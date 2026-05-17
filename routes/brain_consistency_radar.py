@@ -1133,6 +1133,69 @@ def check_enterprise_bot_present() -> list[dict]:
     return findings
 
 
+# ── Phase TTT (2026-05-16) — brand-surface dormancy detector ──────
+def check_brand_surface_dormant() -> list[dict]:
+    """Fires if any brand-positioning surface (/vs, /intelligence,
+    /dcpi/totals, /bs_translator) has zero views in the last 72h
+    AND the surface has been alive (registered) for >24h. These
+    are the marketing-front-door pages — if nobody is hitting them,
+    either the nav links are missing or the brand message isn't
+    reaching anyone. Either way: a human should know.
+
+    Different from check_surface_health_critical (which fires on
+    score<40 across ALL surfaces): this one is BRAND-SPECIFIC and
+    fires on absolute silence — score 0/100 is unambiguous neglect."""
+    findings: list[dict] = []
+    BRAND_SURFACES = ("bs_translator", "power_totals")
+    # (/intelligence isn't registered as a surface — it auto-logs
+    # under 'ai_hub'. Add when refactored. /vs is 'bs_translator',
+    # /dcpi/totals is 'power_totals'.)
+    try:
+        from routes.surface_brain import SURFACES, _conn as _sb_conn
+    except Exception:
+        return findings
+    try:
+        import psycopg2.extras
+        c = _sb_conn()
+        if c is None: return findings
+        try:
+            with c.cursor(cursor_factory=psycopg2.extras.RealDictCursor) as cur:
+                for sid in BRAND_SURFACES:
+                    if sid not in SURFACES: continue
+                    try:
+                        cur.execute("""
+                            SELECT COUNT(*) AS views
+                              FROM surface_telemetry
+                             WHERE surface_id = %s
+                               AND event_type = 'view'
+                               AND ts >= NOW() - INTERVAL '72 hours'
+                        """, (sid,))
+                        n = int((cur.fetchone() or {}).get("views") or 0)
+                    except Exception:
+                        continue
+                    if n == 0:
+                        findings.append({
+                            "issue":  f"brand_surface_dormant:{sid}",
+                            "url":    f"surface_telemetry: surface_id={sid}",
+                            "count":  0,
+                            "detail": (f"Brand-positioning surface '{sid}' has "
+                                       f"ZERO views in the last 72h. The page "
+                                       f"is live (registered) but invisible. "
+                                       f"Likely causes: (1) nav link missing/"
+                                       f"buried, (2) homepage tile missing, "
+                                       f"(3) external traffic not landing. "
+                                       f"Check dchub-frontend/js/dchub-nav.js + "
+                                       f"any homepage hero block, then bump "
+                                       f"discoverability."),
+                        })
+        finally:
+            try: c.close()
+            except Exception: pass
+    except Exception:
+        return findings
+    return findings
+
+
 def scan_all() -> list[dict]:
     """Run every detector. Return a flat list of finding dicts ready
     to merge into actionable_backend_issues."""
@@ -1156,7 +1219,9 @@ def scan_all() -> list[dict]:
                check_surface_health_critical,
                # Phase GGG/LLL detectors
                check_mcp_funnel_leak,
-               check_enterprise_bot_present):
+               check_enterprise_bot_present,
+               # Phase TTT brand-surface dormancy detector
+               check_brand_surface_dormant):
         try:
             out.extend(fn() or [])
         except Exception as e:
