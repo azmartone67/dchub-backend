@@ -169,18 +169,36 @@ def check_worker_version_drift() -> list[dict]:
 #
 # Only listed: tools that have a direct web API counterpart. Composite
 # tools (analyze_site, compare_sites) don't have a single web endpoint.
+# Phase FF (2026-05-17) — corrected paths after live probe found 4 dead
+# mappings spamming 404s in Railway logs. Each entry must point to a
+# real Flask route that returns JSON; the radar fetches it as anonymous
+# and compares the `min_tier` field with the MCP tool's tier (see
+# check_tier_consistency below).
+#
+# Previously-dead, now-fixed:
+#   get_market_intel      /api/v1/market-intel       (404) → /api/v1/markets
+#   get_grid_data         /api/v1/grid               (404) → /api/v1/grid/intelligence/CAISO
+#   get_intelligence_index/api/v1/intelligence-index (404) → /api/v1/intelligence/trends
+#
+# Removed (no public web counterpart):
+#   get_water_risk  — /api/v1/water/stress is wrapped in a conditional
+#                     register at api_integration_wiring.py and 404s in
+#                     prod; there's no other water endpoint. The MCP
+#                     tool returns data from a different code path that
+#                     doesn't have a web mirror, so no tier comparison
+#                     is possible. Removing eliminates noise without
+#                     losing signal.
 _TOOL_API_MAPPING = {
-    "get_market_intel":      "/api/v1/market-intel",
+    "get_market_intel":      "/api/v1/markets",
     "get_grid_intelligence": "/api/v1/grid/intelligence",
     "get_fiber_intel":       "/api/v1/fiber/intel",
-    "get_water_risk":        "/api/v1/water-risk",
     "get_energy_prices":     "/api/v1/energy/summary",
     "get_pipeline":          "/api/v1/pipeline",
     "list_transactions":     "/api/v1/transactions",
-    "get_grid_data":         "/api/v1/grid",
+    "get_grid_data":         "/api/v1/grid/intelligence/CAISO",
     "get_renewable_energy":  "/api/v1/energy/renewable",
     "get_tax_incentives":    "/api/v1/tax-incentives",
-    "get_intelligence_index":"/api/v1/intelligence-index",
+    "get_intelligence_index":"/api/v1/intelligence/trends",
 }
 
 
