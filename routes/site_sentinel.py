@@ -155,31 +155,32 @@ def _ensure_schema(cur):
 
 def _scan_one(path: str, category: str, min_bytes: int) -> tuple[int, int, int, bool, str]:
     """Returns (status_code, bytes, elapsed_ms, healthy, reason)."""
-    import urllib.request
-    import urllib.error
+    import requests
     url = f"{_SITE_BASE}{path}"
     t0 = time.time()
     try:
-        req = urllib.request.Request(url, headers={
+        r = requests.get(url, timeout=10, headers={
             "User-Agent":  "DCHub-Site-Sentinel/1.0",
             "Cache-Control": "no-cache",
-        })
-        with urllib.request.urlopen(req, timeout=10) as r:
-            body = r.read(64 * 1024)  # cap read to 64KB — we just want size signal
-            elapsed = int((time.time() - t0) * 1000)
-            status = r.getcode()
-            n_bytes = len(body)
-            if status != 200:
-                return status, n_bytes, elapsed, False, f"http_status:{status}"
-            if n_bytes < min_bytes:
-                return status, n_bytes, elapsed, False, f"body_too_small:{n_bytes}<{min_bytes}"
-            return status, n_bytes, elapsed, True, "ok"
-    except urllib.error.HTTPError as e:
+        }, stream=True)
+        # Read at most 64KB — we only need a size signal, not the full body
+        body = r.raw.read(64 * 1024, decode_content=True) if r.raw else r.content[:64*1024]
         elapsed = int((time.time() - t0) * 1000)
-        return e.code, 0, elapsed, False, f"http_status:{e.code}"
-    except urllib.error.URLError as e:
+        status = r.status_code
+        n_bytes = len(body) if body else len(r.content)
+        try: r.close()
+        except Exception: pass
+        if status != 200:
+            return status, n_bytes, elapsed, False, f"http_status:{status}"
+        if n_bytes < min_bytes:
+            return status, n_bytes, elapsed, False, f"body_too_small:{n_bytes}<{min_bytes}"
+        return status, n_bytes, elapsed, True, "ok"
+    except requests.exceptions.Timeout:
         elapsed = int((time.time() - t0) * 1000)
-        return 0, 0, elapsed, False, f"connect_failed:{(e.reason or '')[:80]}"
+        return 0, 0, elapsed, False, "timeout"
+    except requests.exceptions.ConnectionError as e:
+        elapsed = int((time.time() - t0) * 1000)
+        return 0, 0, elapsed, False, f"connect_failed:{str(e)[:80]}"
     except Exception as e:
         elapsed = int((time.time() - t0) * 1000)
         return 0, 0, elapsed, False, f"{type(e).__name__}:{str(e)[:80]}"
