@@ -322,6 +322,9 @@ def transactions_index():
   Programmatic access: <a href="/api/v1/transactions">/api/v1/transactions</a> ·
   MCP tool: <code>list_transactions</code>
 </p>
+<!-- Phase QA-sweep (2026-05-16): include dchub-nav.js so users see
+     the top nav instead of having to browser-back to escape. -->
+<script src="/js/dchub-nav.js" defer></script>
 </body>
 </html>"""
     return Response(html, mimetype="text/html",
@@ -468,6 +471,7 @@ def transaction_detail(deal_id):
   Part of <a href="/transactions">DC Hub's transactions database</a> · {_fmt_date(datetime.datetime.utcnow())} ·
   API: <a href="/api/v1/transactions/{deal_id}">/api/v1/transactions/{deal_id}</a>
 </p>
+<script src="/js/dchub-nav.js" defer></script>
 </body>
 </html>"""
     return Response(html, mimetype="text/html",

@@ -61,11 +61,13 @@ on:
     # tick so outcomes settle before next learn pass.
     - cron: '45 5 * * *'
     # Phase GG (2026-05-15) — Bundle 5C: DC Hub Weekly Digest broadcast.
-    # Monday 14:00 UTC (after agent vendor digest at the same slot, but
-    # this targets ALL free + identified + newsletter subscribers, not
-    # just MCP key holders). Auto-builds from DCPI movers + ISO comparison
-    # + changes-since + brain self-assessment. Idempotent via 6-day dedup.
-    - cron: '0 14 * * 1'
+    # Monday 14:30 UTC (Phase QA-sweep 2026-05-16: offset from
+    # `0 14 * * 1` agent_vendor cron at line 39 to clear the
+    # cron_schedule_collision finding flagged by the consistency
+    # radar). Targets ALL free + identified + newsletter subscribers.
+    # Auto-builds from DCPI movers + ISO comparison + changes-since
+    # + brain self-assessment. Idempotent via 6-day dedup.
+    - cron: '30 14 * * 1'
     # Phase PP (2026-05-15) — hot-leads outreach, weekly Thursday 17:00 UTC.
     # Lands 1pm ET — peak business hours mid-week, after Mon/Tue ramp-up
     # but with enough runway to follow up before Friday. Targets the top
@@ -523,10 +525,11 @@ jobs:
   # endpoint auto-builds the body from DCPI movers + ISO comparison +
   # changes-since + brain self-assessment, then broadcasts via Resend.
   # Idempotent: 6-day dedup window so a same-week retry is safe.
-  # NOTE: shares the same '0 14 * * 1' cron as agent_vendor_digest above,
-  # which is fine — both run, neither blocks the other.
+  # NOTE: Phase QA-sweep (2026-05-16) — moved from '0 14 * * 1' to
+  # '30 14 * * 1' to clear the cron_schedule_collision finding. Now
+  # fires 30 min after agent_vendor_digest at the top of the hour.
   weekly_media_digest:
-    if: github.event.schedule == '0 14 * * 1' || (github.event_name == 'workflow_dispatch' && (inputs.phase == 'all' || inputs.phase == 'weekly_media_digest'))
+    if: github.event.schedule == '30 14 * * 1' || (github.event_name == 'workflow_dispatch' && (inputs.phase == 'all' || inputs.phase == 'weekly_media_digest'))
     runs-on: ubuntu-latest
     timeout-minutes: 5
     steps:

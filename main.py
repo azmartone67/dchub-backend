@@ -19538,6 +19538,59 @@ try:
 except Exception as _e:
     print(f"[main] power_totals register failed: {_e}", file=sys.stderr)
 
+# Phase QA-sweep (2026-05-16): /pocket-listings was 404 in Site Sentinel.
+# The data exists (get_pocket_listings MCP tool + /api/v1/listings API)
+# but no HTML surface had been wired. Ship a minimal landing page so the
+# URL stops 404'ing — the richer browser is queued for Phase CCCC+1.
+try:
+    from flask import Response as _PL_Response
+    @app.route('/pocket-listings', methods=['GET'], strict_slashes=False)
+    @app.route('/pocket-listings.html', methods=['GET'])
+    def _pocket_listings_stub():
+        html = """<!doctype html>
+<html><head><meta charset="utf-8">
+<title>Pocket Listings — DC Hub</title>
+<meta name="description" content="Curated pre-market data center capacity listings — exclusive opportunities for tenants and buyers.">
+<link rel="canonical" href="https://dchub.cloud/pocket-listings">
+<style>body{font-family:-apple-system,BlinkMacSystemFont,sans-serif;max-width:900px;
+margin:0 auto;padding:2rem 1rem;color:#1f2937;line-height:1.55;background:#fafbfc}
+h1{font-size:2rem;margin:0 0 .5rem}
+.lead{font-size:1.1rem;color:#4b5563;margin:0 0 2rem}
+.card{background:white;border-radius:10px;padding:1.5rem;margin:1rem 0;
+box-shadow:0 1px 3px rgba(0,0,0,.06)}
+.card h2{margin:0 0 .5rem;font-size:1.15rem}
+.muted{color:#6b7280;font-size:.9rem}
+a{color:#1e40af;text-decoration:none} a:hover{text-decoration:underline}
+.cta{display:inline-block;background:linear-gradient(135deg,#065f46,#0f766e);
+color:white;padding:.6rem 1.25rem;border-radius:6px;font-weight:600;
+text-decoration:none;margin-top:1rem}</style>
+</head><body>
+<h1>Pocket Listings</h1>
+<p class="lead">Curated pre-market data center capacity listings — exclusive opportunities for tenants, buyers, and brokers.</p>
+<div class="card">
+<h2>How to browse</h2>
+<p>The pocket listings dataset is currently surfaced through:</p>
+<ul>
+ <li><strong>MCP tools</strong> — call <code>get_pocket_listings</code> (IDENTIFIED tier) or <code>get_pocket_listing</code> from your AI agent at <a href="/mcp">/mcp</a>.</li>
+ <li><strong>REST API</strong> — <a href="/api/v1/listings">/api/v1/listings</a> returns the live JSON feed.</li>
+ <li><strong>Spare Capacity Marketplace</strong> — operators can list their own capacity at <a href="/spare-capacity">/spare-capacity</a> for tenant discovery.</li>
+</ul>
+<a class="cta" href="/spare-capacity">List your spare capacity →</a>
+</div>
+<div class="card">
+<h2>What's coming</h2>
+<p class="muted">A full HTML browser for pocket listings (filters, map view, broker-attribution tracking) is queued for the next phase. Until then, the MCP + REST surfaces are the canonical access path.</p>
+</div>
+<p class="muted" style="text-align:center;margin-top:3rem">
+ Part of <a href="/">DC Hub</a> · <a href="/spare-capacity">Spare capacity</a> · <a href="/transactions">Transactions</a> · <a href="/api-docs">API docs</a>
+</p>
+<script src="/js/dchub-nav.js" defer></script>
+</body></html>"""
+        return _PL_Response(html, mimetype="text/html",
+                            headers={"Cache-Control": "public, max-age=600"})
+except Exception as _e:
+    print(f"[main] /pocket-listings stub register failed: {_e}", file=sys.stderr)
+
 # Phase BBBB (2026-05-16): /developers acquisition funnel.
 try:
     from routes.developers_funnel import developers_funnel_bp

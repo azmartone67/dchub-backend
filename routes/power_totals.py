@@ -331,6 +331,10 @@ def html_totals():
   Computed at {computed[:19]}Z · cached 5 min · <a href="/api/v1/power/totals">JSON</a> ·
   Part of <a href="/dcpi">DCPI</a> · <a href="/llms.txt">/llms.txt</a> for AI agents
 </p>
+<!-- Phase QA-sweep (2026-05-16): include dchub-nav.js so users see
+     the top nav instead of having to browser-back to escape. Also
+     surfaces in surface_brain via auto-instrumented page-view beacon. -->
+<script src="/js/dchub-nav.js" defer></script>
 </body>
 </html>"""
     return Response(html, mimetype="text/html",

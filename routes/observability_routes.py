@@ -250,17 +250,27 @@ def snapshot():
         try: conn.commit()
         except Exception: pass
 
+        # Phase QA-sweep (2026-05-16): probe each source table with
+        # to_regclass FIRST so missing tables degrade silently instead
+        # of dumping "relation X does not exist" to Railway logs every
+        # cycle (the schema_drift detector was repeatedly flagging
+        # pipelines, gas_compressors, wind_projects which don't exist
+        # on this deploy).
         samples = {}
-        for label, sql in [
-            ('total_substations',    "SELECT COUNT(*) FROM substations"),
-            ('total_pipelines',      "SELECT COUNT(*) FROM pipelines"),
-            ('total_power_plants',   "SELECT COUNT(*) FROM power_plants"),
-            ('total_fiber_routes',   "SELECT COUNT(*) FROM fiber_routes"),
-            ('total_capacity_mw',    "SELECT COALESCE(SUM(capacity_mw),0) FROM power_plants"),
-            ('mcp_tool_calls_24h',   "SELECT COUNT(*) FROM mcp_tool_calls WHERE called_at > NOW() - INTERVAL '24 hours'"),
-            ('mcp_conversions_24h',  "SELECT COUNT(*) FROM mcp_conversions WHERE created_at > NOW() - INTERVAL '24 hours'"),
+        for label, table, sql in [
+            ('total_substations',    'substations',    "SELECT COUNT(*) FROM substations"),
+            ('total_pipelines',      'pipelines',      "SELECT COUNT(*) FROM pipelines"),
+            ('total_power_plants',   'power_plants',   "SELECT COUNT(*) FROM power_plants"),
+            ('total_fiber_routes',   'fiber_routes',   "SELECT COUNT(*) FROM fiber_routes"),
+            ('total_capacity_mw',    'power_plants',   "SELECT COALESCE(SUM(capacity_mw),0) FROM power_plants"),
+            ('mcp_tool_calls_24h',   'mcp_tool_calls', "SELECT COUNT(*) FROM mcp_tool_calls WHERE called_at > NOW() - INTERVAL '24 hours'"),
+            ('mcp_conversions_24h',  'mcp_conversions',"SELECT COUNT(*) FROM mcp_conversions WHERE created_at > NOW() - INTERVAL '24 hours'"),
         ]:
             try:
+                # Probe first — silently skip if table doesn't exist
+                cur.execute("SELECT to_regclass(%s)", (f"public.{table}",))
+                if not (cur.fetchone() or [None])[0]:
+                    continue
                 cur.execute(sql)
                 samples[label] = int((cur.fetchone() or (0,))[0])
             except Exception:

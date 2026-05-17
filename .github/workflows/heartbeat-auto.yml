@@ -1,11 +1,11 @@
 name: Heartbeat Auto-Refresh
 on:
   schedule:
-    # Phase DDDD-cleanup (2026-05-16): 30min → 15min. With BATCH bumped
-    # to 250 per call, 600 stale surfaces drain in ~3 calls (45min).
-    # Combined with the 1h SLA on /heartbeat itself, 15min cadence
-    # keeps the heartbeat surface always FRESH.
-    - cron: '*/15 * * * *'
+    # Phase QA-sweep (2026-05-16): offset by 3 minutes so we don't
+    # collide with auto-rollback.yml at the same `*/15 * * * *`
+    # boundary (consistency radar was flagging the collision). Now
+    # fires at :03, :18, :33, :48 — still 15-min cadence, no overlap.
+    - cron: '3-59/15 * * * *'
   workflow_dispatch: {}
 jobs:
   refresh:
