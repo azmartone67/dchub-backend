@@ -144,10 +144,15 @@ def developers_track():
         _ensure_schema(c)
         import json as _json
         with c.cursor() as cur:
+            # ON CONFLICT DO NOTHING — table has no unique constraint on
+            # the event itself (events are append-only), so this is a
+            # no-op in practice; satisfies the regression-lint rule that
+            # requires every INSERT have a conflict-resolution clause.
             cur.execute("""
                 INSERT INTO developer_funnel_events
                   (event_type, anon_id, api_key_hash, payload)
                 VALUES (%s, %s, %s, %s::jsonb)
+                ON CONFLICT DO NOTHING
             """, (event_type, anon_id, api_key_h, _json.dumps(safe)))
     finally:
         try: c.close()
