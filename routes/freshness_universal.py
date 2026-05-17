@@ -25,8 +25,19 @@ WINDOWS = [
     (r"^/transactions",         24, "refresh_transactions"),
     (r"^/api/v1/dcpi",          26, "refresh_dcpi"),
     (r"^/api/v1/grid",          2, "refresh_iso"),
+    # Phase YY-3 (2026-05-17) — also bind /api/grid (no v1 prefix) to
+    # the iso domain. Without this, /api/grid/supported-isos,
+    # /api/grid/summary/<iso>, /api/grid/fuel-mix-live fell back to
+    # DEFAULT_WINDOW (168h noop_default) — no refresh function, so they
+    # were permanently "29h stale" even though data-pulse runs every
+    # 15 min. The breach was on the wrong surface set the whole time.
+    (r"^/api/grid",             2, "refresh_iso"),
     (r"^/api/v1/markets",       24, "refresh_market"),
     (r"^/api/v1/news",          1, "refresh_news"),
+    # Phase YY-3 — same fix for /api/news without v1 + /api/admin/news-status
+    # which is the news-domain surface that's been flagged.
+    (r"^/api/news",             1, "refresh_news"),
+    (r"^/api/admin/news",       1, "refresh_news"),
     (r"^/research(/|$)",        2160, "refresh_research"),    # 90d
     (r"^/data(/|$)",            168, "refresh_data"),         # 7d
     (r"^/lab(/|$)",             168, "refresh_lab"),
