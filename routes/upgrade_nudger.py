@@ -36,7 +36,12 @@ _RESEND_KEY = (os.environ.get("DCHUB_RESEND_API_KEY")
                or os.environ.get("RESEND_API_KEY") or "").strip()
 _FROM_NAME  = os.environ.get("DCHUB_FROM_NAME",  "DC Hub")
 _FROM_EMAIL = os.environ.get("DCHUB_FROM_EMAIL", "alerts@dchub.cloud")
-_STRIPE_DEV = "https://buy.stripe.com/7sY5kE8F4fs13ml0PEaZi0c"
+# Phase HHH (2026-05-17) — Starter tier ($9/mo, 500 calls/day) is the new
+# default upgrade path. The Round 9 audit found 7,101 weekly upgrade
+# signals / 0 conversions on the $0→$49 jump. $9 cuts the friction 5×.
+# DEVELOPER stays as the secondary option for power users.
+_STRIPE_STARTER = "https://buy.stripe.com/8x2dRa5sS0x75uteGuaZi0g"  # $9/mo
+_STRIPE_DEV     = "https://buy.stripe.com/7sY5kE8F4fs13ml0PEaZi0c"  # $49/mo
 _IDENTIFIED_DAILY_CAP = 200
 _NUDGE_THRESHOLD_PCT  = 0.80   # 80% of cap
 _NUDGE_MIN_DAYS       = 3      # heavy use on 3+ of last 7d
@@ -108,21 +113,37 @@ margin:0 auto;padding:1.5rem;color:#1f2937;line-height:1.55">
  <h2 style="margin:0;font-size:1.2rem">⚡ You're getting real value from DC Hub</h2>
  <p style="margin:.25rem 0 0;color:#d1fae5;font-size:.9rem">{heavy_days} heavy-use days last week · peak {peak} calls ({cap_pct}% of your 200/day cap)</p>
 </div>
-<p>Your usage pattern shows you're hitting the daily limit regularly on data-center research workflows. The DEVELOPER plan gives you:</p>
-<ul style="line-height:1.7">
- <li><strong>2,000 calls/day</strong> (10× your current cap)</li>
- <li><strong>100 rows per call</strong> (vs 20 today)</li>
- <li><strong>Full transaction CSV export</strong> at /api/v1/transactions/export.csv</li>
- <li><strong>analyze_site MCP tool</strong> — composite lat/lon scorer</li>
- <li><strong>No rate-limit cooldown</strong> between calls</li>
-</ul>
-<p style="margin-top:1.5rem">
- <a href="{_STRIPE_DEV}?prefilled_email={email}" style="display:inline-block;background:linear-gradient(135deg,#065f46,#0f766e);color:white;padding:.7rem 1.5rem;border-radius:6px;font-weight:700;text-decoration:none">
-   Upgrade to DEVELOPER — $49/mo →
- </a>
-</p>
-<p style="color:#6b7280;font-size:.85rem;margin-top:1.5rem">
- Cancel anytime · No long-term contract · Your existing key keeps working<br>
+<p>Your usage pattern shows you're hitting the daily limit regularly on data-center research workflows. Two cheap ways to unlock more:</p>
+
+<div style="display:flex;gap:1rem;margin:1.5rem 0;flex-wrap:wrap">
+ <div style="flex:1;min-width:240px;padding:1rem;border:1px solid #10b981;border-radius:8px;background:#f0fdf4">
+  <div style="font-size:.7rem;color:#065f46;font-weight:700;letter-spacing:.05em;margin-bottom:.25rem">💚 STARTER · MOST POPULAR</div>
+  <div style="font-size:1.5rem;font-weight:800;color:#065f46">$9<span style="font-size:.85rem;color:#6b7280;font-weight:400">/month</span></div>
+  <ul style="line-height:1.6;font-size:.88rem;margin:.5rem 0;padding-left:1.1rem">
+   <li><strong>500 calls/day</strong> (2.5× your cap)</li>
+   <li>Same data as Developer, cheaper</li>
+   <li>Cancel in 1 click</li>
+  </ul>
+  <a href="{_STRIPE_STARTER}?prefilled_email={email}" style="display:inline-block;background:#10b981;color:white;padding:.55rem 1rem;border-radius:6px;font-weight:700;text-decoration:none;width:calc(100% - 2rem);text-align:center">
+    Start Starter — $9/mo →
+  </a>
+ </div>
+ <div style="flex:1;min-width:240px;padding:1rem;border:1px solid #e5e7eb;border-radius:8px;background:#fafafa">
+  <div style="font-size:.7rem;color:#6b7280;font-weight:700;letter-spacing:.05em;margin-bottom:.25rem">🤖 DEVELOPER · POWER USERS</div>
+  <div style="font-size:1.5rem;font-weight:800;color:#1f2937">$49<span style="font-size:.85rem;color:#6b7280;font-weight:400">/month</span></div>
+  <ul style="line-height:1.6;font-size:.88rem;margin:.5rem 0;padding-left:1.1rem">
+   <li><strong>2,000 calls/day</strong> (10× cap)</li>
+   <li>100 rows per call · CSV export</li>
+   <li>analyze_site composite scorer</li>
+  </ul>
+  <a href="{_STRIPE_DEV}?prefilled_email={email}" style="display:inline-block;background:#1f2937;color:white;padding:.55rem 1rem;border-radius:6px;font-weight:700;text-decoration:none;width:calc(100% - 2rem);text-align:center">
+    Start Developer — $49/mo →
+  </a>
+ </div>
+</div>
+
+<p style="color:#6b7280;font-size:.85rem;margin-top:1rem">
+ Both plans: cancel anytime · no long-term contract · your existing key keeps working.<br>
  Questions? <a href="mailto:api@dchub.cloud" style="color:#1e40af">api@dchub.cloud</a>
 </p>
 </body></html>"""
@@ -225,8 +246,12 @@ def send_pending_nudges(dry_run: bool = False) -> dict:
                         continue
                 except Exception:
                     pass
-                subject = (f"You're using DC Hub heavily — "
-                           f"DEVELOPER tier ($49/mo) might fit better")
+                # Phase HHH (2026-05-17) — lead with Starter $9 (lower
+                # friction first-jump). The HTML body shows both tiers
+                # side-by-side; the subject line should match the cheap
+                # option for higher open + click rates.
+                subject = (f"You're hitting the DC Hub free cap — "
+                           f"unlock 2.5× more for $9/mo")
                 body = _render_nudge_html(u["user_email"], u["heavy_days_7d"],
                                             u["peak_day_calls"])
                 if dry_run:
