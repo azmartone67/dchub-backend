@@ -48,11 +48,13 @@ from flask import jsonify, request
 # converts somewhere.
 import os as _os
 _STRIPE_LINKS = {
+    # Phase BBB-3-LIVE (2026-05-17) — user provided the real Starter
+    # payment link, no longer a fallback to founding-member. $9/mo,
+    # 500 calls/day, no commitment. Env override still honored if
+    # the SKU ever needs to be rotated.
     "starter_monthly":   _os.environ.get(
         "STARTER_MONTHLY_STRIPE_LINK",
-        # Fallback: founding-member ($99/mo, limited spots). Better than
-        # a dead link.
-        "https://buy.stripe.com/dRm7sMbRgcfPg97buiaZi02"),
+        "https://buy.stripe.com/8x2dRa5sS0x75uteGuaZi0g"),
     "developer_monthly": "https://buy.stripe.com/7sY5kE8F4fs13ml0PEaZi0c",
     "pro_monthly":       "https://buy.stripe.com/dRm7sMbRgcfPg97buiaZi02",
     "pro_annual":        "https://buy.stripe.com/4gM3cwcVk3JjbSR9maaZi01",
@@ -157,10 +159,24 @@ def _gate_response(current_tier: str, required_tier: str,
     endpoint per RFC 7235 so smart clients can self-onboard.
     """
     required_upper = required_tier.upper()
-    checkout_key = {"DEVELOPER": "developer_monthly",
-                    "PRO":       "pro_monthly",
-                    "ENTERPRISE":"enterprise_monthly"}.get(required_upper, "pro_monthly")
-    stripe_url = _STRIPE_LINKS.get(checkout_key, _STRIPE_LINKS["pro_monthly"])
+    # Phase BBB-3-LIVE (2026-05-17): default upgrade target is now the
+    # $9/mo STARTER tier (was DEVELOPER at $49/mo). The cheaper jump
+    # converts better — Round 7 audit showed 7,101 upgrade signals / 0
+    # conversions on the steep $0→$49 jump. STARTER unlocks the same
+    # endpoints as DEVELOPER for the price of two coffees. Pro/Enterprise
+    # paths still surface their own checkout when explicitly required.
+    checkout_key = {"DEVELOPER":  "starter_monthly",   # cheaper alt
+                    "PRO":        "pro_monthly",
+                    "ENTERPRISE": "enterprise_monthly"}.get(required_upper, "starter_monthly")
+    stripe_url = _STRIPE_LINKS.get(checkout_key, _STRIPE_LINKS["starter_monthly"])
+    # Also surface the developer + pro paths explicitly so smart clients
+    # / pricing-aware agents can pick the right tier without re-fetching.
+    stripe_alternates = {
+        "starter_monthly_9":    _STRIPE_LINKS.get("starter_monthly"),
+        "developer_monthly_49": _STRIPE_LINKS.get("developer_monthly"),
+        "pro_monthly_199":      _STRIPE_LINKS.get("pro_monthly"),
+        "pro_annual":           _STRIPE_LINKS.get("pro_annual"),
+    }
     upgrade_url = (f"https://dchub.cloud/pricing"
                    f"?utm_source=rest_gate&utm_medium={gate_id}"
                    f"&utm_campaign={required_upper.lower()}_upgrade")
@@ -190,6 +206,9 @@ def _gate_response(current_tier: str, required_tier: str,
                     f"of what's behind the gate."),
         "upgrade_url":       upgrade_url,
         "stripe_checkout":   f"{stripe_url}?prefilled_email={request.args.get('email','')}",
+        # Phase BBB-3-LIVE — full tier ladder so smart clients can pick
+        # the level that fits without parsing the message text.
+        "stripe_alternates": stripe_alternates,
         "claim_free_key_first": (
             "https://dchub.cloud/api/v1/keys/claim"
             if current_tier == "FREE" else None
