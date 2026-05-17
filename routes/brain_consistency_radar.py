@@ -1162,6 +1162,95 @@ def check_enterprise_bot_present() -> list[dict]:
     return findings
 
 
+# ── Phase BBBB (2026-05-16) — /developers funnel drop detector ────
+def check_developers_funnel_dead() -> list[dict]:
+    """Surface when /developers gets traffic but stage-1 (intent
+    signal) drop is >95% — page is attracting visits but failing to
+    convert interest into intent. The user asked: 'is our developer
+    site actively getting new ai agents to use our tool?' This is
+    the answer surface."""
+    findings: list[dict] = []
+    try:
+        from routes.developers_funnel import _compute_funnel
+        d = _compute_funnel(days=30)
+    except Exception:
+        return findings
+    s = d.get("stages") or {}
+    visitors = int(s.get("0_unique_visitors") or 0)
+    intent   = int(s.get("1_intent_signals")  or 0)
+    if visitors < 50:
+        return findings  # not enough data yet
+    if visitors == 0:
+        return findings
+    intent_rate = 100.0 * intent / visitors
+    if intent_rate < 5.0:  # <5% of visitors signal any intent
+        findings.append({
+            "issue":  "developers_funnel_intent_dead",
+            "url":    "/api/v1/developers/funnel",
+            "count":  int(intent_rate * 10),  # rate * 10 so it's visible in heartbeat
+            "detail": (f"/developers got {visitors} unique visitors in 30d "
+                       f"but only {intent} intent signals ({intent_rate:.1f}% "
+                       f"intent rate). Either the page copy isn't converting "
+                       f"or the CTA is buried. Inspect "
+                       f"/api/v1/developers/funnel for the per-stage breakdown "
+                       f"+ run an A/B on the pricing block."),
+        })
+    return findings
+
+
+# ── Phase CCCC (2026-05-16) — spare-capacity health detector ──────
+def check_spare_capacity_status() -> list[dict]:
+    """Surface (1) the initial milestone of any listings appearing, +
+    (2) pending listings older than 24h that haven't been moderated.
+    The marketplace is brand new — the user wants to know when it
+    starts catching real listings + needs to be reminded to approve
+    pending submissions."""
+    findings: list[dict] = []
+    conn = _db()
+    if conn is None: return findings
+    try:
+        with conn.cursor() as cur:
+            try:
+                cur.execute("SELECT to_regclass('public.spare_capacity_listings')")
+                if not (cur.fetchone() or [None])[0]: return findings
+            except Exception:
+                return findings
+            try:
+                cur.execute("""
+                    SELECT
+                      COUNT(*) FILTER (WHERE status = 'live')    AS live,
+                      COUNT(*) FILTER (WHERE status = 'pending') AS pending,
+                      COUNT(*) FILTER (WHERE status = 'pending'
+                                       AND created_at < NOW() - INTERVAL '24 hours') AS pending_stale,
+                      COALESCE(SUM(mw_available) FILTER (WHERE status = 'live'), 0) AS total_live_mw
+                      FROM spare_capacity_listings
+                """)
+                r = cur.fetchone() or (0,0,0,0)
+                live, pending, pending_stale, total_mw = (int(r[0] or 0), int(r[1] or 0),
+                                                            int(r[2] or 0), float(r[3] or 0))
+            except Exception:
+                return findings
+    finally:
+        try: conn.close()
+        except Exception: pass
+
+    if pending_stale > 0:
+        findings.append({
+            "issue":  "spare_capacity_pending_moderation",
+            "url":    "/api/v1/spare-capacity/listings?status=pending",
+            "count":  pending_stale,
+            "detail": (f"{pending_stale} spare-capacity listings have been "
+                       f"pending for >24h. Review + flip status to 'live' "
+                       f"in spare_capacity_listings table, or build the "
+                       f"admin approval endpoint (Phase DDDD+). Total "
+                       f"pending: {pending}, live: {live}, live MW: {total_mw:.1f}."),
+        })
+    # Don't flag absence of listings (zero is the default state until the
+    # marketplace gets traction — flagging "0 listings" every cycle would
+    # be noise).
+    return findings
+
+
 # ── Phase AAAA (2026-05-16) — dormant-MCP detector ────────────────
 def check_mcp_dormant_agents() -> list[dict]:
     """Surface the top-3 dormant MCP agents (>30 prior calls, idle 14+
@@ -1464,7 +1553,11 @@ def scan_all() -> list[dict]:
                # Phase XXX conversion-rate floor detector
                check_conversion_rate_floor,
                # Phase AAAA dormant-MCP detector
-               check_mcp_dormant_agents):
+               check_mcp_dormant_agents,
+               # Phase BBBB /developers funnel
+               check_developers_funnel_dead,
+               # Phase CCCC spare-capacity marketplace health
+               check_spare_capacity_status):
         try:
             out.extend(fn() or [])
         except Exception as e:

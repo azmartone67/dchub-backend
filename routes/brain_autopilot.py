@@ -449,6 +449,22 @@ _PATTERN_LIBRARY: dict[str, dict[str, Any]] = {
         "use_admin":   False,
         "description": "Escalation-only: agents that previously hammered MCP have gone dormant. See /api/v1/bots/dormant for the structured outreach worklist (top targets ranked by prior_calls). High-priority targets (>=100 prior calls) are the likely enterprise prospects worth manual winback.",
     },
+    # Phase BBBB — /developers funnel intent dead. Escalation-only;
+    # fix is copy + CTA repositioning, requires judgment.
+    "developers_funnel_intent_dead": {
+        "action":      lambda f: (None, None),
+        "method":      None,
+        "use_admin":   False,
+        "description": "Escalation-only: /developers visitors aren't converting to intent signals. Either the page copy doesn't land or the CTA is buried. Inspect /api/v1/developers/funnel and run an A/B on the pricing block.",
+    },
+    # Phase CCCC — pending spare-capacity listings need moderation.
+    # Escalation-only until admin-approval endpoint ships (DDDD+).
+    "spare_capacity_pending_moderation": {
+        "action":      lambda f: (None, None),
+        "method":      None,
+        "use_admin":   False,
+        "description": "Escalation-only: spare-capacity listings are stuck in 'pending' status past 24h. Review and flip to 'live' in the spare_capacity_listings table. Phase DDDD+ will add an admin-approval endpoint.",
+    },
 }
 
 
