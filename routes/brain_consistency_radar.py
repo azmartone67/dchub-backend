@@ -1191,6 +1191,62 @@ def check_enterprise_bot_present() -> list[dict]:
     return findings
 
 
+# ── Phase YYYY (2026-05-16) — operator-profile gap detector ──────
+def check_operator_profile_gap() -> list[dict]:
+    """Surface top operators by facility count that lack rich
+    metadata (missing markets, missing power_mw on most facilities).
+    Brain flags so discovery pipeline can prioritize fills — closes
+    the per-operator-profile gap vs DCHawk/dcByte."""
+    conn = _db()
+    if conn is None: return []
+    findings: list[dict] = []
+    try:
+        with conn.cursor() as cur:
+            try:
+                cur.execute("""
+                    SELECT provider,
+                           COUNT(*) AS facility_count,
+                           COUNT(*) FILTER (WHERE power_mw IS NULL) AS mw_missing,
+                           COUNT(*) FILTER (WHERE market IS NULL OR market = '') AS market_missing
+                      FROM discovered_facilities
+                     WHERE provider IS NOT NULL AND provider != ''
+                       AND merged_at IS NULL AND is_duplicate = 0
+                     GROUP BY provider
+                    HAVING COUNT(*) >= 10
+                     ORDER BY COUNT(*) DESC LIMIT 10
+                """)
+                rows = cur.fetchall()
+            except Exception:
+                return findings
+    finally:
+        try: conn.close()
+        except Exception: pass
+
+    gaps = []
+    for r in rows:
+        name, total, mw_missing, mkt_missing = r[0], int(r[1] or 0), int(r[2] or 0), int(r[3] or 0)
+        mw_pct  = 100.0 * mw_missing / max(1, total)
+        mkt_pct = 100.0 * mkt_missing / max(1, total)
+        # Flag if >50% of either field is missing
+        if mw_pct >= 50 or mkt_pct >= 50:
+            gaps.append((name, total, mw_pct, mkt_pct))
+
+    if not gaps: return findings
+    # One finding per gappy operator, cap at 3
+    for (name, total, mw_pct, mkt_pct) in gaps[:3]:
+        findings.append({
+            "issue":  f"operator_profile_gap:{name[:50]}",
+            "url":    f"/operators/{name.lower().replace(' ', '-')}",
+            "count":  total,
+            "detail": (f"Operator '{name}' has {total} facilities tracked "
+                       f"but {mw_pct:.0f}% missing power_mw and "
+                       f"{mkt_pct:.0f}% missing market. Discovery should "
+                       f"prioritize this operator. Closes the per-operator "
+                       f"profile gap vs DCHawk/dcByte."),
+        })
+    return findings
+
+
 # ── Phase TTTT (2026-05-16) — citation-score detector ────────────
 def check_citation_score_dropped() -> list[dict]:
     """Fires when DC Hub citation score in AI-platform responses
@@ -1991,7 +2047,9 @@ def scan_all() -> list[dict]:
                # Phase VVVV Sentinel content drift
                check_page_content_drift,
                # Phase XXXX competitor announcements
-               check_competitor_announcement):
+               check_competitor_announcement,
+               # Phase YYYY operator-profile gap
+               check_operator_profile_gap):
         try:
             out.extend(fn() or [])
         except Exception as e:

@@ -507,6 +507,13 @@ _PATTERN_LIBRARY: dict[str, dict[str, Any]] = {
         "use_admin":   True,
         "description": "AUTONOMOUS: when a competitor updates their site significantly, auto-trigger DC Hub Media press to publish counter-positioning content while the news is fresh. Third autonomous pattern in the library.",
     },
+    # Phase YYYY — operator-profile gap
+    "operator_profile_gap": {
+        "action":      lambda f: (None, None),
+        "method":      None,
+        "use_admin":   False,
+        "description": "Escalation-only: top operator missing >50% of market or power_mw fields. Discovery pipeline (routes/discovery_routes.py + ingest crons) should prioritize this operator for backfill so /operators/<slug> profile is rich.",
+    },
     "dchub_media_press_weak": {
         "action":      lambda f: (None, None),
         "method":      None,

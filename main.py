@@ -19687,6 +19687,27 @@ try:
 except Exception as _e:
     print(f"[main] competitor_intel register failed: {_e}", file=sys.stderr)
 
+# Phase YYYY (2026-05-16): operator profiles + activity feed — closes
+# the per-operator-profile-page gap vs DCHawk/dcByte.
+try:
+    from routes.operators import operators_bp
+    app.register_blueprint(operators_bp)
+    try:
+        from routes.surface_brain import register_surface, Surface
+        register_surface(Surface(
+            surface_id="operators",
+            name="Operators Directory",
+            description="/operators + per-operator profiles — closes DCHawk/dcByte gap",
+            routes=["/operators", "/operators/<slug>",
+                    "/api/v1/operators", "/api/v1/operators/<slug>",
+                    "/api/v1/activity/recent"],
+            paid_tools=[],
+            expected_event_types=["view", "view_profile"],
+        ))
+    except Exception: pass
+except Exception as _e:
+    print(f"[main] operators register failed: {_e}", file=sys.stderr)
+
 # Phase BBBB (2026-05-16): /developers acquisition funnel.
 try:
     from routes.developers_funnel import developers_funnel_bp

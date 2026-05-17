@@ -75,7 +75,7 @@
 // CONFIGURATION
 // ============================================================
 const RAILWAY_BACKEND = 'https://dchub-backend-production.up.railway.app';
-const WORKER_VERSION = '4.15.0-gggg-jjjj';
+const WORKER_VERSION = '4.16.0-yyyy';
 const _DCHUB_BUILD_MARKER = 'rebuild-1777448239';
 
 const MCP_CACHE_STALE_TTL = 86400;
@@ -1399,8 +1399,20 @@ export default {
         '/sentinel',
         // Phase IIII (2026-05-16): public ops transparency console
         '/transparency',
+        // Phase YYYY (2026-05-16): operator profiles directory
+        '/operators',
       ]);
-      if (PHASE_282_RAILWAY_PATHS.has(pathname)) {
+      // Phase YYYY (2026-05-16): also forward prefix-paths to Railway
+      // for surfaces with dynamic sub-routes (e.g. /operators/<slug>).
+      // The Set check covers literal paths; this prefix-check covers
+      // path families. Keep tight: only paths we know are backend-served.
+      const PHASE_282_PREFIXES = [
+        '/operators/',
+        '/spare-capacity/',
+        '/transactions/',
+      ];
+      if (PHASE_282_RAILWAY_PATHS.has(pathname) ||
+          PHASE_282_PREFIXES.some(p => pathname.startsWith(p))) {
         try {
           const fwdHeaders = new Headers(request.headers);
           fwdHeaders.delete('host');

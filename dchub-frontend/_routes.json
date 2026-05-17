@@ -14,7 +14,9 @@
     "/spare-capacity",
     "/spare-capacity/*",
     "/sentinel",
-    "/transparency"
+    "/transparency",
+    "/operators",
+    "/operators/*"
   ],
   "exclude": []
 }
