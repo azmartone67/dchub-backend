@@ -19,7 +19,9 @@
     "/operators/*",
     "/markets/*",
     "/reports/*",
-    "/events"
+    "/events",
+    "/transactions",
+    "/transactions/*"
   ],
   "exclude": []
 }
