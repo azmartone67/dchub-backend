@@ -129,7 +129,28 @@ def _compute_whales(min_days: int = 3, min_calls_per_day: int = 100) -> list[dic
 
 @bot_outreach_bp.route("/api/v1/bots/whales", methods=["GET"])
 def whales():
-    """Public — high-volume bots that are likely enterprise prospects."""
+    """Phase DDDD (2026-05-16): now PRO-gated. The whale list IS the
+    enterprise sales pipeline — high-volume bots have direct revenue
+    implications. PRO subscribers get the full ranked list; everyone
+    else gets a 402 with preview (count + suggested action only)."""
+    from routes.tier_gate import _resolve_caller_tier, _gate_response
+    tier, _ = _resolve_caller_tier()
+    if (tier or "FREE").upper() not in ("PRO", "ENTERPRISE"):
+        # Preview: count + top action only, no UA/ip_hash
+        try:
+            sample = _compute_whales()
+            preview = {
+                "whale_count":     len(sample),
+                "value_proposition": ("PRO subscribers get the full ranked "
+                                       "list of high-volume bots: ip_hash, "
+                                       "UA fingerprint, calls/day, suggested "
+                                       "outreach action. These are likely "
+                                       "enterprise prospects worth direct "
+                                       "outreach. Sample size hidden on free."),
+            }
+        except Exception:
+            preview = {}
+        return _gate_response(tier, "PRO", "bots_whales", preview)
     out = _compute_whales()
     resp = jsonify(
         whales=out,
@@ -222,7 +243,29 @@ def _compute_dormant(min_prior_calls: int = 10, idle_days: int = 14,
 def dormant():
     """Phase AAAA: agents that used to call us but have gone silent.
     The prospect-waste list — gives DC Hub Media a structured outreach
-    target instead of generic 'reach out to AI platforms'."""
+    target instead of generic 'reach out to AI platforms'.
+
+    Phase DDDD (2026-05-16): now PRO-gated. Dormant agent list = direct
+    sales pipeline. Free shows only the count + value prop."""
+    from routes.tier_gate import _resolve_caller_tier, _gate_response
+    tier, _ = _resolve_caller_tier()
+    if (tier or "FREE").upper() not in ("PRO", "ENTERPRISE"):
+        try:
+            sample = _compute_dormant(min_prior_calls=30, idle_days=14)
+            high = [d for d in sample if d.get("suggested_action") == "high_priority_winback"]
+            preview = {
+                "dormant_count":            len(sample),
+                "high_priority_count":      len(high),
+                "value_proposition": ("PRO subscribers get the full winback "
+                                       "worklist with ip_hash, UA, prior calls, "
+                                       "days idle, and suggested action per row. "
+                                       "Highest-priority targets (>=100 prior "
+                                       "calls) are likely enterprise prospects "
+                                       "worth manual outreach."),
+            }
+        except Exception:
+            preview = {}
+        return _gate_response(tier, "PRO", "bots_dormant", preview)
     try:
         idle_days = max(7, min(90, int(request.args.get("idle_days") or 14)))
     except (ValueError, TypeError):

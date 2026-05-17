@@ -1966,9 +1966,10 @@ def handle_well_known():
             "documentation": "https://dchub.cloud/ai-hub",
             "intelligence_hub": "https://dchub.cloud/intelligence",
             "tiers": {
-                "FREE":       {"description": "Anonymous access, no signup, 25 calls/day, 3 rows/call",  "tools_count": 5},
-                "IDENTIFIED": {"description": "Free with email signup, 200 calls/day, 20 rows/call",      "tools_count": 19},
-                "DEVELOPER":  {"description": "Paid plan ($49/mo), 2,000 calls/day, 100 rows/call",       "tools_count": 2}
+                "FREE":       {"description": "Anonymous access, no signup, 25 calls/day, 3 rows/call",      "tools_count": 5},
+                "IDENTIFIED": {"description": "Free with email signup, 200 calls/day, 20 rows/call",          "tools_count": 19},
+                "DEVELOPER":  {"description": "Paid plan ($49/mo), 2,000 calls/day, 100 rows/call",           "tools_count": 1},
+                "PRO":        {"description": "Paid plan ($199/mo), 10,000 calls/day, multi-site + alerts",   "tools_count": 5}
             },
             "tools": [
                 # FREE — warmup / discovery tools, no key required.
@@ -2002,10 +2003,15 @@ def handle_well_known():
                 {"name": "get_tax_incentives",       "tier": "IDENTIFIED", "description": "State-level sales-tax abatements + property-tax exemptions + program ROI."},
                 {"name": "get_geothermal_potential", "tier": "IDENTIFIED", "description": "Geothermal viability score for a data center site."},
                 {"name": "get_microgrid_viability",  "tier": "IDENTIFIED", "description": "Microgrid viability + ROI for a data center site."},
-                # DEVELOPER — paid moat (composite site-selection tools)
+                # DEVELOPER — single-site composite scorer (entry-paid hook)
                 {"name": "analyze_site",             "tier": "DEVELOPER", "description": "Composite site-score for any lat/lon: power, fiber, water, tax, climate, latency."},
-                {"name": "compare_sites",            "tier": "DEVELOPER", "description": "Side-by-side scoring across up to 5 candidate sites with weighted rankings."},
-                # PRO — operator tools
+                # PRO — Phase DDDD (2026-05-16): compare_sites promoted to PRO
+                # (the killer broker/buyer workflow) + 3 new L+P tools for the
+                # /land-power-map advanced workflow.
+                {"name": "compare_sites",            "tier": "PRO",      "description": "Multi-site ranker — side-by-side scoring across up to 5 candidate sites. (PRO)"},
+                {"name": "get_lp_alerts",            "tier": "PRO",      "description": "Land+Power alerts — notify when DCPI / capacity / pricing changes on saved sites."},
+                {"name": "save_lp_site",             "tier": "PRO",      "description": "Save candidate L+P sites to a personal portfolio for tracking + alerts."},
+                {"name": "lp_bulk_export",           "tier": "PRO",      "description": "Bulk CSV/GeoJSON export of saved L+P sites for offline analysis."},
                 {"name": "get_backup_status",        "tier": "PRO",      "description": "Neon database backup status + data integrity metrics."}
             ],
             "authentication": {
