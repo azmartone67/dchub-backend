@@ -7465,23 +7465,47 @@ def stripe_webhook():
     payload = request.get_data()  # Raw bytes required for Stripe signature verification
     sig_header = request.headers.get('Stripe-Signature')
 
-    # Verify webhook signature if secret is configured
-    if STRIPE_WEBHOOK_SECRET:
-        try:
-            event = stripe.Webhook.construct_event(
-                payload, sig_header, STRIPE_WEBHOOK_SECRET
-            )
-            _STRIPE_WEBHOOK_STATS["verified_total"] += 1
-            _STRIPE_WEBHOOK_STATS["last_verify_ok"] = True
-        except ValueError as e:
+    # Verify webhook signature if any secret is configured.
+    # Phase CCC-2 (2026-05-17) — try multiple secrets. The user has TWO
+    # webhook endpoints in Stripe Dashboard (canonical + webhook-mcp),
+    # each with its OWN signing secret. Old code only tried
+    # STRIPE_WEBHOOK_SECRET → events from the other endpoint always
+    # failed signature verification → 33% error rate. Now we try a
+    # list of secrets in priority order; first match wins. Set any
+    # of these in Railway env:
+    #   STRIPE_WEBHOOK_SECRET            — primary (canonical webhook)
+    #   STRIPE_WEBHOOK_SECRET_MCP        — secondary (webhook-mcp)
+    #   STRIPE_WEBHOOK_SECRET_LIVE       — alt name
+    #   STRIPE_WEBHOOK_SECRET_TEST       — test mode
+    _secrets_to_try = [s for s in [
+        STRIPE_WEBHOOK_SECRET,
+        os.environ.get('STRIPE_WEBHOOK_SECRET_MCP', '').strip(),
+        os.environ.get('STRIPE_WEBHOOK_SECRET_LIVE', '').strip(),
+        os.environ.get('STRIPE_WEBHOOK_SECRET_TEST', '').strip(),
+    ] if s]
+    if _secrets_to_try:
+        event = None
+        last_sig_err = None
+        for _secret in _secrets_to_try:
+            try:
+                event = stripe.Webhook.construct_event(
+                    payload, sig_header, _secret
+                )
+                _STRIPE_WEBHOOK_STATS["verified_total"] += 1
+                _STRIPE_WEBHOOK_STATS["last_verify_ok"] = True
+                break  # First valid secret wins
+            except ValueError as e:
+                _STRIPE_WEBHOOK_STATS["failed_total"] += 1
+                _STRIPE_WEBHOOK_STATS["last_verify_ok"] = False
+                print(f"Webhook error: Invalid payload - {e}")
+                return jsonify({'error': 'Invalid payload'}), 400
+            except stripe.error.SignatureVerificationError as e:
+                last_sig_err = e
+                continue  # try next secret
+        if event is None:
             _STRIPE_WEBHOOK_STATS["failed_total"] += 1
             _STRIPE_WEBHOOK_STATS["last_verify_ok"] = False
-            print(f"Webhook error: Invalid payload - {e}")
-            return jsonify({'error': 'Invalid payload'}), 400
-        except stripe.error.SignatureVerificationError as e:
-            _STRIPE_WEBHOOK_STATS["failed_total"] += 1
-            _STRIPE_WEBHOOK_STATS["last_verify_ok"] = False
-            print(f"Webhook error: Invalid signature - {e}")
+            print(f"Webhook error: Invalid signature against all {len(_secrets_to_try)} secrets - {last_sig_err}")
             return jsonify({'error': 'Invalid signature'}), 400
     else:
         # Without webhook secret, parse event directly (less secure)
@@ -7780,8 +7804,9 @@ def stripe_webhook_list():
         return jsonify(ok=False, error=f'stripe_api:{str(e)[:200]}'), 502
 
     KNOWN_PATHS = {
-        '/api/stripe/webhook':    'live (legacy)',
-        '/api/v1/stripe/webhook': 'live (Phase ZZ alias, canonical)',
+        '/api/stripe/webhook':         'live (legacy)',
+        '/api/v1/stripe/webhook':      'live (Phase ZZ alias, canonical)',
+        '/api/v1/stripe/webhook-mcp':  'live (Phase CCC alias for MCP-attribution webhook)',
     }
     out = {
         'ok': True,
