@@ -7411,18 +7411,31 @@ def create_checkout_session():
 # Without this, the answer to "is Stripe even reaching us?" requires
 # digging through Railway logs. Set in the handler below; read by
 # /api/v1/stripe/webhook-diagnostics.
+#
+# Phase CCC (2026-05-17) — added per-event-type breakdown + handler-fail
+# counter. When the canonical webhook URL had 33% error rate in Stripe
+# Dashboard, the binary "verified vs failed" counter couldn't tell us
+# whether the failures were:
+#   (a) signature mismatch  → fix STRIPE_WEBHOOK_SECRET
+#   (b) handler crash       → fix the specific handle_* fn
+#   (c) unhandled type      → expected, should return 200
+# Now `by_event_type` and `handler_errors` answer (b) and (c).
 _STRIPE_WEBHOOK_STATS = {
     "received_total":   0,
     "verified_total":   0,
-    "failed_total":     0,
+    "failed_total":     0,           # signature failures
+    "handler_errors":   0,           # exception in handle_* function
     "last_received_at": None,
     "last_event_type":  None,
     "last_verify_ok":   None,
+    "last_handler_error": None,
+    "by_event_type":    {},          # {event_type: {received, ok, errored}}
 }
 
 
-@app.route('/api/v1/stripe/webhook', methods=['POST'])
-@app.route('/api/stripe/webhook', methods=['POST'])
+@app.route('/api/v1/stripe/webhook',     methods=['POST'])
+@app.route('/api/v1/stripe/webhook-mcp', methods=['POST'])
+@app.route('/api/stripe/webhook',        methods=['POST'])
 def stripe_webhook():
     """Handle Stripe webhook events.
 
@@ -7430,8 +7443,16 @@ def stripe_webhook():
     the Stripe Dashboard may have been configured for the v1 path (the
     convention for our other APIs). Without the alias, Stripe → 404 →
     silent retries → eventual permanent failure → zero conversions.
-    Both URLs route to the same handler so it doesn't matter which one
-    Stripe is pointing at.
+
+    Phase CCC (2026-05-17) — also alias /api/v1/stripe/webhook-mcp.
+    User had a legacy `MCP upgrade attribution` webhook in Stripe pointed
+    at that path subscribing to customer.subscription.created/updated.
+    Without the alias, that webhook had a 46% error rate (we 404'd
+    every event). Same handler processes all event types correctly;
+    no point requiring the user to delete the Stripe Dashboard entry.
+
+    All three URLs route to the same handler so it doesn't matter which
+    one Stripe is pointing at.
     """
     if not STRIPE_AVAILABLE:
         return jsonify({'error': 'Stripe not available'}), 503
@@ -7472,6 +7493,13 @@ def stripe_webhook():
     event_type = event.get('type', '')
     data = event.get('data', {}).get('object', {})
     _STRIPE_WEBHOOK_STATS["last_event_type"] = event_type
+
+    # Phase CCC (2026-05-17) — per-event-type breakdown so the
+    # diagnostic endpoint can show WHICH events are succeeding vs
+    # erroring. Without this, "33% error rate" was opaque.
+    _evt_bucket = _STRIPE_WEBHOOK_STATS["by_event_type"].setdefault(
+        event_type, {"received": 0, "ok": 0, "errored": 0})
+    _evt_bucket["received"] += 1
 
     print(f"💳 Stripe webhook: {event_type}")
 
@@ -7572,15 +7600,33 @@ def stripe_webhook():
             )
 
     elif event_type == 'customer.subscription.created':
-        handle_subscription_created(data)
+        try:
+            handle_subscription_created(data)
+        except Exception as _e_sub:
+            _STRIPE_WEBHOOK_STATS["handler_errors"] += 1
+            _STRIPE_WEBHOOK_STATS["last_handler_error"] = f"subscription.created: {str(_e_sub)[:120]}"
+            _evt_bucket["errored"] += 1
+            print(f"[stripe_webhook] subscription.created handler error: {_e_sub}")
         last_webhook_time = datetime.utcnow().isoformat() + 'Z'
         last_webhook_status = 'ok'
     elif event_type == 'customer.subscription.updated':
-        handle_subscription_updated(data)
+        try:
+            handle_subscription_updated(data)
+        except Exception as _e_sub:
+            _STRIPE_WEBHOOK_STATS["handler_errors"] += 1
+            _STRIPE_WEBHOOK_STATS["last_handler_error"] = f"subscription.updated: {str(_e_sub)[:120]}"
+            _evt_bucket["errored"] += 1
+            print(f"[stripe_webhook] subscription.updated handler error: {_e_sub}")
         last_webhook_time = datetime.utcnow().isoformat() + 'Z'
         last_webhook_status = 'ok'
     elif event_type == 'customer.subscription.deleted':
-        handle_subscription_deleted(data)
+        try:
+            handle_subscription_deleted(data)
+        except Exception as _e_sub:
+            _STRIPE_WEBHOOK_STATS["handler_errors"] += 1
+            _STRIPE_WEBHOOK_STATS["last_handler_error"] = f"subscription.deleted: {str(_e_sub)[:120]}"
+            _evt_bucket["errored"] += 1
+            print(f"[stripe_webhook] subscription.deleted handler error: {_e_sub}")
         last_webhook_time = datetime.utcnow().isoformat() + 'Z'
         last_webhook_status = 'ok'
     elif event_type == 'invoice.paid':
@@ -7592,9 +7638,21 @@ def stripe_webhook():
         last_webhook_time = datetime.utcnow().isoformat() + 'Z'
         last_webhook_status = 'ok'
     else:
+        # Phase CCC (2026-05-17) — unknown event types are NOT errors.
+        # Stripe lets endpoints subscribe to event sets that may include
+        # types we don't act on (e.g. invoice.upcoming, customer.created).
+        # Return 200 quickly so Stripe doesn't count them as failures
+        # and doesn't retry. Diagnostic still shows them in by_event_type.
         last_webhook_time = datetime.utcnow().isoformat() + 'Z'
-        last_webhook_status = 'ok'
+        last_webhook_status = 'ok_unknown_type'
 
+    # Count as "ok" only if no errored branch incremented (which would
+    # have left errored == received). Keep the math simple: ok =
+    # received - errored. The endpoint always returns 200 either way
+    # so Stripe doesn't retry (handler errors are OUR problem; they're
+    # already logged + counted; making Stripe retry won't help).
+    if _evt_bucket["errored"] < _evt_bucket["received"]:
+        _evt_bucket["ok"] = _evt_bucket["received"] - _evt_bucket["errored"]
     return jsonify({'received': True})
 
 
