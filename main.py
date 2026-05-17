@@ -7651,6 +7651,32 @@ def stripe_webhook_diagnostics():
         out['mcp_pair_codes_redeemed_30d'] = int(rows[0][0]) if rows else None
     except Exception:
         out['mcp_pair_codes_redeemed_30d'] = None
+    # Phase AAA-3 (2026-05-17): expose the actual recent conversions so
+    # ops can verify they're real customers vs old test rows. Email is
+    # truncated for privacy (first 3 chars + @domain). Stripe IDs kept
+    # in full so they can be looked up in Stripe Dashboard.
+    out['recent_conversions'] = []
+    try:
+        _, rows = _pg_execute(
+            "SELECT created_at, plan, amount_cents, currency, "
+            "       customer_email, stripe_session_id, source_tool "
+            "  FROM mcp_conversions "
+            " ORDER BY created_at DESC LIMIT 10",
+            fetch=True)
+        for r in (rows or []):
+            email = r[4] or ''
+            email_redacted = (email[:3] + '@' + email.split('@')[-1]) if '@' in email else email[:5] + '...'
+            out['recent_conversions'].append({
+                'created_at':        r[0].isoformat() if r[0] else None,
+                'plan':              r[1],
+                'amount_cents':      r[2],
+                'currency':          r[3],
+                'customer_email':    email_redacted,
+                'stripe_session_id': r[5],
+                'source_tool':       r[6],
+            })
+    except Exception as e:
+        out['recent_conversions_error'] = str(e)[:120]
     return jsonify(out), 200
 
 
