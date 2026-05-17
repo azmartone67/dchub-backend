@@ -193,8 +193,22 @@ def _action_radar_detector_crashed(finding: dict) -> tuple[str | None, dict | No
 
 
 def _action_tier_inconsistency(finding: dict) -> tuple[str | None, dict | None]:
-    """MCP↔web tier mismatch. Needs decorator change in source. Escalate."""
-    return None, None
+    """MCP↔web tier mismatch. Phase ZZ-2 (2026-05-17) — promote from
+    escalation-only to autonomous-record. The actual fix (decorator
+    change) is still a human code change, but the brain now records
+    every mismatch into tier_drift_proposals so we have a queryable
+    worklist instead of a one-time finding that disappears at next
+    radar tick. Phase QQ off-by-one bugfix made this safe to promote
+    (the detector no longer false-positives on equal-tier endpoints)."""
+    body = {
+        "tool":         finding.get("tool"),
+        "web_path":     finding.get("url"),
+        "mcp_tier":     finding.get("mcp_tier"),
+        "web_min_tier": finding.get("web_min_tier"),
+        "detail":       finding.get("detail", "")[:500],
+        "source":       "autopilot",
+    }
+    return "/api/v1/brain/tier-drift/propose", body
 
 
 def _action_cron_missing_schedule(finding: dict) -> tuple[str | None, dict | None]:
@@ -316,9 +330,12 @@ _PATTERN_LIBRARY: dict[str, dict[str, Any]] = {
     },
     "tier_inconsistency_web_higher_than_mcp": {
         "action":      _action_tier_inconsistency,
-        "method":      None,
+        "method":      "POST",  # Phase ZZ-2 (2026-05-17): promoted from escalation
         "use_admin":   False,
-        "description": "Escalation-only: web endpoint blocks anonymous while MCP allows — needs decorator alignment",
+        "description": ("Autonomous: records mismatch into tier_drift_proposals "
+                         "table so we have a queryable worklist of pending "
+                         "decorator alignments. Actual code fix remains human "
+                         "work but the brain now tracks them automatically."),
     },
     "cron_phase_missing_schedule": {
         "action":      _action_cron_missing_schedule,

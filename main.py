@@ -7407,11 +7407,39 @@ def create_checkout_session():
         print(f"Stripe checkout error: {e}")
         return jsonify({'error': str(e)}), 500
 
+# Phase ZZ (2026-05-17) — observability for Stripe webhook receive count.
+# Without this, the answer to "is Stripe even reaching us?" requires
+# digging through Railway logs. Set in the handler below; read by
+# /api/v1/stripe/webhook-diagnostics.
+_STRIPE_WEBHOOK_STATS = {
+    "received_total":   0,
+    "verified_total":   0,
+    "failed_total":     0,
+    "last_received_at": None,
+    "last_event_type":  None,
+    "last_verify_ok":   None,
+}
+
+
+@app.route('/api/v1/stripe/webhook', methods=['POST'])
 @app.route('/api/stripe/webhook', methods=['POST'])
 def stripe_webhook():
-    """Handle Stripe webhook events"""
+    """Handle Stripe webhook events.
+
+    Phase ZZ (2026-05-17) — added /api/v1/stripe/webhook alias because
+    the Stripe Dashboard may have been configured for the v1 path (the
+    convention for our other APIs). Without the alias, Stripe → 404 →
+    silent retries → eventual permanent failure → zero conversions.
+    Both URLs route to the same handler so it doesn't matter which one
+    Stripe is pointing at.
+    """
     if not STRIPE_AVAILABLE:
         return jsonify({'error': 'Stripe not available'}), 503
+
+    # Phase ZZ instrumentation (counters drive /api/v1/stripe/webhook-diagnostics)
+    import datetime as _dt
+    _STRIPE_WEBHOOK_STATS["received_total"] += 1
+    _STRIPE_WEBHOOK_STATS["last_received_at"] = _dt.datetime.utcnow().isoformat() + "Z"
 
     payload = request.get_data()  # Raw bytes required for Stripe signature verification
     sig_header = request.headers.get('Stripe-Signature')
@@ -7422,10 +7450,16 @@ def stripe_webhook():
             event = stripe.Webhook.construct_event(
                 payload, sig_header, STRIPE_WEBHOOK_SECRET
             )
+            _STRIPE_WEBHOOK_STATS["verified_total"] += 1
+            _STRIPE_WEBHOOK_STATS["last_verify_ok"] = True
         except ValueError as e:
+            _STRIPE_WEBHOOK_STATS["failed_total"] += 1
+            _STRIPE_WEBHOOK_STATS["last_verify_ok"] = False
             print(f"Webhook error: Invalid payload - {e}")
             return jsonify({'error': 'Invalid payload'}), 400
         except stripe.error.SignatureVerificationError as e:
+            _STRIPE_WEBHOOK_STATS["failed_total"] += 1
+            _STRIPE_WEBHOOK_STATS["last_verify_ok"] = False
             print(f"Webhook error: Invalid signature - {e}")
             return jsonify({'error': 'Invalid signature'}), 400
     else:
@@ -7437,6 +7471,7 @@ def stripe_webhook():
 
     event_type = event.get('type', '')
     data = event.get('data', {}).get('object', {})
+    _STRIPE_WEBHOOK_STATS["last_event_type"] = event_type
 
     print(f"💳 Stripe webhook: {event_type}")
 
@@ -7561,6 +7596,62 @@ def stripe_webhook():
         last_webhook_status = 'ok'
 
     return jsonify({'received': True})
+
+
+# Phase ZZ (2026-05-17) — surface the Stripe webhook receive counters
+# + recent conversion stats. Read-only, no admin gate (no secrets
+# exposed). Single most-useful answer to "why no conversions?" — if
+# `received_total: 0` then Stripe isn't reaching us. If `verified_total: 0`
+# then signature secret is wrong. If conversions_7d: 0 but received > 0
+# then the handler is breaking silently. Each case routes to a
+# different fix.
+@app.route('/api/v1/stripe/webhook-diagnostics', methods=['GET'])
+def stripe_webhook_diagnostics():
+    import os as _os
+    secret = _os.environ.get('STRIPE_WEBHOOK_SECRET', '') or _os.environ.get('STRIPE_WEBHOOK_SECRET_MCP', '')
+    api_key = _os.environ.get('STRIPE_SECRET_KEY', '')
+    out = {
+        'webhook_secret_configured':   bool(secret),
+        'webhook_secret_fingerprint':  (secret[:7] + '...' + secret[-4:]) if len(secret) > 14 else None,
+        'api_key_configured':          bool(api_key),
+        'stats':                       dict(_STRIPE_WEBHOOK_STATS),  # copy so caller can't mutate
+        'routes': {
+            '/api/stripe/webhook':       'live (legacy path)',
+            '/api/v1/stripe/webhook':    'live (Phase ZZ alias, recommended Stripe target)',
+            '/api/stripe/webhook-test':  'live (configuration self-test)',
+        },
+        'recommendation': (
+            'Configure Stripe Dashboard → Webhooks endpoint to '
+            'https://dchub.cloud/api/v1/stripe/webhook . Both URLs route '
+            'to the same handler; v1 is the canonical path. After saving '
+            'in Stripe, fire a test event and re-hit this endpoint — '
+            'stats.received_total should increment.'
+        ),
+    }
+    # Best-effort conversion counters (won't raise if tables missing)
+    try:
+        _, rows = _pg_execute(
+            "SELECT COUNT(*) FROM mcp_conversions WHERE created_at >= NOW() - INTERVAL '7 days'",
+            fetch=True)
+        out['mcp_conversions_7d'] = int(rows[0][0]) if rows else None
+    except Exception:
+        out['mcp_conversions_7d'] = None
+    try:
+        _, rows = _pg_execute(
+            "SELECT COUNT(*) FROM auto_trial_keys WHERE upgraded_tier IS NOT NULL",
+            fetch=True)
+        out['trial_keys_upgraded'] = int(rows[0][0]) if rows else None
+    except Exception:
+        out['trial_keys_upgraded'] = None
+    try:
+        _, rows = _pg_execute(
+            "SELECT COUNT(*) FROM mcp_pair_codes WHERE redeemed_at IS NOT NULL "
+            "AND redeemed_at >= NOW() - INTERVAL '30 days'",
+            fetch=True)
+        out['mcp_pair_codes_redeemed_30d'] = int(rows[0][0]) if rows else None
+    except Exception:
+        out['mcp_pair_codes_redeemed_30d'] = None
+    return jsonify(out), 200
 
 
 # =============================================================================
@@ -19795,6 +19886,16 @@ try:
     app.register_blueprint(pattern_growth_bp)
 except Exception as _e:
     print(f"[main] pattern_growth register failed: {_e}", file=sys.stderr)
+
+# Phase ZZ-2 (2026-05-17): tier-drift proposal recorder — autopilot
+# target for the promoted tier_inconsistency_web_higher_than_mcp pattern.
+# Records each MCP↔web tier mismatch the radar finds into a durable
+# worklist (tier_drift_proposals table) for human decorator alignment.
+try:
+    from routes.tier_drift_proposals import tier_drift_bp
+    app.register_blueprint(tier_drift_bp)
+except Exception as _e:
+    print(f"[main] tier_drift_proposals register failed: {_e}", file=sys.stderr)
 
 # Phase WWWW (2026-05-16): tier-upgrade nudger — daily check + email
 # IDENTIFIED users hitting 80%+ cap.
