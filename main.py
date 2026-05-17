@@ -9431,20 +9431,34 @@ def energy_discovery_status_inline():
             except Exception:
                 try: conn.rollback()
                 except Exception: pass
-            try:
-                cur.execute(
-                    "SELECT 'substations' AS source, MAX(updated_at) AS at FROM substations "
-                    "UNION ALL SELECT 'fiber_routes', MAX(updated_at) FROM fiber_routes "
-                    "UNION ALL SELECT 'power_plants', MAX(updated_at) FROM power_plants "
-                    "UNION ALL SELECT 'pipelines', MAX(updated_at) FROM pipelines"
-                )
-                out['data']['recent_syncs'] = [
-                    {'source': r[0], 'at': str(r[1]) if r[1] else None}
-                    for r in cur.fetchall()
-                ]
-            except Exception:
-                try: conn.rollback()
-                except Exception: pass
+            # Phase VVV (2026-05-16): UNION ALL crashed when any single
+            # table had a different timestamp column (power_plants has
+            # `created_at`, not `updated_at`) or didn't exist. Per-
+            # table query + column probe degrades gracefully.
+            out['data']['recent_syncs'] = []
+            for src_tbl in ('substations', 'fiber_routes', 'power_plants', 'pipelines'):
+                try:
+                    cur.execute("""
+                        SELECT column_name FROM information_schema.columns
+                         WHERE table_name = %s
+                    """, (src_tbl,))
+                    cols = {r[0] for r in cur.fetchall()}
+                    if not cols: continue
+                    ts_col = ('updated_at' if 'updated_at' in cols
+                              else ('created_at' if 'created_at' in cols
+                                    else ('retrieved_at' if 'retrieved_at' in cols
+                                          else None)))
+                    if not ts_col: continue
+                    cur.execute(f"SELECT MAX({ts_col}) FROM {src_tbl}")
+                    v = (cur.fetchone() or [None])[0]
+                    out['data']['recent_syncs'].append({
+                        'source': src_tbl,
+                        'at':     str(v) if v else None,
+                    })
+                except Exception:
+                    try: conn.rollback()
+                    except Exception: pass
+                    continue
             out['data']['seed_data'] = (
                 int(out['data'].get('total_substations', 0)) < 1000
             )

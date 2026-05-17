@@ -78,19 +78,40 @@ def _phase25_real_counts():
         except Exception:
             try: conn.rollback()
             except Exception: pass
-        try:
-            cur.execute(
-                "SELECT 'substations' AS source, MAX(updated_at) AS at FROM substations "
-                "UNION ALL SELECT 'pipelines',    MAX(updated_at) FROM pipelines "
-                "UNION ALL SELECT 'power_plants', MAX(updated_at) FROM power_plants"
-            )
-            out['recent_syncs'] = [
-                {'source': r[0], 'at': str(r[1]) if r[1] else None}
-                for r in cur.fetchall()
-            ]
-        except Exception:
-            try: conn.rollback()
-            except Exception: pass
+        # Phase VVV (2026-05-16): the old UNION ALL crashed loudly
+        # ("relation X does not exist" / "column updated_at does not
+        # exist") because (a) not every table exists in every deploy,
+        # (b) power_plants has `created_at` not `updated_at`. Split
+        # into per-table queries with a column probe — any single
+        # missing table/column degrades gracefully instead of killing
+        # the entire recent_syncs block.
+        out['recent_syncs'] = []
+        for src_tbl in ('substations', 'pipelines', 'power_plants'):
+            try:
+                # Probe the table + its timestamp column
+                cur.execute("""
+                    SELECT column_name FROM information_schema.columns
+                     WHERE table_name = %s
+                """, (src_tbl,))
+                cols = {r[0] for r in cur.fetchall()}
+                if not cols:
+                    continue  # table doesn't exist on this deploy
+                ts_col = ('updated_at' if 'updated_at' in cols
+                          else ('created_at' if 'created_at' in cols
+                                else ('retrieved_at' if 'retrieved_at' in cols
+                                      else None)))
+                if not ts_col:
+                    continue
+                cur.execute(f"SELECT MAX({ts_col}) FROM {src_tbl}")
+                v = (cur.fetchone() or [None])[0]
+                out['recent_syncs'].append({
+                    'source': src_tbl,
+                    'at':     str(v) if v else None,
+                })
+            except Exception:
+                try: conn.rollback()
+                except Exception: pass
+                continue
         out['seed_data'] = (out['total_substations'] < 1000)
         try: conn.close()
         except Exception: pass

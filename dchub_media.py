@@ -179,7 +179,26 @@ def run_daily(api_base: str = DCHUB_API_BASE) -> dict:
 
 
 def aggregate_announcements(limit_per_source=20):
-    """Phase 232: guaranteed 5-category aggregator with hard fallbacks + error surfacing."""
+    """Phase VVV (2026-05-16): the original v1 query bank had hardcoded
+    column names (`summary`, `url`, `title`) that don't match every
+    actual table schema in prod, so it crashed loudly 4× per call with
+    "column X does not exist" warnings spamming Railway logs every
+    minute. Phase 239 already built `aggregate_announcements_v3` which
+    introspects each table's columns via information_schema and picks
+    the first that exists — delegate to it. The original v1 body is
+    preserved below for reference/rollback but unreachable.
+
+    Net effect: same return shape, zero schema crashes, identical
+    callers see no API change."""
+    try:
+        return aggregate_announcements_v3(limit_per_source=limit_per_source)
+    except Exception:
+        # If v3 itself fails (unlikely — it self-heals per query) fall
+        # through to the legacy body so the feed never goes completely
+        # dark. The legacy body still records aggregate errors into
+        # _agg_errors so the brain notices.
+        pass
+
     global _agg_errors
     _agg_errors = {}
     import os, psycopg2

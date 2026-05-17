@@ -387,6 +387,23 @@ _PATTERN_LIBRARY: dict[str, dict[str, Any]] = {
         "use_admin":   False,
         "description": "Escalation-only: a brand-positioning surface (vs / dcpi totals / live pulse) has zero traffic in 72h. Add nav link / homepage tile / external drive.",
     },
+    # Phase VVV — schema drift. Dynamic keys
+    # `schema_drift_column_missing:<table>.<col>` and
+    # `schema_drift_table_missing:<table>` resolve via prefix match.
+    # Escalation-only — fixing a missing column means either creating
+    # it OR changing the query, both human-judgment calls.
+    "schema_drift_column_missing": {
+        "action":      lambda f: (None, None),
+        "method":      None,
+        "use_admin":   False,
+        "description": "Escalation-only: a query referenced a column that doesn't exist. Either ALTER TABLE ADD COLUMN or change the query to use information_schema-aware probing (see dchub_media.aggregate_announcements_v3).",
+    },
+    "schema_drift_table_missing": {
+        "action":      lambda f: (None, None),
+        "method":      None,
+        "use_admin":   False,
+        "description": "Escalation-only: a query referenced a table that doesn't exist. Either create it (migration) or wrap the caller with a to_regclass() probe so the absence is silent.",
+    },
 }
 
 
