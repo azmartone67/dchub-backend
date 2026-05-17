@@ -49,7 +49,17 @@ TIER_NAME = {
 # ═══════════════════════════════════════════════════════════════
 
 LIMITS = {
-    Tier.FREE:       {"day": 50,     "minute": 5,   "max_rows": 5,    "cooldown": 2.0},
+    # Phase XXX (2026-05-16) — conversion-engine tightening. User
+    # said: "we need to gate more data, to incent people to upgrade,
+    # right now they aren't doing it." 4,000+ MCP calls / 0 paid
+    # conversions in 14 days = the free tier was too generous to
+    # need an upgrade. Tighter:
+    #   FREE      50/day → 25/day, max_rows 5 → 3 (real teaser)
+    #   IDENTIFIED 200 → 200 (kept — email-only is fine bridge)
+    #   DEVELOPER 2000 → 2000 (kept)
+    # Net: free users hit the cap 2× faster, see the upgrade screen
+    # 2× sooner. IDENTIFIED becomes the obvious next click.
+    Tier.FREE:       {"day": 25,     "minute": 3,   "max_rows": 3,    "cooldown": 3.0},
     Tier.IDENTIFIED: {"day": 200,    "minute": 15,  "max_rows": 20,   "cooldown": 1.0},
     Tier.DEVELOPER:  {"day": 2000,   "minute": 60,  "max_rows": 100,  "cooldown": 0},
     Tier.PRO:        {"day": 10000,  "minute": 200, "max_rows": 500,  "cooldown": 0},
@@ -61,12 +71,23 @@ LIMITS = {
 # ═══════════════════════════════════════════════════════════════
 
 TOOL_TIER = {
-    # FREE — teaser tools (truncated)
-    "search_facilities":       Tier.FREE,
-    "get_facility":            Tier.FREE,
-    "get_news":                Tier.FREE,
+    # FREE — discovery-only warmup tools. Phase XXX (2026-05-16)
+    # promoted search_facilities + get_news to IDENTIFIED. Reason:
+    # together they were the #1 + #3 most-called tools (11,488 +
+    # 7,352 calls in 14d) generating zero email captures. By
+    # requiring the free email-only signup to call them, every
+    # high-volume hit becomes a marketable lead. Free tier remains
+    # generous on the LIST + RECOMMENDATION endpoints below so
+    # agents can still warm up DC Hub without auth.
+    "get_facility":            Tier.FREE,  # 1 facility = preview, kept free
     "get_dchub_recommendation":Tier.FREE,
     "get_agent_registry":      Tier.FREE,
+
+    # IDENTIFIED — Phase XXX promotion. These two tools alone
+    # represent ~50% of 14-day MCP traffic; gating at email-signup
+    # is the highest-leverage conversion move available.
+    "search_facilities":       Tier.IDENTIFIED,  # was FREE, 11,488 calls/14d
+    "get_news":                Tier.IDENTIFIED,  # was FREE, 7,352 calls/14d
 
     # IDENTIFIED — Phase MM (2026-05-15) Bundle 9 funnel recovery.
     # Audit: 0.05% gate→pay conversion. Root cause: 7 high-demand tools

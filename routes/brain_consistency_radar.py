@@ -1162,6 +1162,66 @@ def check_enterprise_bot_present() -> list[dict]:
     return findings
 
 
+# ── Phase XXX (2026-05-16) — conversion-rate floor detector ───────
+def check_conversion_rate_floor() -> list[dict]:
+    """Fires when MCP conversion rate over last 30 days is below the
+    target floor (default 0.5%) AND the denominator is meaningful
+    (>1000 paywall signals). The user explicitly asked: 'we need to
+    gate more data, to incent people to upgrade, right now they aren't
+    doing it.' This puts numerical pressure on the heartbeat so any
+    tier-config regression that drops conversion shows immediately."""
+    conn = _db()
+    if conn is None: return []
+    findings: list[dict] = []
+    try:
+        with conn.cursor() as cur:
+            try:
+                cur.execute("""
+                    SELECT to_regclass('public.mcp_upgrade_signals'),
+                           to_regclass('public.mcp_pair_codes')
+                """)
+                regs = cur.fetchone() or [None,None]
+                if not (regs[0] and regs[1]): return findings
+            except Exception:
+                return findings
+            try:
+                cur.execute("""
+                    SELECT COUNT(*) FROM mcp_upgrade_signals
+                     WHERE created_at >= NOW() - INTERVAL '30 days'
+                """)
+                signals = int((cur.fetchone() or [0])[0] or 0)
+                cur.execute("""
+                    SELECT COUNT(*) FROM mcp_pair_codes
+                     WHERE redeemed_at IS NOT NULL
+                       AND redeemed_at >= NOW() - INTERVAL '30 days'
+                """)
+                conversions = int((cur.fetchone() or [0])[0] or 0)
+            except Exception:
+                return findings
+            if signals < 1000:
+                return findings  # not enough data to be meaningful
+            rate = 100.0 * conversions / signals
+            FLOOR = float(os.environ.get("DCHUB_MIN_CONVERSION_PCT", "0.5"))
+            if rate < FLOOR:
+                findings.append({
+                    "issue":  "mcp_conversion_rate_below_floor",
+                    "url":    "mcp_upgrade_signals + mcp_pair_codes / 30d",
+                    "count":  int(rate * 100),  # basis points
+                    "detail": (f"30-day MCP conversion rate is {rate:.3f}% "
+                               f"({conversions} conversions / {signals} signals) "
+                               f"— below the {FLOOR}% floor. Either tighten "
+                               f"more tools to IDENTIFIED+, raise the FREE "
+                               f"daily cap pressure, or improve the paywall "
+                               f"response message. See "
+                               f"/api/v1/mcp/conversion-funnel for the "
+                               f"per-tool breakdown."),
+                })
+    finally:
+        try: conn.close()
+        except Exception: pass
+    return findings
+
+
 # ── Phase WWW (2026-05-16) — Site Sentinel ingest ─────────────────
 def check_site_sentinel() -> list[dict]:
     """Pull every unhealthy page from the Site Sentinel manifest into
@@ -1361,7 +1421,9 @@ def scan_all() -> list[dict]:
                # Phase VVV schema-drift detector
                check_schema_drift,
                # Phase WWW Site Sentinel — every public page polled
-               check_site_sentinel):
+               check_site_sentinel,
+               # Phase XXX conversion-rate floor detector
+               check_conversion_rate_floor):
         try:
             out.extend(fn() or [])
         except Exception as e:

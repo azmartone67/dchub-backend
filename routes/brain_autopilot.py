@@ -414,6 +414,15 @@ _PATTERN_LIBRARY: dict[str, dict[str, Any]] = {
         "use_admin":   False,
         "description": "Escalation-only: a page in the Site Sentinel manifest is unhealthy. Inspect the path in the finding — common fixes: missing route registration, CSP block, 503 from an upstream API, body smaller than the manifest's min_bytes floor. See /sentinel dashboard.",
     },
+    # Phase XXX — conversion rate below floor. Escalation-only because
+    # the fix is a strategic call: tighten more tools to IDENTIFIED+,
+    # raise FREE-tier cap pressure, or rewrite the paywall response.
+    "mcp_conversion_rate_below_floor": {
+        "action":      lambda f: (None, None),
+        "method":      None,
+        "use_admin":   False,
+        "description": "Escalation-only: 30-day MCP conversion rate is below the configured floor. Inspect /api/v1/mcp/conversion-funnel for per-tool breakdown; the leak is usually concentrated in 1-2 tools that should be on a higher tier or have a tighter cap.",
+    },
 }
 
 

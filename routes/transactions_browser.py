@@ -167,22 +167,54 @@ def transactions_index():
     except Exception:
         pass
 
-    # Build HTML rows
+    # Phase XXX (2026-05-16) — inline soft paywall. User flagged 0 MCP
+    # conversions across 4K+ calls; HTML side gave away even more for
+    # free. After row N_FREE we redact $value + add a "sign up free"
+    # callout to capture leads. Page 1 first 25 stays unredacted so SEO/
+    # AI indexing still works AND the user gets a real teaser.
+    N_FREE_ROWS    = 25
+    # Treat any non-authenticated visitor as needing the gate.
+    is_authed = False
+    try:
+        # Best-effort cookie check; the auth system uses dchub_token.
+        if request.cookies.get("dchub_token"): is_authed = True
+    except Exception:
+        pass
+
     rows_html = []
-    for d in deals:
+    for i, d in enumerate(deals):
+        # Past N_FREE on page 1, OR any page past page 1, redact $value
+        gated_row = (not is_authed) and (page > 1 or i >= N_FREE_ROWS)
+        value_cell = (f'<td><span style="color:#9ca3af">🔒 <a href="/signup?next=/transactions&utm_source=transactions_browser" style="color:#1e40af;text-decoration:underline">Sign up free</a></span></td>'
+                       if gated_row
+                       else f'<td>{_fmt_value(d.get("value"))}</td>')
+        type_cell = (f'<td><span style="color:#9ca3af">🔒</span></td>'
+                      if gated_row
+                      else f'<td>{(d.get("type") or "")[:25]}</td>')
         rows_html.append(
             f'<tr>'
             f'<td><a href="/transactions/{d["id"]}">#{d["id"]}</a></td>'
             f'<td>{_fmt_date(d.get("date")) }</td>'
             f'<td>{(d.get("buyer") or "")[:50]}</td>'
             f'<td>{(d.get("seller") or "")[:50]}</td>'
-            f'<td>{_fmt_value(d.get("value"))}</td>'
+            f'{value_cell}'
             f'<td>{_fmt_mw(d.get("mw"))}</td>'
-            f'<td>{(d.get("type") or "")[:25]}</td>'
+            f'{type_cell}'
             f'<td>{(d.get("region") or "")[:25]}</td>'
             f'<td>{(d.get("market") or "")[:25]}</td>'
             f'</tr>'
         )
+        # Insert teaser callout immediately after the FREE rows on page 1.
+        if (not is_authed) and page == 1 and i == N_FREE_ROWS - 1 and i < len(deals) - 1:
+            rows_html.append(
+                f'<tr style="background:linear-gradient(90deg,#fef3c7,#fde68a)">'
+                f'<td colspan="9" style="text-align:center;padding:.8rem 1rem;font-weight:600;color:#78350f">'
+                f'📊 Showing {N_FREE_ROWS} of {total:,} deals · '
+                f'<a href="/signup?next=/transactions&utm_source=transactions_inline" '
+                f'style="color:#92400e;text-decoration:underline">Sign up free</a> '
+                f'to unlock $value, deal type, CSV export, alerts, and the next {total - N_FREE_ROWS:,} deals'
+                f'</td></tr>'
+            )
 
     # Filter form persistence
     yi  = year   or ""
@@ -236,6 +268,8 @@ def transactions_index():
 <body>
 <h1>Data Center Transactions Browser</h1>
 <p><strong>{total:,} tracked deals</strong> across data center M&amp;A, infra rollups, and platform-level transactions. Free + indexable — every row links to a per-deal page with schema.org markup for AI agents.</p>
+
+{('<div style="background:linear-gradient(135deg,#065f46,#0f766e);color:white;padding:1rem 1.25rem;border-radius:8px;margin:.5rem 0 1.5rem;display:flex;justify-content:space-between;align-items:center;gap:1rem;flex-wrap:wrap"><div><strong style="font-size:1.05rem">🔓 You\'re seeing a free preview.</strong><div style="font-size:.9rem;opacity:.85;margin-top:.15rem">Sign up free (no card) to unlock $value, deal type, CSV export, and alerts on the next ' + f'{total - 25:,} deals.</div></div><a href="/signup?next=/transactions&utm_source=transactions_banner" style="background:white;color:#065f46;padding:.5rem 1.1rem;border-radius:6px;font-weight:700;text-decoration:none">Sign up free →</a></div>') if not is_authed else ''}
 
 <form class="filters" method="GET" action="/transactions">
   <label>Year<input type="text" name="year" value="{yi}" placeholder="2025" size="6"></label>
