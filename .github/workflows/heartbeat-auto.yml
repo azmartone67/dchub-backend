@@ -1,12 +1,16 @@
 name: Heartbeat Auto-Refresh
 on:
   schedule:
-    - cron: '*/30 * * * *'   # every 30 minutes
+    # Phase DDDD-cleanup (2026-05-16): 30min → 15min. With BATCH bumped
+    # to 250 per call, 600 stale surfaces drain in ~3 calls (45min).
+    # Combined with the 1h SLA on /heartbeat itself, 15min cadence
+    # keeps the heartbeat surface always FRESH.
+    - cron: '*/15 * * * *'
   workflow_dispatch: {}
 jobs:
   refresh:
     runs-on: ubuntu-latest
     steps:
       - run: |
-          curl -sS -X POST "https://dchub.cloud/api/v1/heartbeat/auto" \
+          curl -sS -X POST "https://dchub.cloud/api/v1/heartbeat/auto?batch=250" \
             | python3 -m json.tool
