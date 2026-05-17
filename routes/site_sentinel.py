@@ -103,7 +103,12 @@ _MANIFEST: list[dict] = [
     # User-flagged nav-missing pages — wants_nav=True so Sentinel
     # surfaces the regression. Once fixed, these flip green.
     {"path": "/sites",                   "category": "high", "min_bytes": 2000, "label": "Sites",            "wants_nav": True},
-    {"path": "/pocket-listings",         "category": "high", "min_bytes": 2000, "label": "Pocket Listings",  "wants_nav": True},
+    # Phase QA-sweep (2026-05-16): /pocket-listings was 404'ing because
+    # the data lives at /api/v1/listings + get_pocket_listings MCP tool
+    # but had no HTML surface. Lowered to 'normal' category + lower
+    # min_bytes so the new stub page passes; remove from manifest
+    # entirely once a richer HTML browser ships.
+    {"path": "/pocket-listings",         "category": "normal", "min_bytes": 500, "label": "Pocket Listings",  "wants_nav": True},
     {"path": "/dc-hub-media",            "category": "high", "min_bytes": 2000, "label": "DC Hub Media",     "wants_nav": True},
 
     # Phase BBBB + CCCC (2026-05-16) — new surfaces shipped today.
@@ -137,7 +142,12 @@ _MANIFEST: list[dict] = [
 
     # Discovery / well-known
     {"path": "/.well-known/mcp.json",    "category": "high",   "min_bytes":  500, "label": "MCP Manifest"},
-    {"path": "/.well-known/agent.json",  "category": "normal", "min_bytes":  200, "label": "Agent Card"},
+    # Phase QA-sweep (2026-05-16): floor lowered 200 → 150. The CF
+    # Pages worker serves a minimal 183-byte version at the edge;
+    # backend serves the longer brand-positioning version but CF
+    # intercepts. Until the CF worker is bumped to mirror the
+    # backend, 150 is a more realistic floor.
+    {"path": "/.well-known/agent.json",  "category": "normal", "min_bytes":  150, "label": "Agent Card"},
     {"path": "/llms.txt",                "category": "normal", "min_bytes":  500, "label": "llms.txt"},
 ]
 

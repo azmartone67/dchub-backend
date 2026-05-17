@@ -1475,38 +1475,15 @@ def check_schema_drift() -> list[dict]:
     except Exception:
         pass
 
-    # Direct probe: any of the known-noisy single tables. If a query
-    # against one of these tables still raises column/relation errors
-    # we surface it. Best-effort — silent failure means the underlying
-    # table works.
-    conn = _db()
-    if conn is None:
-        return findings
-    try:
-        with conn.cursor() as cur:
-            for tbl in ("wind_projects", "gas_compressors", "gas_processings",
-                         "transmission", "pipelines"):
-                try:
-                    cur.execute(f"SELECT to_regclass('public.{tbl}')")
-                    if not (cur.fetchone() or [None])[0]:
-                        key = f"probe:{tbl}"
-                        if key in seen: continue
-                        seen.add(key)
-                        findings.append({
-                            "issue":  f"schema_drift_table_missing:{tbl}",
-                            "url":    f"to_regclass: public.{tbl}",
-                            "count":  1,
-                            "detail": (f"Table '{tbl}' is referenced by "
-                                       f"energy_auto_discovery_pg.py but does "
-                                       f"not exist in this deploy. Either "
-                                       f"create it or remove the reference."),
-                        })
-                except Exception:
-                    continue
-            if len(findings) >= 8: pass  # don't go wild — cap surface area
-    finally:
-        try: conn.close()
-        except Exception: pass
+    # Phase QA-sweep (2026-05-16): removed the direct probe of
+    # (wind_projects, gas_compressors, gas_processings, transmission,
+    # pipelines). The previous behavior flagged these every cycle even
+    # though the call sites had been guarded with to_regclass already
+    # (in energy_auto_discovery_pg.py + observability_routes.py).
+    # Surfacing them as findings forever was permanent red without an
+    # action: the platform genuinely doesn't ingest those tables on
+    # this deploy. If they ever start being referenced again WITHOUT a
+    # guard, the _agg_errors signal above will catch it.
     return findings[:8]
 
 
