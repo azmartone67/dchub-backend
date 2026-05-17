@@ -106,6 +106,11 @@ _MANIFEST: list[dict] = [
     {"path": "/pocket-listings",         "category": "high", "min_bytes": 2000, "label": "Pocket Listings",  "wants_nav": True},
     {"path": "/dc-hub-media",            "category": "high", "min_bytes": 2000, "label": "DC Hub Media",     "wants_nav": True},
 
+    # Phase BBBB + CCCC (2026-05-16) — new surfaces shipped today.
+    {"path": "/spare-capacity",          "category": "high",   "min_bytes": 3000, "label": "Spare Capacity", "wants_nav": True},
+    {"path": "/api/v1/spare-capacity/listings", "category": "normal", "min_bytes": 200, "label": "Spare Capacity API"},
+    {"path": "/api/v1/developers/funnel","category": "normal", "min_bytes": 100, "label": "Developers Funnel API"},
+
     # Research / brand
     {"path": "/research/grid-intelligence","category":"normal","min_bytes": 2000,"label": "Grid Intel"},
     {"path": "/press",                   "category": "normal", "min_bytes": 2000, "label": "Press"},

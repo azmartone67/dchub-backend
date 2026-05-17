@@ -19532,6 +19532,43 @@ try:
 except Exception as _e:
     print(f"[main] power_totals register failed: {_e}", file=sys.stderr)
 
+# Phase BBBB (2026-05-16): /developers acquisition funnel.
+try:
+    from routes.developers_funnel import developers_funnel_bp
+    app.register_blueprint(developers_funnel_bp)
+    try:
+        from routes.surface_brain import register_surface, Surface
+        register_surface(Surface(
+            surface_id="developers_funnel",
+            name="Developers Funnel",
+            description="Tracks the /developers acquisition funnel: visit → claim → first MCP call → 7d retention",
+            routes=["/developers", "/api/v1/developers/funnel", "/api/v1/developers/track"],
+            paid_tools=[],
+            expected_event_types=["page_view", "cta_click", "pricing_view", "key_claimed", "first_mcp_call"],
+        ))
+    except Exception: pass
+except Exception as _e:
+    print(f"[main] developers_funnel register failed: {_e}", file=sys.stderr)
+
+# Phase CCCC (2026-05-16): spare-capacity marketplace surface.
+try:
+    from routes.spare_capacity import spare_capacity_bp
+    app.register_blueprint(spare_capacity_bp)
+    try:
+        from routes.surface_brain import register_surface, Surface
+        register_surface(Surface(
+            surface_id="spare_capacity",
+            name="Spare Capacity Marketplace",
+            description="/spare-capacity intake + listings with broker-credit referral codes",
+            routes=["/spare-capacity", "/spare-capacity/<ref>",
+                    "/api/v1/spare-capacity/submit", "/api/v1/spare-capacity/listings"],
+            paid_tools=[],
+            expected_event_types=["view", "view_tracker"],
+        ))
+    except Exception: pass
+except Exception as _e:
+    print(f"[main] spare_capacity register failed: {_e}", file=sys.stderr)
+
 # Phase WWW (2026-05-16): Site Sentinel — polls every public URL and
 # surfaces breakages/staleness as brain findings so the heartbeat
 # catches them before a user reports.
