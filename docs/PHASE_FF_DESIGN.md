@@ -30,6 +30,21 @@ The brain is alive and the press cadence is healthy, but the **trust surface** �
 | 7 | Brain-radar `_TOOL_API_MAPPING` — fix 3 dead paths + remove 1 with no web counterpart | `routes/brain_consistency_radar.py:172` | ⏳ ready to commit |
 | 8 | This design doc | `docs/PHASE_FF_DESIGN.md` | ⏳ ready to commit |
 
+## ⚠ Discovered during deploy: Wrangler 3.90 overlap enforcement
+
+After this design doc was written, the frontend deploy revealed Wrangler 3.90 (installed by the cloudflare-pages-action) now **strictly enforces** `_routes.json` no-overlap rules — older deploys grandfathered patterns like `/dcpi` + `/dcpi/*` that now fail validation. Three deploy attempts failed; the catch-all `/*` fallback broke the homepage with 502s; emergency rollback to a minimal `/api/* + /mcp/*` includes restored the homepage but **9 of the 11 new Phase 282 paths still 404** (`/operators`, `/transparency`, `/sentinel`, etc).
+
+Worker.js IS at 4.19.0-master-shell with the full PHASE_282_RAILWAY_PATHS set and PHASE_282_PREFIXES — but CF Pages never invokes the worker for those paths because `_routes.json` is too restrictive.
+
+**Phase FF-2 (top of next session backlog):**
+
+Options to unblock the 9 paths, in increasing order of cleanliness:
+1. **Pin Wrangler to an older version** in `.github/workflows/cloudflare-pages-deploy.yml` (e.g. `wrangler@3.40`) — quick win, may revert later when CF fully retires older versions.
+2. **Splat-only include + `_redirects`** — list `/operators/*` only (no bare), then add `/operators /operators/ 301` to `_redirects` so the splat catches the redirected request. Trade-off: every bare URL gets a visible 301.
+3. **Split rules into non-overlapping namespaces** — backend ships dynamic pages under `/p/operators` etc., reserving short bare names for static. Largest blast radius.
+
+Recommend (1) for FF-2 then revisit when CF tightens further.
+
 ## Out of scope for FF (next session candidates)
 
 - **Frontend-mirror auto-sync.** The `dchub-backend/dchub-frontend/` directory drifting from `~/dchub-frontend/` was the *root cause* of #4 above. Options: (a) git submodule, (b) CI job that fails the backend PR if the mirror diverges from the frontend repo's `main`, (c) delete the mirror entirely and edit only the real repo. Recommend (c) — the mirror gives a false sense of progress.
