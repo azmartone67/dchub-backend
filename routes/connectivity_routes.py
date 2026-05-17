@@ -462,11 +462,19 @@ def list_providers():
         providers = [dict(zip(cols, r)) for r in cur.fetchall()]
         cur.close()
 
-        return jsonify({
+        # Phase WW-2 (2026-05-17) — soft-paywall the provider list.
+        # MCP equivalent get_fiber_intel is IDENTIFIED. Per-market and
+        # per-provider lookups (handlers below) stay FREE as discovery
+        # hooks. Anon sees 10 carriers; IDENTIFIED+ sees the full set.
+        from routes._soft_paywall import maybe_paywall
+        payload = {
             'success': True,
-            'count': len(providers),
-            'data': providers,
-        })
+            'count':   len(providers),
+            'data':    providers,
+        }
+        return maybe_paywall(payload, list_key='data', preview_cap=10,
+                              teaser='all fiber carriers + route miles + '
+                                     'markets served + service types')
     except Exception as e:
         logger.error(f"List providers error: {e}")
         return jsonify({'success': False, 'error': str(e)}), 500
