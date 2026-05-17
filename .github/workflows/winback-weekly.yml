@@ -1,0 +1,26 @@
+name: Winback Outreach Weekly Delivery
+# Phase SSSS (2026-05-16): emails the operator one winback pitch per
+# AI platform on a 7-day cooldown. Brain identifies dormant agents,
+# RRRR generates pitches, this cron delivers them so they actually
+# get acted on instead of sitting in /api/v1/media/winback-pitches.
+on:
+  schedule:
+    # Monday 14:45 UTC — after agent_vendor_digest (14:00) +
+    # weekly_media_digest (14:30) so operator inbox doesn't pile up
+    - cron: '45 14 * * 1'
+  workflow_dispatch: {}
+jobs:
+  deliver:
+    runs-on: ubuntu-latest
+    timeout-minutes: 3
+    steps:
+      - name: Deliver pending winback pitches to operator
+        env:
+          ADMIN_KEY: ${{ secrets.DCHUB_ADMIN_KEY }}
+        run: |
+          if [ -z "$ADMIN_KEY" ]; then
+            echo "::error::DCHUB_ADMIN_KEY secret not set"; exit 1; fi
+          curl -sS --max-time 30 -X POST \
+            -H "X-Admin-Key: $ADMIN_KEY" \
+            "https://dchub.cloud/api/v1/media/winback/deliver" \
+            | python3 -m json.tool
