@@ -473,6 +473,40 @@ _PATTERN_LIBRARY: dict[str, dict[str, Any]] = {
         "use_admin":   True,
         "description": "Autonomous: auto-triggers /api/v1/media/winback/deliver when pitches exist but no deliveries in 14 days. This is the second autonomous pattern (after dchub_media_press_silent) — the brain doesn't just escalate, it acts.",
     },
+    # Phase TTTT — citation score
+    "citation_score_dropped": {
+        "action":      lambda f: (None, None),
+        "method":      None,
+        "use_admin":   False,
+        "description": "Escalation-only: AI-platform citation share dropped. Fix is outreach (see /api/v1/media/winback-pitches) — already wired as a separate autonomous pattern via winback_pitches_unsent.",
+    },
+    "citation_score_below_30pct": {
+        "action":      lambda f: (None, None),
+        "method":      None,
+        "use_admin":   False,
+        "description": "Escalation-only: citation share <30%. Major brand-positioning gap; needs direct AI-platform outreach + improved schema.org markup on key pages.",
+    },
+    # Phase UUUU — pattern-proposal candidates
+    "pattern_proposal_candidate": {
+        "action":      lambda f: (None, None),
+        "method":      None,
+        "use_admin":   False,
+        "description": "Operator-only: brain identified 3+ identical manual resolutions for an issue. See /api/v1/brain/pattern-proposals — copy the proposed_pattern_stub into routes/brain_autopilot.py:_PATTERN_LIBRARY to make the brain autonomous on this issue.",
+    },
+    # Phase VVVV — page content drift
+    "page_content_drift": {
+        "action":      lambda f: (None, None),
+        "method":      None,
+        "use_admin":   False,
+        "description": "Escalation-only: Sentinel detected a page's content hash + size changed significantly. Verify the change was intentional (new schema, fresh data) or a regression (removed block, broken template).",
+    },
+    # Phase XXXX — competitor announcements
+    "competitor_announcement": {
+        "action":      lambda f: ("/api/v1/marketing/auto-generate", {}),
+        "method":      "POST",
+        "use_admin":   True,
+        "description": "AUTONOMOUS: when a competitor updates their site significantly, auto-trigger DC Hub Media press to publish counter-positioning content while the news is fresh. Third autonomous pattern in the library.",
+    },
     "dchub_media_press_weak": {
         "action":      lambda f: (None, None),
         "method":      None,
