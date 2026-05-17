@@ -535,6 +535,19 @@ _PATTERN_LIBRARY: dict[str, dict[str, Any]] = {
         "use_admin":   False,
         "description": "Escalation-only: <20% of top-50 facilities have tenant data. Per-building tenants are DCHawk's main remaining moat. Either build SEC/CRE/news ingest pipeline OR manually POST to /api/v1/tenants/ingest.",
     },
+    # Phase DDDDD — conversion-engine v2
+    "auto_trial_signup_rate_low": {
+        "action":      lambda f: (None, None),
+        "method":      None,
+        "use_admin":   False,
+        "description": "Escalation-only: auto-trial keys are being minted (good) but agents aren't redeeming them to permanent accounts. Improve the redemption CTA in the paywall message, OR auto-email the redeem link to anyone who used a trial key 5+ times.",
+    },
+    "mcp_funnel_concentration_top5": {
+        "action":      lambda f: (None, None),
+        "method":      None,
+        "use_admin":   False,
+        "description": "Informational: top-5 tools generate the vast majority of paywall signals. Phase DDDDD auto-trial flow targets exactly these. If conversion rate doesn't lift within 7 days of DDDDD deploy, the auto-trial response message is the next thing to iterate.",
+    },
     "dchub_media_press_weak": {
         "action":      lambda f: (None, None),
         "method":      None,
