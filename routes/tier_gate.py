@@ -34,9 +34,25 @@ from functools import wraps
 from flask import jsonify, request
 
 
-# Stripe one-click checkout links — pulled from main.py:7269 payment_links
-# (kept in sync with that block; if those change, update here too).
+# Phase BBB-3 (2026-05-17) — STARTER tier slot between IDENTIFIED and
+# DEVELOPER. The 7,101 upgrade signals / 0 conversions in 7d suggests
+# the IDENTIFIED→DEVELOPER jump ($0 → $49/mo) is too steep. A $9/mo
+# Starter tier at 500 calls/day gives a cheap stepping stone:
+#   IDENTIFIED (200/day free)
+#   → STARTER ($9/mo, 500/day, no commitment)
+#   → DEVELOPER ($49/mo, 2k/day, support)
+#
+# Activation requires creating a Stripe payment link for the $9 SKU
+# and setting STARTER_MONTHLY_STRIPE_LINK env var. Until then, the
+# link falls back to the founding-member $99 page so the CTA still
+# converts somewhere.
+import os as _os
 _STRIPE_LINKS = {
+    "starter_monthly":   _os.environ.get(
+        "STARTER_MONTHLY_STRIPE_LINK",
+        # Fallback: founding-member ($99/mo, limited spots). Better than
+        # a dead link.
+        "https://buy.stripe.com/dRm7sMbRgcfPg97buiaZi02"),
     "developer_monthly": "https://buy.stripe.com/7sY5kE8F4fs13ml0PEaZi0c",
     "pro_monthly":       "https://buy.stripe.com/dRm7sMbRgcfPg97buiaZi02",
     "pro_annual":        "https://buy.stripe.com/4gM3cwcVk3JjbSR9maaZi01",
@@ -46,6 +62,7 @@ _STRIPE_LINKS = {
 _TIER_PRICE = {
     "FREE":       "$0",
     "IDENTIFIED": "$0 (free with email)",
+    "STARTER":    "$9/mo",
     "DEVELOPER":  "$49/mo",
     "PRO":        "$199/mo",
     "ENTERPRISE": "Custom",
@@ -54,6 +71,13 @@ _TIER_PRICE = {
 _TIER_RANK = {
     "FREE":       0,
     "IDENTIFIED": 1,
+    # Phase BBB-3 — STARTER shares rank with IDENTIFIED for the
+    # require_tier decorator (both unlock the same routes). Daily-call
+    # quota is enforced elsewhere by tier-specific rate-limit code that
+    # CAN tell STARTER (500/day) from IDENTIFIED (200/day). This keeps
+    # the new tier from accidentally bumping every other tier's rank
+    # comparison and breaking existing gates.
+    "STARTER":    1,
     "DEVELOPER":  2,
     "PRO":        3,
     "ENTERPRISE": 4,
