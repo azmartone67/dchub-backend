@@ -1191,6 +1191,110 @@ def check_enterprise_bot_present() -> list[dict]:
     return findings
 
 
+# ── Phase RRRR (2026-05-16) — DC Hub Media silence detector ───────
+def check_dchub_media_press_silent() -> list[dict]:
+    """User asked 'is DC Hub Media telling everyone?' Honest answer
+    when last checked: NO — 0 press releases in /api/v1/press-releases/
+    list. This detector quantifies press silence so the autopilot
+    auto-triggers /api/v1/marketing/auto-generate when it fires.
+
+    Two thresholds:
+      - silent: no press in 7+ days → autopilot AUTO-FIRES press worker
+      - weak:   <4 press in 30 days → escalate to human"""
+    findings: list[dict] = []
+    try:
+        from routes.dchub_media_revival import _last_press_age_days
+        age, count_30d = _last_press_age_days()
+    except Exception:
+        return findings
+    if age is None:
+        # No press table data — surface as silent (cold start case)
+        findings.append({
+            "issue":  "dchub_media_press_silent",
+            "url":    "/api/v1/media/press-health",
+            "count":  999,
+            "detail": ("No press release timestamps found in "
+                       "auto_press_releases or press_releases tables. "
+                       "DC Hub Media is silent — autopilot will trigger "
+                       "/api/v1/marketing/auto-generate."),
+        })
+        return findings
+    if age > 7:
+        findings.append({
+            "issue":  "dchub_media_press_silent",
+            "url":    "/api/v1/media/press-health",
+            "count":  int(age),
+            "detail": (f"DC Hub Media has been silent for {age:.1f} days "
+                       f"({count_30d} press releases in last 30d). "
+                       f"Source-of-truth score is anemic. Autopilot will "
+                       f"AUTO-TRIGGER /api/v1/marketing/auto-generate."),
+        })
+    elif count_30d < 4:
+        findings.append({
+            "issue":  "dchub_media_press_weak",
+            "url":    "/api/v1/media/press-health",
+            "count":  count_30d,
+            "detail": (f"DC Hub Media output is weak: only {count_30d} "
+                       f"press releases in last 30 days. Healthy cadence "
+                       f"is 4+/month. Escalate to operator — needs human "
+                       f"to inspect why the auto-press cron is running "
+                       f"but not landing rows."),
+        })
+    return findings
+
+
+# ── Phase PPPP (2026-05-16) — dedup-pipeline divergence detector ──
+def check_dedup_backlog_growing() -> list[dict]:
+    """Fires when the raw vs verified gap is >5,000 AND verified
+    hasn't moved in 7 days. Surfaces a stalled dedup worker — the
+    user reported 12,553 verified that was actually 10,078 (worker
+    DID run) vs 21,374 raw (lots of un-deduped rows piling up).
+
+    The honest read: dedup work is happening sporadically but the
+    backlog is huge. This detector lets the brain catch the next
+    stall before users notice their displayed count drifting from
+    the true tracked count."""
+    try:
+        from routes.facilities_delta import compute_delta
+        d = compute_delta()
+    except Exception:
+        return []
+    cur = d.get("current") or {}
+    total    = int(cur.get("total")    or 0)
+    verified = int(cur.get("verified") or 0)
+    gap = total - verified
+    if gap < 5000:
+        return []
+    # If we have baseline, check whether verified has moved
+    delta_7d = (d.get("deltas") or {}).get("7d") or {}
+    verified_delta = int(delta_7d.get("verified") or 0)
+    # If verified hasn't moved >100 in 7 days while gap is >5K, stall
+    if abs(verified_delta) < 100 and d.get("snapshots_available", 0) >= 7:
+        return [{
+            "issue":  "dedup_pipeline_stalled",
+            "url":    "/api/v1/facilities/delta",
+            "count":  gap,
+            "detail": (f"Facility dedup backlog: {gap:,} raw rows not yet "
+                       f"deduped (raw {total:,} vs verified {verified:,}). "
+                       f"Verified count moved only {verified_delta} over the "
+                       f"last 7 days. The dedup worker has stalled or slowed "
+                       f"dramatically; users see a stale facility count on "
+                       f"the homepage. Inspect the dedup cron + "
+                       f"discovery_routes.py merge logic."),
+        }]
+    # No baseline yet — still flag the gap as informational
+    return [{
+        "issue":  "dedup_backlog_large",
+        "url":    "/api/v1/facilities/delta",
+        "count":  gap,
+        "detail": (f"Facility dedup backlog: {gap:,} candidates "
+                   f"awaiting dedup ({verified:,} verified of {total:,} raw). "
+                   f"Not yet flagged as stalled — need 7d of snapshots for "
+                   f"that. If this gap doesn't shrink over the next week, "
+                   f"check the dedup pipeline."),
+    }]
+
+
 # ── Phase HHHH (2026-05-16) — facility-count stagnation detector ──
 def check_facility_count_stagnant() -> list[dict]:
     """Fires when the 7-day facility-count delta is zero (or negative).
@@ -1657,7 +1761,11 @@ def scan_all() -> list[dict]:
                # Phase DDDD REST gate informational signal
                check_rest_gate_hits,
                # Phase HHHH facility-discovery stagnation
-               check_facility_count_stagnant):
+               check_facility_count_stagnant,
+               # Phase PPPP dedup-backlog growing or stalled
+               check_dedup_backlog_growing,
+               # Phase RRRR DC Hub Media silence
+               check_dchub_media_press_silent):
         try:
             out.extend(fn() or [])
         except Exception as e:
