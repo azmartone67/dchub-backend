@@ -53,3 +53,13 @@ jobs:
             -H "X-Admin-Key: $ADMIN_KEY" \
             "https://dchub.cloud/api/v1/competitors/scan" \
             | python3 -m json.tool || true
+      # Phase ZZZZ (2026-05-16): refresh 5 market deep-dives nightly.
+      # Rotates through stalest first — full top-100 coverage in ~3 weeks.
+      - name: Market deep-dive refresh (5 markets)
+        env:
+          ADMIN_KEY: ${{ secrets.DCHUB_ADMIN_KEY }}
+        run: |
+          curl -sS --max-time 120 -X POST \
+            -H "X-Admin-Key: $ADMIN_KEY" \
+            "https://dchub.cloud/api/v1/markets/deep-dive/cron?count=5" \
+            | python3 -m json.tool || true

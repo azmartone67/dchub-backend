@@ -75,7 +75,7 @@
 // CONFIGURATION
 // ============================================================
 const RAILWAY_BACKEND = 'https://dchub-backend-production.up.railway.app';
-const WORKER_VERSION = '4.16.0-yyyy';
+const WORKER_VERSION = '4.17.0-zzzz-ccccc';
 const _DCHUB_BUILD_MARKER = 'rebuild-1777448239';
 
 const MCP_CACHE_STALE_TTL = 86400;
@@ -1401,15 +1401,21 @@ export default {
         '/transparency',
         // Phase YYYY (2026-05-16): operator profiles directory
         '/operators',
+        // Phase BBBBB (2026-05-16): industry events directory
+        '/events',
       ]);
       // Phase YYYY (2026-05-16): also forward prefix-paths to Railway
       // for surfaces with dynamic sub-routes (e.g. /operators/<slug>).
       // The Set check covers literal paths; this prefix-check covers
       // path families. Keep tight: only paths we know are backend-served.
+      // Phase ZZZZ-CCCCC (2026-05-16): +/markets/<slug>/deep-dive,
+      // /reports/quarterly, /events.
       const PHASE_282_PREFIXES = [
         '/operators/',
         '/spare-capacity/',
         '/transactions/',
+        '/markets/',
+        '/reports/',
       ];
       if (PHASE_282_RAILWAY_PATHS.has(pathname) ||
           PHASE_282_PREFIXES.some(p => pathname.startsWith(p))) {

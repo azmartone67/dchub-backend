@@ -19687,6 +19687,36 @@ try:
 except Exception as _e:
     print(f"[main] competitor_intel register failed: {_e}", file=sys.stderr)
 
+# Phase ZZZZ (2026-05-16): market deep-dive narrative generator —
+# closes the per-market narrative gap vs DCHawk/dcByte.
+try:
+    from routes.market_deep_dive import market_deep_dive_bp
+    app.register_blueprint(market_deep_dive_bp)
+except Exception as _e:
+    print(f"[main] market_deep_dive register failed: {_e}", file=sys.stderr)
+
+# Phase AAAAA (2026-05-16): quarterly auto-report — printable HTML
+# with @media print rules + schema.org Report markup.
+try:
+    from routes.quarterly_report import quarterly_report_bp
+    app.register_blueprint(quarterly_report_bp)
+except Exception as _e:
+    print(f"[main] quarterly_report register failed: {_e}", file=sys.stderr)
+
+# Phase BBBBB (2026-05-16): industry event tracker.
+try:
+    from routes.industry_events import industry_events_bp
+    app.register_blueprint(industry_events_bp)
+except Exception as _e:
+    print(f"[main] industry_events register failed: {_e}", file=sys.stderr)
+
+# Phase CCCCC (2026-05-16): tenant directory MVP.
+try:
+    from routes.tenant_directory import tenant_directory_bp
+    app.register_blueprint(tenant_directory_bp)
+except Exception as _e:
+    print(f"[main] tenant_directory register failed: {_e}", file=sys.stderr)
+
 # Phase YYYY (2026-05-16): operator profiles + activity feed — closes
 # the per-operator-profile-page gap vs DCHawk/dcByte.
 try:

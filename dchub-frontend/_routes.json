@@ -16,7 +16,10 @@
     "/sentinel",
     "/transparency",
     "/operators",
-    "/operators/*"
+    "/operators/*",
+    "/markets/*",
+    "/reports/*",
+    "/events"
   ],
   "exclude": []
 }
