@@ -1191,6 +1191,43 @@ def check_enterprise_bot_present() -> list[dict]:
     return findings
 
 
+# ── Phase HHHH (2026-05-16) — facility-count stagnation detector ──
+def check_facility_count_stagnant() -> list[dict]:
+    """Fires when the 7-day facility-count delta is zero (or negative).
+    User pain: 'ai-inventory hasn't improved in weeks, same 12,553
+    facilities.' That's a silent discovery-pipeline failure that
+    used to require human spotting. Now it surfaces in the heartbeat.
+
+    Requires the Phase HHHH facility_count_snapshots table to be
+    populated by the daily cron — quiet during the first 7 days
+    after deploy while we accumulate baseline."""
+    try:
+        from routes.facilities_delta import compute_delta
+        d = compute_delta()
+    except Exception:
+        return []
+    if d.get("snapshots_available", 0) < 7:
+        return []  # not enough baseline yet
+    delta_7d = (d.get("deltas") or {}).get("7d")
+    if not delta_7d: return []
+    net_total = int(delta_7d.get("total") or 0)
+    if net_total > 0:
+        return []
+    current_total = int((d.get("current") or {}).get("total") or 0)
+    stagnant_days = int(d.get("stagnant_days_7d") or 0)
+    return [{
+        "issue":  "facility_count_stagnant",
+        "url":    "/api/v1/facilities/delta",
+        "count":  abs(net_total),
+        "detail": (f"Facility count over the last 7 days: net {net_total} "
+                   f"({current_total:,} current). {stagnant_days} of the "
+                   f"last 7 days saw ZERO net growth — the discovery "
+                   f"pipeline likely stopped finding new facilities. "
+                   f"Inspect routes/discovery_routes.py + the daily ingest "
+                   f"crons; either add new sources or fix a broken one."),
+    }]
+
+
 # ── Phase DDDD (2026-05-16) — REST upgrade-gate hit detector ──────
 def check_rest_gate_hits() -> list[dict]:
     """Surface the count of REST upgrade-gate 402 responses in the
@@ -1618,7 +1655,9 @@ def scan_all() -> list[dict]:
                # Phase CCCC spare-capacity marketplace health
                check_spare_capacity_status,
                # Phase DDDD REST gate informational signal
-               check_rest_gate_hits):
+               check_rest_gate_hits,
+               # Phase HHHH facility-discovery stagnation
+               check_facility_count_stagnant):
         try:
             out.extend(fn() or [])
         except Exception as e:

@@ -19591,6 +19591,47 @@ text-decoration:none;margin-top:1rem}</style>
 except Exception as _e:
     print(f"[main] /pocket-listings stub register failed: {_e}", file=sys.stderr)
 
+# Phase GGGG (2026-05-16): saved L+P sites + alerts backend
+# (PRO-tier value behind the DDDD gates).
+try:
+    from routes.lp_sites import lp_sites_bp
+    app.register_blueprint(lp_sites_bp)
+except Exception as _e:
+    print(f"[main] lp_sites register failed: {_e}", file=sys.stderr)
+
+# Phase HHHH (2026-05-16): facility-count delta tracker + brain
+# stagnation detector. Catches silent discovery-pipeline failures.
+try:
+    from routes.facilities_delta import facilities_delta_bp
+    app.register_blueprint(facilities_delta_bp)
+except Exception as _e:
+    print(f"[main] facilities_delta register failed: {_e}", file=sys.stderr)
+
+# Phase IIII (2026-05-16): public ops transparency dashboard.
+try:
+    from routes.transparency import transparency_bp
+    app.register_blueprint(transparency_bp)
+    try:
+        from routes.surface_brain import register_surface, Surface
+        register_surface(Surface(
+            surface_id="transparency",
+            name="Transparency Console",
+            description="/transparency — public live ops console aggregating brain + sentinel + autopilot + discovery + outreach + funnel",
+            routes=["/transparency"],
+            paid_tools=[],
+            expected_event_types=["view"],
+        ))
+    except Exception: pass
+except Exception as _e:
+    print(f"[main] transparency register failed: {_e}", file=sys.stderr)
+
+# Phase JJJJ (2026-05-16): L+P alert firing cron + Resend email.
+try:
+    from routes.lp_alerts_cron import lp_alerts_cron_bp
+    app.register_blueprint(lp_alerts_cron_bp)
+except Exception as _e:
+    print(f"[main] lp_alerts_cron register failed: {_e}", file=sys.stderr)
+
 # Phase BBBB (2026-05-16): /developers acquisition funnel.
 try:
     from routes.developers_funnel import developers_funnel_bp

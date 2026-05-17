@@ -116,6 +116,10 @@ _MANIFEST: list[dict] = [
     {"path": "/api/v1/spare-capacity/listings", "category": "normal", "min_bytes": 200, "label": "Spare Capacity API"},
     {"path": "/api/v1/developers/funnel","category": "normal", "min_bytes": 100, "label": "Developers Funnel API"},
 
+    # Phase GGGG-JJJJ (2026-05-16) — new surfaces from master shell
+    {"path": "/transparency",                  "category": "high",   "min_bytes": 3000, "label": "Transparency",       "wants_nav": True},
+    {"path": "/api/v1/facilities/delta",       "category": "normal", "min_bytes": 100,  "label": "Facilities Delta API"},
+
     # Research / brand
     {"path": "/research/grid-intelligence","category":"normal","min_bytes": 2000,"label": "Grid Intel"},
     {"path": "/press",                   "category": "normal", "min_bytes": 2000, "label": "Press"},

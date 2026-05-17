@@ -75,7 +75,7 @@
 // CONFIGURATION
 // ============================================================
 const RAILWAY_BACKEND = 'https://dchub-backend-production.up.railway.app';
-const WORKER_VERSION = '4.14.0-qa-sweep';
+const WORKER_VERSION = '4.15.0-gggg-jjjj';
 const _DCHUB_BUILD_MARKER = 'rebuild-1777448239';
 
 const MCP_CACHE_STALE_TTL = 86400;
@@ -1397,6 +1397,8 @@ export default {
         '/pocket-listings',
         '/spare-capacity',
         '/sentinel',
+        // Phase IIII (2026-05-16): public ops transparency console
+        '/transparency',
       ]);
       if (PHASE_282_RAILWAY_PATHS.has(pathname)) {
         try {
