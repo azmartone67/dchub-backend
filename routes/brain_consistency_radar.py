@@ -46,7 +46,14 @@ from typing import Optional
 # Public raw URL to the source-of-truth _worker.js. We fetch this and
 # extract the WORKER_VERSION constant, then compare to the deployed
 # X-DC-Worker-Version header on a known-cheap endpoint.
-_WORKER_SOURCE_URL = "https://raw.githubusercontent.com/azmartone67/dchub-frontend/main/_worker.js"
+#
+# Phase VVV (2026-05-16): old URL pointed at a standalone
+# `azmartone67/dchub-frontend` repo that doesn't exist — the frontend
+# is a sub-directory of `azmartone67/dchub-backend`. Was 404ing every
+# radar cycle, spamming the log + producing a false
+# `worker_source_unreachable` finding every scan. Fixed path now
+# resolves to the actual checkout.
+_WORKER_SOURCE_URL = "https://raw.githubusercontent.com/azmartone67/dchub-backend/main/dchub-frontend/_worker.js"
 _WORKER_PROBE_URL  = "https://dchub.cloud/api/v1/dcpi/scores?limit=1"
 
 
@@ -865,15 +872,20 @@ def check_mcp_demand_gap() -> list[dict]:
                 if not (regs[0] and regs[1]): return findings
             except Exception:
                 return findings
-            # Inner try — column-missing is the most likely failure mode
+            # Phase VVV (2026-05-16): use `tool_requested` (the actual
+            # column on mcp_upgrade_signals, same fix as Phase UUU's
+            # funnel column rename). Was probing `tool` which doesn't
+            # exist → "column 'tool' does not exist" spam in Railway
+            # logs every radar cycle. Falls back to a no-result if the
+            # column also doesn't exist on this deploy.
             try:
                 cur.execute("""
                     WITH paid_demand AS (
-                      SELECT tool, COUNT(*) AS signals
+                      SELECT tool_requested AS tool, COUNT(*) AS signals
                         FROM mcp_upgrade_signals
                        WHERE created_at >= NOW() - INTERVAL '7 days'
-                         AND tool IS NOT NULL
-                       GROUP BY tool HAVING COUNT(*) >= 50
+                         AND tool_requested IS NOT NULL
+                       GROUP BY tool_requested HAVING COUNT(*) >= 50
                     ),
                     converted AS (
                       SELECT tool_name AS tool, COUNT(*) AS convs
@@ -985,13 +997,30 @@ def check_media_topic_unaddressed() -> list[dict]:
                 print(f"[radar] check_media_topic_unaddressed press: {_e}")
                 return findings
 
-            # All recent news text (one query — preferred over N+1)
+            # All recent news text (one query — preferred over N+1).
+            # Phase VVV (2026-05-16): introspect news columns first so
+            # we tolerate schema drift (no `summary` column in some
+            # deploys — was spamming Railway logs every cycle). Pick
+            # the best available body column from a candidate list.
             news_text = ""
             try:
                 cur.execute("""
-                    SELECT LOWER(COALESCE(title,'') || ' ' || COALESCE(summary,'')) AS text
+                    SELECT column_name FROM information_schema.columns
+                     WHERE table_name = 'news'
+                """)
+                news_cols_set = {r[0] for r in cur.fetchall()}
+                body_col = None
+                for c in ("summary", "description", "body", "snippet", "excerpt"):
+                    if c in news_cols_set:
+                        body_col = c; break
+                date_col = ("published_date" if "published_date" in news_cols_set
+                            else ("published_at" if "published_at" in news_cols_set
+                                  else "created_at"))
+                body_expr = f"COALESCE({body_col},'')" if body_col else "''"
+                cur.execute(f"""
+                    SELECT LOWER(COALESCE(title,'') || ' ' || {body_expr}) AS text
                       FROM news
-                     WHERE published_date >= NOW() - INTERVAL '24 hours'
+                     WHERE {date_col} >= NOW() - INTERVAL '24 hours'
                 """)
                 news_text = "\n".join(r[0] for r in cur.fetchall() if r and r[0])
             except Exception as _e:
@@ -1133,6 +1162,97 @@ def check_enterprise_bot_present() -> list[dict]:
     return findings
 
 
+# ── Phase VVV (2026-05-16) — schema-drift detector ────────────────
+def check_schema_drift() -> list[dict]:
+    """Surface every 'column X does not exist' or 'relation Y does not
+    exist' error from the aggregator into a brain finding. The user
+    pointed out Railway logs spam these every cycle — they should NOT
+    require log-trawling to see. Pull from dchub_media._agg_errors
+    (populated by aggregate_announcements) + probe a few known noisy
+    queries directly so we catch schema drift even when the aggregator
+    succeeded via its column-aware fallback path."""
+    findings: list[dict] = []
+    seen: set[str] = set()
+
+    # Pull from aggregator's error map
+    try:
+        from dchub_media import get_aggregator_errors as _get_agg_errors
+        for category, err in (_get_agg_errors() or {}).items():
+            msg = (err or "").lower()
+            if "column" in msg and "does not exist" in msg:
+                # Extract the column name from "column \"X\" does not exist"
+                import re
+                m = re.search(r'column [\"\']?(\w+)[\"\']?\s+does not exist', msg)
+                col = m.group(1) if m else "?"
+                key = f"agg:{category}:column:{col}"
+                if key in seen: continue
+                seen.add(key)
+                findings.append({
+                    "issue":  f"schema_drift_column_missing:{category}.{col}",
+                    "url":    f"dchub_media.aggregate_announcements: {category}",
+                    "count":  1,
+                    "detail": (f"Aggregator query for '{category}' failed because "
+                               f"column '{col}' doesn't exist. Either the table "
+                               f"schema changed or the query needs to introspect "
+                               f"information_schema.columns and pick the actual "
+                               f"available column. Quick fix: route the caller to "
+                               f"aggregate_announcements_v3 (column-aware)."),
+                })
+            elif "relation" in msg and "does not exist" in msg:
+                import re
+                m = re.search(r'relation [\"\']?(\w+)[\"\']?\s+does not exist', msg)
+                tbl = m.group(1) if m else "?"
+                key = f"agg:{category}:table:{tbl}"
+                if key in seen: continue
+                seen.add(key)
+                findings.append({
+                    "issue":  f"schema_drift_table_missing:{tbl}",
+                    "url":    f"dchub_media.aggregate_announcements: {category}",
+                    "count":  1,
+                    "detail": (f"Aggregator query for '{category}' referenced "
+                               f"table '{tbl}' which doesn't exist. Either the "
+                               f"table was renamed/dropped or the query is from "
+                               f"a pre-migration deploy. Wrap caller with a "
+                               f"to_regclass() probe."),
+                })
+    except Exception:
+        pass
+
+    # Direct probe: any of the known-noisy single tables. If a query
+    # against one of these tables still raises column/relation errors
+    # we surface it. Best-effort — silent failure means the underlying
+    # table works.
+    conn = _db()
+    if conn is None:
+        return findings
+    try:
+        with conn.cursor() as cur:
+            for tbl in ("wind_projects", "gas_compressors", "gas_processings",
+                         "transmission", "pipelines"):
+                try:
+                    cur.execute(f"SELECT to_regclass('public.{tbl}')")
+                    if not (cur.fetchone() or [None])[0]:
+                        key = f"probe:{tbl}"
+                        if key in seen: continue
+                        seen.add(key)
+                        findings.append({
+                            "issue":  f"schema_drift_table_missing:{tbl}",
+                            "url":    f"to_regclass: public.{tbl}",
+                            "count":  1,
+                            "detail": (f"Table '{tbl}' is referenced by "
+                                       f"energy_auto_discovery_pg.py but does "
+                                       f"not exist in this deploy. Either "
+                                       f"create it or remove the reference."),
+                        })
+                except Exception:
+                    continue
+            if len(findings) >= 8: pass  # don't go wild — cap surface area
+    finally:
+        try: conn.close()
+        except Exception: pass
+    return findings[:8]
+
+
 # ── Phase TTT (2026-05-16) — brand-surface dormancy detector ──────
 def check_brand_surface_dormant() -> list[dict]:
     """Fires if any brand-positioning surface (/vs, /intelligence,
@@ -1221,7 +1341,9 @@ def scan_all() -> list[dict]:
                check_mcp_funnel_leak,
                check_enterprise_bot_present,
                # Phase TTT brand-surface dormancy detector
-               check_brand_surface_dormant):
+               check_brand_surface_dormant,
+               # Phase VVV schema-drift detector
+               check_schema_drift):
         try:
             out.extend(fn() or [])
         except Exception as e:
