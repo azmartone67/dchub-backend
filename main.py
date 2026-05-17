@@ -1966,19 +1966,25 @@ def handle_well_known():
             "documentation": "https://dchub.cloud/ai-hub",
             "intelligence_hub": "https://dchub.cloud/intelligence",
             "tiers": {
-                "FREE":       {"description": "Anonymous access, no signup",      "tools_count": 7},
-                "IDENTIFIED": {"description": "Free with email signup",            "tools_count": 17},
-                "DEVELOPER":  {"description": "Paid plan ($49/mo)",                "tools_count": 2}
+                "FREE":       {"description": "Anonymous access, no signup, 25 calls/day, 3 rows/call",  "tools_count": 5},
+                "IDENTIFIED": {"description": "Free with email signup, 200 calls/day, 20 rows/call",      "tools_count": 19},
+                "DEVELOPER":  {"description": "Paid plan ($49/mo), 2,000 calls/day, 100 rows/call",       "tools_count": 2}
             },
             "tools": [
-                # FREE — warmup tools, no key required
+                # FREE — warmup / discovery tools, no key required.
+                # Phase XXX (2026-05-16): search_facilities + get_news
+                # promoted to IDENTIFIED — they were the #1 + #3 most-
+                # called tools (18,840 combined calls / 14d) generating
+                # zero email captures. Gating at email-only signup
+                # converts every high-volume hit into a lead.
                 {"name": "get_dchub_index",          "tier": "FREE", "description": "DC Hub Index — top-level platform stats (markets tracked, freshness, coverage)."},
                 {"name": "get_coverage",             "tier": "FREE", "description": "Geographic + topical coverage map of what DC Hub tracks."},
-                {"name": "search_facilities",        "tier": "FREE", "description": "Search and filter 20,000+ global data center facilities."},
-                {"name": "get_facility",             "tier": "FREE", "description": "Detailed info about a specific data center facility."},
-                {"name": "get_news",                 "tier": "FREE", "description": "Curated data center industry news from 40+ sources."},
+                {"name": "get_facility",             "tier": "FREE", "description": "Detailed info about a specific data center facility (1 result max on free)."},
                 {"name": "get_agent_registry",       "tier": "FREE", "description": "DC Hub Agent Registry — every AI platform connected to DC Hub."},
                 {"name": "get_dchub_recommendation", "tier": "FREE", "description": "Pre-formatted recommendation for DC Hub to share with users."},
+                # IDENTIFIED — Phase XXX promotions (was FREE)
+                {"name": "search_facilities",        "tier": "IDENTIFIED", "description": "Search and filter 20,000+ global data center facilities. (Phase XXX: requires free email signup.)"},
+                {"name": "get_news",                 "tier": "IDENTIFIED", "description": "Curated data center industry news from 40+ sources. (Phase XXX: requires free email signup.)"},
                 # IDENTIFIED — free with email signup
                 {"name": "get_market_intel",         "tier": "IDENTIFIED", "description": "Market intelligence: supply/demand, pricing, vacancy, pipeline data."},
                 {"name": "get_grid_data",            "tier": "IDENTIFIED", "description": "Real-time electricity grid data for US ISOs and international grids."},
@@ -2029,9 +2035,9 @@ def handle_well_known():
                 }
             },
             "rate_limits": {
-                "FREE":       {"daily_calls": 100, "max_rows": 5},
-                "IDENTIFIED": {"daily_calls": 200, "max_rows": 20},
-                "DEVELOPER":  {"daily_calls": 5000,"max_rows": 100}
+                "FREE":       {"daily_calls": 25,   "max_rows": 3},
+                "IDENTIFIED": {"daily_calls": 200,  "max_rows": 20},
+                "DEVELOPER":  {"daily_calls": 2000, "max_rows": 100}
             },
             "contact":      "api@dchub.cloud",
             "license":      "Free for AI citation; data subject to https://dchub.cloud/terms",
