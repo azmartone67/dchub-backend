@@ -171,7 +171,14 @@ def _domain_of(surface_name: str) -> str:
 
 
 def _sla_breakdown(surfaces):
-    """Compute per-domain SLA compliance. Returns {domain: {target_h, worst_age_h, status, surfaces_n}}."""
+    """Compute per-domain SLA compliance. Returns
+    {domain: {target_h, worst_age_h, status, surfaces_n, worst_surface}}.
+
+    Phase TT (2026-05-17): also expose `worst_surface` so ops can see
+    WHICH specific surface is dragging the domain into breach. Without
+    this, the freshness endpoint reported 'iso: breach worst=26h' with
+    no way to tell whether one dead ISO surface or all 55 are stale.
+    """
     by_domain = {}
     for s in surfaces:
         d = _domain_of(s.get("surface", ""))
@@ -181,22 +188,35 @@ def _sla_breakdown(surfaces):
         target = DOMAIN_SLA_HOURS.get(domain)
         if target is None:
             continue  # 'other' bucket — don't report SLA
-        ages = [s.get("age_hours") for s in ss if s.get("age_hours") is not None]
-        worst = max(ages) if ages else None
-        if worst is None:
+        # Sort by age desc so the head is the worst offender
+        rated = [(s.get("age_hours"), s.get("surface", "?")) for s in ss
+                 if s.get("age_hours") is not None]
+        rated.sort(reverse=True)
+        worst_age = rated[0][0] if rated else None
+        worst_surface = rated[0][1] if rated else None
+        # Phase TT (2026-05-17): show the top-3 stale surfaces in each
+        # breaching domain so ops know which ones to investigate. List
+        # is omitted when status is within_sla (no signal needed).
+        stale_list = [{"surface": surf, "age_hours": round(age, 2)}
+                       for age, surf in rated[:3] if age > target]
+        if worst_age is None:
             status = "unknown"
-        elif worst <= target:
+        elif worst_age <= target:
             status = "within_sla"
-        elif worst <= target * 2:
+        elif worst_age <= target * 2:
             status = "warning"  # 1-2x the SLA target
         else:
             status = "breach"   # >2x the SLA target
-        out[domain] = {
-            "target_hours": target,
-            "worst_age_hours": round(worst, 2) if worst is not None else None,
-            "status": status,
-            "surfaces": len(ss),
+        entry = {
+            "target_hours":     target,
+            "worst_age_hours":  round(worst_age, 2) if worst_age is not None else None,
+            "worst_surface":    worst_surface,
+            "status":           status,
+            "surfaces":         len(ss),
         }
+        if status in ("warning", "breach") and stale_list:
+            entry["stale_surfaces"] = stale_list
+        out[domain] = entry
     return out
 
 

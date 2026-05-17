@@ -1125,6 +1125,24 @@ def _queue_distribution_posts(rel: dict, press_id: int, today: str) -> None:
                 VALUES (%s, %s, %s, %s, NOW())
                 ON CONFLICT (press_release_id, platform) DO NOTHING
             """, ("twitter", tw_text, "approved", press_id))
+
+            # Phase VV (2026-05-17) — Bluesky queue row. Bluesky has a
+            # 300-grapheme cap so we reuse the Twitter formatter (also
+            # capped at 280 chars) rather than the linkedin long-form.
+            # Standalone publish endpoint already exists at
+            # POST /api/admin/publish/bluesky — and a future
+            # bluesky-auto-publisher background loop (modeled on the
+            # existing LinkedIn one) can drain status='approved' +
+            # platform='bluesky' rows. Phase PP shipped the publisher
+            # function; this just makes sure the queue HAS rows so
+            # when the loop activates there's work to do.
+            bsky_text = _format_twitter_post(rel)  # same short-form
+            cur.execute("""
+                INSERT INTO social_media_posts
+                    (platform, content, status, press_release_id, created_at)
+                VALUES (%s, %s, %s, %s, NOW())
+                ON CONFLICT (press_release_id, platform) DO NOTHING
+            """, ("bluesky", bsky_text, "approved", press_id))
         c.commit()
     finally:
         try: c.close()
@@ -2502,6 +2520,107 @@ def linkedin_post_latest():
         except Exception: pass
     # Delegate to the per-slug endpoint
     return linkedin_post_for(row[0])
+
+
+# Phase SS (2026-05-17) — distribution health endpoint.
+# DC Hub Media generates LinkedIn posts but until now we had no view
+# of whether they actually landed. The press release audit trail
+# (auto_press_releases.linkedin_sent_at) AND the social_media_posts
+# table (with publish_platform='linkedin') both track distribution,
+# but neither was queryable as "how's the last 7 days doing?".
+#
+# Surfaces:
+#   - last_7d_generated:   # releases with linkedin_post text
+#   - last_7d_linkedin:    # of those with linkedin_sent_at populated
+#   - delivery_rate:       %
+#   - failures:            list of slugs missing sent_at
+#   - twitter_configured:  whether TWITTER_* env vars are set
+#   - bluesky_configured:  whether BLUESKY_* env vars are set (Phase PP)
+# Public so ops can monitor without an admin key (no secrets exposed).
+@marketing_bp.get("/api/v1/marketing/distribution/health")
+def distribution_health():
+    c = _conn()
+    if c is None: return jsonify(ok=False, error="no_database"), 503
+    out = {
+        "ok": True,
+        "window_days": 7,
+        "last_7d_generated":      0,
+        "last_7d_linkedin_sent":  0,
+        "delivery_rate_pct":      None,
+        "failures":               [],
+        "channels_configured":    {
+            "linkedin": bool(os.environ.get("LINKEDIN_ACCESS_TOKEN", "").strip()),
+            "twitter":  bool(os.environ.get("TWITTER_API_KEY", "").strip()
+                              or os.environ.get("TWITTER_BEARER_TOKEN", "").strip()),
+            "bluesky":  bool(os.environ.get("BLUESKY_HANDLE", "").strip()
+                              and os.environ.get("BLUESKY_APP_PASSWORD", "").strip()),
+            "resend_email": bool(os.environ.get("RESEND_API_KEY", "").strip()),
+        },
+    }
+    try:
+        with c.cursor() as cur:
+            try:
+                # Total releases generated in last 7d with a LinkedIn post
+                cur.execute("""
+                    SELECT slug, title, generated_at, linkedin_sent_at
+                      FROM auto_press_releases
+                     WHERE generated_at >= NOW() - INTERVAL '7 days'
+                       AND linkedin_post IS NOT NULL
+                       AND linkedin_post != ''
+                     ORDER BY generated_at DESC
+                """)
+                rows = cur.fetchall() or []
+            except Exception as e:
+                return jsonify(ok=False,
+                                error=f"db_query_failed:{str(e)[:120]}"), 503
+
+            out["last_7d_generated"] = len(rows)
+            sent = [r for r in rows if r[3] is not None]
+            out["last_7d_linkedin_sent"] = len(sent)
+            if rows:
+                out["delivery_rate_pct"] = round(
+                    100.0 * len(sent) / len(rows), 1
+                )
+            # Surface the failures (releases generated but not sent)
+            for slug, title, gen_at, sent_at in rows:
+                if sent_at is None:
+                    out["failures"].append({
+                        "slug":         slug,
+                        "title":        (title or "")[:120],
+                        "generated_at": gen_at.isoformat() if gen_at else None,
+                        "reason":       "no_linkedin_sent_at — token expired, "
+                                         "queue stuck, or cron silent",
+                    })
+
+            # Phase SS+1: also check the social_media_posts mirror
+            try:
+                cur.execute("""
+                    SELECT publish_platform, COUNT(*)
+                      FROM social_media_posts
+                     WHERE created_at >= NOW() - INTERVAL '7 days'
+                       AND status = 'published'
+                     GROUP BY publish_platform""")
+                out["social_media_posts_by_platform_7d"] = {
+                    (r[0] or "unknown"): int(r[1] or 0)
+                    for r in cur.fetchall() or []
+                }
+            except Exception:
+                out["social_media_posts_by_platform_7d"] = {}
+    finally:
+        try: c.close()
+        except Exception: pass
+
+    # Single-line health verdict
+    rate = out["delivery_rate_pct"]
+    if rate is None:
+        out["status"] = "no_data"
+    elif rate >= 90:
+        out["status"] = "healthy"
+    elif rate >= 50:
+        out["status"] = "degraded"
+    else:
+        out["status"] = "critical"
+    return jsonify(out), 200
 
 
 @marketing_bp.post("/api/v1/marketing/linkedin/send-daily-email")
