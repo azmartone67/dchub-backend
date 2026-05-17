@@ -239,51 +239,53 @@ def lp_unsave(site_id):
     return jsonify(ok=True, removed=removed), 200
 
 
-@lp_sites_bp.route("/api/v1/lp/alerts", methods=["GET"])
-def lp_list_alerts():
+# Phase GGGG (2026-05-16): single handler for /api/v1/lp/alerts
+# accepting GET (list) + POST (create) — consolidated to keep the
+# regression-lint duplicate-route check happy (only one decorator per
+# URL path). The two operations branch on request.method below.
+@lp_sites_bp.route("/api/v1/lp/alerts", methods=["GET", "POST"])
+def lp_alerts_handler():
     user_id, gate = _require_pro_user()
     if gate is not None: return gate
-    c = _conn()
-    if c is None: return jsonify(error="no_database"), 503
-    try:
-        _ensure_schema(c)
-        import psycopg2.extras
-        with c.cursor(cursor_factory=psycopg2.extras.RealDictCursor) as cur:
-            cur.execute("""
-                SELECT a.id, a.saved_site_id, a.trigger_type, a.threshold,
-                       a.notify_email, a.enabled, a.last_fired_at,
-                       a.last_value, a.created_at,
-                       s.name AS site_name, s.latitude, s.longitude
-                  FROM saved_lp_alerts a
-                  JOIN saved_lp_sites s ON s.id = a.saved_site_id
-                 WHERE a.user_id = %s
-                 ORDER BY a.created_at DESC LIMIT 200
-            """, (user_id,))
-            rows = cur.fetchall()
-    finally:
-        try: c.close()
-        except Exception: pass
-    out = [{
-        "id":           int(r["id"]),
-        "saved_site_id": int(r["saved_site_id"]),
-        "site_name":    r["site_name"],
-        "lat":          float(r["latitude"]),
-        "lon":          float(r["longitude"]),
-        "trigger_type": r["trigger_type"],
-        "threshold":    float(r["threshold"]) if r["threshold"] is not None else None,
-        "notify_email": r["notify_email"],
-        "enabled":      bool(r["enabled"]),
-        "last_fired_at":r["last_fired_at"].isoformat() if r["last_fired_at"] else None,
-        "last_value":   float(r["last_value"]) if r["last_value"] is not None else None,
-        "created_at":   r["created_at"].isoformat() if r["created_at"] else None,
-    } for r in rows]
-    return jsonify(alerts=out, count=len(out)), 200
 
+    if request.method == "GET":
+        c = _conn()
+        if c is None: return jsonify(error="no_database"), 503
+        try:
+            _ensure_schema(c)
+            import psycopg2.extras
+            with c.cursor(cursor_factory=psycopg2.extras.RealDictCursor) as cur:
+                cur.execute("""
+                    SELECT a.id, a.saved_site_id, a.trigger_type, a.threshold,
+                           a.notify_email, a.enabled, a.last_fired_at,
+                           a.last_value, a.created_at,
+                           s.name AS site_name, s.latitude, s.longitude
+                      FROM saved_lp_alerts a
+                      JOIN saved_lp_sites s ON s.id = a.saved_site_id
+                     WHERE a.user_id = %s
+                     ORDER BY a.created_at DESC LIMIT 200
+                """, (user_id,))
+                rows = cur.fetchall()
+        finally:
+            try: c.close()
+            except Exception: pass
+        out = [{
+            "id":           int(r["id"]),
+            "saved_site_id": int(r["saved_site_id"]),
+            "site_name":    r["site_name"],
+            "lat":          float(r["latitude"]),
+            "lon":          float(r["longitude"]),
+            "trigger_type": r["trigger_type"],
+            "threshold":    float(r["threshold"]) if r["threshold"] is not None else None,
+            "notify_email": r["notify_email"],
+            "enabled":      bool(r["enabled"]),
+            "last_fired_at":r["last_fired_at"].isoformat() if r["last_fired_at"] else None,
+            "last_value":   float(r["last_value"]) if r["last_value"] is not None else None,
+            "created_at":   r["created_at"].isoformat() if r["created_at"] else None,
+        } for r in rows]
+        return jsonify(alerts=out, count=len(out)), 200
 
-@lp_sites_bp.route("/api/v1/lp/alerts", methods=["POST"])
-def lp_create_alert():
-    user_id, gate = _require_pro_user()
-    if gate is not None: return gate
+    # POST — create alert
     d = request.get_json(silent=True) or {}
     try: site_id = int(d.get("saved_site_id") or 0)
     except (ValueError, TypeError): return jsonify(error="invalid_site_id"), 400
