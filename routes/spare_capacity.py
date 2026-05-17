@@ -165,12 +165,16 @@ def submit_listing():
                     # loop continues to the next generated code instead
                     # of bubbling a duplicate-key error; also satisfies
                     # the regression-lint INSERT-must-have-ON-CONFLICT rule.
+                    # Status bound as a parameter (not inline literal)
+                    # so the regression-lint regex can scan past it to
+                    # see the ON CONFLICT clause — the regex stops at
+                    # the first single-quote literal otherwise.
                     cur.execute("""
                         INSERT INTO spare_capacity_listings
                           (referral_code, operator_name, location, state, market,
                            mw_available, ready_date, description,
                            contact_name, contact_email, status)
-                        VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, 'pending')
+                        VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s)
                         ON CONFLICT (referral_code) DO NOTHING
                     """, (
                         ref,
@@ -183,6 +187,7 @@ def submit_listing():
                         (d.get("description") or "")[:1000] or None,
                         (d.get("contact_name") or "")[:100] or None,
                         (d.get("contact_email") or "").strip()[:200],
+                        "pending",
                     ))
                     # ON CONFLICT DO NOTHING swallows duplicate-PK
                     # silently; check rowcount so we retry with a new
