@@ -228,15 +228,21 @@ def lp_list_saved():
     return jsonify(saved=out, count=len(out)), 200
 
 
-@lp_sites_bp.route("/api/v1/lp/saved/<int:site_id>", methods=["GET"])
+# Phase QQQQ + GGGG consolidated handler — single decorator for both
+# GET (detail) and DELETE (unsave) to satisfy regression-lint's
+# duplicate-route rule. Branches on request.method.
+@lp_sites_bp.route("/api/v1/lp/saved/<int:site_id>", methods=["GET", "DELETE"])
 @_rl(per_minute=30)
-def lp_get_site(site_id):
-    """Phase QQQQ (2026-05-16): per-site detail. Returns the saved
-    site + current DCPI for its market + nearby substations/fiber
-    count within 50km. Powers the per-site detail UI (queued) and
-    gives MCP clients a single-call rich snapshot for analyze workflows."""
+def lp_site_detail_or_delete(site_id):
     user_id, gate = _require_pro_user()
     if gate is not None: return gate
+    if request.method == "DELETE":
+        return _lp_unsave_impl(site_id, user_id)
+    return _lp_get_site_impl(site_id, user_id)
+
+
+def _lp_get_site_impl(site_id, user_id):
+    """Phase QQQQ (2026-05-16): per-site detail."""
     c = _conn()
     if c is None: return jsonify(error="no_database"), 503
     try:
@@ -315,11 +321,7 @@ def lp_get_site(site_id):
         except Exception: pass
 
 
-@lp_sites_bp.route("/api/v1/lp/saved/<int:site_id>", methods=["DELETE"])
-@_rl(per_minute=30)
-def lp_unsave(site_id):
-    user_id, gate = _require_pro_user()
-    if gate is not None: return gate
+def _lp_unsave_impl(site_id, user_id):
     c = _conn()
     if c is None: return jsonify(error="no_database"), 503
     try:
