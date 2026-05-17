@@ -7598,6 +7598,194 @@ def stripe_webhook():
     return jsonify({'received': True})
 
 
+# Phase BBB-2 (2026-05-17) — cross-reference what Stripe says happened
+# vs what landed in our mcp_conversions table. Answers the persistent
+# "where did the 6 conversions go" question: do real paid sessions
+# exist on Stripe's side that never reached our handler?
+@app.route('/api/v1/stripe/conversions-audit', methods=['GET'])
+def stripe_conversions_audit():
+    if not STRIPE_AVAILABLE or not STRIPE_SECRET_KEY:
+        return jsonify(ok=False, error='Stripe not configured'), 503
+    out = {
+        'ok': True,
+        'stripe_side': {'completed_sessions': 0, 'sample': []},
+        'db_side':     {'mcp_conversions_total': 0,
+                          'mcp_conversions_7d': 0,
+                          'mcp_conversions_30d': 0,
+                          'sample': []},
+        'gap':         None,
+    }
+    # ── Stripe side: list recent completed checkout sessions ──
+    try:
+        # Last 30 days of completed sessions
+        import time as _t
+        cutoff = int(_t.time()) - (30 * 86400)
+        sessions = stripe.checkout.Session.list(
+            limit=100,
+            created={'gte': cutoff},
+        )
+        completed = [s for s in sessions.data if s.get('status') == 'complete']
+        out['stripe_side']['completed_sessions'] = len(completed)
+        for s in completed[:10]:
+            out['stripe_side']['sample'].append({
+                'id':                s.get('id'),
+                'created':           s.get('created'),
+                'customer_email':    s.get('customer_email') or s.get('customer_details', {}).get('email'),
+                'amount_total_cents': s.get('amount_total'),
+                'mode':              s.get('mode'),
+                'payment_status':    s.get('payment_status'),
+            })
+    except Exception as e:
+        out['stripe_side']['error'] = f'stripe_list_failed:{str(e)[:120]}'
+
+    # ── DB side: counts + sample ──
+    for key, sql in [
+        ('mcp_conversions_total', "SELECT COUNT(*) FROM mcp_conversions"),
+        ('mcp_conversions_7d',    "SELECT COUNT(*) FROM mcp_conversions WHERE created_at >= NOW() - INTERVAL '7 days'"),
+        ('mcp_conversions_30d',   "SELECT COUNT(*) FROM mcp_conversions WHERE created_at >= NOW() - INTERVAL '30 days'"),
+    ]:
+        try:
+            _, rows = _pg_execute(sql, fetch=True)
+            out['db_side'][key] = int(rows[0][0]) if rows else 0
+        except Exception:
+            out['db_side'][key] = None
+    try:
+        _, rows = _pg_execute(
+            "SELECT created_at, stripe_session_id, plan, amount_cents, "
+            "       customer_email "
+            "  FROM mcp_conversions "
+            " ORDER BY created_at DESC LIMIT 10",
+            fetch=True)
+        for r in (rows or []):
+            email = r[4] or ''
+            email_redacted = (email[:3] + '@' + email.split('@')[-1]) if '@' in email else (email[:5] + '...' if email else None)
+            out['db_side']['sample'].append({
+                'created_at':        r[0].isoformat() if r[0] else None,
+                'stripe_session_id': r[1],
+                'plan':              r[2],
+                'amount_cents':      r[3],
+                'customer_email':    email_redacted,
+            })
+    except Exception as e:
+        out['db_side']['sample_error'] = str(e)[:120]
+
+    # ── Gap analysis ──
+    stripe_n = out['stripe_side']['completed_sessions']
+    db_n     = out['db_side']['mcp_conversions_30d'] or 0
+    if stripe_n == 0 and db_n == 0:
+        out['gap'] = 'No completed Stripe sessions in 30d AND no DB rows. Either zero conversions OR Stripe API key has wrong scope.'
+    elif stripe_n > 0 and db_n == 0:
+        # Cross-check: which session IDs aren't in the DB?
+        try:
+            stripe_ids = {s['id'] for s in out['stripe_side']['sample']}
+            placeholders = ','.join(['%s'] * len(stripe_ids))
+            _, rows = _pg_execute(
+                f"SELECT stripe_session_id FROM mcp_conversions "
+                f"WHERE stripe_session_id IN ({placeholders})",
+                tuple(stripe_ids), fetch=True)
+            db_ids = {r[0] for r in (rows or [])}
+            missing = stripe_ids - db_ids
+            out['gap'] = (f'CRITICAL: Stripe has {stripe_n} completed sessions in 30d '
+                          f'but DB has 0 mcp_conversions rows. Of the {len(stripe_ids)} '
+                          f'most recent sessions, {len(missing)} are NOT in our DB. '
+                          f'Either webhook never fired OR handler crashed silently. '
+                          f'Missing session IDs (sample): {list(missing)[:5]}')
+        except Exception as e:
+            out['gap'] = f'CRITICAL: {stripe_n} Stripe sessions vs 0 DB rows. Cross-ref failed: {str(e)[:100]}'
+    elif stripe_n > db_n:
+        out['gap'] = f'PARTIAL: Stripe shows {stripe_n} but DB has {db_n}. {stripe_n - db_n} session(s) missing from our recording.'
+    elif db_n > stripe_n:
+        out['gap'] = f'EXTRA: DB has {db_n} but Stripe shows {stripe_n}. Possible test rows or migrated data.'
+    else:
+        out['gap'] = f'MATCH: Stripe {stripe_n} ↔ DB {db_n}. Recording pipeline healthy.'
+
+    return jsonify(out), 200
+
+
+# Phase BBB (2026-05-17) — query Stripe's API for configured webhook
+# endpoints. Answers "what URL is Stripe actually trying to reach + what
+# events is it subscribed to" WITHOUT requiring Dashboard access.
+# Read-only against Stripe's webhook_endpoints resource. Returns
+# url+enabled_events+status for each endpoint, plus a hint match against
+# our two known-good paths so the user can see at a glance whether
+# Stripe is pointed at the right place.
+@app.route('/api/v1/stripe/webhook-list', methods=['GET'])
+def stripe_webhook_list():
+    if not STRIPE_AVAILABLE:
+        return jsonify(ok=False, error='Stripe SDK not available'), 503
+    if not STRIPE_SECRET_KEY:
+        return jsonify(ok=False, error='STRIPE_SECRET_KEY not configured'), 503
+    try:
+        # stripe.WebhookEndpoint.list returns up to 100 endpoints
+        eps = stripe.WebhookEndpoint.list(limit=100)
+    except Exception as e:
+        return jsonify(ok=False, error=f'stripe_api:{str(e)[:200]}'), 502
+
+    KNOWN_PATHS = {
+        '/api/stripe/webhook':    'live (legacy)',
+        '/api/v1/stripe/webhook': 'live (Phase ZZ alias, canonical)',
+    }
+    out = {
+        'ok': True,
+        'endpoint_count': len(eps.data),
+        'endpoints': [],
+        'verdict': None,
+    }
+    pointing_at_us = 0
+    pointing_correctly = 0
+    for ep in eps.data:
+        url = ep.get('url') or ''
+        # Match against known paths
+        match = None
+        for path, status in KNOWN_PATHS.items():
+            if url.endswith(path):
+                match = status
+                pointing_at_us += 1
+                pointing_correctly += 1
+                break
+        if 'dchub.cloud' in url and not match:
+            match = f'pointed at our domain but path is {url.split("dchub.cloud")[-1]} — not a known handler'
+            pointing_at_us += 1
+        out['endpoints'].append({
+            'id':              ep.get('id'),
+            'url':             url,
+            'enabled_events':  ep.get('enabled_events', [])[:20],
+            'status':          ep.get('status'),
+            'description':     ep.get('description'),
+            'livemode':        ep.get('livemode'),
+            'created':         ep.get('created'),
+            'api_version':     ep.get('api_version'),
+            'match':           match,
+        })
+
+    if pointing_correctly > 0:
+        out['verdict'] = (
+            f'OK — {pointing_correctly} webhook(s) point at a known DC Hub path. '
+            f'If conversions are still 0, the issue is signature mismatch '
+            f'(check STRIPE_WEBHOOK_SECRET env var) or event filter.'
+        )
+    elif pointing_at_us > 0:
+        out['verdict'] = (
+            f'PARTIAL — Stripe knows about dchub.cloud but no webhook '
+            f'points at a known handler path. Update the URL to '
+            f'https://dchub.cloud/api/v1/stripe/webhook.'
+        )
+    elif out['endpoint_count'] == 0:
+        out['verdict'] = (
+            'NONE — no webhook endpoints configured in Stripe at all. '
+            'Add one at Dashboard → Developers → Webhooks pointing to '
+            'https://dchub.cloud/api/v1/stripe/webhook with at least '
+            'the checkout.session.completed event subscribed.'
+        )
+    else:
+        out['verdict'] = (
+            f'MISCONFIGURED — Stripe has {out["endpoint_count"]} webhook(s) '
+            'but none point at dchub.cloud. Currently sending events to '
+            'an unrelated service. Update or add an endpoint.'
+        )
+    return jsonify(out), 200
+
+
 # Phase ZZ (2026-05-17) — surface the Stripe webhook receive counters
 # + recent conversion stats. Read-only, no admin gate (no secrets
 # exposed). Single most-useful answer to "why no conversions?" — if
