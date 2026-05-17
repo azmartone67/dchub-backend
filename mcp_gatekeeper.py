@@ -123,16 +123,18 @@ TOOL_TIER = {
     "get_microgrid_viability": Tier.IDENTIFIED,  # site-level resilience
     "get_intelligence_index":  Tier.IDENTIFIED,  # DCPI scores for 280+ markets
 
-    # DEVELOPER — the paid moat is now narrowed to the COMPOSITE
-    # site-selection tools. These are the killer-app workflows that
-    # justify paying: take a lat/lon (or a set of candidate sites) and
-    # return a synthesized recommendation drawing on every IDENTIFIED
-    # tool below. Agents who get hooked on the IDENTIFIED tools convert
-    # when they need site-specific analysis at scale.
+    # DEVELOPER — single-site composite scorer (entry-paid hook)
     "analyze_site":            Tier.DEVELOPER,  # composite lat/lon scorer
-    "compare_sites":           Tier.DEVELOPER,  # multi-site ranker (up to 5)
 
-    # PRO
+    # PRO — Phase DDDD (2026-05-16): compare_sites promoted from
+    # DEVELOPER to PRO. Multi-site comparison is the killer broker /
+    # buyer workflow worth $199/mo; analyze_site stays DEVELOPER as
+    # the entry hook. Plus 3 new PRO L+P tools so the /land-power-map
+    # workflow has paid features beyond the free map view.
+    "compare_sites":           Tier.PRO,  # was DEVELOPER
+    "get_lp_alerts":           Tier.PRO,  # alerts on saved L+P sites
+    "save_lp_site":            Tier.PRO,  # persist a candidate site
+    "lp_bulk_export":          Tier.PRO,  # bulk CSV/GeoJSON export
     "get_backup_status":       Tier.PRO,
 
     # ═══════════════════════════════════════════════════════════════
@@ -441,7 +443,10 @@ TOOL_TEASER = {
     "get_fiber_intel":        "3,200+ long-haul routes — carriers, latency, lit/dark availability, IX presence.",
     "list_transactions":      "$324B+ DC M&A history — buyer, seller, MW, $/kW, date, region.",
     "analyze_site":           "composite site-score for any lat/lon: power, fiber, water, tax, climate, latency to top markets.",
-    "compare_sites":          "side-by-side scoring across up to 5 candidate sites with weighted rankings.",
+    "compare_sites":          "PRO multi-site ranker — side-by-side scoring across up to 5 candidate sites with weighted rankings. The killer broker workflow.",
+    "get_lp_alerts":          "PRO Land+Power alerts — get notified when DCPI score, capacity, or pricing changes on saved sites.",
+    "save_lp_site":           "PRO — save candidate L+P sites to a personal portfolio for tracking, alerts, and bulk export.",
+    "lp_bulk_export":         "PRO bulk export — download all your saved L+P sites as CSV or GeoJSON for offline analysis.",
     "get_colocation_score":   "DCPI sub-score breakdown for any market — what's driving the rank.",
     "get_geothermal_potential":"DOE Play Fairway resource scores + estimated MWe for greenfield geothermal.",
     "get_microgrid_viability":"on-site solar/storage/CHP feasibility with NPV across utility-rate scenarios.",

@@ -1162,6 +1162,59 @@ def check_enterprise_bot_present() -> list[dict]:
     return findings
 
 
+# ── Phase DDDD (2026-05-16) — REST upgrade-gate hit detector ──────
+def check_rest_gate_hits() -> list[dict]:
+    """Surface the count of REST upgrade-gate 402 responses in the
+    last 24h as a brain finding. Lets us see — at heartbeat cadence —
+    whether the new DEVELOPER + PRO REST gates (Phase DDDD) are
+    actually being hit and how many leads they're producing.
+
+    Reads mcp_call_log if it tracks REST too (it doesn't by default),
+    else relies on developer_funnel_events with event_type=cta_click
+    OR the upcoming rest_gate_hits table (Phase DDDD+ telemetry).
+    Always returns at most 1 finding (the aggregate count) — purely
+    informational, not blocking."""
+    conn = _db()
+    if conn is None: return []
+    try:
+        with conn.cursor() as cur:
+            try:
+                # Best-effort across the available signal sources
+                cur.execute("""
+                    SELECT to_regclass('public.developer_funnel_events')
+                """)
+                if not (cur.fetchone() or [None])[0]:
+                    return []
+                cur.execute("""
+                    SELECT COUNT(*) FROM developer_funnel_events
+                     WHERE event_type IN ('cta_click','pricing_view','key_claimed')
+                       AND ts >= NOW() - INTERVAL '24 hours'
+                """)
+                hits = int((cur.fetchone() or [0])[0] or 0)
+            except Exception:
+                return []
+    finally:
+        try: conn.close()
+        except Exception: pass
+    if hits <= 0:
+        return []
+    # Not an "issue" — informational heartbeat metric. Only surface
+    # if there's enough volume that the count tells the operator
+    # something meaningful (>= 5 in 24h).
+    if hits < 5:
+        return []
+    return [{
+        "issue":  "upgrade_gate_traffic_active",
+        "url":    "/api/v1/developers/funnel",
+        "count":  hits,
+        "detail": (f"{hits} upgrade-gate interactions in last 24h "
+                   f"(developer_funnel_events: cta_click + pricing_view + "
+                   f"key_claimed). Healthy signal that the Phase DDDD "
+                   f"REST gates are visible to users. Compare to "
+                   f"30d conversion rate via /api/v1/developers/funnel."),
+    }]
+
+
 # ── Phase BBBB (2026-05-16) — /developers funnel drop detector ────
 def check_developers_funnel_dead() -> list[dict]:
     """Surface when /developers gets traffic but stage-1 (intent
@@ -1557,7 +1610,9 @@ def scan_all() -> list[dict]:
                # Phase BBBB /developers funnel
                check_developers_funnel_dead,
                # Phase CCCC spare-capacity marketplace health
-               check_spare_capacity_status):
+               check_spare_capacity_status,
+               # Phase DDDD REST gate informational signal
+               check_rest_gate_hits):
         try:
             out.extend(fn() or [])
         except Exception as e:

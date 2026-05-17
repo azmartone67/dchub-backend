@@ -328,6 +328,77 @@ def transactions_index():
                     headers={"Cache-Control": "public, max-age=300"})
 
 
+# Phase DDDD (2026-05-16) — DEVELOPER-gated CSV export. User
+# question: "did we confirm the new gating will incent people to
+# upgrade to developer for api data?" Answer: not until this endpoint
+# existed. Now there's a concrete DEVELOPER-only value: full-dataset
+# CSV download with $value + deal type + all rows.
+@transactions_browser_bp.route("/api/v1/transactions/export.csv", methods=["GET"])
+def transactions_export_csv():
+    """DEVELOPER-only: full transactions CSV download. Anonymous gets
+    a structured 402 with stripe checkout link + preview of 3 sample
+    rows so they see exactly what they'd get."""
+    from routes.tier_gate import require_tier as _rt, _resolve_caller_tier as _rc
+
+    def _preview(req):
+        # Cheap preview: 3 sample rows + total count + columns
+        try:
+            sample, total = _fetch_deals(limit=3, offset=0,
+                                           year=None, region=None,
+                                           buyer=None, min_mw=None)
+            return {
+                "total_rows":  total,
+                "sample_rows": [
+                    {"id": d.get("id"), "date": _fmt_date(d.get("date")),
+                     "buyer": d.get("buyer"), "seller": d.get("seller"),
+                     "value": _fmt_value(d.get("value")),
+                     "mw":    d.get("mw"),
+                     "type":  d.get("type"), "region": d.get("region")}
+                    for d in (sample or [])[:3]
+                ],
+                "columns": ["id","date","buyer","seller","value","mw",
+                            "type","region","market"],
+                "format":  "CSV (UTF-8)",
+                "value_proposition": ("Full dataset of all "
+                    f"{total:,}+ tracked data-center M&A transactions, "
+                    "including $value and deal-type fields that are "
+                    "redacted on the free /transactions page."),
+            }
+        except Exception:
+            return {"preview_unavailable": True}
+
+    tier, _ = _rc()
+    if (tier or "FREE").upper() not in ("DEVELOPER", "PRO", "ENTERPRISE"):
+        from routes.tier_gate import _gate_response
+        return _gate_response(tier, "DEVELOPER",
+                              "transactions_csv_export", _preview(request))
+
+    # Tier OK — stream the CSV. Cap at 10K rows per call (safety).
+    try: limit = max(1, min(10000, int(request.args.get("limit") or 10000)))
+    except (ValueError, TypeError): limit = 10000
+    year   = request.args.get("year")
+    region = request.args.get("region")
+    buyer  = request.args.get("buyer")
+    try: min_mw = int(request.args.get("min_mw")) if request.args.get("min_mw") else None
+    except (ValueError, TypeError): min_mw = None
+
+    deals, total = _fetch_deals(limit=limit, offset=0, year=year,
+                                  region=region, buyer=buyer, min_mw=min_mw)
+    import csv, io
+    buf = io.StringIO()
+    cols = ["id","date","buyer","seller","value","mw","type","region","market"]
+    w = csv.writer(buf)
+    w.writerow(cols)
+    for d in (deals or []):
+        w.writerow([d.get(c, "") for c in cols])
+    csv_text = buf.getvalue()
+    resp = Response(csv_text, mimetype="text/csv")
+    resp.headers["Content-Disposition"] = "attachment; filename=dchub-transactions.csv"
+    resp.headers["Cache-Control"] = "private, max-age=300"
+    resp.headers["X-Total-Rows"] = str(total)
+    return resp, 200
+
+
 @transactions_browser_bp.route("/transactions/<deal_id>", methods=["GET"])
 def transaction_detail(deal_id):
     """Per-deal page with schema.org markup. Indexable individually."""
