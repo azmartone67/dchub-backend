@@ -72,7 +72,7 @@ def create_pro_key():
     key_id = db_execute_with_retry("""
         INSERT INTO api_keys (user_id, key_hash, key_prefix, name, permissions, 
                               rate_limit_tier, is_active, plan, created_at)
-        VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s)
+        VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s) ON CONFLICT DO NOTHING
     """, (
         'tier-gating-test',
         key_hash,
@@ -189,7 +189,7 @@ def test_pro_endpoint_with_free_key():
     key_id = db_execute_with_retry("""
         INSERT INTO api_keys (user_id, key_hash, key_prefix, name, permissions, 
                               rate_limit_tier, is_active, plan, created_at)
-        VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s)
+        VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s) ON CONFLICT DO NOTHING
     """, (
         'tier-gating-test-free',
         key_hash,

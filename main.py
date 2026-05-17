@@ -2175,6 +2175,7 @@ except Exception as e:
 # =============================================================================
 # INSTANT HEALTH CHECK - Must respond within 1 second
 # =============================================================================
+# AUTO-REPAIR: duplicate route '/health' also in index_api.py:516 — review and remove one
 @app.route('/health')
 def health_check():
     return {'status': 'ok'}, 200
@@ -4695,6 +4696,7 @@ def _mcp_no_sse_stream():
     resp.headers['Allow'] = 'POST, DELETE, OPTIONS'
     resp.headers['Cache-Control'] = 'no-store'
     return resp
+# AUTO-REPAIR: duplicate route '/mcp' also in main.py:4689 — review and remove one
 
 @app.route('/mcp', methods=['POST', 'DELETE', 'OPTIONS'])
 @app.route('/mcp/', methods=['GET', 'POST', 'DELETE', 'HEAD', 'OPTIONS'])
@@ -6700,7 +6702,7 @@ def subscribe_lead():
 
         c.execute("""
             INSERT INTO leads (id, email, name, company, source, source_detail, verify_token, created_at, last_activity)
-            VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s)
+            VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s) ON CONFLICT DO NOTHING
         """, (
             lead_id,
             email,
@@ -6716,7 +6718,7 @@ def subscribe_lead():
         # Log activity
         c.execute("""
             INSERT INTO lead_activities (lead_id, activity_type, details, created_at)
-            VALUES (%s, 'subscribed', %s, %s)
+            VALUES (%s, 'subscribed', %s, %s) ON CONFLICT DO NOTHING
         """, (lead_id, json.dumps({'source': data.get('source', 'newsletter')}), datetime.utcnow().isoformat()))
 
         conn.commit()
@@ -6779,7 +6781,7 @@ def capture_lead():
 
             c.execute("""
                 INSERT INTO leads (id, email, name, company, source, source_detail, verify_token, lead_score, created_at, last_activity)
-                VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s)
+                VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s) ON CONFLICT DO NOTHING
             """, (
                 lead_id,
                 email,
@@ -6796,7 +6798,7 @@ def capture_lead():
         # Log activity
         c.execute("""
             INSERT INTO lead_activities (lead_id, activity_type, details, created_at)
-            VALUES (%s, 'content_access', %s, %s)
+            VALUES (%s, 'content_access', %s, %s) ON CONFLICT DO NOTHING
         """, (lead_id, json.dumps({'source': source, 'content': data.get('content', '')}), datetime.utcnow().isoformat()))
 
         conn.commit()
@@ -6920,7 +6922,7 @@ def submit_partner_inquiry():
         # Save to database
         c.execute("""
             INSERT INTO partner_inquiries (id, name, email, company, partner_type, message, created_at)
-            VALUES (%s, %s, %s, %s, %s, %s, %s)
+            VALUES (%s, %s, %s, %s, %s, %s, %s) ON CONFLICT DO NOTHING
         """, (
             inquiry_id,
             name,
@@ -6938,7 +6940,7 @@ def submit_partner_inquiry():
             verify_token = secrets.token_urlsafe(32)
             c.execute("""
                 INSERT INTO leads (id, email, name, company, source, source_detail, verify_token, lead_score, created_at, last_activity)
-                VALUES (%s, %s, %s, %s, 'partner_inquiry', %s, %s, 30, %s, %s)
+                VALUES (%s, %s, %s, %s, 'partner_inquiry', %s, %s, 30, %s, %s) ON CONFLICT DO NOTHING
             """, (
                 lead_id, email, name, company, partner_type, verify_token,
                 datetime.utcnow().isoformat(), datetime.utcnow().isoformat()
@@ -6988,7 +6990,7 @@ def submit_partner_inquiry():
 
                 c2.execute("""
                     INSERT INTO email_queue (id, email, template_name, subject, body_html, scheduled_at, status, created_at)
-                    VALUES (%s, %s, %s, %s, %s, %s, 'scheduled', %s)
+                    VALUES (%s, %s, %s, %s, %s, %s, 'scheduled', %s) ON CONFLICT DO NOTHING
                 """, (
                     secrets.token_hex(8),
                     'jonathan@dchub.cloud',
@@ -7138,6 +7140,7 @@ def get_user_alerts():
         except Exception:
             pass
 
+# AUTO-REPAIR: duplicate route '/api/alerts' also in main.py:7096 — review and remove one
 # Phase UU-1 (2026-05-15): same as above — drop the v2 shadow, keep
 # the legacy. alerts_v2_bp is canonical for /api/v2/alerts.
 @app.route('/api/alerts', methods=['POST'])
@@ -7188,7 +7191,7 @@ def create_alert():
         now = datetime.utcnow().isoformat()
         c.execute("""
             INSERT INTO user_alerts (user_id, market, alert_type, enabled, email_notify, created_at)
-            VALUES (%s, %s, %s, 1, 1, %s)
+            VALUES (%s, %s, %s, 1, 1, %s) ON CONFLICT DO NOTHING
         """, (user_id, market, alert_type, now))
 
         alert_id = c.lastrowid
@@ -8225,7 +8228,7 @@ def handle_checkout_completed(session):
                 try:
                     _p17_c2 = _p17_db.cursor()
                     _p17_c2.execute(
-                        'INSERT INTO mcp_conversions (stripe_session_id, plan, amount_cents) VALUES (%s,%s,%s)',
+                        'INSERT INTO mcp_conversions (stripe_session_id, plan, amount_cents) VALUES (%s,%s,%s) ON CONFLICT DO NOTHING',
                         (_p17_session_id, _p17_plan, int(_p17_amount or 0)))
                 except Exception as _e2:
                     _p17_db.rollback()
@@ -8975,7 +8978,7 @@ def generate_report():
                 lead_id = secrets.token_hex(8)
                 c.execute("""
                     INSERT INTO leads (id, email, source, source_detail, lead_score, created_at, last_activity)
-                    VALUES (%s, %s, 'pdf_report', %s, 25, %s, %s)
+                    VALUES (%s, %s, 'pdf_report', %s, 25, %s, %s) ON CONFLICT DO NOTHING
                 """, (lead_id, email, json.dumps(markets), datetime.utcnow().isoformat(), datetime.utcnow().isoformat()))
             else:
                 c.execute("UPDATE leads SET lead_score = lead_score + 25, last_activity = %s WHERE email = %s",
@@ -8996,7 +8999,7 @@ def generate_report():
         c = conn.cursor()
         c.execute("""
             INSERT INTO reports (id, user_id, email, report_type, markets, status, created_at, completed_at)
-            VALUES (%s, %s, %s, %s, %s, 'completed', %s, %s)
+            VALUES (%s, %s, %s, %s, %s, 'completed', %s, %s) ON CONFLICT DO NOTHING
         """, (
             report_id,
             request.user['user_id'] if request.user else None,
@@ -9320,6 +9323,7 @@ def log_ambassador_broadcast():
         try:
             if 'db' in locals() and db:
                 db.close()
+# AUTO-REPAIR: duplicate route '/api/v1/mcp/analytics' also in backend_patch_mcp_routes.py:31 — review and remove one
         except Exception:
             pass
 
@@ -9401,6 +9405,7 @@ def mcp_analytics():
     finally:
         try:
             if 'db' in locals() and db:
+# AUTO-REPAIR: duplicate route '/api/v1/mcp/platforms' also in backend_patch_mcp_routes.py:58 — review and remove one
                 db.close()
         except Exception:
             pass
@@ -10607,7 +10612,7 @@ def partner_inquiry():
         inquiry_id = secrets.token_hex(8)
         c.execute("""
             INSERT INTO partner_inquiries (id, name, email, company, platform_type, use_case, submitted_at)
-            VALUES (%s, %s, %s, %s, %s, %s, %s)
+            VALUES (%s, %s, %s, %s, %s, %s, %s) ON CONFLICT DO NOTHING
         """, (inquiry_id, data['name'], data['email'], data['company'],
               data['platform_type'], data['use_case'], datetime.utcnow().isoformat()))
 
@@ -11222,6 +11227,7 @@ def news_page():
     html = html.replace('</body>', seo_section + '\n</body>')
     resp = make_response(html)
     resp.headers['Content-Type'] = 'text/html'
+# AUTO-REPAIR: duplicate route '/markets' also in index_api.py:529 — review and remove one
     resp.headers['Cache-Control'] = 'no-cache'
     return resp
 
@@ -11281,6 +11287,7 @@ def get_testimonials_legacy():
         with open('data/testimonials.json', 'r') as f:
             data = json.load(f)
         return jsonify({
+# AUTO-REPAIR: duplicate route '/api/testimonials' also in main.py:11277 — review and remove one
             'success': True,
             'data': data
         })
@@ -11377,7 +11384,7 @@ def api_signup():
 
         c.execute("""
             INSERT INTO api_keys (user_id, key_hash, key_prefix, name, permissions, rate_limit_tier, created_at)
-            VALUES (%s, %s, %s, %s, %s, %s, %s)
+            VALUES (%s, %s, %s, %s, %s, %s, %s) ON CONFLICT DO NOTHING
         """, (email, key_hash, key_prefix, company, '["read"]', 'free', datetime.utcnow().isoformat()))
 
         c.execute("""
@@ -11702,7 +11709,7 @@ def daily_cron():
                     pub = a.get('published_at') or datetime.now(_tz.utc).isoformat()
                     if hasattr(pub, 'isoformat'): pub = pub.isoformat()
                     aid = a.get('id') or _hl.md5(a.get('url','').encode()).hexdigest()[:16]
-                    cur2.execute("INSERT INTO announcements (id,title,summary,url,source,source_url,published_date,discovered_at,category,announcement_type,confidence) VALUES (%s,%s,%s,%s,%s,%s,%s::timestamp,NOW(),%s,'news',0.9) ON CONFLICT(id) DO UPDATE SET title=EXCLUDED.title,summary=EXCLUDED.summary,discovered_at=NOW()",
+                    cur2.execute("INSERT INTO announcements (id,title,summary,url,source,source_url,published_date,discovered_at,category,announcement_type,confidence) VALUES (%s,%s,%s,%s,%s,%s,%s::timestamp,NOW() ON CONFLICT DO NOTHING,%s,'news',0.9) ON CONFLICT(id) DO UPDATE SET title=EXCLUDED.title,summary=EXCLUDED.summary,discovered_at=NOW()",
                         (aid,(a.get('title') or '')[:500],(a.get('summary') or '')[:2000],(a.get('url') or '')[:1000],(a.get('source') or '')[:200],(a.get('url') or '')[:1000],pub,(a.get('category') or 'Industry')[:100]))
                     if cur2.rowcount > 0: pushed += 1
                 except Exception as re:
@@ -11807,7 +11814,7 @@ def push_news_to_neon():
                     cur.execute("""
                         INSERT INTO announcements
                             (id, title, summary, url, source, source_url, published_date, discovered_at, category, announcement_type, confidence)
-                        VALUES (%s,%s,%s,%s,%s,%s,%s::timestamp,NOW(),%s,'news',0.9)
+                        VALUES (%s,%s,%s,%s,%s,%s,%s::timestamp,NOW() ON CONFLICT DO NOTHING,%s,'news',0.9)
                         ON CONFLICT(id) DO UPDATE SET
                             title=EXCLUDED.title,
                             summary=EXCLUDED.summary,
@@ -14249,6 +14256,7 @@ def get_testimonials():  # v2 neon-backed
             'count': len(testimonials)
         })
     except Exception as e:
+# AUTO-REPAIR: duplicate route '/api/v1/testimonials' also in main.py:14186 — review and remove one
         logger.error(f"Testimonials fetch error: {e}")
         return jsonify({'success': False, 'error': str(e)}), 500
     finally:
@@ -14279,7 +14287,7 @@ def add_testimonial():
         c = conn.cursor()
         c.execute("""
             INSERT INTO ai_testimonials (platform, agent_name, quote, context, query, url, category, source, approved, approved_at)
-            VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, CASE WHEN %s THEN CURRENT_TIMESTAMP ELSE NULL END)
+            VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, CASE WHEN %s THEN CURRENT_TIMESTAMP ELSE NULL END) ON CONFLICT DO NOTHING
             RETURNING id
         """, (platform, agent_name, quote, context, query_text, url, category, source, auto_approve, auto_approve))
         new_id = c.fetchone()[0]
@@ -14407,7 +14415,7 @@ def seed_testimonials():
                 continue
             c.execute("""
                 INSERT INTO ai_testimonials (platform, agent_name, quote, context, query, category, source, approved, featured, approved_at)
-                VALUES (%s, %s, %s, %s, %s, %s, 'seed', TRUE, %s, CURRENT_TIMESTAMP)
+                VALUES (%s, %s, %s, %s, %s, %s, 'seed', TRUE, %s, CURRENT_TIMESTAMP) ON CONFLICT DO NOTHING
             """, (platform, agent, quote, context, query_text, category, featured))
             inserted += 1
         conn.commit()
@@ -15450,7 +15458,7 @@ def api_health_autoheal():
         try:
             with pg_connection() as pg:
                 cur = pg.cursor()
-                cur.execute("INSERT INTO site_health_findings (check_name,status,expected,actual,error,duration_ms) VALUES (%s,%s,%s,%s,%s,%s)",
+                cur.execute("INSERT INTO site_health_findings (check_name,status,expected,actual,error,duration_ms) VALUES (%s,%s,%s,%s,%s,%s) ON CONFLICT DO NOTHING",
                             (f"autoheal:{check}", result["status"], action["description"], result.get("detail"), None, result.get("duration_ms")))
                 pg.commit()
         except Exception as e:
@@ -15722,7 +15730,7 @@ def api_patch_propose():
                 cur = pg.cursor()
                 cur.execute("""
                     INSERT INTO patch_attempts (check_name, finding_id, prompt, status, safety_flag, duration_ms)
-                    VALUES (%s, %s, %s, 'claude_error', %s, %s)
+                    VALUES (%s, %s, %s, 'claude_error', %s, %s) ON CONFLICT DO NOTHING
                 """, (check_name, finding.get("id"), prompt, result.get("error", "")[:300], result.get("duration_ms", 0)))
                 pg.commit()
         except Exception: pass
@@ -15753,7 +15761,7 @@ def api_patch_propose():
                     files_changed, diff, explanation, diff_lines,
                     passed_size_check, passed_allowlist_check, safety_flag,
                     prompt_tokens, completion_tokens, duration_ms, status, model)
-                VALUES (%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s)
+                VALUES (%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s) ON CONFLICT DO NOTHING
                 RETURNING id
             """, (check_name, finding.get("id"), prompt, result["text"],
                   parsed.get("files_changed", []), parsed.get("diff", ""), parsed.get("explanation", ""),
@@ -17759,6 +17767,7 @@ def api_site_score():
             'upgrade_url': 'https://dchub.cloud/pricing',
         })
 
+# AUTO-REPAIR: duplicate route '/api/agents/intelligence-index' also in intelligence_index.py:38 — review and remove one
     except Exception as e:
         logger.error(f"site-score error: {e}")
         return jsonify({'success': False, 'error': str(e)}), 500
@@ -20197,7 +20206,7 @@ try:
                         cur.execute("""
                             INSERT INTO market_power_scores
                             (market_slug, market_name, constraint_score, excess_power_score, verdict, tier_required, computed_at)
-                            VALUES (%s, %s, %s, %s, %s, 'lite-pro', NOW())
+                            VALUES (%s, %s, %s, %s, %s, 'lite-pro', NOW() ON CONFLICT DO NOTHING)
                             ON CONFLICT (market_slug) DO UPDATE SET
                               constraint_score = EXCLUDED.constraint_score,
                               excess_power_score = EXCLUDED.excess_power_score,
@@ -20938,6 +20947,7 @@ def _admin_schema_introspect():
     try:
         with psycopg2.connect(DATABASE_URL, connect_timeout=6) as conn, conn.cursor() as cur:
             cur.execute("""
+# AUTO-REPAIR: duplicate route '/api/v1/_phase' also in main.py:20661 — review and remove one
                 SELECT column_name, data_type FROM information_schema.columns
                 WHERE table_name = %s ORDER BY ordinal_position;
             """, (table,))
@@ -21155,7 +21165,7 @@ def _heal_cache_db_write(payload: dict):
         if not url: return
         with _pg2.connect(url, sslmode="require", connect_timeout=5) as c, c.cursor() as cur:
             cur.execute(
-                "INSERT INTO heal_findings_cache (payload) VALUES (%s::jsonb)",
+                "INSERT INTO heal_findings_cache (payload) VALUES (%s::jsonb) ON CONFLICT DO NOTHING",
                 (_json.dumps(payload, default=str),))
             cur.execute(
                 "DELETE FROM heal_findings_cache "
@@ -22095,7 +22105,7 @@ def _mcp_capture_email():
                 INSERT INTO mcp_upgrade_signals
                     (session_id, user_email, signal_type, tool_requested,
                      tier_current, created_at)
-                VALUES (%s, %s, 'email_captured', %s, 'free', NOW());
+                VALUES (%s, %s, 'email_captured', %s, 'free', NOW() ON CONFLICT DO NOTHING);
             """, (session_id, email, tool or "unknown"))
             results["new_capture_logged"] = True
             conn.commit()
