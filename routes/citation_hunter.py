@@ -19,10 +19,10 @@ Query battery (rotate so we don't ask same thing every day):
   - "how do I get DCPI scores for data center markets?"
   - "what AI tools track data center construction pipeline?"
 
-For each query → call Claude haiku → regex-match `dchub\.cloud` or
-`dc hub` in response. Score = % of queries where we appear. Persist
-daily. Brain detector citation_score_dropped fires when 7d delta is
-negative AND score is below 50%.
+For each query → call Claude haiku → regex-match ``dchub\\.cloud`` or
+``dc hub`` in response. Score = % of queries where we appear.
+Persist daily. Brain detector citation_score_dropped fires when 7d
+delta is negative AND score is below 50%.
 """
 
 from __future__ import annotations

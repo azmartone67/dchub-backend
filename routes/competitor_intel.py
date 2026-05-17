@@ -28,7 +28,13 @@ import hashlib
 from flask import Blueprint, jsonify, request
 
 
-competitor_intel_bp = Blueprint("competitor_intel", __name__)
+# Phase XXXX (2026-05-16) — name 'competitor_intel' was already
+# registered by routes/competitor_intelligence (a legacy module),
+# so XXXX failed to register in prod logs:
+#   [main] competitor_intel register failed: The name 'competitor_intel'
+#   is already registered for a different blueprint.
+# Rename to competitor_intel_v2 to unblock.
+competitor_intel_bp = Blueprint("competitor_intel_v2", __name__)
 
 
 _ADMIN_KEY = (os.environ.get("DCHUB_ADMIN_KEY")
