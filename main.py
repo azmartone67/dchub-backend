@@ -7879,12 +7879,30 @@ def stripe_webhook_list():
 @app.route('/api/v1/stripe/webhook-diagnostics', methods=['GET'])
 def stripe_webhook_diagnostics():
     import os as _os
-    secret = _os.environ.get('STRIPE_WEBHOOK_SECRET', '') or _os.environ.get('STRIPE_WEBHOOK_SECRET_MCP', '')
-    api_key = _os.environ.get('STRIPE_SECRET_KEY', '')
+    primary  = _os.environ.get('STRIPE_WEBHOOK_SECRET', '').strip()
+    mcp_sec  = _os.environ.get('STRIPE_WEBHOOK_SECRET_MCP', '').strip()
+    live_sec = _os.environ.get('STRIPE_WEBHOOK_SECRET_LIVE', '').strip()
+    test_sec = _os.environ.get('STRIPE_WEBHOOK_SECRET_TEST', '').strip()
+    api_key = _os.environ.get('STRIPE_SECRET_KEY', '').strip()
+
+    def _fp(s):
+        return (s[:7] + '...' + s[-4:]) if len(s) > 14 else None
+
     out = {
-        'webhook_secret_configured':   bool(secret),
-        'webhook_secret_fingerprint':  (secret[:7] + '...' + secret[-4:]) if len(secret) > 14 else None,
+        # Legacy fields kept for backwards compat
+        'webhook_secret_configured':   bool(primary or mcp_sec or live_sec or test_sec),
+        'webhook_secret_fingerprint':  _fp(primary or mcp_sec),
         'api_key_configured':          bool(api_key),
+        # Phase CCC-3 (2026-05-17): per-secret breakdown so the user can
+        # see which env vars are wired BEFORE firing a Stripe test event.
+        # All 4 are tried in order by the webhook handler (Phase CCC-2).
+        'secrets': {
+            'STRIPE_WEBHOOK_SECRET':       {'set': bool(primary),  'fingerprint': _fp(primary)},
+            'STRIPE_WEBHOOK_SECRET_MCP':   {'set': bool(mcp_sec),  'fingerprint': _fp(mcp_sec)},
+            'STRIPE_WEBHOOK_SECRET_LIVE':  {'set': bool(live_sec), 'fingerprint': _fp(live_sec)},
+            'STRIPE_WEBHOOK_SECRET_TEST':  {'set': bool(test_sec), 'fingerprint': _fp(test_sec)},
+            'STRIPE_SECRET_KEY':           {'set': bool(api_key),  'fingerprint': _fp(api_key)},
+        },
         'stats':                       dict(_STRIPE_WEBHOOK_STATS),  # copy so caller can't mutate
         'routes': {
             '/api/stripe/webhook':       'live (legacy path)',
