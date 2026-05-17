@@ -84,11 +84,31 @@ def resolve_tier(req=None) -> tuple[Tier, dict]:
     ctx = {"source": "anonymous", "api_key": None, "user_id": None,
            "email": None, "plan": None}
 
-    # 1. Try X-API-Key (or ?api_key=) → mcp_dev_keys.tier
+    # 1. Try X-API-Key (or ?api_key=) → mcp_dev_keys.tier OR auto_trial_keys
     api_key = (r.headers.get("X-API-Key") or
                r.args.get("api_key") or "").strip()
     if api_key:
         ctx["api_key"] = api_key[:8] + "…"  # never expose full key
+
+        # Phase GGG (2026-05-17) — recognize auto-trial keys.
+        # Trial keys (dch_trial_xxx, minted by Phase DDDDD auto_trial flow)
+        # promote callers to IDENTIFIED tier. Without this check, the
+        # soft-paywall (Phase WW + WW-2) saw trial-keyed callers as anon
+        # and kept truncating their responses to 10 rows — making the
+        # whole trial-key promise (200 calls/day of full data) a lie.
+        # Check this FIRST since trial keys are the hot path post-Phase NN.
+        if api_key.startswith("dch_trial_"):
+            try:
+                from routes.auto_trial import validate_trial_key
+                valid, reason = validate_trial_key(api_key)
+                if valid:
+                    ctx["plan"] = "identified"
+                    ctx["source"] = "auto_trial_key"
+                    ctx["trial"] = True
+                    return Tier.IDENTIFIED, ctx
+            except Exception:
+                pass  # fall through to mcp_dev_keys check
+
         try:
             key_hash = hashlib.sha256(api_key.encode("utf-8")).hexdigest()
             with _conn() as c, c.cursor() as cur:
