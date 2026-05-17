@@ -404,6 +404,16 @@ _PATTERN_LIBRARY: dict[str, dict[str, Any]] = {
         "use_admin":   False,
         "description": "Escalation-only: a query referenced a table that doesn't exist. Either create it (migration) or wrap the caller with a to_regclass() probe so the absence is silent.",
     },
+    # Phase WWW — Site Sentinel page-health pattern. Dynamic key
+    # `site_sentinel_unhealthy:<path>` resolves via prefix match.
+    # Escalation-only because fixing a broken page requires looking
+    # at the actual page code (CSP, missing route, empty data, etc).
+    "site_sentinel_unhealthy": {
+        "action":      lambda f: (None, None),
+        "method":      None,
+        "use_admin":   False,
+        "description": "Escalation-only: a page in the Site Sentinel manifest is unhealthy. Inspect the path in the finding — common fixes: missing route registration, CSP block, 503 from an upstream API, body smaller than the manifest's min_bytes floor. See /sentinel dashboard.",
+    },
 }
 
 

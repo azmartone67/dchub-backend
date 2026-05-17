@@ -19526,6 +19526,26 @@ try:
 except Exception as _e:
     print(f"[main] power_totals register failed: {_e}", file=sys.stderr)
 
+# Phase WWW (2026-05-16): Site Sentinel — polls every public URL and
+# surfaces breakages/staleness as brain findings so the heartbeat
+# catches them before a user reports.
+try:
+    from routes.site_sentinel import site_sentinel_bp
+    app.register_blueprint(site_sentinel_bp)
+    try:
+        from routes.surface_brain import register_surface, Surface
+        register_surface(Surface(
+            surface_id="site_sentinel",
+            name="Site Sentinel",
+            description="The /sentinel dashboard — page-health for every URL on the manifest",
+            routes=["/sentinel", "/api/v1/sentinel/scan", "/api/v1/sentinel/findings"],
+            paid_tools=[],
+            expected_event_types=["view"],
+        ))
+    except Exception: pass
+except Exception as _e:
+    print(f"[main] site_sentinel register failed: {_e}", file=sys.stderr)
+
 # Phase OOO (2026-05-16): BS Translator / "vs static competitors" page.
 # The brand-positioning surface — translates competitor claims into
 # what DC Hub actually offers (live, free, MCP-native, no BS).

@@ -1162,6 +1162,22 @@ def check_enterprise_bot_present() -> list[dict]:
     return findings
 
 
+# ── Phase WWW (2026-05-16) — Site Sentinel ingest ─────────────────
+def check_site_sentinel() -> list[dict]:
+    """Pull every unhealthy page from the Site Sentinel manifest into
+    brain findings so the heartbeat surfaces page-level breakages
+    (404, 500, body-too-small) in real time. Without this, broken
+    pages stay invisible until a user reports them — which is exactly
+    the problem the user surfaced ("tax incentives doesn't show map,
+    capacity pipeline errors, powered shell 503, ercot-batch-zero
+    404"). The Sentinel polls all of those at every radar cycle."""
+    try:
+        from routes.site_sentinel import unhealthy_findings
+        return unhealthy_findings() or []
+    except Exception:
+        return []
+
+
 # ── Phase VVV (2026-05-16) — schema-drift detector ────────────────
 def check_schema_drift() -> list[dict]:
     """Surface every 'column X does not exist' or 'relation Y does not
@@ -1343,7 +1359,9 @@ def scan_all() -> list[dict]:
                # Phase TTT brand-surface dormancy detector
                check_brand_surface_dormant,
                # Phase VVV schema-drift detector
-               check_schema_drift):
+               check_schema_drift,
+               # Phase WWW Site Sentinel — every public page polled
+               check_site_sentinel):
         try:
             out.extend(fn() or [])
         except Exception as e:
