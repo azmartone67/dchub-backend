@@ -19717,6 +19717,15 @@ try:
 except Exception as _e:
     print(f"[main] tenant_directory register failed: {_e}", file=sys.stderr)
 
+# Phase DDDDD (2026-05-16): auto-trial conversion engine — mints
+# IDENTIFIED-tier trial keys INLINE in the paywall response so agents
+# get a working key in the same call. Fixes the 0.08% conversion rate.
+try:
+    from routes.auto_trial import auto_trial_bp
+    app.register_blueprint(auto_trial_bp)
+except Exception as _e:
+    print(f"[main] auto_trial register failed: {_e}", file=sys.stderr)
+
 # Phase YYYY (2026-05-16): operator profiles + activity feed — closes
 # the per-operator-profile-page gap vs DCHawk/dcByte.
 try:

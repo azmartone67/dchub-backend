@@ -1191,6 +1191,100 @@ def check_enterprise_bot_present() -> list[dict]:
     return findings
 
 
+# ── Phase DDDDD (2026-05-16) — auto-trial conversion-rate detector ──
+def check_auto_trial_conversion() -> list[dict]:
+    """Tracks whether the auto-mint-trial flow (DDDDD) is actually
+    converting agents → signups → upgrades. Fires informational
+    finding so /transparency sparkline shows the conversion lift."""
+    conn = _db()
+    if conn is None: return []
+    findings: list[dict] = []
+    try:
+        with conn.cursor() as cur:
+            try:
+                cur.execute("SELECT to_regclass('public.auto_trial_keys')")
+                if not (cur.fetchone() or [None])[0]: return findings
+                cur.execute("""
+                    SELECT COUNT(*),
+                           COUNT(*) FILTER (WHERE signed_up_email IS NOT NULL),
+                           COUNT(*) FILTER (WHERE upgraded_tier IS NOT NULL),
+                           COUNT(*) FILTER (WHERE minted_at >= NOW() - INTERVAL '7 days')
+                      FROM auto_trial_keys
+                """)
+                r = cur.fetchone() or (0, 0, 0, 0)
+                total, signed, upgraded, m7d = (int(r[0] or 0), int(r[1] or 0),
+                                                  int(r[2] or 0), int(r[3] or 0))
+            except Exception:
+                return findings
+    finally:
+        try: conn.close()
+        except Exception: pass
+
+    if total < 10:
+        # Not enough data yet — too early to judge
+        return findings
+    signup_rate  = 100.0 * signed   / max(1, total)
+    upgrade_rate = 100.0 * upgraded / max(1, total)
+    # Healthy goal: 20%+ trials → signups. Flag if below.
+    if signup_rate < 20:
+        findings.append({
+            "issue":  "auto_trial_signup_rate_low",
+            "url":    "/api/v1/keys/auto-trial/stats",
+            "count":  int(signup_rate),
+            "detail": (f"Auto-trial keys: {total} minted, {signed} signed up "
+                       f"({signup_rate:.1f}%), {upgraded} upgraded ({upgrade_rate:.1f}%). "
+                       f"7-day mint volume: {m7d}. Signup rate below 20% target — "
+                       f"agents are using the trial key but not redeeming. "
+                       f"Consider improving the redemption CTA in the paywall message."),
+        })
+    return findings
+
+
+# ── Phase DDDDD (2026-05-16) — per-tool funnel concentration detector ──
+def check_mcp_funnel_concentration() -> list[dict]:
+    """The user diagnosis: 7,839 signals in 7d but signals concentrated
+    on 5 tools (market_intel, grid_data, water_risk, energy_prices,
+    renewable_energy) = 70% of all signals. If conversion is low on
+    those top tools specifically, that's the leak. Surface per-tool
+    signal volume so the operator sees where to focus."""
+    conn = _db()
+    if conn is None: return []
+    findings: list[dict] = []
+    try:
+        with conn.cursor() as cur:
+            try:
+                cur.execute("""
+                    SELECT tool_requested, COUNT(*) AS signals
+                      FROM mcp_upgrade_signals
+                     WHERE created_at >= NOW() - INTERVAL '7 days'
+                       AND tool_requested IS NOT NULL
+                     GROUP BY tool_requested
+                     ORDER BY signals DESC LIMIT 5
+                """)
+                top5 = cur.fetchall()
+            except Exception:
+                return findings
+    finally:
+        try: conn.close()
+        except Exception: pass
+    if not top5 or len(top5) < 3: return findings
+    top5_signals = sum(int(r[1] or 0) for r in top5)
+    if top5_signals < 500: return findings  # not enough volume to flag
+    # Single finding summarizing the funnel concentration
+    summary = ", ".join(f"{r[0]}={r[1]}" for r in top5)
+    findings.append({
+        "issue":  "mcp_funnel_concentration_top5",
+        "url":    "/api/v1/mcp/funnel",
+        "count":  top5_signals,
+        "detail": (f"Top 5 tools generated {top5_signals} paywall signals "
+                   f"in 7 days: {summary}. If conversions are low overall, "
+                   f"focus paywall-response improvements on THESE tools "
+                   f"first. Phase DDDDD auto-trial flow targets exactly "
+                   f"this set (FREE → IDENTIFIED gate)."),
+    })
+    return findings
+
+
 # ── Phase ZZZZ (2026-05-16) — market deep-dive coverage detector ──
 def check_market_deep_dive_stale() -> list[dict]:
     """Flag when the top 10 DCPI markets have deep-dives older than
@@ -2200,7 +2294,11 @@ def scan_all() -> list[dict]:
                # Phase BBBBB event submission deadlines
                check_event_submission_pending,
                # Phase CCCCC tenant coverage thin
-               check_tenant_coverage_thin):
+               check_tenant_coverage_thin,
+               # Phase DDDDD auto-trial conversion
+               check_auto_trial_conversion,
+               # Phase DDDDD funnel concentration
+               check_mcp_funnel_concentration):
         try:
             out.extend(fn() or [])
         except Exception as e:

@@ -280,6 +280,18 @@ def resolve_tier(api_key: Optional[str]) -> Tier:
     if api_key.startswith("dchub_ent_"): return Tier.ENTERPRISE
     if api_key.startswith("dchub_pro_"): return Tier.PRO
     if api_key.startswith("dchub_dev_"): return Tier.DEVELOPER
+    # Phase DDDDD (2026-05-16): auto-mint trial keys (`dch_trial_`)
+    # resolve as IDENTIFIED tier. Validation against DB happens lazily
+    # on first call; the prefix check here keeps the hot path fast.
+    # If the trial is expired or unknown, the per-call check inside
+    # the tool handler can re-validate via routes.auto_trial.validate_trial_key.
+    if api_key.startswith("dch_trial_"):
+        try:
+            from routes.auto_trial import validate_trial_key
+            ok, _ = validate_trial_key(api_key)
+            return Tier.IDENTIFIED if ok else Tier.FREE
+        except Exception:
+            return Tier.IDENTIFIED  # be lenient — DB issues shouldn't break gate
 
     # DB hash lookup for old-style keys (dchub_XXXXX without tier prefix)
     if api_key.startswith("dchub_"):
@@ -575,7 +587,21 @@ def _gate(tool_name: str, api_key: Optional[str] = None,
     if tier < required:
         teaser = TOOL_TEASER.get(tool_name)
         price = TIER_PRICE.get(required, "")
-        return json.dumps({
+        # Phase DDDDD (2026-05-16): if FREE caller hits IDENTIFIED gate,
+        # AUTO-MINT a working trial key INLINE so the agent can retry
+        # immediately. Removes the "claim a key first" friction step
+        # that's been blocking 99.92% of conversions.
+        auto_trial = None
+        if tier == Tier.FREE and required == Tier.IDENTIFIED:
+            try:
+                from routes.auto_trial import mint_trial_for_request
+                from flask import request as _flask_req
+                trial = mint_trial_for_request(_flask_req, tool_name)
+                if trial.get("ok"):
+                    auto_trial = trial
+            except Exception:
+                pass
+        payload = {
             "success": False,
             "error": "upgrade_required",
             "message": _cta_gated(tool_name, tier, required, args=args),
@@ -607,7 +633,29 @@ def _gate(tool_name: str, api_key: Optional[str] = None,
                           "header on subsequent calls — lifts daily cap "
                           "to 100, unlocks tier-FREE tools."),
             },
-        })
+        }
+        # Phase DDDDD: inject auto-minted trial key INLINE if we got one.
+        # This is THE conversion-killer move — agent gets a working key
+        # in the same response, retries with X-API-Key header, succeeds.
+        # No human signup step required.
+        if auto_trial:
+            payload["auto_trial_key"] = auto_trial.get("api_key")
+            payload["auto_trial_expires_at"] = auto_trial.get("expires_at")
+            payload["auto_trial_daily_calls"] = auto_trial.get("daily_calls", 200)
+            # Override the message to LEAD with the working key
+            payload["message"] = (
+                f"✨ Auto-trial key minted for you: "
+                f"`{auto_trial.get('api_key')}` (200 calls/day, expires 30d).\n\n"
+                f"**Retry your call with the header `X-API-Key: "
+                f"{auto_trial.get('api_key')}`** — it will succeed.\n\n"
+                f"To make it permanent + tie to your email: POST "
+                f"https://dchub.cloud/api/v1/keys/auto-trial/redeem "
+                f"with body {{\"api_key\":\"{auto_trial.get('api_key')}\",\"email\":\"you@example.com\"}}.\n\n"
+                f"Tool returns: {teaser or 'data'}"
+            )
+            # Suppress the now-redundant claim_endpoint to keep payload tight
+            payload.pop("claim_endpoint", None)
+        return json.dumps(payload)
 
     # Rate limit check
     rl_key = api_key or "anon"
