@@ -6,6 +6,7 @@ market_intel_neon_bp = Blueprint('market_intelligence_neon', __name__)
 def get_neon():
     return psycopg2.connect(os.environ['DATABASE_URL'])
 
+# AUTO-REPAIR: duplicate route '/api/market-intelligence' also in main.py:15052 — review and remove one
 @market_intel_neon_bp.route('/api/market-intelligence', methods=['GET'])
 def get_market_intelligence():
     region  = request.args.get('region')
