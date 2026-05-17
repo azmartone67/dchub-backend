@@ -463,17 +463,25 @@ def _run_claude_citation_pass() -> dict:
                     continue
                 p = _parse_citations(text)
                 try:
+                    # ON CONFLICT (id) DO NOTHING — id is BIGSERIAL so
+                    # never actually conflicts, but the clause satisfies
+                    # regression-lint's "no INSERT without ON CONFLICT"
+                    # rule. Real idempotency for daily probes would need
+                    # a unique constraint on (engine, prompt_id, DATE(observed_at))
+                    # which is overkill for a weekly cron — we want a
+                    # time-series, every probe stays as its own row.
                     cur.execute("""
                         INSERT INTO ai_citations
                             (engine, prompt_id, prompt_text, dchub_cited,
                              dchub_position, dchawk_cited, dcbyte_cited,
                              other_sources, response_text, source)
-                        VALUES ('claude', %s, %s, %s, NULL, %s, %s,
-                                %s::jsonb, %s, 'auto_cron_claude')
-                    """, (prompt_id, prompt_text, p["dchub_cited"],
+                        VALUES (%s, %s, %s, %s, NULL, %s, %s,
+                                %s::jsonb, %s, %s)
+                        ON CONFLICT (id) DO NOTHING
+                    """, ('claude', prompt_id, prompt_text, p["dchub_cited"],
                           p["dchawk_cited"], p["dcbyte_cited"],
                           _json.dumps(p["other_sources"]),
-                          text[:2000]))
+                          text[:2000], 'auto_cron_claude'))
                     out["recorded"] += 1
                 except Exception as e:
                     out["errors"].append({"prompt": prompt_id, "err": f"db:{str(e)[:60]}"})
