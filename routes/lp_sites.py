@@ -228,6 +228,93 @@ def lp_list_saved():
     return jsonify(saved=out, count=len(out)), 200
 
 
+@lp_sites_bp.route("/api/v1/lp/saved/<int:site_id>", methods=["GET"])
+@_rl(per_minute=30)
+def lp_get_site(site_id):
+    """Phase QQQQ (2026-05-16): per-site detail. Returns the saved
+    site + current DCPI for its market + nearby substations/fiber
+    count within 50km. Powers the per-site detail UI (queued) and
+    gives MCP clients a single-call rich snapshot for analyze workflows."""
+    user_id, gate = _require_pro_user()
+    if gate is not None: return gate
+    c = _conn()
+    if c is None: return jsonify(error="no_database"), 503
+    try:
+        import psycopg2.extras
+        with c.cursor(cursor_factory=psycopg2.extras.RealDictCursor) as cur:
+            cur.execute("""
+                SELECT id, name, latitude, longitude, state, market, notes,
+                       target_mw, dcpi_score_at_save, saved_at
+                  FROM saved_lp_sites
+                 WHERE id = %s AND user_id = %s
+            """, (site_id, user_id))
+            site = cur.fetchone()
+            if not site:
+                return jsonify(error="not_found"), 404
+            lat = float(site["latitude"]); lon = float(site["longitude"])
+
+            # Current DCPI for the market
+            current_dcpi = None
+            if site.get("market"):
+                try:
+                    cur.execute("""
+                        SELECT score FROM market_power_scores
+                         WHERE LOWER(market_name) = LOWER(%s)
+                            OR LOWER(market_slug) = LOWER(%s)
+                         ORDER BY computed_at DESC LIMIT 1
+                    """, (site["market"], site["market"].replace(" ", "-")))
+                    r = cur.fetchone()
+                    if r: current_dcpi = float(r["score"]) if r["score"] is not None else None
+                except Exception: pass
+
+            # Nearby substation count within 50km — bbox + haversine
+            nearby_substations = 0
+            try:
+                deg_lat = 50.0 / 111.0
+                deg_lon = 50.0 / (111.0 * max(0.01, abs((90.0 - abs(lat)) / 90.0) + 0.1))
+                cur.execute("""
+                    SELECT COUNT(*) FROM substations
+                     WHERE latitude  BETWEEN %s AND %s
+                       AND longitude BETWEEN %s AND %s
+                       AND (
+                         6371.0 * acos(LEAST(1.0, GREATEST(-1.0,
+                           cos(radians(%s)) * cos(radians(latitude)) *
+                           cos(radians(longitude) - radians(%s)) +
+                           sin(radians(%s)) * sin(radians(latitude))
+                         )))
+                       ) <= 50.0
+                """, (lat - deg_lat, lat + deg_lat,
+                      lon - deg_lon, lon + deg_lon,
+                      lat, lon, lat))
+                nearby_substations = int((cur.fetchone() or {"count": 0})["count"] or 0)
+            except Exception: pass
+
+            # DCPI delta since save
+            dcpi_delta = None
+            if current_dcpi is not None and site.get("dcpi_score_at_save") is not None:
+                dcpi_delta = round(current_dcpi - float(site["dcpi_score_at_save"]), 1)
+
+            return jsonify({
+                "id":           int(site["id"]),
+                "name":         site["name"],
+                "latitude":     lat,
+                "longitude":    lon,
+                "state":        site["state"],
+                "market":       site["market"],
+                "notes":        site["notes"],
+                "target_mw":    float(site["target_mw"]) if site["target_mw"] is not None else None,
+                "dcpi_at_save": int(site["dcpi_score_at_save"]) if site["dcpi_score_at_save"] is not None else None,
+                "dcpi_now":     current_dcpi,
+                "dcpi_delta":   dcpi_delta,
+                "nearby_substations_50km": nearby_substations,
+                "saved_at":     site["saved_at"].isoformat() if site["saved_at"] else None,
+                "map_url":      f"https://dchub.cloud/land-power-map?lat={lat}&lon={lon}",
+            }), 200
+    finally:
+        try: c.close()
+        except Exception: pass
+
+
 @lp_sites_bp.route("/api/v1/lp/saved/<int:site_id>", methods=["DELETE"])
 @_rl(per_minute=30)
 def lp_unsave(site_id):

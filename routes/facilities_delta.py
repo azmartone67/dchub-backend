@@ -52,7 +52,8 @@ CREATE TABLE IF NOT EXISTS facility_count_snapshots (
 -- are persisted so the brain can detect divergence (e.g., dedup
 -- worker dies → verified stays flat while raw climbs).
 ALTER TABLE facility_count_snapshots
-    ADD COLUMN IF NOT EXISTS verified_count INT;
+    ADD COLUMN IF NOT EXISTS verified_count  INT,
+    ADD COLUMN IF NOT EXISTS published_count INT;
 CREATE INDEX IF NOT EXISTS ix_fcs_date_desc
     ON facility_count_snapshots(snapshot_date DESC);
 """
@@ -68,13 +69,17 @@ def _ensure_schema(c):
 
 
 def _current_counts(cur) -> dict:
-    """Read current counts from discovered_facilities. Phase KKKK
-    (2026-05-16): now returns BOTH `total` (raw COUNT(*)) and
-    `verified` (homepage-displayed count: merged_at IS NULL AND
-    is_duplicate = 0). Surfacing both makes the dedup-pipeline
-    health visible — when raw climbs but verified stays flat, the
-    dedup worker has stalled."""
-    out = {"total": 0, "verified": 0, "operating": 0, "pipeline": 0, "by_state": {}}
+    """Read current counts from discovered_facilities. Phase KKKK +
+    OOOO (2026-05-16): returns three counts:
+      - total     raw COUNT(*) of discovered_facilities (21,374)
+      - verified  deduped: merged_at IS NULL AND is_duplicate = 0
+      - published the count from the curated `facilities` table that
+                   main.py:5862 reads for the homepage stat
+    Three counts surface drift between the discovery pipeline, the
+    dedup worker, and the published curation step — any pair
+    diverging by >X% is a brain finding (Phase PPPP detector)."""
+    out = {"total": 0, "verified": 0, "published": 0,
+           "operating": 0, "pipeline": 0, "by_state": {}}
     try:
         cur.execute("SELECT to_regclass('public.discovered_facilities')")
         if not (cur.fetchone() or [None])[0]: return out
@@ -83,14 +88,19 @@ def _current_counts(cur) -> dict:
         cur.execute("SELECT COUNT(*) FROM discovered_facilities")
         out["total"] = int((cur.fetchone() or [0])[0] or 0)
     except Exception: pass
-    # Verified count — matches the number shown on /api/v1/stats and the
-    # homepage. If the dedup columns don't exist, falls through silently.
     try:
         cur.execute("""
             SELECT COUNT(*) FROM discovered_facilities
              WHERE merged_at IS NULL AND is_duplicate = 0
         """)
         out["verified"] = int((cur.fetchone() or [0])[0] or 0)
+    except Exception: pass
+    # OOOO: also count the curated `facilities` table (what users see)
+    try:
+        cur.execute("SELECT to_regclass('public.facilities')")
+        if (cur.fetchone() or [None])[0]:
+            cur.execute("SELECT COUNT(*) FROM facilities")
+            out["published"] = int((cur.fetchone() or [0])[0] or 0)
     except Exception: pass
     try:
         cur.execute("""
@@ -135,17 +145,18 @@ def write_snapshot() -> dict:
             import json
             cur.execute("""
                 INSERT INTO facility_count_snapshots
-                  (snapshot_date, total_count, verified_count,
+                  (snapshot_date, total_count, verified_count, published_count,
                    operating_count, pipeline_count, by_state)
-                VALUES (CURRENT_DATE, %s, %s, %s, %s, %s::jsonb)
+                VALUES (CURRENT_DATE, %s, %s, %s, %s, %s, %s::jsonb)
                 ON CONFLICT (snapshot_date) DO UPDATE
                   SET total_count = EXCLUDED.total_count,
                       verified_count = EXCLUDED.verified_count,
+                      published_count = EXCLUDED.published_count,
                       operating_count = EXCLUDED.operating_count,
                       pipeline_count = EXCLUDED.pipeline_count,
                       by_state = EXCLUDED.by_state,
                       captured_at = NOW()
-            """, (counts["total"], counts["verified"],
+            """, (counts["total"], counts["verified"], counts["published"],
                   counts["operating"], counts["pipeline"],
                   json.dumps(counts["by_state"])))
             out = {"ok": True, **counts}

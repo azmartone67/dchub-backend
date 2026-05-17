@@ -19639,6 +19639,14 @@ try:
 except Exception as _e:
     print(f"[main] radar_history register failed: {_e}", file=sys.stderr)
 
+# Phase RRRR (2026-05-16): DC Hub Media revival — press health,
+# winback pitches, brain detector to auto-fire the press worker.
+try:
+    from routes.dchub_media_revival import dchub_media_revival_bp
+    app.register_blueprint(dchub_media_revival_bp)
+except Exception as _e:
+    print(f"[main] dchub_media_revival register failed: {_e}", file=sys.stderr)
+
 # Phase BBBB (2026-05-16): /developers acquisition funnel.
 try:
     from routes.developers_funnel import developers_funnel_bp

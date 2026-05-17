@@ -240,6 +240,16 @@ def _action_media_topic_unaddressed(finding: dict) -> tuple[str | None, dict | N
     return "/api/v1/marketing/auto-generate", {}
 
 
+def _action_dchub_media_press_silent(finding: dict) -> tuple[str | None, dict | None]:
+    """Phase RRRR (2026-05-16): DC Hub Media has been silent for 7+
+    days. AUTO-FIRE the marketing worker — this is the wake-up
+    mechanism. Not escalation-only because the user explicitly asked
+    for autonomous output: 'is DC Hub Media telling everyone?'
+    The auto-generate endpoint itself has a same-day dedup so this
+    is safe to call even when other crons already fired today."""
+    return "/api/v1/marketing/auto-generate", {}
+
+
 def _action_surface_health_critical(finding: dict) -> tuple[str | None, dict | None]:
     """A registered surface dropped below health 40. Per-surface
     remediation varies (markets needs different fix than land-power);
@@ -447,7 +457,33 @@ _PATTERN_LIBRARY: dict[str, dict[str, Any]] = {
         "action":      lambda f: (None, None),
         "method":      None,
         "use_admin":   False,
-        "description": "Escalation-only: agents that previously hammered MCP have gone dormant. See /api/v1/bots/dormant for the structured outreach worklist (top targets ranked by prior_calls). High-priority targets (>=100 prior calls) are the likely enterprise prospects worth manual winback.",
+        "description": "Escalation-only: agents that previously hammered MCP have gone dormant. See /api/v1/bots/dormant for the structured outreach worklist (top targets ranked by prior_calls). High-priority targets (>=100 prior calls) are the likely enterprise prospects worth manual winback. Phase RRRR added /api/v1/media/winback-pitches with copy-paste outbound email templates per platform.",
+    },
+    # Phase RRRR — AUTONOMOUS auto-fire on press silence.
+    "dchub_media_press_silent": {
+        "action":      _action_dchub_media_press_silent,
+        "method":      "POST",
+        "use_admin":   True,
+        "description": "Autonomous: auto-triggers /api/v1/marketing/auto-generate when DC Hub Media is silent for 7+ days. The user explicitly asked for the brain to wake DC Hub Media up; this is the mechanism. Rate-limited like every other autopilot action so it can't spam.",
+    },
+    "dchub_media_press_weak": {
+        "action":      lambda f: (None, None),
+        "method":      None,
+        "use_admin":   False,
+        "description": "Escalation-only: 4+ press in 30d is the healthy cadence; below that, the auto-press cron is running but rows aren't landing. Operator needs to inspect the press worker logs OR the auto_press_releases insert path.",
+    },
+    # Phase PPPP — dedup pipeline divergence
+    "dedup_pipeline_stalled": {
+        "action":      lambda f: (None, None),
+        "method":      None,
+        "use_admin":   False,
+        "description": "Escalation-only: dedup worker has stalled — raw discovered_facilities count is climbing while verified (deduped) is flat. Inspect the dedup cron + routes/discovery_routes.py merge logic.",
+    },
+    "dedup_backlog_large": {
+        "action":      lambda f: (None, None),
+        "method":      None,
+        "use_admin":   False,
+        "description": "Informational: dedup backlog is >5k candidates but we don't have 7d of snapshots yet to confirm a stall. Will auto-clear or upgrade to dedup_pipeline_stalled in 7 days based on whether verified moves.",
     },
     # Phase BBBB — /developers funnel intent dead. Escalation-only;
     # fix is copy + CTA repositioning, requires judgment.
