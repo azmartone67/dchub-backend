@@ -73,10 +73,31 @@ def _build_stats() -> dict:
     try:
         with conn.cursor() as cur:
             # ── Coverage ───────────────────────────────────────────
-            s["facilities"]      = int(_scalar(cur,
-                "SELECT COUNT(*) FROM facilities"))
-            s["countries"]       = int(_scalar(cur,
-                "SELECT COUNT(DISTINCT country) FROM facilities WHERE country IS NOT NULL"))
+            # Phase AAA-2 (2026-05-17) — match the truth flip from Phase HH:
+            # the homepage was painting 12,553 (legacy `facilities` table
+            # count) while /api/v1/stats reports 21,374 (real `discovered_
+            # facilities` count). User flagged this mismatch directly.
+            # Now site/stats returns the same truth — discovered count if
+            # available, fallback to legacy table. countries also pulls
+            # from the larger pool.
+            try:
+                s["facilities"] = int(_scalar(cur,
+                    "SELECT COUNT(*) FROM discovered_facilities"))
+            except Exception:
+                s["facilities"] = int(_scalar(cur,
+                    "SELECT COUNT(*) FROM facilities"))
+            # Expose both for backwards compatibility
+            try:
+                s["facilities_legacy_published"] = int(_scalar(cur,
+                    "SELECT COUNT(*) FROM facilities"))
+            except Exception:
+                pass
+            try:
+                s["countries"] = int(_scalar(cur,
+                    "SELECT COUNT(DISTINCT country) FROM discovered_facilities WHERE country IS NOT NULL"))
+            except Exception:
+                s["countries"] = int(_scalar(cur,
+                    "SELECT COUNT(DISTINCT country) FROM facilities WHERE country IS NOT NULL"))
             s["markets_tracked"] = int(_scalar(cur,
                 "SELECT COUNT(DISTINCT market_slug) FROM market_power_scores WHERE published = true"))
             s["build_markets"]   = int(_scalar(cur,
