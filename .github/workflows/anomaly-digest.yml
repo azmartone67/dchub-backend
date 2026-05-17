@@ -43,10 +43,10 @@ jobs:
 
           prompt = f"""You are the dchub.cloud platform observer. Look at this 24-hour snapshot and produce a one-paragraph 'what is weird today' digest. Flag any metric drifting >2 sigma, any shadowed routes, any health score below 90. If nothing is weird, say so plainly.
 
-DATA:
-{json.dumps(payload, indent=2, default=str)[:6000]}
+          DATA:
+          {json.dumps(payload, indent=2, default=str)[:6000]}
 
-Output: a single paragraph (no markdown), 100 words max."""
+          Output: a single paragraph (no markdown), 100 words max."""
 
           r = requests.post('https://api.anthropic.com/v1/messages',
               headers={

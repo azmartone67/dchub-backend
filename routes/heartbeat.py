@@ -264,22 +264,42 @@ def api_heartbeat():
 
 @heartbeat_bp.route("/api/v1/heartbeat/auto", methods=["POST", "GET"])
 def api_auto_refresh():
-    """Phase 126C: batched — process at most 50 surfaces per call to stay
-    well under the CF worker 30s timeout. Cron calls every 30 min, so even
-    if 856 surfaces take ~17 calls to fully cover, we touch all of them
-    within ~9 hours. Surfaces are processed oldest-first.
+    """Phase DDDD-cleanup (2026-05-16): bumped BATCH default 50 → 250 and
+    added an auto-backfill so any surface with NULL or unknown refresh_func
+    gets assigned `noop_default` and refreshed. Root cause of the user's
+    "lots of red" dashboard: 600+ auto-discovered surfaces had NULL
+    refresh_func and were skipped forever by the old `if not r.get(
+    \"refresh_func\")` guard, so they stuck at 184h+ stale.
+
+    Most refresh functions are noops that return immediately, so 250
+    surfaces per call is still well under the 30s CF worker timeout.
+    Cron stays at every-30min; 600 stale surfaces now drain in ~3 calls.
     """
     from flask import request as _req
-    BATCH = int(_req.args.get("batch", "50"))
+    BATCH = int(_req.args.get("batch", "250"))
     s = _status()
     # Sort by oldest last_updated first (None = never refreshed = highest priority)
     s.sort(key=lambda r: (r.get("last_updated") or "0000-00-00"))
     refreshed = []
     for r in s:
         if len(refreshed) >= BATCH: break
-        if not r.get("refresh_func"): continue
         if r["status"] not in ("stale", "unknown"): continue
-        fn = REFRESH_FUNCS.get(r["refresh_func"])
+        # Phase DDDD-cleanup: auto-backfill missing refresh_func with
+        # noop_default so the surface stops being invisible to the loop.
+        # Persists to DB so future scans see the assignment too.
+        fn_name = r.get("refresh_func") or "noop_default"
+        if not r.get("refresh_func"):
+            try:
+                with _conn() as _c, _c.cursor() as _cur:
+                    _cur.execute("""
+                        UPDATE freshness_checks
+                           SET refresh_func = %s
+                         WHERE surface = %s
+                           AND (refresh_func IS NULL OR refresh_func = '')
+                    """, (fn_name, r["surface"]))
+                    _c.commit()
+            except Exception: pass
+        fn = REFRESH_FUNCS.get(fn_name) or REFRESH_FUNCS.get("noop_default")
         if not fn: continue
         ok, info = fn()
         _mark_updated(r["surface"], ok, info)
