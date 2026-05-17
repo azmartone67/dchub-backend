@@ -409,7 +409,7 @@ def seed_major_projects():
                     (id, name, provider, city, state, country, power_mw, status, 
                      latitude, longitude, source, source_id, source_url, raw_data, 
                      first_seen, last_updated, confidence)
-                    VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, 'news_pipeline', %s, %s, %s, %s, %s, 0.85)
+                    VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, 'news_pipeline', %s, %s, %s, %s, %s, 0.85) ON CONFLICT DO NOTHING
                 """, (
                     source_id, f['name'], f['provider'], f['city'], f.get('state', ''),
                     f['country'], f['power_mw'], f['status'],
