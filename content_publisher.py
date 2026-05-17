@@ -633,6 +633,93 @@ def start_twitter_publisher():
                          name="twitter-auto-publisher")
     t.start()
 
+
+# Phase DDD (2026-05-17) — Bluesky auto-publisher loop.
+# Phase PP shipped the standalone _post_to_bluesky function. Phase VV
+# wired auto-press to enqueue platform='bluesky' rows. Without this loop,
+# those rows pile up in social_media_posts forever. Mirrors the LinkedIn
+# + Twitter shape: every 6h, max 2/day, gated on BLUESKY_HANDLE +
+# BLUESKY_APP_PASSWORD env vars.
+_bluesky_publisher_running = False
+
+
+def start_bluesky_publisher():
+    global _bluesky_publisher_running
+    if _bluesky_publisher_running:
+        return
+    _bluesky_publisher_running = True
+
+    def _bsky_loop():
+        logger.info("Bluesky auto-publisher started (every 6h, max 2/day)")
+        while True:
+            try:
+                time.sleep(6 * 3600)
+                handle  = os.environ.get('BLUESKY_HANDLE', '').strip()
+                app_pwd = os.environ.get('BLUESKY_APP_PASSWORD', '').strip()
+                if not handle or not app_pwd:
+                    # Surface the dark state when posts are queued, so
+                    # ops can see it's a missing-env problem, not a code bug.
+                    try:
+                        _qc = _get_db(); _qcur = _qc.cursor()
+                        _qcur.execute(
+                            "SELECT COUNT(*) FROM social_media_posts "
+                            "WHERE status = 'approved' AND platform = 'bluesky'")
+                        _queued = (_qcur.fetchone() or [0])[0]
+                        _qc.close()
+                    except Exception:
+                        _queued = 0
+                    if _queued:
+                        logger.warning("Bluesky auto-publisher: %s approved post(s) queued "
+                                        "but BLUESKY_HANDLE/BLUESKY_APP_PASSWORD not set — "
+                                        "Bluesky distribution is DARK", _queued)
+                    else:
+                        logger.debug("Bluesky auto-publisher: no credentials, skipping")
+                    continue
+
+                conn = _get_db()
+                cur = conn.cursor()
+                today = datetime.utcnow().strftime('%Y-%m-%d')
+                cur.execute(
+                    "SELECT COUNT(*) FROM social_media_posts WHERE status = 'published' "
+                    "AND publish_platform = 'bluesky' AND published_at LIKE %s",
+                    (today + '%',))
+                pub_today = cur.fetchone()[0]
+                if pub_today >= 2:
+                    logger.info(f"Bluesky auto-publisher: already {pub_today} today, skipping")
+                    conn.close()
+                    continue
+
+                cur.execute("SELECT id, content FROM social_media_posts "
+                             "WHERE status = 'approved' AND platform = 'bluesky' "
+                             "ORDER BY created_at ASC LIMIT 1")
+                row = cur.fetchone()
+                if not row:
+                    logger.debug("Bluesky auto-publisher: no approved bluesky posts")
+                    conn.close()
+                    continue
+                post_id = row['id']
+                content_text = row['content']
+                ok, result = _post_to_bluesky(content_text)
+                now = datetime.utcnow().isoformat() + 'Z'
+                if ok:
+                    cur.execute(
+                        "UPDATE social_media_posts SET status = %s, "
+                        "       posted_at = %s, published_at = %s, "
+                        "       publish_platform = %s WHERE id = %s",
+                        ('published', now, now, 'bluesky', post_id))
+                    conn.commit()
+                    logger.info(f"Auto-published post {post_id} to Bluesky (uri={result})")
+                else:
+                    logger.warning(f"Bluesky auto-publish failed for post {post_id}: {result}")
+                conn.close()
+            except Exception as e:
+                logger.error(f"Bluesky auto-publisher error: {e}")
+
+    t = threading.Thread(target=_bsky_loop, daemon=True,
+                         name="bluesky-auto-publisher")
+    t.start()
+
+
 def register_content_publisher(app):
     init_content_tables()
     app.register_blueprint(content_bp)
@@ -648,6 +735,10 @@ def register_content_publisher(app):
         start_twitter_publisher()    # X/Twitter
     except Exception as e:
         logger.warning(f"Twitter auto-publisher failed to start: {e}")
+    try:
+        start_bluesky_publisher()    # Bluesky (Phase DDD)
+    except Exception as e:
+        logger.warning(f"Bluesky auto-publisher failed to start: {e}")
     logger.info("Content Publishing Pipeline registered")
     logger.info("   GET  /api/admin/content/stats")
     logger.info("   GET  /api/admin/content-queue")
@@ -655,4 +746,5 @@ def register_content_publisher(app):
     logger.info("   POST /api/admin/content/<id>/reject")
     logger.info("   POST /api/admin/content/<id>/edit")
     logger.info("   POST /api/admin/publish/linkedin")
-    logger.info("   Auto-publishers: LinkedIn + X/Twitter (every 6h, max 2/day)")
+    logger.info("   POST /api/admin/publish/bluesky")
+    logger.info("   Auto-publishers: LinkedIn + X/Twitter + Bluesky (every 6h, max 2/day)")
