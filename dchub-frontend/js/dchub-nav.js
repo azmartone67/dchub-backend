@@ -273,7 +273,7 @@
           '<defs><linearGradient id="navBoltGrad" x1="12" y1="1" x2="12" y2="31" gradientUnits="userSpaceOnUse"><stop stop-color="#5ce0ff"/><stop offset="1" stop-color="#0077aa"/></linearGradient></defs>' +
         '</svg>' +
         '<span class="dchub-nav-title">DC Hub</span>' +
-        '<span class="dchub-nav-sub">Intelligence</span>' +
+        '<span class="dchub-nav-sub">The live source of truth</span>' +
       '</a>' +
       '<div class="dchub-nav-links">' + linksHTML + '</div>' +
       '<div class="dchub-nav-right">' + rightHTML + '</div>' +
