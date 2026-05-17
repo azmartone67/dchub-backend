@@ -86,14 +86,16 @@ def _compute_funnel(tool_filter: str | None = None, days: int = 14) -> list[dict
                     "biggest_leak":    None,
                 }
 
-                # Stage 1: paywall signals. Phase GGG-2 (2026-05-16):
-                # mcp_upgrade_signals.tool is often NULL because upstream
-                # doesn't always pass it. Try `tool` first, then fall back
-                # to `tool_name` (some deploys), then aggregate IS what's
-                # available. If still 0, count call-log rows with non-ok
-                # status (= paywalled) as a derived signal — same intent.
+                # Stage 1: paywall signals. Phase UUU (2026-05-16):
+                # the actual schema column is `tool_requested` (set by
+                # main.py:21632 + routes/pair_code.py:466). Earlier the
+                # funnel probed `tool` then `tool_name`, neither of which
+                # exist on the table — so stage-1 was always zero and we
+                # showed 100% drop at 0→1. Now we try `tool_requested`
+                # first; `tool`/`tool_name` kept as defensive fallbacks
+                # for older deploys.
                 got_signals = False
-                for col in ("tool", "tool_name"):
+                for col in ("tool_requested", "tool", "tool_name"):
                     try:
                         cur.execute(f"""
                             SELECT COUNT(*) FROM mcp_upgrade_signals

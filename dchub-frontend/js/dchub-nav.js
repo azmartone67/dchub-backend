@@ -66,6 +66,7 @@
         { label: 'Capacity Pipeline',    href: '/capacity-pipeline',      desc: '540 projects · 369 GW tracked' },
         { label: 'Construction',         href: '/construction-pipeline',  desc: 'Active builds & permits' },
         { label: 'Transactions',         href: '/transactions',           desc: 'M&A deal database · $70B+ volume' },
+        { label: 'Total Power',          href: '/dcpi/totals',            desc: 'Operating + being-built MW',         badge: 'NEW' },
         { label: 'Comps',                href: '/transaction-comps',      desc: 'Side-by-side deal analysis' },
         { label: 'AI Pipeline',          href: '/ai-pipeline',            desc: 'AI/ML capacity projects',          badge: 'LIVE' },
         { label: 'AI Deals',             href: '/ai-deals',               desc: 'AI infrastructure M&A',            badge: 'LIVE' },
@@ -100,6 +101,8 @@
         { label: 'Press Releases',    href: '/press',           desc: 'Media kit & company news',     badge: 'NEW' },
         { label: 'GDCI',              href: '/gdci',            desc: 'Global Data Center Index',     badge: 'NEW' },
         { label: 'AI Validation',     href: '/testimonials',    desc: 'What AI says about DC Hub' },
+        { label: 'vs Competitors',    href: '/vs',              desc: 'Static research vs live MCP',    badge: 'NEW' },
+        { label: 'Live Pulse',        href: '/intelligence',    desc: 'Platform health · auto-refresh 60s', badge: 'NEW' },
         { label: 'Announcements',     href: '/announcements',   desc: 'Product updates & releases' },
         { label: 'Architecture',      href: '/architecture',    desc: 'Platform design & roadmap' },
       ]
@@ -316,6 +319,7 @@
     html += '<a href="/ai-inventory" class="dchub-drawer-item">AI Inventory</a>';
     html += '<a href="/analytics" class="dchub-drawer-item">Analytics</a>';
     html += '<a href="/tax-incentives" class="dchub-drawer-item">Tax Incentives</a>';
+    html += '<a href="/dcpi/totals" class="dchub-drawer-item"><span>Total Power</span><span class="dchub-nav-badge new-badge">NEW</span></a>';
     html += '<a href="/news" class="dchub-drawer-item">News</a>';
     html += '</div>';
 
@@ -334,6 +338,8 @@
     html += '<a href="/press" class="dchub-drawer-item"><span>Press Releases</span><span class="dchub-nav-badge new-badge">NEW</span></a>';
     html += '<a href="/gdci" class="dchub-drawer-item"><span>GDCI</span><span class="dchub-nav-badge new-badge">NEW</span></a>';
     html += '<a href="/testimonials" class="dchub-drawer-item">AI Validation</a>';
+    html += '<a href="/vs" class="dchub-drawer-item"><span>vs Competitors</span><span class="dchub-nav-badge new-badge">NEW</span></a>';
+    html += '<a href="/intelligence" class="dchub-drawer-item"><span>Live Pulse</span><span class="dchub-nav-badge new-badge">NEW</span></a>';
     html += '<a href="/announcements" class="dchub-drawer-item">Announcements</a>';
     html += '<a href="/architecture" class="dchub-drawer-item">Architecture</a>';
     html += '</div>';

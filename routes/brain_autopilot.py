@@ -377,6 +377,16 @@ _PATTERN_LIBRARY: dict[str, dict[str, Any]] = {
         "use_admin":   False,
         "description": "Escalation-only: high-volume bot identified (likely enterprise prospect). Reach out or block — see /api/v1/bots/whales.",
     },
+    # Phase TTT — brand-surface dormancy. Dynamic key
+    # `brand_surface_dormant:<surface_id>` binds via _lookup_pattern()
+    # prefix match. Escalation-only because the fix is judgment-heavy
+    # (add nav link / homepage tile / external drive — humans decide).
+    "brand_surface_dormant": {
+        "action":      lambda f: (None, None),
+        "method":      None,
+        "use_admin":   False,
+        "description": "Escalation-only: a brand-positioning surface (vs / dcpi totals / live pulse) has zero traffic in 72h. Add nav link / homepage tile / external drive.",
+    },
 }
 
 
