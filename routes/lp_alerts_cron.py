@@ -92,6 +92,67 @@ def _current_dcpi_for_market(cur, market: str | None, lat: float, lon: float) ->
     return None
 
 
+# Phase LLLL (2026-05-16) — capacity_change + new_facility_nearby
+# trigger implementations. JJJJ shipped these as safe-skip stubs;
+# this fills them in so PRO subscribers get the full alert suite.
+
+def _current_capacity_for_market(cur, market: str | None) -> float | None:
+    """Sum of operating MW for facilities in the given market. Best-
+    effort — tolerates missing columns / market mismatches."""
+    if not market:
+        return None
+    try:
+        cur.execute("""
+            SELECT COALESCE(SUM(power_mw), 0) FROM discovered_facilities
+             WHERE LOWER(COALESCE(market, '')) = LOWER(%s)
+               AND merged_at IS NULL AND is_duplicate = 0
+               AND LOWER(COALESCE(status, '')) IN
+                   ('operational','operating','live','active','running','in-service')
+        """, (market,))
+        r = cur.fetchone()
+        if r and r[0] is not None: return float(r[0])
+    except Exception: pass
+    return None
+
+
+def _new_facilities_within_radius(cur, lat: float, lon: float,
+                                    since, radius_km: float = 50.0) -> int:
+    """Count discovered_facilities with first_seen >= `since` whose
+    great-circle distance from (lat, lon) is within `radius_km`.
+    Uses cheap lat/lon bbox + haversine in SQL — no PostGIS required."""
+    if since is None:
+        # First-time alert — define `since` as 30 days ago so we don't
+        # backfill the user with every facility ever indexed nearby.
+        since = datetime.datetime.utcnow() - datetime.timedelta(days=30)
+    try:
+        # Crude bbox first (~111 km per degree latitude); haversine
+        # narrows to the actual radius. This avoids a full table scan.
+        deg_lat = radius_km / 111.0
+        deg_lon = radius_km / (111.0 * max(0.01, abs((90.0 - abs(lat)) / 90.0) + 0.1))
+        cur.execute("""
+            SELECT COUNT(*) FROM discovered_facilities
+             WHERE first_seen >= %s
+               AND merged_at IS NULL AND is_duplicate = 0
+               AND latitude  BETWEEN %s AND %s
+               AND longitude BETWEEN %s AND %s
+               AND (
+                 6371.0 * acos(
+                   LEAST(1.0, GREATEST(-1.0,
+                     cos(radians(%s)) * cos(radians(latitude)) *
+                     cos(radians(longitude) - radians(%s)) +
+                     sin(radians(%s)) * sin(radians(latitude))
+                   ))
+                 )
+               ) <= %s
+        """, (since, lat - deg_lat, lat + deg_lat,
+              lon - deg_lon, lon + deg_lon,
+              lat, lon, lat, radius_km))
+        r = cur.fetchone()
+        return int((r or [0])[0] or 0)
+    except Exception:
+        return 0
+
+
 def _render_alert_html(site: dict, alert: dict, current_value: float | None,
                         previous_value: float | None) -> str:
     """Conversion-friendly alert email body."""
@@ -199,14 +260,40 @@ def fire_pending_alerts(dry_run: bool = False, max_alerts: int = 100) -> dict:
                         # Fall back: compare against initial score at save
                         prev = prev if prev is not None else float(a["dcpi_score_at_save"])
                 elif trigger == "capacity_change":
-                    # Stub: real implementation would query market_power_scores
-                    # for the capacity column. Skip for now to avoid false fires.
-                    out["skipped"].append({"alert_id": int(a["alert_id"]), "reason": "trigger_not_implemented"})
-                    continue
+                    # Phase LLLL (2026-05-16): operational MW in the
+                    # saved site's market. Compare against last_value.
+                    curr = _current_capacity_for_market(cur, a["market"])
+                    if curr is None:
+                        out["skipped"].append({"alert_id": int(a["alert_id"]),
+                                                "reason": "no_market_capacity"})
+                        continue
                 elif trigger == "new_facility_nearby":
-                    # Stub: real implementation would query discovered_facilities
-                    # for first_seen >= last_fired_at within N km.
-                    out["skipped"].append({"alert_id": int(a["alert_id"]), "reason": "trigger_not_implemented"})
+                    # Phase LLLL (2026-05-16): count of facilities first
+                    # seen after our last_fired_at within 50km. Threshold
+                    # is interpreted as MINIMUM new facilities (default 1).
+                    new_count = _new_facilities_within_radius(
+                        cur, site["latitude"], site["longitude"],
+                        since=a.get("last_fired_at"),
+                        radius_km=50.0)
+                    curr = float(new_count)
+                    # For this trigger, "prev" is implicit zero — fire
+                    # whenever count >= threshold (treated as min, not
+                    # delta — that's what users actually want).
+                    if new_count < max(1, int(threshold)):
+                        out["skipped"].append({"alert_id": int(a["alert_id"]),
+                                                "reason": f"only_{new_count}_new_within_50km"})
+                        # Still update last_value so the next compare
+                        # starts from the current count
+                        try:
+                            cur.execute("UPDATE saved_lp_alerts SET last_value=%s WHERE id=%s",
+                                        (curr, a["alert_id"]))
+                        except Exception: pass
+                        continue
+                    # Force fire by treating prev as None (first-time semantics)
+                    prev = None
+                else:
+                    out["skipped"].append({"alert_id": int(a["alert_id"]),
+                                            "reason": f"unknown_trigger:{trigger}"})
                     continue
 
                 if curr is None:

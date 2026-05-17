@@ -153,6 +153,76 @@ def _gate_response(current_tier: str, required_tier: str,
     return resp, 402
 
 
+# ── Phase NNNN (2026-05-16) — REST rate-limit decorator ──────────
+# Per-key bucket, in-process. Crude but effective for the L+P
+# endpoints' expected volume; if it becomes a hot spot we move to
+# Redis/DB-backed counters in a future phase.
+import time as _time
+_RL_BUCKETS: dict[str, list[float]] = {}
+_RL_MAX_BUCKET = 5000  # safety cap on bucket dict size
+
+def _rl_check(key: str, per_minute: int) -> tuple[bool, int]:
+    """Returns (allowed, retry_in_seconds)."""
+    now = _time.time()
+    window = 60.0
+    bucket = _RL_BUCKETS.setdefault(key, [])
+    bucket[:] = [t for t in bucket if (now - t) < window]
+    if len(bucket) >= per_minute:
+        oldest = bucket[0]
+        retry_in = int(window - (now - oldest)) + 1
+        return False, max(1, retry_in)
+    bucket.append(now)
+    # Crude eviction so the dict can't grow unbounded — if we exceed
+    # the cap, drop the oldest bucket entirely (5000 unique keys/min
+    # is a LOT of unique callers; benign collateral)
+    if len(_RL_BUCKETS) > _RL_MAX_BUCKET:
+        try:
+            oldest_key = min(_RL_BUCKETS, key=lambda k: (_RL_BUCKETS[k][0] if _RL_BUCKETS[k] else now))
+            _RL_BUCKETS.pop(oldest_key, None)
+        except Exception: pass
+    return True, 0
+
+
+def rate_limit(per_minute: int = 60, key_fn=None):
+    """Flask decorator. Returns 429 if caller exceeds per_minute calls
+    within a 60s sliding window. Key derivation: by api_key (or cookie
+    token) if present, else by IP. Override with key_fn(request)→str."""
+    def deco(fn):
+        from functools import wraps
+        @wraps(fn)
+        def wrapper(*a, **kw):
+            # Build a stable key per caller
+            if key_fn:
+                try: key = str(key_fn(request))
+                except Exception: key = "anon"
+            else:
+                key = (request.headers.get("X-API-Key")
+                       or request.cookies.get("dchub_token")
+                       or request.headers.get("CF-Connecting-IP")
+                       or request.remote_addr or "anon")
+            # Namespace by route so a per-route 60/min doesn't share
+            # quota with another route on the same key
+            key = f"{fn.__name__}:{key[:32]}"
+            ok, retry_in = _rl_check(key, per_minute)
+            if not ok:
+                resp = jsonify({
+                    "error":     "rate_limited",
+                    "endpoint":  fn.__name__,
+                    "limit":     f"{per_minute}/min",
+                    "retry_in":  retry_in,
+                    "message":   (f"Too many requests. Limit: {per_minute}/min. "
+                                  f"Retry in {retry_in}s."),
+                    "upgrade_hint": ("Higher tier = higher cap. "
+                                      "See https://dchub.cloud/pricing"),
+                })
+                resp.headers["Retry-After"] = str(retry_in)
+                resp.headers["X-RateLimit-Limit"] = str(per_minute)
+                return resp, 429
+            return fn(*a, **kw)
+        return wrapper
+    return deco
+
+
 def require_tier(min_tier: str, gate_id: str | None = None,
                  preview_fn=None):
     """Flask route decorator. Returns a structured 402 if the caller's
