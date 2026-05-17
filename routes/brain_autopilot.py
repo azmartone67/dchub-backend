@@ -227,6 +227,37 @@ def _action_worker_source_unreachable(finding: dict) -> tuple[str | None, dict |
     return None, None
 
 
+def _action_data_freshness_breach(finding: dict) -> tuple[str | None, dict | None]:
+    """Phase EEE (2026-05-17) — autonomous data-freshness refresh.
+
+    The Phase KK check_data_freshness_sla_breach detector emits findings
+    with url='table:<name>'. Map the table to its known refresh endpoint
+    and POST. Falls through to escalation (None, None) for tables that
+    don't have a manual refresh trigger — those need cron/code fixes.
+
+    Refresh endpoints supported:
+      ai_citations          → /api/v1/ai-citations/run-cron     (Phase II)
+      dcpi_scores           → /api/v1/dcpi/recompute            (Phase II/J)
+      discovered_facilities → escalate (no manual endpoint; depends on
+                              discovery cron which runs externally)
+      news_items            → escalate (RSS poll cron, no endpoint)
+    """
+    url = finding.get("url", "") or ""
+    if not url.startswith("table:"):
+        return None, None
+    table = url[len("table:"):].strip()
+    REFRESH_MAP = {
+        "ai_citations": "/api/v1/ai-citations/run-cron",
+        "dcpi_scores":  "/api/v1/dcpi/recompute",
+        # facilities + news refresh paths live in external cron, not API:
+        # leaving them in this map as escalation candidates.
+    }
+    endpoint = REFRESH_MAP.get(table)
+    if not endpoint:
+        return None, None  # Escalate — no autonomous fix
+    return endpoint, {"source": "autopilot_freshness_refresh", "table": table}
+
+
 # ── Phase DDD (2026-05-16) — organism autopilot actions ──────────────
 def _action_mcp_growth_declining(finding: dict) -> tuple[str | None, dict | None]:
     """MCP volume dropped WoW. No autonomous fix — could be CF outage,
@@ -336,6 +367,15 @@ _PATTERN_LIBRARY: dict[str, dict[str, Any]] = {
                          "table so we have a queryable worklist of pending "
                          "decorator alignments. Actual code fix remains human "
                          "work but the brain now tracks them automatically."),
+    },
+    "data_freshness_sla_breach": {
+        "action":      _action_data_freshness_breach,
+        "method":      "POST",  # Phase EEE (2026-05-17): promoted to autonomous refresh
+        "use_admin":   True,    # refresh endpoints (dcpi/recompute, ai-citations/run-cron) need ADMIN_KEY
+        "description": ("Autonomous: when a tracked table exceeds its SLA, fires "
+                         "the appropriate refresh endpoint (ai_citations → run-cron, "
+                         "dcpi_scores → recompute). Escalates for tables whose refresh "
+                         "is external-cron only (discovered_facilities, news_items)."),
     },
     "cron_phase_missing_schedule": {
         "action":      _action_cron_missing_schedule,
