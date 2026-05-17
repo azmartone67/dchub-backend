@@ -181,6 +181,28 @@ def transactions_index():
     except Exception:
         pass
 
+    # Build the top banner outside the f-string — Python 3.11 disallows
+    # backslash escapes inside f-string expressions, so we precompute
+    # this HTML and interpolate the whole block as a single name.
+    banner_html = ""
+    if not is_authed:
+        unlock_count = max(0, total - N_FREE_ROWS)
+        banner_html = (
+            '<div style="background:linear-gradient(135deg,#065f46,#0f766e);'
+            'color:white;padding:1rem 1.25rem;border-radius:8px;'
+            'margin:.5rem 0 1.5rem;display:flex;justify-content:space-between;'
+            'align-items:center;gap:1rem;flex-wrap:wrap">'
+            '<div><strong style="font-size:1.05rem">'
+            '&#x1F513; You&#39;re seeing a free preview.</strong>'
+            '<div style="font-size:.9rem;opacity:.85;margin-top:.15rem">'
+            'Sign up free (no card) to unlock $value, deal type, CSV export, '
+            f'and alerts on the next {unlock_count:,} deals.</div></div>'
+            '<a href="/signup?next=/transactions&utm_source=transactions_banner" '
+            'style="background:white;color:#065f46;padding:.5rem 1.1rem;'
+            'border-radius:6px;font-weight:700;text-decoration:none">'
+            'Sign up free &rarr;</a></div>'
+        )
+
     rows_html = []
     for i, d in enumerate(deals):
         # Past N_FREE on page 1, OR any page past page 1, redact $value
@@ -269,7 +291,7 @@ def transactions_index():
 <h1>Data Center Transactions Browser</h1>
 <p><strong>{total:,} tracked deals</strong> across data center M&amp;A, infra rollups, and platform-level transactions. Free + indexable — every row links to a per-deal page with schema.org markup for AI agents.</p>
 
-{('<div style="background:linear-gradient(135deg,#065f46,#0f766e);color:white;padding:1rem 1.25rem;border-radius:8px;margin:.5rem 0 1.5rem;display:flex;justify-content:space-between;align-items:center;gap:1rem;flex-wrap:wrap"><div><strong style="font-size:1.05rem">🔓 You\'re seeing a free preview.</strong><div style="font-size:.9rem;opacity:.85;margin-top:.15rem">Sign up free (no card) to unlock $value, deal type, CSV export, and alerts on the next ' + f'{total - 25:,} deals.</div></div><a href="/signup?next=/transactions&utm_source=transactions_banner" style="background:white;color:#065f46;padding:.5rem 1.1rem;border-radius:6px;font-weight:700;text-decoration:none">Sign up free →</a></div>') if not is_authed else ''}
+{banner_html}
 
 <form class="filters" method="GET" action="/transactions">
   <label>Year<input type="text" name="year" value="{yi}" placeholder="2025" size="6"></label>
