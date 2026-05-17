@@ -336,6 +336,134 @@ def _post_to_twitter(content_text):
         return True, data.get('id', 'posted')
     return False, f"X API error {resp.status_code}: {resp.text[:300]}"
 
+# Phase PP (2026-05-17) — Bluesky AT Protocol publishing.
+# DC Hub Media currently amplifies via LinkedIn + email only. Bluesky
+# is the fastest-growing dev/research community and has zero competitor
+# presence in the data-center-intelligence niche — first-mover advantage.
+#
+# Auth: BLUESKY_HANDLE + BLUESKY_APP_PASSWORD (app password is generated
+# at https://bsky.app/settings/app-passwords — never use account password).
+# Free to post unlimited via the public AT Protocol. No approval delay.
+def _post_to_bluesky(content_text):
+    """Post to DC Hub Bluesky account via AT Protocol.
+
+    Two-step flow:
+      1. POST /xrpc/com.atproto.server.createSession with handle + app
+         password → returns accessJwt + did
+      2. POST /xrpc/com.atproto.repo.createRecord with the jwt + did →
+         creates the post in the bsky.feed.post collection
+
+    Bluesky post length cap is 300 graphemes (we truncate to be safe).
+    """
+    handle  = os.environ.get('BLUESKY_HANDLE', '').strip()
+    app_pwd = os.environ.get('BLUESKY_APP_PASSWORD', '').strip()
+    if not handle or not app_pwd:
+        return False, "no_bluesky_credentials"
+
+    # Step 1 — create session
+    try:
+        session_resp = requests.post(
+            'https://bsky.social/xrpc/com.atproto.server.createSession',
+            json={'identifier': handle, 'password': app_pwd},
+            timeout=12,
+        )
+        if session_resp.status_code != 200:
+            return False, f"Bluesky session failed {session_resp.status_code}: {session_resp.text[:200]}"
+        session = session_resp.json()
+        jwt = session.get('accessJwt')
+        did = session.get('did')
+        if not jwt or not did:
+            return False, "Bluesky session missing accessJwt or did"
+    except Exception as e:
+        return False, f"Bluesky session error: {str(e)[:200]}"
+
+    # Step 2 — create the post record
+    try:
+        from datetime import datetime as _dt, timezone as _tz
+        now_iso = _dt.now(_tz.utc).isoformat().replace('+00:00', 'Z')
+        # Bluesky: 300 grapheme limit. Truncate by chars (close enough).
+        text = content_text[:297] + '...' if len(content_text) > 300 else content_text
+        record_resp = requests.post(
+            'https://bsky.social/xrpc/com.atproto.repo.createRecord',
+            json={
+                'repo':       did,
+                'collection': 'app.bsky.feed.post',
+                'record':     {
+                    'text':       text,
+                    'createdAt':  now_iso,
+                    '$type':      'app.bsky.feed.post',
+                    'langs':      ['en'],
+                },
+            },
+            headers={
+                'Authorization': f'Bearer {jwt}',
+                'Content-Type':  'application/json',
+            },
+            timeout=15,
+        )
+        if record_resp.status_code in (200, 201):
+            data = record_resp.json()
+            return True, data.get('uri', 'posted')
+        return False, f"Bluesky post failed {record_resp.status_code}: {record_resp.text[:200]}"
+    except Exception as e:
+        return False, f"Bluesky post error: {str(e)[:200]}"
+
+
+@content_bp.route('/api/admin/publish/bluesky', methods=['POST'])
+def publish_bluesky():
+    """Admin endpoint: manually push a social_media_posts row to Bluesky.
+    Phase PP (2026-05-17) — companion to publish_linkedin / publish_twitter."""
+    if not _check_admin(request):
+        return jsonify({'error': 'Unauthorized'}), 401
+    data = request.get_json(force=True) or {}
+    post_id = data.get('post_id')
+    raw_text = data.get('text', '').strip()
+
+    # Allow either {post_id} (lookup row) OR {text} (one-shot post)
+    content_text = raw_text
+    conn = None
+    if post_id and not raw_text:
+        try:
+            conn = _get_db()
+            cur = conn.cursor()
+            cur.execute("SELECT content FROM social_media_posts WHERE id = %s",
+                        (post_id,))
+            row = cur.fetchone()
+            if not row:
+                return jsonify({'success': False, 'error': 'post_not_found'}), 404
+            content_text = row[0] or ""
+        except Exception as e:
+            return jsonify({'success': False, 'error': f'db:{str(e)[:120]}'}), 500
+    if not content_text:
+        return jsonify({'success': False, 'error': 'post_id_or_text_required'}), 400
+
+    ok, result = _post_to_bluesky(content_text)
+    if ok and post_id and conn is not None:
+        try:
+            cur = conn.cursor()
+            from datetime import datetime as _dt2
+            now = _dt2.utcnow()
+            cur.execute("""UPDATE social_media_posts
+                              SET status = %s,
+                                  posted_at = %s, published_at = %s,
+                                  publish_platform = %s
+                            WHERE id = %s""",
+                        ('published', now, now, 'bluesky', post_id))
+            conn.commit()
+        except Exception:
+            pass
+    if conn is not None:
+        try: conn.close()
+        except Exception: pass
+    return jsonify({
+        'success':  ok,
+        'platform': 'bluesky',
+        'post_id':  post_id,
+        'uri':      result if ok else None,
+        'error':    None if ok else result,
+    }), (200 if ok else 502)
+
+
 @content_bp.route('/api/admin/publish/linkedin', methods=['POST'])
 def publish_linkedin():
     if not _check_admin(request):
