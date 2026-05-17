@@ -199,6 +199,21 @@ def transparency_dashboard():
   </div>
 </div>
 
+<h2>Findings trend · 30-day sparkline (Phase MMMM)</h2>
+<div class="card" style="margin:.5rem 0">
+  <div class="card-label">Brain findings per day</div>
+  <svg id="spark" viewBox="0 0 600 100" style="width:100%;height:100px;margin-top:.5rem">
+    <polyline id="spark-line" fill="none" stroke="#10b981" stroke-width="2" points=""/>
+    <g id="spark-dots"></g>
+  </svg>
+  <div class="card-sub" id="spark-info">loading…</div>
+</div>
+
+<h2>Page-health grid · Site Sentinel (Phase MMMM)</h2>
+<div class="findings" id="sentinel-grid" style="max-height:300px">
+  <div class="loading">loading 52-page grid…</div>
+</div>
+
 <h2>Active findings (top 12 by count)</h2>
 <div class="findings" id="findings-list">
   <div class="loading">Loading findings…</div>
@@ -278,6 +293,69 @@ def transparency_dashboard():
     var s = d.stages || {};
     setText('dev-visitors', fmtNum(s['0_unique_visitors']));
     setText('dev-claimed', fmtNum(s['2_keys_claimed']));
+  }).catch(function(){});
+
+  // Phase MMMM — findings sparkline (last 30 days)
+  fetch('/api/v1/radar/history?days=30').then(r => r.json()).then(d => {
+    var rows = d.history || [];
+    var info = $('spark-info');
+    var line = $('spark-line');
+    var dots = $('spark-dots');
+    if (!rows.length) {
+      if (info) info.textContent = 'no snapshots yet — daily cron starts populating after first run';
+      return;
+    }
+    var counts = rows.map(function(r){ return r.finding_count; });
+    var min = Math.min.apply(null, counts);
+    var max = Math.max.apply(null, counts);
+    var range = (max - min) || 1;
+    var step = 600 / Math.max(1, rows.length - 1);
+    var points = counts.map(function(c, i){
+      var x = i * step;
+      var y = 90 - ((c - min) / range) * 80;
+      return x.toFixed(0) + ',' + y.toFixed(0);
+    }).join(' ');
+    if (line) line.setAttribute('points', points);
+    // Dots
+    if (dots) {
+      var html = '';
+      counts.forEach(function(c, i){
+        var x = i * step;
+        var y = 90 - ((c - min) / range) * 80;
+        html += '<circle cx="'+x.toFixed(0)+'" cy="'+y.toFixed(0)+'" r="3" fill="#10b981"><title>'+rows[i].date+': '+c+' findings</title></circle>';
+      });
+      dots.innerHTML = html;
+    }
+    if (info) {
+      var first = counts[0], last = counts[counts.length - 1];
+      var trend = (last < first) ? '↓ improving' : (last > first) ? '↑ noisier' : '→ flat';
+      info.textContent = rows.length + ' days · min ' + min + ' · max ' + max + ' · current ' + last + ' · ' + trend;
+    }
+  }).catch(function(){});
+
+  // Phase MMMM — sentinel page-health grid
+  fetch('/api/v1/sentinel/scan').then(r => r.json()).then(d => {
+    var rows = d.results || [];
+    rows.sort(function(a, b){
+      // Unhealthy first, then by category critical>high>normal
+      if (a.healthy !== b.healthy) return a.healthy ? 1 : -1;
+      var rank = {critical: 0, high: 1, normal: 2};
+      return (rank[a.category] || 9) - (rank[b.category] || 9);
+    });
+    var html = '<div style="display:grid;grid-template-columns:repeat(auto-fill,minmax(160px,1fr));gap:.4rem">';
+    rows.forEach(function(r){
+      var color = r.healthy ? '#10b981' : (r.status_code === 0 ? '#f59e0b' : '#ef4444');
+      var bg = r.healthy ? '#0f1f1a' : (r.status_code === 0 ? '#1f1a0f' : '#1f0f0f');
+      var label = r.label || r.path;
+      var sub = r.healthy ? 'ok ' + (r.bytes||0) + 'b' : (r.reason||'?').slice(0, 24);
+      html += '<a href="' + r.path + '" style="display:block;padding:.5rem .65rem;background:'+bg+';border:1px solid '+color+';border-radius:6px;text-decoration:none">' +
+              '<div style="font-size:.72rem;font-weight:600;color:'+color+';white-space:nowrap;overflow:hidden;text-overflow:ellipsis">'+label+'</div>' +
+              '<div style="font-size:.65rem;color:#6b7280;margin-top:.15rem">'+sub+'</div>' +
+              '</a>';
+    });
+    html += '</div>';
+    var el = $('sentinel-grid');
+    if (el) el.innerHTML = html;
   }).catch(function(){});
 
   // Findings list (from radar)

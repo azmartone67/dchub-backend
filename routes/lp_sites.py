@@ -30,6 +30,12 @@ import json
 import datetime
 from flask import Blueprint, jsonify, request, Response
 
+# Phase NNNN (2026-05-16): per-endpoint rate-limit decorator.
+# Caps per api-key per minute so a runaway client can't spam the
+# saved-sites table. PRO/ENTERPRISE callers stay under the limit
+# during normal use; abusers get 429 with Retry-After.
+from routes.tier_gate import rate_limit as _rl
+
 
 lp_sites_bp = Blueprint("lp_sites", __name__)
 
@@ -130,6 +136,7 @@ def _require_pro_user():
 # ── REST endpoints ────────────────────────────────────────────────
 
 @lp_sites_bp.route("/api/v1/lp/save", methods=["POST"])
+@_rl(per_minute=30)
 def lp_save():
     user_id, gate = _require_pro_user()
     if gate is not None: return gate
@@ -183,6 +190,7 @@ def lp_save():
 
 
 @lp_sites_bp.route("/api/v1/lp/saved", methods=["GET"])
+@_rl(per_minute=60)
 def lp_list_saved():
     user_id, gate = _require_pro_user()
     if gate is not None: return gate
@@ -221,6 +229,7 @@ def lp_list_saved():
 
 
 @lp_sites_bp.route("/api/v1/lp/saved/<int:site_id>", methods=["DELETE"])
+@_rl(per_minute=30)
 def lp_unsave(site_id):
     user_id, gate = _require_pro_user()
     if gate is not None: return gate
@@ -244,6 +253,7 @@ def lp_unsave(site_id):
 # regression-lint duplicate-route check happy (only one decorator per
 # URL path). The two operations branch on request.method below.
 @lp_sites_bp.route("/api/v1/lp/alerts", methods=["GET", "POST"])
+@_rl(per_minute=30)
 def lp_alerts_handler():
     user_id, gate = _require_pro_user()
     if gate is not None: return gate
@@ -327,6 +337,7 @@ def lp_alerts_handler():
 
 
 @lp_sites_bp.route("/api/v1/lp/export.csv", methods=["GET"])
+@_rl(per_minute=10)  # exports are heavier — tighter cap
 def lp_export_csv():
     user_id, gate = _require_pro_user()
     if gate is not None: return gate
@@ -363,6 +374,7 @@ def lp_export_csv():
 
 
 @lp_sites_bp.route("/api/v1/lp/export.geojson", methods=["GET"])
+@_rl(per_minute=10)
 def lp_export_geojson():
     user_id, gate = _require_pro_user()
     if gate is not None: return gate

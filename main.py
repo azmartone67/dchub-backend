@@ -19632,6 +19632,13 @@ try:
 except Exception as _e:
     print(f"[main] lp_alerts_cron register failed: {_e}", file=sys.stderr)
 
+# Phase MMMM (2026-05-16): radar finding history (sparkline data).
+try:
+    from routes.radar_history import radar_history_bp
+    app.register_blueprint(radar_history_bp)
+except Exception as _e:
+    print(f"[main] radar_history register failed: {_e}", file=sys.stderr)
+
 # Phase BBBB (2026-05-16): /developers acquisition funnel.
 try:
     from routes.developers_funnel import developers_funnel_bp

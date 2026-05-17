@@ -22,3 +22,14 @@ jobs:
             -H "X-Admin-Key: $ADMIN_KEY" \
             "https://dchub.cloud/api/v1/facilities/snapshot" \
             | python3 -m json.tool
+      # Phase MMMM (2026-05-16): also snapshot the brain radar finding
+      # count so /transparency sparkline has 14d of baseline. Same cron
+      # to avoid sprawl; idempotent UPSERT per day.
+      - name: Write daily radar finding snapshot
+        env:
+          ADMIN_KEY: ${{ secrets.DCHUB_ADMIN_KEY }}
+        run: |
+          curl -sS --max-time 30 -X POST \
+            -H "X-Admin-Key: $ADMIN_KEY" \
+            "https://dchub.cloud/api/v1/radar/snapshot" \
+            | python3 -m json.tool

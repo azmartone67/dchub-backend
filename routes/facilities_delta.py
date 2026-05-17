@@ -45,6 +45,14 @@ CREATE TABLE IF NOT EXISTS facility_count_snapshots (
     by_state       JSONB,
     captured_at    TIMESTAMPTZ NOT NULL DEFAULT NOW()
 );
+-- Phase KKKK (2026-05-16): add verified_count column. Raw total_count
+-- counts every row in discovered_facilities; verified_count applies
+-- the WHERE merged_at IS NULL AND is_duplicate = 0 filter that the
+-- homepage /api/v1/stats uses (the 12,553 number the user saw). Both
+-- are persisted so the brain can detect divergence (e.g., dedup
+-- worker dies → verified stays flat while raw climbs).
+ALTER TABLE facility_count_snapshots
+    ADD COLUMN IF NOT EXISTS verified_count INT;
 CREATE INDEX IF NOT EXISTS ix_fcs_date_desc
     ON facility_count_snapshots(snapshot_date DESC);
 """
@@ -60,9 +68,13 @@ def _ensure_schema(c):
 
 
 def _current_counts(cur) -> dict:
-    """Read current counts from discovered_facilities (the source of
-    truth surfaced everywhere else). Tolerant to schema variance."""
-    out = {"total": 0, "operating": 0, "pipeline": 0, "by_state": {}}
+    """Read current counts from discovered_facilities. Phase KKKK
+    (2026-05-16): now returns BOTH `total` (raw COUNT(*)) and
+    `verified` (homepage-displayed count: merged_at IS NULL AND
+    is_duplicate = 0). Surfacing both makes the dedup-pipeline
+    health visible — when raw climbs but verified stays flat, the
+    dedup worker has stalled."""
+    out = {"total": 0, "verified": 0, "operating": 0, "pipeline": 0, "by_state": {}}
     try:
         cur.execute("SELECT to_regclass('public.discovered_facilities')")
         if not (cur.fetchone() or [None])[0]: return out
@@ -70,6 +82,15 @@ def _current_counts(cur) -> dict:
     try:
         cur.execute("SELECT COUNT(*) FROM discovered_facilities")
         out["total"] = int((cur.fetchone() or [0])[0] or 0)
+    except Exception: pass
+    # Verified count — matches the number shown on /api/v1/stats and the
+    # homepage. If the dedup columns don't exist, falls through silently.
+    try:
+        cur.execute("""
+            SELECT COUNT(*) FROM discovered_facilities
+             WHERE merged_at IS NULL AND is_duplicate = 0
+        """)
+        out["verified"] = int((cur.fetchone() or [0])[0] or 0)
     except Exception: pass
     try:
         cur.execute("""
@@ -114,15 +135,18 @@ def write_snapshot() -> dict:
             import json
             cur.execute("""
                 INSERT INTO facility_count_snapshots
-                  (snapshot_date, total_count, operating_count, pipeline_count, by_state)
-                VALUES (CURRENT_DATE, %s, %s, %s, %s::jsonb)
+                  (snapshot_date, total_count, verified_count,
+                   operating_count, pipeline_count, by_state)
+                VALUES (CURRENT_DATE, %s, %s, %s, %s, %s::jsonb)
                 ON CONFLICT (snapshot_date) DO UPDATE
                   SET total_count = EXCLUDED.total_count,
+                      verified_count = EXCLUDED.verified_count,
                       operating_count = EXCLUDED.operating_count,
                       pipeline_count = EXCLUDED.pipeline_count,
                       by_state = EXCLUDED.by_state,
                       captured_at = NOW()
-            """, (counts["total"], counts["operating"], counts["pipeline"],
+            """, (counts["total"], counts["verified"],
+                  counts["operating"], counts["pipeline"],
                   json.dumps(counts["by_state"])))
             out = {"ok": True, **counts}
     finally:
@@ -152,11 +176,13 @@ def compute_delta() -> dict:
             r = cur.fetchone() or (0, None)
             out["snapshots_available"] = int(r[0] or 0)
             out["latest_snapshot"] = r[1].isoformat() if r[1] else None
-            # Deltas
+            # Deltas — Phase KKKK includes verified_count too so the
+            # transparency dashboard can show dedup-pipeline drift.
             for label, days in (("1d", 1), ("7d", 7), ("30d", 30)):
                 try:
                     cur.execute("""
-                        SELECT total_count, operating_count, pipeline_count
+                        SELECT total_count, verified_count,
+                               operating_count, pipeline_count
                           FROM facility_count_snapshots
                          WHERE snapshot_date <= CURRENT_DATE - INTERVAL '%s days'
                          ORDER BY snapshot_date DESC LIMIT 1
@@ -164,10 +190,12 @@ def compute_delta() -> dict:
                     p = cur.fetchone()
                     if p:
                         out["deltas"][label] = {
-                            "total":     counts["total"] - int(p[0] or 0),
-                            "operating": counts["operating"] - int(p[1] or 0),
-                            "pipeline":  counts["pipeline"] - int(p[2] or 0),
-                            "baseline_total": int(p[0] or 0),
+                            "total":     counts["total"]     - int(p[0] or 0),
+                            "verified":  counts["verified"]  - int(p[1] or 0),
+                            "operating": counts["operating"] - int(p[2] or 0),
+                            "pipeline":  counts["pipeline"]  - int(p[3] or 0),
+                            "baseline_total":    int(p[0] or 0),
+                            "baseline_verified": int(p[1] or 0),
                         }
                 except Exception: pass
             # How many of the last 7 days had ZERO net growth?
