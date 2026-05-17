@@ -119,7 +119,7 @@ def fetch_ix_facilities(conn):
             cur.execute("""
                 INSERT INTO peeringdb_ix_facilities 
                 (ix_id, name, city, country, latitude, longitude, participants, speed_gbps, website, retrieved_at)
-                VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, NOW())
+                VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, NOW() ON CONFLICT DO NOTHING)
                 ON CONFLICT (ix_id) DO UPDATE
                 SET name = EXCLUDED.name,
                     city = EXCLUDED.city,
@@ -237,7 +237,7 @@ def fetch_network_facilities(conn):
                 INSERT INTO peeringdb_network_facilities
                 (facility_id, network_id, network_name, facility_name, city, country, 
                  latitude, longitude, retrieved_at)
-                VALUES (%s, %s, %s, %s, %s, %s, %s, %s, NOW())
+                VALUES (%s, %s, %s, %s, %s, %s, %s, %s, NOW() ON CONFLICT DO NOTHING)
                 ON CONFLICT (facility_id, network_id) DO UPDATE
                 SET network_name = EXCLUDED.network_name,
                     facility_name = EXCLUDED.facility_name,
@@ -329,7 +329,7 @@ def fetch_fcc_fiber(conn):
                                 (state, county_fips, county_name, technology_code, 
                                  max_download_mbps, max_upload_mbps, provider_count,
                                  residential_coverage_pct, retrieved_at)
-                                VALUES (%s, %s, %s, 50, 1000, 100, %s, %s, NOW())
+                                VALUES (%s, %s, %s, 50, 1000, 100, %s, %s, NOW() ON CONFLICT DO NOTHING)
                                 ON CONFLICT (county_fips, technology_code) DO UPDATE
                                 SET provider_count = EXCLUDED.provider_count,
                                     residential_coverage_pct = EXCLUDED.residential_coverage_pct,
@@ -402,7 +402,7 @@ def seed_fcc_fallback(conn):
                 (state, county_fips, county_name, technology_code, 
                  max_download_mbps, max_upload_mbps, provider_count,
                  residential_coverage_pct, source, retrieved_at)
-                VALUES (%s, %s, %s, 50, 1000, 100, %s, %s, 'FCC_BDC_EST', NOW())
+                VALUES (%s, %s, %s, 50, 1000, 100, %s, %s, 'FCC_BDC_EST', NOW() ON CONFLICT DO NOTHING)
                 ON CONFLICT (county_fips, technology_code) DO NOTHING
             """, (state, fips, name, providers, coverage))
         except:
