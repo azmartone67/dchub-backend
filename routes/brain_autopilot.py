@@ -514,6 +514,27 @@ _PATTERN_LIBRARY: dict[str, dict[str, Any]] = {
         "use_admin":   False,
         "description": "Escalation-only: top operator missing >50% of market or power_mw fields. Discovery pipeline (routes/discovery_routes.py + ingest crons) should prioritize this operator for backfill so /operators/<slug> profile is rich.",
     },
+    # Phase ZZZZ — AUTONOMOUS: refresh stale market deep-dives nightly
+    "market_deep_dive_stale": {
+        "action":      lambda f: ("/api/v1/markets/deep-dive/cron?count=5", {}),
+        "method":      "POST",
+        "use_admin":   True,
+        "description": "Autonomous: auto-fires the deep-dive cron when top-10 markets have stale narratives. Fourth autonomous pattern (after press_silent, winback_unsent, competitor_announcement) — the brain WRITES content automatically.",
+    },
+    # Phase BBBBB — event submission deadlines (escalation-only)
+    "event_submission_pending": {
+        "action":      lambda f: (None, None),
+        "method":      None,
+        "use_admin":   False,
+        "description": "Escalation-only: industry event submission deadline in <30 days and DC Hub hasn't submitted. Human needs to decide submit/skip. See /events for full list.",
+    },
+    # Phase CCCCC — tenant coverage thin
+    "tenant_coverage_thin": {
+        "action":      lambda f: (None, None),
+        "method":      None,
+        "use_admin":   False,
+        "description": "Escalation-only: <20% of top-50 facilities have tenant data. Per-building tenants are DCHawk's main remaining moat. Either build SEC/CRE/news ingest pipeline OR manually POST to /api/v1/tenants/ingest.",
+    },
     "dchub_media_press_weak": {
         "action":      lambda f: (None, None),
         "method":      None,

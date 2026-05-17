@@ -1191,6 +1191,151 @@ def check_enterprise_bot_present() -> list[dict]:
     return findings
 
 
+# ── Phase ZZZZ (2026-05-16) — market deep-dive coverage detector ──
+def check_market_deep_dive_stale() -> list[dict]:
+    """Flag when the top 10 DCPI markets have deep-dives older than
+    30 days OR no deep-dive at all. Cron should keep these fresh."""
+    conn = _db()
+    if conn is None: return []
+    findings: list[dict] = []
+    try:
+        with conn.cursor() as cur:
+            try:
+                cur.execute("""
+                    SELECT to_regclass('public.market_deep_dives'),
+                           to_regclass('public.market_power_scores')
+                """)
+                regs = cur.fetchone() or [None, None]
+                if not (regs[0] and regs[1]): return findings
+                cur.execute("""
+                    SELECT mps.market_slug, mps.market_name, mdd.generated_at
+                      FROM (SELECT DISTINCT ON (market_slug) market_slug, market_name, score
+                              FROM market_power_scores WHERE published = true
+                             ORDER BY market_slug, computed_at DESC) mps
+                      LEFT JOIN market_deep_dives mdd USING (market_slug)
+                     ORDER BY mps.score DESC LIMIT 10
+                """)
+                rows = cur.fetchall()
+            except Exception:
+                return findings
+    finally:
+        try: conn.close()
+        except Exception: pass
+
+    stale = []
+    now = datetime.datetime.now(datetime.timezone.utc)
+    for r in rows:
+        slug, name, gen_at = r[0], r[1], r[2]
+        if gen_at is None:
+            stale.append((slug, name, "never"))
+        elif gen_at.tzinfo is None:
+            gen_at = gen_at.replace(tzinfo=datetime.timezone.utc)
+        if gen_at and (now - gen_at).days > 30:
+            stale.append((slug, name, f"{(now-gen_at).days}d"))
+    if not stale: return findings
+    findings.append({
+        "issue":  "market_deep_dive_stale",
+        "url":    "/api/v1/markets/deep-dive/cron",
+        "count":  len(stale),
+        "detail": (f"{len(stale)} of top-10 DCPI markets have stale or "
+                   f"missing deep-dive narratives. Stalest: "
+                   f"{', '.join(f'{s[1]} ({s[2]})' for s in stale[:3])}. "
+                   f"Cron POST /api/v1/markets/deep-dive/cron to refresh."),
+    })
+    return findings
+
+
+# ── Phase BBBBB (2026-05-16) — event submission deadline detector ──
+def check_event_submission_pending() -> list[dict]:
+    """Flag upcoming industry events that have a submission deadline
+    in the next 30 days AND DC Hub hasn't submitted. Closes the
+    'why aren't we at DCD?' gap."""
+    conn = _db()
+    if conn is None: return []
+    findings: list[dict] = []
+    try:
+        with conn.cursor() as cur:
+            try:
+                cur.execute("SELECT to_regclass('public.industry_events')")
+                if not (cur.fetchone() or [None])[0]: return findings
+                cur.execute("""
+                    SELECT name, submission_deadline, starts_on
+                      FROM industry_events
+                     WHERE dchub_submitted = FALSE
+                       AND submission_deadline IS NOT NULL
+                       AND submission_deadline >= CURRENT_DATE
+                       AND submission_deadline <= CURRENT_DATE + INTERVAL '30 days'
+                     ORDER BY submission_deadline ASC LIMIT 5
+                """)
+                rows = cur.fetchall()
+            except Exception:
+                return findings
+    finally:
+        try: conn.close()
+        except Exception: pass
+    for r in rows:
+        name, deadline, starts = r[0], r[1], r[2]
+        days_left = (deadline - datetime.date.today()).days if deadline else None
+        findings.append({
+            "issue":  f"event_submission_pending:{name[:50]}",
+            "url":    "/events",
+            "count":  days_left or 0,
+            "detail": (f"Event '{name}' has a submission deadline in "
+                       f"{days_left} days ({deadline}) and DC Hub hasn't "
+                       f"submitted. Event runs {starts}. Decision needed."),
+        })
+    return findings
+
+
+# ── Phase CCCCC (2026-05-16) — tenant-coverage detector ──────────
+def check_tenant_coverage_thin() -> list[dict]:
+    """Flag when tenant coverage on top-50 facilities is <20%.
+    Surfaces the gap so the operator knows to invest in tenant
+    data ingest pipelines."""
+    conn = _db()
+    if conn is None: return []
+    findings: list[dict] = []
+    try:
+        with conn.cursor() as cur:
+            try:
+                cur.execute("SELECT to_regclass('public.facility_tenants')")
+                if not (cur.fetchone() or [None])[0]: return findings
+                cur.execute("""
+                    WITH top50 AS (
+                      SELECT id::text AS fid
+                        FROM discovered_facilities
+                       WHERE merged_at IS NULL AND is_duplicate = 0
+                         AND power_mw IS NOT NULL
+                       ORDER BY power_mw DESC LIMIT 50
+                    )
+                    SELECT COUNT(*) FILTER (WHERE ft.tenant_name IS NOT NULL),
+                           COUNT(*)
+                      FROM top50 t
+                      LEFT JOIN facility_tenants ft ON ft.facility_id = t.fid
+                """)
+                r = cur.fetchone() or (0, 0)
+                with_t, total = int(r[0] or 0), int(r[1] or 0)
+            except Exception:
+                return findings
+    finally:
+        try: conn.close()
+        except Exception: pass
+    if total == 0: return findings
+    pct = 100.0 * with_t / total
+    if pct < 20:
+        findings.append({
+            "issue":  "tenant_coverage_thin",
+            "url":    "/api/v1/tenants/coverage",
+            "count":  int(pct),
+            "detail": (f"Tenant coverage on top-50 facilities is only "
+                       f"{pct:.0f}% ({with_t}/{total}). Per-building tenant "
+                       f"data is DCHawk's main remaining moat. Invest in "
+                       f"SEC filings + CRE comps + news NLP ingest pipeline "
+                       f"OR POST /api/v1/tenants/ingest with structured rows."),
+        })
+    return findings
+
+
 # ── Phase YYYY (2026-05-16) — operator-profile gap detector ──────
 def check_operator_profile_gap() -> list[dict]:
     """Surface top operators by facility count that lack rich
@@ -2049,7 +2194,13 @@ def scan_all() -> list[dict]:
                # Phase XXXX competitor announcements
                check_competitor_announcement,
                # Phase YYYY operator-profile gap
-               check_operator_profile_gap):
+               check_operator_profile_gap,
+               # Phase ZZZZ market deep-dive coverage
+               check_market_deep_dive_stale,
+               # Phase BBBBB event submission deadlines
+               check_event_submission_pending,
+               # Phase CCCCC tenant coverage thin
+               check_tenant_coverage_thin):
         try:
             out.extend(fn() or [])
         except Exception as e:
