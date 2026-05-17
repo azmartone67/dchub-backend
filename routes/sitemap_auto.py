@@ -57,6 +57,21 @@ _STATIC_PAGES = [
     ("/announcements", 0.8, "daily"),
     ("/glossary", 0.5, "monthly"),
     ("/faq", 0.5, "monthly"),
+    # ── Phase JJ (2026-05-17): 11 Phase 282 paths newly reachable
+    # after Phase FF-2 unblocked the worker routing. Previously all
+    # 404'd from CF Pages so they were intentionally omitted; now
+    # backend serves them and AI agents can discover them.
+    ("/operators", 0.8, "weekly"),
+    ("/transparency", 0.7, "weekly"),
+    ("/sentinel", 0.6, "daily"),
+    ("/vs", 0.8, "weekly"),
+    ("/bs-translator", 0.7, "weekly"),
+    ("/intelligence", 0.7, "weekly"),
+    ("/power-totals", 0.7, "daily"),
+    ("/pocket-listings", 0.7, "weekly"),
+    ("/spare-capacity", 0.7, "weekly"),
+    ("/events", 0.7, "weekly"),
+    # /transactions is already listed above
 ]
 
 
