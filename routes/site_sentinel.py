@@ -283,7 +283,13 @@ def _scan_one(entry: dict) -> dict:
         "has_nav": None, "stale_days": None, "data_age_src": None,
     }
     try:
-        r = requests.get(url, timeout=10, headers={
+        # Phase FFFF (2026-05-16): timeout 10s → 15s. The brain
+        # heartbeat endpoint has a 9-10s cold-start path; 10s was
+        # right at the edge and Sentinel was falsely flagging it as
+        # timeout. 15s gives slow cold-starts headroom without
+        # making the overall scan meaningfully slower (most pages
+        # respond in <1s anyway).
+        r = requests.get(url, timeout=15, headers={
             "User-Agent":  "DCHub-Site-Sentinel/1.0",
             "Cache-Control": "no-cache",
         }, stream=True)
