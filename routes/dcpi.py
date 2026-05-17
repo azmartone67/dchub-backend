@@ -854,9 +854,44 @@ def api_scores():
         resp.headers["Cache-Control"] = "public, max-age=120, stale-while-revalidate=300"
         return resp
 
-    resp = jsonify(scores=rows, count=len(rows),
-                   sort=sort_by,
-                   filters={"verdict": verdict_filter, "iso": iso_filter, "state": state_filter})
+    # Phase WW (2026-05-17) — soft-paywall the bulk dump.
+    # Live probe showed anon callers were getting all 285 markets (112KB)
+    # for free — the platform's flagship dataset wide open. MCP equivalent
+    # (get_dcpi_market / get_dcpi_scores) is gated at IDENTIFIED. Web was
+    # leaking. Now: anon/free gets the top 10 markets + clear upgrade CTA;
+    # IDENTIFIED+ gets the full set. Single-market lookup
+    # (/api/v1/dcpi/scores/<slug>) stays FREE — that's the discovery hook.
+    _PREVIEW_CAP = 10
+    _gated = False
+    _total_rows = len(rows)
+    try:
+        from util.tier_gate import resolve_tier, Tier as _T
+        _tier, _ = resolve_tier()
+        if _tier < _T.IDENTIFIED and _total_rows > _PREVIEW_CAP and not limit:
+            rows = rows[:_PREVIEW_CAP]
+            _gated = True
+    except Exception:
+        pass
+
+    payload = {"scores": rows, "count": len(rows), "sort": sort_by,
+               "filters": {"verdict": verdict_filter, "iso": iso_filter,
+                           "state": state_filter}}
+    if _gated:
+        payload["_gated"] = True
+        payload["_preview_only"] = True
+        payload["_total_available"] = _total_rows
+        payload["_hidden_count"] = _total_rows - _PREVIEW_CAP
+        payload["_required_tier"] = "IDENTIFIED"
+        payload["_upgrade_cta"] = (
+            f"Showing top {_PREVIEW_CAP} of {_total_rows} DCPI markets. "
+            f"Get all {_total_rows} markets (BUILD/CAUTION/AVOID verdicts, "
+            f"constraint scores, excess power scores, time-to-power) free — "
+            f"claim a key in 30s: POST /api/v1/keys/claim or pass X-API-Key "
+            f"header (auto-trial mints inline on 402 responses)."
+        )
+        payload["_signup_url"] = "https://dchub.cloud/signup"
+
+    resp = jsonify(**payload)
     resp.headers["ETag"] = etag
     resp.headers["Cache-Control"] = "public, max-age=120, stale-while-revalidate=300"
     return resp, 200
