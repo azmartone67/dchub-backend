@@ -63,3 +63,12 @@ jobs:
             -H "X-Admin-Key: $ADMIN_KEY" \
             "https://dchub.cloud/api/v1/markets/deep-dive/cron?count=5" \
             | python3 -m json.tool || true
+      # Phase HHHHH (2026-05-16): external mention hunter (HN + Reddit).
+      - name: External backlink + mention hunt
+        env:
+          ADMIN_KEY: ${{ secrets.DCHUB_ADMIN_KEY }}
+        run: |
+          curl -sS --max-time 60 -X POST \
+            -H "X-Admin-Key: $ADMIN_KEY" \
+            "https://dchub.cloud/api/v1/mentions/hunt" \
+            | python3 -m json.tool || true

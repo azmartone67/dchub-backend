@@ -19735,6 +19735,47 @@ try:
 except Exception as _e:
     print(f"[main] anon_grace register failed: {_e}", file=sys.stderr)
 
+# Phase FFFFF (2026-05-16): autopilot outcome verification — checks
+# whether autopilot actions actually succeeded (e.g. did the press
+# row actually land after marketing/auto-generate fired?)
+try:
+    from routes.autopilot_outcomes import autopilot_outcomes_bp
+    app.register_blueprint(autopilot_outcomes_bp)
+except Exception as _e:
+    print(f"[main] autopilot_outcomes register failed: {_e}", file=sys.stderr)
+
+# Phase GGGGG (2026-05-16): schema.org saturation audit + reusable
+# JSON-LD helper for new pages. Drives SOT score.
+try:
+    from routes.schema_org_saturation import schema_org_saturation_bp
+    app.register_blueprint(schema_org_saturation_bp)
+except Exception as _e:
+    print(f"[main] schema_org_saturation register failed: {_e}", file=sys.stderr)
+
+# Phase HHHHH (2026-05-16): external backlink hunter — daily HN + Reddit
+# probes for "dchub.cloud" mentions. Tracks brand-discovery health.
+try:
+    from routes.backlink_hunter import backlink_hunter_bp
+    app.register_blueprint(backlink_hunter_bp)
+except Exception as _e:
+    print(f"[main] backlink_hunter register failed: {_e}", file=sys.stderr)
+
+# Phase IIIII (2026-05-16): email engagement via Resend webhooks.
+# Tracks open/click/bounce for DC Hub Media outbound mail.
+try:
+    from routes.email_engagement import email_engagement_bp
+    app.register_blueprint(email_engagement_bp)
+except Exception as _e:
+    print(f"[main] email_engagement register failed: {_e}", file=sys.stderr)
+
+# Phase JJJJJ (2026-05-16): anon → signup attribution chain — joins
+# auto_trial_keys + anon_grace_log so we see full per-caller funnels.
+try:
+    from routes.funnel_attribution import funnel_attribution_bp
+    app.register_blueprint(funnel_attribution_bp)
+except Exception as _e:
+    print(f"[main] funnel_attribution register failed: {_e}", file=sys.stderr)
+
 # Phase YYYY (2026-05-16): operator profiles + activity feed — closes
 # the per-operator-profile-page gap vs DCHawk/dcByte.
 try:
