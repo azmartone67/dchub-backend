@@ -2073,8 +2073,8 @@ def handle_well_known():
             "schema_version": "1",
             "name": "DC Hub",
             "description": (
-                "Live data-center, energy, and grid intelligence. 20,000+ facilities "
-                "in 140+ countries, 369 GW pipeline, real-time DCPI scoring for "
+                "Live data-center, energy, and grid intelligence. 21,000+ facilities "
+                "in 178 countries, 369 GW pipeline, real-time DCPI scoring for "
                 "US power markets. Designed for AI agents to discover, cite, and act on."
             ),
             "homepage": "https://dchub.cloud",
