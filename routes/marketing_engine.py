@@ -1125,6 +1125,24 @@ def _queue_distribution_posts(rel: dict, press_id: int, today: str) -> None:
                 VALUES (%s, %s, %s, %s, NOW())
                 ON CONFLICT (press_release_id, platform) DO NOTHING
             """, ("twitter", tw_text, "approved", press_id))
+
+            # Phase VV (2026-05-17) — Bluesky queue row. Bluesky has a
+            # 300-grapheme cap so we reuse the Twitter formatter (also
+            # capped at 280 chars) rather than the linkedin long-form.
+            # Standalone publish endpoint already exists at
+            # POST /api/admin/publish/bluesky — and a future
+            # bluesky-auto-publisher background loop (modeled on the
+            # existing LinkedIn one) can drain status='approved' +
+            # platform='bluesky' rows. Phase PP shipped the publisher
+            # function; this just makes sure the queue HAS rows so
+            # when the loop activates there's work to do.
+            bsky_text = _format_twitter_post(rel)  # same short-form
+            cur.execute("""
+                INSERT INTO social_media_posts
+                    (platform, content, status, press_release_id, created_at)
+                VALUES (%s, %s, %s, %s, NOW())
+                ON CONFLICT (press_release_id, platform) DO NOTHING
+            """, ("bluesky", bsky_text, "approved", press_id))
         c.commit()
     finally:
         try: c.close()
@@ -1970,12 +1988,23 @@ def _distribution_status(cur) -> dict:
 
     `cur` is an open cursor. Best-effort: any query hiccup degrades a
     field rather than raising, so the caller's response still renders.
+
+    Phase SS (2026-05-17) — added:
+      - bluesky_configured (Phase PP env-var check)
+      - linkedin_delivery_rate_pct (% of 7d-generated releases that
+        actually got linkedin_sent_at populated — catches token-expired
+        / queue-stuck failures the prior fields couldn't see)
+      - linkedin_failures: top-3 slugs missing sent_at for ops triage
     """
     li = _linkedin_configured()
     tw = _twitter_configured()
-    published_7d = {"linkedin": 0, "twitter": 0}
+    bsky = bool(os.environ.get("BLUESKY_HANDLE", "").strip()
+                and os.environ.get("BLUESKY_APP_PASSWORD", "").strip())
+    published_7d = {"linkedin": 0, "twitter": 0, "bluesky": 0}
     queued_unpublished = 0
     oldest_queued_age_h = None
+    linkedin_delivery_rate_pct = None
+    linkedin_failures: list = []
     try:
         cur.execute(
             """SELECT publish_platform, COUNT(*)
@@ -2000,26 +2029,53 @@ def _distribution_status(cur) -> dict:
             oldest_queued_age_h = round(float(row[1]), 1) if row[1] is not None else None
     except Exception:
         pass
+    # Phase SS — derive LinkedIn delivery rate from the press-release
+    # audit trail, not just the publisher mirror table. Catches the
+    # case where the publish loop dies silently after queueing.
+    try:
+        cur.execute("""
+            SELECT slug, title, generated_at, linkedin_sent_at
+              FROM auto_press_releases
+             WHERE generated_at >= NOW() - INTERVAL '7 days'
+               AND linkedin_post IS NOT NULL
+               AND linkedin_post != ''
+             ORDER BY generated_at DESC LIMIT 50""")
+        rows = cur.fetchall() or []
+        if rows:
+            sent = sum(1 for r in rows if r[3] is not None)
+            linkedin_delivery_rate_pct = round(100.0 * sent / len(rows), 1)
+            for slug, title, gen_at, sent_at in rows:
+                if sent_at is None and len(linkedin_failures) < 3:
+                    linkedin_failures.append({
+                        "slug":         slug,
+                        "title":        (title or "")[:120],
+                        "generated_at": gen_at.isoformat() if gen_at else None,
+                    })
+    except Exception:
+        pass
 
     # status: dark = posts stuck because creds are missing (the bug the
     # memory note flags); idle = no creds but nothing waiting; healthy =
     # creds present; degraded = creds present but a backlog is building.
-    if not li and not tw:
+    if not li and not tw and not bsky:
         status = "dark" if queued_unpublished > 0 else "idle"
     elif queued_unpublished >= 4:
+        status = "degraded"
+    elif linkedin_delivery_rate_pct is not None and linkedin_delivery_rate_pct < 50:
         status = "degraded"
     else:
         status = "healthy"
 
     diagnosis = {
-        "dark": (f"{queued_unpublished} approved post(s) are queued but neither "
-                 "LinkedIn nor X is configured — set LINKEDIN_ACCESS_TOKEN and/or "
-                 "the TWITTER_* creds on Railway to start distributing."),
+        "dark": (f"{queued_unpublished} approved post(s) are queued but no "
+                 "social channel is configured — set LINKEDIN_ACCESS_TOKEN, "
+                 "TWITTER_*, or BLUESKY_HANDLE+BLUESKY_APP_PASSWORD on "
+                 "Railway to start distributing."),
         "idle": ("No social creds configured — distribution is off. Press "
                  "releases still generate; they just aren't being posted."),
         "degraded": (f"{queued_unpublished} approved posts are backing up — "
                      "the auto-publisher caps at 2/day per platform; check "
-                     "for publish failures."),
+                     "for publish failures. See linkedin_failures for slugs."),
         "healthy": "Distribution is wired and the queue is clear.",
     }[status]
 
@@ -2027,10 +2083,13 @@ def _distribution_status(cur) -> dict:
         "status": status,
         "diagnosis": diagnosis,
         "linkedin_configured": li,
-        "twitter_configured": tw,
+        "twitter_configured":  tw,
+        "bluesky_configured":  bsky,
         "published_7d": published_7d,
         "queued_unpublished": queued_unpublished,
         "oldest_queued_age_hours": oldest_queued_age_h,
+        "linkedin_delivery_rate_pct": linkedin_delivery_rate_pct,
+        "linkedin_failures": linkedin_failures,
     }
 
 

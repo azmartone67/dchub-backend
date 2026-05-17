@@ -6043,6 +6043,100 @@ def handle_error(e):
         response.headers['Access-Control-Allow-Methods'] = 'GET, POST, PUT, DELETE, OPTIONS'
     return response
 
+
+# Phase UU (2026-05-17) — Smart 404 for /api/v1/* paths.
+# The Round-3 diagnostic surfaced two common-but-wrong paths AI agents
+# repeatedly probe: /api/v1/pulse (real: /api/v1/alive/pulse) and
+# /api/v1/facilities/search (real: /api/v1/agent/facilities). The
+# default 404 is silent — agents bounce off and never discover the
+# right path. This handler does a fuzzy match against all registered
+# /api/v1/* routes and returns up to 3 suggestions in the response body.
+# Agents that pretty-print the body (Claude, Cursor, Cline) immediately
+# learn the correct path. Zero risk: only fires for 404, only on /api/.
+_FUZZY_404_CACHE_ROUTES = []   # populated lazily on first 404
+_FUZZY_404_COMMON = {
+    # Hand-curated known-wrong → known-right (saves a Levenshtein pass)
+    '/api/v1/pulse':              '/api/v1/alive/pulse',
+    '/api/v1/facilities/search':  '/api/v1/agent/facilities',
+    '/api/v1/funnel/attribution': '/api/v1/mcp/funnel/attribution',
+    '/api/v1/citations':          '/api/v1/ai-citations/snapshot',
+    '/api/v1/citation':           '/api/v1/ai-citations/snapshot',
+    '/api/v1/mentions':           '/api/v1/mentions/recent',
+    '/api/v1/health':             '/api/v1/health',  # exists — but ops asks /health/api
+    '/api/v1/freshness':          '/api/v1/freshness',
+    '/api/v1/operators':          '/operators',
+    '/api/v1/transactions/list':  '/api/v1/transactions',
+}
+
+
+def _collect_api_routes():
+    """Build a cached list of /api/v1/* route paths for fuzzy match."""
+    global _FUZZY_404_CACHE_ROUTES
+    if _FUZZY_404_CACHE_ROUTES:
+        return _FUZZY_404_CACHE_ROUTES
+    paths = set()
+    try:
+        for rule in app.url_map.iter_rules():
+            p = str(rule)
+            if p.startswith('/api/v1/'):
+                # Strip Flask variable parts like <slug> → empty so we
+                # match the prefix shape rather than the exact form.
+                norm = ''.join(c if c not in '<>' else '' for c in p)
+                paths.add(norm)
+    except Exception:
+        pass
+    _FUZZY_404_CACHE_ROUTES = sorted(paths)
+    return _FUZZY_404_CACHE_ROUTES
+
+
+def _suggest_paths(missing_path, limit=3):
+    """Cheap-but-effective path suggestions. Hand-curated map first;
+    then prefix match; then character-set overlap as the tiebreaker."""
+    if missing_path in _FUZZY_404_COMMON:
+        return [_FUZZY_404_COMMON[missing_path]]
+    routes = _collect_api_routes()
+    if not routes:
+        return []
+    # Score each route by (a) longest shared prefix + (b) shared char set
+    miss_chars = set(missing_path.lower())
+    def _score(route):
+        # Shared prefix length
+        i = 0
+        for a, b in zip(route.lower(), missing_path.lower()):
+            if a != b: break
+            i += 1
+        # Char overlap (Jaccard)
+        rc = set(route.lower())
+        jac = (len(miss_chars & rc) / max(1, len(miss_chars | rc)))
+        return (i * 3) + (jac * 10)
+    scored = sorted(routes, key=_score, reverse=True)
+    return scored[:limit]
+
+
+@app.errorhandler(404)
+def smart_404(e):
+    path = request.path or ""
+    if not path.startswith('/api/'):
+        # Non-API 404 — let the generic handler take it (HTML pages
+        # rely on CF Pages' 404.html fallback).
+        response = jsonify({'success': False, 'error': str(e), 'path': path})
+        response.status_code = 404
+        return response
+    suggestions = _suggest_paths(path)
+    response = jsonify({
+        'success': False,
+        'error':   '404 Not Found',
+        'path':    path,
+        'suggestions': suggestions,
+        'hint':    ('AI agent? See https://dchub.cloud/.well-known/ai-agents.json '
+                    'for the canonical integration map.'),
+    })
+    response.status_code = 404
+    origin = request.headers.get('Origin', '')
+    if origin in ALLOWED_ORIGINS:
+        response.headers['Access-Control-Allow-Origin'] = origin
+    return response
+
 # =============================================================================
 # ENERGY ROUTES BLUEPRINT (Phase 2 Extract 1)
 # 31 routes: GridStatus, FCC, EPA, PeeringDB, EIA, HIFLD, Oil & Gas
