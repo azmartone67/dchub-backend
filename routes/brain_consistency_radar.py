@@ -1191,6 +1191,58 @@ def check_enterprise_bot_present() -> list[dict]:
     return findings
 
 
+# ── Phase EEEEE (2026-05-16) — MCP volume regression detector ────
+def check_mcp_volume_regression() -> list[dict]:
+    """Fires when 7-day MCP volume drops >20% vs trailing 28-day daily
+    average. User flagged this after a 60K → 37K weekly drop (~38%)
+    following XXX's tier tightening. EEEEE shipped to recover; this
+    detector keeps the brain honest about whether the recovery worked."""
+    conn = _db()
+    if conn is None: return []
+    findings: list[dict] = []
+    try:
+        with conn.cursor() as cur:
+            try:
+                cur.execute("SELECT to_regclass('public.mcp_call_log')")
+                if not (cur.fetchone() or [None])[0]: return findings
+                cur.execute("""
+                    SELECT
+                      COUNT(*) FILTER (WHERE timestamp >= NOW() - INTERVAL '7 days') AS recent_7d,
+                      COUNT(*) FILTER (WHERE timestamp >= NOW() - INTERVAL '35 days'
+                                       AND timestamp <  NOW() - INTERVAL '7 days') AS baseline_28d
+                      FROM mcp_call_log
+                """)
+                r = cur.fetchone() or (0, 0)
+                recent, baseline = int(r[0] or 0), int(r[1] or 0)
+            except Exception:
+                return findings
+    finally:
+        try: conn.close()
+        except Exception: pass
+
+    if baseline < 5000:
+        return findings  # not enough baseline to judge
+    # Compare recent 7d against baseline 28d daily average × 7
+    baseline_weekly = baseline / 4.0  # 28 days → daily avg → 7-day equivalent
+    if baseline_weekly < 1:
+        return findings
+    drop_pct = 100.0 * (baseline_weekly - recent) / baseline_weekly
+    if drop_pct > 20:
+        findings.append({
+            "issue":  "mcp_volume_regression",
+            "url":    "/api/v1/mcp/funnel",
+            "count":  int(drop_pct),
+            "detail": (f"MCP volume regressed: last 7 days = {recent:,} calls, "
+                       f"baseline 28-day weekly avg = {int(baseline_weekly):,} calls "
+                       f"({drop_pct:.1f}% drop). EEEEE anon grace mode should "
+                       f"recover this — check /api/v1/grace/stats for adoption. "
+                       f"If recovery doesn't fire within 7 days, the FREE tier "
+                       f"may need further loosening OR the grace cap raised "
+                       f"from 5/24h to 10/24h."),
+        })
+    return findings
+
+
 # ── Phase DDDDD (2026-05-16) — auto-trial conversion-rate detector ──
 def check_auto_trial_conversion() -> list[dict]:
     """Tracks whether the auto-mint-trial flow (DDDDD) is actually
@@ -2298,7 +2350,9 @@ def scan_all() -> list[dict]:
                # Phase DDDDD auto-trial conversion
                check_auto_trial_conversion,
                # Phase DDDDD funnel concentration
-               check_mcp_funnel_concentration):
+               check_mcp_funnel_concentration,
+               # Phase EEEEE volume regression
+               check_mcp_volume_regression):
         try:
             out.extend(fn() or [])
         except Exception as e:
