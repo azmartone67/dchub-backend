@@ -42,7 +42,15 @@ anon_grace_bp = Blueprint("anon_grace", __name__)
 
 _ADMIN_KEY  = (os.environ.get("DCHUB_ADMIN_KEY")
                or os.environ.get("DCHUB_INTERNAL_KEY") or "").strip()
-_GRACE_CAP_PER_24H = int(os.environ.get("DCHUB_ANON_GRACE_CAP", "5"))
+# Phase NN (2026-05-17) — bump default 5 → 25. Phase HH revealed the
+# truth: agents getting trial keys but never coming back (0 auto-trial
+# conversions on 7,769 paywall hits). Generous grace means more agents
+# get DATA without ever seeing a paywall AND more chances to discover
+# the auto_trial_key field in success-response metadata. The 5-cap was
+# too aggressive — most agents bounce off the paywall within their
+# first session before they have a chance to learn the conversion path.
+# Env override `DCHUB_ANON_GRACE_CAP` still works for ops dial-back.
+_GRACE_CAP_PER_24H = int(os.environ.get("DCHUB_ANON_GRACE_CAP", "25"))
 
 
 def _conn():

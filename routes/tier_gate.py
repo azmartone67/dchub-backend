@@ -121,7 +121,17 @@ def _resolve_caller_tier() -> tuple[str, dict]:
 def _gate_response(current_tier: str, required_tier: str,
                    gate_id: str, preview: dict | None = None):
     """Standardized 402 response — conversion-friendly. Includes
-    inline Stripe checkout URL + preview of what's behind the wall."""
+    inline Stripe checkout URL + preview of what's behind the wall.
+
+    Phase NN (2026-05-17) — Funnel rescue. The diagnostic showed 7,769
+    paywall hits / 0 conversions on auto-trial keys because agents
+    don't parse JSON bodies of 402 responses — they treat 402 as a
+    hard error. Now we ALSO put the auto-trial key in HTTP headers
+    (X-Trial-Key, X-Trial-Key-Expires, Retry-After) so any agent
+    using standard HTTP middleware can detect + retry without parsing
+    the body. Adds a WWW-Authenticate header pointing at the claim
+    endpoint per RFC 7235 so smart clients can self-onboard.
+    """
     required_upper = required_tier.upper()
     checkout_key = {"DEVELOPER": "developer_monthly",
                     "PRO":       "pro_monthly",
@@ -130,6 +140,19 @@ def _gate_response(current_tier: str, required_tier: str,
     upgrade_url = (f"https://dchub.cloud/pricing"
                    f"?utm_source=rest_gate&utm_medium={gate_id}"
                    f"&utm_campaign={required_upper.lower()}_upgrade")
+
+    # Phase NN — auto-mint a trial key INLINE so the agent can retry
+    # immediately. Mirrors the MCP gatekeeper flow in mcp_gatekeeper.py.
+    auto_trial = None
+    if current_tier == "FREE" and required_upper in ("IDENTIFIED", "DEVELOPER"):
+        try:
+            from routes.auto_trial import mint_trial_for_request
+            t = mint_trial_for_request(request, gate_id)
+            if t.get("ok"):
+                auto_trial = t
+        except Exception:
+            pass
+
     payload = {
         "error":             "upgrade_required",
         "gate":              gate_id,
@@ -148,8 +171,43 @@ def _gate_response(current_tier: str, required_tier: str,
             if current_tier == "FREE" else None
         ),
     }
+    if auto_trial:
+        payload["auto_trial_key"]         = auto_trial.get("api_key")
+        payload["auto_trial_expires_at"]  = auto_trial.get("expires_at")
+        payload["auto_trial_daily_calls"] = auto_trial.get("daily_calls", 200)
+        payload["message"] = (
+            f"✨ Auto-trial key minted: `{auto_trial.get('api_key')}` "
+            f"(200 calls/day, 30-day expiry). Retry with header "
+            f"`X-API-Key: {auto_trial.get('api_key')}` and this call "
+            f"will succeed."
+        )
+
     resp = jsonify(payload)
-    resp.headers["Access-Control-Allow-Origin"] = "*"
+    resp.headers["Access-Control-Allow-Origin"]    = "*"
+    resp.headers["Access-Control-Expose-Headers"]  = (
+        "X-Trial-Key, X-Trial-Key-Expires, Retry-After, Link, WWW-Authenticate"
+    )
+    # Phase NN — HTTP-header trial-key delivery so middleware can grab
+    # the key without parsing the body. Standard HTTP retry-loop
+    # patterns will pick this up automatically.
+    if auto_trial and auto_trial.get("api_key"):
+        resp.headers["X-Trial-Key"]         = auto_trial.get("api_key")
+        if auto_trial.get("expires_at"):
+            resp.headers["X-Trial-Key-Expires"] = str(auto_trial.get("expires_at"))
+        resp.headers["Retry-After"]         = "0"
+        # RFC 8288 Link header pointing at the redemption endpoint
+        resp.headers["Link"] = (
+            '<https://dchub.cloud/api/v1/keys/auto-trial/redeem>; '
+            'rel="api-key-redemption"; '
+            'type="application/json"'
+        )
+    # RFC 7235 WWW-Authenticate signals an auth challenge with a
+    # discoverable claim endpoint
+    resp.headers["WWW-Authenticate"] = (
+        f'X-API-Key realm="dchub.cloud", '
+        f'claim="https://dchub.cloud/api/v1/keys/claim", '
+        f'tier="{required_upper}"'
+    )
     return resp, 402
 
 
