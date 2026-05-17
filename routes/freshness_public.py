@@ -163,8 +163,24 @@ DOMAIN_SLA_HOURS = {
 
 
 def _domain_of(surface_name: str) -> str:
-    """Map a surface name to one of the SLA domains."""
+    """Map a surface name to one of the SLA domains.
+
+    Phase YY-2 (2026-05-17): EXCLUDE agent-discovery surfaces
+    (`/ai/learn/*`, `/api/agent/*`, `/ai/schema/*`, `/api/_diagnose/*`)
+    from data-freshness SLAs. These track 'last-pinged-by-an-agent'
+    timestamps, not underlying data age. Misclassifying them was the
+    root cause of Phase TT's persistent ISO/news 'breach' findings
+    (worst was always 29-35h because those endpoints get hit by AI
+    crawlers on their own cadence — has nothing to do with our cron).
+    Real data-source surfaces (e.g. /api/v1/grid/<iso>) are still
+    monitored at their proper SLA.
+    """
     s = (surface_name or "").lower()
+    # ── Agent-discovery / learning surfaces — measured as 'other'
+    # (no SLA reported) so they don't pollute data-source breach signal.
+    if (s.startswith("/ai/learn") or s.startswith("/ai/schema")
+            or s.startswith("/api/agent") or s.startswith("/api/_diagnose")):
+        return "other"
     if "grid" in s or "iso" in s: return "iso"
     if "renewable" in s or "solar" in s or "wind" in s: return "renewable"
     if "rate" in s or "energy" in s and "gas" not in s: return "power"
