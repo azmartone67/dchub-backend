@@ -249,9 +249,16 @@ def check_tier_consistency() -> list[dict]:
             continue
         # Only flag if the structured min_tier is HIGHER than the MCP tier.
         web_min_tier = (payload.get("min_tier") or "").lower()
-        WEB_TIER_RANK = {"free": 1, "identified": 2, "developer": 3,
-                          "pro": 4, "enterprise": 5}
-        web_rank = WEB_TIER_RANK.get(web_min_tier, 0)
+        # Phase QQ-fix (2026-05-17): WEB_TIER_RANK was off-by-one — it
+        # mapped "free"→1, "identified"→2 but Tier.FREE.value=0 and
+        # Tier.IDENTIFIED.value=1. Result: an IDENTIFIED-tier web
+        # endpoint compared to an IDENTIFIED MCP tool showed
+        # web_rank(2) > mcp_rank(1) and fired a false-positive
+        # "web higher than MCP" flag for get_energy_prices. Align the
+        # ranks to the Tier enum so equal tiers don't trip the gate.
+        WEB_TIER_RANK = {"free": 0, "identified": 1, "developer": 2,
+                          "pro": 3, "enterprise": 4}
+        web_rank = WEB_TIER_RANK.get(web_min_tier, -1)
         mcp_rank = mcp_tier.value if hasattr(mcp_tier, "value") else 0
         if web_min_tier and web_rank > mcp_rank:
             findings.append({
