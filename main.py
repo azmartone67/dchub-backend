@@ -19726,6 +19726,15 @@ try:
 except Exception as _e:
     print(f"[main] auto_trial register failed: {_e}", file=sys.stderr)
 
+# Phase EEEEE (2026-05-16): VOLUME RECOVERY — anon grace mode lets
+# the first 5 calls/24h per (ip+ua) bypass the IDENTIFIED gate,
+# returning data + trial key in metadata. Restores 60K-inquiry baseline.
+try:
+    from routes.anon_grace import anon_grace_bp
+    app.register_blueprint(anon_grace_bp)
+except Exception as _e:
+    print(f"[main] anon_grace register failed: {_e}", file=sys.stderr)
+
 # Phase YYYY (2026-05-16): operator profiles + activity feed — closes
 # the per-operator-profile-page gap vs DCHawk/dcByte.
 try:

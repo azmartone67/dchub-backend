@@ -48,18 +48,34 @@ TIER_NAME = {
 # RATE LIMITS
 # ═══════════════════════════════════════════════════════════════
 
+# Phase EEEEE (2026-05-16): per-request grace metadata holder.
+# Flask + WSGI is per-thread, so a thread-local holder is safe for
+# stashing the grace/auto-trial metadata from _gate() so the tool
+# handler can attach it to the response payload.
+import threading as _threading
+_grace_local = _threading.local()
+
+def _set_pending_grace_meta(meta: dict) -> None:
+    _grace_local.meta = meta
+
+def get_pending_grace_meta() -> dict | None:
+    """Tool handlers call this after their response is built to attach
+    the grace + auto-trial metadata. Returns None if no grace was used
+    for this request. Auto-clears so the next request starts fresh."""
+    m = getattr(_grace_local, "meta", None)
+    if m is not None:
+        _grace_local.meta = None
+    return m
+
+
 LIMITS = {
-    # Phase XXX (2026-05-16) — conversion-engine tightening. User
-    # said: "we need to gate more data, to incent people to upgrade,
-    # right now they aren't doing it." 4,000+ MCP calls / 0 paid
-    # conversions in 14 days = the free tier was too generous to
-    # need an upgrade. Tighter:
-    #   FREE      50/day → 25/day, max_rows 5 → 3 (real teaser)
-    #   IDENTIFIED 200 → 200 (kept — email-only is fine bridge)
-    #   DEVELOPER 2000 → 2000 (kept)
-    # Net: free users hit the cap 2× faster, see the upgrade screen
-    # 2× sooner. IDENTIFIED becomes the obvious next click.
-    Tier.FREE:       {"day": 25,     "minute": 3,   "max_rows": 3,    "cooldown": 3.0},
+    # Phase EEEEE (2026-05-16) — VOLUME RECOVERY. The XXX tightening
+    # (50→25 daily, 5→3 rows) was too aggressive and likely caused a
+    # ~38% drop in 7-day MCP volume (60K → 37K). Reverting cap to 50
+    # and rows to 5. Lead capture now happens via DDDDD's auto-mint
+    # trial keys + EEEEE's anon grace mode (first 5 calls succeed
+    # regardless of tier), not via cap-pressure.
+    Tier.FREE:       {"day": 50,     "minute": 5,   "max_rows": 5,    "cooldown": 2.0},
     Tier.IDENTIFIED: {"day": 200,    "minute": 15,  "max_rows": 20,   "cooldown": 1.0},
     Tier.DEVELOPER:  {"day": 2000,   "minute": 60,  "max_rows": 100,  "cooldown": 0},
     Tier.PRO:        {"day": 10000,  "minute": 200, "max_rows": 500,  "cooldown": 0},
@@ -585,6 +601,42 @@ def _gate(tool_name: str, api_key: Optional[str] = None,
 
     # Tier check
     if tier < required:
+        # Phase EEEEE (2026-05-16): ANON GRACE MODE — never bounce an
+        # anonymous caller off an IDENTIFIED tool for their first 5
+        # calls in 24h. Volume recovery move — the XXX tightening cost
+        # ~38% of weekly inquiries. Returns None (gate passes) and
+        # silently mints a trial key + asks the caller's response to
+        # carry it in metadata via _grant_grace_response_meta().
+        if tier == Tier.FREE and required == Tier.IDENTIFIED:
+            try:
+                from routes.anon_grace import grace_remaining, consume_grace
+                from routes.auto_trial import mint_trial_for_request
+                from flask import request as _flask_req
+                if grace_remaining(_flask_req) > 0:
+                    # Mint a trial key the agent can use on follow-ups
+                    trial = mint_trial_for_request(_flask_req, tool_name)
+                    trial_key = trial.get("api_key") if trial.get("ok") else None
+                    if consume_grace(_flask_req, tool_name, trial_key):
+                        # Stash trial key on a module-level so the tool
+                        # handler can attach it to its response metadata.
+                        # The handler reads via get_pending_grace_meta().
+                        _set_pending_grace_meta({
+                            "anon_grace_used":              True,
+                            "anon_grace_calls_remaining":   grace_remaining(_flask_req),
+                            "anon_grace_cap":               5,
+                            "auto_trial_key":               trial_key,
+                            "auto_trial_daily_calls":       200,
+                            "auto_trial_expires_at":        trial.get("expires_at") if trial.get("ok") else None,
+                            "promotion_note": (
+                                "You're using anon grace. After this, a trial key "
+                                "auto-mints (or claim a permanent free key now at "
+                                "POST /api/v1/keys/claim)."
+                            ),
+                        })
+                        return None  # PASS — gate doesn't fire
+            except Exception:
+                pass  # any grace failure → fall through to paywall
+
         teaser = TOOL_TEASER.get(tool_name)
         price = TIER_PRICE.get(required, "")
         # Phase DDDDD (2026-05-16): if FREE caller hits IDENTIFIED gate,

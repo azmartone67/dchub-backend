@@ -548,6 +548,13 @@ _PATTERN_LIBRARY: dict[str, dict[str, Any]] = {
         "use_admin":   False,
         "description": "Informational: top-5 tools generate the vast majority of paywall signals. Phase DDDDD auto-trial flow targets exactly these. If conversion rate doesn't lift within 7 days of DDDDD deploy, the auto-trial response message is the next thing to iterate.",
     },
+    # Phase EEEEE — volume regression
+    "mcp_volume_regression": {
+        "action":      lambda f: (None, None),
+        "method":      None,
+        "use_admin":   False,
+        "description": "Escalation-only: 7-day MCP volume dropped >20% vs baseline. Phase EEEEE anon grace mode should recover. Check /api/v1/grace/stats. If recovery stalls, raise DCHUB_ANON_GRACE_CAP env or further loosen FREE-tier caps.",
+    },
     "dchub_media_press_weak": {
         "action":      lambda f: (None, None),
         "method":      None,
