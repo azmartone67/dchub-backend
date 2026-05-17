@@ -75,7 +75,7 @@
 // CONFIGURATION
 // ============================================================
 const RAILWAY_BACKEND = 'https://dchub-backend-production.up.railway.app';
-const WORKER_VERSION = '4.13.0-rrr';
+const WORKER_VERSION = '4.14.0-qa-sweep';
 const _DCHUB_BUILD_MARKER = 'rebuild-1777448239';
 
 const MCP_CACHE_STALE_TTL = 86400;
@@ -1393,6 +1393,10 @@ export default {
         '/bs-translator',
         '/power-totals',  // /dcpi/totals already routes via /dcpi prefix
         '/intelligence',  // backend's customer-facing pulse page
+        // Phase QA-sweep-2 (2026-05-16): pages shipped after RRR
+        '/pocket-listings',
+        '/spare-capacity',
+        '/sentinel',
       ]);
       if (PHASE_282_RAILWAY_PATHS.has(pathname)) {
         try {
