@@ -555,6 +555,27 @@ _PATTERN_LIBRARY: dict[str, dict[str, Any]] = {
         "use_admin":   False,
         "description": "Escalation-only: 7-day MCP volume dropped >20% vs baseline. Phase EEEEE anon grace mode should recover. Check /api/v1/grace/stats. If recovery stalls, raise DCHUB_ANON_GRACE_CAP env or further loosen FREE-tier caps.",
     },
+    # Phase FFFFF — autopilot outcome verification: AUTONOMOUS
+    "autopilot_action_unverified": {
+        "action":      lambda f: ("/api/v1/brain/autopilot/verify-pending", {}),
+        "method":      "POST",
+        "use_admin":   True,
+        "description": "Autonomous: auto-fires the outcome verifier when actions accumulate unverified. 5th autonomous pattern. Closes the brain's biggest blind spot: knowing whether autopilot ACTUALLY succeeded.",
+    },
+    # Phase GGGGG — schema.org coverage
+    "schema_org_coverage_low": {
+        "action":      lambda f: (None, None),
+        "method":      None,
+        "use_admin":   False,
+        "description": "Escalation-only: <80% of critical pages have proper schema.org JSON-LD. AI agents prioritize structured data when fact-citing — this directly drags SOT score. Worklist: /api/v1/schema-org/missing.",
+    },
+    # Phase HHHHH — external mentions dropoff
+    "external_mentions_dropoff": {
+        "action":      lambda f: (None, None),
+        "method":      None,
+        "use_admin":   False,
+        "description": "Escalation-only: HN/Reddit mentions dropped 40%+ WoW. Brand discovery stalling. Consider auto-posting ShowHN OR submitting to r/datacenter, r/sysadmin.",
+    },
     "dchub_media_press_weak": {
         "action":      lambda f: (None, None),
         "method":      None,

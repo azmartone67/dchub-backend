@@ -1191,6 +1191,127 @@ def check_enterprise_bot_present() -> list[dict]:
     return findings
 
 
+# ── Phase FFFFF (2026-05-16) — autopilot outcome verification ────
+def check_autopilot_action_unverified() -> list[dict]:
+    """Fires when autopilot actions older than 1h have no outcome
+    record. Means FFFFF verifier cron hasn't run OR verifier
+    function is missing for that pattern. Closes the brain's biggest
+    blind spot: knowing if an action actually succeeded."""
+    conn = _db()
+    if conn is None: return []
+    findings: list[dict] = []
+    try:
+        with conn.cursor() as cur:
+            try:
+                cur.execute("""
+                    SELECT to_regclass('public.brain_autopilot_actions'),
+                           to_regclass('public.autopilot_outcomes')
+                """)
+                regs = cur.fetchone() or [None, None]
+                if not regs[0]: return findings
+                # Count actions fired 1h-24h ago without outcomes
+                if regs[1]:
+                    cur.execute("""
+                        SELECT COUNT(*) FROM brain_autopilot_actions a
+                         WHERE a.started_at <= NOW() - INTERVAL '1 hour'
+                           AND a.started_at >= NOW() - INTERVAL '24 hours'
+                           AND a.outcome = 'executed_ok'
+                           AND NOT EXISTS (
+                             SELECT 1 FROM autopilot_outcomes o
+                              WHERE o.autopilot_action_id = a.id
+                           )
+                    """)
+                    n = int((cur.fetchone() or [0])[0] or 0)
+                else:
+                    n = 0  # table missing — verifier hasn't deployed
+            except Exception:
+                return findings
+    finally:
+        try: conn.close()
+        except Exception: pass
+    if n < 5: return findings
+    return [{
+        "issue":  "autopilot_action_unverified",
+        "url":    "/api/v1/brain/autopilot/outcomes",
+        "count":  n,
+        "detail": (f"{n} autopilot actions fired in last 24h are not yet "
+                   f"verified. Cron POST /api/v1/brain/autopilot/verify-pending "
+                   f"should run every 15 min. Either the cron isn't firing, "
+                   f"OR the verifier function for the action's pattern is "
+                   f"missing from _VERIFIERS dict in routes/autopilot_outcomes.py."),
+    }]
+
+
+# ── Phase GGGGG (2026-05-16) — schema.org coverage gap ───────────
+def check_schema_org_coverage_low() -> list[dict]:
+    """Fires when audit shows <80% schema coverage on critical pages.
+    Direct attack on the 10/100 SOT score — AI agents fact-cite
+    structured data first."""
+    try:
+        from routes.schema_org_saturation import run_audit
+        a = run_audit()
+    except Exception:
+        return []
+    pct = a.get("coverage_pct", 100)
+    if pct < 80:
+        return [{
+            "issue":  "schema_org_coverage_low",
+            "url":    "/api/v1/schema-org/missing",
+            "count":  int(pct),
+            "detail": (f"Schema.org coverage is {pct}% — below 80% target. "
+                       f"{a.get('missing',0)} pages have no JSON-LD; "
+                       f"{a.get('wrong_type',0)} have wrong @type. AI agents "
+                       f"prioritize structured data when fact-citing — "
+                       f"this directly drags the source-of-truth score. "
+                       f"Worklist: /api/v1/schema-org/missing."),
+        }]
+    return []
+
+
+# ── Phase HHHHH (2026-05-16) — external mentions dropoff ─────────
+def check_external_mentions_dropoff() -> list[dict]:
+    """Fires when 7d external mention count drops >40% vs trailing
+    28d daily avg. Counterpart to TTTT for human-mention signal."""
+    conn = _db()
+    if conn is None: return []
+    findings: list[dict] = []
+    try:
+        with conn.cursor() as cur:
+            try:
+                cur.execute("SELECT to_regclass('public.external_mentions')")
+                if not (cur.fetchone() or [None])[0]: return findings
+                cur.execute("""
+                    SELECT
+                      COUNT(*) FILTER (WHERE discovered_at >= NOW() - INTERVAL '7 days') AS recent,
+                      COUNT(*) FILTER (WHERE discovered_at >= NOW() - INTERVAL '35 days'
+                                       AND discovered_at <  NOW() - INTERVAL '7 days') AS baseline
+                      FROM external_mentions
+                """)
+                r = cur.fetchone() or (0, 0)
+                recent, baseline = int(r[0] or 0), int(r[1] or 0)
+            except Exception:
+                return findings
+    finally:
+        try: conn.close()
+        except Exception: pass
+    if baseline < 20: return findings  # not enough baseline
+    baseline_weekly = baseline / 4.0
+    if baseline_weekly < 1: return findings
+    drop_pct = 100.0 * (baseline_weekly - recent) / baseline_weekly
+    if drop_pct > 40:
+        findings.append({
+            "issue":  "external_mentions_dropoff",
+            "url":    "/api/v1/mentions/stats",
+            "count":  int(drop_pct),
+            "detail": (f"External (HN/Reddit) DC Hub mentions dropped "
+                       f"{drop_pct:.0f}% week-over-week ({int(baseline_weekly)} → {recent}). "
+                       f"Combined with the 10/100 SOT score this suggests "
+                       f"brand discovery is stalling. Consider auto-posting "
+                       f"to ShowHN or industry subreddits."),
+        })
+    return findings
+
+
 # ── Phase EEEEE (2026-05-16) — MCP volume regression detector ────
 def check_mcp_volume_regression() -> list[dict]:
     """Fires when 7-day MCP volume drops >20% vs trailing 28-day daily
@@ -2352,7 +2473,13 @@ def scan_all() -> list[dict]:
                # Phase DDDDD funnel concentration
                check_mcp_funnel_concentration,
                # Phase EEEEE volume regression
-               check_mcp_volume_regression):
+               check_mcp_volume_regression,
+               # Phase FFFFF autopilot outcome verification
+               check_autopilot_action_unverified,
+               # Phase GGGGG schema.org coverage
+               check_schema_org_coverage_low,
+               # Phase HHHHH external mentions dropoff
+               check_external_mentions_dropoff):
         try:
             out.extend(fn() or [])
         except Exception as e:

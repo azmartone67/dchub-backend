@@ -14,3 +14,15 @@ jobs:
       - run: |
           curl -sS -X POST "https://dchub.cloud/api/v1/heartbeat/auto?batch=250" \
             | python3 -m json.tool
+      # Phase FFFFF (2026-05-16): also verify pending autopilot outcomes
+      # on every heartbeat tick. Cheap (small SQL) and closes the
+      # 'did the action actually succeed?' blind spot every 15min.
+      - name: Verify pending autopilot outcomes
+        env:
+          ADMIN_KEY: ${{ secrets.DCHUB_ADMIN_KEY }}
+        run: |
+          if [ -z "$ADMIN_KEY" ]; then exit 0; fi
+          curl -sS --max-time 30 -X POST \
+            -H "X-Admin-Key: $ADMIN_KEY" \
+            "https://dchub.cloud/api/v1/brain/autopilot/verify-pending" \
+            | python3 -m json.tool || true
