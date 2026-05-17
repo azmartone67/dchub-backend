@@ -166,6 +166,7 @@ def latest():
     return jsonify(iso="NYISO", metrics=list(by_metric.values())), 200
 
 
+# AUTO-REPAIR: duplicate route '/health' also in index_api.py:516 — review and remove one
 @iso_nyiso_bp.route("/health", methods=["GET"])
 def health():
     with _conn() as c, c.cursor() as cur:
