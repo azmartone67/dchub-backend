@@ -466,6 +466,13 @@ _PATTERN_LIBRARY: dict[str, dict[str, Any]] = {
         "use_admin":   True,
         "description": "Autonomous: auto-triggers /api/v1/marketing/auto-generate when DC Hub Media is silent for 7+ days. The user explicitly asked for the brain to wake DC Hub Media up; this is the mechanism. Rate-limited like every other autopilot action so it can't spam.",
     },
+    # Phase SSSS — AUTONOMOUS auto-fire on winback pitches unsent.
+    "winback_pitches_unsent": {
+        "action":      lambda f: ("/api/v1/media/winback/deliver", {}),
+        "method":      "POST",
+        "use_admin":   True,
+        "description": "Autonomous: auto-triggers /api/v1/media/winback/deliver when pitches exist but no deliveries in 14 days. This is the second autonomous pattern (after dchub_media_press_silent) — the brain doesn't just escalate, it acts.",
+    },
     "dchub_media_press_weak": {
         "action":      lambda f: (None, None),
         "method":      None,

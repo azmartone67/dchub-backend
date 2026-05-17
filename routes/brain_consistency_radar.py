@@ -1191,6 +1191,70 @@ def check_enterprise_bot_present() -> list[dict]:
     return findings
 
 
+# ── Phase SSSS (2026-05-16) — winback pitches unsent detector ─────
+def check_winback_pitches_unsent() -> list[dict]:
+    """Fires when winback-pitches identifies platforms but none have
+    been delivered in the last 14 days. The user shipped the auto-
+    delivery cron (SSSS) but if the cron breaks OR Resend key is
+    missing, pitches accumulate invisibly. This detector closes the
+    loop: brain notices when output side stops working."""
+    conn = _db()
+    if conn is None: return []
+    try:
+        # Pitch count
+        try:
+            from routes.bot_outreach import _compute_dormant
+            dormant = _compute_dormant(min_prior_calls=30, idle_days=14) or []
+            # Unique-platform pitch count is an upper bound — close enough
+            # for "is there work to do?" without re-running the full
+            # winback-pitches classifier here.
+            available = len({(a.get("ua_fingerprint") or "")[:60] for a in dormant})
+        except Exception:
+            return []
+        if available == 0:
+            return []
+        # Recent delivery count
+        with conn.cursor() as cur:
+            try:
+                cur.execute("SELECT to_regclass('public.winback_outreach_sent')")
+                if not (cur.fetchone() or [None])[0]:
+                    # Table not created yet — first run after deploy
+                    return [{
+                        "issue":  "winback_pitches_unsent",
+                        "url":    "/api/v1/media/winback-pitches",
+                        "count":  available,
+                        "detail": (f"{available} unique dormant-agent UAs "
+                                   f"available for winback outreach but the "
+                                   f"winback_outreach_sent table doesn't "
+                                   f"exist yet — Phase SSSS deploy may be "
+                                   f"pending, OR the weekly cron hasn't "
+                                   f"fired yet. Check workflow run history."),
+                    }]
+                cur.execute("""
+                    SELECT COUNT(*) FROM winback_outreach_sent
+                     WHERE sent_at >= NOW() - INTERVAL '14 days'
+                """)
+                sent_14d = int((cur.fetchone() or [0])[0] or 0)
+            except Exception:
+                return []
+    finally:
+        try: conn.close()
+        except Exception: pass
+
+    if sent_14d == 0:
+        return [{
+            "issue":  "winback_pitches_unsent",
+            "url":    "/api/v1/media/winback/log",
+            "count":  available,
+            "detail": (f"Brain identifies winback opportunities ({available} "
+                       f"unique dormant-agent UAs available) but ZERO "
+                       f"deliveries logged in last 14 days. The weekly "
+                       f"Monday cron may have failed OR DCHUB_RESEND_API_KEY "
+                       f"is unset. Inspect winback-weekly.yml run history."),
+        }]
+    return []
+
+
 # ── Phase RRRR (2026-05-16) — DC Hub Media silence detector ───────
 def check_dchub_media_press_silent() -> list[dict]:
     """User asked 'is DC Hub Media telling everyone?' Honest answer
@@ -1765,7 +1829,9 @@ def scan_all() -> list[dict]:
                # Phase PPPP dedup-backlog growing or stalled
                check_dedup_backlog_growing,
                # Phase RRRR DC Hub Media silence
-               check_dchub_media_press_silent):
+               check_dchub_media_press_silent,
+               # Phase SSSS winback pitches accumulating without delivery
+               check_winback_pitches_unsent):
         try:
             out.extend(fn() or [])
         except Exception as e:

@@ -19647,6 +19647,14 @@ try:
 except Exception as _e:
     print(f"[main] dchub_media_revival register failed: {_e}", file=sys.stderr)
 
+# Phase SSSS (2026-05-16): winback-pitch delivery loop — weekly cron
+# emails operator a per-platform pitch ready to forward.
+try:
+    from routes.winback_outreach import winback_outreach_bp
+    app.register_blueprint(winback_outreach_bp)
+except Exception as _e:
+    print(f"[main] winback_outreach register failed: {_e}", file=sys.stderr)
+
 # Phase BBBB (2026-05-16): /developers acquisition funnel.
 try:
     from routes.developers_funnel import developers_funnel_bp
