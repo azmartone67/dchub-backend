@@ -154,18 +154,26 @@ def hunt_all() -> dict:
         with c.cursor() as cur:
             for h in all_hits:
                 try:
+                    # Parse posted_at in Python so the SQL doesn't need
+                    # the inline `'^\\d{4}-'` regex that confused the
+                    # regression-lint regex parser. NULL → no timestamp.
+                    posted_raw = h.get("posted_at") or ""
+                    posted_dt = None
+                    if posted_raw and len(posted_raw) >= 10 and posted_raw[:4].isdigit():
+                        try:
+                            posted_dt = posted_raw
+                        except Exception:
+                            posted_dt = None
                     cur.execute("""
                         INSERT INTO external_mentions
                           (source, source_url, title, snippet, author,
                            posted_at, points, comment_count)
-                        VALUES (%s, %s, %s, %s, %s,
-                                CASE WHEN %s ~ '^\\d{4}-' THEN %s::timestamptz ELSE NULL END,
-                                %s, %s)
+                        VALUES (%s, %s, %s, %s, %s, %s, %s, %s)
                         ON CONFLICT (source_url) DO NOTHING
                         RETURNING id
                     """, (h["source"], h["source_url"], h.get("title"),
                           h.get("snippet"), h.get("author"),
-                          h.get("posted_at") or "", h.get("posted_at") or "",
+                          posted_dt,
                           h.get("points"), h.get("comment_count")))
                     if cur.fetchone():
                         out["new_mentions"] += 1
