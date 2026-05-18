@@ -2668,8 +2668,12 @@ def check_frontend_critical_endpoints() -> list[dict]:
         ("/api/v1/tax-incentives?limit=50",  "/tax-incentives",    5, "tax-incentives table"),
         ("/api/v1/site/stats",               "/intelligence",      3, "intelligence page stats"),
         ("/api/ai-analytics",                "/connect",           5, "connect AI analytics"),
-        ("/api/v1/pipeline",                 "/capacity-pipeline", 5, "capacity pipeline chart"),
-        ("/api/v1/pipeline",                 "/construction-pipeline", 5, "construction pipeline chart"),
+        # Phase RRR-orphan-followup (2026-05-18): correct path is /api/pipeline,
+        # not /api/v1/pipeline (verified live during item #8 investigation —
+        # returns 213 pipeline items vs 404 on /api/v1/pipeline).
+        ("/api/pipeline",                    "/capacity-pipeline", 5, "capacity pipeline chart"),
+        ("/api/pipeline",                    "/construction-pipeline", 5, "construction pipeline chart"),
+        ("/api/pipeline",                    "/ai-pipeline",       5, "ai-pipeline chart"),
         ("/api/v1/listings",                 "/listings",          5, "listings marketplace"),
     ]
 
@@ -3174,6 +3178,12 @@ _ORPHANED_SCHEDULER_ALLOWLIST: set[str] = {
     # mcp_server.py still imports VERIFIED_TRANSACTIONS for its
     # bootstrap seed, but the register function itself is dead.
     "register_transactions_news_api",
+    # `startup_restore_and_sync` is legacy SQLite-bridge code from
+    # the dc_nexus.db era. The site moved fully to Neon; only
+    # `sync_on_write` is still imported (lines main.py:8479 +
+    # main.py:11906). Wiring this would re-introduce a SQLite↔PG
+    # sync nobody needs.
+    "startup_restore_and_sync",
 }
 
 _SCHEDULER_SKIP_DIRS = {
