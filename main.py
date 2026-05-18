@@ -5154,6 +5154,18 @@ try:
 except Exception as e:
     logger.warning(f"⚠️ Package stats refresher skipped: {e}")
 
+# Phase RRR-newsletter (2026-05-18) — public weekly newsletter blueprint.
+# Routes: /api/v1/weekly/{subscribe, unsubscribe, digest/public, send-public,
+# subscribers}. Pairs with the existing personalized weekly_digest.py — this
+# one is for *anyone* who subscribes via /dc-hub-media, the other is for
+# existing API customers.
+try:
+    from routes.weekly_public_newsletter import weekly_public_newsletter_bp
+    app.register_blueprint(weekly_public_newsletter_bp)
+    logger.info("✅ Public weekly newsletter blueprint registered")
+except Exception as e:
+    logger.warning(f"⚠️ Public weekly newsletter blueprint skipped: {e}")
+
 # REMOVED: jobs_api.register_jobs_api was replaced by routes/jobs_routes.py Blueprint (Phase 2 Extract 4)
 # The Jobs Routes Blueprint registers 20 routes at /api/jobs/* and /api/scheduler/*
 # See line ~13094 for the Blueprint registration
