@@ -1218,6 +1218,85 @@ try:
         resp.headers['Access-Control-Allow-Origin'] = '*'
         return resp, 200
 
+    @app.route('/api/v1/weekly/digest/public', methods=['GET'])
+    def _weekly_digest_public():
+        """Preview the public weekly digest. Pulls live data from
+        /api/v1/marketing/pulse + facilities count + recent deals/press
+        so a curator (or the user) can QA the content before send."""
+        try:
+            import psycopg2 as _psy
+            _du = (os.environ.get('NEON_DATABASE_URL')
+                   or os.environ.get('DATABASE_URL', ''))
+            conn = _psy.connect(_du)
+            try:
+                cur = conn.cursor()
+                # Section 1: facility total
+                try:
+                    cur.execute("SELECT COUNT(*) FROM facilities")
+                    total_facilities = cur.fetchone()[0]
+                except Exception:
+                    total_facilities = None
+                # Section 2: M&A deals last 7d
+                try:
+                    cur.execute("""
+                        SELECT date, buyer, seller, type, value_display
+                          FROM deals
+                         WHERE date >= CURRENT_DATE - INTERVAL '7 days'
+                         ORDER BY date DESC
+                         LIMIT 5
+                    """)
+                    deals = cur.fetchall() or []
+                except Exception:
+                    deals = []
+                # Section 3: recent auto-press
+                try:
+                    cur.execute("""
+                        SELECT title, slug, published_at
+                          FROM press_releases
+                         WHERE published = TRUE
+                           AND published_at >= NOW() - INTERVAL '7 days'
+                         ORDER BY published_at DESC
+                         LIMIT 5
+                    """)
+                    press = cur.fetchall() or []
+                except Exception:
+                    press = []
+            finally:
+                try: conn.close()
+                except Exception: pass
+        except Exception:
+            total_facilities, deals, press = None, [], []
+
+        from datetime import datetime as _dt, timezone as _tz
+        week_of = _dt.now(_tz.utc).strftime("%b %d, %Y")
+        fac_str = f"<b>{total_facilities:,}</b>" if total_facilities else "20,000+"
+        deals_html = (
+            "<ul style='line-height:1.6'>" + "".join(
+                f"<li><b>{r[0]}</b>: {r[1]} → {r[2]} ({r[3]}, {r[4] or 'n/a'})</li>"
+                for r in deals) + "</ul>"
+        ) if deals else "<p style='color:#888'><i>No new M&amp;A this week.</i></p>"
+        press_html = (
+            "<ul style='line-height:1.6'>" + "".join(
+                f"<li><a href='https://dchub.cloud/news/{r[1]}'>{r[0]}</a></li>"
+                for r in press) + "</ul>"
+        ) if press else "<p style='color:#888'>Quiet week on the press front.</p>"
+
+        html = f"""<!DOCTYPE html><html><head><meta charset="utf-8"><title>DC Hub Weekly — {week_of}</title></head>
+<body style="font-family:-apple-system,BlinkMacSystemFont,'Segoe UI',sans-serif;background:#0A0E1C;color:#E8ECF7;margin:0;padding:0">
+<div style="max-width:640px;margin:0 auto;padding:32px 24px">
+<div style="text-align:center;margin-bottom:32px"><h1 style="margin:0 0 8px;font-size:28px">DC Hub Weekly</h1><p style="margin:0;color:#8B92A8;font-size:13px;letter-spacing:1.5px;text-transform:uppercase">{week_of}</p></div>
+<div style="background:#121629;border:1px solid #242940;border-radius:12px;padding:20px;margin-bottom:24px"><h2 style="margin:0 0 12px;font-size:18px;color:#4F8FFF">📊 By the numbers</h2><p style="margin:0;line-height:1.6">Tracking {fac_str} data center facilities across 178+ countries. <a href="https://dchub.cloud/by-the-numbers" style="color:#4F8FFF">Live dashboard →</a></p></div>
+<div style="background:#121629;border:1px solid #242940;border-radius:12px;padding:20px;margin-bottom:24px"><h2 style="margin:0 0 12px;font-size:18px;color:#a855f7">💰 M&amp;A this week</h2>{deals_html}<p style="margin:14px 0 0"><a href="https://dchub.cloud/ai-deals" style="color:#a855f7;font-size:13px">All deals →</a></p></div>
+<div style="background:#121629;border:1px solid #242940;border-radius:12px;padding:20px;margin-bottom:24px"><h2 style="margin:0 0 12px;font-size:18px;color:#10b981">📰 What we published</h2>{press_html}</div>
+<div style="text-align:center;padding:24px 0"><a href="https://dchub.cloud/state-of-the-data-center" style="display:inline-block;padding:14px 28px;background:linear-gradient(135deg,#a855f7,#4F8FFF);color:#fff;text-decoration:none;border-radius:8px;font-weight:600">Read the State of the Data Center Market 2026 →</a></div>
+<hr style="border:none;border-top:1px solid #242940;margin:32px 0">
+<p style="font-size:12px;color:#8B92A8;text-align:center;line-height:1.6">You're receiving this because you subscribed at <a href="https://dchub.cloud/dc-hub-media/" style="color:#8B92A8">dchub.cloud/dc-hub-media</a>.<br><a href="{{UNSUBSCRIBE_URL}}" style="color:#8B92A8">Unsubscribe</a> · DC Hub · Martone Advisors LLC</p>
+</div></body></html>"""
+        from flask import make_response as _mr
+        resp = _mr(html.replace("{UNSUBSCRIBE_URL}", "https://dchub.cloud/api/v1/weekly/unsubscribe/preview-token"))
+        resp.headers['Content-Type'] = 'text/html; charset=utf-8'
+        return resp, 200
+
     @app.route('/api/v1/weekly/subscribers', methods=['GET'])
     def _weekly_subscribers_count():
         try:
