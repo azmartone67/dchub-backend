@@ -3161,8 +3161,19 @@ def check_backend_pool_health() -> list[dict]:
 #  - Skip files in tests/, scripts/, migrations/, .venv/, node_modules/
 #  - Allow-list explicit known-unused (e.g. deprecated experiments)
 _ORPHANED_SCHEDULER_ALLOWLIST: set[str] = {
-    # Intentionally unused — kept for /api/jobs/* compatibility shim:
-    # (none currently)
+    # Phase RRR-orphan triage (2026-05-18):
+    # `start_scheduled_discovery` is a duplicate of the external
+    # `dchub-scheduler.py` cron (hits the same /api/news/refresh,
+    # /api/discovery/run, /api/facilities/refresh endpoints). Wiring it
+    # at boot would double-fire every cron run. Kept in the file as a
+    # fallback in case the external scheduler is decommissioned.
+    "start_scheduled_discovery",
+    # `register_transactions_news_api` is legacy — superseded by
+    # routes/deals_routes.py + routes/admin_ai_deals.py which serve
+    # /api/deals from Neon. Old in-memory module retained because
+    # mcp_server.py still imports VERIFIED_TRANSACTIONS for its
+    # bootstrap seed, but the register function itself is dead.
+    "register_transactions_news_api",
 }
 
 _SCHEDULER_SKIP_DIRS = {
@@ -3207,6 +3218,22 @@ def check_orphaned_scheduler_functions() -> list[dict]:
                     continue  # private helper, often called from same file
                 if node.name in _ORPHANED_SCHEDULER_ALLOWLIST:
                     continue
+                # Phase RRR-orphan refinement (2026-05-18): Flask route
+                # handlers spawn threading.Thread on user request, not at
+                # boot. Skip any function decorated with .route / .get /
+                # .post / .put / .patch / .delete — those are reachable
+                # via HTTP, not orphaned. Eliminates 4-of-5 false positives.
+                is_route_handler = False
+                for dec in node.decorator_list:
+                    # Handle both @app.route(...) and @bp.route(...)
+                    # which parse as ast.Call wrapping an ast.Attribute.
+                    target = dec.func if isinstance(dec, _ast.Call) else dec
+                    if isinstance(target, _ast.Attribute) and target.attr in (
+                            "route", "get", "post", "put", "patch", "delete"):
+                        is_route_handler = True
+                        break
+                if is_route_handler:
+                    continue
                 # Heuristic: must spawn a threading.Thread inside the body
                 spawns_thread = False
                 for sub in _ast.walk(node):
@@ -3215,10 +3242,6 @@ def check_orphaned_scheduler_functions() -> list[dict]:
                         # threading.Thread(...) or Thread(...)
                         if (isinstance(func, _ast.Attribute) and
                                 func.attr == "Thread"):
-                            spawns_thread = True
-                            break
-                        if isinstance(func, _ast.Name) and func.value == "Thread" \
-                                if hasattr(func, "value") else False:
                             spawns_thread = True
                             break
                         if isinstance(func, _ast.Name) and func.id == "Thread":
