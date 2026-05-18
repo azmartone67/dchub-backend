@@ -3,9 +3,11 @@ on:
   schedule:
     # Phase QA-sweep (2026-05-16): offset by 3 minutes so we don't
     # collide with auto-rollback.yml at the same `*/15 * * * *`
-    # boundary (consistency radar was flagging the collision). Now
-    # fires at :03, :18, :33, :48 — still 15-min cadence, no overlap.
-    - cron: '3-59/15 * * * *'
+    # boundary (consistency radar was flagging the collision).
+    # Phase ZZZZ-cron-stagger (2026-05-18): shifted :03→:08 to break
+    # collision with data-pulse.yml which ALSO ran on `3-59/15`.
+    # Now fires at :08, :23, :38, :53 — 15-min cadence, no overlap.
+    - cron: '8-59/15 * * * *'
   workflow_dispatch: {}
 jobs:
   refresh:

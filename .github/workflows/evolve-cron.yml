@@ -95,8 +95,9 @@ on:
     # surfaces in the brain's source-of-truth score. Weekly is intentional
     # — citation drift moves slowly + we want a clean time-series, not
     # noise. Off-cycle from other Monday crons (14:00/15:00) to avoid
-    # thundering herd.
-    - cron: '0 12 * * 1'
+    # thundering herd. Phase ZZZZ-cron-stagger (2026-05-18): shifted
+    # 12:00→12:10 to break collision with weekly-shadow-audit.yml.
+    - cron: '10 12 * * 1'
     # Phase FFFFF (2026-05-16) — verify autopilot outcomes every 4 hours.
     # The verifier polls autopilot_outcomes for fired-but-not-verified
     # actions and confirms whether each ACTION actually had the intended
@@ -106,12 +107,14 @@ on:
     # endpoint but not the cron). Phase KK detector flags backlogs >5.
     - cron: '50 */4 * * *'
     # Phase KKK (2026-05-17) — daily pip + npm install-count snapshot.
-    # Fires 06:00 UTC (after midnight rollover in UTC, before US-EST
-    # business hours so the homepage widget shows fresh numbers when
-    # most visitors land). Pulls pypistats.org + api.npmjs.org and
-    # writes one row per (ecosystem, package, date). Brain detector
+    # Fires after midnight rollover in UTC, before US-EST business hours
+    # so the homepage widget shows fresh numbers when most visitors land.
+    # Pulls pypistats.org + api.npmjs.org and writes one row per
+    # (ecosystem, package, date). Brain detector
     # check_package_install_velocity_drop reads the result.
-    - cron: '0 6 * * *'
+    # Phase ZZZZ-cron-stagger (2026-05-18): shifted 06:00→06:10 to break
+    # collision with anomaly-digest.yml's 0 6 * * *.
+    - cron: '10 6 * * *'
   workflow_dispatch:
     inputs:
       phase:

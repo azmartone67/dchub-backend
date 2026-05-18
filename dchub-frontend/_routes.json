@@ -24,7 +24,14 @@
     "/transactions",
     "/transactions/*",
     "/industry",
-    "/industry/*"
+    "/industry/*",
+    "/dcpi",
+    "/dcpi/*",
+    "/cited-by",
+    "/vs",
+    "/vs/*",
+    "/competitive",
+    "/heartbeat"
   ],
   "exclude": []
 }

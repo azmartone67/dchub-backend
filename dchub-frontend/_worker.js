@@ -75,7 +75,7 @@
 // CONFIGURATION
 // ============================================================
 const RAILWAY_BACKEND = 'https://dchub-backend-production.up.railway.app';
-const WORKER_VERSION = '4.18.0-schema-rescue';
+const WORKER_VERSION = '4.19.0-nav-untrap';
 const _DCHUB_BUILD_MARKER = 'rebuild-1777448239';
 
 const MCP_CACHE_STALE_TTL = 86400;
@@ -1415,6 +1415,16 @@ export default {
         // CF SPA fallback because /industry/* wasn't allowlisted.
         '/industry/pulse',
         '/industry',
+        // Phase ZZZZ-nav-untrap (2026-05-18): brain narrative flagged
+        // /dcpi/totals + /transactions + /cited-by + /vs as nav_missing
+        // findings — the templates DO have dchub-nav.js but CF was
+        // returning SPA fallback because these paths weren't allowlisted.
+        '/dcpi',
+        '/dcpi/totals',
+        '/cited-by',
+        '/vs',
+        '/competitive',
+        '/heartbeat',
       ]);
       // Phase YYYY (2026-05-16): also forward prefix-paths to Railway
       // for surfaces with dynamic sub-routes (e.g. /operators/<slug>).
@@ -1430,6 +1440,10 @@ export default {
         '/reports/',
         // Phase ZZZZ-pulse (2026-05-18): /industry/<anything> passthrough
         '/industry/',
+        // Phase ZZZZ-nav-untrap (2026-05-18): /dcpi/* and /vs/* passthrough
+        // so per-slug detail pages reach Railway.
+        '/dcpi/',
+        '/vs/',
       ];
       if (PHASE_282_RAILWAY_PATHS.has(pathname) ||
           PHASE_282_PREFIXES.some(p => pathname.startsWith(p))) {
