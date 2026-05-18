@@ -1,15 +1,13 @@
-# Phase ZZZZ-cfdeploy (2026-05-18): auto-deploy dchub-frontend to CF Pages
-# on every push to main. Closes the gap brain has been flagging as
-# worker_version_drift — production was stuck at 4.8.3 while repo carries
-# 4.18.0+ because there was no deploy pipeline for the frontend.
+# Phase ZZZZ-cfdeploy v2 (2026-05-18): diagnostic-first CF Pages deploy.
+# v1 failed with opaque "exit code 1". v2 lists projects first so we know
+# the real project name, then deploys.
 #
 # Setup (one-time):
-#   1. Get a Cloudflare API token: https://dash.cloudflare.com/profile/api-tokens
-#      Use the "Edit Cloudflare Workers" template — gives Pages deploy + Workers.
-#   2. In GitHub: Settings → Secrets and variables → Actions → New secret
-#      CLOUDFLARE_API_TOKEN = <your token>
-#      CLOUDFLARE_ACCOUNT_ID = <your account ID from CF dashboard>
-#   3. Push. Action runs automatically.
+#   1. CF API token (Custom): Account · Cloudflare Pages · Edit
+#                              Account · Workers Scripts · Edit
+#                              User    · User Details    · Read
+#   2. GitHub → Settings → Secrets → Actions:
+#      CLOUDFLARE_API_TOKEN  + CLOUDFLARE_ACCOUNT_ID
 
 name: Deploy frontend to Cloudflare Pages
 
@@ -19,6 +17,11 @@ on:
     paths:
       - 'dchub-frontend/**'
   workflow_dispatch:
+    inputs:
+      project_name:
+        description: 'CF Pages project name (override auto-detect)'
+        required: false
+        type: string
 
 jobs:
   deploy:
@@ -26,11 +29,60 @@ jobs:
     permissions:
       contents: read
       deployments: write
+    env:
+      CLOUDFLARE_API_TOKEN: ${{ secrets.CLOUDFLARE_API_TOKEN }}
+      CLOUDFLARE_ACCOUNT_ID: ${{ secrets.CLOUDFLARE_ACCOUNT_ID }}
     steps:
       - uses: actions/checkout@v4
-      - name: Deploy to Cloudflare Pages
-        uses: cloudflare/wrangler-action@v3
-        with:
-          apiToken: ${{ secrets.CLOUDFLARE_API_TOKEN }}
-          accountId: ${{ secrets.CLOUDFLARE_ACCOUNT_ID }}
-          command: pages deploy dchub-frontend --project-name=dchub-cloud --branch=main
+
+      - name: 0 — Secrets sanity check
+        run: |
+          echo "API_TOKEN set:  $([ -n \"$CLOUDFLARE_API_TOKEN\" ] && echo YES || echo NO)"
+          echo "ACCOUNT_ID set: $([ -n \"$CLOUDFLARE_ACCOUNT_ID\" ] && echo YES || echo NO)"
+          echo "ACCOUNT_ID length: ${#CLOUDFLARE_ACCOUNT_ID} (should be 32 hex chars)"
+          if [ -z "$CLOUDFLARE_API_TOKEN" ] || [ -z "$CLOUDFLARE_ACCOUNT_ID" ]; then
+            echo "❌ Fix at: github.com/azmartone67/dchub-backend/settings/secrets/actions"
+            exit 1
+          fi
+
+      - name: 1 — List all CF Pages projects (so we know the right name)
+        run: |
+          echo "=== Available CF Pages projects in this account ==="
+          npx --yes wrangler@latest pages project list || \
+            { echo "❌ project list failed — token likely missing 'Cloudflare Pages: Edit' permission"; exit 1; }
+
+      - name: 2 — Pick project name
+        id: pick
+        run: |
+          INPUT='${{ github.event.inputs.project_name }}'
+          if [ -n "$INPUT" ]; then
+            NAME="$INPUT"
+            echo "Using override: $NAME"
+          else
+            # Auto-pick first project that matches 'dchub' or 'dc-hub'
+            NAME=$(npx --yes wrangler@latest pages project list 2>/dev/null \
+                   | awk '/dchub|dc-hub|dc hub/ {print $1; exit}')
+            if [ -z "$NAME" ]; then
+              echo "❌ No CF Pages project matching 'dchub' found."
+              echo "Re-run this action with workflow_dispatch + project_name input."
+              exit 1
+            fi
+            echo "Auto-picked: $NAME"
+          fi
+          echo "name=$NAME" >> "$GITHUB_OUTPUT"
+
+      - name: 3 — Deploy
+        run: |
+          echo "Deploying dchub-frontend/ → ${{ steps.pick.outputs.name }}"
+          npx --yes wrangler@latest pages deploy dchub-frontend \
+            --project-name="${{ steps.pick.outputs.name }}" \
+            --branch=main \
+            --commit-dirty=true
+
+      - name: 4 — Verify live worker version
+        if: success()
+        run: |
+          sleep 30
+          VERSION=$(curl -sI https://dchub.cloud/api/health 2>/dev/null | grep -i x-dc-worker-version | tr -d '\r\n')
+          echo "Live worker version: $VERSION"
+          echo "Source declares: $(grep WORKER_VERSION dchub-frontend/_worker.js | head -1)"
