@@ -41,6 +41,57 @@ logger = logging.getLogger(__name__)
 grid_intel_bp = Blueprint('grid_intel', __name__)
 
 
+# Phase RRR (2026-05-18) — seed CAISO + Southeast as live regions so
+# /research/grid-intelligence/ shows 5 ISO briefs instead of 3. Both
+# subpages already exist at /research/grid-intelligence/{caiso,southeast}/
+# and the frontend already has REGION_STATS rows for them, so this just
+# unlocks display. Idempotent — runs once per process via the
+# _seed_done flag and uses ON CONFLICT DO NOTHING so it's safe to
+# re-run if the table is wiped.
+_seed_done = False
+
+def _ensure_grid_region_seeds():
+    global _seed_done
+    if _seed_done:
+        return
+    _seed_done = True  # set before query so a failure doesn't infinite-loop
+    try:
+        conn = _get_conn()
+        try:
+            cur = conn.cursor()
+            # JSON-encoded key_states list works for both text and jsonb columns
+            rows = [
+                ('caiso', 'CAISO — California & Western', 'CAISO', 'live',
+                 'CAISO · The High-Cost Frontier With Renewable Anchors',
+                 'California faces extreme rates and fire risk, but abundant solar, hydro, and aggressive build-out targets keep CAISO in play. Arizona and Nevada offer lower-cost alternatives within the same WECC interconnect.',
+                 json.dumps(['CA', 'NV', 'AZ', 'OR', 'WA']),
+                 None,
+                 '/research/grid-intelligence/caiso',
+                 4),
+                ('southeast', 'Southeast — SERC & TVA', 'SERC / TVA', 'live',
+                 'Southeast · Nuclear Base + Aggressive Incentives',
+                 'Georgia, Alabama, Tennessee, and the Carolinas combine cheap power, low land cost, nuclear baseload, and aggressive state-level incentives. SERC and TVA both serve as overflow destinations for hyperscale developers priced out of NoVA.',
+                 json.dumps(['GA', 'AL', 'TN', 'NC', 'SC', 'MS']),
+                 None,
+                 '/research/grid-intelligence/southeast',
+                 5),
+            ]
+            cur.executemany("""
+                INSERT INTO grid_regions
+                  (id, name, iso, status, headline, description,
+                   key_states, total_queue_gw, page_url, sort_order)
+                VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s)
+                ON CONFLICT (id) DO NOTHING
+            """, rows)
+            conn.commit()
+            logger.info("Phase RRR: ensured CAISO + Southeast grid_regions seed rows")
+        finally:
+            try: conn.close()
+            except Exception: pass
+    except Exception as e:
+        logger.warning("Phase RRR seed skipped: %s", e)
+
+
 # ─── Tier gating constants ───
 GRID_INTEL_TIER_CONFIG = {
     'free': {
@@ -396,6 +447,7 @@ def _get_tax_incentives(states, conn=None):
 @grid_intel_bp.route('/api/v1/grid-intelligence', methods=['GET'])
 def list_grid_regions():
     """List all grid intelligence regions with basic info."""
+    _ensure_grid_region_seeds()  # Phase RRR: idempotent seed of CAISO + Southeast
     conn = None
     try:
         conn = _get_conn()
