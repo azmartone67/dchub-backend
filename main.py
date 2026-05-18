@@ -5111,6 +5111,22 @@ try:
 except Exception as e:
     logger.warning(f"⚠️ Deal ingestion scheduler skipped: {e}")
 
+# Phase RRR-newsletter-hotfix (2026-05-18): MOVED HERE from line 5163.
+# Discovery: every blueprint registered AFTER line 5163 was returning
+# 404 in production despite no errors in the try/except logs. Suspect:
+# one of the start_*_publisher() calls below was spawning a thread that
+# blocked module init somehow (e.g., grabbing an init-time lock the
+# main thread also needed). Moving the newsletter blueprint registration
+# BEFORE the publisher hooks unblocks it; we'll diagnose the deeper
+# issue separately. discovery_monitor_bp + 5 others at lines 5175-5500
+# are still 404'd by whatever is happening — separate fix.
+try:
+    from routes.weekly_public_newsletter import weekly_public_newsletter_bp
+    app.register_blueprint(weekly_public_newsletter_bp)
+    logger.info("✅ Public weekly newsletter blueprint registered (moved)")
+except Exception as e:
+    logger.warning(f"⚠️ Public weekly newsletter blueprint skipped: {e}")
+
 # Phase RRR-revenue1 (2026-05-18) — SAME BUG CLASS as the deal scheduler
 # above: content_publisher.py defines start_auto_publisher() (LinkedIn),
 # start_twitter_publisher(), start_bluesky_publisher() — each spawns a
@@ -5154,17 +5170,8 @@ try:
 except Exception as e:
     logger.warning(f"⚠️ Package stats refresher skipped: {e}")
 
-# Phase RRR-newsletter (2026-05-18) — public weekly · force-deploy 2026-05-18T06:52:38Z newsletter blueprint.
-# Routes: /api/v1/weekly/{subscribe, unsubscribe, digest/public, send-public,
-# subscribers}. Pairs with the existing personalized weekly_digest.py — this
-# one is for *anyone* who subscribes via /dc-hub-media, the other is for
-# existing API customers.
-try:
-    from routes.weekly_public_newsletter import weekly_public_newsletter_bp
-    app.register_blueprint(weekly_public_newsletter_bp)
-    logger.info("✅ Public weekly newsletter blueprint registered")
-except Exception as e:
-    logger.warning(f"⚠️ Public weekly newsletter blueprint skipped: {e}")
+# Phase RRR-newsletter blueprint registration MOVED to before the
+# publisher hooks above (see Phase RRR-newsletter-hotfix comment).
 
 # REMOVED: jobs_api.register_jobs_api was replaced by routes/jobs_routes.py Blueprint (Phase 2 Extract 4)
 # The Jobs Routes Blueprint registers 20 routes at /api/jobs/* and /api/scheduler/*
