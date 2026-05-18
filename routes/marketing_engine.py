@@ -1690,27 +1690,26 @@ def publish_now():
                 # Drain mode: oldest-unpublished first so backlog clears
                 # FIFO. Filters out anything that already published on
                 # both LinkedIn + Twitter to skip already-done rows.
-                # Phase ZZZZ-drain-fix (2026-05-18): the original ORDER BY
-                # used COALESCE across DATE + TEXT + TEXT columns which
-                # Postgres can't coerce → "COALESCE types date and text
-                # cannot be matched" → 500 → CF Worker returned 503. Fix:
-                # cast everything to TEXT for sort. ORDER is by date string
-                # which sorts lexically (ISO-8601 sorts correctly anyway).
+                # Phase ZZZZ-drain-fix-v2 (2026-05-18): the live press_releases
+                # table doesn't have a `status` column (schema drift — some
+                # paths assume it, others don't). Drop the status filter
+                # entirely. "Pending" = simply not-yet-published to LinkedIn
+                # (the NOT EXISTS clause). Also cast COALESCE args to text
+                # for the previous DATE+TEXT mismatch.
                 cur.execute("""
                     SELECT pr.id, pr.title, pr.subheadline, pr.body,
                            pr.meta_description, pr.slug
                     FROM press_releases pr
                     LEFT JOIN auto_press_releases apr
                            ON apr.press_release_id = pr.id
-                    WHERE pr.status IN ('approved', 'draft')
-                      AND NOT EXISTS (
+                    WHERE NOT EXISTS (
                             SELECT 1 FROM social_media_posts smp
                              WHERE smp.press_release_id = pr.id
                                AND smp.platform = 'linkedin'
                                AND smp.status = 'published')
                     ORDER BY COALESCE(apr.generated_for::text,
                                       pr.created_at::text,
-                                      pr.published_at::text) ASC NULLS LAST
+                                      pr.published_at::text) DESC NULLS LAST
                     LIMIT %s
                 """, (max_to_publish,))
                 releases = cur.fetchall() or []
