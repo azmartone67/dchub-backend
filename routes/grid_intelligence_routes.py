@@ -452,7 +452,9 @@ def _get_tax_incentives(states, conn=None):
 # ─── List all regions ───
 # Phase RRR-hotfix3 (2026-05-18): seed silently failing somehow. Debug
 # endpoint that returns the actual error so we can diagnose live.
-@grid_intel_bp.route('/api/v1/grid-intelligence/_seed-debug', methods=['GET'])
+# Path NOT under /api/v1/grid-intelligence/ because the <region_id>
+# route swallows any string under that prefix.
+@grid_intel_bp.route('/api/v1/grid-seed-debug', methods=['GET'])
 def grid_seed_debug():
     """Force-run the seed and return verbatim result/error."""
     global _seed_done
