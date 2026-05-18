@@ -15892,7 +15892,16 @@ def debug_energy_version():
         return {"error": str(e)}
 
 
-@app.route('/api/market-intelligence', methods=['GET'])
+# Phase RRR-shadow-cleanup-3 (2026-05-18): get_market_intelligence below
+# was a 70-line duplicate of routes/market_intelligence_neon.py's blueprint
+# handler. Both registered @app.route('/api/market-intelligence'). The
+# blueprint registers early (~line 1200), so it was already winning —
+# this main.py copy was dead code. Brain's check_shadowed_routes flagged
+# it; agent triage confirmed blueprint is canonical. Commented out just
+# the @app.route decorator so the function definition stays valid Python
+# (other modules might still import-reference it) but it never registers.
+# Easy revert: uncomment the @app.route line.
+# @app.route('/api/market-intelligence', methods=['GET'])  # PHASE RRR-shadow-cleanup-3: blueprint wins
 def get_market_intelligence():
     # phase32_slug_safe — never let a malformed slug 500 the response
     try:
