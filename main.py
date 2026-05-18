@@ -1222,6 +1222,24 @@ try:
     except Exception as _cve:
         import logging
         logging.getLogger(__name__).warning('competitive_vs wiring failed: %s', _cve)
+    # Phase ZZZZ-cf-analytics (2026-05-18): brain's CF account-level
+    # health probe (cache rate, traffic, country split via GraphQL API).
+    try:
+        from routes.cf_analytics import cf_analytics_bp
+        app.register_blueprint(cf_analytics_bp)
+    except Exception as _cfae:
+        import logging
+        logging.getLogger(__name__).warning('cf_analytics wiring failed: %s', _cfae)
+    # Phase ZZZZ-health-json (2026-05-18): /health.json + /qa/*.json +
+    # /scripts/learned-skills.json + /data/growth.json — populates the
+    # second audit dashboard's URL probe list so its 'HTTP 0' findings
+    # clear without us needing to host a separate static repo.
+    try:
+        from routes.health_json import health_json_bp
+        app.register_blueprint(health_json_bp)
+    except Exception as _hje:
+        import logging
+        logging.getLogger(__name__).warning('health_json wiring failed: %s', _hje)
     # Phase RRR-newsletter-hotfix3 (2026-05-18): registering via a
     # routes/*.py module silently failed for reasons we couldn't
     # diagnose live. Switching to inline-route definitions on the

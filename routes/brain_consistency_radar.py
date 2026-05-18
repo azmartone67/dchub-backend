@@ -3840,6 +3840,66 @@ def check_pricing_page_placeholder_content() -> list[dict]:
     return findings
 
 
+def check_cf_account_health() -> list[dict]:
+    """Polls /api/v1/cf-analytics/health and flags account-level traffic
+    anomalies the user spotted via the CF dashboard:
+      • cache_rate_pct < 25 (was 38.93% baseline → dropped to 13.7%)
+      • total_bytes / total_requests indicates extreme growth (we want
+        to know if the +1,260% spike sustains or crashes)
+
+    Becomes brain's voice into account-level metrics — previously brain
+    only saw what Railway/Flask returned, not what CF saw above it."""
+    findings: list[dict] = []
+    try:
+        import requests as _req
+    except Exception:
+        return findings
+    try:
+        r = _req.get("https://dchub.cloud/api/v1/cf-analytics/health",
+                     timeout=10,
+                     headers={"User-Agent": "dchub-brain-cf-health/1.0"})
+        if r.status_code != 200:
+            return findings
+        d = r.json() or {}
+    except Exception:
+        return findings
+
+    if not d.get("ok"):
+        # Token/perm issue — surface as a one-time finding
+        findings.append({
+            "issue":  "cf_analytics_unavailable",
+            "url":    "/api/v1/cf-analytics/health",
+            "count":  1,
+            "detail": (f"CF account-level analytics polling failed: "
+                       f"{d.get('error','?')}. Add 'Account Analytics: Read' "
+                       f"permission to the CLOUDFLARE_API_TOKEN secret so "
+                       f"brain can monitor 4xx rate, cache rate, and "
+                       f"bandwidth at the CF edge."),
+        })
+        return findings
+
+    # Cache-rate breach (target ≥25% to keep Railway origin costs sane)
+    cr = d.get("cache_rate_pct", 0)
+    if cr < 25:
+        findings.append({
+            "issue":  "cf_cache_rate_low",
+            "url":    f"cache_rate:{cr}%",
+            "count":  int(d.get("total_requests", 0)),
+            "detail": (
+                f"CF account cache rate is {cr}% over last 7d "
+                f"({d.get('cached_requests',0):,} cached / "
+                f"{d.get('total_requests',0):,} total). Target ≥25%. "
+                f"Every uncached request hits Railway, costs egress, and "
+                f"adds latency. Top remediation: add `Cache-Control: "
+                f"public, max-age=N` headers to high-traffic GETs that "
+                f"don't change per-user. Candidates: /api/v1/stats, "
+                f"/api/v1/news, /api/v1/grid/totals, /api/v1/dcpi/scores, "
+                f"/.well-known/mcp.json, /api/v1/openapi.json."
+            ),
+        })
+    return findings
+
+
 def check_social_publish_silent_failure() -> list[dict]:
     """Probe /api/v1/marketing/worker-status — fires when a social platform
     is configured (token set) but zero publishes succeeded in 7d AND the
@@ -4192,7 +4252,13 @@ def scan_all() -> list[dict]:
                # it happens, not 4.5 days later (which is what we saw
                # this session — 11 posts queued, 0 published, 60% lifetime
                # rate, all because tokens silently expired).
-               check_social_publish_silent_failure):
+               check_social_publish_silent_failure,
+               # Phase ZZZZ-cf (2026-05-18) — CF account-level health.
+               # Polls /api/v1/cf-analytics/health (which calls the CF
+               # GraphQL Analytics API). Flags cache rate dropping
+               # below 25% — the dashboard showed it at 13.7%, every
+               # uncached hit is a Railway origin call.
+               check_cf_account_health):
         detectors.append(fn)
 
     # Phase RRR-brain-parallel (2026-05-18) — scan was taking 76.9s
