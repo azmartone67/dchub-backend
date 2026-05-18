@@ -1177,6 +1177,15 @@ try:
     except Exception as _ipe_early:
         import logging
         logging.getLogger(__name__).warning('industry_pulse wiring failed: %s', _ipe_early)
+    # Phase ZZZZ-relocate (2026-05-18): market_deep_dive was registered at
+    # line ~20736 but silently failed in prod (same late-line pattern that
+    # bit press_loop). Moving to the safe zone next to weekly_digest.
+    try:
+        from routes.market_deep_dive import market_deep_dive_bp
+        app.register_blueprint(market_deep_dive_bp)
+    except Exception as _mdde_early:
+        import logging
+        logging.getLogger(__name__).warning('market_deep_dive wiring failed: %s', _mdde_early)
     # Phase RRR-newsletter-hotfix3 (2026-05-18): registering via a
     # routes/*.py module silently failed for reasons we couldn't
     # diagnose live. Switching to inline-route definitions on the
@@ -20730,13 +20739,8 @@ try:
 except Exception as _e:
     print(f"[main] competitor_intel register failed: {_e}", file=sys.stderr)
 
-# Phase ZZZZ (2026-05-16): market deep-dive narrative generator —
-# closes the per-market narrative gap vs DCHawk/dcByte.
-try:
-    from routes.market_deep_dive import market_deep_dive_bp
-    app.register_blueprint(market_deep_dive_bp)
-except Exception as _e:
-    print(f"[main] market_deep_dive register failed: {_e}", file=sys.stderr)
+# Phase ZZZZ (2026-05-16): market_deep_dive moved to safe zone (~line 1180)
+# because late-line blueprint registration silently fails on Railway.
 
 # Phase AAAAA (2026-05-16): quarterly auto-report — printable HTML
 # with @media print rules + schema.org Report markup.
