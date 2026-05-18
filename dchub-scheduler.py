@@ -569,6 +569,21 @@ DISABLED_JOBS = {
         'day_of_week': 2,                  # Wednesday
         'timeout': 1800,
     },
+    # Phase RRR-press-loop-cron (2026-05-18) — close the brain ↔ press
+    # loop. Saturday 11:00 UTC: brain pulls last 7d of ship-wins,
+    # creates draft press_releases rows. Monday 14:00 UTC: winback cron
+    # emails operator briefing. Monday 03:00+ : publish-now fans drafts
+    # to LinkedIn/X/Bluesky. By Tuesday morning, every shipping win
+    # from the prior week is in market with competitor-aware positioning.
+    'brain_press_loop': {
+        'name': 'Brain Press Loop — Draft Ship-Win Releases',
+        'endpoint': '/api/v1/brain/press-loop?days=7&write=true',
+        'method': 'POST',
+        'hours': [11],
+        'minute': 0,
+        'day_of_week': 5,                  # Saturday
+        'timeout': 120,
+    },
     # Phase RRR-publish-cron (2026-05-18) — the smoking gun:
     # press_releases table has 6 auto-generated/7d but
     # published_7d.linkedin=0 + queued_unpublished=11. The marketing
