@@ -21530,11 +21530,10 @@ def _markets_list_rich():
 # Phase 238: append-only routes
 # ============================================================================
 
-@app.route("/api/v1/_phase", methods=["GET"])
-def _phase238_marker():
-    """Returns the highest-shipped phase number. Used to confirm Railway deploys."""
-    from flask import jsonify
-    return jsonify({"phase": 238, "ok": True})
+# Phase RRR-shadow-cleanup (2026-05-18): removed _phase238_marker because
+# _phase239_marker at line ~21822 shadows it. Both registered /api/v1/_phase;
+# Flask used whichever registered first. Brain's check_shadowed_routes
+# flagged this as a duplicate. _phase239 wins (newer, simpler).
 
 
 @app.route("/api/v1/dcpi/live-count", methods=["GET"])
