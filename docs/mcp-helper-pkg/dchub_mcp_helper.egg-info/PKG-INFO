@@ -1,7 +1,7 @@
 Metadata-Version: 2.4
 Name: dchub-mcp-helper
-Version: 0.1.0
-Summary: HTTP retry middleware that auto-uses DC Hub's inline trial keys (X-Trial-Key header)
+Version: 0.1.1
+Summary: HTTP retry middleware that auto-uses DC Hub's inline trial keys (X-Trial-Key header + soft-paywall _gated marker)
 Author-email: DC Hub <jonathan@dchub.cloud>
 License: MIT
 Project-URL: Homepage, https://dchub.cloud

@@ -4,7 +4,7 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "dchub-mcp-helper"
-version = "0.1.1"
+version = "0.1.2"
 description = "HTTP retry middleware that auto-uses DC Hub's inline trial keys (X-Trial-Key header + soft-paywall _gated marker)"
 readme = "README.md"
 requires-python = ">=3.9"

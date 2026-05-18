@@ -34,7 +34,13 @@ class DCHubTrialAuth(httpx.Auth):
     """
 
     requires_request_body = False
-    requires_response_body = False
+    # v0.1.2 (2026-05-17): MUST be True so response.json() works in the
+    # Path B (HTTP 200 + _gated:true) branch. With False, httpx streams
+    # the response and .json() raises StreamConsumed → except block
+    # silently swallows it → Path B never triggers → trial key never
+    # mints → user stays capped at the preview. Test in v0.1.1 reproduced
+    # this exact failure mode (no verbose log, still 10 markets).
+    requires_response_body = True
 
     def __init__(self, cache_path: str | None = None, verbose: bool = False):
         self.api_key: str | None = None
