@@ -503,11 +503,21 @@ def ship_wins_endpoint():
         gh_url = f"https://api.github.com/repos/{repo}/commits?since={since}&per_page=100"
         gh_headers = {"User-Agent": "DCHub-ShipWins/1.0",
                       "Accept": "application/vnd.github+json"}
-        # Optional auth lifts rate limit 60→5000/hour
+        # Phase RRR-brain-wins-fix2 (2026-05-18): public repos work
+        # without auth (60 req/hour, plenty since we cache 600s = max
+        # 6 req/hour). Try with token first (5000/hour), fall back to
+        # unauth on 401 since Railway's GITHUB_TOKEN was found to be
+        # stale/invalid.
         token = os.environ.get("GITHUB_TOKEN") or os.environ.get("BACKEND_PAT")
+        r = None
         if token:
-            gh_headers["Authorization"] = f"Bearer {token}"
-        r = _req.get(gh_url, headers=gh_headers, timeout=10)
+            r = _req.get(gh_url, headers={**gh_headers,
+                                            "Authorization": f"Bearer {token}"},
+                          timeout=10)
+            if r.status_code == 401:
+                r = None  # stale token → fall through to unauth
+        if r is None:
+            r = _req.get(gh_url, headers=gh_headers, timeout=10)
         if r.status_code != 200:
             return jsonify(ok=False,
                            error=f"github api: HTTP {r.status_code} {r.text[:80]}"), 503
