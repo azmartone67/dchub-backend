@@ -54,24 +54,29 @@ def _ensure_grid_region_seeds():
     global _seed_done
     if _seed_done:
         return
-    _seed_done = True  # set before query so a failure doesn't infinite-loop
+    # Phase RRR-hotfix2 (2026-05-18): key_states column is PostgreSQL text[]
+    # (native array), not jsonb. Original seed passed json.dumps(...) which
+    # produced a JSON string that didn't match the text[] schema → silent
+    # INSERT failure → stayed at 3 ISOs. psycopg2 converts python lists to
+    # text[] automatically — pass the list directly. Also: only set the
+    # done-flag AFTER success so a recoverable error (transient DB hiccup)
+    # retries on the next request.
     try:
         conn = _get_conn()
         try:
             cur = conn.cursor()
-            # JSON-encoded key_states list works for both text and jsonb columns
             rows = [
                 ('caiso', 'CAISO — California & Western', 'CAISO', 'live',
                  'CAISO · The High-Cost Frontier With Renewable Anchors',
                  'California faces extreme rates and fire risk, but abundant solar, hydro, and aggressive build-out targets keep CAISO in play. Arizona and Nevada offer lower-cost alternatives within the same WECC interconnect.',
-                 json.dumps(['CA', 'NV', 'AZ', 'OR', 'WA']),
+                 ['CA', 'NV', 'AZ', 'OR', 'WA'],
                  None,
                  '/research/grid-intelligence/caiso',
                  4),
                 ('southeast', 'Southeast — SERC & TVA', 'SERC / TVA', 'live',
                  'Southeast · Nuclear Base + Aggressive Incentives',
                  'Georgia, Alabama, Tennessee, and the Carolinas combine cheap power, low land cost, nuclear baseload, and aggressive state-level incentives. SERC and TVA both serve as overflow destinations for hyperscale developers priced out of NoVA.',
-                 json.dumps(['GA', 'AL', 'TN', 'NC', 'SC', 'MS']),
+                 ['GA', 'AL', 'TN', 'NC', 'SC', 'MS'],
                  None,
                  '/research/grid-intelligence/southeast',
                  5),
@@ -84,12 +89,13 @@ def _ensure_grid_region_seeds():
                 ON CONFLICT (id) DO NOTHING
             """, rows)
             conn.commit()
+            _seed_done = True
             logger.info("Phase RRR: ensured CAISO + Southeast grid_regions seed rows")
         finally:
             try: conn.close()
             except Exception: pass
     except Exception as e:
-        logger.warning("Phase RRR seed skipped: %s", e)
+        logger.warning("Phase RRR seed skipped (will retry next request): %s", e)
 
 
 # ─── Tier gating constants ───
