@@ -1162,16 +1162,82 @@ try:
     except Exception as _wde:
         import logging
         logging.getLogger(__name__).warning('weekly_digest wiring failed: %s', _wde)
-    # Phase RRR-newsletter-hotfix2 (2026-05-18): late-line blueprint
-    # registration at line 5114 doesn't take effect on Railway for reasons
-    # we haven't fully diagnosed. Same neighborhood as weekly_digest_bp
-    # works reliably — co-locating here.
-    try:
-        from routes.weekly_public_newsletter import weekly_public_newsletter_bp
-        app.register_blueprint(weekly_public_newsletter_bp)
-    except Exception as _wpne:
-        import logging
-        logging.getLogger(__name__).warning('weekly_public_newsletter wiring failed: %s', _wpne)
+    # Phase RRR-newsletter-hotfix3 (2026-05-18): registering via a
+    # routes/*.py module silently failed for reasons we couldn't
+    # diagnose live. Switching to inline-route definitions on the
+    # existing `app` object — same pattern as the hundreds of @app.route
+    # decorators throughout main.py. This bypasses module-import issues
+    # entirely.
+    @app.route('/api/v1/weekly/ping', methods=['GET'])
+    def _weekly_ping():
+        return jsonify(ok=True, version='inline-2026-05-18')
+
+    @app.route('/api/v1/weekly/subscribe', methods=['POST', 'OPTIONS'])
+    def _weekly_subscribe():
+        if request.method == 'OPTIONS':
+            return ('', 204, {'Access-Control-Allow-Origin': '*',
+                              'Access-Control-Allow-Methods': 'POST, OPTIONS',
+                              'Access-Control-Allow-Headers': 'Content-Type'})
+        data = request.get_json(silent=True) or {}
+        email = (data.get('email') or '').strip().lower()
+        if not email or '@' not in email:
+            return jsonify(ok=False, error='invalid_email'), 400
+        import secrets as _secrets
+        try:
+            import psycopg2 as _psy
+            _du = (os.environ.get('NEON_DATABASE_URL')
+                   or os.environ.get('DATABASE_URL', ''))
+            conn = _psy.connect(_du)
+            try:
+                cur = conn.cursor()
+                cur.execute("""
+                    CREATE TABLE IF NOT EXISTS weekly_public_subscribers (
+                        email             TEXT PRIMARY KEY,
+                        subscribed_at     TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+                        unsubscribe_token TEXT NOT NULL,
+                        status            TEXT NOT NULL DEFAULT 'active',
+                        source            TEXT
+                    )
+                """)
+                cur.execute("""
+                    INSERT INTO weekly_public_subscribers
+                        (email, unsubscribe_token, source, status)
+                    VALUES (%s, %s, %s, 'active')
+                    ON CONFLICT (email) DO UPDATE
+                        SET status = 'active', subscribed_at = NOW()
+                """, (email, _secrets.token_urlsafe(24),
+                      (data.get('source') or request.referrer or '')[:120]))
+                conn.commit()
+            finally:
+                try: conn.close()
+                except Exception: pass
+        except Exception as _e:
+            return jsonify(ok=False, error=f'db: {str(_e)[:120]}'), 503
+        resp = jsonify(ok=True, email=email, status='subscribed',
+                       next_send='Monday 13:00 UTC')
+        resp.headers['Access-Control-Allow-Origin'] = '*'
+        return resp, 200
+
+    @app.route('/api/v1/weekly/subscribers', methods=['GET'])
+    def _weekly_subscribers_count():
+        try:
+            import psycopg2 as _psy
+            _du = (os.environ.get('NEON_DATABASE_URL')
+                   or os.environ.get('DATABASE_URL', ''))
+            conn = _psy.connect(_du)
+            try:
+                cur = conn.cursor()
+                cur.execute("""
+                    SELECT COUNT(*) FROM weekly_public_subscribers
+                     WHERE status = 'active'
+                """)
+                n = cur.fetchone()[0]
+            finally:
+                try: conn.close()
+                except Exception: pass
+            return jsonify(ok=True, active=n), 200
+        except Exception as _e:
+            return jsonify(ok=False, error=str(_e)[:120]), 503
     # Phase FF (2026-05-14): the market-movement alerts primitive — the
     # shared spine for buyer-facing email alerts + agent-facing webhooks,
     # and the unfulfilled "alerts when a tracked market moves" promise
