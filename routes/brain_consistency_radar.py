@@ -2619,6 +2619,79 @@ def check_ai_citations_stale_v2() -> list[dict]:
     return findings
 
 
+def check_frontend_critical_endpoints() -> list[dict]:
+    """Phase OOO (2026-05-17) — probe the API endpoints that public
+    HTML pages depend on. Flag any that timeout / 5xx / take >5s.
+
+    Why: user reported /cited-by showing 'No testimonials surfaced yet'
+    + /capacity-pipeline + /tax-incentives + /powered-shell all silently
+    failing because their backing API was 503. The brain had no eyes on
+    this — no detector probed these specific paths. Now it does.
+
+    Each endpoint maps to a public page so the finding URL points at
+    the page the user sees broken, not the API path they don't know
+    about.
+    """
+    findings: list[dict] = []
+    try:
+        import requests as _req
+    except Exception:
+        return findings
+
+    # Endpoints that public pages depend on. Each entry is
+    # (api_path, public_page_path, max_seconds, page_description).
+    _PROBES = [
+        ("/api/v1/testimonials?limit=4",     "/cited-by",          5, "cited-by testimonials widget"),
+        ("/api/v1/news?q=DC+Hub&limit=6",    "/cited-by",          5, "cited-by news mentions widget"),
+        ("/api/v1/powered-shell/markets",    "/powered-shell",     5, "powered-shell markets list"),
+        ("/api/v1/map?all=true&limit=2000",  "/assets",            8, "assets / map facility data"),
+        ("/api/v1/site/stats",               "/",                  3, "homepage hero counts"),
+        ("/api/v1/marketing/pulse",          "/dc-hub-media",      5, "DC Hub Media press pulse"),
+        ("/api/v1/stats",                    "/",                  3, "site-wide stats"),
+    ]
+
+    for api_path, page_path, max_sec, label in _PROBES:
+        url = f"https://dchub.cloud{api_path}"
+        import time as _t
+        t0 = _t.time()
+        try:
+            r = _req.get(url, timeout=max_sec + 2,
+                          headers={"User-Agent": "dchub-frontend-health/1.0"})
+            elapsed = _t.time() - t0
+        except Exception as e:
+            elapsed = _t.time() - t0
+            findings.append({
+                "issue":  "frontend_endpoint_unreachable",
+                "url":    page_path,
+                "count":  1,
+                "detail": (f"Public page `{page_path}` depends on API `{api_path}` "
+                           f"({label}) which timed out / errored after "
+                           f"{elapsed:.1f}s: {type(e).__name__}. The page renders "
+                           f"empty/broken to visitors. Likely Railway upstream "
+                           f"failure or endpoint regression."),
+            })
+            continue
+        if r.status_code >= 500:
+            findings.append({
+                "issue":  "frontend_endpoint_5xx",
+                "url":    page_path,
+                "count":  r.status_code,
+                "detail": (f"Public page `{page_path}` depends on API `{api_path}` "
+                           f"({label}) which returned HTTP {r.status_code}. "
+                           f"The page renders empty/broken to visitors."),
+            })
+        elif elapsed > max_sec:
+            findings.append({
+                "issue":  "frontend_endpoint_slow",
+                "url":    page_path,
+                "count":  int(elapsed * 1000),
+                "detail": (f"Public page `{page_path}` API call to `{api_path}` "
+                           f"({label}) took {elapsed:.1f}s (cap {max_sec}s). "
+                           f"Visitors abandon before render."),
+            })
+    return findings
+
+
 def check_package_install_velocity_drop() -> list[dict]:
     """Phase KKK (2026-05-17) — flag when published package install
     velocity drops sharply WoW. Pulls from package_install_stats
@@ -2883,7 +2956,9 @@ def scan_all() -> list[dict]:
                # Phase XX (2026-05-17) — breach prevention
                check_rest_endpoint_leakage,
                # Phase KKK (2026-05-17) — package install velocity drop
-               check_package_install_velocity_drop):
+               check_package_install_velocity_drop,
+               # Phase OOO (2026-05-17) — frontend-critical endpoint health
+               check_frontend_critical_endpoints):
         try:
             out.extend(fn() or [])
         except Exception as e:
