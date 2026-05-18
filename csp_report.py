@@ -168,6 +168,39 @@ def csp_report():
     return Response(status=204)
 
 
+# ---------------------------------------------------------------------------
+# Helpers consumed by brain_consistency_radar (Phase QQQ, 2026-05-17)
+# ---------------------------------------------------------------------------
+
+def recent_blocked_uris(window_seconds: int = 86400, top_n: int = 10) -> list[dict]:
+    """Return the top-N most-blocked URIs in the last `window_seconds`.
+
+    Brain `check_csp_violation_reports()` calls this each scan; if a
+    blocked URI shows up repeatedly we want a finding because that's a
+    CSP allowlist gap actively breaking real users.
+
+    NOTE: in-process state only. If Railway recycles the worker the
+    counts reset. Good enough — the brain runs every 6h and persistent
+    storage would require a migration; keeping this simple keeps it
+    deployable today.
+    """
+    cutoff = _now() - window_seconds
+    by_blocked: dict[tuple[str, str], int] = defaultdict(int)
+    for ts, directive, blocked, document in _recent_events:
+        if ts < cutoff:
+            continue
+        if not blocked or blocked == "-":
+            continue
+        # Strip protocol so we group cdn.x.com http vs https together
+        clean = blocked.split("://", 1)[-1].split("?", 1)[0].split("/", 1)[0]
+        by_blocked[(clean, directive or "-")] += 1
+    ranked = sorted(by_blocked.items(), key=lambda kv: kv[1], reverse=True)
+    return [
+        {"blocked_uri": k[0], "directive": k[1], "count": v}
+        for k, v in ranked[:top_n]
+    ]
+
+
 @csp_report_bp.route("/api/csp-report/stats", methods=["GET"])
 def csp_report_stats():
     """Summary of recent CSP violations for at-a-glance health."""

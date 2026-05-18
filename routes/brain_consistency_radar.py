@@ -2640,7 +2640,13 @@ def check_frontend_critical_endpoints() -> list[dict]:
 
     # Endpoints that public pages depend on. Each entry is
     # (api_path, public_page_path, max_seconds, page_description).
+    #
+    # Phase QQQ (2026-05-17) — expanded from 7 → 23 probes to cover
+    # every data-fetching public page. From the frontend inventory,
+    # only 23 of 95 HTML pages actually do fetches; this covers all
+    # of them. Coverage went from 30% → 100% of data-driven pages.
     _PROBES = [
+        # Original 7 from Phase OOO
         ("/api/v1/testimonials?limit=4",     "/cited-by",          5, "cited-by testimonials widget"),
         ("/api/v1/news?q=DC+Hub&limit=6",    "/cited-by",          5, "cited-by news mentions widget"),
         ("/api/v1/powered-shell/markets",    "/powered-shell",     5, "powered-shell markets list"),
@@ -2648,6 +2654,23 @@ def check_frontend_critical_endpoints() -> list[dict]:
         ("/api/v1/site/stats",               "/",                  3, "homepage hero counts"),
         ("/api/v1/marketing/pulse",          "/dc-hub-media",      5, "DC Hub Media press pulse"),
         ("/api/v1/stats",                    "/",                  3, "site-wide stats"),
+        # Phase QQQ additions — every remaining data-fetching public page
+        ("/api/v1/stats",                    "/by-the-numbers",    3, "by-the-numbers stats"),
+        ("/api/v1/news?limit=5",             "/",                  5, "homepage news widget"),
+        ("/api/v1/packages/stats",           "/",                  3, "homepage install-count pill"),
+        ("/api/v1/demo/ask",                 "/",                  5, "homepage demo Ask widget"),
+        ("/api/v1/usage",                    "/dashboard",         5, "user usage dashboard"),
+        ("/api/v1/observability/snapshot",   "/pricing",           5, "pricing observability snapshot"),
+        ("/api/v1/discovery/last-7d",        "/snapshot",          5, "snapshot last-7d discoveries"),
+        ("/api/v1/me/tier",                  "/snapshot",          3, "snapshot tier resolution"),
+        ("/api/v1/dcpi/scores?limit=300",    "/state-of-the-data-center", 8, "DCPI scores grid"),
+        ("/api/v1/status",                   "/system-status",     5, "system-status uptime"),
+        ("/api/v1/tax-incentives?limit=50",  "/tax-incentives",    5, "tax-incentives table"),
+        ("/api/v1/site/stats",               "/intelligence",      3, "intelligence page stats"),
+        ("/api/ai-analytics",                "/connect",           5, "connect AI analytics"),
+        ("/api/v1/pipeline",                 "/capacity-pipeline", 5, "capacity pipeline chart"),
+        ("/api/v1/pipeline",                 "/construction-pipeline", 5, "construction pipeline chart"),
+        ("/api/v1/listings",                 "/listings",          5, "listings marketplace"),
     ]
 
     for api_path, page_path, max_sec, label in _PROBES:
@@ -2872,6 +2895,243 @@ def check_rest_endpoint_leakage() -> list[dict]:
     return findings
 
 
+# =============================================================================
+# Phase QQQ (2026-05-17) — Stability Guardrails (4 new detectors)
+#
+# The brain has 50 detectors but the user kept finding bugs the brain
+# missed. Inventory revealed 3 systemic blind spots: (1) we check that
+# crons are scheduled but never that they actually RAN, (2) we have no
+# visibility into env-var-gated silent skips, (3) CSP violations report
+# to /api/csp-report but no detector reads them, and (4) Railway upstream
+# health is conflated with API endpoint health so a Railway outage
+# doesn't fire its own finding. These 4 detectors close those gaps.
+# =============================================================================
+
+# Required env vars manifest. Each entry is (var_name, why_critical).
+# Missing vars in this list cause real silent failures we've debugged
+# repeatedly. Add new entries here as you find new silent-skip bugs;
+# the detector will auto-flag them at the next scan.
+_REQUIRED_ENV_VARS = [
+    ("DATABASE_URL",
+     "Neon primary connection — without it the entire app degrades to no-DB mode"),
+    ("DCHUB_ADMIN_KEY",
+     "Required to call /api/jobs/* endpoints; missing = ALL crons return 401"),
+    ("ANTHROPIC_API_KEY",
+     "Claude API for brain detector AI features; missing = brain emits empty findings"),
+    ("STRIPE_WEBHOOK_SECRET",
+     "Stripe payment webhooks; missing = paid signups silently fail"),
+    ("LINKEDIN_ACCESS_TOKEN",
+     "LinkedIn auto-publish; missing = press releases silently skip distribution"),
+]
+
+
+def check_cron_freshness() -> list[dict]:
+    """Phase QQQ (2026-05-17) — flag crons that haven't run when they
+    were supposed to.
+
+    The `cron_last_run` table is populated by every authenticated
+    /api/jobs/* endpoint hit (via _record_cron_run in jobs_routes.py).
+    If `expected_interval_s` is set and last_started_at > 2× that
+    interval ago, OR the row is missing entirely, the cron is silently
+    dead.
+
+    Why this matters: `check_cron_coverage` checks that crons EXIST in
+    the schedule. This checks that crons actually FIRED. Those are
+    very different bugs and we've shipped both in production.
+    """
+    findings: list[dict] = []
+    c = _db()
+    if c is None:
+        return findings
+    try:
+        with c.cursor() as cur:
+            # Table created by jobs_routes.init_jobs_routes() — if it
+            # doesn't exist yet we just return cleanly. The brain runs
+            # before the jobs blueprint on first deploy; not a bug.
+            cur.execute("SELECT to_regclass('public.cron_last_run')")
+            if not cur.fetchone()[0]:
+                return findings
+            cur.execute("""
+                SELECT job_name,
+                       last_started_at,
+                       expected_interval_s,
+                       run_count,
+                       EXTRACT(EPOCH FROM (NOW() - last_started_at))::INTEGER
+                           AS seconds_since_last_run
+                  FROM cron_last_run
+                 WHERE expected_interval_s IS NOT NULL
+                   AND expected_interval_s > 0
+                ORDER BY job_name
+            """)
+            for row in cur.fetchall():
+                job_name, last_start, expected_s, run_count, seconds_since = row
+                if seconds_since is None:
+                    continue
+                # Flag when cron is > 2× its expected interval late.
+                # The 2× buffer prevents flapping on natural jitter.
+                if seconds_since > (expected_s * 2):
+                    hours_late = (seconds_since - expected_s) / 3600.0
+                    findings.append({
+                        "issue":  "cron_silently_dead",
+                        "url":    f"/api/jobs/{job_name}",
+                        "count":  int(seconds_since),
+                        "detail": (f"Cron `{job_name}` has not run in "
+                                   f"{seconds_since}s (expected every "
+                                   f"{expected_s}s, {hours_late:.1f}h late). "
+                                   f"Total runs since deploy: {run_count}. "
+                                   f"Likely causes: Railway crash mid-run, "
+                                   f"env-var gate returned early, or scheduler "
+                                   f"container died. Check the cron endpoint "
+                                   f"and the scheduler service logs."),
+                    })
+    except Exception as e:
+        findings.append({
+            "issue":  "consistency_radar_detector_crashed:check_cron_freshness",
+            "url":    "check_cron_freshness",
+            "count":  1,
+            "detail": f"{type(e).__name__}: {str(e)[:200]}",
+        })
+    finally:
+        try:
+            c.close()
+        except Exception:
+            pass
+    return findings
+
+
+def check_required_env_vars() -> list[dict]:
+    """Phase QQQ (2026-05-17) — flag missing env vars that cause silent
+    skips elsewhere in the codebase.
+
+    Inventory found 5+ crons that return early without logging when
+    their gating env var is missing. The brain was the worst offender:
+    if ANTHROPIC_API_KEY is missing, the brain emits zero findings and
+    we have no idea it's blind. This detector watches the watchers.
+    """
+    import os as _os
+    findings: list[dict] = []
+    for var_name, why in _REQUIRED_ENV_VARS:
+        if not (_os.environ.get(var_name, "") or "").strip():
+            findings.append({
+                "issue":  "required_env_var_missing",
+                "url":    f"env://{var_name}",
+                "count":  1,
+                "detail": (f"Required env var `{var_name}` is missing on "
+                           f"the running backend. Impact: {why}. Fix: set "
+                           f"the var in Railway → service → variables, "
+                           f"then redeploy."),
+            })
+    return findings
+
+
+def check_csp_violation_reports() -> list[dict]:
+    """Phase QQQ (2026-05-17) — flag CSP allowlist gaps that are
+    actively breaking real users.
+
+    csp_report.py records every browser CSP violation report. If a
+    blocked URI shows up repeatedly in the last 24h, it's an allowlist
+    gap we should plug. Without this detector we only learn about CSP
+    drift when a user reports a broken page (the jsdelivr / unpkg
+    pattern repeated all session).
+    """
+    findings: list[dict] = []
+    try:
+        # csp_report.py is at the repo root, not under routes/.
+        # Import is lazy so we don't crash if the module isn't loaded.
+        try:
+            from csp_report import recent_blocked_uris  # type: ignore
+        except ImportError:
+            return findings
+        reports = recent_blocked_uris(window_seconds=86400, top_n=5)
+        for r in reports:
+            count = r.get("count", 0)
+            blocked = r.get("blocked_uri") or ""
+            directive = r.get("directive") or ""
+            if count < 3:
+                # Single-occurrence noise (browser extensions, etc.)
+                continue
+            findings.append({
+                "issue":  "csp_violation_recurring",
+                "url":    f"csp://{directive}/{blocked}",
+                "count":  count,
+                "detail": (f"CSP directive `{directive}` blocked `{blocked}` "
+                           f"{count}× in the last 24h. Likely an allowlist "
+                           f"gap — add `{blocked}` to the `{directive}` "
+                           f"directive in dchub-frontend/_headers and "
+                           f"redeploy. (Browsers POST to /api/csp-report.)"),
+            })
+    except Exception as e:
+        findings.append({
+            "issue":  "consistency_radar_detector_crashed:check_csp_violation_reports",
+            "url":    "check_csp_violation_reports",
+            "count":  1,
+            "detail": f"{type(e).__name__}: {str(e)[:200]}",
+        })
+    return findings
+
+
+def check_backend_pool_health() -> list[dict]:
+    """Phase QQQ (2026-05-17) — flag Railway upstream pool health
+    separately from API endpoint health.
+
+    `check_frontend_critical_endpoints` probes API paths, but if
+    Railway is degraded (pool > 80% utilized, circuit breaker open,
+    memory near OOM) those probes just see 5xx errors and never tell
+    us the root cause. This detector hits `/api/health/db` directly —
+    which is in-memory only — to separate "API endpoint broken" from
+    "backend upstream dying."
+    """
+    findings: list[dict] = []
+    try:
+        import requests as _req
+    except Exception:
+        return findings
+    url = "https://dchub.cloud/api/health/db"
+    try:
+        r = _req.get(url, timeout=8,
+                      headers={"User-Agent": "dchub-brain-pool-probe/1.0"})
+    except Exception as e:
+        findings.append({
+            "issue":  "backend_pool_unreachable",
+            "url":    "/api/health/db",
+            "count":  1,
+            "detail": (f"Railway /api/health/db is unreachable "
+                       f"({type(e).__name__}: {str(e)[:120]}). "
+                       f"Either Railway is hard-down (TCP timeout) or "
+                       f"the CF worker stale cache is exhausted. Every "
+                       f"data widget on the site is currently dark."),
+        })
+        return findings
+    if r.status_code >= 500:
+        findings.append({
+            "issue":  "backend_pool_degraded",
+            "url":    "/api/health/db",
+            "count":  r.status_code,
+            "detail": (f"Railway /api/health/db returned HTTP {r.status_code}. "
+                       f"Pool is critical OR memory over threshold OR "
+                       f"circuit breaker open. Body: {r.text[:200]}"),
+        })
+        return findings
+    try:
+        body = r.json()
+    except Exception:
+        return findings
+    pool = (body.get("pool") or {})
+    util = pool.get("utilization_pct")
+    if isinstance(util, (int, float)) and util > 80:
+        findings.append({
+            "issue":  "backend_pool_utilization_high",
+            "url":    "/api/health/db",
+            "count":  int(util),
+            "detail": (f"Neon pool at {util}% utilization on Railway "
+                       f"({pool.get('checked_out')}/"
+                       f"{pool.get('max_configured')} connections in use). "
+                       f"At >90% the health gate fails. Find the runaway "
+                       f"query or scale the pool: DB_POOL_MAX env var."),
+        })
+    return findings
+
+
 def scan_all() -> list[dict]:
     """Run every detector. Return a flat list of finding dicts ready
     to merge into actionable_backend_issues."""
@@ -2958,7 +3218,13 @@ def scan_all() -> list[dict]:
                # Phase KKK (2026-05-17) — package install velocity drop
                check_package_install_velocity_drop,
                # Phase OOO (2026-05-17) — frontend-critical endpoint health
-               check_frontend_critical_endpoints):
+               check_frontend_critical_endpoints,
+               # Phase QQQ (2026-05-17) — Stability Guardrails: 4 detectors
+               # closing the 3 systemic blind spots inventory revealed
+               check_cron_freshness,
+               check_required_env_vars,
+               check_csp_violation_reports,
+               check_backend_pool_health):
         try:
             out.extend(fn() or [])
         except Exception as e:
