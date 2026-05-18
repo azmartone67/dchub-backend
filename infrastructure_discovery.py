@@ -907,7 +907,15 @@ class SubstationDiscovery:
             if 0 < voltage <= 69:
                 return  # Skip telecom/distribution-grade substations
 
-            source_id = sub.get('source_id', f"{sub['name']}_{sub.get('lat', 0):.4f}_{sub.get('lng', 0):.4f}".replace(" ", "_").lower()[:100])
+            # Phase ZZZZ-substation-fix (2026-05-18): .get('lat', 0) returns
+            # None when key EXISTS with None value (the default only kicks
+            # in when key is missing). Coerce both to floats explicitly so
+            # the :.4f format never gets None.
+            lat_val = sub.get('lat')
+            lng_val = sub.get('lng')
+            lat_safe = float(lat_val) if lat_val is not None else 0.0
+            lng_safe = float(lng_val) if lng_val is not None else 0.0
+            source_id = sub.get('source_id', f"{sub['name']}_{lat_safe:.4f}_{lng_safe:.4f}".replace(" ", "_").lower()[:100])
             # FIX: INSERT OR IGNORE → ON CONFLICT DO NOTHING, ? → %s
             rowcount = _safe_write('''
                 INSERT INTO substations

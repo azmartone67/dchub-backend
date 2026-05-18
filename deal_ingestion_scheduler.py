@@ -171,7 +171,12 @@ def run_ingestion(get_db):
         return
 
     # 3. Upsert into Neon
+    # Phase ZZZZ-conn-fix (2026-05-18): pool watchdog was force-reclaiming
+    # this connection after 76s because we never called conn.close(). Add
+    # try/finally so the connection always returns to pool — even on
+    # exception. Prevents pool-exhaustion cascade under load.
     inserted, updated, errors = 0, 0, 0
+    conn = None
     try:
         conn = get_db()
         cur = conn.cursor()
@@ -206,6 +211,10 @@ def run_ingestion(get_db):
     except Exception as e:
         logger.error(f"  DB error: {e}")
         errors = len(deals)
+    finally:
+        if conn is not None:
+            try: conn.close()
+            except Exception: pass
 
     logger.info(f"  ✅ Ingestion complete: {inserted} inserted/updated, {errors} errors")
 

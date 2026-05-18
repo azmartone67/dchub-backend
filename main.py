@@ -10674,9 +10674,23 @@ def energy_eia_ingest_run():
             pass
 
 
+# Phase ZZZZ-stats-cache (2026-05-18): /api/v1/stats runs 15+ sequential
+# SQL queries (including 2 COUNT DISTINCT scans on the facilities table)
+# and takes ~1.8s. That blocks /land-power's first paint. Cache the full
+# response in-process for 5min — stats data is hourly-fresh at best.
+import time as _t_stats
+_STATS_CACHE = {"value": None, "ts": 0}
+_STATS_TTL = 300  # 5min
+
 @app.route('/api/v1/stats', methods=['GET'])
 def get_stats():
-    """Get aggregate statistics"""
+    """Get aggregate statistics — cached 5min to keep /land-power fast."""
+    now = _t_stats.monotonic()
+    if _STATS_CACHE["value"] and (now - _STATS_CACHE["ts"]) < _STATS_TTL:
+        cached = dict(_STATS_CACHE["value"])
+        cached.setdefault("_cache", {})["served_from"] = "memo"
+        cached["_cache"]["age_seconds"] = int(now - _STATS_CACHE["ts"])
+        return jsonify(cached)
     conn = None
     try:
         conn = get_read_db()
@@ -10922,6 +10936,11 @@ def get_stats():
             'users_by_plan': stats.get('users_by_plan', {})
         }
         cache_for_degradation('v1_stats', result)
+        # Phase ZZZZ-stats-cache (2026-05-18): memo-store so next 5 min
+        # of /api/v1/stats requests serve from memory (~1ms) instead of
+        # re-running the 15+ SQL queries (~1.8s).
+        _STATS_CACHE["value"] = result
+        _STATS_CACHE["ts"] = _t_stats.monotonic()
         return jsonify(result)
     except Exception as e:
         import traceback; tb = traceback.format_exc(); logger.error("Stats endpoint error: %s\n%s", e, tb)
