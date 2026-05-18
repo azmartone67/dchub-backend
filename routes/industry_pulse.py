@@ -278,6 +278,7 @@ def _start_bg_compute_if_needed():
                        name="industry-pulse-compute").start()
 
 
+@industry_pulse_bp.route("/api/v1/industry/pulse-v2", methods=["GET"])
 @industry_pulse_bp.route("/api/v1/industry/pulse", methods=["GET"])
 def industry_pulse():
     """Weekly stat sheet for industry analysts + AI citation.
