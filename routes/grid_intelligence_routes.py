@@ -450,6 +450,58 @@ def _get_tax_incentives(states, conn=None):
 
 
 # ─── List all regions ───
+# Phase RRR-hotfix3 (2026-05-18): seed silently failing somehow. Debug
+# endpoint that returns the actual error so we can diagnose live.
+@grid_intel_bp.route('/api/v1/grid-intelligence/_seed-debug', methods=['GET'])
+def grid_seed_debug():
+    """Force-run the seed and return verbatim result/error."""
+    global _seed_done
+    _seed_done = False  # always re-run for debug
+    try:
+        conn = _get_conn()
+        try:
+            cur = conn.cursor()
+            rows = [
+                ('caiso', 'CAISO — California & Western', 'CAISO', 'live',
+                 'CAISO · The High-Cost Frontier With Renewable Anchors',
+                 'California faces extreme rates and fire risk, but abundant solar, hydro, and aggressive build-out targets keep CAISO in play.',
+                 ['CA', 'NV', 'AZ', 'OR', 'WA'],
+                 None,
+                 '/research/grid-intelligence/caiso',
+                 4),
+                ('southeast', 'Southeast — SERC & TVA', 'SERC / TVA', 'live',
+                 'Southeast · Nuclear Base + Aggressive Incentives',
+                 'Georgia, Alabama, Tennessee, and the Carolinas combine cheap power, low land cost, nuclear baseload, and aggressive state-level incentives.',
+                 ['GA', 'AL', 'TN', 'NC', 'SC', 'MS'],
+                 None,
+                 '/research/grid-intelligence/southeast',
+                 5),
+            ]
+            cur.executemany("""
+                INSERT INTO grid_regions
+                  (id, name, iso, status, headline, description,
+                   key_states, total_queue_gw, page_url, sort_order)
+                VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s)
+                ON CONFLICT (id) DO NOTHING
+            """, rows)
+            conn.commit()
+            # Verify
+            cur.execute("SELECT id FROM grid_regions ORDER BY sort_order")
+            ids = [r[0] for r in cur.fetchall()]
+            return jsonify({'ok': True, 'ids': ids, 'count': len(ids)})
+        finally:
+            try: conn.close()
+            except Exception: pass
+    except Exception as e:
+        import traceback
+        return jsonify({
+            'ok': False,
+            'error_type': type(e).__name__,
+            'error': str(e),
+            'traceback': traceback.format_exc().splitlines()[-6:],
+        }), 500
+
+
 @grid_intel_bp.route('/api/v1/grid-intelligence', methods=['GET'])
 def list_grid_regions():
     """List all grid intelligence regions with basic info."""
