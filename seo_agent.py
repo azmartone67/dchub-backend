@@ -289,6 +289,7 @@ def get_ai_citation_stats():
         return {"error": str(e), "total_ai_citations": 0}
 
 
+# AUTO-REPAIR: duplicate route '/api/seo/status' also in seo_agents.py:308 — review and remove one
 @seo_agent_bp.route('/api/seo/status', methods=['GET'])
 def seo_status():
     """Get SEO agent status and metrics"""
