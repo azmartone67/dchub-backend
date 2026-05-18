@@ -5127,37 +5127,26 @@ try:
 except Exception as e:
     logger.warning(f"⚠️ Public weekly newsletter blueprint skipped: {e}")
 
-# Phase RRR-revenue1 (2026-05-18) — SAME BUG CLASS as the deal scheduler
-# above: content_publisher.py defines start_auto_publisher() (LinkedIn),
-# start_twitter_publisher(), start_bluesky_publisher() — each spawns a
-# daemon thread that loops every 6h checking the publish queue. None of
-# them were called from anywhere in main.py. Result: press releases got
-# generated (auto_press_7d=6) but ZERO published to any of 3 channels
-# despite pulse.distribution.status == "healthy" (the "healthy" check
-# only verified env vars were present, not that the loop was running).
-# This is the silent gating-bug class the user flagged in memory.
-# Each is wrapped individually so one missing env var (LINKEDIN_ACCESS_TOKEN,
-# TWITTER_BEARER_TOKEN, BLUESKY_APP_PASSWORD) doesn't kill the others.
-try:
-    from content_publisher import start_auto_publisher
-    start_auto_publisher()
-    logger.info("✅ LinkedIn auto-publisher launched")
-except Exception as e:
-    logger.warning(f"⚠️ LinkedIn auto-publisher skipped: {e}")
-
-try:
-    from content_publisher import start_twitter_publisher
-    start_twitter_publisher()
-    logger.info("✅ Twitter/X auto-publisher launched")
-except Exception as e:
-    logger.warning(f"⚠️ Twitter/X auto-publisher skipped: {e}")
-
-try:
-    from content_publisher import start_bluesky_publisher
-    start_bluesky_publisher()
-    logger.info("✅ Bluesky auto-publisher launched")
-except Exception as e:
-    logger.warning(f"⚠️ Bluesky auto-publisher skipped: {e}")
+# Phase RRR-revenue1-REVERT (2026-05-18) — REMOVED the start_*_publisher()
+# calls. Initial diagnosis was right (the publisher loops were never
+# started), but the deeper issue is that content_publisher.py is LEGACY
+# pre-Neon code that uses `sqlite3.connect('dc_nexus.db', timeout=30)`.
+# On Railway dc_nexus.db doesn't exist, so the publisher threads hang in
+# 30-second retry loops, and somehow that hang propagated through the
+# interpreter such that EVERY blueprint registered after this point in
+# main.py (8 blueprints — newsletter, discovery_monitor, ai_ecosystem,
+# autonomous, ai_interconnect, promotion, market_intel_neon, deals_public,
+# platforms) was silently 404'd.
+#
+# Proper fix path: migrate content_publisher.py from sqlite3 to psycopg2
+# (matches the rest of the app). Until that's done, the auto-publish loops
+# remain intentionally orphaned. The orphan-scheduler brain detector
+# will keep flagging them — that's the correct signal until the SQLite
+# migration is done.
+#
+# In the meantime: external dchub-scheduler.py cron jobs hit /api/jobs/*
+# endpoints which already do publish work via the marketing_engine
+# blueprint (separate from this broken SQLite path).
 
 # Phase RRR-revenue2 (2026-05-18) — package install counter refresher.
 # /api/v1/packages/refresh endpoint existed but nothing called it, so the
