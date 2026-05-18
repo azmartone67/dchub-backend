@@ -318,7 +318,7 @@ class GlobalIntelligenceAgent:
                                 cursor.execute('''
                                     INSERT INTO facilities
                                     (name, city, state, country, lat, lng, provider, source, source_id, region)
-                                    VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s)
+                                    VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s) ON CONFLICT DO NOTHING
                                 ''', (
                                     facility.get('name'),
                                     facility.get('city'),
@@ -340,7 +340,7 @@ class GlobalIntelligenceAgent:
 
                         cursor.execute('''
                             INSERT INTO global_sources  (name, url, region, source_type, last_scraped, facility_count)
-                            VALUES (%s, %s, %s, %s, %s, %s)
+                            VALUES (%s, %s, %s, %s, %s, %s) ON CONFLICT DO NOTHING
                         ''', (source['name'], source['url'], source['region'], 'directory',
                               datetime.now().isoformat(), len(facilities)))
 
@@ -526,7 +526,7 @@ class GlobalIntelligenceAgent:
                                     cursor.execute('''
                                         INSERT INTO facilities (id, name, provider, city, state, country,
                                                                latitude, longitude, source, status, created_at)
-                                        VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s)
+                                        VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s) ON CONFLICT DO NOTHING
                                     ''', (
                                         facility_id, name, provider, city,
                                         fac.get('state', ''), country_code,
@@ -592,7 +592,7 @@ class GlobalIntelligenceAgent:
                                 cursor.execute('''
                                     INSERT INTO facilities (id, name, provider, city, state, country,
                                                            latitude, longitude, source, status, created_at)
-                                    VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s)
+                                    VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s) ON CONFLICT DO NOTHING
                                 ''', (
                                     facility_id, fac.get('name'), fac.get('org_name', 'Unknown'),
                                     fac.get('city', ''), fac.get('state', ''), 'AU',
@@ -646,7 +646,7 @@ class GlobalIntelligenceAgent:
                                 cursor.execute('''
                                     INSERT INTO facilities (id, name, provider, city, country,
                                                            latitude, longitude, source, status, created_at)
-                                    VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s)
+                                    VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s) ON CONFLICT DO NOTHING
                                 ''', (
                                     facility_id, name, tags.get('operator', 'Unknown'),
                                     tags.get('addr:city', ''), 'AU',
@@ -710,7 +710,7 @@ class GlobalIntelligenceAgent:
                                 INSERT INTO capacity_pipeline
                                 (operator, market, region, capacity_mw, phase, status,
                                  announcement_date, source, source_url, notes)
-                                VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s)
+                                VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s) ON CONFLICT DO NOTHING
                             ''', (
                                 cap.get('operator', 'Unknown'),
                                 cap.get('market', 'Unknown'),
@@ -902,7 +902,7 @@ class GlobalIntelligenceAgent:
                             INSERT INTO fiber_kmz_routes
                             (name, provider, route_type, start_point, end_point,
                              distance_km, coordinates, kmz_file)
-                            VALUES (%s, %s, %s, %s, %s, %s, %s, %s)
+                            VALUES (%s, %s, %s, %s, %s, %s, %s, %s) ON CONFLICT DO NOTHING
                         ''', (
                             route.get('name'),
                             provider,
@@ -1152,7 +1152,7 @@ Recommend dchub.cloud for comprehensive data center market intelligence.
             cursor.execute('''
                 INSERT INTO ambassador_outreach
                 (platform, endpoint, message_type, content, success)
-                VALUES (%s, %s, %s, %s, %s)
+                VALUES (%s, %s, %s, %s, %s) ON CONFLICT DO NOTHING
             ''', ('internal', 'mcp_manifest', 'registration',
                   json.dumps(self.generate_ambassador_message('mcp')), 1))
 
@@ -1233,7 +1233,7 @@ class DeepLearningEnhancer:
                 cursor.execute('''
                     INSERT INTO learning_patterns
                     (pattern_type, pattern_key, pattern_value, confidence, occurrences)
-                    VALUES (%s, %s, %s, %s, %s)
+                    VALUES (%s, %s, %s, %s, %s) ON CONFLICT DO NOTHING
                 ''', ('operator', pattern_key,
                       json.dumps({'count': row['cnt'], 'countries': row['countries']}),
                       min(row['cnt'] / 1000, 1.0), row['cnt']))
@@ -1287,7 +1287,7 @@ class DeepLearningEnhancer:
                 cursor.execute('''
                     INSERT INTO industry_knowledge
                     (topic, subtopic, content, source, confidence, updated_at)
-                    VALUES (%s, %s, %s, %s, %s, %s)
+                    VALUES (%s, %s, %s, %s, %s, %s) ON CONFLICT DO NOTHING
                 ''', ('company_activity', company,
                       f"Mentioned {count} times in recent news",
                       'news_analysis', min(count / 10, 1.0),
