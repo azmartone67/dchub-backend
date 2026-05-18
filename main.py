@@ -6820,7 +6820,26 @@ def add_security_headers(response):
     # Error responses must be force-revalidated so the fix lands the
     # moment Railway recovers.
     path = request.path.lower()
-    if response.status_code >= 400:
+    # Phase ZZZZ-cache-lift v3 (2026-05-18): consult curated _CACHE_PATHS
+    # FIRST so high-traffic stable GETs get long TTLs instead of being
+    # caught by the blanket /api/ no-store rule below.
+    _matched_curated = None
+    try:
+        if response.status_code == 200 and request.method == 'GET':
+            _matched_curated = _CACHE_PATHS.get(path)
+            if _matched_curated is None:
+                for prefix in _CACHE_PATHS:
+                    if path.startswith(prefix + '/'):
+                        _matched_curated = _CACHE_PATHS[prefix]
+                        break
+    except Exception:
+        _matched_curated = None
+
+    if _matched_curated is not None:
+        secs = _matched_curated[0] if isinstance(_matched_curated, tuple) else _matched_curated
+        response.headers['Cache-Control'] = (
+            f'public, max-age={secs}, s-maxage={secs}, stale-while-revalidate=60')
+    elif response.status_code >= 400:
         response.headers['Cache-Control'] = 'no-store, no-cache, must-revalidate, max-age=0'
     elif path.startswith('/static/js/') or path.startswith('/static/css/'):
         response.headers['Cache-Control'] = 'public, max-age=86400, stale-while-revalidate=604800'
