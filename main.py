@@ -5154,7 +5154,7 @@ try:
 except Exception as e:
     logger.warning(f"⚠️ Package stats refresher skipped: {e}")
 
-# Phase RRR-newsletter (2026-05-18) — public weekly newsletter blueprint.
+# Phase RRR-newsletter (2026-05-18) — public weekly · force-deploy 2026-05-18T06:52:38Z newsletter blueprint.
 # Routes: /api/v1/weekly/{subscribe, unsubscribe, digest/public, send-public,
 # subscribers}. Pairs with the existing personalized weekly_digest.py — this
 # one is for *anyone* who subscribes via /dc-hub-media, the other is for
