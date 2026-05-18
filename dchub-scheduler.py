@@ -569,6 +569,22 @@ DISABLED_JOBS = {
         'day_of_week': 2,                  # Wednesday
         'timeout': 1800,
     },
+    # Phase RRR-publish-cron (2026-05-18) — the smoking gun:
+    # press_releases table has 6 auto-generated/7d but
+    # published_7d.linkedin=0 + queued_unpublished=11. The marketing
+    # engine generates press AND has /publish-now to push it to
+    # LinkedIn/X/Bluesky, but NOTHING was calling /publish-now on a
+    # schedule. Yet another "endpoint exists, no cron" silent skip.
+    # Fires every 3h to catch new generations within a reasonable
+    # delay — 11 currently queued will flush on first run.
+    'marketing_publish_now': {
+        'name': 'Marketing — Publish Pending Press Releases',
+        'endpoint': '/api/v1/marketing/publish-now',
+        'method': 'POST',
+        'hours': [0, 3, 6, 9, 12, 15, 18, 21],
+        'minute': 5,
+        'timeout': 300,
+    },
 }
 
 # ============================================================

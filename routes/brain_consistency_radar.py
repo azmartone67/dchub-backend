@@ -3451,6 +3451,12 @@ _CRON_PATH_PATTERNS = [
     r"/api/v1/[\w-]+/cron",             # */cron
     r"/api/v1/[\w-]+/sync\b",           # */sync
     r"/api/v1/[\w-]+/scan\b",           # */scan
+    # Phase RRR-publish-cron (2026-05-18) — caught the silent
+    # press → LinkedIn skip. The marketing publish-now endpoint had no
+    # cron + my original patterns missed it. Adding here.
+    r"/api/v1/[\w-]+/publish-now",      # */publish-now
+    r"/api/v1/[\w-]+/publish\b",        # */publish (plain)
+    r"/api/v1/[\w-]+/ingest\b",         # */ingest
 ]
 
 # Endpoints that LOOK like cron paths but are intentionally manual-only
