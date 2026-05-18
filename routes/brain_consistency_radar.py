@@ -3479,6 +3479,10 @@ _CRON_INTENTIONAL_MANUAL: set[str] = {
     "/api/jobs/sync-all-tables",         # too heavy for cron — invoked manually for one-time data ops
     "/api/v1/heal/run",                  # requires ?action=<name> param; not cron-compatible without choosing the action
     "/api/v1/packages/refresh",          # already wired as a daemon Thread via start_package_stats_refresher
+    # Phase RRR-publish-cron-followup (2026-05-18): /api/v1/tenants/ingest
+    # is a bulk-import admin endpoint — takes {tenants:[...]} POST body
+    # for one-shot data ingest. NOT cron-compatible; intentionally manual.
+    "/api/v1/tenants/ingest",
 }
 
 
@@ -3501,9 +3505,14 @@ def check_cron_endpoint_unscheduled() -> list[dict]:
     try:
         with open(scheduler_path, "r", encoding="utf-8") as f:
             src = f.read()
-        # Find every 'endpoint': '/...' pair
+        # Find every 'endpoint': '/...' pair. Phase RRR-publish-cron
+        # bugfix (2026-05-18): strip query params before comparing, since
+        # JOBS dict often has endpoints like '/api/v1/daily/run?job=all'
+        # but the matching Flask route is just '/api/v1/daily/run'.
+        # Without the strip, we'd false-flag every job that uses query
+        # params (caught both /daily/run + /alerts/run incorrectly).
         for m in _re.finditer(r"['\"]endpoint['\"]\s*:\s*['\"]([^'\"]+)['\"]", src):
-            scheduled_paths.add(m.group(1))
+            scheduled_paths.add(m.group(1).split('?')[0])
     except Exception:
         return findings  # if we can't read the scheduler, can't detect
 
