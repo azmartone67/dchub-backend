@@ -20212,6 +20212,15 @@ try:
 except Exception as _e:
     print(f"[main] tier_drift_proposals register failed: {_e}", file=sys.stderr)
 
+# Phase III (2026-05-17): cron-collision proposal recorder — autopilot
+# target for the promoted cron_schedule_collision pattern. Records each
+# thundering-herd cron minute into cron_collision_proposals worklist.
+try:
+    from routes.cron_collision_proposals import cron_collision_bp
+    app.register_blueprint(cron_collision_bp)
+except Exception as _e:
+    print(f"[main] cron_collision_proposals register failed: {_e}", file=sys.stderr)
+
 # Phase WWWW (2026-05-16): tier-upgrade nudger — daily check + email
 # IDENTIFIED users hitting 80%+ cap.
 try:
