@@ -79,3 +79,95 @@ def purge_markets_fix():
         "https://dchub.cloud/markets/",
         "https://dchub.cloud/market-intelligence",
     ])), 200
+
+
+def _cf_get(path: str) -> dict:
+    """Helper: GET against CF API. Returns parsed JSON or error dict."""
+    if not _CF_API_TOKEN:
+        return {"ok": False, "error": "CLOUDFLARE_API_TOKEN not set"}
+    try:
+        import requests
+        r = requests.get(
+            f"https://api.cloudflare.com/client/v4{path}",
+            headers={"Authorization": f"Bearer {_CF_API_TOKEN}"},
+            timeout=12,
+        )
+        return r.json() if r.headers.get("content-type","").startswith("application/json") else {"raw": r.text[:500]}
+    except Exception as e:
+        return {"ok": False, "error": f"{type(e).__name__}: {str(e)[:200]}"}
+
+
+@cf_purge_bp.route("/api/v1/cf/inspect/routes-and-rules", methods=["GET"])
+def inspect_routes_and_rules():
+    """Phase ZZZZ-cf-inspect (2026-05-18): aggregate view of everything
+    that could be intercepting requests for dchub.cloud, so we can find
+    what's catching /markets and what's serving the 4.8.3 worker error
+    on /api/v1/marketing/publish-now.
+
+    Returns:
+      - workers in account (list of all worker scripts)
+      - worker routes (which patterns map to which scripts)
+      - pages projects
+      - zone DNS records (looks for hostname intercepts)
+      - bulk redirects + ruleset rules
+
+    Public read-only — no admin gate. Token must have Workers/Pages/Zone
+    read perms.
+    """
+    acct = (os.environ.get("CLOUDFLARE_ACCOUNT_ID")
+            or "4bb33ec40ef02f9f4b41dc97668d5a52").strip()
+    zone = (os.environ.get("CLOUDFLARE_ZONE_ID") or "").strip()
+    out = {"account": acct, "zone_id": zone or "(unset — set CLOUDFLARE_ZONE_ID)"}
+
+    # All worker scripts in the account
+    workers = _cf_get(f"/accounts/{acct}/workers/scripts")
+    out["workers_scripts"] = [
+        {"id": w.get("id"),
+         "created_on": w.get("created_on"),
+         "modified_on": w.get("modified_on"),
+         "logpush": w.get("logpush"),
+         "placement_mode": w.get("placement", {}).get("mode") if isinstance(w.get("placement"), dict) else None}
+        for w in (workers.get("result") or [])
+    ] if workers.get("success") else {"_error": workers.get("errors", workers)}
+
+    # Pages projects
+    pages = _cf_get(f"/accounts/{acct}/pages/projects")
+    out["pages_projects"] = [
+        {"name": p.get("name"),
+         "subdomain": p.get("subdomain"),
+         "domains": p.get("domains"),
+         "production_branch": p.get("production_branch"),
+         "latest_deployment": (p.get("latest_deployment") or {}).get("created_on")}
+        for p in (pages.get("result") or [])
+    ] if pages.get("success") else {"_error": pages.get("errors", pages)}
+
+    # Zone-scoped data only if ZONE_ID set
+    if zone:
+        # Worker routes on this zone — THE key data
+        routes = _cf_get(f"/zones/{zone}/workers/routes")
+        out["worker_routes"] = [
+            {"pattern": r.get("pattern"), "script": r.get("script"), "id": r.get("id")}
+            for r in (routes.get("result") or [])
+        ] if routes.get("success") else {"_error": routes.get("errors", routes)}
+
+        # Ruleset entries (transform rules, redirect rules, etc.)
+        rulesets = _cf_get(f"/zones/{zone}/rulesets")
+        out["rulesets"] = [
+            {"id": rs.get("id"), "name": rs.get("name"), "phase": rs.get("phase"),
+             "kind": rs.get("kind")}
+            for rs in (rulesets.get("result") or [])
+        ] if rulesets.get("success") else {"_error": rulesets.get("errors", rulesets)}
+
+        # Page Rules
+        page_rules = _cf_get(f"/zones/{zone}/pagerules")
+        out["page_rules"] = [
+            {"targets": [t.get("constraint", {}).get("value")
+                         for t in (pr.get("targets") or [])],
+             "actions": [a.get("id") for a in (pr.get("actions") or [])],
+             "status": pr.get("status")}
+            for pr in (page_rules.get("result") or [])
+        ] if page_rules.get("success") else {"_error": page_rules.get("errors", page_rules)}
+    else:
+        out["worker_routes"] = "(need CLOUDFLARE_ZONE_ID)"
+
+    return jsonify(out), 200
