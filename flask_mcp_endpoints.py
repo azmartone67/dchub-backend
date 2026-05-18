@@ -882,9 +882,15 @@ def mcp_funnel():
                 # clientInfo.name in initialize handshake). Backfill via
                 # user_agent pattern-matching so we actually know WHO is
                 # hitting the funnel — was 'unknown' for 70%+ of traffic.
-                _platform_case = """
+                # Phase ZZZZ-attr-v2: client_name is being set to session
+                # UUIDs (not platform names) for most MCP traffic — those
+                # 8-4-4-4-12 hex UUIDs pollute the platform list. Filter
+                # them out via a regex check so we fall through to
+                # user_agent classification.
+                _platform_case = r"""
                     CASE
                         WHEN NULLIF(LOWER(client_name), '') IS NOT NULL
+                             AND client_name !~* '^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$'
                             THEN LOWER(client_name)
                         WHEN user_agent ILIKE '%chatgpt%' OR user_agent ILIKE '%openai%'
                             THEN 'chatgpt'
