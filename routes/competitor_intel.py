@@ -519,8 +519,42 @@ def ship_wins_endpoint():
         if r is None:
             r = _req.get(gh_url, headers=gh_headers, timeout=10)
         if r.status_code != 200:
-            return jsonify(ok=False,
-                           error=f"github api: HTTP {r.status_code} {r.text[:80]}"), 503
+            # Phase RRR-brain-wins-fix3 (2026-05-18): the dchub-backend
+            # repo is private, so unauth GitHub gives 404 ("Not Found").
+            # Auth path needs a valid GITHUB_TOKEN/BACKEND_PAT on
+            # Railway — the current one is stale (401 Bad Credentials).
+            # Return a self-describing error + sample wins so the
+            # endpoint is still demoable without GitHub access.
+            sample_wins = [
+                {"commit": "8689f3c7", "subject": "fix(phase-rrr-brain-wins-fix): GitHub API",
+                 "when": "2026-05-18", "keyword": "brain detector",
+                 "headline": _WIN_KEYWORDS_TO_POSITIONING["brain detector"][0],
+                 "positioning": _WIN_KEYWORDS_TO_POSITIONING["brain detector"][1],
+                 "post_draft": "(sample mode)"},
+                {"commit": "b3bcfc0a", "subject": "feat(phase-rrr-competitive-intel): comparison endpoint",
+                 "when": "2026-05-18", "keyword": "competitive",
+                 "headline": _WIN_KEYWORDS_TO_POSITIONING["competitive"][0],
+                 "positioning": _WIN_KEYWORDS_TO_POSITIONING["competitive"][1],
+                 "post_draft": "(sample mode)"},
+                {"commit": "e4945a13", "subject": "feat(phase-rrr-cron-batch): 6 cron jobs wired",
+                 "when": "2026-05-18", "keyword": "cron",
+                 "headline": _WIN_KEYWORDS_TO_POSITIONING["cron"][0],
+                 "positioning": _WIN_KEYWORDS_TO_POSITIONING["cron"][1],
+                 "post_draft": "(sample mode)"},
+            ]
+            return jsonify(
+                ok=True,
+                mode="sample_fallback",
+                fetch_error=f"github api: HTTP {r.status_code} (repo likely private + token stale)",
+                fix_hint=("Update GITHUB_TOKEN env var on Railway "
+                          "(Settings → Variables) with a fresh personal "
+                          "access token that has 'repo' scope. Then this "
+                          "endpoint returns real shipment wins instead "
+                          "of these 3 hardcoded samples."),
+                win_count=len(sample_wins),
+                wins=sample_wins,
+                generated_at=datetime.datetime.utcnow().isoformat() + "Z",
+            ), 200
         commits = r.json() or []
     except Exception as e:
         return jsonify(ok=False, error=f"github fetch failed: {str(e)[:120]}"), 503
