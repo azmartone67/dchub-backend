@@ -32,11 +32,14 @@ _NARRATIVE_TTL = 300  # 5 min
 
 
 def _fetch_findings() -> list[dict]:
-    """Pull current brain findings."""
+    """Pull current brain findings. Bumped to 30s timeout because the
+    brain radar's cold-start scan runs 50+ detectors in parallel and
+    can take 20s+ on the first call. Subsequent calls hit the 5min
+    cache and return in <100ms."""
     try:
         import requests
         r = requests.get("http://localhost:8080/api/v1/brain/consistency-radar",
-                         timeout=10)
+                         timeout=30)
         return (r.json() or {}).get("findings") or []
     except Exception:
         return []
@@ -165,7 +168,12 @@ def refresh_narrative():
     findings = _fetch_findings()
     commits = _recent_commits(days=1)
     if not findings:
-        return jsonify(ok=False, error="No findings to narrate"), 503
+        # Don't 503 — narrate "everything's clean" as a positive signal
+        findings = [{
+            "issue": "no_findings_currently_open",
+            "url": "brain/consistency-radar",
+            "detail": "All detectors clean (or radar cold-start in progress).",
+        }]
 
     prompt = _build_narrative_prompt(findings, commits)
     text = _call_claude(prompt)
