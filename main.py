@@ -3572,34 +3572,34 @@ _CACHE_PATHS: dict = {
 
 @app.after_request
 def add_cache_headers(response):
-    """Phase ZZZZ-cache-lift: attach Cache-Control to high-traffic GETs
-    so CF stops origin-fetching every request. Only fires for GET 200s
-    on the curated path list. Never overrides an existing Cache-Control
-    (so endpoints that set their own — like the marketing publish-now
-    pages — keep their behavior)."""
+    """Phase ZZZZ-cache-lift v2: attach Cache-Control to high-traffic
+    GETs so CF stops origin-fetching every request. OVERRIDES existing
+    Cache-Control for paths in _CACHE_PATHS (some other middleware sets
+    max-age=60 which is too short for stable data). Only fires for GET
+    200s. Untouched paths keep whatever they were doing."""
     try:
         if request.method != 'GET' or response.status_code != 200:
             return response
-        if response.headers.get('Cache-Control'):
-            return response  # respect existing
         path = request.path
         # Exact + prefix match
         ttl = _CACHE_PATHS.get(path)
         if ttl is None:
-            for prefix, val in _CACHE_PATHS.items():
-                if path.startswith(prefix + '/') or path == prefix:
-                    ttl = val
+            for prefix in _CACHE_PATHS:
+                if path.startswith(prefix + '/'):
+                    ttl = _CACHE_PATHS[prefix]
                     break
         if ttl is None:
             return response
         seconds = ttl[0] if isinstance(ttl, tuple) else ttl
-        response.headers['Cache-Control'] = f'public, max-age={seconds}, s-maxage={seconds}'
-        # Vary on Accept so JSON/HTML negotiation doesn't cross-pollute
+        # OVERRIDE — we know better than the default 60s
+        response.headers['Cache-Control'] = (
+            f'public, max-age={seconds}, s-maxage={seconds}, '
+            f'stale-while-revalidate=60')
         existing_vary = response.headers.get('Vary', '')
         if 'Accept' not in existing_vary:
             response.headers['Vary'] = (existing_vary + ', Accept').lstrip(', ')
     except Exception:
-        pass  # never break the request over cache header policy
+        pass
     return response
 
 # Setup Google & Meta Integration Routes
