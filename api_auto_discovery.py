@@ -1191,10 +1191,15 @@ class APIAutoDiscovery:
             cursor.execute('SELECT COUNT(*) FROM api_registry WHERE enabled = 1')
             registry_count = cursor.fetchone()[0]
 
-            cursor.execute("SELECT COUNT(*) FROM api_health_checks WHERE checked_at > NOW() - INTERVAL '24 hours'")
+            # Phase RRR-shadow-fix (2026-05-18): `checked_at` and `detected_at`
+            # columns are TEXT (legacy schema), not TIMESTAMP, so `> NOW() -
+            # INTERVAL` errors with "operator does not exist: text > timestamp
+            # with time zone". Cast at query time via ::timestamptz.
+            # Brain's /api/discovery/status SQL error caught this.
+            cursor.execute("SELECT COUNT(*) FROM api_health_checks WHERE checked_at::timestamptz > NOW() - INTERVAL '24 hours'")
             checks_24h = cursor.fetchone()[0]
 
-            cursor.execute("SELECT COUNT(*) FROM api_change_events WHERE detected_at > NOW() - INTERVAL '7 days'")
+            cursor.execute("SELECT COUNT(*) FROM api_change_events WHERE detected_at::timestamptz > NOW() - INTERVAL '7 days'")
             changes_7d = cursor.fetchone()[0]
 
             cursor.execute('''
