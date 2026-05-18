@@ -3427,6 +3427,134 @@ def check_dead_internal_links() -> list[dict]:
     return findings
 
 
+# ── Phase RRR-cron-wiring (2026-05-18) — HTTP-cron unscheduled detector ─
+#
+# Sibling of check_orphaned_scheduler_functions. That one catches
+# Thread() loops defined but never started. THIS one catches HTTP
+# endpoints that LOOK like cron triggers (path matches /api/jobs/*,
+# /api/v1/*/refresh, /api/v1/*/deliver, /api/v1/*/send-public, etc.)
+# but aren't actually scheduled in dchub-scheduler.py.
+#
+# Hit this twice today: routes/weekly_public_newsletter.py's
+# /api/v1/weekly/send-public endpoint AND routes/winback_outreach.py's
+# /api/v1/media/winback/deliver endpoint — both built, both
+# admin-gated, both intended to fire on Mondays, neither was actually
+# in JOBS until I added them. Same "silent inert" failure mode as the
+# Thread()-spawner orphans.
+
+_CRON_PATH_PATTERNS = [
+    r"/api/jobs/[a-z][\w-]*",           # convention for scheduled jobs
+    r"/api/v1/[\w-]+/refresh",          # */refresh
+    r"/api/v1/[\w-]+/deliver\b",        # */deliver
+    r"/api/v1/[\w-]+/send-public",      # */send-public
+    r"/api/v1/[\w-]+/run\b",            # */run
+    r"/api/v1/[\w-]+/cron",             # */cron
+    r"/api/v1/[\w-]+/sync\b",           # */sync
+    r"/api/v1/[\w-]+/scan\b",           # */scan
+]
+
+# Endpoints that LOOK like cron paths but are intentionally manual-only
+# (not in JOBS, that's correct). Allowlist to prevent false positives.
+_CRON_INTENTIONAL_MANUAL: set[str] = {
+    "/api/jobs/db-backup/list",          # admin read-only
+    "/api/jobs/status",                  # admin read-only
+    "/api/jobs/keep-alive",              # called by browser keep-alive, not cron
+    "/api/v1/manual/run",                # explicit manual-only
+}
+
+
+def check_cron_endpoint_unscheduled() -> list[dict]:
+    """Find Flask routes that look like cron triggers but aren't in
+    dchub-scheduler.py's JOBS dict. The "weekly_public_newsletter" +
+    "winback_delivery" wiring I added today were both already-built
+    endpoints; the brain would have caught them sooner with this
+    detector."""
+    import ast as _ast
+    import os as _os
+    import re as _re
+    findings: list[dict] = []
+
+    here = _os.path.dirname(_os.path.dirname(_os.path.abspath(__file__)))
+
+    # Pass 1: extract all scheduled endpoint paths from dchub-scheduler.py
+    scheduled_paths: set[str] = set()
+    scheduler_path = _os.path.join(here, "dchub-scheduler.py")
+    try:
+        with open(scheduler_path, "r", encoding="utf-8") as f:
+            src = f.read()
+        # Find every 'endpoint': '/...' pair
+        for m in _re.finditer(r"['\"]endpoint['\"]\s*:\s*['\"]([^'\"]+)['\"]", src):
+            scheduled_paths.add(m.group(1))
+    except Exception:
+        return findings  # if we can't read the scheduler, can't detect
+
+    # Pass 2: extract every Flask @route path from main.py + routes/*.py
+    # via simple regex (faster than AST for this; route decorators are
+    # syntactically clean).
+    candidates: list[tuple[str, str, int]] = []  # (path, file_rel, lineno)
+    compiled_patterns = [_re.compile(p) for p in _CRON_PATH_PATTERNS]
+    route_re = _re.compile(r"@\w+\.route\(['\"]([^'\"]+)['\"]")
+
+    for root, dirs, files in _os.walk(here):
+        # Skip noisy dirs
+        dirs[:] = [d for d in dirs if d not in
+                    {".git", ".venv", "venv", "tests", "test", "__pycache__",
+                     "node_modules", ".wrangler", "dist", "build", "scripts",
+                     "migrations"}]
+        for fname in files:
+            if not fname.endswith(".py"):
+                continue
+            fpath = _os.path.join(root, fname)
+            rel = _os.path.relpath(fpath, here)
+            try:
+                with open(fpath, "r", encoding="utf-8") as f:
+                    for lineno, line in enumerate(f, 1):
+                        m = route_re.search(line)
+                        if not m:
+                            continue
+                        path = m.group(1)
+                        if path in _CRON_INTENTIONAL_MANUAL:
+                            continue
+                        # Does this path match any cron pattern?
+                        if any(cp.fullmatch(path) for cp in compiled_patterns):
+                            candidates.append((path, rel, lineno))
+            except Exception:
+                continue
+
+    # Dedup candidates by path — multiple decorators on the same path
+    # (e.g., @app.route('/foo', methods=POST) + @app.route('/foo',
+    # methods=OPTIONS)) are the same endpoint logically.
+    seen = set()
+    unique_candidates = []
+    for path, rel, ln in candidates:
+        if path in seen:
+            continue
+        seen.add(path)
+        unique_candidates.append((path, rel, ln))
+
+    # Pass 3: flag any candidate not in scheduled_paths
+    for path, rel, ln in unique_candidates:
+        if path not in scheduled_paths:
+            findings.append({
+                "issue":  "cron_endpoint_unscheduled",
+                "url":    path,
+                "count":  1,
+                "detail": (
+                    f"`{path}` (defined at `{rel}:{ln}`) matches a cron-"
+                    f"trigger naming convention (/jobs/*, */refresh, "
+                    f"*/deliver, */send-public, */run, */cron, */sync, "
+                    f"*/scan) but isn't in `dchub-scheduler.py`'s JOBS "
+                    f"dict. Either (a) add an entry to JOBS so it fires "
+                    f"on the intended schedule, OR (b) add the path to "
+                    f"`_CRON_INTENTIONAL_MANUAL` in this detector if it "
+                    f"genuinely should only be hit by hand. Caught the "
+                    f"winback-delivery + weekly-newsletter silent-inert "
+                    f"bugs today (both endpoints existed, neither fired)."
+                ),
+            })
+    return findings
+
+
 # ── Phase RRR-funnel (2026-05-18) — auto-trial signal/mint mismatch ─
 #
 # The 1,581 → 0 conversion mystery cracked open: of 1,581 paywall
@@ -3661,7 +3789,12 @@ def scan_all() -> list[dict]:
                # Phase RRR-funnel (2026-05-18) — auto-trial signal/mint
                # mismatch. Catches the silent failure mode where agents
                # bash the paywall without extracting trial keys.
-               check_auto_trial_signal_mint_mismatch):
+               check_auto_trial_signal_mint_mismatch,
+               # Phase RRR-cron-wiring (2026-05-18) — HTTP-cron orphan
+               # detector. Sibling to check_orphaned_scheduler_functions
+               # — that one catches Thread() loops never started; this
+               # one catches HTTP cron endpoints never scheduled.
+               check_cron_endpoint_unscheduled):
         try:
             out.extend(fn() or [])
         except Exception as e:
