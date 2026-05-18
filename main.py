@@ -1162,6 +1162,21 @@ try:
     except Exception as _wde:
         import logging
         logging.getLogger(__name__).warning('weekly_digest wiring failed: %s', _wde)
+    # Phase RRR-press-loop + industry-pulse (2026-05-18): co-located
+    # here next to weekly_digest because late-line blueprint registration
+    # at line ~1500 silently fails on Railway (proven during hotfix3).
+    try:
+        from routes.brain_press_loop import brain_press_loop_bp
+        app.register_blueprint(brain_press_loop_bp)
+    except Exception as _bple_early:
+        import logging
+        logging.getLogger(__name__).warning('brain_press_loop wiring failed: %s', _bple_early)
+    try:
+        from routes.industry_pulse import industry_pulse_bp
+        app.register_blueprint(industry_pulse_bp)
+    except Exception as _ipe_early:
+        import logging
+        logging.getLogger(__name__).warning('industry_pulse wiring failed: %s', _ipe_early)
     # Phase RRR-newsletter-hotfix3 (2026-05-18): registering via a
     # routes/*.py module silently failed for reasons we couldn't
     # diagnose live. Switching to inline-route definitions on the
@@ -1505,25 +1520,9 @@ try:
     except Exception as _mae:
         import logging
         logging.getLogger(__name__).warning('market_alerts wiring failed: %s', _mae)
-    # Phase RRR-press-loop (2026-05-18): brain-driven press generation.
-    # /api/v1/brain/press-loop pulls competitive/ship-wins → drafts press
-    # releases → they flow to /api/v1/marketing/publish-now → LinkedIn/X/Bluesky.
-    try:
-        from routes.brain_press_loop import brain_press_loop_bp
-        app.register_blueprint(brain_press_loop_bp)
-    except Exception as _bple:
-        import logging
-        logging.getLogger(__name__).warning('brain_press_loop wiring failed: %s', _bple)
-    # Phase RRR-industry-pulse (2026-05-18): analyst-citable stat sheet.
-    # /api/v1/industry/pulse (JSON) + /industry/pulse (HTML). The
-    # "we become the source of truth" surface — designed for CBRE/JLL/
-    # Gartner/IDC to cite + Gemini/Perplexity/Groq to serve in answers.
-    try:
-        from routes.industry_pulse import industry_pulse_bp
-        app.register_blueprint(industry_pulse_bp)
-    except Exception as _ipe:
-        import logging
-        logging.getLogger(__name__).warning('industry_pulse wiring failed: %s', _ipe)
+    # Phase RRR-press-loop + industry-pulse registrations MOVED earlier
+    # in main.py (right after weekly_digest_bp) — see Phase RRR-newsletter-
+    # hotfix3 comment for why late-line registrations silently fail.
     # Phase GG (2026-05-14): the site-wide data-freshness radar — one
     # registry (data_domain_freshness) that knows when every data domain
     # last got fresh data, so staleness can't hide. See
