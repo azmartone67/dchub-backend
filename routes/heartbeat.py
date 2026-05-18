@@ -280,13 +280,17 @@ def api_auto_refresh():
     s = _status()
     # Sort by oldest last_updated first (None = never refreshed = highest priority)
     s.sort(key=lambda r: (r.get("last_updated") or "0000-00-00"))
+
+    # Phase ZZZZ-dedupe (2026-05-18): /auto was timing out at 15s because
+    # heavy refresh functions (refresh_dcpi → recompute_all_scores)
+    # were being called once per stale surface — 5 DCPI surfaces meant
+    # 5× full recomputes back-to-back. Now: run each fn ONCE per batch,
+    # then mark all surfaces using that fn updated with the cached result.
+    fn_result_cache: dict = {}
     refreshed = []
     for r in s:
         if len(refreshed) >= BATCH: break
         if r["status"] not in ("stale", "unknown"): continue
-        # Phase DDDD-cleanup: auto-backfill missing refresh_func with
-        # noop_default so the surface stops being invisible to the loop.
-        # Persists to DB so future scans see the assignment too.
         fn_name = r.get("refresh_func") or "noop_default"
         if not r.get("refresh_func"):
             try:
@@ -301,11 +305,21 @@ def api_auto_refresh():
             except Exception: pass
         fn = REFRESH_FUNCS.get(fn_name) or REFRESH_FUNCS.get("noop_default")
         if not fn: continue
-        ok, info = fn()
+        # Dedupe: same fn → reuse the first call's result for the rest
+        if fn_name in fn_result_cache:
+            ok, info = fn_result_cache[fn_name]
+        else:
+            try:
+                ok, info = fn()
+            except Exception as _e:
+                ok, info = False, f"{type(_e).__name__}: {str(_e)[:80]}"
+            fn_result_cache[fn_name] = (ok, info)
         _mark_updated(r["surface"], ok, info)
-        refreshed.append({"surface": r["surface"], "ok": ok, "info": str(info)[:80], "was": r["status"]})
+        refreshed.append({"surface": r["surface"], "ok": ok,
+                          "info": str(info)[:80], "was": r["status"]})
     return jsonify(refreshed=refreshed, count=len(refreshed),
-                   batch_size=BATCH, total_surfaces=len(s)), 200
+                   batch_size=BATCH, total_surfaces=len(s),
+                   unique_fns_executed=len(fn_result_cache)), 200
 
 
 
