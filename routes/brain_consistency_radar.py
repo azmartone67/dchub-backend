@@ -3708,6 +3708,88 @@ def check_shadowed_routes() -> list[dict]:
     return findings
 
 
+def check_blueprint_registration_silent_failure() -> list[dict]:
+    """Catch the recurring bug class where `from routes.X import X_bp` +
+    `app.register_blueprint(X_bp)` lines run without raising, but the
+    routes are nowhere in `app.url_map` — the late-line silent failure
+    pattern that hit us 3× in 7 days (press_loop, industry_pulse,
+    market_deep_dive). When this happens the user sees a 404 on what
+    SHOULD be a 200 page.
+
+    The detector walks main.py for `from routes.X import Y_bp` declarations
+    and for each, checks whether ANY rule in current_app.url_map points
+    at an endpoint matching the blueprint's name. If not → silent failure.
+    """
+    findings: list[dict] = []
+    try:
+        from flask import current_app
+    except Exception:
+        return findings
+
+    # Resolve main.py path
+    import os
+    main_py = os.path.join(
+        os.path.dirname(os.path.dirname(os.path.abspath(__file__))),
+        "main.py")
+    if not os.path.exists(main_py):
+        return findings
+
+    # Collect imports of blueprints from routes/*.py
+    import re
+    pattern = re.compile(
+        r"from\s+routes\.(\w+)\s+import\s+(\w+_bp)", re.MULTILINE)
+    try:
+        with open(main_py, "r") as f:
+            src = f.read()
+    except Exception:
+        return findings
+
+    declared: dict[str, str] = {}  # bp_var → module
+    for m in pattern.finditer(src):
+        module, bp_var = m.group(1), m.group(2)
+        declared[bp_var] = module
+
+    if not declared:
+        return findings
+
+    # Build set of blueprint NAMES (not vars) that the running app has
+    registered_bp_names: set[str] = set()
+    try:
+        for rule in current_app.url_map.iter_rules():
+            ep = rule.endpoint or ""
+            if "." in ep:
+                registered_bp_names.add(ep.split(".", 1)[0])
+    except Exception:
+        return findings
+
+    # For each declared blueprint var, infer the likely Blueprint() name
+    # — convention in this repo is Blueprint("module_name", ...) so the
+    # name equals the module. We also accept the bp_var stripped of _bp.
+    for bp_var, module in declared.items():
+        candidates = {module, bp_var[:-3] if bp_var.endswith("_bp") else bp_var}
+        if not (candidates & registered_bp_names):
+            findings.append({
+                "issue":  "blueprint_registered_but_not_serving",
+                "url":    f"main.py: register_blueprint({bp_var})",
+                "count":  1,
+                "detail": (
+                    f"`from routes.{module} import {bp_var}` is declared in "
+                    f"main.py but no rules from blueprint name(s) "
+                    f"{sorted(candidates)} are in app.url_map. This is the "
+                    f"late-line silent-failure pattern: the register_blueprint "
+                    f"call may be inside an except-swallowed try, or after a "
+                    f"line that errored at import-time. FIX: move the "
+                    f"`from routes.{module} import {bp_var}` + "
+                    f"`app.register_blueprint({bp_var})` pair into the known-"
+                    f"working safe zone at ~line 1180 of main.py (next to "
+                    f"weekly_digest_bp). 3× confirmed instances of this bug "
+                    f"in the last 7 days (press_loop, industry_pulse, "
+                    f"market_deep_dive)."
+                ),
+            })
+    return findings
+
+
 def scan_all() -> list[dict]:
     """Run every detector. Return a flat list of finding dicts ready
     to merge into actionable_backend_issues.
@@ -3828,7 +3910,15 @@ def scan_all() -> list[dict]:
                # detector. Sibling to check_orphaned_scheduler_functions
                # — that one catches Thread() loops never started; this
                # one catches HTTP cron endpoints never scheduled.
-               check_cron_endpoint_unscheduled):
+               check_cron_endpoint_unscheduled,
+               # Phase ZZZZ-bp-detector (2026-05-18) — blueprint silent-
+               # failure detector. Closes the recurring bug class where
+               # late-line `app.register_blueprint(X)` calls execute
+               # without raising but never actually wire (3× in 7 days:
+               # press_loop, industry_pulse, market_deep_dive). Walks
+               # main.py for `from routes.X import Y_bp` and verifies
+               # each is in current_app.url_map. Fast — no HTTP.
+               check_blueprint_registration_silent_failure):
         detectors.append(fn)
 
     # Phase RRR-brain-parallel (2026-05-18) — scan was taking 76.9s
