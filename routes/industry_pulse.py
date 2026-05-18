@@ -288,6 +288,14 @@ def industry_pulse():
     /api/v1/industry/pulse/refresh endpoint, called by cron. Result:
     handler is <5ms, never 502s, always returns valid Schema.org JSON.
     """
+    # Phase ZZZZ-debug (2026-05-18): isolate where 502s happen by
+    # returning a hard-coded JSON if ?debug=1. If THIS returns OK while
+    # the full handler 502s, the issue is in _canonical_fallback_metrics
+    # or _build_response.
+    if request.args.get("debug") == "1":
+        return jsonify(ok=True, debug=True,
+                       msg="handler reached, jsonify works"), 200
+
     cached = _PULSE_CACHE["value"]
     age = _time.monotonic() - _PULSE_CACHE["computed_at"]
 
