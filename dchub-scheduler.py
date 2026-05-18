@@ -339,6 +339,37 @@ DISABLED_JOBS = {
         'timeout': 120,
         'disabled_reason': 'ai_outreach_agent ambassador module not installed',
     },
+    # Phase RRR-winback-cron (2026-05-18) — wire the existing
+    # winback delivery system. routes/winback_outreach.py:deliver_pending()
+    # exists + works (uses Neon + Resend), but no cron called it. Same
+    # "defined-but-never-scheduled" bug class as deal_ingestion +
+    # content_publisher. Mondays 14:00 UTC: aggregates the week's
+    # dormant agents, emails operator briefing per platform (7-day
+    # cooldown built into deliver_pending), records to
+    # winback_outreach_sent for the verifier loop. Brain's
+    # check_winback_pitches_unsent detector watches output side.
+    'winback_delivery': {
+        'name': 'Winback Outreach Delivery',
+        'endpoint': '/api/v1/media/winback/deliver',
+        'method': 'POST',
+        'hours': [14],
+        'minute': 0,
+        'day_of_week': 0,  # Monday
+        'timeout': 300,
+    },
+    # Phase RRR-newsletter-cron (2026-05-18) — wire the public weekly
+    # newsletter we built today. routes/weekly_public_newsletter.py
+    # exists; this fires the send to all active public subscribers
+    # every Monday at 13:00 UTC (1h before the winback briefing).
+    'weekly_public_newsletter': {
+        'name': 'Public Weekly Newsletter Send',
+        'endpoint': '/api/v1/weekly/send-public',
+        'method': 'POST',
+        'hours': [13],
+        'minute': 0,
+        'day_of_week': 0,  # Monday
+        'timeout': 300,
+    },
 }
 
 # ============================================================
