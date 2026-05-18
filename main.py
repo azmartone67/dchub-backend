@@ -1297,6 +1297,104 @@ try:
         resp.headers['Content-Type'] = 'text/html; charset=utf-8'
         return resp, 200
 
+    # Phase RRR-funnel (2026-05-18) — auto-trial funnel observability.
+    # The brain reports `mcp_demand_gap_unaddressed`: 1,581 paywall
+    # signals on get_market_intel / 7d → 0 conversions. The auto-trial
+    # infrastructure exists (routes/auto_trial.py) and mints keys
+    # inline in the 402 response. But conversions are 0. We need to
+    # see EXACTLY where the funnel leaks — mint vs use vs signup vs
+    # upgrade — to know which step to fix.
+    @app.route('/api/v1/observability/auto-trial-funnel', methods=['GET'])
+    def _auto_trial_funnel():
+        try:
+            import psycopg2 as _psy
+            _du = (os.environ.get('NEON_DATABASE_URL')
+                   or os.environ.get('DATABASE_URL', ''))
+            conn = _psy.connect(_du)
+            try:
+                cur = conn.cursor()
+                # Full funnel over 7d
+                cur.execute("""
+                    SELECT
+                      COUNT(*) AS minted,
+                      COUNT(*) FILTER (WHERE last_used_at IS NOT NULL OR call_count > 0) AS used,
+                      COUNT(*) FILTER (WHERE signed_up_email IS NOT NULL) AS signed_up,
+                      COUNT(*) FILTER (WHERE upgraded_tier IS NOT NULL) AS upgraded
+                    FROM auto_trial_keys
+                    WHERE minted_at >= NOW() - INTERVAL '7 days'
+                """)
+                r = cur.fetchone() or (0, 0, 0, 0)
+                m, u, s, up = int(r[0] or 0), int(r[1] or 0), int(r[2] or 0), int(r[3] or 0)
+
+                # All-time
+                cur.execute("""
+                    SELECT
+                      COUNT(*) AS minted,
+                      COUNT(*) FILTER (WHERE last_used_at IS NOT NULL OR call_count > 0) AS used,
+                      COUNT(*) FILTER (WHERE signed_up_email IS NOT NULL) AS signed_up,
+                      COUNT(*) FILTER (WHERE upgraded_tier IS NOT NULL) AS upgraded
+                    FROM auto_trial_keys
+                """)
+                r2 = cur.fetchone() or (0, 0, 0, 0)
+                m_a, u_a, s_a, up_a = int(r2[0] or 0), int(r2[1] or 0), int(r2[2] or 0), int(r2[3] or 0)
+
+                # Per-tool breakdown — where are the mints concentrated?
+                cur.execute("""
+                    SELECT
+                      COALESCE(minted_for_tool, '(unknown)') AS tool,
+                      COUNT(*) AS minted,
+                      COUNT(*) FILTER (WHERE last_used_at IS NOT NULL OR call_count > 0) AS used,
+                      COUNT(*) FILTER (WHERE signed_up_email IS NOT NULL) AS signed_up
+                    FROM auto_trial_keys
+                    WHERE minted_at >= NOW() - INTERVAL '30 days'
+                    GROUP BY minted_for_tool
+                    ORDER BY minted DESC LIMIT 15
+                """)
+                per_tool = [
+                    {"tool": row[0], "minted": int(row[1] or 0),
+                     "used": int(row[2] or 0), "signed_up": int(row[3] or 0)}
+                    for row in (cur.fetchall() or [])
+                ]
+            finally:
+                try: conn.close()
+                except Exception: pass
+        except Exception as e:
+            return jsonify(ok=False, error=str(e)[:200]), 503
+
+        def pct(a, b):
+            return round(100.0 * a / b, 2) if b else None
+
+        # The diagnosis: which step is the bottleneck?
+        diagnosis = None
+        if m == 0:
+            diagnosis = "no_mints_in_7d — paywall signals aren't triggering mint_trial_for_request. Check if get_market_intel etc. are calling the mint flow."
+        elif u == 0:
+            diagnosis = "mints_unused — agents receive trial keys in JSON response but never extract+use them. Switch key delivery to HTTP header X-Trial-Key, or reduce response nesting."
+        elif u > 0 and s == 0:
+            diagnosis = "used_but_no_signup — agents use the trial key for free 200 calls/day, but never claim to a permanent account. The /auto-trial/redeem CTA is failing."
+        elif s > 0 and up == 0:
+            diagnosis = "signed_up_but_no_upgrade — users redeem trial→identified but never pay. Pricing or perceived-value issue. Test cheaper Starter tier surfacing."
+        else:
+            diagnosis = f"funnel_healthy — mint→use {pct(u,m)}%, use→signup {pct(s,u)}%, signup→upgrade {pct(up,s)}%"
+
+        return jsonify(
+            ok=True,
+            window="7d",
+            funnel_7d={
+                "minted": m, "used": u, "signed_up": s, "upgraded": up,
+                "mint_to_use_pct": pct(u, m),
+                "use_to_signup_pct": pct(s, u),
+                "signup_to_upgrade_pct": pct(up, s),
+                "mint_to_upgrade_pct": pct(up, m),
+            },
+            funnel_all_time={
+                "minted": m_a, "used": u_a, "signed_up": s_a, "upgraded": up_a,
+            },
+            per_tool_30d=per_tool,
+            diagnosis=diagnosis,
+            generated_at=__import__("datetime").datetime.utcnow().isoformat() + "Z",
+        ), 200
+
     @app.route('/api/v1/weekly/subscribers', methods=['GET'])
     def _weekly_subscribers_count():
         try:
