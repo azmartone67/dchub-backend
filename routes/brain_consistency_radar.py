@@ -3319,6 +3319,114 @@ def check_orphaned_scheduler_functions() -> list[dict]:
     return findings
 
 
+# ── Phase RRR-newsletter (2026-05-18) — dead internal link detector ──
+#
+# Catches the bug class of "navigation/CTA links pointing at routes that
+# no longer exist". We hit this twice this session:
+#   - /intelligence card linked to /open-data → 404 (real path was /data)
+#   - /press hit /api/press-releases → 404 (real path was /list)
+#
+# Both were silent: the user clicked, got a 404, didn't report it.
+# This detector probes a curated list of the highest-traffic internal
+# URLs surfaced on the homepage + key landing pages, flags any that
+# don't return 2xx. The list is intentionally short — every entry has
+# to be deliberately maintained, which keeps signal-to-noise high.
+#
+# To extend coverage to the full ~95 HTML page surface, switch this to
+# an auto-discovery detector that scrapes hrefs from a small set of
+# index pages. For now the curated approach is more reliable.
+_INTERNAL_LINK_PROBES = [
+    # Navigation entries that appear on /dchub-nav.js (every page header)
+    "/",
+    "/by-the-numbers",
+    "/cited-by",
+    "/pricing",
+    "/dc-hub-media/",
+    "/markets",
+    "/land-power",
+    "/dashboard",
+    "/digest",
+    # Hero/CTA targets across landing pages
+    "/dcpi",
+    "/intelligence",
+    "/ai",
+    "/ai-deals",
+    "/ai-pipeline",
+    "/ai-inventory",
+    "/ai-wars",
+    "/ecosystem",
+    "/state-of-the-data-center",
+    "/about",
+    "/advertise",
+    "/api-docs",
+    "/data",                       # /intelligence "Open data (CSV)" link
+    "/research/grid-intelligence/",
+    # Common API paths the frontend depends on
+    "/api/v1/stats",
+    "/api/v1/site/stats",
+    "/api/v1/marketing/pulse",
+    "/api/v1/packages/stats",
+    "/api/v1/grid-intelligence",
+    "/api/press-releases/list",    # /press page (Phase RRR-wave2 fixed)
+]
+
+
+def check_dead_internal_links() -> list[dict]:
+    """Phase RRR-newsletter (2026-05-18) — probe every high-traffic
+    internal URL and flag any that 404 or 5xx. Catches the dead-link
+    bug class that's silent from the user's side."""
+    findings: list[dict] = []
+    try:
+        import requests as _req
+    except Exception:
+        return findings
+    import time as _t
+    headers = {"User-Agent": "dchub-brain-deadlink-probe/1.0"}
+    for path in _INTERNAL_LINK_PROBES:
+        url = f"https://dchub.cloud{path}"
+        t0 = _t.time()
+        try:
+            # HEAD is faster but some CF-served pages don't support it;
+            # GET with a tight timeout is more universal.
+            r = _req.get(url, timeout=5, headers=headers, allow_redirects=True)
+            elapsed = _t.time() - t0
+        except Exception as e:
+            findings.append({
+                "issue":  "internal_link_unreachable",
+                "url":    path,
+                "count":  1,
+                "detail": (f"`{path}` failed to load: "
+                           f"{type(e).__name__}: {str(e)[:120]}. "
+                           f"Either CF Pages route missing OR CF Worker "
+                           f"can't reach the backend handler."),
+            })
+            continue
+        if r.status_code == 404:
+            findings.append({
+                "issue":  "internal_link_404",
+                "url":    path,
+                "count":  1,
+                "detail": (f"`{path}` returns 404 Not Found. Either the "
+                           f"route was renamed/removed but a nav link "
+                           f"still points at it, or CF Pages _routes.json "
+                           f"doesn't include this prefix. Audit nav JS + "
+                           f"_redirects."),
+            })
+        elif r.status_code >= 500:
+            findings.append({
+                "issue":  "internal_link_5xx",
+                "url":    path,
+                "count":  r.status_code,
+                "detail": (f"`{path}` returns HTTP {r.status_code} "
+                           f"(server error). Body: {r.text[:120]}"),
+            })
+        elif r.status_code in (401, 403):
+            # Some admin endpoints will 401/403 anonymously — that's
+            # correct behavior, not a dead link. Skip.
+            pass
+    return findings
+
+
 def scan_all() -> list[dict]:
     """Run every detector. Return a flat list of finding dicts ready
     to merge into actionable_backend_issues."""
@@ -3416,7 +3524,11 @@ def scan_all() -> list[dict]:
                # detector. Closes the recurring bug class where a daemon
                # loop is defined but never started at boot (4 instances
                # caught this session before this detector existed).
-               check_orphaned_scheduler_functions):
+               check_orphaned_scheduler_functions,
+               # Phase RRR-newsletter (2026-05-18) — dead-link detector.
+               # Catches navigation/CTA links that 404 (we hit this twice
+               # this session: /open-data and /api/press-releases).
+               check_dead_internal_links):
         try:
             out.extend(fn() or [])
         except Exception as e:
