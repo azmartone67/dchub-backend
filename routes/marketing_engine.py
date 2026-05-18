@@ -1708,8 +1708,8 @@ def publish_now():
                                AND smp.platform = 'linkedin'
                                AND smp.status = 'published')
                     ORDER BY COALESCE(apr.generated_for::text,
-                                      pr.created_at::text,
-                                      pr.published_at::text) DESC NULLS LAST
+                                      pr.published_date::text,
+                                      pr.created_at::text) DESC NULLS LAST
                     LIMIT %s
                 """, (max_to_publish,))
                 releases = cur.fetchall() or []
