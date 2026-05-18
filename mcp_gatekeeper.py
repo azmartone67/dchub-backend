@@ -395,22 +395,36 @@ class _RateLimiter:
         return datetime.utcnow().strftime("%Y-%m-%d")
 
     def check(self, key: str, tier: Tier) -> Optional[str]:
-        """Returns error message if rate-limited, None if OK."""
+        """Returns error message if rate-limited, None if OK.
+
+        Phase ZZZZ-trial-cap (2026-05-18): trial keys get TIGHTER caps
+        than full IDENTIFIED tier so agents see the wall + upgrade
+        earlier in the trial cycle. Currently 50/day (vs 200) and
+        cooldown 1.5s (vs 1s)."""
         now = time.time()
         lim = LIMITS[tier]
+
+        # TRIAL OVERRIDE — keys minted by auto_trial have tighter caps
+        # despite resolving to IDENTIFIED tier (they can call IDENTIFIED
+        # tools but at FREE-ish volume).
+        is_trial = bool(key) and isinstance(key, str) and key.startswith("dch_trial_")
+        if is_trial:
+            lim = {**lim, "day": 50, "minute": 10, "cooldown": 1.5}
 
         # Cooldown
         if lim["cooldown"] > 0:
             gap = now - self._last.get(key, 0)
             if gap < lim["cooldown"]:
-                return f"Rate limited: wait {lim['cooldown'] - gap:.1f}s (Free tier)"
+                return f"Rate limited: wait {lim['cooldown'] - gap:.1f}s"
 
         # Per-minute
         win = self._minute[key]
         win[:] = [t for t in win if t > now - 60]
         if len(win) >= lim["minute"]:
             return (f"Rate limited: {len(win)}/{lim['minute']} calls/min. "
-                    f"Upgrade → https://dchub.cloud/pricing?utm_source=mcp&utm_medium=ratelimit")
+                    f"{'Trial' if is_trial else 'Free'} tier. "
+                    f"Upgrade → https://buy.stripe.com/14k14og7w7Zz9KJ8i6aZi02 "
+                    f"($9/mo = 500/day permanent)")
 
         # Per-day
         today = self._today()
@@ -420,7 +434,9 @@ class _RateLimiter:
         count = dc.get(today, 0)
         if count >= lim["day"]:
             return (f"Rate limited: {count}/{lim['day']} calls today. "
-                    f"Upgrade → https://dchub.cloud/pricing?utm_source=mcp&utm_medium=ratelimit")
+                    f"{'Trial' if is_trial else 'Free'} tier. "
+                    f"Upgrade → https://buy.stripe.com/14k14og7w7Zz9KJ8i6aZi02 "
+                    f"($9/mo = 500/day, no expiry).")
 
         # Record
         win.append(now)

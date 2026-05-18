@@ -58,11 +58,19 @@ def _conn():
         return None
 
 
+# Phase ZZZZ-trial-tighten (2026-05-18): trial config in one place.
+# Brain narrative + funnel showed: 15,104 paywall signals → 0 conversions
+# because the trial gave 200 calls/day for 30 days — long + generous
+# enough that agents never had to upgrade.
+# v2: 7-day expiry + 50 calls/day. Forces renewal/upgrade decision quicker.
+TRIAL_DAYS         = 7
+TRIAL_DAILY_CALLS  = 50
+
 _SCHEMA = """
 CREATE TABLE IF NOT EXISTS auto_trial_keys (
     api_key          TEXT PRIMARY KEY,
     minted_at        TIMESTAMPTZ NOT NULL DEFAULT NOW(),
-    expires_at       TIMESTAMPTZ NOT NULL DEFAULT (NOW() + INTERVAL '30 days'),
+    expires_at       TIMESTAMPTZ NOT NULL DEFAULT (NOW() + INTERVAL '7 days'),
     minted_for_tool  TEXT,
     request_ip_hash  TEXT,
     request_ua       TEXT,
@@ -119,24 +127,40 @@ def mint_trial_for_request(req=None, tool_name: str = "") -> dict:
                 """, (ip_hash, ua))
                 r = cur.fetchone()
                 if r:
+                    # Compute days_remaining for the countdown CTA
+                    import datetime as _dt
+                    days_left = None
+                    if r[1]:
+                        delta = r[1] - _dt.datetime.now(_dt.timezone.utc)
+                        days_left = max(0, int(delta.total_seconds() / 86400))
                     return {
                         "ok":          True,
                         "api_key":     r[0],
                         "expires_at":  r[1].isoformat() if r[1] else None,
                         "tier":        "IDENTIFIED",
-                        "daily_calls": 200,
+                        "daily_calls": TRIAL_DAILY_CALLS,
+                        "trial_days":  TRIAL_DAYS,
+                        "days_remaining": days_left,
                         "reused":      True,
-                        "instructions":"Use the api_key in the X-API-Key header on subsequent calls. Free for 30 days.",
+                        "upgrade_cta": (
+                            f"Trial expires in {days_left} day(s). "
+                            f"Developer plan ($9/mo) = 500 calls/day permanent, "
+                            f"no expiry. https://buy.stripe.com/14k14og7w7Zz9KJ8i6aZi02"
+                        ),
+                        "instructions":(f"Use api_key in X-API-Key header. "
+                                         f"FREE for {days_left} more day(s) at "
+                                         f"{TRIAL_DAILY_CALLS}/day. Upgrade for unlimited."),
                     }
             except Exception: pass
 
             # Mint a new trial key
             api_key = "dch_trial_" + secrets.token_urlsafe(24).replace("_", "x").replace("-", "x")[:32]
             try:
-                cur.execute("""
+                cur.execute(f"""
                     INSERT INTO auto_trial_keys
-                      (api_key, minted_for_tool, request_ip_hash, request_ua)
-                    VALUES (%s, %s, %s, %s)
+                      (api_key, minted_for_tool, request_ip_hash, request_ua,
+                       expires_at)
+                    VALUES (%s, %s, %s, %s, NOW() + INTERVAL '{TRIAL_DAYS} days')
                     ON CONFLICT (api_key) DO NOTHING
                     RETURNING expires_at
                 """, (api_key, tool_name[:40] or None, ip_hash, ua))
@@ -153,12 +177,21 @@ def mint_trial_for_request(req=None, tool_name: str = "") -> dict:
         "api_key":     api_key,
         "expires_at":  expires,
         "tier":        "IDENTIFIED",
-        "daily_calls": 200,
+        "daily_calls": TRIAL_DAILY_CALLS,
+        "trial_days":  TRIAL_DAYS,
+        "days_remaining": TRIAL_DAYS,
         "reused":      False,
-        "instructions":("Use the api_key in the X-API-Key header on subsequent "
-                         "calls. Free for 30 days. To make it permanent + extend "
-                         "to your account, POST /api/v1/keys/auto-trial/redeem "
-                         "with {api_key, email}."),
+        "upgrade_cta": (
+            f"Trial gives you {TRIAL_DAILY_CALLS} calls/day for "
+            f"{TRIAL_DAYS} days. After that you'll need to upgrade. "
+            f"Skip the wait — Developer plan ($9/mo) starts at 500 "
+            f"calls/day with no expiry. "
+            f"https://buy.stripe.com/14k14og7w7Zz9KJ8i6aZi02"
+        ),
+        "instructions":(f"Use api_key in X-API-Key header. FREE for "
+                         f"{TRIAL_DAYS} days at {TRIAL_DAILY_CALLS}/day. "
+                         f"To extend + persist to your account: POST "
+                         f"/api/v1/keys/auto-trial/redeem {{api_key, email}}."),
     }
 
 

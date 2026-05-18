@@ -1240,6 +1240,15 @@ try:
     except Exception as _hje:
         import logging
         logging.getLogger(__name__).warning('health_json wiring failed: %s', _hje)
+    # Phase ZZZZ-cf-purge (2026-05-18): programmatic CF cache purge
+    # (POST /api/v1/cf/purge) so brain L1 can clear bricked URLs
+    # without dashboard clicks.
+    try:
+        from routes.cf_purge import cf_purge_bp
+        app.register_blueprint(cf_purge_bp)
+    except Exception as _cfpe:
+        import logging
+        logging.getLogger(__name__).warning('cf_purge wiring failed: %s', _cfpe)
     # Phase RRR-newsletter-hotfix3 (2026-05-18): registering via a
     # routes/*.py module silently failed for reasons we couldn't
     # diagnose live. Switching to inline-route definitions on the

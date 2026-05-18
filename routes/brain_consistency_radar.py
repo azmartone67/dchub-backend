@@ -3840,6 +3840,57 @@ def check_pricing_page_placeholder_content() -> list[dict]:
     return findings
 
 
+def check_trial_to_paid_stagnation() -> list[dict]:
+    """Fires when auto-trial keys are being minted but NONE are converting
+    to paid. Pattern: lots of mints + lots of usage + 0 redemptions OR 0
+    upgrades over 7d → trial mechanism is working as a giveaway, not a
+    conversion funnel.
+
+    Threshold: > 10 trial keys with activity in last 7d AND 0 paid keys
+    minted in last 7d. Surfaces the "giveaway leak" the user spotted."""
+    findings: list[dict] = []
+    try:
+        import requests as _req
+        r = _req.get("https://dchub.cloud/api/v1/mcp/funnel", timeout=8)
+        if r.status_code != 200:
+            return findings
+        d = r.json() or {}
+    except Exception:
+        return findings
+
+    sig_platforms = d.get("signals_by_platform_30d") or []
+    tot_signals = sum(p.get("signals", 0) for p in sig_platforms)
+    tot_conv = sum(p.get("converted", 0) for p in sig_platforms)
+    keys = d.get("keys_by_tier") or {}
+    paid = keys.get("paid", 0)
+    free = keys.get("free", 0)
+
+    if tot_signals < 500:
+        return findings   # not enough volume to draw a conclusion
+
+    rate = (tot_conv / tot_signals * 100) if tot_signals else 0
+    if rate >= 1.0:
+        return findings   # converting OK — no finding
+
+    findings.append({
+        "issue":  "trial_to_paid_stagnation",
+        "url":    "funnel:signals_to_conversions",
+        "count":  int(tot_signals),
+        "detail": (
+            f"{tot_signals:,} paywall signals → {tot_conv} conversions "
+            f"({rate:.3f}% gate→paid). Free key count: {free}. Paid: {paid}. "
+            f"Likely cause: the transparent auto-trial gives 7d × 50/day "
+            f"FREE access to the 5 hot tools, so agents never see the "
+            f"upgrade wall. Tighten further by: (1) lowering TRIAL_DAYS "
+            f"from 7 to 3, (2) lowering TRIAL_DAILY_CALLS from 50 to 20, "
+            f"(3) adding a hard upgrade-wall after N=3 trial cycles, "
+            f"(4) removing transparent-retry for non-essential tools "
+            f"(the 5-tool whitelist in mcp_gatekeeper._AUTO_RETRY_TOOLS)."
+        ),
+    })
+    return findings
+
+
 def check_cf_account_health() -> list[dict]:
     """Polls /api/v1/cf-analytics/health and flags account-level traffic
     anomalies the user spotted via the CF dashboard:
@@ -4258,7 +4309,13 @@ def scan_all() -> list[dict]:
                # GraphQL Analytics API). Flags cache rate dropping
                # below 25% — the dashboard showed it at 13.7%, every
                # uncached hit is a Railway origin call.
-               check_cf_account_health):
+               check_cf_account_health,
+               # Phase ZZZZ-trial (2026-05-18) — trial-to-paid stagnation.
+               # Fires when paywall signals are high but conversions are
+               # near-zero — the leak the user spotted this session
+               # (15K signals → 0 conversions because trial gives free
+               # access to the 5 hot tools).
+               check_trial_to_paid_stagnation):
         detectors.append(fn)
 
     # Phase RRR-brain-parallel (2026-05-18) — scan was taking 76.9s
