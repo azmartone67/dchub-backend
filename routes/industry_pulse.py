@@ -282,46 +282,55 @@ def _start_bg_compute_if_needed():
 def industry_pulse():
     """Weekly stat sheet for industry analysts + AI citation.
 
-    Phase ZZZZ-pulse-simple (2026-05-18): the threading-based cache was
-    502'ing on Railway for reasons that weren't visible from outside.
-    Simplified to plain module-level dict cache + opportunistic refresh
-    inside the request (capped to 4s wall-clock). No background threads.
+    Phase ZZZZ-pulse-readonly (2026-05-18): this handler does ZERO DB
+    work. It reads from the module-level cache; if cache is empty it
+    returns canonical defaults. The heavy compute is done by the
+    /api/v1/industry/pulse/refresh endpoint, called by cron. Result:
+    handler is <5ms, never 502s, always returns valid Schema.org JSON.
     """
     cached = _PULSE_CACHE["value"]
     age = _time.monotonic() - _PULSE_CACHE["computed_at"]
 
-    # If cache stale OR cold, try a synchronous refresh capped by 4s
-    if cached is None or age > _PULSE_TTL_SECONDS:
-        started = _time.monotonic()
-        try:
-            new_metrics = _compute_pulse_metrics()
-            if (_time.monotonic() - started) < 4.0 and new_metrics:
-                _PULSE_CACHE["value"] = new_metrics
-                _PULSE_CACHE["computed_at"] = _time.monotonic()
-                cached = new_metrics
-                source_tag = f"computed_in_{int((_time.monotonic()-started)*1000)}ms"
-            else:
-                # Took too long → use whatever we got + fall back where missing
-                source_tag = "partial_compute_fallback"
-                cached = new_metrics or _canonical_fallback_metrics()
-        except Exception as e:
-            logger.warning(f"industry_pulse compute failed, serving fallback: {e}")
-            cached = _canonical_fallback_metrics()
-            source_tag = "compute_error_fallback"
+    if cached is None:
+        metrics = _canonical_fallback_metrics()
+        source_tag = "cold_fallback_call_refresh_to_populate"
+    elif age > _PULSE_TTL_SECONDS:
+        metrics = cached
+        source_tag = f"stale_serve_age={int(age)}s_call_refresh"
     else:
+        metrics = cached
         source_tag = f"cache_hit_age={int(age)}s"
 
-    # Belt and suspenders: never return an empty metrics dict
-    if not cached:
-        cached = _canonical_fallback_metrics()
-        source_tag = "empty_cache_fallback"
-
-    resp = jsonify(_build_response(cached, source_tag))
+    resp = jsonify(_build_response(metrics, source_tag))
     resp.headers["Cache-Control"] = "public, max-age=3600"
     resp.headers["Access-Control-Allow-Origin"] = "*"
     resp.headers["X-Cite-As"] = f"DC Hub Industry Pulse — {_dt.datetime.utcnow().strftime('%Y-%m-%d')}"
     resp.headers["X-Pulse-Cache"] = source_tag
     return resp, 200
+
+
+@industry_pulse_bp.route("/api/v1/industry/pulse/refresh", methods=["POST", "GET"])
+def industry_pulse_refresh():
+    """Cron-called compute endpoint. Runs the actual ~15 DB queries and
+    populates _PULSE_CACHE. Safe to call manually for testing too —
+    no admin gate because it's read-only computation."""
+    started = _time.monotonic()
+    try:
+        new_metrics = _compute_pulse_metrics()
+    except Exception as e:
+        return jsonify(ok=False, error=f"{type(e).__name__}: {str(e)[:200]}"), 503
+    elapsed_ms = int((_time.monotonic() - started) * 1000)
+    if new_metrics:
+        _PULSE_CACHE["value"] = new_metrics
+        _PULSE_CACHE["computed_at"] = _time.monotonic()
+    return jsonify(
+        ok=True,
+        elapsed_ms=elapsed_ms,
+        metrics_keys=sorted(new_metrics.keys()) if new_metrics else [],
+        cached=bool(new_metrics),
+        note=("Cache populated. /api/v1/industry/pulse now serves these "
+              "values for up to 30 min."),
+    ), 200
 
 
 @industry_pulse_bp.route("/industry/pulse", methods=["GET"])

@@ -408,6 +408,18 @@ DISABLED_JOBS = {
         'minutes': [5, 35],   # every 30min — offset to avoid :00 cron pileup
         'timeout': 120,
     },
+    # Phase ZZZZ-pulse-cron (2026-05-18): industry pulse compute is the
+    # ~15-query roll-up that would 502 if run in a user request. This
+    # cron populates the in-process cache every 30min so the public
+    # /api/v1/industry/pulse endpoint can always serve from memory in
+    # <5ms. CC-BY-4.0 analyst-citable surface stays always-available.
+    'industry_pulse_refresh': {
+        'name': 'Industry Pulse — Compute and Cache',
+        'endpoint': '/api/v1/industry/pulse/refresh',
+        'method': 'POST',
+        'minutes': [7, 37],   # every 30min, offset to spread load
+        'timeout': 60,
+    },
     # Press queue scan: detects new auto-press triggers (DCPI movers,
     # facility events). Every 4h, staggered :50.
     'press_queue_scan': {
