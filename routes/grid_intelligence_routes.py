@@ -444,6 +444,7 @@ def _get_tax_incentives(states, conn=None):
 
 
 # ─── List all regions ───
+# AUTO-REPAIR: duplicate route '/api/v1/grid-intelligence' also in grid_intelligence_routes_patched.py:396 — review and remove one
 @grid_intel_bp.route('/api/v1/grid-intelligence', methods=['GET'])
 def list_grid_regions():
     """List all grid intelligence regions with basic info."""
@@ -652,6 +653,7 @@ def list_grid_regions():
                 pass
 
 
+# AUTO-REPAIR: duplicate route '/api/v1/grid-intelligence/<region_id>' also in grid_intelligence_routes_patched.py:574 — review and remove one
 # ─── Get single region with full data ───
 @grid_intel_bp.route('/api/v1/grid-intelligence/<region_id>', methods=['GET'])
 def get_grid_region(region_id):
