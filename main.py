@@ -1395,6 +1395,86 @@ try:
             generated_at=__import__("datetime").datetime.utcnow().isoformat() + "Z",
         ), 200
 
+    @app.route('/api/v1/weekly/send-public', methods=['POST'])
+    def _weekly_send_public():
+        """Admin trigger: send the current weekly digest to every active
+        subscriber via Resend. ?dry=true returns counts without sending."""
+        admin_key = (os.environ.get('DCHUB_ADMIN_KEY')
+                     or os.environ.get('ADMIN_KEY') or '').strip()
+        provided = (request.headers.get('X-Admin-Key') or '').strip()
+        if admin_key and provided != admin_key:
+            return jsonify(error='unauthorized'), 401
+        dry = (request.args.get('dry') or '').lower() in ('1', 'true', 'yes')
+        # Fetch subscribers
+        try:
+            import psycopg2 as _psy
+            _du = (os.environ.get('NEON_DATABASE_URL')
+                   or os.environ.get('DATABASE_URL', ''))
+            conn = _psy.connect(_du)
+            try:
+                cur = conn.cursor()
+                cur.execute("""
+                    SELECT email, unsubscribe_token FROM weekly_public_subscribers
+                     WHERE status = 'active'
+                """)
+                rows = cur.fetchall() or []
+            finally:
+                try: conn.close()
+                except Exception: pass
+        except Exception as _e:
+            return jsonify(ok=False, error=f'db: {str(_e)[:120]}'), 500
+
+        # Generate digest (re-use the public preview function inline)
+        from datetime import datetime as _dt, timezone as _tz
+        week_of = _dt.now(_tz.utc).strftime("%b %d, %Y")
+        subject = f"DC Hub Weekly — {week_of}"
+
+        # Build html via internal request to /digest/public so the content
+        # logic stays in one place. Use the test client to avoid HTTP loop.
+        try:
+            with app.test_client() as tc:
+                html_template = tc.get('/api/v1/weekly/digest/public').get_data(as_text=True)
+        except Exception:
+            html_template = f"<h1>{subject}</h1><p>See https://dchub.cloud</p>"
+
+        if dry:
+            return jsonify(ok=True, mode='dry_run', subject=subject,
+                           eligible=len(rows), preview_size=len(html_template)), 200
+
+        sent = 0; failed = 0
+        try:
+            from dchub_outreach import send_via_resend
+        except Exception as _e:
+            return jsonify(ok=False, error=f'resend_unavailable: {str(_e)[:80]}'), 500
+
+        for email, token in rows:
+            unsub = f"https://dchub.cloud/api/v1/weekly/unsubscribe/{token}"
+            html = html_template.replace("{UNSUBSCRIBE_URL}", unsub)
+            try:
+                ok, _resp, _id = send_via_resend(
+                    to_email=email, subject=subject, html_body=html,
+                    text_body=None, reply_to="jonathan@dchub.cloud")
+                if ok:
+                    sent += 1
+                    # mark sent
+                    try:
+                        conn = _psy.connect(_du)
+                        try:
+                            cur = conn.cursor()
+                            cur.execute("UPDATE weekly_public_subscribers SET last_sent_at = NOW() WHERE email = %s",
+                                        (email,))
+                            conn.commit()
+                        finally:
+                            try: conn.close()
+                            except Exception: pass
+                    except Exception: pass
+                else:
+                    failed += 1
+            except Exception:
+                failed += 1
+        return jsonify(ok=True, mode='sent', subject=subject,
+                       eligible=len(rows), sent=sent, failed=failed), 200
+
     @app.route('/api/v1/weekly/subscribers', methods=['GET'])
     def _weekly_subscribers_count():
         try:
