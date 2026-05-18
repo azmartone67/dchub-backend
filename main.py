@@ -1186,6 +1186,42 @@ try:
     except Exception as _mdde_early:
         import logging
         logging.getLogger(__name__).warning('market_deep_dive wiring failed: %s', _mdde_early)
+    # Phase ZZZZ-brain-L123 (2026-05-18): brain layers 1-3 — PR opener,
+    # LLM narrative, finding-outcome memory. Closes the "brain detects
+    # but never fixes / never learns" gap the user called out.
+    try:
+        from routes.brain_pr_opener import brain_pr_opener_bp
+        app.register_blueprint(brain_pr_opener_bp)
+    except Exception as _bpre:
+        import logging
+        logging.getLogger(__name__).warning('brain_pr_opener wiring failed: %s', _bpre)
+    try:
+        from routes.brain_narrative import brain_narrative_bp
+        app.register_blueprint(brain_narrative_bp)
+    except Exception as _bne:
+        import logging
+        logging.getLogger(__name__).warning('brain_narrative wiring failed: %s', _bne)
+    try:
+        from routes.brain_memory import brain_memory_bp
+        app.register_blueprint(brain_memory_bp)
+    except Exception as _bme:
+        import logging
+        logging.getLogger(__name__).warning('brain_memory wiring failed: %s', _bme)
+    # Phase ZZZZ-competitive (2026-05-18): /cited-by (live MCP citation
+    # proof) + /vs/<slug> (head-to-head generator). The "let AI agents
+    # do the killing" + "Switzerland with receipts" play.
+    try:
+        from routes.cited_by import cited_by_bp
+        app.register_blueprint(cited_by_bp)
+    except Exception as _cbe:
+        import logging
+        logging.getLogger(__name__).warning('cited_by wiring failed: %s', _cbe)
+    try:
+        from routes.competitive_vs import competitive_vs_bp
+        app.register_blueprint(competitive_vs_bp)
+    except Exception as _cve:
+        import logging
+        logging.getLogger(__name__).warning('competitive_vs wiring failed: %s', _cve)
     # Phase RRR-newsletter-hotfix3 (2026-05-18): registering via a
     # routes/*.py module silently failed for reasons we couldn't
     # diagnose live. Switching to inline-route definitions on the

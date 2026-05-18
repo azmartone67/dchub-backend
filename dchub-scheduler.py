@@ -420,6 +420,18 @@ DISABLED_JOBS = {
         'minutes': [7, 37],   # every 30min, offset to spread load
         'timeout': 60,
     },
+    # Phase ZZZZ-brain-narrative (2026-05-18): every 6h have Claude
+    # synthesize current brain findings into a 3-paragraph operational
+    # narrative. Replaces "operator reads 43 flat findings" with
+    # "operator reads 200-word story." Costs ~$0.001/call (haiku).
+    'brain_narrative_refresh': {
+        'name': 'Brain Narrative — Claude Digest',
+        'endpoint': '/api/v1/brain/narrative/refresh',
+        'method': 'POST',
+        'hours': [3, 9, 15, 21],
+        'minute': 25,
+        'timeout': 60,
+    },
     # Press queue scan: detects new auto-press triggers (DCPI movers,
     # facility events). Every 4h, staggered :50.
     'press_queue_scan': {
