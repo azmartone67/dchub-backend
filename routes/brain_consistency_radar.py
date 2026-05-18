@@ -3427,6 +3427,71 @@ def check_dead_internal_links() -> list[dict]:
     return findings
 
 
+# ── Phase RRR-funnel (2026-05-18) — auto-trial signal/mint mismatch ─
+#
+# The 1,581 → 0 conversion mystery cracked open: of 1,581 paywall
+# signals on get_market_intel in 7 days, only 3 auto-trial keys were
+# ever minted. The mint flow deduplicates per (ip_hash, ua) within
+# 24h — so 1,581 signals came from ~3 unique agents bashing the gate
+# repeatedly without ever extracting the trial key from the JSON-RPC
+# response body. Each repeat reused the existing key. Agents render
+# the text to humans but don't programmatically retry with the key.
+#
+# This detector flags the mismatch: when signals >> mints, the gate
+# is being hit by sticky repeat callers who aren't converting. It's
+# the "fix the funnel UX" signal.
+def check_auto_trial_signal_mint_mismatch() -> list[dict]:
+    """Flag when paywall-signal volume vastly exceeds auto-trial mints.
+    Strong signal that agents hit the gate but don't extract+use the
+    inline trial key."""
+    findings: list[dict] = []
+    conn = _db()
+    if conn is None: return findings
+    try:
+        with conn.cursor() as cur:
+            try:
+                cur.execute("""
+                    SELECT COUNT(*) FROM mcp_upgrade_signals
+                     WHERE created_at >= NOW() - INTERVAL '7 days'
+                """)
+                signals = int((cur.fetchone() or (0,))[0] or 0)
+                cur.execute("""
+                    SELECT COUNT(*) FROM auto_trial_keys
+                     WHERE minted_at >= NOW() - INTERVAL '7 days'
+                """)
+                mints = int((cur.fetchone() or (0,))[0] or 0)
+            except Exception:
+                return findings
+    finally:
+        try: conn.close()
+        except Exception: pass
+
+    # Healthy ratio: ~1 mint per signal (unique caller pattern). When
+    # signals overwhelmingly outnumber mints, the same callers are
+    # hitting the gate over and over without converting.
+    if signals >= 500 and mints < signals * 0.05:
+        ratio = signals / max(mints, 1)
+        findings.append({
+            "issue":  "auto_trial_signal_mint_mismatch",
+            "url":    "/api/v1/observability/auto-trial-funnel",
+            "count":  signals,
+            "detail": (
+                f"7d: {signals:,} paywall signals → only {mints} trial keys "
+                f"minted ({ratio:.0f}:1 ratio). The mint flow deduplicates "
+                f"per (ip_hash, ua) within 24h, so high signal volume + low "
+                f"mint count = sticky repeat callers who never extract the "
+                f"trial key from the JSON-RPC response body. They render "
+                f"the gated message to humans but don't programmatically "
+                f"retry. Fix: switch from inline JSON-key delivery to "
+                f"transparent auto-retry inside mcp_gatekeeper.py (invoke "
+                f"the wrapped tool with the new key + return data, not a "
+                f"gated response). Or: surface the key in MCP server's "
+                f"transport-layer response metadata."
+            ),
+        })
+    return findings
+
+
 # ── Phase RRR-newsletter+1 (2026-05-18) — shadowed-route detector ────
 #
 # Catches the bug class where the same Flask path is registered TWICE
@@ -3592,7 +3657,11 @@ def scan_all() -> list[dict]:
                # Phase RRR-newsletter+1 (2026-05-18) — shadowed-route
                # detector. Catches duplicate Flask route registrations
                # (today's dummy submit-challenge shadowing the real one).
-               check_shadowed_routes):
+               check_shadowed_routes,
+               # Phase RRR-funnel (2026-05-18) — auto-trial signal/mint
+               # mismatch. Catches the silent failure mode where agents
+               # bash the paywall without extracting trial keys.
+               check_auto_trial_signal_mint_mismatch):
         try:
             out.extend(fn() or [])
         except Exception as e:
