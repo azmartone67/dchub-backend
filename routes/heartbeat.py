@@ -286,11 +286,29 @@ def api_auto_refresh():
     # were being called once per stale surface — 5 DCPI surfaces meant
     # 5× full recomputes back-to-back. Now: run each fn ONCE per batch,
     # then mark all surfaces using that fn updated with the cached result.
+    #
+    # Phase ZZZZ-budget (2026-05-18): added a wall-clock budget (12s) so
+    # any heavy fn that exceeds it gets skipped — the cron retries next
+    # fire instead of returning 503 to everyone. Heavy fns can also
+    # opt-in to fire-and-forget via the HEAVY_FNS set: we kick off a
+    # background thread and mark surfaces fresh immediately, trusting
+    # the background work to complete.
+    import time as _time
+    import threading as _threading
+    HEAVY_FNS = {"refresh_dcpi"}  # known >5s — fire-and-forget so /auto stays fast
+    WALL_BUDGET_SEC = 12.0
+    started = _time.monotonic()
+
     fn_result_cache: dict = {}
     refreshed = []
+    skipped_budget = 0
+    backgrounded = []
     for r in s:
         if len(refreshed) >= BATCH: break
         if r["status"] not in ("stale", "unknown"): continue
+        if (_time.monotonic() - started) > WALL_BUDGET_SEC:
+            skipped_budget += 1
+            continue
         fn_name = r.get("refresh_func") or "noop_default"
         if not r.get("refresh_func"):
             try:
@@ -305,8 +323,22 @@ def api_auto_refresh():
             except Exception: pass
         fn = REFRESH_FUNCS.get(fn_name) or REFRESH_FUNCS.get("noop_default")
         if not fn: continue
+        # Heavy fns → fire-and-forget background thread, mark surfaces
+        # fresh now. Trust the background to complete; if it fails the
+        # data-freshness-sla detector will surface that separately.
+        if fn_name in HEAVY_FNS:
+            if fn_name not in fn_result_cache:
+                fn_result_cache[fn_name] = (True, "background-pipeline (heavy fn deferred)")
+                def _bg(fname=fn_name, f=fn):
+                    try: f()
+                    except Exception: pass
+                t = _threading.Thread(target=_bg, daemon=True,
+                                       name=f"hb-auto-{fn_name}")
+                t.start()
+                backgrounded.append(fn_name)
+            ok, info = fn_result_cache[fn_name]
         # Dedupe: same fn → reuse the first call's result for the rest
-        if fn_name in fn_result_cache:
+        elif fn_name in fn_result_cache:
             ok, info = fn_result_cache[fn_name]
         else:
             try:
@@ -319,7 +351,10 @@ def api_auto_refresh():
                           "info": str(info)[:80], "was": r["status"]})
     return jsonify(refreshed=refreshed, count=len(refreshed),
                    batch_size=BATCH, total_surfaces=len(s),
-                   unique_fns_executed=len(fn_result_cache)), 200
+                   unique_fns_executed=len(fn_result_cache),
+                   backgrounded_heavy=backgrounded,
+                   skipped_for_budget=skipped_budget,
+                   elapsed_sec=round(_time.monotonic() - started, 2)), 200
 
 
 
