@@ -1852,16 +1852,21 @@ DCPI_INDEX_TEMPLATE = """<!DOCTYPE html>
 <html lang="en">
 <head>
 <meta charset="utf-8">
-<title>DCPI · Data Center Power Index | DC Hub</title>
+<title>DCPI · Data Center Power Index | datacenterpowerindex.com | DC Hub</title>
 <meta name="viewport" content="width=device-width, initial-scale=1">
-<meta name="description" content="DCPI tracks power availability across {{ count }}+ U.S. data center markets in real time. The Excess Power Score surfaces stranded capacity nobody else publishes.">
-<meta property="og:title" content="DCPI — The Data Center Power Index">
-<meta property="og:description" content="Real-time power availability across {{ count }}+ U.S. markets. Find the excess capacity hidden in plain sight.">
+<meta name="description" content="DCPI (Data Center Power Index) tracks power availability across {{ count }}+ U.S. data center markets in real time. The Excess Power Score surfaces stranded capacity nobody else publishes. Also at datacenterpowerindex.com.">
+<meta property="og:title" content="DCPI — The Data Center Power Index | datacenterpowerindex.com">
+<meta property="og:description" content="Real-time power availability across {{ count }}+ U.S. markets. Find the excess capacity hidden in plain sight. The industry-standard power index.">
 <meta property="og:image" content="https://dchub.cloud/dcpi/og.svg">
 <meta property="og:url" content="https://dchub.cloud/dcpi">
 <meta name="twitter:card" content="summary_large_image">
 <meta name="robots" content="index,follow,max-snippet:-1,max-image-preview:large">
 <link rel="canonical" href="https://dchub.cloud/dcpi">
+<!-- Phase NNN (2026-05-17) — own the category. datacenterpowerindex.com
+     is a vanity domain (GoDaddy 301 → /dcpi). Self-reference via
+     <link rel="alternate"> so search engines + AI crawlers know they're
+     the same resource, and we get the SEO credit for both. -->
+<link rel="alternate" href="https://datacenterpowerindex.com" hreflang="x-default" title="datacenterpowerindex.com (canonical)">
 <link rel="alternate" type="application/json+oembed" href="https://dchub.cloud/api/v1/dcpi/oembed?url=https%3A%2F%2Fdchub.cloud%2Fdcpi" title="DCPI OEmbed">
 <!-- phase 267: schema.org Dataset markup so DCPI is citable by LLMs and search engines -->
 <script type="application/ld+json">

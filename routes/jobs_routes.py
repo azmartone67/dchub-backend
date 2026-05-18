@@ -46,6 +46,110 @@ def init_jobs_routes(scheduler_registry, autopilot_available, evolution_availabl
     _EVOLUTION_AVAILABLE = evolution_available
     _discovery_engine = discovery_engine
     _IS_RAILWAY = is_railway
+    # Phase QQQ (2026-05-17): ensure cron_last_run table exists.
+    _ensure_cron_last_run_table()
+
+
+# ----------------------------------------------------------------------
+# Phase QQQ (2026-05-17): Cron-fired observability
+#
+# Until now the brain checked that crons were SCHEDULED
+# (`check_cron_coverage`) but never that they actually RAN. A cron
+# can have a perfect schedule and silently never execute (Railway
+# crashed mid-run, env-var gate returned early, scheduler container
+# died) and `check_cron_coverage` is none the wiser. That's exactly
+# the failure mode behind auto-publish silently skipping for weeks.
+#
+# Fix: every /api/jobs/* endpoint calls `_record_cron_run(name)` on
+# entry. New brain detector `check_cron_freshness` reads this table
+# and flags any cron whose last-run timestamp is > 2× expected
+# interval (or NULL = never fired since deploy).
+# ----------------------------------------------------------------------
+
+def _ensure_cron_last_run_table():
+    """Create cron_last_run if missing. Safe to call repeatedly."""
+    db_url = os.environ.get('DATABASE_URL')
+    if not db_url:
+        logger.warning("cron_last_run: DATABASE_URL missing, skipping table create")
+        return
+    try:
+        conn = psycopg2.connect(db_url, connect_timeout=5)
+        try:
+            with conn.cursor() as cur:
+                cur.execute("""
+                    CREATE TABLE IF NOT EXISTS cron_last_run (
+                        job_name           TEXT PRIMARY KEY,
+                        last_started_at    TIMESTAMP WITH TIME ZONE NOT NULL,
+                        last_completed_at  TIMESTAMP WITH TIME ZONE,
+                        last_status        TEXT,
+                        last_duration_ms   INTEGER,
+                        last_error         TEXT,
+                        expected_interval_s INTEGER,
+                        run_count          BIGINT DEFAULT 0
+                    )
+                """)
+                conn.commit()
+        finally:
+            conn.close()
+    except Exception as e:
+        logger.warning(f"cron_last_run: table create failed: {type(e).__name__}: {e}")
+
+
+def _record_cron_run(job_name, expected_interval_s=None):
+    """Stamp cron_last_run with start time + bump run_count.
+
+    Call at the very TOP of each /api/jobs/* endpoint. Failures are
+    swallowed — observability MUST NEVER break the underlying job.
+    """
+    db_url = os.environ.get('DATABASE_URL')
+    if not db_url:
+        return
+    try:
+        conn = psycopg2.connect(db_url, connect_timeout=3)
+        try:
+            with conn.cursor() as cur:
+                cur.execute("""
+                    INSERT INTO cron_last_run
+                        (job_name, last_started_at, expected_interval_s, run_count)
+                    VALUES (%s, NOW(), %s, 1)
+                    ON CONFLICT (job_name) DO UPDATE SET
+                        last_started_at = EXCLUDED.last_started_at,
+                        expected_interval_s = COALESCE(
+                            EXCLUDED.expected_interval_s,
+                            cron_last_run.expected_interval_s
+                        ),
+                        run_count = cron_last_run.run_count + 1
+                """, (job_name, expected_interval_s))
+                conn.commit()
+        finally:
+            conn.close()
+    except Exception as e:
+        logger.warning(f"_record_cron_run({job_name}): {type(e).__name__}: {e}")
+
+
+def _record_cron_complete(job_name, status='ok', duration_ms=None, error=None):
+    """Optional completion stamp. The detector only needs start time
+    to spot silently-dead crons; this enables richer telemetry."""
+    db_url = os.environ.get('DATABASE_URL')
+    if not db_url:
+        return
+    try:
+        conn = psycopg2.connect(db_url, connect_timeout=3)
+        try:
+            with conn.cursor() as cur:
+                cur.execute("""
+                    UPDATE cron_last_run
+                       SET last_completed_at = NOW(),
+                           last_status = %s,
+                           last_duration_ms = %s,
+                           last_error = %s
+                     WHERE job_name = %s
+                """, (status, duration_ms, (error or '')[:500], job_name))
+                conn.commit()
+        finally:
+            conn.close()
+    except Exception as e:
+        logger.warning(f"_record_cron_complete({job_name}): {type(e).__name__}: {e}")
 
 
 def _require_admin_key():
@@ -76,6 +180,21 @@ def _require_admin_key():
             (request.user_agent.string if request.user_agent else "?")[:80],
         )
         return jsonify({'success': False, 'error': '🔒 authentication failed. Check DCHUB_ADMIN_KEY'}), 401
+
+    # Phase QQQ (2026-05-17): record the cron run for every authenticated
+    # /api/jobs/* hit. Derives job name from URL — one helper, zero
+    # endpoint edits, all 20+ jobs get freshness tracking instantly.
+    # Safe: _record_cron_run swallows all errors.
+    try:
+        path = request.path or ""
+        # "/api/jobs/news-refresh" -> "news-refresh"
+        if path.startswith('/api/jobs/'):
+            job_name = path[len('/api/jobs/'):].split('/', 1)[0].strip()
+            if job_name and job_name not in ('status', 'keep-alive'):
+                _record_cron_run(job_name)
+    except Exception:
+        pass
+
     return None
 
 

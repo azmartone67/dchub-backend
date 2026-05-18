@@ -11049,41 +11049,89 @@ def serve_frontend():
 
 @app.route('/api/health', methods=['GET'])
 def api_health():
-    """Health check with data counts for monitoring and failover validation."""
+    """Health check with data counts for monitoring and failover validation.
+
+    Phase QQQ (2026-05-17): tightened the Railway-facing health gate to
+    return 503 when the pool is critical (>90% utilized) OR memory is
+    over threshold OR the circuit breaker is open. Previously this
+    endpoint always returned 200 as long as Flask itself was alive,
+    which let Railway happily route traffic to a backend that was
+    seconds from collapse — exactly the failure mode that produced the
+    "intermittent 502/timeout" pattern we kept manually fixing.
+    """
     health = {
         'status': 'healthy',
         'timestamp': datetime.utcnow().isoformat() + 'Z',
         'version': APP_VERSION,
         'uptime_seconds': round(time.time() - APP_START_TIME),
-        'environment': 'railway' if IS_RAILWAY else 'replit',
+        'environment': 'railway' if IS_RAILWAY else 'local',
         'source': 'neon',
         'facility_count': 0,
         'deal_count': 0,
         'news_count': 0,
     }
+
+    # Phase QQQ: degrade signal from in-memory pool/memory snapshot
+    # BEFORE touching the DB. If we're already critical, we should not
+    # even open another connection — that's how cascading failures start.
+    is_degraded = False
+    degrade_reasons: list[str] = []
     try:
-        # Use context manager — guarantees connection returned to pool on exit
-        with pg_connection() as conn:
-            cur = conn.cursor()
-            cur.execute("SET statement_timeout = '3s'")
-            try:
-                cur.execute("SELECT COUNT(*) FROM discovered_facilities")
-                health['facility_count'] = cur.fetchone()[0] or 0
-            except Exception:
-                pass
-            try:
-                cur.execute("SELECT COUNT(*) FROM deals")
-                health['deal_count'] = cur.fetchone()[0] or 0
-            except Exception:
-                pass
-            try:
-                cur.execute("SELECT COUNT(*) FROM announcements")
-                health['news_count'] = cur.fetchone()[0] or 0
-            except Exception:
-                pass
-    except Exception:
-        health['source'] = 'neon-unreachable'
-        health['note'] = 'Pool busy or DB unreachable - counts unavailable'
+        pool_health = get_pool_health()  # in-memory only, never blocks
+        pool_info = pool_health.get('pool', {}) or {}
+        cb_info = pool_health.get('circuit_breaker', {}) or {}
+        mem_info = pool_health.get('memory', {}) or {}
+        health['pool'] = pool_info
+        health['memory_rss_mb'] = mem_info.get('rss_mb')
+        if pool_info.get('status') == 'critical':
+            is_degraded = True
+            degrade_reasons.append(
+                f"pool_critical:{pool_info.get('utilization_pct')}%")
+        if cb_info.get('open'):
+            is_degraded = True
+            degrade_reasons.append(
+                f"circuit_breaker_open:fails={cb_info.get('consecutive_failures')}")
+        if mem_info.get('warning'):
+            is_degraded = True
+            degrade_reasons.append(
+                f"memory_above_threshold:{mem_info.get('rss_mb')}mb")
+    except Exception as e:
+        # Don't let the pool-health probe itself break the health endpoint.
+        health['pool_health_error'] = f"{type(e).__name__}: {str(e)[:100]}"
+
+    # Only attempt DB counts if not already degraded — adding load to a
+    # degraded backend is the opposite of what a health check should do.
+    if not is_degraded:
+        try:
+            with pg_connection() as conn:
+                cur = conn.cursor()
+                cur.execute("SET statement_timeout = '3s'")
+                try:
+                    cur.execute("SELECT COUNT(*) FROM discovered_facilities")
+                    health['facility_count'] = cur.fetchone()[0] or 0
+                except Exception:
+                    pass
+                try:
+                    cur.execute("SELECT COUNT(*) FROM deals")
+                    health['deal_count'] = cur.fetchone()[0] or 0
+                except Exception:
+                    pass
+                try:
+                    cur.execute("SELECT COUNT(*) FROM announcements")
+                    health['news_count'] = cur.fetchone()[0] or 0
+                except Exception:
+                    pass
+        except Exception:
+            health['source'] = 'neon-unreachable'
+            health['note'] = 'Pool busy or DB unreachable - counts unavailable'
+
+    if is_degraded:
+        health['status'] = 'degraded'
+        health['degrade_reasons'] = degrade_reasons
+        # Return 503 so Railway's health gate sees the failure and can
+        # route traffic away / trigger a restart. The restartPolicyType
+        # in railway.toml will recycle the worker.
+        return jsonify(health), 503
     return jsonify(health)
 
 
