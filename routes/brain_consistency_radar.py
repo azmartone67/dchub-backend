@@ -3427,6 +3427,66 @@ def check_dead_internal_links() -> list[dict]:
     return findings
 
 
+# ── Phase RRR-newsletter+1 (2026-05-18) — shadowed-route detector ────
+#
+# Catches the bug class where the same Flask path is registered TWICE
+# (different blueprints / different functions). Flask silently picks one
+# based on registration order — usually the first registered wins. Hit
+# this concretely today: my Phase RRR-wave3 dummy `submit-challenge` in
+# ai_wars.py was registered before the REAL working implementation in
+# ai_wars_automation.py, so the dummy "private beta" responder shadowed
+# the working queue-and-async-battle handler for ~6 hours.
+#
+# Detection is essentially free — the existing /api/v1/observability/
+# route-audit endpoint already reports shadowed_routes + sets healthy:
+# False when any exist. This detector just consumes that signal.
+def check_shadowed_routes() -> list[dict]:
+    """Probe /api/v1/observability/route-audit and flag any path that
+    has multiple handlers. The dup is almost always a code merge issue:
+    one was the original, one is a copy added later by someone who
+    didn't grep first."""
+    findings: list[dict] = []
+    try:
+        import requests as _req
+    except Exception:
+        return findings
+    try:
+        r = _req.get("https://dchub.cloud/api/v1/observability/route-audit",
+                     timeout=5,
+                     headers={"User-Agent": "dchub-brain-route-audit/1.0"})
+        if r.status_code != 200:
+            return findings
+        data = (r.json().get("data") or {})
+    except Exception:
+        return findings
+
+    for entry in (data.get("shadowed_routes") or []):
+        path = entry.get("path", "?")
+        methods = entry.get("methods", [])
+        endpoints = entry.get("endpoints", [])
+        # If both endpoint names are identical, the dup was caused by
+        # stacked @route decorators with the same path — usually a copy-
+        # paste typo. If the names differ, two real functions are
+        # competing for the path.
+        same_endpoint = (len(set(endpoints)) == 1)
+        findings.append({
+            "issue":  "shadowed_route",
+            "url":    path,
+            "count":  len(endpoints),
+            "detail": (
+                f"Path `{path}` ({','.join(methods)}) has "
+                f"{len(endpoints)} registered handlers: "
+                f"{', '.join(endpoints)}. "
+                + ("Same function name — likely a duplicate decorator on the "
+                   "same function. " if same_endpoint else
+                   "Different functions — two implementations competing for "
+                   "the same URL; Flask silently picks the first registered. ")
+                + "grep the codebase for the path and pick one canonical handler."
+            ),
+        })
+    return findings
+
+
 def scan_all() -> list[dict]:
     """Run every detector. Return a flat list of finding dicts ready
     to merge into actionable_backend_issues."""
@@ -3528,7 +3588,11 @@ def scan_all() -> list[dict]:
                # Phase RRR-newsletter (2026-05-18) — dead-link detector.
                # Catches navigation/CTA links that 404 (we hit this twice
                # this session: /open-data and /api/press-releases).
-               check_dead_internal_links):
+               check_dead_internal_links,
+               # Phase RRR-newsletter+1 (2026-05-18) — shadowed-route
+               # detector. Catches duplicate Flask route registrations
+               # (today's dummy submit-challenge shadowing the real one).
+               check_shadowed_routes):
         try:
             out.extend(fn() or [])
         except Exception as e:
