@@ -3460,6 +3460,12 @@ _CRON_INTENTIONAL_MANUAL: set[str] = {
     "/api/jobs/status",                  # admin read-only
     "/api/jobs/keep-alive",              # called by browser keep-alive, not cron
     "/api/v1/manual/run",                # explicit manual-only
+    # Phase RRR-cron-batch (2026-05-18) — read-only cached endpoints
+    # whose ACTIVE trigger is a sibling path (e.g., /scan returns
+    # cached results; /scan-now triggers a fresh scan). The cron
+    # should be on the active variant, not the read variant.
+    "/api/v1/sentinel/scan",             # read-only (see /sentinel/scan-now)
+    "/api/v1/news/sync",                 # one-shot manual sync (uses /api/jobs/news-refresh for cron)
 }
 
 

@@ -370,6 +370,71 @@ DISABLED_JOBS = {
         'day_of_week': 0,  # Monday
         'timeout': 300,
     },
+    # Phase RRR-cron-batch (2026-05-18) — 6 endpoints surfaced by the
+    # new check_cron_endpoint_unscheduled brain detector. All were
+    # admin-gated + idempotent + already-built; just missing schedule.
+    # Staggered minutes to avoid pool contention.
+
+    # Site Sentinel: actively scan + persist health for all surfaces.
+    # /scan returns cached; /scan-now triggers fresh probe. Every 4h.
+    'sentinel_scan_now': {
+        'name': 'Site Sentinel — Active Scan',
+        'endpoint': '/api/v1/sentinel/scan-now',
+        'method': 'POST',
+        'hours': [1, 5, 9, 13, 17, 21],
+        'minute': 20,
+        'timeout': 300,
+    },
+    # Heartbeat: refresh per-surface freshness telemetry. Every 4h,
+    # staggered :40 to follow sentinel :20.
+    'heartbeat_refresh': {
+        'name': 'Heartbeat Surface Refresh',
+        'endpoint': '/api/v1/heartbeat/refresh',
+        'method': 'POST',
+        'hours': [1, 5, 9, 13, 17, 21],
+        'minute': 40,
+        'timeout': 300,
+    },
+    # Press queue scan: detects new auto-press triggers (DCPI movers,
+    # facility events). Every 4h, staggered :50.
+    'press_queue_scan': {
+        'name': 'Press Queue Scan',
+        'endpoint': '/api/v1/press/scan',
+        'method': 'POST',
+        'hours': [1, 5, 9, 13, 17, 21],
+        'minute': 50,
+        'timeout': 180,
+    },
+    # Competitor intel: snapshot competitor sites for change detection.
+    # Daily at 02:30 UTC (off-peak).
+    'competitor_scan': {
+        'name': 'Competitor Intelligence Scan',
+        'endpoint': '/api/v1/competitors/scan',
+        'method': 'POST',
+        'hours': [2],
+        'minute': 30,
+        'timeout': 600,
+    },
+    # Daily aggregation: market brief + alert digest + linkedin daily.
+    # The omnibus daily cron, fires at 06:30 UTC (after morning data).
+    'daily_aggregation': {
+        'name': 'Daily Aggregation (omnibus)',
+        'endpoint': '/api/v1/daily/run?job=all',
+        'method': 'POST',
+        'hours': [6],
+        'minute': 30,
+        'timeout': 600,
+    },
+    # Market alerts: snapshot + fan-out to subscribers. Daily at 09:00
+    # UTC (avoid overlap with daily aggregation).
+    'market_alerts_send': {
+        'name': 'Market Alerts Send',
+        'endpoint': '/api/v1/alerts/run?send=true',
+        'method': 'POST',
+        'hours': [9],
+        'minute': 0,
+        'timeout': 300,
+    },
 }
 
 # ============================================================
