@@ -3136,6 +3136,156 @@ def check_backend_pool_health() -> list[dict]:
     return findings
 
 
+# ── Phase RRR-revenue (2026-05-18) — orphaned-scheduler detector ─────
+#
+# This is the 5th instance of a recurring bug class this session:
+#   1. deal_ingestion_scheduler.start_deal_scheduler — defined, never called
+#   2. content_publisher.start_auto_publisher (LinkedIn) — defined, never called
+#   3. content_publisher.start_twitter_publisher — defined, never called
+#   4. content_publisher.start_bluesky_publisher — defined, never called
+#   5. routes/package_stats.start_package_stats_refresher — defined, never called
+#
+# Symptom is always the same: a downstream surface looks "healthy" because
+# the code that publishes/refreshes/ingests exists, env vars are set, and
+# the queue is clear — but no actual work happens because the daemon
+# thread that does the work was never started at boot.
+#
+# This detector AST-scans the codebase for functions whose body contains
+# `threading.Thread(target=...)` (the signature of a daemon-loop starter),
+# then text-greps the codebase for any external reference to the function
+# name (excluding the file it's defined in). Zero external references =
+# orphaned = silent skip waiting to happen.
+#
+# False-positive controls:
+#  - Skip names starting with `_` (private helpers, often called internally)
+#  - Skip files in tests/, scripts/, migrations/, .venv/, node_modules/
+#  - Allow-list explicit known-unused (e.g. deprecated experiments)
+_ORPHANED_SCHEDULER_ALLOWLIST: set[str] = {
+    # Intentionally unused — kept for /api/jobs/* compatibility shim:
+    # (none currently)
+}
+
+_SCHEDULER_SKIP_DIRS = {
+    "tests", "test", "scripts", "migrations", ".venv", "venv", "node_modules",
+    "__pycache__", ".git", "dist", "build", ".wrangler", ".pytest_cache",
+}
+
+def check_orphaned_scheduler_functions() -> list[dict]:
+    """Find `def start_xxx()` / `def xxx_loop()` functions that spawn a
+    threading.Thread but are never called from anywhere else.
+
+    This is the bug class that caused:
+      - LinkedIn/X/Bluesky publish silently 0/0/0 for weeks
+      - /ai-deals stale 21+ days (deal ingestion never started)
+      - homepage install-count pill stuck at 0
+    """
+    import ast as _ast
+    import os as _os
+    findings: list[dict] = []
+
+    here = _os.path.dirname(_os.path.dirname(_os.path.abspath(__file__)))
+
+    # Pass 1: AST-walk to find scheduler-starter candidates.
+    candidates: list[tuple[str, str, int]] = []  # (func_name, file_rel, lineno)
+    for root, dirs, files in _os.walk(here):
+        # In-place filter — _os.walk respects it
+        dirs[:] = [d for d in dirs if d not in _SCHEDULER_SKIP_DIRS]
+        for fname in files:
+            if not fname.endswith(".py"):
+                continue
+            fpath = _os.path.join(root, fname)
+            try:
+                with open(fpath, "r", encoding="utf-8") as f:
+                    source = f.read()
+                tree = _ast.parse(source, filename=fpath)
+            except Exception:
+                continue
+            for node in _ast.walk(tree):
+                if not isinstance(node, _ast.FunctionDef):
+                    continue
+                if node.name.startswith("_"):
+                    continue  # private helper, often called from same file
+                if node.name in _ORPHANED_SCHEDULER_ALLOWLIST:
+                    continue
+                # Heuristic: must spawn a threading.Thread inside the body
+                spawns_thread = False
+                for sub in _ast.walk(node):
+                    if isinstance(sub, _ast.Call):
+                        func = sub.func
+                        # threading.Thread(...) or Thread(...)
+                        if (isinstance(func, _ast.Attribute) and
+                                func.attr == "Thread"):
+                            spawns_thread = True
+                            break
+                        if isinstance(func, _ast.Name) and func.value == "Thread" \
+                                if hasattr(func, "value") else False:
+                            spawns_thread = True
+                            break
+                        if isinstance(func, _ast.Name) and func.id == "Thread":
+                            spawns_thread = True
+                            break
+                if spawns_thread:
+                    rel = _os.path.relpath(fpath, here)
+                    candidates.append((node.name, rel, node.lineno))
+
+    if not candidates:
+        return findings
+
+    # Pass 2: For each candidate, walk every .py file and COUNT occurrences
+    # of the function name. We need counts (not just presence) so we can
+    # distinguish "defined in main.py + called in main.py" (=2 occurrences
+    # in main.py, NOT orphaned) from "defined in main.py, never called"
+    # (=1 occurrence in main.py, orphaned).
+    candidate_names = {c[0] for c in candidates}
+    # Map (name → file → count)
+    counts: dict[str, dict[str, int]] = {n: {} for n in candidate_names}
+    for root, dirs, files in _os.walk(here):
+        dirs[:] = [d for d in dirs if d not in _SCHEDULER_SKIP_DIRS]
+        for fname in files:
+            if not fname.endswith(".py"):
+                continue
+            fpath = _os.path.join(root, fname)
+            rel = _os.path.relpath(fpath, here)
+            try:
+                with open(fpath, "r", encoding="utf-8") as f:
+                    src = f.read()
+            except Exception:
+                continue
+            for name in candidate_names:
+                n = src.count(name)
+                if n > 0:
+                    counts[name][rel] = n
+
+    # Pass 3: report any candidate where:
+    #   - the defining file has exactly 1 occurrence (just the def itself)
+    #   - AND no other file references it
+    # This catches the silent-skip pattern: defined, not called anywhere.
+    for func_name, def_file, def_line in candidates:
+        per_file = counts.get(func_name, {})
+        in_def_file = per_file.get(def_file, 0)
+        other_files = {f: c for f, c in per_file.items() if f != def_file}
+        is_orphan = (in_def_file <= 1) and (not other_files)
+        if is_orphan:
+            findings.append({
+                "issue":  "scheduler_function_orphaned",
+                "url":    f"{def_file}:{def_line}",
+                "count":  1,
+                "detail": (f"`{func_name}()` is defined in `{def_file}` and "
+                           f"spawns a threading.Thread (daemon loop), but "
+                           f"NOTHING else in the codebase references it. "
+                           f"Likely the `{func_name}()` call was never added "
+                           f"to main.py at boot — the loop never starts, the "
+                           f"surface it powers (publish queue / cron / "
+                           f"refresher) sits silent while everything *appears* "
+                           f"healthy (env vars set, queue clear). This is the "
+                           f"bug class that caused LinkedIn/X/Bluesky publish + "
+                           f"deal ingestion + package counter silent-skips. "
+                           f"Fix: add a try/except wrapped `{func_name}()` "
+                           f"call at boot in main.py."),
+            })
+    return findings
+
+
 def scan_all() -> list[dict]:
     """Run every detector. Return a flat list of finding dicts ready
     to merge into actionable_backend_issues."""
@@ -3228,7 +3378,12 @@ def scan_all() -> list[dict]:
                check_cron_freshness,
                check_required_env_vars,
                check_csp_violation_reports,
-               check_backend_pool_health):
+               check_backend_pool_health,
+               # Phase RRR-revenue (2026-05-18) — orphaned-scheduler
+               # detector. Closes the recurring bug class where a daemon
+               # loop is defined but never started at boot (4 instances
+               # caught this session before this detector existed).
+               check_orphaned_scheduler_functions):
         try:
             out.extend(fn() or [])
         except Exception as e:
