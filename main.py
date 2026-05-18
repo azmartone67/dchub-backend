@@ -3535,6 +3535,73 @@ def add_cors_headers(response):
     response.headers['Access-Control-Allow-Headers'] = 'Content-Type, Authorization, X-API-Key, Accept, X-Requested-With'
     return response
 
+
+# Phase ZZZZ-cache-lift (2026-05-18): CF cache rate dropped 38.93% to
+# 13.7% per the user's dashboard. Brain narrative recommended adding
+# Cache-Control headers to the 6 top-traffic GETs that don't change
+# per-user. This after_request hook centralizes the policy so future
+# endpoints can opt in by adding a path to _CACHE_PATHS — no need to
+# edit each route file.
+#
+# TTLs are conservative: data is updated by cron at the cadence on the
+# right; cache TTL is set to ~half that so CF gets one or two refreshes
+# per data cycle before serving anyone stale numbers.
+_CACHE_PATHS: dict = {
+    # path-prefix → (cache_seconds, reason)
+    '/api/v1/stats':              (300,  'site stats — refreshes hourly'),
+    '/api/v1/news':               (600,  'news feed — refreshes via cron'),
+    '/api/v1/news-digests':       (600,  'digest list — daily cadence'),
+    '/api/v1/grid/totals':        (300,  'grid rollups — ISO ingest 30min'),
+    '/api/v1/grid/snapshot':      (300,  'grid snapshot — ISO ingest 30min'),
+    '/api/v1/grid-headroom':      (300,  'grid headroom — derived'),
+    '/api/v1/dcpi/scores':        (1800, 'DCPI scores — recomputed 4x/day'),
+    '/api/v1/dcpi/movers':        (1800, 'DCPI movers — same cadence'),
+    '/api/v1/dcpi/totals':        (1800, 'DCPI totals — same cadence'),
+    '/.well-known/mcp.json':      (3600, 'MCP manifest — rarely changes'),
+    '/api/v1/openapi.json':       (3600, 'OpenAPI spec — rarely changes'),
+    '/.well-known/ai-agents.json':(3600, 'agent manifest'),
+    '/api/v1/sources/health':     (300,  'source health'),
+    '/api/v1/intelligence/health':(300,  'intelligence health'),
+    '/api/v1/freshness':          (300,  'freshness rollup'),
+    '/api/v1/site/stats':         (300,  'site stats'),
+    '/health.json':               (180,  'audit dashboard root'),
+    '/data/growth.json':          (300,  'audit growth roll-up'),
+    '/api/v1/markets/list':       (1800, 'markets list — stable catalog'),
+    '/api/v1/markets/list-rich':  (1800, 'markets list rich'),
+}
+
+@app.after_request
+def add_cache_headers(response):
+    """Phase ZZZZ-cache-lift: attach Cache-Control to high-traffic GETs
+    so CF stops origin-fetching every request. Only fires for GET 200s
+    on the curated path list. Never overrides an existing Cache-Control
+    (so endpoints that set their own — like the marketing publish-now
+    pages — keep their behavior)."""
+    try:
+        if request.method != 'GET' or response.status_code != 200:
+            return response
+        if response.headers.get('Cache-Control'):
+            return response  # respect existing
+        path = request.path
+        # Exact + prefix match
+        ttl = _CACHE_PATHS.get(path)
+        if ttl is None:
+            for prefix, val in _CACHE_PATHS.items():
+                if path.startswith(prefix + '/') or path == prefix:
+                    ttl = val
+                    break
+        if ttl is None:
+            return response
+        seconds = ttl[0] if isinstance(ttl, tuple) else ttl
+        response.headers['Cache-Control'] = f'public, max-age={seconds}, s-maxage={seconds}'
+        # Vary on Accept so JSON/HTML negotiation doesn't cross-pollute
+        existing_vary = response.headers.get('Vary', '')
+        if 'Accept' not in existing_vary:
+            response.headers['Vary'] = (existing_vary + ', Accept').lstrip(', ')
+    except Exception:
+        pass  # never break the request over cache header policy
+    return response
+
 # Setup Google & Meta Integration Routes
 try:
     setup_google_routes(app)
