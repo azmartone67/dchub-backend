@@ -1,0 +1,43 @@
+{
+  "name": "@dchub/mcp-helper",
+  "version": "0.1.0",
+  "description": "fetch() middleware that auto-uses DC Hub's inline trial keys (X-Trial-Key header) — for AI agents talking to https://dchub.cloud",
+  "main": "index.js",
+  "type": "module",
+  "exports": {
+    ".": {
+      "import": "./index.js",
+      "require": "./index.cjs"
+    }
+  },
+  "files": [
+    "index.js",
+    "index.cjs",
+    "index.d.ts",
+    "README.md",
+    "LICENSE"
+  ],
+  "keywords": [
+    "dchub",
+    "mcp",
+    "stripe",
+    "trial-key",
+    "fetch",
+    "ai-agent",
+    "data-center",
+    "cursor",
+    "cline",
+    "continue"
+  ],
+  "author": "DC Hub <jonathan@dchub.cloud>",
+  "license": "MIT",
+  "homepage": "https://dchub.cloud",
+  "repository": {
+    "type": "git",
+    "url": "https://github.com/azmartone67/dchub-backend.git",
+    "directory": "docs/mcp-helper-npm"
+  },
+  "engines": {
+    "node": ">=18"
+  }
+}

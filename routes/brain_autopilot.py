@@ -217,8 +217,23 @@ def _action_cron_missing_schedule(finding: dict) -> tuple[str | None, dict | Non
 
 
 def _action_cron_schedule_collision(finding: dict) -> tuple[str | None, dict | None]:
-    """Two workflows share the same cron minute. Needs YAML edit. Escalate."""
-    return None, None
+    """Phase III (2026-05-17) — promote from escalation to autonomous-record.
+
+    Two workflows share the same cron minute → thundering herd against
+    Railway. The actual fix (edit one .yml to stagger by N minutes) is
+    a human code change, but the brain now records every collision into
+    cron_collision_proposals so we have a queryable worklist instead of
+    a volatile finding that disappears each radar tick.
+
+    Same pattern as Phase ZZ-2 tier_drift + Phase EEE data_freshness.
+    """
+    body = {
+        "collision_minute": finding.get("url"),       # e.g. "13:30" or detail
+        "detail":           finding.get("detail", "")[:600],
+        "count":            finding.get("count"),
+        "source":           "autopilot",
+    }
+    return "/api/v1/brain/cron-collision/propose", body
 
 
 def _action_worker_source_unreachable(finding: dict) -> tuple[str | None, dict | None]:
@@ -385,9 +400,11 @@ _PATTERN_LIBRARY: dict[str, dict[str, Any]] = {
     },
     "cron_schedule_collision": {
         "action":      _action_cron_schedule_collision,
-        "method":      None,
+        "method":      "POST",  # Phase III (2026-05-17): promoted to autonomous-record
         "use_admin":   False,
-        "description": "Escalation-only: two workflows fire the same minute — stagger one in its .yml",
+        "description": ("Autonomous: records each collision into cron_collision_proposals "
+                         "(queryable worklist). Actual YAML edit remains human work but the "
+                         "brain tracks them rather than re-emitting the same finding every tick."),
     },
     "worker_source_unreachable": {
         "action":      _action_worker_source_unreachable,
