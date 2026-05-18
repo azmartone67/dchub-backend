@@ -77,25 +77,54 @@ def _ensure_schema(c):
 
 
 def _fetch_pypi(name: str) -> dict:
-    """Returns {downloads_today, downloads_7d, downloads_30d} from pypistats.
-    None on failure. Best-effort; never raises."""
+    """Returns {downloads_today, downloads_7d, downloads_30d} from pypistats,
+    with a fallback to PyPI's own JSON API so brand-new packages register
+    as 'present' (downloads_today=0) before pypistats catches up (24-48h
+    indexing lag for new packages).
+
+    Never raises. Best-effort."""
     try:
         import requests as _req
-        r = _req.get(
-            f"https://pypistats.org/api/packages/{name}/recent",
-            headers={"User-Agent": "dchub-package-stats/1.0"},
-            timeout=10,
-        )
-        if r.status_code != 200:
-            return {}
-        d = (r.json() or {}).get("data") or {}
-        return {
-            "downloads_today": d.get("last_day"),
-            "downloads_7d":    d.get("last_week"),
-            "downloads_30d":   d.get("last_month"),
-        }
+
+        # Primary: pypistats.org (has real download counts but 24-48h lag
+        # for brand-new packages)
+        try:
+            r = _req.get(
+                f"https://pypistats.org/api/packages/{name}/recent",
+                headers={"User-Agent": "dchub-package-stats/1.0"},
+                timeout=10,
+            )
+            if r.status_code == 200:
+                d = (r.json() or {}).get("data") or {}
+                if d:
+                    return {
+                        "downloads_today": d.get("last_day"),
+                        "downloads_7d":    d.get("last_week"),
+                        "downloads_30d":   d.get("last_month"),
+                    }
+        except Exception:
+            pass
+
+        # Fallback: confirm the package EXISTS on PyPI via its own JSON
+        # API. Returns 0s for downloads but lets the homepage widget
+        # show 'Available on PyPI' instead of staying hidden.
+        try:
+            r = _req.get(
+                f"https://pypi.org/pypi/{name}/json",
+                headers={"User-Agent": "dchub-package-stats/1.0"},
+                timeout=8,
+            )
+            if r.status_code == 200:
+                return {
+                    "downloads_today": 0,
+                    "downloads_7d":    0,
+                    "downloads_30d":   0,
+                }
+        except Exception:
+            pass
     except Exception:
-        return {}
+        pass
+    return {}
 
 
 def _fetch_npm(name: str) -> dict:
