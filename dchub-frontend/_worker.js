@@ -75,7 +75,7 @@
 // CONFIGURATION
 // ============================================================
 const RAILWAY_BACKEND = 'https://dchub-backend-production.up.railway.app';
-const WORKER_VERSION = '4.19.0-nav-untrap';
+const WORKER_VERSION = '4.20.0-audit-bridge';
 const _DCHUB_BUILD_MARKER = 'rebuild-1777448239';
 
 const MCP_CACHE_STALE_TTL = 86400;
@@ -1425,6 +1425,9 @@ export default {
         '/vs',
         '/competitive',
         '/heartbeat',
+        // Phase ZZZZ-audit-bridge (2026-05-18): populate the OTHER
+        // audit dashboard's expected JSON URLs from Railway.
+        '/health.json',
       ]);
       // Phase YYYY (2026-05-16): also forward prefix-paths to Railway
       // for surfaces with dynamic sub-routes (e.g. /operators/<slug>).
@@ -1444,6 +1447,13 @@ export default {
         // so per-slug detail pages reach Railway.
         '/dcpi/',
         '/vs/',
+        // Phase ZZZZ-audit-bridge (2026-05-18): /qa/*, /scripts/*, /data/*
+        // for the OTHER audit dashboard. /data/* already worked via some
+        // other rule but adding explicitly for clarity.
+        '/qa/',
+        '/scripts/',
+        '/data/',
+        '/api/v1/cf-analytics/',
       ];
       if (PHASE_282_RAILWAY_PATHS.has(pathname) ||
           PHASE_282_PREFIXES.some(p => pathname.startsWith(p))) {

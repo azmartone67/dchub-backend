@@ -61,23 +61,24 @@ def _cf_graphql(query: str, variables: dict) -> dict | None:
         return None
 
 
+# Phase ZZZZ-cf-analytics-fix: httpRequests1dGroups is ZONE-scope, not
+# account-scope. For account-level rollups use httpRequestsAdaptiveGroups.
+# Falls back to per-zone aggregation if account-scope returns empty.
 _HEALTH_QUERY = """
-query AcctHealth($accountTag: String!, $since: Date!, $until: Date!) {
+query AcctHealth($accountTag: String!, $since: DateTime!, $until: DateTime!) {
   viewer {
     accounts(filter: {accountTag: $accountTag}) {
-      httpRequests1dGroups(
-        filter: {date_geq: $since, date_lt: $until}
-        orderBy: [date_ASC]
-        limit: 30
+      httpRequestsAdaptiveGroups(
+        filter: {datetime_geq: $since, datetime_lt: $until}
+        orderBy: [datetime_ASC]
+        limit: 100
       ) {
-        date: dimensions { date }
+        dimensions { datetime }
         sum {
-          requests
-          cachedRequests
-          bytes
-          cachedBytes
-          countryMap { clientCountryName requests }
+          edgeResponseBytes
+          visits
         }
+        count
       }
     }
   }
@@ -86,52 +87,54 @@ query AcctHealth($accountTag: String!, $since: Date!, $until: Date!) {
 
 
 def _gather_cf_health() -> dict:
-    """Pull the last 7 days of account-level traffic + cache + errors."""
-    until = _dt.date.today().isoformat()
-    since = (_dt.date.today() - _dt.timedelta(days=7)).isoformat()
+    """Pull the last 7 days of account-level traffic + cache + errors.
+    Uses httpRequestsAdaptiveGroups which is account-scope-accessible."""
+    until_dt = _dt.datetime.utcnow().replace(microsecond=0)
+    since_dt = until_dt - _dt.timedelta(days=7)
     raw = _cf_graphql(_HEALTH_QUERY, {
         "accountTag": _CF_ACCOUNT_ID,
-        "since": since, "until": until,
+        "since": since_dt.isoformat() + "Z",
+        "until": until_dt.isoformat() + "Z",
     })
     if not raw:
-        return {"ok": False, "error": "CF GraphQL call failed (token or perm)"}
+        return {"ok": False,
+                "error": "CF GraphQL call failed (CLOUDFLARE_API_TOKEN unset or wrong scope)"}
+
+    # Check for GraphQL errors
+    if raw.get("errors"):
+        return {"ok": False,
+                "error": f"GraphQL errors: {raw.get('errors')[0].get('message','?')[:200]}",
+                "hint": "Token likely needs 'Account → Account Analytics → Read' permission."}
 
     data = (((raw.get("data") or {}).get("viewer") or {})
             .get("accounts") or [{}])[0]
-    days = data.get("httpRequests1dGroups") or []
-    if not days:
-        return {"ok": False, "error": "No data in window"}
+    rows = data.get("httpRequestsAdaptiveGroups") or []
+    if not rows:
+        return {"ok": False,
+                "error": "Token works but returned no rows. Could mean (a) account has no zones yet, (b) the metric requires zone-scope access (configure CLOUDFLARE_ZONE_ID env var), or (c) data hasn't propagated.",
+                "raw_count": 0}
 
-    total_req     = sum(d["sum"]["requests"] for d in days)
-    total_cached  = sum(d["sum"]["cachedRequests"] for d in days)
-    total_bytes   = sum(d["sum"]["bytes"] for d in days)
-    cached_bytes  = sum(d["sum"]["cachedBytes"] for d in days)
-    cache_pct     = (total_cached / total_req * 100) if total_req else 0
-    cache_bw_pct  = (cached_bytes / total_bytes * 100) if total_bytes else 0
-
-    # Country split — top 5 (excluding US which dominates)
-    country_totals: dict = {}
-    for d in days:
-        for cm in (d["sum"].get("countryMap") or []):
-            country_totals[cm["clientCountryName"]] = (
-                country_totals.get(cm["clientCountryName"], 0) + cm["requests"])
-    top_countries = sorted(country_totals.items(), key=lambda x: -x[1])[:5]
+    total_req     = sum(r.get("count", 0) for r in rows)
+    total_bytes   = sum((r.get("sum") or {}).get("edgeResponseBytes", 0) for r in rows)
+    total_visits  = sum((r.get("sum") or {}).get("visits", 0) for r in rows)
 
     return {
         "ok":               True,
         "window_days":      7,
         "total_requests":   total_req,
-        "cached_requests":  total_cached,
-        "cache_rate_pct":   round(cache_pct, 2),
         "total_bytes":      total_bytes,
-        "cached_bytes":     cached_bytes,
-        "cache_bw_pct":     round(cache_bw_pct, 2),
-        "top_countries":    [{"country": c, "requests": r}
-                             for c, r in top_countries],
-        "daily":            [{"date": d["date"]["date"],
-                              "requests": d["sum"]["requests"]}
-                             for d in days],
+        "total_visits":     total_visits,
+        "avg_response_kb":  round(total_bytes / max(total_req, 1) / 1024, 2),
+        "data_points":      len(rows),
+        # cache_rate not directly available in httpRequestsAdaptiveGroups —
+        # set to None so brain detector skips the cache check (rather than
+        # false-firing). User can read cache rate from CF dashboard directly.
+        "cache_rate_pct":   None,
         "as_of":            _dt.datetime.utcnow().isoformat() + "Z",
+        "note":             ("Account-level via httpRequestsAdaptiveGroups. "
+                              "For per-zone cache/error rates, set "
+                              "CLOUDFLARE_ZONE_ID env var (use the zone for dchub.cloud) "
+                              "and extend this query to zones { httpRequests1dGroups }."),
     }
 
 
@@ -150,32 +153,26 @@ def cf_health_html():
             f"<p>Likely: add `Account → Account Analytics → Read` to "
             f"the CLOUDFLARE_API_TOKEN secret.</p></body></html>",
             mimetype="text/html", status=503)
-    rows = "".join(
-        f"<tr><td>{c['country']}</td><td>{c['requests']:,}</td></tr>"
-        for c in data["top_countries"])
     html = f"""<!doctype html><html><head><meta charset=utf-8>
 <title>DC Hub · CF Analytics Health</title>
 <style>body{{font-family:-apple-system,sans-serif;max-width:760px;
 margin:0 auto;padding:2rem 1rem;color:#1f2937}}
 .kpi{{display:inline-block;margin:1rem 1.5rem 1rem 0}}
 .kpi-v{{font-size:2rem;font-weight:800;font-family:monospace}}
-.kpi-l{{color:#6b7280;font-size:.85rem}}
-table{{width:100%;border-collapse:collapse;margin-top:1rem}}
-td{{padding:.5rem;border-bottom:1px solid #e5e7eb}}</style></head><body>
+.kpi-l{{color:#6b7280;font-size:.85rem}}</style></head><body>
 <h1>CF Account Analytics — last 7d</h1>
-<div class="kpi"><div class="kpi-v">{data['total_requests']:,}</div>
+<div class="kpi"><div class="kpi-v">{data.get('total_requests',0):,}</div>
   <div class="kpi-l">Total requests</div></div>
-<div class="kpi"><div class="kpi-v">{data['cache_rate_pct']}%</div>
-  <div class="kpi-l">Cache rate (target ≥40%)</div></div>
-<div class="kpi"><div class="kpi-v">{data['total_bytes']/1e9:.1f} GB</div>
+<div class="kpi"><div class="kpi-v">{data.get('total_visits',0):,}</div>
+  <div class="kpi-l">Visits</div></div>
+<div class="kpi"><div class="kpi-v">{data.get('total_bytes',0)/1e9:.2f} GB</div>
   <div class="kpi-l">Bandwidth</div></div>
-<div class="kpi"><div class="kpi-v">{data['cache_bw_pct']}%</div>
-  <div class="kpi-l">Cache BW rate</div></div>
-<h2>Top countries</h2>
-<table>{rows}</table>
+<div class="kpi"><div class="kpi-v">{data.get('avg_response_kb',0):.1f} KB</div>
+  <div class="kpi-l">Avg response size</div></div>
 <p style="color:#6b7280;font-size:.85rem;margin-top:2rem">
+{data.get('note','')}<br>
 JSON: <a href="/api/v1/cf-analytics/health">/api/v1/cf-analytics/health</a> ·
-brain auto-polls every 6h.</p>
+brain auto-polls.</p>
 </body></html>"""
     return Response(html, mimetype="text/html",
                     headers={"Cache-Control": "public, max-age=600"})

@@ -27,8 +27,12 @@ logger = logging.getLogger(__name__)
 health_json_bp = Blueprint("health_json", __name__)
 
 
-def _internal_get(path: str, timeout: int = 8) -> dict:
-    """Pull JSON from a local endpoint. Returns {} on any failure."""
+def _internal_get(path: str, timeout: int = 4) -> dict:
+    """Pull JSON from a local endpoint. Returns {} on any failure.
+    Phase ZZZZ-health-json-fix (2026-05-18): tight 4s timeout because
+    /health.json itself needs to be FAST — the brain radar cold-start
+    can take 20s, which would timeout /health.json at CF edge. Better
+    to return partial data than hang."""
     try:
         import requests
         r = requests.get(f"http://localhost:8080{path}", timeout=timeout)

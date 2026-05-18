@@ -31,7 +31,11 @@
     "/vs",
     "/vs/*",
     "/competitive",
-    "/heartbeat"
+    "/heartbeat",
+    "/health.json",
+    "/qa/*",
+    "/scripts/*",
+    "/data/*"
   ],
   "exclude": []
 }
