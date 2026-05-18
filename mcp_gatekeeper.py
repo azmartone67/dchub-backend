@@ -637,6 +637,53 @@ def _gate(tool_name: str, api_key: Optional[str] = None,
             except Exception:
                 pass  # any grace failure → fall through to paywall
 
+        # Phase RRR-funnel-transparent-retry (2026-05-18) — Option A from
+        # the auto-trial-funnel diagnosis. The funnel observability
+        # endpoint revealed: 1,581 paywall signals → only 3 trial keys
+        # minted (per-caller 24h dedup) → 1 used → 0 conversions. The
+        # mint happens but agents don't extract+retry with the JSON-
+        # delivered key. So: for the top-demand READ-ONLY tools, if the
+        # caller already has an active trial key from an earlier mint
+        # (within 24h, not yet expired), TRANSPARENTLY pass the gate
+        # without making them retry. The 200/day cap on trial keys is
+        # the natural rate control. Conservative whitelist below — only
+        # tools with high concentrated paywall demand + zero side effects.
+        _AUTO_RETRY_TOOLS = {
+            "get_market_intel",       # 1581 signals/7d, 0 conversions
+            "get_grid_data",          # 1358 signals/7d
+            "get_water_risk",         # 1305 signals/7d
+            "get_energy_prices",      # 1207 signals/7d
+            "get_renewable_energy",   # 1117 signals/7d
+        }
+        if (tier == Tier.FREE and required == Tier.IDENTIFIED
+                and tool_name in _AUTO_RETRY_TOOLS):
+            try:
+                from routes.auto_trial import mint_trial_for_request
+                from flask import request as _flask_req
+                trial = mint_trial_for_request(_flask_req, tool_name)
+                if trial.get("ok") and trial.get("reused"):
+                    # Caller had a key minted earlier and it's still
+                    # valid. Pass the gate transparently — tool returns
+                    # data, agent never sees a paywall. Trial-meta will
+                    # be attached by finalize() via _set_pending_grace_meta.
+                    _set_pending_grace_meta({
+                        "auto_trial_active":         True,
+                        "auto_trial_key":            trial.get("api_key"),
+                        "auto_trial_expires_at":     trial.get("expires_at"),
+                        "auto_trial_daily_calls":    200,
+                        "promotion_note": (
+                            f"You're being transparently authenticated via an "
+                            f"active trial key for `{tool_name}`. To track "
+                            f"usage + persist to your account, pass header "
+                            f"`X-API-Key: {trial.get('api_key')}` on future "
+                            f"calls (or POST /api/v1/keys/auto-trial/redeem "
+                            f"with the key + your email)."
+                        ),
+                    })
+                    return None  # PASS — tool runs, real data returned
+            except Exception:
+                pass  # fall through to paywall on any error
+
         teaser = TOOL_TEASER.get(tool_name)
         price = TIER_PRICE.get(required, "")
         # Phase DDDDD (2026-05-16): if FREE caller hits IDENTIFIED gate,
