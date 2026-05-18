@@ -876,14 +876,67 @@ def mcp_funnel():
                 # leaving client_name ungrouped → "must appear in GROUP
                 # BY" error. Fix: alias as `client_platform` (no column
                 # collision) and GROUP BY the full expression.
+                #
+                # Phase ZZZZ-attribution (2026-05-18): client_name is
+                # null/empty for 23K+ calls (most agents don't send
+                # clientInfo.name in initialize handshake). Backfill via
+                # user_agent pattern-matching so we actually know WHO is
+                # hitting the funnel — was 'unknown' for 70%+ of traffic.
+                _platform_case = """
+                    CASE
+                        WHEN NULLIF(LOWER(client_name), '') IS NOT NULL
+                            THEN LOWER(client_name)
+                        WHEN user_agent ILIKE '%chatgpt%' OR user_agent ILIKE '%openai%'
+                            THEN 'chatgpt'
+                        WHEN user_agent ILIKE '%claude%' OR user_agent ILIKE '%anthropic%'
+                            THEN 'claude'
+                        WHEN user_agent ILIKE '%perplexity%'
+                            THEN 'perplexity'
+                        WHEN user_agent ILIKE '%gemini%' OR user_agent ILIKE '%googleother%'
+                            THEN 'gemini'
+                        WHEN user_agent ILIKE '%groq%'
+                            THEN 'groq'
+                        WHEN user_agent ILIKE '%cursor%'
+                            THEN 'cursor'
+                        WHEN user_agent ILIKE '%windsurf%'
+                            THEN 'windsurf'
+                        WHEN user_agent ILIKE '%continue%'
+                            THEN 'continue.dev'
+                        WHEN user_agent ILIKE '%cody%' OR user_agent ILIKE '%sourcegraph%'
+                            THEN 'sourcegraph-cody'
+                        WHEN user_agent ILIKE '%copilot%'
+                            THEN 'github-copilot'
+                        WHEN user_agent ILIKE '%cline%'
+                            THEN 'cline'
+                        WHEN user_agent ILIKE '%phind%'
+                            THEN 'phind'
+                        WHEN user_agent ILIKE '%you.com%' OR user_agent ILIKE '%youbot%'
+                            THEN 'you.com'
+                        WHEN user_agent ILIKE '%meta-external%' OR user_agent ILIKE '%llama%'
+                            THEN 'meta-ai'
+                        WHEN user_agent ILIKE '%applebot-extended%'
+                            THEN 'apple-intelligence'
+                        WHEN user_agent ILIKE '%curl%'
+                            THEN 'curl'
+                        WHEN user_agent ILIKE '%python%' OR user_agent ILIKE '%requests%'
+                            THEN 'python-script'
+                        WHEN user_agent ILIKE '%node%' OR user_agent ILIKE '%axios%'
+                            THEN 'node-script'
+                        WHEN user_agent ILIKE '%postman%'
+                            THEN 'postman'
+                        WHEN user_agent ILIKE '%insomnia%'
+                            THEN 'insomnia'
+                        ELSE 'unknown'
+                    END
+                """
                 cur.execute(
-                    """SELECT
-                          COALESCE(NULLIF(LOWER(client_name), ''), 'unknown') AS client_platform,
+                    f"""SELECT
+                          {_platform_case} AS client_platform,
                           COUNT(*) AS calls,
                           COUNT(DISTINCT ip_address) AS unique_ips
                        FROM mcp_tool_calls
                        WHERE created_at >= NOW() - INTERVAL '30 days'
-                       GROUP BY COALESCE(NULLIF(LOWER(client_name), ''), 'unknown')
+                       GROUP BY {_platform_case}
                        ORDER BY calls DESC
                        LIMIT 20"""
                 )

@@ -3840,6 +3840,66 @@ def check_pricing_page_placeholder_content() -> list[dict]:
     return findings
 
 
+def check_social_publish_silent_failure() -> list[dict]:
+    """Probe /api/v1/marketing/worker-status — fires when a social platform
+    is configured (token set) but zero publishes succeeded in 7d AND the
+    queue is backed up. Catches the "LinkedIn/X access token expired"
+    pattern that brain spotted manually this session: 11 posts queued
+    for 4.5 days, 0 published, 60% lifetime delivery rate (suggesting
+    SOMETHING used to work, then stopped — classic token expiry).
+
+    LinkedIn tokens expire every 60 days. X tokens cycle on policy changes.
+    This detector turns "I notice nothing's been published" into a P0
+    finding the moment it happens, not 4.5 days later."""
+    findings: list[dict] = []
+    try:
+        import requests as _req
+    except Exception:
+        return findings
+    try:
+        r = _req.get("https://dchub.cloud/api/v1/marketing/worker-status",
+                     timeout=8,
+                     headers={"User-Agent": "dchub-brain-social-probe/1.0"})
+        if r.status_code != 200:
+            return findings
+        d = r.json() or {}
+    except Exception:
+        return findings
+
+    dist = d.get("distribution") or {}
+    queued = dist.get("queued_unpublished", 0)
+    oldest_h = dist.get("oldest_queued_age_hours", 0)
+    pub7 = dist.get("published_7d") or {}
+
+    # Only fire if there's a backlog WORTH publishing
+    if queued < 3 and oldest_h < 24:
+        return findings
+
+    for platform in ("linkedin", "twitter", "bluesky"):
+        configured = dist.get(f"{platform}_configured", False)
+        published = (pub7 or {}).get(platform, 0)
+        if not configured: continue   # platform not set up — not a bug
+        if published > 0: continue    # platform IS publishing — fine
+        # Configured but 0 publishes in 7d + queue backed up → token issue
+        findings.append({
+            "issue":  "social_publish_silent_failure",
+            "url":    f"platform:{platform}",
+            "count":  int(queued),
+            "detail": (
+                f"{platform.title()} is configured but published 0 posts "
+                f"in last 7d while {queued} posts are queued (oldest: "
+                f"{oldest_h:.1f}h old). Most likely cause: the platform's "
+                f"access token expired (LinkedIn tokens cycle every 60 days; "
+                f"X tokens cycle on policy changes). Fix: regenerate "
+                f"{platform.upper()}_ACCESS_TOKEN in Railway env vars and "
+                f"trigger /api/v1/marketing/publish-now?max=20 to drain "
+                f"the backlog. Each queued post represents ~24h of lost "
+                f"distribution reach."
+            ),
+        })
+    return findings
+
+
 def check_tool_signal_to_conversion_leak() -> list[dict]:
     """Probe /api/v1/mcp/funnel for tools with high paywall-signal volume
     but near-zero conversions. Targeted at the leak the brain narrative
@@ -4124,7 +4184,15 @@ def scan_all() -> list[dict]:
                # signal vs conversion leak. Closes the same gap the brain
                # narrative flagged (1547 get_market_intel signals → 0
                # conversions). Now any tool with that pattern auto-surfaces.
-               check_tool_signal_to_conversion_leak):
+               check_tool_signal_to_conversion_leak,
+               # Phase ZZZZ-social (2026-05-18) — social publish silent
+               # failure detector. Fires when a platform (LinkedIn/X/
+               # Bluesky) is configured but has 0 publishes in 7d while
+               # the queue is backed up. Catches token-expiry the moment
+               # it happens, not 4.5 days later (which is what we saw
+               # this session — 11 posts queued, 0 published, 60% lifetime
+               # rate, all because tokens silently expired).
+               check_social_publish_silent_failure):
         detectors.append(fn)
 
     # Phase RRR-brain-parallel (2026-05-18) — scan was taking 76.9s

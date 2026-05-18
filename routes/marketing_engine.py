@@ -1613,115 +1613,160 @@ def publish_now():
     import os as _os
     only = (request.args.get("only") or "").strip().lower()
 
+    # Phase ZZZZ-drain (2026-05-18): drain up to N approved+unpublished
+    # press releases per call instead of just the most recent. With 11
+    # currently backed up and the cron firing every 3h, the previous
+    # 1-per-call shape would take 33h to drain even with healthy tokens.
+    # Now: ?max=N (default 5) processes up to N pending releases per call.
+    max_to_publish = int(request.args.get("max") or "5")
+    slug = request.args.get("slug")
+
     c = _conn()
     if c is None:
         return jsonify(ok=False, error="no_database"), 503
+    releases = []
     try:
         with c.cursor() as cur:
-            slug = request.args.get("slug")
             if slug:
+                # Single explicit slug — admin testing path
                 cur.execute("""
                     SELECT id, title, subheadline, body, meta_description, slug
                     FROM press_releases WHERE slug = %s LIMIT 1
                 """, (slug,))
+                row = cur.fetchone()
+                if row:
+                    releases.append(row)
             else:
+                # Drain mode: oldest-unpublished first so backlog clears
+                # FIFO. Filters out anything that already published on
+                # both LinkedIn + Twitter to skip already-done rows.
                 cur.execute("""
                     SELECT pr.id, pr.title, pr.subheadline, pr.body,
                            pr.meta_description, pr.slug
                     FROM press_releases pr
-                    JOIN auto_press_releases apr ON apr.press_release_id = pr.id
-                    ORDER BY apr.generated_for DESC, pr.id DESC
-                    LIMIT 1
-                """)
-            row = cur.fetchone()
-            if not row:
-                return jsonify(ok=False, error="no_press_release_found"), 404
-            press_id, title, sub, body, meta_desc, real_slug = row
-            rel = {
-                "title": title, "subheadline": sub, "body": body or "",
-                "meta_description": meta_desc or sub or title,
-                "slug": real_slug,
-            }
+                    LEFT JOIN auto_press_releases apr
+                           ON apr.press_release_id = pr.id
+                    WHERE pr.status IN ('approved', 'draft')
+                      AND NOT EXISTS (
+                            SELECT 1 FROM social_media_posts smp
+                             WHERE smp.press_release_id = pr.id
+                               AND smp.platform = 'linkedin'
+                               AND smp.status = 'published')
+                    ORDER BY COALESCE(apr.generated_for, pr.created_at, pr.published_at) ASC NULLS LAST
+                    LIMIT %s
+                """, (max_to_publish,))
+                releases = cur.fetchall() or []
+            if not releases:
+                return jsonify(ok=False, error="no_pending_press_releases"), 404
     finally:
         try: c.close()
         except Exception: pass
 
-    # Backfill distribution rows if missing — no-ops if already there
-    # via the UNIQUE INDEX on (press_release_id, platform).
-    try:
-        _queue_distribution_posts(rel, press_id,
-                                  date.today().isoformat())
-    except Exception as e:
-        return jsonify(ok=False, error=f"backfill_failed: {e}"), 500
+    # Process each release. Build a per-release `rel` dict and reuse the
+    # existing single-post path below for each.
+    drain_results: list = []
+    for row in releases:
+        press_id, title, sub, body, meta_desc, real_slug = row
+        rel = {
+            "title": title, "subheadline": sub, "body": body or "",
+            "meta_description": meta_desc or sub or title,
+            "slug": real_slug,
+        }
 
-    # Fetch the queued rows back so we can call the channel-specific
-    # publishers with the actual stored content.
-    c = _conn()
-    posts: dict = {}
-    try:
-        with c.cursor() as cur:
-            cur.execute("""
-                SELECT platform, content, id
-                FROM social_media_posts
-                WHERE press_release_id = %s
-                  AND platform IN ('linkedin', 'twitter')
-            """, (press_id,))
-            for plat, content, post_id in (cur.fetchall() or []):
-                posts[plat] = {"content": content, "post_id": post_id}
-    finally:
-        try: c.close()
-        except Exception: pass
+        # Backfill distribution rows if missing — no-ops if already there
+        # via the UNIQUE INDEX on (press_release_id, platform).
+        try:
+            _queue_distribution_posts(rel, press_id,
+                                      date.today().isoformat())
+        except Exception as e:
+            drain_results.append({"slug": real_slug, "press_release_id": press_id,
+                                   "error": f"backfill_failed: {e}"})
+            continue
 
-    out = {"slug": real_slug, "press_release_id": press_id, "results": {}}
+        # Fetch the queued rows back so we can call the channel-specific
+        # publishers with the actual stored content.
+        c2 = _conn()
+        posts: dict = {}
+        try:
+            with c2.cursor() as cur:
+                cur.execute("""
+                    SELECT platform, content, id
+                    FROM social_media_posts
+                    WHERE press_release_id = %s
+                      AND platform IN ('linkedin', 'twitter')
+                """, (press_id,))
+                for plat, content, post_id in (cur.fetchall() or []):
+                    posts[plat] = {"content": content, "post_id": post_id}
+        finally:
+            try: c2.close()
+            except Exception: pass
 
-    # LinkedIn — Phase HH (2026-05-13): now ARTICLE share with rich
-    # link-card. URL points at /news/<slug> which serves an og:image
-    # of /api/v1/og/today/<slug>.png — LinkedIn scrapes that for the
-    # card thumbnail. Cache-busted with the slug+date so LinkedIn
-    # re-fetches OG on reposts.
-    if (not only or only == "linkedin") and "linkedin" in posts:
-        li_token = _os.environ.get("LINKEDIN_ACCESS_TOKEN", "").strip()
-        if not li_token:
-            out["results"]["linkedin"] = {"ok": False,
-                                          "error": "LINKEDIN_ACCESS_TOKEN not set"}
-        else:
-            try:
-                from content_publisher import _post_to_linkedin
-                article_url = f"https://dchub.cloud/news/{rel['slug']}"
-                article_thumb = (
-                    f"https://dchub.cloud/api/v1/og/today/{rel['slug']}.png"
-                )
-                ok, result = _post_to_linkedin(
-                    posts["linkedin"]["content"],
-                    li_token,
-                    article_url=article_url,
-                    article_title=rel.get("title"),
-                    article_description=(rel.get("meta_description") or
-                                          rel.get("subheadline")),
-                    article_thumbnail_url=article_thumb,
-                )
-                out["results"]["linkedin"] = {"ok": ok, "result": result}
-                if ok:
-                    _mark_published(posts["linkedin"]["post_id"], "linkedin")
-                    # Remember the share URN so /repost-now can delete it
-                    _remember_share_urn(press_id, "linkedin", result)
-            except Exception as e:
+        out = {"slug": real_slug, "press_release_id": press_id, "results": {}}
+
+        # LinkedIn — Phase HH (2026-05-13): now ARTICLE share with rich
+        # link-card. URL points at /news/<slug> which serves an og:image
+        # of /api/v1/og/today/<slug>.png — LinkedIn scrapes that for the
+        # card thumbnail. Cache-busted with the slug+date so LinkedIn
+        # re-fetches OG on reposts.
+        if (not only or only == "linkedin") and "linkedin" in posts:
+            li_token = _os.environ.get("LINKEDIN_ACCESS_TOKEN", "").strip()
+            if not li_token:
                 out["results"]["linkedin"] = {"ok": False,
+                                              "error": "LINKEDIN_ACCESS_TOKEN not set"}
+            else:
+                try:
+                    from content_publisher import _post_to_linkedin
+                    article_url = f"https://dchub.cloud/news/{rel['slug']}"
+                    article_thumb = (
+                        f"https://dchub.cloud/api/v1/og/today/{rel['slug']}.png")
+                    ok, result = _post_to_linkedin(
+                        posts["linkedin"]["content"],
+                        li_token,
+                        article_url=article_url,
+                        article_title=rel.get("title"),
+                        article_description=(rel.get("meta_description") or
+                                              rel.get("subheadline")),
+                        article_thumbnail_url=article_thumb,
+                    )
+                    out["results"]["linkedin"] = {"ok": ok, "result": result}
+                    if ok:
+                        _mark_published(posts["linkedin"]["post_id"], "linkedin")
+                        _remember_share_urn(press_id, "linkedin", result)
+                except Exception as e:
+                    out["results"]["linkedin"] = {"ok": False,
+                                                  "error": f"exception: {e}"}
+
+        # Twitter / X
+        if (not only or only == "twitter") and "twitter" in posts:
+            try:
+                from content_publisher import _post_to_twitter
+                ok, result = _post_to_twitter(posts["twitter"]["content"])
+                out["results"]["twitter"] = {"ok": ok, "result": result}
+                if ok:
+                    _mark_published(posts["twitter"]["post_id"], "twitter")
+            except Exception as e:
+                out["results"]["twitter"] = {"ok": False,
                                               "error": f"exception: {e}"}
 
-    # Twitter / X
-    if (not only or only == "twitter") and "twitter" in posts:
-        try:
-            from content_publisher import _post_to_twitter
-            ok, result = _post_to_twitter(posts["twitter"]["content"])
-            out["results"]["twitter"] = {"ok": ok, "result": result}
-            if ok:
-                _mark_published(posts["twitter"]["post_id"], "twitter")
-        except Exception as e:
-            out["results"]["twitter"] = {"ok": False,
-                                          "error": f"exception: {e}"}
+        drain_results.append(out)
 
-    return jsonify(ok=True, **out), 200
+    # Final summary across the whole drain
+    total_li_success = sum(1 for r in drain_results
+                            if (r.get("results", {}) or {}).get("linkedin", {}).get("ok"))
+    total_tw_success = sum(1 for r in drain_results
+                            if (r.get("results", {}) or {}).get("twitter", {}).get("ok"))
+    return jsonify(
+        ok=True,
+        drained=len(drain_results),
+        linkedin_published=total_li_success,
+        twitter_published=total_tw_success,
+        results=drain_results,
+        note=(f"Processed {len(drain_results)} press release(s). "
+              f"LinkedIn: {total_li_success} succeeded, "
+              f"Twitter: {total_tw_success} succeeded. "
+              f"If 0/all failed, check LINKEDIN_ACCESS_TOKEN + X tokens — "
+              f"LinkedIn tokens expire every 60 days."),
+    ), 200
 
 
 def _mark_published(post_id: int, platform: str) -> None:
