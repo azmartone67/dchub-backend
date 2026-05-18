@@ -653,6 +653,23 @@ def _gate(tool_name: str, api_key: Optional[str] = None,
                     auto_trial = trial
             except Exception:
                 pass
+        # Phase RRR-revenue3 (2026-05-18) — direct Stripe Payment Link per
+        # required tier. Old upgrade_url just sent users to /pricing,
+        # which gates Stripe checkout behind a sign-up wall. With 6,653
+        # MCP signals → 1 conversion (0.015%), the friction was killing
+        # the funnel. Direct Stripe Payment Link cuts /pricing out and
+        # lets agents (or the human they're embedded in) check out with
+        # zero account creation. The URLs are the same Stripe Payment
+        # Links published on the /pricing page itself (verified live).
+        _STRIPE_BUY_NOW = {
+            "starter":    "https://buy.stripe.com/8x2dRa5sS0x75uteGuaZi0g",  # $9/mo
+            "developer":  "https://buy.stripe.com/7sY5kE8F4fs13ml0PEaZi0c",  # $49/mo
+            "pro":        "https://buy.stripe.com/dRm7sM6wW7Zz1edgOCaZi07",  # $99/mo
+            "enterprise": "https://buy.stripe.com/fZueVe5sS6Vv7CB41QaZi0a",  # custom
+        }
+        _required_name = TIER_NAME[required].lower()
+        _buy_now_url = _STRIPE_BUY_NOW.get(_required_name)
+
         payload = {
             "success": False,
             "error": "upgrade_required",
@@ -667,6 +684,12 @@ def _gate(tool_name: str, api_key: Optional[str] = None,
             "teaser": teaser,
             "echo_args": _safe_echo_args(args),
             "upgrade_url": f"{PRICING_URL}?utm_source=mcp&utm_tool={tool_name}",
+            # Phase RRR-revenue3: direct Stripe Payment Link — one click
+            # to checkout, no /pricing landing, no sign-up wall.
+            "buy_now_url": (f"{_buy_now_url}?utm_source=mcp&utm_tool={tool_name}"
+                            if _buy_now_url else None),
+            "buy_now_price": price,
+            "buy_now_note": "Direct Stripe checkout — no signup required",
             # Phase ZZ+1 (2026-05-15): structured claim-endpoint card so
             # agents that parse the response programmatically (Cursor,
             # Claude Code, Cline) can render a "claim free key" button

@@ -147,6 +147,40 @@ def _fetch_npm(name: str) -> dict:
         return {}
 
 
+# Phase RRR-revenue2 (2026-05-18) — daily refresh thread. /api/v1/packages/refresh
+# endpoint existed but no cron called it, so package_install_stats stayed
+# empty and the homepage install-count pill always showed 0. Same "defined
+# but never called" pattern as the deal_ingestion_scheduler + content
+# auto-publisher bugs. This in-process daemon runs once at startup (to
+# populate the table immediately) then every 6h thereafter.
+_refresh_loop_running = False
+
+def _refresh_loop():
+    import time, logging
+    log = logging.getLogger(__name__)
+    # Initial 30s delay so DB pool / blueprint registration finishes first
+    time.sleep(30)
+    while True:
+        try:
+            out = _refresh_all()
+            log.info("package_stats refresh: %d packages, %d errors",
+                     len(out.get("packages", [])), len(out.get("errors", [])))
+        except Exception as e:
+            log.warning("package_stats refresh failed: %s", e)
+        time.sleep(6 * 3600)  # 6h cadence
+
+def start_package_stats_refresher():
+    """Call from main.py at boot. Daemon thread — won't block Flask."""
+    global _refresh_loop_running
+    if _refresh_loop_running:
+        return
+    _refresh_loop_running = True
+    import threading
+    t = threading.Thread(target=_refresh_loop, daemon=True,
+                         name="package-stats-refresher")
+    t.start()
+
+
 def _refresh_all() -> dict:
     """Pull live download counts from PyPI + npm, INSERT today's snapshot."""
     out = {"refreshed_at": datetime.datetime.utcnow().isoformat() + "Z",
