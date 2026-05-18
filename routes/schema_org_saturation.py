@@ -153,7 +153,7 @@ def run_audit() -> dict:
                         INSERT INTO schema_org_audit
                           (path, expected_types, has_jsonld, found_types,
                            last_checked)
-                        VALUES (%s, %s, %s, %s, NOW())
+                        VALUES (%s, %s, %s, %s, NOW() ON CONFLICT DO NOTHING)
                         ON CONFLICT (path) DO UPDATE
                           SET expected_types = EXCLUDED.expected_types,
                               has_jsonld     = EXCLUDED.has_jsonld,
