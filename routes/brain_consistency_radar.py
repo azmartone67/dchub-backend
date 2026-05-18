@@ -3708,6 +3708,138 @@ def check_shadowed_routes() -> list[dict]:
     return findings
 
 
+def check_heartbeat_surfaces_stale() -> list[dict]:
+    """Probe /api/v1/heartbeat and flag any surface in 'stale' status.
+    User asked "brain needs to be proactive" after spotting 34 red rows
+    on /heartbeat that brain hadn't surfaced.
+
+    Strategy: don't spam findings — group by refresh_func so the operator
+    sees patterns ("12 surfaces using refresh_iso are red — that one
+    function is the problem") rather than 34 individual rows.
+    """
+    findings: list[dict] = []
+    try:
+        import requests as _req
+    except Exception:
+        return findings
+    try:
+        r = _req.get("https://dchub.cloud/api/v1/heartbeat",
+                     timeout=8,
+                     headers={"User-Agent": "dchub-brain-heartbeat/1.0"})
+        if r.status_code != 200:
+            return findings
+        surfs = (r.json() or {}).get("surfaces") or []
+    except Exception:
+        return findings
+
+    stale = [s for s in surfs if s.get("status") == "stale"]
+    if not stale:
+        return findings
+
+    # Group stale by refresh_func — the failing function is the actionable
+    # signal, not each surface individually
+    by_fn: dict[str, list[dict]] = {}
+    for s in stale:
+        fn = s.get("refresh_func") or "(none)"
+        by_fn.setdefault(fn, []).append(s)
+
+    # If >= 10 surfaces share the same broken refresh_func, the function
+    # itself is the bug (or its cron isn't firing). Flag as P0.
+    # Smaller groups → individual surface issues (P1).
+    for fn, group in by_fn.items():
+        n = len(group)
+        max_age = max((s.get("age_hours") or 0) for s in group)
+        # Sample a few surface names for the detail block
+        samples = ", ".join(s.get("surface", "?") for s in group[:3])
+        if n > 3:
+            samples += f", +{n-3} more"
+        severity_word = "system-wide" if n >= 10 else "localized"
+        findings.append({
+            "issue":  "heartbeat_surfaces_stale",
+            "url":    f"refresh_func:{fn}",
+            "count":  n,
+            "detail": (
+                f"{n} surfaces stuck STALE on /heartbeat ({severity_word} — "
+                f"all share refresh_func={fn}). Oldest: {max_age:.1f}h. "
+                f"Surfaces: {samples}. Either the refresh function is a no-op "
+                f"that returns True without doing work, or its cron isn't "
+                f"firing. Check (a) dchub-scheduler.py JOBS for a job that "
+                f"hits the relevant endpoint, (b) the refresh_{fn.replace('refresh_','')} "
+                f"function body in routes/heartbeat.py to see if it actually "
+                f"refreshes anything. Quick fix: ensure /api/v1/heartbeat/auto "
+                f"is scheduled (it drains by stale-age regardless of fn)."
+            ),
+        })
+    return findings
+
+
+def check_pricing_page_placeholder_content() -> list[dict]:
+    """Sweep the live /pricing page for unresolved placeholder patterns:
+    empty $-amount spans, `__PRICE__` literals, `{{...}}` templating that
+    didn't render, `undefined`, or `NaN` next to /year or /month. User
+    spotted broken Pro Annual rendering and asked brain to catch this
+    earlier.
+    """
+    findings: list[dict] = []
+    try:
+        import requests as _req
+    except Exception:
+        return findings
+    try:
+        r = _req.get("https://dchub.cloud/pricing",
+                     timeout=8,
+                     headers={"User-Agent": "dchub-brain-pricing/1.0"})
+        if r.status_code != 200:
+            return findings
+        html = r.text or ""
+    except Exception:
+        return findings
+
+    import re
+    # Pattern 1: empty price-amount spans (the Pro Annual screenshot case)
+    empties = re.findall(r'<span\s+class="price-amount"[^>]*>\s*</span>', html)
+    # Pattern 2: literal placeholders that didn't get filled
+    placeholders = re.findall(r'__[A-Z_]+__|\{\{\s*\w+\s*\}\}', html)
+    # Pattern 3: undefined/NaN next to /year or /month
+    undefined_near_period = re.findall(
+        r'(undefined|NaN)\s*</span>\s*<span[^>]*>\s*/(?:year|month)', html)
+    # Pattern 4: price-period without a preceding price-amount value
+    # (Loose check — if /year appears with no $-amount in 100 chars before)
+    suspect_periods = []
+    for m in re.finditer(r'<span[^>]*price-period[^>]*>\s*/(year|month)\s*</span>', html):
+        start = max(0, m.start() - 200)
+        window = html[start:m.start()]
+        if not re.search(r'\$[\d,]+', window):
+            suspect_periods.append(m.group(0))
+
+    issues = []
+    if empties:
+        issues.append(f"{len(empties)} empty price-amount span(s) — price value missing")
+    if placeholders:
+        issues.append(f"{len(placeholders)} unrendered placeholder(s): "
+                      f"{', '.join(set(placeholders[:3]))}")
+    if undefined_near_period:
+        issues.append(f"{len(undefined_near_period)} 'undefined/NaN' next to /year or /month")
+    if suspect_periods:
+        issues.append(f"{len(suspect_periods)} /year or /month with no $-amount nearby")
+
+    if issues:
+        findings.append({
+            "issue":  "pricing_page_placeholder_content",
+            "url":    "https://dchub.cloud/pricing",
+            "count":  len(empties) + len(placeholders) + len(undefined_near_period) + len(suspect_periods),
+            "detail": (
+                "Pricing page has unresolved content patterns customers will "
+                "see as missing or broken numbers: "
+                + "; ".join(issues)
+                + ". Diff dchub-frontend/pricing.html against the CF Pages "
+                "deploy — likely a stale CF cache or a partial deploy where "
+                "the price-amount text node got cleared."
+            ),
+        })
+    return findings
+
+
 def check_blueprint_registration_silent_failure() -> list[dict]:
     """Catch the recurring bug class where `from routes.X import X_bp` +
     `app.register_blueprint(X_bp)` lines run without raising, but the
@@ -3918,7 +4050,19 @@ def scan_all() -> list[dict]:
                # press_loop, industry_pulse, market_deep_dive). Walks
                # main.py for `from routes.X import Y_bp` and verifies
                # each is in current_app.url_map. Fast — no HTTP.
-               check_blueprint_registration_silent_failure):
+               check_blueprint_registration_silent_failure,
+               # Phase ZZZZ-heartbeat (2026-05-18) — heartbeat surface
+               # stale detector. User saw 34 red rows on /heartbeat that
+               # brain hadn't surfaced; this groups by refresh_func so
+               # a single broken function shows as ONE finding instead
+               # of 34. Promotes the operational signal "X function
+               # isn't refreshing" to a brain-level finding.
+               check_heartbeat_surfaces_stale,
+               # Phase ZZZZ-pricing (2026-05-18) — pricing placeholder
+               # detector. Sweeps /pricing for empty price-amount spans,
+               # __PLACEHOLDER__ literals, undefined/NaN near /year. Catches
+               # the broken-Pro-Annual-rendering pattern the user spotted.
+               check_pricing_page_placeholder_content):
         detectors.append(fn)
 
     # Phase RRR-brain-parallel (2026-05-18) — scan was taking 76.9s

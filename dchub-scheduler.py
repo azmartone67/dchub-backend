@@ -395,6 +395,19 @@ DISABLED_JOBS = {
         'minute': 40,
         'timeout': 300,
     },
+    # Phase ZZZZ-heartbeat-auto (2026-05-18): drain auto-discovered stale
+    # surfaces. /refresh only iterates the static SURFACES list and missed
+    # 34 auto-discovered surfaces (iso_*, /api/v1/news, /api/v1/grid/*)
+    # that were sitting RED on the /heartbeat dashboard. /auto sorts by
+    # stale-age and drains up to 250/call. Every 30min keeps red counts
+    # near zero for surfaces with stale_after as short as 1h.
+    'heartbeat_auto_drain': {
+        'name': 'Heartbeat Auto-Drain Stale Surfaces',
+        'endpoint': '/api/v1/heartbeat/auto?batch=250',
+        'method': 'POST',
+        'minutes': [5, 35],   # every 30min — offset to avoid :00 cron pileup
+        'timeout': 120,
+    },
     # Press queue scan: detects new auto-press triggers (DCPI movers,
     # facility events). Every 4h, staggered :50.
     'press_queue_scan': {
