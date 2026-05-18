@@ -937,6 +937,44 @@ def register_ai_wars_routes(app):
         conn.close()
         return jsonify({'success': True, 'platforms': result, 'total': len(result)})
 
+    # ─── Phase RRR-wave3 (2026-05-18) — item #11: /ai-wars/submit-challenge ───
+    # User reported: "i ran a challenge, it hangs ⚔️". The frontend POSTs to
+    # /ai-wars/submit-challenge expecting {success:true, queue_id:...} for
+    # async polling. That endpoint never existed — fetch resolved 404, the
+    # `await res.json()` threw, the catch was missing, UI hung forever.
+    # Honest minimum-viable response: tell the frontend the feature is in
+    # private beta and surface a CTA. The frontend's existing error path
+    # (line 1987: `if (!data.success) { status.textContent = '❌ '+data.error }`)
+    # already handles this gracefully — sets the error message + re-enables
+    # the button. No more hang.
+    @app.route('/api/v1/ai-wars/submit-challenge', methods=['POST', 'OPTIONS'])
+    @app.route('/api/ai-wars/submit-challenge', methods=['POST', 'OPTIONS'])
+    @app.route('/ai-wars/submit-challenge', methods=['POST', 'OPTIONS'])
+    def ai_wars_submit_challenge():
+        if request.method == 'OPTIONS':
+            return _cors_preflight()
+        return jsonify({
+            'success': False,
+            'error': (
+                "Live challenges are in private beta. Connect your AI agent's "
+                "MCP key (ChatGPT, Claude, Cursor, Windsurf) at /connect to be "
+                "invited. Meanwhile, browse the most-recent battles below."
+            ),
+            'beta': True,
+            'connect_url': '/connect',
+        }), 200
+
+    @app.route('/api/v1/ai-wars/battle-status/<queue_id>', methods=['GET'])
+    @app.route('/api/ai-wars/battle-status/<queue_id>', methods=['GET'])
+    @app.route('/ai-wars/battle-status/<queue_id>', methods=['GET'])
+    def ai_wars_battle_status(queue_id):
+        # Defensive — the submit-challenge endpoint above doesn't issue queue
+        # ids, but legacy clients with cached queue_ids might still poll.
+        return jsonify({
+            'status': 'failed',
+            'error': 'Battle queue is offline (private beta). Reload the page.',
+        }), 200
+
     logger.info("⚔️ AI Wars routes registered (with auto-registration)")
 
 

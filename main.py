@@ -5094,6 +5094,23 @@ try:
 except Exception as e:
     logger.error(f"⚠️ AI Wars API failed: {e}")
 
+# Phase RRR-wave3 (2026-05-18) — item #9: /ai-deals had been stale for 21+
+# days because deal_ingestion_scheduler.py defined start_deal_scheduler()
+# but no code path in main.py ever called it. The scheduler ingests
+# Google News RSS → keyword-classifies deal-relevant items → upserts into
+# the deals table. With this call, the daemon thread launches at boot and
+# runs the ingestion loop on its own cadence (defined in the module).
+# Daemon=True means it won't block Flask shutdown.
+try:
+    from deal_ingestion_scheduler import start_deal_scheduler
+    # get_db() is the standard pooled-connection accessor (line ~2639).
+    # We pass it as a callable so the scheduler can pull fresh connections
+    # from the pool on each run.
+    start_deal_scheduler(get_db)
+    logger.info("✅ Deal ingestion scheduler launched (item #9 fix)")
+except Exception as e:
+    logger.warning(f"⚠️ Deal ingestion scheduler skipped: {e}")
+
 # REMOVED: jobs_api.register_jobs_api was replaced by routes/jobs_routes.py Blueprint (Phase 2 Extract 4)
 # The Jobs Routes Blueprint registers 20 routes at /api/jobs/* and /api/scheduler/*
 # See line ~13094 for the Blueprint registration
