@@ -3088,7 +3088,11 @@ def check_backend_pool_health() -> list[dict]:
         return findings
     url = "https://dchub.cloud/api/health/db"
     try:
-        r = _req.get(url, timeout=8,
+        # Phase QQQ-hotfix: 3s timeout (down from 8s) — /api/health/db is
+        # in-memory only and should respond in <100ms; 3s is a generous
+        # ceiling that keeps brain scan latency bounded. The 5-min cache
+        # on scan_summary() means this fires at most every 5 min anyway.
+        r = _req.get(url, timeout=3,
                       headers={"User-Agent": "dchub-brain-pool-probe/1.0"})
     except Exception as e:
         findings.append({
@@ -3258,18 +3262,44 @@ except ImportError:
     brain_consistency_radar_bp = None  # tests can still import the detectors
 
 
+# Phase QQQ-hotfix (2026-05-18) — the docstring on consistency_radar_endpoint
+# always claimed "Cached in-process for 5 min" but no cache existed. The
+# brain has 50+ detectors, several of which now make HTTP calls (Phase OOO
+# frontend probes, Phase QQQ check_backend_pool_health). Running them all
+# live on every dashboard poll caused the brain endpoint to time out past
+# Railway's request limit. This single-process TTL cache makes the
+# docstring actually true.
+import time as _t_mod
+_SCAN_CACHE: dict = {"value": None, "expires_at": 0.0}
+_SCAN_CACHE_TTL_SECONDS = 300  # 5 minutes
+
+
 def scan_summary() -> dict:
     """Same as scan_all() but wrapped for the /api/v1/brain/consistency-radar
-    endpoint — adds a count + as_of timestamp + grouping by issue type."""
+    endpoint — adds a count + as_of timestamp + grouping by issue type.
+
+    Cached in-process for 5 min. The brain runs every detector on the
+    server-side cron anyway (so findings are always fresh in the
+    underlying DB); this just keeps dashboard polls from running 50+
+    detectors live on every request.
+    """
+    now = _t_mod.time()
+    if _SCAN_CACHE["value"] is not None and now < _SCAN_CACHE["expires_at"]:
+        return _SCAN_CACHE["value"]
+
     findings = scan_all()
     by_issue: dict[str, int] = {}
     for f in findings:
         by_issue[f["issue"]] = by_issue.get(f["issue"], 0) + 1
     from datetime import datetime, timezone
-    return {
+    result = {
         "ok": True,
         "count": len(findings),
         "by_issue": by_issue,
         "findings": findings,
         "as_of": datetime.now(timezone.utc).isoformat(),
+        "cache_ttl_seconds": _SCAN_CACHE_TTL_SECONDS,
     }
+    _SCAN_CACHE["value"] = result
+    _SCAN_CACHE["expires_at"] = now + _SCAN_CACHE_TTL_SECONDS
+    return result
