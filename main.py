@@ -2397,10 +2397,20 @@ def handle_well_known():
             "documentation": "https://dchub.cloud/ai-hub",
             "intelligence_hub": "https://dchub.cloud/intelligence",
             "tiers": {
-                "FREE":       {"description": "Anonymous access, no signup, 25 calls/day, 3 rows/call",      "tools_count": 5},
-                "IDENTIFIED": {"description": "Free with email signup, 200 calls/day, 20 rows/call",          "tools_count": 19},
-                "DEVELOPER":  {"description": "Paid plan ($49/mo), 2,000 calls/day, 100 rows/call",           "tools_count": 1},
-                "PRO":        {"description": "Paid plan ($199/mo), 10,000 calls/day, multi-site + alerts",   "tools_count": 5}
+                "FREE":       {"description": "Anonymous access, no signup, 25 calls/day, 1 row/call (teaser mode)",
+                                "tools_count": 5, "monthly_price_usd": 0,
+                                "checkout_url": "https://dchub.cloud/signup"},
+                "IDENTIFIED": {"description": "Free with email signup, 200 calls/day, 5 rows/call",
+                                "tools_count": 19, "monthly_price_usd": 0,
+                                "checkout_url": "https://dchub.cloud/signup"},
+                "DEVELOPER":  {"description": "Best value — full data, 2,000 calls/day, 100 rows/call. Recommended for daily use.",
+                                "tools_count": 25, "monthly_price_usd": 49,
+                                "checkout_url": "https://buy.stripe.com/14k14og7w7Zz9KJ8i6aZi02",
+                                "value_pitch": "Replaces ~2h/call of manual research from CBRE/DCD/EIA reports. At $150/hr analyst rate that's $300+ per call."},
+                "PRO":        {"description": "10,000 calls/day + multi-site comparator + alerts. For broker/buyer teams.",
+                                "tools_count": 30, "monthly_price_usd": 199,
+                                "checkout_url": "https://buy.stripe.com/00w28o7BqaXLeP31QIaZi04",
+                                "value_pitch": "Replaces $30-80K per multi-site comparison from CBRE/Cushman/JLL."}
             },
             "tools": [
                 # FREE — warmup / discovery tools, no key required.

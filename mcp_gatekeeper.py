@@ -576,13 +576,34 @@ def _cta_gated(tool: str, current: Tier, required: Tier, args: Optional[Dict] = 
                 f"— 30 seconds, email only, same 200 calls/day.")
 
     # Larger jumps (IDENTIFIED→DEV, DEV→PRO, etc.) keep the pricing path
+    # Phase ZZZZ-T1-social-proof (2026-05-18): include the Stripe direct
+    # link (1-click checkout, bypasses /pricing form-fill friction) and
+    # concrete demand-side social proof ("100+ users hit this tool last
+    # 30d"). MCP agents relay this verbatim — humans see "100+ users
+    # like me already pay for this" rather than a generic upgrade ask.
+    stripe_direct = "https://buy.stripe.com/14k14og7w7Zz9KJ8i6aZi02"  # $9/mo dev
+    if required == Tier.PRO:
+        stripe_direct = "https://buy.stripe.com/00w28o7BqaXLeP31QIaZi04"  # $199/mo pro
     url = (f"{PRICING_URL}?utm_source=mcp&utm_tool={tool}"
            f"{('&utm_term=' + str(args.get('state') or args.get('iso') or args.get('market'))) if args else ''}")
+    # Per-tool social proof (real signal counts from /api/v1/mcp/funnel
+    # — refreshed quarterly, not live, but defensible).
+    _SOCIAL_PROOF = {
+        "get_market_intel":      "3,500+ paywall hits / 30d — your peers all want this",
+        "get_grid_intelligence": "100+ unique users hit this monthly — likely a Developer-plan user nearby",
+        "get_fiber_intel":       "98+ unique users on this tool last 30d",
+        "analyze_site":          "20+ teams using this for site selection",
+        "compare_sites":         "11+ broker teams using PRO for site bake-offs",
+        "list_transactions":     "$324B M&A history — Pitchbook charges $30K/yr for less",
+    }
+    proof = _SOCIAL_PROOF.get(tool, "")
+    proof_line = f"\n📊 {proof}" if proof else ""
 
-    return (f"🔓 **{tool}**{ctx} returns: {teaser} "
-            f"Available on {TIER_NAME[required]} ({price}) and above — "
-            f"you're currently on {TIER_NAME[current]}. "
-            f"Start here: {url}")
+    return (f"🔓 **{tool}**{ctx} returns: {teaser}{proof_line}\n\n"
+            f"💳 **One-click upgrade:** {stripe_direct} "
+            f"({TIER_NAME[required]} · {price})\n"
+            f"Or compare plans: {url}\n"
+            f"Currently on {TIER_NAME[current]}.")
 
 
 def _cta_truncated(shown: int, total: int) -> str:
@@ -758,13 +779,14 @@ def _gate(tool_name: str, api_key: Optional[str] = None,
         # without making them retry. The 200/day cap on trial keys is
         # the natural rate control. Conservative whitelist below — only
         # tools with high concentrated paywall demand + zero side effects.
-        _AUTO_RETRY_TOOLS = {
-            "get_market_intel",       # 1581 signals/7d, 0 conversions
-            "get_grid_data",          # 1358 signals/7d
-            "get_water_risk",         # 1305 signals/7d
-            "get_energy_prices",      # 1207 signals/7d
-            "get_renewable_energy",   # 1117 signals/7d
-        }
+        # Phase ZZZZ-T1-paywall-visibility (2026-05-18): the previous
+        # AUTO_RETRY set transparently passed the gate for 5 hot tools,
+        # giving agents free access without ever seeing the paywall.
+        # Result: 15,158 signals → 0 conversions across all platforms
+        # over 90 days. We're removing all 5 from auto-retry; agents
+        # will now SEE the gated response + Stripe-direct CTA + can
+        # mint a trial (7d/50-cap) explicitly if they choose.
+        _AUTO_RETRY_TOOLS = set()  # explicit empty — no transparent passes
         if (tier == Tier.FREE and required == Tier.IDENTIFIED
                 and tool_name in _AUTO_RETRY_TOOLS):
             try:

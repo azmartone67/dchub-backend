@@ -197,6 +197,95 @@ def lookup():
     ), 200
 
 
+@brain_memory_bp.route("/api/v1/brain/memory/backfill-from-commits", methods=["POST", "GET"])
+def backfill_from_commits():
+    """Phase ZZZZ-T2-memory-bootstrap (2026-05-18): brain memory was
+    empty (0 records) because nothing's been writing to it. Bootstrap
+    by walking the last N days of git commits and creating one record
+    per fix-shaped commit. After this runs once, the auto-narrative
+    cron writes new ones going forward.
+
+    Walks GitHub API (no git binary on Railway), filters commits whose
+    message starts with 'fix(' or 'feat(' (typical brain-fixable shape),
+    creates `outcome='success'` records (assumes the fix shipped + the
+    issue resolved — brain can downgrade later if it re-fires)."""
+    _ensure_schema()
+    days = int(request.args.get("days") or "7")
+    try:
+        import requests
+        token = os.environ.get("GITHUB_TOKEN", "").strip()
+        repo = os.environ.get("GITHUB_REPO", "azmartone67/dchub-backend").strip()
+        since = (_dt.datetime.utcnow() - _dt.timedelta(days=days)).isoformat() + "Z"
+        h = {"Accept": "application/vnd.github+json"}
+        if token: h["Authorization"] = f"Bearer {token}"
+        r = requests.get(f"https://api.github.com/repos/{repo}/commits",
+                         params={"since": since, "per_page": 100},
+                         headers=h, timeout=15)
+        if r.status_code != 200:
+            return jsonify(ok=False, error=f"GitHub API {r.status_code}: {r.text[:200]}"), 503
+        commits = r.json() or []
+    except Exception as e:
+        return jsonify(ok=False, error=str(e)[:200]), 503
+
+    recorded = 0
+    skipped = 0
+    try:
+        c = _conn()
+        try:
+            cur = c.cursor()
+            for cm in commits:
+                msg = (cm.get("commit", {}).get("message") or "").split("\n")[0]
+                sha = cm.get("sha", "")[:12]
+                # Only commits that look like fixes/features
+                if not msg.startswith(("fix(", "feat(", "perf(")):
+                    skipped += 1
+                    continue
+                # Extract the parenthesized scope as issue_type
+                import re
+                m = re.match(r"^(fix|feat|perf)\(([^)]+)\):\s*(.+)$", msg)
+                if not m:
+                    skipped += 1
+                    continue
+                kind, scope, summary = m.group(1), m.group(2), m.group(3)
+                # Skip if already recorded for this sha
+                cur.execute("SELECT 1 FROM brain_finding_outcomes WHERE fix_pr_url LIKE %s LIMIT 1",
+                            (f"%{sha}%",))
+                if cur.fetchone():
+                    skipped += 1
+                    continue
+                cur.execute("""
+                    INSERT INTO brain_finding_outcomes
+                      (issue_type, finding_url, fix_kind, fix_summary,
+                       fix_pr_url, outcome, outcome_detail)
+                    VALUES (%s, %s, %s, %s, %s, %s, %s)
+                """, (
+                    f"commit_scope:{scope}",
+                    f"git:{repo}",
+                    f"{kind}_commit",
+                    summary[:300],
+                    f"https://github.com/{repo}/commit/{sha}",
+                    "success",  # assumed; can downgrade later
+                    f"Auto-recorded from commit {sha}",
+                ))
+                recorded += 1
+            c.commit()
+        finally:
+            try: c.close()
+            except Exception: pass
+    except Exception as e:
+        return jsonify(ok=False, error=str(e)[:200]), 503
+
+    return jsonify(
+        ok=True,
+        commits_seen=len(commits),
+        recorded=recorded,
+        skipped=skipped,
+        days_window=days,
+        note=("Brain memory bootstrapped from git history. Future fixes "
+              "should be recorded via /api/v1/brain/memory/record."),
+    ), 200
+
+
 @brain_memory_bp.route("/api/v1/brain/memory/stats", methods=["GET"])
 def stats():
     """Overall view: top recurring issues, top-working fix templates."""

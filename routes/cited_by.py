@@ -55,6 +55,29 @@ _UA_PATTERNS = [
     (re.compile(r"you\.com|youbot", re.I),         "You.com"),
     (re.compile(r"meta-external|metabot|llama", re.I), "Meta AI"),
     (re.compile(r"applebot-extended", re.I),       "Apple Intelligence"),
+    # Phase ZZZZ-T3-classifier-v2 (2026-05-18): node-script (50K calls!)
+    # is mostly modelcontextprotocol/sdk in Node. The unknown bucket
+    # (25K calls / 42 IPs) is mostly bots without UA — those stay
+    # unknown. But we catch more SDK + MCP patterns:
+    (re.compile(r"@modelcontextprotocol|mcp-sdk|@anthropic", re.I), "MCP SDK (Node/Python)"),
+    (re.compile(r"axios|undici|node-fetch", re.I), "Node HTTP client"),
+    (re.compile(r"aiohttp|httpx|urllib3", re.I),   "Python HTTP client"),
+    (re.compile(r"go-http-client|github\.com/", re.I), "Go HTTP client"),
+    (re.compile(r"reqwest|hyper", re.I),           "Rust HTTP client"),
+    (re.compile(r"curl/", re.I),                   "curl CLI"),
+    (re.compile(r"wget", re.I),                    "wget CLI"),
+    (re.compile(r"postmanruntime", re.I),          "Postman"),
+    (re.compile(r"insomnia", re.I),                "Insomnia"),
+    (re.compile(r"warp|charm\.io", re.I),          "Warp / Charm CLI"),
+    (re.compile(r"zed", re.I),                     "Zed editor"),
+    (re.compile(r"jetbrains|intellij", re.I),      "JetBrains AI"),
+    (re.compile(r"deepseek", re.I),                "DeepSeek"),
+    (re.compile(r"mistral", re.I),                 "Mistral AI"),
+    (re.compile(r"grok|xai", re.I),                "Grok (xAI)"),
+    (re.compile(r"replit", re.I),                  "Replit AI"),
+    (re.compile(r"v0\.dev|vercel-ai", re.I),       "Vercel v0"),
+    (re.compile(r"bolt\.new", re.I),               "Bolt.new"),
+    (re.compile(r"goose|block-ai", re.I),          "Goose (Block)"),
 ]
 
 

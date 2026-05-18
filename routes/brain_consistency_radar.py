@@ -3665,7 +3665,12 @@ def check_shadowed_routes() -> list[dict]:
     """Probe /api/v1/observability/route-audit and flag any path that
     has multiple handlers. The dup is almost always a code merge issue:
     one was the original, one is a copy added later by someone who
-    didn't grep first."""
+    didn't grep first.
+
+    Phase ZZZZ-T4 (2026-05-18): now includes a specific proposed-fix
+    PER shadow based on the endpoint name conventions we've seen this
+    week. Older _override / _legacy / _v1 suffixed handlers are
+    proposed for removal; newer named handlers stay."""
     findings: list[dict] = []
     try:
         import requests as _req
@@ -3685,11 +3690,34 @@ def check_shadowed_routes() -> list[dict]:
         path = entry.get("path", "?")
         methods = entry.get("methods", [])
         endpoints = entry.get("endpoints", [])
-        # If both endpoint names are identical, the dup was caused by
-        # stacked @route decorators with the same path — usually a copy-
-        # paste typo. If the names differ, two real functions are
-        # competing for the path.
         same_endpoint = (len(set(endpoints)) == 1)
+
+        # Phase ZZZZ-T4 (2026-05-18): pick the loser per heuristics.
+        # _override, _legacy, _v1, _old, phaseNNN_ prefixed handlers
+        # are almost always the one to remove (we keep the cleanly-named
+        # canonical handler).
+        loser = None
+        keeper = None
+        for ep in endpoints:
+            ep_low = ep.lower()
+            if any(s in ep_low for s in ("_override", "_legacy", "_v1", "_old",
+                                          "phase9", "phase8", "phase7")):
+                loser = ep
+            else:
+                keeper = ep
+        if loser and keeper and loser != keeper:
+            recommendation = (
+                f"REMOVE the `{loser}` handler (older/legacy pattern). "
+                f"KEEP `{keeper}`. Grep the codebase for `def {loser.split('.')[-1]}` "
+                f"and comment out or delete its @route decorator."
+            )
+        else:
+            recommendation = (
+                "grep the codebase for the path and pick one canonical "
+                "handler (look for _override/_legacy suffixes — those are "
+                "usually the ones to remove)."
+            )
+
         findings.append({
             "issue":  "shadowed_route",
             "url":    path,
@@ -3702,7 +3730,7 @@ def check_shadowed_routes() -> list[dict]:
                    "same function. " if same_endpoint else
                    "Different functions — two implementations competing for "
                    "the same URL; Flask silently picks the first registered. ")
-                + "grep the codebase for the path and pick one canonical handler."
+                + recommendation
             ),
         })
     return findings
@@ -3835,6 +3863,93 @@ def check_pricing_page_placeholder_content() -> list[dict]:
                 + ". Diff dchub-frontend/pricing.html against the CF Pages "
                 "deploy — likely a stale CF cache or a partial deploy where "
                 "the price-amount text node got cleared."
+            ),
+        })
+    return findings
+
+
+def check_brain_memory_empty() -> list[dict]:
+    """Phase ZZZZ-T2.2 (2026-05-18): irony detector. Fires when L3
+    brain memory has < 5 records. Brain shipped the memory table
+    + endpoints but nothing's writing to it — brain literally can't
+    learn from prior fixes. Recommend hitting the bootstrap endpoint.
+    """
+    findings: list[dict] = []
+    try:
+        import requests as _req
+        r = _req.get("https://dchub.cloud/api/v1/brain/memory/stats",
+                     timeout=8,
+                     headers={"User-Agent": "dchub-brain-memory-probe/1.0"})
+        if r.status_code != 200:
+            return findings
+        d = r.json() or {}
+    except Exception:
+        return findings
+
+    total = d.get("total_records", 0)
+    if total >= 5:
+        return findings
+
+    findings.append({
+        "issue":  "brain_memory_empty",
+        "url":    "/api/v1/brain/memory/stats",
+        "count":  total,
+        "detail": (
+            f"Brain L3 memory has {total} records. Without history, brain "
+            f"can't recommend 'we tried X before, it worked' on recurring "
+            f"findings — every detection feels new. Bootstrap with: "
+            f"`curl -X POST https://dchub.cloud/api/v1/brain/memory/"
+            f"backfill-from-commits?days=14` (auto-records fix/feat/perf "
+            f"commits from git as success-outcomes). Going forward, every "
+            f"brain narrative cycle should auto-record what it observed."
+        ),
+    })
+    return findings
+
+
+def check_addressable_demand_unconverted() -> list[dict]:
+    """Phase ZZZZ-T3.2 (2026-05-18): identifies CONCENTRATED revenue
+    opportunities — single paid tools where many distinct users are
+    hammering with 0 conversions. Different from the generic conversion
+    leak detector: this calls out specific tools to focus sales on.
+
+    Threshold: any paid_tool with > 30 unique users + > 500 calls in
+    30d. Currently fires for get_grid_intelligence (100 users) and
+    get_fiber_intel (98 users)."""
+    findings: list[dict] = []
+    try:
+        import requests as _req
+        r = _req.get("https://dchub.cloud/api/v1/mcp/funnel",
+                     timeout=8,
+                     headers={"User-Agent": "dchub-brain-demand/1.0"})
+        if r.status_code != 200:
+            return findings
+        d = r.json() or {}
+    except Exception:
+        return findings
+
+    paid_demand = d.get("paid_tool_demand_30d") or []
+    paid_keys = (d.get("keys_by_tier") or {}).get("paid", 0)
+
+    for t in paid_demand:
+        users = t.get("users", 0)
+        calls = t.get("calls", 0)
+        name = t.get("tool", "?")
+        if users < 30 or calls < 500:
+            continue
+        # Brain found a concentrated demand pocket
+        findings.append({
+            "issue":  "addressable_demand_unconverted",
+            "url":    f"tool:{name}",
+            "count":  users,
+            "detail": (
+                f"`{name}`: {users} unique free users with {calls:,} calls "
+                f"in 30d but only {paid_keys} paid keys account-wide. This "
+                f"is a CONCENTRATED upgrade target — pick the top-5 users "
+                f"of this tool, look up their IPs/UAs, run a manual "
+                f"sales-outreach (LinkedIn DM, email, etc.). Or wire a "
+                f"per-tool email-capture form: 'You hit get_grid_intelligence "
+                f"{calls // users:,}× this month. Get unlimited for $9/mo.'"
             ),
         })
     return findings
@@ -4315,7 +4430,13 @@ def scan_all() -> list[dict]:
                # near-zero — the leak the user spotted this session
                # (15K signals → 0 conversions because trial gives free
                # access to the 5 hot tools).
-               check_trial_to_paid_stagnation):
+               check_trial_to_paid_stagnation,
+               # Phase ZZZZ-T2.2 (2026-05-18) — irony: brain memory empty.
+               check_brain_memory_empty,
+               # Phase ZZZZ-T3.2 (2026-05-18) — addressable demand.
+               # Names specific paid tools where concentrated demand
+               # exists with 0 conversions = sales-outreach targets.
+               check_addressable_demand_unconverted):
         detectors.append(fn)
 
     # Phase RRR-brain-parallel (2026-05-18) — scan was taking 76.9s
