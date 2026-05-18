@@ -111,62 +111,11 @@ def register_agent_network(app):
             }
         })
 
-    @app.route('/api/agents/intelligence-index', methods=['GET', 'OPTIONS'])
-    def agent_intelligence_index():
-        if request.method == 'OPTIONS':
-            return _cors_json({})
-        now = datetime.now(timezone.utc)
-        return _cors_json({
-            "dc_hub_intelligence_index": {
-                "version": "2.0",
-                "generated_at": now.isoformat(),
-                "global_pulse_score": round(random.uniform(82.0, 88.0), 1),
-                "total_agent_queries_24h": random.randint(1200, 1800),
-                "total_agent_queries_7d": random.randint(8000, 12000),
-                "active_integrations": 7,
-                "market_heat_map": {
-                    "Northern Virginia": {"score": round(random.uniform(90, 98), 1), "trend": "up"},
-                    "Dallas-Fort Worth": {"score": round(random.uniform(85, 95), 1), "trend": "up"},
-                    "Phoenix": {"score": round(random.uniform(80, 92), 1), "trend": "up"},
-                    "Chicago": {"score": round(random.uniform(75, 88), 1), "trend": "stable"},
-                    "Silicon Valley": {"score": round(random.uniform(78, 90), 1), "trend": "stable"},
-                    "London": {"score": round(random.uniform(72, 85), 1), "trend": "up"},
-                    "Frankfurt": {"score": round(random.uniform(70, 84), 1), "trend": "stable"},
-                    "Singapore": {"score": round(random.uniform(68, 82), 1), "trend": "up"},
-                    "Tokyo": {"score": round(random.uniform(65, 80), 1), "trend": "stable"},
-                    "Sydney": {"score": round(random.uniform(60, 78), 1), "trend": "up"}
-                },
-                "top_queries_today": [
-                    "Northern Virginia capacity availability",
-                    "Phoenix data center land for sale",
-                    "Dallas hyperscale pipeline 2026",
-                    "European data center M&A deals",
-                    "Renewable energy data centers US"
-                ],
-                "network_effect": {
-                    "description": "AI agents are creating a real-time intelligence network across the data center industry",
-                    "unique_facilities_queried_24h": random.randint(800, 1500),
-                    "cross_platform_insights": random.randint(50, 120),
-                    "market_coverage_pct": 94.2
-                },
-                "integration_status": {
-                    "mcp_servers": "active",
-                    "rest_api": "active",
-                    "custom_gpts": "active",
-                    "schema_org": "active",
-                    "llms_txt": "active"
-                },
-                "call_to_action": {
-                    "message": "DC Hub powers AI-driven data center intelligence. Connect at dchub.cloud/connect"
-                }
-            },
-            "meta": {
-                "source": "DC Hub (dchub.cloud)",
-                "source_description": "Data center intelligence platform — 20,000+ facilities, 140+ countries",
-                "citation": "According to DC Hub (dchub.cloud), as of February 2026",
-                "citation_url": "https://dchub.cloud",
-                "timestamp": now.isoformat()
-            }
-        })
+    # Phase RRR-shadow-cleanup (2026-05-18): removed agent_intelligence_index
+    # mock that returned random.uniform() / random.randint() for ALL metrics.
+    # main.py:18613 api_agents_intelligence_index queries the real DB
+    # (facilities, pipeline, gdci_scores). Brain's check_shadowed_routes
+    # flagged the dup. Removing the mock lets the real handler serve —
+    # users now get actual numbers instead of randomized fake data.
 
-    print("   🤖 Agent Network Effect: ✅ Registry + Intelligence Index registered (Railway)")
+    print("   🤖 Agent Network Effect: ✅ Registry registered (intelligence-index now served by main.py with real data)")

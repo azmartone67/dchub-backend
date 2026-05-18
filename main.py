@@ -16012,9 +16012,12 @@ def gas_processing_plants():
 def gas_compressor_stations():
     return jsonify({"features": [], "total": 0, "source": "stub"})
 
-@app.route('/api/v2/risk/active-fires', methods=['GET', 'OPTIONS'])
-def active_fires():
-    return jsonify({"fires": [], "source": "NASA FIRMS", "status": "ok"})
+# Phase RRR-shadow-cleanup (2026-05-18): removed `active_fires` stub
+# at this line. It returned `{"fires": [], ...}` empty stub while
+# `fire_data_layer.get_active_fires` (registered earlier via blueprint)
+# has the REAL NASA FIRMS query implementation. Brain's
+# check_shadowed_routes flagged the dup. Removing the empty stub lets
+# the real handler serve.
 
 
 # --- press-release orphan redirect (press_release_orphan_patch_v1) ---
