@@ -1690,6 +1690,12 @@ def publish_now():
                 # Drain mode: oldest-unpublished first so backlog clears
                 # FIFO. Filters out anything that already published on
                 # both LinkedIn + Twitter to skip already-done rows.
+                # Phase ZZZZ-drain-fix (2026-05-18): the original ORDER BY
+                # used COALESCE across DATE + TEXT + TEXT columns which
+                # Postgres can't coerce → "COALESCE types date and text
+                # cannot be matched" → 500 → CF Worker returned 503. Fix:
+                # cast everything to TEXT for sort. ORDER is by date string
+                # which sorts lexically (ISO-8601 sorts correctly anyway).
                 cur.execute("""
                     SELECT pr.id, pr.title, pr.subheadline, pr.body,
                            pr.meta_description, pr.slug
@@ -1702,7 +1708,9 @@ def publish_now():
                              WHERE smp.press_release_id = pr.id
                                AND smp.platform = 'linkedin'
                                AND smp.status = 'published')
-                    ORDER BY COALESCE(apr.generated_for, pr.created_at, pr.published_at) ASC NULLS LAST
+                    ORDER BY COALESCE(apr.generated_for::text,
+                                      pr.created_at::text,
+                                      pr.published_at::text) ASC NULLS LAST
                     LIMIT %s
                 """, (max_to_publish,))
                 releases = cur.fetchall() or []
