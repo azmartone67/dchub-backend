@@ -1403,6 +1403,18 @@ export default {
         '/operators',
         // Phase BBBBB (2026-05-16): industry events directory
         '/events',
+        // Phase ZZZZ-edge (2026-05-18): /markets index (no slug) was
+        // timing out HTTP=000. The /markets/* prefix below only catches
+        // sub-paths; bare /markets fell through to CF Pages which
+        // doesn't have a /markets asset and hung. Adding here forces
+        // it to Railway where the market_intelligence_page handler
+        // returns the same HTML /market-intelligence does (200/157ms).
+        '/markets',
+        // Phase ZZZZ-pulse (2026-05-18): industry source-of-truth page.
+        // /industry/pulse returns a Schema.org Dataset HTML; was hitting
+        // CF SPA fallback because /industry/* wasn't allowlisted.
+        '/industry/pulse',
+        '/industry',
       ]);
       // Phase YYYY (2026-05-16): also forward prefix-paths to Railway
       // for surfaces with dynamic sub-routes (e.g. /operators/<slug>).
@@ -1416,6 +1428,8 @@ export default {
         '/transactions/',
         '/markets/',
         '/reports/',
+        // Phase ZZZZ-pulse (2026-05-18): /industry/<anything> passthrough
+        '/industry/',
       ];
       if (PHASE_282_RAILWAY_PATHS.has(pathname) ||
           PHASE_282_PREFIXES.some(p => pathname.startsWith(p))) {

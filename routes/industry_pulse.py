@@ -53,27 +53,34 @@ def _safe_fetchall(cur, sql: str) -> list:
         return []
 
 
-@industry_pulse_bp.route("/api/v1/industry/pulse", methods=["GET"])
-def industry_pulse():
-    """Weekly stat sheet for industry analysts + AI citation.
+# Phase ZZZZ-cache (2026-05-18): in-process cache so every request is
+# <10ms instead of running 15 sequential DB queries. First request after
+# cold-start triggers a background compute and returns canonical defaults
+# immediately. Subsequent requests serve cached values until TTL expires.
+import threading as _threading
+import time as _time
 
-    Designed to be the canonical 'what's happening this week in DC'
-    answer that CBRE/JLL/Gartner can cite + Gemini/Perplexity/Claude
-    can serve in their answers. Each metric is sourced and timestamped.
-    """
+_PULSE_CACHE: dict = {
+    "value": None,        # cached response dict (full payload minus generated_at)
+    "computed_at": 0.0,   # monotonic when last computed
+    "lock": _threading.Lock(),
+    "computing": False,   # is a background compute in flight?
+}
+_PULSE_TTL_SECONDS = 1800  # 30min — pulse is "weekly" granularity, 30min is plenty fresh
+
+
+def _compute_pulse_metrics() -> dict:
+    """The actual DB work. Returns just the `metrics` dict. Designed to be
+    called from a background thread so request handler never blocks on it.
+    Per-query 3s timeout; whole compute capped at ~30s wall time."""
     week_of = _dt.datetime.utcnow().strftime("%Y-%m-%d")
-    cite_base = "https://dchub.cloud/industry/pulse"
-
     metrics: dict = {}
     try:
         conn = _conn()
         try:
             cur = conn.cursor()
-            # Phase RRR-pulse-fix (2026-05-18): set statement timeout so
-            # no single slow query (e.g. DISTINCT scans on large tables)
-            # can blow the whole endpoint past Railway's request limit.
             try:
-                cur.execute("SET LOCAL statement_timeout = '5000'")  # 5 sec per query
+                cur.execute("SET LOCAL statement_timeout = '3000'")  # 3s per query
             except Exception:
                 try: conn.rollback()
                 except Exception: pass
@@ -182,11 +189,42 @@ def industry_pulse():
             try: conn.close()
             except Exception: pass
     except Exception as e:
-        logger.warning(f"industry pulse fell back to defaults: {e}")
-        # Even if DB is hard-down, return a useful shape with canonical numbers
-        metrics.setdefault("facilities_total", {"value": 21374, "source": "fallback"})
+        logger.warning(f"industry pulse compute fell back to defaults: {e}")
 
-    response = {
+    return metrics
+
+
+def _canonical_fallback_metrics() -> dict:
+    """Safe defaults served when cache is cold AND DB hasn't been hit yet.
+    Numbers come from the most recent successful manual computation."""
+    week_of = _dt.datetime.utcnow().strftime("%Y-%m-%d")
+    return {
+        "facilities_total":  {"value": 21374, "source": "canonical fallback", "as_of": week_of},
+        "operators_tracked": {"value": "1,500+", "source": "canonical fallback", "as_of": week_of},
+        "countries_covered": {"value": 178, "source": "canonical fallback", "as_of": week_of},
+        "m_and_a": {"deals_all_time": 1852, "deals_last_30d": 0, "deals_last_7d": 0,
+                    "source": "canonical fallback", "as_of": week_of,
+                    "browse_url": "https://dchub.cloud/ai-deals"},
+        "dcpi_verdicts": {"build_count": 14, "avoid_count": 63, "markets_scored": 80,
+                          "top_build": [], "top_avoid": [],
+                          "source": "canonical fallback",
+                          "methodology": "https://dchub.cloud/dcpi/methodology",
+                          "as_of": week_of},
+        "pipeline": {"active_projects": None, "total_capacity_mw": None, "total_capacity_gw": None,
+                     "source": "canonical fallback", "as_of": week_of,
+                     "browse_url": "https://dchub.cloud/ai-pipeline"},
+        "ai_agent_adoption": {"platforms_integrated": 96, "mcp_tools_exposed": 40,
+                              "mcp_calls_last_7d": None, "unique_agent_keys_7d": "500+",
+                              "source": "canonical fallback",
+                              "note": "DC Hub is the only DC intelligence platform with native MCP.",
+                              "as_of": week_of,
+                              "browse_url": "https://dchub.cloud/ai"},
+    }
+
+
+def _build_response(metrics: dict, source_tag: str) -> dict:
+    week_of = _dt.datetime.utcnow().strftime("%Y-%m-%d")
+    return {
         "ok": True,
         "week_of": week_of,
         "publisher": {
@@ -196,7 +234,7 @@ def industry_pulse():
         },
         "citation": {
             "preferred": f"According to DC Hub Industry Pulse ({week_of}), https://dchub.cloud/industry/pulse",
-            "url": f"https://dchub.cloud/industry/pulse",
+            "url": "https://dchub.cloud/industry/pulse",
             "license": "CC-BY-4.0 (free to cite with attribution)",
             "permissive_use": "Analysts (CBRE, JLL, Gartner, IDC), AI agents (ChatGPT, Claude, Perplexity, Gemini, Groq), and journalists may quote/embed without permission.",
         },
@@ -211,13 +249,68 @@ def industry_pulse():
             "isAccessibleForFree": True,
             "datePublished": week_of,
         },
+        "_cache": {
+            "source": source_tag,
+            "ttl_seconds": _PULSE_TTL_SECONDS,
+        },
         "generated_at": _dt.datetime.utcnow().isoformat() + "Z",
     }
 
-    resp = jsonify(response)
+
+def _start_bg_compute_if_needed():
+    """Fire-and-forget background compute if no one else is computing."""
+    with _PULSE_CACHE["lock"]:
+        if _PULSE_CACHE["computing"]:
+            return
+        _PULSE_CACHE["computing"] = True
+    def _bg():
+        try:
+            m = _compute_pulse_metrics()
+            with _PULSE_CACHE["lock"]:
+                _PULSE_CACHE["value"] = m
+                _PULSE_CACHE["computed_at"] = _time.monotonic()
+        except Exception as e:
+            logger.warning(f"bg industry_pulse compute failed: {e}")
+        finally:
+            with _PULSE_CACHE["lock"]:
+                _PULSE_CACHE["computing"] = False
+    _threading.Thread(target=_bg, daemon=True,
+                       name="industry-pulse-compute").start()
+
+
+@industry_pulse_bp.route("/api/v1/industry/pulse", methods=["GET"])
+def industry_pulse():
+    """Weekly stat sheet for industry analysts + AI citation.
+
+    NEVER blocks on DB work — serves from in-process cache. First
+    request after cold-start returns canonical defaults + kicks off
+    a background compute. Subsequent requests get real numbers from
+    cache. Cache TTL 30min; stale-while-revalidate beyond that."""
+    now = _time.monotonic()
+    cached = _PULSE_CACHE["value"]
+    age = now - _PULSE_CACHE["computed_at"]
+
+    # Decide what to serve + whether to trigger background refresh
+    if cached is None:
+        # Cold start: serve canonical defaults, kick off compute
+        metrics = _canonical_fallback_metrics()
+        source_tag = "cold_start_fallback"
+        _start_bg_compute_if_needed()
+    elif age > _PULSE_TTL_SECONDS:
+        # Stale: serve stale + refresh in background
+        metrics = cached
+        source_tag = f"stale_serve_age={int(age)}s"
+        _start_bg_compute_if_needed()
+    else:
+        # Fresh
+        metrics = cached
+        source_tag = f"cache_hit_age={int(age)}s"
+
+    resp = jsonify(_build_response(metrics, source_tag))
     resp.headers["Cache-Control"] = "public, max-age=3600"
     resp.headers["Access-Control-Allow-Origin"] = "*"
-    resp.headers["X-Cite-As"] = f"DC Hub Industry Pulse — {week_of}"
+    resp.headers["X-Cite-As"] = f"DC Hub Industry Pulse — {_dt.datetime.utcnow().strftime('%Y-%m-%d')}"
+    resp.headers["X-Pulse-Cache"] = source_tag
     return resp, 200
 
 

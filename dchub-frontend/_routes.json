@@ -17,11 +17,14 @@
     "/transparency",
     "/operators",
     "/operators/*",
+    "/markets",
     "/markets/*",
     "/reports/*",
     "/events",
     "/transactions",
-    "/transactions/*"
+    "/transactions/*",
+    "/industry",
+    "/industry/*"
   ],
   "exclude": []
 }
