@@ -138,7 +138,7 @@ def _write_testimonial(cur, *, source: str, platform: str, agent_name: str,
         """INSERT INTO ai_testimonials
             (platform, agent_name, quote, context, query, category,
              featured, source, approved, created_at)
-           VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, NOW())""",
+           VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, NOW() ON CONFLICT DO NOTHING)""",
         (platform, agent_name, quote.strip(),
          f"Probed via {source} on {datetime.now(timezone.utc).date().isoformat()}",
          "What is dchub.cloud?",
