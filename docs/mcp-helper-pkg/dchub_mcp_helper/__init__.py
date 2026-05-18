@@ -24,5 +24,5 @@ See https://dchub.cloud/docs/MCP_AUTO_TRIAL.md for the full guide.
 """
 from .auth import DCHubTrialAuth
 
-__version__ = "0.1.0"
+__version__ = "0.1.1"
 __all__ = ["DCHubTrialAuth"]
