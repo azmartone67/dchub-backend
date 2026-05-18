@@ -437,3 +437,118 @@ def sitemap_pulse_endpoint():
     resp.headers["Cache-Control"] = "public, max-age=1800"
     resp.headers["Access-Control-Allow-Origin"] = "*"
     return resp, 200
+
+
+# ── Phase RRR-brain-wins (2026-05-18) — auto-generate competitor-aware
+# "win posts" when we ship new capabilities. User asked for the brain
+# to "study our competition and pick custom dynamic responses ... when
+# we fix things." This endpoint walks recent git commits, identifies
+# meaningful shipments, and drafts LinkedIn/X-ready posts that name a
+# specific differentiator vs the competition.
+
+_WIN_KEYWORDS_TO_POSITIONING = {
+    # commit-message keywords → competitive differentiator narrative
+    "brain detector":   ("12 autonomous brain detectors",
+                          "DCHawk/dcByte/DCD/DCF rely on manual QA + quarterly reports. DC Hub catches its own data drift in 6h cycles."),
+    "mcp ":             ("Native MCP server",
+                          "96 AI agents auto-discover DC Hub tools. No competitor publishes an MCP server — agents have to be manually integrated with them."),
+    "cron":             ("Scheduled automation coverage",
+                          "34 scheduled jobs ensure freshness. Editorial competitors publish on human cadence."),
+    "auto-trial":       ("Zero-friction free tier",
+                          "200 calls/day for 30 days, no email. Enterprise platforms require sales-led onboarding."),
+    "transparent retry": ("Agent-native upgrade path",
+                          "Top-demand tools auto-elevate FREE → IDENTIFIED without paywall friction."),
+    "newsletter":       ("Public weekly distribution",
+                          "Open newsletter + auto-publish to LinkedIn/X/Bluesky. Competitors don't have email-list audiences."),
+    "competitive":      ("Self-aware positioning",
+                          "Live /competitive page that auto-updates as we ship — competitors don't publish comparison data."),
+    "shadowed":         ("Internal code hygiene",
+                          "Brain detector catches duplicate handlers before they cause silent bugs."),
+    "orphan":           ("Background-task health",
+                          "Brain detects scheduler functions defined but never started — competitors' silent failures stay silent."),
+    "publish-now":      ("Distribution wiring",
+                          "Every press release auto-pushes to LinkedIn/X/Bluesky within 3 hours."),
+    "neon":             ("Pure cloud-native PG",
+                          "Zero SQLite legacy. Competitors with SaaS dashboards often have SQLite shadows."),
+    "funnel":           ("Conversion observability",
+                          "Public auto-trial funnel endpoint so anyone can see where signals leak. Competitors don't publish conversion data."),
+}
+
+
+def _classify_commit(subject: str) -> dict | None:
+    """Match a commit message against the win-keyword map. Returns
+    {key, headline, positioning} or None if no match."""
+    s = subject.lower()
+    for keyword, (headline, positioning) in _WIN_KEYWORDS_TO_POSITIONING.items():
+        if keyword in s:
+            return {"keyword": keyword, "headline": headline,
+                    "positioning": positioning}
+    return None
+
+
+@competitor_intel_bp.route("/api/v1/competitive/ship-wins", methods=["GET"])
+def ship_wins_endpoint():
+    """Walk recent git commits, identify shipments that map to
+    competitive differentiators, draft post-ready text per win."""
+    import subprocess
+    days = int(request.args.get("days", "7"))
+    try:
+        # Read git log from /app (Railway working dir) or fallback to cwd
+        result = subprocess.run(
+            ["git", "log", f"--since={days} days ago",
+             "--pretty=format:%h|%s|%ai"],
+            capture_output=True, text=True, timeout=10,
+            cwd="/app" if os.path.isdir("/app/.git") else None,
+        )
+        lines = (result.stdout or "").strip().split("\n") if result.stdout else []
+    except Exception as e:
+        return jsonify(ok=False, error=f"git log failed: {str(e)[:120]}"), 503
+
+    wins = []
+    seen_keywords = set()
+    for line in lines:
+        if "|" not in line:
+            continue
+        parts = line.split("|", 2)
+        if len(parts) < 3:
+            continue
+        sha, subject, when = parts
+        classification = _classify_commit(subject)
+        if not classification:
+            continue
+        # Dedup by keyword — one post per differentiator class
+        if classification["keyword"] in seen_keywords:
+            continue
+        seen_keywords.add(classification["keyword"])
+
+        # Draft a LinkedIn-ready post
+        post_draft = (
+            f"{classification['headline']} →\n\n"
+            f"{classification['positioning']}\n\n"
+            f"Shipped: {subject.split(':')[1].strip() if ':' in subject else subject}\n\n"
+            f"See it live: dchub.cloud/competitive"
+        )
+        wins.append({
+            "commit":       sha,
+            "subject":      subject,
+            "when":         when,
+            "keyword":      classification["keyword"],
+            "headline":     classification["headline"],
+            "positioning": classification["positioning"],
+            "post_draft":  post_draft,
+        })
+
+    resp = jsonify(
+        ok=True,
+        window_days=days,
+        win_count=len(wins),
+        wins=wins,
+        note=("Each win is a draft post the brain generated by matching "
+              "a recent commit message against the competitive-differentiator "
+              "map. Wire these to /api/v1/marketing/publish-now to auto-post "
+              "or hand-pick for the weekly digest."),
+        generated_at=datetime.datetime.utcnow().isoformat() + "Z",
+    )
+    resp.headers["Cache-Control"] = "public, max-age=600"
+    resp.headers["Access-Control-Allow-Origin"] = "*"
+    return resp, 200

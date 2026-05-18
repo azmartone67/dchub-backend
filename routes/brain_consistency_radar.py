@@ -3710,8 +3710,14 @@ def check_shadowed_routes() -> list[dict]:
 
 def scan_all() -> list[dict]:
     """Run every detector. Return a flat list of finding dicts ready
-    to merge into actionable_backend_issues."""
+    to merge into actionable_backend_issues.
+
+    Phase RRR-brain-parallel (2026-05-18): parallelized via ThreadPool
+    after observability showed scan was taking 76.9s serial. Detectors
+    are collected first, then run concurrently with per-detector 20s
+    timeout — wall time becomes max(detector) instead of sum(detector)."""
     out: list[dict] = []
+    detectors: list = []
     for fn in (check_worker_version_drift,
                check_tier_consistency,
                check_cron_coverage,
@@ -3823,20 +3829,54 @@ def scan_all() -> list[dict]:
                # — that one catches Thread() loops never started; this
                # one catches HTTP cron endpoints never scheduled.
                check_cron_endpoint_unscheduled):
+        detectors.append(fn)
+
+    # Phase RRR-brain-parallel (2026-05-18) — scan was taking 76.9s
+    # serial because several detectors make HTTP calls (frontend probes
+    # 23 URLs, dead-link probes 30 URLs, backend pool probe 1 URL, route
+    # audit 1 URL, competitor sitemaps 6 URLs). At ~3-8s each that
+    # serializes to 60-90s. Parallelize via ThreadPoolExecutor — wall
+    # time becomes max(detector_time) ≈ 10-15s instead of sum.
+    # Per-detector 20s timeout prevents any single slow probe from
+    # holding up the whole scan.
+    import concurrent.futures as _cf
+    def _run_one(fn):
         try:
-            out.extend(fn() or [])
+            return ("ok", fn.__name__, fn() or [])
         except Exception as e:
-            # Phase CCC (2026-05-16): include the detector function name
-            # in the issue string itself so the heartbeat's by_issue
-            # summary surfaces WHICH detector crashed without needing
-            # a deep findings drill-down. The detail still carries the
-            # full traceback excerpt for the engineer.
-            out.append({
-                "issue":  f"consistency_radar_detector_crashed:{fn.__name__}",
-                "url":    fn.__name__,
-                "count":  1,
-                "detail": f"{type(e).__name__}: {str(e)[:200]}",
-            })
+            return ("err", fn.__name__,
+                    f"{type(e).__name__}: {str(e)[:200]}")
+
+    with _cf.ThreadPoolExecutor(max_workers=8,
+                                 thread_name_prefix="brain-scan") as ex:
+        futs = {ex.submit(_run_one, fn): fn for fn in detectors}
+        for fut in _cf.as_completed(futs, timeout=60):
+            fn = futs[fut]
+            try:
+                status, name, result = fut.result(timeout=20)
+                if status == "ok":
+                    out.extend(result)
+                else:
+                    out.append({
+                        "issue":  f"consistency_radar_detector_crashed:{name}",
+                        "url":    name,
+                        "count":  1,
+                        "detail": result,
+                    })
+            except _cf.TimeoutError:
+                out.append({
+                    "issue":  f"consistency_radar_detector_timeout:{fn.__name__}",
+                    "url":    fn.__name__,
+                    "count":  1,
+                    "detail": "Detector exceeded 20s timeout — investigate (likely HTTP probe stalling).",
+                })
+            except Exception as e:
+                out.append({
+                    "issue":  f"consistency_radar_detector_crashed:{fn.__name__}",
+                    "url":    fn.__name__,
+                    "count":  1,
+                    "detail": f"{type(e).__name__}: {str(e)[:200]}",
+                })
     return out
 
 
