@@ -1249,6 +1249,14 @@ try:
     except Exception as _cfpe:
         import logging
         logging.getLogger(__name__).warning('cf_purge wiring failed: %s', _cfpe)
+    # Phase ZZZZ-redirects (2026-05-18): /vs, /industry, /competitive
+    # → 301 to the working sub-paths so the 3 remaining index 404s clear.
+    try:
+        from routes.quick_redirects import quick_redirects_bp
+        app.register_blueprint(quick_redirects_bp)
+    except Exception as _qre:
+        import logging
+        logging.getLogger(__name__).warning('quick_redirects wiring failed: %s', _qre)
     # Phase RRR-newsletter-hotfix3 (2026-05-18): registering via a
     # routes/*.py module silently failed for reasons we couldn't
     # diagnose live. Switching to inline-route definitions on the

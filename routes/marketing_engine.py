@@ -1590,6 +1590,56 @@ def linkedin_whoami():
     ), 200
 
 
+@marketing_bp.get("/api/v1/marketing/linkedin-token-test")
+def linkedin_token_test():
+    """Phase ZZZZ-li-debug (2026-05-18): validate the current
+    LINKEDIN_ACCESS_TOKEN env var WITHOUT publishing anything.
+    Calls LinkedIn's /v2/userinfo which works for any valid token
+    and returns the authenticated user's info. Failing here means
+    the token is expired, malformed, or has wrong scopes.
+
+    Public (no admin gate) because it's read-only + helps diagnose
+    publishing failures from the worker-status dashboard."""
+    import os as _os
+    import requests as _req
+    token = (_os.environ.get("LINKEDIN_ACCESS_TOKEN") or "").strip()
+    org_id = (_os.environ.get("LINKEDIN_ORG_ID") or "110894959").strip()
+    if not token:
+        return jsonify(ok=False, error="LINKEDIN_ACCESS_TOKEN not set in Railway"), 503
+    try:
+        r = _req.get(
+            "https://api.linkedin.com/v2/userinfo",
+            headers={"Authorization": f"Bearer {token}",
+                     "X-Restli-Protocol-Version": "2.0.0"},
+            timeout=10,
+        )
+        body = r.json() if r.headers.get("content-type","").startswith("application/json") else {"raw": r.text[:400]}
+        # Also probe the organization (the actual posting endpoint needs this)
+        org = _req.get(
+            f"https://api.linkedin.com/v2/organizations/{org_id}",
+            headers={"Authorization": f"Bearer {token}",
+                     "X-Restli-Protocol-Version": "2.0.0"},
+            timeout=10,
+        )
+        org_body = org.json() if org.headers.get("content-type","").startswith("application/json") else {"raw": org.text[:400]}
+        return jsonify(
+            ok=(r.status_code == 200),
+            token_length=len(token),
+            token_prefix=token[:8] + "...",
+            userinfo_status=r.status_code,
+            userinfo_body=body,
+            org_id=org_id,
+            org_status=org.status_code,
+            org_body=org_body,
+            hint=("If userinfo returns 401, token is expired or invalid. "
+                  "If userinfo is 200 but org is 401/403, token is missing "
+                  "the w_member_social or r_organization_admin scope, OR is "
+                  "scoped to a user not authorized for the org_id."),
+        ), 200
+    except Exception as e:
+        return jsonify(ok=False, error=f"{type(e).__name__}: {str(e)[:200]}"), 503
+
+
 @marketing_bp.post("/api/v1/marketing/publish-now")
 @_require_admin
 def publish_now():

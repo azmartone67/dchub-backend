@@ -97,6 +97,41 @@ def _cf_get(path: str) -> dict:
         return {"ok": False, "error": f"{type(e).__name__}: {str(e)[:200]}"}
 
 
+@cf_purge_bp.route("/api/v1/cf/inspect/token", methods=["GET"])
+def inspect_token():
+    """Phase ZZZZ-token-debug (2026-05-18): the token in Railway might be
+    out of sync with the token in the CF dashboard (user edited token
+    perms but Railway still has the OLD token value). This endpoint
+    calls CF's /user/tokens/verify which returns the active token's
+    own metadata + status — proves whether Railway has the current
+    token value or a stale one.
+
+    Hides the actual token but shows id, status, expires_on, and the
+    last 6 chars so the user can compare to what's in their CF
+    dashboard."""
+    if not _CF_API_TOKEN:
+        return jsonify(ok=False, error="CLOUDFLARE_API_TOKEN not set in Railway"), 503
+    try:
+        import requests
+        r = requests.get(
+            "https://api.cloudflare.com/client/v4/user/tokens/verify",
+            headers={"Authorization": f"Bearer {_CF_API_TOKEN}"},
+            timeout=12,
+        )
+        try:
+            body = r.json()
+        except Exception:
+            body = {"raw": r.text[:500]}
+        return jsonify(
+            railway_token_last6=("..." + _CF_API_TOKEN[-6:]) if _CF_API_TOKEN else "(unset)",
+            railway_token_length=len(_CF_API_TOKEN),
+            status_code=r.status_code,
+            cf_response=body,
+        ), 200
+    except Exception as e:
+        return jsonify(ok=False, error=f"{type(e).__name__}: {str(e)[:200]}"), 503
+
+
 @cf_purge_bp.route("/api/v1/cf/inspect/routes-and-rules", methods=["GET"])
 def inspect_routes_and_rules():
     """Phase ZZZZ-cf-inspect (2026-05-18): aggregate view of everything
