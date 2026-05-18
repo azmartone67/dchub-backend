@@ -292,6 +292,7 @@ def run_extraction():
 # Endpoints
 # ---------------------------------------------------------------------------
 
+# AUTO-REPAIR: duplicate route '/extract' also in routes/iso_nyiso.py:147 — review and remove one
 @sec_edgar_bp.route("/extract", methods=["POST", "GET"])
 def trigger_extract_all():
     s = run_extraction_all()
@@ -403,6 +404,7 @@ def list_companies():
 
     return jsonify(count=len(tracked), companies=tracked), 200
 
+# AUTO-REPAIR: duplicate route '/health' also in index_api.py:516 — review and remove one
 
 @sec_edgar_bp.route("/health", methods=["GET"])
 def health():

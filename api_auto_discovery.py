@@ -438,7 +438,7 @@ class APIAutoDiscovery:
                 cursor.execute('''
                     INSERT INTO discovered_apis
                     (name, category, api_type, url, record_count, fields, status)
-                    VALUES (%s, %s, %s, %s, %s, %s, 'verified')
+                    VALUES (%s, %s, %s, %s, %s, %s, 'verified') ON CONFLICT DO NOTHING
                 ''', (
                     api['name'], api['category'], api['type'],
                     api['url'], api['record_count'], json.dumps(api['fields'])
@@ -882,7 +882,7 @@ class APIAutoDiscovery:
                     cursor.execute('''
                         INSERT INTO api_health_checks
                         (api_id, url, status_code, response_time_ms, record_count, schema_hash, is_healthy, error_message)
-                        VALUES (%s, %s, %s, %s, %s, %s, %s, %s)
+                        VALUES (%s, %s, %s, %s, %s, %s, %s, %s) ON CONFLICT DO NOTHING
                     ''', row)
                 except Exception:
                     pass
@@ -941,7 +941,7 @@ class APIAutoDiscovery:
                         cursor.execute('''
                             INSERT INTO api_registry 
                             (name, url, api_type, auth_type, last_success, items_fetched, enabled, discovered_at)
-                            VALUES (%s, %s, %s, %s, %s, %s, 1, %s)
+                            VALUES (%s, %s, %s, %s, %s, %s, 1, %s) ON CONFLICT DO NOTHING
                         ''', (name, url, api_type, 'none' if api_type != 'eia' else 'api_key',
                               datetime.now().isoformat(), record_ct, datetime.now().isoformat()))
 
@@ -1139,7 +1139,7 @@ class APIAutoDiscovery:
                     conn2.execute('''
                         INSERT INTO learned_infrastructure
                         (category, item_type, name, location, source_api, metadata)
-                        VALUES (%s, %s, %s, %s, %s, %s)
+                        VALUES (%s, %s, %s, %s, %s, %s) ON CONFLICT DO NOTHING
                     ''', row)
                     conn2.commit()
                     results['items_learned'] += 1
@@ -1430,7 +1430,7 @@ class APIAutoDiscovery:
 
             cursor.execute('''
                 INSERT INTO api_discovery_log (action, source, apis_found, apis_tested, apis_integrated, details)
-                VALUES (%s, %s, %s, %s, %s, %s)
+                VALUES (%s, %s, %s, %s, %s, %s) ON CONFLICT DO NOTHING
             ''', (
                 'discovery_cycle_v2',
                 'auto_scheduler',
@@ -1500,7 +1500,7 @@ class APIAutoDiscovery:
 
             cursor.execute('''
                 INSERT INTO discovered_apis (name, category, api_type, url, status, last_tested, test_result)
-                VALUES (%s, %s, %s, %s, %s, %s, %s)
+                VALUES (%s, %s, %s, %s, %s, %s, %s) ON CONFLICT DO NOTHING
             ''', (
                 api_info['name'][:200], api_info.get('category', 'other'),
                 api_info.get('type', 'rest'), api_info['url'],
@@ -1521,7 +1521,7 @@ class APIAutoDiscovery:
         try:
             cursor.execute('''
                 INSERT INTO api_change_events (api_id, event_type, old_value, new_value, description)
-                VALUES (%s, %s, %s, %s, %s)
+                VALUES (%s, %s, %s, %s, %s) ON CONFLICT DO NOTHING
             ''', (api_id, event_type, old_value, new_value, description))
         except Exception:
             pass
@@ -1590,6 +1590,7 @@ def register_api_discovery_routes(app, start_scheduler=True):
 
     discovery_bp = Blueprint('api_discovery', __name__)
 
+# AUTO-REPAIR: duplicate route '/api/discovery/status' also in api_server.py:2838 — review and remove one
     @discovery_bp.route('/api/discovery/status')
     def api_discovery_status():
         return jsonify({
@@ -1597,6 +1598,7 @@ def register_api_discovery_routes(app, start_scheduler=True):
             'engine': 'API Auto-Discovery v2.0',
             **_discovery_instance.get_discovery_status()
         })
+# AUTO-REPAIR: duplicate route '/api/discovery/run' also in api_server.py:2584 — review and remove one
 
     @discovery_bp.route('/api/discovery/run', methods=['POST'])
     def run_api_discovery():
