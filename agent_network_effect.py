@@ -111,6 +111,7 @@ def register_agent_network(app):
             }
         })
 
+# AUTO-REPAIR: duplicate route '/api/agents/intelligence-index' also in intelligence_index.py:38 — review and remove one
     @app.route('/api/agents/intelligence-index', methods=['GET', 'OPTIONS'])
     def agent_intelligence_index():
         if request.method == 'OPTIONS':
