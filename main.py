@@ -1162,6 +1162,16 @@ try:
     except Exception as _wde:
         import logging
         logging.getLogger(__name__).warning('weekly_digest wiring failed: %s', _wde)
+    # Phase RRR-newsletter-hotfix2 (2026-05-18): late-line blueprint
+    # registration at line 5114 doesn't take effect on Railway for reasons
+    # we haven't fully diagnosed. Same neighborhood as weekly_digest_bp
+    # works reliably — co-locating here.
+    try:
+        from routes.weekly_public_newsletter import weekly_public_newsletter_bp
+        app.register_blueprint(weekly_public_newsletter_bp)
+    except Exception as _wpne:
+        import logging
+        logging.getLogger(__name__).warning('weekly_public_newsletter wiring failed: %s', _wpne)
     # Phase FF (2026-05-14): the market-movement alerts primitive — the
     # shared spine for buyer-facing email alerts + agent-facing webhooks,
     # and the unfulfilled "alerts when a tracked market moves" promise
@@ -5111,21 +5121,9 @@ try:
 except Exception as e:
     logger.warning(f"⚠️ Deal ingestion scheduler skipped: {e}")
 
-# Phase RRR-newsletter-hotfix (2026-05-18): MOVED HERE from line 5163.
-# Discovery: every blueprint registered AFTER line 5163 was returning
-# 404 in production despite no errors in the try/except logs. Suspect:
-# one of the start_*_publisher() calls below was spawning a thread that
-# blocked module init somehow (e.g., grabbing an init-time lock the
-# main thread also needed). Moving the newsletter blueprint registration
-# BEFORE the publisher hooks unblocks it; we'll diagnose the deeper
-# issue separately. discovery_monitor_bp + 5 others at lines 5175-5500
-# are still 404'd by whatever is happening — separate fix.
-try:
-    from routes.weekly_public_newsletter import weekly_public_newsletter_bp
-    app.register_blueprint(weekly_public_newsletter_bp)
-    logger.info("✅ Public weekly newsletter blueprint registered (moved)")
-except Exception as e:
-    logger.warning(f"⚠️ Public weekly newsletter blueprint skipped: {e}")
+# Phase RRR-newsletter-hotfix2: registration moved to line ~1166 (right
+# after weekly_digest_bp) — late-line registration didn't take effect on
+# Railway for unknown reasons.
 
 # Phase RRR-revenue1-REVERT (2026-05-18) — REMOVED the start_*_publisher()
 # calls. Initial diagnosis was right (the publisher loops were never
