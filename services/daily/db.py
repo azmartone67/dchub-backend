@@ -39,7 +39,7 @@ def upsert_snapshot(date: datetime.date, payload: dict) -> None:
     with conn() as c:
         c.execute(
             """INSERT INTO daily.snapshots(date, payload, generated_at)
-               VALUES (%s, %s, now())
+               VALUES (%s, %s, now() ON CONFLICT DO NOTHING)
                ON CONFLICT(date) DO UPDATE
                  SET payload = EXCLUDED.payload,
                      generated_at = EXCLUDED.generated_at""",
@@ -61,7 +61,7 @@ def upsert_render(date: datetime.date, theme: str, size: str,
     with conn() as c:
         c.execute(
             """INSERT INTO daily.renders(date, theme, size, r2_key, bytes, generated_at)
-               VALUES (%s, %s, %s, %s, %s, now())
+               VALUES (%s, %s, %s, %s, %s, now() ON CONFLICT DO NOTHING)
                ON CONFLICT(date, theme, size) DO UPDATE
                  SET r2_key = EXCLUDED.r2_key,
                      bytes = EXCLUDED.bytes,
