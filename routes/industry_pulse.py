@@ -282,31 +282,41 @@ def _start_bg_compute_if_needed():
 def industry_pulse():
     """Weekly stat sheet for industry analysts + AI citation.
 
-    NEVER blocks on DB work — serves from in-process cache. First
-    request after cold-start returns canonical defaults + kicks off
-    a background compute. Subsequent requests get real numbers from
-    cache. Cache TTL 30min; stale-while-revalidate beyond that."""
-    now = _time.monotonic()
+    Phase ZZZZ-pulse-simple (2026-05-18): the threading-based cache was
+    502'ing on Railway for reasons that weren't visible from outside.
+    Simplified to plain module-level dict cache + opportunistic refresh
+    inside the request (capped to 4s wall-clock). No background threads.
+    """
     cached = _PULSE_CACHE["value"]
-    age = now - _PULSE_CACHE["computed_at"]
+    age = _time.monotonic() - _PULSE_CACHE["computed_at"]
 
-    # Decide what to serve + whether to trigger background refresh
-    if cached is None:
-        # Cold start: serve canonical defaults, kick off compute
-        metrics = _canonical_fallback_metrics()
-        source_tag = "cold_start_fallback"
-        _start_bg_compute_if_needed()
-    elif age > _PULSE_TTL_SECONDS:
-        # Stale: serve stale + refresh in background
-        metrics = cached
-        source_tag = f"stale_serve_age={int(age)}s"
-        _start_bg_compute_if_needed()
+    # If cache stale OR cold, try a synchronous refresh capped by 4s
+    if cached is None or age > _PULSE_TTL_SECONDS:
+        started = _time.monotonic()
+        try:
+            new_metrics = _compute_pulse_metrics()
+            if (_time.monotonic() - started) < 4.0 and new_metrics:
+                _PULSE_CACHE["value"] = new_metrics
+                _PULSE_CACHE["computed_at"] = _time.monotonic()
+                cached = new_metrics
+                source_tag = f"computed_in_{int((_time.monotonic()-started)*1000)}ms"
+            else:
+                # Took too long → use whatever we got + fall back where missing
+                source_tag = "partial_compute_fallback"
+                cached = new_metrics or _canonical_fallback_metrics()
+        except Exception as e:
+            logger.warning(f"industry_pulse compute failed, serving fallback: {e}")
+            cached = _canonical_fallback_metrics()
+            source_tag = "compute_error_fallback"
     else:
-        # Fresh
-        metrics = cached
         source_tag = f"cache_hit_age={int(age)}s"
 
-    resp = jsonify(_build_response(metrics, source_tag))
+    # Belt and suspenders: never return an empty metrics dict
+    if not cached:
+        cached = _canonical_fallback_metrics()
+        source_tag = "empty_cache_fallback"
+
+    resp = jsonify(_build_response(cached, source_tag))
     resp.headers["Cache-Control"] = "public, max-age=3600"
     resp.headers["Access-Control-Allow-Origin"] = "*"
     resp.headers["X-Cite-As"] = f"DC Hub Industry Pulse — {_dt.datetime.utcnow().strftime('%Y-%m-%d')}"
@@ -325,19 +335,23 @@ def industry_pulse_page():
     except Exception:
         data = {"ok": False}
 
+    def _int(v, d):
+        try: return int(v)
+        except Exception: return d
+
     week = data.get("week_of", _dt.datetime.utcnow().strftime("%Y-%m-%d"))
     m = data.get("metrics", {})
-    fac = m.get("facilities_total", {}).get("value", "21,374")
-    countries = m.get("countries_covered", {}).get("value", 178)
-    deals_total = m.get("m_and_a", {}).get("deals_all_time", 1852)
-    deals_30d = m.get("m_and_a", {}).get("deals_last_30d", 0)
+    fac = _int(m.get("facilities_total", {}).get("value"), 21374)
+    countries = _int(m.get("countries_covered", {}).get("value"), 178)
+    deals_total = _int(m.get("m_and_a", {}).get("deals_all_time"), 1852)
+    deals_30d = _int(m.get("m_and_a", {}).get("deals_last_30d"), 0)
     dcpi = m.get("dcpi_verdicts", {})
-    build_count = dcpi.get("build_count", 14)
-    avoid_count = dcpi.get("avoid_count", 63)
-    markets_scored = dcpi.get("markets_scored", 80)
+    build_count = _int(dcpi.get("build_count"), 14)
+    avoid_count = _int(dcpi.get("avoid_count"), 63)
+    markets_scored = _int(dcpi.get("markets_scored"), 80)
     pipeline_gw = m.get("pipeline", {}).get("total_capacity_gw")
     pipeline_count = m.get("pipeline", {}).get("active_projects")
-    ai_platforms = m.get("ai_agent_adoption", {}).get("platforms_integrated", 96)
+    ai_platforms = _int(m.get("ai_agent_adoption", {}).get("platforms_integrated"), 96)
     mcp_calls = m.get("ai_agent_adoption", {}).get("mcp_calls_last_7d")
 
     top_build = dcpi.get("top_build", [])
