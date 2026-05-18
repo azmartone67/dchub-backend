@@ -269,6 +269,7 @@ def _render_html() -> str:
 </html>"""
 
 
+# AUTO-REPAIR: duplicate route '/vs' also in routes/competitive_vs.py:309 — review and remove one
 @bs_translator_bp.route("/vs", methods=["GET"], strict_slashes=False)
 @bs_translator_bp.route("/bs-translator", methods=["GET"], strict_slashes=False)
 def vs_page():
