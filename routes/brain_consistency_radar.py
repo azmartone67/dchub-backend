@@ -2619,6 +2619,70 @@ def check_ai_citations_stale_v2() -> list[dict]:
     return findings
 
 
+def check_package_install_velocity_drop() -> list[dict]:
+    """Phase KKK (2026-05-17) — flag when published package install
+    velocity drops sharply WoW. Pulls from package_install_stats
+    (populated daily by /api/v1/packages/refresh cron).
+
+    Why: pip + npm install counts are the most honest organic-adoption
+    signal we have. A sustained drop means either an upstream issue
+    (PyPI / npm CDN), a new bug in a release, or a competitor stole
+    mindshare. All three want a human to look.
+    """
+    findings: list[dict] = []
+    c = _db()
+    if c is None: return findings
+    try:
+        with c.cursor() as cur:
+            try:
+                cur.execute("SELECT to_regclass('public.package_install_stats')")
+                if not (cur.fetchone() or [None])[0]:
+                    return findings  # table doesn't exist yet
+                cur.execute("""
+                    WITH this_week AS (
+                      SELECT ecosystem, package_name,
+                             MAX(downloads_7d) AS downloads_7d
+                        FROM package_install_stats
+                       WHERE snapshot_date >= CURRENT_DATE - INTERVAL '1 day'
+                       GROUP BY ecosystem, package_name
+                    ),
+                    last_week AS (
+                      SELECT ecosystem, package_name,
+                             MAX(downloads_7d) AS downloads_7d
+                        FROM package_install_stats
+                       WHERE snapshot_date <= CURRENT_DATE - INTERVAL '7 days'
+                         AND snapshot_date >= CURRENT_DATE - INTERVAL '8 days'
+                       GROUP BY ecosystem, package_name
+                    )
+                    SELECT tw.ecosystem, tw.package_name,
+                           tw.downloads_7d AS this_7d,
+                           lw.downloads_7d AS last_7d
+                      FROM this_week tw
+                      JOIN last_week lw USING (ecosystem, package_name)
+                     WHERE lw.downloads_7d >= 10
+                       AND tw.downloads_7d * 2 < lw.downloads_7d
+                """)
+                for r in cur.fetchall() or []:
+                    eco, name, this7, last7 = r[0], r[1], int(r[2] or 0), int(r[3] or 0)
+                    drop_pct = round(100.0 * (last7 - this7) / max(1, last7), 1)
+                    findings.append({
+                        "issue":  "package_install_velocity_drop",
+                        "url":    f"{eco}:{name}",
+                        "count":  this7,
+                        "detail": (f"{eco} package `{name}` 7-day installs dropped "
+                                   f"{drop_pct}% WoW ({last7}→{this7}). Either an "
+                                   f"upstream registry issue, a regression in the "
+                                   f"latest release, or competitor mindshare shift. "
+                                   f"Investigate before assuming it's noise."),
+                    })
+            except Exception:
+                pass
+    finally:
+        try: c.close()
+        except Exception: pass
+    return findings
+
+
 def check_autopilot_verifier_backlog() -> list[dict]:
     """Fires when Phase FFFFF's outcome verifier has > 5 actions
     fired in the last 48h but not yet verified. Either the verify
@@ -2817,7 +2881,9 @@ def scan_all() -> list[dict]:
                check_ai_citations_stale_v2,
                check_autopilot_verifier_backlog,
                # Phase XX (2026-05-17) — breach prevention
-               check_rest_endpoint_leakage):
+               check_rest_endpoint_leakage,
+               # Phase KKK (2026-05-17) — package install velocity drop
+               check_package_install_velocity_drop):
         try:
             out.extend(fn() or [])
         except Exception as e:

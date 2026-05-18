@@ -20221,6 +20221,16 @@ try:
 except Exception as _e:
     print(f"[main] cron_collision_proposals register failed: {_e}", file=sys.stderr)
 
+# Phase KKK (2026-05-17): public install-count tracker. Pulls PyPI +
+# npm download counts on a daily cron + exposes them as a credibility
+# widget on the homepage ("trusted by N developers"). Source: PyPI's
+# free pypistats.org API + npm's free api.npmjs.org.
+try:
+    from routes.package_stats import package_stats_bp
+    app.register_blueprint(package_stats_bp)
+except Exception as _e:
+    print(f"[main] package_stats register failed: {_e}", file=sys.stderr)
+
 # Phase WWWW (2026-05-16): tier-upgrade nudger — daily check + email
 # IDENTIFIED users hitting 80%+ cap.
 try:
