@@ -6825,7 +6825,9 @@ def add_security_headers(response):
     # caught by the blanket /api/ no-store rule below.
     _matched_curated = None
     try:
-        if response.status_code == 200 and request.method == 'GET':
+        # HEAD must get the same Cache-Control as GET — CF caches HEAD
+        # using GET's policy and curl -I uses HEAD to probe.
+        if response.status_code == 200 and request.method in ('GET', 'HEAD'):
             _matched_curated = _CACHE_PATHS.get(path)
             if _matched_curated is None:
                 for prefix in _CACHE_PATHS:
