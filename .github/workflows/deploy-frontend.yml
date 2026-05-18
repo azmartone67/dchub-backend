@@ -52,26 +52,48 @@ jobs:
             exit 1
           fi
 
-      - name: 1 — List all CF Pages projects (so we know the right name)
+      - name: 1 — List CF Pages projects (via REST API for clean JSON)
+        id: list
         run: |
-          echo "=== Available CF Pages projects in this account ==="
-          npx --yes wrangler@latest pages project list || \
-            { echo "❌ project list failed — token likely missing 'Cloudflare Pages: Edit' permission"; exit 1; }
+          echo "=== Calling CF REST API for clean JSON list ==="
+          RESP=$(curl -sS \
+            -H "Authorization: Bearer $CLOUDFLARE_API_TOKEN" \
+            "https://api.cloudflare.com/client/v4/accounts/$CLOUDFLARE_ACCOUNT_ID/pages/projects")
+          SUCCESS=$(echo "$RESP" | jq -r '.success')
+          if [ "$SUCCESS" != "true" ]; then
+            echo "❌ CF API rejected the request:"
+            echo "$RESP" | jq '.errors // .'
+            exit 1
+          fi
+          NAMES=$(echo "$RESP" | jq -r '.result[].name')
+          echo "=== Projects in this account ==="
+          echo "$NAMES"
+          # Stash all names for the next step
+          echo "all_names<<EOF" >> "$GITHUB_OUTPUT"
+          echo "$NAMES"          >> "$GITHUB_OUTPUT"
+          echo "EOF"             >> "$GITHUB_OUTPUT"
 
       - name: 2 — Pick project name
         id: pick
         run: |
           INPUT='${{ github.event.inputs.project_name }}'
+          ALL='${{ steps.list.outputs.all_names }}'
           if [ -n "$INPUT" ]; then
             NAME="$INPUT"
             echo "Using override: $NAME"
           else
-            # Auto-pick first project that matches 'dchub' or 'dc-hub'
-            NAME=$(npx --yes wrangler@latest pages project list 2>/dev/null \
-                   | awk '/dchub|dc-hub|dc hub/ {print $1; exit}')
+            # Auto-pick first name matching dchub OR dc-hub
+            NAME=$(echo "$ALL" | grep -iE '^(dchub|dc-hub|dc_hub)' | head -1)
             if [ -z "$NAME" ]; then
-              echo "❌ No CF Pages project matching 'dchub' found."
-              echo "Re-run this action with workflow_dispatch + project_name input."
+              # Fall back to ANY name containing dchub/dc-hub
+              NAME=$(echo "$ALL" | grep -iE 'dchub|dc-hub|dc_hub' | head -1)
+            fi
+            if [ -z "$NAME" ]; then
+              echo "❌ No project matching 'dchub' found in your account."
+              echo "Names available:"
+              echo "$ALL"
+              echo ""
+              echo "Re-run via Run workflow with project_name input set to the right one."
               exit 1
             fi
             echo "Auto-picked: $NAME"
