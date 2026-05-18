@@ -1,0 +1,36 @@
+# Phase ZZZZ-cfdeploy (2026-05-18): auto-deploy dchub-frontend to CF Pages
+# on every push to main. Closes the gap brain has been flagging as
+# worker_version_drift — production was stuck at 4.8.3 while repo carries
+# 4.18.0+ because there was no deploy pipeline for the frontend.
+#
+# Setup (one-time):
+#   1. Get a Cloudflare API token: https://dash.cloudflare.com/profile/api-tokens
+#      Use the "Edit Cloudflare Workers" template — gives Pages deploy + Workers.
+#   2. In GitHub: Settings → Secrets and variables → Actions → New secret
+#      CLOUDFLARE_API_TOKEN = <your token>
+#      CLOUDFLARE_ACCOUNT_ID = <your account ID from CF dashboard>
+#   3. Push. Action runs automatically.
+
+name: Deploy frontend to Cloudflare Pages
+
+on:
+  push:
+    branches: [main]
+    paths:
+      - 'dchub-frontend/**'
+  workflow_dispatch:
+
+jobs:
+  deploy:
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      deployments: write
+    steps:
+      - uses: actions/checkout@v4
+      - name: Deploy to Cloudflare Pages
+        uses: cloudflare/wrangler-action@v3
+        with:
+          apiToken: ${{ secrets.CLOUDFLARE_API_TOKEN }}
+          accountId: ${{ secrets.CLOUDFLARE_ACCOUNT_ID }}
+          command: pages deploy dchub-frontend --project-name=dchub-cloud --branch=main

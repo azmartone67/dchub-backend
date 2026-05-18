@@ -3840,6 +3840,63 @@ def check_pricing_page_placeholder_content() -> list[dict]:
     return findings
 
 
+def check_tool_signal_to_conversion_leak() -> list[dict]:
+    """Probe /api/v1/mcp/funnel for tools with high paywall-signal volume
+    but near-zero conversions. Targeted at the leak the brain narrative
+    already flagged: get_market_intel had 1547 signals → 0 conversions.
+    Catches the same pattern across all tools.
+
+    Fires when: tool has >100 paywall signals in 7d AND <0.5% gate→paid
+    conversion AND the tool is gated above FREE. P0 finding."""
+    findings: list[dict] = []
+    try:
+        import requests as _req
+    except Exception:
+        return findings
+    try:
+        r = _req.get("https://dchub.cloud/api/v1/mcp/funnel",
+                     timeout=8,
+                     headers={"User-Agent": "dchub-brain-conversion-leak/1.0"})
+        if r.status_code != 200:
+            return findings
+        d = r.json() or {}
+    except Exception:
+        return findings
+
+    tools = d.get("top_tools") or d.get("tools") or []
+    if not tools:
+        return findings
+
+    for t in tools[:20]:
+        if not isinstance(t, dict): continue
+        signals = (t.get("paywall_signals_7d")
+                   or t.get("gated_7d") or t.get("signals_7d") or 0)
+        conv = (t.get("conversions_7d") or t.get("paid_7d") or 0)
+        name = t.get("tool") or t.get("name") or "?"
+        if signals < 100:
+            continue
+        rate = (conv / signals * 100) if signals else 0
+        if rate >= 0.5:
+            continue
+        findings.append({
+            "issue":  "tool_signal_conversion_leak",
+            "url":    f"tool:{name}",
+            "count":  int(signals),
+            "detail": (
+                f"`{name}` got {signals} paywall signals in 7d but only "
+                f"{conv} conversions ({rate:.2f}% gate→paid). This is the "
+                f"same leak pattern brain narrative flagged for get_market_intel. "
+                f"Likely root cause: free tier returns enough data that "
+                f"users don't need to upgrade, OR the upgrade CTA doesn't "
+                f"convey concrete savings. Check (a) LIMITS[Tier.FREE].max_rows "
+                f"in mcp_gatekeeper.py, (b) _SAVINGS_CLAIMS for this tool, "
+                f"(c) whether transparent auto-trial is dispensing too many "
+                f"long-lived free keys."
+            ),
+        })
+    return findings
+
+
 def check_blueprint_registration_silent_failure() -> list[dict]:
     """Catch the recurring bug class where `from routes.X import X_bp` +
     `app.register_blueprint(X_bp)` lines run without raising, but the
@@ -4062,7 +4119,12 @@ def scan_all() -> list[dict]:
                # detector. Sweeps /pricing for empty price-amount spans,
                # __PLACEHOLDER__ literals, undefined/NaN near /year. Catches
                # the broken-Pro-Annual-rendering pattern the user spotted.
-               check_pricing_page_placeholder_content):
+               check_pricing_page_placeholder_content,
+               # Phase ZZZZ-conversion (2026-05-18) — tool-level paywall
+               # signal vs conversion leak. Closes the same gap the brain
+               # narrative flagged (1547 get_market_intel signals → 0
+               # conversions). Now any tool with that pattern auto-surfaces.
+               check_tool_signal_to_conversion_leak):
         detectors.append(fn)
 
     # Phase RRR-brain-parallel (2026-05-18) — scan was taking 76.9s

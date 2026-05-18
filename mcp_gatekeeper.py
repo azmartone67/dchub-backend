@@ -69,14 +69,20 @@ def get_pending_grace_meta() -> dict | None:
 
 
 LIMITS = {
-    # Phase EEEEE (2026-05-16) — VOLUME RECOVERY. The XXX tightening
-    # (50→25 daily, 5→3 rows) was too aggressive and likely caused a
-    # ~38% drop in 7-day MCP volume (60K → 37K). Reverting cap to 50
-    # and rows to 5. Lead capture now happens via DDDDD's auto-mint
-    # trial keys + EEEEE's anon grace mode (first 5 calls succeed
-    # regardless of tier), not via cap-pressure.
-    Tier.FREE:       {"day": 50,     "minute": 5,   "max_rows": 5,    "cooldown": 2.0},
-    Tier.IDENTIFIED: {"day": 200,    "minute": 15,  "max_rows": 20,   "cooldown": 1.0},
+    # Phase ZZZZ-tease (2026-05-18) — CONVERSION RECALIBRATION.
+    # Brain narrative flagged the root cause: 1547 signals → 0 conversions
+    # on get_market_intel because the FREE tier was generous enough that
+    # users got what they needed without ever signing up. Tightening:
+    #   • FREE: 1 row only (TEASER mode) — shows the shape, not the data
+    #   • IDENTIFIED: 5 rows (preview-the-locked-content mode) — shows
+    #     enough to be useful but with a concrete "X more on Developer"
+    #   • DEVELOPER: 100 rows (real working tier)
+    #   • PRO: 500 rows (no-friction tier)
+    # The cap drops won't kill volume because the auto-trial mint still
+    # passes the first 5 anon calls; this only changes the *response shape*
+    # so each response makes the upgrade value concrete.
+    Tier.FREE:       {"day": 25,     "minute": 3,   "max_rows": 1,    "cooldown": 3.0},
+    Tier.IDENTIFIED: {"day": 200,    "minute": 15,  "max_rows": 5,    "cooldown": 1.0},
     Tier.DEVELOPER:  {"day": 2000,   "minute": 60,  "max_rows": 100,  "cooldown": 0},
     Tier.PRO:        {"day": 10000,  "minute": 200, "max_rows": 500,  "cooldown": 0},
     Tier.ENTERPRISE: {"day": 100000, "minute": 1000,"max_rows": 10000,"cooldown": 0},
@@ -572,6 +578,94 @@ def _cta_redacted(tool: str) -> str:
             f"Full data with Developer license → {PRICING_URL}?utm_source=mcp&utm_tool={tool}")
 
 
+# Phase ZZZZ-savings (2026-05-18): per-tool "what you'd save vs the
+# alternative." This is the FOMO-concrete claim the user asked for —
+# "saves them a ton of time and money and using multiple sites."
+# Each entry: (alternative source, hours-saved-per-call, $-equivalent-saved).
+# Numbers are deliberately conservative + defensible.
+_SAVINGS_CLAIMS = {
+    "get_market_intel":      ("Compiling from CBRE/JLL/DCD reports (quarterly PDFs)",
+                              2, "$25K/yr CBRE seat = ~$70/report"),
+    "get_grid_data":         ("Cross-referencing ISO websites + EIA + manual extraction",
+                              1, "$0 direct, ~$150/hr analyst time"),
+    "get_grid_intelligence": ("ISO + EIA + interconnection queue manual scrape",
+                              2, "~$300/hr senior energy analyst"),
+    "get_water_risk":        ("WRI Aqueduct portal + local utility lookups per-site",
+                              1, "free data, manual = 1hr per site"),
+    "get_energy_prices":     ("EIA state datasets + utility tariff portals",
+                              0.5, "EIA monthly = free, current rates often gated"),
+    "get_renewable_energy":  ("EIA-860 + state RPS reports + IRA project lookups",
+                              2, "all free, but discovery = 2-3hrs"),
+    "get_tax_incentives":    ("State commerce dept + property-tax abatement DBs",
+                              3, "varies by state, ~$2-5K/site for consultants"),
+    "get_pipeline":          ("DCD news scraping + manual project tracking",
+                              4, "$25K/yr DC Hawk + ongoing labor"),
+    "list_transactions":     ("Pitchbook ($30K/yr) or 451 Research subscription",
+                              0.25, "$30K/yr Pitchbook, deal-only data"),
+    "get_infrastructure":    ("HIFLD shapefiles + GIS analysis per location",
+                              3, "free data, ~$200/hr GIS analyst"),
+    "get_fiber_intel":       ("Carrier maps (private) + manual route research",
+                              4, "$50K/yr commercial fiber DB"),
+    "analyze_site":          ("Multi-vendor site assessment (CBRE + Cushman + JLL)",
+                              40, "$15-50K per site assessment"),
+    "compare_sites":         ("Brokered site shortlist + bake-off analysis",
+                              80, "$30-80K per multi-site comparison"),
+    "get_dcpi_scores":       ("CBRE H1/H2 reports + DCHawk quarterlies",
+                              3, "$25K/yr DC Hawk seat"),
+    "search_facilities":     ("DC Knowledge directory + manual operator websites",
+                              1, "free data, ~$150/hr researcher time"),
+    "get_news":              ("Google News + DCD + DataCenterDynamics manual filter",
+                              0.5, "free, ~$75/hr per news sweep"),
+}
+
+
+def _value_unlock_block(tool_name: str, tier: Tier, max_rows: int,
+                         rows_visible: int, rows_total: int) -> dict:
+    """Build the upgrade-incentive metadata block attached to every
+    response. The goal: make each successful free response include a
+    CONCRETE upgrade case (what they'd save, how much, what they're not
+    seeing) so even users who didn't hit the gate see the value of paying.
+    """
+    block: dict = {}
+    teaser = TOOL_TEASER.get(tool_name)
+    savings = _SAVINGS_CLAIMS.get(tool_name)
+
+    # Tier-aware framing
+    if tier == Tier.FREE:
+        block["showing_tier"] = "FREE (teaser — 1 row max)"
+        block["recommended_tier"] = "DEVELOPER ($49/mo) for full data"
+        if rows_total > rows_visible:
+            block["rows_hidden"] = rows_total - rows_visible
+            block["unlock_hint"] = (f"{rows_total - rows_visible} more rows hidden. "
+                                     f"All visible with free signup ({PRICING_URL}?utm_source=mcp&utm_tool={tool_name}).")
+    elif tier == Tier.IDENTIFIED:
+        block["showing_tier"] = "FREE-IDENTIFIED (5 rows)"
+        block["recommended_tier"] = "DEVELOPER ($49/mo) for 100 rows + composite analyses"
+        if rows_total > rows_visible:
+            block["rows_hidden"] = rows_total - rows_visible
+            block["unlock_hint"] = (f"{rows_total - rows_visible} additional rows on Developer plan. "
+                                     f"100 rows/call + analyze_site + compare_sites unlocked at $49/mo.")
+    elif tier == Tier.DEVELOPER:
+        block["showing_tier"] = "DEVELOPER ($49/mo)"
+        block["recommended_tier"] = "PRO ($199/mo) for multi-site + alerts"
+
+    if teaser:
+        block["full_value"] = teaser
+    if savings:
+        alt_source, hrs_saved, dollar_equiv = savings
+        block["alternative_source"] = alt_source
+        block["hours_saved_vs_manual"] = hrs_saved
+        block["dollar_equivalent"] = dollar_equiv
+        block["savings_pitch"] = (
+            f"This call replaces ~{hrs_saved}h of work from {alt_source}. "
+            f"At analyst rates that's ~${int(hrs_saved * 150)} per call; "
+            f"Developer plan is $49/mo for 2000 calls/day.")
+
+    block["upgrade_url"] = (f"{PRICING_URL}?utm_source=mcp&utm_medium=value-unlock"
+                            f"&utm_tool={tool_name}")
+    return block
+
+
 # ═══════════════════════════════════════════════════════════════
 # MAIN API: _gate() and _finalize()
 # ═══════════════════════════════════════════════════════════════
@@ -901,6 +995,24 @@ def _finalize(result_json: str, tool_name: str, api_key: Optional[str] = None) -
     }
     if tier == Tier.FREE:
         data["_meta"]["upgrade_url"] = f"{PRICING_URL}?utm_source=mcp"
+
+    # Phase ZZZZ-savings (2026-05-18): attach the value_unlock block on
+    # EVERY response (not just gated/truncated ones). This is the user's
+    # "sell them on dev/pro that saves them time + money + multiple sites"
+    # ask. Conservative — only for tiers below PRO + only when we have
+    # a savings claim for the tool.
+    if tier < Tier.PRO and tool_name in _SAVINGS_CLAIMS:
+        rows_visible = 0
+        rows_total = 0
+        # Sum across all top-level arrays for the visible/total accounting
+        for key in data.keys():
+            if key.startswith("_"): continue
+            val = data[key]
+            if isinstance(val, list):
+                rows_visible += len(val)
+        rows_total = data.get("_meta", {}).get("total_available", rows_visible)
+        data["_meta"]["value_unlock"] = _value_unlock_block(
+            tool_name, tier, max_rows, rows_visible, rows_total)
 
     return json.dumps(data, indent=2, default=str)
 

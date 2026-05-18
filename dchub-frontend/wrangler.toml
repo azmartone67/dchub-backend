@@ -1,0 +1,26 @@
+# DC Hub frontend — Cloudflare Pages deploy config.
+# Phase ZZZZ-cfdeploy (2026-05-18): added so backend pushes can carry
+# frontend changes (_worker.js, _routes.json, *.html) up to CF Pages
+# in one step. Production worker has been stuck at 4.8.3 while the
+# repo carries 4.18.0+; this fixes the deploy gap brain has been
+# flagging via worker_version_drift.
+#
+# One-time setup (do once on the dev machine):
+#   1. wrangler login            (browser flow — authenticates this machine)
+#   2. wrangler pages project list   (verify the project name below matches)
+#
+# Then to deploy from this repo:
+#   cd dchub-backend/dchub-frontend
+#   wrangler pages deploy . --project-name=dchub-cloud --branch=main
+#
+# Or wire into a GitHub Action that runs on push to main (see
+# .github/workflows/deploy-frontend.yml).
+
+name = "dchub-cloud"
+compatibility_date = "2026-05-18"
+pages_build_output_dir = "."
+
+# The worker_version_drift detector compares this to runtime.
+# Update each meaningful deploy.
+[vars]
+WORKER_VERSION_NOTE = "version is set inside _worker.js (const WORKER_VERSION)"
