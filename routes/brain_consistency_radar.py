@@ -3466,6 +3466,13 @@ _CRON_INTENTIONAL_MANUAL: set[str] = {
     # should be on the active variant, not the read variant.
     "/api/v1/sentinel/scan",             # read-only (see /sentinel/scan-now)
     "/api/v1/news/sync",                 # one-shot manual sync (uses /api/jobs/news-refresh for cron)
+    # Phase RRR-cron-batch-2 (2026-05-18) — final 4 unschedulables
+    # that are intentionally not cron-driven. Each has a documented
+    # reason; the brain shouldn't keep flagging them.
+    "/api/jobs/db-backup",               # the existing 'backup' cron handles backups; this endpoint is a manual variant
+    "/api/jobs/sync-all-tables",         # too heavy for cron — invoked manually for one-time data ops
+    "/api/v1/heal/run",                  # requires ?action=<name> param; not cron-compatible without choosing the action
+    "/api/v1/packages/refresh",          # already wired as a daemon Thread via start_package_stats_refresher
 }
 
 

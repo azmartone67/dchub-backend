@@ -435,6 +435,140 @@ DISABLED_JOBS = {
         'minute': 0,
         'timeout': 300,
     },
+    # ─── Phase RRR-cron-batch-2 (2026-05-18) — 11 more from the 18
+    # remaining unscheduled. Conservative cadences + heavy staggering
+    # to keep pool pressure low. Skipped: /api/jobs/heal/run (needs
+    # per-action parameter), /api/jobs/sync-all-tables (too heavy),
+    # /api/jobs/db-backup (existing backup cron handles it),
+    # /api/v1/packages/refresh (already wired as a thread).
+
+    # ── Neon pool health: very lightweight (in-memory only), every 15min ──
+    'neon_health': {
+        'name': 'Neon Pool Health Probe',
+        'endpoint': '/api/jobs/neon-health',
+        'method': 'POST',
+        'hours': list(range(24)),
+        'minute': 7,                       # every hour at :07
+        'timeout': 30,
+    },
+    # ── Health probe: deeper than neon_health, every 30min on the half ──
+    'health_probe': {
+        'name': 'Deep Health Probe',
+        'endpoint': '/api/jobs/health-probe',
+        'method': 'POST',
+        'hours': list(range(24)),
+        'minute': 37,                      # every hour at :37
+        'timeout': 60,
+    },
+
+    # ── Job posting aggregator (5 endpoints) — daily, heavily staggered ──
+    'jobs_trends': {
+        'name': 'Job Postings — Trends',
+        'endpoint': '/api/jobs/trends',
+        'method': 'POST',
+        'hours': [4],
+        'minute': 0,
+        'timeout': 300,
+    },
+    'jobs_expansion_signals': {
+        'name': 'Job Postings — Expansion Signals',
+        'endpoint': '/api/jobs/expansion-signals',
+        'method': 'POST',
+        'hours': [4],
+        'minute': 15,
+        'timeout': 300,
+    },
+    'jobs_skills': {
+        'name': 'Job Postings — Skills Index',
+        'endpoint': '/api/jobs/skills',
+        'method': 'POST',
+        'hours': [4],
+        'minute': 30,
+        'timeout': 300,
+    },
+    'jobs_market_heat': {
+        'name': 'Job Postings — Market Heat',
+        'endpoint': '/api/jobs/market-heat',
+        'method': 'POST',
+        'hours': [4],
+        'minute': 45,
+        'timeout': 300,
+    },
+    'jobs_summary': {
+        'name': 'Job Postings — Summary Roll-up',
+        'endpoint': '/api/jobs/summary',
+        'method': 'POST',
+        'hours': [5],
+        'minute': 0,
+        'timeout': 300,
+    },
+
+    # ── Network/IX sync (4 endpoints) — weekly Tuesday 03:00+, staggered ──
+    'network_sync': {
+        'name': 'Network — Full Sync',
+        'endpoint': '/api/jobs/network-sync',
+        'method': 'POST',
+        'hours': [3],
+        'minute': 0,
+        'day_of_week': 1,                  # Tuesday
+        'timeout': 1800,
+    },
+    'ix_sync': {
+        'name': 'IX — Peering Sync',
+        'endpoint': '/api/jobs/ix-sync',
+        'method': 'POST',
+        'hours': [3],
+        'minute': 20,
+        'day_of_week': 1,                  # Tuesday
+        'timeout': 1800,
+    },
+    'campus_sync': {
+        'name': 'Campus Layout Sync',
+        'endpoint': '/api/jobs/campus-sync',
+        'method': 'POST',
+        'hours': [3],
+        'minute': 40,
+        'day_of_week': 1,                  # Tuesday
+        'timeout': 1800,
+    },
+    'peeringdb_full_sync': {
+        'name': 'PeeringDB — Full Sync',
+        'endpoint': '/api/jobs/peeringdb-full-sync',
+        'method': 'POST',
+        'hours': [4],
+        'minute': 0,
+        'day_of_week': 1,                  # Tuesday
+        'timeout': 3600,
+    },
+
+    # ── Fiber/subsea sync (3 endpoints) — weekly Wednesday 03:00+, staggered ──
+    'fiber_full_sync': {
+        'name': 'Fiber — Full Sync',
+        'endpoint': '/api/jobs/fiber-full-sync',
+        'method': 'POST',
+        'hours': [3],
+        'minute': 0,
+        'day_of_week': 2,                  # Wednesday
+        'timeout': 3600,
+    },
+    'subsea_sync': {
+        'name': 'Subsea Cables — Sync',
+        'endpoint': '/api/jobs/subsea-sync',
+        'method': 'POST',
+        'hours': [3],
+        'minute': 30,
+        'day_of_week': 2,                  # Wednesday
+        'timeout': 1800,
+    },
+    'carrier_sync': {
+        'name': 'Carrier — Sync',
+        'endpoint': '/api/jobs/carrier-sync',
+        'method': 'POST',
+        'hours': [4],
+        'minute': 0,
+        'day_of_week': 2,                  # Wednesday
+        'timeout': 1800,
+    },
 }
 
 # ============================================================
