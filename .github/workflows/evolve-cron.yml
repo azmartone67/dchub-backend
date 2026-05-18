@@ -105,13 +105,20 @@ on:
     # because this cron was never scheduled (Phase FFFFF shipped the
     # endpoint but not the cron). Phase KK detector flags backlogs >5.
     - cron: '50 */4 * * *'
+    # Phase KKK (2026-05-17) — daily pip + npm install-count snapshot.
+    # Fires 06:00 UTC (after midnight rollover in UTC, before US-EST
+    # business hours so the homepage widget shows fresh numbers when
+    # most visitors land). Pulls pypistats.org + api.npmjs.org and
+    # writes one row per (ecosystem, package, date). Brain detector
+    # check_package_install_velocity_drop reads the result.
+    - cron: '0 6 * * *'
   workflow_dispatch:
     inputs:
       phase:
         description: 'Which phase to run on demand'
         required: true
         type: choice
-        options: [all, brain, outreach, audit, marketing, linkedin, testimonials, agent_vendor, weekly_digest, market_alerts, freshness_radar, brain_probe_outcomes, weekly_media_digest, marketing_rescue, marketing_publish_now, hot_leads_preview, hot_leads_send_top_5, hot_leads_send_top_50, free_users_dryrun, free_users_send, energy_verify, testimonial_probe, ai_citations_probe, autopilot_verify]
+        options: [all, brain, outreach, audit, marketing, linkedin, testimonials, agent_vendor, weekly_digest, market_alerts, freshness_radar, brain_probe_outcomes, weekly_media_digest, marketing_rescue, marketing_publish_now, hot_leads_preview, hot_leads_send_top_5, hot_leads_send_top_50, free_users_dryrun, free_users_send, energy_verify, testimonial_probe, ai_citations_probe, autopilot_verify, packages_refresh]
         default: all
       dry_run:
         description: 'Dry-run (preview audience + body, do NOT send emails) — DEFAULT TRUE for manual dispatch'
@@ -963,4 +970,38 @@ jobs:
               print(f\"::notice::Autopilot verifier processed={d.get('processed',0)} verified={d.get('verified',0)} still_pending={d.get('still_pending',0)}\")
           else:
               print(f\"::warning::Autopilot verifier failed: {d.get('error','?')}\")
+          " || true
+
+  packages_refresh:
+    # Phase KKK (2026-05-17) — daily pip + npm install-count snapshot.
+    # Fires 06:00 UTC. Pulls pypistats.org + api.npmjs.org for each
+    # registered package, INSERTs one row per (ecosystem, name, date).
+    # Brain detector check_package_install_velocity_drop reads the
+    # rolling 7d window to flag WoW drops.
+    if: github.event.schedule == '0 6 * * *' || (github.event_name == 'workflow_dispatch' && inputs.phase == 'packages_refresh')
+    runs-on: ubuntu-latest
+    timeout-minutes: 4
+    steps:
+      - name: Refresh package install counts
+        env:
+          ADMIN_KEY: ${{ secrets.DCHUB_ADMIN_KEY }}
+        run: |
+          if [ -z "$ADMIN_KEY" ]; then
+            echo "::error::DCHUB_ADMIN_KEY secret not set"; exit 1; fi
+          response=$(curl -sS --max-time 90 -X POST \
+            -H "X-Admin-Key: $ADMIN_KEY" \
+            "https://dchub-backend-production.up.railway.app/api/v1/packages/refresh" \
+            || echo '{"ok":false,"error":"curl_fail"}')
+          echo "$response" | head -c 2000
+          echo
+          echo "$response" | python3 -c "
+          import json, sys
+          d = json.load(sys.stdin)
+          pkgs = d.get('packages', [])
+          errs = d.get('errors', [])
+          if pkgs:
+              total = sum((p.get('downloads_7d') or 0) for p in pkgs)
+              print(f\"::notice::Refreshed {len(pkgs)} package(s), {total} total 7d installs, {len(errs)} errors\")
+          else:
+              print(f\"::warning::No packages refreshed; errors={errs}\")
           " || true
