@@ -75,7 +75,7 @@
 // CONFIGURATION
 // ============================================================
 const RAILWAY_BACKEND = 'https://dchub-backend-production.up.railway.app';
-const WORKER_VERSION = '4.21.0-vs-industry-fix';
+const WORKER_VERSION = '4.22.0-publish-timeout';
 const _DCHUB_BUILD_MARKER = 'rebuild-1777448239';
 
 const MCP_CACHE_STALE_TTL = 86400;
@@ -157,6 +157,20 @@ const ROUTE_TIMEOUTS = {
   '/api/reports/': 30_000, '/api/facilities/refresh': 30_000,
   '/api/transactions/refresh': 30_000,
   '/mcp': 45_000, '/api/v1/ai-wars/': 90_000,
+  // Phase ZZZZ-publish-timeout (2026-05-18): publish-now drains 5 posts
+  // per call, each post = 1 LinkedIn POST + 1 Twitter POST. Conservative
+  // 90s budget to clear backlogs in single calls.
+  '/api/v1/marketing/publish-now': 90_000,
+  '/api/v1/marketing/': 60_000,
+  // Brain narrative calls Claude — 30s typical, 60s safety.
+  '/api/v1/brain/narrative': 60_000,
+  '/api/v1/brain/': 30_000,
+  // Industry pulse compute is the 15-query roll-up
+  '/api/v1/industry/pulse/refresh': 60_000,
+  // CF inspector calls 4 CF APIs sequentially
+  '/api/v1/cf/': 30_000,
+  // Heartbeat auto-drain processes 250 surfaces
+  '/api/v1/heartbeat/auto': 90_000,
   'DEFAULT': 15_000,
 };
 
