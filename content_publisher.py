@@ -29,14 +29,32 @@ content_bp = Blueprint('content_publisher', __name__)
 DB_PATH = 'dc_nexus.db'
 
 def _get_db(retries=3):
-    """Get SQLite connection with retry logic for lock contention on large DB."""
+    """Phase RRR-content-publisher-neon (2026-05-18) — MIGRATED from
+    sqlite3 to psycopg2/Neon. The SQL queries in this module already
+    use %s placeholders (PG style), so they work as-is once the
+    connection is PG. On Railway, dc_nexus.db doesn't exist — the old
+    sqlite3.connect() was hanging in 30s timeouts and broke 8
+    downstream blueprints. Falls back to SQLite ONLY if no Neon URL
+    is set (local-dev shim)."""
     last_error = None
+    neon_url = os.environ.get("NEON_DATABASE_URL") or os.environ.get("DATABASE_URL", "")
+    if neon_url:
+        try:
+            import psycopg2
+            import psycopg2.extras
+            # Use RealDictCursor so cur.fetchone() returns dict (the
+            # auto-publish loops reference row['id'], row['content'])
+            conn = psycopg2.connect(neon_url, connect_timeout=10,
+                                    cursor_factory=psycopg2.extras.RealDictCursor)
+            return conn
+        except Exception as e:
+            logger.warning(f"Neon connect failed, falling back to sqlite: {e}")
+            last_error = e
+    # Local dev only: SQLite fallback. On Railway this will fail because
+    # dc_nexus.db doesn't exist + sqlite3.connect with timeout hangs.
     for attempt in range(retries):
         try:
-            conn = sqlite3.connect(DB_PATH, timeout=30)
-            # sqlite3.Row removed - PostgreSQL uses RealDictCursor or dict(row)
-            # PRAGMA removed - not needed for PostgreSQL
-            # PRAGMA removed - not needed for PostgreSQL
+            conn = sqlite3.connect(DB_PATH, timeout=10)
             return conn
         except (sqlite3.OperationalError, sqlite3.DatabaseError) as e:
             last_error = e
@@ -53,27 +71,55 @@ def _check_admin(req):
     return admin_key in valid_keys
 
 def init_content_tables():
+    """Phase RRR-content-publisher-neon (2026-05-18) — Neon-compatible
+    table bootstrap. Creates social_media_posts if missing, then adds
+    any missing columns. press_releases is already managed elsewhere
+    (routes/press_queue.py etc.) so we leave it alone."""
     conn = _get_db()
     cur = conn.cursor()
-    for col, default in [('approved_at', None), ('publish_platform', None)]:
-        for table in ['social_media_posts', 'press_releases']:
-            try:
-                cur.execute(f"ALTER TABLE {table} ADD COLUMN {col} TEXT")
-                logger.info(f"Added {col} to {table}")
-            except sqlite3.OperationalError:
-                pass
-    for table in ['social_media_posts', 'press_releases']:
+    try:
+        # social_media_posts — needed by auto-publish loops
         try:
-            cur.execute(f"SELECT published_at FROM {table} LIMIT 1")
-        except sqlite3.OperationalError:
+            cur.execute("""
+                CREATE TABLE IF NOT EXISTS social_media_posts (
+                    id              SERIAL PRIMARY KEY,
+                    content         TEXT NOT NULL,
+                    platform        TEXT,
+                    status          TEXT NOT NULL DEFAULT 'draft',
+                    created_at      TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+                    approved_at     TEXT,
+                    posted_at       TEXT,
+                    published_at    TEXT,
+                    publish_platform TEXT,
+                    bluesky_uri     TEXT,
+                    twitter_id      TEXT,
+                    linkedin_urn    TEXT
+                )
+            """)
+            try: conn.commit()
+            except Exception: pass
+        except Exception as e:
+            logger.warning(f"social_media_posts CREATE skipped: {e}")
+        # Add missing columns idempotently (cheap on PG with IF NOT EXISTS)
+        for col_def in [
+            "approved_at TEXT",
+            "publish_platform TEXT",
+            "published_at TEXT",
+            "bluesky_uri TEXT",
+            "twitter_id TEXT",
+            "linkedin_urn TEXT",
+        ]:
+            col = col_def.split()[0]
             try:
-                cur.execute(f"ALTER TABLE {table} ADD COLUMN published_at TEXT")
-                logger.info(f"Added published_at to {table}")
-            except sqlite3.OperationalError:
+                cur.execute(f"ALTER TABLE social_media_posts ADD COLUMN IF NOT EXISTS {col_def}")
+                try: conn.commit()
+                except Exception: pass
+            except Exception:
                 pass
-    conn.commit()
-    conn.close()
-    logger.info("Content publishing tables initialized")
+        logger.info("Content publishing tables initialized (Neon)")
+    finally:
+        try: conn.close()
+        except Exception: pass
 
 @content_bp.route('/api/admin/content/stats', methods=['GET'])
 def content_stats():
