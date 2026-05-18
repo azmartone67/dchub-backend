@@ -489,20 +489,41 @@ def _classify_commit(subject: str) -> dict | None:
 @competitor_intel_bp.route("/api/v1/competitive/ship-wins", methods=["GET"])
 def ship_wins_endpoint():
     """Walk recent git commits, identify shipments that map to
-    competitive differentiators, draft post-ready text per win."""
-    import subprocess
+    competitive differentiators, draft post-ready text per win.
+
+    Phase RRR-brain-wins-fix (2026-05-18): Railway image doesn't ship
+    the `git` binary, so subprocess.run(['git', 'log']) fails. Use
+    GitHub's REST API instead — no auth needed for public repos."""
+    import requests as _req
+    import datetime as _dt
     days = int(request.args.get("days", "7"))
+    since = (_dt.datetime.utcnow() - _dt.timedelta(days=days)).strftime("%Y-%m-%dT%H:%M:%SZ")
+    repo = os.environ.get("DCHUB_GITHUB_REPO", "azmartone67/dchub-backend")
     try:
-        # Read git log from /app (Railway working dir) or fallback to cwd
-        result = subprocess.run(
-            ["git", "log", f"--since={days} days ago",
-             "--pretty=format:%h|%s|%ai"],
-            capture_output=True, text=True, timeout=10,
-            cwd="/app" if os.path.isdir("/app/.git") else None,
-        )
-        lines = (result.stdout or "").strip().split("\n") if result.stdout else []
+        gh_url = f"https://api.github.com/repos/{repo}/commits?since={since}&per_page=100"
+        gh_headers = {"User-Agent": "DCHub-ShipWins/1.0",
+                      "Accept": "application/vnd.github+json"}
+        # Optional auth lifts rate limit 60→5000/hour
+        token = os.environ.get("GITHUB_TOKEN") or os.environ.get("BACKEND_PAT")
+        if token:
+            gh_headers["Authorization"] = f"Bearer {token}"
+        r = _req.get(gh_url, headers=gh_headers, timeout=10)
+        if r.status_code != 200:
+            return jsonify(ok=False,
+                           error=f"github api: HTTP {r.status_code} {r.text[:80]}"), 503
+        commits = r.json() or []
     except Exception as e:
-        return jsonify(ok=False, error=f"git log failed: {str(e)[:120]}"), 503
+        return jsonify(ok=False, error=f"github fetch failed: {str(e)[:120]}"), 503
+
+    # Normalize to (sha, subject, when) tuples
+    lines = []
+    for c in commits:
+        sha = (c.get("sha") or "")[:7]
+        # subject is first line of commit message
+        subject = (c.get("commit") or {}).get("message", "").split("\n")[0]
+        when = (c.get("commit") or {}).get("author", {}).get("date", "")
+        if sha and subject:
+            lines.append(f"{sha}|{subject}|{when}")
 
     wins = []
     seen_keywords = set()
