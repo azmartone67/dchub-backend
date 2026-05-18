@@ -35,6 +35,13 @@ jobs:
     steps:
       - uses: actions/checkout@v4
 
+      # GitHub-hosted ubuntu-latest pins Node 20; wrangler@4 needs >=22.
+      # Without this step v3 fix logs were misleading ("token missing
+      # permission" was the secondary symptom, not the root cause).
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '22'
+
       - name: 0 — Secrets sanity check
         run: |
           echo "API_TOKEN set:  $([ -n \"$CLOUDFLARE_API_TOKEN\" ] && echo YES || echo NO)"
