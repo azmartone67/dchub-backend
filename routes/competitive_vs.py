@@ -306,6 +306,6 @@ JSON: <a href="/api/v1/competitive/vs/{data['slug']}" style="color:#a855f7">/api
                     headers={"Cache-Control": "public, max-age=3600"})
 
 
-@competitive_vs_bp.route("/vs", methods=["GET"])
-def vs_index():
-    return vs_page("__none__")  # triggers the 404-fallback index render
+# /vs index handler moved to routes/quick_redirects.py — that file
+# 301-redirects to /vs/dchawk (a real working competitor page) instead
+# of returning the 404-styled index. Cleaner UX.
