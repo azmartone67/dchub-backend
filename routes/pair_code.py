@@ -478,6 +478,165 @@ def redeem_landing(code):
         except Exception: pass
 
 
+# ---------------------------------------------------------------------------
+# Phase FF+7 (2026-05-19) — close the paywall → click → redeem funnel.
+#
+# L14 (Causal Reasoner) found the actual conversion-leak root cause: the
+# MCP paywall response was returning `upgrade_url: "https://dchub.cloud/
+# pricing"` — a generic pricing page with NO pair-code, so users had no
+# 1-click path back to the specific tool that paywalled them. Redeem
+# funnel data confirmed: 15,420 paywall_hits / 30d → 1 click. The leak
+# is RIGHT HERE at paywall_hit → click.
+#
+# Two new entry-points:
+#   GET  /upgrade?key=<>&tool=<>&market=<>   — anyone landing here gets
+#                                              a pair-code minted and is
+#                                              302'd to /redeem/<code>.
+#                                              For URL-in-paywall use.
+#   POST /api/v1/mcp/paywall-response         — single backend call that
+#                                              MCP server can use to get
+#                                              a complete paywall payload
+#                                              (mints code, records signal,
+#                                              returns redeem_url + status
+#                                              poll URL). One-trip.
+# ---------------------------------------------------------------------------
+
+@pair_code_bp.get("/upgrade")
+def upgrade_redirect():
+    """Smart-redirect entry point. Mint a pair-code for the caller and
+       302 to /redeem/<code>. Falls back to /pricing on any error.
+
+       Query params:
+         key    — caller's api_key (also accepted as X-API-Key header)
+         tool   — tool name that triggered the paywall (for context on
+                  the redeem page)
+         market — market name (optional, for context)
+         agent  — referring AI agent name (e.g. claude-desktop, cursor)
+    """
+    from flask import redirect
+    api_key = (request.headers.get("X-API-Key")
+               or request.args.get("key")
+               or request.args.get("api_key") or "")
+    tool = request.args.get("tool") or request.args.get("tool_name")
+    market = request.args.get("market")
+    agent = request.args.get("agent") or request.args.get("referring_agent")
+
+    # Without an api_key we can't mint a code; bounce to /pricing with
+    # attribution so we still capture funnel-source even when we can't
+    # close the loop.
+    if not api_key:
+        utm = f"?utm_source=mcp_upgrade&utm_medium=paywall"
+        if tool: utm += f"&utm_content={tool}"
+        return redirect(f"https://dchub.cloud/pricing{utm}", code=302)
+
+    result = get_or_create_code(api_key, tool_name=tool, market=market,
+                                referring_agent=agent)
+    if not result or not result.get("code"):
+        # Mint failed — still send to /pricing with attribution rather
+        # than blackholing the user.
+        return redirect(f"https://dchub.cloud/pricing"
+                        f"?utm_source=mcp_upgrade&utm_medium=paywall_mint_fail"
+                        f"&utm_content={tool or 'unknown'}", code=302)
+    return redirect(f"https://dchub.cloud/redeem/{result['code']}", code=302)
+
+
+@pair_code_bp.post("/api/v1/mcp/paywall-response")
+def paywall_response():
+    """One-call paywall response for MCP servers. Mints a pair-code,
+       records an upgrade_signal row, returns a structured payload
+       the MCP server can ship to the agent verbatim.
+
+       Body (JSON) or query params:
+         api_key (required) — caller key (also accepted as X-API-Key)
+         tool (required)    — tool that hit the paywall
+         market (optional)  — market context for the redeem page
+         agent (optional)   — referring AI agent name
+         reason (optional)  — short reason string for the agent ("Paid
+                              tier required for full result set")
+
+       Returns:
+         {
+           ok: true,
+           reason: "...",
+           pair_code: "DCM-4F7K",
+           redeem_url: "https://dchub.cloud/redeem/DCM-4F7K",
+           upgrade_url: "https://dchub.cloud/upgrade?key=...&tool=...",
+           status_poll_url: "https://dchub.cloud/api/v1/mcp/pair-code/<code>/status",
+           expires_at: "...",
+           message_to_agent: "Tell the human to visit ..." (suggested)
+         }
+
+       The MCP server can use either redeem_url (direct deep-link) or
+       upgrade_url (generic, lets us re-mint if the user comes back later).
+    """
+    body = request.get_json(silent=True) or {}
+    api_key = (request.headers.get("X-API-Key")
+               or body.get("api_key") or request.args.get("api_key") or "")
+    tool = body.get("tool") or body.get("tool_name") or request.args.get("tool")
+    market = body.get("market") or request.args.get("market")
+    agent = body.get("agent") or request.args.get("agent")
+    reason = body.get("reason") or "Paid tier required for full result set"
+
+    if not api_key:
+        return jsonify(ok=False, error="api_key_required",
+                       hint="POST with X-API-Key header or body.api_key"), 400
+    if not tool:
+        return jsonify(ok=False, error="tool_required",
+                       hint="Pass body.tool — the tool that hit the paywall"), 400
+
+    result = get_or_create_code(api_key, tool_name=tool, market=market,
+                                referring_agent=agent)
+    if not result or not result.get("code"):
+        return jsonify(ok=False, error="mint_failed",
+                       fallback_url="https://dchub.cloud/pricing"), 503
+
+    code = result["code"]
+    # Record paywall_hit upgrade_signal — this is what
+    # check_tool_signal_to_conversion_leak watches. Without an explicit
+    # row here, the only signals come from the MCP server side, which
+    # may not be writing them. Writing from the paywall-response
+    # endpoint guarantees per-tool signal counters stay accurate.
+    c = _conn()
+    if c is not None:
+        try:
+            with c.cursor() as cur:
+                cur.execute("""
+                    INSERT INTO mcp_upgrade_signals
+                        (signal_type, tool_requested, mcp_client,
+                         message_shown, created_at)
+                    VALUES ('paywall_hit', %s, %s, %s, NOW())
+                """, (tool, (agent or "unknown")[:200],
+                      f"paywall_hit: code={code}"[:300]))
+            c.commit()
+        except Exception:
+            try: c.rollback()
+            except Exception: pass
+        try: c.close()
+        except Exception: pass
+
+    upgrade_url = (f"https://dchub.cloud/upgrade?key={api_key}"
+                   f"&tool={tool}")
+    if market: upgrade_url += f"&market={market}"
+    if agent:  upgrade_url += f"&agent={agent}"
+
+    return jsonify(
+        ok=True,
+        reason=reason,
+        pair_code=code,
+        redeem_url=result["redeem_url"],
+        upgrade_url=upgrade_url,
+        status_poll_url=f"https://dchub.cloud/api/v1/mcp/pair-code/{code}/status",
+        expires_at=result.get("expires_at"),
+        message_to_agent=(
+            f"This tool requires the Developer tier. Tell the human "
+            f"to visit {result['redeem_url']} to upgrade (one click, "
+            f"30-min code). I'll poll status and unlock as soon as they "
+            f"complete checkout."
+        ),
+        reused=result.get("reused", False),
+    ), 200
+
+
 @pair_code_bp.post("/api/v1/mcp/pair-code/<code>/clicked")
 def pair_code_clicked(code):
     """Called by the redeem page JS when the user clicks the Stripe

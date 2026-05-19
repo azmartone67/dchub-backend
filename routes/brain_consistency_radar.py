@@ -431,6 +431,53 @@ def check_cron_coverage() -> list[dict]:
 
 # ── public API ─────────────────────────────────────────────────────
 
+def check_paywall_click_leak() -> list[dict]:
+    """Phase FF+7 (2026-05-19) — flag the conversion leak L14 identified
+    as the real root cause of the funnel collapse: paywall_hit → click
+    drop-off >99% means the upgrade_url either isn't reaching users or
+    is pointing somewhere users can't act on.
+
+    Pulls /api/v1/redeem/funnel-stats. If paywall_hit > 500 (significant
+    volume) and click/paywall_hit < 0.5%, fire — this is the leak.
+    """
+    findings: list[dict] = []
+    body, _ = _http_get("http://localhost:8080/api/v1/redeem/funnel-stats",
+                        timeout=5)
+    if not body:
+        return findings
+    try:
+        import json as _json
+        d = _json.loads(body) if isinstance(body, str) else body
+    except Exception:
+        return findings
+    fc = d.get("funnel_counts") or {}
+    paywall = int(fc.get("paywall_hit") or 0)
+    click = int(fc.get("click") or 0)
+    upgrade = int(fc.get("upgrade") or 0)
+    if paywall < 500:
+        return findings
+    click_rate = (click / paywall) if paywall else 0.0
+    if click_rate >= 0.005:
+        return findings
+    findings.append({
+        "issue": "paywall_click_leak_critical",
+        "url": "/api/v1/redeem/funnel-stats",
+        "count": 1,
+        "detail": (f"paywall_hit={paywall:,} but click={click} "
+                   f"(rate={click_rate:.4%}). The upgrade_url in the "
+                   f"paywall response either isn't reaching users or "
+                   f"isn't actionable. Verify the MCP server is emitting "
+                   f"/upgrade?key=... (Phase FF+7) instead of bare "
+                   f"/pricing. Mint endpoint: POST /api/v1/mcp/paywall-"
+                   f"response. Total upgrade=={upgrade} likely came "
+                   f"from non-paywall channels."),
+        "paywall_hits_30d": paywall,
+        "clicks_30d": click,
+        "click_rate_pct": round(click_rate * 100, 4),
+    })
+    return findings
+
+
 def check_cron_if_mismatched() -> list[dict]:
     """Phase FF+7 (2026-05-19) — catch the bug class L14 surfaced:
     a job's `if: github.event.schedule == 'CRON_STRING'` references a
@@ -4488,6 +4535,12 @@ def scan_all() -> list[dict]:
                # fires (silent collision — job never runs from cron).
                # Found 5 instances on first run.
                check_cron_if_mismatched,
+               # Phase FF+7 (2026-05-19) — paywall_hit -> click drop-off
+               # detector. L14 identified this as the actual conversion-
+               # crisis root cause (15K paywall hits / 1 click in 30d).
+               # Watches /redeem/funnel-stats; fires if rate < 0.5% on
+               # >500 paywall hits. Recovery target: 5%+ click-through.
+               check_paywall_click_leak,
                check_csp_drift,
                check_dcpi_partial_recompute,
                check_discovery_stalled,

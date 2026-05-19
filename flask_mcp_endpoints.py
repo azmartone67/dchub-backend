@@ -370,7 +370,12 @@ def claim_key():
             "endpoint is rate-limited to 1 key per IP per 24h. To lift that limit, "
             "verify an email at /api/v1/dev-signup later."
         ),
-        upgrade_url="https://dchub.cloud/pricing",
+        # Phase FF+7 (2026-05-19): point at /upgrade entry-point instead
+        # of bare /pricing. /upgrade mints a pair-code on demand and 302s
+        # to /redeem/<code> for proper funnel attribution. L14 (Causal
+        # Reasoner) identified the bare /pricing redirect as the root
+        # cause of paywall_hit→click=0.01% drop-off.
+        upgrade_url=f"https://dchub.cloud/upgrade?key={api_key}",
     ), 200
 
 
@@ -753,7 +758,8 @@ def dev_signup():
                     "is_new":      False,
                     "header":      "X-API-Key",
                     "docs":        "https://dchub.cloud/ai",
-                    "upgrade_url": "https://dchub.cloud/pricing",
+                    # Phase FF+7 (2026-05-19): /upgrade entry-point (see /keys/claim above)
+                    "upgrade_url": f"https://dchub.cloud/upgrade?key={existing[0]}",
                 }), 200
             cur.execute(
                 """INSERT INTO mcp_dev_keys
@@ -771,7 +777,8 @@ def dev_signup():
         "is_new":      True,
         "header":      "X-API-Key",
         "docs":        "https://dchub.cloud/ai",
-        "upgrade_url": "https://dchub.cloud/pricing",
+        # Phase FF+7 (2026-05-19): /upgrade entry-point with attribution
+        "upgrade_url": f"https://dchub.cloud/upgrade?key={api_key}",
     }), 200
 
 
