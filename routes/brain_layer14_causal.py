@@ -211,6 +211,20 @@ def causal():
 @brain_layer14_bp.route("/api/v1/brain/causal/analyze",
                         methods=["POST", "GET"])
 def analyze():
+    # Phase FF+7-emergency (2026-05-19) — KILL SWITCH. Same crash-loop
+    # class as L8. Synchronous 30-90s Claude call. Disabled until
+    # refactored to background-thread mode. GET /api/v1/brain/causal
+    # serves the last cached analysis.
+    if os.environ.get("CAUSAL_ANALYZE_ENABLED", "0") != "1":
+        return jsonify(
+            ok=False,
+            disabled=True,
+            reason=("Synchronous Claude call was crash-looping the "
+                    "container (along with L8 orchestrator). Disabled "
+                    "until refactor. GET /api/v1/brain/causal serves "
+                    "the last cached analysis."),
+        ), 503
+
     if request.method == "POST" and _ADMIN_KEY:
         provided = (request.headers.get("X-Admin-Key") or "").strip()
         if provided != _ADMIN_KEY:

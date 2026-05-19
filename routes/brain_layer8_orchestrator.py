@@ -236,6 +236,27 @@ def orchestrator():
 @brain_layer8_bp.route("/api/v1/brain/orchestrator/refresh",
                           methods=["POST", "GET"])
 def orchestrator_refresh():
+    # Phase FF+7-emergency (2026-05-19 10:25 UTC) — KILL SWITCH.
+    # This synchronous Claude call (30-90s holding a gunicorn worker
+    # while streaming a multi-KB JSON response) was triggering the
+    # watchdog's memory threshold mid-request, crashing the container
+    # in a 2-min loop and taking the map down. Until this is refactored
+    # to fire-and-forget via a background thread (write result to
+    # _CACHE async), the endpoint returns immediately. The cached plan
+    # at GET /api/v1/brain/orchestrator still serves the last computed
+    # value. Set ORCHESTRATOR_REFRESH_ENABLED=1 in Railway env to
+    # re-enable manually.
+    if os.environ.get("ORCHESTRATOR_REFRESH_ENABLED", "0") != "1":
+        return jsonify(
+            ok=False,
+            disabled=True,
+            reason=("Synchronous Claude call was crash-looping the "
+                    "container. Disabled until refactor. GET "
+                    "/api/v1/brain/orchestrator serves the cached plan."),
+            cached_plan_age_seconds=(int(time.monotonic() - _CACHE["computed_at"])
+                                       if _CACHE.get("computed_at") else None),
+        ), 503
+
     provided = (request.headers.get("X-Admin-Key") or "").strip()
     if request.method == "POST" and _ADMIN_KEY and provided != _ADMIN_KEY:
         return jsonify(error="unauthorized"), 401
