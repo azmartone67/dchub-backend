@@ -62,7 +62,11 @@ def _internal(path: str, timeout: int = 8) -> dict:
 
 def _gather_joined_context() -> dict:
     """Pull state from EVERY layer that has a signal. The point of L14
-    is to look across layers — not at any one in isolation."""
+    is to look across layers — not at any one in isolation.
+
+    Phase FF+7-L18 (2026-05-19): also pulls L18 consolidated lessons +
+    L16 calibration data so each L14 analysis is informed by what the
+    brain has learned about itself."""
     return {
         "findings":       (_internal("/api/v1/brain/consistency-radar", 20)
                             .get("findings") or [])[:25],
@@ -77,6 +81,12 @@ def _gather_joined_context() -> dict:
         "publisher":      _internal("/api/v1/marketing/worker-status"),
         "outreach":       _internal("/api/v1/media/outreach-log"),
         "schedulers":     _internal("/api/schedulers/audit"),
+        # L18 lessons — what the brain has distilled from its own history
+        "lessons":        (_internal("/api/v1/brain/lessons")
+                            .get("active_lessons") or [])[:10],
+        # L16 calibration — how often the brain's past predictions
+        # at each confidence level have been correct
+        "calibration":    _internal("/api/v1/brain/self-critique/calibration"),
     }
 
 
@@ -105,8 +115,26 @@ Anti-patterns to avoid:
   - Speculating without naming the specific signal that supports your
     claim. If you can't cite a signal, you don't know yet.
 
+╔══════════════════════════════════════════════════════════════════╗
+║ META-COGNITION (Phase FF+7-L18, 2026-05-19):                     ║
+║ This prompt is INFORMED BY THE BRAIN'S OWN TRACK RECORD.         ║
+║                                                                  ║
+║ L18 has distilled the brain's recent episodes into NAMED LESSONS ║
+║ (see ctx.lessons below). Apply them — if a current chain matches ║
+║ a known pattern from past episodes, name the lesson explicitly   ║
+║ and use it to set confidence appropriately.                      ║
+║                                                                  ║
+║ L16 has tracked the brain's calibration (see ctx.calibration).   ║
+║ If past "high" confidence chains have been correct <70% of the   ║
+║ time, the brain is over-confident — be more conservative on      ║
+║ "high" labels this time.                                         ║
+║                                                                  ║
+║ Use the lessons + calibration as input to your reasoning, not    ║
+║ just as observations. They're how the brain learns from itself.  ║
+╚══════════════════════════════════════════════════════════════════╝
+
 Context (JSON):
-{json.dumps(ctx, indent=2, default=str)[:9000]}
+{json.dumps(ctx, indent=2, default=str)[:9500]}
 
 Return a JSON object (NO markdown fences) with this exact shape:
 

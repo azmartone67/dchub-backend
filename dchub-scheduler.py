@@ -486,6 +486,30 @@ DISABLED_JOBS = {
         'minute': 20,
         'timeout': 60,
     },
+    # Phase FF+7-meta (2026-05-19): Brain L16 — Self-Critique. Verifies
+    # past predictions, builds calibration data. Runs at :35, after L14
+    # (:15), L15 (:20), and L2 narrative (:25) have settled. Allows L18
+    # to read fresh verification data at its 04:40/16:40 sleep pass.
+    'brain_self_critique': {
+        'name': 'Brain L16 — Self-Critique (verify past predictions)',
+        'endpoint': '/api/v1/brain/self-critique/run',
+        'method': 'POST',
+        'hours': [3, 9, 15, 21],
+        'minute': 35,
+        'timeout': 90,
+    },
+    # Phase FF+7-meta (2026-05-19): Brain L18 — Memory Consolidation
+    # (the "sleep" pass). Twice daily. Reads L16-verified outcomes +
+    # raw episodes, asks Claude to distill into named lessons. L14
+    # reads these lessons in EVERY analysis prompt going forward.
+    'brain_memory_consolidate': {
+        'name': 'Brain L18 — Memory Consolidation (sleep pass)',
+        'endpoint': '/api/v1/brain/lessons/consolidate',
+        'method': 'POST',
+        'hours': [4, 16],
+        'minute': 40,
+        'timeout': 90,
+    },
     # Press queue scan: detects new auto-press triggers (DCPI movers,
     # facility events). Every 4h, staggered :50.
     'press_queue_scan': {

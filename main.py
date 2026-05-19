@@ -1332,6 +1332,34 @@ try:
     except Exception as _l14e:
         import logging
         logging.getLogger(__name__).warning('brain_layer14 wiring failed: %s', _l14e)
+    # Phase FF+7-meta (2026-05-19): Brain L16 — Self-Critique. Verifies
+    # predictions, builds calibration data so the brain learns its own
+    # accuracy. Closes the prediction-outcome loop. Read by L14 prompt.
+    try:
+        from routes.brain_layer16_self_critique import brain_layer16_bp
+        app.register_blueprint(brain_layer16_bp)
+    except Exception as _l16e:
+        import logging
+        logging.getLogger(__name__).warning('brain_layer16 wiring failed: %s', _l16e)
+    # Phase FF+7-meta (2026-05-19): Brain L18 — Memory Consolidation.
+    # The "sleep" pass. Periodically distills episodic memory into
+    # named lessons. L14 reads these in its prompt. This is how the
+    # brain gets smarter from its own history.
+    try:
+        from routes.brain_layer18_memory_consolidation import brain_layer18_bp
+        app.register_blueprint(brain_layer18_bp)
+    except Exception as _l18e:
+        import logging
+        logging.getLogger(__name__).warning('brain_layer18 wiring failed: %s', _l18e)
+    # Phase FF+7-meta (2026-05-19): Brain L19 — Awareness. Single
+    # endpoint that reports the brain's current epistemic state:
+    # calibration, lessons, blind spots, growth signals.
+    try:
+        from routes.brain_layer19_awareness import brain_layer19_bp
+        app.register_blueprint(brain_layer19_bp)
+    except Exception as _l19e:
+        import logging
+        logging.getLogger(__name__).warning('brain_layer19 wiring failed: %s', _l19e)
     # Phase FF+7 (2026-05-19): Brain L15 — Auto-Action. Reads L14's
     # high-confidence chains and auto-opens a GitHub issue for each one
     # with a concrete fix. Closes the loop from "brain finds" → "work
