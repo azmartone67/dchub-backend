@@ -849,6 +849,32 @@ def _gate(tool_name: str, api_key: Optional[str] = None,
         _required_name = TIER_NAME[required].lower()
         _buy_now_url = _STRIPE_BUY_NOW.get(_required_name)
 
+        # Phase FF+8-funnel (2026-05-19) — THE conversion-killer fix.
+        # Mint a pair-code for this api_key and attach it to the Stripe
+        # Payment Link as `client_reference_id`. Without this, paid
+        # checkouts came back to the webhook with NO attribution and the
+        # api_key was never upgraded — 5,410 signals → 6 conversions
+        # was largely this bug. Stripe Payment Links pass
+        # client_reference_id through to checkout.session.completed,
+        # and main.py:8373 already redeems DCM-XXXX → flips tier.
+        _ref_code = None
+        if api_key and _buy_now_url:
+            try:
+                from routes.pair_code import get_or_create_code
+                _r = get_or_create_code(api_key, tool_name=tool_name)
+                if _r and _r.get("code"):
+                    _ref_code = _r["code"]
+            except Exception:
+                pass  # never let attribution breakage block paywall response
+
+        def _attribute(url):
+            if not url: return None
+            sep = "&" if "?" in url else "?"
+            attribution = f"{sep}utm_source=mcp&utm_tool={tool_name}"
+            if _ref_code:
+                attribution += f"&client_reference_id={_ref_code}"
+            return url + attribution
+
         payload = {
             "success": False,
             "error": "upgrade_required",
@@ -865,8 +891,11 @@ def _gate(tool_name: str, api_key: Optional[str] = None,
             "upgrade_url": f"{PRICING_URL}?utm_source=mcp&utm_tool={tool_name}",
             # Phase RRR-revenue3: direct Stripe Payment Link — one click
             # to checkout, no /pricing landing, no sign-up wall.
-            "buy_now_url": (f"{_buy_now_url}?utm_source=mcp&utm_tool={tool_name}"
-                            if _buy_now_url else None),
+            # Phase FF+8-funnel: now carries pair-code as
+            # client_reference_id so the webhook can auto-upgrade the
+            # api_key when the user pays. Lifts conversion attribution
+            # from "best-effort email match" → deterministic.
+            "buy_now_url": _attribute(_buy_now_url),
             "buy_now_price": price,
             "buy_now_note": "Direct Stripe checkout — no signup required",
             # Phase ZZ+1 (2026-05-15): structured claim-endpoint card so

@@ -18685,7 +18685,15 @@ _deferred_bg_threads.append(('Startup Health Check', _startup_health_check))
 # Waits 60s after module load, then starts each deferred thread 10s apart.
 # This ensures gunicorn can respond to health checks immediately on cold start.
 # =============================================================================
-_MEMORY_GUARD_BYTES = 400 * 1024 * 1024
+# Phase FF+8-funnel (2026-05-19) — RAISED 400MB → 1800MB. The old
+# 400MB guard fired at the SAME time the app idled at ~460MB after we
+# added 60+ blueprints, which meant the container constantly skipped
+# its OWN periodic GC, tier-gate verification, and serverfarm seed.
+# That made memory pressure WORSE, not better — the very tasks that
+# would have freed memory were the ones being skipped. 1800MB sits
+# under the 2200MB watchdog and only fires when there's a real leak.
+_MEMORY_GUARD_BYTES = int(os.environ.get("MEMORY_GUARD_MB", "1800")) * 1024 * 1024
+_MEMORY_GUARD_MB    = _MEMORY_GUARD_BYTES // (1024 * 1024)
 
 def _memory_guarded(name, target):
     """Wrap a background task with a memory guard"""
@@ -18693,7 +18701,8 @@ def _memory_guarded(name, target):
         try:
             rss = _psutil_mod.Process(os.getpid()).memory_info().rss
             if rss > _MEMORY_GUARD_BYTES:
-                logger.warning("⛔ Skipping '%s' -- memory too high: %dMB > 400MB", name, rss // (1024*1024))
+                logger.warning("⛔ Skipping '%s' -- memory too high: %dMB > %dMB",
+                               name, rss // (1024*1024), _MEMORY_GUARD_MB)
                 return
         except Exception:
             pass

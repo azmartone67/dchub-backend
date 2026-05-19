@@ -283,20 +283,37 @@ def redeem_pair_code(code: str, stripe_session_id: str | None = None) -> dict:
             out["ok"] = True
             out["already_redeemed"] = True
             return out
-        # Flip the api_key's tier (by hash, since we don't store the raw key)
+        # Phase FF+8-funnel (2026-05-19) — THE bug that destroyed
+        # paid-conversion attribution. The previous code used:
+        #
+        #   WHERE encode(sha256(key_value::bytea), 'hex') LIKE
+        #         _hash_key("") + "%"
+        #
+        # which compared against the SHA-256 of an EMPTY string, not
+        # against this redemption's actual api_key_hash. Result: the
+        # UPDATE matched zero rows on every successful checkout, and
+        # paid users walked away with no tier flip. The mcp_pair_codes
+        # row was marked redeemed (so we LOOKED like we converted),
+        # but api_keys.plan stayed 'free'.
+        #
+        # Fix: match api_keys.key_hash directly against the same
+        # _hash_key() output that pair-code creation stored.
+        rows_flipped = 0
         try:
             with c.cursor() as cur:
                 cur.execute("""
                     UPDATE api_keys
-                    SET plan = %s, updated_at = NOW()
-                    WHERE encode(sha256(key_value::bytea), 'hex') LIKE %s
-                """, (target_tier, _hash_key("") + "%"))  # Will be refined below
-        except Exception:
+                    SET plan = %s
+                    WHERE key_hash = %s
+                """, (target_tier, key_hash))
+                rows_flipped = cur.rowcount or 0
+        except Exception as _flip_err:
             # api_keys table might use a different hash scheme; in that case
             # the operator does a manual upgrade via the existing dashboard.
             # Either way, the conversion is RECORDED so we know to act on it.
-            pass
+            out["flip_error"] = str(_flip_err)[:200]
         c.commit()
+        out["rows_flipped"] = rows_flipped
         out["ok"] = True
         out["target_tier"] = target_tier
         out["pair_code_id"] = pid
@@ -501,6 +518,52 @@ def redeem_landing(code):
 #                                              poll URL). One-trip.
 # ---------------------------------------------------------------------------
 
+# Phase FF+8-funnel (2026-05-19) — /upgrade was hanging 8-30s when L8
+# Claude background calls held gunicorn workers. Users clicked, got
+# a spinner, closed the tab. 200+ high-intent users → 6 conversions.
+# Now: in-memory cache + 500ms deadline on the mint. Cache hit is
+# instant. Cache miss runs the mint in a thread; if it doesn't return
+# in 500ms, we 302 to /pricing with full attribution rather than make
+# the user wait. The mint completes in the background and lands in
+# the cache for the next click from the same key.
+import threading as _threading
+import time as _time
+_UPGRADE_CODE_CACHE: dict = {}        # api_key_hash -> (code, expires_at_ts)
+_UPGRADE_CACHE_LOCK = _threading.Lock()
+_UPGRADE_CACHE_TTL_SEC = 1700         # 28 min — just under DB code expiry
+
+
+def _fast_get_code(api_key, tool, market, agent, deadline_ms=500):
+    """Return a pair-code dict in under deadline_ms, or None if the DB
+    mint didn't complete fast enough. The mint thread is daemon so it
+    can keep running and populate the cache for the next click."""
+    h = _hash_key(api_key)
+    now = _time.time()
+    with _UPGRADE_CACHE_LOCK:
+        cached = _UPGRADE_CODE_CACHE.get(h)
+        if cached and cached[1] > now:
+            return {"code": cached[0], "cached": True}
+
+    box = {"result": None}
+
+    def _mint_in_thread():
+        try:
+            r = get_or_create_code(api_key, tool_name=tool,
+                                   market=market, referring_agent=agent)
+            box["result"] = r
+            if r and r.get("code"):
+                with _UPGRADE_CACHE_LOCK:
+                    _UPGRADE_CODE_CACHE[h] = (r["code"],
+                                              _time.time() + _UPGRADE_CACHE_TTL_SEC)
+        except Exception:
+            pass
+
+    t = _threading.Thread(target=_mint_in_thread, daemon=True)
+    t.start()
+    t.join(timeout=deadline_ms / 1000.0)
+    return box["result"]
+
+
 @pair_code_bp.get("/upgrade")
 def upgrade_redirect():
     """Smart-redirect entry point. Mint a pair-code for the caller and
@@ -517,7 +580,7 @@ def upgrade_redirect():
     api_key = (request.headers.get("X-API-Key")
                or request.args.get("key")
                or request.args.get("api_key") or "")
-    tool = request.args.get("tool") or request.args.get("tool_name")
+    tool = request.args.get("tool") or request.args.get("tool_name") or ""
     market = request.args.get("market")
     agent = request.args.get("agent") or request.args.get("referring_agent")
 
@@ -529,15 +592,18 @@ def upgrade_redirect():
         if tool: utm += f"&utm_content={tool}"
         return redirect(f"https://dchub.cloud/pricing{utm}", code=302)
 
-    result = get_or_create_code(api_key, tool_name=tool, market=market,
-                                referring_agent=agent)
-    if not result or not result.get("code"):
-        # Mint failed — still send to /pricing with attribution rather
-        # than blackholing the user.
-        return redirect(f"https://dchub.cloud/pricing"
-                        f"?utm_source=mcp_upgrade&utm_medium=paywall_mint_fail"
-                        f"&utm_content={tool or 'unknown'}", code=302)
-    return redirect(f"https://dchub.cloud/redeem/{result['code']}", code=302)
+    # Fast path: cached code OR mint completes in <500ms.
+    result = _fast_get_code(api_key, tool, market, agent, deadline_ms=500)
+    if result and result.get("code"):
+        return redirect(f"https://dchub.cloud/redeem/{result['code']}", code=302)
+
+    # Slow path: mint didn't finish in time. Send the user to /pricing
+    # with attribution NOW (no more 8-30s spinner). The mint keeps
+    # running in the daemon thread and will populate the cache; the
+    # next /upgrade click for this key gets the redeem flow.
+    return redirect(f"https://dchub.cloud/pricing"
+                    f"?utm_source=mcp_upgrade&utm_medium=paywall_fast_fallback"
+                    f"&utm_content={tool or 'unknown'}", code=302)
 
 
 @pair_code_bp.post("/api/v1/mcp/paywall-response")
