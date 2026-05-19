@@ -20,6 +20,41 @@ logger = logging.getLogger('rate_limiter')
 _buckets = {}
 _last_cleanup = time.time()
 
+# Phase FF+14-ratelog (2026-05-19) — per-key log throttle. A single
+# bot IP (e.g. 162.220.232.99 on Spamhaus zen) was filling Railway
+# logs with hundreds of "Rate limit hit:" lines per minute, which
+# (a) makes real signal hard to spot and (b) costs Railway log
+# storage / bandwidth. The rate limiter itself was already
+# enforcing — we just don't need to log every single denial.
+# Now: log at most LOG_BUDGET hits per LOG_WINDOW seconds per key.
+_log_budget = {}   # key -> {'count': int, 'window_start': float, 'silenced_at': float|None}
+_LOG_BUDGET_PER_WINDOW = 5     # max log lines per key per window
+_LOG_BUDGET_WINDOW_SEC = 3600  # 1 hour
+
+
+def _should_log_rate_hit(key: str) -> bool:
+    """Return True if we should log this rate-limit hit for `key`.
+    First N hits per hour log normally; the (N+1)th logs a single
+    "silenced further hits" line; subsequent hits are silent until
+    the window rolls over."""
+    now = time.time()
+    bucket = _log_budget.get(key)
+    if bucket is None or now - bucket['window_start'] > _LOG_BUDGET_WINDOW_SEC:
+        _log_budget[key] = {'count': 1, 'window_start': now, 'silenced_at': None}
+        return True
+    bucket['count'] += 1
+    if bucket['count'] <= _LOG_BUDGET_PER_WINDOW:
+        return True
+    if bucket['silenced_at'] is None:
+        bucket['silenced_at'] = now
+        logger.warning(
+            "Rate limit log throttle: key=%s exceeded %d hits/hour; "
+            "further hits silenced until window rolls over.",
+            key, _LOG_BUDGET_PER_WINDOW
+        )
+        return False
+    return False
+
 
 def _cleanup():
     global _last_cleanup
@@ -193,13 +228,15 @@ def rate_limit_before():
     # Per-minute check
     ok, remaining, retry = _check(f"{key}:min", limits['rpm'], 60)
     if not ok:
-        logger.warning(f"Rate limit hit: {key} tier={tier} path={path} ip={_get_client_ip()}")
+        if _should_log_rate_hit(key):
+            logger.warning(f"Rate limit hit: {key} tier={tier} path={path} ip={_get_client_ip()}")
         return _resp(retry)
 
     # Per-hour check
     ok_h, rem_h, retry_h = _check(f"{key}:hr", limits['rph'], 3600)
     if not ok_h:
-        logger.warning(f"Hourly limit hit: {key} tier={tier} path={path} ip={_get_client_ip()}")
+        if _should_log_rate_hit(key):
+            logger.warning(f"Hourly limit hit: {key} tier={tier} path={path} ip={_get_client_ip()}")
         return _resp(retry_h)
 
     # Stash for after_request headers

@@ -10766,11 +10766,16 @@ def energy_discovery_status_inline():
             # dumped "relation pipelines/transmission/wind_projects/... does not
             # exist" to Railway logs. Also: power_plants has created_at not
             # updated_at — match the actual schema.
+            # Phase FF+14-schemafix (2026-05-19): transmission_lines has no
+            # updated_at — only created_at. The previous tuple kept logging
+            # "column updated_at does not exist" warnings on every health
+            # refresh even though _count_max falls back to created_at. Set
+            # the right column here so the first query succeeds.
             for label, table, ts in [
                 ('total_substations',     'substations',     'updated_at'),
                 ('total_pipelines',       'gas_pipelines',   'updated_at'),
                 ('total_power_plants',    'power_plants',    'created_at'),
-                ('total_transmissions',   'transmission_lines', 'updated_at'),
+                ('total_transmissions',   'transmission_lines', 'created_at'),
                 ('total_wind_projects',   'wind_projects',   'updated_at'),
                 ('total_gas_compressors', 'gas_compressors', 'updated_at'),
                 ('total_gas_processings', 'gas_processings', 'updated_at'),
@@ -18496,7 +18501,18 @@ def verify_tier_gating():
 import psutil as _psutil_mod
 _SERVER_RESTART_TS = time.strftime('%Y-%m-%dT%H:%M:%SZ', time.gmtime())
 
-_MEMORY_LIMIT_MB = 1024
+# Phase FF+14-memthresholds (2026-05-19) — was 1024MB which fired
+# constantly at the now-typical idle RSS (~460MB cold + ~1.0-1.1GB
+# during L8 Claude call). Raised to 1500MB so cache-clearing kicks
+# in only when memory is meaningfully elevated, before the 1800MB
+# background-task-skip guard and well below the 2200MB watchdog
+# kill. Env-overridable via MEMORY_GC_LIMIT_MB.
+#
+# Three-tier memory pressure model:
+#   1500MB → soft: clear caches + force GC (this loop)
+#   1800MB → medium: skip background tasks (_MEMORY_GUARD_BYTES)
+#   2200MB → hard: watchdog kills container
+_MEMORY_LIMIT_MB = int(os.environ.get("MEMORY_GC_LIMIT_MB", "1500"))
 _GC_INTERVAL = 60
 
 try:

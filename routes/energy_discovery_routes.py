@@ -260,11 +260,15 @@ def energy_discovery_status():
 
             # Phase FF+6 (2026-05-18): to_regclass guard + correct table names
             # to silence Railway log noise. power_plants uses created_at.
+            # Phase FF+14-schemafix (2026-05-19): transmission_lines lacks
+            # updated_at — only has created_at. Set right column upfront so
+            # the db_utils wrapper doesn't log the failed first attempt
+            # before _count_max falls back.
             for label, table, ts in [
                 ('total_substations',      'substations',        'updated_at'),
                 ('total_pipelines',        'gas_pipelines',      'updated_at'),
                 ('total_power_plants',     'power_plants',       'created_at'),
-                ('total_transmissions',    'transmission_lines', 'updated_at'),
+                ('total_transmissions',    'transmission_lines', 'created_at'),
                 ('total_wind_projects',    'wind_projects',      'updated_at'),
                 ('total_gas_compressors',  'gas_compressors',    'updated_at'),
                 ('total_gas_processings',  'gas_processings',    'updated_at'),
