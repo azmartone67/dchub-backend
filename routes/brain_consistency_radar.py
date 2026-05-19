@@ -5242,29 +5242,41 @@ except ImportError:
 # Railway's request limit. This single-process TTL cache makes the
 # docstring actually true.
 import time as _t_mod
+import threading as _thr_mod
 _SCAN_CACHE: dict = {"value": None, "expires_at": 0.0}
-_SCAN_CACHE_TTL_SECONDS = 300  # 5 minutes
+_SCAN_CACHE_TTL_SECONDS = 300       # 5 minutes (fresh)
+_SCAN_STALE_GRACE_SECONDS = 3600    # serve stale up to 1 h old when herd hits
+
+# Phase FF+13-radarstorm (2026-05-19) — EMERGENCY single-flight lock.
+# The endpoint kept saturating all gunicorn workers at once:
+#   - The "5-min cache" was per-worker (in-process), not shared.
+#   - Gunicorn runs N workers, each had its own _SCAN_CACHE.
+#   - When the TTL expired, every concurrent caller in every worker
+#     ran scan_all() (76 detectors, several making HTTP/DB calls).
+#   - Logs showed 7+ concurrent in-flight calls each taking ~140s.
+#   - Workers fully blocked → watchdog declared self_response failure → kill.
+#
+# Plus 9 brain layers (L8, L11, L12, L14, L16, L19, L22, autopilot, alive)
+# all hit this endpoint on their own crons — a classic thundering herd.
+#
+# Fix:
+#   1. ONE thread per process actually computes scan_all() at a time
+#      (threading.Lock with non-blocking acquire).
+#   2. Concurrent callers who can't get the lock get the LAST cached
+#      value with a stale=true flag — never blocks > a few ms.
+#   3. Stale-grace extends to 1h so a slow scan_all() never causes a
+#      total cache miss for callers.
+#   4. If no cache exists yet AND the lock is held, return an empty
+#      ok=true response instead of waiting (better than 140s timeout).
+_SCAN_LOCK = _thr_mod.Lock()
 
 
-def scan_summary() -> dict:
-    """Same as scan_all() but wrapped for the /api/v1/brain/consistency-radar
-    endpoint — adds a count + as_of timestamp + grouping by issue type.
-
-    Cached in-process for 5 min. The brain runs every detector on the
-    server-side cron anyway (so findings are always fresh in the
-    underlying DB); this just keeps dashboard polls from running 50+
-    detectors live on every request.
-    """
-    now = _t_mod.time()
-    if _SCAN_CACHE["value"] is not None and now < _SCAN_CACHE["expires_at"]:
-        return _SCAN_CACHE["value"]
-
-    findings = scan_all()
+def _build_summary(findings):
     by_issue: dict[str, int] = {}
     for f in findings:
         by_issue[f["issue"]] = by_issue.get(f["issue"], 0) + 1
     from datetime import datetime, timezone
-    result = {
+    return {
         "ok": True,
         "count": len(findings),
         "by_issue": by_issue,
@@ -5272,6 +5284,51 @@ def scan_summary() -> dict:
         "as_of": datetime.now(timezone.utc).isoformat(),
         "cache_ttl_seconds": _SCAN_CACHE_TTL_SECONDS,
     }
-    _SCAN_CACHE["value"] = result
-    _SCAN_CACHE["expires_at"] = now + _SCAN_CACHE_TTL_SECONDS
-    return result
+
+
+def scan_summary() -> dict:
+    """Single-flight + stale-grace wrapper around scan_all().
+    Returns INSTANT response on any concurrent contention; only the
+    first caller through the lock actually runs the 76 detectors."""
+    now = _t_mod.time()
+    cached = _SCAN_CACHE.get("value")
+    expires_at = _SCAN_CACHE.get("expires_at", 0.0)
+
+    # Fast path: fresh cache hit. No lock needed.
+    if cached is not None and now < expires_at:
+        return cached
+
+    # Cache stale or missing. Try to acquire the single-flight lock
+    # without blocking. If another worker thread is already running
+    # scan_all() for this process, serve last-known-good instead.
+    got_lock = _SCAN_LOCK.acquire(blocking=False)
+    if not got_lock:
+        if cached is not None and (now - expires_at) < _SCAN_STALE_GRACE_SECONDS:
+            stale = dict(cached)
+            stale["stale"] = True
+            stale["stale_reason"] = "single_flight_lock_busy"
+            return stale
+        return {
+            "ok": True, "count": 0, "by_issue": {}, "findings": [],
+            "stale": True, "stale_reason": "cold_start_lock_busy",
+            "cache_ttl_seconds": _SCAN_CACHE_TTL_SECONDS,
+        }
+
+    try:
+        # Double-check the cache after acquiring the lock — another
+        # thread may have just refreshed it while we were waiting.
+        now = _t_mod.time()
+        cached = _SCAN_CACHE.get("value")
+        expires_at = _SCAN_CACHE.get("expires_at", 0.0)
+        if cached is not None and now < expires_at:
+            return cached
+
+        # Truly stale and we have the lock — refresh.
+        findings = scan_all()
+        result = _build_summary(findings)
+        _SCAN_CACHE["value"] = result
+        _SCAN_CACHE["expires_at"] = _t_mod.time() + _SCAN_CACHE_TTL_SECONDS
+        return result
+    finally:
+        try: _SCAN_LOCK.release()
+        except Exception: pass
