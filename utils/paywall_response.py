@@ -259,6 +259,40 @@ def build_paywall_response(
     pricing_url = _attribution_url(PRICING_URL, tool_name, call_count, current_tier)
     signup_url = _attribution_url(SIGNUP_URL, tool_name, call_count, current_tier)
 
+    # Phase FF+15-funnel2 (2026-05-19) — THE second paywall builder.
+    # Phase FF+8 patched mcp_gatekeeper.py to attach client_reference_id
+    # to buy_now_url, but this build_paywall_response() (used by
+    # api_tier_gating for every gated REST endpoint — get_grid_intelligence,
+    # get_fiber_intel, etc., the tools generating most signals) was
+    # untouched. Result: Stripe Payment Link clicks from these paths
+    # still arrived at the webhook with NO client_reference_id, no
+    # pair-code lookup, no api_key flip. Conversion attribution failed
+    # for ~70% of paywall response paths.
+    #
+    # Fix: mint the pair_code BEFORE the URLs are built so the
+    # one_click_upgrade_url gets ?client_reference_id=DCM-XXXX. Webhook
+    # at main.py:8373 already handles DCM-XXXX redemption — combined
+    # with FF+8's hash-match fix, paid checkouts from THIS builder also
+    # finally flip the api_key tier.
+    _pair_code = None
+    if user_id:
+        try:
+            from routes.pair_code import get_or_create_code
+            pc = get_or_create_code(user_id, tool_name=tool_name)
+            if pc and pc.get("code"):
+                _pair_code = pc["code"]
+                _pair_expires = pc.get("expires_at")
+        except Exception:
+            pass  # best-effort; legacy /pricing CTA still works
+
+    def _stripe_with_attrib(url):
+        if not url: return url
+        sep = "&" if "?" in url else "?"
+        attrib = f"{sep}utm_source=mcp_paywall&utm_tool={tool_name}"
+        if _pair_code:
+            attrib += f"&client_reference_id={_pair_code}"
+        return url + attrib
+
     base = {
         'tool': tool_name,
         'human_message': human_message,
@@ -276,42 +310,29 @@ def build_paywall_response(
     # discrete structured field so AI clients can offer it as a button/CTA
     # without having to parse it out of the markdown human_message.
     if STRIPE_DEVELOPER_LINK:
-        base['one_click_upgrade_url'] = STRIPE_DEVELOPER_LINK
+        base['one_click_upgrade_url'] = _stripe_with_attrib(STRIPE_DEVELOPER_LINK)
         base['one_click_upgrade_tier'] = 'developer'  # phase 281
         base['one_click_upgrade_price'] = '$49/mo'    # phase 281
 
-    # Phase DD (2026-05-12): inject a pair-code + redeem URL when the
-    # caller's api_key is known. This closes the agent→human handoff
-    # that's keeping MCP conversion at 0.012%. Agent gets the redeem URL,
-    # passes it to its human, who clicks ONE link to upgrade THIS key
-    # (no copy-paste, no config swap). Strip pair-code generation on
-    # any error — the response still has the legacy /pricing CTA so
-    # nothing regresses.
-    if user_id:
+    # Phase DD (2026-05-12): inject pair-code structured fields when we
+    # successfully minted one above. Lets agents pass the redeem URL to
+    # their human in one trip — agent doesn't need to know the key.
+    if _pair_code:
         try:
-            from routes.pair_code import get_or_create_code
-            pc = get_or_create_code(user_id, tool_name=tool_name)
-            if pc and pc.get("code"):
-                base['pair_code'] = pc['code']
-                base['pair_redeem_url'] = pc['redeem_url']
-                base['pair_expires_at'] = pc.get('expires_at')
-                base['pair_stripe_url'] = pc.get(
-                    'redeem_url',
-                    f"https://dchub.cloud/redeem/{pc['code']}",
-                )
-                # Prepend the magic-link line to human_message so the
-                # AI surfaces it first when it relays to the user.
-                magic_line = (
-                    f"🔗 **Tell your human: visit https://dchub.cloud/redeem/"
-                    f"{pc['code']} to unlock this in one click.** "
-                    f"Code expires in 30 minutes.\n\n"
-                )
-                if isinstance(base.get('human_message'), str):
-                    base['human_message'] = magic_line + base['human_message']
-        except Exception as _pce:
-            # Pair-code generation is best-effort. If the DB is down or
-            # the routes import fails, the paywall still returns the
-            # legacy Stripe link and the old (worse) funnel still works.
+            base['pair_code'] = _pair_code
+            base['pair_redeem_url'] = f"https://dchub.cloud/redeem/{_pair_code}"
+            base['pair_expires_at'] = _pair_expires
+            base['pair_stripe_url']  = f"https://dchub.cloud/redeem/{_pair_code}"
+            # Prepend the magic-link line to human_message so the
+            # AI surfaces it first when it relays to the user.
+            magic_line = (
+                f"🔗 **Tell your human: visit https://dchub.cloud/redeem/"
+                f"{_pair_code} to unlock this in one click.** "
+                f"Code expires in 30 minutes.\n\n"
+            )
+            if isinstance(base.get('human_message'), str):
+                base['human_message'] = magic_line + base['human_message']
+        except Exception:
             pass
 
     # Phase DD+ Play 4 (2026-05-12): if the caller didn't supply real
