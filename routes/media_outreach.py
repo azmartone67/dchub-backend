@@ -258,6 +258,40 @@ def pitch_send():
     if not (email and subject and txt):
         return jsonify(ok=False, error="recipient_email + subject + body required"), 400
 
+    # Phase ZZZZ-cooldown (2026-05-19): prevent inbox storms (Rich got
+    # 4 emails in 6 min during a test). Reject if same recipient was
+    # already pitched in last 7 days. Override with ?force=true.
+    force = (request.args.get("force") or b.get("force") or "").lower() in ("1","true","yes")
+    _ensure_schema()
+    try:
+        c = _conn()
+        try:
+            cur = c.cursor()
+            cur.execute("""
+                SELECT id, sent_at FROM media_outreach_log
+                 WHERE recipient_email = %s
+                   AND sent_at >= NOW() - INTERVAL '7 days'
+                 ORDER BY sent_at DESC LIMIT 1
+            """, (email,))
+            prev = cur.fetchone()
+        finally:
+            try: c.close()
+            except Exception: pass
+    except Exception:
+        prev = None
+    if prev and not force:
+        return jsonify(
+            ok=False,
+            error="cooldown",
+            hint=(f"Recipient {email} was already pitched at {prev[1].isoformat()}. "
+                  f"7-day cooldown to prevent spam. Add ?force=true if intentional. "
+                  f"Most likely fix: pick a different recipient from "
+                  f"GET /api/v1/media/journalists"),
+            previous_send_id=prev[0],
+            previous_sent_at=prev[1].isoformat(),
+            cooldown_block=True,
+        ), 429
+
     # Phase ZZZZ-pitch-guard (2026-05-19): prevent placeholder leaks like
     # subject:"<from draft>" or body:"<from draft>" from being sent to
     # real journalists. Either reject + return draft auto-filled, or
