@@ -435,11 +435,18 @@ DISABLED_JOBS = {
     # Phase ZZZZ-brain-L8 (2026-05-19): Orchestrator — Claude synthesizes
     # all brain layers into a prioritized action plan, refreshed every
     # 6h offset from L2 narrative so both don't fire simultaneously.
-    'brain_orchestrator_refresh': {
-        'name': 'Brain L8 Orchestrator — Action Plan',
+    #
+    # DISABLED 2026-05-19 10:19 UTC — was causing crash loop. Every
+    # invocation took 30-60s synchronously inside a gunicorn worker,
+    # holding Claude's response body in memory. Memory crossed the
+    # watchdog threshold mid-call, marked unhealthy 3x, SIGTERM, restart.
+    # Cycle repeated every ~2 minutes. Map was down because of this.
+    # Re-enable after refactoring the endpoint to background-thread mode.
+    'brain_orchestrator_refresh_DISABLED': {
+        'name': 'Brain L8 Orchestrator — Action Plan (DISABLED — see comment)',
         'endpoint': '/api/v1/brain/orchestrator/refresh',
         'method': 'POST',
-        'hours': [3, 9, 15, 21],
+        'hours': [],  # empty hours = never fires
         'minute': 45,
         'timeout': 90,
     },
@@ -464,14 +471,15 @@ DISABLED_JOBS = {
         'minute': 0,
         'timeout': 30,
     },
-    # Phase FF+7 (2026-05-18): Brain L14 causal reasoner — Claude reads
-    # ALL layers joined and finds root-cause chains. Every 6h offset :15
-    # so it lands after L11 (:05), before L2 (:25), well before L8 (:45).
-    'brain_causal_analyze': {
-        'name': 'Brain L14 — Causal Reasoner',
+    # Phase FF+7 (2026-05-18): Brain L14 causal reasoner — DISABLED
+    # 2026-05-19 10:19 UTC. Same crash-loop class as L8 — synchronous
+    # 30-90s Claude calls cause RSS to cross watchdog threshold.
+    # Re-enable after refactoring to background-thread mode.
+    'brain_causal_analyze_DISABLED': {
+        'name': 'Brain L14 — Causal Reasoner (DISABLED)',
         'endpoint': '/api/v1/brain/causal/analyze',
         'method': 'POST',
-        'hours': [3, 9, 15, 21],
+        'hours': [],
         'minute': 15,
         'timeout': 90,
     },
@@ -486,27 +494,25 @@ DISABLED_JOBS = {
         'minute': 20,
         'timeout': 60,
     },
-    # Phase FF+7-meta (2026-05-19): Brain L16 — Self-Critique. Verifies
-    # past predictions, builds calibration data. Runs at :35, after L14
-    # (:15), L15 (:20), and L2 narrative (:25) have settled. Allows L18
-    # to read fresh verification data at its 04:40/16:40 sleep pass.
-    'brain_self_critique': {
-        'name': 'Brain L16 — Self-Critique (verify past predictions)',
+    # Phase FF+7-meta — Brain L16 Self-Critique. DISABLED 2026-05-19
+    # 10:19 UTC — same crash-loop class as L8/L14. Re-enable after
+    # refactoring to background-thread mode.
+    'brain_self_critique_DISABLED': {
+        'name': 'Brain L16 — Self-Critique (DISABLED)',
         'endpoint': '/api/v1/brain/self-critique/run',
         'method': 'POST',
-        'hours': [3, 9, 15, 21],
+        'hours': [],
         'minute': 35,
         'timeout': 90,
     },
-    # Phase FF+7-meta (2026-05-19): Brain L18 — Memory Consolidation
-    # (the "sleep" pass). Twice daily. Reads L16-verified outcomes +
-    # raw episodes, asks Claude to distill into named lessons. L14
-    # reads these lessons in EVERY analysis prompt going forward.
-    'brain_memory_consolidate': {
-        'name': 'Brain L18 — Memory Consolidation (sleep pass)',
+    # Phase FF+7-meta — Brain L18 Memory Consolidation. DISABLED
+    # 2026-05-19 10:19 UTC — same crash-loop class. Re-enable after
+    # refactoring.
+    'brain_memory_consolidate_DISABLED': {
+        'name': 'Brain L18 — Memory Consolidation (DISABLED)',
         'endpoint': '/api/v1/brain/lessons/consolidate',
         'method': 'POST',
-        'hours': [4, 16],
+        'hours': [],
         'minute': 40,
         'timeout': 90,
     },
