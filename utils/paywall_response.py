@@ -367,6 +367,27 @@ def build_paywall_response(
     if isinstance(base.get('human_message'), str):
         base['human_message'] = _agent_claim_line() + base['human_message']
 
+    # Phase FF+16-emailcapture (2026-05-19) — surface the 3 email-capture
+    # paths in every paywall response so anonymous users have somewhere
+    # to leave an email instead of walking away unreachable.
+    try:
+        from routes.email_capture import build_email_capture_urls
+        _ec = build_email_capture_urls(
+            tool=tool_name, api_key=user_id,
+            tier='developer', client_reference_id=_pair_code,
+        )
+        base['notify_url'] = _ec['notify_url']
+        base['checkout_start_url'] = _ec['checkout_start_url']
+        base['auto_trial_with_email_url'] = _ec['auto_trial_with_email_url']
+        # Re-route one_click_upgrade_url through /checkout/start so we
+        # capture email BEFORE the Stripe redirect — every Stripe
+        # abandoner now becomes an addressable email.
+        if STRIPE_DEVELOPER_LINK:
+            base['one_click_upgrade_url_direct_stripe'] = base.get('one_click_upgrade_url')
+            base['one_click_upgrade_url'] = _ec['checkout_start_url']
+    except Exception:
+        pass  # paywall still works without email_capture
+
     if trial_preview_data is not None:
         base['trial_preview'] = trial_preview_data
     else:

@@ -19500,6 +19500,20 @@ try:
 except Exception as e:
     print(f"📮 Lost-Conversion Outreach: ⚠️ Failed to load: {e}")
 
+# Phase FF+16-emailcapture (2026-05-19) — three capture paths:
+#   /notify              (Option A — paywall CTA landing)
+#   /api/v1/auto-trial/with-email (Option B — trial key tied to email)
+#   /checkout/start      (Option C — Stripe pre-checkout capture)
+# All three feed mcp_email_capture. Paywall builders surface the URLs.
+try:
+    from routes.email_capture import email_capture_bp
+    app.register_blueprint(email_capture_bp)
+    print("📬 Email Capture: ✅ Registered (/notify, /checkout/start, "
+          "/api/v1/notify-when-free, /api/v1/auto-trial/with-email, "
+          "/api/v1/email-capture/stats)")
+except Exception as e:
+    print(f"📬 Email Capture: ⚠️ Failed to load: {e}")
+
 # =============================================================================
 # FACILITY AUTO-APPROVE PIPELINE v2.0
 # Moves discovered_facilities → facilities with dedup logic

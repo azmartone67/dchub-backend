@@ -917,6 +917,29 @@ def _gate(tool_name: str, api_key: Optional[str] = None,
                           "to 100, unlocks tier-FREE tools."),
             },
         }
+        # Phase FF+16-emailcapture (2026-05-19) — every paywall response
+        # now surfaces 3 email-capture paths (notify, auto-trial-w-email,
+        # checkout-start). Closes the gap where 99.98% of MCP signals
+        # were anonymous and unreachable. The /notify page lets a human
+        # opt in to limit-reset notifications; /checkout/start captures
+        # email BEFORE Stripe so abandons are still addressable.
+        try:
+            from routes.email_capture import build_email_capture_urls
+            _ec = build_email_capture_urls(
+                tool=tool_name, api_key=api_key,
+                tier=_required_name, client_reference_id=_ref_code,
+            )
+            payload["notify_url"] = _ec["notify_url"]
+            payload["checkout_start_url"] = _ec["checkout_start_url"]
+            payload["auto_trial_with_email_url"] = _ec["auto_trial_with_email_url"]
+            # Override buy_now_url to route through checkout/start so we
+            # capture email BEFORE the Stripe redirect even when the
+            # agent renders only the buy_now CTA.
+            if _buy_now_url:
+                payload["buy_now_url_direct_stripe"] = payload.get("buy_now_url")
+                payload["buy_now_url"] = _ec["checkout_start_url"]
+        except Exception:
+            pass  # if email_capture fails to import, paywall still works
         # Phase DDDDD: inject auto-minted trial key INLINE if we got one.
         # This is THE conversion-killer move — agent gets a working key
         # in the same response, retries with X-API-Key header, succeeds.
