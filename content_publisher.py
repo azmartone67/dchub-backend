@@ -583,8 +583,15 @@ def start_auto_publisher():
                 conn = _get_db()
                 cur = conn.cursor()
                 today = datetime.utcnow().strftime('%Y-%m-%d')
-                cur.execute("SELECT COUNT(*) FROM social_media_posts WHERE status = 'published' AND publish_platform = 'linkedin' AND published_at LIKE %s", (today + '%',))
-                published_today = cur.fetchone()[0]
+                # Phase FF+7-fix3 (2026-05-19): Neon connection uses
+                # RealDictCursor as default cursor_factory, so fetchone()
+                # returns a dict-like RealDictRow — `row[0]` raises
+                # KeyError(0) which str's to "0". Production logs showed
+                # "Auto-publisher error: 0" on all 3 loops at startup.
+                # Fix: alias COUNT(*) and pull by name.
+                cur.execute("SELECT COUNT(*) AS n FROM social_media_posts WHERE status = 'published' AND publish_platform = 'linkedin' AND published_at LIKE %s", (today + '%',))
+                _row = cur.fetchone() or {}
+                published_today = _row.get('n', 0) if hasattr(_row, 'get') else (_row[0] if _row else 0)
                 # Phase FF+7 (2026-05-18): cap raised 2 -> 3/day. With 42
                 # queued posts and a 5-day-old oldest, the old 2/day cap
                 # meant 21 days to drain. 3/day cuts that to ~14d while
@@ -597,8 +604,9 @@ def start_auto_publisher():
                 # Phase FF+7 backlog-drain mode: when there's a real backlog
                 # (>10 queued), publish multiple in this cycle to catch up
                 # rather than 1 per wake-up.
-                cur.execute("SELECT COUNT(*) FROM social_media_posts WHERE status = 'approved'")
-                _queued = (cur.fetchone() or [0])[0]
+                cur.execute("SELECT COUNT(*) AS n FROM social_media_posts WHERE status = 'approved'")
+                _row = cur.fetchone() or {}
+                _queued = _row.get('n', 0) if hasattr(_row, 'get') else (_row[0] if _row else 0)
                 _drain_budget = (DAILY_CAP - published_today) if _queued > 10 else 1
                 _attempts = 0
                 while _attempts < _drain_budget:
@@ -678,8 +686,10 @@ def start_twitter_publisher():
                 conn = _get_db()
                 cur = conn.cursor()
                 today = datetime.utcnow().strftime('%Y-%m-%d')
-                cur.execute("SELECT COUNT(*) FROM social_media_posts WHERE status = 'published' AND publish_platform = 'twitter' AND published_at LIKE %s", (today + '%',))
-                pub_today = cur.fetchone()[0]
+                # Phase FF+7-fix3 (2026-05-19): RealDictCursor — pull by name.
+                cur.execute("SELECT COUNT(*) AS n FROM social_media_posts WHERE status = 'published' AND publish_platform = 'twitter' AND published_at LIKE %s", (today + '%',))
+                _row = cur.fetchone() or {}
+                pub_today = _row.get('n', 0) if hasattr(_row, 'get') else (_row[0] if _row else 0)
                 if pub_today >= 2:
                     logger.info(f"Twitter auto-publisher: already {pub_today} today, skipping")
                     conn.close()
@@ -757,11 +767,13 @@ def start_bluesky_publisher():
                 conn = _get_db()
                 cur = conn.cursor()
                 today = datetime.utcnow().strftime('%Y-%m-%d')
+                # Phase FF+7-fix3 (2026-05-19): RealDictCursor — pull by name.
                 cur.execute(
-                    "SELECT COUNT(*) FROM social_media_posts WHERE status = 'published' "
+                    "SELECT COUNT(*) AS n FROM social_media_posts WHERE status = 'published' "
                     "AND publish_platform = 'bluesky' AND published_at LIKE %s",
                     (today + '%',))
-                pub_today = cur.fetchone()[0]
+                _row = cur.fetchone() or {}
+                pub_today = _row.get('n', 0) if hasattr(_row, 'get') else (_row[0] if _row else 0)
                 DAILY_CAP = 3
                 if pub_today >= DAILY_CAP:
                     logger.info(f"Bluesky auto-publisher: already {pub_today} today, skipping")
@@ -775,8 +787,9 @@ def start_bluesky_publisher():
                 # despite being configured). Match LinkedIn's pattern: try
                 # platform-specific first, fall back to any approved post.
                 # Also backlog-drain like LinkedIn.
-                cur.execute("SELECT COUNT(*) FROM social_media_posts WHERE status = 'approved'")
-                _queued = (cur.fetchone() or [0])[0]
+                cur.execute("SELECT COUNT(*) AS n FROM social_media_posts WHERE status = 'approved'")
+                _row = cur.fetchone() or {}
+                _queued = _row.get('n', 0) if hasattr(_row, 'get') else (_row[0] if _row else 0)
                 _drain_budget = (DAILY_CAP - pub_today) if _queued > 10 else 1
                 _attempts = 0
                 while _attempts < _drain_budget:
