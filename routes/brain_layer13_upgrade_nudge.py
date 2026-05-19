@@ -75,7 +75,10 @@ def _candidates(limit: int = 25) -> list[dict]:
         conn = get_db()
         if not conn: return []
         cur = conn.cursor()
-        # Find heavy callers in last 14d
+        # Schema: mcp_tool_calls.api_key_hash, api_keys.key_hash,
+        # api_keys.user_id -> users.email, api_keys.plan (not tier).
+        # Heavy callers in last 14d that have a captured email + are
+        # on the free/identified tier and haven't been nudged in 30d.
         cur.execute("""
             WITH heavy AS (
                 SELECT api_key_hash,
@@ -89,11 +92,12 @@ def _candidates(limit: int = 25) -> list[dict]:
             ),
             with_email AS (
                 SELECT h.api_key_hash, h.calls_14d, h.top_tool,
-                       k.email, k.tier
+                       u.email, COALESCE(k.plan, 'free') AS plan
                 FROM heavy h
-                JOIN api_keys k ON k.api_key_hash = h.api_key_hash
-                WHERE k.email IS NOT NULL AND k.email <> ''
-                  AND (k.tier IS NULL OR k.tier IN ('free', 'identified'))
+                JOIN api_keys k ON k.key_hash = h.api_key_hash
+                JOIN users u    ON u.id = k.user_id
+                WHERE u.email IS NOT NULL AND u.email <> ''
+                  AND COALESCE(k.plan, 'free') IN ('free', 'identified', 'developer')
             ),
             not_recently_nudged AS (
                 SELECT w.* FROM with_email w
@@ -105,7 +109,7 @@ def _candidates(limit: int = 25) -> list[dict]:
                 WHERE n.last_sent IS NULL
                    OR n.last_sent < NOW() - INTERVAL %s
             )
-            SELECT api_key_hash, calls_14d, top_tool, email, tier
+            SELECT api_key_hash, calls_14d, top_tool, email, plan
             FROM not_recently_nudged
             ORDER BY calls_14d DESC
             LIMIT %s
