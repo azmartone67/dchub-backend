@@ -79,6 +79,18 @@ def _http_get(url: str, timeout: int = 8) -> tuple[Optional[str], Optional[dict]
             gh_token = os.environ.get("GITHUB_TOKEN") or os.environ.get("BACKEND_PAT")
             if gh_token:
                 headers["Authorization"] = f"token {gh_token}"
+        # Phase FF+7-meta (2026-05-19): when probing our own paid API
+        # endpoints (dchub.cloud/api/v1/*), include the enterprise key.
+        # Without this, every brain-radar probe to a paid tool gets
+        # 401/403 and the detectors that rely on those probes go blind.
+        # Visible in Railway logs as "[brain-radar] .../fiber/intel HTTP
+        # 401 Unauthorized" — these are noise that hide real signal.
+        elif "dchub.cloud" in url or "dchub-backend-production" in url:
+            api_key = (os.environ.get("DCHUB_INTERNAL_API_KEY")
+                       or os.environ.get("DCHUB_API_KEY")
+                       or os.environ.get("DCHUB_BRAIN_API_KEY") or "").strip()
+            if api_key:
+                headers["X-API-Key"] = api_key
         req = urllib.request.Request(url, headers=headers)
         with urllib.request.urlopen(req, timeout=timeout) as resp:
             return resp.read().decode("utf-8", errors="replace"), dict(resp.headers)
@@ -496,6 +508,54 @@ def check_unsafe_db_conn_pattern() -> list[dict]:
                 "open_count": opens,
                 "finally_count": finallys,
             })
+    return findings
+
+
+def check_ai_citation_new_landing() -> list[dict]:
+    """Phase FF+7-meta (2026-05-19) — celebrate-and-amplify detector.
+    Fires when a NEW ai_citations row landed in the last 24h where
+    dchub_cited=true. Turns the brain into a notifier for citation wins.
+
+    Why this matters: AI citation is the long-game KPI behind the
+    'Switzerland with receipts' positioning. The first one took a year.
+    The brain should make sure the next one isn't missed by ops — we
+    surface it as a finding so the dashboards highlight it.
+    """
+    findings: list[dict] = []
+    try:
+        body, _ = _http_get("http://localhost:8080/api/v1/ai-citations/history",
+                            timeout=5)
+        if not body: return findings
+        import json as _json
+        data = _json.loads(body)
+        obs = data.get("observations") or data.get("recent") or []
+        # Filter to last 24h + dchub_cited
+        from datetime import datetime as _dt, timedelta as _td, timezone as _tz
+        cutoff = _dt.now(_tz.utc) - _td(hours=24)
+        new_wins = []
+        for o in obs:
+            if not o.get("dchub_cited"): continue
+            at = o.get("observed_at") or o.get("at")
+            try:
+                d = _dt.fromisoformat(str(at).replace("Z", "+00:00"))
+                if d > cutoff:
+                    new_wins.append(o)
+            except Exception: continue
+        if new_wins:
+            engines = ", ".join(sorted({w.get("engine", "?") for w in new_wins}))
+            findings.append({
+                "issue": "ai_citation_landed",
+                "url": "/cited-by",
+                "count": len(new_wins),
+                "detail": (f"{len(new_wins)} new AI-citation observation(s) "
+                           f"in the last 24h where dchub.cloud was cited "
+                           f"(engines: {engines}). This is the long-game "
+                           f"KPI behind the positioning. Add to /cited-by "
+                           f"page + tweet a screenshot."),
+                "engines": list(sorted({w.get("engine", "?") for w in new_wins})),
+                "wins": new_wins[:5],
+            })
+    except Exception: pass
     return findings
 
 
@@ -4738,6 +4798,12 @@ def scan_all() -> list[dict]:
                # CLASS that bypasses every other safeguard because the
                # brain is on the unhealthy container.
                check_deploy_queue_churn,
+               # Phase FF+7-meta (2026-05-19) — celebrate-and-amplify
+               # detector. Fires when a new AI-citation observation lands
+               # with dchub_cited=true in the last 24h. Turns wins into
+               # findings so they surface on dashboards. First detected
+               # win: Gemini citing dchub.cloud alongside CBRE+JLL.
+               check_ai_citation_new_landing,
                check_csp_drift,
                check_dcpi_partial_recompute,
                check_discovery_stalled,

@@ -752,7 +752,15 @@ def pg_connection(pool_type=None):
         if conn is not None:
             return_pg_connection(conn)
 
-_HEALTH_MEMORY_THRESHOLD_MB = 2048
+# Phase FF+7-meta (2026-05-19) — bumped 2048 -> 3072. Railway logs on
+# 2026-05-19 ~10:02 UTC showed 3 consecutive "Health check failed: memory"
+# events triggering a watchdog SIGTERM restart. The trigger happened
+# DURING a 56s L8 orchestrator Claude call — the slow request + the
+# brain layers' in-process caches pushed RSS over 2048MB. Railway gives
+# us more memory than 2GB; the threshold was the tighter constraint.
+# Bumping to 3072 buys headroom while we work on the cache-bounding
+# fixes for L8/L14/L18/L19.
+_HEALTH_MEMORY_THRESHOLD_MB = 3072
 
 def get_pool_health():
     """Purely in-memory health check -- NEVER touches the database or pool internals.

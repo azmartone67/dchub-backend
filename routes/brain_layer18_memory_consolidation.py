@@ -398,8 +398,10 @@ def lessons_consolidate():
             return jsonify(error="unauthorized"), 401
     _ensure_table()
     result = _consolidate()
+    # Pop ok out before splatting to avoid duplicate-keyword TypeError
+    _ok = result.pop("ok", False)
     return jsonify(
-        ok=result.get("ok", False),
+        ok=_ok,
         ran_at=_dt.datetime.utcnow().isoformat() + "Z",
         **result,
     )

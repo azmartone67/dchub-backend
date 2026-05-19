@@ -73,11 +73,16 @@ def _fetch_deals(limit: int = 100, offset: int = 0,
                 print(f"[transactions_browser] count failed: {ce}")
                 total = 0
 
-            # SELECT * so any column shape works; we extract what we find
+            # SELECT * so any column shape works; we extract what we find.
+            # Phase FF+7-meta (2026-05-19): deals.date is TEXT (ISO-8601
+            # strings), not DATE. The previous '1970-01-01'::date cast
+            # produced "COALESCE types text and date cannot be matched"
+            # every page render. ISO dates sort lexicographically =
+            # chronologically, so plain text works.
             try:
                 cur.execute(f"""
                     SELECT * FROM deals{where_sql}
-                     ORDER BY COALESCE(date, '1970-01-01'::date) DESC
+                     ORDER BY COALESCE(date, '1970-01-01') DESC
                      LIMIT %s OFFSET %s
                 """, params + [limit, offset])
                 rows = cur.fetchall()
