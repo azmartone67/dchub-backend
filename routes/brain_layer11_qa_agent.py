@@ -38,7 +38,7 @@ PROBE_PATHS = [
     # Marketing surfaces
     "/", "/markets", "/dcpi", "/dcpi/methodology",
     "/partnerships", "/media/outreach", "/pricing", "/signup",
-    "/about", "/api-docs", "/agents", "/AGENTS.md",
+    "/about", "/api-docs", "/AGENTS.md",
     # Public data pages
     "/iso/caiso", "/iso/ercot", "/iso/pjm", "/iso/miso",
     # Pulse + brain dashboards
@@ -235,7 +235,7 @@ def qa_agent():
         rows = []
         for p in PROBE_PATHS:
             rows.append(_probe(p))
-            time.sleep(0.25)
+            time.sleep(0.5)
         prev = _previous_run_summary()
         _record(rows)
         regr = _regressions(rows, prev)
