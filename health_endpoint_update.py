@@ -22,6 +22,7 @@ Replace with the block below:
 
 # ---- COPY FROM HERE ----
 
+# AUTO-REPAIR: duplicate route '/api/health' also in main.py:11670 — review and remove one
 @app.route('/api/health', methods=['GET'])
 def api_health():
     """Health check with data counts for monitoring and failover validation.
