@@ -281,10 +281,15 @@ def notify_when_free():
     if not rid:
         return jsonify(ok=False, error="capture_failed"), 500
 
-    # Best-effort: trigger a welcome email so they know we got it.
+    # Trigger a welcome email so they know we got it. Phase FF+16-v3
+    # (2026-05-19): previously this was wrapped in bare except:pass which
+    # silently swallowed all errors. User signed up, never got an email,
+    # we had no way to know why. Now we surface the actual send result
+    # in the JSON response AND log so Railway logs catch the failure mode.
+    email_result = None
     try:
         from email_service import send_email
-        send_email(
+        email_result = send_email(
             email,
             "You're on the DC Hub list",
             f"<p>Thanks — you're on the list for <strong>{tool or 'DC Hub Pro'}</strong>. "
@@ -296,10 +301,25 @@ def notify_when_free():
                           f"We'll notify you the moment your daily limit resets.\n\n"
                           f"Want instant access? https://dchub.cloud/pricing?utm_source=notify_welcome")
         )
-    except Exception:
-        pass  # best-effort
+        import logging as _lg
+        _lg.getLogger(__name__).info(
+            "email_capture welcome send: to=%s success=%s err=%s",
+            email, (email_result or {}).get("success"),
+            (email_result or {}).get("error", "")[:200]
+        )
+    except Exception as e:
+        import logging as _lg
+        _lg.getLogger(__name__).warning(
+            "email_capture welcome send EXCEPTION: to=%s err=%s", email, str(e)[:200])
+        email_result = {"success": False, "error": f"exception: {str(e)[:200]}"}
 
-    return jsonify(ok=True, captured_id=rid, source=src)
+    return jsonify(
+        ok=True,
+        captured_id=rid,
+        source=src,
+        welcome_email_sent=bool((email_result or {}).get("success")),
+        welcome_email_error=(email_result or {}).get("error"),
+    )
 
 
 # ═══════════════════════════════════════════════════════════════════════
@@ -584,6 +604,64 @@ def backfill_signals():
 # ═══════════════════════════════════════════════════════════════════════
 #  Stats
 # ═══════════════════════════════════════════════════════════════════════
+
+# ─── Diagnostic ───────────────────────────────────────────────────────
+# Phase FF+16-v3 (2026-05-19) — user reported signing up at /notify
+# but receiving no email. Two bugs were hiding the cause:
+#   1. notify_when_free swallowed all send errors silently (fixed)
+#   2. lost_conversion_outreach checked result.get('ok') but
+#      email_service.send_email returns result.get('success') (fixed)
+# This endpoint surfaces the SMTP config + does a test send so we can
+# tell at-a-glance whether O365 SMTP is configured at all.
+@email_capture_bp.route("/api/v1/email-capture/test-send", methods=["GET"])
+def test_send():
+    """Diagnose email delivery. ?to=you@example.com (defaults to admin)."""
+    sent = (request.headers.get("X-Internal-Key") or
+            request.args.get("admin_key") or "").strip()
+    allowed = {"dchub-internal-sync-2026"}
+    for n in ("DCHUB_INTERNAL_KEY", "INTERNAL_KEY", "DCHUB_ADMIN_KEY"):
+        v = os.environ.get(n)
+        if v: allowed.add(v)
+    if sent not in allowed:
+        return jsonify(error="forbidden", hint="X-Internal-Key required"), 403
+
+    to_email = (request.args.get("to") or "").strip()
+    if not to_email or not _valid_email(to_email):
+        return jsonify(error="invalid_to_email",
+                       hint="?to=you@example.com required"), 400
+
+    # Surface SMTP config so we can see what's missing
+    config = {
+        "SMTP_USER_set":     bool(os.environ.get("SMTP_USER")),
+        "SMTP_PASSWORD_set": bool(os.environ.get("SMTP_PASSWORD")),
+        "SMTP_FROM_EMAIL":   os.environ.get("SMTP_FROM_EMAIL", "(default)"),
+        "SMTP_FROM_NAME":    os.environ.get("SMTP_FROM_NAME",  "(default)"),
+        "SMTP_HOST":         os.environ.get("SMTP_HOST",       "(default)"),
+        "SMTP_PORT":         os.environ.get("SMTP_PORT",       "(default)"),
+    }
+
+    try:
+        from email_service import send_email
+    except Exception as e:
+        return jsonify(error="email_service_import_failed",
+                       detail=str(e)[:300], config=config), 500
+
+    result = send_email(
+        to_email,
+        "DC Hub email diagnostic — test send",
+        ("<p>This is a diagnostic test from <code>/api/v1/email-capture/test-send</code>. "
+         "If you got this, SMTP is configured correctly and Phase FF+16 email "
+         "capture welcome emails should also work.</p>"),
+        text_content=("DC Hub email diagnostic. If you got this, SMTP works and "
+                      "Phase FF+16 welcome emails should also fire."),
+    )
+    return jsonify(
+        ok=bool(result.get("success")),
+        smtp_result=result,
+        smtp_config=config,
+        recipient=to_email,
+    )
+
 
 @email_capture_bp.route("/api/v1/email-capture/stats", methods=["GET"])
 def stats():

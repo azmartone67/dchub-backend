@@ -410,17 +410,20 @@ def send():
     for c in cand:
         try:
             msg = _build_email(c)
-            result = send_email(c["email"], msg["subject"], msg["html"], msg["text"])
-            # send_email may return dict {ok: True} or {status: ...}
-            ok = bool(result and (result.get("ok") or result.get("status") == "sent"
-                                  or result.get("success")))
+            # email_service.send_email signature:
+            #   send_email(to_email, subject, html_content, text_content=None)
+            # returns {success: True/False, message_id|error: ...}
+            result = send_email(c["email"], msg["subject"], msg["html"],
+                                text_content=msg["text"])
+            ok = bool(result and result.get("success"))
             if ok:
                 _mark_outreach_sent(c["signal_ids"])
                 sent_ok.append(c["email"])
             else:
-                failed.append({"email": c["email"], "reason": str(result)[:120]})
+                err = (result or {}).get("error") or str(result)[:120]
+                failed.append({"email": c["email"], "reason": err[:200]})
         except Exception as e:
-            failed.append({"email": c["email"], "reason": str(e)[:120]})
+            failed.append({"email": c["email"], "reason": str(e)[:200]})
 
     return jsonify(
         ok=True,
