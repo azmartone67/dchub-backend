@@ -56,6 +56,7 @@ def patch_cors_for_chatgpt(app):
             response.headers["Access-Control-Max-Age"] = "86400"
         return response
 
+# AUTO-REPAIR: duplicate route '/mcp' also in main.py:5318 — review and remove one
     @app.route("/mcp", methods=["OPTIONS"])
     @app.route("/mcp/sse", methods=["OPTIONS"])
     def mcp_cors_preflight():
