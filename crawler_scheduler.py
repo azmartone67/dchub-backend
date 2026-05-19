@@ -580,7 +580,7 @@ def _run_deals_crawler():
                 try:
                     cur.execute("""
                         INSERT INTO deals (id, date, year, buyer, seller, value, type, region, market, source_url, created_at, verified)
-                        VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, NOW(), 0)
+                        VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, NOW() ON CONFLICT DO NOTHING, 0)
                         ON CONFLICT (id) DO NOTHING
                     """, (deal_id, deal_date, deal_year,
                           buyer[:100], 'Undisclosed',

@@ -367,6 +367,7 @@ def _ap_score_site(lat, lon, capacity_mw, genset_mw=None):
 # ------------------------------------------------------------------
 # Flask routes
 # ------------------------------------------------------------------
+# AUTO-REPAIR: duplicate route '/api/infrastructure/air-permitting/nonattainment' also in main.py:20280 — review and remove one
 @app.route('/api/infrastructure/air-permitting/nonattainment', methods=['GET'])
 def ap_nonattainment():
     """EPA Green Book nonattainment GeoJSON for the map overlay."""
@@ -390,6 +391,7 @@ def ap_nonattainment():
                     "data":{"type":"FeatureCollection","features":features},
                     "elapsed_ms":round((_ap_time.time()-_t0)*1000, 2)})
 
+# AUTO-REPAIR: duplicate route '/api/infrastructure/air-permitting/monitors' also in main.py:20304 — review and remove one
 
 @app.route('/api/infrastructure/air-permitting/monitors', methods=['GET'])
 def ap_monitors():
@@ -413,6 +415,7 @@ def ap_monitors():
     return jsonify({"success":True,"count":len(results[:limit]),
                     "data":results[:limit],
                     "elapsed_ms":round((_ap_time.time()-_t0)*1000, 2)})
+# AUTO-REPAIR: duplicate route '/api/infrastructure/air-permitting/class1' also in main.py:20328 — review and remove one
 
 
 @app.route('/api/infrastructure/air-permitting/class1', methods=['GET'])
@@ -420,6 +423,7 @@ def ap_class1():
     """Federal Class I areas (NPS + Wilderness)."""
     _t0 = _ap_time.time()
     return jsonify({"success":True,"count":len(_AP_CLASS1),"data":_AP_CLASS1,
+# AUTO-REPAIR: duplicate route '/api/infrastructure/air-permitting/sites' also in main.py:20336 — review and remove one
                     "elapsed_ms":round((_ap_time.time()-_t0)*1000, 2)})
 
 
@@ -427,6 +431,7 @@ def ap_class1():
 def ap_sites():
     """Sample candidate sites (demo)."""
     _t0 = _ap_time.time()
+# AUTO-REPAIR: duplicate route '/api/infrastructure/air-permitting/score' also in main.py:20344 — review and remove one
     return jsonify({"success":True,"count":len(_AP_SAMPLE_SITES),"data":_AP_SAMPLE_SITES,
                     "elapsed_ms":round((_ap_time.time()-_t0)*1000, 2)})
 
@@ -460,6 +465,7 @@ def ap_score():
         result = _ap_score_site(lat, lon, capacity_mw, genset_mw)
     except Exception as _e:
         return jsonify({"success":False,"error":f"Scoring failed: {_e}"}), 500
+# AUTO-REPAIR: duplicate route '/api/infrastructure/air-permitting/health' also in main.py:20378 — review and remove one
 
     return jsonify({"success":True,"count":1,"data":result,
                     "elapsed_ms":round((_ap_time.time()-_t0)*1000, 2)})
