@@ -179,27 +179,45 @@ _TABLE_ENSURED = False
 
 def _flush_to_db():
     """Write current buffer contents to brain_http_errors."""
-    global _LAST_FLUSH_AT, _TABLE_ENSURED
+    global _LAST_FLUSH_AT
     with _BUFFER_LOCK:
         to_write = list(_ERROR_BUFFER)
         _ERROR_BUFFER.clear()
     _LAST_FLUSH_AT = time.time()
     if not to_write:
         return
-    # Phase FF+7-meta (2026-05-19) — race-condition fix. The flush
-    # thread was starting before _ensure_table() finished, so the
-    # first few flushes failed with "relation brain_http_errors does
-    # not exist". Now we ensure the table exists once at flush time
-    # too, idempotently.
-    if not _TABLE_ENSURED:
-        _ensure_table()
-        _TABLE_ENSURED = True
+    # Phase FF+7-survive (2026-05-19) — final race-condition fix. The
+    # module-level _TABLE_ENSURED flag wasn't shared across worker
+    # processes, so each fresh worker would re-hit "relation does not
+    # exist" once. We now CREATE the table on the SAME connection right
+    # before the inserts run, in the same transaction view. This makes
+    # the operation truly idempotent per-connection.
     try:
         from main import get_db
         conn = get_db()
         if not conn: return
         try:
             cur = conn.cursor()
+            # Ensure table on THIS connection's view before inserting.
+            try:
+                cur.execute("""
+                    CREATE TABLE IF NOT EXISTS brain_http_errors (
+                        id          BIGSERIAL PRIMARY KEY,
+                        occurred_at TIMESTAMPTZ DEFAULT NOW(),
+                        method      TEXT,
+                        path        TEXT,
+                        pattern     TEXT,
+                        status      INTEGER,
+                        referer     TEXT,
+                        body_preview TEXT
+                    )
+                """)
+                cur.execute("CREATE INDEX IF NOT EXISTS idx_http_err_time "
+                            "ON brain_http_errors(occurred_at DESC)")
+                conn.commit()
+            except Exception:
+                try: conn.rollback()
+                except Exception: pass
             for e in to_write:
                 try:
                     cur.execute(
@@ -211,33 +229,18 @@ def _flush_to_db():
                          e["pattern"], e["status"],
                          e["referer"][:300], e["body_preview"][:300]),
                     )
-                except Exception as ie:
-                    # Most likely the table genuinely doesn't exist
-                    # yet — try to create it inline + retry once
-                    if "does not exist" in str(ie).lower():
-                        try: conn.rollback()
-                        except Exception: pass
-                        try:
-                            _ensure_table()
-                            cur.execute(
-                                "INSERT INTO brain_http_errors "
-                                "(occurred_at, method, path, pattern, status, "
-                                " referer, body_preview) "
-                                "VALUES (to_timestamp(%s), %s, %s, %s, %s, %s, %s)",
-                                (e["occurred_at"], e["method"], e["path"],
-                                 e["pattern"], e["status"],
-                                 e["referer"][:300], e["body_preview"][:300]),
-                            )
-                        except Exception: pass
-                    else:
-                        try: conn.rollback()
-                        except Exception: pass
+                except Exception:
+                    try: conn.rollback()
+                    except Exception: pass
             # Trim old rows opportunistically — keep last 7 days
             try:
                 cur.execute("DELETE FROM brain_http_errors "
                             "WHERE occurred_at < NOW() - INTERVAL '7 days'")
+            except Exception:
+                try: conn.rollback()
+                except Exception: pass
+            try: conn.commit()
             except Exception: pass
-            conn.commit()
         finally:
             try: conn.close()
             except Exception: pass

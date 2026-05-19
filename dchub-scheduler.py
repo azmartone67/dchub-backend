@@ -452,11 +452,16 @@ DISABLED_JOBS = {
     # Phase FF+6 (2026-05-18): Brain L11 QA Agent — probes every public
     # surface every 6h. Status, perf, dynamic-vs-static, regressions.
     # Offset :05 so it doesn't collide with L2 (:25) or L8 (:45).
-    'brain_qa_agent_sweep': {
-        'name': 'Brain L11 QA Agent — Surface Sweep',
+    #
+    # Phase FF+7-survive (2026-05-19): DISABLED. Container in crash-loop.
+    # The 240s timeout + N parallel HTTP probes was sitting on memory at
+    # the worst moments. Re-enable after the memory pressure cycle is
+    # closed (likely requires moving QA probes to a separate worker).
+    'brain_qa_agent_sweep_DISABLED': {
+        'name': 'Brain L11 QA Agent — Surface Sweep (DISABLED)',
         'endpoint': '/api/v1/brain/qa-agent',
         'method': 'POST',
-        'hours': [3, 9, 15, 21],
+        'hours': [],
         'minute': 5,
         'timeout': 240,
     },
@@ -498,11 +503,15 @@ DISABLED_JOBS = {
     # User flipped to live mode. Hourly. Reads L21 ring buffer + radar
     # for 404 spikes >=2/hour, opens GitHub issues with the proposed
     # fix. Idempotent via 7-day dedup + slug-keyed targets.
+    #
+    # Phase FF+7-survive (2026-05-19): cut from hourly → 4×/day. Container
+    # was crash-looping; L22 was the most frequent Claude-touching cron.
+    # 4×/day still catches the 404 spike class within the radar window.
     'brain_auto_code_scan': {
-        'name': 'Brain L22 — Auto-Code Scan (LIVE)',
+        'name': 'Brain L22 — Auto-Code Scan (LIVE, 4×/day)',
         'endpoint': '/api/v1/brain/auto-code/run',
         'method': 'POST',
-        'hours': list(range(0, 24)),  # hourly
+        'hours': [4, 10, 16, 22],
         'minute': 50,
         'timeout': 30,
     },
