@@ -267,7 +267,7 @@ def propose_detector():
                 INSERT INTO brain_detector_proposals
                   (scope, based_on_count, detector_name, detector_code,
                    rationale, reviewer_decision)
-                VALUES (%s, %s, %s, %s, %s, 'pending')
+                VALUES (%s, %s, %s, %s, %s, 'pending') ON CONFLICT DO NOTHING
                 RETURNING id, proposed_at
             """, (
                 scope, n_fixes,
