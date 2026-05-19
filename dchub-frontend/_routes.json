@@ -34,7 +34,9 @@
     "/health.json",
     "/qa/*",
     "/scripts/*",
-    "/data/*"
+    "/data/*",
+    "/AGENTS.md",
+    "/iso/*"
   ],
   "exclude": []
 }
