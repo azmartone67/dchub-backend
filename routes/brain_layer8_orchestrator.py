@@ -52,6 +52,16 @@ def _gather_context() -> dict:
     funnel   = _internal("/api/v1/mcp/funnel")
     ws       = _internal("/api/v1/marketing/worker-status")
     outreach = _internal("/api/v1/media/outreach-log")
+    # Phase FF+7 (2026-05-19): include L14 causal chains. L14 finds
+    # root-cause groupings across layers — feeding its output into L8's
+    # prompt gives the orchestrator a head-start on prioritization
+    # ("don't list 46 findings — fix the 2 root causes that produce them").
+    causal   = _internal("/api/v1/brain/causal", 6)
+    # Phase FF+7 (2026-05-19): also include L11 QA results so L8 knows
+    # which surfaces are currently failing/slow without re-probing.
+    qa       = _internal("/api/v1/brain/qa-agent", 6)
+    # Phase FF+7 (2026-05-19): redeem funnel for actual stage-level leak data
+    redeem   = _internal("/api/v1/redeem/funnel-stats", 6)
     # Recent commits via GitHub API
     commits = []
     try:
@@ -99,6 +109,25 @@ def _gather_context() -> dict:
             "reply_rate_pct": outreach.get("reply_rate_pct"),
             "recent":     (outreach.get("log") or [])[:5],
         },
+        # Phase FF+7: L14 causal chains — pre-grouped root causes that
+        # L8 should use as its starting point rather than re-deriving.
+        "causal_chains": (causal.get("analysis") or {}).get("causal_chains", []),
+        "causal_highest_leverage": (causal.get("analysis") or {}).get("single_highest_leverage"),
+        # Phase FF+7: L11 QA — current surface health snapshot.
+        "qa_verdict":   qa.get("verdict"),
+        "qa_errors":    (qa.get("errors") or [])[:5],
+        "qa_slow":      (qa.get("slow_pages") or [])[:5],
+        # Phase FF+7: redeem funnel — actual stage-level numbers, not
+        # just aggregate "0 conversions". Shows WHERE in the funnel
+        # the leak is.
+        "redeem_funnel": {
+            "paywall_hit": (redeem.get("funnel_counts") or {}).get("paywall_hit"),
+            "click":       (redeem.get("funnel_counts") or {}).get("click"),
+            "view":        (redeem.get("funnel_counts") or {}).get("view"),
+            "submit":      (redeem.get("funnel_counts") or {}).get("submit"),
+            "upgrade":     (redeem.get("funnel_counts") or {}).get("upgrade"),
+            "biggest_leak": redeem.get("biggest_leak"),
+        },
         "recent_commits": commits,
     }
 
@@ -115,9 +144,19 @@ def _build_prompt(ctx: dict) -> str:
     return f"""You are the DC Hub brain Orchestrator (L8). You see EVERYTHING:
 detector findings, memory of past fixes, velocity predictions, proposed
 new detectors, funnel state, publisher state, journalist outreach log,
-and the last 24h of git commits.
+last 24h of git commits, L14's pre-computed CAUSAL CHAINS (cross-layer
+root-cause groupings), L11 QA verdict + current errors/slow pages,
+and the REAL redeem-funnel stage counts (paywall_hit -> click -> view
+-> submit -> upgrade).
 
 Synthesize one prioritized action plan for the founder.
+
+Key heuristic: if `causal_chains` in the context is non-empty, those are
+already-grouped root causes (L14 ran cross-layer analysis). Use them
+as your starting point — don't re-derive the same conclusions from
+individual findings. The `causal_highest_leverage` field names the one
+chain L14 marked as highest impact. Promote that to action #1 unless
+you have strong reason otherwise.
 
 Context:
 {json.dumps(ctx, indent=2, default=str)[:8000]}
