@@ -29,8 +29,8 @@ brain_layer12_bp = Blueprint("brain_layer12", __name__)
 
 def _ensure_table():
     try:
-        from main import get_db_conn  # type: ignore
-        conn = get_db_conn()
+        from main import get_db  # type: ignore
+        conn = get_db()
         if not conn: return False
         cur = conn.cursor()
         cur.execute("""
@@ -117,8 +117,8 @@ def _count_pub_channels() -> int:
 
 def _count_db_tables() -> int:
     try:
-        from main import get_db_conn  # type: ignore
-        conn = get_db_conn()
+        from main import get_db  # type: ignore
+        conn = get_db()
         if not conn: return 0
         cur = conn.cursor()
         cur.execute("SELECT COUNT(*) FROM information_schema.tables "
@@ -166,8 +166,8 @@ def _current_snapshot() -> dict:
 def _save_snapshot(snap: dict):
     if not _ensure_table(): return
     try:
-        from main import get_db_conn  # type: ignore
-        conn = get_db_conn()
+        from main import get_db  # type: ignore
+        conn = get_db()
         if not conn: return
         cur = conn.cursor()
         cur.execute(
@@ -190,8 +190,8 @@ def _save_snapshot(snap: dict):
 
 def _historical(days: int) -> dict | None:
     try:
-        from main import get_db_conn  # type: ignore
-        conn = get_db_conn()
+        from main import get_db  # type: ignore
+        conn = get_db()
         if not conn: return None
         cur = conn.cursor()
         cur.execute(

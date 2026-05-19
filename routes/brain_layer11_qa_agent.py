@@ -71,8 +71,8 @@ _TIMEOUT = 12
 def _ensure_table():
     """Idempotent: create brain_qa_probes table if missing."""
     try:
-        from main import get_db_conn  # type: ignore
-        conn = get_db_conn()
+        from main import get_db  # type: ignore
+        conn = get_db()
         if not conn: return False
         cur = conn.cursor()
         cur.execute("""
@@ -159,8 +159,8 @@ def _probe(path: str) -> dict:
 def _record(rows: list[dict]):
     if not _ensure_table(): return
     try:
-        from main import get_db_conn  # type: ignore
-        conn = get_db_conn()
+        from main import get_db  # type: ignore
+        conn = get_db()
         if not conn: return
         cur = conn.cursor()
         for r in rows:
@@ -187,8 +187,8 @@ def _previous_run_summary() -> dict:
     """Pull most-recent-but-one probe per path, for regression diffing."""
     out = {}
     try:
-        from main import get_db_conn  # type: ignore
-        conn = get_db_conn()
+        from main import get_db  # type: ignore
+        conn = get_db()
         if not conn: return out
         cur = conn.cursor()
         cur.execute("""
@@ -262,8 +262,8 @@ def qa_agent():
 
     # GET — cached summary from latest run
     try:
-        from main import get_db_conn  # type: ignore
-        conn = get_db_conn()
+        from main import get_db  # type: ignore
+        conn = get_db()
         if not conn:
             return jsonify(ok=False, error="db unavailable"), 503
         cur = conn.cursor()
@@ -319,8 +319,8 @@ def qa_history():
     if not path:
         return jsonify(ok=False, error="missing path param"), 400
     try:
-        from main import get_db_conn  # type: ignore
-        conn = get_db_conn()
+        from main import get_db  # type: ignore
+        conn = get_db()
         if not conn:
             return jsonify(ok=False, error="db unavailable"), 503
         cur = conn.cursor()
