@@ -481,6 +481,7 @@ def register_smoke_routes(app):
 
     expected = os.environ.get('DCHUB_ADMIN_KEY') or os.environ.get('DAILY_ADMIN_KEY', '')
 
+# AUTO-REPAIR: duplicate route '/api/admin/smoke-test' also in smoke_test.py:320 — review and remove one
     @app.route('/api/admin/smoke-test', methods=['GET', 'POST'])
     def _smoke_test_endpoint():
         provided = (
