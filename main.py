@@ -1416,6 +1416,18 @@ try:
     except Exception as _fppe:
         import logging
         logging.getLogger(__name__).warning('facility_profile wiring failed: %s', _fppe)
+    # Phase FF+7-mttr5 (2026-05-19): Brain L22 — Auto-Code Layer.
+    # Reads consistency-radar findings, matches whitelisted fix
+    # recipes (route-alias for 404 patterns, etc.), drafts an Issue
+    # with the proposed diff. DRY_RUN=true by default. Real PR-write
+    # is the next iteration — MVP opens issues so the operator can
+    # one-click apply the change.
+    try:
+        from routes.brain_layer22_auto_code import brain_layer22_bp
+        app.register_blueprint(brain_layer22_bp)
+    except Exception as _l22e:
+        import logging
+        logging.getLogger(__name__).warning('brain_layer22 wiring failed: %s', _l22e)
     # Phase FF+7 (2026-05-19): Brain L15 — Auto-Action. Reads L14's
     # high-confidence chains and auto-opens a GitHub issue for each one
     # with a concrete fix. Closes the loop from "brain finds" → "work
@@ -2218,6 +2230,33 @@ except Exception as _it2_err:
     print('[iteration2] FAILED:', repr(_it2_err), flush=True)
     _it2_tb.print_exc()
 # === end iteration 2 ===
+
+
+# Phase FF+7-meta (2026-05-19): /api/v1/explorer alias — the frontend
+# links to /api/v1/explorer from the map sidebar + press releases, but
+# the actual endpoint is /api/v1/search/semantic. Add a route that
+# returns a usage hint (NOT a raw 302 — better UX) and a sample
+# call so visitors who land here see what to do.
+@app.route('/api/v1/explorer', methods=['GET'])
+def _explorer_landing():
+    """User-facing API documentation for the semantic search endpoint.
+    The frontend used to link here and 404 — now visitors land on a
+    helpful JSON shape with example queries + the real endpoint URL."""
+    return jsonify({
+        "ok": True,
+        "endpoint_name": "DC Hub Semantic Search Explorer",
+        "real_endpoint": "/api/v1/search/semantic",
+        "usage": "GET /api/v1/search/semantic?q=<text>&topK=10&hydrate=true",
+        "example_queries": [
+            "/api/v1/search/semantic?q=hyperscale+campus+austin&topK=10",
+            "/api/v1/search/semantic?q=fiber+routes+lancaster&topK=5",
+            "/api/v1/search/semantic?q=ERCOT+interconnection+queue",
+        ],
+        "filters": ["grid", "states", "provider", "country", "min_mw"],
+        "note": "Powered by Cloudflare Vectorize over 21,000+ facilities. "
+                "Free tier returns top-3 results; identified tier returns top-10; "
+                "paid tier returns full topK + match scores.",
+    }), 200
 
 
 # === Iteration 3: semantic search via Cloudflare Vectorize ===

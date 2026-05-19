@@ -57,16 +57,22 @@ echo
 
 # ─── 2. Is Railway healthy RIGHT NOW? ────────────────────────────
 echo "[2/4] Checking Railway health..."
+# Phase FF+7-meta (2026-05-19): on curl total-failure, %{http_code}
+# can be empty which the OR-echo replaces with "000". But sometimes
+# the empty echo concatenates with a prior "000" giving "000000".
+# Treat anything non-200 as risky.
 http=$(/usr/bin/curl -s -m 8 -o /dev/null -w "%{http_code}" \
-  "https://dchub-backend-production.up.railway.app/api/health" 2>/dev/null || echo "000")
+  "https://dchub-backend-production.up.railway.app/api/health" 2>/dev/null)
+[ -z "$http" ] && http="000"
 if [ "$http" = "200" ]; then
   green "  ✓ Railway origin: HTTP $http"
-elif [ "$http" = "503" ] || [ "$http" = "000" ]; then
+elif [ "$http" = "503" ] || [ "$http" = "000" ] || [ "$http" = "000000" ] || [ "$http" = "502" ]; then
   red "  ✗ Railway origin: HTTP $http (degraded or down)"
   red "    Pushing now will pile on top of a broken deploy. WAIT for recovery."
   FAIL=1
 else
-  yellow "  ⚠ Railway origin: HTTP $http (unusual)"
+  yellow "  ⚠ Railway origin: HTTP $http (unusual — treating as risky)"
+  FAIL=1
 fi
 echo
 

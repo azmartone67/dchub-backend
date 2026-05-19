@@ -81,6 +81,17 @@ def stripe_webhook_alert():
     client_error = data.get('error', 'Plan not activated after payment')
     now = datetime.now(timezone.utc).isoformat()
 
+    # Phase FF+7-meta (2026-05-19): silently drop test-email noise so the
+    # admin email + log spam stops. Real customers don't match these.
+    _SUPPRESSED_EMAILS = {"qa-test@dchub.cloud", "test@dchub.cloud",
+                           "qa@dchub.cloud", "stripe-test@dchub.cloud"}
+    if email in _SUPPRESSED_EMAILS or email.endswith("@example.com"):
+        logger.info(
+            "STRIPE ALERT suppressed (test email): email=%s plan=%s",
+            email, expected_plan)
+        return jsonify({"ok": True, "suppressed": True,
+                         "reason": "test_email"}), 200
+
     logger.warning(
         "STRIPE ALERT: Plan not activated — email=%s plan=%s session=%s error=%s"
         % (email, expected_plan, session_id, client_error)
