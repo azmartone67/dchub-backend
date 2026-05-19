@@ -494,13 +494,13 @@ DISABLED_JOBS = {
         'minute': 30,
         'timeout': 30,
     },
-    # Phase FF+7-mttr5 (2026-05-19): Brain L22 — Auto-Code dry-run.
-    # Hourly scan of consistency-radar for matched fix recipes. Default
-    # DRY_RUN=true so it just LOGS what would be drafted. To enable
-    # live issue creation, set AUTO_CODE_DRY_RUN=0 in Railway env.
+    # Phase FF+7-mttr5 (2026-05-19): Brain L22 — Auto-Code LIVE.
+    # User flipped to live mode. Hourly. Reads L21 ring buffer + radar
+    # for 404 spikes >=2/hour, opens GitHub issues with the proposed
+    # fix. Idempotent via 7-day dedup + slug-keyed targets.
     'brain_auto_code_scan': {
-        'name': 'Brain L22 — Auto-Code Scan (dry-run by default)',
-        'endpoint': '/api/v1/brain/auto-code/dry-run',
+        'name': 'Brain L22 — Auto-Code Scan (LIVE)',
+        'endpoint': '/api/v1/brain/auto-code/run',
         'method': 'POST',
         'hours': list(range(0, 24)),  # hourly
         'minute': 50,

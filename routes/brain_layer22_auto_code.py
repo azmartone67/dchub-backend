@@ -61,7 +61,10 @@ brain_layer22_bp = Blueprint("brain_layer22", __name__)
 _GITHUB_TOKEN = (os.environ.get("GITHUB_TOKEN") or "").strip()
 _GITHUB_REPO = (os.environ.get("GITHUB_REPO") or "azmartone67/dchub-backend").strip()
 _ADMIN_KEY = (os.environ.get("DCHUB_ADMIN_KEY") or "").strip()
-_DRY_RUN = os.environ.get("AUTO_CODE_DRY_RUN", "1") == "1"  # SAFE DEFAULT: dry-run
+# Phase FF+7-meta (2026-05-19): default flipped to LIVE — user wants
+# L22 actually opening issues now. Set AUTO_CODE_DRY_RUN=1 in Railway
+# env to revert to dry-run-only mode if it gets too noisy.
+_DRY_RUN = os.environ.get("AUTO_CODE_DRY_RUN", "0") == "1"
 _MAX_DIFF_LINES = int(os.environ.get("AUTO_CODE_MAX_DIFF_LINES", "20"))
 _DEDUP_WINDOW_DAYS = 7
 
@@ -353,27 +356,109 @@ def _record(draft, dry_run, pr_url, pr_number, branch, error):
 
 # ── Main scanner ────────────────────────────────────────────────────
 
+def _try_recipe_missing_route(pattern_key: str, count: int) -> dict | None:
+    """For any 404 pattern with no route alias match, open an issue
+    suggesting the operator add the route OR fix the frontend caller.
+    Lower confidence than route_alias but still actionable."""
+    # pattern_key looks like "GET /api/ai-analytics [404]"
+    import re
+    m = re.match(r"(\w+)\s+(/\S+)\s+\[(\d+)\]", pattern_key)
+    if not m: return None
+    method, path, status = m.group(1), m.group(2), m.group(3)
+    if status != "404": return None
+    if _is_forbidden_path(path): return None
+    if _already_drafted("missing_api_route", path):
+        return None
+
+    title = f"[brain-l22] 404 spike on {method} {path} ({count}x in 1h)"
+    return {
+        "recipe": "missing_api_route",
+        "target_path": path,
+        "title": title,
+        "body": _build_pr_body(
+            recipe="missing_api_route",
+            trigger={"method": method, "path": path, "count": count, "status": 404},
+            target=path,
+            diff_summary=(
+                f"Add a backend handler for `{method} {path}` OR fix the "
+                f"frontend caller that's hitting this path. Search the "
+                f"frontend for the literal string `{path}` to find the "
+                f"broken link."),
+            rationale=(
+                f"The L21 HTTP capture ring buffer recorded {count}x 404s "
+                f"on this path in the last hour. Either the backend is "
+                f"missing this route entirely (add it) or the frontend is "
+                f"hitting a typo (fix the href). Today's pattern: many "
+                f"singular/plural mismatches like /facility/<slug> vs "
+                f"/facilities/<slug>."),
+            verification=(
+                f"After fix, curl {path} — should be 200 (or whatever "
+                f"intended status). The L21 detector should stop firing "
+                f"on this pattern within an hour."),
+        ),
+        "labels": ["brain-l22-auto-code", "recipe-missing-route",
+                   "confidence-medium"],
+    }
+
+
 def _scan_and_draft(dry_run: bool) -> dict:
-    """Pull recent findings + L21 actions; match against recipes; draft."""
+    """Pull recent findings + L21 ring buffer; match against recipes; draft.
+
+    Phase FF+7-meta (2026-05-19): wired DIRECTLY to L21's
+    /api/v1/brain/http-errors/patterns endpoint. The radar's
+    check_repeated_404_patterns detector requires 10 hits/hour which
+    is too high for fresh-deploy traffic. The ring buffer threshold
+    here is 2 hits/hour — lower friction, more actionable.
+    """
     drafted = []
     skipped = []
 
-    # 1. From consistency-radar
-    radar = _internal("/api/v1/brain/consistency-radar")
-    findings = radar.get("findings") or []
-    for f in findings:
-        if f.get("issue") != "repeated_404_pattern":
-            continue
-        draft = _try_recipe_route_alias(f)
-        if draft:
+    # 1. From L21 ring buffer (real-time, fresh)
+    try:
+        patterns = _internal("/api/v1/brain/http-errors/patterns?window=3600")
+        for p in (patterns.get("patterns") or []):
+            key = p.get("pattern", "")
+            n = int(p.get("count", 0))
+            if n < 2: continue
+            if "[404]" not in key: continue
+            # Try route-alias first (singular/plural)
+            synthetic = {
+                "url": (key.split(" ", 1)[1].rsplit(" ", 1)[0]
+                        if " " in key else key),
+                "count": n,
+                "confidence": "medium",
+            }
+            draft = _try_recipe_route_alias(synthetic)
+            if not draft:
+                draft = _try_recipe_missing_route(key, n)
+            if not draft:
+                skipped.append({"pattern": key, "count": n,
+                                "reason": "no matching recipe / forbidden / dedup"})
+                continue
             res = _draft_pr(draft, dry_run=dry_run)
             (drafted if res.get("ok") else skipped).append({
                 "recipe": draft["recipe"], "title": draft["title"],
+                "pattern": key, "count": n,
                 "result": res,
             })
-        else:
-            skipped.append({"finding": f.get("url"),
-                             "reason": "no matching recipe / forbidden / dedup"})
+    except Exception as e:
+        skipped.append({"reason": f"L21 read failed: {e}"})
+
+    # 2. Also scan consistency-radar (slow, but covers older patterns)
+    try:
+        radar = _internal("/api/v1/brain/consistency-radar")
+        findings = radar.get("findings") or []
+        for f in findings:
+            if f.get("issue") != "repeated_404_pattern":
+                continue
+            draft = _try_recipe_route_alias(f)
+            if draft:
+                res = _draft_pr(draft, dry_run=dry_run)
+                (drafted if res.get("ok") else skipped).append({
+                    "recipe": draft["recipe"], "title": draft["title"],
+                    "result": res,
+                })
+    except Exception: pass
 
     return {
         "ok": True,
