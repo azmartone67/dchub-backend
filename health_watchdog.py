@@ -56,13 +56,22 @@ class HealthWatchdog:
             return False, f"PostgreSQL error: {str(e)[:100]}"
 
     def _check_memory(self):
+        # Phase FF+7-survive (2026-05-19): RAISED from 450MB → 2200MB.
+        # The old 450MB limit was set when the app had ~20 blueprints;
+        # we now register 60+, so steady-state RSS is ~460MB which
+        # tripped the watchdog every 60s × 3 = 3 min into a kill cycle.
+        # 2200MB matches the L20 durability soft-limit (70% of the
+        # 3072MB ceiling reported by /api/v1/health). Configurable via
+        # WATCHDOG_PROCESS_MEMORY_LIMIT_MB env var if you need to
+        # adjust without a deploy.
         try:
+            limit_mb = int(os.environ.get("WATCHDOG_PROCESS_MEMORY_LIMIT_MB", "2200"))
             process = psutil.Process(os.getpid())
             mem_mb = process.memory_info().rss / (1024 * 1024)
             mem_percent = psutil.virtual_memory().percent
-            if mem_mb > 450:
-                return False, f"Process memory critical: {mem_mb:.0f}MB (limit 450MB)"
-            if mem_percent > 90:
+            if mem_mb > limit_mb:
+                return False, f"Process memory critical: {mem_mb:.0f}MB (limit {limit_mb}MB)"
+            if mem_percent > 95:
                 return False, f"System memory critical: {mem_percent:.0f}% used, process {mem_mb:.0f}MB"
             return True, f"ok ({mem_mb:.0f}MB process, {mem_percent:.0f}% system)"
         except Exception as e:

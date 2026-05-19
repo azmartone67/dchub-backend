@@ -15250,8 +15250,14 @@ try:
     # its first check — so eager init carries no real startup cost and
     # the endpoint starts answering 200 immediately.
     try:
-        init_watchdog(app, check_interval=60, max_failures=3)
-        print("🐕 Health Watchdog: ✅ Running (check every 60s, restart after 3 failures)")
+        # Phase FF+7-survive (2026-05-19): RAISED 60s/3 → 90s/5. The old
+        # 60s × 3 = 3 min restart cycle was too tight: a single slow
+        # Claude call on L8 already holds a worker for 30–45s, so a
+        # transient bg-thread spike was enough to land us in a kill
+        # loop. 90s × 5 = 7.5 min gives the L20 durability layer time
+        # to step in before the watchdog goes nuclear.
+        init_watchdog(app, check_interval=90, max_failures=5)
+        print("🐕 Health Watchdog: ✅ Running (check every 90s, restart after 5 failures)")
     except Exception as e:
         print(f"⚠️ Health Watchdog: Failed to start: {e}")
 except ImportError:
