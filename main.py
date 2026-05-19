@@ -1332,6 +1332,16 @@ try:
     except Exception as _l14e:
         import logging
         logging.getLogger(__name__).warning('brain_layer14 wiring failed: %s', _l14e)
+    # Phase FF+7 (2026-05-19): Brain L15 — Auto-Action. Reads L14's
+    # high-confidence chains and auto-opens a GitHub issue for each one
+    # with a concrete fix. Closes the loop from "brain finds" → "work
+    # queue" without requiring a human to be reading the dashboards.
+    try:
+        from routes.brain_layer15_auto_action import brain_layer15_bp
+        app.register_blueprint(brain_layer15_bp)
+    except Exception as _l15e:
+        import logging
+        logging.getLogger(__name__).warning('brain_layer15 wiring failed: %s', _l15e)
     # Phase RRR-newsletter-hotfix3 (2026-05-18): registering via a
     # routes/*.py module silently failed for reasons we couldn't
     # diagnose live. Switching to inline-route definitions on the

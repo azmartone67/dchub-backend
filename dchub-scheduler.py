@@ -475,6 +475,17 @@ DISABLED_JOBS = {
         'minute': 15,
         'timeout': 90,
     },
+    # Phase FF+7 (2026-05-19): Brain L15 auto-action — scans L14's
+    # high-confidence chains and opens GitHub issues. Runs at :20,
+    # 5min after L14 lands the analysis. Idempotent (7d dedup).
+    'brain_auto_action': {
+        'name': 'Brain L15 — Auto-Action (GitHub issues)',
+        'endpoint': '/api/v1/brain/auto-action/run',
+        'method': 'POST',
+        'hours': [3, 9, 15, 21],
+        'minute': 20,
+        'timeout': 60,
+    },
     # Press queue scan: detects new auto-press triggers (DCPI movers,
     # facility events). Every 4h, staggered :50.
     'press_queue_scan': {
