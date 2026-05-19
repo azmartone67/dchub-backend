@@ -47,7 +47,7 @@ PROBE_PATHS = [
     "/api/health",
     "/api/v1/stats",
     "/api/v1/energy/summary",
-    "/api/v1/markets/snapshot",
+    "/api/v1/markets/list",
     "/api/v1/brain/orchestrator",
     "/api/v1/brain/consistency-radar",
     "/api/v1/brain/memory/stats",
@@ -230,7 +230,12 @@ def _regressions(current: list[dict], previous: dict) -> list[dict]:
 def qa_agent():
     """Run the QA sweep (POST) or read the latest sweep summary (GET)."""
     if request.method == "POST":
-        rows = [_probe(p) for p in PROBE_PATHS]
+        # Probe with a small inter-request pause so we don't trip our own
+        # rate limiter (which fired 429s on /iso/* and /brain on first run).
+        rows = []
+        for p in PROBE_PATHS:
+            rows.append(_probe(p))
+            time.sleep(0.25)
         prev = _previous_run_summary()
         _record(rows)
         regr = _regressions(rows, prev)

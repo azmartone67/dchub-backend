@@ -71,11 +71,40 @@ _BACKEND_ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 
 
 def _count_detectors() -> int:
+    """Count `def check_...(` in brain_consistency_radar.py (now under routes/)."""
+    import re
+    for candidate in (
+        os.path.join(_BACKEND_ROOT, "routes", "brain_consistency_radar.py"),
+        os.path.join(_BACKEND_ROOT, "brain_consistency_radar.py"),
+    ):
+        try:
+            with open(candidate, "rb") as f:
+                src = f.read().decode("utf-8", "ignore")
+            n = len(re.findall(r"^def check_\w+\(", src, re.MULTILINE))
+            if n: return n
+        except Exception: continue
+    return 0
+
+
+def _count_cron_jobs() -> int:
+    """Count entries in the JOBS dict in dchub-scheduler.py."""
     try:
-        import re
-        with open(os.path.join(_BACKEND_ROOT, "brain_consistency_radar.py"), "rb") as f:
+        with open(os.path.join(_BACKEND_ROOT, "dchub-scheduler.py"), "rb") as f:
             src = f.read().decode("utf-8", "ignore")
-        return len(re.findall(r"^def check_\w+\(", src, re.MULTILINE))
+        # Each job is a top-level key in JOBS = { ... } with a 'name' field
+        return src.count("'name':")
+    except Exception:
+        return 0
+
+
+def _count_journalists() -> int:
+    try:
+        # The list is named _JOURNALISTS (underscore-prefixed) in media_outreach
+        from routes import media_outreach as _mo  # type: ignore
+        for attr in ("JOURNALISTS", "_JOURNALISTS"):
+            v = getattr(_mo, attr, None)
+            if isinstance(v, (list, tuple)): return len(v)
+        return 0
     except Exception:
         return 0
 
@@ -85,23 +114,6 @@ def _count_brain_layers() -> int:
         d = os.path.join(_BACKEND_ROOT, "routes")
         return len([f for f in os.listdir(d)
                     if f.startswith("brain_layer") and f.endswith(".py")])
-    except Exception:
-        return 0
-
-
-def _count_cron_jobs() -> int:
-    try:
-        with open(os.path.join(_BACKEND_ROOT, "dchub-scheduler.py"), "rb") as f:
-            src = f.read().decode("utf-8", "ignore")
-        return src.count("scheduler.add_job(") or src.count(".add_job(")
-    except Exception:
-        return 0
-
-
-def _count_journalists() -> int:
-    try:
-        from routes.media_outreach import JOURNALISTS  # type: ignore
-        return len(JOURNALISTS)
     except Exception:
         return 0
 
