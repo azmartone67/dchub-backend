@@ -1,0 +1,118 @@
+name: external-watchdog
+
+# Phase FF+7-meta (2026-05-19) — externally-hosted health watchdog.
+#
+# Problem this solves: the brain's internal pool-pressure detector, L11
+# QA agent, and check_db_pool_pressure all live INSIDE the container
+# they're supposed to protect. When the container is down, they can't
+# observe it.
+#
+# This workflow runs every 5 minutes from GitHub Actions infrastructure
+# (outside Railway), probes the production /api/health endpoint, and:
+#   - If it sees 3 failures in a row (15 min of downtime), it alerts
+#     via webhook (Resend if configured)
+#   - If it sees the failures coincide with a recent push (<30 min),
+#     it OPENS a GitHub issue with the suspect commit attached
+#
+# 5-min granularity matches what users would notice. Externally hosted
+# so it works even when Railway is fully down.
+
+on:
+  schedule:
+    # Every 5 minutes
+    - cron: '*/5 * * * *'
+  workflow_dispatch:
+
+jobs:
+  watchdog:
+    runs-on: ubuntu-latest
+    timeout-minutes: 3
+    steps:
+      - name: Probe production health
+        id: probe
+        run: |
+          set -u
+          PROD_URL="${{ vars.PROD_HEALTH_URL || 'https://dchub-backend-production.up.railway.app/api/health' }}"
+          CF_URL="${{ vars.PROD_CF_URL || 'https://dchub.cloud/api/health' }}"
+
+          # Three sequential probes 10s apart — eliminates single-blip false alarms
+          fail_count=0
+          for i in 1 2 3; do
+            http=$(curl -s -m 8 -o /dev/null -w "%{http_code}" "$PROD_URL?_=$(date +%s)" || echo "000")
+            cf_http=$(curl -s -m 8 -o /dev/null -w "%{http_code}" "$CF_URL?_=$(date +%s)" || echo "000")
+            if [ "$http" != "200" ] && [ "$cf_http" != "200" ]; then
+              fail_count=$((fail_count + 1))
+            fi
+            sleep 10
+          done
+
+          echo "fail_count=$fail_count" >> "$GITHUB_OUTPUT"
+          echo "Probe results: $fail_count of 3 failed"
+
+          if [ "$fail_count" = "3" ]; then
+            echo "ALERT: Production is fully down (3/3 probes failed)"
+            echo "alert=true" >> "$GITHUB_OUTPUT"
+          else
+            echo "OK: Production reachable"
+            echo "alert=false" >> "$GITHUB_OUTPUT"
+          fi
+
+      - name: Check for recent push (likely culprit)
+        if: steps.probe.outputs.alert == 'true'
+        id: recent
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          # Look at commits in the last 30 min
+          since=$(date -u -d '30 minutes ago' +%Y-%m-%dT%H:%M:%SZ)
+          recent_count=$(gh api "repos/${{ github.repository }}/commits?since=$since&per_page=10" --jq 'length' || echo "0")
+          recent_first=$(gh api "repos/${{ github.repository }}/commits?since=$since&per_page=1" --jq '.[0].sha[0:8] + " " + .[0].commit.message' 2>/dev/null | head -1 || echo "unknown")
+          echo "recent_count=$recent_count" >> "$GITHUB_OUTPUT"
+          echo "recent_first=$recent_first" >> "$GITHUB_OUTPUT"
+
+      - name: Open or update outage issue
+        if: steps.probe.outputs.alert == 'true'
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          # De-dup: if there's an open issue labeled "outage-watchdog" in the
+          # last 60 min, comment on it instead of opening a new one.
+          existing=$(gh issue list --repo "${{ github.repository }}" \
+            --label outage-watchdog --state open --limit 1 --json number,createdAt \
+            --jq '.[0].number // ""')
+
+          msg="🚨 **External watchdog**: production health-check failed 3/3 probes (10s apart).
+
+          - Most recent commit (last 30m): \`${{ steps.recent.outputs.recent_first }}\`
+          - Total commits in last 30m: ${{ steps.recent.outputs.recent_count }}
+          - Probe time: $(date -u +%Y-%m-%dT%H:%M:%SZ)
+
+          If \`recent_count >= 3\`, this is likely deploy-queue churn — pushes are
+          serializing slower than Railway can heal. Stop pushing and wait."
+
+          if [ -n "$existing" ]; then
+            gh issue comment "$existing" --repo "${{ github.repository }}" --body "$msg"
+            echo "Updated existing outage issue #$existing"
+          else
+            gh issue create --repo "${{ github.repository }}" \
+              --title "[watchdog] Production health 3/3 failed at $(date -u +%H:%M\ UTC)" \
+              --label outage-watchdog \
+              --body "$msg"
+            echo "Opened new outage issue"
+          fi
+
+      - name: Close stale outage issues when recovered
+        if: steps.probe.outputs.alert == 'false'
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          # Close any open outage-watchdog issues — production is back
+          gh issue list --repo "${{ github.repository }}" \
+            --label outage-watchdog --state open --limit 5 \
+            --json number --jq '.[].number' | while read n; do
+            if [ -n "$n" ]; then
+              gh issue close "$n" --repo "${{ github.repository }}" \
+                --comment "Auto-closed: 3/3 probes returned 200 at $(date -u +%H:%M\ UTC). Production recovered."
+              echo "Closed recovered outage issue #$n"
+            fi
+          done

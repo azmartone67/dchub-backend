@@ -499,6 +499,65 @@ def check_unsafe_db_conn_pattern() -> list[dict]:
     return findings
 
 
+def check_deploy_queue_churn() -> list[dict]:
+    """Phase FF+7-meta (2026-05-19) — detect the outage class triggered
+    by rapid-fire commits.
+
+    Two confirmed outages this week (~30 min each) had the same shape:
+      - 5-8 commits pushed in <30 min
+      - Railway serializes deploys at 2-3 min each
+      - Net: deploy queue saturated, intermediate states unhealthy
+      - Brain's INTERNAL detectors can't fire because they live on
+        the unhealthy container
+
+    This static detector pulls recent commit timestamps from the GitHub
+    API and flags when push velocity exceeds Railway's deploy throughput.
+    Visible from inside the brain so we can ATTRIBUTE outages to push
+    velocity in retrospect.
+
+    Threshold: >=4 commits in the last 30 min from any author = warn.
+    """
+    findings: list[dict] = []
+    import os as _os
+    token = _os.environ.get("GITHUB_TOKEN", "").strip()
+    if not token:
+        return findings  # need a token to read API; fail closed
+    try:
+        import urllib.request as _ur, json as _json, datetime as _dt
+        since = (_dt.datetime.utcnow() - _dt.timedelta(minutes=30)).isoformat() + "Z"
+        repo = _os.environ.get("GITHUB_REPO", "azmartone67/dchub-backend").strip()
+        req = _ur.Request(
+            f"https://api.github.com/repos/{repo}/commits?since={since}&per_page=20",
+            headers={"Accept": "application/vnd.github+json",
+                     "Authorization": f"Bearer {token}"},
+        )
+        with _ur.urlopen(req, timeout=8) as resp:
+            commits = _json.loads(resp.read().decode("utf-8"))
+        n = len(commits) if isinstance(commits, list) else 0
+        if n >= 4:
+            first_msg = (commits[0].get("commit", {}).get("message", "")
+                          .split("\n")[0])[:80]
+            last_msg = (commits[-1].get("commit", {}).get("message", "")
+                         .split("\n")[0])[:80]
+            findings.append({
+                "issue": "deploy_queue_churn",
+                "url": f"https://github.com/{repo}/commits/main",
+                "count": n,
+                "detail": (f"{n} commits pushed in the last 30 min. "
+                           f"Railway serializes deploys at 2-3 min each — "
+                           f"this saturates the queue and produced 2 "
+                           f"outages this week (each ~30 min). Recent commits: "
+                           f"newest='{first_msg}', oldest='{last_msg}'. "
+                           f"Recommend: rate-limit pushes to 1 per 5 min "
+                           f"on fragile files (publishers, brain layers, "
+                           f"main.py)."),
+                "commit_count": n,
+            })
+    except Exception:
+        pass
+    return findings
+
+
 def check_db_pool_pressure() -> list[dict]:
     """Phase FF+7-fix4 (2026-05-19) — early-warning detector for the
     pool-exhaustion class of outage that took Railway down for 30 min
@@ -4674,6 +4733,11 @@ def scan_all() -> list[dict]:
                # finally: blocks. Closes the discovery loop for the leak
                # class that caused the outage. Lightweight (no HTTP).
                check_unsafe_db_conn_pattern,
+               # Phase FF+7-meta (2026-05-19) — detects rapid-fire commits
+               # saturating Railway's deploy queue. Catches the outage
+               # CLASS that bypasses every other safeguard because the
+               # brain is on the unhealthy container.
+               check_deploy_queue_churn,
                check_csp_drift,
                check_dcpi_partial_recompute,
                check_discovery_stalled,
