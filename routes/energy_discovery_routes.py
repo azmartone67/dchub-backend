@@ -238,14 +238,25 @@ def energy_discovery_status():
             cur = conn.cursor()
 
             def _count_max(table, ts_col='updated_at'):
-                try:
-                    cur.execute(f"SELECT COUNT(*), MAX({ts_col}) FROM {table}")
-                    r = cur.fetchone() or (0, None)
-                    return int(r[0] or 0), str(r[1]) if r[1] else None
-                except Exception:
-                    try: conn.rollback()
-                    except Exception: pass
-                    return 0, None
+                # Phase FF+7 (2026-05-18): try ts_col, fall back to
+                # created_at, then plain COUNT(*). Some tables
+                # (transmission_lines, gas_pipelines, fiber_routes) lack
+                # updated_at — Railway logs flagged transmission_lines
+                # explicitly on every refresh cycle.
+                for col in (ts_col, 'created_at', 'inserted_at', None):
+                    try:
+                        if col:
+                            cur.execute(f"SELECT COUNT(*), MAX({col}) FROM {table}")
+                            r = cur.fetchone() or (0, None)
+                            return int(r[0] or 0), (str(r[1]) if r[1] else None)
+                        cur.execute(f"SELECT COUNT(*) FROM {table}")
+                        r = cur.fetchone() or (0,)
+                        return int(r[0] or 0), None
+                    except Exception:
+                        try: conn.rollback()
+                        except Exception: pass
+                        continue
+                return 0, None
 
             # Phase FF+6 (2026-05-18): to_regclass guard + correct table names
             # to silence Railway log noise. power_plants uses created_at.

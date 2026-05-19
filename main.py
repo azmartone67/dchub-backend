@@ -10581,14 +10581,25 @@ def energy_discovery_status_inline():
         if conn:
             cur = conn.cursor()
             def _count_max(table, ts_col='updated_at'):
-                try:
-                    cur.execute(f"SELECT COUNT(*), MAX({ts_col}) FROM {table}")
-                    r = cur.fetchone() or (0, None)
-                    return int(r[0] or 0), str(r[1]) if r[1] else None
-                except Exception:
-                    try: conn.rollback()
-                    except Exception: pass
-                    return 0, None
+                # Phase FF+7 (2026-05-18): try ts_col, fall back to created_at,
+                # then to just COUNT(*). transmission_lines + gas_pipelines + a
+                # few others lack updated_at; Railway logs flagged this on
+                # every cycle. The to_regclass guard upstream catches missing
+                # TABLES; this catches missing COLUMNS on tables that do exist.
+                for col in (ts_col, 'created_at', 'inserted_at', None):
+                    try:
+                        if col:
+                            cur.execute(f"SELECT COUNT(*), MAX({col}) FROM {table}")
+                            r = cur.fetchone() or (0, None)
+                            return int(r[0] or 0), (str(r[1]) if r[1] else None)
+                        cur.execute(f"SELECT COUNT(*) FROM {table}")
+                        r = cur.fetchone() or (0,)
+                        return int(r[0] or 0), None
+                    except Exception:
+                        try: conn.rollback()
+                        except Exception: pass
+                        continue
+                return 0, None
             # Phase FF+6 (2026-05-18): probe each table with to_regclass first
             # so missing relations degrade silently. Without this, every cycle
             # dumped "relation pipelines/transmission/wind_projects/... does not
@@ -17203,6 +17214,8 @@ def api_v1_data_freshness():
     try:
         conn = get_read_db()
         cur = conn.cursor(cursor_factory=psycopg2.extras.RealDictCursor)
+        # Phase FF+7 (2026-05-18): transmission_lines + gas_pipelines lack
+        # updated_at — use created_at. Railway logs flagged this every cycle.
         candidates = [
             ('mcp_tool_calls', 'mcp_tool_calls', 'created_at'),
             ('users', 'users', 'created_at'),
@@ -17210,10 +17223,10 @@ def api_v1_data_freshness():
             ('facilities', 'facilities', 'updated_at'),
             ('facilities', 'facilities', 'created_at'),
             ('substations', 'substations', 'updated_at'),
-            ('pipelines', 'gas_pipelines', 'updated_at'),
+            ('pipelines', 'gas_pipelines', 'created_at'),
             ('power_plants', 'power_plants', 'created_at'),
-            ('transmission', 'transmission_lines', 'updated_at'),
-            ('fiber_routes', 'fiber_routes', 'updated_at'),
+            ('transmission', 'transmission_lines', 'created_at'),
+            ('fiber_routes', 'fiber_routes', 'created_at'),
         ]
         seen = set()
         for label, table, col in candidates:
