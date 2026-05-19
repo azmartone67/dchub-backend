@@ -1672,16 +1672,34 @@ def check_media_topic_unaddressed() -> list[dict]:
 # Surface health combines volume + success rate + WoW growth into a
 # 0-100 score. <40 = critical (e.g. no traffic OR mostly failing).
 
+# Phase FF+9-triage (2026-05-19) — internal/admin surfaces that are
+# EXPECTED to have low consumer traffic. Excluded from the critical
+# detector so the L21 escalation queue doesn't sit on actions that
+# need "more traffic" when by design these pages are only used by
+# operators (us) running diagnostics. Fold a new surface in here
+# only when the surface is truly internal — consumer-facing surfaces
+# with low traffic ARE a real signal and SHOULD keep firing.
+_LOW_TRAFFIC_OK_SURFACES = {
+    "site_sentinel",    # /sentinel admin dashboard — page-health monitor
+    "power_totals",     # /dcpi/totals — vanity stat page, marketed when needed
+}
+
+
 def check_surface_health_critical() -> list[dict]:
     """Flag any surface whose health_score < 40. The brain learns which
     pages are dying + escalates per-surface so the right action library
-    fires (markets needs a different fix than land_power)."""
+    fires (markets needs a different fix than land_power).
+
+    Phase FF+9-triage: surfaces in _LOW_TRAFFIC_OK_SURFACES are skipped
+    because their low traffic is by design, not a failure mode."""
     findings: list[dict] = []
     try:
         from routes.surface_brain import SURFACES
     except Exception:
         return findings
     for sid, surface in SURFACES.items():
+        if sid in _LOW_TRAFFIC_OK_SURFACES:
+            continue
         try:
             score = surface.health_score()
         except Exception:
@@ -2177,11 +2195,28 @@ def check_tenant_coverage_thin() -> list[dict]:
 
 
 # ── Phase YYYY (2026-05-16) — operator-profile gap detector ──────
+_NON_OPERATOR_PROVIDERS = {
+    # Phase FF+9-triage (2026-05-19) — catch-all bucket. "Unknown" was
+    # generating an `operator_profile_gap` finding daily, but it's not
+    # a real operator — it's the placeholder for 1,603 facilities the
+    # discovery pipeline hasn't been able to attribute to a named
+    # provider yet. Surfacing it as a profile gap was actionable noise:
+    # the human can't write a profile for "Unknown." The real work
+    # (provider attribution backfill) belongs to a separate detector.
+    "unknown", "n/a", "tbd", "various", "multiple",
+    "undisclosed", "other", "",
+}
+
+
 def check_operator_profile_gap() -> list[dict]:
     """Surface top operators by facility count that lack rich
     metadata (missing markets, missing power_mw on most facilities).
     Brain flags so discovery pipeline can prioritize fills — closes
-    the per-operator-profile gap vs DCHawk/dcByte."""
+    the per-operator-profile gap vs DCHawk/dcByte.
+
+    Phase FF+9-triage: filters _NON_OPERATOR_PROVIDERS (Unknown / N/A /
+    placeholder rows) so the human queue isn't blocked on actions that
+    cannot have a profile written for them."""
     conn = _db()
     if conn is None: return []
     findings: list[dict] = []
@@ -2198,7 +2233,7 @@ def check_operator_profile_gap() -> list[dict]:
                        AND merged_at IS NULL AND is_duplicate = 0
                      GROUP BY provider
                     HAVING COUNT(*) >= 10
-                     ORDER BY COUNT(*) DESC LIMIT 10
+                     ORDER BY COUNT(*) DESC LIMIT 20
                 """)
                 rows = cur.fetchall()
             except Exception:
@@ -2210,6 +2245,9 @@ def check_operator_profile_gap() -> list[dict]:
     gaps = []
     for r in rows:
         name, total, mw_missing, mkt_missing = r[0], int(r[1] or 0), int(r[2] or 0), int(r[3] or 0)
+        # Phase FF+9-triage: skip placeholder/catch-all providers
+        if (name or "").strip().lower() in _NON_OPERATOR_PROVIDERS:
+            continue
         mw_pct  = 100.0 * mw_missing / max(1, total)
         mkt_pct = 100.0 * mkt_missing / max(1, total)
         # Flag if >50% of either field is missing
