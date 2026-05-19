@@ -143,7 +143,7 @@ class EvolutionEngine:
                     cursor = conn.cursor()
                     cursor.execute('''INSERT INTO evolution_log
                         (action_type, action_category, description, details, impact_score, success)
-                        VALUES (%s, %s, %s, %s, %s, %s)''',
+                        VALUES (%s, %s, %s, %s, %s, %s) ON CONFLICT DO NOTHING''',
                         (action_type, category, description,
                          json.dumps(details) if details else None, impact, success))
                     conn.commit()
@@ -753,7 +753,7 @@ Return as JSON: [{{"improvement": "...", "priority": "high/medium/low"}}]"""
         try:
             conn = get_db(self.db_path)
             cursor = conn.cursor()
-            cursor.execute('INSERT INTO quality_issues (issue_type, entity_type, entity_id, description, auto_fixable) VALUES (%s, %s, %s, %s, %s)',
+            cursor.execute('INSERT INTO quality_issues (issue_type, entity_type, entity_id, description, auto_fixable) VALUES (%s, %s, %s, %s, %s) ON CONFLICT DO NOTHING',
                 (issue_type, entity_type, entity_id, description, auto_fixable))
             conn.commit()
             conn.close()
