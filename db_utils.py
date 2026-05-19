@@ -367,6 +367,69 @@ def get_bg_db():
     return _get_pg_connection()
 
 
+# Phase FF+7-fix4 (2026-05-19) — context manager that guarantees
+# conn.close() in finally, regardless of exception path. Use this for
+# every new daemon-thread / background-task DB call going forward:
+#
+#   from db_utils import safe_db
+#   with safe_db() as conn:
+#       c = conn.cursor()
+#       c.execute(...)
+#       conn.commit()
+#   # conn is guaranteed closed here, even if the block raised
+#
+# This prevents the Neon pool exhaustion class of outage that took
+# Railway down for 30 minutes on 2026-05-19. The brain detector
+# check_unsafe_db_conn_pattern (routes/brain_consistency_radar.py)
+# flags files that have many `conn = get_db()` calls but few finally
+# blocks — adopt this helper to make those flags clear.
+from contextlib import contextmanager as _cm
+
+@_cm
+def safe_db():
+    """Context manager that guarantees conn.close() on any exit path.
+    Use for daemon-thread / background-task DB operations.
+    Yields the connection; the caller manages cursors and commits.
+    """
+    conn = _get_pg_connection()
+    try:
+        yield conn
+    finally:
+        try:
+            conn.close()
+        except Exception:
+            pass
+
+
+@_cm
+def safe_db_cursor():
+    """Same guarantees as safe_db() but yields a cursor instead.
+    Convenient when you don't need direct access to the connection.
+    Auto-commits on clean exit.
+
+      with safe_db_cursor() as cur:
+          cur.execute("...")
+          # commit on clean exit; rollback + close on exception
+    """
+    conn = _get_pg_connection()
+    cur = None
+    try:
+        cur = conn.cursor()
+        yield cur
+        try: conn.commit()
+        except Exception: pass
+    except Exception:
+        try: conn.rollback()
+        except Exception: pass
+        raise
+    finally:
+        if cur is not None:
+            try: cur.close()
+            except Exception: pass
+        try: conn.close()
+        except Exception: pass
+
+
 def safe_write(db_path, sql, params=None, retries=5, delay=0.5):
     for attempt in range(retries):
         try:
