@@ -380,6 +380,9 @@ def _run_market_refresh():
         return
 
     # STEP 5: Sync new facilities → capacity_pipeline (catch any missed)
+    # Phase FF+7-fix4 (2026-05-19): added finally blocks so conn closes
+    # on every exception path, preventing pool exhaustion in this daemon.
+    conn = None
     try:
         from db_utils import get_db
         conn = get_db()
@@ -402,8 +405,13 @@ def _run_market_refresh():
         logger.info(f"   [5/7] Pipeline sync: +{new_pipeline} new projects")
     except Exception as e:
         logger.warning(f"   [5/7] Pipeline sync error: {e}")
+    finally:
+        if conn is not None:
+            try: conn.close()
+            except Exception: pass
 
     # STEP 6: Refresh GDCI scores from facility data
+    conn = None
     try:
         from db_utils import get_db
         conn = get_db()
@@ -421,8 +429,13 @@ def _run_market_refresh():
         logger.info(f"   [6/7] GDCI refresh: {c.rowcount} markets scored")
     except Exception as e:
         logger.warning(f"   [6/7] GDCI refresh error: {e}")
+    finally:
+        if conn is not None:
+            try: conn.close()
+            except Exception: pass
 
     # STEP 7: Refresh market_intelligence with current facility counts
+    conn = None
     try:
         from db_utils import get_db
         conn = get_db()
@@ -459,6 +472,10 @@ def _run_market_refresh():
         logger.info(f"   [7/7] Market intelligence: {updated} markets refreshed")
     except Exception as e:
         logger.warning(f"   [7/7] Market intelligence error: {e}")
+    finally:
+        if conn is not None:
+            try: conn.close()
+            except Exception: pass
 
     logger.info("   === MARKET REFRESH COMPLETE ===")
 
@@ -666,6 +683,8 @@ def _run_facility_discovery():
         return
 
     # STEP 3: Auto-approve high-confidence pending facilities
+    # Phase FF+7-fix4 (2026-05-19): try/finally to ensure conn closes.
+    conn = None
     try:
         from facility_auto_approve import run_auto_approve
         from db_utils import get_db
@@ -679,11 +698,16 @@ def _run_facility_discovery():
         logger.warning("   [3/4] Auto-approve not available")
     except Exception as e:
         logger.warning(f"   [3/4] Auto-approve error: {e}")
+    finally:
+        if conn is not None:
+            try: conn.close()
+            except Exception: pass
 
     if _stop_event.is_set():
         return
 
     # STEP 4: Sync new facilities to capacity_pipeline
+    conn = None
     try:
         from db_utils import get_db
         conn = get_db()
@@ -710,6 +734,10 @@ def _run_facility_discovery():
             logger.info(f"   [4/4] Pipeline sync: no new projects")
     except Exception as e:
         logger.warning(f"   [4/4] Pipeline sync error: {e}")
+    finally:
+        if conn is not None:
+            try: conn.close()
+            except Exception: pass
 
     logger.info("   === FACILITY PIPELINE COMPLETE ===")
 
