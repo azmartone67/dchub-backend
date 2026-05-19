@@ -58,6 +58,15 @@ PROBE_PATHS = [
     "/api/v1/media/journalists",
     "/api/v1/media/outreach-log",
     "/.well-known/ai-agents.json",
+    # Phase FF+7 (2026-05-19) — conversion-flow probes. /upgrade should
+    # 302 to /redeem/<code> when given any key; /redeem/INVALID should
+    # render the 404-ish "expired/missing code" page (still 200). Both
+    # are now in the critical path for closing the funnel L14 surfaced.
+    "/upgrade?key=qa-probe&tool=get_grid_intelligence",
+    "/api/v1/brain/causal",       # L14
+    "/api/v1/brain/expansion",    # L12
+    "/api/v1/brain/qa-agent",     # L11 itself (cached GET)
+    "/api/v1/redeem/funnel-stats",  # permanent watchdog endpoint
 ]
 
 _DYNAMIC_HINTS = (
