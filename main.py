@@ -1314,6 +1314,15 @@ try:
     except Exception as _l12e:
         import logging
         logging.getLogger(__name__).warning('brain_layer12 wiring failed: %s', _l12e)
+    # Phase FF+7 (2026-05-18): Brain L13 — Upgrade nudge for high-volume
+    # free-tier MCP users (attacks the 10K-calls / 0-paywall-signals
+    # conversion crisis the brain has been flagging).
+    try:
+        from routes.brain_layer13_upgrade_nudge import brain_layer13_bp
+        app.register_blueprint(brain_layer13_bp)
+    except Exception as _l13e:
+        import logging
+        logging.getLogger(__name__).warning('brain_layer13 wiring failed: %s', _l13e)
     # Phase RRR-newsletter-hotfix3 (2026-05-18): registering via a
     # routes/*.py module silently failed for reasons we couldn't
     # diagnose live. Switching to inline-route definitions on the
