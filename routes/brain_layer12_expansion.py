@@ -67,30 +67,22 @@ def _count_routes() -> int:
         return 0
 
 
+_BACKEND_ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+
+
 def _count_detectors() -> int:
     try:
-        from brain_consistency_radar import scan_all  # type: ignore
-        # scan_all is the list of detectors; if it's a fn introspect __code__
-        if callable(scan_all):
-            import inspect
-            src = inspect.getsource(scan_all)
-            return src.count("check_")
-        return len(scan_all)
+        import re
+        with open(os.path.join(_BACKEND_ROOT, "brain_consistency_radar.py"), "rb") as f:
+            src = f.read().decode("utf-8", "ignore")
+        return len(re.findall(r"^def check_\w+\(", src, re.MULTILINE))
     except Exception:
-        # Fallback: grep the file
-        try:
-            with open("/Users/jonathanmartone/dchub-backend/brain_consistency_radar.py", "rb") as f:
-                src = f.read().decode("utf-8", "ignore")
-            # count `def check_...(`
-            import re
-            return len(re.findall(r"^def check_\w+\(", src, re.MULTILINE))
-        except Exception:
-            return 0
+        return 0
 
 
 def _count_brain_layers() -> int:
     try:
-        d = "/Users/jonathanmartone/dchub-backend/routes"
+        d = os.path.join(_BACKEND_ROOT, "routes")
         return len([f for f in os.listdir(d)
                     if f.startswith("brain_layer") and f.endswith(".py")])
     except Exception:
@@ -99,9 +91,8 @@ def _count_brain_layers() -> int:
 
 def _count_cron_jobs() -> int:
     try:
-        with open("/Users/jonathanmartone/dchub-backend/dchub-scheduler.py", "rb") as f:
+        with open(os.path.join(_BACKEND_ROOT, "dchub-scheduler.py"), "rb") as f:
             src = f.read().decode("utf-8", "ignore")
-        # Count scheduler.add_job(...) lines
         return src.count("scheduler.add_job(") or src.count(".add_job(")
     except Exception:
         return 0
@@ -145,8 +136,7 @@ def _count_db_tables() -> int:
 def _count_code_lines() -> int:
     """Total LoC across Python in the backend — proxy for surface size."""
     total = 0
-    for root in ("/Users/jonathanmartone/dchub-backend",
-                 "/Users/jonathanmartone/dchub-backend/routes"):
+    for root in (_BACKEND_ROOT, os.path.join(_BACKEND_ROOT, "routes")):
         try:
             for f in os.listdir(root):
                 if not f.endswith(".py"): continue
