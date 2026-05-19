@@ -28,6 +28,49 @@ CRITICAL_METRICS = [
 ]
 
 
+# Phase FF+11-schemafix (2026-05-19) — lift the observability_metrics
+# CREATE TABLE out of the per-request handler. Previously the handler
+# did CREATE TABLE then a loop of SELECTs from source tables (one of
+# which had the called_at typo and aborted the transaction), then
+# INSERTs into observability_metrics — which then surfaced as
+# "relation observability_metrics does not exist" because the
+# transaction had been aborted by the failed SELECT. Fixing the
+# called_at typo on its own should resolve this, but a module-level
+# init makes us robust to any future query in the loop that aborts
+# the transaction.
+def _ensure_observability_metrics_table():
+    try:
+        from db_utils import try_get_db
+        conn = try_get_db()
+        if not conn: return
+        try:
+            cur = conn.cursor()
+            cur.execute("""
+                CREATE TABLE IF NOT EXISTS observability_metrics (
+                    metric TEXT NOT NULL,
+                    value DOUBLE PRECISION NOT NULL,
+                    recorded_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
+                )
+            """)
+            try: cur.execute(
+                "CREATE INDEX IF NOT EXISTS ix_obs_metric_recorded "
+                "ON observability_metrics (metric, recorded_at DESC)"
+            )
+            except Exception: pass
+            conn.commit()
+        finally:
+            try: conn.close()
+            except Exception: pass
+    except Exception:
+        pass  # best-effort; per-request fallback CREATE still in place
+
+
+try:
+    _ensure_observability_metrics_table()
+except Exception:
+    pass
+
+
 def _record_click():
     """Phase 55 — record an attributed upgrade-URL click via NEON direct.
     Matches Phase 54 funnel reader's connection so both endpoints hit
@@ -263,7 +306,14 @@ def snapshot():
             ('total_power_plants',   'power_plants',   "SELECT COUNT(*) FROM power_plants"),
             ('total_fiber_routes',   'fiber_routes',   "SELECT COUNT(*) FROM fiber_routes"),
             ('total_capacity_mw',    'power_plants',   "SELECT COALESCE(SUM(capacity_mw),0) FROM power_plants"),
-            ('mcp_tool_calls_24h',   'mcp_tool_calls', "SELECT COUNT(*) FROM mcp_tool_calls WHERE called_at > NOW() - INTERVAL '24 hours'"),
+            # Phase FF+11-schemafix (2026-05-19): column is `created_at`,
+            # not `called_at`. The wrong name aborted the request's
+            # transaction, which is why subsequent INSERT INTO
+            # observability_metrics statements then ALSO failed with
+            # "relation does not exist" — psycopg2 surfaces aborted-
+            # transaction errors that way until rollback. Two bugs,
+            # one root cause.
+            ('mcp_tool_calls_24h',   'mcp_tool_calls', "SELECT COUNT(*) FROM mcp_tool_calls WHERE created_at > NOW() - INTERVAL '24 hours'"),
             ('mcp_conversions_24h',  'mcp_conversions',"SELECT COUNT(*) FROM mcp_conversions WHERE created_at > NOW() - INTERVAL '24 hours'"),
         ]:
             try:

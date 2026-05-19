@@ -85,7 +85,8 @@ def _candidates(limit: int = 25) -> list[dict]:
                        COUNT(*) AS calls_14d,
                        MODE() WITHIN GROUP (ORDER BY tool_name) AS top_tool
                 FROM mcp_tool_calls
-                WHERE called_at > NOW() - INTERVAL '14 days'
+                -- Phase FF+11-schemafix (2026-05-19): created_at, not called_at
+                WHERE created_at > NOW() - INTERVAL '14 days'
                   AND api_key_hash IS NOT NULL
                 GROUP BY api_key_hash
                 HAVING COUNT(*) >= %s

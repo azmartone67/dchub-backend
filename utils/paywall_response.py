@@ -140,10 +140,11 @@ def get_user_call_count(user_id, tool_name, days=7):
         if not conn: return 0
         cur = conn.cursor()
         try:
+            # Phase FF+11-schemafix (2026-05-19): column is created_at, not called_at
             cur.execute(
                 "SELECT COUNT(*) FROM mcp_tool_calls "
                 "WHERE user_id = %s AND tool_name = %s "
-                f"AND called_at > NOW() - INTERVAL '{int(days)} days'",
+                f"AND created_at > NOW() - INTERVAL '{int(days)} days'",
                 (user_id, tool_name)
             )
             r = cur.fetchone() or (0,)
