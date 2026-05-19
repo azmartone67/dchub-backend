@@ -85,62 +85,143 @@ def _db():
 
 
 def _query_candidates(min_signals=2, days=30, limit=500):
-    """Return list of dicts: {email, signal_count, top_tool, first_signal_at,
-    last_signal_at, signal_ids[]}.
+    """Return list of dicts: {email, source, signal_count, top_tool,
+    first_signal_at, last_signal_at, signal_ids[]}.
 
-    Logic: distinct emails with >=min_signals upgrade_signals in the last
-    `days`, where:
-      - email is non-test, non-suppressed
-      - none of their signals have converted=TRUE
-      - none of their signals have outreach_sent=TRUE
+    Two sources, merged and deduped by lowercased email:
+
+    A) mcp_upgrade_signals — explicit paywall hits with user_email
+       captured at signal time. Filters: not converted, not previously
+       outreached, >=min_signals.
+
+    B) api_keys — claimed dev keys (have emails) on the free plan,
+       active in the last `days` (last_used or created_at). These are
+       the highest-value targets: they trusted us enough to claim a key
+       but never upgraded. Phase FF+15-outreach added this source after
+       the first dry-run showed only 1 candidate from (A) — most MCP
+       signals are anonymous (no email), so api_keys.email is the
+       larger pool.
+
+    Candidates from (A) carry signal_ids so the send endpoint can flip
+    outreach_sent. Candidates from (B) carry an empty list (we don't
+    have signals to flag, but we still record one row with source=
+    api_keys_only in mcp_upgrade_signals at send time).
     """
     conn = _db()
     if conn is None:
         return [], "no_database"
+    out: dict[str, dict] = {}   # email -> merged candidate
+    err = None
     try:
         with conn.cursor() as cur:
-            cur.execute("""
-                WITH user_signals AS (
-                    SELECT
-                        LOWER(TRIM(user_email)) AS email,
-                        COUNT(*) AS signal_count,
-                        MIN(created_at) AS first_signal_at,
-                        MAX(created_at) AS last_signal_at,
-                        MODE() WITHIN GROUP (ORDER BY tool_requested)
-                            AS top_tool,
-                        ARRAY_AGG(id) AS signal_ids,
-                        BOOL_OR(converted) AS any_converted,
-                        BOOL_OR(outreach_sent) AS any_outreach_sent
-                    FROM mcp_upgrade_signals
-                    WHERE user_email IS NOT NULL
-                      AND user_email <> ''
-                      AND created_at > NOW() - INTERVAL '%s days'
-                    GROUP BY LOWER(TRIM(user_email))
-                )
-                SELECT email, signal_count, top_tool,
-                       first_signal_at, last_signal_at, signal_ids
-                FROM user_signals
-                WHERE any_converted IS NOT TRUE
-                  AND any_outreach_sent IS NOT TRUE
-                  AND signal_count >= %s
-                ORDER BY signal_count DESC, last_signal_at DESC
-                LIMIT %s
-            """ % (int(days), int(min_signals), int(limit)))
-            rows = cur.fetchall()
-            cand = []
-            for r in rows:
-                em = r[0]
-                if not _is_send_safe_email(em):
+            # Source A — explicit paywall signals with email
+            try:
+                cur.execute("""
+                    WITH user_signals AS (
+                        SELECT
+                            LOWER(TRIM(user_email)) AS email,
+                            COUNT(*) AS signal_count,
+                            MIN(created_at) AS first_signal_at,
+                            MAX(created_at) AS last_signal_at,
+                            MODE() WITHIN GROUP (ORDER BY tool_requested)
+                                AS top_tool,
+                            ARRAY_AGG(id) AS signal_ids,
+                            BOOL_OR(converted) AS any_converted,
+                            BOOL_OR(outreach_sent) AS any_outreach_sent
+                        FROM mcp_upgrade_signals
+                        WHERE user_email IS NOT NULL
+                          AND user_email <> ''
+                          AND created_at > NOW() - INTERVAL '%s days'
+                        GROUP BY LOWER(TRIM(user_email))
+                    )
+                    SELECT email, signal_count, top_tool,
+                           first_signal_at, last_signal_at, signal_ids
+                    FROM user_signals
+                    WHERE any_converted IS NOT TRUE
+                      AND any_outreach_sent IS NOT TRUE
+                      AND signal_count >= %s
+                    ORDER BY signal_count DESC, last_signal_at DESC
+                """ % (int(days), int(min_signals)))
+                for r in cur.fetchall():
+                    em = r[0]
+                    if not _is_send_safe_email(em):
+                        continue
+                    out[em] = {
+                        "email": em,
+                        "source": "upgrade_signals",
+                        "signal_count": int(r[1] or 0),
+                        "top_tool": r[2] or "various tools",
+                        "first_signal_at": r[3].isoformat() if r[3] else None,
+                        "last_signal_at":  r[4].isoformat() if r[4] else None,
+                        "signal_ids": list(r[5] or []),
+                    }
+            except Exception as e:
+                err = f"source_A_failed: {str(e)[:140]}"
+                try: conn.rollback()
+                except Exception: pass
+
+            # Source B — claimed dev keys on free plan with captured email
+            # (api_keys table schema varies across the codebase; try a few
+            # column variants and degrade silently)
+            for sql in [
+                """
+                SELECT LOWER(TRIM(email)) AS email,
+                       COALESCE(name, key_prefix, 'developer') AS top_tool,
+                       created_at AS first_at,
+                       COALESCE(last_used::timestamptz, created_at) AS last_at
+                FROM api_keys
+                WHERE email IS NOT NULL AND email <> ''
+                  AND COALESCE(plan, 'free') = 'free'
+                  AND COALESCE(is_active, 1) IN (1, TRUE)
+                  AND COALESCE(last_used::timestamptz, created_at)
+                      > NOW() - INTERVAL '%s days'
+                """ % int(days),
+                """
+                SELECT LOWER(TRIM(email)) AS email,
+                       'developer' AS top_tool,
+                       created_at AS first_at,
+                       created_at AS last_at
+                FROM api_keys
+                WHERE email IS NOT NULL AND email <> ''
+                  AND COALESCE(rate_limit_tier, 'trial') IN ('trial','free')
+                  AND created_at > NOW() - INTERVAL '%s days'
+                """ % int(days),
+            ]:
+                try:
+                    cur.execute(sql)
+                    for r in cur.fetchall():
+                        em = r[0]
+                        if not em or not _is_send_safe_email(em):
+                            continue
+                        if em in out:
+                            # already from source A — flag as merged
+                            out[em]["source"] = "both"
+                            continue
+                        out[em] = {
+                            "email": em,
+                            "source": "api_keys_only",
+                            "signal_count": 0,
+                            "top_tool": r[1] or "DC Hub Pro tools",
+                            "first_signal_at": r[2].isoformat() if r[2] else None,
+                            "last_signal_at":  r[3].isoformat() if r[3] else None,
+                            "signal_ids": [],
+                        }
+                    break  # first variant that runs wins
+                except Exception:
+                    try: conn.rollback()
+                    except Exception: pass
                     continue
-                cand.append({
-                    "email": em,
-                    "signal_count": int(r[1] or 0),
-                    "top_tool": r[2] or "various tools",
-                    "first_signal_at": r[3].isoformat() if r[3] else None,
-                    "last_signal_at":  r[4].isoformat() if r[4] else None,
-                    "signal_ids": list(r[5] or []),
-                })
-            return cand, None
+
+        ordered = sorted(out.values(),
+                         key=lambda c: (-c["signal_count"],
+                                        c.get("last_signal_at") or ""),
+                         reverse=False)
+        # signal_count desc primary; if tied, more recent first
+        ordered = sorted(out.values(),
+                         key=lambda c: (-(c["signal_count"]),
+                                        -(0 if not c.get("last_signal_at")
+                                          else 1)))
+        return ordered[:int(limit)], err
     except Exception as e:
         return [], f"query_failed: {str(e)[:200]}"
     finally:
