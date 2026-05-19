@@ -8110,7 +8110,6 @@ _STRIPE_WEBHOOK_STATS = {
 
 
 @app.route('/api/v1/stripe/webhook',     methods=['POST'])
-@app.route('/api/v1/stripe/webhook-mcp', methods=['POST'])
 @app.route('/api/stripe/webhook',        methods=['POST'])
 def stripe_webhook():
     """Handle Stripe webhook events.
@@ -8120,15 +8119,18 @@ def stripe_webhook():
     convention for our other APIs). Without the alias, Stripe → 404 →
     silent retries → eventual permanent failure → zero conversions.
 
-    Phase CCC (2026-05-17) — also alias /api/v1/stripe/webhook-mcp.
-    User had a legacy `MCP upgrade attribution` webhook in Stripe pointed
-    at that path subscribing to customer.subscription.created/updated.
-    Without the alias, that webhook had a 46% error rate (we 404'd
-    every event). Same handler processes all event types correctly;
-    no point requiring the user to delete the Stripe Dashboard entry.
-
-    All three URLs route to the same handler so it doesn't matter which
-    one Stripe is pointing at.
+    Phase FF+7 (2026-05-18) — REMOVED the /api/v1/stripe/webhook-mcp
+    alias previously added in Phase CCC. Brain L14 (Causal Reasoner)
+    diagnosed this as the highest-leverage root cause of the conversion
+    crisis: that path is ALSO registered by flask_mcp_endpoints.py's
+    stripe_webhook_mcp() — the proper MCP-attribution handler that
+    inserts into mcp_conversions with upgrade-signal attribution. With
+    BOTH handlers registered, Flask shadowed the dedicated one, the
+    generic handler returned 200 (success) but never inserted a
+    conversion row. Result: 5,586 paywall signals in 7d, 1 conversion.
+    Dropping the alias here makes the dedicated handler win, so Stripe
+    customer.subscription.created/updated events actually populate
+    mcp_conversions.
     """
     if not STRIPE_AVAILABLE:
         return jsonify({'error': 'Stripe not available'}), 503
