@@ -432,6 +432,17 @@ DISABLED_JOBS = {
         'minute': 25,
         'timeout': 60,
     },
+    # Phase ZZZZ-brain-L8 (2026-05-19): Orchestrator — Claude synthesizes
+    # all brain layers into a prioritized action plan, refreshed every
+    # 6h offset from L2 narrative so both don't fire simultaneously.
+    'brain_orchestrator_refresh': {
+        'name': 'Brain L8 Orchestrator — Action Plan',
+        'endpoint': '/api/v1/brain/orchestrator/refresh',
+        'method': 'POST',
+        'hours': [3, 9, 15, 21],
+        'minute': 45,
+        'timeout': 90,
+    },
     # Press queue scan: detects new auto-press triggers (DCPI movers,
     # facility events). Every 4h, staggered :50.
     'press_queue_scan': {

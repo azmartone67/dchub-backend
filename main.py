@@ -1285,6 +1285,21 @@ try:
     except Exception as _ppe:
         import logging
         logging.getLogger(__name__).warning('partnerships wiring failed: %s', _ppe)
+    # Phase ZZZZ-brain-L8 (2026-05-19): Orchestrator — synthesizes L0-L7
+    # into a prioritized action plan ("tonight's 3 things").
+    try:
+        from routes.brain_layer8_orchestrator import brain_layer8_bp
+        app.register_blueprint(brain_layer8_bp)
+    except Exception as _l8e:
+        import logging
+        logging.getLogger(__name__).warning('brain_layer8 wiring failed: %s', _l8e)
+    # Phase ZZZZ-brain-L9 (2026-05-19): Conversational Q&A endpoint.
+    try:
+        from routes.brain_layer9_conversational import brain_layer9_bp
+        app.register_blueprint(brain_layer9_bp)
+    except Exception as _l9e:
+        import logging
+        logging.getLogger(__name__).warning('brain_layer9 wiring failed: %s', _l9e)
     # Phase RRR-newsletter-hotfix3 (2026-05-18): registering via a
     # routes/*.py module silently failed for reasons we couldn't
     # diagnose live. Switching to inline-route definitions on the
