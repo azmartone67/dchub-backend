@@ -431,6 +431,56 @@ def check_cron_coverage() -> list[dict]:
 
 # ── public API ─────────────────────────────────────────────────────
 
+def check_db_pool_pressure() -> list[dict]:
+    """Phase FF+7-fix4 (2026-05-19) — early-warning detector for the
+    pool-exhaustion class of outage that took Railway down for 30 min
+    on 2026-05-19 08:18 UTC.
+
+    Symptom of pool exhaustion: many independent DB-backed endpoints
+    start timing out simultaneously while pure-Python endpoints stay
+    fast. By the time Railway's health-check fails, the pool is fully
+    gone and recovery requires a container restart.
+
+    We probe 3 DB endpoints with tight timeouts. If 2/3 time out (>3s
+    each) on a healthy worker, the pool is under pressure — flag it
+    before the container hits the unhealthy threshold.
+    """
+    findings: list[dict] = []
+    import time as _t
+    probes = [
+        ("freshness_radar",  "/api/v1/freshness/radar"),
+        ("brain_memory",     "/api/v1/brain/memory/stats"),
+        ("redeem_funnel",    "/api/v1/redeem/funnel-stats"),
+    ]
+    slow = []
+    for label, path in probes:
+        t0 = _t.monotonic()
+        body, _ = _http_get(f"http://localhost:8080{path}", timeout=4)
+        dur = _t.monotonic() - t0
+        if not body or dur >= 3.0:
+            slow.append({"endpoint": label, "duration_s": round(dur, 2),
+                         "got_body": bool(body)})
+
+    if len(slow) >= 2:
+        findings.append({
+            "issue": "db_pool_pressure",
+            "url": "/api/v1/brain/db-pool-pressure",
+            "count": len(slow),
+            "detail": (f"{len(slow)}/3 DB-backed endpoints slow or "
+                       f"timing out ({slow}). Pool exhaustion class of "
+                       f"failure — check for connection leaks in long-"
+                       f"running threads (auto-publisher loops, brain "
+                       f"learn cycles). 2026-05-19 incident: publisher "
+                       f"loops missing try/finally leaked conns until "
+                       f"Neon pool exhausted, container went unhealthy "
+                       f"for 30 min. Fix is always: ensure every "
+                       f"_get_db()/get_db() call is followed by a "
+                       f"try/finally that closes the conn."),
+            "slow_endpoints": slow,
+        })
+    return findings
+
+
 def check_paywall_click_leak() -> list[dict]:
     """Phase FF+7 (2026-05-19) — flag the conversion leak L14 identified
     as the real root cause of the funnel collapse: paywall_hit → click
@@ -4546,6 +4596,11 @@ def scan_all() -> list[dict]:
                # Watches /redeem/funnel-stats; fires if rate < 0.5% on
                # >500 paywall hits. Recovery target: 5%+ click-through.
                check_paywall_click_leak,
+               # Phase FF+7-fix4 (2026-05-19) — early-warning for the
+               # pool-exhaustion class of outage that took Railway down
+               # for 30min on 2026-05-19. Probes 3 DB endpoints; flags
+               # when 2/3 are slow — before container goes unhealthy.
+               check_db_pool_pressure,
                check_csp_drift,
                check_dcpi_partial_recompute,
                check_discovery_stalled,
