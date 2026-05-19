@@ -363,7 +363,7 @@ def record_observation():
                     (engine, prompt_id, prompt_text, dchub_cited,
                      dchub_position, dchawk_cited, dcbyte_cited,
                      other_sources, response_text, response_url, notes, source)
-                VALUES (%s,%s,%s,%s,%s,%s,%s,%s::jsonb,%s,%s,%s,%s)
+                VALUES (%s,%s,%s,%s,%s,%s,%s,%s::jsonb,%s,%s,%s,%s) ON CONFLICT DO NOTHING
                 RETURNING id, observed_at
             """, (
                 engine,
