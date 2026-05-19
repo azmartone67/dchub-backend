@@ -1300,6 +1300,20 @@ try:
     except Exception as _l9e:
         import logging
         logging.getLogger(__name__).warning('brain_layer9 wiring failed: %s', _l9e)
+    # Phase FF+6 (2026-05-18): Brain L11 — QA Agent that probes every surface.
+    try:
+        from routes.brain_layer11_qa_agent import brain_layer11_bp
+        app.register_blueprint(brain_layer11_bp)
+    except Exception as _l11e:
+        import logging
+        logging.getLogger(__name__).warning('brain_layer11 wiring failed: %s', _l11e)
+    # Phase FF+6 (2026-05-18): Brain L12 — Site expansion tracker.
+    try:
+        from routes.brain_layer12_expansion import brain_layer12_bp
+        app.register_blueprint(brain_layer12_bp)
+    except Exception as _l12e:
+        import logging
+        logging.getLogger(__name__).warning('brain_layer12 wiring failed: %s', _l12e)
     # Phase RRR-newsletter-hotfix3 (2026-05-18): registering via a
     # routes/*.py module silently failed for reasons we couldn't
     # diagnose live. Switching to inline-route definitions on the
@@ -10566,16 +10580,30 @@ def energy_discovery_status_inline():
                     try: conn.rollback()
                     except Exception: pass
                     return 0, None
+            # Phase FF+6 (2026-05-18): probe each table with to_regclass first
+            # so missing relations degrade silently. Without this, every cycle
+            # dumped "relation pipelines/transmission/wind_projects/... does not
+            # exist" to Railway logs. Also: power_plants has created_at not
+            # updated_at — match the actual schema.
             for label, table, ts in [
                 ('total_substations',     'substations',     'updated_at'),
-                ('total_pipelines',       'pipelines',       'updated_at'),
-                ('total_power_plants',    'power_plants',    'updated_at'),
-                ('total_transmissions',   'transmission',    'updated_at'),
+                ('total_pipelines',       'gas_pipelines',   'updated_at'),
+                ('total_power_plants',    'power_plants',    'created_at'),
+                ('total_transmissions',   'transmission_lines', 'updated_at'),
                 ('total_wind_projects',   'wind_projects',   'updated_at'),
                 ('total_gas_compressors', 'gas_compressors', 'updated_at'),
                 ('total_gas_processings', 'gas_processings', 'updated_at'),
                 ('total_fiber_routes',    'fiber_routes',    'updated_at'),
             ]:
+                try:
+                    cur.execute("SELECT to_regclass(%s)", (f"public.{table}",))
+                    if not (cur.fetchone() or [None])[0]:
+                        out['data'][label] = 0
+                        continue
+                except Exception:
+                    try: conn.rollback()
+                    except Exception: pass
+                    continue
                 n, latest = _count_max(table, ts)
                 out['data'][label] = n
                 if latest:
@@ -17173,14 +17201,23 @@ def api_v1_data_freshness():
             ('facilities', 'facilities', 'updated_at'),
             ('facilities', 'facilities', 'created_at'),
             ('substations', 'substations', 'updated_at'),
-            ('pipelines', 'pipelines', 'updated_at'),
-            ('power_plants', 'power_plants', 'updated_at'),
-            ('transmission', 'transmission', 'updated_at'),
+            ('pipelines', 'gas_pipelines', 'updated_at'),
+            ('power_plants', 'power_plants', 'created_at'),
+            ('transmission', 'transmission_lines', 'updated_at'),
             ('fiber_routes', 'fiber_routes', 'updated_at'),
         ]
         seen = set()
         for label, table, col in candidates:
             if label in seen: continue
+            # Phase FF+6: probe with to_regclass before SELECT to avoid log spam
+            try:
+                cur.execute("SELECT to_regclass(%s)", (f"public.{table}",))
+                if not (cur.fetchone() or [None])[0]:
+                    continue
+            except Exception:
+                try: conn.rollback()
+                except Exception: pass
+                continue
             try:
                 cur.execute(f"SELECT MAX({col}) AS latest, COUNT(*) AS n FROM {table}")
                 row = cur.fetchone() or {}

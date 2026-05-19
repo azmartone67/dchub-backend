@@ -443,6 +443,27 @@ DISABLED_JOBS = {
         'minute': 45,
         'timeout': 90,
     },
+    # Phase FF+6 (2026-05-18): Brain L11 QA Agent — probes every public
+    # surface every 6h. Status, perf, dynamic-vs-static, regressions.
+    # Offset :05 so it doesn't collide with L2 (:25) or L8 (:45).
+    'brain_qa_agent_sweep': {
+        'name': 'Brain L11 QA Agent — Surface Sweep',
+        'endpoint': '/api/v1/brain/qa-agent',
+        'method': 'POST',
+        'hours': [3, 9, 15, 21],
+        'minute': 5,
+        'timeout': 240,
+    },
+    # Phase FF+6 (2026-05-18): Brain L12 expansion snapshot — once daily
+    # so 7d/30d deltas are stable. Lightweight, no LLM, ~1s.
+    'brain_expansion_snapshot': {
+        'name': 'Brain L12 — Expansion Snapshot',
+        'endpoint': '/api/v1/brain/expansion',
+        'method': 'POST',
+        'hours': [4],
+        'minute': 0,
+        'timeout': 30,
+    },
     # Press queue scan: detects new auto-press triggers (DCPI movers,
     # facility events). Every 4h, staggered :50.
     'press_queue_scan': {

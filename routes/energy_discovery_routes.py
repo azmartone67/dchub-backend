@@ -247,16 +247,27 @@ def energy_discovery_status():
                     except Exception: pass
                     return 0, None
 
+            # Phase FF+6 (2026-05-18): to_regclass guard + correct table names
+            # to silence Railway log noise. power_plants uses created_at.
             for label, table, ts in [
-                ('total_substations',      'substations',     'updated_at'),
-                ('total_pipelines',        'pipelines',       'updated_at'),
-                ('total_power_plants',     'power_plants',    'updated_at'),
-                ('total_transmissions',    'transmission',    'updated_at'),
-                ('total_wind_projects',    'wind_projects',   'updated_at'),
-                ('total_gas_compressors',  'gas_compressors', 'updated_at'),
-                ('total_gas_processings',  'gas_processings', 'updated_at'),
-                ('total_fiber_routes',     'fiber_routes',    'updated_at'),
+                ('total_substations',      'substations',        'updated_at'),
+                ('total_pipelines',        'gas_pipelines',      'updated_at'),
+                ('total_power_plants',     'power_plants',       'created_at'),
+                ('total_transmissions',    'transmission_lines', 'updated_at'),
+                ('total_wind_projects',    'wind_projects',      'updated_at'),
+                ('total_gas_compressors',  'gas_compressors',    'updated_at'),
+                ('total_gas_processings',  'gas_processings',    'updated_at'),
+                ('total_fiber_routes',     'fiber_routes',       'updated_at'),
             ]:
+                try:
+                    cur.execute("SELECT to_regclass(%s)", (f"public.{table}",))
+                    if not (cur.fetchone() or [None])[0]:
+                        out['data'][label] = 0
+                        continue
+                except Exception:
+                    try: conn.rollback()
+                    except Exception: pass
+                    continue
                 n, latest = _count_max(table, ts)
                 out['data'][label] = n
                 if latest:
@@ -272,11 +283,12 @@ def energy_discovery_status():
                 except Exception: pass
 
             # recent_syncs from any source we can find
+            # Phase FF+6: power_plants uses created_at, not updated_at
             try:
                 cur.execute(
                     "SELECT 'substations' AS source, MAX(updated_at) AS at FROM substations "
                     "UNION ALL SELECT 'fiber_routes', MAX(updated_at) FROM fiber_routes "
-                    "UNION ALL SELECT 'power_plants', MAX(updated_at) FROM power_plants"
+                    "UNION ALL SELECT 'power_plants', MAX(created_at) FROM power_plants"
                 )
                 out['data']['recent_syncs'] = [
                     {'source': r[0], 'at': str(r[1]) if r[1] else None}
