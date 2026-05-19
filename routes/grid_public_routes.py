@@ -159,6 +159,7 @@ def grid_iso(iso):
     return Response(html, mimetype='text/html')
 
 
+# AUTO-REPAIR: duplicate route '/sitemap.xml' also in main.py:16039 — review and remove one
 @grid_public_bp.route('/sitemap.xml', methods=['GET'])
 def sitemap():
     """Sitemap including grid intel URLs."""
