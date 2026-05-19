@@ -202,7 +202,7 @@ def upsert_proposal(entry: dict) -> dict | None:
                     (issue_label, find, replace, rationale, source_url,
                      proposed_at, last_seen_at, model,
                      approval_count, approved)
-                VALUES (%s, %s, %s, %s, %s, NOW(), NOW(), %s, 1, FALSE)
+                VALUES (%s, %s, %s, %s, %s, NOW() ON CONFLICT DO NOTHING, NOW(), %s, 1, FALSE)
                 ON CONFLICT (find, replace) DO UPDATE SET
                     approval_count = brain_proposed_fixes.approval_count + 1,
                     last_seen_at   = NOW(),
@@ -294,7 +294,7 @@ def log_event(entry: dict) -> bool:
                 INSERT INTO brain_learning_log
                     (t, issue_label, outcome, find, replace,
                      approval_count, approved, extra)
-                VALUES (COALESCE(%s, NOW()), %s, %s, %s, %s, %s, %s, %s)
+                VALUES (COALESCE(%s, NOW() ON CONFLICT DO NOTHING), %s, %s, %s, %s, %s, %s, %s)
                 ON CONFLICT DO NOTHING;
                 """,
                 (entry.get("t"),
@@ -368,7 +368,7 @@ def bump_persistence(issue_label: str, url: str = "",
                 INSERT INTO brain_issue_persistence
                     (issue_label, url, last_outcome,
                      first_seen_at, last_seen_at, seen_count)
-                VALUES (%s, %s, %s, NOW(), NOW(), 1)
+                VALUES (%s, %s, %s, NOW() ON CONFLICT DO NOTHING, NOW(), 1)
                 ON CONFLICT (issue_label, url) DO UPDATE SET
                     seen_count   = brain_issue_persistence.seen_count + 1,
                     last_seen_at = NOW(),
@@ -479,7 +479,7 @@ def set_meta(key: str, value: str) -> bool:
         with c, c.cursor() as cur:
             cur.execute(
                 """INSERT INTO brain_meta (key, value, updated_at)
-                   VALUES (%s, %s, NOW())
+                   VALUES (%s, %s, NOW() ON CONFLICT DO NOTHING)
                    ON CONFLICT (key) DO UPDATE SET
                        value = EXCLUDED.value, updated_at = NOW()""",
                 (key, str(value) if value is not None else None),
@@ -535,7 +535,7 @@ def mark_false_positive(issue_label: str, url: str = "") -> int:
             cur.execute(
                 """INSERT INTO brain_false_positives
                        (issue_label, url, refused_count, first_seen_at, last_seen_at)
-                   VALUES (%s, %s, 1, NOW(), NOW())
+                   VALUES (%s, %s, 1, NOW() ON CONFLICT DO NOTHING, NOW())
                    ON CONFLICT (issue_label, url) DO UPDATE SET
                        refused_count = brain_false_positives.refused_count + 1,
                        last_seen_at  = NOW()
