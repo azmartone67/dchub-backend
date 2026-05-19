@@ -19514,6 +19514,17 @@ try:
 except Exception as e:
     print(f"📬 Email Capture: ⚠️ Failed to load: {e}")
 
+# Phase FF+21-d1-sync (2026-05-19) — Neon → Cloudflare D1 hourly mirror.
+# Survives Railway outages: when Railway is down, the Pages worker
+# (FF+20-cf-stack) reads /api/v1/map straight from D1 at the edge.
+try:
+    from routes.d1_sync import d1_sync_bp
+    app.register_blueprint(d1_sync_bp)
+    print("☁️ D1 Sync: ✅ Registered (Neon → Cloudflare D1 mirror, "
+          "/api/v1/admin/d1-sync/run + /status)")
+except Exception as e:
+    print(f"☁️ D1 Sync: ⚠️ Failed to load: {e}")
+
 # =============================================================================
 # FACILITY AUTO-APPROVE PIPELINE v2.0
 # Moves discovered_facilities → facilities with dedup logic

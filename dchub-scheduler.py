@@ -295,6 +295,20 @@ JOBS = {
         'minute': 50,
         'timeout': 30,
     },
+    # Phase FF+21-d1-sync (2026-05-19) — every hour, mirror the
+    # ~21k facility rows from Neon → Cloudflare D1 so the Pages
+    # worker can serve /api/v1/map from D1 when Railway is down.
+    # Requires CLOUDFLARE_API_TOKEN env var set on Railway with
+    # D1:Edit scope on database 34464113-9e19-4d0b-839a-a20df72409b0.
+    'd1_facilities_sync': {
+        'name': 'D1 Facilities Sync (Neon → Cloudflare D1)',
+        'endpoint': '/api/v1/admin/d1-sync/run',
+        'method': 'POST',
+        'hours': list(range(0, 24)),  # hourly
+        'minute': 15,                  # offset from other crons
+        'timeout': 600,                # 10 min ceiling, matches script's SYNC_TIMEOUT
+        'headers': {'X-Internal-Key': 'dchub-internal-sync-2026'},
+    },
     'smoke_test': {
         'name': 'Production Smoke Test',
         'endpoint': '/api/jobs/smoke-test',
