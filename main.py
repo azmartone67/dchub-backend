@@ -1368,6 +1368,19 @@ try:
     except Exception as _l19e:
         import logging
         logging.getLogger(__name__).warning('brain_layer19 wiring failed: %s', _l19e)
+    # Phase FF+7-durability (2026-05-19): Brain L20 — Durability Guard.
+    # Active monitoring + auto-mitigation for the synchronous-Claude-call
+    # crash pattern that took the map down 4 times today. Reads RSS
+    # every 30s, refuses new Claude calls when memory approaches
+    # watchdog threshold. L8/L14 consult this guard before spawning.
+    try:
+        from routes.brain_layer20_durability import (
+            brain_layer20_bp, start_durability_watcher)
+        app.register_blueprint(brain_layer20_bp)
+        start_durability_watcher()
+    except Exception as _l20e:
+        import logging
+        logging.getLogger(__name__).warning('brain_layer20 wiring failed: %s', _l20e)
     # Phase FF+7 (2026-05-19): Brain L15 — Auto-Action. Reads L14's
     # high-confidence chains and auto-opens a GitHub issue for each one
     # with a concrete fix. Closes the loop from "brain finds" → "work

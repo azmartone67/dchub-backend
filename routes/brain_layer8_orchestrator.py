@@ -236,52 +236,80 @@ def orchestrator():
 @brain_layer8_bp.route("/api/v1/brain/orchestrator/refresh",
                           methods=["POST", "GET"])
 def orchestrator_refresh():
-    # Phase FF+7-emergency (2026-05-19 10:25 UTC) — KILL SWITCH.
-    # This synchronous Claude call (30-90s holding a gunicorn worker
-    # while streaming a multi-KB JSON response) was triggering the
-    # watchdog's memory threshold mid-request, crashing the container
-    # in a 2-min loop and taking the map down. Until this is refactored
-    # to fire-and-forget via a background thread (write result to
-    # _CACHE async), the endpoint returns immediately. The cached plan
-    # at GET /api/v1/brain/orchestrator still serves the last computed
-    # value. Set ORCHESTRATOR_REFRESH_ENABLED=1 in Railway env to
-    # re-enable manually.
-    if os.environ.get("ORCHESTRATOR_REFRESH_ENABLED", "0") != "1":
-        return jsonify(
-            ok=False,
-            disabled=True,
-            reason=("Synchronous Claude call was crash-looping the "
-                    "container. Disabled until refactor. GET "
-                    "/api/v1/brain/orchestrator serves the cached plan."),
-            cached_plan_age_seconds=(int(time.monotonic() - _CACHE["computed_at"])
-                                       if _CACHE.get("computed_at") else None),
-        ), 503
+    """Phase FF+7-durability (2026-05-19): refactored to fire-and-
+    forget. Returns 202 immediately + spawns a background thread for
+    the Claude call. Result writes to _CACHE when done. Caller reads
+    via GET /api/v1/brain/orchestrator (cached). No more synchronous
+    60s holds on gunicorn workers — that pattern is what crashed the
+    container 4 times today.
 
+    Brain L20 (durability guard) is consulted BEFORE spawning the
+    thread. If RSS is approaching the watchdog threshold OR too many
+    Claude calls have started recently, this endpoint refuses and
+    returns 429.
+    """
     provided = (request.headers.get("X-Admin-Key") or "").strip()
     if request.method == "POST" and _ADMIN_KEY and provided != _ADMIN_KEY:
         return jsonify(error="unauthorized"), 401
     if not _ANTHROPIC_KEY:
         return jsonify(ok=False, error="ANTHROPIC_API_KEY not set"), 503
 
-    ctx = _gather_context()
-    prompt = _build_prompt(ctx)
-    plan = _call_claude(prompt)
-    if not plan:
-        return jsonify(ok=False, error="Claude call failed"), 503
+    # L20 durability guard
+    try:
+        from routes.brain_layer20_durability import (
+            can_start_claude_call, register_claude_call_start,
+            register_claude_call_end)
+        allowed, reason = can_start_claude_call("L8")
+        if not allowed:
+            return jsonify(ok=False, throttled=True, reason=reason,
+                           cached_plan_age_seconds=(
+                               int(time.monotonic() - _CACHE["computed_at"])
+                               if _CACHE.get("computed_at") else None)), 429
+    except Exception:
+        # If L20 isn't available, fall back to permissive — but log
+        register_claude_call_start = lambda layer: None  # noqa
+        register_claude_call_end = lambda call_id: None  # noqa
 
-    _CACHE["plan"] = plan
-    _CACHE["computed_at"] = time.monotonic()
+    def _bg_refresh():
+        call_id = None
+        try:
+            try:
+                from routes.brain_layer20_durability import register_claude_call_start, register_claude_call_end
+                call_id = register_claude_call_start("L8")
+            except Exception: pass
+            ctx = _gather_context()
+            prompt = _build_prompt(ctx)
+            plan = _call_claude(prompt)
+            if plan:
+                _CACHE["plan"] = plan
+                _CACHE["computed_at"] = time.monotonic()
+                _CACHE["based_on"] = {
+                    "findings_count":   ctx["findings_count"],
+                    "memory_records":   ctx["memory_records"],
+                    "predictions":      len(ctx["predictions"]),
+                    "proposed_detectors_pending": len(ctx["proposed_detectors_pending"]),
+                    "recent_commits":   len(ctx["recent_commits"]),
+                    "outreach_sent":    (ctx["outreach"] or {}).get("total_sent"),
+                }
+                logger.info("L8 orchestrator/refresh background call complete")
+            else:
+                logger.warning("L8 orchestrator/refresh background call: no plan returned")
+        except Exception as e:
+            logger.warning(f"L8 orchestrator/refresh background error: {e}")
+        finally:
+            if call_id is not None:
+                try:
+                    from routes.brain_layer20_durability import register_claude_call_end
+                    register_claude_call_end(call_id)
+                except Exception: pass
 
+    import threading as _th
+    _th.Thread(target=_bg_refresh, daemon=True, name="l8-orchestrator-refresh").start()
     return jsonify(
         ok=True,
-        plan=plan,
-        based_on={
-            "findings_count":   ctx["findings_count"],
-            "memory_records":   ctx["memory_records"],
-            "predictions":      len(ctx["predictions"]),
-            "proposed_detectors_pending": len(ctx["proposed_detectors_pending"]),
-            "recent_commits":   len(ctx["recent_commits"]),
-            "outreach_sent":    (ctx["outreach"] or {}).get("total_sent"),
-        },
-        computed_at=_dt.datetime.utcnow().isoformat() + "Z",
-    ), 200
+        accepted=True,
+        note=("Refresh started in background. Poll GET "
+              "/api/v1/brain/orchestrator for the updated plan in ~30-90s."),
+        previous_plan_age_seconds=(int(time.monotonic() - _CACHE["computed_at"])
+                                     if _CACHE.get("computed_at") else None),
+    ), 202

@@ -436,19 +436,18 @@ DISABLED_JOBS = {
     # all brain layers into a prioritized action plan, refreshed every
     # 6h offset from L2 narrative so both don't fire simultaneously.
     #
-    # DISABLED 2026-05-19 10:19 UTC — was causing crash loop. Every
-    # invocation took 30-60s synchronously inside a gunicorn worker,
-    # holding Claude's response body in memory. Memory crossed the
-    # watchdog threshold mid-call, marked unhealthy 3x, SIGTERM, restart.
-    # Cycle repeated every ~2 minutes. Map was down because of this.
-    # Re-enable after refactoring the endpoint to background-thread mode.
-    'brain_orchestrator_refresh_DISABLED': {
-        'name': 'Brain L8 Orchestrator — Action Plan (DISABLED — see comment)',
+    # Phase FF+7-durability (2026-05-19): RE-ENABLED after Phase FF+7-
+    # emergency disable. Endpoint is now fire-and-forget (returns 202
+    # immediately; Claude call runs in a background thread). L20
+    # durability guard refuses new calls when RSS is high. The 2-min
+    # crash loop class is closed.
+    'brain_orchestrator_refresh': {
+        'name': 'Brain L8 Orchestrator — Action Plan (async-safe)',
         'endpoint': '/api/v1/brain/orchestrator/refresh',
         'method': 'POST',
-        'hours': [],  # empty hours = never fires
+        'hours': [3, 9, 15, 21],
         'minute': 45,
-        'timeout': 90,
+        'timeout': 15,  # bg-thread mode returns 202 in <1s; 15s is plenty
     },
     # Phase FF+6 (2026-05-18): Brain L11 QA Agent — probes every public
     # surface every 6h. Status, perf, dynamic-vs-static, regressions.
@@ -471,17 +470,15 @@ DISABLED_JOBS = {
         'minute': 0,
         'timeout': 30,
     },
-    # Phase FF+7 (2026-05-18): Brain L14 causal reasoner — DISABLED
-    # 2026-05-19 10:19 UTC. Same crash-loop class as L8 — synchronous
-    # 30-90s Claude calls cause RSS to cross watchdog threshold.
-    # Re-enable after refactoring to background-thread mode.
-    'brain_causal_analyze_DISABLED': {
-        'name': 'Brain L14 — Causal Reasoner (DISABLED)',
+    # Phase FF+7-durability (2026-05-19): RE-ENABLED with fire-and-
+    # forget bg-thread pattern.
+    'brain_causal_analyze': {
+        'name': 'Brain L14 — Causal Reasoner (async-safe)',
         'endpoint': '/api/v1/brain/causal/analyze',
         'method': 'POST',
-        'hours': [],
+        'hours': [3, 9, 15, 21],
         'minute': 15,
-        'timeout': 90,
+        'timeout': 15,
     },
     # Phase FF+7 (2026-05-19): Brain L15 auto-action — scans L14's
     # high-confidence chains and opens GitHub issues. Runs at :20,

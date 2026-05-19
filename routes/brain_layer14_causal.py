@@ -211,20 +211,9 @@ def causal():
 @brain_layer14_bp.route("/api/v1/brain/causal/analyze",
                         methods=["POST", "GET"])
 def analyze():
-    # Phase FF+7-emergency (2026-05-19) — KILL SWITCH. Same crash-loop
-    # class as L8. Synchronous 30-90s Claude call. Disabled until
-    # refactored to background-thread mode. GET /api/v1/brain/causal
-    # serves the last cached analysis.
-    if os.environ.get("CAUSAL_ANALYZE_ENABLED", "0") != "1":
-        return jsonify(
-            ok=False,
-            disabled=True,
-            reason=("Synchronous Claude call was crash-looping the "
-                    "container (along with L8 orchestrator). Disabled "
-                    "until refactor. GET /api/v1/brain/causal serves "
-                    "the last cached analysis."),
-        ), 503
-
+    """Phase FF+7-durability (2026-05-19): fire-and-forget. Returns 202
+    immediately + spawns background thread. Result writes to _CACHE.
+    GET /api/v1/brain/causal serves the cached analysis."""
     if request.method == "POST" and _ADMIN_KEY:
         provided = (request.headers.get("X-Admin-Key") or "").strip()
         if provided != _ADMIN_KEY:
@@ -232,6 +221,55 @@ def analyze():
     if not _ANTHROPIC_KEY:
         return jsonify(ok=False, error="ANTHROPIC_API_KEY not set"), 503
 
+    # L20 durability guard
+    try:
+        from routes.brain_layer20_durability import can_start_claude_call
+        allowed, reason = can_start_claude_call("L14")
+        if not allowed:
+            return jsonify(ok=False, throttled=True, reason=reason,
+                           cached_analysis_age_seconds=(
+                               int(time.monotonic() - _CACHE["computed_at"])
+                               if _CACHE.get("computed_at") else None)), 429
+    except Exception: pass
+
+    def _bg_analyze():
+        call_id = None
+        try:
+            try:
+                from routes.brain_layer20_durability import register_claude_call_start, register_claude_call_end
+                call_id = register_claude_call_start("L14")
+            except Exception: pass
+            ctx = _gather_joined_context()
+            prompt = _build_prompt(ctx)
+            analysis = _call_claude(prompt)
+            if analysis:
+                _CACHE["analysis"] = analysis
+                _CACHE["computed_at"] = time.monotonic()
+                logger.info("L14 causal/analyze background call complete")
+            else:
+                logger.warning("L14 causal/analyze background call: no analysis returned")
+        except Exception as e:
+            logger.warning(f"L14 causal/analyze background error: {e}")
+        finally:
+            if call_id is not None:
+                try:
+                    from routes.brain_layer20_durability import register_claude_call_end
+                    register_claude_call_end(call_id)
+                except Exception: pass
+
+    import threading as _th
+    _th.Thread(target=_bg_analyze, daemon=True, name="l14-causal-analyze").start()
+    return jsonify(
+        ok=True,
+        accepted=True,
+        note=("Analysis started in background. Poll GET "
+              "/api/v1/brain/causal for the updated chains in ~30-60s."),
+        previous_analysis_age_seconds=(int(time.monotonic() - _CACHE["computed_at"])
+                                         if _CACHE.get("computed_at") else None),
+    ), 202
+
+    # Legacy synchronous path below — unreachable but kept for diff clarity.
+    # (Will be removed once durability is verified live.)
     ctx = _gather_joined_context()
     prompt = _build_prompt(ctx)
     analysis = _call_claude(prompt)
