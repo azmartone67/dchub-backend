@@ -95,7 +95,7 @@ WHERE user_id = %s
 
 INCREMENT_SESSION_SQL = """
 INSERT INTO free_map_usage (user_id, session_date, sessions_used, layer_toggles, last_access)
-VALUES (%s, CURRENT_DATE, 1, 0, NOW())
+VALUES (%s, CURRENT_DATE, 1, 0, NOW() ON CONFLICT DO NOTHING)
 ON CONFLICT (user_id, session_date) DO UPDATE SET
     sessions_used = free_map_usage.sessions_used + 1,
     last_access = NOW();
@@ -103,7 +103,7 @@ ON CONFLICT (user_id, session_date) DO UPDATE SET
 
 INCREMENT_TOGGLE_SQL = """
 INSERT INTO free_map_usage (user_id, session_date, sessions_used, layer_toggles, last_access)
-VALUES (%s, CURRENT_DATE, 0, 1, NOW())
+VALUES (%s, CURRENT_DATE, 0, 1, NOW() ON CONFLICT DO NOTHING)
 ON CONFLICT (user_id, session_date) DO UPDATE SET
     layer_toggles = free_map_usage.layer_toggles + 1,
     last_access = NOW();
