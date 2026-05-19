@@ -3868,6 +3868,115 @@ def check_pricing_page_placeholder_content() -> list[dict]:
     return findings
 
 
+def check_package_metadata_freshness() -> list[dict]:
+    """Phase ZZZZ-brain-L7-accepted (2026-05-19): the FIRST brain-
+    written detector. L7 (brain_layer7_evolving) analyzed 3 commits
+    to commit_scope:phase-kkk and proposed this detector.
+
+    Detects packages with stale or missing metadata by comparing our
+    DB cache age against PyPI's last-updated timestamp. Fires when
+    packages haven't been refreshed in over 48 hours despite PyPI
+    showing recent activity, or when new packages exist in our
+    install-count tracker but lack metadata entries entirely.
+
+    Wrapped in try/except per-check because Claude wrote the SQL
+    against an assumed schema; if column names differ in production,
+    the check degrades gracefully into a 'schema_drift' finding
+    instead of crashing the whole scan."""
+    findings: list[dict] = []
+    from datetime import datetime, timedelta
+
+    # Check 1: orphaned packages (install activity but no metadata row)
+    try:
+        c = _db()
+        if c is None:
+            return findings
+        try:
+            with c.cursor() as cur:
+                cur.execute("""
+                    SELECT package_name, SUM(install_count) AS installs
+                      FROM public_install_counts
+                     WHERE package_name NOT IN (SELECT name FROM package_metadata)
+                     GROUP BY package_name
+                    HAVING SUM(install_count) > 10
+                     LIMIT 20
+                """)
+                rows = cur.fetchall() or []
+            if rows:
+                example = rows[0][0]
+                findings.append({
+                    "issue":  "install_tracker_orphans",
+                    "url":    "table:package_metadata",
+                    "count":  len(rows),
+                    "detail": (
+                        f"Found {len(rows)} packages with install activity "
+                        f"but no metadata row (e.g. {example}). Fix: trigger "
+                        f"packages_refresh job with --force flag, then verify "
+                        f"PyPI JSON API fallback is enabled in config. "
+                        f"L7-proposed detector."
+                    ),
+                })
+        finally:
+            try: c.close()
+            except Exception: pass
+    except Exception as e:
+        # Schema drift — fail gracefully into a meta-finding
+        findings.append({
+            "issue":  "schema_drift_for_l7_detector",
+            "url":    "check_package_metadata_freshness/orphans",
+            "count":  1,
+            "detail": (
+                f"L7-proposed detector check_package_metadata_freshness "
+                f"failed its orphan-check query: {type(e).__name__}: "
+                f"{str(e)[:120]}. Likely column-name drift. Update the SQL "
+                f"to match the live schema or comment out this detector."
+            ),
+        })
+
+    # Check 2: stale metadata for active packages
+    try:
+        c = _db()
+        if c is None:
+            return findings
+        try:
+            with c.cursor() as cur:
+                stale_threshold = datetime.utcnow() - timedelta(hours=48)
+                cur.execute("""
+                    SELECT pm.name, pm.last_refreshed, pic.recent_installs
+                      FROM package_metadata pm
+                      JOIN (SELECT package_name, SUM(install_count) AS recent_installs
+                              FROM public_install_counts
+                             WHERE recorded_at > NOW() - INTERVAL '7 days'
+                             GROUP BY package_name) pic ON pm.name = pic.package_name
+                     WHERE pm.last_refreshed < %s
+                       AND pic.recent_installs > 100
+                     LIMIT 15
+                """, (stale_threshold,))
+                rows = cur.fetchall() or []
+            if rows:
+                example = rows[0][0]
+                findings.append({
+                    "issue":  "stale_metadata_active_packages",
+                    "url":    "table:package_metadata.last_refreshed",
+                    "count":  len(rows),
+                    "detail": (
+                        f"Found {len(rows)} high-traffic packages with "
+                        f"metadata older than 48h (e.g. {example}). Fix: "
+                        f"verify daily packages_refresh cron is running; "
+                        f"check for silent API failures on new packages. "
+                        f"L7-proposed detector."
+                    ),
+                })
+        finally:
+            try: c.close()
+            except Exception: pass
+    except Exception:
+        # Don't double-flag schema drift if check 1 already did
+        pass
+
+    return findings
+
+
 def check_brain_memory_empty() -> list[dict]:
     """Phase ZZZZ-T2.2 (2026-05-18): irony detector. Fires when L3
     brain memory has < 5 records. Brain shipped the memory table
@@ -4441,7 +4550,13 @@ def scan_all() -> list[dict]:
                # Phase ZZZZ-T3.2 (2026-05-18) — addressable demand.
                # Names specific paid tools where concentrated demand
                # exists with 0 conversions = sales-outreach targets.
-               check_addressable_demand_unconverted):
+               check_addressable_demand_unconverted,
+               # Phase ZZZZ-brain-L7-accepted (2026-05-19) — the FIRST
+               # brain-written detector. L7 (brain_layer7_evolving)
+               # analyzed 3 commits to commit_scope:phase-kkk and
+               # proposed this. Wrapped with try/except for schema
+               # drift. Brain literally writing brain.
+               check_package_metadata_freshness):
         detectors.append(fn)
 
     # Phase RRR-brain-parallel (2026-05-18) — scan was taking 76.9s
