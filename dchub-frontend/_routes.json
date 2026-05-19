@@ -36,7 +36,9 @@
     "/scripts/*",
     "/data/*",
     "/AGENTS.md",
-    "/iso/*"
+    "/iso/*",
+    "/partnerships",
+    "/media/outreach"
   ],
   "exclude": []
 }

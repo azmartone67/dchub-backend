@@ -1257,6 +1257,34 @@ try:
     except Exception as _qre:
         import logging
         logging.getLogger(__name__).warning('quick_redirects wiring failed: %s', _qre)
+    # Phase ZZZZ-brain-L6 (2026-05-19): predictive brain.
+    try:
+        from routes.brain_layer6_predictive import brain_layer6_bp
+        app.register_blueprint(brain_layer6_bp)
+    except Exception as _l6e:
+        import logging
+        logging.getLogger(__name__).warning('brain_layer6 wiring failed: %s', _l6e)
+    # Phase ZZZZ-brain-L7 (2026-05-19): self-evolving brain (proposes new detectors).
+    try:
+        from routes.brain_layer7_evolving import brain_layer7_bp
+        app.register_blueprint(brain_layer7_bp)
+    except Exception as _l7e:
+        import logging
+        logging.getLogger(__name__).warning('brain_layer7 wiring failed: %s', _l7e)
+    # Phase ZZZZ-media-outreach (2026-05-19): journalist pitch pipeline.
+    try:
+        from routes.media_outreach import media_outreach_bp
+        app.register_blueprint(media_outreach_bp)
+    except Exception as _moe:
+        import logging
+        logging.getLogger(__name__).warning('media_outreach wiring failed: %s', _moe)
+    # Phase ZZZZ-partnerships (2026-05-19): Switzerland positioning page.
+    try:
+        from routes.partnerships_page import partnerships_bp
+        app.register_blueprint(partnerships_bp)
+    except Exception as _ppe:
+        import logging
+        logging.getLogger(__name__).warning('partnerships wiring failed: %s', _ppe)
     # Phase RRR-newsletter-hotfix3 (2026-05-18): registering via a
     # routes/*.py module silently failed for reasons we couldn't
     # diagnose live. Switching to inline-route definitions on the

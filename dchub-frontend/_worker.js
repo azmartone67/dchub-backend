@@ -75,7 +75,7 @@
 // CONFIGURATION
 // ============================================================
 const RAILWAY_BACKEND = 'https://dchub-backend-production.up.railway.app';
-const WORKER_VERSION = '4.23.0-audit-404-fix';
+const WORKER_VERSION = '4.24.0-switzerland';
 const _DCHUB_BUILD_MARKER = 'rebuild-1777448239';
 
 const MCP_CACHE_STALE_TTL = 86400;
@@ -1444,6 +1444,9 @@ export default {
         '/health.json',
         // Phase ZZZZ-audit-404-fix (2026-05-18): three audit-flagged 404s
         '/AGENTS.md',
+        // Phase ZZZZ-partnerships (2026-05-19): Switzerland positioning
+        '/partnerships',
+        '/media/outreach',
       ]);
       // Phase YYYY (2026-05-16): also forward prefix-paths to Railway
       // for surfaces with dynamic sub-routes (e.g. /operators/<slug>).
