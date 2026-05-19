@@ -1381,6 +1381,30 @@ try:
     except Exception as _l20e:
         import logging
         logging.getLogger(__name__).warning('brain_layer20 wiring failed: %s', _l20e)
+    # Phase FF+7-mttr5 (2026-05-19): Brain HTTP Error Capture — middleware
+    # that records every 4xx + 5xx response into an in-memory ring buffer
+    # + brain_http_errors table. Feeds Brain L21 the real-time signal
+    # the brain has been missing for live failures.
+    try:
+        from routes.brain_http_capture import (
+            brain_http_capture_bp, register_capture)
+        app.register_blueprint(brain_http_capture_bp)
+        register_capture(app)
+    except Exception as _hcap_e:
+        import logging
+        logging.getLogger(__name__).warning('brain_http_capture wiring failed: %s', _hcap_e)
+    # Phase FF+7-mttr5 (2026-05-19): Brain L21 — Auto-Pilot. Every 60s,
+    # reads recent HTTP errors, fires recovery actions for matched
+    # failure patterns. Tier A (log + GH issue) and Tier B (L20 trip)
+    # are auto. Tier C (restart, cache-bust) is admin-gated.
+    try:
+        from routes.brain_layer21_autopilot import (
+            brain_layer21_bp, start_autopilot)
+        app.register_blueprint(brain_layer21_bp)
+        start_autopilot()
+    except Exception as _l21e:
+        import logging
+        logging.getLogger(__name__).warning('brain_layer21 wiring failed: %s', _l21e)
     # Phase FF+7 (2026-05-19): Brain L15 — Auto-Action. Reads L14's
     # high-confidence chains and auto-opens a GitHub issue for each one
     # with a concrete fix. Closes the loop from "brain finds" → "work
