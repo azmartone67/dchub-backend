@@ -104,3 +104,4 @@
 /research/:slug             /api/v1/research/:slug             302
 /heartbeat                  /api/v1/heartbeat/page             302
 /lab                        /api/v1/lab/page                   302
+/markets    /market-intelligence    301

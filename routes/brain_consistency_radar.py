@@ -4045,7 +4045,12 @@ def check_cf_account_health() -> list[dict]:
         return findings
 
     # Cache-rate breach (target ≥25% to keep Railway origin costs sane)
-    cr = d.get("cache_rate_pct", 0)
+    # cf-analytics returns cache_rate_pct=None when zone-scope query
+    # isn't accessible (account-scope httpRequestsAdaptiveGroups doesn't
+    # expose cache rate). Skip the check rather than crash.
+    cr = d.get("cache_rate_pct")
+    if cr is None:
+        return findings
     if cr < 25:
         findings.append({
             "issue":  "cf_cache_rate_low",
