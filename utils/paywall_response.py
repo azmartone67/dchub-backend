@@ -385,6 +385,21 @@ def build_paywall_response(
         if STRIPE_DEVELOPER_LINK:
             base['one_click_upgrade_url_direct_stripe'] = base.get('one_click_upgrade_url')
             base['one_click_upgrade_url'] = _ec['checkout_start_url']
+        # ALSO inject the URLs into human_message so AI agents that only
+        # relay text (don't render structured fields) still surface them
+        # to the human. Most agents do at least one of these — making
+        # the URLs reachable from EITHER path is the difference between
+        # 0.02% capture and 20%+.
+        if isinstance(base.get('human_message'), str):
+            email_cta = (
+                "\n\n💌 **Don't want to pay yet?** Drop your email and we'll "
+                "notify you the moment your daily quota resets:\n"
+                f"   {_ec['notify_url']}\n\n"
+                "💳 **Ready to upgrade?** One-click checkout (email pre-fills, "
+                "your API key auto-upgrades on payment):\n"
+                f"   {_ec['checkout_start_url']}\n"
+            )
+            base['human_message'] = base['human_message'] + email_cta
     except Exception:
         pass  # paywall still works without email_capture
 

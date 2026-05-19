@@ -938,6 +938,18 @@ def _gate(tool_name: str, api_key: Optional[str] = None,
             if _buy_now_url:
                 payload["buy_now_url_direct_stripe"] = payload.get("buy_now_url")
                 payload["buy_now_url"] = _ec["checkout_start_url"]
+            # Phase FF+16-emailcapture-v2 — also weave the URLs into the
+            # natural-language message so text-only relay agents
+            # (which strip structured fields when proxying back to the
+            # human) still surface them. Without this, MCP servers that
+            # only echo `message` to their UI never show the URLs.
+            if isinstance(payload.get("message"), str):
+                payload["message"] = payload["message"] + (
+                    "\n\n💌 Not ready to pay? Drop your email for limit-reset "
+                    "notifications: " + _ec["notify_url"] + "\n"
+                    "💳 Ready to upgrade? One-click checkout (your API key "
+                    "auto-upgrades on payment): " + _ec["checkout_start_url"]
+                )
         except Exception:
             pass  # if email_capture fails to import, paywall still works
         # Phase DDDDD: inject auto-minted trial key INLINE if we got one.
