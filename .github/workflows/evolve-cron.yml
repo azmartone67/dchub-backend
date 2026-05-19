@@ -34,18 +34,18 @@ on:
     # Phase FF (2026-05-12) — testimonial ingestion every 6h (15 min
     # offset from ingestion_audit so they don't collide).
     - cron: '45 */6 * * *'
-    # Phase FF — agent vendor outreach digest, weekly Monday 14:00 UTC
-    # (after the press + LinkedIn fire). Idempotent.
-    - cron: '0 14 * * 1'
-    # Phase TT Increment 3b (2026-05-14) — weekly market digest to every
-    # identified MCP key, Monday 15:00 UTC (after the agent vendor
-    # digest). Deduped once-per-week per key on mcp_dev_keys.metadata.
-    - cron: '0 15 * * 1'
+    # Phase FF — agent vendor outreach digest, weekly Monday 14:00 UTC.
+    # Phase FF+7 (2026-05-19): moved to 14:05 — at :00 the hourly cron
+    # 'O * * * *' was winning the github.event.schedule field and
+    # the job's if-check was failing. Same pattern as hot_leads cron.
+    - cron: '5 14 * * 1'
+    # Phase TT Increment 3b (2026-05-14) — weekly market digest, Monday 15:00 UTC.
+    # Phase FF+7 (2026-05-19): moved to 15:05 — same hourly-cron collision
+    # bug as agent_vendor_digest above.
+    - cron: '5 15 * * 1'
     # Phase FF (2026-05-14) — market-movement alerts, daily 16:00 UTC.
-    # Snapshots every DCPI market, diffs day-over-day, fans movement out
-    # to email + webhook subscribers. Idempotent: the 20h snapshot-gap
-    # guard means a same-day re-run won't corrupt the diff baseline.
-    - cron: '0 16 * * *'
+    # Phase FF+7 (2026-05-19): moved to 16:05 — same hourly-cron collision.
+    - cron: '5 16 * * *'
     # Phase GG (2026-05-14) — data-freshness radar scan, every 6h. Walks
     # every data domain's source table and upserts data_domain_freshness.
     # The self-heal detector reads this registry (fast); this cron is the
@@ -68,14 +68,17 @@ on:
     # Auto-builds from DCPI movers + ISO comparison + changes-since
     # + brain self-assessment. Idempotent via 6-day dedup.
     - cron: '30 14 * * 1'
-    # Phase PP (2026-05-15) — hot-leads outreach, weekly Thursday 17:00 UTC.
-    # Lands 1pm ET — peak business hours mid-week, after Mon/Tue ramp-up
-    # but with enough runway to follow up before Friday. Targets the top
-    # 50 free users by MCP upgrade-signal volume; per-lead personalized
-    # body via /admin/funnel-leads/broadcast with confirm_send=true. The
-    # endpoint enforces a 14-day cooldown so a same-lead repeat is
-    # impossible — duplicate-firing this cron is safe.
-    - cron: '0 17 * * 4'
+    # Phase PP (2026-05-15) — hot-leads outreach, weekly Thursday 17:07 UTC.
+    # Lands 1pm ET — peak business hours mid-week. Phase FF+7 (2026-05-19):
+    # moved from 17:00 -> 17:07 to break collision with the hourly
+    # '0 * * * *' cron. When both fire at the same minute, GitHub Actions
+    # coalesces into one workflow run but passes the HOURLY schedule in
+    # github.event.schedule — making the job's
+    # `if: github.event.schedule == '0 17 * * 4'` check evaluate false.
+    # Brain L14 surfaced this: detector saw "no schedule fires this job"
+    # even though the cron line existed. Endpoint enforces 14d per-lead
+    # cooldown so duplicate firing is safe.
+    - cron: '7 17 * * 4'
     # Phase PP (2026-05-15) — active testimonial probe, daily 03:30 UTC.
     # Asks Claude (and any other configured agent) "what is dchub.cloud?"
     # and records the response as a testimonial citation. Runs 6h before
@@ -353,7 +356,8 @@ jobs:
 
   # Phase FF — weekly agent vendor outreach digest (Monday 14:00 UTC).
   agent_vendor_digest:
-    if: github.event.schedule == '0 14 * * 1' || (github.event_name == 'workflow_dispatch' && (inputs.phase == 'all' || inputs.phase == 'agent_vendor'))
+    # Phase FF+7 (2026-05-19): matches the new '5 14 * * 1' cron — see schedule comment.
+    if: github.event.schedule == '5 14 * * 1' || (github.event_name == 'workflow_dispatch' && (inputs.phase == 'all' || inputs.phase == 'agent_vendor'))
     runs-on: ubuntu-latest
     timeout-minutes: 3
     steps:
@@ -392,7 +396,8 @@ jobs:
   # retry after a failed deploy is safe. send=true; the endpoint
   # no-ops to a dry-run when DCHUB_RESEND_API_KEY isn't set in Railway.
   weekly_market_digest:
-    if: github.event.schedule == '0 15 * * 1' || (github.event_name == 'workflow_dispatch' && (inputs.phase == 'all' || inputs.phase == 'weekly_digest'))
+    # Phase FF+7 (2026-05-19): matches the new '5 15 * * 1' cron.
+    if: github.event.schedule == '5 15 * * 1' || (github.event_name == 'workflow_dispatch' && (inputs.phase == 'all' || inputs.phase == 'weekly_digest'))
     runs-on: ubuntu-latest
     timeout-minutes: 5
     steps:
@@ -432,7 +437,8 @@ jobs:
   # out to email + webhook subscribers. Idempotent — the 20h snapshot-gap
   # guard keeps the diff baseline clean across same-day re-runs.
   market_alerts_run:
-    if: github.event.schedule == '0 16 * * *' || (github.event_name == 'workflow_dispatch' && (inputs.phase == 'all' || inputs.phase == 'market_alerts'))
+    # Phase FF+7 (2026-05-19): matches the new '5 16 * * *' cron.
+    if: github.event.schedule == '5 16 * * *' || (github.event_name == 'workflow_dispatch' && (inputs.phase == 'all' || inputs.phase == 'market_alerts'))
     runs-on: ubuntu-latest
     timeout-minutes: 5
     steps:
@@ -769,11 +775,13 @@ jobs:
           " || true
 
   hot_leads_send_top_50:
-    # Phase PP (2026-05-15): also fires on the weekly Thursday 17:00 UTC
-    # schedule. The endpoint's 14-day per-lead cooldown makes the cron
-    # safe to repeat; in practice each week's cohort is a fresh slice
-    # of users whose cooldown window has expired.
-    if: github.event.schedule == '0 17 * * 4' || (github.event_name == 'workflow_dispatch' && inputs.phase == 'hot_leads_send_top_50')
+    # Phase PP (2026-05-15) + Phase FF+7 (2026-05-19): fires on weekly
+    # Thursday 17:07 UTC schedule (moved from :00 due to hourly-cron
+    # collision — see schedule comment above for full rationale). The
+    # endpoint's 14-day per-lead cooldown makes the cron safe to repeat;
+    # in practice each week's cohort is a fresh slice of users whose
+    # cooldown window has expired.
+    if: github.event.schedule == '7 17 * * 4' || (github.event_name == 'workflow_dispatch' && inputs.phase == 'hot_leads_send_top_50')
     runs-on: ubuntu-latest
     timeout-minutes: 5
     steps:
@@ -917,7 +925,12 @@ jobs:
     # into ai_citations recording whether dchub.cloud / DCHawk / dcByte
     # were cited. Powers share-of-voice metric + the new
     # check_ai_citations_stale_v2 detector (Phase KK).
-    if: github.event.schedule == '0 12 * * 1' || (github.event_name == 'workflow_dispatch' && inputs.phase == 'ai_citations_probe')
+    # Phase FF+7 (2026-05-19): updated to '10 12 * * 1' to match the cron
+    # schedule (line 100) — Phase ZZZZ-cron-stagger moved the cron from
+    # :00 to :10 to break collision with weekly-shadow-audit.yml, but
+    # this if-check was left at the old :00 value, so the job hadn't
+    # fired on schedule since 2026-05-18.
+    if: github.event.schedule == '10 12 * * 1' || (github.event_name == 'workflow_dispatch' && inputs.phase == 'ai_citations_probe')
     runs-on: ubuntu-latest
     timeout-minutes: 8
     steps:
@@ -981,7 +994,12 @@ jobs:
     # registered package, INSERTs one row per (ecosystem, name, date).
     # Brain detector check_package_install_velocity_drop reads the
     # rolling 7d window to flag WoW drops.
-    if: github.event.schedule == '0 6 * * *' || (github.event_name == 'workflow_dispatch' && inputs.phase == 'packages_refresh')
+    # Phase FF+7 (2026-05-19): updated to '10 6 * * *' to match the cron
+    # schedule (line 117) — Phase ZZZZ-cron-stagger moved the cron from
+    # :00 to :10 to break collision with anomaly-digest.yml, but this
+    # if-check was left at the old :00 value, so the job hadn't fired
+    # on schedule since 2026-05-18.
+    if: github.event.schedule == '10 6 * * *' || (github.event_name == 'workflow_dispatch' && inputs.phase == 'packages_refresh')
     runs-on: ubuntu-latest
     timeout-minutes: 4
     steps:
