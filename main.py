@@ -2526,11 +2526,28 @@ def api_v1_map():
         offset = request.args.get('offset', 0, type=int)
         limit = min(limit, 10000)
 
+        # Phase FF+8 (2026-05-19): expanded payload for FiberLocator-style
+        # popups. Adds facility_type, sqft, market, and a correlated
+        # subquery to assemble fiber_providers (top 8) from
+        # carrier_facility_presence. The subquery is bounded so a facility
+        # with 200 carriers doesn't blow up the response — the popup only
+        # needs a glanceable list anyway. If perf becomes an issue, add
+        # an index on carrier_facility_presence(dchub_facility_id).
         c.execute("""
             SELECT df.id, df.name, df.provider, df.city, df.state, df.country,
-                   df.market AS region, df.latitude, df.longitude,
+                   df.market AS region, df.market, df.latitude, df.longitude,
                    COALESCE(df.power_mw, f.power_mw) AS power_mw,
-                   df.status, df.address
+                   df.status, df.address, df.facility_type, df.sqft,
+                   (
+                     SELECT array_agg(carrier_name ORDER BY carrier_name)
+                     FROM (
+                       SELECT DISTINCT cfp.carrier_name
+                       FROM carrier_facility_presence cfp
+                       WHERE cfp.dchub_facility_id = df.id
+                         AND cfp.carrier_name IS NOT NULL
+                       LIMIT 8
+                     ) sub
+                   ) AS fiber_providers
             FROM discovered_facilities df
             LEFT JOIN facilities f ON f.id = df.merged_facility_id
             WHERE df.latitude IS NOT NULL AND df.longitude IS NOT NULL
