@@ -137,43 +137,72 @@ _JOURNALISTS = [
 
 
 def _compose_pitch(topic: str, story: dict, recipient: dict) -> tuple[str, str]:
-    """Generate (subject, body) for a journalist pitch around a topic."""
+    """Generate (subject, body) for a journalist pitch around a topic.
+
+    Phase ZZZZ-pitch-no-price (2026-05-19): Removed ALL pricing
+    references. Journalists get DC Hub data forever-free under
+    CC-BY-4.0. We pitch them as a primary source, not a customer.
+    What WE want: citation in their reporting. What THEY get:
+    real-time data that DCHawk/dcByte charge $25K+/yr for, with
+    charts on demand."""
     first_name = (recipient.get("name") or "").split()[0]
     if not first_name: first_name = "there"
 
-    subject = f"DC Hub data: {story.get('headline', topic)}"
+    subject = f"Live DC industry data for {recipient.get('publication','your reporting')} — free, CC-BY-4.0"
     body = f"""Hi {first_name},
 
-I run dchub.cloud — a real-time data center intelligence platform tracking
-21,000+ facilities, 280+ markets, $324B+ M&A history, and live grid data
-across 11 ISOs. CC-BY-4.0 license — free to cite with attribution.
+Quick note from dchub.cloud. We run a real-time data center intelligence
+platform — 21,000+ facilities, 280+ markets, $324B+ M&A history, live
+grid telemetry across 11 ISOs.
+
+The pitch is simple: this data is **free and forever-free for your
+reporting**. CC-BY-4.0 — you cite, we ship. No subscription, no NDA,
+no embargo dance.
 
 {story.get('story_paragraph', '')}
 
-The data behind this: {story.get('data_url', 'https://dchub.cloud/industry/pulse')}
-Full methodology: {story.get('methodology_url', 'https://dchub.cloud/dcpi')}
+What you can pull right now:
+- Weekly machine-readable stat sheet (schema.org Dataset markup):
+  https://dchub.cloud/industry/pulse
+- Live AI-citation telemetry — see which platforms (ChatGPT, Claude,
+  Perplexity, Gemini) already cite us in real time:
+  https://dchub.cloud/cited-by
+- DCPI scores (BUILD/CAUTION/AVOID verdicts for 280+ markets):
+  https://dchub.cloud/dcpi
+- M&A deal history searchable by buyer/seller/MW/$/kW:
+  https://dchub.cloud/transactions
 
-A few framings that might work for {recipient.get('publication', 'your publication')}:
+A few angles that might fit {recipient.get('publication', 'your beat')}:
 - {story.get('angle_1', 'The headline number with context')}
 - {story.get('angle_2', 'What it means for the industry')}
 - {story.get('angle_3', 'Forward-looking implication')}
 
-Happy to provide:
-- Pre-built charts/graphics in PNG or SVG
-- Raw JSON or CSV for any DC Hub data
-- A 15-min call with our data + a quote you can use
+What I'd love in return: if any of this ends up in a piece, a link or
+citation to dchub.cloud. That's it. Industry coverage = the way our
+data reaches operators and investors who matter; you have the audience
+we don't.
 
-No quarterly PDF release cycle, no $25K license — just live JSON if it
-helps your reporting.
+Happy to provide on request, gratis:
+- Pre-built charts/graphics in PNG/SVG sized for your CMS
+- Custom JSON or CSV cuts for any specific market/operator/timeframe
+- A 15-min call with the data + a quote you can use
+- Embargoed preview of next week's DCPI movers (Sunday-evening drop
+  if you want it before Monday-morning coverage)
+
+DC Hub is what the rest of the industry pays $25K+/yr to access
+(DCHawk, dcByte, etc.) — we made it free to give the press primary-
+source data for the AI-infra story. Use it however helps.
 
 Best,
 [your name]
 DC Hub · https://dchub.cloud
 press@dchub.cloud
 
-P.S. — If this isn't your beat, would you point me to the right person on
-your team? Happy to add you to a once-a-month DC industry data brief
-(short, no marketing, just numbers) if that'd be useful — reply 'subscribe'."""
+P.S. If this isn't your beat, who on your team covers data center
+infrastructure / AI compute / hyperscaler buildout? Happy to send them
+the same brief. Or if you'd like a once-a-month digest of DC industry
+data (numbers only, no marketing) — reply 'subscribe' and you're on
+the list."""
     return subject, body
 
 
