@@ -35,17 +35,20 @@ on:
     # offset from ingestion_audit so they don't collide).
     - cron: '45 */6 * * *'
     # Phase FF — agent vendor outreach digest, weekly Monday 14:00 UTC.
-    # Phase FF+7 (2026-05-19): moved to 14:05 — at :00 the hourly cron
-    # 'O * * * *' was winning the github.event.schedule field and
-    # the job's if-check was failing. Same pattern as hot_leads cron.
-    - cron: '5 14 * * 1'
+    # Phase FF+7-fix2 (2026-05-19): moved to 14:13 — :05 was used by
+    # canary-weekly.yml; :10 by dcpi-weekly-digest.yml; :30 by
+    # weekly_market_digest below; :45 by winback-weekly.yml. L14 caught
+    # the canary-weekly collision on the same scan that L14 flagged the
+    # original :00/hourly collision.
+    - cron: '13 14 * * 1'
     # Phase TT Increment 3b (2026-05-14) — weekly market digest, Monday 15:00 UTC.
     # Phase FF+7 (2026-05-19): moved to 15:05 — same hourly-cron collision
     # bug as agent_vendor_digest above.
     - cron: '5 15 * * 1'
     # Phase FF (2026-05-14) — market-movement alerts, daily 16:00 UTC.
-    # Phase FF+7 (2026-05-19): moved to 16:05 — same hourly-cron collision.
-    - cron: '5 16 * * *'
+    # Phase FF+7-fix2 (2026-05-19): moved to 16:12 — :05 was used by
+    # outreach-daily.yml. L14 caught the collision on its second-pass scan.
+    - cron: '12 16 * * *'
     # Phase GG (2026-05-14) — data-freshness radar scan, every 6h. Walks
     # every data domain's source table and upserts data_domain_freshness.
     # The self-heal detector reads this registry (fast); this cron is the
@@ -356,8 +359,8 @@ jobs:
 
   # Phase FF — weekly agent vendor outreach digest (Monday 14:00 UTC).
   agent_vendor_digest:
-    # Phase FF+7 (2026-05-19): matches the new '5 14 * * 1' cron — see schedule comment.
-    if: github.event.schedule == '5 14 * * 1' || (github.event_name == 'workflow_dispatch' && (inputs.phase == 'all' || inputs.phase == 'agent_vendor'))
+    # Phase FF+7-fix2 (2026-05-19): matches the new '13 14 * * 1' cron.
+    if: github.event.schedule == '13 14 * * 1' || (github.event_name == 'workflow_dispatch' && (inputs.phase == 'all' || inputs.phase == 'agent_vendor'))
     runs-on: ubuntu-latest
     timeout-minutes: 3
     steps:
@@ -437,8 +440,8 @@ jobs:
   # out to email + webhook subscribers. Idempotent — the 20h snapshot-gap
   # guard keeps the diff baseline clean across same-day re-runs.
   market_alerts_run:
-    # Phase FF+7 (2026-05-19): matches the new '5 16 * * *' cron.
-    if: github.event.schedule == '5 16 * * *' || (github.event_name == 'workflow_dispatch' && (inputs.phase == 'all' || inputs.phase == 'market_alerts'))
+    # Phase FF+7-fix2 (2026-05-19): matches the new '12 16 * * *' cron.
+    if: github.event.schedule == '12 16 * * *' || (github.event_name == 'workflow_dispatch' && (inputs.phase == 'all' || inputs.phase == 'market_alerts'))
     runs-on: ubuntu-latest
     timeout-minutes: 5
     steps:
