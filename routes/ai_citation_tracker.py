@@ -392,6 +392,171 @@ def record_observation():
         except Exception: pass
 
 
+# Phase FF+7-press-loop (2026-05-19) — auto-press from citations.
+# User caught the gap: ChatGPT + Gemini cited dchub.cloud TODAY, but
+# /dc-hub-media still shows 73-day-old releases. The citation_tracker
+# was capturing observations but nothing fed them into press_releases.
+# This closes the loop: any dchub_cited=true observation becomes a
+# draft press release. Same shape as brain_press_loop's ship-wins
+# pattern, just with citation evidence instead of commit evidence.
+
+@ai_citation_tracker_bp.route("/api/v1/ai-citations/draft-press",
+                              methods=["POST", "GET"])
+def draft_press_from_citations():
+    """For every recent dchub_cited=true observation NOT already drafted,
+    INSERT a draft press_releases row. Idempotent (slug-keyed).
+
+    Use ?days=7 to look further back. ?write=true to actually insert
+    (GET dry-runs by default). Auto-approved if ?auto_approve=true.
+    """
+    days = int(request.args.get("days", "30"))
+    write = request.args.get("write", "").lower() in ("1", "true", "yes")
+    auto_approve = request.args.get("auto_approve", "").lower() in ("1", "true", "yes")
+    if request.method == "POST":
+        # POST = write mode by default; honor explicit ?write=false
+        if request.args.get("write", "").lower() not in ("0", "false", "no"):
+            write = True
+
+    c = _conn()
+    if c is None:
+        return jsonify(ok=False, error="no_database"), 503
+    try:
+        with c.cursor() as cur:
+            cur.execute("""
+                SELECT id, engine, prompt_id, prompt_text, response_text,
+                       response_url, observed_at, other_sources, dchub_position
+                FROM ai_citations
+                WHERE dchub_cited = TRUE
+                  AND observed_at > NOW() - INTERVAL %s
+                ORDER BY observed_at DESC
+                LIMIT 50
+            """, (f"{days} days",))
+            rows = cur.fetchall()
+
+        candidates = []
+        for r in rows:
+            cid = r[0] if not hasattr(r, "get") else r.get("id")
+            engine = (r[1] if not hasattr(r, "get") else r.get("engine")) or "?"
+            prompt_id = (r[2] if not hasattr(r, "get") else r.get("prompt_id")) or "?"
+            prompt_text = (r[3] if not hasattr(r, "get") else r.get("prompt_text")) or ""
+            response_text = (r[4] if not hasattr(r, "get") else r.get("response_text")) or ""
+            response_url = (r[5] if not hasattr(r, "get") else r.get("response_url")) or ""
+            observed_at = r[6] if not hasattr(r, "get") else r.get("observed_at")
+            other_sources = (r[7] if not hasattr(r, "get") else r.get("other_sources")) or []
+            dchub_position = r[8] if not hasattr(r, "get") else r.get("dchub_position")
+
+            # Parse other_sources (jsonb)
+            try:
+                if isinstance(other_sources, str):
+                    other_sources = _json.loads(other_sources)
+            except Exception:
+                other_sources = []
+
+            # Build a slug: ai-citation-<engine>-<observed_date>-<prompt_id>
+            obs_date = observed_at.strftime("%Y-%m-%d") if observed_at else "unknown"
+            slug = f"ai-citation-{engine}-{obs_date}-{prompt_id}"[:120].lower()
+            slug = "".join(ch if ch.isalnum() or ch == "-" else "-" for ch in slug)
+
+            # Title formula that converts well: "AI platform X cites DC Hub
+            # alongside [peer authorities]"
+            peer_phrase = ""
+            if other_sources:
+                if len(other_sources) == 1:
+                    peer_phrase = f" alongside {other_sources[0]}"
+                elif len(other_sources) == 2:
+                    peer_phrase = f" alongside {other_sources[0]} and {other_sources[1]}"
+                else:
+                    peer_phrase = f" alongside {', '.join(other_sources[:2])} and others"
+            position_phrase = ""
+            if dchub_position == 1:
+                position_phrase = " #1"
+
+            engine_display = {"chatgpt": "ChatGPT", "gemini": "Google Gemini",
+                              "claude": "Claude", "perplexity": "Perplexity"}.get(
+                                  engine.lower(), engine.title())
+            title = f"{engine_display} Cites DC Hub{position_phrase} for Data Center Intelligence{peer_phrase}"[:160]
+
+            # Body: the verbatim quote + context
+            body = f"""<article>
+<h2>{title}</h2>
+<p><strong>Observed:</strong> {obs_date}</p>
+<p><strong>Prompt:</strong> &ldquo;{prompt_text[:300]}&rdquo;</p>
+<blockquote style="border-left:4px solid #4285f4;padding:12px 18px;background:#f8fafc;margin:18px 0;font-size:1.05rem;line-height:1.6">
+{response_text[:1500]}
+</blockquote>
+<p>This citation is part of the growing pattern of AI platforms naming
+DC Hub (dchub.cloud) as a primary source for data-center industry
+intelligence. Live testimonials and citation tracking at
+<a href="https://dchub.cloud/cited-by">dchub.cloud/cited-by</a>.</p>
+{f'<p><strong>Source:</strong> <a href="{response_url}" rel="nofollow">{response_url}</a></p>' if response_url else ''}
+</article>"""
+
+            candidates.append({
+                "citation_id": cid,
+                "slug": slug,
+                "title": title,
+                "engine": engine,
+                "observed_at": observed_at.isoformat() if observed_at else None,
+                "body_preview": (response_text[:200] + "...") if len(response_text) > 200 else response_text,
+                "body_html": body,
+                "auto_approve": auto_approve,
+            })
+
+        if not write:
+            return jsonify(
+                ok=True, mode="dry_run",
+                note=("GET returns the planned drafts. POST or "
+                      "?write=true to actually create them. Add "
+                      "?auto_approve=true to mark them publish-ready."),
+                would_draft=len(candidates),
+                candidates=candidates[:10],
+            ), 200
+
+        # Write the drafts
+        drafted = []
+        skipped = 0
+        errors = []
+        status_to_set = "approved" if auto_approve else "draft"
+        now = _dt.datetime.utcnow().isoformat() + "Z"
+        with c, c.cursor() as cur:
+            for cand in candidates:
+                try:
+                    cur.execute("""
+                        INSERT INTO press_releases
+                          (title, slug, body, category, published, status,
+                           published_at, created_at, meta_description)
+                        VALUES (%s, %s, %s, 'ai-citation', FALSE, %s, NULL, %s, %s)
+                        ON CONFLICT (slug) DO NOTHING
+                        RETURNING id
+                    """, (cand["title"], cand["slug"], cand["body_html"],
+                          status_to_set, now,
+                          f"{cand['engine'].title()} cited DC Hub as a primary source.")[:200])
+                    rid = cur.fetchone()
+                    if rid:
+                        drafted.append({"slug": cand["slug"],
+                                         "id": rid[0] if not hasattr(rid, "get") else rid.get("id"),
+                                         "title": cand["title"]})
+                    else:
+                        skipped += 1
+                except Exception as e:
+                    errors.append({"slug": cand["slug"],
+                                    "err": f"{type(e).__name__}: {str(e)[:120]}"})
+        return jsonify(
+            ok=True, mode="write",
+            drafted_count=len(drafted),
+            skipped_existing=skipped,
+            errors=errors[:5],
+            drafted=drafted[:10],
+            ran_at=now,
+        ), 201
+
+    except Exception as e:
+        return jsonify(ok=False, error=str(e)[:200]), 500
+    finally:
+        try: c.close()
+        except Exception: pass
+
+
 # Phase II (2026-05-17) — real LLM probe (Claude implementation).
 # The original run_cron was a stub. With ANTHROPIC_API_KEY now in
 # Railway env, we can actually ask Claude the canonical prompts and

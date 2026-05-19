@@ -511,6 +511,77 @@ def check_unsafe_db_conn_pattern() -> list[dict]:
     return findings
 
 
+def check_press_stale_vs_citations() -> list[dict]:
+    """Phase FF+7-press-loop (2026-05-19) — fires when AI citations
+    have landed BUT the press_releases queue hasn't caught up.
+
+    The gap the user caught: ChatGPT + Gemini cited dchub.cloud today,
+    /dc-hub-media still shows 73-day-old releases. Brain L20 was
+    capturing citations but no loop drafted press from them.
+
+    Detector logic: if newest dchub_cited=true observation is fresher
+    than newest press_releases row, flag it as a press_drafting_lag
+    finding. Auto-fix is to POST /api/v1/ai-citations/draft-press.
+    """
+    findings: list[dict] = []
+    try:
+        body, _ = _http_get("http://localhost:8080/api/v1/ai-citations/history",
+                            timeout=5)
+        if not body: return findings
+        import json as _json
+        d = _json.loads(body)
+        obs = d.get("observations") or d.get("recent") or []
+        cited = [o for o in obs if o.get("dchub_cited")]
+        if not cited: return findings
+
+        # Newest citation timestamp
+        from datetime import datetime as _dt
+        newest_citation = None
+        for o in cited:
+            at = o.get("observed_at") or o.get("at")
+            try:
+                d2 = _dt.fromisoformat(str(at).replace("Z", "+00:00"))
+                if newest_citation is None or d2 > newest_citation:
+                    newest_citation = d2
+            except Exception: continue
+        if newest_citation is None: return findings
+
+        # Newest press_releases.published_at
+        body2, _ = _http_get("http://localhost:8080/api/v1/press-releases?limit=1",
+                              timeout=5)
+        newest_press = None
+        if body2:
+            try:
+                d3 = _json.loads(body2)
+                items = d3.get("items") or d3.get("press_releases") or d3.get("releases") or (d3 if isinstance(d3, list) else [])
+                if items:
+                    at = items[0].get("published_date") or items[0].get("created_at")
+                    if at:
+                        newest_press = _dt.fromisoformat(str(at).replace("Z", "+00:00"))
+            except Exception: pass
+
+        # Gap: citation fresher than newest press by >24h
+        from datetime import timezone as _tz
+        nc = newest_citation.replace(tzinfo=_tz.utc) if newest_citation.tzinfo is None else newest_citation
+        np = newest_press.replace(tzinfo=_tz.utc) if (newest_press and newest_press.tzinfo is None) else newest_press
+        if np is None or (nc - np).total_seconds() > 24 * 3600:
+            lag_h = int((nc - np).total_seconds() / 3600) if np else 9999
+            findings.append({
+                "issue": "press_drafting_lag",
+                "url": "/dc-hub-media",
+                "count": 1,
+                "detail": (f"AI-citation observations are fresher than "
+                           f"the newest press release by {lag_h}h. "
+                           f"The dc-hub-media surface looks stale even "
+                           f"though ChatGPT/Gemini/Claude have cited us "
+                           f"recently. Auto-fix: POST /api/v1/ai-citations/"
+                           f"draft-press?write=true&auto_approve=true&days=7"),
+                "lag_hours": lag_h,
+            })
+    except Exception: pass
+    return findings
+
+
 def check_ai_citation_new_landing() -> list[dict]:
     """Phase FF+7-meta (2026-05-19) — celebrate-and-amplify detector.
     Fires when a NEW ai_citations row landed in the last 24h where
@@ -4804,6 +4875,11 @@ def scan_all() -> list[dict]:
                # findings so they surface on dashboards. First detected
                # win: Gemini citing dchub.cloud alongside CBRE+JLL.
                check_ai_citation_new_landing,
+               # Phase FF+7-press-loop (2026-05-19) — flags when press
+               # output lags behind citation evidence. User spotted this:
+               # AI citations landed today but /dc-hub-media showed 73-
+               # day-old releases. Now any citation/press lag >24h fires.
+               check_press_stale_vs_citations,
                check_csp_drift,
                check_dcpi_partial_recompute,
                check_discovery_stalled,

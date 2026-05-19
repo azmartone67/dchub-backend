@@ -480,6 +480,20 @@ DISABLED_JOBS = {
         'minute': 15,
         'timeout': 15,
     },
+    # Phase FF+7-press-loop (2026-05-19): auto-draft press releases from
+    # AI-citation observations. Closes the gap user spotted: ChatGPT +
+    # Gemini cited dchub.cloud TODAY but /dc-hub-media still showed 73-
+    # day-old releases. Now every dchub_cited=true observation becomes
+    # a draft press release (slug-keyed, idempotent). Runs daily 14:30
+    # UTC, after the morning press cron + agent-vendor digest.
+    'ai_citation_press_draft': {
+        'name': 'AI-Citation Press Loop — auto-draft releases',
+        'endpoint': '/api/v1/ai-citations/draft-press?write=true&auto_approve=true&days=7',
+        'method': 'POST',
+        'hours': [14],
+        'minute': 30,
+        'timeout': 30,
+    },
     # Phase FF+7 (2026-05-19): Brain L15 auto-action — scans L14's
     # high-confidence chains and opens GitHub issues. Runs at :20,
     # 5min after L14 lands the analysis. Idempotent (7d dedup).
