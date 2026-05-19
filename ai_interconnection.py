@@ -110,7 +110,7 @@ def _track_ai_usage_sync(endpoint, query, records_returned, response_type, user_
         cursor.execute('''
             INSERT INTO ai_usage_tracking 
             (timestamp, platform, endpoint, query, user_agent, ip_address, records_returned, response_type, referer)
-            VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s)
+            VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s) ON CONFLICT DO NOTHING
         ''', (
             datetime.utcnow().isoformat(),
             platform,
