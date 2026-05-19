@@ -19490,6 +19490,16 @@ try:
 except Exception as e:
     print(f"💳 Webhook Alert Endpoint: ⚠️ Failed to load: {e}")
 
+# Phase FF+15-outreach (2026-05-19) — reach out to the 200+ users who hit
+# the FF+8/FF+15-funnel2 paywall attribution bug and never converted.
+try:
+    from routes.lost_conversion_outreach import lost_conversion_outreach_bp
+    app.register_blueprint(lost_conversion_outreach_bp)
+    print("📮 Lost-Conversion Outreach: ✅ Registered "
+          "(/api/v1/admin/lost-conversion/candidates|send)")
+except Exception as e:
+    print(f"📮 Lost-Conversion Outreach: ⚠️ Failed to load: {e}")
+
 # =============================================================================
 # FACILITY AUTO-APPROVE PIPELINE v2.0
 # Moves discovered_facilities → facilities with dedup logic
