@@ -81,16 +81,23 @@ def stripe_webhook_alert():
     client_error = data.get('error', 'Plan not activated after payment')
     now = datetime.now(timezone.utc).isoformat()
 
-    # Phase FF+7-meta (2026-05-19): silently drop test-email noise so the
-    # admin email + log spam stops. Real customers don't match these.
+    # Phase FF+7-meta (2026-05-19): silently drop test-fixture noise.
+    # Source confirmed: .github/workflows/dchub-qa.yml line 122-124
+    # POSTs to this endpoint twice daily (12:00 + 00:00 UTC) as a
+    # health probe. The 'issue': 'qa_check' field is the workflow's
+    # own marker. Also catches manual qa fixtures by email pattern.
+    _client_issue = (data.get('issue') or '').strip().lower()
     _SUPPRESSED_EMAILS = {"qa-test@dchub.cloud", "test@dchub.cloud",
                            "qa@dchub.cloud", "stripe-test@dchub.cloud"}
-    if email in _SUPPRESSED_EMAILS or email.endswith("@example.com"):
+    if (email in _SUPPRESSED_EMAILS
+            or email.endswith("@example.com")
+            or _client_issue == "qa_check"):
         logger.info(
-            "STRIPE ALERT suppressed (test email): email=%s plan=%s",
-            email, expected_plan)
+            "STRIPE ALERT suppressed (test fixture): email=%s issue=%s",
+            email, _client_issue or "—")
         return jsonify({"ok": True, "suppressed": True,
-                         "reason": "test_email"}), 200
+                         "reason": "test_fixture",
+                         "source": "dchub-qa.yml health probe"}), 200
 
     logger.warning(
         "STRIPE ALERT: Plan not activated — email=%s plan=%s session=%s error=%s"
