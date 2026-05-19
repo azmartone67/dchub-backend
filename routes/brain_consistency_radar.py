@@ -511,6 +511,85 @@ def check_unsafe_db_conn_pattern() -> list[dict]:
     return findings
 
 
+def check_repeated_404_patterns() -> list[dict]:
+    """Phase FF+7-meta (2026-05-19) — fires when the same URL PATTERN
+    has 404'd repeatedly. The gap the user spotted: the map's facility
+    profile pages hit /api/v1/facility/<slug> (singular) which 404'd —
+    backend serves /facilities/<slug> (plural). Every visitor to a
+    facility profile got 404. The brain didn't catch it because no
+    detector was looking at recent 404 patterns.
+
+    This detector reads from `request_telemetry` (any HTTP log table
+    the app writes to) OR from the 404 handler's own counter, groups
+    by URL pattern (collapses /api/v1/facility/<X> to /api/v1/facility/*),
+    and fires if any pattern has >=10 404s in the last hour.
+
+    Falls back to checking sentinel 404 status if telemetry table
+    doesn't exist.
+    """
+    findings: list[dict] = []
+    try:
+        from main import get_db
+        conn = get_db()
+        if not conn: return findings
+        try:
+            cur = conn.cursor()
+            # Probe for a 404-log table; if missing, fall back gracefully
+            for table_candidate in ("request_telemetry", "http_request_log",
+                                     "api_404_log", "site_sentinel_results"):
+                try:
+                    cur.execute("SELECT to_regclass(%s)", (f"public.{table_candidate}",))
+                    if (cur.fetchone() or [None])[0]:
+                        # Found a candidate — query 404s in last hour
+                        if table_candidate == "site_sentinel_results":
+                            cur.execute("""
+                                SELECT path, COUNT(*) AS n
+                                FROM site_sentinel_results
+                                WHERE checked_at > NOW() - INTERVAL '24 hours'
+                                  AND status = 404
+                                GROUP BY path HAVING COUNT(*) >= 2
+                                ORDER BY n DESC LIMIT 5
+                            """)
+                        else:
+                            cur.execute(f"""
+                                SELECT
+                                    regexp_replace(path, '/[a-z0-9_-]{{16,}}$', '/<slug>') AS pattern,
+                                    COUNT(*) AS n
+                                FROM {table_candidate}
+                                WHERE created_at > NOW() - INTERVAL '1 hour'
+                                  AND status = 404
+                                GROUP BY pattern HAVING COUNT(*) >= 10
+                                ORDER BY n DESC LIMIT 5
+                            """)
+                        for r in cur.fetchall():
+                            pattern = r[0] if not hasattr(r, "get") else r.get("pattern") or r.get("path")
+                            n = r[1] if not hasattr(r, "get") else r.get("n")
+                            if pattern and n:
+                                findings.append({
+                                    "issue": "repeated_404_pattern",
+                                    "url": pattern,
+                                    "count": int(n),
+                                    "detail": (f"URL pattern '{pattern}' returned 404 "
+                                               f"{n} times recently. Likely a "
+                                               f"frontend/backend route mismatch (e.g. "
+                                               f"/facility/<slug> vs /facilities/<slug>). "
+                                               f"Auto-fix idea: add a route alias on the "
+                                               f"backend OR fix the frontend caller. "
+                                               f"Verify with: curl -i "
+                                               f"https://dchub.cloud{pattern.replace('<slug>','test')}"),
+                                })
+                        break
+                except Exception:
+                    try: conn.rollback()
+                    except Exception: pass
+                    continue
+        finally:
+            try: conn.close()
+            except Exception: pass
+    except Exception: pass
+    return findings
+
+
 def check_press_stale_vs_citations() -> list[dict]:
     """Phase FF+7-press-loop (2026-05-19) — fires when AI citations
     have landed BUT the press_releases queue hasn't caught up.
@@ -4880,6 +4959,12 @@ def scan_all() -> list[dict]:
                # AI citations landed today but /dc-hub-media showed 73-
                # day-old releases. Now any citation/press lag >24h fires.
                check_press_stale_vs_citations,
+               # Phase FF+7-meta (2026-05-19) — repeated-404-pattern
+               # detector. Map facility profiles hit /facility/<slug>
+               # (404) for hours before user reported it. Brain didn't
+               # catch it. This detector groups recent 404s by URL
+               # pattern and fires when one pattern has >=10 hits.
+               check_repeated_404_patterns,
                check_csp_drift,
                check_dcpi_partial_recompute,
                check_discovery_stalled,

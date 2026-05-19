@@ -11231,9 +11231,18 @@ def facilities_state_status_counts():
 # ─── Aggregate endpoints for dashboard charts ────────────────────────────
 
 
+@app.route('/api/v1/facility/<path:slug>', methods=['GET'])  # singular alias — frontend uses this
 @app.route('/api/v1/facilities/<path:slug>', methods=['GET'])
 def facility_by_slug(slug):
-    """Look up a facility by its slug hash for facility detail pages."""
+    """Look up a facility by its slug hash for facility detail pages.
+
+    Phase FF+7-meta (2026-05-19) — added singular /facility/ alias. The
+    map frontend was hitting /api/v1/facility/<slug> and getting 404
+    because the backend only served /facilities/<slug> (plural). Adding
+    the alias rather than touching the frontend so old/cached map JS
+    keeps working too. The brain SHOULD have caught this — a new
+    detector (check_repeated_404_patterns) now watches for exactly this
+    failure mode."""
     parts = slug.rsplit('-', 1)
     if len(parts) != 2 or len(parts[1]) != 8:
         return jsonify({'success': False, 'error': 'Invalid slug'}), 404
