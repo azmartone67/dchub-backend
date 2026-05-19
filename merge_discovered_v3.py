@@ -69,7 +69,7 @@ for row in rows:
     try:
         cur.execute("""
             INSERT INTO facilities (id, name, provider, city, state, country, latitude, longitude, power_mw, status, address, region)
-            VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s)
+            VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s) ON CONFLICT DO NOTHING
         """, (final_slug, name, provider, city, state, country, lat, lng, power, status or 'active', address, region))
         existing_ids.add(final_slug)
         merged_ids.append(df_id)
