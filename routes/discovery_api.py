@@ -121,6 +121,7 @@ def intelligence_index():
     except Exception as e:
         return jsonify({"error": str(e), "data": []}), 200
 
+# AUTO-REPAIR: duplicate route '/news' also in main.py:12443 — review and remove one
 @dchub_discovery_api_bp.route('/news')
 def news():
     limit = request.args.get('limit', 50, type=int)
