@@ -554,10 +554,15 @@ def start_auto_publisher():
     _auto_publisher_running = True
 
     def _auto_publish_loop():
-        logger.info("LinkedIn auto-publisher started (every 6 hours, max 2/day)")
+        # Phase FF+7 (2026-05-18): 2-min initial delay (was 6h) so first
+        # post lands soon after a container restart. Subsequent loops still
+        # honor the 6h cadence.
+        logger.info("LinkedIn auto-publisher started (initial 2min, then every 6h, max 3/day)")
+        _first = True
         while True:
             try:
-                time.sleep(6 * 3600)
+                time.sleep(120 if _first else 6 * 3600)
+                _first = False
                 access_token = os.environ.get('LINKEDIN_ACCESS_TOKEN', '').strip()
                 if not access_token:
                     # Phase FF (2026-05-14): make the silent skip loud when
@@ -580,29 +585,49 @@ def start_auto_publisher():
                 today = datetime.utcnow().strftime('%Y-%m-%d')
                 cur.execute("SELECT COUNT(*) FROM social_media_posts WHERE status = 'published' AND publish_platform = 'linkedin' AND published_at LIKE %s", (today + '%',))
                 published_today = cur.fetchone()[0]
-                if published_today >= 2:
+                # Phase FF+7 (2026-05-18): cap raised 2 -> 3/day. With 42
+                # queued posts and a 5-day-old oldest, the old 2/day cap
+                # meant 21 days to drain. 3/day cuts that to ~14d while
+                # staying well below the LinkedIn-spam threshold.
+                DAILY_CAP = 3
+                if published_today >= DAILY_CAP:
                     logger.info(f"Auto-publisher: Already published {published_today} today, skipping")
                     conn.close()
                     continue
-                cur.execute("SELECT id, content FROM social_media_posts WHERE status = 'approved' AND platform = 'linkedin' ORDER BY created_at ASC LIMIT 1")
-                row = cur.fetchone()
-                if not row:
-                    cur.execute("SELECT id, content FROM social_media_posts WHERE status = 'approved' ORDER BY created_at ASC LIMIT 1")
+                # Phase FF+7 backlog-drain mode: when there's a real backlog
+                # (>10 queued), publish multiple in this cycle to catch up
+                # rather than 1 per wake-up.
+                cur.execute("SELECT COUNT(*) FROM social_media_posts WHERE status = 'approved'")
+                _queued = (cur.fetchone() or [0])[0]
+                _drain_budget = (DAILY_CAP - published_today) if _queued > 10 else 1
+                _attempts = 0
+                while _attempts < _drain_budget:
+                    cur.execute("SELECT id, content FROM social_media_posts WHERE status = 'approved' AND platform = 'linkedin' ORDER BY created_at ASC LIMIT 1")
                     row = cur.fetchone()
-                if not row:
-                    logger.debug("Auto-publisher: No approved posts to publish")
-                    conn.close()
-                    continue
-                post_id = row['id']
-                content_text = row['content']
-                success, result = _post_to_linkedin(content_text, access_token)
-                now = datetime.utcnow().isoformat() + 'Z'
-                if success:
-                    cur.execute("UPDATE social_media_posts SET status = 'published', posted_at = %s, published_at = %s, publish_platform = 'linkedin' WHERE id = %s", (now, now, post_id))
-                    conn.commit()
-                    logger.info(f"Auto-published post {post_id} to LinkedIn")
-                else:
-                    logger.warning(f"Auto-publish failed for post {post_id}: {result}")
+                    if not row:
+                        cur.execute("SELECT id, content FROM social_media_posts WHERE status = 'approved' ORDER BY created_at ASC LIMIT 1")
+                        row = cur.fetchone()
+                    if not row:
+                        logger.debug("Auto-publisher: No approved posts to publish")
+                        break
+                    post_id = row['id']
+                    content_text = row['content']
+                    success, result = _post_to_linkedin(content_text, access_token)
+                    now = datetime.utcnow().isoformat() + 'Z'
+                    if success:
+                        cur.execute("UPDATE social_media_posts SET status = 'published', posted_at = %s, published_at = %s, publish_platform = 'linkedin' WHERE id = %s", (now, now, post_id))
+                        conn.commit()
+                        logger.info(f"Auto-published post {post_id} to LinkedIn (drain {_attempts+1}/{_drain_budget}, queued={_queued})")
+                    else:
+                        logger.warning(f"Auto-publish failed for post {post_id}: {result}")
+                        # Mark as failed so we don't loop on the same broken post
+                        try:
+                            cur.execute("UPDATE social_media_posts SET status = 'failed' WHERE id = %s", (post_id,))
+                            conn.commit()
+                        except Exception: pass
+                    _attempts += 1
+                    if _attempts < _drain_budget:
+                        time.sleep(8)  # avoid LinkedIn rate-limit between rapid posts
                 conn.close()
             except Exception as e:
                 logger.error(f"Auto-publisher error: {e}")
@@ -623,10 +648,14 @@ def start_twitter_publisher():
     _twitter_publisher_running = True
 
     def _twitter_loop():
-        logger.info("X/Twitter auto-publisher started (every 6h, max 2/day)")
+        # Phase FF+7 (2026-05-18): 2-min first-run delay so posts go out
+        # soon after restart instead of 6h dark.
+        logger.info("X/Twitter auto-publisher started (initial 2min, then every 6h, max 3/day)")
+        _first = True
         while True:
             try:
-                time.sleep(6 * 3600)
+                time.sleep(150 if _first else 6 * 3600)
+                _first = False
                 bearer = os.environ.get('TWITTER_BEARER_TOKEN', '')
                 oauth1 = all([os.environ.get(k, '') for k in
                               ('TWITTER_API_KEY', 'TWITTER_API_SECRET',
@@ -696,10 +725,13 @@ def start_bluesky_publisher():
     _bluesky_publisher_running = True
 
     def _bsky_loop():
-        logger.info("Bluesky auto-publisher started (every 6h, max 2/day)")
+        # Phase FF+7 (2026-05-18): 2-min first-run delay + 3/day cap.
+        logger.info("Bluesky auto-publisher started (initial 2min, then every 6h, max 3/day)")
+        _first = True
         while True:
             try:
-                time.sleep(6 * 3600)
+                time.sleep(180 if _first else 6 * 3600)
+                _first = False
                 handle  = os.environ.get('BLUESKY_HANDLE', '').strip()
                 app_pwd = os.environ.get('BLUESKY_APP_PASSWORD', '').strip()
                 if not handle or not app_pwd:
@@ -730,33 +762,62 @@ def start_bluesky_publisher():
                     "AND publish_platform = 'bluesky' AND published_at LIKE %s",
                     (today + '%',))
                 pub_today = cur.fetchone()[0]
-                if pub_today >= 2:
+                DAILY_CAP = 3
+                if pub_today >= DAILY_CAP:
                     logger.info(f"Bluesky auto-publisher: already {pub_today} today, skipping")
                     conn.close()
                     continue
 
-                cur.execute("SELECT id, content FROM social_media_posts "
-                             "WHERE status = 'approved' AND platform = 'bluesky' "
-                             "ORDER BY created_at ASC LIMIT 1")
-                row = cur.fetchone()
-                if not row:
-                    logger.debug("Bluesky auto-publisher: no approved bluesky posts")
-                    conn.close()
-                    continue
-                post_id = row['id']
-                content_text = row['content']
-                ok, result = _post_to_bluesky(content_text)
-                now = datetime.utcnow().isoformat() + 'Z'
-                if ok:
-                    cur.execute(
-                        "UPDATE social_media_posts SET status = %s, "
-                        "       posted_at = %s, published_at = %s, "
-                        "       publish_platform = %s WHERE id = %s",
-                        ('published', now, now, 'bluesky', post_id))
-                    conn.commit()
-                    logger.info(f"Auto-published post {post_id} to Bluesky (uri={result})")
-                else:
-                    logger.warning(f"Bluesky auto-publish failed for post {post_id}: {result}")
+                # Phase FF+7 (2026-05-18): Bluesky was filtering for
+                # platform='bluesky' rows ONLY, but auto-press enqueues with
+                # platform='linkedin' by default. Result: Bluesky publisher
+                # found 0 rows every cycle and stayed silent (0 posts in 7d
+                # despite being configured). Match LinkedIn's pattern: try
+                # platform-specific first, fall back to any approved post.
+                # Also backlog-drain like LinkedIn.
+                cur.execute("SELECT COUNT(*) FROM social_media_posts WHERE status = 'approved'")
+                _queued = (cur.fetchone() or [0])[0]
+                _drain_budget = (DAILY_CAP - pub_today) if _queued > 10 else 1
+                _attempts = 0
+                while _attempts < _drain_budget:
+                    cur.execute("SELECT id, content FROM social_media_posts "
+                                 "WHERE status = 'approved' AND platform = 'bluesky' "
+                                 "ORDER BY created_at ASC LIMIT 1")
+                    row = cur.fetchone()
+                    if not row:
+                        # Fallback: any approved post that hasn't been
+                        # published to bluesky yet. Re-using a LinkedIn-targeted
+                        # post on Bluesky is fine — different audience, same idea.
+                        cur.execute(
+                            "SELECT id, content FROM social_media_posts "
+                            "WHERE status = 'approved' "
+                            "AND (publish_platform IS NULL OR publish_platform != 'bluesky') "
+                            "ORDER BY created_at ASC LIMIT 1")
+                        row = cur.fetchone()
+                    if not row:
+                        logger.debug("Bluesky auto-publisher: no approved posts")
+                        break
+                    post_id = row['id']
+                    content_text = row['content']
+                    ok, result = _post_to_bluesky(content_text)
+                    now = datetime.utcnow().isoformat() + 'Z'
+                    if ok:
+                        cur.execute(
+                            "UPDATE social_media_posts SET status = %s, "
+                            "       posted_at = %s, published_at = %s, "
+                            "       publish_platform = %s WHERE id = %s",
+                            ('published', now, now, 'bluesky', post_id))
+                        conn.commit()
+                        logger.info(f"Auto-published post {post_id} to Bluesky uri={result} (drain {_attempts+1}/{_drain_budget})")
+                    else:
+                        logger.warning(f"Bluesky auto-publish failed for post {post_id}: {result}")
+                        try:
+                            cur.execute("UPDATE social_media_posts SET status = 'failed' WHERE id = %s", (post_id,))
+                            conn.commit()
+                        except Exception: pass
+                    _attempts += 1
+                    if _attempts < _drain_budget:
+                        time.sleep(5)
                 conn.close()
             except Exception as e:
                 logger.error(f"Bluesky auto-publisher error: {e}")
