@@ -257,6 +257,51 @@ def pitch_send():
     email = b.get("recipient_email"); subject = b.get("subject"); txt = b.get("body")
     if not (email and subject and txt):
         return jsonify(ok=False, error="recipient_email + subject + body required"), 400
+
+    # Phase ZZZZ-pitch-guard (2026-05-19): prevent placeholder leaks like
+    # subject:"<from draft>" or body:"<from draft>" from being sent to
+    # real journalists. Either reject + return draft auto-filled, or
+    # accept body=="auto" and inline-generate.
+    placeholder_markers = ("<from draft>", "<draft>", "<TODO>", "<placeholder>",
+                            "from draft", "FROM DRAFT")
+    if any(m in subject for m in placeholder_markers) or any(m in txt for m in placeholder_markers):
+        return jsonify(ok=False,
+                       error="placeholder text detected in subject or body",
+                       hint=("Looks like you sent '<from draft>' literally. "
+                             "Either (a) re-run /pitch-draft and copy the full "
+                             "subject + body strings into this call, OR "
+                             "(b) re-run this call with body:'auto' to auto-"
+                             "inline the draft."),
+                       safety_block=True), 400
+
+    # Auto-mode: caller can pass body:"auto" + topic to skip the
+    # copy-paste step entirely.
+    if txt.strip().lower() == "auto":
+        topic = b.get("topic", "industry_pulse")
+        story = b.get("story") or {}
+        recipient_obj = next((j for j in _JOURNALISTS if j["email"] == email), None)
+        if not recipient_obj:
+            return jsonify(ok=False,
+                           error=f"unknown recipient {email}",
+                           hint="GET /api/v1/media/journalists for the list"), 404
+        if not story:
+            # Default story (same as the draft endpoint)
+            story = {
+                "headline": "Weekly DC industry stat sheet",
+                "story_paragraph": (
+                    "DC Hub publishes a weekly machine-readable stat sheet of "
+                    "US/global data center facility counts, M&A volume, "
+                    "pipeline MW, and AI-agent adoption metrics. CC-BY-4.0 "
+                    "(free to cite). Designed for analyst + journalist use — "
+                    "schema.org Dataset markup, every metric sourced + timestamped."),
+                "data_url": "https://dchub.cloud/industry/pulse",
+                "methodology_url": "https://dchub.cloud/dcpi/methodology",
+                "angle_1": "DC industry data is mostly locked behind $25K/yr paywalls (DCHawk, dcByte). Our weekly stat sheet is free.",
+                "angle_2": "AI agents (ChatGPT/Claude/Perplexity/Gemini) auto-cite our MCP server in real time — see /cited-by.",
+                "angle_3": "Pipeline + DCPI rankings shift weekly. Static quarterly reports miss the inflection points.",
+            }
+        subject, txt = _compose_pitch(topic, story, recipient_obj)
+
     recipient = next((j for j in _JOURNALISTS if j["email"] == email), None)
 
     # Send via Resend
