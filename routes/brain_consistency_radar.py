@@ -513,9 +513,14 @@ def check_cron_if_mismatched() -> list[dict]:
     has_hourly_zero = any(c.strip() == "0 * * * *" for c in cron_strings)
 
     # Walk every if-check that pins to github.event.schedule == '<cron>'.
+    # Phase FF+7-detector-fix (2026-05-19): require line to START with
+    # whitespace + `if:` so we don't match `if:` mentioned inside YAML
+    # comments (the prior regex was matching comment text like
+    # `# if: github.event.schedule == '0 17 * * 4'` as a real if-check).
     for m in re.finditer(
-        r"if:\s*github\.event\.schedule\s*==\s*['\"]([^'\"]+)['\"]",
+        r"^\s*if:\s*github\.event\.schedule\s*==\s*['\"]([^'\"]+)['\"]",
         text,
+        re.MULTILINE,
     ):
         check_cron = m.group(1)
         line_no = text[:m.start()].count("\n") + 1

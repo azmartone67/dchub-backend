@@ -20,8 +20,11 @@ on:
   schedule:
     # Phase I — hourly Brain v2 learning pass
     - cron: '0 * * * *'
-    # Phase J + K — every 6h, K offset 15 min after J
-    - cron: '0 */6 * * *'
+    # Phase J + K — every 6h. Phase FF+7 (2026-05-19): moved J from
+    # ':00' to ':03' to break the hourly-cron collision detector. At
+    # ':00' the hourly cron 'O * * * *' wins github.event.schedule
+    # and outreach_run's if-check evaluates false 4/4 fires per day.
+    - cron: '3 */6 * * *'
     - cron: '15 */6 * * *'
     # Phase BB (2026-05-12) — daily 13:00 UTC autonomous press release
     # (09:00 ET, when buyers + journalists check news). Idempotent —
@@ -179,8 +182,9 @@ jobs:
           " || true
 
   outreach_run:
-    # Run on the 0-min 6h cron OR manual "all" / "outreach"
-    if: github.event.schedule == '0 */6 * * *' || (github.event_name == 'workflow_dispatch' && (inputs.phase == 'all' || inputs.phase == 'outreach'))
+    # Phase FF+7 (2026-05-19): moved to '3 */6 * * *' to break hourly-cron
+    # collision. The new check_cron_if_mismatched detector caught this.
+    if: github.event.schedule == '3 */6 * * *' || (github.event_name == 'workflow_dispatch' && (inputs.phase == 'all' || inputs.phase == 'outreach'))
     runs-on: ubuntu-latest
     timeout-minutes: 5
     steps:
