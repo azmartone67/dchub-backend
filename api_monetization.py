@@ -401,23 +401,31 @@ monetization_rate_limiter = RateLimiter()
 # =============================================================================
 
 def track_api_usage(user_id, api_key_id, endpoint, method, status_code, response_time_ms, ip_address, user_agent):
-    """Track API usage asynchronously"""
+    """Track API usage asynchronously.
+
+    Phase FF+7-fix4 (2026-05-19) — wrapped in try/finally so conn ALWAYS
+    closes. This is the worst-case leak site: every API request spawns
+    a daemon thread, so under load any leak per request compounds to
+    pool exhaustion in seconds. Was 0 finally blocks for 13 _get_db
+    sites — fixing the highest-traffic one (_track).
+    """
     def _track():
+        conn = None
         try:
             conn = get_db()
             c = conn.cursor()
-            
+
             now = datetime.utcnow()
             date = now.strftime('%Y-%m-%d')
-            
+
             # Insert detailed log
             c.execute("""
-                INSERT INTO api_usage (user_id, api_key_id, endpoint, method, status_code, 
+                INSERT INTO api_usage (user_id, api_key_id, endpoint, method, status_code,
                                        response_time_ms, ip_address, user_agent, timestamp, date)
                 VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s)
-            """, (user_id, api_key_id, endpoint, method, status_code, 
+            """, (user_id, api_key_id, endpoint, method, status_code,
                   response_time_ms, ip_address, user_agent, now.isoformat(), date))
-            
+
             # Update daily aggregate
             c.execute("""
                 INSERT INTO api_usage_daily (user_id, api_key_id, date, request_count, error_count, avg_response_time_ms)
@@ -427,25 +435,28 @@ def track_api_usage(user_id, api_key_id, endpoint, method, status_code, response
                     error_count = error_count + %s,
                     avg_response_time_ms = (avg_response_time_ms * request_count + %s) / (request_count + 1)
             """, (
-                user_id, api_key_id, date, 
-                1 if status_code >= 400 else 0, 
+                user_id, api_key_id, date,
+                1 if status_code >= 400 else 0,
                 response_time_ms,
                 1 if status_code >= 400 else 0,
                 response_time_ms
             ))
-            
+
             # Update user plan usage
             c.execute("""
-                UPDATE user_plans 
+                UPDATE user_plans
                 SET usage_this_cycle = usage_this_cycle + 1, updated_at = %s
                 WHERE user_id = %s
             """, (now.isoformat(), user_id))
-            
+
             conn.commit()
-            conn.close()
         except Exception as e:
-            print(f"Usage tracking error: {e}")
-    
+            print(f"Usage tracking error: {type(e).__name__}: {e}")
+        finally:
+            if conn is not None:
+                try: conn.close()
+                except Exception: pass
+
     # Run in background thread
     threading.Thread(target=_track, daemon=True).start()
 

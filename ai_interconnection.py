@@ -101,14 +101,21 @@ def detect_ai_platform(user_agent, referer=None):
     return 'Unknown'
 
 def _track_ai_usage_sync(endpoint, query, records_returned, response_type, user_agent, referer, ip_address):
-    """Internal sync DB write for AI usage tracking"""
+    """Internal sync DB write for AI usage tracking.
+
+    Phase FF+7-fix4 (2026-05-19) — wrapped in try/finally so conn ALWAYS
+    closes. Every AI-traffic page view fires this in a daemon thread;
+    any insert failure used to leak a Neon conn slot. Combined with the
+    other leak sites, this contributed to the 2026-05-19 pool exhaustion.
+    """
+    conn = None
     try:
         platform = detect_ai_platform(user_agent, referer)
         conn = get_db()
         # sqlite3.Row removed - PostgreSQL uses RealDictCursor or dict(row)
         cursor = conn.cursor()
         cursor.execute('''
-            INSERT INTO ai_usage_tracking 
+            INSERT INTO ai_usage_tracking
             (timestamp, platform, endpoint, query, user_agent, ip_address, records_returned, response_type, referer)
             VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s)
         ''', (
@@ -123,7 +130,6 @@ def _track_ai_usage_sync(endpoint, query, records_returned, response_type, user_
             referer[:500] if referer else None
         ))
         conn.commit()
-        conn.close()
         if platform not in ('Unknown', 'API Client', 'direct'):
             try:
                 from agent_hub import emit_ai_traffic_event
@@ -131,7 +137,11 @@ def _track_ai_usage_sync(endpoint, query, records_returned, response_type, user_
             except Exception:
                 pass
     except Exception as e:
-        print(f"AI tracking error: {e}")
+        print(f"AI tracking error: {type(e).__name__}: {e}")
+    finally:
+        if conn is not None:
+            try: conn.close()
+            except Exception: pass
 
 def track_ai_usage(endpoint, query=None, records_returned=0, response_type='json'):
     """Log AI platform usage to database (fire-and-forget via thread)"""
