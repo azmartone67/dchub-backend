@@ -431,6 +431,74 @@ def check_cron_coverage() -> list[dict]:
 
 # ── public API ─────────────────────────────────────────────────────
 
+def check_unsafe_db_conn_pattern() -> list[dict]:
+    """Phase FF+7-fix4 (2026-05-19) — static-audit for the conn-leak
+    pattern that took Railway down on 2026-05-19.
+
+    Scans .py files for occurrences of `conn = _get_db()` or
+    `conn = get_db()` and counts how many times `conn.close()` appears
+    in the same file with a `finally:` block. If a file opens many
+    conns but has zero or few finally blocks, it's a leak risk —
+    every uncaught exception leaks a slot in the Neon pool.
+
+    Runs LOCALLY (no HTTP). Lightweight enough to fire on every scan.
+    Flags only when the ratio is bad (e.g. 10 opens, 0 finally) since
+    sometimes `with` contexts or per-request handlers don't need it.
+    """
+    findings: list[dict] = []
+    import os as _os, re as _re
+
+    backend_root = _os.path.dirname(_os.path.dirname(_os.path.abspath(__file__)))
+    open_pat = _re.compile(r"conn\s*=\s*_?get_db\(\)")
+    finally_pat = _re.compile(r"^\s*finally\s*:", _re.MULTILINE)
+
+    # Long-running thread files are the highest risk — leaks in
+    # per-request handlers are bounded per-request, but leaks in
+    # daemon threads accumulate forever.
+    thread_files = set()
+    for root in (backend_root, _os.path.join(backend_root, "routes")):
+        try:
+            for f in _os.listdir(root):
+                if not f.endswith(".py"): continue
+                p = _os.path.join(root, f)
+                if not _os.path.isfile(p): continue
+                try:
+                    with open(p, "rb") as fh:
+                        src = fh.read().decode("utf-8", "ignore")
+                except Exception: continue
+                if "daemon=True" in src or "daemon = True" in src:
+                    thread_files.add(p)
+        except Exception: continue
+
+    for p in sorted(thread_files):
+        try:
+            with open(p, "rb") as fh:
+                src = fh.read().decode("utf-8", "ignore")
+        except Exception: continue
+        opens = len(open_pat.findall(src))
+        finallys = len(finally_pat.findall(src))
+        # Heuristic: more than 3 opens AND fewer finallys than half
+        # the opens = likely leaks. Skip if balanced.
+        if opens >= 3 and finallys < opens / 2:
+            rel = p.replace(backend_root, "").lstrip("/")
+            findings.append({
+                "issue": "unsafe_db_conn_pattern",
+                "url": rel,
+                "count": opens,
+                "detail": (f"{rel}: {opens} `conn = _get_db()` opens vs "
+                           f"only {finallys} `finally:` blocks. This file "
+                           f"contains a daemon thread (daemon=True). Conn "
+                           f"leaks in long-running threads accumulate forever "
+                           f"and eventually exhaust the Neon pool — the "
+                           f"failure mode behind the 2026-05-19 outage. Fix: "
+                           f"wrap every _get_db()...conn.close() block with "
+                           f"try/finally so conn closes on exception paths."),
+                "open_count": opens,
+                "finally_count": finallys,
+            })
+    return findings
+
+
 def check_db_pool_pressure() -> list[dict]:
     """Phase FF+7-fix4 (2026-05-19) — early-warning detector for the
     pool-exhaustion class of outage that took Railway down for 30 min
@@ -4601,6 +4669,11 @@ def scan_all() -> list[dict]:
                # for 30min on 2026-05-19. Probes 3 DB endpoints; flags
                # when 2/3 are slow — before container goes unhealthy.
                check_db_pool_pressure,
+               # Phase FF+7-fix4 (2026-05-19) — STATIC auditor that flags
+               # daemon-thread .py files with many _get_db() opens but few
+               # finally: blocks. Closes the discovery loop for the leak
+               # class that caused the outage. Lightweight (no HTTP).
+               check_unsafe_db_conn_pattern,
                check_csp_drift,
                check_dcpi_partial_recompute,
                check_discovery_stalled,

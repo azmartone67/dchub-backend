@@ -1039,15 +1039,30 @@ def _run_battle_async(queue_id, question, category):
 
 def _run_battle(question, category, fighters_config=None, api_base='https://dchub-backend-production.up.railway.app'):
     """Run a battle: send question to platforms, score responses, save results.
-    
+
     v2: Uses direct API calls with per-platform adapters.
     Falls back to generate_all_responses if available and API calls fail.
+
+    Phase FF+7-fix4 (2026-05-19) — wrapped in try/finally so conn always
+    closes. ~200 lines between _get_db() and the happy-path close mean
+    any exception leaked a Neon pool slot. That class of leak across
+    long-running threads caused the 2026-05-19 30-min outage.
     """
     conn = _get_db()
     try:
-        conn.rollback()  # Clear any stale aborted transaction
-    except Exception:
-        pass
+        try:
+            conn.rollback()  # Clear any stale aborted transaction
+        except Exception:
+            pass
+        return _run_battle_inner(conn, question, category, fighters_config, api_base)
+    finally:
+        try: conn.close()
+        except Exception: pass
+
+
+def _run_battle_inner(conn, question, category, fighters_config, api_base):
+    """Inner implementation — `conn` is owned by the caller, which
+    guarantees close via try/finally."""
     c = conn.cursor()
 
     # Get active platforms
