@@ -28,7 +28,18 @@ DB_PATH = 'dc_nexus.db'
 
 
 def _safe_write(sql, params=None, retries=3):
-    """Write to PostgreSQL via db_utils. Rolls back on error to keep pool clean."""
+    """Write to PostgreSQL via db_utils. Rolls back on error to keep pool clean.
+
+    Phase FF+10-pipeline (2026-05-19): added fast-fail for the
+    "no unique or exclusion constraint" error class. Without this
+    short-circuit, every `INSERT ... ON CONFLICT(<col>) DO NOTHING`
+    statement that hits a table missing the matching constraint
+    retried 3× with 1s + 2s sleeps — turning a single bad statement
+    into 3-4s of wasted DB connection time. The autonomous-brain
+    inline loop calls into here every 5 min × N pipelines, which
+    exhausted the Neon pool and pegged gunicorn workers (watchdog
+    eventually killed the container on self_response failures).
+    """
     for attempt in range(retries):
         conn = None
         try:
@@ -46,6 +57,17 @@ def _safe_write(sql, params=None, retries=3):
                     conn.rollback()
                 except Exception:
                     pass
+            # Phase FF+10-pipeline fast-fail: schema bugs (missing
+            # constraint, undefined column) can NEVER be fixed by a
+            # retry — bail immediately so the caller can degrade
+            # gracefully instead of holding a connection 3-4 seconds.
+            _msg = str(e).lower()
+            if ("no unique or exclusion constraint" in _msg
+                    or "does not exist" in _msg
+                    or "undefined column" in _msg
+                    or "syntax error" in _msg):
+                logger.warning(f"Infrastructure write SCHEMA-fail (no retry): {e}")
+                return 0
             if attempt < retries - 1:
                 time.sleep(1.0 * (attempt + 1))
             else:
@@ -187,6 +209,30 @@ def init_infrastructure_tables():
             updated_at TIMESTAMPTZ DEFAULT NOW()
         )
     ''')
+
+    # Phase FF+10-pipeline (2026-05-19) — backfill the UNIQUE constraint
+    # on gas_pipelines.source_id for tables created before the DDL above
+    # included `UNIQUE`. Without this, every `INSERT ... ON CONFLICT
+    # (source_id)` returned "no unique or exclusion constraint matching"
+    # and the autonomous-brain loop spammed retries until the Neon pool
+    # collapsed (root cause of the 15:38 watchdog kill). Partial index
+    # (WHERE source_id IS NOT NULL) so NULL rows don't block creation,
+    # and wrapped in try/except so existing duplicates don't crash init.
+    try:
+        cursor.execute("""
+            CREATE UNIQUE INDEX IF NOT EXISTS gas_pipelines_source_id_uniq
+              ON gas_pipelines (source_id)
+            WHERE source_id IS NOT NULL
+        """)
+        logger.info("[infra] gas_pipelines source_id UNIQUE index ensured")
+    except Exception as _idx_err:
+        logger.warning(
+            f"[infra] gas_pipelines UNIQUE index NOT created "
+            f"(likely dupe source_ids exist): {str(_idx_err)[:200]}. "
+            f"Falling back to fast-fail-on-conflict in _safe_write."
+        )
+        try: conn.rollback()
+        except Exception: pass
 
     cursor.execute('''
         CREATE TABLE IF NOT EXISTS linkedin_weekly_posts (
