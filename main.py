@@ -1323,6 +1323,15 @@ try:
     except Exception as _l13e:
         import logging
         logging.getLogger(__name__).warning('brain_layer13 wiring failed: %s', _l13e)
+    # Phase FF+7 (2026-05-18): Brain L14 — Causal Reasoner. Ties symptoms
+    # across layers, calls Claude with joined context, returns root-cause
+    # chains + smallest-safe fixes. Goal: stop fixing symptoms; fix causes.
+    try:
+        from routes.brain_layer14_causal import brain_layer14_bp
+        app.register_blueprint(brain_layer14_bp)
+    except Exception as _l14e:
+        import logging
+        logging.getLogger(__name__).warning('brain_layer14 wiring failed: %s', _l14e)
     # Phase RRR-newsletter-hotfix3 (2026-05-18): registering via a
     # routes/*.py module silently failed for reasons we couldn't
     # diagnose live. Switching to inline-route definitions on the

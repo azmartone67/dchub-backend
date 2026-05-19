@@ -464,6 +464,17 @@ DISABLED_JOBS = {
         'minute': 0,
         'timeout': 30,
     },
+    # Phase FF+7 (2026-05-18): Brain L14 causal reasoner — Claude reads
+    # ALL layers joined and finds root-cause chains. Every 6h offset :15
+    # so it lands after L11 (:05), before L2 (:25), well before L8 (:45).
+    'brain_causal_analyze': {
+        'name': 'Brain L14 — Causal Reasoner',
+        'endpoint': '/api/v1/brain/causal/analyze',
+        'method': 'POST',
+        'hours': [3, 9, 15, 21],
+        'minute': 15,
+        'timeout': 90,
+    },
     # Press queue scan: detects new auto-press triggers (DCPI movers,
     # facility events). Every 4h, staggered :50.
     'press_queue_scan': {
