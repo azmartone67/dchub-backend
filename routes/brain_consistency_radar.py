@@ -431,6 +431,94 @@ def check_cron_coverage() -> list[dict]:
 
 # ── public API ─────────────────────────────────────────────────────
 
+def check_cron_if_mismatched() -> list[dict]:
+    """Phase FF+7 (2026-05-19) — catch the bug class L14 surfaced:
+    a job's `if: github.event.schedule == 'CRON_STRING'` references a
+    cron string that isn't actually in the workflow's `on.schedule`
+    list, so the job never fires from cron.
+
+    Two failure modes covered:
+      1. STALE: the schedule was moved (e.g. ':00' -> ':10' to break
+         collision with another workflow) but the matching if-check
+         wasn't updated. Job hasn't fired since the move.
+      2. COLLISION: the if-check pins to a cron like '0 17 * * 4' but
+         the hourly '0 * * * *' cron ALSO fires at that minute. GH
+         Actions coalesces into one workflow run and passes the hourly
+         schedule in github.event.schedule, so the if-check fails.
+
+    We flag both: any if-check cron string that isn't in the schedule
+    list literally is STALE; any cron pinned to ':00' minute where a
+    hourly '0 * * * *' cron also exists is COLLISION.
+    """
+    findings: list[dict] = []
+    if not os.path.exists(_WORKFLOW_FILE):
+        return findings
+    try:
+        with open(_WORKFLOW_FILE, "r") as f:
+            text = f.read()
+    except Exception:
+        return findings
+
+    # Extract cron strings from `on.schedule` block.
+    import re
+    cron_strings = set(re.findall(r"^\s*-\s*cron:\s*['\"]([^'\"]+)['\"]",
+                                   text, re.MULTILINE))
+    has_hourly_zero = any(c.strip() == "0 * * * *" for c in cron_strings)
+
+    # Walk every if-check that pins to github.event.schedule == '<cron>'.
+    for m in re.finditer(
+        r"if:\s*github\.event\.schedule\s*==\s*['\"]([^'\"]+)['\"]",
+        text,
+    ):
+        check_cron = m.group(1)
+        line_no = text[:m.start()].count("\n") + 1
+        # Find the nearest preceding job name (best-effort context).
+        prev = text.rfind("\n  ", 0, m.start())
+        nl = text.find("\n", m.start())
+        job_ctx = text[max(0, m.start()-300):m.start()]
+        job_match = re.findall(r"^\s\s([\w_-]+):\s*$", job_ctx, re.MULTILINE)
+        job_name = job_match[-1] if job_match else "?"
+
+        if check_cron not in cron_strings:
+            findings.append({
+                "issue": "cron_if_check_mismatched_schedule",
+                "url": _WORKFLOW_FILE,
+                "count": 1,
+                "detail": (f"Job `{job_name}` (line {line_no}) checks for "
+                           f"github.event.schedule == '{check_cron}', but "
+                           f"that cron string is NOT in the workflow's "
+                           f"on.schedule list. Either the schedule was moved "
+                           f"and this if-check wasn't updated, or the check "
+                           f"was written for a cron that was never added. "
+                           f"Either way, this job never fires from cron."),
+                "job": job_name,
+                "expected_cron": check_cron,
+            })
+            continue
+
+        # Cron is in schedule list — but does it collide with the hourly '0 * * * *'?
+        if has_hourly_zero and check_cron.startswith("0 ") and check_cron != "0 * * * *":
+            # The if-check is pinned to ':00' minute and an hourly cron also
+            # fires at ':00'. GH Actions will (usually) pass the hourly cron
+            # in github.event.schedule, so this job's if-check evaluates false.
+            findings.append({
+                "issue": "cron_if_check_collides_with_hourly",
+                "url": _WORKFLOW_FILE,
+                "count": 1,
+                "detail": (f"Job `{job_name}` (line {line_no}) is pinned to "
+                           f"cron '{check_cron}' which fires at ':00' minute. "
+                           f"The hourly '0 * * * *' cron also fires at ':00' "
+                           f"every hour. When both fire simultaneously, GH "
+                           f"Actions coalesces them and passes the hourly "
+                           f"schedule in github.event.schedule — this job's "
+                           f"if-check evaluates false. Move the cron to a "
+                           f"non-':00' minute (e.g. ':05' or ':07')."),
+                "job": job_name,
+                "colliding_cron": check_cron,
+            })
+    return findings
+
+
 def check_cron_collisions() -> list[dict]:
     """Phase VV-1 (2026-05-15) — detect cron expression collisions across
     workflow files in BOTH repos.
@@ -4393,6 +4481,13 @@ def scan_all() -> list[dict]:
                check_tier_consistency,
                check_cron_coverage,
                check_cron_collisions,
+               # Phase FF+7 (2026-05-19) — catches the bug L14 helped
+               # find: jobs with `if: github.event.schedule == 'X'` where
+               # 'X' isn't in on.schedule (stale check after cron move)
+               # OR 'X' is pinned to ':00' minute where hourly cron also
+               # fires (silent collision — job never runs from cron).
+               # Found 5 instances on first run.
+               check_cron_if_mismatched,
                check_csp_drift,
                check_dcpi_partial_recompute,
                check_discovery_stalled,
