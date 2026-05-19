@@ -106,7 +106,7 @@ def log_event(cycle_id, endpoint, pattern, fix, success, details=""):
             cur.execute("""
                 INSERT INTO self_heal_events
                   (cycle_id, endpoint, pattern, fix_applied, success, details)
-                VALUES (%s,%s,%s,%s,%s,%s);
+                VALUES (%s,%s,%s,%s,%s,%s) ON CONFLICT DO NOTHING;
             """, (cycle_id, endpoint, pattern, fix, success, details[:2000]))
             c.commit()
     except Exception as e:
@@ -507,7 +507,7 @@ def fix_backfill_press_releases():
             for slug, title, body, url in prs:
                 cur.execute("""
                     INSERT INTO press_releases (slug, title, body, url, published_at)
-                    VALUES (%s, %s, %s, %s, NOW())
+                    VALUES (%s, %s, %s, %s, NOW() ON CONFLICT DO NOTHING)
                     ON CONFLICT (slug) DO NOTHING;
                 """, (slug, title, body, url))
             c.commit()
@@ -553,7 +553,7 @@ def fix_backfill_testimonials():
             for quote, author, source in seeds:
                 cur.execute("""
                     INSERT INTO ai_testimonials (quote, author, source, created_at)
-                    VALUES (%s, %s, %s, NOW() - (random() * INTERVAL '14 days'));
+                    VALUES (%s, %s, %s, NOW() ON CONFLICT DO NOTHING - (random() * INTERVAL '14 days'));
                 """, (quote, author, source))
             c.commit()
             return True, f"seeded {len(seeds)} testimonials"
