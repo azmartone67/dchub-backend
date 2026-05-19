@@ -1405,6 +1405,17 @@ try:
     except Exception as _l21e:
         import logging
         logging.getLogger(__name__).warning('brain_layer21 wiring failed: %s', _l21e)
+    # Phase FF+7-meta (2026-05-19): facility profile DYNAMIC renderer.
+    # 2,002 static HTML files cover only ~10% of the 21,000-facility
+    # DB. Every facility added after the last static-generation pass
+    # 404'd. This route renders any facility on demand from DB data
+    # using the same visual style as the static files.
+    try:
+        from routes.facility_profile_page import facility_profile_bp
+        app.register_blueprint(facility_profile_bp)
+    except Exception as _fppe:
+        import logging
+        logging.getLogger(__name__).warning('facility_profile wiring failed: %s', _fppe)
     # Phase FF+7 (2026-05-19): Brain L15 — Auto-Action. Reads L14's
     # high-confidence chains and auto-opens a GitHub issue for each one
     # with a concrete fix. Closes the loop from "brain finds" → "work
