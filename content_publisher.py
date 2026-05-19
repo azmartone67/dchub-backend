@@ -560,21 +560,31 @@ def start_auto_publisher():
         logger.info("LinkedIn auto-publisher started (initial 2min, then every 6h, max 3/day)")
         _first = True
         while True:
+            # Phase FF+7-fix4 (2026-05-19): hard guarantee that every
+            # iteration closes its DB connection, even when sub-operations
+            # raise. The earlier loop had `conn = _get_db()` then ~50 lines
+            # of work and `conn.close()` only in some branches. When an
+            # exception fired mid-way (e.g. RealDictCursor KeyError, network
+            # blip), the connection leaked. Across 3 publishers × N
+            # iterations, this exhausted Neon's pool — every other endpoint
+            # then timed out and Railway marked the container unhealthy.
+            # 30-min outage 2026-05-19 was likely this. Wrap in try/finally.
+            import traceback as _tb
+            conn = None
             try:
                 time.sleep(120 if _first else 6 * 3600)
                 _first = False
                 access_token = os.environ.get('LINKEDIN_ACCESS_TOKEN', '').strip()
                 if not access_token:
-                    # Phase FF (2026-05-14): make the silent skip loud when
-                    # posts are actually piling up undelivered — that's the
-                    # actionable signal, vs. a quiet debug when nothing's queued.
+                    # Loud-when-queued, quiet-when-empty surface
+                    _queued = 0
                     try:
-                        _qc = _get_db(); _qcur = _qc.cursor()
-                        _qcur.execute("SELECT COUNT(*) FROM social_media_posts WHERE status = 'approved'")
-                        _queued = (_qcur.fetchone() or [0])[0]
-                        _qc.close()
-                    except Exception:
-                        _queued = 0
+                        conn = _get_db()
+                        _qcur = conn.cursor()
+                        _qcur.execute("SELECT COUNT(*) AS n FROM social_media_posts WHERE status = 'approved'")
+                        _r = _qcur.fetchone() or {}
+                        _queued = _r.get('n', 0) if hasattr(_r, 'get') else (_r[0] if _r else 0)
+                    except Exception: pass
                     if _queued:
                         logger.warning("Auto-publisher: %s approved post(s) queued but LINKEDIN_ACCESS_TOKEN not set — LinkedIn distribution is DARK", _queued)
                     else:
@@ -583,27 +593,13 @@ def start_auto_publisher():
                 conn = _get_db()
                 cur = conn.cursor()
                 today = datetime.utcnow().strftime('%Y-%m-%d')
-                # Phase FF+7-fix3 (2026-05-19): Neon connection uses
-                # RealDictCursor as default cursor_factory, so fetchone()
-                # returns a dict-like RealDictRow — `row[0]` raises
-                # KeyError(0) which str's to "0". Production logs showed
-                # "Auto-publisher error: 0" on all 3 loops at startup.
-                # Fix: alias COUNT(*) and pull by name.
                 cur.execute("SELECT COUNT(*) AS n FROM social_media_posts WHERE status = 'published' AND publish_platform = 'linkedin' AND published_at LIKE %s", (today + '%',))
                 _row = cur.fetchone() or {}
                 published_today = _row.get('n', 0) if hasattr(_row, 'get') else (_row[0] if _row else 0)
-                # Phase FF+7 (2026-05-18): cap raised 2 -> 3/day. With 42
-                # queued posts and a 5-day-old oldest, the old 2/day cap
-                # meant 21 days to drain. 3/day cuts that to ~14d while
-                # staying well below the LinkedIn-spam threshold.
                 DAILY_CAP = 3
                 if published_today >= DAILY_CAP:
                     logger.info(f"Auto-publisher: Already published {published_today} today, skipping")
-                    conn.close()
-                    continue
-                # Phase FF+7 backlog-drain mode: when there's a real backlog
-                # (>10 queued), publish multiple in this cycle to catch up
-                # rather than 1 per wake-up.
+                    continue  # finally will close conn
                 cur.execute("SELECT COUNT(*) AS n FROM social_media_posts WHERE status = 'approved'")
                 _row = cur.fetchone() or {}
                 _queued = _row.get('n', 0) if hasattr(_row, 'get') else (_row[0] if _row else 0)
@@ -628,17 +624,23 @@ def start_auto_publisher():
                         logger.info(f"Auto-published post {post_id} to LinkedIn (drain {_attempts+1}/{_drain_budget}, queued={_queued})")
                     else:
                         logger.warning(f"Auto-publish failed for post {post_id}: {result}")
-                        # Mark as failed so we don't loop on the same broken post
                         try:
                             cur.execute("UPDATE social_media_posts SET status = 'failed' WHERE id = %s", (post_id,))
                             conn.commit()
                         except Exception: pass
                     _attempts += 1
                     if _attempts < _drain_budget:
-                        time.sleep(8)  # avoid LinkedIn rate-limit between rapid posts
-                conn.close()
+                        time.sleep(8)
             except Exception as e:
-                logger.error(f"Auto-publisher error: {e}")
+                # Log FULL traceback so we can diagnose, not just str(e)
+                logger.error(f"Auto-publisher error: {type(e).__name__}: {e}")
+                logger.error(_tb.format_exc())
+            finally:
+                # GUARANTEE conn closed every iteration — prevents the pool
+                # exhaustion that was likely behind the 2026-05-19 outage.
+                if conn is not None:
+                    try: conn.close()
+                    except Exception: pass
 
     t = threading.Thread(target=_auto_publish_loop, daemon=True, name="linkedin-auto-publisher")
     t.start()
@@ -661,6 +663,10 @@ def start_twitter_publisher():
         logger.info("X/Twitter auto-publisher started (initial 2min, then every 6h, max 3/day)")
         _first = True
         while True:
+            # Phase FF+7-fix4 (2026-05-19): try/finally guarantees conn.close()
+            # to prevent Neon pool exhaustion. Same pattern as LinkedIn loop.
+            import traceback as _tb
+            conn = None
             try:
                 time.sleep(150 if _first else 6 * 3600)
                 _first = False
@@ -669,15 +675,14 @@ def start_twitter_publisher():
                               ('TWITTER_API_KEY', 'TWITTER_API_SECRET',
                                'TWITTER_ACCESS_TOKEN', 'TWITTER_ACCESS_SECRET')])
                 if not (bearer or oauth1):
-                    # Phase FF (2026-05-14): loud when X posts are queued
-                    # but undeliverable; quiet when nothing's waiting.
+                    _queued = 0
                     try:
-                        _qc = _get_db(); _qcur = _qc.cursor()
-                        _qcur.execute("SELECT COUNT(*) FROM social_media_posts WHERE status = 'approved' AND platform = 'twitter'")
-                        _queued = (_qcur.fetchone() or [0])[0]
-                        _qc.close()
-                    except Exception:
-                        _queued = 0
+                        conn = _get_db()
+                        _qcur = conn.cursor()
+                        _qcur.execute("SELECT COUNT(*) AS n FROM social_media_posts WHERE status = 'approved' AND platform = 'twitter'")
+                        _r = _qcur.fetchone() or {}
+                        _queued = _r.get('n', 0) if hasattr(_r, 'get') else (_r[0] if _r else 0)
+                    except Exception: pass
                     if _queued:
                         logger.warning("Twitter auto-publisher: %s approved X post(s) queued but no credentials set — X distribution is DARK", _queued)
                     else:
@@ -686,19 +691,16 @@ def start_twitter_publisher():
                 conn = _get_db()
                 cur = conn.cursor()
                 today = datetime.utcnow().strftime('%Y-%m-%d')
-                # Phase FF+7-fix3 (2026-05-19): RealDictCursor — pull by name.
                 cur.execute("SELECT COUNT(*) AS n FROM social_media_posts WHERE status = 'published' AND publish_platform = 'twitter' AND published_at LIKE %s", (today + '%',))
                 _row = cur.fetchone() or {}
                 pub_today = _row.get('n', 0) if hasattr(_row, 'get') else (_row[0] if _row else 0)
                 if pub_today >= 2:
                     logger.info(f"Twitter auto-publisher: already {pub_today} today, skipping")
-                    conn.close()
                     continue
                 cur.execute("SELECT id, content FROM social_media_posts WHERE status = 'approved' AND platform = 'twitter' ORDER BY created_at ASC LIMIT 1")
                 row = cur.fetchone()
                 if not row:
                     logger.debug("Twitter auto-publisher: no approved Twitter posts")
-                    conn.close()
                     continue
                 post_id = row['id']
                 content_text = row['content']
@@ -710,9 +712,13 @@ def start_twitter_publisher():
                     logger.info(f"Auto-published post {post_id} to X")
                 else:
                     logger.warning(f"Twitter auto-publish failed for {post_id}: {result}")
-                conn.close()
             except Exception as e:
-                logger.error(f"Twitter auto-publisher error: {e}")
+                logger.error(f"Twitter auto-publisher error: {type(e).__name__}: {e}")
+                logger.error(_tb.format_exc())
+            finally:
+                if conn is not None:
+                    try: conn.close()
+                    except Exception: pass
 
     t = threading.Thread(target=_twitter_loop, daemon=True,
                          name="twitter-auto-publisher")
@@ -739,23 +745,26 @@ def start_bluesky_publisher():
         logger.info("Bluesky auto-publisher started (initial 2min, then every 6h, max 3/day)")
         _first = True
         while True:
+            # Phase FF+7-fix4 (2026-05-19): try/finally guarantees conn.close()
+            # to prevent Neon pool exhaustion. Same pattern as LinkedIn loop.
+            import traceback as _tb
+            conn = None
             try:
                 time.sleep(180 if _first else 6 * 3600)
                 _first = False
                 handle  = os.environ.get('BLUESKY_HANDLE', '').strip()
                 app_pwd = os.environ.get('BLUESKY_APP_PASSWORD', '').strip()
                 if not handle or not app_pwd:
-                    # Surface the dark state when posts are queued, so
-                    # ops can see it's a missing-env problem, not a code bug.
+                    _queued = 0
                     try:
-                        _qc = _get_db(); _qcur = _qc.cursor()
+                        conn = _get_db()
+                        _qcur = conn.cursor()
                         _qcur.execute(
-                            "SELECT COUNT(*) FROM social_media_posts "
+                            "SELECT COUNT(*) AS n FROM social_media_posts "
                             "WHERE status = 'approved' AND platform = 'bluesky'")
-                        _queued = (_qcur.fetchone() or [0])[0]
-                        _qc.close()
-                    except Exception:
-                        _queued = 0
+                        _r = _qcur.fetchone() or {}
+                        _queued = _r.get('n', 0) if hasattr(_r, 'get') else (_r[0] if _r else 0)
+                    except Exception: pass
                     if _queued:
                         logger.warning("Bluesky auto-publisher: %s approved post(s) queued "
                                         "but BLUESKY_HANDLE/BLUESKY_APP_PASSWORD not set — "
@@ -777,8 +786,7 @@ def start_bluesky_publisher():
                 DAILY_CAP = 3
                 if pub_today >= DAILY_CAP:
                     logger.info(f"Bluesky auto-publisher: already {pub_today} today, skipping")
-                    conn.close()
-                    continue
+                    continue  # finally will close conn
 
                 # Phase FF+7 (2026-05-18): Bluesky was filtering for
                 # platform='bluesky' rows ONLY, but auto-press enqueues with
@@ -831,9 +839,13 @@ def start_bluesky_publisher():
                     _attempts += 1
                     if _attempts < _drain_budget:
                         time.sleep(5)
-                conn.close()
             except Exception as e:
-                logger.error(f"Bluesky auto-publisher error: {e}")
+                logger.error(f"Bluesky auto-publisher error: {type(e).__name__}: {e}")
+                logger.error(_tb.format_exc())
+            finally:
+                if conn is not None:
+                    try: conn.close()
+                    except Exception: pass
 
     t = threading.Thread(target=_bsky_loop, daemon=True,
                          name="bluesky-auto-publisher")
