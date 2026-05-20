@@ -139,17 +139,30 @@ def _act_5xx_burst_response(key: str, count: int) -> dict:
 # ── Action recording ────────────────────────────────────────────────
 
 def _ensure_table():
+    """Idempotently align brain_autopilot_actions to L21's expected schema.
+
+    Phase FF+24-followup (2026-05-20): routes/brain_autopilot.py and this
+    module BOTH INSERT into brain_autopilot_actions but with DIFFERENT
+    column sets. Whichever module's _ensure_table() ran first created
+    the table; the other one's INSERT then fails forever with
+      column "action" of relation "brain_autopilot_actions" does not exist
+    (the symptom observed in Railway logs at 2026-05-20 03:07:32 UTC).
+
+    The fix: keep CREATE TABLE IF NOT EXISTS for fresh installs, then
+    ADD COLUMN IF NOT EXISTS for each L21-specific column so this module
+    works whether or not the other one initialized the table first."""
     try:
         from main import get_db
         conn = get_db()
         if not conn: return
         try:
             cur = conn.cursor()
+            # Fresh-install path
             cur.execute("""
                 CREATE TABLE IF NOT EXISTS brain_autopilot_actions (
                     id           BIGSERIAL PRIMARY KEY,
                     fired_at     TIMESTAMPTZ DEFAULT NOW(),
-                    action       TEXT NOT NULL,
+                    action       TEXT,
                     target       TEXT,
                     tier         TEXT,
                     detail       TEXT,
@@ -157,6 +170,24 @@ def _ensure_table():
                     resolved_at  TIMESTAMPTZ
                 )
             """)
+            # Drift-repair path: backfill columns L21 needs when the table
+            # already exists with a different schema (created by
+            # brain_autopilot.py's _record_action).
+            for col_sql in (
+                "ADD COLUMN IF NOT EXISTS action       TEXT",
+                "ADD COLUMN IF NOT EXISTS target       TEXT",
+                "ADD COLUMN IF NOT EXISTS tier         TEXT",
+                "ADD COLUMN IF NOT EXISTS detail       TEXT",
+                "ADD COLUMN IF NOT EXISTS detected_at  TIMESTAMPTZ",
+                "ADD COLUMN IF NOT EXISTS resolved_at  TIMESTAMPTZ",
+                "ADD COLUMN IF NOT EXISTS fired_at     TIMESTAMPTZ DEFAULT NOW()",
+            ):
+                try:
+                    cur.execute(f"ALTER TABLE brain_autopilot_actions {col_sql}")
+                except Exception as _ce:
+                    # ADD COLUMN IF NOT EXISTS is PG 9.6+, won't error
+                    # for already-present columns. Log anything else.
+                    logger.debug(f"[L21] alter skipped: {_ce}")
             cur.execute("CREATE INDEX IF NOT EXISTS idx_autopilot_actions_time "
                         "ON brain_autopilot_actions(fired_at DESC)")
             conn.commit()
