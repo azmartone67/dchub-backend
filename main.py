@@ -8611,6 +8611,23 @@ def stripe_webhook():
                                     plan=_u.get("plan") or "developer",
                                     stripe_customer_id=str(data.get("customer") or ""),
                                 )
+                                # Phase r19b: founder-touch welcome
+                                # email (separate from standard Pro
+                                # welcome — different tone, asks for
+                                # /cited-by consent, invites founder
+                                # call). Best-effort; doesn't raise.
+                                try:
+                                    from routes.founding_customers import (
+                                        send_founding_welcome_email,
+                                    )
+                                    send_founding_welcome_email(
+                                        email=customer_email,
+                                        position=_tag_result["position"],
+                                        plan=_u.get("plan") or "developer",
+                                    )
+                                except Exception as _fw_err:
+                                    print(f"⚠️ Founding welcome email "
+                                          f"failed (non-fatal): {_fw_err}")
                             elif _tag_result.get("reason") != "already_tagged":
                                 print(f"  founding auto-tag skipped: "
                                       f"{_tag_result.get('reason')}")
@@ -9591,16 +9608,54 @@ def handle_checkout_completed(session):
                 _pg_execute("UPDATE api_keys SET rate_limit_tier = %s, plan = %s, last_used_at = %s WHERE user_id = %s", (api_tier, api_tier, now, resolved_user_id))
                 print(f"🔑 Updated API key(s) to tier: {api_tier}")
 
-                import secrets as sec
-                raw_key = 'dchub_' + sec.token_urlsafe(32)
-                key_hash = hashlib.sha256(raw_key.encode()).hexdigest()
-                key_prefix = raw_key[:12]
+                # Phase FF+25-followup-r20 (2026-05-20): dual-key fix.
+                # When an existing user upgrades (Kevin Serfass case:
+                # $9 → $49 within 60s), the previous code BOTH updated
+                # their existing key tier AND minted a brand-new key.
+                # Result: customer ends up with 2 keys for 1 account,
+                # billing-side confusion, support headaches.
+                #
+                # New logic: check if the user already has an active key
+                # FIRST. If yes, the UPDATE above already promoted it —
+                # don't mint a duplicate. If no, mint one (covers edge
+                # case where users table exists but api_keys row was
+                # purged).
+                _, _existing_keys = _pg_execute(
+                    "SELECT id, key_prefix FROM api_keys "
+                    "WHERE user_id = %s AND COALESCE(is_active, 1) = 1 "
+                    "LIMIT 1",
+                    (resolved_user_id,), fetch=True,
+                )
+                if _existing_keys:
+                    print(f"🔑 Upgrade detected — existing key promoted "
+                          f"to {api_tier}, no new key minted "
+                          f"(prefix={_existing_keys[0][1]})")
+                    # Send a tier-upgrade confirmation instead of the
+                    # new-customer welcome (different tone — no raw key
+                    # to share since we can't recover the existing one).
+                    try:
+                        send_admin_alert_email(
+                            f"Upgrade confirmed — {customer_email} → {plan_name}",
+                            f"<p>{customer_email} upgraded their existing "
+                            f"key (prefix {_existing_keys[0][1]}) to tier "
+                            f"<b>{api_tier}</b>. No new key was minted.</p>"
+                            f"<p>If they need their key resent, hit the "
+                            f"/dashboard or use the existing 'Forgot key' "
+                            f"flow.</p>"
+                        )
+                    except Exception: pass
+                else:
+                    import secrets as sec
+                    raw_key = 'dchub_' + sec.token_urlsafe(32)
+                    key_hash = hashlib.sha256(raw_key.encode()).hexdigest()
+                    key_prefix = raw_key[:12]
 
-                _pg_execute(
-                    "INSERT INTO api_keys (user_id, key_hash, key_prefix, name, permissions, rate_limit_tier, is_active, created_at, usage_count, plan, calls_today, calls_total) VALUES (%s, %s, %s, %s, '[\"read\",\"write\"]', %s, 1, %s, 0, %s, 0, 0) ON CONFLICT (key_hash) DO UPDATE SET user_id = EXCLUDED.user_id, key_hash = EXCLUDED.key_hash, key_prefix = EXCLUDED.key_prefix, name = EXCLUDED.name, permissions = EXCLUDED.permissions, rate_limit_tier = EXCLUDED.rate_limit_tier, is_active = EXCLUDED.is_active, created_at = EXCLUDED.created_at, usage_count = EXCLUDED.usage_count, plan = EXCLUDED.plan, calls_today = EXCLUDED.calls_today, calls_total = EXCLUDED.calls_total",
-                    (resolved_user_id, key_hash, key_prefix, f'{customer_email} Pro Key', api_tier, now, plan_name))
-                print(f"🔑 Generated new {plan_name} API key for existing user: {key_prefix}...")
-                send_welcome_email_sendgrid(customer_email, raw_key, plan_name)
+                    _pg_execute(
+                        "INSERT INTO api_keys (user_id, key_hash, key_prefix, name, permissions, rate_limit_tier, is_active, created_at, usage_count, plan, calls_today, calls_total) VALUES (%s, %s, %s, %s, '[\"read\",\"write\"]', %s, 1, %s, 0, %s, 0, 0) ON CONFLICT (key_hash) DO UPDATE SET user_id = EXCLUDED.user_id, key_hash = EXCLUDED.key_hash, key_prefix = EXCLUDED.key_prefix, name = EXCLUDED.name, permissions = EXCLUDED.permissions, rate_limit_tier = EXCLUDED.rate_limit_tier, is_active = EXCLUDED.is_active, created_at = EXCLUDED.created_at, usage_count = EXCLUDED.usage_count, plan = EXCLUDED.plan, calls_today = EXCLUDED.calls_today, calls_total = EXCLUDED.calls_total",
+                        (resolved_user_id, key_hash, key_prefix, f'{customer_email} Pro Key', api_tier, now, plan_name))
+                    print(f"🔑 Generated new {plan_name} API key for "
+                          f"existing user (no prior key): {key_prefix}...")
+                    send_welcome_email_sendgrid(customer_email, raw_key, plan_name)
             else:
                 print(f"⚠️ Could not find user_id for email {customer_email} -- skipping api_keys update")
 
