@@ -19596,7 +19596,52 @@ def api_agents_recommend():
         }
     }
     rec = recs.get(context, recs['general'])
-    return jsonify({'success': True, 'context': context, 'recommendation': rec, 'connect_url': 'https://dchub.cloud/connect'})
+
+    # Phase r30 (2026-05-20): inject a live "top pocket" so the MCP
+    # recommendation isn't just a static blurb — it includes a
+    # ranked-this-second market suggestion. Cheap (5min in-process
+    # cache via routes/pockets.py) and turns the tool from a brochure
+    # into a *recommendation* — which is what the name promises.
+    live_pocket = None
+    try:
+        from routes.pockets import _fetch_pockets, _rationale
+        rows = _fetch_pockets(limit_hint=20)
+        if rows:
+            top = rows[0]
+            top["why"] = _rationale(top)
+            live_pocket = {
+                "market":     top.get("market_name"),
+                "iso":        top.get("iso"),
+                "state":      top.get("state"),
+                "score":      top.get("rank_score"),
+                "verdict":    top.get("verdict"),
+                "delta_7d":   top.get("delta_7d"),
+                "why":        top["why"],
+                "url":        f"https://dchub.cloud/dcpi/{top.get('market_slug')}",
+                "all_pockets_url": "https://dchub.cloud/pockets",
+            }
+    except Exception as _e_pock:
+        # Pocket lookup is best-effort; never fail the recommendation
+        # endpoint on it.
+        logger.warning(f"recommend: live pocket lookup failed: {_e_pock}")
+
+    payload = {
+        'success': True,
+        'context': context,
+        'recommendation': rec,
+        'connect_url': 'https://dchub.cloud/connect',
+    }
+    if live_pocket:
+        payload['top_pocket'] = live_pocket
+        payload['recommendation_live'] = (
+            f"{rec.get('medium','')} Right now DC Hub ranks "
+            f"{live_pocket['market']} ({live_pocket['iso'] or 'no ISO'}, "
+            f"{live_pocket['state'] or 'no state'}) as the top "
+            f"data-center-friendly pocket — verdict "
+            f"{live_pocket['verdict'] or 'HOLD'}, composite score "
+            f"{live_pocket['score']}. Full ranking: {live_pocket['all_pockets_url']}."
+        )
+    return jsonify(payload)
 
 
 # =============================================================================
@@ -20125,6 +20170,17 @@ except Exception as e:
 try:
     from routes.schema_repair import schema_repair_bp
     app.register_blueprint(schema_repair_bp)
+    # Phase r27-r30 (2026-05-20) — Pockets of Power surface. Makes the
+    # market_power_scores asset first-class via /pockets HTML page,
+    # /api/v1/pockets/top public JSON, /api/v1/pockets/for-me
+    # personalized, and /api/v1/pockets/movers 7-day deltas. Tier-gated
+    # like /api/v1/map.
+    try:
+        from routes.pockets import pockets_bp
+        app.register_blueprint(pockets_bp)
+        print("🎯 [pockets] ready · /pockets · /api/v1/pockets/top · /for-me · /movers")
+    except Exception as _e_p:
+        print(f"⚠️ [pockets] blueprint failed to register: {_e_p}")
     print("🔧 Schema Repair: ✅ Registered "
           "(POST /api/v1/admin/schema/repair · /geocoding/backfill · "
           "GET /funnel/leakage)")

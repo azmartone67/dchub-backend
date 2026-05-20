@@ -251,6 +251,36 @@ def _gather_signals() -> dict:
                    AND last_seen_at >= NOW() - INTERVAL '14 days'
                  ORDER BY mention_count DESC, last_seen_at DESC
                  LIMIT 15""")
+        # Phase r28 (2026-05-20) — Pocket-of-power 7-day movers. Surfaces
+        # markets whose excess-power index shifted ≥10 points in the last
+        # week. This is the autonomous product signal: when Phoenix
+        # jumps +18, that's a *recommendation* the user should know about,
+        # not buried in /digest. Inspector flags movers in the brief +
+        # the autopilot can act on the same signal via
+        # check_pocket_high_mover detector → _action_pocket_alert_announce.
+        _try("pocket_movers_7d",
+             """WITH latest AS (
+                  SELECT DISTINCT ON (market_slug)
+                         market_slug, market_name, iso, state, verdict,
+                         excess_power_score AS now_e
+                    FROM market_power_scores
+                   ORDER BY market_slug, computed_at DESC
+                ),
+                week_ago AS (
+                  SELECT DISTINCT ON (market_slug)
+                         market_slug, excess_power_score AS prev_e
+                    FROM market_power_scores
+                   WHERE computed_at < NOW() - INTERVAL '7 days'
+                   ORDER BY market_slug, computed_at DESC
+                )
+                SELECT l.market_name, l.iso, l.state, l.verdict,
+                       l.now_e,
+                       (l.now_e - w.prev_e) AS delta_7d
+                  FROM latest l
+                  JOIN week_ago w ON l.market_slug = w.market_slug
+                 WHERE ABS(l.now_e - w.prev_e) >= 10
+                 ORDER BY ABS(l.now_e - w.prev_e) DESC
+                 LIMIT 8""")
     finally:
         try: c.close()
         except Exception: pass
@@ -274,6 +304,7 @@ You must:
   - If founding_customers has any rows, NAME each customer by email (first 5) in the Healthy section with their tagged_at date. Founding customers matter disproportionately and the Inspector brief should make them visible.
   - If paid_conversions_7d has rows AND the previous brief mentioned zero conversions, flag this as a positive inflection in the One-line take.
   - If news_unknown_entities has rows, list the top 3 in the Needs-attention section by name, with mention_count + sample_headline. Recommend that the operator review them at /admin/news-ner/candidates and either seed via /api/v1/admin/facilities/bulk or reject as noise via /api/v1/admin/news-ner/reject. These are operator/facility names appearing in news that we don't track yet — high-signal discovery candidates.
+  - If pocket_movers_7d has rows, mention the top 1-2 movers BY NAME in the Healthy or Degrading section depending on direction. Format: "<market> (<iso>, <state>) <±delta> on the excess-power index this week — verdict <BUILD/HOLD/AVOID>." These are the most actionable market-level shifts and represent the autonomous DCPI surface. A +15 mover should be flagged as a "BUILD candidate accelerating"; a −15 mover as "constraint emerging."
 
 Output the brief in this exact Markdown structure:
 

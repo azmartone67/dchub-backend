@@ -162,8 +162,23 @@ def digest_send():
 
     d = _today_summary()
     with _conn() as c, c.cursor() as cur:
-        cur.execute("""SELECT DISTINCT email FROM mcp_dev_keys
-                       WHERE email IS NOT NULL AND email != ''""")
+        # Phase r27 (2026-05-20): UNION mcp_dev_keys AND digest_subscribers.
+        # Pre-r27 the form-signups (digest_subscribers) were a dead-end
+        # table — the form accepted emails, INSERTed them, then never
+        # emailed anyone. Now anyone who hands us their email via the
+        # /api/v1/digest/subscribe endpoint or the embedded form gets
+        # the same daily brief that dev-key holders get.
+        cur.execute("""
+            SELECT DISTINCT lower(email) AS email
+              FROM (
+                SELECT email FROM mcp_dev_keys
+                 WHERE email IS NOT NULL AND email != ''
+                UNION
+                SELECT email FROM digest_subscribers
+                 WHERE email IS NOT NULL AND email != ''
+                   AND unsubscribed_at IS NULL
+              ) u
+        """)
         emails = [r[0] for r in cur.fetchall()]
     if dry:
         return jsonify(dry_run=True, recipient_count=len(emails),

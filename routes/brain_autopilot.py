@@ -314,6 +314,61 @@ def _action_founding_welcome_rescue(finding: dict) -> tuple[str | None, dict | N
     )
 
 
+def _action_pocket_alert_announce(finding: dict) -> tuple[str | None, dict | None]:
+    """Phase r28 (2026-05-20). When check_pocket_high_mover fires (a
+    market moved ≥15pts on the excess-power index in 7 days), the
+    autonomous response is to *announce* it — convert the signal into
+    a one-paragraph press/social post and queue it for auto-publish.
+
+    Reads the detector's _market_name / _delta_7d / _iso / _state /
+    _verdict fields, drafts a sentence, and posts to the existing
+    /api/v1/marketing/queue-pocket-alert endpoint. That endpoint
+    (created alongside this) writes to social_post_queue and is
+    drained by the existing LinkedIn/X auto-publish cron.
+
+    Why this matters: pre-r28, a +20pt move in Phoenix would land in
+    /digest but no one outside daily-brief subscribers would know.
+    Now the same signal flows to LinkedIn/X within hours, building
+    the "DC Hub spots shifts first" reputation that drives signups.
+
+    Rate-limit/cooldown still applies via the standard autopilot
+    machinery — same market won't auto-announce twice in the
+    cooldown window."""
+    market = finding.get("_market_name") or ""
+    iso = finding.get("_iso") or ""
+    state = finding.get("_state") or ""
+    delta = finding.get("_delta_7d")
+    score = finding.get("_score")
+    verdict = finding.get("_verdict") or "HOLD"
+    slug = finding.get("_market_slug") or ""
+
+    if not market or delta is None:
+        return (None, None)
+
+    sign = "+" if delta > 0 else ""
+    direction = "accelerating" if delta > 0 else "decelerating"
+    body = (
+        f"{market} ({iso or 'no ISO'}, {state or 'no state'}) is {direction} "
+        f"on DC Hub's excess-power index — {sign}{delta:.1f} pts over the last "
+        f"7 days, now at {score:.1f}. Verdict: {verdict}. "
+        f"Full ranking: https://dchub.cloud/pockets · "
+        f"Market detail: https://dchub.cloud/dcpi/{slug}"
+    )
+
+    return (
+        "/api/v1/marketing/queue-pocket-alert",
+        {
+            "market_slug":  slug,
+            "market_name":  market,
+            "iso":          iso,
+            "state":        state,
+            "delta_7d":     delta,
+            "verdict":      verdict,
+            "body":         body[:500],  # social platforms cap at ~500-1000
+        },
+    )
+
+
 def _action_monthly_trend_unsent(finding: dict) -> tuple[str | None, dict | None]:
     """Phase FF+25-followup-r7 (2026-05-20): backstop for the GitHub
     monthly-cron. If we're 4+ days into a new month and the prior-month
@@ -479,6 +534,17 @@ _PATTERN_LIBRARY: dict[str, dict[str, Any]] = {
         "method":      "POST",
         "use_admin":   True,
         "description": "Autonomous: a founding customer was tagged but never received their welcome email after 1 hour. Brain fires /api/v1/admin/founding-customers/send-welcome with the specific email. Rate-limit prevents flooding if Resend is down.",
+    },
+    # Phase r28 (2026-05-20): pocket-of-power high-mover announcement.
+    # When a tracked market shifts ≥15pts on the excess-power index in
+    # 7 days, autopilot drafts a one-paragraph announcement and queues
+    # it for social auto-publish. Turns the DCPI signal into a public
+    # narrative without human intervention.
+    "pocket_high_mover": {
+        "action":      _action_pocket_alert_announce,
+        "method":      "POST",
+        "use_admin":   True,
+        "description": "Autonomous: a tracked market moved ≥15pts on the excess-power index in 7 days. Brain drafts a one-paragraph announcement and queues it for social auto-publish via /api/v1/marketing/queue-pocket-alert. Rate-limit + cooldown prevent same-market re-announcement within the window.",
     },
     # Phase FF+25-followup-r12 (2026-05-20): visual drift escalation.
     # Drift is fixed by editing /js/dchub-nav.js or per-page <style> —

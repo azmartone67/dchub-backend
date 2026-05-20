@@ -2487,6 +2487,56 @@ def check_winback_pitches_unsent() -> list[dict]:
 
 
 # ── Phase RRRR (2026-05-16) — DC Hub Media silence detector ───────
+def check_pocket_high_mover() -> list[dict]:
+    """Phase r28 (2026-05-20). When a tracked market's excess-power
+    index shifts ≥15 points in 7 days, that's a story. Pre-r28 the
+    only places this surfaced were the developer brief and the daily
+    digest — neither of which prompt the autopilot to *do* anything
+    with the signal.
+
+    This detector reads market_power_scores 7-day deltas and fires
+    findings for any market with |Δ| ≥ 15. Pairs with
+    _action_pocket_alert_announce in brain_autopilot.py which drafts
+    a press-style sentence and queues it for social auto-publish.
+
+    Threshold tuning: 15pts is large enough that real news (a major
+    capacity announcement, a transmission upgrade, a moratorium being
+    lifted) drives it, while filtering normal week-to-week noise (most
+    deltas are <5pts)."""
+    findings: list[dict] = []
+    try:
+        from routes.pockets import detect_high_movers
+        movers = detect_high_movers(threshold=15.0)
+    except Exception as e:
+        # Pockets module not loaded yet, or pg unavailable — skip silently.
+        return findings
+
+    for m in movers[:5]:  # cap so a chaotic week doesn't flood the brief
+        direction = "rising" if (m["delta_7d"] or 0) > 0 else "falling"
+        sign = "+" if (m["delta_7d"] or 0) > 0 else ""
+        findings.append({
+            "issue":  "pocket_high_mover",
+            "url":    f"/pockets?focus={m['market_slug']}",
+            "count":  1,
+            "detail": (
+                f"{m['market_name']} ({m['iso'] or '—'}, {m['state'] or '—'}) "
+                f"moved {sign}{m['delta_7d']:.1f} pts on the excess-power "
+                f"index over the last 7 days — now at {m['current_score']:.1f}, "
+                f"verdict {m['verdict'] or 'HOLD'}. "
+                f"This is {direction} faster than normal week-to-week noise "
+                f"and is worth a tweet/note. /pockets shows full ranking."
+            ),
+            "_market_slug": m["market_slug"],
+            "_market_name": m["market_name"],
+            "_iso":         m["iso"],
+            "_state":       m["state"],
+            "_delta_7d":    m["delta_7d"],
+            "_score":       m["current_score"],
+            "_verdict":     m["verdict"],
+        })
+    return findings
+
+
 def check_founding_customer_not_welcomed() -> list[dict]:
     """Phase FF+25-followup-r21 (2026-05-20). Tonight, Kevin Serfass
     (first paid customer) ended up without a welcome email because the
@@ -5313,6 +5363,13 @@ def scan_all() -> list[dict]:
                check_coverage_gap_canada,
                # Phase FF+25-followup-r21 founding-customer welcome rescue
                check_founding_customer_not_welcomed,
+               # Phase r28 (2026-05-20) — pocket-of-power high mover
+               # detector. Fires when a tracked market's excess-power
+               # index shifts ≥15pts in 7 days. Pairs with the autopilot
+               # action _action_pocket_alert_announce so significant
+               # shifts auto-generate a press/social post rather than
+               # only living in /digest where users have to seek them out.
+               check_pocket_high_mover,
                # Phase SSSS winback pitches accumulating without delivery
                check_winback_pitches_unsent,
                # Phase TTTT citation score
