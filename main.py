@@ -3123,19 +3123,46 @@ except ImportError:
     CRAWLER_SCHEDULER_AVAILABLE = False
     print("📅 Crawler Scheduler: Not installed (crawler_scheduler.py missing)")
 
-# Detect Railway vs Replit environment
+# Detect Railway vs Render vs Replit environment.
+#
+# Phase FF+22-render (2026-05-20): added explicit Render detection.
+# Render sets RENDER=true automatically. When deployed there, this app
+# should run READ-ONLY as a failover — no background schedulers, no
+# autonomous brain, no crons. Railway remains the primary that runs
+# all background work; Render just serves the API surface.
+#
+# The previous code assumed "if not Railway, you're Replit primary" —
+# which made Render boot ALL background threads, one of which killed
+# the process mid-init.
 IS_RAILWAY = bool(os.environ.get("RAILWAY_ENVIRONMENT"))
-IS_PRIMARY = IS_RAILWAY  # Railway is primary, runs all background tasks
+IS_RENDER  = (
+    os.environ.get("RENDER", "").lower() in ("true", "1", "yes")
+    or bool(os.environ.get("RENDER_SERVICE_ID"))
+)
+# DCHUB_FAILOVER=1 lets any deployment opt into failover mode regardless
+# of the cloud (e.g. future Fly.io or Cloudflare Containers).
+IS_FAILOVER = (
+    IS_RENDER
+    or os.environ.get("DCHUB_FAILOVER", "").lower() in ("true", "1", "yes")
+)
+IS_PRIMARY = IS_RAILWAY and not IS_FAILOVER
 
-ENABLE_DISCOVERY_THREADS = IS_RAILWAY
-if IS_RAILWAY:
-    ENABLE_BACKGROUND_SCHEDULERS = False  # DISABLED: all jobs handled by external scheduler service
-    ENABLE_DISCOVERY_SCHEDULERS = False  # Disabled: managed by crawler_scheduler.py
+ENABLE_DISCOVERY_THREADS = IS_RAILWAY and not IS_FAILOVER
+if IS_RAILWAY and not IS_FAILOVER:
+    ENABLE_BACKGROUND_SCHEDULERS = False  # external scheduler service runs jobs
+    ENABLE_DISCOVERY_SCHEDULERS = False   # managed by crawler_scheduler.py
     logger.info("🚂 RAILWAY ENVIRONMENT DETECTED -- Running as PRIMARY with all background tasks")
     logger.info("   📡 Discovery schedulers: ENABLED (KMZ + API auto-discovery)")
+elif IS_FAILOVER:
+    ENABLE_BACKGROUND_SCHEDULERS = False  # failover serves READS only
+    ENABLE_DISCOVERY_SCHEDULERS = False   # primary handles all discovery
+    cloud = "Render" if IS_RENDER else "failover env"
+    logger.info(f"☁️ {cloud.upper()} ENVIRONMENT DETECTED -- Running as READ-ONLY FAILOVER")
+    logger.info("   📡 Background schedulers: DISABLED (primary handles all bg work)")
+    logger.info("   🩺 Health monitor: ACTIVE (still serves /api/v1/health)")
 else:
-    logger.info("🔄 NON-RAILWAY ENVIRONMENT -- Running as FAILOVER (background tasks disabled)")
-    ENABLE_BACKGROUND_SCHEDULERS = True  # __bg_sched_enable_v3__
+    logger.info("🔄 LEGACY ENVIRONMENT -- Running as FAILOVER (Replit-era defaults)")
+    ENABLE_BACKGROUND_SCHEDULERS = True   # __bg_sched_enable_v3__
     ENABLE_DISCOVERY_SCHEDULERS = True
     logger.info("   📡 FAILOVER BACKGROUND TASKS: EXPLICITLY ENABLED on Replit")
 
