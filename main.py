@@ -14116,18 +14116,22 @@ def fiber_sources():
         try: conn.close()
         except Exception: pass
 
-@app.route('/api/v1/fiber/routes', methods=['GET'])
-@require_plan('pro')
-def fiber_routes_api():
-    """Get fiber routes with optional filtering, returns GeoJSON"""
+def _build_fiber_routes_geojson():
+    """Shared body for the gated and public fiber-routes endpoints.
+    Returns a GeoJSON FeatureCollection dict. Prefers full polyline
+    geometry from the `coordinates` column, falling back to a 2-point
+    LineString for legacy rows."""
     carrier = request.args.get('carrier')
     route_type = request.args.get('type')
-
+    conn = None
     try:
         conn = get_db()
         cursor = conn.cursor()
 
-        query = 'SELECT * FROM fiber_routes WHERE start_lat IS NOT NULL'
+        limit = request.args.get('limit', 2000, type=int)
+        limit = min(max(limit, 1), 5000)
+
+        query = 'SELECT * FROM fiber_routes WHERE (start_lat IS NOT NULL OR coordinates IS NOT NULL)'
         params = []
         if carrier:
             query += ' AND provider = %s'
@@ -14135,7 +14139,8 @@ def fiber_routes_api():
         if route_type:
             query += ' AND route_type = %s'
             params.append(route_type)
-        query += ' LIMIT 500'
+        query += ' LIMIT %s'
+        params.append(limit)
 
         cursor.execute(query, params)
         columns = [desc[0] for desc in cursor.description]
@@ -14144,15 +14149,24 @@ def fiber_routes_api():
         features = []
         for row in rows:
             row_dict = dict(zip(columns, row))
-            # fiber_routes stores start/end lat/lng, build 2-point LineString
-            try:
-                slat = float(row_dict.get('start_lat') or 0)
-                slng = float(row_dict.get('start_lng') or 0)
-                elat = float(row_dict.get('end_lat') or 0)
-                elng = float(row_dict.get('end_lng') or 0)
-                coords = [[slng, slat], [elng, elat]] if slat and slng and elat and elng else []
-            except Exception:
-                coords = []
+            coords = []
+            raw_coords = row_dict.get('coordinates')
+            if raw_coords:
+                try:
+                    parsed = json.loads(raw_coords) if isinstance(raw_coords, str) else raw_coords
+                    if isinstance(parsed, list) and len(parsed) >= 2:
+                        coords = parsed
+                except Exception:
+                    coords = []
+            if not coords:
+                try:
+                    slat = float(row_dict.get('start_lat') or 0)
+                    slng = float(row_dict.get('start_lng') or 0)
+                    elat = float(row_dict.get('end_lat') or 0)
+                    elng = float(row_dict.get('end_lng') or 0)
+                    coords = [[slng, slat], [elng, elat]] if slat and slng and elat and elng else []
+                except Exception:
+                    coords = []
 
             features.append({
                 "type": "Feature",
@@ -14163,6 +14177,8 @@ def fiber_routes_api():
                     "start_point": row_dict.get('start_location', ''),
                     "end_point": row_dict.get('end_location', ''),
                     "distance_km": row_dict.get('distance_miles'),
+                    "capacity": row_dict.get('capacity_label', ''),
+                    "color": row_dict.get('color', ''),
                 },
                 "geometry": {
                     "type": "LineString",
@@ -14170,16 +14186,29 @@ def fiber_routes_api():
                 }
             })
 
-        return jsonify({
-            "type": "FeatureCollection",
-            "features": features,
-            "total": len(features)
-        })
+        return {"type": "FeatureCollection", "features": features, "total": len(features)}
     except Exception as e:
-        return jsonify({"type": "FeatureCollection", "features": [], "total": 0, "note": str(e)})
+        return {"type": "FeatureCollection", "features": [], "total": 0, "note": str(e)}
     finally:
-        try: conn.close()
-        except Exception: pass
+        if conn:
+            try: conn.close()
+            except Exception: pass
+
+
+@app.route('/api/v1/fiber/routes', methods=['GET'])
+@require_plan('pro')
+def fiber_routes_api():
+    """Get fiber routes with optional filtering, returns GeoJSON (Pro/API tier)."""
+    return jsonify(_build_fiber_routes_geojson())
+
+
+@app.route('/api/v1/fiber/routes/public', methods=['GET'])
+def fiber_routes_public_api():
+    """Public read-only fiber routes for the Land & Power map overlay.
+    Mirrors /api/v1/map's ungated pattern — the carrier backbone overlay
+    is part of the free map experience; the gated /api/v1/fiber/routes
+    remains for API/developer customers."""
+    return jsonify(_build_fiber_routes_geojson())
 
 logger.info("✅ Fiber routes endpoints registered: /api/v1/fiber/sources, /api/v1/fiber/routes")
 
