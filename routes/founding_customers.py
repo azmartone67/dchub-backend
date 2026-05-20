@@ -260,29 +260,53 @@ def auto_tag_if_under_cap(
 def notify_admin_of_founding(email: str, position: int, plan: str,
                               stripe_customer_id: str | None) -> None:
     """Send Jonathan an admin alert email so he knows immediately when
-    a new founding customer lands. Best-effort — never raises."""
+    a new founding customer lands. Best-effort — never raises.
+    Phase r23: also surface MILESTONE flags (cohort hit 5, 10, 25)."""
     try:
         from main import send_admin_alert_email
     except Exception:
         return
     cap = FOUNDING_CAP
-    subj = f"Founding customer #{position} of {cap} — {email}"
+    # Milestone trigger thresholds — surface as a banner on the alert
+    MILESTONES = {5, 10, 25, 50, 100}
+    is_milestone = position in MILESTONES
+
+    milestone_html = ""
+    if is_milestone:
+        milestone_html = (
+            f"<div style='background:linear-gradient(135deg,#6366f1,#a855f7);"
+            f"color:#fff;padding:18px 24px;border-radius:10px;"
+            f"margin-bottom:18px;text-align:center'>"
+            f"<div style='font-size:11px;text-transform:uppercase;"
+            f"letter-spacing:.12em;opacity:.85;margin-bottom:6px'>"
+            f"COHORT MILESTONE</div>"
+            f"<div style='font-size:22px;font-weight:700'>"
+            f"{position} of {cap} founding customers</div>"
+            f"<div style='font-size:13px;opacity:.85;margin-top:6px'>"
+            f"This is a moment. Consider an admin alert / LinkedIn post."
+            f"</div></div>"
+        )
+
+    subj_prefix = "MILESTONE · " if is_milestone else ""
+    subj = f"{subj_prefix}Founding customer #{position} of {cap} — {email}"
     body = (
-        f"<h2>Founding customer #{position} of {cap} just signed up</h2>"
-        f"<p><b>Email:</b> {email}</p>"
-        f"<p><b>Plan:</b> {plan}</p>"
-        f"<p><b>Stripe:</b> {stripe_customer_id or '(none)'}</p>"
-        f"<p>The first {cap} paying customers matter disproportionately. "
-        f"Reach out personally within the next hour — even a 60-second "
-        f"welcome note converts a buyer into a reference customer.</p>"
-        f"<p>"
-        f"<a href='https://dchub.cloud/api/v1/admin/customer-lookup?"
-        f"email={email}'>Customer record</a> · "
-        f"<a href='https://dashboard.stripe.com/customers/"
-        f"{stripe_customer_id or ''}'>Stripe</a> · "
-        f"<a href='https://dchub.cloud/api/v1/admin/founding-customers'>"
-        f"Cohort</a>"
-        f"</p>"
+        milestone_html
+        + f"<h2>Founding customer #{position} of {cap} just signed up</h2>"
+        + f"<p><b>Email:</b> {email}</p>"
+        + f"<p><b>Plan:</b> {plan}</p>"
+        + f"<p><b>Stripe:</b> {stripe_customer_id or '(none)'}</p>"
+        + f"<p>The first {cap} paying customers matter disproportionately. "
+        + f"Reach out personally within the next hour — even a 60-second "
+        + f"welcome note converts a buyer into a reference customer.</p>"
+        + f"<p>"
+        + f"<a href='https://dchub.cloud/api/v1/admin/customer-lookup?"
+        + f"email={email}'>Customer record</a> · "
+        + f"<a href='https://dashboard.stripe.com/customers/"
+        + f"{stripe_customer_id or ''}'>Stripe</a> · "
+        + f"<a href='https://dchub.cloud/api/v1/admin/founding-customers'>"
+        + f"Cohort</a> · "
+        + f"<a href='https://dchub.cloud/founders'>Public page</a>"
+        + f"</p>"
     )
     try:
         send_admin_alert_email(subj, body)
@@ -509,6 +533,66 @@ def consent():
             "you write back to us in email — no marketing-speak.</p>"
             "<p style='margin-top:20px;font-size:.85rem'>"
             "Change your mind? Just reply with 'opt out'.</p>"
+            "</div></body></html>",
+            mimetype="text/html",
+        )
+    finally:
+        try: c.close()
+        except Exception: pass
+
+
+# ── Opt-out endpoint (revoke /founders consent) ─────────────────────
+@founding_customers_bp.route("/api/v1/founding-customers/opt-out",
+                              methods=["GET", "POST"])
+def opt_out():
+    """Public — a founding customer can revoke /founders consent at
+    any time. Mirrors /consent. Visiting the link = opt out. Token-less
+    by design (the link is mailed directly to them)."""
+    email = (request.args.get("email") or "").lower().strip()
+    if not email or "@" not in email:
+        return Response(
+            "<p>Invalid link.</p>", mimetype="text/html",
+        )
+    _ensure_table()
+    c = _get_db()
+    if c is None:
+        return Response("<p>System unavailable. Try again shortly.</p>",
+                        mimetype="text/html")
+    try:
+        with c.cursor() as cur:
+            cur.execute(
+                "UPDATE founding_customers SET consented_to_cite = FALSE "
+                "WHERE email = %s RETURNING email", (email,),
+            )
+            row = cur.fetchone()
+        try: c.commit()
+        except Exception: pass
+        if not row:
+            return Response(
+                "<p>We don't have your email on file. Nothing to opt out of.</p>",
+                mimetype="text/html",
+            )
+        return Response(
+            "<!doctype html><html><head><meta charset='utf-8'>"
+            "<title>Opted out — DC Hub</title>"
+            "<style>body{font-family:-apple-system,sans-serif;"
+            "background:#0a0a0f;color:#f5f5f7;display:flex;"
+            "align-items:center;justify-content:center;min-height:100vh;"
+            "margin:0;padding:20px}"
+            ".card{max-width:480px;text-align:center;"
+            "background:#131319;border:1px solid rgba(255,255,255,.06);"
+            "border-radius:14px;padding:40px}"
+            "h1{font-size:1.5rem;margin:0 0 12px;color:#f5f5f7}"
+            "p{color:#a1a1aa;line-height:1.5}"
+            "a{color:#c7d2fe}</style></head><body>"
+            "<div class='card'>"
+            "<h1>Opted out</h1>"
+            "<p>Your name has been removed from "
+            "<a href='https://dchub.cloud/founders'>dchub.cloud/founders</a>. "
+            "Your subscription and access are unaffected — we just won't "
+            "list you publicly.</p>"
+            "<p style='margin-top:20px;font-size:.85rem'>"
+            "Changed your mind? Reply to Jonathan and we'll re-enable.</p>"
             "</div></body></html>",
             mimetype="text/html",
         )

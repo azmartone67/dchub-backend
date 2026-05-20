@@ -19957,6 +19957,19 @@ try:
 except Exception as e:
     print(f"⭐ Founding Customers: ⚠️ Failed to load: {e}")
 
+# Phase FF+25-followup-r23 (2026-05-20) — news entity extraction.
+# Scans recent news_items for capitalized facility/operator names that
+# we DON'T have in facilities. Surfaces unknowns as discovery candidates
+# so we can catch new builds BEFORE DCHawk/DCM index them. Regex-first;
+# NEWS_NER_LLM=true env var enables Haiku LLM enrichment.
+try:
+    from routes.news_entity_extraction import news_ner_bp
+    app.register_blueprint(news_ner_bp)
+    print("📰 News NER: ✅ Registered "
+          "(POST /api/v1/admin/news-ner/run · /candidates · /status)")
+except Exception as e:
+    print(f"📰 News NER: ⚠️ Failed to load: {e}")
+
 # =============================================================================
 # FACILITY AUTO-APPROVE PIPELINE v2.0
 # Moves discovered_facilities → facilities with dedup logic

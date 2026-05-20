@@ -253,6 +253,55 @@ def backfill_discovered():
         except Exception: pass
 
 
+# ── Phase r23: dedicated key-deactivate endpoint ─────────────────────
+# Used for cleaning up dual-key cases (Kevin had 2 keys for 1
+# subscription due to the pre-r20 bug). Deactivates a specific key by
+# id and leaves the other keys for the same user alone.
+@facility_admin_bp.route("/api/v1/admin/keys/deactivate",
+                          methods=["POST"])
+def deactivate_key():
+    if not _admin_ok():
+        return jsonify(ok=False, error="forbidden"), 403
+    p = request.get_json(silent=True) or {}
+    key_id = p.get("key_id") or request.args.get("key_id")
+    if not key_id:
+        return jsonify(ok=False, error="key_id_required"), 400
+    try:
+        key_id = int(key_id)
+    except (TypeError, ValueError):
+        return jsonify(ok=False, error="key_id_must_be_int"), 400
+    c = _get_db()
+    if c is None: return jsonify(ok=False, error="no_db"), 503
+    try:
+        with c.cursor() as cur:
+            cur.execute(
+                "UPDATE api_keys SET is_active = 0 "
+                "WHERE id = %s "
+                "RETURNING id, key_prefix, name, plan",
+                (key_id,),
+            )
+            r = cur.fetchone()
+        try: c.commit()
+        except Exception: pass
+        if not r:
+            return jsonify(ok=False, error="key_not_found",
+                           key_id=key_id), 404
+        return jsonify(
+            ok=True, deactivated=True,
+            key_id=int(r[0]),
+            key_prefix=r[1],
+            name=r[2],
+            plan=r[3],
+        )
+    except Exception as e:
+        try: c.rollback()
+        except Exception: pass
+        return jsonify(ok=False, error=str(e)[:200]), 500
+    finally:
+        try: c.close()
+        except Exception: pass
+
+
 @facility_admin_bp.route("/api/v1/admin/facilities/recent",
                           methods=["GET"])
 def recent_manual():
