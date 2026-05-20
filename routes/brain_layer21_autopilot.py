@@ -378,3 +378,123 @@ def autopilot_run_now():
 def autopilot_dry_run():
     """Show what WOULD fire — no actions taken."""
     return jsonify(_one_tick(dry_run=True))
+
+
+# Phase FF+25-followup (2026-05-20): one-shot admin endpoint to repair
+# the brain_autopilot_actions schema drift. The module-load _ensure_table()
+# in this file calls ALTER TABLE ADD COLUMN IF NOT EXISTS for each L21
+# column, but those ALTERs apparently aren't landing in production (Railway
+# logs still show "column 'action' does not exist" on every L21 tick).
+# Possible silent failure modes: transaction rollback, lock contention,
+# permissions, or the function not actually running on this deploy.
+#
+# This endpoint surfaces what's actually happening. It returns the result
+# of each ALTER explicitly so we can SEE which one(s) failed and why.
+@brain_layer21_bp.route("/api/v1/admin/brain/repair-l21-schema",
+                          methods=["POST", "GET"])
+def repair_l21_schema():
+    """Force-apply L21 column repairs + return per-statement result."""
+    import os, logging
+    log = logging.getLogger(__name__)
+
+    # Admin gate
+    sent = (request.headers.get("X-Internal-Key")
+            or request.args.get("admin_key") or "").strip()
+    allowed = {"dchub-internal-sync-2026"}
+    for _n in ("DCHUB_INTERNAL_KEY", "INTERNAL_KEY",
+                "MCP_INTERNAL_KEY", "DCHUB_ADMIN_KEY"):
+        _v = os.environ.get(_n)
+        if _v: allowed.add(_v)
+    if sent not in allowed:
+        return jsonify(error="forbidden", hint="X-Internal-Key required"), 403
+
+    try:
+        from main import get_db
+    except Exception as e:
+        return jsonify(error=f"no get_db: {e}"), 500
+
+    conn = get_db()
+    if conn is None:
+        return jsonify(error="no_db_conn"), 503
+
+    results = []
+    column_defs = [
+        ("action",      "TEXT"),
+        ("target",      "TEXT"),
+        ("tier",        "TEXT"),
+        ("detail",      "TEXT"),
+        ("detected_at", "TIMESTAMPTZ"),
+        ("resolved_at", "TIMESTAMPTZ"),
+        ("fired_at",    "TIMESTAMPTZ DEFAULT NOW()"),
+    ]
+    try:
+        cur = conn.cursor()
+        # Pre-check: list current columns of brain_autopilot_actions
+        try:
+            cur.execute("""
+                SELECT column_name, data_type
+                FROM information_schema.columns
+                WHERE table_name = 'brain_autopilot_actions'
+                ORDER BY ordinal_position
+            """)
+            current_cols = [(r[0], r[1]) for r in cur.fetchall()]
+        except Exception as e:
+            current_cols = [("__schema_query_failed__", str(e)[:120])]
+
+        for col_name, col_type in column_defs:
+            sql = f"ALTER TABLE brain_autopilot_actions " \
+                  f"ADD COLUMN IF NOT EXISTS {col_name} {col_type}"
+            try:
+                cur.execute(sql)
+                conn.commit()
+                results.append({"column": col_name, "status": "ok"})
+            except Exception as e:
+                # Roll back so we can keep going
+                try: conn.rollback()
+                except Exception: pass
+                results.append({
+                    "column": col_name,
+                    "status": "error",
+                    "error": str(e)[:200],
+                })
+
+        # Post-check: list columns again to confirm
+        try:
+            cur.execute("""
+                SELECT column_name, data_type
+                FROM information_schema.columns
+                WHERE table_name = 'brain_autopilot_actions'
+                ORDER BY ordinal_position
+            """)
+            new_cols = [(r[0], r[1]) for r in cur.fetchall()]
+        except Exception as e:
+            new_cols = [("__post_schema_query_failed__", str(e)[:120])]
+
+        # Try a probe INSERT (then immediately delete) to verify L21 can write
+        probe_status = None
+        try:
+            cur.execute(
+                "INSERT INTO brain_autopilot_actions "
+                "(action, target, tier, detail) "
+                "VALUES (%s, %s, %s, %s) RETURNING id",
+                ("__schema_probe", "test", "A", "FF+25-followup repair verification")
+            )
+            probe_id = cur.fetchone()[0]
+            cur.execute("DELETE FROM brain_autopilot_actions WHERE id = %s", (probe_id,))
+            conn.commit()
+            probe_status = "ok"
+        except Exception as e:
+            try: conn.rollback()
+            except Exception: pass
+            probe_status = f"error: {str(e)[:200]}"
+
+        return jsonify(
+            ok=all(r["status"] == "ok" for r in results) and probe_status == "ok",
+            columns_before=current_cols,
+            columns_after=new_cols,
+            alters=results,
+            probe_insert=probe_status,
+        )
+    finally:
+        try: conn.close()
+        except Exception: pass
