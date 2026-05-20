@@ -84,26 +84,28 @@ def _d1_query(sql: str, params: list = None, timeout: int = 30) -> dict:
 
 
 def _d1_batch(statements: list, timeout: int = 60) -> dict:
-    """POST a list of {sql, params} statement objects to D1 in ONE HTTP call.
+    """POST a list of {sql, params} statement objects to D1's /query
+    endpoint as an ARRAY body — CF D1's documented batch mode.
 
     Phase FF+25-followup (2026-05-20): the per-row loop in _run_sync()
-    was making 12,553 sequential HTTP calls to CF D1 (~300ms each =
-    >60min). Railway edge killed the request after ~30s, leaving D1
-    perpetually under-populated (e.g. 262 of 12,553 rows). CF's D1
-    REST API supports a `batch` endpoint that takes an array of
-    statements + executes them as one round-trip. ~100 statements per
-    call → 126 calls instead of 12,553 → completes in ~30-40s.
+    was making 12,553 sequential HTTP calls (~300ms each = >60min,
+    Railway edge timed out at 30s). The CF D1 REST API accepts a JSON
+    ARRAY at the same /query URL for batch execution. ~50 statements
+    per call → ~250 calls total → ~75s end-to-end.
+
+    First implementation used /batch as the URL (replaced /query), but
+    that 404'd silently — CF doesn't expose /batch, it's array-body-to-
+    /query. Fixed in v2.
     """
     import requests
     if not CF_TOKEN:
         raise RuntimeError("CLOUDFLARE_API_TOKEN not set")
-    # CF D1's /batch endpoint accepts an array body
-    url = CF_D1_URL.replace("/query", "/batch")
     headers = {
         "Authorization": f"Bearer {CF_TOKEN}",
         "Content-Type": "application/json",
     }
-    r = requests.post(url, headers=headers, json=statements, timeout=timeout)
+    # CF D1 batch: same URL as single-query, but body is an array
+    r = requests.post(CF_D1_URL, headers=headers, json=statements, timeout=timeout)
     r.raise_for_status()
     return r.json()
 
