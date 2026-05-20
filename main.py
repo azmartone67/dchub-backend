@@ -6276,6 +6276,27 @@ def enforce_tier_rate_limits():
     if internal_token and internal_secret and hmac.compare_digest(internal_token, internal_secret):
         return None
 
+    # Phase FF+25-followup (2026-05-20): User-Agent allowlist for our own
+    # internal probes. The CF WAF allow rule (matching `lower(user_agent)
+    # contains "dchub"`) unblocked them at the edge; this is defense-in-
+    # depth at the backend so if CF rules drift, our probes still work.
+    #
+    # Bypass is rate-limit ONLY — does NOT bypass tier-gating on
+    # protected endpoints. The UA is forgeable but the only escape is
+    # rate-limit (not paid-tool access), so the risk is low.
+    #
+    # Matches: DCHubHealer/1.0, DCHub-Regression/2026-04-28,
+    # DCHub-SmokeTest, DCHub-Schema-Audit, DCHub-SelfHeal,
+    # dchub-brain-radar, dchub-brain-deadlink-probe, dchub-frontend-health,
+    # DCHub-Intelligence, DCHub-GasPipelineLoader, etc.
+    _ua = request.headers.get('User-Agent', '')
+    _ua_lower = _ua.lower()
+    if (_ua_lower.startswith('dchub') or
+        _ua.startswith('DCHub') or
+        'dchub-' in _ua_lower or
+        'dchub/' in _ua_lower):
+        return None
+
     # Skip OPTIONS preflight
     if request.method == 'OPTIONS':
         return None
@@ -19706,6 +19727,18 @@ try:
           "(/api/v1/admin/enrich/run + /email + /status)")
 except Exception as e:
     print(f"🔍 Signup Enrichment: ⚠️ Failed to load: {e}")
+
+# Phase FF+25-followup (2026-05-20) — defense-in-depth internal probe
+# acknowledgment endpoint. Pairs with the UA allowlist in
+# enforce_tier_rate_limits to let our own probes verify they're
+# recognized + bypass rate limiting even if CF rules drift.
+try:
+    from routes.internal_probe_check import internal_probe_check_bp
+    app.register_blueprint(internal_probe_check_bp)
+    print("🤖 Internal Probe Check: ✅ Registered "
+          "(/api/v1/internal/probe-ack)")
+except Exception as e:
+    print(f"🤖 Internal Probe Check: ⚠️ Failed to load: {e}")
 
 # =============================================================================
 # FACILITY AUTO-APPROVE PIPELINE v2.0
