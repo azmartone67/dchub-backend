@@ -17645,61 +17645,19 @@ def _bundle6a_edge_cache(resp):
 
 
 
-# --- phase 9g: redundant /api/v1/mcp/track on the main app -------------------
-# Belt-and-braces: we patched flask_mcp_endpoints.py, but in case the
-# blueprint registration order or url_prefix mishandles the path, this
-# directly registers the route on the Flask app. add_url_rule with a unique
-# endpoint name avoids conflict.
-def phase9g_mcp_track_override():
-    try:
-        payload = request.get_json(silent=True) or {}
-    except Exception:
-        payload = {}
-    tool_name = (str(payload.get('tool_name') or 'unknown'))[:200]
-    if not tool_name or tool_name == 'unknown':
-        return jsonify({'success': False, 'error': 'tool_name required'}), 200
-    platform_v= (str(payload.get('platform') or 'mcp-worker'))[:80]
-    client    = (str(payload.get('client_name') or 'unknown'))[:200]
-    params_v  = payload.get('params')
-    if not isinstance(params_v, str):
-        try: params_v = json.dumps(params_v or {})
-        except Exception: params_v = '{}'
-    success_v = bool(payload.get('success', True))
-    duration  = int(payload.get('response_time_ms') or payload.get('duration_ms') or 0)
-    ip        = (request.headers.get('X-Forwarded-For') or request.remote_addr or '')[:64]
-    ua        = (request.headers.get('User-Agent') or '')[:300]
-    db = None
-    try:
-        from db_utils import try_get_db
-        db = try_get_db()
-        if db:
-            c = db.cursor()
-            c.execute("""INSERT INTO mcp_tool_calls
-                (tool_name, platform, client_name, params, success,
-                 response_time_ms, ip_address, user_agent)
-                VALUES (%s, %s, %s, %s, %s, %s, %s, %s)""",
-                (tool_name, platform_v, client, params_v[:4000],
-                 success_v, duration, ip, ua))
-            db.commit()
-            return jsonify({'success': True, 'logged': True, 'src': 'phase9g_main'})
-    except Exception as e:
-        try: logger.error(f"phase9g_main track INSERT: {e}")
-        except Exception: pass
-    finally:
-        if db:
-            try: db.close()
-            except Exception: pass
-    return jsonify({'success': True, 'logged': False, 'src': 'phase9g_main'})
-
-try:
-    app.add_url_rule('/api/v1/mcp/track',
-                     endpoint='phase9g_mcp_track_override',
-                     view_func=phase9g_mcp_track_override,
-                     methods=['POST'])
-except Exception as _e:
-    try: logger.warning(f'phase9g override registration: {_e}')
-    except Exception: pass
-# --- end phase 9g -----------------------------------------------------------
+# --- phase 9g: REMOVED (was shadow handler for /api/v1/mcp/track) ----------
+# Phase FF+25-followup (2026-05-20): removed the entire phase9g block.
+# It was a belt-and-braces override that registered /api/v1/mcp/track
+# AGAIN on the main app — the canonical handler is at
+# flask_mcp_endpoints.py:508 (mcp_bp.track_tool_call) and has all the
+# active maintenance: Phase NN attribution recovery + Phase XX UUID
+# detection. Flask picks the first-registered handler when there's a
+# conflict, and the blueprint always loads before this main.py override,
+# so the override never actually served traffic — it was just causing
+# the brain consistency radar to log:
+#   shadow: /api/v1/mcp/track  mcp_bp.track_tool_call + phase9g_mcp_track_override
+# Function body + add_url_rule call deleted in this commit.
+# --- end phase 9g (REMOVED) -------------------------------------------------
 
 
 
