@@ -19853,6 +19853,19 @@ try:
 except Exception as e:
     print(f"🌐 OSM Crawler: ⚠️ Failed to load: {e}")
 
+# Phase FF+25-followup-r19 (2026-05-20) — founding customers cohort.
+# Kevin Serfass landed today as first website-front-door conversion.
+# Tags + brain signal so the Inspector celebrates milestones (1, 5,
+# 10, 25, 50) and the cohort becomes a queryable reference-customer
+# list as we grow.
+try:
+    from routes.founding_customers import founding_customers_bp
+    app.register_blueprint(founding_customers_bp)
+    print("⭐ Founding Customers: ✅ Registered "
+          "(POST /tag · GET /api/v1/founding-customers/count)")
+except Exception as e:
+    print(f"⭐ Founding Customers: ⚠️ Failed to load: {e}")
+
 # =============================================================================
 # FACILITY AUTO-APPROVE PIPELINE v2.0
 # Moves discovered_facilities → facilities with dedup logic

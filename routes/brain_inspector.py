@@ -218,6 +218,25 @@ def _gather_signals() -> dict:
         _try("deals_recent",
              """SELECT date, buyer, seller, value FROM deals
                  WHERE date IS NOT NULL ORDER BY date DESC LIMIT 5""")
+        # Phase r19 — founding customers cohort. First-12 paid customers
+        # matter disproportionately: they're proof the value-prop lands,
+        # they become references, they tolerate rough edges. Surface
+        # the count + the most recent so the Inspector can name them
+        # in the Healthy section.
+        _try("founding_customers",
+             """SELECT email, tagged_at, plan_at_tag,
+                       first_payment_at, contact_status
+                  FROM founding_customers
+                 ORDER BY tagged_at DESC LIMIT 12""")
+        # Phase r19 — recent paid conversions (last 7 days). Inspector
+        # uses this to detect "first paid conversion this week" or
+        # "conversions accelerating" as positive trends.
+        _try("paid_conversions_7d",
+             """SELECT email, plan, created_at
+                  FROM api_keys
+                 WHERE plan IN ('developer','pro','enterprise')
+                   AND created_at >= NOW() - INTERVAL '7 days'
+                 ORDER BY created_at DESC LIMIT 25""")
     finally:
         try: c.close()
         except Exception: pass
@@ -238,6 +257,8 @@ You must:
   - Forecast what's likely to change in the next 24 hours, with explicit caveats.
   - If facilities_by_country shows any country with fewer than 50 facilities AND that country has a known active DC industry (Canada, UK, Germany, Singapore, Australia, Japan, France, Netherlands, Ireland), flag it as a "coverage gap" in Degrading with a specific recommendation.
   - If facilities_added_7d is 0, flag the discovery pipeline as Degrading — fresh additions are how we stay ahead of DCHawk + dcByte.
+  - If founding_customers has any rows, NAME each customer by email (first 5) in the Healthy section with their tagged_at date. Founding customers matter disproportionately and the Inspector brief should make them visible.
+  - If paid_conversions_7d has rows AND the previous brief mentioned zero conversions, flag this as a positive inflection in the One-line take.
 
 Output the brief in this exact Markdown structure:
 
