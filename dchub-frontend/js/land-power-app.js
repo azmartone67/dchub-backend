@@ -1,6 +1,11 @@
     document.addEventListener('DOMContentLoaded', function() {
         'use strict';
-        
+
+        // Cache-bust key for fiber API fetches. The CF worker edge-caches
+        // /api/* GETs; bump this whenever fiber_routes data or the endpoint's
+        // filtering changes so the overlay never serves a stale cached set.
+        window.FIBER_DATA_VERSION = '134';
+
         // Initialize map
         var map = L.map('map',{zoomControl:true}).setView([39.0,-98.0],4);
         window.map = map; // Make map globally accessible
@@ -2542,7 +2547,7 @@
 
         (function loadFiberRoutesFromApi() {
             var _f = window.dchubFetch || window.fetch.bind(window);
-            _f('/api/v1/fiber/routes/public?limit=5000')
+            _f('/api/v1/fiber/routes/public?limit=5000&_v=' + (window.FIBER_DATA_VERSION || '134'))
                 .then(function(r){ return r.ok ? r.json() : Promise.reject(r.status); })
                 .then(function(geo){
                     if (!geo || !Array.isArray(geo.features) || geo.features.length === 0) return;
@@ -8310,7 +8315,7 @@ var markets = {
         function loadFiberClass(routeClass, targetLayer, countElId, styleOverride) {
             if (targetLayer.getLayers().length > 0) return; // already loaded
             var _f = window.dchubFetch || window.fetch.bind(window);
-            _f('/api/v1/fiber/routes/public?class=' + encodeURIComponent(routeClass) + '&limit=5000')
+            _f('/api/v1/fiber/routes/public?class=' + encodeURIComponent(routeClass) + '&limit=5000&_v=' + (window.FIBER_DATA_VERSION || '134'))
                 .then(function(r){ return r.ok ? r.json() : Promise.reject(r.status); })
                 .then(function(geo){
                     var feats = (geo && geo.features) || [];
