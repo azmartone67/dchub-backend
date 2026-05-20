@@ -2487,6 +2487,66 @@ def check_winback_pitches_unsent() -> list[dict]:
 
 
 # ── Phase RRRR (2026-05-16) — DC Hub Media silence detector ───────
+def check_founding_customer_not_welcomed() -> list[dict]:
+    """Phase FF+25-followup-r21 (2026-05-20). Tonight, Kevin Serfass
+    (first paid customer) ended up without a welcome email because the
+    Stripe webhook auto-tag fired into a deploy-lag window — the
+    founding_customers module wasn't loaded yet, the tag silently 404'd,
+    and the welcome email path never fired.
+
+    This detector closes that gap. It scans founding_customers for rows
+    where contact_status is 'new' or 'auto-tagged' AND tagged_at is
+    older than 1 hour. Any such row means the customer was tagged but
+    never welcomed. Autopilot fires the send-welcome endpoint
+    autonomously so the customer gets their email even if the original
+    path failed.
+
+    The 1-hour threshold gives the standard webhook auto-email path
+    time to complete before the brain intervenes — prevents
+    double-sending in the happy path."""
+    import os as _os, psycopg2 as _pg
+    findings: list[dict] = []
+    db = _os.environ.get("DATABASE_URL")
+    if not db: return findings
+    try:
+        c = _pg.connect(db, sslmode="require", connect_timeout=5)
+        try:
+            with c.cursor() as cur:
+                cur.execute("""
+                    SELECT email, tagged_at, contact_status
+                      FROM founding_customers
+                     WHERE COALESCE(contact_status, 'new')
+                          IN ('new', 'auto-tagged')
+                       AND tagged_at < NOW() - INTERVAL '1 hour'
+                     ORDER BY tagged_at ASC
+                     LIMIT 5
+                """)
+                rows = cur.fetchall()
+        finally:
+            c.close()
+    except Exception:
+        return findings
+
+    for r in rows:
+        email = r[0]
+        when = r[1].isoformat() if r[1] else "unknown"
+        status = r[2] or "new"
+        findings.append({
+            "issue":  "founding_customer_not_welcomed",
+            "url":    f"/api/v1/admin/founding-customers/send-welcome",
+            "count":  1,
+            "detail": (f"Founding customer {email} (tagged {when}, "
+                       f"status={status}) hasn't received a welcome "
+                       f"email after 1 hour. Autopilot will POST "
+                       f"/api/v1/admin/founding-customers/send-welcome "
+                       f"to rescue. If this fires repeatedly check "
+                       f"DCHUB_RESEND_API_KEY on Railway."),
+            # extra payload the autopilot action reads
+            "_email": email,
+        })
+    return findings
+
+
 def check_coverage_gap_canada() -> list[dict]:
     """Phase FF+25-followup-r14 (2026-05-20). User found two Calgary-
     metro facilities (Gryphon Digital Mining in Pincher Creek; Prairie
@@ -5251,6 +5311,8 @@ def scan_all() -> list[dict]:
                check_page_brand_drift,
                # Phase FF+25-followup-r14 Canadian / regional coverage gaps
                check_coverage_gap_canada,
+               # Phase FF+25-followup-r21 founding-customer welcome rescue
+               check_founding_customer_not_welcomed,
                # Phase SSSS winback pitches accumulating without delivery
                check_winback_pitches_unsent,
                # Phase TTTT citation score

@@ -300,6 +300,20 @@ def _action_media_topic_unaddressed(finding: dict) -> tuple[str | None, dict | N
     return "/api/v1/marketing/auto-generate", {}
 
 
+def _action_founding_welcome_rescue(finding: dict) -> tuple[str | None, dict | None]:
+    """Phase FF+25-followup-r21 (2026-05-20): autonomous rescue when
+    a founding customer was tagged but the welcome email never fired
+    (deploy lag, Resend hiccup, etc.). Reads the _email field the
+    detector attaches and POSTs the send-welcome endpoint."""
+    email = finding.get("_email") or ""
+    if not email or "@" not in email:
+        return (None, None)
+    return (
+        "/api/v1/admin/founding-customers/send-welcome",
+        {"email": email},
+    )
+
+
 def _action_monthly_trend_unsent(finding: dict) -> tuple[str | None, dict | None]:
     """Phase FF+25-followup-r7 (2026-05-20): backstop for the GitHub
     monthly-cron. If we're 4+ days into a new month and the prior-month
@@ -455,6 +469,16 @@ _PATTERN_LIBRARY: dict[str, dict[str, Any]] = {
         "method":      "POST",
         "use_admin":   True,
         "description": "Autonomous backstop: the monthly trend snapshot wasn't emailed by the 4th of the new month. Brain fires /api/v1/reports/monthly/send-outreach with triggered_by=autopilot.",
+    },
+    # Phase FF+25-followup-r21 (2026-05-20): founding-customer welcome rescue.
+    # If a founding customer was tagged but contact_status stays 'new' or
+    # 'auto-tagged' for >1h, fire the send-welcome endpoint autonomously.
+    # Closes the deploy-lag window that left Kevin without an email tonight.
+    "founding_customer_not_welcomed": {
+        "action":      _action_founding_welcome_rescue,
+        "method":      "POST",
+        "use_admin":   True,
+        "description": "Autonomous: a founding customer was tagged but never received their welcome email after 1 hour. Brain fires /api/v1/admin/founding-customers/send-welcome with the specific email. Rate-limit prevents flooding if Resend is down.",
     },
     # Phase FF+25-followup-r12 (2026-05-20): visual drift escalation.
     # Drift is fixed by editing /js/dchub-nav.js or per-page <style> —
