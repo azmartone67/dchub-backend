@@ -13,7 +13,7 @@ Pipeline per tick:
         {power_mw}MW {facility_type} - {status}"
   3. POST the blob batch to CF Workers AI
        /ai/run/@cf/baai/bge-small-en-v1.5
-     → 768-dim float32 embedding per row.
+     → 384-dim float32 embedding per row (bge-small-en-v1.5 output).
   4. Upsert {id, vector, metadata} rows to Vectorize via
        /vectorize/v2/indexes/dchub-facility-search/upsert
      in batches of 100.
@@ -26,7 +26,7 @@ Cost note (per CLAUDE.md envelope):
     tier ($0.011 per 1k neurons = ~$2.31 per full re-sync). Daily is
     overkill once steady-state; the cron is daily but most rows skip
     via the dedupe check at the top.
-  - Vectorize: 21k × 768 ≈ 16M queried-dimensions per full query.
+  - Vectorize: 21k × 384 ≈ 8M queried-dimensions per full query.
     Free tier is 30M/month → ~1 full re-sync's worth of search
     traffic fits free. Index storage 5M vectors free.
 
@@ -205,9 +205,9 @@ def _text_hash(text: str) -> str:
 
 
 def _embed_batch(texts: list) -> list:
-    """POST texts → 768-dim embeddings. Returns list aligned with input."""
+    """POST texts → 384-dim embeddings. Returns list aligned with input."""
     resp = _cf_post(CF_AI_URL, {"text": texts}, timeout=60)
-    # CF AI response shape: { result: { data: [[...768 floats...], ...], shape: [n, 768] }, success: true }
+    # CF AI response shape: { result: { data: [[...384 floats...], ...], shape: [n, 384] }, success: true }
     res = resp.get("result") or {}
     data = res.get("data") or []
     if len(data) != len(texts):
@@ -218,7 +218,7 @@ def _embed_batch(texts: list) -> list:
 
 def _vec_upsert(vectors: list) -> dict:
     """Upsert vectors to Vectorize. `vectors` is a list of
-       {id, values: [768 floats], metadata: {...}} dicts.
+       {id, values: [384 floats], metadata: {...}} dicts.
 
     Vectorize v2 upsert accepts NDJSON via the body. Each line is a
     JSON-encoded vector object."""

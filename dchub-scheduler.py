@@ -338,6 +338,21 @@ JOBS = {
         'timeout': 1800,
         'headers': {'X-Internal-Key': 'dchub-internal-sync-2026'},
     },
+    # Phase FF+23-followup (2026-05-20) — the land-power dataset has
+    # been silently going stale because register_land_power_routes()
+    # was never called from main.py. Health check has been showing
+    # `land_power.status=red, days_stale=15+` for weeks. Fixed by
+    # wiring the routes; now also need a cron to actually run the
+    # sync. Incremental nightly + full refresh on Sundays via ?full=1.
+    'land_power_sync_incremental': {
+        'name': 'Land+Power Sync (incremental, weekdays)',
+        'endpoint': '/api/land-power/sync',
+        'method': 'POST',
+        'hours': [4],     # 4am UTC = midnight ET = low-traffic window
+        'minute': 30,
+        'timeout': 900,
+        'headers': {'X-Internal-Key': 'dchub-internal-sync-2026'},
+    },
     'smoke_test': {
         'name': 'Production Smoke Test',
         'endpoint': '/api/jobs/smoke-test',

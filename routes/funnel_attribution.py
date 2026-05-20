@@ -125,8 +125,13 @@ def by_tool():
         import psycopg2.extras
         with c.cursor(cursor_factory=psycopg2.extras.RealDictCursor) as cur:
             try:
-                cur.execute("SELECT to_regclass('public.auto_trial_keys')")
-                if not (cur.fetchone() or [None])[0]:
+                # Phase FF+23-followup (2026-05-20): RealDictCursor returns
+                # dict, not tuple — `[0]` was raising KeyError on every call,
+                # producing `{"error":"query_failed:KeyError"}` and a 503 at
+                # the worker layer. Use the column name instead.
+                cur.execute("SELECT to_regclass('public.auto_trial_keys') AS t")
+                _row = cur.fetchone()
+                if not _row or not _row.get("t"):
                     return jsonify(tools=[], note="no auto_trial_keys yet"), 200
                 cur.execute("""
                     SELECT minted_for_tool,

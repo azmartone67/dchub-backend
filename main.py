@@ -3958,6 +3958,40 @@ try:
 except Exception as e:
     logger.error(f"⚠️ Land Power routes failed: {e}")
 
+# Phase FF+23-followup (2026-05-20): wire the land-power CRAWLER
+# routes (separate module from setup_land_power_routes above, which
+# is a deprecated no-op stub). The crawler routes include
+# /api/land-power/sync — the only way to refresh the 126k-row dataset.
+# Without these registered, the data has been silently going stale
+# for 15+ days (last refresh 2026-05-04, before this fix). Health
+# check `land_power.status=red` was correctly screaming about it.
+try:
+    from land_power_crawler import register_land_power_routes as _lpc_register
+
+    # require_admin: same X-Internal-Key check the d1/vectorize jobs use.
+    def _lpc_require_admin(fn):
+        from functools import wraps
+        @wraps(fn)
+        def _w(*args, **kwargs):
+            sent = (request.headers.get("X-Internal-Key")
+                    or request.args.get("admin_key") or "").strip()
+            allowed = {"dchub-internal-sync-2026"}
+            for _n in ("DCHUB_INTERNAL_KEY", "INTERNAL_KEY",
+                       "MCP_INTERNAL_KEY", "DCHUB_ADMIN_KEY"):
+                _v = os.environ.get(_n)
+                if _v: allowed.add(_v)
+            if sent in allowed:
+                return fn(*args, **kwargs)
+            return jsonify(error="forbidden",
+                            hint="X-Internal-Key required for land-power sync"), 403
+        return _w
+
+    _lpc_register(app, get_db, _lpc_require_admin)
+    logger.info("✅ Land Power Crawler routes registered "
+                 "(/api/land-power/sync + /status + /market-profiles)")
+except Exception as e:
+    logger.error(f"⚠️ Land Power Crawler routes failed: {e}")
+
 try:
     if setup_energy_routes:
         setup_energy_routes(app)
@@ -19618,7 +19652,7 @@ except Exception as e:
     print(f"☁️ D1 Sync: ⚠️ Failed to load: {e}")
 
 # Phase FF+23-vectorize (2026-05-20) — Neon → Cloudflare Vectorize.
-# Builds the bge-small-en (768-dim) ANN index that the Pages worker
+# Builds the bge-small-en (384-dim) ANN index that the Pages worker
 # queries from /api/v1/search/semantic. Runs daily; text-hash dedup
 # means steady-state cost is ~deltas only.
 try:
