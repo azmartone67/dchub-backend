@@ -19825,6 +19825,19 @@ try:
 except Exception as e:
     print(f"🏢 Facility Admin: ⚠️ Failed to load: {e}")
 
+# Phase FF+25-followup-r16 (2026-05-20) — DataCenterMap crawler.
+# Polite nightly crawl of datacentermap.com (public registry, no ToS
+# restriction). Disabled by default — set DCM_CRAWL_ENABLED=true in
+# Railway env vars to activate. Source-tagged so a single SQL purges
+# everything if needed.
+try:
+    from routes.datacentermap_crawler import datacentermap_crawler_bp
+    app.register_blueprint(datacentermap_crawler_bp)
+    print("🌍 DataCenterMap Crawler: ✅ Registered "
+          "(POST /api/v1/admin/dcm-crawl/run · /status · /log)")
+except Exception as e:
+    print(f"🌍 DataCenterMap Crawler: ⚠️ Failed to load: {e}")
+
 # =============================================================================
 # FACILITY AUTO-APPROVE PIPELINE v2.0
 # Moves discovered_facilities → facilities with dedup logic

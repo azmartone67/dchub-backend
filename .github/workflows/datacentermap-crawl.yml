@@ -1,0 +1,65 @@
+# Phase FF+25-followup-r16 (2026-05-20) — DataCenterMap nightly crawl.
+# Walks public country pages, extracts facility name + city + operator,
+# diffs against our facilities table, bulk-inserts the gaps. Polite:
+# UA identifies as DCHubCrawler, 2s between requests, respects
+# robots.txt. Disabled at the backend until DCM_CRAWL_ENABLED=true is
+# set in Railway env, so a runaway crawl can't happen by accident.
+
+name: DataCenterMap — nightly coverage sweep
+
+on:
+  schedule:
+    # 04:11 UTC daily — well off-peak for DCM, doesn't dogpile our
+    # other crons (monthly cron at 00:05, brain inspector at :07).
+    - cron: '11 4 * * *'
+  workflow_dispatch:
+    inputs:
+      country:
+        description: 'Country slug (e.g. canada). Empty = walk full list.'
+        required: false
+      dry_run:
+        description: 'Dry run (no inserts)'
+        required: false
+        default: 'false'
+
+jobs:
+  crawl:
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    steps:
+      - name: Trigger crawl
+        run: |
+          set -eo pipefail
+          ADMIN_KEY="${{ secrets.DCHUB_ADMIN_KEY }}"
+          COUNTRY="${{ github.event.inputs.country }}"
+          DRY="${{ github.event.inputs.dry_run }}"
+          QS=""
+          if [ -n "$COUNTRY" ]; then QS="?country=$COUNTRY"; fi
+          if [ "$DRY" = "true" ]; then
+            [ -z "$QS" ] && QS="?dry_run=1" || QS="$QS&dry_run=1"
+          fi
+          RESP=$(curl -sS -X POST \
+            -H "X-Admin-Key: $ADMIN_KEY" \
+            -H "User-Agent: DCHub-DCM-Cron/1.0" \
+            --max-time 1500 \
+            "https://dchub.cloud/api/v1/admin/dcm-crawl/run$QS")
+          echo "$RESP" | python3 -c "
+          import sys, json
+          d = json.load(sys.stdin)
+          ok = d.get('ok')
+          if not ok:
+            print(f'::warning::Crawler returned: {d.get(\"error\")}')
+            print(json.dumps(d, indent=2)[:600])
+            sys.exit(0)
+          print(f'### DataCenterMap crawl')
+          print()
+          print(f'- Countries: {\", \".join(d.get(\"countries\", []))}')
+          print(f'- Pages fetched: {d.get(\"pages_fetched\")}')
+          print(f'- Facilities seen: {d.get(\"facilities_seen\")}')
+          print(f'- New: {d.get(\"facilities_new\")}')
+          print(f'- Duplicate (already in DB): {d.get(\"facilities_dup\")}')
+          print(f'- Errors: {d.get(\"errors\")}')
+          print()
+          for ex in (d.get('examples') or [])[:10]:
+              print(f'  - {ex.get(\"name\")} | {ex.get(\"country\", \"\")}')
+          " >> "$GITHUB_STEP_SUMMARY"
