@@ -159,9 +159,20 @@ def grid_iso(iso):
     return Response(html, mimetype='text/html')
 
 
-@grid_public_bp.route('/sitemap.xml', methods=['GET'])
+@grid_public_bp.route('/grid/sitemap.xml', methods=['GET'])
 def sitemap():
-    """Sitemap including grid intel URLs."""
+    """Grid-specific sitemap (ISO hub URLs only).
+
+    Phase FF+25-followup (2026-05-20): renamed from `/sitemap.xml` to
+    `/grid/sitemap.xml`. Previously this 7-URL grid sitemap was shadowing
+    the comprehensive 15,000-URL sitemap defined at main.py:16297
+    (serve_sitemap_xml). Flask picked whichever loaded first, so on
+    some boots Googlebot received only the 7 grid URLs instead of the
+    full facility/market sitemap — silent SEO disaster.
+
+    The grid-specific sitemap is still useful as a niche resource at
+    /grid/sitemap.xml; main.py:16297 owns the canonical `/sitemap.xml`.
+    """
     today = datetime.datetime.utcnow().strftime('%Y-%m-%d')
     base = 'https://dchub.cloud'
     urls = [
