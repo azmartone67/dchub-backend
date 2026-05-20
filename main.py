@@ -19970,6 +19970,17 @@ try:
 except Exception as e:
     print(f"📰 News NER: ⚠️ Failed to load: {e}")
 
+# Phase FF+25-followup-r24 (2026-05-20) — public /coverage page.
+# Social proof for the OSM crawler + curation work. Shows by-country
+# facility counts + 7d additions. Public, no auth.
+try:
+    from routes.coverage_page import coverage_page_bp
+    app.register_blueprint(coverage_page_bp)
+    print("🌐 Coverage Page: ✅ Registered "
+          "(GET /coverage + /api/v1/site/coverage)")
+except Exception as e:
+    print(f"🌐 Coverage Page: ⚠️ Failed to load: {e}")
+
 # =============================================================================
 # FACILITY AUTO-APPROVE PIPELINE v2.0
 # Moves discovered_facilities → facilities with dedup logic

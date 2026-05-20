@@ -34,6 +34,25 @@ jobs:
     runs-on: ubuntu-latest
     timeout-minutes: 8
     steps:
+      - name: Probe deploy readiness
+        run: |
+          # Phase r24 probe-first: don't fire the actual archive +
+          # send-outreach until we confirm the route is live. Prevents
+          # silent failure when this cron races a Railway redeploy.
+          for i in 1 2 3 4 5 6; do
+            code=$(curl -s -o /dev/null -w "%{http_code}" \
+              "https://dchub.cloud/api/v1/reports/monthly" \
+              --max-time 10)
+            if [ "$code" = "200" ] || [ "$code" = "302" ]; then
+              echo "deploy ready (attempt $i, code=$code)"
+              exit 0
+            fi
+            echo "  attempt $i: code=$code, waiting 30s…"
+            sleep 30
+          done
+          echo "::error::Monthly trend deploy probe failed"
+          exit 1
+
       - name: Archive prior month
         id: archive
         run: |

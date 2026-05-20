@@ -237,6 +237,20 @@ def _gather_signals() -> dict:
                  WHERE plan IN ('developer','pro','enterprise')
                    AND created_at >= NOW() - INTERVAL '7 days'
                  ORDER BY created_at DESC LIMIT 25""")
+        # Phase r24 — news entity discovery candidates. Surfaces unknown
+        # operator/facility names that appeared in recent news but
+        # aren't in our facilities table yet. Inspector flags these as
+        # Degrading items + recommends seeding via the bulk endpoint.
+        # Excludes status='rejected' (operator already dismissed them).
+        _try("news_unknown_entities",
+             """SELECT entity_name, mention_count, sample_headline,
+                       sample_url, last_seen_at
+                  FROM news_discovered_entities
+                 WHERE in_facilities = FALSE
+                   AND COALESCE(status, 'unknown') != 'rejected'
+                   AND last_seen_at >= NOW() - INTERVAL '14 days'
+                 ORDER BY mention_count DESC, last_seen_at DESC
+                 LIMIT 15""")
     finally:
         try: c.close()
         except Exception: pass
@@ -259,6 +273,7 @@ You must:
   - If facilities_added_7d is 0, flag the discovery pipeline as Degrading — fresh additions are how we stay ahead of DCHawk + dcByte.
   - If founding_customers has any rows, NAME each customer by email (first 5) in the Healthy section with their tagged_at date. Founding customers matter disproportionately and the Inspector brief should make them visible.
   - If paid_conversions_7d has rows AND the previous brief mentioned zero conversions, flag this as a positive inflection in the One-line take.
+  - If news_unknown_entities has rows, list the top 3 in the Needs-attention section by name, with mention_count + sample_headline. Recommend that the operator review them at /admin/news-ner/candidates and either seed via /api/v1/admin/facilities/bulk or reject as noise via /api/v1/admin/news-ner/reject. These are operator/facility names appearing in news that we don't track yet — high-signal discovery candidates.
 
 Output the brief in this exact Markdown structure:
 

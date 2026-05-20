@@ -16,6 +16,27 @@ jobs:
     runs-on: ubuntu-latest
     timeout-minutes: 5
     steps:
+      - name: Probe deploy readiness
+        run: |
+          # Phase r24: probe-first pattern. Poll the endpoint until it
+          # returns 200/401/403 (i.e. the route IS deployed) before
+          # firing the actual call. 404 = deploy lag, retry. Caps at
+          # 6 attempts × 30s = 3 min max wait, then fails the job
+          # rather than silently misfiring.
+          for i in 1 2 3 4 5 6; do
+            code=$(curl -s -o /dev/null -w "%{http_code}" \
+              "https://dchub.cloud/api/v1/brain/models" \
+              --max-time 10)
+            if [ "$code" = "200" ]; then
+              echo "deploy ready (attempt $i)"
+              exit 0
+            fi
+            echo "  attempt $i: code=$code, waiting 30s…"
+            sleep 30
+          done
+          echo "::error::Deploy probe failed after 6 attempts — endpoint not live"
+          exit 1
+
       - name: Trigger Inspector
         id: gen
         run: |

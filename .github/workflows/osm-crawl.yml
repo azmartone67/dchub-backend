@@ -1,0 +1,65 @@
+# Phase FF+25-followup-r24 (2026-05-20) — OSM nightly crawl.
+# Walks all 26 OpenStreetMap regions for data center POIs and bulk-
+# inserts the missing ones. Polite — 2s sleep per region, UA identifies
+# as DCHubCrawler/1.0. Disabled at the backend until DCM_CRAWL_ENABLED
+# (or OSM_CRAWL_ENABLED) is set in Railway env. User confirmed
+# tonight that DCM_CRAWL_ENABLED=true is set on both Railway + Render.
+#
+# Offset cron 23 4 * * * — runs 12 min after the DCM workflow (4:11)
+# so they don't dogpile.
+
+name: OpenStreetMap — nightly DC coverage sweep
+
+on:
+  schedule:
+    - cron: '23 4 * * *'
+  workflow_dispatch:
+    inputs:
+      region:
+        description: 'Single region slug (e.g. alberta). Empty = all 26.'
+        required: false
+      dry_run:
+        description: 'Dry run (no inserts)'
+        required: false
+        default: 'false'
+
+jobs:
+  crawl:
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    steps:
+      - name: Trigger OSM crawl
+        run: |
+          set -eo pipefail
+          ADMIN_KEY="${{ secrets.DCHUB_ADMIN_KEY }}"
+          REGION="${{ github.event.inputs.region }}"
+          DRY="${{ github.event.inputs.dry_run }}"
+          QS=""
+          if [ -n "$REGION" ]; then QS="?region=$REGION"; fi
+          if [ "$DRY" = "true" ]; then
+            [ -z "$QS" ] && QS="?dry_run=1" || QS="$QS&dry_run=1"
+          fi
+          RESP=$(curl -sS -X POST \
+            -H "X-Admin-Key: $ADMIN_KEY" \
+            -H "User-Agent: DCHub-OSM-Cron/1.0" \
+            --max-time 1500 \
+            "https://dchub.cloud/api/v1/admin/osm-crawl/run$QS")
+          echo "$RESP" | python3 -c "
+          import sys, json
+          d = json.load(sys.stdin)
+          if not d.get('ok'):
+              print(f'::warning::OSM crawler returned error: {d.get(\"error\")}')
+              print(json.dumps(d, indent=2)[:600])
+              sys.exit(0)
+          print(f'### OSM nightly crawl')
+          print()
+          print(f'- Regions: {len(d.get(\"regions\", []))} swept')
+          print(f'- POIs seen: {d.get(\"pois_seen\")}')
+          print(f'- New: {d.get(\"pois_new\")}')
+          print(f'- Duplicate (already in DB): {d.get(\"pois_dup\")}')
+          print(f'- Errors: {d.get(\"errors\")}')
+          print()
+          print(f'**Sample of new additions:**')
+          for ex in (d.get('examples') or [])[:15]:
+              print(f'- {ex.get(\"name\", \"\")} ({ex.get(\"country\", \"\")})')
+          " >> "$GITHUB_STEP_SUMMARY"
