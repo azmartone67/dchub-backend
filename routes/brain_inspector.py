@@ -83,6 +83,13 @@ def _get_db():
 
 
 def _ensure_brief_table():
+    # FIX r10 (2026-05-20): the original version of this function ran
+    # CREATE TABLE inside a cursor block but never called c.commit(),
+    # so on connections that aren't in autocommit mode the DDL never
+    # landed. Symptom: every brief generation reported
+    # "relation brain_briefs does not exist". Explicit commit + a
+    # NOT NULL relaxation on brief_md (so error-state rows can be
+    # logged with the empty body for debugging).
     c = _get_db()
     if c is None: return False
     try:
@@ -92,9 +99,9 @@ def _ensure_brief_table():
                     id            SERIAL PRIMARY KEY,
                     generated_at  TIMESTAMPTZ NOT NULL DEFAULT NOW(),
                     model         TEXT NOT NULL,
-                    inputs        JSONB,            -- signals fed to the LLM
-                    brief_md      TEXT NOT NULL,    -- the rendered narrative
-                    summary       TEXT,             -- 1-line take
+                    inputs        JSONB,
+                    brief_md      TEXT,
+                    summary       TEXT,
                     healthy_count INT,
                     degrading_count INT,
                     attention_count INT,
@@ -108,9 +115,13 @@ def _ensure_brief_table():
                 "CREATE INDEX IF NOT EXISTS idx_brain_briefs_generated "
                 "ON brain_briefs(generated_at DESC)"
             )
+        try: c.commit()
+        except Exception: pass
         return True
     except Exception as e:
         logger.warning(f"[brain-inspector] table create failed: {e}")
+        try: c.rollback()
+        except Exception: pass
         return False
     finally:
         try: c.close()
@@ -537,7 +548,10 @@ def _generate_brief() -> dict:
             except Exception:
                 pass
 
-    # Persist
+    # Persist. FIX r10 (2026-05-20): explicit c.commit() — get_db()
+    # returns connections in non-autocommit mode, so the INSERT was
+    # rolling back on connection close. Same fix applied in
+    # _ensure_brief_table above.
     _ensure_brief_table()
     c = _get_db()
     if c is not None:
@@ -561,7 +575,11 @@ def _generate_brief() -> dict:
                 if r:
                     out["id"] = int(r[0])
                     out["generated_at"] = str(r[1])
+            try: c.commit()
+            except Exception: pass
         except Exception as e:
+            try: c.rollback()
+            except Exception: pass
             out["persist_error"] = str(e)[:200]
         finally:
             try: c.close()

@@ -58,7 +58,9 @@ def _get_db():
 def _ensure_log_table():
     """Track which (year, month) outreach campaigns have been sent
     and to how many recipients. Detector reads this to know whether
-    the prior-month snapshot has been distributed."""
+    the prior-month snapshot has been distributed.
+    FIX r10: explicit c.commit() after DDL — get_db() returns non-
+    autocommit connections so the CREATE TABLE was rolling back."""
     c = _get_db()
     if c is None: return False
     try:
@@ -72,14 +74,18 @@ def _ensure_log_table():
                     succeeded    INT NOT NULL DEFAULT 0,
                     failed       INT NOT NULL DEFAULT 0,
                     permalink    TEXT,
-                    triggered_by TEXT,           -- 'cron', 'autopilot', 'manual'
+                    triggered_by TEXT,
                     notes        TEXT,
                     PRIMARY KEY (year, month)
                 )
             """)
+        try: c.commit()
+        except Exception: pass
         return True
     except Exception as e:
         logger.warning(f"[monthly-outreach] table create failed: {e}")
+        try: c.rollback()
+        except Exception: pass
         return False
     finally:
         try: c.close()

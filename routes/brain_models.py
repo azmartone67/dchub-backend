@@ -44,10 +44,16 @@ import logging
 logger = logging.getLogger(__name__)
 
 # ── Defaults (current public Anthropic lineup, 2026-05-20) ──────────
-_DEFAULT_INSPECTOR = "claude-opus-4-7-20251202"
-_DEFAULT_REASONING = "claude-opus-4-7-20251202"
+# FIX r10: my earlier guess "claude-opus-4-7-20251202" returned
+# not_found_error from the Anthropic API. The known-working Opus
+# identifier in this codebase is "claude-opus-4-5" (see
+# extractor_cron.py:22 + eval_runner.py:12 which have been hitting
+# production for weeks). Sticking with proven IDs; users can opt into
+# a newer tier via DCHUB_BRAIN_MODEL_INSPECTOR when one releases.
+_DEFAULT_INSPECTOR = "claude-opus-4-5"
+_DEFAULT_REASONING = "claude-opus-4-5"
 _DEFAULT_ROUTINE   = "claude-sonnet-4-5"
-_DEFAULT_VOICE     = "claude-haiku-4-5"
+_DEFAULT_VOICE     = "claude-haiku-3-5"
 
 # Global fallback (matches the legacy DCHUB_BRAIN_MODEL pattern from
 # brain_v2_layer4). If set, becomes the answer to every untiered call.
