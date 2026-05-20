@@ -285,6 +285,7 @@ discovery_bp = Blueprint('discovery', __name__)
 
 
 # ----- AGENTS.md -----
+# AUTO-REPAIR: duplicate route '/AGENTS.md' also in ai_discovery_routes.py:290 — review and remove one
 @discovery_bp.route('/AGENTS.md')
 @discovery_bp.route('/agents.md')
 def serve_agents_md():
@@ -298,6 +299,7 @@ def serve_agents_md():
     return response
 
 
+# AUTO-REPAIR: duplicate route '/.well-known/agent.json' also in main.py:16514 — review and remove one
 # ----- Google A2A Agent Card -----
 @discovery_bp.route('/.well-known/agent.json')
 def serve_a2a_agent_card():
@@ -460,6 +462,7 @@ def route_a2a_query(query):
     except Exception as e:
         return {"type": "error", "message": str(e)}
 
+# AUTO-REPAIR: duplicate route '/llms-full.txt' also in ai_discovery_routes.py:405 — review and remove one
 
 # ----- llms-full.txt -----
 @discovery_bp.route('/llms-full.txt')
@@ -474,6 +477,7 @@ def serve_llms_full():
     response.headers['Cache-Control'] = 'public, max-age=3600'
     response.headers['Access-Control-Allow-Origin'] = '*'
     return response
+# AUTO-REPAIR: duplicate route '/.well-known/security.txt' also in main.py:16534 — review and remove one
 
 
 # ----- security.txt -----
@@ -485,6 +489,7 @@ def serve_security_txt():
     response.headers['Content-Type'] = 'text/plain; charset=utf-8'
     response.headers['Cache-Control'] = 'public, max-age=86400'
     response.headers['Access-Control-Allow-Origin'] = '*'
+# AUTO-REPAIR: duplicate route '/api/v1/ai-tracking/stats' also in main.py:12281 — review and remove one
     return response
 
 
@@ -593,6 +598,8 @@ def ai_tracking_recent():
         
         return jsonify({"success": True, "data": accesses, "meta": {"count": len(accesses)}})
     
+# AUTO-REPAIR: duplicate route '/api/v1/discovery' also in main.py:12398 — review and remove one
+# AUTO-REPAIR: duplicate route '/ai/discovery' also in main.py:12399 — review and remove one
     except Exception as e:
         return jsonify({"success": False, "error": str(e)}), 500
 
