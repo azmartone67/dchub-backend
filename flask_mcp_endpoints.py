@@ -786,6 +786,23 @@ def dev_signup():
 
 @mcp_bp.get("/api/v1/mcp/funnel")
 def mcp_funnel():
+    # Phase FF+25-followup-r3 (2026-05-20) — split probe vs real traffic.
+    # Until now `tool_calls_7d` lumped together genuine MCP-client traffic
+    # AND our own QA / healer probes (User-Agent matches python-script,
+    # node-script, curl, postman, insomnia, plus the always-unattributed
+    # "unknown" bucket). When CF WAF temporarily over-blocked our probes,
+    # the 7d number dropped 38k→27k and looked like real-user churn even
+    # though zero external clients had changed behavior.
+    #
+    # `tool_calls_7d_real` excludes those self-traffic platforms so the
+    # public dashboard can show what AI agents are actually doing. Both
+    # numbers ship in the response — `tool_calls_7d` stays as the gross
+    # count for backward compat (brain detectors / mcp_growth.py still
+    # read it) and `tool_calls_7d_real` is what the UI should highlight.
+    _PROBE_PLATFORMS = (
+        'curl', 'python-script', 'node-script',
+        'postman', 'insomnia', 'unknown', 'verify',
+    )
     out = {}
     try:
         with _pool.connection() as conn, conn.cursor() as cur:
@@ -959,6 +976,37 @@ def mcp_funnel():
                 ]
             except Exception as e:
                 out["calls_by_platform_30d_error"] = str(e)[:120]
+
+            # Phase FF+25-followup-r3 (2026-05-20): probe-filtered counts.
+            # Same _platform_case classifier as above, but COUNTed at 7d
+            # window with the probe platforms excluded. These are what the
+            # public /cited-by + homepage dashboards should display.
+            try:
+                cur.execute(
+                    f"""SELECT
+                          COUNT(*) FILTER (
+                            WHERE {_platform_case} NOT IN %s
+                          ) AS real_calls,
+                          COUNT(*) FILTER (
+                            WHERE {_platform_case}     IN %s
+                          ) AS probe_calls,
+                          COUNT(DISTINCT ip_address) FILTER (
+                            WHERE {_platform_case} NOT IN %s
+                          ) AS real_unique_ips
+                       FROM mcp_tool_calls
+                       WHERE created_at >= NOW() - INTERVAL '7 days'""",
+                    (_PROBE_PLATFORMS, _PROBE_PLATFORMS, _PROBE_PLATFORMS),
+                )
+                _r = cur.fetchone() or (0, 0, 0)
+                out["tool_calls_7d_real"]   = int(_r[0] or 0)
+                out["tool_calls_7d_probes"] = int(_r[1] or 0)
+                out["unique_ips_7d_real"]   = int(_r[2] or 0)
+                # Convenience: list which platforms were classified as probes
+                # so the UI can render a tooltip ("filtered: node-script,
+                # python-script, curl, ...").
+                out["probe_platforms"] = list(_PROBE_PLATFORMS)
+            except Exception as e:
+                out["tool_calls_7d_real_error"] = str(e)[:120]
 
             # Time-to-conversion median per platform (days from first
             # upgrade signal to converted=true). Reveals whether some

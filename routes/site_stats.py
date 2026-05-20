@@ -126,8 +126,34 @@ def _build_stats() -> dict:
                 "SELECT COUNT(DISTINCT iso) FROM market_power_scores WHERE iso IS NOT NULL AND iso != ''"))
 
             # ── MCP / AI traffic (the "agents are using us" signal) ─
+            # mcp_calls_7d is the GROSS count (includes our own QA probes).
+            # mcp_calls_7d_real (Phase FF+25-followup-r3, 2026-05-20)
+            # filters out the self-traffic platforms so the homepage tile
+            # reflects external AI-agent demand only. CF WAF over-blocking
+            # of our probes May 17-19 dragged the gross count from 38k→27k
+            # while real external traffic was unchanged; we now ship both
+            # so the public-facing number is robust against probe noise.
             s["mcp_calls_7d"]      = int(_scalar(cur,
                 "SELECT COUNT(*) FROM mcp_tool_calls WHERE created_at > NOW() - INTERVAL '7 days'"))
+            try:
+                s["mcp_calls_7d_real"] = int(_scalar(cur, """
+                    SELECT COUNT(*) FROM mcp_tool_calls
+                     WHERE created_at > NOW() - INTERVAL '7 days'
+                       AND COALESCE(LOWER(user_agent),'') NOT LIKE '%curl%'
+                       AND COALESCE(LOWER(user_agent),'') NOT LIKE '%python%'
+                       AND COALESCE(LOWER(user_agent),'') NOT LIKE '%requests%'
+                       AND COALESCE(LOWER(user_agent),'') NOT LIKE '%node%'
+                       AND COALESCE(LOWER(user_agent),'') NOT LIKE '%axios%'
+                       AND COALESCE(LOWER(user_agent),'') NOT LIKE '%postman%'
+                       AND COALESCE(LOWER(user_agent),'') NOT LIKE '%insomnia%'
+                       AND COALESCE(LOWER(user_agent),'') NOT LIKE 'dchub%'
+                       AND COALESCE(LOWER(user_agent),'') NOT LIKE '%dchub-%'
+                       AND user_agent IS NOT NULL
+                       AND user_agent != ''
+                """))
+            except Exception:
+                # Schema may not have user_agent yet on every deploy
+                s["mcp_calls_7d_real"] = s["mcp_calls_7d"]
             s["mcp_unique_callers_7d"] = int(_scalar(cur,
                 "SELECT COUNT(DISTINCT COALESCE(NULLIF(client_name,''),NULLIF(platform,''),ip_address)) FROM mcp_tool_calls WHERE created_at > NOW() - INTERVAL '7 days'"))
             s["mcp_developers"]    = int(_scalar(cur,
