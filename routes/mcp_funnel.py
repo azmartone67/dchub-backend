@@ -181,6 +181,7 @@ def _compute_funnel(tool_filter: str | None = None, days: int = 14) -> list[dict
     return out
 
 
+# AUTO-REPAIR: duplicate route '/api/v1/mcp/conversion-funnel' also in main.py:23218 — review and remove one
 @mcp_funnel_bp.route("/api/v1/mcp/conversion-funnel", methods=["GET"])
 def conversion_funnel():
     """All paid + commonly-called tools with per-stage funnel."""

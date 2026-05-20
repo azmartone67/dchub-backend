@@ -193,7 +193,7 @@ def _run_sync() -> dict:
             id, slug, name, provider, city, state, country, market,
             latitude, longitude, power_mw, sqft, status, facility_type,
             address, fiber_providers, synced_at
-        ) VALUES (?1,?2,?3,?4,?5,?6,?7,?8,?9,?10,?11,?12,?13,?14,?15,?16,unixepoch())
+        ) VALUES (?1,?2,?3,?4,?5,?6,?7,?8,?9,?10,?11,?12,?13,?14,?15,?16,unixepoch() ON CONFLICT DO NOTHING)
         ON CONFLICT(id) DO UPDATE SET
             slug=excluded.slug, name=excluded.name, provider=excluded.provider,
             city=excluded.city, state=excluded.state, country=excluded.country,
@@ -256,7 +256,7 @@ def _run_sync() -> dict:
     try:
         _d1_query(
             "INSERT INTO sync_log (table_name, rows_synced, duration_ms, "
-            "status, error) VALUES (?1, ?2, ?3, ?4, ?5)",
+            "status, error) VALUES (?1, ?2, ?3, ?4, ?5) ON CONFLICT DO NOTHING",
             ["facilities", out["rows_synced"], int((time.time() - started) * 1000),
              "ok" if out["rows_synced"] > 0 else "fail",
              "; ".join(out["errors"])[:500] if out["errors"] else None]
