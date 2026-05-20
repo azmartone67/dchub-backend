@@ -19981,6 +19981,19 @@ try:
 except Exception as e:
     print(f"🌐 Coverage Page: ⚠️ Failed to load: {e}")
 
+# Phase FF+25-followup-r25 (2026-05-20) — schema repair + geocoding +
+# funnel diagnostic. Addresses three issues Inspector Brief #2 surfaced:
+# (1) brain_findings + worker_versions tables missing (2) 25% of
+# facilities lack country tags (3) MCP funnel shows 99.8% drop-off.
+try:
+    from routes.schema_repair import schema_repair_bp
+    app.register_blueprint(schema_repair_bp)
+    print("🔧 Schema Repair: ✅ Registered "
+          "(POST /api/v1/admin/schema/repair · /geocoding/backfill · "
+          "GET /funnel/leakage)")
+except Exception as e:
+    print(f"🔧 Schema Repair: ⚠️ Failed to load: {e}")
+
 # =============================================================================
 # FACILITY AUTO-APPROVE PIPELINE v2.0
 # Moves discovered_facilities → facilities with dedup logic
