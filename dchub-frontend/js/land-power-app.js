@@ -2495,15 +2495,15 @@
         
         var routeTypeCounts = {longhaul: 0, metro: 0, fabric: 0, hyperscale: 0, dark: 0};
         var carrierCounts = {};
-        
-        fiberRoutes.forEach(function(f) {
+
+        function drawFiberRoute(f) {
             var routeColor = f.color || '#10b981';
             var routeType = f.type || 'longhaul';
             var style = routeTypeStyles[routeType] || routeTypeStyles.longhaul;
-            
+
             routeTypeCounts[routeType] = (routeTypeCounts[routeType] || 0) + 1;
             carrierCounts[f.owner] = (carrierCounts[f.owner] || 0) + 1;
-            
+
             L.polyline(f.coords, {
                 color: routeColor,
                 weight: style.weight,
@@ -2512,19 +2512,65 @@
             }).bindPopup(
                 '<div class="popup-title">🌐 '+f.name+'</div>'+
                 '<div class="popup-row"><span class="popup-label">Type</span><span class="popup-value">'+style.label+'</span></div>'+
-                '<div class="popup-row"><span class="popup-label">Capacity</span><span class="popup-value">'+f.cap+'</span></div>'+
+                '<div class="popup-row"><span class="popup-label">Capacity</span><span class="popup-value">'+(f.cap||'—')+'</span></div>'+
                 '<div class="popup-row"><span class="popup-label">Owner</span><span class="popup-value">'+f.owner+'</span></div>'+
                 '<div style="margin-top:4px;padding-top:4px;border-top:1px solid rgba(255,255,255,0.1);">'+
                 '<span style="display:inline-block;width:10px;height:10px;background:'+routeColor+';border-radius:2px;margin-right:6px;"></span>'+
                 '<span style="font-size:10px;color:rgba(255,255,255,0.6);">'+f.owner+' Network</span></div>'
             ).addTo(layers.fiber);
-        });
-        
-        console.log('🌐 Fiber Routes: ' + fiberRoutes.length + ' routes loaded');
-        window.fiberRoutes = fiberRoutes; // Make globally accessible
-        window.routeTypeStyles = routeTypeStyles; // Make styles accessible too
-        console.log('📊 Route types: Longhaul=' + routeTypeCounts.longhaul + ', Metro=' + routeTypeCounts.metro + ', Fabric=' + routeTypeCounts.fabric + ', Hyperscale=' + routeTypeCounts.hyperscale + ', Dark=' + routeTypeCounts.dark);
-        console.log('🏢 Carriers: ' + Object.keys(carrierCounts).length + ' unique carriers');
+        }
+
+        function drawFiberRoutes(routesArr) {
+            routeTypeCounts = {longhaul: 0, metro: 0, fabric: 0, hyperscale: 0, dark: 0};
+            carrierCounts = {};
+            routesArr.forEach(drawFiberRoute);
+            window.fiberRoutes = routesArr;
+            window.routeTypeStyles = routeTypeStyles;
+            console.log('🌐 Fiber Routes: ' + routesArr.length + ' routes drawn');
+            console.log('📊 Route types: Longhaul=' + routeTypeCounts.longhaul + ', Metro=' + routeTypeCounts.metro + ', Fabric=' + routeTypeCounts.fabric + ', Hyperscale=' + routeTypeCounts.hyperscale + ', Dark=' + routeTypeCounts.dark);
+            console.log('🏢 Carriers: ' + Object.keys(carrierCounts).length + ' unique carriers');
+        }
+
+        // Draw the built-in array immediately (instant, offline-safe), then
+        // upgrade to the live DB superset from /api/v1/fiber/routes/public.
+        // The fiber_routes table now contains every built-in route plus more,
+        // so on success we clear+redraw rather than appending (no duplicates),
+        // and mutate fiberRoutes in place so the carrier panel / later refs
+        // see the richer set too.
+        drawFiberRoutes(fiberRoutes);
+
+        (function loadFiberRoutesFromApi() {
+            var _f = window.dchubFetch || window.fetch.bind(window);
+            _f('/api/v1/fiber/routes/public?limit=5000')
+                .then(function(r){ return r.ok ? r.json() : Promise.reject(r.status); })
+                .then(function(geo){
+                    if (!geo || !Array.isArray(geo.features) || geo.features.length === 0) return;
+                    var apiRoutes = geo.features.map(function(ft){
+                        var c = (ft.geometry && ft.geometry.coordinates) || [];
+                        var latlng = c.map(function(pt){ return [pt[1], pt[0]]; }); // GeoJSON [lng,lat] -> Leaflet [lat,lng]
+                        var p = ft.properties || {};
+                        return {
+                            name: p.name || 'Fiber Route',
+                            coords: latlng,
+                            cap: p.capacity || '',
+                            owner: p.carrier || 'Unknown',
+                            color: p.color || '',
+                            type: p.route_type || 'longhaul'
+                        };
+                    }).filter(function(rt){ return rt.coords.length >= 2; });
+                    if (apiRoutes.length === 0) return;
+                    layers.fiber.clearLayers();
+                    fiberRoutes.length = 0;
+                    Array.prototype.push.apply(fiberRoutes, apiRoutes);
+                    drawFiberRoutes(fiberRoutes);
+                    var statEl = document.getElementById('stat-fiber');
+                    if (statEl) statEl.textContent = fiberRoutes.length;
+                    console.log('🌐 Fiber overlay upgraded from API: ' + fiberRoutes.length + ' routes');
+                })
+                .catch(function(err){
+                    console.log('🌐 Fiber API unavailable (' + err + '); using built-in routes');
+                });
+        })();
 
         // ============================================
         // FIBER PANEL v5 - Debug Version
