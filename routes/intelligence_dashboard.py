@@ -59,34 +59,87 @@ def intelligence_dashboard():
   "creator":  {"@type": "Organization", "name": "DC Hub", "url": "https://dchub.cloud"}
 }
 </script>
+<link rel="icon" type="image/svg+xml" href="/icons/icon.svg">
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link href="https://fonts.googleapis.com/css2?family=Instrument+Sans:wght@400;500;600;700&family=JetBrains+Mono:wght@400;500;600&display=swap" rel="stylesheet">
+<script defer src="/js/dchub-brand.js"></script>
 <style>
-  *{box-sizing:border-box}
-  body{font-family:-apple-system,BlinkMacSystemFont,"Segoe UI",Roboto,sans-serif;
-        max-width:1100px;margin:0 auto;padding:2rem 1rem;color:#1f2937;line-height:1.55;
-        background:#fafbfc}
-  h1{font-size:2rem;margin:0 0 .25rem;display:flex;align-items:center;gap:.6rem}
-  h1 .pulse{display:inline-block;width:14px;height:14px;border-radius:50%;
-             background:#16a34a;animation:pulse 1.5s ease-in-out infinite}
-  @keyframes pulse{0%,100%{opacity:1}50%{opacity:.35}}
-  h1+p{color:#6b7280;margin:0 0 2rem;font-size:1.05rem}
-  .grid{display:grid;grid-template-columns:repeat(auto-fit,minmax(280px,1fr));gap:1rem;margin:1rem 0}
-  .card{background:white;padding:1.25rem 1.4rem;border-radius:10px;
-         box-shadow:0 1px 3px rgba(0,0,0,.06);transition:transform .2s}
-  .card:hover{transform:translateY(-2px);box-shadow:0 4px 12px rgba(0,0,0,.08)}
-  .card h3{margin:0 0 .5rem;font-size:.85rem;text-transform:uppercase;letter-spacing:.08em;color:#6b7280;font-weight:600}
-  .metric{font-size:2.2rem;font-weight:700;color:#111827;line-height:1.1}
-  .metric-sub{color:#6b7280;font-size:.9rem;margin-top:.4rem}
-  .lead{background:linear-gradient(135deg,#0f172a 0%,#1e3a8a 100%);color:white;
-         padding:2rem;border-radius:14px;margin:1.5rem 0}
-  .lead h2{font-size:1.4rem;margin:0 0 .5rem}
-  .lead p{margin:0;font-size:1.05rem;color:#cbd5e1}
-  .footnote{color:#9ca3af;font-size:.85rem;text-align:center;margin-top:3rem}
-  .data-loading{color:#9ca3af;font-style:italic;font-size:1.1rem}
-  a{color:#1e40af;text-decoration:none}
-  a:hover{text-decoration:underline}
+  /* Phase FF+25-followup-r14 (2026-05-20) — canonical brand on the
+     backend-served intelligence dashboard. Was a white page with
+     #fafbfc bg and Segoe UI; now matches refined.html dark canvas
+     with indigo→violet glow, Instrument Sans, gradient KPIs. The
+     LIVE data fetches below are unchanged — only the chrome. */
+  :root{
+    --bg:#0a0a0f; --surface:#131319;
+    --border:rgba(255,255,255,.06); --border-strong:rgba(255,255,255,.1);
+    --text:#f5f5f7; --text-dim:#a1a1aa; --text-faint:#71717a;
+    --indigo:#6366f1; --violet:#a855f7;
+    --grad:linear-gradient(135deg,#6366f1 0%,#a855f7 100%);
+    --grad-soft:linear-gradient(135deg,rgba(99,102,241,.10) 0%,rgba(168,85,247,.10) 100%);
+    --font:'Instrument Sans',-apple-system,BlinkMacSystemFont,sans-serif;
+    --mono:'JetBrains Mono','SF Mono',monospace;
+  }
+  *{margin:0;padding:0;box-sizing:border-box}
+  body{font-family:var(--font);background:var(--bg);color:var(--text);
+       max-width:1100px;margin:0 auto;padding:48px 24px 80px;
+       line-height:1.55;-webkit-font-smoothing:antialiased;
+       position:relative;min-height:100vh}
+  body::before{content:'';position:fixed;top:-30%;left:50%;
+    transform:translateX(-50%);width:1200px;height:1200px;z-index:0;
+    pointer-events:none;
+    background:radial-gradient(circle,rgba(99,102,241,.10) 0%,
+                                rgba(168,85,247,.06) 30%,transparent 60%)}
+  body > *{position:relative;z-index:1}
+  ::selection{background:var(--indigo);color:#fff}
+
+  header.top{display:flex;align-items:center;justify-content:space-between;
+    margin-bottom:32px;flex-wrap:wrap;gap:12px}
+  header.top a.brand{display:inline-flex;align-items:center;gap:10px;
+    text-decoration:none;color:var(--text)}
+
+  h1{font-size:clamp(1.8rem,3.4vw,2.4rem);font-weight:700;letter-spacing:-.025em;
+    line-height:1.05;margin:0 0 10px;display:flex;align-items:center;gap:12px}
+  h1 .pulse{display:inline-block;width:10px;height:10px;border-radius:50%;
+    background:var(--violet);box-shadow:0 0 12px var(--violet);
+    animation:pulse 1.8s ease-in-out infinite}
+  @keyframes pulse{0%,100%{opacity:1}50%{opacity:.4}}
+  h1+p{color:var(--text-dim);margin:0 0 28px;font-size:1rem;
+    max-width:720px;line-height:1.55}
+
+  .grid{display:grid;grid-template-columns:repeat(auto-fit,minmax(240px,1fr));
+    gap:12px;margin:16px 0}
+  .card{background:var(--surface);border:1px solid var(--border);
+    padding:22px;border-radius:14px;transition:border-color .2s,transform .2s ease}
+  .card:hover{border-color:var(--border-strong);transform:translateY(-2px)}
+  .card h3{margin:0 0 10px;font-family:var(--mono);font-size:10px;
+    text-transform:uppercase;letter-spacing:.12em;color:var(--text-faint);
+    font-weight:600}
+  .metric{font-size:1.9rem;font-weight:700;letter-spacing:-.02em;
+    background:var(--grad);-webkit-background-clip:text;background-clip:text;
+    color:transparent;line-height:1.1;display:block;font-family:var(--mono)}
+  .metric-sub{color:var(--text-dim);font-size:.85rem;margin-top:6px}
+
+  .lead{background:var(--grad-soft);border:1px solid rgba(168,85,247,.22);
+    color:var(--text);padding:28px;border-radius:14px;margin:20px 0;
+    position:relative;overflow:hidden}
+  .lead::before{content:'';position:absolute;top:0;left:0;right:0;height:1px;
+    background:var(--grad)}
+  .lead h2{font-size:1.25rem;font-weight:700;letter-spacing:-.015em;
+    margin:0 0 8px;color:var(--text)}
+  .lead p{margin:0;font-size:.98rem;color:var(--text-dim);line-height:1.55}
+
+  .footnote{color:var(--text-faint);font-family:var(--mono);font-size:.7rem;
+    text-align:center;margin-top:48px;letter-spacing:.04em;text-transform:uppercase}
+  .data-loading{color:var(--text-faint);font-style:italic;font-size:.95rem}
+  a{color:#c7d2fe;text-decoration:none;transition:color .15s}
+  a:hover{color:#fff}
 </style>
 </head>
 <body>
+<header class="top">
+  <a href="/" class="brand" data-dchub-brand></a>
+  <span style="font-family:var(--mono);font-size:11px;text-transform:uppercase;letter-spacing:.1em;color:var(--text-faint)">Auto-refresh · 60s</span>
+</header>
 <h1><span class="pulse"></span> DC Hub is breathing</h1>
 <p>Live operational pulse · refreshes every 60s · the only data-center intelligence platform that publishes its own vital signs</p>
 
