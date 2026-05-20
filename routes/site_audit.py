@@ -164,7 +164,12 @@ def audit_json():
 # page rule that 301s the whole path to status.dchub.cloud. We can't
 # reach it from the apex domain, so the dashboard lives under
 # /dashboard and /admin/status (both routes serve the same handler).
-@site_audit_bp.route("/dashboard", methods=["GET"], strict_slashes=False)
+# Phase r15: /dashboard collides with main.py:serve_dashboard (the API-key
+# management dashboard for logged-in customers — totally different page).
+# Renamed audit dashboard to /ops/dashboard so the existing surface keeps
+# the /dashboard path. /status still works (CF page rule shadows it from
+# the apex but Railway-direct serves it).
+@site_audit_bp.route("/ops/dashboard", methods=["GET"], strict_slashes=False)
 @site_audit_bp.route("/admin/status", methods=["GET"], strict_slashes=False)
 @site_audit_bp.route("/status", methods=["GET"])
 def status_html():
