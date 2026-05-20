@@ -45,19 +45,31 @@ def _get_db():
 
 
 def _insert_one(cur, f: dict) -> tuple[bool, str]:
-    """Insert one facility row. Returns (added, source_id)."""
+    """Insert one facility row. Returns (added, source_id).
+    FIX r14b: facilities table has no UNIQUE constraint on source_id,
+    so ON CONFLICT (source_id) was raising. Doing a SELECT-then-INSERT
+    pattern instead — idempotency at the application layer."""
     name = (f.get("name") or "").strip()
     if not name:
         return False, ""
     source_id = ("manual_"
                  + hashlib.sha256(name.encode()).hexdigest()[:16])
+    # Already exists?
+    try:
+        cur.execute(
+            "SELECT 1 FROM facilities WHERE source_id = %s LIMIT 1",
+            (source_id,),
+        )
+        if cur.fetchone():
+            return False, source_id   # already present, no-op
+    except Exception:
+        pass
     cur.execute("""
         INSERT INTO facilities (
             id, name, provider, city, state, country, power_mw,
             status, address, source, source_id
         )
         VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, 'manual', %s)
-        ON CONFLICT (source_id) DO NOTHING
         RETURNING id
     """, (
         source_id, name, f.get("provider"),
