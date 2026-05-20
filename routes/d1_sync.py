@@ -59,7 +59,7 @@ CF_TOKEN = os.environ.get("CLOUDFLARE_API_TOKEN", "")
 CF_D1_URL = (f"https://api.cloudflare.com/client/v4/accounts/{CF_ACCOUNT}"
               f"/d1/database/{CF_D1_ID}/query")
 
-BATCH_SIZE = 200            # rows per D1 query — D1 caps at ~10k bound params
+BATCH_SIZE = 50             # statements per /batch call (CF caps batch size + each stmt has 16 params)
 SYNC_TIMEOUT_SECONDS = 600  # whole-job ceiling (10 min)
 
 
@@ -79,6 +79,31 @@ def _d1_query(sql: str, params: list = None, timeout: int = 30) -> dict:
     if params:
         body["params"] = params
     r = requests.post(CF_D1_URL, headers=headers, json=body, timeout=timeout)
+    r.raise_for_status()
+    return r.json()
+
+
+def _d1_batch(statements: list, timeout: int = 60) -> dict:
+    """POST a list of {sql, params} statement objects to D1 in ONE HTTP call.
+
+    Phase FF+25-followup (2026-05-20): the per-row loop in _run_sync()
+    was making 12,553 sequential HTTP calls to CF D1 (~300ms each =
+    >60min). Railway edge killed the request after ~30s, leaving D1
+    perpetually under-populated (e.g. 262 of 12,553 rows). CF's D1
+    REST API supports a `batch` endpoint that takes an array of
+    statements + executes them as one round-trip. ~100 statements per
+    call → 126 calls instead of 12,553 → completes in ~30-40s.
+    """
+    import requests
+    if not CF_TOKEN:
+        raise RuntimeError("CLOUDFLARE_API_TOKEN not set")
+    # CF D1's /batch endpoint accepts an array body
+    url = CF_D1_URL.replace("/query", "/batch")
+    headers = {
+        "Authorization": f"Bearer {CF_TOKEN}",
+        "Content-Type": "application/json",
+    }
+    r = requests.post(url, headers=headers, json=statements, timeout=timeout)
     r.raise_for_status()
     return r.json()
 
@@ -178,41 +203,53 @@ def _run_sync() -> dict:
             facility_type=excluded.facility_type, address=excluded.address,
             fiber_providers=excluded.fiber_providers, synced_at=unixepoch()
     """
+    # Phase FF+25-followup (2026-05-20): batched via CF D1 /batch endpoint.
+    # Previous version did ONE HTTP call per row → 12,553 calls × 300ms =
+    # 60+ min, way past Railway's edge timeout. Now: 50 statements per
+    # batch, ~250 batches total → ~75s end-to-end at 300ms/batch.
+    def _row_params(r):
+        return [
+            str(r.get("id")) if r.get("id") is not None else None,
+            _build_facility_slug(r),
+            r.get("name") or "",
+            r.get("provider"),
+            r.get("city"),
+            r.get("state"),
+            r.get("country"),
+            r.get("market"),
+            float(r["latitude"]) if r.get("latitude") is not None else None,
+            float(r["longitude"]) if r.get("longitude") is not None else None,
+            float(r["power_mw"]) if r.get("power_mw") is not None else None,
+            int(r["sqft"]) if r.get("sqft") is not None else None,
+            r.get("status"),
+            r.get("facility_type"),
+            r.get("address"),
+            None,  # fiber_providers — populate separately once we have data
+        ]
+
     for i in range(0, len(rows), BATCH_SIZE):
         if time.time() - started > SYNC_TIMEOUT_SECONDS:
             out["errors"].append(f"timeout after {SYNC_TIMEOUT_SECONDS}s, "
                                   f"completed {out['rows_synced']}/{out['rows_read']}")
             break
         batch = rows[i:i + BATCH_SIZE]
-        # D1 doesn't support multi-row INSERT in one query via the REST
-        # API, so we send each row's INSERT as one query in a batch via
-        # the `sql` field with `;` separators. Use parameterized form.
-        for r in batch:
-            params = [
-                str(r.get("id")) if r.get("id") is not None else None,
-                _build_facility_slug(r),
-                r.get("name") or "",
-                r.get("provider"),
-                r.get("city"),
-                r.get("state"),
-                r.get("country"),
-                r.get("market"),
-                float(r["latitude"]) if r.get("latitude") is not None else None,
-                float(r["longitude"]) if r.get("longitude") is not None else None,
-                float(r["power_mw"]) if r.get("power_mw") is not None else None,
-                int(r["sqft"]) if r.get("sqft") is not None else None,
-                r.get("status"),
-                r.get("facility_type"),
-                r.get("address"),
-                None,  # fiber_providers — populate in a separate sync once we have data
-            ]
-            try:
-                _d1_query(insert_sql, params)
-                out["rows_synced"] += 1
-            except Exception as e:
-                msg = str(e)[:200]
-                if msg not in [x for x in out["errors"] if msg in x][:1]:
-                    out["errors"].append(f"batch row failed: {msg}")
+        # Build a statement array for CF D1's /batch endpoint
+        statements = [{"sql": insert_sql, "params": _row_params(r)} for r in batch]
+        try:
+            _d1_batch(statements, timeout=45)
+            out["rows_synced"] += len(batch)
+        except Exception as e:
+            msg = str(e)[:200]
+            # Fall back to per-row mode for this batch only — gives us
+            # detail on which rows fail when the batch as a whole errors
+            # (e.g. one row has bad UTF-8 or oversize address).
+            out["errors"].append(f"batch {out['batches']} failed ({msg}); falling back to per-row")
+            for r in batch:
+                try:
+                    _d1_query(insert_sql, _row_params(r))
+                    out["rows_synced"] += 1
+                except Exception as e2:
+                    pass  # already logged at batch level
         out["batches"] += 1
 
     # 3) Record this run in the sync_log table.
