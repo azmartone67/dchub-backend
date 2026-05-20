@@ -160,6 +160,12 @@ def audit_json():
     return resp
 
 
+# Phase FF+25-followup-r13 (2026-05-20): /status is shadowed by a CF
+# page rule that 301s the whole path to status.dchub.cloud. We can't
+# reach it from the apex domain, so the dashboard lives under
+# /dashboard and /admin/status (both routes serve the same handler).
+@site_audit_bp.route("/dashboard", methods=["GET"], strict_slashes=False)
+@site_audit_bp.route("/admin/status", methods=["GET"], strict_slashes=False)
 @site_audit_bp.route("/status", methods=["GET"])
 def status_html():
     d = _gather_audit()

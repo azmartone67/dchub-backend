@@ -766,6 +766,45 @@ def brief_html():
         rec_count = len(_parse_recommendations(md))
         fix_count = len(_parse_code_fix_candidates(md))
 
+    # FIX r13 (2026-05-20): build the action-button HTML in a regular
+    # string BEFORE the f-string render. The previous inline form had
+    # backslash-escaped apostrophes inside an f-string, which Python
+    # interprets as line-continuation + character — broke parse for the
+    # whole module and 404'd every Inspector endpoint until this fix.
+    if latest_id:
+        btn_apply = (
+            '<a class="regen" '
+            'onclick="dchubApplyRecs(this)" '
+            f'data-bid="{latest_id}" '
+            'href="javascript:void(0)">'
+            f'▶ Apply {rec_count} recommendations</a>'
+        )
+        btn_draft = (
+            '<a class="regen" '
+            'onclick="dchubDraftPrs(this)" '
+            f'data-bid="{latest_id}" '
+            'href="javascript:void(0)">'
+            f'⌥ Draft {fix_count} PRs via L22</a>'
+        )
+        action_row = (
+            '<div style="margin-top:18px;display:flex;gap:10px;flex-wrap:wrap">'
+            + btn_apply + btn_draft + '</div>'
+            + '<script>'
+            + 'function dchubApplyRecs(el){var bid=el.dataset.bid;'
+            + 'var k=prompt("admin key?");if(!k)return;'
+            + 'fetch("/api/v1/brain/brief/"+bid+"/apply",{method:"POST",'
+            + 'headers:{"X-Admin-Key":k}}).then(r=>r.json()).then('
+            + 'd=>alert("Fired "+(d.fired||0)+" of "+(d.recommendations_found||0)));}'
+            + 'function dchubDraftPrs(el){var bid=el.dataset.bid;'
+            + 'var k=prompt("admin key?");if(!k)return;'
+            + 'fetch("/api/v1/brain/brief/"+bid+"/draft-prs",{method:"POST",'
+            + 'headers:{"X-Admin-Key":k}}).then(r=>r.json()).then('
+            + 'd=>alert("Found "+(d.candidates_found||0)+" code-fix candidates"));}'
+            + '</script>'
+        )
+    else:
+        action_row = ''
+
     return Response(f"""<!doctype html><html lang="en"><head>
 <meta charset="utf-8">
 <title>DC Hub · Brain Brief</title>
@@ -857,7 +896,7 @@ pre.brief{{background:var(--surface);border:1px solid var(--border);
     <div class="count"><span class="count-val">{counts['attention']}</span><span class="count-lbl">Needs attention</span></div>
   </div>
   <pre class="brief">{body_inner}</pre>
-  {('<div style="margin-top:18px;display:flex;gap:10px;flex-wrap:wrap"><a class="regen" href="javascript:void(fetch(\\'/api/v1/brain/brief/' + latest_id + '/apply\\',{method:\\'POST\\',headers:{\\'X-Admin-Key\\':prompt(\\'admin key?\\')}}).then(r=>r.json()).then(d=>alert(\\'Fired \\'+d.fired+\\' of \\'+d.recommendations_found)))">▶ Apply ' + str(rec_count) + ' recommendations</a><a class="regen" href="javascript:void(fetch(\\'/api/v1/brain/brief/' + latest_id + '/draft-prs\\',{method:\\'POST\\',headers:{\\'X-Admin-Key\\':prompt(\\'admin key?\\')}}).then(r=>r.json()).then(d=>alert(\\'Found \\'+d.candidates_found+\\' code-fix candidates\\')))">⌥ Draft ' + str(fix_count) + ' PRs via L22</a></div>') if latest_id else ''}
+  {action_row}
   <div class="foot">
     DC Hub · Inspector layer · model {model or '—'}<br>
     <a href="/">dchub.cloud</a> · <a href="/reports/monthly">monthly trend</a> · <a href="/cited-by">cited by</a> · <a href="/transparency">ops</a>
