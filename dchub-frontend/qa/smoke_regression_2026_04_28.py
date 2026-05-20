@@ -68,28 +68,32 @@ def _semver(s):
 
 
 def r1(base):
-    """Phase FF+25-followup-v5 (2026-05-20): expectation updated.
+    """Phase FF+25-followup-v6 (2026-05-20): expectation updated AGAIN.
 
-    /press-release no longer renders content directly — after 4 failed
-    attempts to break the env.ASSETS redirect loop, the working fix is a
-    deliberate 301 → /press. Test now verifies the redirect hop lands at
-    /press and /press itself loads.
+    Iteration history of /press-release:
+      v1-v4: worker tried to handle it → various redirect-loop failures
+      v5:    worker 301'd /press-release → /press as final escape
+      v6:    REALIZED removing /press-release from _routes.json lets CF
+             Pages serve press-release.html directly — no worker, no
+             redirect, no loop. So the actual behavior today is just a
+             clean 200 with the press-release.html content.
+      The bare /press-release path is no longer in the worker's include
+      list. Only /press-release/<slug> hits the worker (handled by the
+      news rewriter elsewhere).
 
-    Backend has its own embedded copy of this file at
-    dchub-backend/dchub-frontend/qa/ which is what CI actually runs;
-    the standalone dchub-frontend repo has the same fix in its copy."""
+    R1 now verifies the simplest possible contract: /press-release
+    returns 200 with non-empty HTML containing the actual press-release
+    page title."""
     t0 = time.monotonic()
     try:
-        r1 = _get(f"{base}/press-release", allow_redirects=False)
-        ok_hop = r1.status_code in (301, 302) and r1.headers.get("Location", "").endswith("/press")
-        r2 = _get(f"{base}/press")
-        ok_dest = r2.status_code == 200 and len(r2.text) > 1000
-        ok = ok_hop and ok_dest
-        d = (f"hop=/press-release→{r1.status_code}→{r1.headers.get('Location','?')} "
-             f"dest=/press→{r2.status_code} bytes={len(r2.text)}")
-        return Result("R1", "/press-release redirects cleanly to /press", ok, _ms(t0), d, r1.status_code)
+        r = _get(f"{base}/press-release")
+        body = r.text
+        title_ok = ("Press Release" in body) or ("press-release" in body.lower())
+        ok = r.status_code == 200 and title_ok and len(body) > 1000
+        d = f"status={r.status_code} title_marker={title_ok} bytes={len(body)}"
+        return Result("R1", "/press-release serves cleanly (200)", ok, _ms(t0), d, r.status_code)
     except Exception as ex:
-        return Result("R1", "/press-release redirects cleanly to /press", False, _ms(t0), f"exception: {ex}")
+        return Result("R1", "/press-release serves cleanly (200)", False, _ms(t0), f"exception: {ex}")
 
 
 def r2(base):
