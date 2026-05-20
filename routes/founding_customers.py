@@ -386,6 +386,70 @@ Real thanks for the bet.
         return False
 
 
+# ── Admin send-welcome (for backfilling customers tagged before
+#    the auto-email path was wired) ───────────────────────────────────
+@founding_customers_bp.route(
+    "/api/v1/admin/founding-customers/send-welcome",
+    methods=["POST"],
+)
+def admin_send_welcome():
+    """Fire send_founding_welcome_email for an already-tagged customer.
+
+    Used for backfilling Kevin (tagged manually before the auto-email
+    path went live) and any future case where a customer needs a
+    resend. Idempotent at the customer level — they may get the email
+    twice if called twice, so use sparingly."""
+    if not _admin_ok():
+        return jsonify(ok=False, error="forbidden"), 403
+    p = request.get_json(silent=True) or {}
+    email = (p.get("email") or request.args.get("email") or "").lower().strip()
+    if not email:
+        return jsonify(ok=False, error="email_required"), 400
+    _ensure_table()
+    c = _get_db()
+    if c is None: return jsonify(ok=False, error="no_db"), 503
+    try:
+        with c.cursor() as cur:
+            cur.execute("""
+                SELECT email, plan_at_tag, contact_status
+                  FROM founding_customers
+                 WHERE email = %s
+            """, (email,))
+            r = cur.fetchone()
+            if not r:
+                return jsonify(
+                    ok=False,
+                    error="not_in_cohort",
+                    hint=("Customer isn't tagged as founding. Call "
+                           "POST /api/v1/admin/founding-customers/tag "
+                           "first."),
+                ), 404
+            # Position is their rank in the cohort by tagged_at ASC
+            cur.execute("""
+                SELECT COUNT(*) FROM founding_customers
+                 WHERE tagged_at <= (
+                    SELECT tagged_at FROM founding_customers WHERE email = %s
+                 )
+            """, (email,))
+            position = int((cur.fetchone() or [1])[0] or 1)
+    finally:
+        try: c.close()
+        except Exception: pass
+
+    sent = send_founding_welcome_email(
+        email=email,
+        position=position,
+        plan=(r[1] or "developer"),
+    )
+    return jsonify(
+        ok=sent, email=email, position=position,
+        cap=FOUNDING_CAP,
+        previous_status=r[2],
+        note=("Welcome email " + ("sent" if sent
+                                    else "FAILED — check Resend logs")),
+    )
+
+
 # ── Consent endpoint (CC-BY-style opt-in for /founders public page) ──
 @founding_customers_bp.route("/api/v1/founding-customers/consent",
                               methods=["GET", "POST"])
