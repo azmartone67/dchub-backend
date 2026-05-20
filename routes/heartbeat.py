@@ -187,7 +187,61 @@ def refresh_news():
 
 
 def refresh_iso():
-    return True, "ISO ingestion checkpointed (static surface)"
+    """Phase FF+25-followup (2026-05-20): was a no-op stub that ALWAYS
+    returned True without doing anything. Brain consistency radar at
+    /api/v1/brain/consistency-radar reported "22 ISO surfaces stuck
+    STALE 13.3h" all sharing refresh_func=refresh_iso. With a no-op
+    refresher, the stale-detector was either (a) seeing the truthy
+    return but not applying it, OR (b) freshness was so stale that
+    even after refresh, stale_hours=12 made them flip back to STALE
+    instantly.
+
+    New behavior: actually PROBE the live ISO endpoints. If they
+    return 200, the surface IS legitimately fresh — mark it so with
+    real telemetry. If they 5xx or time out, surface the real failure
+    so the radar can stop blaming this stub and the next investigator
+    has signal pointing at the actual broken endpoint.
+
+    Side benefit: every refresh tick now logs probe results to the
+    standard logger, so `grep refresh_iso` in Railway logs shows
+    the full timeline of ISO endpoint health.
+    """
+    import logging
+    log = logging.getLogger(__name__)
+    try:
+        import requests
+        # Two representative ISO endpoints — if either is healthy, the
+        # backend's ISO subsystem is alive. We don't probe ALL 12 ISOs
+        # here because that'd be 12 sequential calls in a refresh tick
+        # and refresh_iso is called once per surface (~22 times in a
+        # full refresh pass).
+        probe_urls = [
+            "http://127.0.0.1:8080/api/v1/grid/intelligence/PJM",
+            "http://127.0.0.1:8080/api/v1/grid/intelligence/CAISO",
+        ]
+        alive_count = 0
+        details = []
+        for url in probe_urls:
+            try:
+                r = requests.get(url, timeout=4)
+                if r.status_code == 200:
+                    alive_count += 1
+                    details.append(f"{url.split('/')[-1]}:200")
+                else:
+                    details.append(f"{url.split('/')[-1]}:{r.status_code}")
+            except requests.Timeout:
+                details.append(f"{url.split('/')[-1]}:timeout")
+            except Exception as e:
+                details.append(f"{url.split('/')[-1]}:{type(e).__name__}")
+        info = "iso_probe " + " ".join(details)
+        if alive_count > 0:
+            log.info(f"[refresh_iso] {info} → fresh")
+            return True, info
+        log.warning(f"[refresh_iso] {info} → all probes failed, marking error")
+        return False, info
+    except Exception as e:
+        log.warning(f"[refresh_iso] handler error: {type(e).__name__}: {e}")
+        return False, f"{type(e).__name__}: {str(e)[:80]}"
 
 
 def noop_default():
