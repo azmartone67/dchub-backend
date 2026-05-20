@@ -16679,6 +16679,11 @@ def serve_sitemap_xml():
         ('/ai/facts', '0.6', 'weekly'),
         ('/llms.txt', '0.5', 'monthly'),
         ('/llms-full.txt', '0.5', 'monthly'),
+        # Phase r27/r31 (2026-05-20) — pockets-of-power surface
+        ('/pockets',     '0.9', 'daily'),
+        ('/pockets.rss', '0.6', 'daily'),
+        ('/digest',      '0.8', 'daily'),
+        ('/coverage',    '0.7', 'weekly'),
     ]
     for path, pri, freq in static_pages:
         urls.append(f'  <url><loc>https://dchub.cloud{path}</loc><lastmod>{today}</lastmod><changefreq>{freq}</changefreq><priority>{pri}</priority></url>')
@@ -16696,6 +16701,26 @@ def serve_sitemap_xml():
     urls.append(f'  <url><loc>https://dchub.cloud/markets</loc><lastmod>{today}</lastmod><changefreq>weekly</changefreq><priority>0.8</priority></url>')
     for m in markets:
         urls.append(f'  <url><loc>https://dchub.cloud/markets/{m}</loc><lastmod>{today}</lastmod><changefreq>daily</changefreq><priority>0.8</priority></url>')
+
+    # ---- Pocket detail pages (Phase r31, 2026-05-20) ----
+    # One URL per ranked market. These pages carry schema.org Article
+    # markup so Google can index each as a standalone ranking article.
+    try:
+        from routes.pockets import _fetch_pockets as _fp
+        _pocket_rows = _fp(limit_hint=500)
+        for _p in _pocket_rows:
+            _slug = _p.get("market_slug")
+            if not _slug:
+                continue
+            urls.append(
+                f'  <url><loc>https://dchub.cloud/pockets/{_slug}</loc>'
+                f'<lastmod>{today}</lastmod><changefreq>daily</changefreq>'
+                f'<priority>0.7</priority></url>'
+            )
+    except Exception as _e_sitemap_pockets:
+        # Pockets module may not be loaded yet (cold-start race) — sitemap
+        # falls back to just the index page rather than failing.
+        pass
 
     # ---- Location pages (from DB) ----
     # URL format: /locations/{country-code} or /locations/{country-code}-{state-code}

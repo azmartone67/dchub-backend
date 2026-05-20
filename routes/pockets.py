@@ -458,7 +458,7 @@ footer a{color:var(--acc)}
 {% for p in pockets %}
 <tr>
 <td class="rank">{{ loop.index }}</td>
-<td class="market"><a href="/dcpi/{{ p.market_slug }}">{{ p.market_name }}</a><br><span class="iso">{{ p.state or '—' }}</span></td>
+<td class="market"><a href="/pockets/{{ p.market_slug }}">{{ p.market_name }}</a><br><span class="iso">{{ p.state or '—' }}</span></td>
 <td class="iso">{{ p.iso or '—' }}</td>
 <td class="score">{{ p.rank_score }}</td>
 <td class="score">{{ p.excess_power_score }}</td>
@@ -477,7 +477,7 @@ footer a{color:var(--acc)}
 {% endif %}
 <footer>
 Methodology: composite of EIA retail rates, ISO grid headroom, DCPI verdict, time-to-power.
-Data refreshed daily. <a href="/digest">Daily brief →</a> · <a href="/api/v1/pockets/top">JSON</a> · <a href="/dcpi">DCPI index</a>
+Data refreshed daily. <a href="/digest">Daily brief →</a> · <a href="/api/v1/pockets/top">JSON</a> · <a href="/pockets.rss">RSS</a> · <a href="/dcpi">DCPI index</a>
 </footer>
 </div></body></html>'''
 
@@ -523,6 +523,389 @@ def pockets_page():
     )
     resp = Response(html, mimetype="text/html")
     resp.headers["Cache-Control"] = "public, max-age=300, must-revalidate"
+    return resp
+
+
+# ─── Pocket detail (per-market) endpoints ────────────────────────────
+
+def _fetch_pocket_detail(slug: str) -> dict | None:
+    """Pull full detail for one market: latest snapshot + 30d history
+    + comparable markets. Used by both the JSON and HTML detail
+    endpoints."""
+    conn = _get_db()
+    if conn is None or not slug:
+        return None
+    out: dict = {}
+    try:
+        cur = conn.cursor()
+        # Latest snapshot
+        cur.execute("""
+            SELECT market_slug, market_name, iso, state, verdict,
+                   excess_power_score, constraint_score,
+                   time_to_power_months, computed_at
+              FROM market_power_scores
+             WHERE market_slug = %s
+             ORDER BY computed_at DESC
+             LIMIT 1
+        """, (slug,))
+        row = cur.fetchone()
+        if not row:
+            return None
+        excess_v = float(row[5] or 0)
+        constraint_v = float(row[6] or 0)
+        ttp_v = float(row[7] or 36)
+        ttp_penalty = max(0, ttp_v - 24) * 2
+        rank_score = excess_v - (constraint_v * 0.5) - ttp_penalty
+        if row[4] == "BUILD":
+            rank_score += 10
+        elif row[4] == "AVOID":
+            rank_score -= 20
+        out = {
+            "market_slug": row[0],
+            "market_name": row[1],
+            "iso":         row[2],
+            "state":       row[3],
+            "verdict":     row[4],
+            "excess_power_score":    round(excess_v, 1),
+            "constraint_score":      round(constraint_v, 1),
+            "time_to_power_months":  round(ttp_v, 0),
+            "rank_score":            round(rank_score, 1),
+            "computed_at": row[8].isoformat() if row[8] else None,
+        }
+
+        # 30-day score history (chart data)
+        try:
+            cur.execute("""
+                SELECT computed_at, excess_power_score, constraint_score,
+                       time_to_power_months, verdict
+                  FROM market_power_scores
+                 WHERE market_slug = %s
+                   AND computed_at >= NOW() - INTERVAL '30 days'
+                 ORDER BY computed_at ASC
+                 LIMIT 60
+            """, (slug,))
+            history = []
+            for r in cur.fetchall():
+                history.append({
+                    "at":       r[0].isoformat() if r[0] else None,
+                    "excess":   round(float(r[1] or 0), 1),
+                    "constraint": round(float(r[2] or 0), 1),
+                    "ttp":      round(float(r[3] or 0), 0),
+                    "verdict":  r[4],
+                })
+            out["history_30d"] = history
+        except Exception:
+            try: conn.rollback()
+            except Exception: pass
+            out["history_30d"] = []
+
+        # 7d delta
+        delta_7d = None
+        try:
+            cur.execute("""
+                SELECT excess_power_score
+                  FROM market_power_scores
+                 WHERE market_slug = %s
+                   AND computed_at < NOW() - INTERVAL '7 days'
+                 ORDER BY computed_at DESC
+                 LIMIT 1
+            """, (slug,))
+            r = cur.fetchone()
+            if r and r[0] is not None:
+                delta_7d = round(excess_v - float(r[0]), 1)
+        except Exception:
+            try: conn.rollback()
+            except Exception: pass
+        out["delta_7d"] = delta_7d
+
+        # Comparable markets — same ISO if available, ranked by closest score
+        try:
+            iso = out["iso"] or ""
+            cur.execute("""
+                SELECT DISTINCT ON (market_slug)
+                       market_slug, market_name, iso, state, verdict,
+                       excess_power_score
+                  FROM market_power_scores
+                 WHERE market_slug != %s
+                   AND (%s = '' OR iso = %s)
+                 ORDER BY market_slug, computed_at DESC
+            """, (slug, iso, iso))
+            candidates = []
+            for r in cur.fetchall():
+                cand_excess = float(r[5] or 0)
+                candidates.append({
+                    "market_slug": r[0],
+                    "market_name": r[1],
+                    "iso": r[2],
+                    "state": r[3],
+                    "verdict": r[4],
+                    "excess_power_score": round(cand_excess, 1),
+                    "_distance": abs(cand_excess - excess_v),
+                })
+            candidates.sort(key=lambda x: x["_distance"])
+            for c in candidates:
+                c.pop("_distance", None)
+            out["comparables"] = candidates[:5]
+        except Exception:
+            try: conn.rollback()
+            except Exception: pass
+            out["comparables"] = []
+    except Exception as e:
+        logger.warning(f"pockets: detail fetch failed for {slug}: {e}")
+    finally:
+        _return_db(conn)
+
+    out["why"] = _rationale({
+        **out,
+        "delta_7d": out.get("delta_7d"),
+    })
+    return out
+
+
+@pockets_bp.route("/api/v1/pockets/<slug>", methods=["GET"])
+def pocket_detail_json(slug):
+    """JSON detail for one market. Tier-gated: anon gets a SEO-friendly
+    truncated payload (name + verdict + score + why), identified+ gets
+    full breakdown + history + comparables."""
+    tier = _detect_tier()
+    detail = _fetch_pocket_detail(slug.strip())
+    if not detail:
+        return jsonify(ok=False, error="not_found", market_slug=slug), 404
+
+    # Tier-gate: anon sees the headline, full data for identified+
+    if tier in ("anonymous", "free"):
+        return jsonify(
+            ok=True,
+            tier=tier,
+            gated=True,
+            market_slug=detail["market_slug"],
+            market_name=detail["market_name"],
+            iso=detail["iso"],
+            state=detail["state"],
+            verdict=detail["verdict"],
+            rank_score=detail["rank_score"],
+            delta_7d=detail["delta_7d"],
+            why=detail["why"],
+            upgrade={
+                "label": "Sign up free for full breakdown + 30d history",
+                "url":   f"/signup?next=/pockets/{slug}&utm_source=pocket_detail",
+            },
+        ), 200
+
+    return jsonify(ok=True, tier=tier, **detail), 200
+
+
+_POCKET_DETAIL_HTML = '''<!DOCTYPE html><html lang="en"><head>
+<meta charset="utf-8">
+<title>{{ d.market_name }} · Pocket of Power · DC Hub</title>
+<meta name="description" content="{{ d.market_name }} ({{ d.iso or 'no ISO' }}, {{ d.state or 'no state' }}) — DCPI composite score {{ d.rank_score }}, verdict {{ d.verdict or 'HOLD' }}. {{ d.why }}.">
+<meta property="og:title" content="{{ d.market_name }} — Pocket of Power Score {{ d.rank_score }}">
+<meta property="og:description" content="DCPI verdict: {{ d.verdict or 'HOLD' }} · Composite score {{ d.rank_score }} · {{ d.why }}.">
+<meta property="og:url" content="https://dchub.cloud/pockets/{{ d.market_slug }}">
+<meta property="og:type" content="article">
+<meta name="twitter:card" content="summary_large_image">
+<link rel="canonical" href="https://dchub.cloud/pockets/{{ d.market_slug }}">
+<script type="application/ld+json">
+{
+  "@context": "https://schema.org",
+  "@type": "Article",
+  "headline": "{{ d.market_name }} — Pocket of Power Ranking",
+  "description": "DCPI composite score {{ d.rank_score }}, verdict {{ d.verdict or 'HOLD' }}. {{ d.why }}.",
+  "datePublished": "{{ d.computed_at or '' }}",
+  "dateModified": "{{ d.computed_at or '' }}",
+  "author": {"@type": "Organization", "name": "DC Hub"},
+  "publisher": {
+    "@type": "Organization",
+    "name": "DC Hub",
+    "url": "https://dchub.cloud"
+  },
+  "url": "https://dchub.cloud/pockets/{{ d.market_slug }}",
+  "about": {
+    "@type": "Place",
+    "name": "{{ d.market_name }}",
+    "containedInPlace": {"@type": "State", "name": "{{ d.state or '' }}"}
+  }
+}
+</script>
+<link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;600;700;800&family=JetBrains+Mono:wght@400;600&display=swap" rel="stylesheet">
+<style>
+:root{--bg:#0a0a12;--card:#11121a;--bd:#1f2030;--tx:#fff;--tx2:#9ca3af;--green:#10b981;--orange:#f59e0b;--red:#ef4444;--acc:#6366f1;--violet:#8b5cf6}
+*{box-sizing:border-box}body{font-family:Inter,-apple-system,sans-serif;background:var(--bg);color:var(--tx);margin:0;line-height:1.6}
+.wrap{max-width:980px;margin:0 auto;padding:2.5rem 1.5rem}
+.crumb{font-family:'JetBrains Mono',monospace;font-size:0.78rem;color:var(--tx2);text-transform:uppercase;letter-spacing:.08em;margin-bottom:.75rem}
+.crumb a{color:var(--acc);text-decoration:none}.crumb a:hover{color:#fff}
+h1{font-size:2.6rem;margin:0 0 0.5rem;font-weight:800;letter-spacing:-0.02em;display:flex;align-items:baseline;gap:1rem;flex-wrap:wrap}
+.verdict{font-size:0.75rem;text-transform:uppercase;letter-spacing:0.08em;font-weight:700;padding:4px 12px;border-radius:6px}
+.verdict.BUILD{background:rgba(16,185,129,0.18);color:var(--green);border:1px solid rgba(16,185,129,.4)}
+.verdict.HOLD{background:rgba(245,158,11,0.18);color:var(--orange);border:1px solid rgba(245,158,11,.4)}
+.verdict.AVOID{background:rgba(239,68,68,0.18);color:var(--red);border:1px solid rgba(239,68,68,.4)}
+.sub{color:var(--tx2);font-size:1rem;margin:0 0 2rem}
+.hero-grid{display:grid;grid-template-columns:repeat(auto-fit,minmax(170px,1fr));gap:1rem;margin:1.5rem 0 2.5rem}
+.hero-stat{background:linear-gradient(135deg,rgba(99,102,241,.1),rgba(168,85,247,.05));border:1px solid rgba(168,85,247,.3);border-radius:12px;padding:1.25rem 1.5rem}
+.hero-stat .n{font-family:'JetBrains Mono',monospace;font-size:2rem;font-weight:800;line-height:1}
+.hero-stat .n.green{color:var(--green)}.hero-stat .n.red{color:var(--red)}.hero-stat .n.amber{color:var(--orange)}
+.hero-stat .l{color:var(--tx2);font-size:0.7rem;text-transform:uppercase;letter-spacing:.08em;margin-top:0.5rem}
+.hero-stat .x{color:var(--tx2);font-size:0.8rem;margin-top:0.25rem;font-family:'JetBrains Mono',monospace}
+h2{font-size:0.82rem;color:var(--tx2);text-transform:uppercase;letter-spacing:0.12em;margin:2rem 0 0.8rem;font-weight:700}
+.lede{background:var(--card);border:1px solid var(--bd);border-radius:10px;padding:1.5rem;margin:0 0 2rem;font-size:1.05rem;color:#ddd}
+.chart{background:var(--card);border:1px solid var(--bd);border-radius:10px;padding:1.5rem;margin:0 0 2rem;height:240px;position:relative;overflow:hidden}
+.bar{position:absolute;bottom:0;background:linear-gradient(180deg,var(--violet),var(--acc));border-radius:2px 2px 0 0;transition:opacity .15s}
+.bar:hover{opacity:0.7}
+.chart-empty{display:flex;align-items:center;justify-content:center;height:100%;color:var(--tx2);font-size:0.9rem}
+table{width:100%;border-collapse:collapse;background:var(--card);border:1px solid var(--bd);border-radius:10px;overflow:hidden}
+th{text-align:left;padding:0.75rem 1rem;background:#0f1019;color:var(--tx2);font-size:0.72rem;text-transform:uppercase;letter-spacing:.1em;font-weight:700;border-bottom:1px solid var(--bd)}
+td{padding:0.75rem 1rem;border-bottom:1px solid var(--bd);font-size:0.92rem}
+tr:last-child td{border-bottom:none}
+tr:hover{background:rgba(99,102,241,.04)}
+.market a{color:var(--tx);text-decoration:none;font-weight:600;border-bottom:1px dotted rgba(255,255,255,.2)}
+.market a:hover{color:var(--acc);border-bottom-color:var(--acc)}
+footer{margin-top:3rem;padding-top:1.5rem;border-top:1px solid var(--bd);color:var(--tx2);font-size:0.85rem}
+footer a{color:var(--acc)}
+.share{display:flex;gap:0.5rem;margin-top:1.5rem;flex-wrap:wrap}
+.share a{padding:0.5rem 1rem;background:var(--card);border:1px solid var(--bd);border-radius:8px;color:var(--tx2);text-decoration:none;font-size:0.85rem;font-weight:600}
+.share a:hover{border-color:var(--violet);color:#fff}
+</style></head><body><div class="wrap">
+<div class="crumb"><a href="/pockets">← All pockets</a> · <a href="/dcpi">DCPI index</a></div>
+<h1>{{ d.market_name }} <span class="verdict {{ d.verdict or 'HOLD' }}">{{ d.verdict or 'HOLD' }}</span></h1>
+<p class="sub">{{ d.iso or 'No ISO' }} · {{ d.state or 'No state' }} · last computed {{ d.computed_at[:10] if d.computed_at else 'never' }}</p>
+
+<div class="hero-grid">
+  <div class="hero-stat"><div class="n">{{ d.rank_score }}</div><div class="l">Composite score</div><div class="x">excess − constraint/2 − ttp penalty</div></div>
+  <div class="hero-stat"><div class="n {% if d.excess_power_score >= 70 %}green{% elif d.excess_power_score >= 40 %}amber{% else %}red{% endif %}">{{ d.excess_power_score }}</div><div class="l">Excess power</div><div class="x">0=tight · 100=ample</div></div>
+  <div class="hero-stat"><div class="n {% if d.constraint_score <= 30 %}green{% elif d.constraint_score <= 60 %}amber{% else %}red{% endif %}">{{ d.constraint_score }}</div><div class="l">Grid constraint</div><div class="x">0=clear · 100=blocked</div></div>
+  <div class="hero-stat"><div class="n">{{ d.time_to_power_months|int }}<span style="font-size:.55em">mo</span></div><div class="l">Time to power</div><div class="x">interconnect → MW</div></div>
+  {% if d.delta_7d is not none %}
+  <div class="hero-stat"><div class="n {% if d.delta_7d > 0 %}green{% elif d.delta_7d < 0 %}red{% else %}amber{% endif %}">{{ '+' if d.delta_7d > 0 else '' }}{{ d.delta_7d }}</div><div class="l">7-day Δ excess</div><div class="x">vs same time last week</div></div>
+  {% endif %}
+</div>
+
+<div class="lede"><b>Why this verdict:</b> {{ d.why }}.</div>
+
+<h2>30-day excess-power trend</h2>
+<div class="chart">
+{% if d.history_30d %}
+  {% set vals = d.history_30d|map(attribute='excess')|list %}
+  {% set vmax = vals|max if vals else 100 %}
+  {% set vmin = vals|min if vals else 0 %}
+  {% set span = (vmax - vmin) if vmax != vmin else 1 %}
+  {% set w = 100.0 / (d.history_30d|length) %}
+  {% for h in d.history_30d %}
+    {% set ht = ((h.excess - vmin) / span * 95) + 5 %}
+    <div class="bar" style="left:{{ loop.index0 * w }}%;width:{{ w * 0.7 }}%;height:{{ ht }}%" title="{{ h.at[:10] }}: {{ h.excess }}"></div>
+  {% endfor %}
+{% else %}
+  <div class="chart-empty">No 30-day history yet — this market joined the index recently.</div>
+{% endif %}
+</div>
+
+<h2>Comparable markets {% if d.iso %}in {{ d.iso }}{% endif %}</h2>
+{% if d.comparables %}
+<table><thead><tr><th>Market</th><th>ISO</th><th>State</th><th>Verdict</th><th>Excess</th></tr></thead><tbody>
+{% for c in d.comparables %}
+<tr>
+<td class="market"><a href="/pockets/{{ c.market_slug }}">{{ c.market_name }}</a></td>
+<td>{{ c.iso or '—' }}</td>
+<td>{{ c.state or '—' }}</td>
+<td><span class="verdict {{ c.verdict or 'HOLD' }}">{{ c.verdict or 'HOLD' }}</span></td>
+<td style="font-family:'JetBrains Mono',monospace">{{ c.excess_power_score }}</td>
+</tr>
+{% endfor %}
+</tbody></table>
+{% else %}
+<div class="lede">No comparable markets indexed yet.</div>
+{% endif %}
+
+<div class="share">
+<a href="https://twitter.com/intent/tweet?text={{ d.market_name }} — DCPI verdict {{ d.verdict or 'HOLD' }}, score {{ d.rank_score }}&url=https://dchub.cloud/pockets/{{ d.market_slug }}" target="_blank" rel="noopener">Share on X</a>
+<a href="https://www.linkedin.com/sharing/share-offsite/?url=https://dchub.cloud/pockets/{{ d.market_slug }}" target="_blank" rel="noopener">Share on LinkedIn</a>
+<a href="/api/v1/pockets/{{ d.market_slug }}">JSON</a>
+</div>
+
+<footer>
+Methodology: composite of EIA retail rates, ISO grid headroom, DCPI verdict, time-to-power. Updated daily.
+<a href="/pockets">All pockets</a> · <a href="/dcpi/{{ d.market_slug }}">Market deep-dive</a> · <a href="/digest">Daily brief</a>
+</footer>
+</div></body></html>'''
+
+
+@pockets_bp.route("/pockets/<slug>", methods=["GET"])
+def pocket_detail_page(slug):
+    """Per-market HTML detail page — SEO-friendly, schema.org Article
+    markup, share buttons, embedded 30d sparkline."""
+    detail = _fetch_pocket_detail(slug.strip())
+    if not detail:
+        # Soft 404 — render a back-to-/pockets prompt rather than the
+        # ugly Flask default. 404 status code preserved.
+        html = f"""<!DOCTYPE html><html><head><title>Pocket not found · DC Hub</title>
+        <style>body{{font-family:system-ui;background:#0a0a12;color:#fff;padding:3rem;text-align:center}}
+        a{{color:#8b5cf6}}</style></head><body>
+        <h1>Pocket "{slug}" not in the index</h1>
+        <p>It may have been renamed or dropped from coverage.</p>
+        <p><a href="/pockets">← See all ranked pockets</a></p></body></html>"""
+        return Response(html, mimetype="text/html"), 404
+
+    html = render_template_string(_POCKET_DETAIL_HTML, d=detail)
+    resp = Response(html, mimetype="text/html")
+    resp.headers["Cache-Control"] = "public, max-age=600, must-revalidate"
+    return resp
+
+
+# ─── RSS feed for syndication ────────────────────────────────────────
+
+_POCKETS_RSS = '''<?xml version="1.0" encoding="UTF-8"?>
+<rss version="2.0" xmlns:atom="http://www.w3.org/2005/Atom">
+<channel>
+  <title>DC Hub · Pockets of Power</title>
+  <link>https://dchub.cloud/pockets</link>
+  <atom:link href="https://dchub.cloud/pockets.rss" rel="self" type="application/rss+xml"/>
+  <description>Live ranking of data-center-friendly markets by excess power, grid constraint, and time-to-power. Updated daily.</description>
+  <language>en-us</language>
+  <lastBuildDate>{{ build_date }}</lastBuildDate>
+  <ttl>360</ttl>
+{% for p in pockets %}
+  <item>
+    <title>{{ p.market_name }} — {{ p.verdict or 'HOLD' }} — Score {{ p.rank_score }}{% if p.delta_7d and p.delta_7d > 0 %} (▲ +{{ p.delta_7d }}){% elif p.delta_7d and p.delta_7d < 0 %} (▼ {{ p.delta_7d }}){% endif %}</title>
+    <link>https://dchub.cloud/pockets/{{ p.market_slug }}</link>
+    <guid isPermaLink="true">https://dchub.cloud/pockets/{{ p.market_slug }}</guid>
+    <pubDate>{{ p.computed_at_rfc }}</pubDate>
+    <description><![CDATA[{{ p.market_name }} ({{ p.iso or 'no ISO' }}, {{ p.state or 'no state' }}) — DCPI verdict {{ p.verdict or 'HOLD' }}. Composite score {{ p.rank_score }}, excess power {{ p.excess_power_score }}, constraint {{ p.constraint_score }}, TTP {{ p.time_to_power_months|int }}mo. {{ p.why }}.]]></description>
+    <category>{{ p.verdict or 'HOLD' }}</category>
+    {% if p.iso %}<category>{{ p.iso }}</category>{% endif %}
+    {% if p.state %}<category>{{ p.state }}</category>{% endif %}
+  </item>
+{% endfor %}
+</channel>
+</rss>'''
+
+
+def _rfc822(iso_str: str) -> str:
+    """ISO 8601 → RFC 822 for RSS pubDate."""
+    if not iso_str:
+        return datetime.datetime.utcnow().strftime("%a, %d %b %Y %H:%M:%S GMT")
+    try:
+        dt = datetime.datetime.fromisoformat(iso_str.replace("Z", "+00:00"))
+        return dt.strftime("%a, %d %b %Y %H:%M:%S GMT")
+    except Exception:
+        return datetime.datetime.utcnow().strftime("%a, %d %b %Y %H:%M:%S GMT")
+
+
+@pockets_bp.route("/pockets.rss", methods=["GET"])
+@pockets_bp.route("/api/v1/pockets/rss", methods=["GET"])
+def pockets_rss():
+    """RSS 2.0 feed for the top 30 ranked pockets. No auth — designed
+    to be picked up by Feedly, Inoreader, NetNewsWire, etc., and by
+    LLM agents (Perplexity, Claude) for indexing."""
+    rows = _fetch_pockets(limit_hint=30)
+    for r in rows:
+        r["why"] = _rationale(r)
+        r["computed_at_rfc"] = _rfc822(r.get("computed_at") or "")
+    xml = render_template_string(
+        _POCKETS_RSS,
+        pockets=rows,
+        build_date=_rfc822(datetime.datetime.utcnow().isoformat() + "Z"),
+    )
+    resp = Response(xml, mimetype="application/rss+xml; charset=utf-8")
+    resp.headers["Cache-Control"] = "public, max-age=900"
     return resp
 
 

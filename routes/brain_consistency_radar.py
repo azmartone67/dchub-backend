@@ -2516,7 +2516,7 @@ def check_pocket_high_mover() -> list[dict]:
         sign = "+" if (m["delta_7d"] or 0) > 0 else ""
         findings.append({
             "issue":  "pocket_high_mover",
-            "url":    f"/pockets?focus={m['market_slug']}",
+            "url":    f"/pockets/{m['market_slug']}",
             "count":  1,
             "detail": (
                 f"{m['market_name']} ({m['iso'] or '—'}, {m['state'] or '—'}) "

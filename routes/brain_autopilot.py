@@ -347,12 +347,15 @@ def _action_pocket_alert_announce(finding: dict) -> tuple[str | None, dict | Non
 
     sign = "+" if delta > 0 else ""
     direction = "accelerating" if delta > 0 else "decelerating"
+    # Phase r31 (2026-05-20): link directly to the new /pockets/<slug>
+    # detail page rather than the /pockets ranking — gives the social
+    # post a sharable canonical URL with schema.org markup, og tags,
+    # and the 30d trend chart already rendered.
     body = (
         f"{market} ({iso or 'no ISO'}, {state or 'no state'}) is {direction} "
         f"on DC Hub's excess-power index — {sign}{delta:.1f} pts over the last "
         f"7 days, now at {score:.1f}. Verdict: {verdict}. "
-        f"Full ranking: https://dchub.cloud/pockets · "
-        f"Market detail: https://dchub.cloud/dcpi/{slug}"
+        f"https://dchub.cloud/pockets/{slug}"
     )
 
     return (
