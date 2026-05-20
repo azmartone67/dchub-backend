@@ -19740,6 +19740,31 @@ try:
 except Exception as e:
     print(f"🤖 Internal Probe Check: ⚠️ Failed to load: {e}")
 
+# Phase FF+25-followup-r5 (2026-05-20) — dynamic hero engine.
+# Three public endpoints powering the homepage:
+#   /api/v1/hero/messaging     — rotating H1+sub copy
+#   /api/v1/hero/infra-ticker  — live transmission / fiber / gas / water counts
+#   /api/v1/hero/brain-pulse   — what the autonomous brain is doing now (voice)
+try:
+    from routes.dynamic_hero import dynamic_hero_bp
+    app.register_blueprint(dynamic_hero_bp)
+    print("🧠 Dynamic Hero: ✅ Registered "
+          "(/api/v1/hero/messaging + /infra-ticker + /brain-pulse)")
+except Exception as e:
+    print(f"🧠 Dynamic Hero: ⚠️ Failed to load: {e}")
+
+# Phase FF+25-followup-r5 (2026-05-20) — sponsorship queue.
+# Powers the friends-and-family launch of "Pocket Listings of the Week"
+# weekly digest sponsorships. /active is public; everything else is
+# admin-gated via X-Internal-Key.
+try:
+    from routes.sponsorships import sponsorships_bp
+    app.register_blueprint(sponsorships_bp)
+    print("💰 Sponsorships: ✅ Registered "
+          "(POST/GET /api/v1/sponsorships · GET /active public)")
+except Exception as e:
+    print(f"💰 Sponsorships: ⚠️ Failed to load: {e}")
+
 # =============================================================================
 # FACILITY AUTO-APPROVE PIPELINE v2.0
 # Moves discovered_facilities → facilities with dedup logic
