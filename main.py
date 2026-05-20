@@ -59,6 +59,29 @@ def _phase22_audit_check():
 load_dotenv()
 
 # =================================================================
+# Phase FF+22-render-v2 (2026-05-20): EARLY failover flag
+# -----------------------------------------------------------------
+# IS_FAILOVER is defined again later (line ~3144) for blueprint
+# branching, but several killer subsystems (dchub_self_heal at
+# ~1102, L20 watcher at ~1380, L21 autopilot at ~1404, HealthMonitor
+# at ~2337, HealthWatchdog at ~15308) start BEFORE that definition.
+# We need the flag available at module top so Render can boot
+# without these self-restart loops killing the process mid-init.
+# Same env-var rules as the later block:
+#   - RENDER=true  → failover (Render sets this automatically)
+#   - DCHUB_FAILOVER=1 → manual opt-in (Fly.io, CF Containers, etc.)
+# =================================================================
+import os as _ff_os
+_IS_FAILOVER = (
+    _ff_os.environ.get("RENDER", "").lower() in ("true", "1", "yes")
+    or bool(_ff_os.environ.get("RENDER_SERVICE_ID"))
+    or _ff_os.environ.get("DCHUB_FAILOVER", "").lower() in ("true", "1", "yes")
+)
+if _IS_FAILOVER:
+    print("☁️ FAILOVER MODE DETECTED — disabling self-restart subsystems")
+    print("   (self_heal, L20-durability, L21-autopilot, HealthMonitor, HealthWatchdog)")
+
+# =================================================================
 # BOOT GUARD — Syntax self-check + Neon hostname monitor
 # Prevents crash-loops and detects silent DB migrations
 # Added: 2026-03-07 (Neon outage prevention) 1.0
@@ -1098,12 +1121,19 @@ app = Flask(__name__, static_folder='static', static_url_path='/static')
 
 
 # === Phase 227: in-process self-healer ===
-try:
-    import dchub_self_heal
-    dchub_self_heal.start_scheduler()
-except Exception as _heal_err:
-    import logging
-    logging.warning("self_heal scheduler failed to start: %s", _heal_err)
+# Phase FF+22-render-v2 (2026-05-20): skip on failover. self_heal runs
+# write-side fix actions (DB migrations, cache rebuilds) that don't
+# belong on a read-only failover. Also it spins a 60s scheduler thread
+# that touches Postgres — adds latency to Render's port-bind window.
+if _IS_FAILOVER:
+    print("self_heal scheduler: SKIPPED (failover mode)")
+else:
+    try:
+        import dchub_self_heal
+        dchub_self_heal.start_scheduler()
+    except Exception as _heal_err:
+        import logging
+        logging.warning("self_heal scheduler failed to start: %s", _heal_err)
 # === /Phase 227 ===
 # --- Phase 22 + 23 + 24 blueprints (auto-wired) ---
 try:
@@ -1377,7 +1407,14 @@ try:
         from routes.brain_layer20_durability import (
             brain_layer20_bp, start_durability_watcher)
         app.register_blueprint(brain_layer20_bp)
-        start_durability_watcher()
+        # Phase FF+22-render-v2 (2026-05-20): watcher reads RSS every
+        # 30s and can mutate L8/L14 acceptance gates — skip on failover.
+        # Blueprint still registers so /api/v1/brain/durability endpoints
+        # remain queryable from the read-only side.
+        if _IS_FAILOVER:
+            print("L20 durability watcher: SKIPPED (failover mode, BP still registered)")
+        else:
+            start_durability_watcher()
     except Exception as _l20e:
         import logging
         logging.getLogger(__name__).warning('brain_layer20 wiring failed: %s', _l20e)
@@ -1401,7 +1438,14 @@ try:
         from routes.brain_layer21_autopilot import (
             brain_layer21_bp, start_autopilot)
         app.register_blueprint(brain_layer21_bp)
-        start_autopilot()
+        # Phase FF+22-render-v2 (2026-05-20): autopilot fires recovery
+        # actions (restarts, cache busts) every 60s — strictly a primary
+        # responsibility. Blueprint stays so /api/v1/brain/autopilot/*
+        # endpoints still answer reads.
+        if _IS_FAILOVER:
+            print("L21 autopilot: SKIPPED (failover mode, BP still registered)")
+        else:
+            start_autopilot()
     except Exception as _l21e:
         import logging
         logging.getLogger(__name__).warning('brain_layer21 wiring failed: %s', _l21e)
@@ -2334,10 +2378,18 @@ if SELF_HEALING_AVAILABLE:
             reset_pool=_reset_all_pools,
             alert_manager=_alert_manager,
         )
-        _health_monitor.start()
+        # Phase FF+22-render-v2 (2026-05-20): HealthMonitor calls
+        # _reset_all_pools() on failure, which churns Neon connections.
+        # On failover that's redundant (primary handles pool health)
+        # and during Render's port-bind window it can OOM/spin. Endpoints
+        # still register so /health stays answerable.
+        if _IS_FAILOVER:
+            print("SELF-HEALING: HealthMonitor SKIPPED (failover mode, endpoints still registered)")
+        else:
+            _health_monitor.start()
+            print("SELF-HEALING: ✅ Health monitor started (30s interval)")
         app.config["START_TIME"] = time.time()
         register_health_endpoints(app, _health_monitor, _alert_manager)
-        print("SELF-HEALING: ✅ Health monitor started (30s interval)")
     except Exception as e:
         print(f"SELF-HEALING: ⚠️ Failed to start: {e}")
 
@@ -15305,8 +15357,21 @@ try:
         # transient bg-thread spike was enough to land us in a kill
         # loop. 90s × 5 = 7.5 min gives the L20 durability layer time
         # to step in before the watchdog goes nuclear.
-        init_watchdog(app, check_interval=90, max_failures=5)
-        print("🐕 Health Watchdog: ✅ Running (check every 90s, restart after 5 failures)")
+        #
+        # Phase FF+22-render-v2 (2026-05-20): SKIP on failover. The
+        # watchdog's whole job is to call os.kill(SIGTERM) on itself
+        # when /health probes fail. During Render's long cold-boot
+        # window /health WILL fail (blueprints still loading) — so
+        # the watchdog reliably executes a self-restart 7.5 minutes
+        # in, before the app finishes coming up. That manifests as
+        # "Exited with status 1" with NO Python traceback, which is
+        # exactly what we've been seeing. Routes still register so
+        # /api/health/watchdog answers from the read side.
+        if _IS_FAILOVER:
+            print("🐕 Health Watchdog: SKIPPED (failover mode — no self-restart loop)")
+        else:
+            init_watchdog(app, check_interval=90, max_failures=5)
+            print("🐕 Health Watchdog: ✅ Running (check every 90s, restart after 5 failures)")
     except Exception as e:
         print(f"⚠️ Health Watchdog: Failed to start: {e}")
 except ImportError:
