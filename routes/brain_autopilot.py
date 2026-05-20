@@ -467,6 +467,21 @@ _PATTERN_LIBRARY: dict[str, dict[str, Any]] = {
         "use_admin":   False,
         "description": "Escalation-only: one or more public pages drifted off the canonical indigo→violet brand. Look at the detail field for which page + which signal; fix in /js/dchub-nav.js (covers most pages) or the per-page <style>. Track on /status.",
     },
+    # Phase FF+25-followup-r14 (2026-05-20): coverage gap escalation.
+    # User reported DCHawk has Calgary-metro facilities we don't. Fix
+    # is upstream in discovery crawler — not an autopilot action.
+    "coverage_gap_canada": {
+        "action":      lambda f: (None, None),
+        "method":      None,
+        "use_admin":   False,
+        "description": "Escalation-only: Canadian facility footprint is below the industry baseline. Discovery crawler missing CA sources. Patch immediate gaps via POST /api/v1/admin/facilities/bulk; long-term fix is to add a Canadian source to crawler_scheduler.py.",
+    },
+    "coverage_gap_alberta": {
+        "action":      lambda f: (None, None),
+        "method":      None,
+        "use_admin":   False,
+        "description": "Escalation-only: Alberta footprint thin. Known builds in Pincher Creek + Strathmore + Calgary metro need to be added. POST /api/v1/admin/facilities/bulk to patch.",
+    },
     # Phase EEE — surface brain pattern. Dynamic key
     # `surface_health_critical:<surface_id>` is handled via the prefix-
     # match in _lookup_pattern() so all surfaces share this entry.

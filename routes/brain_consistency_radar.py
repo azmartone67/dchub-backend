@@ -2487,6 +2487,74 @@ def check_winback_pitches_unsent() -> list[dict]:
 
 
 # ── Phase RRRR (2026-05-16) — DC Hub Media silence detector ───────
+def check_coverage_gap_canada() -> list[dict]:
+    """Phase FF+25-followup-r14 (2026-05-20). User found two Calgary-
+    metro facilities (Gryphon Digital Mining in Pincher Creek; Prairie
+    Sky in Strathmore) that DCHawk tracks and we don't. Symptom of the
+    discovery pipeline missing Canadian DC announcements.
+
+    This detector queries our own facilities table for Canada rows. If
+    we have fewer than 80 (industry baseline: ~110 Canadian DCs across
+    Toronto/Montreal/Calgary/Vancouver per public sources), it fires.
+    Escalation-only — fix is upstream in the discovery crawler, not an
+    autopilot action."""
+    import os as _os, psycopg2 as _pg
+    findings: list[dict] = []
+    db = _os.environ.get("DATABASE_URL")
+    if not db: return findings
+    try:
+        c = _pg.connect(db, sslmode="require", connect_timeout=5)
+        try:
+            with c.cursor() as cur:
+                cur.execute("""
+                    SELECT COUNT(*) FROM facilities
+                     WHERE LOWER(COALESCE(country,'')) IN
+                          ('ca','canada','can')
+                """)
+                ca_count = int((cur.fetchone() or [0])[0] or 0)
+                cur.execute("""
+                    SELECT COUNT(*) FROM facilities
+                     WHERE (LOWER(COALESCE(state,'')) = 'ab'
+                            OR LOWER(COALESCE(city,'')) LIKE '%calgar%'
+                            OR LOWER(COALESCE(city,'')) LIKE '%edmont%'
+                            OR LOWER(COALESCE(city,'')) LIKE '%pincher%'
+                            OR LOWER(COALESCE(city,'')) LIKE '%strathmore%')
+                """)
+                ab_count = int((cur.fetchone() or [0])[0] or 0)
+        finally:
+            c.close()
+    except Exception:
+        return findings
+
+    # Thresholds calibrated to current public estimates. Tunable via env
+    # if either over- or under-fires for a few weeks.
+    if ca_count < 80:
+        findings.append({
+            "issue":  "coverage_gap_canada",
+            "url":    f"/api/v1/facilities?country=CA",
+            "count":  80 - ca_count,
+            "detail": (f"Only {ca_count} Canadian facilities in DB "
+                       f"(baseline ~110+). DCHawk + dcByte have more. "
+                       f"Discovery crawler likely missing CA sources. "
+                       f"Inspect crawler_scheduler.py + add a Canadian "
+                       f"data source (dcd.com, datacenterhawk.com, the "
+                       f"CDCRA registry). Patch immediate gaps via "
+                       f"POST /api/v1/admin/facilities/bulk."),
+        })
+    if ab_count < 8:
+        findings.append({
+            "issue":  "coverage_gap_alberta",
+            "url":    f"/api/v1/facilities?state=AB",
+            "count":  8 - ab_count,
+            "detail": (f"Alberta footprint thin: {ab_count} facilities "
+                       f"tracked, vs known active builds in Pincher "
+                       f"Creek (Gryphon Digital Mining), Strathmore "
+                       f"(Prairie Sky Data Solutions), Calgary metro. "
+                       f"User reported this gap on 2026-05-20."),
+        })
+    return findings
+
+
 def check_page_brand_drift() -> list[dict]:
     """Phase FF+25-followup-r12 (2026-05-20). The user is tired of
     fixing visual drift one page at a time. This detector fetches a
@@ -5181,6 +5249,8 @@ def scan_all() -> list[dict]:
                check_monthly_trend_unsent_3d,
                # Phase FF+25-followup-r12 visual drift across the site
                check_page_brand_drift,
+               # Phase FF+25-followup-r14 Canadian / regional coverage gaps
+               check_coverage_gap_canada,
                # Phase SSSS winback pitches accumulating without delivery
                check_winback_pitches_unsent,
                # Phase TTTT citation score

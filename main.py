@@ -19813,6 +19813,18 @@ try:
 except Exception as e:
     print(f"📊 Site Audit: ⚠️ Failed to load: {e}")
 
+# Phase FF+25-followup-r14 (2026-05-20) — facility admin endpoint.
+# User found two Calgary-metro facilities DCHawk had that we didn't.
+# Manual add/bulk endpoint so coverage gaps can be patched immediately
+# without writing one-off SQL scripts.
+try:
+    from routes.facility_admin import facility_admin_bp
+    app.register_blueprint(facility_admin_bp)
+    print("🏢 Facility Admin: ✅ Registered "
+          "(POST /api/v1/admin/facilities/add|bulk)")
+except Exception as e:
+    print(f"🏢 Facility Admin: ⚠️ Failed to load: {e}")
+
 # =============================================================================
 # FACILITY AUTO-APPROVE PIPELINE v2.0
 # Moves discovered_facilities → facilities with dedup logic
