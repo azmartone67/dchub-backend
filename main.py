@@ -14372,6 +14372,15 @@ def _build_fiber_routes_geojson():
     LineString for legacy rows."""
     carrier = request.args.get('carrier')
     route_type = request.args.get('type')
+    # `class` buckets the messy route_type taxonomy into the UI's three
+    # fiber sub-layers (Metro / Long-haul / Dark fiber).
+    route_class = request.args.get('class')
+    CLASS_TYPES = {
+        'metro':    ('metro', 'metro_ring', 'dc_interconnect', 'enterprise_lateral'),
+        'longhaul': ('longhaul', 'long-haul', 'long_haul'),
+        'dark':     ('dark', 'dark_fiber'),
+        'ix':       ('ix_interconnect', 'IX'),
+    }
     conn = None
     try:
         conn = get_db()
@@ -14388,6 +14397,10 @@ def _build_fiber_routes_geojson():
         if route_type:
             query += ' AND route_type = %s'
             params.append(route_type)
+        elif route_class and route_class in CLASS_TYPES:
+            types = CLASS_TYPES[route_class]
+            query += ' AND route_type IN (' + ','.join(['%s'] * len(types)) + ')'
+            params.extend(types)
         query += ' LIMIT %s'
         params.append(limit)
 

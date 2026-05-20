@@ -117,6 +117,7 @@
             metrofiber: L.layerGroup(),
             genqueue: L.layerGroup(),
             longhaulfiber: L.layerGroup(),
+            darkfiber: L.layerGroup(),
             midstream: L.layerGroup(),
             lng: L.layerGroup(),
             // HIFLD Enhanced Layers
@@ -5558,7 +5559,21 @@ var markets = {
                         map.addLayer(layers.metrofiber);
                         this.classList.add('active');
                         loadMetroFiber();
-                        console.log('📡 Metro Fiber shown (Premium placeholder)');
+                        console.log('📡 Metro Fiber shown (real routes)');
+                    }
+                    return;
+                }
+
+                if (layerName === 'darkfiber') {
+                    if (map.hasLayer(layers.darkfiber)) {
+                        map.removeLayer(layers.darkfiber);
+                        this.classList.remove('active');
+                        console.log('⚫ Dark Fiber hidden');
+                    } else {
+                        map.addLayer(layers.darkfiber);
+                        this.classList.add('active');
+                        loadDarkFiber();
+                        console.log('⚫ Dark Fiber shown (real routes)');
                     }
                     return;
                 }
@@ -8287,45 +8302,55 @@ var markets = {
         }
         
         // ============================================
-        // PHASE 3: METRO FIBER (Premium placeholder)
+        // FIBER SUB-LAYERS — real routes from /api/v1/fiber/routes/public
+        // Each sub-layer (metro / dark) pulls the matching route_type class
+        // from the DB and draws real polylines, replacing the old static
+        // "premium placeholder" circles.
         // ============================================
-        function loadMetroFiber() {
-            if (layers.metrofiber.getLayers().length > 0) return;
-            
-            // Add placeholder markers for major metro fiber networks
-            var metroFiberMarkets = [
-                {name: "Northern Virginia Metro Ring", lat: 39.0438, lng: -77.4874, providers: ["Zayo", "Lumen", "Crown Castle", "Windstream"]},
-                {name: "Dallas Metro Fiber", lat: 32.7767, lng: -96.7970, providers: ["Zayo", "AT&T", "Spectrum Enterprise", "Uniti"]},
-                {name: "Chicago Metro Network", lat: 41.8781, lng: -87.6298, providers: ["Zayo", "Cogent", "GTL", "AT&T"]},
-                {name: "Silicon Valley Metro", lat: 37.3382, lng: -121.8863, providers: ["Zayo", "AT&T", "Lumen", "TPx"]},
-                {name: "Phoenix Metro Fiber", lat: 33.4484, lng: -112.0740, providers: ["Zayo", "Cox", "Lumen", "Uniti"]},
-                {name: "Atlanta Metro Ring", lat: 33.7490, lng: -84.3880, providers: ["Zayo", "AT&T", "Comcast", "Uniti"]}
-            ];
-            
-            metroFiberMarkets.forEach(function(mf) {
-                L.circle([mf.lat, mf.lng], {
-                    radius: 25000, // 25km radius
-                    fillColor: '#8b5cf6',
-                    color: '#7c3aed',
-                    weight: 2,
-                    opacity: 0.6,
-                    fillOpacity: 0.1,
-                    dashArray: '10, 5'
-                }).bindPopup(
-                    '<div class="popup-title">📡 ' + mf.name + '</div>' +
-                    '<div class="popup-row"><span class="popup-label">Major Providers</span></div>' +
-                    '<div class="popup-row"><span class="popup-value">' + mf.providers.join(', ') + '</span></div>' +
-                    '<div class="popup-row" style="background:rgba(139,92,246,0.1);padding:8px;border-radius:4px;margin-top:8px;text-align:center;">' +
-                    '<span style="color:#8b5cf6;font-weight:600;">🔒 Premium Data Available</span><br>' +
-                    '<span style="font-size:11px;color:var(--text3);">Detailed fiber routes from GeoTel/FiberLocator</span>' +
-                    '</div>'
-                ).addTo(layers.metrofiber);
-            });
-            
-            document.getElementById('count-metrofiber').textContent = metroFiberMarkets.length;
-            console.log('✅ Loaded ' + metroFiberMarkets.length + ' metro fiber markets (premium placeholder)');
+        function loadFiberClass(routeClass, targetLayer, countElId, styleOverride) {
+            if (targetLayer.getLayers().length > 0) return; // already loaded
+            var _f = window.dchubFetch || window.fetch.bind(window);
+            _f('/api/v1/fiber/routes/public?class=' + encodeURIComponent(routeClass) + '&limit=5000')
+                .then(function(r){ return r.ok ? r.json() : Promise.reject(r.status); })
+                .then(function(geo){
+                    var feats = (geo && geo.features) || [];
+                    var drawn = 0;
+                    feats.forEach(function(ft){
+                        var c = (ft.geometry && ft.geometry.coordinates) || [];
+                        if (c.length < 2) return;
+                        var latlng = c.map(function(pt){ return [pt[1], pt[0]]; });
+                        var p = ft.properties || {};
+                        var color = styleOverride.color || p.color || '#10b981';
+                        L.polyline(latlng, {
+                            color: color,
+                            weight: styleOverride.weight,
+                            opacity: styleOverride.opacity,
+                            dashArray: styleOverride.dashArray
+                        }).bindPopup(
+                            '<div class="popup-title">' + styleOverride.icon + ' ' + (p.name || 'Fiber Route') + '</div>' +
+                            '<div class="popup-row"><span class="popup-label">Carrier</span><span class="popup-value">' + (p.carrier || '—') + '</span></div>' +
+                            '<div class="popup-row"><span class="popup-label">Type</span><span class="popup-value">' + (p.route_type || routeClass) + '</span></div>' +
+                            '<div class="popup-row"><span class="popup-label">Capacity</span><span class="popup-value">' + (p.capacity || '—') + '</span></div>'
+                        ).addTo(targetLayer);
+                        drawn++;
+                    });
+                    var el = document.getElementById(countElId);
+                    if (el) el.textContent = drawn;
+                    console.log('🌐 ' + routeClass + ' fiber: ' + drawn + ' routes drawn');
+                })
+                .catch(function(err){ console.log('🌐 ' + routeClass + ' fiber API unavailable (' + err + ')'); });
         }
-        
+
+        function loadMetroFiber() {
+            loadFiberClass('metro', layers.metrofiber, 'count-metrofiber',
+                {color: '#8b5cf6', weight: 2, opacity: 0.75, dashArray: '6,4', icon: '📡'});
+        }
+
+        function loadDarkFiber() {
+            loadFiberClass('dark', layers.darkfiber, 'count-darkfiber',
+                {color: '#94a3b8', weight: 2, opacity: 0.7, dashArray: '8,8', icon: '⚫'});
+        }
+
         // ============================================
         // INTERCONNECTION QUEUE BY RTO/ISO
         // Shows what's waiting to come online
