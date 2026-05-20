@@ -456,6 +456,17 @@ _PATTERN_LIBRARY: dict[str, dict[str, Any]] = {
         "use_admin":   True,
         "description": "Autonomous backstop: the monthly trend snapshot wasn't emailed by the 4th of the new month. Brain fires /api/v1/reports/monthly/send-outreach with triggered_by=autopilot.",
     },
+    # Phase FF+25-followup-r12 (2026-05-20): visual drift escalation.
+    # Drift is fixed by editing /js/dchub-nav.js or per-page <style> —
+    # both code-level. Autopilot escalates so a human (or L22 auto-code)
+    # sees the finding; no auto-action because the fix path varies per
+    # page and could touch arbitrary CSS.
+    "page_brand_drift": {
+        "action":      lambda f: (None, None),
+        "method":      None,
+        "use_admin":   False,
+        "description": "Escalation-only: one or more public pages drifted off the canonical indigo→violet brand. Look at the detail field for which page + which signal; fix in /js/dchub-nav.js (covers most pages) or the per-page <style>. Track on /status.",
+    },
     # Phase EEE — surface brain pattern. Dynamic key
     # `surface_health_critical:<surface_id>` is handled via the prefix-
     # match in _lookup_pattern() so all surfaces share this entry.

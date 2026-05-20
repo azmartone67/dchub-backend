@@ -2487,6 +2487,84 @@ def check_winback_pitches_unsent() -> list[dict]:
 
 
 # ── Phase RRRR (2026-05-16) — DC Hub Media silence detector ───────
+def check_page_brand_drift() -> list[dict]:
+    """Phase FF+25-followup-r12 (2026-05-20). The user is tired of
+    fixing visual drift one page at a time. This detector fetches a
+    rotating sample of canonical public pages and looks for signals
+    that the page has drifted off-brand:
+
+      · missing data-dchub-brand attribute (no canonical mark)
+      · missing 'Instrument Sans' font reference
+      · old color tokens: #10b981, #3478f6, #06b6d4 (legacy green/cyan)
+      · missing /js/dchub-brand.js script reference
+
+    Fires page_brand_drift finding with count of drift signals when at
+    least one signal is found. Lets the brain catch new drift the same
+    way it catches schema drift today.
+    """
+    import urllib.request as _req
+    findings: list[dict] = []
+    # Rotating canonical sample (deterministic but covers different
+    # pages over a 24-hour window so we don't hit the same 5 every tick).
+    import datetime as _dt
+    hour_bucket = _dt.datetime.utcnow().hour
+    sample_pool = [
+        "/", "/about", "/pricing", "/intelligence", "/ai-hub",
+        "/dcpi", "/transactions", "/cited-by", "/reports/monthly",
+        "/daily", "/advertise", "/markets/", "/brain/brief", "/status",
+    ]
+    # Take 5 from the pool keyed off hour so we cycle through over time
+    start = (hour_bucket * 3) % len(sample_pool)
+    sample = (sample_pool + sample_pool)[start:start + 5]
+
+    drift_pages: list[dict] = []
+    for path in sample:
+        try:
+            req = _req.Request(
+                f"https://dchub.cloud{path}",
+                headers={"User-Agent": "DCHubBrainDriftDetector/1.0"},
+            )
+            with _req.urlopen(req, timeout=8) as resp:
+                html = resp.read(120000).decode("utf-8", errors="replace")
+        except Exception:
+            continue
+        if not html or len(html) < 1000:
+            continue
+
+        signals = []
+        if "data-dchub-brand" not in html:
+            signals.append("missing-brand-mark")
+        if "/js/dchub-brand.js" not in html and "dchub-brand.js" not in html:
+            signals.append("missing-brand-script")
+        if "Instrument Sans" not in html:
+            signals.append("missing-instrument-sans")
+        # Legacy color tokens — only flag when several appear (one stray
+        # hex in an OG meta tag isn't drift)
+        legacy = sum(html.count(c) for c in ("#10b981", "#3478f6", "#06b6d4"))
+        if legacy >= 3:
+            signals.append(f"legacy-colors({legacy})")
+
+        if signals:
+            drift_pages.append({"path": path, "signals": signals})
+
+    if drift_pages:
+        details = "; ".join(
+            f"{p['path']} → " + ",".join(p["signals"])
+            for p in drift_pages[:5]
+        )
+        findings.append({
+            "issue":  "page_brand_drift",
+            "url":    "/status",
+            "count":  len(drift_pages),
+            "detail": (f"{len(drift_pages)} of {len(sample)} sampled "
+                       f"pages drifted off-canonical brand: {details}. "
+                       f"Fix by editing /js/dchub-nav.js (covers all "
+                       f"pages that load it) or the per-page <style> "
+                       f"block. Track at /status."),
+        })
+    return findings
+
+
 def check_monthly_trend_unsent_3d() -> list[dict]:
     """Phase FF+25-followup-r7 (2026-05-20). If today is the 4th or later
     of a new month AND we haven't yet emailed the prior-month monthly
@@ -5101,6 +5179,8 @@ def scan_all() -> list[dict]:
                check_dchub_media_press_silent,
                # Phase FF+25-followup-r7 monthly trend backstop
                check_monthly_trend_unsent_3d,
+               # Phase FF+25-followup-r12 visual drift across the site
+               check_page_brand_drift,
                # Phase SSSS winback pitches accumulating without delivery
                check_winback_pitches_unsent,
                # Phase TTTT citation score

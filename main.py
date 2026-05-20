@@ -19802,6 +19802,17 @@ try:
 except Exception as e:
     print(f"🧠 Brain Inspector: ⚠️ Failed to load: {e}")
 
+# Phase FF+25-followup-r12 (2026-05-20) — site audit + status dashboard.
+# One URL (/status) that shows the entire stack at a glance — brain,
+# autopilot, Inspector, press, MCP, sponsorships. JSON at /api/v1/site/audit.
+try:
+    from routes.site_audit import site_audit_bp
+    app.register_blueprint(site_audit_bp)
+    print("📊 Site Audit: ✅ Registered "
+          "(GET /status + /api/v1/site/audit)")
+except Exception as e:
+    print(f"📊 Site Audit: ⚠️ Failed to load: {e}")
+
 # =============================================================================
 # FACILITY AUTO-APPROVE PIPELINE v2.0
 # Moves discovered_facilities → facilities with dedup logic
