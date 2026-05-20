@@ -19765,6 +19765,19 @@ try:
 except Exception as e:
     print(f"💰 Sponsorships: ⚠️ Failed to load: {e}")
 
+# Phase FF+25-followup-r6 (2026-05-20) — monthly trend snapshot.
+# Upgrades the quarterly report cadence to monthly with MoM + YoY deltas,
+# press-kit quotes journalists can copy-paste, and permanent-URL archives
+# (/reports/monthly/2026-05 always shows May once snapshotted). For
+# distribution to DCD / JLL / CBRE / industry press.
+try:
+    from routes.monthly_trend import monthly_trend_bp
+    app.register_blueprint(monthly_trend_bp)
+    print("📊 Monthly Trend: ✅ Registered "
+          "(/reports/monthly + /reports/monthly/<year>-<month>)")
+except Exception as e:
+    print(f"📊 Monthly Trend: ⚠️ Failed to load: {e}")
+
 # =============================================================================
 # FACILITY AUTO-APPROVE PIPELINE v2.0
 # Moves discovered_facilities → facilities with dedup logic
