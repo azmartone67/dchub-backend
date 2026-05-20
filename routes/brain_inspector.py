@@ -222,11 +222,230 @@ Output the brief in this exact Markdown structure:
 [items that need human review or where autopilot action is uncertain]
 
 ## Would-do (autonomous recommendations)
-[concrete actions the autopilot could take, each one mapped to an existing pattern name from the autopilot library if possible]
+[concrete actions the autopilot could take. Format each bullet as:
+   - PATTERN: <pattern_name> · <one-line rationale>
+ where <pattern_name> is from this list of known autopilot patterns:
+   dcpi_partial_recompute, auto_press_market_repetition, seo_sitemap_stale,
+   data_freshness_sla_breach, mcp_demand_gap_unaddressed,
+   source_of_truth_declining, media_topic_unaddressed,
+   dchub_media_press_silent, monthly_trend_unsent_3d,
+   tier_inconsistency_web_higher_than_mcp, cron_schedule_collision.
+ Omit any pattern that doesn't actually apply. If nothing fits, write
+ "(no autonomous actions warranted this pass)".]
+
+## Code-fix candidates
+[bulleted list of issues whose fix is code-level, suitable for the L22
+ auto-code PR drafter. Format each bullet as:
+   - RECIPE: <route_alias_404 | schema_drift_guard | cron_if_mismatched> · <target> · <one-line rationale>
+ Only emit if a finding clearly maps to one of those three recipes.
+ Otherwise write "(none this pass)".]
 
 ## Predictions · next 24h
 [1-3 forecasts with confidence + the caveat that they're forecasts not facts]
 """
+
+
+# ── Parsing the Inspector's structured Markdown ──────────────────────
+def _parse_recommendations(md: str) -> list[dict]:
+    """Pull the `PATTERN: <name> · <rationale>` lines from the Would-do
+    section. Returns [{pattern, rationale}]."""
+    import re
+    if not md or "## Would-do" not in md:
+        return []
+    try:
+        section = md.split("## Would-do", 1)[1]
+        section = section.split("\n## ", 1)[0]
+    except Exception:
+        return []
+    out: list[dict] = []
+    for line in section.split("\n"):
+        m = re.match(r"\s*[-*+]\s*PATTERN:\s*([a-z0-9_:.\-]+)\s*[·\-:|]\s*(.*)$",
+                     line.strip(), re.IGNORECASE)
+        if m:
+            out.append({
+                "pattern":   m.group(1).strip(),
+                "rationale": m.group(2).strip()[:240],
+            })
+    return out
+
+
+def _parse_code_fix_candidates(md: str) -> list[dict]:
+    """Pull the `RECIPE: <recipe> · <target> · <rationale>` lines from
+    the Code-fix candidates section. Returns [{recipe, target, rationale}]."""
+    import re
+    if not md or "## Code-fix candidates" not in md:
+        return []
+    try:
+        section = md.split("## Code-fix candidates", 1)[1]
+        section = section.split("\n## ", 1)[0]
+    except Exception:
+        return []
+    out: list[dict] = []
+    valid = ("route_alias_404", "schema_drift_guard", "cron_if_mismatched")
+    for line in section.split("\n"):
+        m = re.match(r"\s*[-*+]\s*RECIPE:\s*([a-z0-9_]+)\s*[·\-:|]\s*([^·\-:|]+)\s*[·\-:|]\s*(.*)$",
+                     line.strip(), re.IGNORECASE)
+        if m and m.group(1).strip() in valid:
+            out.append({
+                "recipe":    m.group(1).strip(),
+                "target":    m.group(2).strip()[:200],
+                "rationale": m.group(3).strip()[:240],
+            })
+    return out
+
+
+# ── Apply recommendations (Inspector → L21 autopilot) ────────────────
+def _fire_recommendation(pattern: str, rationale: str) -> dict:
+    """Translate one Inspector recommendation into a real autopilot
+    action. Looks up the pattern in _PATTERN_LIBRARY, builds a synthetic
+    finding, gets (endpoint, payload), POSTs it.
+
+    Honors the autopilot's rate-limit + cooldown — calls go through the
+    same execution path as autonomous detector firings, so a misfire
+    can't stack."""
+    try:
+        from routes.brain_autopilot import _PATTERN_LIBRARY
+    except Exception as e:
+        return {"pattern": pattern, "ok": False, "error": f"library_import: {e}"}
+
+    entry = _PATTERN_LIBRARY.get(pattern)
+    if not entry:
+        # Try prefix match (e.g. brand_surface_dormant:power_totals)
+        base = pattern.split(":", 1)[0]
+        entry = _PATTERN_LIBRARY.get(base)
+    if not entry:
+        return {"pattern": pattern, "ok": False, "error": "pattern_not_in_library"}
+
+    action_fn = entry.get("action")
+    if not callable(action_fn):
+        return {"pattern": pattern, "ok": False, "error": "no_action_callable"}
+
+    synthetic = {
+        "issue":  pattern,
+        "url":    f"inspector://{pattern}",
+        "count":  1,
+        "detail": rationale or "inspector recommendation",
+    }
+    try:
+        endpoint, payload = action_fn(synthetic)
+    except Exception as e:
+        return {"pattern": pattern, "ok": False,
+                "error": f"action_eval: {str(e)[:200]}"}
+    if not endpoint:
+        return {"pattern": pattern, "ok": False,
+                "error": "pattern_is_escalation_only"}
+
+    # POST through the autopilot's _execute_action so the rate-limit +
+    # logging behave identically to autonomous firings.
+    try:
+        from routes.brain_autopilot import _execute_action
+        use_admin = bool(entry.get("use_admin"))
+        http_code, body, error = _execute_action(endpoint, payload or {}, use_admin)
+        return {
+            "pattern":   pattern,
+            "endpoint":  endpoint,
+            "http_code": http_code,
+            "ok":        bool(http_code and 200 <= http_code < 300),
+            "body":      (body or "")[:200],
+            "error":     error,
+        }
+    except Exception as e:
+        return {"pattern": pattern, "ok": False,
+                "error": f"execute: {str(e)[:200]}"}
+
+
+@brain_inspector_bp.route("/api/v1/brain/brief/<int:bid>/apply",
+                            methods=["POST"])
+def brief_apply(bid: int):
+    """Admin: fire the Inspector's Would-do recommendations through the
+    autopilot. Each pattern goes through the standard rate-limit +
+    cooldown — Inspector can't override safety guardrails."""
+    if not _admin_ok():
+        return jsonify(ok=False, error="forbidden"), 403
+    c = _get_db()
+    if c is None: return jsonify(ok=False, error="no_db"), 503
+    try:
+        with c.cursor() as cur:
+            cur.execute("SELECT brief_md FROM brain_briefs WHERE id = %s",
+                        (bid,))
+            r = cur.fetchone()
+            if not r: return jsonify(ok=False, error="not_found"), 404
+            md = r[0] or ""
+    finally:
+        try: c.close()
+        except Exception: pass
+
+    recs = _parse_recommendations(md)
+    results = [_fire_recommendation(r["pattern"], r["rationale"]) for r in recs]
+    return jsonify(
+        ok=True, brief_id=bid,
+        recommendations_found=len(recs),
+        fired=sum(1 for r in results if r.get("ok")),
+        results=results,
+    )
+
+
+# ── Draft PRs via L22 (Inspector → auto-code) ────────────────────────
+@brain_inspector_bp.route("/api/v1/brain/brief/<int:bid>/draft-prs",
+                            methods=["POST"])
+def brief_draft_prs(bid: int):
+    """Admin: hand the Inspector's code-fix candidates to L22 so it can
+    draft GitHub PRs. L22 has its own safety whitelist (only 3 recipes
+    eligible for auto-PR; everything else gets a WIP label or refused)."""
+    if not _admin_ok():
+        return jsonify(ok=False, error="forbidden"), 403
+    c = _get_db()
+    if c is None: return jsonify(ok=False, error="no_db"), 503
+    try:
+        with c.cursor() as cur:
+            cur.execute("SELECT brief_md FROM brain_briefs WHERE id = %s",
+                        (bid,))
+            r = cur.fetchone()
+            if not r: return jsonify(ok=False, error="not_found"), 404
+            md = r[0] or ""
+    finally:
+        try: c.close()
+        except Exception: pass
+
+    candidates = _parse_code_fix_candidates(md)
+    if not candidates:
+        return jsonify(ok=True, brief_id=bid, candidates_found=0,
+                       note="No code-fix candidates in this brief.")
+
+    # Hand off to L22. We don't reach into its internals — we just
+    # POST its /run endpoint and let it pull from L14 + L21 findings
+    # (which is its existing path). The candidates we found here are
+    # logged so a human can correlate.
+    try:
+        import urllib.request, json as _json
+        admin_key = (os.environ.get("DCHUB_ADMIN_KEY")
+                      or "dchub-internal-sync-2026")
+        req = urllib.request.Request(
+            "http://localhost:8000/api/v1/brain/auto-code/run",
+            data=_json.dumps({"trigger": "inspector",
+                              "brief_id": bid}).encode(),
+            method="POST",
+            headers={"Content-Type": "application/json",
+                      "X-Admin-Key": admin_key},
+        )
+        with urllib.request.urlopen(req, timeout=30) as resp:
+            l22_body = resp.read().decode("utf-8", errors="replace")[:1000]
+            l22_status = resp.status
+    except Exception as e:
+        l22_body = ""
+        l22_status = None
+        l22_error = f"{type(e).__name__}: {str(e)[:200]}"
+    else:
+        l22_error = None
+
+    return jsonify(
+        ok=True, brief_id=bid,
+        candidates_found=len(candidates),
+        candidates=candidates,
+        l22_status=l22_status,
+        l22_body=l22_body[:500] if l22_body else None,
+        l22_error=l22_error,
+    )
 
 
 def _call_opus(system: str, user: str, model: str,
@@ -507,6 +726,28 @@ def brief_html():
         "<code>POST /api/v1/brain/brief/generate</code> to trigger one.</p>"
     )
 
+    # Extract latest brief id for the action buttons. Pulled separately
+    # so the page can offer apply / draft-prs once the brief exists.
+    latest_id = ""
+    rec_count = 0
+    fix_count = 0
+    if md:
+        try:
+            c2 = _get_db()
+            if c2 is not None:
+                with c2.cursor() as cur2:
+                    cur2.execute("""
+                        SELECT id FROM brain_briefs
+                         WHERE error IS NULL
+                         ORDER BY generated_at DESC LIMIT 1
+                    """)
+                    rid = cur2.fetchone()
+                    if rid: latest_id = str(rid[0])
+                c2.close()
+        except Exception: pass
+        rec_count = len(_parse_recommendations(md))
+        fix_count = len(_parse_code_fix_candidates(md))
+
     return Response(f"""<!doctype html><html lang="en"><head>
 <meta charset="utf-8">
 <title>DC Hub · Brain Brief</title>
@@ -598,6 +839,7 @@ pre.brief{{background:var(--surface);border:1px solid var(--border);
     <div class="count"><span class="count-val">{counts['attention']}</span><span class="count-lbl">Needs attention</span></div>
   </div>
   <pre class="brief">{body_inner}</pre>
+  {('<div style="margin-top:18px;display:flex;gap:10px;flex-wrap:wrap"><a class="regen" href="javascript:void(fetch(\\'/api/v1/brain/brief/' + latest_id + '/apply\\',{method:\\'POST\\',headers:{\\'X-Admin-Key\\':prompt(\\'admin key?\\')}}).then(r=>r.json()).then(d=>alert(\\'Fired \\'+d.fired+\\' of \\'+d.recommendations_found)))">▶ Apply ' + str(rec_count) + ' recommendations</a><a class="regen" href="javascript:void(fetch(\\'/api/v1/brain/brief/' + latest_id + '/draft-prs\\',{method:\\'POST\\',headers:{\\'X-Admin-Key\\':prompt(\\'admin key?\\')}}).then(r=>r.json()).then(d=>alert(\\'Found \\'+d.candidates_found+\\' code-fix candidates\\')))">⌥ Draft ' + str(fix_count) + ' PRs via L22</a></div>') if latest_id else ''}
   <div class="foot">
     DC Hub · Inspector layer · model {model or '—'}<br>
     <a href="/">dchub.cloud</a> · <a href="/reports/monthly">monthly trend</a> · <a href="/cited-by">cited by</a> · <a href="/transparency">ops</a>

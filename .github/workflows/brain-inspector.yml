@@ -17,6 +17,7 @@ jobs:
     timeout-minutes: 5
     steps:
       - name: Trigger Inspector
+        id: gen
         run: |
           set -eo pipefail
           ADMIN_KEY="${{ secrets.DCHUB_ADMIN_KEY }}"
@@ -28,6 +29,12 @@ jobs:
             -H "X-Admin-Key: $ADMIN_KEY" \
             -H "User-Agent: DCHub-Inspector-Cron/1.0" \
             "https://dchub.cloud/api/v1/brain/brief/generate")
+          BRIEF_ID=$(echo "$RESP" | python3 -c "
+          import sys, json
+          d = json.load(sys.stdin)
+          print(d.get('id') or '')
+          ")
+          echo "brief_id=$BRIEF_ID" >> "$GITHUB_OUTPUT"
           echo "$RESP" | python3 -c "
           import sys, json
           d = json.load(sys.stdin)
@@ -46,4 +53,55 @@ jobs:
           print(f'> {d.get(\"summary\", \"\")[:280]}')
           print()
           print(f'Full brief: https://dchub.cloud/brain/brief')
+          " >> "$GITHUB_STEP_SUMMARY"
+
+      # ── Apply the Inspector's recommendations to the autopilot.
+      # Inspector recommendations fire through the same rate-limit
+      # path as autonomous detector findings — Inspector can't override
+      # safety. Recommendations that are already in cooldown will be
+      # logged as rate_limited and not actually executed.
+      - name: Apply recommendations
+        if: steps.gen.outputs.brief_id != ''
+        run: |
+          set -eo pipefail
+          ADMIN_KEY="${{ secrets.DCHUB_ADMIN_KEY }}"
+          BID="${{ steps.gen.outputs.brief_id }}"
+          curl -sS -X POST \
+            -H "X-Admin-Key: $ADMIN_KEY" \
+            -H "User-Agent: DCHub-Inspector-Cron/1.0" \
+            "https://dchub.cloud/api/v1/brain/brief/${BID}/apply" \
+          | python3 -c "
+          import sys, json
+          d = json.load(sys.stdin)
+          print(f'### Recommendations applied')
+          print()
+          print(f'- Found: {d.get(\"recommendations_found\", 0)}')
+          print(f'- Fired: {d.get(\"fired\", 0)}')
+          for r in (d.get('results') or [])[:10]:
+              ok = '✓' if r.get('ok') else '✗'
+              print(f'  - {ok} {r.get(\"pattern\")} · http {r.get(\"http_code\")}')
+          " >> "$GITHUB_STEP_SUMMARY"
+
+      # ── Hand any code-fix candidates to L22 so it can draft PRs.
+      # L22 has its own safety whitelist; only 3 recipes auto-PR.
+      - name: Draft PRs via L22
+        if: steps.gen.outputs.brief_id != ''
+        continue-on-error: true
+        run: |
+          set -eo pipefail
+          ADMIN_KEY="${{ secrets.DCHUB_ADMIN_KEY }}"
+          BID="${{ steps.gen.outputs.brief_id }}"
+          curl -sS -X POST \
+            -H "X-Admin-Key: $ADMIN_KEY" \
+            -H "User-Agent: DCHub-Inspector-Cron/1.0" \
+            "https://dchub.cloud/api/v1/brain/brief/${BID}/draft-prs" \
+          | python3 -c "
+          import sys, json
+          d = json.load(sys.stdin)
+          n = d.get('candidates_found', 0)
+          print(f'### Code-fix candidates: {n}')
+          for c in (d.get('candidates') or [])[:10]:
+              print(f'- recipe={c.get(\"recipe\")} target={c.get(\"target\")}')
+          if d.get('l22_status'):
+              print(f'- L22 returned HTTP {d[\"l22_status\"]}')
           " >> "$GITHUB_STEP_SUMMARY"

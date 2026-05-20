@@ -282,6 +282,7 @@ def brain_pulse():
         "actions_24h": 0,
         "verdict":     "—",
         "voice_line":  None,
+        "inspector_brief": None,   # populated when a recent brief exists
         "served_at":   datetime.datetime.utcnow().isoformat() + "Z",
     }
     conn = _get_db()
@@ -292,6 +293,32 @@ def brain_pulse():
 
     try:
         with conn.cursor() as cur:
+            # Latest Inspector brief (Opus 4.7 narrative) — if one exists
+            # in the last 24h, surface its one-line take as the canonical
+            # "what the brain noticed" line. Falls back to rule-based
+            # voice line below if no brief or no summary.
+            try:
+                cur.execute("""
+                    SELECT id, summary, generated_at, model
+                      FROM brain_briefs
+                     WHERE error IS NULL
+                       AND generated_at >= NOW() - INTERVAL '24 hours'
+                     ORDER BY generated_at DESC LIMIT 1
+                """)
+                br = cur.fetchone()
+                if br and br[1]:
+                    out["inspector_brief"] = {
+                        "id":           int(br[0]),
+                        "summary":      br[1],
+                        "generated_at": br[2].isoformat() if br[2] else None,
+                        "age_human":    _humanize_age(br[2]),
+                        "model":        br[3],
+                    }
+            except Exception:
+                try: conn.rollback()
+                except Exception: pass
+
+
             # Latest non-bookkeeping action
             try:
                 cur.execute("""
@@ -345,7 +372,17 @@ def brain_pulse():
 
     out["status"]     = "active" if out["actions_24h"] > 0 else "quiet"
     out["verdict"]    = _verdict(out["actions_24h"], out.get("press_today", 0))
-    out["voice_line"] = _voice(out)
+    # Phase FF+25-followup-r9 (2026-05-20): if the Inspector has a fresh
+    # one-line take, prefer that as the voice line — it's a richer
+    # synthesis than the rule-based mapping. Falls back to the original
+    # pattern-mapped voice when no brief is available or summary is empty.
+    brief = out.get("inspector_brief") or {}
+    if brief.get("summary"):
+        out["voice_line"] = brief["summary"]
+        out["voice_source"] = "inspector"
+    else:
+        out["voice_line"] = _voice(out)
+        out["voice_source"] = "rules"
 
     resp = jsonify(out)
     resp.headers["Cache-Control"] = "public, max-age=60"
