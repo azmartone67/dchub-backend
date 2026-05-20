@@ -458,6 +458,35 @@ def repair_l21_schema():
                     "error": str(e)[:200],
                 })
 
+        # Phase FF+25-followup-v2 (2026-05-20): the table also has NOT
+        # NULL constraints on the OTHER autopilot module's columns
+        # (finding_issue, finding_url, pattern_name, etc.) from
+        # routes/brain_autopilot.py. Since L21 writes WITHOUT those
+        # columns (different schema), its INSERTs fail on the NOT NULL.
+        # Both modules need to coexist → relax the NOT NULL so either
+        # column set can write. Each module still validates its own
+        # required fields at the application layer.
+        relax_null_cols = [
+            "finding_issue", "finding_url", "pattern_name",
+            "action_endpoint", "outcome",
+        ]
+        relax_results = []
+        for col in relax_null_cols:
+            sql = f"ALTER TABLE brain_autopilot_actions ALTER COLUMN {col} DROP NOT NULL"
+            try:
+                cur.execute(sql)
+                conn.commit()
+                relax_results.append({"column": col, "status": "dropped_not_null"})
+            except Exception as e:
+                try: conn.rollback()
+                except Exception: pass
+                msg = str(e)[:150]
+                # If the column already accepts NULL, that's fine
+                if "does not exist" in msg.lower():
+                    relax_results.append({"column": col, "status": "column_missing_ok"})
+                else:
+                    relax_results.append({"column": col, "status": "error", "error": msg})
+
         # Post-check: list columns again to confirm
         try:
             cur.execute("""
@@ -493,6 +522,7 @@ def repair_l21_schema():
             columns_before=current_cols,
             columns_after=new_cols,
             alters=results,
+            relaxed_not_null=relax_results,
             probe_insert=probe_status,
         )
     finally:
