@@ -8581,6 +8581,42 @@ def stripe_webhook():
                             send_pro_welcome_email_sendgrid(customer_email, customer_email.split("@")[0])
                         except Exception as email_err:
                             print(f"⚠️ Pro welcome email error: {email_err}")
+                        # Phase FF+25-followup-r19a (2026-05-20):
+                        # Auto-tag into founding_customers cohort if we're
+                        # still under FOUNDING_CUSTOMERS_CAP. The first 25
+                        # paying customers get the founding tag — after
+                        # that, ordinary signups skip this. Idempotent +
+                        # never raises (best-effort side-effect).
+                        try:
+                            from routes.founding_customers import (
+                                auto_tag_if_under_cap,
+                                notify_admin_of_founding,
+                            )
+                            _tag_result = auto_tag_if_under_cap(
+                                email=customer_email,
+                                plan=_u.get("plan") or "developer",
+                                stripe_customer_id=str(data.get("customer") or ""),
+                                first_payment_at=datetime.utcnow().isoformat() + "Z",
+                                notes=("auto-tagged from "
+                                        "checkout.session.completed · "
+                                        f"session={data.get('id', 'unknown')}"),
+                            )
+                            if _tag_result.get("tagged"):
+                                print(f"⭐ Founding customer #"
+                                      f"{_tag_result['position']} of "
+                                      f"{_tag_result['cap']}: {customer_email}")
+                                notify_admin_of_founding(
+                                    email=customer_email,
+                                    position=_tag_result["position"],
+                                    plan=_u.get("plan") or "developer",
+                                    stripe_customer_id=str(data.get("customer") or ""),
+                                )
+                            elif _tag_result.get("reason") != "already_tagged":
+                                print(f"  founding auto-tag skipped: "
+                                      f"{_tag_result.get('reason')}")
+                        except Exception as _fc_err:
+                            print(f"⚠️ Founding auto-tag error "
+                                  f"(non-fatal): {_fc_err}")
                 except Exception as verify_err:
                     print(f"⚠️ Could not verify user after checkout: {verify_err}")
 

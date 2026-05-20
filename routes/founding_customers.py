@@ -183,8 +183,115 @@ def public_count():
         except Exception: pass
 
 
+# ── Auto-tag hook ────────────────────────────────────────────────────
+# Called from the Stripe webhook on checkout.session.completed +
+# customer.subscription.created so every paid signup auto-tags into the
+# founding cohort UNTIL the cap is hit. After cap, ordinary paid
+# customers just become regular customers and no founding row is added.
+#
+# Cap is FOUNDING_CUSTOMERS_CAP env var (default 25). After hitting the
+# cap the auto-tag stops permanently — those 25 become the canonical
+# "founding 25" cohort for marketing / reference use.
+FOUNDING_CAP = int(os.environ.get("FOUNDING_CUSTOMERS_CAP", "25"))
+
+
+def auto_tag_if_under_cap(
+    email: str,
+    plan: str = "developer",
+    stripe_customer_id: str | None = None,
+    first_payment_at: str | None = None,
+    notes: str | None = None,
+) -> dict:
+    """Idempotently tag a paid customer into founding_customers if the
+    cohort is below FOUNDING_CAP. Safe to call from the Stripe webhook —
+    no exception bubbles up if the table is missing or the connection
+    fails.
+
+    Returns {tagged: bool, position: int|None, cap: int}.
+    """
+    out: dict = {"tagged": False, "position": None,
+                 "cap": FOUNDING_CAP, "reason": ""}
+    if not email or "@" not in email:
+        out["reason"] = "invalid_email"
+        return out
+    email = email.lower().strip()
+    try:
+        _ensure_table()
+        c = _get_db()
+        if c is None:
+            out["reason"] = "no_db"
+            return out
+        try:
+            with c.cursor() as cur:
+                cur.execute("SELECT COUNT(*) FROM founding_customers")
+                cohort_size = int((cur.fetchone() or [0])[0] or 0)
+                if cohort_size >= FOUNDING_CAP:
+                    out["reason"] = f"cap_reached ({cohort_size}/{FOUNDING_CAP})"
+                    return out
+                # Already tagged?
+                cur.execute(
+                    "SELECT 1 FROM founding_customers WHERE email = %s",
+                    (email,),
+                )
+                if cur.fetchone():
+                    out["reason"] = "already_tagged"
+                    return out
+                cur.execute("""
+                    INSERT INTO founding_customers
+                      (email, plan_at_tag, first_payment_at,
+                       stripe_customer_id, notes, contact_status)
+                    VALUES (%s, %s, %s, %s, %s, 'auto-tagged')
+                """, (email, plan, first_payment_at,
+                       stripe_customer_id, notes))
+            try: c.commit()
+            except Exception: pass
+            out["tagged"] = True
+            out["position"] = cohort_size + 1
+            return out
+        finally:
+            try: c.close()
+            except Exception: pass
+    except Exception as e:
+        out["reason"] = f"exception: {str(e)[:160]}"
+        return out
+
+
+def notify_admin_of_founding(email: str, position: int, plan: str,
+                              stripe_customer_id: str | None) -> None:
+    """Send Jonathan an admin alert email so he knows immediately when
+    a new founding customer lands. Best-effort — never raises."""
+    try:
+        from main import send_admin_alert_email
+    except Exception:
+        return
+    cap = FOUNDING_CAP
+    subj = f"Founding customer #{position} of {cap} — {email}"
+    body = (
+        f"<h2>Founding customer #{position} of {cap} just signed up</h2>"
+        f"<p><b>Email:</b> {email}</p>"
+        f"<p><b>Plan:</b> {plan}</p>"
+        f"<p><b>Stripe:</b> {stripe_customer_id or '(none)'}</p>"
+        f"<p>The first {cap} paying customers matter disproportionately. "
+        f"Reach out personally within the next hour — even a 60-second "
+        f"welcome note converts a buyer into a reference customer.</p>"
+        f"<p>"
+        f"<a href='https://dchub.cloud/api/v1/admin/customer-lookup?"
+        f"email={email}'>Customer record</a> · "
+        f"<a href='https://dashboard.stripe.com/customers/"
+        f"{stripe_customer_id or ''}'>Stripe</a> · "
+        f"<a href='https://dchub.cloud/api/v1/admin/founding-customers'>"
+        f"Cohort</a>"
+        f"</p>"
+    )
+    try:
+        send_admin_alert_email(subj, body)
+    except Exception as e:
+        logger.warning(f"[founding-customers] admin alert failed: {e}")
+
+
 def _smoke():
-    logger.info("[founding-customers] ready · "
-                 "POST /tag · GET /api/v1/admin/founding-customers")
+    logger.info(f"[founding-customers] ready · cap={FOUNDING_CAP} · "
+                 f"POST /tag · GET /api/v1/admin/founding-customers · "
+                 f"auto_tag_if_under_cap() importable")
 
 _smoke()
