@@ -102,10 +102,20 @@ jobs:
 
       - name: 3 — Deploy
         run: |
-          echo "Deploying dchub-frontend/ → ${{ steps.pick.outputs.name }}"
+          NAME="${{ steps.pick.outputs.name }}"
+          # Deploying with --branch=main created PREVIEW deployments because
+          # the project's production branch is not "main" — that left the live
+          # domain stale (the worker_version_drift symptom). Look up the real
+          # production branch and deploy to it so we hit production.
+          PROD_BRANCH=$(curl -sS \
+            -H "Authorization: Bearer $CLOUDFLARE_API_TOKEN" \
+            "https://api.cloudflare.com/client/v4/accounts/$CLOUDFLARE_ACCOUNT_ID/pages/projects/$NAME" \
+            | jq -r '.result.production_branch // "main"')
+          echo "Project: $NAME | production branch: $PROD_BRANCH"
+          echo "Deploying dchub-frontend/ → $NAME (branch=$PROD_BRANCH)"
           npx --yes wrangler@latest pages deploy dchub-frontend \
-            --project-name="${{ steps.pick.outputs.name }}" \
-            --branch=main \
+            --project-name="$NAME" \
+            --branch="$PROD_BRANCH" \
             --commit-dirty=true
 
       - name: 4 — Verify live worker version
