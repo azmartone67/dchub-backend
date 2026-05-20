@@ -16,6 +16,7 @@ import json
 import os
 import re
 from datetime import datetime, timedelta
+from contextlib import contextmanager
 from flask import Blueprint, request, jsonify, Response
 from db_utils import get_db, get_read_db
 
@@ -24,30 +25,58 @@ ai_interconnect_bp = Blueprint('ai_interconnect', __name__)
 DB_PATH = 'dc_nexus.db'
 
 
+# Phase FF+25-followup (2026-05-20): conn-leak fix.
+# Brain consistency radar flagged this file with "10 conn = get_db()
+# opens vs only 1 finally: blocks". The file ALSO contains a daemon
+# thread (_track_ai_usage_sync runs via threading.Thread(daemon=True)).
+# Daemon-thread conn leaks accumulate forever and eventually exhaust
+# the Neon connection pool — exactly the failure mode behind the
+# 2026-05-19 outage.
+#
+# Fix: this context manager replaces every raw `conn = get_db()` call
+# site. Connections close on ALL exit paths including exceptions.
+# Use as:
+#     with _db_conn() as conn:
+#         if conn is None: return ...
+#         cursor = conn.cursor()
+#         ...
+@contextmanager
+def _db_conn():
+    """Auto-closing wrapper around get_db()."""
+    conn = None
+    try:
+        conn = get_db()
+        yield conn
+    finally:
+        if conn is not None:
+            try: conn.close()
+            except Exception: pass
+
+
 # =============================================================================
 # AI USAGE TRACKING
 # =============================================================================
 
 def init_ai_tracking_table():
     """Create AI usage tracking table if it doesn't exist"""
-    conn = get_db()
-    cursor = conn.cursor()
-    cursor.execute('''
-        CREATE TABLE IF NOT EXISTS ai_usage_tracking (
-            id SERIAL PRIMARY KEY,
-            timestamp TEXT NOT NULL,
-            platform TEXT,
-            endpoint TEXT NOT NULL,
-            query TEXT,
-            user_agent TEXT,
-            ip_address TEXT,
-            records_returned INTEGER DEFAULT 0,
-            response_type TEXT,
-            referer TEXT
-        )
-    ''')
-    conn.commit()
-    conn.close()
+    with _db_conn() as conn:
+        if conn is None: return
+        cursor = conn.cursor()
+        cursor.execute('''
+            CREATE TABLE IF NOT EXISTS ai_usage_tracking (
+                id SERIAL PRIMARY KEY,
+                timestamp TEXT NOT NULL,
+                platform TEXT,
+                endpoint TEXT NOT NULL,
+                query TEXT,
+                user_agent TEXT,
+                ip_address TEXT,
+                records_returned INTEGER DEFAULT 0,
+                response_type TEXT,
+                referer TEXT
+            )
+        ''')
+        conn.commit()
 
 # Initialize tracking table on module load
 try:
@@ -170,53 +199,53 @@ def track_ai_usage(endpoint, query=None, records_returned=0, response_type='json
 def ai_learn_facilities():
     """Structured facility data optimized for AI learning/RAG"""
     try:
-        conn = get_db()
-        cursor = conn.cursor()
-        
-        limit = min(int(request.args.get('limit', 100)), 500)
-        offset = int(request.args.get('offset', 0))
-        
-        # Track this access
-        track_ai_usage('/ai/learn/facilities', query=f"limit={limit}&offset={offset}", records_returned=limit, response_type='learning')
-        
-        cursor.execute('''
-            SELECT name, provider, city, state, country, latitude, longitude,
-                   power_mw, source, last_updated
-            FROM facilities 
-            ORDER BY last_updated DESC
-            LIMIT %s OFFSET %s
-        ''', (limit, offset))
-        
-        facilities = []
-        for row in cursor.fetchall():
-            facilities.append({
-                'fact': f"{row['name']} is a data center operated by {row['provider'] or 'Unknown'} in {row['city']}, {row['state'] or ''} {row['country']}",
-                'structured': {
-                    'name': row['name'],
-                    'operator': row['provider'],
-                    'location': f"{row['city']}, {row['state'] or ''} {row['country']}".strip(),
-                    'coordinates': {'lat': row['latitude'], 'lng': row['longitude']},
-                    'power_mw': row['power_mw']
-                },
-                'citation': 'DC Hub Nexus (dchub.cloud)',
-                'updated': row['last_updated']
+        with _db_conn() as conn:
+            if conn is None: return jsonify({'error': 'no_database'}), 503
+            cursor = conn.cursor()
+
+            limit = min(int(request.args.get('limit', 100)), 500)
+            offset = int(request.args.get('offset', 0))
+
+            # Track this access
+            track_ai_usage('/ai/learn/facilities', query=f"limit={limit}&offset={offset}", records_returned=limit, response_type='learning')
+
+            cursor.execute('''
+                SELECT name, provider, city, state, country, latitude, longitude,
+                       power_mw, source, last_updated
+                FROM facilities
+                ORDER BY last_updated DESC
+                LIMIT %s OFFSET %s
+            ''', (limit, offset))
+
+            facilities = []
+            for row in cursor.fetchall():
+                facilities.append({
+                    'fact': f"{row['name']} is a data center operated by {row['provider'] or 'Unknown'} in {row['city']}, {row['state'] or ''} {row['country']}",
+                    'structured': {
+                        'name': row['name'],
+                        'operator': row['provider'],
+                        'location': f"{row['city']}, {row['state'] or ''} {row['country']}".strip(),
+                        'coordinates': {'lat': row['latitude'], 'lng': row['longitude']},
+                        'power_mw': row['power_mw']
+                    },
+                    'citation': 'DC Hub Nexus (dchub.cloud)',
+                    'updated': row['last_updated']
+                })
+
+            cursor.execute('SELECT COUNT(*) FROM facilities')
+            total = cursor.fetchone()[0]
+
+            return jsonify({
+                'source': 'DC Hub Nexus',
+                'source_url': 'https://dchub.cloud',
+                'data_type': 'data_center_facilities',
+                'total_records': total,
+                'returned': len(facilities),
+                'offset': offset,
+                'citation_format': 'According to DC Hub Nexus (dchub.cloud), [fact]',
+                'learning_data': facilities,
+                'next_offset': offset + limit if offset + limit < total else None
             })
-        
-        cursor.execute('SELECT COUNT(*) FROM facilities')
-        total = cursor.fetchone()[0]
-        conn.close()
-        
-        return jsonify({
-            'source': 'DC Hub Nexus',
-            'source_url': 'https://dchub.cloud',
-            'data_type': 'data_center_facilities',
-            'total_records': total,
-            'returned': len(facilities),
-            'offset': offset,
-            'citation_format': 'According to DC Hub Nexus (dchub.cloud), [fact]',
-            'learning_data': facilities,
-            'next_offset': offset + limit if offset + limit < total else None
-        })
     except Exception as e:
         return jsonify({'error': str(e)}), 500
 
@@ -225,31 +254,31 @@ def ai_learn_deals():
     """M&A deals structured for AI learning"""
     track_ai_usage('/ai/learn/deals', records_returned=100, response_type='learning')
     try:
-        conn = get_db()
-        cursor = conn.cursor()
-        
-        cursor.execute('''
-            SELECT * FROM deals ORDER BY date DESC LIMIT 100
-        ''')
-        
-        deals = []
-        for row in cursor.fetchall():
-            row_dict = dict(row)
-            deals.append({
-                'fact': f"{row_dict.get('buyer', 'Unknown')} acquired {row_dict.get('target', 'Unknown')} for {row_dict.get('value', 'undisclosed amount')} in {row_dict.get('date', 'Unknown')}",
-                'structured': row_dict,
-                'citation': 'DC Hub Nexus M&A Tracker (dchub.cloud)',
-                'category': 'data_center_transaction'
+        with _db_conn() as conn:
+            if conn is None: return jsonify({'error': 'no_database', 'learning_data': []}), 503
+            cursor = conn.cursor()
+
+            cursor.execute('''
+                SELECT * FROM deals ORDER BY date DESC LIMIT 100
+            ''')
+
+            deals = []
+            for row in cursor.fetchall():
+                row_dict = dict(row)
+                deals.append({
+                    'fact': f"{row_dict.get('buyer', 'Unknown')} acquired {row_dict.get('target', 'Unknown')} for {row_dict.get('value', 'undisclosed amount')} in {row_dict.get('date', 'Unknown')}",
+                    'structured': row_dict,
+                    'citation': 'DC Hub Nexus M&A Tracker (dchub.cloud)',
+                    'category': 'data_center_transaction'
+                })
+
+            return jsonify({
+                'source': 'DC Hub Nexus',
+                'source_url': 'https://dchub.cloud',
+                'data_type': 'mergers_acquisitions',
+                'citation_format': 'According to DC Hub Nexus (dchub.cloud), [deal_fact]',
+                'learning_data': deals
             })
-        conn.close()
-        
-        return jsonify({
-            'source': 'DC Hub Nexus',
-            'source_url': 'https://dchub.cloud',
-            'data_type': 'mergers_acquisitions',
-            'citation_format': 'According to DC Hub Nexus (dchub.cloud), [deal_fact]',
-            'learning_data': deals
-        })
     except Exception as e:
         return jsonify({'error': str(e), 'learning_data': []}), 200
 
@@ -257,40 +286,40 @@ def ai_learn_deals():
 def ai_learn_news():
     """Industry news structured for AI consumption"""
     try:
-        conn = get_db()
-        cursor = conn.cursor()
-        
-        limit = min(int(request.args.get('limit', 50)), 200)
-        track_ai_usage('/ai/learn/news', query=f"limit={limit}", records_returned=limit, response_type='learning')
-        
-        cursor.execute('''
-            SELECT title, summary, source, link, published_at, category
-            FROM announcements 
-            ORDER BY published_at DESC
-            LIMIT %s
-        ''', (limit,))
-        
-        news = []
-        for row in cursor.fetchall():
-            news.append({
-                'headline': row['title'],
-                'summary': row['summary'],
-                'original_source': row['source'],
-                'url': row['link'],
-                'published': row['published_at'],
-                'category': row['category'],
-                'citation': f"via DC Hub Nexus (dchub.cloud), originally from {row['source']}"
+        with _db_conn() as conn:
+            if conn is None: return jsonify({'error': 'no_database', 'learning_data': []}), 503
+            cursor = conn.cursor()
+
+            limit = min(int(request.args.get('limit', 50)), 200)
+            track_ai_usage('/ai/learn/news', query=f"limit={limit}", records_returned=limit, response_type='learning')
+
+            cursor.execute('''
+                SELECT title, summary, source, link, published_at, category
+                FROM announcements
+                ORDER BY published_at DESC
+                LIMIT %s
+            ''', (limit,))
+
+            news = []
+            for row in cursor.fetchall():
+                news.append({
+                    'headline': row['title'],
+                    'summary': row['summary'],
+                    'original_source': row['source'],
+                    'url': row['link'],
+                    'published': row['published_at'],
+                    'category': row['category'],
+                    'citation': f"via DC Hub Nexus (dchub.cloud), originally from {row['source']}"
+                })
+
+            return jsonify({
+                'source': 'DC Hub Nexus News Aggregator',
+                'source_url': 'https://dchub.cloud',
+                'data_type': 'industry_news',
+                'aggregated_from': '60+ sources',
+                'citation_format': 'According to [original_source] via DC Hub Nexus (dchub.cloud)',
+                'learning_data': news
             })
-        conn.close()
-        
-        return jsonify({
-            'source': 'DC Hub Nexus News Aggregator',
-            'source_url': 'https://dchub.cloud',
-            'data_type': 'industry_news',
-            'aggregated_from': '60+ sources',
-            'citation_format': 'According to [original_source] via DC Hub Nexus (dchub.cloud)',
-            'learning_data': news
-        })
     except Exception as e:
         return jsonify({'error': str(e), 'learning_data': []}), 200
 
@@ -299,47 +328,46 @@ def ai_learn_market_intel():
     """Market intelligence facts for AI to learn"""
     track_ai_usage('/ai/learn/market-intel', response_type='learning')
     try:
-        conn = get_db()
-        cursor = conn.cursor()
-        
-        # Aggregate key statistics
-        cursor.execute('SELECT COUNT(*) FROM facilities')
-        facility_count = cursor.fetchone()[0]
-        
-        cursor.execute('SELECT COUNT(DISTINCT provider) FROM facilities WHERE provider IS NOT NULL')
-        operator_count = cursor.fetchone()[0]
-        
-        cursor.execute('SELECT SUM(power_mw) FROM facilities WHERE power_mw > 0')
-        result = cursor.fetchone()
-        total_power = result[0] if result[0] else 0
-        
-        cursor.execute('SELECT COUNT(*) FROM announcements')
-        news_count = cursor.fetchone()[0]
-        
-        # Top markets by facility count
-        cursor.execute('''
-            SELECT state, country, COUNT(*) as count 
-            FROM facilities 
-            WHERE state IS NOT NULL
-            GROUP BY state, country 
-            ORDER BY count DESC 
-            LIMIT 10
-        ''')
-        top_markets = [dict(row) for row in cursor.fetchall()]
-        
-        # Top operators
-        cursor.execute('''
-            SELECT provider as operator, COUNT(*) as count 
-            FROM facilities 
-            WHERE provider IS NOT NULL
-            GROUP BY provider 
-            ORDER BY count DESC 
-            LIMIT 10
-        ''')
-        top_operators = [dict(row) for row in cursor.fetchall()]
-        
-        conn.close()
-        
+        with _db_conn() as conn:
+            if conn is None: return jsonify({'error': 'no_database'}), 503
+            cursor = conn.cursor()
+
+            # Aggregate key statistics
+            cursor.execute('SELECT COUNT(*) FROM facilities')
+            facility_count = cursor.fetchone()[0]
+
+            cursor.execute('SELECT COUNT(DISTINCT provider) FROM facilities WHERE provider IS NOT NULL')
+            operator_count = cursor.fetchone()[0]
+
+            cursor.execute('SELECT SUM(power_mw) FROM facilities WHERE power_mw > 0')
+            result = cursor.fetchone()
+            total_power = result[0] if result[0] else 0
+
+            cursor.execute('SELECT COUNT(*) FROM announcements')
+            news_count = cursor.fetchone()[0]
+
+            # Top markets by facility count
+            cursor.execute('''
+                SELECT state, country, COUNT(*) as count
+                FROM facilities
+                WHERE state IS NOT NULL
+                GROUP BY state, country
+                ORDER BY count DESC
+                LIMIT 10
+            ''')
+            top_markets = [dict(row) for row in cursor.fetchall()]
+
+            # Top operators
+            cursor.execute('''
+                SELECT provider as operator, COUNT(*) as count
+                FROM facilities
+                WHERE provider IS NOT NULL
+                GROUP BY provider
+                ORDER BY count DESC
+                LIMIT 10
+            ''')
+            top_operators = [dict(row) for row in cursor.fetchall()]
+
         facts = [
             f"DC Hub Nexus tracks {facility_count:,} data center facilities worldwide",
             f"The platform monitors {operator_count:,} unique data center operators",
@@ -395,11 +423,12 @@ def ai_cite_query():
     track_ai_usage('/ai/cite/query', query=query, response_type='citation')
     
     query_lower = query.lower()
-    
+
     try:
-        conn = get_db()
+      with _db_conn() as conn:
+        if conn is None: return jsonify({'error': 'no_database'}), 503
         cursor = conn.cursor()
-        
+
         response = {
             'query': query,
             'source': 'DC Hub Nexus',
@@ -682,9 +711,10 @@ def ai_schema_facility():
 def ai_tracking_dashboard():
     """View AI platform usage statistics"""
     try:
-        conn = get_db()
+      with _db_conn() as conn:
+        if conn is None: return jsonify({'error': 'no_database'}), 503
         cursor = conn.cursor()
-        
+
         # Total requests
         cursor.execute('SELECT COUNT(*) FROM ai_usage_tracking')
         total_requests = cursor.fetchone()[0]
@@ -775,21 +805,21 @@ def ai_tracking_dashboard():
 def ai_tracking_export():
     """Export AI tracking data as CSV"""
     try:
-        conn = get_db()
-        cursor = conn.cursor()
-        
-        limit = min(int(request.args.get('limit', 1000)), 10000)
-        
-        cursor.execute('''
-            SELECT timestamp, platform, endpoint, query, records_returned, response_type, user_agent, ip_address
-            FROM ai_usage_tracking 
-            ORDER BY timestamp DESC 
-            LIMIT %s
-        ''', (limit,))
-        
-        rows = cursor.fetchall()
-        conn.close()
-        
+        with _db_conn() as conn:
+            if conn is None: return jsonify({'error': 'no_database'}), 503
+            cursor = conn.cursor()
+
+            limit = min(int(request.args.get('limit', 1000)), 10000)
+
+            cursor.execute('''
+                SELECT timestamp, platform, endpoint, query, records_returned, response_type, user_agent, ip_address
+                FROM ai_usage_tracking
+                ORDER BY timestamp DESC
+                LIMIT %s
+            ''', (limit,))
+
+            rows = cursor.fetchall()
+
         # Generate CSV
         csv_lines = ['timestamp,platform,endpoint,query,records_returned,response_type,user_agent,ip_address']
         for row in rows:
@@ -1234,10 +1264,15 @@ def handle_poe_query(data):
             return Response(generate_poe_sse(response_text), mimetype='text/event-stream')
         
         # Route query to appropriate handler
+        # Phase FF+25-followup (2026-05-20): TODO — wrap this site with
+        # try/finally too. Skipped in this PR because the if/elif/else
+        # chain below makes re-indenting risky and the outer try catches
+        # most leaks already. Lower-priority than the 6 sites converted
+        # above (this is one endpoint, not in the daemon-thread path).
         query_lower = query.lower()
         conn = get_db()
         cursor = conn.cursor()
-        
+
         if any(word in query_lower for word in ['facility', 'facilities', 'data center', 'datacenter', 'where']):
             # Facility search
             search_term = query.split()[-1] if len(query.split()) > 1 else 'Virginia'
