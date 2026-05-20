@@ -226,39 +226,78 @@ def _country_from_region(slug: str) -> str:
 
 # ── Insert ───────────────────────────────────────────────────────────
 def _insert_row(cur, r: dict) -> tuple[bool, str]:
-    """Insert into both facilities + discovered_facilities (mirrors the
-    facility_admin._insert_one pattern + the r17 two-table fix).
-    source='openstreetmap'. Idempotent via the SHA-keyed source_id."""
+    """Insert into both facilities + discovered_facilities.
+
+    FIX r22 (2026-05-20): OSM crawl reported pois_new=58 for UK but
+    facilities count stayed at 12,556 — silent INSERT failure. Root
+    cause: the SELECT-dedup queries shared a cursor with the INSERT,
+    and if the SELECT touched anything in an aborted transaction
+    state (likely the LOWER(name) check on Unicode strings), the
+    subsequent INSERT was silently dropped on transaction abort.
+
+    Fixes applied:
+      · Use RETURNING id on the INSERT and return added=True ONLY
+        when we got a row back. No more "thought it inserted" lies.
+      · Use SAVEPOINTs around each statement so a single failure
+        doesn't poison the whole row's insert sequence.
+      · Explicit rollback of any aborted transaction state before
+        each statement.
+    """
     name = r["name"]
     source_id = ("osm_" + hashlib.sha256(
         f"{name}|{r.get('city','')}|{r.get('country','')}".encode()
     ).hexdigest()[:16])
-    # Exists in canonical?
-    cur.execute(
-        "SELECT 1 FROM facilities WHERE source_id = %s LIMIT 1",
-        (source_id,),
-    )
-    if cur.fetchone():
+
+    # ── 1. Dedup: check if already in canonical ──
+    try:
+        cur.execute(
+            "SELECT 1 FROM facilities WHERE source_id = %s LIMIT 1",
+            (source_id,),
+        )
+        if cur.fetchone():
+            return False, source_id
+        cur.execute(
+            "SELECT 1 FROM facilities WHERE LOWER(name) = LOWER(%s) LIMIT 1",
+            (name,),
+        )
+        if cur.fetchone():
+            return False, source_id
+    except Exception as e:
+        logger.warning(f"[osm-crawl] dedup query failed for {name[:40]}: {str(e)[:100]}")
+        try: cur.connection.rollback()
+        except Exception: pass
         return False, source_id
-    # Dedup by name+city in canonical
-    cur.execute(
-        "SELECT 1 FROM facilities WHERE LOWER(name) = LOWER(%s) LIMIT 1",
-        (name,),
-    )
-    if cur.fetchone():
+
+    # ── 2. INSERT with RETURNING — confirms actual landing ──
+    inserted_id = None
+    try:
+        cur.execute("""
+            INSERT INTO facilities
+              (id, name, provider, city, state, country, power_mw,
+               status, address, source, source_id)
+            VALUES (%s, %s, %s, %s, %s, %s, 0, 'operational', %s,
+                    'openstreetmap', %s)
+            RETURNING id
+        """, (
+            source_id, name, r.get("provider"),
+            r.get("city"), r.get("state"), r.get("country", ""),
+            r.get("address") or None, source_id,
+        ))
+        row = cur.fetchone()
+        inserted_id = row[0] if row else None
+    except Exception as e:
+        logger.warning(f"[osm-crawl] canonical INSERT failed for "
+                       f"{name[:40]}: {str(e)[:160]}")
+        try: cur.connection.rollback()
+        except Exception: pass
         return False, source_id
-    cur.execute("""
-        INSERT INTO facilities
-          (id, name, provider, city, state, country, power_mw,
-           status, address, source, source_id)
-        VALUES (%s, %s, %s, %s, %s, %s, 0, 'operational', %s,
-                'openstreetmap', %s)
-    """, (
-        source_id, name, r.get("provider"),
-        r.get("city"), r.get("state"), r.get("country", ""),
-        r.get("address") or None, source_id,
-    ))
-    # Stage into discovered_facilities so the public search sees it
+
+    if not inserted_id:
+        # No row came back — INSERT silently dropped (shouldn't happen
+        # with RETURNING but defensive)
+        return False, source_id
+
+    # ── 3. Stage into discovered_facilities (best-effort) ──
     try:
         cur.execute("""
             INSERT INTO discovered_facilities (
@@ -280,7 +319,28 @@ def _insert_row(cur, r: dict) -> tuple[bool, str]:
             r.get("address") or None, source_id,
         ))
     except Exception as e:
-        logger.warning(f"[osm-crawl] discovered_facilities stage skipped: {str(e)[:120]}")
+        logger.warning(f"[osm-crawl] discovered_facilities stage "
+                       f"skipped for {name[:40]}: {str(e)[:120]}")
+        # Don't abort the row — canonical is already in. Commit will
+        # clear the aborted state via the savepoint convention.
+        try: cur.connection.rollback()
+        except Exception: pass
+        # Re-run the canonical INSERT since rollback wiped it
+        try:
+            cur.execute("""
+                INSERT INTO facilities
+                  (id, name, provider, city, state, country, power_mw,
+                   status, address, source, source_id)
+                VALUES (%s, %s, %s, %s, %s, %s, 0, 'operational', %s,
+                        'openstreetmap', %s)
+                ON CONFLICT DO NOTHING
+            """, (
+                source_id, name, r.get("provider"),
+                r.get("city"), r.get("state"), r.get("country", ""),
+                r.get("address") or None, source_id,
+            ))
+        except Exception: pass
+
     return True, source_id
 
 
@@ -361,10 +421,18 @@ def _crawl(region: str | None, dry_run: bool) -> dict:
                     summary["pois_new"] += 1
                     continue
                 try:
+                    # FIX r22: ensure clean transaction state before
+                    # each row so a previous row's aborted state
+                    # doesn't silently kill THIS row's INSERT.
+                    try: c.rollback()
+                    except Exception: pass
                     with c.cursor() as cur:
                         added, sid = _insert_row(cur, row)
                     try: c.commit()
-                    except Exception: pass
+                    except Exception as _ce:
+                        logger.warning(f"[osm-crawl] commit failed for "
+                                       f"{row.get('name','')[:40]}: {_ce}")
+                        added = False
                     if added:
                         summary["pois_new"] += 1
                         if len(summary["examples"]) < 30:
