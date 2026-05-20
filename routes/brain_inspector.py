@@ -194,6 +194,26 @@ def _gather_signals() -> dict:
         # Top facilities counts
         _try("facilities_total",
              """SELECT COUNT(*) FROM facilities""", one=True)
+        # Phase r14 — facility coverage by country (catches gaps DCHawk
+        # / dcByte have that we don't). If Canada/UK/Singapore counts
+        # look thin compared to the public industry baseline, the
+        # Inspector calls it out in the brief.
+        _try("facilities_by_country",
+             """SELECT COALESCE(NULLIF(UPPER(country),''),'?') AS c,
+                       COUNT(*) AS n
+                  FROM facilities
+                 GROUP BY UPPER(country)
+                 ORDER BY n DESC LIMIT 12""")
+        # Phase r14 — recent facility additions (gives the Inspector a
+        # sense of whether discovery is alive). If we haven't added
+        # anything in 7d, the pipeline likely needs a kick.
+        _try("facilities_added_7d",
+             """SELECT COUNT(*) FROM facilities
+                 WHERE source = 'manual'
+                    OR id IN (
+                       SELECT id FROM discovered_facilities
+                        WHERE discovered_at >= NOW() - INTERVAL '7 days'
+                    )""", one=True)
         # Most recent deal
         _try("deals_recent",
              """SELECT date, buyer, seller, value FROM deals
@@ -211,11 +231,13 @@ _SYSTEM_PROMPT = """You are the DC Hub Inspector — an autonomous senior infras
 Your job: read the signal block below and produce a single coherent Markdown brief. Your voice is dry, observational, evidence-first. Never overpromise, never invent numbers, never use exclamation marks or emojis.
 
 You must:
-  - Cite which signal each claim came from (e.g. "per autopilot_24h" or "per mcp_funnel").
+  - Cite which signal each claim came from (e.g. "per autopilot_24h" or "per mcp_funnel" or "per facilities_by_country").
   - If a number isn't in the signal block, do NOT invent one. Say "not yet measured" or omit.
   - Mark each item with confidence: high / medium / low.
   - Suggest concrete next actions ONLY for items where the action is well-defined; otherwise mark as "needs human review".
   - Forecast what's likely to change in the next 24 hours, with explicit caveats.
+  - If facilities_by_country shows any country with fewer than 50 facilities AND that country has a known active DC industry (Canada, UK, Germany, Singapore, Australia, Japan, France, Netherlands, Ireland), flag it as a "coverage gap" in Degrading with a specific recommendation.
+  - If facilities_added_7d is 0, flag the discovery pipeline as Degrading — fresh additions are how we stay ahead of DCHawk + dcByte.
 
 Output the brief in this exact Markdown structure:
 
