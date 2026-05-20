@@ -192,15 +192,17 @@ def _compute_report(year: int | None = None,
             yago_lo, yago_hi = _month_bounds(yy, ym)
 
             # ── HEADLINE: facilities, total MW (point-in-time, end of month)
-            # We use "current totals" as the snapshot for the current/last
-            # month, since the data is cumulative.
-            facilities_now = int(_safe_scalar(cur, """
-                SELECT COUNT(*) FROM discovered_facilities
-                 WHERE merged_at IS NULL AND is_duplicate = 0
-            """) or 0)
+            # FIX r7 (2026-05-20): switched cumulative totals from
+            # discovered_facilities (10k rows, 17 GW — the discovery queue)
+            # to facilities (21k rows, 849 GW — the canonical merged table
+            # site_stats uses). The "added this month" delta still reads
+            # discovered_facilities.discovered_at since that's where the
+            # timestamp lives.
+            facilities_now = int(_safe_scalar(cur,
+                "SELECT COUNT(*) FROM facilities") or 0)
             total_mw_now = float(_safe_scalar(cur, """
-                SELECT COALESCE(SUM(power_mw), 0) FROM discovered_facilities
-                 WHERE merged_at IS NULL AND is_duplicate = 0
+                SELECT COALESCE(SUM(power_mw), 0) FROM facilities
+                 WHERE power_mw IS NOT NULL
             """) or 0)
 
             # Facilities ADDED in the month + the prior month (for MoM growth)
@@ -241,10 +243,18 @@ def _compute_report(year: int | None = None,
             prev_deals = _deal_window(prev_lo, prev_hi)
             yago_deals = _deal_window(yago_lo, yago_hi)
 
+            # FIX r7: rolling 30-day deal window so the press-kit number
+            # is meaningful for the current month even when calendar
+            # data lags (typical mid-month state of M&A pipelines).
+            rolling30_lo = today - datetime.timedelta(days=30)
+            rolling30_hi = today + datetime.timedelta(days=1)
+            rolling_deals = _deal_window(rolling30_lo, rolling30_hi)
+
             out["deal_flow"] = {
                 "current":  curr_deals,
                 "prior":    prev_deals,
                 "year_ago": yago_deals,
+                "rolling_30d": rolling_deals,
                 "deals_mom_pct":   _pct_delta(curr_deals["count"], prev_deals["count"]),
                 "deals_yoy_pct":   _pct_delta(curr_deals["count"], yago_deals["count"]),
                 "value_mom_pct":   _pct_delta(curr_deals["value"], prev_deals["value"]),
@@ -252,35 +262,52 @@ def _compute_report(year: int | None = None,
             }
 
             # ── TOP DEALS this month ────────────────────────────────────
-            try:
+            # FIX r7: if calendar month has nothing (mid-month is common
+            # for M&A pipelines that lag), fall back to last-30-days so
+            # the section is never blank when actual deals exist. Label
+            # the data accordingly so the press-kit doesn't misattribute.
+            def _fetch_top_deals(lo, hi):
                 cur.execute("""
                     SELECT id, date, buyer, seller, value, mw
                       FROM deals
                      WHERE date >= %s AND date < %s AND value IS NOT NULL
                      ORDER BY value DESC LIMIT 5
-                """, (curr_lo, curr_hi))
-                out["top_deals"] = [{
+                """, (lo, hi))
+                return [{
                     "id":     int(r[0]) if r[0] else None,
                     "date":   r[1].isoformat() if hasattr(r[1], "isoformat") else (str(r[1]) if r[1] else None),
                     "buyer":  r[2], "seller": r[3],
                     "value":  float(r[4]) if r[4] is not None else None,
                     "mw":     float(r[5]) if r[5] is not None else None,
                 } for r in cur.fetchall()]
+            try:
+                out["top_deals"] = _fetch_top_deals(curr_lo, curr_hi)
+                out["top_deals_window"] = "calendar_month"
+                if not out["top_deals"]:
+                    out["top_deals"] = _fetch_top_deals(
+                        today - datetime.timedelta(days=30),
+                        today + datetime.timedelta(days=1)
+                    )
+                    if out["top_deals"]:
+                        out["top_deals_window"] = "rolling_30d"
             except Exception:
                 try: c.rollback()
                 except Exception: pass
                 out["top_deals"] = []
+                out["top_deals_window"] = "none"
 
-            # ── TOP MARKETS by operating MW ─────────────────────────────
+            # ── TOP MARKETS by total MW ─────────────────────────────────
+            # FIX r7: query facilities (canonical) using market then city
+            # then state as the grouping key.
             try:
                 cur.execute("""
-                    SELECT COALESCE(market, city, '') AS m,
+                    SELECT COALESCE(market, city, state, '') AS m,
                            COUNT(*) AS n,
                            COALESCE(SUM(power_mw), 0) AS mw
-                      FROM discovered_facilities
-                     WHERE merged_at IS NULL AND is_duplicate = 0
-                       AND COALESCE(market, city) IS NOT NULL
-                     GROUP BY COALESCE(market, city)
+                      FROM facilities
+                     WHERE COALESCE(market, city, state) IS NOT NULL
+                       AND power_mw IS NOT NULL
+                     GROUP BY COALESCE(market, city, state)
                      ORDER BY mw DESC LIMIT 10
                 """)
                 out["top_markets"] = [
@@ -294,12 +321,35 @@ def _compute_report(year: int | None = None,
                 out["top_markets"] = []
 
             # ── DCPI top movers ─────────────────────────────────────────
+            # FIX r7: real schema has excess_power_score + constraint_score
+            # + computed_at — no weekly_delta column. Compute the delta
+            # in-query by joining each market's most-recent score against
+            # its score from 7d ago.
             try:
                 cur.execute("""
-                    SELECT market_name, score, weekly_delta
-                      FROM market_power_scores
-                     WHERE published = true AND weekly_delta IS NOT NULL
-                     ORDER BY ABS(weekly_delta) DESC LIMIT 10
+                    WITH latest AS (
+                      SELECT DISTINCT ON (market_slug) market_slug,
+                             market_name, excess_power_score AS now_e,
+                             constraint_score AS now_c
+                        FROM market_power_scores
+                       WHERE COALESCE(published, TRUE) = TRUE
+                       ORDER BY market_slug, computed_at DESC
+                    ),
+                    week_ago AS (
+                      SELECT DISTINCT ON (market_slug) market_slug,
+                             excess_power_score AS prev_e
+                        FROM market_power_scores
+                       WHERE computed_at < NOW() - INTERVAL '7 days'
+                       ORDER BY market_slug, computed_at DESC
+                    )
+                    SELECT l.market_name,
+                           l.now_e,
+                           (l.now_e - w.prev_e) AS delta
+                      FROM latest l
+                      JOIN week_ago w USING (market_slug)
+                     WHERE l.now_e IS NOT NULL AND w.prev_e IS NOT NULL
+                     ORDER BY ABS(l.now_e - w.prev_e) DESC NULLS LAST
+                     LIMIT 10
                 """)
                 out["dcpi_movers"] = [
                     {"market": r[0], "score": int(r[1] or 0),
@@ -312,18 +362,17 @@ def _compute_report(year: int | None = None,
                 out["dcpi_movers"] = []
 
             # ── CONSTRUCTION PIPELINE ──────────────────────────────────
+            # FIX r7: capacity_pipeline is the right table (used in
+            # site_stats.py for pipeline_mw). Columns: market, capacity_mw.
             try:
                 cur.execute("""
-                    SELECT COALESCE(market, city, '') AS m,
+                    SELECT COALESCE(market, city, state, '') AS m,
                            COUNT(*) AS n,
-                           COALESCE(SUM(power_mw), 0) AS mw
-                      FROM discovered_facilities
-                     WHERE merged_at IS NULL AND is_duplicate = 0
-                       AND LOWER(COALESCE(status,'')) IN
-                          ('construction','planned','permitting',
-                           'under construction','proposed','development')
-                       AND COALESCE(market, city) IS NOT NULL
-                     GROUP BY COALESCE(market, city)
+                           COALESCE(SUM(capacity_mw), 0) AS mw
+                      FROM capacity_pipeline
+                     WHERE COALESCE(market, city, state) IS NOT NULL
+                       AND capacity_mw IS NOT NULL
+                     GROUP BY COALESCE(market, city, state)
                      ORDER BY mw DESC LIMIT 10
                 """)
                 out["pipeline_by_market"] = [
@@ -334,31 +383,91 @@ def _compute_report(year: int | None = None,
             except Exception:
                 try: c.rollback()
                 except Exception: pass
-                out["pipeline_by_market"] = []
+                # Last-resort fallback: try without state column
+                try:
+                    cur.execute("""
+                        SELECT COALESCE(market, city, '') AS m,
+                               COUNT(*) AS n,
+                               COALESCE(SUM(capacity_mw), 0) AS mw
+                          FROM capacity_pipeline
+                         WHERE COALESCE(market, city) IS NOT NULL
+                         GROUP BY COALESCE(market, city)
+                         ORDER BY mw DESC LIMIT 10
+                    """)
+                    out["pipeline_by_market"] = [
+                        {"market": r[0], "projects": int(r[1]),
+                         "mw":     float(r[2] or 0)}
+                        for r in cur.fetchall() if r[0]
+                    ]
+                except Exception:
+                    try: c.rollback()
+                    except Exception: pass
+                    out["pipeline_by_market"] = []
 
             # ── AI / MCP USAGE ─────────────────────────────────────────
+            # FIX r7: probe-filter the counts. Comparing unfiltered windows
+            # produces nonsense (+5859% MoM) because last month's window
+            # was during CF WAF probe-blocking and this month's isn't.
+            # Mirror the filter used in site_stats.mcp_calls_7d_real.
+            _PROBE_LIKE = (
+                "AND COALESCE(LOWER(user_agent),'') NOT LIKE '%curl%' "
+                "AND COALESCE(LOWER(user_agent),'') NOT LIKE '%python%' "
+                "AND COALESCE(LOWER(user_agent),'') NOT LIKE '%requests%' "
+                "AND COALESCE(LOWER(user_agent),'') NOT LIKE '%node%' "
+                "AND COALESCE(LOWER(user_agent),'') NOT LIKE '%axios%' "
+                "AND COALESCE(LOWER(user_agent),'') NOT LIKE '%postman%' "
+                "AND COALESCE(LOWER(user_agent),'') NOT LIKE '%insomnia%' "
+                "AND COALESCE(LOWER(user_agent),'') NOT LIKE 'dchub%' "
+                "AND COALESCE(LOWER(user_agent),'') NOT LIKE '%dchub-%' "
+                "AND user_agent IS NOT NULL AND user_agent != ''"
+            )
             try:
-                cur.execute("""
+                cur.execute(f"""
                     SELECT COUNT(*) FROM mcp_tool_calls
                      WHERE created_at >= %s AND created_at < %s
+                       {_PROBE_LIKE}
                 """, (curr_lo, curr_hi))
                 mcp_curr = int((cur.fetchone() or [0])[0] or 0)
-                cur.execute("""
+                cur.execute(f"""
                     SELECT COUNT(*) FROM mcp_tool_calls
                      WHERE created_at >= %s AND created_at < %s
+                       {_PROBE_LIKE}
                 """, (prev_lo, prev_hi))
                 mcp_prev = int((cur.fetchone() or [0])[0] or 0)
                 out["ai_traffic"] = {
                     "tool_calls_month":  mcp_curr,
                     "tool_calls_prior":  mcp_prev,
                     "mom_pct":           _pct_delta(mcp_curr, mcp_prev),
+                    "probes_filtered":   True,
                 }
             except Exception:
                 try: c.rollback()
                 except Exception: pass
-                out["ai_traffic"] = {"tool_calls_month": None,
-                                      "tool_calls_prior": None,
-                                      "mom_pct": None}
+                # Fallback: unfiltered, marked so the UI / press kit knows
+                try:
+                    cur.execute("""
+                        SELECT COUNT(*) FROM mcp_tool_calls
+                         WHERE created_at >= %s AND created_at < %s
+                    """, (curr_lo, curr_hi))
+                    mcp_curr = int((cur.fetchone() or [0])[0] or 0)
+                    cur.execute("""
+                        SELECT COUNT(*) FROM mcp_tool_calls
+                         WHERE created_at >= %s AND created_at < %s
+                    """, (prev_lo, prev_hi))
+                    mcp_prev = int((cur.fetchone() or [0])[0] or 0)
+                    out["ai_traffic"] = {
+                        "tool_calls_month":  mcp_curr,
+                        "tool_calls_prior":  mcp_prev,
+                        "mom_pct":           _pct_delta(mcp_curr, mcp_prev),
+                        "probes_filtered":   False,
+                    }
+                except Exception:
+                    try: c.rollback()
+                    except Exception: pass
+                    out["ai_traffic"] = {"tool_calls_month": None,
+                                          "tool_calls_prior": None,
+                                          "mom_pct": None,
+                                          "probes_filtered": False}
 
             # ── CITATION PULSE (brand visibility) ──────────────────────
             try:
@@ -388,52 +497,96 @@ def _compute_report(year: int | None = None,
 def _build_press_kit(d: dict) -> dict:
     """Pre-written sentences journalists can copy-paste with attribution.
     Every claim is grounded in numbers already in `d`. If a number is
-    missing, the corresponding sentence is dropped — never invent."""
-    h    = d.get("headline") or {}
-    df   = d.get("deal_flow") or {}
-    curr = df.get("current") or {}
-    ai   = d.get("ai_traffic") or {}
-    label = d.get("month_label", "")
+    missing, the corresponding sentence is dropped — never invent.
+    FIX r7: suppress MoM deltas above 300% (the prior-window was zero or
+    near-zero, so the percent is nonsense). Prefer rolling-30d when
+    calendar-month deal data is sparse."""
+    h       = d.get("headline") or {}
+    df      = d.get("deal_flow") or {}
+    curr    = df.get("current") or {}
+    rolling = df.get("rolling_30d") or {}
+    ai      = d.get("ai_traffic") or {}
+    label   = d.get("month_label", "")
+
+    def _sane_delta(pct):
+        """Suppress percent values where the prior window was so small
+        that the delta is mathematically large but editorially meaningless.
+        Threshold: |pct| > 300 → drop."""
+        if pct is None: return None
+        try:
+            return pct if abs(pct) <= 300 else None
+        except Exception:
+            return None
 
     quotables: list[str] = []
 
     if h.get("facilities_total") and h.get("total_mw"):
         quotables.append(
             f"DC Hub now tracks {h['facilities_total']:,} data center "
-            f"facilities globally, representing {h['total_mw']:,.0f} MW "
-            f"of operational and pipeline capacity."
+            f"facilities globally, representing "
+            f"{h['total_mw']/1000:,.1f} GW of operational and pipeline "
+            f"capacity."
         )
 
-    if h.get("facilities_added_month") and h.get("facilities_mom_pct") is not None:
-        direction = "up" if h["facilities_mom_pct"] >= 0 else "down"
+    mom = _sane_delta(h.get("facilities_mom_pct"))
+    if h.get("facilities_added_month") and mom is not None:
+        direction = "up" if mom >= 0 else "down"
         quotables.append(
             f"{h['facilities_added_month']:,} new facilities were "
             f"discovered in {label}, {direction} "
-            f"{abs(h['facilities_mom_pct']):.1f}% month-over-month."
+            f"{abs(mom):.1f}% month-over-month."
         )
 
-    if curr.get("count") and df.get("deals_mom_pct") is not None:
-        direction = "increased" if df["deals_mom_pct"] >= 0 else "decreased"
+    # Deal-flow: prefer calendar-month when populated, fall back to
+    # rolling-30d otherwise (mid-month commonly has thin calendar data).
+    deal_count = curr.get("count") or 0
+    deal_value = curr.get("value") or 0
+    deal_mw    = curr.get("mw") or 0
+    deal_label = label
+    if deal_count == 0 and rolling.get("count"):
+        deal_count = rolling.get("count") or 0
+        deal_value = rolling.get("value") or 0
+        deal_mw    = rolling.get("mw") or 0
+        deal_label = "the trailing 30 days"
+
+    mom_d = _sane_delta(df.get("deals_mom_pct"))
+    if deal_count and mom_d is not None and deal_label == label:
+        direction = "increased" if mom_d >= 0 else "decreased"
         quotables.append(
-            f"{label} saw {curr['count']} tracked M&A transactions "
-            f"representing ${(curr['value'] or 0)/1e9:.1f}B in aggregate "
-            f"deal value, a count that {direction} "
-            f"{abs(df['deals_mom_pct']):.1f}% from the prior month."
+            f"{label} saw {deal_count} tracked M&A transactions "
+            f"representing ${deal_value/1e9:.1f}B in aggregate deal "
+            f"value, a count that {direction} {abs(mom_d):.1f}% from "
+            f"the prior month."
         )
-
-    if curr.get("mw"):
+    elif deal_count:
         quotables.append(
-            f"{curr['mw']:,.0f} MW of capacity changed hands through M&A "
-            f"and JV transactions tracked by DC Hub in {label}."
+            f"In {deal_label}, DC Hub tracked {deal_count} M&A "
+            f"transactions worth ${deal_value/1e9:.1f}B in aggregate "
+            f"deal value."
         )
 
-    if ai.get("tool_calls_month") and ai.get("mom_pct") is not None:
-        direction = "increased" if ai["mom_pct"] >= 0 else "decreased"
+    if deal_mw:
+        quotables.append(
+            f"{deal_mw:,.0f} MW of capacity changed hands through M&A "
+            f"and JV transactions tracked by DC Hub in {deal_label}."
+        )
+
+    ai_mom = _sane_delta(ai.get("mom_pct"))
+    if ai.get("tool_calls_month") and ai_mom is not None:
+        direction = "increased" if ai_mom >= 0 else "decreased"
         quotables.append(
             f"AI-agent queries against DC Hub's research API "
-            f"{direction} {abs(ai['mom_pct']):.1f}% in {label}, with "
+            f"{direction} {abs(ai_mom):.1f}% in {label}, with "
             f"ChatGPT, Claude, Gemini, and Perplexity all citing the "
             f"platform by name in research responses."
+        )
+    elif ai.get("tool_calls_month"):
+        # Have the count, can't honestly state a delta — say so plainly.
+        quotables.append(
+            f"DC Hub's research API served {ai['tool_calls_month']:,} "
+            f"AI-agent tool calls in {label}, with ChatGPT, Claude, "
+            f"Gemini, and Perplexity all citing the platform by name "
+            f"in research responses."
         )
 
     return {
@@ -449,15 +602,39 @@ def _build_press_kit(d: dict) -> dict:
 
 # ── HTML render ──────────────────────────────────────────────────────
 def _render_html(d: dict, *, partner: str = "") -> str:
-    h    = d.get("headline") or {}
-    df   = d.get("deal_flow") or {}
-    curr = df.get("current") or {}
-    ai   = d.get("ai_traffic") or {}
-    pk   = d.get("press_kit") or {}
-    label = d.get("month_label", "")
+    h       = d.get("headline") or {}
+    df      = d.get("deal_flow") or {}
+    curr    = df.get("current") or {}
+    rolling = df.get("rolling_30d") or {}
+    ai      = d.get("ai_traffic") or {}
+    pk      = d.get("press_kit") or {}
+    label   = d.get("month_label", "")
+
+    # FIX r7: when calendar month has no deals, surface the trailing
+    # 30-day numbers so the tile + table aren't empty for a healthy
+    # database. UI label switches to "Trailing 30d" so attribution stays
+    # honest.
+    deals_view  = curr if (curr.get("count") or 0) > 0 else rolling
+    deals_label = label
+    if deals_view is rolling and (rolling.get("count") or 0) > 0:
+        deals_label = "trailing 30d"
+
+    top_deals_window = d.get("top_deals_window", "calendar_month")
+    deals_section_tag = (
+        "Calendar month" if top_deals_window == "calendar_month"
+        else ("Trailing 30 days" if top_deals_window == "rolling_30d"
+              else "")
+    )
 
     def _delta_html(pct: float | None) -> str:
+        # FIX r7: suppress nonsense deltas (prior window near zero →
+        # mathematically valid percent that's editorially meaningless)
         if pct is None: return '<span style="color:#71717a">—</span>'
+        try:
+            if abs(pct) > 300:
+                return '<span style="color:#71717a" title="Prior window too small to compare">—</span>'
+        except Exception:
+            return '<span style="color:#71717a">—</span>'
         sign = "+" if pct >= 0 else ""
         color = "#10b981" if pct >= 0 else "#ef4444"
         return f'<span style="color:{color};font-weight:600">{sign}{pct:.1f}%</span>'
@@ -642,9 +819,9 @@ def _render_html(d: dict, *, partner: str = "") -> str:
         <div class="stat-sub">{_delta_html(h.get('facilities_mom_pct'))} MoM · {_delta_html(h.get('facilities_yoy_pct'))} YoY</div>
       </div>
       <div class="stat">
-        <span class="stat-val">${(curr.get('value') or 0)/1e9:.1f}B</span>
-        <span class="stat-lbl">Deal $ this month</span>
-        <div class="stat-sub">{curr.get('count',0)} deals · {_delta_html(df.get('value_mom_pct'))} MoM</div>
+        <span class="stat-val">${(deals_view.get('value') or 0)/1e9:.1f}B</span>
+        <span class="stat-lbl">Deal $ ({deals_label})</span>
+        <div class="stat-sub">{deals_view.get('count',0)} deals · {_delta_html(df.get('value_mom_pct'))} MoM</div>
       </div>
     </div>
   </section>
@@ -661,7 +838,7 @@ def _render_html(d: dict, *, partner: str = "") -> str:
       <div class="stat">
         <span class="stat-val">{_delta_html(df.get('deals_mom_pct'))}</span>
         <span class="stat-lbl">Deal count</span>
-        <div class="stat-sub">{curr.get('count',0)} deals · vs {(df.get('prior') or {{}}).get('count',0)} prior month</div>
+        <div class="stat-sub">{deals_view.get('count',0)} deals ({deals_label}) · vs {(df.get('prior') or {{}}).get('count',0)} prior month</div>
       </div>
       <div class="stat">
         <span class="stat-val">{_delta_html(ai.get('mom_pct'))}</span>
@@ -673,7 +850,7 @@ def _render_html(d: dict, *, partner: str = "") -> str:
 
   <!-- M&A -->
   <section>
-    <h2><span class="num">03</span>M&amp;A this month</h2>
+    <h2><span class="num">03</span>M&amp;A {('· ' + deals_section_tag) if deals_section_tag else ''}</h2>
     <table>
       <thead><tr><th>Date</th><th>Buyer</th><th>Seller</th><th class="r">Value</th><th class="r">MW</th></tr></thead>
       <tbody>{_td(deal_rows, 5)}</tbody>
