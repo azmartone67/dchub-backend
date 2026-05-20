@@ -703,12 +703,29 @@ def _lookup_pattern(issue: str) -> dict | None:
 
 
 # ── Rate limit helpers ────────────────────────────────────────────────
+# Phase FF+25-followup-r4 (2026-05-20): exclude bookkeeping rows from
+# the rate-limit count. The old query counted every row with the given
+# pattern_name including the ones we wrote ourselves to RECORD that the
+# previous attempt was rate-limited. Result: each blocked attempt
+# incremented n_24h, which then tripped escalation_threshold (>=5) on
+# the next legitimate attempt and immediately wrote ANOTHER rate_limited
+# row — a self-perpetuating throttle that locked every pattern out for
+# the full 24-hour window. Observed at 23 actions / 24h, all blocked.
+#
+# Now we only count rows that represent real fire attempts (anything
+# other than the rate_limited / cooldown_active bookkeeping outcomes).
+# Same fix applied to _last_action_age_minutes so cooldown windows
+# aren't refreshed by blocked retries.
+_BOOKKEEPING_OUTCOMES = ('rate_limited', 'cooldown_active')
+
+
 def _recent_actions(cur, pattern: str, hours: int) -> int:
     cur.execute("""
         SELECT COUNT(*) FROM brain_autopilot_actions
          WHERE pattern_name = %s
            AND started_at >= NOW() - INTERVAL %s
-    """, (pattern, f"{hours} hours"))
+           AND COALESCE(outcome, '') NOT IN %s
+    """, (pattern, f"{hours} hours", _BOOKKEEPING_OUTCOMES))
     return int((cur.fetchone() or [0])[0] or 0)
 
 
@@ -718,7 +735,8 @@ def _last_action_age_minutes(cur, pattern: str, url: str | None) -> int | None:
           FROM brain_autopilot_actions
          WHERE pattern_name = %s
            AND COALESCE(finding_url,'') = %s
-    """, (pattern, url or ""))
+           AND COALESCE(outcome, '') NOT IN %s
+    """, (pattern, url or "", _BOOKKEEPING_OUTCOMES))
     r = cur.fetchone()
     if not r or r[0] is None: return None
     return int(float(r[0]))

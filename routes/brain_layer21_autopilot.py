@@ -314,10 +314,18 @@ def autopilot_status():
         if conn:
             try:
                 cur = conn.cursor()
+                # Phase FF+25-followup-r4 (2026-05-20): brain_autopilot_actions
+                # is shared with brain_autopilot.py which writes pattern_name
+                # + finding_url but leaves action/target/tier NULL. Filtering
+                # those out so the L21 dashboard shows L21's own rows only —
+                # otherwise the recent_actions list was 8x "fired_at + all
+                # other fields null" because we displayed the sibling module's
+                # rows we don't own.
                 cur.execute(
                     "SELECT fired_at, action, target, tier, detail, "
                     "       detected_at, resolved_at "
                     "FROM brain_autopilot_actions "
+                    "WHERE action IS NOT NULL "
                     "ORDER BY fired_at DESC LIMIT 20"
                 )
                 for r in cur.fetchall():
