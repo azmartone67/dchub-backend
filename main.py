@@ -19688,6 +19688,25 @@ try:
 except Exception as e:
     print(f"🎨 Daily Render Fanout: ⚠️ Failed to load: {e}")
 
+# Phase FF+25-followup-audience (2026-05-20) — feeds /advertise + /audience
+try:
+    from routes.audience_signals import audience_signals_bp
+    app.register_blueprint(audience_signals_bp)
+    print("📊 Audience Signals: ✅ Registered "
+          "(/api/v1/audience/summary + /full)")
+except Exception as e:
+    print(f"📊 Audience Signals: ⚠️ Failed to load: {e}")
+
+# Phase FF+25-followup-enrich (2026-05-20) — Clearbit/Abstract/Hunter
+# enrichment; gracefully degrades when no provider key is set
+try:
+    from routes.signup_enrichment import signup_enrichment_bp
+    app.register_blueprint(signup_enrichment_bp)
+    print("🔍 Signup Enrichment: ✅ Registered "
+          "(/api/v1/admin/enrich/run + /email + /status)")
+except Exception as e:
+    print(f"🔍 Signup Enrichment: ⚠️ Failed to load: {e}")
+
 # =============================================================================
 # FACILITY AUTO-APPROVE PIPELINE v2.0
 # Moves discovered_facilities → facilities with dedup logic
