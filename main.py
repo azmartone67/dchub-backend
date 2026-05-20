@@ -19790,6 +19790,18 @@ try:
 except Exception as e:
     print(f"📨 Monthly Outreach: ⚠️ Failed to load: {e}")
 
+# Phase FF+25-followup-r9 (2026-05-20) — Brain Inspector + model config.
+# Adds an Opus-4.7-powered proactive Inspector that reads every surface
+# and writes a Markdown brief. Central brain_models.py module exposes
+# the tier system so the brain can be upgraded with env-var changes.
+try:
+    from routes.brain_inspector import brain_inspector_bp
+    app.register_blueprint(brain_inspector_bp)
+    print("🧠 Brain Inspector: ✅ Registered "
+          "(GET /brain/brief + /api/v1/brain/brief/* + /api/v1/brain/models)")
+except Exception as e:
+    print(f"🧠 Brain Inspector: ⚠️ Failed to load: {e}")
+
 # =============================================================================
 # FACILITY AUTO-APPROVE PIPELINE v2.0
 # Moves discovered_facilities → facilities with dedup logic

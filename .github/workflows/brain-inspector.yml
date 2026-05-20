@@ -1,0 +1,49 @@
+# Phase FF+25-followup-r9 (2026-05-20) — Brain Inspector cron.
+# Runs every 6 hours. Reads every surface, asks Opus 4.7 to write a
+# Markdown brief, persists it. Public read at /brain/brief.
+
+name: Brain Inspector — proactive scan
+
+on:
+  schedule:
+    # Every 6 hours at :07 past the hour (offset from other crons so
+    # we don't dogpile the DB)
+    - cron: '7 */6 * * *'
+  workflow_dispatch:
+
+jobs:
+  inspect:
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    steps:
+      - name: Trigger Inspector
+        run: |
+          set -eo pipefail
+          ADMIN_KEY="${{ secrets.DCHUB_ADMIN_KEY }}"
+          if [ -z "$ADMIN_KEY" ]; then
+            echo "::error::DCHUB_ADMIN_KEY secret not set"
+            exit 1
+          fi
+          RESP=$(curl -sS -X POST \
+            -H "X-Admin-Key: $ADMIN_KEY" \
+            -H "User-Agent: DCHub-Inspector-Cron/1.0" \
+            "https://dchub.cloud/api/v1/brain/brief/generate")
+          echo "$RESP" | python3 -c "
+          import sys, json
+          d = json.load(sys.stdin)
+          ok = d.get('ok')
+          if not ok:
+            print(f'::warning::Inspector returned: {d.get(\"error\")}')
+            print(json.dumps(d, indent=2)[:600])
+            sys.exit(0 if d.get('error') == 'ANTHROPIC_API_KEY not set' else 1)
+          print(f'### Brain Brief #{d.get(\"id\")}')
+          print()
+          print(f'- Model: {d.get(\"model\")}')
+          print(f'- Tokens: {d.get(\"tokens_in\")} in / {d.get(\"tokens_out\")} out')
+          print(f'- Duration: {d.get(\"duration_ms\")}ms')
+          print(f'- Healthy: {d.get(\"healthy_count\")} · Degrading: {d.get(\"degrading_count\")} · Attention: {d.get(\"attention_count\")}')
+          print()
+          print(f'> {d.get(\"summary\", \"\")[:280]}')
+          print()
+          print(f'Full brief: https://dchub.cloud/brain/brief')
+          " >> "$GITHUB_STEP_SUMMARY"
