@@ -409,15 +409,23 @@ def start_scheduler():
         log.warning("APScheduler not installed — self-heal scheduler NOT started")
         return None
     _scheduler = BackgroundScheduler(daemon=True, timezone="UTC")
-    _scheduler.add_job(heal_cycle, "interval", minutes=5, id="heal_cycle",
-                       max_instances=1, coalesce=True, misfire_grace_time=120)
+    # Phase FF+25-followup (2026-05-20): interval 5 → 30 min.
+    # CF analytics showed DCHubHealer/1.0 doing 119k requests/24h = 30%
+    # of ALL traffic to dchub.cloud. Each heal_cycle expands ~414 URL
+    # probes (10 PROBES × ~40 linked-asset sub-fetches). At 5-min interval
+    # = 288 cycles/day = ~119k. Bumping to 30 min cuts to ~20k/day (6×
+    # reduction) — still responsive enough for self-healing, but cleans
+    # up the "internal probes drowning the backend" pattern. Same
+    # rationale as raising L8 watchdog from 60s/3 → 90s/5 in FF+7-survive.
+    _scheduler.add_job(heal_cycle, "interval", minutes=30, id="heal_cycle",
+                       max_instances=1, coalesce=True, misfire_grace_time=300)
     # Also run once 60 seconds after boot
     from datetime import datetime, timedelta
     _scheduler.add_job(heal_cycle, "date",
                        run_date=datetime.utcnow() + timedelta(seconds=60),
                        id="heal_warmup", max_instances=1)
     _scheduler.start()
-    log.info("self_heal scheduler STARTED — heal_cycle every 5 min")
+    log.info("self_heal scheduler STARTED — heal_cycle every 30 min")
     return _scheduler
 
 

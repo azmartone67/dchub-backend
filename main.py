@@ -576,13 +576,32 @@ def _init_pg_pool():
         return
     for attempt in range(3):
         try:
+            # Phase FF+25-followup (2026-05-20): TCP keepalive params.
+            # Render logs showed continual "Stale connection discarded"
+            # errors during news ingestion — Neon kills idle conns after
+            # 5-10 min, but pool conns sat idle longer between cron
+            # bursts. The existing _validate_connection (SELECT 1) caught
+            # the stale conns at checkout but burned 2-4s + retries on
+            # every detection. TCP-level keepalive prevents the idle
+            # timeout entirely by sending heartbeats every 60s.
+            #
+            # Tuning rationale:
+            #   keepalives=1               enable feature
+            #   keepalives_idle=60         start probing after 60s idle
+            #                              (Neon idle timeout ~300s)
+            #   keepalives_interval=10     probe every 10s if no response
+            #   keepalives_count=3         declare dead after 3 missed
             _pg_pool_obj = _pg_pool.ThreadedConnectionPool(
                 minconn=int(os.environ.get('DB_POOL_MIN', 2)),
                 maxconn=int(os.environ.get('DB_POOL_MAX', 20)),
                 dsn=pg_url,
                 connect_timeout=15,
+                keepalives=1,
+                keepalives_idle=60,
+                keepalives_interval=10,
+                keepalives_count=3,
             )
-            print(f"DATABASE POOL: ✅ Single pool initialized (attempt {attempt+1}) -- 2-20 connections")
+            print(f"DATABASE POOL: ✅ Single pool initialized (attempt {attempt+1}) -- 2-20 connections, TCP keepalive 60s")
             return
         except Exception as e:
             print(f"DATABASE POOL: ⚠️ Pool init attempt {attempt+1}/3 failed: {e}")
