@@ -7385,6 +7385,15 @@ def init_new_tables():
         for col_sql in [
             "ALTER TABLE users ADD COLUMN IF NOT EXISTS stripe_customer_id TEXT",
             "ALTER TABLE users ADD COLUMN IF NOT EXISTS subscription_status TEXT",
+            # Phase r26 (2026-05-20): dunning counters — see
+            # routes/schema_repair.py SCHEMA_STATEMENTS for the
+            # canonical Postgres version. SQLite mirror so the cache
+            # writes (in handle_invoice_paid / handle_payment_failed)
+            # don't error on missing columns.
+            "ALTER TABLE users ADD COLUMN IF NOT EXISTS invoices_paid_count INTEGER DEFAULT 0",
+            "ALTER TABLE users ADD COLUMN IF NOT EXISTS payment_failed_count INTEGER DEFAULT 0",
+            "ALTER TABLE users ADD COLUMN IF NOT EXISTS demoted_at TEXT",
+            "ALTER TABLE users ADD COLUMN IF NOT EXISTS demoted_reason TEXT",
         ]:
             try:
                 c.execute(col_sql)
@@ -9812,27 +9821,155 @@ def handle_subscription_deleted(subscription):
         except Exception: pass
 
 def handle_invoice_paid(invoice):
-    """Handle successful payment"""
+    """Handle successful payment — increments invoices_paid_count and
+    resets payment_failed_count so a customer who has paid at least once
+    is never demoted by the first-charge-never-succeeded guard below."""
     customer_id = invoice.get('customer', '')
     print(f"💰 Invoice paid for customer: {customer_id}")
+    if not customer_id:
+        return
 
-def handle_payment_failed(invoice):
-    """Handle failed payment - writes to PostgreSQL first, then SQLite"""
-    customer_id = invoice.get('customer', '')
-
-    _pg_execute("UPDATE users SET subscription_status = 'payment_failed' WHERE stripe_customer_id = %s", (customer_id,))
-    conn = get_db()
+    # Postgres (canonical)
     try:
+        _pg_execute(
+            """UPDATE users
+                  SET invoices_paid_count = COALESCE(invoices_paid_count, 0) + 1,
+                      payment_failed_count = 0,
+                      subscription_status = 'active'
+                WHERE stripe_customer_id = %s""",
+            (customer_id,),
+        )
+    except Exception as e:
+        print(f"[dunning] invoice_paid pg update failed for {customer_id}: {e}")
+
+    # SQLite mirror (best-effort)
+    try:
+        conn = get_db()
         c = conn.cursor()
-        c.execute("UPDATE users SET subscription_status = 'payment_failed' WHERE stripe_customer_id = %s",
-                  (customer_id,))
+        c.execute(
+            """UPDATE users
+                  SET invoices_paid_count = COALESCE(invoices_paid_count, 0) + 1,
+                      payment_failed_count = 0,
+                      subscription_status = 'active'
+                WHERE stripe_customer_id = ?""",
+            (customer_id,),
+        )
         conn.commit()
         _sync_tables_bg('users')
-        print(f"⚠️ Payment failed for customer: {customer_id}")
-
+    except Exception:
+        pass
     finally:
         try: conn.close()
         except Exception: pass
+
+
+def handle_payment_failed(invoice):
+    """Handle failed payment — increment failure counter, then apply the
+    first-charge-never-succeeded demote guard.
+
+    Dunning policy (Phase r26, 2026-05-20):
+      - Every failure bumps users.payment_failed_count and sets
+        subscription_status = 'payment_failed'.
+      - If a customer has had ZERO successful invoices AND has hit
+        payment_failed_count >= 2, demote their api_keys.rate_limit_tier
+        to 'free'. The key STAYS ACTIVE — Stripe's recovery email still
+        clicks through to a working dashboard — they just lose paid
+        rate limits + paid endpoints. users.plan is preserved so a
+        successful retry will restore them via subscription.updated.
+      - Real customers (paid_count >= 1) ride out the full Stripe retry
+        cycle (~21 days) untouched, and get downgraded only when
+        Stripe finally cancels (handle_subscription_deleted).
+
+    Rationale: Stripe Radar already flags repeated-failure + failed
+    AVS/ZIP as fraud. We don't want to keep handing pro-tier API access
+    to a never-paid-us customer while Stripe runs another 16 days of
+    retries.
+    """
+    customer_id = invoice.get('customer', '')
+    if not customer_id:
+        return
+    attempt_count = invoice.get('attempt_count') or 1
+    now_iso = datetime.utcnow().isoformat()
+
+    # Postgres canonical bump — use RETURNING to get current counters
+    # in one round-trip.
+    pg_rows = []
+    try:
+        _, pg_rows = _pg_execute(
+            """UPDATE users
+                  SET subscription_status = 'payment_failed',
+                      payment_failed_count = COALESCE(payment_failed_count, 0) + 1
+                WHERE stripe_customer_id = %s
+            RETURNING id,
+                      COALESCE(invoices_paid_count, 0),
+                      COALESCE(payment_failed_count, 0),
+                      plan,
+                      email""",
+            (customer_id,),
+            fetch=True,
+        )
+    except Exception as e:
+        print(f"[dunning] payment_failed pg update failed for {customer_id}: {e}")
+
+    # SQLite mirror (best-effort, no return needed)
+    try:
+        conn = get_db()
+        c = conn.cursor()
+        c.execute(
+            """UPDATE users
+                  SET subscription_status = 'payment_failed',
+                      payment_failed_count = COALESCE(payment_failed_count, 0) + 1
+                WHERE stripe_customer_id = ?""",
+            (customer_id,),
+        )
+        conn.commit()
+        _sync_tables_bg('users')
+    except Exception:
+        pass
+    finally:
+        try: conn.close()
+        except Exception: pass
+
+    # First-charge-never-succeeded guard.
+    DEMOTE_AFTER_N_FAILURES = 2
+    demoted_users = []
+    for row in (pg_rows or []):
+        user_id, paid_count, failed_count, plan, email = row
+        paid_count = int(paid_count or 0)
+        failed_count = int(failed_count or 0)
+        if paid_count == 0 and failed_count >= DEMOTE_AFTER_N_FAILURES:
+            try:
+                # Mark the demote (idempotent — only if not already
+                # demoted, so a 3rd failure doesn't reset the clock).
+                _pg_execute(
+                    """UPDATE users
+                          SET demoted_at = NOW(),
+                              demoted_reason = 'first_charge_never_succeeded'
+                        WHERE id = %s AND demoted_at IS NULL""",
+                    (user_id,),
+                )
+                # Pull rate limit to 'free' — KEY STAYS ACTIVE so the
+                # recovery flow continues to work.
+                _pg_execute(
+                    """UPDATE api_keys
+                          SET rate_limit_tier = 'free',
+                              last_used_at = %s
+                        WHERE user_id = %s""",
+                    (now_iso, user_id),
+                )
+                demoted_users.append({"user_id": user_id, "email": email, "plan": plan,
+                                      "paid": paid_count, "failed": failed_count})
+                print(
+                    f"🪫 Dunning demote: user_id={user_id} email={email} "
+                    f"customer={customer_id} plan={plan} paid={paid_count} "
+                    f"failed={failed_count} attempt={attempt_count} "
+                    f"→ rate_limit_tier=free (key stays active)"
+                )
+            except Exception as e:
+                print(f"[dunning] demote failed for user_id={user_id}: {e}")
+
+    print(f"⚠️ Payment failed for customer: {customer_id} (attempt #{attempt_count})"
+          + (f" — demoted {len(demoted_users)} user(s)" if demoted_users else ""))
 
 @app.route('/api/stripe/subscription', methods=['GET'])
 @require_auth

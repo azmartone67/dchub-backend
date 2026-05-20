@@ -79,6 +79,19 @@ SCHEMA_STATEMENTS = [
         )""",
         "CREATE INDEX IF NOT EXISTS ix_worker_versions_observed ON worker_versions(observed_at DESC)",
     ]),
+    ("users.dunning_counters columns", [
+        # Phase r26 (2026-05-20): tracks dunning state per customer so
+        # handle_payment_failed can decide whether to demote API rate
+        # limits without yanking the key entirely. Real customers (with
+        # at least one successful invoice) ride out Stripe's full
+        # retry cycle untouched; first-charge-never-succeeded freeloaders
+        # get demoted to 'free' rate limit on the 2nd consecutive failure
+        # while keeping their key alive so dunning emails still work.
+        "ALTER TABLE users ADD COLUMN IF NOT EXISTS invoices_paid_count INTEGER NOT NULL DEFAULT 0",
+        "ALTER TABLE users ADD COLUMN IF NOT EXISTS payment_failed_count INTEGER NOT NULL DEFAULT 0",
+        "ALTER TABLE users ADD COLUMN IF NOT EXISTS demoted_at TIMESTAMPTZ",
+        "ALTER TABLE users ADD COLUMN IF NOT EXISTS demoted_reason TEXT",
+    ]),
     ("press_releases.published_at column", [
         # If the column doesn't exist, ALTER TABLE ADD COLUMN IF NOT
         # EXISTS is idempotent. Some deploys may have it as
