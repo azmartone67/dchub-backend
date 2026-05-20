@@ -19830,6 +19830,8 @@ except Exception as e:
 # restriction). Disabled by default — set DCM_CRAWL_ENABLED=true in
 # Railway env vars to activate. Source-tagged so a single SQL purges
 # everything if needed.
+# NOTE: DCM is gated behind Vercel bot challenge — keep registered for
+# future use if they open up, but real coverage now comes from OSM.
 try:
     from routes.datacentermap_crawler import datacentermap_crawler_bp
     app.register_blueprint(datacentermap_crawler_bp)
@@ -19837,6 +19839,19 @@ try:
           "(POST /api/v1/admin/dcm-crawl/run · /status · /log)")
 except Exception as e:
     print(f"🌍 DataCenterMap Crawler: ⚠️ Failed to load: {e}")
+
+# Phase FF+25-followup-r18 (2026-05-20) — OpenStreetMap crawler.
+# Open-data alternative to DCM (which Vercel-shields). Uses Overpass
+# API to pull data center POIs by bounding box. 26 regions configured
+# (Canadian provinces, top EU/APAC/LATAM markets). Shares the
+# DCM_CRAWL_ENABLED env flag so flipping one activates both.
+try:
+    from routes.osm_crawler import osm_crawler_bp
+    app.register_blueprint(osm_crawler_bp)
+    print("🌐 OSM Crawler: ✅ Registered "
+          "(POST /api/v1/admin/osm-crawl/run · /status)")
+except Exception as e:
+    print(f"🌐 OSM Crawler: ⚠️ Failed to load: {e}")
 
 # =============================================================================
 # FACILITY AUTO-APPROVE PIPELINE v2.0
