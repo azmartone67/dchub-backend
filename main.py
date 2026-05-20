@@ -19617,6 +19617,31 @@ try:
 except Exception as e:
     print(f"☁️ D1 Sync: ⚠️ Failed to load: {e}")
 
+# Phase FF+23-vectorize (2026-05-20) — Neon → Cloudflare Vectorize.
+# Builds the bge-small-en (768-dim) ANN index that the Pages worker
+# queries from /api/v1/search/semantic. Runs daily; text-hash dedup
+# means steady-state cost is ~deltas only.
+try:
+    from routes.vectorize_sync import vectorize_sync_bp
+    app.register_blueprint(vectorize_sync_bp)
+    print("🔎 Vectorize Sync: ✅ Registered (Neon → CF Vectorize, "
+          "/api/v1/admin/vectorize-sync/run + /status)")
+except Exception as e:
+    print(f"🔎 Vectorize Sync: ⚠️ Failed to load: {e}")
+
+# Phase FF+23-daily (2026-05-20) — Daily image render fanout.
+# Daily 06:00 UTC cron fires this endpoint, which POSTs 27 times to
+# the Pages worker's /api/admin/render-daily so each theme × size
+# combo gets rendered + uploaded to R2 dchub-daily. Once R2 has files,
+# /daily.html's Tier 1 fallback serves PNGs at edge speed.
+try:
+    from routes.daily_render_fanout import daily_render_fanout_bp
+    app.register_blueprint(daily_render_fanout_bp)
+    print("🎨 Daily Render Fanout: ✅ Registered "
+          "(/api/jobs/render-daily-fanout + /status)")
+except Exception as e:
+    print(f"🎨 Daily Render Fanout: ⚠️ Failed to load: {e}")
+
 # =============================================================================
 # FACILITY AUTO-APPROVE PIPELINE v2.0
 # Moves discovered_facilities → facilities with dedup logic

@@ -309,6 +309,35 @@ JOBS = {
         'timeout': 600,                # 10 min ceiling, matches script's SYNC_TIMEOUT
         'headers': {'X-Internal-Key': 'dchub-internal-sync-2026'},
     },
+    # Phase FF+23-vectorize (2026-05-20) — once daily, embed any
+    # facility text that changed since the last run (text_hash dedup)
+    # and upsert vectors to CF Vectorize. First run embeds all ~21k.
+    # Steady-state is delta-only, so neuron spend stays bounded.
+    # Requires CLOUDFLARE_API_TOKEN env var with these scopes added
+    # to the existing D1 token: Workers AI:Read + Vectorize:Edit.
+    'vectorize_facility_sync': {
+        'name': 'Vectorize Facility Sync (Neon → CF Vectorize)',
+        'endpoint': '/api/v1/admin/vectorize-sync/run',
+        'method': 'POST',
+        'hours': [3],
+        'minute': 15,
+        'timeout': 1800,               # 30 min — matches script TIMEOUT_S=1500 + slack
+        'headers': {'X-Internal-Key': 'dchub-internal-sync-2026'},
+    },
+    # Phase FF+23-daily (2026-05-20) — once daily, fan out 27
+    # Browser-Rendering calls to the Pages worker (theme × size grid)
+    # so /daily.html serves PNGs from R2 (Tier 1) instead of falling
+    # back to Railway /generate. Loop is on Railway side because each
+    # call is independent and CF worker CPU budget caps per-invocation.
+    'daily_image_render': {
+        'name': 'Daily Image Render (CF Browser Rendering → R2)',
+        'endpoint': '/api/jobs/render-daily-fanout',
+        'method': 'POST',
+        'hours': [6],
+        'minute': 0,
+        'timeout': 1800,
+        'headers': {'X-Internal-Key': 'dchub-internal-sync-2026'},
+    },
     'smoke_test': {
         'name': 'Production Smoke Test',
         'endpoint': '/api/jobs/smoke-test',
