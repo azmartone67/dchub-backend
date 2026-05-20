@@ -19778,6 +19778,18 @@ try:
 except Exception as e:
     print(f"📊 Monthly Trend: ⚠️ Failed to load: {e}")
 
+# Phase FF+25-followup-r7 (2026-05-20) — monthly outreach campaign.
+# Sends the monthly trend snapshot to the journalist outreach list on the
+# 1st of every month (via GitHub cron) or as a brain backstop if cron
+# fails (via the monthly_trend_unsent_3d pattern).
+try:
+    from routes.monthly_outreach import monthly_outreach_bp
+    app.register_blueprint(monthly_outreach_bp)
+    print("📨 Monthly Outreach: ✅ Registered "
+          "(POST /api/v1/reports/monthly/send-outreach + status)")
+except Exception as e:
+    print(f"📨 Monthly Outreach: ⚠️ Failed to load: {e}")
+
 # =============================================================================
 # FACILITY AUTO-APPROVE PIPELINE v2.0
 # Moves discovered_facilities → facilities with dedup logic

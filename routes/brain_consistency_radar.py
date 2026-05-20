@@ -2487,6 +2487,64 @@ def check_winback_pitches_unsent() -> list[dict]:
 
 
 # ── Phase RRRR (2026-05-16) — DC Hub Media silence detector ───────
+def check_monthly_trend_unsent_3d() -> list[dict]:
+    """Phase FF+25-followup-r7 (2026-05-20). If today is the 4th or later
+    of a new month AND we haven't yet emailed the prior-month monthly
+    trend snapshot to the journalist outreach list, fire this finding.
+    The autopilot's autonomous action POSTs the send endpoint, acting
+    as a backstop for the GitHub cron in case it failed.
+
+    Threshold: day >= 4 of the new month. Gives the cron its full
+    grace window (1st 00:05 UTC fire, 2nd-3rd retry buffer)."""
+    import datetime as _dt
+    findings: list[dict] = []
+    today = _dt.date.today()
+    if today.day < 4:
+        return findings   # still inside cron grace window
+
+    # Prior month
+    if today.month == 1:
+        py, pm = today.year - 1, 12
+    else:
+        py, pm = today.year, today.month - 1
+    prior_label = _dt.date(py, pm, 1).strftime("%B %Y")
+
+    try:
+        import os, psycopg2 as _pg
+        db = os.environ.get("DATABASE_URL")
+        if not db: return findings
+        c = _pg.connect(db, sslmode="require", connect_timeout=5)
+        try:
+            with c.cursor() as cur:
+                cur.execute("""
+                    SELECT COUNT(*) FROM monthly_outreach_log
+                     WHERE year = %s AND month = %s
+                """, (py, pm))
+                already_sent = int((cur.fetchone() or [0])[0] or 0)
+        finally:
+            c.close()
+    except Exception:
+        # Table might not exist yet on a fresh deploy — treat as unsent
+        # so the brain fires the create-and-send on its first tick.
+        already_sent = 0
+
+    if already_sent:
+        return findings
+
+    findings.append({
+        "issue":  "monthly_trend_unsent_3d",
+        "url":    f"/reports/monthly/{py}-{pm:02d}",
+        "count":  today.day,
+        "detail": (f"Day {today.day} of the new month and the {prior_label} "
+                   f"monthly trend snapshot has not been emailed to the "
+                   f"journalist outreach list (DCD, DCK, DCF, WSJ, "
+                   f"Forbes, Semafor, SFGate, Runtime). Autopilot will "
+                   f"POST /api/v1/reports/monthly/send-outreach as a "
+                   f"backstop for the GitHub cron."),
+    })
+    return findings
+
+
 def check_dchub_media_press_silent() -> list[dict]:
     """User asked 'is DC Hub Media telling everyone?' Honest answer
     when last checked: NO — 0 press releases in /api/v1/press-releases/
@@ -5041,6 +5099,8 @@ def scan_all() -> list[dict]:
                check_dedup_backlog_growing,
                # Phase RRRR DC Hub Media silence
                check_dchub_media_press_silent,
+               # Phase FF+25-followup-r7 monthly trend backstop
+               check_monthly_trend_unsent_3d,
                # Phase SSSS winback pitches accumulating without delivery
                check_winback_pitches_unsent,
                # Phase TTTT citation score

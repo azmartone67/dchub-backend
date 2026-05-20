@@ -300,6 +300,15 @@ def _action_media_topic_unaddressed(finding: dict) -> tuple[str | None, dict | N
     return "/api/v1/marketing/auto-generate", {}
 
 
+def _action_monthly_trend_unsent(finding: dict) -> tuple[str | None, dict | None]:
+    """Phase FF+25-followup-r7 (2026-05-20): backstop for the GitHub
+    monthly-cron. If we're 4+ days into a new month and the prior-month
+    snapshot hasn't been emailed to journalists, this fires the send
+    endpoint with triggered_by=autopilot so the campaign log shows the
+    brain rescued the campaign."""
+    return ("/api/v1/reports/monthly/send-outreach?triggered_by=autopilot", {})
+
+
 def _action_dchub_media_press_silent(finding: dict) -> tuple[str | None, dict | None]:
     """Phase RRRR (2026-05-16): DC Hub Media has been silent for 7+
     days. AUTO-FIRE the marketing worker — this is the wake-up
@@ -436,6 +445,16 @@ _PATTERN_LIBRARY: dict[str, dict[str, Any]] = {
         "method":      "POST",
         "use_admin":   True,
         "description": "Hot news topic with no press response — autonomously generate one while the story is fresh",
+    },
+    # Phase FF+25-followup-r7 (2026-05-20): monthly trend outreach backstop.
+    # If the GitHub cron failed to fire the 1st-of-month outreach campaign,
+    # this autonomous action recovers it. Rate-limit + cooldown apply (so it
+    # can fire at most once per pattern/url combo per cooldown window).
+    "monthly_trend_unsent_3d": {
+        "action":      _action_monthly_trend_unsent,
+        "method":      "POST",
+        "use_admin":   True,
+        "description": "Autonomous backstop: the monthly trend snapshot wasn't emailed by the 4th of the new month. Brain fires /api/v1/reports/monthly/send-outreach with triggered_by=autopilot.",
     },
     # Phase EEE — surface brain pattern. Dynamic key
     # `surface_health_critical:<surface_id>` is handled via the prefix-

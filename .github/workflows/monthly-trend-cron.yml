@@ -1,0 +1,94 @@
+# Phase FF+25-followup-r7 (2026-05-20) — monthly trend cron.
+# Runs at 00:05 UTC on the 1st of every month.
+#   Step 1: snapshot the prior month into the monthly_reports archive
+#           (so /reports/monthly/<year>-<month> stays accurate forever)
+#   Step 2: email the snapshot to the journalist outreach list (DCD,
+#           DCK, DCF, WSJ, Forbes, Semafor, SFGate, Runtime)
+#
+# Backstop: brain detector check_monthly_trend_unsent_3d fires at day
+# 4+ if this workflow somehow didn't run / didn't land. Autopilot then
+# POSTs the same send endpoint with triggered_by=autopilot.
+
+name: Monthly Trend — archive + outreach
+
+on:
+  schedule:
+    # 00:05 UTC on day 1 of every month
+    - cron: '5 0 1 * *'
+  workflow_dispatch:
+    # Lets you run it manually from the GitHub UI / a backfill year + month
+    inputs:
+      year:
+        description: 'Year (defaults to prior month)'
+        required: false
+      month:
+        description: 'Month (defaults to prior month)'
+        required: false
+      dry_run:
+        description: 'Dry run (compose pitches but do not send)'
+        required: false
+        default: 'false'
+
+jobs:
+  archive-and-send:
+    runs-on: ubuntu-latest
+    timeout-minutes: 8
+    steps:
+      - name: Archive prior month
+        id: archive
+        run: |
+          set -eo pipefail
+          ADMIN_KEY="${{ secrets.DCHUB_ADMIN_KEY }}"
+          if [ -z "$ADMIN_KEY" ]; then
+            echo "::error::DCHUB_ADMIN_KEY secret not set"
+            exit 1
+          fi
+          YEAR="${{ github.event.inputs.year }}"
+          MONTH="${{ github.event.inputs.month }}"
+          QS=""
+          if [ -n "$YEAR" ]; then QS="?year=$YEAR"; fi
+          if [ -n "$MONTH" ]; then
+            if [ -z "$QS" ]; then QS="?month=$MONTH"; else QS="$QS&month=$MONTH"; fi
+          fi
+          echo "Archiving via /api/v1/reports/monthly/archive$QS"
+          RESP=$(curl -sS -X POST \
+            -H "X-Admin-Key: $ADMIN_KEY" \
+            -H "User-Agent: DCHub-MonthlyCron/1.0" \
+            "https://dchub.cloud/api/v1/reports/monthly/archive$QS")
+          echo "$RESP"
+          echo "$RESP" | python3 -c "import sys,json; d=json.load(sys.stdin); sys.exit(0 if d.get('ok') else 1)"
+
+      - name: Send outreach campaign
+        id: send
+        run: |
+          set -eo pipefail
+          ADMIN_KEY="${{ secrets.DCHUB_ADMIN_KEY }}"
+          YEAR="${{ github.event.inputs.year }}"
+          MONTH="${{ github.event.inputs.month }}"
+          DRY="${{ github.event.inputs.dry_run }}"
+          QS="?triggered_by=cron"
+          if [ -n "$YEAR" ];  then QS="$QS&year=$YEAR"; fi
+          if [ -n "$MONTH" ]; then QS="$QS&month=$MONTH"; fi
+          if [ "$DRY" = "true" ]; then QS="$QS&dry_run=1"; fi
+          echo "Sending via /api/v1/reports/monthly/send-outreach$QS"
+          RESP=$(curl -sS -X POST \
+            -H "X-Admin-Key: $ADMIN_KEY" \
+            -H "User-Agent: DCHub-MonthlyCron/1.0" \
+            "https://dchub.cloud/api/v1/reports/monthly/send-outreach$QS")
+          echo "$RESP"
+          # Surface attempted / succeeded / failed in the workflow summary
+          echo "$RESP" | python3 -c "
+          import sys, json
+          d = json.load(sys.stdin)
+          ok = d.get('ok')
+          atc = d.get('attempted', 0)
+          suc = d.get('succeeded', 0)
+          fld = d.get('failed', 0)
+          plink = d.get('permalink', '')
+          print(f'### Monthly trend outreach' )
+          print(f'')
+          print(f'- Snapshot: {plink}')
+          print(f'- Attempted: {atc} · Succeeded: {suc} · Failed: {fld}')
+          print(f'- triggered_by: {d.get(\"triggered_by\")}')
+          sys.exit(0 if ok else 1)
+          " >> "$GITHUB_STEP_SUMMARY"
