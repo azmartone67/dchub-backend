@@ -113,7 +113,7 @@ ON CONFLICT (user_id, session_date) DO UPDATE SET
 # ── Helpers ────────────────────────────────────────────────────────────────
 
 def is_gated(path):
-    if any(path.startswith(p) for p in ['/api/v1/fiber/summary', '/api/v1/fiber/coverage', '/api/v1/fiber/nearby', '/api/v1/subsea/', '/api/v1/carriers', '/api/jobs/', '/api/admin/mcp/', '/api/v1/track-conversion']):
+    if any(path.startswith(p) for p in ['/api/v1/fiber/summary', '/api/v1/fiber/coverage', '/api/v1/fiber/nearby', '/api/v1/fiber/routes/public', '/api/v1/subsea/', '/api/v1/carriers', '/api/jobs/', '/api/admin/mcp/', '/api/v1/track-conversion']):
         return False
     return any(path.startswith(p) for p in GATED_PREFIXES)
 
