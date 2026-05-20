@@ -3045,16 +3045,31 @@ def deferred_db_init():
 
     logger.info("  ⏭️ PG→SQLite restore sync DISABLED (API reads from Neon directly)")
 
-    try:
-        from main import init_new_tables, init_partner_inquiries_table, init_discovery_tables
-    except ImportError:
-        pass
+    # Phase FF+25-followup (2026-05-20): replaced `from main import ...`
+    # (which created broken function-local bindings) with globals()
+    # lookup at call time. The init_* functions ARE defined at main.py
+    # module level by the time deferred_db_init runs in its background
+    # thread — but the function-local `from main import` was making
+    # Python's compiler shadow those names as locals, and partial
+    # import failures meant the locals were declared but unbound. Result:
+    #   UnboundLocalError: cannot access local variable 'init_*'
+    # …on every backend boot. Caught + logged as ERROR lines but never
+    # actually fatal; just noise that masked real failures.
 
-    try:
-        init_new_tables()
-        logger.info("  ✅ init_new_tables complete")
-    except Exception as e:
-        logger.error(f"  ⚠️ init_new_tables failed: {e}")
+    def _call_inited(fn_name: str, label: str = None):
+        """Look up a module-level init function and call it; log result."""
+        label = label or fn_name
+        fn = globals().get(fn_name)
+        if not callable(fn):
+            logger.info(f"  ⏭️ {label} not yet defined — skipping")
+            return
+        try:
+            fn()
+            logger.info(f"  ✅ {label} complete")
+        except Exception as e:
+            logger.error(f"  ⚠️ {label} failed: {e}")
+
+    _call_inited('init_new_tables')
 
     try:
         if init_linkedin_tables:
@@ -3066,17 +3081,8 @@ def deferred_db_init():
     except Exception as e:
         logger.error(f"  ⚠️ LinkedIn init failed: {e}")
 
-    try:
-        init_partner_inquiries_table()
-        logger.info("  ✅ init_partner_inquiries_table complete")
-    except Exception as e:
-        logger.error(f"  ⚠️ init_partner_inquiries_table failed: {e}")
-
-    try:
-        init_discovery_tables()
-        logger.info("  ✅ init_discovery_tables complete")
-    except Exception as e:
-        logger.error(f"  ⚠️ init_discovery_tables failed: {e}")
+    _call_inited('init_partner_inquiries_table')
+    _call_inited('init_discovery_tables')
 
     try:
         with pg_connection() as _pgc:
