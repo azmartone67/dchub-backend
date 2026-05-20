@@ -152,6 +152,62 @@ NOISE = {
     "november", "december",
 }
 
+# Phase r23-tighten: regex catches Title-Case fragments that aren't
+# real entity names. These suffixes give a STRONG signal a phrase is
+# actually a company — Inc, Ltd, Holdings, Networks, Digital, etc.
+# When the regex finds candidates with no entity-suffix, we require
+# them to ALSO match a known-operator pattern (multi-word AllCap or
+# CamelCase brand) or we drop them.
+ENTITY_SUFFIXES = {
+    "Inc", "Inc.", "Ltd", "Ltd.", "LLC", "Corp", "Corp.", "Corporation",
+    "Holdings", "Networks", "Communications", "Digital", "Hyperscale",
+    "Industries", "Group", "Solutions", "Technologies", "Systems",
+    "Realty", "REIT", "Capital", "Partners", "Trust", "Mining",
+    "Compute", "Cloud", "Hosting", "Colocation", "DataBank",
+    "Edge", "Centers", "Centres",
+}
+
+# Generic English words that should NEVER be considered entities
+# regardless of capitalization (covers most sentence-fragment noise).
+GENERIC_VERBS_NOUNS = {
+    "bets", "limits", "front", "debate", "scrutiny", "policy",
+    "pushback", "demands", "ground", "alternatives", "rules",
+    "report", "operators", "expansion", "resistance", "battery",
+    "storage", "boom", "outage", "transforms", "stretch",
+    "tightens", "opens", "hit", "seeks", "seek", "meets",
+    "resiliency", "permitting", "head-on", "beyond",
+    "data centers", "data centres", "ai", "the", "and",
+}
+
+
+def _is_real_entity(phrase: str) -> bool:
+    """Heuristic: does this look like an actual operator/facility name
+    vs. a sentence fragment? Returns False for obvious noise."""
+    p = phrase.strip()
+    if not p or len(p) < 4: return False
+    lower = p.lower()
+    if lower in GENERIC_VERBS_NOUNS: return False
+    # If any word is a noisy generic verb/noun, drop it
+    tokens = p.split()
+    if any(t.lower() in GENERIC_VERBS_NOUNS for t in tokens):
+        return False
+    # All-caps single word ≥ 3 chars (acronym pattern like TSMC, NTT)
+    if len(tokens) == 1 and p.isupper() and len(p) >= 3:
+        return True
+    # Entity suffix? Strong signal
+    if tokens[-1] in ENTITY_SUFFIXES:
+        return True
+    # 2+ word Title Case (each word starts with caps) → maybe a name
+    if (len(tokens) >= 2
+            and all(t[0].isupper() and (t[1:].islower() or t[1:].isdigit() or "-" in t)
+                    for t in tokens)):
+        # But reject if it ends in a verb-y form
+        last = tokens[-1].lower()
+        if last.endswith(("ing", "ed", "es", "ly", "tion")):
+            return False
+        return True
+    return False
+
 
 def _extract_names_regex(text: str) -> list[str]:
     if not text: return []
@@ -171,6 +227,12 @@ def _extract_names_regex(text: str) -> list[str]:
                         or phrase.lower() in NOISE):
                     continue
                 if phrase.isdigit():
+                    continue
+                # Phase r23-tighten: only keep phrases that pass the
+                # real-entity heuristic. Drops sentence fragments
+                # like "Oklahoma Law Opens New", "Battery Storage
+                # Gains Ground", and single-word verbs.
+                if not _is_real_entity(phrase):
                     continue
                 candidates.add(phrase)
             idx = pos + len(trigger)
@@ -426,7 +488,13 @@ def ner_candidates():
     if c is None: return jsonify(ok=False, error="no_db"), 503
     try:
         with c.cursor() as cur:
-            where = "WHERE in_facilities = FALSE" if only_unknown else ""
+            # r23-tighten: always exclude 'rejected' from the human-
+            # facing candidates list. Operators have already said no
+            # to these.
+            where = ("WHERE in_facilities = FALSE "
+                     "AND COALESCE(status, 'unknown') != 'rejected'"
+                     if only_unknown
+                     else "WHERE COALESCE(status, 'unknown') != 'rejected'")
             cur.execute(f"""
                 SELECT entity_name, mention_count, first_seen_at,
                        last_seen_at, sample_headline, sample_url,
@@ -448,6 +516,83 @@ def ner_candidates():
                     "status": r[7],
                 })
         return jsonify(ok=True, count=len(rows), candidates=rows)
+    finally:
+        try: c.close()
+        except Exception: pass
+
+
+@news_ner_bp.route("/api/v1/admin/news-ner/reject", methods=["POST"])
+def ner_reject():
+    """Mark a candidate as 'noise' so it doesn't keep showing up.
+    Body: {"name": "Sentence Fragment"} or {"id": 123}.
+    Marks status='rejected' — future scans of the same name skip
+    adding to the candidates list."""
+    if not _admin_ok():
+        return jsonify(ok=False, error="forbidden"), 403
+    p = request.get_json(silent=True) or {}
+    name = (p.get("name") or "").strip()
+    cid = p.get("id")
+    if not name and not cid:
+        return jsonify(ok=False, error="name_or_id_required"), 400
+    c = _get_db()
+    if c is None: return jsonify(ok=False, error="no_db"), 503
+    try:
+        with c.cursor() as cur:
+            if name:
+                cur.execute(
+                    "UPDATE news_discovered_entities SET status = 'rejected' "
+                    "WHERE LOWER(entity_name) = LOWER(%s) RETURNING id",
+                    (name,),
+                )
+            else:
+                cur.execute(
+                    "UPDATE news_discovered_entities SET status = 'rejected' "
+                    "WHERE id = %s RETURNING id",
+                    (cid,),
+                )
+            r = cur.fetchone()
+        try: c.commit()
+        except Exception: pass
+        return jsonify(ok=True, rejected=bool(r),
+                       id=int(r[0]) if r else None)
+    finally:
+        try: c.close()
+        except Exception: pass
+
+
+@news_ner_bp.route("/api/v1/admin/news-ner/purge-noise", methods=["POST"])
+def ner_purge_noise():
+    """Retroactively run the _is_real_entity filter over existing
+    rows and mark fragments as 'rejected'. Cleans up the noise from
+    pre-r23-tighten scans."""
+    if not _admin_ok():
+        return jsonify(ok=False, error="forbidden"), 403
+    c = _get_db()
+    if c is None: return jsonify(ok=False, error="no_db"), 503
+    rejected = 0
+    kept = 0
+    try:
+        with c.cursor() as cur:
+            cur.execute("""
+                SELECT id, entity_name FROM news_discovered_entities
+                 WHERE status NOT IN ('rejected', 'seeded')
+            """)
+            rows = cur.fetchall()
+            for r in rows:
+                name = r[1] or ""
+                if not _is_real_entity(name):
+                    cur.execute(
+                        "UPDATE news_discovered_entities "
+                        "SET status = 'rejected' WHERE id = %s",
+                        (r[0],),
+                    )
+                    rejected += 1
+                else:
+                    kept += 1
+        try: c.commit()
+        except Exception: pass
+        return jsonify(ok=True, scanned=len(rows),
+                       rejected=rejected, kept=kept)
     finally:
         try: c.close()
         except Exception: pass
