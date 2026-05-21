@@ -79,6 +79,14 @@ SCHEMA_STATEMENTS = [
         )""",
         "CREATE INDEX IF NOT EXISTS ix_worker_versions_observed ON worker_versions(observed_at DESC)",
     ]),
+    ("users.pocket_preferences column", [
+        # r33 (2026-05-20): single JSONB column for profile-driven
+        # /api/v1/pockets/for-me re-ranking. Stores target_mw,
+        # preferred_iso, preferred_state, within_ttp, workload_type.
+        # JSONB lets us add new dimensions (carbon target, latency
+        # threshold, water risk tolerance) without re-migrating.
+        "ALTER TABLE users ADD COLUMN IF NOT EXISTS pocket_preferences JSONB DEFAULT '{}'::jsonb",
+    ]),
     ("users.dunning_counters columns", [
         # Phase r26 (2026-05-20): tracks dunning state per customer so
         # handle_payment_failed can decide whether to demote API rate

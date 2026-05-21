@@ -1,0 +1,38 @@
+name: Pockets Weekly Digest
+
+# r35 (2026-05-20): Monday-morning focused email of top BUILD pockets +
+# biggest 7-day movers. Separate from the existing daily /digest cron
+# (digest-daily.yml, M-F 14:15 UTC) so the pockets-specific cadence
+# lands at the top of the inbox once a week rather than competing
+# with the daily brief. Idempotency is enforced server-side via
+# brain_findings logging — refuses a second send within 6 days.
+on:
+  schedule:
+    # Mondays at 14:05 UTC (offset by 5min from the existing 14:00
+    # anchor cluster — see brain consistency_radar cron-collision
+    # detector for the rationale).
+    - cron: '5 14 * * 1'
+  workflow_dispatch: {}
+
+jobs:
+  send:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Probe Railway is live (handles deploy-lag silent fail)
+        run: |
+          for i in 1 2 3 4 5; do
+            code=$(curl -s -o /dev/null -w "%{http_code}" "https://dchub.cloud/api/v1/pockets/health")
+            if [ "$code" = "200" ]; then
+              echo "Backend ready"
+              exit 0
+            fi
+            echo "Attempt $i: backend returned $code, sleeping 30s..."
+            sleep 30
+          done
+          echo "Backend never returned 200 — aborting send"
+          exit 1
+      - name: Send weekly pockets digest
+        run: |
+          curl -sS -X POST "https://dchub.cloud/api/v1/pockets/digest/send?dry=0" \
+            -H "X-Admin-Key: ${{ secrets.DCHUB_ADMIN_KEY }}" \
+            | python3 -m json.tool

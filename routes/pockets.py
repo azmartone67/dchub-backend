@@ -268,11 +268,17 @@ def pockets_for_me():
     tier = _detect_tier()
     cap = _limit_for_tier(tier)
 
-    target_mw = request.args.get("target_mw", type=int) or 0
-    iso_pref = (request.args.get("iso") or "").strip().upper()
-    state_pref = (request.args.get("state") or "").strip().upper()
-    within_ttp = request.args.get("within_ttp", type=int) or 0
-    workload = (request.args.get("workload") or "").strip().lower()
+    # r33 (2026-05-20): query params win, but fall back to the user's
+    # saved profile preferences. Logged-in users get personalized
+    # rankings without specifying anything; query params override
+    # for one-off "what if" exploration.
+    profile = _load_preferences(_auth_user_id()) or {}
+    target_mw = request.args.get("target_mw", type=int) or int(profile.get("target_mw") or 0)
+    iso_pref = (request.args.get("iso") or profile.get("iso") or "").strip().upper()
+    state_pref = (request.args.get("state") or profile.get("state") or "").strip().upper()
+    within_ttp = request.args.get("within_ttp", type=int) or int(profile.get("within_ttp") or 0)
+    workload = (request.args.get("workload") or profile.get("workload") or "").strip().lower()
+    source_of_prefs = "query+profile" if profile else "query"
 
     rows = _fetch_pockets(limit_hint=500)
 
@@ -333,6 +339,7 @@ def pockets_for_me():
             "state":     state_pref or None,
             "within_ttp": within_ttp or None,
             "workload":  workload or None,
+            "source":    source_of_prefs,
         },
         "pockets": rows,
         "methodology": (
@@ -524,6 +531,170 @@ def pockets_page():
     resp = Response(html, mimetype="text/html")
     resp.headers["Cache-Control"] = "public, max-age=300, must-revalidate"
     return resp
+
+
+# ─── Profile-driven preferences (r33) ─────────────────────────────────
+#
+# Persisted preferences live on users.pocket_preferences (JSONB on
+# Postgres, TEXT on SQLite). Shape:
+#   {
+#     "target_mw":   int,
+#     "iso":         "PJM"|"ERCOT"|...,
+#     "state":       "VA"|"TX"|...,
+#     "within_ttp":  int (months),
+#     "workload":    "ai_training"|"inference"|"colo"
+#   }
+# /api/v1/pockets/for-me reads these when matching query params aren't
+# provided, so logged-in users get personalized rankings without having
+# to specify each time.
+
+def _auth_user_id():
+    """Resolve the authenticated user_id from the current request.
+    Returns None for anonymous. Uses the canonical auth_context resolver
+    where available; falls back to JWT cookie + X-API-Key."""
+    try:
+        from routes.auth_context import get_auth_context
+        ctx = get_auth_context(request)
+        if ctx and ctx.user_id:
+            return ctx.user_id
+    except Exception:
+        pass
+    # JWT cookie fallback
+    try:
+        import jwt as _jwt
+        from main import JWT_SECRET
+        token = (request.cookies.get('dchub_token') or
+                 request.cookies.get('auth_token') or
+                 request.cookies.get('token') or '')
+        if token:
+            payload = _jwt.decode(token, JWT_SECRET, algorithms=['HS256'])
+            return payload.get('user_id') or payload.get('sub')
+    except Exception:
+        pass
+    # X-API-Key fallback
+    api_key = request.headers.get('X-API-Key') or request.args.get('api_key')
+    if api_key and api_key.startswith('dchub_'):
+        try:
+            import hashlib
+            from main import get_pg_connection, return_pg_connection
+            c = get_pg_connection(retries=1)
+            try:
+                cur = c.cursor()
+                kh = hashlib.sha256(api_key.encode()).hexdigest()
+                cur.execute("SELECT user_id FROM api_keys "
+                            "WHERE key_hash=%s AND is_active=1 LIMIT 1", (kh,))
+                r = cur.fetchone()
+                return r[0] if r else None
+            finally:
+                return_pg_connection(c)
+        except Exception:
+            pass
+    return None
+
+
+def _load_preferences(user_id) -> dict:
+    """Read users.pocket_preferences for the given user. Returns {} on
+    any failure or missing user. Tolerates both JSONB (returns dict)
+    and TEXT (returns JSON string)."""
+    if not user_id:
+        return {}
+    conn = _get_db()
+    if conn is None:
+        return {}
+    try:
+        cur = conn.cursor()
+        cur.execute("SELECT pocket_preferences FROM users WHERE id = %s",
+                    (user_id,))
+        row = cur.fetchone()
+        if not row or row[0] is None:
+            return {}
+        v = row[0]
+        if isinstance(v, dict):
+            return v
+        if isinstance(v, str):
+            try:
+                return json.loads(v) if v else {}
+            except Exception:
+                return {}
+        return {}
+    except Exception as e:
+        logger.warning(f"pockets: prefs load failed for {user_id}: {e}")
+        return {}
+    finally:
+        _return_db(conn)
+
+
+def _save_preferences(user_id, prefs: dict) -> bool:
+    """Persist pocket_preferences for the user. Returns True on success."""
+    if not user_id:
+        return False
+    conn = _get_db()
+    if conn is None:
+        return False
+    try:
+        cur = conn.cursor()
+        # Postgres JSONB path first (production); fall back to TEXT.
+        try:
+            cur.execute(
+                "UPDATE users SET pocket_preferences = %s::jsonb WHERE id = %s",
+                (json.dumps(prefs), user_id),
+            )
+            conn.commit()
+            return True
+        except Exception:
+            try: conn.rollback()
+            except Exception: pass
+            cur.execute(
+                "UPDATE users SET pocket_preferences = %s WHERE id = %s",
+                (json.dumps(prefs), user_id),
+            )
+            conn.commit()
+            return True
+    except Exception as e:
+        logger.warning(f"pockets: prefs save failed for {user_id}: {e}")
+        return False
+    finally:
+        _return_db(conn)
+
+
+@pockets_bp.route("/api/v1/pockets/preferences", methods=["GET", "POST"])
+def pockets_preferences():
+    """Read or write the authenticated user's pocket preferences.
+
+    GET  → returns current prefs (or {} if not set)
+    POST → body {target_mw, iso, state, within_ttp, workload} writes them
+    """
+    user_id = _auth_user_id()
+    if not user_id:
+        return jsonify(ok=False, error="auth_required",
+                       message="Sign in to save pocket preferences"), 401
+
+    if request.method == "GET":
+        return jsonify(ok=True, user_id=user_id,
+                       preferences=_load_preferences(user_id)), 200
+
+    body = request.get_json(silent=True) or {}
+    # Whitelist + light validation. Unknown fields are dropped silently.
+    clean = {}
+    if body.get("target_mw") is not None:
+        try: clean["target_mw"] = max(0, int(body["target_mw"]))
+        except (ValueError, TypeError): pass
+    if body.get("iso"):
+        clean["iso"] = str(body["iso"]).upper().strip()[:12]
+    if body.get("state"):
+        clean["state"] = str(body["state"]).upper().strip()[:3]
+    if body.get("within_ttp") is not None:
+        try: clean["within_ttp"] = max(0, int(body["within_ttp"]))
+        except (ValueError, TypeError): pass
+    if body.get("workload"):
+        w = str(body["workload"]).lower().strip()
+        if w in {"ai_training", "inference", "colo"}:
+            clean["workload"] = w
+
+    if not _save_preferences(user_id, clean):
+        return jsonify(ok=False, error="save_failed"), 500
+    return jsonify(ok=True, user_id=user_id, preferences=clean,
+                   saved=True), 200
 
 
 # ─── Pocket detail (per-market) endpoints ────────────────────────────
@@ -1031,3 +1202,393 @@ def detect_high_movers(threshold: float = 15.0) -> list[dict]:
             })
     out.sort(key=lambda r: -abs(r["delta_7d"]))
     return out
+
+
+# ─── r34: Map overlay support ────────────────────────────────────────
+#
+# /map already exists. r34 adds a "show pockets" overlay layer. The
+# /api/v1/pockets/geojson endpoint emits a GeoJSON FeatureCollection
+# with one Feature per market (Point geometry). Each feature carries
+# the verdict + score so the frontend can color-code (BUILD=green,
+# HOLD=amber, AVOID=red) and link the marker popup to /pockets/<slug>.
+#
+# Lat/lng comes from a curated MARKET_COORDS dict — market_power_scores
+# doesn't carry coordinates, and looking up via facilities aggregation
+# would be slow + noisy. Curated covers ~80 known markets.
+MARKET_COORDS = {
+    # PJM
+    "northern-virginia": (38.9047, -77.4356),  # Ashburn
+    "ashburn":           (39.0438, -77.4874),
+    "chicago":           (41.8781, -87.6298),
+    "columbus":          (39.9612, -82.9988),
+    "atlanta":           (33.7490, -84.3880),
+    "richmond":          (37.5407, -77.4360),
+    "pittsburgh":        (40.4406, -79.9959),
+    # ERCOT
+    "dallas":            (32.7767, -96.7970),
+    "fort-worth":        (32.7555, -97.3308),
+    "houston":           (29.7604, -95.3698),
+    "austin":            (30.2672, -97.7431),
+    "san-antonio":       (29.4241, -98.4936),
+    # CAISO / WECC
+    "silicon-valley":    (37.3382, -121.8863),
+    "san-francisco":     (37.7749, -122.4194),
+    "los-angeles":       (34.0522, -118.2437),
+    "san-jose":          (37.3382, -121.8863),
+    "phoenix":           (33.4484, -112.0740),
+    "tucson":            (32.2226, -110.9747),
+    "las-vegas":         (36.1699, -115.1398),
+    "reno":              (39.5296, -119.8138),
+    "salt-lake-city":    (40.7608, -111.8910),
+    "portland":          (45.5152, -122.6784),
+    "seattle":           (47.6062, -122.3321),
+    "spokane":           (47.6588, -117.4260),
+    "denver":            (39.7392, -104.9903),
+    "boise":             (43.6150, -116.2023),
+    "san-diego":         (32.7157, -117.1611),
+    # MISO
+    "minneapolis":       (44.9778, -93.2650),
+    "des-moines":        (41.5868, -93.6250),
+    "milwaukee":          (43.0389, -87.9065),
+    "st-louis":          (38.6270, -90.1994),
+    "kansas-city":       (39.0997, -94.5786),
+    "indianapolis":      (39.7684, -86.1581),
+    "detroit":           (42.3314, -83.0458),
+    # NYISO + ISO-NE
+    "new-york":          (40.7128, -74.0060),
+    "albany":            (42.6526, -73.7562),
+    "boston":            (42.3601, -71.0589),
+    "providence":        (41.8240, -71.4128),
+    # SPP / SERC
+    "oklahoma-city":     (35.4676, -97.5164),
+    "omaha":             (41.2565, -95.9345),
+    "memphis":           (35.1495, -90.0490),
+    "nashville":         (36.1627, -86.7816),
+    "charlotte":         (35.2271, -80.8431),
+    "raleigh":           (35.7796, -78.6382),
+    "miami":             (25.7617, -80.1918),
+    "tampa":             (27.9506, -82.4572),
+    "orlando":           (28.5384, -81.3789),
+    "jacksonville":      (30.3322, -81.6557),
+    # Canada
+    "toronto":           (43.6532, -79.3832),
+    "montreal":          (45.5017, -73.5673),
+    "vancouver":         (49.2827, -123.1207),
+    "calgary":           (51.0447, -114.0719),
+    "ottawa":            (45.4215, -75.6972),
+    "quebec-city":       (46.8139, -71.2080),
+    # Europe (top markets)
+    "london":            (51.5074, -0.1278),
+    "frankfurt":         (50.1109, 8.6821),
+    "amsterdam":         (52.3676, 4.9041),
+    "paris":             (48.8566, 2.3522),
+    "dublin":            (53.3498, -6.2603),
+    "stockholm":         (59.3293, 18.0686),
+    "madrid":            (40.4168, -3.7038),
+    "milan":             (45.4642, 9.1900),
+    "zurich":            (47.3769, 8.5417),
+    "warsaw":            (52.2297, 21.0122),
+    # APAC
+    "singapore":         (1.3521, 103.8198),
+    "tokyo":             (35.6762, 139.6503),
+    "osaka":             (34.6937, 135.5023),
+    "sydney":            (-33.8688, 151.2093),
+    "melbourne":         (-37.8136, 144.9631),
+    "hong-kong":         (22.3193, 114.1694),
+    "mumbai":            (19.0760, 72.8777),
+    "delhi":             (28.7041, 77.1025),
+    "bangalore":         (12.9716, 77.5946),
+    "seoul":             (37.5665, 126.9780),
+    "jakarta":           (-6.2088, 106.8456),
+    "kuala-lumpur":      (3.1390, 101.6869),
+    "bangkok":           (13.7563, 100.5018),
+    "manila":            (14.5995, 120.9842),
+    # LATAM
+    "sao-paulo":         (-23.5505, -46.6333),
+    "rio-de-janeiro":    (-22.9068, -43.1729),
+    "mexico-city":       (19.4326, -99.1332),
+    "santiago":          (-33.4489, -70.6693),
+    "bogota":            (4.7110, -74.0721),
+    "buenos-aires":      (-34.6037, -58.3816),
+}
+
+
+@pockets_bp.route("/api/v1/pockets/geojson", methods=["GET"])
+def pockets_geojson():
+    """GeoJSON FeatureCollection for the map overlay. One Point per
+    market that has known coordinates. Each Feature carries verdict,
+    score, delta_7d, and a link URL so the frontend can color + popup.
+
+    Public — no tier gate. The map exposing where the BUILD markets
+    are is marketing surface, not gated data.
+    """
+    rows = _fetch_pockets(limit_hint=200)
+    features = []
+    skipped = 0
+    for r in rows:
+        slug = (r.get("market_slug") or "").lower()
+        coords = MARKET_COORDS.get(slug)
+        if not coords:
+            skipped += 1
+            continue
+        lat, lng = coords
+        verdict = (r.get("verdict") or "HOLD").upper()
+        color = {
+            "BUILD": "#10b981",  # green
+            "HOLD":  "#f59e0b",  # amber
+            "AVOID": "#ef4444",  # red
+        }.get(verdict, "#9ca3af")
+        features.append({
+            "type": "Feature",
+            "geometry": {"type": "Point", "coordinates": [lng, lat]},
+            "properties": {
+                "market_slug": slug,
+                "market_name": r.get("market_name"),
+                "iso":         r.get("iso"),
+                "state":       r.get("state"),
+                "verdict":     verdict,
+                "rank_score":  r.get("rank_score"),
+                "excess":      r.get("excess_power_score"),
+                "constraint":  r.get("constraint_score"),
+                "delta_7d":    r.get("delta_7d"),
+                "color":       color,
+                "url":         f"/pockets/{slug}",
+                "why":         _rationale(r),
+            },
+        })
+    payload = {
+        "type": "FeatureCollection",
+        "features": features,
+        "as_of": datetime.datetime.utcnow().isoformat() + "Z",
+        "shown": len(features),
+        "skipped_no_coords": skipped,
+        "legend": {
+            "BUILD": "#10b981",
+            "HOLD":  "#f59e0b",
+            "AVOID": "#ef4444",
+        },
+    }
+    resp = jsonify(payload)
+    resp.headers["Cache-Control"] = "public, max-age=600"
+    return resp
+
+
+# ─── r35: Weekly pockets digest ──────────────────────────────────────
+#
+# Mon-morning focused email of the week's top BUILD pockets + biggest
+# movers. Separate from /digest (which is daily, broader) — this one
+# is narrow: pockets only, weekly cadence, sent Mondays so it lands at
+# the top of the inbox.
+
+def _build_weekly_digest():
+    """Compose the weekly digest payload: top 5 BUILD + top 5 movers."""
+    rows = _fetch_pockets(limit_hint=200)
+    top_build = [r for r in rows if r.get("verdict") == "BUILD"][:5]
+    movers = [r for r in rows if r.get("delta_7d") is not None]
+    top_movers = sorted(movers, key=lambda r: -abs(r.get("delta_7d") or 0))[:5]
+    for r in (top_build + top_movers):
+        r["why"] = _rationale(r)
+    return {
+        "as_of":      datetime.datetime.utcnow().isoformat() + "Z",
+        "week_of":    datetime.date.today().isoformat(),
+        "top_build":  top_build,
+        "top_movers": top_movers,
+        "title":      f"Pockets of Power · Week of {datetime.date.today().strftime('%b %d, %Y')}",
+    }
+
+
+def _render_weekly_html(d: dict) -> str:
+    """Render the weekly digest as HTML for both the preview endpoint
+    and the Resend email body. Brand-matched dark theme."""
+    rows_build = "".join(
+        f'<tr><td><a href="https://dchub.cloud/pockets/{r["market_slug"]}" '
+        f'style="color:#fff;font-weight:600;text-decoration:none">'
+        f'{r["market_name"]}</a><br><span style="color:#9ca3af;font-size:12px">'
+        f'{r.get("iso") or "—"} · {r.get("state") or "—"}</span></td>'
+        f'<td style="font-family:monospace;font-weight:700;color:#10b981">'
+        f'{r["rank_score"]}</td>'
+        f'<td style="color:#cbd5e1;font-size:13px">{r["why"]}</td></tr>'
+        for r in d["top_build"]
+    ) or '<tr><td colspan="3" style="color:#6b7280;text-align:center;padding:24px">No BUILD verdict markets this week.</td></tr>'
+
+    rows_movers = "".join(
+        (lambda r, sign, color: (
+            f'<tr><td><a href="https://dchub.cloud/pockets/{r["market_slug"]}" '
+            f'style="color:#fff;font-weight:600;text-decoration:none">'
+            f'{r["market_name"]}</a><br><span style="color:#9ca3af;font-size:12px">'
+            f'{r.get("iso") or "—"} · {r.get("state") or "—"}</span></td>'
+            f'<td style="font-family:monospace;font-weight:700;color:{color}">'
+            f'{sign}{r["delta_7d"]}</td>'
+            f'<td style="color:#cbd5e1;font-size:13px">{r["why"]}</td></tr>'
+        ))(r,
+            "+" if (r.get("delta_7d") or 0) > 0 else "",
+            "#10b981" if (r.get("delta_7d") or 0) > 0 else "#ef4444")
+        for r in d["top_movers"]
+    ) or '<tr><td colspan="3" style="color:#6b7280;text-align:center;padding:24px">No significant movers this week.</td></tr>'
+
+    return f'''<div style="font-family:Inter,-apple-system,sans-serif;background:#0a0a12;color:#fff;padding:32px;max-width:680px;margin:0 auto;line-height:1.55">
+<div style="font-family:monospace;font-size:11px;color:#c4b5fd;text-transform:uppercase;letter-spacing:.14em;margin-bottom:8px">DC HUB · WEEKLY POCKETS · {d["week_of"]}</div>
+<h1 style="font-size:24px;margin:0 0 8px;font-weight:800;color:#fff">{d["title"]}</h1>
+<p style="color:#9ca3af;margin:0 0 24px;font-size:14px">Top BUILD-verdict markets and biggest 7-day movers on the excess-power index. Powered by DC Hub's live grid + DCPI signals.</p>
+
+<h2 style="font-size:12px;color:#9ca3af;text-transform:uppercase;letter-spacing:.12em;margin:24px 0 12px">Top BUILD verdicts</h2>
+<table style="width:100%;border-collapse:collapse;background:#11121a;border:1px solid #1f2030;border-radius:10px;overflow:hidden;font-size:14px">
+<thead><tr><th style="text-align:left;padding:10px 14px;color:#9ca3af;background:#0f1019;font-size:11px;text-transform:uppercase;letter-spacing:.1em">Market</th><th style="text-align:left;padding:10px 14px;color:#9ca3af;background:#0f1019;font-size:11px;text-transform:uppercase;letter-spacing:.1em">Score</th><th style="text-align:left;padding:10px 14px;color:#9ca3af;background:#0f1019;font-size:11px;text-transform:uppercase;letter-spacing:.1em">Why</th></tr></thead>
+<tbody>{rows_build}</tbody></table>
+
+<h2 style="font-size:12px;color:#9ca3af;text-transform:uppercase;letter-spacing:.12em;margin:24px 0 12px">Biggest 7-day movers</h2>
+<table style="width:100%;border-collapse:collapse;background:#11121a;border:1px solid #1f2030;border-radius:10px;overflow:hidden;font-size:14px">
+<thead><tr><th style="text-align:left;padding:10px 14px;color:#9ca3af;background:#0f1019;font-size:11px;text-transform:uppercase;letter-spacing:.1em">Market</th><th style="text-align:left;padding:10px 14px;color:#9ca3af;background:#0f1019;font-size:11px;text-transform:uppercase;letter-spacing:.1em">7d Δ</th><th style="text-align:left;padding:10px 14px;color:#9ca3af;background:#0f1019;font-size:11px;text-transform:uppercase;letter-spacing:.1em">Why</th></tr></thead>
+<tbody>{rows_movers}</tbody></table>
+
+<p style="margin:24px 0 0;color:#6b7280;font-size:13px;text-align:center">
+<a href="https://dchub.cloud/pockets" style="color:#6366f1;text-decoration:none">See the full ranking →</a> ·
+<a href="https://dchub.cloud/pockets.rss" style="color:#6b7280">RSS</a> ·
+<a href="https://dchub.cloud/digest" style="color:#6b7280">Daily brief</a>
+</p>
+<p style="margin:16px 0 0;color:#6b7280;font-size:11px;text-align:center">DC Hub · neutral data layer for data center infrastructure</p>
+</div>'''
+
+
+@pockets_bp.route("/api/v1/pockets/digest/preview", methods=["GET"])
+def pockets_digest_preview():
+    """Preview the weekly digest HTML in a browser. Public — same
+    content the email would carry, useful for QA + the user to share
+    as a link instead of an email blast."""
+    d = _build_weekly_digest()
+    html = (
+        f'<!DOCTYPE html><html><head><meta charset="utf-8">'
+        f'<title>{d["title"]}</title>'
+        f'<style>body{{background:#0a0a12;margin:0;padding:24px 0}}</style>'
+        f'</head><body>{_render_weekly_html(d)}</body></html>'
+    )
+    resp = Response(html, mimetype="text/html")
+    resp.headers["Cache-Control"] = "public, max-age=900"
+    return resp
+
+
+@pockets_bp.route("/api/v1/pockets/digest/send", methods=["POST"])
+def pockets_digest_send():
+    """Send the weekly pockets digest to the UNION'd recipient list
+    (digest_subscribers + mcp_dev_keys). Admin-gated. Idempotent per
+    week — refuses if a digest was already sent in the last 6 days.
+    Supports ?dry=1 to inspect recipients without sending."""
+    expected = os.environ.get("DCHUB_ADMIN_KEY") or os.environ.get("DCHUB_INTERNAL_KEY")
+    provided = request.headers.get("X-Admin-Key") or request.args.get("admin_key")
+    if expected and provided != expected:
+        return jsonify(ok=False, error="unauthorized"), 401
+
+    dry = request.args.get("dry", "0") == "1"
+
+    # Recipient list — same UNION as /api/v1/digest/send.
+    conn = _get_db()
+    if conn is None:
+        return jsonify(ok=False, error="no_db"), 503
+    emails: list = []
+    try:
+        cur = conn.cursor()
+        try:
+            cur.execute("""
+                SELECT DISTINCT lower(email)
+                  FROM (
+                    SELECT email FROM mcp_dev_keys
+                     WHERE email IS NOT NULL AND email != ''
+                    UNION
+                    SELECT email FROM digest_subscribers
+                     WHERE email IS NOT NULL AND email != ''
+                       AND unsubscribed_at IS NULL
+                  ) u
+            """)
+            emails = [r[0] for r in cur.fetchall() if r[0]]
+        except Exception as e:
+            return jsonify(ok=False, error="recipient_query_failed",
+                           detail=str(e)[:200]), 500
+
+        # Idempotency — refuse to send twice within 6 days. We log
+        # sends to brain_findings so this is queryable.
+        if not dry:
+            try:
+                cur.execute("""
+                    SELECT COUNT(*) FROM brain_findings
+                     WHERE issue = 'pockets_weekly_digest_sent'
+                       AND created_at > NOW() - INTERVAL '6 days'
+                """)
+                if int((cur.fetchone() or [0])[0] or 0) > 0:
+                    return jsonify(
+                        ok=False, error="already_sent_this_week",
+                        message=("A pockets-weekly digest was already sent "
+                                 "in the last 6 days. Use ?dry=1 to inspect "
+                                 "without sending."),
+                    ), 409
+            except Exception:
+                try: conn.rollback()
+                except Exception: pass
+    finally:
+        _return_db(conn)
+
+    d = _build_weekly_digest()
+    html_body = _render_weekly_html(d)
+
+    if dry:
+        return jsonify(
+            ok=True, dry_run=True,
+            recipient_count=len(emails),
+            sample_recipients=emails[:3],
+            digest=d,
+        ), 200
+
+    # Fire the emails via Resend (same client digest.py uses).
+    sent, failed = 0, 0
+    resend_key = os.environ.get("DCHUB_RESEND_API_KEY") or os.environ.get("RESEND_API_KEY", "")
+    if not resend_key:
+        return jsonify(ok=False, error="resend_not_configured"), 500
+    try:
+        import requests as _rq
+        from_email = os.environ.get("DCHUB_FROM_EMAIL",
+                                     "DC Hub <jonathan@dchub.cloud>")
+        for em in emails:
+            try:
+                r = _rq.post(
+                    "https://api.resend.com/emails",
+                    json={
+                        "from":    from_email,
+                        "to":      [em],
+                        "subject": d["title"],
+                        "html":    html_body,
+                    },
+                    headers={
+                        "Authorization": f"Bearer {resend_key.strip()}",
+                        "Content-Type":  "application/json",
+                    },
+                    timeout=15,
+                )
+                if 200 <= r.status_code < 300:
+                    sent += 1
+                else:
+                    failed += 1
+            except Exception:
+                failed += 1
+    except Exception as e:
+        return jsonify(ok=False, error="resend_exception",
+                       detail=str(e)[:200], sent=sent, failed=failed), 500
+
+    # Log the send for idempotency + observability.
+    conn = _get_db()
+    if conn is not None:
+        try:
+            cur = conn.cursor()
+            cur.execute(
+                """INSERT INTO brain_findings (issue, url, count, detail, detector, created_at)
+                   VALUES ('pockets_weekly_digest_sent', %s, %s, %s, 'pockets_digest', NOW())""",
+                (f"/pockets?week={d['week_of']}",
+                 sent, f"sent={sent} failed={failed} title={d['title']}"),
+            )
+            conn.commit()
+        except Exception:
+            try: conn.rollback()
+            except Exception: pass
+        finally:
+            _return_db(conn)
+
+    return jsonify(ok=True, sent=sent, failed=failed,
+                   recipient_count=len(emails), week_of=d["week_of"]), 200
