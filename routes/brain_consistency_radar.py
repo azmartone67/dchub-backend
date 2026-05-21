@@ -2299,12 +2299,27 @@ def check_citation_score_dropped() -> list[dict]:
         return []
     rows = d.get("history") or []
     if len(rows) < 3: return []
-    latest_pct = float(rows[-1].get("score_pct") or 0)
-    # 7-day delta if available
-    week_ago = next((r for r in rows[::-1]
-                     if r["date"] and rows[-1]["date"] and
-                     (datetime.datetime.fromisoformat(rows[-1]["date"]) -
-                      datetime.datetime.fromisoformat(r["date"])).days >= 7), None)
+    try:
+        latest_pct = float(rows[-1].get("score_pct") or 0)
+    except (TypeError, ValueError):
+        return []
+    # Phase r33-G (2026-05-21): defensive date parsing. Before this
+    # guard, a malformed date in any row raised ValueError inside the
+    # generator expression below and crashed the detector — which
+    # showed up on /brain-live as consistency_radar_detector_crashed.
+    def _safe_iso(s):
+        try:
+            return datetime.datetime.fromisoformat(s) if s else None
+        except (ValueError, TypeError):
+            return None
+    latest_dt = _safe_iso(rows[-1].get("date"))
+    week_ago = None
+    if latest_dt is not None:
+        for r in rows[::-1]:
+            r_dt = _safe_iso(r.get("date"))
+            if r_dt is not None and (latest_dt - r_dt).days >= 7:
+                week_ago = r
+                break
     findings: list[dict] = []
     if week_ago:
         wow_delta = latest_pct - float(week_ago.get("score_pct") or 0)
@@ -7058,6 +7073,85 @@ try:
         """Public read-only endpoint — returns current consistency findings.
         Cached in-process for 5 min to avoid hammering on dashboard polls."""
         return jsonify(scan_summary())
+
+    @brain_consistency_radar_bp.post("/api/v1/brain/scan/force")
+    def consistency_radar_force_endpoint():
+        """Phase r33-G (2026-05-21) — operator escape hatch. Admin
+        endpoint to force-clear the cache + force-release the lock
+        + run a fresh scan_all(). Use when brain is stuck on a
+        stale lock (single_flight_lock_busy on /brain-live).
+
+        Auth: X-Admin-Key (same as other admin endpoints)."""
+        import os as _os_force
+        from flask import request as _req_force
+        admin_key = (_os_force.environ.get("DCHUB_ADMIN_KEY")
+                     or _os_force.environ.get("DCHUB_INTERNAL_KEY"))
+        provided = (_req_force.headers.get("X-Admin-Key")
+                    or _req_force.headers.get("X-Internal-Key")
+                    or _req_force.args.get("admin_key") or "")
+        if not admin_key or provided != admin_key:
+            return jsonify(error="unauthorized",
+                           hint="X-Admin-Key header required"), 401
+        # Force-clear cache + lock
+        _SCAN_CACHE["value"]      = None
+        _SCAN_CACHE["expires_at"] = 0.0
+        _release_scan_lock()
+        # Run fresh scan
+        t0 = _t_mod.time()
+        try:
+            findings = scan_all()
+        except Exception as e:
+            return jsonify(
+                ok=False,
+                error=f"{type(e).__name__}: {str(e)[:300]}",
+                elapsed_s=round(_t_mod.time() - t0, 1),
+            ), 500
+        result = _build_summary(findings)
+        _SCAN_CACHE["value"]      = result
+        _SCAN_CACHE["expires_at"] = _t_mod.time() + _SCAN_CACHE_TTL_SECONDS
+        result["elapsed_s"]   = round(_t_mod.time() - t0, 1)
+        result["forced_by"]   = "operator"
+        return jsonify(result), 200
+
+    @brain_consistency_radar_bp.get("/api/v1/brain/scan/diagnostic")
+    def consistency_radar_diagnostic_endpoint():
+        """Quick diagnostic: cache state + lock state + per-detector
+        timings (from _DETECTOR_TIMINGS). Useful when brain is
+        misbehaving — answers 'what is brain doing right now'."""
+        cache_age = -1
+        if _SCAN_CACHE.get("expires_at"):
+            cache_age = round(
+                _t_mod.time()
+                - (_SCAN_CACHE["expires_at"] - _SCAN_CACHE_TTL_SECONDS), 1)
+        lock_t = _SCAN_LOCK_HOLDER_T0.get("t", 0.0)
+        return jsonify({
+            "ok": True,
+            "cache": {
+                "fresh": (_SCAN_CACHE.get("expires_at", 0.0)
+                          > _t_mod.time()),
+                "age_seconds":  cache_age,
+                "ttl_seconds":  _SCAN_CACHE_TTL_SECONDS,
+                "grace_seconds": _SCAN_STALE_GRACE_SECONDS,
+                "findings_count": (
+                    (_SCAN_CACHE.get("value") or {}).get("count", 0)),
+            },
+            "lock": {
+                "locked":  lock_t > 0,
+                "held_for_s": (round(_t_mod.time() - lock_t, 1)
+                               if lock_t > 0 else 0),
+                "max_hold_s": _SCAN_LOCK_MAX_HOLD_SECONDS,
+                "holder_pid": _SCAN_LOCK_HOLDER_T0.get("pid", 0),
+            },
+            "detector_timings": {
+                name: {"last_ms": info.get("last_ms", 0),
+                       "ok":      info.get("ok"),
+                       "err":     info.get("err"),
+                       "age_s":   (round(_t_mod.time()
+                                         - info.get("last_run", 0), 1)
+                                   if info.get("last_run") else None)}
+                for name, info in (_DETECTOR_TIMINGS or {}).items()
+            },
+        }), 200
 except ImportError:
     brain_consistency_radar_bp = None  # tests can still import the detectors
 
@@ -7096,7 +7190,45 @@ _SCAN_STALE_GRACE_SECONDS = 3600    # serve stale up to 1 h old when herd hits
 #      total cache miss for callers.
 #   4. If no cache exists yet AND the lock is held, return an empty
 #      ok=true response instead of waiting (better than 140s timeout).
+# Phase r33-G (2026-05-21): timed lock instead of boolean Lock().
+# The old threading.Lock() pattern leaked: if scan_all hung (one
+# detector blocking despite the 20s timeout), the lock stayed held
+# forever — every subsequent scan request returned
+# "single_flight_lock_busy" stale data and the brain stopped
+# evolving. Now we track WHEN the lock was claimed; any caller can
+# force-release after 120s (longer than a healthy scan's ~15s p99).
 _SCAN_LOCK = _thr_mod.Lock()
+_SCAN_LOCK_HOLDER_T0: dict[str, float] = {"t": 0.0, "pid": 0}
+_SCAN_LOCK_MAX_HOLD_SECONDS = 120.0
+
+
+def _try_acquire_scan_lock() -> bool:
+    """Try to grab the scan lock. If it's held but >120s old,
+    force-release first (assume the holder is dead)."""
+    import os as _os_lock
+    if _SCAN_LOCK.acquire(blocking=False):
+        _SCAN_LOCK_HOLDER_T0["t"]   = _t_mod.time()
+        _SCAN_LOCK_HOLDER_T0["pid"] = _os_lock.getpid()
+        return True
+    # Held — check age
+    held_for = _t_mod.time() - _SCAN_LOCK_HOLDER_T0.get("t", 0.0)
+    if held_for > _SCAN_LOCK_MAX_HOLD_SECONDS:
+        # Force-release: the holder is presumed dead (gunicorn worker
+        # restarted, detector hung past its 20s budget, etc).
+        try: _SCAN_LOCK.release()
+        except Exception: pass
+        if _SCAN_LOCK.acquire(blocking=False):
+            _SCAN_LOCK_HOLDER_T0["t"]   = _t_mod.time()
+            _SCAN_LOCK_HOLDER_T0["pid"] = _os_lock.getpid()
+            return True
+    return False
+
+
+def _release_scan_lock() -> None:
+    try: _SCAN_LOCK.release()
+    except Exception: pass
+    _SCAN_LOCK_HOLDER_T0["t"]   = 0.0
+    _SCAN_LOCK_HOLDER_T0["pid"] = 0
 
 
 def _build_summary(findings):
@@ -7126,20 +7258,24 @@ def scan_summary() -> dict:
     if cached is not None and now < expires_at:
         return cached
 
-    # Cache stale or missing. Try to acquire the single-flight lock
-    # without blocking. If another worker thread is already running
-    # scan_all() for this process, serve last-known-good instead.
-    got_lock = _SCAN_LOCK.acquire(blocking=False)
+    # Cache stale or missing. Try to acquire the timed lock. Force-
+    # releases stale (>120s) holds so a dead worker doesn't poison
+    # the brain forever.
+    got_lock = _try_acquire_scan_lock()
     if not got_lock:
         if cached is not None and (now - expires_at) < _SCAN_STALE_GRACE_SECONDS:
             stale = dict(cached)
             stale["stale"] = True
             stale["stale_reason"] = "single_flight_lock_busy"
+            stale["lock_held_for_s"] = round(
+                _t_mod.time() - _SCAN_LOCK_HOLDER_T0.get("t", 0.0), 1)
             return stale
         return {
             "ok": True, "count": 0, "by_issue": {}, "findings": [],
             "stale": True, "stale_reason": "cold_start_lock_busy",
             "cache_ttl_seconds": _SCAN_CACHE_TTL_SECONDS,
+            "lock_held_for_s": round(
+                _t_mod.time() - _SCAN_LOCK_HOLDER_T0.get("t", 0.0), 1),
         }
 
     try:
@@ -7158,5 +7294,4 @@ def scan_summary() -> dict:
         _SCAN_CACHE["expires_at"] = _t_mod.time() + _SCAN_CACHE_TTL_SECONDS
         return result
     finally:
-        try: _SCAN_LOCK.release()
-        except Exception: pass
+        _release_scan_lock()
