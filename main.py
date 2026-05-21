@@ -5647,13 +5647,246 @@ def _gate_mcp_sse_stream(resp, rpc_method, rpc_params, tier):
 # __mcp_get_405_shim__
 @app.route('/mcp', methods=['GET', 'HEAD'])
 def _mcp_no_sse_stream():
-    from flask import Response
+    """Phase r33-J+sweep (2026-05-21): browser users hitting /mcp used
+    to see raw `{"error":"..."}` JSON — completely unhelpful when
+    you're trying to figure out HOW to connect. Now: if the request
+    Accepts text/html (i.e. a browser), serve a connection landing
+    page with copy-paste setup for Claude Desktop, Claude.ai web,
+    Cursor, Cline, and Continue.dev. Agents using Accept: */* or
+    application/json still get the original 405 JSON shim.
+
+    User report: another Claude agent searched the connector registry,
+    couldn't find dchub.cloud, told them to add as a custom connector.
+    But /mcp gave them no instructions. This page fixes that — any
+    AI or human landing here sees exactly how to connect in 60s."""
+    from flask import Response, request as _req
+    if request.method == "HEAD":
+        return "", 200, {"Content-Type": "text/html",
+                         "Access-Control-Allow-Origin": "*"}
+    accept = (_req.headers.get('Accept') or '').lower()
+    if 'text/html' in accept:
+        return Response(_MCP_LANDING_HTML, mimetype='text/html',
+                        headers={'Cache-Control': 'public, max-age=300',
+                                 'Access-Control-Allow-Origin': '*'})
     resp = Response(
         '{"error":"Streamable HTTP subscription is not supported. Use POST /mcp."}',
         status=405, mimetype='application/json')
     resp.headers['Allow'] = 'POST, DELETE, OPTIONS'
     resp.headers['Cache-Control'] = 'no-store'
     return resp
+
+
+_MCP_LANDING_HTML = """<!DOCTYPE html>
+<html lang="en"><head>
+<meta charset="utf-8"><meta name="viewport" content="width=device-width, initial-scale=1">
+<title>DC Hub MCP Server · Connect to Claude, Cursor, Cline, Windsurf</title>
+<meta name="description" content="Add DC Hub's Model Context Protocol server to any AI agent runtime. 40 tools. Auto-trial keys mean you start in 60 seconds.">
+<link rel="canonical" href="https://dchub.cloud/mcp">
+<meta property="og:title" content="DC Hub MCP Server">
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link href="https://fonts.googleapis.com/css2?family=Instrument+Sans:wght@400;500;600;700;800&family=JetBrains+Mono:wght@500;600;700&display=swap" rel="stylesheet">
+<link rel="stylesheet" href="/static/dchub-brand.css">
+<script src="/js/dchub-nav.js" defer></script>
+<style>
+  body{max-width:920px;margin:0 auto;padding:32px 24px;line-height:1.6}
+  header{margin:48px 0 32px}
+  header .eyebrow{color:var(--dch-indigo);font-size:.78rem;letter-spacing:.16em;text-transform:uppercase;margin-bottom:10px;font-weight:600}
+  header h1{font-size:2.6rem;margin:0 0 14px;letter-spacing:-.025em;line-height:1.1}
+  header p{color:var(--dch-text-mute);font-size:1.1rem;max-width:660px;margin:0}
+  .badges{display:flex;gap:10px;margin:18px 0 0;flex-wrap:wrap}
+  .badge{padding:5px 12px;background:rgba(129,140,248,.12);color:var(--dch-indigo);border-radius:999px;font-size:.78rem;font-weight:600;letter-spacing:.04em}
+  section{margin-bottom:36px}
+  h2{font-size:1.4rem;margin:0 0 12px;letter-spacing:-.01em}
+  .lead{color:var(--dch-text-mute);margin-bottom:18px}
+  .tabs{display:flex;gap:6px;margin-bottom:14px;flex-wrap:wrap;border-bottom:1px solid var(--dch-border);padding-bottom:0}
+  .tab{padding:9px 16px;background:transparent;border:none;color:var(--dch-text-mute);cursor:pointer;font-family:inherit;font-size:.92rem;font-weight:500;border-bottom:2px solid transparent;margin-bottom:-1px}
+  .tab.active{color:var(--dch-indigo);border-bottom-color:var(--dch-indigo)}
+  .tab:hover:not(.active){color:var(--dch-text)}
+  .pane{display:none;background:var(--dch-surface);border:1px solid var(--dch-border);border-radius:12px;padding:22px 24px}
+  .pane.active{display:block}
+  .pane h3{margin:0 0 12px;font-size:1.05rem}
+  .pane ol{padding-left:22px;margin:0 0 14px}
+  .pane li{margin-bottom:10px;color:var(--dch-text)}
+  pre{background:var(--dch-bg);border:1px solid var(--dch-border);border-radius:8px;padding:14px 16px;overflow-x:auto;font-family:'JetBrains Mono',monospace;font-size:.85rem;line-height:1.5;color:var(--dch-text);margin:8px 0 0;position:relative}
+  .copy-btn{position:absolute;top:8px;right:8px;font-size:.7rem;color:var(--dch-indigo);background:var(--dch-surface);border:1px solid var(--dch-border);padding:3px 10px;border-radius:6px;cursor:pointer;font-family:inherit}
+  .copy-btn:hover{border-color:var(--dch-indigo)}
+  .tool-grid{display:grid;grid-template-columns:repeat(auto-fit,minmax(240px,1fr));gap:10px;margin-top:14px}
+  .tool{background:var(--dch-surface);border:1px solid var(--dch-border);border-radius:10px;padding:12px 14px}
+  .tool .tname{font-family:'JetBrains Mono',monospace;font-size:.84rem;color:var(--dch-indigo);font-weight:600}
+  .tool .tdesc{font-size:.82rem;color:var(--dch-text-mute);margin-top:4px;line-height:1.45}
+  .cta-row{display:flex;gap:12px;margin-top:18px;flex-wrap:wrap}
+  .cta{padding:11px 22px;border-radius:8px;text-decoration:none;font-weight:600;font-size:.9rem;display:inline-block}
+  .cta-primary{background:var(--dch-grad-brand);color:#fff}
+  .cta-secondary{background:transparent;border:1px solid var(--dch-border);color:var(--dch-text)}
+  .cta-secondary:hover{border-color:var(--dch-indigo);color:var(--dch-indigo)}
+  code{background:var(--dch-surface);padding:1px 6px;border-radius:4px;font-family:'JetBrains Mono',monospace;font-size:.86em}
+  footer{margin-top:48px;padding-top:18px;border-top:1px solid var(--dch-border);color:var(--dch-text-dim);font-size:.85rem}
+  footer a{color:var(--dch-indigo);text-decoration:none}
+</style>
+</head><body>
+<header>
+  <div class="eyebrow">Model Context Protocol · MCP Server</div>
+  <h1>Drop DC Hub into any AI agent.</h1>
+  <p>Native MCP server. 40 tools covering 21,000+ facilities, M&amp;A transactions, grid intelligence, fiber routes, water risk, tax incentives. Auto-trial keys mean your agent starts working in 60 seconds &mdash; no signup flow, no manual auth.</p>
+  <div class="badges">
+    <span class="badge">Streamable HTTP</span>
+    <span class="badge">40 tools</span>
+    <span class="badge">Free tier 1k calls/day</span>
+    <span class="badge">Cited by 15+ AI platforms</span>
+  </div>
+</header>
+
+<section>
+  <h2>Connect in 60 seconds</h2>
+  <p class="lead">Pick your AI runtime. Copy-paste the snippet. You're done.</p>
+
+  <div class="tabs">
+    <button class="tab active" data-tab="claude-web">Claude.ai (web)</button>
+    <button class="tab" data-tab="claude-desktop">Claude Desktop</button>
+    <button class="tab" data-tab="cursor">Cursor</button>
+    <button class="tab" data-tab="cline">Cline / Continue</button>
+    <button class="tab" data-tab="agents">Other agents</button>
+  </div>
+
+  <div class="pane active" data-pane="claude-web">
+    <h3>Claude.ai web &mdash; Add as custom connector</h3>
+    <ol>
+      <li>Open Claude.ai &rarr; <strong>Settings</strong> &rarr; <strong>Connectors</strong> (left sidebar)</li>
+      <li>Click <strong>Add custom connector</strong></li>
+      <li>Fill in:
+        <ul>
+          <li>Name: <code>DC Hub</code></li>
+          <li>URL: <code>https://dchub.cloud/mcp</code></li>
+          <li>Auth header (optional): <code>X-API-Key: your-key</code></li>
+        </ul>
+      </li>
+      <li>Save. Tools appear in any conversation under the connector menu.</li>
+    </ol>
+    <p style="color:var(--dch-text-mute);font-size:.88rem;margin-top:14px">
+      <strong>Note:</strong> dchub.cloud isn't in Anthropic's curated directory yet &mdash; adding as a custom connector is the supported path until that changes. Anonymous access works at 5 calls/day; an API key unlocks free-tier 1k/day.
+    </p>
+  </div>
+
+  <div class="pane" data-pane="claude-desktop">
+    <h3>Claude Desktop &mdash; Edit claude_desktop_config.json</h3>
+    <ol>
+      <li>Open <code>~/Library/Application Support/Claude/claude_desktop_config.json</code> (Mac) or <code>%APPDATA%\\Claude\\claude_desktop_config.json</code> (Windows)</li>
+      <li>Add this under <code>mcpServers</code>:</li>
+    </ol>
+    <pre><button class="copy-btn" onclick="copyMe(this)">copy</button><code>"dchub": {
+  "command": "npx",
+  "args": [
+    "-y",
+    "mcp-remote",
+    "https://dchub.cloud/mcp",
+    "--header",
+    "X-API-Key:${DCHUB_API_KEY}"
+  ],
+  "env": {
+    "DCHUB_API_KEY": "your-key-or-leave-blank-for-free-tier"
+  }
+}</code></pre>
+    <ol start="3">
+      <li>Restart Claude Desktop. Tools appear in the right panel.</li>
+    </ol>
+  </div>
+
+  <div class="pane" data-pane="cursor">
+    <h3>Cursor &mdash; Settings &rarr; MCP</h3>
+    <ol>
+      <li>Open Cursor &rarr; <strong>Settings</strong> &rarr; <strong>Cursor Settings</strong> &rarr; <strong>MCP</strong></li>
+      <li>Click <strong>+ Add new MCP server</strong></li>
+      <li>Use this config:</li>
+    </ol>
+    <pre><button class="copy-btn" onclick="copyMe(this)">copy</button><code>{
+  "mcpServers": {
+    "dchub": {
+      "url": "https://dchub.cloud/mcp",
+      "headers": { "X-API-Key": "your-key-or-blank" }
+    }
+  }
+}</code></pre>
+  </div>
+
+  <div class="pane" data-pane="cline">
+    <h3>Cline / Continue.dev &mdash; Add to config</h3>
+    <p>Both runtimes support remote MCP via Streamable HTTP. Add to your config:</p>
+    <pre><button class="copy-btn" onclick="copyMe(this)">copy</button><code>"dchub": {
+  "transport": "streamable-http",
+  "url": "https://dchub.cloud/mcp",
+  "headers": { "X-API-Key": "your-key-or-blank" }
+}</code></pre>
+  </div>
+
+  <div class="pane" data-pane="agents">
+    <h3>Other agents (Windsurf, Roo Code, llmstxt-aware bots)</h3>
+    <p>Discovery surfaces &mdash; agents that auto-discover MCP servers find DC Hub via:</p>
+    <ul style="margin:8px 0 14px;padding-left:22px;color:var(--dch-text-mute)">
+      <li><code>/.well-known/mcp.json</code> &mdash; full server manifest + tool catalog</li>
+      <li><code>/llms.txt</code> &mdash; agent-facing site description</li>
+      <li><code>/api/v1/openapi.json</code> &mdash; REST API spec (fallback for non-MCP clients)</li>
+    </ul>
+    <p>Direct MCP endpoint:</p>
+    <pre><code>POST https://dchub.cloud/mcp
+Content-Type: application/json
+X-API-Key: your-key
+
+{ "jsonrpc": "2.0", "id": 1, "method": "initialize",
+  "params": { "protocolVersion": "2024-11-05" } }</code></pre>
+  </div>
+
+  <div class="cta-row">
+    <a class="cta cta-primary" href="/signup?next=/onboarding&utm_source=mcp_landing">Get an API key (free)</a>
+    <a class="cta cta-secondary" href="/.well-known/mcp.json">View manifest</a>
+    <a class="cta cta-secondary" href="/api-docs">REST API docs</a>
+  </div>
+</section>
+
+<section>
+  <h2>What you can ask</h2>
+  <p class="lead">All 40 tools land directly in your AI's tool menu. Example asks:</p>
+  <div class="tool-grid">
+    <div class="tool"><div class="tname">search_facilities</div><div class="tdesc">"Find data centers in Ashburn over 50 MW"</div></div>
+    <div class="tool"><div class="tname">analyze_site</div><div class="tdesc">"Score lat 39.0, lon -77.4 for hyperscaler suitability"</div></div>
+    <div class="tool"><div class="tname">get_grid_intelligence</div><div class="tdesc">"What's ERCOT's queue depth and interconnect velocity?"</div></div>
+    <div class="tool"><div class="tname">get_fiber_intel</div><div class="tdesc">"Show dark fiber routes near Dallas"</div></div>
+    <div class="tool"><div class="tname">list_transactions</div><div class="tdesc">"M&amp;A deals over $1B in 2025"</div></div>
+    <div class="tool"><div class="tname">compare_sites</div><div class="tdesc">"Compare Northern Virginia vs Columbus vs Phoenix"</div></div>
+    <div class="tool"><div class="tname">get_water_risk</div><div class="tdesc">"Water stress for facility ID 2842"</div></div>
+    <div class="tool"><div class="tname">get_tax_incentives</div><div class="tdesc">"Sales tax breaks for new builds in Texas"</div></div>
+  </div>
+</section>
+
+<footer>
+  Already cited by ChatGPT, Claude, Gemini, Perplexity, Copilot, Grok, Cursor, Windsurf, Cline, Continue.dev &middot;
+  <a href="/cited-by">See the receipts &rarr;</a> &middot;
+  <a href="/pricing">Pricing</a> &middot;
+  <a href="/api-docs">REST API</a>
+</footer>
+
+<script>
+  document.querySelectorAll('.tab').forEach(function(t){
+    t.addEventListener('click', function(){
+      document.querySelectorAll('.tab').forEach(function(x){ x.classList.remove('active'); });
+      document.querySelectorAll('.pane').forEach(function(x){ x.classList.remove('active'); });
+      t.classList.add('active');
+      var k = t.getAttribute('data-tab');
+      document.querySelector('.pane[data-pane="'+k+'"]').classList.add('active');
+    });
+  });
+  function copyMe(btn){
+    var pre = btn.parentElement;
+    var code = pre.querySelector('code');
+    if (!code) return;
+    navigator.clipboard.writeText(code.textContent).then(function(){
+      var prev = btn.textContent;
+      btn.textContent = 'copied!';
+      setTimeout(function(){ btn.textContent = prev; }, 1500);
+    });
+  }
+</script>
+</body></html>"""
 
 @app.route('/mcp', methods=['POST', 'DELETE', 'OPTIONS'])
 @app.route('/mcp/', methods=['GET', 'POST', 'DELETE', 'HEAD', 'OPTIONS'])
