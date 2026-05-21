@@ -2551,6 +2551,92 @@ def check_upgrade_pool_grown() -> list[dict]:
     return findings
 
 
+def check_inspector_brief_unprocessed_recipes() -> list[dict]:
+    """Phase r32-brain-pipe (2026-05-20). The Inspector (Claude Opus 4.5)
+    writes daily briefs that include code-fix RECIPE candidates
+    (schema_drift_guard, route_alias_404, cron_if_mismatched). Today's
+    brief proposed 4 of these. None have been promoted to L22 auto-PR
+    drafting yet because the handoff endpoint /api/v1/brain/brief/<id>
+    /draft-prs is human-triggered only.
+
+    This detector fires when:
+      - There's a brain_briefs row from the last 24h
+      - That brief mentions a RECIPE candidate in its code-fix section
+      - The corresponding L22 proposal hasn't been drafted
+
+    Pairs with autopilot pattern `inspector_l22_handoff` which POSTs
+    the existing draft-prs endpoint, letting L22's 3-recipe whitelist
+    decide whether to actually draft a PR.
+
+    Safety: L22 has _already_drafted() idempotency + a strict
+    whitelist (3 recipes only). Brain autopilot has rate-limit +
+    cooldown machinery. Three-deep safety boundary."""
+    findings: list[dict] = []
+    import os as _os, psycopg2 as _pg, re as _re
+    db = _os.environ.get("DATABASE_URL")
+    if not db: return findings
+    try:
+        c = _pg.connect(db, sslmode="require", connect_timeout=5)
+        try:
+            with c.cursor() as cur:
+                # Find the most-recent brief that has RECIPE candidates.
+                cur.execute("""
+                    SELECT id, brief_md, generated_at
+                      FROM brain_briefs
+                     WHERE generated_at > NOW() - INTERVAL '24 hours'
+                       AND brief_md LIKE '%%RECIPE:%%'
+                     ORDER BY generated_at DESC
+                     LIMIT 1
+                """)
+                row = cur.fetchone()
+                if not row:
+                    return findings
+                brief_id, md, gen_at = row
+
+                # Did we already fire the L22 handoff for this brief?
+                # Check brain_findings for a previous autopilot record.
+                try:
+                    cur.execute("""
+                        SELECT 1 FROM brain_findings
+                         WHERE issue = 'inspector_l22_handoff_fired'
+                           AND url LIKE %s
+                           AND created_at > NOW() - INTERVAL '24 hours'
+                         LIMIT 1
+                    """, (f"%/brief/{brief_id}/%",))
+                    if cur.fetchone():
+                        return findings  # already fired
+                except Exception:
+                    try: c.rollback()
+                    except Exception: pass
+
+                # Extract just the RECIPE lines for the finding detail.
+                recipe_lines = []
+                for line in (md or "").split("\n"):
+                    if "RECIPE:" in line:
+                        recipe_lines.append(line.strip()[:200])
+                recipe_summary = "; ".join(recipe_lines[:4])
+        finally:
+            c.close()
+    except Exception:
+        return findings
+
+    findings.append({
+        "issue":  "inspector_l22_handoff",
+        "url":    f"/api/v1/brain/brief/{brief_id}/draft-prs",
+        "count":  len(recipe_lines),
+        "detail": (
+            f"Inspector brief #{brief_id} ({gen_at.isoformat() if gen_at else 'recent'}) "
+            f"proposed {len(recipe_lines)} RECIPE candidate(s) for L22 auto-PR drafting "
+            f"but the handoff hasn't fired. Recipes: {recipe_summary}. "
+            f"Autopilot will POST /api/v1/brain/brief/{brief_id}/draft-prs to hand them "
+            f"to L22's 3-recipe safety whitelist. L22's _already_drafted() idempotency "
+            f"plus brain autopilot's rate-limit form a three-deep safety boundary."
+        ),
+        "_brief_id": brief_id,
+    })
+    return findings
+
+
 def check_tier_dict_missing_keys() -> list[dict]:
     """Phase r32-sweep (2026-05-20). Closes the bug class that caused
     Land & Power to silently treat paying $49/mo Developer customers
@@ -5593,6 +5679,13 @@ def scan_all() -> list[dict]:
                # autopilot pattern below can fire the outreach campaign
                # autonomously when this finding lands repeatedly.
                check_upgrade_pool_grown,
+               # Phase r32-brain-pipe (2026-05-20) — Inspector → L22
+               # auto-PR handoff. Closes the missing pipe between
+               # the Inspector's RECIPE proposals and the L22 auto-
+               # code drafter. Three-deep safety: brain autopilot
+               # rate-limit + L22 whitelist (3 recipes only) + L22
+               # _already_drafted() idempotency.
+               check_inspector_brief_unprocessed_recipes,
                # Phase SSSS winback pitches accumulating without delivery
                check_winback_pitches_unsent,
                # Phase TTTT citation score

@@ -314,6 +314,30 @@ def _action_founding_welcome_rescue(finding: dict) -> tuple[str | None, dict | N
     )
 
 
+def _action_inspector_l22_handoff(finding: dict) -> tuple[str | None, dict | None]:
+    """Phase r32-brain-pipe (2026-05-20). Closes the missing pipe between
+    the Inspector's RECIPE candidates and L22 auto-code drafting.
+
+    Reads the brief_id from the detector's finding, POSTs the existing
+    /api/v1/brain/brief/<id>/draft-prs admin endpoint. L22 then applies
+    its own 3-recipe safety whitelist (route_alias_404, schema_drift_
+    guard, cron_if_mismatched) plus the _already_drafted() idempotency
+    check. So even if this autopilot fires aggressively, L22 enforces
+    the actual mutation safety.
+
+    Effect: brain Inspector identifies a code-level fix, drafts it as
+    a RECIPE candidate in the daily brief, this autopilot picks it up
+    from the detector, hands it to L22, L22 drafts a GitHub PR, human
+    reviews + merges. End-to-end autonomous code change."""
+    brief_id = finding.get("_brief_id")
+    if not brief_id:
+        return (None, None)
+    return (
+        f"/api/v1/brain/brief/{brief_id}/draft-prs",
+        {"trigger": "consistency_radar"},
+    )
+
+
 def _action_pocket_alert_announce(finding: dict) -> tuple[str | None, dict | None]:
     """Phase r28 (2026-05-20). When check_pocket_high_mover fires (a
     market moved ≥15pts on the excess-power index in 7 days), the
@@ -548,6 +572,17 @@ _PATTERN_LIBRARY: dict[str, dict[str, Any]] = {
         "method":      "POST",
         "use_admin":   True,
         "description": "Autonomous: a tracked market moved ≥15pts on the excess-power index in 7 days. Brain drafts a one-paragraph announcement and queues it for social auto-publish via /api/v1/marketing/queue-pocket-alert. Rate-limit + cooldown prevent same-market re-announcement within the window.",
+    },
+    # Phase r32-brain-pipe (2026-05-20): Inspector → L22 auto-PR handoff.
+    # The missing pipe that lets brain actually ship code, not just
+    # propose it. Three-deep safety: rate-limit + L22 3-recipe whitelist
+    # + L22 idempotency. End-to-end: Inspector identifies → autopilot
+    # hands off → L22 drafts PR → human reviews + merges.
+    "inspector_l22_handoff": {
+        "action":      _action_inspector_l22_handoff,
+        "method":      "POST",
+        "use_admin":   True,
+        "description": "Autonomous: Inspector brief contains RECIPE candidates that haven't been promoted to L22 auto-PR drafting. Brain POSTs /api/v1/brain/brief/<id>/draft-prs. L22's 3-recipe safety whitelist (route_alias_404, schema_drift_guard, cron_if_mismatched) decides whether to draft a PR; L22's _already_drafted() prevents duplicate work. Closes the long-standing gap where Inspector proposed code fixes that nothing executed on.",
     },
     # Phase FF+25-followup-r12 (2026-05-20): visual drift escalation.
     # Drift is fixed by editing /js/dchub-nav.js or per-page <style> —
