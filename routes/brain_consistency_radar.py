@@ -2487,6 +2487,83 @@ def check_winback_pitches_unsent() -> list[dict]:
 
 
 # ── Phase RRRR (2026-05-16) — DC Hub Media silence detector ───────
+def check_tier_dict_missing_keys() -> list[dict]:
+    """Phase r32-sweep (2026-05-20). Closes the bug class that caused
+    Land & Power to silently treat paying $49/mo Developer customers
+    as free-tier (they hit 1 search/month instead of 50). Root cause:
+    tier-limit dicts predated the canonical anonymous → identified →
+    developer → pro+ ladder and were missing entries, so
+    `dict.get(tier, default)` fell through to free defaults.
+
+    Detector imports each known tier-limit dict and verifies the four
+    canonical tier names are present. Flags any gap so the brain
+    surfaces the regression risk BEFORE a customer hits it.
+
+    Adding a new tier-limit table? Add it to TIER_DICTS_TO_CHECK
+    below — that's the bug-class containment surface."""
+    findings: list[dict] = []
+    REQUIRED = {'anonymous', 'identified', 'developer', 'pro'}
+    # (module_path, dict_attr_name, description)
+    TIER_DICTS_TO_CHECK = [
+        ('api_tier_gating', 'TIER_RATE_LIMITS',
+         'Daily API rate limit by tier'),
+        ('api_tier_gating', 'TIER_DAILY_RECORD_CAPS',
+         'Per-day unique record cap'),
+        ('api_tier_gating', 'TIER_PAGE_CAPS',
+         'Max pages per paginated query'),
+        ('api_tier_gating', 'TIER_SEARCH_LIMITS',
+         'Max results per search'),
+        ('api_tier_gating', 'MCP_TIER_RESULT_LIMITS',
+         'MCP per-tool result limit'),
+        ('api_tier_gating', 'PLAN_LEVELS',
+         'Plan hierarchy (used by user_has_access)'),
+        ('paywall_middleware', 'TIER_HIERARCHY',
+         'Tier hierarchy in paywall middleware'),
+        ('paywall_middleware', 'RATE_LIMITS',
+         'Paywall middleware rate limits'),
+        ('paywall_middleware', 'TIER_FEATURES',
+         'Paywall middleware feature flags'),
+        ('dchub_me', 'LIMITS',
+         '/api/me rate-limit table'),
+        ('land_power_usage_limiter', 'LAND_POWER_LIMITS',
+         'Land & Power tool monthly caps'),
+        ('land_power_usage_limiter', 'API_MONTHLY_LIMITS',
+         'Land & Power API monthly limits'),
+    ]
+    import importlib
+    for mod_path, attr, desc in TIER_DICTS_TO_CHECK:
+        try:
+            mod = importlib.import_module(mod_path)
+            d = getattr(mod, attr, None)
+            if not isinstance(d, dict):
+                continue
+            keys = set(d.keys())
+            missing = sorted(REQUIRED - keys)
+            if missing:
+                findings.append({
+                    "issue":  "tier_dict_missing_keys",
+                    "url":    f"/gating-matrix#{mod_path}.{attr}",
+                    "count":  len(missing),
+                    "detail": (
+                        f"{mod_path}.{attr} ({desc}) is missing required "
+                        f"tier keys: {', '.join(missing)}. Callers in those "
+                        f"tiers silently fall through to the default (usually "
+                        f"'free'), so paying customers may be getting free-"
+                        f"tier limits. Add explicit entries — see Land & "
+                        f"Power r32 fix for the pattern."
+                    ),
+                    "_module": mod_path,
+                    "_attr":   attr,
+                    "_missing": missing,
+                })
+        except Exception:
+            # Module not importable in this scan context — skip silently.
+            # We deliberately don't flag missing modules as findings
+            # because some are environment-dependent.
+            pass
+    return findings
+
+
 def check_pocket_high_mover() -> list[dict]:
     """Phase r28 (2026-05-20). When a tracked market's excess-power
     index shifts ≥15 points in 7 days, that's a story. Pre-r28 the
@@ -5399,6 +5476,14 @@ def scan_all() -> list[dict]:
                # shifts auto-generate a press/social post rather than
                # only living in /digest where users have to seek them out.
                check_pocket_high_mover,
+               # Phase r32-sweep (2026-05-20) — tier-dict missing-keys
+               # detector. Closes the bug class that caused Land &
+               # Power to treat paying $49 Developer customers as free
+               # tier. Static-imports each known tier-limit dict and
+               # verifies anonymous/identified/developer/pro are all
+               # present. Adding a new tier table? Append to the list
+               # inside the detector — that's the containment surface.
+               check_tier_dict_missing_keys,
                # Phase SSSS winback pitches accumulating without delivery
                check_winback_pitches_unsent,
                # Phase TTTT citation score

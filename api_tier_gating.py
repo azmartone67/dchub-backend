@@ -73,19 +73,35 @@ PAYMENT_LINKS = {
 }
 
 # Plan hierarchy (higher = more access)
+# r32-sweep (2026-05-20): added anonymous + identified entries that
+# were missing — same bug class as land_power_usage_limiter. Without
+# these keys, dict.get(plan, default) silently fell through to free's
+# values, meaning identified users (email-only signups) got the SAME
+# data caps as anonymous walk-ins. Identified is now slotted between
+# free (0) and founding (2) at level 1.
 PLAN_LEVELS = {
-    'free': 0,
-    'founding': 1,  # Founding members get Pro access
-    'developer': 2,  # Developer tier - $49/mo, 1000 calls/day
-    'pro': 3,
-    'enterprise': 4,
-    'research_seed': 4,    # NEW: research-institution tier, enterprise-equivalent access
-    'admin': 99,
+    'anonymous': -1,         # no signup
+    'anon':      -1,         # alias used by some callers
+    'free':       0,         # legacy free (no email)
+    'identified': 1,         # email-only signup, no card — the "taste" tier
+    'founding':   2,         # Founding members — Pro-equivalent
+    'developer':  3,         # $49/mo Developer
+    'pro':        4,
+    'enterprise': 5,
+    'research_seed': 5,      # research-institution tier, enterprise-equivalent
+    'admin':      99,
 }
 
 # Rate limits per tier (API requests per day)
+# r32-sweep: identified gets 50/day (5x free) — meaningful "taste"
+# above anonymous (5) and free (10). Justification: a free email
+# signup is more committed than a walk-in, deserves more than 10
+# calls before being told to upgrade.
 TIER_RATE_LIMITS = {
+    'anonymous':   5,
+    'anon':        5,
     'free':       10,
+    'identified': 50,
     'founding':   1000,
     'developer':  1000,
     'pro':        5000,
@@ -93,14 +109,14 @@ TIER_RATE_LIMITS = {
     'admin':      999999,
 }
 
-# ── NEW: Per-day unique record caps (prevents dataset vacuuming) ──
-# This is the HARD ceiling on how many data records (facilities, deals,
-# pipeline entries, etc.) a user can retrieve in a single calendar day
-# across ALL endpoints (REST + MCP). No amount of pagination or delay
-# will bypass this.
+# ── Per-day unique record caps (prevents dataset vacuuming) ──
+# Identified slotted at 200 — 4x free, half of developer. Big enough
+# to actually evaluate the dataset, small enough to drive upgrades.
 TIER_DAILY_RECORD_CAPS = {
+    'anonymous':  50,
     'anon':       50,
     'free':       50,
+    'identified': 200,
     'founding':   500,
     'developer':  500,
     'pro':        5000,
@@ -108,10 +124,12 @@ TIER_DAILY_RECORD_CAPS = {
     'admin':      999999,
 }
 
-# ── NEW: Max pages per paginated query ──
+# ── Max pages per paginated query ──
 TIER_PAGE_CAPS = {
+    'anonymous':  1,
     'anon':       1,
     'free':       2,
+    'identified': 5,
     'founding':   10,
     'developer':  10,
     'pro':        50,
@@ -119,10 +137,12 @@ TIER_PAGE_CAPS = {
     'admin':      999,
 }
 
-# ── NEW: Max results per single search/list query ──
+# ── Max results per single search/list query ──
 TIER_SEARCH_LIMITS = {
+    'anonymous':  25,
     'anon':       25,
     'free':       50,
+    'identified': 100,
     'founding':   100,
     'developer':  100,
     'pro':        500,
@@ -130,9 +150,16 @@ TIER_SEARCH_LIMITS = {
     'admin':      9999,
 }
 
-# ── NEW: MCP per-tool result limits (facility/search arrays) ──
+# ── MCP per-tool result limits (facility/search arrays) ──
+# r32-sweep: identified matches developer's 25 for FREE tools (the
+# email-gated ones like get_news) so a free-with-email signup actually
+# notices something improved. Paid-only tools still gated by
+# PAID_ONLY_TOOLS in mcp_upgrade_gate.py.
 MCP_TIER_RESULT_LIMITS = {
+    'anonymous':  3,
+    'anon':       3,
     'free':       5,
+    'identified': 15,
     'founding':   25,
     'developer':  25,
     'pro':        100,

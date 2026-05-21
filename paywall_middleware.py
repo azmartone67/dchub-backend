@@ -45,16 +45,35 @@ import stripe
 logger = logging.getLogger(__name__)
 
 # Tier hierarchy
+# r32-sweep (2026-05-20): this file uses 'registered' as the email-
+# signup tier; api_tier_gating + map_tier_gating use 'identified' for
+# the same concept. Adding `identified` (+ `anonymous` + `founding`)
+# as aliases so callers from any subsystem find their tier without
+# falling through to the 'free' default. Same bug class as Land &
+# Power had — paying customers silently demoted to free defaults.
 TIER_HIERARCHY = {
-    'free': 0,
-    'registered': 1,
-    'developer': 2,
-    'pro': 3,
+    'anonymous':  0,         # walk-in, no signup
+    'anon':       0,
+    'free':       0,
+    'registered': 1,         # legacy alias
+    'identified': 1,         # canonical email-only signup tier
+    'founding':   3,         # Founding cohort = Pro-equivalent
+    'developer':  2,
+    'pro':        3,
     'enterprise': 4
 }
 
-# Feature flags by tier
+# Feature flags by tier — identified gets the same as registered
+# (which is what this file ALREADY thought was the email-signup tier).
 TIER_FEATURES = {
+    'anonymous': {
+        'facilitiesSearch': True,    # 5 results teaser
+        'marketIntel': False,
+        'pipelineTracking': False,
+        'transactionData': False,
+        'gridIntelligence': False,
+        'exportData': False,
+    },
     'free': {
         'facilitiesSearch': True,
         'marketIntel': False,
@@ -63,7 +82,15 @@ TIER_FEATURES = {
         'gridIntelligence': False,
         'exportData': False,
     },
-    'registered': {
+    'registered': {              # legacy alias for identified
+        'facilitiesSearch': True,
+        'marketIntel': True,
+        'pipelineTracking': False,
+        'transactionData': False,
+        'gridIntelligence': False,
+        'exportData': False,
+    },
+    'identified': {              # canonical — same flags as registered
         'facilitiesSearch': True,
         'marketIntel': True,
         'pipelineTracking': False,
@@ -72,6 +99,14 @@ TIER_FEATURES = {
         'exportData': False,
     },
     'developer': {
+        'facilitiesSearch': True,
+        'marketIntel': True,
+        'pipelineTracking': True,
+        'transactionData': True,
+        'gridIntelligence': True,
+        'exportData': True,
+    },
+    'founding': {                # Founding = Pro-equivalent feature set
         'facilitiesSearch': True,
         'marketIntel': True,
         'pipelineTracking': True,
@@ -98,11 +133,18 @@ TIER_FEATURES = {
 }
 
 # Rate limits (calls per day)
+# r32-sweep: identified bumped to 50 (was 15 for `registered`). 5x
+# free is the right "taste" signal — small enough to drive upgrade,
+# big enough to actually evaluate the product.
 RATE_LIMITS = {
-    'free': 10,
-    'registered': 15,
+    'anonymous':  5,
+    'anon':       5,
+    'free':      10,
+    'registered': 50,
+    'identified': 50,
+    'founding':  10000,        # founding = Pro-equivalent rate
     'developer': 1000,
-    'pro': 10000,
+    'pro':       10000,
     'enterprise': 100000,
 }
 

@@ -41,12 +41,21 @@ from flask import Blueprint, jsonify, request
 # Kept in sync by convention; if you change main.py's table, change this too.
 # ---------------------------------------------------------------------------
 
+# r32-sweep (2026-05-20): identified + developer + admin were missing.
+# Identified callers fell through to default (= free's 5 daily MCP
+# calls), and a developer paying $49/mo got the same. Now every
+# canonical tier appears explicitly so dict.get(tier, default) never
+# silently demotes a customer.
 LIMITS = {
     "anonymous":  {"per_minute": 60,   "per_hour": 500,   "daily_mcp_calls": 5},
+    "anon":       {"per_minute": 60,   "per_hour": 500,   "daily_mcp_calls": 5},
     "free":       {"per_minute": 60,   "per_hour": 500,   "daily_mcp_calls": 5},
+    "identified": {"per_minute": 120,  "per_hour": 1500,  "daily_mcp_calls": 25},   # 5x free taste
+    "developer":  {"per_minute": 200,  "per_hour": 3000,  "daily_mcp_calls": 500},  # $49/mo
     "pro":        {"per_minute": 300,  "per_hour": 5000,  "daily_mcp_calls": 1000},
     "founding":   {"per_minute": 300,  "per_hour": 5000,  "daily_mcp_calls": 1000},
     "enterprise": {"per_minute": 1000, "per_hour": 20000, "daily_mcp_calls": 100000},
+    "admin":      {"per_minute": 5000, "per_hour": 99999, "daily_mcp_calls": 999999},
 }
 
 ME_BUILD = "me-endpoint-1.0.0"  # bump per deploy so /api/me tells you which build answered
