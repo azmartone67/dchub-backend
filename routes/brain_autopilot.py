@@ -1373,11 +1373,20 @@ def autopilot_run():
         )
         if _outbound_admin:
             req.add_header("X-Admin-Key", _outbound_admin)
-        with urllib.request.urlopen(req, timeout=20) as resp:
+        # r33-J round 4 (2026-05-21): bump timeout 20s → 60s. The
+        # /heal/findings endpoint has a deferred-cache path (Phase
+        # GG) that can take 30-50s when the in-memory cache is cold
+        # AND no DB row exists yet. Previous 20s timeout was killing
+        # legitimate slow responses with 'read operation timed out'.
+        with urllib.request.urlopen(req, timeout=60) as resp:
             payload = json.loads(resp.read().decode("utf-8"))
     except Exception as e:
-        return jsonify(error="heal_findings_fetch_failed",
-                       detail=str(e)[:200]), 500
+        # Don't fail the whole run — fall through with empty issues
+        # and let the in-process radar bridge below contribute findings.
+        payload = {"actionable_backend_issues": []}
+        _heal_fetch_error = f"{type(e).__name__}: {str(e)[:120]}"
+    else:
+        _heal_fetch_error = None
 
     issues = payload.get("actionable_backend_issues") or []
     if not isinstance(issues, list):
@@ -1495,6 +1504,8 @@ def autopilot_run():
     summary["completed_at"] = datetime.datetime.utcnow().isoformat() + "Z"
     if summary_bridge_error:
         summary["radar_bridge_error"] = summary_bridge_error
+    if _heal_fetch_error:
+        summary["heal_fetch_error"] = _heal_fetch_error
     return jsonify(ok=True, summary=summary), 200
 
 

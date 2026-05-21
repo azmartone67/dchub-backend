@@ -491,3 +491,85 @@ def brain_alerts_critical_list():
             "created_at": r[7].isoformat() if r[7] else None,
         })
     return jsonify(alerts=out, count=len(out)), 200
+
+
+# ──────────────────────────────────────────────────────────────────
+# Phase r33-J+sweep (2026-05-21) — one-shot data hygiene endpoints.
+# Operator-callable cleanup for state corruption detected by the
+# brain that doesn't fit into the autopilot's per-pattern actions.
+# ──────────────────────────────────────────────────────────────────
+
+
+@brain_autoaction_helpers_bp.route(
+    "/api/v1/admin/news/clamp-future-dates", methods=["POST"])
+def admin_news_clamp_future_dates():
+    """Clamp any news_articles row where published_at > NOW() to
+    NOW(). Returns count of rows touched.
+
+    Triggered by the user noting age=-960h on /system-status — a
+    bad upstream feed wrote a row dated 40 days in the future.
+    Combined with the news_engine.py ingest-side defensive clamp
+    (r33-J+sweep), this prevents the issue both retroactively and
+    prospectively."""
+    if not _admin_authorized():
+        return jsonify(error="unauthorized"), 401
+    conn = _db()
+    if conn is None: return jsonify(error="no_database"), 503
+    try:
+        with conn.cursor() as cur:
+            # Show what we'll touch before touching
+            cur.execute("""
+                SELECT id, title, published_at
+                  FROM news_articles
+                 WHERE published_at > NOW()
+                 ORDER BY published_at DESC LIMIT 50
+            """)
+            preview = []
+            for r in cur.fetchall():
+                preview.append({
+                    "id": r[0],
+                    "title": (r[1] or "")[:80],
+                    "published_at": r[2].isoformat() if r[2] else None,
+                })
+            # Now clamp them
+            cur.execute("""
+                UPDATE news_articles
+                   SET published_at = NOW()
+                 WHERE published_at > NOW()
+            """)
+            touched = cur.rowcount
+        conn.commit()
+    except Exception as e:
+        try: conn.rollback()
+        except Exception: pass
+        return jsonify(error=str(e)[:200]), 500
+    finally:
+        _db_return(conn)
+    return jsonify(success=True, touched=touched,
+                   preview=preview), 200
+
+
+@brain_autoaction_helpers_bp.route(
+    "/api/v1/admin/dcpi/trigger-recompute", methods=["POST"])
+def admin_dcpi_trigger_recompute():
+    """Trigger a DCPI recompute via the standard /api/v1/dcpi/recompute
+    endpoint, with admin auth wrapped here so the autopilot doesn't
+    need to also juggle DCHUB_DCPI_KEY (if separate)."""
+    if not _admin_authorized():
+        return jsonify(error="unauthorized"), 401
+    import urllib.request as _ur, json as _json
+    admin_key = (os.environ.get("DCHUB_ADMIN_KEY")
+                 or os.environ.get("DCHUB_INTERNAL_KEY"))
+    if not admin_key:
+        return jsonify(error="no_admin_key_env"), 503
+    target = "http://localhost:8080/api/v1/dcpi/recompute"
+    req = _ur.Request(target, method="POST")
+    req.add_header("X-Admin-Key", admin_key)
+    req.add_header("Content-Type", "application/json")
+    try:
+        with _ur.urlopen(req, timeout=120) as resp:
+            body = resp.read().decode("utf-8", errors="replace")
+            return (body, resp.status,
+                    {"Content-Type": "application/json"})
+    except Exception as e:
+        return jsonify(error=str(e)[:200]), 502

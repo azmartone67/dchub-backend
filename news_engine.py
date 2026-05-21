@@ -13,7 +13,7 @@ import json
 import os
 import threading
 import logging
-from datetime import datetime, timedelta
+from datetime import datetime, timedelta, timezone
 from typing import List, Dict, Optional, Tuple
 from urllib.parse import quote_plus, urlparse
 from concurrent.futures import ThreadPoolExecutor, as_completed
@@ -461,6 +461,21 @@ def save_articles(articles, db_path=NEWS_DB_PATH):
         try:
             pub = a.get('published_at')
             if isinstance(pub, datetime): pub = pub.isoformat()
+            # Phase r33-J+sweep (2026-05-21): clamp future-dated
+            # published_at to now. Some RSS feeds emit malformed dates
+            # (year fields off-by-1 or future-scheduled posts) that
+            # poisoned the freshness radar (showed age=-960h on
+            # /system-status). Clamping here prevents recurrence.
+            if pub:
+                try:
+                    _dt_iso = pub if isinstance(pub, str) else pub.isoformat()
+                    _dt_check = datetime.fromisoformat(
+                        _dt_iso.replace('Z', '+00:00'))
+                    _now_check = datetime.now(_dt_check.tzinfo or timezone.utc)
+                    if _dt_check > _now_check:
+                        pub = _now_check.isoformat()
+                except Exception:
+                    pass  # If we can't parse, leave as-is
             c.execute("SAVEPOINT sp_article")
             c.execute('''INSERT INTO news_articles
                 (id,title,url,source,category,summary,author,published_at,
