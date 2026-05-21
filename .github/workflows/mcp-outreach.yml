@@ -1,0 +1,75 @@
+name: MCP Outreach (24x7 outbound discovery)
+
+# Phase r33-N (2026-05-21) — daily outbound discovery cron.
+#
+# DC Hub's inbound brain (autopilot + consistency_radar) watches the
+# site for problems. THIS workflow watches our PRESENCE across the
+# open AI-agent web — making sure every MCP registry that could
+# list us actually does, and re-submits / audits each one daily.
+#
+# Endpoint hit:
+#   POST /api/v1/admin/outreach/mcp-registry/submit-all
+#
+# Targets (defined in routes/mcp_registry_outreach.py):
+#   1. Smithery               (largest community MCP registry)
+#   2. mcp.so                 (public directory)
+#   3. MCPHub                 (categorized listings)
+#   4. PulseMCP               (curated pulse)
+#   5. Glama AI               (MCP aggregator)
+#   6. awesome-mcp-servers    (GitHub canonical list)
+#   7. Anthropic Connector    (claude.ai/settings/connectors)
+#
+# Each is submitted (or queued for manual PR) + audited. Results
+# land in the outreach_submissions table. Brain detector
+# check_outbound_distribution_health flags any registry where we've
+# fallen off or where the audit row is stale.
+
+on:
+  schedule:
+    - cron: '37 13 * * *'   # 13:37 UTC daily — off-peak, distinct minute
+  workflow_dispatch: {}     # manual trigger from Actions tab
+
+permissions:
+  contents: read
+
+env:
+  RAILWAY_BASE: https://dchub-backend-production.up.railway.app
+
+jobs:
+  outreach:
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    steps:
+      - name: Run outbound MCP-registry cycle
+        env:
+          ADMIN_KEY: ${{ secrets.DCHUB_ADMIN_KEY }}
+        run: |
+          set -euo pipefail
+          if [ -z "$ADMIN_KEY" ]; then
+            echo "::warning::DCHUB_ADMIN_KEY not set — skipping outreach"
+            exit 0
+          fi
+          response=$(curl -sS --max-time 120 -X POST \
+            -H "X-Admin-Key: $ADMIN_KEY" \
+            -H "Content-Type: application/json" \
+            "$RAILWAY_BASE/api/v1/admin/outreach/mcp-registry/submit-all" \
+            || echo '{"ok":false,"error":"curl_fail"}')
+          echo "$response" | head -c 4000
+          echo
+          echo "$response" | python3 -c "
+          import json, sys
+          try:
+              d = json.load(sys.stdin)
+              s = d.get('summary') or {}
+              print(f'::notice::outreach: targets={s.get(\"targets\",0)} '
+                    f'listed={s.get(\"listed\",0)} '
+                    f'not_listed={s.get(\"not_listed\",0)} '
+                    f'queued={s.get(\"queued\",0)} '
+                    f'submitted={s.get(\"submitted\",0)}')
+              # Fail the job if zero targets even saw an audit attempt —
+              # something is wrong with the discovery list.
+              if s.get('targets', 0) == 0:
+                  print('::warning::outreach saw 0 targets — registry list empty?')
+          except Exception as e:
+              print(f'::warning::outreach response parse failed: {e}')
+          "

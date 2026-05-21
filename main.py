@@ -22154,6 +22154,23 @@ except Exception as _e:
     print(f"[main] brain_autoaction_helpers register failed: {_e}",
           file=sys.stderr)
 
+# Phase r33-N (2026-05-21): 24x7 outbound discovery engine. The
+# inbound brain watches our site for problems; this watches our
+# PRESENCE on the open web. Daily GH-Actions cron POSTs
+# /api/v1/admin/outreach/mcp-registry/submit-all which submits or
+# queues a refresh to 7 MCP discovery surfaces (Smithery, mcp.so,
+# MCPHub, PulseMCP, Glama, awesome-mcp-servers, Anthropic dir) and
+# audits whether each one actually lists us. Brain detector
+# check_outbound_distribution_health flags any that have fallen off.
+try:
+    from routes.mcp_registry_outreach import mcp_registry_outreach_bp
+    app.register_blueprint(mcp_registry_outreach_bp)
+    print("📡 MCP Registry Outreach: ✅ Registered (7 discovery surfaces · "
+          "POST /api/v1/admin/outreach/mcp-registry/submit-all)")
+except Exception as _e:
+    print(f"[main] mcp_registry_outreach register failed: {_e}",
+          file=sys.stderr)
+
 # Phase XX (2026-05-16): Land+Power MCP bridge. /api/v1/land-power/site-analysis
 # powers the new free-tier `find_power_site` MCP tool — the missing link
 # between agent demand (3,380 calls/30d to get_grid_intelligence, 3,212

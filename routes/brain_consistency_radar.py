@@ -4280,6 +4280,82 @@ def check_page_brand_uniformity() -> list[dict]:
     return findings
 
 
+def check_outbound_distribution_health() -> list[dict]:
+    """Phase r33-N (2026-05-21) — outbound discovery health.
+
+    Watches our PRESENCE on 7 major MCP discovery surfaces (Smithery,
+    mcp.so, MCPHub, PulseMCP, Glama, awesome-mcp-servers, Anthropic).
+    Fires when: any audit is stale >48h (cron broken) OR any target
+    is `not_listed` for >7d (submission stalled) OR any target has
+    NEVER been audited (first-run not triggered)."""
+    findings: list[dict] = []
+    import os as _os, psycopg2 as _pg
+    db = _os.environ.get("DATABASE_URL")
+    if not db: return findings
+    try:
+        conn = _pg.connect(db, sslmode="require", connect_timeout=5)
+        try:
+            with conn.cursor() as cur:
+                cur.execute("SELECT to_regclass('public.outreach_submissions')")
+                if not (cur.fetchone() or [None])[0]:
+                    return findings
+                cur.execute("""
+                    SELECT DISTINCT ON (target_key)
+                           target_key, target_name, outcome,
+                           submitted_at, detail
+                      FROM outreach_submissions
+                     WHERE action = 'audit'
+                     ORDER BY target_key, submitted_at DESC
+                """)
+                audits = cur.fetchall()
+        finally:
+            conn.close()
+    except Exception:
+        return findings
+
+    import datetime as _dt
+    now = _dt.datetime.now(_dt.timezone.utc)
+    seen = set()
+    for tk, tname, outcome, ts, detail in audits:
+        seen.add(tk)
+        if ts.tzinfo is None:
+            ts = ts.replace(tzinfo=_dt.timezone.utc)
+        age_h = (now - ts).total_seconds() / 3600.0
+        if outcome == "not_listed":
+            findings.append({
+                "issue":  "outbound_distribution_health",
+                "url":    f"target:{tk}",
+                "count":  int(age_h),
+                "detail": (f"{tname} audit: `not_listed` "
+                           f"({(detail or '')[:80]}). {age_h:.0f}h ago. "
+                           f"Open the PR / fill form. See "
+                           f"/api/v1/admin/outreach/mcp-registry/status"),
+            })
+        if age_h > 48.0:
+            findings.append({
+                "issue":  "outbound_distribution_health",
+                "url":    f"target:{tk}",
+                "count":  int(age_h),
+                "detail": (f"{tname} not audited in {age_h:.0f}h. The "
+                           f"daily mcp-outreach.yml cron may be broken."),
+            })
+    try:
+        from routes.mcp_registry_outreach import DISCOVERY_TARGETS as _TARGETS
+        for t in _TARGETS:
+            if t["key"] not in seen:
+                findings.append({
+                    "issue":  "outbound_distribution_health",
+                    "url":    f"target:{t['key']}",
+                    "count":  0,
+                    "detail": (f"{t['name']} has never been audited. "
+                               f"POST /api/v1/admin/outreach/mcp-registry/submit "
+                               f"with target={t['key']} to start."),
+                })
+    except Exception:
+        pass
+    return findings[:10]
+
+
 def check_monthly_trend_unsent_3d() -> list[dict]:
     """Phase FF+25-followup-r7 (2026-05-20). If today is the 4th or later
     of a new month AND we haven't yet emailed the prior-month monthly
@@ -6974,6 +7050,11 @@ def scan_all() -> list[dict]:
                # Companion to check_page_brand_drift (rotating sample)
                # — this one hits the full canonical page set every cycle.
                check_page_brand_uniformity,
+               # Phase r33-N (2026-05-21) — outbound discovery health.
+               # Watches our presence across 7 MCP registries; fires if
+               # the daily cron hasn't audited recently OR if any
+               # listing has fallen off / never landed.
+               check_outbound_distribution_health,
                # Phase FF+25-followup-r14 Canadian / regional coverage gaps
                check_coverage_gap_canada,
                # Phase FF+25-followup-r21 founding-customer welcome rescue
