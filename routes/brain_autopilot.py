@@ -773,6 +773,16 @@ _PATTERN_LIBRARY: dict[str, dict[str, Any]] = {
         "use_admin":   False,
         "description": "Escalation-only: one or more public pages drifted off the canonical indigo→violet brand. Look at the detail field for which page + which signal; fix in /js/dchub-nav.js (covers most pages) or the per-page <style>. Track on /status.",
     },
+    # Phase r33-K (2026-05-21) — brand-uniformity audit across all top
+    # public pages. The fix is a per-page HTML edit (add <link> or
+    # replace off-brand colors / body-font declarations) so this is
+    # escalation-only — no API endpoint can apply the patch.
+    "page_brand_uniformity": {
+        "action":      lambda f: (None, None),
+        "method":      None,
+        "use_admin":   False,
+        "description": "Escalation-only: page is missing brand.css/Instrument Sans/dchub-nav.js OR has off-brand colors. Edit the page (static .html in dchub-frontend or Flask handler in dchub-backend) to add the missing link and replace off-brand patterns. Audit /api/v1/brain/consistency-radar?issue=page_brand_uniformity for the list.",
+    },
     # Phase FF+25-followup-r14 (2026-05-20): coverage gap escalation.
     # User reported DCHawk has Calgary-metro facilities we don't. Fix
     # is upstream in discovery crawler — not an autopilot action.

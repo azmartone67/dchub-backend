@@ -4101,6 +4101,185 @@ def check_page_brand_drift() -> list[dict]:
     return findings
 
 
+def check_page_brand_uniformity() -> list[dict]:
+    """Phase r33-K (2026-05-21). After r33-I's manual sweep unified every
+    public page to the canonical brand (Instrument Sans + indigo→violet
+    + dchub-brand.css + dchub-nav.js), this detector watches for FUTURE
+    drift so a regression never ships silently.
+
+    Companion to check_page_brand_drift (sampled, rotating) — this one
+    scans ALL top public pages every cycle and tests for two failure
+    modes side by side:
+
+      A. MISSING required brand elements (positive signals):
+         · /static/dchub-brand.css link
+         · 'Instrument Sans' font reference
+         · /js/dchub-nav.js script
+
+      B. PRESENT off-brand patterns we just removed (negative signals):
+         · #1e40af — wrong-blue accent (should be #6366f1)
+         · #065f46 / #0f766e — old emerald-teal gradient (should be
+           indigo/violet)
+         · body { font-family:-apple-system,BlinkMacSystemFont } — fall-
+           back stack used as the primary, no Instrument Sans
+         · body { font-family: Inter } — wrong canonical font
+         · font-family: 'DM Sans' — wrong canonical font
+
+    Fires one finding per page/issue, capped at 20 per scan so a fully-
+    broken site doesn't flood the radar. Detail field is actionable:
+    names the page + the exact CSS/HTML change to make.
+    """
+    import urllib.request as _req
+    import urllib.error as _rerr
+    import concurrent.futures as _cf
+    import re as _re
+
+    PAGES = [
+        '/', '/pricing', '/api-docs', '/developers', '/architecture',
+        '/transactions', '/transaction-comps', '/markets', '/dcpi',
+        '/pockets', '/coverage', '/digest', '/news', '/press',
+        '/dc-hub-media', '/tax-incentives', '/ai', '/ai-deals',
+        '/ai-pipeline', '/ai-integrations', '/ai-inventory',
+        '/state-of-the-data-center', '/system-status', '/grid-intelligence',
+        '/platform', '/sites', '/spare-capacity', '/capacity-pipeline',
+        '/mcp',
+    ]
+
+    REQUIRED = [
+        ("/static/dchub-brand.css", "missing-brand-css"),
+        ("Instrument Sans",         "missing-instrument-sans"),
+        ("/js/dchub-nav.js",        "missing-dchub-nav-js"),
+    ]
+
+    # Off-brand patterns we just removed in r33-I. Each tuple is
+    # (needle, issue-tag, fix-hint). For body-font patterns we use a
+    # compiled regex because we need to match a `body { ... }` block.
+    OFF_BRAND_LITERALS = [
+        ("#1e40af",
+         "off-brand-blue-1e40af",
+         "replace #1e40af with #6366f1 (canonical indigo accent)"),
+        ("#065f46",
+         "off-brand-emerald-065f46",
+         "replace #065f46 with the indigo→violet gradient "
+         "(linear-gradient(135deg,#6366f1,#a855f7))"),
+        ("#0f766e",
+         "off-brand-teal-0f766e",
+         "replace #0f766e with the indigo→violet gradient "
+         "(linear-gradient(135deg,#6366f1,#a855f7))"),
+    ]
+    # Body-font regressions: only flag when the wrong family is the
+    # PRIMARY family inside a body{} declaration, not a fallback later
+    # in a stack that starts with Instrument Sans.
+    _BODY_BLOCK_RE = _re.compile(r"body\s*\{[^}]{0,400}\}", _re.IGNORECASE)
+    BODY_FONT_PATTERNS = [
+        (_re.compile(r"font-family\s*:\s*-apple-system\s*,\s*BlinkMacSystemFont",
+                     _re.IGNORECASE),
+         "body-font-apple-system-primary",
+         "body uses the -apple-system,BlinkMacSystemFont stack as the "
+         "primary — prepend 'Instrument Sans' so canonical font wins"),
+        (_re.compile(r"font-family\s*:\s*Inter\b", _re.IGNORECASE),
+         "body-font-inter",
+         "body { font-family: Inter } — replace with "
+         "'Instrument Sans','Inter',-apple-system,sans-serif"),
+        (_re.compile(r"font-family\s*:\s*['\"]DM Sans['\"]", _re.IGNORECASE),
+         "body-font-dm-sans",
+         "body { font-family: 'DM Sans' } — replace with "
+         "'Instrument Sans',-apple-system,sans-serif"),
+    ]
+
+    def _fetch(path: str) -> tuple[str, Optional[str], Optional[int]]:
+        url = f"https://dchub.cloud{path}"
+        try:
+            req = _req.Request(
+                url,
+                headers={"User-Agent": "DCHub-BrainUniformity/1.0"},
+            )
+            with _req.urlopen(req, timeout=10) as resp:
+                code = resp.getcode()
+                body = resp.read(200000).decode("utf-8", errors="replace")
+                return path, body, code
+        except _rerr.HTTPError as e:
+            return path, None, e.code
+        except Exception:
+            return path, None, None
+
+    findings: list[dict] = []
+    # 8 parallel fetches with a global cap so one slow page doesn't
+    # block the whole scan.
+    with _cf.ThreadPoolExecutor(max_workers=8) as pool:
+        results = list(pool.map(_fetch, PAGES))
+
+    for path, html, code in results:
+        if not html or code != 200:
+            # Non-200 is caught by check_frontend_critical_endpoints
+            # and friends — don't double-report here.
+            continue
+        if len(findings) >= 20:
+            break
+
+        # A. Required elements
+        for needle, tag in REQUIRED:
+            if len(findings) >= 20:
+                break
+            if needle not in html:
+                if tag == "missing-brand-css":
+                    fix = ("add `<link rel=\"stylesheet\" "
+                           "href=\"/static/dchub-brand.css\">` before "
+                           "</head>")
+                elif tag == "missing-instrument-sans":
+                    fix = ("add Instrument Sans — either via the Google "
+                           "Fonts <link> in <head> or by ensuring "
+                           "/static/dchub-brand.css is loaded (it "
+                           "@imports the font)")
+                else:  # missing-dchub-nav-js
+                    fix = ("add `<script src=\"/js/dchub-nav.js\" "
+                           "defer></script>` before </body> so the "
+                           "shared nav renders")
+                findings.append({
+                    "issue":  "page_brand_uniformity",
+                    "url":    path,
+                    "count":  1,
+                    "detail": (f"Page {path} {tag.replace('-', ' ')} — "
+                               f"{fix}. After r33-I unification this "
+                               f"page is a regression."),
+                })
+
+        # B. Off-brand literals (anywhere in the HTML)
+        for needle, tag, hint in OFF_BRAND_LITERALS:
+            if len(findings) >= 20:
+                break
+            if needle in html:
+                findings.append({
+                    "issue":  "page_brand_uniformity",
+                    "url":    path,
+                    "count":  html.count(needle),
+                    "detail": (f"Page {path} contains off-brand pattern "
+                               f"`{needle}` ({tag}) — {hint}. After "
+                               f"r33-I unification this page is a "
+                               f"regression."),
+                })
+
+        # C. Body-font regressions (regex-checked inside body{} blocks)
+        for body_block in _BODY_BLOCK_RE.findall(html):
+            for rx, tag, hint in BODY_FONT_PATTERNS:
+                if len(findings) >= 20:
+                    break
+                if rx.search(body_block):
+                    findings.append({
+                        "issue":  "page_brand_uniformity",
+                        "url":    path,
+                        "count":  1,
+                        "detail": (f"Page {path} has off-brand body "
+                                   f"font ({tag}) — {hint}. After "
+                                   f"r33-I unification this page is a "
+                                   f"regression."),
+                    })
+            if len(findings) >= 20:
+                break
+
+    return findings
+
+
 def check_monthly_trend_unsent_3d() -> list[dict]:
     """Phase FF+25-followup-r7 (2026-05-20). If today is the 4th or later
     of a new month AND we haven't yet emailed the prior-month monthly
@@ -6788,6 +6967,13 @@ def scan_all() -> list[dict]:
                check_monthly_trend_unsent_3d,
                # Phase FF+25-followup-r12 visual drift across the site
                check_page_brand_drift,
+               # Phase r33-K (2026-05-21) brand-uniformity sweep. Audits
+               # every top public page for missing brand.css / Instrument
+               # Sans / dchub-nav.js AND for off-brand colors / wrong
+               # body fonts re-introduced after r33-I's manual unify pass.
+               # Companion to check_page_brand_drift (rotating sample)
+               # — this one hits the full canonical page set every cycle.
+               check_page_brand_uniformity,
                # Phase FF+25-followup-r14 Canadian / regional coverage gaps
                check_coverage_gap_canada,
                # Phase FF+25-followup-r21 founding-customer welcome rescue
