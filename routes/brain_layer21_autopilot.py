@@ -372,9 +372,18 @@ def autopilot_status():
     )
 
 
-@brain_layer21_bp.route("/api/v1/brain/autopilot/run", methods=["POST"])
+# Phase r33-H (2026-05-21) — RENAMED to break route-shadow with the
+# newer brain_autopilot.py. Both blueprints used to register
+# /api/v1/brain/autopilot/run; whichever loaded first won, which
+# was L21 (this file) — meaning the GH-Actions cron hit L21's
+# 5-pattern HTTP-burst tick instead of brain_autopilot's 60-pattern
+# rich library. Brain literally detected this as a shadowed_route
+# finding (×2) before we fixed it.
+@brain_layer21_bp.route("/api/v1/brain/autopilot/l21-tick", methods=["POST"])
 def autopilot_run_now():
-    """Admin: trigger one tick immediately."""
+    """Admin: trigger one L21 traffic-pattern tick immediately.
+    Distinct from /api/v1/brain/autopilot/run (the rich pattern
+    library)."""
     if _ADMIN_KEY:
         provided = (request.headers.get("X-Admin-Key") or "").strip()
         if provided != _ADMIN_KEY:
@@ -382,9 +391,9 @@ def autopilot_run_now():
     return jsonify(_one_tick(dry_run=False))
 
 
-@brain_layer21_bp.route("/api/v1/brain/autopilot/dry-run", methods=["POST", "GET"])
+@brain_layer21_bp.route("/api/v1/brain/autopilot/l21-dry-run", methods=["POST", "GET"])
 def autopilot_dry_run():
-    """Show what WOULD fire — no actions taken."""
+    """Show what the L21 traffic-pattern tick WOULD fire — no actions taken."""
     return jsonify(_one_tick(dry_run=True))
 
 
