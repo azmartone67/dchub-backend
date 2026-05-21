@@ -48,9 +48,16 @@ for _n in ("DCHUB_INTERNAL_KEY", "INTERNAL_KEY", "DCHUB_ADMIN_KEY",
 
 
 def _admin_ok():
+    """r32-david-fix (2026-05-20): cookie-aware auth so browser users
+    don't have to URL-encode the admin key on every request. Accepts
+    header → query → cookie in that order. The cookie is set by
+    GET /visitor-intelligence/auth?key=XXX which redirects to the
+    dashboard with a 90-day HttpOnly cookie."""
     sent = (request.headers.get("X-Internal-Key")
             or request.headers.get("X-Admin-Key")
-            or request.args.get("admin_key") or "").strip()
+            or request.args.get("admin_key")
+            or request.cookies.get("dchub_admin_key")
+            or "").strip()
     return sent in _INTERNAL_KEYS
 
 
@@ -371,10 +378,84 @@ td.mono{font-family:var(--mono);font-size:.85rem}
 
 
 @visitor_intelligence_bp.route(
+    "/visitor-intelligence/auth", methods=["GET"])
+def visitor_intelligence_auth():
+    """r32-david-fix (2026-05-20): one-time login. Visit
+    /visitor-intelligence/auth?key=XXX to set a 90-day HttpOnly cookie,
+    then /visitor-intelligence opens cleanly in the browser without
+    needing the key in the URL bar every time."""
+    key = (request.args.get("key") or "").strip()
+    if key not in _INTERNAL_KEYS:
+        return Response(
+            "<!DOCTYPE html><html><body style='font-family:system-ui;"
+            "background:#0a0a12;color:#fff;padding:3rem;text-align:center'>"
+            "<h1>Invalid key</h1><p>The admin key you provided doesn't match. "
+            "Double-check your DCHUB_ADMIN_KEY env var.</p></body></html>",
+            status=401, mimetype="text/html",
+        )
+    resp = Response("", status=302)
+    resp.headers["Location"] = "/visitor-intelligence"
+    # HttpOnly + Secure + SameSite=Lax. 90-day TTL.
+    resp.set_cookie(
+        "dchub_admin_key", key,
+        max_age=90 * 24 * 3600,
+        httponly=True, secure=True, samesite="Lax",
+        path="/",
+    )
+    return resp
+
+
+@visitor_intelligence_bp.route(
+    "/visitor-intelligence/logout", methods=["GET"])
+def visitor_intelligence_logout():
+    """Clear the admin cookie."""
+    resp = Response(
+        "<!DOCTYPE html><html><body style='font-family:system-ui;"
+        "background:#0a0a12;color:#fff;padding:3rem;text-align:center'>"
+        "<h1>Logged out</h1></body></html>",
+        mimetype="text/html",
+    )
+    resp.set_cookie("dchub_admin_key", "", max_age=0, path="/")
+    return resp
+
+
+@visitor_intelligence_bp.route(
     "/visitor-intelligence", methods=["GET"])
 def visitor_intelligence_page():
     if not _admin_ok():
-        return Response("Unauthorized", status=401, mimetype="text/plain")
+        # r32-david-fix: friendly login prompt instead of bare 401.
+        # Tells the user exactly how to authenticate via the
+        # cookie-setting endpoint.
+        login_html = """<!DOCTYPE html><html><head>
+<meta charset="utf-8"><title>Login · DC Hub Visitor Intelligence</title>
+<style>body{font-family:Inter,-apple-system,sans-serif;background:#0a0a12;color:#fff;
+margin:0;min-height:100vh;display:flex;align-items:center;justify-content:center}
+.card{background:#11121a;border:1px solid #1f2030;border-radius:14px;
+padding:2.5rem 3rem;max-width:480px;width:90%}
+h1{font-size:1.6rem;margin:0 0 1rem;background:linear-gradient(90deg,#fff,#c4b5fd);
+-webkit-background-clip:text;background-clip:text;color:transparent}
+p{color:#9ca3af;margin:.75rem 0}
+input{width:100%;padding:.7rem 1rem;background:#0a0a12;color:#fff;
+border:1px solid #1f2030;border-radius:8px;font-family:'JetBrains Mono',monospace;
+font-size:.92rem;margin:.5rem 0 1rem}
+button{background:linear-gradient(135deg,#6366f1,#a855f7);color:#fff;
+padding:.7rem 1.5rem;border-radius:8px;border:0;font-weight:600;cursor:pointer;
+font-size:.95rem;width:100%}
+button:hover{opacity:.9}
+code{background:#0a0a12;border:1px solid #1f2030;padding:.2rem .5rem;
+border-radius:4px;font-size:.85rem;color:#c4b5fd}</style></head>
+<body><div class="card">
+<h1>Visitor Intelligence · Login</h1>
+<p>Paste your admin key below. It will be stored in an HttpOnly cookie
+for 90 days so you don't need to re-enter it.</p>
+<form action="/visitor-intelligence/auth" method="get">
+<input type="password" name="key" placeholder="DCHUB_ADMIN_KEY" autofocus required>
+<button type="submit">Sign in</button>
+</form>
+<p style="margin-top:1.5rem;font-size:.85rem">Or use a header from the CLI:<br>
+<code>curl -H "X-Admin-Key: $DCHUB_ADMIN_KEY" https://dchub.cloud/visitor-intelligence</code></p>
+</div></body></html>"""
+        return Response(login_html, status=401, mimetype="text/html")
     try:
         days = max(1, min(90, int(request.args.get("days", 7))))
     except (ValueError, TypeError):
