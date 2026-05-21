@@ -2551,6 +2551,92 @@ def check_upgrade_pool_grown() -> list[dict]:
     return findings
 
 
+def check_multi_cloud_failover_broken() -> list[dict]:
+    """Phase r32-multi-cloud (2026-05-21). User hit a multi-cloud outage:
+    Railway down (status incident KVZ1Z8GY in progress) AND Render
+    also failing (likely Neon credential drift). The architecture
+    intent is failover — Render backs up Railway — but if BOTH are
+    sick simultaneously, the failover is theatre, not safety.
+
+    This detector probes BOTH origins directly (bypassing the CF
+    worker) and fires when:
+      - Railway returns connection-refused / timeout (000)
+      - Render returns 5xx or doesn't have a fresh response
+
+    The finding is escalation-only because the fix is environment
+    (Neon DSN on Render, Railway plan upgrade, etc.) — not autopilot
+    actionable. But surfacing it lets the operator catch the
+    failover regression BEFORE the next outage."""
+    findings: list[dict] = []
+    try:
+        import urllib.request as _ur
+        import urllib.error as _ue
+    except Exception:
+        return findings
+
+    def _probe(url: str, timeout: int = 8) -> tuple[int, str]:
+        try:
+            req = _ur.Request(url, headers={
+                "User-Agent": "DCHub-FailoverProbe/1.0",
+            })
+            with _ur.urlopen(req, timeout=timeout) as resp:
+                return resp.status, resp.read(200).decode("utf-8", errors="replace")
+        except _ue.HTTPError as e:
+            return e.code, str(e)[:200]
+        except Exception as e:
+            return 0, f"{type(e).__name__}: {str(e)[:160]}"
+
+    railway_code, railway_body = _probe(
+        "https://dchub-backend-production.up.railway.app/api/v1/health")
+    render_code, render_body = _probe(
+        "https://dchub-backend-render.onrender.com/api/v1/site/stats")
+
+    railway_ok = 200 <= railway_code < 400
+    render_ok = 200 <= render_code < 400
+
+    if not railway_ok and not render_ok:
+        findings.append({
+            "issue":  "multi_cloud_both_down",
+            "url":    "/api/v1/health",
+            "count":  1,
+            "detail": (
+                f"Both backends are unreachable. Railway returned "
+                f"{railway_code} ({railway_body[:120]}); Render returned "
+                f"{render_code} ({render_body[:120]}). The CF Worker is "
+                f"failing every dynamic request — only static pages "
+                f"served by CF Pages are working. Investigate Railway "
+                f"status page + Render dashboard. If Render is sleeping "
+                f"(free tier), wake it with a keep-alive cron or upgrade."
+            ),
+        })
+    elif not railway_ok:
+        findings.append({
+            "issue":  "railway_down_render_serving",
+            "url":    "/api/v1/health",
+            "count":  1,
+            "detail": (
+                f"Railway is down ({railway_code}) but Render is serving. "
+                f"Failover is doing its job — verify the CF worker is "
+                f"correctly routing 100% of traffic to Render right now "
+                f"(x-dc-hub-backend header should say 'render')."
+            ),
+        })
+    elif not render_ok:
+        findings.append({
+            "issue":  "render_down_railway_serving",
+            "url":    "/api/v1/health",
+            "count":  1,
+            "detail": (
+                f"Render backup is unreachable ({render_code}). Railway is "
+                f"primary right now. If Railway has an incident, failover "
+                f"won't catch us. Likely Neon credential drift on Render "
+                f"(ep-old-waterfall-aa2rwjzs-pooler reference from earlier "
+                f"in the session) — update DATABASE_URL on Render."
+            ),
+        })
+    return findings
+
+
 def check_inspector_brief_unprocessed_recipes() -> list[dict]:
     """Phase r32-brain-pipe (2026-05-20). The Inspector (Claude Opus 4.5)
     writes daily briefs that include code-fix RECIPE candidates
@@ -5700,6 +5786,14 @@ def scan_all() -> list[dict]:
                # rate-limit + L22 whitelist (3 recipes only) + L22
                # _already_drafted() idempotency.
                check_inspector_brief_unprocessed_recipes,
+               # Phase r32-multi-cloud (2026-05-21) — failover health.
+               # Probes Railway + Render origins directly. Fires when
+               # BOTH are down (no failover safety) or when one is
+               # down (warns about the regression risk). User caught
+               # this with the failed schema-repair curl during a
+               # Railway incident — Render was ALSO sick so failover
+               # was theatre.
+               check_multi_cloud_failover_broken,
                # Phase SSSS winback pitches accumulating without delivery
                check_winback_pitches_unsent,
                # Phase TTTT citation score
