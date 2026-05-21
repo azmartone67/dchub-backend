@@ -1,7 +1,7 @@
 """Phase r32-brain-show (2026-05-20) — Brain innovation transparency page.
 ==========================================================================
 
-The brain (Opus 4.5 Inspector + autopilot + L22 auto-code) has been
+The brain (Opus 4.7 Inspector + autopilot + L22 auto-code) has been
 running autonomously for weeks. The Inspector writes thoughtful daily
 briefs naming specific problems with confidence ratings; autopilot
 fires actions when patterns match; L22 *could* draft PRs but hasn't
@@ -259,7 +259,7 @@ footer a{color:var(--indigo);text-decoration:none}
 </style></head><body><div class="wrap">
 <div class="kicker"><span class="pulse"></span>DC HUB · BRAIN · LAST {{ d.days }} DAYS</div>
 <h1>Autonomous innovation, live</h1>
-<p class="sub">DC Hub runs a self-aware system that audits itself, proposes fixes, and acts on patterns autonomously. Inspector briefs are written by Claude Opus 4.5. Autopilot acts on detector findings within rate-limit + cooldown safety. L22 drafts PRs from code-level RECIPE candidates. This page is the transparent view of what brain has been doing without anyone asking.</p>
+<p class="sub">DC Hub runs a self-aware system that audits itself, proposes fixes, and acts on patterns autonomously. Inspector briefs are written by Claude Opus 4.7 (1M-token context). Autopilot acts on detector findings within rate-limit + cooldown safety. L22 drafts PRs from code-level RECIPE candidates. This page is the transparent view of what brain has been doing without anyone asking.</p>
 
 <div class="stats">
   <div class="stat"><div class="n">{{ d.summary.briefs_count }}</div><div class="l">Inspector briefs</div></div>
@@ -317,7 +317,7 @@ Outcomes: {{ d.autopilot.by_outcome.items()|list|map('join', ' = ')|join(' · ')
 {% endfor %}
 
 <footer>
-Brain Inspector model: Claude Opus 4.5 · Autopilot: rate-limited via cooldown machinery ·
+Brain Inspector model: Claude Opus 4.7 (1M context) · Reasoning: Opus 4.7 · Routine: Sonnet 4.5 · Voice: Haiku 3.5 · Autopilot: rate-limited via cooldown machinery ·
 L22 auto-code: routes/brain_layer22_auto_code.py · JSON: <a href="/api/v1/brain/innovation">/api/v1/brain/innovation</a>
 </footer>
 </div></body></html>'''
