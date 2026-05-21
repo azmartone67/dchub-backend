@@ -270,36 +270,79 @@ def html_totals():
 <meta property="og:description" content="{_fmt_mw(op_mw)} operating + {_fmt_mw(pp_mw)} being built — live, free, indexable.">
 <meta property="og:url" content="https://dchub.cloud/dcpi/totals">
 <script type="application/ld+json">{_json.dumps(schema_org)}</script>
+<link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700;800&family=JetBrains+Mono:wght@400;500;600&display=swap" rel="stylesheet">
 <style>
+  /* r32 (2026-05-20): brand-match — dark navy canvas, indigo→violet
+     gradient, Inter + JetBrains Mono. Mirrors /pockets + /coverage
+     + /daily so the site feels like one product, not five. */
+  :root{{
+    --bg:#0a0a12; --surface:#11121a; --surface-2:#181a25;
+    --border:#1f2030; --border-strong:#2a2d40;
+    --text:#fff; --text-dim:#9ca3af; --text-faint:#6b7280;
+    --indigo:#6366f1; --violet:#a855f7;
+    --green:#10b981; --orange:#f59e0b; --red:#ef4444;
+    --grad:linear-gradient(135deg,#6366f1 0%,#a855f7 100%);
+    --grad-soft:linear-gradient(135deg,rgba(99,102,241,.10) 0%,rgba(168,85,247,.06) 100%);
+    --mono:'JetBrains Mono','SF Mono',monospace;
+    color-scheme:dark;
+  }}
   *{{box-sizing:border-box}}
-  body{{font-family:-apple-system,BlinkMacSystemFont,"Segoe UI",Roboto,sans-serif;
-        max-width:1100px;margin:0 auto;padding:1.5rem 1rem;color:#1f2937;line-height:1.55;
-        background:#fafbfc}}
-  h1{{margin:0 0 .25rem;font-size:2rem}}
-  h1+p{{color:#6b7280;margin:0 0 1.5rem}}
-  .hero{{display:grid;grid-template-columns:1fr 1fr;gap:1rem;margin:1rem 0 2rem}}
-  .hero .card{{background:white;padding:2rem 1.5rem;border-radius:12px;
-                box-shadow:0 1px 3px rgba(0,0,0,.06)}}
-  .hero .card.operating{{border-top:6px solid #16a34a}}
-  .hero .card.pipeline{{border-top:6px solid #1e40af}}
-  .hero .label{{font-size:.85rem;text-transform:uppercase;letter-spacing:.08em;color:#6b7280;font-weight:600}}
-  .hero .number{{font-size:3.5rem;font-weight:700;color:#111827;line-height:1}}
-  .hero .number small{{font-size:1.2rem;color:#9ca3af;font-weight:400}}
-  .hero .sub{{color:#6b7280;font-size:.95rem;margin-top:.5rem}}
-  .hero .ratio{{margin-top:1rem;font-size:.85rem;color:#1e40af;font-weight:600}}
-  h2{{margin:2rem 0 .75rem;font-size:1.3rem}}
-  table{{width:100%;border-collapse:collapse;font-size:.92rem;background:white;border-radius:8px;overflow:hidden;box-shadow:0 1px 2px rgba(0,0,0,.04)}}
-  th,td{{text-align:left;padding:.5rem .8rem;border-bottom:1px solid #f3f4f6}}
-  th{{background:#f9fafb;font-weight:600;color:#374151;font-size:.82rem;text-transform:uppercase;letter-spacing:.04em}}
-  td a{{color:#1e40af;text-decoration:none;font-weight:600}}
-  td a:hover{{text-decoration:underline}}
-  .footnote{{color:#9ca3af;font-size:.85rem;margin-top:3rem;text-align:center}}
-  @media (max-width: 720px) {{ .hero{{grid-template-columns:1fr}} .hero .number{{font-size:2.5rem}} }}
+  body{{font-family:Inter,-apple-system,BlinkMacSystemFont,sans-serif;
+        background:var(--bg);color:var(--text);line-height:1.55;
+        min-height:100vh;margin:0;padding:0;-webkit-font-smoothing:antialiased;
+        position:relative;overflow-x:hidden}}
+  body::before{{
+    content:'';position:fixed;top:-30%;left:50%;transform:translateX(-50%);
+    width:1400px;height:1400px;z-index:0;pointer-events:none;
+    background:radial-gradient(circle,rgba(99,102,241,.10) 0%,
+      rgba(168,85,247,.06) 30%,transparent 70%);
+  }}
+  .wrap{{max-width:1100px;margin:0 auto;padding:2.5rem 1.5rem;position:relative;z-index:1}}
+  .kicker{{font-family:var(--mono);font-size:.78rem;color:#c4b5fd;
+    text-transform:uppercase;letter-spacing:.14em;margin-bottom:.6rem}}
+  h1{{margin:0 0 .5rem;font-size:2.4rem;font-weight:800;letter-spacing:-.02em;
+    background:linear-gradient(90deg,#fff,#c4b5fd);
+    -webkit-background-clip:text;background-clip:text;color:transparent}}
+  h1+p{{color:var(--text-dim);margin:0 0 2rem;font-size:1rem}}
+  h1+p a{{color:var(--indigo)}}
+  h1+p a:hover{{color:#fff}}
+  .hero{{display:grid;grid-template-columns:1fr 1fr;gap:1rem;margin:1rem 0 2.5rem}}
+  .hero .card{{background:var(--surface);padding:2rem 1.75rem;border-radius:14px;
+    border:1px solid var(--border);position:relative;overflow:hidden}}
+  .hero .card.operating{{border-top:4px solid var(--green)}}
+  .hero .card.pipeline{{border-top:4px solid var(--indigo)}}
+  .hero .label{{font-family:var(--mono);font-size:.74rem;text-transform:uppercase;
+    letter-spacing:.1em;color:var(--text-dim);font-weight:600;margin-bottom:.5rem}}
+  .hero .number{{font-family:var(--mono);font-size:3.4rem;font-weight:800;
+    color:var(--text);line-height:1;letter-spacing:-.02em}}
+  .hero .number small{{font-size:1.1rem;color:var(--text-faint);font-weight:500}}
+  .hero .sub{{color:var(--text-dim);font-size:.92rem;margin-top:.6rem}}
+  .hero .ratio{{margin-top:.85rem;font-size:.82rem;color:var(--indigo);font-weight:600;
+    font-family:var(--mono);text-transform:uppercase;letter-spacing:.08em}}
+  h2{{margin:2.5rem 0 1rem;font-size:.82rem;color:var(--text-dim);
+    text-transform:uppercase;letter-spacing:.12em;font-weight:700}}
+  table{{width:100%;border-collapse:collapse;font-size:.92rem;
+    background:var(--surface);border:1px solid var(--border);border-radius:10px;overflow:hidden}}
+  th,td{{text-align:left;padding:.75rem 1rem;border-bottom:1px solid var(--border)}}
+  tr:last-child td{{border-bottom:none}}
+  tr:hover td{{background:rgba(99,102,241,.04)}}
+  th{{background:#0f1019;font-weight:700;color:var(--text-dim);font-size:.72rem;
+    text-transform:uppercase;letter-spacing:.1em;border-bottom:1px solid var(--border-strong)}}
+  td a{{color:#fff;text-decoration:none;font-weight:600;
+    border-bottom:1px dotted rgba(255,255,255,.15)}}
+  td a:hover{{color:var(--indigo);border-bottom-color:var(--indigo)}}
+  td:nth-child(n+2):not(:last-child){{font-family:var(--mono);color:var(--text)}}
+  .footnote{{color:var(--text-faint);font-size:.85rem;margin-top:3rem;text-align:center;
+    padding-top:1.5rem;border-top:1px solid var(--border)}}
+  .footnote a{{color:var(--indigo);text-decoration:none}}
+  .footnote a:hover{{color:#fff}}
+  @media (max-width: 720px){{ .hero{{grid-template-columns:1fr}} .hero .number{{font-size:2.5rem}} h1{{font-size:1.8rem}} }}
 </style>
 </head>
-<body>
+<body><div class="wrap">
+<div class="kicker">DC HUB · DCPI · LIVE</div>
 <h1>Total US Data Center Power · Operating + Being Built</h1>
-<p>Live aggregate from {len(by_state)} US states. Updated every 5 minutes. <a href="/dcpi">DCPI scoring</a> · <a href="/api/v1/power/totals">JSON</a></p>
+<p>Live aggregate from {len(by_state)} US states. Updated every 5 minutes. <a href="/dcpi">DCPI scoring</a> · <a href="/pockets">Pockets of power</a> · <a href="/api/v1/power/totals">JSON</a></p>
 
 <div class="hero">
   <div class="card operating">
@@ -329,8 +372,9 @@ def html_totals():
 
 <p class="footnote">
   Computed at {computed[:19]}Z · cached 5 min · <a href="/api/v1/power/totals">JSON</a> ·
-  Part of <a href="/dcpi">DCPI</a> · <a href="/llms.txt">/llms.txt</a> for AI agents
+  Part of <a href="/dcpi">DCPI</a> · <a href="/pockets">Pockets</a> · <a href="/llms.txt">/llms.txt</a> for AI agents
 </p>
+</div>
 <!-- Phase QA-sweep (2026-05-16): include dchub-nav.js so users see
      the top nav instead of having to browser-back to escape. Also
      surfaces in surface_brain via auto-instrumented page-view beacon. -->

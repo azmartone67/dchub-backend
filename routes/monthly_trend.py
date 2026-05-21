@@ -206,21 +206,39 @@ def _compute_report(year: int | None = None,
             """) or 0)
 
             # Facilities ADDED in the month + the prior month (for MoM growth)
-            new_curr = int(_safe_scalar(cur, """
-                SELECT COUNT(*) FROM discovered_facilities
-                 WHERE merged_at IS NULL AND is_duplicate = 0
-                   AND discovered_at >= %s AND discovered_at < %s
-            """, (curr_lo, curr_hi)) or 0)
-            new_prev = int(_safe_scalar(cur, """
-                SELECT COUNT(*) FROM discovered_facilities
-                 WHERE merged_at IS NULL AND is_duplicate = 0
-                   AND discovered_at >= %s AND discovered_at < %s
-            """, (prev_lo, prev_hi)) or 0)
-            new_yago = int(_safe_scalar(cur, """
-                SELECT COUNT(*) FROM discovered_facilities
-                 WHERE merged_at IS NULL AND is_duplicate = 0
-                   AND discovered_at >= %s AND discovered_at < %s
-            """, (yago_lo, yago_hi)) or 0)
+            # FIX r32 (2026-05-20): drop the `merged_at IS NULL` filter
+            # (which counted only the unmerged QUEUE, not the actual flow
+            # of new facilities). The dedup runner sets merged_at on every
+            # row once it's promoted into the canonical facilities table,
+            # so the old filter zeroed out every cleanly-processed row.
+            # New approach: count discovered_facilities by discovered_at
+            # window irrespective of merge status, with is_duplicate=0
+            # so only the deduped representative row counts.
+            # Then we ALSO try facilities.first_seen as a fallback /
+            # primary source — that's the canonical timestamp on the
+            # merged table.
+            def _new_in_window(lo, hi):
+                # Primary: facilities.first_seen (canonical) — cast to
+                # timestamptz to handle TEXT-typed columns gracefully.
+                n = _safe_scalar(cur, """
+                    SELECT COUNT(*) FROM facilities
+                     WHERE first_seen::timestamptz >= %s
+                       AND first_seen::timestamptz <  %s
+                """, (lo, hi))
+                if n is not None and int(n) > 0:
+                    return int(n)
+                # Fallback: discovered_facilities.discovered_at window,
+                # no merged_at filter.
+                n = _safe_scalar(cur, """
+                    SELECT COUNT(*) FROM discovered_facilities
+                     WHERE COALESCE(is_duplicate, 0) = 0
+                       AND discovered_at >= %s AND discovered_at < %s
+                """, (lo, hi))
+                return int(n or 0)
+
+            new_curr = _new_in_window(curr_lo, curr_hi)
+            new_prev = _new_in_window(prev_lo, prev_hi)
+            new_yago = _new_in_window(yago_lo, yago_hi)
 
             out["headline"] = {
                 "facilities_total":           facilities_now,
@@ -250,8 +268,20 @@ def _compute_report(year: int | None = None,
             rolling30_hi = today + datetime.timedelta(days=1)
             rolling_deals = _deal_window(rolling30_lo, rolling30_hi)
 
+            # FIX r32 (2026-05-20): when the calendar-month deal window
+            # is empty (typical mid-month for M&A pipelines that lag),
+            # promote the rolling-30d window into `current` so the press-
+            # kit numbers aren't zero. Label `current_window` so consumers
+            # know which sample we used. Keep the raw rolling_30d on the
+            # payload so the strict month-only view is still available.
+            current_window = "calendar_month"
+            if curr_deals["count"] == 0 and rolling_deals["count"] > 0:
+                curr_deals = dict(rolling_deals)  # preserve original key
+                current_window = "rolling_30d"
+
             out["deal_flow"] = {
                 "current":  curr_deals,
+                "current_window": current_window,
                 "prior":    prev_deals,
                 "year_ago": yago_deals,
                 "rolling_30d": rolling_deals,
@@ -297,18 +327,23 @@ def _compute_report(year: int | None = None,
                 out["top_deals_window"] = "none"
 
             # ── TOP MARKETS by total MW ─────────────────────────────────
-            # FIX r7: query facilities (canonical) using market then city
-            # then state as the grouping key.
+            # FIX r32 (2026-05-20): drop the `power_mw IS NOT NULL` row
+            # filter — it was excluding markets where most facilities
+            # lack a published MW figure, even when SOME do. The SUM
+            # already coalesces null MW to 0, so the aggregate is safe
+            # without the row filter. Sort by MW with facility count as
+            # the tiebreaker so MW-rich markets float to the top while
+            # MW-thin-but-facility-dense markets still show up.
             try:
                 cur.execute("""
                     SELECT COALESCE(market, city, state, '') AS m,
                            COUNT(*) AS n,
                            COALESCE(SUM(power_mw), 0) AS mw
                       FROM facilities
-                     WHERE COALESCE(market, city, state) IS NOT NULL
-                       AND power_mw IS NOT NULL
+                     WHERE COALESCE(market, city, state, '') != ''
                      GROUP BY COALESCE(market, city, state)
-                     ORDER BY mw DESC LIMIT 10
+                     ORDER BY mw DESC, n DESC
+                     LIMIT 10
                 """)
                 out["top_markets"] = [
                     {"market": r[0], "facilities": int(r[1]),
@@ -370,10 +405,9 @@ def _compute_report(year: int | None = None,
                            COUNT(*) AS n,
                            COALESCE(SUM(capacity_mw), 0) AS mw
                       FROM capacity_pipeline
-                     WHERE COALESCE(market, city, state) IS NOT NULL
-                       AND capacity_mw IS NOT NULL
+                     WHERE COALESCE(market, city, state, '') != ''
                      GROUP BY COALESCE(market, city, state)
-                     ORDER BY mw DESC LIMIT 10
+                     ORDER BY mw DESC, n DESC LIMIT 10
                 """)
                 out["pipeline_by_market"] = [
                     {"market": r[0], "projects": int(r[1]),

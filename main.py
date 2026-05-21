@@ -2000,6 +2000,52 @@ def phase19_geocode():
 # --- end phase 19 ----------------------------------------------------------
 
 
+# r32 (2026-05-20): /api/v1/research/grid-intelligence — tolerant alias.
+# Users were hitting this URL (from old docs / search-result snippets /
+# autocomplete suggestions in the AI demo) and getting CF's generic
+# "Market not found" 404 page. The canonical endpoint is
+# /api/v1/grid/intelligence/<region>. Accept query params here and
+# forward so external links continue working.
+@app.route('/api/v1/research/grid-intelligence', methods=['GET'])
+def alias_research_grid_intelligence():
+    """Tolerant alias for /api/v1/grid/intelligence/<region>.
+    Accepts ?market= / ?iso= / ?region= query params and forwards."""
+    region = (
+        request.args.get('iso')
+        or request.args.get('region')
+        or request.args.get('market')
+        or ''
+    ).strip()
+    # Allow a market name like "northern-virginia" or "pjm" to map to
+    # the nearest ISO. Most market-named queries are PJM in our user
+    # base; explicit ISO/region wins.
+    MARKET_TO_ISO = {
+        'northern-virginia': 'PJM', 'ashburn': 'PJM',
+        'dallas': 'ERCOT', 'houston': 'ERCOT', 'austin': 'ERCOT',
+        'phoenix': 'WECC', 'silicon-valley': 'CAISO',
+        'chicago': 'PJM', 'columbus': 'PJM', 'atlanta': 'SERC',
+        'salt-lake-city': 'WECC', 'portland': 'WECC',
+    }
+    if region.lower() in MARKET_TO_ISO:
+        region = MARKET_TO_ISO[region.lower()]
+    region = region.upper() or 'PJM'
+    # Forward via test_request_context so we hit the real handler
+    # in-process (no HTTP round-trip).
+    with app.test_request_context(
+        f'/api/v1/grid/intelligence/{region}',
+        headers=dict(request.headers),
+    ):
+        try:
+            return phase19b_grid_intelligence(region)
+        except Exception as e:
+            return jsonify({
+                'error': 'grid_intelligence_failed',
+                'detail': str(e)[:200],
+                'region_requested': region,
+                'canonical': f'/api/v1/grid/intelligence/{region}',
+            }), 500
+
+
 # --- phase 19b: grid intelligence aggregate endpoint -----------------------
 @app.route('/api/v1/grid/intelligence/<region>', methods=['GET'])
 def phase19b_grid_intelligence(region):
