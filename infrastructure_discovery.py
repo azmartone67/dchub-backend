@@ -62,8 +62,53 @@ def _safe_write(sql, params=None, retries=3):
             # retry — bail immediately so the caller can degrade
             # gracefully instead of holding a connection 3-4 seconds.
             _msg = str(e).lower()
-            if ("no unique or exclusion constraint" in _msg
-                    or "does not exist" in _msg
+            # r33-Q+substations (2026-05-21): the "no unique or exclusion
+            # constraint matching the ON CONFLICT specification" error
+            # was firing for substations even though psql-shell tests
+            # showed the constraint IS there. Root cause never fully
+            # nailed (suspected: pool connection's catalog cache differs
+            # from a fresh psql connection's view of the constraint).
+            # ONE-TIME RECOVERY: when this error fires, retry the same
+            # SQL with the explicit conflict target stripped down to
+            # bare `ON CONFLICT DO NOTHING`. That form lets PG choose
+            # ANY unique constraint as the arbiter — works as long as
+            # at least one UNIQUE constraint exists on the table.
+            if "no unique or exclusion constraint" in _msg:
+                import re as _re
+                # Strip ON CONFLICT(col) → ON CONFLICT
+                _fallback_sql = _re.sub(
+                    r"ON\s+CONFLICT\s*\([^)]+\)",
+                    "ON CONFLICT",
+                    sql,
+                    flags=_re.IGNORECASE,
+                )
+                if _fallback_sql != sql:
+                    try:
+                        conn2 = get_db()
+                        cur2 = conn2.cursor()
+                        if params:
+                            cur2.execute(_fallback_sql, params)
+                        else:
+                            cur2.execute(_fallback_sql)
+                        conn2.commit()
+                        rc = cur2.rowcount
+                        try: conn2.close()
+                        except Exception: pass
+                        # Log once at INFO level so we know fallback fired
+                        logger.info(
+                            "Infrastructure write recovered via bare "
+                            "ON CONFLICT DO NOTHING fallback (rowcount=%s).",
+                            rc,
+                        )
+                        return rc
+                    except Exception as e2:
+                        logger.warning(
+                            "Fallback ON CONFLICT DO NOTHING also failed: %s",
+                            str(e2)[:200],
+                        )
+                logger.warning(f"Infrastructure write SCHEMA-fail (no retry): {e}")
+                return 0
+            if ("does not exist" in _msg
                     or "undefined column" in _msg
                     or "syntax error" in _msg):
                 logger.warning(f"Infrastructure write SCHEMA-fail (no retry): {e}")
