@@ -261,11 +261,29 @@ def _action_data_freshness_breach(finding: dict) -> tuple[str | None, dict | Non
     if not url.startswith("table:"):
         return None, None
     table = url[len("table:"):].strip()
+    # r33-stale-recovery (2026-05-21): added every refresh endpoint
+    # we actually have, including discovery crawls and heal cycle.
+    # User caught the gap: facilities table 17d stale because
+    # discovered_facilities was marked "escalate — depends on external
+    # cron" but we have admin endpoints that trigger OSM + DCM crawls
+    # directly. Same for heal_cache (the self_heal scheduler). When
+    # Railway flaps and crons miss windows, this autopilot path
+    # recovers them autonomously.
     REFRESH_MAP = {
-        "ai_citations": "/api/v1/ai-citations/run-cron",
-        "dcpi_scores":  "/api/v1/dcpi/recompute",
-        # facilities + news refresh paths live in external cron, not API:
-        # leaving them in this map as escalation candidates.
+        "ai_citations":          "/api/v1/ai-citations/run-cron",
+        "dcpi_scores":           "/api/v1/dcpi/recompute",
+        "market_power_scores":   "/api/v1/dcpi/recompute",
+        "discovered_facilities": "/api/v1/admin/osm-crawl/run",
+        "facilities":            "/api/v1/admin/osm-crawl/run",
+        # DCM crawler also seeds facilities — usable when OSM hits
+        # rate limit or stalls. Picked as fallback by detector via
+        # multiple-finding emission.
+        "facilities_dcm":        "/api/v1/admin/dcm-crawl/run",
+        "press_releases":        "/api/v1/marketing/auto-generate",
+        "monthly_trend":         "/api/v1/reports/monthly/archive",
+        # Heal cache refresh — kicks the self_heal scheduler once
+        # (idempotent in the heal_cycle implementation).
+        "heal_cache":            "/api/v1/heal/run-cycle",
     }
     endpoint = REFRESH_MAP.get(table)
     if not endpoint:

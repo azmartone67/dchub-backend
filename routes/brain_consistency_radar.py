@@ -3690,12 +3690,21 @@ def check_data_freshness_sla_breach() -> list[dict]:
       • ai_citations      — 168h (weekly cron — see Phase II)
     """
     findings: list[dict] = []
+    # r33-stale-recovery (2026-05-21): expanded SLA list to match what
+    # /status page tracks. User caught the gap — `facilities` canonical
+    # table was 17d stale (407h vs 336h SLA) but our detector only
+    # watched `discovered_facilities` (the queue). Both matter; both
+    # now monitored.
     SLAS = [
         # (table, age_column, max_hours, friendly_label)
-        ("dcpi_scores",          "computed_at",  12,  "DCPI scores"),
-        ("discovered_facilities","discovered_at",24,  "facility discovery"),
-        ("news_items",           "published_at", 6,   "news ingest"),
-        ("ai_citations",         "observed_at",  168, "AI citations (weekly)"),
+        ("dcpi_scores",            "computed_at",  12,   "DCPI scores"),
+        ("market_power_scores",    "computed_at",  48,   "market power scores"),
+        ("discovered_facilities",  "discovered_at",24,   "facility discovery queue"),
+        ("facilities",             "first_seen",   336,  "canonical facilities"),
+        ("news_items",             "published_at", 6,    "news ingest"),
+        ("press_releases",         "published_at", 36,   "press releases"),
+        ("ai_citations",           "observed_at",  168,  "AI citations (weekly)"),
+        ("monthly_reports",        "created_at",   744,  "monthly trend snapshot"),
     ]
     c = _db()
     if c is None: return findings
