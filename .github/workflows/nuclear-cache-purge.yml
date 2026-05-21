@@ -1,0 +1,23 @@
+name: Nuclear CF Cache Purge
+
+on: [workflow_dispatch]
+
+jobs:
+  purge:
+    runs-on: ubuntu-latest
+    env:
+      CLOUDFLARE_API_TOKEN: ${{ secrets.CLOUDFLARE_API_TOKEN }}
+    steps:
+      - name: Find zone + purge ALL cache
+        run: |
+          ZONE_ID=$(curl -sS \
+            -H "Authorization: Bearer $CLOUDFLARE_API_TOKEN" \
+            "https://api.cloudflare.com/client/v4/zones?name=dchub.cloud" \
+            | jq -r '.result[0].id')
+          echo "Zone: $ZONE_ID"
+          RESP=$(curl -sS -X POST \
+            -H "Authorization: Bearer $CLOUDFLARE_API_TOKEN" \
+            -H "Content-Type: application/json" \
+            "https://api.cloudflare.com/client/v4/zones/$ZONE_ID/purge_cache" \
+            -d '{"purge_everything":true}')
+          echo "$RESP" | jq
