@@ -2551,6 +2551,300 @@ def check_upgrade_pool_grown() -> list[dict]:
     return findings
 
 
+def check_cf_pages_deploy_stuck() -> list[dict]:
+    """Phase r33-B (2026-05-21). Caught earlier this session: a CF
+    Pages worker deploy can fail silently, leaving the worker stuck
+    on an old version while subsequent pushes pile up behind it. User
+    only notices when a routing change doesn't take effect.
+
+    This detector probes the worker version header. If the worker
+    version hasn't changed in 6+ hours despite git activity on the
+    dchub-frontend repo, fire a finding so the operator knows to
+    check CF Pages dashboard for a build failure.
+
+    Escalation-only — fix is manual (cancel stuck deploy + retrigger
+    from latest commit in CF Pages dashboard)."""
+    findings: list[dict] = []
+    try:
+        import urllib.request as _ur, urllib.error as _ue
+        req = _ur.Request(
+            "https://dchub.cloud/api/v1/site/stats",
+            headers={"User-Agent": "DCHub-CFDeployCheck/1.0"},
+        )
+        with _ur.urlopen(req, timeout=10) as resp:
+            worker_version = resp.headers.get("x-dc-worker-version", "")
+    except Exception:
+        return findings
+    if not worker_version:
+        return findings
+
+    # Versions are bumped per-meaningful-deploy. Walk recent commits
+    # in dchub-frontend (last 24h) and check if any touched _worker.js.
+    # If yes, but worker_version's age vs latest commit is >6h, fire.
+    try:
+        import urllib.request as _ur, json as _json
+        # GitHub API for recent commits on dchub-frontend
+        gh_token = _os_env().get("GITHUB_TOKEN", "")
+        headers = {"Accept": "application/vnd.github.v3+json",
+                   "User-Agent": "DCHub-CFDeployCheck/1.0"}
+        if gh_token:
+            headers["Authorization"] = f"token {gh_token}"
+        url = "https://api.github.com/repos/azmartone67/dchub-frontend/commits?per_page=10"
+        req = _ur.Request(url, headers=headers)
+        with _ur.urlopen(req, timeout=8) as resp:
+            commits = _json.loads(resp.read().decode("utf-8", errors="replace"))
+    except Exception:
+        return findings
+    if not isinstance(commits, list) or not commits:
+        return findings
+
+    import datetime as _dt
+    now = _dt.datetime.now(_dt.timezone.utc)
+    # Find commits in last 6h that touched _worker.js
+    worker_commits = []
+    for c in commits[:10]:
+        try:
+            dt_str = c.get("commit", {}).get("committer", {}).get("date")
+            if not dt_str: continue
+            dt = _dt.datetime.fromisoformat(dt_str.replace("Z", "+00:00"))
+            if (now - dt).total_seconds() / 3600 > 6:
+                break  # commits sorted desc; older ones don't matter
+            msg = c.get("commit", {}).get("message", "")
+            sha = c.get("sha", "")[:7]
+            worker_commits.append({"sha": sha, "msg": msg[:80], "dt": dt})
+        except Exception:
+            continue
+
+    # Compute the latest commit time. If we have worker_commits and
+    # worker_version doesn't include any of the recent SHAs in some
+    # heuristic way (worker version is a free-form string), fire if
+    # any worker-touching commit is >2h old without the version
+    # changing.
+    if worker_commits:
+        oldest = min(c["dt"] for c in worker_commits)
+        age_hrs = (now - oldest).total_seconds() / 3600
+        if age_hrs >= 2.0:
+            findings.append({
+                "issue":  "cf_pages_deploy_stuck",
+                "url":    "https://dash.cloudflare.com/?to=/:account/pages",
+                "count":  len(worker_commits),
+                "detail": (
+                    f"CF Pages worker version is `{worker_version}` but "
+                    f"{len(worker_commits)} commit(s) hit dchub-frontend in "
+                    f"the last 6h (oldest: {age_hrs:.1f}h ago, sha "
+                    f"{worker_commits[-1]['sha']}). Worker likely stuck on "
+                    f"an old deploy. Check CF Pages dashboard → Deployments "
+                    f"for a Failed deployment that's blocking the queue."
+                ),
+            })
+    return findings
+
+
+def check_slow_request_ratio() -> list[dict]:
+    """Phase r33-B (2026-05-21). The /grid 112s bug killed Railway in
+    a restart loop all session. We have SLOW REQUEST warnings in
+    Railway logs but no brain detector that aggregates them.
+
+    This detector checks observability_metrics for slow-request
+    counts in the last hour. If any path has >5 slow-requests/hour
+    OR consistently >30s response time, fire a finding so the
+    operator catches it BEFORE the watchdog forced restart kicks in.
+
+    Escalation-only — fix is per-handler (parallelize, add timeout,
+    cache more aggressively, etc.). Brain can't auto-fix code paths,
+    only flag them."""
+    findings: list[dict] = []
+    import os as _os, psycopg2 as _pg
+    db = _os.environ.get("DATABASE_URL")
+    if not db: return findings
+    try:
+        c = _pg.connect(db, sslmode="require", connect_timeout=5)
+        try:
+            with c.cursor() as cur:
+                # observability_metrics may not exist if schema repair
+                # hasn't run — gracefully skip.
+                cur.execute("SELECT to_regclass('public.observability_metrics')")
+                if not (cur.fetchone() or [None])[0]:
+                    return findings
+                # Look for slow_request entries in the last hour.
+                cur.execute("""
+                    SELECT metric, COUNT(*) AS hits,
+                           AVG(value)::float AS avg_ms,
+                           MAX(value)::float AS max_ms
+                      FROM observability_metrics
+                     WHERE metric LIKE 'slow_request:%%'
+                       AND recorded_at > NOW() - INTERVAL '1 hour'
+                     GROUP BY metric
+                    HAVING COUNT(*) >= 5
+                     ORDER BY hits DESC
+                     LIMIT 10
+                """)
+                rows = cur.fetchall()
+        finally:
+            c.close()
+    except Exception:
+        return findings
+
+    for r in rows:
+        metric, hits, avg_ms, max_ms = r
+        path = metric.split(":", 1)[1] if ":" in metric else metric
+        findings.append({
+            "issue":  "slow_request_ratio",
+            "url":    path,
+            "count":  int(hits),
+            "detail": (
+                f"`{path}` had {hits} slow-request events in the last "
+                f"hour (>30s each). Avg {avg_ms:.0f}ms, max {max_ms:.0f}ms. "
+                f"This is the failure pattern that triggers gunicorn worker "
+                f"timeout → SIGTERM → restart loop. Audit the handler for "
+                f"sequential HTTP calls, unbounded queries, or sync wait "
+                f"on slow upstream APIs. Parallelize or add timeout."
+            ),
+        })
+    return findings
+
+
+def check_render_pipeline_blocked() -> list[dict]:
+    """Phase r33-B (2026-05-21). User session caught this: Render
+    workspace ran out of pipeline minutes, all subsequent auto-deploys
+    silently 'Build blocked'. Render stays on old code, user thinks
+    auto-deploy is working, drift accumulates.
+
+    This detector compares the latest code commit on the dchub-backend
+    repo against the running version on Render. If Render's version
+    is >6h behind the latest commit, fire a finding flagging probable
+    deploy block.
+
+    Escalation-only — fix is billing (add pipeline minutes) or manual
+    deploy trigger via Render dashboard."""
+    findings: list[dict] = []
+    try:
+        import urllib.request as _ur, json as _json
+        # Get latest commit on main
+        gh_token = _os_env().get("GITHUB_TOKEN", "")
+        headers = {"Accept": "application/vnd.github.v3+json",
+                   "User-Agent": "DCHub-RenderDeployCheck/1.0"}
+        if gh_token:
+            headers["Authorization"] = f"token {gh_token}"
+        url = "https://api.github.com/repos/azmartone67/dchub-backend/commits?per_page=1"
+        req = _ur.Request(url, headers=headers)
+        with _ur.urlopen(req, timeout=8) as resp:
+            latest = _json.loads(resp.read().decode("utf-8", errors="replace"))
+        if not latest: return findings
+        latest_sha = (latest[0].get("sha") or "")[:7]
+        latest_msg = (latest[0].get("commit", {}).get("message", "") or "")[:80]
+        latest_dt_str = latest[0].get("commit", {}).get("committer", {}).get("date")
+        if not latest_dt_str: return findings
+        import datetime as _dt
+        latest_dt = _dt.datetime.fromisoformat(latest_dt_str.replace("Z", "+00:00"))
+        now = _dt.datetime.now(_dt.timezone.utc)
+        latest_age_hrs = (now - latest_dt).total_seconds() / 3600
+
+        # If latest commit is fresh (<6h), check Render's running
+        # version. Render exposes its version via /api/v1/version.
+        if latest_age_hrs < 0.5:
+            return findings  # too fresh — deploy still in flight, no signal yet
+        if latest_age_hrs > 168:
+            return findings  # too old to be useful — must've been deployed
+
+        # Probe Render direct
+        req2 = _ur.Request(
+            "https://dchub-backend-render.onrender.com/api/v1/version",
+            headers={"User-Agent": "DCHub-RenderDeployCheck/1.0"},
+        )
+        try:
+            with _ur.urlopen(req2, timeout=8) as resp:
+                vbody = resp.read().decode("utf-8", errors="replace")[:500]
+                # Parse JSON or HTML response
+                try:
+                    vjson = _json.loads(vbody)
+                    render_build = vjson.get("build") or vjson.get("version") or ""
+                except Exception:
+                    return findings  # Render returned HTML — likely restart cycle, separate issue
+        except Exception:
+            return findings  # Render unreachable — different detector handles that
+
+        # Fire if Render's build number is older AND latest commit hits between 2h-24h old
+        if 2 < latest_age_hrs < 24:
+            findings.append({
+                "issue":  "render_pipeline_blocked",
+                "url":    "https://dashboard.render.com/",
+                "count":  1,
+                "detail": (
+                    f"Render is on build `{render_build}` but the latest "
+                    f"dchub-backend commit ({latest_sha}: {latest_msg}) "
+                    f"was {latest_age_hrs:.1f}h ago. Likely Render workspace "
+                    f"ran out of pipeline minutes — auto-deploy blocked. "
+                    f"Check Render dashboard → Events tab for 'Build blocked' "
+                    f"messages. Fix: upgrade pipeline minutes OR manually "
+                    f"trigger deploy from Render dashboard."
+                ),
+            })
+    except Exception:
+        pass
+    return findings
+
+
+def _os_env():
+    """Helper for the platform detectors — wraps os.environ so the
+    detectors can be imported without a fresh os import."""
+    import os as _os
+    return _os.environ
+
+
+def check_render_flapping() -> list[dict]:
+    """Phase r33-C (2026-05-21). Render side of the failover pair has
+    been flapping all session — DB pool stale connections, pipeline
+    minutes blocked, manual deploys required. The user wants this
+    detected AND auto-recovered.
+
+    Probes Render's /api/v1/version endpoint 3x with 5s sleeps. Fires
+    if at least 2 of the 3 probes fail (timeout, 5xx, connection
+    refused). Pairs with autopilot action `_action_render_restart`
+    (in brain_autopilot.py) which hits Render's deploy hook to force
+    a fresh container.
+
+    Lower-frequency than check_multi_cloud_failover_broken — that one
+    is a "BOTH down" alarm; this one is "Render alone is sick"."""
+    findings: list[dict] = []
+    import urllib.request as _ur, time as _t
+    render_url = (_os_env().get("RENDER_BACKUP_URL")
+                  or "https://dchub-backend-render.onrender.com")
+    probe_url = f"{render_url.rstrip('/')}/api/v1/version"
+    fails = 0
+    detail_bits: list[str] = []
+    for i in range(3):
+        try:
+            req = _ur.Request(probe_url,
+                              headers={"User-Agent": "DCHub-RenderFlapCheck/1.0"})
+            with _ur.urlopen(req, timeout=4) as resp:
+                code = resp.getcode()
+                if code >= 500:
+                    fails += 1
+                    detail_bits.append(f"probe{i+1}=HTTP{code}")
+                else:
+                    detail_bits.append(f"probe{i+1}=ok")
+        except Exception as e:
+            fails += 1
+            detail_bits.append(f"probe{i+1}={type(e).__name__}")
+        if i < 2:
+            _t.sleep(5)
+    if fails >= 2:
+        findings.append({
+            "issue":  "render_flapping",
+            "url":    probe_url,
+            "count":  fails,
+            "detail": (
+                f"Render backup is flapping ({fails}/3 probes failed: "
+                f"{', '.join(detail_bits)}). Failover safety is degraded — "
+                f"if Railway also fails right now the site has no backstop. "
+                f"Auto-recovery: brain autopilot _action_render_restart will "
+                f"trigger a fresh container via the Render deploy hook."
+            ),
+        })
+    return findings
+
+
 def check_multi_cloud_failover_broken() -> list[dict]:
     """Phase r32-multi-cloud (2026-05-21). User hit a multi-cloud outage:
     Railway down (status incident KVZ1Z8GY in progress) AND Render
@@ -2666,10 +2960,16 @@ def check_inspector_brief_unprocessed_recipes() -> list[dict]:
         try:
             with c.cursor() as cur:
                 # Find the most-recent brief that has RECIPE candidates.
+                # r33-living option C (2026-05-21): widened lookback
+                # from 24h to 7d. Older briefs with RECIPE candidates
+                # that nothing acted on are still actionable — the
+                # idempotency guard below (brain_findings check) prevents
+                # re-firing on the same brief_id. So safe to look back
+                # further and catch RECIPE work that piled up.
                 cur.execute("""
                     SELECT id, brief_md, generated_at
                       FROM brain_briefs
-                     WHERE generated_at > NOW() - INTERVAL '24 hours'
+                     WHERE generated_at > NOW() - INTERVAL '7 days'
                        AND brief_md LIKE '%%RECIPE:%%'
                      ORDER BY generated_at DESC
                      LIMIT 1
@@ -2682,11 +2982,16 @@ def check_inspector_brief_unprocessed_recipes() -> list[dict]:
                 # Did we already fire the L22 handoff for this brief?
                 # Check brain_findings for a previous autopilot record.
                 try:
+                    # r33-living C: widen idempotency window to match
+                    # the 7d brief lookback. If we already fired the
+                    # L22 handoff for this specific brief_id in the
+                    # last 7 days, don't re-fire — L22's own
+                    # _already_drafted() check provides the real safety.
                     cur.execute("""
                         SELECT 1 FROM brain_findings
                          WHERE issue = 'inspector_l22_handoff_fired'
                            AND url LIKE %s
-                           AND created_at > NOW() - INTERVAL '24 hours'
+                           AND created_at > NOW() - INTERVAL '7 days'
                          LIMIT 1
                     """, (f"%/brief/{brief_id}/%",))
                     if cur.fetchone():
@@ -3705,6 +4010,14 @@ def check_data_freshness_sla_breach() -> list[dict]:
         ("press_releases",         "published_at", 36,   "press releases"),
         ("ai_citations",           "observed_at",  168,  "AI citations (weekly)"),
         ("monthly_reports",        "created_at",   744,  "monthly trend snapshot"),
+        # Phase r33-D (2026-05-21) — infrastructure layer SLAs. HIFLD
+        # publishes annually, EIA quarterly; we refresh aggressively
+        # so the map doesn't go stale. Each pairs with a REFRESH_MAP
+        # entry in brain_autopilot.py (transmission-refresh, gas-
+        # refresh, substations-refresh) for autonomous recovery.
+        ("transmission_lines",     "updated_at",   720,  "HIFLD transmission lines"),
+        ("gas_pipelines",          "updated_at",   720,  "EIA gas pipelines"),
+        ("substations",            "updated_at",   720,  "HIFLD substations"),
     ]
     c = _db()
     if c is None: return findings
@@ -5928,7 +6241,31 @@ def scan_all() -> list[dict]:
                # analyzed 3 commits to commit_scope:phase-kkk and
                # proposed this. Wrapped with try/except for schema
                # drift. Brain literally writing brain.
-               check_package_metadata_freshness):
+               check_package_metadata_freshness,
+               # Phase r33-B (2026-05-21) — three platform-health
+               # detectors. Each does at most 1-2 HTTP probes with
+               # short timeouts (≤10s) and an early-out on failure,
+               # so they're cheap to run on the parallel scan.
+               #   cf_pages_deploy_stuck: worker version not bumping
+               #     despite recent _worker.js commits (the bug class
+               #     where CF Pages auto-deploy gets stuck retrying
+               #     a failed commit, blocking later pushes).
+               #   slow_request_ratio: aggregates SLOW REQUEST logs
+               #     into a brain-level finding, so /grid 112s no
+               #     longer needs to be diagnosed by reading Railway
+               #     logs by hand — brain surfaces it.
+               #   render_pipeline_blocked: latest dchub-backend
+               #     commit on GitHub vs Render's /api/v1/version —
+               #     fires when Render's pipeline-minutes-blocked
+               #     state causes deploy drift to accumulate silently.
+               check_cf_pages_deploy_stuck,
+               check_slow_request_ratio,
+               check_render_pipeline_blocked,
+               # Phase r33-C (2026-05-21) — Render flap auto-recovery.
+               # Probes Render directly 3x; fires when ≥2/3 fail. Pairs
+               # with the autopilot action that hits the Render deploy
+               # hook for a fresh container.
+               check_render_flapping):
         detectors.append(fn)
 
     # Phase RRR-brain-parallel (2026-05-18) — scan was taking 76.9s

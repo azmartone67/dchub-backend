@@ -731,6 +731,118 @@ def job_infrastructure_sync():
     return jsonify({'success': True, 'job': 'infrastructure-sync', 'results': results, 'ts': datetime.utcnow().isoformat()})
 
 
+# ──────────────────────────────────────────────────────────────────
+# Phase r33-D (2026-05-21) — per-table infrastructure refresh.
+#
+# Closes the gap where transmission_lines / gas_pipelines / substations
+# get stale (autopilot's check_data_freshness_sla_breach detector has
+# no refresh endpoint to call, so it escalates instead of recovering).
+# Each endpoint kicks the loader in a daemon thread so the HTTP call
+# returns immediately — the loaders take 60-240s for full HIFLD pulls.
+# Pairs with brain_autopilot.REFRESH_MAP entries below.
+# ──────────────────────────────────────────────────────────────────
+def _spawn_loader(name: str, run_fn) -> dict:
+    """Fire-and-forget the loader on a daemon thread. Returns a token
+    so the operator (or autopilot) can poll status if needed."""
+    import threading, time as _t, traceback as _tb
+    state = {"name": name, "started_at": datetime.utcnow().isoformat() + "Z",
+             "status": "running", "rows": None, "error": None,
+             "elapsed_s": None}
+    _INFRA_REFRESH_STATE[name] = state
+    def _runner():
+        t0 = _t.time()
+        try:
+            res = run_fn()
+            state["status"] = "ok"
+            state["rows"] = res if isinstance(res, (int, str)) else "completed"
+        except Exception as e:
+            state["status"] = "error"
+            state["error"] = f"{type(e).__name__}: {str(e)[:200]}"
+            logger.error("infra-refresh %s failed: %s\n%s",
+                         name, e, _tb.format_exc()[:1000])
+        finally:
+            state["elapsed_s"] = round(_t.time() - t0, 1)
+            state["ended_at"] = datetime.utcnow().isoformat() + "Z"
+    threading.Thread(target=_runner, daemon=True,
+                     name=f"infra-refresh-{name}").start()
+    return state
+
+
+_INFRA_REFRESH_STATE: dict[str, dict] = {}
+
+
+@jobs_bp.route('/api/jobs/transmission-refresh', methods=['POST'])
+def job_transmission_refresh():
+    """Refresh transmission_lines from HIFLD. Daemon-threaded —
+    returns immediately. Poll /api/jobs/infra-refresh-status."""
+    auth_err = _require_admin_key()
+    if auth_err: return auth_err
+    def _run():
+        # load_hifld_transmission.py is script-style (executes at
+        # import). Run via runpy so we don't pollute sys.modules.
+        import runpy
+        runpy.run_path('/app/load_hifld_transmission.py',
+                       run_name='__main__')
+        return "transmission_lines refresh started"
+    state = _spawn_loader('transmission_lines', _run)
+    _reg_update('transmission_refresh')
+    return jsonify({'success': True, 'job': 'transmission-refresh',
+                    'state': state}), 202
+
+
+@jobs_bp.route('/api/jobs/gas-refresh', methods=['POST'])
+def job_gas_refresh():
+    """Refresh gas_pipelines + gas_compressors + gas_processings. Uses
+    the existing energy_auto_discovery_pg sync-all path but filters
+    to the gas-related loaders only. Daemon-threaded."""
+    auth_err = _require_admin_key()
+    if auth_err: return auth_err
+    def _run():
+        rows = 0
+        for mod, fn in (('pipeline_loader',        'load_pipelines'),
+                        ('gas_compressor_loader',  'load_gas_compressors'),
+                        ('gas_processing_loader',  'load_gas_processings')):
+            try:
+                m = __import__(mod, fromlist=[fn])
+                f = getattr(m, fn, None)
+                if f:
+                    r = f()
+                    if isinstance(r, int): rows += r
+            except ImportError:
+                continue
+            except Exception as e:
+                logger.warning("gas-refresh %s.%s skipped: %s", mod, fn, e)
+        return rows or 'completed'
+    state = _spawn_loader('gas_pipelines', _run)
+    _reg_update('gas_refresh')
+    return jsonify({'success': True, 'job': 'gas-refresh',
+                    'state': state}), 202
+
+
+@jobs_bp.route('/api/jobs/substations-refresh', methods=['POST'])
+def job_substations_refresh():
+    """Refresh substations from HIFLD via load_substations.load(). Daemon-threaded."""
+    auth_err = _require_admin_key()
+    if auth_err: return auth_err
+    def _run():
+        # load_substations.py exposes load() that connects via DATABASE_URL
+        from load_substations import load as _load_substations
+        r = _load_substations()
+        return r if isinstance(r, (int, str)) else 'completed'
+    state = _spawn_loader('substations', _run)
+    _reg_update('substations_refresh')
+    return jsonify({'success': True, 'job': 'substations-refresh',
+                    'state': state}), 202
+
+
+@jobs_bp.route('/api/jobs/infra-refresh-status', methods=['GET'])
+def job_infra_refresh_status():
+    """Poll status of any currently-running or just-completed
+    transmission/gas/substations refresh. Public read."""
+    return jsonify({'success': True,
+                    'state': _INFRA_REFRESH_STATE}), 200
+
+
 @jobs_bp.route('/api/jobs/energy-discovery', methods=['POST'])
 def job_energy_discovery():
     """Cron: Energy infrastructure auto-discovery"""

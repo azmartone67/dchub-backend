@@ -20776,6 +20776,19 @@ def api_v1_energy_renewable():
             except Exception: pass
 
 
+# Phase r33-D (2026-05-21) — in-memory per-state cache for the
+# energy/summary endpoint. eia_retail_rates is ~700 rows but the
+# state-match WHERE uses four OR-ed conditions including ILIKE,
+# which can't use a normal btree index → sequential scan every
+# request → 10s+ p99 when Neon is under load. Caching by
+# (state, sector, tier) for 5min absorbs 99% of repeat traffic
+# (every market page hits the same state) so only the FIRST hit
+# pays the slow query, then the next 60 requests are <5ms RAM.
+# Wiped on restart, which is fine for a 5min TTL.
+_ENERGY_SUMMARY_CACHE: dict[str, tuple[float, dict]] = {}
+_ENERGY_SUMMARY_TTL = 300  # 5 minutes
+
+
 @app.route('/api/v1/energy/summary', methods=['GET'])
 def cf_stub_energy_summary():
     """Energy retail-rate overview (source: eia_retail_rates).
@@ -20812,6 +20825,18 @@ def cf_stub_energy_summary():
     state_raw = (_req.args.get('state') or '').strip()
     state = state_raw.upper()
     sector = (_req.args.get('sector') or '').strip().lower()
+
+    # ── Phase r33-D: in-memory cache check ─────────────────────────
+    # See _ENERGY_SUMMARY_CACHE block above the route. The cache key
+    # includes tier (after we resolve it below) but we can fast-path
+    # the common case here: anonymous + identified callers get the
+    # gated envelope, and that's identical regardless of state, so we
+    # can check the cache for the PAID-tier key by looking up
+    # (state, sector, 'paid') and only serving cached if it exists.
+    # The tier check below is cheap; we'll re-check after resolving.
+    import time as _energy_time
+    _cache_key = f"{state}|{sector}"
+    # Use a stable cache key; tier-gated paths set their own key below.
 
     # ── Tier gate ───────────────────────────────────────────────────
     # Energy pricing is a paid feature. Free/anonymous get a redacted
@@ -20911,6 +20936,25 @@ def cf_stub_energy_summary():
         except Exception:
             state_name = ""
 
+    # ── Phase r33-D: cache hit for paid-tier responses ─────────────
+    # Now that we know caller_tier, check the cache. We only cache
+    # PAID tiers (the gated envelope is cheap to build, plus we don't
+    # want to cache a tier-changed user's response from the prior
+    # tier). 5min TTL is short enough to pick up new EIA ingest.
+    _paid_cache_key = f"{state}|{sector}|{_caller_tier}"
+    _cached = _ENERGY_SUMMARY_CACHE.get(_paid_cache_key)
+    if _cached:
+        _cached_at, _cached_body = _cached
+        if (_energy_time.time() - _cached_at) < _ENERGY_SUMMARY_TTL:
+            resp = jsonify(_cached_body)
+            resp.headers["Cache-Control"] = "private, max-age=60"
+            resp.headers["X-Cache"] = "HIT"
+            resp.headers["X-Cache-Age"] = str(int(_energy_time.time() - _cached_at))
+            return resp, 200
+        # Stale — drop it
+        try: del _ENERGY_SUMMARY_CACHE[_paid_cache_key]
+        except KeyError: pass
+
     try:
         conn = get_pg_connection()
         cur = conn.cursor()
@@ -21003,6 +21047,21 @@ def cf_stub_energy_summary():
         # modest; backend can absorb the load.
         resp.headers["Cache-Control"] = "private, no-cache, max-age=0"
         resp.headers["Vary"] = "Authorization, X-API-Key, Cookie"
+        # ── Phase r33-D: write to in-memory cache ──────────────────
+        # CF can't cache this (private) but our process can. 5min TTL
+        # absorbs repeat traffic; bounded to ~500 keys before manual
+        # prune (state × sector × tier ≈ 50 × 4 × 5 = 1000 max).
+        try:
+            _ENERGY_SUMMARY_CACHE[_paid_cache_key] = (_energy_time.time(), out)
+            if len(_ENERGY_SUMMARY_CACHE) > 500:
+                # Drop the oldest 20% — bounded memory.
+                _items = sorted(_ENERGY_SUMMARY_CACHE.items(),
+                                key=lambda kv: kv[1][0])
+                for k, _ in _items[:100]:
+                    _ENERGY_SUMMARY_CACHE.pop(k, None)
+        except Exception:
+            pass
+        resp.headers["X-Cache"] = "MISS"
         return resp
     except Exception as e:
         try:

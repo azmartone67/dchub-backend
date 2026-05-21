@@ -284,6 +284,17 @@ def _action_data_freshness_breach(finding: dict) -> tuple[str | None, dict | Non
         # Heal cache refresh — kicks the self_heal scheduler once
         # (idempotent in the heal_cycle implementation).
         "heal_cache":            "/api/v1/heal/run-cycle",
+        # r33-D (2026-05-21) — infrastructure layer. These tables
+        # back the Land & Power map (50K+ rows each). Each endpoint
+        # spawns a daemon thread that runs the HIFLD/EIA loader; the
+        # endpoint returns 202 immediately so the autopilot doesn't
+        # block on a 60-240s refresh. Status pollable via
+        # /api/jobs/infra-refresh-status.
+        "transmission_lines":    "/api/jobs/transmission-refresh",
+        "gas_pipelines":         "/api/jobs/gas-refresh",
+        "gas_compressors":       "/api/jobs/gas-refresh",
+        "gas_processings":       "/api/jobs/gas-refresh",
+        "substations":           "/api/jobs/substations-refresh",
     }
     endpoint = REFRESH_MAP.get(table)
     if not endpoint:
@@ -431,6 +442,33 @@ def _action_dchub_media_press_silent(finding: dict) -> tuple[str | None, dict | 
     The auto-generate endpoint itself has a same-day dedup so this
     is safe to call even when other crons already fired today."""
     return "/api/v1/marketing/auto-generate", {}
+
+
+def _action_render_restart(finding: dict) -> tuple[str | None, dict | None]:
+    """Phase r33-C (2026-05-21) — autonomous Render restart.
+
+    Pair to check_render_flapping detector. When the detector fires
+    (≥2/3 probes failed), this action hits Render's deploy hook to
+    force a fresh container, clearing the stale-DB-connection /
+    pipeline-blocked / pool-leak state classes that all manifest as
+    flap. Render's deploy hook is idempotent (no-op if already
+    deploying) so safe to fire even on a flapping container.
+
+    Rate-limited by the brain's _is_in_cooldown machinery — won't
+    re-fire within 30min, so we don't bounce-loop Render even if the
+    underlying issue is persistent. Long-term fix (e.g. add
+    pipeline minutes, fix Neon DSN) still requires human action."""
+    import os as _os
+    hook = (_os.environ.get("RENDER_DEPLOY_HOOK_URL")
+            or _os.environ.get("RENDER_DEPLOY_HOOK"))
+    if not hook:
+        # No deploy hook configured → escalate. The operator gets
+        # the finding but no autonomous fire-and-forget happens.
+        return None, None
+    # Hook is a complete URL; we POST with no body. Authority is
+    # baked into the URL path (Render's hook tokens are URL-secret).
+    return hook, {"source": "autopilot_render_restart",
+                  "fails": finding.get("count", 0)}
 
 
 def _action_surface_health_critical(finding: dict) -> tuple[str | None, dict | None]:
@@ -875,6 +913,37 @@ _PATTERN_LIBRARY: dict[str, dict[str, Any]] = {
         "method":      None,
         "use_admin":   False,
         "description": "Escalation-only: spare-capacity listings are stuck in 'pending' status past 24h. Review and flip to 'live' in the spare_capacity_listings table. Phase DDDD+ will add an admin-approval endpoint.",
+    },
+    # Phase r33-B (2026-05-21) — three platform-health patterns. Two
+    # escalate (CF Pages + Render pipeline both need a human at the
+    # dashboard), one stays informational (slow_request just surfaces
+    # the SLOW REQUEST aggregate — the fix is per-handler code).
+    "cf_pages_deploy_stuck": {
+        "action":      lambda f: (None, None),
+        "method":      None,
+        "use_admin":   False,
+        "description": "Escalation-only: CF Pages worker version hasn't bumped despite recent _worker.js commits. Likely a failed deploy stuck in the queue. Fix: CF dashboard → Pages → dchub-frontend → Deployments → cancel the failed build, then push an empty commit to retrigger.",
+    },
+    "slow_request_ratio": {
+        "action":      lambda f: (None, None),
+        "method":      None,
+        "use_admin":   False,
+        "description": "Informational: path X had ≥5 SLOW REQUEST (>30s) events in the last hour. Audit the handler for sequential HTTP calls, unbounded queries, or sync wait on slow upstream APIs. This is the failure class that triggers gunicorn worker timeout → restart loop.",
+    },
+    "render_pipeline_blocked": {
+        "action":      lambda f: (None, None),
+        "method":      None,
+        "use_admin":   False,
+        "description": "Escalation-only: Render is >2h behind the latest dchub-backend commit. Likely pipeline-minutes-blocked. Fix: Render dashboard → Settings → Billing → add pipeline minutes, OR manually trigger a deploy from the Deploys tab.",
+    },
+    # Phase r33-C (2026-05-21) — Render flap auto-restart. AUTO-FIRES
+    # the Render deploy hook when probes fail. Rate-limited via
+    # _is_in_cooldown so we can't bounce-loop Render.
+    "render_flapping": {
+        "action":      _action_render_restart,
+        "method":      "POST",
+        "use_admin":   False,
+        "description": "Auto-recovery: ≥2/3 probes against Render's /api/v1/version failed. Action POSTs the Render deploy hook (RENDER_DEPLOY_HOOK_URL env) to force a fresh container. 30-min cooldown prevents bounce loops. Escalates if hook env var is missing.",
     },
 }
 
