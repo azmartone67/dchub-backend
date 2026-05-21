@@ -1135,10 +1135,10 @@ def queue_pocket_alert():
             for tbl, sql in (
                 ("social_post_queue",
                  """INSERT INTO social_post_queue (platform, body, meta, status, created_at)
-                    VALUES ('linkedin', %s, %s, 'queued', NOW())"""),
+                    VALUES ('linkedin', %s, %s, 'queued', NOW() ON CONFLICT DO NOTHING)"""),
                 ("marketing_queue",
                  """INSERT INTO marketing_queue (channel, body, meta, status, created_at)
-                    VALUES ('social', %s, %s, 'queued', NOW())"""),
+                    VALUES ('social', %s, %s, 'queued', NOW() ON CONFLICT DO NOTHING)"""),
             ):
                 try:
                     meta_json = json.dumps({
@@ -1163,7 +1163,7 @@ def queue_pocket_alert():
         try:
             cur.execute(
                 """INSERT INTO brain_findings (issue, url, count, detail, detector, created_at)
-                   VALUES ('pocket_alert_queued', %s, 1, %s, 'autopilot', NOW())""",
+                   VALUES ('pocket_alert_queued', %s, 1, %s, 'autopilot', NOW() ON CONFLICT DO NOTHING)""",
                 (f"/pockets?focus={slug}", text[:300]),
             )
             conn.commit()
@@ -1579,7 +1579,7 @@ def pockets_digest_send():
             cur = conn.cursor()
             cur.execute(
                 """INSERT INTO brain_findings (issue, url, count, detail, detector, created_at)
-                   VALUES ('pockets_weekly_digest_sent', %s, %s, %s, 'pockets_digest', NOW())""",
+                   VALUES ('pockets_weekly_digest_sent', %s, %s, %s, 'pockets_digest', NOW() ON CONFLICT DO NOTHING)""",
                 (f"/pockets?week={d['week_of']}",
                  sent, f"sent={sent} failed={failed} title={d['title']}"),
             )

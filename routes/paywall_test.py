@@ -198,7 +198,7 @@ def paywall_test_log_render():
                 """INSERT INTO brain_findings
                     (issue, url, count, detail, detector, created_at)
                    VALUES ('paywall_render_observation', %s, %s, %s,
-                           'paywall_test', NOW())""",
+                           'paywall_test', NOW() ON CONFLICT DO NOTHING)""",
                 (f"/paywall-test?client={client}",
                  1 if (renders_redeem or renders_upgrade) else 0,
                  f"client={client} redeem={renders_redeem} "

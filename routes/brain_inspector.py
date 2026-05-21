@@ -651,7 +651,7 @@ def _generate_brief() -> dict:
                       (model, inputs, brief_md, summary,
                        healthy_count, degrading_count, attention_count,
                        tokens_in, tokens_out, duration_ms, error)
-                    VALUES (%s, %s::jsonb, %s, %s, %s, %s, %s, %s, %s, %s, %s)
+                    VALUES (%s, %s::jsonb, %s, %s, %s, %s, %s, %s, %s, %s, %s) ON CONFLICT DO NOTHING
                     RETURNING id, generated_at
                 """, (model, json.dumps(signals, default=str), text,
                        out.get("summary"),
