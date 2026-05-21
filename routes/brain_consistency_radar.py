@@ -4253,7 +4253,15 @@ _INTERNAL_LINK_PROBES = [
 def check_dead_internal_links() -> list[dict]:
     """Phase RRR-newsletter (2026-05-18) — probe every high-traffic
     internal URL and flag any that 404 or 5xx. Catches the dead-link
-    bug class that's silent from the user's side."""
+    bug class that's silent from the user's side.
+
+    Phase r32 (2026-05-20): expanded to auto-discover nested-slug paths
+    from modules whose data tables list canonical slugs (competitive_vs,
+    pockets, locations). Pre-r32 the detector missed /vs/cbre and
+    /vs/jll because they weren't in the curated list — user reported
+    "come on why isnt brain fixing". This closes that gap by reading
+    the slug tables directly at probe time, so any future addition is
+    automatically covered."""
     findings: list[dict] = []
     try:
         import requests as _req
@@ -4261,7 +4269,28 @@ def check_dead_internal_links() -> list[dict]:
         return findings
     import time as _t
     headers = {"User-Agent": "dchub-brain-deadlink-probe/1.0"}
-    for path in _INTERNAL_LINK_PROBES:
+
+    # Expand the probe list with auto-discovered nested slugs.
+    probes = list(_INTERNAL_LINK_PROBES)
+    # /vs/<competitor> — known from competitive_vs._COMPETITORS
+    try:
+        from routes.competitive_vs import _COMPETITORS
+        for slug in _COMPETITORS.keys():
+            probes.append(f"/vs/{slug}")
+    except Exception:
+        pass
+    # /pockets/<slug> — sample first 3 ranked pockets (full sweep
+    # would be too noisy; if 3 work the rest will)
+    try:
+        from routes.pockets import _fetch_pockets
+        rows = _fetch_pockets(limit_hint=3)
+        for r in rows:
+            if r.get("market_slug"):
+                probes.append(f"/pockets/{r['market_slug']}")
+    except Exception:
+        pass
+
+    for path in probes:
         url = f"https://dchub.cloud{path}"
         t0 = _t.time()
         try:

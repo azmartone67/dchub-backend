@@ -14433,7 +14433,7 @@ def _build_fiber_routes_geojson():
         cursor = conn.cursor()
 
         limit = request.args.get('limit', 2000, type=int)
-        limit = min(max(limit, 1), 5000)
+        limit = min(max(limit, 1), 20000)
 
         query = 'SELECT * FROM fiber_routes WHERE (start_lat IS NOT NULL OR coordinates IS NOT NULL)'
         params = []
@@ -20265,6 +20265,15 @@ try:
         print("🎯 [pockets] ready · /pockets · /api/v1/pockets/top · /for-me · /movers")
     except Exception as _e_p:
         print(f"⚠️ [pockets] blueprint failed to register: {_e_p}")
+    # Phase r32 (2026-05-20) — tier-gating policy matrix. Single source
+    # of truth for "what each tier sees" across every surface. User
+    # asked for a sweep; this is the auditable answer.
+    try:
+        from routes.gating_matrix import gating_matrix_bp
+        app.register_blueprint(gating_matrix_bp)
+        print("🎫 [gating-matrix] ready · /gating-matrix · /api/v1/gating/matrix")
+    except Exception as _e_gm:
+        print(f"⚠️ [gating-matrix] blueprint failed to register: {_e_gm}")
     print("🔧 Schema Repair: ✅ Registered "
           "(POST /api/v1/admin/schema/repair · /geocoding/backfill · "
           "GET /funnel/leakage)")
