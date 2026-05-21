@@ -1374,6 +1374,39 @@ def autopilot_run():
     if not isinstance(issues, list):
         issues = []
 
+    # Phase r33-H bridge (2026-05-21) — also pull consistency_radar
+    # findings. That feed is where ALL of the r33 detectors land
+    # (data_freshness_sla_breach, render_flapping, neon_replication_lag,
+    # 404_spike, signup_drop_off_step, etc — 14 new patterns this
+    # session). They weren't reaching /heal/findings's
+    # actionable_backend_issues, so the autopilot couldn't see them.
+    # Now we merge both feeds into a single issue list — deduped by
+    # (issue, url) tuple so we don't double-fire when the same
+    # finding shows up on both sides.
+    try:
+        rad_req = urllib.request.Request(
+            _BACKEND_BASE.rstrip("/") + "/api/v1/brain/consistency-radar",
+            method="GET",
+        )
+        with urllib.request.urlopen(rad_req, timeout=30) as rad_resp:
+            rad_payload = json.loads(rad_resp.read().decode("utf-8"))
+        radar_findings = rad_payload.get("findings") or []
+        if isinstance(radar_findings, list):
+            seen = {(i.get("issue") or "", i.get("url") or "")
+                    for i in issues if isinstance(i, dict)}
+            for f in radar_findings:
+                if not isinstance(f, dict): continue
+                key = (f.get("issue") or "", f.get("url") or "")
+                if key in seen: continue
+                seen.add(key)
+                issues.append(f)
+    except Exception as e:
+        # Bridge is non-fatal — autopilot continues with whatever
+        # /heal/findings gave us. Log via the response payload.
+        summary_bridge_error = f"{type(e).__name__}: {str(e)[:100]}"
+    else:
+        summary_bridge_error = None
+
     summary = {
         "examined":   len(issues),
         "actioned":   0,
@@ -1444,6 +1477,8 @@ def autopilot_run():
         except Exception: pass
 
     summary["completed_at"] = datetime.datetime.utcnow().isoformat() + "Z"
+    if summary_bridge_error:
+        summary["radar_bridge_error"] = summary_bridge_error
     return jsonify(ok=True, summary=summary), 200
 
 
