@@ -212,7 +212,26 @@ def render_grid_hub_html(cards, schema, tier):
             if c.get('gen_mix'):
                 gm = c['gen_mix']
                 if isinstance(gm, dict) and gm:
-                    top_fuel = max(gm.items(), key=lambda kv: kv[1] or 0)[0]
+                    # r32-cf-audit-fix (2026-05-20): defensive coercion.
+                    # gen_mix used to be {fuel: mw_int} but upstream data
+                    # now sometimes ships {fuel: {mw: N, pct: P}}. The
+                    # max() with `kv[1] or 0` compared dicts to dicts
+                    # and threw 'unsupported >'. Coerce each value to a
+                    # number — pull from .get('mw') if nested, else use
+                    # the value directly when numeric, else 0.
+                    def _num(v):
+                        if isinstance(v, dict):
+                            for k in ('mw', 'value', 'amount', 'gen_mw'):
+                                if k in v:
+                                    try: return float(v[k] or 0)
+                                    except (TypeError, ValueError): pass
+                            return 0
+                        try: return float(v or 0)
+                        except (TypeError, ValueError): return 0
+                    try:
+                        top_fuel = max(gm.items(), key=lambda kv: _num(kv[1]))[0]
+                    except (ValueError, TypeError):
+                        top_fuel = ''
             cards_html.append(f'''
             <a class="grid-card" href="/grid/{c['iso'].lower()}">  <!-- phase26_lowercase_links -->
               <div class="iso-badge">{c['iso']}</div>
