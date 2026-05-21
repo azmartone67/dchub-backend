@@ -251,10 +251,19 @@ def _compute_report(year: int | None = None,
             }
 
             # ── DEAL FLOW: deal_count + $ + MW for curr / prev / year-ago ─
+            # r32-mt-fix (2026-05-21): deals.date column is TEXT (ISO
+            # strings like '2026-04-27'). Pre-fix, passing a Python
+            # datetime.date here caused Postgres to error or silently
+            # return 0 because TEXT vs DATE comparison isn't reliable.
+            # Now we pass ISO strings — lexicographic comparison on ISO
+            # YYYY-MM-DD format is equivalent to date comparison and
+            # works reliably regardless of column type.
             def _deal_window(lo, hi):
-                n  = _safe_scalar(cur, "SELECT COUNT(*) FROM deals WHERE date >= %s AND date < %s", (lo, hi)) or 0
-                v  = _safe_scalar(cur, "SELECT COALESCE(SUM(value),0) FROM deals WHERE date >= %s AND date < %s", (lo, hi)) or 0
-                mw = _safe_scalar(cur, "SELECT COALESCE(SUM(mw),0)    FROM deals WHERE date >= %s AND date < %s", (lo, hi)) or 0
+                lo_s = lo.isoformat() if hasattr(lo, 'isoformat') else str(lo)
+                hi_s = hi.isoformat() if hasattr(hi, 'isoformat') else str(hi)
+                n  = _safe_scalar(cur, "SELECT COUNT(*) FROM deals WHERE date >= %s AND date < %s", (lo_s, hi_s)) or 0
+                v  = _safe_scalar(cur, "SELECT COALESCE(SUM(value),0) FROM deals WHERE date >= %s AND date < %s", (lo_s, hi_s)) or 0
+                mw = _safe_scalar(cur, "SELECT COALESCE(SUM(mw),0)    FROM deals WHERE date >= %s AND date < %s", (lo_s, hi_s)) or 0
                 return {"count": int(n), "value": float(v), "mw": float(mw)}
 
             curr_deals = _deal_window(curr_lo, curr_hi)
@@ -297,12 +306,20 @@ def _compute_report(year: int | None = None,
             # the section is never blank when actual deals exist. Label
             # the data accordingly so the press-kit doesn't misattribute.
             def _fetch_top_deals(lo, hi):
+                # r32-mt-fix: ISO string comparison (see _deal_window).
+                # Also relaxed `value IS NOT NULL` — many tracked deals
+                # don't have a public value but ARE real deals worth
+                # listing in M&A. Sort by value DESC NULLS LAST so the
+                # disclosed deals float to the top.
+                lo_s = lo.isoformat() if hasattr(lo, 'isoformat') else str(lo)
+                hi_s = hi.isoformat() if hasattr(hi, 'isoformat') else str(hi)
                 cur.execute("""
                     SELECT id, date, buyer, seller, value, mw
                       FROM deals
-                     WHERE date >= %s AND date < %s AND value IS NOT NULL
-                     ORDER BY value DESC LIMIT 5
-                """, (lo, hi))
+                     WHERE date >= %s AND date < %s
+                     ORDER BY value DESC NULLS LAST, date DESC
+                     LIMIT 5
+                """, (lo_s, hi_s))
                 return [{
                     "id":     int(r[0]) if r[0] else None,
                     "date":   r[1].isoformat() if hasattr(r[1], "isoformat") else (str(r[1]) if r[1] else None),
@@ -334,14 +351,19 @@ def _compute_report(year: int | None = None,
             # without the row filter. Sort by MW with facility count as
             # the tiebreaker so MW-rich markets float to the top while
             # MW-thin-but-facility-dense markets still show up.
+            # r32-mt-fix (2026-05-21): three fallbacks because the
+            # facilities table can be sparse on market+city+state for
+            # certain ingest sources. Try market → city+state →
+            # discovered_facilities. Whichever finds data first wins.
             try:
+                out["top_markets"] = []
+                # Pass 1: market column (most specific, prettiest names)
                 cur.execute("""
-                    SELECT COALESCE(market, city, state, '') AS m,
-                           COUNT(*) AS n,
+                    SELECT market, COUNT(*) AS n,
                            COALESCE(SUM(power_mw), 0) AS mw
                       FROM facilities
-                     WHERE COALESCE(market, city, state, '') != ''
-                     GROUP BY COALESCE(market, city, state)
+                     WHERE market IS NOT NULL AND market != ''
+                     GROUP BY market
                      ORDER BY mw DESC, n DESC
                      LIMIT 10
                 """)
@@ -350,10 +372,50 @@ def _compute_report(year: int | None = None,
                      "total_mw": float(r[2] or 0)}
                     for r in cur.fetchall() if r[0]
                 ]
+                # Pass 2: city + state combo if market column was sparse
+                if not out["top_markets"]:
+                    cur.execute("""
+                        SELECT CONCAT_WS(', ', NULLIF(city,''), NULLIF(state,'')) AS m,
+                               COUNT(*) AS n,
+                               COALESCE(SUM(power_mw), 0) AS mw
+                          FROM facilities
+                         WHERE (city IS NOT NULL AND city != '')
+                            OR (state IS NOT NULL AND state != '')
+                         GROUP BY CONCAT_WS(', ', NULLIF(city,''), NULLIF(state,''))
+                        HAVING CONCAT_WS(', ', NULLIF(city,''), NULLIF(state,'')) != ''
+                         ORDER BY mw DESC, n DESC
+                         LIMIT 10
+                    """)
+                    out["top_markets"] = [
+                        {"market": r[0], "facilities": int(r[1]),
+                         "total_mw": float(r[2] or 0)}
+                        for r in cur.fetchall() if r[0]
+                    ]
+                # Pass 3: discovered_facilities fallback (21k rows vs 12k)
+                if not out["top_markets"]:
+                    cur.execute("""
+                        SELECT CONCAT_WS(', ', NULLIF(city,''), NULLIF(state,'')) AS m,
+                               COUNT(*) AS n,
+                               COALESCE(SUM(power_mw), 0) AS mw
+                          FROM discovered_facilities
+                         WHERE COALESCE(is_duplicate, 0) = 0
+                           AND ((city IS NOT NULL AND city != '')
+                             OR (state IS NOT NULL AND state != ''))
+                         GROUP BY CONCAT_WS(', ', NULLIF(city,''), NULLIF(state,''))
+                        HAVING CONCAT_WS(', ', NULLIF(city,''), NULLIF(state,'')) != ''
+                         ORDER BY mw DESC NULLS LAST, n DESC
+                         LIMIT 10
+                    """)
+                    out["top_markets"] = [
+                        {"market": r[0], "facilities": int(r[1]),
+                         "total_mw": float(r[2] or 0)}
+                        for r in cur.fetchall() if r[0]
+                    ]
             except Exception:
                 try: c.rollback()
                 except Exception: pass
-                out["top_markets"] = []
+                # Don't reset to [] here — preserve any partial result
+                # from earlier passes if a later pass crashed.
 
             # ── DCPI top movers ─────────────────────────────────────────
             # FIX r7: real schema has excess_power_score + constraint_score

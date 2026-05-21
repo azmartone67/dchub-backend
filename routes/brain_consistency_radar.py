@@ -4556,26 +4556,40 @@ def check_dead_internal_links() -> list[dict]:
     except Exception:
         pass
 
-    for path in probes:
+    # r32-mt-fix (2026-05-21): parallelize the probes. Pre-fix this
+    # detector ran 45 serial HTTP requests with 5s timeout each =
+    # worst case 225s. Railway logs caught this as a SLOW REQUEST
+    # (216.2s on /api/v1/brain/consistency-radar). scan_all() already
+    # parallelizes DETECTORS, but each detector still ran serially
+    # inside itself — so a single slow detector blocked its scan slot
+    # the full 20s timeout. Now: 6-thread pool inside this detector,
+    # 5s per-request timeout, target wall time ~10s for 45 probes.
+    import concurrent.futures as _cf
+
+    def _probe_one(path):
         url = f"https://dchub.cloud{path}"
-        t0 = _t.time()
         try:
-            # HEAD is faster but some CF-served pages don't support it;
-            # GET with a tight timeout is more universal.
             r = _req.get(url, timeout=5, headers=headers, allow_redirects=True)
-            elapsed = _t.time() - t0
+            return (path, r.status_code, (r.text or "")[:120], None)
         except Exception as e:
+            return (path, None, "", f"{type(e).__name__}: {str(e)[:120]}")
+
+    with _cf.ThreadPoolExecutor(max_workers=6,
+                                 thread_name_prefix="deadlink") as ex:
+        results = list(ex.map(_probe_one, probes))
+
+    for path, status, body_snip, err in results:
+        if err is not None:
             findings.append({
                 "issue":  "internal_link_unreachable",
                 "url":    path,
                 "count":  1,
-                "detail": (f"`{path}` failed to load: "
-                           f"{type(e).__name__}: {str(e)[:120]}. "
+                "detail": (f"`{path}` failed to load: {err}. "
                            f"Either CF Pages route missing OR CF Worker "
                            f"can't reach the backend handler."),
             })
             continue
-        if r.status_code == 404:
+        if status == 404:
             findings.append({
                 "issue":  "internal_link_404",
                 "url":    path,
@@ -4586,15 +4600,15 @@ def check_dead_internal_links() -> list[dict]:
                            f"doesn't include this prefix. Audit nav JS + "
                            f"_redirects."),
             })
-        elif r.status_code >= 500:
+        elif status is not None and status >= 500:
             findings.append({
                 "issue":  "internal_link_5xx",
                 "url":    path,
-                "count":  r.status_code,
-                "detail": (f"`{path}` returns HTTP {r.status_code} "
-                           f"(server error). Body: {r.text[:120]}"),
+                "count":  status,
+                "detail": (f"`{path}` returns HTTP {status} "
+                           f"(server error). Body: {body_snip}"),
             })
-        elif r.status_code in (401, 403):
+        elif status in (401, 403):
             # Some admin endpoints will 401/403 anonymously — that's
             # correct behavior, not a dead link. Skip.
             pass

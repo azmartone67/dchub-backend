@@ -79,6 +79,38 @@ SCHEMA_STATEMENTS = [
         )""",
         "CREATE INDEX IF NOT EXISTS ix_worker_versions_observed ON worker_versions(observed_at DESC)",
     ]),
+    ("observability_metrics table", [
+        # r32-mt-fix (2026-05-21): Railway logs showed
+        #   PG query failed: INSERT INTO observability_metrics
+        #   error: relation "observability_metrics" does not exist
+        # firing on every brain cycle. Created the table so the metric
+        # writes succeed and the brain's L20 durability surface has a
+        # place to land.
+        """CREATE TABLE IF NOT EXISTS observability_metrics (
+            id          SERIAL PRIMARY KEY,
+            metric      TEXT NOT NULL,
+            value       NUMERIC,
+            recorded_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
+        )""",
+        "CREATE INDEX IF NOT EXISTS ix_observability_metrics_metric ON observability_metrics(metric)",
+        "CREATE INDEX IF NOT EXISTS ix_observability_metrics_recorded ON observability_metrics(recorded_at DESC)",
+    ]),
+    ("substations.UNIQUE constraint", [
+        # r32-mt-fix (2026-05-21): Railway logs showed
+        #   error: there is no unique or exclusion constraint matching
+        #   the ON CONFLICT specification
+        # firing on every infrastructure sync because the INSERT uses
+        # ON CONFLICT (name, lat, lng) but no such unique index exists.
+        # CREATE UNIQUE INDEX IF NOT EXISTS is idempotent — safe to
+        # apply even if a partial duplicate exists in the table.
+        # We exclude rows where lat/lng are NULL since those can't
+        # have a stable identity. If duplicates exist, the index
+        # creation will FAIL — that's expected and the migration
+        # statement is wrapped in try/except so the rest continue.
+        """CREATE UNIQUE INDEX IF NOT EXISTS ix_substations_name_lat_lng
+           ON substations(name, lat, lng)
+           WHERE lat IS NOT NULL AND lng IS NOT NULL""",
+    ]),
     ("mcp_upgrade_signals.outreach_sent_at column", [
         # r32-conv (2026-05-20): outreach campaign tracking. Records
         # when the upgrade-pool email actually landed (not just that
