@@ -63,28 +63,46 @@ mcp_registry_outreach_bp = Blueprint("mcp_registry_outreach", __name__)
 
 DISCOVERY_TARGETS = [
     {
+        # r33-N+ (2026-05-21) — Verified live: Smithery API confirms
+        # qualifiedName `azmartone67/dchub` + displayName "DC Hub -
+        # Data Center Intelligence". Audit goes through the Smithery
+        # registry API (returns JSON, easy signal match).
         "key":         "smithery",
         "name":        "Smithery",
-        "homepage":    "https://smithery.ai",
-        "submit_url":  "https://smithery.ai/server/dchub",          # canonical slug
-        "submit_method": "manual",                                  # Smithery uses GitHub PR
+        "homepage":    "https://smithery.ai/server/azmartone67/dchub",
+        "submit_url":  "https://smithery.ai/server/azmartone67/dchub",
+        "submit_method":"refresh_only",        # already listed; we only audit
         "manual_url":  "https://github.com/smithery-ai/registry/blob/main/CONTRIBUTING.md",
-        "audit_url":   "https://smithery.ai/server/dchub",
-        "audit_signal":"DC Hub",
-        "description": "Largest community MCP registry. Submit via PR to smithery-ai/registry.",
+        "audit_url":   "https://registry.smithery.ai/servers?q=dchub",
+        "audit_signal":"azmartone67/dchub",
+        "description": "Largest community MCP registry. Already listed as azmartone67/dchub.",
     },
     {
+        # Verified live at mcp.so/server/dc-hub — title "DC Hub MCP Server"
         "key":         "mcpso",
         "name":        "mcp.so",
-        "homepage":    "https://mcp.so",
-        "submit_url":  "https://mcp.so/server/submit",
-        "submit_method":"form",
+        "homepage":    "https://mcp.so/server/dc-hub",
+        "submit_url":  "https://mcp.so/submit",
+        "submit_method":"refresh_only",
         "manual_url":  "https://mcp.so/submit",
-        "audit_url":   "https://mcp.so/server/dchub",
-        "audit_signal":"DC Hub",
-        "description": "Public MCP server directory. Form-based submit.",
+        "audit_url":   "https://mcp.so/server/dc-hub",
+        "audit_signal":"DC Hub MCP",
+        "description": "Public MCP server directory. Already listed as /server/dc-hub.",
     },
     {
+        # Verified live at glama.ai/mcp/connectors/cloud.dchub/mcp-server (200 OK)
+        "key":         "glama",
+        "name":        "Glama AI",
+        "homepage":    "https://glama.ai/mcp/connectors/cloud.dchub/mcp-server",
+        "submit_url":  "https://glama.ai/mcp/servers/submit",
+        "submit_method":"refresh_only",
+        "manual_url":  "https://glama.ai/mcp/servers/submit",
+        "audit_url":   "https://glama.ai/mcp/connectors/cloud.dchub/mcp-server",
+        "audit_signal":"dchub",                # case-insensitive substring
+        "description": "AI gateway with MCP aggregation. Already listed as cloud.dchub.",
+    },
+    {
+        # Probable not-yet-listed; submission pending.
         "key":         "mcphub",
         "name":        "MCPHub",
         "homepage":    "https://mcphub.io",
@@ -93,9 +111,12 @@ DISCOVERY_TARGETS = [
         "manual_url":  "https://mcphub.io/submit",
         "audit_url":   "https://mcphub.io/servers/dchub",
         "audit_signal":"DC Hub",
-        "description": "MCP server hub with categorized listings.",
+        "description": "MCP server hub with categorized listings. Pending submission.",
     },
     {
+        # PulseMCP serves 403 to bare curl (bot protection). Audit via
+        # their JSON API/sitemap if possible, otherwise treat audit as
+        # informational.
         "key":         "pulsemcp",
         "name":        "PulseMCP",
         "homepage":    "https://www.pulsemcp.com",
@@ -104,20 +125,11 @@ DISCOVERY_TARGETS = [
         "manual_url":  "https://www.pulsemcp.com/servers/submit",
         "audit_url":   "https://www.pulsemcp.com/servers/dchub",
         "audit_signal":"DC Hub",
-        "description": "Curated MCP server pulse with daily ranking.",
+        "audit_browser_ua": True,              # send a real browser UA
+        "description": "Curated MCP pulse. Bot-protected; submission status pending.",
     },
     {
-        "key":         "glama",
-        "name":        "Glama AI",
-        "homepage":    "https://glama.ai",
-        "submit_url":  "https://glama.ai/mcp/servers/submit",
-        "submit_method":"manual",
-        "manual_url":  "https://glama.ai/mcp/servers/submit",
-        "audit_url":   "https://glama.ai/mcp/servers/dchub",
-        "audit_signal":"DC Hub",
-        "description": "AI gateway with MCP server aggregation.",
-    },
-    {
+        # Confirmed NOT in README — needs PR.
         "key":         "awesome_mcp",
         "name":        "awesome-mcp-servers (GitHub)",
         "homepage":    "https://github.com/punkpeye/awesome-mcp-servers",
@@ -126,7 +138,7 @@ DISCOVERY_TARGETS = [
         "manual_url":  "https://github.com/punkpeye/awesome-mcp-servers/pulls",
         "audit_url":   "https://raw.githubusercontent.com/punkpeye/awesome-mcp-servers/main/README.md",
         "audit_signal":"dchub.cloud",
-        "description": "Canonical curated list. PR to README adds the listing.",
+        "description": "Canonical curated README. NOT yet listed; PR pending.",
     },
     {
         "key":         "anthropic_directory",
@@ -137,7 +149,7 @@ DISCOVERY_TARGETS = [
         "manual_url":  "https://www.anthropic.com/contact-sales",
         "audit_url":   None,
         "audit_signal":None,
-        "description": "Anthropic's curated directory. No public submission API — outreach via sales.",
+        "description": "Anthropic's curated directory. No public submission API; sales outreach pending.",
     },
 ]
 
@@ -211,21 +223,33 @@ def _record(target_key: str, target_name: str, action: str,
 
 def _audit_target(target: dict) -> dict:
     """HEAD or GET the audit_url. If the response body contains
-    audit_signal, we're listed. Otherwise we've fallen off (or were
-    never listed yet)."""
+    audit_signal (case-insensitive substring match), we're listed.
+    Otherwise we've fallen off (or were never listed yet).
+
+    r33-N+ (2026-05-21): support audit_browser_ua flag for registries
+    that 403 bot UAs (PulseMCP). Falls back to "informational" status
+    when bot-blocked — operator can verify manually."""
     import urllib.request as _ur, urllib.error as _ue
     audit_url = target.get("audit_url")
     signal = target.get("audit_signal")
     if not audit_url or not signal:
         return {"listed": None, "reason": "no_audit_url"}
+    use_browser_ua = target.get("audit_browser_ua", False)
+    ua = ("Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) "
+          "AppleWebKit/537.36 (KHTML, like Gecko) "
+          "Chrome/130.0.0.0 Safari/537.36"
+          if use_browser_ua
+          else "DCHub-OutreachAudit/1.0 (+https://dchub.cloud)")
     try:
         req = _ur.Request(audit_url, headers={
-            "User-Agent": "DCHub-OutreachAudit/1.0 (https://dchub.cloud)",
-            "Accept":     "text/html,application/json,text/plain",
+            "User-Agent": ua,
+            "Accept":     "text/html,application/json,*/*;q=0.8",
         })
         with _ur.urlopen(req, timeout=10) as resp:
             body = resp.read().decode("utf-8", errors="replace")
-            listed = signal in body
+            # Case-insensitive substring match — registries often
+            # title-case the listing differently than we expect.
+            listed = signal.lower() in body.lower()
             return {"listed": listed,
                     "http_code": resp.getcode(),
                     "reason": "ok" if listed else "signal_missing"}
@@ -233,6 +257,9 @@ def _audit_target(target: dict) -> dict:
         if he.code == 404:
             return {"listed": False, "http_code": 404,
                     "reason": "page_404 — likely not yet submitted"}
+        if he.code == 403 and not use_browser_ua:
+            return {"listed": None, "http_code": 403,
+                    "reason": "bot_blocked — set audit_browser_ua=True"}
         return {"listed": False, "http_code": he.code,
                 "reason": f"http_{he.code}"}
     except Exception as e:
@@ -255,6 +282,18 @@ def _submit_target(target: dict) -> dict:
     # Manifest payload from /.well-known/mcp.json — single source of
     # truth, never re-stated in multiple places.
     manifest_url = "https://dchub.cloud/.well-known/mcp.json"
+
+    if method == "refresh_only":
+        # We're already listed; the daily cron just exists to AUDIT
+        # (verify the listing didn't get pulled). The submit half is
+        # a no-op for these.
+        _record(key, name, action="refresh_only",
+                outcome="noop",
+                detail=f"Already listed at {target.get('homepage')}. Audit only.")
+        return {"target": key, "outcome": "noop",
+                "method": method,
+                "listing_url": target.get("homepage"),
+                "next_step": "Already listed — audit-only mode"}
 
     if method == "manual" or method == "github_pr" or method == "anthropic_form":
         # We CAN'T auto-submit. Log the intent so the dashboard
