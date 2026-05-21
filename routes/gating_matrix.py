@@ -58,6 +58,13 @@ MATRIX_ROWS = [
      "Same",
      "Same",
      "No gating — meant for SEO + journalist citation"),
+    # ── Land & Power tool ──────────────────────────────────────────
+    ("Land & Power tool · /land-power",
+     "Map + 3 layers preview · 0 searches (signup CTA)",
+     "3 searches/month · 5 filter layers · 100 API calls/month",
+     "50 searches/month · 15 filter layers · 10,000 API calls/month",
+     "Unlimited searches · all layers · 300K-3M API calls/month",
+     "r32 fix: developer + identified tiers were missing from the table, falling through to free defaults — paying $49 customers got 1/mo. Now matches the ladder."),
     # ── Facility search ────────────────────────────────────────────
     ("Facility map · /map (/api/v1/map)",
      "0 facilities (signup prompt)",

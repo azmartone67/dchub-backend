@@ -48,12 +48,50 @@ DATABASE_URL = os.environ.get('NEON_DATABASE_URL', '') or os.environ.get('DATABA
 # CONFIGURATION
 # =============================================================================
 
+# r32 (2026-05-20): tier policy aligned to the canonical
+# anonymous → identified → developer → pro+ ladder. Previously the
+# table was missing 'identified' AND 'developer' entries, so a $49/mo
+# paying developer customer fell through to free defaults (1 search,
+# 5 filters) — broken UX + churn driver. Each tier now matches what
+# /gating-matrix advertises and what the user pays for.
 LAND_POWER_LIMITS = {
+    'anonymous': {
+        # No login = can view the map UI + layer list, but cannot
+        # execute a search. Frontend should show "Sign up free (email
+        # only) to run your first search" CTA instead of hiding the
+        # tool entirely — the tease IS the marketing.
+        'searches_per_month': 0,
+        'max_filters': 3,
+        'label': 'Anonymous',
+        'upgrade_text': 'Sign up free (email only) to run your first 3 Land & Power searches.',
+    },
     'free': {
-        'searches_per_month': 1,
+        # Legacy alias kept for backward compatibility. Same defaults
+        # as 'identified' so callers using either name behave identically.
+        'searches_per_month': 3,
         'max_filters': 5,
         'label': 'Free',
-        'upgrade_text': 'Upgrade to Pro for unlimited Land & Power searches with all filters.',
+        'upgrade_text': 'Upgrade to Developer ($49/mo) for 50 searches + 15 filters per month.',
+    },
+    'identified': {
+        # Email-only signup, no card. Three free searches per month —
+        # enough to evaluate the tool, not enough to use it as a
+        # production research tool. Stays consistent with /pockets
+        # "first taste" ladder.
+        'searches_per_month': 3,
+        'max_filters': 5,
+        'label': 'Identified',
+        'upgrade_text': 'Upgrade to Developer ($49/mo) for 50 searches + 15 filters per month.',
+    },
+    'developer': {
+        # $49/mo paid tier. Generous limits — 50 searches/month
+        # (≈2/day) + 15 filters/search covers most professional usage.
+        # Was MISSING from this table → developer customers fell
+        # through to free's 1/5 limits. Bug fixed.
+        'searches_per_month': 50,
+        'max_filters': 15,
+        'label': 'Developer',
+        'upgrade_text': 'Upgrade to Pro ($199/mo) for unlimited Land & Power searches with all filters.',
     },
     'pro': {
         'searches_per_month': -1,  # unlimited
@@ -81,10 +119,16 @@ LAND_POWER_LIMITS = {
     },
 }
 
-# API monthly limits for free tier (replaces daily)
+# r32: API rate limits aligned the same way. Previously identified
+# and developer were missing → fell through to free's 100/month.
+# Developer paying $49/mo deserves more headroom than a free email
+# signup; pro/enterprise/founding unchanged.
 API_MONTHLY_LIMITS = {
-    'free': 100,       # was 100/day, now 100/month
-    'pro': 300000,     # 10K/day * 30 = 300K/month effectively
+    'anonymous': 50,         # very small — IP-bound demo only
+    'free': 100,             # legacy alias for identified
+    'identified': 100,       # free with email — 100 calls/month
+    'developer': 10000,      # $49/mo — 10K calls/month (~333/day)
+    'pro': 300000,           # was 10K/day * 30 = 300K/month
     'enterprise': 3000000,
     'founding': 300000,
     'admin': 9999999,
@@ -399,19 +443,29 @@ def register_usage_routes(app):
     
     @app.route('/api/v1/land-power/usage', methods=['GET'])
     def lp_usage():
-        """Check current Land & Power usage for the authenticated user."""
+        """Check current Land & Power usage for the authenticated user.
+
+        r32 (2026-05-20): anonymous branch now reports the new
+        anonymous-tier limits (map preview + filter teaser, but 0
+        searches until signup) rather than masquerading as free.
+        Frontend can render the layer picker + map but disable the
+        Run-Search button with a "sign up free to unlock" CTA."""
         user_id, email, plan = _get_user_plan_from_request(app)
-        
+
         if not user_id:
+            anon = LAND_POWER_LIMITS['anonymous']
             return jsonify({
                 'authenticated': False,
-                'plan': 'free',
+                'plan': 'anonymous',
+                'plan_label': anon['label'],
                 'searches_used': 0,
-                'searches_limit': LAND_POWER_LIMITS['free']['searches_per_month'],
+                'searches_limit': anon['searches_per_month'],  # 0 — must sign up
                 'searches_remaining': 0,
-                'max_filters': LAND_POWER_LIMITS['free']['max_filters'],
+                'max_filters': anon['max_filters'],            # 3 — preview filters
                 'resets_at': _next_month_reset(),
-                'message': 'Sign in to use Land & Power search.',
+                'upgrade_text': anon['upgrade_text'],
+                'message': 'Sign up free (email only) to run your first 3 Land & Power searches.',
+                'upgrade_url': '/signup?next=/land-power&utm_source=land_power',
             })
         
         usage = _get_usage(user_id)
@@ -462,24 +516,44 @@ def register_usage_routes(app):
             return jsonify({
                 'allowed': False,
                 'error': 'FILTER_LIMIT',
-                'message': f'Free plan allows up to {max_filters} filters. You selected {len(active_filters)}.',
+                # r32 (2026-05-20): message now reflects the caller's
+                # actual tier (was always "Free plan" — wrong for
+                # developer/identified callers hitting their cap).
+                'message': (
+                    f'{limits["label"]} plan allows up to {max_filters} '
+                    f'filters per search. You selected {len(active_filters)}.'
+                ),
+                'tier': plan,
                 'max_filters': max_filters,
                 'selected_filters': len(active_filters),
-                'upgrade_url': '/pricing.html',
+                'upgrade_url': '/pricing?from=land_power_filter_limit',
+                'upgrade_text': limits.get('upgrade_text'),
             }), 403
-        
+
         # Check monthly search limit (skip for unlimited plans)
         if limit > 0:
             usage = _get_usage(user_id)
             if usage['count'] >= limit:
+                # r32 (2026-05-20): same — message reflects actual tier
+                # + uses the table-defined upgrade_text so each tier
+                # gets the right next-step CTA (identified → developer,
+                # developer → pro).
                 return jsonify({
                     'allowed': False,
                     'error': 'MONTHLY_LIMIT',
-                    'message': f'You\'ve used your {limit} free search{"es" if limit > 1 else ""} this month. Upgrade to Pro for unlimited searches.',
+                    'message': (
+                        f'You\'ve used your {limit} '
+                        f'{limits["label"]}-tier search'
+                        f'{"es" if limit > 1 else ""} this month. '
+                        + (limits.get('upgrade_text') or
+                           'Upgrade for more searches.')
+                    ),
+                    'tier': plan,
                     'searches_used': usage['count'],
                     'searches_limit': limit,
                     'resets_at': _next_month_reset(),
-                    'upgrade_url': '/pricing.html',
+                    'upgrade_url': '/pricing?from=land_power_monthly_limit',
+                    'upgrade_text': limits.get('upgrade_text'),
                 }), 429
         
         # Allowed — record the search
@@ -499,29 +573,58 @@ def register_usage_routes(app):
     
     @app.route('/api/v1/land-power/limits', methods=['GET'])
     def lp_limits():
-        """Public endpoint showing tier limits for Land & Power."""
+        """Public endpoint showing tier limits for Land & Power.
+
+        r32 (2026-05-20): rebuilt to mirror the canonical anonymous →
+        identified → developer → pro+ ladder. Each tier in
+        LAND_POWER_LIMITS now appears here so the pricing page +
+        upgrade prompts can show consistent numbers."""
+        def _fmt(n):
+            return 'Unlimited' if n is None or n < 0 else n
+
         return jsonify({
             'tiers': {
-                'free': {
-                    'searches_per_month': LAND_POWER_LIMITS['free']['searches_per_month'],
-                    'max_filters': LAND_POWER_LIMITS['free']['max_filters'],
+                'anonymous': {
+                    'searches_per_month': _fmt(LAND_POWER_LIMITS['anonymous']['searches_per_month']),
+                    'max_filters': _fmt(LAND_POWER_LIMITS['anonymous']['max_filters']),
                     'price': '$0',
+                    'note': 'Map preview only — sign up free to run searches.',
+                },
+                'identified': {
+                    'searches_per_month': _fmt(LAND_POWER_LIMITS['identified']['searches_per_month']),
+                    'max_filters': _fmt(LAND_POWER_LIMITS['identified']['max_filters']),
+                    'price': '$0 + email',
+                    'note': 'Email-only signup. No card.',
+                },
+                'developer': {
+                    'searches_per_month': _fmt(LAND_POWER_LIMITS['developer']['searches_per_month']),
+                    'max_filters': _fmt(LAND_POWER_LIMITS['developer']['max_filters']),
+                    'price': '$49/mo',
+                    'note': '~2 searches/day with 15 filter layers.',
                 },
                 'pro': {
                     'searches_per_month': 'Unlimited',
                     'max_filters': 'Unlimited',
-                    'price': '$299/mo',
+                    'price': '$199/mo',
                 },
                 'enterprise': {
                     'searches_per_month': 'Unlimited',
                     'max_filters': 'Unlimited',
-                    'price': 'Contact Us',
+                    'price': 'Contact us',
+                },
+                'founding': {
+                    'searches_per_month': 'Unlimited',
+                    'max_filters': 'Unlimited',
+                    'price': 'Founding cohort',
                 },
             },
             'api_limits': {
-                'free': '100 calls/month',
-                'pro': '10,000 calls/day',
-                'enterprise': '100,000 calls/day',
+                'anonymous': '50 calls/month (IP-bound)',
+                'identified': '100 calls/month',
+                'developer': '10,000 calls/month',
+                'pro': '300,000 calls/month',
+                'enterprise': '3,000,000 calls/month',
+                'founding': '300,000 calls/month',
             }
         })
     
