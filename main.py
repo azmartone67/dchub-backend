@@ -20298,6 +20298,28 @@ try:
         print("👁️ [visitor-intelligence] ready · /visitor-intelligence · /api/v1/admin/visitor-intelligence")
     except Exception as _e_vi:
         print(f"⚠️ [visitor-intelligence] blueprint failed to register: {_e_vi}")
+    # r32-paywall (2026-05-20) — paywall response diagnostic. Renders
+    # the EXACT MCP paywall payload + per-LLM "open this prompt" links
+    # so the operator can paste into each platform and observe how
+    # the redeem URL renders. The structural diagnostic for the
+    # 0.05% conversion rate hypothesis.
+    try:
+        from routes.paywall_test import paywall_test_bp
+        app.register_blueprint(paywall_test_bp)
+        print("🧪 [paywall-test] ready · /paywall-test · /api/v1/admin/paywall-test")
+    except Exception as _e_pt:
+        print(f"⚠️ [paywall-test] blueprint failed to register: {_e_pt}")
+    # r32-devrel (2026-05-20) — client-based DevRel target surface.
+    # Anonymous LLM-proxy traffic can't be email-outreached, but each
+    # platform has a DevRel surface (Claude MCP catalog, GPT Store,
+    # Perplexity Pages, Gemini Extensions, Cursor catalog). This page
+    # aggregates anonymous signals by platform + drafts pitches.
+    try:
+        from routes.devrel_targets import devrel_targets_bp
+        app.register_blueprint(devrel_targets_bp)
+        print("📡 [devrel-targets] ready · /devrel-targets · /api/v1/admin/devrel-targets")
+    except Exception as _e_dr:
+        print(f"⚠️ [devrel-targets] blueprint failed to register: {_e_dr}")
     print("🔧 Schema Repair: ✅ Registered "
           "(POST /api/v1/admin/schema/repair · /geocoding/backfill · "
           "GET /funnel/leakage)")

@@ -227,12 +227,23 @@ def gate_tool_call(tool_name, api_key=None, user_agent=None,
         f"`{{\"client_name\": \"<your agent>\"}}` → returns a free dev key instantly. "
         f"Then retry `{tool_name}` with header `X-API-Key: <key>`. Free tier: 100 calls/day.\n\n"
 
-        f"🔓 **The {tool_name} tool requires a paid plan.**"
-
-        f"\n\n👉 **Human handoff:** get a free dev key here:\n{_redeem_url}\n\nNo credit card. Unlocks 50 facility lookups, real-time grid for 7 ISOs, fiber intel, M&A deals.\n\n"
-
-        f"_Or upgrade to Pro at {UPGRADE_URL} for $49/mo unlimited access._"
-
+        # r32-paywall (2026-05-20): added the DIRECT Stripe checkout
+        # link for the Developer tier ($49/mo). Old paywall only had
+        # /pricing as the upgrade path which requires an extra click.
+        # Direct checkout cuts a step. The redeem flow stays as the
+        # primary CTA (free + email-only) but power-users with intent
+        # now have a one-click path.
+        # Also rewrote the message in plain-text-friendly form because
+        # paywall-test diagnostic showed some LLMs strip **/markdown.
+        # Plain URLs always render; **bold** doesn't survive everywhere.
+        f"The {tool_name} tool requires a paid plan."
+        f"\n\n"
+        f"FREE unlock (email only, no card, 60 seconds):\n"
+        f"  → {_redeem_url}\n"
+        f"  Unlocks 50 facility lookups + 7 ISOs grid + fiber intel + M&A deals.\n\n"
+        f"DIRECT upgrade (Developer $49/mo, unlimited):\n"
+        f"  → https://buy.stripe.com/7sY5kE8F4fs13ml0PEaZi0c\n\n"
+        f"Compare plans: {UPGRADE_URL}"
         )
         # r32-conv-2: pass api_key so fire_upgrade_signal can resolve
         # email if user_email wasn't supplied. Closes the 0.0% capture rate.
