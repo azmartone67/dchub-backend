@@ -260,6 +260,15 @@ def transactions_index():
 <meta property="og:title" content="DC Hub Transactions Browser">
 <meta property="og:description" content="{total:,} data center deals tracked. Free browsable database.">
 <meta property="og:url" content="https://dchub.cloud/transactions">
+<!-- Phase r33-J (2026-05-21): unified brand styling. The previous
+     inline CSS hardcoded a white page with #-apple-system font +
+     #1e40af blue, which made /transactions look completely off-brand
+     vs the rest of the site. Now uses brand.css tokens. -->
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link href="https://fonts.googleapis.com/css2?family=Instrument+Sans:wght@400;500;600;700;800&family=JetBrains+Mono:wght@500;700&display=swap" rel="stylesheet">
+<link rel="stylesheet" href="/static/dchub-brand.css">
+<script src="/js/dchub-nav.js" defer></script>
 <script type="application/ld+json">
 {{
   "@context": "https://schema.org",
@@ -272,24 +281,28 @@ def transactions_index():
 }}
 </script>
 <style>
-  body{{font-family:-apple-system,BlinkMacSystemFont,"Segoe UI",Roboto,sans-serif;
-        max-width:1300px;margin:1.5rem auto;padding:0 1rem;color:#1f2937;line-height:1.55}}
-  h1{{margin:0 0 .25rem;font-size:1.75rem}}
-  h1 + p{{color:#6b7280;margin:0 0 1.5rem}}
-  .filters{{background:#f9fafb;padding:1rem 1.25rem;border-radius:8px;margin-bottom:1rem;
-            display:flex;gap:.75rem;flex-wrap:wrap;align-items:flex-end}}
-  .filters label{{display:flex;flex-direction:column;font-size:.85rem;color:#6b7280;gap:.2rem}}
-  .filters input, .filters select{{padding:.4rem .6rem;border:1px solid #d1d5db;border-radius:4px;font-size:.95rem}}
-  .filters button{{padding:.45rem 1rem;background:#1e40af;color:white;border:0;border-radius:4px;cursor:pointer;font-weight:600}}
-  table{{width:100%;border-collapse:collapse;font-size:.92rem}}
-  th,td{{text-align:left;padding:.5rem .6rem;border-bottom:1px solid #f3f4f6;vertical-align:top}}
-  th{{background:#f9fafb;font-weight:600;color:#374151;font-size:.82rem;text-transform:uppercase;letter-spacing:.04em}}
-  tbody tr:hover{{background:#fafbfc}}
-  td a{{color:#1e40af;text-decoration:none;font-weight:600}}
+  body{{max-width:1300px;margin:1.5rem auto;padding:0 1rem;line-height:1.55}}
+  h1{{margin:1.5rem 0 .25rem;font-size:1.75rem;letter-spacing:-.02em}}
+  h1 + p{{color:var(--dch-text-mute);margin:0 0 1.5rem}}
+  .filters{{background:var(--dch-surface);padding:1rem 1.25rem;border-radius:10px;margin-bottom:1rem;
+            display:flex;gap:.75rem;flex-wrap:wrap;align-items:flex-end;
+            border:1px solid var(--dch-border)}}
+  .filters label{{display:flex;flex-direction:column;font-size:.78rem;color:var(--dch-text-mute);gap:.25rem;text-transform:uppercase;letter-spacing:.06em}}
+  .filters input, .filters select{{padding:.5rem .7rem;border:1px solid var(--dch-border);border-radius:6px;font-size:.95rem;background:var(--dch-bg);color:var(--dch-text);font-family:inherit}}
+  .filters input:focus, .filters select:focus{{outline:none;border-color:var(--dch-indigo);box-shadow:0 0 0 3px rgba(129,140,248,.15)}}
+  .filters button{{padding:.55rem 1.2rem;background:var(--dch-grad-brand);color:white;border:0;border-radius:6px;cursor:pointer;font-weight:600;font-family:inherit}}
+  .filters button:hover{{opacity:.9}}
+  table{{width:100%;border-collapse:collapse;font-size:.92rem;background:transparent !important;border:1px solid var(--dch-border);border-radius:10px;overflow:hidden}}
+  th,td{{text-align:left;padding:.65rem .8rem;border-bottom:1px solid var(--dch-border);vertical-align:top}}
+  th{{background:var(--dch-surface) !important;font-weight:600;color:var(--dch-text) !important;font-size:.74rem;text-transform:uppercase;letter-spacing:.06em}}
+  tbody tr:hover td{{background:var(--dch-surface-2) !important}}
+  td a{{color:var(--dch-indigo) !important;text-decoration:none;font-weight:600}}
+  td a:hover{{color:var(--dch-violet) !important}}
   .pagination{{display:flex;gap:.5rem;justify-content:center;margin:1.5rem 0;flex-wrap:wrap}}
-  .pagination a, .pagination span{{padding:.4rem .8rem;border:1px solid #d1d5db;border-radius:4px;color:#374151;text-decoration:none}}
-  .pagination .current{{background:#1e40af;color:white;border-color:#1e40af}}
-  .summary{{color:#6b7280;font-size:.9rem;margin-top:1rem}}
+  .pagination a, .pagination span{{padding:.45rem .9rem;border:1px solid var(--dch-border);border-radius:6px;color:var(--dch-text);text-decoration:none;font-size:.9rem}}
+  .pagination a:hover{{border-color:var(--dch-indigo);color:var(--dch-indigo)}}
+  .pagination .current{{background:var(--dch-grad-brand);color:white;border-color:transparent}}
+  .summary{{color:var(--dch-text-mute);font-size:.9rem;margin-top:1rem}}
 </style>
 </head>
 <body>
@@ -443,17 +456,24 @@ def transaction_detail(deal_id):
 <link rel="canonical" href="https://dchub.cloud/transactions/{deal_id}">
 <meta property="og:title" content="{title}">
 <meta property="og:description" content="DC Hub Transaction #{deal_id}">
+<!-- Phase r33-J (2026-05-21): brand.css unification -->
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link href="https://fonts.googleapis.com/css2?family=Instrument+Sans:wght@400;500;600;700;800&family=JetBrains+Mono:wght@500;700&display=swap" rel="stylesheet">
+<link rel="stylesheet" href="/static/dchub-brand.css">
+<script src="/js/dchub-nav.js" defer></script>
 <script type="application/ld+json">{json.dumps(ld_json, indent=2)}</script>
 <style>
-  body{{font-family:-apple-system,BlinkMacSystemFont,"Segoe UI",Roboto,sans-serif;
-        max-width:760px;margin:2rem auto;padding:0 1rem;color:#1f2937;line-height:1.55}}
-  h1{{font-size:1.6rem;margin:0 0 .25rem}}
-  .badge{{display:inline-block;background:#dbeafe;color:#1e40af;padding:2px 8px;border-radius:4px;font-size:.8rem;font-weight:600}}
-  dl{{display:grid;grid-template-columns:140px 1fr;gap:.5rem 1rem;margin:1.5rem 0}}
-  dt{{color:#6b7280;font-weight:600;font-size:.9rem}}
-  dd{{margin:0;color:#1f2937;font-size:1rem}}
-  .back{{color:#6b7280;text-decoration:none;font-size:.9rem}}
-  .back:hover{{color:#1e40af}}
+  body{{max-width:780px;margin:2rem auto;padding:0 1rem;line-height:1.55}}
+  h1{{font-size:1.7rem;margin:1.5rem 0 .25rem;letter-spacing:-.02em}}
+  .badge{{display:inline-block;background:rgba(129,140,248,.15);color:var(--dch-indigo);padding:3px 10px;border-radius:6px;font-size:.78rem;font-weight:600;letter-spacing:.04em}}
+  dl{{display:grid;grid-template-columns:140px 1fr;gap:.6rem 1rem;margin:1.5rem 0;padding:1.2rem;background:var(--dch-surface);border:1px solid var(--dch-border);border-radius:10px}}
+  dt{{color:var(--dch-text-mute);font-weight:600;font-size:.78rem;text-transform:uppercase;letter-spacing:.06em}}
+  dd{{margin:0;color:var(--dch-text);font-size:1rem}}
+  .back{{color:var(--dch-text-mute);text-decoration:none;font-size:.88rem}}
+  .back:hover{{color:var(--dch-indigo)}}
+  a{{color:var(--dch-indigo)}}
+  a:hover{{color:var(--dch-violet)}}
 </style>
 </head>
 <body>
