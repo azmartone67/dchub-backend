@@ -20,6 +20,16 @@ def _conn():
     return psycopg2.connect(db, sslmode="require")
 
 
+# Phase r33-J (2026-05-21) — /open-data alias. User reported 503 at
+# /open-data; underlying cause was the route never existed (we
+# registered /data but not /open-data). Both should serve the same
+# landing page so external links to either work.
+@open_data_bp.route("/open-data", methods=["GET"])
+def open_data_landing_alias():
+    """Alias for /data — backward-compat with `/open-data` URLs."""
+    return data_landing()
+
+
 @open_data_bp.route("/data", methods=["GET"])
 def data_landing():
     return Response("""<!DOCTYPE html><html><head><meta charset="utf-8"><title>DC Hub · Open Data</title>

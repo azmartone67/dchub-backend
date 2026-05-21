@@ -504,6 +504,96 @@ def grid_seed_debug():
         }), 500
 
 
+# Phase r33-J (2026-05-21) — public landing page. User reported
+# /grid-intelligence returning Cloudflare Error 1000. Underlying:
+# only the /api/v1/grid-intelligence JSON endpoint existed; the bare
+# HTML page route was never registered. Adds a thin server-rendered
+# landing that lists registered grid regions and links to each.
+@grid_intel_bp.route('/grid-intelligence', methods=['GET'], strict_slashes=False)
+def grid_intelligence_landing():
+    """Server-rendered landing page for /grid-intelligence.
+    Lists CAISO + Southeast + any other registered ISO regions and
+    links to their per-region pages (already exist at
+    /research/grid-intelligence/<id>)."""
+    from flask import Response as _Resp
+    _ensure_grid_region_seeds()
+    rows = []
+    try:
+        conn = _get_conn()
+        try:
+            cur = conn.cursor()
+            cur.execute("""
+                SELECT id, name, iso, headline, description,
+                       page_url, status
+                  FROM grid_regions
+                 ORDER BY sort_order, name
+            """)
+            rows = cur.fetchall()
+        finally:
+            try: conn.close()
+            except Exception: pass
+    except Exception:
+        rows = []
+    cards = []
+    for rid, name, iso, headline, desc, page_url, status in rows:
+        url = page_url or f"/research/grid-intelligence/{rid}"
+        status_pill = (f'<span style="font-size:.7rem;padding:2px 8px;border-radius:8px;'
+                       f'background:rgba(16,185,129,.15);color:#10b981">{status or "live"}</span>')
+        cards.append(f'''
+        <a class="card" href="{url}">
+          <div style="display:flex;align-items:center;gap:10px;margin-bottom:6px">
+            <h3 style="margin:0">{name}</h3>{status_pill}
+          </div>
+          <p style="color:var(--dch-text-mute);font-size:.95rem;margin:0 0 8px">
+            {desc or "Regional grid intelligence + interconnect queue + capacity outlook."}
+          </p>
+          <div style="color:var(--dch-indigo);font-size:.85rem">{iso or ""} →</div>
+        </a>''')
+    if not cards:
+        cards.append('<div class="card"><p style="color:var(--dch-text-mute)">'
+                     'Grid regions seeding — refresh in 60s.</p></div>')
+    return _Resp(f'''<!DOCTYPE html><html lang="en"><head>
+<meta charset="utf-8"><meta name="viewport" content="width=device-width, initial-scale=1">
+<title>DC Hub · Grid Intelligence — Per-ISO Capacity & Queue</title>
+<meta name="description" content="Grid intelligence for every major US ISO. Interconnect queue, capacity factor, fuel mix, and per-market headroom.">
+<link rel="canonical" href="https://dchub.cloud/grid-intelligence">
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link href="https://fonts.googleapis.com/css2?family=Instrument+Sans:wght@400;500;600;700;800&family=JetBrains+Mono:wght@500;700&display=swap" rel="stylesheet">
+<link rel="stylesheet" href="/static/dchub-brand.css">
+<script src="/js/dchub-nav.js" defer></script>
+<style>
+body{{font-family:'Instrument Sans',-apple-system,sans-serif;background:var(--dch-bg);color:var(--dch-text);min-height:100vh;margin:0}}
+.container{{max-width:1100px;margin:0 auto;padding:32px 24px}}
+header{{margin:32px 0 28px}}
+header .eyebrow{{color:var(--dch-indigo);font-size:.78rem;letter-spacing:.16em;text-transform:uppercase;margin-bottom:8px}}
+header h1{{font-size:2.4rem;margin:0 0 12px;letter-spacing:-.02em}}
+header p{{color:var(--dch-text-mute);font-size:1.05rem;line-height:1.6;max-width:680px}}
+.grid{{display:grid;grid-template-columns:repeat(auto-fit,minmax(280px,1fr));gap:14px;margin-top:24px}}
+.card{{background:var(--dch-surface);border:1px solid var(--dch-border);border-radius:12px;padding:18px 20px;text-decoration:none;color:inherit;display:block;transition:border-color .2s,transform .15s}}
+.card:hover{{border-color:var(--dch-indigo);transform:translateY(-2px)}}
+.card h3{{font-size:1.05rem;font-weight:600}}
+.footer{{margin-top:36px;padding-top:18px;border-top:1px solid var(--dch-border);color:var(--dch-text-dim);font-size:.82rem}}
+.footer a{{color:var(--dch-indigo)}}
+</style></head><body>
+<div class="container">
+<header>
+  <div class="eyebrow">Research · Grid Intelligence</div>
+  <h1>Per-ISO grid headroom &amp; interconnect queue</h1>
+  <p>Where the data centers want to go, what the grid can actually carry, and how the queue is moving. Each region rolls up live capacity factor, queue position depth, fuel-mix exposure, and per-market headroom — the same data every site-selection deal needs.</p>
+</header>
+<div class="grid">
+{''.join(cards)}
+</div>
+<div class="footer">
+  Machine-readable: <a href="/api/v1/grid-intelligence">/api/v1/grid-intelligence</a> ·
+  Per-region JSON: <a href="/api/v1/grid-intelligence/caiso">/api/v1/grid-intelligence/&lt;id&gt;</a> ·
+  <a href="/intelligence">All intelligence surfaces →</a>
+</div>
+</div>
+</body></html>''', mimetype='text/html')
+
+
 @grid_intel_bp.route('/api/v1/grid-intelligence', methods=['GET'])
 def list_grid_regions():
     """List all grid intelligence regions with basic info."""
