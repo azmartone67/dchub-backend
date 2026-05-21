@@ -5750,21 +5750,33 @@ _MCP_LANDING_HTML = """<!DOCTYPE html>
   </div>
 
   <div class="pane active" data-pane="claude-web">
-    <h3>Claude.ai web &mdash; Add as custom connector</h3>
+    <h3>Claude.ai web &mdash; Three steps, copy-paste ready</h3>
+    <div style="background:rgba(129,140,248,.08);border:1px solid rgba(129,140,248,.3);border-radius:10px;padding:14px 18px;margin-bottom:18px">
+      <div style="font-weight:600;margin-bottom:8px;color:var(--dch-indigo)">
+        Just copy this URL &mdash; that's the whole secret:
+      </div>
+      <div style="display:flex;gap:8px;align-items:center;flex-wrap:wrap">
+        <code id="mcp-url" style="background:var(--dch-bg);padding:8px 14px;border-radius:6px;font-size:1rem;flex:1;min-width:280px">https://dchub.cloud/mcp</code>
+        <button class="cta cta-primary" onclick="copyMcpUrl(this)" style="cursor:pointer;border:none">copy URL</button>
+        <a href="https://claude.ai/settings/connectors" class="cta cta-secondary" target="_blank" rel="noopener" style="cursor:pointer">open Claude settings &rarr;</a>
+      </div>
+    </div>
     <ol>
-      <li>Open Claude.ai &rarr; <strong>Settings</strong> &rarr; <strong>Connectors</strong> (left sidebar)</li>
-      <li>Click <strong>Add custom connector</strong></li>
-      <li>Fill in:
-        <ul>
+      <li><strong>Click the "open Claude settings" button above</strong> &mdash; takes you straight to Claude.ai &rarr; Settings &rarr; Connectors.</li>
+      <li>Click <strong>+ Add custom connector</strong>. Fill in:
+        <ul style="margin-top:8px">
           <li>Name: <code>DC Hub</code></li>
-          <li>URL: <code>https://dchub.cloud/mcp</code></li>
-          <li>Auth header (optional): <code>X-API-Key: your-key</code></li>
+          <li>URL: paste <code>https://dchub.cloud/mcp</code> (copied above)</li>
+          <li>Skip the auth section &mdash; we don't use OAuth. Tools work anonymously at 5 calls/day.</li>
         </ul>
       </li>
-      <li>Save. Tools appear in any conversation under the connector menu.</li>
+      <li>Save. The DC Hub connector appears in every chat under the &#x1F50C; menu.</li>
     </ol>
     <p style="color:var(--dch-text-mute);font-size:.88rem;margin-top:14px">
-      <strong>Note:</strong> dchub.cloud isn't in Anthropic's curated directory yet &mdash; adding as a custom connector is the supported path until that changes. Anonymous access works at 5 calls/day; an API key unlocks free-tier 1k/day.
+      <strong>Want higher limits?</strong> For 1k calls/day, add a header in the connector setup: <code>X-API-Key: your-key</code> &mdash; <a href="/signup?next=/onboarding">get a free key here</a>. Or use the URL form: <code>https://dchub.cloud/mcp?api_key=YOUR_KEY</code>
+    </p>
+    <p style="color:var(--dch-text-mute);font-size:.85rem;margin-top:10px">
+      <strong>Note:</strong> dchub.cloud isn't in Anthropic's curated directory yet &mdash; adding as a custom connector is the supported path until that changes.
     </p>
   </div>
 
@@ -5883,6 +5895,17 @@ X-API-Key: your-key
       var prev = btn.textContent;
       btn.textContent = 'copied!';
       setTimeout(function(){ btn.textContent = prev; }, 1500);
+    });
+  }
+  function copyMcpUrl(btn){
+    navigator.clipboard.writeText('https://dchub.cloud/mcp').then(function(){
+      var prev = btn.textContent;
+      btn.textContent = '✓ copied — now click "open Claude settings"';
+      btn.style.background = 'var(--dch-ok)';
+      setTimeout(function(){
+        btn.textContent = prev;
+        btn.style.background = '';
+      }, 4000);
     });
   }
 </script>
