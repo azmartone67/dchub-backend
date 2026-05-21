@@ -4,7 +4,7 @@
         // Cache-bust key for fiber API fetches. The CF worker edge-caches
         // /api/* GETs; bump this whenever fiber_routes data or the endpoint's
         // filtering changes so the overlay never serves a stale cached set.
-        window.FIBER_DATA_VERSION = '134';
+        window.FIBER_DATA_VERSION = '135';
 
         // Initialize map
         var map = L.map('map',{zoomControl:true}).setView([39.0,-98.0],4);
@@ -123,6 +123,7 @@
             genqueue: L.layerGroup(),
             longhaulfiber: L.layerGroup(),
             darkfiber: L.layerGroup(),
+            metrointerconnect: L.layerGroup(),
             midstream: L.layerGroup(),
             lng: L.layerGroup(),
             // HIFLD Enhanced Layers
@@ -5582,6 +5583,20 @@ var markets = {
                     }
                     return;
                 }
+
+                if (layerName === 'metrointerconnect') {
+                    if (map.hasLayer(layers.metrointerconnect)) {
+                        map.removeLayer(layers.metrointerconnect);
+                        this.classList.remove('active');
+                        console.log('🕸️ Metro Interconnect hidden');
+                    } else {
+                        map.addLayer(layers.metrointerconnect);
+                        this.classList.add('active');
+                        loadMetroInterconnect();
+                        console.log('🕸️ Metro Interconnect shown (inferred from PoP presence)');
+                    }
+                    return;
+                }
                 
                 // Gen Queue - Interconnection waiting list
                 if (layerName === 'genqueue') {
@@ -8312,10 +8327,13 @@ var markets = {
         // from the DB and draws real polylines, replacing the old static
         // "premium placeholder" circles.
         // ============================================
-        function loadFiberClass(routeClass, targetLayer, countElId, styleOverride) {
+        // qsFragment is the API query selector, e.g. 'class=metro' or
+        // 'type=metro_inferred'. limit defaults high enough for the dense
+        // inferred metro-interconnect set.
+        function loadFiberClass(qsFragment, targetLayer, countElId, styleOverride, limit) {
             if (targetLayer.getLayers().length > 0) return; // already loaded
             var _f = window.dchubFetch || window.fetch.bind(window);
-            _f('/api/v1/fiber/routes/public?class=' + encodeURIComponent(routeClass) + '&limit=5000&_v=' + (window.FIBER_DATA_VERSION || '134'))
+            _f('/api/v1/fiber/routes/public?' + qsFragment + '&limit=' + (limit || 5000) + '&_v=' + (window.FIBER_DATA_VERSION || '134'))
                 .then(function(r){ return r.ok ? r.json() : Promise.reject(r.status); })
                 .then(function(geo){
                     var feats = (geo && geo.features) || [];
@@ -8326,34 +8344,42 @@ var markets = {
                         var latlng = c.map(function(pt){ return [pt[1], pt[0]]; });
                         var p = ft.properties || {};
                         var color = styleOverride.color || p.color || '#10b981';
+                        var inferred = (p.route_type === 'metro_inferred');
                         L.polyline(latlng, {
                             color: color,
                             weight: styleOverride.weight,
                             opacity: styleOverride.opacity,
                             dashArray: styleOverride.dashArray
                         }).bindPopup(
-                            '<div class="popup-title">' + styleOverride.icon + ' ' + (p.name || 'Fiber Route') + '</div>' +
-                            '<div class="popup-row"><span class="popup-label">Carrier</span><span class="popup-value">' + (p.carrier || '—') + '</span></div>' +
-                            '<div class="popup-row"><span class="popup-label">Type</span><span class="popup-value">' + (p.route_type || routeClass) + '</span></div>' +
-                            '<div class="popup-row"><span class="popup-label">Capacity</span><span class="popup-value">' + (p.capacity || '—') + '</span></div>'
+                            '<div class="popup-title">' + styleOverride.icon + ' ' + (p.carrier || p.name || 'Fiber Route') + '</div>' +
+                            '<div class="popup-row"><span class="popup-label">Type</span><span class="popup-value">' + (p.route_type || qsFragment) + '</span></div>' +
+                            '<div class="popup-row"><span class="popup-label">Capacity</span><span class="popup-value">' + (p.capacity || '—') + '</span></div>' +
+                            (inferred ? '<div class="popup-row" style="margin-top:4px;font-size:10px;color:var(--text3)">Inferred metro link from carrier PoP presence — not a surveyed route.</div>' : '')
                         ).addTo(targetLayer);
                         drawn++;
                     });
                     var el = document.getElementById(countElId);
                     if (el) el.textContent = drawn;
-                    console.log('🌐 ' + routeClass + ' fiber: ' + drawn + ' routes drawn');
+                    console.log('🌐 ' + qsFragment + ': ' + drawn + ' routes drawn');
                 })
-                .catch(function(err){ console.log('🌐 ' + routeClass + ' fiber API unavailable (' + err + ')'); });
+                .catch(function(err){ console.log('🌐 ' + qsFragment + ' unavailable (' + err + ')'); });
         }
 
         function loadMetroFiber() {
-            loadFiberClass('metro', layers.metrofiber, 'count-metrofiber',
+            loadFiberClass('class=metro', layers.metrofiber, 'count-metrofiber',
                 {color: '#8b5cf6', weight: 2, opacity: 0.75, dashArray: '6,4', icon: '📡'});
         }
 
         function loadDarkFiber() {
-            loadFiberClass('dark', layers.darkfiber, 'count-darkfiber',
+            loadFiberClass('class=dark', layers.darkfiber, 'count-darkfiber',
                 {color: '#94a3b8', weight: 2, opacity: 0.7, dashArray: '8,8', icon: '⚫'});
+        }
+
+        // Inferred carrier metro interconnect (MST of each NSP carrier's PoPs
+        // per DC metro, from carrier_facility_presence). Dense set — higher limit.
+        function loadMetroInterconnect() {
+            loadFiberClass('type=metro_inferred', layers.metrointerconnect, 'count-metrointerconnect',
+                {color: '#22d3ee', weight: 1, opacity: 0.55, dashArray: '3,3', icon: '🕸️'}, 20000);
         }
 
         // ============================================

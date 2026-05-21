@@ -542,12 +542,13 @@
         </div>
 
         <!-- Category: Fiber & Connectivity -->
-        <div class="cat-header" onclick="this.classList.toggle('closed');this.nextElementSibling.style.display=this.classList.contains('closed')?'none':'flex'">🌐 Fiber & Connectivity <span class="cat-count">9</span><span class="cat-arrow">▾</span></div>
+        <div class="cat-header" onclick="this.classList.toggle('closed');this.nextElementSibling.style.display=this.classList.contains('closed')?'none':'flex'">🌐 Fiber & Connectivity <span class="cat-count">10</span><span class="cat-arrow">▾</span></div>
         <div class="cat-layers" style="display:none;flex-direction:column;gap:2px">
             <button class="layer-btn fiber-btn-main" id="fiber-panel-btn" onclick="toggleFiberPanel()">🌐 Fiber Networks<span class="count" id="count-fiber">620</span></button>
             <button class="layer-btn" data-layer="metrofiber">📡 Metro Fiber<span class="count" id="count-metrofiber">600+</span></button>
             <button class="layer-btn" data-layer="longhaulfiber">🔗 Long-Haul Fiber<span class="count" id="count-longhaul">22</span></button>
             <button class="layer-btn" data-layer="darkfiber">⚫ Dark Fiber<span class="count" id="count-darkfiber">80+</span></button>
+            <button class="layer-btn" data-layer="metrointerconnect" style="background:rgba(34,211,238,0.1);border-color:rgba(34,211,238,0.3)">🕸️ Metro Interconnect<span class="count" style="background:rgba(34,211,238,0.3);color:#22d3ee" id="count-metrointerconnect">13k</span></button>
             <button class="layer-btn" data-layer="fiberDensity">🌐 Fiber Density<span class="count" id="count-fiber-density">40+</span></button>
             <button class="layer-btn" data-layer="broadband">📶 Broadband<span class="count" id="count-broadband">FCC</span></button>
             <button class="layer-btn" data-layer="ixpoints">🌐 Internet Exchanges<span class="count" id="count-ix">15</span></button>
@@ -941,7 +942,7 @@
       }
     });
     </script>
-    <script src="js/land-power-app.js?v=134"></script>
+    <script src="js/land-power-app.js?v=135"></script>
     <!-- Address search safety net (fixes dead search bar if app.js crashes) -->
     <script src="js/land-power-search-fix.js?v=2"></script>
     <script src="js/coord-parser-fix.js?v=6"></script>

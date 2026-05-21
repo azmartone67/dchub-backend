@@ -7440,6 +7440,10 @@ def init_new_tables():
             "ALTER TABLE users ADD COLUMN IF NOT EXISTS payment_failed_count INTEGER DEFAULT 0",
             "ALTER TABLE users ADD COLUMN IF NOT EXISTS demoted_at TEXT",
             "ALTER TABLE users ADD COLUMN IF NOT EXISTS demoted_reason TEXT",
+            # r33 (2026-05-20): JSON-text preferences for /api/v1/pockets/for-me.
+            # SQLite has no JSONB; TEXT with json.dumps/loads is the
+            # standard pattern.
+            "ALTER TABLE users ADD COLUMN IF NOT EXISTS pocket_preferences TEXT DEFAULT '{}'",
         ]:
             try:
                 c.execute(col_sql)
