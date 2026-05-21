@@ -1383,39 +1383,58 @@ def autopilot_run():
     # Now we merge both feeds into a single issue list — deduped by
     # (issue, url) tuple so we don't double-fire when the same
     # finding shows up on both sides.
-    try:
-        rad_req = urllib.request.Request(
-            _BACKEND_BASE.rstrip("/") + "/api/v1/brain/consistency-radar",
-            method="GET",
-        )
-        with urllib.request.urlopen(rad_req, timeout=30) as rad_resp:
-            rad_payload = json.loads(rad_resp.read().decode("utf-8"))
-        radar_findings = rad_payload.get("findings") or []
-        if isinstance(radar_findings, list):
-            seen = {(i.get("issue") or "", i.get("url") or "")
-                    for i in issues if isinstance(i, dict)}
-            for f in radar_findings:
-                if not isinstance(f, dict): continue
-                key = (f.get("issue") or "", f.get("url") or "")
-                if key in seen: continue
-                seen.add(key)
-                issues.append(f)
-    except Exception as e:
-        # Bridge is non-fatal — autopilot continues with whatever
-        # /heal/findings gave us. Log via the response payload.
-        summary_bridge_error = f"{type(e).__name__}: {str(e)[:100]}"
-    else:
-        summary_bridge_error = None
+    #
+    # r33-H+resilience (2026-05-21): retry once if we hit cold-start
+    # lock busy. The autopilot+radar both run on the same Railway
+    # service; immediately after a deploy, the radar's per-worker
+    # cache is cold AND another worker may be scanning, leaving us
+    # with empty findings. Brief retry catches the lock release.
+    radar_findings: list[dict] = []
+    summary_bridge_error = None
+    for _attempt in range(2):
+        try:
+            rad_req = urllib.request.Request(
+                _BACKEND_BASE.rstrip("/") + "/api/v1/brain/consistency-radar",
+                method="GET",
+            )
+            with urllib.request.urlopen(rad_req, timeout=30) as rad_resp:
+                rad_payload = json.loads(rad_resp.read().decode("utf-8"))
+            fetched = rad_payload.get("findings") or []
+            if isinstance(fetched, list) and fetched:
+                radar_findings = fetched
+                break  # Got real findings — stop retrying
+            # Empty findings + cold-start lock busy → wait + retry
+            reason = (rad_payload.get("stale_reason") or "").lower()
+            if "cold_start" in reason and _attempt == 0:
+                import time as _bridge_sleep
+                _bridge_sleep.sleep(8)
+                continue
+            radar_findings = fetched if isinstance(fetched, list) else []
+            break
+        except Exception as e:
+            summary_bridge_error = f"{type(e).__name__}: {str(e)[:100]}"
+            break
+    if radar_findings:
+        seen = {(i.get("issue") or "", i.get("url") or "")
+                for i in issues if isinstance(i, dict)}
+        for f in radar_findings:
+            if not isinstance(f, dict): continue
+            key = (f.get("issue") or "", f.get("url") or "")
+            if key in seen: continue
+            seen.add(key)
+            issues.append(f)
 
     summary = {
-        "examined":   len(issues),
-        "actioned":   0,
-        "rate_limited": 0,
-        "escalated":  0,
-        "no_action":  0,
-        "errors":     0,
-        "dry_run":    _is_dry_run(),
-        "actions":    [],
+        "examined":           len(issues),
+        "from_heal_findings": len(payload.get("actionable_backend_issues") or []),
+        "from_radar_bridge":  len(radar_findings),
+        "actioned":           0,
+        "rate_limited":       0,
+        "escalated":          0,
+        "no_action":          0,
+        "errors":             0,
+        "dry_run":            _is_dry_run(),
+        "actions":            [],
     }
 
     c = _conn()
