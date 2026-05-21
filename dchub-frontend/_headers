@@ -1,3 +1,23 @@
+# r33-Q/cache-nuke (2026-05-21) — homepage must NEVER be cached more than 60s
+# After the stuck-CF-cache + stuck-service-worker incident where browsers held
+# the old design for 50+ minutes despite multiple deploys + purges, the / path
+# now sends Clear-Site-Data: "cache" on every response. This forces every
+# visitor's browser to drop its dchub.cloud HTTP cache on each visit.
+# storage/cookies are NOT cleared so logged-in sessions survive.
+/
+  Cache-Control: no-cache, no-store, must-revalidate
+  Pragma: no-cache
+  Expires: 0
+  Clear-Site-Data: "cache"
+  X-DC-Cache-Rule: homepage-no-cache
+
+/index.html
+  Cache-Control: no-cache, no-store, must-revalidate
+  Pragma: no-cache
+  Expires: 0
+  Clear-Site-Data: "cache"
+  X-DC-Cache-Rule: homepage-no-cache
+
 /map
   Cache-Control: public, max-age=60, s-maxage=60, must-revalidate, stale-while-revalidate=30
   X-DC-Cache-Rule: explicit-map
