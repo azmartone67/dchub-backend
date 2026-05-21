@@ -4416,6 +4416,17 @@ _INTERNAL_LINK_PROBES = [
     "/api/v1/packages/stats",
     "/api/v1/grid-intelligence",
     "/api/press-releases/list",    # /press page (Phase RRR-wave2 fixed)
+    # r32-cf-audit (2026-05-20): paths the CF analytics flagged as the
+    # top 4xx sources. Each one was the same bug class — literal path
+    # not forwarded by CF Pages → handler unreachable → cached 404.
+    # 276k /grid 404s alone over 30 days.
+    "/grid",                       # 276.85k 4xx — biggest single leak
+    "/mcp.json",                   # 94.47k 4xx — agent discovery convention
+    "/agents",                     # 18.25k 4xx — should serve agents.html
+    "/digest",                     # 29.21k 4xx — cached 404 from past
+                                   # outage; route is healthy now
+    "/.well-known/mcp.json",       # canonical mcp.json — pair with above
+    "/pockets.rss",                # r31 — make sure RSS feed doesn't drift
 ]
 
 
