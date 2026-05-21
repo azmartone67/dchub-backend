@@ -2792,6 +2792,14 @@ def _os_env():
     return _os.environ
 
 
+# Phase r33-E (2026-05-21) — detector-runtime tracker. Populated
+# inside scan_all()'s _run_one wrapper; read by
+# check_detector_runtime_distribution to surface slow detectors as
+# brain-level findings (otherwise the only way to spot a 30s
+# detector is to read Railway logs by hand).
+_DETECTOR_TIMINGS: dict[str, dict] = {}
+
+
 def check_render_flapping() -> list[dict]:
     """Phase r33-C (2026-05-21). Render side of the failover pair has
     been flapping all session — DB pool stale connections, pipeline
@@ -2840,6 +2848,327 @@ def check_render_flapping() -> list[dict]:
                 f"if Railway also fails right now the site has no backstop. "
                 f"Auto-recovery: brain autopilot _action_render_restart will "
                 f"trigger a fresh container via the Render deploy hook."
+            ),
+        })
+    return findings
+
+
+# ──────────────────────────────────────────────────────────────────
+# Phase r33-E (2026-05-21) — QA monitor master shell. Five detectors
+# closing the highest-leverage QA gaps the user identified:
+#   1. check_404_spike — burst detection
+#   2. check_neon_replication_lag — failover safety
+#   3. check_signup_drop_off_step — revenue protection
+#   4. check_detector_runtime_distribution — brain meta-monitor
+#   5. check_stripe_webhook_lag — revenue pipeline safety
+# Each is defensive (graceful skip when its table doesn't exist).
+# ──────────────────────────────────────────────────────────────────
+
+
+def check_404_spike() -> list[dict]:
+    """Burst-detect 404s. Different from check_repeated_404_patterns
+    (which catches sustained patterns over hours); this catches
+    SUDDEN bursts: any URL pattern with ≥10 404s in the last 5
+    minutes where the prior hour averaged <1/hr. Classic deploy-
+    regression signal — the path was working an hour ago, now
+    everyone hitting it gets a 404.
+
+    Looks for the data in `request_log_404` first, falls back to
+    `request_log` filtered on status=404. Both are optional; if
+    neither exists, returns []."""
+    findings: list[dict] = []
+    c = _db()
+    if c is None: return findings
+    try:
+        with c.cursor() as cur:
+            # Prefer dedicated 404 log if present.
+            cur.execute("SELECT to_regclass('public.request_log_404')")
+            tbl_404 = (cur.fetchone() or [None])[0]
+            if tbl_404:
+                path_col = "url_pattern"
+                ts_col   = "ts"
+                src_tbl  = "request_log_404"
+                where_extra = ""
+            else:
+                cur.execute("SELECT to_regclass('public.request_log')")
+                if not (cur.fetchone() or [None])[0]:
+                    return findings
+                src_tbl  = "request_log"
+                path_col = "path"
+                ts_col   = "ts"
+                where_extra = " AND status = 404"
+            # Burst window: last 5min, ≥10 hits per path
+            cur.execute(f"""
+                WITH burst AS (
+                    SELECT {path_col} AS p, COUNT(*) AS n5
+                      FROM {src_tbl}
+                     WHERE {ts_col} > NOW() - INTERVAL '5 minutes'
+                       {where_extra}
+                     GROUP BY {path_col}
+                    HAVING COUNT(*) >= 10
+                ),
+                baseline AS (
+                    SELECT {path_col} AS p, COUNT(*) AS n60
+                      FROM {src_tbl}
+                     WHERE {ts_col} > NOW() - INTERVAL '1 hour'
+                       AND {ts_col} <= NOW() - INTERVAL '5 minutes'
+                       {where_extra}
+                     GROUP BY {path_col}
+                )
+                SELECT b.p, b.n5, COALESCE(bl.n60, 0) AS n60
+                  FROM burst b
+                  LEFT JOIN baseline bl ON bl.p = b.p
+                 WHERE COALESCE(bl.n60, 0) < 60   -- <1/min baseline
+                 ORDER BY b.n5 DESC LIMIT 10
+            """)
+            rows = cur.fetchall()
+    except Exception:
+        return findings
+    finally:
+        try: c.close()
+        except Exception: pass
+
+    for path, n5, n60 in rows:
+        findings.append({
+            "issue":  "404_spike",
+            "url":    path,
+            "count":  int(n5),
+            "detail": (
+                f"`{path}` returned {n5} 404s in the last 5min "
+                f"(baseline {n60}/hr — was working). Classic deploy "
+                f"regression: a route was removed/renamed and traffic "
+                f"is still hitting the old path. Audit recent commits "
+                f"for blueprint registration changes or route renames."
+            ),
+        })
+    return findings
+
+
+def check_neon_replication_lag() -> list[dict]:
+    """Probes the read-replica connection (if configured) and
+    measures the gap between primary and replica via
+    pg_last_xact_replay_timestamp(). Fires if >60s.
+
+    On Neon, the read replica is a separate compute endpoint with
+    its own DATABASE_URL — usually exposed as READ_REPLICA_URL.
+    When the replica falls behind, all read traffic routed there
+    serves stale data. Failover assumes replica is fresh, so this
+    detector catches the gap before it becomes an outage."""
+    findings: list[dict] = []
+    import os as _os, psycopg2 as _pg
+    rr_url = (_os.environ.get("READ_REPLICA_URL")
+              or _os.environ.get("DATABASE_REPLICA_URL"))
+    if not rr_url:
+        return findings  # No replica configured → nothing to probe
+    try:
+        c = _pg.connect(rr_url, sslmode="require", connect_timeout=5)
+        try:
+            with c.cursor() as cur:
+                # pg_last_xact_replay_timestamp() returns the commit
+                # timestamp of the last applied xact. On the PRIMARY
+                # this returns NULL; on a replica it returns the
+                # timestamp we're caught up to.
+                cur.execute("""
+                    SELECT EXTRACT(EPOCH FROM (
+                        NOW() - pg_last_xact_replay_timestamp()
+                    ))
+                """)
+                lag_s = (cur.fetchone() or [None])[0]
+        finally:
+            c.close()
+    except Exception as e:
+        # Connection-level failure means the replica is unreachable
+        # which is its own finding — surface it.
+        findings.append({
+            "issue":  "neon_replication_lag",
+            "url":    "neon:read_replica",
+            "count":  -1,
+            "detail": (
+                f"Read replica unreachable: {type(e).__name__}. "
+                f"Failover safety is gone — all reads landing on the "
+                f"primary. Check READ_REPLICA_URL is valid and the "
+                f"replica endpoint isn't paused on the Neon dashboard."
+            ),
+        })
+        return findings
+    if lag_s is None:
+        # We connected but got NULL → we hit the primary, not the
+        # replica. Misconfiguration.
+        findings.append({
+            "issue":  "neon_replication_lag",
+            "url":    "neon:read_replica",
+            "count":  -2,
+            "detail": (
+                "READ_REPLICA_URL connected but pg_last_xact_replay_"
+                "timestamp() returned NULL — the URL is pointing at "
+                "the PRIMARY, not a replica. Reconfigure to a Neon "
+                "read-replica endpoint to restore failover safety."
+            ),
+        })
+    elif float(lag_s) > 60.0:
+        findings.append({
+            "issue":  "neon_replication_lag",
+            "url":    "neon:read_replica",
+            "count":  int(lag_s),
+            "detail": (
+                f"Read replica is {float(lag_s):.0f}s behind the primary "
+                f"(threshold: 60s). Reads routed to the replica serve "
+                f"stale data. Check Neon dashboard for replica health "
+                f"or for primary-side write storms saturating WAL."
+            ),
+        })
+    return findings
+
+
+def check_signup_drop_off_step() -> list[dict]:
+    """Computes per-step signup funnel counts for yesterday vs the
+    day before, fires for any step where conversion drops >30%
+    day-over-day. Each step is keyed off events in `signup_events`:
+      • landing → email_submitted → email_verified → onboarded →
+        first_mcp_call
+
+    Defensive: if the events table doesn't exist or steps don't
+    have enough volume (n<20), skip silently."""
+    findings: list[dict] = []
+    c = _db()
+    if c is None: return findings
+    try:
+        with c.cursor() as cur:
+            cur.execute("SELECT to_regclass('public.signup_events')")
+            if not (cur.fetchone() or [None])[0]:
+                return findings
+            cur.execute("""
+                SELECT step,
+                       COUNT(*) FILTER (
+                         WHERE created_at::date = (CURRENT_DATE - 1)) AS yday,
+                       COUNT(*) FILTER (
+                         WHERE created_at::date = (CURRENT_DATE - 2)) AS day_before
+                  FROM signup_events
+                 WHERE created_at > CURRENT_DATE - INTERVAL '4 days'
+                   AND step IS NOT NULL
+                 GROUP BY step
+            """)
+            rows = cur.fetchall()
+    except Exception:
+        return findings
+    finally:
+        try: c.close()
+        except Exception: pass
+
+    for step, yday, prev in rows:
+        yday = int(yday or 0)
+        prev = int(prev or 0)
+        # Need enough volume on the prior day to make the ratio
+        # meaningful. n<20 = noise, skip.
+        if prev < 20: continue
+        drop_pct = round((1.0 - (yday / prev)) * 100.0, 1)
+        if drop_pct >= 30.0:
+            findings.append({
+                "issue":  "signup_drop_off_step",
+                "url":    f"funnel:{step}",
+                "count":  int(drop_pct),
+                "detail": (
+                    f"Signup step `{step}` dropped {drop_pct}% "
+                    f"day-over-day ({yday} vs {prev} the day before). "
+                    f"Audit the page that owns this step for a "
+                    f"regression — broken form, paywall change, JS "
+                    f"error, or copy that turned the flow cold."
+                ),
+            })
+    return findings
+
+
+def check_detector_runtime_distribution() -> list[dict]:
+    """Reads the _DETECTOR_TIMINGS dict (populated by scan_all's
+    _run_one wrapper) and fires for any detector taking >15s.
+
+    Brain meta-monitor: when the radar itself slows down (caught
+    this session — consistency_radar hit 107s and triggered the
+    /grid 112s Railway restart cascade), this surfaces the culprit
+    as a brain-level finding instead of requiring a manual log dig."""
+    findings: list[dict] = []
+    THRESHOLD_MS = 15_000
+    for name, info in list(_DETECTOR_TIMINGS.items()):
+        try:
+            ms = int(info.get("last_ms") or 0)
+        except Exception:
+            continue
+        if ms > THRESHOLD_MS:
+            findings.append({
+                "issue":  "detector_runtime_slow",
+                "url":    f"detector:{name}",
+                "count":  int(ms / 1000),
+                "detail": (
+                    f"Detector `{name}` took {ms/1000:.1f}s on the last "
+                    f"scan (threshold: 15s). Slow detectors push the "
+                    f"whole scan past its 60s budget — eventually the "
+                    f"gunicorn worker times out and Railway restarts. "
+                    f"Audit the detector for sequential HTTP calls, "
+                    f"unbounded queries, or a missing per-probe timeout."
+                ),
+            })
+    return findings
+
+
+def check_stripe_webhook_lag() -> list[dict]:
+    """Fires if the most recent Stripe webhook receipt is >2h old.
+
+    Stripe webhooks are how subscription state, payment failures,
+    and cancellations land in our DB. A lag means our customer
+    state is drifting from reality — a paid user might be churned
+    in Stripe but still see paid-tier access here, or worse.
+
+    Looks for the most recent row in `stripe_webhooks` /
+    `stripe_webhook_log` / `stripe_events`. Defensive across schema
+    variants."""
+    findings: list[dict] = []
+    c = _db()
+    if c is None: return findings
+    candidates = [
+        ("stripe_webhooks",     "received_at"),
+        ("stripe_webhook_log",  "received_at"),
+        ("stripe_events",       "created_at"),
+    ]
+    tbl = ts_col = None
+    try:
+        with c.cursor() as cur:
+            for t, col in candidates:
+                cur.execute("SELECT to_regclass(%s)", (f"public.{t}",))
+                if (cur.fetchone() or [None])[0]:
+                    tbl, ts_col = t, col
+                    break
+            if not tbl:
+                return findings
+            cur.execute(f"SELECT MAX({ts_col}) FROM {tbl}")
+            last = (cur.fetchone() or [None])[0]
+    except Exception:
+        return findings
+    finally:
+        try: c.close()
+        except Exception: pass
+
+    if last is None:
+        # Table exists but is empty — could be a fresh deploy or a
+        # webhook that's never fired. Fire only if it's a known-active
+        # account; otherwise informational.
+        return findings
+    import datetime as _dt
+    now = _dt.datetime.now(_dt.timezone.utc)
+    if last.tzinfo is None:
+        last = last.replace(tzinfo=_dt.timezone.utc)
+    age_h = (now - last).total_seconds() / 3600.0
+    if age_h > 2.0:
+        findings.append({
+            "issue":  "stripe_webhook_lag",
+            "url":    f"table:{tbl}",
+            "count":  int(age_h),
+            "detail": (
+                f"Last Stripe webhook landed {age_h:.1f}h ago "
+                f"(table: `{tbl}`, threshold: 2h). Customer state is "
+                f"drifting — recent subscription changes, payment "
+                f"failures, and cancellations are not reflected. "
+                f"Check Stripe dashboard → Developers → Webhooks for "
+                f"a disabled endpoint or repeated 5xx failures."
             ),
         })
     return findings
@@ -6265,7 +6594,22 @@ def scan_all() -> list[dict]:
                # Probes Render directly 3x; fires when ≥2/3 fail. Pairs
                # with the autopilot action that hits the Render deploy
                # hook for a fresh container.
-               check_render_flapping):
+               check_render_flapping,
+               # Phase r33-E (2026-05-21) — QA monitor master shell.
+               # Five detectors closing the next-highest-leverage gaps:
+               #   404_spike: burst detection (deploy regression sign)
+               #   neon_replication_lag: failover safety
+               #   signup_drop_off_step: revenue protection
+               #   detector_runtime_distribution: brain meta-monitor
+               #     (catches a slow detector before it cascades a
+               #      restart — the bug class that caused this session's
+               #      107s consistency_radar → /grid 112s outage)
+               #   stripe_webhook_lag: revenue-pipeline safety
+               check_404_spike,
+               check_neon_replication_lag,
+               check_signup_drop_off_step,
+               check_detector_runtime_distribution,
+               check_stripe_webhook_lag):
         detectors.append(fn)
 
     # Phase RRR-brain-parallel (2026-05-18) — scan was taking 76.9s
@@ -6276,11 +6620,24 @@ def scan_all() -> list[dict]:
     # time becomes max(detector_time) ≈ 10-15s instead of sum.
     # Per-detector 20s timeout prevents any single slow probe from
     # holding up the whole scan.
-    import concurrent.futures as _cf
+    import concurrent.futures as _cf, time as _scan_time
     def _run_one(fn):
+        t0 = _scan_time.time()
         try:
-            return ("ok", fn.__name__, fn() or [])
+            result = fn() or []
+            _DETECTOR_TIMINGS[fn.__name__] = {
+                "last_ms":  int((_scan_time.time() - t0) * 1000),
+                "last_run": _scan_time.time(),
+                "ok":       True,
+            }
+            return ("ok", fn.__name__, result)
         except Exception as e:
+            _DETECTOR_TIMINGS[fn.__name__] = {
+                "last_ms":  int((_scan_time.time() - t0) * 1000),
+                "last_run": _scan_time.time(),
+                "ok":       False,
+                "err":      f"{type(e).__name__}: {str(e)[:120]}",
+            }
             return ("err", fn.__name__,
                     f"{type(e).__name__}: {str(e)[:200]}")
 

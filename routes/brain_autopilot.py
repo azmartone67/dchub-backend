@@ -945,6 +945,44 @@ _PATTERN_LIBRARY: dict[str, dict[str, Any]] = {
         "use_admin":   False,
         "description": "Auto-recovery: ≥2/3 probes against Render's /api/v1/version failed. Action POSTs the Render deploy hook (RENDER_DEPLOY_HOOK_URL env) to force a fresh container. 30-min cooldown prevents bounce loops. Escalates if hook env var is missing.",
     },
+    # ──────────────────────────────────────────────────────────────
+    # Phase r33-E (2026-05-21) — QA monitor master shell patterns.
+    # All 5 are escalation-only because the fixes are code-level
+    # (deploy revert, replica reconfigure, funnel step audit, slow-
+    # detector refactor, Stripe webhook endpoint reset). They surface
+    # the signal so a human or L22 auto-code can act. Worth adding
+    # auto-actions later for the deterministic ones.
+    # ──────────────────────────────────────────────────────────────
+    "404_spike": {
+        "action":      lambda f: (None, None),
+        "method":      None,
+        "use_admin":   False,
+        "description": "Escalation-only: a URL pattern had ≥10 404s in the last 5min with <1/hr baseline. Classic deploy regression. Investigate: (1) git log of last commit to main branch for route renames or blueprint removals; (2) front-end pages referencing the URL pattern in the finding; (3) consider auto-redirect via _routes.json or a Flask 301.",
+    },
+    "neon_replication_lag": {
+        "action":      lambda f: (None, None),
+        "method":      None,
+        "use_admin":   False,
+        "description": "Escalation-only: read replica is >60s behind primary, unreachable, or pointing at primary. Failover safety degraded. Fix: Neon dashboard → check replica endpoint health, branch status, and replication lag. Validate READ_REPLICA_URL points at an actual read-replica endpoint (not primary).",
+    },
+    "signup_drop_off_step": {
+        "action":      lambda f: (None, None),
+        "method":      None,
+        "use_admin":   False,
+        "description": "Escalation-only: a signup funnel step dropped ≥30% day-over-day. The finding.url is `funnel:<step>` — start from the page that owns that step. Audit: form validation, paywall copy, JS errors in Plausible, recent deploys that touched signup/onboarding routes.",
+    },
+    "detector_runtime_slow": {
+        "action":      lambda f: (None, None),
+        "method":      None,
+        "use_admin":   False,
+        "description": "Escalation-only: a single detector took >15s on the last scan. This is the failure pattern that caused this session's /grid 112s cascade. Audit the named detector for sequential HTTP probes (parallelize), unbounded SQL (add LIMIT or move to a cron), or external API calls without per-call timeout (add 5s ceiling).",
+    },
+    "stripe_webhook_lag": {
+        "action":      lambda f: (None, None),
+        "method":      None,
+        "use_admin":   False,
+        "description": "Escalation-only: last Stripe webhook landed >2h ago. Customer state is drifting. Fix: Stripe dashboard → Developers → Webhooks → check our endpoint isn't disabled, isn't returning 5xx, and signing secret hasn't rotated. Re-send recent failed events from the Stripe UI to backfill.",
+    },
 }
 
 
