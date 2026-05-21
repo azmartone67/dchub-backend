@@ -1359,11 +1359,20 @@ def autopilot_run():
 
     # Pull findings from our OWN heal endpoint via Railway-direct (bypass
     # CF Worker timeout). This is the same JSON the brain reads.
+    #
+    # r33-H+auth (2026-05-21): include X-Admin-Key so the outbound fetch
+    # bypasses our own IP-based rate limiter. Previous runs were getting
+    # HTTP 429 ("heal_findings_fetch_failed") because the GH-Actions
+    # runner IP hit the anonymous rate ceiling after 5 triggers in 30min,
+    # which caused examined=0 cascades on every subsequent run.
+    _outbound_admin = _admin_key()
     try:
         req = urllib.request.Request(
             _BACKEND_BASE.rstrip("/") + "/api/v1/heal/findings",
             method="GET",
         )
+        if _outbound_admin:
+            req.add_header("X-Admin-Key", _outbound_admin)
         with urllib.request.urlopen(req, timeout=20) as resp:
             payload = json.loads(resp.read().decode("utf-8"))
     except Exception as e:
@@ -1397,6 +1406,8 @@ def autopilot_run():
                 _BACKEND_BASE.rstrip("/") + "/api/v1/brain/consistency-radar",
                 method="GET",
             )
+            if _outbound_admin:
+                rad_req.add_header("X-Admin-Key", _outbound_admin)
             with urllib.request.urlopen(rad_req, timeout=30) as rad_resp:
                 rad_payload = json.loads(rad_resp.read().decode("utf-8"))
             fetched = rad_payload.get("findings") or []
