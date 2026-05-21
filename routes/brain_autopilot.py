@@ -1403,21 +1403,30 @@ def autopilot_run():
     # finding shows up on both sides.
     #
     # r33-J in-process bridge (2026-05-21) — replaces the HTTP fetch.
-    # The HTTP fetch went to a random Railway worker via Railway-direct;
-    # each worker has its own scan cache; the autopilot consistently
-    # hit a worker with empty cache → from_radar_bridge: 0 even after
-    # the X-Admin-Key + retry fixes landed. Calling scan_summary() IN
-    # this worker's process guarantees we use THIS worker's cache (and
-    # populate it if cold). One in-process call replaces 2 HTTP hops +
-    # the cold-start retry dance entirely.
+    # r33-J round 5: use scan_all() directly instead of scan_summary().
+    # scan_summary() has a single-flight lock that returns empty
+    # cold_start_lock_busy if ANOTHER worker is mid-scan — we kept
+    # getting from_radar_bridge: 0 because some background worker was
+    # always scanning. scan_all() runs the 100 detectors directly with
+    # no lock dance. The autopilot has a 240s cron budget; a 15-30s
+    # in-process scan fits fine. One in-process call replaces 2 HTTP
+    # hops + the cold-start retry dance entirely.
     radar_findings: list[dict] = []
     summary_bridge_error = None
     try:
-        from routes.brain_consistency_radar import scan_summary as _radar_scan
-        _rad_payload = _radar_scan() or {}
+        # First try the cached summary (fast path when cache is fresh).
+        from routes.brain_consistency_radar import (
+            scan_summary as _radar_summary,
+            scan_all as _radar_scan_all,
+        )
+        _rad_payload = _radar_summary() or {}
         fetched = _rad_payload.get("findings") or []
-        if isinstance(fetched, list):
+        if isinstance(fetched, list) and fetched:
             radar_findings = fetched
+        else:
+            # Cache cold OR lock busy — run scan_all directly. Bypasses
+            # the lock; populates findings in-process for this worker.
+            radar_findings = _radar_scan_all() or []
     except Exception as e:
         summary_bridge_error = f"{type(e).__name__}: {str(e)[:100]}"
     if radar_findings:
