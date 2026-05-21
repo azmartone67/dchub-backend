@@ -2304,12 +2304,13 @@ def check_citation_score_dropped() -> list[dict]:
     except (TypeError, ValueError):
         return []
     # Phase r33-G (2026-05-21): defensive date parsing. Before this
-    # guard, a malformed date in any row raised ValueError inside the
-    # generator expression below and crashed the detector — which
-    # showed up on /brain-live as consistency_radar_detector_crashed.
+    # guard, a malformed date crashed the detector. r33-G-fix:
+    # `datetime` was never module-imported in this file; use the
+    # inline-import pattern like every other detector here.
+    import datetime as _dt_mod
     def _safe_iso(s):
         try:
-            return datetime.datetime.fromisoformat(s) if s else None
+            return _dt_mod.datetime.fromisoformat(s) if s else None
         except (ValueError, TypeError):
             return None
     latest_dt = _safe_iso(rows[-1].get("date"))
