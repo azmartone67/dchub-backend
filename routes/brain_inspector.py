@@ -211,15 +211,17 @@ def _gather_signals() -> dict:
         # so the bare >= comparison errored on every brief with
         # "operator does not exist: text >= timestamp with time zone".
         # CAST to timestamptz, guard against empty strings + NULL.
+        # r33-Q (2026-05-21, fix-2): the join `facilities.id IN (
+        # SELECT id FROM discovered_facilities)` was a TEXT-vs-INTEGER
+        # type mismatch (facilities.id=text, discovered_facilities.id=int)
+        # and they're separate ID spaces anyway. The metric Inspector
+        # actually wants is "how many new facilities surfaced in the
+        # last 7 days" — count discovered_facilities directly.
         _try("facilities_added_7d",
-             """SELECT COUNT(*) FROM facilities
-                 WHERE source = 'manual'
-                    OR id IN (
-                       SELECT id FROM discovered_facilities
-                        WHERE COALESCE(discovered_at, '') != ''
-                          AND discovered_at::timestamptz
-                              >= NOW() - INTERVAL '7 days'
-                    )""", one=True)
+             """SELECT COUNT(*) FROM discovered_facilities
+                 WHERE COALESCE(discovered_at, '') != ''
+                   AND discovered_at::timestamptz
+                       >= NOW() - INTERVAL '7 days'""", one=True)
         # Most recent deal
         _try("deals_recent",
              """SELECT date, buyer, seller, value FROM deals
@@ -241,12 +243,18 @@ def _gather_signals() -> dict:
         # lives on users(id). Previous query errored with
         # "column 'email' does not exist" every brief. Join users via
         # LEFT JOIN so api keys without a linked user still appear.
+        # r33-Q (2026-05-21, fix-2): api_keys.created_at is TEXT not
+        # TIMESTAMP (same trap as discovered_facilities.discovered_at).
+        # Bare >= comparison errored "text >= timestamp with time zone".
+        # CAST to timestamptz with empty-string guard.
         _try("paid_conversions_7d",
              """SELECT u.email, ak.plan, ak.created_at
                   FROM api_keys ak
                   LEFT JOIN users u ON u.id = ak.user_id
                  WHERE ak.plan IN ('developer','pro','enterprise')
-                   AND ak.created_at >= NOW() - INTERVAL '7 days'
+                   AND COALESCE(ak.created_at, '') != ''
+                   AND ak.created_at::timestamptz
+                       >= NOW() - INTERVAL '7 days'
                  ORDER BY ak.created_at DESC LIMIT 25""")
         # Phase r24 — news entity discovery candidates. Surfaces unknown
         # operator/facility names that appeared in recent news but
