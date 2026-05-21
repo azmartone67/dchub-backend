@@ -48,7 +48,7 @@ def _compute_coverage() -> dict:
                 SELECT UPPER(COALESCE(country, '?')) AS cc, COUNT(*) AS n
                   FROM facilities
                  WHERE COALESCE(country, '') != ''
-                 GROUP BY UPPER(country)
+                 GROUP BY UPPER(COALESCE(country, '?'))
                  ORDER BY n DESC
                  LIMIT 25
             """)
