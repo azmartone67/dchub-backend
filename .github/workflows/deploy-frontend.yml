@@ -118,10 +118,48 @@ jobs:
             --branch="$PROD_BRANCH" \
             --commit-dirty=true
 
-      - name: 4 — Verify live worker version
+      - name: 4 — Purge CF zone cache for / (root)
+        # r33-Q+cache-purge (2026-05-21): CF Pages deploys update the
+        # Pages project, but the CF ZONE cache (separate layer in front of
+        # Pages) was holding the old HTML for ~50+ min on age headers.
+        # This caused the 2026-05-21 "new homepage shows old design"
+        # incident: deploy was correct, origin served new, but cf-cache-status:HIT
+        # with age:3089 meant browsers got the old cached HTML.
+        #
+        # Look up the zone for dchub.cloud + purge / specifically.
         if: success()
         run: |
-          sleep 30
-          VERSION=$(curl -sI https://dchub.cloud/api/health 2>/dev/null | grep -i x-dc-worker-version | tr -d '\r\n')
-          echo "Live worker version: $VERSION"
-          echo "Source declares: $(grep WORKER_VERSION dchub-frontend/_worker.js | head -1)"
+          ZONE_RESP=$(curl -sS \
+            -H "Authorization: Bearer $CLOUDFLARE_API_TOKEN" \
+            "https://api.cloudflare.com/client/v4/zones?name=dchub.cloud")
+          ZONE_ID=$(echo "$ZONE_RESP" | jq -r '.result[0].id // ""')
+          if [ -z "$ZONE_ID" ] || [ "$ZONE_ID" = "null" ]; then
+            echo "::warning::Could not resolve zone ID for dchub.cloud — skipping cache purge"
+            echo "$ZONE_RESP" | jq '.errors // .' | head -20
+            exit 0
+          fi
+          echo "Purging cache for zone $ZONE_ID (dchub.cloud)"
+          PURGE_RESP=$(curl -sS -X POST \
+            -H "Authorization: Bearer $CLOUDFLARE_API_TOKEN" \
+            -H "Content-Type: application/json" \
+            "https://api.cloudflare.com/client/v4/zones/$ZONE_ID/purge_cache" \
+            -d '{"files":["https://dchub.cloud/","https://dchub.cloud","https://dchub.cloud/index.html"]}')
+          SUCCESS=$(echo "$PURGE_RESP" | jq -r '.success')
+          if [ "$SUCCESS" = "true" ]; then
+            echo "✅ Cache purged for / and /index.html"
+          else
+            echo "::warning::Cache purge failed:"
+            echo "$PURGE_RESP" | jq '.errors // .'
+          fi
+
+      - name: 5 — Verify live worker version + cache state
+        if: success()
+        run: |
+          sleep 5
+          echo "=== /api/health worker version ==="
+          curl -sI https://dchub.cloud/api/health 2>/dev/null | grep -i x-dc-worker-version | tr -d '\r\n'
+          echo
+          echo "=== / cache-status (should be MISS after purge) ==="
+          curl -sI https://dchub.cloud/ 2>/dev/null | grep -iE "cf-cache-status|age:"
+          echo
+          echo "=== Source declares: $(grep WORKER_VERSION dchub-frontend/_worker.js | head -1) ==="
