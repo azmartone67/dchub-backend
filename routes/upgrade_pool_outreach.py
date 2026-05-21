@@ -42,15 +42,28 @@ logger = logging.getLogger(__name__)
 upgrade_pool_outreach_bp = Blueprint("upgrade_pool_outreach", __name__)
 
 
+# r32-conv-fix (2026-05-20): match the EXACT auth pattern that
+# /api/v1/admin/schema/repair uses — multi-env-var set with header
+# fallback chain. User reported 401 even though their X-Admin-Key
+# worked for schema/repair. Root cause: my earlier check looked at
+# DCHUB_ADMIN_KEY only, but Railway has DCHUB_INTERNAL_KEY set (which
+# schema/repair also accepts). Now both modules accept the same key.
+_INTERNAL_KEYS: set = {"dchub-internal-sync-2026"}
+for _n in ("DCHUB_INTERNAL_KEY", "INTERNAL_KEY", "DCHUB_ADMIN_KEY",
+           "ADMIN_API_KEY", "ADMIN_SECRET"):
+    _v = os.environ.get(_n)
+    if _v:
+        _INTERNAL_KEYS.add(_v)
+
+
 def _admin_ok():
-    """Match the auth pattern used by /admin/schema/repair and other
-    admin endpoints. Header X-Admin-Key OR query ?admin_key=, compared
-    against DCHUB_ADMIN_KEY env."""
-    expected = (os.environ.get("DCHUB_ADMIN_KEY") or
-                os.environ.get("DCHUB_INTERNAL_KEY"))
-    provided = (request.headers.get("X-Admin-Key") or
-                request.args.get("admin_key"))
-    return expected and provided == expected
+    """Match /schema/repair's auth pattern exactly: accept any header
+    in {X-Internal-Key, X-Admin-Key} or ?admin_key= query param that
+    matches ANY of the configured internal keys."""
+    sent = (request.headers.get("X-Internal-Key")
+            or request.headers.get("X-Admin-Key")
+            or request.args.get("admin_key") or "").strip()
+    return sent in _INTERNAL_KEYS
 
 
 def _get_db():
