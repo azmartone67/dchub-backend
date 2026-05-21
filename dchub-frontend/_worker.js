@@ -75,6 +75,14 @@
 // CONFIGURATION
 // ============================================================
 const RAILWAY_BACKEND = 'https://dchub-backend-production.up.railway.app';
+
+// r33-Q+failover (2026-05-21) — wire Render as actual failover.
+// Previously the worker had a single Railway upstream; when Railway 5xx'd
+// or timed out, requests fell straight to stale KV → 503. Render was paying
+// for itself but never catching traffic. Now: on GET requests where Railway
+// returns 5xx or null AND we have no fresh/stale KV, try Render before 503.
+// POST/PUT/DELETE skip failover (Render runs IS_FAILOVER=true, read-only).
+const RENDER_FAILOVER = 'https://dchub-backend-render.onrender.com';
 const WORKER_VERSION = '4.24.0-switzerland';
 const _DCHUB_BUILD_MARKER = 'rebuild-1777448239';
 
@@ -1142,6 +1150,32 @@ async function proxyToRailway(request, pathname, search, edgeTtl, timeoutMs) {
   } catch (e) { clearTimeout(timer); return null; }
 }
 
+// r33-Q+failover (2026-05-21) — parallel proxy to Render. Only invoked
+// when Railway returns 5xx or null AND no fresh/stale KV cache is
+// available. Render cold-starts can take 30-60s, so use a generous
+// timeout (45s) — better a slow response than a 503.
+async function proxyToRender(request, pathname, search, timeoutMs) {
+  const targetUrl = RENDER_FAILOVER + pathname + (search || '');
+  const controller = new AbortController();
+  const timer = setTimeout(() => controller.abort(), timeoutMs);
+  try {
+    const headers = new Headers(request.headers);
+    headers.set('X-Forwarded-Host', 'dchub.cloud');
+    headers.set('X-Forwarded-Proto', 'https');
+    headers.set('Referer', 'https://dchub.cloud');
+    headers.set('Accept-Encoding', 'identity');
+    headers.set('X-DC-Hub-Failover-Reason', 'railway-5xx-or-timeout');
+    const fetchOpts = {
+      method: request.method, headers,
+      body: ['GET', 'HEAD'].includes(request.method) ? null : request.body,
+      signal: controller.signal, redirect: 'manual',
+    };
+    const resp = await fetch(targetUrl, fetchOpts);
+    clearTimeout(timer);
+    return resp;
+  } catch (e) { clearTimeout(timer); return null; }
+}
+
 async function proxyWithRetry(request, pathname, search, edgeTtl, timeoutMs) {
   const resp = await proxyToRailway(request, pathname, search, edgeTtl, timeoutMs);
   if (resp && resp.status >= 500 && isRetryable(request.method, pathname)) {
@@ -1772,6 +1806,22 @@ export default {
       return result;
     }
 
+    // STEP 2.5: Render failover (GETs only — Render runs IS_FAILOVER=true read-only)
+    // r33-Q+failover (2026-05-21) — try Render before falling through to stale cache.
+    // Was: Railway 5xx → stale KV → 503. Now: Railway 5xx → Render → stale KV → 503.
+    if (isGet) {
+      const renderResp = await proxyToRender(request, pathname, url.search, 45000);
+      if (renderResp && renderResp.status < 500) {
+        const result = addCORS(new Response(renderResp.body, renderResp), request);
+        result.headers.set('x-dc-hub-backend', 'render');
+        result.headers.set('x-dc-hub-failover', 'true');
+        result.headers.set('X-Failover-Mode', 'render-active');
+        result.headers.set('X-DC-Worker-Version', WORKER_VERSION);
+        result.headers.set('X-DC-Response-Time', `${Date.now() - startTime}ms`);
+        return result;
+      }
+    }
+
     // STEP 3: Stale KV
     if (isGet && env.DCHUB_CACHE && kvIsCacheable(pathname)) {
       const kvResult = await kvCacheGet(env.DCHUB_CACHE, kvCacheKey(url.toString()), true, tier.kvFreshTtl, tier.kvStaleTtl);
@@ -1786,7 +1836,7 @@ export default {
     }
 
     // STEP 4: 503
-    const errResp = addCORS(json({ error: 'Service temporarily unavailable', message: 'Backend unreachable and no cached data available. Please retry shortly.', status: 503, worker_version: WORKER_VERSION, tip: 'This message lands when both Railway and KV stale cache are unavailable.' }, 503), request);
+    const errResp = addCORS(json({ error: 'Service temporarily unavailable', message: 'Backend unreachable and no cached data available. Please retry shortly.', status: 503, worker_version: WORKER_VERSION, tip: 'This message lands when Railway, Render failover, and KV stale cache are all unavailable.' }, 503), request);
     errResp.headers.set('X-DC-Worker-Version', WORKER_VERSION);
     errResp.headers.set('X-DC-Response-Time', `${Date.now() - startTime}ms`);
     return errResp;
