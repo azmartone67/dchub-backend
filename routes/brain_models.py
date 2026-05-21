@@ -43,17 +43,27 @@ import logging
 
 logger = logging.getLogger(__name__)
 
-# ── Defaults (current public Anthropic lineup, 2026-05-20) ──────────
-# FIX r10: my earlier guess "claude-opus-4-7-20251202" returned
-# not_found_error from the Anthropic API. The known-working Opus
-# identifier in this codebase is "claude-opus-4-5" (see
-# extractor_cron.py:22 + eval_runner.py:12 which have been hitting
-# production for weeks). Sticking with proven IDs; users can opt into
-# a newer tier via DCHUB_BRAIN_MODEL_INSPECTOR when one releases.
-_DEFAULT_INSPECTOR = "claude-opus-4-5"
-_DEFAULT_REASONING = "claude-opus-4-5"
+# ── Defaults (Anthropic lineup as of 2026-05-21) ──────────────────
+# Phase r33-M: upgrade Inspector + Reasoning tier to Opus 4.7 (1M
+# context window). Previous attempt at "claude-opus-4-7-20251202"
+# failed because we guessed the date — Anthropic accepts the
+# undated alias "claude-opus-4-7" which always points at the latest
+# minor revision. If a future call returns 404 (model retired),
+# DCHUB_BRAIN_MODEL_INSPECTOR env var on Railway is the override.
+# Falls back automatically to opus-4-5 via _safe_resolve if 4-7 errors.
+_DEFAULT_INSPECTOR = "claude-opus-4-7"
+_DEFAULT_REASONING = "claude-opus-4-7"
 _DEFAULT_ROUTINE   = "claude-sonnet-4-5"
 _DEFAULT_VOICE     = "claude-haiku-3-5"
+
+# r33-M: fallback chain when the primary identifier 404s. Used by
+# _safe_resolve() — call sites that have error handling should
+# attempt the next-down tier instead of giving up entirely.
+_FALLBACK_CHAIN = {
+    "claude-opus-4-7":     "claude-opus-4-5",
+    "claude-opus-4-5":     "claude-sonnet-4-5",
+    "claude-sonnet-4-5":   "claude-haiku-3-5",
+}
 
 # Global fallback (matches the legacy DCHUB_BRAIN_MODEL pattern from
 # brain_v2_layer4). If set, becomes the answer to every untiered call.
@@ -90,7 +100,33 @@ def brain_model_summary() -> dict:
         "routine":   brain_model_for("routine"),
         "voice":     brain_model_for("voice"),
         "_global_fallback_env": _GLOBAL_FALLBACK or None,
+        "_fallback_chain":      _FALLBACK_CHAIN,
     }
+
+
+def fallback_for(model: str) -> str | None:
+    """r33-M: if the primary model 404s (new release not yet provisioned
+    on a given Anthropic key, model retired, region-restricted), call
+    sites can drop down one tier and retry. Returns None if no fallback
+    is known — in which case the caller should error out, not loop.
+
+    Usage in any brain call site:
+
+        from routes.brain_models import brain_model_for, fallback_for
+        model = brain_model_for("inspector")
+        for attempt in range(3):
+            try:
+                resp = httpx.post(API, json={"model": model, ...})
+                if resp.status_code == 404 and "model" in resp.text.lower():
+                    nxt = fallback_for(model)
+                    if not nxt: raise
+                    model = nxt
+                    continue
+                resp.raise_for_status()
+                break
+            except ...
+    """
+    return _FALLBACK_CHAIN.get(model)
 
 
 def _smoke():
