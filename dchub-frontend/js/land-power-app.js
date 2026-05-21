@@ -4,7 +4,7 @@
         // Cache-bust key for fiber API fetches. The CF worker edge-caches
         // /api/* GETs; bump this whenever fiber_routes data or the endpoint's
         // filtering changes so the overlay never serves a stale cached set.
-        window.FIBER_DATA_VERSION = '135';
+        window.FIBER_DATA_VERSION = '136';
 
         // Initialize map
         var map = L.map('map',{zoomControl:true}).setView([39.0,-98.0],4);
@@ -8379,7 +8379,7 @@ var markets = {
         // per DC metro, from carrier_facility_presence). Dense set — higher limit.
         function loadMetroInterconnect() {
             loadFiberClass('type=metro_inferred', layers.metrointerconnect, 'count-metrointerconnect',
-                {color: '#22d3ee', weight: 1, opacity: 0.55, dashArray: '3,3', icon: '🕸️'}, 20000);
+                {color: '#22d3ee', weight: 2.5, opacity: 0.9, dashArray: '6,4', icon: '🕸️'}, 20000);
         }
 
         // ============================================
