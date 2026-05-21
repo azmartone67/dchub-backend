@@ -960,15 +960,36 @@ def _init_read_pool():
     if not read_url.startswith('postgres'):
         print("DATABASE POOL: ⚠️ DATABASE_READ_URL is not a valid postgres:// URL — ignoring")
         return
+    # r32-failover-2 (2026-05-21): same fix as _init_pg_pool — on
+    # Render (IS_FAILOVER=true) use minconn=0 + keepalive_idle=30 so
+    # the READ pool doesn't keep idle conns alive. Pre-fix the main
+    # pool was minconn=0 but this READ pool was still minconn=2 →
+    # the stale-storm came from THIS pool, undoing the main fix.
+    # User caught this when Render flap-loop continued AFTER 98fb42de
+    # deployed — same DATABASE POOL: Retry messages, same SIGTERM,
+    # same restart loop. Now BOTH pools are failover-aware.
+    _is_failover = (
+        os.environ.get("RENDER", "").lower() in ("true", "1", "yes")
+        or bool(os.environ.get("RENDER_SERVICE_ID"))
+        or os.environ.get("DCHUB_FAILOVER", "").lower() in ("true", "1", "yes")
+    )
+    _read_min = 0 if _is_failover else 2
+    _read_keepidle = 30 if _is_failover else 60
     for attempt in range(3):
         try:
             _pg_pool_read = _pg_pool.ThreadedConnectionPool(
-                minconn=2,
+                minconn=_read_min,
                 maxconn=30,
                 dsn=read_url,
-                connect_timeout=10
+                connect_timeout=10,
+                keepalives=1,
+                keepalives_idle=_read_keepidle,
+                keepalives_interval=10,
+                keepalives_count=3,
             )
-            print("DATABASE POOL: ✅ Read replica pool initialized (2-30 connections)")
+            print(f"DATABASE POOL: ✅ Read replica pool initialized "
+                  f"({_read_min}-30 connections, keepalive {_read_keepidle}s)"
+                  + (" [FAILOVER MODE — minconn=0]" if _is_failover else ""))
             return
         except Exception as e:
             print(f"DATABASE POOL: ⚠️ Read pool attempt {attempt + 1}/3 failed: {e}")
