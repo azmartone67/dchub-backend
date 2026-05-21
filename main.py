@@ -20289,6 +20289,15 @@ try:
         print("📨 [upgrade-pool] ready · /api/v1/admin/upgrade-pool/preview · /send")
     except Exception as _e_up:
         print(f"⚠️ [upgrade-pool] blueprint failed to register: {_e_up}")
+    # Phase r32-david (2026-05-20) — visitor intelligence dashboard.
+    # Honest demo of what we can deliver re: eyeball intelligence for
+    # enterprise visitors. Admin-gated (same key chain as upgrade-pool).
+    try:
+        from routes.visitor_intelligence import visitor_intelligence_bp
+        app.register_blueprint(visitor_intelligence_bp)
+        print("👁️ [visitor-intelligence] ready · /visitor-intelligence · /api/v1/admin/visitor-intelligence")
+    except Exception as _e_vi:
+        print(f"⚠️ [visitor-intelligence] blueprint failed to register: {_e_vi}")
     print("🔧 Schema Repair: ✅ Registered "
           "(POST /api/v1/admin/schema/repair · /geocoding/backfill · "
           "GET /funnel/leakage)")
