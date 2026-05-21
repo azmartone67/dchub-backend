@@ -53,18 +53,94 @@ def _p99_send_email(email, api_key, tools_tried):
     SendGrid removed in phase 102c (account permanently OOC, user declined
     upgrade). Resend errors are surfaced even when SMTP succeeds, so we can
     always diagnose Resend without it being masked by a working fallback.
+
+    r32-welcome (2026-05-20): personalized opening based on tools_tried.
+    If we know the recipient hit a specific paid tool (passed in via the
+    redeem flow), the email leads with a working curl example FOR THAT
+    TOOL — "you hit get_grid_intelligence, here's the call that just
+    unlocked." Higher activation rate than the generic ERCOT default
+    because it shows them the exact thing they were trying to do.
     """
     import os as _os, json as _j
     import urllib.request as _ur, urllib.error as _ue
 
-    subject = "Your DC Hub dev key is ready"
+    # r32-welcome: tool-aware customization.
+    PRIMARY_TOOL_HINTS = {
+        "get_grid_intelligence": {
+            "tagline": "Real-time grid intelligence for 7 ISOs",
+            "curl_example": (
+                f"curl -H 'Authorization: Bearer {api_key}' "
+                "https://dchub.cloud/api/v1/grid-intelligence?iso=PJM"
+            ),
+            "next_step": "Try PJM, ERCOT, CAISO, MISO, SPP, NYISO, ISO-NE.",
+        },
+        "get_fiber_intel": {
+            "tagline": "Fiber routes + carrier intelligence",
+            "curl_example": (
+                f"curl -H 'Authorization: Bearer {api_key}' "
+                "https://dchub.cloud/api/v1/fiber/intel?market=ashburn"
+            ),
+            "next_step": "Try ashburn, dallas, phoenix, silicon-valley, atlanta.",
+        },
+        "get_market_intel": {
+            "tagline": "DCPI scores for 276 markets",
+            "curl_example": (
+                f"curl -H 'Authorization: Bearer {api_key}' "
+                "https://dchub.cloud/api/v1/markets/northern-virginia"
+            ),
+            "next_step": "Or open https://dchub.cloud/pockets for the live ranking.",
+        },
+        "analyze_site": {
+            "tagline": "Composite site scoring across power/fiber/risk/carbon",
+            "curl_example": (
+                f"curl -H 'Authorization: Bearer {api_key}' "
+                "'https://dchub.cloud/api/v1/site-forecast?lat=38.98&lon=-77.49&state=VA'"
+            ),
+            "next_step": "Swap lat/lon for any site you're evaluating.",
+        },
+        "get_water_risk": {
+            "tagline": "Facility-level water-risk overlay",
+            "curl_example": (
+                f"curl -H 'Authorization: Bearer {api_key}' "
+                "https://dchub.cloud/api/v1/water-risk?state=AZ"
+            ),
+            "next_step": "Useful in WECC + ERCOT where water stress matters most.",
+        },
+    }
+    # Pick the first known tool from tools_tried that maps to a hint.
+    primary_tool = None
+    if tools_tried:
+        for t in tools_tried:
+            if t in PRIMARY_TOOL_HINTS:
+                primary_tool = t
+                break
+    hint = PRIMARY_TOOL_HINTS.get(primary_tool, {
+        "tagline":      "Real-time data center market intelligence",
+        "curl_example": (f"curl -H 'Authorization: Bearer {api_key}' "
+                         "https://dchub.cloud/api/v1/grid-intelligence?iso=ERCOT"),
+        "next_step":    "Try any of 7 ISOs (PJM, ERCOT, CAISO, MISO, SPP, NYISO, ISO-NE).",
+    })
+
+    subject = (
+        f"Your DC Hub dev key — unlocks {primary_tool}"
+        if primary_tool else
+        "Your DC Hub dev key is ready"
+    )
+    personal_open = (
+        f"You hit {primary_tool} from MCP — that's why this email landed.\n"
+        f"{hint['tagline']}.\n\n"
+        if primary_tool else
+        f"{hint['tagline']}.\n\n"
+    )
     text = (
+        f"{personal_open}"
         f"Your DC Hub dev key:\n\n"
         f"  {api_key}\n\n"
         f"Add to Claude Desktop / Cursor / Cline config:\n\n"
         f'  {{"mcpServers":{{"dchub":{{"command":"npx","args":["-y","mcp-remote","https://dchub.cloud/mcp"],"env":{{"DCHUB_API_KEY":"{api_key}"}}}}}}}}\n\n'
-        f"Direct API:\n"
-        f"  curl -H 'Authorization: Bearer {api_key}' https://dchub.cloud/api/v1/grid-intelligence?iso=ERCOT\n\n"
+        f"Direct API (try this now — the call that just unlocked):\n"
+        f"  {hint['curl_example']}\n\n"
+        f"{hint['next_step']}\n\n"
         f"Unlocks: 50 facility lookups, real-time grid (7 ISOs), fiber intel, M&A deals, 650+ GW pipeline.\n\n"
         f"Upgrade to Pro at https://dchub.cloud/pricing — $49/mo unlimited.\n"
     )
@@ -73,12 +149,29 @@ def _p99_send_email(email, api_key, tools_tried):
         '"args":["-y","mcp-remote","https://dchub.cloud/mcp"],'
         '"env":{"DCHUB_API_KEY":"' + api_key + '"}}}}'
     )
+    # r32-welcome: tool-aware HTML body — leads with the specific tool
+    # the recipient hit so the email shows them the exact call that
+    # just unlocked. Higher activation than the generic version.
+    html_personal_open = (
+        f"<p style='background:linear-gradient(135deg,#6366f111,#a855f711);"
+        f"border:1px solid #6366f155;border-radius:8px;padding:12px 16px;"
+        f"margin:0 0 16px'>"
+        f"You hit <b>{primary_tool}</b> from MCP — that's why this email landed.<br>"
+        f"<span style='color:#6b7280;font-size:13px'>{hint['tagline']}.</span>"
+        f"</p>"
+        if primary_tool else
+        f"<p style='color:#6b7280;font-size:14px'>{hint['tagline']}.</p>"
+    )
     html = (
         "<html><body style='font-family:system-ui;max-width:600px;margin:auto;padding:24px'>"
-        "<h2>Your DC Hub dev key is ready</h2>"
+        f"<h2>Your DC Hub dev key is ready{' · ' + primary_tool if primary_tool else ''}</h2>"
+        f"{html_personal_open}"
         f"<p>API key:<br><code style='background:#eee;padding:6px 10px;border-radius:4px'>{api_key}</code></p>"
         "<p>Add to your AI assistant config:</p>"
         f"<pre style='background:#1a1a1a;color:#eee;padding:12px;border-radius:6px;font-size:12px;overflow-x:auto'>{html_install}</pre>"
+        f"<p><b>Try it now</b> — the call that just unlocked:</p>"
+        f"<pre style='background:#1a1a1a;color:#eee;padding:12px;border-radius:6px;font-size:12px;overflow-x:auto'>{hint['curl_example']}</pre>"
+        f"<p style='color:#6b7280;font-size:13px'>{hint['next_step']}</p>"
         "<p>Unlocks 50 facility lookups, real-time grid (7 ISOs), fiber intel, M&A deals.</p>"
         "<p><a href='https://dchub.cloud/pricing'>Upgrade to Pro</a> for unlimited access.</p>"
         "</body></html>"

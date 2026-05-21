@@ -20320,6 +20320,16 @@ try:
         print("📡 [devrel-targets] ready · /devrel-targets · /api/v1/admin/devrel-targets")
     except Exception as _e_dr:
         print(f"⚠️ [devrel-targets] blueprint failed to register: {_e_dr}")
+    # r32-brain-show (2026-05-20) — Brain innovation transparency page.
+    # Makes the autonomous brain VISIBLE — Inspector briefs, autopilot
+    # actions, open findings, L22 proposals. Public, no auth (storytelling
+    # surface for prospects + accountability for the operator).
+    try:
+        from routes.brain_innovation import brain_innovation_bp
+        app.register_blueprint(brain_innovation_bp)
+        print("🧠 [brain-innovation] ready · /brain/innovation · /api/v1/brain/innovation")
+    except Exception as _e_bi:
+        print(f"⚠️ [brain-innovation] blueprint failed to register: {_e_bi}")
     print("🔧 Schema Repair: ✅ Registered "
           "(POST /api/v1/admin/schema/repair · /geocoding/backfill · "
           "GET /funnel/leakage)")
