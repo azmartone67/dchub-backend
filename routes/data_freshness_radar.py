@@ -225,7 +225,21 @@ def scan_domains():
 
                 age_hours = None
                 if last_at is not None:
-                    age_hours = round((now - last_at).total_seconds() / 3600.0, 2)
+                    raw_age = (now - last_at).total_seconds() / 3600.0
+                    # Phase r33-J+sweep (2026-05-21): future-date guard.
+                    # A row in news_articles got a published_at 40 days
+                    # in the future (likely a feed parse error). The
+                    # negative age made the status calculator show
+                    # `age=-960h` which is meaningless. Clamp to 0 and
+                    # mark unknown so the operator notices the bad row.
+                    if raw_age < 0:
+                        age_hours = 0.0
+                        detail = (detail or "") + (
+                            f" [⚠ future-dated row: "
+                            f"{abs(raw_age):.1f}h ahead of now — clean "
+                            f"the upstream ingest]")
+                    else:
+                        age_hours = round(raw_age, 2)
 
                 status = _classify(age_hours, sla, bool(table), bool(ts_used))
                 if status == "fresh":
