@@ -179,31 +179,49 @@ def transactions_index():
     # AI indexing still works AND the user gets a real teaser.
     N_FREE_ROWS    = 25
     # Treat any non-authenticated visitor as needing the gate.
+    # r33-J round 10 (2026-05-21): user reported enterprise license
+    # still seeing the free-preview banner. The old check ONLY looked
+    # at the dchub_token cookie — but enterprise users authenticate
+    # via X-API-Key header (and the key validates to a paid tier).
+    # Now we ALSO check the API key tier via map_tier_gating helper
+    # used by the rest of the site, so paid users see the unredacted
+    # table with no upsell banner.
     is_authed = False
     try:
-        # Best-effort cookie check; the auth system uses dchub_token.
         if request.cookies.get("dchub_token"): is_authed = True
     except Exception:
         pass
+    if not is_authed:
+        try:
+            from map_tier_gating import _detect_caller_tier
+            tier = (_detect_caller_tier(request) or "anonymous").lower()
+            if tier in ("identified", "developer", "pro",
+                        "enterprise", "founding", "internal", "admin"):
+                is_authed = True
+        except Exception:
+            pass
 
     # Build the top banner outside the f-string — Python 3.11 disallows
     # backslash escapes inside f-string expressions, so we precompute
     # this HTML and interpolate the whole block as a single name.
+    # r33-J round 10: banner now uses brand indigo→violet gradient
+    # instead of the off-brand emerald-teal that looked like a
+    # leftover from an earlier site.
     banner_html = ""
     if not is_authed:
         unlock_count = max(0, total - N_FREE_ROWS)
         banner_html = (
-            '<div style="background:linear-gradient(135deg,#065f46,#0f766e);'
-            'color:white;padding:1rem 1.25rem;border-radius:8px;'
+            '<div style="background:linear-gradient(135deg,#6366f1,#a855f7);'
+            'color:white;padding:1rem 1.25rem;border-radius:10px;'
             'margin:.5rem 0 1.5rem;display:flex;justify-content:space-between;'
             'align-items:center;gap:1rem;flex-wrap:wrap">'
             '<div><strong style="font-size:1.05rem">'
             '&#x1F513; You&#39;re seeing a free preview.</strong>'
-            '<div style="font-size:.9rem;opacity:.85;margin-top:.15rem">'
+            '<div style="font-size:.9rem;opacity:.9;margin-top:.15rem">'
             'Sign up free (no card) to unlock $value, deal type, CSV export, '
             f'and alerts on the next {unlock_count:,} deals.</div></div>'
             '<a href="/signup?next=/transactions&utm_source=transactions_banner" '
-            'style="background:white;color:#065f46;padding:.5rem 1.1rem;'
+            'style="background:white;color:#6366f1;padding:.55rem 1.2rem;'
             'border-radius:6px;font-weight:700;text-decoration:none">'
             'Sign up free &rarr;</a></div>'
         )
