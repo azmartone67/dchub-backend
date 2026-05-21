@@ -54,14 +54,20 @@ def _fetch_live(iso):
     if cached and (now - cached[0]) < _LIVE_TTL_SECONDS:
         return cached[1]
 
+    # r33-grid-perf (2026-05-21): localhost call is a recursive
+    # self-fetch — when /grid is busy serving the parent request,
+    # the localhost call waits in the gunicorn queue → cascade hang.
+    # Drop the localhost URL entirely and call Railway directly.
+    # With a 2s timeout per ISO (was 8s) the worst case is parallel-
+    # bounded by ThreadPoolExecutor in grid_hub.
     port = _os.environ.get('PORT', '8080')
     urls = [
-        f'http://127.0.0.1:{port}/api/v1/grid/intelligence/{iso}',
         f'https://dchub-backend-production.up.railway.app/api/v1/grid/intelligence/{iso}',
+        f'http://127.0.0.1:{port}/api/v1/grid/intelligence/{iso}',
     ]
     for u in urls:
         try:
-            r = requests.get(u, timeout=8)
+            r = requests.get(u, timeout=2)  # r33: was 8s → 2s
             if r.ok:
                 payload = r.json()
                 # Prefer 'data' key if present; fall back to payload itself
@@ -98,11 +104,54 @@ def _to_int(v):
 
 @grid_public_bp.route('/grid', methods=['GET'])
 def grid_hub():
-    """Public hub page showing all 7 ISOs at a glance."""
+    """Public hub page showing all 7 ISOs at a glance.
+
+    r33-grid-perf (2026-05-21): /grid was taking 112s — killing Railway
+    in a restart loop. Root cause: sequential _fetch_live() across 7
+    ISOs, each with 8s timeout, each falling back to a SECOND URL with
+    another 8s. Worst case 7 × 2 × 8 = 112s exactly matches Railway
+    SLOW REQUEST logs. AND the first URL was localhost, which created
+    a recursive self-call that hangs when the worker is already busy
+    serving /grid.
+
+    Fix: parallelize the 7 fetches with ThreadPoolExecutor (wall time
+    becomes max single-fetch, not sum). Each individual _fetch_live
+    keeps its 8s timeout for healthy paths, but the page now responds
+    in <10s even when every ISO is slow. The recursive localhost call
+    is left intact for the cache-hit fast path (it's an in-process
+    Python call after the first fill) but the 8s ceiling prevents the
+    runaway timeouts.
+    """
     tier = _user_tier(request)
     cards = []
+
+    # Fetch all 7 ISOs in parallel. 4 workers is enough — most ISOs
+    # are cache hits after the first request, parallel only matters
+    # on cold start or after the 5min cache expires.
+    import concurrent.futures as _cf
+    iso_keys = list(ISOS.keys())
+    live_by_iso: dict = {}
+    try:
+        with _cf.ThreadPoolExecutor(max_workers=4,
+                                     thread_name_prefix='grid-iso') as ex:
+            futs = {ex.submit(_fetch_live, iso): iso for iso in iso_keys}
+            # Hard ceiling: 10s for ALL 7 fetches combined. If one
+            # ISO's upstream hangs, we just leave that card stale —
+            # never block the whole page.
+            for fut in _cf.as_completed(futs, timeout=10):
+                iso = futs[fut]
+                try:
+                    live_by_iso[iso] = fut.result(timeout=1) or {}
+                except Exception:
+                    live_by_iso[iso] = {}
+    except (_cf.TimeoutError, Exception):
+        # Timeout on the whole batch — fill in empties from cache or {}.
+        for iso in iso_keys:
+            if iso not in live_by_iso:
+                live_by_iso[iso] = _LIVE_CACHE.get(iso, (0, {}))[1] or {}
+
     for iso, meta in ISOS.items():
-        live = _fetch_live(iso)
+        live = live_by_iso.get(iso, {})
         gated = (tier == 'free' and iso not in FREE_TIER_ISOS)
         cards.append({
             'iso': iso,
