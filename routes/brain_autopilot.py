@@ -1393,38 +1393,24 @@ def autopilot_run():
     # (issue, url) tuple so we don't double-fire when the same
     # finding shows up on both sides.
     #
-    # r33-H+resilience (2026-05-21): retry once if we hit cold-start
-    # lock busy. The autopilot+radar both run on the same Railway
-    # service; immediately after a deploy, the radar's per-worker
-    # cache is cold AND another worker may be scanning, leaving us
-    # with empty findings. Brief retry catches the lock release.
+    # r33-J in-process bridge (2026-05-21) — replaces the HTTP fetch.
+    # The HTTP fetch went to a random Railway worker via Railway-direct;
+    # each worker has its own scan cache; the autopilot consistently
+    # hit a worker with empty cache → from_radar_bridge: 0 even after
+    # the X-Admin-Key + retry fixes landed. Calling scan_summary() IN
+    # this worker's process guarantees we use THIS worker's cache (and
+    # populate it if cold). One in-process call replaces 2 HTTP hops +
+    # the cold-start retry dance entirely.
     radar_findings: list[dict] = []
     summary_bridge_error = None
-    for _attempt in range(2):
-        try:
-            rad_req = urllib.request.Request(
-                _BACKEND_BASE.rstrip("/") + "/api/v1/brain/consistency-radar",
-                method="GET",
-            )
-            if _outbound_admin:
-                rad_req.add_header("X-Admin-Key", _outbound_admin)
-            with urllib.request.urlopen(rad_req, timeout=30) as rad_resp:
-                rad_payload = json.loads(rad_resp.read().decode("utf-8"))
-            fetched = rad_payload.get("findings") or []
-            if isinstance(fetched, list) and fetched:
-                radar_findings = fetched
-                break  # Got real findings — stop retrying
-            # Empty findings + cold-start lock busy → wait + retry
-            reason = (rad_payload.get("stale_reason") or "").lower()
-            if "cold_start" in reason and _attempt == 0:
-                import time as _bridge_sleep
-                _bridge_sleep.sleep(8)
-                continue
-            radar_findings = fetched if isinstance(fetched, list) else []
-            break
-        except Exception as e:
-            summary_bridge_error = f"{type(e).__name__}: {str(e)[:100]}"
-            break
+    try:
+        from routes.brain_consistency_radar import scan_summary as _radar_scan
+        _rad_payload = _radar_scan() or {}
+        fetched = _rad_payload.get("findings") or []
+        if isinstance(fetched, list):
+            radar_findings = fetched
+    except Exception as e:
+        summary_bridge_error = f"{type(e).__name__}: {str(e)[:100]}"
     if radar_findings:
         seen = {(i.get("issue") or "", i.get("url") or "")
                 for i in issues if isinstance(i, dict)}
