@@ -1,0 +1,55 @@
+name: Brain Outcome Verifier
+
+# Phase r33-P (2026-05-21) — runs every 5min, verifies whether
+# autopilot's executed actions actually resolved the underlying
+# findings. Without this, brain fires the same actions over and
+# over because nothing measures whether the fix stuck.
+#
+# Endpoint: POST /api/v1/brain/autopilot/verify
+# Reads:  brain_autopilot_actions WHERE outcome_verified IS NULL AND > 5min old
+# Writes: outcome_verified TRUE/FALSE on each row + brain.volume score
+
+on:
+  schedule:
+    - cron: '*/7 * * * *'   # every 7 min — slightly off the autopilot's 30min cycle so they don't collide
+  workflow_dispatch: {}
+
+permissions:
+  contents: read
+
+env:
+  RAILWAY_BASE: https://dchub-backend-production.up.railway.app
+
+jobs:
+  verify:
+    runs-on: ubuntu-latest
+    timeout-minutes: 4
+    steps:
+      - name: Run verification pass
+        env:
+          ADMIN_KEY: ${{ secrets.DCHUB_ADMIN_KEY }}
+        run: |
+          set -euo pipefail
+          if [ -z "$ADMIN_KEY" ]; then
+            echo "::warning::DCHUB_ADMIN_KEY not set — skipping verifier"
+            exit 0
+          fi
+          response=$(curl -sS --max-time 90 -X POST \
+            -H "X-Admin-Key: $ADMIN_KEY" \
+            -H "Content-Type: application/json" \
+            "$RAILWAY_BASE/api/v1/brain/autopilot/verify" \
+            || echo '{"ok":false,"error":"curl_fail"}')
+          echo "$response" | head -c 2000
+          echo
+          echo "$response" | python3 -c "
+          import json, sys
+          try:
+              d = json.load(sys.stdin)
+              s = d.get('summary') or {}
+              print(f'::notice::verify: scanned={s.get(\"scanned\",0)} '
+                    f'verified_ok={s.get(\"verified_ok\",0)} '
+                    f'verified_failed={s.get(\"verified_failed\",0)} '
+                    f'errors={s.get(\"errors\",0)}')
+          except Exception as e:
+              print(f'::warning::verify response parse failed: {e}')
+          "

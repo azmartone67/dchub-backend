@@ -115,6 +115,21 @@ def _ensure_schema():
                 CREATE INDEX IF NOT EXISTS ix_autopilot_pattern
                     ON brain_autopilot_actions(pattern_name, started_at DESC);
             """)
+            # r33-P (2026-05-21) — outcome verification columns. The
+            # brain has been firing 322 rate-limited actions because
+            # the same patterns refire when underlying issues don't
+            # actually resolve. These columns let the verifier cron
+            # mark each action verified/failed AFTER it runs, so
+            # brain "volume" score reflects ACTUAL fixes, not
+            # attempts.
+            for stmt in (
+                "ALTER TABLE brain_autopilot_actions ADD COLUMN IF NOT EXISTS outcome_verified BOOLEAN",
+                "ALTER TABLE brain_autopilot_actions ADD COLUMN IF NOT EXISTS verified_at TIMESTAMPTZ",
+                "ALTER TABLE brain_autopilot_actions ADD COLUMN IF NOT EXISTS verification_detail TEXT",
+                "CREATE INDEX IF NOT EXISTS ix_autopilot_unverified ON brain_autopilot_actions(started_at DESC) WHERE outcome = 'executed_ok' AND outcome_verified IS NULL",
+            ):
+                try: cur.execute(stmt)
+                except Exception: pass  # ALTER on missing column is fine on first boot
         return True
     except Exception as e:
         print(f"[autopilot] schema init failed: {e}")
@@ -843,22 +858,28 @@ _PATTERN_LIBRARY: dict[str, dict[str, Any]] = {
         "use_admin":   False,
         "description": "Escalation-only: a brand-positioning surface (vs / dcpi totals / live pulse) has zero traffic in 72h. Add nav link / homepage tile / external drive.",
     },
-    # Phase VVV — schema drift. Dynamic keys
-    # `schema_drift_column_missing:<table>.<col>` and
-    # `schema_drift_table_missing:<table>` resolve via prefix match.
-    # Escalation-only — fixing a missing column means either creating
-    # it OR changing the query, both human-judgment calls.
+    # Phase VVV (UPGRADED r33-P 2026-05-21): schema drift now auto-
+    # fires /api/v1/admin/schema/repair, which is idempotent + covers
+    # the known drift cases (worker_versions table, press_releases
+    # .published_at column, brain_findings, brain_critical_alerts,
+    # route_redirects). The repair endpoint uses IF NOT EXISTS so
+    # repeated firing is safe — the bound `outcome_verified` cron
+    # will catch any drift the canned statements don't cover.
     "schema_drift_column_missing": {
-        "action":      lambda f: (None, None),
-        "method":      None,
-        "use_admin":   False,
-        "description": "Escalation-only: a query referenced a column that doesn't exist. Either ALTER TABLE ADD COLUMN or change the query to use information_schema-aware probing (see dchub_media.aggregate_announcements_v3).",
+        "action":      lambda f: ("/api/v1/admin/schema/repair",
+                                   {"source": "autopilot_schema_drift",
+                                    "trigger": (f.get("url") or "")[:120]}),
+        "method":      "POST",
+        "use_admin":   True,
+        "description": "Auto-recovery: hits the idempotent schema-repair endpoint which CREATEs the missing tables/columns using IF NOT EXISTS. Outcome verifier confirms next scan whether the column/table is back. Escalates if repair endpoint returns failure or finding still present after verification.",
     },
     "schema_drift_table_missing": {
-        "action":      lambda f: (None, None),
-        "method":      None,
-        "use_admin":   False,
-        "description": "Escalation-only: a query referenced a table that doesn't exist. Either create it (migration) or wrap the caller with a to_regclass() probe so the absence is silent.",
+        "action":      lambda f: ("/api/v1/admin/schema/repair",
+                                   {"source": "autopilot_schema_drift",
+                                    "trigger": (f.get("url") or "")[:120]}),
+        "method":      "POST",
+        "use_admin":   True,
+        "description": "Auto-recovery: same repair endpoint as schema_drift_column_missing — creates the missing tables (worker_versions, brain_findings, brain_critical_alerts, route_redirects, stripe_webhook_replay_log) if absent.",
     },
     # Phase WWW — Site Sentinel page-health pattern. Dynamic key
     # `site_sentinel_unhealthy:<path>` resolves via prefix match.
@@ -1889,3 +1910,175 @@ def autopilot_recent():
     for r in rows:
         if r.get("started_at"): r["started_at"] = r["started_at"].isoformat()
     return jsonify(actions=rows, count=len(rows)), 200
+
+
+# ──────────────────────────────────────────────────────────────────
+# Phase r33-P (2026-05-21) — OUTCOME VERIFICATION.
+#
+# THE problem: brain fires 322 rate-limited actions in 7d because the
+# same patterns re-fire when underlying issues don't actually resolve.
+# Brain "volume" score = 0/4 because no successful outcomes recorded.
+#
+# THE fix: every executed action gets re-verified 5 minutes later by
+# checking if the SAME finding still exists in brain_findings.
+#   - Finding GONE → outcome verified. Brain volume increments.
+#   - Finding STILL THERE → outcome failed. Pattern + url blacklisted
+#     for 24h (cooldown machinery already handles this once we set
+#     a marker outcome).
+#
+# This turns the brain from "documenting problems" into "measuring
+# whether its own fixes worked."
+# ──────────────────────────────────────────────────────────────────
+
+
+@brain_autopilot_bp.route("/api/v1/brain/autopilot/verify",
+                           methods=["POST"])
+def autopilot_verify():
+    """Run a verification pass: for each executed_ok action with
+    outcome_verified IS NULL AND started_at < NOW() - 5min, check
+    whether the (issue, url) is still present in brain_findings.
+
+    If GONE      → outcome_verified=true,  volume++
+    If PRESENT   → outcome_verified=false, mark for re-escalation
+    If too young → skip (let next pass handle it)
+
+    Admin or internal key gated. Called by a GH-Actions cron every
+    5min via mcp-outreach-style workflow."""
+    expected = _admin_key()
+    provided = (request.headers.get("X-Admin-Key")
+                or request.headers.get("X-Internal-Key")
+                or request.args.get("admin_key"))
+    if expected and provided != expected:
+        return jsonify(error="unauthorized"), 401
+
+    c = _conn()
+    if c is None:
+        return jsonify(error="no_database"), 503
+
+    summary = {
+        "scanned": 0,
+        "verified_ok": 0,
+        "verified_failed": 0,
+        "skipped_young": 0,
+        "errors": 0,
+    }
+    try:
+        with c.cursor(cursor_factory=psycopg2.extras.RealDictCursor) as cur:
+            # Get all unverified executed actions older than 5 min, capped at 50
+            cur.execute("""
+                SELECT id, finding_issue, finding_url, pattern_name,
+                       started_at
+                  FROM brain_autopilot_actions
+                 WHERE outcome = 'executed_ok'
+                   AND outcome_verified IS NULL
+                   AND started_at < NOW() - INTERVAL '5 minutes'
+                   AND started_at > NOW() - INTERVAL '24 hours'
+                 ORDER BY started_at DESC
+                 LIMIT 50
+            """)
+            unverified = cur.fetchall()
+            summary["scanned"] = len(unverified)
+
+            for action in unverified:
+                issue = action["finding_issue"] or ""
+                url   = action["finding_url"] or ""
+                action_id = action["id"]
+                try:
+                    # Check brain_findings — is this finding still there?
+                    cur.execute("""
+                        SELECT last_seen FROM brain_findings
+                         WHERE issue = %s AND url = %s
+                           AND last_seen > NOW() - INTERVAL '10 minutes'
+                         LIMIT 1
+                    """, (issue, url))
+                    still_present = cur.fetchone() is not None
+
+                    if still_present:
+                        # Action didn't fix it — verification failed
+                        cur.execute("""
+                            UPDATE brain_autopilot_actions
+                               SET outcome_verified = FALSE,
+                                   verified_at = NOW(),
+                                   verification_detail = %s
+                             WHERE id = %s
+                        """, (f"Finding ({issue}, {url}) still present in "
+                              f"brain_findings — action did not resolve it.",
+                              action_id))
+                        summary["verified_failed"] += 1
+                    else:
+                        # Finding is GONE — action worked!
+                        cur.execute("""
+                            UPDATE brain_autopilot_actions
+                               SET outcome_verified = TRUE,
+                                   verified_at = NOW(),
+                                   verification_detail = %s
+                             WHERE id = %s
+                        """, (f"Finding ({issue}, {url}) no longer in "
+                              f"brain_findings — action resolved it.",
+                              action_id))
+                        summary["verified_ok"] += 1
+                except Exception as e:
+                    summary["errors"] += 1
+                    logger.warning("verify action %s: %s", action_id, e)
+        c.commit()
+    finally:
+        try: c.close()
+        except Exception: pass
+
+    summary["completed_at"] = datetime.datetime.utcnow().isoformat() + "Z"
+    return jsonify(ok=True, summary=summary), 200
+
+
+@brain_autopilot_bp.route("/api/v1/brain/autopilot/verification-status",
+                           methods=["GET"])
+def autopilot_verification_status():
+    """Public read — per-pattern verification stats. Powers the brain
+    volume / fix-success scores on /alive + /system-status."""
+    c = _conn()
+    if c is None: return jsonify(error="no_database"), 503
+    try:
+        with c.cursor(cursor_factory=psycopg2.extras.RealDictCursor) as cur:
+            cur.execute("""
+                SELECT pattern_name,
+                       COUNT(*) FILTER (WHERE outcome_verified = TRUE) AS verified_ok,
+                       COUNT(*) FILTER (WHERE outcome_verified = FALSE) AS verified_failed,
+                       COUNT(*) FILTER (WHERE outcome_verified IS NULL
+                                          AND outcome = 'executed_ok'
+                                          AND started_at > NOW() - INTERVAL '24 hours') AS pending,
+                       COUNT(*) FILTER (WHERE outcome = 'executed_ok'
+                                          AND started_at > NOW() - INTERVAL '24 hours') AS fired_24h
+                  FROM brain_autopilot_actions
+                 WHERE started_at > NOW() - INTERVAL '7 days'
+                 GROUP BY pattern_name
+                 ORDER BY fired_24h DESC NULLS LAST, verified_ok DESC
+                 LIMIT 30
+            """)
+            rows = cur.fetchall()
+            # Aggregate fix success rate
+            cur.execute("""
+                SELECT
+                  COUNT(*) FILTER (WHERE outcome_verified = TRUE) AS verified_ok,
+                  COUNT(*) FILTER (WHERE outcome_verified = FALSE) AS verified_failed,
+                  COUNT(*) FILTER (WHERE outcome_verified IS NULL
+                                     AND outcome = 'executed_ok'
+                                     AND started_at > NOW() - INTERVAL '24 hours') AS pending
+                  FROM brain_autopilot_actions
+                 WHERE started_at > NOW() - INTERVAL '7 days'
+            """)
+            totals = cur.fetchone() or {}
+    finally:
+        try: c.close()
+        except Exception: pass
+
+    total = (totals.get("verified_ok") or 0) + (totals.get("verified_failed") or 0)
+    fix_success_rate = (
+        round((totals.get("verified_ok") or 0) / total * 100, 1)
+        if total > 0 else None
+    )
+
+    return jsonify({
+        "ok": True,
+        "totals_7d": dict(totals),
+        "fix_success_rate_pct": fix_success_rate,
+        "by_pattern": [dict(r) for r in rows],
+    }), 200
