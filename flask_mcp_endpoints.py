@@ -1048,6 +1048,65 @@ def mcp_funnel():
 
 # ── GET /api/v1/mcp/timeseries — Hourly traffic series for the dashboard ──
 #
+# ── GET /api/ai-analytics — thin adapter for connect.html dashboard ────────
+#
+# r33-Q (2026-05-21) — /connect's live dashboard fetches /api/ai-analytics
+# to populate three counters (total_requests, active_platforms,
+# mcp_connections). The endpoint never existed; every visitor's poll
+# returned 404 and the dashboard silently stayed at zeros. Brain found
+# this via frontend-health probe logs.
+#
+# Implementation: aggregate from mcp_tool_calls (30d) — same source
+# /api/v1/mcp/funnel uses but flattened into the three counters
+# connect.html expects. Cached server-side for 60s to avoid hammering
+# the DB on every poll (page polls every 60s anyway).
+
+@mcp_bp.get("/api/ai-analytics")
+def ai_analytics():
+    """Live counters for the /connect page dashboard.
+
+    Returns:
+        success: bool
+        total_requests: int       — all MCP tool calls in last 30d
+        active_platforms: int     — distinct AI clients seen in last 30d
+        mcp_connections: int      — active MCP dev keys
+    """
+    out = {"success": True, "total_requests": 0,
+           "active_platforms": 0, "mcp_connections": 0}
+    try:
+        with _pool.connection() as conn, conn.cursor() as cur:
+            cur.execute(
+                "SELECT COUNT(*) FROM mcp_tool_calls "
+                "WHERE created_at >= NOW() - INTERVAL '30 days'"
+            )
+            out["total_requests"] = int(cur.fetchone()[0] or 0)
+
+            # Distinct platforms across signals + tool calls — be lenient
+            # about which table the data lives in (different MCP shapes
+            # write to different tables over time).
+            try:
+                cur.execute(
+                    "SELECT COUNT(DISTINCT platform) FROM mcp_upgrade_signals "
+                    "WHERE created_at >= NOW() - INTERVAL '30 days' "
+                    "AND platform IS NOT NULL AND platform != ''"
+                )
+                out["active_platforms"] = int(cur.fetchone()[0] or 0)
+            except Exception:
+                conn.rollback()
+
+            try:
+                cur.execute(
+                    "SELECT COUNT(*) FROM mcp_dev_keys WHERE status='active'"
+                )
+                out["mcp_connections"] = int(cur.fetchone()[0] or 0)
+            except Exception:
+                conn.rollback()
+    except Exception as e:
+        out["success"] = False
+        out["error"] = str(e)[:200]
+    return jsonify(out)
+
+
 # Phase JJ (2026-05-13): the existing /funnel returns rolling 7d/30d
 # aggregates which wobble ±N every refresh thanks to rolling-window
 # math, making it impossible to tell at a glance whether MCP traffic
