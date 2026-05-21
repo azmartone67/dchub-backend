@@ -40,6 +40,9 @@ for _mod in _MODULES:
         }
 
 
+# AUTO-REPAIR: duplicate route '/api/health' also in main.py:12683 — review and remove one
+# AUTO-REPAIR: duplicate route '/health' also in index_api.py:516 — review and remove one
+# AUTO-REPAIR: duplicate route '/' also in main.py:12672 — review and remove one
 @app.route('/api/health')
 @app.route('/health')
 @app.route('/')
