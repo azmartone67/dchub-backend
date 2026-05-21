@@ -21869,6 +21869,23 @@ try:
 except Exception as _e:
     print(f"[main] brain_autopilot register failed: {_e}", file=sys.stderr)
 
+# Phase r33-F (2026-05-21): autopilot auto-action helpers. Provides
+# three endpoints that power the three upgraded auto-actions:
+#   POST /api/v1/admin/route-redirect/add      (404_spike action)
+#   POST /api/stripe/webhook/replay            (stripe_webhook_lag action)
+#   POST /api/v1/brain/alerts/critical         (neon_replication_lag action)
+# Tables auto-bootstrap via CREATE IF NOT EXISTS on first call so no
+# separate migration is required. Failed registration is non-fatal —
+# the autopilot actions degrade to escalation-only.
+try:
+    from routes.brain_autoaction_helpers import brain_autoaction_helpers_bp
+    app.register_blueprint(brain_autoaction_helpers_bp)
+    print("🚀 Brain Auto-Action Helpers: ✅ Registered (route-redirect/add · "
+          "stripe/webhook/replay · brain/alerts/critical)")
+except Exception as _e:
+    print(f"[main] brain_autoaction_helpers register failed: {_e}",
+          file=sys.stderr)
+
 # Phase XX (2026-05-16): Land+Power MCP bridge. /api/v1/land-power/site-analysis
 # powers the new free-tier `find_power_site` MCP tool — the missing link
 # between agent demand (3,380 calls/30d to get_grid_intelligence, 3,212

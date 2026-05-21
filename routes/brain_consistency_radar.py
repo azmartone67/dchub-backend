@@ -2800,6 +2800,16 @@ def _os_env():
 _DETECTOR_TIMINGS: dict[str, dict] = {}
 
 
+# Phase r33-F (2026-05-21) — worker process boot time. Set ONCE at
+# module import. Each gunicorn worker that imports this file gets
+# its own boot time, so the detector sees only its own worker's
+# age (we can't see siblings). Still useful: if THIS worker is
+# >24h old, others likely are too — that's the memory-growth-class
+# restart signal.
+import time as _r33f_time
+_BOOT_TIME: float = _r33f_time.time()
+
+
 def check_render_flapping() -> list[dict]:
     """Phase r33-C (2026-05-21). Render side of the failover pair has
     been flapping all session — DB pool stale connections, pipeline
@@ -3171,6 +3181,356 @@ def check_stripe_webhook_lag() -> list[dict]:
                 f"a disabled endpoint or repeated 5xx failures."
             ),
         })
+    return findings
+
+
+# ──────────────────────────────────────────────────────────────────
+# Phase r33-F (2026-05-21) — second batch of QA monitors. Five more
+# detectors closing structural blind spots:
+#   1. check_canonical_redirect_loops — top-50 pages, follow one
+#      redirect, flag self-bounces or 404 targets
+#   2. check_gunicorn_worker_age — memory-growth class indicator
+#   3. check_facility_dedupe_collisions — ghost-facility class
+#   4. check_paid_user_zero_value_tools — pre-churn signal
+#   5. check_cf_kv_namespace_pressure — KV cache stampede
+# ──────────────────────────────────────────────────────────────────
+
+
+def check_canonical_redirect_loops() -> list[dict]:
+    """Probes a hand-curated list of top public pages. For each,
+    issues a HEAD with redirects=manual and inspects the Location
+    header. Fires if:
+      • Location matches the source path (loop)
+      • Location resolves to a 404 (broken target)
+
+    Defensive: each probe has a 6s timeout, parallel via
+    ThreadPoolExecutor so wall-time stays under 20s."""
+    findings: list[dict] = []
+    PROBES = [
+        "/", "/pricing", "/markets", "/dcpi", "/pockets",
+        "/coverage", "/api", "/developers", "/docs",
+        "/dc-hub-media", "/digest", "/brain", "/brain-live",
+        "/admin-health", "/sitemap.xml", "/state-of-the-data-center",
+    ]
+    BASE = "https://dchub.cloud"
+    import urllib.request as _ur, urllib.error as _ue
+    import concurrent.futures as _cf, urllib.parse as _up
+
+    def _probe_one(path: str):
+        try:
+            req = _ur.Request(BASE + path, method="HEAD",
+                              headers={"User-Agent": "DCHub-RedirCheck/1.0"})
+            opener = _ur.build_opener(_ur.HTTPRedirectHandler())
+            # Disable auto-redirect so we can SEE the 30x.
+            class _NoFollow(_ur.HTTPRedirectHandler):
+                def redirect_request(self, *a, **k): return None
+            opener = _ur.build_opener(_NoFollow())
+            try:
+                resp = opener.open(req, timeout=6)
+                return (path, resp.getcode(), None)
+            except _ue.HTTPError as he:
+                loc = he.headers.get("Location") if he.headers else None
+                return (path, he.code, loc)
+        except Exception as e:
+            return (path, 0, f"err:{type(e).__name__}")
+
+    results = []
+    with _cf.ThreadPoolExecutor(max_workers=8,
+                                 thread_name_prefix="brain-redir") as ex:
+        futs = {ex.submit(_probe_one, p): p for p in PROBES}
+        for fut in _cf.as_completed(futs, timeout=18):
+            try:
+                results.append(fut.result(timeout=8))
+            except Exception:
+                continue
+
+    for src, code, loc in results:
+        if code in (301, 302, 307, 308) and loc:
+            # Normalise loc to a path for comparison
+            try:
+                parsed = _up.urlparse(loc)
+                loc_path = parsed.path or "/"
+            except Exception:
+                loc_path = loc
+            # Self-loop: redirects to itself
+            if loc_path.rstrip("/") == src.rstrip("/"):
+                findings.append({
+                    "issue":  "canonical_redirect_loop",
+                    "url":    src,
+                    "count":  1,
+                    "detail": (
+                        f"`{src}` 30x→ `{loc_path}` (itself). Loop. "
+                        f"Browsers will fail after ~20 hops. Audit "
+                        f"the redirect rule that owns this path "
+                        f"(_redirects, _worker.js, or Flask handler)."
+                    ),
+                })
+            else:
+                # Verify the target isn't itself a 404
+                try:
+                    target_req = _ur.Request(
+                        BASE + loc_path, method="HEAD",
+                        headers={"User-Agent": "DCHub-RedirCheck/1.0"})
+                    with _ur.urlopen(target_req, timeout=4) as tresp:
+                        if tresp.getcode() >= 400:
+                            findings.append({
+                                "issue":  "canonical_redirect_loop",
+                                "url":    src,
+                                "count":  tresp.getcode(),
+                                "detail": (
+                                    f"`{src}` 30x→ `{loc_path}` but "
+                                    f"target returns HTTP {tresp.getcode()}. "
+                                    f"Dead redirect — point it at a real URL "
+                                    f"or remove the rule."
+                                ),
+                            })
+                except _ue.HTTPError as he:
+                    findings.append({
+                        "issue":  "canonical_redirect_loop",
+                        "url":    src,
+                        "count":  he.code,
+                        "detail": (
+                            f"`{src}` 30x→ `{loc_path}` but target "
+                            f"returns HTTP {he.code}. Dead redirect."
+                        ),
+                    })
+                except Exception:
+                    pass
+    return findings
+
+
+def check_gunicorn_worker_age() -> list[dict]:
+    """Fires if the current gunicorn worker has been alive >24h.
+    Long-lived workers accumulate memory (psycopg2 cursors that
+    never get freed, growing per-process caches). Restart hygiene
+    is to recycle workers daily; gunicorn's --max-requests handles
+    this normally but if it's mis-set or disabled this detector
+    catches the drift.
+
+    Per-process visibility: each worker that imports this module
+    has its own _BOOT_TIME. We only see the worker handling this
+    request — but that's enough signal to know workers AREN'T
+    being recycled."""
+    findings: list[dict] = []
+    age_s = _r33f_time.time() - _BOOT_TIME
+    age_h = age_s / 3600.0
+    if age_h > 24.0:
+        import os as _os
+        pid = _os.getpid()
+        findings.append({
+            "issue":  "gunicorn_worker_age",
+            "url":    f"pid:{pid}",
+            "count":  int(age_h),
+            "detail": (
+                f"Worker PID {pid} has been alive {age_h:.1f}h "
+                f"(threshold: 24h). Memory drift class — add or fix "
+                f"gunicorn --max-requests=1000 --max-requests-jitter=100 "
+                f"in the Procfile/startup. Restarts the worker after N "
+                f"requests, freeing accumulated state."
+            ),
+        })
+    return findings
+
+
+def check_facility_dedupe_collisions() -> list[dict]:
+    """Finds facility rows that share the same name AND coordinates
+    (rounded to 4 decimal places) but have different IDs. These are
+    'ghost facilities' — a discovery crawl created a new row when
+    it should have linked to an existing one. Frontend shows them
+    twice on the map, search returns duplicates, downstream
+    aggregations double-count.
+
+    Caps at 20 findings per scan to prevent flooding."""
+    findings: list[dict] = []
+    c = _db()
+    if c is None: return findings
+    try:
+        with c.cursor() as cur:
+            cur.execute("SELECT to_regclass('public.facilities')")
+            if not (cur.fetchone() or [None])[0]:
+                return findings
+            cur.execute("""
+                SELECT name,
+                       ROUND(lat::numeric, 4) AS lat4,
+                       ROUND(lng::numeric, 4) AS lng4,
+                       COUNT(*) AS dup,
+                       ARRAY_AGG(id ORDER BY id) AS ids
+                  FROM facilities
+                 WHERE name IS NOT NULL AND name != ''
+                   AND lat IS NOT NULL AND lng IS NOT NULL
+                 GROUP BY name, ROUND(lat::numeric, 4), ROUND(lng::numeric, 4)
+                HAVING COUNT(*) > 1
+                 ORDER BY COUNT(*) DESC
+                 LIMIT 20
+            """)
+            rows = cur.fetchall()
+    except Exception:
+        return findings
+    finally:
+        try: c.close()
+        except Exception: pass
+
+    for name, lat4, lng4, dup, ids in rows:
+        primary_id = ids[0] if ids else None
+        findings.append({
+            "issue":  "facility_dedupe_collision",
+            "url":    f"facility:{primary_id}",
+            "count":  int(dup),
+            "detail": (
+                f"{dup} facilities share name=`{name}` at "
+                f"({lat4},{lng4}). IDs: {ids}. Merge candidates — "
+                f"point the duplicates at the canonical ID via "
+                f"`POST /api/v1/admin/facilities/merge` (canonical: "
+                f"id={primary_id}). Downstream aggregations are "
+                f"double-counting this site."
+            ),
+        })
+    return findings
+
+
+def check_paid_user_zero_value_tools() -> list[dict]:
+    """Pre-churn signal: paid customers (developer/pro/enterprise)
+    who haven't called ANY paid MCP tool in 14 days. They're paying
+    but extracting zero value — high churn risk.
+
+    Joins `api_keys` (or `users`) tier info with `mcp_call_log` time
+    series. Defensive across schema variants."""
+    findings: list[dict] = []
+    c = _db()
+    if c is None: return findings
+    try:
+        with c.cursor() as cur:
+            cur.execute("SELECT to_regclass('public.api_keys')")
+            keys_exists = (cur.fetchone() or [None])[0]
+            cur.execute("SELECT to_regclass('public.mcp_call_log')")
+            log_exists = (cur.fetchone() or [None])[0]
+            if not keys_exists or not log_exists:
+                return findings
+            # Probe column names defensively. api_keys often has
+            # (api_key, tier, email, created_at). mcp_call_log has
+            # (api_key, tool_name, created_at).
+            cur.execute("""
+                SELECT ak.email, ak.tier,
+                       COALESCE(
+                           (SELECT MAX(mcl.created_at)
+                              FROM mcp_call_log mcl
+                             WHERE mcl.api_key = ak.api_key),
+                           '1970-01-01'::timestamp) AS last_call
+                  FROM api_keys ak
+                 WHERE ak.tier IN ('developer','pro','enterprise')
+                   AND ak.email IS NOT NULL
+                   AND ak.created_at < NOW() - INTERVAL '14 days'
+                 ORDER BY last_call ASC
+                 LIMIT 30
+            """)
+            rows = cur.fetchall()
+    except Exception:
+        return findings
+    finally:
+        try: c.close()
+        except Exception: pass
+
+    import datetime as _dt
+    now = _dt.datetime.now(_dt.timezone.utc)
+    for email, tier, last_call in rows:
+        if last_call is None: continue
+        try:
+            if last_call.tzinfo is None:
+                last_call = last_call.replace(tzinfo=_dt.timezone.utc)
+            silence_d = (now - last_call).total_seconds() / 86400.0
+        except Exception:
+            continue
+        if silence_d >= 14.0:
+            findings.append({
+                "issue":  "paid_user_zero_value",
+                "url":    f"user:{email}",
+                "count":  int(silence_d),
+                "detail": (
+                    f"`{email}` ({tier}) has not called any paid MCP "
+                    f"tool in {silence_d:.0f} days. Pre-churn signal. "
+                    f"Trigger: reach out with a use-case nudge "
+                    f"(/api/v1/admin/outreach/send), surface a "
+                    f"personalized welcome-back via the upgrade pool, "
+                    f"or add their account to the lost-conversion "
+                    f"campaign queue."
+                ),
+            })
+    return findings
+
+
+def check_cf_kv_namespace_pressure() -> list[dict]:
+    """Probes the Cloudflare KV API for namespace key counts on
+    DCHUB_CACHE / DCHUB_API_KEYS / DCHUB_USAGE. Fires if any
+    namespace has >5000 keys (cache stampede signal — orphaned
+    entries accumulating because TTL isn't firing).
+
+    Requires CF_API_TOKEN and CF_ACCOUNT_ID env vars. Silent no-op
+    if either is missing — this is an enterprise-tier-feature
+    detector."""
+    findings: list[dict] = []
+    import os as _os
+    token = _os.environ.get("CF_API_TOKEN")
+    acct  = _os.environ.get("CF_ACCOUNT_ID")
+    if not token or not acct:
+        return findings
+    import urllib.request as _ur, json as _json
+    # List namespaces, then for each one count keys
+    headers = {
+        "Authorization": f"Bearer {token}",
+        "User-Agent":    "DCHub-KVPressure/1.0",
+    }
+    try:
+        url = f"https://api.cloudflare.com/client/v4/accounts/{acct}/storage/kv/namespaces?per_page=50"
+        req = _ur.Request(url, headers=headers)
+        with _ur.urlopen(req, timeout=8) as resp:
+            data = _json.loads(resp.read().decode("utf-8", errors="replace"))
+    except Exception:
+        return findings
+    namespaces = (data.get("result") or [])
+    TARGETS = {"DCHUB_CACHE", "DCHUB_API_KEYS", "DCHUB_USAGE"}
+    for ns in namespaces:
+        title = ns.get("title", "")
+        if title not in TARGETS:
+            continue
+        ns_id = ns.get("id", "")
+        # Count keys (CF caps the list to 1000 per page; iterate
+        # cursors only if first page is full — for pressure check
+        # we just need an "estimated >5000" answer, so cap iteration).
+        total = 0
+        cursor = None
+        try:
+            for _ in range(6):  # max 6 pages = 6000 keys probed
+                page_url = (
+                    f"https://api.cloudflare.com/client/v4/accounts/{acct}"
+                    f"/storage/kv/namespaces/{ns_id}/keys?limit=1000"
+                )
+                if cursor:
+                    page_url += f"&cursor={cursor}"
+                req = _ur.Request(page_url, headers=headers)
+                with _ur.urlopen(req, timeout=8) as resp:
+                    pd = _json.loads(resp.read().decode("utf-8", errors="replace"))
+                keys = pd.get("result") or []
+                total += len(keys)
+                cursor = (pd.get("result_info") or {}).get("cursor")
+                if not cursor or not keys:
+                    break
+        except Exception:
+            continue
+        if total >= 5000:
+            findings.append({
+                "issue":  "cf_kv_namespace_pressure",
+                "url":    f"kv:{title}",
+                "count":  total,
+                "detail": (
+                    f"CF KV namespace `{title}` has ≥{total} keys "
+                    f"(threshold: 5000). Cache stampede class — TTL "
+                    f"likely not firing or entries are being written "
+                    f"with infinite TTL. Audit writes to this namespace "
+                    f"for missing `expirationTtl`. KV is unlimited but "
+                    f"key-count growth past 5K usually indicates a "
+                    f"write-leak, not legitimate cache growth."
+                ),
+            })
     return findings
 
 
@@ -6609,7 +6969,19 @@ def scan_all() -> list[dict]:
                check_neon_replication_lag,
                check_signup_drop_off_step,
                check_detector_runtime_distribution,
-               check_stripe_webhook_lag):
+               check_stripe_webhook_lag,
+               # Phase r33-F (2026-05-21) — second QA-monitor batch.
+               # Five more detectors closing structural blind spots:
+               #   canonical_redirect_loops: 30x→self or 30x→404
+               #   gunicorn_worker_age: memory drift / restart hygiene
+               #   facility_dedupe_collisions: ghost facility class
+               #   paid_user_zero_value_tools: pre-churn signal
+               #   cf_kv_namespace_pressure: write-leak detection
+               check_canonical_redirect_loops,
+               check_gunicorn_worker_age,
+               check_facility_dedupe_collisions,
+               check_paid_user_zero_value_tools,
+               check_cf_kv_namespace_pressure):
         detectors.append(fn)
 
     # Phase RRR-brain-parallel (2026-05-18) — scan was taking 76.9s

@@ -444,6 +444,128 @@ def _action_dchub_media_press_silent(finding: dict) -> tuple[str | None, dict | 
     return "/api/v1/marketing/auto-generate", {}
 
 
+# ──────────────────────────────────────────────────────────────────
+# Phase r33-F (2026-05-21) — three auto-action upgrades that replace
+# the corresponding escalation-only lambdas.
+#
+#  6. _action_404_spike_add_redirect: find a high-confidence target
+#     for the 404'd URL via a sitemap+route similarity check; if
+#     found, POST /api/v1/admin/route-redirect/add. Caps at 5/24h
+#     (enforced server-side). Falls back to escalation if no
+#     confident target.
+#
+#  7. _action_stripe_webhook_replay: POST /api/stripe/webhook/replay
+#     which uses STRIPE_SECRET_KEY to enumerate events since the
+#     last webhook receipt and queue them for re-processing. No-op
+#     if STRIPE_SECRET_KEY env is missing.
+#
+#  8. _action_neon_replication_paging: differentiated severity ladder.
+#     count == -1 (unreachable)         → POST critical alert
+#     count == -2 (URL points at primary) → POST high alert
+#     count > 60 (lag only)              → return (None, None) — wait
+# ──────────────────────────────────────────────────────────────────
+
+
+def _find_similar_route(missing_path: str) -> tuple[str, float] | None:
+    """Find the most-similar existing route for a 404'd path.
+
+    Strategy:
+      1. Read a hand-curated list of known top-level routes
+         (cheap, deterministic, no DB hit).
+      2. Score each by Levenshtein distance + prefix match.
+      3. Return best match if normalized similarity ≥ 0.85.
+
+    Returns (target_path, confidence) or None."""
+    import difflib as _dl
+    KNOWN_ROUTES = [
+        "/", "/pricing", "/markets", "/dcpi", "/pockets",
+        "/coverage", "/api", "/developers", "/docs", "/sitemap.xml",
+        "/dc-hub-media", "/digest", "/brain", "/brain-live",
+        "/brain/brief", "/admin-health", "/state-of-the-data-center",
+        "/founders", "/heartbeat", "/status", "/signup", "/login",
+        "/devrel-targets", "/visitor-intelligence", "/paywall-test",
+        "/grid", "/land-power", "/reports/monthly", "/coverage",
+        "/api/v1/energy/summary", "/api/v1/dcpi/recompute",
+        "/api/v1/heal/run-cycle", "/api/v1/marketing/auto-generate",
+    ]
+    src = (missing_path or "").rstrip("/").lower()
+    if not src or src == "/":
+        return None
+    best, best_score = None, 0.0
+    for r in KNOWN_ROUTES:
+        score = _dl.SequenceMatcher(None, src, r.lower()).ratio()
+        if score > best_score:
+            best_score, best = score, r
+    if best and best_score >= 0.85 and best != missing_path:
+        return (best, round(best_score, 3))
+    return None
+
+
+def _action_404_spike_add_redirect(finding: dict) -> tuple[str | None, dict | None]:
+    """If the 404'd URL has a strong (Levenshtein ≥ 0.85) match in
+    the known-routes list, register a 301 redirect autonomously.
+    Otherwise escalate."""
+    src = (finding.get("url") or "").strip()
+    if not src or not src.startswith("/"):
+        return None, None
+    match = _find_similar_route(src)
+    if not match:
+        return None, None  # No confident target → escalate
+    target, confidence = match
+    return "/api/v1/admin/route-redirect/add", {
+        "from":        src,
+        "to":          target,
+        "confidence":  confidence,
+        "created_by":  "autopilot",
+        "status_code": 301,
+        "source_finding_count": finding.get("count"),
+    }
+
+
+def _action_stripe_webhook_replay(finding: dict) -> tuple[str | None, dict | None]:
+    """Trigger the replay endpoint. No body required — it derives
+    the `since` window from MAX(received_at) on the stripe_webhooks
+    tables. Endpoint no-ops if STRIPE_SECRET_KEY env is missing,
+    which gets logged as escalation in the audit table."""
+    return "/api/stripe/webhook/replay", {
+        "source": "autopilot_stripe_replay",
+        "lag_hours": finding.get("count"),
+    }
+
+
+def _action_neon_replication_paging(finding: dict) -> tuple[str | None, dict | None]:
+    """Differentiated severity based on the failure mode embedded
+    in finding.count (set by check_neon_replication_lag):
+
+       count = -1  → replica unreachable (critical: paging)
+       count = -2  → URL pointing at primary (high: misconfig)
+       count > 60  → just lagging (escalate only, no page)
+    """
+    count = finding.get("count")
+    try:
+        count = int(count)
+    except Exception:
+        return None, None  # Malformed finding → escalate
+    if count == -1:
+        return "/api/v1/brain/alerts/critical", {
+            "severity":     "critical",
+            "issue":        finding.get("issue") or "neon_replication_lag",
+            "finding_url":  finding.get("url"),
+            "detail":       finding.get("detail", "")[:1500],
+            "source":       "autopilot_neon_paging",
+        }
+    if count == -2:
+        return "/api/v1/brain/alerts/critical", {
+            "severity":     "high",
+            "issue":        finding.get("issue") or "neon_replication_lag",
+            "finding_url":  finding.get("url"),
+            "detail":       finding.get("detail", "")[:1500],
+            "source":       "autopilot_neon_paging",
+        }
+    # Lag-only — escalate via the normal finding path
+    return None, None
+
+
 def _action_render_restart(finding: dict) -> tuple[str | None, dict | None]:
     """Phase r33-C (2026-05-21) — autonomous Render restart.
 
@@ -953,17 +1075,23 @@ _PATTERN_LIBRARY: dict[str, dict[str, Any]] = {
     # the signal so a human or L22 auto-code can act. Worth adding
     # auto-actions later for the deterministic ones.
     # ──────────────────────────────────────────────────────────────
+    # Phase r33-F upgrade: auto-fire when a high-confidence redirect
+    # target exists. Falls back to escalation if no confident match.
+    # Server-side 24h cap of 5 autopilot redirects prevents runaway.
     "404_spike": {
-        "action":      lambda f: (None, None),
-        "method":      None,
-        "use_admin":   False,
-        "description": "Escalation-only: a URL pattern had ≥10 404s in the last 5min with <1/hr baseline. Classic deploy regression. Investigate: (1) git log of last commit to main branch for route renames or blueprint removals; (2) front-end pages referencing the URL pattern in the finding; (3) consider auto-redirect via _routes.json or a Flask 301.",
+        "action":      _action_404_spike_add_redirect,
+        "method":      "POST",
+        "use_admin":   True,
+        "description": "Auto-recovery: if the 404'd URL has a Levenshtein ≥0.85 match against the known-routes list, register a 301 via /api/v1/admin/route-redirect/add (capped at 5/24h server-side). If no confident target, escalates so a human can audit the deploy regression.",
     },
+    # Phase r33-F upgrade: differentiated escalation by failure mode.
+    # count=-1 (unreachable) → critical alert; count=-2 (URL points
+    # at primary) → high alert; count>60 (just lagging) → escalate.
     "neon_replication_lag": {
-        "action":      lambda f: (None, None),
-        "method":      None,
-        "use_admin":   False,
-        "description": "Escalation-only: read replica is >60s behind primary, unreachable, or pointing at primary. Failover safety degraded. Fix: Neon dashboard → check replica endpoint health, branch status, and replication lag. Validate READ_REPLICA_URL points at an actual read-replica endpoint (not primary).",
+        "action":      _action_neon_replication_paging,
+        "method":      "POST",
+        "use_admin":   True,
+        "description": "Differentiated paging: unreachable replica → critical alert; URL misconfigured at primary → high alert; lag >60s → escalation-only (waits one cycle for natural recovery). All write to brain_critical_alerts and optionally fan out to Slack via BRAIN_ALERT_WEBHOOK_URL.",
     },
     "signup_drop_off_step": {
         "action":      lambda f: (None, None),
@@ -977,11 +1105,51 @@ _PATTERN_LIBRARY: dict[str, dict[str, Any]] = {
         "use_admin":   False,
         "description": "Escalation-only: a single detector took >15s on the last scan. This is the failure pattern that caused this session's /grid 112s cascade. Audit the named detector for sequential HTTP probes (parallelize), unbounded SQL (add LIMIT or move to a cron), or external API calls without per-call timeout (add 5s ceiling).",
     },
+    # Phase r33-F upgrade: auto-fire Stripe replay endpoint which
+    # enumerates events since MAX(received_at) and queues them for
+    # re-processing. No-op if STRIPE_SECRET_KEY is missing (then
+    # the endpoint returns 503 and the autopilot logs it as
+    # escalation in the audit table).
     "stripe_webhook_lag": {
+        "action":      _action_stripe_webhook_replay,
+        "method":      "POST",
+        "use_admin":   True,
+        "description": "Auto-recovery: POSTs /api/stripe/webhook/replay which uses STRIPE_SECRET_KEY to enumerate events since MAX(received_at) and queue them in stripe_webhook_replay_log for re-processing. Falls back to escalation if STRIPE_SECRET_KEY is missing or Stripe API returns 5xx.",
+    },
+    # ──────────────────────────────────────────────────────────────
+    # Phase r33-F (2026-05-21) — 5 new detector patterns. All
+    # escalation-only because their fixes are out-of-band (config,
+    # billing, schema, customer outreach, gunicorn restart).
+    # ──────────────────────────────────────────────────────────────
+    "canonical_redirect_loop": {
         "action":      lambda f: (None, None),
         "method":      None,
         "use_admin":   False,
-        "description": "Escalation-only: last Stripe webhook landed >2h ago. Customer state is drifting. Fix: Stripe dashboard → Developers → Webhooks → check our endpoint isn't disabled, isn't returning 5xx, and signing secret hasn't rotated. Re-send recent failed events from the Stripe UI to backfill.",
+        "description": "Escalation-only: a top-level page redirects to itself OR to a 404. Audit the rule that owns it (frontend _redirects, _worker.js, or Flask handler). The finding.url is the source; finding.detail explains where it lands.",
+    },
+    "gunicorn_worker_age": {
+        "action":      lambda f: (None, None),
+        "method":      None,
+        "use_admin":   False,
+        "description": "Escalation-only: the current gunicorn worker has been alive >24h. Memory-drift class — add or fix --max-requests=1000 --max-requests-jitter=100 in the Procfile to enable worker recycling. Restart frees accumulated psycopg2 cursors and per-process caches.",
+    },
+    "facility_dedupe_collision": {
+        "action":      lambda f: (None, None),
+        "method":      None,
+        "use_admin":   False,
+        "description": "Escalation-only: facilities sharing name + lat/lng at 4 decimal places but with different IDs. POST /api/v1/admin/facilities/merge with the canonical ID + dupe IDs from finding.detail. Downstream aggregations are double-counting until merged.",
+    },
+    "paid_user_zero_value": {
+        "action":      lambda f: (None, None),
+        "method":      None,
+        "use_admin":   False,
+        "description": "Escalation-only: a paid customer has not called any paid MCP tool in 14+ days. Pre-churn signal. Trigger: lost-conversion outreach via /api/v1/admin/lost-conversion/send, personalized welcome-back via the upgrade pool, or sales follow-up.",
+    },
+    "cf_kv_namespace_pressure": {
+        "action":      lambda f: (None, None),
+        "method":      None,
+        "use_admin":   False,
+        "description": "Escalation-only: a CF KV namespace has ≥5000 keys. Cache stampede class — audit writes to the namespace for missing expirationTtl. KV is unlimited but key-count growth past 5K usually signals a write-leak.",
     },
 }
 
