@@ -4,7 +4,7 @@
         // Cache-bust key for fiber API fetches. The CF worker edge-caches
         // /api/* GETs; bump this whenever fiber_routes data or the endpoint's
         // filtering changes so the overlay never serves a stale cached set.
-        window.FIBER_DATA_VERSION = '136';
+        window.FIBER_DATA_VERSION = '137';
 
         // Initialize map
         var map = L.map('map',{zoomControl:true}).setView([39.0,-98.0],4);
