@@ -419,7 +419,7 @@ def html_tool_catalog():
   .tier{{display:inline-block;font-size:.65rem;padding:1px 6px;border-radius:3px;
          margin-left:.4rem;vertical-align:middle;font-weight:600}}
   .tier.free{{background:#dcfce7;color:#166534}}
-  .tier.identified{{background:#dbeafe;color:#1e40af}}
+  .tier.identified{{background:rgba(129,140,248,.15);color:#818cf8}}
   .tier.developer{{background:#fef3c7;color:#92400e}}
   .tier.pro{{background:#fce7f3;color:#9d174d}}
   .quick-start{{background:#0f172a;color:#e2e8f0;padding:1rem 1.25rem;border-radius:6px;margin:1.5rem 0}}

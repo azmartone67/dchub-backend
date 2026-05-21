@@ -848,10 +848,11 @@ def _redeem_page(code, tool_name, market, target_tier, referring_agent=None):
 <title>Unlock your AI agent · DC Hub · Code {_h(code)}</title>
 <meta name="viewport" content="width=device-width,initial-scale=1">
 <meta name="robots" content="noindex,nofollow">
-<link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;600;700;800&display=swap" rel="stylesheet">
+<link href="https://fonts.googleapis.com/css2?family=Instrument+Sans:wght@400;500;600;700;800&display=swap" rel="stylesheet">
+<link rel="stylesheet" href="/static/dchub-brand.css">
 <style>
-:root{{--bg:#0a0a12;--card:#11121a;--bd:#1f2030;--tx:#fff;--tx2:#9ca3af;--green:#10b981;--acc:#6366f1;--gradient:linear-gradient(135deg,#6366f1 0%,#a855f7 100%);}}
-*{{box-sizing:border-box}}body{{font-family:Inter,system-ui;background:var(--bg);color:var(--tx);margin:0;line-height:1.55;min-height:100vh;display:flex;align-items:center;justify-content:center;padding:20px;}}
+:root{{--bg:#0a0a0f;--card:#131319;--bd:rgba(255,255,255,.08);--tx:#fafafa;--tx2:#a1a1aa;--green:#10b981;--acc:#6366f1;--gradient:linear-gradient(135deg,#6366f1 0%,#a855f7 100%);}}
+*{{box-sizing:border-box}}body{{font-family:'Instrument Sans',system-ui;background:var(--bg);color:var(--tx);margin:0;line-height:1.55;min-height:100vh;display:flex;align-items:center;justify-content:center;padding:20px;}}
 .wrap{{max-width:560px;width:100%;background:var(--card);border:1px solid var(--bd);border-radius:14px;padding:36px;}}
 .kicker{{font-family:JetBrains Mono,monospace;font-size:0.72rem;letter-spacing:0.14em;color:var(--green);text-transform:uppercase;margin-bottom:10px;font-weight:700}}
 h1{{font-size:1.6rem;margin:0 0 8px;letter-spacing:-0.02em;font-weight:800}}

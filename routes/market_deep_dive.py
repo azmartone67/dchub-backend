@@ -355,12 +355,12 @@ def deep_dive_html(slug):
 <style>body{{font-family:Georgia,serif;max-width:760px;margin:0 auto;padding:2rem 1rem;color:#1f2937;line-height:1.7}}
 h1{{font-family:-apple-system,sans-serif;margin:0 0 .25rem;font-size:2rem}}
 .sub{{color:#6b7280;font-family:-apple-system,sans-serif;margin:0 0 1.5rem;font-size:.9rem}}
-.stats{{display:grid;grid-template-columns:repeat(auto-fit,minmax(140px,1fr));gap:.5rem;margin:1rem 0 2rem;background:#f9fafb;padding:1rem 1.25rem;border-radius:8px;font-family:-apple-system,sans-serif}}
+.stats{{display:grid;grid-template-columns:repeat(auto-fit,minmax(140px,1fr));gap:.5rem;margin:1rem 0 2rem;background:#f5f5fa;padding:1rem 1.25rem;border-radius:8px;font-family:-apple-system,sans-serif}}
 .stat{{font-size:.85rem;color:#6b7280}}
 .stat b{{display:block;font-size:1.4rem;color:#1f2937}}
 p{{margin:1rem 0;font-size:1.08rem}}
 .foot{{color:#9ca3af;font-size:.85rem;margin-top:2rem;font-family:-apple-system,sans-serif}}
-.foot a{{color:#1e40af;text-decoration:none}}
+.foot a{{color:#6366f1;text-decoration:none}}
 .foot a:hover{{text-decoration:underline}}</style>
 </head><body>
 <h1>{name}</h1>
@@ -493,11 +493,11 @@ def market_short_html(slug):
 <style>body{{font-family:-apple-system,sans-serif;max-width:760px;margin:0 auto;padding:2rem 1rem;color:#1f2937;line-height:1.7}}
 h1{{margin:0 0 .25rem;font-size:2rem}}
 .sub{{color:#6b7280;margin:0 0 1.5rem;font-size:.9rem}}
-.stats{{display:grid;grid-template-columns:repeat(auto-fit,minmax(140px,1fr));gap:.5rem;margin:1rem 0 2rem;background:#f9fafb;padding:1rem 1.25rem;border-radius:8px}}
+.stats{{display:grid;grid-template-columns:repeat(auto-fit,minmax(140px,1fr));gap:.5rem;margin:1rem 0 2rem;background:#f5f5fa;padding:1rem 1.25rem;border-radius:8px}}
 .stat{{font-size:.85rem;color:#6b7280}}
 .stat b{{display:block;font-size:1.4rem;color:#1f2937}}
 .foot{{color:#9ca3af;font-size:.85rem;margin-top:2rem}}
-.foot a{{color:#1e40af;text-decoration:none}}
+.foot a{{color:#6366f1;text-decoration:none}}
 .foot a:hover{{text-decoration:underline}}
 ul{{padding-left:1.25rem}}</style>
 </head><body>

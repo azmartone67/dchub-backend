@@ -403,7 +403,7 @@ _POCKETS_PAGE_HTML = '''<!DOCTYPE html><html lang="en"><head>
 <link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;600;700;800&family=JetBrains+Mono:wght@400;600&display=swap" rel="stylesheet">
 <style>
 :root{--bg:#0a0a12;--card:#11121a;--bd:#1f2030;--tx:#fff;--tx2:#9ca3af;--green:#10b981;--orange:#f59e0b;--red:#ef4444;--acc:#6366f1;--violet:#8b5cf6}
-*{box-sizing:border-box}body{font-family:Inter,-apple-system,sans-serif;background:var(--bg);color:var(--tx);margin:0;line-height:1.6}
+*{box-sizing:border-box}body{font-family:'Instrument Sans',-apple-system,sans-serif;background:var(--bg);color:var(--tx);margin:0;line-height:1.6}
 .wrap{max-width:1100px;margin:0 auto;padding:3rem 1.5rem}
 .kicker{font-family:'JetBrains Mono',monospace;font-size:0.78rem;color:var(--acc);text-transform:uppercase;letter-spacing:0.12em;margin-bottom:0.5rem}
 h1{font-size:2.8rem;margin:0 0 0.5rem;font-weight:800;letter-spacing:-0.02em;background:linear-gradient(90deg,#fff,#a78bfa);-webkit-background-clip:text;background-clip:text;color:transparent}
@@ -901,7 +901,7 @@ _POCKET_DETAIL_HTML = '''<!DOCTYPE html><html lang="en"><head>
 <link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;600;700;800&family=JetBrains+Mono:wght@400;600&display=swap" rel="stylesheet">
 <style>
 :root{--bg:#0a0a12;--card:#11121a;--bd:#1f2030;--tx:#fff;--tx2:#9ca3af;--green:#10b981;--orange:#f59e0b;--red:#ef4444;--acc:#6366f1;--violet:#8b5cf6}
-*{box-sizing:border-box}body{font-family:Inter,-apple-system,sans-serif;background:var(--bg);color:var(--tx);margin:0;line-height:1.6}
+*{box-sizing:border-box}body{font-family:'Instrument Sans',-apple-system,sans-serif;background:var(--bg);color:var(--tx);margin:0;line-height:1.6}
 .wrap{max-width:980px;margin:0 auto;padding:2.5rem 1.5rem}
 .crumb{font-family:'JetBrains Mono',monospace;font-size:0.78rem;color:var(--tx2);text-transform:uppercase;letter-spacing:.08em;margin-bottom:.75rem}
 .crumb a{color:var(--acc);text-decoration:none}.crumb a:hover{color:#fff}
@@ -1426,7 +1426,7 @@ def _render_weekly_html(d: dict) -> str:
         for r in d["top_movers"]
     ) or '<tr><td colspan="3" style="color:#6b7280;text-align:center;padding:24px">No significant movers this week.</td></tr>'
 
-    return f'''<div style="font-family:Inter,-apple-system,sans-serif;background:#0a0a12;color:#fff;padding:32px;max-width:680px;margin:0 auto;line-height:1.55">
+    return f'''<div style="font-family:'Instrument Sans',-apple-system,sans-serif;background:#0a0a12;color:#fff;padding:32px;max-width:680px;margin:0 auto;line-height:1.55">
 <div style="font-family:monospace;font-size:11px;color:#c4b5fd;text-transform:uppercase;letter-spacing:.14em;margin-bottom:8px">DC HUB · WEEKLY POCKETS · {d["week_of"]}</div>
 <h1 style="font-size:24px;margin:0 0 8px;font-weight:800;color:#fff">{d["title"]}</h1>
 <p style="color:#9ca3af;margin:0 0 24px;font-size:14px">Top BUILD-verdict markets and biggest 7-day movers on the excess-power index. Powered by DC Hub's live grid + DCPI signals.</p>

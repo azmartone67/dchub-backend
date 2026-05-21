@@ -221,12 +221,17 @@ def vs_page(slug):
             for k, v in sorted(_COMPETITORS.items()))
         html = f"""<!doctype html><html><head><meta charset=utf-8>
 <title>DC Hub Competitive Comparisons</title>
-<style>body{{font-family:-apple-system,sans-serif;max-width:680px;margin:2rem auto;
-padding:1rem;color:#1f2937;line-height:1.7}}h1{{font-size:2rem}}
-li{{margin:.5rem 0}}a{{color:#1e40af;text-decoration:none}}a:hover{{text-decoration:underline}}</style>
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=Instrument+Sans:wght@400;500;600;700;800&family=JetBrains+Mono:wght@500;700&display=swap">
+<link rel="stylesheet" href="/static/dchub-brand.css">
+<style>body{{font-family:'Instrument Sans',-apple-system,BlinkMacSystemFont,sans-serif;max-width:680px;margin:2rem auto;
+padding:1rem;color:var(--dch-text);line-height:1.7;background:var(--dch-bg)}}h1{{font-size:2rem}}
+li{{margin:.5rem 0}}a{{color:#6366f1;text-decoration:none}}a:hover{{text-decoration:underline}}</style>
 </head><body><h1>DC Hub vs the field</h1>
 <p>Head-to-head fact comparisons. No adjectives, just numbers.</p>
-<ul>{items}</ul></body></html>"""
+<ul>{items}</ul>
+<script src="/js/dchub-nav.js" defer></script></body></html>"""
         return Response(html, mimetype="text/html", status=404)
 
     rows_html = "".join(f"""<tr>
@@ -250,8 +255,12 @@ li{{margin:.5rem 0}}a{{color:#1e40af;text-decoration:none}}a:hover{{text-decorat
  "url":"https://dchub.cloud/vs/{data['slug']}",
  "publisher":{{"@type":"Organization","name":"DC Hub","url":"https://dchub.cloud"}}
 }}</script>
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=Instrument+Sans:wght@400;500;600;700;800&family=JetBrains+Mono:wght@500;700&display=swap">
+<link rel="stylesheet" href="/static/dchub-brand.css">
 <style>
-body{{font-family:'Instrument Sans',-apple-system,sans-serif;background:#05060d;color:#fafafa;margin:0;padding:2rem 1.5rem;line-height:1.6}}
+body{{font-family:'Instrument Sans',-apple-system,BlinkMacSystemFont,sans-serif;background:var(--dch-bg);color:var(--dch-text);margin:0;padding:2rem 1.5rem;line-height:1.6}}
 .wrap{{max-width:980px;margin:0 auto}}
 .pill{{display:inline-block;padding:6px 14px;border-radius:99px;background:rgba(99,102,241,.12);border:1px solid rgba(99,102,241,.4);font-size:.78rem;color:#6366f1;font-weight:600;font-family:'JetBrains Mono',monospace;margin-bottom:1rem}}
 h1{{font-size:2.4rem;font-weight:800;letter-spacing:-0.025em;margin:0 0 .25rem}}
@@ -267,9 +276,9 @@ td{{padding:14px;border-top:1px solid rgba(255,255,255,.05);vertical-align:top}}
 td b{{color:#9ca3af}}
 td.dchub{{color:#10b981;font-weight:500}}
 td.comp{{color:#cbd5e1}}
-.hook{{background:linear-gradient(135deg,rgba(16,185,129,.08),rgba(99,102,241,.08));border:1px solid rgba(16,185,129,.4);border-radius:10px;padding:1.25rem 1.5rem;color:#cbd5e1;margin-bottom:2rem}}
-.hook b{{color:#10b981}}
-.foot{{color:#6b7280;font-size:.85rem;margin-top:2rem}}
+.hook{{background:linear-gradient(135deg,rgba(99,102,241,.10),rgba(168,85,247,.10));border:1px solid rgba(129,140,248,.40);border-radius:10px;padding:1.25rem 1.5rem;color:#cbd5e1;margin-bottom:2rem}}
+.hook b{{color:#818cf8}}
+.foot{{color:var(--dch-text-mute);font-size:.85rem;margin-top:2rem}}
 .foot a{{color:#a855f7;text-decoration:none}}
 </style>
 </head><body>

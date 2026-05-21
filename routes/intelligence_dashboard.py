@@ -61,8 +61,11 @@ def intelligence_dashboard():
 </script>
 <link rel="icon" type="image/svg+xml" href="/icons/icon.svg">
 <link rel="preconnect" href="https://fonts.googleapis.com">
-<link href="https://fonts.googleapis.com/css2?family=Instrument+Sans:wght@400;500;600;700&family=JetBrains+Mono:wght@400;500;600&display=swap" rel="stylesheet">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link href="https://fonts.googleapis.com/css2?family=Instrument+Sans:wght@400;500;600;700;800&family=JetBrains+Mono:wght@500;700&display=swap" rel="stylesheet">
+<link rel="stylesheet" href="/static/dchub-brand.css">
 <script defer src="/js/dchub-brand.js"></script>
+<script defer src="/js/dchub-nav.js"></script>
 <style>
   /* Phase FF+25-followup-r14 (2026-05-20) — canonical brand on the
      backend-served intelligence dashboard. Was a white page with

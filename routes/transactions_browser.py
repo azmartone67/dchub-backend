@@ -230,7 +230,7 @@ def transactions_index():
     for i, d in enumerate(deals):
         # Past N_FREE on page 1, OR any page past page 1, redact $value
         gated_row = (not is_authed) and (page > 1 or i >= N_FREE_ROWS)
-        value_cell = (f'<td><span style="color:#9ca3af">🔒 <a href="/signup?next=/transactions&utm_source=transactions_browser" style="color:#1e40af;text-decoration:underline">Sign up free</a></span></td>'
+        value_cell = (f'<td><span style="color:#9ca3af">🔒 <a href="/signup?next=/transactions&utm_source=transactions_browser" style="color:#818cf8;text-decoration:underline">Sign up free</a></span></td>'
                        if gated_row
                        else f'<td>{_fmt_value(d.get("value"))}</td>')
         type_cell = (f'<td><span style="color:#9ca3af">🔒</span></td>'

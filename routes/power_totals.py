@@ -231,14 +231,14 @@ def html_totals():
     state_rows = "\n".join(
         f'<tr><td><a href="/dcpi/{s["state"].lower()}">{s["state"]}</a></td>'
         f'<td>{_fmt_mw(s["operating_mw"])}</td>'
-        f'<td style="color:#1e40af;font-weight:600">{_fmt_mw(s["pipeline_mw"])}</td>'
+        f'<td style="color:#818cf8;font-weight:600">{_fmt_mw(s["pipeline_mw"])}</td>'
         f'<td>{_fmt_mw(s["total_mw"])}</td>'
         f'<td>{s["facility_count"]:,}</td></tr>'
         for s in by_state[:25]
     )
     pp_market_rows = "\n".join(
         f'<tr><td>{m["city"]}, {m["state"] or "-"}</td>'
-        f'<td style="color:#1e40af;font-weight:600">{_fmt_mw(m["pipeline_mw"])}</td>'
+        f'<td style="color:#818cf8;font-weight:600">{_fmt_mw(m["pipeline_mw"])}</td>'
         f'<td>{m["project_count"]:,}</td></tr>'
         for m in top_pp[:15]
     )
@@ -270,7 +270,10 @@ def html_totals():
 <meta property="og:description" content="{_fmt_mw(op_mw)} operating + {_fmt_mw(pp_mw)} being built — live, free, indexable.">
 <meta property="og:url" content="https://dchub.cloud/dcpi/totals">
 <script type="application/ld+json">{_json.dumps(schema_org)}</script>
-<link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700;800&family=JetBrains+Mono:wght@400;500;600&display=swap" rel="stylesheet">
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link href="https://fonts.googleapis.com/css2?family=Instrument+Sans:wght@400;500;600;700;800&family=JetBrains+Mono:wght@500;700&display=swap" rel="stylesheet">
+<link rel="stylesheet" href="/static/dchub-brand.css">
 <style>
   /* r32 (2026-05-20): brand-match — dark navy canvas, indigo→violet
      gradient, Inter + JetBrains Mono. Mirrors /pockets + /coverage
@@ -287,7 +290,7 @@ def html_totals():
     color-scheme:dark;
   }}
   *{{box-sizing:border-box}}
-  body{{font-family:Inter,-apple-system,BlinkMacSystemFont,sans-serif;
+  body{{font-family:'Instrument Sans',-apple-system,BlinkMacSystemFont,sans-serif;
         background:var(--bg);color:var(--text);line-height:1.55;
         min-height:100vh;margin:0;padding:0;-webkit-font-smoothing:antialiased;
         position:relative;overflow-x:hidden}}

@@ -226,18 +226,22 @@ def operators_index():
   {','.join(f'{{"@type":"ListItem","position":{i+1},"name":"{o["name"]}","url":"https://dchub.cloud/operators/{o["slug"]}"}}' for i, o in enumerate(ops))}
  ]
 }}</script>
-<style>body{{font-family:-apple-system,sans-serif;max-width:1100px;margin:0 auto;
-padding:2rem 1rem;color:#1f2937;line-height:1.55}}
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link href="https://fonts.googleapis.com/css2?family=Instrument+Sans:wght@400;500;600;700;800&family=JetBrains+Mono:wght@500;700&display=swap" rel="stylesheet">
+<link rel="stylesheet" href="/static/dchub-brand.css">
+<style>body{{font-family:'Instrument Sans',-apple-system,sans-serif;max-width:1100px;margin:0 auto;
+padding:2rem 1rem;color:var(--dch-text);line-height:1.55;background:var(--dch-bg)}}
 h1{{margin:0 0 .25rem;font-size:1.85rem}}
-.sub{{color:#6b7280;margin:0 0 1.5rem}}
-table{{width:100%;border-collapse:collapse;font-size:.95rem;background:white;
-border-radius:8px;overflow:hidden;box-shadow:0 1px 3px rgba(0,0,0,.06)}}
-th{{text-align:left;padding:.6rem .8rem;background:#f3f4f6;font-size:.8rem;
-text-transform:uppercase;color:#6b7280;font-weight:600}}
-td{{padding:.5rem .8rem;border-top:1px solid #f3f4f6}}
-td:first-child{{color:#9ca3af;font-family:monospace}}
-a{{color:#1e40af;text-decoration:none}} a:hover{{text-decoration:underline}}
-.foot{{color:#9ca3af;font-size:.85rem;text-align:center;margin-top:2rem}}</style>
+.sub{{color:var(--dch-text-mute);margin:0 0 1.5rem}}
+table{{width:100%;border-collapse:collapse;font-size:.95rem;background:var(--dch-surface);
+border-radius:8px;overflow:hidden;border:1px solid var(--dch-border)}}
+th{{text-align:left;padding:.6rem .8rem;background:var(--dch-surface-2);font-size:.8rem;
+text-transform:uppercase;color:var(--dch-text-mute);font-weight:600}}
+td{{padding:.5rem .8rem;border-top:1px solid var(--dch-border)}}
+td:first-child{{color:var(--dch-text-dim);font-family:'JetBrains Mono',monospace}}
+a{{color:#818cf8;text-decoration:none}} a:hover{{text-decoration:underline;color:#a855f7}}
+.foot{{color:var(--dch-text-dim);font-size:.85rem;text-align:center;margin-top:2rem}}</style>
 </head><body>
 <h1>Data Center Operators</h1>
 <p class="sub">Top {len(ops)} operators by tracked facility count. Click any name for the per-operator portfolio.</p>
@@ -291,7 +295,7 @@ def operator_page(slug):
     ) or '<tr><td colspan=6 style="text-align:center;color:#9ca3af;padding:.8rem">No tracked deals yet.</td></tr>'
 
     market_chips = "".join(
-        f'<span style="display:inline-block;background:#eef2ff;color:#3730a3;'
+        f'<span style="display:inline-block;background:rgba(129,140,248,.15);color:#818cf8;'
         f'padding:.25rem .65rem;border-radius:999px;font-size:.85rem;margin:.15rem">'
         f'{m["market"]} <strong>×{m["facilities"]}</strong></span>'
         for m in (summary.get("top_markets") or [])[:10]
@@ -309,22 +313,26 @@ def operator_page(slug):
  "name":"{summary['name']}","url":"https://dchub.cloud/operators/{slug}",
  "description":"Data center operator tracked by DC Hub. {summary['facility_count']} facilities, {summary['total_mw']:,.0f} MW total, {summary['countries']} countries."
 }}</script>
-<style>body{{font-family:-apple-system,sans-serif;max-width:1000px;margin:0 auto;
-padding:2rem 1rem;color:#1f2937;line-height:1.55}}
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link href="https://fonts.googleapis.com/css2?family=Instrument+Sans:wght@400;500;600;700;800&family=JetBrains+Mono:wght@500;700&display=swap" rel="stylesheet">
+<link rel="stylesheet" href="/static/dchub-brand.css">
+<style>body{{font-family:'Instrument Sans',-apple-system,sans-serif;max-width:1000px;margin:0 auto;
+padding:2rem 1rem;color:var(--dch-text);line-height:1.55;background:var(--dch-bg)}}
 h1{{margin:0 0 .25rem;font-size:2rem}}
-.sub{{color:#6b7280;margin:0 0 1.5rem}}
+.sub{{color:var(--dch-text-mute);margin:0 0 1.5rem}}
 .grid{{display:grid;grid-template-columns:repeat(auto-fit,minmax(180px,1fr));gap:.75rem;margin:1rem 0 2rem}}
-.card{{background:white;padding:1rem 1.2rem;border-radius:8px;box-shadow:0 1px 3px rgba(0,0,0,.06)}}
-.card-label{{font-size:.72rem;text-transform:uppercase;letter-spacing:.08em;color:#6b7280;font-weight:600}}
-.card-metric{{font-size:1.8rem;font-weight:800;color:#1f2937;line-height:1;margin-top:.3rem}}
-h2{{font-size:1rem;color:#6b7280;text-transform:uppercase;letter-spacing:.08em;margin:1.5rem 0 .5rem}}
-table{{width:100%;border-collapse:collapse;font-size:.92rem;background:white;border-radius:8px;overflow:hidden;box-shadow:0 1px 3px rgba(0,0,0,.06)}}
-th{{text-align:left;padding:.55rem .75rem;background:#f3f4f6;font-size:.75rem;
-text-transform:uppercase;color:#6b7280;font-weight:600}}
-td{{padding:.5rem .75rem;border-top:1px solid #f3f4f6}}
-a{{color:#1e40af;text-decoration:none}} a:hover{{text-decoration:underline}}
-.back{{color:#6b7280;font-size:.9rem}}
-.foot{{color:#9ca3af;font-size:.85rem;text-align:center;margin-top:2rem}}</style>
+.card{{background:var(--dch-surface);padding:1rem 1.2rem;border-radius:8px;border:1px solid var(--dch-border)}}
+.card-label{{font-size:.72rem;text-transform:uppercase;letter-spacing:.08em;color:var(--dch-text-mute);font-weight:600}}
+.card-metric{{font-size:1.8rem;font-weight:800;color:var(--dch-text);line-height:1;margin-top:.3rem}}
+h2{{font-size:1rem;color:var(--dch-text-mute);text-transform:uppercase;letter-spacing:.08em;margin:1.5rem 0 .5rem}}
+table{{width:100%;border-collapse:collapse;font-size:.92rem;background:var(--dch-surface);border-radius:8px;overflow:hidden;border:1px solid var(--dch-border)}}
+th{{text-align:left;padding:.55rem .75rem;background:var(--dch-surface-2);font-size:.75rem;
+text-transform:uppercase;color:var(--dch-text-mute);font-weight:600}}
+td{{padding:.5rem .75rem;border-top:1px solid var(--dch-border)}}
+a{{color:#818cf8;text-decoration:none}} a:hover{{text-decoration:underline;color:#a855f7}}
+.back{{color:var(--dch-text-mute);font-size:.9rem}}
+.foot{{color:var(--dch-text-dim);font-size:.85rem;text-align:center;margin-top:2rem}}</style>
 </head><body>
 <p class="back"><a href="/operators">← All operators</a></p>
 <h1>{summary['name']}</h1>

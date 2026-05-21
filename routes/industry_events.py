@@ -248,12 +248,12 @@ def events_page():
                           if r["dchub_submitted"] else
                           '<span style="background:#f59e0b;color:white;padding:.15rem .5rem;border-radius:4px;font-size:.75rem">NOT SUBMITTED</span>')
         rows_html.append(
-            f'<div style="background:white;padding:1rem 1.25rem;border-radius:8px;'
-            f'margin:.6rem 0;box-shadow:0 1px 3px rgba(0,0,0,.06)">'
+            f'<div style="background:var(--dch-surface);padding:1rem 1.25rem;border-radius:8px;'
+            f'margin:.6rem 0;border:1px solid var(--dch-border)">'
             f'<div style="display:flex;justify-content:space-between;align-items:center;gap:.5rem;flex-wrap:wrap">'
-            f'<a href="{r["url"] or "#"}" style="font-weight:700;color:#1e40af;text-decoration:none">{r["name"]}</a>'
+            f'<a href="{r["url"] or "#"}" style="font-weight:700;color:#818cf8;text-decoration:none">{r["name"]}</a>'
             f'{submitted_badge}</div>'
-            f'<div style="color:#6b7280;font-size:.85rem;margin-top:.3rem">'
+            f'<div style="color:var(--dch-text-mute);font-size:.85rem;margin-top:.3rem">'
             f'{r["starts_on"] or "?"} → {r["ends_on"] or "?"} · {r["location"] or "?"} · {r["organizer"] or "?"}'
             f'{f" · in {days}d" if days is not None and days > 0 else ""}</div>'
             f'<div style="margin-top:.3rem;font-size:.85rem">{deadline_str}</div>'
@@ -265,15 +265,19 @@ def events_page():
 <title>Industry Events · DC Hub</title>
 <meta name="description" content="Upcoming data-center industry events tracked by DC Hub. {len(rows)} events with submission deadlines and DC Hub participation status.">
 <link rel="canonical" href="https://dchub.cloud/events">
-<style>body{{font-family:-apple-system,sans-serif;max-width:900px;margin:0 auto;padding:2rem 1rem;color:#1f2937;line-height:1.55;background:#fafbfc}}
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link href="https://fonts.googleapis.com/css2?family=Instrument+Sans:wght@400;500;600;700;800&family=JetBrains+Mono:wght@500;700&display=swap" rel="stylesheet">
+<link rel="stylesheet" href="/static/dchub-brand.css">
+<style>body{{font-family:'Instrument Sans',-apple-system,sans-serif;max-width:900px;margin:0 auto;padding:2rem 1rem;color:var(--dch-text);line-height:1.55;background:var(--dch-bg)}}
 h1{{margin:0 0 .25rem;font-size:1.85rem}}
-.sub{{color:#6b7280;margin:0 0 1.5rem}}
-a{{text-decoration:none}}</style></head><body>
+.sub{{color:var(--dch-text-mute);margin:0 0 1.5rem}}
+a{{text-decoration:none;color:#818cf8}}</style></head><body>
 <h1>📅 Industry Events</h1>
 <p class="sub">{len(rows)} upcoming data-center industry events · DC Hub Media participation tracked · submission deadlines surfaced</p>
-{''.join(rows_html) or '<p style="color:#9ca3af;text-align:center;padding:2rem">No events tracked yet — POST /api/v1/events/seed to populate.</p>'}
-<p style="color:#9ca3af;font-size:.85rem;margin-top:2rem;text-align:center">
- Live JSON: <a href="/api/v1/events/upcoming" style="color:#1e40af">/api/v1/events/upcoming</a> · Brain flags events 30d out without DC Hub submission
+{''.join(rows_html) or '<p style="color:var(--dch-text-mute);text-align:center;padding:2rem">No events tracked yet — POST /api/v1/events/seed to populate.</p>'}
+<p style="color:var(--dch-text-dim);font-size:.85rem;margin-top:2rem;text-align:center">
+ Live JSON: <a href="/api/v1/events/upcoming" style="color:#818cf8">/api/v1/events/upcoming</a> · Brain flags events 30d out without DC Hub submission
 </p>
 <script src="/js/dchub-nav.js" defer></script>
 </body></html>"""

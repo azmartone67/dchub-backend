@@ -127,9 +127,13 @@ def mint_unlock_token(api_key: str):
 _PAGE = """<!doctype html><html lang="en"><head><meta charset="utf-8">
 <meta name="viewport" content="width=device-width,initial-scale=1">
 <title>Unlock DC Hub — __HEAD__</title>
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link href="https://fonts.googleapis.com/css2?family=Instrument+Sans:wght@400;500;600;700;800&family=JetBrains+Mono:wght@500;700&display=swap" rel="stylesheet">
+<link rel="stylesheet" href="/static/dchub-brand.css">
 <style>
-*{box-sizing:border-box}body{margin:0;font-family:-apple-system,BlinkMacSystemFont,'Segoe UI',Inter,sans-serif;
-background:#0a0a12;color:#e8e8f0;display:flex;min-height:100vh;align-items:center;justify-content:center;padding:1.5rem}
+*{box-sizing:border-box}body{margin:0;font-family:'Instrument Sans',-apple-system,BlinkMacSystemFont,'Segoe UI',sans-serif;
+background:#0a0a0f;color:#e8e8f0;display:flex;min-height:100vh;align-items:center;justify-content:center;padding:1.5rem}
 .card{background:#13141d;border:1px solid #262838;border-radius:16px;padding:2.5rem;max-width:440px;width:100%}
 h1{font-size:1.5rem;margin:0 0 .5rem}p{color:#9ca3b8;line-height:1.55;margin:.4rem 0 1.3rem}
 .unlocks{background:#0e1a14;border:1px solid #1c3a2a;border-radius:10px;padding:.9rem 1.1rem;margin:0 0 1.4rem;font-size:.92rem;color:#7ee2a8}

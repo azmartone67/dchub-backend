@@ -634,25 +634,29 @@ def sentinel_dashboard():
 <html><head><meta charset="utf-8">
 <title>DC Hub Site Sentinel — every page, every minute</title>
 <meta name="description" content="Live page-health dashboard. Polls every public DC Hub URL and surfaces breakages as brain findings.">
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link href="https://fonts.googleapis.com/css2?family=Instrument+Sans:wght@400;500;600;700;800&family=JetBrains+Mono:wght@500;700&display=swap" rel="stylesheet">
+<link rel="stylesheet" href="/static/dchub-brand.css">
 <style>
- body{{font-family:-apple-system,sans-serif;max-width:1200px;margin:0 auto;padding:2rem 1rem;background:#fafbfc;color:#1f2937}}
+ body{{font-family:'Instrument Sans',-apple-system,sans-serif;max-width:1200px;margin:0 auto;padding:2rem 1rem;background:var(--dch-bg);color:var(--dch-text)}}
  h1{{font-size:1.8rem;margin:0 0 .25rem}}
  .summary{{padding:1.25rem;border-radius:10px;color:white;font-size:1.2rem;margin:1rem 0}}
- .summary.green{{background:linear-gradient(135deg,#065f46,#0f766e)}}
+ .summary.green{{background:linear-gradient(135deg,#6366f1,#a855f7)}}
  .summary.amber{{background:linear-gradient(135deg,#92400e,#b45309)}}
  .summary.red{{background:linear-gradient(135deg,#991b1b,#b91c1c)}}
- table{{width:100%;border-collapse:collapse;background:white;border-radius:8px;overflow:hidden;box-shadow:0 1px 3px rgba(0,0,0,.06)}}
- th{{text-align:left;padding:.6rem;background:#f3f4f6;font-size:.8rem;text-transform:uppercase;color:#6b7280}}
- td{{padding:.55rem .6rem;border-top:1px solid #f3f4f6;font-size:.9rem}}
- tr.ok td{{color:#1f2937}}
- tr.bad{{background:#fef2f2}}
- tr.bad td{{color:#991b1b;font-weight:600}}
- a{{color:#1e40af;text-decoration:none}} a:hover{{text-decoration:underline}}
- .footer{{color:#9ca3af;font-size:.85rem;margin-top:2rem}}
+ table{{width:100%;border-collapse:collapse;background:var(--dch-surface);border-radius:8px;overflow:hidden;border:1px solid var(--dch-border)}}
+ th{{text-align:left;padding:.6rem;background:var(--dch-surface-2);font-size:.8rem;text-transform:uppercase;color:var(--dch-text-mute)}}
+ td{{padding:.55rem .6rem;border-top:1px solid var(--dch-border);font-size:.9rem}}
+ tr.ok td{{color:var(--dch-text)}}
+ tr.bad{{background:rgba(239,68,68,.08)}}
+ tr.bad td{{color:#fca5a5;font-weight:600}}
+ a{{color:#818cf8;text-decoration:none}} a:hover{{text-decoration:underline;color:#a855f7}}
+ .footer{{color:var(--dch-text-dim);font-size:.85rem;margin-top:2rem}}
 </style></head>
 <body>
 <h1>🛰️ Site Sentinel</h1>
-<p style="color:#6b7280">Polls every public URL on the manifest. Unhealthy pages auto-surface as brain findings in /api/v1/brain/heartbeat.</p>
+<p style="color:var(--dch-text-mute)">Polls every public URL on the manifest. Unhealthy pages auto-surface as brain findings in /api/v1/brain/heartbeat.</p>
 <div class="summary {overall_class}">
   <strong>{healthy}/{len(rows)} pages healthy ({pct}%)</strong>
 </div>

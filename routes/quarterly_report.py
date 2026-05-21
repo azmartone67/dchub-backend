@@ -233,8 +233,8 @@ def _render_html(d: dict) -> str:
 <style>
 @page {{ size: letter; margin: 1in; }}
 body{{font-family:Georgia,serif;max-width:780px;margin:0 auto;padding:2rem 1rem;color:#1f2937;line-height:1.6}}
-h1{{font-family:-apple-system,sans-serif;font-size:2.2rem;margin:0 0 .25rem;border-bottom:3px solid #1e40af;padding-bottom:.5rem}}
-h2{{font-family:-apple-system,sans-serif;font-size:1.25rem;margin:2rem 0 .5rem;color:#1e40af}}
+h1{{font-family:-apple-system,sans-serif;font-size:2.2rem;margin:0 0 .25rem;border-bottom:3px solid #6366f1;padding-bottom:.5rem}}
+h2{{font-family:-apple-system,sans-serif;font-size:1.25rem;margin:2rem 0 .5rem;color:#6366f1}}
 .cover{{margin-bottom:2.5rem}}
 .cover .quarter{{color:#6b7280;font-family:-apple-system,sans-serif;font-size:1rem;margin:.25rem 0}}
 .headline{{display:grid;grid-template-columns:repeat(auto-fit,minmax(140px,1fr));gap:.6rem;margin:1.5rem 0;padding:1rem 1.25rem;background:#f9fafb;border-radius:8px;font-family:-apple-system,sans-serif}}
@@ -246,7 +246,7 @@ td{{padding:.35rem .6rem;border-bottom:1px solid #f3f4f6}}
 .print-note{{background:#eef2ff;border:1px solid #c7d2fe;color:#3730a3;padding:.6rem 1rem;border-radius:6px;font-family:-apple-system,sans-serif;font-size:.85rem;margin:1rem 0}}
 @media print {{ .print-note, .nav, .foot {{ display: none !important; }} }}
 .foot{{color:#9ca3af;font-size:.85rem;margin-top:3rem;font-family:-apple-system,sans-serif;text-align:center}}
-.foot a{{color:#1e40af;text-decoration:none}}
+.foot a{{color:#6366f1;text-decoration:none}}
 </style>
 </head><body>
 <div class="cover">

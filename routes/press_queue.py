@@ -230,16 +230,21 @@ def press_feed_html():
         cards = '<p style="color:#9ca3af;text-align:center;padding:3rem 0;">No press releases yet. Check back when DCPI moves &gt;15 points week-over-week.</p>'
     return Response(f"""<!DOCTYPE html><html lang="en"><head><meta charset="utf-8">
 <title>DC Hub · Press</title>
-<link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;600;700;800&family=JetBrains+Mono&display=swap" rel="stylesheet">
-<style>body{{font-family:Inter,system-ui;background:#0a0a12;color:#fff;margin:0;line-height:1.6}}
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link href="https://fonts.googleapis.com/css2?family=Instrument+Sans:wght@400;500;600;700;800&family=JetBrains+Mono:wght@500;700&display=swap" rel="stylesheet">
+<link rel="stylesheet" href="/static/dchub-brand.css">
+<style>body{{font-family:'Instrument Sans',system-ui;background:var(--dch-bg);color:var(--dch-text);margin:0;line-height:1.6}}
 .wrap{{max-width:780px;margin:0 auto;padding:3rem 1.5rem}}
 h1{{font-size:2.4rem;margin:0 0 0.5rem;font-weight:800;letter-spacing:-0.02em}}
-.sub{{color:#9ca3af;margin:0 0 2.5rem}}
+.sub{{color:var(--dch-text-mute);margin:0 0 2.5rem}}
 </style></head><body><div class="wrap">
 <h1>DC Hub Press</h1>
 <p class="sub">Auto-published when the DCPI moves more than 15 points week-over-week. Free for citation.</p>
 {cards}
-</div></body></html>""", mimetype="text/html")
+</div>
+<script src="/js/dchub-nav.js" defer></script>
+</body></html>""", mimetype="text/html")
 
 
 @press_queue_bp.route("/press/<slug>", methods=["GET"])
@@ -260,14 +265,14 @@ def press_release_page(slug):
 <meta property="og:description" content="{(r.get('subheadline') or '')[:200]}">
 <meta property="og:type" content="article">
 <meta property="og:url" content="https://dchub.cloud/press/{slug}">
-<link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;600;700;800&family=Georgia&display=swap" rel="stylesheet">
+<link href="https://fonts.googleapis.com/css2?family=Instrument+Sans:wght@400;500;600;700;800&family=Georgia&display=swap" rel="stylesheet">
 <style>body{{font-family:Georgia,serif;max-width:720px;margin:0 auto;padding:3rem 1.5rem;line-height:1.7;color:#222;background:white}}
-.kicker{{font-family:Inter,system-ui;font-size:0.72rem;color:#6366f1;text-transform:uppercase;letter-spacing:0.12em;margin-bottom:0.4rem;font-weight:700}}
-h1{{font-family:Inter,system-ui;font-size:2.2rem;margin:0 0 0.6rem;line-height:1.15;font-weight:800}}
+.kicker{{font-family:'Instrument Sans',system-ui;font-size:0.72rem;color:#6366f1;text-transform:uppercase;letter-spacing:0.12em;margin-bottom:0.4rem;font-weight:700}}
+h1{{font-family:'Instrument Sans',system-ui;font-size:2.2rem;margin:0 0 0.6rem;line-height:1.15;font-weight:800}}
 .sub{{color:#555;font-size:1.1rem;margin:0 0 2rem}}
-.meta{{font-family:Inter,system-ui;color:#999;font-size:0.85rem;margin-bottom:2.5rem;padding-bottom:1.5rem;border-bottom:1px solid #ddd}}
+.meta{{font-family:'Instrument Sans',system-ui;color:#999;font-size:0.85rem;margin-bottom:2.5rem;padding-bottom:1.5rem;border-bottom:1px solid #ddd}}
 p{{font-size:1.05rem;margin:0 0 1.2rem}}
-.cite{{font-family:Inter,system-ui;color:#666;font-size:0.85rem;margin-top:3rem;border-top:1px solid #ddd;padding-top:1.5rem}}
+.cite{{font-family:'Instrument Sans',system-ui;color:#666;font-size:0.85rem;margin-top:3rem;border-top:1px solid #ddd;padding-top:1.5rem}}
 </style></head><body>
 <div class="kicker">DC Hub Press · DCPI Alert</div>
 <h1>{r['title']}</h1>

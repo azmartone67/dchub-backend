@@ -214,7 +214,7 @@ _BRAIN_INNOV_HTML = '''<!DOCTYPE html><html lang="en"><head>
   --indigo:#6366f1;--violet:#a855f7;--green:#10b981;--orange:#f59e0b;--red:#ef4444;
   --grad:linear-gradient(135deg,#6366f1 0%,#a855f7 100%);
   --mono:'JetBrains Mono','SF Mono',monospace;color-scheme:dark}
-*{box-sizing:border-box}body{font-family:Inter,-apple-system,sans-serif;
+*{box-sizing:border-box}body{font-family:'Instrument Sans',-apple-system,sans-serif;
   background:var(--bg);color:var(--tx);margin:0;line-height:1.55;min-height:100vh;
   position:relative;overflow-x:hidden;-webkit-font-smoothing:antialiased}
 body::before{content:'';position:fixed;top:-30%;left:50%;transform:translateX(-50%);

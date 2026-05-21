@@ -224,7 +224,7 @@ _PAYWALL_TEST_HTML = '''<!DOCTYPE html><html lang="en"><head>
 :root{--bg:#0a0a12;--surface:#11121a;--bd:#1f2030;--tx:#fff;--tx2:#9ca3af;
   --indigo:#6366f1;--violet:#a855f7;--green:#10b981;--orange:#f59e0b;--red:#ef4444;
   --mono:'JetBrains Mono','SF Mono',monospace;color-scheme:dark}
-*{box-sizing:border-box}body{font-family:Inter,-apple-system,sans-serif;
+*{box-sizing:border-box}body{font-family:'Instrument Sans',-apple-system,sans-serif;
   background:var(--bg);color:var(--tx);margin:0;line-height:1.55;-webkit-font-smoothing:antialiased}
 .wrap{max-width:1100px;margin:0 auto;padding:2.5rem 1.5rem}
 .kicker{font-family:var(--mono);font-size:.78rem;color:#c4b5fd;text-transform:uppercase;letter-spacing:.14em;margin-bottom:.6rem}

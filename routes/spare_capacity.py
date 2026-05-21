@@ -318,35 +318,39 @@ def _render_form_html(total_live: int) -> str:
   "creator":  {{"@type": "Organization", "name": "DC Hub", "url": "https://dchub.cloud"}}
 }}
 </script>
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link href="https://fonts.googleapis.com/css2?family=Instrument+Sans:wght@400;500;600;700;800&family=JetBrains+Mono:wght@500;700&display=swap" rel="stylesheet">
+<link rel="stylesheet" href="/static/dchub-brand.css">
 <style>
  *{{box-sizing:border-box}}
- body{{font-family:-apple-system,BlinkMacSystemFont,"Segoe UI",Roboto,sans-serif;
-       max-width:1100px;margin:0 auto;padding:2rem 1rem;color:#1f2937;line-height:1.55;background:#fafbfc}}
+ body{{font-family:'Instrument Sans',-apple-system,BlinkMacSystemFont,"Segoe UI",Roboto,sans-serif;
+       max-width:1100px;margin:0 auto;padding:2rem 1rem;color:var(--dch-text);line-height:1.55;background:var(--dch-bg)}}
  h1{{font-size:2rem;margin:0 0 .25rem}}
- .tag{{display:inline-block;background:#111827;color:white;padding:.25rem .75rem;border-radius:999px;
+ .tag{{display:inline-block;background:linear-gradient(135deg,#6366f1,#a855f7);color:white;padding:.25rem .75rem;border-radius:999px;
       font-size:.8rem;letter-spacing:.08em;text-transform:uppercase;margin-bottom:1rem}}
- .lead{{font-size:1.05rem;color:#4b5563;max-width:780px;margin:0 0 2rem}}
+ .lead{{font-size:1.05rem;color:var(--dch-text-mute);max-width:780px;margin:0 0 2rem}}
  .grid{{display:grid;grid-template-columns:1.2fr 1fr;gap:2rem;align-items:start}}
  @media (max-width:760px){{.grid{{grid-template-columns:1fr}}}}
- .card{{background:white;padding:1.5rem;border-radius:12px;box-shadow:0 1px 3px rgba(0,0,0,.06)}}
+ .card{{background:var(--dch-surface);padding:1.5rem;border-radius:12px;border:1px solid var(--dch-border)}}
  .card h2{{margin:0 0 1rem;font-size:1.25rem}}
- label{{display:block;font-size:.85rem;color:#374151;font-weight:600;margin:.7rem 0 .2rem}}
- input, textarea, select{{width:100%;padding:.55rem .7rem;border:1px solid #d1d5db;border-radius:6px;font-size:.95rem;background:white}}
+ label{{display:block;font-size:.85rem;color:var(--dch-text-mute);font-weight:600;margin:.7rem 0 .2rem}}
+ input, textarea, select{{width:100%;padding:.55rem .7rem;border:1px solid var(--dch-border);border-radius:6px;font-size:.95rem;background:var(--dch-surface);color:var(--dch-text)}}
  textarea{{min-height:80px;resize:vertical}}
  .row{{display:grid;grid-template-columns:1fr 1fr;gap:.75rem}}
- button{{margin-top:1.25rem;background:linear-gradient(135deg,#065f46,#0f766e);color:white;
+ button{{margin-top:1.25rem;background:linear-gradient(135deg,#6366f1,#a855f7);color:white;
         padding:.7rem 1.5rem;border:0;border-radius:6px;font-weight:700;cursor:pointer;font-size:1rem;width:100%}}
  button:hover{{filter:brightness(1.1)}}
- .why{{background:#ecfdf5;border:1px solid #a7f3d0;padding:1.25rem;border-radius:8px;margin-bottom:1rem}}
+ .why{{background:rgba(129,140,248,.10);border:1px solid rgba(129,140,248,.30);padding:1.25rem;border-radius:8px;margin-bottom:1rem}}
  .why ul{{margin:.5rem 0 0;padding-left:1.25rem}}
  .why li{{margin:.25rem 0}}
- .stat{{font-size:2.4rem;font-weight:700;color:#065f46;line-height:1}}
- .stat-sub{{color:#6b7280;font-size:.85rem;margin-top:.25rem}}
+ .stat{{font-size:2.4rem;font-weight:700;background:linear-gradient(135deg,#6366f1,#a855f7);-webkit-background-clip:text;background-clip:text;color:transparent;line-height:1}}
+ .stat-sub{{color:var(--dch-text-mute);font-size:.85rem;margin-top:.25rem}}
  #result{{margin-top:1rem;padding:.8rem 1rem;border-radius:6px;display:none}}
- #result.ok{{background:#ecfdf5;border:1px solid #a7f3d0;color:#065f46;display:block}}
- #result.err{{background:#fef2f2;border:1px solid #fecaca;color:#991b1b;display:block}}
- .footer{{color:#9ca3af;font-size:.85rem;text-align:center;margin-top:3rem}}
- a{{color:#1e40af;text-decoration:none}} a:hover{{text-decoration:underline}}
+ #result.ok{{background:rgba(129,140,248,.10);border:1px solid rgba(129,140,248,.30);color:var(--dch-indigo);display:block}}
+ #result.err{{background:rgba(239,68,68,.10);border:1px solid rgba(239,68,68,.30);color:#fca5a5;display:block}}
+ .footer{{color:var(--dch-text-dim);font-size:.85rem;text-align:center;margin-top:3rem}}
+ a{{color:#818cf8;text-decoration:none}} a:hover{{text-decoration:underline}}
 </style>
 </head>
 <body>
@@ -542,37 +546,42 @@ def spare_capacity_tracker(ref):
 <html><head><meta charset="utf-8">
 <title>Spare Capacity Listing {ref} — DC Hub</title>
 <meta name="description" content="{listing['operator_name']}: {listing['mw_available']} MW available in {listing['location']}. Listed via DC Hub Spare Capacity Marketplace.">
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link href="https://fonts.googleapis.com/css2?family=Instrument+Sans:wght@400;500;600;700;800&family=JetBrains+Mono:wght@500;700&display=swap" rel="stylesheet">
+<link rel="stylesheet" href="/static/dchub-brand.css">
 <style>
- body{{font-family:-apple-system,sans-serif;max-width:800px;margin:0 auto;padding:2rem 1rem;color:#1f2937;line-height:1.55}}
- .card{{background:white;padding:2rem;border-radius:12px;box-shadow:0 2px 6px rgba(0,0,0,.08);margin-top:1rem}}
- .ref{{font-family:monospace;background:#f3f4f6;padding:.2rem .5rem;border-radius:4px;font-size:.9rem;color:#374151}}
- .mw{{font-size:3rem;font-weight:700;color:#065f46;line-height:1}}
- .meta{{display:grid;grid-template-columns:1fr 1fr;gap:1rem;margin:1.5rem 0;padding:1rem 1.25rem;background:#f9fafb;border-radius:8px}}
+ body{{font-family:'Instrument Sans',-apple-system,BlinkMacSystemFont,sans-serif;max-width:800px;margin:0 auto;padding:2rem 1rem;color:var(--dch-text);line-height:1.55;background:var(--dch-bg)}}
+ .card{{background:var(--dch-surface);padding:2rem;border-radius:12px;border:1px solid var(--dch-border);margin-top:1rem}}
+ .ref{{font-family:'JetBrains Mono',monospace;background:var(--dch-surface-2);padding:.2rem .5rem;border-radius:4px;font-size:.9rem;color:var(--dch-text)}}
+ .mw{{font-size:3rem;font-weight:700;background:linear-gradient(135deg,#6366f1,#a855f7);-webkit-background-clip:text;background-clip:text;color:transparent;line-height:1}}
+ .meta{{display:grid;grid-template-columns:1fr 1fr;gap:1rem;margin:1.5rem 0;padding:1rem 1.25rem;background:var(--dch-surface-2);border-radius:8px;border:1px solid var(--dch-border)}}
  .meta div{{font-size:.95rem}}
- .meta strong{{display:block;font-size:.75rem;text-transform:uppercase;letter-spacing:.08em;color:#6b7280;margin-bottom:.25rem}}
- .cta{{display:inline-block;background:linear-gradient(135deg,#065f46,#0f766e);color:white;padding:.65rem 1.5rem;border-radius:6px;text-decoration:none;font-weight:700;margin-top:1rem}}
+ .meta strong{{display:block;font-size:.75rem;text-transform:uppercase;letter-spacing:.08em;color:var(--dch-text-mute);margin-bottom:.25rem}}
+ .cta{{display:inline-block;background:linear-gradient(135deg,#6366f1,#a855f7);color:white;padding:.65rem 1.5rem;border-radius:6px;text-decoration:none;font-weight:700;margin-top:1rem}}
+ a{{color:#818cf8;text-decoration:none}}
 </style></head>
 <body>
 <a href="/spare-capacity">← Browse all listings</a>
 <div class="card">
- <p style="margin:0 0 .25rem;color:#6b7280">Spare Capacity Listing <span class="ref">{ref}</span></p>
+ <p style="margin:0 0 .25rem;color:var(--dch-text-mute)">Spare Capacity Listing <span class="ref">{ref}</span></p>
  <h1 style="margin:0 0 .25rem">{listing['operator_name']}</h1>
- <p style="margin:0;color:#6b7280">{listing['location']}{(' · ' + listing['market']) if listing['market'] else ''}</p>
+ <p style="margin:0;color:var(--dch-text-mute)">{listing['location']}{(' · ' + listing['market']) if listing['market'] else ''}</p>
  <div class="mw" style="margin-top:1rem">{listing['mw_available']:.1f} MW</div>
- <p style="color:#6b7280;margin:.25rem 0 0">available{(' · ready ' + listing['ready_date']) if listing['ready_date'] else ''}</p>
+ <p style="color:var(--dch-text-mute);margin:.25rem 0 0">available{(' · ready ' + listing['ready_date']) if listing['ready_date'] else ''}</p>
  <div class="meta">
    <div><strong>Status</strong>{listing['status']}</div>
    <div><strong>State</strong>{listing['state'] or '—'}</div>
    <div><strong>Listed</strong>{listing['created_at'].strftime('%Y-%m-%d') if listing['created_at'] else '—'}</div>
    <div><strong>Tenant inquiries</strong>{listing['tenant_inquiries']}</div>
  </div>
- {('<p style="color:#374151;white-space:pre-wrap">' + (listing['description'] or '') + '</p>') if listing.get('description') else ''}
+ {('<p style="color:var(--dch-text);white-space:pre-wrap">' + (listing['description'] or '') + '</p>') if listing.get('description') else ''}
  <p style="margin-top:1.5rem">
    <a class="cta" href="mailto:ops@dchub.cloud?subject=Tenant inquiry — {ref}&body=I'm interested in the {listing['mw_available']:.1f} MW listing in {listing['location']} (referral {ref}). Please connect me with the operator.">
      Inquire via DC Hub (tracked)
    </a>
  </p>
- <p style="color:#9ca3af;font-size:.85rem;margin-top:1.5rem">
+ <p style="color:var(--dch-text-dim);font-size:.85rem;margin-top:1.5rem">
    This tracker URL attributes any tenant interest to the source operator.
    When the deal closes, DC Hub gets credit via the referral_code <span class="ref">{ref}</span>.
  </p>

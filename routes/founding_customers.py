@@ -669,8 +669,10 @@ def founders_html():
 <link rel="icon" type="image/svg+xml" href="/icons/icon.svg">
 <link rel="preconnect" href="https://fonts.googleapis.com">
 <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
-<link href="https://fonts.googleapis.com/css2?family=Instrument+Sans:wght@400;500;600;700&family=JetBrains+Mono:wght@400;500;600&display=swap" rel="stylesheet">
+<link href="https://fonts.googleapis.com/css2?family=Instrument+Sans:wght@400;500;600;700;800&family=JetBrains+Mono:wght@500;700&display=swap" rel="stylesheet">
+<link rel="stylesheet" href="/static/dchub-brand.css">
 <script defer src="/js/dchub-brand.js"></script>
+<script defer src="/js/dchub-nav.js"></script>
 <style>
   :root{{--bg:#0a0a0f;--surface:#131319;--border:rgba(255,255,255,.06);
     --border-strong:rgba(255,255,255,.1);--text:#f5f5f7;

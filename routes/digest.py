@@ -95,10 +95,12 @@ def digest_today_page():
 <title>{{ d.title }} · DC Hub</title>
 <meta property="og:title" content="{{ d.title }}">
 <meta property="og:description" content="DC market brief — {{ d.top_build|length }} BUILD-verdict markets, {{ d.biggest_movers|length }} movers, {{ d.news_count_24h }} news items in last 24h.">
-<link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;600;700;800&family=JetBrains+Mono:wght@400;600&display=swap" rel="stylesheet">
+<link href="https://fonts.googleapis.com/css2?family=Instrument+Sans:wght@400;500;600;700;800&family=JetBrains+Mono:wght@500;700&display=swap" rel="stylesheet">
+<link rel="stylesheet" href="/static/dchub-brand.css">
+<script src="/js/dchub-nav.js" defer></script>
 <style>
-:root{--bg:#0a0a12;--card:#11121a;--bd:#1f2030;--tx:#fff;--tx2:#9ca3af;--green:#10b981;--orange:#f59e0b;--red:#ef4444;--acc:#6366f1}
-*{box-sizing:border-box}body{font-family:Inter,-apple-system,sans-serif;background:var(--bg);color:var(--tx);margin:0;line-height:1.6}
+:root{--bg:#0a0a0f;--card:#131319;--bd:rgba(255,255,255,.08);--tx:#fafafa;--tx2:#a1a1aa;--green:#10b981;--orange:#f59e0b;--red:#ef4444;--acc:#6366f1}
+*{box-sizing:border-box}body{font-family:'Instrument Sans',-apple-system,sans-serif;background:var(--bg);color:var(--tx);margin:0;line-height:1.6}
 .wrap{max-width:880px;margin:0 auto;padding:3rem 1.5rem}
 .kicker{font-family:'JetBrains Mono',monospace;font-size:0.78rem;color:var(--acc);text-transform:uppercase;letter-spacing:0.12em;margin-bottom:0.5rem}
 h1{font-size:2.6rem;margin:0 0 0.5rem;font-weight:800;letter-spacing:-0.02em}

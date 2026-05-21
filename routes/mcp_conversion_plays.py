@@ -300,7 +300,8 @@ def topup_landing(token):
     return Response(
         f"""<!DOCTYPE html><html><head><meta charset=utf-8>
 <title>Top-up · DC Hub</title>
-<style>body{{font-family:Inter,system-ui;background:#0a0a12;color:#fff;display:flex;
+<link rel="stylesheet" href="/static/dchub-brand.css">
+<style>body{{font-family:'Instrument Sans',system-ui;background:#0a0a0f;color:#fff;display:flex;
 align-items:center;justify-content:center;min-height:100vh;margin:0;padding:20px}}
 .wrap{{max-width:520px;background:#11121a;border:1px solid #1f2030;border-radius:14px;padding:36px}}
 .kicker{{font-size:.72rem;letter-spacing:.14em;color:#10b981;text-transform:uppercase;font-weight:700;margin-bottom:10px;font-family:JetBrains Mono,monospace}}

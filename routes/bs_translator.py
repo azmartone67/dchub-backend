@@ -208,39 +208,43 @@ def _render_html() -> str:
 <script type="application/ld+json">
 {schema_json}
 </script>
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link href="https://fonts.googleapis.com/css2?family=Instrument+Sans:wght@400;500;600;700;800&family=JetBrains+Mono:wght@500;700&display=swap" rel="stylesheet">
+<link rel="stylesheet" href="/static/dchub-brand.css">
+<script src="/js/dchub-nav.js" defer></script>
 <style>
   *{{box-sizing:border-box}}
-  body{{font-family:-apple-system,BlinkMacSystemFont,"Segoe UI",Roboto,sans-serif;
-        max-width:1200px;margin:0 auto;padding:2rem 1rem;color:#1f2937;line-height:1.55;background:#fafbfc}}
+  body{{font-family:'Instrument Sans',-apple-system,BlinkMacSystemFont,"Segoe UI",Roboto,sans-serif;
+        max-width:1200px;margin:0 auto;padding:2rem 1rem;color:var(--dch-text);line-height:1.55;background:var(--dch-bg)}}
   h1{{font-size:2.4rem;margin:0 0 .25rem}}
-  .tag{{display:inline-block;background:#111827;color:white;padding:.25rem .75rem;border-radius:999px;
+  .tag{{display:inline-block;background:linear-gradient(135deg,#6366f1,#a855f7);color:white;padding:.25rem .75rem;border-radius:999px;
        font-size:.8rem;letter-spacing:.08em;text-transform:uppercase;margin-bottom:1rem}}
-  .lead{{font-size:1.15rem;color:#4b5563;max-width:780px;margin:0 0 2rem}}
-  .row{{background:white;border-radius:12px;padding:1.5rem;margin:1rem 0;
-        box-shadow:0 1px 3px rgba(0,0,0,.06)}}
-  .category{{font-size:.75rem;text-transform:uppercase;letter-spacing:.1em;color:#6b7280;font-weight:700;margin-bottom:.75rem}}
+  .lead{{font-size:1.15rem;color:var(--dch-text-mute);max-width:780px;margin:0 0 2rem}}
+  .row{{background:var(--dch-surface);border:1px solid var(--dch-border);border-radius:12px;padding:1.5rem;margin:1rem 0}}
+  .category{{font-size:.75rem;text-transform:uppercase;letter-spacing:.1em;color:var(--dch-text-mute);font-weight:700;margin-bottom:.75rem}}
   .cols{{display:grid;grid-template-columns:1fr 1fr 1.2fr;gap:1rem}}
   @media (max-width:760px){{.cols{{grid-template-columns:1fr}}}}
-  .col{{padding:1rem;border-radius:8px;background:#f9fafb}}
-  .col.claim{{background:#fef2f2;border:1px solid #fecaca}}
-  .col.translation{{background:#fef3c7;border:1px solid #fde68a}}
-  .col.dchub{{background:#ecfdf5;border:1px solid #a7f3d0}}
+  .col{{padding:1rem;border-radius:8px;background:var(--dch-surface-2);border:1px solid var(--dch-border)}}
+  .col.claim{{background:rgba(239,68,68,.08);border:1px solid rgba(239,68,68,.25)}}
+  .col.translation{{background:rgba(245,158,11,.08);border:1px solid rgba(245,158,11,.25)}}
+  .col.dchub{{background:rgba(129,140,248,.10);border:1px solid rgba(129,140,248,.30)}}
   .col-label{{font-size:.7rem;text-transform:uppercase;letter-spacing:.08em;font-weight:700;
-              color:#6b7280;margin-bottom:.5rem}}
-  .col.claim .col-label{{color:#991b1b}}
-  .col.translation .col-label{{color:#92400e}}
-  .col.dchub .col-label{{color:#065f46}}
+              color:var(--dch-text-mute);margin-bottom:.5rem}}
+  .col.claim .col-label{{color:#fca5a5}}
+  .col.translation .col-label{{color:#fcd34d}}
+  .col.dchub .col-label{{color:#818cf8}}
   .col-body{{font-size:.95rem;line-height:1.55}}
-  .proof{{display:inline-block;margin-top:.75rem;color:#065f46;font-weight:600;text-decoration:none;font-size:.9rem}}
-  .proof:hover{{text-decoration:underline}}
-  .cta{{background:linear-gradient(135deg,#065f46 0%,#0f766e 100%);color:white;padding:2rem;
+  .proof{{display:inline-block;margin-top:.75rem;color:#818cf8;font-weight:600;text-decoration:none;font-size:.9rem}}
+  .proof:hover{{text-decoration:underline;color:#a855f7}}
+  .cta{{background:linear-gradient(135deg,#6366f1 0%,#a855f7 100%);color:white;padding:2rem;
         border-radius:14px;margin:2.5rem 0 1rem;text-align:center}}
   .cta h2{{margin:0 0 .5rem;font-size:1.5rem}}
-  .cta p{{margin:0 0 1rem;color:#d1fae5}}
-  .cta a{{display:inline-block;background:white;color:#065f46;padding:.6rem 1.25rem;border-radius:6px;
+  .cta p{{margin:0 0 1rem;color:#e0e7ff}}
+  .cta a{{display:inline-block;background:white;color:#6366f1;padding:.6rem 1.25rem;border-radius:6px;
          font-weight:700;text-decoration:none;margin:.2rem}}
-  .footnote{{color:#9ca3af;font-size:.85rem;text-align:center;margin-top:3rem}}
-  .footnote a{{color:#6b7280}}
+  .footnote{{color:var(--dch-text-dim);font-size:.85rem;text-align:center;margin-top:3rem}}
+  .footnote a{{color:var(--dch-text-mute)}}
 </style>
 </head>
 <body>

@@ -67,11 +67,15 @@ def transparency_dashboard():
   "creator":  {"@type": "Organization", "name": "DC Hub", "url": "https://dchub.cloud"}
 }
 </script>
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link href="https://fonts.googleapis.com/css2?family=Instrument+Sans:wght@400;500;600;700;800&family=JetBrains+Mono:wght@500;700&display=swap" rel="stylesheet">
+<link rel="stylesheet" href="/static/dchub-brand.css">
 <style>
  *{box-sizing:border-box}
- body{font-family:-apple-system,BlinkMacSystemFont,"Segoe UI",Roboto,sans-serif;
+ body{font-family:'Instrument Sans',-apple-system,BlinkMacSystemFont,"Segoe UI",Roboto,sans-serif;
        max-width:1300px;margin:0 auto;padding:1.5rem 1rem;color:#e5e7eb;line-height:1.55;
-       background:#0a0a14}
+       background:#0a0a0f}
  h1{font-size:1.9rem;margin:0 0 .25rem;display:flex;align-items:center;gap:.6rem;color:white}
  h1 .pulse{display:inline-block;width:12px;height:12px;border-radius:50%;
             background:#10b981;animation:pulse 1.5s ease-in-out infinite}
@@ -99,7 +103,7 @@ def transparency_dashboard():
  .footer{color:#6b7280;font-size:.8rem;text-align:center;margin-top:2.5rem}
  a{color:#a5b4fc;text-decoration:none}
  a:hover{color:#c4b5fd;text-decoration:underline}
- .hero{background:linear-gradient(135deg,#0f172a 0%,#1e3a8a 100%);padding:1.5rem 1.75rem;border-radius:12px;margin-bottom:1.5rem}
+ .hero{background:linear-gradient(135deg,#6366f1 0%,#a855f7 100%);padding:1.5rem 1.75rem;border-radius:12px;margin-bottom:1.5rem}
  .hero h2{color:white;margin:0 0 .4rem;font-size:1.1rem;letter-spacing:0;text-transform:none}
  .hero p{margin:0;color:#cbd5e1;font-size:.92rem}
 </style>

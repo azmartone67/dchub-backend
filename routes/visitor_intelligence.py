@@ -302,7 +302,7 @@ _VI_HTML = '''<!DOCTYPE html><html lang="en"><head>
 :root{--bg:#0a0a12;--surface:#11121a;--bd:#1f2030;--tx:#fff;--tx2:#9ca3af;
   --indigo:#6366f1;--violet:#a855f7;--green:#10b981;--orange:#f59e0b;--red:#ef4444;
   --mono:'JetBrains Mono','SF Mono',monospace;color-scheme:dark}
-*{box-sizing:border-box}body{font-family:Inter,-apple-system,sans-serif;
+*{box-sizing:border-box}body{font-family:'Instrument Sans',-apple-system,sans-serif;
   background:var(--bg);color:var(--tx);margin:0;line-height:1.55;-webkit-font-smoothing:antialiased}
 .wrap{max-width:1200px;margin:0 auto;padding:2.5rem 1.5rem}
 .kicker{font-family:var(--mono);font-size:.78rem;color:#c4b5fd;
@@ -428,7 +428,7 @@ def visitor_intelligence_page():
         # cookie-setting endpoint.
         login_html = """<!DOCTYPE html><html><head>
 <meta charset="utf-8"><title>Login · DC Hub Visitor Intelligence</title>
-<style>body{font-family:Inter,-apple-system,sans-serif;background:#0a0a12;color:#fff;
+<style>body{font-family:'Instrument Sans',-apple-system,sans-serif;background:#0a0a12;color:#fff;
 margin:0;min-height:100vh;display:flex;align-items:center;justify-content:center}
 .card{background:#11121a;border:1px solid #1f2030;border-radius:14px;
 padding:2.5rem 3rem;max-width:480px;width:90%}

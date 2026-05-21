@@ -207,11 +207,13 @@ _ENTERPRISE_PAGE_TEMPLATE = """<!DOCTYPE html>
 <meta property="og:description" content="Unlimited MCP calls. SLA-backed. Dedicated support. Talk to us.">
 <meta property="og:url" content="https://dchub.cloud/enterprise">
 <meta name="twitter:card" content="summary_large_image">
-<link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700;800&family=JetBrains+Mono:wght@400;500;700&display=swap" rel="stylesheet">
+<link href="https://fonts.googleapis.com/css2?family=Instrument+Sans:wght@400;500;600;700;800&family=JetBrains+Mono:wght@500;700&display=swap" rel="stylesheet">
+<link rel="stylesheet" href="/static/dchub-brand.css">
+<script src="/js/dchub-nav.js" defer></script>
 <style>
-:root{--bg:#0a0a12;--bg2:#0f1119;--card:#11121a;--bd:#1f2030;--tx:#fff;--tx2:#9ca3af;--tx3:#6b7280;--green:#10b981;--red:#ef4444;--acc:#6366f1;--acc-light:#818cf8;--acc-vivid:#a855f7;--gradient:linear-gradient(135deg,#6366f1 0%,#a855f7 100%);}
+:root{--bg:#0a0a0f;--bg2:#0f1119;--card:#131319;--bd:rgba(255,255,255,.08);--tx:#fafafa;--tx2:#a1a1aa;--tx3:#71717a;--green:#10b981;--red:#ef4444;--acc:#6366f1;--acc-light:#818cf8;--acc-vivid:#a855f7;--gradient:linear-gradient(135deg,#6366f1 0%,#a855f7 100%);}
 *{box-sizing:border-box}
-body{font-family:Inter,-apple-system,system-ui,sans-serif;background:var(--bg);color:var(--tx);margin:0;line-height:1.55;-webkit-font-smoothing:antialiased;}
+body{font-family:'Instrument Sans',-apple-system,system-ui,sans-serif;background:var(--bg);color:var(--tx);margin:0;line-height:1.55;-webkit-font-smoothing:antialiased;}
 .wrap{max-width:1100px;margin:0 auto;padding:3rem 1.5rem;}
 .eyebrow{font-family:'JetBrains Mono',monospace;font-size:0.74rem;color:var(--acc);text-transform:uppercase;letter-spacing:0.14em;margin-bottom:0.6rem;}
 h1{font-size:clamp(2.4rem,5vw,3.4rem);margin:0 0 0.7rem;font-weight:800;letter-spacing:-0.025em;line-height:1.05;}

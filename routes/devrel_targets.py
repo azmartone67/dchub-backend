@@ -276,7 +276,7 @@ _DEVREL_HTML = '''<!DOCTYPE html><html lang="en"><head>
 :root{--bg:#0a0a12;--surface:#11121a;--bd:#1f2030;--tx:#fff;--tx2:#9ca3af;
   --indigo:#6366f1;--violet:#a855f7;--green:#10b981;--orange:#f59e0b;
   --mono:'JetBrains Mono','SF Mono',monospace;color-scheme:dark}
-*{box-sizing:border-box}body{font-family:Inter,-apple-system,sans-serif;
+*{box-sizing:border-box}body{font-family:'Instrument Sans',-apple-system,sans-serif;
   background:var(--bg);color:var(--tx);margin:0;line-height:1.55;-webkit-font-smoothing:antialiased}
 .wrap{max-width:1200px;margin:0 auto;padding:2.5rem 1.5rem}
 .kicker{font-family:var(--mono);font-size:.78rem;color:#c4b5fd;text-transform:uppercase;letter-spacing:.14em;margin-bottom:.6rem}
@@ -299,7 +299,7 @@ h2{font-size:.78rem;color:var(--tx2);text-transform:uppercase;letter-spacing:.12
 .tool b{color:#fff;margin-right:.4rem}
 .pitch{background:#0a0a12;border:1px solid var(--bd);border-radius:8px;padding:1rem 1.25rem;font-size:.92rem;color:#cbd5e1;line-height:1.55;white-space:pre-wrap;margin-bottom:1rem}
 .actions{display:flex;gap:.5rem;flex-wrap:wrap}
-.actions a,.actions button{display:inline-block;padding:.55rem 1.1rem;border-radius:6px;font-size:.84rem;font-weight:600;text-decoration:none;cursor:pointer;border:0;font-family:Inter,sans-serif}
+.actions a,.actions button{display:inline-block;padding:.55rem 1.1rem;border-radius:6px;font-size:.84rem;font-weight:600;text-decoration:none;cursor:pointer;border:0;font-family:'Instrument Sans',sans-serif}
 .actions a.primary{background:linear-gradient(135deg,#6366f1,#a855f7);color:#fff}
 .actions button.copy{background:#1f2030;color:#cbd5e1;border:1px solid #2a2d40}
 .next{margin-top:.75rem;padding-top:.75rem;border-top:1px solid var(--bd);font-size:.88rem;color:var(--green)}
