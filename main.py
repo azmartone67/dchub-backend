@@ -6345,25 +6345,39 @@ except Exception as e:
 #
 # init_content_tables() runs idempotent CREATE TABLE IF NOT EXISTS for
 # social_media_posts on first import, so the schema is guaranteed.
+# r33-Q (2026-05-21) — IS_FAILOVER guard
+# Without these guards, Render (IS_FAILOVER=true) was double-firing the
+# auto-publishers alongside Railway, causing duplicate posts / wasted
+# API quota / fights over the social_media_posts table. Failover should
+# serve READS only; primary owns all publishing.
 try:
     from content_publisher import init_content_tables, start_auto_publisher
-    init_content_tables()
-    start_auto_publisher()
-    logger.info("✅ LinkedIn auto-publisher launched (Neon-migrated)")
+    init_content_tables()  # table init is idempotent + safe on both
+    if not IS_FAILOVER:
+        start_auto_publisher()
+        logger.info("✅ LinkedIn auto-publisher launched (Neon-migrated)")
+    else:
+        logger.info("⏸️ LinkedIn auto-publisher PAUSED (IS_FAILOVER=true)")
 except Exception as e:
     logger.warning(f"⚠️ LinkedIn auto-publisher skipped: {e}")
 
 try:
     from content_publisher import start_twitter_publisher
-    start_twitter_publisher()
-    logger.info("✅ Twitter/X auto-publisher launched (Neon-migrated)")
+    if not IS_FAILOVER:
+        start_twitter_publisher()
+        logger.info("✅ Twitter/X auto-publisher launched (Neon-migrated)")
+    else:
+        logger.info("⏸️ Twitter/X auto-publisher PAUSED (IS_FAILOVER=true)")
 except Exception as e:
     logger.warning(f"⚠️ Twitter/X auto-publisher skipped: {e}")
 
 try:
     from content_publisher import start_bluesky_publisher
-    start_bluesky_publisher()
-    logger.info("✅ Bluesky auto-publisher launched (Neon-migrated)")
+    if not IS_FAILOVER:
+        start_bluesky_publisher()
+        logger.info("✅ Bluesky auto-publisher launched (Neon-migrated)")
+    else:
+        logger.info("⏸️ Bluesky auto-publisher PAUSED (IS_FAILOVER=true)")
 except Exception as e:
     logger.warning(f"⚠️ Bluesky auto-publisher skipped: {e}")
 
@@ -6449,7 +6463,15 @@ try:
     logger.info("✅ Autonomous Brain routes registered")
 
     _brain_enabled = os.environ.get('AUTONOMOUS_BRAIN_ENABLED', 'true').lower() == 'true'
-    if ENABLE_BACKGROUND_SCHEDULERS or _brain_enabled:
+    # r33-Q (2026-05-21) — IS_FAILOVER must hard-veto the brain even when
+    # AUTONOMOUS_BRAIN_ENABLED defaults to true. Before this guard,
+    # Render (IS_FAILOVER=true) was running cycle 7300+ of the brain in
+    # parallel with Railway — double-firing autopilot actions, duplicate
+    # Inspector briefs, fights over brain_findings. Failover serves READS
+    # only; primary owns all brain work.
+    if IS_FAILOVER:
+        logger.info("⏸️ Autonomous Brain scheduler PAUSED (IS_FAILOVER=true — primary owns brain)")
+    elif ENABLE_BACKGROUND_SCHEDULERS or _brain_enabled:
         def _start_autonomous_brain():
             import time
             time.sleep(90)
