@@ -207,12 +207,18 @@ def _gather_signals() -> dict:
         # Phase r14 — recent facility additions (gives the Inspector a
         # sense of whether discovery is alive). If we haven't added
         # anything in 7d, the pipeline likely needs a kick.
+        # r33-O (2026-05-21): discovered_at column is TEXT not TIMESTAMP,
+        # so the bare >= comparison errored on every brief with
+        # "operator does not exist: text >= timestamp with time zone".
+        # CAST to timestamptz, guard against empty strings + NULL.
         _try("facilities_added_7d",
              """SELECT COUNT(*) FROM facilities
                  WHERE source = 'manual'
                     OR id IN (
                        SELECT id FROM discovered_facilities
-                        WHERE discovered_at >= NOW() - INTERVAL '7 days'
+                        WHERE COALESCE(discovered_at, '') != ''
+                          AND discovered_at::timestamptz
+                              >= NOW() - INTERVAL '7 days'
                     )""", one=True)
         # Most recent deal
         _try("deals_recent",
@@ -231,12 +237,17 @@ def _gather_signals() -> dict:
         # Phase r19 — recent paid conversions (last 7 days). Inspector
         # uses this to detect "first paid conversion this week" or
         # "conversions accelerating" as positive trends.
+        # r33-O (2026-05-21): api_keys has user_id but not email — that
+        # lives on users(id). Previous query errored with
+        # "column 'email' does not exist" every brief. Join users via
+        # LEFT JOIN so api keys without a linked user still appear.
         _try("paid_conversions_7d",
-             """SELECT email, plan, created_at
-                  FROM api_keys
-                 WHERE plan IN ('developer','pro','enterprise')
-                   AND created_at >= NOW() - INTERVAL '7 days'
-                 ORDER BY created_at DESC LIMIT 25""")
+             """SELECT u.email, ak.plan, ak.created_at
+                  FROM api_keys ak
+                  LEFT JOIN users u ON u.id = ak.user_id
+                 WHERE ak.plan IN ('developer','pro','enterprise')
+                   AND ak.created_at >= NOW() - INTERVAL '7 days'
+                 ORDER BY ak.created_at DESC LIMIT 25""")
         # Phase r24 — news entity discovery candidates. Surfaces unknown
         # operator/facility names that appeared in recent news but
         # aren't in our facilities table yet. Inspector flags these as

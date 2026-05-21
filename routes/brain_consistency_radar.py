@@ -7521,6 +7521,92 @@ def _build_summary(findings):
     }
 
 
+# r33-O Wave A (2026-05-21) — DB-backed findings persistence.
+#
+# Inspector has been flagging "brain_findings relation missing" on
+# multiple briefs. Autopilot has been silent for 10+ hours because
+# its in-process scan_summary() bridge keeps hitting empty caches on
+# fresh workers. Both problems solved by: every scan_all run UPSERTs
+# its findings to a shared brain_findings table, so:
+#   1. The autopilot reads from DB (worker-independent, no cache
+#      divergence) — fixes the silence problem permanently.
+#   2. The Inspector's `brain_findings` query stops erroring.
+#   3. Any cron / external tool can ALSO query findings without
+#      having to hit the radar endpoint with its lock dance.
+_BRAIN_FINDINGS_DDL = """
+CREATE TABLE IF NOT EXISTS brain_findings (
+    id           SERIAL PRIMARY KEY,
+    issue        TEXT NOT NULL,
+    url          TEXT NOT NULL DEFAULT '',
+    count        INTEGER,
+    detail       TEXT,
+    first_seen   TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+    last_seen    TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+    seen_count   INTEGER NOT NULL DEFAULT 1,
+    UNIQUE (issue, url)
+);
+CREATE INDEX IF NOT EXISTS brain_findings_last_seen_idx
+    ON brain_findings (last_seen DESC);
+CREATE INDEX IF NOT EXISTS brain_findings_issue_idx
+    ON brain_findings (issue);
+"""
+
+
+def _persist_findings_to_db(findings: list[dict]) -> int:
+    """Write findings to brain_findings. UPSERT on (issue, url) so the
+    same finding rolling across scans increments seen_count + bumps
+    last_seen instead of duplicating. Returns rows touched.
+
+    Defensive — never raises; persistence failures don't fail the
+    scan."""
+    import os as _os_p, psycopg2 as _pg_p
+    db = _os_p.environ.get("DATABASE_URL")
+    if not db or not findings:
+        return 0
+    rows = 0
+    try:
+        conn = _pg_p.connect(db, sslmode="require", connect_timeout=5)
+        try:
+            with conn.cursor() as cur:
+                cur.execute(_BRAIN_FINDINGS_DDL)
+                # Stale-removal: mark findings older than 2 scan cycles
+                # (10 min) as gone if they didn't reappear this run.
+                # First grab the current scan's unique keys, then
+                # delete brain_findings rows whose last_seen is older
+                # than 10 min AND not in this scan's keys.
+                current_keys = set()
+                for f in findings:
+                    if not isinstance(f, dict): continue
+                    issue = (f.get("issue") or "")[:200]
+                    url   = (f.get("url") or "")[:500]
+                    if not issue: continue
+                    current_keys.add((issue, url))
+                    cur.execute("""
+                        INSERT INTO brain_findings
+                            (issue, url, count, detail,
+                             first_seen, last_seen, seen_count)
+                        VALUES (%s, %s, %s, %s, NOW(), NOW(), 1)
+                        ON CONFLICT (issue, url) DO UPDATE
+                           SET count       = EXCLUDED.count,
+                               detail      = EXCLUDED.detail,
+                               last_seen   = NOW(),
+                               seen_count  = brain_findings.seen_count + 1
+                    """, (issue, url, f.get("count"),
+                          (f.get("detail") or "")[:2000]))
+                    rows += 1
+                # Sweep stale findings (haven't reappeared in 10 min)
+                cur.execute("""
+                    DELETE FROM brain_findings
+                     WHERE last_seen < NOW() - INTERVAL '10 minutes'
+                """)
+            conn.commit()
+        finally:
+            conn.close()
+    except Exception:
+        pass  # Defensive — persistence never fails the scan
+    return rows
+
+
 def scan_summary() -> dict:
     """Single-flight + stale-grace wrapper around scan_all().
     Returns INSTANT response on any concurrent contention; only the
@@ -7567,6 +7653,15 @@ def scan_summary() -> dict:
         result = _build_summary(findings)
         _SCAN_CACHE["value"] = result
         _SCAN_CACHE["expires_at"] = _t_mod.time() + _SCAN_CACHE_TTL_SECONDS
+        # r33-O Wave A: persist findings to brain_findings table so the
+        # autopilot worker can read fresh findings from DB instead of
+        # via in-process scan_summary() (which has cache divergence
+        # across Railway workers and has caused autopilot silence
+        # for hours). Defensive — never fails the scan.
+        try:
+            _persist_findings_to_db(findings or [])
+        except Exception:
+            pass
         return result
     finally:
         _release_scan_lock()

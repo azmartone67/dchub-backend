@@ -1423,33 +1423,62 @@ def autopilot_run():
     # (issue, url) tuple so we don't double-fire when the same
     # finding shows up on both sides.
     #
-    # r33-J in-process bridge (2026-05-21) — replaces the HTTP fetch.
-    # r33-J round 5: use scan_all() directly instead of scan_summary().
-    # scan_summary() has a single-flight lock that returns empty
-    # cold_start_lock_busy if ANOTHER worker is mid-scan — we kept
-    # getting from_radar_bridge: 0 because some background worker was
-    # always scanning. scan_all() runs the 100 detectors directly with
-    # no lock dance. The autopilot has a 240s cron budget; a 15-30s
-    # in-process scan fits fine. One in-process call replaces 2 HTTP
-    # hops + the cold-start retry dance entirely.
+    # r33-O Wave A (2026-05-21) — DB-backed bridge. Replaces the
+    # in-process scan_summary/scan_all calls that have been silently
+    # returning empty findings across Railway worker restarts. The
+    # consistency_radar now persists findings to brain_findings on
+    # every scan completion. Autopilot reads from there — worker-
+    # independent, no cache divergence, no lock dance.
+    #
+    # Fallback chain: brain_findings DB read → if 0 rows, scan_all()
+    # in-process (kicks a fresh scan + populates the table for next
+    # time) → if still 0, give up + escalate via summary.
     radar_findings: list[dict] = []
     summary_bridge_error = None
     try:
-        # First try the cached summary (fast path when cache is fresh).
-        from routes.brain_consistency_radar import (
-            scan_summary as _radar_summary,
-            scan_all as _radar_scan_all,
-        )
-        _rad_payload = _radar_summary() or {}
-        fetched = _rad_payload.get("findings") or []
-        if isinstance(fetched, list) and fetched:
-            radar_findings = fetched
-        else:
-            # Cache cold OR lock busy — run scan_all directly. Bypasses
-            # the lock; populates findings in-process for this worker.
-            radar_findings = _radar_scan_all() or []
+        import os as _os_pb, psycopg2 as _pg_pb
+        import psycopg2.extras as _pg_extras_pb
+        _db_url = _os_pb.environ.get("DATABASE_URL")
+        if _db_url:
+            _conn_pb = _pg_pb.connect(
+                _db_url, sslmode="require", connect_timeout=5)
+            try:
+                with _conn_pb.cursor(
+                        cursor_factory=_pg_extras_pb.RealDictCursor) as cur:
+                    # Only read findings seen in the last 10 minutes —
+                    # anything older is stale (radar prunes at 10min too).
+                    cur.execute("""
+                        SELECT issue, url, count, detail, last_seen
+                          FROM brain_findings
+                         WHERE last_seen > NOW() - INTERVAL '10 minutes'
+                         ORDER BY last_seen DESC
+                         LIMIT 200
+                    """)
+                    rows = cur.fetchall()
+                    radar_findings = [
+                        {"issue":  r["issue"],
+                         "url":    r["url"],
+                         "count":  r["count"],
+                         "detail": r["detail"] or ""}
+                        for r in rows
+                    ]
+            finally:
+                _conn_pb.close()
     except Exception as e:
-        summary_bridge_error = f"{type(e).__name__}: {str(e)[:100]}"
+        summary_bridge_error = f"db_read: {type(e).__name__}: {str(e)[:80]}"
+
+    # Fallback: if DB returned 0 rows, scan_all in-process. Slow but
+    # populates brain_findings for the next run, so future runs hit
+    # the DB fast path.
+    if not radar_findings:
+        try:
+            from routes.brain_consistency_radar import (
+                scan_all as _radar_scan_all,
+            )
+            radar_findings = _radar_scan_all() or []
+        except Exception as e:
+            summary_bridge_error = (
+                f"scan_all_fallback: {type(e).__name__}: {str(e)[:80]}")
     if radar_findings:
         seen = {(i.get("issue") or "", i.get("url") or "")
                 for i in issues if isinstance(i, dict)}
