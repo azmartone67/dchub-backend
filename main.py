@@ -11434,9 +11434,16 @@ def get_stats():
     now = _t_stats.monotonic()
     if _STATS_CACHE["value"] and (now - _STATS_CACHE["ts"]) < _STATS_TTL:
         cached = dict(_STATS_CACHE["value"])
+        age = int(now - _STATS_CACHE["ts"])
         cached.setdefault("_cache", {})["served_from"] = "memo"
-        cached["_cache"]["age_seconds"] = int(now - _STATS_CACHE["ts"])
-        return jsonify(cached)
+        cached["_cache"]["age_seconds"] = age
+        # Phase r33-J: surface cache status so the frontend / press page can
+        # observe whether the 5min memo is being hit (target: ~99% HIT).
+        resp = jsonify(cached)
+        resp.headers["X-Cache"] = "HIT"
+        resp.headers["X-Cache-Age"] = str(age)
+        resp.headers["Cache-Control"] = "public, max-age=60"
+        return resp
     conn = None
     try:
         conn = get_read_db()
@@ -11687,7 +11694,12 @@ def get_stats():
         # re-running the 15+ SQL queries (~1.8s).
         _STATS_CACHE["value"] = result
         _STATS_CACHE["ts"] = _t_stats.monotonic()
-        return jsonify(result)
+        # Phase r33-J: mark this response as a cache MISS so callers can
+        # distinguish the slow (~1.8s) fresh-compute path from memo hits.
+        resp = jsonify(result)
+        resp.headers["X-Cache"] = "MISS"
+        resp.headers["Cache-Control"] = "public, max-age=60"
+        return resp
     except Exception as e:
         import traceback; tb = traceback.format_exc(); logger.error("Stats endpoint error: %s\n%s", e, tb)
         cached, age = get_degraded_data('v1_stats')
