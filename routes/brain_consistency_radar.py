@@ -2847,6 +2847,13 @@ def check_render_flapping() -> list[dict]:
     probe_url = f"{render_url.rstrip('/')}/api/v1/version"
     fails = 0
     detail_bits: list[str] = []
+    # Phase r33-G-fix (2026-05-21): cut probe-interval from 5s → 1.5s.
+    # The original 5s sleep × 2 intervals + 3 probes × 4s timeout was
+    # making this detector contribute ~22s to scan wall time — the
+    # biggest single contributor to the consistency-radar 70s SLOW
+    # REQUEST events. 1.5s is still long enough to defeat a true
+    # transient flap (single dropped packet) without dominating the
+    # scan budget. Worst case now: 3*4 + 2*1.5 = 15s.
     for i in range(3):
         try:
             req = _ur.Request(probe_url,
@@ -2862,7 +2869,7 @@ def check_render_flapping() -> list[dict]:
             fails += 1
             detail_bits.append(f"probe{i+1}={type(e).__name__}")
         if i < 2:
-            _t.sleep(5)
+            _t.sleep(1.5)
     if fails >= 2:
         findings.append({
             "issue":  "render_flapping",
