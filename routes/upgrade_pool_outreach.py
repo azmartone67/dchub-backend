@@ -192,6 +192,123 @@ DC Hub · <a href="https://dchub.cloud">dchub.cloud</a></p>
 
 
 @upgrade_pool_outreach_bp.route(
+    "/api/v1/admin/upgrade-pool/backfill-emails", methods=["POST"])
+def upgrade_pool_backfill_emails():
+    """Phase r32-conv-2 (2026-05-20): backfill user_email on the 15,826
+    anonymous-but-actually-identifiable signals.
+
+    Root cause uncovered: live /api/v1/mcp/email-distribution shows
+    0.0% email capture rate (1 of 15,827 signals has email). That's
+    why /upgrade-pool/preview returned 0 candidates — the WHERE
+    user_email != '' filter eats everything. But api_key prefixes
+    leak into the user_agent column (via the same pattern
+    _daily_call_count uses), so we can resolve them retroactively.
+
+    This endpoint walks every email-less signal, extracts a dchub_
+    prefix from user_agent, joins api_keys → users to find the email,
+    and UPDATEs the row. After it runs, /upgrade-pool/preview will
+    show the real addressable pool.
+
+    Idempotent — only touches rows where user_email IS NULL OR ''."""
+    if not _admin_ok():
+        return jsonify(ok=False, error="unauthorized"), 401
+
+    try:
+        days = max(1, min(90, int(request.args.get("days", 30))))
+    except (ValueError, TypeError):
+        days = 30
+
+    conn = _get_db()
+    if conn is None:
+        return jsonify(ok=False, error="no_db"), 503
+
+    updated = 0
+    examined = 0
+    distinct_emails = set()
+    try:
+        with conn.cursor() as cur:
+            # Single SQL statement: regex-extract dchub_<prefix> from
+            # user_agent, hash check against api_keys.key_prefix, join
+            # to users for the email, UPDATE in place. SUBSTRING the
+            # 16-char prefix that _daily_call_count uses so it matches.
+            cur.execute("""
+                WITH candidates AS (
+                  SELECT s.id,
+                         substring(s.user_agent FROM 'dchub_[A-Za-z0-9_]{1,30}') AS api_prefix
+                    FROM mcp_upgrade_signals s
+                   WHERE s.created_at > NOW() - INTERVAL %s
+                     AND (s.user_email IS NULL OR s.user_email = '')
+                     AND s.user_agent IS NOT NULL
+                     AND s.user_agent ~ 'dchub_'
+                ),
+                resolved AS (
+                  SELECT c.id, u.email
+                    FROM candidates c
+                    JOIN api_keys ak
+                      ON c.api_prefix LIKE ak.key_prefix || '%%'
+                       OR ak.key_prefix LIKE substring(c.api_prefix FROM 1 FOR 12) || '%%'
+                    JOIN users u ON ak.user_id = u.id
+                   WHERE u.email IS NOT NULL AND u.email != ''
+                )
+                UPDATE mcp_upgrade_signals s
+                   SET user_email = r.email
+                  FROM resolved r
+                 WHERE s.id = r.id
+                RETURNING s.id, s.user_email
+            """, (f"{days} days",))
+            rows = cur.fetchall()
+            updated = len(rows)
+            distinct_emails = {r[1] for r in rows if r[1]}
+            conn.commit()
+
+            # Also count how many email-less rows remain (for next-step
+            # diagnosis — these need session_id or IP-based resolution).
+            cur.execute("""
+                SELECT COUNT(*) FROM mcp_upgrade_signals
+                 WHERE created_at > NOW() - INTERVAL %s
+                   AND (user_email IS NULL OR user_email = '')
+            """, (f"{days} days",))
+            remaining_anonymous = int((cur.fetchone() or [0])[0] or 0)
+
+            # Count addressable pool now.
+            cur.execute("""
+                SELECT COUNT(DISTINCT user_email)
+                  FROM mcp_upgrade_signals
+                 WHERE created_at > NOW() - INTERVAL %s
+                   AND user_email IS NOT NULL AND user_email != ''
+                   AND COALESCE(converted, false) = false
+                   AND COALESCE(outreach_sent, false) = false
+                 GROUP BY user_email
+                HAVING COUNT(*) >= 1
+            """, (f"{days} days",))
+            addressable = len(cur.fetchall())
+    except Exception as e:
+        try: conn.rollback()
+        except Exception: pass
+        return jsonify(ok=False, error="backfill_failed",
+                       detail=str(e)[:300]), 500
+    finally:
+        try: conn.close()
+        except Exception: pass
+
+    return jsonify(
+        ok=True,
+        days=days,
+        signals_updated=updated,
+        distinct_emails_resolved=len(distinct_emails),
+        remaining_anonymous_signals=remaining_anonymous,
+        addressable_users_now=addressable,
+        message=(
+            f"Resolved emails for {updated} signals "
+            f"({len(distinct_emails)} distinct users). "
+            f"{remaining_anonymous} signals still anonymous "
+            f"(no api_key prefix in user_agent — likely Claude/ChatGPT "
+            f"calling MCP without an unlocked dev key)."
+        ),
+    ), 200
+
+
+@upgrade_pool_outreach_bp.route(
     "/api/v1/admin/upgrade-pool/preview", methods=["GET"])
 def upgrade_pool_preview():
     """List the addressable upgrade pool with the outreach body that

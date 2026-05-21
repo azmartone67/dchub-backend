@@ -83,14 +83,29 @@ def _http_get(url: str, timeout: int = 8) -> tuple[Optional[str], Optional[dict]
         # endpoints (dchub.cloud/api/v1/*), include the enterprise key.
         # Without this, every brain-radar probe to a paid tool gets
         # 401/403 and the detectors that rely on those probes go blind.
-        # Visible in Railway logs as "[brain-radar] .../fiber/intel HTTP
-        # 401 Unauthorized" — these are noise that hide real signal.
+        #
+        # r32-conv-2 (2026-05-20): user reported the 401 still firing
+        # on /api/v1/fiber/intel — meaning the three DCHUB_*_API_KEY
+        # env vars aren't set on Railway. Add a SECOND bypass path
+        # via X-Internal-Key (already validated by
+        # map_tier_gating._detect_caller_tier → 'pro' tier). The
+        # _INTERNAL_KEYS set in schema_repair pulls from
+        # DCHUB_INTERNAL_KEY which IS set on Railway. Same fallback
+        # chain so the brain self-heals without a new env-var setup.
         elif "dchub.cloud" in url or "dchub-backend-production" in url:
             api_key = (os.environ.get("DCHUB_INTERNAL_API_KEY")
                        or os.environ.get("DCHUB_API_KEY")
                        or os.environ.get("DCHUB_BRAIN_API_KEY") or "").strip()
             if api_key:
                 headers["X-API-Key"] = api_key
+            internal_key = (os.environ.get("DCHUB_INTERNAL_KEY")
+                            or os.environ.get("INTERNAL_KEY")
+                            or os.environ.get("DCHUB_ADMIN_KEY") or "").strip()
+            if internal_key:
+                headers["X-Internal-Key"] = internal_key
+            # Also include the brain UA so rate-limit bypass kicks in
+            # (separate machinery from tier-bypass).
+            headers["User-Agent"] = "DCHub-BrainRadar/1.0 (+https://dchub.cloud)"
         req = urllib.request.Request(url, headers=headers)
         with urllib.request.urlopen(req, timeout=timeout) as resp:
             return resp.read().decode("utf-8", errors="replace"), dict(resp.headers)

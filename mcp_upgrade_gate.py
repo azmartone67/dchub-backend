@@ -78,8 +78,16 @@ def validate_key_tier(api_key: str = "") -> str:
 def fire_upgrade_signal(*, signal_type, tool_requested=None, tier_current="free",
                         tier_required="paid", message_shown=None, mcp_client=None,
                         user_agent=None, daily_usage=None, daily_limit=None,
-                        session_id=None, user_email=None, ip_address=None):  # phase62_ip_capture
-    """Insert a row into mcp_upgrade_signals. Never raises — telemetry is fire-and-forget."""
+                        session_id=None, user_email=None, ip_address=None,
+                        api_key=None):  # r32-conv-2 (2026-05-20)
+    """Insert a row into mcp_upgrade_signals. Never raises — telemetry is fire-and-forget.
+
+    r32-conv-2 (2026-05-20): added api_key kwarg. If user_email wasn't
+    passed in but api_key is, resolve email via api_keys → users join
+    so the signal row gets the addressable identifier. Closes the
+    0.0% email-capture-rate gap that left /upgrade-pool/preview
+    returning 0 candidates against 15,826 signals.
+    """
     # phase62j_chain_fallback -- pull IP/UA from Flask request scope
     try:
         from flask import request as _req, has_request_context as _hrc
@@ -90,8 +98,39 @@ def fire_upgrade_signal(*, signal_type, tool_requested=None, tier_current="free"
                               or _req.remote_addr)
             if not user_agent:
                 user_agent = _req.headers.get('User-Agent')
+            # Also try to lift the api_key from the live request if
+            # the caller didn't pass it explicitly.
+            if not api_key:
+                api_key = (_req.headers.get('X-API-Key') or
+                           _req.args.get('api_key'))
+                if not api_key:
+                    auth = _req.headers.get('Authorization', '')
+                    if auth.startswith('Bearer ') and auth[7:].startswith('dchub_'):
+                        api_key = auth[7:]
     except Exception:
         pass
+
+    # r32-conv-2: resolve api_key → user email if we have one and
+    # caller didn't pass email. This is the forward fix for the
+    # 0.0% capture rate.
+    if not user_email and api_key and api_key.startswith('dchub_'):
+        try:
+            import hashlib as _hashlib
+            with _cursor() as cur:
+                kh = _hashlib.sha256(api_key.encode()).hexdigest()
+                cur.execute(
+                    """SELECT u.email FROM api_keys ak
+                         JOIN users u ON ak.user_id = u.id
+                        WHERE ak.key_hash = %s
+                          AND COALESCE(ak.is_active, 1) = 1
+                        LIMIT 1""",
+                    (kh,),
+                )
+                row = cur.fetchone()
+                if row and row[0]:
+                    user_email = row[0]
+        except Exception:
+            pass
     try:
         with _cursor() as cur:
             cur.execute(
@@ -195,11 +234,14 @@ def gate_tool_call(tool_name, api_key=None, user_agent=None,
         f"_Or upgrade to Pro at {UPGRADE_URL} for $49/mo unlimited access._"
 
         )
+        # r32-conv-2: pass api_key so fire_upgrade_signal can resolve
+        # email if user_email wasn't supplied. Closes the 0.0% capture rate.
         fire_upgrade_signal(
             signal_type="paid_tool_blocked", tool_requested=tool_name,
             tier_current=tier, tier_required="paid", message_shown=msg,
             mcp_client=platform, user_agent=user_agent,
-            session_id=session_id, user_email=user_email, ip_address=ip_address)
+            session_id=session_id, user_email=user_email, ip_address=ip_address,
+            api_key=api_key)
         return {"allowed": False, "tier": tier, "platform": platform,
                 "message": msg, "upgrade_url": UPGRADE_URL}
 
@@ -213,7 +255,8 @@ def gate_tool_call(tool_name, api_key=None, user_agent=None,
                 tier_current=tier, tier_required="paid",
                 daily_usage=used, daily_limit=FREE_DAILY_LIMIT,
                 message_shown=msg, mcp_client=platform, user_agent=user_agent,
-                session_id=session_id, user_email=user_email, ip_address=ip_address)
+                session_id=session_id, user_email=user_email, ip_address=ip_address,
+                api_key=api_key)
             return {"allowed": False, "tier": tier, "platform": platform,
                     "message": msg, "upgrade_url": UPGRADE_URL}
 
