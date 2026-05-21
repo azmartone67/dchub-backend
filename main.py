@@ -591,17 +591,38 @@ def _init_pg_pool():
             #                              (Neon idle timeout ~300s)
             #   keepalives_interval=10     probe every 10s if no response
             #   keepalives_count=3         declare dead after 3 missed
+            # r32-failover (2026-05-21): on Render (IS_FAILOVER=true),
+            # use minconn=0 so the pool doesn't keep idle connections
+            # alive between request bursts. Render's network stack puts
+            # idle sockets to sleep, causing every conn to come back
+            # stale → 2-4s retry per checkout → worker timeout → SIGTERM
+            # → restart loop (the "Render flapping" the user reported).
+            # Tradeoff: each first-request after idle pays the connect
+            # cost (~200ms), but no more cascade-stale storms.
+            _is_failover = (
+                os.environ.get("RENDER", "").lower() in ("true", "1", "yes")
+                or bool(os.environ.get("RENDER_SERVICE_ID"))
+                or os.environ.get("DCHUB_FAILOVER", "").lower() in ("true", "1", "yes")
+            )
+            _minconn = 0 if _is_failover else int(os.environ.get('DB_POOL_MIN', 2))
+            _maxconn = int(os.environ.get('DB_POOL_MAX', 20))
+            # On failover containers also use shorter idle timeout
+            # so keepalive probes catch dead conns faster.
+            _keepidle = 30 if _is_failover else 60
             _pg_pool_obj = _pg_pool.ThreadedConnectionPool(
-                minconn=int(os.environ.get('DB_POOL_MIN', 2)),
-                maxconn=int(os.environ.get('DB_POOL_MAX', 20)),
+                minconn=_minconn,
+                maxconn=_maxconn,
                 dsn=pg_url,
                 connect_timeout=15,
                 keepalives=1,
-                keepalives_idle=60,
+                keepalives_idle=_keepidle,
                 keepalives_interval=10,
                 keepalives_count=3,
             )
-            print(f"DATABASE POOL: ✅ Single pool initialized (attempt {attempt+1}) -- 2-20 connections, TCP keepalive 60s")
+            print(f"DATABASE POOL: ✅ Single pool initialized (attempt {attempt+1}) "
+                  f"-- {_minconn}-{_maxconn} connections, TCP keepalive {_keepidle}s"
+                  + (f" [FAILOVER MODE — minconn=0 to avoid stale-storms]"
+                     if _is_failover else ""))
             return
         except Exception as e:
             print(f"DATABASE POOL: ⚠️ Pool init attempt {attempt+1}/3 failed: {e}")
