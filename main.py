@@ -20278,6 +20278,17 @@ try:
         print("🎫 [gating-matrix] ready · /gating-matrix · /api/v1/gating/matrix")
     except Exception as _e_gm:
         print(f"⚠️ [gating-matrix] blueprint failed to register: {_e_gm}")
+    # Phase r32-conv (2026-05-20) — MCP upgrade-pool outreach engine.
+    # User flagged 9 conversions / 30d vs ~18K paywall hits. Tools this
+    # gives: preview the addressable list w/ per-user drafted body,
+    # then fire personalized Resend emails. Marks outreach_sent=true so
+    # the campaign is idempotent.
+    try:
+        from routes.upgrade_pool_outreach import upgrade_pool_outreach_bp
+        app.register_blueprint(upgrade_pool_outreach_bp)
+        print("📨 [upgrade-pool] ready · /api/v1/admin/upgrade-pool/preview · /send")
+    except Exception as _e_up:
+        print(f"⚠️ [upgrade-pool] blueprint failed to register: {_e_up}")
     print("🔧 Schema Repair: ✅ Registered "
           "(POST /api/v1/admin/schema/repair · /geocoding/backfill · "
           "GET /funnel/leakage)")

@@ -79,6 +79,13 @@ SCHEMA_STATEMENTS = [
         )""",
         "CREATE INDEX IF NOT EXISTS ix_worker_versions_observed ON worker_versions(observed_at DESC)",
     ]),
+    ("mcp_upgrade_signals.outreach_sent_at column", [
+        # r32-conv (2026-05-20): outreach campaign tracking. Records
+        # when the upgrade-pool email actually landed (not just that
+        # it was queued). Lets us correlate send timing → conversion
+        # in the funnel analytics.
+        "ALTER TABLE mcp_upgrade_signals ADD COLUMN IF NOT EXISTS outreach_sent_at TIMESTAMPTZ",
+    ]),
     ("users.pocket_preferences column", [
         # r33 (2026-05-20): single JSONB column for profile-driven
         # /api/v1/pockets/for-me re-ranking. Stores target_mw,

@@ -2487,6 +2487,55 @@ def check_winback_pitches_unsent() -> list[dict]:
 
 
 # ── Phase RRRR (2026-05-16) — DC Hub Media silence detector ───────
+def check_upgrade_pool_grown() -> list[dict]:
+    """Phase r32-conv (2026-05-20). Fires when the MCP upgrade pool
+    grows past 50 unreached candidates — your outreach engine has work
+    to do. The pool is identified users with paywall signals who
+    haven't been outreached and haven't converted. Past 50, the
+    addressable revenue justifies a campaign batch.
+
+    Threshold tuning: 50 candidates × 5% conversion × $49 MRR = $122
+    expected MRR per batch — large enough to be worth a brain alert."""
+    findings: list[dict] = []
+    import os as _os, psycopg2 as _pg
+    db = _os.environ.get("DATABASE_URL")
+    if not db: return findings
+    try:
+        c = _pg.connect(db, sslmode="require", connect_timeout=5)
+        try:
+            with c.cursor() as cur:
+                cur.execute("""
+                    SELECT COUNT(DISTINCT user_email)
+                      FROM mcp_upgrade_signals
+                     WHERE created_at > NOW() - INTERVAL '30 days'
+                       AND user_email IS NOT NULL AND user_email != ''
+                       AND COALESCE(converted, false) = false
+                       AND COALESCE(outreach_sent, false) = false
+                """)
+                count = int((cur.fetchone() or [0])[0] or 0)
+        finally:
+            c.close()
+    except Exception:
+        return findings
+
+    THRESHOLD = 50
+    if count >= THRESHOLD:
+        findings.append({
+            "issue":  "upgrade_pool_grown",
+            "url":    "/api/v1/admin/upgrade-pool/preview",
+            "count":  count,
+            "detail": (
+                f"{count} identified users have hit MCP paywall signals "
+                f"in the last 30 days without being outreached and without "
+                f"converting. At a conservative 5% conversion rate that's "
+                f"~{count // 20} potential Developer signups ($49/mo each). "
+                f"POST /api/v1/admin/upgrade-pool/send to fire the campaign. "
+                f"Use ?dry=1 first to inspect."
+            ),
+        })
+    return findings
+
+
 def check_tier_dict_missing_keys() -> list[dict]:
     """Phase r32-sweep (2026-05-20). Closes the bug class that caused
     Land & Power to silently treat paying $49/mo Developer customers
@@ -2529,12 +2578,40 @@ def check_tier_dict_missing_keys() -> list[dict]:
          'Land & Power tool monthly caps'),
         ('land_power_usage_limiter', 'API_MONTHLY_LIMITS',
          'Land & Power API monthly limits'),
+        # r32-sweep round 2 (2026-05-20): wider audit found 3 more
+        # tier dicts missing identified + others. Adding them here so
+        # the detector covers the bug-class containment surface fully.
+        # Nested attrs use a dot path: 'PROTECTION_CONFIG.daily_record_caps'
+        # — the detector walks the path and audits the leaf dict.
+        ('alert_system_v2', 'ALERT_LIMITS',
+         'Alert quotas per tier'),
+        ('free_tier_limiter', 'TIER_LIMITS',
+         'Land & Power + API monthly caps (free tier limiter)'),
+        ('api_data_protection', 'PROTECTION_CONFIG.daily_record_caps',
+         'Per-day unique record cap (api_data_protection)'),
+        ('api_data_protection', 'PROTECTION_CONFIG.max_results_per_response',
+         'Max API response rows (api_data_protection)'),
     ]
     import importlib
+    def _resolve_dotted(mod, path):
+        """Walk a dot path: 'PROTECTION_CONFIG.daily_record_caps' →
+        getattr(mod, 'PROTECTION_CONFIG')['daily_record_caps']. Returns
+        None if any step fails so the caller can skip cleanly."""
+        parts = path.split('.')
+        cur = getattr(mod, parts[0], None)
+        for p in parts[1:]:
+            if isinstance(cur, dict):
+                cur = cur.get(p)
+            else:
+                return None
+            if cur is None:
+                return None
+        return cur
+
     for mod_path, attr, desc in TIER_DICTS_TO_CHECK:
         try:
             mod = importlib.import_module(mod_path)
-            d = getattr(mod, attr, None)
+            d = _resolve_dotted(mod, attr)
             if not isinstance(d, dict):
                 continue
             keys = set(d.keys())
@@ -5484,6 +5561,12 @@ def scan_all() -> list[dict]:
                # present. Adding a new tier table? Append to the list
                # inside the detector — that's the containment surface.
                check_tier_dict_missing_keys,
+               # Phase r32-conv (2026-05-20) — MCP upgrade-pool growth
+               # alert. Fires when ≥50 identified users have hit paid-
+               # tool paywall signals without being outreached. The
+               # autopilot pattern below can fire the outreach campaign
+               # autonomously when this finding lands repeatedly.
+               check_upgrade_pool_grown,
                # Phase SSSS winback pitches accumulating without delivery
                check_winback_pitches_unsent,
                # Phase TTTT citation score

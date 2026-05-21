@@ -67,18 +67,30 @@ AI_WARS_KEYS_TIER = {
 
 PROTECTION_CONFIG = {
     # Max unique facility records a key can pull per 24h rolling window
+    # r32-sweep (2026-05-20): added anonymous/identified/developer.
+    # Pre-r32 these tiers fell through to free's 10/day cap.
     "daily_record_caps": {
-        "free": 10,
-        "pro": 2000,
+        "anonymous":   5,
+        "anon":        5,
+        "free":       10,
+        "identified": 40,         # 4x free taste
+        "developer":  500,        # $49/mo
+        "founding":  2000,        # Pro-equivalent
+        "pro":       2000,
         "enterprise": 10000,
-        "founding": 2000,
-        "admin": 999999,
+        "admin":     999999,
     },
     # Max results per single API response (hard cap regardless of ?limit=)
     "max_results_per_response": {
-        "free": 5,
-        "pro": 100,
+        "anonymous":   3,
+        "anon":        3,
+        "free":        5,
+        "identified": 15,
+        "developer":  25,
+        "founding":  100,
+        "pro":       100,
         "enterprise": 100,
+        "admin":     999,
     },
     # Anomaly detection thresholds
     "anomaly": {

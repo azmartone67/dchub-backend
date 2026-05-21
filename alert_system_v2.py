@@ -107,10 +107,20 @@ ALERT_TYPES = {
 }
 
 # Plan limits
+# r32-sweep (2026-05-20): added anonymous/identified/developer/founding
+# entries — were missing, so any non-free/pro/ent caller fell through
+# to a hard error when .get(tier) returned None. Now every canonical
+# tier has an explicit value matching the gating ladder.
 ALERT_LIMITS = {
-    'free': 5,
-    'pro': 50,
-    'enterprise': 500
+    'anonymous':  0,         # can't create alerts without an account
+    'anon':       0,
+    'free':       5,
+    'identified': 10,        # 2x free taste
+    'developer':  25,        # $49/mo
+    'founding':   50,        # Pro-equivalent
+    'pro':        50,
+    'enterprise': 500,
+    'admin':      9999,
 }
 
 # =============================================================================

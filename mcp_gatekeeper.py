@@ -258,8 +258,20 @@ def _load_keys_from_db():
                     LEFT JOIN users u ON ak.user_id = u.id
                     WHERE ak.is_active = 1 OR ak.is_active = true
                 """)
-                tier_map = {"free": Tier.FREE, "developer": Tier.DEVELOPER, "dev": Tier.DEVELOPER,
-                            "pro": Tier.PRO, "enterprise": Tier.ENTERPRISE, "ent": Tier.ENTERPRISE}
+                # r32-sweep (2026-05-20): added 'identified' + 'founding'
+                # + 'anonymous'. Pre-fix, a user with plan='identified'
+                # in users.plan resolved to Tier.FREE here → MCP gave
+                # them free-tier limits and tool access even though
+                # they'd signed up with email. Same bug class as
+                # api_tier_gating.
+                tier_map = {"anonymous": Tier.FREE, "anon": Tier.FREE,
+                            "free": Tier.FREE,
+                            "identified": Tier.IDENTIFIED,
+                            "developer": Tier.DEVELOPER, "dev": Tier.DEVELOPER,
+                            "founding": Tier.PRO,    # founding = Pro-equivalent
+                            "pro": Tier.PRO,
+                            "enterprise": Tier.ENTERPRISE, "ent": Tier.ENTERPRISE,
+                            "admin": Tier.ENTERPRISE}
                 count = 0
                 for row in cur.fetchall():
                     # Map plan/rate_limit_tier to our tier system
@@ -278,8 +290,15 @@ def _load_keys_from_db():
                 try:
                     cur.execute("SELECT api_key, tier FROM api_keys WHERE active = true")
                     for row in cur.fetchall():
-                        tier_map = {"free": Tier.FREE, "developer": Tier.DEVELOPER,
-                                    "pro": Tier.PRO, "enterprise": Tier.ENTERPRISE}
+                        # r32-sweep: parity with the canonical tier_map above.
+                        tier_map = {"anonymous": Tier.FREE, "anon": Tier.FREE,
+                                    "free": Tier.FREE,
+                                    "identified": Tier.IDENTIFIED,
+                                    "developer": Tier.DEVELOPER, "dev": Tier.DEVELOPER,
+                                    "founding": Tier.PRO,
+                                    "pro": Tier.PRO,
+                                    "enterprise": Tier.ENTERPRISE, "ent": Tier.ENTERPRISE,
+                                    "admin": Tier.ENTERPRISE}
                         _key_store[row["api_key"]] = tier_map.get(row.get("tier", "free"), Tier.FREE)
                     logger.info(f"🔑 Loaded {len(_key_store)} API keys from DB (simple schema)")
                 except Exception:
@@ -362,9 +381,18 @@ def _resolve_from_db_hash(api_key: str) -> Optional[Tier]:
         conn.close()
         if row:
             plan = (row.get("plan") or row.get("rate_limit_tier") or row.get("user_plan") or "free").lower()
-            tier_map = {"free": Tier.FREE, "developer": Tier.DEVELOPER, "dev": Tier.DEVELOPER,
-                        "pro": Tier.PRO, "enterprise": Tier.ENTERPRISE, "ent": Tier.ENTERPRISE,
-                        "founding": Tier.PRO}
+            # r32-sweep (2026-05-20): added 'identified' — every paying
+            # email-signup customer was resolving here to Tier.FREE.
+            # Same bug as the loader paths above + the api_tier_gating
+            # gap fixed in 4e36c4f9.
+            tier_map = {"anonymous": Tier.FREE, "anon": Tier.FREE,
+                        "free": Tier.FREE,
+                        "identified": Tier.IDENTIFIED,
+                        "developer": Tier.DEVELOPER, "dev": Tier.DEVELOPER,
+                        "founding": Tier.PRO,
+                        "pro": Tier.PRO,
+                        "enterprise": Tier.ENTERPRISE, "ent": Tier.ENTERPRISE,
+                        "admin": Tier.ENTERPRISE}
             return tier_map.get(plan, Tier.FREE)
     except Exception as e:
         # Promoted from DEBUG → WARNING so silent tier-downgrades surface in logs.

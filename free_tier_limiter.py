@@ -42,22 +42,57 @@ logger = logging.getLogger(__name__)
 DB_PATH = os.environ.get('DB_PATH', 'dc_nexus.db')
 
 # Monthly limits by tier
+# r32-sweep (2026-05-20): added anonymous/identified/developer/founding
+# entries. This file mirrored the broken Land & Power table — anon/
+# identified/developer all fell through to free's 1-search/5-filter
+# limit. Now every canonical tier has explicit values matching the
+# r32-3 fix to land_power_usage_limiter.LAND_POWER_LIMITS.
 TIER_LIMITS = {
+    'anonymous': {
+        'land_power_searches_per_month': 0,
+        'land_power_max_filters': 3,
+        'api_requests_per_month': 50,
+    },
+    'anon': {                # alias
+        'land_power_searches_per_month': 0,
+        'land_power_max_filters': 3,
+        'api_requests_per_month': 50,
+    },
     'free': {
-        'land_power_searches_per_month': 1,
+        'land_power_searches_per_month': 3,    # was 1 — matches r32-3 fix
         'land_power_max_filters': 5,
         'api_requests_per_month': 100,
     },
-    'pro': {
-        'land_power_searches_per_month': 999999,  # Effectively unlimited
-        'land_power_max_filters': 999,             # Effectively unlimited
+    'identified': {           # $0 with email
+        'land_power_searches_per_month': 3,
+        'land_power_max_filters': 5,
+        'api_requests_per_month': 100,
+    },
+    'developer': {            # $49/mo
+        'land_power_searches_per_month': 50,
+        'land_power_max_filters': 15,
         'api_requests_per_month': 10000,
+    },
+    'founding': {             # Pro-equivalent
+        'land_power_searches_per_month': 999999,
+        'land_power_max_filters': 999,
+        'api_requests_per_month': 300000,
+    },
+    'pro': {
+        'land_power_searches_per_month': 999999,
+        'land_power_max_filters': 999,
+        'api_requests_per_month': 300000,    # bumped from 10000 to match r32-3
     },
     'enterprise': {
         'land_power_searches_per_month': 999999,
         'land_power_max_filters': 999,
-        'api_requests_per_month': 100000,
-    }
+        'api_requests_per_month': 3000000,
+    },
+    'admin': {
+        'land_power_searches_per_month': 999999,
+        'land_power_max_filters': 999,
+        'api_requests_per_month': 9999999,
+    },
 }
 
 # =============================================================================
