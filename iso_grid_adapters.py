@@ -376,8 +376,13 @@ try:
                 for k in kw) else 1)
             out.update(auth="ok", products=prods, count=len(prods))
         except urllib.error.HTTPError as e:
-            out.update(auth=f"http_{e.code}",
-                       hint="403=key/scope wrong, 401=bearer missing/expired")
+            body = ""
+            try: body = e.read().decode("utf-8", "ignore")[:240]
+            except Exception: pass
+            out.update(auth=f"http_{e.code}", api_error=body,
+                       hint="401 'invalid subscription key' → ERCOT_API_KEY wrong; "
+                            "401 token/audience → ERCOT_SCOPE wrong; "
+                            "403 → not subscribed to the product")
         except Exception as e:
             out.update(auth="error", detail=str(e)[:160])
         _PROBE_CACHE["ercot"] = (now, out)
