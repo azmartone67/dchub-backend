@@ -27,6 +27,8 @@ are present.
 from __future__ import annotations
 
 import os
+import io
+import csv
 import json
 import datetime
 import urllib.request
@@ -141,6 +143,20 @@ def _http_json(url: str, headers: dict | None = None, timeout: int = 20):
         return json.loads(r.read().decode("utf-8"))
 
 
+def _http_text(url: str, headers: dict | None = None, timeout: int = 20) -> str:
+    req = urllib.request.Request(url, headers=headers or {"User-Agent": "dchub-iso/1.0"})
+    with urllib.request.urlopen(req, timeout=timeout) as r:
+        return r.read().decode("utf-8", "ignore")
+
+
+def _to_float(v) -> float | None:
+    try:
+        s = str(v).strip().replace(",", "")
+        return float(s) if s not in ("", "-", "N/A") else None
+    except Exception:
+        return None
+
+
 # ─────────────────────────────────────────────────────────────────────
 # Per-ISO registry — base URL, auth model, env-var prefix, status
 # ─────────────────────────────────────────────────────────────────────
@@ -150,9 +166,9 @@ ISO_REGISTRY = {
     "ERCOT": {"auth": "oauth_key", "base": "https://api.ercot.com/api/public-data",
               "env": "ERCOT", "impl": "fetch_ercot",
               "note": "Azure-APIM: Ocp-Apim-Subscription-Key + B2C ROPC bearer."},
-    "CAISO": {"auth": "public", "base": "http://oasis.caiso.com/oasisapi/SingleZip",
-              "env": "CAISO", "impl": None,
-              "note": "OASIS API — public, zip/XML by queryname (e.g. ENE_SLRS)."},
+    "CAISO": {"auth": "public", "base": "https://www.caiso.com/outlook/current",
+              "env": "CAISO", "impl": "fetch_caiso",
+              "note": "Today's Outlook CSVs (fuelsource + demand) — public, no auth."},
     "PJM":   {"auth": "key", "base": "https://api.pjm.com/api/v1",
               "env": "PJM", "impl": None,
               "note": "Data Miner 2 — needs Ocp-Apim-Subscription-Key."},
@@ -163,8 +179,8 @@ ISO_REGISTRY = {
               "env": "SPP", "impl": None,
               "note": "Marketplace portal CSV — public, path-based."},
     "NYISO": {"auth": "public", "base": "http://mis.nyiso.com/public/csv",
-              "env": "NYISO", "impl": None,
-              "note": "Public CSV by report (e.g. /pal, /rtfuelmix) — no auth."},
+              "env": "NYISO", "impl": "fetch_nyiso",
+              "note": "Public CSV by report (rtfuelmix + pal) — no auth."},
     "ISONE": {"auth": "basic", "base": "https://webservices.iso-ne.com/api/v1.1",
               "env": "ISONE", "impl": None,
               "note": "Web Services — HTTP basic auth (account user/pass)."},
@@ -279,8 +295,123 @@ def fetch_ercot() -> list[dict]:
         return []
 
 
+# ─────────────────────────────────────────────────────────────────────
+# NYISO — public dated CSVs, no auth. Confirmed live shapes (2026-05-22):
+#   rtfuelmix:  Time Stamp, Time Zone, Fuel Category, Gen MW   (row per fuel)
+#   pal (load): "Time Stamp","Time Zone","Name","PTID","Load"  (row per zone)
+# We build ONE system record: total online gen (Σ latest fuel mix) vs total
+# load (Σ latest zone loads), with the fuel mix carried for context.
+# ─────────────────────────────────────────────────────────────────────
+def _nyiso_csv(report: str) -> str:
+    """Fetch today's NYISO CSV for a report (e.g. 'rtfuelmix','pal'); falls
+    back to yesterday near midnight ET when today's file is empty."""
+    base = ISO_REGISTRY["NYISO"]["base"]
+    for delta in (0, 1):
+        d = (datetime.datetime.now(datetime.timezone.utc)
+             - datetime.timedelta(days=delta)).strftime("%Y%m%d")
+        try:
+            txt = _http_text(f"{base}/{report}/{d}{report}.csv")
+            if txt and txt.count("\n") > 1:
+                return txt
+        except Exception:
+            continue
+    return ""
+
+
+def fetch_nyiso() -> list[dict]:
+    """NYISO system telemetry from public real-time CSVs. Fail-safe → []."""
+    try:
+        fuel_txt = _nyiso_csv("rtfuelmix")
+        load_txt = _nyiso_csv("pal")
+        if not fuel_txt or not load_txt:
+            return []
+        # --- fuel mix: keep only rows at the latest timestamp ---
+        frows = list(csv.DictReader(io.StringIO(fuel_txt)))
+        if not frows:
+            return []
+        latest_fts = max(r["Time Stamp"] for r in frows if r.get("Time Stamp"))
+        fuel_mix, total_gen = {}, 0.0
+        for r in frows:
+            if r.get("Time Stamp") != latest_fts:
+                continue
+            mw = _to_float(r.get("Gen MW"))
+            cat = (r.get("Fuel Category") or "").strip()
+            if mw is not None and cat:
+                fuel_mix[cat] = round(mw, 1)
+                total_gen += mw
+        # --- load: sum zone loads at the latest timestamp ---
+        lrows = list(csv.DictReader(io.StringIO(load_txt)))
+        if not lrows:
+            return []
+        latest_lts = max(r["Time Stamp"] for r in lrows if r.get("Time Stamp"))
+        total_load = 0.0
+        for r in lrows:
+            if r.get("Time Stamp") != latest_lts:
+                continue
+            v = _to_float(r.get("Load"))
+            if v is not None:
+                total_load += v
+        if total_gen <= 0 or total_load <= 0:
+            return []
+        return [_record("NYISO", "NYCA",
+                        online_gen_mw=round(total_gen, 1),
+                        load_mw=round(total_load, 1),
+                        fuel_mix=fuel_mix,
+                        source="nyiso:rtfuelmix+pal")]
+    except Exception as e:
+        print(f"[iso_grid] NYISO fetch error: {e}", flush=True)
+        return []
+
+
+# ─────────────────────────────────────────────────────────────────────
+# CAISO — public "Today's Outlook" CSVs, no auth. Confirmed live (2026-05-22):
+#   outlook/current/fuelsource.csv  Time, Solar, Wind, ... Imports, Other
+#   outlook/current/demand.csv      Time, Day ahead fc, Hour ahead fc,
+#                                    Current demand, Demand response
+# One system record: Σ latest fuel-source row = supply, Current demand = load.
+# ─────────────────────────────────────────────────────────────────────
+def fetch_caiso() -> list[dict]:
+    """CAISO system telemetry from public Today's Outlook CSVs. Fail-safe → []."""
+    try:
+        fs = _http_text("https://www.caiso.com/outlook/current/fuelsource.csv")
+        dm = _http_text("https://www.caiso.com/outlook/current/demand.csv")
+        if not fs or not dm:
+            return []
+        frows = [r for r in csv.DictReader(io.StringIO(fs))
+                 if any((v or "").strip() for k, v in r.items() if k != "Time")]
+        if not frows:
+            return []
+        last = frows[-1]
+        fuel_mix, total_gen = {}, 0.0
+        for k, v in last.items():
+            if k == "Time":
+                continue
+            mw = _to_float(v)
+            if mw is not None:
+                fuel_mix[k] = round(mw, 1)
+                total_gen += mw
+        # demand: latest row with a non-empty Current demand
+        load = None
+        for r in csv.DictReader(io.StringIO(dm)):
+            v = _to_float(r.get("Current demand"))
+            if v is not None:
+                load = v
+        if total_gen <= 0 or load is None:
+            return []
+        return [_record("CAISO", "CAISO",
+                        online_gen_mw=round(total_gen, 1),
+                        load_mw=round(load, 1),
+                        fuel_mix=fuel_mix,
+                        source="caiso:outlook")]
+    except Exception as e:
+        print(f"[iso_grid] CAISO fetch error: {e}", flush=True)
+        return []
+
+
 # Dispatch table — maps impl names to functions.
-_IMPL = {"fetch_ercot": fetch_ercot}
+_IMPL = {"fetch_ercot": fetch_ercot,
+         "fetch_nyiso": fetch_nyiso,
+         "fetch_caiso": fetch_caiso}
 
 
 def fetch_iso(iso: str) -> list[dict]:
@@ -396,6 +527,32 @@ try:
     @iso_grid_bp.get("/api/v1/iso/probe/ercot")
     def _iso_probe_ercot():
         return jsonify(_ercot_product_catalog()), 200
+
+    @iso_grid_bp.get("/api/v1/iso/sample/<iso>")
+    def _iso_sample(iso):
+        """Read-only live pull for one ISO — proves an adapter works WITHOUT
+        writing to the DB (no store_records). 60s cache to avoid hammering the
+        ISO. Public ISOs (NYISO, CAISO) need no creds."""
+        import time as _t
+        iso = (iso or "").upper()
+        if iso not in ISO_REGISTRY:
+            return jsonify(ok=False, error="unknown ISO",
+                           known=list(ISO_REGISTRY)), 404
+        ck = f"sample:{iso}"
+        now = _t.time()
+        hit = _PROBE_CACHE.get(ck)
+        if hit and (now - hit[0]) < 60:
+            return jsonify(hit[1]), 200
+        recs = fetch_iso(iso)
+        out = {
+            "ok": True, "iso": iso,
+            "implemented": bool(_IMPL.get((ISO_REGISTRY[iso].get("impl") or ""))),
+            "creds_present": _has_creds(iso),
+            "records": recs, "count": len(recs),
+            "note": ISO_REGISTRY[iso].get("note"),
+        }
+        _PROBE_CACHE[ck] = (now, out)
+        return jsonify(out), 200
 except Exception as _bp_err:  # Flask unavailable in some contexts — stay importable
     iso_grid_bp = None
     print(f"[iso_grid] blueprint skipped: {_bp_err}", flush=True)
