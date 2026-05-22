@@ -727,6 +727,19 @@ Output STRICT JSON only, no preamble:
 }"""
 
 
+def _inject_live_stats(system_prompt: str) -> str:
+    """Phase FF #8b: swap the hardcoded "280+ markets... 20,000+ facilities"
+    in the system prompt for the canonical live numbers, so Claude-generated
+    posts quote ONE consistent figure. Fail-safe: any error → original prompt."""
+    try:
+        from canonical_stats import headline_blurb
+        return system_prompt.replace(
+            "tracking 280+ US/global markets, 7 ISOs, and 20,000+ facilities",
+            "tracking " + headline_blurb())
+    except Exception:
+        return system_prompt
+
+
 def _call_claude_marketing(prompt: str) -> tuple[dict | None, str | None]:
     """Single Anthropic call. Returns (parsed_json, error)."""
     if not ANTHROPIC_API_KEY:
@@ -735,7 +748,7 @@ def _call_claude_marketing(prompt: str) -> tuple[dict | None, str | None]:
     body = json.dumps({
         "model": MARKETING_MODEL,
         "max_tokens": 1500,
-        "system": _MARKETING_SYSTEM,
+        "system": _inject_live_stats(_MARKETING_SYSTEM),
         "messages": [{"role": "user", "content": prompt}],
     }).encode("utf-8")
     req = Request("https://api.anthropic.com/v1/messages", data=body, headers={
