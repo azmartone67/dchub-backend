@@ -74,7 +74,7 @@ def _collapse_path(path: str) -> str:
 
 def _ensure_table():
     try:
-        from main import get_db
+        from db_utils import get_db
         conn = get_db()
         if not conn: return
         try:
@@ -193,7 +193,7 @@ def _flush_to_db():
     # before the inserts run, in the same transaction view. This makes
     # the operation truly idempotent per-connection.
     try:
-        from main import get_db
+        from db_utils import get_db
         conn = get_db()
         if not conn: return
         try:

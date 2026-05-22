@@ -152,7 +152,7 @@ def _ensure_table():
     ADD COLUMN IF NOT EXISTS for each L21-specific column so this module
     works whether or not the other one initialized the table first."""
     try:
-        from main import get_db
+        from db_utils import get_db
         conn = get_db()
         if not conn: return
         try:
@@ -201,7 +201,7 @@ def _ensure_table():
 def _record_action(action: str, target: str, detail: str,
                    tier: str = "A", detected_at: float | None = None):
     try:
-        from main import get_db
+        from db_utils import get_db
         conn = get_db()
         if not conn: return
         try:
@@ -309,7 +309,7 @@ def autopilot_status():
     recent_actions = []
     mttr_samples = []
     try:
-        from main import get_db
+        from db_utils import get_db
         conn = get_db()
         if conn:
             try:
@@ -426,7 +426,7 @@ def repair_l21_schema():
         return jsonify(error="forbidden", hint="X-Internal-Key required"), 403
 
     try:
-        from main import get_db
+        from db_utils import get_db
     except Exception as e:
         return jsonify(error=f"no get_db: {e}"), 500
 

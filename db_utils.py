@@ -191,7 +191,7 @@ class PGCursorWrapper:
                 pass
             if _is_connectivity_error(e):
                 try:
-                    from main import _record_circuit_failure
+                    from database import _record_circuit_failure
                     _record_circuit_failure()
                 except Exception:
                     pass
@@ -214,7 +214,7 @@ class PGCursorWrapper:
                 pass
             if _is_connectivity_error(e):
                 try:
-                    from main import _record_circuit_failure
+                    from database import _record_circuit_failure
                     _record_circuit_failure()
                 except Exception:
                     pass
@@ -328,8 +328,10 @@ class PGConnectionWrapper:
 
 def _get_pg_connection():
     try:
-        from main import get_pg_connection, return_pg_connection
+        from database import get_pg_connection, return_pg_connection
         conn = get_pg_connection(retries=2)
+        if conn is None:
+            raise RuntimeError("No database connection available")
         try:
             c = conn.cursor()
             c.execute("SET statement_timeout = 15000")
@@ -346,7 +348,7 @@ def _get_pg_connection():
 def try_get_db():
     """Non-blocking: returns a connection or None if pool is busy. For non-critical logging."""
     try:
-        from main import try_get_pg_connection, return_pg_connection
+        from database import try_get_pg_connection, return_pg_connection
         conn = try_get_pg_connection()
         if conn is None:
             return None
