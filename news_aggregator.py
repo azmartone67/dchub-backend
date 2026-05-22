@@ -406,6 +406,19 @@ def parse_feed(source_key, feed_config):
             )
             published_date = parse_date(date_str)
 
+            # r33-Q+news-future-clamp (2026-05-22): clamp future-dated
+            # published_date to NOW(). The `news` table (read by the
+            # freshness radar at routes/_freshness.py) showed a row
+            # "955h ahead of now" because some RSS feeds emit
+            # future-scheduled or year-off-by-one dates. The existing
+            # clamp in news_engine.py only protected news_articles, NOT
+            # this `news` table — different ingester, different table.
+            # Clamp here so the freshness radar stops false-alarming.
+            if published_date:
+                _now = datetime.now(published_date.tzinfo or timezone.utc)
+                if published_date > _now:
+                    published_date = _now
+
             # Skip articles older than 90 days
             if published_date:
                 cutoff = datetime.now(timezone.utc) - timedelta(days=90)

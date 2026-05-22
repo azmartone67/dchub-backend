@@ -538,6 +538,22 @@ def admin_news_clamp_future_dates():
                  WHERE published_at > NOW()
             """)
             touched = cur.rowcount
+            # r33-Q+news-table (2026-05-22): ALSO clamp the `news` table.
+            # The freshness radar (routes/_freshness.py) reads `news`,
+            # not news_articles — that's the table that showed the
+            # "955h ahead" alarm. Different ingester (news_aggregator.py),
+            # different column name (published_date). Clamp both so the
+            # one admin call fixes the surface the radar actually checks.
+            touched_news = 0
+            try:
+                cur.execute("""
+                    UPDATE news
+                       SET published_date = NOW()
+                     WHERE published_date > NOW()
+                """)
+                touched_news = cur.rowcount
+            except Exception:
+                pass  # `news` table may not exist in all envs
         conn.commit()
     except Exception as e:
         try: conn.rollback()
@@ -546,6 +562,7 @@ def admin_news_clamp_future_dates():
     finally:
         _db_return(conn)
     return jsonify(success=True, touched=touched,
+                   touched_news_table=touched_news,
                    preview=preview), 200
 
 

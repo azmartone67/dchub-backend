@@ -663,6 +663,19 @@ def _generate_brief() -> dict:
             except Exception:
                 pass
 
+    # r33-Q+empty-brief-guard (2026-05-22): do NOT persist an empty
+    # brief. When the Opus call is throttled by L20 durability (>2
+    # Claude calls/min) or errors, _call_opus returns text="" + an
+    # error in meta. Persisting that creates a junk brain_briefs row
+    # (observed: id=11, ok:False, 0 duration, null counts) that can
+    # surface as "latest brief" and pollute the innovation page.
+    # Bail early — the caller sees ok:False and can retry. The brief
+    # table only ever holds real, content-bearing briefs.
+    if out.get("error") or not (text or "").strip():
+        out["ok"] = False
+        out["skipped_persist"] = "empty_or_errored_brief"
+        return out
+
     # Persist. FIX r10 (2026-05-20): explicit c.commit() — get_db()
     # returns connections in non-autocommit mode, so the INSERT was
     # rolling back on connection close. Same fix applied in

@@ -7613,12 +7613,20 @@ def _persist_findings_to_db(findings: list[dict]) -> int:
     Defensive — never raises; persistence failures don't fail the
     scan."""
     import os as _os_p, psycopg2 as _pg_p
-    db = _os_p.environ.get("DATABASE_URL")
+    # r33-Q+persist-robust (2026-05-22): fall back to NEON_DATABASE_URL
+    # if DATABASE_URL isn't set (main.py normally overrides it, but a
+    # bare-import context or a worker that booted before the override
+    # may not have it). Connect timeout bumped 5s→10s: the earlier
+    # "inspector_findings_persisted: 0" happened because this opens a
+    # COLD psycopg2 connection (not the warm pool) and a 5s timeout
+    # loses the race during a Railway flap. 10s clears the flap window.
+    db = (_os_p.environ.get("DATABASE_URL")
+          or _os_p.environ.get("NEON_DATABASE_URL"))
     if not db or not findings:
         return 0
     rows = 0
     try:
-        conn = _pg_p.connect(db, sslmode="require", connect_timeout=5)
+        conn = _pg_p.connect(db, sslmode="require", connect_timeout=10)
         try:
             with conn.cursor() as cur:
                 cur.execute(_BRAIN_FINDINGS_DDL)
