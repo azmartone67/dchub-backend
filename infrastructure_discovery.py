@@ -1374,7 +1374,7 @@ This week in data center infrastructure:
         # FIX: ? → %s
         cursor.execute('''
             INSERT INTO linkedin_weekly_posts (week_start, week_end, content, posted_at, post_id)
-            VALUES (%s, %s, %s, %s, %s)
+            VALUES (%s, %s, %s, %s, %s) ON CONFLICT DO NOTHING
         ''', (week_start.date(), week_end.date(), content, datetime.now(), post_id))
 
         conn.commit()
