@@ -6,6 +6,11 @@
 # (Pages strips .html → 301 to /ai → rewrite to /ai.html → loop)
 
 # ── Broken nav links → working pages ──
+# Phase FF (2026-05-22): consolidate the two partner pages. /partners was a
+# lighter comparison page; /partnerships is the rich "Switzerland · 6 tracks"
+# resource (the keeper). 301 to one canonical so we don't dilute SEO or confuse.
+/partners                      /partnerships            301
+/partners/                     /partnerships            301
 /markets/ashburn               /ashburn                 301
 /ai.txt                        /ai.json                 301
 /shell                         /powered-shell           301
