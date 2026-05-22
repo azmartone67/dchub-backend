@@ -536,27 +536,36 @@ def admin_news_clamp_future_dates():
     if conn is None: return jsonify(error="no_database"), 503
     try:
         with conn.cursor() as cur:
-            # Show what we'll touch before touching
-            cur.execute("""
-                SELECT id, title, published_at
-                  FROM news_articles
-                 WHERE published_at > NOW()
-                 ORDER BY published_at DESC LIMIT 50
-            """)
+            # r33-Q+cast-fix (2026-05-22): news_articles.published_at is
+            # a TEXT column, not TIMESTAMP. The bare `published_at > NOW()`
+            # comparison raised "operator does not exist: text > timestamp
+            # with time zone" (same type-mismatch trap as the Inspector
+            # SQL queries). CAST to timestamptz with an empty/invalid
+            # string guard so the comparison is valid.
+            touched = 0
+            try:
+                cur.execute("""
+                    UPDATE news_articles
+                       SET published_at = NOW()::text
+                     WHERE COALESCE(published_at, '') != ''
+                       AND published_at ~ '^\\d{4}-\\d{2}-\\d{2}'
+                       AND published_at::timestamptz > NOW()
+                """)
+                touched = cur.rowcount
+            except Exception:
+                # Column may be a real TIMESTAMP in some envs — retry
+                # without the cast.
+                try:
+                    cur.execute("ROLLBACK")
+                except Exception:
+                    pass
+                cur.execute("""
+                    UPDATE news_articles
+                       SET published_at = NOW()
+                     WHERE published_at > NOW()
+                """)
+                touched = cur.rowcount
             preview = []
-            for r in cur.fetchall():
-                preview.append({
-                    "id": r[0],
-                    "title": (r[1] or "")[:80],
-                    "published_at": r[2].isoformat() if r[2] else None,
-                })
-            # Now clamp them
-            cur.execute("""
-                UPDATE news_articles
-                   SET published_at = NOW()
-                 WHERE published_at > NOW()
-            """)
-            touched = cur.rowcount
             # r33-Q+news-table (2026-05-22): ALSO clamp the `news` table.
             # The freshness radar (routes/_freshness.py) reads `news`,
             # not news_articles — that's the table that showed the
