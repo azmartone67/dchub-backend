@@ -20793,16 +20793,17 @@ def get_press_release(slug):
 @app.route("/api/admin/press-releases", methods=["POST"])
 def create_press_release():
     auth = request.headers.get("Authorization", "")
-    # r33-Q+env-cleanup (2026-05-21): consolidated DCHUB_ADMIN_API_KEY
-    # → DCHUB_ADMIN_KEY (canonical name, 211 other uses). Fallback to
-    # the legacy DCHUB_ADMIN_API_KEY name for one deploy cycle so any
-    # caller using the old key still works while you remove the env
-    # var. After confirming /api/v1/admin/press-releases still works,
-    # delete DCHUB_ADMIN_API_KEY on Railway + Render.
+    # r33-Q+env-cleanup-v2 (2026-05-21): accept EITHER DCHUB_ADMIN_KEY
+    # or DCHUB_ADMIN_API_KEY. Earlier version used `or` short-circuit
+    # which only checked the first non-empty env var. Now we explicitly
+    # check both so the consolidation migration works regardless of
+    # which key the caller has. Once we verify and remove
+    # DCHUB_ADMIN_API_KEY, this still works against DCHUB_ADMIN_KEY only.
     sent = auth.replace("Bearer ", "").strip()
-    expected = (os.getenv("DCHUB_ADMIN_KEY")
-                or os.getenv("DCHUB_ADMIN_API_KEY") or "").strip()
-    if not expected or sent != expected:
+    admin     = (os.getenv("DCHUB_ADMIN_KEY") or "").strip()
+    admin_api = (os.getenv("DCHUB_ADMIN_API_KEY") or "").strip()
+    valid_keys = [k for k in (admin, admin_api) if k]
+    if not sent or sent not in valid_keys:
         return jsonify({"error": "Unauthorized"}), 401
     data = request.get_json()
     try:
