@@ -103,6 +103,14 @@ LIMITS = {
     'internal':      {'rpm': 300, 'rph': 20000},   # MCP / X-Internal-Key
     'authenticated': {'rpm': 120, 'rph': 5000},     # Any logged-in user
     'anonymous':     {'rpm': 20,  'rph': 200},      # No auth
+    # Phase FF (2026-05-22): public showcase/content pages (/dcpi, /markets,
+    # /reports, /brain/*). These are the flagship SEO + AI-citation surfaces
+    # (datacenterpowerindex.com redirects to /dcpi). Throttling anonymous
+    # visitors AND crawlers at 20rpm/200rph here was producing 429s on the
+    # most important pages — directly undercutting the citation strategy.
+    # Generous (not unlimited): a hammering scraper still caps, but normal
+    # crawl + browse never trips. These pages are cacheable + cheap.
+    'public_content': {'rpm': 120, 'rph': 2000},
 }
 
 # DC Hub internal key values (same as used in main.py route guards)
@@ -182,6 +190,11 @@ SKIP_PATHS = frozenset([
 # Flask-level rate limiter.
 SKIP_PREFIXES = ('/static/', '/assets/', '/js/', '/css/', '/images/', '/mcp/')
 
+# Phase FF (2026-05-22): public showcase/content HTML pages get the generous
+# 'public_content' tier instead of the strict anonymous IP cap, so crawlers +
+# visitors aren't 429'd on the flagship citation surfaces. Prefix match.
+PUBLIC_CONTENT_PREFIXES = ('/dcpi', '/markets', '/reports', '/brain/')
+
 
 # ---------------------------------------------------------------------------
 # Flask middleware
@@ -223,6 +236,11 @@ def rate_limit_before():
         return None
 
     key, tier = _get_key_and_tier()
+    # Phase FF: elevate anonymous hits on public showcase pages to the
+    # generous public_content tier (flagship SEO/citation surfaces). Authed/
+    # internal tiers already have higher limits, so only lift anonymous.
+    if tier == 'anonymous' and path.startswith(PUBLIC_CONTENT_PREFIXES):
+        tier = 'public_content'
     limits = LIMITS[tier]
 
     # Per-minute check

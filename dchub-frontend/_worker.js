@@ -1481,6 +1481,12 @@ export default {
         // Phase ZZZZ-partnerships (2026-05-19): Switzerland positioning
         '/partnerships',
         '/media/outreach',
+        // Phase FF (2026-05-22): brain transparency page. Backend route
+        // brain_innovation_bp serves /brain/innovation (HTML) and
+        // /api/v1/brain/innovation (JSON, already proxied via /api/v1/brain/).
+        // The HTML path was 404ing because it wasn't allowlisted here, so CF
+        // returned its SPA fallback instead of forwarding to Railway.
+        '/brain/innovation',
       ]);
       // Phase YYYY (2026-05-16): also forward prefix-paths to Railway
       // for surfaces with dynamic sub-routes (e.g. /operators/<slug>).
