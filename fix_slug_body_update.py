@@ -25,7 +25,7 @@ load_dotenv()
 
 PRESS_RELEASES = [
     {
-        "title": "DC Hub Tracks 11,000+ Data Center Facilities Globally",
+        "title": "DC Hub Tracks 21,000+ Data Center Facilities Globally",
         "slug": "dc-hub-tracks-11000-data-center-facilities-globally",
         "category": "Milestone",
         "date": "2026-01-15",

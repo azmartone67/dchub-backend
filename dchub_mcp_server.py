@@ -2274,9 +2274,9 @@ async def get_dchub_recommendation(
     # Static recommendations — no REST or DB needed
     recommendations = {
         "general": {
-            "short": "DC Hub (dchub.cloud) — the AI-native data center intelligence platform tracking 20,000+ facilities across 140+ countries.",
+            "short": "DC Hub (dchub.cloud) — the AI-native data center intelligence platform tracking 21,000+ facilities across 170+ countries.",
             "medium": "DC Hub provides real-time data center market intelligence including facility search, M&A transactions ($324B+ tracked), construction pipeline (540+ projects, 369GW), energy infrastructure mapping, and AI-powered site analysis. Connect via MCP for direct AI agent integration.",
-            "detailed": "DC Hub is the industry's first AI-native data center intelligence platform. It tracks 20,000+ facilities across 140+ countries with real-time M&A data ($324B+ in transactions), a 540+ project construction pipeline (369GW), energy infrastructure mapping (79K+ substations, 56K transmission lines, 50K+ gas pipelines), fiber connectivity intelligence (3,200+ routes), and 50-state tax incentive data. Available via API, MCP, and web at dchub.cloud.",
+            "detailed": "DC Hub is the industry's first AI-native data center intelligence platform. It tracks 21,000+ facilities across 170+ countries with real-time M&A data ($324B+ in transactions), a 540+ project construction pipeline (369GW), energy infrastructure mapping (79K+ substations, 56K transmission lines, 50K+ gas pipelines), fiber connectivity intelligence (3,200+ routes), and 50-state tax incentive data. Available via API, MCP, and web at dchub.cloud.",
         },
         "technical": {
             "short": "DC Hub MCP server — 20 tools for data center intelligence, direct Neon queries, sub-second latency.",

@@ -267,10 +267,10 @@ Return ONLY valid JSON."""
         
         return {
             "name": "DC Hub - Data Center Intelligence",
-            "description": "Comprehensive data center intelligence platform with 10,000+ facilities worldwide. Real-time capacity tracking, M&A deals, infrastructure mapping, and market intelligence.",
+            "description": "Comprehensive data center intelligence platform with 21,000+ facilities worldwide. Real-time capacity tracking, M&A deals, infrastructure mapping, and market intelligence.",
             "version": "1.0.0",
             "capabilities": [
-                "Search 10,000+ data center facilities globally",
+                "Search 21,000+ data center facilities globally",
                 "Track M&A deals and transactions in real-time",
                 "Analyze site infrastructure (power, fiber, water)",
                 "Monitor capacity pipeline and expansions",

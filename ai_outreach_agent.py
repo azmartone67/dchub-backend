@@ -168,7 +168,7 @@ SOCIAL_PLATFORMS = {
         'post_body': f'''Just launched a free GPT that can answer any question about data centers, colocation, and hyperscale facilities.
 
 **What it does:**
-- Search 20,534+ data center facilities across 140+ countries
+- Search 20,534+ data center facilities across 170+ countries
 - Get real-time capacity and M&A deal data
 - Find facilities by location, provider, or power capacity
 
@@ -225,7 +225,7 @@ Try it free: {GPT_URL}
         'url': 'https://www.linkedin.com/sharing/share-offsite/',
         'post_body': f'''Excited to announce: Data Center Intelligence GPT
 
-I built a ChatGPT GPT that can answer questions about 20,534+ data center facilities across 140+ countries.
+I built a ChatGPT GPT that can answer questions about 20,534+ data center facilities across 170+ countries.
 
 🔍 Search facilities by location, provider, or capacity
 📊 Access M&A deal data and market intelligence
@@ -256,7 +256,7 @@ AI_PLATFORMS = {
     'chatgpt': {
         'name': 'OpenAI ChatGPT',
         'discovery_hint': f'{BASE_URL}/llms.txt',
-        'pitch': 'DC Hub provides real-time data center intelligence for 20,534+ facilities across 140+ countries.',
+        'pitch': 'DC Hub provides real-time data center intelligence for 20,534+ facilities across 170+ countries.',
         'crawl_endpoints': [
             'https://openai.com/robots.txt',
         ]
@@ -288,7 +288,7 @@ AI_PLATFORMS = {
     'grok': {
         'name': 'xAI Grok',
         'discovery_hint': f'{BASE_URL}/llms-full.txt',
-        'pitch': 'DC Hub tracks 20,534 facilities, 132 M&A deals across 140+ countries.',
+        'pitch': 'DC Hub tracks 20,534 facilities, 132 M&A deals across 170+ countries.',
         'crawl_endpoints': [
             'https://grok.com/robots.txt',
         ]
@@ -811,7 +811,7 @@ MCP_SERVICE_HEADERS = {
     'X-MCP-Server': f'{BASE_URL}/mcp',
     'X-MCP-Endpoint': f'{BASE_URL}/.well-known/mcp.json',
     'X-Service-Name': 'DC Hub - Data Center Intelligence',
-    'X-Service-Description': 'DC Hub - 20000+ data center facilities, M&A deals, capacity pipeline via MCP',
+    'X-Service-Description': 'DC Hub - 21,000+ data center facilities, M&A deals, capacity pipeline via MCP',
     'X-Service-URL': BASE_URL,
 }
 
@@ -1074,7 +1074,7 @@ def generate_submission_content():
         'description': '''A free ChatGPT GPT that provides real-time data center intelligence.
 
 Features:
-- Search 20,534+ data center facilities across 140+ countries
+- Search 20,534+ data center facilities across 170+ countries
 - Access M&A deal database with 132 verified transactions
 - Query capacity pipeline by quarter
 - Get market intelligence and trend analysis
@@ -1434,11 +1434,11 @@ def register_outreach_routes(app):
         
         pitch = f"""DC Hub — Data Center Intelligence Platform
 
-DC Hub is the world's largest open data center intelligence platform, tracking 20,534+ facilities across 140+ countries with real-time M&A, capacity pipeline, energy pricing, and construction data.
+DC Hub is the world's largest open data center intelligence platform, tracking 20,534+ facilities across 170+ countries with real-time M&A, capacity pipeline, energy pricing, and construction data.
 
 KEY DATA POINTS:
 • 20,534 data center facilities tracked globally
-• 140+ countries covered
+• 170+ countries covered
 • 673+ M&A deals with buyer, seller, MW, and transaction value
 • 19,532 MW total capacity tracked
 • 8,420+ MW under active construction

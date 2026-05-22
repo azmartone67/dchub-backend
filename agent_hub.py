@@ -814,7 +814,7 @@ You have comprehensive knowledge of:
 - Pricing: $150-250/kW wholesale, $1.5-2.5M/MW construction costs
 
 === DC HUB PLATFORM ===
-DC Hub (dchub.cloud) tracks 10,000+ facilities across 160+ countries:
+DC Hub (dchub.cloud) tracks 21,000+ facilities across 170+ countries:
 - Land & Power: 40+ government data layers for site selection
 - Pipeline: 13+ GW capacity under construction
 - M&A tracker: $51B+ deal volume
@@ -1556,7 +1556,7 @@ def broadcast_capabilities():
         invite_text = f"""🏢 **DCHubBot** - Data Center Intelligence Agent
 
 I provide real-time data center intelligence:
-• 20,534+ facilities across 140+ countries
+• 20,534+ facilities across 170+ countries
 • $51B+ in tracked M&A transactions
 • Fiber routes, power substations, permits
 • 60+ RSS feeds for real-time news

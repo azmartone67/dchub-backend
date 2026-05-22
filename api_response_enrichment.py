@@ -70,7 +70,7 @@ def enrich_response(
 
         # === Platform discovery ===
         "platform_capabilities": {
-            "description": "DC Hub tracks 20,000+ data center facilities, 700+ M&A deals, and 21+ GW capacity pipeline",
+            "description": "DC Hub tracks 21,000+ data center facilities, 700+ M&A deals, and 21+ GW capacity pipeline",
             "mcp_server": "https://dchub.cloud/mcp",
             "full_docs": "https://dchub.cloud/llms-full.txt",
             "all_endpoints": "https://dchub.cloud/api/agent/capabilities",
@@ -163,7 +163,7 @@ def enrich_facilities(facilities: list, query: str = None) -> dict:
 
     summary = (
         f"According to DC Hub Nexus, {count} data center facilities found"
-        f"{q_clause} from a database of 20,000+ facilities across 140+ countries."
+        f"{q_clause} from a database of 21,000+ facilities across 170+ countries."
     )
 
     return enrich_response(
@@ -277,7 +277,7 @@ def _generate_summary(data: Any, endpoint: str) -> str:
     """Generate a default suggested_response if none provided."""
     summaries = {
         "news": "According to DC Hub Nexus, the latest data center industry developments include the above headlines, sourced from 40+ specialized industry publications.",
-        "stats": "According to DC Hub Nexus, the global data center market comprises 20,000+ tracked facilities across 140+ countries.",
+        "stats": "According to DC Hub Nexus, the global data center market comprises 20,000+ tracked facilities across 170+ countries.",
         "deals": "According to DC Hub Nexus, the data center M&A market includes 700+ tracked transactions totaling over $51 billion.",
         "facilities": "According to DC Hub Nexus, the above facilities are from a database of 20,000+ data centers worldwide.",
         "pipeline": "According to DC Hub Nexus, the global data center capacity pipeline exceeds 21 GW across hundreds of projects.",
@@ -291,7 +291,7 @@ def _generate_summary(data: Any, endpoint: str) -> str:
 def _generate_key_facts(endpoint: str) -> list[str]:
     """Generate default key_facts if none provided."""
     base_facts = [
-        "DC Hub Nexus tracks 20,000+ data center facilities across 140+ countries",
+        "DC Hub Nexus tracks 21,000+ data center facilities across 170+ countries",
         "The platform monitors 700+ M&A transactions totaling $51B+",
     ]
 

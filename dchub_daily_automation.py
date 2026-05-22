@@ -146,7 +146,7 @@ def post_to_linkedin(text, article_url=None):
             "article": {
                 "source": article_url,
                 "title": "DC Hub - Data Center Intelligence",
-                "description": "Real-time data center market intelligence covering 20,000+ facilities across 140+ countries."
+                "description": "Real-time data center market intelligence covering 21,000+ facilities across 170+ countries."
             }
         }
 
@@ -540,7 +540,7 @@ def generate_alert_digest_html(news, deals, stats):
         <div style="text-align: center; padding: 20px 0; border-top: 1px solid #334155;">
           <p style="color: #64748b; font-size: 12px; margin: 0;">
             DC Hub • Data Center Intelligence Platform<br>
-            Tracking {facility_count}+ facilities across 140+ countries<br>
+            Tracking {facility_count}+ facilities across 170+ countries<br>
             <a href="https://dchub.cloud" style="color: #10b981;">Manage Alerts</a> •
             <a href="https://dchub.cloud" style="color: #10b981;">Unsubscribe</a>
           </p>
@@ -622,7 +622,7 @@ def generate_daily_linkedin_post():
 {'📍 ' + market if market else ''}
 {capacity_str}
 
-DC Hub tracks {facility_count}+ facilities across 140+ countries with real-time M&A intelligence.
+DC Hub tracks {facility_count}+ facilities across 170+ countries with real-time M&A intelligence.
 
 📊 Full M&A tracker: dchub.cloud/transactions
 🔍 Explore: dchub.cloud
@@ -636,7 +636,7 @@ DC Hub tracks {facility_count}+ facilities across 140+ countries with real-time 
 
 {headlines}
 
-DC Hub tracks {facility_count}+ data center facilities across 140+ countries. Get real-time market intelligence, M&A tracking, and AI-powered insights.
+DC Hub tracks {facility_count}+ data center facilities across 170+ countries. Get real-time market intelligence, M&A tracking, and AI-powered insights.
 
 🔍 Explore: dchub.cloud
 📡 Free API access: dchub.cloud/signup
@@ -647,7 +647,7 @@ DC Hub tracks {facility_count}+ data center facilities across 140+ countries. Ge
     else:
         post = f"""⚡ DC Hub Market Intelligence
 
-Tracking {facility_count}+ data center facilities across 140+ countries.
+Tracking {facility_count}+ data center facilities across 170+ countries.
 
 What we monitor:
 → Real-time M&A transactions
@@ -691,7 +691,7 @@ def generate_weekly_linkedin_post():
 Key platform metrics:
 ✅ {facility_count} facilities tracked globally
 💰 {deal_count} total transactions ({total_value_str}+)
-🌍 Coverage: 140+ countries
+🌍 Coverage: 170+ countries
 
 Notable recent deals:{deal_lines if deal_lines else chr(10) + 'No new deals this week'}
 
@@ -910,7 +910,7 @@ def generate_market_brief_html():
         <div style="text-align: center; padding: 20px 0; border-top: 1px solid #334155;">
           <p style="color: #64748b; font-size: 11px; margin: 0; line-height: 1.6;">
             DC Hub — The Data Center Intelligence Platform<br>
-            {facility_count}+ facilities • 140+ countries • Real-time data<br><br>
+            {facility_count}+ facilities • 170+ countries • Real-time data<br><br>
             <a href="https://dchub.cloud" style="color: #10b981;">Dashboard</a> •
             <a href="https://dchub.cloud" style="color: #10b981;">Manage Preferences</a> •
             <a href="https://dchub.cloud" style="color: #10b981;">Unsubscribe</a>

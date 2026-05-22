@@ -203,14 +203,14 @@ class CompetitorAnalysis:
     }
     
     DC_HUB_ADVANTAGES = {
-        'facility_count': '20,000+ facilities vs competitors\' 6-12k',
+        'facility_count': '21,000+ facilities vs competitors\' 6-12k',
         'api_access': 'Free public API + tiered commercial',
         'real_time_power': 'Live power grid data (67+ zones)',
         'fiber_network': 'Major carrier routes + lit buildings',
         'ai_integration': '14 AI platforms tracked + citations',
         'climate_data': 'Cooling scores, weather risk',
         'government_data': '40+ infrastructure layers',
-        'global_coverage': '140+ countries tracked',
+        'global_coverage': '170+ countries tracked',
         'update_frequency': 'Real-time news, daily discovery',
         'pricing': 'Free tier available'
     }
@@ -219,7 +219,7 @@ class CompetitorAnalysis:
         {'competitor': 'DCByte', 'gap': 'No real-time power grid data', 'dc_hub_advantage': 'Live carbon intensity, grid demand across 67+ zones'},
         {'competitor': 'DCByte', 'gap': 'No fiber network mapping', 'dc_hub_advantage': '8 major carriers, routes, carrier hotels'},
         {'competitor': 'DCHawk', 'gap': 'No API access', 'dc_hub_advantage': 'Full REST API with 100+ endpoints'},
-        {'competitor': 'DCHawk', 'gap': 'Limited to North America', 'dc_hub_advantage': '140+ countries, 20,000+ facilities'},
+        {'competitor': 'DCHawk', 'gap': 'Limited to North America', 'dc_hub_advantage': '170+ countries, 21,000+ facilities'},
         {'competitor': 'DataCenters.com', 'gap': 'No market intelligence', 'dc_hub_advantage': 'SEC filings, expansion signals, M&A tracking'},
         {'competitor': 'DataCenters.com', 'gap': 'User-submitted data quality', 'dc_hub_advantage': 'Verified from 15+ authoritative sources'},
         {'competitor': 'All', 'gap': 'No AI platform integration', 'dc_hub_advantage': 'ChatGPT, Gemini, Claude, Perplexity citations'},

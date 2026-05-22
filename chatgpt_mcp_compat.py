@@ -497,7 +497,7 @@ def register_chatgpt_compat(mcp_server):
             name="search",
             description=(
                 "Search DC Hub's comprehensive data center intelligence. "
-                "Covers 50,000+ facilities across 140+ countries, M&A transactions "
+                "Covers 21,000+ facilities across 170+ countries, M&A transactions "
                 "($51B+ tracked), construction pipeline (21+ GW), market intelligence, "
                 "and curated industry news from 40+ sources. "
                 "Returns results with IDs that can be passed to the fetch tool for full details."
@@ -539,7 +539,7 @@ def register_on_raw_server(server_or_tools_dict):
     if isinstance(server_or_tools_dict, dict):
         server_or_tools_dict["search"] = {
             "description": (
-                "Search DC Hub's data center intelligence — 50,000+ facilities, "
+                "Search DC Hub's data center intelligence — 21,000+ facilities, "
                 "M&A transactions, construction pipeline, market intel, and industry news."
             ),
             "inputSchema": {

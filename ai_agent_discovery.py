@@ -171,7 +171,7 @@ def load_file(filename):
 AGENTS_MD_FALLBACK = """# DC Hub — Data Center Intelligence Platform
 
 ## Overview
-DC Hub (dchub.cloud) tracks 50,000+ data center facilities across 140+ countries.
+DC Hub (dchub.cloud) tracks 21,000+ data center facilities across 170+ countries.
 Free API at https://dchub.cloud/api/v1
 
 ## API Endpoints
@@ -195,7 +195,7 @@ Free API at https://dchub.cloud/api/v1
 A2A_AGENT_CARD = {
     "protocolVersion": "0.2.1",
     "name": "DC Hub Intelligence Agent",
-    "description": "Data center intelligence platform - 50,000+ facilities, $51B+ M&A, real-time grid data from 7 ISOs, site scoring, market intelligence across 140+ countries.",
+    "description": "Data center intelligence platform - 21,000+ facilities, $51B+ M&A, real-time grid data from 7 ISOs, site scoring, market intelligence across 170+ countries.",
     "url": "https://dchub.cloud",
     "iconUrl": "https://dchub.cloud/favicon.ico",
     "version": "86.0.0",
@@ -211,7 +211,7 @@ A2A_AGENT_CARD = {
         {
             "id": "facility-search",
             "name": "Data Center Facility Search",
-            "description": "Search 50,000+ data center facilities worldwide by name, location, provider, or capacity.",
+            "description": "Search 21,000+ data center facilities worldwide by name, location, provider, or capacity.",
             "tags": ["data center", "colocation", "facility", "infrastructure"],
             "examples": ["Find Equinix data centers in Dallas", "List hyperscale data centers in Arizona"]
         },
@@ -239,7 +239,7 @@ A2A_AGENT_CARD = {
         {
             "id": "market-intelligence",
             "name": "Market Intelligence",
-            "description": "Daily market reports: facility counts, capacity, deal volume, trends across 140+ countries.",
+            "description": "Daily market reports: facility counts, capacity, deal volume, trends across 170+ countries.",
             "tags": ["market report", "intelligence", "analytics", "trends"],
             "examples": ["Today's market report", "Top data center markets globally"]
         },
