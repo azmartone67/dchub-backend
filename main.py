@@ -10490,10 +10490,18 @@ def list_markets():
     conn = get_db()
     try:
         c = conn.cursor()
-        markets = []
+        # r34 perf: 30-min memoize of the expensive ~120-query market build.
+        # /api/v1/markets(/list) was a consistent 7-8s N+1 (per-market ILIKE
+        # scans). tier/limit are computed AFTER the build, so seed `markets`
+        # from cache and no-op each build loop on a hit; per-caller tier
+        # redaction below still runs. Cache stored just before tier compute.
+        import time as _tmk
+        _mkc = getattr(list_markets, '_mk_cache', None)
+        _use_cache = bool(_mkc and (_tmk.time() - _mkc[0]) < 1800)
+        markets = [dict(m) for m in _mkc[1]] if _use_cache else []
 
         # ── 1. Curated markets from MARKET_ALIASES ─────────────────
-        for market_key, cities in MARKET_ALIASES.items():
+        for market_key, cities in (() if _use_cache else MARKET_ALIASES.items()):
             if len(market_key) <= 2 or market_key in ['la', 'sf', 'nj', 'nyc', 'dfw', 'nova']:
                 continue
             conditions, params = [], []
@@ -10568,7 +10576,7 @@ def list_markets():
                 HAVING COUNT(*) >= 3
                 ORDER BY n DESC LIMIT 60;
             """, (tuple(existing) if existing else ('__none__',),))
-            for row in c.fetchall():
+            for row in (() if _use_cache else c.fetchall()):
                 city_l, city, state, n, op_mw, pipe_mw = row
                 slug = city_l.replace(' ', '-').replace('/', '-').replace(',', '')
                 kwh = None
@@ -10601,7 +10609,7 @@ def list_markets():
                 HAVING COUNT(*) >= 3
                 ORDER BY n DESC LIMIT 40;
             """)
-            for row in c.fetchall():
+            for row in (() if _use_cache else c.fetchall()):
                 city_l, city, country, n, op_mw, pipe_mw = row
                 slug = (city_l + '-' + (country or '').lower()).replace(' ', '-').replace('/', '-').replace(',', '')
                 markets.append({
@@ -10622,6 +10630,8 @@ def list_markets():
         api_key = _req.headers.get('X-API-Key') or _req.headers.get('Authorization', '').replace('Bearer ', '')
 
         # Determine tier without circular import — use the existing helper if defined
+        if not _use_cache:
+            list_markets._mk_cache = (_tmk.time(), [dict(m) for m in markets])
         tier = 'anonymous'
         if api_key:
             tier = 'free'  # default for any valid-looking key, refine below
