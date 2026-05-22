@@ -616,7 +616,30 @@ def start_auto_publisher():
                         break
                     post_id = row['id']
                     content_text = row['content']
-                    success, result = _post_to_linkedin(content_text, access_token)
+                    # Phase FF (#1): promote text-only posts to rich ARTICLE
+                    # shares so LinkedIn renders the rotating og:today card (the
+                    # "4 designs"). Extract the first URL + a title from the body;
+                    # _post_to_linkedin builds an ARTICLE share whose card image
+                    # LinkedIn scrapes from that URL's og:image — press-release
+                    # pages point og:image at /api/v1/og/today/<slug>.png. This
+                    # is the reason posts were weak text-only: line passed no
+                    # article_url. FAIL-SAFE: any error / no URL → text-only
+                    # (prior behaviour), so it can never make a post worse.
+                    _art_url = None
+                    _art_title = None
+                    try:
+                        import re as _re_url
+                        _m = _re_url.search(r'https?://[^\s)>\]]+', content_text or '')
+                        if _m:
+                            _art_url = _m.group(0).rstrip('.,')
+                            _first_line = (content_text or '').strip().split('\n', 1)[0].strip()
+                            _art_title = _first_line[:180] or None
+                    except Exception:
+                        _art_url = None
+                        _art_title = None
+                    success, result = _post_to_linkedin(
+                        content_text, access_token,
+                        article_url=_art_url, article_title=_art_title)
                     now = datetime.utcnow().isoformat() + 'Z'
                     if success:
                         cur.execute("UPDATE social_media_posts SET status = 'published', posted_at = %s, published_at = %s, publish_platform = 'linkedin' WHERE id = %s", (now, now, post_id))
