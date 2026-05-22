@@ -240,7 +240,7 @@ def infra_ticker():
         ("gas_pipelines",      "SELECT COUNT(*) FROM gas_pipelines"),
         ("fiber_routes",       "SELECT COUNT(*) FROM fiber_routes"),
         ("water_risk_records", "SELECT COUNT(*) FROM water_risk"),
-        ("operational_mw",     "SELECT COALESCE(SUM(capacity_mw),0)::bigint "
+        ("operational_mw",     "SELECT COALESCE(SUM(power_mw),0)::bigint "
                                "FROM discovered_facilities "
                                "WHERE status IN ('operational','live','active')"),
         ("pipeline_mw",        "SELECT COALESCE(SUM(capacity_mw),0)::bigint "
