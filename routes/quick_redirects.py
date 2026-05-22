@@ -15,6 +15,7 @@ from flask import Blueprint, redirect, Response, jsonify
 quick_redirects_bp = Blueprint("quick_redirects", __name__)
 
 
+# AUTO-REPAIR: duplicate route '/vs' also in routes/bs_translator.py:276 — review and remove one
 @quick_redirects_bp.route("/vs", methods=["GET"], strict_slashes=False)
 def vs_index_redirect():
     return redirect("/vs/dchawk", code=301)
@@ -100,6 +101,7 @@ dcByte, DC Knowledge). No quarterly PDFs, no $25K contracts, no NDAs —
 just live JSON updated every 60 seconds.
 """
 
+# AUTO-REPAIR: duplicate route '/AGENTS.md' also in ai_discovery_routes.py:290 — review and remove one
 
 @quick_redirects_bp.route("/AGENTS.md", methods=["GET"])
 def agents_md():
