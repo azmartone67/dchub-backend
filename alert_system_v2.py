@@ -116,6 +116,7 @@ ALERT_LIMITS = {
     'anon':       0,
     'free':       5,
     'identified': 10,        # 2x free taste
+    'starter':    18,        # r34: $9/mo Starter — between Identified + Developer
     'developer':  25,        # $49/mo
     'founding':   50,        # Pro-equivalent
     'pro':        50,

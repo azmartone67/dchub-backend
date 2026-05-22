@@ -30,15 +30,21 @@ class Tier(IntEnum):
     # and DEVELOPER. Free user who's signed up + verified email gets 4x
     # the free limits + access to a few more tools (changes_since, pocket
     # teaser). Drives 72 free users → email signup → identified upgrade.
+    # r34 (2026-05-22): STARTER inserted between IDENTIFIED and DEVELOPER —
+    # the $9/mo taste-data tier the pricing page sells but the gatekeeper
+    # had no place for, so $9 customers were misclassified. Order-preserving:
+    # FREE < IDENTIFIED < STARTER < DEVELOPER < PRO < ENTERPRISE.
     FREE = 0
     IDENTIFIED = 1
-    DEVELOPER = 2
-    PRO = 3
-    ENTERPRISE = 4
+    STARTER = 2
+    DEVELOPER = 3
+    PRO = 4
+    ENTERPRISE = 5
 
 TIER_NAME = {
     Tier.FREE: "Free",
     Tier.IDENTIFIED: "Identified",
+    Tier.STARTER: "Starter",
     Tier.DEVELOPER: "Developer",
     Tier.PRO: "Pro",
     Tier.ENTERPRISE: "Enterprise",
@@ -83,6 +89,9 @@ LIMITS = {
     # so each response makes the upgrade value concrete.
     Tier.FREE:       {"day": 25,     "minute": 3,   "max_rows": 1,    "cooldown": 3.0},
     Tier.IDENTIFIED: {"day": 200,    "minute": 15,  "max_rows": 5,    "cooldown": 1.0},
+    # r34: $9/mo Starter — generous taste so people experience the data,
+    # but well below Developer so the upgrade still has clear daylight.
+    Tier.STARTER:    {"day": 600,    "minute": 30,  "max_rows": 25,   "cooldown": 0.5},
     Tier.DEVELOPER:  {"day": 2000,   "minute": 60,  "max_rows": 100,  "cooldown": 0},
     Tier.PRO:        {"day": 10000,  "minute": 200, "max_rows": 500,  "cooldown": 0},
     Tier.ENTERPRISE: {"day": 100000, "minute": 1000,"max_rows": 10000,"cooldown": 0},
@@ -321,6 +330,7 @@ def resolve_tier(api_key: Optional[str]) -> Tier:
     if api_key.startswith("dchub_ent_"): return Tier.ENTERPRISE
     if api_key.startswith("dchub_pro_"): return Tier.PRO
     if api_key.startswith("dchub_dev_"): return Tier.DEVELOPER
+    if api_key.startswith("dchub_sta_"): return Tier.STARTER
     # Phase DDDDD (2026-05-16): auto-mint trial keys (`dch_trial_`)
     # resolve as IDENTIFIED tier. Validation against DB happens lazily
     # on first call; the prefix check here keeps the hot path fast.

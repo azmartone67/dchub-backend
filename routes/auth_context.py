@@ -61,10 +61,11 @@ _TIER_RANK = {
     TIER_ANONYMOUS:  0,
     TIER_FREE:       1,
     TIER_IDENTIFIED: 2,
-    TIER_DEVELOPER:  3,
-    TIER_PRO:        4,
-    TIER_ENTERPRISE: 5,
-    TIER_FOUNDING:   5,    # founding == enterprise pricing-wise
+    "starter":       3,    # r34: $9/mo taste tier between Identified + Developer
+    TIER_DEVELOPER:  4,
+    TIER_PRO:        5,
+    TIER_ENTERPRISE: 6,
+    TIER_FOUNDING:   6,    # founding == enterprise pricing-wise
     TIER_INTERNAL:   99,   # always satisfies any check
 }
 

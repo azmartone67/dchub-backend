@@ -127,6 +127,7 @@ API_MONTHLY_LIMITS = {
     'anonymous': 50,         # very small — IP-bound demo only
     'free': 100,             # legacy alias for identified
     'identified': 100,       # free with email — 100 calls/month
+    'starter': 1500,         # r34: $9/mo Starter — 1.5K calls/month (~50/day)
     'developer': 10000,      # $49/mo — 10K calls/month (~333/day)
     'pro': 300000,           # was 10K/day * 30 = 300K/month
     'enterprise': 3000000,

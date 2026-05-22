@@ -74,6 +74,7 @@ PROTECTION_CONFIG = {
         "anon":        5,
         "free":       10,
         "identified": 40,         # 4x free taste
+        "starter":   200,         # r34: $9/mo Starter
         "developer":  500,        # $49/mo
         "founding":  2000,        # Pro-equivalent
         "pro":       2000,
@@ -86,6 +87,7 @@ PROTECTION_CONFIG = {
         "anon":        3,
         "free":        5,
         "identified": 15,
+        "starter":    20,    # r34: $9/mo Starter
         "developer":  25,
         "founding":  100,
         "pro":       100,
