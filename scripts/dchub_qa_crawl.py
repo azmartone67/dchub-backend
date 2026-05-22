@@ -212,10 +212,25 @@ def check_html_quality(r: dict) -> list[tuple]:
     if no_alt:
         f.append(("medium", "img_no_alt", f"{no_alt} <img> without alt attr"))
 
-    # Real placeholder em-dashes (using phase 273 detector)
-    n_placeholders = len(_PLACEHOLDER_RE.findall(text_body))
+    # Real placeholder em-dashes — but EXCLUDE JS-populated defaults.
+    # Phase FF+falsepos (2026-05-22): a no-JS crawler always sees the "—"
+    # default that client-side JS replaces (e.g. id="founders-progress-text",
+    # class="infra-num"). Those aren't stale content — they fill in for real
+    # users — and they were jamming the brain's worklist with un-fixable
+    # findings. Detect on raw HTML and skip any "—" cell whose element carries
+    # an id (JS targets ids) or a known dynamic class.
+    _emdash_cell = re.compile(r'<(\w+)([^>]*)>\s*—\s*</\1>')
+    _JS_DYN_HINTS = ('id=', 'infra-num', 'founders-progress', 'js-', 'data-dyn',
+                     '-val"', '-value"', 'data-fetch', 'ticker')
+    n_placeholders = 0
+    for _tag, _attrs in _emdash_cell.findall(body):
+        al = _attrs.lower()
+        if any(h in al for h in _JS_DYN_HINTS):
+            continue  # JS-populated default — not stale content
+        n_placeholders += 1
     if n_placeholders:
-        f.append(("high", "data_placeholder", f"{n_placeholders} empty data cells (>—<)"))
+        f.append(("high", "data_placeholder",
+                  f"{n_placeholders} static empty data cells (>—<)"))
 
     # Phase-marker comments (technical debt smell)
     n_phase = len(_PHASE_MARKER_RE.findall(body))
