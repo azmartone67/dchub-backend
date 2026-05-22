@@ -123,7 +123,7 @@ def _build_story(year: int, month: int, snapshot: dict) -> dict:
     if curr.get("count") and (curr.get("value") or 0) > 0:
         paragraph_parts.append(
             f"{curr['count']} M&A transactions worth "
-            f"${curr['value']/1e9:.1f}B in the month."
+            f"${curr['value']/1e3:.1f}B in the month."  # value is in $millions
         )
     if ai.get("tool_calls_month") and ai.get("mom_pct") is not None:
         d = "up" if ai["mom_pct"] >= 0 else "down"
@@ -145,7 +145,7 @@ def _build_story(year: int, month: int, snapshot: dict) -> dict:
         td = top_d[0]
         angles.append(
             f"Biggest deal: {td['buyer']} → {td.get('seller','?')} at "
-            f"${td['value']/1e9:.1f}B ({(td.get('mw') or 0):,.0f} MW)"
+            f"${td['value']/1e3:.1f}B ({(td.get('mw') or 0):,.0f} MW)"  # value is in $millions
         )
     if df.get("deals_mom_pct") is not None:
         d = "up" if df["deals_mom_pct"] >= 0 else "down"

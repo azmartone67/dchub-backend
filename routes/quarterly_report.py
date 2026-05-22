@@ -262,7 +262,7 @@ def _render_html(d: dict) -> str:
 <link rel="canonical" href="https://dchub.cloud/reports/quarterly">
 <meta property="og:type" content="article">
 <meta property="og:title" content="DC Hub Quarterly — Data Center Market Intelligence · {d.get('quarter_label','')}">
-<meta property="og:description" content="{vd.get('build',0)} BUILD markets, {h.get('facilities',0):,} facilities, {h.get('total_mw',0):,.0f} MW, ${(ma.get('total_value') or 0)/1e9:.1f}B M&amp;A — from DC Hub's live Data Center Power Index.">
+<meta property="og:description" content="{vd.get('build',0)} BUILD markets, {h.get('facilities',0):,} facilities, {h.get('total_mw',0):,.0f} MW, ${(ma.get('total_value') or 0)/1e3:.1f}B M&amp;A — from DC Hub's live Data Center Power Index.">
 <meta property="og:image" content="https://dchub.cloud/dcpi/og.svg">
 <meta property="og:url" content="https://dchub.cloud/reports/quarterly">
 <meta name="twitter:card" content="summary_large_image">
@@ -305,7 +305,7 @@ td{{padding:.35rem .6rem;border-bottom:1px solid #f3f4f6}}
  <div class="stat">Facilities tracked<b>{h.get('facilities',0):,}</b></div>
  <div class="stat">Total MW<b>{h.get('total_mw',0):,.0f}</b></div>
  <div class="stat">Deals (quarter)<b>{ma.get('deal_count',0):,}</b></div>
- <div class="stat">Deal $ volume<b>${(ma.get('total_value') or 0)/1e9:.1f}B</b></div>
+ <div class="stat">Deal $ volume<b>${(ma.get('total_value') or 0)/1e3:.1f}B</b></div>
  <div class="stat">Citation score<b>{(bp.get('citation_score') or 0):.0f}%</b></div>
  <div class="stat">SOT score<b>{bp.get('source_of_truth') or '—'}/100</b></div>
 </div>
@@ -330,7 +330,7 @@ td{{padding:.35rem .6rem;border-bottom:1px solid #f3f4f6}}
 <tbody>{markets_rows}</tbody></table>
 
 <h2>3. M&amp;A Summary · last 90 days</h2>
-<p>{ma.get('deal_count',0)} tracked deals · ${(ma.get('total_value') or 0)/1e9:.1f}B aggregate value · {(ma.get('total_mw') or 0):,.0f} MW changed hands.</p>
+<p>{ma.get('deal_count',0)} tracked deals · ${(ma.get('total_value') or 0)/1e3:.1f}B aggregate value · {(ma.get('total_mw') or 0):,.0f} MW changed hands.</p>
 <table><thead><tr><th>Date</th><th>Buyer</th><th>Seller</th><th>Value</th><th>MW</th></tr></thead>
 <tbody>{deals_rows}</tbody></table>
 
