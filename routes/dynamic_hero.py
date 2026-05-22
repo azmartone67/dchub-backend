@@ -242,7 +242,16 @@ def infra_ticker():
         ("water_risk_records", "SELECT COUNT(*) FROM water_risk"),
         ("operational_mw",     "SELECT COALESCE(SUM(power_mw),0)::bigint "
                                "FROM discovered_facilities "
-                               "WHERE status IN ('operational','live','active')"),
+                               # r34: status is sparsely populated, so a strict
+                               # 3-value match returned 0 even on a healthy DB.
+                               # Treat 'unknown/null status with a power_mw' as
+                               # operational (the conservative read for an
+                               # already-built facility); EXCLUDE only the
+                               # explicit pipeline/planned statuses.
+                               "WHERE power_mw IS NOT NULL "
+                               "  AND (status IS NULL OR LOWER(status) NOT IN "
+                               "       ('planned','permitting','construction','proposed',"
+                               "        'under construction','pipeline'))"),
         ("pipeline_mw",        "SELECT COALESCE(SUM(capacity_mw),0)::bigint "
                                "FROM capacity_pipeline"),
     ]

@@ -467,6 +467,7 @@ def _compute_report(year: int | None = None,
                       FROM latest l
                       JOIN week_ago w USING (market_slug)
                      WHERE l.now_e IS NOT NULL AND w.prev_e IS NOT NULL
+                       AND l.now_e <> w.prev_e   -- only REAL movers (no 0-delta)
                      ORDER BY ABS(l.now_e - w.prev_e) DESC NULLS LAST
                      LIMIT 10
                 """)
@@ -780,7 +781,7 @@ def _render_html(d: dict, *, partner: str = "") -> str:
         f'<tr><td>{x["date"] or "—"}</td><td><strong>{x["buyer"] or "?"}</strong></td>'
         f'<td>{x["seller"] or "?"}</td>'
         f'<td style="text-align:right">{_fmt_deal_value(x["value"])}</td>'
-        f'<td style="text-align:right">{(x["mw"] or 0):,.0f}</td></tr>'
+        f'<td style="text-align:right">{("—" if not x.get("mw") else format(x["mw"], ",.0f"))}</td></tr>'
         for x in (d.get("top_deals") or [])
     ]
     market_rows = [
