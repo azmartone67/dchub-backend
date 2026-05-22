@@ -192,15 +192,27 @@ def _has_creds(iso: str) -> bool:
 # and client_id are ENV-OVERRIDABLE so we never ship a value we can't verify;
 # the documented ERCOT defaults are placeholders to confirm on first live run.
 # ─────────────────────────────────────────────────────────────────────
+_LAST_BEARER_ERR: str | None = None
+
+
 def _ercot_bearer() -> str | None:
-    """ROPC token. Returns access_token or None (fail-safe)."""
+    """ROPC token. Returns access_token or None (fail-safe). Records the
+    failure reason in _LAST_BEARER_ERR so the probe can report it precisely."""
+    global _LAST_BEARER_ERR
+    _LAST_BEARER_ERR = None
     user, pw = _env("ERCOT_USERNAME"), _env("ERCOT_PASSWORD")
     if not (user and pw):
+        _LAST_BEARER_ERR = "missing ERCOT_USERNAME and/or ERCOT_PASSWORD"
+        return None
+    client_id = _env("ERCOT_CLIENT_ID", "")           # set from your ERCOT app
+    if not client_id:
+        _LAST_BEARER_ERR = ("missing ERCOT_CLIENT_ID — Azure B2C rejects the "
+                            "ROPC token request without it. Find it in ERCOT's "
+                            "API authorization docs (public client ID).")
         return None
     token_url = _env("ERCOT_TOKEN_URL",
         "https://ercotb2c.b2clogin.com/ercotb2c.onmicrosoft.com/"
         "B2C_1_PUBAPI-ROPC-FLOW/oauth2/v2.0/token")   # VERIFY on first live run
-    client_id = _env("ERCOT_CLIENT_ID", "")           # set from your ERCOT app
     scope = _env("ERCOT_SCOPE", f"openid {client_id} offline_access")
     body = urllib.parse.urlencode({
         "grant_type": "password", "username": user, "password": pw,
@@ -210,8 +222,20 @@ def _ercot_bearer() -> str | None:
         req = urllib.request.Request(token_url, data=body,
             headers={"Content-Type": "application/x-www-form-urlencoded"})
         with urllib.request.urlopen(req, timeout=20) as r:
-            return json.loads(r.read().decode("utf-8")).get("access_token")
+            tok = json.loads(r.read().decode("utf-8")).get("access_token")
+        if not tok:
+            _LAST_BEARER_ERR = "token endpoint returned no access_token"
+        return tok
+    except urllib.error.HTTPError as e:
+        detail = ""
+        try: detail = e.read().decode("utf-8", "ignore")[:200]
+        except Exception: pass
+        _LAST_BEARER_ERR = (f"token HTTP {e.code} — likely wrong client_id, "
+                            f"token URL, scope, or credentials. {detail}")
+        print(f"[iso_grid] ERCOT bearer HTTP {e.code}: {detail}", flush=True)
+        return None
     except Exception as e:
+        _LAST_BEARER_ERR = f"token request error: {str(e)[:160]}"
         print(f"[iso_grid] ERCOT bearer failed: {e}", flush=True)
         return None
 
@@ -327,6 +351,7 @@ try:
             return out
         bearer = _ercot_bearer()
         out["bearer_obtained"] = bool(bearer)
+        out["bearer_error"] = _LAST_BEARER_ERR
         headers = {"Ocp-Apim-Subscription-Key": key}
         if bearer:
             headers["Authorization"] = f"Bearer {bearer}"
