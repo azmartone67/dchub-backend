@@ -416,7 +416,7 @@ def generate_deals_post():
 
 {chr(10).join(deal_lines)}
 
-DC Hub now tracks {total_tracked} data center transactions worth $185B+ — the most comprehensive M&A database in the industry.
+DC Hub now tracks {total_tracked} data center transactions worth $324B+ — the most comprehensive M&A database in the industry.
 
 Explore all deals → dchub.cloud/transactions
 

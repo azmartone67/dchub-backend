@@ -58,7 +58,7 @@ def get_marketing_stats():
             highlight = f"{highlight_row[0]} {highlight_row[1]} MW" if highlight_row[0] else f"{highlight_row[1]} MW {highlight_row[2]}"
         
         # Get deal volume (from transactions table if exists)
-        deal_volume = '$51B+'  # Default
+        deal_volume = '$324B+'  # Default
         try:
             cursor.execute("SELECT COALESCE(SUM(CAST(value AS NUMERIC)), 0) / 1000000000 FROM deals WHERE value IS NOT NULL AND value != ''")
             deal_billions = cursor.fetchone()[0] or 0
@@ -96,7 +96,7 @@ def get_marketing_stats():
                 "news_today": 0,
                 "top_markets": "Ashburn, Singapore, Amsterdam",
                 "highlight": "",
-                "deal_volume": "$51B+",
+                "deal_volume": "$324B+",
                 "vacancy": "1.6%",
                 "avg_pricing": "$200+/kW",
                 "preleased": "73%"
@@ -140,7 +140,7 @@ def get_marketing_stats_simple():
             "stats": {
                 "facilities": facilities,
                 "pipeline_gw": pipeline_gw,
-                "deal_volume": "$51B+",
+                "deal_volume": "$324B+",
                 "markets": "35+"
             }
         })
