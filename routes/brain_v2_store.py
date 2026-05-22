@@ -688,6 +688,26 @@ def set_directive_status(directive_id: int, status: str,
         except Exception: pass
 
 
+def seed_directive_once(marker: str, directive: str, kind: str = "fix",
+                        target: str = "", priority: int = 100) -> bool:
+    """Insert a directive exactly once, keyed by a brain_meta marker.
+    Idempotent across restarts/deploys — lets us queue a known operator
+    directive from code without the HTTP/admin-key dance. Returns True if it
+    inserted this call, False if already seeded or on failure."""
+    mkey = f"directive_seeded:{marker}"
+    try:
+        if get_meta(mkey):
+            return False
+    except Exception:
+        return False
+    row = add_directive(directive, kind=kind, target=target,
+                        priority=priority, source=f"seed:{marker}")
+    if row:
+        set_meta(mkey, "1")
+        return True
+    return False
+
+
 def count_open_directives() -> int:
     c = _conn()
     if c is None:

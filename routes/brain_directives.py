@@ -30,6 +30,30 @@ logger = logging.getLogger(__name__)
 brain_directives_bp = Blueprint("brain_directives", __name__)
 
 
+def _seed_startup_directives():
+    """Queue known operator directives from code (idempotent). Lets us prove
+    the human→brain channel end-to-end without the admin-key curl dance."""
+    try:
+        store.init_schema()  # ensure brain_directives table exists
+        store.seed_directive_once(
+            marker="miso_spp_adapters_2026_05_22",
+            directive=("Find current public real-time generation + load "
+                       "endpoints for MISO and SPP (old paths returned "
+                       "404/empty on 2026-05-22), then implement fetch_miso() "
+                       "and fetch_spp() in iso_grid_adapters.py matching the "
+                       "NYISO/CAISO adapter pattern."),
+            kind="create", target="iso_grid_adapters.py", priority=200,
+        )
+    except Exception as e:
+        logger.warning(f"[brain_directives] seed skipped: {e}")
+
+
+try:
+    _seed_startup_directives()
+except Exception:
+    pass
+
+
 def _admin_ok() -> bool:
     """Constant-time check of X-Admin-Key against BRAIN_ADMIN_KEY env.
     Returns False (deny) if the env var is unset — never fail open."""
