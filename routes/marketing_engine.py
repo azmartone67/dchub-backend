@@ -484,10 +484,49 @@ def _topic_recently_ran(topic: str, recent_3d: set) -> bool:
 # row, regardless of what topic the picker chose. Belt-and-suspenders for
 # the "Cheyenne 4 days in a row" repeat — even if the dedup window were
 # permissive, this guard catches the actual symptom (repeat market).
+# Phase FF+roundrobin (2026-05-22): city↔state alias map so the dedup guard
+# treats "Cheyenne", "Cheyenne, WY", and "Wyoming" as the SAME market — the
+# exact gap that let the Wyoming story repeat. Extend as new repeat-offenders
+# surface. Keys/values are all lowercase.
+_MARKET_ALIASES = {
+    "cheyenne": "wyoming", "cheyenne, wy": "wyoming", "wy": "wyoming",
+    "ashburn": "northern virginia", "loudoun": "northern virginia",
+    "loudoun county": "northern virginia", "nova": "northern virginia",
+    "va": "northern virginia",
+    "santa clara": "silicon valley", "san jose": "silicon valley",
+    "dallas": "dallas-fort worth", "fort worth": "dallas-fort worth",
+    "dfw": "dallas-fort worth",
+    "phoenix": "phoenix", "mesa": "phoenix", "az": "phoenix",
+    "columbus": "central ohio", "new albany": "central ohio",
+}
+_US_STATES = {
+    "alabama","alaska","arizona","arkansas","california","colorado",
+    "connecticut","delaware","florida","georgia","hawaii","idaho","illinois",
+    "indiana","iowa","kansas","kentucky","louisiana","maine","maryland",
+    "massachusetts","michigan","minnesota","mississippi","missouri","montana",
+    "nebraska","nevada","new hampshire","new jersey","new mexico","new york",
+    "north carolina","north dakota","ohio","oklahoma","oregon","pennsylvania",
+    "rhode island","south carolina","south dakota","tennessee","texas","utah",
+    "vermont","virginia","washington","west virginia","wisconsin","wyoming",
+}
+
+
+def _norm_market(name: str | None) -> str:
+    """Canonicalize a market name for dedup: lowercased, ', XX' suffix
+    stripped, and aliased (Cheyenne→wyoming). Returns '' for falsy input."""
+    if not name:
+        return ""
+    s = name.strip().lower()
+    # strip a trailing state abbrev ", wy" / " wy"
+    s = re.sub(r",?\s+[a-z]{2}$", "", s).strip()
+    s = re.sub(r"\s+(metro|metropolitan|area|region)$", "", s).strip()
+    return _MARKET_ALIASES.get(s, s)
+
+
 def _recent_market_names(n: int = 2) -> set:
-    """Returns a lowercased set of market name fragments mentioned in the
-    last `n` auto press release titles. Best-effort regex extraction; a
-    miss just means looser variety (fail-open)."""
+    """Returns a normalized set of market identities mentioned in the last
+    `n` auto press release titles. Best-effort extraction; a miss just means
+    looser variety (fail-open)."""
     try:
         c = _conn()
         if c is None:
@@ -502,12 +541,18 @@ def _recent_market_names(n: int = 2) -> set:
             titles = [r[0] for r in cur.fetchall() if r and r[0]]
         c.close()
         out = set()
-        import re as _re
         for t in titles:
-            # "Cheyenne, WY ...", "Atlanta Metro ...", "Northern Virginia ..."
-            m = _re.match(r"^([A-Z][a-zA-Z\.\- ]+?)(?:,| Metro|:| - | – | Leads| Tops| Takes)", t)
+            tl = t.lower()
+            # 1) leading market name: "Cheyenne, WY ...", "Atlanta Metro ..."
+            m = re.match(r"^([A-Z][a-zA-Z\.\- ]+?)(?:,| Metro|:| - | – | Leads| Tops| Takes)", t)
             if m:
-                out.add(m.group(1).strip().lower())
+                out.add(_norm_market(m.group(1)))
+            # 2) any US state mentioned anywhere in the title (catches the
+            #    "Wyoming" headline that the city regex above would miss).
+            for st in _US_STATES:
+                if re.search(r"\b" + re.escape(st) + r"\b", tl):
+                    out.add(_norm_market(st))
+        out.discard("")
         return out
     except Exception:
         return set()
@@ -583,12 +628,23 @@ def _pick_daily_topic(signals: dict) -> tuple[str, str]:
             return t in recent
 
     def _market_clash(name: str | None) -> bool:
-        """True if `name` overlaps with any market in the last 2 titles.
-        Lowercased substring match catches "Cheyenne, WY" vs "Cheyenne"."""
+        """True if `name` resolves to a market featured recently. Normalizes
+        via _norm_market so Cheyenne / Cheyenne, WY / Wyoming all collide."""
         if not name or not recent_markets:
             return False
-        nm = name.lower()
-        return any(nm.startswith(rm) or rm.startswith(nm) for rm in recent_markets)
+        nm = _norm_market(name)
+        if not nm:
+            return False
+        return any(nm == rm or nm.startswith(rm) or rm.startswith(nm)
+                   for rm in recent_markets if rm)
+
+    def _first_fresh(items: list, key: str = "market"):
+        """Round-robin helper: return the first item whose market hasn't been
+        featured recently, instead of fixating on items[0]. None if all clash."""
+        for it in (items or []):
+            if isinstance(it, dict) and not _market_clash(it.get(key)):
+                return it
+        return None
 
     # ── 0. AI-citation showcase (HIGHEST priority) ──────────────────
     # The format that actually drives engagement: when a major AI engine
@@ -606,9 +662,9 @@ def _pick_daily_topic(signals: dict) -> tuple[str, str]:
     # ── 1. DCPI movers (high bar: |delta| >= 5pts) ──────────────────
     movers = signals.get("biggest_movers") or []
     if movers and not _topic_dedup("dcpi_mover"):
-        m = movers[0]
-        d = abs(m.get("delta") or 0)
-        if d >= 5 and not _market_clash(m.get("market")):
+        # Round-robin: first mover with |delta|>=5 that isn't a recent repeat.
+        m = _first_fresh([x for x in movers if abs(x.get("delta") or 0) >= 5])
+        if m:
             return "dcpi_mover", (
                 f"{m.get('market','a market')} shifted "
                 f"{m.get('delta')}pts in DCPI this week — biggest mover.")
@@ -658,18 +714,20 @@ def _pick_daily_topic(signals: dict) -> tuple[str, str]:
     # Now gated on _topic_dedup (7-day window) AND _market_clash so
     # back-to-back Cheyenne is impossible.
     builds = signals.get("top_build_markets") or []
-    if builds and not _topic_dedup("dcpi_leader") \
-            and not _market_clash(builds[0].get("market")):
-        return "dcpi_leader", (
-            f"{builds[0].get('market','top market')} leads the BUILD ranking "
-            f"with excess power score {builds[0].get('excess','?')}.")
+    if builds and not _topic_dedup("dcpi_leader"):
+        b = _first_fresh(builds)   # round-robin past a persistent #1
+        if b:
+            return "dcpi_leader", (
+                f"{b.get('market','top market')} leads the BUILD ranking "
+                f"with excess power score {b.get('excess','?')}.")
 
     avoids = signals.get("top_avoid_markets") or []
-    if avoids and not _topic_dedup("dcpi_warning") \
-            and not _market_clash(avoids[0].get("market")):
-        return "dcpi_warning", (
-            f"{avoids[0].get('market','a market')} flagged AVOID — highest "
-            f"constraint score {avoids[0].get('constraint','?')}.")
+    if avoids and not _topic_dedup("dcpi_warning"):
+        a = _first_fresh(avoids)
+        if a:
+            return "dcpi_warning", (
+                f"{a.get('market','a market')} flagged AVOID — highest "
+                f"constraint score {a.get('constraint','?')}.")
 
     new_fac = signals.get("new_facilities_24h") or []
     if new_fac and not _topic_dedup("new_facility"):
