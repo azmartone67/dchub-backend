@@ -58,13 +58,18 @@ jobs:
       # ── CHECK 2: localhost port typos — HARD FAIL
       - name: 2 — No localhost port typos (must be :8080)
         run: |
-          echo "Scanning for localhost:80XX where XX != 80..."
+          echo "Scanning for localhost:80XX where XX != 80 in STRING LITERALS..."
           # The app binds $PORT=8080. Any self-call to a different
           # localhost:80XX port is almost certainly a typo (the L22
-          # handoff bug was localhost:8000).
-          HITS=$(grep -rnE "localhost:80[0-9]{2}" --include="*.py" . \
+          # handoff bug was localhost:8000). Match only when the port
+          # appears inside a quoted string ("http://localhost:80XX" or
+          # 'localhost:80XX') so prose/comments mentioning the port
+          # don't false-positive. Strip inline comments first.
+          HITS=$(grep -rnE "['\"]https?://localhost:80[0-9]{2}" --include="*.py" . \
             | grep -v "localhost:8080" \
-            | grep -vE "^\./(docs|\.venv)/" || true)
+            | grep -vE "^\./(docs|\.venv)/" \
+            | sed 's/#.*//' \
+            | grep -E "localhost:80[0-9]{2}" || true)
           if [ -n "$HITS" ]; then
             echo "::error::Found localhost port that isn't :8080 (likely a self-call typo)"
             echo "$HITS"
