@@ -117,6 +117,15 @@ def _http_get(url: str, timeout: int = 8) -> tuple[Optional[str], Optional[dict]
                 or os.environ.get("DCHUB_ADMIN_KEY") or "")
             if internal_key:
                 headers["X-Internal-Key"] = internal_key
+            # r34 (2026-05-22): the X-API-Key / X-Internal-Key paths kept
+            # 401ing on /api/v1/fiber/intel (those env vars unset or not
+            # authorizing). DCHUB_ADMIN_KEY IS set and grants admin-tier
+            # bypass on every gated endpoint — send it too so the radar can
+            # finally probe paid tools instead of going blind.
+            admin_key = _clean(os.environ.get("DCHUB_ADMIN_KEY")
+                               or os.environ.get("DCHUB_INTERNAL_KEY") or "")
+            if admin_key:
+                headers["X-Admin-Key"] = admin_key
             # Also include the brain UA so rate-limit bypass kicks in
             # (separate machinery from tier-bypass).
             headers["User-Agent"] = "DCHub-BrainRadar/1.0 (+https://dchub.cloud)"
@@ -147,7 +156,7 @@ def check_worker_version_drift() -> list[dict]:
     # Phase RR+1: bumped to 30s timeout — raw.githubusercontent.com can be
     # slow from Railway's network. Also echoes the actual urllib error in
     # the finding detail instead of a generic 'unreachable'.
-    source_body, _ = _http_get(_WORKER_SOURCE_URL, timeout=30)
+    source_body, _ = _http_get(_WORKER_SOURCE_URL, timeout=15)
     if not source_body:
         err = _LAST_FETCH_ERROR.get(_WORKER_SOURCE_URL, "unknown error")
         return [{
@@ -265,12 +274,20 @@ def check_tier_consistency() -> list[dict]:
             "detail": f"Could not import TOOL_TIER: {e}",
         }]
 
-    for tool, web_path in _TOOL_API_MAPPING.items():
+    # r34 (2026-05-22): probe the eligible endpoints CONCURRENTLY. This loop
+    # used to run ~10 sequential _http_get calls at 6s each — the dominant
+    # cause of the 103s /consistency-radar runs that blew the 30s budget.
+    # Fan out with a small thread pool so total time ≈ slowest single probe.
+    eligible = [(t, p) for t, p in _TOOL_API_MAPPING.items()
+                if (mt := TOOL_TIER.get(t)) is not None
+                and mt.value <= Tier.IDENTIFIED.value]
+    from concurrent.futures import ThreadPoolExecutor
+    _probe = lambda tp: (tp, _http_get(f"https://dchub.cloud{tp[1]}?_=radar", timeout=6))
+    with ThreadPoolExecutor(max_workers=8) as _ex:
+        results = list(_ex.map(_probe, eligible))
+
+    for (tool, web_path), (body, _h) in results:
         mcp_tier = TOOL_TIER.get(tool)
-        if mcp_tier is None or mcp_tier.value > Tier.IDENTIFIED.value:
-            # MCP gates at DEVELOPER+ — web API gating higher is fine.
-            continue
-        body, _h = _http_get(f"https://dchub.cloud{web_path}?_=radar", timeout=6)
         if not body:
             continue
         # Phase WW (2026-05-15): parse JSON and check the STRUCTURED
