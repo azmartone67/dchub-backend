@@ -59,7 +59,12 @@ def _dcpi_dynamic_markets():
     """
     import os, urllib.request, json
     try:
-        base = os.environ.get("DCHUB_INTERNAL_API", "http://localhost:8000")
+        # r33-Q+port-fix (2026-05-22): default was localhost:8000 but the
+        # app binds $PORT=8080. Same one-digit typo class as the
+        # Inspector→L22 bug. With :8000 this self-call always failed →
+        # DCPI fell back to MARKET_ALIASES instead of the live 132-market
+        # list. Caught by the new regression-guard CI check.
+        base = os.environ.get("DCHUB_INTERNAL_API", "http://localhost:8080")
         # Use enterprise key to bypass tier-gate
         ent_key = os.environ.get("DCHUB_ENT_KEY", "ent_internal_dcpi_scorer")
         req = urllib.request.Request(
