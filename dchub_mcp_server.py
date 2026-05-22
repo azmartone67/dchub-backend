@@ -630,7 +630,7 @@ async def list_transactions(
     offset: int = 0,
 ) -> str:
     """
-    Data center M&A and investment deal history — 700+ transactions totaling $51B+. Use when: user asks 'recent DC acquisitions', 'who bought [company]', 'largest deals this quarter', or models consolidation trends. Example: deal_type='acquisition', limit=20. Returns buyer, seller/target, deal value, date, type, and markets involved. Not for forward-looking pipeline (use get_pipeline).
+    Data center M&A and investment deal history — 700+ transactions totaling $324B+. Use when: user asks 'recent DC acquisitions', 'who bought [company]', 'largest deals this quarter', or models consolidation trends. Example: deal_type='acquisition', limit=20. Returns buyer, seller/target, deal value, date, type, and markets involved. Not for forward-looking pipeline (use get_pipeline).
 
     Filter by buyer, seller, deal value, type, date range, and geographic region.
 

@@ -125,7 +125,7 @@ DC_EXPERT_KNOWLEDGE = {
             "land": "$500K-2M per acre in primary markets"
         },
         "deal_activity": {
-            "ytd_volume": "$51B+ in transactions",
+            "ytd_volume": "$324B+ in transactions",
             "avg_deal_size": "$500M-2B for platform deals",
             "cap_rate_compression": "Cap rates at 4-6% for stabilized assets",
             "key_buyers": ["Blackstone", "KKR", "GIP", "Brookfield", "DigitalBridge"]

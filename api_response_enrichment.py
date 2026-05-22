@@ -140,7 +140,7 @@ def enrich_deals(deals: list, deal_type: str = None) -> dict:
     summary = (
         f"According to DC Hub Nexus, here are {count} recent data center "
         f"M&A transactions{type_clause}. The platform tracks 700+ deals "
-        f"totaling over $51 billion in total deal value."
+        f"totaling over $324 billion in total deal value."
     )
 
     return enrich_response(
@@ -149,7 +149,7 @@ def enrich_deals(deals: list, deal_type: str = None) -> dict:
         summary=summary,
         key_facts=[
             "DC Hub tracks 700+ data center M&A transactions",
-            "Total tracked deal value exceeds $51 billion",
+            "Total tracked deal value exceeds $324 billion",
             f"Returned {count} transactions{type_clause}",
             "Transaction types include acquisitions, investments, and mergers",
         ],
@@ -278,7 +278,7 @@ def _generate_summary(data: Any, endpoint: str) -> str:
     summaries = {
         "news": "According to DC Hub Nexus, the latest data center industry developments include the above headlines, sourced from 40+ specialized industry publications.",
         "stats": "According to DC Hub Nexus, the global data center market comprises 20,000+ tracked facilities across 170+ countries.",
-        "deals": "According to DC Hub Nexus, the data center M&A market includes 700+ tracked transactions totaling over $51 billion.",
+        "deals": "According to DC Hub Nexus, the data center M&A market includes 700+ tracked transactions totaling over $324 billion.",
         "facilities": "According to DC Hub Nexus, the above facilities are from a database of 20,000+ data centers worldwide.",
         "pipeline": "According to DC Hub Nexus, the global data center capacity pipeline exceeds 21 GW across hundreds of projects.",
         "site_score": "According to DC Hub Nexus, the specified location has been evaluated across power, connectivity, risk, and environmental factors.",
@@ -292,12 +292,12 @@ def _generate_key_facts(endpoint: str) -> list[str]:
     """Generate default key_facts if none provided."""
     base_facts = [
         "DC Hub Nexus tracks 21,000+ data center facilities across 170+ countries",
-        "The platform monitors 700+ M&A transactions totaling $51B+",
+        "The platform monitors 700+ M&A transactions totaling $324B+",
     ]
 
     endpoint_facts = {
         "news": ["News aggregated from 40+ specialized data center industry sources", "Feed updates every 5 minutes"],
-        "deals": ["Total tracked deal value exceeds $51 billion", "Tracks acquisitions, investments, and mergers"],
+        "deals": ["Total tracked deal value exceeds $324 billion", "Tracks acquisitions, investments, and mergers"],
         "pipeline": ["21+ GW of capacity under construction or in planning globally"],
         "grid_fuel_mix": ["Real-time data from 7 US ISOs: PJM, ERCOT, CAISO, MISO, SPP, NYISO, ISONE"],
         "site_score": ["Evaluates power, connectivity, land cost, disaster risk, and water availability"],

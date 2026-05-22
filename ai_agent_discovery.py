@@ -195,7 +195,7 @@ Free API at https://dchub.cloud/api/v1
 A2A_AGENT_CARD = {
     "protocolVersion": "0.2.1",
     "name": "DC Hub Intelligence Agent",
-    "description": "Data center intelligence platform - 21,000+ facilities, $51B+ M&A, real-time grid data from 7 ISOs, site scoring, market intelligence across 170+ countries.",
+    "description": "Data center intelligence platform - 21,000+ facilities, $324B+ M&A, real-time grid data from 7 ISOs, site scoring, market intelligence across 170+ countries.",
     "url": "https://dchub.cloud",
     "iconUrl": "https://dchub.cloud/favicon.ico",
     "version": "86.0.0",
@@ -232,7 +232,7 @@ A2A_AGENT_CARD = {
         {
             "id": "ma-tracking",
             "name": "M&A Transaction Tracking",
-            "description": "Track $51B+ in data center M&A, CapEx, and investment deals.",
+            "description": "Track $324B+ in data center M&A, CapEx, and investment deals.",
             "tags": ["M&A", "transactions", "deals", "acquisitions", "investment"],
             "examples": ["Recent data center acquisitions", "Deals over $1 billion"]
         },

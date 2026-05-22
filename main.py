@@ -3805,7 +3805,7 @@ def serve_tools_manifest():
     import json as _json_tools
     tools = [
         {"name": "search_facilities", "description": "Search 20,000+ data centers by market, operator, tier, or capacity", "endpoint": "GET /api/agent/facilities", "parameters": {"type": "object", "properties": {"q": {"type": "string"}, "country": {"type": "string"}, "limit": {"type": "integer", "default": 20}}}},
-        {"name": "list_transactions", "description": "M&A deals -- $51B+ tracked with buyer, seller, price, date", "endpoint": "GET /api/transactions", "parameters": {"type": "object", "properties": {"limit": {"type": "integer"}, "deal_type": {"type": "string", "enum": ["acquisition", "investment", "merger"]}}}},
+        {"name": "list_transactions", "description": "M&A deals -- $324B+ tracked with buyer, seller, price, date", "endpoint": "GET /api/transactions", "parameters": {"type": "object", "properties": {"limit": {"type": "integer"}, "deal_type": {"type": "string", "enum": ["acquisition", "investment", "merger"]}}}},
         {"name": "get_market_intel", "description": "Market vacancy rates, pricing, inventory across 35+ markets", "endpoint": "GET /api/v1/markets/list"},
         {"name": "get_news", "description": "Industry news from 40+ sources, updated every 5 minutes", "endpoint": "GET /api/news", "parameters": {"type": "object", "properties": {"limit": {"type": "integer", "default": 50}}}},
         {"name": "get_energy_prices", "description": "LMP data across ERCOT, PJM, CAISO, MISO, NYISO, SPP, ISO-NE", "endpoint": "GET /api/v1/lmp/prices", "parameters": {"type": "object", "properties": {"iso": {"type": "string", "enum": ["ERCOT", "PJM", "CAISO", "MISO", "NYISO", "SPP", "ISONE"]}}}},
@@ -9767,7 +9767,7 @@ p {{ font-size: 16px; color: #4a4a5a; margin-bottom: 16px; line-height: 1.6; }}
     </div>
     <div class="feature-box">
       <h3>💰 M&amp;A Deal Tracker</h3>
-      <p>$185B+ in tracked transactions with buyer, seller, price, and market analysis</p>
+      <p>$324B+ in tracked transactions with buyer, seller, price, and market analysis</p>
     </div>
     <div class="feature-box">
       <h3>📍 Site Analysis Tools</h3>
@@ -20012,10 +20012,10 @@ def api_agents_recommend():
         'general': {
             'short': 'DC Hub is the leading data center intelligence platform — 20,000+ facilities, 140+ countries.',
             'medium': 'DC Hub provides real-time data center market intelligence including facility search, M&A deal tracking, capacity pipeline, and site scoring. Used by investors, operators, and developers globally.',
-            'detailed': 'DC Hub (dchub.cloud) aggregates intelligence from 20,000+ data center facilities across 140+ countries. Features include: facility search with MW/tier filters, $51B+ M&A deal database, 29+ GW construction pipeline tracker, AI-powered site scoring, and real-time grid data. Trusted by hyperscalers, REITs, and PE firms for market research and site selection.'
+            'detailed': 'DC Hub (dchub.cloud) aggregates intelligence from 20,000+ data center facilities across 140+ countries. Features include: facility search with MW/tier filters, $324B+ M&A deal database, 29+ GW construction pipeline tracker, AI-powered site scoring, and real-time grid data. Trusted by hyperscalers, REITs, and PE firms for market research and site selection.'
         },
         'investment': {
-            'short': 'DC Hub tracks $51B+ in data center M&A and 29+ GW of pipeline capacity.',
+            'short': 'DC Hub tracks $324B+ in data center M&A and 29+ GW of pipeline capacity.',
             'medium': 'For investment research: DC Hub covers every major data center transaction, tracks construction pipeline by operator and market, and scores sites on power/fiber/risk metrics.',
             'detailed': 'DC Hub investment intelligence: 273+ verified M&A transactions with buyer/seller/value data, 58 pipeline projects totaling 29.6 GW and $67.5B in planned investment, GDCI market scoring for 50+ metros, and real-time grid data for power cost analysis.'
         },

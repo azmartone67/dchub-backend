@@ -41,7 +41,7 @@ class DCHub:
         return self._get("/api/agent/facilities", {"q": query, "country": country, "limit": limit})
 
     def transactions(self, limit=50, deal_type=None):
-        """M&A deals, acquisitions, investments ($51B+ tracked)."""
+        """M&A deals, acquisitions, investments ($324B+ tracked)."""
         return self._get("/api/transactions", {"limit": limit, "deal_type": deal_type})
 
     def news(self, limit=20):
