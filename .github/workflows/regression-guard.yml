@@ -1,0 +1,113 @@
+# Regression Guard — r33-Q (2026-05-22)
+# ════════════════════════════════════════════════════════════════════
+# Catches the SPECIFIC bug classes that bit us during the 2026-05-21/22
+# marathon session, BEFORE they reach production. Each check maps to a
+# real outage or spam-storm we debugged:
+#
+#   1. SyntaxWarning (invalid escape sequences) — the /20,000\+?/ and
+#      \s-in-non-raw-docstring warnings that spammed every boot.
+#   2. localhost port typos — the Inspector→L22 handoff failed for
+#      MONTHS because of `localhost:8000` vs the real `:8080`.
+#   3. Partial-UNIQUE + bare ON CONFLICT (col) mismatch — caused the
+#      gas_pipelines + substations "no unique or exclusion constraint
+#      matching" spam → watchdog → container loop.
+#   4. Raw env var → HTTP header without sanitization — the
+#      "Invalid header value b'...\n~/dchub-frontend'" ValueError.
+#
+# Non-blocking by default (continue-on-error true on the heuristic
+# checks) so it informs without halting deploys; the hard checks
+# (syntax) fail the build.
+
+name: Regression Guard
+
+on:
+  push:
+    branches: [main]
+  workflow_dispatch: {}
+
+jobs:
+  guard:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.13'
+
+      # ── CHECK 1: SyntaxWarning (invalid escape sequences) — HARD FAIL
+      - name: 1 — No invalid escape sequences (SyntaxWarning)
+        run: |
+          echo "Compiling all tracked .py files with SyntaxWarning as error..."
+          FAIL=0
+          while IFS= read -r f; do
+            if ! python3 -W error::SyntaxWarning -m py_compile "$f" 2>/tmp/err; then
+              # Only fail on SyntaxWarning, not runtime import issues
+              if grep -q "SyntaxWarning\|invalid escape" /tmp/err; then
+                echo "::error file=$f::SyntaxWarning (invalid escape sequence)"
+                cat /tmp/err | head -4
+                FAIL=1
+              fi
+            fi
+          done < <(git ls-files '*.py' | grep -vE '^(docs/|.*/\.venv/)')
+          if [ "$FAIL" = "1" ]; then
+            echo "❌ Invalid escape sequences found — use raw strings (r'...')"
+            exit 1
+          fi
+          echo "✅ No invalid escape sequences"
+
+      # ── CHECK 2: localhost port typos — HARD FAIL
+      - name: 2 — No localhost port typos (must be :8080)
+        run: |
+          echo "Scanning for localhost:80XX where XX != 80..."
+          # The app binds $PORT=8080. Any self-call to a different
+          # localhost:80XX port is almost certainly a typo (the L22
+          # handoff bug was localhost:8000).
+          HITS=$(grep -rnE "localhost:80[0-9]{2}" --include="*.py" . \
+            | grep -v "localhost:8080" \
+            | grep -vE "^\./(docs|\.venv)/" || true)
+          if [ -n "$HITS" ]; then
+            echo "::error::Found localhost port that isn't :8080 (likely a self-call typo)"
+            echo "$HITS"
+            exit 1
+          fi
+          echo "✅ All localhost self-calls use :8080"
+
+      # ── CHECK 3: partial UNIQUE + bare ON CONFLICT heuristic — WARN
+      - name: 3 — Partial-UNIQUE vs ON CONFLICT mismatch (heuristic)
+        continue-on-error: true
+        run: |
+          echo "Heuristic scan: tables with ON CONFLICT (col) that also"
+          echo "create a PARTIAL unique index (WHERE ...) on that col."
+          echo "PG won't use a partial index as an ON CONFLICT arbiter"
+          echo "unless the conflict clause repeats the WHERE predicate."
+          echo
+          # List files doing bare ON CONFLICT (col) DO ...
+          grep -rnE "ON CONFLICT\s*\([a-z_]+\)" --include="*.py" . \
+            | grep -vE "^\./(docs|\.venv)/" \
+            | head -30 || true
+          echo
+          echo "⚠️ Cross-check the above against any CREATE UNIQUE INDEX"
+          echo "   ... WHERE on the same table. If a partial index exists,"
+          echo "   either make it full or add the predicate to ON CONFLICT."
+          echo "(informational — does not fail the build)"
+
+      # ── CHECK 4: raw env var → HTTP header without sanitization — WARN
+      - name: 4 — Env var used directly in HTTP header (contamination risk)
+        continue-on-error: true
+        run: |
+          echo "Scanning for headers[...] = os.environ.get(...) without"
+          echo ".split() / .strip() sanitization. A contaminated env var"
+          echo "(trailing newline + path) raises 'Invalid header value'."
+          echo
+          grep -rnE "headers\[[^]]+\]\s*=\s*os\.environ" --include="*.py" . \
+            | grep -vE "^\./(docs|\.venv)/" \
+            | head -20 || true
+          echo
+          echo "⚠️ If any above lack a first-token sanitizer, wrap with"
+          echo "   a _clean() that does value.split()[0] (see"
+          echo "   routes/brain_consistency_radar.py _http_get for the pattern)."
+          echo "(informational — does not fail the build)"
+
+      - name: Summary
+        if: always()
+        run: echo "Regression guard complete. Hard checks 1-2 must pass; 3-4 are advisory."
