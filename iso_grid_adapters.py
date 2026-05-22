@@ -461,22 +461,29 @@ def status() -> dict:
 # (names/ids/descriptions). Cached so repeated hits don't hammer ERCOT.
 # ─────────────────────────────────────────────────────────────────────
 try:
-    from flask import Blueprint, jsonify
+    from flask import Blueprint, jsonify, request
     iso_grid_bp = Blueprint("iso_grid", __name__)
 
     _PROBE_CACHE: dict = {}
 
-    def _ercot_product_catalog(limit: int = 400) -> dict:
+    def _ercot_product_catalog(limit: int = 400, fresh: bool = False) -> dict:
         """List ERCOT public Data Products our key can see. Proves auth +
         surfaces reportTypeIds so we can pick the gen/load product. Safe:
-        no key/token in the response. 5-min cache."""
+        no key/token in the response. 5-min cache (bypass with fresh=True)."""
         import time as _t
         now = _t.time()
-        hit = _PROBE_CACHE.get("ercot")
-        if hit and (now - hit[0]) < 300:
-            return hit[1]
-        key = _env("ERCOT_API_KEY")
-        out: dict = {"auth": "unknown", "products": [], "count": 0}
+        if not fresh:
+            hit = _PROBE_CACHE.get("ercot")
+            if hit and (now - hit[0]) < 300:
+                return hit[1]
+        # Raw vs stripped length lets us detect trailing whitespace in the
+        # Railway env var WITHOUT ever revealing the key itself.
+        raw = os.environ.get("ERCOT_API_KEY") or ""
+        key = raw.strip()
+        out: dict = {"auth": "unknown", "products": [], "count": 0,
+                     "key_present": bool(key),
+                     "key_len": len(key),
+                     "key_had_whitespace": (len(raw) != len(key))}
         if not key:
             out["auth"] = "no_api_key"
             return out
@@ -526,7 +533,8 @@ try:
 
     @iso_grid_bp.get("/api/v1/iso/probe/ercot")
     def _iso_probe_ercot():
-        return jsonify(_ercot_product_catalog()), 200
+        fresh = request.args.get("fresh") in ("1", "true", "yes")
+        return jsonify(_ercot_product_catalog(fresh=fresh)), 200
 
     @iso_grid_bp.get("/api/v1/iso/sample/<iso>")
     def _iso_sample(iso):
