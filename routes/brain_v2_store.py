@@ -161,6 +161,28 @@ CREATE TABLE IF NOT EXISTS brain_false_positives (
     last_seen_at   TIMESTAMPTZ NOT NULL DEFAULT NOW(),
     CONSTRAINT brain_fp_unique UNIQUE (issue_label, url)
 );
+
+-- Phase FF+directives (2026-05-22): HUMAN directive intake. Until now the
+-- brain was purely self-directed (detectors → findings → worklist). This
+-- table lets an authenticated operator queue an explicit "fix X / build Y"
+-- task that surfaces at the TOP of the worklist Layer 4/5 consume. kind is
+-- 'fix' (existing-surface change) or 'create' (new thing). status flows
+-- open → in_progress → done | dismissed. Writes are admin-gated at the
+-- endpoint; this table never accepts anonymous input.
+CREATE TABLE IF NOT EXISTS brain_directives (
+    id            BIGSERIAL PRIMARY KEY,
+    directive     TEXT NOT NULL,
+    kind          TEXT NOT NULL DEFAULT 'fix',
+    target        TEXT NOT NULL DEFAULT '',
+    priority      INT  NOT NULL DEFAULT 100,
+    status        TEXT NOT NULL DEFAULT 'open',
+    source        TEXT NOT NULL DEFAULT 'operator',
+    created_at    TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+    updated_at    TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+    notes         TEXT
+);
+CREATE INDEX IF NOT EXISTS brain_directives_status_idx
+    ON brain_directives(status, priority DESC, created_at);
 """
 
 
@@ -570,6 +592,112 @@ def list_false_positives(min_refused: int = 3) -> set:
     except Exception as e:
         print(f"[brain_v2_store] list_false_positives failed: {e}", file=sys.stderr)
         return set()
+    finally:
+        try: c.close()
+        except Exception: pass
+
+
+# ---------------------------------------------------------------------------
+# Human directives (Phase FF+directives, 2026-05-22)
+# ---------------------------------------------------------------------------
+
+def add_directive(directive: str, kind: str = "fix", target: str = "",
+                  priority: int = 100, source: str = "operator") -> dict | None:
+    """Queue an operator directive. Returns the new row, or None on failure.
+    Caller is responsible for auth — this fn does not check secrets."""
+    directive = (directive or "").strip()
+    if not directive:
+        return None
+    kind = kind if kind in ("fix", "create") else "fix"
+    c = _conn()
+    if c is None:
+        return None
+    try:
+        with c, c.cursor(cursor_factory=RealDictCursor) as cur:
+            cur.execute(
+                """INSERT INTO brain_directives
+                       (directive, kind, target, priority, source)
+                   VALUES (%s, %s, %s, %s, %s)
+                   RETURNING *""",
+                (directive[:2000], kind, (target or "")[:300],
+                 int(priority), (source or "operator")[:80]),
+            )
+            row = cur.fetchone()
+            return _normalize_row(dict(row)) if row else None
+    except Exception as e:
+        print(f"[brain_v2_store] add_directive failed: {e}", file=sys.stderr)
+        return None
+    finally:
+        try: c.close()
+        except Exception: pass
+
+
+def list_directives(status: str | None = "open", limit: int = 100) -> list[dict]:
+    """List directives. status=None returns all; otherwise filters (open,
+    in_progress, done, dismissed). Ordered highest-priority, oldest-first."""
+    c = _conn()
+    if c is None:
+        return []
+    try:
+        with c, c.cursor(cursor_factory=RealDictCursor) as cur:
+            if status:
+                cur.execute(
+                    """SELECT * FROM brain_directives WHERE status = %s
+                       ORDER BY priority DESC, created_at ASC LIMIT %s""",
+                    (status, limit),
+                )
+            else:
+                cur.execute(
+                    """SELECT * FROM brain_directives
+                       ORDER BY (status='open') DESC, priority DESC,
+                                created_at ASC LIMIT %s""",
+                    (limit,),
+                )
+            return [_normalize_row(dict(r)) for r in cur.fetchall()]
+    except Exception as e:
+        print(f"[brain_v2_store] list_directives failed: {e}", file=sys.stderr)
+        return []
+    finally:
+        try: c.close()
+        except Exception: pass
+
+
+def set_directive_status(directive_id: int, status: str,
+                         notes: str = "") -> bool:
+    """Transition a directive (open|in_progress|done|dismissed)."""
+    if status not in ("open", "in_progress", "done", "dismissed"):
+        return False
+    c = _conn()
+    if c is None:
+        return False
+    try:
+        with c, c.cursor() as cur:
+            cur.execute(
+                """UPDATE brain_directives
+                       SET status = %s, updated_at = NOW(),
+                           notes = COALESCE(NULLIF(%s,''), notes)
+                     WHERE id = %s""",
+                (status, notes or "", int(directive_id)),
+            )
+            return cur.rowcount > 0
+    except Exception as e:
+        print(f"[brain_v2_store] set_directive_status failed: {e}", file=sys.stderr)
+        return False
+    finally:
+        try: c.close()
+        except Exception: pass
+
+
+def count_open_directives() -> int:
+    c = _conn()
+    if c is None:
+        return 0
+    try:
+        with c, c.cursor() as cur:
+            cur.execute("SELECT COUNT(*) FROM brain_directives WHERE status='open'")
+            return int(cur.fetchone()[0])
+    except Exception:
+        return 0
     finally:
         try: c.close()
         except Exception: pass

@@ -853,13 +853,37 @@ def persistence_worklist():
         print(f"[brain_v2_layer4] heartbeat fold-in failed: {e}",
               file=sys.stderr)
 
-    items = list(persistence_items) + heartbeat_items
+    # Phase FF+directives (2026-05-22): operator directives LEAD the worklist.
+    # A human-queued "fix X / build Y" outranks every auto-detected finding —
+    # high synthetic seen_count keeps it at the top of any seen_count sort.
+    directive_items = []
+    if _STORE_OK:
+        try:
+            for d in _store.list_directives(status="open", limit=20):
+                directive_items.append({
+                    "issue_label": "operator_directive",
+                    "url": d.get("target", ""),
+                    "seen_count": 10000 + int(d.get("priority") or 100),
+                    "first_seen_at": d.get("created_at"),
+                    "last_seen_at": d.get("updated_at") or d.get("created_at"),
+                    "last_outcome": (f"operator [{d.get('kind')}]: "
+                                     f"{(d.get('directive') or '')[:200]}"),
+                    "source": "operator_directive",
+                    "directive_id": d.get("id"),
+                    "kind": d.get("kind"),
+                })
+        except Exception as e:
+            print(f"[brain_v2_layer4] directive fold-in failed: {e}",
+                  file=sys.stderr)
+
+    items = directive_items + list(persistence_items) + heartbeat_items
     return jsonify(
         as_of=datetime.now(timezone.utc).isoformat(),
         store_backed=_STORE_OK,
         min_count=min_count,
         count=len(items),
         items=items,
+        directive_count=len(directive_items),
         persistence_count=len(persistence_items),
         heartbeat_stale_count=len(heartbeat_items),
         hint=(None if _STORE_OK else

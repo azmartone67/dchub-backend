@@ -1230,6 +1230,11 @@ try:
     app.register_blueprint(brain_v2_bp)  # phase 289 — Brain v2 Layer 4 self-learning
     app.register_blueprint(brain_v2_public_bp)  # phase 300 — public /brain transparency page
     app.register_blueprint(brain_v2_layer5_bp)  # phase RR-3 — code-level proposals
+    try:
+        from routes.brain_directives import brain_directives_bp
+        app.register_blueprint(brain_directives_bp)  # Phase FF+directives — operator directive intake
+    except Exception as _e:
+        print(f"[main] brain_directives_bp not registered: {_e}", flush=True)
     app.register_blueprint(outreach_cap_bp)  # phase 290 — cap-exceeded outreach engine
     # Phase DD (2026-05-12): pair-code conversion flow. Closes the
     # agent→human handoff that's keeping MCP conversion at 0.012%.
