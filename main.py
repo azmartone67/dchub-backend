@@ -20793,7 +20793,16 @@ def get_press_release(slug):
 @app.route("/api/admin/press-releases", methods=["POST"])
 def create_press_release():
     auth = request.headers.get("Authorization", "")
-    if auth.replace("Bearer ", "").strip() != os.getenv("DCHUB_ADMIN_API_KEY"):
+    # r33-Q+env-cleanup (2026-05-21): consolidated DCHUB_ADMIN_API_KEY
+    # → DCHUB_ADMIN_KEY (canonical name, 211 other uses). Fallback to
+    # the legacy DCHUB_ADMIN_API_KEY name for one deploy cycle so any
+    # caller using the old key still works while you remove the env
+    # var. After confirming /api/v1/admin/press-releases still works,
+    # delete DCHUB_ADMIN_API_KEY on Railway + Render.
+    sent = auth.replace("Bearer ", "").strip()
+    expected = (os.getenv("DCHUB_ADMIN_KEY")
+                or os.getenv("DCHUB_ADMIN_API_KEY") or "").strip()
+    if not expected or sent != expected:
         return jsonify({"error": "Unauthorized"}), 401
     data = request.get_json()
     try:
