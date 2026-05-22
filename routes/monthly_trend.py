@@ -779,7 +779,7 @@ def _render_html(d: dict, *, partner: str = "") -> str:
     deal_rows = [
         f'<tr><td>{x["date"] or "—"}</td><td><strong>{x["buyer"] or "?"}</strong></td>'
         f'<td>{x["seller"] or "?"}</td>'
-        f'<td style="text-align:right">${(x["value"] or 0)/1e9:.2f}B</td>'
+        f'<td style="text-align:right">{_fmt_deal_value(x["value"])}</td>'
         f'<td style="text-align:right">{(x["mw"] or 0):,.0f}</td></tr>'
         for x in (d.get("top_deals") or [])
     ]
