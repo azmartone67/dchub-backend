@@ -93,14 +93,28 @@ def _http_get(url: str, timeout: int = 8) -> tuple[Optional[str], Optional[dict]
         # DCHUB_INTERNAL_KEY which IS set on Railway. Same fallback
         # chain so the brain self-heals without a new env-var setup.
         elif "dchub.cloud" in url or "dchub-backend-production" in url:
-            api_key = (os.environ.get("DCHUB_INTERNAL_API_KEY")
-                       or os.environ.get("DCHUB_API_KEY")
-                       or os.environ.get("DCHUB_BRAIN_API_KEY") or "").strip()
+            # r33-Q+hardening (2026-05-22): _clean() defends against
+            # contaminated env vars. The recurring "ValueError: Invalid
+            # header value b'5GyWzWPGvz...\n~/dchub-frontend'" AND the 401
+            # on /api/v1/fiber/intel were BOTH caused by DCHUB_INTERNAL_KEY
+            # having a trailing newline + shell path pasted into it. A
+            # newline in an HTTP header value raises ValueError, the
+            # request never sends, the endpoint sees no auth → 401.
+            # Take only the first whitespace-delimited token so even a
+            # dirty env var produces a valid header.
+            def _clean(v):
+                parts = (v or "").split()
+                return parts[0] if parts else ""
+            api_key = _clean(
+                os.environ.get("DCHUB_INTERNAL_API_KEY")
+                or os.environ.get("DCHUB_API_KEY")
+                or os.environ.get("DCHUB_BRAIN_API_KEY") or "")
             if api_key:
                 headers["X-API-Key"] = api_key
-            internal_key = (os.environ.get("DCHUB_INTERNAL_KEY")
-                            or os.environ.get("INTERNAL_KEY")
-                            or os.environ.get("DCHUB_ADMIN_KEY") or "").strip()
+            internal_key = _clean(
+                os.environ.get("DCHUB_INTERNAL_KEY")
+                or os.environ.get("INTERNAL_KEY")
+                or os.environ.get("DCHUB_ADMIN_KEY") or "")
             if internal_key:
                 headers["X-Internal-Key"] = internal_key
             # Also include the brain UA so rate-limit bypass kicks in
@@ -7303,36 +7317,75 @@ def scan_all() -> list[dict]:
             return ("err", fn.__name__,
                     f"{type(e).__name__}: {str(e)[:200]}")
 
+    # r33-Q+radar-budget (2026-05-22): HARD 25s wall-clock budget on the
+    # whole scan. Previously `as_completed(timeout=60)` let the scan run
+    # 100s+ (observed: "SLOW REQUEST GET /api/v1/brain/consistency-radar
+    # took 103.1s"). With ~100 detectors making 4-8s HTTP self-calls in
+    # 8 worker threads, deadlocked self-calls compounded into 13 batches
+    # × per-call timeouts. A radar scan that takes 103s is worse than
+    # useless: it holds a gunicorn worker hostage and trips L20 + the
+    # watchdog. Better to return PARTIAL findings in 25s than complete
+    # findings in 103s. Detectors still running at the deadline are
+    # abandoned (their thread finishes in the background, result
+    # discarded). Each detector also keeps its own 20s per-future cap.
+    _SCAN_BUDGET_S = 25
+    _deadline = _scan_time.time() + _SCAN_BUDGET_S
+    _completed = 0
+    _abandoned = 0
     with _cf.ThreadPoolExecutor(max_workers=8,
                                  thread_name_prefix="brain-scan") as ex:
         futs = {ex.submit(_run_one, fn): fn for fn in detectors}
-        for fut in _cf.as_completed(futs, timeout=60):
-            fn = futs[fut]
-            try:
-                status, name, result = fut.result(timeout=20)
-                if status == "ok":
-                    out.extend(result)
-                else:
+        try:
+            for fut in _cf.as_completed(futs, timeout=_SCAN_BUDGET_S):
+                fn = futs[fut]
+                try:
+                    status, name, result = fut.result(timeout=5)
+                    _completed += 1
+                    if status == "ok":
+                        out.extend(result)
+                    else:
+                        out.append({
+                            "issue":  f"consistency_radar_detector_crashed:{name}",
+                            "url":    name,
+                            "count":  1,
+                            "detail": result,
+                        })
+                except _cf.TimeoutError:
                     out.append({
-                        "issue":  f"consistency_radar_detector_crashed:{name}",
-                        "url":    name,
+                        "issue":  f"consistency_radar_detector_timeout:{fn.__name__}",
+                        "url":    fn.__name__,
                         "count":  1,
-                        "detail": result,
+                        "detail": "Detector exceeded per-future 5s collection cap.",
                     })
-            except _cf.TimeoutError:
-                out.append({
-                    "issue":  f"consistency_radar_detector_timeout:{fn.__name__}",
-                    "url":    fn.__name__,
-                    "count":  1,
-                    "detail": "Detector exceeded 20s timeout — investigate (likely HTTP probe stalling).",
-                })
-            except Exception as e:
-                out.append({
-                    "issue":  f"consistency_radar_detector_crashed:{fn.__name__}",
-                    "url":    fn.__name__,
-                    "count":  1,
-                    "detail": f"{type(e).__name__}: {str(e)[:200]}",
-                })
+                except Exception as e:
+                    out.append({
+                        "issue":  f"consistency_radar_detector_crashed:{fn.__name__}",
+                        "url":    fn.__name__,
+                        "count":  1,
+                        "detail": f"{type(e).__name__}: {str(e)[:200]}",
+                    })
+                if _scan_time.time() >= _deadline:
+                    break
+        except _cf.TimeoutError:
+            # Overall scan budget exceeded — abandon the rest. Count how
+            # many detectors never reported so the scan is honest about
+            # being partial rather than silently dropping them.
+            _abandoned = sum(1 for f in futs if not f.done())
+        # Tally abandoned detectors (deadline hit mid-iteration or budget
+        # raised). Surface as a single finding so the operator knows the
+        # scan was partial — never a silent truncation.
+        not_done = [futs[f].__name__ for f in futs if not f.done()]
+        if not_done:
+            out.append({
+                "issue":  "consistency_radar_scan_partial",
+                "url":    "/api/v1/brain/consistency-radar",
+                "count":  len(not_done),
+                "detail": (f"Scan hit {_SCAN_BUDGET_S}s budget with "
+                           f"{len(not_done)} detectors still running "
+                           f"(completed {_completed}). Slowest are "
+                           f"likely HTTP self-call probes. Abandoned: "
+                           + ", ".join(not_done[:8])),
+            })
     return out
 
 

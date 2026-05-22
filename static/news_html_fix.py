@@ -150,7 +150,12 @@ def clean_existing_articles_in_db(db_path='dc_nexus.db'):
 # Add this to your api_server.py news route
 # ===========================================
 
-"""
+# r33-Q+escape-fix (2026-05-22): raw triple-quote (r-prefix) — this is
+# an EXAMPLE-code block stored as a string. It contains `re.sub(r'\s+')`
+# which, inside a NON-raw outer string, made Python emit
+# "SyntaxWarning: invalid escape sequence '\s'" attributed to line 164.
+# Raw outer string keeps the inner example literal + silences the warn.
+r"""
 # In your /api/v1/news endpoint, add this helper:
 
 import re

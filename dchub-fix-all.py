@@ -329,7 +329,10 @@ fix('analytics.html',
 print("\n📄 index.html")
 
 # Add a small script before </body> to fetch live stats
-STATS_SCRIPT = """<script>
+# r33-Q+escape-fix (2026-05-22): raw string (r-prefix) so the JS regex
+# `/20,000\+?/` doesn't trigger Python's "invalid escape sequence '\+'"
+# SyntaxWarning at import. The \+ is a JS regex escape, not Python.
+STATS_SCRIPT = r"""<script>
 (function(){
     fetch('/api/v1/stats').then(r=>r.json()).then(s=>{
         document.querySelectorAll('.metric-value, .feature-stat, td.check').forEach(el=>{
