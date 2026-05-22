@@ -47,15 +47,34 @@ brain_autoaction_helpers_bp = Blueprint(
 def _admin_authorized() -> bool:
     """Match the brain-autopilot _post_json admin-key contract. Either
     X-Admin-Key matches DCHUB_ADMIN_KEY OR X-Internal-Key matches
-    DCHUB_INTERNAL_KEY. Brain calls both during a single action."""
-    admin_key = (os.environ.get("DCHUB_ADMIN_KEY")
-                 or os.environ.get("DCHUB_INTERNAL_KEY"))
-    if not admin_key:
+    DCHUB_INTERNAL_KEY. Brain calls both during a single action.
+
+    r33-Q+auth-fix (2026-05-22): the old version did
+      admin_key = DCHUB_ADMIN_KEY or DCHUB_INTERNAL_KEY
+    which `or`-short-circuits to ONE key, then compared BOTH provided
+    headers against that single value — so a valid X-Internal-Key
+    (matching DCHUB_INTERNAL_KEY) was rejected whenever DCHUB_ADMIN_KEY
+    was set. Same bug class as the press-release endpoint (e7c31a11).
+    Now we build the full set of valid keys and the hardcoded internal
+    sync key, and accept the request if ANY provided header matches ANY
+    valid key. _clean() strips env-var contamination (newline+path)."""
+    def _clean(v):
+        parts = (v or "").split()
+        return parts[0] if parts else ""
+    valid = {
+        _clean(os.environ.get("DCHUB_ADMIN_KEY")),
+        _clean(os.environ.get("DCHUB_INTERNAL_KEY")),
+        "dchub-internal-sync-2026",  # hardcoded brain sync key
+    }
+    valid.discard("")
+    if not valid:
         return False
-    provided = (request.headers.get("X-Admin-Key")
-                or request.headers.get("X-Internal-Key")
-                or request.args.get("admin_key") or "")
-    return provided and provided == admin_key
+    provided = [
+        _clean(request.headers.get("X-Admin-Key")),
+        _clean(request.headers.get("X-Internal-Key")),
+        _clean(request.args.get("admin_key")),
+    ]
+    return any(p and p in valid for p in provided)
 
 
 def _db():
