@@ -300,6 +300,77 @@ def status() -> dict:
             for iso, cfg in ISO_REGISTRY.items()}
 
 
+# ─────────────────────────────────────────────────────────────────────
+# Probe blueprint — lets us confirm auth + discover the right Data Product
+# WITHOUT shipping secrets. Returns only public ERCOT catalog metadata
+# (names/ids/descriptions). Cached so repeated hits don't hammer ERCOT.
+# ─────────────────────────────────────────────────────────────────────
+try:
+    from flask import Blueprint, jsonify
+    iso_grid_bp = Blueprint("iso_grid", __name__)
+
+    _PROBE_CACHE: dict = {}
+
+    def _ercot_product_catalog(limit: int = 400) -> dict:
+        """List ERCOT public Data Products our key can see. Proves auth +
+        surfaces reportTypeIds so we can pick the gen/load product. Safe:
+        no key/token in the response. 5-min cache."""
+        import time as _t
+        now = _t.time()
+        hit = _PROBE_CACHE.get("ercot")
+        if hit and (now - hit[0]) < 300:
+            return hit[1]
+        key = _env("ERCOT_API_KEY")
+        out: dict = {"auth": "unknown", "products": [], "count": 0}
+        if not key:
+            out["auth"] = "no_api_key"
+            return out
+        bearer = _ercot_bearer()
+        out["bearer_obtained"] = bool(bearer)
+        headers = {"Ocp-Apim-Subscription-Key": key}
+        if bearer:
+            headers["Authorization"] = f"Bearer {bearer}"
+        try:
+            data = _http_json(f"{ISO_REGISTRY['ERCOT']['base']}/", headers=headers)
+            items = data if isinstance(data, list) else (data.get("products") or data.get("data") or [])
+            prods = []
+            for p in (items or [])[:limit]:
+                if not isinstance(p, dict):
+                    continue
+                # gen/load-relevant products bubble to the top for easy picking
+                prods.append({
+                    "productId": p.get("productId"),
+                    "reportTypeId": p.get("reportTypeId"),
+                    "name": p.get("name"),
+                    "generationFrequency": p.get("generationFrequency"),
+                    "description": (p.get("description") or "")[:160],
+                })
+            kw = ("gen", "load", "system condition", "fuel", "capacity", "reserve")
+            prods.sort(key=lambda x: 0 if any(
+                k in ((x.get("name") or "") + (x.get("description") or "")).lower()
+                for k in kw) else 1)
+            out.update(auth="ok", products=prods, count=len(prods))
+        except urllib.error.HTTPError as e:
+            out.update(auth=f"http_{e.code}",
+                       hint="403=key/scope wrong, 401=bearer missing/expired")
+        except Exception as e:
+            out.update(auth="error", detail=str(e)[:160])
+        _PROBE_CACHE["ercot"] = (now, out)
+        return out
+
+    @iso_grid_bp.get("/api/v1/iso/status")
+    def _iso_status():
+        return jsonify(as_of=datetime.datetime.now(datetime.timezone.utc).isoformat(),
+                       isos=status()), 200
+
+    @iso_grid_bp.get("/api/v1/iso/probe/ercot")
+    def _iso_probe_ercot():
+        return jsonify(_ercot_product_catalog()), 200
+except Exception as _bp_err:  # Flask unavailable in some contexts — stay importable
+    iso_grid_bp = None
+    print(f"[iso_grid] blueprint skipped: {_bp_err}", flush=True)
+
+
 if __name__ == "__main__":
     import pprint
     pprint.pprint(status())

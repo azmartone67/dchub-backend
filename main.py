@@ -22257,6 +22257,17 @@ try:
 except Exception as _e:
     print(f"[main] ai_citation_tracker register failed: {_e}", file=sys.stderr)
 
+# Phase FF (2026-05-22): ISO grid-telemetry probe — GET /api/v1/iso/status
+# + /api/v1/iso/probe/ercot. Confirms ERCOT auth + lists Data Products so we
+# can pick the gen/load reportTypeId, then wire it into the DCPI score.
+# Module is otherwise inert (no cron, not feeding the score yet).
+try:
+    from iso_grid_adapters import iso_grid_bp
+    if iso_grid_bp is not None:
+        app.register_blueprint(iso_grid_bp)
+except Exception as _e:
+    print(f"[main] iso_grid register failed: {_e}", file=sys.stderr)
+
 # Phase DDD (2026-05-16): MCP + Media as living organisms.
 # mcp_growth.py exposes /api/v1/mcp/growth + /demand-gaps + snapshot cron.
 # media_pulse.py exposes /api/v1/media/source-of-truth + /topic-pulse.
