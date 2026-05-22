@@ -205,6 +205,151 @@ def _auto_remediate():
         return jsonify(ok=False, error=f"open-pr handoff failed: {e}"), 502
 
 
+@brain_guardrails_bp.post("/api/v1/brain/draft-from-directive")
+def _draft_from_directive():
+    """Stage 2/4 capstone: take a free-form open directive and have Claude
+    draft a concrete (file, find, replace) proposal that goes through the
+    same generic_find_replace review-PR pipeline. Admin-gated. Guarded by
+    can_open_pr() (kill switch + daily change budget). Validates the model's
+    output against the live file BEFORE handing off — file must exist, `find`
+    must be present and unique. Humans still merge every PR.
+
+    Body: {"directive_id": <int>}  (or "id"). Optionally {"dry_run": true}.
+    """
+    if not _admin_ok():
+        return jsonify(ok=False, error="admin auth required"), 401
+    body = request.get_json(silent=True) or {}
+    did = body.get("directive_id") or body.get("id")
+    if not did:
+        return jsonify(ok=False, error="directive_id required"), 400
+
+    ok_gate, why = can_open_pr()
+    if not ok_gate and not body.get("dry_run"):
+        return jsonify(ok=False, error="autonomy_gate_closed", reason=why), 429
+
+    if _store is None:
+        return jsonify(ok=False, error="store unavailable"), 503
+
+    # Fetch the directive — must be open + free-form (no find/replace yet).
+    target_directive = None
+    for d in _store.list_directives(status="open", limit=200):
+        if int(d.get("id") or 0) == int(did):
+            target_directive = d
+            break
+    if not target_directive:
+        return jsonify(ok=False, error=f"open directive {did} not found"), 404
+    if target_directive.get("find") and target_directive.get("replace") is not None:
+        return jsonify(ok=False,
+                       error="directive already has find/replace — use auto-remediate"), 400
+
+    directive_text = (target_directive.get("directive") or "").strip()
+    target_path = (target_directive.get("target") or "").strip().lstrip("/")
+    if not directive_text:
+        return jsonify(ok=False, error="directive text is empty"), 400
+
+    # Optional: include the target file content as Claude context.
+    file_excerpt = ""
+    if target_path:
+        try:
+            from routes.brain_pr_opener import _get_file
+            body_text, _sha = _get_file(target_path)
+            if body_text:
+                file_excerpt = body_text[:6000]  # cap so we don't blow the context
+        except Exception:
+            pass
+
+    # Strict-JSON prompt. The validators downstream catch any ambiguity, but
+    # we prime the model heavily because a clear refusal is far better than a
+    # wrong guess on autonomous code generation.
+    system = (
+        "You are DC Hub's Layer-5 code drafter. Convert an operator directive "
+        "into ONE deterministic single-file find→replace edit that opens as a "
+        "review PR (a human merges). NEVER produce free-form code unless you "
+        "can express it as an EXACT, UNAMBIGUOUS single-string substitution.\n\n"
+        "Output STRICTLY a JSON object with exactly these keys:\n"
+        "  {\"file\": \"...\", \"find\": \"...\", \"replace\": \"...\", "
+        "\"rationale\": \"...\"}\n"
+        "OR, if you cannot safely produce such an edit:\n"
+        "  {\"refuse\": true, \"rationale\": \"...\"}\n\n"
+        "Rules — REFUSE if any are violated:\n"
+        "  • `find` MUST be present LITERALLY in the target file and appear "
+        "    EXACTLY ONCE (we will verify; ambiguous fails closed).\n"
+        "  • `find` MUST be at least 24 characters (no tiny matches).\n"
+        "  • Path MUST be repo-relative (no '..', no leading '/').\n"
+        "  • Do NOT propose changes to secrets, .env, CI workflows, or "
+        "    anything touching auth, billing, or payment flows.\n"
+        "  • If the directive is research or scaffolding (no clear single-edit "
+        "    expression), REFUSE — a human will handle it."
+    )
+    excerpt_block = (f"\n\nTARGET FILE `{target_path}` (first 6KB):\n```\n"
+                     f"{file_excerpt}\n```" if file_excerpt else "")
+    prompt = (f"DIRECTIVE #{did}: {directive_text}{excerpt_block}\n\n"
+              f"Produce the JSON object now. No commentary outside the JSON.")
+
+    try:
+        from routes.brain_v2_layer4 import _call_claude
+    except Exception as e:
+        return jsonify(ok=False, error=f"cannot import _call_claude: {e}"), 503
+    text, err = _call_claude(prompt, system)
+    if err or not text:
+        return jsonify(ok=False, error=f"claude call failed: {err}"), 502
+
+    # Parse JSON — accept either the proposal or an explicit refusal.
+    import json as _json, re as _re
+    m = _re.search(r"\{.*\}", text, _re.DOTALL)
+    if not m:
+        return jsonify(ok=False, error="no JSON in model output",
+                       model_text=text[:400]), 422
+    try:
+        prop = _json.loads(m.group(0))
+    except Exception as e:
+        return jsonify(ok=False, error=f"JSON parse failed: {e}",
+                       model_text=text[:400]), 422
+    if prop.get("refuse"):
+        return jsonify(ok=True, acted=False, refused=True,
+                       rationale=prop.get("rationale", "")), 200
+
+    # Hand the proposal to the PR-opener's generic_find_replace (it re-runs
+    # the same validators: file exists, find present + unique, etc., and
+    # checks the autonomy gate again before committing).
+    if body.get("dry_run"):
+        return jsonify(ok=True, dry_run=True, proposal=prop, gate=status()), 200
+
+    payload = {
+        "issue":  "generic_find_replace",
+        "file":   prop.get("file") or target_path,
+        "find":   prop.get("find"),
+        "replace": prop.get("replace", ""),
+        "detail": f"Layer-5 codegen for directive #{did}: {directive_text[:200]}",
+    }
+    try:
+        import urllib.request
+        base = os.environ.get("INTERNAL_BASE_URL",
+                              "https://dchub-backend-production.up.railway.app")
+        req = urllib.request.Request(
+            f"{base}/api/v1/brain/open-pr-for-finding",
+            data=_json.dumps(payload).encode(), method="POST",
+            headers={"Content-Type": "application/json",
+                     "X-Admin-Key": (os.environ.get("DCHUB_ADMIN_KEY")
+                                     or os.environ.get("BRAIN_ADMIN_KEY") or "")})
+        with urllib.request.urlopen(req, timeout=60) as r:
+            out = _json.loads(r.read().decode("utf-8", "ignore"))
+    except Exception as e:
+        return jsonify(ok=False, error=f"open-pr handoff failed: {e}"), 502
+
+    # On success, mark directive in_progress so the verifier loop watches it.
+    if out.get("ok"):
+        try:
+            _store.set_directive_status(
+                int(did), "in_progress",
+                notes=f"Layer-5 drafted PR {out.get('pr_url','?')}")
+        except Exception:
+            pass
+
+    return jsonify(ok=True, acted=bool(out.get("ok")),
+                   proposal=prop, pr=out, gate=status()), 200
+
+
 @brain_guardrails_bp.post("/api/v1/brain/verify-directives")
 def _verify_directives():
     """Stage 3 verification loop. For each in_progress directive carrying a
