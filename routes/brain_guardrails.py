@@ -190,7 +190,59 @@ def _auto_remediate():
                                      or os.environ.get("BRAIN_ADMIN_KEY") or "")})
         with urllib.request.urlopen(req, timeout=40) as r:
             out = _json.loads(r.read().decode("utf-8", "ignore"))
+        # Stage 3: a directive whose PR opened moves open → in_progress, so
+        # the verifier knows to watch it (and we don't re-PR it next cycle).
+        if out.get("ok") and candidate.get("_directive_id") and _store is not None:
+            try:
+                _store.set_directive_status(
+                    candidate["_directive_id"], "in_progress",
+                    notes=f"auto-PR opened: {out.get('pr_url','?')}")
+            except Exception:
+                pass
         return jsonify(ok=True, acted=bool(out.get("ok")),
                        pr=out, gate=status()), 200
     except Exception as e:
         return jsonify(ok=False, error=f"open-pr handoff failed: {e}"), 502
+
+
+@brain_guardrails_bp.post("/api/v1/brain/verify-directives")
+def _verify_directives():
+    """Stage 3 verification loop. For each in_progress directive carrying a
+    find/replace, fetch the target file from `main` and check the `find` string
+    is GONE (i.e. the PR merged + fix applied). If so → mark done (verified).
+    If still present, leave it (PR not merged yet / regressed). Admin-gated.
+
+    This is what lets the brain TRUST its own fixes: an action isn't "done"
+    until the live file proves it, not when the PR was merely opened."""
+    if not _admin_ok():
+        return jsonify(ok=False, error="admin auth required"), 401
+    if _store is None:
+        return jsonify(ok=False, error="store unavailable"), 503
+    try:
+        from routes.brain_pr_opener import _get_file
+    except Exception as e:
+        return jsonify(ok=False, error=f"cannot import _get_file: {e}"), 503
+
+    verified, still_open, errors = [], [], []
+    for d in _store.list_directives(status="in_progress", limit=50):
+        find = d.get("find")
+        path = d.get("target")
+        if not (find and path):
+            continue
+        try:
+            body, _sha = _get_file(path, ref="main")
+            if body is None:
+                errors.append({"id": d.get("id"), "path": path, "err": "unreadable"})
+                continue
+            if find not in body:
+                _store.set_directive_status(
+                    d["id"], "done",
+                    notes="verified: find-string absent from main (fix merged)")
+                verified.append(d.get("id"))
+            else:
+                still_open.append(d.get("id"))
+        except Exception as e:
+            errors.append({"id": d.get("id"), "err": str(e)[:120]})
+
+    return jsonify(ok=True, verified=verified, verified_count=len(verified),
+                   still_in_progress=still_open, errors=errors), 200
