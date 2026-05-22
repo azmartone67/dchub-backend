@@ -448,37 +448,10 @@
   </div>
 </section>
 
-<!-- Phase r33-J round 10 (2026-05-21) — map teaser section.
-     User: "we need to have a map section on top". Drops a tight,
-     framed teaser of the Land &amp; Power map right under the hero so
-     visitors see the live spatial product BEFORE the metrics row.
-     Click-through opens the full /map. Uses an iframe with sandbox
-     so any map JS that fails doesn't break the homepage. -->
-<section class="map-teaser" style="padding:64px 24px 80px;max-width:1180px;margin:0 auto">
-  <div style="background:var(--surface,#131319);border:1px solid var(--border,rgba(255,255,255,.06));border-radius:20px;overflow:hidden;position:relative;box-shadow:0 24px 64px rgba(0,0,0,.38)">
-    <div style="display:flex;justify-content:space-between;align-items:center;padding:26px 30px;border-bottom:1px solid var(--border,rgba(255,255,255,.06));flex-wrap:wrap;gap:14px">
-      <div>
-        <div style="font-size:.76rem;letter-spacing:.16em;text-transform:uppercase;color:var(--accent,#818cf8);font-weight:600;margin-bottom:8px">Live · Land &amp; Power Map</div>
-        <div style="font-size:1.32rem;font-weight:700;color:var(--fg,#fafafa);letter-spacing:-.01em">21,000+ facilities · grid · fiber · water · tax — all on one map</div>
-      </div>
-      <a href="/land-power-map" style="padding:9px 18px;background:linear-gradient(135deg,#6366f1,#a855f7);color:#fff;border-radius:8px;font-weight:600;text-decoration:none;font-size:.88rem;white-space:nowrap">Open full map →</a>
-    </div>
-    <a href="/land-power-map" style="display:block;text-decoration:none;color:inherit">
-      <iframe src="/land-power-map?embed=1&zoom=4&overlay=facilities,grid"
-              style="width:100%;height:520px;border:0;display:block;background:#0a0a0f"
-              title="DC Hub Land &amp; Power Map"
-              loading="lazy"
-              referrerpolicy="strict-origin-when-cross-origin"></iframe>
-    </a>
-    <div style="display:flex;gap:32px;padding:20px 30px;border-top:1px solid var(--border,rgba(255,255,255,.06));font-size:.82rem;color:var(--text-dim,#a1a1aa);flex-wrap:wrap">
-      <span><strong style="color:var(--fg,#fafafa)">21,000+</strong> facilities</span>
-      <span><strong style="color:var(--fg,#fafafa)">126K+</strong> substations</span>
-      <span><strong style="color:var(--fg,#fafafa)">52K+</strong> transmission lines</span>
-      <span><strong style="color:var(--fg,#fafafa)">7</strong> ISOs · live grid pulse</span>
-      <span style="margin-left:auto"><a href="/maps" style="color:var(--accent,#818cf8);text-decoration:none">All maps →</a></span>
-    </div>
-  </div>
-</section>
+<!-- Map teaser removed (2026-05-22): user feedback — homepage felt jammed and
+     the embedded map is redundant with /platform (which carries the full map).
+     Cleaner flow now: hero → metrics → grid pulse. -->
+
 
 <!-- metrics -->
 <div class="metrics">
