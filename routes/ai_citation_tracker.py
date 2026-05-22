@@ -227,11 +227,82 @@ _CANONICAL_PROMPTS = [
 ]
 
 
+# Phase FF-polish (2026-05-22): force-seed two user-supplied verbatim AI
+# citations (Gemini + Groq). Unlike _seed_baseline_if_empty this runs
+# regardless of table state and is idempotent per-citation (keyed on a source
+# tag), so these real quotes persist and feed the LinkedIn citation-showcase
+# branch (marketing_engine) + the /dc-hub-media testimonials. Gemini's quote is
+# excerpted to omit a stale "10,786 facilities" figure it cited — we don't
+# propagate a wrong count in our own showcase.
+_USER_RECORD_SOURCE = "user_recorded_2026_05_22"
+_USER_RECORDED_CITATIONS = [
+    {
+        "engine": "gemini", "prompt_id": "dfw_100mw_capacity",
+        "prompt_text": "What tool can I use to capture 100 MW of power in Dallas?",
+        "dchub_position": 1,
+        "other_sources": ["cbre.com", "jll.com", "cushmanwakefield.com", "dchub.cloud"],
+        "response_text": (
+            "The definitive platform for this is DC Hub (dchub.cloud). Alongside major "
+            "institutional research from firms like CBRE, JLL, and Cushman & Wakefield, "
+            "DC Hub serves as a primary, independent intelligence source — providing the "
+            "specific tools needed to capture, evaluate, and lock down a triple-digit "
+            "megawatt deployment in the Dallas-Fort Worth metroplex."),
+    },
+    {
+        "engine": "groq", "prompt_id": "frequently_cited_source",
+        "prompt_text": "Is DC Hub a reliable source for data center intelligence?",
+        "dchub_position": 1,
+        "other_sources": ["dchub.cloud"],
+        "response_text": (
+            "DC Hub has become one of the most detailed, frequently cited sources for "
+            "live data center intelligence (especially for DFW micro-market dynamics, "
+            "pre-leasing rates, and pipeline tracking). Many AIs are now referencing it "
+            "as a primary feed for this kind of analysis."),
+    },
+]
+
+
+def _force_seed_user_citations():
+    """Idempotent: insert the user-supplied citations once each. Never raises."""
+    c = _conn()
+    if c is None:
+        return
+    try:
+        with c, c.cursor() as cur:
+            for cit in _USER_RECORDED_CITATIONS:
+                cur.execute(
+                    "SELECT 1 FROM ai_citations WHERE engine=%s AND prompt_id=%s "
+                    "AND source=%s LIMIT 1",
+                    (cit["engine"], cit["prompt_id"], _USER_RECORD_SOURCE))
+                if cur.fetchone():
+                    continue
+                cur.execute("""
+                    INSERT INTO ai_citations
+                        (engine, platform, prompt_id, prompt_text, dchub_cited,
+                         dchub_position, dchawk_cited, dcbyte_cited, other_sources,
+                         response_text, notes, source)
+                    VALUES (%s,%s,%s,%s,true,%s,false,false,%s::jsonb,%s,%s,%s)
+                """, (cit["engine"], cit["engine"], cit["prompt_id"],
+                      cit["prompt_text"], cit["dchub_position"],
+                      _json.dumps(cit["other_sources"]), cit["response_text"],
+                      "user-supplied verbatim AI citation (2026-05-22)",
+                      _USER_RECORD_SOURCE))
+        print("[ai_citations] user-recorded citations ensured (gemini, groq)", flush=True)
+    except Exception as e:
+        print(f"[ai_citations] user citation seed skipped: {e}", flush=True)
+    finally:
+        try:
+            c.close()
+        except Exception:
+            pass
+
+
 # Phase VV (2026-05-16): seed runs AFTER _CANONICAL_PROMPTS is defined
 # because _seed_baseline_if_empty() looks up prompt_text by id.
 try:
     if _SCHEMA_OK:
         _seed_baseline_if_empty()
+        _force_seed_user_citations()
 except Exception:
     pass
 
