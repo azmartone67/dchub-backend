@@ -361,6 +361,19 @@ JOBS = {
         'minute': 55,
         'timeout': 120,
     },
+    # Phase FF (2026-05-21): ACTIVATED — reactivation step 1 (lightest first).
+    # Was staged in DISABLED_JOBS (defined-but-never-run, not a firefight
+    # casualty). DB scan, NO Claude, no active job duplicates it (verified).
+    # Detects new auto-press triggers (DCPI movers, facility events).
+    # Every 4h, staggered :50. Monitor one cycle before activating step 2.
+    'press_queue_scan': {
+        'name': 'Press Queue Scan',
+        'endpoint': '/api/v1/press/scan',
+        'method': 'POST',
+        'hours': [1, 5, 9, 13, 17, 21],
+        'minute': 50,
+        'timeout': 180,
+    },
 }
 
 # ── Disabled jobs (modules not installed on Railway) ──────────
@@ -625,16 +638,6 @@ DISABLED_JOBS = {
         'hours': [],
         'minute': 40,
         'timeout': 90,
-    },
-    # Press queue scan: detects new auto-press triggers (DCPI movers,
-    # facility events). Every 4h, staggered :50.
-    'press_queue_scan': {
-        'name': 'Press Queue Scan',
-        'endpoint': '/api/v1/press/scan',
-        'method': 'POST',
-        'hours': [1, 5, 9, 13, 17, 21],
-        'minute': 50,
-        'timeout': 180,
     },
     # Competitor intel: snapshot competitor sites for change detection.
     # Daily at 02:30 UTC (off-peak).
