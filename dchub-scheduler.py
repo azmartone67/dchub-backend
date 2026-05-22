@@ -556,26 +556,6 @@ DISABLED_JOBS = {
         'minute': 15,
         'timeout': 15,
     },
-    # Phase FF (2026-05-21): Citation Hunt — fills the EMPTY citation_scores
-    # table (the proactive query-battery measure; distinct from the live
-    # /api/v1/media/source-of-truth ai_cited_pct=38%). The pipeline
-    # (citation_hunter.hunt_citations → asks Claude haiku, writes
-    # citation_scores) exists but was never scheduled.
-    # STAGED HERE (DISABLED), NOT active: it is Claude-touching, and the
-    # whole citation→press→aggregation pipeline is currently parked in
-    # DISABLED_JOBS as a deliberate survival posture after the crash-loop
-    # firefight. Activating Claude crons is a STABILITY decision — move this
-    # into the JOBS dict (above, before the closing brace at the smoke_test
-    # entry) only after the brain-cron reactivation plan is agreed.
-    # Cadence when activated: once daily 05:12 UTC, 8-query haiku battery.
-    'citation_hunt': {
-        'name': 'AI-Citation Hunt — measure SOT/citation share (Claude)',
-        'endpoint': '/api/v1/citations/hunt?queries=8',
-        'method': 'POST',
-        'hours': [5],
-        'minute': 12,
-        'timeout': 120,
-    },
     # Phase FF+7-press-loop (2026-05-19): auto-draft press releases from
     # AI-citation observations. Closes the gap user spotted: ChatGPT +
     # Gemini cited dchub.cloud TODAY but /dc-hub-media still showed 73-

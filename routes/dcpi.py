@@ -3466,74 +3466,11 @@ def og_card_index():
                     headers={"Cache-Control": "public, max-age=600, must-revalidate"})
 
 
-@dcpi_bp.route("/dcpi/methodology", methods=["GET"], strict_slashes=False)
-def dcpi_methodology():
-    """Methodology + citation page. Fixes 3 dead footer links (/dcpi/methodology)."""
-    year = datetime.datetime.utcnow().year if hasattr(datetime, "datetime") else 2026
-    html = f"""<!doctype html><html lang="en"><head><meta charset="utf-8">
-<meta name="viewport" content="width=device-width,initial-scale=1">
-<title>DCPI Methodology · Data Center Power Index</title>
-<meta name="description" content="How the Data Center Power Index (DCPI) scores U.S. markets: Excess Power Score, Constraint Score, verdict logic, data sources, and how to cite it.">
-<link rel="canonical" href="https://dchub.cloud/dcpi/methodology">
-<meta property="og:title" content="DCPI Methodology — Data Center Power Index">
-<meta property="og:image" content="https://dchub.cloud/dcpi/og.svg">
-<script type="application/ld+json">
-{{"@context":"https://schema.org","@type":"Dataset","name":"Data Center Power Index (DCPI)","description":"Daily composite scores ranking U.S. markets by excess electrical capacity and grid constraint for data-center siting.","url":"https://dchub.cloud/dcpi","sameAs":"https://datacenterpowerindex.com","creator":{{"@type":"Organization","name":"DC Hub","url":"https://dchub.cloud"}},"license":"https://dchub.cloud/dcpi/methodology","isAccessibleForFree":true,"keywords":["data center","power","grid capacity","interconnection queue","ISO","site selection"]}}
-</script>
-<style>
-body{{font-family:-apple-system,BlinkMacSystemFont,sans-serif;background:#0a0a12;color:#e5e7eb;max-width:820px;margin:0 auto;padding:48px 24px;line-height:1.6}}
-h1{{font-size:34px;letter-spacing:-1px;margin-bottom:4px}}
-h2{{font-size:22px;margin:36px 0 10px;color:#fff}}
-.sub{{color:#9ca3af;margin-bottom:8px}}
-code,pre{{background:#16161f;border:1px solid #26263a;border-radius:8px}}
-pre{{padding:16px;overflow:auto;font-size:13px;color:#c7d2fe}}
-.f{{background:#16161f;border-left:3px solid #6366f1;padding:14px 18px;border-radius:8px;margin:12px 0}}
-a{{color:#6366f1}} .pill{{display:inline-block;padding:2px 10px;border-radius:99px;font-size:12px;font-weight:700}}
-</style></head><body>
-<p class="sub"><a href="/dcpi">← Back to the Index</a></p>
-<h1>DCPI Methodology</h1>
-<p class="sub">How the Data Center Power Index scores U.S. markets · updated daily 06:00 UTC</p>
-
-<h2>The two scores</h2>
-<div class="f"><b>Excess Power Score (0–100)</b> — weighted sum of: ISO reserve-margin headroom,
-queued generation additions under 12 months, renewable curtailment volume, queue approval rate,
-stranded interconnection capacity at retiring plants, and behind-the-meter industrial generation.
-Higher = more electrical headroom available for new data-center load.</div>
-<div class="f"><b>Constraint Score (0–100)</b> — interconnection queue wait time, reserve-margin
-proximity to the NERC floor, year-over-year demand growth, and recent grid-emergency events.
-Higher = harder/slower to energize new load.</div>
-
-<h2>Composite &amp; verdict</h2>
-<pre>composite = excess_power_score − 0.5 × constraint_score + urgency_bonus
-
-verdict:
-  BUILD    → strong excess, low constraint
-  CAUTION  → mixed signals
-  AVOID    → constrained grid / long queue</pre>
-
-<h2>Data sources</h2>
-<p>ISO public filings (queue &amp; reserve-margin reports), EIA monthly generation and retail-rate
-data, NERC reliability assessments, and DC Hub's own grid-feed extractors. Inputs are ingested daily.</p>
-
-<h2>How to cite</h2>
-<p>The index is free to cite with attribution. Canonical URL:
-<a href="https://dchub.cloud/dcpi">https://dchub.cloud/dcpi</a>
-(also at <a href="https://datacenterpowerindex.com">datacenterpowerindex.com</a>).</p>
-<pre>@misc{{dchub_dcpi_{year},
-  title  = {{{{Data Center Power Index (DCPI)}}}},
-  author = {{{{DC Hub}}}},
-  year   = {{{year}}},
-  url    = {{https://dchub.cloud/dcpi}},
-  note   = {{Daily market-level grid-capacity scores for data-center siting}}
-}}</pre>
-
-<h2>Machine-readable</h2>
-<p>Programmatic access: <a href="/api/v1/dcpi/leaderboard">/api/v1/dcpi/leaderboard</a> ·
-<a href="/api/v1/dcpi/scores">/api/v1/dcpi/scores</a> · embed a market:
-<code>&lt;iframe src="https://dchub.cloud/dcpi/embed/atlanta"&gt;&lt;/iframe&gt;</code></p>
-</body></html>"""
-    return Response(html, mimetype="text/html",
-                    headers={"Cache-Control": "public, max-age=900"})
+# NOTE: there is intentionally NO backend /dcpi/methodology route — Cloudflare
+# Pages serves /dcpi/methodology/ as a static page (it intercepts /dcpi/* before
+# the request reaches this Flask backend). A backend route here would be dead,
+# unreachable code. If the methodology page needs JSON-LD/BibTeX, edit the CF
+# Pages static file, not this file. (Phase FF, 2026-05-21.)
 
 
 @dcpi_bp.route("/dcpi/press", methods=["GET"], strict_slashes=False)
