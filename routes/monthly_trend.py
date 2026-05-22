@@ -338,7 +338,10 @@ def _compute_report(year: int | None = None,
                      LIMIT 5
                 """, (lo_s, hi_s))
                 return [{
-                    "id":     int(r[0]) if r[0] else None,
+                    # deals.id is a content hash (TEXT), not an int — int()
+                    # raised ValueError, which the caller's except swallowed
+                    # → the M&A table rendered empty ("none") even with deals.
+                    "id":     r[0] if r[0] is not None else None,
                     "date":   r[1].isoformat() if hasattr(r[1], "isoformat") else (str(r[1]) if r[1] else None),
                     "buyer":  r[2], "seller": r[3],
                     "value":  float(r[4]) if r[4] is not None else None,
