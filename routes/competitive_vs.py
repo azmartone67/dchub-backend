@@ -289,7 +289,7 @@ td.comp{{color:#cbd5e1}}
 JSON: <a href="/api/v1/competitive/vs/{data['slug']}" style="color:#a855f7">/api/v1/competitive/vs/{data['slug']}</a></p>
 
 <div class="strengths">
-  <h3>What {data['competitor']} is genuinely strong at</h3>
+  <h3>Where {data['competitor']} is genuinely strong</h3>
   <ul>{strengths_html}</ul>
 </div>
 
