@@ -1,0 +1,42 @@
+name: Brain auto-remediate + verify
+
+# Phase FF+selfreg (2026-05-22): the hands-free loop, with brakes.
+# Every 4h: ask the brain to open ONE review-PR for the top actionable item
+# (guardrails enforce the daily cap + kill switch), then verify any
+# in_progress directives against main. Humans still merge every PR.
+#
+# Kill switch: set BRAIN_AUTONOMY_DISABLED=1 on the backend — no deploy needed.
+
+on:
+  schedule:
+    - cron: '37 */4 * * *'   # every 4h, offset off the hour
+  workflow_dispatch: {}
+
+permissions:
+  contents: read
+
+env:
+  RAILWAY_BASE: https://dchub-backend-production.up.railway.app
+
+jobs:
+  remediate:
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    steps:
+      - name: Verify merged directives, then propose one fix
+        env:
+          ADMIN_KEY: ${{ secrets.DCHUB_ADMIN_KEY }}
+        run: |
+          set -euo pipefail
+          if [ -z "$ADMIN_KEY" ]; then
+            echo "::warning::DCHUB_ADMIN_KEY not set — skipping"
+            exit 0
+          fi
+          echo "== verify in_progress directives against main =="
+          curl -sS --max-time 60 -X POST -H "X-Admin-Key: $ADMIN_KEY" \
+            "$RAILWAY_BASE/api/v1/brain/verify-directives" | head -c 1500; echo
+          echo "== gate status =="
+          curl -sS --max-time 30 "$RAILWAY_BASE/api/v1/brain/guardrails" | head -c 600; echo
+          echo "== auto-remediate one item (guardrails enforce cap/kill-switch) =="
+          curl -sS --max-time 90 -X POST -H "X-Admin-Key: $ADMIN_KEY" \
+            "$RAILWAY_BASE/api/v1/brain/auto-remediate" | head -c 1500; echo
