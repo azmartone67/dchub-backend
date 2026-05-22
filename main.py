@@ -9645,7 +9645,7 @@ p {{ font-size: 16px; color: #4a4a5a; margin-bottom: 16px; line-height: 1.6; }}
   </div>
   <div class="body">
     <h1>Welcome to DC Hub, {display_name}!</h1>
-    <p>Your free account is now active. You have access to the world's largest data center intelligence platform with <strong>11,000+ facilities</strong> across <strong>100+ countries</strong>.</p>
+    <p>Your free account is now active. You have access to the world's largest data center intelligence platform with <strong>21,000+ facilities</strong> across <strong>170+ countries</strong>.</p>
 
     <h2 style="margin-top: 32px;">Your Free Plan Includes</h2>
     <div class="feature-box">
@@ -9747,7 +9747,7 @@ p {{ font-size: 16px; color: #4a4a5a; margin-bottom: 16px; line-height: 1.6; }}
   </div>
   <div class="body">
     <h1>Welcome to Pro, {display_name}! 🎉</h1>
-    <p>Your upgrade is now active. You have full access to the world's most comprehensive data center intelligence platform -- <strong>11,000+ facilities</strong> across <strong>170+ countries</strong>.</p>
+    <p>Your upgrade is now active. You have full access to the world's most comprehensive data center intelligence platform -- <strong>21,000+ facilities</strong> across <strong>170+ countries</strong>.</p>
     <h2 style="margin-top: 32px;">What You Now Have Access To</h2>
     <div class="feature-box">
       <h3>⚡ 10,000 API Calls / Day</h3>
