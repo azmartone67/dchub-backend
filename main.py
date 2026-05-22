@@ -1235,6 +1235,11 @@ try:
         app.register_blueprint(brain_directives_bp)  # Phase FF+directives — operator directive intake
     except Exception as _e:
         print(f"[main] brain_directives_bp not registered: {_e}", flush=True)
+    try:
+        from routes.brain_guardrails import brain_guardrails_bp
+        app.register_blueprint(brain_guardrails_bp)  # Stage 5 — autonomy guardrails + auto-remediate consumer
+    except Exception as _e:
+        print(f"[main] brain_guardrails_bp not registered: {_e}", flush=True)
     app.register_blueprint(outreach_cap_bp)  # phase 290 — cap-exceeded outreach engine
     # Phase DD (2026-05-12): pair-code conversion flow. Closes the
     # agent→human handoff that's keeping MCP conversion at 0.012%.

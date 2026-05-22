@@ -218,6 +218,18 @@ def open_pr_for_finding():
     if not _GITHUB_TOKEN:
         return jsonify(ok=False, error="GITHUB_TOKEN env var not set; cannot open PR"), 503
 
+    # Stage-5 guardrails: kill switch + daily change budget. Every autonomous
+    # PR passes through here. Manual callers can override with ?force=1.
+    if request.args.get("force") not in ("1", "true", "yes"):
+        try:
+            from routes.brain_guardrails import can_open_pr
+            _ok, _why = can_open_pr()
+            if not _ok:
+                return jsonify(ok=False, error="autonomy_gate_closed",
+                               reason=_why), 429
+        except Exception as _ge:
+            return jsonify(ok=False, error=f"guardrail check failed: {_ge}"), 503
+
     finding = request.get_json(silent=True) or {}
     issue = finding.get("issue", "")
     fix_handler = _FIX_HANDLERS.get(issue)
@@ -272,12 +284,20 @@ def open_pr_for_finding():
                         error="PR creation failed (branch + commit succeeded)",
                         branch=branch_name), 503
 
+    # Count this PR against today's budget (after success only).
+    try:
+        from routes.brain_guardrails import record_pr_opened
+        _budget_used = record_pr_opened()
+    except Exception:
+        _budget_used = None
+
     return jsonify(
         ok=True,
         pr_url=pr.get("html_url"),
         pr_number=pr.get("number"),
         branch=branch_name,
         summary=summary,
+        auto_prs_today=_budget_used,
     ), 200
 
 
