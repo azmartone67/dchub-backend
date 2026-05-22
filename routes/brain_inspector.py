@@ -535,12 +535,19 @@ def brief_draft_prs(bid: int):
     # POST its /run endpoint and let it pull from L14 + L21 findings
     # (which is its existing path). The candidates we found here are
     # logged so a human can correlate.
+    # r33-Q+l22-port-fix (2026-05-21): PORT 8000 → 8080. The app runs on
+    # 8080 (gunicorn binds $PORT which is 8080 on Railway). 8000 was
+    # silently failing — connection refused — which is exactly why
+    # /brain/innovation showed 0 L22 PR proposals despite the page
+    # explicitly calling out the Inspector→L22 handoff as the next
+    # autonomy frontier. ONE CHARACTER. Months of "wired but not firing"
+    # was a port typo.
     try:
         import urllib.request, json as _json
         admin_key = (os.environ.get("DCHUB_ADMIN_KEY")
                       or "dchub-internal-sync-2026")
         req = urllib.request.Request(
-            "http://localhost:8000/api/v1/brain/auto-code/run",
+            "http://localhost:8080/api/v1/brain/auto-code/run",
             data=_json.dumps({"trigger": "inspector",
                               "brief_id": bid}).encode(),
             method="POST",
@@ -692,6 +699,112 @@ def _generate_brief() -> dict:
         finally:
             try: c.close()
             except Exception: pass
+
+    # r33-Q+inspector-bridge (2026-05-21) — C + E together.
+    #
+    # C) Persist Inspector's Degrading + Needs-attention items to
+    #    brain_findings so the consistency-radar page actually shows
+    #    what Inspector sees. Before this hook, the radar showed
+    #    "0 Open findings" even when Inspector flagged 8-10 degrading
+    #    items per brief — the two were on different data planes.
+    #
+    # E) Auto-trigger the L22 draft-PR pipeline. The Inspector already
+    #    identifies code-fix RECIPE candidates in every brief, but the
+    #    handoff to L22 was only firing when an admin manually clicked
+    #    "Draft PRs". After this hook, L22 gets the candidates the
+    #    moment the brief lands. Combined with the port fix in
+    #    brief_draft_prs, this is what unblocks the 0-L22-proposals
+    #    embarrassment on /brain/innovation.
+    #
+    # Both wrapped in try/except so a failure doesn't taint the brief
+    # itself — the brief is the canonical artifact; these are surfaces
+    # on top of it.
+    brief_id = out.get("id")
+    if brief_id and out.get("brief_md"):
+        # ── C: persist Degrading + Attention items to brain_findings ──
+        try:
+            md = out["brief_md"]
+            findings = []
+            for section in ("Degrading", "Needs attention"):
+                try:
+                    body = md.split(f"## {section}", 1)[1]
+                    body = body.split("\n## ", 1)[0]
+                except Exception:
+                    continue
+                # Each bullet becomes a finding. Detail = the bullet text.
+                for line in body.split("\n"):
+                    line = line.strip()
+                    if not line.startswith(("-", "*", "+")):
+                        continue
+                    # Strip bullet + cleanup
+                    bullet = line.lstrip("-*+ ").strip()
+                    if len(bullet) < 8:
+                        continue
+                    # Extract issue key from leading **bold** segment if present;
+                    # otherwise use first 80 chars
+                    issue_key = ""
+                    if bullet.startswith("**"):
+                        try:
+                            issue_key = bullet.split("**", 2)[1][:100]
+                        except Exception:
+                            pass
+                    if not issue_key:
+                        issue_key = bullet.split(":", 1)[0][:100]
+                    findings.append({
+                        "issue":  f"inspector:{section.lower().replace(' ', '_')}:{issue_key}",
+                        "url":    f"/api/v1/brain/brief/{brief_id}",
+                        "count":  1,
+                        "detail": bullet[:2000],
+                    })
+            if findings:
+                try:
+                    from routes.brain_consistency_radar import _persist_findings_to_db
+                    n = _persist_findings_to_db(findings)
+                    out["inspector_findings_persisted"] = n
+                    logger.info(
+                        "Inspector → brain_findings: persisted %d items "
+                        "from brief %d", n, brief_id,
+                    )
+                except Exception as _e:
+                    out["inspector_findings_persist_error"] = str(_e)[:200]
+        except Exception as _e:
+            out["inspector_findings_persist_error"] = str(_e)[:200]
+
+        # ── E: auto-fire L22 draft-PR pipeline ────────────────────────
+        # Run in a background thread so the brief endpoint returns fast.
+        # L22 will take 10-30s to draft; the brief caller shouldn't wait.
+        try:
+            import threading as _th
+            def _bg_l22():
+                try:
+                    import urllib.request, json as _json
+                    admin_key = (os.environ.get("DCHUB_ADMIN_KEY")
+                                  or "dchub-internal-sync-2026")
+                    req = urllib.request.Request(
+                        "http://localhost:8080/api/v1/brain/auto-code/run",
+                        data=_json.dumps({"trigger": "inspector_auto",
+                                          "brief_id": brief_id}).encode(),
+                        method="POST",
+                        headers={"Content-Type": "application/json",
+                                  "X-Admin-Key": admin_key},
+                    )
+                    with urllib.request.urlopen(req, timeout=45) as resp:
+                        logger.info(
+                            "Inspector → L22 auto-fire for brief %d: "
+                            "HTTP %s", brief_id, resp.status,
+                        )
+                except Exception as _e:
+                    logger.warning(
+                        "Inspector → L22 auto-fire failed: %s",
+                        str(_e)[:200],
+                    )
+            _th.Thread(
+                target=_bg_l22, daemon=True,
+                name=f"inspector-l22-brief-{brief_id}",
+            ).start()
+            out["l22_autofire_scheduled"] = True
+        except Exception as _e:
+            out["l22_autofire_error"] = str(_e)[:200]
 
     return out
 
