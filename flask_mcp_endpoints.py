@@ -1002,25 +1002,27 @@ def mcp_funnel():
             # window with the probe platforms excluded. These are what the
             # public /cited-by + homepage dashboards should display.
             try:
-                # This query passes %s params, so psycopg2 parses the WHOLE
-                # SQL string for placeholders — the LIKE '%chatgpt%' etc. in
-                # _platform_case would trip it ("got '%c'"). Double the % in
-                # the embedded classifier so only the real %s params bind.
-                _platform_case_esc = _platform_case.replace('%', '%%')
+                # No bound params here: passing %s tripped the driver two ways
+                # (psycopg2 parsed the LIKE '%chatgpt%' in _platform_case as
+                # placeholders → "got '%c'"; and the tuple binding rendered a
+                # bare "$1" Postgres couldn't parse). _PROBE_PLATFORMS is a
+                # trusted hardcoded constant, so inline it as a SQL literal
+                # IN-list — no binding, so _platform_case's % are left alone.
+                _probe_in = ",".join(
+                    "'" + str(p).replace("'", "''") + "'" for p in _PROBE_PLATFORMS)
                 cur.execute(
                     f"""SELECT
                           COUNT(*) FILTER (
-                            WHERE {_platform_case_esc} NOT IN %s
+                            WHERE {_platform_case} NOT IN ({_probe_in})
                           ) AS real_calls,
                           COUNT(*) FILTER (
-                            WHERE {_platform_case_esc}     IN %s
+                            WHERE {_platform_case}     IN ({_probe_in})
                           ) AS probe_calls,
                           COUNT(DISTINCT ip_address) FILTER (
-                            WHERE {_platform_case_esc} NOT IN %s
+                            WHERE {_platform_case} NOT IN ({_probe_in})
                           ) AS real_unique_ips
                        FROM mcp_tool_calls
-                       WHERE created_at >= NOW() - INTERVAL '7 days'""",
-                    (_PROBE_PLATFORMS, _PROBE_PLATFORMS, _PROBE_PLATFORMS),
+                       WHERE created_at >= NOW() - INTERVAL '7 days'"""
                 )
                 _r = cur.fetchone() or (0, 0, 0)
                 out["tool_calls_7d_real"]   = int(_r[0] or 0)
