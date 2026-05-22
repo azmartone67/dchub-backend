@@ -96,20 +96,20 @@ def _open_pr(title: str, head: str, body: str) -> dict | None:
 
 # ─── Fix templates ──────────────────────────────────────────────────────
 
-def _fix_blueprint_silent_failure(finding: dict) -> tuple[str | None, str]:
+def _fix_blueprint_silent_failure(finding: dict) -> tuple[str | None, str | None, str]:
     """For blueprint_registered_but_not_serving — relocate the import +
     register_blueprint pair into the safe zone after weekly_digest_bp.
 
-    Returns (proposed_new_main_py_content, diff_summary). Returns None
+    Returns (file_path, proposed_new_content, diff_summary). Returns None
     content if it can't safely automate the fix.
     """
     # Extract blueprint var name from finding.url like "main.py: register_blueprint(foo_bp)"
     m = re.search(r"register_blueprint\((\w+)\)", finding.get("url", ""))
-    if not m: return None, "Could not parse blueprint name from finding"
+    if not m: return None, None, "Could not parse blueprint name from finding"
     bp_var = m.group(1)
 
     main_py, _sha = _get_file("main.py")
-    if not main_py: return None, "Could not read main.py"
+    if not main_py: return None, None, "Could not read main.py"
 
     # Find any existing try/except wrap that registers this bp
     pattern = re.compile(
@@ -119,7 +119,7 @@ def _fix_blueprint_silent_failure(finding: dict) -> tuple[str | None, str]:
         re.MULTILINE)
     found = pattern.search(main_py)
     if not found:
-        return None, f"Could not locate try/except for {bp_var} in main.py"
+        return None, None, f"Could not locate try/except for {bp_var} in main.py"
     module = found.group(1)
 
     # Find the safe-zone anchor (the weekly_digest_bp block)
@@ -127,7 +127,7 @@ def _fix_blueprint_silent_failure(finding: dict) -> tuple[str | None, str]:
                    "        from routes.weekly_digest import weekly_digest_bp\n"
                    "        app.register_blueprint(weekly_digest_bp)")
     if safe_anchor not in main_py:
-        return None, "Could not find safe-zone anchor"
+        return None, None, "Could not find safe-zone anchor"
 
     # Build the replacement
     new_block = (
@@ -148,11 +148,52 @@ def _fix_blueprint_silent_failure(finding: dict) -> tuple[str | None, str]:
                f"`app.register_blueprint({bp_var})` from line ~unknown "
                f"(late-line zone) to ~line 1180 (safe zone next to "
                f"weekly_digest_bp).")
-    return new_main, summary
+    return "main.py", new_main, summary
+
+
+def _fix_generic_find_replace(finding: dict) -> tuple[str | None, str | None, str]:
+    """Generic, deterministic single-file edit: apply an exact string
+    find→replace to a named file. This is the same primitive Layer 4's
+    healer already produces (brain_proposed_fixes.find/replace), now able to
+    open a review PR for ANY file — not just main.py.
+
+    Finding fields:
+      file     — repo-relative path (required)
+      find     — exact substring to replace (required, must be present + unique)
+      replace  — replacement text (required; may be empty for deletion)
+
+    Safety: refuses if `find` is missing, absent from the file, or appears
+    more than once (ambiguous). Path is constrained to the repo (no '..',
+    no leading '/'). PR is review-gated — humans merge.
+    """
+    path = (finding.get("file") or "").strip().lstrip("/")
+    find = finding.get("find")
+    replace = finding.get("replace", "")
+    if not path or find is None:
+        return None, None, "generic_find_replace needs 'file' and 'find'"
+    if ".." in path or path.startswith("/"):
+        return None, None, f"unsafe path: {path}"
+    if not find:
+        return None, None, "'find' must be a non-empty string"
+    content, _sha = _get_file(path)
+    if content is None:
+        return None, None, f"could not read {path}"
+    n = content.count(find)
+    if n == 0:
+        return None, None, f"'find' string not present in {path}"
+    if n > 1:
+        return None, None, f"'find' appears {n}× in {path} — ambiguous, refused"
+    new_content = content.replace(find, replace, 1)
+    if new_content == content:
+        return None, None, "no-op edit (find == replace)"
+    summary = (f"Applied a single exact find→replace in `{path}` "
+               f"({len(find)}→{len(replace)} chars).")
+    return path, new_content, summary
 
 
 _FIX_HANDLERS = {
     "blueprint_registered_but_not_serving": _fix_blueprint_silent_failure,
+    "generic_find_replace": _fix_generic_find_replace,
 }
 
 
@@ -185,8 +226,8 @@ def open_pr_for_finding():
                        error=f"No fix template for issue type '{issue}'",
                        supported=list(_FIX_HANDLERS.keys())), 400
 
-    new_main, summary = fix_handler(finding)
-    if not new_main:
+    file_path, new_content, summary = fix_handler(finding)
+    if not new_content or not file_path:
         return jsonify(ok=False, error=f"Fix could not be templated: {summary}"), 422
 
     # Open the PR
@@ -200,14 +241,14 @@ def open_pr_for_finding():
     if not _create_branch(branch_name, sha):
         return jsonify(ok=False, error=f"Could not create branch {branch_name}"), 503
 
-    # Get current main.py sha
-    _cur_main, main_sha = _get_file("main.py", ref="main")
-    if not main_sha:
-        return jsonify(ok=False, error="Could not get main.py sha"), 503
+    # Get current sha for the target file
+    _cur, file_sha = _get_file(file_path, ref="main")
+    if not file_sha:
+        return jsonify(ok=False, error=f"Could not get sha for {file_path}"), 503
 
-    if not _commit_file("main.py", new_main,
-                         f"fix(brain): auto-relocate for {issue}", branch_name, main_sha):
-        return jsonify(ok=False, error="Could not commit fix"), 503
+    if not _commit_file(file_path, new_content,
+                         f"fix(brain): {issue} in {file_path}", branch_name, file_sha):
+        return jsonify(ok=False, error=f"Could not commit fix to {file_path}"), 503
 
     pr_body = (
         f"## Brain auto-fix\n\n"
