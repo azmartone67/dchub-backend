@@ -1,0 +1,56 @@
+name: ISO grid telemetry pull
+
+# Phase FF+iso (2026-05-22): periodically pull + STORE live ISO grid
+# telemetry so DCPI has a real-time grid-headroom history to draw on.
+# The adapters (NYISO + CAISO live today; ERCOT once its key activates)
+# are fail-safe and idempotent — credless/unimplemented ISOs no-op.
+#
+# Runs in the scheduler (here), NOT in the Flask request path: the endpoint
+# uses its own short-lived psycopg2 connection and the public ISOs return
+# ~1 row each, so this is nowhere near the bulk-loader pattern that caused
+# the earlier Neon pool-exhaustion incidents.
+
+on:
+  schedule:
+    - cron: '*/20 * * * *'   # every 20 min — real-time grid data
+  workflow_dispatch: {}
+
+permissions:
+  contents: read
+
+env:
+  RAILWAY_BASE: https://dchub-backend-production.up.railway.app
+
+jobs:
+  pull:
+    runs-on: ubuntu-latest
+    timeout-minutes: 4
+    steps:
+      - name: Pull + store ISO telemetry
+        env:
+          ADMIN_KEY: ${{ secrets.DCHUB_ADMIN_KEY }}
+        run: |
+          set -euo pipefail
+          if [ -z "$ADMIN_KEY" ]; then
+            echo "::warning::DCHUB_ADMIN_KEY not set — skipping ISO pull"
+            exit 0
+          fi
+          response=$(curl -sS --max-time 120 -X POST \
+            -H "X-Admin-Key: $ADMIN_KEY" \
+            -H "Content-Type: application/json" \
+            "$RAILWAY_BASE/api/v1/iso/pull" \
+            || echo '{"ok":false,"error":"curl_fail"}')
+          echo "$response" | head -c 2000
+          echo
+          echo "$response" | python3 -c "
+          import json, sys
+          try:
+              d = json.load(sys.stdin)
+              ran = d.get('ran', [])
+              hits = [r for r in ran if r.get('records')]
+              print(f'::notice::iso pull: stored={d.get(\"stored\",0)} '
+                    f'live={[r[\"iso\"] for r in hits]} '
+                    f'skipped={d.get(\"skipped\",[])}')
+          except Exception as e:
+              print(f'::warning::iso pull parse failed: {e}')
+          "

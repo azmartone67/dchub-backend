@@ -536,6 +536,30 @@ try:
         fresh = request.args.get("fresh") in ("1", "true", "yes")
         return jsonify(_ercot_product_catalog(fresh=fresh)), 200
 
+    @iso_grid_bp.post("/api/v1/iso/pull")
+    def _iso_pull():
+        """Pull + STORE telemetry for every credentialed ISO. Admin-gated
+        (X-Admin-Key == BRAIN_ADMIN_KEY). Meant to be driven by a scheduler
+        cron, not hot paths. Uses its own short-lived psycopg2 connection
+        (isolated from the app pool), and the public ISOs return ~1 row each,
+        so it's nowhere near the bulk-loader pattern that caused pool issues."""
+        import hmac as _hmac
+        # Accept the system-standard admin key (what every other cron uses)
+        # OR the operator BRAIN_ADMIN_KEY — whichever is configured.
+        candidates = [os.environ.get(k, "") for k in
+                      ("DCHUB_ADMIN_KEY", "DCHUB_INTERNAL_KEY", "BRAIN_ADMIN_KEY")]
+        candidates = [c for c in candidates if c]
+        provided = request.headers.get("X-Admin-Key", "")
+        if not candidates:
+            return jsonify(ok=False, error="no admin key configured"), 503
+        if not (provided and any(_hmac.compare_digest(provided, c) for c in candidates)):
+            return jsonify(ok=False, error="admin auth required"), 401
+        try:
+            summary = run_all()
+            return jsonify(ok=True, **summary), 200
+        except Exception as e:
+            return jsonify(ok=False, error=str(e)[:200]), 500
+
     @iso_grid_bp.get("/api/v1/iso/sample/<iso>")
     def _iso_sample(iso):
         """Read-only live pull for one ISO — proves an adapter works WITHOUT
