@@ -148,12 +148,44 @@ def _gather_cited_by_data(days: int = 30) -> dict:
         p["top_tools"] = [{"tool": t, "calls": n} for t, n in tb]
         del p["tool_breakdown"]
 
+    # Phase FF (2026-05-22): the UA fingerprint catches only a sliver — AI
+    # agents proxy through mcp-remote with generic UAs, so most calls are
+    # "unattributed". The REAL proof is the ai_citations table: verbatim quotes
+    # where a NAMED engine cited DC Hub. Surface those — that's the gold.
+    verbatim = []
+    try:
+        c2 = _conn()
+        try:
+            cur2 = c2.cursor()
+            cur2.execute("""
+                SELECT engine, prompt_text, response_text, observed_at
+                  FROM ai_citations
+                 WHERE dchub_cited = true
+                   AND response_text IS NOT NULL AND response_text <> ''
+                 ORDER BY observed_at DESC LIMIT 12
+            """)
+            for eng, prompt, resp, ts in (cur2.fetchall() or []):
+                verbatim.append({
+                    "engine": (eng or "AI assistant"),
+                    "prompt": (prompt or "")[:140],
+                    "quote":  (resp or "")[:420],
+                    "observed_at": ts.isoformat() if ts else None,
+                })
+        finally:
+            try: c2.close()
+            except Exception: pass
+    except Exception as e:
+        logger.warning(f"cited_by verbatim citations failed: {e}")
+
+    classified = sum(p["total_calls"] for p in platforms)
     return {
         "window_days": days,
         "total_calls_in_window": total_calls,
         "total_unique_user_agents": total_unique_uas,
         "platforms_identified": len(platforms),
         "platforms": platforms,
+        "unattributed_calls": max(0, total_calls - classified),
+        "verbatim_citations": verbatim,
     }
 
 
@@ -185,10 +217,26 @@ def cited_by_page():
           <td>{tools or '<i>—</i>'}</td>
           <td class="ago">{last}</td>
         </tr>"""
+    unattributed = data.get("unattributed_calls", 0)
     if not platforms:
         rows_html = ('<tr><td colspan="4" style="text-align:center;color:#999;'
-                     'padding:2rem">No identified LLM platforms in the last 30 days '
-                     '(or telemetry just bootstrapping).</td></tr>')
+                     'padding:2rem">Most agents reach us via mcp-remote with a '
+                     'generic user-agent (so they show as unattributed below) — '
+                     'the verbatim citations are the real signal.</td></tr>')
+
+    # Phase FF: verbatim AI-citation quotes — the proof a static PDF can't show.
+    citations = data.get("verbatim_citations", [])
+    quotes_html = ""
+    for q in citations:
+        quotes_html += f"""<div class="quote">
+          <div class="q-engine">{q['engine']}</div>
+          <div class="q-text">&ldquo;{q['quote']}&rdquo;</div>
+          <div class="q-meta">{(q.get('prompt') or '')}</div>
+        </div>"""
+    quotes_section = (f"""
+      <h2 class="qh">What AI platforms actually said about DC Hub</h2>
+      <p class="sub" style="margin:0 0 1.2rem">Verbatim citations captured from named engines — the proof static research (DCHawk, dcByte) structurally cannot show.</p>
+      <div class="quotes">{quotes_html}</div>""" if citations else "")
 
     html = f"""<!doctype html><html lang=en>
 <head><meta charset=utf-8>
@@ -225,21 +273,34 @@ td.ago{{color:#6b7280;font-size:.85rem}}
 .foot{{color:#6b7280;margin-top:2rem;font-size:.85rem}}
 .foot a{{color:#a855f7;text-decoration:none}}
 code{{background:rgba(255,255,255,.06);padding:1px 6px;border-radius:4px;font-size:.85em}}
+.qh{{font-size:1.5rem;font-weight:800;letter-spacing:-.02em;margin:2.6rem 0 .4rem}}
+.quotes{{display:grid;grid-template-columns:repeat(auto-fit,minmax(300px,1fr));gap:14px;margin-bottom:1rem}}
+.quote{{background:#0f1119;border:1px solid rgba(255,255,255,.08);border-left:3px solid #a855f7;border-radius:10px;padding:18px 20px}}
+.q-engine{{font-family:'JetBrains Mono',monospace;font-size:.78rem;font-weight:700;color:#a855f7;text-transform:uppercase;letter-spacing:.06em;margin-bottom:8px}}
+.q-text{{font-size:1.02rem;color:#f3f4f6;line-height:1.55}}
+.q-meta{{color:#6b7280;font-size:.82rem;margin-top:10px;font-style:italic}}
 </style>
 </head><body>
 <div class="wrap">
 <div class="pill">● Live · Real-time MCP telemetry · Updated continuously</div>
 <h1>AI Agents Citing DC Hub</h1>
-<p class="sub">Every call to DC Hub's MCP server is logged with a user-agent fingerprint.
-This page shows which AI platforms are using us as the source of truth for data center
-intelligence — in the last 30 days, in real time.</p>
+<p class="sub">Two kinds of proof. <b style="color:#f3f4f6">Below:</b> verbatim citations from named
+AI platforms that referenced DC Hub by name. <b style="color:#f3f4f6">Then:</b> live MCP-server
+telemetry — tens of thousands of tool calls a month, most arriving via mcp-remote with generic
+user-agents, so only a fraction self-identify. Both are signals a static research PDF can't produce.</p>
 
 <div class="kpi-row">
-  <div class="kpi"><div class="kpi-v">{total:,}</div><div class="kpi-l">Tool calls (last 30d)</div></div>
-  <div class="kpi"><div class="kpi-v">{len(platforms)}</div><div class="kpi-l">AI platforms identified</div></div>
+  <div class="kpi"><div class="kpi-v">{total:,}</div><div class="kpi-l">MCP tool calls (last 30d)</div></div>
+  <div class="kpi"><div class="kpi-v">{unattributed:,}</div><div class="kpi-l">Calls via generic / proxied UAs</div></div>
+  <div class="kpi"><div class="kpi-v">{len(platforms)}</div><div class="kpi-l">Self-identified platforms</div></div>
   <div class="kpi"><div class="kpi-v">{data.get('total_unique_user_agents',0)}</div><div class="kpi-l">Distinct user-agents</div></div>
 </div>
 
+{quotes_section}
+
+<h2 class="qh">Live MCP telemetry — who's calling, for what</h2>
+<p class="sub" style="margin:0 0 1.2rem">Every call to DC Hub's MCP server is logged with a user-agent.
+The ones that self-identify are listed here; the rest sit in the unattributed bucket above.</p>
 <table>
 <thead><tr><th>Platform</th><th class="num">Calls (30d)</th><th>Top tools called</th><th>Last seen</th></tr></thead>
 <tbody>{rows_html}</tbody>
