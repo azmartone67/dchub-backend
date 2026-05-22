@@ -1367,6 +1367,39 @@ export default {
     }
 
     // ══════════════════════════════════════════════════════════════
+    // Phase FF (2026-05-22): /brain/innovation early backend passthrough.
+    // The PHASE_282 backend-page block (below) was NOT forwarding this path
+    // (404, no x-dc-hub-source header) despite Set membership — same symptom
+    // as /freshness, /enterprise. Rather than rely on that shadowed block,
+    // forward here FIRST (same proven pattern as the /press-release + /mcp
+    // guards above) so it can't be skipped by any downstream handler. Backend
+    // route brain_innovation_bp serves /brain/innovation (verified 200).
+    // ══════════════════════════════════════════════════════════════
+    if (pathname === '/brain/innovation' || pathname === '/brain/innovation/') {
+      try {
+        const fwdHeaders = new Headers(request.headers);
+        fwdHeaders.delete('host');
+        fwdHeaders.delete('cf-connecting-ip');
+        fwdHeaders.delete('cf-ray');
+        fwdHeaders.delete('cf-visitor');
+        const upstream = await fetch(`${RAILWAY_BACKEND}${pathname}${url.search}`, {
+          method: request.method,
+          headers: fwdHeaders,
+          body: (request.method === 'GET' || request.method === 'HEAD') ? undefined : request.body,
+          redirect: 'manual',
+        });
+        const h = new Headers(upstream.headers);
+        h.set('X-DC-Worker-Version', WORKER_VERSION);
+        h.set('x-dc-hub-source', 'worker-brain-innovation-early');
+        h.delete('cf-cache-status');
+        return new Response(upstream.body, { status: upstream.status, statusText: upstream.statusText, headers: h });
+      } catch (e) {
+        return new Response('brain/innovation proxy failed: ' + (e && e.message ? e.message : String(e)),
+          { status: 502, headers: { 'X-DC-Worker-Version': WORKER_VERSION, 'x-dc-hub-source': 'worker-brain-innovation-error' } });
+      }
+    }
+
+    // ══════════════════════════════════════════════════════════════
     // v4.6.1 HARD-GUARANTEED MCP PASSTHROUGH (runs before ANY routing)
     // DO NOT move this. DO NOT add logic above it (except the press redirect).
     // ══════════════════════════════════════════════════════════════
