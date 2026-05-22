@@ -357,11 +357,12 @@ def _compute_report(year: int | None = None,
                     )
                     if out["top_deals"]:
                         out["top_deals_window"] = "rolling_30d"
-            except Exception:
+            except Exception as _tde:
                 try: c.rollback()
                 except Exception: pass
                 out["top_deals"] = []
                 out["top_deals_window"] = "none"
+                out["top_deals_error"] = f"{type(_tde).__name__}: {str(_tde)[:200]}"
 
             # ── TOP MARKETS by total MW ─────────────────────────────────
             # FIX r32 (2026-05-20): drop the `power_mw IS NOT NULL` row
