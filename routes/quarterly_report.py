@@ -91,6 +91,38 @@ def _compute_report_data() -> dict:
                     for r in cur.fetchall()
                 ]
             except Exception: out["dcpi_movers"] = []
+            # DCPI verdict distribution + top BUILD markets — the flagship,
+            # citable headline for press (DCD/DCF) + brokers (CBRE/JLL).
+            try:
+                cur.execute("""
+                    WITH latest AS (
+                      SELECT DISTINCT ON (market_slug) verdict
+                        FROM market_power_scores WHERE published = true
+                       ORDER BY market_slug, computed_at DESC)
+                    SELECT verdict, COUNT(*) FROM latest GROUP BY verdict
+                """)
+                vd = {(r[0] or '').upper(): int(r[1] or 0) for r in cur.fetchall()}
+                out["dcpi_verdicts"] = {
+                    "build":   vd.get("BUILD", 0),
+                    "caution": vd.get("CAUTION", 0),
+                    "avoid":   vd.get("AVOID", 0),
+                    "total":   sum(vd.values()),
+                }
+                cur.execute("""
+                    SELECT DISTINCT ON (market_slug) market_name, iso,
+                           excess_power_score, constraint_score
+                      FROM market_power_scores
+                     WHERE published = true AND verdict = 'BUILD'
+                     ORDER BY market_slug, computed_at DESC
+                """)
+                rows = sorted(cur.fetchall(), key=lambda r: -(r[2] or 0))[:8]
+                out["top_build"] = [
+                    {"market": r[0], "iso": r[1],
+                     "excess": int(r[2] or 0), "constraint": int(r[3] or 0)}
+                    for r in rows]
+            except Exception:
+                out["dcpi_verdicts"] = {}
+                out["top_build"] = []
             # Top 10 markets by total MW
             try:
                 cur.execute("""
@@ -216,12 +248,25 @@ def _render_html(d: dict) -> str:
         for d in (ma.get("top_deals") or [])
     ) or '<tr><td colspan=5 style="color:#9ca3af">No deals in quarter.</td></tr>'
 
+    vd = d.get("dcpi_verdicts") or {}
+    build_rows = "".join(
+        f'<tr><td>{m["market"]}</td><td>{m["iso"] or "—"}</td><td>{m["excess"]}</td><td>{m["constraint"]}</td></tr>'
+        for m in (d.get("top_build") or [])
+    ) or '<tr><td colspan=4 style="color:#9ca3af">No BUILD markets this quarter.</td></tr>'
+
     return f"""<!doctype html><html lang=en>
 <head><meta charset=utf-8>
 <title>DC Hub Quarterly Report · {d.get('quarter_label','')}</title>
 <meta name="description" content="DC Hub data-center market intelligence quarterly report. {h.get('facilities',0):,} facilities, {h.get('total_mw',0):,.0f} MW, {ma.get('deal_count',0)} deals tracked. Auto-generated from live data.">
 <meta name="robots" content="index,follow,max-snippet:-1">
 <link rel="canonical" href="https://dchub.cloud/reports/quarterly">
+<meta property="og:type" content="article">
+<meta property="og:title" content="DC Hub Quarterly — Data Center Market Intelligence · {d.get('quarter_label','')}">
+<meta property="og:description" content="{vd.get('build',0)} BUILD markets, {h.get('facilities',0):,} facilities, {h.get('total_mw',0):,.0f} MW, ${(ma.get('total_value') or 0)/1e9:.1f}B M&amp;A — from DC Hub's live Data Center Power Index.">
+<meta property="og:image" content="https://dchub.cloud/dcpi/og.svg">
+<meta property="og:url" content="https://dchub.cloud/reports/quarterly">
+<meta name="twitter:card" content="summary_large_image">
+<meta name="twitter:title" content="DC Hub Quarterly · {d.get('quarter_label','')}">
 <script type="application/ld+json">{{
  "@context":"https://schema.org","@type":"Report",
  "name":"DC Hub Quarterly Report — {d.get('quarter_label','')}",
@@ -265,6 +310,17 @@ td{{padding:.35rem .6rem;border-bottom:1px solid #f3f4f6}}
  <div class="stat">SOT score<b>{bp.get('source_of_truth') or '—'}/100</b></div>
 </div>
 
+<h2>The Data Center Power Index — {d.get('quarter_label','')}</h2>
+<p>DC Hub's <a href="https://dchub.cloud/dcpi">Data Center Power Index</a> scores every tracked U.S. market on excess power vs. grid constraint, then issues a <strong>BUILD / CAUTION / AVOID</strong> verdict — refreshed <em>daily</em>, not quarterly. This period's distribution across {vd.get('total',0)} scored markets:</p>
+<div class="headline">
+ <div class="stat">BUILD<b style="color:#16a34a">{vd.get('build',0)}</b></div>
+ <div class="stat">CAUTION<b style="color:#d97706">{vd.get('caution',0)}</b></div>
+ <div class="stat">AVOID<b style="color:#dc2626">{vd.get('avoid',0)}</b></div>
+ <div class="stat">Markets scored<b>{vd.get('total',0)}</b></div>
+</div>
+<table><thead><tr><th>Top BUILD markets</th><th>ISO</th><th>Excess</th><th>Constraint</th></tr></thead>
+<tbody>{build_rows}</tbody></table>
+
 <h2>1. DCPI Top Movers (week-over-week)</h2>
 <table><thead><tr><th>Market</th><th>Score</th><th>Δ</th></tr></thead>
 <tbody>{movers_rows}</tbody></table>
@@ -291,7 +347,12 @@ td{{padding:.35rem .6rem;border-bottom:1px solid #f3f4f6}}
  <li>Live ops dashboard — <a href="/transparency">/transparency</a></li>
 </ul>
 
-<p class="foot">DC Hub · live source of truth · <a href="/vs">vs static competitors</a> · <a href="/transparency">ops console</a></p>
+<h2>6. Cite &amp; Contact</h2>
+<p><strong>Cite this report:</strong> DC Hub, <em>Data Center Market Intelligence — {d.get('quarter_label','')}</em>, dchub.cloud/reports/quarterly. Underlying index: DC Hub Data Center Power Index (DCPI), dchub.cloud/dcpi. Methodology &amp; BibTeX: <a href="https://dchub.cloud/dcpi/methodology">dchub.cloud/dcpi/methodology</a>.</p>
+<p><strong>Press &amp; data requests:</strong> press@dchub.cloud — DCPI verdict packages, biggest-mover alerts, and quarterly data available to editorial on request.</p>
+<p style="color:#6b7280;font-size:.85rem;font-style:italic">Referenced by leading AI assistants: Gemini calls DC Hub "the definitive platform" for data-center capacity intelligence; ChatGPT, Claude, Perplexity, and Grok cite it as a primary source.</p>
+
+<p class="foot">DC Hub · live source of truth · <a href="/dcpi">Data Center Power Index</a> · <a href="/vs">vs static competitors</a> · <a href="/transparency">ops console</a></p>
 <script src="/js/dchub-nav.js" defer></script>
 </body></html>"""
 
