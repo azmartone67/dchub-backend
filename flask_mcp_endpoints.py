@@ -233,6 +233,14 @@ def claim_key():
     body = request.get_json(silent=True) or {}
     client_name = (str(body.get("client_name") or ""))[:80]
     intended_use = (str(body.get("intended_use") or ""))[:400]
+    # Phase FF (2026-05-22): OPTIONAL email capture. Turns claimed keys into
+    # addressable contacts (the visitor-intel "0 known email" → a real nurture
+    # list + unblocks /admin/upgrade-pool/backfill-emails). Frictionless: omit
+    # it and you still get a key instantly. Purely identity capture — does NOT
+    # touch gating or daily limits (that stays in the gatekeeper).
+    email = (str(body.get("email") or "")).strip().lower()[:200]
+    if email and not _kc_re.match(r"^[^@\s]+@[^@\s]+\.[^@\s]+$", email):
+        email = ""  # invalid → ignore, still mint the anonymous key
 
     # Real IP behind Cloudflare / Railway proxy. Trust the first hop in XFF.
     ip = (request.headers.get("X-Forwarded-For", request.remote_addr or "")
@@ -329,6 +337,7 @@ def claim_key():
         "intended_use": intended_use or None,
         "claim_id": claim_id,
         "claimed_at": datetime.now(timezone.utc).isoformat(),
+        "email_captured": bool(email),
     }
 
     try:
@@ -337,7 +346,7 @@ def claim_key():
                 """INSERT INTO mcp_dev_keys
                      (api_key, developer_id, email, tier, status, metadata)
                    VALUES (%s, %s, %s, 'free', 'active', %s::jsonb)""",
-                (api_key, developer_id, None, json.dumps(metadata)),
+                (api_key, developer_id, (email or None), json.dumps(metadata)),
             )
     except Exception as e:
         return jsonify(
@@ -355,20 +364,31 @@ def claim_key():
         developer_id=developer_id,
         tier="free",
         claim_id=claim_id,
-        unverified=True,
+        unverified=(not email),
+        email_captured=bool(email),
+        email=(email or None),
         usage_instructions=(
             "Pass this key as X-API-Key header on requests to dchub.cloud/api/v1/* "
             "or in your MCP client config when connecting to dchub.cloud/mcp."
         ),
+        # Phase FF (2026-05-22): honest email-capture nudge. If no email was
+        # provided, invite one — it saves the key, enables usage alerts +
+        # early access to new tools, and (per the funnel plan) is the hook for
+        # a future higher daily allowance for verified contacts.
+        email_nudge=(None if email else
+            "Tip: re-claim with {\"email\": \"you@company.com\"} to save this "
+            "key to your account, get usage alerts before you hit the cap, and "
+            "early access to new tools."),
         free_tier_summary={
             "daily_calls": 100,
             "daily_caps": {"get_grid_intelligence": 10, "get_fiber_intel": 10},
             "paid_only_tools": ["analyze_site", "compare_sites", "get_dchub_recommendation"],
         },
         rate_limit_note=(
-            "This key was claimed without email verification. The /api/v1/keys/claim "
-            "endpoint is rate-limited to 1 key per IP per 24h. To lift that limit, "
-            "verify an email at /api/v1/dev-signup later."
+            ("Email captured — thanks. " if email else
+             "This key was claimed without an email. ") +
+            "The /api/v1/keys/claim endpoint is rate-limited to 1 key per IP "
+            "per 24h."
         ),
         # Phase FF+7 (2026-05-19): point at /upgrade entry-point instead
         # of bare /pricing. /upgrade mints a pair-code on demand and 302s
