@@ -190,6 +190,15 @@ def _call_claude(prompt: str) -> dict | None:
     if not _ANTHROPIC_KEY: return None
     try:
         import requests
+        # r33-Q+l8-timeout (2026-05-21): tightened from 45s to (10, 25)
+        # tuple = 10s connect, 25s read. Tonight's logs showed L8 calls
+        # held in-flight 90-110s. The old timeout=45 was a single value
+        # which requests interprets as BOTH connect+read separately, so
+        # the real cap was 90s (worst case). The tuple form makes the
+        # cap a hard 25s read. When Anthropic is slow, L8 returns None
+        # fast and the watchdog stops counting healthcheck failures.
+        # Cap is short enough to fail fast, long enough for an honest
+        # Sonnet 4.5 response (typical 5-15s).
         r = requests.post(
             "https://api.anthropic.com/v1/messages",
             headers={"x-api-key": _ANTHROPIC_KEY,
@@ -198,7 +207,7 @@ def _call_claude(prompt: str) -> dict | None:
             json={"model": "claude-sonnet-4-5",
                   "max_tokens": 2000,
                   "messages": [{"role": "user", "content": prompt}]},
-            timeout=45,
+            timeout=(10, 25),
         )
         if r.status_code != 200:
             logger.warning(f"L8 Claude {r.status_code}: {r.text[:200]}")

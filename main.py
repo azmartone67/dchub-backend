@@ -16102,8 +16102,15 @@ try:
         if _IS_FAILOVER:
             print("🐕 Health Watchdog: SKIPPED (failover mode — no self-restart loop)")
         else:
-            init_watchdog(app, check_interval=90, max_failures=5)
-            print("🐕 Health Watchdog: ✅ Running (check every 90s, restart after 5 failures)")
+            # r33-Q+watchdog-bump (2026-05-21): RAISED 5 → 10 max failures.
+            # Tonight's logs showed 3/5 self_response fails caused by L8
+            # Claude calls hanging 90-110s each. 90s × 5 = 7.5min was too
+            # tight; 90s × 10 = 15min gives slow Anthropic responses room
+            # without triggering SIGTERM-master kill. The real architectural
+            # fix (move L8 to a dedicated worker, watchdog kills WORKER not
+            # MASTER) is on the backlog — this is the band-aid until then.
+            init_watchdog(app, check_interval=90, max_failures=10)
+            print("🐕 Health Watchdog: ✅ Running (check every 90s, restart after 10 failures)")
     except Exception as e:
         print(f"⚠️ Health Watchdog: Failed to start: {e}")
 except ImportError:
