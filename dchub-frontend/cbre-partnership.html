@@ -10,46 +10,66 @@
 <meta property="og:title" content="DC Hub × CBRE — Partnership Proposal">
 <meta property="og:description" content="CBRE has the brokers and the report. DC Hub is the always-on data layer underneath it.">
 <meta property="og:image" content="https://dchub.cloud/dcpi/og.svg">
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link href="https://fonts.googleapis.com/css2?family=Instrument+Sans:wght@400;500;600;700&family=JetBrains+Mono:wght@400;500&display=swap" rel="stylesheet">
 <style>
 @page { size: letter; margin: 0.7in; }
-* { margin: 0; box-sizing: border-box; }
-body { font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif;
-  color: #1f2430; line-height: 1.55; max-width: 820px; margin: 0 auto; padding: 48px 28px; background: #fff; }
-.kicker { font-size: .72rem; letter-spacing: .18em; text-transform: uppercase; color: #6366f1; font-weight: 700; }
-h1 { font-size: 2.1rem; letter-spacing: -.02em; margin: 6px 0 4px; color: #14142a; }
-.sub { color: #5b6170; font-size: 1.05rem; }
-.rule { height: 3px; background: linear-gradient(90deg,#6366f1,#a855f7); border-radius: 2px; margin: 18px 0 24px; }
-.lead { font-size: 1.05rem; color: #2b303c; background: #f6f7fb; border-left: 3px solid #6366f1;
-  padding: 16px 20px; border-radius: 8px; margin-bottom: 26px; }
-.lead b { color: #14142a; }
-.cols { display: grid; grid-template-columns: 1fr 1fr; gap: 26px; margin-bottom: 26px; }
-@media (max-width: 640px){ .cols { grid-template-columns: 1fr; } }
-h2 { font-size: 1.05rem; color: #14142a; margin-bottom: 10px; letter-spacing: -.01em; }
-ul { list-style: none; padding: 0; }
-li { font-size: .92rem; color: #2b303c; padding: 7px 0 7px 22px; position: relative; border-bottom: 1px solid #f0f1f6; }
-li:before { content: "→"; position: absolute; left: 0; color: #6366f1; font-weight: 700; }
-.give h2 { color: #6366f1; }
-.pilot { background: #14142a; color: #e9eaf5; border-radius: 14px; padding: 24px 26px; margin: 8px 0 26px; }
-.pilot .kicker { color: #a5b4fc; }
-.pilot h2 { color: #fff; font-size: 1.25rem; margin: 4px 0 8px; }
-.pilot p { color: #c9cce0; font-size: .95rem; }
-.stats { display: grid; grid-template-columns: repeat(4,1fr); gap: 12px; margin: 0 0 26px; }
-@media (max-width: 640px){ .stats { grid-template-columns: repeat(2,1fr); } }
-.stat { background: #f6f7fb; border: 1px solid #ececf3; border-radius: 10px; padding: 14px; text-align: center; }
-.stat b { display: block; font-size: 1.3rem; color: #6366f1; letter-spacing: -.01em; }
-.stat span { font-size: .68rem; text-transform: uppercase; letter-spacing: .08em; color: #6b7280; }
-.foot { border-top: 1px solid #ececf3; padding-top: 18px; color: #5b6170; font-size: .9rem; }
-.foot a { color: #6366f1; text-decoration: none; }
-.cite { font-style: italic; color: #6b7280; font-size: .82rem; margin-top: 10px; }
-.print { background: #eef2ff; border: 1px solid #c7d2fe; color: #3730a3; padding: 9px 14px; border-radius: 8px; font-size: .82rem; margin-bottom: 22px; }
-@media print { .print { display: none; } body { padding: 0; } }
+:root{
+  --bg:#0a0a0f; --surface:#131319; --surface-2:#1a1a22;
+  --border:rgba(255,255,255,.06); --border-strong:rgba(255,255,255,.1);
+  --text:#f5f5f7; --text-dim:#a1a1aa; --text-faint:#71717a;
+  --indigo:#6366f1; --violet:#a855f7;
+  --grad:linear-gradient(135deg,#6366f1 0%,#a855f7 100%);
+  --font:'Instrument Sans',-apple-system,BlinkMacSystemFont,sans-serif;
+  --mono:'JetBrains Mono','SF Mono',monospace;
+}
+*{margin:0;box-sizing:border-box}
+body{font-family:var(--font); color:var(--text); line-height:1.55;
+  max-width:820px; margin:0 auto; padding:48px 28px; background:var(--bg);
+  -webkit-font-smoothing:antialiased;
+  -webkit-print-color-adjust:exact; print-color-adjust:exact;}
+.kicker{font-family:var(--mono); font-size:.72rem; letter-spacing:.18em; text-transform:uppercase; color:var(--indigo); font-weight:600;}
+h1{font-size:2.2rem; letter-spacing:-.03em; margin:8px 0 4px; color:var(--text); font-weight:700;}
+h1 .x{background:var(--grad); -webkit-background-clip:text; background-clip:text; -webkit-text-fill-color:transparent;}
+.sub{color:var(--text-dim); font-size:1.05rem;}
+.rule{height:3px; background:var(--grad); border-radius:2px; margin:18px 0 24px;}
+.lead{font-size:1.05rem; color:var(--text); background:var(--surface); border:1px solid var(--border);
+  border-left:3px solid var(--indigo); padding:18px 22px; border-radius:12px; margin-bottom:26px;}
+.lead b{color:#fff;}
+.cols{display:grid; grid-template-columns:1fr 1fr; gap:26px; margin-bottom:26px;}
+@media (max-width:640px){.cols{grid-template-columns:1fr;}}
+h2{font-size:1.05rem; color:var(--text); margin-bottom:10px; letter-spacing:-.01em; font-weight:600;}
+ul{list-style:none; padding:0;}
+li{font-size:.92rem; color:var(--text-dim); padding:8px 0 8px 22px; position:relative; border-bottom:1px solid var(--border);}
+li b{color:var(--text);}
+li:before{content:"→"; position:absolute; left:0; color:var(--indigo); font-weight:700;}
+.give h2{background:var(--grad); -webkit-background-clip:text; background-clip:text; -webkit-text-fill-color:transparent;}
+.pilot{background:var(--surface); border:1px solid var(--border-strong); position:relative; overflow:hidden;
+  border-radius:16px; padding:24px 26px; margin:8px 0 26px;}
+.pilot:before{content:""; position:absolute; inset:0 auto 0 0; width:3px; background:var(--grad);}
+.pilot .kicker{color:var(--violet);}
+.pilot h2{color:#fff; font-size:1.25rem; margin:4px 0 8px;}
+.pilot p{color:var(--text-dim); font-size:.95rem;}
+.stats{display:grid; grid-template-columns:repeat(4,1fr); gap:12px; margin:0 0 26px;}
+@media (max-width:640px){.stats{grid-template-columns:repeat(2,1fr);}}
+.stat{background:var(--surface); border:1px solid var(--border); border-radius:12px; padding:16px; text-align:center;}
+.stat b{display:block; font-family:var(--mono); font-size:1.35rem; color:var(--indigo); letter-spacing:-.01em; font-weight:500;}
+.stat span{font-size:.68rem; text-transform:uppercase; letter-spacing:.08em; color:var(--text-faint);}
+.foot{border-top:1px solid var(--border); padding-top:18px; color:var(--text-dim); font-size:.9rem;}
+.foot b{color:var(--text);}
+.foot a{color:var(--violet); text-decoration:none;}
+.cite{font-style:italic; color:var(--text-faint); font-size:.82rem; margin-top:10px;}
+.print{background:var(--surface); border:1px solid var(--border-strong); color:var(--text-dim); padding:9px 14px; border-radius:8px; font-size:.82rem; margin-bottom:22px;}
+.print b{color:var(--text);}
+@media print{.print{display:none;} body{padding:0;}}
 </style>
 </head>
 <body>
 <div class="print">📄 Tip: <b>Print → Save as PDF</b> for a one-page attachment. Every figure below is live from <b>dchub.cloud</b>.</div>
 
 <p class="kicker">Partnership Proposal · Confidential · for Pat Lynch, CBRE Data Center Solutions</p>
-<h1>DC Hub <span style="color:#6366f1">×</span> CBRE</h1>
+<h1>DC Hub <span class="x">×</span> CBRE</h1>
 <p class="sub">The always-on data layer beneath the market report.</p>
 <div class="rule"></div>
 
