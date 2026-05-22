@@ -57,8 +57,8 @@
         .filter-btn { background: var(--bg3); border: 1px solid var(--border); border-radius: 8px; padding: 8px 16px; color: var(--text2); cursor: pointer; font-size: 0.85rem; font-family: inherit; transition: all 0.2s; }
         .filter-btn:hover, .filter-btn.active { background: var(--accent); color: white; border-color: var(--accent); }
         .market-grid { display: grid; grid-template-columns: repeat(auto-fill, minmax(380px, 1fr)); gap: 16px; }
-        .market-card { background: var(--bg3); border: 1px solid var(--border); border-radius: 12px; padding: 20px; transition: border-color 0.2s; }
-        .market-card:hover { border-color: var(--accent); }
+        .market-card { background: var(--bg3); border: 1px solid var(--border); border-radius: 12px; padding: 20px; transition: border-color 0.2s, transform 0.15s, box-shadow 0.2s; cursor: pointer; }
+        .market-card:hover { border-color: var(--accent); transform: translateY(-3px); box-shadow: 0 8px 24px rgba(0,0,0,0.35); }
         .market-name { font-size: 1.2rem; font-weight: 700; margin-bottom: 4px; }
         .market-region { font-size: 0.8rem; color: var(--cyan); font-weight: 500; margin-bottom: 12px; }
         .market-metrics { display: grid; grid-template-columns: 1fr 1fr; gap: 8px; margin-bottom: 12px; }
@@ -180,7 +180,8 @@
                 const highlights = (m.highlights || []).slice(0, 3).map(h => `<li>${h}</li>`).join('');
                 const priceChange = m.yoy_price_change ? (m.yoy_price_change > 0 ? `+${m.yoy_price_change}%` : `${m.yoy_price_change}%`) : '';
                 const priceColor = m.yoy_price_change > 10 ? 'red' : m.yoy_price_change > 0 ? 'orange' : 'green';
-                return `<div class="market-card">
+                const slug = (m.slug || m.market || '').toLowerCase().replace(/[^a-z0-9]+/g,'-').replace(/^-+|-+$/g,'');
+                return `<a href="/markets/${slug}" class="market-card" style="text-decoration:none;color:inherit;display:block;cursor:pointer">
                     <div class="market-name">${m.market}</div>
                     <div class="market-region">${m.region || 'Global'}</div>
                     <div class="market-metrics">
@@ -212,7 +213,7 @@
                     </div>
                     ${providers ? `<div class="market-providers">${providers}</div>` : ''}
                     ${highlights ? `<ul class="highlights-list">${highlights}</ul>` : ''}
-                </div>`;
+                </a>`;
             }).join('');
         }
 
