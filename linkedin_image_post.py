@@ -55,7 +55,7 @@ Now he's joining DC Hub at the most pivotal moment in our industry's history.
 
 Data center power demand is growing ~15% per year. The U.S. faces 100+ GW of new demand through 2035. AI is rewriting every assumption about capacity, energy, and site selection.
 
-We're building the intelligence layer for this era — 50,000+ facilities, 140+ countries, real-time energy infrastructure mapping, M&A deal flow, and the first data center platform natively accessible to AI agents via MCP.
+We're building the intelligence layer for this era — 21,000+ facilities, 170+ countries, real-time energy infrastructure mapping, M&A deal flow, and the first data center platform natively accessible to AI agents via MCP.
 
 In Tony's own words: "The convergence of AI demand, energy constraints, and capital deployment requires a new kind of intelligence layer, and DC Hub is delivering it."
 

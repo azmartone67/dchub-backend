@@ -314,7 +314,7 @@ def well_known_mcp():
             "mcp_server": "/mcp/manifest",
             "name": MCP_SERVER_NAME,
             "version": "2.0.0",
-            "description": "Data center intelligence platform with 50,000+ facilities, infrastructure mapping, and water/drought analysis"
+            "description": "Data center intelligence platform with 21,000+ facilities, infrastructure mapping, and water/drought analysis"
         })
 
 

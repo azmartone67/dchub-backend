@@ -29,16 +29,16 @@ PRESS_RELEASES = [
         "slug": "dc-hub-tracks-11000-data-center-facilities-globally",
         "category": "Milestone",
         "date": "2026-01-15",
-        "subheadline": "DC Hub's facility database surpasses 11,000 tracked data centers across 140+ countries — the most comprehensive source of global colocation and hyperscale intelligence",
-        "meta_description": "DC Hub now tracks over 11,000 data center facilities globally, covering colocation, hyperscale, and edge deployments across 140+ countries.",
-        "body": """DC Hub has surpassed 11,000 tracked data center facilities in its global database, covering colocation campuses, hyperscale deployments, edge nodes, and enterprise data centers across 140+ countries — making it the most comprehensive independently maintained facility database in the industry.
+        "subheadline": "DC Hub's facility database surpasses 21,000 tracked data centers across 170+ countries — the most comprehensive source of global colocation and hyperscale intelligence",
+        "meta_description": "DC Hub now tracks over 21,000+ data center facilities globally, covering colocation, hyperscale, and edge deployments across 170+ countries.",
+        "body": """DC Hub has surpassed 21,000 tracked data center facilities in its global database, covering colocation campuses, hyperscale deployments, edge nodes, and enterprise data centers across 170+ countries — making it the most comprehensive independently maintained facility database in the industry.
 
 The milestone reflects DC Hub's ongoing expansion beyond the traditional North American and Western European markets that most competitive intelligence platforms focus on. DC Hub now provides meaningful coverage across Southeast Asia, Latin America, the Middle East, and Sub-Saharan Africa — regions that are increasingly attracting hyperscale investment as cloud providers seek to serve emerging markets.
 
 Each facility record in DC Hub includes operator, owner, campus size, power capacity, cooling technology, connectivity providers, geographic coordinates, and M&A transaction history. The platform automatically enriches records as new information becomes available through its crawler infrastructure and community verification system.
 
 Quote from Jonathan Martone, Founder & CEO of DC Hub:
-"Eleven thousand facilities is a milestone, but the real story is depth. Any platform can list buildings. We track power capacity, grid connections, carrier presence, transaction history, and construction pipeline — the data that actually drives investment and site selection decisions."
+"Twenty-one thousand facilities is a milestone, but the real story is depth. Any platform can list buildings. We track power capacity, grid connections, carrier presence, transaction history, and construction pipeline — the data that actually drives investment and site selection decisions."
 
 DC Hub's facility database is accessible through its web platform, REST API, and MCP server integration, enabling AI agents from Claude, ChatGPT, and Perplexity to query facility data programmatically.
 
