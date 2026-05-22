@@ -437,6 +437,18 @@ def trigger_learn():
         # not body substitution. Group them with asset_* for filtering.
         return lbl.startswith("asset_") or lbl.startswith("api_contract_")
 
+    def _is_data_placeholder(i):
+        # Phase FF (2026-05-22): CLASSIFICATION. An em-dash "— placeholder"
+        # finding is a DATA-binding gap — a cell whose live value didn't
+        # populate (e.g. the homepage "— FACILITIES — MW" field-name bug we
+        # just fixed). It is NOT fixable by a text find/replace: there is no
+        # static string to swap in — the cell must bind to a live value. Asking
+        # Claude to substitute a bare "—" is precisely why the learning log was
+        # all find_too_short / refused and volume sat at 0/4. Route these to the
+        # data worklist instead of wasting a Claude text-fix call. Literal
+        # placeholders (__FOO__, {{x}}) have no em-dash and stay text-fixable.
+        return "—" in (i.get("issue") or "")
+
     # Phase S (2026-05-12): "learn from errors it misses" — track every
     # issue's persistence in Postgres, then prioritize the most-stuck
     # ones (high seen_count, no successful proposal yet) for this learn
@@ -458,6 +470,12 @@ def trigger_learn():
     novel_candidates = [i for i in issues
                         if i.get("issue") not in KNOWN
                         and not _is_asset_issue(i)]
+
+    # Phase FF (2026-05-22): partition data-placeholders (em-dash value gaps,
+    # not text-fixable) out of the Claude path. Routed below to the worklist
+    # WITHOUT a Claude call; only text-fixable findings hit the Claude budget.
+    data_findings = [i for i in novel_candidates if _is_data_placeholder(i)]
+    novel_candidates = [i for i in novel_candidates if not _is_data_placeholder(i)]
 
     # Phase SS (2026-05-14): drop confirmed false positives. An issue
     # Claude has REFUSED 3+ times isn't a real fixable placeholder —
@@ -499,6 +517,24 @@ def trigger_learn():
     novel = novel_candidates[:BRAIN_MAX_LEARN]
 
     results = []
+    # Phase FF (2026-05-22): route data-placeholders to the worklist with an
+    # honest outcome — the classification fix. No Claude call: these need a
+    # data/binding fix (like the homepage field-name bug), not a text swap.
+    for issue in data_findings:
+        _log({"issue": issue.get("issue"), "url": issue.get("url"),
+              "outcome": "data_placeholder_routed",
+              "detail": "needs a live-data/binding fix, not a text substitution"})
+        if _STORE_OK:
+            try:
+                _store.set_persistence_outcome(
+                    issue.get("issue") or "", issue.get("url") or "",
+                    "data_placeholder_routed")
+            except Exception:
+                pass
+        results.append({"issue": issue.get("issue"),
+                        "outcome": "data_placeholder_routed",
+                        "note": "needs data binding, not text fix"})
+
     for issue in novel:
         snippet = _fetch_snippet(issue.get("url", ""))
         if not snippet:
