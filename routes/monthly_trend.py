@@ -123,6 +123,23 @@ def _pct_delta(curr: float | int | None, prev: float | int | None) -> float | No
         return None
 
 
+def _fmt_deal_value(v) -> str:
+    """Honest aggregate-deal-$ formatting. Most tracked deals are undisclosed,
+    so a small disclosed sum must NOT render as a misleading '$0.0B'. Scales
+    to B / M / K, and says 'undisclosed' when the disclosed total is zero."""
+    try:
+        v = float(v or 0)
+    except Exception:
+        v = 0.0
+    if v >= 1e9:
+        return f"${v/1e9:.1f}B"
+    if v >= 1e6:
+        return f"${v/1e6:.0f}M"
+    if v > 0:
+        return f"${v/1e3:.0f}K"
+    return "undisclosed"
+
+
 def _safe_scalar(cur, sql: str, params=()) -> float | int | None:
     """Run sql, return scalar, swallow ProgrammingError (table missing).
     Caller must commit/rollback on its own connection. We rollback on
@@ -646,20 +663,33 @@ def _build_press_kit(d: dict) -> dict:
         deal_label = "the trailing 30 days"
 
     mom_d = _sane_delta(df.get("deals_mom_pct"))
+    _val_str = _fmt_deal_value(deal_value)
+    _has_val = deal_value and deal_value >= 1e6
     if deal_count and mom_d is not None and deal_label == label:
         direction = "increased" if mom_d >= 0 else "decreased"
-        quotables.append(
-            f"{label} saw {deal_count} tracked M&A transactions "
-            f"representing ${deal_value/1e9:.1f}B in aggregate deal "
-            f"value, a count that {direction} {abs(mom_d):.1f}% from "
-            f"the prior month."
-        )
+        if _has_val:
+            quotables.append(
+                f"{label} saw {deal_count} tracked M&A transactions "
+                f"({_val_str} in aggregate disclosed value), a count that "
+                f"{direction} {abs(mom_d):.1f}% from the prior month."
+            )
+        else:
+            quotables.append(
+                f"{label} saw {deal_count} tracked M&A transactions, a "
+                f"count that {direction} {abs(mom_d):.1f}% from the prior "
+                f"month (aggregate deal values largely undisclosed)."
+            )
     elif deal_count:
-        quotables.append(
-            f"In {deal_label}, DC Hub tracked {deal_count} M&A "
-            f"transactions worth ${deal_value/1e9:.1f}B in aggregate "
-            f"deal value."
-        )
+        if _has_val:
+            quotables.append(
+                f"In {deal_label}, DC Hub tracked {deal_count} M&A "
+                f"transactions worth {_val_str} in aggregate disclosed value."
+            )
+        else:
+            quotables.append(
+                f"In {deal_label}, DC Hub tracked {deal_count} M&A "
+                f"transactions (aggregate values largely undisclosed)."
+            )
 
     if deal_mw:
         quotables.append(
@@ -791,7 +821,7 @@ def _render_html(d: dict, *, partner: str = "") -> str:
 <title>DC Hub Monthly Trend · {label}</title>
 <meta name="description" content="DC Hub data center market intelligence — {label} monthly trend snapshot. {h.get('facilities_total',0):,} facilities, {h.get('total_mw',0):,.0f} MW, {curr.get('count',0)} M&amp;A deals tracked. Live data, MoM + YoY deltas, press-kit quotes free for journalist use.">
 <meta property="og:title" content="DC Hub Monthly Trend · {label}">
-<meta property="og:description" content="Live data center market intelligence. {h.get('facilities_total',0):,} facilities · {curr.get('count',0)} deals · {(curr.get('value') or 0)/1e9:.1f}B in {label}.">
+<meta property="og:description" content="Live data center market intelligence. {h.get('facilities_total',0):,} facilities · {curr.get('count',0)} deals · {_fmt_deal_value(curr.get('value'))} disclosed in {label}.">
 <meta property="og:image" content="https://dchub.cloud/og-default.png">
 <meta name="robots" content="index,follow,max-snippet:-1">
 <link rel="canonical" href="{permalink}">
@@ -917,9 +947,9 @@ def _render_html(d: dict, *, partner: str = "") -> str:
         <div class="stat-sub">{_delta_html(h.get('facilities_mom_pct'))} MoM · {_delta_html(h.get('facilities_yoy_pct'))} YoY</div>
       </div>
       <div class="stat">
-        <span class="stat-val">${(deals_view.get('value') or 0)/1e9:.1f}B</span>
+        <span class="stat-val">{_fmt_deal_value(deals_view.get('value'))}</span>
         <span class="stat-lbl">Deal $ ({deals_label})</span>
-        <div class="stat-sub">{deals_view.get('count',0)} deals · {_delta_html(df.get('value_mom_pct'))} MoM</div>
+        <div class="stat-sub">{deals_view.get('count',0)} deals · {_delta_html(df.get('deals_mom_pct'))} MoM</div>
       </div>
     </div>
   </section>
