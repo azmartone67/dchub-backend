@@ -186,6 +186,7 @@ def _collect_signals() -> dict:
         "biggest_movers": [],
         "ai_usage_24h": {"tool_calls": 0, "unique_callers": 0},
         "new_facilities_24h": [],
+        "recent_ai_citation": None,
     }
     c = _conn()
     if c is None:
@@ -207,6 +208,28 @@ def _collect_signals() -> dict:
                 {"market": r[0], "slug": r[1], "iso": r[2], "state": r[3],
                  "excess": r[4], "constraint": r[5]}
                 for r in rows[:3]]
+
+        # Phase FF-polish: most recent AI citation of DC Hub. The citation-quote
+        # post format far outperforms bare-link posts (Gemini/ChatGPT quote posts
+        # got 70/16 impressions + reactions vs 7-17 for link posts). Own
+        # try/except so a missing/empty table can't break signal gathering.
+        try:
+            with c.cursor() as cur:
+                cur.execute("""
+                    SELECT engine, prompt_text, response_text, response_url
+                      FROM ai_citations
+                     WHERE dchub_cited = true
+                       AND response_text IS NOT NULL AND response_text <> ''
+                       AND observed_at > NOW() - INTERVAL '14 days'
+                     ORDER BY observed_at DESC LIMIT 1
+                """)
+                r = cur.fetchone()
+                if r:
+                    out["recent_ai_citation"] = {
+                        "engine": r[0], "prompt": r[1],
+                        "quote": (r[2] or "")[:600], "url": r[3]}
+        except Exception:
+            pass
 
         # Top 3 AVOID markets (highest constraint_score)
         with c.cursor() as cur:
@@ -566,6 +589,19 @@ def _pick_daily_topic(signals: dict) -> tuple[str, str]:
             return False
         nm = name.lower()
         return any(nm.startswith(rm) or rm.startswith(nm) for rm in recent_markets)
+
+    # ── 0. AI-citation showcase (HIGHEST priority) ──────────────────
+    # The format that actually drives engagement: when a major AI engine
+    # cited DC Hub in the last 14 days, lead with the quote. Gated by dedup
+    # so the same citation isn't reposted. Biases the content mix toward the
+    # third-party-validation posts that outperform bare-link releases.
+    cite = signals.get("recent_ai_citation")
+    if cite and cite.get("quote") and not _topic_dedup("ai_citation"):
+        eng = cite.get("engine") or "A leading AI assistant"
+        return "ai_citation", (
+            f"{eng} cited DC Hub answering '{(cite.get('prompt') or 'a data-center query')[:120]}'. "
+            f"Quote: \"{cite['quote'][:280]}\". Showcase this third-party AI validation — "
+            f"lead with the quote, attribute the engine, keep it short, link dchub.cloud.")
 
     # ── 1. DCPI movers (high bar: |delta| >= 5pts) ──────────────────
     movers = signals.get("biggest_movers") or []
