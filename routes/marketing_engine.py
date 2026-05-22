@@ -543,7 +543,13 @@ def _pick_daily_topic(signals: dict) -> tuple[str, str]:
     except NameError:
         recent = set()
     try:
-        recent_markets = _recent_market_names(n=2)
+        # Phase FF (2026-05-22): widened 2 → 8. n=2 only blocked the same
+        # market in back-to-back posts, so "Cheyenne, WY #1" recurred every
+        # 3rd post (user-reported: "Cheyenne over and over"). 8 ≈ a week of
+        # posts, so a persistent #1 mover can't dominate the feed. Only
+        # affects the market-named branches (dcpi_mover/dcpi_leader); topic
+        # variety for industry_pulse/iso_focus/coverage is unaffected.
+        recent_markets = _recent_market_names(n=8)
     except NameError:
         recent_markets = set()
 
