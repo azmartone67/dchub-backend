@@ -796,8 +796,10 @@
       if (!rows.length) { track.parentElement.style.display='none'; return; }
       function pill(m){
         var name  = m.name || m.market || m.slug || '—';
-        var mw    = m.total_mw != null ? Math.round(m.total_mw).toLocaleString() : (m.mw || '—');
-        var n     = m.facilities || m.count || '—';
+        var _mwv  = (m.total_power_mw != null ? m.total_power_mw : (m.total_mw != null ? m.total_mw : null));
+        var mw    = _mwv != null ? Math.round(_mwv).toLocaleString() : (m.mw || '—');
+        var _nv   = (m.facility_count != null ? m.facility_count : (m.facilities != null ? m.facilities : m.count));
+        var n     = _nv != null ? _nv.toLocaleString() : '—';
         var tier  = (m.verdict || m.tier || '').toString().toUpperCase();
         var slug  = (m.slug || m.market_slug || name).toString().toLowerCase().replace(/\s+/g,'-');
         return '<a class="mk-pill" href="/markets/' + slug + '">'
