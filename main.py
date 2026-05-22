@@ -17073,6 +17073,14 @@ def serve_sitemap_xml():
         ('/pockets.rss', '0.6', 'daily'),
         ('/digest',      '0.8', 'daily'),
         ('/coverage',    '0.7', 'weekly'),
+        # r33-Q+dcpi-sitemap (2026-05-22) — DCPI is the flagship product
+        # with its own keyword domain (datacenterpowerindex.com →
+        # dchub.cloud/dcpi). It was MISSING from the sitemap entirely.
+        # Priority 1.0 (tied with home) since the matching-keyword domain
+        # makes /dcpi a top SEO target for "data center power index".
+        ('/dcpi',             '1.0', 'daily'),
+        ('/dcpi/totals',      '0.9', 'daily'),
+        ('/dcpi/methodology', '0.7', 'monthly'),
     ]
     for path, pri, freq in static_pages:
         urls.append(f'  <url><loc>https://dchub.cloud{path}</loc><lastmod>{today}</lastmod><changefreq>{freq}</changefreq><priority>{pri}</priority></url>')
