@@ -33,10 +33,21 @@ _CACHE = {"plan": None, "computed_at": 0.0}
 _TTL = 300
 
 
-def _internal(path: str, timeout: int = 8) -> dict:
+def _internal(path: str, timeout: int = 3) -> dict:
+    """r33-Q+l8-self-call-fix (2026-05-21): default timeout slashed
+    from 8s → 3s. _gather_context() does 9-10 of these calls to itself
+    via HTTP — when localhost:8080 is busy, each call sat for up to 8s,
+    blowing the total budget past 60s and forcing L8 in-flight to 90+s.
+    With 3s caps, total worst case is 30s for all calls combined; the
+    Claude call gets the remaining budget without flapping watchdog.
+    Tuple form (connect, read) so a single slow chunk can't extend
+    indefinitely."""
     try:
         import requests
-        r = requests.get(f"http://localhost:8080{path}", timeout=timeout)
+        r = requests.get(
+            f"http://localhost:8080{path}",
+            timeout=(1, timeout),
+        )
         if r.status_code != 200: return {}
         return r.json() or {}
     except Exception:
@@ -45,7 +56,14 @@ def _internal(path: str, timeout: int = 8) -> dict:
 
 def _gather_context() -> dict:
     """Pull every brain layer output + funnel + outreach + commits into one dict."""
-    findings = (_internal("/api/v1/brain/consistency-radar", 25).get("findings") or [])
+    # r33-Q+l8-self-call-fix (2026-05-21): consistency-radar timeout
+    # SLASHED 25s → 5s. When the radar itself is slow (which is the
+    # very symptom L8 is trying to summarize), a 25s wait here cascades:
+    # gather_context blocks 25s, then Claude call blocks 25s+, then
+    # watchdog flaps. 5s is enough for a healthy radar response (~1s
+    # typical) and short enough to fail fast when the radar is broken
+    # (then L8 just summarizes with empty findings, which is honest).
+    findings = (_internal("/api/v1/brain/consistency-radar", 5).get("findings") or [])
     memory   = _internal("/api/v1/brain/memory/stats")
     predict  = _internal("/api/v1/brain/predictions")
     proposed = _internal("/api/v1/brain/proposed-detectors")
