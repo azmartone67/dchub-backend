@@ -123,20 +123,21 @@ def _pct_delta(curr: float | int | None, prev: float | int | None) -> float | No
         return None
 
 
-def _fmt_deal_value(v) -> str:
-    """Honest aggregate-deal-$ formatting. Most tracked deals are undisclosed,
-    so a small disclosed sum must NOT render as a misleading '$0.0B'. Scales
-    to B / M / K, and says 'undisclosed' when the disclosed total is zero."""
+def _fmt_deal_value(v_millions) -> str:
+    """Format aggregate deal $ honestly. IMPORTANT: deals.value is stored in
+    MILLIONS of dollars (the Google/Anthropic $40B deal is value=40000), so the
+    old `value/1e9` under-reported by 1,000,000× and rendered '$0.0B'. Input
+    here is millions; we scale to B/M and say 'undisclosed' when zero."""
     try:
-        v = float(v or 0)
+        m = float(v_millions or 0)   # value is in $millions
     except Exception:
-        v = 0.0
-    if v >= 1e9:
-        return f"${v/1e9:.1f}B"
-    if v >= 1e6:
-        return f"${v/1e6:.0f}M"
-    if v > 0:
-        return f"${v/1e3:.0f}K"
+        m = 0.0
+    if m >= 1000:
+        return f"${m/1000:.1f}B"
+    if m >= 1:
+        return f"${m:,.0f}M"
+    if m > 0:
+        return f"${m*1000:.0f}K"
     return "undisclosed"
 
 
@@ -668,7 +669,7 @@ def _build_press_kit(d: dict) -> dict:
 
     mom_d = _sane_delta(df.get("deals_mom_pct"))
     _val_str = _fmt_deal_value(deal_value)
-    _has_val = deal_value and deal_value >= 1e6
+    _has_val = bool(deal_value and deal_value >= 1)  # value is in $millions
     if deal_count and mom_d is not None and deal_label == label:
         direction = "increased" if mom_d >= 0 else "decreased"
         if _has_val:
