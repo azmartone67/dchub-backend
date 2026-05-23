@@ -1,0 +1,162 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>DC Hub · Brain v2 — autonomous self-healing</title>
+<meta name="description" content="DC Hub's Brain v2 — live activity dashboard. What the brain has recognized, proposed, and shipped autonomously.">
+<meta name="robots" content="noindex">
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link href="https://fonts.googleapis.com/css2?family=Instrument+Sans:wght@400;500;600;700;800&family=JetBrains+Mono:wght@500;600&display=swap" rel="stylesheet">
+<link rel="stylesheet" href="/static/dchub-brand.css">
+<script src="/js/dchub-nav.js" defer></script>
+<style>
+  body{max-width:1100px;margin:0 auto;padding:24px;line-height:1.55;font-family:'Instrument Sans',system-ui,sans-serif}
+  header{margin:24px 0 28px}
+  .eyebrow{color:var(--dch-indigo);font-size:.78rem;letter-spacing:.16em;text-transform:uppercase;margin-bottom:8px;font-weight:600}
+  h1{font-size:2.1rem;margin:0 0 10px;letter-spacing:-.02em;line-height:1.15}
+  .lead{color:var(--dch-text-mute);max-width:780px;font-size:1rem}
+  .tiles{display:grid;grid-template-columns:repeat(auto-fit,minmax(200px,1fr));gap:12px;margin:24px 0}
+  .tile{background:var(--dch-surface);border:1px solid var(--dch-border);border-radius:12px;padding:16px}
+  .tile-label{font-size:.72rem;text-transform:uppercase;letter-spacing:.12em;color:var(--dch-text-mute);margin-bottom:6px}
+  .tile-value{font-size:1.6rem;font-weight:700;font-family:'JetBrains Mono',monospace}
+  .tile-sub{font-size:.8rem;color:var(--dch-text-dim);margin-top:4px}
+  .tile.good .tile-value{color:#34d399}
+  .tile.warn .tile-value{color:#fbbf24}
+  .tile.bad .tile-value{color:#ef4444}
+  section.pane{background:var(--dch-surface);border:1px solid var(--dch-border);border-radius:12px;padding:20px;margin:20px 0}
+  section.pane h2{margin:0 0 12px;font-size:1.05rem}
+  section.pane .sub{font-size:.85rem;color:var(--dch-text-mute);margin-bottom:14px}
+  .row{display:flex;justify-content:space-between;gap:12px;padding:8px 0;border-bottom:1px dashed rgba(255,255,255,.06);font-size:.88rem}
+  .row:last-child{border:0}
+  .row .l{color:var(--dch-text)}
+  .row .r{color:var(--dch-text-mute);font-family:'JetBrains Mono',monospace;font-size:.82rem;white-space:nowrap}
+  .pill{display:inline-block;padding:2px 8px;border-radius:999px;font-size:.72rem;font-weight:600;background:rgba(99,102,241,.15);color:var(--dch-indigo)}
+  .pill.good{background:rgba(52,211,153,.15);color:#34d399}
+  .pill.warn{background:rgba(251,191,36,.15);color:#fbbf24}
+  code{font-family:'JetBrains Mono',monospace;font-size:.82em;background:var(--dch-bg);padding:1px 6px;border-radius:4px}
+  footer{margin:40px 0 24px;padding-top:16px;border-top:1px solid var(--dch-border);color:var(--dch-text-dim);font-size:.82rem}
+  footer a{color:var(--dch-indigo);text-decoration:none;margin-right:14px}
+  .empty{color:var(--dch-text-dim);font-style:italic;padding:8px 0;font-size:.88rem}
+  .loading{color:var(--dch-text-dim);font-size:.88rem}
+</style>
+</head>
+<body>
+
+<header>
+  <div class="eyebrow">DC Hub · Brain v2 · live</div>
+  <h1>The system fixes itself.</h1>
+  <p class="lead">Live activity from the brain pipeline: what it recognizes, what it proposes, and what it has shipped autonomously. <strong>This page reflects reality across every layer</strong> — not just the legacy text-placeholder loop.</p>
+</header>
+
+<div class="tiles" id="tiles">
+  <div class="tile"><div class="tile-label">Cron heartbeat</div><div class="tile-value loading" id="t-cron">…</div><div class="tile-sub" id="t-cron-sub">checking…</div></div>
+  <div class="tile"><div class="tile-label">Self-assessment</div><div class="tile-value loading" id="t-grade">…</div><div class="tile-sub" id="t-grade-sub">letter grade · 60d</div></div>
+  <div class="tile"><div class="tile-label">Error classes known</div><div class="tile-value loading" id="t-classes">…</div><div class="tile-sub" id="t-classes-sub">avg confidence</div></div>
+  <div class="tile"><div class="tile-label">Layer-4 verdict</div><div class="tile-value loading" id="t-verdict">…</div><div class="tile-sub" id="t-verdict-sub">text-fix loop</div></div>
+</div>
+
+<section class="pane">
+  <h2>Error classes the brain can recognize</h2>
+  <div class="sub">Each row is a recurring log pattern with a templated remediation recipe. <code>shipped_proof</code> is the commit on main where this class was first fixed by hand — the confidence anchor. Layer-5 (free-form codegen) consumes this registry to propose templated PRs for future occurrences.</div>
+  <div id="error-class-list"><div class="loading">loading registry…</div></div>
+</section>
+
+<section class="pane">
+  <h2>Layer-4 self-assessment (text-loop)</h2>
+  <div class="sub">The legacy HTML-placeholder learn loop. "Quiet" with 0 proposals is the correct result when the healer has no text-fixable findings — the brain's broader Stage 2-5 codegen ships fixes outside this surface.</div>
+  <div id="assessment-list"><div class="loading">loading assessment…</div></div>
+</section>
+
+<section class="pane">
+  <h2>Recent learning attempts (log)</h2>
+  <div class="sub">Historical log of Layer-4 learn passes. <code>refused</code> / <code>validation_fail</code> entries are the validator (correctly) rejecting unsafe substitutions — not failures of the brain.</div>
+  <div id="log-list"><div class="loading">loading log…</div></div>
+</section>
+
+<footer>
+  <a href="/api/v1/brain/status">/brain/status</a>
+  <a href="/api/v1/brain/self-assessment">/brain/self-assessment</a>
+  <a href="/api/v1/brain/error-classes">/brain/error-classes</a>
+  <a href="/api/v1/brain/learning-log">/brain/learning-log</a>
+  <span style="color:var(--dch-text-dim)">· as of <span id="as-of">—</span></span>
+</footer>
+
+<script>
+(async function(){
+  function fmtAge(min){ if(min==null) return '—'; if(min<60) return min+'m'; if(min<1440) return Math.round(min/60)+'h'; return Math.round(min/1440)+'d'; }
+  function tileColor(el, kind){ var t=el.closest('.tile'); if(!t) return; t.classList.remove('good','warn','bad','loading'); if(kind) t.classList.add(kind); }
+
+  async function safe(url){ try{ var r=await fetch(url); if(!r.ok) return null; return await r.json(); }catch(e){ return null; } }
+
+  // --- Status tile ---
+  var status = await safe('/api/v1/brain/status');
+  if (status){
+    var run = status.minutes_since_last_run;
+    document.getElementById('t-cron').textContent = fmtAge(run) + ' ago';
+    document.getElementById('t-cron-sub').textContent = status.active ? 'active · cron firing' : 'inactive';
+    tileColor(document.getElementById('t-cron'), status.active && run!=null && run<180 ? 'good' : 'warn');
+    document.getElementById('t-verdict').textContent = (status.verdict || '?').replace('_',' ');
+    document.getElementById('t-verdict-sub').textContent = (status.verdict_detail || '').slice(0,60);
+    tileColor(document.getElementById('t-verdict'), status.verdict==='stalled' ? 'bad' : (status.verdict==='dormant'?'warn':'good'));
+  }
+
+  // --- Assessment tile + pane ---
+  var assess = await safe('/api/v1/brain/self-assessment');
+  if (assess){
+    document.getElementById('t-grade').textContent = assess.grade || '—';
+    document.getElementById('t-grade-sub').textContent = 'weighted ' + (assess.weighted_score || '—') + '/4';
+    tileColor(document.getElementById('t-grade'), (assess.grade||'').match(/A|B/) ? 'good' : 'warn');
+    var cs = assess.component_scores || {};
+    var m = assess.metrics || {};
+    var rows = [
+      ['cron health',         (cs.cron_health  ?? '—') + '/4',  (cs.cron_health===4?'good':'warn')],
+      ['fix success rate',    m.fix_success_rate==null?'—':((m.fix_success_rate*100).toFixed(0)+'%'), ''],
+      ['human rejection rate',m.human_rejection_rate==null?'—':((m.human_rejection_rate*100).toFixed(0)+'%'), ''],
+      ['volume score',        (cs.volume       ?? '—') + '/4',  (cs.volume>=2?'good':'warn')],
+      ['proposals 30d (code)',(m.proposals_30d || {}).code ?? '—', ''],
+      ['proposals 30d (text)',(m.proposals_30d || {}).text ?? '—', ''],
+      ['human reviews 60d',   m.human_review_count_60d ?? '—', ''],
+    ];
+    document.getElementById('assessment-list').innerHTML =
+      rows.map(function(r){return '<div class="row"><span class="l">'+r[0]+'</span><span class="r">'+r[1]+(r[2]?(' <span class="pill '+r[2]+'">'+r[2]+'</span>'):'')+'</span></div>';}).join('');
+  } else {
+    document.getElementById('assessment-list').innerHTML = '<div class="empty">unavailable</div>';
+  }
+
+  // --- Error-class registry ---
+  var ec = await safe('/api/v1/brain/error-classes');
+  if (ec && ec.classes){
+    document.getElementById('t-classes').textContent = ec.total_classes;
+    document.getElementById('t-classes-sub').textContent = 'avg conf ' + ec.avg_confidence + ' · ' + ec.with_shipped_proof + ' shipped';
+    tileColor(document.getElementById('t-classes'), ec.with_shipped_proof>=3?'good':'warn');
+    document.getElementById('error-class-list').innerHTML =
+      ec.classes.map(function(c){return '<div class="row"><span class="l"><strong>'+c.id+'</strong> — '+c.description+'</span><span class="r">'+
+        (c.shipped_proof?('<span class="pill good">'+c.shipped_proof+'</span> '):'')+
+        'conf '+c.confidence+
+        '</span></div>';}).join('');
+  } else {
+    document.getElementById('error-class-list').innerHTML = '<div class="empty">registry unavailable</div>';
+  }
+
+  // --- Learning log ---
+  var log = await safe('/api/v1/brain/learning-log?limit=12');
+  if (log && (log.entries||log.log||[]).length){
+    var items = log.entries || log.log || [];
+    document.getElementById('log-list').innerHTML =
+      items.slice(0,12).map(function(e){
+        var t = e.t || e.timestamp || '';
+        var label = e.label || e.issue || '—';
+        var status = e.status || e.result || '';
+        return '<div class="row"><span class="l">'+label+'</span><span class="r">'+(t?t.slice(0,16):'')+(status?' · <span class="pill warn">'+status+'</span>':'')+'</span></div>';
+      }).join('');
+  } else {
+    document.getElementById('log-list').innerHTML = '<div class="empty">no log entries — brain is quiet (no text-fixable findings)</div>';
+  }
+
+  document.getElementById('as-of').textContent = new Date().toISOString().slice(0,19) + 'Z';
+})();
+</script>
+</body>
+</html>
