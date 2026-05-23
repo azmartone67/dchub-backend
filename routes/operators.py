@@ -52,6 +52,42 @@ def _slugify(s: str) -> str:
     return s[:80]
 
 
+# Phase ZZZZZ-round4 (2026-05-23): slug aliases for common short names.
+# Search-engine + AI-agent traffic types "/operators/aws", not "/operators/
+# amazon-web-services". Map the short form to the canonical provider name
+# (case-insensitive). Add new entries here when SEO logs show 404s on
+# canonical short forms (azure, gcp, fb, etc.).
+SLUG_ALIASES = {
+    "aws":              "Amazon Web Services",
+    "amazon":           "Amazon Web Services",
+    "azure":            "Microsoft",
+    "ms":               "Microsoft",
+    "gcp":              "Google",
+    "google-cloud":     "Google",
+    "fb":               "Meta",
+    "facebook":         "Meta",
+    "ali":              "Alibaba",
+    "alibaba-cloud":    "Alibaba",
+    "tencent-cloud":    "Tencent",
+    "oci":              "Oracle",
+    "oracle-cloud":     "Oracle",
+    "ibm-cloud":        "IBM",
+    "dr":               "Digital Realty",
+    "eq":               "Equinix",
+    "im":               "Iron Mountain",
+    "ntt":              "NTT Global Data Centers",
+    "sti":              "STACK Infrastructure",
+    "cyrus":            "CyrusOne",
+    "qts":              "QTS",
+    "compass":          "Compass Datacenters",
+    "vantage":          "Vantage Data Centers",
+    "edgeconnex":       "EdgeConneX",
+    "switch":           "Switch",
+    "cologix":          "Cologix",
+    "coresite":         "CoreSite",
+}
+
+
 def _operator_summary(cur, name: str) -> dict | None:
     """Aggregate one operator from discovered_facilities + deals."""
     try:
@@ -158,31 +194,46 @@ def api_operators_list():
     return resp, 200
 
 
+def _resolve_slug_to_provider(cur, slug: str) -> str | None:
+    """Map a URL slug to the canonical provider name.
+    Checks aliases first, then does exact slug match against the DB."""
+    alias_target = SLUG_ALIASES.get(slug.lower())
+    if alias_target:
+        return alias_target
+    cur.execute("""
+        SELECT DISTINCT provider FROM discovered_facilities
+         WHERE provider IS NOT NULL AND provider != ''
+           AND merged_at IS NULL AND is_duplicate = 0
+    """)
+    for r in cur.fetchall():
+        if _slugify(r[0]) == slug:
+            return r[0]
+    return None
+
+
 @operators_bp.route("/api/v1/operators/<slug>", methods=["GET"])
 def api_operator_detail(slug):
     c = _conn()
     if c is None: return jsonify(error="no_database"), 503
     try:
         with c.cursor() as cur:
-            # Find the operator name from slug — fuzzy-match top providers
-            cur.execute("""
-                SELECT DISTINCT provider FROM discovered_facilities
-                 WHERE provider IS NOT NULL AND provider != ''
-                   AND merged_at IS NULL AND is_duplicate = 0
-            """)
-            for r in cur.fetchall():
-                if _slugify(r[0]) == slug:
-                    summary = _operator_summary(cur, r[0])
-                    if summary:
-                        resp = jsonify(summary)
-                        resp.headers["Cache-Control"] = "public, max-age=600"
-                        resp.headers["Access-Control-Allow-Origin"] = "*"
-                        return resp, 200
-                    break
+            provider = _resolve_slug_to_provider(cur, slug)
+            if provider:
+                summary = _operator_summary(cur, provider)
+                if summary:
+                    # If user hit an alias, tell them the canonical slug
+                    if summary["slug"] != slug:
+                        summary["alias_for"] = summary["slug"]
+                        summary["canonical_url"] = f"/api/v1/operators/{summary['slug']}"
+                    resp = jsonify(summary)
+                    resp.headers["Cache-Control"] = "public, max-age=600"
+                    resp.headers["Access-Control-Allow-Origin"] = "*"
+                    return resp, 200
     finally:
         try: c.close()
         except Exception: pass
-    return jsonify(error="operator_not_found", slug=slug), 404
+    return jsonify(error="operator_not_found", slug=slug,
+                   hint="Try /api/v1/operators for the canonical list."), 404
 
 
 # ── HTML pages ──────────────────────────────────────────────────
@@ -259,20 +310,18 @@ a{{color:#818cf8;text-decoration:none}} a:hover{{text-decoration:underline;color
 @operators_bp.route("/operators/<slug>", methods=["GET"])
 def operator_page(slug):
     """Per-operator profile page (HTML). schema.org Organization markup."""
+    from flask import redirect
     c = _conn()
     summary = None
     if c is not None:
         try:
             with c.cursor() as cur:
-                cur.execute("""
-                    SELECT DISTINCT provider FROM discovered_facilities
-                     WHERE provider IS NOT NULL AND provider != ''
-                       AND merged_at IS NULL AND is_duplicate = 0
-                """)
-                for r in cur.fetchall():
-                    if _slugify(r[0]) == slug:
-                        summary = _operator_summary(cur, r[0])
-                        break
+                provider = _resolve_slug_to_provider(cur, slug)
+                if provider:
+                    summary = _operator_summary(cur, provider)
+                    # If the user hit an alias slug, 301 to canonical for SEO
+                    if summary and summary["slug"] != slug:
+                        return redirect(f"/operators/{summary['slug']}", code=301)
         finally:
             try: c.close()
             except Exception: pass
