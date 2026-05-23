@@ -63,6 +63,63 @@ def powered_shell_markets():
                    "DCPI BUILD/AVOID verdicts that drive these recommendations."),
     }), 200
 
+# Phase ZZZZZ-round24 (2026-05-23): /powered-shell page was hitting
+# three endpoints we never registered — 404 for each, broke the page.
+# User reported it in the Tonopah/site audit. Same coming_soon pattern
+# as /markets above.
+@stubs_v3.route("/api/v1/powered-shell/rate-band/<market>", methods=["GET"])
+def powered_shell_rate_band(market):
+    """Stub: per-market rate band for powered-shell construction.
+    Returns seed economic ranges from dc_expert_brain context until
+    the real EIA + permit-data pipeline lands."""
+    return jsonify({
+        "market": market,
+        "coming_soon": True,
+        "ticket": "#36",
+        "rate_band": {
+            "construction_cost_per_mw_low":  "$1.4M",
+            "construction_cost_per_mw_high": "$2.5M",
+            "operating_cost_per_mwh_low":    "$48",
+            "operating_cost_per_mwh_high":   "$95",
+            "land_lease_psf_low":            "$0.85",
+            "land_lease_psf_high":           "$2.40",
+            "powered_shell_to_full_fit_ratio": "0.35-0.50",
+        },
+        "note": ("Seed ranges from dc_expert_brain. Live per-market "
+                  "values land with the EIA + permit-data pipeline."),
+        "verdict_link": f"/dcpi/{market}",
+    }), 200
+
+
+@stubs_v3.route("/api/v1/powered-shell/comps", methods=["GET"])
+def powered_shell_comps():
+    """Stub: list of comparable powered-shell deals.
+    Returns 200 with `comps: []` + coming_soon flag — frontend renders
+    'no comps yet' state instead of a 404 error."""
+    return jsonify({
+        "coming_soon": True,
+        "ticket": "#36",
+        "comps": [],
+        "note": ("Powered-shell deal comps land with the M&A deal "
+                  "tracker integration. The page renders an empty list "
+                  "until then — better than 404."),
+    }), 200
+
+
+@stubs_v3.route("/api/v1/powered-shell/pipeline", methods=["GET"])
+def powered_shell_pipeline():
+    """Stub: list of powered-shell projects in the pipeline.
+    Returns 200 with `pipeline: []` + coming_soon flag — same pattern."""
+    return jsonify({
+        "coming_soon": True,
+        "ticket": "#36",
+        "pipeline": [],
+        "note": ("Powered-shell pipeline data lands with the discovery "
+                  "engine integration. Capacity-pipeline.py has the "
+                  "scaffolding; needs powered_shell category tag."),
+    }), 200
+
+
 @stubs_v3.route("/api/v1/air-permitting", methods=["GET"])
 def air_permitting():
     lat = request.args.get("lat")

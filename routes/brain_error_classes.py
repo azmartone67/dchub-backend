@@ -506,6 +506,71 @@ REGISTRY: list[ErrorClass] = [
         confidence=0.85,
         notes="Requires rate_limit_events table. No-op if missing — won't break the scan.",
     ),
+    # ── Phase ZZZZZ-round24 (2026-05-23) — Site-wide URL canary classes
+    ErrorClass(
+        id="site_url_unhealthy",
+        pattern=r"site_url_unhealthy|returned HTTP \d+ \(expected 200\)",
+        fix_template="fix_route_or_redirect",
+        description=(
+            "A curated public URL returned non-200 status. Brain "
+            "site-probe checks 40+ surfaces (pages + APIs) every cycle. "
+            "Common causes: (a) the route was renamed but old URL is "
+            "still linked, (b) trailing-slash vs no-slash mismatch, "
+            "(c) handler crashed (5xx), (d) middleware short-circuit "
+            "(401/403). Look at the finding URL + status code; the "
+            "fix is usually a one-line @app.route addition or a "
+            "redirect."
+        ),
+        confidence=0.95,
+        shipped_proof="round24",
+        notes="Add new public URLs to _PROBE_LIST in routes/brain_site_probe.py so they're monitored too.",
+    ),
+    ErrorClass(
+        id="site_url_empty_body",
+        pattern=r"site_url_empty_body|returned 200 but body is only \d+ bytes",
+        fix_template="restore_data_pipeline_or_template",
+        description=(
+            "A public URL returned 200 but the body is too small for "
+            "what the page should be (under min_bytes threshold). "
+            "Usually means the data pipeline failed and the page "
+            "rendered a skeleton with no data, OR the template is "
+            "broken and only output the header/footer. Check the "
+            "page's data source (API endpoint, DB query) and the "
+            "template's error handling."
+        ),
+        confidence=0.85,
+        notes="Threshold in _PROBE_LIST entries. Raise if a page legitimately renders smaller.",
+    ),
+    ErrorClass(
+        id="site_url_error_in_body",
+        pattern=r"site_url_error_in_body|body contains error marker",
+        fix_template="surface_handler_error",
+        description=(
+            "A public URL returned 200 but the response body contains "
+            "an error marker string ('error', 'Backend unreachable', "
+            "'Authentication system is starting', etc.). The handler "
+            "is swallowing exceptions and returning 200 with an error "
+            "body — silent failure. Fix: surface the error as a "
+            "proper HTTP status (4xx/5xx) so monitoring catches it."
+        ),
+        confidence=0.85,
+        notes="Bad-body markers in _BAD_BODY_MARKERS at routes/brain_site_probe.py.",
+    ),
+    ErrorClass(
+        id="site_url_unreachable",
+        pattern=r"site_url_unreachable|connection-error",
+        fix_template="critical_diagnose_worker_pool",
+        description=(
+            "A public URL couldn't be reached AT ALL from inside the "
+            "container (connection refused / timeout). Indicates "
+            "either (a) gunicorn worker pool is exhausted, (b) the "
+            "Flask app is in an unrecoverable error state, (c) the "
+            "route is registered but Blueprint.register failed "
+            "silently. CRITICAL — investigate immediately."
+        ),
+        confidence=0.95,
+        notes="If this fires for many URLs at once, Railway is in trouble. See round 20 emergency revert pattern.",
+    ),
     # ── Phase ZZZZZ-round23 (2026-05-23) — Privacy/VPN/Tor share class
     ErrorClass(
         id="privacy_traffic_share_high",
