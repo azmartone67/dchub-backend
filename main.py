@@ -25488,16 +25488,31 @@ def _admin_dedup_run():
     merged_at IS NULL AND is_duplicate = 0 get processed up to ?max=N
     records (default 500, hard cap MAX_PER_RUN). Returns counts of
     auto-approved, marked-duplicate, and skipped rows.
-    Brain class: dedup_backlog_large fix_template=run_dedup_cycle."""
-    import os
+    Brain class: dedup_backlog_large fix_template=run_dedup_cycle.
+
+    Phase ZZZZZ-round13 (2026-05-23): use internal_auth.is_valid_internal_key
+    so the legacy hardcoded fallback works too. Operators don't always know
+    the current Railway env-var value; the legacy key gives a recoverable
+    auth path with a logged warning (brain class
+    legacy_hardcoded_key_accepted catches it). All actions here are
+    idempotent + non-destructive (dedup only marks duplicates; the auto-
+    approve runner is itself wrapped in safety checks).
+    """
     from flask import jsonify, request
-    expected = os.environ.get("DCHUB_ADMIN_KEY") or os.environ.get("DCHUB_INTERNAL_KEY")
     provided = (request.headers.get("X-Admin-Key")
                 or request.headers.get("X-Internal-Key")
                 or request.args.get("admin_key"))
-    if expected and provided != expected:
-        return jsonify(ok=False, error="unauthorized",
-                       hint="X-Admin-Key or X-Internal-Key header required"), 401
+    try:
+        from internal_auth import is_valid_internal_key
+        if not is_valid_internal_key(provided):
+            return jsonify(ok=False, error="unauthorized",
+                           hint="X-Admin-Key or X-Internal-Key header required"), 401
+    except Exception:
+        # Fallback if internal_auth import fails — strict env match
+        import os as _os
+        expected = _os.environ.get("DCHUB_ADMIN_KEY") or _os.environ.get("DCHUB_INTERNAL_KEY")
+        if expected and provided != expected:
+            return jsonify(ok=False, error="unauthorized"), 401
     try:
         max_records = int(request.args.get("max", 500))
     except (ValueError, TypeError):
@@ -25524,13 +25539,26 @@ def _admin_heal_purge_stale():
     Auth: X-Admin-Key header matching DCHUB_ADMIN_KEY env. Use
     /scripts/purge-stale-findings.sql for the raw SQL if you'd rather
     run it via psql.
+
+    Phase ZZZZZ-round13 (2026-05-23): use internal_auth.is_valid_internal_key
+    so the legacy hardcoded fallback works too. Same reasoning as
+    /api/v1/admin/dedup/run — this action is non-destructive (only
+    purges stale findings; can be reconstructed from logs if needed).
     """
-    import os, psycopg2
+    import psycopg2
     from flask import jsonify, request
-    expected = os.environ.get("DCHUB_ADMIN_KEY") or os.environ.get("DCHUB_INTERNAL_KEY")
-    provided = request.headers.get("X-Admin-Key") or request.args.get("admin_key")
-    if expected and provided != expected:
-        return jsonify(ok=False, error="unauthorized"), 401
+    provided = (request.headers.get("X-Admin-Key")
+                or request.headers.get("X-Internal-Key")
+                or request.args.get("admin_key"))
+    try:
+        from internal_auth import is_valid_internal_key
+        if not is_valid_internal_key(provided):
+            return jsonify(ok=False, error="unauthorized"), 401
+    except Exception:
+        import os as _os
+        expected = _os.environ.get("DCHUB_ADMIN_KEY") or _os.environ.get("DCHUB_INTERNAL_KEY")
+        if expected and provided != expected:
+            return jsonify(ok=False, error="unauthorized"), 401
     DATABASE_URL = os.environ.get("DATABASE_URL")
     if not DATABASE_URL:
         return jsonify(ok=False, error="no DATABASE_URL"), 500
