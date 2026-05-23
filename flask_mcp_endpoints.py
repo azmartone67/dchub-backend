@@ -931,11 +931,39 @@ def mcp_funnel():
                 # 8-4-4-4-12 hex UUIDs pollute the platform list. Filter
                 # them out via a regex check so we fall through to
                 # user_agent classification.
+                # Phase ZZZZZ-round9 (2026-05-23): tighten the classifier
+                # so 90,000+ tool calls don't lump into 'node-script' +
+                # 'unknown' (which is what mcp/funnel showed before this
+                # commit — 50k + 40k = 98% of traffic unattributable).
+                # Two layers added BEFORE the generic node/python buckets:
+                #   1. Internal traffic — our own DCHub-* UAs (brain-radar,
+                #      healer, sentinel, scheduler, smoke-test) sorted into
+                #      'internal-dchub' so they don't pollute external
+                #      conversion metrics.
+                #   2. MCP SDK identification — @modelcontextprotocol/sdk,
+                #      mcp-inspector, and the n8n MCP node all expose
+                #      identifiable UA fragments. Catching them before the
+                #      generic 'node-script' falls through means we know
+                #      "this is an MCP agent" even when the host AI client
+                #      didn't pass clientInfo.name.
                 _platform_case = r"""
                     CASE
                         WHEN NULLIF(LOWER(client_name), '') IS NOT NULL
                              AND client_name !~* '^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$'
                             THEN LOWER(client_name)
+                        WHEN user_agent ILIKE '%dchub-%' OR user_agent ILIKE '%dchubhealer%'
+                            OR user_agent ILIKE '%brain-v2-headless%' OR user_agent ILIKE '%brain-radar%'
+                            OR user_agent ILIKE '%uptimerobot%'
+                            THEN 'internal-dchub'
+                        WHEN user_agent ILIKE '%@modelcontextprotocol/sdk%'
+                            OR user_agent ILIKE '%modelcontextprotocol%'
+                            THEN 'mcp-sdk'
+                        WHEN user_agent ILIKE '%mcp-inspector%'
+                            THEN 'mcp-inspector'
+                        WHEN user_agent ILIKE '%n8n%'
+                            THEN 'n8n'
+                        WHEN user_agent ILIKE '%smithery%'
+                            THEN 'smithery'
                         WHEN user_agent ILIKE '%chatgpt%' OR user_agent ILIKE '%openai%'
                             THEN 'chatgpt'
                         WHEN user_agent ILIKE '%claude%' OR user_agent ILIKE '%anthropic%'
@@ -948,7 +976,7 @@ def mcp_funnel():
                             THEN 'groq'
                         WHEN user_agent ILIKE '%cursor%'
                             THEN 'cursor'
-                        WHEN user_agent ILIKE '%windsurf%'
+                        WHEN user_agent ILIKE '%windsurf%' OR user_agent ILIKE '%codeium%'
                             THEN 'windsurf'
                         WHEN user_agent ILIKE '%continue%'
                             THEN 'continue.dev'
@@ -970,7 +998,10 @@ def mcp_funnel():
                             THEN 'curl'
                         WHEN user_agent ILIKE '%python%' OR user_agent ILIKE '%requests%'
                             THEN 'python-script'
-                        WHEN user_agent ILIKE '%node%' OR user_agent ILIKE '%axios%'
+                        WHEN user_agent ILIKE '%node-fetch%' OR user_agent ILIKE '%undici%'
+                            OR user_agent ILIKE '%axios%' OR user_agent ILIKE '%got/%'
+                            THEN 'node-http-client'
+                        WHEN user_agent ILIKE '%node%'
                             THEN 'node-script'
                         WHEN user_agent ILIKE '%postman%'
                             THEN 'postman'
