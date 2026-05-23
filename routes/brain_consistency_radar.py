@@ -7321,15 +7321,31 @@ def scan_all() -> list[dict]:
     #   - security_header_missing   → x-content-type-options, x-frame-options, etc.
     #   - secret_pattern_in_response → AWS/Stripe/GitHub/internal keys in body
     #   - suspicious_admin_scan     → 401-spam from one IP > 20/h
-    try:
-        from routes.brain_security_detectors import SECURITY_DETECTORS
-        for _sec_fn in SECURITY_DETECTORS:
-            detectors.append(_sec_fn)
-    except Exception as _e_sec:
-        # Module import must never break the radar.
-        import sys as _sys
-        print(f"[radar] brain_security_detectors import skipped: {_e_sec}",
-              file=_sys.stderr)
+    #
+    # Phase ZZZZZ-round20 (2026-05-23) EMERGENCY GATE: registering 6
+    # HTTP-self-probing detectors inside scan_all caused Railway to hang.
+    # With only ~2 gunicorn workers, having 6 detectors each issuing
+    # 5+ blocking self-calls back to localhost:8080 inside a single
+    # scan deadlocked the worker pool — the workers serving scan_all
+    # couldn't serve the self-probes the detectors were waiting on.
+    # POST endpoints (which CF can't failover to Render) started 503'ing.
+    #
+    # Fix: gate behind DCHUB_SECURITY_RADAR_ENABLED env var, default OFF.
+    # The security detectors should run on their own schedule (cron, not
+    # every-5min radar pass). To re-enable for testing, set the env var
+    # to '1' on Railway. They remain available as a module and can be
+    # invoked directly via /api/v1/admin/brain/security-scan endpoint.
+    import os as _os_radar
+    if _os_radar.environ.get("DCHUB_SECURITY_RADAR_ENABLED", "0") == "1":
+        try:
+            from routes.brain_security_detectors import SECURITY_DETECTORS
+            for _sec_fn in SECURITY_DETECTORS:
+                detectors.append(_sec_fn)
+        except Exception as _e_sec:
+            # Module import must never break the radar.
+            import sys as _sys
+            print(f"[radar] brain_security_detectors import skipped: {_e_sec}",
+                  file=_sys.stderr)
 
     # Phase RRR-brain-parallel (2026-05-18) — scan was taking 76.9s
     # serial because several detectors make HTTP calls (frontend probes

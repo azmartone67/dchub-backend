@@ -11355,6 +11355,111 @@ def get_marketing_stats():
         try: conn.close()
         except Exception: pass
 
+# Phase ZZZZZ-round20 (2026-05-23): missing endpoint that the homepage
+# (dchub-frontend/index.html line 906) has been POSTing to with 404s
+# the whole time. The user noticed: "Ask dchub on main site is broken,
+# this is embarrassing 404 not found error when we ask it questions".
+#
+# Lightweight wrapper around Anthropic's Claude API. Public endpoint
+# (no auth) — same threat profile as any AI demo. Rate-limited at the
+# CF worker layer + tier_gate's anonymous bucket.
+@app.route('/api/v1/ai-demo/ask', methods=['POST', 'OPTIONS'])
+def _ai_demo_ask():
+    """Public 'Ask DC Hub' demo on the homepage. Forwards the question
+    to Claude with a constrained system prompt — answers grounded in
+    DC Hub's public domain (data centers, grid, fiber, capacity).
+
+    Returns {answer, model, tokens_in, tokens_out} on success or
+    {error, hint} on failure. Hard-cap response at 600 tokens to keep
+    cost predictable + UX snappy."""
+    from flask import jsonify, request, make_response
+    if request.method == 'OPTIONS':
+        resp = make_response('', 204)
+        resp.headers['Access-Control-Allow-Origin'] = '*'
+        resp.headers['Access-Control-Allow-Methods'] = 'POST, OPTIONS'
+        resp.headers['Access-Control-Allow-Headers'] = 'Content-Type'
+        return resp
+    api_key = os.environ.get('ANTHROPIC_API_KEY', '').strip()
+    if not api_key:
+        return jsonify(error='ai_demo_unconfigured',
+                       answer="The Ask DC Hub demo is temporarily offline. "
+                              "Browse /dcpi for live market rankings or "
+                              "/mcp for the AI agent integration."), 503
+    body = request.get_json(silent=True) or {}
+    question = (body.get('question') or body.get('q') or '').strip()
+    if not question:
+        return jsonify(error='missing_question',
+                       hint="POST {\"question\": \"...\"}"), 400
+    if len(question) > 1000:
+        question = question[:1000]
+    persona = (body.get('persona') or 'broker').strip().lower()[:20]
+    # Persona-flavored system prompt
+    persona_map = {
+        'broker': ('You are answering as DC Hub Media for a commercial '
+                    'real estate broker focused on data-center site selection.'),
+        'developer': ('You are answering as DC Hub Media for a data-center '
+                       'developer evaluating land + power + interconnection.'),
+        'operator': ('You are answering as DC Hub Media for a hyperscale '
+                      'operator monitoring grid + capacity + risk.'),
+        'investor': ('You are answering as DC Hub Media for an infrastructure '
+                       'investor tracking DC asset deals + market velocity.'),
+    }
+    role = persona_map.get(persona, persona_map['broker'])
+    system_prompt = (
+        f"{role} Be direct, numbers-first, no fluff. Cite ISO codes, "
+        f"specific markets (e.g. ERCOT, CAISO), MW figures, $/kW where "
+        f"available. If you don't know, say so — DO NOT hallucinate. "
+        f"Keep responses under 300 words. End with one CTA pointing the "
+        f"reader to a specific DC Hub surface (e.g. /dcpi, /grid-intelligence, "
+        f"/land-power-map, /pipeline, /mcp) that would deepen the answer."
+    )
+    import requests
+    try:
+        r = requests.post(
+            'https://api.anthropic.com/v1/messages',
+            json={
+                'model': 'claude-sonnet-4-20250514',
+                'max_tokens': 600,
+                'system': system_prompt,
+                'messages': [{'role': 'user', 'content': question}],
+            },
+            headers={
+                'x-api-key': api_key,
+                'anthropic-version': '2023-06-01',
+                'Content-Type': 'application/json',
+            },
+            timeout=20,
+        )
+    except Exception as e:
+        return jsonify(error='upstream_timeout',
+                       answer="The Ask DC Hub demo is responding slowly. "
+                              "Try /dcpi or /grid-intelligence for the same "
+                              "underlying data.",
+                       detail=str(e)[:120]), 504
+    if r.status_code != 200:
+        return jsonify(error=f'anthropic_{r.status_code}',
+                       answer="The Ask DC Hub demo couldn't reach the model. "
+                              "Try again, or browse /dcpi for live data.",
+                       detail=r.text[:200]), 502
+    try:
+        data = r.json()
+        content = data.get('content') or []
+        answer_text = ''.join(b.get('text', '') for b in content
+                               if isinstance(b, dict) and b.get('type') == 'text').strip()
+        usage = data.get('usage') or {}
+        resp = jsonify(answer=answer_text or "(no answer)",
+                        model=data.get('model'),
+                        persona=persona,
+                        tokens_in=usage.get('input_tokens'),
+                        tokens_out=usage.get('output_tokens'),
+                        source='claude_anthropic_api')
+        resp.headers['Cache-Control'] = 'no-store, max-age=0'
+        resp.headers['Access-Control-Allow-Origin'] = '*'
+        return resp, 200
+    except Exception as e:
+        return jsonify(error='parse_failure', detail=str(e)[:120]), 502
+
+
 @app.route('/api/v1/ai-platforms/status', methods=['GET'])
 def get_ai_platforms_status():
     """Get AI platform integration status - dynamically configurable"""
@@ -25648,6 +25753,64 @@ def _admin_heal_purge_stale():
                        hint="Re-probe /api/v1/heal/findings in ~30s — count should drop after the fresh compute lands.")
     except Exception as e:
         return jsonify(ok=False, error=str(e)[:300]), 500
+
+
+# Phase ZZZZZ-round20 (2026-05-23): admin endpoint to run the security
+# detector suite ON DEMAND. Round 17 originally wired them into
+# scan_all but the 6 detectors each issuing 5+ HTTP self-probes
+# deadlocked the gunicorn worker pool — workers serving scan_all
+# couldn't serve the self-probes the detectors were waiting on.
+# Solution: gate the registration behind DCHUB_SECURITY_RADAR_ENABLED
+# (default OFF) and provide this admin-triggered endpoint to run the
+# scan when explicitly requested (cron, CI, or human curiosity).
+@app.route("/api/v1/admin/brain/security-scan", methods=["POST"])
+def _admin_brain_security_scan():
+    """Run the security/breach detector suite on-demand.
+
+    Six detectors:
+      - admin_endpoint_open
+      - paywall_hole
+      - security_header_drift
+      - secret_pattern_in_body
+      - repeated_admin_401
+      - hosting_traffic_share
+
+    Returns the combined findings list. Cap each detector at 8s to
+    avoid hanging the request even if a probe blocks."""
+    from flask import jsonify, request, make_response
+    provided = (request.headers.get("X-Admin-Key")
+                or request.headers.get("X-Internal-Key")
+                or request.args.get("admin_key"))
+    try:
+        from internal_auth import is_valid_internal_key
+        if not is_valid_internal_key(provided):
+            resp = make_response(jsonify(ok=False, error="unauthorized"), 401)
+            resp.headers["Cache-Control"] = "no-store, max-age=0"
+            return resp
+    except Exception:
+        return jsonify(ok=False, error="auth_module_unavailable"), 500
+    try:
+        from routes.brain_security_detectors import SECURITY_DETECTORS
+    except Exception as e:
+        return jsonify(ok=False, error=f"detectors_unavailable: {str(e)[:120]}"), 500
+    import concurrent.futures as _cf
+    findings = []
+    errors = {}
+    with _cf.ThreadPoolExecutor(max_workers=4) as ex:
+        futs = {ex.submit(fn): fn.__name__ for fn in SECURITY_DETECTORS}
+        for fut in _cf.as_completed(futs, timeout=60):
+            name = futs[fut]
+            try:
+                result = fut.result(timeout=8) or []
+                findings.extend(result)
+            except Exception as e:
+                errors[name] = f"{type(e).__name__}: {str(e)[:120]}"
+    return jsonify(ok=True, findings=findings, errors=errors,
+                   count=len(findings),
+                   hint=("Detectors run on-demand only. To wire into the "
+                         "5-min radar, set DCHUB_SECURITY_RADAR_ENABLED=1 "
+                         "on Railway (caveat: increases scan_all CPU/HTTP "
+                         "load — verify worker pool can handle it)."))
 
 
 @app.route("/api/v1/admin/tag-customer", methods=["POST"])
