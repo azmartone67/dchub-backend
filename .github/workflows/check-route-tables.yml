@@ -19,6 +19,12 @@ on:
 jobs:
   check:
     runs-on: ubuntu-latest
+    # ADVISORY until the exclusion rules are fully tuned — the goal is to
+    # CATCH the /pockets-style routing-footgun class without firing on
+    # static-file-backed pages, admin paths, manifests, or dynamic catch-
+    # alls. Make it non-blocking; flip to required-check once warnings
+    # are clean for a week.
+    continue-on-error: true
     steps:
       - uses: actions/checkout@v4
       - name: 1 — extract Flask HTML routes
@@ -29,6 +35,40 @@ jobs:
           import re, os, sys, json
 
           ROUTE_RE = re.compile(r"@\w+\.route\(\s*['\"]([^'\"]+)['\"]")
+          # Collect existing static files in dchub-frontend so we can
+          # skip routes that have a corresponding static asset. e.g.
+          # /ai-hub.html is a real file → CF serves it; no need for
+          # the Worker to proxy.
+          static_files = set()
+          static_basenames = set()
+          for root, _, files in os.walk('dchub-frontend'):
+              for f in files:
+                  if f.endswith(('.html', '.json', '.txt', '.md', '.xml')):
+                      rel = os.path.relpath(os.path.join(root, f), 'dchub-frontend')
+                      static_files.add('/' + rel)
+                      # also the clean-URL form (no .html): /ai-hub.html → /ai-hub
+                      if rel.endswith('.html'):
+                          static_files.add('/' + rel[:-5])
+                          static_basenames.add(rel[:-5])
+          print(f"  {len(static_files)} static-backed paths in dchub-frontend/")
+
+          # Routes we explicitly DON'T expect to proxy through the worker:
+          #  - dynamic catch-alls `/<string:foo>` — these handle un-routed
+          #    paths inside Railway, not user-facing dashboards.
+          #  - admin paths — intentionally not surfaced via CF.
+          #  - .well-known, manifests, well-known sitemap/robots/favicon.
+          SKIP_PATTERNS = (
+              '/<',                   # catch-all dynamic patterns
+              '/admin/',              # admin surfaces
+              '/.well-known/',        # manifests
+          )
+          SKIP_LITERAL = {
+              '/',
+              '/health', '/robots.txt', '/sitemap.xml', '/favicon.ico',
+              '/ai.txt', '/ai-plugin.json', '/llms.txt', '/manifest.json',
+              '/.well-known/mcp.json', '/agents.md', '/AGENTS.md',
+          }
+
           html_routes = set()
           for root, _, files in os.walk('.'):
               if any(x in root for x in ('.git', 'node_modules', '.claude', 'dchub-frontend')):
@@ -42,12 +82,16 @@ jobs:
                               m = ROUTE_RE.search(line)
                               if not m: continue
                               path = m.group(1)
-                              # Only care about HTML-serving paths, not /api/* or /static or with method=POST-only
-                              if path.startswith('/api') or path.startswith('/static') or path.startswith('/.well-known'):
+                              # Only care about HTML-serving paths.
+                              if path.startswith('/api') or path.startswith('/static'):
                                   continue
-                              if path in ('/', '/health', '/robots.txt', '/sitemap.xml', '/favicon.ico'):
+                              if path in SKIP_LITERAL:
                                   continue
-                              # Skip <converter:var> dynamic-only sub-paths (we check the prefix instead)
+                              if any(path.startswith(s) for s in SKIP_PATTERNS):
+                                  continue
+                              # If a static file already serves this path, skip.
+                              if path in static_files:
+                                  continue
                               html_routes.add(path)
                   except Exception:
                       pass
