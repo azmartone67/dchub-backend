@@ -1525,6 +1525,23 @@ export default {
         // no rule, so CF's SSRF guard returned "DNS points to prohibited IP".
         // Flask backend routes/pockets.py:1002 + 492 serve these fine.
         '/pockets',
+        // Phase ZZZZZ-bulk (2026-05-23): triage sweep — paths where Flask
+        // returns 200 but CF was 404'ing because the worker had no rule.
+        '/ai-partners',
+        '/ai-partners.html',
+        '/ai/discover',
+        '/ai/facts',
+        '/ai/facts.json',
+        '/ai/gpts',
+        '/ai/learn',
+        '/ai/learn/news',
+        '/ai/llms.txt',
+        '/ai/outreach',
+        '/ai/platforms',
+        '/ai/schema/facility',
+        '/capacity-map',
+        '/capacity-map.html',
+        '/mcp/manifest',
         '/visitor-intelligence',
       ]);
       // Phase YYYY (2026-05-16): also forward prefix-paths to Railway
