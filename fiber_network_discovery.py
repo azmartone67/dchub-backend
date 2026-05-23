@@ -81,9 +81,22 @@ def _ensure_fiber_routes_table():
 
 
 def _upsert_fiber_route(conn, route):
-    """Upsert a single fiber route into Neon."""
+    """Upsert a single fiber route into Neon.
+
+    Phase ZZZZZ-round5-fiber (2026-05-23): wrapped in SAVEPOINT/ROLLBACK
+    so one bad row doesn't poison the rest of the transaction. The
+    earlier shape ("try except: log; return False") still left the
+    parent transaction in an ABORTED state after a raise — every
+    subsequent row then logged 'current transaction is aborted, commands
+    ignored until end of transaction block'. The savepoint ROLLBACK
+    discards just the failed row's changes and leaves the connection
+    usable for the next iteration.
+
+    Brain error class registered: psycopg2_transaction_aborted.
+    """
+    cur = conn.cursor()
     try:
-        cur = conn.cursor()
+        cur.execute("SAVEPOINT fiber_upsert")
         cur.execute("""
             INSERT INTO fiber_routes
                 (name, provider, route_type, start_location, end_location,
@@ -116,10 +129,37 @@ def _upsert_fiber_route(conn, route):
             route.get('source', 'seed'),
             route.get('source_id', ''),
         ))
+        cur.execute("RELEASE SAVEPOINT fiber_upsert")
         return True
     except Exception as e:
-        logger.warning(f"Fiber route upsert failed: {e}")
+        try:
+            cur.execute("ROLLBACK TO SAVEPOINT fiber_upsert")
+        except Exception:
+            # If the savepoint itself failed, fall back to a full rollback
+            # so the connection is at least usable for the next caller.
+            try: conn.rollback()
+            except Exception: pass
+        # Log only the first ~5 bad rows per cycle to avoid log spam
+        # when an entire batch is malformed.
+        _spam_key = "_fiber_upsert_warns_logged"
+        warns = getattr(_upsert_fiber_route, _spam_key, 0)
+        if warns < 5:
+            logger.warning(f"Fiber route upsert failed (row {route.get('source_id','?')}): {e}")
+            setattr(_upsert_fiber_route, _spam_key, warns + 1)
+        elif warns == 5:
+            logger.warning("Fiber route upsert: further row-level errors suppressed for this cycle.")
+            setattr(_upsert_fiber_route, _spam_key, 6)
         return False
+    finally:
+        try: cur.close()
+        except Exception: pass
+
+
+def _reset_fiber_warn_counter():
+    """Call once at the start of each discovery cycle to reset the
+    per-cycle log-spam suppressor."""
+    if hasattr(_upsert_fiber_route, "_fiber_upsert_warns_logged"):
+        delattr(_upsert_fiber_route, "_fiber_upsert_warns_logged")
 
 
 # ============================================================
@@ -163,8 +203,14 @@ def _discover_peeringdb_fiber():
     discovered = []
     try:
         # Get US Internet Exchanges from PeeringDB
+        # Phase ZZZZZ-round5-peeringdb (2026-05-23): root cause of the
+        # "PeeringDB returned 404" log spam was a busted URL — '%s' was
+        # never substituted, so the request went to
+        # /api/ix%scountry=US&status=ok (literal '%s' character).
+        # PeeringDB's API was never wrong; the URL template was. Fixed:
+        # the separator between path and query string is '?'.
         resp = requests.get(
-            "https://www.peeringdb.com/api/ix%scountry=US&status=ok",
+            "https://www.peeringdb.com/api/ix?country=US&status=ok",
             headers={"User-Agent": "DCHub/2.0 (dchub.cloud)"},
             timeout=15
         )

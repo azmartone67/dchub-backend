@@ -198,7 +198,7 @@ def generate_alert_email(alert: dict, trigger_data: dict) -> tuple:
             </div>
             <div class="footer">
                 <p>DC Hub - Data Center Intelligence Platform</p>
-                <p><a href="https://dchub.cloud/alerts/unsubscribe%sid={alert['id']}" style="color: #888;">Unsubscribe from this alert</a></p>
+                <p><a href="https://dchub.cloud/alerts/unsubscribe?id={alert['id']}" style="color: #888;">Unsubscribe from this alert</a></p>
             </div>
         </div>
     </body>
@@ -216,7 +216,7 @@ Trigger Reason: {trigger_data.get('reason', 'Alert condition met')}
 
 ---
 Manage your alerts: https://dchub.cloud/alerts
-Unsubscribe: https://dchub.cloud/alerts/unsubscribe%sid={alert['id']}
+Unsubscribe: https://dchub.cloud/alerts/unsubscribe?id={alert['id']}
     '''
     
     return html, text

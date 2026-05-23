@@ -388,7 +388,9 @@ def generate_deals_post():
     """Generate a LinkedIn post about recent M&A deals."""
     import requests as req
     try:
-        resp = req.get('https://dchub.cloud/api/v1/deals%slimit=5', timeout=15)
+        # Phase ZZZZZ-round5 (2026-05-23): '%s'→'?' URL bug — was hitting
+        # /api/v1/deals%slimit=5 (literal '%s') which 404'd. Fixed.
+        resp = req.get('https://dchub.cloud/api/v1/deals?limit=5', timeout=15)
         data = resp.json()
         deals = data.get('deals', data.get('data', []))
         if not deals:
@@ -429,7 +431,9 @@ def generate_news_post():
     """Generate a LinkedIn post about latest industry news."""
     import requests as req
     try:
-        resp = req.get('https://dchub.cloud/api/news%slimit=5', timeout=15)
+        # Phase ZZZZZ-round5 (2026-05-23): '%s'→'?' URL bug. Same root
+        # cause as the /api/v1/deals fix above.
+        resp = req.get('https://dchub.cloud/api/news?limit=5', timeout=15)
         data = resp.json()
         articles = data.get('articles', data.get('data', []))
         if not articles:

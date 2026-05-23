@@ -86,9 +86,16 @@ def _ensure_fiber_routes_table():
 
 
 def _upsert_fiber_route(conn, route):
-    """Upsert a single fiber route into Neon."""
+    """Upsert a single fiber route into Neon.
+
+    Phase ZZZZZ-round5-fiber (2026-05-23): SAVEPOINT/ROLLBACK so one bad
+    row doesn't poison the parent transaction. See twin function in
+    fiber_network_discovery.py for the full pattern + brain error class
+    psycopg2_transaction_aborted that this resolves.
+    """
+    cur = conn.cursor()
     try:
-        cur = conn.cursor()
+        cur.execute("SAVEPOINT fiber_upsert")
         cur.execute("""
             INSERT INTO fiber_routes
                 (name, provider, route_type, start_location, end_location,
@@ -116,10 +123,25 @@ def _upsert_fiber_route(conn, route):
             route.get('source', 'seed'),
             route.get('source_id', ''),
         ))
+        cur.execute("RELEASE SAVEPOINT fiber_upsert")
         return True
     except Exception as e:
-        logger.warning(f"Fiber route upsert failed: {e}")
+        try:
+            cur.execute("ROLLBACK TO SAVEPOINT fiber_upsert")
+        except Exception:
+            try: conn.rollback()
+            except Exception: pass
+        warns = getattr(_upsert_fiber_route, "_warns", 0)
+        if warns < 5:
+            logger.warning(f"Fiber route upsert failed (row {route.get('source_id','?')}): {e}")
+            setattr(_upsert_fiber_route, "_warns", warns + 1)
+        elif warns == 5:
+            logger.warning("Fiber route upsert: further row-level errors suppressed for this cycle.")
+            setattr(_upsert_fiber_route, "_warns", 6)
         return False
+    finally:
+        try: cur.close()
+        except Exception: pass
 
 
 # ============================================================
@@ -163,8 +185,11 @@ def _discover_peeringdb_fiber():
     discovered = []
     try:
         # Get US Internet Exchanges from PeeringDB
+        # Phase ZZZZZ-round5-peeringdb (2026-05-23): same '%s'→'?' URL
+        # fix as fiber_network_discovery.py. See that file for the
+        # root-cause notes.
         resp = requests.get(
-            "https://www.peeringdb.com/api/ix%scountry=US&status=ok",
+            "https://www.peeringdb.com/api/ix?country=US&status=ok",
             headers={"User-Agent": "DCHub/2.0 (dchub.cloud)"},
             timeout=15
         )
