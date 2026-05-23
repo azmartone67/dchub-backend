@@ -1520,6 +1520,12 @@ export default {
         // The HTML path was 404ing because it wasn't allowlisted here, so CF
         // returned its SPA fallback instead of forwarding to Railway.
         '/brain/innovation',
+        // Phase ZZZZZ (2026-05-23): /pockets/<slug> + /pockets index were
+        // 404'ing CF-side. _routes.json sends them here but the worker had
+        // no rule, so CF's SSRF guard returned "DNS points to prohibited IP".
+        // Flask backend routes/pockets.py:1002 + 492 serve these fine.
+        '/pockets',
+        '/visitor-intelligence',
       ]);
       // Phase YYYY (2026-05-16): also forward prefix-paths to Railway
       // for surfaces with dynamic sub-routes (e.g. /operators/<slug>).
@@ -1548,6 +1554,8 @@ export default {
         '/api/v1/cf-analytics/',
         // Phase ZZZZ-audit-404-fix (2026-05-18): legacy ISO paths
         '/iso/',
+        // Phase ZZZZZ (2026-05-23): /pockets/<slug> per-market detail pages.
+        '/pockets/',
       ];
       if (PHASE_282_RAILWAY_PATHS.has(pathname) ||
           PHASE_282_PREFIXES.some(p => pathname.startsWith(p))) {
