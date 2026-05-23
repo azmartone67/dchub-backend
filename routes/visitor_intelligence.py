@@ -472,21 +472,28 @@ def visitor_intel_public():
 
     full = _compute(days=7)
     # Strip anything resembling PII or operationally-sensitive data.
+    # Phase ZZZZZ-round7b (2026-05-23): map _compute()'s actual keys
+    # (total_paywall_signals / unique_sessions / unique_mcp_clients /
+    # unique_known_visitors) — first version of this endpoint guessed
+    # generic key names and returned 0s on every counter.
+    totals = full.get("totals") or {}
     safe = {
         "ok": "error" not in full,
         "as_of": full.get("as_of"),
         "window_days": 7,
         "headline": {
-            "tool_calls_7d":          (full.get("totals") or {}).get("tool_calls", 0),
-            "distinct_mcp_clients_7d": (full.get("totals") or {}).get("distinct_mcp_clients", 0),
-            "paywall_hits_7d":        (full.get("totals") or {}).get("upgrade_signals", 0),
-            "identified_users_7d":    (full.get("totals") or {}).get("identified_users", 0),
+            "paywall_hits_7d":         int(totals.get("total_paywall_signals", 0)),
+            "unique_sessions_7d":      int(totals.get("unique_sessions", 0)),
+            "distinct_mcp_clients_7d": int(totals.get("unique_mcp_clients", 0)),
+            "identified_users_7d":     int(totals.get("unique_known_visitors", 0)),
+            "conversions_30d":         int(totals.get("conversions", 0)),
         },
         # Top tools by paywall-hit volume — surfaces what the market
         # most wants (without naming who).
         "top_tools_by_demand": [
-            {"tool": t.get("tool"), "calls_7d": t.get("calls", 0)}
+            {"tool": t.get("tool"), "hits_7d": int(t.get("hits", 0))}
             for t in (full.get("top_tools") or [])[:5]
+            if t.get("tool")
         ],
         # MCP client breakdown — no IPs, no UAs, just family-level counts.
         "mcp_client_breakdown": [
@@ -496,6 +503,7 @@ def visitor_intel_public():
                 # don't expose signal counts directly — implies tier behavior
             }
             for c in (full.get("by_mcp_client") or [])[:8]
+            if c.get("client") and c.get("client") != "unknown"
         ],
         "note": "Live MCP usage at DC Hub. Coarse aggregates only — no PII. Source-of-truth: /api/v1/admin/visitor-intelligence (admin-only) + /api/v1/mcp/conversion-funnel.",
         "cache_ttl_seconds": _PUBLIC_SUMMARY_TTL,
