@@ -1,6 +1,10 @@
 <!DOCTYPE html>
 <html lang="en">
 <head>
+<!-- MUST load before any other script that fetches /api/* — wraps
+     window.fetch with a per-page-load cache-bust to dodge CF edge
+     cache poisoning. See dchub-frontend/js/dchub-cachebust.js. -->
+<script src="/js/dchub-cachebust.js"></script>
 <!-- Phase FF+25-followup-r3 (2026-05-20) — refined v3
      User feedback on v2: "less green more purple and blue", "missing the
      logos of ai agents on front", "looks sloppy", "i still think our old
