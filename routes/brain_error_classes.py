@@ -217,6 +217,98 @@ REGISTRY: list[ErrorClass] = [
             "instead of the bare 'mcp' default."
         ),
     ),
+    # Phase ZZZZZ-round6b (2026-05-23): 6 new classes for findings the
+    # brain dashboard was tagging as "unknown class". Each one is a
+    # well-defined detector that already exists in
+    # brain_consistency_radar.py — these are documentation, not new
+    # detection. Registering them grows the brain's recognized
+    # vocabulary so Layer-5 can propose templated handlers.
+    ErrorClass(
+        id="enterprise_bot_present",
+        pattern=r"enterprise_bot_present|whale_identified|high.volume.bot",
+        fix_template="surface_whale_for_sales_outreach",
+        description=(
+            "Heavyweight scraper / bot identified — >500 MCP calls over 14 days, "
+            "3+ active days. This is an OPPORTUNITY signal, not an error: route "
+            "to /api/v1/bots/whales for human review (sales outreach vs block "
+            "vs whitelist). Default action 'monitor' until a human triages."
+        ),
+        confidence=0.85,
+        notes="Detector lives at routes/brain_consistency_radar.py:1810 (check_enterprise_bot_present). The 22,677 count is cumulative across all detection runs — same whale keeps surfacing until acted on.",
+    ),
+    ErrorClass(
+        id="dedup_backlog_large",
+        pattern=r"dedup_backlog_large|dedup.*backlog|discovered_facilities.*duplicate",
+        fix_template="run_dedup_cycle",
+        description=(
+            "Discovered-facilities table has accumulated >N duplicates awaiting "
+            "merge. Fix: trigger the dedup cycle (POST /api/jobs/dedup/run) "
+            "or wait for the next scheduled merge pass. If the count keeps "
+            "growing without dropping after dedup runs, investigate why the "
+            "dedup detector isn't matching the new duplicates."
+        ),
+        confidence=0.8,
+        notes="Detector at brain_consistency_radar.py:4546. 11,401 backlog as of 2026-05-23 — dedup cycle should reduce on next run.",
+    ),
+    ErrorClass(
+        id="auto_trial_signal_mint_mismatch",
+        pattern=r"auto_trial_signal_mint_mismatch|signal.*mint.*ratio|trial.*signal.*key.*ratio",
+        fix_template="check_auto_trial_mint_gate",
+        description=(
+            "Mismatch between paywall signals fired and auto-trial keys minted. "
+            "Expected 590:1 signal:key ratio (per Phase ZZZZ-T1-paywall-visibility "
+            "calibration); seeing significant deviation. Either the mint endpoint "
+            "is rejecting more than expected, the dedup window is too aggressive, "
+            "or signals are firing without their attached email-capture step."
+        ),
+        confidence=0.75,
+        notes="Detector at brain_consistency_radar.py:6199. 2,860 occurrences suggests a structural mint gap, not a one-off.",
+    ),
+    ErrorClass(
+        id="data_freshness_sla_breach",
+        pattern=r"data_freshness_sla_breach|freshness.*sla|dataset.*stale.*past.*sla",
+        fix_template="kick_dataset_refresh_cron",
+        description=(
+            "A tracked dataset hasn't refreshed within its SLA window. Fix: "
+            "(a) trigger the dataset's refresh job manually (POST to its /api/"
+            "jobs/<name>/run endpoint), AND (b) investigate why the cron didn't "
+            "fire — check scheduler heartbeat at /api/v1/admin/scheduler-status "
+            "and the dataset's last_run timestamp in source_health."
+        ),
+        confidence=0.85,
+        notes="Detector at brain_consistency_radar.py:4992. 1,302 occurrences — one dataset breaching repeatedly, or several breaching once each.",
+    ),
+    ErrorClass(
+        id="site_sentinel_unhealthy",
+        pattern=r"site_sentinel_unhealthy[:_]",
+        fix_template="fix_unhealthy_page_or_relax_sentinel",
+        description=(
+            "Site Sentinel polls a manifest of public pages and flags any that "
+            "return non-200 OR body smaller than the page's min_bytes floor. "
+            "Fix: (a) actually fix the page (most common: a route was renamed, "
+            "or a feature was removed but the manifest still expects it), OR "
+            "(b) update the sentinel manifest at routes/site_sentinel.py if "
+            "the page legitimately moved / category changed."
+        ),
+        confidence=0.95,
+        notes="Detector module: routes/site_sentinel.py. Manifest entries register pages with category + min_bytes + optional max_age_days. 2026-05-23: /vs (301 → /vs/dchawk, which IS healthy — sentinel needs to follow the redirect) and /pocket-listings (200 with 2659 bytes, above 500 floor — should clear on next scan).",
+    ),
+    ErrorClass(
+        id="funnel_leak_critical",
+        pattern=r"funnel_leak_critical|paywall_hit.*converting at.*%",
+        fix_template="conversion_funnel_step_diagnosis",
+        description=(
+            "Funnel-step conversion rate dropped below the alarm threshold "
+            "(typically 0.5% paywall→click). The leak diagnosis at /api/v1/mcp/"
+            "conversion-funnel + new /api/v1/mcp/conversion-funnel/by-client "
+            "should localize WHERE in the funnel the leak is. Fix: don't add "
+            "auto-retry (was deliberately removed after 0 conversions in 90 days "
+            "— Phase ZZZZ-T1-paywall-visibility). Test alternate CTA copy, OR "
+            "address the dominant client's specific friction."
+        ),
+        confidence=0.85,
+        notes="Detector emits funnel_leak_critical + funnel_conversion_critical when paywall→click is <0.5% OR paywall→conversion is <0.5%. 2026-05-23: BOTH firing at ~0.05% — paywall hits are real demand, the close is the gap.",
+    ),
 ]
 
 

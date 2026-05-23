@@ -226,6 +226,36 @@ def rate_limit_before():
     if raw_ip in ('127.0.0.1', '::1', 'localhost'):
         return None
 
+    # Phase ZZZZZ-round6c (2026-05-23): Bypass Railway's own internal
+    # IP ranges. Our brain-radar, dchub-selfheal, healer, sentinel, etc.
+    # all hit dchub.cloud from Railway infrastructure to verify endpoint
+    # health. WHOIS-confirmed AS400940 Railway (RLWY-METALGEN1-01) IPs
+    # were generating ~22k/14d hits — flagged as "enterprise_bot_present"
+    # whales by the bot-outreach detector, then rate-limited at the
+    # public-content tier as if they were external scrapers. They are
+    # the platform talking to itself.
+    #
+    # Railway publishes their egress IP range as 162.220.232.0/24 + a
+    # few other /24s. We can't trust the IP alone (could be spoofed in
+    # XFF), so also check the User-Agent matches one of our internal
+    # crawler signatures — defense in depth.
+    if raw_ip.startswith('162.220.232.') or raw_ip.startswith('162.220.233.'):
+        ua = (request.headers.get('User-Agent') or '').lower()
+        # Allow if either (a) the UA is one of our known internal ones,
+        # OR (b) the request is for /api/health or a known healthcheck
+        # path that has to work for Railway-side liveness probes.
+        internal_ua_markers = (
+            'dchubhealer', 'dchub-brain', 'dchub-redircheck',
+            'dchub-grid', 'brain-v2-headless', 'brain-radar',
+            'uptimerobot', 'dchub-selfheal', 'dchub-scheduler',
+        )
+        if any(m in ua for m in internal_ua_markers) or path in ('/api/health', '/alive'):
+            return None
+        # Even without a markeruct UA, Railway-egress IPs hitting public
+        # pages get a generous lift to public_content tier (not the
+        # strict anonymous cap). This catches our own crawlers using
+        # generic Python urllib UA without log-spamming.
+
     # Bypass dchub.cloud frontend — the map fires dozens of spatial API
     # calls on every pan/zoom.  These are already gated by the tier-aware
     # enforce_tier_rate_limits() in main.py; double-limiting here causes

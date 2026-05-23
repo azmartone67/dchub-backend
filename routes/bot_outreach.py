@@ -46,13 +46,22 @@ def _conn():
 
 
 def _compute_whales(min_days: int = 3, min_calls_per_day: int = 100) -> list[dict]:
-    """Find IPs that hit us >100x/day for 3+ days. These aren't casual."""
+    """Find IPs that hit us >100x/day for 3+ days. These aren't casual.
+
+    Phase ZZZZZ-round6c (2026-05-23): exclude our own Railway egress
+    range (AS400940, 162.220.232.0/24 + 162.220.233.0/24). The brain
+    radar + dchub-selfheal + healer all probe public surfaces from
+    Railway infra and were generating 22,677 calls / 14d, getting
+    surfaced as the #1 whale to outreach. That was the platform
+    flagging itself as an enterprise prospect — useless signal that
+    crowded out real external whales below."""
     c = _conn()
     if c is None: return []
     out = []
     try:
         with c.cursor(cursor_factory=psycopg2.extras.RealDictCursor) as cur:
-            # Group calls by ip_address + day, then identify whales
+            # Group calls by ip_address + day, then identify whales.
+            # Exclude Railway internal egress IPs.
             cur.execute("""
                 WITH daily AS (
                   SELECT ip_address, DATE(created_at) AS day,
@@ -61,6 +70,9 @@ def _compute_whales(min_days: int = 3, min_calls_per_day: int = 100) -> list[dic
                    WHERE created_at >= NOW() - INTERVAL '14 days'
                      AND ip_address IS NOT NULL
                      AND ip_address != ''
+                     AND ip_address NOT LIKE '162.220.232.%%'
+                     AND ip_address NOT LIKE '162.220.233.%%'
+                     AND ip_address != '127.0.0.1'
                    GROUP BY ip_address, DATE(created_at)
                   HAVING COUNT(*) >= %s
                 ),

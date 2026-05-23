@@ -158,13 +158,35 @@
   if (findings && Array.isArray(findings.actionable_backend_issues)){
     var classes = (ec && ec.classes) || [];
     function matchClass(issue){
+      if (!issue) return null;
+      // Phase ZZZZZ-round6-jsfix (2026-05-23): the prior matcher took
+      // the first underscore-split word of a class id and used it as a
+      // substring match. That meant `on_conflict_target_mismatch` had
+      // a 2-char anchor "on" which matched ANY finding containing the
+      // letters "on" — including `trial_to_paid_stagnation`,
+      // `funnel_conversion_critical`, `mcp_conversion_stale_critical`,
+      // `mcp_funnel_concentration_top5` — all listed as "known:
+      // on_conflict_target_mismatch" when they're completely unrelated.
+      //
+      // New matcher: prefer EXACT class-id match (finding name equals
+      // class id, or finding starts with `<class_id>:` like
+      // site_sentinel_unhealthy:/vs). Falls back to FULL class id as
+      // substring — much tighter than a 2-char first-word match.
+      var lower = issue.toLowerCase();
+      // Strip any "<class_id>: detail..." prefix to isolate the id.
+      var idPart = lower.split(':')[0].trim();
       for (var i=0;i<classes.length;i++){
-        var c = classes[i];
-        // Loose substring match against the class id/description — the
-        // server-side regex match is in routes/brain_error_classes.py
-        if (issue && (issue.toLowerCase().indexOf((c.id||'').replace(/_/g,' ').split(' ')[0].toLowerCase())>=0)){
-          return c;
-        }
+        var cid = (classes[i].id||'').toLowerCase();
+        if (!cid) continue;
+        if (idPart === cid) return classes[i];                  // exact
+        if (idPart.indexOf(cid) === 0) return classes[i];        // class_id is prefix
+        if (idPart === cid.replace(/_/g,'-')) return classes[i]; // tolerate dash form
+      }
+      // Fallback: full id appears anywhere in the finding (length 12+
+      // to avoid 2-char false positives).
+      for (var j=0;j<classes.length;j++){
+        var fid = (classes[j].id||'').toLowerCase();
+        if (fid.length >= 12 && lower.indexOf(fid) >= 0) return classes[j];
       }
       return null;
     }
