@@ -1589,8 +1589,12 @@ export default {
         '/scripts/',
         '/data/',
         '/api/v1/cf-analytics/',
-        // Phase ZZZZ-audit-404-fix (2026-05-18): legacy ISO paths
-        '/iso/',
+        // Phase ZZZZZ-round4 (2026-05-23): /iso/* removed from prefix proxy.
+        // The per-ISO zones.json files are STATIC assets in dchub-frontend/
+        // iso/*/zones.json; proxying to Flask returned 404 since Flask has
+        // no /iso/<iso>/zones.json route. The Flask aggregator at
+        // /api/v1/iso/zones reads from these static files via dchub.cloud
+        // — so /iso/* must hit Pages static, not Railway.
         // Phase ZZZZZ (2026-05-23): /pockets/<slug> per-market detail pages.
         '/pockets/',
       ];
