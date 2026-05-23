@@ -71,6 +71,141 @@ def _get_db():
         return None
 
 
+# ── Phase ZZZZZ-round4 (2026-05-23): IP-based enrichment ────────────
+# Resolves an IP address to an organization / company / city / country
+# via IPinfo (https://ipinfo.io). Gated by IPINFO_TOKEN env var so the
+# module degrades cleanly when the key isn't set (returns the IP-only
+# dict with provider='unconfigured').
+#
+# Cache is in-process, 24h TTL. ~70k entries max before we'd worry about
+# memory — IPinfo paid plan typically gives 250k lookups/month.
+import time as _time
+_IP_CACHE: dict = {}
+_IP_CACHE_TTL = 24 * 3600
+_IP_CACHE_MAX = 70_000
+
+
+def _ipinfo_enrich(ip: str) -> dict:
+    """Look up an IP via IPinfo. Cached 24h. Safe to call without a token
+    set — returns {"ip": ip, "provider": "unconfigured"} in that case."""
+    if not ip:
+        return {"ip": "", "provider": "invalid_ip"}
+    token = (os.environ.get("IPINFO_TOKEN") or "").strip()
+    if not token:
+        return {"ip": ip, "provider": "unconfigured",
+                "hint": "Set IPINFO_TOKEN env var to enable IP enrichment."}
+
+    # Cache hit?
+    now = _time.time()
+    entry = _IP_CACHE.get(ip)
+    if entry and (now - entry["t"]) < _IP_CACHE_TTL:
+        return entry["v"]
+
+    try:
+        import requests
+        r = requests.get(
+            f"https://ipinfo.io/{ip}/json",
+            params={"token": token},
+            timeout=4,
+        )
+        if r.status_code != 200:
+            return {"ip": ip, "provider": "ipinfo",
+                    "error": f"status {r.status_code}"}
+        data = r.json() or {}
+        out = {
+            "ip":       ip,
+            "provider": "ipinfo",
+            "org":      data.get("org") or None,            # "AS15169 Google LLC"
+            "company":  (data.get("company") or {}).get("name") or None,
+            "domain":   (data.get("company") or {}).get("domain") or None,
+            "type":     (data.get("company") or {}).get("type") or None,
+            "city":     data.get("city") or None,
+            "region":   data.get("region") or None,
+            "country":  data.get("country") or None,
+            "hostname": data.get("hostname") or None,
+        }
+    except Exception as e:
+        return {"ip": ip, "provider": "ipinfo",
+                "error": f"exception: {str(e)[:80]}"}
+
+    # Trim cache if it gets too big — drop oldest 20% by timestamp.
+    if len(_IP_CACHE) >= _IP_CACHE_MAX:
+        sorted_keys = sorted(_IP_CACHE.keys(),
+                             key=lambda k: _IP_CACHE[k]["t"])
+        for k in sorted_keys[: _IP_CACHE_MAX // 5]:
+            _IP_CACHE.pop(k, None)
+    _IP_CACHE[ip] = {"t": now, "v": out}
+    return out
+
+
+@visitor_intelligence_bp.route(
+    "/api/v1/admin/ip-enrich", methods=["GET"])
+def api_ip_enrich():
+    """Admin-only IP enrichment lookup. Useful for spot-checking an IP
+    from logs without hitting IPinfo's UI."""
+    if not _admin_ok():
+        return jsonify(error="unauthorized"), 401
+    ip = (request.args.get("ip") or "").strip()
+    if not ip:
+        return jsonify(error="missing_ip",
+                       usage="/api/v1/admin/ip-enrich?ip=1.2.3.4"), 400
+    return jsonify(_ipinfo_enrich(ip))
+
+
+def _enrich_top_anon_ips(days: int = 7, limit: int = 25) -> dict:
+    """Pull the top-N anonymous IPs from mcp_upgrade_signals over the
+    given window, enrich each via IPinfo, and group the result by
+    company / org. Skipped silently if no IPINFO_TOKEN is set (the
+    caller already checks). Returns the same shape regardless of
+    whether enrichment succeeded so the frontend can render both
+    states with the same template."""
+    out: dict = {"status": "ok", "as_of": datetime.utcnow().isoformat() + "Z",
+                 "window_days": days, "count": 0, "ips": []}
+    conn = _get_db()
+    if conn is None:
+        out["status"] = "no_db"
+        return out
+    try:
+        with conn.cursor() as cur:
+            try:
+                cur.execute("""
+                    SELECT ip_address, COUNT(*) AS signals,
+                           COUNT(DISTINCT session_id) AS sessions
+                      FROM mcp_upgrade_signals
+                     WHERE created_at > NOW() - INTERVAL %s
+                       AND (user_email IS NULL OR user_email = '')
+                       AND ip_address IS NOT NULL
+                       AND ip_address != ''
+                     GROUP BY ip_address
+                     ORDER BY signals DESC
+                     LIMIT %s
+                """, (f"{days} days", limit))
+                rows = cur.fetchall()
+            except Exception:
+                try: conn.rollback()
+                except Exception: pass
+                rows = []
+    finally:
+        try: conn.close()
+        except Exception: pass
+
+    ips_out = []
+    for ip, signals, sessions in rows:
+        enriched = _ipinfo_enrich(ip)
+        ips_out.append({
+            "ip": ip,
+            "signals": int(signals or 0),
+            "sessions": int(sessions or 0),
+            "org":      enriched.get("org"),
+            "company":  enriched.get("company"),
+            "country":  enriched.get("country"),
+            "city":     enriched.get("city"),
+        })
+    out["ips"] = ips_out
+    out["count"] = len(ips_out)
+    return out
+
+
 def _compute(days: int = 7) -> dict:
     """Aggregate visitor intelligence over the last N days."""
     out = {
@@ -269,13 +404,28 @@ def _compute(days: int = 7) -> dict:
         try: conn.close()
         except Exception: pass
 
+    # Phase ZZZZZ-round4 (2026-05-23): enrich top anon IPs with IPinfo
+    # if IPINFO_TOKEN is set. This turns "Browser: 1,247 signals" into
+    # "Browser at AS15169 Google LLC, Mountain View CA, 1,247 signals"
+    # for the highest-volume IPs.
+    if (os.environ.get("IPINFO_TOKEN") or "").strip():
+        out["top_enriched_ips"] = _enrich_top_anon_ips(days)
+    else:
+        out["top_enriched_ips"] = {
+            "status": "unconfigured",
+            "hint": "Set IPINFO_TOKEN env var to enable per-IP company resolution.",
+        }
+
     # Coverage gaps — derived, not queried.
-    out["coverage_gaps"] = [
-        "IP → company enrichment requires IPinfo or Clearbit integration (not yet wired).",
+    coverage = [
         "Per-page click-stream beyond the MCP boundary requires a frontend pixel (Plausible covers public pages but not authenticated tool usage).",
         "Identity resolution for cookie-less anon visitors requires session-token persistence across MCP calls (out of scope for the MCP protocol).",
         "Anonymous signals from Claude/ChatGPT (≈90% of MCP traffic) can't be email-resolved without a dev key redemption — those callers reach DC Hub through an LLM proxy.",
     ]
+    if not (os.environ.get("IPINFO_TOKEN") or "").strip():
+        coverage.insert(0,
+            "IP → company enrichment requires IPinfo (set IPINFO_TOKEN env var) — currently unconfigured.")
+    out["coverage_gaps"] = coverage
     return out
 
 
