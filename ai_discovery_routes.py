@@ -287,7 +287,13 @@ def register_discovery_routes(app):
     # =========================================================================
     # /AGENTS.md — Agent Discovery (Linux Foundation / OpenAI standard)
     # =========================================================================
-    @app.route('/AGENTS.md')
+    # Phase ZZZZZ-round6 (2026-05-23): renamed to /agents-md-inline to
+    # stop shadowing the canonical handler at ai_agent_discovery.py:288,
+    # which loads from the live AGENTS.md file with a fallback. This
+    # version's inline string was older and went stale (~3 weeks behind
+    # the file). The inline copy stays here as a backup endpoint in
+    # case AGENTS.md goes missing from disk.
+    @app.route('/agents-md-inline')
     def serve_agents_md():
         content = """# AGENTS.md — DC Hub Data Center Intelligence
 

@@ -1595,15 +1595,23 @@ def register_api_discovery_routes(app, start_scheduler=True):
 
     discovery_bp = Blueprint('api_discovery', __name__)
 
-    @discovery_bp.route('/api/discovery/status')
+    # Phase ZZZZZ-round6 (2026-05-23): renamed paths to /api/discovery/
+    # legacy/{status,run} so they stop shadowing routes/discovery_routes.py
+    # (the canonical newer implementation that handles multi-source +
+    # init_discovery_tables). Old paths were producing
+    # "shadowed route" warnings on Flask startup. The legacy aliases
+    # below keep this v2.0 engine reachable for callers that still
+    # know its specific behaviors.
+    @discovery_bp.route('/api/discovery/legacy/status')
     def api_discovery_status():
         return jsonify({
             'success': True,
-            'engine': 'API Auto-Discovery v2.0',
+            'engine': 'API Auto-Discovery v2.0 (legacy alias)',
+            'canonical': '/api/discovery/status',
             **_discovery_instance.get_discovery_status()
         })
 
-    @discovery_bp.route('/api/discovery/run', methods=['POST'])
+    @discovery_bp.route('/api/discovery/legacy/run', methods=['POST'])
     def run_api_discovery():
         admin_key = os.environ.get('DCHUB_ADMIN_KEY', '')
         provided_key = request.headers.get('Authorization', '').replace('Bearer ', '') or \

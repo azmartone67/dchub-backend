@@ -120,7 +120,14 @@ REGISTRY: list[ErrorClass] = [
             "Don't keep issuing queries on a poisoned connection."
         ),
         confidence=0.9,
-        notes="Observed in 2026-05-23 logs: fiber_routes upsert loop logged 20 'transaction aborted' warnings in succession, then '0 carrier routes written'. The seed function isn't catching the first ON CONFLICT error per row.",
+        shipped_proof="e95fa29c",
+        notes=(
+            "2026-05-23: fiber_routes upsert loop logged 20 'transaction aborted' "
+            "warnings in succession, then '0 carrier routes written'. Fix shipped "
+            "in e95fa29c: SAVEPOINT/ROLLBACK wrapping per-row upserts in both "
+            "fiber_network_discovery.py and jobs_api.py. Plus per-cycle log-spam "
+            "suppression (first 5 only, then summarized)."
+        ),
     ),
     ErrorClass(
         id="external_api_404_silent",
@@ -130,10 +137,18 @@ REGISTRY: list[ErrorClass] = [
             "External API returned 404 (or 405) — the endpoint shape changed or "
             "the resource was removed. Fix: don't keep retrying every cycle. Log "
             "once, mark the source DEGRADED in source_health, and pause it from "
-            "the discovery rotation until a human revisits."
+            "the discovery rotation until a human revisits. ALSO check for the "
+            "malformed_url_format_placeholder class — sometimes the '404' is just "
+            "a busted URL template ('%s' where '?' belongs), not the upstream."
         ),
         confidence=0.8,
-        notes="2026-05-23: PeeringDB 404 fires every fiber discovery cycle (~5min). Wasted ~290 outbound calls/day.",
+        shipped_proof="e95fa29c",
+        notes=(
+            "2026-05-23: PeeringDB 404 fired every cycle for weeks. Root cause "
+            "was actually malformed_url_format_placeholder: '/api/ix%scountry=' "
+            "instead of '/api/ix?country='. Two brain classes can share root "
+            "cause — both should run for cross-checking."
+        ),
     ),
     ErrorClass(
         id="slow_request_threshold_breach",

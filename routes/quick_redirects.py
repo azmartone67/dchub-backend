@@ -101,10 +101,16 @@ just live JSON updated every 60 seconds.
 """
 
 
-@quick_redirects_bp.route("/AGENTS.md", methods=["GET"])
+# Phase ZZZZZ-round6 (2026-05-23): /AGENTS.md is handled canonically
+# by ai_agent_discovery.py:288 (loads from the live AGENTS.md file
+# with a fallback) — that's the version registered first in Flask, so
+# /AGENTS.md probes route there. Removing this duplicate registration
+# kills the "shadowed route" startup warning. The _AGENTS_MD constant
+# above stays defined as data; serve it under a clearly-distinct path.
+@quick_redirects_bp.route("/AGENTS-inline.md", methods=["GET"])
 def agents_md():
-    """Agent-discovery manifest. Standard convention for AI agents
-    finding integration docs at /AGENTS.md."""
+    """Inline copy of AGENTS.md — fallback when the file-loader
+    handler in ai_agent_discovery.py is unavailable."""
     return Response(_AGENTS_MD, mimetype="text/markdown",
                     headers={"Cache-Control": "public, max-age=3600"})
 
