@@ -1555,10 +1555,12 @@ export default {
         '/auth.md',
         '/dchub2026.txt',
         '/digest/today',
-        // Phase ZZZZZ-round3 (2026-05-23): /integrations exact + /ui — Flask
-        // returns 200 here but CF was static-404ing.
-        '/integrations',
+        // Phase ZZZZZ-round3 (2026-05-23): /ui — Flask returns 200; /integrations
+        // exact is Flask-404 so removed from this list (prefix /integrations/
+        // still proxies the actual integration subpaths).
         '/ui',
+        // Phase ZZZZZ-round4 (2026-05-23): /founders — Flask 200 but CF was 404.
+        '/founders',
         '/visitor-intelligence',
       ]);
       // Phase YYYY (2026-05-16): also forward prefix-paths to Railway
