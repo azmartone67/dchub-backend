@@ -272,14 +272,24 @@ REGISTRY: list[ErrorClass] = [
         pattern=r"data_freshness_sla_breach|freshness.*sla|dataset.*stale.*past.*sla",
         fix_template="kick_dataset_refresh_cron",
         description=(
-            "A tracked dataset hasn't refreshed within its SLA window. Fix: "
-            "(a) trigger the dataset's refresh job manually (POST to its /api/"
-            "jobs/<name>/run endpoint), AND (b) investigate why the cron didn't "
-            "fire — check scheduler heartbeat at /api/v1/admin/scheduler-status "
-            "and the dataset's last_run timestamp in source_health."
+            "A tracked dataset hasn't refreshed within its SLA window. The "
+            "brain autopilot's REFRESH_MAP (routes/brain_autopilot.py:287) "
+            "maps each monitored table → a recovery endpoint that the "
+            "autopilot calls autonomously when this class fires:\n"
+            "  • dcpi_scores            → /api/v1/dcpi/recompute\n"
+            "  • discovered_facilities  → /api/v1/admin/osm-crawl/run\n"
+            "  • facilities             → /api/v1/admin/osm-crawl/run\n"
+            "  • press_releases         → /api/v1/marketing/auto-generate\n"
+            "  • ai_citations           → /api/v1/ai-citations/run-cron\n"
+            "  • transmission_lines / substations / gas_pipelines  → respective\n"
+            "    HIFLD refresh endpoints (see brain_autopilot.py:286-313).\n"
+            "Manual override: POST the endpoint with X-Admin-Key. The autopilot "
+            "skips a table after 3 consecutive failed recoveries (escalates "
+            "to brain_critical_alerts)."
         ),
         confidence=0.85,
-        notes="Detector at brain_consistency_radar.py:4992. 1,302 occurrences — one dataset breaching repeatedly, or several breaching once each.",
+        shipped_proof="DDD",
+        notes="Detector at brain_consistency_radar.py:4992. 1,302 occurrences — autopilot's REFRESH_MAP exists since Phase DDD; remaining findings are tables where autopilot's recovery hasn't yet succeeded (escalation cases).",
     ),
     ErrorClass(
         id="site_sentinel_unhealthy",
