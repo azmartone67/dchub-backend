@@ -62,15 +62,37 @@ def is_valid_internal_key(header_value):
     return False
 
 
+_LEGACY_FALLBACK_WARNED = False
+
+
 def get_internal_key_for_client():
     """Return the secret a client should send in its X-Internal-Key header.
 
     Prefers env var (rotatable); falls back to the legacy hardcoded string
     only during migration so existing clients keep working without changes.
+
+    Phase ZZZZZ-round6 (2026-05-23): when the function falls back to the
+    legacy value, log it ONCE per process (not per call — DCHub-Scheduler
+    calls this 12x/hour and we don't want hourly log spam). One clear
+    warning tells the operator exactly which env var to set; the brain's
+    legacy_hardcoded_key_accepted class gets a client-side counterpart
+    to its server-side detection so both ends of the migration are
+    visible.
     """
     for env_var in ("DCHUB_INTERNAL_KEY", "DCHUB_SYNC_KEY", "INTERNAL_WORKER_SECRET"):
         v = os.environ.get(env_var, "")
         if v:
             return v
+    global _LEGACY_FALLBACK_WARNED
+    if not _LEGACY_FALLBACK_WARNED:
+        log.warning(
+            "internal_auth: get_internal_key_for_client() falling back to "
+            "legacy hardcoded value because none of DCHUB_INTERNAL_KEY / "
+            "DCHUB_SYNC_KEY / INTERNAL_WORKER_SECRET are set in env. "
+            "Each downstream caller using this fallback will trigger a "
+            "'legacy hardcoded key accepted' warning on the server side. "
+            "Set DCHUB_INTERNAL_KEY on this host to close the migration."
+        )
+        _LEGACY_FALLBACK_WARNED = True
     # Last-resort legacy (remove after all clients migrated)
     return "dchub-internal-sync-2026"

@@ -307,7 +307,7 @@ JOBS = {
         'hours': list(range(0, 24)),  # hourly
         'minute': 15,                  # offset from other crons
         'timeout': 600,                # 10 min ceiling, matches script's SYNC_TIMEOUT
-        'headers': {'X-Internal-Key': 'dchub-internal-sync-2026'},
+        'headers': {}  # actual X-Internal-Key set in api_call() from env (was hardcoded; cleanup ZZZZZ-round6),
     },
     # Phase FF+23-vectorize (2026-05-20) — once daily, embed any
     # facility text that changed since the last run (text_hash dedup)
@@ -322,7 +322,7 @@ JOBS = {
         'hours': [3],
         'minute': 15,
         'timeout': 1800,               # 30 min — matches script TIMEOUT_S=1500 + slack
-        'headers': {'X-Internal-Key': 'dchub-internal-sync-2026'},
+        'headers': {}  # actual X-Internal-Key set in api_call() from env (was hardcoded; cleanup ZZZZZ-round6),
     },
     # Phase FF+23-daily (2026-05-20) — once daily, fan out 27
     # Browser-Rendering calls to the Pages worker (theme × size grid)
@@ -336,7 +336,7 @@ JOBS = {
         'hours': [6],
         'minute': 0,
         'timeout': 1800,
-        'headers': {'X-Internal-Key': 'dchub-internal-sync-2026'},
+        'headers': {}  # actual X-Internal-Key set in api_call() from env (was hardcoded; cleanup ZZZZZ-round6),
     },
     # Phase FF+23-followup (2026-05-20) — the land-power dataset has
     # been silently going stale because register_land_power_routes()
@@ -351,7 +351,7 @@ JOBS = {
         'hours': [4],     # 4am UTC = midnight ET = low-traffic window
         'minute': 30,
         'timeout': 900,
-        'headers': {'X-Internal-Key': 'dchub-internal-sync-2026'},
+        'headers': {}  # actual X-Internal-Key set in api_call() from env (was hardcoded; cleanup ZZZZZ-round6),
     },
     'smoke_test': {
         'name': 'Production Smoke Test',
