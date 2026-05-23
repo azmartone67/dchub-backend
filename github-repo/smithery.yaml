@@ -1,9 +1,42 @@
 name: dchub-mcp-server
-description: DC Hub Nexus MCP Server - Data center intelligence for AI agents
+displayName: DC Hub Intelligence
+description: |
+  Real-time data center market intelligence for AI agents. 20,000+
+  facilities across 140+ countries, 975+ M&A transactions, real-time
+  ISO/RTO grid data (7 US ISOs, 74 load zones), capacity pipeline
+  tracking (21+ GW), site-suitability scoring, and industry news
+  refreshed every 5 minutes from 60+ curated sources.
 version: 3.0.0
 icon: https://dchub.cloud/static/icon.png
+homepage: https://dchub.cloud
+license: Apache-2.0
+
+# Phase ZZZZZ-round4 (2026-05-23): switched from stdio (which started
+# a local Python proxy) to remote streamable-http. DC Hub is hosted,
+# so users get instant access without installing dependencies. The
+# stdio variant is kept below as `localServer` for offline / locked-
+# down environments that need a local hop.
 
 startCommand:
+  type: http
+  url: "{{config.MCP_URL}}"
+  configSchema:
+    type: object
+    properties:
+      MCP_URL:
+        type: string
+        default: "https://dchub.cloud/mcp"
+        description: "DC Hub MCP endpoint (override only if self-hosting)."
+      API_KEY:
+        type: string
+        description: "Optional X-API-Key value for paid-tier tools. Free tier works without one."
+    required: []
+  headers:
+    X-API-Key: "{{config.API_KEY}}"
+
+# Legacy local stdio launcher — kept for users who want an in-process server.
+# Not required for the default hosted endpoint above.
+localServer:
   type: stdio
   configSchema:
     type: object

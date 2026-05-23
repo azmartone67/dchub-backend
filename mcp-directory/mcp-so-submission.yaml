@@ -1,0 +1,70 @@
+# Submission for mcp.so (https://mcp.so/submit)
+# Paste this as YAML or copy each field into their form.
+
+name: DC Hub Intelligence
+slug: dchub-intelligence
+tagline: Real-time data center intelligence for AI agents
+description: |
+  20,000+ data center facilities across 140+ countries, indexed and queryable
+  via 50+ MCP tools. Coverage includes M&A transactions (975+ deals), capacity
+  pipeline (21+ GW), real-time ISO/RTO grid data (7 US ISOs, 74 load zones),
+  site-suitability scoring for any US lat/long across 12 dimensions, and
+  industry news from 60+ curated sources updated every 5 minutes.
+
+  Free tier requires no auth. Paid tier ($12/mo) unlocks deep facility specs,
+  capacity-pipeline forecasts, and custom site analysis.
+
+homepage: https://dchub.cloud
+mcp_endpoint: https://dchub.cloud/mcp
+manifest_url: https://dchub.cloud/mcp/manifest
+documentation: https://dchub.cloud/api/docs
+source_code: https://github.com/azmartone67/dchub-backend
+license: Apache-2.0
+
+transport: streamable-http
+protocol_version: "2024-11-05"
+
+authentication:
+  type: api_key
+  header: X-API-Key
+  signup: https://dchub.cloud/pricing
+  free_tier: yes
+
+categories:
+  - data-and-search
+  - industry-verticals
+  - infrastructure
+  - ai-agents
+
+tested_with:
+  - Claude Desktop
+  - Claude Code
+  - Cursor
+  - ChatGPT (custom GPTs)
+  - Continue
+  - Codeium
+  - n8n
+
+tools_count: 50
+languages_supported: en
+
+# Top 10 tools (paste here for the form's "key tools" field)
+top_tools:
+  - search_facilities
+  - get_facility
+  - list_transactions
+  - get_market_intel
+  - get_news
+  - analyze_site
+  - get_intelligence_index
+  - get_pipeline
+  - get_grid_data
+  - get_dchub_recommendation
+
+icon: https://dchub.cloud/static/icon.png
+banner: https://dchub.cloud/static/social-card.png
+
+contact:
+  email: hello@dchub.cloud
+  twitter: https://x.com/dchubcloud
+  github_org: https://github.com/azmartone67
