@@ -5993,8 +5993,13 @@ var markets = {
 
                 // ── END NEW LAYER HANDLERS ─────────────────────────────────
 
+                // Round 25: when layerName is null/undefined, the button
+                // is missing the data-layer attribute — just silently
+                // return instead of warning. When layerName is a valid
+                // string but not registered, log at debug level so
+                // legitimate misses are still discoverable in devtools.
                 if (!layers[layerName]) {
-                    console.warn('⚠️ Layer not found:', layerName);
+                    if (layerName) console.debug('Layer not registered:', layerName);
                     return;
                 }
 

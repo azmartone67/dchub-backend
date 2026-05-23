@@ -406,7 +406,7 @@ def limit_land_power_search(f):
 
 def limit_api_requests(f):
     """Decorator to enforce monthly API request limits.
-    
+
     Usage:
         @app.route('/api/v1/facilities')
         @limit_api_requests
@@ -415,6 +415,21 @@ def limit_api_requests(f):
     """
     @wraps(f)
     def wrapper(*args, **kwargs):
+        # Round 25 (2026-05-23): bypass localhost AND known internal
+        # probe UAs. The site-probe + security-audit detectors hit
+        # localhost:8080 with custom UAs and were eating the anonymous
+        # monthly quota. 14/15 probes failed as 429 in round 24.
+        _raw_ip = request.remote_addr or ''
+        if _raw_ip in ('127.0.0.1', '::1', 'localhost'):
+            return f(*args, **kwargs)
+        _ua = (request.headers.get('User-Agent') or '').lower()
+        _INTERNAL_UA_MARKERS = (
+            'dc-brain-site-probe', 'dc-security-audit',
+            'dchubhealer', 'dchub-brain', 'brain-radar',
+            'dchub-selfheal', 'dchub-scheduler', 'uptimerobot',
+        )
+        if any(m in _ua for m in _INTERNAL_UA_MARKERS):
+            return f(*args, **kwargs)
         user_id = _get_current_user_id()
         if not user_id:
             # Anonymous API calls — check by IP

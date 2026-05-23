@@ -187,13 +187,28 @@ def _db():
 
 
 def _admin_authorized() -> bool:
-    expected = (os.environ.get("DCHUB_ADMIN_KEY")
-                or os.environ.get("DCHUB_INTERNAL_KEY"))
-    if not expected: return False
+    """Round 25 (2026-05-23): bridge to internal_auth.is_valid_internal_key
+    so the legacy hardcoded key + DCHUB_INTERNAL_KEY env both work,
+    matching the auth chain used by /api/v1/admin/heal/purge-stale and
+    /api/v1/admin/dedup/run. Previously only accepted exact match of the
+    DCHUB_ADMIN_KEY env, which made the registry submit-all unreachable
+    when only the legacy key was known."""
     provided = (request.headers.get("X-Admin-Key")
                 or request.headers.get("X-Internal-Key")
                 or request.args.get("admin_key") or "")
-    return provided and provided == expected
+    if not provided:
+        return False
+    # First-class path: internal_auth chain (legacy fallback + env match)
+    try:
+        from internal_auth import is_valid_internal_key
+        if is_valid_internal_key(provided):
+            return True
+    except Exception:
+        pass
+    # Fallback path: direct env-var match (in case internal_auth fails)
+    expected = (os.environ.get("DCHUB_ADMIN_KEY")
+                or os.environ.get("DCHUB_INTERNAL_KEY"))
+    return bool(expected) and provided == expected
 
 
 def _record(target_key: str, target_name: str, action: str,

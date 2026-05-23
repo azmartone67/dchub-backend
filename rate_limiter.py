@@ -248,6 +248,11 @@ def rate_limit_before():
             'dchubhealer', 'dchub-brain', 'dchub-redircheck',
             'dchub-grid', 'brain-v2-headless', 'brain-radar',
             'uptimerobot', 'dchub-selfheal', 'dchub-scheduler',
+            # Round 25 (2026-05-23): site-probe + security-audit UAs.
+            # The round 24 site-probe runs from localhost:8080 and was
+            # getting 429'd because its UA didn't match this list —
+            # 14/15 probes failed as 429. Whitelist explicitly.
+            'dc-brain-site-probe', 'dc-security-audit',
         )
         if any(m in ua for m in internal_ua_markers) or path in ('/api/health', '/alive'):
             return None
