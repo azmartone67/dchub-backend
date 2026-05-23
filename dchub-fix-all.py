@@ -345,10 +345,26 @@ STATS_SCRIPT = r"""<script>
 })();
 </script></body>"""
 
-fix('index.html',
-    '</body>',
-    STATS_SCRIPT,
-    'Inject live stats loader before </body> — replaces 20,000+ with real count')
+# Idempotency guard: fix() does a find/replace that turns `</body>` into
+# `<script>...</script></body>`. On the NEXT run the new `</body>` (still
+# there at the end) matches again and a SECOND copy of STATS_SCRIPT gets
+# injected — visible as duplicate <script> blocks in the root index.html
+# diff. Skip the injection if the marker is already present.
+def _stats_script_already_injected(path):
+    try:
+        with open(path, 'r', encoding='utf-8') as f:
+            content = f.read()
+        return "/api/v1/stats" in content and "20,000\\+?" in content
+    except Exception:
+        return False
+
+if _stats_script_already_injected('index.html'):
+    print("📄 index.html\n  ⏭️  STATS_SCRIPT already injected — skipping (idempotent)")
+else:
+    fix('index.html',
+        '</body>',
+        STATS_SCRIPT,
+        'Inject live stats loader before </body> — replaces 20,000+ with real count')
 
 # ═══════════════════════════════════════════════════════════
 # 12. press.html — Fix hardcoded XHR URL
