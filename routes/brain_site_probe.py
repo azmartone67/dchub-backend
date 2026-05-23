@@ -127,49 +127,73 @@ def _probe(path: str, timeout: float = 5.0) -> tuple[int, int, str]:
         return 0, 0, f"connection-error: {type(e).__name__}"
 
 
+def _evaluate_probe(probe_entry: tuple) -> dict | None:
+    """Run one probe + classify the response. Returns finding dict or
+    None when the URL is healthy. Pure function — safe to call from
+    a thread pool."""
+    path, expected, min_bytes, label = probe_entry
+    status, body_len, sample = _probe(path, timeout=4.0)
+    if status != expected:
+        return {
+            "issue": ("site_url_unreachable" if status == 0
+                       else "site_url_unhealthy"),
+            "url":    path,
+            "count":  status,
+            "detail": (f"{label} ({path}) returned HTTP {status} "
+                        f"(expected {expected}). "
+                        f"Body preview: {sample[:140]!r}"),
+        }
+    if body_len < min_bytes:
+        return {
+            "issue":  "site_url_empty_body",
+            "url":    path,
+            "count":  body_len,
+            "detail": (f"{label} ({path}) returned 200 but body is "
+                        f"only {body_len} bytes (expected {min_bytes}+). "
+                        f"Body preview: {sample[:140]!r}"),
+        }
+    lower = sample.lower()
+    for marker in _BAD_BODY_MARKERS:
+        if marker.lower() in lower:
+            return {
+                "issue":  "site_url_error_in_body",
+                "url":    path,
+                "count":  1,
+                "detail": (f"{label} ({path}) returned 200 but body "
+                            f"contains error marker {marker!r}. "
+                            f"Body preview: {sample[:200]!r}"),
+            }
+    return None
+
+
 def check_site_url_health() -> list[dict]:
-    """Probe every URL in _PROBE_LIST. Return findings for any that
-    return non-expected status, empty body, or a bad-body marker."""
+    """Probe every URL in _PROBE_LIST IN PARALLEL via ThreadPoolExecutor.
+
+    Round 24 lesson: serial probes deadlocked Railway exactly like
+    round 17 did. With ~2 gunicorn workers and 40 probes each
+    re-entering the same pool via localhost:8080, the worker serving
+    the scan request gets stuck waiting for self-probes that can't
+    be served.
+
+    Fix: cap concurrency to 4 (well under worker count) AND cap total
+    elapsed time to 15s (fail-open on remainder). Per-probe timeout
+    drops to 4s. Worst-case wall time: 15s. Each probe gets its own
+    request; gunicorn can multiplex 4 of them through 2 workers."""
+    import concurrent.futures as _cf
+    import time as _t
     findings: list[dict] = []
-    for path, expected, min_bytes, label in _PROBE_LIST:
-        status, body_len, sample = _probe(path, timeout=5.0)
-        # Status mismatch
-        if status != expected:
-            issue = (
-                "site_url_unreachable" if status == 0
-                else "site_url_unhealthy"
-            )
-            findings.append({
-                "issue":  issue,
-                "url":    path,
-                "count":  status,
-                "detail": (f"{label} ({path}) returned HTTP {status} "
-                            f"(expected {expected}). "
-                            f"Body preview: {sample[:140]!r}"),
-            })
-            continue
-        # Body too small for what the page should be
-        if body_len < min_bytes:
-            findings.append({
-                "issue":  "site_url_empty_body",
-                "url":    path,
-                "count":  body_len,
-                "detail": (f"{label} ({path}) returned 200 but body is "
-                            f"only {body_len} bytes (expected {min_bytes}+). "
-                            f"Body preview: {sample[:140]!r}"),
-            })
-            continue
-        # Bad-body marker detection
-        lower = sample.lower()
-        for marker in _BAD_BODY_MARKERS:
-            if marker.lower() in lower:
-                findings.append({
-                    "issue":  "site_url_error_in_body",
-                    "url":    path,
-                    "count":  1,
-                    "detail": (f"{label} ({path}) returned 200 but body "
-                                f"contains error marker {marker!r}. "
-                                f"Body preview: {sample[:200]!r}"),
-                })
+    deadline = _t.time() + 15.0  # hard wall-clock budget
+    with _cf.ThreadPoolExecutor(max_workers=4,
+                                  thread_name_prefix="site-probe") as ex:
+        futs = {ex.submit(_evaluate_probe, p): p for p in _PROBE_LIST}
+        for fut in _cf.as_completed(futs, timeout=15.0):
+            if _t.time() > deadline:
                 break
+            try:
+                result = fut.result(timeout=1.0)
+                if result is not None:
+                    findings.append(result)
+            except Exception:
+                # Probe internal error; not a finding (don't double-count)
+                pass
     return findings
