@@ -79,7 +79,26 @@
     return Math.max(6, Math.min(28, Math.log10(Math.max(1, n)) * 8));
   }
 
-  fetch('/api/v1/visitor-map?days=7', { cache: 'no-store' })
+  // Round 23b: default to exclude_hosting=true on initial load so the
+  // user sees real customers, not just AWS/GCP scrapers. A toggle in
+  // the corner lets them flip back to ALL traffic if curious.
+  var EXCLUDE_HOSTING = true;
+  var TOGGLE_HTML = '<button id="toggle-hosting" style="position:fixed;top:90px;right:20px;z-index:1000;background:#161a2b;color:#e6e9f2;border:1px solid #1f2333;padding:8px 12px;border-radius:6px;font-size:12px;cursor:pointer">'
+    + 'Showing: real customers only<br><small style="color:#8b91a8">click to include datacenter bots</small></button>';
+  document.body.insertAdjacentHTML('beforeend', TOGGLE_HTML);
+  document.getElementById('toggle-hosting').addEventListener('click', function(){
+    EXCLUDE_HOSTING = !EXCLUDE_HOSTING;
+    this.innerHTML = EXCLUDE_HOSTING
+      ? 'Showing: real customers only<br><small style="color:#8b91a8">click to include datacenter bots</small>'
+      : 'Showing: ALL traffic (incl. bots)<br><small style="color:#8b91a8">click to filter to customers</small>';
+    // Clear existing markers + refetch
+    map.eachLayer(function(l){ if (l instanceof L.CircleMarker) map.removeLayer(l); });
+    loadMap();
+  });
+
+  function loadMap(){
+    var url = '/api/v1/visitor-map?days=7' + (EXCLUDE_HOSTING ? '&exclude_hosting=true' : '');
+    fetch(url, { cache: 'no-store' })
     .then(function(r){ return r.json(); })
     .then(function(d){
       if (!d || !d.ok || !Array.isArray(d.clusters)){
@@ -130,6 +149,8 @@
       document.getElementById('s-calls').textContent = 'Fetch error';
       console.error('visitor-map fetch err:', err);
     });
+  }
+  loadMap();
 })();
 </script>
 </body>

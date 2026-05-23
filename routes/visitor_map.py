@@ -146,6 +146,12 @@ def visitor_map_public():
     """Public aggregated city-level heatmap of MCP traffic. No raw
     IPs. Cached 5 min at the edge.
 
+    Query params:
+      days (1..30, default 7)
+      limit (20..500, default 200)
+      exclude_hosting (default false)  — filter out AWS/GCP/Azure/etc
+                                          so the map shows REAL users.
+
     Returns GeoJSON-ready cluster list ready to feed into Leaflet."""
     try:
         days = max(1, min(30, int(request.args.get("days", 7))))
@@ -155,7 +161,18 @@ def visitor_map_public():
         limit = max(20, min(500, int(request.args.get("limit", 200))))
     except (ValueError, TypeError):
         limit = 200
+    exclude_hosting = (request.args.get("exclude_hosting", "").lower()
+                        in ("1", "true", "yes"))
     ips = _top_ips(days=days, limit=limit)
+    if exclude_hosting:
+        # Filter via IPinfo + ASN heuristics. Same path the brain uses.
+        try:
+            from routes.visitor_intelligence import _ipinfo_enrich
+            from routes.brain_security_detectors import _is_hosting_ip
+            ips = [r for r in ips
+                   if not _is_hosting_ip(_ipinfo_enrich(r.get("ip_address","")))]
+        except Exception:
+            pass
     if not ips:
         resp = jsonify(
             ok=True, days=days, total_ips=0, total_calls=0,
