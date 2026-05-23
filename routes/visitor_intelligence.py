@@ -443,6 +443,68 @@ def visitor_intelligence_json():
     return jsonify(payload), (200 if "error" not in payload else 500)
 
 
+# Phase ZZZZZ-round7 (2026-05-23): public, sanitized visitor-intel
+# summary. Different from /api/v1/admin/visitor-intelligence — this
+# strips IPs/UAs/emails/session_ids and rolls everything to coarse
+# aggregates, then exposes for /pricing + /advertise as social proof.
+# No admin gate, no PII, cached 5min in-process.
+import time as _vi_time
+_PUBLIC_SUMMARY_CACHE = {"data": None, "ts": 0}
+_PUBLIC_SUMMARY_TTL = 300  # 5 min
+
+
+@visitor_intelligence_bp.route(
+    "/api/v1/visitor-intel", methods=["GET"])
+def visitor_intel_public():
+    """Public sanitized visitor-intel summary.
+
+    Returns coarse aggregates only — total MCP tool calls / 7d,
+    distinct AI platforms hitting, top 5 tools by demand, paywall hit
+    count. No PII (no IPs, no UAs, no emails, no session IDs). Safe to
+    embed on /pricing, /advertise, /api-docs.
+
+    Cached 5min in-process so a single hit-storm from /pricing doesn't
+    DDoS the underlying admin aggregator queries.
+    """
+    now = _vi_time.time()
+    if _PUBLIC_SUMMARY_CACHE["data"] and (now - _PUBLIC_SUMMARY_CACHE["ts"]) < _PUBLIC_SUMMARY_TTL:
+        return jsonify(_PUBLIC_SUMMARY_CACHE["data"])
+
+    full = _compute(days=7)
+    # Strip anything resembling PII or operationally-sensitive data.
+    safe = {
+        "ok": "error" not in full,
+        "as_of": full.get("as_of"),
+        "window_days": 7,
+        "headline": {
+            "tool_calls_7d":          (full.get("totals") or {}).get("tool_calls", 0),
+            "distinct_mcp_clients_7d": (full.get("totals") or {}).get("distinct_mcp_clients", 0),
+            "paywall_hits_7d":        (full.get("totals") or {}).get("upgrade_signals", 0),
+            "identified_users_7d":    (full.get("totals") or {}).get("identified_users", 0),
+        },
+        # Top tools by paywall-hit volume — surfaces what the market
+        # most wants (without naming who).
+        "top_tools_by_demand": [
+            {"tool": t.get("tool"), "calls_7d": t.get("calls", 0)}
+            for t in (full.get("top_tools") or [])[:5]
+        ],
+        # MCP client breakdown — no IPs, no UAs, just family-level counts.
+        "mcp_client_breakdown": [
+            {
+                "client": (c.get("client") or "unknown")[:40],
+                "sessions_7d": int(c.get("sessions", 0)),
+                # don't expose signal counts directly — implies tier behavior
+            }
+            for c in (full.get("by_mcp_client") or [])[:8]
+        ],
+        "note": "Live MCP usage at DC Hub. Coarse aggregates only — no PII. Source-of-truth: /api/v1/admin/visitor-intelligence (admin-only) + /api/v1/mcp/conversion-funnel.",
+        "cache_ttl_seconds": _PUBLIC_SUMMARY_TTL,
+    }
+    _PUBLIC_SUMMARY_CACHE["data"] = safe
+    _PUBLIC_SUMMARY_CACHE["ts"] = now
+    return jsonify(safe)
+
+
 _VI_HTML = '''<!DOCTYPE html><html lang="en"><head>
 <meta charset="utf-8">
 <title>Visitor Intelligence · DC Hub</title>

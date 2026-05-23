@@ -25409,6 +25409,93 @@ def _admin_welcome_sequence():
         return jsonify({"error": str(e)[:300]}), 500
 
 
+# Phase ZZZZZ-round7 (2026-05-23): admin purge for stale brain findings.
+# Mirrors scripts/purge-stale-findings.sql but runnable via curl.
+@app.route("/api/v1/admin/heal/purge-stale", methods=["POST"])
+def _admin_heal_purge_stale():
+    """Purge stale brain findings from heal_findings.
+    Drops: (1) enterprise_bot_present entries pointing at Railway's own
+    egress range, (2) anything older than 30 days. Idempotent.
+
+    Auth: X-Admin-Key header matching DCHUB_ADMIN_KEY env. Use
+    /scripts/purge-stale-findings.sql for the raw SQL if you'd rather
+    run it via psql.
+    """
+    import os, psycopg2
+    from flask import jsonify, request
+    expected = os.environ.get("DCHUB_ADMIN_KEY") or os.environ.get("DCHUB_INTERNAL_KEY")
+    provided = request.headers.get("X-Admin-Key") or request.args.get("admin_key")
+    if expected and provided != expected:
+        return jsonify(ok=False, error="unauthorized"), 401
+    DATABASE_URL = os.environ.get("DATABASE_URL")
+    if not DATABASE_URL:
+        return jsonify(ok=False, error="no DATABASE_URL"), 500
+    summary = {"before": {}, "deleted_railway_bots": 0, "deleted_over_30d": 0, "after": {}}
+    try:
+        with psycopg2.connect(DATABASE_URL, connect_timeout=5) as conn, conn.cursor() as cur:
+            # Before
+            try:
+                cur.execute("""
+                    SELECT COUNT(*),
+                           SUM(CASE WHEN issue='enterprise_bot_present' THEN 1 ELSE 0 END),
+                           SUM(CASE WHEN created_at < NOW() - INTERVAL '30 days' THEN 1 ELSE 0 END)
+                      FROM heal_findings
+                """)
+                r = cur.fetchone()
+                summary["before"] = {"total": int(r[0] or 0),
+                                      "bot_findings": int(r[1] or 0),
+                                      "over_30d_old": int(r[2] or 0)}
+            except Exception as e:
+                summary["before"] = {"error": str(e)[:200]}
+                try: conn.rollback()
+                except Exception: pass
+            # Purge Railway-bot entries
+            try:
+                cur.execute("""
+                    DELETE FROM heal_findings
+                     WHERE issue = 'enterprise_bot_present'
+                       AND (url LIKE '%%162.220.232.%%' OR url LIKE '%%162.220.233.%%'
+                            OR url LIKE '%%RLWY-METALGEN1%%' OR url LIKE '%%AS400940%%')
+                """)
+                summary["deleted_railway_bots"] = cur.rowcount
+            except Exception as e:
+                summary["deleted_railway_bots"] = f"error: {str(e)[:200]}"
+                try: conn.rollback()
+                except Exception: pass
+            # Purge anything > 30 days
+            try:
+                cur.execute("DELETE FROM heal_findings WHERE created_at < NOW() - INTERVAL '30 days'")
+                summary["deleted_over_30d"] = cur.rowcount
+            except Exception as e:
+                summary["deleted_over_30d"] = f"error: {str(e)[:200]}"
+                try: conn.rollback()
+                except Exception: pass
+            conn.commit()
+            # After
+            try:
+                cur.execute("""
+                    SELECT COUNT(*),
+                           SUM(CASE WHEN issue='enterprise_bot_present' THEN 1 ELSE 0 END)
+                      FROM heal_findings
+                """)
+                r = cur.fetchone()
+                summary["after"] = {"total": int(r[0] or 0),
+                                     "bot_findings": int(r[1] or 0)}
+            except Exception as e:
+                summary["after"] = {"error": str(e)[:200]}
+        # Also invalidate the in-memory heal cache so /api/v1/heal/findings
+        # re-renders from the now-purged DB on next call.
+        try:
+            with _HEAL_FINDINGS_LOCK:
+                _HEAL_FINDINGS_CACHE["payload"] = None
+                _HEAL_FINDINGS_CACHE["ts"] = 0
+        except Exception:
+            pass
+        return jsonify(ok=True, **summary)
+    except Exception as e:
+        return jsonify(ok=False, error=str(e)[:300]), 500
+
+
 @app.route("/api/v1/admin/tag-customer", methods=["POST"])
 def _admin_tag_customer():
     """Updates api_keys.name with a tag for the user. Lets us mark

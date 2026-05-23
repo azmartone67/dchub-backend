@@ -150,6 +150,36 @@ def _operator_summary(cur, name: str) -> dict | None:
             } for r in cur.fetchall()]
         except Exception:
             out["recent_deals"] = []
+        # Phase ZZZZZ-round7 (2026-05-23): Similar operators — pull the
+        # 5 operators with facility count within ±30% of this one. Gives
+        # /operators/<slug> pages a "you might also be interested in" rail
+        # so someone researching e.g. Equinix sees Digital Realty + NTT +
+        # Iron Mountain. Helps brand discovery + reduces bounce.
+        try:
+            target_count = int(r[0] or 0)
+            if target_count > 0:
+                lo, hi = max(1, int(target_count * 0.7)), int(target_count * 1.3)
+                cur.execute("""
+                    SELECT provider, COUNT(*) AS n,
+                           COALESCE(SUM(power_mw), 0) AS mw
+                      FROM discovered_facilities
+                     WHERE LOWER(COALESCE(provider, '')) != LOWER(%s)
+                       AND provider IS NOT NULL AND provider != ''
+                       AND merged_at IS NULL AND is_duplicate = 0
+                     GROUP BY provider
+                    HAVING COUNT(*) BETWEEN %s AND %s
+                     ORDER BY ABS(COUNT(*) - %s) ASC LIMIT 5
+                """, (name, lo, hi, target_count))
+                out["similar_operators"] = [{
+                    "name":           sr[0],
+                    "slug":           _slugify(sr[0]),
+                    "facility_count": int(sr[1]),
+                    "total_mw":       float(sr[2] or 0),
+                } for sr in cur.fetchall()]
+            else:
+                out["similar_operators"] = []
+        except Exception:
+            out["similar_operators"] = []
         return out
     except Exception:
         return None
@@ -400,6 +430,17 @@ a{{color:#818cf8;text-decoration:none}} a:hover{{text-decoration:underline;color
  <thead><tr><th>Date</th><th>Buyer</th><th>Seller</th><th>Value</th><th>MW</th><th>Type</th></tr></thead>
  <tbody>{deals_rows}</tbody>
 </table>
+<h2>Similar operators</h2>
+<div class="grid">
+{"".join(
+    f'<a class="card" href="/operators/{so["slug"]}" style="text-decoration:none;cursor:pointer">'
+    f'<div class="card-label">{so["facility_count"]:,} facilities</div>'
+    f'<div style="font-size:1.1rem;font-weight:700;color:#a855f7;margin:.25rem 0">{so["name"]}</div>'
+    f'<div style="font-size:.85rem;color:var(--dch-text-mute)">{so["total_mw"]:,.0f} MW</div>'
+    f'</a>'
+    for so in (summary.get("similar_operators") or [])[:5]
+) or '<div class="card" style="grid-column:1/-1;text-align:center;color:#9ca3af">No comparable operators in the size band yet.</div>'}
+</div>
 <p class="foot">Live JSON: <a href="/api/v1/operators/{slug}">/api/v1/operators/{slug}</a> · Indexed by AI agents via MCP — call <code>search_facilities(operator="{summary['name']}")</code></p>
 <script src="/js/dchub-nav.js" defer></script>
 </body></html>"""
