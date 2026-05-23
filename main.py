@@ -20443,7 +20443,9 @@ def api_agents_intelligence_index():
             try: conn.rollback()
             except Exception: pass
         try:
-            c.execute("SELECT market, score FROM gdci_scores ORDER BY score DESC NULLS LAST LIMIT 10")
+            # Round 25 (2026-05-23): actual column is gdci_score, not score.
+            # The brain site-probe caught the schema drift in <5 min.
+            c.execute("SELECT market, gdci_score FROM gdci_scores ORDER BY gdci_score DESC NULLS LAST LIMIT 10")
             top_markets = [{'market': r[0], 'score': float(r[1] or 0)} for r in c.fetchall()]
         except Exception as e:
             errors.append(f"gdci_scores: {str(e)[:60]}")

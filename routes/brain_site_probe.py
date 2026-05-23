@@ -102,6 +102,19 @@ _BAD_BODY_MARKERS = (
 )
 
 
+class _NoRedirectHandler(_req.HTTPRedirectHandler):
+    """Phase ZZZZZ-round25 (2026-05-23): urllib by default follows
+    3xx redirects, which made the probe see /vs as 200 (the target
+    of the 301 redirect) instead of 301 (the actual response status).
+    This handler short-circuits redirects so we see the ORIGINAL
+    response status, which is what the probe expects."""
+    def redirect_request(self, req, fp, code, msg, headers, newurl):
+        return None
+
+
+_NO_REDIRECT_OPENER = _req.build_opener(_NoRedirectHandler())
+
+
 def _probe(path: str, timeout: float = 5.0) -> tuple[int, int, str]:
     """Probe a local URL; return (status, byte_count, body_text_preview)."""
     url = f"http://localhost:8080{path}"
@@ -112,7 +125,7 @@ def _probe(path: str, timeout: float = 5.0) -> tuple[int, int, str]:
     # fires for the data API endpoints in the probe list.
     req.add_header("Referer", "https://dchub.cloud/")
     try:
-        with _req.urlopen(req, timeout=timeout) as r:
+        with _NO_REDIRECT_OPENER.open(req, timeout=timeout) as r:
             body = r.read(8192).decode("utf-8", "ignore")
             return r.status, len(body), body[:300]
     except _reqerr.HTTPError as he:
