@@ -104,6 +104,50 @@ REGISTRY: list[ErrorClass] = [
         shipped_proof="e2e1999d",
         notes="Stack-trace line in the log names the leaking caller — feed it to the template.",
     ),
+    # Phase ZZZZZ-round5 (2026-05-23): 3 new patterns picked up from the
+    # 2026-05-23 Railway logs the user shared. Each is a recurring class
+    # that already costs cycles in production; getting them registered
+    # lets Layer-5 propose templated PRs the next time they fire.
+    ErrorClass(
+        id="psycopg2_transaction_aborted",
+        pattern=r"current\s+transaction\s+is\s+aborted,\s+commands\s+ignored",
+        fix_template="rollback_then_retry_or_savepoint",
+        description=(
+            "psycopg2: one query inside a transaction raised, so every subsequent "
+            "query in the same transaction returns 'current transaction is aborted'. "
+            "Fix: wrap risky upserts in a SAVEPOINT and ROLLBACK TO that savepoint "
+            "on error, OR call conn.rollback() in the except block before continuing. "
+            "Don't keep issuing queries on a poisoned connection."
+        ),
+        confidence=0.9,
+        notes="Observed in 2026-05-23 logs: fiber_routes upsert loop logged 20 'transaction aborted' warnings in succession, then '0 carrier routes written'. The seed function isn't catching the first ON CONFLICT error per row.",
+    ),
+    ErrorClass(
+        id="external_api_404_silent",
+        pattern=r"(PeeringDB|external\s+API)\s+returned\s+4(04|05)",
+        fix_template="record_external_404_with_backoff",
+        description=(
+            "External API returned 404 (or 405) — the endpoint shape changed or "
+            "the resource was removed. Fix: don't keep retrying every cycle. Log "
+            "once, mark the source DEGRADED in source_health, and pause it from "
+            "the discovery rotation until a human revisits."
+        ),
+        confidence=0.8,
+        notes="2026-05-23: PeeringDB 404 fires every fiber discovery cycle (~5min). Wasted ~290 outbound calls/day.",
+    ),
+    ErrorClass(
+        id="slow_request_threshold_breach",
+        pattern=r"SLOW\s+REQUEST:\s+\S+\s+\S+\s+took\s+\d+\.\d+s\s+\(>\d+s\)",
+        fix_template="move_to_background_task_or_paginate",
+        description=(
+            "A request exceeded the slow-threshold (typically 30s gunicorn timeout). "
+            "Fix: (a) move the work to a background task and return 202 + a poll URL "
+            "from the request, OR (b) paginate the underlying query so the request "
+            "returns the first page in <2s. Don't leave it as a 60s+ blocking call."
+        ),
+        confidence=0.85,
+        notes="2026-05-23: /api/v1/energy/eia-ingest/run took 69.9s — pure ingest, should be a cron not a request.",
+    ),
 ]
 
 

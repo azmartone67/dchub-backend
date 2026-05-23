@@ -70,6 +70,8 @@
     "/scripts/*",
     "/data/*",
     "/AGENTS.md",
+    "/grid",
+    "/grid/*",
     "/partnerships",
     "/media/outreach"
   ],

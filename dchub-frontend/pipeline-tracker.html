@@ -1,0 +1,66 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1">
+<title>Data Center Pipeline Tracker — 21+ GW Tracked | DC Hub</title>
+<meta name="description" content="Live pipeline tracker for data center construction across all US markets — 21+ GW under construction or in planning. Per-market breakdown, hyperscaler announcements, status updates refreshed every 60 seconds.">
+<link rel="canonical" href="https://dchub.cloud/pipeline-tracker">
+<meta property="og:title" content="Data Center Pipeline Tracker — 21+ GW | DC Hub">
+<meta property="og:description" content="Live tracker of 21+ GW of data center construction across all US markets.">
+<meta property="og:url" content="https://dchub.cloud/pipeline-tracker">
+<meta property="og:type" content="website">
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link href="https://fonts.googleapis.com/css2?family=Instrument+Sans:wght@400;500;600;700;800&display=swap" rel="stylesheet">
+<style>
+:root{color-scheme:dark;--bg:#0A0E1C;--fg:#E8ECF7;--muted:#8B92A8;--accent:#4F8FFF;--border:#242940;--card:#121629}
+*{box-sizing:border-box}
+body{margin:0;font-family:'Instrument Sans',ui-sans-serif,system-ui,sans-serif;background:var(--bg);color:var(--fg);line-height:1.55}
+.wrap{max-width:1100px;margin:0 auto;padding:32px 24px}
+h1{margin:0 0 6px;font-size:clamp(24px,4vw,34px);letter-spacing:1px}
+.sub{color:var(--muted);margin:0 0 24px;font-size:15px}
+.sub a{color:var(--accent)}
+.cards{display:grid;grid-template-columns:repeat(auto-fit,minmax(220px,1fr));gap:14px;margin:24px 0}
+.card{background:var(--card);border:1px solid var(--border);border-radius:12px;padding:18px}
+.card .n{font-size:30px;font-weight:700;color:var(--accent)}
+.card .l{color:var(--muted);font-size:13px;text-transform:uppercase;letter-spacing:.5px;margin-top:4px}
+.cta{display:inline-block;background:linear-gradient(135deg,#4F8FFF,#a855f7);color:#fff;padding:10px 18px;border-radius:8px;text-decoration:none;font-weight:600;margin:8px 8px 0 0}
+.cta.ghost{background:transparent;border:1px solid var(--border);color:var(--fg)}
+.note{color:var(--muted);font-size:13px;margin-top:24px}
+</style>
+</head>
+<body>
+<script src="/js/dchub-nav.js"></script>
+<div class="wrap">
+<h1>Data Center Pipeline Tracker</h1>
+<p class="sub">21+ GW of data center construction across the US — under construction, permitted, announced. Live data, refreshed every 60 seconds.</p>
+
+<div class="cards" id="cards">
+  <div class="card"><div class="n" id="pipeline-gw">—</div><div class="l">Total GW pipeline</div></div>
+  <div class="card"><div class="n" id="under-construction">—</div><div class="l">Under construction</div></div>
+  <div class="card"><div class="n" id="markets">—</div><div class="l">Tracked markets</div></div>
+  <div class="card"><div class="n" id="hyperscalers">—</div><div class="l">Hyperscaler projects</div></div>
+</div>
+
+<a class="cta" href="/capacity-pipeline">Full capacity pipeline ↗</a>
+<a class="cta ghost" href="/transactions">Recent transactions</a>
+<a class="cta ghost" href="/intelligence">Market intelligence</a>
+<a class="cta ghost" href="/api/v1/pipeline">JSON API</a>
+
+<p class="note">Data source: DC Hub aggregates from public filings, M&amp;A disclosures, and operator announcements. Underlying tools available via the <a href="/mcp" style="color:var(--accent)">MCP server</a> (<code style="background:var(--card);padding:1px 6px;border-radius:4px">get_pipeline</code>, <code style="background:var(--card);padding:1px 6px;border-radius:4px">get_capacity</code>).</p>
+</div>
+<script>
+(async function(){
+  try{
+    const r = await fetch('/api/v1/pipeline',{headers:{'Accept':'application/json'}});
+    if(!r.ok) return;
+    const d = await r.json();
+    if(d.total_gw)            document.getElementById('pipeline-gw').textContent = d.total_gw + ' GW';
+    if(d.under_construction)  document.getElementById('under-construction').textContent = d.under_construction.toLocaleString();
+    if(d.markets)             document.getElementById('markets').textContent = d.markets.toLocaleString();
+    if(d.hyperscaler_projects)document.getElementById('hyperscalers').textContent = d.hyperscaler_projects.toLocaleString();
+  }catch(_){}
+})();
+</script>
+</body>
+</html>

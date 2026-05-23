@@ -1561,6 +1561,13 @@ export default {
         '/ui',
         // Phase ZZZZZ-round4 (2026-05-23): /founders — Flask 200 but CF was 404.
         '/founders',
+        // Phase ZZZZZ-round5 (2026-05-23): CF errors dashboard surfaced
+        // /grid/<iso> ~9k 404s/day (3 ISOs × 3k each) — Flask routes
+        // exist at routes/grid_public_routes.py:182. /pipeline-tracker
+        // and /dc-hub-media are 404 on Flask too, so they're served as
+        // STATIC files (see dchub-frontend/pipeline-tracker.html and
+        // dc-hub-media.html — must NOT be in PHASE_282).
+        '/grid',
         '/visitor-intelligence',
       ]);
       // Phase YYYY (2026-05-16): also forward prefix-paths to Railway
@@ -1597,6 +1604,9 @@ export default {
         // — so /iso/* must hit Pages static, not Railway.
         // Phase ZZZZZ (2026-05-23): /pockets/<slug> per-market detail pages.
         '/pockets/',
+        // Phase ZZZZZ-round5 (2026-05-23): per-ISO grid pages — /grid/PJM,
+        // /grid/CAISO, /grid/ERCOT etc. (~9k 404s/day combined).
+        '/grid/',
       ];
       if (PHASE_282_RAILWAY_PATHS.has(pathname) ||
           PHASE_282_PREFIXES.some(p => pathname.startsWith(p))) {
