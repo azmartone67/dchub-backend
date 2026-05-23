@@ -42,37 +42,32 @@ from typing import Any
 
 
 # Curated public URL list. (path, expected_status, min_bytes, label).
-# Adding a new public surface? Append here. The probe runs every cycle
-# and a new URL not yet returning 200 will surface as a finding for
-# triage. Same pattern as the round 22 land_power canary.
+# IMPORTANT: only paths SERVED BY FLASK (not by Cloudflare Pages /
+# the CF worker). The probe hits http://localhost:8080 directly,
+# so static pages served from CF Pages would always 404 here.
+# CF Pages routes (e.g. /about, /pricing, /architecture, /daily,
+# /tax-incentives) should be tested via dchub.cloud externally.
+#
+# Adding a new probe? Verify it returns 200 from Flask first
+# (curl http://localhost:8080/<path>) — if it 404s from Flask
+# but 200s via dchub.cloud, it's a CF Pages route and doesn't
+# belong here.
 _PROBE_LIST = [
-    # ── Marketing surfaces ──
+    # ── Flask-rendered HTML pages (handlers in main.py) ──
     ("/",                              200,  3000, "Homepage"),
-    ("/pricing",                       200,  2000, "Pricing"),
-    ("/about",                         200,  1500, "About"),
-    ("/vs",                            200,   500, "Vs index"),
+    ("/vs",                            301,   100, "Vs index (redirect)"),
     ("/vs/dchawk",                     200,  2000, "Vs DC Hawk"),
     ("/vs/cbre",                       200,  2000, "Vs CBRE"),
-    ("/dc-hub-media",                  200,  3000, "DC Hub Media"),
-    ("/news",                          200,  2000, "News"),
-    # ── Data dashboards ──
     ("/markets",                       200,  2000, "Markets"),
     ("/dcpi",                          200,  2000, "DCPI"),
-    ("/intelligence",                  200,  2000, "Intelligence"),
     ("/pocket-listings",               200,  1500, "Pocket Listings"),
     ("/pockets",                       200,  1500, "Pockets"),
-    ("/architecture",                  200,  2000, "Architecture"),
-    ("/tax-incentives",                200,  2000, "Tax Incentives"),
-    ("/powered-shell",                 200,  2000, "Powered Shell"),
     ("/operators",                     200,  1500, "Operators index"),
     ("/transactions",                  200,  1500, "Transactions"),
     ("/grid-intelligence",             200,  1500, "Grid Intelligence"),
-    ("/land-power-map",                200,  3000, "Land Power Map"),
-    ("/visitor-map",                   200,  2000, "Visitor Map"),
     ("/brain",                         200,  2000, "Brain dashboard"),
     ("/alive",                         200,  1500, "Operator dashboard"),
-    # ── Agent-facing JSON APIs ──
-    ("/api/version",                   200,    50, "Version JSON"),
+    # ── Agent-facing JSON APIs (Flask blueprints) ──
     ("/api/v1/version",                200,   100, "v1 Version"),
     ("/api/v1/stats",                  200,   100, "Stats"),
     ("/api/v1/dcpi/scores",            200,   200, "DCPI scores"),
@@ -80,15 +75,18 @@ _PROBE_LIST = [
     ("/api/v1/brain/error-classes",    200,   200, "Brain error classes"),
     ("/api/v1/brain/status",           200,    50, "Brain status"),
     ("/api/v1/heal/findings",          200,   200, "Heal findings"),
-    ("/api/v1/agents/health",          200,    50, "Agent health"),
+    ("/api/agents/health",             200,    50, "Agent health"),
     ("/api/agents/intelligence-index", 200,   200, "Intelligence index"),
     ("/api/v1/mcp/funnel",             200,   100, "MCP funnel"),
     ("/api/v1/marketing/pulse",        200,   100, "Marketing pulse"),
     ("/api/v1/marketing/distribution/health", 200, 100, "Distribution health"),
-    ("/api/v1/dchub-media/feed-v3",    200,   100, "Media feed"),
     ("/api/v1/testimonials/live",      200,   100, "Testimonials"),
     ("/.well-known/ai-agents.json",    200,   200, "Agent manifest"),
     ("/api/v1/visitor-map",            200,   100, "Visitor map JSON"),
+    ("/api/v1/powered-shell/markets",  200,   100, "Powered Shell markets"),
+    ("/api/v1/powered-shell/comps",    200,    50, "Powered Shell comps"),
+    ("/api/v1/powered-shell/pipeline", 200,    50, "Powered Shell pipeline"),
+    ("/api/v1/marketing/twitter/whoami", 200,  100, "Twitter whoami"),
 ]
 
 # Body markers that indicate a soft error even when status is 200.

@@ -38,6 +38,41 @@ across the site.
 Pages worker for this repo. If unsure, the route's worker name should
 show "dchub-frontend" or similar Pages-flavored naming.
 
+### 1b. There's ALSO a `4.8.5-mcp-landing` zone worker on `/mcp/*`
+
+A second out-of-repo worker intercepts `/mcp/manifest` and returns 404
+(via Express, x-powered-by header). Claude.ai's connector dialog
+checks the manifest endpoint to validate the server — when it 404s,
+Claude.ai shows "Couldn't reach the MCP server" even though `/mcp`
+itself (the JSON-RPC endpoint) responds correctly.
+
+**Steps to verify the problem:**
+```sh
+# This should return 200 with our tools manifest, NOT a 404 HTML page
+curl -sS https://dchub.cloud/mcp/manifest
+```
+
+If you see `<pre>Cannot GET /mcp/manifest</pre>` (Express 404), that's
+the rogue zone worker. To fix:
+
+1. CF dashboard → `dchub.cloud` zone → Workers Routes.
+2. Find route(s) matching `dchub.cloud/mcp/*` or `dchub.cloud/mcp/manifest`
+   pointing to a worker that is NOT the canonical Pages worker.
+3. Delete those routes.
+4. Verify:
+   ```sh
+   curl -sS https://dchub.cloud/mcp/manifest | head -c 200
+   ```
+   Should now return JSON listing the MCP tools.
+
+**Meanwhile — the MCP server ITSELF works.** Users connecting via
+Claude Desktop or Claude.ai can use this URL directly:
+- **Server URL:** `https://dchub.cloud/mcp`
+- **Transport:** Streamable HTTP
+- **Protocol version:** 2024-11-05 (also supports 2025-06-18)
+
+Verified working with curl + tested initialize/tools/list handshake.
+
 ### 2. R2 bucket CORS for `/daily` page
 
 **Why it matters:** `/daily` page fails to load card images because the

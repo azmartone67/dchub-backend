@@ -87,6 +87,7 @@
         { label: 'Developers',         href: '/developers',           desc: 'SDKs, guides & integration docs' },
         { label: 'AI Integrations',    href: '/ai-integrations',      desc: 'MCP status · platform connections' },
         { label: 'AI Hub',             href: '/ai',                   desc: 'Claude · ChatGPT · Gemini landing' },
+        { label: 'Visitor Map',        href: '/visitor-map',          desc: 'Where AI agents call from · live heatmap', badge: 'NEW' },
         { label: 'AI Wars',            href: '/ai-wars',              desc: 'Live AI platform benchmarks',       badge: 'LIVE' },
         { label: 'Ecosystem',          href: '/ecosystem',            desc: '76 vendors & partners' },
         { label: 'Assets Explorer',    href: '/assets',               desc: '20,000+ searchable facilities' },
