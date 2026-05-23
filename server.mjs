@@ -897,6 +897,108 @@ app.post('/mcp', async (req, res) => {
   }
 });
 
+const MCP_LANDING_HTML = `<!DOCTYPE html>
+<html lang="en"><head>
+<meta charset="utf-8"><meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Connect DC Hub MCP · Claude, Cursor, Cline</title>
+<meta name="description" content="Add DC Hub's MCP server to any AI agent runtime. 40 tools, 21,000+ facilities, no signup needed for the free tier.">
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link href="https://fonts.googleapis.com/css2?family=Instrument+Sans:wght@400;500;600;700;800&family=JetBrains+Mono:wght@500;600;700&display=swap" rel="stylesheet">
+<link rel="stylesheet" href="https://dchub.cloud/static/dchub-brand.css">
+<script src="https://dchub.cloud/js/dchub-nav.js" defer></script>
+<style>
+  body{max-width:860px;margin:0 auto;padding:32px 24px;line-height:1.6}
+  header{margin:40px 0 28px}
+  .eyebrow{color:var(--dch-indigo);font-size:.78rem;letter-spacing:.16em;text-transform:uppercase;margin-bottom:10px;font-weight:600}
+  h1{font-size:2.4rem;margin:0 0 14px;letter-spacing:-.02em;line-height:1.15}
+  .lead{color:var(--dch-text-mute);font-size:1.05rem;max-width:640px}
+  .urlbox{background:rgba(129,140,248,.08);border:1px solid rgba(129,140,248,.3);border-radius:12px;padding:18px 22px;margin:24px 0}
+  .urlbox-label{font-weight:600;color:var(--dch-indigo);margin-bottom:10px}
+  .url-row{display:flex;gap:10px;align-items:center;flex-wrap:wrap}
+  code.url{background:var(--dch-bg);padding:10px 16px;border-radius:8px;font-size:1.05rem;flex:1;min-width:280px;font-family:'JetBrains Mono',monospace}
+  .btn{padding:11px 22px;border-radius:8px;text-decoration:none;font-weight:600;font-size:.92rem;display:inline-block;cursor:pointer;font-family:inherit;border:none}
+  .btn-primary{background:var(--dch-grad-brand);color:#fff}
+  .btn-secondary{background:var(--dch-surface);border:1px solid var(--dch-border);color:var(--dch-text)}
+  .btn-secondary:hover{border-color:var(--dch-indigo);color:var(--dch-indigo)}
+  ol{padding-left:22px;margin:16px 0}
+  ol li{margin-bottom:10px}
+  .pane{background:var(--dch-surface);border:1px solid var(--dch-border);border-radius:12px;padding:22px;margin:20px 0}
+  .pane h2{margin:0 0 12px;font-size:1.15rem}
+  pre{background:var(--dch-bg);border:1px solid var(--dch-border);border-radius:8px;padding:14px 16px;overflow-x:auto;font-family:'JetBrains Mono',monospace;font-size:.85rem;line-height:1.5;margin:10px 0 0;position:relative}
+  .copybtn{position:absolute;top:8px;right:8px;font-size:.72rem;color:var(--dch-indigo);background:var(--dch-surface);border:1px solid var(--dch-border);padding:3px 10px;border-radius:6px;cursor:pointer;font-family:inherit}
+  code{background:var(--dch-surface);padding:1px 6px;border-radius:4px;font-family:'JetBrains Mono',monospace;font-size:.86em}
+  footer{margin-top:36px;padding-top:18px;border-top:1px solid var(--dch-border);color:var(--dch-text-dim);font-size:.85rem}
+  footer a{color:var(--dch-indigo);text-decoration:none}
+</style>
+</head><body>
+<header>
+  <div class="eyebrow">Model Context Protocol · MCP Server</div>
+  <h1>Connect DC Hub to your AI in 30 seconds.</h1>
+  <p class="lead">Native MCP server. 40 tools covering 21,000+ facilities, M&amp;A, grid intelligence, fiber, water risk, tax incentives. No signup needed for the free tier.</p>
+</header>
+
+<div class="urlbox">
+  <div class="urlbox-label">Step 1 — Copy this URL:</div>
+  <div class="url-row">
+    <code class="url" id="mcpurl">https://dchub.cloud/mcp</code>
+    <button class="btn btn-primary" onclick="copyUrl(this)">copy URL</button>
+    <a href="https://claude.ai/settings/connectors" class="btn btn-secondary" target="_blank" rel="noopener">open Claude settings →</a>
+  </div>
+</div>
+
+<div class="pane">
+  <h2>Step 2 — Add to Claude.ai</h2>
+  <ol>
+    <li>Click <strong>open Claude settings →</strong> above (or visit <a href="https://claude.ai/settings/connectors" target="_blank" rel="noopener">claude.ai/settings/connectors</a>)</li>
+    <li>Click <strong>+ Add custom connector</strong></li>
+    <li>Name: <code>DC Hub</code> — URL: paste the URL you just copied — <strong>leave auth blank</strong> (we don’t use OAuth; tools work anonymously at 5 calls/day, or add an X-API-Key header for 1k/day)</li>
+    <li>Save. The DC Hub connector appears in every chat under the 🔌 menu.</li>
+  </ol>
+</div>
+
+<div class="pane">
+  <h2>Other runtimes</h2>
+  <p><strong>Claude Desktop</strong> — add to <code>claude_desktop_config.json</code>:</p>
+  <pre><button class="copybtn" onclick="copyPre(this)">copy</button><code>"dchub": {
+  "command": "npx",
+  "args": ["-y", "mcp-remote", "https://dchub.cloud/mcp"]
+}</code></pre>
+  <p style="margin-top:18px"><strong>Cursor / Cline / Continue.dev</strong> — streamable-http MCP config:</p>
+  <pre><button class="copybtn" onclick="copyPre(this)">copy</button><code>"dchub": {
+  "transport": "streamable-http",
+  "url": "https://dchub.cloud/mcp"
+}</code></pre>
+</div>
+
+<footer>
+  Cited by ChatGPT, Claude, Gemini, Perplexity, Copilot, Cursor, Cline, Continue.dev ·
+  <a href="https://dchub.cloud/cited-by">See receipts</a> ·
+  <a href="https://dchub.cloud/pricing">Pricing</a> ·
+  <a href="https://dchub.cloud/api-docs">REST API</a> ·
+  <a href="https://dchub.cloud/.well-known/mcp.json">Manifest</a>
+</footer>
+
+<script>
+function copyUrl(btn){
+  navigator.clipboard.writeText('https://dchub.cloud/mcp').then(function(){
+    var p = btn.textContent;
+    btn.textContent = '✓ copied — now click "open Claude settings"';
+    setTimeout(function(){ btn.textContent = p; }, 4000);
+  });
+}
+function copyPre(btn){
+  var code = btn.parentElement.querySelector('code');
+  if (!code) return;
+  navigator.clipboard.writeText(code.textContent).then(function(){
+    var p = btn.textContent;
+    btn.textContent = 'copied!';
+    setTimeout(function(){ btn.textContent = p; }, 1500);
+  });
+}
+</script>
+</body></html>`;
+
 app.get('/mcp', async (req, res) => {
   const sid = req.headers['mcp-session-id'];
   if (sid && sessions.has(sid)) {
@@ -904,6 +1006,19 @@ app.get('/mcp', async (req, res) => {
     return ctx.run({ ...meta, session_id: sid }, async () => {
       await sessions.get(sid).handleRequest(req, res);
     });
+  }
+  // r33-J round 9 (2026-05-21): browser users hitting GET /mcp used
+  // to see raw JSON-RPC error — completely unhelpful when trying to
+  // figure out how to connect. If the request Accepts text/html
+  // (i.e. a human in a browser), serve the connection landing page
+  // inline (no redirect chain — /connect → /mcp would loop).
+  // Agents using Accept: */* or application/json still get the
+  // original 400 JSON shim.
+  const accept = (req.headers.accept || '').toLowerCase();
+  if (accept.includes('text/html')) {
+    res.set('Content-Type', 'text/html; charset=utf-8');
+    res.set('Cache-Control', 'public, max-age=300');
+    return res.send(MCP_LANDING_HTML);
   }
   res.status(400).json({ error: 'No session. POST /mcp with initialize.' });
 });
