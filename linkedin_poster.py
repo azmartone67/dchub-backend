@@ -593,6 +593,79 @@ POST_SCHEDULE = {
 }
 
 
+# Phase ZZZZZ-round4 (2026-05-23): 4-style rotation
+# Same topic, 4 different presentation styles — prevents the LinkedIn algo
+# from down-ranking us for "repetitive content" and gives the same audience
+# a fresh hook every ~6 weeks (4 styles × week-based rotation across 6 topics).
+#
+# A style is applied as a HEADER (replaces the lead line) and an optional
+# FOOTER (appended before the CTA). The body of the post is left intact so
+# we don't lose the live data.
+POST_STYLES = {
+    'data': {
+        'header': None,  # No header — the existing posts already lead with numbers
+        'footer': None,
+    },
+    'narrative': {
+        'header': "Story of the week:",
+        'footer': "That's the kind of momentum a 20,000-facility database surfaces in real time.",
+    },
+    'listicle': {
+        'header': "3 things data-center watchers should know this week:",
+        'footer': "Each of these is queryable via the DC Hub API — links below.",
+    },
+    'contrarian': {
+        'header': "Most reports treat the data-center market as static.\nThe numbers say otherwise:",
+        'footer': "If your dashboard still shows last quarter's snapshot, you're behind.",
+    },
+}
+
+STYLE_ORDER = ['data', 'narrative', 'listicle', 'contrarian']
+
+
+def _pick_style(week_num: int) -> str:
+    """Pick this week's style. Cycles through STYLE_ORDER on a week basis."""
+    return STYLE_ORDER[week_num % len(STYLE_ORDER)]
+
+
+def _apply_style(post_text: str, style: str) -> str:
+    """Wrap a post's body with the chosen style's header/footer."""
+    if not post_text:
+        return post_text
+    cfg = POST_STYLES.get(style, POST_STYLES['data'])
+    header, footer = cfg.get('header'), cfg.get('footer')
+
+    body = post_text
+    if header:
+        # Drop the original first line (which was the lead) and substitute.
+        # Heuristic: original first line ends at the first '\n\n'. Keep
+        # everything from the first '\n\n' onward.
+        parts = body.split('\n\n', 1)
+        if len(parts) == 2:
+            body = f"{header}\n\n{parts[1]}"
+        else:
+            body = f"{header}\n\n{body}"
+    if footer:
+        # Insert footer right before the CTA line (heuristic: "See it live →"
+        # or "Explore all" or any line beginning with the arrow).
+        cta_markers = ['See it live →', 'Explore', 'Learn more', '→ dchub']
+        inserted = False
+        for marker in cta_markers:
+            if marker in body:
+                body = body.replace(marker, f"{footer}\n\n{marker}", 1)
+                inserted = True
+                break
+        if not inserted:
+            # Fallback: prepend footer to the hashtag line if it exists,
+            # otherwise just append.
+            if '#' in body:
+                idx = body.rfind('\n')
+                body = body[:idx] + f"\n\n{footer}\n" + body[idx:]
+            else:
+                body = f"{body}\n\n{footer}"
+    return body
+
+
 def _get_todays_topic():
     """Pick today's topic, alternating within each day's options."""
     now = datetime.now(timezone.utc)
@@ -609,7 +682,7 @@ def _get_todays_topic():
 
 
 def generate_scheduled_post():
-    """Generate the appropriate post for today's schedule."""
+    """Generate the appropriate post for today's schedule with this week's style."""
     topic_name, generator = _get_todays_topic()
     if not generator:
         return None, None, None, None
@@ -617,6 +690,11 @@ def generate_scheduled_post():
     result = generator()
     if result and len(result) == 3:
         text, link_url, link_title = result
+        # Phase ZZZZZ-round4: apply this week's writing style
+        week_num = datetime.now(timezone.utc).isocalendar()[1]
+        style = _pick_style(week_num)
+        text = _apply_style(text, style)
+        logger.info(f"[LinkedIn] topic={topic_name} style={style} (week {week_num})")
         return topic_name, text, link_url, link_title
 
     return None, None, None, None
