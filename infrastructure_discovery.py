@@ -1224,13 +1224,20 @@ class GasPipelineDiscovery:
     def _save_pipeline(self, pipeline, source='discovery'):
         try:
             source_id = pipeline.get('source_id', f"{pipeline['name']}".replace(" ", "_").lower()[:100])
-            # FIX: INSERT OR IGNORE → ON CONFLICT DO NOTHING, ? → %s
+            # FIX r34 (2026-05-22): ON CONFLICT target was (source_id) but the
+            # actual unique index is gas_pipelines_name_operator_uniq on
+            # (name, operator). Different pulls produced different source_ids
+            # for the same Texas Intrastate Pipeline row → ON CONFLICT didn't
+            # match → duplicate raised → retry loop hammered the DB → warning
+            # spam filled Railway logs (same shape as the 2026-05-21 incident).
+            # Target the constraint by name so the conflict is handled cleanly
+            # regardless of which columns the unique index actually covers.
             rowcount = _safe_write('''
                 INSERT INTO gas_pipelines
                 (name, operator, pipeline_type, diameter_inches, capacity_mcf, status,
                  lat, lng, city, state, source, source_id)
                 VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s)
-                ON CONFLICT(source_id) DO NOTHING
+                ON CONFLICT ON CONSTRAINT gas_pipelines_name_operator_uniq DO NOTHING
             ''', (
                 pipeline['name'][:200],
                 pipeline.get('operator', '')[:100],
