@@ -501,7 +501,68 @@ def require_plan(min_plan='pro'):
                 internal_key = request.headers.get('X-Internal-Key', '')
                 if is_valid_internal_key(internal_key):
                     return f(*args, **kwargs)
-                
+
+                # ── STEP 0b (Phase ZZZZZ-round22): map endpoint bypass ─
+                # Read-only geographic map data — same logic as the early
+                # require_plan stub in main.py. Keeps /land-power
+                # rendering for any browser session on dchub.cloud, even
+                # if the JWT auto-injection didn't reach the call site.
+                # Mirrored here because some routes
+                # (e.g. /api/v1/infrastructure/substations) use this
+                # require_plan directly via @_infra_require_plan.
+                _MAP_BYPASS_PATHS = (
+                    '/api/v1/gas-pipelines',
+                    '/api/v1/infrastructure/substations',
+                    '/api/v1/infrastructure/transmission',
+                    '/api/v1/infrastructure/power-plants',
+                    '/api/v1/infrastructure/fiber',
+                    '/api/v1/infrastructure/permits',
+                    '/api/v1/infrastructure/properties',
+                    '/api/v1/infrastructure/nearby',
+                    '/api/v1/infrastructure/summary',
+                    '/api/v1/energy/power-plants',
+                    '/api/v1/energy/power-plants/nearby',
+                    '/api/v1/energy/rto/demand',
+                    '/api/v1/energy/rto/fuelmix',
+                    '/api/v1/energy/naturalgas/price',
+                    '/api/v1/energy/retail/rates',
+                    '/api/v1/energy/gas-storage',
+                    '/api/v1/fiber/routes',
+                    '/api/v1/fiber/sources',
+                    '/api/v1/connectivity/ixps',
+                    '/api/v1/connectivity/facilities',
+                    '/api/v1/connectivity/score',
+                    '/api/v1/grid/overview',
+                    '/api/v1/grid/status',
+                    '/api/v1/markets/compare',
+                    '/api/v1/pipeline/summary',
+                    '/api/v1/oilgas/search',
+                    '/api/v1/deals',
+                    '/api/facilities',
+                    '/api/deals',
+                    '/api/grid/demand',
+                    '/api/grid/prices',
+                    '/api/grid/all-isos',
+                    '/api/discovery/facilities',
+                    '/api/epa/facilities',
+                    '/api/renewable/solar',
+                    '/api/renewable/wind',
+                    '/api/renewable/combined',
+                    '/api/site-score',
+                    '/api/carbon/intensity',
+                    '/api/risk/assessment',
+                    '/api/v2/risk/active-fires',
+                    '/api/auth/me',
+                )
+                if request.method == 'GET':
+                    origin = (request.headers.get('Origin', '')
+                              or request.headers.get('Referer', ''))
+                    if 'dchub.cloud' in origin:
+                        rp = request.path or ''
+                        if any(rp == p or rp.startswith(p + '/')
+                                for p in _MAP_BYPASS_PATHS):
+                            return f(*args, **kwargs)
+
                 # ── STEP 1: Check web session cookies ──────────────────
                 # dchub.cloud frontend may store JWT in a cookie after
                 # Google OAuth login. Check common cookie names.
