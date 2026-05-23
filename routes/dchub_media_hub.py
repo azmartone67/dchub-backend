@@ -987,13 +987,30 @@ def _ingest_mcp_derived() -> dict:
         # non-agent skip-list as the vendor-telemetry endpoint. Skip
         # browser/curl/probe traffic; capture KNOWN vendors precisely;
         # synthesize entries for UNKNOWN agents so they still surface.
+        #
+        # Phase ZZZZZ-round15 (2026-05-23): extend skip list to match
+        # the round 14 _compute_whales filter. The AWS bot with bare
+        # 'node' UA (22,677 calls / 8 days) was generating "Unidentified
+        # client: unknown queried 21k times" testimonials EVERY DAY —
+        # crowding out real AI-agent citations in the DC Hub Media feed.
+        # Treat 'unknown', 'node' (bare), 'node-fetch' (bare) and other
+        # generic-only fingerprints the same way we treat curl.
         _NON_AGENT = ("mozilla/", "chrome/", "safari/", "curl/", "wget/",
                        "python-requests", "python-urllib", "github-actions",
                        "dchubbot", "dchub-qa", "dchub-self", "uptime")
+        # Exact-match fingerprints — these come through as the
+        # client_name field set to a generic placeholder, NOT as a
+        # substring of a UA. Substring-match would over-filter (e.g.
+        # 'unknown_kindle' shouldn't be skipped just because it
+        # contains 'unknown'). So we test fp_low == p exactly.
+        _NON_AGENT_EXACT = ("unknown", "node", "node-fetch", "undici",
+                             "python", "mcp", "")
         for fp, calls, ips, last_seen, tools in agg:
             fp_str = fp or ""
             fp_low = fp_str.lower()
             if any(p in fp_low for p in _NON_AGENT):
+                continue
+            if fp_low in _NON_AGENT_EXACT:
                 continue
             vendor = _detect_vendor(fp_str)
             if not vendor:
@@ -1080,8 +1097,14 @@ def testimonials_live():
                            COALESCE(posted_at, captured_at), source
                     FROM ai_testimonials_auto
                     WHERE approved = true
+                      -- round15 (2026-05-23): hide the stale
+                      -- bare-'node' AWS-bot rows that round14 filtered
+                      -- out at capture time. Existing rows persist
+                      -- until cron rewrites; this filter hides them
+                      -- in the meantime so the feed reads clean today.
+                      AND COALESCE(agent_name, '') NOT LIKE %s
                     ORDER BY COALESCE(posted_at, captured_at) DESC LIMIT 30
-                """)
+                """, ('Unidentified client%',))
                 for r in cur.fetchall():
                     out.append({
                         "feed": "auto",
@@ -1103,6 +1126,48 @@ def testimonials_live():
     )
     resp.headers["Cache-Control"] = "public, max-age=120, stale-while-revalidate=240"
     return resp, 200
+
+
+# Phase ZZZZZ-round15 (2026-05-23): admin purge — delete the stale
+# bare-'node' AWS-bot testimonials from ai_testimonials_auto. Round14
+# filtered them at capture time, round15 hides them at read time, but
+# the DB rows still take up space. This endpoint removes them.
+@media_hub_bp.post("/api/v1/admin/testimonials/purge-bot-rows")
+def admin_purge_bot_testimonials():
+    from flask import jsonify, request, make_response
+    provided = (request.headers.get("X-Admin-Key")
+                or request.headers.get("X-Internal-Key")
+                or request.args.get("admin_key"))
+    try:
+        from internal_auth import is_valid_internal_key
+        if not is_valid_internal_key(provided):
+            resp = make_response(jsonify(ok=False, error="unauthorized"), 401)
+            resp.headers["Cache-Control"] = "no-store, max-age=0"
+            return resp
+    except Exception:
+        return jsonify(ok=False, error="auth_module_unavailable"), 500
+    c = _conn()
+    if c is None: return jsonify(ok=False, error="no_db"), 503
+    deleted = 0
+    try:
+        with c.cursor() as cur:
+            cur.execute("""
+                DELETE FROM ai_testimonials_auto
+                 WHERE agent_name LIKE %s
+                    OR agent_name LIKE %s
+                    OR agent_name LIKE %s
+            """, ('Unidentified client%', 'Unidentified client: unknown%',
+                  'Unidentified client: node%'))
+            deleted = cur.rowcount
+            c.commit()
+    except Exception as e:
+        c.rollback()
+        return jsonify(ok=False, error=str(e)[:200]), 500
+    finally:
+        try: c.close()
+        except Exception: pass
+    return jsonify(ok=True, deleted_rows=deleted,
+                   hint="DC Hub Media feed will reflect this within the 120s CDN cache window.")
 
 
 # ────────────────────────────────────────────────────────────────────
