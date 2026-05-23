@@ -1,0 +1,20 @@
+{
+  "iso": "ieso",
+  "country": "CA",
+  "fetched_at": "2026-05-23T08:48:30Z",
+  "schema_version": 1,
+  "source": "IESO Hourly Demand and Zone Definitions (https://www.ieso.ca/power-data)",
+  "note": "Zone roster only — HOEP values populated by future scrape cron. Pending.",
+  "zones": [
+    {"id": "BRUCE",     "name": "Bruce Power Region",          "type": "demand_zone", "lmp_usd_mwh": null},
+    {"id": "EAST",      "name": "Eastern Ontario",             "type": "demand_zone", "lmp_usd_mwh": null},
+    {"id": "ESSA",      "name": "Essa Region (Simcoe)",        "type": "demand_zone", "lmp_usd_mwh": null},
+    {"id": "NIAGARA",   "name": "Niagara Region",              "type": "demand_zone", "lmp_usd_mwh": null},
+    {"id": "NORTHEAST", "name": "Northeast Ontario",           "type": "demand_zone", "lmp_usd_mwh": null},
+    {"id": "NORTHWEST", "name": "Northwest Ontario",           "type": "demand_zone", "lmp_usd_mwh": null},
+    {"id": "OTTAWA",    "name": "Ottawa Region",               "type": "demand_zone", "lmp_usd_mwh": null},
+    {"id": "SOUTHWEST", "name": "Southwest Ontario (Windsor)", "type": "demand_zone", "lmp_usd_mwh": null},
+    {"id": "TORONTO",   "name": "Toronto Region",              "type": "demand_zone", "lmp_usd_mwh": null},
+    {"id": "WEST",      "name": "West Ontario (London)",       "type": "demand_zone", "lmp_usd_mwh": null}
+  ]
+}

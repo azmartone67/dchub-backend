@@ -1,0 +1,20 @@
+{
+  "iso": "cenace",
+  "country": "MX",
+  "fetched_at": "2026-05-23T08:48:30Z",
+  "schema_version": 1,
+  "source": "CENACE Mercado Eléctrico Mayorista zone definitions (https://www.cenace.gob.mx/Paginas/SIM/Reportes/PreciosEnergiaSisMEM.aspx)",
+  "note": "PML (Precio Marginal Local) per zone, in MXN/MWh upstream — converted to USD/MWh when LMP fill cron lands.",
+  "zones": [
+    {"id": "NORTE",       "name": "Norte (Chihuahua, Coahuila, Nuevo León)",   "type": "control_zone", "lmp_usd_mwh": null},
+    {"id": "NORESTE",     "name": "Noreste",                                    "type": "control_zone", "lmp_usd_mwh": null},
+    {"id": "NOROESTE",    "name": "Noroeste (Sonora)",                          "type": "control_zone", "lmp_usd_mwh": null},
+    {"id": "OCCIDENTAL",  "name": "Occidental (Jalisco, Guanajuato)",           "type": "control_zone", "lmp_usd_mwh": null},
+    {"id": "CENTRAL",     "name": "Central (CDMX, Estado de México)",           "type": "control_zone", "lmp_usd_mwh": null},
+    {"id": "ORIENTAL",    "name": "Oriental (Puebla, Veracruz)",                "type": "control_zone", "lmp_usd_mwh": null},
+    {"id": "PENINSULAR",  "name": "Peninsular (Yucatán, Quintana Roo)",         "type": "control_zone", "lmp_usd_mwh": null},
+    {"id": "BCA",         "name": "Baja California (isolated)",                 "type": "isolated_grid","lmp_usd_mwh": null},
+    {"id": "BCS",         "name": "Baja California Sur (isolated)",             "type": "isolated_grid","lmp_usd_mwh": null},
+    {"id": "MULEGE",      "name": "Mulegé (isolated)",                          "type": "isolated_grid","lmp_usd_mwh": null}
+  ]
+}

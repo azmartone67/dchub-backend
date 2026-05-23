@@ -1,0 +1,18 @@
+{
+  "iso": "aeso",
+  "country": "CA",
+  "fetched_at": "2026-05-23T08:48:30Z",
+  "schema_version": 1,
+  "source": "AESO Long-term Outlook + Pool Price postings (https://www.aeso.ca/market/market-and-system-reporting/)",
+  "note": "AESO operates a single energy-only market — Pool Price applies system-wide. Planning regions affect transmission siting, not LMP.",
+  "zones": [
+    {"id": "POOL",      "name": "Alberta Pool Price",          "type": "pool",         "lmp_usd_mwh": null},
+    {"id": "CALGARY",   "name": "Calgary Planning Region",     "type": "planning_zone","lmp_usd_mwh": null},
+    {"id": "EDMONTON",  "name": "Edmonton Planning Region",    "type": "planning_zone","lmp_usd_mwh": null},
+    {"id": "CENTRAL",   "name": "Central Planning Region",     "type": "planning_zone","lmp_usd_mwh": null},
+    {"id": "NORTH",     "name": "North Planning Region",       "type": "planning_zone","lmp_usd_mwh": null},
+    {"id": "NORTHEAST", "name": "Northeast Planning Region",   "type": "planning_zone","lmp_usd_mwh": null},
+    {"id": "NORTHWEST", "name": "Northwest Planning Region",   "type": "planning_zone","lmp_usd_mwh": null},
+    {"id": "SOUTH",     "name": "South Planning Region",       "type": "planning_zone","lmp_usd_mwh": null}
+  ]
+}

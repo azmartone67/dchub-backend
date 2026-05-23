@@ -22842,8 +22842,15 @@ try:
         from flask import jsonify, request
         import urllib.request, json
         iso_filter = request.args.get("iso", "").lower()
-        out = {"zones": [], "count": 0, "source": "eia-rto-region-data"}
-        iso_list = ["caiso", "ercot", "pjm", "miso", "nyiso", "isone", "spp"]
+        country_filter = request.args.get("country", "").upper()
+        out = {"zones": [], "count": 0, "source": "rto-region-data",
+               "isos_covered": [], "countries": {}}
+        # Phase ZZZZZ-round4 (2026-05-23): expanded from 7 US ISOs to 10
+        # incl. Canada (IESO, AESO) and Mexico (CENACE). The frontend
+        # snapshot at /iso/<iso>/zones.json may carry a "country" field;
+        # if present, it's surfaced for filtering.
+        iso_list = ["caiso", "ercot", "pjm", "miso", "nyiso", "isone", "spp",
+                    "ieso", "aeso", "cenace"]
         if iso_filter and iso_filter in iso_list:
             iso_list = [iso_filter]
         for iso in iso_list:
@@ -22852,8 +22859,14 @@ try:
                 req = urllib.request.Request(url, headers={"User-Agent": "dchub-iso-aggregator/1.0"})
                 with urllib.request.urlopen(req, timeout=8) as r:
                     summary = json.loads(r.read().decode("utf-8", errors="replace"))
+                country = summary.get("country") or "US"
+                if country_filter and country != country_filter:
+                    continue
+                out["isos_covered"].append(iso)
+                out["countries"][country] = out["countries"].get(country, 0) + len(summary.get("zones", []))
                 for z in summary.get("zones", []):
-                    out["zones"].append({**z, "iso": iso, "fetched_at": summary.get("fetched_at")})
+                    out["zones"].append({**z, "iso": iso, "country": country,
+                                          "fetched_at": summary.get("fetched_at")})
             except Exception as e:
                 # Quietly skip if a zones.json doesn't exist yet
                 pass
