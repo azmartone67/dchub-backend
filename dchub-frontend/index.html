@@ -903,16 +903,38 @@
     if (!q) return;
     output.style.display = 'block';
     output.textContent = 'Asking…';
-    fetch('/api/v1/ai-demo/ask', {
-      method:'POST',
-      headers:{'Content-Type':'application/json'},
-      body: JSON.stringify({question:q})
-    }).then(function(r){return r.json();}).then(function(d){
-      output.textContent = d.answer || d.response || d.text ||
-        (d.error ? '× ' + d.error : 'No answer.');
-    }).catch(function(){
-      output.textContent = 'Demo temporarily unreachable. Try /platform for the full UI.';
-    });
+    // Phase ZZZZZ-round20 (2026-05-23): the CF zone-level worker
+    // 4.34.6-oauth-404 intercepts POST to dchub.cloud/api/* and
+    // returns a stale 503 when Railway is briefly unhealthy. It does
+    // NOT know about Render failover (older worker version). So we
+    // hit Railway DIRECTLY here — CSP already whitelists the domain.
+    // If that fails, fall through to the CF route as a last resort.
+    var BACKENDS = [
+      'https://dchub-backend-production.up.railway.app/api/v1/ai-demo/ask',
+      'https://dchub.cloud/api/v1/ai-demo/ask',
+    ];
+    var personaName = (document.querySelector('.demo-tab.active') || {}).getAttribute
+       ? (document.querySelector('.demo-tab.active') || {}).getAttribute('data-persona')
+       : 'broker';
+    function tryBackend(i){
+      if (i >= BACKENDS.length){
+        output.textContent = 'Demo temporarily unreachable. Try /platform for the full UI.';
+        return;
+      }
+      fetch(BACKENDS[i], {
+        method:'POST',
+        headers:{'Content-Type':'application/json'},
+        body: JSON.stringify({question:q, persona: personaName || 'broker'})
+      }).then(function(r){
+        if (!r.ok && r.status >= 500){ tryBackend(i+1); return null; }
+        return r.json();
+      }).then(function(d){
+        if (!d) return;
+        output.textContent = d.answer || d.response || d.text ||
+          (d.error ? '× ' + d.error : 'No answer.');
+      }).catch(function(){ tryBackend(i+1); });
+    }
+    tryBackend(0);
   });
 })();
 
