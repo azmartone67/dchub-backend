@@ -953,6 +953,30 @@ def compute_brain_verdict(has_api_key, run_age_min, stale_min,
             "learn pass since deploy. Give it one cron cycle.")
 
 
+# Alias: /api/v1/brain/assessment → forwards to the existing
+# /api/v1/brain/self-assessment handler. The /brain dashboard footer
+# advertises the short-form URL; previously that 404'd. (2026-05-23)
+@brain_v2_bp.get("/api/v1/brain/assessment")
+def brain_assessment_alias():
+    """Alias for /api/v1/brain/self-assessment. Same payload, shorter URL."""
+    from flask import redirect
+    return redirect("/api/v1/brain/self-assessment", code=307)
+
+
+# Brain error-class registry — what classes of error the brain knows
+# how to recognize + remediate. See routes/brain_error_classes.py.
+# Surfacing this on /brain demonstrates the brain's actual capability
+# surface, not just the legacy Layer-4 placeholder loop. (2026-05-23)
+@brain_v2_bp.get("/api/v1/brain/error-classes")
+def brain_error_classes():
+    """List the error CLASSES the brain can self-match + remediate."""
+    try:
+        from routes.brain_error_classes import summary as _summary
+        return jsonify(_summary())
+    except Exception as e:
+        return jsonify({"error": str(e), "total_classes": 0, "classes": []}), 500
+
+
 @brain_v2_bp.get("/api/v1/brain/status")
 def brain_status():
     """Public health check — proves the layer is loaded + reports activation.
