@@ -75,13 +75,20 @@ def build_geo_index(facilities):
 
 
 def _load_facilities_from_db():
+    # psycopg2 cursor.execute() returns None; chaining .fetchall() on it
+    # raised "NoneType has no attribute fetchall" in JOB auto-approve.
+    # Split into two statements + guarantee conn.close on every exit.
     conn = _get_db()
-    c = conn.cursor()
-    existing = c.execute("""
-        SELECT id, name, city, country, latitude, longitude
-        FROM facilities
-    """).fetchall()
-    conn.close()
+    try:
+        c = conn.cursor()
+        c.execute("""
+            SELECT id, name, city, country, latitude, longitude
+            FROM facilities
+        """)
+        existing = c.fetchall()
+    finally:
+        try: conn.close()
+        except Exception: pass
     return [dict(r) for r in existing]
 
 
@@ -168,68 +175,75 @@ def run_auto_approval(max_records=None, test_mode=False):
 
     init_approval_table()
 
+    # psycopg2: cursor.execute() returns None — chaining .fetchall() /
+    # .fetchone() on it raised "NoneType has no attribute" in prod
+    # (JOB auto-approve log). Also wrap the whole job body in try/finally
+    # so a slow batch doesn't leak the conn for 74s+ (forced-reclaim).
     conn = _get_db()
+    try:
+        c = conn.cursor()
+        c.execute("""
+            SELECT id, source, source_id, name, provider, market, city, state, country,
+                   address, latitude, longitude, power_mw, sqft, status, facility_type,
+                   source_url, confidence_score
+            FROM discovered_facilities
+            WHERE merged_at IS NULL AND is_duplicate = 0
+            ORDER BY
+                CASE WHEN source IN ('peeringdb','openstreetmap') THEN 0 ELSE 1 END,
+                id ASC
+            LIMIT %s
+        """, (max_records,))
+        pending = c.fetchall()
 
-    c = conn.cursor()
-    pending = c.execute("""
-        SELECT id, source, source_id, name, provider, market, city, state, country,
-               address, latitude, longitude, power_mw, sqft, status, facility_type,
-               source_url, confidence_score
-        FROM discovered_facilities
-        WHERE merged_at IS NULL AND is_duplicate = 0
-        ORDER BY
-            CASE WHEN source IN ('peeringdb','openstreetmap') THEN 0 ELSE 1 END,
-            id ASC
-        LIMIT %s
-    """, (max_records,)).fetchall()
+        if not pending:
+            return {
+                'status': 'no_pending',
+                'approved': 0,
+                'duplicate_skipped': 0,
+                'flagged_review': 0,
+                'errors': 0,
+                'total_processed': 0
+            }
 
-    if not pending:
-        conn.close()
-        return {
-            'status': 'no_pending',
+        name_index, geo_index = get_cached_indexes()
+
+        c = conn.cursor()
+        c.execute("SELECT COUNT(*) FROM facilities")
+        count_before = c.fetchone()[0]
+
+        stats = {
             'approved': 0,
             'duplicate_skipped': 0,
             'flagged_review': 0,
             'errors': 0,
-            'total_processed': 0
+            'total_processed': 0,
+            'batches': 0,
+            'count_before': count_before
         }
 
-    name_index, geo_index = get_cached_indexes()
+        pending_list = [dict(r) for r in pending]
+        batches = [pending_list[i:i+BATCH_SIZE] for i in range(0, len(pending_list), BATCH_SIZE)]
 
-    c = conn.cursor()
-    count_before = c.execute("SELECT COUNT(*) FROM facilities").fetchone()[0]
+        for batch_idx, batch in enumerate(batches):
+            stats['batches'] += 1
+            try:
+                _process_batch(conn, batch, stats, name_index, geo_index)
+            except Exception as e:
+                print(f"   Batch {batch_idx+1} error: {e}")
+                stats['errors'] += len(batch)
 
-    stats = {
-        'approved': 0,
-        'duplicate_skipped': 0,
-        'flagged_review': 0,
-        'errors': 0,
-        'total_processed': 0,
-        'batches': 0,
-        'count_before': count_before
-    }
+            if batch_idx < len(batches) - 1:
+                time.sleep(BATCH_DELAY)
 
-    pending_list = [dict(r) for r in pending]
-    batches = [pending_list[i:i+BATCH_SIZE] for i in range(0, len(pending_list), BATCH_SIZE)]
-
-    for batch_idx, batch in enumerate(batches):
-        stats['batches'] += 1
-        try:
-            _process_batch(conn, batch, stats, name_index, geo_index)
-        except Exception as e:
-            print(f"   Batch {batch_idx+1} error: {e}")
-            stats['errors'] += len(batch)
-
-        if batch_idx < len(batches) - 1:
-            time.sleep(BATCH_DELAY)
-
-    c = conn.cursor()
-    count_after = c.execute("SELECT COUNT(*) FROM facilities").fetchone()[0]
-    stats['count_after'] = count_after
-    stats['net_new'] = count_after - count_before
-    stats['status'] = 'complete'
-
-    conn.close()
+        c = conn.cursor()
+        c.execute("SELECT COUNT(*) FROM facilities")
+        count_after = c.fetchone()[0]
+        stats['count_after'] = count_after
+        stats['net_new'] = count_after - count_before
+        stats['status'] = 'complete'
+    finally:
+        try: conn.close()
+        except Exception: pass
 
     cache_info = get_cache_stats()
     stats['cache_age_seconds'] = cache_info['age_seconds']
