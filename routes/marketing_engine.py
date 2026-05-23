@@ -1056,11 +1056,35 @@ def _format_linkedin_post(rel: dict) -> str:
     return "\n\n".join(parts)[:2900]
 
 
-def _claude_rewrite_for_linkedin(rel: dict) -> str | None:
+def _pick_linkedin_style(rel: dict) -> str:
+    """Phase ZZZZZ-round16 (2026-05-23) — 4-style rotation.
+    Deterministic so the same press release always gets the same
+    style (idempotent across regenerations), but varied across the
+    week so the feed doesn't read uniform. Rotation key = press_id
+    or sha(slug) → 1 of 4 styles.
+
+    The styles:
+      - data:        hook-first, 3 bullets, numbers-heavy (current)
+      - narrative:   scene-setting opening, story arc, less listy
+      - listicle:    'The 5 things you need to know' numbered list
+      - contrarian:  'Everyone says X. The data shows Y.' angle
+    """
+    import hashlib
+    seed = rel.get("id") or rel.get("press_id") or rel.get("slug") or ""
+    h = hashlib.sha256(str(seed).encode()).hexdigest()
+    idx = int(h[:8], 16) % 4
+    return ("data", "narrative", "listicle", "contrarian")[idx]
+
+
+def _claude_rewrite_for_linkedin(rel: dict, style: str | None = None) -> str | None:
     """Phase HH: Claude rewrites the press release into a punchy
     LinkedIn post. Optimized for engagement: opens with a hook
     (stat, contrarian angle, or specific number), 2-3 short insight
     bullets, then a CTA. Hashtag footer.
+
+    Phase ZZZZZ-round16 (2026-05-23): now supports 4-style rotation
+    (data/narrative/listicle/contrarian). Style is picked by
+    _pick_linkedin_style(rel) unless explicitly overridden.
 
     Cost: ~$0.005/call at Sonnet rates. Caching at the row level
     is via auto_press_releases.linkedin_post — once Claude writes
@@ -1078,23 +1102,64 @@ def _claude_rewrite_for_linkedin(rel: dict) -> str | None:
     # Trim body — Claude gets the title + sub + first ~1500 chars of body
     body_preview = body[:1500] if body else sub
 
+    if style is None:
+        style = _pick_linkedin_style(rel)
+
+    # Per-style structure instructions. The trailing CTA + byline +
+    # hashtag block is the same across all 4 (keeps brand consistency
+    # while the lead body changes shape).
+    style_instructions = {
+        "data": (
+            "1. HOOK (line 1): single sentence opening with the most "
+            "   surprising stat or contrarian claim from the release. "
+            "   Numbers belong on this line. No throat-clearing.\n"
+            "2. CONTEXT (1-2 short sentences): why this matters now.\n"
+            "3. THREE BULLETS (use '→' as the marker): "
+            "   the three most quotable findings. Each bullet ≤ 110 chars. "
+            "   At least two bullets contain a specific number "
+            "   (MW, $, %, or rank).\n"
+        ),
+        "narrative": (
+            "1. SCENE (lines 1-3): open with a vivid mini-scene or "
+            "   counter-intuitive observation. NO bullets in the first "
+            "   half. Treat the press release as a story arc.\n"
+            "2. PIVOT (1-2 sentences): the inflection point — what just "
+            "   changed, what the data revealed. ONE precise number.\n"
+            "3. PAYOFF (1-2 sentences): what this means for the reader "
+            "   (operator, investor, policy wonk). 1 more number max.\n"
+        ),
+        "listicle": (
+            "1. HOOK (line 1): 'The N [things/markets/signals] you need to "
+            "   know about [topic] this week.' Pick a number 3-5.\n"
+            "2. NUMBERED ITEMS (use '1.' '2.' '3.' …): each item 1-2 "
+            "   short sentences, opens with a market name or specific "
+            "   entity, includes ONE precise number. Match the count "
+            "   announced in the hook.\n"
+            "3. NO closing bullets — go straight to the CTA after the "
+            "   last numbered item.\n"
+        ),
+        "contrarian": (
+            "1. PREMISE (line 1): 'Everyone says X.' or 'The conventional "
+            "   wisdom is X.' — name the assumption being challenged.\n"
+            "2. REVERSAL (line 2): 'The data shows Y.' — one sentence "
+            "   stating the actual finding, with a number.\n"
+            "3. EVIDENCE (2-3 short paragraphs): the supporting facts. "
+            "   At least two specific numbers (MW, $, %, rank). Avoid "
+            "   bullets — make it argumentative prose.\n"
+        ),
+    }
+    section_a = style_instructions.get(style, style_instructions["data"])
+
     prompt = (
-        "You are writing a LinkedIn post for DC Hub Media — the newsroom "
-        "arm of DC Hub (a data center intelligence platform). The post "
-        "promotes a DC Hub press release. Audience: infrastructure "
-        "investors, hyperscale ops leaders, and policy wonks who follow "
-        "grid + power markets.\n\n"
+        f"You are writing a LinkedIn post in the '{style}' style for "
+        "DC Hub Media — the newsroom arm of DC Hub (a data center "
+        "intelligence platform). The post promotes a DC Hub press "
+        "release. Audience: infrastructure investors, hyperscale ops "
+        "leaders, and policy wonks who follow grid + power markets.\n\n"
         "GOAL: a high-engagement LinkedIn post — feed-stopping, "
         "info-dense, 2026 newsroom voice. Optimize for clicks to the URL.\n\n"
         "STRUCTURE (strict):\n"
-        "1. HOOK (line 1): a single sentence opening with the most "
-        "   surprising stat or contrarian claim from the release. "
-        "   No throat-clearing. Numbers belong on this line.\n"
-        "2. CONTEXT (1-2 short sentences): why this matters now.\n"
-        "3. THREE BULLETS (use '→' as the marker): "
-        "   the three most quotable findings. Each bullet ≤ 110 chars. "
-        "   At least two bullets should contain a specific number "
-        "   (MW, $, %, or rank).\n"
+        f"{section_a}"
         f"4. CTA: 'Full release → {url}' on its own line.\n"
         "5. BYLINE: 'Published by DC Hub Media — "
         "   dchub.cloud/dc-hub-media' on its own line. This is the "
@@ -1751,6 +1816,121 @@ def linkedin_token_test():
         ), 200
     except Exception as e:
         return jsonify(ok=False, error=f"{type(e).__name__}: {str(e)[:200]}"), 503
+
+
+# Phase ZZZZZ-round16 (2026-05-23): Twitter / X is showing 0 posts in
+# 7d despite TWITTER_API_KEY family being configured. Add a parallel
+# whoami so we can see WHY without going through Railway logs.
+@marketing_bp.get("/api/v1/marketing/twitter/whoami")
+def twitter_whoami():
+    """Probe Twitter/X creds + queue without publishing anything.
+
+    Public (read-only). Shows which OAuth path is set (bearer vs
+    OAuth1 quad), pings GET /2/users/me to verify, and reports
+    queue/published counts. Lets us diagnose 0/7d-posts at a glance.
+    """
+    import os as _os
+    import requests as _rq
+    bearer  = (_os.environ.get('TWITTER_BEARER_TOKEN') or '').strip()
+    api_key = (_os.environ.get('TWITTER_API_KEY') or '').strip()
+    api_sec = (_os.environ.get('TWITTER_API_SECRET') or '').strip()
+    acc_tok = (_os.environ.get('TWITTER_ACCESS_TOKEN') or '').strip()
+    acc_sec = (_os.environ.get('TWITTER_ACCESS_SECRET') or '').strip()
+    oauth1_complete = bool(api_key and api_sec and acc_tok and acc_sec)
+    masked = {
+        "bearer_set":        bool(bearer),
+        "bearer_length":     len(bearer),
+        "oauth1_complete":   oauth1_complete,
+        "oauth1_missing":    [k for k, v in [
+                                ("TWITTER_API_KEY", api_key),
+                                ("TWITTER_API_SECRET", api_sec),
+                                ("TWITTER_ACCESS_TOKEN", acc_tok),
+                                ("TWITTER_ACCESS_SECRET", acc_sec),
+                              ] if not v],
+    }
+    # Probe /2/users/me
+    me_status = None; me_body = None
+    if bearer:
+        try:
+            r = _rq.get("https://api.twitter.com/2/users/me",
+                         headers={"Authorization": f"Bearer {bearer}"},
+                         timeout=10)
+            me_status = r.status_code
+            me_body = r.text[:400]
+        except Exception as e:
+            me_body = f"network err: {e}"
+    elif oauth1_complete:
+        try:
+            from requests_oauthlib import OAuth1
+            auth = OAuth1(api_key, api_sec, acc_tok, acc_sec,
+                            signature_type='auth_header')
+            r = _rq.get("https://api.twitter.com/2/users/me", auth=auth,
+                         timeout=10)
+            me_status = r.status_code
+            me_body = r.text[:400]
+        except Exception as e:
+            me_body = f"oauth1 err: {e}"
+
+    # Queue + published counts (last 7d)
+    queue = {}
+    try:
+        c = _conn()
+        if c:
+            with c.cursor() as cur:
+                cur.execute("""
+                    SELECT status, COUNT(*) FROM social_media_posts
+                     WHERE platform='twitter'
+                       AND created_at >= NOW() - INTERVAL '14 days'
+                     GROUP BY status
+                """)
+                rows = cur.fetchall() or []
+                queue = {r[0]: int(r[1]) for r in rows}
+                cur.execute("""
+                    SELECT COUNT(*) FROM social_media_posts
+                     WHERE publish_platform='twitter' AND status='published'
+                       AND published_at::timestamptz >= NOW() - INTERVAL '7 days'
+                """)
+                pub7 = (cur.fetchone() or [0])[0]
+            c.close()
+        else:
+            pub7 = None
+    except Exception:
+        pub7 = None
+
+    diagnosis = []
+    if not (bearer or oauth1_complete):
+        diagnosis.append("No Twitter credentials set on Railway. Need EITHER "
+                          "TWITTER_BEARER_TOKEN (read+write scope) OR the "
+                          "complete OAuth1 quad (API_KEY/SECRET + "
+                          "ACCESS_TOKEN/SECRET).")
+    if bearer and me_status == 401:
+        diagnosis.append("Bearer token returns 401 — expired, revoked, or "
+                          "wrong API tier. Regenerate at developer.x.com.")
+    if bearer and me_status == 403:
+        diagnosis.append("Bearer token returns 403 — token lacks 'tweet.write' "
+                          "scope. App-only bearer cannot post tweets; you need "
+                          "USER-context OAuth2 bearer or OAuth1.")
+    if oauth1_complete and me_status not in (200, None):
+        diagnosis.append(f"OAuth1 ping returned {me_status} — check that all 4 "
+                          "tokens were copied without spaces and that the app "
+                          "tier supports tweet posting.")
+    if not queue.get("approved") and not queue.get("published") and not queue.get("failed"):
+        diagnosis.append("No Twitter rows in social_media_posts at all — "
+                          "auto-press may not be enqueueing for Twitter. Check "
+                          "_queue_distribution_posts() in marketing_engine.")
+
+    return jsonify(
+        ok=(me_status == 200) if me_status else False,
+        masked=masked,
+        users_me_status=me_status,
+        users_me_body_preview=me_body[:300] if me_body else None,
+        queue_14d=queue,
+        published_7d=pub7,
+        diagnosis=diagnosis,
+        hint=("Set TWITTER_BEARER_TOKEN with user-context OAuth2 (tweet.read + "
+              "tweet.write + users.read scopes) at developer.x.com → app "
+              "settings → user auth → OAuth2. Bearer length should be ~120 chars."),
+    ), 200
 
 
 @marketing_bp.post("/api/v1/marketing/publish-now")
