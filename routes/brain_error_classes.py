@@ -414,6 +414,98 @@ REGISTRY: list[ErrorClass] = [
         confidence=0.85,
         notes="933 occurrences. Top demand: get_grid_intelligence (96 distinct users hitting paid tool), get_fiber_intel (97 users). Both should get free-tier teasers.",
     ),
+    # ── Phase ZZZZZ-round17 (2026-05-23) — security/breach class set ─
+    # User explicitly asked to enhance the brain to detect security
+    # breaches. Five new classes, all surfaced by detectors in
+    # routes/brain_security_detectors.py.
+    ErrorClass(
+        id="admin_endpoint_open",
+        pattern=r"admin_endpoint_open|Admin endpoint.*returned HTTP.*WITHOUT auth",
+        fix_template="add_internal_auth_check",
+        description=(
+            "An admin endpoint executed its handler body without "
+            "verifying the caller's auth header. Detector probes a "
+            "curated list of admin routes anonymously; any 200/201/202 "
+            "response = handler ran without checking is_valid_internal_key. "
+            "FIX: wrap the handler body in an early-return auth check. "
+            "Pattern: provided = request.headers.get('X-Admin-Key') or "
+            "request.headers.get('X-Internal-Key'); if not "
+            "is_valid_internal_key(provided): return jsonify("
+            "ok=False, error='unauthorized'), 401."
+        ),
+        confidence=0.95,
+        shipped_proof="round12+round14",
+        notes="Audits ~25 admin routes per scan (see _ADMIN_ENDPOINTS_REQUIRING_AUTH in brain_security_detectors.py). Add new admin routes to that list so the detector covers them.",
+    ),
+    ErrorClass(
+        id="paywall_hole",
+        pattern=r"paywall_hole|Endpoint.*responded HTTP.*to anon with.*bytes.*NO gated marker",
+        fix_template="apply_require_plan_or_agent_action_paywall",
+        description=(
+            "A PRO/Enterprise endpoint returned full data to an "
+            "anonymous caller. Detector probes a curated list of paid "
+            "endpoints anonymously; any 200 with >1500 bytes and no "
+            "'gated' marker = hole. FIX: import from routes.tier_gate; "
+            "call _resolve_caller_tier() at the top of the handler; "
+            "if tier not in ('PRO','ENTERPRISE'): return _gate_response("
+            "tier, 'PRO', '<tool_name>', preview_dict). Round 12 closed "
+            "the original /grid/intelligence hole; this detector is the "
+            "recurring audit so regressions surface immediately."
+        ),
+        confidence=0.95,
+        shipped_proof="round12",
+        notes="Audits _PRO_GATED_PATHS in brain_security_detectors.py. Currently 3 paths; add more as paid endpoints expand.",
+    ),
+    ErrorClass(
+        id="security_header_missing",
+        pattern=r"security_header_missing|response missing headers",
+        fix_template="add_security_headers_middleware",
+        description=(
+            "A public page response is missing baseline security HTTP "
+            "headers (x-content-type-options, x-frame-options, "
+            "referrer-policy). FIX: ensure the Cloudflare worker "
+            "(_worker.js) OR the Flask after_request hook adds: "
+            "X-Content-Type-Options: nosniff, X-Frame-Options: "
+            "SAMEORIGIN, Referrer-Policy: strict-origin-when-cross-"
+            "origin. HSTS is zone-managed by Cloudflare so we don't "
+            "audit it at the origin layer."
+        ),
+        confidence=0.9,
+        notes="Probes /, /pricing, /api/v1/version every scan. Headers we audit are the minimum-safe set per OWASP.",
+    ),
+    ErrorClass(
+        id="secret_pattern_in_response",
+        pattern=r"secret_pattern_in_response|contains a string matching the.*pattern",
+        fix_template="redact_credential_from_response",
+        description=(
+            "A public API endpoint response contains a string matching "
+            "a known credential pattern (AWS access key, Stripe secret "
+            "key, GitHub token, Slack token, or legacy internal key). "
+            "This may be a real credential leaked into a public API "
+            "surface. FIX: audit the handler; remove the field from "
+            "the response payload. If it's a doc/example string and a "
+            "false positive, add a regex exclusion to "
+            "_SECRET_PATTERNS in brain_security_detectors.py."
+        ),
+        confidence=0.95,
+        notes="Sample-scans 6 public endpoints per pass. Patterns enforce distinctive prefixes (AKIA, sk_live_, ghp_, etc.) to minimize false positives.",
+    ),
+    ErrorClass(
+        id="suspicious_admin_scan",
+        pattern=r"suspicious_admin_scan|hit.*admin/.*401.*times in the last 1h",
+        fix_template="rate_limit_or_firewall_admin_scanner",
+        description=(
+            "Single IP hitting /api/v1/admin/* endpoints with HTTP 401 "
+            ">20 times in 1 hour — consistent with credential-stuffing "
+            "or admin-endpoint brute-force scan. FIX: verify the "
+            "rate_limiter is throttling the IP. If sustained, add a CF "
+            "firewall rule blocking the IP at the edge. Distinguishes "
+            "real attacker traffic from our own self-probing by "
+            "excluding the Railway egress /24s and 127.0.0.1."
+        ),
+        confidence=0.85,
+        notes="Requires rate_limit_events table. No-op if missing — won't break the scan.",
+    ),
 ]
 
 

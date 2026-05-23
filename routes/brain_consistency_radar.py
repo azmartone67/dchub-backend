@@ -7311,6 +7311,26 @@ def scan_all() -> list[dict]:
                check_cf_kv_namespace_pressure):
         detectors.append(fn)
 
+    # Phase ZZZZZ-round17 (2026-05-23) — security/breach detectors.
+    # The user explicitly asked: "can we also enhance brain to detect any
+    # bugs or gate breaches or security breaches for that matter, want
+    # our data to be secure". These run alongside the health detectors
+    # so security regressions surface in the same heal-findings stream:
+    #   - admin_endpoint_open       → POST /admin/* without auth = 200
+    #   - paywall_hole              → PRO-gated endpoint serving data anon
+    #   - security_header_missing   → x-content-type-options, x-frame-options, etc.
+    #   - secret_pattern_in_response → AWS/Stripe/GitHub/internal keys in body
+    #   - suspicious_admin_scan     → 401-spam from one IP > 20/h
+    try:
+        from routes.brain_security_detectors import SECURITY_DETECTORS
+        for _sec_fn in SECURITY_DETECTORS:
+            detectors.append(_sec_fn)
+    except Exception as _e_sec:
+        # Module import must never break the radar.
+        import sys as _sys
+        print(f"[radar] brain_security_detectors import skipped: {_e_sec}",
+              file=_sys.stderr)
+
     # Phase RRR-brain-parallel (2026-05-18) — scan was taking 76.9s
     # serial because several detectors make HTTP calls (frontend probes
     # 23 URLs, dead-link probes 30 URLs, backend pool probe 1 URL, route
