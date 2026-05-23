@@ -15021,7 +15021,23 @@ def fiber_routes_public_api():
     remains for API/developer customers."""
     return jsonify(_build_fiber_routes_geojson())
 
-logger.info("✅ Fiber routes endpoints registered: /api/v1/fiber/sources, /api/v1/fiber/routes")
+
+# Phase ZZZZZ-round6 (2026-05-23): /api/v1/fiber/intel was referenced
+# by routes/redeem_routes.py and the brain consistency radar's
+# _TOOL_API_MAPPING but had no Flask handler — every probe returned 404
+# (visible in Railway logs as "[brain-radar] ... fiber/intel?_=radar
+# HTTP 404 Not Found"). Add it as an alias of /api/v1/fiber/routes so
+# both internal callers (radar, redeem) get real data and the radar's
+# tier-consistency check has something to compare against.
+@app.route('/api/v1/fiber/intel', methods=['GET'])
+@require_plan('pro')
+def fiber_intel_api():
+    """Alias of /api/v1/fiber/routes — kept for compatibility with the
+    redeem-flow + brain-radar callers that hardcode this path.
+    Same response shape, same Pro gate."""
+    return jsonify(_build_fiber_routes_geojson())
+
+logger.info("✅ Fiber routes endpoints registered: /api/v1/fiber/sources, /api/v1/fiber/routes, /api/v1/fiber/intel")
 
 # =============================================================================
 # SCHEDULER AUDIT & DATA FRESHNESS (v92)

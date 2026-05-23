@@ -146,7 +146,59 @@ REGISTRY: list[ErrorClass] = [
             "returns the first page in <2s. Don't leave it as a 60s+ blocking call."
         ),
         confidence=0.85,
-        notes="2026-05-23: /api/v1/energy/eia-ingest/run took 69.9s — pure ingest, should be a cron not a request.",
+        shipped_proof="096c6cd6",
+        notes="2026-05-23: /api/v1/energy/eia-ingest/run took 69.9s — fixed in 096c6cd6 by defaulting to async w/ task_id + poll endpoint.",
+    ),
+    # Phase ZZZZZ-round6 (2026-05-23): 2 more patterns from today's bug
+    # sweep. malformed_url_format_placeholder caught 4 instances in
+    # one grep (PeeringDB, LinkedIn x2, alerts) — high value class to
+    # register so the brain catches the next one. mcp_generic_client_
+    # attribution names the data-quality gap we just patched in
+    # ai_tracking.py.
+    ErrorClass(
+        id="malformed_url_format_placeholder",
+        pattern=r"['\"](?:https?://[^'\"]*)%s(?:country|limit|page|key|id=|query|filter|offset|tier|status)",
+        fix_template="replace_pct_s_with_qmark_in_url",
+        description=(
+            "A quoted URL string contains '%s' where '?' belongs (separator between "
+            "path and query string). Almost always means someone meant to use "
+            "%-format substitution but never called it, OR copy-pasted a format "
+            "template without converting. Result: every request goes to a literal "
+            "'%s' in the path → 404. Run `grep -rn '%s(country|limit|page|id=)' "
+            "--include='*.py'` to find all instances."
+        ),
+        confidence=0.95,
+        shipped_proof="e95fa29c",
+        notes=(
+            "2026-05-23 sweep caught 4 instances: PeeringDB IX endpoint (3 wasted "
+            "outbound/day worth of 404), LinkedIn deals_post + news_post (Mon/Wed "
+            "topics silently empty for weeks), alerts.py unsubscribe links (every "
+            "alert email had a broken unsubscribe URL). Brain didn't flag any of "
+            "these because the upstream services returned 404 not 500 — looked "
+            "like 'normal API not found' noise."
+        ),
+    ),
+    ErrorClass(
+        id="mcp_generic_client_attribution",
+        pattern=r"mcp_client\s*=\s*['\"]mcp['\"]|platform\s*=\s*['\"]mcp['\"]",
+        fix_template="add_specific_sdk_markers_to_detect_platform",
+        description=(
+            "AI client attribution defaulting to literal 'mcp' instead of a "
+            "specific platform name (claude, chatgpt, cursor, …). Caused by "
+            "detect_platform falling through to the generic 'mcp' bucket when "
+            "user-agent contains 'mcp' but no specific marker matches. Fix: "
+            "add more granular markers (mcp_sdk_ts, mcp_sdk_py, mcp_inspector, "
+            "smithery, n8n, …) in detect_platform so the bucket-of-unknowns "
+            "shrinks to truly unidentifiable clients."
+        ),
+        confidence=0.9,
+        shipped_proof="<pending — fix in flight this commit>",
+        notes=(
+            "2026-05-23: /api/v1/mcp/conversion-funnel/by-client showed 2,903 "
+            "paywall signals/7d in the 'mcp' bucket vs 1 each in 'claude-desktop' "
+            "and 'verify'. Hidden the real per-client conversion rate, blocked "
+            "A/B testing by client."
+        ),
     ),
 ]
 

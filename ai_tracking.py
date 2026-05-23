@@ -103,17 +103,58 @@ AI_ENDPOINT_PATTERNS = [
 
 
 def detect_platform(user_agent: str) -> str:
-    """Identify AI platform from User-Agent string."""
+    """Identify AI platform from User-Agent string.
+
+    Phase ZZZZZ-round6-attribution (2026-05-23): the old logic returned
+    literal 'mcp' whenever the UA contained 'mcp' — even if a more
+    specific platform marker was present. The funnel-by-client
+    dashboard showed 2,903 paywall signals / 7d attributed to that
+    generic bucket vs 1 each to claude-desktop and verify. With ~99.9%
+    of traffic unattributed, A/B testing CTAs by client was blind.
+
+    New behavior:
+      1. Check AI_PLATFORMS specific markers first (Claude, ChatGPT,
+         Cursor, etc.) — unchanged.
+      2. If 'mcp' is in UA, inspect the SDK / transport substring to
+         derive a more specific identity (typescript-sdk → 'mcp_sdk_ts',
+         python-sdk → 'mcp_sdk_py', inspector → 'mcp_inspector', …).
+      3. Only fall back to 'mcp_generic' (not 'mcp') if no specific MCP
+         transport is identifiable — preserves the legacy bucket but
+         names it honestly so it stops shadowing real platforms.
+      4. Bots / crawlers / direct unchanged.
+    """
     if not user_agent:
         return "direct"
     ua_lower = user_agent.lower()
+    # Primary: specific AI-platform markers
     for platform_key, info in AI_PLATFORMS.items():
         for agent_sig in info["agents"]:
             if agent_sig.lower() in ua_lower:
                 return platform_key
-    # Check for generic MCP clients
-    if "mcp" in ua_lower or "model-context-protocol" in ua_lower:
-        return "mcp"
+    # MCP SDK / transport-level identification (more specific than 'mcp')
+    if ("mcp" in ua_lower
+            or "model-context-protocol" in ua_lower
+            or "modelcontextprotocol" in ua_lower):
+        if "@modelcontextprotocol/sdk" in ua_lower or "typescript-sdk" in ua_lower:
+            return "mcp_sdk_ts"
+        if "python-sdk" in ua_lower or "py-mcp" in ua_lower or "mcp-python" in ua_lower:
+            return "mcp_sdk_py"
+        if "rust-sdk" in ua_lower or "rust-mcp" in ua_lower:
+            return "mcp_sdk_rust"
+        if "go-mcp" in ua_lower or "mcp-go" in ua_lower:
+            return "mcp_sdk_go"
+        if "inspector" in ua_lower:
+            return "mcp_inspector"
+        if "n8n" in ua_lower:
+            return "n8n"
+        if "continue" in ua_lower:
+            return "continue_dev"
+        if "codeium" in ua_lower:
+            return "codeium"
+        # Last resort — better than 'mcp' alone because the bucket
+        # name signals "we tried to identify and could not" rather
+        # than implying every caller is a generic mcp client.
+        return "mcp_generic"
     # Check for generic bots
     if any(b in ua_lower for b in ["bot", "crawler", "spider", "scraper"]):
         return "seo_bot"
