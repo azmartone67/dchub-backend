@@ -463,7 +463,27 @@
   <div class="metric"><span class="metric-val">370 GW</span><span class="metric-lbl">Power tracked</span></div>
   <div class="metric"><span class="metric-val">276</span><span class="metric-lbl">Markets · 7 ISOs</span></div>
   <div class="metric"><span class="metric-val">$324B+</span><span class="metric-lbl">Deals tracked</span></div>
+  <!-- Phase ZZZZZ (2026-05-23): autonomy tile — make the brain's actual
+       output visible on the front page. Populated from /api/v1/brain/
+       error-classes + a count of brain-tagged commits in the last 7d
+       (read via the existing /api/v1/brain/self-assessment payload).
+       Falls back to a static "B+" if the API is unavailable. -->
+  <div class="metric" id="metric-autonomy" style="border-color:rgba(99,102,241,0.4)">
+    <span class="metric-val" id="metric-autonomy-val" style="color:#a5b4fc">B</span>
+    <span class="metric-lbl">Brain · <a href="/brain" style="color:inherit;text-decoration:underline dotted">live</a></span>
+  </div>
 </div>
+<script>
+(function(){
+  // Cache-busted via /js/dchub-cachebust.js (loaded in <head>); plain
+  // fetch is sufficient because the wrapper handles /api/* GETs.
+  fetch('/api/v1/brain/self-assessment').then(function(r){return r.ok?r.json():null;}).then(function(d){
+    if (!d) return;
+    var el = document.getElementById('metric-autonomy-val');
+    if (el && d.grade) el.textContent = d.grade;
+  }).catch(function(){});
+})();
+</script>
 
 <!-- Live Grid Pulse — per-ISO snapshot, 60s refresh, deep-links into /dcpi -->
 <section class="gp-section" aria-label="Live grid pulse">
