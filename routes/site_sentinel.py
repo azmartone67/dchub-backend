@@ -120,6 +120,19 @@ _MANIFEST: list[dict] = [
     {"path": "/transparency",                  "category": "high",   "min_bytes": 3000, "label": "Transparency",       "wants_nav": True},
     {"path": "/api/v1/facilities/delta",       "category": "normal", "min_bytes": 100,  "label": "Facilities Delta API"},
 
+    # Phase ZZZZZ-round5 (2026-05-23) — surfaces that were 404'ing per
+    # CF errors dashboard. Add to sentinel so the brain catches regressions.
+    {"path": "/pipeline-tracker",        "category": "high",   "min_bytes": 2000, "label": "Pipeline Tracker",  "wants_nav": True},
+    {"path": "/grid",                    "category": "high",   "min_bytes": 3000, "label": "Grid Hub",          "wants_nav": True},
+    {"path": "/grid/PJM",                "category": "normal", "min_bytes": 2000, "label": "Grid PJM"},
+    {"path": "/grid/CAISO",              "category": "normal", "min_bytes": 2000, "label": "Grid CAISO"},
+    {"path": "/grid/ERCOT",              "category": "normal", "min_bytes": 2000, "label": "Grid ERCOT"},
+    {"path": "/operators",               "category": "high",   "min_bytes": 3000, "label": "Operators Index",   "wants_nav": True},
+    {"path": "/founders",                "category": "normal", "min_bytes": 2000, "label": "Founders"},
+    {"path": "/integrations/tools.json", "category": "normal", "min_bytes":  200, "label": "Integrations tools.json"},
+    {"path": "/api/v1/iso/zones",        "category": "high",   "min_bytes":  500, "label": "ISO Zones Aggregator"},
+    {"path": "/api/v1/mcp/manifest",     "category": "high",   "min_bytes": 1000, "label": "MCP Manifest (api/v1)"},
+
     # Research / brand
     {"path": "/research/grid-intelligence","category":"normal","min_bytes": 2000,"label": "Grid Intel"},
     {"path": "/press",                   "category": "normal", "min_bytes": 2000, "label": "Press"},
