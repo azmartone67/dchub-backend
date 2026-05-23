@@ -2897,12 +2897,14 @@ def handle_well_known():
         # of truth and crawlers follow the redirect. Without this the
         # path 404'd at origin and CF turned that into a 403.
         return redirect('/llms.txt', code=301)
-    # Phase 280: /.well-known/ai-agents.json — the discovery file the QA
-    # crawler flagged as broken (linked from another page but returning 404).
-    # Modeled on the existing agent.json + mcp.json but with the richer
-    # auth/claim/tier surface that phases 275-277 added, so AI agents
-    # discovering this file can self-serve onto the free tier in one curl.
-    if path == '/.well-known/ai-agents.json':
+    # Phase 280 + ZZZZZ-round6 (2026-05-23): /.well-known/ai-agents.json
+    # and the sibling /api/v1/ai-agents.json (added today). The .well-known
+    # path is shadowed in production by the 4.8.5-mcp-landing zone-level
+    # Workers Route — Flask serves 200 here, but CF returns 404 because
+    # the zone worker intercepts /.well-known/* like it does /mcp/*. The
+    # sibling /api/v1/ai-agents.json route bypasses that shadow.
+    # Same workaround we used for /mcp/manifest in commit ae81bfec.
+    if path == '/.well-known/ai-agents.json' or path == '/api/v1/ai-agents.json':
         import json as _j2
         return Response(_j2.dumps({
             "schema_version": "1",

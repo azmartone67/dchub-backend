@@ -192,12 +192,14 @@ REGISTRY: list[ErrorClass] = [
             "shrinks to truly unidentifiable clients."
         ),
         confidence=0.9,
-        shipped_proof="<pending — fix in flight this commit>",
+        shipped_proof="437a75b0",
         notes=(
             "2026-05-23: /api/v1/mcp/conversion-funnel/by-client showed 2,903 "
             "paywall signals/7d in the 'mcp' bucket vs 1 each in 'claude-desktop' "
             "and 'verify'. Hidden the real per-client conversion rate, blocked "
-            "A/B testing by client."
+            "A/B testing by client. Fix shipped: ai_tracking.detect_platform "
+            "now returns mcp_sdk_ts / mcp_sdk_py / mcp_inspector / mcp_generic "
+            "instead of the bare 'mcp' default."
         ),
     ),
 ]
