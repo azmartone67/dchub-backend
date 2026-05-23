@@ -64,7 +64,9 @@
 </section>
 
 <section class="pane">
-  <h2>Live backend findings (the work queue)</h2>
+  <h2>Live backend findings (the work queue)
+    <span id="findings-freshness" style="font-size:0.6em;font-weight:400;margin-left:8px;opacity:0.7;"></span>
+  </h2>
   <div class="sub">Issues the healer is currently surfacing from production logs. The error-class registry above is the brain's <em>vocabulary</em>; this is the <em>backlog</em>. Top-by-count first; entries matching a known class are tagged.</div>
   <div id="findings-list"><div class="loading">loading findings…</div></div>
 </section>
@@ -155,6 +157,23 @@
 
   // --- Live backend findings (the work queue) ---
   var findings = await safe('/api/v1/heal/findings');
+  // Phase ZZZZZ-round18 (2026-05-23): surface cache age so users can
+  // tell at a glance if the data is stale. The user took a screenshot
+  // 30+min after a fix landed and didn't realize the page was showing
+  // cached data; new banner makes it explicit.
+  if (findings && typeof findings._cache_age_seconds === 'number'){
+    var age = findings._cache_age_seconds;
+    var src = findings._cache_source || '?';
+    var label, color;
+    if (age < 300)       { label = 'fresh ('  + Math.round(age) + 's old)'; color = '#0a0'; }
+    else if (age < 1800) { label = 'aging ('  + Math.round(age/60) + 'm old)'; color = '#b80'; }
+    else                 { label = 'STALE ('  + Math.round(age/60) + 'm old — refresh in flight)'; color = '#d33'; }
+    var el = document.getElementById('findings-freshness');
+    if (el){
+      el.style.color = color;
+      el.textContent = '· data ' + label + ' · source=' + src;
+    }
+  }
   if (findings && Array.isArray(findings.actionable_backend_issues)){
     var classes = (ec && ec.classes) || [];
     function matchClass(issue){
