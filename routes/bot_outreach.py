@@ -141,21 +141,33 @@ def _compute_whales(min_days: int = 3, min_calls_per_day: int = 100) -> list[dic
                 # Replaces the brittle bare-UA filter (round 14) with a
                 # real signal — IPinfo's company.type field marks IPs as
                 # 'hosting' (datacenter — AWS/GCP/Azure/etc.) vs
-                # 'business' / 'isp' / 'education' (real users). Hosting
-                # traffic on bare-node UA is almost always a scraper.
+                # 'business' / 'isp' / 'education' (real users).
+                #
+                # Round 19b: free IPinfo tier returns type=null for the
+                # vast majority of IPs (Business plan upgrade gives
+                # company.type). Use _is_hosting_ip() helper which checks
+                # type AND falls back to ASN/hostname patterns — covers
+                # AWS/GCP/Azure/DigitalOcean/Linode/Hetzner/OVH etc.
+                # without needing the paid plan.
                 enrich = {}
                 try:
                     from routes.visitor_intelligence import _ipinfo_enrich
                     enrich = _ipinfo_enrich(ip)
                 except Exception:
                     enrich = {}
-                ip_type = (enrich.get("type") or "").lower()
                 ip_company = enrich.get("company") or enrich.get("org") or ""
+                ip_type = (enrich.get("type") or "").lower()
+                is_hosting = False
+                try:
+                    from routes.brain_security_detectors import _is_hosting_ip
+                    is_hosting = _is_hosting_ip(enrich)
+                except Exception:
+                    is_hosting = (ip_type == "hosting")
 
                 # Suggest outreach action — IPinfo type now drives this.
                 action = "monitor"
                 ua_low = ua.lower()
-                if ip_type == "hosting":
+                if is_hosting:
                     # Datacenter IPs are almost always bots/scrapers.
                     # Even high volume here is NOT enterprise signal.
                     action = "block_or_throttle"

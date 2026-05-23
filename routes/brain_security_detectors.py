@@ -45,7 +45,14 @@ from typing import Any
 def _probe(path: str, method: str = "GET", timeout: float = 6.0,
             headers: dict | None = None,
             body: bytes | None = None) -> tuple[int, dict, str]:
-    """Probe a local URL; return (status, response_headers, body_text)."""
+    """Probe a local URL; return (status, response_headers, body_text).
+
+    Phase ZZZZZ-round19b (2026-05-23): read cap raised from 2048 to
+    16384 bytes. Round 19's first run produced a false-positive
+    paywall_hole finding because the 950-byte /grid/intelligence/ERCOT
+    response was getting cut at 2048 bytes when combined with response
+    framing, causing JSON parser to fail and the gated marker to be
+    missed. 16k is enough headroom for any single paywall response."""
     url = f"http://localhost:8080{path}"
     req = _req.Request(url, method=method, data=body)
     for k, v in (headers or {}).items():
@@ -54,15 +61,69 @@ def _probe(path: str, method: str = "GET", timeout: float = 6.0,
     req.add_header("User-Agent", "dchub-brain-security/1.0")
     try:
         with _req.urlopen(req, timeout=timeout) as r:
-            return r.status, dict(r.headers), r.read(2048).decode("utf-8", "ignore")
+            return r.status, dict(r.headers), r.read(16384).decode("utf-8", "ignore")
     except _reqerr.HTTPError as he:
         try:
-            body_text = he.read(2048).decode("utf-8", "ignore")
+            body_text = he.read(16384).decode("utf-8", "ignore")
         except Exception:
             body_text = ""
         return he.code, dict(he.headers), body_text
     except Exception:
         return 0, {}, ""
+
+
+# Phase ZZZZZ-round19b (2026-05-23): ASN-based hosting detection.
+# IPinfo's free tier does NOT return company.type; only the Business
+# plan does. So we can't rely on type=hosting alone — fall back to
+# matching the AS-number against the known set of cloud / hosting
+# providers. The major ones cover 95%+ of bot traffic in the wild.
+_HOSTING_ASN_MARKERS = (
+    "AS16509",   # Amazon AWS
+    "AS14618",   # Amazon AWS-2 (newer ranges)
+    "AS15169",   # Google (LLC + Cloud)
+    "AS396982",  # Google Cloud
+    "AS8075",    # Microsoft (Azure + Office)
+    "AS24940",   # Hetzner
+    "AS14061",   # DigitalOcean
+    "AS63949",   # Linode / Akamai-cloud
+    "AS20473",   # Vultr / Choopa
+    "AS16276",   # OVH
+    "AS197695",  # Reg.ru
+    "AS41540",   # Aruba S.p.A.
+    "AS9009",    # M247 (Tier 5)
+    "AS210079",  # Aeza
+    "AS43984",   # Stark Industries
+    "AS200558",  # Servers.com
+    "AS62240",   # Clouvider
+    "AS3573",    # Cogent
+    "AS54113",   # Fastly
+    "AS13335",   # Cloudflare (rare for outbound but possible)
+    "AS400940",  # Railway (our own; redundant guard)
+)
+
+
+def _is_hosting_ip(enrich: dict) -> bool:
+    """Decide whether an IPinfo-enrichment dict represents a hosting/
+    datacenter IP. Uses company.type when available (Business plan),
+    falls back to ASN matching otherwise."""
+    if not enrich:
+        return False
+    if (enrich.get("type") or "").lower() == "hosting":
+        return True
+    org = (enrich.get("org") or "")
+    for asn in _HOSTING_ASN_MARKERS:
+        if asn in org:
+            return True
+    hostname = (enrich.get("hostname") or "").lower()
+    # Reverse-DNS suffix patterns that scream datacenter
+    HOSTNAME_HINTS = (".compute.amazonaws.com", ".googleusercontent.com",
+                       ".azurewebsites.net", ".cloudapp.net",
+                       ".linodeusercontent.com", ".digitalocean.com",
+                       ".your-server.de", ".oraclevcn.com",
+                       ".vultr.com", ".ovh.net",)
+    if any(h in hostname for h in HOSTNAME_HINTS):
+        return True
+    return False
 
 
 # ────────────────────────────────────────────────────────────────────
@@ -147,27 +208,39 @@ def check_paywall_holes() -> list[dict]:
     gated (402, gated:true, agent_action paywall). Full data leak = hole.
 
     Round 12 closed the /grid/intelligence hole; this is the recurring
-    audit so future regressions surface as findings immediately."""
+    audit so future regressions surface as findings immediately.
+
+    Phase ZZZZZ-round19b (2026-05-23): also check the raw response
+    string for the gated markers BEFORE attempting JSON.loads, so a
+    truncated-but-still-valid response doesn't false-positive."""
     findings: list[dict] = []
     for path in _PRO_GATED_PATHS:
         status, _hdrs, body = _probe(path, method="GET", timeout=6,
                                        headers={"X-Test-Anon": "1"})
         if status in (0, 401, 402, 403):
             continue
-        # 200 with gated marker is acceptable.
+        # Fast-path: if the raw body contains any of these substrings,
+        # it's gated even if JSON parsing fails or the response is
+        # truncated. Misses are biased toward false-negative (we'd
+        # flag a real hole as fine), not false-positive.
+        raw_low = (body or "").lower()
+        if ('"gated": true' in raw_low
+                or '"gated":true' in raw_low
+                or '"agent_action"' in raw_low
+                or '"upgrade_required"' in raw_low
+                or '"tier_required"' in raw_low):
+            continue
+        # Slow-path: JSON parse for unambiguous decision.
         try:
             d = _json.loads(body) if body else {}
         except Exception:
             d = {}
-        if not isinstance(d, dict):
-            continue
-        gated = d.get("gated") or d.get("error") == "upgrade_required"
-        has_action = bool(d.get("agent_action"))
-        # If response carries real data fields (e.g. demand_mw + gen_mix +
-        # numbers in deep fields) AND no gated marker → hole.
-        # Cheap heuristic: byte count > 1500 AND no 'gated'/'upgrade'.
-        if gated or has_action:
-            continue
+        if isinstance(d, dict):
+            gated = d.get("gated") or d.get("error") == "upgrade_required"
+            has_action = bool(d.get("agent_action"))
+            if gated or has_action:
+                continue
+        # If response carries real data fields AND no gated marker → hole.
         if len(body) > 1500:
             findings.append({
                 "issue": "paywall_hole",
@@ -390,9 +463,13 @@ def check_hosting_traffic_share() -> list[dict]:
         return findings
     for r in rows:
         enrich = _ipinfo_enrich(r["ip_address"]) or {}
-        if (enrich.get("type") or "").lower() == "hosting":
+        # Phase ZZZZZ-round19b: use _is_hosting_ip which checks both
+        # company.type (Business plan) AND ASN markers (free plan).
+        # The free IPinfo tier returns type=null, so type-only check
+        # always returned False and the detector never fired.
+        if _is_hosting_ip(enrich):
             hosting_calls += int(r["calls"])
-            company = enrich.get("company") or enrich.get("org") or "?"
+            company = enrich.get("org") or enrich.get("company") or "?"
             sample_companies.append(company)
     share_pct = round(100.0 * hosting_calls / total, 1)
     if share_pct < 40:
