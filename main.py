@@ -2199,6 +2199,73 @@ def phase19b_grid_intelligence(region):
     out['note'] = 'EIA hourly RTO data via api.eia.gov/v2/electricity/rto. ' + \
                   ('Set EIA_API_KEY env var on Railway for higher rate limits.' if not os.environ.get('EIA_API_KEY') else '')
 
+    # Phase ZZZZZ-round12 (2026-05-23): close the paywall hole between
+    # the MCP tool (Tier.IDENTIFIED) and this HTTP endpoint (was wide
+    # open). The gating matrix at routes/gating_matrix.py:96-101 DECLARED
+    # this endpoint should have tier-gradient responses ("headline EIA
+    # demand + 3-line summary" for free, full data for identified+).
+    # The MCP tool already enforces that; the HTTP path didn't. Agents
+    # discovering /api/v1/grid/intelligence/<iso> directly were getting
+    # paid-tier data for free, undermining the 96+ paywall hits we see
+    # in mcp_demand_gap_unaddressed.
+    #
+    # Bypass exceptions:
+    #   • Internal callers (DCHub-* UA, Railway egress IP) — server-to-
+    #     server calls from grid_public_routes.py + brain-radar still
+    #     work. These render the public /grid/<iso> HTML pages.
+    #   • Identified+ tier callers (X-API-Key matches a valid free key)
+    #     — full data flows through unchanged.
+    #
+    # Anonymous external callers get the same data, but TRUNCATED:
+    # demand_mw + demand_period only (3 numbers), 24h series and gen
+    # mix redacted. Plus agent_action JSON pointing at /api/v1/keys/claim
+    # so the agent can self-serve a free key in one POST.
+    _ua = (request.headers.get('User-Agent') or '').lower()
+    _ip = (request.headers.get('Cf-Connecting-Ip')
+           or (request.headers.get('X-Forwarded-For') or '').split(',')[0].strip()
+           or request.remote_addr or '')
+    _is_internal = (any(m in _ua for m in ('dchub-', 'dchubhealer', 'brain-radar',
+                                            'brain-v2-headless', 'uptimerobot'))
+                    or _ip.startswith('162.220.232.')
+                    or _ip.startswith('162.220.233.'))
+    _has_key = bool(request.headers.get('X-API-Key') or request.args.get('api_key'))
+    if not _is_internal and not _has_key:
+        # Anonymous external caller — return headline only + agent_action.
+        gated = {
+            'region':       out.get('region'),
+            'rto_code':     out.get('rto_code'),
+            'demand_mw':    out.get('demand_mw'),
+            'demand_period': out.get('demand_period'),
+            # Truncated views — headline numbers only.
+            'demand_24h':   '<gated: identified-tier or higher>',
+            'gen_mix':      '<gated: identified-tier or higher>',
+            'headroom':     '<gated: identified-tier or higher>',
+            'gated': True,
+            'tier_required': 'identified',
+            'message': (
+                f"You got the headline demand for {out.get('region')} "
+                f"({out.get('demand_mw')} MW @ {out.get('demand_period')}). "
+                "Full 24h series + generation mix + headroom requires a "
+                "free dev key (email-only signup, no credit card)."
+            ),
+            'agent_action': {
+                'type':    'claim_free_key',
+                'method':  'POST',
+                'url':     'https://dchub.cloud/api/v1/keys/claim',
+                'headers': {'Content-Type': 'application/json'},
+                'body':    {'client_name': '<your agent identifier>'},
+                'then':    f"Retry GET /api/v1/grid/intelligence/{out.get('region')} with header 'X-API-Key: <api_key>'",
+            },
+            'upgrade_url':   'https://dchub.cloud/signup?next=/onboarding&utm_source=grid_intel',
+            'gating_matrix': 'https://dchub.cloud/api/v1/gating-matrix',
+            'note':          out.get('note'),
+        }
+        resp = jsonify(gated)
+        resp.headers['Cache-Control'] = 'public, max-age=60'  # Shorter — encourage re-fetch with key
+        resp.headers['Access-Control-Allow-Origin'] = '*'
+        resp.headers['X-Tier-Gated'] = 'true'
+        return resp
+
     resp = jsonify(out)
     resp.headers['Cache-Control'] = 'public, max-age=300'
     resp.headers['Access-Control-Allow-Origin'] = '*'
