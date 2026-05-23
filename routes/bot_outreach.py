@@ -54,7 +54,16 @@ def _compute_whales(min_days: int = 3, min_calls_per_day: int = 100) -> list[dic
     Railway infra and were generating 22,677 calls / 14d, getting
     surfaced as the #1 whale to outreach. That was the platform
     flagging itself as an enterprise prospect — useless signal that
-    crowded out real external whales below."""
+    crowded out real external whales below.
+
+    Phase ZZZZZ-round14 (2026-05-23): the 22,677-call whale moved IP
+    (Railway rotates egress, or this is a sibling Railway worker on a
+    different /24) but kept the same bare 'node' UA. Real enterprise
+    Node.js clients identify with 'node-fetch/x.y', 'axios/x.y',
+    'undici', or product names — bare 'node' is what Node.js sets
+    when no UA override is given, which is internal/scripted traffic.
+    Filter by UA in addition to IP. Same defense-in-depth as the
+    rate_limiter does for incoming requests."""
     c = _conn()
     if c is None: return []
     out = []
@@ -62,6 +71,10 @@ def _compute_whales(min_days: int = 3, min_calls_per_day: int = 100) -> list[dic
         with c.cursor(cursor_factory=psycopg2.extras.RealDictCursor) as cur:
             # Group calls by ip_address + day, then identify whales.
             # Exclude Railway internal egress IPs.
+            # ALSO exclude rows whose UA is bare/generic internal-looking:
+            # 'node', 'node-fetch' bare, 'python-requests' bare, etc.
+            # We compute majority-UA per IP via a subquery and reject IPs
+            # whose top UA is in the blocklist.
             cur.execute("""
                 WITH daily AS (
                   SELECT ip_address, DATE(created_at) AS day,
@@ -82,8 +95,23 @@ def _compute_whales(min_days: int = 3, min_calls_per_day: int = 100) -> list[dic
                          SUM(calls) AS total_calls
                     FROM daily GROUP BY ip_address
                   HAVING COUNT(DISTINCT day) >= %s
+                ),
+                top_ua AS (
+                  SELECT DISTINCT ON (ip_address)
+                         ip_address, LOWER(COALESCE(user_agent, '')) AS ua
+                    FROM mcp_tool_calls
+                   WHERE created_at >= NOW() - INTERVAL '14 days'
+                     AND ip_address IN (SELECT ip_address FROM whales)
+                   ORDER BY ip_address, created_at DESC
                 )
-                SELECT * FROM whales ORDER BY total_calls DESC LIMIT 20
+                SELECT w.*
+                  FROM whales w
+                  LEFT JOIN top_ua t ON t.ip_address = w.ip_address
+                 WHERE COALESCE(t.ua, '') NOT IN (
+                         'node', 'node-fetch', 'python-requests',
+                         'python-urllib', 'urllib', 'python', ''
+                       )
+                 ORDER BY w.total_calls DESC LIMIT 20
             """, (min_calls_per_day, min_days))
             whales = cur.fetchall()
 
@@ -137,6 +165,61 @@ def _compute_whales(min_days: int = 3, min_calls_per_day: int = 100) -> list[dic
         try: c.close()
         except Exception: pass
     return out
+
+
+# Phase ZZZZZ-round14 (2026-05-23): admin-only debug — return raw IPs
+# of top whales so we can identify mystery bots like the bare-"node"
+# 22,677-call client. NOT for general consumption — auth-gated.
+@bot_outreach_bp.route("/api/v1/bots/whales/debug", methods=["GET"])
+def whales_debug():
+    from flask import jsonify, request, make_response
+    provided = (request.headers.get("X-Admin-Key")
+                or request.headers.get("X-Internal-Key")
+                or request.args.get("admin_key"))
+    try:
+        from internal_auth import is_valid_internal_key
+        if not is_valid_internal_key(provided):
+            resp = make_response(jsonify(ok=False, error="unauthorized"), 401)
+            resp.headers["Cache-Control"] = "no-store, max-age=0"
+            return resp
+    except Exception:
+        return jsonify(ok=False, error="auth_module_unavailable"), 500
+    c = _conn()
+    if c is None: return jsonify(ok=False, error="no_db"), 500
+    rows = []
+    try:
+        with c.cursor(cursor_factory=psycopg2.extras.RealDictCursor) as cur:
+            # All-IPs, all-UAs view BYPASSING the round14 UA filter so we
+            # can see what the filter would otherwise hide.
+            cur.execute("""
+                WITH daily AS (
+                  SELECT ip_address, DATE(created_at) AS day,
+                         COUNT(*) AS calls,
+                         MAX(user_agent) AS sample_ua
+                    FROM mcp_tool_calls
+                   WHERE created_at >= NOW() - INTERVAL '14 days'
+                     AND ip_address IS NOT NULL
+                     AND ip_address != ''
+                   GROUP BY ip_address, DATE(created_at)
+                ),
+                whales AS (
+                  SELECT ip_address,
+                         COUNT(DISTINCT day) AS days_active,
+                         SUM(calls) AS total_calls,
+                         MAX(sample_ua) AS sample_ua
+                    FROM daily GROUP BY ip_address
+                )
+                SELECT * FROM whales ORDER BY total_calls DESC LIMIT 15
+            """)
+            rows = [dict(r) for r in cur.fetchall()]
+    finally:
+        try: c.close()
+        except Exception: pass
+    resp = jsonify(ok=True, count=len(rows), top_15_by_calls=rows,
+                   note="admin-only — raw IPs returned for triage. "
+                        "Verify with WHOIS, then add to filter if internal.")
+    resp.headers["Cache-Control"] = "no-store, max-age=0"
+    return resp
 
 
 @bot_outreach_bp.route("/api/v1/bots/whales", methods=["GET"])
