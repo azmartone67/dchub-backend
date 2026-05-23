@@ -242,13 +242,16 @@ REGISTRY: list[ErrorClass] = [
         fix_template="run_dedup_cycle",
         description=(
             "Discovered-facilities table has accumulated >N duplicates awaiting "
-            "merge. Fix: trigger the dedup cycle (POST /api/jobs/dedup/run) "
-            "or wait for the next scheduled merge pass. If the count keeps "
+            "merge. Fix: trigger the dedup cycle via "
+            "POST /api/v1/admin/dedup/run?max=500 (header X-Admin-Key) — "
+            "the runner processes up to MAX_PER_RUN per call; for a backlog "
+            "of 11k+ chain 6+ calls or schedule via cron. If the count keeps "
             "growing without dropping after dedup runs, investigate why the "
             "dedup detector isn't matching the new duplicates."
         ),
         confidence=0.8,
-        notes="Detector at brain_consistency_radar.py:4546. 11,401 backlog as of 2026-05-23 — dedup cycle should reduce on next run.",
+        shipped_proof="d3cce84f",
+        notes="Detector at brain_consistency_radar.py:4546. 11,401 backlog as of 2026-05-23 — endpoint shipped in d3cce84f, ready to drain.",
     ),
     ErrorClass(
         id="auto_trial_signal_mint_mismatch",
