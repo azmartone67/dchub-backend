@@ -887,7 +887,79 @@ class AutonomousBrain:
         results['duration_seconds'] = duration
         logger.info(f"Autonomous Brain - Cycle {results['cycle_id']} complete in {duration:.1f}s")
 
+        # Phase ZZZZZ-round6c (2026-05-23): write each sub-extractor's
+        # result to extraction_intelligence so the autonomous-intelligence
+        # dashboard at /api/v1/extractor-brain/insights and /brain/innovation
+        # reports more than just "github-actions-data-pulse" as the only
+        # active source. Each of the 9 domain extractors below becomes its
+        # own source_id with success/failure + rows ingested per cycle.
+        try:
+            self._record_cycle_to_extraction_intelligence(results, duration)
+        except Exception as e:
+            logger.debug(f"   (non-fatal) extraction_intelligence write failed: {e}")
+
         return results
+
+    def _record_cycle_to_extraction_intelligence(self, results: Dict, duration: float):
+        """Phase ZZZZZ-round6c: instrument each domain extractor's output
+        into the extraction_intelligence table so the brain dashboard
+        actually has more than 1 active source."""
+        # Map: domain key in results → source_id + canonical rows-count getter
+        domains = [
+            ('capacity',                   'autonomous-brain-capacity',     'new_pipeline'),
+            ('deals',                      'autonomous-brain-deals',        'deals_found'),
+            ('quality',                    'autonomous-brain-quality',      'fixed'),
+            ('infrastructure',             'autonomous-brain-infra-news',   'fiber_mentions'),
+            ('gas_infrastructure',         'autonomous-brain-gas',          'pipelines'),
+            ('transmission_infrastructure','autonomous-brain-transmission', 'transmission_lines'),
+            ('fiber_infrastructure',       'autonomous-brain-fiber',        'dark_fiber'),
+            ('substation_infrastructure',  'autonomous-brain-substations',  'substations'),
+            ('power_plants',               'autonomous-brain-power-plants', 'natural_gas'),
+        ]
+        try:
+            import os, psycopg2
+            db = os.environ.get('DATABASE_URL')
+            if not db:
+                return
+            conn = psycopg2.connect(db, connect_timeout=4)
+            try:
+                with conn.cursor() as cur:
+                    # Ensure table exists (idempotent — _ensure_tables on the
+                    # routes/extractor_brain.py side does the heavy lifting,
+                    # but a redundant CREATE IF NOT EXISTS here means cold
+                    # boots don't drop rows.)
+                    cur.execute("""
+                        CREATE TABLE IF NOT EXISTS extraction_intelligence (
+                            id              SERIAL PRIMARY KEY,
+                            source_id       TEXT NOT NULL,
+                            outcome         TEXT NOT NULL,
+                            rows_inserted   INTEGER DEFAULT 0,
+                            duration_ms     INTEGER DEFAULT 0,
+                            error           TEXT,
+                            anomaly_score   REAL DEFAULT 0,
+                            observations    TEXT,
+                            proposed_fix    TEXT,
+                            observed_at     TIMESTAMPTZ DEFAULT NOW()
+                        )
+                    """)
+                    per_domain_ms = max(int(duration * 1000 / max(len(domains), 1)), 1)
+                    for key, source_id, rows_key in domains:
+                        dr = results.get(key) or {}
+                        rows = int(dr.get(rows_key) or 0)
+                        outcome = 'success' if dr else 'skip'
+                        cur.execute("""
+                            INSERT INTO extraction_intelligence
+                                (source_id, outcome, rows_inserted, duration_ms, observations)
+                            VALUES (%s, %s, %s, %s, %s)
+                        """, (source_id, outcome, rows, per_domain_ms,
+                              __import__('json').dumps({"cycle": results.get('cycle_id')})))
+                    conn.commit()
+            finally:
+                try: conn.close()
+                except Exception: pass
+        except Exception as e:
+            logger.debug(f"   extraction_intelligence write skipped: {e}")
+            return
 
     def _extract_operator(self, text: str) -> str:
         """Extract operator name from text - expanded list of 60+ operators"""
