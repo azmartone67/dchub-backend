@@ -1555,6 +1555,10 @@ export default {
         '/auth.md',
         '/dchub2026.txt',
         '/digest/today',
+        // Phase ZZZZZ-round3 (2026-05-23): /integrations exact + /ui — Flask
+        // returns 200 here but CF was static-404ing.
+        '/integrations',
+        '/ui',
         '/visitor-intelligence',
       ]);
       // Phase YYYY (2026-05-16): also forward prefix-paths to Railway
@@ -1574,6 +1578,7 @@ export default {
         // Phase ZZZZ-nav-untrap (2026-05-18): /dcpi/* and /vs/* passthrough
         // so per-slug detail pages reach Railway.
         '/dcpi/',
+        '/integrations/',  // round 3 — chatgpt/copilot/grok integration manifests
         '/vs/',
         // Phase ZZZZ-audit-bridge (2026-05-18): /qa/*, /scripts/*, /data/*
         // for the OTHER audit dashboard. /data/* already worked via some
