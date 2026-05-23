@@ -11625,6 +11625,126 @@ def energy_discovery_status_inline():
     return jsonify(out)
 
 
+# Phase ZZZZZ-round5-eia-async (2026-05-23): EIA ingest used to run
+# synchronously on the request thread, taking ~70s and triggering
+# "SLOW REQUEST" gunicorn warnings (brain error class
+# slow_request_threshold_breach). Now defaults to async — returns 202
+# + task_id, runs in a background thread. Caller can poll
+# /api/v1/energy/eia-ingest/status?id=<task_id>. Pass ?sync=1 to
+# preserve old behavior for callers that need the result inline.
+import threading as _eia_threading
+import uuid as _eia_uuid
+import time as _eia_time
+_EIA_TASKS: dict = {}      # task_id → {"status": "running|done|error", "result": ..., "started_at": ..., "finished_at": ...}
+_EIA_TASKS_LOCK = _eia_threading.Lock()
+_EIA_TASK_TTL = 3600       # 1h — purge finished tasks after this
+
+
+def _eia_purge_stale_tasks():
+    """LRU-trim finished tasks older than _EIA_TASK_TTL."""
+    now = _eia_time.time()
+    with _EIA_TASKS_LOCK:
+        stale = [k for k, v in _EIA_TASKS.items()
+                 if v.get("finished_at") and (now - v["finished_at"]) > _EIA_TASK_TTL]
+        for k in stale:
+            _EIA_TASKS.pop(k, None)
+
+
+def _eia_run_ingest(task_id: str):
+    """The actual ingest. Runs on a background thread. Writes to _EIA_TASKS."""
+    results = {"electricity_rates": None, "natural_gas_prices": None,
+               "gas_storage": None, "errors": []}
+    conn = None
+    try:
+        import sys as _sys, os as _os2
+        _scripts_dir = _os2.path.join(_os2.path.dirname(_os2.path.abspath(__file__)), "scripts")
+        if _scripts_dir not in _sys.path:
+            _sys.path.insert(0, _scripts_dir)
+        import eia_pricing_discovery as _eia
+        conn = _eia.get_conn()
+        if conn is None:
+            with _EIA_TASKS_LOCK:
+                _EIA_TASKS[task_id] = {"status": "error", "result": {
+                    "ok": False, "error": "db_connection_failed",
+                    "hint": "get_conn() returned None — check DATABASE_URL on Railway",
+                }, "started_at": _EIA_TASKS[task_id]["started_at"], "finished_at": _eia_time.time()}
+            return
+        for label, fn in [
+            ("electricity_rates", _eia.fetch_electricity_rates),
+            ("natural_gas_prices", _eia.fetch_natural_gas_prices),
+            ("gas_storage", _eia.fetch_gas_storage),
+        ]:
+            try:
+                results[label] = fn(conn)
+            except Exception as e:
+                results["errors"].append(f"{label}: {type(e).__name__}: {str(e)[:200]}")
+        try:
+            with conn.cursor() as _rc:
+                _rc.execute("""
+                    CREATE TABLE IF NOT EXISTS eia_retail_rates (
+                        state         TEXT,
+                        sector        TEXT,
+                        rate_cents_kwh REAL,
+                        period        TEXT,
+                        retrieved_at  TIMESTAMPTZ DEFAULT NOW()
+                    )
+                """)
+                _rc.execute("DELETE FROM eia_retail_rates")
+                _rc.execute("""
+                    INSERT INTO eia_retail_rates (state, sector, rate_cents_kwh, period, retrieved_at)
+                    SELECT state, sector, price_cents_kwh, period, retrieved_at
+                    FROM eia_electricity_rates
+                """)
+                results["retail_rates_synced"] = _rc.rowcount
+            conn.commit()
+        except Exception as e:
+            try: conn.rollback()
+            except Exception: pass
+            results["errors"].append(f"retail_rates_sync: {type(e).__name__}: {str(e)[:200]}")
+        total = sum(v for v in (results["electricity_rates"],
+                                results["natural_gas_prices"],
+                                results["gas_storage"]) if isinstance(v, int))
+        result = {"ok": True, "total_records": total, **results}
+        with _EIA_TASKS_LOCK:
+            existing = _EIA_TASKS.get(task_id, {})
+            _EIA_TASKS[task_id] = {"status": "done", "result": result,
+                                    "started_at": existing.get("started_at", _eia_time.time()),
+                                    "finished_at": _eia_time.time()}
+    except Exception as e:
+        import traceback
+        with _EIA_TASKS_LOCK:
+            existing = _EIA_TASKS.get(task_id, {})
+            _EIA_TASKS[task_id] = {"status": "error", "result": {
+                "ok": False, "error": str(e)[:300],
+                "traceback": traceback.format_exc()[-500:],
+            }, "started_at": existing.get("started_at", _eia_time.time()),
+               "finished_at": _eia_time.time()}
+    finally:
+        try:
+            if conn: conn.close()
+        except Exception:
+            pass
+
+
+@app.route('/api/v1/energy/eia-ingest/status', methods=['GET'])
+def energy_eia_ingest_status():
+    """Poll for an in-flight or recently-completed EIA ingest task."""
+    task_id = (request.args.get("id") or "").strip()
+    if not task_id:
+        return jsonify(ok=False, error="missing_id",
+                       usage="?id=<task_id from POST /api/v1/energy/eia-ingest/run>"), 400
+    _eia_purge_stale_tasks()
+    with _EIA_TASKS_LOCK:
+        task = _EIA_TASKS.get(task_id)
+    if not task:
+        return jsonify(ok=False, error="task_not_found",
+                       hint="Task ID unknown or expired (>1h finished)."), 404
+    elapsed = round((task.get("finished_at") or _eia_time.time()) - task["started_at"], 2)
+    return jsonify(ok=True, task_id=task_id, status=task["status"],
+                   started_at=task["started_at"], finished_at=task.get("finished_at"),
+                   elapsed_seconds=elapsed, result=task["result"])
+
+
 @app.route('/api/v1/energy/eia-ingest/run', methods=['POST'])
 def energy_eia_ingest_run():
     """Phase LL+4 (2026-05-14): Railway-side EIA pricing ingest.
@@ -11638,6 +11758,10 @@ def energy_eia_ingest_run():
     Railway HAS those env vars. So the workflow now POSTs here instead,
     same fix pattern as PR #62 (brain_learn) and PR #83 (dcpi cron).
 
+    Phase ZZZZZ-round5-eia-async (2026-05-23): default behavior is now
+    ASYNC — returns 202 + task_id, runs the ingest on a background
+    thread. Old 69.9s blocking call only fires if caller passes ?sync=1.
+
     Admin-gated. Calls the three fetch_* functions from the script
     directly (not main() — main() does sys.exit on error which would
     kill the gunicorn worker). Each fetch is independently caught so
@@ -11649,6 +11773,20 @@ def energy_eia_ingest_run():
     if expected and provided != expected:
         return jsonify(ok=False, error="unauthorized",
                        hint="X-Admin-Key header required"), 401
+
+    # Phase ZZZZZ-round5-eia-async: default to background mode.
+    # ?sync=1 preserves old behavior.
+    if request.args.get("sync") != "1":
+        task_id = _eia_uuid.uuid4().hex
+        with _EIA_TASKS_LOCK:
+            _EIA_TASKS[task_id] = {"status": "running", "result": None,
+                                    "started_at": _eia_time.time(),
+                                    "finished_at": None}
+        t = _eia_threading.Thread(target=_eia_run_ingest, args=(task_id,), daemon=True)
+        t.start()
+        return jsonify(ok=True, task_id=task_id, status="running",
+                       poll_url=f"/api/v1/energy/eia-ingest/status?id={task_id}",
+                       hint="Use GET on poll_url to retrieve the result. Expect ~60-90s."), 202
 
     results = {"electricity_rates": None, "natural_gas_prices": None,
                "gas_storage": None, "errors": []}
@@ -24476,6 +24614,138 @@ def _mcp_conversion_funnel():
     funnel["conversion_rates"] = rates
     funnel["leak_diagnosis"] = _diagnose_funnel_leak(funnel)
     return jsonify(funnel)
+
+
+# Phase ZZZZZ-round5-funnel (2026-05-23): the global funnel hides which
+# MCP client converts vs which one walks. Per-client segmentation lets
+# us see Claude's conversion rate vs ChatGPT's vs Cursor's — actionable
+# signal for where to invest in CTA + signup-flow improvements. This is
+# pure measurement; no auto-retry (deliberately avoided after the prior
+# 0-conversions-in-90-days experiment per Phase ZZZZ-T1-paywall-visibility).
+@app.route("/api/v1/mcp/conversion-funnel/by-client", methods=["GET"])
+def _mcp_conversion_funnel_by_client():
+    """Per-MCP-client segmented funnel. Surfaces conversion rate per
+    AI platform so we can see which client closes vs which walks.
+
+    Returns: [{ "client": "claude-desktop", "tool_calls_7d": N,
+                "paywall_hits_7d": N, "free_keys_claimed_7d": N,
+                "conversion_rate_pct": float }, ...] sorted by paywall_hits desc.
+    """
+    import os as _os, psycopg2
+    db = _os.environ.get("DATABASE_URL")
+    if not db:
+        return jsonify({"error": "no DATABASE_URL"}), 500
+    try:
+        conn = psycopg2.connect(db, connect_timeout=5)
+    except Exception as e:
+        return jsonify({"error": f"db_connect: {str(e)[:120]}"}), 503
+    out = []
+    try:
+        with conn.cursor() as cur:
+            # 1) tool calls per client over 7d
+            try:
+                cur.execute("""
+                    SELECT COALESCE(NULLIF(client_name,''),'unknown') AS client,
+                           COUNT(*) AS calls
+                      FROM mcp_tool_calls
+                     WHERE created_at > NOW() - INTERVAL '7 days'
+                     GROUP BY 1 ORDER BY 2 DESC
+                """)
+                calls_by_client = {r[0]: int(r[1]) for r in cur.fetchall()}
+            except Exception:
+                try: conn.rollback()
+                except Exception: pass
+                calls_by_client = {}
+            # 2) paywall hits per client over 7d
+            try:
+                cur.execute("""
+                    SELECT COALESCE(NULLIF(mcp_client,''),'unknown') AS client,
+                           COUNT(*) AS hits
+                      FROM mcp_upgrade_signals
+                     WHERE created_at > NOW() - INTERVAL '7 days'
+                     GROUP BY 1 ORDER BY 2 DESC
+                """)
+                paywalls_by_client = {r[0]: int(r[1]) for r in cur.fetchall()}
+            except Exception:
+                try: conn.rollback()
+                except Exception: pass
+                paywalls_by_client = {}
+            # 3) free keys claimed per client over 7d (proxy: mcp_dev_keys.platform)
+            try:
+                cur.execute("""
+                    SELECT COALESCE(NULLIF(platform,''),'unknown') AS client,
+                           COUNT(*) AS claims
+                      FROM mcp_dev_keys
+                     WHERE created_at > NOW() - INTERVAL '7 days'
+                     GROUP BY 1 ORDER BY 2 DESC
+                """)
+                claims_by_client = {r[0]: int(r[1]) for r in cur.fetchall()}
+            except Exception:
+                try: conn.rollback()
+                except Exception: pass
+                claims_by_client = {}
+            # 4) conversions (tier ≥ paid) per client over 30d
+            try:
+                cur.execute("""
+                    SELECT COALESCE(NULLIF(mcp_client,''),'unknown') AS client,
+                           COUNT(*) AS conversions
+                      FROM mcp_upgrade_signals
+                     WHERE created_at > NOW() - INTERVAL '30 days'
+                       AND tier_current IN ('pro','paid','enterprise')
+                     GROUP BY 1 ORDER BY 2 DESC
+                """)
+                conversions_by_client = {r[0]: int(r[1]) for r in cur.fetchall()}
+            except Exception:
+                try: conn.rollback()
+                except Exception: pass
+                conversions_by_client = {}
+        # Union of all clients we have any signal for
+        all_clients = (set(calls_by_client) | set(paywalls_by_client)
+                       | set(claims_by_client) | set(conversions_by_client))
+        for c in all_clients:
+            calls = calls_by_client.get(c, 0)
+            paywalls = paywalls_by_client.get(c, 0)
+            claims = claims_by_client.get(c, 0)
+            conversions = conversions_by_client.get(c, 0)
+            rate = round((conversions / paywalls * 100), 3) if paywalls > 0 else None
+            out.append({
+                "client": c,
+                "tool_calls_7d": calls,
+                "paywall_hits_7d": paywalls,
+                "free_keys_claimed_7d": claims,
+                "conversions_30d": conversions,
+                "conversion_rate_pct": rate,
+            })
+        # Sort by paywall hits desc — biggest demand first
+        out.sort(key=lambda x: -x["paywall_hits_7d"])
+    finally:
+        try: conn.close()
+        except Exception: pass
+
+    # Insight string — what's the biggest win?
+    insight = "Insufficient data for insight."
+    if out:
+        # Find the client with highest paywall hits where conversion rate is low (<0.5%)
+        top_demand = out[0]
+        if top_demand["paywall_hits_7d"] >= 50:
+            if (top_demand["conversion_rate_pct"] or 0) < 0.5:
+                insight = (
+                    f"{top_demand['client']} drives {top_demand['paywall_hits_7d']} paywall hits/7d "
+                    f"but converts at {top_demand['conversion_rate_pct'] or 0}%. "
+                    f"Highest-leverage segment to A/B test the CTA copy on."
+                )
+            else:
+                insight = (
+                    f"{top_demand['client']} converts at {top_demand['conversion_rate_pct']}% "
+                    f"on {top_demand['paywall_hits_7d']} paywall hits/7d — invest in scaling this client."
+                )
+    return jsonify({
+        "as_of": __import__("datetime").datetime.utcnow().isoformat() + "Z",
+        "window": "calls/paywalls/keys=7d, conversions=30d",
+        "segments": out,
+        "insight": insight,
+        "note": "Pure measurement. No auto-retry (per Phase ZZZZ-T1-paywall-visibility: a previous auto-retry experiment scored 0 conversions in 90 days and was deliberately removed).",
+    })
 
 
 def _diagnose_funnel_leak(funnel):
