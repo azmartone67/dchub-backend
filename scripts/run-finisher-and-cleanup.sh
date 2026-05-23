@@ -38,9 +38,21 @@ if [ -z "${IPINFO_TOKEN:-}" ] || [ "${IPINFO_TOKEN:-}" = "$IPINFO_TOKEN_FALLBACK
     IPINFO_TOKEN="$IPINFO_TOKEN_FALLBACK"
 fi
 
-# Auto-generate a fresh DCHUB_INTERNAL_KEY if not already set.
+# Phase ZZZZZ-round13b (2026-05-23): default to the legacy hardcoded key
+# (which internal_auth.is_valid_internal_key accepts with a warning) if
+# no DCHUB_INTERNAL_KEY is set in env. The OLD logic generated a random
+# 64-char openssl key, which the SERVER doesn't know — so every admin
+# call got 401. Random keys never work without a matching env-var on
+# Railway; the legacy key always works (until LEGACY_OK is flipped off).
+#
+# Override paths (any one wins):
+#   1. export DCHUB_INTERNAL_KEY=<your value> ; bash scripts/run-finisher-and-cleanup.sh
+#   2. DCHUB_INTERNAL_KEY=<value> bash -c 'bash scripts/run-finisher-and-cleanup.sh'
+#   3. Edit this script and replace the default below.
+LEGACY_INTERNAL_KEY="dchub-internal-sync-2026"
 if [ -z "${DCHUB_INTERNAL_KEY:-}" ]; then
-    DCHUB_INTERNAL_KEY=$(openssl rand -hex 32)
+    DCHUB_INTERNAL_KEY="$LEGACY_INTERNAL_KEY"
+    echo "  (using legacy fallback key — server's internal_auth accepts it)"
 fi
 
 export IPINFO_TOKEN
