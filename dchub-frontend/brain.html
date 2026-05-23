@@ -64,6 +64,12 @@
 </section>
 
 <section class="pane">
+  <h2>Live backend findings (the work queue)</h2>
+  <div class="sub">Issues the healer is currently surfacing from production logs. The error-class registry above is the brain's <em>vocabulary</em>; this is the <em>backlog</em>. Top-by-count first; entries matching a known class are tagged.</div>
+  <div id="findings-list"><div class="loading">loading findings…</div></div>
+</section>
+
+<section class="pane">
   <h2>Layer-4 self-assessment (text-loop)</h2>
   <div class="sub">The legacy HTML-placeholder learn loop. "Quiet" with 0 proposals is the correct result when the healer has no text-fixable findings — the brain's broader Stage 2-5 codegen ships fixes outside this surface.</div>
   <div id="assessment-list"><div class="loading">loading assessment…</div></div>
@@ -145,6 +151,32 @@
         '</span></div>';}).join('');
   } else {
     document.getElementById('error-class-list').innerHTML = '<div class="empty">registry unavailable</div>';
+  }
+
+  // --- Live backend findings (the work queue) ---
+  var findings = await safe('/api/v1/heal/findings');
+  if (findings && Array.isArray(findings.actionable_backend_issues)){
+    var classes = (ec && ec.classes) || [];
+    function matchClass(issue){
+      for (var i=0;i<classes.length;i++){
+        var c = classes[i];
+        // Loose substring match against the class id/description — the
+        // server-side regex match is in routes/brain_error_classes.py
+        if (issue && (issue.toLowerCase().indexOf((c.id||'').replace(/_/g,' ').split(' ')[0].toLowerCase())>=0)){
+          return c;
+        }
+      }
+      return null;
+    }
+    var top = findings.actionable_backend_issues.slice().sort(function(a,b){return (b.count||0)-(a.count||0);}).slice(0,12);
+    document.getElementById('findings-list').innerHTML = top.map(function(it){
+      var issue = it.issue || '—';
+      var matched = matchClass(issue);
+      var tag = matched ? '<span class="pill good">known: '+matched.id+'</span>' : '<span class="pill warn">unknown class</span>';
+      return '<div class="row"><span class="l">'+issue.slice(0,90)+'</span><span class="r">count '+(it.count||0).toLocaleString()+' · '+tag+'</span></div>';
+    }).join('') || '<div class="empty">no actionable backend findings right now</div>';
+  } else {
+    document.getElementById('findings-list').innerHTML = '<div class="empty">findings endpoint unavailable</div>';
   }
 
   // --- Learning log ---

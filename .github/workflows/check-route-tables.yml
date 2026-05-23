@@ -1,0 +1,161 @@
+# Phase ZZZZZ (2026-05-23): kill the recurring routing-footgun class.
+#
+# /pockets/<slug> 404'd today even though Flask had the handler, because
+# the same path needed to be in BOTH dchub-frontend/_routes.json `include`
+# AND dchub-frontend/_worker.js's PHASE_282 tables. Two pages today, four
+# before that — same root cause every time.
+#
+# This check diff-greps Flask HTML routes against both tables and fails
+# the PR when one half is missing. Lints, doesn't deploy — safe.
+name: route-tables coherence
+
+on:
+  pull_request:
+    branches: [main]
+  push:
+    branches: [main]
+  workflow_dispatch:
+
+jobs:
+  check:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: 1 — extract Flask HTML routes
+        run: |
+          # Pick out HTML routes (paths that don't start with /api or /static).
+          # Pattern: @app.route('/foo')  or  @any_bp.route('/foo')
+          python3 <<'PY'
+          import re, os, sys, json
+
+          ROUTE_RE = re.compile(r"@\w+\.route\(\s*['\"]([^'\"]+)['\"]")
+          html_routes = set()
+          for root, _, files in os.walk('.'):
+              if any(x in root for x in ('.git', 'node_modules', '.claude', 'dchub-frontend')):
+                  continue
+              for f in files:
+                  if not f.endswith('.py'): continue
+                  p = os.path.join(root, f)
+                  try:
+                      with open(p, 'r', encoding='utf-8') as fh:
+                          for line in fh:
+                              m = ROUTE_RE.search(line)
+                              if not m: continue
+                              path = m.group(1)
+                              # Only care about HTML-serving paths, not /api/* or /static or with method=POST-only
+                              if path.startswith('/api') or path.startswith('/static') or path.startswith('/.well-known'):
+                                  continue
+                              if path in ('/', '/health', '/robots.txt', '/sitemap.xml', '/favicon.ico'):
+                                  continue
+                              # Skip <converter:var> dynamic-only sub-paths (we check the prefix instead)
+                              html_routes.add(path)
+                  except Exception:
+                      pass
+
+          with open('/tmp/flask_html_routes.json','w') as fh:
+              json.dump(sorted(html_routes), fh, indent=2)
+          print(f"discovered {len(html_routes)} Flask HTML routes")
+          PY
+          jq length /tmp/flask_html_routes.json || true
+
+      - name: 2 — extract _routes.json include + _worker.js PHASE_282 tables
+        run: |
+          python3 <<'PY'
+          import json, re, sys
+          with open('dchub-frontend/_routes.json') as f:
+              routes_json = set(json.load(f).get('include', []))
+          src = open('dchub-frontend/_worker.js').read()
+          # PHASE_282_RAILWAY_PATHS = new Set([ ... ])
+          m = re.search(r"PHASE_282_RAILWAY_PATHS\s*=\s*new\s+Set\(\[([^\]]+)\]\)", src, re.DOTALL)
+          worker_paths = set()
+          if m:
+              worker_paths = set(re.findall(r"'([^']+)'", m.group(1)))
+          # PHASE_282_PREFIXES = [ ... ]
+          m2 = re.search(r"PHASE_282_PREFIXES\s*=\s*\[([^\]]+)\]", src, re.DOTALL)
+          worker_prefixes = set()
+          if m2:
+              worker_prefixes = set(re.findall(r"'([^']+)'", m2.group(1)))
+          with open('/tmp/route_tables.json','w') as f:
+              json.dump({
+                  'routes_json_include':   sorted(routes_json),
+                  'worker_paths':          sorted(worker_paths),
+                  'worker_prefixes':       sorted(worker_prefixes),
+              }, f, indent=2)
+          print(f"_routes.json include: {len(routes_json)} entries")
+          print(f"worker PHASE_282_RAILWAY_PATHS: {len(worker_paths)} entries")
+          print(f"worker PHASE_282_PREFIXES: {len(worker_prefixes)} entries")
+          PY
+
+      - name: 3 — diff Flask routes vs the two tables, fail on mismatch
+        run: |
+          python3 <<'PY'
+          import json, sys
+
+          with open('/tmp/flask_html_routes.json') as f:
+              flask = set(json.load(f))
+          with open('/tmp/route_tables.json') as f:
+              tables = json.load(f)
+          routes_json = set(tables['routes_json_include'])
+          worker_paths = set(tables['worker_paths'])
+          worker_prefixes = tuple(tables['worker_prefixes'])
+
+          # A Flask route is "covered" if either:
+          #  - it's literally in _routes.json include (or one of its /* matches)
+          #  - it's in PHASE_282_RAILWAY_PATHS or matches a PHASE_282_PREFIX
+          def covered_by_routes_json(path):
+              if path in routes_json: return True
+              for inc in routes_json:
+                  if inc.endswith('/*') and path.startswith(inc[:-1]):
+                      return True
+              return False
+
+          def covered_by_worker(path):
+              if path in worker_paths: return True
+              return any(path.startswith(p) for p in worker_prefixes)
+
+          missing_routes_json = []
+          missing_worker = []
+          for r in flask:
+              # static-like dynamic Flask paths e.g. '/markets/<slug>' — strip converter
+              # for the routes-json check use the prefix '/markets/'
+              if '<' in r:
+                  prefix = r.split('<')[0]
+                  if not (covered_by_routes_json(prefix) or covered_by_routes_json(prefix.rstrip('/'))):
+                      missing_routes_json.append(r)
+                  if not covered_by_worker(prefix):
+                      missing_worker.append(r)
+              else:
+                  if not covered_by_routes_json(r):
+                      missing_routes_json.append(r)
+                  if not covered_by_worker(r):
+                      missing_worker.append(r)
+
+          ok = True
+          if missing_routes_json:
+              ok = False
+              print("::error::Flask HTML routes missing from dchub-frontend/_routes.json `include`:")
+              for r in sorted(missing_routes_json)[:30]:
+                  print(f"  - {r}")
+              if len(missing_routes_json) > 30:
+                  print(f"  …and {len(missing_routes_json)-30} more")
+          if missing_worker:
+              ok = False
+              print("::error::Flask HTML routes missing from dchub-frontend/_worker.js PHASE_282 tables:")
+              for r in sorted(missing_worker)[:30]:
+                  print(f"  - {r}")
+              if len(missing_worker) > 30:
+                  print(f"  …and {len(missing_worker)-30} more")
+
+          if not ok:
+              print()
+              print("Each Flask-served HTML route MUST be in BOTH:")
+              print("  1. dchub-frontend/_routes.json `include` (CF Pages → Worker)")
+              print("  2. dchub-frontend/_worker.js PHASE_282_RAILWAY_PATHS")
+              print("     OR PHASE_282_PREFIXES (Worker → Railway)")
+              print()
+              print("Missing the first → CF serves SPA-404. Missing the second → CF's SSRF")
+              print("guard returns 'DNS points to prohibited IP' (HTTP 403).")
+              sys.exit(1)
+
+          print(f"OK — {len(flask)} Flask HTML routes covered by both tables.")
+          PY
