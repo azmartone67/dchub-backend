@@ -57,8 +57,14 @@ def _probe(path: str, method: str = "GET", timeout: float = 6.0,
     req = _req.Request(url, method=method, data=body)
     for k, v in (headers or {}).items():
         req.add_header(k, v)
-    # Add a clearly-identifying UA so rate_limiter passes us through.
-    req.add_header("User-Agent", "dchub-brain-security/1.0")
+    # Phase ZZZZZ-round21 (2026-05-23): UA must NOT contain 'dchub-' or
+    # any other marker the tier_gate's _is_internal check recognizes as
+    # internal infra. The detector's whole job is to see what an
+    # external caller sees - if it bypasses the gate, it can't audit
+    # the gate. Round 20 used 'dchub-brain-security/1.0' which falsely
+    # appeared as internal traffic and produced a paywall_hole false
+    # positive on /grid/intelligence/ERCOT.
+    req.add_header("User-Agent", "dc-security-audit/1.0")
     try:
         with _req.urlopen(req, timeout=timeout) as r:
             return r.status, dict(r.headers), r.read(16384).decode("utf-8", "ignore")

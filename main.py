@@ -25816,9 +25816,31 @@ def _admin_brain_security_scan():
 @app.route("/api/v1/admin/tag-customer", methods=["POST"])
 def _admin_tag_customer():
     """Updates api_keys.name with a tag for the user. Lets us mark
-    founder-touched, refunded, VIP, etc. for tracking."""
+    founder-touched, refunded, VIP, etc. for tracking.
+
+    Phase ZZZZZ-round21 (2026-05-23): auth check moved to TOP. The
+    handler used to validate fields BEFORE checking auth — caught by
+    the security detector as admin_endpoint_open (returned 400 instead
+    of 401 for empty body). Reordered so an unauthenticated probe
+    short-circuits at 401 before any handler logic runs."""
     import os, psycopg2
-    from flask import jsonify, request
+    from flask import jsonify, request, make_response
+    # AUTH FIRST
+    provided = (request.headers.get("X-Admin-Key")
+                or request.headers.get("X-Internal-Key")
+                or request.args.get("admin_key"))
+    try:
+        from internal_auth import is_valid_internal_key
+        if not is_valid_internal_key(provided):
+            resp = make_response(jsonify(ok=False, error="unauthorized"), 401)
+            resp.headers["Cache-Control"] = "no-store, max-age=0"
+            return resp
+    except Exception:
+        expected = os.environ.get("DCHUB_ADMIN_KEY") or os.environ.get("DCHUB_INTERNAL_KEY")
+        if expected and provided != expected:
+            resp = make_response(jsonify(ok=False, error="unauthorized"), 401)
+            resp.headers["Cache-Control"] = "no-store, max-age=0"
+            return resp
     DATABASE_URL = os.environ.get("DATABASE_URL")
     if not DATABASE_URL: return jsonify({"error": "no DATABASE_URL"}), 500
     body = request.get_json(silent=True) or {}
