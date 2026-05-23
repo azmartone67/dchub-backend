@@ -1,0 +1,19 @@
+{
+  "iso": "miso",
+  "fetched_at": "2026-05-23T08:41:37Z",
+  "schema_version": 1,
+  "source": "MISO Local Resource Zones (https://cdn.misoenergy.org/2024%20Resource%20Adequacy%20Zone%20Map637879.pdf)",
+  "note": "Zone roster only — LMP values populated by EIA snapshot cron. Pending hookup.",
+  "zones": [
+    {"id": "LRZ1", "name": "Minnesota / Western Dakotas",                 "type": "lrz", "lmp_usd_mwh": null},
+    {"id": "LRZ2", "name": "Eastern Dakotas / Western Wisconsin",         "type": "lrz", "lmp_usd_mwh": null},
+    {"id": "LRZ3", "name": "Iowa",                                        "type": "lrz", "lmp_usd_mwh": null},
+    {"id": "LRZ4", "name": "Northern Illinois / Eastern Wisconsin",       "type": "lrz", "lmp_usd_mwh": null},
+    {"id": "LRZ5", "name": "Missouri / Southern Illinois / Eastern Iowa", "type": "lrz", "lmp_usd_mwh": null},
+    {"id": "LRZ6", "name": "Indiana / Western Kentucky",                  "type": "lrz", "lmp_usd_mwh": null},
+    {"id": "LRZ7", "name": "Lower Michigan",                              "type": "lrz", "lmp_usd_mwh": null},
+    {"id": "LRZ8", "name": "Arkansas",                                    "type": "lrz", "lmp_usd_mwh": null},
+    {"id": "LRZ9", "name": "Louisiana / E. Texas / Mississippi",          "type": "lrz", "lmp_usd_mwh": null},
+    {"id": "LRZ10","name": "MISO South Hub",                              "type": "hub", "lmp_usd_mwh": null}
+  ]
+}

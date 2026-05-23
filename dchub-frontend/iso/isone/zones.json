@@ -1,0 +1,17 @@
+{
+  "iso": "isone",
+  "fetched_at": "2026-05-23T08:41:37Z",
+  "schema_version": 1,
+  "source": "ISO New England Load Zones (https://www.iso-ne.com/markets-operations/markets/da-rt-energy-markets/lmp-real-time)",
+  "note": "Zone roster only — LMP values populated by EIA snapshot cron. Pending hookup.",
+  "zones": [
+    {"id": "ME",     "name": "Maine",         "type": "load_zone", "lmp_usd_mwh": null},
+    {"id": "NH",     "name": "New Hampshire", "type": "load_zone", "lmp_usd_mwh": null},
+    {"id": "VT",     "name": "Vermont",       "type": "load_zone", "lmp_usd_mwh": null},
+    {"id": "CT",     "name": "Connecticut",   "type": "load_zone", "lmp_usd_mwh": null},
+    {"id": "RI",     "name": "Rhode Island",  "type": "load_zone", "lmp_usd_mwh": null},
+    {"id": "SEMA",   "name": "Southeast Massachusetts",  "type": "load_zone", "lmp_usd_mwh": null},
+    {"id": "WCMA",   "name": "Western/Central Massachusetts", "type": "load_zone", "lmp_usd_mwh": null},
+    {"id": "NEMA",   "name": "Northeast Massachusetts / Boston", "type": "load_zone", "lmp_usd_mwh": null}
+  ]
+}

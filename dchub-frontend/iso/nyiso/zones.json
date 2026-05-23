@@ -1,0 +1,75 @@
+{
+  "iso": "nyiso",
+  "fetched_at": "2026-05-23T08:41:37Z",
+  "schema_version": 1,
+  "source": "NYISO Day-Ahead Market hourly LBMP postings (https://www.nyiso.com/energy-market-operational-data)",
+  "note": "Zone roster only \u2014 LBMP values populated by EIA snapshot cron. Pending hookup.",
+  "zones": [
+    {
+      "id": "ZONE_A",
+      "name": "West",
+      "type": "load_zone",
+      "lmp_usd_mwh": null
+    },
+    {
+      "id": "ZONE_B",
+      "name": "Genesee",
+      "type": "load_zone",
+      "lmp_usd_mwh": null
+    },
+    {
+      "id": "ZONE_C",
+      "name": "Central",
+      "type": "load_zone",
+      "lmp_usd_mwh": null
+    },
+    {
+      "id": "ZONE_D",
+      "name": "North",
+      "type": "load_zone",
+      "lmp_usd_mwh": null
+    },
+    {
+      "id": "ZONE_E",
+      "name": "Mohawk Valley",
+      "type": "load_zone",
+      "lmp_usd_mwh": null
+    },
+    {
+      "id": "ZONE_F",
+      "name": "Capital",
+      "type": "load_zone",
+      "lmp_usd_mwh": null
+    },
+    {
+      "id": "ZONE_G",
+      "name": "Hudson Valley",
+      "type": "load_zone",
+      "lmp_usd_mwh": null
+    },
+    {
+      "id": "ZONE_H",
+      "name": "Millwood",
+      "type": "load_zone",
+      "lmp_usd_mwh": null
+    },
+    {
+      "id": "ZONE_I",
+      "name": "Dunwoodie",
+      "type": "load_zone",
+      "lmp_usd_mwh": null
+    },
+    {
+      "id": "ZONE_J",
+      "name": "New York City",
+      "type": "load_zone",
+      "lmp_usd_mwh": null
+    },
+    {
+      "id": "ZONE_K",
+      "name": "Long Island",
+      "type": "load_zone",
+      "lmp_usd_mwh": null
+    }
+  ]
+}

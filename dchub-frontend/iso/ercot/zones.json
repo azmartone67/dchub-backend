@@ -1,0 +1,63 @@
+{
+  "iso": "ercot",
+  "fetched_at": "2026-05-23T08:41:37Z",
+  "schema_version": 1,
+  "source": "ERCOT public zonal price postings (https://www.ercot.com/mp/data-products/data-product-details?id=NP6-905-CD)",
+  "note": "Zone roster only \u2014 LMP values populated by EIA snapshot cron. Pending hookup.",
+  "zones": [
+    {
+      "id": "LZ_NORTH",
+      "name": "North Load Zone",
+      "type": "load_zone",
+      "lmp_usd_mwh": null
+    },
+    {
+      "id": "LZ_SOUTH",
+      "name": "South Load Zone",
+      "type": "load_zone",
+      "lmp_usd_mwh": null
+    },
+    {
+      "id": "LZ_HOUSTON",
+      "name": "Houston Load Zone",
+      "type": "load_zone",
+      "lmp_usd_mwh": null
+    },
+    {
+      "id": "LZ_WEST",
+      "name": "West Load Zone",
+      "type": "load_zone",
+      "lmp_usd_mwh": null
+    },
+    {
+      "id": "HB_BUSAVG",
+      "name": "Hub Bus Average",
+      "type": "hub",
+      "lmp_usd_mwh": null
+    },
+    {
+      "id": "HB_HOUSTON",
+      "name": "Houston Hub",
+      "type": "hub",
+      "lmp_usd_mwh": null
+    },
+    {
+      "id": "HB_NORTH",
+      "name": "North Hub",
+      "type": "hub",
+      "lmp_usd_mwh": null
+    },
+    {
+      "id": "HB_SOUTH",
+      "name": "South Hub",
+      "type": "hub",
+      "lmp_usd_mwh": null
+    },
+    {
+      "id": "HB_WEST",
+      "name": "West Hub",
+      "type": "hub",
+      "lmp_usd_mwh": null
+    }
+  ]
+}

@@ -1,0 +1,16 @@
+{
+  "iso": "caiso",
+  "fetched_at": "2026-05-23T08:41:37Z",
+  "schema_version": 1,
+  "source": "CAISO trading hub + default LAP definitions (http://oasis.caiso.com)",
+  "note": "Zone roster only — LMP values populated by EIA snapshot cron. Pending hookup.",
+  "zones": [
+    {"id": "DLAP_PGAE",  "name": "PG&E Default LAP",       "type": "dlap", "lmp_usd_mwh": null},
+    {"id": "DLAP_SCE",   "name": "Southern California Edison Default LAP", "type": "dlap", "lmp_usd_mwh": null},
+    {"id": "DLAP_SDGE",  "name": "San Diego Gas & Electric Default LAP",   "type": "dlap", "lmp_usd_mwh": null},
+    {"id": "DLAP_VEA",   "name": "Valley Electric Association Default LAP","type": "dlap", "lmp_usd_mwh": null},
+    {"id": "TH_NP15",    "name": "North of Path 15 Trading Hub",           "type": "hub",  "lmp_usd_mwh": null},
+    {"id": "TH_SP15",    "name": "South of Path 15 Trading Hub",           "type": "hub",  "lmp_usd_mwh": null},
+    {"id": "TH_ZP26",    "name": "Zone of Path 26 Trading Hub",            "type": "hub",  "lmp_usd_mwh": null}
+  ]
+}

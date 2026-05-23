@@ -1,0 +1,17 @@
+{
+  "iso": "spp",
+  "fetched_at": "2026-05-23T08:41:37Z",
+  "schema_version": 1,
+  "source": "SPP Integrated Marketplace Settlement Locations (https://marketplace.spp.org/pages/da-lmp-by-settlement-location)",
+  "note": "Hub roster only — LMP values populated by EIA snapshot cron. Pending hookup.",
+  "zones": [
+    {"id": "SPPNORTH",   "name": "SPP North Hub",   "type": "hub", "lmp_usd_mwh": null},
+    {"id": "SPPSOUTH",   "name": "SPP South Hub",   "type": "hub", "lmp_usd_mwh": null},
+    {"id": "SPP_AECC",   "name": "Arkansas Electric Cooperative", "type": "settlement_zone", "lmp_usd_mwh": null},
+    {"id": "SPP_OKGE",   "name": "Oklahoma Gas & Electric",        "type": "settlement_zone", "lmp_usd_mwh": null},
+    {"id": "SPP_PSO",    "name": "Public Service Co. of Oklahoma", "type": "settlement_zone", "lmp_usd_mwh": null},
+    {"id": "SPP_SPS",    "name": "Southwestern Public Service",    "type": "settlement_zone", "lmp_usd_mwh": null},
+    {"id": "SPP_WERE",   "name": "Westar Energy",                  "type": "settlement_zone", "lmp_usd_mwh": null},
+    {"id": "SPP_NPPD",   "name": "Nebraska Public Power District", "type": "settlement_zone", "lmp_usd_mwh": null}
+  ]
+}

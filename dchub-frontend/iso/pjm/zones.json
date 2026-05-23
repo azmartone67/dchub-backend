@@ -1,0 +1,135 @@
+{
+  "iso": "pjm",
+  "fetched_at": "2026-05-23T08:41:37Z",
+  "schema_version": 1,
+  "source": "PJM Markets Gateway zone definitions (https://www.pjm.com/markets-and-operations/energy/real-time/monthlylmp.aspx)",
+  "note": "Zone roster only \u2014 LMP values populated by EIA snapshot cron. Pending hookup.",
+  "zones": [
+    {
+      "id": "AECO",
+      "name": "Atlantic Electric (NJ)",
+      "type": "load_zone",
+      "lmp_usd_mwh": null
+    },
+    {
+      "id": "AEP",
+      "name": "American Electric Power",
+      "type": "load_zone",
+      "lmp_usd_mwh": null
+    },
+    {
+      "id": "APS",
+      "name": "Allegheny Power Systems",
+      "type": "load_zone",
+      "lmp_usd_mwh": null
+    },
+    {
+      "id": "ATSI",
+      "name": "American Trans. Systems Inc.",
+      "type": "load_zone",
+      "lmp_usd_mwh": null
+    },
+    {
+      "id": "BGE",
+      "name": "Baltimore Gas & Electric",
+      "type": "load_zone",
+      "lmp_usd_mwh": null
+    },
+    {
+      "id": "COMED",
+      "name": "Commonwealth Edison",
+      "type": "load_zone",
+      "lmp_usd_mwh": null
+    },
+    {
+      "id": "DAY",
+      "name": "Dayton Power & Light",
+      "type": "load_zone",
+      "lmp_usd_mwh": null
+    },
+    {
+      "id": "DEOK",
+      "name": "Duke Energy Ohio/Kentucky",
+      "type": "load_zone",
+      "lmp_usd_mwh": null
+    },
+    {
+      "id": "DOM",
+      "name": "Dominion Virginia Power",
+      "type": "load_zone",
+      "lmp_usd_mwh": null
+    },
+    {
+      "id": "DPL",
+      "name": "Delmarva Power & Light",
+      "type": "load_zone",
+      "lmp_usd_mwh": null
+    },
+    {
+      "id": "DUQ",
+      "name": "Duquesne Light",
+      "type": "load_zone",
+      "lmp_usd_mwh": null
+    },
+    {
+      "id": "EKPC",
+      "name": "East Kentucky Power Coop",
+      "type": "load_zone",
+      "lmp_usd_mwh": null
+    },
+    {
+      "id": "JCPL",
+      "name": "Jersey Central Power & Light",
+      "type": "load_zone",
+      "lmp_usd_mwh": null
+    },
+    {
+      "id": "METED",
+      "name": "Metropolitan Edison",
+      "type": "load_zone",
+      "lmp_usd_mwh": null
+    },
+    {
+      "id": "OVEC",
+      "name": "Ohio Valley Electric",
+      "type": "load_zone",
+      "lmp_usd_mwh": null
+    },
+    {
+      "id": "PECO",
+      "name": "PECO Energy",
+      "type": "load_zone",
+      "lmp_usd_mwh": null
+    },
+    {
+      "id": "PENELEC",
+      "name": "Pennsylvania Electric",
+      "type": "load_zone",
+      "lmp_usd_mwh": null
+    },
+    {
+      "id": "PEPCO",
+      "name": "Potomac Electric Power",
+      "type": "load_zone",
+      "lmp_usd_mwh": null
+    },
+    {
+      "id": "PPL",
+      "name": "PPL Electric Utilities",
+      "type": "load_zone",
+      "lmp_usd_mwh": null
+    },
+    {
+      "id": "PSEG",
+      "name": "Public Service Electric & Gas",
+      "type": "load_zone",
+      "lmp_usd_mwh": null
+    },
+    {
+      "id": "RECO",
+      "name": "Rockland Electric (NJ)",
+      "type": "load_zone",
+      "lmp_usd_mwh": null
+    }
+  ]
+}
