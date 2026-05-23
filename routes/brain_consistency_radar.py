@@ -135,6 +135,12 @@ def _http_get(url: str, timeout: int = 8) -> tuple[Optional[str], Optional[dict]
     except urllib.error.HTTPError as e:
         msg = f"HTTP {e.code} {e.reason}"
         _LAST_FETCH_ERROR[url] = msg
+        # 401/403 on an anonymous internal probe is EXPECTED — the radar's
+        # purpose is to detect when a tier gates higher than its MCP-tool
+        # counterpart. Treat gated responses as a normal data point and
+        # don't pollute Railway logs with red WARNINGs.
+        if e.code in (401, 403):
+            return None, None
         print(f"[brain-radar] {url} {msg}", file=sys.stderr)
         return None, None
     except urllib.error.URLError as e:
