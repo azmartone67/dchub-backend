@@ -506,6 +506,27 @@ REGISTRY: list[ErrorClass] = [
         confidence=0.85,
         notes="Requires rate_limit_events table. No-op if missing — won't break the scan.",
     ),
+    # ── Phase ZZZZZ-round19 (2026-05-23) — IPinfo bot-share detector
+    ErrorClass(
+        id="hosting_traffic_share_high",
+        pattern=r"hosting_traffic_share_high|comes from datacenter / cloud-hosting IPs",
+        fix_template="rate_limit_or_whitelist_hosting_traffic",
+        description=(
+            ">40% of recent MCP traffic is coming from datacenter / "
+            "cloud-hosting IPs (AWS / GCP / Azure / Hetzner) — usually "
+            "automated scrapers, NOT enterprise prospects. The detector "
+            "enriches the top-20 IPs by call volume with IPinfo's "
+            "company.type field; weights the share by call count. FIX "
+            "options: (a) tighten rate-limit tier for hosting IPs (the "
+            "rate_limiter can bypass the 162.220.232.x/233.x Railway "
+            "egress but should THROTTLE generic AWS/GCP), OR (b) if "
+            "it's a known LLM proxy (Claude / ChatGPT routing through "
+            "their own infra), whitelist that ASN so it stops "
+            "surfacing as a bot signal."
+        ),
+        confidence=0.85,
+        notes="Requires IPINFO_TOKEN. No-op if absent. Cached 24h per-IP — effectively free after first run.",
+    ),
 ]
 
 

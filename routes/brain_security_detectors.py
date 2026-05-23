@@ -335,6 +335,86 @@ def check_repeated_admin_401() -> list[dict]:
     return findings
 
 
+# ────────────────────────────────────────────────────────────────────
+# 6. Hosting/datacenter traffic share — bot infestation signal.
+# ────────────────────────────────────────────────────────────────────
+def check_hosting_traffic_share() -> list[dict]:
+    """Phase ZZZZZ-round19 (2026-05-23) — use IPinfo enrichment to
+    surface the SHARE of recent MCP traffic that came from datacenter
+    IPs (AWS/GCP/Azure/Hetzner/etc.). Real enterprise leads come from
+    business/ISP IPs; >40% hosting share = bot infestation.
+
+    Lightweight: only enriches top-20 IPs by call volume, then weights
+    the answer by their call count. Cached 24h per-IP by IPinfo helper
+    so this is effectively free after the first run."""
+    findings: list[dict] = []
+    try:
+        import psycopg2
+        import psycopg2.extras
+    except ImportError:
+        return findings
+    db = os.environ.get("DATABASE_URL")
+    if not db:
+        return findings
+    try:
+        with psycopg2.connect(db, sslmode="require", connect_timeout=5) as c:
+            c.autocommit = True
+            with c.cursor(cursor_factory=psycopg2.extras.RealDictCursor) as cur:
+                cur.execute("""
+                    SELECT ip_address, COUNT(*) AS calls
+                      FROM mcp_tool_calls
+                     WHERE created_at >= NOW() - INTERVAL '24 hours'
+                       AND ip_address IS NOT NULL
+                       AND ip_address != ''
+                       AND ip_address NOT LIKE '162.220.232.%%'
+                       AND ip_address NOT LIKE '162.220.233.%%'
+                     GROUP BY ip_address
+                     ORDER BY calls DESC
+                     LIMIT 20
+                """)
+                rows = cur.fetchall() or []
+    except Exception:
+        return findings
+    if not rows:
+        return findings
+
+    # Sum and per-type tally
+    total = sum(int(r["calls"]) for r in rows)
+    if total < 100:
+        return findings  # not enough volume to draw a conclusion
+    hosting_calls = 0
+    sample_companies: list[str] = []
+    try:
+        from routes.visitor_intelligence import _ipinfo_enrich
+    except Exception:
+        return findings
+    for r in rows:
+        enrich = _ipinfo_enrich(r["ip_address"]) or {}
+        if (enrich.get("type") or "").lower() == "hosting":
+            hosting_calls += int(r["calls"])
+            company = enrich.get("company") or enrich.get("org") or "?"
+            sample_companies.append(company)
+    share_pct = round(100.0 * hosting_calls / total, 1)
+    if share_pct < 40:
+        return findings  # healthy mix
+    findings.append({
+        "issue": "hosting_traffic_share_high",
+        "url":   "mcp_tool_calls",
+        "count": int(share_pct),
+        "detail": (f"{share_pct}% of recent MCP traffic (24h, top-20 IPs) "
+                    f"comes from datacenter / cloud-hosting IPs — likely "
+                    f"automated scrapers, not enterprise prospects. "
+                    f"Top hosting orgs: "
+                    f"{', '.join(set(sample_companies))[:200]}. Action: "
+                    f"tighten rate limits on hosting IPs, OR if the "
+                    f"traffic is a known LLM proxy (Claude/ChatGPT), "
+                    f"whitelist that company's range so it stops "
+                    f"surfacing here. Brain class: paywall_hole +/- "
+                    f"suspicious_admin_scan candidates."),
+    })
+    return findings
+
+
 # Convenience: expose all in one list so brain_consistency_radar
 # can iterate them in scan_all() without enumerating each name.
 SECURITY_DETECTORS = (
@@ -343,4 +423,5 @@ SECURITY_DETECTORS = (
     check_security_header_drift,
     check_secret_pattern_in_body,
     check_repeated_admin_401,
+    check_hosting_traffic_share,
 )

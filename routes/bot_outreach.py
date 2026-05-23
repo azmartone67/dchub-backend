@@ -137,13 +137,35 @@ def _compute_whales(min_days: int = 3, min_calls_per_day: int = 100) -> list[dic
                 ua = (ua_row.get("user_agent") if ua_row else "") or ""
                 last_seen = ua_row.get("last_seen") if ua_row else None
 
-                # Suggest outreach action
+                # Phase ZZZZZ-round19 (2026-05-23): IPinfo enrichment.
+                # Replaces the brittle bare-UA filter (round 14) with a
+                # real signal — IPinfo's company.type field marks IPs as
+                # 'hosting' (datacenter — AWS/GCP/Azure/etc.) vs
+                # 'business' / 'isp' / 'education' (real users). Hosting
+                # traffic on bare-node UA is almost always a scraper.
+                enrich = {}
+                try:
+                    from routes.visitor_intelligence import _ipinfo_enrich
+                    enrich = _ipinfo_enrich(ip)
+                except Exception:
+                    enrich = {}
+                ip_type = (enrich.get("type") or "").lower()
+                ip_company = enrich.get("company") or enrich.get("org") or ""
+
+                # Suggest outreach action — IPinfo type now drives this.
                 action = "monitor"
                 ua_low = ua.lower()
-                if any(k in ua_low for k in ("scan", "spider", "crawler", "wget", "curl/")):
+                if ip_type == "hosting":
+                    # Datacenter IPs are almost always bots/scrapers.
+                    # Even high volume here is NOT enterprise signal.
                     action = "block_or_throttle"
+                elif any(k in ua_low for k in ("scan", "spider", "crawler", "wget", "curl/")):
+                    action = "block_or_throttle"
+                elif ip_type == "business" and w["total_calls"] > 1000:
+                    # Real company IP + high volume = enterprise lead.
+                    action = "high_value_outreach"
                 elif w["total_calls"] > 5000:
-                    action = "high_value_outreach"  # serious volume
+                    action = "high_value_outreach"
                 elif w["days_active"] >= 7:
                     action = "outreach"             # sustained interest
 
@@ -160,6 +182,11 @@ def _compute_whales(min_days: int = 3, min_calls_per_day: int = 100) -> list[dic
                     "top_tools":      top_tools,
                     "last_seen":      last_seen.isoformat() if last_seen else None,
                     "suggested_action": action,
+                    # round19: ipinfo-derived enterprise context
+                    "ip_type":         ip_type or None,
+                    "ip_company":      ip_company or None,
+                    "ip_country":      enrich.get("country") or None,
+                    "ip_city":         enrich.get("city") or None,
                 })
     finally:
         try: c.close()
