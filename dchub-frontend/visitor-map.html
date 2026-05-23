@@ -1,0 +1,136 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<title>DC Hub · Visitor Map — Where the AI agents are calling from</title>
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<meta name="description" content="Real-time global heatmap of MCP traffic to DC Hub. Where AI agents are making calls from — city-level aggregation, last 7 days.">
+<link rel="canonical" href="https://dchub.cloud/visitor-map">
+
+<link rel="stylesheet" href="https://unpkg.com/leaflet@1.9.4/dist/leaflet.css">
+<link rel="stylesheet" href="brand.css">
+
+<style>
+  body { margin:0; font-family: 'Inter', -apple-system, sans-serif; background:#0a0e1a; color:#e6e9f2; }
+  header.page { padding:24px 32px; border-bottom:1px solid #1f2333; }
+  header.page h1 { margin:0 0 4px; font-size:24px; }
+  header.page .sub { font-size:13px; color:#8b91a8; }
+  .stats { display:flex; gap:24px; padding:12px 32px; border-bottom:1px solid #1f2333; flex-wrap:wrap; }
+  .stat { font-size:13px; color:#8b91a8; }
+  .stat strong { display:block; font-size:18px; color:#e6e9f2; }
+  #map { height: calc(100vh - 200px); width:100%; }
+  .leaflet-popup-content-wrapper { background:#161a2b; color:#e6e9f2; }
+  .leaflet-popup-content { font-family:inherit; }
+  .leaflet-popup-content h3 { margin:0 0 6px; font-size:14px; }
+  .leaflet-popup-content .v { font-size:12px; color:#8b91a8; }
+  .leaflet-popup-tip { background:#161a2b; }
+  .leaflet-control-attribution { background:rgba(22,26,43,0.85); color:#8b91a8; }
+  .leaflet-control-attribution a { color:#8090b5; }
+  .legend { background:#161a2b; padding:10px; border-radius:6px; font-size:12px; line-height:1.6; color:#e6e9f2; }
+  .legend .dot { display:inline-block; width:10px; height:10px; border-radius:50%; vertical-align:middle; margin-right:6px; }
+</style>
+</head>
+<body>
+
+<header class="page">
+  <h1>🗺️ Visitor Map · where AI agents call DC Hub from</h1>
+  <div class="sub">Last 7 days · city-level aggregation · IPinfo geolocation · privacy-safe (no raw IPs, lat/lng rounded to 1 decimal)</div>
+</header>
+
+<section class="stats">
+  <div class="stat"><span id="s-calls">—</span><strong id="s-calls-n">—</strong></div>
+  <div class="stat">Unique IPs<strong id="s-ips">—</strong></div>
+  <div class="stat">Cities<strong id="s-cities">—</strong></div>
+  <div class="stat">Top city<strong id="s-topcity">—</strong></div>
+  <div class="stat">Top org<strong id="s-toporg">—</strong></div>
+  <div class="stat">As of<strong id="s-as-of">—</strong></div>
+</section>
+
+<div id="map"></div>
+
+<script src="https://unpkg.com/leaflet@1.9.4/dist/leaflet.js"></script>
+<script>
+(function(){
+  // Init map. Center on continental US since most traffic is there.
+  var map = L.map('map', { worldCopyJump: true }).setView([39, -96], 3);
+  L.tileLayer('https://{s}.basemaps.cartocdn.com/dark_all/{z}/{x}/{y}.png', {
+    attribution: '&copy; <a href="https://carto.com/">CARTO</a> &copy; <a href="https://openstreetmap.org/">OSM</a> · geo by <a href="https://ipinfo.io">IPinfo</a>',
+    subdomains: 'abcd',
+    maxZoom: 8,
+  }).addTo(map);
+
+  // Legend
+  var legend = L.control({position: 'bottomright'});
+  legend.onAdd = function(){
+    var div = L.DomUtil.create('div', 'legend');
+    div.innerHTML = '<div><span class="dot" style="background:#10b981"></span>1-99 calls</div>' +
+                    '<div><span class="dot" style="background:#f59e0b"></span>100-999 calls</div>' +
+                    '<div><span class="dot" style="background:#ef4444"></span>1,000+ calls</div>';
+    return div;
+  };
+  legend.addTo(map);
+
+  function colorForCalls(n){
+    if (n >= 1000) return '#ef4444';
+    if (n >= 100)  return '#f59e0b';
+    return '#10b981';
+  }
+  function radiusForCalls(n){
+    return Math.max(6, Math.min(28, Math.log10(Math.max(1, n)) * 8));
+  }
+
+  fetch('/api/v1/visitor-map?days=7', { cache: 'no-store' })
+    .then(function(r){ return r.json(); })
+    .then(function(d){
+      if (!d || !d.ok || !Array.isArray(d.clusters)){
+        document.getElementById('s-calls').textContent = 'API error';
+        return;
+      }
+      // Stats
+      document.getElementById('s-calls').textContent = 'Calls 7d';
+      document.getElementById('s-calls-n').textContent = (d.total_calls || 0).toLocaleString();
+      document.getElementById('s-ips').textContent = (d.total_ips || 0).toLocaleString();
+      document.getElementById('s-cities').textContent = (d.cluster_count || 0).toLocaleString();
+      var top = d.clusters[0] || {};
+      document.getElementById('s-topcity').textContent = top.city
+        ? (top.city + ', ' + (top.country || '?') + ' (' + (top.calls||0).toLocaleString() + ')')
+        : '—';
+      var topOrg = '—';
+      for (var i = 0; i < d.clusters.length; i++){
+        if (d.clusters[i].orgs && d.clusters[i].orgs.length){
+          topOrg = d.clusters[i].orgs[0];
+          break;
+        }
+      }
+      document.getElementById('s-toporg').textContent = topOrg;
+      document.getElementById('s-as-of').textContent = (d.as_of || '').slice(0, 16).replace('T', ' ');
+
+      // Render clusters as circle markers
+      d.clusters.forEach(function(c){
+        if (c.lat == null || c.lng == null) return;  // can't plot — no IPinfo loc
+        var marker = L.circleMarker([c.lat, c.lng], {
+          radius: radiusForCalls(c.calls),
+          color: colorForCalls(c.calls),
+          weight: 1.5,
+          fillColor: colorForCalls(c.calls),
+          fillOpacity: 0.5,
+        }).addTo(map);
+        var orgsHtml = (c.orgs && c.orgs.length)
+          ? '<div class="v">Top orgs: ' + c.orgs.slice(0,3).join('; ') + '</div>'
+          : '';
+        marker.bindPopup(
+          '<h3>' + (c.city || 'Unknown') + ', ' + (c.country || '?') + '</h3>' +
+          '<div class="v"><b>' + c.calls.toLocaleString() + '</b> calls · ' +
+            c.ips + ' IP' + (c.ips === 1 ? '' : 's') + (c.region ? ' · ' + c.region : '') + '</div>' +
+          orgsHtml
+        );
+      });
+    })
+    .catch(function(err){
+      document.getElementById('s-calls').textContent = 'Fetch error';
+      console.error('visitor-map fetch err:', err);
+    });
+})();
+</script>
+</body>
+</html>

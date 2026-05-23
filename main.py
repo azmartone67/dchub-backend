@@ -21073,6 +21073,25 @@ try:
         print("👁️ [visitor-intelligence] ready · /visitor-intelligence · /api/v1/admin/visitor-intelligence")
     except Exception as _e_vi:
         print(f"⚠️ [visitor-intelligence] blueprint failed to register: {_e_vi}")
+    # Phase ZZZZZ-round23 (2026-05-23) — Tools Item 1: Map IP heatmap.
+    # User asked "can we use any of these tools" referring to IPinfo's
+    # Map IP. Aggregates last-7d MCP traffic to city/country clusters
+    # with call counts, suitable for a Leaflet heatmap on /visitor-map.
+    try:
+        from routes.visitor_map import visitor_map_bp
+        app.register_blueprint(visitor_map_bp)
+        print("🗺️  [visitor-map] ready · /api/v1/visitor-map · /api/v1/admin/visitor-map")
+    except Exception as _e_vm:
+        print(f"⚠️ [visitor-map] blueprint failed to register: {_e_vm}")
+    # Phase ZZZZZ-round23 (2026-05-23) — Tools Item 3: enterprise leads.
+    # When a whale matches type=business + company_name + >1k calls,
+    # auto-write to enterprise_leads table for sales triage.
+    try:
+        from routes.enterprise_leads import enterprise_leads_bp
+        app.register_blueprint(enterprise_leads_bp)
+        print("💼 [enterprise-leads] ready · /api/v1/admin/enterprise-leads · /refresh · /<id>/mark")
+    except Exception as _e_el:
+        print(f"⚠️ [enterprise-leads] blueprint failed to register: {_e_el}")
     # r32-paywall (2026-05-20) — paywall response diagnostic. Renders
     # the EXACT MCP paywall payload + per-LLM "open this prompt" links
     # so the operator can paste into each platform and observe how

@@ -123,6 +123,11 @@ def _ipinfo_enrich(ip: str) -> dict:
             "region":   data.get("region") or None,
             "country":  data.get("country") or None,
             "hostname": data.get("hostname") or None,
+            # Phase ZZZZZ-round23 (2026-05-23): add loc field for Map IP
+            # heatmap. IPinfo returns 'loc' as 'lat,lng' string.
+            "loc":      data.get("loc") or None,
+            "timezone": data.get("timezone") or None,
+            "postal":   data.get("postal") or None,
         }
     except Exception as e:
         return {"ip": ip, "provider": "ipinfo",

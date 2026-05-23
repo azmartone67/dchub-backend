@@ -506,6 +506,25 @@ REGISTRY: list[ErrorClass] = [
         confidence=0.85,
         notes="Requires rate_limit_events table. No-op if missing — won't break the scan.",
     ),
+    # ── Phase ZZZZZ-round23 (2026-05-23) — Privacy/VPN/Tor share class
+    ErrorClass(
+        id="privacy_traffic_share_high",
+        pattern=r"privacy_traffic_share_high|comes from VPN / Proxy / Tor IPs",
+        fix_template="block_or_throttle_privacy_asn",
+        description=(
+            ">15% of recent MCP traffic comes from VPN / Proxy / Tor / "
+            "anonymizer IPs (heuristic match against known VPN-reseller "
+            "ASNs + hostname keywords). The standard signature for a "
+            "coordinated scraping campaign or anonymous abuse. FIX "
+            "options: (a) tighten the rate-limiter for privacy IPs, "
+            "OR (b) add a CF firewall rule blocking the offending ASN "
+            "at the edge. Use _is_privacy_ip in "
+            "brain_security_detectors.py to mark requests before "
+            "they reach the rate-limiter."
+        ),
+        confidence=0.85,
+        notes="Free-tier compatible — uses ASN + hostname heuristics, not IPinfo's paid Privacy Detection product.",
+    ),
     # ── Phase ZZZZZ-round22 (2026-05-23) — /land-power canary class
     ErrorClass(
         id="land_power_endpoint_5xx",

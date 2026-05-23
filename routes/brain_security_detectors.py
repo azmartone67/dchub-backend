@@ -498,6 +498,108 @@ def check_hosting_traffic_share() -> list[dict]:
     return findings
 
 
+# Phase ZZZZZ-round23 (2026-05-23): Privacy / VPN / Proxy detection.
+# IPinfo's free tier returns 'privacy' fields only on the paid plan,
+# but we can heuristically detect VPN/Proxy/Tor via known hostname
+# patterns and ASN markers. This detector flags traffic from those
+# sources. The user said "want our data secure" — VPN/Proxy/Tor are
+# the standard abuse vector for data scraping.
+_PRIVACY_ASN_MARKERS = (
+    "AS9009",     # M247 (popular VPN provider backbone)
+    "AS210079",   # Aeza (proxy/VPN reseller)
+    "AS43984",    # Stark Industries (hosting + VPN)
+    "AS62240",    # Clouvider (proxy hosting)
+    "AS200558",   # Servers.com (VPN reseller backbone)
+    "AS49981",    # WorldStream (popular bot infra)
+    "AS9123",     # TENET (Tor exit relay common)
+    "AS208046",   # HZ Hosting (VPN reseller)
+    "AS49505",    # SELECTEL (well-known proxy reseller)
+)
+_PRIVACY_HOSTNAME_HINTS = (
+    "vpn",  "proxy",   "tor-exit",  "torexit",  "openvpn",
+    "anonymizer",      "privatevpn",            "nordvpn",
+    "expressvpn",      "mullvad",   ".pia.",   "i2p.",
+)
+
+
+def _is_privacy_ip(enrich: dict) -> bool:
+    """Heuristic privacy detection — returns True when an IP looks
+    like a VPN / Proxy / Tor exit / anonymizer. Free-tier safe."""
+    if not enrich:
+        return False
+    org = (enrich.get("org") or "")
+    for asn in _PRIVACY_ASN_MARKERS:
+        if asn in org:
+            return True
+    hostname = (enrich.get("hostname") or "").lower()
+    return any(h in hostname for h in _PRIVACY_HOSTNAME_HINTS)
+
+
+def check_privacy_traffic_share() -> list[dict]:
+    """Use IPinfo + ASN heuristics to detect VPN/Proxy/Tor traffic.
+    Fires when >15% of recent MCP traffic comes from privacy IPs —
+    indicates a coordinated scraping campaign."""
+    findings: list[dict] = []
+    try:
+        import psycopg2
+        import psycopg2.extras
+    except ImportError:
+        return findings
+    db = os.environ.get("DATABASE_URL")
+    if not db:
+        return findings
+    try:
+        with psycopg2.connect(db, sslmode="require", connect_timeout=5) as c:
+            c.autocommit = True
+            with c.cursor(cursor_factory=psycopg2.extras.RealDictCursor) as cur:
+                cur.execute("""
+                    SELECT ip_address, COUNT(*) AS calls
+                      FROM mcp_tool_calls
+                     WHERE created_at >= NOW() - INTERVAL '24 hours'
+                       AND ip_address IS NOT NULL
+                       AND ip_address != ''
+                       AND ip_address NOT LIKE '162.220.232.%%'
+                       AND ip_address NOT LIKE '162.220.233.%%'
+                     GROUP BY ip_address
+                     ORDER BY calls DESC LIMIT 20
+                """)
+                rows = cur.fetchall() or []
+    except Exception:
+        return findings
+    if not rows:
+        return findings
+    total = sum(int(r["calls"]) for r in rows)
+    if total < 100:
+        return findings
+    try:
+        from routes.visitor_intelligence import _ipinfo_enrich
+    except Exception:
+        return findings
+    privacy_calls = 0
+    sample_hostnames: list[str] = []
+    for r in rows:
+        enrich = _ipinfo_enrich(r["ip_address"]) or {}
+        if _is_privacy_ip(enrich):
+            privacy_calls += int(r["calls"])
+            host = enrich.get("hostname") or enrich.get("org") or "?"
+            sample_hostnames.append(host)
+    share = round(100.0 * privacy_calls / total, 1) if total else 0
+    if share < 15:
+        return findings
+    findings.append({
+        "issue": "privacy_traffic_share_high",
+        "url":   "mcp_tool_calls",
+        "count": int(share),
+        "detail": (f"{share}% of recent MCP traffic (24h, top-20 IPs) "
+                    f"comes from VPN / Proxy / Tor IPs — indicates a "
+                    f"coordinated scraping campaign or anonymous abuse. "
+                    f"Sample hostnames: {', '.join(set(sample_hostnames))[:200]}. "
+                    f"Action: tighten rate-limit for privacy IPs, OR "
+                    f"add an ASN-block at the CF edge if abuse persists."),
+    })
+    return findings
+
+
 # Phase ZZZZZ-round22 (2026-05-23): /land-power health canary.
 # The user said "this is the most important resource we have that
 # cannot ever be down, or have errors". Probe each of the map's
@@ -579,4 +681,5 @@ SECURITY_DETECTORS = (
     check_repeated_admin_401,
     check_hosting_traffic_share,
     check_land_power_map_health,
+    check_privacy_traffic_share,
 )
