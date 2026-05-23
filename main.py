@@ -25409,6 +25409,43 @@ def _admin_welcome_sequence():
         return jsonify({"error": str(e)[:300]}), 500
 
 
+# Phase ZZZZZ-round9 (2026-05-23): admin endpoint to trigger the
+# facility dedup pipeline. Closes the loop on brain class
+# dedup_backlog_large (11,401 findings as of 2026-05-23). The detector
+# already existed; the auto-approve runner already existed at
+# discovery_auto_approve.run_auto_approval(); they just weren't wired
+# to an HTTP endpoint. Now they are.
+@app.route("/api/v1/admin/dedup/run", methods=["POST"])
+def _admin_dedup_run():
+    """Run a batch of facility deduplication. Discovered facilities with
+    merged_at IS NULL AND is_duplicate = 0 get processed up to ?max=N
+    records (default 500, hard cap MAX_PER_RUN). Returns counts of
+    auto-approved, marked-duplicate, and skipped rows.
+    Brain class: dedup_backlog_large fix_template=run_dedup_cycle."""
+    import os
+    from flask import jsonify, request
+    expected = os.environ.get("DCHUB_ADMIN_KEY") or os.environ.get("DCHUB_INTERNAL_KEY")
+    provided = (request.headers.get("X-Admin-Key")
+                or request.headers.get("X-Internal-Key")
+                or request.args.get("admin_key"))
+    if expected and provided != expected:
+        return jsonify(ok=False, error="unauthorized",
+                       hint="X-Admin-Key or X-Internal-Key header required"), 401
+    try:
+        max_records = int(request.args.get("max", 500))
+    except (ValueError, TypeError):
+        max_records = 500
+    test_mode = (request.args.get("test") in ("1", "true", "yes"))
+    try:
+        from discovery_auto_approve import run_auto_approval
+        result = run_auto_approval(max_records=max_records, test_mode=test_mode)
+        return jsonify(ok=True, **result)
+    except Exception as e:
+        import traceback
+        return jsonify(ok=False, error=str(e)[:300],
+                       traceback=traceback.format_exc()[-500:]), 500
+
+
 # Phase ZZZZZ-round7 (2026-05-23): admin purge for stale brain findings.
 # Mirrors scripts/purge-stale-findings.sql but runnable via curl.
 @app.route("/api/v1/admin/heal/purge-stale", methods=["POST"])
