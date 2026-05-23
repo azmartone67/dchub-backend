@@ -22,27 +22,40 @@ hr()     { printf "\033[90m─────────────────�
 step()   { hr; blue "▸ $*"; }
 
 # ─────────────────────────────────────────────────────────────────────
-# EDIT_ME — paste your IPinfo token here
-# ─────────────────────────────────────────────────────────────────────
-IPINFO_TOKEN_VALUE='ipinfo_xxx_paste_yours_here'
+# Read IPINFO_TOKEN from environment (preferred — no file edit needed).
+# Falls back to the in-file constant for backward compat with existing
+# uses of this script. If neither is set, you'll be prompted whether
+# to continue without IPinfo enrichment.
+#
+# Preferred usage:
+#   IPINFO_TOKEN=ipinfo_xxx bash scripts/run-finisher-and-cleanup.sh
+#
+# OR set persistent:
+#   export IPINFO_TOKEN=ipinfo_xxx
+#   bash scripts/run-finisher-and-cleanup.sh
+IPINFO_TOKEN_FALLBACK='ipinfo_xxx_paste_yours_here'
+if [ -z "${IPINFO_TOKEN:-}" ] || [ "${IPINFO_TOKEN:-}" = "$IPINFO_TOKEN_FALLBACK" ]; then
+    IPINFO_TOKEN="$IPINFO_TOKEN_FALLBACK"
+fi
 
 # Auto-generate a fresh DCHUB_INTERNAL_KEY if not already set.
 if [ -z "${DCHUB_INTERNAL_KEY:-}" ]; then
     DCHUB_INTERNAL_KEY=$(openssl rand -hex 32)
 fi
 
-export IPINFO_TOKEN="$IPINFO_TOKEN_VALUE"
-export DCHUB_INTERNAL_KEY="$DCHUB_INTERNAL_KEY"
+export IPINFO_TOKEN
+export DCHUB_INTERNAL_KEY
 
 green "Generated/loaded:"
-echo "  DCHUB_INTERNAL_KEY = ${DCHUB_INTERNAL_KEY:0:8}…  (length: ${#DCHUB_INTERNAL_KEY})"
-echo "  IPINFO_TOKEN       = ${IPINFO_TOKEN:0:8}…  (length: ${#IPINFO_TOKEN})"
+echo "  DCHUB_INTERNAL_KEY = ${DCHUB_INTERNAL_KEY:0:8}...  (length: ${#DCHUB_INTERNAL_KEY})"
+echo "  IPINFO_TOKEN       = ${IPINFO_TOKEN:0:8}...  (length: ${#IPINFO_TOKEN})"
 echo
 
 # Validate IPINFO_TOKEN was actually replaced
-if [ "$IPINFO_TOKEN" = "ipinfo_xxx_paste_yours_here" ]; then
-    red "WARNING: IPINFO_TOKEN is still the placeholder. Edit line 23 of this script first."
-    red "  Sign up at https://ipinfo.io/signup to get a free token."
+if [ "$IPINFO_TOKEN" = "$IPINFO_TOKEN_FALLBACK" ]; then
+    red "WARNING: IPINFO_TOKEN is still the placeholder."
+    red "  Pass it via env:  IPINFO_TOKEN=ipinfo_xxx bash scripts/run-finisher-and-cleanup.sh"
+    red "  Sign up at https://ipinfo.io/signup to get a free token (50k lookups/mo)."
     echo
     read -p "Continue without IPinfo (item 4 will be skipped)? [y/N] " ans
     if [ "$ans" != "y" ] && [ "$ans" != "Y" ]; then
