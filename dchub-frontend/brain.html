@@ -88,7 +88,14 @@
   function fmtAge(min){ if(min==null) return '—'; if(min<60) return min+'m'; if(min<1440) return Math.round(min/60)+'h'; return Math.round(min/1440)+'d'; }
   function tileColor(el, kind){ var t=el.closest('.tile'); if(!t) return; t.classList.remove('good','warn','bad','loading'); if(kind) t.classList.add(kind); }
 
-  async function safe(url){ try{ var r=await fetch(url); if(!r.ok) return null; return await r.json(); }catch(e){ return null; } }
+  // Cache-bust every API fetch — CF edge-caches /api/* GETs at the worker
+  // (cf: cacheTtl, cacheEverything) and a 404 from a not-yet-deployed
+  // endpoint stays poisoned for an hour. Per-page-load random key avoids it.
+  var _CB = '_cb=' + Date.now() + '-' + Math.floor(Math.random()*1e6);
+  async function safe(url){
+    var sep = url.indexOf('?')>=0 ? '&' : '?';
+    try{ var r=await fetch(url + sep + _CB, {cache: 'no-store'}); if(!r.ok) return null; return await r.json(); }catch(e){ return null; }
+  }
 
   // --- Status tile ---
   var status = await safe('/api/v1/brain/status');
