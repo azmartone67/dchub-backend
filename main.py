@@ -25620,10 +25620,25 @@ def _admin_heal_purge_stale():
         # the round-6c-fixed detectors (Railway IPs filtered out of the
         # whale check), so the 22,677 enterprise_bot_present finding
         # drops to whatever the latest scan produces (~0 expected).
+        #
+        # Phase ZZZZZ-round14 (2026-05-23): force-reset the "running"
+        # guard before kicking. The previous refresh thread either hung
+        # or died silently and left _HEAL_FINDINGS_REFRESHING["running"]
+        # stuck at True — which made every subsequent kick a no-op (the
+        # guard at line 24335 short-circuits). Result: cache_age kept
+        # climbing past 30 min, the count never updated, /heal/findings
+        # kept returning the stale 85. Resetting the flag here breaks
+        # the deadlock; the new thread starts cleanly.
         try:
             with _HEAL_FINDINGS_LOCK:
                 _HEAL_FINDINGS_CACHE["payload"] = None
                 _HEAL_FINDINGS_CACHE["ts"] = 0
+            try:
+                prior = _HEAL_FINDINGS_REFRESHING.get("running", False)
+                _HEAL_FINDINGS_REFRESHING["running"] = False
+                summary["prior_refresh_running"] = prior
+            except Exception as _re:
+                summary["prior_refresh_running"] = f"reset-error: {str(_re)[:120]}"
             _refresh_heal_findings_async()
             summary["fresh_recompute"] = "kicked"
         except Exception as e:
