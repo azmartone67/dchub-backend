@@ -23,7 +23,7 @@ real-time ISO/RTO grid data, and site-suitability scoring for any US
 lat/long.
 
 Production endpoint: https://dchub.cloud/mcp
-Discovery manifest: https://dchub.cloud/mcp/manifest
+Discovery manifest: https://dchub.cloud/api/v1/mcp/manifest
 Public homepage:   https://dchub.cloud
 Source repo:       https://github.com/azmartone67/dchub-backend (Apache-2.0)
 

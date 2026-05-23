@@ -9,7 +9,7 @@
   "repository": "https://github.com/azmartone67/dchub-backend",
   "transport": "streamable-http",
   "url": "https://dchub.cloud/mcp",
-  "manifest": "https://dchub.cloud/mcp/manifest",
+  "manifest": "https://dchub.cloud/api/v1/mcp/manifest",
   "protocol_version": "2024-11-05",
   "authentication": {
     "type": "api_key",

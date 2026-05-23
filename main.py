@@ -6211,6 +6211,15 @@ def mcp_proxy():
             }
         }), 502, {'Access-Control-Allow-Origin': '*'}
 
+# Phase ZZZZZ-round4 (2026-05-23): the canonical /mcp/manifest at Flask
+# is shadowed by an out-of-repo CF zone-level worker (4.8.5-mcp-landing)
+# that intercepts dchub.cloud/mcp/* and proxies to a separate Express
+# service that doesn't have the manifest endpoint. To work around that
+# without access to the zone worker, /api/v1/mcp/manifest is wired as
+# a sibling route — /api/v1/* is NOT intercepted by the zone worker, so
+# AI agents discovering DC Hub via the registry files (mcp.json,
+# glama.json) reach a working manifest immediately.
+@app.route('/api/v1/mcp/manifest', methods=['GET'])
 @app.route('/mcp/manifest', methods=['GET'])
 def mcp_manifest():
     """Serve MCP manifest for AI agent discovery"""

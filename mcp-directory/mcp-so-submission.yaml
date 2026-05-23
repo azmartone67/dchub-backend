@@ -16,7 +16,7 @@ description: |
 
 homepage: https://dchub.cloud
 mcp_endpoint: https://dchub.cloud/mcp
-manifest_url: https://dchub.cloud/mcp/manifest
+manifest_url: https://dchub.cloud/api/v1/mcp/manifest
 documentation: https://dchub.cloud/api/docs
 source_code: https://github.com/azmartone67/dchub-backend
 license: Apache-2.0
