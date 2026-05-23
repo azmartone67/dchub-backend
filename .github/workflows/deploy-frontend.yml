@@ -125,13 +125,19 @@ jobs:
             --branch="$PROD_BRANCH" \
             --commit-dirty=true
 
-      - name: 4 — Purge CF zone cache for / (root)
+      - name: 4 — Purge CF zone cache for / + any newly-added routes
         # r33-Q+cache-purge (2026-05-21): CF Pages deploys update the
         # Pages project, but the CF ZONE cache (separate layer in front of
         # Pages) was holding the old HTML for ~50+ min on age headers.
         # This caused the 2026-05-21 "new homepage shows old design"
         # incident: deploy was correct, origin served new, but cf-cache-status:HIT
         # with age:3089 meant browsers got the old cached HTML.
+        #
+        # Phase ZZZZZ-round3 (2026-05-23): also purge any path that became
+        # newly-routable in this commit. The cache-poisoning class: a route
+        # gets added to _routes.json + _worker.js PHASE_282, but the CF edge
+        # has the previous 404 cached for an hour. Purging the explicit
+        # paths makes the fix visible within ~30s instead of 60min.
         #
         # Look up the zone for dchub.cloud + purge / specifically.
         if: success()
@@ -145,15 +151,42 @@ jobs:
             echo "$ZONE_RESP" | jq '.errors // .' | head -20
             exit 0
           fi
+
+          # Always-purge: home page (most heavily cached)
+          FILES='"https://dchub.cloud/","https://dchub.cloud","https://dchub.cloud/index.html"'
+
+          # Extra-purge: any path added/changed in _routes.json or _worker.js
+          # this commit. We diff vs the previous commit on main and extract any
+          # bare-path additions from the diff. Splat routes (/foo/*) are
+          # skipped — CF only purges exact URLs.
+          PREV=$(git rev-parse HEAD^ 2>/dev/null || echo "")
+          if [ -n "$PREV" ]; then
+            EXTRA=$(git diff "$PREV"...HEAD -- dchub-frontend/_routes.json dchub-frontend/_worker.js 2>/dev/null \
+              | grep -E "^\+" \
+              | grep -oE "['\"](/[a-zA-Z0-9_-][a-zA-Z0-9_./?#-]*?)['\"]" \
+              | grep -v '\*' \
+              | tr -d "'\"" \
+              | sort -u \
+              | head -30)
+            for path in $EXTRA; do
+              FILES="$FILES,\"https://dchub.cloud${path}\""
+            done
+            EXTRA_COUNT=$(echo "$EXTRA" | grep -c . || echo 0)
+            if [ "$EXTRA_COUNT" -gt 0 ]; then
+              echo "Also purging $EXTRA_COUNT newly-added route(s):"
+              echo "$EXTRA" | sed 's/^/  /'
+            fi
+          fi
+
           echo "Purging cache for zone $ZONE_ID (dchub.cloud)"
           PURGE_RESP=$(curl -sS -X POST \
             -H "Authorization: Bearer $CLOUDFLARE_API_TOKEN" \
             -H "Content-Type: application/json" \
             "https://api.cloudflare.com/client/v4/zones/$ZONE_ID/purge_cache" \
-            -d '{"files":["https://dchub.cloud/","https://dchub.cloud","https://dchub.cloud/index.html"]}')
+            -d "{\"files\":[$FILES]}")
           SUCCESS=$(echo "$PURGE_RESP" | jq -r '.success')
           if [ "$SUCCESS" = "true" ]; then
-            echo "✅ Cache purged for / and /index.html"
+            echo "✅ Cache purged"
           else
             echo "::warning::Cache purge failed:"
             echo "$PURGE_RESP" | jq '.errors // .'
