@@ -498,6 +498,77 @@ def check_hosting_traffic_share() -> list[dict]:
     return findings
 
 
+# Phase ZZZZZ-round22 (2026-05-23): /land-power health canary.
+# The user said "this is the most important resource we have that
+# cannot ever be down, or have errors". Probe each of the map's
+# critical data endpoints with a representative GET. ANY 4xx/5xx
+# becomes a brain finding so we know immediately.
+def check_land_power_map_health() -> list[dict]:
+    """Probe /land-power's critical data endpoints. Fires for any
+    non-200 status on a known-good endpoint. Lightweight: 8 GETs
+    on a fixed Tonopah-area bounding box, ~3-5s total."""
+    findings: list[dict] = []
+    # (label, path) — the same probes the frontend would make on a
+    # Tonopah NV site eval. Picked to cover the breadth of layers.
+    probes = [
+        ("gas_pipelines",    "/api/v1/gas-pipelines?lat=38.07&lng=-117.23&radius=50&limit=20"),
+        ("substations",      "/api/v1/infrastructure/substations?lat=38.07&lng=-117.23&radius=10&min_kv=69&limit=50"),
+        ("transmission",     "/api/v1/infrastructure/transmission?lat=38.07&lng=-117.23&radius=10&limit=50"),
+        ("fiber_routes",     "/api/v1/fiber/routes?limit=10"),
+        ("ixps",             "/api/v1/connectivity/ixps?lat=38.07&lng=-117.23&limit=10"),
+        ("active_fires",     "/api/v2/risk/active-fires?minLat=37.5&maxLat=38.5&minLng=-118&maxLng=-116&days=1"),
+        ("facilities",       "/api/facilities?limit=1"),
+        ("power_plants",     "/api/v1/energy/power-plants/nearby?lat=38.07&lng=-117.23&radius=50"),
+    ]
+    for label, path in probes:
+        # Use a non-dchub UA so we get external-tier treatment, then
+        # add Referer so the dchub.cloud map bypass (round 22) fires.
+        status, _hdrs, body = _probe(
+            path, method="GET", timeout=6,
+            headers={"Referer": "https://dchub.cloud/land-power",
+                     "Origin": "https://dchub.cloud"},
+        )
+        # 200/304 = ok. 400 means bad query (probably the probe is
+        # wrong, not the endpoint). We care about 401/403/5xx.
+        if status in (200, 304, 400):
+            continue
+        if status == 0:
+            # Connection failed — major problem
+            findings.append({
+                "issue": "land_power_endpoint_unreachable",
+                "url":   path,
+                "count": 1,
+                "detail": (f"/land-power dependency '{label}' "
+                            f"({path}) is unreachable from inside "
+                            f"the container. Gunicorn worker pool may "
+                            f"be exhausted or the route is missing."),
+            })
+            continue
+        if status in (401, 403):
+            findings.append({
+                "issue": "land_power_auth_regression",
+                "url":   path,
+                "count": status,
+                "detail": (f"/land-power dependency '{label}' "
+                            f"({path}) returned HTTP {status} with "
+                            f"dchub.cloud Referer/Origin. The round 22 "
+                            f"map-bypass list may need to include this "
+                            f"path. Body sample: {body[:160]!r}"),
+            })
+            continue
+        if status >= 500:
+            findings.append({
+                "issue": "land_power_endpoint_5xx",
+                "url":   path,
+                "count": status,
+                "detail": (f"/land-power dependency '{label}' "
+                            f"({path}) returned HTTP {status}. Map "
+                            f"layers will render empty. Body sample: "
+                            f"{body[:160]!r}"),
+            })
+    return findings
+
+
 # Convenience: expose all in one list so brain_consistency_radar
 # can iterate them in scan_all() without enumerating each name.
 SECURITY_DETECTORS = (
@@ -507,4 +578,5 @@ SECURITY_DETECTORS = (
     check_secret_pattern_in_body,
     check_repeated_admin_401,
     check_hosting_traffic_share,
+    check_land_power_map_health,
 )

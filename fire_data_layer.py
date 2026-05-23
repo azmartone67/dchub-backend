@@ -147,9 +147,30 @@ def get_active_fires():
         }), 503
 
     result = query_firms(min_lng, min_lat, max_lng, max_lat, days, source)
-    
+
+    # Phase ZZZZZ-round22 (2026-05-23): land-power map MUST NEVER ERROR.
+    # If NASA FIRMS upstream fails (they 400 on odd bounding boxes,
+    # 5xx on outages), return an empty FeatureCollection with
+    # degraded=true so the map renders cleanly instead of throwing
+    # a 502 that puts a red error in the user's console.
     if 'error' in result and result.get('count', 0) == 0:
-        return jsonify({'success': False, 'error': result['error']}), 502
+        resp = jsonify({
+            'success': True,
+            'data': {'type': 'FeatureCollection', 'features': [], 'count': 0,
+                      'source': source, 'days_queried': days},
+            'count': 0,
+            'source': 'NASA FIRMS',
+            'satellite': source,
+            'days': days,
+            'degraded': True,
+            'upstream_error': str(result.get('error', ''))[:200],
+            'note': ('NASA FIRMS upstream returned an error for this bounding '
+                      'box. Returning empty result so the map keeps rendering. '
+                      'Retry with a different region or check '
+                      'https://firms.modaps.eosdis.nasa.gov/ for FIRMS status.'),
+        })
+        resp.headers['Cache-Control'] = 'public, max-age=60'
+        return resp, 200
 
     return jsonify({
         'success': True,

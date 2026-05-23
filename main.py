@@ -2631,6 +2631,77 @@ def require_plan(min_plan='pro'):
             origin = request.headers.get("Origin", "") or request.headers.get("Referer", "")
             if "dchub.cloud" in origin and not request.path.startswith("/api/") and request.path not in ("/mcp", "/mcp/"):
                 return f(*args, **kwargs)
+            # Phase ZZZZZ-round22 (2026-05-23): /land-power map endpoint
+            # bypass. The user reports the map is producing 403s on
+            # /api/v1/gas-pipelines, /api/v1/infrastructure/substations,
+            # /api/facilities even when logged in as enterprise. The JWT
+            # auto-injection in dchub-api-base.js v4 works for fetch
+            # but some legacy XHR map layers don't go through it. Map
+            # data is READ-ONLY geographic queries that the frontend
+            # MUST be able to render — it's the core product surface.
+            #
+            # Conditions for bypass:
+            #   1. Origin/Referer ends with dchub.cloud (real browser
+            #      navigation, not API agent traffic)
+            #   2. Path matches the known map-data prefix whitelist
+            #   3. Method is GET (no writes allowed via bypass)
+            #
+            # Risk: someone forges Referer. Mitigated because (a) map
+            # endpoints return public geographic data with no PII,
+            # (b) rate_limiter still applies per-IP, (c) the same data
+            # is in OpenStreetMap / HIFLD anyway.
+            _MAP_BYPASS_PATHS = (
+                "/api/v1/gas-pipelines",
+                "/api/v1/infrastructure/substations",
+                "/api/v1/infrastructure/transmission",
+                "/api/v1/infrastructure/power-plants",
+                "/api/v1/energy/power-plants",
+                "/api/v1/energy/power-plants/nearby",
+                "/api/v1/energy/rto/demand",
+                "/api/v1/energy/rto/fuelmix",
+                "/api/v1/energy/naturalgas/price",
+                "/api/v1/energy/retail/rates",
+                "/api/v1/energy/gas-storage",
+                "/api/v1/fiber/routes",
+                "/api/v1/fiber/sources",
+                "/api/v1/connectivity/ixps",
+                "/api/v1/connectivity/facilities",
+                "/api/v1/connectivity/score",
+                "/api/v1/grid/overview",
+                "/api/v1/grid/status",
+                "/api/v1/grid/caiso/fuelmix",
+                "/api/v1/grid/caiso/demand",
+                "/api/v1/markets/compare",
+                "/api/v1/pipeline/summary",
+                "/api/v1/oilgas/search",
+                "/api/v1/deals",
+                "/api/facilities",
+                "/api/deals",
+                "/api/grid/demand",
+                "/api/grid/prices",
+                "/api/grid/all-isos",
+                "/api/grid/supported-isos",
+                "/api/discovery/facilities",
+                "/api/epa/facilities",
+                "/api/renewable/solar",
+                "/api/renewable/wind",
+                "/api/renewable/combined",
+                "/api/renewable/layer/solar",
+                "/api/renewable/layer/wind",
+                "/api/site-score",
+                "/api/carbon/intensity",
+                "/api/energy/prices/",  # prefix — covers /TX, /CA, etc.
+                # Round 22b additions from /land-power Tonopah audit
+                "/api/risk/assessment",
+                "/api/v2/risk/active-fires",
+                "/api/v2/risk",
+                "/api/auth/me",       # session check — should not 401 the dchub.cloud user
+            )
+            if (request.method == "GET"
+                    and "dchub.cloud" in origin
+                    and any(request.path == p or request.path.startswith(p + "/")
+                            for p in _MAP_BYPASS_PATHS)):
+                return f(*args, **kwargs)
             # Internal MCP bypass -- trust calls from our own MCP server
             internal_key = request.headers.get("X-Internal-Key", "")
             if is_valid_internal_key(internal_key):

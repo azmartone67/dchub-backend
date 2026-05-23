@@ -506,6 +506,53 @@ REGISTRY: list[ErrorClass] = [
         confidence=0.85,
         notes="Requires rate_limit_events table. No-op if missing — won't break the scan.",
     ),
+    # ── Phase ZZZZZ-round22 (2026-05-23) — /land-power canary class
+    ErrorClass(
+        id="land_power_endpoint_5xx",
+        pattern=r"land_power_endpoint_5xx|/land-power dependency.*returned HTTP 5",
+        fix_template="restart_or_fix_upstream",
+        description=(
+            "A /land-power map data dependency returned a 5xx. The map "
+            "is the core product surface — any layer 5xx degrades the "
+            "user experience. FIX: identify the failing upstream "
+            "(usually NASA FIRMS / EIA / HIFLD), wrap in graceful "
+            "degradation (return empty FeatureCollection with "
+            "degraded=true), and add a brain class to track. Round 22 "
+            "did this for NASA FIRMS active-fires."
+        ),
+        confidence=0.95,
+        notes="Probed by check_land_power_map_health every brain scan when enabled. Tonopah NV is the canary location.",
+    ),
+    ErrorClass(
+        id="land_power_auth_regression",
+        pattern=r"land_power_auth_regression|/land-power dependency.*returned HTTP 40[13]",
+        fix_template="extend_map_bypass_whitelist",
+        description=(
+            "A /land-power map endpoint returned 401/403 with the "
+            "dchub.cloud Referer set. The round 22 map-bypass list in "
+            "require_plan (main.py around line 2640) needs the path "
+            "added. Map data is READ-ONLY geographic data that should "
+            "render for any browser session on dchub.cloud."
+        ),
+        confidence=0.95,
+        shipped_proof="round22",
+        notes="Triggered when a new map endpoint is added but not added to _MAP_BYPASS_PATHS. The fix is one line.",
+    ),
+    ErrorClass(
+        id="land_power_endpoint_unreachable",
+        pattern=r"land_power_endpoint_unreachable|unreachable from inside the container",
+        fix_template="investigate_worker_pool_or_missing_route",
+        description=(
+            "A /land-power dependency couldn't even be reached from "
+            "the security detector's localhost:8080 probe — connection "
+            "failed before any HTTP response. Indicates either (a) "
+            "gunicorn worker pool exhausted, (b) route is not "
+            "registered, or (c) Flask app is in an unrecoverable "
+            "state. CRITICAL — investigate immediately."
+        ),
+        confidence=0.95,
+        notes="If this fires multiple cycles in a row, the worker pool is locked. Round 20 already established the pattern.",
+    ),
     # ── Phase ZZZZZ-round19 (2026-05-23) — IPinfo bot-share detector
     ErrorClass(
         id="hosting_traffic_share_high",
