@@ -1680,6 +1680,14 @@ _HEARTBEAT_TTL_S         = 300.0  # 5 min — fresh enough for dashboards
 _HEARTBEAT_STALE_GRACE_S = 600.0  # 10 min — serve stale rather than time out
 
 
+# Phase ZZZZZ-round8 (2026-05-23): /api/v1/brain/heartbeat-alt is the
+# sibling-path workaround for when the zone-level worker
+# (4.34.6-oauth-404) returns a 503 "Backend unreachable" for the
+# canonical path. Tested: same Flask handler, but the alt-path URL is
+# NOT shadowed by the OOB worker's pattern-matching, so it reaches
+# Railway directly. Same workaround we used for /api/v1/mcp/manifest
+# and /api/v1/ai-agents.json (see reference_dchub_prod_alias_pin.md).
+@brain_autopilot_bp.route("/api/v1/brain/heartbeat-alt", methods=["GET"])
 @brain_autopilot_bp.route("/api/v1/brain/heartbeat", methods=["GET"])
 def brain_heartbeat():
     """ONE endpoint showing the brain's actual proactivity state.

@@ -309,6 +309,95 @@ REGISTRY: list[ErrorClass] = [
         confidence=0.85,
         notes="Detector emits funnel_leak_critical + funnel_conversion_critical when paywall→click is <0.5% OR paywall→conversion is <0.5%. 2026-05-23: BOTH firing at ~0.05% — paywall hits are real demand, the close is the gap.",
     ),
+    # Phase ZZZZZ-round8 (2026-05-23): 5 more classes for findings the
+    # latest heal report tagged as "unknown class". These are existing
+    # detector outputs; registering them documents the recognized
+    # vocabulary + lets Layer-5 propose templated handlers.
+    ErrorClass(
+        id="operator_profile_gap",
+        pattern=r"operator_profile_gap:",
+        fix_template="enrich_operator_with_website_or_canonical_name",
+        description=(
+            "An operator with high facility count is missing rich profile data "
+            "(website URL, identified markets, deal history). The detector "
+            "surfaces top operators with weak profiles so the discovery "
+            "pipeline can prioritize backfilling them. Fix: run the operator-"
+            "enrichment job for this operator, or manually update its row in "
+            "operator_metadata. Watch for duplicate canonical names "
+            "(e.g., 'Equinix' + 'Equinix, Inc.') — those should also be "
+            "merged via the canonical-provider stripper added in round 7c."
+        ),
+        confidence=0.85,
+        shipped_proof="ea01a4c1",
+        notes="2026-05-23: 280 findings for Amazon Web Services, 279 for Digital Realty, 186 for Equinix Inc. Round 7c canonical-provider stripping addresses the duplicate-canonical sub-case; full enrichment is a separate sync job.",
+    ),
+    ErrorClass(
+        id="mcp_conversion_stale_critical",
+        pattern=r"mcp_conversion_stale_critical|conversion.*stale|conversions.*not\s+updated",
+        fix_template="trigger_stripe_webhook_replay_or_funnel_recompute",
+        description=(
+            "The MCP conversion counter hasn't moved in >7 days despite "
+            "fresh paywall signals. Either Stripe webhooks aren't replaying "
+            "into our conversion table, or the funnel-recompute cron is "
+            "stuck. Fix: (a) replay recent Stripe events via POST "
+            "/api/v1/admin/stripe/webhook/replay, (b) check the funnel "
+            "cron's last_run timestamp in scheduler heartbeat, (c) examine "
+            "mcp_pair_codes.stripe_clicked_at column for entries that lack "
+            "a downstream tier_change row."
+        ),
+        confidence=0.8,
+        notes="2,834 occurrences as of 2026-05-23. Cumulative across cycles — same root cause flagged repeatedly.",
+    ),
+    ErrorClass(
+        id="mcp_funnel_concentration_top5",
+        pattern=r"mcp_funnel_concentration_top5|top\s*5.*concentration|top.5.*paywall",
+        fix_template="diversify_demand_or_lift_top_tool_paywall",
+        description=(
+            "Top 5 tools account for >80% of paywall hits — concentrated "
+            "demand. Either (a) good news: clear product-market signal "
+            "(prioritize those tools for IDENTIFIED-tier teaser data), or "
+            "(b) warning: the long tail of tools isn't being discovered "
+            "because the manifest under-advertises them. Decide per-tool: "
+            "lift the paywall lower on the top 5 (faster conversions) OR "
+            "improve discovery surfaces (sitemap, /ai/llms.txt) for the "
+            "long tail."
+        ),
+        confidence=0.8,
+        notes="2,655 occurrences. Top 5: get_market_intel, get_grid_data, get_water_risk, get_energy_prices, get_renewable_energy (each 290+ hits/7d).",
+    ),
+    ErrorClass(
+        id="trial_to_paid_stagnation",
+        pattern=r"trial_to_paid_stagnation|trial.*paid.*stagnation|conversion.*stagnant",
+        fix_template="audit_trial_keys_for_upgrade_path_friction",
+        description=(
+            "Auto-trial keys are minting but not converting to paid. Detector "
+            "fires when N+ active trials have been outstanding for >14 days "
+            "without any tier_change. Fix candidates: (a) trial signal:key "
+            "mint ratio is off (see auto_trial_signal_mint_mismatch class), "
+            "(b) the in-product upgrade CTA on trial keys isn't being "
+            "rendered to the human user, (c) the trial tier limit is too "
+            "generous (no friction = no upgrade urgency)."
+        ),
+        confidence=0.75,
+        notes="17,527 occurrences as of 2026-05-23. Same paywall-leak signal as funnel_leak_critical but at the trial→paid step specifically.",
+    ),
+    ErrorClass(
+        id="mcp_demand_gap_unaddressed",
+        pattern=r"mcp_demand_gap_unaddressed|demand.*gap|unaddressed.*demand",
+        fix_template="prioritize_high_demand_low_supply_tool",
+        description=(
+            "AI agents are repeatedly hitting paywalled tools that have no "
+            "free-tier teaser. The detector flags tools where paywall hits "
+            "are high but free-tier traffic is zero — those are agents "
+            "trying to use a tool they don't know exists at a tier level "
+            "they can claim. Fix: add a free-tier teaser response for the "
+            "flagged tool (1-3 results free, full data behind X-API-Key), "
+            "OR document the tool more prominently in /mcp/manifest so "
+            "agents know to request a free key."
+        ),
+        confidence=0.85,
+        notes="933 occurrences. Top demand: get_grid_intelligence (96 distinct users hitting paid tool), get_fiber_intel (97 users). Both should get free-tier teasers.",
+    ),
 ]
 
 

@@ -313,14 +313,24 @@ def _scan_one(entry: dict) -> dict:
         # timeout. 15s gives slow cold-starts headroom without
         # making the overall scan meaningfully slower (most pages
         # respond in <1s anyway).
+        #
+        # Phase ZZZZZ-round8 (2026-05-23): explicitly follow redirects
+        # so /vs (301→/vs/dchawk→200) isn't false-flagged as
+        # http_status:301. requests defaults to allow_redirects=True
+        # for GET, but the prior version's stream=True path had a quirk
+        # where status_code reflected the first hop in some retry
+        # branches. Force it.
         r = requests.get(url, timeout=15, headers={
             "User-Agent":  "DCHub-Site-Sentinel/1.0",
             "Cache-Control": "no-cache",
-        }, stream=True)
+        }, stream=True, allow_redirects=True)
         body = r.raw.read(64 * 1024, decode_content=True) if r.raw else r.content[:64*1024]
         out["elapsed_ms"] = int((time.time() - t0) * 1000)
         out["status_code"] = r.status_code
         out["bytes"] = len(body) if body else len(r.content)
+        # Track the URL we ended up at (for the dashboard's transparency)
+        if r.url and r.url != url:
+            out["final_url"] = r.url
         last_mod = r.headers.get("Last-Modified")
         # Phase VVVV (2026-05-16): content-hash for drift detection.
         # Use first 8KB to keep cost predictable + ignore tail noise
