@@ -12,10 +12,17 @@
 name: Deploy frontend to Cloudflare Pages
 
 on:
+  # Run on every push to main, not just dchub-frontend/** changes. The
+  # paths-filter caused recurring "I shipped it but prod is stale" pain:
+  # any dchub-frontend/ change followed by a backend-only commit would
+  # never re-deploy the frontend, leaving prod behind on whatever the
+  # last frontend-touching commit happened to be. `wrangler pages deploy`
+  # is idempotent (only changed files actually upload — typical run says
+  # "Uploaded 2 files (2399 already uploaded)"), so running on every
+  # main push costs ~1 min of CI per backend-only push and eliminates an
+  # entire deploy-staleness bug class.
   push:
     branches: [main]
-    paths:
-      - 'dchub-frontend/**'
   workflow_dispatch:
     inputs:
       project_name:
