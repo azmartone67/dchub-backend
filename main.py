@@ -25532,98 +25532,105 @@ def _admin_dedup_run():
 # Mirrors scripts/purge-stale-findings.sql but runnable via curl.
 @app.route("/api/v1/admin/heal/purge-stale", methods=["POST"])
 def _admin_heal_purge_stale():
-    """Purge stale brain findings from heal_findings.
-    Drops: (1) enterprise_bot_present entries pointing at Railway's own
-    egress range, (2) anything older than 30 days. Idempotent.
+    """Purge stale brain findings + trigger a fresh re-compute.
 
-    Auth: X-Admin-Key header matching DCHUB_ADMIN_KEY env. Use
-    /scripts/purge-stale-findings.sql for the raw SQL if you'd rather
-    run it via psql.
+    Phase ZZZZZ-round13b (2026-05-23): the actual storage is
+    heal_findings_cache (one JSONB blob per refresh, "newest wins").
+    My first version tried to DELETE rows from a 'heal_findings' table
+    that doesn't exist — the SQL ran and returned 0 deletes but no real
+    effect.
 
-    Phase ZZZZZ-round13 (2026-05-23): use internal_auth.is_valid_internal_key
-    so the legacy hardcoded fallback works too. Same reasoning as
-    /api/v1/admin/dedup/run — this action is non-destructive (only
-    purges stale findings; can be reconstructed from logs if needed).
+    Correct fix: trigger a fresh _refresh_heal_findings_async() pass.
+    The round 6c whale-detector fix (which excludes Railway's own egress
+    IPs from check_enterprise_bot_present) only affects NEW findings
+    runs; the cached blob still has the 22,677 historical count until a
+    new compute pass writes a fresh row.
+
+    Optional: also TRUNCATE old cache rows so the table doesn't grow.
+
+    Auth: X-Admin-Key or X-Internal-Key header. Uses
+    internal_auth.is_valid_internal_key so the legacy fallback works.
     """
     import psycopg2
-    from flask import jsonify, request
+    from flask import jsonify, request, make_response
     provided = (request.headers.get("X-Admin-Key")
                 or request.headers.get("X-Internal-Key")
                 or request.args.get("admin_key"))
     try:
         from internal_auth import is_valid_internal_key
         if not is_valid_internal_key(provided):
-            return jsonify(ok=False, error="unauthorized"), 401
+            # Don't let CF cache 401s — they poison the endpoint for
+            # an hour. Round 13b: explicit no-store on auth-fail.
+            resp = make_response(jsonify(ok=False, error="unauthorized"), 401)
+            resp.headers["Cache-Control"] = "no-store, max-age=0"
+            return resp
     except Exception:
         import os as _os
         expected = _os.environ.get("DCHUB_ADMIN_KEY") or _os.environ.get("DCHUB_INTERNAL_KEY")
         if expected and provided != expected:
-            return jsonify(ok=False, error="unauthorized"), 401
+            resp = make_response(jsonify(ok=False, error="unauthorized"), 401)
+            resp.headers["Cache-Control"] = "no-store, max-age=0"
+            return resp
     DATABASE_URL = os.environ.get("DATABASE_URL")
     if not DATABASE_URL:
         return jsonify(ok=False, error="no DATABASE_URL"), 500
-    summary = {"before": {}, "deleted_railway_bots": 0, "deleted_over_30d": 0, "after": {}}
+    summary = {"before_findings": 0, "after_findings": None,
+               "old_cache_rows_pruned": 0, "fresh_recompute": "queued"}
     try:
+        # Phase ZZZZZ-round13b (2026-05-23): correct table is
+        # heal_findings_cache (JSONB blob, newest wins). Approach:
+        # 1. Count findings in the current cached blob (the "before")
+        # 2. TRUNCATE all but the latest cache row (housekeeping)
+        # 3. Invalidate in-memory cache so next /heal/findings call
+        #    triggers a synchronous recompute with the round 6c whale
+        #    fix applied. Stale Railway-as-whale finding drops naturally.
         with psycopg2.connect(DATABASE_URL, connect_timeout=5) as conn, conn.cursor() as cur:
-            # Before
+            # Count current findings
             try:
                 cur.execute("""
-                    SELECT COUNT(*),
-                           SUM(CASE WHEN issue='enterprise_bot_present' THEN 1 ELSE 0 END),
-                           SUM(CASE WHEN created_at < NOW() - INTERVAL '30 days' THEN 1 ELSE 0 END)
-                      FROM heal_findings
+                    SELECT jsonb_array_length(
+                             COALESCE(payload->'actionable_backend_issues','[]'::jsonb))
+                      FROM heal_findings_cache
+                     ORDER BY computed_at DESC LIMIT 1
                 """)
                 r = cur.fetchone()
-                summary["before"] = {"total": int(r[0] or 0),
-                                      "bot_findings": int(r[1] or 0),
-                                      "over_30d_old": int(r[2] or 0)}
+                summary["before_findings"] = int(r[0] or 0) if r else 0
             except Exception as e:
-                summary["before"] = {"error": str(e)[:200]}
+                summary["before_findings_error"] = str(e)[:200]
                 try: conn.rollback()
                 except Exception: pass
-            # Purge Railway-bot entries
+            # Prune old cache rows (keep newest only)
             try:
                 cur.execute("""
-                    DELETE FROM heal_findings
-                     WHERE issue = 'enterprise_bot_present'
-                       AND (url LIKE '%%162.220.232.%%' OR url LIKE '%%162.220.233.%%'
-                            OR url LIKE '%%RLWY-METALGEN1%%' OR url LIKE '%%AS400940%%')
+                    DELETE FROM heal_findings_cache
+                     WHERE id NOT IN (
+                         SELECT id FROM heal_findings_cache
+                          ORDER BY computed_at DESC LIMIT 1
+                     )
                 """)
-                summary["deleted_railway_bots"] = cur.rowcount
+                summary["old_cache_rows_pruned"] = cur.rowcount
             except Exception as e:
-                summary["deleted_railway_bots"] = f"error: {str(e)[:200]}"
-                try: conn.rollback()
-                except Exception: pass
-            # Purge anything > 30 days
-            try:
-                cur.execute("DELETE FROM heal_findings WHERE created_at < NOW() - INTERVAL '30 days'")
-                summary["deleted_over_30d"] = cur.rowcount
-            except Exception as e:
-                summary["deleted_over_30d"] = f"error: {str(e)[:200]}"
+                summary["old_cache_rows_pruned"] = f"error: {str(e)[:200]}"
                 try: conn.rollback()
                 except Exception: pass
             conn.commit()
             # After
-            try:
-                cur.execute("""
-                    SELECT COUNT(*),
-                           SUM(CASE WHEN issue='enterprise_bot_present' THEN 1 ELSE 0 END)
-                      FROM heal_findings
-                """)
-                r = cur.fetchone()
-                summary["after"] = {"total": int(r[0] or 0),
-                                     "bot_findings": int(r[1] or 0)}
-            except Exception as e:
-                summary["after"] = {"error": str(e)[:200]}
-        # Also invalidate the in-memory heal cache so /api/v1/heal/findings
-        # re-renders from the now-purged DB on next call.
+        # Invalidate in-memory + DB cache + trigger fresh recompute.
+        # The next /api/v1/heal/findings call will get a fresh blob from
+        # the round-6c-fixed detectors (Railway IPs filtered out of the
+        # whale check), so the 22,677 enterprise_bot_present finding
+        # drops to whatever the latest scan produces (~0 expected).
         try:
             with _HEAL_FINDINGS_LOCK:
                 _HEAL_FINDINGS_CACHE["payload"] = None
                 _HEAL_FINDINGS_CACHE["ts"] = 0
-        except Exception:
-            pass
-        return jsonify(ok=True, **summary)
+            _refresh_heal_findings_async()
+            summary["fresh_recompute"] = "kicked"
+        except Exception as e:
+            summary["fresh_recompute"] = f"error: {str(e)[:200]}"
+
+        return jsonify(ok=True, **summary,
+                       hint="Re-probe /api/v1/heal/findings in ~30s — count should drop after the fresh compute lands.")
     except Exception as e:
         return jsonify(ok=False, error=str(e)[:300]), 500
 
