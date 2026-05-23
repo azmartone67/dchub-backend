@@ -306,6 +306,71 @@ def init_free_tier_gate(app, get_db_conn):
         # Bypass internal MCP server calls
         if request.headers.get("X-Internal-Key") in (os.environ.get("DCHUB_INTERNAL_KEY", ""), os.environ.get("DCHUB_SYNC_KEY", "")):
             return None
+        # Phase ZZZZZ-round22c (2026-05-23): /land-power map endpoint
+        # bypass. The user's main complaint was 401/403 errors on map
+        # data. enforce_free_tier runs BEFORE any route decorator and
+        # returns 401 here for unauthenticated callers, even on
+        # explicitly-public map data endpoints. Mirror the same path
+        # whitelist + dchub.cloud Origin check from main.py /
+        # api_tier_gating's require_plan stub. GET-only - keeps writes
+        # gated.
+        if request.method == 'GET':
+            origin = (request.headers.get('Origin', '')
+                       or request.headers.get('Referer', ''))
+            if 'dchub.cloud' in origin:
+                _MAP_BYPASS_PATHS = (
+                    '/api/v1/gas-pipelines',
+                    '/api/v1/infrastructure/substations',
+                    '/api/v1/infrastructure/transmission',
+                    '/api/v1/infrastructure/power-plants',
+                    '/api/v1/infrastructure/fiber',
+                    '/api/v1/infrastructure/permits',
+                    '/api/v1/infrastructure/properties',
+                    '/api/v1/infrastructure/nearby',
+                    '/api/v1/infrastructure/summary',
+                    '/api/v1/energy/power-plants',
+                    '/api/v1/energy/power-plants/nearby',
+                    '/api/v1/energy/rto/demand',
+                    '/api/v1/energy/rto/fuelmix',
+                    '/api/v1/energy/naturalgas/price',
+                    '/api/v1/energy/retail/rates',
+                    '/api/v1/energy/gas-storage',
+                    '/api/v1/fiber/routes',
+                    '/api/v1/fiber/sources',
+                    '/api/v1/fiber/intel',
+                    '/api/v1/connectivity/ixps',
+                    '/api/v1/connectivity/facilities',
+                    '/api/v1/connectivity/score',
+                    '/api/v1/grid/overview',
+                    '/api/v1/grid/status',
+                    '/api/v1/markets/compare',
+                    '/api/v1/pipeline/summary',
+                    '/api/v1/oilgas/search',
+                    '/api/v1/deals',
+                    '/api/v1/power-plants/nearby',
+                    '/api/v2/infrastructure/hifld/transmission',
+                    '/api/v2/connectivity/ixps',
+                    '/api/v2/risk/active-fires',
+                    '/api/v2/risk/fire-history',
+                    '/api/facilities',
+                    '/api/deals',
+                    '/api/grid/demand',
+                    '/api/grid/prices',
+                    '/api/grid/all-isos',
+                    '/api/grid/supported-isos',
+                    '/api/discovery/facilities',
+                    '/api/epa/facilities',
+                    '/api/renewable/solar',
+                    '/api/renewable/wind',
+                    '/api/renewable/combined',
+                    '/api/site-score',
+                    '/api/carbon/intensity',
+                    '/api/risk/assessment',
+                    '/api/auth/me',
+                )
+                if any(path == p or path.startswith(p + '/')
+                       for p in _MAP_BYPASS_PATHS):
+                    return None
         if is_always_open(path):
             return None
         if not is_gated(path):
