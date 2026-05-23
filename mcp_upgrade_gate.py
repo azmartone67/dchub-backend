@@ -308,12 +308,40 @@ def gated(tool_name: str):
                 user_agent=user_agent,
             )
             if not gate["allowed"]:
+                # Phase ZZZZZ-round10 (2026-05-23): structured agent_action
+                # field so AI clients can act programmatically. Previously
+                # the response was just `message` text that agents had to
+                # parse English to discover the claim-key flow. With 96+
+                # distinct users hitting paid tools but only 22 claiming
+                # keys, agents weren't translating the prose into action.
+                #
+                # NOT auto-retry — the prior auto-retry experiment scored
+                # 0 conversions in 90 days and was deliberately removed
+                # (Phase ZZZZ-T1-paywall-visibility). This is just clearer
+                # machine-readable directions; the agent's own reasoning
+                # still decides whether to act.
                 return {
                     "error":       "tier_gate_blocked",
                     "message":     gate["message"],
                     "upgrade_url": gate["upgrade_url"],
                     "tier":        gate["tier"],
                     "platform":    gate["platform"],
+                    "agent_action": {
+                        "type":    "claim_free_key",
+                        "method":  "POST",
+                        "url":     "https://dchub.cloud/api/v1/keys/claim",
+                        "headers": {"Content-Type": "application/json"},
+                        "body":    {"client_name": "<your agent identifier>"},
+                        "expects": {
+                            "200": "Returns {api_key: 'dch_live_...'}; retry tools/call with header X-API-Key: <api_key>",
+                            "429": "Already claimed from this IP in last 24h — use the existing key",
+                        },
+                        "then":    f"Retry the '{tool_name}' tools/call with header 'X-API-Key: <api_key>'",
+                    },
+                    "next_steps": [
+                        "POST /api/v1/keys/claim to get a free dev key",
+                        f"Retry '{tool_name}' with X-API-Key header set",
+                    ],
                 }
             return fn(*args, **kwargs)
 
