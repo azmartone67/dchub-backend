@@ -342,14 +342,17 @@ REGISTRY: list[ErrorClass] = [
             "The MCP conversion counter hasn't moved in >7 days despite "
             "fresh paywall signals. Either Stripe webhooks aren't replaying "
             "into our conversion table, or the funnel-recompute cron is "
-            "stuck. Fix: (a) replay recent Stripe events via POST "
-            "/api/v1/admin/stripe/webhook/replay, (b) check the funnel "
-            "cron's last_run timestamp in scheduler heartbeat, (c) examine "
-            "mcp_pair_codes.stripe_clicked_at column for entries that lack "
-            "a downstream tier_change row."
+            "stuck. Fix: (a) replay recent Stripe events via "
+            "POST /api/stripe/webhook/replay (header X-Admin-Key or "
+            "X-Internal-Key; requires STRIPE_SECRET_KEY env), "
+            "(b) check the funnel cron's last_run timestamp in "
+            "scheduler heartbeat, (c) examine mcp_pair_codes.stripe_"
+            "clicked_at column for entries that lack a downstream "
+            "tier_change row."
         ),
         confidence=0.8,
-        notes="2,834 occurrences as of 2026-05-23. Cumulative across cycles — same root cause flagged repeatedly.",
+        shipped_proof="r33-F",
+        notes="2,834 occurrences as of 2026-05-23. The replay endpoint at /api/stripe/webhook/replay has existed since Phase r33-F (routes/brain_autoaction_helpers.py:239). Class entry now points at the correct URL.",
     ),
     ErrorClass(
         id="mcp_funnel_concentration_top5",
