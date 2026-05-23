@@ -454,6 +454,19 @@ _PUBLIC_SUMMARY_TTL = 300  # 5 min
 
 
 @visitor_intelligence_bp.route(
+    "/api/v1/admin/visitor-intel/purge-cache", methods=["POST"])
+def visitor_intel_purge_cache():
+    """Force-invalidate the public /api/v1/visitor-intel cache.
+    Useful when a code change updated the payload shape but the
+    in-process cache is still serving the stale shape."""
+    if not _admin_ok():
+        return jsonify(ok=False, error="unauthorized"), 401
+    _PUBLIC_SUMMARY_CACHE["data"] = None
+    _PUBLIC_SUMMARY_CACHE["ts"] = 0
+    return jsonify(ok=True, message="public visitor-intel cache cleared")
+
+
+@visitor_intelligence_bp.route(
     "/api/v1/visitor-intel", methods=["GET"])
 def visitor_intel_public():
     """Public sanitized visitor-intel summary.

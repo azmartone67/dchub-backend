@@ -52,6 +52,26 @@ def _slugify(s: str) -> str:
     return s[:80]
 
 
+# Phase ZZZZZ-round7c (2026-05-23): normalize operator names that differ
+# only by corporate suffix. discovered_facilities has both "Equinix" and
+# "Equinix, Inc." as distinct provider strings — dedup-by-slug catches
+# "Equinix" vs "equinix" but not "Equinix" vs "Equinix, Inc." (different
+# slugs after the comma is stripped). Stripping the suffix BEFORE
+# slugifying collapses both to the same canonical form.
+_CORP_SUFFIX_RE = re.compile(
+    r",?\s+(?:inc\.?|llc\.?|ltd\.?|corp\.?|corporation|"
+    r"company|co\.?|gmbh|plc|limited|holdings?|group|"
+    r"international|technologies|systems)\.?\s*$",
+    re.IGNORECASE,
+)
+
+
+def _canonical_provider(s: str) -> str:
+    """Strip corporate suffixes ('Inc', 'LLC', 'Ltd', etc.) for dedup.
+    Returns the cleaned name; slug it separately if needed."""
+    return _CORP_SUFFIX_RE.sub("", (s or "").strip()).strip()
+
+
 # Phase ZZZZZ-round4 (2026-05-23): slug aliases for common short names.
 # Search-engine + AI-agent traffic types "/operators/aws", not "/operators/
 # amazon-web-services". Map the short form to the canonical provider name
@@ -156,13 +176,13 @@ def _operator_summary(cur, name: str) -> dict | None:
         # so someone researching e.g. Equinix sees Digital Realty + NTT +
         # Iron Mountain. Helps brand discovery + reduces bounce.
         #
-        # Phase ZZZZZ-round7b (2026-05-23): de-dupe by slug, not raw
-        # provider name, so "Equinix" and "Equinix, Inc." aren't both
-        # surfaced as similar to "Equinix". Also exclude any provider
-        # whose slug equals the target's slug.
+        # Phase ZZZZZ-round7b/c (2026-05-23): de-dupe via canonical
+        # provider name (suffix-stripped) → slug, so "Equinix" and
+        # "Equinix, Inc." canonicalize to the same key and only one
+        # appears as similar to the target operator.
         try:
             target_count = int(r[0] or 0)
-            target_slug = _slugify(name)
+            target_canon = _slugify(_canonical_provider(name))
             if target_count > 0:
                 lo, hi = max(1, int(target_count * 0.7)), int(target_count * 1.3)
                 cur.execute("""
@@ -174,18 +194,18 @@ def _operator_summary(cur, name: str) -> dict | None:
                        AND merged_at IS NULL AND is_duplicate = 0
                      GROUP BY provider
                     HAVING COUNT(*) BETWEEN %s AND %s
-                     ORDER BY ABS(COUNT(*) - %s) ASC LIMIT 20
+                     ORDER BY ABS(COUNT(*) - %s) ASC LIMIT 30
                 """, (name, lo, hi, target_count))
-                seen_slugs = {target_slug}
+                seen_canon = {target_canon}
                 similars = []
                 for sr in cur.fetchall():
-                    s_slug = _slugify(sr[0])
-                    if s_slug in seen_slugs:
+                    s_canon = _slugify(_canonical_provider(sr[0]))
+                    if not s_canon or s_canon in seen_canon:
                         continue
-                    seen_slugs.add(s_slug)
+                    seen_canon.add(s_canon)
                     similars.append({
                         "name":           sr[0],
-                        "slug":           s_slug,
+                        "slug":           _slugify(sr[0]),
                         "facility_count": int(sr[1]),
                         "total_mw":       float(sr[2] or 0),
                     })
