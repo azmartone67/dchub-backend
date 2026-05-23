@@ -1542,6 +1542,19 @@ export default {
         '/capacity-map',
         '/capacity-map.html',
         '/mcp/manifest',
+        // Phase ZZZZZ-bulk (2026-05-23): triage sweep — paths where Flask
+        // returns 200 but CF was 404'ing because the worker had no rule.
+        '/ai-data-source',
+        '/ai/discovery',
+        '/ai/learn/deals',
+        '/ai/learn/facilities',
+        '/ai/learn/market-intel',
+        '/ai/robots.txt',
+        '/ai/tracking/export',
+        '/alive',
+        '/auth.md',
+        '/dchub2026.txt',
+        '/digest/today',
         '/visitor-intelligence',
       ]);
       // Phase YYYY (2026-05-16): also forward prefix-paths to Railway
