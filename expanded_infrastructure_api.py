@@ -639,7 +639,14 @@ def get_hifld_gas_pipelines():
         conn = get_db()
         c = conn.cursor()
 
-        conditions = []
+        # 2026-05-24 r31: dangling-AND fix. The previous form did
+        # `{where} AND lat IS NOT NULL...` which produced `AND lat IS
+        # NOT NULL` with NO preceding WHERE when conditions was empty
+        # (no lat/lng/state params passed). Result: SQL syntax error +
+        # HTTP 500 on every anonymous GET. SLA visitor caught it.
+        # Fix: fold the NOT-NULL guards into `conditions` from the
+        # start so the WHERE clause is always well-formed.
+        conditions = ['lat IS NOT NULL', 'lng IS NOT NULL']
         params = []
 
         if state:
@@ -654,25 +661,23 @@ def get_hifld_gas_pipelines():
             conditions.append('lng BETWEEN %s AND %s')
             params.extend([lng - lng_range, lng + lng_range])
 
-            where = 'WHERE ' + ' AND '.join(conditions) if conditions else ''
+            where = 'WHERE ' + ' AND '.join(conditions)
             query = f"""
                 SELECT name, operator, pipeline_type, diameter_inches, capacity_mcf, status, lat, lng, city, state,
                     ROUND((3959 * acos(LEAST(1.0, cos(radians(%s)) * cos(radians(lat)) * cos(radians(lng) - radians(%s)) + sin(radians(%s)) * sin(radians(lat)))))::numeric, 2) as distance_miles
                 FROM gas_pipelines
                 {where}
-                AND lat IS NOT NULL AND lng IS NOT NULL
                 ORDER BY distance_miles
                 LIMIT %s
             """
             params_full = [lat, lng, lat] + params + [limit]
         else:
-            where = 'WHERE ' + ' AND '.join(conditions) if conditions else ''
+            where = 'WHERE ' + ' AND '.join(conditions)
             query = f"""
                 SELECT name, operator, pipeline_type, diameter_inches, capacity_mcf, status, lat, lng, city, state,
                     NULL as distance_miles
                 FROM gas_pipelines
                 {where}
-                AND lat IS NOT NULL AND lng IS NOT NULL
                 LIMIT %s
             """
             params_full = params + [limit]
