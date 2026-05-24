@@ -1678,6 +1678,9 @@ import time as _time
 _HEARTBEAT_CACHE = {"payload": None, "ts": 0.0}
 _HEARTBEAT_TTL_S         = 300.0  # 5 min — fresh enough for dashboards
 _HEARTBEAT_STALE_GRACE_S = 600.0  # 10 min — serve stale rather than time out
+# Phase ZZZZZ-round32 (2026-05-24): single-flight lock for cold-start
+# compute so concurrent cold requests don't pile up identical scans.
+_HEARTBEAT_COMPUTING = {"in_progress": False}
 
 
 # Phase ZZZZZ-round8 (2026-05-23): /api/v1/brain/heartbeat-alt is the
@@ -1732,6 +1735,55 @@ def brain_heartbeat():
         # grace expires pays the full cold-start cost.
         return _serve_cached(stale=True)
 
+    # Phase ZZZZZ-round32 (2026-05-24): cold-start used to compute
+    # synchronously here — but scan_summary() probes 40+ URLs and can
+    # take 15-30s, which exceeds the Cloudflare Worker timeout → user
+    # gets 503. After 15 min of no traffic this happened on every cold
+    # request, masking the real brain health and triggering false alerts
+    # in the radar/heartbeat-stale detector (it probes itself).
+    # Fix: kick the full compute to a daemon thread so the FIRST cold
+    # request returns immediately with a "warming" payload. Subsequent
+    # requests within 5 min get the freshly-computed cache. Worst case
+    # is one user sees "warming" status for ~30s — they don't 503.
+    import threading as _threading
+    if not _HEARTBEAT_COMPUTING["in_progress"]:
+        _HEARTBEAT_COMPUTING["in_progress"] = True
+        _threading.Thread(target=_compute_heartbeat_async, daemon=True).start()
+    from flask import jsonify as _j2
+    warming = {
+        "checked_at": datetime.datetime.utcnow().isoformat() + "Z",
+        "verdict":    "warming",
+        "verdict_detail": "Brain heartbeat cache is cold (15+ min since last fetch). Computing in background. Retry in ~30s for full status.",
+        "_cache_age_seconds": None,
+        "_cached": False,
+        "_warming": True,
+    }
+    resp = _j2(warming)
+    resp.headers["Cache-Control"] = "no-cache, no-store, must-revalidate"
+    resp.headers["Access-Control-Allow-Origin"] = "*"
+    resp.headers["Retry-After"] = "30"
+    return resp, 202   # Accepted, processing async
+
+def _compute_heartbeat_async():
+    """Run the full heartbeat compute in a daemon thread. Writes result
+    to _HEARTBEAT_CACHE. Released the in-progress flag on completion
+    or error so subsequent cold-starts can re-trigger."""
+    try:
+        _compute_heartbeat_sync()
+    except Exception as _e:
+        # Don't write to cache on failure — next request retries
+        try:
+            import sys as _s
+            print(f"[brain_heartbeat] async compute crashed: {_e}",
+                  file=_s.stderr, flush=True)
+        except Exception:
+            pass
+    finally:
+        _HEARTBEAT_COMPUTING["in_progress"] = False
+
+def _compute_heartbeat_sync():
+    """The original synchronous compute body. Refactored out of
+    brain_heartbeat() so it can be called from the async refresh path."""
     out: dict = {
         "checked_at": datetime.datetime.utcnow().isoformat() + "Z",
         "verdict":    "unknown",
