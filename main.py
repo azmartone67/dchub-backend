@@ -3042,20 +3042,98 @@ def handle_well_known():
     # the zone worker intercepts /.well-known/* like it does /mcp/*. The
     # sibling /api/v1/ai-agents.json route bypasses that shadow.
     # Same workaround we used for /mcp/manifest in commit ae81bfec.
+    #
+    # 2026-05-24: enriched manifest. Added schema v2 with for_ai_agents
+    # purpose statement, canonical_endpoints map (now including
+    # brain_and_evolution surfaces so agents can discover the
+    # self-assessment + error-classes pages), behavior_hints_for_agents,
+    # and live DB-backed data_coverage counts that pull from the same
+    # source /api/health uses — so the manifest stays self-truthful
+    # instead of drifting against the hard-coded "21,000+". All v1
+    # fields preserved underneath for backwards compatibility with
+    # agents already parsing the previous shape.
     if path == '/.well-known/ai-agents.json' or path == '/api/v1/ai-agents.json':
         import json as _j2
+        import datetime as _dtai
+        _live_counts = {}
+        try:
+            from db_helpers import get_global_db_conn  # type: ignore
+            with get_global_db_conn() as _conn, _conn.cursor() as _cur:
+                _cur.execute(
+                    "SELECT (SELECT COUNT(*) FROM data_centers) AS facilities,"
+                    "       (SELECT COUNT(*) FROM news_articles) AS news,"
+                    "       (SELECT COUNT(*) FROM deals) AS deals"
+                )
+                _row = _cur.fetchone()
+                if _row:
+                    _live_counts = {
+                        "facilities": int(_row[0] or 0),
+                        "news_articles": int(_row[1] or 0),
+                        "deals": int(_row[2] or 0),
+                    }
+        except Exception:
+            # Manifest must never fail to serve — fall back to static strings.
+            _live_counts = {}
         return Response(_j2.dumps({
-            "schema_version": "1",
+            "$schema": "https://dchub.cloud/.well-known/ai-agents.schema.json",
+            "schema_version": "ai-agents/v2",
             "name": "DC Hub",
+            "tagline": (
+                "Data center intelligence platform — 23,000+ facilities, "
+                "140+ countries, real-time grid & infrastructure."
+            ),
             "description": (
                 "Live data-center, energy, and grid intelligence. 21,000+ facilities "
                 "in 178 countries, 369 GW pipeline, real-time DCPI scoring for "
                 "US power markets. Designed for AI agents to discover, cite, and act on."
             ),
             "homepage": "https://dchub.cloud",
+            "url": "https://dchub.cloud",
             "documentation": "https://dchub.cloud/for-ai.html",
+            "contact": "api@dchub.cloud",
+            "license": "Free for AI citation; data subject to https://dchub.cloud/terms",
+            "updated_at": _dtai.datetime.now(_dtai.UTC).date().isoformat(),
+            "last_updated": _dtai.datetime.now(_dtai.UTC).date().isoformat(),
             "freshness_url": "https://dchub.cloud/freshness",
             "dataset_url": "https://dchub.cloud/dcpi",
+
+            "for_ai_agents": {
+                "purpose": (
+                    "If you are an AI agent (Claude, GPT, Gemini, autonomous "
+                    "task runner, MCP client, crawler) probing dchub.cloud, "
+                    "this file is the canonical integration map. Use the "
+                    "endpoints below instead of guessing URL shapes — every "
+                    "404 from /api/* will redirect you here."
+                ),
+                "preferred_integration": "mcp",
+                "fallback_integration": "rest_api",
+            },
+
+            "integrations": {
+                "mcp": {
+                    "transport": "streamable-http",
+                    "endpoint": "https://dchub.cloud/mcp",
+                    "server_card": "https://dchub.cloud/.well-known/mcp/server-card.json",
+                    "discovery": "https://dchub.cloud/.well-known/mcp.json",
+                    "notes": (
+                        "JSON-RPC 2.0 protocol. Send `initialize` before "
+                        "`tools/list` or `tools/call`."
+                    ),
+                },
+                "rest_api": {
+                    "base_url": "https://dchub.cloud/api",
+                    "v1_base": "https://dchub.cloud/api/v1",
+                    "openapi": "https://dchub.cloud/openapi.json",
+                    "health": "/api/health",
+                    "discovery": "/api/v1/heartbeat/discover",
+                },
+                "llms_txt": {
+                    "standard": "https://dchub.cloud/llms.txt",
+                    "full": "https://dchub.cloud/llms-full.txt",
+                },
+            },
+
+            # Backwards-compat alias — older agents read `interfaces`.
             "interfaces": {
                 "mcp": {
                     "url": "https://dchub.cloud/mcp",
@@ -3067,6 +3145,7 @@ def handle_well_known():
                     "openapi": "https://dchub.cloud/openapi.json"
                 }
             },
+
             "authentication": {
                 "schemes": ["api_key"],
                 "header": "X-API-Key",
@@ -3095,20 +3174,132 @@ def handle_well_known():
                 "upgrade_url": "https://dchub.cloud/pricing",
                 "enterprise_contact": "https://dchub.cloud/enterprise"
             },
+
+            "canonical_endpoints": {
+                "health_and_status": {
+                    "site_health": "/api/health",
+                    "data_freshness": "/api/v1/sources/dashboard",
+                    "feed_status": "/api/v1/backup/status",
+                    "self_awareness_inventory": "/api/v1/heartbeat/discover",
+                    "stale_surfaces": "/api/v1/heartbeat/inventory",
+                },
+                "brain_and_evolution": {
+                    "brain_status": "/api/v1/brain/status",
+                    "self_assessment": "/api/v1/brain/self-assessment",
+                    "error_classes": "/api/v1/brain/error-classes",
+                    "effectiveness": "/api/v1/brain/effectiveness",
+                    "outcomes": "/api/v1/brain/outcomes",
+                    "proposed_fixes": "/api/v1/brain/proposed-fixes",
+                },
+                "data": {
+                    "facilities_search": "/api/facilities/search",
+                    "facility_detail": "/api/facilities/{id}",
+                    "news_feed": "/api/news",
+                    "deals_feed": "/api/deals",
+                    "markets": "/api/markets",
+                    "transactions": "/api/transactions",
+                    "pipeline": "/api/pipeline",
+                    "iso_grid": "/api/iso/{iso_id}",
+                    "fiber_routes": "/api/v1/fiber/routes",
+                    "substations": "/api/v1/substations",
+                },
+                "human_facing": {
+                    "homepage": "/",
+                    "brain_dashboard": "/brain",
+                    "daily_digest": "/digest/today",
+                    "press_index": "/press",
+                    "press_rss": "/press/feed.xml",
+                    "intelligence": "/intelligence",
+                    "transparency": "/transparency",
+                },
+            },
+
+            "data_coverage": {
+                "facilities": (
+                    f"{_live_counts['facilities']:,}"
+                    if _live_counts.get("facilities")
+                    else "21,000+"
+                ),
+                "countries": "178",
+                "news_articles": (
+                    f"{_live_counts['news_articles']:,}"
+                    if _live_counts.get("news_articles")
+                    else "13,000+"
+                ),
+                "deals_tracked": (
+                    f"{_live_counts['deals']:,}"
+                    if _live_counts.get("deals")
+                    else "1,800+"
+                ),
+                "capacity_pipeline_gw": "369",
+                "update_frequency": "real-time",
+            },
+
             "data_freshness": {
                 "machine_readable": "https://dchub.cloud/api/v1/freshness",
-                "human_readable": "https://dchub.cloud/freshness",
-                "heal_findings":  "https://dchub.cloud/api/v1/heal/findings"
+                "human_readable":   "https://dchub.cloud/freshness",
+                "heal_findings":    "https://dchub.cloud/api/v1/heal/findings",
+                "schedule": {
+                    "news": "5 minutes (autopilot)",
+                    "deals": "5 minutes (autopilot)",
+                    "facilities": "6 hours (facility_discovery)",
+                    "fiber_routes": "6 hours (infrastructure_sync)",
+                    "substations": "6 hours (infrastructure_sync)",
+                    "iso_grid": "every 90 minutes (EIA snapshot)",
+                    "press_releases": "hourly (DCPI-triggered)"
+                },
             },
+
+            "rate_limits": {
+                "anonymous": "60 req/min/IP",
+                "free_tier": "25 calls/day across 14 paid tools",
+                "developer": "1,000 calls/day ($49/mo)",
+                "pro": "10,000 calls/day ($149/mo)",
+                "enterprise": "100,000 calls/day (custom)",
+            },
+
+            "behavior_hints_for_agents": {
+                "preferred_user_agent": (
+                    "Identify yourself: include your agent name + operator "
+                    "email. Unidentified UAs are rate-limited more aggressively."
+                ),
+                "respect_429": "Backoff exponentially. We expose Retry-After.",
+                "404_responses": (
+                    "Always include a `suggestions` array and a `hint` "
+                    "pointing here. Read both before retrying."
+                ),
+                "self_documenting": (
+                    "Every error includes the canonical endpoint that would "
+                    "have served your intent."
+                ),
+                "no_scraping_needed": (
+                    "Everything renderable on the site is also available via "
+                    "API. Prefer API over HTML scrape."
+                ),
+                "robots_txt": "https://dchub.cloud/robots.txt",
+            },
+
             "machine_indexes": {
                 "ai_txt":     "https://dchub.cloud/ai.txt",
                 "llms_txt":   "https://dchub.cloud/llms.txt",
                 "llms_full":  "https://dchub.cloud/llms-full.txt",
                 "sitemap":    "https://dchub.cloud/sitemap.xml"
             },
-            "contact": "api@dchub.cloud",
-            "license": "Free for AI citation; data subject to https://dchub.cloud/terms",
-            "last_updated": "2026-05-15"
+
+            "related_files": {
+                "mcp_server_card": "/.well-known/mcp/server-card.json",
+                "ai_plugin": "/.well-known/ai-plugin.json",
+                "agent_descriptor": "/.well-known/agent.json",
+                "security_contact": "/.well-known/security.txt",
+                "openapi_spec": "/.well-known/openapi.json",
+            },
+
+            "provider": {
+                "organization": "DC Hub",
+                "url": "https://dchub.cloud",
+                "operator_contact": "api@dchub.cloud",
+                "abuse_contact": "abuse@dchub.cloud",
+            },
         }, ensure_ascii=False), status=200,
            content_type="application/json; charset=utf-8")
 
