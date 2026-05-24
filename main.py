@@ -23572,6 +23572,25 @@ try:
 except Exception as _rb_e:
     print(f"[main] surface_registrations_batch wiring failed: {_rb_e}", file=sys.stderr, flush=True)
 
+# Phase r34 (2026-05-24): Auto-log middleware — wires a Flask
+# before_request hook that fires auto_log("<surface_id>", "view") for
+# every GET that matches a registered surface route. Activates real
+# engagement tracking for all 58 surfaces from round33b without
+# touching their individual handlers. Skips assets + telemetry paths
+# to avoid recursion. Errors are swallowed (instrumentation must
+# never crash a request).
+try:
+    from routes.auto_log_middleware import install as _alm_install
+    _alm = _alm_install(app, log_homepage=True)
+    if _alm.get("hook_installed"):
+        print(f"[main] auto_log_middleware: tracking {_alm.get('paths_tracked')} paths "
+              f"across {_alm.get('surfaces_seen')} surfaces", flush=True)
+    else:
+        print(f"[main] auto_log_middleware not installed: {_alm.get('error')}",
+              file=sys.stderr, flush=True)
+except Exception as _alm_e:
+    print(f"[main] auto_log_middleware wiring failed: {_alm_e}", file=sys.stderr, flush=True)
+
 # Phase WWW (2026-05-16): Site Sentinel — polls every public URL and
 # surfaces breakages/staleness as brain findings so the heartbeat
 # catches them before a user reports.

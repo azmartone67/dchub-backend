@@ -320,9 +320,21 @@ def _scan_one(entry: dict) -> dict:
         # for GET, but the prior version's stream=True path had a quirk
         # where status_code reflected the first hop in some retry
         # branches. Force it.
+        # 2026-05-24 r34: browser-style User-Agent. The old "DCHub-Site-
+        # Sentinel/1.0" was triggering Cloudflare's anti-bot WAF on
+        # /grid/CAISO, /grid/ERCOT, /grid/PJM, /research/grid-intelligence
+        # (all 4 returning HTTP 403 with 8115b WAF challenge page even
+        # though real users hit them fine). Switching to a recent
+        # Chrome UA passes the bot check while keeping the request
+        # identifiable via the X-DC-Probe header for our own log analysis.
         r = requests.get(url, timeout=15, headers={
-            "User-Agent":  "DCHub-Site-Sentinel/1.0",
+            "User-Agent": ("Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) "
+                           "AppleWebKit/537.36 (KHTML, like Gecko) "
+                           "Chrome/120.0.0.0 Safari/537.36 "
+                           "DCHub-Sentinel/2.0"),
+            "X-DC-Probe": "site-sentinel",
             "Cache-Control": "no-cache",
+            "Accept": "text/html,application/json,application/xhtml+xml,*/*;q=0.8",
         }, stream=True, allow_redirects=True)
         body = r.raw.read(64 * 1024, decode_content=True) if r.raw else r.content[:64*1024]
         out["elapsed_ms"] = int((time.time() - t0) * 1000)
