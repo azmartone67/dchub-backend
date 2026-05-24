@@ -113,7 +113,7 @@ def rank_markets():
                 COUNT(DISTINCT provider)                                    AS operator_count,
                 COALESCE(AVG(power_mw), 0)::numeric(10,1)                  AS avg_mw,
                 COALESCE(MAX(power_mw), 0)::numeric(10,1)                  AS max_mw
-              FROM facilities
+              FROM discovered_facilities
              WHERE city IS NOT NULL AND city != ''
                AND state IS NOT NULL AND state != ''
                AND status = 'active'
@@ -224,14 +224,14 @@ def find_alternatives():
             return jsonify({"error": "database unavailable"}), 503
         try:
             with c.cursor(cursor_factory=psycopg2.extras.RealDictCursor) as cur:
-                # Get the target facility
+                # Get the target facility (cast id since discovered_facilities.id is SERIAL int)
                 cur.execute("""
                     SELECT id, name, provider, city, state, country,
-                           latitude, longitude, power_mw, tier, status
-                      FROM facilities
-                     WHERE id = %s
+                           latitude, longitude, power_mw, status
+                      FROM discovered_facilities
+                     WHERE CAST(id AS TEXT) = %s
                      LIMIT 1
-                """, (facility_id,))
+                """, (str(facility_id),))
                 target = cur.fetchone()
 
                 if not target:
@@ -239,6 +239,9 @@ def find_alternatives():
                         "error": "facility not found",
                         "facility_id": facility_id,
                     }), 404
+
+                # tier column doesn't exist in discovered_facilities — default to 0
+                target.setdefault('tier', 0)
 
                 # Find candidates — same market first, then expand
                 same_op_filter = "AND provider != %s" if exclude_operator else ""
@@ -248,16 +251,18 @@ def find_alternatives():
 
                 cur.execute(f"""
                     SELECT id, name, provider, city, state, country,
-                           latitude, longitude, power_mw, tier, status
-                      FROM facilities
+                           latitude, longitude, power_mw, status
+                      FROM discovered_facilities
                      WHERE city = %s AND state = %s
                        AND id != %s
-                       AND status = 'active'
+                       AND COALESCE(is_duplicate, 0) = 0
                        {same_op_filter}
                   ORDER BY power_mw DESC NULLS LAST
                      LIMIT 50
                 """, params)
                 candidates = cur.fetchall()
+                for cand in candidates:
+                    cand.setdefault('tier', 0)
         except Exception as e:
             return jsonify({"error": f"query_failed: {type(e).__name__}: {str(e)[:200]}"}), 500
 
@@ -375,23 +380,34 @@ def score_facility():
             return jsonify({"error": "database unavailable"}), 503
         try:
             with c.cursor(cursor_factory=psycopg2.extras.RealDictCursor) as cur:
+                # discovered_facilities lacks tier/sqft/certifications/connectivity
+                # — graceful absence (defaults to 0/None)
                 cur.execute("""
                     SELECT id, name, provider, city, state, country,
-                           latitude, longitude, power_mw, sqft, tier, status,
-                           certifications, connectivity, source
-                      FROM facilities WHERE id = %s LIMIT 1
-                """, (facility_id,))
+                           latitude, longitude, power_mw, status,
+                           source, source_url, confidence_score
+                      FROM discovered_facilities
+                     WHERE CAST(id AS TEXT) = %s LIMIT 1
+                """, (str(facility_id),))
                 f = cur.fetchone()
 
                 if not f:
                     return jsonify({"error": "facility not found", "facility_id": facility_id}), 404
 
+                # Default missing columns so the rest of the scoring works
+                f.setdefault('tier', 0)
+                f.setdefault('sqft', 0)
+                f.setdefault('certifications', None)
+                f.setdefault('connectivity', None)
+
                 # Get market context (count of facilities + avg MW in market)
                 cur.execute("""
                     SELECT COUNT(*) AS n, AVG(power_mw) AS avg_mw,
                            COUNT(DISTINCT provider) AS operators
-                      FROM facilities
-                     WHERE city = %s AND state = %s AND status = 'active' AND id != %s
+                      FROM discovered_facilities
+                     WHERE city = %s AND state = %s
+                       AND COALESCE(is_duplicate, 0) = 0
+                       AND id != %s
                 """, (f["city"], f["state"], f["id"]))
                 market = cur.fetchone() or {"n": 0, "avg_mw": 0, "operators": 0}
         except Exception as e:

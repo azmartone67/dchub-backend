@@ -179,15 +179,16 @@ def facility_page(id_or_slug: str):
     row = None
     try:
         with c.cursor(cursor_factory=psycopg2.extras.RealDictCursor) as cur:
-            # Try ID first, then name-based slug
+            # Round 33: query discovered_facilities (21k rows, primary table)
+            # rather than legacy facilities (12k rows). discovered_facilities
+            # has integer SERIAL IDs, no tier/sqft/certifications columns.
             cur.execute("""
-                SELECT id, name, provider, address, city, state, country, region,
-                       latitude, longitude, power_mw, sqft, status, tier,
-                       certifications, connectivity, source, source_url,
-                       confidence, last_updated
-                  FROM facilities
-                 WHERE id = %s
-                    OR LOWER(REPLACE(REPLACE(name,' ','-'),',','')) = LOWER(%s)
+                SELECT id, name, provider, address, city, state, country,
+                       latitude, longitude, power_mw, status,
+                       source, source_url, confidence_score, last_updated
+                  FROM discovered_facilities
+                 WHERE (CAST(id AS TEXT) = %s)
+                    OR LOWER(REPLACE(REPLACE(COALESCE(name,''),' ','-'),',','')) = LOWER(%s)
                  LIMIT 1
             """, (id_or_slug, id_or_slug))
             row = cur.fetchone()
@@ -201,9 +202,9 @@ def facility_page(id_or_slug: str):
             with c.cursor(cursor_factory=psycopg2.extras.RealDictCursor) as cur:
                 cur.execute("""
                     SELECT id, name, provider, power_mw
-                      FROM facilities
+                      FROM discovered_facilities
                      WHERE city = %s AND state = %s AND id != %s
-                       AND status = 'active'
+                       AND COALESCE(is_duplicate, 0) = 0
                      ORDER BY power_mw DESC NULLS LAST
                      LIMIT 8
                 """, (row['city'], row['state'], row['id']))
@@ -232,8 +233,8 @@ def _render_facility(f: dict, nearby: list) -> str:
     country   = f.get('country') or ''
     location  = ", ".join([s for s in (city, state, country) if s]) or 'Location unknown'
     power_mw  = _round(f.get('power_mw'), 1)
-    sqft      = f.get('sqft') or 0
-    tier      = f.get('tier') or 0
+    sqft      = f.get('sqft') or 0          # may be absent in discovered_facilities
+    tier      = f.get('tier') or 0          # may be absent
     status    = f.get('status') or 'unknown'
     lat       = _round(f.get('latitude'), 5)
     lon       = _round(f.get('longitude'), 5)
@@ -365,10 +366,10 @@ def market_page(slug: str):
     try:
         with c.cursor(cursor_factory=psycopg2.extras.RealDictCursor) as cur:
             cur.execute("""
-                SELECT id, name, provider, power_mw, status, tier
-                  FROM facilities
+                SELECT id, name, provider, power_mw, status
+                  FROM discovered_facilities
                  WHERE (LOWER(city) = LOWER(%s) AND UPPER(state) = %s)
-                    OR LOWER(city || '-' || state) = LOWER(%s)
+                    OR LOWER(COALESCE(city,'') || '-' || COALESCE(state,'')) = LOWER(%s)
                  ORDER BY power_mw DESC NULLS LAST
                  LIMIT 200
             """, (city_guess, state_guess, slug))
@@ -382,7 +383,7 @@ def market_page(slug: str):
                         COUNT(DISTINCT provider)      AS operator_count,
                         AVG(power_mw)                 AS avg_mw,
                         MAX(power_mw)                 AS max_mw
-                      FROM facilities
+                      FROM discovered_facilities
                      WHERE LOWER(city) = LOWER(%s) AND UPPER(state) = %s
                 """, (city_guess, state_guess))
                 stats = cur.fetchone()
@@ -629,8 +630,9 @@ def sitemap_facilities():
         try:
             with c.cursor() as cur:
                 cur.execute("""
-                    SELECT id, last_updated FROM facilities
-                     WHERE status = 'active'
+                    SELECT id, last_updated FROM discovered_facilities
+                     WHERE COALESCE(is_duplicate, 0) = 0
+                       AND latitude IS NOT NULL
                      ORDER BY power_mw DESC NULLS LAST
                      LIMIT 50000
                 """)
@@ -663,9 +665,10 @@ def sitemap_markets():
             with c.cursor() as cur:
                 cur.execute("""
                     SELECT LOWER(REPLACE(city,' ','-') || '-' || LOWER(state)) AS slug
-                      FROM facilities
+                      FROM discovered_facilities
                      WHERE city IS NOT NULL AND state IS NOT NULL
-                       AND status = 'active' AND country IN ('US','USA','United States')
+                       AND COALESCE(is_duplicate, 0) = 0
+                       AND country IN ('US','USA','United States')
                      GROUP BY city, state
                     HAVING COUNT(*) >= 3
                 """)

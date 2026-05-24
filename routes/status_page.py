@@ -90,13 +90,15 @@ def http_probes():
     }), 200
 
 
-@status_page_bp.get("/status.json")
+@status_page_bp.get("/system-status.json")
+@status_page_bp.get("/status.json")  # legacy alias — may be shadowed by CF
 def http_status_json():
     """Lightweight status JSON for monitoring tools. Same shape as /api/v1/status/probes."""
     return http_probes()
 
 
-@status_page_bp.get("/status")
+@status_page_bp.get("/system-status")
+@status_page_bp.get("/status")  # legacy alias — may be shadowed by CF redirect to status.dchub.cloud
 def http_status_page():
     """HTML status dashboard. Polls services from the browser so results
     reflect what users actually experience from their networks."""
