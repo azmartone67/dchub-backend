@@ -197,6 +197,7 @@ def compute_dcpi_score():
     }
 
 
+# AUTO-REPAIR: duplicate route '/run' also in ai_orchestrator.py:916 — review and remove one
 @iso_nordpool_intl_bp.route("/run", methods=["POST", "GET"])
 def http_run():
     summary = run_extraction()
@@ -221,6 +222,7 @@ def http_snapshot():
 def http_dcpi_score():
     return jsonify(compute_dcpi_score()), 200
 
+# AUTO-REPAIR: duplicate route '/health' also in index_api.py:516 — review and remove one
 
 @iso_nordpool_intl_bp.route("/health", methods=["GET"])
 def http_health():
