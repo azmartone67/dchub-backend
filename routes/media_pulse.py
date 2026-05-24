@@ -296,27 +296,61 @@ def api_topic_pulse():
     if c is None: return jsonify(out), 200
     try:
         with c.cursor(cursor_factory=psycopg2.extras.RealDictCursor) as cur:
+            # 2026-05-24 r34e: UNION across news + news_articles + announcements
+            # with COALESCE on published_date / published_at. The previous
+            # query only read `news` (15-col legacy table, ~3 rows/48h) and
+            # missed `news_articles` (the real ingest target with 13,487+
+            # rows). Result: topic_pulse stuck at 3 news items in 48h even
+            # though the platform ingests 50+/day. Also widened the window
+            # from 48h → 7d so quieter-news days don't blank the surface.
             try:
                 cur.execute("""
-                    SELECT COUNT(*) AS n FROM news
-                     WHERE published_date >= NOW() - INTERVAL '48 hours'
+                    SELECT COUNT(*) AS n FROM (
+                        SELECT 1 FROM news
+                         WHERE published_date >= NOW() - INTERVAL '7 days'
+                        UNION ALL
+                        SELECT 1 FROM news_articles
+                         WHERE published_at >= NOW() - INTERVAL '7 days'
+                        UNION ALL
+                        SELECT 1 FROM announcements
+                         WHERE COALESCE(published_at, published_date)
+                               >= NOW() - INTERVAL '7 days'
+                    ) AS combined
                 """)
                 out["news_last_48h"] = int((cur.fetchone() or {"n":0})["n"] or 0)
             except Exception:
                 pass
 
-            # Pull recent news headlines + match against DCPI market names
-            try:
-                cur.execute("""
-                    SELECT title, summary, source, published_date, url
-                      FROM news
-                     WHERE published_date >= NOW() - INTERVAL '48 hours'
-                       AND title IS NOT NULL
-                     ORDER BY published_date DESC LIMIT 100
-                """)
-                news_items = cur.fetchall()
-            except Exception:
-                news_items = []
+            # Pull recent headlines from ALL three tables.
+            news_items: list = []
+            for tbl, date_col in (
+                ("news",          "published_date"),
+                ("news_articles", "published_at"),
+                ("announcements", "COALESCE(published_at, published_date)"),
+            ):
+                try:
+                    cur.execute(f"""
+                        SELECT title, COALESCE(summary, '') AS summary,
+                               COALESCE(source, '') AS source,
+                               {date_col} AS published_date,
+                               COALESCE(url, '') AS url
+                          FROM {tbl}
+                         WHERE {date_col} >= NOW() - INTERVAL '7 days'
+                           AND title IS NOT NULL
+                         ORDER BY {date_col} DESC LIMIT 200
+                    """)
+                    news_items.extend(cur.fetchall())
+                except Exception:
+                    continue
+            # Dedup by title to avoid double-matching the same story
+            seen_titles: set = set()
+            unique_items: list = []
+            for n in news_items:
+                t = (n.get("title") or "").strip().lower()
+                if t and t not in seen_titles:
+                    seen_titles.add(t)
+                    unique_items.append(n)
+            news_items = unique_items[:300]
 
             # Pull DCPI market names for intersection
             market_names = {}
