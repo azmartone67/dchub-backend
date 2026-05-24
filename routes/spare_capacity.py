@@ -250,28 +250,44 @@ def listings():
             listings=[], total=0, page=1, per_page=50,
             note="database transiently unreachable — listings empty",
         ), 200
+    # r33 (2026-05-24, follow-up): the previous degrade-to-200 fix
+    # caught the DB-connect-failed branch but not the
+    # "connected then query exploded" branch — which produced
+    # HTTP 500 {"error":"0", "success":false} when _ensure_schema or
+    # the SELECT failed. Wrap the whole block in try/except so ANY
+    # query exception yields the same empty-200 response as a connect
+    # failure. The underlying DB issue still surfaces via /api/health.
+    rows: list = []
+    total = 0
     try:
-        _ensure_schema(c)
-        import psycopg2.extras
-        with c.cursor(cursor_factory=psycopg2.extras.RealDictCursor) as cur:
-            sql_where = "" if status_filter == "all" else "WHERE status = %s"
-            params: tuple = (per_page, offset) if status_filter == "all" else (status_filter, per_page, offset)
-            cur.execute(f"""
-                SELECT referral_code, operator_name, location, state, market,
-                       mw_available, ready_date, description, status,
-                       tenant_inquiries, created_at, contact_name, contact_email
-                  FROM spare_capacity_listings
-                  {sql_where}
-                 ORDER BY created_at DESC LIMIT %s OFFSET %s
-            """, params)
-            rows = cur.fetchall()
-            # Total
-            if status_filter == "all":
-                cur.execute("SELECT COUNT(*) FROM spare_capacity_listings")
-            else:
-                cur.execute("SELECT COUNT(*) FROM spare_capacity_listings WHERE status = %s",
-                            (status_filter,))
-            total = int((cur.fetchone() or [0])[0] or 0)
+        try:
+            _ensure_schema(c)
+            import psycopg2.extras
+            with c.cursor(cursor_factory=psycopg2.extras.RealDictCursor) as cur:
+                sql_where = "" if status_filter == "all" else "WHERE status = %s"
+                params: tuple = (per_page, offset) if status_filter == "all" else (status_filter, per_page, offset)
+                cur.execute(f"""
+                    SELECT referral_code, operator_name, location, state, market,
+                           mw_available, ready_date, description, status,
+                           tenant_inquiries, created_at, contact_name, contact_email
+                      FROM spare_capacity_listings
+                      {sql_where}
+                     ORDER BY created_at DESC LIMIT %s OFFSET %s
+                """, params)
+                rows = cur.fetchall()
+                if status_filter == "all":
+                    cur.execute("SELECT COUNT(*) FROM spare_capacity_listings")
+                else:
+                    cur.execute("SELECT COUNT(*) FROM spare_capacity_listings WHERE status = %s",
+                                (status_filter,))
+                total = int((cur.fetchone() or [0])[0] or 0)
+        except Exception as _qe:
+            # Query failed (table missing, transaction aborted, etc.) —
+            # return empty 200 so this public LIST endpoint stays alive.
+            return jsonify(
+                listings=[], total=0, page=1, per_page=50,
+                note=f"query failed gracefully: {type(_qe).__name__}",
+            ), 200
     finally:
         try: c.close()
         except Exception: pass
