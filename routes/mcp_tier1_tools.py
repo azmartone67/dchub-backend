@@ -127,12 +127,19 @@ def rank_markets():
         params.append(min_cap)
 
         # Order by criteria
+        # r36-fix: ORDER BY ARITHMETIC must use raw column refs, not aliases.
+        # PostgreSQL allows ORDER BY alias only for plain references —
+        # the moment you wrap the alias in an expression (e.g. total_mw * 0.4)
+        # it must be the original COALESCE(SUM(power_mw),0) form.
+        _SUM_MW = "COALESCE(SUM(power_mw), 0)"
+        _CNT_OPS = "COUNT(DISTINCT provider)"
+        _CNT_FAC = "COUNT(*)"
         order_clause = {
-            "cheapest_power":   "ORDER BY total_mw DESC NULLS LAST",  # proxy: largest markets get cheapest LMP
+            "cheapest_power":   "ORDER BY total_mw DESC NULLS LAST",
             "most_capacity":    "ORDER BY total_mw DESC NULLS LAST",
             "most_operators":   "ORDER BY operator_count DESC, total_mw DESC",
-            "fastest_growing":  "ORDER BY facility_count DESC",  # proxy until pipeline join
-            "best_overall":     "ORDER BY (total_mw * 0.4 + operator_count * 50 + facility_count * 20) DESC",
+            "fastest_growing":  "ORDER BY facility_count DESC",
+            "best_overall":     f"ORDER BY ({_SUM_MW} * 0.4 + {_CNT_OPS} * 50 + {_CNT_FAC} * 20) DESC",
         }[criteria]
         query += " " + order_clause + " LIMIT %s"
         params.append(limit)

@@ -22848,6 +22848,54 @@ try:
 except Exception as _bw_e:
     print(f"[main] brain_warming_bp register failed: {_bw_e}", flush=True)
 
+# Phase ZZZZZ-round36 (2026-05-24): integrations/mcp clean landing
+try:
+    from routes.integrations_landing import integrations_landing_bp
+    app.register_blueprint(integrations_landing_bp)
+    print("[main] integrations_landing_bp registered: /integrations/mcp (clean, no 308 leak)", flush=True)
+except Exception as _il_e:
+    print(f"[main] integrations_landing_bp register failed: {_il_e}", flush=True)
+
+# Phase ZZZZZ-round36 (2026-05-24): openapi.json with dynamic counts
+try:
+    from routes.openapi_dynamic import openapi_dynamic_bp
+    app.register_blueprint(openapi_dynamic_bp)
+    print("[main] openapi_dynamic_bp registered: /openapi-live.json /openapi-counts", flush=True)
+except Exception as _od_e:
+    print(f"[main] openapi_dynamic_bp register failed: {_od_e}", flush=True)
+
+# Phase ZZZZZ-round36 (2026-05-24): AI Compute Capacity Index
+try:
+    from routes.ai_capacity_index import ai_capacity_index_bp
+    app.register_blueprint(ai_capacity_index_bp)
+    print("[main] ai_capacity_index_bp registered: /api/v1/ai-capacity-index + landing", flush=True)
+except Exception as _aci_e:
+    print(f"[main] ai_capacity_index_bp register failed: {_aci_e}", flush=True)
+
+# Phase ZZZZZ-round36 (2026-05-24): Hyperscaler AI Deal Tracker
+try:
+    from routes.hyperscaler_deals import hyperscaler_deals_bp
+    app.register_blueprint(hyperscaler_deals_bp)
+    print("[main] hyperscaler_deals_bp registered: /api/v1/hyperscaler-deals + landing", flush=True)
+except Exception as _hd_e:
+    print(f"[main] hyperscaler_deals_bp register failed: {_hd_e}", flush=True)
+
+# Phase ZZZZZ-round36 (2026-05-24): A2A agent.json + skill manifest
+try:
+    from routes.agent_a2a import agent_a2a_bp
+    app.register_blueprint(agent_a2a_bp)
+    print("[main] agent_a2a_bp registered: /.well-known/agent.json (A2A discovery)", flush=True)
+except Exception as _a2a_e:
+    print(f"[main] agent_a2a_bp register failed: {_a2a_e}", flush=True)
+
+# Phase ZZZZZ-round36 (2026-05-24): MCP funnel leak diagnostic
+try:
+    from routes.mcp_funnel_diag import mcp_funnel_bp
+    app.register_blueprint(mcp_funnel_bp)
+    print("[main] mcp_funnel_bp registered: /api/v1/mcp/funnel", flush=True)
+except Exception as _fn_e:
+    print(f"[main] mcp_funnel_bp register failed: {_fn_e}", flush=True)
+
 # Phase ZZZZZ-round33 (2026-05-24): public status page — trust signal for
 # enterprise buyers. Polls all services from the browser.
 try:
