@@ -7,7 +7,27 @@ credential rotations, manual signups). Updated 2026-05-23 (round 24).
 
 ## 🔴 P0 — Site stability
 
-### 1. Kill the Cloudflare zone-level Worker `4.34.6-oauth-404`
+### 1. ⚠️ CORRECTION — workers are LEGITIMATE, do NOT delete (2026-05-23 evening)
+
+After reading both workers' source code, the earlier "delete the rogue worker" advice was wrong. Both `dchubapiproxy` and `mcp-proxy` are intentional infrastructure:
+
+| Worker | Role |
+|---|---|
+| `dchub-frontend` Pages (v4.24.0-switzerland) | `dchub.cloud/*`. Full failover Railway → Render → KV → 503. ✅ healthy |
+| `dchubapiproxy` (v4.8.5-mcp-landing) | `api.dchub.cloud/*`. KV cache, Stripe webhooks, API key mint, MCP tier gating, Vectorize semantic search. Needs Render failover patch. |
+| `mcp-proxy` | `dchub.cloud/mcp`, `/health`. Pass-through to dchub-mcp-server backend. Needs `/mcp/manifest` inline static patch. |
+
+The 503s seen were legitimate "backend exhausted" responses, not rogue interception. Real fixes are in `PATCHES/` directory:
+
+- `PATCHES/mcp-proxy-add-manifest.md` — adds `/mcp/manifest` inline so Claude.ai connector validates (~5 min)
+- `PATCHES/dchubapiproxy-add-render-failover.md` — adds STEP 2.5 Render failover so `api.dchub.cloud` matches `dchub.cloud` resilience (~10 min)
+
+Both deploy via the CF dashboard editor (paste blocks → Save and deploy). Do not delete any workers.
+
+<details>
+<summary>⚠️ Old (deprecated) Item 1 instructions — preserved for context, do NOT follow</summary>
+
+### 1-orig. Kill the Cloudflare zone-level Worker `4.34.6-oauth-404`
 
 **Why it matters:** That worker intercepts POST requests to
 `dchub.cloud/api/*` and returns stale 503 errors even when Railway
@@ -38,7 +58,14 @@ across the site.
 Pages worker for this repo. If unsure, the route's worker name should
 show "dchub-frontend" or similar Pages-flavored naming.
 
-### 1b. There's ALSO a `4.8.5-mcp-landing` zone worker on `/mcp/*`
+</details>
+
+### 1b. (deprecated) There's ALSO a `4.8.5-mcp-landing` zone worker on `/mcp/*`
+
+[Also wrong — see correction at top of Item 1. Real fix is `PATCHES/mcp-proxy-add-manifest.md`.]
+
+<details>
+<summary>Old text preserved for context</summary>
 
 A second out-of-repo worker intercepts `/mcp/manifest` and returns 404
 (via Express, x-powered-by header). Claude.ai's connector dialog
@@ -72,6 +99,8 @@ Claude Desktop or Claude.ai can use this URL directly:
 - **Protocol version:** 2024-11-05 (also supports 2025-06-18)
 
 Verified working with curl + tested initialize/tools/list handshake.
+
+</details>
 
 ### 2. R2 bucket CORS for `/daily` page
 

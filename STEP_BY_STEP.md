@@ -8,7 +8,41 @@ Date: 2026-05-23 (round 25). Pairs with `USER_ACTIONS.md`.
 
 ---
 
-## 🔴 Item 1: Delete the rogue Cloudflare zone worker `4.34.6-oauth-404`
+## 🔴 Item 1: ⚠️ CORRECTION (2026-05-23 evening) — DO NOT delete any workers
+
+**Earlier instructions to delete `4.34.6-oauth-404` and `4.8.5-mcp-landing` were WRONG.** After reading the actual worker source code:
+
+| Worker | Role | Status |
+|---|---|---|
+| `dchub-frontend` (v4.24.0-switzerland) | Pages worker on `dchub.cloud/*`. Full failover Railway → Render → KV stale → 503. | ✅ Healthy |
+| `dchubapiproxy` (v4.8.5-mcp-landing) | API gateway on `api.dchub.cloud`. KV cache, Stripe webhooks, API key minting, MCP tier gating, Vectorize semantic search, news/press HTML builders. | ⚠️ Needs Render failover patch |
+| `mcp-proxy` | Pass-through to `dchub-mcp-server` Railway backend for `dchub.cloud/mcp`. Serves landing page for browser GETs. | ⚠️ Needs `/mcp/manifest` inline patch |
+
+**The 503s you saw were legitimate failover messages.** They fire only when Railway + Render + KV stale cache are all unavailable — a backend overload signal, not a worker problem. **Deleting any worker would break the platform.**
+
+### Real fixes (replace the old delete instructions)
+
+Two code patches to existing workers, both documented step-by-step in the repo:
+
+| Patch | What it fixes | Time |
+|---|---|---|
+| [`PATCHES/mcp-proxy-add-manifest.md`](PATCHES/mcp-proxy-add-manifest.md) | Inline `/mcp/manifest` static handler so Claude.ai connector validation passes | ~5 min |
+| [`PATCHES/dchubapiproxy-add-render-failover.md`](PATCHES/dchubapiproxy-add-render-failover.md) | Add Render failover (STEP 2.5) so `api.dchub.cloud` GETs match `dchub.cloud` resilience | ~10 min |
+
+Both deploy via the Cloudflare dashboard editor: **Workers & Pages → worker name → Edit code → paste blocks → Save and deploy**.
+
+Below is the OLD (incorrect) section preserved as historical reference. Do NOT follow it.
+
+<details>
+<summary>⚠️ Old (deprecated) Item 1 instructions — DO NOT FOLLOW</summary>
+
+(The old delete-the-worker instructions assumed the workers were rogue. They are not. Use the PATCHES/ above instead.)
+
+</details>
+
+---
+
+## 🟠 Item 1-orig: (deprecated) Delete the rogue Cloudflare zone worker
 
 **Time:** 3-5 minutes
 **Why:** This worker intercepts POST requests to `dchub.cloud/api/*`
