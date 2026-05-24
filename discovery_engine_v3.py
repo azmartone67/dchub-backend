@@ -962,7 +962,7 @@ class DiscoveryEngine:
                 c.execute("""
                     INSERT INTO announcements 
                     (id, title, summary, url, source, published_date, discovered_at)
-                    VALUES (%s, %s, %s, %s, %s, %s, %s)
+                    VALUES (%s, %s, %s, %s, %s, %s, %s) ON CONFLICT DO NOTHING
                 """, (
                     ann['id'], ann['title'], ann['summary'],
                     ann['url'], ann['source'], ann['published_date'],
@@ -1064,7 +1064,7 @@ class DiscoveryEngine:
                         (id, name, provider, address, city, state, country, region,
                          latitude, longitude, power_mw, sqft, source, source_id,
                          source_url, raw_data, confidence, first_seen, last_updated)
-                        VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s)
+                        VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s) ON CONFLICT DO NOTHING
                     """, (
                         facility_id, f.get('name'), f.get('provider'),
                         f.get('address'), f.get('city'), f.get('state'),
