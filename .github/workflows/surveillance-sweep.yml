@@ -1,0 +1,66 @@
+name: Surveillance Sweep (pages / backup / brain / media / heartbeat / health)
+
+# r29b 2026-05-24 — minimal v2 sweep. Composes existing endpoints
+# (read-only) via /api/v1/sentinel/sweep. Severity != green emits
+# ::warning:: in GHA logs so problems surface in run summaries.
+
+on:
+  schedule:
+    # Off-cycle from heartbeat-auto (:08,:23,:38,:53) and auto-rollback
+    # (:00/:15) — picks :11,:26,:41,:56 — 15 min cadence.
+    - cron: '11-59/15 * * * *'
+  workflow_dispatch: {}
+
+permissions:
+  contents: read
+
+env:
+  BASE: https://dchub-backend-production.up.railway.app
+
+jobs:
+  sweep:
+    runs-on: ubuntu-latest
+    timeout-minutes: 3
+    steps:
+      - name: Poll /sentinel/sweep
+        id: sweep
+        run: |
+          set -euo pipefail
+          response=$(curl -sS --max-time 60 "$BASE/api/v1/sentinel/sweep" \
+            || echo '{"severity":"red","error":"curl_fail"}')
+          echo "$response" > sweep.json
+          severity=$(echo "$response" | python3 -c "
+          import json, sys
+          try: print(json.load(sys.stdin).get('severity','unknown'))
+          except Exception: print('unknown')
+          ")
+          echo "severity=$severity" >> "$GITHUB_OUTPUT"
+          echo "::notice::Surveillance sweep severity=$severity"
+
+      - name: Surface findings (amber / red)
+        if: steps.sweep.outputs.severity != 'green'
+        run: |
+          python3 - <<'PY'
+          import json
+          with open("sweep.json") as f:
+              d = json.load(f)
+          actions = d.get("actions") or []
+          print(f"::warning::sweep severity={d.get('severity')} actions={len(actions)}")
+          from collections import defaultdict
+          by_cat = defaultdict(list)
+          for a in actions:
+              by_cat[a.get("category","other")].append(a)
+          for cat, items in by_cat.items():
+              print(f"::warning::[{cat}] {len(items)} finding(s):")
+              for a in items[:5]:
+                  print(f"::warning::  - [{a.get('priority','?')}] {a.get('issue','')}: {a.get('detail','')[:200]}")
+          for name, check in (d.get("checks") or {}).items():
+              if isinstance(check, dict) and check.get("ok") is False:
+                  print(f"::warning::check.{name}: NOT OK -> {json.dumps(check)[:300]}")
+          PY
+
+      - name: Hard fail on red
+        if: steps.sweep.outputs.severity == 'red'
+        run: |
+          echo "::error::Sweep RED — high/critical findings present."
+          exit 1

@@ -23395,6 +23395,19 @@ try:
 except Exception as _e:
     print(f"[main] spare_capacity register failed: {_e}", file=sys.stderr)
 
+# Phase r29b (2026-05-24): Surveillance Sweep v2 — minimal read-only
+# rollup. Composes existing endpoints (sentinel/findings, backup/status,
+# brain/status, media/press-health, heartbeat/inventory, api/health)
+# via Flask test_client into one /api/v1/sentinel/sweep payload.
+# Polled by surveillance-sweep.yml every 15 min. Defensive try/except
+# with print-to-stderr so a broken sweep can never block boot.
+try:
+    from routes.surveillance_sweep import surveillance_bp as _sweep_bp
+    app.register_blueprint(_sweep_bp)
+    print("[main] surveillance_sweep blueprint registered", flush=True)
+except Exception as _ssw_e:
+    print(f"[main] surveillance_sweep wiring failed: {_ssw_e}", file=sys.stderr, flush=True)
+
 # Phase WWW (2026-05-16): Site Sentinel — polls every public URL and
 # surfaces breakages/staleness as brain findings so the heartbeat
 # catches them before a user reports.
