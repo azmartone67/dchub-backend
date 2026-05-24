@@ -157,6 +157,86 @@ def sentinel_sweep():
                 "issue": f"stale-surface ratio {checks['heartbeat']['stale_ratio'] * 100:.0f}%",
             })
 
+        # HTTP error tracking (r29d) — exposes recent 4xx/5xx captured
+        # by brain_http_capture middleware into a 1000-entry ring buffer.
+        # We treat sustained 5xx as a high-priority signal.
+        body, _ = _call(tc, "/api/v1/brain/http-errors")
+        recent = body.get("recent") or []
+        count_5xx_15m = sum(
+            1 for e in recent
+            if isinstance(e, dict) and int(e.get("status", 0)) >= 500
+        )
+        count_4xx_15m = sum(
+            1 for e in recent
+            if isinstance(e, dict) and 400 <= int(e.get("status", 0)) < 500
+        )
+        checks["errors"] = {
+            "ok": count_5xx_15m < 5,
+            "buffer_total": body.get("count"),
+            "recent_5xx": count_5xx_15m,
+            "recent_4xx": count_4xx_15m,
+        }
+        if count_5xx_15m >= 10:
+            actions.append({
+                "category": "errors",
+                "priority": "high",
+                "issue": f"{count_5xx_15m} 5xx in recent buffer",
+                "detail": "sustained server-side errors — check brain_layer21 autopilot",
+            })
+        elif count_5xx_15m >= 5:
+            actions.append({
+                "category": "errors",
+                "priority": "medium",
+                "issue": f"{count_5xx_15m} 5xx in recent buffer",
+            })
+
+        # Security signals (r29d) — runs the brain security detectors via
+        # lazy import (NOT at module load — that pattern was tried in r29
+        # v1 and may have contributed to the boot loop). Each detector
+        # wrapped in its own try/except so a single failing detector can't
+        # break the sweep. The detectors self-probe localhost via urllib;
+        # capping at 5 detectors and time-bounding via per-call timeouts.
+        sec_findings = []
+        sec_errors = []
+        try:
+            from routes import brain_security_detectors as _bsd
+            for name in (
+                "check_admin_endpoint_open",
+                "check_paywall_holes",
+                "check_security_header_drift",
+                "check_secret_pattern_in_body",
+                "check_repeated_admin_401",
+            ):
+                fn = getattr(_bsd, name, None)
+                if not callable(fn):
+                    continue
+                try:
+                    rows = fn() or []
+                    for r in rows:
+                        if isinstance(r, dict):
+                            r.setdefault("source", name)
+                            sec_findings.append(r)
+                except Exception as _e:
+                    sec_errors.append(f"{name}: {type(_e).__name__}")
+        except Exception as _e:
+            sec_errors.append(f"import: {type(_e).__name__}")
+        checks["security"] = {
+            "ok": len(sec_findings) == 0,
+            "detectors_run": 5 - len(sec_errors),
+            "findings_count": len(sec_findings),
+            "findings_sample": sec_findings[:5],
+            "detector_errors": sec_errors,
+        }
+        if len(sec_findings) > 0:
+            # Security findings are always high — these are real holes.
+            for f in sec_findings[:3]:
+                actions.append({
+                    "category": "security",
+                    "priority": "high",
+                    "issue": f.get("issue") or f.get("source", "security finding"),
+                    "detail": (f.get("detail") or "")[:200],
+                })
+
         # Data-drift (NEW r29c) — flags >5% row drops on headline tables
         # vs recorded baseline. Surfaces silent data-loss / migrations.
         body, _ = _call(tc, "/api/v1/sentinel/drift")

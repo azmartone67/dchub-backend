@@ -151,7 +151,7 @@ _MANIFEST: list[dict] = [
     {"path": "/glossary",                "category": "normal", "min_bytes": 1500, "label": "Glossary"},
 
     # Healthcheck APIs
-    {"path": "/api/v1/brain/heartbeat",  "category": "high",   "min_bytes":  500, "label": "Brain Heartbeat"},
+    {"path": "/api/v1/brain/heartbeat",  "category": "high",   "min_bytes":  500, "label": "Brain Heartbeat", "expected_status": [200, 202]},  # 202 when cached/stale-while-revalidate (r28)
     {"path": "/api/v1/dcpi/scores?limit=1","category": "high","min_bytes": 200, "label": "DCPI Scores API"},
     {"path": "/api/v1/surfaces",         "category": "normal", "min_bytes":  300, "label": "Surfaces API"},
     {"path": "/api/v1/mcp/growth",       "category": "normal", "min_bytes":  200, "label": "MCP Growth"},
@@ -344,8 +344,17 @@ def _scan_one(entry: dict) -> dict:
         try: r.close()
         except Exception: pass
 
-        # HTTP status / size gates first (same as before)
-        if out["status_code"] != 200:
+        # HTTP status / size gates first.
+        # 2026-05-24: support per-entry `expected_status` so routes that
+        # intentionally return non-200 (e.g. /api/v1/brain/heartbeat's 202
+        # stale-while-revalidate path) don't get flagged as unhealthy.
+        # Accepts int or list/tuple of ints; defaults to [200].
+        expected = entry.get("expected_status", 200)
+        if isinstance(expected, (list, tuple, set)):
+            allowed = set(expected)
+        else:
+            allowed = {expected}
+        if out["status_code"] not in allowed:
             out["reason"] = f"http_status:{out['status_code']}"
             return out
         if out["bytes"] < min_bytes:

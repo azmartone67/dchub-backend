@@ -352,6 +352,9 @@ def render_grid_hub_html(cards, schema, tier):
     <p>Data: EIA Open Data API · Updated {datetime.datetime.utcnow().strftime('%Y-%m-%d %H:%M UTC')}</p>
     <p><a href="/" style="color:#ff6b35">← DC Hub home</a> · <a href="/api/docs" style="color:#ff6b35">API access</a></p>
   </footer>
+  <!-- 2026-05-24: site_sentinel nav_missing finding — include dchub-nav.js
+       so users can navigate away from /grid without back button. -->
+  <script src="/js/dchub-nav.js" defer></script>
 </body>
 </html>'''
 
