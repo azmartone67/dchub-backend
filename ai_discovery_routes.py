@@ -673,7 +673,16 @@ Allow: /
 # MCP: https://dchub.cloud/.well-known/mcp/server-card.json
 # AGENTS.md: https://dchub.cloud/AGENTS.md
 
+# Sitemaps (r35 2026-05-24): include round-33 SEO sitemap-index and
+# per-property sub-sitemaps published from api.dchub.cloud (Flask).
 Sitemap: https://dchub.cloud/sitemap.xml
+Sitemap: https://api.dchub.cloud/sitemap-index.xml
+Sitemap: https://api.dchub.cloud/sitemap-facilities.xml
+Sitemap: https://api.dchub.cloud/sitemap-markets.xml
+Sitemap: https://api.dchub.cloud/sitemap-grids.xml
+
+# Host preference
+Host: dchub.cloud
 """
         return Response(content, mimetype='text/plain; charset=utf-8', headers={'Access-Control-Allow-Origin': '*'})
 

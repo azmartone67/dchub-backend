@@ -90,38 +90,41 @@ def detectors():
         out["error"] = "no_db_or_psycopg2"
         return jsonify(out), 200
 
-    try:
-        with _pg.connect(_dsn()) as c, c.cursor() as cur:
-            # tier 1 adoption — uses mcp_tool_usage table if present
-            try:
-                cur.execute("""
-                    SELECT tool_name, COUNT(*) AS n
-                    FROM mcp_tool_usage
-                    WHERE tool_name IN ('rank_markets','find_alternatives','score_facility')
-                      AND ts > NOW() - INTERVAL '7 days'
-                    GROUP BY tool_name
-                """)
-                out["detectors"]["tier1_mcp_adoption_7d"] = {r[0]: r[1] for r in cur.fetchall()}
-            except Exception as e:
-                out["detectors"]["tier1_mcp_adoption_7d"] = {"_error": type(e).__name__}
-
-            # api_usage_meter (round 34 stripe_metered table)
-            try:
-                cur.execute(
-                    "SELECT COUNT(*) FROM api_usage_meter WHERE ts > NOW() - INTERVAL '24 hours'")
-                out["detectors"]["api_calls_24h"] = cur.fetchone()[0]
-            except Exception:
-                out["detectors"]["api_calls_24h"] = "n/a"
-
-            # facilities population for OG image generation viability
-            try:
-                cur.execute("SELECT COUNT(*) FROM discovered_facilities")
-                out["detectors"]["discovered_facilities_total"] = cur.fetchone()[0]
-            except Exception:
-                out["detectors"]["discovered_facilities_total"] = "n/a"
-
-    except Exception as e:
-        out["error"] = f"{type(e).__name__}: {e}"
+    # Each query runs in its OWN connection so a single failure (e.g.
+    # missing table) doesn't poison the rest. psycopg2 puts the txn into
+    # an aborted state on error; rollback per-query also works but a
+    # fresh conn is more bulletproof for a diagnostics endpoint.
+    QUERIES = [
+        ("tier1_mcp_adoption_7d", """
+            SELECT tool_name, COUNT(*) AS n
+            FROM mcp_tool_usage
+            WHERE tool_name IN ('rank_markets','find_alternatives','score_facility')
+              AND ts > NOW() - INTERVAL '7 days'
+            GROUP BY tool_name
+        """, "dict"),
+        ("api_calls_24h",
+            "SELECT COUNT(*) FROM api_usage_meter WHERE ts > NOW() - INTERVAL '24 hours'",
+            "scalar"),
+        ("discovered_facilities_total",
+            "SELECT COUNT(*) FROM discovered_facilities",
+            "scalar"),
+        ("discovered_with_mw",
+            "SELECT COUNT(*) FROM discovered_facilities WHERE power_mw IS NOT NULL AND power_mw > 0",
+            "scalar"),
+        ("sitemap_url_count_facilities",
+            "SELECT COUNT(*) FROM discovered_facilities WHERE name IS NOT NULL",
+            "scalar"),
+    ]
+    for label, sql, shape in QUERIES:
+        try:
+            with _pg.connect(_dsn()) as c, c.cursor() as cur:
+                cur.execute(sql)
+                if shape == "dict":
+                    out["detectors"][label] = {r[0]: r[1] for r in cur.fetchall()}
+                else:
+                    out["detectors"][label] = cur.fetchone()[0]
+        except Exception as e:
+            out["detectors"][label] = {"_error": type(e).__name__, "msg": str(e)[:140]}
 
     # OG image health probe
     og_probe = _hit(f"{BASE}/static/og/default.png", timeout=5)
