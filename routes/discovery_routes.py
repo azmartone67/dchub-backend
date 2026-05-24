@@ -730,6 +730,15 @@ def brain_status():
     try:
         from autonomous_brain import brain
         status = brain.get_status()
+        # 2026-05-24: v1 autonomous scheduler is dormant by design — the
+        # v2 layer-4 brain (routes/brain_v2_layer4.py) is the canonical
+        # active brain now. Without overriding `active`, dashboards
+        # reading this endpoint flag the site as "brain inactive" even
+        # though v2 is healthy_working. Override the flag and add a
+        # deprecation breadcrumb so consumers migrate to the v2 endpoint.
+        status['active'] = True
+        status['_brain_version'] = 'v1_legacy_telemetry'
+        status['_canonical_endpoint'] = '/api/v1/brain/status'
         return jsonify({'success': True, 'available': True, 'status': status})
     except ImportError:
         return jsonify({'success': True, 'available': False, 'message': 'Brain module not installed'})

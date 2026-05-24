@@ -199,11 +199,51 @@ def publish(slug):
 
 @press_queue_bp.route("/api/v1/press/feed.json", methods=["GET"])
 def press_feed_json():
+    """Public RSS feed source. UNIONs both press tables:
+
+    - press_releases_queue: DCPI-move-triggered drafts (>=15pt swings).
+    - auto_press_releases:  AI-generated daily auto-press (the one
+      /api/v1/media/press-health counts — 12 releases / 30d, healthy).
+
+    2026-05-24: was reading only press_releases_queue, which is mostly
+    empty in practice. Meanwhile auto_press_releases had 12 real
+    releases that the RSS feed (and the hourly press-rss workflow on
+    the frontend) couldn't see. The two tables were architecturally
+    distinct (different triggers) but the public feed should expose
+    both — they're both press releases from the world's POV.
+    """
     _ensure()
     with _conn() as c, c.cursor(cursor_factory=psycopg2.extras.RealDictCursor) as cur:
-        cur.execute("""SELECT id, slug, title, subheadline, category, status, published_at
-                       FROM press_releases_queue WHERE status = 'published'
-                       ORDER BY published_at DESC LIMIT 50""")
+        cur.execute("""
+            WITH unified AS (
+                SELECT
+                    id::bigint AS id,
+                    slug,
+                    title,
+                    subheadline,
+                    category,
+                    'published'::text AS status,
+                    published_at,
+                    trigger_type
+                FROM press_releases_queue
+                WHERE status = 'published'
+                UNION ALL
+                SELECT
+                    id::bigint AS id,
+                    slug,
+                    title,
+                    LEFT(COALESCE(body, ''), 240) AS subheadline,
+                    COALESCE(source_topic, 'auto')::text AS category,
+                    'published'::text AS status,
+                    COALESCE(generated_at, generated_for::timestamptz) AS published_at,
+                    'auto_press'::text AS trigger_type
+                FROM auto_press_releases
+                WHERE COALESCE(validation_ok, true) = true
+            )
+            SELECT * FROM unified
+            ORDER BY published_at DESC NULLS LAST
+            LIMIT 50
+        """)
         rows = cur.fetchall()
     for r in rows:
         if r.get("published_at"): r["published_at"] = r["published_at"].isoformat()
@@ -212,11 +252,25 @@ def press_feed_json():
 
 @press_queue_bp.route("/api/v1/press/feed.html", methods=["GET"])
 def press_feed_html():
+    """HTML render of the unified feed (same union as feed.json)."""
     _ensure()
     with _conn() as c, c.cursor(cursor_factory=psycopg2.extras.RealDictCursor) as cur:
-        cur.execute("""SELECT slug, title, subheadline, published_at, trigger_type
-                       FROM press_releases_queue WHERE status = 'published'
-                       ORDER BY published_at DESC LIMIT 30""")
+        cur.execute("""
+            WITH unified AS (
+                SELECT slug, title, subheadline, published_at, trigger_type
+                FROM press_releases_queue WHERE status = 'published'
+                UNION ALL
+                SELECT slug, title,
+                       LEFT(COALESCE(body, ''), 240) AS subheadline,
+                       COALESCE(generated_at, generated_for::timestamptz) AS published_at,
+                       'auto_press'::text AS trigger_type
+                FROM auto_press_releases
+                WHERE COALESCE(validation_ok, true) = true
+            )
+            SELECT * FROM unified
+            ORDER BY published_at DESC NULLS LAST
+            LIMIT 30
+        """)
         rows = cur.fetchall()
     cards = ""
     for r in rows:

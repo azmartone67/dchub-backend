@@ -14,7 +14,11 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - run: |
-          curl -sS -X POST "https://dchub.cloud/api/v1/heartbeat/auto?batch=250" \
+          # 2026-05-24: bumped batch=250 → 500. Surface inventory grew
+          # past 1,300 routes; at 250/tick (15 min cadence) a full refresh
+          # took ~75 min, which produced a 297-stale + 340-unknown backlog.
+          # At 500/tick the full surface set refreshes in ~40 min.
+          curl -sS -X POST "https://dchub.cloud/api/v1/heartbeat/auto?batch=500" \
             | python3 -m json.tool
       # Phase FFFFF (2026-05-16): also verify pending autopilot outcomes
       # on every heartbeat tick. Cheap (small SQL) and closes the

@@ -1,0 +1,72 @@
+name: Daily R2 render (heroic-reprieve /refresh)
+
+# 2026-05-24: services/daily/app.py has a /refresh endpoint that
+# pulls a fresh snapshot, renders 9 share-image variants (3 themes
+# × 3 sizes), pushes them to R2 dchub-daily, and fans out to social
+# autopost. Nothing was scheduling it — snapshot stayed at
+# as_of=2026-03-31 (2 months stale) and og:image kept 404'ing on
+# missing PNGs.
+#
+# This cron hits the FastAPI Daily service every day at 14:30 UTC
+# (07:30 PT, 10:30 ET — before US business hours so socials are
+# ready by morning). REFRESH_SECRET is shared with the Daily service.
+
+on:
+  schedule:
+    - cron: '30 14 * * *'   # 14:30 UTC daily
+  workflow_dispatch: {}
+
+permissions:
+  contents: read
+
+env:
+  DAILY_BASE: https://dchub-backend-production-f7dd.up.railway.app
+
+jobs:
+  refresh:
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    steps:
+      - name: Trigger /refresh
+        env:
+          REFRESH_SECRET: ${{ secrets.REFRESH_SECRET }}
+        run: |
+          set -euo pipefail
+          if [ -z "${REFRESH_SECRET:-}" ]; then
+            echo "::warning::REFRESH_SECRET not set in this repo — calling /refresh anonymously (will fail if secret is required)"
+            HEADER_ARGS=()
+          else
+            HEADER_ARGS=(-H "X-Refresh-Secret: $REFRESH_SECRET")
+          fi
+          response=$(curl -sS --max-time 60 -X POST "${HEADER_ARGS[@]}" \
+            "$DAILY_BASE/refresh" \
+            || echo '{"queued":false,"error":"curl_fail"}')
+          echo "$response"
+          # /refresh queues a background task — log the queued flag so
+          # we can spot regressions. Actual render completion happens
+          # async; check /snapshot the next tick for the freshly written
+          # as_of date.
+          echo "$response" | python3 -c "
+          import json, sys
+          try:
+              d = json.loads(sys.stdin.read())
+              if d.get('queued'):
+                  print('::notice::Daily refresh queued OK')
+              else:
+                  print(f\"::warning::Daily refresh not queued: {d.get('error','unknown')}\")
+          except Exception as e:
+              print(f'::warning::refresh response parse failed: {e}')
+          "
+
+      - name: Verify snapshot updated (next tick)
+        run: |
+          # Quick sanity: snapshot updates as_of after a successful render.
+          # Note this fires immediately; the render is async, so we expect
+          # the *previous* day's snapshot here. The next cron tick will
+          # show today's render.
+          curl -sS --max-time 15 "$DAILY_BASE/snapshot" \
+            | python3 -c "
+          import json, sys
+          d = json.loads(sys.stdin.read())
+          print(f\"current snapshot as_of: {d.get('as_of', '?')}\")
+          "

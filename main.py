@@ -7817,8 +7817,11 @@ def smart_404(e):
         'error':   '404 Not Found',
         'path':    path,
         'suggestions': suggestions,
-        'hint':    ('AI agent? See https://dchub.cloud/.well-known/ai-agents.json '
-                    'for the canonical integration map.'),
+        'hint':    ('AI agent? See https://dchub.cloud/api/v1/ai-agents.json '
+                    'for the canonical integration map. (The .well-known/ '
+                    'path is intermittently shadowed by the zone-level '
+                    'MCP-landing worker; this sibling path is the reliable '
+                    'bypass.)'),
     })
     response.status_code = 404
     origin = request.headers.get('Origin', '')
