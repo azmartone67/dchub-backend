@@ -71,33 +71,37 @@ def _compute_index(horizon_days=90, limit=20):
                   AND state IS NOT NULL AND state != ''
                   AND status = 'active'
                 GROUP BY city, state, country
-                HAVING COUNT(*) >= 3 AND COALESCE(SUM(power_mw), 0) >= 50
-                ORDER BY total_mw DESC
+                -- Power data is sparse (only 34.6% of discovered_facilities
+                -- have power_mw populated). Filtering on SUM(power_mw) excludes
+                -- 65% of markets. Use facility_count + operator_count as primary
+                -- signals; power_mw is a scoring bonus when present.
+                HAVING COUNT(*) >= 3 AND COUNT(DISTINCT provider) >= 2
+                ORDER BY COUNT(*) DESC, COALESCE(SUM(power_mw),0) DESC
                 LIMIT %s
             """, (limit * 3,))  # over-fetch for scoring
             rows = cur.fetchall()
     except Exception as e:
         return {"error": f"query_failed: {type(e).__name__}", "detail": str(e)[:200]}, 500
 
-    # Score each market
+    # Score each market — facility_count + operator diversity are always
+    # present; power_mw is a bonus when populated (only 34.6% of rows).
     scored = []
     for r in rows:
-        # Heuristics — refined when we wire spare-capacity tables
         total_mw = float(r["total_mw"] or 0)
         ops = int(r["operator_count"] or 0)
-        # spare = larger markets have more headroom; older markets have less
-        spare_proxy = min(500.0, total_mw * 0.15)
-        # operator diversity proxies vendor flexibility for PPAs
-        operator_score = min(100, ops * 12)
-        # max facility size proxies hyperscale-ready power infrastructure
-        hyperscale_ready = float(r["max_facility_mw"] or 0) > 50
-
+        fac = int(r["facility_count"] or 0)
+        max_mw = float(r["max_facility_mw"] or 0)
+        depth_score = min(150, fac * 2.5)           # 60 facilities → 150
+        diversity_score = min(100, ops * 8)         # 12+ operators → 100
+        spare_proxy = min(500.0, total_mw * 0.15)   # heuristic when MW present
+        hyperscale_ready = max_mw > 50
         score = (
-            spare_proxy * 0.4
-            + operator_score
+            depth_score
+            + diversity_score
+            + spare_proxy * 0.3
             + (50 if hyperscale_ready else 0)
-            + min(80, ops * 8)
         )
+        operator_score = diversity_score  # back-compat for any reference below
 
         scored.append({
             "market":           r["slug"],
