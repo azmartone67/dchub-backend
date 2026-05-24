@@ -1,32 +1,36 @@
 """
-surveillance_sweep.py — Phase r29b (2026-05-24).
+surveillance_sweep.py — Phase r29b (2026-05-24) + r29c data-drift add.
 
 Unified surveillance rollup. Answers the operator's question:
 "is everything green right now, and if not, what's wrong?"
 
-Previous r29 attempt (full version with data-drift, table creation,
-direct psycopg2 calls) caused a Railway boot issue and was reverted.
-This v2 is intentionally minimal: composes EXISTING endpoints via
-Flask's test_client (no new DB schema, no module-level imports of
-heavy modules, no table creation). Same pattern brain_v2_layer4
-already uses successfully for /heal/findings.
+Composes existing endpoints via Flask test_client (safe pattern).
+r29c (2026-05-24): added data-drift detection as a SEPARATE endpoint
+/api/v1/sentinel/drift with lazy CREATE TABLE inside the request
+handler (not at module load) — the same safety pattern as the rest of
+this file. The drift check is then composed into /sweep so silent data
+loss / accidental DELETE / migration mistakes get caught in the same
+15-min cadence.
 
-What it composes (read-only):
-  - /api/v1/sentinel/findings   — page health (site_sentinel)
-  - /api/v1/backup/status        — Neon backup + feed freshness
+Composed in /sweep:
+  - /api/v1/sentinel/findings   — page health
+  - /api/v1/freshness            — per-domain SLA breaches
   - /api/v1/brain/status          — brain layer-4 verdict
   - /api/v1/media/press-health   — press cadence
-  - /api/v1/heartbeat/inventory  — stale surfaces count
+  - /api/v1/heartbeat/inventory  — stale-surface ratio
   - /api/health                   — pool / memory / uptime
+  - /api/v1/sentinel/drift       — row-count drift vs baseline (NEW r29c)
 
 Severity rollup: critical > high > medium > none → red / amber / green.
 """
 from __future__ import annotations
 
 import datetime
+import os
 import time
 
-from flask import Blueprint, jsonify, current_app
+import psycopg2
+from flask import Blueprint, jsonify, current_app, request
 
 
 surveillance_bp = Blueprint("surveillance_sweep", __name__)
@@ -153,6 +157,25 @@ def sentinel_sweep():
                 "issue": f"stale-surface ratio {checks['heartbeat']['stale_ratio'] * 100:.0f}%",
             })
 
+        # Data-drift (NEW r29c) — flags >5% row drops on headline tables
+        # vs recorded baseline. Surfaces silent data-loss / migrations.
+        body, _ = _call(tc, "/api/v1/sentinel/drift")
+        drops = body.get("drops") or []
+        checks["drift"] = {
+            "ok": len(drops) == 0,
+            "tables_checked": body.get("tables_checked"),
+            "drops": drops[:5],
+            "_note": body.get("_note"),
+        }
+        for d in drops:
+            if "drop_pct" in d:
+                actions.append({
+                    "category": "data_loss",
+                    "priority": "critical",
+                    "issue": f"{d['table']} dropped {d['drop_pct']}%",
+                    "detail": f"baseline={d['baseline']:,}, current={d['current']:,}",
+                })
+
         # Core health (pool / memory / uptime / version)
         body, _ = _call(tc, "/api/health")
         pool = body.get("pool") or {}
@@ -198,9 +221,120 @@ def sentinel_sweep():
         "actions_count": len(actions),
         "purpose": (
             "Surveillance rollup — composes /sentinel/findings, "
-            "/backup/status, /brain/status, /media/press-health, "
-            "/heartbeat/inventory, /api/health. Polled by "
-            "surveillance-sweep.yml every 15 min. Severity != green "
-            "emits ::warning:: in GHA logs."
+            "/freshness, /brain/status, /media/press-health, "
+            "/heartbeat/inventory, /sentinel/drift, /api/health. "
+            "Polled by surveillance-sweep.yml every 15 min. "
+            "Severity != green emits ::warning:: in GHA logs."
         ),
     }), 200
+
+
+# ── data drift detection (r29c) ───────────────────────────────────
+#
+# Flags unexpected row-count drops on headline tables. Compares current
+# count vs recorded baseline; >5% drop fires a finding. First run for
+# each table records baseline. Baselines auto-ratchet up when counts
+# grow (so the baseline tracks reality without operator intervention).
+# Lazy CREATE TABLE inside the request handler — never runs at boot.
+
+_DRIFT_TABLES = (
+    "discovered_facilities",
+    "announcements",
+    "deals",
+    "fiber_routes",
+    "substations",
+    "auto_press_releases",
+    "ai_testimonials",
+)
+
+
+def _drift_conn():
+    db = os.environ.get("DATABASE_URL") or os.environ.get("NEON_DATABASE_URL")
+    if not db:
+        return None
+    try:
+        return psycopg2.connect(db, sslmode="require", connect_timeout=5)
+    except Exception:
+        return None
+
+
+@surveillance_bp.route("/api/v1/sentinel/drift", methods=["GET"])
+def sentinel_drift():
+    """Data-drift baseline check. Lazy schema: CREATE TABLE on first hit.
+
+    Detects accidental DELETE / silent data loss / failed migrations
+    that drop the headline-table row counts. Threshold: 5%. Baselines
+    auto-ratchet up so growth doesn't trigger false alarms.
+    """
+    c = _drift_conn()
+    if c is None:
+        return jsonify(ok=True, drops=[], _note="DB unreachable"), 200
+
+    try:
+        # Lazy schema — never runs at boot.
+        with c.cursor() as cur:
+            cur.execute("""
+                CREATE TABLE IF NOT EXISTS sentinel_row_baselines (
+                    table_name TEXT PRIMARY KEY,
+                    baseline_count BIGINT,
+                    baseline_at TIMESTAMPTZ DEFAULT NOW(),
+                    last_seen_count BIGINT,
+                    last_seen_at TIMESTAMPTZ
+                )
+            """)
+            c.commit()
+
+        drops: list = []
+        current: dict = {}
+        for t in _DRIFT_TABLES:
+            try:
+                with c.cursor() as cur:
+                    cur.execute(f"SELECT COUNT(*) FROM {t}")
+                    n = int((cur.fetchone() or [0])[0] or 0)
+                    current[t] = n
+
+                    cur.execute(
+                        "SELECT baseline_count, baseline_at "
+                        "FROM sentinel_row_baselines WHERE table_name=%s",
+                        (t,))
+                    row = cur.fetchone()
+                    if row is None:
+                        cur.execute(
+                            "INSERT INTO sentinel_row_baselines "
+                            "(table_name, baseline_count, last_seen_count, last_seen_at) "
+                            "VALUES (%s, %s, %s, NOW())",
+                            (t, n, n))
+                        c.commit()
+                        continue
+                    baseline = int(row[0] or 0)
+                    if baseline > 0 and n < baseline * 0.95:
+                        drops.append({
+                            "table": t,
+                            "baseline": baseline,
+                            "current":  n,
+                            "drop_pct": round(100.0 * (baseline - n) / baseline, 2),
+                            "baseline_at": str(row[1])[:19],
+                        })
+                    # Always refresh last_seen + ratchet baseline up if grown.
+                    new_baseline = max(baseline, n)
+                    cur.execute(
+                        "UPDATE sentinel_row_baselines "
+                        "SET last_seen_count=%s, last_seen_at=NOW(), "
+                        "    baseline_count=%s, "
+                        "    baseline_at=CASE WHEN %s > baseline_count "
+                        "                     THEN NOW() ELSE baseline_at END "
+                        "WHERE table_name=%s",
+                        (n, new_baseline, n, t))
+                    c.commit()
+            except Exception as e:
+                drops.append({"table": t, "error": f"{type(e).__name__}"})
+
+        return jsonify(
+            ok=len(drops) == 0,
+            tables_checked=len(_DRIFT_TABLES),
+            current_counts=current,
+            drops=drops,
+        ), 200
+    finally:
+        try: c.close()
+        except Exception: pass
