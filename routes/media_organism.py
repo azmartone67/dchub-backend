@@ -50,6 +50,17 @@ def _call(tc, path):
         return {"_error": f"{type(e).__name__}: {str(e)[:100]}"}, 0
 
 
+def _is_failed_response(body) -> bool:
+    """True if body is the sentinel error-shape from _call. Used by the
+    organism rollup to SKIP channels (return None score) instead of
+    treating an unreachable endpoint as a healthy-zero. Without this,
+    one timed-out test_client call drags the composite ~40% during
+    deploy windows (caught on 2026-05-24 when /sentinel briefly
+    showed organism=27.7 instead of stable ~46)."""
+    if not isinstance(body, dict): return True
+    return any(k in body for k in ("_error", "_status", "_non_json"))
+
+
 def _score_component(value, ok_threshold, weak_threshold, max_value=None):
     """Return (0-100, verdict_word) for one component metric.
 
@@ -94,28 +105,30 @@ def media_organism():
     with current_app.test_client() as tc:
         # 1. Press cadence (auto-publisher)
         body, _ = _call(tc, "/api/v1/media/press-health")
-        days_since = body.get("days_since_last_press")
-        count_30d = int(body.get("press_releases_30d") or 0)
-        # Score: 30d count vs target 12 (=daily-ish for 30d / 2.5 days each = 12)
-        score, verdict = _score_component(count_30d, 70, 35, max_value=24)
-        components["press"] = {
-            "score": score,
-            "verdict": verdict,
-            "days_since_last_press": days_since,
-            "count_30d": count_30d,
-        }
+        if _is_failed_response(body):
+            components["press"] = {"score": None, "verdict": "unreachable"}
+        else:
+            days_since = body.get("days_since_last_press")
+            count_30d = int(body.get("press_releases_30d") or 0)
+            score, verdict = _score_component(count_30d, 70, 35, max_value=24)
+            components["press"] = {
+                "score": score, "verdict": verdict,
+                "days_since_last_press": days_since,
+                "count_30d": count_30d,
+            }
 
         # 2. LinkedIn velocity
         body, _ = _call(tc, "/api/v1/media/pulse")
-        li = (body.get("components") or {}).get("linkedin") or {}
-        li_7d = int(li.get("sent_7d") or 0)
-        score, verdict = _score_component(li_7d, 70, 35, max_value=14)  # 2/day target
-        components["linkedin"] = {
-            "score": score,
-            "verdict": verdict,
-            "sent_7d": li_7d,
-            "sent_24h": int(li.get("sent_24h") or 0),
-        }
+        if _is_failed_response(body):
+            components["linkedin"] = {"score": None, "verdict": "unreachable"}
+        else:
+            li = (body.get("components") or {}).get("linkedin") or {}
+            li_7d = int(li.get("sent_7d") or 0)
+            score, verdict = _score_component(li_7d, 70, 35, max_value=14)  # 2/day target
+            components["linkedin"] = {
+                "score": score, "verdict": verdict,
+                "sent_7d": li_7d, "sent_24h": int(li.get("sent_24h") or 0),
+            }
 
         # 3. Source-of-truth (canonical voice signal)
         body, _ = _call(tc, "/api/v1/media/source-of-truth")
@@ -146,23 +159,23 @@ def media_organism():
 
         # 5. Journalist outreach
         body, _ = _call(tc, "/api/v1/media/journalists")
-        journos = body.get("journalists") or []
         body2, _ = _call(tc, "/api/v1/media/outreach-log")
-        log = body2.get("log") or []
-        # "Recent" = last 14 days
-        cutoff = (datetime.datetime.utcnow() - datetime.timedelta(days=14)).isoformat()
-        recent_sent = sum(
-            1 for e in log
-            if isinstance(e, dict) and (e.get("sent_at") or "") >= cutoff
-        )
-        score, verdict = _score_component(recent_sent, 70, 30, max_value=10)
-        components["journalist_outreach"] = {
-            "score": score,
-            "verdict": verdict,
-            "journalist_count": len(journos),
-            "sent_14d": recent_sent,
-            "sent_total": len(log),
-        }
+        if _is_failed_response(body) or _is_failed_response(body2):
+            components["journalist_outreach"] = {"score": None, "verdict": "unreachable"}
+        else:
+            journos = body.get("journalists") or []
+            log = body2.get("log") or []
+            cutoff = (datetime.datetime.utcnow() - datetime.timedelta(days=14)).isoformat()
+            recent_sent = sum(
+                1 for e in log
+                if isinstance(e, dict) and (e.get("sent_at") or "") >= cutoff
+            )
+            score, verdict = _score_component(recent_sent, 70, 30, max_value=10)
+            components["journalist_outreach"] = {
+                "score": score, "verdict": verdict,
+                "journalist_count": len(journos),
+                "sent_14d": recent_sent, "sent_total": len(log),
+            }
 
         # 6. Winback (dormant agent retargeting)
         body, _ = _call(tc, "/api/v1/media/winback-pitches")
