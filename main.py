@@ -23395,18 +23395,6 @@ try:
 except Exception as _e:
     print(f"[main] spare_capacity register failed: {_e}", file=sys.stderr)
 
-# Phase r28 (2026-05-24): Surveillance Sweep — unified endpoint that
-# composes site_sentinel + brain_security_detectors + backup freshness
-# + data drift + 5xx spike + brain filter telemetry + media pulse into
-# one /api/v1/sentinel/sweep payload. Polled by surveillance-sweep.yml
-# every 15 min; severity ≠ green emits ::warning:: in GHA logs.
-try:
-    from routes.surveillance_sweep import surveillance_bp
-    app.register_blueprint(surveillance_bp)
-    logger.info("✅ surveillance_sweep blueprint registered")
-except Exception as _ssw_e:
-    logger.warning(f"surveillance_sweep wiring failed: {_ssw_e}")
-
 # Phase WWW (2026-05-16): Site Sentinel — polls every public URL and
 # surfaces breakages/staleness as brain findings so the heartbeat
 # catches them before a user reports.
