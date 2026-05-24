@@ -281,7 +281,9 @@ def _resolve_og_image(date: datetime.date, base: str) -> str:
     404s on the og:image (every social preview was blank). Now self-heals
     by querying DB renders backwards.
     """
-    fallback = "https://dchub.cloud/images/og-default.png"
+    # /og-default.png lives at the frontend root (CF Pages); /images/og-default.png
+    # is referenced in many HTML files but actually 404s. Verified 2026-05-24.
+    fallback = "https://dchub.cloud/og-default.png"
     if not base:
         return fallback
     # Today first — usually correct once /refresh has fired.
