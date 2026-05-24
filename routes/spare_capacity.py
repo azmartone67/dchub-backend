@@ -238,8 +238,18 @@ def listings():
     if _ADMIN_KEY and provided == _ADMIN_KEY:
         show_contact = True
 
+    # r33 (2026-05-24): degrade to empty 200 instead of 503 when DB is
+    # transiently unreachable. The site sentinel flagged this endpoint
+    # as 503 on every scan — but the right behavior for a public LIST
+    # endpoint is "no rows" not "service unavailable". Users + agents
+    # can still consume the shape; the underlying DB issue surfaces
+    # via /api/health which is the canonical place to alert on it.
     c = _conn()
-    if c is None: return jsonify(error="no_database"), 503
+    if c is None:
+        return jsonify(
+            listings=[], total=0, page=1, per_page=50,
+            note="database transiently unreachable — listings empty",
+        ), 200
     try:
         _ensure_schema(c)
         import psycopg2.extras

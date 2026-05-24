@@ -23505,6 +23505,18 @@ try:
 except Exception as _morg_e:
     print(f"[main] media_organism wiring failed: {_morg_e}", file=sys.stderr, flush=True)
 
+# Phase r33 (2026-05-24): Page integrity report — per-URL brain
+# integration + freshness + health score. Answers "is every page on
+# the site dynamic, agentic, learning, evolving?" by walking the
+# sentinel manifest, surface_brain registry, and heal-findings and
+# scoring each URL 0-100 with a verdict (alive/stale/orphan/broken).
+try:
+    from routes.page_integrity import page_integrity_bp as _pi_bp
+    app.register_blueprint(_pi_bp)
+    print("[main] page_integrity blueprint registered", flush=True)
+except Exception as _pi_e:
+    print(f"[main] page_integrity wiring failed: {_pi_e}", file=sys.stderr, flush=True)
+
 # Phase WWW (2026-05-16): Site Sentinel — polls every public URL and
 # surfaces breakages/staleness as brain findings so the heartbeat
 # catches them before a user reports.

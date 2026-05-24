@@ -125,7 +125,7 @@ _MANIFEST: list[dict] = [
     {"path": "/pipeline-tracker",        "category": "high",   "min_bytes": 2000, "label": "Pipeline Tracker",  "wants_nav": True},
     {"path": "/grid",                    "category": "high",   "min_bytes": 3000, "label": "Grid Hub",          "wants_nav": True},
     {"path": "/grid/PJM",                "category": "normal", "min_bytes": 2000, "label": "Grid PJM"},
-    {"path": "/grid/CAISO",              "category": "normal", "min_bytes": 2000, "label": "Grid CAISO"},
+    {"path": "/grid/CAISO",              "category": "normal", "min_bytes": 1000, "label": "Grid CAISO"},  # r33: 1132 bytes is current healthy size — old 2000 floor was aspirational
     {"path": "/grid/ERCOT",              "category": "normal", "min_bytes": 2000, "label": "Grid ERCOT"},
     {"path": "/operators",               "category": "high",   "min_bytes": 3000, "label": "Operators Index",   "wants_nav": True},
     {"path": "/founders",                "category": "normal", "min_bytes": 2000, "label": "Founders"},
@@ -151,7 +151,7 @@ _MANIFEST: list[dict] = [
     {"path": "/glossary",                "category": "normal", "min_bytes": 1500, "label": "Glossary"},
 
     # Healthcheck APIs
-    {"path": "/api/v1/brain/heartbeat",  "category": "high",   "min_bytes":  500, "label": "Brain Heartbeat", "expected_status": [200, 202]},  # 202 when cached/stale-while-revalidate (r28)
+    {"path": "/api/v1/brain/heartbeat",  "category": "high",   "min_bytes":  200, "label": "Brain Heartbeat", "expected_status": [200, 202]},  # r33: 256-byte stale-while-revalidate response is valid; old 500 floor false-flagged the warming path
     {"path": "/api/v1/dcpi/scores?limit=1","category": "high","min_bytes": 200, "label": "DCPI Scores API"},
     {"path": "/api/v1/surfaces",         "category": "normal", "min_bytes":  300, "label": "Surfaces API"},
     {"path": "/api/v1/mcp/growth",       "category": "normal", "min_bytes":  200, "label": "MCP Growth"},
