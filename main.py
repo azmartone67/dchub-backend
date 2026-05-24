@@ -3057,26 +3057,27 @@ def handle_well_known():
         import datetime as _dtai
         _live_counts = {}
         try:
-            # get_db_connection is defined in this module (alias at line ~8034
-            # of get_db). Pool-backed psycopg2 wrapper; close() returns to pool.
-            _conn = get_db_connection()
-            try:
-                with _conn.cursor() as _cur:
-                    _cur.execute(
-                        "SELECT (SELECT COUNT(*) FROM data_centers) AS facilities,"
-                        "       (SELECT COUNT(*) FROM news_articles) AS news,"
-                        "       (SELECT COUNT(*) FROM deals) AS deals"
-                    )
-                    _row = _cur.fetchone()
-                    if _row:
-                        _live_counts = {
-                            "facilities": int(_row[0] or 0),
-                            "news_articles": int(_row[1] or 0),
-                            "deals": int(_row[2] or 0),
-                        }
-            finally:
+            # Mirror the /api/health pattern exactly (main.py:13372): use
+            # pg_connection() as context manager + per-COUNT try/except so a
+            # single missing table doesn't blank the whole manifest. Real
+            # table names: discovered_facilities / announcements / deals
+            # (not the generic data_centers / news_articles names).
+            with pg_connection() as _conn:
+                _cur = _conn.cursor()
+                _cur.execute("SET statement_timeout = '3s'")
                 try:
-                    _conn.close()
+                    _cur.execute("SELECT COUNT(*) FROM discovered_facilities")
+                    _live_counts["facilities"] = int(_cur.fetchone()[0] or 0)
+                except Exception:
+                    pass
+                try:
+                    _cur.execute("SELECT COUNT(*) FROM announcements")
+                    _live_counts["news_articles"] = int(_cur.fetchone()[0] or 0)
+                except Exception:
+                    pass
+                try:
+                    _cur.execute("SELECT COUNT(*) FROM deals")
+                    _live_counts["deals"] = int(_cur.fetchone()[0] or 0)
                 except Exception:
                     pass
         except Exception:
