@@ -278,7 +278,7 @@ def seed_pipelines():
         
         cur.execute("""
             INSERT INTO discovered_pipelines (name, operator, type, diameter, commodity, status, latitude, longitude, state, source)
-            VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, 'hifld_seed')
+            VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, 'hifld_seed') ON CONFLICT DO NOTHING
         """, (name, operator, ptype, diameter, commodity, status, lat, lng, state))
         inserted += 1
     
