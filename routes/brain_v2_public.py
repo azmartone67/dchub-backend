@@ -437,6 +437,73 @@ def brain_page():
     except Exception:
         value_shipped_block = ""
 
+    # r34 (2026-05-24): Page integrity tile — quantified answer to
+    # "is every page dynamic, agentic, learning?". Composes the
+    # /api/v1/sentinel/page-integrity rollup (site_score + verdict +
+    # alive/broken/orphan breakdown). Same in-process test_client
+    # pattern as the grade + value-shipped blocks.
+    integrity_block = ""
+    try:
+        from flask import current_app
+        with current_app.test_client() as _client:
+            _ri = _client.get("/api/v1/sentinel/page-integrity")
+            if _ri.status_code == 200:
+                _ig = _ri.get_json() or {}
+                _isc = float(_ig.get("site_score") or 0)
+                _ivd = _ig.get("site_verdict", "unknown")
+                _ibreak = _ig.get("verdict_breakdown") or {}
+                _alive = int(_ibreak.get("alive") or 0)
+                _broken = int(_ibreak.get("broken") or 0)
+                _orphan = int(_ibreak.get("orphan") or 0)
+                _total = int(_ig.get("pages_total") or 0)
+                _verdict_color = {
+                    "alive":   ("var(--green)", "rgba(16,185,129,0.12)", "rgba(16,185,129,0.4)"),
+                    "weak":    ("var(--amber)", "rgba(245,158,11,0.10)", "rgba(245,158,11,0.4)"),
+                    "patchy":  ("var(--amber)", "rgba(245,158,11,0.14)", "rgba(245,158,11,0.5)"),
+                    "broken":  ("var(--red)",   "rgba(239,68,68,0.10)", "rgba(239,68,68,0.4)"),
+                }.get(_ivd, ("var(--tx2)", "rgba(156,163,175,0.08)", "rgba(156,163,175,0.3)"))
+                _ic, _ibg, _ibd = _verdict_color
+                # Three category pills
+                def _pill(label, count, color, bg):
+                    return (f'<span style="display:inline-flex;align-items:center;gap:0.35rem;'
+                            f'padding:0.25rem 0.6rem;border-radius:99px;background:{bg};'
+                            f'color:{color};font-size:0.74rem;font-weight:600;margin:0.2rem;">'
+                            f'<span style="opacity:0.75">{label}</span>'
+                            f'<span style="font-family:JetBrains Mono,monospace;font-weight:700">{count}</span>'
+                            f'</span>')
+                _alive_pill  = _pill("alive",  _alive,
+                                     "var(--green)", "rgba(16,185,129,0.12)") if _alive  else ""
+                _broken_pill = _pill("broken", _broken,
+                                     "var(--red)", "rgba(239,68,68,0.12)") if _broken else ""
+                _orphan_pill = _pill("orphan", _orphan,
+                                     "var(--amber)", "rgba(245,158,11,0.12)") if _orphan else ""
+                integrity_block = (
+                    f'<div style="background:{_ibg};border:1px solid {_ibd};'
+                    f'border-radius:10px;padding:1.1rem 1.3rem;margin:0.4rem 0;'
+                    f'display:flex;gap:1.2rem;align-items:center;flex-wrap:wrap;">'
+                    f'<div style="flex:0 0 auto;font-family:JetBrains Mono,monospace;'
+                    f'font-size:3rem;font-weight:800;line-height:1;color:{_ic};'
+                    f'min-width:80px;text-align:center;">{_isc:.1f}</div>'
+                    f'<div style="flex:1;min-width:240px;">'
+                    f'<div style="font-size:0.72rem;font-family:JetBrains Mono,monospace;'
+                    f'color:var(--tx2);text-transform:uppercase;letter-spacing:0.1em;'
+                    f'margin-bottom:0.35rem;">Page integrity — {_total} pages · '
+                    f'<span style="color:{_ic};font-weight:700">{_h(_ivd.upper())}</span></div>'
+                    f'<div style="color:var(--tx);font-size:0.95rem;line-height:1.4;'
+                    f'margin-bottom:0.5rem;">'
+                    f'Every page in the sentinel manifest scored 0-100 on probe-health + '
+                    f'brain-tracking + freshness + heal-findings. Site-wide mean answers '
+                    f'"is every page dynamic, agentic, learning?".</div>'
+                    f'<div style="margin-left:-0.2rem;">{_alive_pill}{_broken_pill}{_orphan_pill}</div>'
+                    f'<a href="/api/v1/sentinel/page-integrity" style="color:var(--acc-light);'
+                    f'font-size:0.78rem;text-decoration:none;border-bottom:1px dotted '
+                    f'rgba(129,140,248,0.5);margin-top:0.6rem;display:inline-block;">'
+                    f'view full per-page report</a>'
+                    f'</div></div>'
+                )
+    except Exception:
+        integrity_block = ""
+
     # Render proposals (newest first)
     if proposals:
         prop_blocks = []
@@ -523,7 +590,7 @@ def brain_page():
             .replace("{{pending_count}}", str(pending_count))
             .replace("{{log_count}}", str(len(state["log"])))
             .replace("{{verdict_banner}}", verdict_banner)
-            .replace("{{grade_block}}", grade_block + value_shipped_block)
+            .replace("{{grade_block}}", grade_block + value_shipped_block + integrity_block)
             .replace("{{proposals_html}}", proposals_html)
             .replace("{{persistence_html}}", persistence_html)
             .replace("{{log_html}}", log_html)

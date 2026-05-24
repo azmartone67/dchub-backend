@@ -661,6 +661,71 @@ def sentinel_dashboard():
     pct = round(100.0 * healthy / max(len(rows), 1), 1)
     overall_class = "green" if pct >= 95 else ("amber" if pct >= 80 else "red")
 
+    # r34 (2026-05-24): Page-integrity tile. Pulls the per-URL
+    # 0-100 + verdict from /api/v1/sentinel/page-integrity so the
+    # operator sees the holistic "is every page evolving" score
+    # right next to the per-page pass/fail table below.
+    integrity_tile = ""
+    try:
+        from flask import current_app
+        with current_app.test_client() as _c2:
+            _ri = _c2.get("/api/v1/sentinel/page-integrity")
+            if _ri.status_code == 200:
+                _ig = _ri.get_json() or {}
+                _isc = float(_ig.get("site_score") or 0)
+                _ivd = _ig.get("site_verdict", "unknown")
+                _ibreak = _ig.get("verdict_breakdown") or {}
+                _itotal = int(_ig.get("pages_total") or 0)
+                _vcolor = {
+                    "alive":   ("#10b981", "linear-gradient(135deg,#065f46,#10b981)"),
+                    "weak":    ("#f59e0b", "linear-gradient(135deg,#92400e,#f59e0b)"),
+                    "patchy":  ("#f59e0b", "linear-gradient(135deg,#7c2d12,#f59e0b)"),
+                    "broken":  ("#ef4444", "linear-gradient(135deg,#991b1b,#ef4444)"),
+                }.get(_ivd, ("#94a3b8", "linear-gradient(135deg,#475569,#94a3b8)"))
+                _ic, _ibg = _vcolor
+                _alive  = int(_ibreak.get("alive")  or 0)
+                _broken = int(_ibreak.get("broken") or 0)
+                _orphan = int(_ibreak.get("orphan") or 0)
+                _stale  = int(_ibreak.get("stale")  or 0)
+                _pills = ""
+                for lbl, val, col in (
+                    ("alive", _alive, "#10b981"),
+                    ("broken", _broken, "#ef4444"),
+                    ("orphan", _orphan, "#f59e0b"),
+                    ("stale", _stale, "#a78bfa"),
+                ):
+                    if val:
+                        _pills += (
+                            f'<span style="display:inline-flex;align-items:center;gap:0.3rem;'
+                            f'padding:0.25rem 0.6rem;border-radius:99px;'
+                            f'background:rgba(255,255,255,0.08);color:{col};'
+                            f'font-size:0.78rem;font-weight:600;margin:0.15rem;">'
+                            f'{lbl} <span style="font-family:JetBrains Mono,monospace;'
+                            f'opacity:0.9">{val}</span></span>'
+                        )
+                integrity_tile = (
+                    f'<div style="padding:1.25rem 1.5rem;border-radius:10px;color:white;'
+                    f'margin:1rem 0;background:{_ibg};">'
+                    f'<div style="display:flex;align-items:center;justify-content:space-between;'
+                    f'flex-wrap:wrap;gap:1rem;">'
+                    f'<div><div style="font-size:0.78rem;text-transform:uppercase;'
+                    f'letter-spacing:0.1em;opacity:0.8;margin-bottom:0.3rem;">'
+                    f'🔍 Page Integrity — {_itotal} pages</div>'
+                    f'<div style="font-size:1.5rem;font-weight:700;line-height:1.1;">'
+                    f'{_isc:.1f}/100 · {_ivd.upper()}</div>'
+                    f'<div style="font-size:0.85rem;opacity:0.85;margin-top:0.3rem;">'
+                    f'per-URL brain integration + freshness + health</div></div>'
+                    f'<div style="font-size:0.78rem;opacity:0.8;text-align:right;">'
+                    f'<a href="/api/v1/sentinel/page-integrity" style="color:white;'
+                    f'text-decoration:none;border-bottom:1px dotted rgba(255,255,255,0.5);">'
+                    f'view JSON →</a></div>'
+                    f'</div>'
+                    f'<div style="margin-top:0.7rem;">{_pills}</div>'
+                    f'</div>'
+                )
+    except Exception:
+        integrity_tile = ""
+
     # r32 (2026-05-24): Media-organism tile. Pulls vitality + verdict
     # from /api/v1/media/organism so the operator's "is everything OK"
     # page also answers "is media alive?". Wrapped in try so a slow
@@ -774,6 +839,7 @@ def sentinel_dashboard():
 <div class="summary {overall_class}">
   <strong>{healthy}/{len(rows)} pages healthy ({pct}%)</strong>
 </div>
+{integrity_tile}
 {organism_tile}
 <table>
   <thead>
