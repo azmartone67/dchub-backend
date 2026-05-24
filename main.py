@@ -22617,6 +22617,16 @@ try:
 except Exception as _hq_e:
     _HYDROQUEBEC_OK = False
     print(f"[main] iso_hydroquebec import failed: {_hq_e}", flush=True)
+
+# Phase ZZZZZ-round33 (2026-05-24): second non-US ISO — AESO (Alberta)
+# Note: routes/iso_aeso.py already exists for US-context queries; this
+# is the iso_aeso_intl variant for the international DCPI roll-up.
+try:
+    from routes.iso_aeso_intl import iso_aeso_intl_bp
+    _AESO_INTL_OK = True
+except Exception as _ae_e:
+    _AESO_INTL_OK = False
+    print(f"[main] iso_aeso_intl import failed: {_ae_e}", flush=True)
 from routes.iso_nyiso import iso_nyiso_bp
 from routes.iso_orchestrator import iso_orchestrator_bp
 from routes.iso_miso import iso_miso_bp
@@ -22686,6 +22696,9 @@ app.register_blueprint(iso_caiso_bp)
 if _HYDROQUEBEC_OK:
     app.register_blueprint(iso_hydroquebec_bp)
     print("[main] iso_hydroquebec_bp registered — first international ISO in DCPI", flush=True)
+if _AESO_INTL_OK:
+    app.register_blueprint(iso_aeso_intl_bp)
+    print("[main] iso_aeso_intl_bp registered — second international ISO (Alberta)", flush=True)
 app.register_blueprint(iso_nyiso_bp)
 app.register_blueprint(iso_orchestrator_bp)
 app.register_blueprint(iso_miso_bp)
