@@ -353,30 +353,96 @@ def api_topic_pulse():
                     unique_items.append(n)
             news_items = unique_items[:300]
 
-            # Pull DCPI market names for intersection
-            market_names = {}
+            # Pull DCPI market names for intersection. r34f: also pulls
+            # state + iso so we can match news that mentions the broader
+            # region without the specific market name (e.g. "Texas data
+            # center boom" matches ERCOT markets).
+            markets_full: list = []
             try:
                 cur.execute("""
                     SELECT DISTINCT ON (market_slug)
-                           market_slug, market_name, state, verdict,
+                           market_slug, market_name, state, iso, verdict,
                            excess_power_score, constraint_score
                       FROM market_power_scores
                      WHERE published = true
                      ORDER BY market_slug, computed_at DESC
                 """)
-                for r in cur.fetchall():
-                    nm = (r["market_name"] or "").lower()
-                    if nm: market_names[nm] = r
+                markets_full = list(cur.fetchall())
             except Exception:
-                pass
+                markets_full = []
 
-        # Match news to markets
+        # r34f (2026-05-24): aliased matching. The previous logic only
+        # matched the literal market_name (or first word) — too strict for
+        # real news headlines that use regional names, state names, or
+        # operator hubs. Now matches against a per-market alias set so
+        # "Northern Virginia data center boom" matches the loudoun-county
+        # market, "Texas ERCOT surplus" matches every ERCOT market, etc.
+
+        # Hand-curated regional / state-abbrev / colloquial aliases for the
+        # markets that need them most. Keys are market_slug; values are
+        # additional lowercase phrases to match against the news text.
+        _ALIAS_BY_SLUG = {
+            "loudoun-county":      ["northern virginia", "nova", "ashburn"],
+            "ashburn":              ["northern virginia", "nova", "loudoun"],
+            "santa-clara":          ["silicon valley", "bay area", "san jose"],
+            "san-jose":             ["silicon valley", "bay area"],
+            "dallas":               ["dfw", "north texas", "dallas-fort worth"],
+            "dallas-fort-worth":    ["dfw", "north texas"],
+            "phoenix":              ["arizona desert", "maricopa"],
+            "chicago":              ["chicagoland", "northwest indiana"],
+            "atlanta":              ["metro atlanta", "douglasville"],
+            "columbus":             ["central ohio", "new albany"],
+            "reno":                 ["northern nevada"],
+            "salt-lake-city":       ["wasatch", "utah"],
+            "richmond":             ["central virginia"],
+            "des-moines":           ["altoona"],
+            "omaha":                ["papillion", "fremont"],
+        }
+
+        # State abbreviation map (when market.state is "VA" we also want
+        # to match "virginia" and vice versa).
+        _STATE_FULL = {
+            "VA": "virginia", "TX": "texas", "CA": "california", "WA": "washington",
+            "OR": "oregon", "AZ": "arizona", "NV": "nevada", "UT": "utah", "CO": "colorado",
+            "NM": "new mexico", "ID": "idaho", "MT": "montana", "WY": "wyoming",
+            "ND": "north dakota", "SD": "south dakota", "NE": "nebraska", "KS": "kansas",
+            "OK": "oklahoma", "MN": "minnesota", "IA": "iowa", "MO": "missouri",
+            "AR": "arkansas", "LA": "louisiana", "MS": "mississippi", "AL": "alabama",
+            "TN": "tennessee", "KY": "kentucky", "GA": "georgia", "FL": "florida",
+            "SC": "south carolina", "NC": "north carolina", "WV": "west virginia",
+            "OH": "ohio", "IN": "indiana", "IL": "illinois", "WI": "wisconsin",
+            "MI": "michigan", "PA": "pennsylvania", "NY": "new york", "NJ": "new jersey",
+            "MD": "maryland", "DE": "delaware", "CT": "connecticut", "MA": "massachusetts",
+            "RI": "rhode island", "VT": "vermont", "NH": "new hampshire", "ME": "maine",
+            "DC": "district of columbia",
+        }
+
+        def _aliases_for(market) -> set:
+            """Build the full lowercase alias set for one market row."""
+            a = set()
+            nm = (market.get("market_name") or "").lower()
+            if nm:
+                a.add(nm)
+                parts = nm.split()
+                if len(parts) > 1:
+                    a.add(parts[0])  # first word (e.g. "ashburn" from "Ashburn, VA")
+            # Hand-curated regional aliases
+            for extra in _ALIAS_BY_SLUG.get(market.get("market_slug", ""), []):
+                a.add(extra)
+            # State name (full)
+            st = (market.get("state") or "").upper().strip()
+            if st in _STATE_FULL:
+                a.add(_STATE_FULL[st])
+            return a
+
+        # Match news to markets via aliases
         topic_hits = {}  # market_slug → {market, news[], excess, constraint, verdict}
         for n in news_items:
             text = (((n["title"] or "") + " " + (n["summary"] or "")).lower())
-            for mn, market in market_names.items():
-                # Match on full market name OR first word (e.g. "Ashburn" matches "Ashburn, VA")
-                if mn in text or (len(mn.split()) > 1 and mn.split()[0] in text):
+            for market in markets_full:
+                aliases = _aliases_for(market)
+                matched_alias = next((a for a in aliases if a and a in text), None)
+                if matched_alias:
                     slug = market["market_slug"]
                     if slug not in topic_hits:
                         topic_hits[slug] = {
