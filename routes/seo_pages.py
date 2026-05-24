@@ -247,7 +247,7 @@ def _render_facility(f: dict, nearby: list) -> str:
     else:
         desc = f"{name} data center in {location}. Operated by {operator}. Detailed power, fiber, and connectivity data on DC Hub."
 
-    canonical = f"https://dchub.cloud/facility/{fac_id}"
+    canonical = f"https://api.dchub.cloud/facility/{fac_id}"
     og_image  = f"https://dchub.cloud/static/og/facility-{fac_id}.png"  # generated lazily
 
     schema = f"""{{
@@ -407,7 +407,7 @@ def market_page(slug: str):
 
 
 def _render_market(slug, city, state, facilities, stats) -> str:
-    canonical = f"https://dchub.cloud/markets/{slug}"
+    canonical = f"https://api.dchub.cloud/markets/{slug}"
     n_fac     = stats['facility_count'] if stats else len(facilities)
     total_mw  = _round(stats['total_mw'], 1) if stats and stats['total_mw'] else 0
     n_op      = stats['operator_count'] if stats else 0
@@ -535,7 +535,7 @@ def iso_page(code: str):
             try: c.close()
             except Exception: pass
 
-    canonical = f"https://dchub.cloud/grids/{code}"
+    canonical = f"https://api.dchub.cloud/grids/{code}"
     title = f"{display} — Grid + Data Center Intelligence | DC Hub"
     if facility_count:
         desc = f"Real-time {display} grid data + {facility_count} data centers totaling {total_mw}MW. Fuel mix, electricity prices, capacity scarcity, and renewable share."
@@ -612,11 +612,13 @@ def iso_page(code: str):
 @seo_pages_bp.get("/sitemap-index.xml")
 def sitemap_index():
     today = _dt.date.today().isoformat()
+    # Round 34 fix: point at api.dchub.cloud (where Flask serves these).
+    # dchub.cloud/sitemap-*.xml is shadowed by CF Pages → 404.
     xml = f"""<?xml version="1.0" encoding="UTF-8"?>
 <sitemapindex xmlns="http://www.sitemaps.org/schemas/sitemap/0.9">
-  <sitemap><loc>https://dchub.cloud/sitemap-facilities.xml</loc><lastmod>{today}</lastmod></sitemap>
-  <sitemap><loc>https://dchub.cloud/sitemap-markets.xml</loc><lastmod>{today}</lastmod></sitemap>
-  <sitemap><loc>https://dchub.cloud/sitemap-grids.xml</loc><lastmod>{today}</lastmod></sitemap>
+  <sitemap><loc>https://api.dchub.cloud/sitemap-facilities.xml</loc><lastmod>{today}</lastmod></sitemap>
+  <sitemap><loc>https://api.dchub.cloud/sitemap-markets.xml</loc><lastmod>{today}</lastmod></sitemap>
+  <sitemap><loc>https://api.dchub.cloud/sitemap-grids.xml</loc><lastmod>{today}</lastmod></sitemap>
 </sitemapindex>"""
     return Response(xml, mimetype='application/xml',
                      headers={'Cache-Control': 'public, max-age=3600'})
@@ -649,7 +651,7 @@ def sitemap_facilities():
         if lastmod:
             try: lastmod_str = f"<lastmod>{str(lastmod)[:10]}</lastmod>"
             except Exception: pass
-        items.append(f'  <url><loc>https://dchub.cloud/facility/{fid}</loc>{lastmod_str}<changefreq>monthly</changefreq><priority>0.7</priority></url>')
+        items.append(f'  <url><loc>https://api.dchub.cloud/facility/{fid}</loc>{lastmod_str}<changefreq>monthly</changefreq><priority>0.7</priority></url>')
 
     xml = '<?xml version="1.0" encoding="UTF-8"?>\n<urlset xmlns="http://www.sitemaps.org/schemas/sitemap/0.9">\n' + '\n'.join(items) + '\n</urlset>'
     return Response(xml, mimetype='application/xml',
@@ -680,7 +682,7 @@ def sitemap_markets():
             except Exception: pass
 
     items = '\n'.join(
-        f'  <url><loc>https://dchub.cloud/markets/{slug}</loc><changefreq>weekly</changefreq><priority>0.8</priority></url>'
+        f'  <url><loc>https://api.dchub.cloud/markets/{slug}</loc><changefreq>weekly</changefreq><priority>0.8</priority></url>'
         for slug in markets
     )
     xml = f'<?xml version="1.0" encoding="UTF-8"?>\n<urlset xmlns="http://www.sitemaps.org/schemas/sitemap/0.9">\n{items}\n</urlset>'
@@ -691,7 +693,7 @@ def sitemap_markets():
 @seo_pages_bp.get("/sitemap-grids.xml")
 def sitemap_grids():
     items = '\n'.join(
-        f'  <url><loc>https://dchub.cloud/grids/{code}</loc><changefreq>daily</changefreq><priority>0.9</priority></url>'
+        f'  <url><loc>https://api.dchub.cloud/grids/{code}</loc><changefreq>daily</changefreq><priority>0.9</priority></url>'
         for code in ISO_REGISTRY.keys()
     )
     xml = f'<?xml version="1.0" encoding="UTF-8"?>\n<urlset xmlns="http://www.sitemaps.org/schemas/sitemap/0.9">\n{items}\n</urlset>'
