@@ -51,9 +51,18 @@ def _call(tc, path):
 
 
 def _score_component(value, ok_threshold, weak_threshold, max_value=None):
-    """Return (0-100, verdict_word) for one component metric."""
+    """Return (0-100, verdict_word) for one component metric.
+
+    2026-05-24 r34d: when value is None (composed endpoint timed out or
+    returned non-JSON), return (None, "unknown") instead of (0, ...).
+    The composite-mean logic already filters out None scores, so an
+    unreachable channel no longer drags the composite to 0. Caught when
+    the /sentinel dashboard briefly showed media-organism=27.7 during
+    a deploy window — one timed-out channel was scoring 0 and pulling
+    the weighted mean down ~40%.
+    """
     if value is None:
-        return (0, "unknown")
+        return (None, "unknown")
     if max_value:
         # Normalized score
         pct = min(100.0, 100.0 * value / max_value)
