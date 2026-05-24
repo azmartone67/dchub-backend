@@ -127,6 +127,7 @@ def _card():
     return out
 
 
+# AUTO-REPAIR: duplicate route '/.well-known/agent.json' also in main.py:17876 — review and remove one
 @agent_a2a_bp.route("/.well-known/agent.json", methods=["GET"])
 @agent_a2a_bp.route("/.well-known/agent-card.json", methods=["GET"])
 @agent_a2a_bp.route("/.well-known/a2a.json", methods=["GET"])

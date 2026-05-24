@@ -479,7 +479,7 @@ def redeem_landing(code):
                         INSERT INTO mcp_upgrade_signals
                             (signal_type, tool_requested, mcp_client,
                              message_shown, created_at)
-                        VALUES ('redeem_url_viewed', %s, %s, %s, NOW())
+                        VALUES ('redeem_url_viewed', %s, %s, %s, NOW() ON CONFLICT DO NOTHING)
                     """, (tool_name or 'unknown',
                           (referring_agent or 'unknown')[:200],
                           f"redeem_viewed: code={code}"))
@@ -670,7 +670,7 @@ def paywall_response():
                     INSERT INTO mcp_upgrade_signals
                         (signal_type, tool_requested, mcp_client,
                          message_shown, created_at)
-                    VALUES ('paywall_hit', %s, %s, %s, NOW())
+                    VALUES ('paywall_hit', %s, %s, %s, NOW() ON CONFLICT DO NOTHING)
                 """, (tool, (agent or "unknown")[:200],
                       f"paywall_hit: code={code}"[:300]))
             c.commit()
