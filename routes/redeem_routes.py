@@ -470,7 +470,28 @@ def phase63_redeem(session_id):
                 try: _p99_conn.close()
                 except Exception: pass
             if _p99_key_ok:
-                _p99_email_ok, _p99_email_info = _p99_send_email(email, _p99_api_key, tools_tried)
+                # Phase ZZZZZ-round32 (2026-05-24): email send was blocking
+                # the POST response. SendGrid call adds 2-5s in best case,
+                # times out 15s+ when Railway is under load → worker returns
+                # 503 → user never sees success page → conversion lost.
+                # Master diagnostic 2026-05-24 confirmed 0% redeem POST
+                # success rate during Railway-busy periods.
+                # Fix: hand the email send to a daemon thread. The user
+                # gets the success page immediately (with the API key on
+                # it — they have everything they need). Email arrives
+                # ~5s later. If email fails, _p99_rec() below + the
+                # diagnostic endpoint /api/v1/redeem/diagnostic/<email>
+                # still capture the key so we can re-send manually.
+                import threading
+                _p99_email_ok   = True             # optimistic — logged via diagnostic
+                _p99_email_info = 'queued-async'
+                def _send_in_background():
+                    try:
+                        ok, info = _p99_send_email(email, _p99_api_key, tools_tried)
+                        _p99_logger.info(f'async-redeem-email session={session_id} email={email} ok={ok} info={info}')
+                    except Exception as _bg_e:
+                        _p99_logger.error(f'async-redeem-email session={session_id} email={email} crashed: {_bg_e}')
+                threading.Thread(target=_send_in_background, daemon=True).start()
         except Exception as _p99_e:
             _p99_key_err = _p99_key_err or f'unexpected: {type(_p99_e).__name__}: {_p99_e}'
         try:
