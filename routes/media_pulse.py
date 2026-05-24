@@ -287,39 +287,40 @@ def api_topic_pulse():
     """Reads news from last 48h, finds intersection with DCPI markets +
     pipeline projects + facilities, ranks topic suggestions. The
     media organism's 'next move' inference."""
-    out = {
+    out: dict = {
         "topic_suggestions":   [],
         "news_last_48h":       0,
+        "_window_days":        7,  # r34e+1 explicit so callers know the math
         "computed_at":         datetime.datetime.utcnow().isoformat() + "Z",
     }
     c = _conn()
     if c is None: return jsonify(out), 200
     try:
         with c.cursor(cursor_factory=psycopg2.extras.RealDictCursor) as cur:
-            # 2026-05-24 r34e: UNION across news + news_articles + announcements
-            # with COALESCE on published_date / published_at. The previous
-            # query only read `news` (15-col legacy table, ~3 rows/48h) and
-            # missed `news_articles` (the real ingest target with 13,487+
-            # rows). Result: topic_pulse stuck at 3 news items in 48h even
-            # though the platform ingests 50+/day. Also widened the window
-            # from 48h → 7d so quieter-news days don't blank the surface.
-            try:
-                cur.execute("""
-                    SELECT COUNT(*) AS n FROM (
-                        SELECT 1 FROM news
-                         WHERE published_date >= NOW() - INTERVAL '7 days'
-                        UNION ALL
-                        SELECT 1 FROM news_articles
-                         WHERE published_at >= NOW() - INTERVAL '7 days'
-                        UNION ALL
-                        SELECT 1 FROM announcements
-                         WHERE COALESCE(published_at, published_date)
-                               >= NOW() - INTERVAL '7 days'
-                    ) AS combined
-                """)
-                out["news_last_48h"] = int((cur.fetchone() or {"n":0})["n"] or 0)
-            except Exception:
-                pass
+            # 2026-05-24 r34e+1: per-table counts (UNION was failing
+            # atomically on any single bad subquery, dropping all 3
+            # counts to 0). Sum across news + news_articles + announcements,
+            # each wrapped in its own try/except. Widened to 7d so a
+            # quiet news cycle doesn't blank the surface.
+            for tbl_q in (
+                "SELECT COUNT(*) FROM news "
+                "WHERE published_date >= NOW() - INTERVAL '7 days'",
+                "SELECT COUNT(*) FROM news_articles "
+                "WHERE published_at >= NOW() - INTERVAL '7 days'",
+                "SELECT COUNT(*) FROM announcements "
+                "WHERE COALESCE(published_at, published_date) "
+                "      >= NOW() - INTERVAL '7 days'",
+            ):
+                try:
+                    cur.execute(tbl_q)
+                    n_row = cur.fetchone() or {"count": 0}
+                    out["news_last_48h"] += int(n_row.get("count") or 0)
+                except Exception:
+                    # Per-source try/except — one missing column / table
+                    # can't zero out the others. Rollback the failed
+                    # transaction so the next query can run.
+                    try: c.rollback()
+                    except Exception: pass
 
             # Pull recent headlines from ALL three tables.
             news_items: list = []
