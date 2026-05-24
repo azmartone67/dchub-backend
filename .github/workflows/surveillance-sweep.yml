@@ -20,8 +20,34 @@ env:
 jobs:
   sweep:
     runs-on: ubuntu-latest
-    timeout-minutes: 3
+    timeout-minutes: 5
     steps:
+      # 2026-05-24 r29c: trigger a fresh site_sentinel scan before
+      # polling /sweep, so stale page-findings clear on the same 15-min
+      # cadence as the sweep itself. Without this, /sweep keeps showing
+      # findings that have already been fixed (4 of 5 in our first
+      # production run were stale — pages worked, sentinel just hadn't
+      # re-probed). Admin-keyed; silently no-ops if key missing.
+      - name: Trigger fresh sentinel scan (clears stale findings)
+        env:
+          ADMIN_KEY: ${{ secrets.DCHUB_ADMIN_KEY }}
+        run: |
+          if [ -z "${ADMIN_KEY:-}" ]; then
+            echo "::notice::DCHUB_ADMIN_KEY not set — skipping fresh scan"
+            exit 0
+          fi
+          curl -sS --max-time 90 -X POST \
+            -H "X-Admin-Key: $ADMIN_KEY" \
+            "$BASE/api/v1/sentinel/scan-now" \
+            | python3 -c "
+          import json, sys
+          try:
+              d = json.load(sys.stdin)
+              print(f'::notice::sentinel scan: scanned={d.get(\"scanned\",0)} healthy={d.get(\"healthy\",0)} unhealthy={d.get(\"unhealthy\",0)}')
+          except Exception as e:
+              print(f'::warning::scan-now response parse failed: {e}')
+          " || true
+
       - name: Poll /sentinel/sweep
         id: sweep
         run: |
