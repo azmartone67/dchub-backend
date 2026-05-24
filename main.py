@@ -22610,6 +22610,13 @@ from routes.news_digests_read import news_digests_read_bp
 from routes.sources import sources_bp
 from routes.iso_ercot import iso_ercot_bp
 from routes.iso_caiso import iso_caiso_bp
+# Phase ZZZZZ-round33 (2026-05-24): first non-US ISO — Hydro-Québec
+try:
+    from routes.iso_hydroquebec import iso_hydroquebec_bp
+    _HYDROQUEBEC_OK = True
+except Exception as _hq_e:
+    _HYDROQUEBEC_OK = False
+    print(f"[main] iso_hydroquebec import failed: {_hq_e}", flush=True)
 from routes.iso_nyiso import iso_nyiso_bp
 from routes.iso_orchestrator import iso_orchestrator_bp
 from routes.iso_miso import iso_miso_bp
@@ -22675,6 +22682,10 @@ except Exception as _e:
 
 app.register_blueprint(iso_ercot_bp)
 app.register_blueprint(iso_caiso_bp)
+# Phase ZZZZZ-round33 (2026-05-24): first non-US ISO — Hydro-Québec
+if _HYDROQUEBEC_OK:
+    app.register_blueprint(iso_hydroquebec_bp)
+    print("[main] iso_hydroquebec_bp registered — first international ISO in DCPI", flush=True)
 app.register_blueprint(iso_nyiso_bp)
 app.register_blueprint(iso_orchestrator_bp)
 app.register_blueprint(iso_miso_bp)
