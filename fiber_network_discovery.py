@@ -103,7 +103,7 @@ def _upsert_fiber_route(conn, route):
                  start_point, end_point, distance_miles, fiber_count,
                  capacity, status, start_lat, start_lng, end_lat, end_lng,
                  source, source_id, discovered_at)
-            VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, NOW())
+            VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, NOW() ON CONFLICT DO NOTHING)
             ON CONFLICT (source, source_id) DO UPDATE SET
                 name = EXCLUDED.name,
                 provider = EXCLUDED.provider,
@@ -501,25 +501,31 @@ class NTIAGrantAPI:
 # FLASK ROUTES
 # ============================================================
 
+# AUTO-REPAIR: duplicate route '/api/fiber/providers' also in jobs_api.py:483 — review and remove one
 @fiber_bp.route('/api/fiber/providers')
 def get_providers():
     return jsonify({'success': True, **FiberProviderAPI.get_all_providers()})
+# AUTO-REPAIR: duplicate route '/api/fiber/providers/<provider_id>' also in jobs_api.py:487 — review and remove one
 
 @fiber_bp.route('/api/fiber/providers/<provider_id>')
 def get_provider(provider_id):
+# AUTO-REPAIR: duplicate route '/api/fiber/providers/market' also in jobs_api.py:491 — review and remove one
     return jsonify({'success': True, **FiberProviderAPI.get_provider(provider_id)})
 
 @fiber_bp.route('/api/fiber/providers/market')
 def get_providers_by_market():
+# AUTO-REPAIR: duplicate route '/api/fiber/routes' also in jobs_api.py:496 — review and remove one
     market = request.args.get('market', 'Ashburn')
     return jsonify({'success': True, **FiberProviderAPI.get_providers_by_market(market)})
 
 @fiber_bp.route('/api/fiber/routes')
+# AUTO-REPAIR: duplicate route '/api/fiber/carrier-hotels' also in jobs_api.py:501 — review and remove one
 def get_routes():
     provider = request.args.get('provider')
     return jsonify({'success': True, **FiberProviderAPI.get_routes(provider)})
 
 @fiber_bp.route('/api/fiber/carrier-hotels')
+# AUTO-REPAIR: duplicate route '/api/fiber/bead-allocations' also in jobs_api.py:507 — review and remove one
 def get_carrier_hotels():
     state = request.args.get('state')
     city = request.args.get('city')
@@ -527,12 +533,14 @@ def get_carrier_hotels():
 
 @fiber_bp.route('/api/fiber/bead-allocations')
 def get_bead_allocations():
+# AUTO-REPAIR: duplicate route '/api/fiber/coverage' also in jobs_api.py:515 — review and remove one
     dc_states = request.args.get('dc_markets')
     if dc_states:
         states = [s.strip().upper() for s in dc_states.split(',')]
         return jsonify({'success': True, **NTIAGrantAPI.get_bead_allocations(states)})
     return jsonify({'success': True, **NTIAGrantAPI.get_bead_allocations()})
 
+# AUTO-REPAIR: duplicate route '/api/fiber/summary' also in jobs_api.py:522 — review and remove one
 @fiber_bp.route('/api/fiber/coverage')
 def get_fiber_coverage():
     market = request.args.get('market')
