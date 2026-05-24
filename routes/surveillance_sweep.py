@@ -74,28 +74,32 @@ def sentinel_sweep():
                 "issue": f"{page_count} unhealthy pages",
             })
 
-        # Backup / feed freshness
-        body, _ = _call(tc, "/api/v1/backup/status")
-        summary = body.get("summary") or {}
-        feeds_ok = (summary.get("error", 0) == 0 and summary.get("stale", 0) == 0)
-        checks["backup"] = {
-            "ok": feeds_ok,
-            "healthy_feeds": summary.get("healthy"),
-            "stale_feeds":   summary.get("stale"),
-            "error_feeds":   summary.get("error"),
-            "overall":       summary.get("overall_health"),
+        # Data freshness — SLA breaches per domain. /api/v1/backup/status
+        # doesn't exist as a REST route (it's an MCP tool); /api/v1/freshness
+        # is the canonical Flask endpoint and exposes richer per-domain
+        # SLA data including which domains have breached.
+        body, _ = _call(tc, "/api/v1/freshness")
+        breaches = body.get("sla_breaches") or []
+        checks["freshness"] = {
+            "ok": len(breaches) == 0,
+            "sla_breached_domains": breaches,
+            "breach_count": len(breaches),
+            "dcpi_age_minutes": (body.get("dcpi") or {}).get("age_minutes"),
+            "dcpi_published_markets": (body.get("dcpi") or {}).get("published_markets"),
         }
-        if summary.get("error", 0) > 0:
+        if len(breaches) >= 3:
             actions.append({
                 "category": "data_freshness",
                 "priority": "high",
-                "issue": f"{summary.get('error')} feed(s) in error state",
+                "issue": f"{len(breaches)} domain(s) breaching SLA",
+                "detail": ", ".join(breaches[:6]),
             })
-        elif summary.get("stale", 0) > 0:
+        elif len(breaches) > 0:
             actions.append({
                 "category": "data_freshness",
                 "priority": "medium",
-                "issue": f"{summary.get('stale')} feed(s) stale",
+                "issue": f"{len(breaches)} domain(s) breaching SLA",
+                "detail": ", ".join(breaches[:6]),
             })
 
         # Brain v2 verdict
