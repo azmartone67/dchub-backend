@@ -100,36 +100,59 @@ def _fetch_deals(limit=20):
     if not (_pg and _dsn()):
         return [], "database_unavailable"
     sql_keywords = " OR ".join([f"LOWER(title) LIKE '%%{k}%%'" for k in HYPERSCALER_KEYWORDS])
-    query = f"""
-        SELECT id, title, source, url, published_at, summary
-        FROM news_articles
+    # Schema: news table — id, title, source, url, published_date (DATE).
+    # Try both `summary` and `description` columns; whichever exists.
+    query_summary = f"""
+        SELECT id, title, source, url, published_date, summary
+        FROM news
         WHERE ({sql_keywords})
-          AND published_at > NOW() - INTERVAL '60 days'
-        ORDER BY published_at DESC
-        LIMIT %s
+          AND published_date > CURRENT_DATE - INTERVAL '60 days'
+        ORDER BY published_date DESC LIMIT %s
     """
-    try:
-        with _conn() as c, c.cursor(cursor_factory=psycopg2.extras.RealDictCursor) as cur:
-            cur.execute(query, (limit * 2,))
-            rows = cur.fetchall()
-    except Exception as e:
-        return [], f"query_failed: {type(e).__name__}: {str(e)[:200]}"
+    query_desc = f"""
+        SELECT id, title, source, url, published_date, description AS summary
+        FROM news
+        WHERE ({sql_keywords})
+          AND published_date > CURRENT_DATE - INTERVAL '60 days'
+        ORDER BY published_date DESC LIMIT %s
+    """
+    query_no_summary = f"""
+        SELECT id, title, source, url, published_date, '' AS summary
+        FROM news
+        WHERE ({sql_keywords})
+          AND published_date > CURRENT_DATE - INTERVAL '60 days'
+        ORDER BY published_date DESC LIMIT %s
+    """
+    rows = None
+    last_err = None
+    for q in (query_summary, query_desc, query_no_summary):
+        try:
+            with _conn() as c, c.cursor(cursor_factory=psycopg2.extras.RealDictCursor) as cur:
+                cur.execute(q, (limit * 3,))
+                rows = cur.fetchall()
+                break
+        except Exception as e:
+            last_err = f"{type(e).__name__}: {str(e)[:120]}"
+            continue
+    if rows is None:
+        return [], last_err or "all_queries_failed"
 
     out = []
     for r in rows:
-        full = (r["title"] or "") + " " + (r["summary"] or "")
+        full = (r.get("title") or "") + " " + (r.get("summary") or "")
         actors = _classify_actor(full)
         if not actors: continue
+        pub = r.get("published_date")
         out.append({
-            "id":         r["id"],
-            "title":      r["title"],
-            "source":     r["source"],
-            "url":        r["url"],
-            "published":  r["published_at"].isoformat() if r["published_at"] else None,
+            "id":         r.get("id"),
+            "title":      r.get("title"),
+            "source":     r.get("source"),
+            "url":        r.get("url"),
+            "published":  pub.isoformat() if pub else None,
             "actors":     actors,
             "value_usd":  _extract_dollars(full),
             "capacity":   _extract_mw(full),
-            "summary":    (r["summary"] or "")[:280],
+            "summary":    (r.get("summary") or "")[:280],
         })
         if len(out) >= limit: break
     return out, None

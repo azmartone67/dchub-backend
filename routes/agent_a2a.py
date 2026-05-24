@@ -127,10 +127,13 @@ def _card():
     return out
 
 
-@agent_a2a_bp.route("/.well-known/agent.json", methods=["GET"])
+# NOTE: /.well-known/agent.json is owned by ai_agent_discovery.py
+# (registered first via discovery_bp). Our richer A2A card lives at
+# alternate aliases so it's discoverable without the shadow conflict.
 @agent_a2a_bp.route("/.well-known/agent-card.json", methods=["GET"])
 @agent_a2a_bp.route("/.well-known/a2a.json", methods=["GET"])
 @agent_a2a_bp.route("/agent.json", methods=["GET"])
+@agent_a2a_bp.route("/.well-known/dchub-agent.json", methods=["GET"])
 def agent_card():
     return jsonify(_card()), 200, {
         "Cache-Control": "public, max-age=3600",

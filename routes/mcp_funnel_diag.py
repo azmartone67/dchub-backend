@@ -22,6 +22,11 @@ try:
 except Exception:
     _pg = None
 
+# NOTE: /api/v1/mcp/funnel is already owned by main.py with a richer
+# implementation (22,900 tool calls/7d, 18,497 paywall signals, 0
+# conversions, top-signal-tools breakdown). Our diagnostic endpoint
+# stages-based view lives at /api/v1/mcp/funnel-stages so both surfaces
+# coexist for different consumers.
 mcp_funnel_bp = Blueprint("mcp_funnel", __name__,
                            url_prefix="/api/v1/mcp")
 
@@ -37,7 +42,7 @@ def _conn():
     finally: c.close()
 
 
-@mcp_funnel_bp.route("/funnel", methods=["GET"])
+@mcp_funnel_bp.route("/funnel-stages", methods=["GET"])
 def funnel_diag():
     out = {
         "at": datetime.datetime.utcnow().isoformat() + "Z",
