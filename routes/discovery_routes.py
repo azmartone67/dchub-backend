@@ -716,10 +716,20 @@ def evolution_history():
 
 @discovery_bp.route('/api/brain/status', methods=['GET'])
 def brain_status():
-    """Get autonomous brain status."""
+    """Get autonomous brain status.
+
+    2026-05-24: was importing `get_brain_status`, but that name collides
+    with the Flask view function at autonomous_brain.py:1160. Calling a
+    view outside a request context returns a Response object which then
+    can't be JSON-serialized — producing the long-standing
+    "Object of type Response is not JSON serializable" degradation
+    flagged in /api/v1/brain/status QA. Fixed by calling the
+    module-level brain instance's get_status() directly, which returns
+    a plain dict (autonomous_brain.py:1101).
+    """
     try:
-        from autonomous_brain import get_brain_status
-        status = get_brain_status()
+        from autonomous_brain import brain
+        status = brain.get_status()
         return jsonify({'success': True, 'available': True, 'status': status})
     except ImportError:
         return jsonify({'success': True, 'available': False, 'message': 'Brain module not installed'})

@@ -271,6 +271,52 @@ def share_page(date: str):
     return share_page_html(d)
 
 
+def _resolve_og_image(date: datetime.date, base: str) -> str:
+    """Pick the best og:image URL — today's hero if rendered, else walk
+    back up to 14 days to find the most recent real square render, else
+    a stable dchub.cloud fallback.
+
+    2026-05-24: was hard-pointing to {date}/{default_theme(date)}_square.png
+    even when no cron had rendered for that date — producing permanent
+    404s on the og:image (every social preview was blank). Now self-heals
+    by querying DB renders backwards.
+    """
+    fallback = "https://dchub.cloud/images/og-default.png"
+    if not base:
+        return fallback
+    # Today first — usually correct once /refresh has fired.
+    candidate_key = _r2_key(date, default_theme(date), "square")
+    candidate_url = f"{base}/{candidate_key}"
+    if not os.environ.get("DATABASE_URL"):
+        # No DB to consult; trust today's URL and let the cron heal it.
+        return candidate_url
+    try:
+        db = _lazy_db()
+        # Walk back from `date` up to 14 days looking for an existing
+        # square render. Each daily refresh writes 9 renders (3 themes
+        # × 3 sizes); the first one in the DB is good enough to share.
+        for back in range(0, 14):
+            day = date - datetime.timedelta(days=back)
+            day_rows = db.get_renders(day) or []
+            squares = [r for r in day_rows if r.get("size") == "square"]
+            if not squares:
+                continue
+            # Prefer the theme that would be today's default; else any.
+            preferred = default_theme(day)
+            hero = next(
+                (r for r in squares if r.get("theme") == preferred),
+                squares[0],
+            )
+            key = hero.get("r2_key") or _r2_key(
+                day, hero.get("theme", preferred), "square"
+            )
+            return f"{base}/{key}"
+    except Exception:
+        # Never fail — og:image must always resolve.
+        pass
+    return fallback
+
+
 def share_page_html(date: datetime.date) -> str:
     rows = []
     if os.environ.get("DATABASE_URL"):
@@ -279,6 +325,7 @@ def share_page_html(date: datetime.date) -> str:
         except Exception:
             rows = []
     base = os.environ.get("R2_PUBLIC_BASE", "")
+    og_image_url = _resolve_og_image(date, base)
     cards = []
     for theme in THEMES:
         for size in SIZES:
@@ -302,7 +349,7 @@ def share_page_html(date: datetime.date) -> str:
 <meta charset="utf-8"/>
 <title>DC Hub Daily — {date.isoformat()}</title>
 <meta property="og:title" content="DC Hub Daily — {date.isoformat()}"/>
-<meta property="og:image" content="{base}/{_r2_key(date, default_theme(date), 'square')}"/>
+<meta property="og:image" content="{og_image_url}"/>
 <meta name="twitter:card" content="summary_large_image"/>
 <style>
   :root {{ color-scheme: dark; }}
