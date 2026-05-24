@@ -22771,6 +22771,16 @@ try:
 except Exception as _sp_e:
     print(f"[main] status_page_bp register failed: {_sp_e}", flush=True)
 
+# Phase ZZZZZ-round33 (2026-05-24): Tier 1 MCP tools — rank_markets,
+# find_alternatives, score_facility. Backend endpoints; dchub-mcp-server
+# registers the MCP tool wrappers that call these.
+try:
+    from routes.mcp_tier1_tools import mcp_tier1_bp
+    app.register_blueprint(mcp_tier1_bp)
+    print("[main] mcp_tier1_bp registered: rank_markets + find_alternatives + score_facility", flush=True)
+except Exception as _t1_e:
+    print(f"[main] mcp_tier1_bp register failed: {_t1_e}", flush=True)
+
 # auto-registered: freshness_universal_bp
 app.register_blueprint(freshness_universal_bp)
 
