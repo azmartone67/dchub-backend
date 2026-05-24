@@ -94,16 +94,28 @@ def detectors():
     # missing table) doesn't poison the rest. psycopg2 puts the txn into
     # an aborted state on error; rollback per-query also works but a
     # fresh conn is more bulletproof for a diagnostics endpoint.
+    # Schema cheat sheet (verified 2026-05-24):
+    #   mcp_tool_usage    → date (DATE), tool_name, tier, call_count
+    #   api_usage_meter   → usage_date (DATE), api_key, tier, calls_count, last_call_at
     QUERIES = [
         ("tier1_mcp_adoption_7d", """
-            SELECT tool_name, COUNT(*) AS n
+            SELECT tool_name, SUM(call_count)::int AS n
             FROM mcp_tool_usage
             WHERE tool_name IN ('rank_markets','find_alternatives','score_facility')
-              AND ts > NOW() - INTERVAL '7 days'
+              AND date > CURRENT_DATE - INTERVAL '7 days'
             GROUP BY tool_name
         """, "dict"),
         ("api_calls_24h",
-            "SELECT COUNT(*) FROM api_usage_meter WHERE ts > NOW() - INTERVAL '24 hours'",
+            "SELECT COALESCE(SUM(calls_count),0)::int FROM api_usage_meter "
+            "WHERE usage_date >= CURRENT_DATE - INTERVAL '1 day'",
+            "scalar"),
+        ("api_calls_unique_keys_7d",
+            "SELECT COUNT(DISTINCT api_key)::int FROM api_usage_meter "
+            "WHERE usage_date >= CURRENT_DATE - INTERVAL '7 days'",
+            "scalar"),
+        ("mcp_tool_usage_total_7d",
+            "SELECT COALESCE(SUM(call_count),0)::int FROM mcp_tool_usage "
+            "WHERE date > CURRENT_DATE - INTERVAL '7 days'",
             "scalar"),
         ("discovered_facilities_total",
             "SELECT COUNT(*) FROM discovered_facilities",
