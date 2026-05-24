@@ -22699,6 +22699,38 @@ if _HYDROQUEBEC_OK:
 if _AESO_INTL_OK:
     app.register_blueprint(iso_aeso_intl_bp)
     print("[main] iso_aeso_intl_bp registered — second international ISO (Alberta)", flush=True)
+
+# Phase ZZZZZ-round34 (2026-05-24): third international ISO — Nord Pool (Nordics)
+try:
+    from routes.iso_nordpool_intl import iso_nordpool_intl_bp
+    app.register_blueprint(iso_nordpool_intl_bp)
+    print("[main] iso_nordpool_intl_bp registered — third international ISO (Nord Pool, 15 zones)", flush=True)
+except Exception as _np_e:
+    print(f"[main] iso_nordpool_intl_bp register failed: {_np_e}", flush=True)
+
+# Phase ZZZZZ-round34 (2026-05-24): Tier 2 MCP tools — PDF site reports + CSV export
+try:
+    from routes.mcp_tier2_reports import mcp_tier2_bp
+    app.register_blueprint(mcp_tier2_bp)
+    print("[main] mcp_tier2_bp registered: create_site_report + export_facility_csv", flush=True)
+except Exception as _t2_e:
+    print(f"[main] mcp_tier2_bp register failed: {_t2_e}", flush=True)
+
+# Phase ZZZZZ-round34 (2026-05-24): Slack /dchub command
+try:
+    from routes.slack_app import slack_app_bp
+    app.register_blueprint(slack_app_bp)
+    print("[main] slack_app_bp registered: /api/v1/slack/{command,events,interact,oauth/callback}", flush=True)
+except Exception as _sk_e:
+    print(f"[main] slack_app_bp register failed: {_sk_e}", flush=True)
+
+# Phase ZZZZZ-round34 (2026-05-24): Stripe metered billing for API overage
+try:
+    from routes.stripe_metered import stripe_metered_bp
+    app.register_blueprint(stripe_metered_bp)
+    print("[main] stripe_metered_bp registered: pay-per-call overage billing", flush=True)
+except Exception as _sm_e:
+    print(f"[main] stripe_metered_bp register failed: {_sm_e}", flush=True)
 app.register_blueprint(iso_nyiso_bp)
 app.register_blueprint(iso_orchestrator_bp)
 app.register_blueprint(iso_miso_bp)
