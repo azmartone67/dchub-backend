@@ -357,6 +357,13 @@ def api_topic_pulse():
             # state + iso so we can match news that mentions the broader
             # region without the specific market name (e.g. "Texas data
             # center boom" matches ERCOT markets).
+            # r34f+1 (2026-05-24): dropped `WHERE published = true` —
+            # /api/v1/media/aggregate.live_spine.dcpi_markets reports 285
+            # markets but the published flag is sparse, so the filter was
+            # collapsing the available match set to (essentially) zero.
+            # Any market with a market_name + computed_at is fair game
+            # for news intersection; we let the verdict NULL → "neutral"
+            # in the scoring step downstream.
             markets_full: list = []
             try:
                 cur.execute("""
@@ -364,7 +371,8 @@ def api_topic_pulse():
                            market_slug, market_name, state, iso, verdict,
                            excess_power_score, constraint_score
                       FROM market_power_scores
-                     WHERE published = true
+                     WHERE market_name IS NOT NULL
+                       AND market_slug IS NOT NULL
                      ORDER BY market_slug, computed_at DESC
                 """)
                 markets_full = list(cur.fetchall())
