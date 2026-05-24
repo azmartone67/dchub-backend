@@ -23492,6 +23492,19 @@ try:
 except Exception as _ssw_e:
     print(f"[main] surveillance_sweep wiring failed: {_ssw_e}", file=sys.stderr, flush=True)
 
+# Phase r32 (2026-05-24): Media as a living organism — single vital-
+# signs rollup composing press cadence + LinkedIn velocity + source-of-
+# truth + topic pulse + journalist outreach + winback into ONE 0-100
+# score + verdict (alive/warming/quiet/dormant). Polled hourly by
+# media-organism-tick.yml; that cron also auto-fires pitch-drafts when
+# the rollup shows journalist_outreach is the weakest channel.
+try:
+    from routes.media_organism import media_organism_bp as _morg_bp
+    app.register_blueprint(_morg_bp)
+    print("[main] media_organism blueprint registered", flush=True)
+except Exception as _morg_e:
+    print(f"[main] media_organism wiring failed: {_morg_e}", file=sys.stderr, flush=True)
+
 # Phase WWW (2026-05-16): Site Sentinel — polls every public URL and
 # surfaces breakages/staleness as brain findings so the heartbeat
 # catches them before a user reports.

@@ -1101,6 +1101,136 @@ def brain_model_tiers():
     return jsonify(ok=True, **summary), 200
 
 
+@brain_v2_bp.get("/api/v1/brain/value-shipped")
+def brain_value_shipped():
+    """What has the brain actually shipped that made the site more valuable?
+
+    Counts autonomous output across the brain's value-creation surfaces:
+      - code proposals shipped (brain_proposed_fixes, status=approved+shipped)
+      - autopilot actions completed (brain_autopilot_actions)
+      - autonomous press releases written (auto_press_releases)
+      - LinkedIn posts sent (auto_press_releases.linkedin_sent_at)
+
+    Returns counts at 7d / 30d windows so operators can answer
+    "is the brain making us more valuable than last week?"
+    with one query instead of digging through 6 endpoints.
+    """
+    import datetime as _dt
+    c = None
+    try:
+        if _STORE_OK:
+            try:
+                c = _store._conn() if hasattr(_store, "_conn") else None
+            except Exception:
+                c = None
+        if c is None:
+            try:
+                import psycopg2 as _pg
+                c = _pg.connect(
+                    os.environ.get("DATABASE_URL")
+                    or os.environ.get("NEON_DATABASE_URL", ""),
+                    sslmode="require",
+                    connect_timeout=5,
+                )
+            except Exception:
+                c = None
+    except Exception:
+        c = None
+
+    if c is None:
+        return jsonify(
+            ok=False,
+            error="DB unreachable",
+            generated_at=_dt.datetime.utcnow().isoformat() + "Z",
+        ), 200
+
+    def _count(table, where_extra="", window_days=7):
+        """Return COUNT(*) for table over last window_days, swallowing errors."""
+        try:
+            with c.cursor() as cur:
+                cur.execute(f"SELECT to_regclass('public.{table}')")
+                if not (cur.fetchone() or [None])[0]:
+                    return None
+                # Find the most likely "created/applied" timestamp column.
+                cur.execute(f"""
+                    SELECT column_name FROM information_schema.columns
+                    WHERE table_name = %s
+                      AND data_type IN ('timestamp with time zone',
+                                        'timestamp without time zone')
+                    ORDER BY CASE column_name
+                      WHEN 'applied_at' THEN 1
+                      WHEN 'shipped_at' THEN 2
+                      WHEN 'completed_at' THEN 3
+                      WHEN 'sent_at' THEN 4
+                      WHEN 'generated_at' THEN 5
+                      WHEN 'created_at' THEN 6
+                      ELSE 99
+                    END
+                    LIMIT 1
+                """, (table,))
+                row = cur.fetchone()
+                if not row:
+                    return None
+                ts_col = row[0]
+                where = f"WHERE {ts_col} >= NOW() - INTERVAL '{int(window_days)} days'"
+                if where_extra:
+                    where += f" AND ({where_extra})"
+                cur.execute(f"SELECT COUNT(*) FROM {table} {where}")
+                return int((cur.fetchone() or [0])[0] or 0)
+        except Exception:
+            return None
+
+    shipped_7d = {
+        "code_fixes":     _count("brain_proposed_fixes",
+                                 "(status = 'shipped' OR status = 'approved')", 7),
+        "autopilot_actions": _count("brain_autopilot_actions", "", 7),
+        "press_releases":  _count("auto_press_releases", "", 7),
+        "linkedin_posts":  _count("auto_press_releases",
+                                  "linkedin_sent_at IS NOT NULL", 7),
+        "outreach_pitches": _count("media_outreach_log", "", 7),
+    }
+    shipped_30d = {
+        "code_fixes":     _count("brain_proposed_fixes",
+                                 "(status = 'shipped' OR status = 'approved')", 30),
+        "autopilot_actions": _count("brain_autopilot_actions", "", 30),
+        "press_releases":  _count("auto_press_releases", "", 30),
+        "linkedin_posts":  _count("auto_press_releases",
+                                  "linkedin_sent_at IS NOT NULL", 30),
+        "outreach_pitches": _count("media_outreach_log", "", 30),
+    }
+
+    def _sum_nonnull(d):
+        return sum(v for v in d.values() if isinstance(v, int))
+
+    total_7d = _sum_nonnull(shipped_7d)
+    total_30d = _sum_nonnull(shipped_30d)
+
+    # Verdict ladder — what does this volume mean?
+    if total_7d >= 14:    verdict = "high_output"
+    elif total_7d >= 7:   verdict = "steady"
+    elif total_7d >= 1:   verdict = "slow"
+    else:                 verdict = "silent"
+
+    try: c.close()
+    except Exception: pass
+
+    return jsonify(
+        ok=True,
+        verdict=verdict,
+        total_shipped_7d=total_7d,
+        total_shipped_30d=total_30d,
+        shipped_7d=shipped_7d,
+        shipped_30d=shipped_30d,
+        generated_at=_dt.datetime.utcnow().isoformat() + "Z",
+        purpose=(
+            "Aggregate brain value-creation. Counts code proposals shipped, "
+            "autopilot actions, press releases written, LinkedIn posts, "
+            "and journalist pitches over 7d/30d. Single answer to 'is the "
+            "brain alive and making us more valuable this week?'"
+        ),
+    ), 200
+
+
 @brain_v2_bp.get("/api/v1/brain/filter-summary")
 def brain_filter_summary():
     """Why is the brain proposing N fixes? Counts learning_log outcomes

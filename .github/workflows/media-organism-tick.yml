@@ -1,0 +1,106 @@
+name: Media organism tick (hourly heartbeat)
+
+# 2026-05-24 r32 — DC Hub Media as a living organism.
+# Hourly heartbeat that polls /api/v1/media/organism, logs the vitality
+# score + per-channel verdict, and auto-fires journalist outreach when
+# a hot topic intersects with channel silence.
+#
+# Off-cycle from other media crons:
+#   press-scan-daily   :00 daily
+#   outreach-daily     :05 16 UTC daily
+#   mcp-outreach       (its own schedule)
+#   linkedin-whoami    (its own schedule)
+# This fires at :22 hourly so it doesn't collide.
+
+on:
+  schedule:
+    - cron: '22 * * * *'
+  workflow_dispatch: {}
+
+permissions:
+  contents: read
+
+env:
+  BASE: https://dchub-backend-production.up.railway.app
+
+jobs:
+  tick:
+    runs-on: ubuntu-latest
+    timeout-minutes: 4
+    steps:
+      - name: Poll /media/organism
+        id: organism
+        run: |
+          set -euo pipefail
+          response=$(curl -sS --max-time 60 "$BASE/api/v1/media/organism" \
+            || echo '{"verdict":"unreachable","vitality_score":0}')
+          echo "$response" > organism.json
+          # Single-line summary to the GHA run log.
+          python3 - <<'PY'
+          import json
+          with open("organism.json") as f: d = json.load(f)
+          score   = d.get("vitality_score", 0)
+          verdict = d.get("verdict", "?")
+          weakest = d.get("weakest_channel", "?")
+          weakest_s = d.get("weakest_channel_score", "?")
+          comps = d.get("components") or {}
+          print(f"::notice::media organism: score={score} verdict={verdict} weakest={weakest}@{weakest_s}")
+          for name, c in comps.items():
+              if isinstance(c, dict):
+                  print(f"::notice::  {name}: score={c.get('score','?')} verdict={c.get('verdict','?')}")
+          PY
+          # Export for downstream steps
+          score=$(python3 -c "import json; print(json.load(open('organism.json')).get('vitality_score',0))")
+          verdict=$(python3 -c "import json; print(json.load(open('organism.json')).get('verdict','?'))")
+          weakest=$(python3 -c "import json; print(json.load(open('organism.json')).get('weakest_channel','?'))")
+          echo "score=$score"     >> "$GITHUB_OUTPUT"
+          echo "verdict=$verdict" >> "$GITHUB_OUTPUT"
+          echo "weakest=$weakest" >> "$GITHUB_OUTPUT"
+
+      - name: Auto-fire pitch-draft when topic_pulse hot + outreach quiet
+        if: |
+          steps.organism.outputs.weakest == 'journalist_outreach' ||
+          steps.organism.outputs.verdict == 'dormant' ||
+          steps.organism.outputs.verdict == 'quiet'
+        env:
+          ADMIN_KEY: ${{ secrets.DCHUB_ADMIN_KEY }}
+        run: |
+          if [ -z "${ADMIN_KEY:-}" ]; then
+            echo "::warning::DCHUB_ADMIN_KEY not set — skipping auto pitch-draft"
+            exit 0
+          fi
+          # Pull the top topic suggestion, draft a pitch (does NOT send).
+          # Sending is still gated to the daily outreach-daily.yml cron.
+          topic=$(python3 -c "
+          import json
+          d = json.load(open('organism.json'))
+          comps = d.get('components',{})
+          tp = comps.get('topic_pulse',{})
+          # If suggestions_count > 0 we want to act; otherwise no-op.
+          print(tp.get('suggestions_count',0))
+          ")
+          if [ "$topic" -eq "0" ] 2>/dev/null; then
+              echo "::notice::topic_pulse has 0 suggestions — nothing to draft today"
+              exit 0
+          fi
+          response=$(curl -sS --max-time 60 -X POST \
+            -H "X-Admin-Key: $ADMIN_KEY" \
+            -H "Content-Type: application/json" \
+            "$BASE/api/v1/media/pitch-draft" \
+            -d '{}' \
+            || echo '{"ok":false,"error":"curl_fail"}')
+          echo "$response" | python3 -c "
+          import json, sys
+          try:
+              d = json.loads(sys.stdin.read())
+              if d.get('ok'):
+                  print(f'::notice::pitch-draft queued for {d.get(\"recipient\",\"?\")}')
+              else:
+                  print(f'::warning::pitch-draft did not queue: {d.get(\"error\",\"\")[:200]}')
+          except Exception as e:
+              print(f'::warning::pitch-draft response parse failed: {e}')
+          " || true
+
+      - name: Final verdict
+        run: |
+          echo "::notice::Media organism tick complete — score=${{ steps.organism.outputs.score }} verdict=${{ steps.organism.outputs.verdict }}"
