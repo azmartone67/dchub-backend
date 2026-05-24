@@ -190,45 +190,23 @@ def sentinel_sweep():
                 "issue": f"{count_5xx_15m} 5xx in recent buffer",
             })
 
-        # Security signals (r29d) — runs the brain security detectors via
-        # lazy import (NOT at module load — that pattern was tried in r29
-        # v1 and may have contributed to the boot loop). Each detector
-        # wrapped in its own try/except so a single failing detector can't
-        # break the sweep. The detectors self-probe localhost via urllib;
-        # capping at 5 detectors and time-bounding via per-call timeouts.
-        sec_findings = []
-        sec_errors = []
-        try:
-            from routes import brain_security_detectors as _bsd
-            for name in (
-                "check_admin_endpoint_open",
-                "check_paywall_holes",
-                "check_security_header_drift",
-                "check_secret_pattern_in_body",
-                "check_repeated_admin_401",
-            ):
-                fn = getattr(_bsd, name, None)
-                if not callable(fn):
-                    continue
-                try:
-                    rows = fn() or []
-                    for r in rows:
-                        if isinstance(r, dict):
-                            r.setdefault("source", name)
-                            sec_findings.append(r)
-                except Exception as _e:
-                    sec_errors.append(f"{name}: {type(_e).__name__}")
-        except Exception as _e:
-            sec_errors.append(f"import: {type(_e).__name__}")
+        # Security signals — pulled from the dedicated /sentinel/security
+        # endpoint (5-min in-memory cache). Without the cache, the 5
+        # detectors' urllib self-probes pile onto the same gunicorn
+        # workers serving the sweep, causing test_client calls to time
+        # out and the rest of /sweep to return None. Cache turns it into
+        # an instant lookup unless the 5-min window has lapsed.
+        body, _ = _call(tc, "/api/v1/sentinel/security")
+        sec_findings = body.get("findings") or []
         checks["security"] = {
             "ok": len(sec_findings) == 0,
-            "detectors_run": 5 - len(sec_errors),
-            "findings_count": len(sec_findings),
+            "detectors_run": body.get("detectors_run"),
+            "findings_count": body.get("findings_count", len(sec_findings)),
             "findings_sample": sec_findings[:5],
-            "detector_errors": sec_errors,
+            "computed_at": body.get("computed_at"),
+            "from_cache": body.get("from_cache"),
         }
         if len(sec_findings) > 0:
-            # Security findings are always high — these are real holes.
             for f in sec_findings[:3]:
                 actions.append({
                     "category": "security",
@@ -307,6 +285,84 @@ def sentinel_sweep():
             "Severity != green emits ::warning:: in GHA logs."
         ),
     }), 200
+
+
+# ── security check w/ in-memory cache (r29e) ──────────────────────
+#
+# The 5 detectors self-probe localhost via urllib (~5-10s combined).
+# Without caching, this slowed /sweep from 6s → 27s AND caused other
+# test_client calls inside /sweep to time out (workers fighting each
+# other). 5-min cache makes /sweep fast while still letting a separate
+# cron poll /security?force=1 hourly to refresh the result.
+
+_SEC_CACHE: dict = {"computed_at": 0.0, "findings": [], "errors": []}
+_SEC_TTL_SEC = 300
+
+
+@surveillance_bp.route("/api/v1/sentinel/security", methods=["GET"])
+def sentinel_security():
+    """Run brain_security_detectors. 5-min cache. ?force=1 bypasses.
+
+    Composed by /sweep — the cache makes that call instant. A separate
+    cron (or workflow_dispatch) can refresh by hitting this endpoint
+    directly with ?force=1.
+    """
+    now = time.time()
+    use_cache = (
+        request.args.get("force") != "1"
+        and (now - _SEC_CACHE["computed_at"]) < _SEC_TTL_SEC
+    )
+    if use_cache and _SEC_CACHE["computed_at"] > 0:
+        return jsonify(
+            ok=len(_SEC_CACHE["findings"]) == 0,
+            from_cache=True,
+            computed_at=datetime.datetime.utcfromtimestamp(
+                _SEC_CACHE["computed_at"]).isoformat() + "Z",
+            findings_count=len(_SEC_CACHE["findings"]),
+            findings=_SEC_CACHE["findings"][:20],
+            detectors_run=5 - len(_SEC_CACHE["errors"]),
+            errors=_SEC_CACHE["errors"],
+        ), 200
+
+    # Cold path — actually run the detectors.
+    findings: list = []
+    errors: list = []
+    try:
+        from routes import brain_security_detectors as _bsd  # lazy
+        for name in (
+            "check_admin_endpoint_open",
+            "check_paywall_holes",
+            "check_security_header_drift",
+            "check_secret_pattern_in_body",
+            "check_repeated_admin_401",
+        ):
+            fn = getattr(_bsd, name, None)
+            if not callable(fn):
+                continue
+            try:
+                rows = fn() or []
+                for r in rows:
+                    if isinstance(r, dict):
+                        r.setdefault("source", name)
+                        findings.append(r)
+            except Exception as _e:
+                errors.append(f"{name}: {type(_e).__name__}: {str(_e)[:80]}")
+    except Exception as _e:
+        errors.append(f"import: {type(_e).__name__}: {str(_e)[:80]}")
+
+    _SEC_CACHE["computed_at"] = now
+    _SEC_CACHE["findings"] = findings
+    _SEC_CACHE["errors"] = errors
+
+    return jsonify(
+        ok=len(findings) == 0,
+        from_cache=False,
+        computed_at=datetime.datetime.utcfromtimestamp(now).isoformat() + "Z",
+        findings_count=len(findings),
+        findings=findings[:20],
+        detectors_run=5 - len(errors),
+        errors=errors,
+    ), 200
 
 
 # ── data drift detection (r29c) ───────────────────────────────────
