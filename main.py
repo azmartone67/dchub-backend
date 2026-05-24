@@ -2706,6 +2706,23 @@ def require_plan(min_plan='pro'):
             internal_key = request.headers.get("X-Internal-Key", "")
             if is_valid_internal_key(internal_key):
                 return f(*args, **kwargs)
+            # r35-radar-fix (2026-05-24): brain consistency radar also
+            # sends X-Admin-Key (env var DCHUB_ADMIN_KEY). Honor it here
+            # so the radar can probe gated paths like /api/v1/fiber/intel
+            # without flipping the caller's tier to admin globally. Both
+            # sides cleaned (split()[0]) to defend against trailing
+            # whitespace / shell-path pollution in the env var.
+            try:
+                import hmac as _hmac_admin
+                _admin_hdr = (request.headers.get("X-Admin-Key", "") or "").split()
+                _admin_clean = _admin_hdr[0] if _admin_hdr else ""
+                _admin_expected = (os.environ.get("DCHUB_ADMIN_KEY", "") or "").split()
+                _admin_expected = _admin_expected[0] if _admin_expected else ""
+                if (_admin_clean and _admin_expected
+                        and _hmac_admin.compare_digest(_admin_clean, _admin_expected)):
+                    return f(*args, **kwargs)
+            except Exception:
+                pass
             try:
                 ai_info = get_ai_wars_key_info()
                 if ai_info:

@@ -28,20 +28,46 @@ _LEGACY_KEYS = frozenset(("dchub-internal-2024", "dchub-internal-sync-2026"))
 LEGACY_OK = os.environ.get("INTERNAL_AUTH_LEGACY_OK", "1") == "1"
 
 
+def _clean_key(v):
+    """Strip leading/trailing whitespace AND take only the first whitespace-
+    delimited token. This defends against env vars that were pasted with
+    trailing newlines OR with a shell path accidentally appended (the
+    pattern we hit on Railway: DCHUB_INTERNAL_KEY="5GyW...\n~/dchub-frontend").
+
+    The radar already _clean()s on the SEND side (brain_consistency_radar.py
+    line 105-107); without symmetric cleaning on the RECEIVE side, hmac
+    compare still fails because expected has the trailing junk that
+    header_value doesn't.
+    """
+    if not v: return ""
+    parts = str(v).split()
+    return parts[0] if parts else ""
+
+
 def is_valid_internal_key(header_value):
     """Constant-time check of an X-Internal-Key header.
 
     Returns True if the header matches any configured env-backed secret.
     During migration (LEGACY_OK=True), also accepts the two legacy hardcoded
     strings and logs a deprecation warning so we can audit remaining callers.
+
+    r35-radar-fix (2026-05-24): both sides (header AND env var) now run
+    through _clean_key so trailing newlines / shell-path pollution on the
+    env var doesn't silently break HMAC compare. The brain radar already
+    cleans on send; without this fix it 401'd on /api/v1/fiber/intel
+    despite sending the correct key.
     """
     if not header_value:
         return False
 
+    cleaned = _clean_key(header_value)
+    if not cleaned:
+        return False
+
     # Env-backed secrets (the correct path). Check all three known env vars.
     for env_var in ("DCHUB_INTERNAL_KEY", "DCHUB_SYNC_KEY", "INTERNAL_WORKER_SECRET"):
-        expected = os.environ.get(env_var, "")
-        if expected and hmac.compare_digest(str(header_value), expected):
+        expected = _clean_key(os.environ.get(env_var, ""))
+        if expected and hmac.compare_digest(cleaned, expected):
             return True
 
     # Legacy fallback (logs on hit so we can track remaining hardcoded callers)
@@ -80,7 +106,7 @@ def get_internal_key_for_client():
     visible.
     """
     for env_var in ("DCHUB_INTERNAL_KEY", "DCHUB_SYNC_KEY", "INTERNAL_WORKER_SECRET"):
-        v = os.environ.get(env_var, "")
+        v = _clean_key(os.environ.get(env_var, ""))
         if v:
             return v
     global _LEGACY_FALLBACK_WARNED
