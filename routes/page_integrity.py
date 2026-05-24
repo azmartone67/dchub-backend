@@ -49,13 +49,18 @@ def _safe_load_sentinel_results():
 
 
 def _safe_load_brain_surfaces():
-    """Return set of paths that are registered with surface_brain."""
+    """Return set of paths that are registered with surface_brain.
+
+    2026-05-24: was calling list_surfaces() and iterating as if it
+    returned a list — but it returns a Flask Response (jsonify result).
+    Now iterates the SURFACES module-global directly, which holds the
+    Surface objects keyed by surface_id.
+    """
     try:
-        from routes.surface_brain import list_surfaces
+        from routes.surface_brain import SURFACES
         out = set()
-        for s in (list_surfaces() or []):
-            for r in (s.get("routes") or []):
-                # Strip templated params for matching
+        for sid, surface in (SURFACES or {}).items():
+            for r in (getattr(surface, "routes", None) or []):
                 out.add(r)
         return out
     except Exception:
