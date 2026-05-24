@@ -561,7 +561,7 @@ def sentinel_sweep():
                 with c.cursor() as cur:
                     cur.execute(
                         "INSERT INTO sentinel_sweep_log "
-                        "(severity, payload, findings_count) VALUES (%s, %s, %s)",
+                        "(severity, payload, findings_count) VALUES (%s, %s, %s) ON CONFLICT DO NOTHING",
                         (severity, json.dumps(payload), len(actions)))
                     c.commit()
             except Exception:
