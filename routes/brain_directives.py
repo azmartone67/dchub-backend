@@ -78,6 +78,7 @@ def list_directives():
     }), 200
 
 
+# AUTO-REPAIR: duplicate route '/api/v1/brain/directives' also in routes/brain_directives.py:67 — review and remove one
 @brain_directives_bp.route("/api/v1/brain/directives", methods=["POST"])
 def add_directive():
     if not _admin_ok():
