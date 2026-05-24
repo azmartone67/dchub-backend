@@ -118,7 +118,7 @@ def insert_batch(conn, substations):
             # Use lat/lng as natural dedup key (same location = same substation)
             cur.execute("""
                 INSERT INTO substations (name, city, state, county, status, voltage_kv, owner, lat, lng, latitude, longitude, source, created_at)
-                VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, NOW())
+                VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, NOW() ON CONFLICT DO NOTHING)
                 ON CONFLICT DO NOTHING
             """, (
                 sub['name'], sub['city'], sub['state'], sub['county'],
