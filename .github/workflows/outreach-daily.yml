@@ -21,8 +21,12 @@ jobs:
     steps:
       - name: Dispatch outreach
         env:
-          DRY_RUN: ${{ github.event.inputs.dry_run || 'true' }}
-          LIMIT: ${{ github.event.inputs.limit || '10' }}
+          # Scheduled runs go live (dry_run=false). Manual workflow_dispatch
+          # defaults to dry_run=true for safety — override per-run via inputs.
+          # Limit capped at 3 on cron so the first weeks of live sending stay
+          # bounded (queue rarely exceeds a handful of high-priority leads).
+          DRY_RUN: ${{ github.event_name == 'schedule' && 'false' || github.event.inputs.dry_run || 'true' }}
+          LIMIT: ${{ github.event_name == 'schedule' && '3' || github.event.inputs.limit || '10' }}
         run: |
           R=$(curl -sS --max-time 30 -X POST \
             "https://dchub.cloud/api/v1/outreach/dispatch?dry_run=${DRY_RUN}&limit=${LIMIT}")
