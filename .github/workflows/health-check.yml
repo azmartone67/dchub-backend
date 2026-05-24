@@ -7,15 +7,29 @@ jobs:
   health:
     runs-on: ubuntu-latest
     steps:
-      - name: Check /api/health
+      - name: Check /api/health (with retry on transient 503)
         run: |
-          STATUS=$(curl -s -o /dev/null -w "%{http_code}" --max-time 15 https://dchub.cloud/api/health)
-          echo "HTTP status: $STATUS"
-          if [ "$STATUS" != "200" ]; then
-            echo "❌ Health check FAILED — got $STATUS"
-            exit 1
-          fi
-          echo "✅ Health check passed"
+          # 2026-05-24 r31: added 3-attempt retry. /api/health returns 503
+          # when pool is critical OR memory threshold breached — both can
+          # happen transiently during a Railway worker recycle (15-30s
+          # window every ~hour during deploy storms). Retrying 3 times
+          # with 20s gaps catches this without false-firing the "create
+          # GitHub issue" notify step. A REAL outage will fail all 3.
+          for attempt in 1 2 3; do
+            STATUS=$(curl -s -o /dev/null -w "%{http_code}" --max-time 15 \
+              https://dchub.cloud/api/health)
+            echo "attempt $attempt: HTTP $STATUS"
+            if [ "$STATUS" = "200" ]; then
+              echo "✅ Health check passed"
+              exit 0
+            fi
+            if [ "$attempt" -lt 3 ]; then
+              echo "non-200 — waiting 20s before retry..."
+              sleep 20
+            fi
+          done
+          echo "❌ Health check FAILED — non-200 on all 3 attempts"
+          exit 1
 
       - name: Notify on workflow failure
         if: failure()

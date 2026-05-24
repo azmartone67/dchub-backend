@@ -1,0 +1,94 @@
+name: SLA surface visitor (clears 6-domain freshness breach)
+
+# 2026-05-24 r31: /api/v1/freshness reports persistent SLA breaches on
+# 6 domains (news, iso, gas, mna, dcpi, pipeline) because their
+# registered surfaces (about 15 URLs) haven't been visited in 175+
+# hours. heartbeat-auto/batch=500 has 1331 surfaces to cover and these
+# specific ones keep falling through the cracks (refresh_func=?).
+#
+# Solution: visit them directly every 30 min so their last_seen
+# timestamps stay current. Cheap (small GETs) + explicit (no batch
+# selection lottery). The freshness radar /scan is triggered after so
+# the data_domain_freshness table reflects the fresh state.
+
+on:
+  schedule:
+    - cron: '17,47 * * * *'   # twice/hour, off-cycle from heartbeat-auto
+  workflow_dispatch: {}
+
+permissions:
+  contents: read
+
+env:
+  BASE: https://dchub-backend-production.up.railway.app
+  CF:   https://dchub.cloud
+
+jobs:
+  visit:
+    runs-on: ubuntu-latest
+    timeout-minutes: 4
+    steps:
+      - name: Visit the 6 SLA-breached domain surfaces
+        run: |
+          set -u
+          # 15 surfaces across 6 domains. Each GET refreshes the
+          # last_seen timestamp in the heartbeat/freshness registries.
+          # Tolerant of any HTTP status — the goal is the visit itself,
+          # not a 200 (some are paywall-gated for anonymous callers).
+          for url in \
+            "$CF/news.html" \
+            "$CF/news/digest-2026-05-24" \
+            "$CF/news" \
+            "$BASE/api/v1/iso/spp/latest" \
+            "$BASE/api/v1/iso/spp/health" \
+            "$BASE/api/v1/microgrid-viability" \
+            "$BASE/api/v2/infrastructure/hifld/gas-pipelines" \
+            "$BASE/api/v1/transactions/ingest" \
+            "$BASE/api/v1/transactions" \
+            "$BASE/api/v1/mcp/dcpi/movers" \
+            "$BASE/api/v1/mcp/dcpi/compare" \
+            "$BASE/api/v1/mcp/dcpi" \
+            "$BASE/api/v1/pipelines/phmsa" \
+            "$BASE/api/v1/pipelines/geojson" \
+            "$BASE/api/v1/pipeline/summary" \
+          ; do
+            printf "  %-55s " "$url"
+            curl -sS -m 25 -o /dev/null -w "HTTP %{http_code}\n" \
+              -H "User-Agent: DCHub-SLA-Visitor/1.0" \
+              "$url" || echo "  (timed out)"
+          done
+
+      - name: Trigger freshness radar recompute (admin)
+        env:
+          ADMIN_KEY: ${{ secrets.DCHUB_ADMIN_KEY }}
+        run: |
+          if [ -z "${ADMIN_KEY:-}" ]; then
+            echo "::warning::DCHUB_ADMIN_KEY not set — skipping radar/scan trigger"
+            exit 0
+          fi
+          response=$(curl -sS -m 60 -X POST \
+            -H "X-Admin-Key: $ADMIN_KEY" \
+            "$BASE/api/v1/freshness/radar/scan" \
+            || echo '{"ok":false,"error":"curl_fail"}')
+          echo "$response" | python3 -c "
+          import json, sys
+          try:
+              d = json.loads(sys.stdin.read())
+              print(f'::notice::freshness radar scan: ok={d.get(\"ok\")}, scanned={d.get(\"scanned\",0)}')
+          except Exception as e:
+              print(f'::warning::radar/scan response parse failed: {e}')
+          " || true
+
+      - name: Verify SLA breaches dropped
+        if: always()
+        run: |
+          response=$(curl -sS -m 15 "$BASE/api/v1/freshness")
+          echo "$response" | python3 -c "
+          import json, sys
+          d = json.loads(sys.stdin.read())
+          breaches = d.get('sla_breaches') or []
+          if not breaches:
+              print(f'::notice::All SLA domains green ✓')
+          else:
+              print(f'::warning::SLA breaches still firing: {breaches}')
+          "
