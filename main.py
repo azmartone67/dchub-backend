@@ -22807,6 +22807,30 @@ try:
 except Exception as _seo_e:
     print(f"[main] seo_pages_bp register failed: {_seo_e}", flush=True)
 
+# Phase ZZZZZ-round35 (2026-05-24): OG image generator (Pillow-based)
+try:
+    from routes.og_images import og_images_bp
+    app.register_blueprint(og_images_bp)
+    print("[main] og_images_bp registered: /static/og/{facility,market,grid,default}.png", flush=True)
+except Exception as _og_e:
+    print(f"[main] og_images_bp register failed: {_og_e}", flush=True)
+
+# Phase ZZZZZ-round35 (2026-05-24): robots.txt with Sitemap: directive
+try:
+    from routes.robots_seo import robots_seo_bp
+    app.register_blueprint(robots_seo_bp)
+    print("[main] robots_seo_bp registered: /robots.txt + Sitemap directives", flush=True)
+except Exception as _rb_e:
+    print(f"[main] robots_seo_bp register failed: {_rb_e}", flush=True)
+
+# Phase ZZZZZ-round35 (2026-05-24): brain heartbeat warmer + r35 detectors
+try:
+    from routes.brain_warming import brain_warming_bp
+    app.register_blueprint(brain_warming_bp)
+    print("[main] brain_warming_bp registered: /api/v1/brain-warming/{warm,detectors}", flush=True)
+except Exception as _bw_e:
+    print(f"[main] brain_warming_bp register failed: {_bw_e}", flush=True)
+
 # Phase ZZZZZ-round33 (2026-05-24): public status page — trust signal for
 # enterprise buyers. Polls all services from the browser.
 try:
