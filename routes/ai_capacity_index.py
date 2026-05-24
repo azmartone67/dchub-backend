@@ -71,10 +71,12 @@ def _compute_index(horizon_days=90, limit=20):
                   AND state IS NOT NULL AND state != ''
                   AND status = 'active'
                 GROUP BY city, state, country
-                -- Power data is sparse (only 34.6% of discovered_facilities
+                -- Power data is sparse (only ~35pct of discovered_facilities
                 -- have power_mw populated). Filtering on SUM(power_mw) excludes
-                -- 65% of markets. Use facility_count + operator_count as primary
-                -- signals; power_mw is a scoring bonus when present.
+                -- two-thirds of markets. Use facility_count + operator_count as
+                -- primary signals; power_mw is a scoring bonus when present.
+                -- (Avoiding literal pct signs here — psycopg2 treats them as
+                -- placeholder markers and breaks parameter substitution.)
                 HAVING COUNT(*) >= 3 AND COUNT(DISTINCT provider) >= 2
                 ORDER BY COUNT(*) DESC, COALESCE(SUM(power_mw),0) DESC
                 LIMIT %s
