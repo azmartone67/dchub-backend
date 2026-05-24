@@ -3057,20 +3057,28 @@ def handle_well_known():
         import datetime as _dtai
         _live_counts = {}
         try:
-            from db_helpers import get_global_db_conn  # type: ignore
-            with get_global_db_conn() as _conn, _conn.cursor() as _cur:
-                _cur.execute(
-                    "SELECT (SELECT COUNT(*) FROM data_centers) AS facilities,"
-                    "       (SELECT COUNT(*) FROM news_articles) AS news,"
-                    "       (SELECT COUNT(*) FROM deals) AS deals"
-                )
-                _row = _cur.fetchone()
-                if _row:
-                    _live_counts = {
-                        "facilities": int(_row[0] or 0),
-                        "news_articles": int(_row[1] or 0),
-                        "deals": int(_row[2] or 0),
-                    }
+            # get_db_connection is defined in this module (alias at line ~8034
+            # of get_db). Pool-backed psycopg2 wrapper; close() returns to pool.
+            _conn = get_db_connection()
+            try:
+                with _conn.cursor() as _cur:
+                    _cur.execute(
+                        "SELECT (SELECT COUNT(*) FROM data_centers) AS facilities,"
+                        "       (SELECT COUNT(*) FROM news_articles) AS news,"
+                        "       (SELECT COUNT(*) FROM deals) AS deals"
+                    )
+                    _row = _cur.fetchone()
+                    if _row:
+                        _live_counts = {
+                            "facilities": int(_row[0] or 0),
+                            "news_articles": int(_row[1] or 0),
+                            "deals": int(_row[2] or 0),
+                        }
+            finally:
+                try:
+                    _conn.close()
+                except Exception:
+                    pass
         except Exception:
             # Manifest must never fail to serve — fall back to static strings.
             _live_counts = {}
