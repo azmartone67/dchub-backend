@@ -169,9 +169,16 @@ def _call_claude(prompt: str) -> dict | None:
             headers={"x-api-key": _ANTHROPIC_KEY,
                      "anthropic-version": "2023-06-01",
                      "content-type": "application/json"},
-            json={"model": "claude-sonnet-4-5",
-                  "max_tokens": 2500,
-                  "messages": [{"role": "user", "content": prompt}]},
+            json={
+                # 2026-05-24 r30: route via brain_models tier registry.
+                # L14 causal analysis is "reasoning" tier — Opus 4.7.
+                "model": (
+                    __import__("routes.brain_models", fromlist=["brain_model_for"])
+                    .brain_model_for("reasoning")
+                ),
+                "max_tokens": 2500,
+                "messages": [{"role": "user", "content": prompt}],
+            },
             timeout=60,
         )
         if r.status_code != 200:

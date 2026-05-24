@@ -227,6 +227,130 @@ def winback_pitches():
               "Media playbook uses."),
         generated_at=datetime.datetime.utcnow().isoformat() + "Z",
     )
+
+    resp.headers["Cache-Control"] = "public, max-age=600"
+    resp.headers["Access-Control-Allow-Origin"] = "*"
+    return resp, 200
+
+
+# ── r30 (2026-05-24): consolidated media pulse ────────────────────
+#
+# One endpoint that rolls press cadence + LinkedIn velocity + winback
+# pitch count into a single health verdict. Consumed by the
+# /api/v1/sentinel/sweep rollup and the /transparency UI so the
+# operator stops needing to mentally compose 3 separate endpoints.
+
+@dchub_media_revival_bp.route("/api/v1/media/pulse", methods=["GET"])
+def media_pulse():
+    """Consolidated DC Hub Media health rollup.
+
+    Replaces the operator's mental sum of:
+      - /api/v1/media/press-health  (press cadence)
+      - /api/v1/media/winback-pitches (outbound queue)
+      + LinkedIn publish velocity
+
+    Returns one dict + a single verdict (healthy / weak / quiet /
+    silent) so /transparency can render a single tile and the
+    surveillance sweep can roll it into the master severity.
+    """
+    out: dict = {
+        "generated_at": datetime.datetime.utcnow().isoformat() + "Z",
+        "components": {},
+    }
+    c = _conn()
+    press_age, press_30d, press_7d, li_24h, li_7d = None, 0, 0, 0, 0
+    if c is not None:
+        try:
+            with c.cursor() as cur:
+                for table, date_col in (
+                    ("auto_press_releases", "generated_at"),
+                    ("auto_press_releases", "generated_for"),
+                ):
+                    try:
+                        cur.execute(f"SELECT to_regclass('public.{table}')")
+                        if not (cur.fetchone() or [None])[0]:
+                            continue
+                        cur.execute(f"""
+                            SELECT
+                              EXTRACT(EPOCH FROM (NOW() - MAX({date_col})))/86400.0,
+                              COUNT(*) FILTER (WHERE {date_col} >= NOW() - INTERVAL '30 days'),
+                              COUNT(*) FILTER (WHERE {date_col} >= NOW() - INTERVAL '7 days')
+                            FROM {table}
+                        """)
+                        r = cur.fetchone()
+                        if r and r[0] is not None:
+                            press_age = float(r[0])
+                            press_30d = int(r[1] or 0)
+                            press_7d = int(r[2] or 0)
+                            break
+                    except Exception:
+                        continue
+                try:
+                    cur.execute("""
+                        SELECT
+                          COUNT(*) FILTER (WHERE linkedin_sent_at >= NOW() - INTERVAL '24 hours'),
+                          COUNT(*) FILTER (WHERE linkedin_sent_at >= NOW() - INTERVAL '7 days')
+                        FROM auto_press_releases
+                        WHERE linkedin_sent_at IS NOT NULL
+                    """)
+                    r = cur.fetchone()
+                    if r:
+                        li_24h = int(r[0] or 0)
+                        li_7d = int(r[1] or 0)
+                except Exception:
+                    pass
+        except Exception as _e:
+            out["components"]["error"] = f"{type(_e).__name__}: {str(_e)[:80]}"
+
+    out["components"]["press"] = {
+        "days_since_last": round(press_age, 1) if press_age is not None else None,
+        "count_30d": press_30d,
+        "count_7d":  press_7d,
+        "verdict": (
+            "silent"  if press_age is None or press_age > 7 else
+            "weak"    if press_30d < 4 else
+            "healthy"
+        ),
+    }
+    out["components"]["linkedin"] = {
+        "sent_24h": li_24h,
+        "sent_7d":  li_7d,
+        "verdict": "healthy" if li_7d > 0 else "silent",
+    }
+
+    pitches_count = 0
+    try:
+        from flask import current_app
+        with current_app.test_client() as _tc:
+            _r = _tc.get("/api/v1/media/winback-pitches")
+            if _r.status_code == 200:
+                _data = _r.get_json() or {}
+                pitches_count = int(_data.get("platform_count") or 0)
+    except Exception:
+        pass
+    out["components"]["winback"] = {
+        "platforms_targetable": pitches_count,
+        "verdict": "healthy" if pitches_count > 0 else "quiet",
+    }
+
+    severity_rank = {"silent": 3, "degraded": 3, "weak": 2, "quiet": 1, "healthy": 0}
+    worst = max(
+        (severity_rank.get(c.get("verdict"), 0)
+         for c in out["components"].values()
+         if isinstance(c, dict) and "verdict" in c),
+        default=0,
+    )
+    out["verdict"] = next(
+        (v for v, rank in severity_rank.items() if rank == worst),
+        "healthy",
+    )
+    out["ok"] = worst < 2
+
+    if c is not None:
+        try: c.close()
+        except Exception: pass
+
+    resp = jsonify(out)
     resp.headers["Cache-Control"] = "public, max-age=600"
     resp.headers["Access-Control-Allow-Origin"] = "*"
     return resp, 200

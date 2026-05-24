@@ -206,7 +206,13 @@ Reply with ONLY the JSON object, no other text."""
                 "content-type": "application/json",
             },
             json={
-                "model": "claude-sonnet-4-5",
+                # 2026-05-24 r30: route via brain_models tier registry.
+                # L7 evolving is "reasoning" tier — multi-step thinking
+                # benefits from Opus 4.7's 1M context.
+                "model": (
+                    __import__("routes.brain_models", fromlist=["brain_model_for"])
+                    .brain_model_for("reasoning")
+                ),
                 "max_tokens": 2000,
                 "messages": [{"role": "user", "content": prompt}],
             },

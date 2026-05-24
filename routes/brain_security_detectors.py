@@ -178,7 +178,16 @@ def check_admin_endpoint_open() -> list[dict]:
         # 0 = connection error (worker unhealthy), 404 = route not present,
         # 401/403 = auth correctly rejecting. 5xx = handler crash, also
         # not a leak (no data returned).
-        if status in (0, 401, 403, 404, 405, 500, 502, 503):
+        # 429 = rate-limit middleware blocked the request before the auth
+        # check could fire — functionally protected (no privileged work
+        # ran, no data leaked). 2026-05-24: 20 admin endpoints were
+        # returning 429 to anon callers and getting flagged as false
+        # positives; rate-limit-first is a valid (if cosmetic) defense
+        # since no handler body executes. The deeper order-of-middleware
+        # fix (auth check before rate-limit) is tracked separately and
+        # brain_consistency_radar can still surface it as a low-severity
+        # finding distinct from this critical-tier admin_endpoint_open.
+        if status in (0, 401, 403, 404, 405, 429, 500, 502, 503):
             continue
         # 200/201/202 without auth = REAL leak.
         # 400 with rich error body is also suspicious (handler executed

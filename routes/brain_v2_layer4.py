@@ -70,7 +70,18 @@ from flask import Blueprint, jsonify, request
 brain_v2_bp = Blueprint("brain_v2", __name__)
 
 ANTHROPIC_API_KEY = os.environ.get("ANTHROPIC_API_KEY", "")
-BRAIN_MODEL = os.environ.get("DCHUB_BRAIN_MODEL", "claude-sonnet-4-5")
+# 2026-05-24 r30: route through brain_models tier registry. "inspector"
+# tier maps to claude-opus-4-7 — the 1M-context model brain L4 actually
+# needs for synthesis. DCHUB_BRAIN_MODEL_INSPECTOR env override per-tier;
+# legacy DCHUB_BRAIN_MODEL still works as a global fallback inside
+# brain_model_for(). Falls back gracefully if brain_models can't import.
+try:
+    from routes.brain_models import brain_model_for as _brain_model_for
+    BRAIN_MODEL = (os.environ.get("DCHUB_BRAIN_MODEL_INSPECTOR")
+                   or os.environ.get("DCHUB_BRAIN_MODEL")
+                   or _brain_model_for("inspector"))
+except Exception:
+    BRAIN_MODEL = os.environ.get("DCHUB_BRAIN_MODEL", "claude-opus-4-7")
 BRAIN_MAX_LEARN = int(os.environ.get("DCHUB_BRAIN_MAX_LEARN", "3"))
 ADMIN_KEY = os.environ.get("DCHUB_ADMIN_KEY") or os.environ.get("DCHUB_INTERNAL_KEY")
 
@@ -1061,4 +1072,70 @@ def brain_status():
         verdict_detail=verdict_detail,
         hint=(None if ANTHROPIC_API_KEY
               else "Set ANTHROPIC_API_KEY in Railway env to activate"),
+    ), 200
+
+
+# ── r30 (2026-05-24): brain transparency endpoints ───────────────
+#
+# Two small additions that close gaps the user kept asking about:
+# "what model is the brain actually running on?" and "why is the
+# brain proposing 0 fixes — is it broken or just being conservative?"
+
+@brain_v2_bp.get("/api/v1/brain/model-tiers")
+def brain_model_tiers():
+    """What model is each brain tier currently using?
+
+    Answers "is the brain on Opus 4.7?". Reflects env overrides
+    (DCHUB_BRAIN_MODEL_INSPECTOR etc.) — what brain_model_for actually
+    returns, not the hardcoded default. The brain status endpoint
+    shows only the L4 model; this exposes the full per-tier picture.
+    """
+    try:
+        from routes.brain_models import brain_model_summary
+        summary = brain_model_summary()
+    except Exception as e:
+        return jsonify(ok=False, error=f"brain_models import: {type(e).__name__}"), 200
+    # Also surface what THIS module's BRAIN_MODEL actually resolved to,
+    # since L4 has its own resolution path that env overrides can affect.
+    summary["_brain_v2_layer4_resolved"] = BRAIN_MODEL
+    return jsonify(ok=True, **summary), 200
+
+
+@brain_v2_bp.get("/api/v1/brain/filter-summary")
+def brain_filter_summary():
+    """Why is the brain proposing N fixes? Counts learning_log outcomes
+    by category — proves the filter chain is doing work even when
+    proposed_fixes stays at 0 (the system being conservative is
+    healthy; the metric being 0 because of a bug is not).
+
+    Returns a count of each outcome from the recent learning log
+    (capped to 200 entries to stay cheap).
+    """
+    log_entries: list = []
+    try:
+        if _STORE_OK:
+            log_entries = _store.list_log(limit=200) or []
+        else:
+            log_entries = list(_learning_log)[-200:]
+    except Exception:
+        log_entries = list(_learning_log)[-200:]
+
+    from collections import Counter
+    by_outcome = Counter(
+        (e.get("outcome") or "_unknown").split(":")[0]
+        for e in log_entries
+    )
+    # Most-recent timestamp + total count for context.
+    last_t = log_entries[-1].get("t") if log_entries else None
+    return jsonify(
+        ok=True,
+        total_entries_scanned=len(log_entries),
+        last_entry_at=last_t,
+        outcomes=dict(by_outcome.most_common()),
+        purpose=(
+            "Filter telemetry. If proposed_fixes is 0 but outcomes "
+            "contains data_placeholder_routed / refused / no_snippet, "
+            "the brain is correctly filtering — not broken. Empty "
+            "outcomes here would be the real red flag."
+        ),
     ), 200
