@@ -649,6 +649,76 @@ def sentinel_dashboard():
     pct = round(100.0 * healthy / max(len(rows), 1), 1)
     overall_class = "green" if pct >= 95 else ("amber" if pct >= 80 else "red")
 
+    # r32 (2026-05-24): Media-organism tile. Pulls vitality + verdict
+    # from /api/v1/media/organism so the operator's "is everything OK"
+    # page also answers "is media alive?". Wrapped in try so a slow
+    # composition can never block this dashboard from rendering.
+    organism_tile = ""
+    try:
+        from flask import current_app
+        with current_app.test_client() as _client:
+            _r = _client.get("/api/v1/media/organism")
+            if _r.status_code == 200:
+                _d = _r.get_json() or {}
+                _vs = float(_d.get("vitality_score") or 0)
+                _verdict = _d.get("verdict", "unknown")
+                _weakest = _d.get("weakest_channel") or "—"
+                _comps = _d.get("components") or {}
+                _verdict_color = {
+                    "alive":   ("#10b981", "linear-gradient(135deg,#065f46,#10b981)"),
+                    "warming": ("#3b82f6", "linear-gradient(135deg,#1d4ed8,#3b82f6)"),
+                    "quiet":   ("#f59e0b", "linear-gradient(135deg,#92400e,#f59e0b)"),
+                    "dormant": ("#ef4444", "linear-gradient(135deg,#991b1b,#ef4444)"),
+                }.get(_verdict, ("#94a3b8", "linear-gradient(135deg,#475569,#94a3b8)"))
+                _vc, _vbg = _verdict_color
+                # Compact pill row, one per channel.
+                _pills = ""
+                _icons = {
+                    "press": "📰", "linkedin": "💼", "source_of_truth": "🎯",
+                    "topic_pulse": "📡", "journalist_outreach": "✉️", "winback": "♻️",
+                }
+                for _k, _c in _comps.items():
+                    if not isinstance(_c, dict): continue
+                    _sv = float(_c.get("score") or 0)
+                    _cv = _c.get("verdict", "?")
+                    _icon = _icons.get(_k, "•")
+                    _pcolor = ("#10b981" if _cv == "healthy"
+                               else "#f59e0b" if _cv == "weak"
+                               else "#94a3b8" if _cv == "quiet"
+                               else "#ef4444" if _cv == "dormant"
+                               else "#94a3b8")
+                    _pills += (
+                        f'<span style="display:inline-flex;align-items:center;gap:0.3rem;'
+                        f'padding:0.25rem 0.6rem;border-radius:99px;'
+                        f'background:rgba(255,255,255,0.08);color:{_pcolor};'
+                        f'font-size:0.78rem;font-weight:600;margin:0.15rem;">'
+                        f'{_icon} {_k.replace("_"," ")} '
+                        f'<span style="font-family:JetBrains Mono,monospace;'
+                        f'opacity:0.9">{_sv:.0f}</span></span>'
+                    )
+                organism_tile = (
+                    f'<div style="padding:1.25rem 1.5rem;border-radius:10px;color:white;'
+                    f'margin:1rem 0;background:{_vbg};">'
+                    f'<div style="display:flex;align-items:center;justify-content:space-between;'
+                    f'flex-wrap:wrap;gap:1rem;">'
+                    f'<div><div style="font-size:0.78rem;text-transform:uppercase;'
+                    f'letter-spacing:0.1em;opacity:0.8;margin-bottom:0.3rem;">'
+                    f'📺 DC Hub Media Organism</div>'
+                    f'<div style="font-size:1.5rem;font-weight:700;line-height:1.1;">'
+                    f'{_vs:.1f}/100 · {_verdict.upper()}</div>'
+                    f'<div style="font-size:0.85rem;opacity:0.85;margin-top:0.3rem;">'
+                    f'weakest channel: <strong>{_weakest}</strong></div></div>'
+                    f'<div style="font-size:0.78rem;opacity:0.8;text-align:right;">'
+                    f'<a href="/api/v1/media/organism" style="color:white;'
+                    f'text-decoration:none;border-bottom:1px dotted rgba(255,255,255,0.5);">'
+                    f'view JSON →</a></div>'
+                    f'</div>'
+                    f'<div style="margin-top:0.7rem;">{_pills}</div>'
+                    f'</div>'
+                )
+    except Exception:
+        organism_tile = ""
+
     rows_html = []
     for r in sorted(rows, key=lambda x: (x.get("healthy") or False, x.get("category"), x.get("path"))):
         css = "ok" if r.get("healthy") else "bad"
@@ -692,6 +762,7 @@ def sentinel_dashboard():
 <div class="summary {overall_class}">
   <strong>{healthy}/{len(rows)} pages healthy ({pct}%)</strong>
 </div>
+{organism_tile}
 <table>
   <thead>
     <tr><th>Category</th><th>Page</th><th>Status</th><th>Bytes</th><th>Latency</th><th>Reason</th></tr>

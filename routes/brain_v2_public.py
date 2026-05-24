@@ -363,6 +363,80 @@ def brain_page():
     except Exception:
         grade_block = ""
 
+    # r32 (2026-05-24): Brain value-shipped tile — quantified answer
+    # to "is the brain making the site more valuable this week?". Same
+    # in-process test_client pattern as grade_block; wrapped in try so
+    # a missing tier-1 source can never break the /brain page.
+    value_shipped_block = ""
+    try:
+        from flask import current_app
+        with current_app.test_client() as _client:
+            _rv = _client.get("/api/v1/brain/value-shipped")
+            if _rv.status_code == 200:
+                _vs = _rv.get_json() or {}
+                _vd = _vs.get("verdict", "silent")
+                _v7 = int(_vs.get("total_shipped_7d") or 0)
+                _v30 = int(_vs.get("total_shipped_30d") or 0)
+                _shipped7 = _vs.get("shipped_7d") or {}
+                _verdict_color = {
+                    "high_output": ("var(--green)", "rgba(16,185,129,0.12)", "rgba(16,185,129,0.4)"),
+                    "steady":      ("var(--green)", "rgba(16,185,129,0.08)", "rgba(16,185,129,0.3)"),
+                    "slow":        ("var(--amber)", "rgba(245,158,11,0.10)", "rgba(245,158,11,0.4)"),
+                    "silent":      ("var(--red)",   "rgba(239,68,68,0.10)", "rgba(239,68,68,0.4)"),
+                }.get(_vd, ("var(--tx2)", "rgba(156,163,175,0.08)", "rgba(156,163,175,0.3)"))
+                _vc, _vbg, _vbd = _verdict_color
+                _category_labels = {
+                    "code_fixes":            "code fixes",
+                    "autopilot_actions":     "autopilot",
+                    "press_releases":        "press",
+                    "linkedin_posts":        "linkedin",
+                    "outreach_pitches":      "outreach",
+                    "facilities_discovered": "facilities",
+                }
+                _cat_pills = ""
+                for _k, _v in _shipped7.items():
+                    if _v is None:
+                        continue  # table missing — skip silently
+                    _lbl = _h(_category_labels.get(_k, _k))
+                    if _v > 0:
+                        _pbg = "rgba(16,185,129,0.12)"; _pc = "var(--green)"
+                    else:
+                        _pbg = "rgba(156,163,175,0.08)"; _pc = "var(--tx3)"
+                    _cat_pills += (
+                        f'<span style="display:inline-flex;align-items:center;gap:0.35rem;'
+                        f'padding:0.25rem 0.6rem;border-radius:99px;background:{_pbg};'
+                        f'color:{_pc};font-size:0.74rem;font-weight:600;margin:0.2rem;">'
+                        f'<span style="opacity:0.75">{_lbl}</span>'
+                        f'<span style="font-family:JetBrains Mono,monospace;font-weight:700">{int(_v)}</span>'
+                        f'</span>'
+                    )
+                value_shipped_block = (
+                    f'<div style="background:{_vbg};border:1px solid {_vbd};'
+                    f'border-radius:10px;padding:1.1rem 1.3rem;margin:0.4rem 0;'
+                    f'display:flex;gap:1.2rem;align-items:center;flex-wrap:wrap;">'
+                    f'<div style="flex:0 0 auto;font-family:JetBrains Mono,monospace;'
+                    f'font-size:3rem;font-weight:800;line-height:1;color:{_vc};'
+                    f'min-width:80px;text-align:center;">{_v7}</div>'
+                    f'<div style="flex:1;min-width:240px;">'
+                    f'<div style="font-size:0.72rem;font-family:JetBrains Mono,monospace;'
+                    f'color:var(--tx2);text-transform:uppercase;letter-spacing:0.1em;'
+                    f'margin-bottom:0.35rem;">Value shipped — last 7d · '
+                    f'<span style="color:{_vc};font-weight:700">{_h(_vd.upper())}</span></div>'
+                    f'<div style="color:var(--tx);font-size:0.95rem;line-height:1.4;'
+                    f'margin-bottom:0.5rem;">'
+                    f'{_v7} autonomous outputs in the last 7 days; {_v30} over 30 days. '
+                    f'Press releases, LinkedIn posts, outreach pitches, autopilot actions, '
+                    f'and code fixes the brain shipped while no one was watching.</div>'
+                    f'<div style="margin-left:-0.2rem;">{_cat_pills}</div>'
+                    f'<a href="/api/v1/brain/value-shipped" style="color:var(--acc-light);'
+                    f'font-size:0.78rem;text-decoration:none;border-bottom:1px dotted '
+                    f'rgba(129,140,248,0.5);margin-top:0.6rem;display:inline-block;">'
+                    f'view full value-shipped JSON</a>'
+                    f'</div></div>'
+                )
+    except Exception:
+        value_shipped_block = ""
+
     # Render proposals (newest first)
     if proposals:
         prop_blocks = []
@@ -449,7 +523,7 @@ def brain_page():
             .replace("{{pending_count}}", str(pending_count))
             .replace("{{log_count}}", str(len(state["log"])))
             .replace("{{verdict_banner}}", verdict_banner)
-            .replace("{{grade_block}}", grade_block)
+            .replace("{{grade_block}}", grade_block + value_shipped_block)
             .replace("{{proposals_html}}", proposals_html)
             .replace("{{persistence_html}}", persistence_html)
             .replace("{{log_html}}", log_html)
