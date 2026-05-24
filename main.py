@@ -22742,6 +22742,15 @@ app.register_blueprint(dcpi_digest_bp)
 # phase 109F: register heartbeat
 app.register_blueprint(heartbeat_bp)
 
+# Phase ZZZZZ-round33 (2026-05-24): SEO landing pages — 21k facility pages,
+# ~50 market pages, 16 grid pages. Drives long-tail organic search.
+try:
+    from routes.seo_pages import seo_pages_bp
+    app.register_blueprint(seo_pages_bp)
+    print("[main] seo_pages_bp registered: /facility/<id> /markets/<slug> /grids/<code> + sitemaps", flush=True)
+except Exception as _seo_e:
+    print(f"[main] seo_pages_bp register failed: {_seo_e}", flush=True)
+
 # auto-registered: freshness_universal_bp
 app.register_blueprint(freshness_universal_bp)
 
