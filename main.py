@@ -22896,6 +22896,17 @@ try:
 except Exception as _fn_e:
     print(f"[main] mcp_funnel_bp register failed: {_fn_e}", flush=True)
 
+# Phase ZZZZZ-round36 (2026-05-24): defensive /AGENTS.md handler
+# The pre-existing ai_agent_discovery.py /AGENTS.md route returns 404
+# at the Flask layer (root cause unclear). Re-register the path here
+# with inline content so the LF/OpenAI agent-discovery standard works.
+try:
+    from routes.agents_md_fallback import agents_md_fallback_bp
+    app.register_blueprint(agents_md_fallback_bp)
+    print("[main] agents_md_fallback_bp registered: /AGENTS.md inline content", flush=True)
+except Exception as _amf_e:
+    print(f"[main] agents_md_fallback_bp register failed: {_amf_e}", flush=True)
+
 # Phase ZZZZZ-round33 (2026-05-24): public status page — trust signal for
 # enterprise buyers. Polls all services from the browser.
 try:
