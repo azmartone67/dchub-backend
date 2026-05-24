@@ -23541,6 +23541,20 @@ try:
 except Exception as _pi_e:
     print(f"[main] page_integrity wiring failed: {_pi_e}", file=sys.stderr, flush=True)
 
+# Phase r33 (2026-05-24): Bulk surface_brain registration. /api/v1/sentinel/
+# page-integrity flagged 59 sentinel-manifest pages as "orphan" (working
+# but not brain-tracked). This batch wires them all up at startup, bumping
+# each one's integrity score from 70 to 85 and making them visible in
+# /api/v1/surfaces. Per-handler auto_log() calls for event tracking are
+# a separate future wave; this just closes the metadata-orphan gap.
+try:
+    from routes.surface_registrations_batch import register_all as _reg_all
+    _rb = _reg_all()
+    print(f"[main] surface_registrations_batch: {_rb.get('registered')}/{_rb.get('total')} "
+          f"({len(_rb.get('errors') or [])} errors)", flush=True)
+except Exception as _rb_e:
+    print(f"[main] surface_registrations_batch wiring failed: {_rb_e}", file=sys.stderr, flush=True)
+
 # Phase WWW (2026-05-16): Site Sentinel — polls every public URL and
 # surfaces breakages/staleness as brain findings so the heartbeat
 # catches them before a user reports.
