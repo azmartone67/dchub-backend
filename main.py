@@ -22762,6 +22762,15 @@ try:
 except Exception as _seo_e:
     print(f"[main] seo_pages_bp register failed: {_seo_e}", flush=True)
 
+# Phase ZZZZZ-round33 (2026-05-24): public status page — trust signal for
+# enterprise buyers. Polls all services from the browser.
+try:
+    from routes.status_page import status_page_bp
+    app.register_blueprint(status_page_bp)
+    print("[main] status_page_bp registered: /status /status.json /api/v1/status/probes", flush=True)
+except Exception as _sp_e:
+    print(f"[main] status_page_bp register failed: {_sp_e}", flush=True)
+
 # auto-registered: freshness_universal_bp
 app.register_blueprint(freshness_universal_bp)
 
