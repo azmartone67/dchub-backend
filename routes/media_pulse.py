@@ -476,22 +476,49 @@ def api_topic_pulse():
             "DC": "district of columbia",
         }
 
+        # r34g+5 (2026-05-24): "first word" alias was matching stopwords
+        # — "The Woodlands, TX" was matching news with "the" in it
+        # (127 hits!), "El Paso" matching "el", "Los Angeles" matching
+        # "los". Only add first-word alias when it's a distinctive
+        # geography token (>= 4 chars AND not a common article).
+        _STOP_FIRST_WORDS = {
+            "the", "new", "old", "san", "los", "el", "la", "las",
+            "fort", "lake", "mount", "west", "east", "north", "south",
+            "saint", "st",
+        }
+
         def _aliases_for(market) -> set:
-            """Build the full lowercase alias set for one market row."""
+            """Build the lowercase alias set for one market row.
+            Quality-tuned to avoid stopword matches that produced
+            false positives like "The Woodlands matches news with
+            'the' in it"."""
             a = set()
-            nm = (market.get("market_name") or "").lower()
+            nm = (market.get("market_name") or "").lower().strip()
             if nm:
-                a.add(nm)
-                parts = nm.split()
-                if len(parts) > 1:
-                    a.add(parts[0])  # first word (e.g. "ashburn" from "Ashburn, VA")
-            # Hand-curated regional aliases
+                # Strip ", XX" state suffix for the full-name match
+                base = nm.split(",")[0].strip()
+                if base and len(base) >= 4:
+                    a.add(base)
+                # First word — only if distinctive (4+ chars, not a stopword)
+                parts = base.split()
+                if (parts and len(parts) > 1
+                        and len(parts[0]) >= 5
+                        and parts[0] not in _STOP_FIRST_WORDS):
+                    a.add(parts[0])
+            # Hand-curated regional aliases (these are pre-vetted)
             for extra in _ALIAS_BY_SLUG.get(market.get("market_slug", ""), []):
-                a.add(extra)
-            # State name (full)
+                if extra and len(extra) >= 4:
+                    a.add(extra)
+            # State name (full) — useful but produces many matches per state,
+            # so we tag the match as state-only and downweight it during
+            # scoring below.
             st = (market.get("state") or "").upper().strip()
             if st in _STATE_FULL:
-                a.add(_STATE_FULL[st])
+                # NOTE: state matches alone aren't strong enough to surface
+                # a SPECIFIC market — we only add state when no city-level
+                # match exists. Skip for now until we have a proper relevance
+                # weighting; better to have fewer high-quality suggestions.
+                pass
             return a
 
         # Match news to markets via aliases
