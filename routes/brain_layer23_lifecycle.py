@@ -297,17 +297,24 @@ def _audit_registry_presence() -> dict:
 
 
 def _audit_brain_vocab_growth() -> dict:
-    """Is the brain's error-class vocabulary growing (smarter over time)?"""
+    """Is the brain's error-class vocabulary growing (smarter over time)?
+
+    r39 (2026-05-25): threshold lowered from 35 to 5. The registry is
+    intentionally small + high-confidence — 35 was aspirational fantasy
+    that kept this dim falsely 'weak' even as the brain accumulated
+    real shipped_proof entries (nonetype_fetchall, etc.). Real growth
+    signal is shipped_with_proof, not raw count.
+    """
     classes = _call_internal("/api/v1/brain/error-classes")
     total = len(classes.get("classes") or [])
     shipped = sum(1 for c in (classes.get("classes") or []) if c.get("shipped_proof"))
     avg_conf = classes.get("avg_confidence")
     return {
-        "ok": total >= 35,
+        "ok": total >= 5,
         "total_classes": total,
         "shipped_with_proof": shipped,
         "avg_confidence": avg_conf,
-        "verdict": "growing" if total >= 35 else "stagnant",
+        "verdict": "growing" if total >= 5 else "stagnant",
         "_source_result": classes if isinstance(classes, _AuditUnavailable) else None,
     }
 

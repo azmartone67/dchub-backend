@@ -1,0 +1,152 @@
+name: Submit DC Hub to awesome-mcp-servers (Manual)
+
+# Phase r39 (2026-05-25): Closes one of the 7 pending registry_presence
+# findings from the L23 lifecycle audit by opening an actual PR against
+# punkpeye/awesome-mcp-servers. This is the only one of the 7 pending
+# registries with a programmatic submission path — the rest are forms.
+#
+# Manual trigger only (workflow_dispatch). Running it forks the repo
+# (or updates an existing fork), adds our entry to the appropriate
+# section in README.md, and opens a PR. If a PR already exists the
+# script no-ops cleanly.
+#
+# Requires: secret PR_SUBMIT_TOKEN — a fine-grained PAT with
+# `contents:read,write` on the bot's fork + `pull_requests:write`.
+# Set this in repo Settings → Secrets → Actions.
+
+on:
+  workflow_dispatch:
+    inputs:
+      dry_run:
+        description: "Set true to skip the PR open step (just prints diff)"
+        required: false
+        default: "false"
+
+permissions:
+  contents: read
+
+jobs:
+  submit_pr:
+    runs-on: ubuntu-latest
+    timeout-minutes: 8
+    steps:
+      - name: Check token presence
+        id: tok
+        env:
+          T: ${{ secrets.PR_SUBMIT_TOKEN }}
+        run: |
+          if [ -z "${T:-}" ]; then
+            echo "::warning::PR_SUBMIT_TOKEN secret not set — emitting draft only"
+            echo "have_token=false" >> "$GITHUB_OUTPUT"
+          else
+            echo "have_token=true" >> "$GITHUB_OUTPUT"
+          fi
+
+      - name: Compute our README entry
+        id: entry
+        run: |
+          # The exact line format the README expects: a Markdown bullet
+          # under the relevant category. punkpeye/awesome-mcp-servers
+          # uses simple `- [name](url) - description` entries.
+          cat > /tmp/entry.md <<'EOF'
+          - [DC Hub](https://dchub.cloud/mcp) - Data-center intelligence MCP server. 23+ tools covering 21,000+ data-center facilities (170+ countries), 285 US power markets scored by the proprietary DC Hub Power Index (DCPI), $324B+ tracked M&A, 369 GW construction pipeline, ISO grid telemetry (PJM, ERCOT, CAISO, MISO, SPP, NYISO), fiber routes, energy pricing. Free for citation; powering 96+ AI platforms.
+          EOF
+          echo "::notice::Entry drafted:"
+          cat /tmp/entry.md
+
+      - name: Clone awesome-mcp-servers + craft branch
+        if: steps.tok.outputs.have_token == 'true'
+        env:
+          GH_TOKEN: ${{ secrets.PR_SUBMIT_TOKEN }}
+        run: |
+          set -euo pipefail
+          # GitHub CLI is preinstalled on ubuntu-latest.
+          # Step 1: clone upstream (read-only).
+          git clone --depth 1 https://github.com/punkpeye/awesome-mcp-servers /tmp/amcp
+          cd /tmp/amcp
+
+          # Step 2: skip if our entry is already there.
+          if grep -q "dchub.cloud" README.md; then
+            echo "::notice::dchub.cloud already present in README.md — no PR needed."
+            echo "ALREADY_PRESENT=1" >> "$GITHUB_ENV"
+            exit 0
+          fi
+
+          # Step 3: find a sensible insertion section. The README has
+          # category headings like "## 🔬 Data Science". DC Hub fits
+          # under "Data Platforms" / "Research" / "Marketplaces".
+          # Use a robust grep that doesn't depend on emoji.
+          SECTION=$(grep -nE '^##.*(Marketplace|Data|Research|Research and Data)' README.md \
+                    | head -1 | cut -d: -f1)
+          if [ -z "$SECTION" ]; then
+            echo "::warning::Could not find target section; appending at EOF"
+            echo "" >> README.md
+            cat /tmp/entry.md >> README.md
+          else
+            # Insert our entry on the line AFTER the section heading
+            # (skip blank lines until we find first bullet, append above it).
+            awk -v insert_after="$SECTION" '
+              NR==insert_after { print; next }
+              NR==insert_after+1 && /^- / {
+                while ((getline line < "/tmp/entry.md") > 0) print line
+                print
+                next
+              }
+              { print }
+            ' README.md > README.md.new
+            mv README.md.new README.md
+          fi
+
+          # Step 4: configure git, commit, push to our fork.
+          git config user.name  "dchub-cloud-bot"
+          git config user.email "bot@dchub.cloud"
+
+          # Use gh to fork if not already forked, then push to fork.
+          gh auth setup-git
+          # Check if we already have a fork; create if not.
+          if ! gh repo view dchub-cloud-bot/awesome-mcp-servers >/dev/null 2>&1; then
+            gh repo fork punkpeye/awesome-mcp-servers --clone=false --remote=false
+          fi
+          BR="add-dchub-mcp-$(date +%Y%m%d-%H%M)"
+          git remote add fork "https://github.com/dchub-cloud-bot/awesome-mcp-servers.git"
+          git checkout -b "$BR"
+          git add README.md
+          git commit -m "Add DC Hub — data-center intelligence MCP server"
+          git push -u fork "$BR"
+          echo "BRANCH=$BR" >> "$GITHUB_ENV"
+
+      - name: Open PR (skip if already_present or dry_run)
+        if: steps.tok.outputs.have_token == 'true' && env.ALREADY_PRESENT != '1' && inputs.dry_run != 'true'
+        env:
+          GH_TOKEN: ${{ secrets.PR_SUBMIT_TOKEN }}
+        run: |
+          set -euo pipefail
+          cd /tmp/amcp
+          gh pr create \
+            --repo punkpeye/awesome-mcp-servers \
+            --head "dchub-cloud-bot:${BRANCH}" \
+            --title "Add DC Hub — data-center intelligence MCP server" \
+            --body "$(cat <<'EOF'
+          ## What
+          Adds DC Hub to the awesome-mcp-servers list.
+
+          ## Server
+          - **Name:** DC Hub
+          - **URL:** https://dchub.cloud/mcp
+          - **Server card:** https://dchub.cloud/.well-known/mcp/server-card.json
+          - **Description:** Data-center intelligence MCP server. 23+ tools covering 21,000+ data-center facilities (170+ countries), 285 US power markets scored by the proprietary DC Hub Power Index (DCPI), \$324B+ tracked M&A, 369 GW construction pipeline, ISO grid telemetry (PJM, ERCOT, CAISO, MISO, SPP, NYISO), fiber routes, energy pricing.
+          - **License:** Free for citation.
+          - **Existing distribution:** Listed on Smithery, Glama, mcp.so. Used by 96+ AI platforms.
+
+          ## Why this list
+          Closes a real gap — there is no other MCP server covering data-center / power-market intelligence at this scope. Existing entries cover finance, dev tools, search, and general data, but not infrastructure.
+
+          Generated by https://github.com/azmartone67/dchub-backend/.github/workflows/awesome-mcp-pr.yml
+          EOF
+          )"
+
+      - name: Show what would have been submitted
+        if: steps.tok.outputs.have_token != 'true' || inputs.dry_run == 'true'
+        run: |
+          echo "::notice::DRY-RUN MODE — would have opened PR with the following entry:"
+          cat /tmp/entry.md

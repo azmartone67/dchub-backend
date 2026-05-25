@@ -30,10 +30,19 @@ from __future__ import annotations
 import datetime
 import time
 
-from flask import Blueprint, jsonify, current_app
+from flask import Blueprint, jsonify, current_app, request
 
 
 media_organism_bp = Blueprint("media_organism", __name__)
+
+
+# r39 (2026-05-25): 60s in-memory cache. The organism rollup composes
+# 6 test_client calls (each one its own DB query); under load the
+# whole compose runs 9-15s. Without this cache, the L23 audit + the
+# dashboard + the hourly cron all triggered fresh composes back-to-
+# back. Cache turns repeat hits into ~0ms returns.
+_ORGANISM_CACHE: dict = {"at": 0.0, "value": None}
+_ORGANISM_TTL = 60.0
 
 
 def _call(tc, path):
@@ -98,7 +107,19 @@ def media_organism():
     composite score + per-channel breakdown. Polled by the new
     media-organism-tick cron every hour; surfaces a verdict
     operators can react to.
+
+    Query: ?force=1 bypasses the 60s in-memory cache.
     """
+    # r39 cache check
+    _force = (request.args.get("force") or "").lower() in ("1", "true", "yes")
+    _now = time.time()
+    if (not _force and _ORGANISM_CACHE["value"] is not None
+            and (_now - _ORGANISM_CACHE["at"]) < _ORGANISM_TTL):
+        cached = dict(_ORGANISM_CACHE["value"])
+        cached["served_from_cache"] = True
+        cached["cache_age_seconds"] = round(_now - _ORGANISM_CACHE["at"], 1)
+        return jsonify(cached), 200
+
     t0 = time.time()
     components: dict = {}
 
@@ -225,7 +246,7 @@ def media_organism():
         default=None,
     )
 
-    return jsonify(
+    payload = dict(
         vitality_score=composite,
         verdict=verdict,
         weakest_channel=weakest[0] if weakest else None,
@@ -241,7 +262,11 @@ def media_organism():
             "auto-fires journalist outreach when topics are hot + outreach "
             "channel is quiet."
         ),
-    ), 200
+    )
+    # r39 cache write
+    _ORGANISM_CACHE["at"] = _now
+    _ORGANISM_CACHE["value"] = payload
+    return jsonify(payload), 200
 
 
 @media_organism_bp.route("/api/v1/media/organism/quick", methods=["GET"])
