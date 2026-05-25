@@ -22939,6 +22939,46 @@ try:
 except Exception as _amf_e:
     print(f"[main] agents_md_fallback_bp register failed: {_amf_e}", flush=True)
 
+# Phase ZZZZZ-round37 (2026-05-24): direct Stripe checkout for paywall hits
+try:
+    from routes.stripe_direct_upgrade import stripe_direct_bp
+    app.register_blueprint(stripe_direct_bp)
+    print("[main] stripe_direct_bp registered: /pricing/upgrade → direct Stripe", flush=True)
+except Exception as _sd_e:
+    print(f"[main] stripe_direct_bp register failed: {_sd_e}", flush=True)
+
+# Phase ZZZZZ-round37 (2026-05-24): per-landing OG images
+try:
+    from routes.og_landings import og_landings_bp
+    app.register_blueprint(og_landings_bp)
+    print("[main] og_landings_bp registered: 4 landing-specific OG renders", flush=True)
+except Exception as _ogl_e:
+    print(f"[main] og_landings_bp register failed: {_ogl_e}", flush=True)
+
+# Phase ZZZZZ-round37 (2026-05-24): MCP 2025-06-18 OAuth Protected Resource
+try:
+    from routes.mcp_oauth_2025_06_18 import mcp_oauth_2025_bp
+    app.register_blueprint(mcp_oauth_2025_bp)
+    print("[main] mcp_oauth_2025_bp registered: MCP 2025-06-18 OAuth spec", flush=True)
+except Exception as _mo_e:
+    print(f"[main] mcp_oauth_2025_bp register failed: {_mo_e}", flush=True)
+
+# Phase ZZZZZ-round37 (2026-05-24): /api/v1/integrations/tools.json sentinel alias
+try:
+    from routes.integrations_tools_json import integrations_tools_bp
+    app.register_blueprint(integrations_tools_bp)
+    print("[main] integrations_tools_bp registered: tool catalog alias", flush=True)
+except Exception as _it_e:
+    print(f"[main] integrations_tools_bp register failed: {_it_e}", flush=True)
+
+# Phase ZZZZZ-round37 (2026-05-24): grid page pre-warmer (drops 11k 429s/day)
+try:
+    from routes.grid_cache_warmer import grid_warmer_bp
+    app.register_blueprint(grid_warmer_bp)
+    print("[main] grid_warmer_bp registered: /api/v1/grid-warmer/warm", flush=True)
+except Exception as _gw_e:
+    print(f"[main] grid_warmer_bp register failed: {_gw_e}", flush=True)
+
 # Phase ZZZZZ-round33 (2026-05-24): public status page — trust signal for
 # enterprise buyers. Polls all services from the browser.
 try:

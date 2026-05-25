@@ -20,7 +20,7 @@ MCP_LANDING_HTML = """<!DOCTYPE html>
 <meta name="description" content="DC Hub MCP server — 24 tools covering 21,000+ data center facilities, M&A, grid intelligence, fiber, water risk, tax incentives. Free tier: 10 calls/day, no signup.">
 <meta property="og:title" content="DC Hub MCP — connect to any AI agent in 30 seconds">
 <meta property="og:description" content="24 tools · 21,000+ facilities · streamable-http · free tier no signup">
-<meta property="og:image" content="https://dchub.cloud/static/og/default.png">
+<meta property="og:image" content="https://dchub.cloud/static/og/landing-integrations-mcp.png">
 <meta property="og:url" content="https://dchub.cloud/integrations/mcp">
 <meta name="twitter:card" content="summary_large_image">
 <link rel="canonical" href="https://dchub.cloud/integrations/mcp">

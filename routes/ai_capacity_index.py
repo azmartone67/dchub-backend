@@ -155,7 +155,7 @@ _LANDING = """<!DOCTYPE html>
 <meta name="description" content="Where 100MW of AI training capacity can actually land in 30/60/90 days. Ranked weekly across 286 data center markets.">
 <meta property="og:title" content="AI Compute Capacity Index">
 <meta property="og:description" content="Weekly leaderboard: where can hyperscale AI workloads land in the next 30/60/90 days?">
-<meta property="og:image" content="https://dchub.cloud/static/og/default.png">
+<meta property="og:image" content="https://dchub.cloud/static/og/landing-ai-capacity.png">
 <link rel="canonical" href="https://dchub.cloud/ai-capacity-index">
 <link rel="stylesheet" href="https://dchub.cloud/static/dchub-brand.css">
 <style>
