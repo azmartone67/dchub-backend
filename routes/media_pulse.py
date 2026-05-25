@@ -322,16 +322,25 @@ def api_topic_pulse():
                     try: c.rollback()
                     except Exception: pass
 
-            # Pull recent headlines from ALL three tables.
+            # r34g+4 (2026-05-24): per-table column maps because the 3
+            # source tables don't agree on column names. `news` has
+            # `description` (not summary), `news_articles` and
+            # `announcements` have `summary`. The previous one-size-fits-
+            # all SELECT failed silently on `news` (column-not-found
+            # killed the autocommit transaction for THAT cursor) and
+            # returned 0 fetched items even though COUNT was 207.
             news_items: list = []
-            for tbl, date_col in (
-                ("news",          "published_date"),
-                ("news_articles", "published_at"),
-                ("announcements", "COALESCE(published_at, published_date)"),
-            ):
+            _NEWS_QUERIES = (
+                # (table, body_col, date_col)
+                ("news",          "description", "published_date"),
+                ("news_articles", "summary",     "published_at"),
+                ("announcements", "summary",     "COALESCE(published_at, published_date)"),
+            )
+            for tbl, body_col, date_col in _NEWS_QUERIES:
                 try:
                     cur.execute(f"""
-                        SELECT title, COALESCE(summary, '') AS summary,
+                        SELECT title,
+                               COALESCE({body_col}, '') AS summary,
                                COALESCE(source, '') AS source,
                                {date_col} AS published_date,
                                COALESCE(url, '') AS url
@@ -342,6 +351,11 @@ def api_topic_pulse():
                     """)
                     news_items.extend(cur.fetchall())
                 except Exception:
+                    # Rollback the failed transaction so the next per-table
+                    # query gets a clean slate. Without this, one bad
+                    # column name on table A kills the queries on B + C.
+                    try: c.rollback()
+                    except Exception: pass
                     continue
             # Dedup by title to avoid double-matching the same story
             seen_titles: set = set()
