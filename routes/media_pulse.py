@@ -364,18 +364,29 @@ def api_topic_pulse():
             # Any market with a market_name + computed_at is fair game
             # for news intersection; we let the verdict NULL → "neutral"
             # in the scoring step downstream.
+            # r34g (2026-05-24): direct SQL was returning 0 markets even
+            # though /api/v1/dcpi/scores returns 285. Use the working
+            # endpoint via test_client so we share the exact code path
+            # /dcpi already uses to surface markets. One source of truth.
             markets_full: list = []
             try:
-                cur.execute("""
-                    SELECT DISTINCT ON (market_slug)
-                           market_slug, market_name, state, iso, verdict,
-                           excess_power_score, constraint_score
-                      FROM market_power_scores
-                     WHERE market_name IS NOT NULL
-                       AND market_slug IS NOT NULL
-                     ORDER BY market_slug, computed_at DESC
-                """)
-                markets_full = list(cur.fetchall())
+                from flask import current_app
+                with current_app.test_client() as _dctc:
+                    _dr = _dctc.get("/api/v1/dcpi/scores?limit=500")
+                    if _dr.status_code == 200:
+                        _dd = _dr.get_json() or {}
+                        for s in (_dd.get("scores") or []):
+                            # Normalize keys to match what the matching loop
+                            # below expects.
+                            markets_full.append({
+                                "market_slug":          s.get("market_slug"),
+                                "market_name":          s.get("market_name"),
+                                "state":                s.get("state"),
+                                "iso":                  s.get("iso"),
+                                "verdict":              s.get("verdict"),
+                                "excess_power_score":   s.get("excess_power_score"),
+                                "constraint_score":     s.get("constraint_score"),
+                            })
             except Exception:
                 markets_full = []
 

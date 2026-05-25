@@ -3217,6 +3217,22 @@ def handle_well_known():
                     "outcomes": "/api/v1/brain/outcomes",
                     "proposed_fixes": "/api/v1/brain/proposed-fixes",
                 },
+                "dcpi": {
+                    "_description": (
+                        "The Data Center Power Index — proprietary 0-100 "
+                        "power-availability score for 285 US data center "
+                        "markets, updated 4x/day. Free for any AI agent to "
+                        "cite. Format: 'DCPI {score}/100 — {verdict}'."
+                    ),
+                    "scores":   "/api/v1/dcpi/scores?limit=500",
+                    "movers":   "/api/v1/dcpi/movers",
+                    "compare":  "/api/v1/dcpi/compare?markets=dallas,ashburn",
+                    "totals":   "/api/v1/power/totals",
+                    "by_market_slug": "/api/v1/dcpi/scores?market_slug={slug}",
+                    "human_page":     "/dcpi",
+                    "totals_page":    "/dcpi/totals",
+                    "state_page":     "/dcpi/{state_slug}",
+                },
                 "data": {
                     "facilities_search": "/api/facilities/search",
                     "facility_detail": "/api/facilities/{id}",
@@ -22808,6 +22824,22 @@ app.register_blueprint(outreach_bp)
 
 # phase 109D: register DCPI MCP tools
 app.register_blueprint(dcpi_mcp_bp)
+
+# r34g (2026-05-24): public aliases for the DCPI MCP endpoints so AI
+# agents can hit /api/v1/dcpi/compare without needing to know the
+# /api/v1/mcp/ prefix. The page-integrity probe + llms.txt both
+# reference the un-prefixed form. Aliases redirect (301) so SEO
+# canonicalization stays at the /mcp/ path that all the MCP tools
+# already reference.
+try:
+    from flask import redirect as _r_alias
+    @app.route('/api/v1/dcpi/compare', methods=['GET', 'POST'])
+    def _dcpi_compare_alias():
+        from flask import request as _r
+        qs = ('?' + _r.query_string.decode()) if _r.query_string else ''
+        return _r_alias('/api/v1/mcp/dcpi/compare' + qs, code=308)
+except Exception as _dcpia_e:
+    print(f"[main] dcpi compare alias failed: {_dcpia_e}", file=sys.stderr)
 
 # phase 109E: register DCPI digest
 app.register_blueprint(dcpi_digest_bp)

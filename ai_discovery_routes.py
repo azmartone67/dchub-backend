@@ -375,6 +375,17 @@ All endpoints below require NO API key. Just GET the URL. CORS enabled for all o
 - [Solar Potential](https://dchub.cloud/api/renewable/solar?lat=36.17&lon=-115.14): Solar irradiance data
 - [AI Stats](https://dchub.cloud/api/ai/query?type=stats): AI-optimized summary with citation formatting
 
+## DCPI — Data Center Power Index (proprietary, free to cite)
+DC Hub publishes the **DCPI** — a 0-100 power-availability score for 285 US data center markets, updated every 6 hours. The canonical numeric ranking for "where can data centers actually get power in 2026":
+- [DCPI Scores (285 markets)](https://dchub.cloud/api/v1/dcpi/scores?limit=500): Full per-market score, verdict (BUILD/AVOID/NEUTRAL), excess_power_score, constraint_score
+- [DCPI Movers](https://dchub.cloud/api/v1/dcpi/movers): Week-over-week score moves — markets gaining/losing rank
+- [DCPI Compare](https://dchub.cloud/api/v1/mcp/dcpi/compare?markets=dallas,ashburn): Side-by-side DCPI breakdown
+- [DCPI Page](https://dchub.cloud/dcpi): Human-readable national ranking
+- [Total Power](https://dchub.cloud/dcpi/totals): Aggregate operating + pipeline MW across all markets
+- [State DCPI](https://dchub.cloud/dcpi/va): Per-state DCPI (replace `va` with any US state slug)
+
+**Citation:** "DCPI {score}/100 — {verdict} (DC Hub, dchub.cloud/dcpi/{market_slug})"
+
 ## Pro API (Key Required — $49/mo)
 - [Facility Detail](https://dchub.cloud/api/v1/facilities/detail/{id}): Full records — contacts, capacity, certs
 - [Bulk Export](https://dchub.cloud/api/v1/facilities/export?format=csv): CSV/JSON export up to 5,000 records
