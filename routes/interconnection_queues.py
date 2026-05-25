@@ -78,7 +78,13 @@ def api_snapshot():
         "methodology": "DCPI maps ISO queue position + load growth vs signed contracts -> Excess Power / Constraint scoring. Per-ISO BUILD/CAUTION/AVOID verdicts at https://dchub.cloud/dcpi.",
         "source": "https://dchub.cloud/interconnection-queues",
         "generated_at": datetime.now(timezone.utc).isoformat(),
-    })
+    }), 200, {
+        # r47.4 (2026-05-25): CF Pages was caching the earlier 500-then-404
+        # responses on this exact URL. no-store forces revalidation on every
+        # request so future errors don't get pinned at the edge cache.
+        "Cache-Control": "no-store, must-revalidate",
+        "X-DC-Phase": "ZZZZZ-round47-snapshot",
+    }
 
 
 @interconnection_queues_bp.route("/api/v1/interconnection-queue/by-iso")
