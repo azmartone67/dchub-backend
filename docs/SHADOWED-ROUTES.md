@@ -1,26 +1,14 @@
 # Shadowed Routes Inventory
 
-_Generated: 2026-05-18T14:53:35.970433Z_  
-_Total routes: 1528_  
-_Shadowed routes: **10**_
+_Generated: 2026-05-25T13:52:09.642801Z_  
+_Total routes: 1909_  
+_Shadowed routes: **11**_
 
 A "shadowed route" is a URL path registered in two or more places.
 Flask uses the FIRST registration; the others are dead code that
 creates ambiguity and can mask bugs (Phase 20 lost a week to one).
 
 ## Inventory
-
-### `/api/discovery/run` (POST)
-
-Registered in 2 place(s):
-- `api_discovery.run_api_discovery`
-- `discovery.discovery_run`
-
-### `/api/discovery/status` (GET)
-
-Registered in 2 place(s):
-- `api_discovery.api_discovery_status`
-- `discovery.discovery_status`
 
 ### `/api/v1/dcpi/ask` (GET, POST)
 
@@ -40,17 +28,23 @@ Registered in 2 place(s):
 - `mcp_funnel_v2.conversion_funnel`
 - `_mcp_conversion_funnel`
 
-### `/api/v1/mcp/track` (POST)
+### `/favicon.ico` (GET)
 
 Registered in 2 place(s):
-- `mcp_bp.track_tool_call`
-- `phase9g_mcp_track_override`
+- `favicon`
+- `favicon_quieter.favicon`
 
-### `/api/v1/stripe/webhook-mcp` (POST)
+### `/integrations/tools.json` (GET)
 
 Registered in 2 place(s):
-- `mcp_bp.stripe_webhook_mcp`
-- `stripe_webhook`
+- `serve_tools_manifest`
+- `integrations_tools.integrations_tools_short`
+
+### `/markets/<slug>` (GET)
+
+Registered in 2 place(s):
+- `market_deep_dive.market_short_html`
+- `seo_pages.market_page`
 
 ### `/research` (GET)
 
@@ -58,14 +52,26 @@ Registered in 2 place(s):
 - `research_page`
 - `open_data.research_landing`
 
-### `/sitemap.xml` (GET)
+### `/robots.txt` (GET)
 
 Registered in 2 place(s):
-- `grid_public.sitemap`
-- `serve_sitemap_xml`
+- `serve_robots_txt`
+- `robots_seo.robots_txt`
+
+### `/status` (GET)
+
+Registered in 2 place(s):
+- `site_audit.status_html`
+- `status_page.http_status_page`
+
+### `/upgrade` (GET)
+
+Registered in 2 place(s):
+- `pair_code.upgrade_redirect`
+- `stripe_direct_upgrade.upgrade_redirect`
 
 ### `/vs` (GET)
 
 Registered in 2 place(s):
-- `competitive_vs.vs_index`
+- `quick_redirects.vs_index_redirect`
 - `bs_translator.vs_page`
