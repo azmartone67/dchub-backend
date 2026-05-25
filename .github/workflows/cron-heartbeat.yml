@@ -1,0 +1,44 @@
+name: Cron Heartbeat (5-min)
+
+# Phase ZZZZZ-round37.1 — single cron driver that calls dchub-backend's
+# /api/v1/cron/heartbeat every 5 minutes. The endpoint itself dispatches
+# to grid-warmer (every call) and brain-warmer (once/hour, once/day).
+#
+# This is the cleanest path because:
+#   - Railway service-level cron only takes 1 expression
+#   - GitHub Actions cron is free + unlimited
+#   - The dispatch logic lives in code (versioned, reviewable)
+#
+# To disable: comment out the schedule block or rename this file.
+
+on:
+  schedule:
+    - cron: '*/5 * * * *'   # every 5 minutes
+  workflow_dispatch:        # manual trigger from Actions UI
+
+permissions:
+  contents: read
+
+jobs:
+  ping:
+    runs-on: ubuntu-latest
+    timeout-minutes: 3
+    steps:
+      - name: Hit cron heartbeat endpoint
+        run: |
+          set -e
+          BODY=$(curl -sS -X POST \
+            -H "User-Agent: GH-Actions-CronHeartbeat/1.0" \
+            -w "\nHTTP_STATUS=%{http_code}\nELAPSED=%{time_total}s\n" \
+            https://api.dchub.cloud/api/v1/cron/heartbeat)
+          echo "$BODY"
+          # Surface non-2xx as warnings (not failures) so transient
+          # Railway 429s don't trip the workflow red.
+          STATUS=$(echo "$BODY" | grep HTTP_STATUS | cut -d= -f2)
+          if [ "$STATUS" -ge 500 ]; then
+            echo "::error::Cron heartbeat returned 5xx ($STATUS)"
+            exit 1
+          fi
+          if [ "$STATUS" -ge 400 ]; then
+            echo "::warning::Cron heartbeat returned $STATUS — likely transient"
+          fi

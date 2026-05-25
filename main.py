@@ -22979,6 +22979,17 @@ try:
 except Exception as _gw_e:
     print(f"[main] grid_warmer_bp register failed: {_gw_e}", flush=True)
 
+# Phase ZZZZZ-round37.1 (2026-05-24): single cron heartbeat endpoint
+# Railway service-level cron only takes ONE expression, so collapse all
+# scheduled warmers behind a single HTTP endpoint that dispatches by UTC
+# time. User configures ONE external cron @ */5 hitting /api/v1/cron/heartbeat.
+try:
+    from routes.cron_heartbeat import cron_heartbeat_bp
+    app.register_blueprint(cron_heartbeat_bp)
+    print("[main] cron_heartbeat_bp registered: /api/v1/cron/heartbeat (single-cron dispatcher)", flush=True)
+except Exception as _ch_e:
+    print(f"[main] cron_heartbeat_bp register failed: {_ch_e}", flush=True)
+
 # Phase ZZZZZ-round33 (2026-05-24): public status page — trust signal for
 # enterprise buyers. Polls all services from the browser.
 try:
