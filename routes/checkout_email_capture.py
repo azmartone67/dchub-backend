@@ -35,23 +35,8 @@ except Exception:
 
 checkout_email_bp = Blueprint("checkout_email_capture", __name__)
 
-# Mirror STRIPE_LINKS from routes/stripe_direct_upgrade.py
-STRIPE_LINKS = {
-    "starter":    "https://buy.stripe.com/8x2dRa5sS0x75uteGuaZi0g",
-    "developer":  "https://buy.stripe.com/7sY5kE8F4fs13ml0PEaZi0c",
-    "pro":        "https://buy.stripe.com/eVq5kE4oOfs13mleGuaZi0h",
-    "enterprise": "https://buy.stripe.com/fZueVe5sS6Vv7CB41QaZi0a",
-}
-TOOL_TIER_MAP = {
-    "get_intelligence_index": "pro", "compare_sites": "pro",
-    "analyze_site": "pro", "get_infrastructure": "pro",
-    "get_fiber_intel": "pro", "get_grid_intelligence": "pro",
-    "search_facilities": "developer", "list_transactions": "developer",
-    "get_news": "developer", "get_pipeline": "developer",
-    "rank_markets": "developer", "find_alternatives": "developer",
-    "score_facility": "developer", "ai_capacity_index": "developer",
-    "hyperscaler_deals": "developer",
-}
+# r39 (2026-05-25): centralized in routes/_stripe_links.py
+from routes._stripe_links import STRIPE_LINKS, TOOL_TIER_MAP
 
 
 def _dsn():

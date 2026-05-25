@@ -25,45 +25,9 @@ from flask import Blueprint, request, redirect, jsonify
 
 stripe_direct_bp = Blueprint("stripe_direct_upgrade", __name__)
 
-# Source of truth: routes/email_capture.py:STRIPE_LINKS (Phase r36-shipped tier links)
-STRIPE_LINKS = {
-    "starter":    "https://buy.stripe.com/8x2dRa5sS0x75uteGuaZi0g",
-    "developer":  "https://buy.stripe.com/7sY5kE8F4fs13ml0PEaZi0c",
-    "pro":        "https://buy.stripe.com/eVq5kE4oOfs13mleGuaZi0h",
-    "enterprise": "https://buy.stripe.com/fZueVe5sS6Vv7CB41QaZi0a",
-}
-
-# Tool → recommended tier mapping (which tier is needed to call this tool)
-TOOL_TIER_MAP = {
-    # Tools gated at Pro
-    "get_intelligence_index": "pro",
-    "compare_sites":          "pro",
-    "analyze_site":           "pro",
-    "get_infrastructure":     "pro",
-    "get_fiber_intel":        "pro",
-    "get_grid_intelligence":  "pro",
-    # Tools gated at Developer (fields truncated on free)
-    "search_facilities":      "developer",
-    "list_transactions":      "developer",
-    "get_news":               "developer",
-    "get_pipeline":           "developer",
-    # New tier-1 tools
-    "rank_markets":           "developer",
-    "find_alternatives":      "developer",
-    "score_facility":         "developer",
-    # AI capex relevance tools (r36)
-    "ai_capacity_index":      "developer",
-    "hyperscaler_deals":      "developer",
-}
-
-
-def _resolve_tier(tool, tier_param):
-    """Pick the right Stripe URL — explicit tier wins, else look up tool, else developer."""
-    if tier_param and tier_param.lower() in STRIPE_LINKS:
-        return tier_param.lower()
-    if tool and tool in TOOL_TIER_MAP:
-        return TOOL_TIER_MAP[tool]
-    return "developer"  # safe default for self-serve
+# r39 (2026-05-25): centralized in routes/_stripe_links.py. Re-export
+# locally so existing _resolve_tier callers don't need to change.
+from routes._stripe_links import STRIPE_LINKS, TOOL_TIER_MAP, resolve_tier as _resolve_tier
 
 
 def _build_url(tier, tool, ref):
@@ -77,11 +41,27 @@ def _build_url(tier, tool, ref):
 @stripe_direct_bp.route("/pricing/upgrade", methods=["GET"], strict_slashes=False)
 @stripe_direct_bp.route("/upgrade", methods=["GET"], strict_slashes=False)
 def upgrade_redirect():
+    """r39: default behavior now routes through email-capture form so we
+    identify every paywall-click. Add ?direct=1 to skip the form and go
+    straight to Stripe (legacy behavior, kept for testing + power users).
+    """
     tool   = (request.args.get("tool") or "").strip()
     tier   = (request.args.get("tier") or "").strip()
     ref    = (request.args.get("ref")  or "paywall").strip()
+    direct = (request.args.get("direct") or "").strip() in ("1","true","yes")
     chosen = _resolve_tier(tool, tier)
-    url    = _build_url(chosen, tool, ref)
+
+    # r39: route through email capture for identity gating BEFORE Stripe.
+    # /upgrade legacy path keeps the old direct behavior to not break the
+    # pair-code redeem flow that was here pre-r38.
+    if not direct and request.path.startswith("/pricing/upgrade"):
+        from urllib.parse import urlencode
+        params = {"tool": tool, "tier": chosen, "ref": ref}
+        params = {k: v for k, v in params.items() if v}
+        return redirect(f"/pricing/checkout/start?{urlencode(params)}", code=302)
+
+    # Direct path or /upgrade legacy: straight to Stripe
+    url = _build_url(chosen, tool, ref)
     return redirect(url, code=302)
 
 

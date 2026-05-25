@@ -82,6 +82,12 @@ _DISPATCH = [
      f"{BASE}/api/v1/brain-warming/detectors",
      "GET",
      lambda now: now.hour == 14 and now.minute < 5),
+
+    # r39: outreach to identified-but-unconverted leads — hourly at :17
+    ("outreach_pending",
+     f"{BASE}/api/v1/outreach/process-pending?limit=25",
+     "POST",
+     lambda now: now.minute >= 15 and now.minute < 20),
 ]
 
 
