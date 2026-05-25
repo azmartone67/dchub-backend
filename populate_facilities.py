@@ -210,7 +210,7 @@ def populate_facilities():
             import uuid
             c.execute("""
                 INSERT INTO facilities (id, name, provider, city, state, country, region, latitude, longitude, power_mw, sqft, status, source, confidence)
-                VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, 'seed', 0.95)
+                VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, 'seed', 0.95) ON CONFLICT DO NOTHING
             """, (
                 str(uuid.uuid4()), f['name'], f['provider'], f['city'], f.get('state', ''), f['country'],
                 f['region'], f['lat'], f['lng'], f['power_mw'], f.get('sqft', 0),
