@@ -87,22 +87,68 @@ def _extract_dollar_usd(text):
 
 
 def _classify_actor(text):
+    """r43 (2026-05-25): broader actor recognition. Picks the FIRST
+    match in the priority order below — hyperscalers > AI labs >
+    cloud > GPU vendors > infra investors > "miscellaneous capex".
+
+    SUSE, Google/Blackstone JV, sovereign-AI funds all had to show
+    as 'Unknown' until this. Order matters: 'Google and Blackstone'
+    should classify as Google, not Blackstone, so Google wins.
+    """
     t = (text or "").lower()
-    for actor, keys in [
-        ("OpenAI",    ["openai", "stargate"]),
-        ("Anthropic", ["anthropic", "claude"]),
-        ("Microsoft", ["microsoft", "azure"]),
-        ("Google",    ["google ai", "alphabet"]),
-        ("AWS",       ["aws", "amazon web"]),
-        ("Meta",      ["meta ai", "facebook ai"]),
-        ("Oracle",    ["oracle"]),
-        ("CoreWeave", ["coreweave"]),
-        ("Lambda",    ["lambda labs"]),
-        ("Crusoe",    ["crusoe"]),
-        ("xAI",       ["xai", "grok", "musk ai"]),
-        ("NVIDIA",    ["nvidia", "blackwell"]),
-        ("AMD",       ["amd "]),
-    ]:
+    classifications = [
+        # AI labs (highest priority — they drive most $1B+ news)
+        ("OpenAI",       ["openai", "stargate", "sam altman"]),
+        ("Anthropic",    ["anthropic", "claude.ai", "dario amodei"]),
+        ("xAI",          ["xai ", "x.ai", "grok ", "musk ai"]),
+        ("Mistral",      ["mistral ai", "mistral large"]),
+        ("DeepSeek",     ["deepseek"]),
+        ("Cohere",       ["cohere ai", "cohere expansion"]),
+        # Hyperscalers
+        ("Microsoft",    ["microsoft", "azure ", "satya nadella"]),
+        ("Google",       ["google ai", "google cloud", "alphabet",
+                           "google and ", "deepmind", "gemini"]),
+        ("AWS",          ["aws ", "amazon web", "amazon expand",
+                           "amazon ai", " bedrock"]),
+        ("Meta",         ["meta ai", "facebook ai", "llama "]),
+        ("Apple",        ["apple intelligence", "apple ai", "apple build"]),
+        # GPU clouds / neoclouds
+        ("CoreWeave",    ["coreweave"]),
+        ("Lambda",       ["lambda labs", "lambda cloud"]),
+        ("Crusoe",       ["crusoe"]),
+        ("Vultr",        ["vultr "]),
+        ("IREN",         ["iren ", "iris energy"]),
+        ("Applied",      ["applied digital"]),
+        # Database / enterprise software
+        ("Oracle",       ["oracle"]),
+        ("SAP",          ["sap "]),
+        ("ServiceNow",   ["servicenow"]),
+        ("Snowflake",    ["snowflake"]),
+        ("Databricks",   ["databricks"]),
+        ("SUSE",         ["suse "]),
+        # Chip / hardware
+        ("NVIDIA",       ["nvidia", "blackwell", "jensen huang", "h100", "h200"]),
+        ("AMD",          ["amd ", "lisa su"]),
+        ("Intel",        ["intel ", "intel ai", "gaudi"]),
+        ("TSMC",         ["tsmc", "taiwan semi"]),
+        # Power / infra investors
+        ("Blackstone",   ["blackstone "]),
+        ("Brookfield",   ["brookfield"]),
+        ("KKR",          ["kkr "]),
+        ("Stonepeak",    ["stonepeak"]),
+        # Data center operators
+        ("Equinix",      ["equinix"]),
+        ("Digital Realty", ["digital realty"]),
+        ("QTS",          ["qts data"]),
+        ("Stack",        ["stack infra"]),
+        # Sovereign / state programs
+        ("UAE",          ["uae ai", "abu dhabi", "g42 "]),
+        ("Saudi",        ["saudi ai", "humain", "pif"]),
+        # Generic AI capex (catch-all)
+        ("AI Capex",     ["ai data center", "ai infrastructure",
+                           "ai cloud", "gpu cluster", "hyperscale"]),
+    ]
+    for actor, keys in classifications:
         if any(k in t for k in keys): return actor
     return "Unknown"
 

@@ -23133,6 +23133,30 @@ try:
 except Exception as _lw_e:
     print(f"[main] linkedin_whoami_bp register failed: {_lw_e}", flush=True)
 
+# Phase ZZZZZ-round43 (2026-05-25): LinkedIn DB token reset endpoint
+try:
+    from routes.linkedin_token_reset import linkedin_token_reset_bp
+    app.register_blueprint(linkedin_token_reset_bp)
+    print("[main] linkedin_token_reset_bp registered: /api/v1/linkedin/token/{reset-from-env,status}", flush=True)
+except Exception as _ltr_e:
+    print(f"[main] linkedin_token_reset_bp register failed: {_ltr_e}", flush=True)
+
+# Phase ZZZZZ-round43: hyperscaler actor re-classification
+try:
+    from routes.hyperscaler_reclassify import hyperscaler_reclassify_bp
+    app.register_blueprint(hyperscaler_reclassify_bp)
+    print("[main] hyperscaler_reclassify_bp registered: /api/v1/hyperscaler-alerts/reclassify", flush=True)
+except Exception as _hr_e:
+    print(f"[main] hyperscaler_reclassify_bp register failed: {_hr_e}", flush=True)
+
+# Phase ZZZZZ-round43: brain DCPI chunk-aware health
+try:
+    from routes.brain_dcpi_chunk_filter import brain_dcpi_filter_bp
+    app.register_blueprint(brain_dcpi_filter_bp)
+    print("[main] brain_dcpi_filter_bp registered: /api/v1/brain/dcpi/true-health", flush=True)
+except Exception as _bdf_e:
+    print(f"[main] brain_dcpi_filter_bp register failed: {_bdf_e}", flush=True)
+
 # Phase ZZZZZ-round33 (2026-05-24): public status page — trust signal for
 # enterprise buyers. Polls all services from the browser.
 try:
