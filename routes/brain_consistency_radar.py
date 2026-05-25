@@ -1743,19 +1743,37 @@ def check_surface_health_critical() -> list[dict]:
     fires (markets needs a different fix than land_power).
 
     Phase FF+9-triage: surfaces in _LOW_TRAFFIC_OK_SURFACES are skipped
-    because their low traffic is by design, not a failure mode."""
+    because their low traffic is by design, not a failure mode.
+
+    r41-surface-parallel (2026-05-25): parallelized the per-surface
+    health_score() calls. Pre-fix each call did 2 DB queries
+    (pulse + growth) serially, so 65 surfaces × 2 queries × ~250ms =
+    ~32s wall time (slowest single detector in the radar). Now ~4-6s
+    via 8-worker pool. Worker cap stays well under the 50-conn DB pool.
+    """
     findings: list[dict] = []
     try:
         from routes.surface_brain import SURFACES
     except Exception:
         return findings
-    for sid, surface in SURFACES.items():
-        if sid in _LOW_TRAFFIC_OK_SURFACES:
-            continue
+
+    eligible = [(sid, surface) for sid, surface in SURFACES.items()
+                if sid not in _LOW_TRAFFIC_OK_SURFACES]
+
+    import concurrent.futures as _cf
+
+    def _score_one(item):
+        sid, surface = item
         try:
-            score = surface.health_score()
+            return (sid, surface, surface.health_score())
         except Exception:
-            continue
+            return (sid, surface, None)
+
+    with _cf.ThreadPoolExecutor(max_workers=8,
+                                 thread_name_prefix="surface-health") as ex:
+        results = list(ex.map(_score_one, eligible))
+
+    for sid, surface, score in results:
         if score is not None and score < 40:
             findings.append({
                 "issue":  f"surface_health_critical:{sid}",
@@ -5223,34 +5241,53 @@ def check_frontend_critical_endpoints() -> list[dict]:
         ("/api/v1/listings",                 "/listings",          5, "listings marketplace"),
     ]
 
-    for api_path, page_path, max_sec, label in _PROBES:
+    # r41-frontend-parallel (2026-05-25): parallelize the 24-probe loop.
+    # Pre-fix this was serial — observed wall time ~37s (slowest single
+    # detector in the radar scan). At 24 probes × ~1.5s avg = ~36s
+    # serially, but the scan_all() outer ThreadPoolExecutor only gives
+    # each detector a 20s budget, so this detector was getting truncated
+    # past the deadline and its findings were dropped half the time.
+    # Same pattern as check_dead_internal_links r32-mt-fix.
+    import concurrent.futures as _cf
+    import time as _t
+
+    def _probe_one(probe):
+        api_path, page_path, max_sec, label = probe
         url = f"https://dchub.cloud{api_path}"
-        import time as _t
         t0 = _t.time()
         try:
             r = _req.get(url, timeout=max_sec + 2,
                           headers={"User-Agent": "dchub-frontend-health/1.0"})
-            elapsed = _t.time() - t0
+            return (probe, r.status_code, _t.time() - t0, None)
         except Exception as e:
-            elapsed = _t.time() - t0
+            return (probe, None, _t.time() - t0,
+                    f"{type(e).__name__}: {str(e)[:120]}")
+
+    with _cf.ThreadPoolExecutor(max_workers=8,
+                                 thread_name_prefix="frontend-probe") as ex:
+        results = list(ex.map(_probe_one, _PROBES))
+
+    for probe, status, elapsed, err in results:
+        api_path, page_path, max_sec, label = probe
+        if err is not None:
             findings.append({
                 "issue":  "frontend_endpoint_unreachable",
                 "url":    page_path,
                 "count":  1,
                 "detail": (f"Public page `{page_path}` depends on API `{api_path}` "
                            f"({label}) which timed out / errored after "
-                           f"{elapsed:.1f}s: {type(e).__name__}. The page renders "
+                           f"{elapsed:.1f}s: {err}. The page renders "
                            f"empty/broken to visitors. Likely Railway upstream "
                            f"failure or endpoint regression."),
             })
             continue
-        if r.status_code >= 500:
+        if status >= 500:
             findings.append({
                 "issue":  "frontend_endpoint_5xx",
                 "url":    page_path,
-                "count":  r.status_code,
+                "count":  status,
                 "detail": (f"Public page `{page_path}` depends on API `{api_path}` "
-                           f"({label}) which returned HTTP {r.status_code}. "
+                           f"({label}) which returned HTTP {status}. "
                            f"The page renders empty/broken to visitors."),
             })
         elif elapsed > max_sec:
@@ -5986,7 +6023,14 @@ def check_dead_internal_links() -> list[dict]:
         except Exception as e:
             return (path, None, "", f"{type(e).__name__}: {str(e)[:120]}")
 
-    with _cf.ThreadPoolExecutor(max_workers=6,
+    # r41 (2026-05-25): bumped from 6 → 12 workers. Detector was still
+    # hitting 52s observed wall time with 6 workers (the slowest single
+    # detector in the radar scan). Probe count has grown (auto-discovered
+    # slugs from competitive_vs + pockets push the list past 60), so the
+    # 6-worker cap was a real bottleneck. 12 workers in 60 probes × 5s
+    # worst case ≈ 25s; in practice most probes return in 0.5-2s so
+    # wall time should land closer to 8-12s.
+    with _cf.ThreadPoolExecutor(max_workers=12,
                                  thread_name_prefix="deadlink") as ex:
         results = list(ex.map(_probe_one, probes))
 

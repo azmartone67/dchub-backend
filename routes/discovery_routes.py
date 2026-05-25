@@ -191,6 +191,71 @@ def init_discovery_tables():
 # STAGING HELPER
 # ─────────────────────────────────────────────────────────────
 
+def _stage_facilities_batch(conn, rows, batch_size=200):
+    """Bulk-insert discovered facilities via psycopg2.extras.execute_values.
+
+    r41-disco-batch (2026-05-25): replaces the per-row _stage_facility
+    loop inside run_osm_discovery (the 76s connection-holder that
+    triggered _forced_reclaim warnings). Pre-fix: 4,139 individual
+    INSERT+commit roundtrips to Neon held a single DB connection for
+    ~76 seconds. Post-fix: ~21 batched multi-row INSERTs release the
+    connection in ~2 seconds.
+
+    rows: list of dicts with the same keyword args _stage_facility takes
+    Returns: (added_count, duplicate_count)
+    """
+    if not rows:
+        return 0, 0
+    from psycopg2.extras import execute_values
+    now = datetime.utcnow().isoformat()
+    total_added = 0
+    total_dup = 0
+    for i in range(0, len(rows), batch_size):
+        chunk = rows[i:i + batch_size]
+        values = []
+        for r in chunk:
+            values.append((
+                r['source'], r['source_id'], r['name'], r.get('provider', 'Unknown'),
+                r.get('city', ''), r.get('state', ''), r.get('country', 'US'),
+                r.get('latitude'), r.get('longitude'),
+                r.get('power_mw', 0), r.get('status', 'active'),
+                r.get('address', ''), r.get('source_url', ''),
+                json.dumps(r.get('raw_data') or {}),
+                now, now, now,
+                r.get('confidence', 0.5),
+            ))
+        try:
+            c = conn.cursor()
+            execute_values(c, """
+                INSERT INTO discovered_facilities
+                (source, source_id, name, provider, city, state, country,
+                 latitude, longitude, power_mw, status, address, source_url,
+                 raw_data, discovered_at, first_seen, last_updated, confidence_score)
+                VALUES %s
+                ON CONFLICT (source, source_id) DO UPDATE SET
+                    last_updated = EXCLUDED.last_updated,
+                    confidence_score = GREATEST(discovered_facilities.confidence_score,
+                                                EXCLUDED.confidence_score)
+                RETURNING (xmax = 0) AS inserted
+            """, values)
+            # xmax = 0 → fresh insert; xmax != 0 → UPDATE branch fired (duplicate)
+            for (inserted,) in c.fetchall():
+                if inserted:
+                    total_added += 1
+                else:
+                    total_dup += 1
+            conn.commit()
+        except Exception as e:
+            try:
+                conn.rollback()
+            except Exception:
+                pass
+            logger.warning(
+                f"Batch stage failed at offset {i} (size {len(chunk)}): {e}")
+            # Continue with next batch — partial progress preserved.
+    return total_added, total_dup
+
+
 def _stage_facility(conn, source, source_id, name, provider, city='', state='',
                     country='US', latitude=None, longitude=None, power_mw=0,
                     status='active', address='', source_url='', raw_data=None,
@@ -319,6 +384,12 @@ def run_osm_discovery():
 
         conn = _db()
 
+        # r41-disco-batch (2026-05-25): accumulate rows in memory, then
+        # bulk-insert via execute_values. Pre-fix this loop did one
+        # INSERT+commit per element holding the connection ~76s for the
+        # 4,139-row OSM payload, which forced the _track_checkout
+        # reclaim watchdog to fire. Now: ~2s for the same payload.
+        rows = []
         for elem in elements:
             tags = elem.get('tags', {})
             name = (tags.get('name') or tags.get('operator') or
@@ -334,18 +405,25 @@ def run_osm_discovery():
 
             source_id = f"osm_{elem.get('type', 'n')}_{elem.get('id', '')}"
 
-            added = _stage_facility(
-                conn, 'OpenStreetMap', source_id, name, operator or 'Unknown',
-                city=city, state=state, country=country[:2].upper() if country else 'US',
-                latitude=lat, longitude=lng,
-                address=address,
-                source_url=f"https://www.openstreetmap.org/{elem.get('type', 'node')}/{elem.get('id', '')}",
-                raw_data=tags, confidence=0.6
-            )
-            if added:
-                result['added'] += 1
-            else:
-                result['duplicate'] += 1
+            rows.append({
+                'source':     'OpenStreetMap',
+                'source_id':  source_id,
+                'name':       name,
+                'provider':   operator or 'Unknown',
+                'city':       city,
+                'state':      state,
+                'country':    country[:2].upper() if country else 'US',
+                'latitude':   lat,
+                'longitude':  lng,
+                'address':    address,
+                'source_url': f"https://www.openstreetmap.org/{elem.get('type', 'node')}/{elem.get('id', '')}",
+                'raw_data':   tags,
+                'confidence': 0.6,
+            })
+
+        added, dup = _stage_facilities_batch(conn, rows)
+        result['added']     = added
+        result['duplicate'] = dup
 
         logger.info(f"OSM: {result['found']} found, {result['added']} new, {result['duplicate']} existing")
     except Exception as e:

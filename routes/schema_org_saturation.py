@@ -116,7 +116,14 @@ def _audit_page(path: str) -> dict:
 
 
 def run_audit() -> dict:
-    """Audit every required page; persist + return summary."""
+    """Audit every required page; persist + return summary.
+
+    r41-schema-parallel (2026-05-25): the per-page HTTP fetch loop is
+    now parallelized via ThreadPoolExecutor. Pre-fix each page fetched
+    serially with a 12s timeout, so ~20 pages × ~1.2s avg = ~24s wall
+    time (4th-slowest brain detector). Now ~3-5s. The DB INSERT is
+    moved out of the loop and batched after all fetches return.
+    """
     summary = {"total": len(_REQUIRED_SCHEMA), "ok": 0, "missing": 0,
                 "wrong_type": 0, "unreachable": 0,
                 "ran_at": datetime.datetime.utcnow().isoformat() + "Z",
@@ -124,8 +131,19 @@ def run_audit() -> dict:
     c = _conn()
     if c is not None:
         _ensure_schema(c)
-    for path, expected in _REQUIRED_SCHEMA:
-        a = _audit_page(path)
+
+    import concurrent.futures as _cf
+
+    def _audit_with_expected(item):
+        path, expected = item
+        return path, expected, _audit_page(path)
+
+    with _cf.ThreadPoolExecutor(max_workers=8,
+                                 thread_name_prefix="schema-audit") as ex:
+        results = list(ex.map(_audit_with_expected, _REQUIRED_SCHEMA))
+
+    rows_to_persist = []
+    for path, expected, a in results:
         exp_types = [t.strip() for t in expected.split("|")]
         status_ok = a.get("status") == 200
         types_ok  = bool(a.get("found_types")) and any(
@@ -146,21 +164,30 @@ def run_audit() -> dict:
         summary["details"].append({
             **a, "expected_types": expected, "verdict": verdict,
         })
-        if c is not None:
-            try:
-                with c.cursor() as cur:
-                    cur.execute("""
-                        INSERT INTO schema_org_audit
-                          (path, expected_types, has_jsonld, found_types,
-                           last_checked)
-                        VALUES (%s, %s, %s, %s, NOW())
-                        ON CONFLICT (path) DO UPDATE
-                          SET expected_types = EXCLUDED.expected_types,
-                              has_jsonld     = EXCLUDED.has_jsonld,
-                              found_types    = EXCLUDED.found_types,
-                              last_checked   = NOW()
-                    """, (path, expected, a.get("has_jsonld"),
-                          ",".join(a.get("found_types") or [])))
+        rows_to_persist.append(
+            (path, expected, a.get("has_jsonld"),
+             ",".join(a.get("found_types") or []))
+        )
+
+    # Persist all rows after fetches complete (single connection held briefly)
+    if c is not None and rows_to_persist:
+        try:
+            with c.cursor() as cur:
+                from psycopg2.extras import execute_values
+                execute_values(cur, """
+                    INSERT INTO schema_org_audit
+                      (path, expected_types, has_jsonld, found_types, last_checked)
+                    VALUES %s
+                    ON CONFLICT (path) DO UPDATE
+                      SET expected_types = EXCLUDED.expected_types,
+                          has_jsonld     = EXCLUDED.has_jsonld,
+                          found_types    = EXCLUDED.found_types,
+                          last_checked   = NOW()
+                """, [(p, e, h, f, datetime.datetime.utcnow())
+                       for (p, e, h, f) in rows_to_persist])
+            c.commit()
+        except Exception:
+            try: c.rollback()
             except Exception: pass
     if c is not None:
         try: c.close()
