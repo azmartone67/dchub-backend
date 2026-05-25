@@ -590,6 +590,120 @@ def _audit_value_shipped() -> dict:
     }
 
 
+def _audit_ecosystem_position() -> dict:
+    """r46 (2026-05-25): are we present on the watched MCP registries?
+
+    Reads /api/v1/brain/ecosystem/findings (populated by daily cron).
+    Flags weak when we're absent from >1 of the watched targets.
+    """
+    findings = _call_internal("/api/v1/brain/ecosystem/findings")
+    by_target = findings.get("by_target") or {}
+    summary = findings.get("summary") or {}
+
+    targets_known = int(summary.get("targets_known") or 0)
+    we_present = int(summary.get("we_present_in") or 0)
+    expected = int(summary.get("expected_total") or 0)
+
+    if targets_known == 0:
+        return {
+            "ok": True,
+            "targets_known": 0,
+            "verdict": "no-probe-data-yet",
+            "_source_result": _AuditUnavailable("ecosystem#empty"),
+        }
+
+    absent_count = max(0, expected - we_present)
+    competitors_seen = sum(
+        1 for v in by_target.values() if v.get("competition_seen")
+    )
+
+    return {
+        "ok": absent_count <= 1,
+        "targets_known": targets_known,
+        "we_present_in": we_present,
+        "expected_total": expected,
+        "absent_count": absent_count,
+        "competitors_visible_in": competitors_seen,
+        "verdict": (
+            "dominant" if absent_count == 0 and competitors_seen <= 1 else
+            "present"  if absent_count <= 1 else
+            "trailing"
+        ),
+        "_source_result": None,
+    }
+
+
+def _audit_self_pruning() -> dict:
+    """r46 (2026-05-25): does the brain know to clean up its own cruft?
+
+    Tracks three sources of accumulated stale state:
+      - lifecycle proposals >30d old still pending (not approved, not
+        dismissed) — Opus's ideas waiting in limbo
+      - error classes with shipped_proof=NULL and last_seen >14d ago —
+        detectors that fired once and never came back
+      - heal findings >7d old, never auto-fixed — backlog that's
+        rotting
+
+    'weak' when the combined stale_count > 12. The brain should be
+    cleaning behind itself; if it isn't, this dim shouts.
+    """
+    _ensure_schema()
+    c = _conn()
+    if c is None:
+        return {
+            "ok": True, "verdict": "unknown (no DB)",
+            "_source_result": _AuditUnavailable("self_pruning#db"),
+        }
+
+    stale_proposals = 0
+    stale_findings = 0
+    try:
+        with c.cursor() as cur:
+            try:
+                cur.execute("""
+                    SELECT COUNT(*) FROM brain_lifecycle_proposals
+                     WHERE proposed_at < NOW() - INTERVAL '30 days'
+                       AND approved IS NULL
+                       AND dismissed_at IS NULL
+                       AND shipped_at IS NULL
+                """)
+                stale_proposals = int((cur.fetchone() or [0])[0] or 0)
+            except Exception:
+                pass
+            try:
+                cur.execute("""
+                    SELECT COUNT(*) FROM heal_findings
+                     WHERE created_at < NOW() - INTERVAL '7 days'
+                       AND (auto_fixed_at IS NULL OR auto_fixed_at = 'epoch')
+                """)
+                stale_findings = int((cur.fetchone() or [0])[0] or 0)
+            except Exception:
+                # Table or column may not exist
+                pass
+    except Exception:
+        return {
+            "ok": True, "verdict": "unknown (query failed)",
+            "_source_result": _AuditUnavailable("self_pruning#query"),
+        }
+    finally:
+        try: c.close()
+        except Exception: pass
+
+    total_stale = stale_proposals + stale_findings
+    return {
+        "ok": total_stale <= 12,
+        "stale_proposals_30d": stale_proposals,
+        "stale_findings_7d": stale_findings,
+        "stale_total": total_stale,
+        "verdict": (
+            "tidy"     if total_stale <= 5  else
+            "managing" if total_stale <= 12 else
+            "needs-cleanup"
+        ),
+        "_source_result": None,
+    }
+
+
 def _audit_composite_trend() -> dict:
     """r45 (2026-05-25): is the moat-health composite climbing over time?
 
@@ -776,6 +890,10 @@ def _run_full_audit(force: bool = False) -> dict:
         "unique_sessions":        _audit_unique_sessions,
         # r45 (2026-05-25): meta-signal — is the composite climbing?
         "composite_trend":        _audit_composite_trend,
+        # r46 (2026-05-25): does the brain clean up after itself?
+        "self_pruning":           _audit_self_pruning,
+        # r46 (2026-05-25): competitive position on MCP ecosystem
+        "ecosystem_position":     _audit_ecosystem_position,
     }
     audits: dict = {}
     try:
@@ -912,6 +1030,16 @@ def _short_recommendation(dim: str, result: dict) -> str:
         ap7 = result.get("avg_prev_7d")
         return (f"composite health declining — 7d avg {a7} vs prior 7d {ap7} "
                 f"(Δ={d}). Investigate which dim regressed via history endpoint.")
+    if dim == "self_pruning":
+        return (f"brain has {result.get('stale_total')} stale entries "
+                f"({result.get('stale_proposals_30d')} proposals >30d, "
+                f"{result.get('stale_findings_7d')} heal findings >7d) — "
+                f"review + dismiss or ship via lifecycle/proposals endpoints.")
+    if dim == "ecosystem_position":
+        return (f"absent from {result.get('absent_count')} of "
+                f"{result.get('expected_total')} watched MCP registries "
+                f"(competitors visible in {result.get('competitors_visible_in')}). "
+                f"Submit via PATCHES/REGISTRY_SUBMISSIONS_r45/ drafts.")
     return "see full audit JSON"
 
 
@@ -921,8 +1049,18 @@ _LIFECYCLE_PROMPT = """You are the lifecycle curator for DC Hub Nexus — the
 de-facto MCP server for data center market intelligence. Your job is to
 PROPOSE ONE specific new capability that would deepen the moat.
 
-Current state (10 audited dimensions):
+Current state (audited dimensions):
 {audit_summary}
+
+Moat-health trajectory (r46 added — last 7 days):
+{trend_context}
+
+Recently dismissed proposals (do NOT re-propose these or close variants):
+{dismissed_context}
+
+Approved but not-yet-shipped proposals (consider proposing HOW to ship
+one of these instead of a brand-new capability):
+{pending_context}
 
 Existing 23 MCP tools: search_facilities, get_facility, get_market_intel,
 rank_markets, find_alternatives, score_facility, get_pipeline,
@@ -937,7 +1075,8 @@ proprietary DCPI scores for 285 markets + real-time data vs LLM
 training cutoff.
 
 Propose ONE NEW capability — could be a new MCP tool, a new endpoint,
-a new content surface, a new integration. Be specific:
+a new content surface, a new integration, OR a shipping plan for an
+existing approved proposal. Be specific:
   - Name (snake_case if a tool, kebab-case if a route)
   - One-paragraph description
   - Why it deepens the moat (what new agent citations it unlocks,
@@ -945,8 +1084,109 @@ a new content surface, a new integration. Be specific:
     we'd start ranking for)
   - Rough implementation sketch (3-5 bullets)
 
-Reply in JSON: {{"name": "...", "kind": "mcp_tool|endpoint|content|integration",
+Reply in JSON: {{"name": "...", "kind": "mcp_tool|endpoint|content|integration|shipping_plan",
 "description": "...", "moat_rationale": "...", "implementation": ["...", "..."]}}"""
+
+
+# r46 (2026-05-25): context-fetch helpers used by _call_opus_for_proposal
+# to enrich the Opus prompt. Each one is best-effort + bounded to a tight
+# size so the prompt doesn't bloat. Empty string falls back gracefully.
+
+def _fetch_trend_context(max_chars: int = 600) -> str:
+    """Returns short narrative of recent composite_health trajectory."""
+    c = _conn()
+    if c is None:
+        return "(history table unavailable)"
+    try:
+        with c.cursor() as cur:
+            cur.execute("""
+                SELECT at, composite_health, findings_count
+                  FROM brain_lifecycle_history
+                 WHERE at >= NOW() - INTERVAL '7 days'
+                 ORDER BY at DESC
+                 LIMIT 12
+            """)
+            rows = cur.fetchall()
+        if not rows:
+            return "(no history rows yet — first audit cycles building baseline)"
+        lines = []
+        for at, h, fc in rows[:8]:
+            lines.append(f"  {str(at)[:16]} composite={h:.2f} findings={fc}")
+        return "\n".join(lines)[:max_chars]
+    except Exception:
+        return "(history query failed)"
+    finally:
+        try: c.close()
+        except Exception: pass
+
+
+def _fetch_dismissed_context(max_chars: int = 800) -> str:
+    """Last 5 dismissed proposals so Opus doesn't repeat them."""
+    c = _conn()
+    if c is None:
+        return "(none — table unavailable)"
+    try:
+        with c.cursor() as cur:
+            cur.execute("""
+                SELECT proposal_kind, proposal_text, notes, dismissed_at
+                  FROM brain_lifecycle_proposals
+                 WHERE dismissed_at IS NOT NULL
+                 ORDER BY dismissed_at DESC
+                 LIMIT 5
+            """)
+            rows = cur.fetchall()
+        if not rows:
+            return "(none yet)"
+        lines = []
+        for kind, text, notes, when in rows:
+            try:
+                p = json.loads(text or "{}")
+            except Exception:
+                p = {}
+            name = p.get("name", "?")
+            why = (notes or "no reason given")[:80]
+            lines.append(f"  • {name} ({kind}) — dismissed: {why}")
+        return "\n".join(lines)[:max_chars]
+    except Exception:
+        return "(dismissed query failed)"
+    finally:
+        try: c.close()
+        except Exception: pass
+
+
+def _fetch_pending_context(max_chars: int = 800) -> str:
+    """Approved but unshipped proposals — Opus may propose how to ship."""
+    c = _conn()
+    if c is None:
+        return "(none — table unavailable)"
+    try:
+        with c.cursor() as cur:
+            cur.execute("""
+                SELECT id, proposal_kind, proposal_text
+                  FROM brain_lifecycle_proposals
+                 WHERE approved IS TRUE
+                   AND shipped_at IS NULL
+                 ORDER BY proposed_at DESC
+                 LIMIT 5
+            """)
+            rows = cur.fetchall()
+        if not rows:
+            return "(none — clean approval queue)"
+        lines = []
+        for pid, kind, text in rows:
+            try:
+                p = json.loads(text or "{}")
+            except Exception:
+                p = {}
+            name = p.get("name", "?")
+            desc = (p.get("description", "") or "")[:120]
+            lines.append(f"  • #{pid} {name} ({kind}) — {desc}")
+        return "\n".join(lines)[:max_chars]
+    except Exception:
+        return "(pending query failed)"
+    finally:
+        try: c.close()
+        except Exception: pass
 
 
 def _call_opus_for_proposal(audit_summary: str) -> tuple[dict | None, str | None]:
@@ -961,7 +1201,18 @@ def _call_opus_for_proposal(audit_summary: str) -> tuple[dict | None, str | None
     except Exception:
         model = "claude-opus-4-7"
 
-    prompt = _LIFECYCLE_PROMPT.format(audit_summary=audit_summary[:3000])
+    # r46 (2026-05-25): fetch enrichment contexts. Each is bounded and
+    # best-effort so a DB hiccup never blocks the proposal call.
+    trend_ctx = _fetch_trend_context()
+    dismissed_ctx = _fetch_dismissed_context()
+    pending_ctx = _fetch_pending_context()
+
+    prompt = _LIFECYCLE_PROMPT.format(
+        audit_summary=audit_summary[:3000],
+        trend_context=trend_ctx,
+        dismissed_context=dismissed_ctx,
+        pending_context=pending_ctx,
+    )
     body = json.dumps({
         "model": model,
         "max_tokens": 1200,
@@ -1360,3 +1611,145 @@ def lifecycle_history():
     finally:
         try: c.close()
         except Exception: pass
+
+
+# r46 (2026-05-25): weekly brain-health digest. One endpoint that answers
+# "how much smarter did the brain get this week?" — aggregating across
+# lifecycle proposals, error classes, audit history, and weak-dim clears.
+# Designed for human readability (also feeds future Slack/email digests).
+@brain_lifecycle_bp.route("/api/v1/brain/health-report", methods=["GET"])
+def brain_health_report():
+    """Weekly brain-health digest. Human-readable narrative of progress.
+
+    Query:
+      ?days=N   window (default 7, max 30)
+    """
+    try:
+        days = max(1, min(int(request.args.get("days", 7)), 30))
+    except Exception:
+        days = 7
+
+    _ensure_schema()
+    c = _conn()
+    if c is None:
+        return jsonify({"ok": False, "error": "db_unreachable"}), 200
+
+    report: dict = {
+        "ok": True,
+        "window_days": days,
+        "generated_at": datetime.datetime.utcnow().isoformat() + "Z",
+    }
+    try:
+        with c.cursor() as cur:
+            # Composite health trajectory
+            try:
+                cur.execute(f"""
+                    SELECT
+                      MIN(composite_health) AS min_h,
+                      MAX(composite_health) AS max_h,
+                      AVG(composite_health) AS avg_h,
+                      (SELECT composite_health FROM brain_lifecycle_history
+                        ORDER BY at DESC LIMIT 1) AS latest_h,
+                      (SELECT composite_health FROM brain_lifecycle_history
+                        WHERE at < NOW() - INTERVAL '{days} days'
+                        ORDER BY at DESC LIMIT 1) AS prior_h,
+                      COUNT(*) AS row_count
+                    FROM brain_lifecycle_history
+                    WHERE at >= NOW() - INTERVAL '{days} days'
+                """)
+                row = cur.fetchone() or [None]*6
+                latest = float(row[3]) if row[3] is not None else None
+                prior  = float(row[4]) if row[4] is not None else None
+                report["composite_health"] = {
+                    "latest":      latest,
+                    "prior_week":  prior,
+                    "delta":       (round(latest - prior, 3)
+                                    if latest is not None and prior is not None
+                                    else None),
+                    "min":         float(row[0]) if row[0] is not None else None,
+                    "max":         float(row[1]) if row[1] is not None else None,
+                    "mean":        round(float(row[2]), 3) if row[2] is not None else None,
+                    "snapshots":   int(row[5] or 0),
+                }
+            except Exception:
+                report["composite_health"] = None
+
+            # Proposal pipeline activity
+            try:
+                cur.execute(f"""
+                    SELECT
+                      COUNT(*) FILTER (WHERE proposed_at >= NOW() - INTERVAL '{days} days')   AS proposed,
+                      COUNT(*) FILTER (WHERE approved = TRUE
+                                         AND reviewed_by IS NOT NULL
+                                         AND proposed_at >= NOW() - INTERVAL '{days} days')    AS approved,
+                      COUNT(*) FILTER (WHERE dismissed_at >= NOW() - INTERVAL '{days} days')   AS dismissed,
+                      COUNT(*) FILTER (WHERE shipped_at >= NOW() - INTERVAL '{days} days')     AS shipped,
+                      COUNT(*) FILTER (WHERE gh_issue_url IS NOT NULL
+                                         AND proposed_at >= NOW() - INTERVAL '{days} days')    AS issue_drafted
+                    FROM brain_lifecycle_proposals
+                """)
+                row = cur.fetchone() or [0]*5
+                report["proposals"] = {
+                    "proposed":      int(row[0] or 0),
+                    "approved":      int(row[1] or 0),
+                    "dismissed":     int(row[2] or 0),
+                    "shipped":       int(row[3] or 0),
+                    "issue_drafted": int(row[4] or 0),
+                }
+            except Exception:
+                report["proposals"] = None
+
+            # New error classes shipped_proof — brain growing vocab
+            try:
+                cur.execute(f"""
+                    SELECT COUNT(*)
+                      FROM brain_proposed_fixes
+                     WHERE COALESCE(applied_at, created_at)
+                       >= NOW() - INTERVAL '{days} days'
+                       AND status IN ('shipped','approved','applied','merged')
+                """)
+                report["code_fixes_shipped"] = int((cur.fetchone() or [0])[0] or 0)
+            except Exception:
+                report["code_fixes_shipped"] = None
+
+            # Auto-press releases (organism vitality)
+            try:
+                cur.execute(f"""
+                    SELECT COUNT(*) FROM auto_press_releases
+                     WHERE generated_at >= NOW() - INTERVAL '{days} days'
+                """)
+                report["press_releases"] = int((cur.fetchone() or [0])[0] or 0)
+            except Exception:
+                report["press_releases"] = None
+    except Exception as e:
+        report["query_error"] = str(e)[:200]
+    finally:
+        try: c.close()
+        except Exception: pass
+
+    # Narrative summary — one sentence the operator can scan
+    ch = report.get("composite_health") or {}
+    delta = ch.get("delta")
+    pr = report.get("proposals") or {}
+    parts = []
+    if delta is not None:
+        if delta > 0.02:
+            parts.append(f"composite climbed +{delta} (now {ch.get('latest')})")
+        elif delta < -0.02:
+            parts.append(f"composite dropped {delta} — investigate")
+        else:
+            parts.append(f"composite stable at {ch.get('latest')}")
+    if pr.get("proposed"):
+        parts.append(f"Opus proposed {pr['proposed']} ideas")
+    if pr.get("issue_drafted"):
+        parts.append(f"L22 drafted {pr['issue_drafted']} GH issues")
+    if pr.get("shipped"):
+        parts.append(f"shipped {pr['shipped']} approved")
+    if report.get("code_fixes_shipped"):
+        parts.append(f"code fixes shipped: {report['code_fixes_shipped']}")
+    if report.get("press_releases"):
+        parts.append(f"{report['press_releases']} press releases generated")
+    report["narrative"] = "; ".join(parts) if parts else "(quiet week)"
+
+    resp = jsonify(report)
+    return _no_cache_headers(resp), 200

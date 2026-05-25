@@ -1558,6 +1558,16 @@ try:
     except Exception as _l23e:
         import logging
         logging.getLogger(__name__).warning('brain_layer23 wiring failed: %s', _l23e)
+    # Phase r46 (2026-05-25): Brain Ecosystem Watch. Watches the MCP
+    # ecosystem for competitive pressure (Smithery/Glama/mcp.so).
+    # Daily cron probes registry pages, detects new entrants in our
+    # category. L23 audit reads findings via ecosystem_position dim.
+    try:
+        from routes.brain_ecosystem_watch import brain_ecosystem_watch_bp
+        app.register_blueprint(brain_ecosystem_watch_bp)
+    except Exception as _ecow_e:
+        import logging
+        logging.getLogger(__name__).warning('brain_ecosystem_watch wiring failed: %s', _ecow_e)
     # Phase FF+7 (2026-05-19): Brain L15 — Auto-Action. Reads L14's
     # high-confidence chains and auto-opens a GitHub issue for each one
     # with a concrete fix. Closes the loop from "brain finds" → "work

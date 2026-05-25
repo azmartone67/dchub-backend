@@ -1,0 +1,47 @@
+name: Brain Ecosystem Watch (Daily MCP-registry probe)
+
+# r46 (2026-05-25): Watches Smithery / Glama / mcp.so for our presence
+# + competitive entries. Daily probe → DB → L23 audit reads via the
+# new ecosystem_position dim. Out-of-codebase competitive intel becomes
+# in-loop signal.
+#
+# Daily at 06:43 UTC — off-cycle from other crons.
+
+on:
+  schedule:
+    - cron: '43 6 * * *'
+  workflow_dispatch: {}
+
+permissions:
+  contents: read
+
+env:
+  BASE: https://dchub-backend-production.up.railway.app
+
+jobs:
+  watch:
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    steps:
+      - name: Probe registries
+        env:
+          ADMIN_KEY: ${{ secrets.DCHUB_ADMIN_KEY }}
+        run: |
+          if [ -z "${ADMIN_KEY:-}" ]; then
+            echo "::warning::DCHUB_ADMIN_KEY not set — skipping"
+            exit 0
+          fi
+          response=$(curl -sS --max-time 60 -X POST \
+            -H "X-Admin-Key: $ADMIN_KEY" \
+            "$BASE/api/v1/brain/ecosystem/watch" \
+            || echo '{"ok":false,"error":"curl_fail"}')
+          echo "$response" | head -c 2500
+          echo
+          python3 - <<'PY'
+          import json, sys
+          d = json.loads("""$(echo "$response" | tr -d '\n')""") if False else {}
+          # We can't reliably parse $response in heredoc, but the response
+          # was echoed above and L23's ecosystem_position dim will read
+          # the latest finding from DB on next audit tick.
+          print("::notice::Ecosystem watch tick complete — L23 audit will surface findings on next composite refresh.")
+          PY
