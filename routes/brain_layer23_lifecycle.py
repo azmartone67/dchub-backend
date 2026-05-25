@@ -110,6 +110,11 @@ def _ensure_schema():
                 "reviewed_by TEXT",
                 "gh_issue_url TEXT",
                 "gh_issue_number INTEGER",
+                # r47 (2026-05-25): multi-model challenger fields
+                "challenger_model TEXT",
+                "challenger_approved BOOLEAN",
+                "challenger_score INTEGER",
+                "challenger_critique TEXT",
             ]:
                 col_name = col_def.split()[0]
                 try:
@@ -1247,6 +1252,110 @@ def _call_opus_for_proposal(audit_summary: str) -> tuple[dict | None, str | None
         return None, f"{type(e).__name__}: {str(e)[:120]}"
 
 
+# ── r47 (2026-05-25): Multi-model challenger ──────────────────────
+# Opus 4.7 proposes. Sonnet (cheaper, different perspective) challenges.
+# Result: a 0-10 score + critique + approved boolean stored alongside
+# the proposal. Proposals that fail the challenge still persist (the
+# human can override) but get the challenger_approved=False flag so
+# the dashboard can highlight them.
+#
+# This isn't a moderation layer — it's a second mind. Sonnet sometimes
+# spots flaws Opus misses; sometimes Sonnet's critique is what makes
+# the human approve. The brain gets smarter by having two voices.
+
+_CHALLENGER_PROMPT = """You are the SKEPTIC reviewing a moat-deepening
+capability proposal for DC Hub Nexus, the leading data-center
+intelligence MCP server.
+
+PROPOSAL UNDER REVIEW (from Opus 4.7):
+{proposal_json}
+
+CURRENT AUDIT STATE:
+{audit_summary}
+
+Your job: critique this proposal for THREE things:
+  1. MOAT VALUE: would this genuinely strengthen the moat, or is it
+     incremental noise? Compare to the existing 23 MCP tools + the
+     proprietary DCPI scoring. Specific reasoning required.
+  2. NOVELTY: is this distinct from existing capabilities and from
+     recently dismissed proposals? Avoid restating tools we have.
+  3. FEASIBILITY: can this be shipped in 1-2 days by 1 engineer
+     with the existing Flask/Postgres/Cloudflare stack? If it needs
+     new infrastructure, flag it.
+
+Score the proposal 0-10 (10 = ship immediately, 0 = dismiss). If
+score < 6, recommend dismissal with specific reasons. If score >= 6,
+add one concrete IMPROVEMENT suggestion (a name change, a scope
+narrowing, an additional metric to track).
+
+Reply in JSON:
+{{"score": <0-10>, "approved": <true|false>,
+  "critique": "<2-3 sentences>", "improvement": "<optional one-line>"}}"""
+
+
+def _challenge_proposal(proposal: dict, audit_summary: str) -> dict:
+    """Send Opus's proposal to Sonnet for a second opinion.
+
+    Returns a dict with: ok, score, approved, critique, improvement,
+    model. Never raises — degrades to {'ok': False, 'error': ...}
+    so the caller can persist whatever Opus produced regardless.
+    """
+    if not ANTHROPIC_API_KEY:
+        return {"ok": False, "error": "no_anthropic_key"}
+    try:
+        from routes.brain_models import brain_model_for
+        model = brain_model_for("challenger")  # sonnet 4.5 by default
+    except Exception:
+        model = "claude-sonnet-4-5"
+
+    prompt = _CHALLENGER_PROMPT.format(
+        proposal_json=json.dumps(proposal, indent=2)[:2000],
+        audit_summary=audit_summary[:1500],
+    )
+    body = json.dumps({
+        "model": model,
+        "max_tokens": 600,
+        "messages": [{"role": "user", "content": prompt}],
+    }).encode("utf-8")
+    req = urllib.request.Request(
+        "https://api.anthropic.com/v1/messages",
+        data=body,
+        headers={
+            "Content-Type": "application/json",
+            "X-API-Key": ANTHROPIC_API_KEY,
+            "Anthropic-Version": "2023-06-01",
+        },
+    )
+    try:
+        with urllib.request.urlopen(req, timeout=30) as r:
+            payload = json.loads(r.read().decode("utf-8"))
+        text_parts = payload.get("content") or []
+        text = "".join(p.get("text", "") for p in text_parts if isinstance(p, dict))
+        import re as _re
+        m = _re.search(r"\{[\s\S]*\}", text)
+        if not m:
+            return {"ok": False, "error": "no_json", "raw": text[:200],
+                    "model": model}
+        try:
+            parsed = json.loads(m.group(0))
+        except Exception:
+            return {"ok": False, "error": "parse_fail", "raw": text[:200],
+                    "model": model}
+        return {
+            "ok":          True,
+            "model":       model,
+            "score":       int(parsed.get("score") or 0),
+            "approved":    bool(parsed.get("approved", False)),
+            "critique":    str(parsed.get("critique") or "")[:1000],
+            "improvement": str(parsed.get("improvement") or "")[:500],
+        }
+    except urllib.error.HTTPError as e:
+        return {"ok": False, "error": f"http_{e.code}", "model": model}
+    except Exception as e:
+        return {"ok": False, "error": f"{type(e).__name__}: {str(e)[:120]}",
+                "model": model}
+
+
 # ── HTTP endpoints ────────────────────────────────────────────────
 
 def _no_cache_headers(resp):
@@ -1322,7 +1431,17 @@ def lifecycle_propose():
     if err:
         return jsonify(ok=False, error=err, audit=audit), 200
 
-    # Persist
+    # r47 (2026-05-25): challenger pass — Sonnet reviews Opus's proposal
+    # for moat-value, novelty, and feasibility. Adds quality gate + a
+    # second perspective. Skipped if caller passes ?skip_challenge=1
+    # (preserves the legacy fast-path). Cost: ~$0.01 per proposal,
+    # bounded by audit findings_count > 0 cron gating.
+    challenge = None
+    skip_challenge = (request.args.get("skip_challenge") or "").lower() in ("1", "true", "yes")
+    if not skip_challenge:
+        challenge = _challenge_proposal(proposal, summary)
+
+    # Persist (now with challenger fields)
     c = _conn()
     new_id = None
     if c is not None:
@@ -1330,18 +1449,25 @@ def lifecycle_propose():
             with c.cursor() as cur:
                 cur.execute("""
                     INSERT INTO brain_lifecycle_proposals
-                        (audit_snapshot, proposal_text, proposal_kind, model)
-                    VALUES (%s, %s, %s, %s)
+                        (audit_snapshot, proposal_text, proposal_kind, model,
+                         challenger_model, challenger_approved,
+                         challenger_score, challenger_critique)
+                    VALUES (%s, %s, %s, %s, %s, %s, %s, %s)
                     RETURNING id
                 """, (
                     json.dumps(audit),
                     json.dumps(proposal),
                     proposal.get("kind"),
                     "claude-opus-4-7",
+                    (challenge or {}).get("model") if challenge else None,
+                    (challenge or {}).get("approved") if challenge and challenge.get("ok") else None,
+                    (challenge or {}).get("score") if challenge and challenge.get("ok") else None,
+                    (challenge or {}).get("critique") if challenge and challenge.get("ok") else None,
                 ))
                 new_id = (cur.fetchone() or [None])[0]
         except Exception as pe:
             return jsonify(ok=True, proposal=proposal, audit_summary=summary,
+                            challenge=challenge,
                             persistence_error=str(pe)[:200]), 200
         finally:
             try: c.close()
@@ -1397,6 +1523,7 @@ def lifecycle_propose():
         ok=True,
         proposal_id=new_id,
         proposal=proposal,
+        challenge=challenge,
         audit_findings=audit.get("findings"),
         composite_health=audit.get("composite_health"),
         issue_drafted=issue_result,
@@ -1413,14 +1540,35 @@ def lifecycle_proposals():
         return jsonify(proposals=[], error="db_unreachable"), 200
     try:
         with c.cursor() as cur:
-            cur.execute("""
-                SELECT id, proposed_at, proposal_text, proposal_kind,
-                       model, approved, shipped_at, notes
-                  FROM brain_lifecycle_proposals
-                 ORDER BY proposed_at DESC
-                 LIMIT %s
-            """, (limit,))
-            rows = cur.fetchall()
+            # r47 (2026-05-25): include challenger fields. Use SELECT-list
+            # that's defensive against the ADD COLUMN IF NOT EXISTS still
+            # being in-flight — if any challenger_* col doesn't exist yet,
+            # the query fails and we fall back to the legacy SELECT.
+            try:
+                cur.execute("""
+                    SELECT id, proposed_at, proposal_text, proposal_kind,
+                           model, approved, shipped_at, notes,
+                           challenger_model, challenger_approved,
+                           challenger_score, challenger_critique
+                      FROM brain_lifecycle_proposals
+                     ORDER BY proposed_at DESC
+                     LIMIT %s
+                """, (limit,))
+                rows = cur.fetchall()
+                has_challenger_cols = True
+            except Exception:
+                # rollback before retrying — Postgres aborts the txn on error
+                try: c.rollback()
+                except Exception: pass
+                cur.execute("""
+                    SELECT id, proposed_at, proposal_text, proposal_kind,
+                           model, approved, shipped_at, notes
+                      FROM brain_lifecycle_proposals
+                     ORDER BY proposed_at DESC
+                     LIMIT %s
+                """, (limit,))
+                rows = cur.fetchall()
+                has_challenger_cols = False
         out = []
         for r in rows:
             prop_text = r[2]
@@ -1428,7 +1576,7 @@ def lifecycle_proposals():
                 prop = json.loads(prop_text) if prop_text else {}
             except Exception:
                 prop = {"raw": (prop_text or "")[:400]}
-            out.append({
+            row = {
                 "id":           r[0],
                 "proposed_at":  str(r[1])[:19] if r[1] else None,
                 "proposal":     prop,
@@ -1437,7 +1585,15 @@ def lifecycle_proposals():
                 "approved":     r[5],
                 "shipped_at":   str(r[6])[:19] if r[6] else None,
                 "notes":        r[7],
-            })
+            }
+            if has_challenger_cols:
+                row["challenger"] = {
+                    "model":    r[8],
+                    "approved": r[9],
+                    "score":    r[10],
+                    "critique": r[11],
+                }
+            out.append(row)
         return jsonify(proposals=out, count=len(out)), 200
     finally:
         try: c.close()

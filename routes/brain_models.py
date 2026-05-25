@@ -55,6 +55,11 @@ _DEFAULT_INSPECTOR = "claude-opus-4-7"
 _DEFAULT_REASONING = "claude-opus-4-7"
 _DEFAULT_ROUTINE   = "claude-sonnet-4-5"
 _DEFAULT_VOICE     = "claude-haiku-3-5"
+# r47 (2026-05-25): challenger tier — independent second opinion on
+# proposals from the reasoning tier. Sonnet by default (cheaper +
+# different perspective than Opus). L23 multi-model challenger uses
+# this to gate Opus proposals before they reach human review.
+_DEFAULT_CHALLENGER = "claude-sonnet-4-5"
 
 # r33-M: fallback chain when the primary identifier 404s. Used by
 # _safe_resolve() — call sites that have error handling should
@@ -85,10 +90,11 @@ def brain_model_for(tier: str = "routine") -> str:
     if _GLOBAL_FALLBACK:
         return _GLOBAL_FALLBACK
     return {
-        "inspector": _DEFAULT_INSPECTOR,
-        "reasoning": _DEFAULT_REASONING,
-        "routine":   _DEFAULT_ROUTINE,
-        "voice":     _DEFAULT_VOICE,
+        "inspector":  _DEFAULT_INSPECTOR,
+        "reasoning":  _DEFAULT_REASONING,
+        "routine":    _DEFAULT_ROUTINE,
+        "voice":      _DEFAULT_VOICE,
+        "challenger": _DEFAULT_CHALLENGER,
     }.get(tier, _DEFAULT_ROUTINE)
 
 
