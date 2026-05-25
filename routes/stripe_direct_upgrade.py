@@ -81,7 +81,7 @@ def paywall_checkout_json():
         "tier_pricing":   {
             "developer": "$49/mo",
             "pro":       "$199/mo",
-            "starter":   "$19/mo",
+            "starter":   "$9/mo",
             "enterprise": "Custom",
         }.get(chosen, "—"),
         "client_reference_id": f"mcp:tool={tool or 'none'}:ref={ref}",
