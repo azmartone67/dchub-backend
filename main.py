@@ -23083,6 +23083,14 @@ try:
 except Exception as _oc_e:
     print(f"[main] outreach_cron_bp register failed: {_oc_e}", flush=True)
 
+# Phase ZZZZZ-round40 (2026-05-25): 4-posts-per-day LinkedIn rotation
+try:
+    from routes.linkedin_quad_daily import linkedin_quad_bp
+    app.register_blueprint(linkedin_quad_bp)
+    print("[main] linkedin_quad_bp registered: /api/v1/linkedin-quad/{run,status} (4 topics/day)", flush=True)
+except Exception as _lq_e:
+    print(f"[main] linkedin_quad_bp register failed: {_lq_e}", flush=True)
+
 # Phase ZZZZZ-round33 (2026-05-24): public status page — trust signal for
 # enterprise buyers. Polls all services from the browser.
 try:
