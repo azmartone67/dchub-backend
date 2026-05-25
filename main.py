@@ -23091,6 +23091,38 @@ try:
 except Exception as _lq_e:
     print(f"[main] linkedin_quad_bp register failed: {_lq_e}", flush=True)
 
+# Phase ZZZZZ-round41 (2026-05-25): DCPI cron health + recovery
+try:
+    from routes.dcpi_cron_health import dcpi_health_bp
+    app.register_blueprint(dcpi_health_bp)
+    print("[main] dcpi_health_bp registered: /api/v1/cron/dcpi/{health,recent-errors}", flush=True)
+except Exception as _dh_e:
+    print(f"[main] dcpi_health_bp register failed: {_dh_e}", flush=True)
+
+# Phase ZZZZZ-round41: hyperscaler $1B+ deal alerts
+try:
+    from routes.hyperscaler_alerts import hyperscaler_alerts_bp
+    app.register_blueprint(hyperscaler_alerts_bp)
+    print("[main] hyperscaler_alerts_bp registered: /api/v1/hyperscaler-alerts{,/sweep}", flush=True)
+except Exception as _ha_e:
+    print(f"[main] hyperscaler_alerts_bp register failed: {_ha_e}", flush=True)
+
+# Phase ZZZZZ-round41: lead enrichment via IPinfo + email parsing
+try:
+    from routes.lead_enrichment import lead_enrich_bp
+    app.register_blueprint(lead_enrich_bp)
+    print("[main] lead_enrich_bp registered: /api/v1/lead-enrichment/{process-pending,status,by-id}", flush=True)
+except Exception as _le_e:
+    print(f"[main] lead_enrich_bp register failed: {_le_e}", flush=True)
+
+# Phase ZZZZZ-round41: LinkedIn whoami at canonical path
+try:
+    from routes.linkedin_whoami_proxy import linkedin_whoami_bp
+    app.register_blueprint(linkedin_whoami_bp)
+    print("[main] linkedin_whoami_bp registered: /api/v1/linkedin/whoami", flush=True)
+except Exception as _lw_e:
+    print(f"[main] linkedin_whoami_bp register failed: {_lw_e}", flush=True)
+
 # Phase ZZZZZ-round33 (2026-05-24): public status page — trust signal for
 # enterprise buyers. Polls all services from the browser.
 try:
