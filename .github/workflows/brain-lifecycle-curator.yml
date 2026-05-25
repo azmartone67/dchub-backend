@@ -1,0 +1,86 @@
+name: Brain Lifecycle Curator (Layer 23)
+
+# 2026-05-25 r35: proactive moat-builder. Every 2 hours, the brain
+# (Opus 4.7, reasoning tier) audits 10 lifecycle dimensions and
+# proposes ONE new capability that would deepen the moat. Proposals
+# persist in brain_lifecycle_proposals for human review.
+#
+# Cadence: every 2 hours. Throttled enough to keep Opus spend bounded;
+# frequent enough that audit findings stay fresh and proposals stack
+# up at ~12/day max. The propose call only fires when there's at least
+# ONE weak audit dimension — clean audit = no Opus call (cost-aware).
+
+on:
+  schedule:
+    - cron: '37 */2 * * *'   # :37 past every 2h, off-cycle from other crons
+  workflow_dispatch: {}
+
+permissions:
+  contents: read
+
+env:
+  BASE: https://dchub-backend-production.up.railway.app
+
+jobs:
+  audit_and_propose:
+    runs-on: ubuntu-latest
+    timeout-minutes: 6
+    steps:
+      - name: Run lifecycle audit (always)
+        id: audit
+        run: |
+          set -euo pipefail
+          response=$(curl -sS --max-time 60 "$BASE/api/v1/brain/lifecycle/findings" \
+            || echo '{"composite_health":0,"findings_count":0,"error":"curl_fail"}')
+          echo "$response" > audit.json
+          findings_n=$(python3 -c "
+          import json
+          d = json.load(open('audit.json'))
+          print(int(d.get('findings_count') or 0))
+          ")
+          composite=$(python3 -c "
+          import json
+          d = json.load(open('audit.json'))
+          print(d.get('composite_health', 0))
+          ")
+          echo "findings_count=$findings_n" >> "$GITHUB_OUTPUT"
+          echo "composite=$composite" >> "$GITHUB_OUTPUT"
+          echo "::notice::Lifecycle audit: composite_health=$composite, findings=$findings_n"
+          python3 - <<'PY'
+          import json
+          d = json.load(open('audit.json'))
+          for f in d.get('findings') or []:
+              print(f"::notice::  [{f.get('dim')}] {f.get('summary','')[:180]}")
+          PY
+
+      - name: Ask Opus 4.7 for new-capability proposal (when audit has weak dims)
+        if: steps.audit.outputs.findings_count != '0'
+        env:
+          ADMIN_KEY: ${{ secrets.DCHUB_ADMIN_KEY }}
+        run: |
+          if [ -z "${ADMIN_KEY:-}" ]; then
+            echo "::warning::DCHUB_ADMIN_KEY not set — skipping Opus proposal"
+            exit 0
+          fi
+          response=$(curl -sS --max-time 90 -X POST \
+            -H "X-Admin-Key: $ADMIN_KEY" \
+            "$BASE/api/v1/brain/lifecycle/propose" \
+            || echo '{"ok":false,"error":"curl_fail"}')
+          echo "$response" | head -c 2500
+          echo
+          python3 - <<'PY'
+          import json, sys
+          d = json.loads(open('audit.json').read())  # reuse audit
+          # We can't capture the propose response cleanly here without
+          # also wiring stdin — but the response was already echoed
+          # above. Just surface a notice.
+          print(f"::notice::Opus proposal triggered for {d.get('findings_count', 0)} weak dimensions")
+          PY
+
+      - name: Compact summary for the run log
+        if: always()
+        run: |
+          echo "Lifecycle Curator tick complete."
+          echo "Audit composite health: ${{ steps.audit.outputs.composite }}"
+          echo "Weak dimensions: ${{ steps.audit.outputs.findings_count }}"
+          echo "See full proposal history: $BASE/api/v1/brain/lifecycle/proposals"

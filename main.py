@@ -1543,6 +1543,21 @@ try:
     except Exception as _l22e:
         import logging
         logging.getLogger(__name__).warning('brain_layer22 wiring failed: %s', _l22e)
+    # Phase r35 (2026-05-25): Brain L23 — Lifecycle Curator. The brain's
+    # PROACTIVE moat-builder. Every 2h cron audits 10 lifecycle
+    # dimensions (server-card drift, ai_citations trend, press cadence,
+    # topic-pulse, platform activity, registry presence, brain vocab,
+    # organism vitality, page integrity, value-shipped). When any
+    # dimension is weak, calls Opus 4.7 (reasoning tier) for ONE
+    # creative new-capability proposal. Persists to
+    # brain_lifecycle_proposals for human review. Cost-aware:
+    # Opus only fires when audit finds weak dimensions.
+    try:
+        from routes.brain_layer23_lifecycle import brain_lifecycle_bp
+        app.register_blueprint(brain_lifecycle_bp)
+    except Exception as _l23e:
+        import logging
+        logging.getLogger(__name__).warning('brain_layer23 wiring failed: %s', _l23e)
     # Phase FF+7 (2026-05-19): Brain L15 — Auto-Action. Reads L14's
     # high-confidence chains and auto-opens a GitHub issue for each one
     # with a concrete fix. Closes the loop from "brain finds" → "work
