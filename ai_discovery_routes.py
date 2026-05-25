@@ -8,9 +8,56 @@ NOTE: /api/v1/discovery route is NOT included here — it already exists in main
       as ai_discovery_index(). Including it would cause a Flask AssertionError.
 """
 
-from flask import Flask, Response, jsonify, request
+from flask import Flask, Response, jsonify, request, current_app
 from datetime import datetime, timezone
 import json
+import time
+
+
+# r37 (2026-05-25): module-level cache for dynamic stats so we don't
+# pay an internal /api/health hit on every server-card request. AI
+# registry crawlers (Smithery, Glama, mcp.so, awesome-mcp-servers, etc.)
+# poll us at varying cadences; this keeps the cost bounded at ~1 hit
+# per 60s no matter how chatty they get.
+_STATS_CACHE: dict = {"at": 0.0, "value": None}
+
+
+def _stats_live_dynamic(fallback: dict, ttl_seconds: float = 60.0) -> dict:
+    """Return stats_live block backed by live /api/health counts.
+
+    Merges live facility / news / deal counts into the static claim
+    block so server-card claims always reflect reality (clears the L23
+    server_card_drift audit dim). Degrades to the static fallback if
+    the internal call fails — server-card responses must never break.
+    """
+    now = time.time()
+    if (_STATS_CACHE["value"] is not None
+            and (now - _STATS_CACHE["at"]) < ttl_seconds):
+        return _STATS_CACHE["value"]
+
+    live = dict(fallback)  # start from static, override with live values
+    try:
+        with current_app.test_client() as client:
+            r = client.get("/api/health")
+            if r.status_code == 200:
+                h = r.get_json() or {}
+                fc = h.get("facility_count")
+                if isinstance(fc, int) and fc > 0:
+                    live["facilities_tracked"] = fc
+                nc = h.get("news_count")
+                if isinstance(nc, int) and nc > 0:
+                    live["news_articles_total"] = nc
+                dc = h.get("deal_count")
+                if isinstance(dc, int) and dc > 0:
+                    live["mna_deals_tracked"] = dc
+                live["_source"] = "live /api/health"
+                live["_refreshed_at"] = datetime.utcnow().isoformat() + "Z"
+    except Exception:
+        live["_source"] = "fallback (live health unavailable)"
+
+    _STATS_CACHE["at"] = now
+    _STATS_CACHE["value"] = live
+    return live
 
 
 def register_discovery_routes(app):
@@ -400,15 +447,24 @@ def register_discovery_routes(app):
                 "press":        "hourly",
             },
 
-            "stats_live": {
-                "facilities_tracked":  23000,
-                "countries_covered":   178,
-                "dcpi_markets":        285,
-                "mna_tracked_usd":     "324B+",
-                "pipeline_gw":         369,
-                "active_ai_platforms": 96,
-                "mcp_calls_per_month": "100,000+",
-            },
+            # r37 (2026-05-25): stats_live is now DYNAMIC. The L23
+            # lifecycle audit flagged drift when this block hardcoded
+            # facilities_tracked=23000 while the live count drifted.
+            # We pull the live counts from /api/health at request time
+            # via the in-process test_client (no network hop, ~ms).
+            # 60-second module-level cache prevents thundering the
+            # health endpoint when registry crawlers poll us hard.
+            "stats_live": _stats_live_dynamic(
+                fallback={
+                    "facilities_tracked":  23000,
+                    "countries_covered":   178,
+                    "dcpi_markets":        285,
+                    "mna_tracked_usd":     "324B+",
+                    "pipeline_gw":         369,
+                    "active_ai_platforms": 96,
+                    "mcp_calls_per_month": "100,000+",
+                },
+            ),
 
             "contact": {
                 "email": "api@dchub.cloud",

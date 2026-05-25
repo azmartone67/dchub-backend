@@ -46,6 +46,70 @@ def _conn():
         return None
 
 
+# r37 (2026-05-25): same UA-based platform classifier the funnel
+# endpoint uses (flask_mcp_endpoints._platform_case). Centralizing
+# here so the brain L23 audit + dashboards see consistent platform
+# names. Previously the platforms_24h list read mcp_call_log.platform
+# directly — most rows hold "mcp" (generic write-time bucket) so the
+# audit's WoW comparison looked like a single-platform collapse when
+# it was actually a classification artifact.
+_PLATFORM_CASE_TC = r"""
+    CASE
+        WHEN NULLIF(LOWER(client_name), '') IS NOT NULL
+             AND client_name !~* '^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$'
+             AND client_name NOT IN ('unknown', 'mcp')
+            THEN LOWER(client_name)
+        WHEN user_agent ILIKE '%dchub-%' OR user_agent ILIKE '%dchubhealer%'
+            OR user_agent ILIKE '%brain-v2-headless%' OR user_agent ILIKE '%brain-radar%'
+            OR user_agent ILIKE '%uptimerobot%'
+            THEN 'internal-dchub'
+        WHEN user_agent ILIKE '%@modelcontextprotocol/sdk%'
+            OR user_agent ILIKE '%modelcontextprotocol%'
+            THEN 'mcp-sdk'
+        WHEN user_agent ILIKE '%mcp-inspector%'  THEN 'mcp-inspector'
+        WHEN user_agent ILIKE '%n8n%'            THEN 'n8n'
+        WHEN user_agent ILIKE '%smithery%'       THEN 'smithery'
+        WHEN user_agent ILIKE '%chatgpt%' OR user_agent ILIKE '%openai%'
+                                                 THEN 'chatgpt'
+        WHEN user_agent ILIKE '%claude%' OR user_agent ILIKE '%anthropic%'
+                                                 THEN 'claude'
+        WHEN user_agent ILIKE '%perplexity%'     THEN 'perplexity'
+        WHEN user_agent ILIKE '%gemini%' OR user_agent ILIKE '%googleother%'
+                                                 THEN 'gemini'
+        WHEN user_agent ILIKE '%groq%'           THEN 'groq'
+        WHEN user_agent ILIKE '%cursor%'         THEN 'cursor'
+        WHEN user_agent ILIKE '%windsurf%' OR user_agent ILIKE '%codeium%'
+                                                 THEN 'windsurf'
+        WHEN user_agent ILIKE '%continue%'       THEN 'continue.dev'
+        WHEN user_agent ILIKE '%cody%' OR user_agent ILIKE '%sourcegraph%'
+                                                 THEN 'sourcegraph-cody'
+        WHEN user_agent ILIKE '%copilot%'        THEN 'github-copilot'
+        WHEN user_agent ILIKE '%cline%'          THEN 'cline'
+        WHEN user_agent ILIKE '%phind%'          THEN 'phind'
+        WHEN user_agent ILIKE '%you.com%' OR user_agent ILIKE '%youbot%'
+                                                 THEN 'you.com'
+        WHEN user_agent ILIKE '%meta-external%' OR user_agent ILIKE '%llama%'
+                                                 THEN 'meta-ai'
+        WHEN user_agent ILIKE '%applebot-extended%'
+                                                 THEN 'apple-intelligence'
+        WHEN user_agent ILIKE '%mistral%'        THEN 'mistral'
+        WHEN user_agent ILIKE '%deepseek%'       THEN 'deepseek'
+        WHEN user_agent ILIKE '%grok%' OR user_agent ILIKE '%x-ai%'
+                                                 THEN 'grok'
+        WHEN user_agent ILIKE '%curl%'           THEN 'curl'
+        WHEN user_agent ILIKE '%python%' OR user_agent ILIKE '%requests%'
+                                                 THEN 'python-script'
+        WHEN user_agent ILIKE '%node-fetch%' OR user_agent ILIKE '%undici%'
+            OR user_agent ILIKE '%axios%' OR user_agent ILIKE '%got/%'
+                                                 THEN 'node-http-client'
+        WHEN user_agent ILIKE '%node%'           THEN 'node-script'
+        WHEN user_agent ILIKE '%postman%'        THEN 'postman'
+        WHEN user_agent ILIKE '%insomnia%'       THEN 'insomnia'
+        ELSE 'unknown'
+    END
+"""
+
+
 _SCHEMA_DDL = """
 CREATE TABLE IF NOT EXISTS mcp_growth_snapshots (
     id                  BIGSERIAL PRIMARY KEY,
@@ -222,20 +286,45 @@ def _compute_growth() -> dict:
                 pass
 
             # ── Top platforms last 24h ──
+            # r37 (2026-05-25): rewritten to read mcp_tool_calls
+            # (which has user_agent + client_name) with the
+            # _PLATFORM_CASE_TC classifier. Previously read
+            # mcp_call_log.platform which is the raw write-time bucket
+            # — most rows were lumped as 'mcp', producing the bogus
+            # -29.2% WoW signal that L23 flagged.
             try:
-                cur.execute("""
-                    SELECT platform, COUNT(*) AS calls
-                      FROM mcp_call_log
-                     WHERE timestamp >= NOW() - INTERVAL '24 hours'
-                       AND platform IS NOT NULL
-                     GROUP BY platform ORDER BY calls DESC LIMIT 10
-                """)
+                cur.execute(
+                    f"""SELECT {_PLATFORM_CASE_TC} AS platform,
+                              COUNT(*) AS calls
+                         FROM mcp_tool_calls
+                        WHERE created_at >= NOW() - INTERVAL '24 hours'
+                        GROUP BY {_PLATFORM_CASE_TC}
+                        ORDER BY calls DESC LIMIT 15"""
+                )
                 out["platforms_24h"] = [
-                    {"platform": r["platform"][:30], "calls": int(r["calls"])}
+                    {"platform": (r["platform"] or "unknown")[:30],
+                     "calls": int(r["calls"])}
                     for r in cur.fetchall()
                 ]
-            except Exception:
-                pass
+            except Exception as _e_p24:
+                # Fall back to the legacy mcp_call_log query if
+                # mcp_tool_calls is unavailable.
+                try:
+                    cur.execute("""
+                        SELECT platform, COUNT(*) AS calls
+                          FROM mcp_call_log
+                         WHERE timestamp >= NOW() - INTERVAL '24 hours'
+                           AND platform IS NOT NULL
+                         GROUP BY platform ORDER BY calls DESC LIMIT 10
+                    """)
+                    out["platforms_24h"] = [
+                        {"platform": r["platform"][:30],
+                         "calls": int(r["calls"])}
+                        for r in cur.fetchall()
+                    ]
+                    out["platforms_24h_source"] = "fallback_mcp_call_log"
+                except Exception:
+                    pass
 
             # ── Tools with 0 conversions despite 50+ paywall signals ──
             # These are the "demand-trapped" tools: agents keep trying
@@ -478,5 +567,94 @@ def api_demand_gaps():
         except Exception: pass
     resp = jsonify(out)
     resp.headers["Cache-Control"] = "public, max-age=600"
+    resp.headers["Access-Control-Allow-Origin"] = "*"
+    return resp, 200
+
+
+# ── r37 (2026-05-25) ───────────────────────────────────────────────
+# /api/v1/mcp/growth/by-platform — WoW delta per platform.
+# Answers the L23 audit question "which platform throttled?" The
+# /growth endpoint reports a single composite WoW number (-29.2%);
+# this endpoint breaks it down so we know whether the dip is one
+# platform (e.g. a specific crawler backing off) or systemic.
+
+@mcp_growth_bp.route("/api/v1/mcp/growth/by-platform", methods=["GET"])
+def api_growth_by_platform():
+    """Per-platform call counts: this week vs. previous week + delta."""
+    conn = _conn()
+    if not conn:
+        return jsonify({"ok": False, "error": "db_unavailable"}), 503
+    rows: list[dict] = []
+    try:
+        with conn, conn.cursor(cursor_factory=psycopg2.extras.RealDictCursor) as cur:
+            cur.execute(
+                f"""WITH this_wk AS (
+                        SELECT {_PLATFORM_CASE_TC} AS platform,
+                               COUNT(*) AS calls
+                          FROM mcp_tool_calls
+                         WHERE created_at >= NOW() - INTERVAL '7 days'
+                         GROUP BY {_PLATFORM_CASE_TC}
+                    ),
+                    prev_wk AS (
+                        SELECT {_PLATFORM_CASE_TC} AS platform,
+                               COUNT(*) AS calls
+                          FROM mcp_tool_calls
+                         WHERE created_at >= NOW() - INTERVAL '14 days'
+                           AND created_at <  NOW() - INTERVAL '7 days'
+                         GROUP BY {_PLATFORM_CASE_TC}
+                    )
+                    SELECT COALESCE(t.platform, p.platform) AS platform,
+                           COALESCE(t.calls, 0) AS calls_7d,
+                           COALESCE(p.calls, 0) AS calls_prev_7d,
+                           COALESCE(t.calls, 0) - COALESCE(p.calls, 0) AS delta
+                      FROM this_wk t FULL OUTER JOIN prev_wk p
+                        ON t.platform = p.platform
+                     ORDER BY ABS(COALESCE(t.calls, 0)
+                                  - COALESCE(p.calls, 0)) DESC
+                     LIMIT 25"""
+            )
+            for r in cur.fetchall():
+                cur_n = int(r["calls_7d"] or 0)
+                prev_n = int(r["calls_prev_7d"] or 0)
+                delta = int(r["delta"] or 0)
+                pct = (
+                    round(100.0 * delta / prev_n, 1) if prev_n > 0
+                    else (None if cur_n == 0 else float("inf"))
+                )
+                rows.append({
+                    "platform":      r["platform"] or "unknown",
+                    "calls_7d":      cur_n,
+                    "calls_prev_7d": prev_n,
+                    "delta":         delta,
+                    "wow_pct":       pct if pct != float("inf") else "new",
+                })
+    except Exception as e:
+        return jsonify({"ok": False, "error": str(e)[:200]}), 200
+
+    # Identify the dominant mover (biggest contributor to the WoW
+    # composite signal). Brain L23 audit can quote this when proposing.
+    biggest_drop = next(
+        (r for r in rows if isinstance(r["delta"], int) and r["delta"] < 0),
+        None,
+    )
+    biggest_gain = next(
+        (r for r in sorted(rows, key=lambda x: -(x["delta"] or 0))
+         if isinstance(r["delta"], int) and r["delta"] > 0),
+        None,
+    )
+
+    resp = jsonify({
+        "ok": True,
+        "tool": "getPlatformWoW",
+        "platforms": rows,
+        "biggest_drop_platform": biggest_drop["platform"] if biggest_drop else None,
+        "biggest_drop_delta":    biggest_drop["delta"]    if biggest_drop else None,
+        "biggest_gain_platform": biggest_gain["platform"] if biggest_gain else None,
+        "biggest_gain_delta":    biggest_gain["delta"]    if biggest_gain else None,
+        "window_this_week":      "last 7 days",
+        "window_prev_week":      "7-14 days ago",
+        "computed_at":           datetime.datetime.utcnow().isoformat() + "Z",
+    })
+    resp.headers["Cache-Control"] = "public, max-age=300"
     resp.headers["Access-Control-Allow-Origin"] = "*"
     return resp, 200

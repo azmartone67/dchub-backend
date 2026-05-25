@@ -22876,6 +22876,16 @@ try:
 except Exception as _mcedcpi_e:
     print(f"[main] mcp_explain_dcpi wiring failed: {_mcedcpi_e}", file=sys.stderr)
 
+# r37 (2026-05-25): outreach draft-submissions helper — closes the
+# loop from L23 audit's "missing from N registries" finding to
+# ready-to-paste submission packages (Markdown + JSON) for every
+# pending registry. Admin-keyed.
+try:
+    from routes.mcp_outreach_drafts import mcp_outreach_drafts_bp
+    app.register_blueprint(mcp_outreach_drafts_bp)
+except Exception as _mcod_e:
+    print(f"[main] mcp_outreach_drafts wiring failed: {_mcod_e}", file=sys.stderr)
+
 # phase 109E: register DCPI digest
 app.register_blueprint(dcpi_digest_bp)
 
