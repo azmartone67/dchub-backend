@@ -52,62 +52,61 @@ def best_of_day():
 
     try:
         with _conn() as c, c.cursor() as cur:
-            # Pull today's quad posts ordered by impressions if logged
-            # (we currently don't log impressions back into the table —
-            # they sit in LinkedIn analytics — so this picks the most
-            # recent style as a proxy "best fresh content").
+            # r47.10.1 fix: linkedin_quad_posts stores post_text + landing_url
+            # + linkedin_urn directly — no JOIN needed. Earlier draft tried
+            # to JOIN linkedin_posts on non-existent post_urn column.
             cur.execute("""
-                SELECT q.id, q.post_urn, q.topic, q.style, q.slot_hour,
-                       q.posted_at, COALESCE(p.content, '') AS body
-                FROM linkedin_quad_posts q
-                LEFT JOIN linkedin_posts p ON p.post_urn = q.post_urn
-                WHERE q.slot_date = CURRENT_DATE
-                  AND q.success = TRUE
-                ORDER BY q.slot_hour DESC
+                SELECT id, linkedin_urn, topic, style, slot_hour,
+                       posted_at, COALESCE(post_text, '') AS body,
+                       landing_url, og_image_url
+                FROM linkedin_quad_posts
+                WHERE slot_date = CURRENT_DATE
+                  AND success = TRUE
+                ORDER BY slot_hour DESC
                 LIMIT 1
             """)
             row = cur.fetchone()
             if not row:
                 # Fall back to most-recent successful quad post regardless of date
                 cur.execute("""
-                    SELECT q.id, q.post_urn, q.topic, q.style, q.slot_hour,
-                           q.posted_at, COALESCE(p.content, '') AS body
-                    FROM linkedin_quad_posts q
-                    LEFT JOIN linkedin_posts p ON p.post_urn = q.post_urn
-                    WHERE q.success = TRUE
-                    ORDER BY q.posted_at DESC
+                    SELECT id, linkedin_urn, topic, style, slot_hour,
+                           posted_at, COALESCE(post_text, '') AS body,
+                           landing_url, og_image_url
+                    FROM linkedin_quad_posts
+                    WHERE success = TRUE
+                    ORDER BY posted_at DESC
                     LIMIT 1
                 """)
                 row = cur.fetchone()
             if not row:
                 return jsonify({"error": "no_posts_yet"}), 404
 
-            post_id, urn, topic, style, slot_hour, posted_at, body = row
+            post_id, urn, topic, style, slot_hour, posted_at, body, landing, og = row
 
             # Cross-post helper URLs
-            post_urn_short = (urn or "").split(":")[-1]
             post_view_url = (
                 f"https://www.linkedin.com/feed/update/{urn}/"
                 if urn and urn.startswith("urn:li:") else None
             )
             personal_share_url = (
                 f"https://www.linkedin.com/feed/?shareActive=true"
-                f"&shareUrl={quote(post_view_url or 'https://dchub.cloud', safe='')}"
-                if post_view_url else
-                "https://www.linkedin.com/feed/?shareActive=true&shareUrl=https%3A%2F%2Fdchub.cloud"
+                f"&shareUrl={quote(post_view_url or landing or 'https://dchub.cloud', safe='')}"
             )
 
         return jsonify({
-            "post_urn":     urn,
+            "post_id":      post_id,
+            "linkedin_urn": urn,
             "topic":        topic,
             "style":        style,
             "slot_hour":    slot_hour,
             "posted_at":    posted_at.isoformat() if posted_at else None,
             "post_text":    body,
             "char_count":   len(body or ""),
+            "landing_url":  landing,
+            "og_image_url": og,
             "post_view_url": post_view_url,
             "personal_share_url": personal_share_url,
-            "hint": "Copy `post_text` and paste to your personal LinkedIn feed, or click `personal_share_url` to share with one click.",
+            "hint": "Copy `post_text` and paste to your personal LinkedIn feed, OR click `personal_share_url` to reshare the existing post with your network in one click.",
             "computed_at":  datetime.datetime.utcnow().isoformat() + "Z",
         }), 200
     except Exception as e:
