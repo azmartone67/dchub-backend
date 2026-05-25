@@ -1616,6 +1616,10 @@ export default {
         '/ai-capacity-index/',
         '/hyperscaler-deals.',  // catches .rss and .xml (literal prefix, not /hyperscaler-deals/ which would over-match)
         '/rss/',
+        // r47 (2026-05-25): ISO interconnection queue landing page —
+        // the moat surface that pulls cited queue numbers (410 GW etc)
+        // into dchub.cloud's domain.
+        '/interconnection-queues',
       ];
       if (PHASE_282_RAILWAY_PATHS.has(pathname) ||
           PHASE_282_PREFIXES.some(p => pathname.startsWith(p))) {

@@ -24061,6 +24061,16 @@ try:
 except Exception as _e:
     print(f"[main] seo_agent_alternates register failed: {_e}", file=sys.stderr)
 
+# r47 (2026-05-25): ISO interconnection queue tracker — moat surface
+# that pulls the cited numbers (410 GW total, 87% DC share) into DCPI's
+# domain so AI synthesis attributes them to dchub.cloud, not ercot.com.
+try:
+    from routes.interconnection_queues import interconnection_queues_bp
+    app.register_blueprint(interconnection_queues_bp)
+    print("[main] interconnection_queues_bp registered: /interconnection-queues + /api/v1/interconnection-queue/*")
+except Exception as _e:
+    print(f"[main] interconnection_queues_bp register failed: {_e}", file=sys.stderr)
+
 # === Brain v2 · Layer 3 freshness fields ===
 try:
     from flask import jsonify as _bv2_jsonify

@@ -678,8 +678,8 @@ def track_tool_call():
             cur.execute(
                 """INSERT INTO mcp_call_log
                      (timestamp, tool, params, platform, api_key, tier,
-                      session_id, status, duration_ms, referrer, user_agent)
-                   VALUES (%s, %s, %s::jsonb, %s, %s, %s, %s, %s, %s, %s, %s)""",
+                      session_id, status, duration_ms, referrer, user_agent, event_type)
+                   VALUES (%s, %s, %s::jsonb, %s, %s, %s, %s, %s, %s, %s, %s, %s)""",
                 (
                     ts_dt, tool, params,
                     (_r_platform or body.get("platform")),
@@ -691,6 +691,12 @@ def track_tool_call():
                     # r46 (2026-05-25): attribution for v_paywall_attribution view
                     body.get("referer") or body.get("referrer"),
                     (body.get("user_agent") or "")[:500] or None,
+                    # r47 (2026-05-25): derive event_type from status so views
+                    # don't need backfills going forward.
+                    {"blocked_paid_only": "paywall_block",
+                     "trial_used":        "trial_preview",
+                     "ok":                "tool_call",
+                     "error":             "tool_error"}.get(body.get("status")),
                 ),
             )
     except Exception as e:
