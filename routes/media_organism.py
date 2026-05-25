@@ -123,91 +123,125 @@ def media_organism():
     t0 = time.time()
     components: dict = {}
 
-    with current_app.test_client() as tc:
-        # 1. Press cadence (auto-publisher)
-        body, _ = _call(tc, "/api/v1/media/press-health")
-        if _is_failed_response(body):
-            components["press"] = {"score": None, "verdict": "unreachable"}
-        else:
-            days_since = body.get("days_since_last_press")
-            count_30d = int(body.get("press_releases_30d") or 0)
-            score, verdict = _score_component(count_30d, 70, 35, max_value=24)
-            components["press"] = {
-                "score": score, "verdict": verdict,
-                "days_since_last_press": days_since,
-                "count_30d": count_30d,
-            }
+    # r43 (2026-05-25): fan out all 7 upstream sub-calls in parallel.
+    # Previously this composed sequentially (9-15s); ThreadPoolExecutor
+    # collapses it to ~max(slow_call) ≈ 2-3s. Each worker grabs its
+    # own app_context. test_client() instances are per-thread because
+    # they share state via Flask app — the executor maps URL→body and
+    # the main thread does the scoring synchronously after.
+    from concurrent.futures import ThreadPoolExecutor
+    _app = current_app._get_current_object()  # type: ignore
 
-        # 2. LinkedIn velocity
-        body, _ = _call(tc, "/api/v1/media/pulse")
-        if _is_failed_response(body):
-            components["linkedin"] = {"score": None, "verdict": "unreachable"}
-        else:
-            li = (body.get("components") or {}).get("linkedin") or {}
-            li_7d = int(li.get("sent_7d") or 0)
-            score, verdict = _score_component(li_7d, 70, 35, max_value=14)  # 2/day target
-            components["linkedin"] = {
-                "score": score, "verdict": verdict,
-                "sent_7d": li_7d, "sent_24h": int(li.get("sent_24h") or 0),
-            }
+    _subpaths = [
+        "/api/v1/media/press-health",
+        "/api/v1/media/pulse",
+        "/api/v1/media/source-of-truth",
+        "/api/v1/media/topic-pulse",
+        "/api/v1/media/journalists",
+        "/api/v1/media/outreach-log",
+        "/api/v1/media/winback-pitches",
+    ]
 
-        # 3. Source-of-truth (canonical voice signal)
-        body, _ = _call(tc, "/api/v1/media/source-of-truth")
-        sot_score = body.get("score")
-        # SOT score is already 0-100; treat 50+ as healthy (we'd be aspirational)
-        if sot_score is not None:
-            sot_v = "healthy" if sot_score >= 50 else "weak" if sot_score >= 25 else "quiet"
-        else:
-            sot_score, sot_v = 0, "unknown"
-        components["source_of_truth"] = {
-            "score": float(sot_score),
-            "verdict": sot_v,
-            "trend_30d": body.get("trend_30d"),
+    def _fetch_one(path: str) -> tuple[str, dict]:
+        with _app.app_context():
+            with _app.test_client() as tc:
+                body, _code = _call(tc, path)
+                return path, (body or {})
+
+    fetched: dict[str, dict] = {}
+    try:
+        with ThreadPoolExecutor(max_workers=8) as ex:
+            for path, body in ex.map(_fetch_one, _subpaths):
+                fetched[path] = body
+    except Exception:
+        # Fallback to sequential composition on thread-pool failure
+        with current_app.test_client() as tc:
+            for path in _subpaths:
+                body, _ = _call(tc, path)
+                fetched[path] = (body or {})
+
+    # 1. Press cadence
+    body = fetched.get("/api/v1/media/press-health") or {}
+    if _is_failed_response(body):
+        components["press"] = {"score": None, "verdict": "unreachable"}
+    else:
+        days_since = body.get("days_since_last_press")
+        count_30d = int(body.get("press_releases_30d") or 0)
+        score, verdict = _score_component(count_30d, 70, 35, max_value=24)
+        components["press"] = {
+            "score": score, "verdict": verdict,
+            "days_since_last_press": days_since,
+            "count_30d": count_30d,
         }
 
-        # 4. Topic pulse (are we listening to the conversation?)
-        body, _ = _call(tc, "/api/v1/media/topic-pulse")
-        suggestions = body.get("topic_suggestions") or body.get("topics") or []
-        news_48h = int(body.get("news_last_48h") or 0)
-        # Score: a healthy pulse has at least 1-3 suggestions + 20+ news in 48h
-        topic_score = min(100.0, len(suggestions) * 30 + min(news_48h, 50) * 1)
-        components["topic_pulse"] = {
-            "score": round(topic_score, 1),
-            "verdict": "healthy" if topic_score >= 50 else "weak" if topic_score >= 20 else "quiet",
-            "suggestions_count": len(suggestions),
-            "news_last_48h": news_48h,
+    # 2. LinkedIn velocity
+    body = fetched.get("/api/v1/media/pulse") or {}
+    if _is_failed_response(body):
+        components["linkedin"] = {"score": None, "verdict": "unreachable"}
+    else:
+        li = (body.get("components") or {}).get("linkedin") or {}
+        li_7d = int(li.get("sent_7d") or 0)
+        score, verdict = _score_component(li_7d, 70, 35, max_value=14)
+        components["linkedin"] = {
+            "score": score, "verdict": verdict,
+            "sent_7d": li_7d, "sent_24h": int(li.get("sent_24h") or 0),
         }
 
-        # 5. Journalist outreach
-        body, _ = _call(tc, "/api/v1/media/journalists")
-        body2, _ = _call(tc, "/api/v1/media/outreach-log")
-        if _is_failed_response(body) or _is_failed_response(body2):
-            components["journalist_outreach"] = {"score": None, "verdict": "unreachable"}
-        else:
-            journos = body.get("journalists") or []
-            log = body2.get("log") or []
-            cutoff = (datetime.datetime.utcnow() - datetime.timedelta(days=14)).isoformat()
-            recent_sent = sum(
-                1 for e in log
-                if isinstance(e, dict) and (e.get("sent_at") or "") >= cutoff
-            )
-            score, verdict = _score_component(recent_sent, 70, 30, max_value=10)
-            components["journalist_outreach"] = {
-                "score": score, "verdict": verdict,
-                "journalist_count": len(journos),
-                "sent_14d": recent_sent, "sent_total": len(log),
-            }
+    # 3. Source-of-truth
+    body = fetched.get("/api/v1/media/source-of-truth") or {}
+    sot_score = body.get("score")
+    if sot_score is not None:
+        sot_v = "healthy" if sot_score >= 50 else "weak" if sot_score >= 25 else "quiet"
+    else:
+        sot_score, sot_v = 0, "unknown"
+    components["source_of_truth"] = {
+        "score": float(sot_score),
+        "verdict": sot_v,
+        "trend_30d": body.get("trend_30d"),
+    }
 
-        # 6. Winback (dormant agent retargeting)
-        body, _ = _call(tc, "/api/v1/media/winback-pitches")
-        winback_n = int(body.get("platform_count") or 0)
-        score, verdict = _score_component(winback_n, 70, 30, max_value=5)
-        components["winback"] = {
-            "score": score,
-            "verdict": verdict,
-            "platforms_targetable": winback_n,
-            "dormant_agents_total": int(body.get("total_dormant_agents") or 0),
+    # 4. Topic pulse
+    body = fetched.get("/api/v1/media/topic-pulse") or {}
+    suggestions = body.get("topic_suggestions") or body.get("topics") or []
+    news_48h = int(body.get("news_last_48h") or 0)
+    topic_score = min(100.0, len(suggestions) * 30 + min(news_48h, 50) * 1)
+    components["topic_pulse"] = {
+        "score": round(topic_score, 1),
+        "verdict": "healthy" if topic_score >= 50 else "weak" if topic_score >= 20 else "quiet",
+        "suggestions_count": len(suggestions),
+        "news_last_48h": news_48h,
+    }
+
+    # 5. Journalist outreach (uses 2 endpoints)
+    body = fetched.get("/api/v1/media/journalists") or {}
+    body2 = fetched.get("/api/v1/media/outreach-log") or {}
+    if _is_failed_response(body) or _is_failed_response(body2):
+        components["journalist_outreach"] = {"score": None, "verdict": "unreachable"}
+    else:
+        journos = body.get("journalists") or []
+        log = body2.get("log") or []
+        cutoff = (datetime.datetime.utcnow() - datetime.timedelta(days=14)).isoformat()
+        recent_sent = sum(
+            1 for e in log
+            if isinstance(e, dict) and (e.get("sent_at") or "") >= cutoff
+        )
+        score, verdict = _score_component(recent_sent, 70, 30, max_value=10)
+        components["journalist_outreach"] = {
+            "score": score, "verdict": verdict,
+            "journalist_count": len(journos),
+            "sent_14d": recent_sent, "sent_total": len(log),
         }
+
+    # 6. Winback
+    body = fetched.get("/api/v1/media/winback-pitches") or {}
+    winback_n = int(body.get("platform_count") or 0)
+    score, verdict = _score_component(winback_n, 70, 30, max_value=5)
+    components["winback"] = {
+        "score": score,
+        "verdict": verdict,
+        "platforms_targetable": winback_n,
+        "dormant_agents_total": int(body.get("total_dormant_agents") or 0),
+    }
 
     # Composite score: weighted mean
     weights = {

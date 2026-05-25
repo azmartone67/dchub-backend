@@ -63,6 +63,10 @@ _PLATFORM_CASE_TC = r"""
             OR user_agent ILIKE '%brain-v2-headless%' OR user_agent ILIKE '%brain-radar%'
             OR user_agent ILIKE '%uptimerobot%'
             THEN 'internal-dchub'
+        -- r43 (2026-05-25): claude-code is its own bucket (THE specific
+        -- Anthropic CLI), separate from generic 'claude' SDK detection.
+        WHEN user_agent ILIKE '%claude-code%' OR user_agent ILIKE '%claude_code%'
+                                                 THEN 'claude-code'
         WHEN user_agent ILIKE '%@modelcontextprotocol/sdk%'
             OR user_agent ILIKE '%modelcontextprotocol%'
             THEN 'mcp-sdk'
@@ -70,11 +74,13 @@ _PLATFORM_CASE_TC = r"""
         WHEN user_agent ILIKE '%n8n%'            THEN 'n8n'
         WHEN user_agent ILIKE '%smithery%'       THEN 'smithery'
         WHEN user_agent ILIKE '%chatgpt%' OR user_agent ILIKE '%openai%'
+            OR user_agent ILIKE '%gpt-4%' OR user_agent ILIKE '%gpt4%'
                                                  THEN 'chatgpt'
         WHEN user_agent ILIKE '%claude%' OR user_agent ILIKE '%anthropic%'
                                                  THEN 'claude'
         WHEN user_agent ILIKE '%perplexity%'     THEN 'perplexity'
         WHEN user_agent ILIKE '%gemini%' OR user_agent ILIKE '%googleother%'
+            OR user_agent ILIKE '%google-extended%'
                                                  THEN 'gemini'
         WHEN user_agent ILIKE '%groq%'           THEN 'groq'
         WHEN user_agent ILIKE '%cursor%'         THEN 'cursor'
@@ -89,14 +95,25 @@ _PLATFORM_CASE_TC = r"""
         WHEN user_agent ILIKE '%you.com%' OR user_agent ILIKE '%youbot%'
                                                  THEN 'you.com'
         WHEN user_agent ILIKE '%meta-external%' OR user_agent ILIKE '%llama%'
-                                                 THEN 'meta-ai'
-        WHEN user_agent ILIKE '%applebot-extended%'
+            OR user_agent ILIKE '%facebookbot%'  THEN 'meta-ai'
+        WHEN user_agent ILIKE '%applebot-extended%' OR user_agent ILIKE '%apple-intelligence%'
                                                  THEN 'apple-intelligence'
         WHEN user_agent ILIKE '%mistral%'        THEN 'mistral'
         WHEN user_agent ILIKE '%deepseek%'       THEN 'deepseek'
-        WHEN user_agent ILIKE '%grok%' OR user_agent ILIKE '%x-ai%'
+        WHEN user_agent ILIKE '%grok%' OR user_agent ILIKE '%x-ai%' OR user_agent ILIKE '%xai%'
                                                  THEN 'grok'
+        -- r43: Glean (enterprise AI search) + Tavily (research) + Cohere
+        WHEN user_agent ILIKE '%glean%'          THEN 'glean'
+        WHEN user_agent ILIKE '%tavily%'         THEN 'tavily'
+        WHEN user_agent ILIKE '%cohere%'         THEN 'cohere'
+        -- r43: Bedrock + Vertex AI surface as their cloud's marker
+        WHEN user_agent ILIKE '%bedrock%' OR user_agent ILIKE '%aws-sdk%'
+                                                 THEN 'aws-bedrock'
+        WHEN user_agent ILIKE '%vertexai%' OR user_agent ILIKE '%vertex-ai%'
+            OR user_agent ILIKE '%google-cloud%' THEN 'google-vertex'
         WHEN user_agent ILIKE '%curl%'           THEN 'curl'
+        WHEN user_agent ILIKE '%python-httpx%' OR user_agent ILIKE '%httpx/%'
+                                                 THEN 'python-httpx'
         WHEN user_agent ILIKE '%python%' OR user_agent ILIKE '%requests%'
                                                  THEN 'python-script'
         WHEN user_agent ILIKE '%node-fetch%' OR user_agent ILIKE '%undici%'
@@ -105,6 +122,15 @@ _PLATFORM_CASE_TC = r"""
         WHEN user_agent ILIKE '%node%'           THEN 'node-script'
         WHEN user_agent ILIKE '%postman%'        THEN 'postman'
         WHEN user_agent ILIKE '%insomnia%'       THEN 'insomnia'
+        -- r43 (2026-05-25): if UA is empty/missing but client_name
+        -- looks like a session UUID, emit 'mcp-anon' (anonymous MCP
+        -- session) instead of 'unknown' — that's the modern MCP
+        -- pattern: clients connect with a session ID, send no UA,
+        -- and we have NO way to know which vendor. Surface this
+        -- explicitly so the brain knows to chase identification.
+        WHEN client_name ~* '^[0-9a-f]{8}-[0-9a-f]{4}'
+            AND (user_agent IS NULL OR user_agent = '')
+                                                 THEN 'mcp-anon-session'
         ELSE 'unknown'
     END
 """

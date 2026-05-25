@@ -142,20 +142,39 @@ class _AuditUnavailable:
     def __repr__(self): return f"<unavailable:{self.path}>"
 
 
+# r43 (2026-05-25): 60s path→response cache. When multiple audit
+# composes happen close together (cron + dashboard refresh + manual
+# probe), the inner upstream hits hit cache instead of triggering
+# fresh composes. Also helps when one audit dim is hit by multiple
+# audit fns (e.g. /api/v1/mcp/growth feeds both platform_activity
+# AND tool_conversion_health).
+_INTERNAL_CACHE: dict = {}
+_INTERNAL_TTL = 60.0
+
+
 def _call_internal(path: str, timeout: float = 8.0):
-    """In-process GET via test_client.
+    """In-process GET via test_client, 60s memoized by path.
 
     Returns the parsed JSON dict on success, or an _AuditUnavailable
     marker on any failure / non-200 / timeout. The marker is falsy
     and .get() returns None, so existing callers keep working — but
     callers that want to distinguish 'real None' from 'never got a
     response' can `isinstance(result, _AuditUnavailable)`.
+
+    r43: cached for 60s per-path; failed responses are NOT cached so
+    transient timeouts auto-retry on the next call.
     """
+    now = time.time()
+    cached = _INTERNAL_CACHE.get(path)
+    if cached and (now - cached[0]) < _INTERNAL_TTL:
+        return cached[1]
     try:
         with current_app.test_client() as tc:
             r = tc.get(path)
             if r.status_code == 200:
-                return r.get_json() or {}
+                data = r.get_json() or {}
+                _INTERNAL_CACHE[path] = (now, data)
+                return data
     except Exception:
         pass
     return _AuditUnavailable(path)
@@ -285,7 +304,12 @@ def _audit_platform_activity() -> dict:
     NOISE_BUCKETS = {
         "node-script", "node-http-client", "unknown",
         "internal-dchub", "curl", "python-script", "postman",
-        "insomnia", "mcp-sdk",
+        "insomnia", "mcp-sdk", "python-httpx",
+        # r43 (2026-05-25): modern anonymous-MCP-session bucket. Real
+        # MCP clients connecting without identifying UA. Worth
+        # surfacing in the audit but doesn't count as signal because
+        # we can't attribute to a specific AI platform.
+        "mcp-anon-session", "mcp-inspector",
     }
 
     def _sum(field: str, in_noise: bool) -> int:
