@@ -722,7 +722,7 @@ def learn_from_interaction(agent: str, user_message: str, response: str, success
         
         cursor.execute('''
             INSERT INTO agent_interactions (agent, user_message, response_summary, success)
-            VALUES (%s, %s, %s, %s)
+            VALUES (%s, %s, %s, %s) ON CONFLICT DO NOTHING
         ''', (agent, user_message[:500], response[:200] if response else '', success))
         
         conn.commit()
