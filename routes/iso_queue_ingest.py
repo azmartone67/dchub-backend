@@ -99,35 +99,48 @@ def ingest_ercot():
     debug = []
     parsed = {}
     try:
-        # Step 1: ERCOT publishes monthly large-load INR reports
-        # Try multiple discovery surfaces
+        # ERCOT publishes monthly large-load INR reports. The /gridinfo/resource
+        # page is dominated by MORA reports (Monthly Operational Reliability
+        # Assessment — generation-side, NOT load queue). The actual queue
+        # data lives in the large-load planning surface + board materials.
         candidates = [
+            "https://www.ercot.com/services/comm/mkt_rules/issues/large-load-interconnection",
+            "https://www.ercot.com/services/comm/mkt_rules/issues/large-load-requests",
+            "https://www.ercot.com/about/governance/board",
             "https://www.ercot.com/gridinfo/resource",
-            "https://www.ercot.com/files/docs/2026/05/01/Monthly_Operational_Highlights_March_2026.pdf",
-            "https://www.ercot.com/services/comm/mkt_rules/issues/INR.aspx",
         ]
         landing = ""
-        for url in candidates[:2]:
+        for url in candidates:
             try:
-                landing, st = _fetch(url, timeout=20)
-                debug.append(f"landing[{url.split('/')[-1][:30]}] http_{st} len={len(landing)}")
-                if st == 200 and len(landing) > 1000:
+                body, st = _fetch(url, timeout=20)
+                debug.append(f"try[{url.split('/')[-1][:24]}] http_{st} len={len(body)}")
+                if st == 200 and len(body) > 1000:
+                    landing = body
                     break
             except urllib.error.HTTPError as e:
-                debug.append(f"landing 4xx: {e.code}")
+                debug.append(f"try[{url.split('/')[-1][:24]}] http_{e.code}")
         if not landing:
             return True, parsed, "; ".join(debug + ["no_landing_reachable"])
 
-        # Step 2: find a PDF link with "highlight"/"operational"/"interconnection" in it
+        # Find PDFs — EXCLUDE MORA (operational reliability, not queue data).
+        # Prefer URLs with INR / large-load / interconnection-request /
+        # board / queue / load patterns. Score by relevance.
         pdf_urls = re.findall(r'https?://[^\s"\'<>]+\.pdf', landing, re.IGNORECASE)
-        # filter for relevant ones
-        relevant = [u for u in pdf_urls if any(k in u.lower() for k in
-                    ("highlight", "operational", "interconnection", "inr", "queue", "load"))]
-        pdf_url = (relevant or pdf_urls or [None])[0]
+        non_mora = [u for u in pdf_urls if "mora" not in u.lower()]
+        def _score(u):
+            u_lower = u.lower()
+            score = 0
+            for kw, pts in [("large-load", 10), ("inr", 8), ("interconnection-request", 8),
+                            ("interconnection_request", 8), ("queue", 6), ("load", 4),
+                            ("board", 2), ("planning", 2), ("highlights", 1)]:
+                if kw in u_lower: score += pts
+            return score
+        ranked = sorted(non_mora, key=_score, reverse=True)
+        pdf_url = ranked[0] if ranked and _score(ranked[0]) > 0 else None
         if not pdf_url:
-            debug.append("no_pdf_links_in_landing")
+            debug.append(f"no_relevant_pdf_links (had {len(pdf_urls)} total, {len(pdf_urls)-len(non_mora)} MORA filtered)")
             return True, parsed, "; ".join(debug)
-        debug.append(f"pdf_url=...{pdf_url[-50:]}")
+        debug.append(f"chose_pdf=...{pdf_url[-60:]} score={_score(pdf_url)}")
 
         # Step 3: download + parse
         try:
@@ -183,26 +196,55 @@ def ingest_pjm():
     debug = []
     parsed = {}
     try:
-        # PJM has historically used .xls (BIFF binary) but recently
-        # transitioned to .xlsx. Try .xlsx first, fall back to .xls.
-        candidates = [
+        # PJM reorganized downloads in late 2024 — both old paths
+        # (/pub/planning/.../ProjectsActive.xls{,x}) now 404 after a 308
+        # redirect to /pjmfiles/. Strategy: scrape the public landing
+        # page for an embedded .xlsx/.xls/.csv href, then try that.
+        # Fall back to known historical patterns including new media-
+        # style /-/media/.../active-queue.ashx paths PJM uses for some
+        # downloads.
+        landing_url = "https://www.pjm.com/planning/services-requests/interconnection-queues"
+        candidates = []
+        try:
+            landing, st = _fetch(landing_url, timeout=20)
+            debug.append(f"landing http_{st} len={len(landing)}")
+            for m in re.finditer(r'href=["\']([^"\']+\.(?:xlsx|xls|csv))["\']', landing, re.IGNORECASE):
+                href = m.group(1)
+                full = href if href.startswith("http") else (
+                    f"https://www.pjm.com{href}" if href.startswith("/") else f"https://www.pjm.com/{href}"
+                )
+                candidates.append(full)
+            debug.append(f"landing_yielded={len(candidates)}_candidates")
+        except Exception as e:
+            debug.append(f"landing_fail: {type(e).__name__}")
+        candidates += [
+            "https://www.pjm.com/pjmfiles/pub/planning/downloads/xlsx/ProjectsActive.xlsx",
+            "https://www.pjm.com/-/media/planning/gen-and-trans-planning/queue-reports/active-queue.ashx",
+            "https://www.pjm.com/library/-/media/documents/planning/queue/active-queue.ashx",
             "https://www.pjm.com/pub/planning/downloads/xls/ProjectsActive.xlsx",
             "https://www.pjm.com/pub/planning/downloads/xls/ProjectsActive.xls",
         ]
+        seen = set()
+        ordered = [u for u in candidates if not (u in seen or seen.add(u))]
         xlsx_bytes = None
         used_url = None
-        for url in candidates:
+        for url in ordered:
             try:
                 xlsx_bytes, st = _fetch(url, timeout=60, return_bytes=True)
-                debug.append(f"{url.split('/')[-1]}: http_{st} size_kb={len(xlsx_bytes)//1024}")
+                tag = url.rsplit('/', 1)[-1][:40]
+                debug.append(f"{tag}: http_{st} kb={len(xlsx_bytes)//1024}")
                 if st == 200 and len(xlsx_bytes) > 10000:
                     used_url = url
                     break
+                xlsx_bytes = None
             except urllib.error.HTTPError as e:
-                debug.append(f"{url.split('/')[-1]}: http_{e.code}")
+                debug.append(f"{url.rsplit('/',1)[-1][:40]}: http_{e.code}")
+                xlsx_bytes = None
+            except Exception as e:
+                debug.append(f"{url.rsplit('/',1)[-1][:40]}: {type(e).__name__}")
                 xlsx_bytes = None
         if not xlsx_bytes:
-            return False, None, "; ".join(debug + ["all_pjm_urls_failed"])
+            return False, None, "; ".join(debug + ["all_pjm_urls_failed_or_too_small"])
 
         wb = _try_openpyxl(xlsx_bytes)
         if not wb:
