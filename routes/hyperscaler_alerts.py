@@ -125,7 +125,7 @@ def _classify_actor(text):
         ("ServiceNow",   ["servicenow"]),
         ("Snowflake",    ["snowflake"]),
         ("Databricks",   ["databricks"]),
-        ("SUSE",         ["suse "]),
+        ("SUSE",         ["suse "  , "suse's", "suse l", "suse e", "suse a"]),
         # Chip / hardware
         ("NVIDIA",       ["nvidia", "blackwell", "jensen huang", "h100", "h200"]),
         ("AMD",          ["amd ", "lisa su"]),

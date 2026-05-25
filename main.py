@@ -23101,6 +23101,52 @@ try:
 except Exception as _lq_e:
     print(f"[main] linkedin_quad_bp register failed: {_lq_e}", flush=True)
 
+# r45 (2026-05-25): explicit per-blueprint registration (batch loop in r44
+# was failing silently — Flask blueprint name conflicts get swallowed).
+
+try:
+    from routes.linkedin_token_reset import linkedin_token_reset_bp
+    app.register_blueprint(linkedin_token_reset_bp)
+    print("[main] linkedin_token_reset_bp registered", flush=True)
+except Exception as _e:
+    print(f"[main] linkedin_token_reset_bp register failed: {_e}", flush=True)
+
+try:
+    from routes.brain_dcpi_chunk_filter import brain_dcpi_filter_bp
+    app.register_blueprint(brain_dcpi_filter_bp)
+    print("[main] brain_dcpi_filter_bp registered", flush=True)
+except Exception as _e:
+    print(f"[main] brain_dcpi_filter_bp register failed: {_e}", flush=True)
+
+try:
+    from routes.hyperscaler_reclassify import hyperscaler_reclassify_bp
+    app.register_blueprint(hyperscaler_reclassify_bp)
+    print("[main] hyperscaler_reclassify_bp registered", flush=True)
+except Exception as _e:
+    print(f"[main] hyperscaler_reclassify_bp register failed: {_e}", flush=True)
+
+try:
+    from routes.market_intel_preview import market_intel_preview_bp
+    app.register_blueprint(market_intel_preview_bp)
+    print("[main] market_intel_preview_bp registered", flush=True)
+except Exception as _e:
+    print(f"[main] market_intel_preview_bp register failed: {_e}", flush=True)
+
+try:
+    from routes.search_safe_default import search_safe_bp
+    app.register_blueprint(search_safe_bp)
+    print("[main] search_safe_bp registered", flush=True)
+except Exception as _e:
+    print(f"[main] search_safe_bp register failed: {_e}", flush=True)
+
+# r45: lite healthcheck (no DB) for high-concurrency probes
+try:
+    from routes.health_lite import health_lite_bp
+    app.register_blueprint(health_lite_bp)
+    print("[main] health_lite_bp registered: /healthz /livez /readyz", flush=True)
+except Exception as _e:
+    print(f"[main] health_lite_bp register failed: {_e}", flush=True)
+
 # Phase ZZZZZ-round41 (2026-05-25): DCPI cron health + recovery
 try:
     from routes.dcpi_cron_health import dcpi_health_bp
