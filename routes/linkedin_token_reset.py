@@ -38,7 +38,7 @@ def _probe(token):
         with urllib.request.urlopen(req, timeout=10) as resp:
             return True, json.loads(resp.read()), None
     except urllib.error.HTTPError as e:
-        return False, None, f"{e.code}: {e.read().decode(chr(39)+chr(39)+chr(39),chr(39)+chr(39)+chr(39))[:300]}".replace(chr(39)*3, "utf-8")
+        return False, None, f"{e.code}: {e.read().decode('utf-8', 'replace')[:300]}"
     except Exception as e:
         return False, None, f"{type(e).__name__}: {e}"
 
@@ -57,7 +57,7 @@ def reset_from_env():
         out["env_token_identity"] = {
             "id": info.get("id"),
             "name": (info.get("localizedFirstName", "") + " " + info.get("localizedLastName", "")).strip(),
-            "member_urn": f"urn:li:person:{info.get(chr(39)+'id'+chr(39),chr(39)+chr(39))}" if info.get("id") else None,
+            "member_urn": (f"urn:li:person:{info.get('id')}" if info.get("id") else None),
         }
     if not ok:
         out["verdict"] = "env_token_itself_broken"
@@ -67,7 +67,8 @@ def reset_from_env():
         return jsonify(out), 200
 
     member_urn = (out.get("env_token_identity") or {}).get("member_urn")
-    company_urn = f"urn:li:organization:{os.environ.get(chr(39)+'LINKEDIN_COMPANY_ID'+chr(39),chr(39)+chr(39))}" if os.environ.get("LINKEDIN_COMPANY_ID") else None
+    _co_id = os.environ.get("LINKEDIN_COMPANY_ID", "").strip()
+    company_urn = (f"urn:li:organization:{_co_id}" if _co_id else None)
     expires = datetime.datetime.utcnow() + datetime.timedelta(days=60)
 
     try:
