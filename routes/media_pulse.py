@@ -364,31 +364,36 @@ def api_topic_pulse():
             # Any market with a market_name + computed_at is fair game
             # for news intersection; we let the verdict NULL → "neutral"
             # in the scoring step downstream.
-            # r34g (2026-05-24): direct SQL was returning 0 markets even
-            # though /api/v1/dcpi/scores returns 285. Use the working
-            # endpoint via test_client so we share the exact code path
-            # /dcpi already uses to surface markets. One source of truth.
+            # Placeholder — markets_full is populated AFTER this cursor
+            # block closes (see r34g+1 below). Calling test_client while
+            # holding an open cursor was producing 0 markets because the
+            # nested request couldn't grab a second pool connection in
+            # time.
             markets_full: list = []
-            try:
-                from flask import current_app
-                with current_app.test_client() as _dctc:
-                    _dr = _dctc.get("/api/v1/dcpi/scores?limit=500")
-                    if _dr.status_code == 200:
-                        _dd = _dr.get_json() or {}
-                        for s in (_dd.get("scores") or []):
-                            # Normalize keys to match what the matching loop
-                            # below expects.
-                            markets_full.append({
-                                "market_slug":          s.get("market_slug"),
-                                "market_name":          s.get("market_name"),
-                                "state":                s.get("state"),
-                                "iso":                  s.get("iso"),
-                                "verdict":              s.get("verdict"),
-                                "excess_power_score":   s.get("excess_power_score"),
-                                "constraint_score":     s.get("constraint_score"),
-                            })
-            except Exception:
-                markets_full = []
+
+        # r34g+1 (2026-05-24): populate markets_full from /api/v1/dcpi/scores
+        # AFTER the parent cursor block closes — calling test_client while
+        # holding an open psycopg2 cursor on the same connection was
+        # blocking the nested request's own DB lookup. Now the parent
+        # connection is released, test_client runs cleanly.
+        try:
+            from flask import current_app
+            with current_app.test_client() as _dctc:
+                _dr = _dctc.get("/api/v1/dcpi/scores?limit=500")
+                if _dr.status_code == 200:
+                    _dd = _dr.get_json() or {}
+                    for s in (_dd.get("scores") or []):
+                        markets_full.append({
+                            "market_slug":          s.get("market_slug"),
+                            "market_name":          s.get("market_name"),
+                            "state":                s.get("state"),
+                            "iso":                  s.get("iso"),
+                            "verdict":              s.get("verdict"),
+                            "excess_power_score":   s.get("excess_power_score"),
+                            "constraint_score":     s.get("constraint_score"),
+                        })
+        except Exception:
+            pass  # graceful — match against empty market list
 
         # r34f (2026-05-24): aliased matching. The previous logic only
         # matched the literal market_name (or first word) — too strict for
