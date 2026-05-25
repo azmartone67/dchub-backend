@@ -57,14 +57,26 @@ def _last_press_age_hours():
 
 
 def _trigger_auto_generate(force_topic=None):
-    """Call the existing marketing_engine.auto_generate endpoint."""
+    """Call the existing marketing_engine.auto_generate endpoint.
+
+    r40 (2026-05-25): added X-Admin-Key header — auto-generate requires
+    admin auth and was 401-ing every cron tick (press cadence frozen at
+    999h). Pulls from DCHUB_ADMIN_KEY env var which IS set on Railway.
+    """
     url = f"{BASE}/api/v1/marketing/auto-generate"
     if force_topic:
         url += f"?force_topic={force_topic}"
+    admin_key = (os.environ.get("DCHUB_ADMIN_KEY")
+                 or os.environ.get("DCHUB_ADMIN_API_KEY") or "").split()[0] if (
+        os.environ.get("DCHUB_ADMIN_KEY") or os.environ.get("DCHUB_ADMIN_API_KEY")) else ""
+    headers = {
+        "User-Agent": "DCHub-PressPublisher/1.0",
+        "X-DC-Internal-Cron": "1",
+    }
+    if admin_key:
+        headers["X-Admin-Key"] = admin_key
     try:
-        req = urllib.request.Request(url, method="POST",
-            headers={"User-Agent": "DCHub-PressPublisher/1.0",
-                     "X-DC-Internal-Cron": "1"})
+        req = urllib.request.Request(url, method="POST", headers=headers)
         with urllib.request.urlopen(req, timeout=30) as resp:
             body = resp.read(4096)
             try:
