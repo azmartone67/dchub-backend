@@ -1,0 +1,27 @@
+{
+  "name": "dc-hub-intelligence",
+  "display_name": "DC Hub Intelligence",
+  "description": "Real-time data center intelligence: 21,000+ facilities, M&A deals, 10 ISO grids (7 US + Hydro-Quebec + AESO + Nord Pool 15 zones), fiber routes, water risk, tax incentives. AI capex deal tracker + AI Compute Capacity Index.",
+  "url": "https://dchub.cloud/mcp",
+  "transport": "streamable-http",
+  "protocol_version": "2024-11-05",
+  "categories": ["data", "infrastructure", "energy", "ai-infrastructure", "real-estate"],
+  "tags": ["data-center", "AI", "hyperscaler", "grid", "fiber", "M&A", "PPA", "capacity-planning"],
+  "homepage": "https://dchub.cloud",
+  "documentation": "https://dchub.cloud/integrations/mcp",
+  "agents_md": "https://dchub.cloud/AGENTS.md",
+  "agent_card": "https://api.dchub.cloud/.well-known/agent-card.json",
+  "vendor": "DC Hub",
+  "contact": "api@dchub.cloud",
+  "license": "Commercial (tier-based)",
+  "auth": {
+    "modes": ["none", "api_key"],
+    "free_tier": {"calls_per_day": 10, "no_signup": true},
+    "api_key_header": "X-API-Key",
+    "signup_url": "https://dchub.cloud/signup"
+  },
+  "tool_count": 25,
+  "tools_summary": "Facility search, site planning, grid intelligence, market ranking, AI capex events, M&A history, hyperscaler deal tracker, AI Compute Capacity Index.",
+  "verified": true,
+  "added_at": "2026-05-25"
+}

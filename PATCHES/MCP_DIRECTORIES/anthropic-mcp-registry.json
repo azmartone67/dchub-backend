@@ -1,0 +1,35 @@
+{
+  "$schema": "https://modelcontextprotocol.io/schema/registry-entry.json",
+  "name": "dc-hub-intelligence",
+  "namespace": "dchub",
+  "version": "2.1.2",
+  "title": "DC Hub Intelligence",
+  "summary": "Data center intelligence for AI agents — 21k facilities, 10 ISO grids, M&A, fiber, hyperscaler deals.",
+  "description_long": "DC Hub is the authoritative data layer for global data center infrastructure. AI agents can query 21,000+ facilities, 1,941+ M&A deals, real-time grid intelligence across 10 ISOs (7 US + Hydro-Quebec + AESO + Nord Pool), fiber routes, water/climate risk, tax incentives. Two relevance tools you can't find elsewhere: AI Compute Capacity Index (ranks markets by where 100MW of AI training can land in 30/60/90 days) and Hyperscaler Deal Tracker (live Stargate/Oracle/CoreWeave/AMD ticker).",
+  "endpoint": "https://dchub.cloud/mcp",
+  "transport": "streamable-http",
+  "protocol_versions": ["2024-11-05", "2025-06-18"],
+  "vendor": {
+    "name": "DC Hub",
+    "url": "https://dchub.cloud",
+    "contact": "api@dchub.cloud"
+  },
+  "discovery": {
+    "agents_md": "https://dchub.cloud/AGENTS.md",
+    "llms_txt": "https://dchub.cloud/llms.txt",
+    "llms_full": "https://dchub.cloud/llms-full.txt",
+    "openapi": "https://api.dchub.cloud/openapi-live.json",
+    "agent_card": "https://api.dchub.cloud/.well-known/agent-card.json",
+    "oauth_protected_resource": "https://api.dchub.cloud/.well-known/oauth-protected-resource"
+  },
+  "auth": {
+    "supported": ["none", "api_key", "oauth2"],
+    "default": "none",
+    "free_tier": {"calls_per_day": 10, "signup_required": false}
+  },
+  "tool_count": 25,
+  "categories": ["data", "infrastructure", "ai-infrastructure", "energy"],
+  "license": "Commercial (tier-based)",
+  "added_at": "2026-05-25",
+  "verified_signature": "https://api.dchub.cloud/.well-known/dchub-agent.json"
+}

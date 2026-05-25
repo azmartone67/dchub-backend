@@ -1,0 +1,38 @@
+# Smithery MCP server submission
+# Submit at: https://smithery.ai/submit
+name: dc-hub-intelligence
+displayName: DC Hub Intelligence
+description: >
+  Real-time data center intelligence — 21,000+ facilities, M&A deals,
+  10 ISO grids (7 US + Hydro-Quebec + AESO + Nord Pool), fiber routes,
+  water risk, tax incentives. AI capex deal tracker + AI Compute
+  Capacity Index.
+url: https://dchub.cloud/mcp
+transport: streamable-http
+protocolVersion: 2024-11-05
+homepage: https://dchub.cloud
+documentation: https://dchub.cloud/integrations/mcp
+vendor: DC Hub
+contact: api@dchub.cloud
+categories:
+  - data
+  - infrastructure
+  - ai-infrastructure
+  - energy
+tags:
+  - data-center
+  - hyperscaler
+  - grid-intelligence
+  - fiber
+  - M&A
+  - PPA
+  - AI-capex
+tools: 25
+freeTier:
+  callsPerDay: 10
+  signupRequired: false
+example:
+  - search 21,000+ global data center facilities
+  - score a lat/lon for data center suitability
+  - track Stargate / OpenAI / Oracle hyperscaler deals
+  - rank markets by where 100MW can land in 90 days

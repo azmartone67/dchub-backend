@@ -59,11 +59,23 @@ _DISPATCH = [
      "POST",
      lambda now: True),
 
+    # MCP SSE event refresh — every invocation (cheap DB query)
+    ("mcp_sse_refresh",
+     f"{BASE}/api/v1/mcp/events/refresh",
+     "POST",
+     lambda now: True),
+
     # Brain heartbeat warmer — once per hour at :03 (to spread load)
     ("brain_warmer_hourly",
      f"{BASE}/api/v1/brain-warming/warm",
      "POST",
-     lambda now: now.minute < 5),  # fires on the first invocation per hour
+     lambda now: now.minute < 5),
+
+    # Press publisher cadence check — every 2h on :07
+    ("press_publisher",
+     f"{BASE}/api/v1/press-publisher/run",
+     "POST",
+     lambda now: now.minute < 10 and now.hour % 2 == 0),
 
     # Heavy brain detectors run — once daily at 14:00 UTC
     ("brain_detectors_daily",

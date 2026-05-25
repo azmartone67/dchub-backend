@@ -23005,6 +23005,38 @@ try:
 except Exception as _ch_e:
     print(f"[main] cron_heartbeat_bp register failed: {_ch_e}", flush=True)
 
+# Phase ZZZZZ-round38 (2026-05-25): email capture before Stripe checkout
+try:
+    from routes.checkout_email_capture import checkout_email_bp
+    app.register_blueprint(checkout_email_bp)
+    print("[main] checkout_email_bp registered: /pricing/checkout/start (email capture pre-Stripe)", flush=True)
+except Exception as _ce_e:
+    print(f"[main] checkout_email_bp register failed: {_ce_e}", flush=True)
+
+# Phase ZZZZZ-round38 (2026-05-25): press auto-publisher restart endpoint
+try:
+    from routes.press_publisher_restart import press_restart_bp
+    app.register_blueprint(press_restart_bp)
+    print("[main] press_restart_bp registered: /api/v1/press-publisher/run", flush=True)
+except Exception as _pr_e:
+    print(f"[main] press_restart_bp register failed: {_pr_e}", flush=True)
+
+# Phase ZZZZZ-round38 (2026-05-25): MCP SSE event stream
+try:
+    from routes.mcp_sse_events import mcp_sse_bp
+    app.register_blueprint(mcp_sse_bp)
+    print("[main] mcp_sse_bp registered: /api/v1/mcp/events.sse + /events/recent", flush=True)
+except Exception as _sse_e:
+    print(f"[main] mcp_sse_bp register failed: {_sse_e}", flush=True)
+
+# Phase ZZZZZ-round38 (2026-05-25): rate-limit bypass for internal UAs
+try:
+    from routes.sentinel_ratelimit_bypass import ratelimit_bypass_bp
+    app.register_blueprint(ratelimit_bypass_bp)
+    print("[main] ratelimit_bypass_bp registered: internal UA bypass (drops sentinel 429s)", flush=True)
+except Exception as _rb_e:
+    print(f"[main] ratelimit_bypass_bp register failed: {_rb_e}", flush=True)
+
 # Phase ZZZZZ-round33 (2026-05-24): public status page — trust signal for
 # enterprise buyers. Polls all services from the browser.
 try:
