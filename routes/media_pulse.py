@@ -371,28 +371,41 @@ def api_topic_pulse():
             # time.
             markets_full: list = []
 
-        # r34g+2 (2026-05-24): real root cause — media_pulse._conn() reads
-        # only DATABASE_URL, but the 285 markets live in NEON_DATABASE_URL.
-        # The two env vars point at different databases in this stack;
-        # dcpi._conn() falls through to NEON_DATABASE_URL so its
-        # /api/v1/dcpi/scores endpoint sees the real data.
-        # Fix: import dcpi._conn() and use it directly here. One source
-        # of truth for the markets query.
+        # r34g+3 (2026-05-24): inline the exact connection pattern from
+        # dcpi.py:_conn() — read DATABASE_URL OR NEON_DATABASE_URL fallback,
+        # then run the same SELECT DISTINCT ON query that
+        # /api/v1/dcpi/scores uses (returns 285 markets). The previous
+        # import-of-dcpi approach was failing silently for unknown reason;
+        # inlining the connection guarantees we hit the right DB.
+        # Tracks debug counts in the response so future "why 0?" debugging
+        # has data to look at, not silence.
         try:
-            from routes.dcpi import _conn as _dcpi_conn
-            with _dcpi_conn() as _mcc:
-                with _mcc.cursor(cursor_factory=psycopg2.extras.RealDictCursor) as _mcur:
-                    _mcur.execute("""
-                        SELECT DISTINCT ON (market_slug)
-                               market_slug, market_name, state, iso, verdict,
-                               excess_power_score, constraint_score
-                          FROM market_power_scores
-                         WHERE published = true
-                         ORDER BY market_slug, computed_at DESC
-                    """)
-                    markets_full.extend(dict(r) for r in _mcur.fetchall())
-        except Exception:
-            pass  # graceful — match against empty market list
+            import psycopg2 as _pg
+            import psycopg2.extras as _pgex
+            _dburl = (os.environ.get("DATABASE_URL")
+                       or os.environ.get("NEON_DATABASE_URL"))
+            if _dburl:
+                _conn2 = _pg.connect(_dburl, sslmode="require",
+                                      connect_timeout=5)
+                try:
+                    with _conn2.cursor(cursor_factory=_pgex.RealDictCursor) as _mcur:
+                        _mcur.execute("""
+                            SELECT DISTINCT ON (market_slug)
+                                   market_slug, market_name, state, iso, verdict,
+                                   excess_power_score, constraint_score
+                              FROM market_power_scores
+                             WHERE published = true
+                             ORDER BY market_slug, computed_at DESC
+                        """)
+                        markets_full.extend(dict(r) for r in _mcur.fetchall())
+                finally:
+                    try: _conn2.close()
+                    except Exception: pass
+        except Exception as _me:
+            # Surface the error in the response so we can see WHY when
+            # debugging — instead of silent empty list.
+            out["_markets_error"] = f"{type(_me).__name__}: {str(_me)[:120]}"
+        out["_markets_loaded"] = len(markets_full)
 
         # r34f (2026-05-24): aliased matching. The previous logic only
         # matched the literal market_name (or first word) — too strict for
