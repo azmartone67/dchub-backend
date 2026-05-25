@@ -108,6 +108,8 @@ _CAPTURE_HTML = """<!DOCTYPE html>
 <meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1">
 <title>One step before checkout — DC Hub</title>
 <meta name="robots" content="noindex">
+<link rel="icon" href="https://dchub.cloud/favicon.ico" type="image/x-icon">
+<link rel="apple-touch-icon" href="https://dchub.cloud/apple-touch-icon.png">
 <style>
  body{font:16px/1.55 -apple-system,BlinkMacSystemFont,system-ui,sans-serif;max-width:520px;margin:48px auto;padding:0 24px;color:#0f172a}
  .eyebrow{color:#6366f1;font-size:.78rem;letter-spacing:.16em;text-transform:uppercase;font-weight:600;margin-bottom:8px}

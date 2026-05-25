@@ -23067,6 +23067,14 @@ try:
 except Exception as _rb_e:
     print(f"[main] ratelimit_bypass_bp register failed: {_rb_e}", flush=True)
 
+# Phase ZZZZZ-round38.3 (2026-05-25): quiet /favicon.ico 522 noise
+try:
+    from routes.favicon_quieter import favicon_bp
+    app.register_blueprint(favicon_bp)
+    print("[main] favicon_bp registered: /favicon.ico → 301 to dchub.cloud", flush=True)
+except Exception as _fav_e:
+    print(f"[main] favicon_bp register failed: {_fav_e}", flush=True)
+
 # Phase ZZZZZ-round33 (2026-05-24): public status page — trust signal for
 # enterprise buyers. Polls all services from the browser.
 try:
