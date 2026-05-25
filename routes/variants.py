@@ -58,7 +58,7 @@ def serve_variant(surface):
         if pick <= cum:
             with _conn() as c, c.cursor() as cur:
                 cur.execute("UPDATE page_variants SET impressions = impressions+1 WHERE id=%s", (vid,))
-                cur.execute("INSERT INTO page_variant_events (variant_id, event) VALUES (%s, 'impression')", (vid,))
+                cur.execute("INSERT INTO page_variant_events (variant_id, event) VALUES (%s, 'impression') ON CONFLICT DO NOTHING", (vid,))
                 c.commit()
             return vid, content
     return rows[0][0], rows[0][1]
@@ -87,7 +87,7 @@ def engage(vid):
     _ensure()
     with _conn() as c, c.cursor() as cur:
         cur.execute("UPDATE page_variants SET engagements = engagements+1 WHERE id=%s", (vid,))
-        cur.execute("INSERT INTO page_variant_events (variant_id, event) VALUES (%s, 'engagement')", (vid,))
+        cur.execute("INSERT INTO page_variant_events (variant_id, event) VALUES (%s, 'engagement') ON CONFLICT DO NOTHING", (vid,))
         c.commit()
     return jsonify(ok=True), 200
 
