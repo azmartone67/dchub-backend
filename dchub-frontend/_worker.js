@@ -1607,6 +1607,15 @@ export default {
         // Phase ZZZZZ-round5 (2026-05-23): per-ISO grid pages — /grid/PJM,
         // /grid/CAISO, /grid/ERCOT etc. (~9k 404s/day combined).
         '/grid/',
+        // Phase ZZZZZ-round46 (2026-05-25): funnel + moat surfaces.
+        // /onboard/<code>            — post-redeem HTML setup page
+        // /ai-capacity-index/        — daily citable index (json/txt/svg)
+        // /hyperscaler-deals.rss/xml — RSS feed for $1B+ deals (bot distribution)
+        // /rss/                      — future feed paths
+        '/onboard/',
+        '/ai-capacity-index/',
+        '/hyperscaler-deals.',  // catches .rss and .xml (literal prefix, not /hyperscaler-deals/ which would over-match)
+        '/rss/',
       ];
       if (PHASE_282_RAILWAY_PATHS.has(pathname) ||
           PHASE_282_PREFIXES.some(p => pathname.startsWith(p))) {

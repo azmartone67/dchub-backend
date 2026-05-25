@@ -161,7 +161,11 @@ def mark_activated():
         return jsonify({"ok": False, "err": str(e)}), 500
 
 
-@onboarding_bp.route("/onboard/_health")
+@onboarding_bp.route("/api/v1/onboard/health")
 def _health():
-    return jsonify({"ok": True, "phase": "ZZZZZ-round40-onboarding",
+    """Health endpoint deliberately under /api/v1/ so it can't be shadowed
+    by the /onboard/<code> dynamic route (werkzeug treats '_health' as a
+    valid code value, so a static /onboard/_health route loses to the
+    dynamic one in URL-map specificity)."""
+    return jsonify({"ok": True, "phase": "ZZZZZ-round46-onboarding",
                     "template_bytes": len(HTML)})
