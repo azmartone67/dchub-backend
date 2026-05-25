@@ -73,7 +73,12 @@
     "/grid",
     "/grid/*",
     "/partnerships",
-    "/media/outreach"
+    "/media/outreach",
+    "/onboard/*",
+    "/ai-capacity-index/*",
+    "/hyperscaler-deals.rss",
+    "/hyperscaler-deals.xml",
+    "/rss/*"
   ],
   "exclude": []
 }
