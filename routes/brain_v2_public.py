@@ -504,6 +504,83 @@ def brain_page():
     except Exception:
         integrity_block = ""
 
+    # r40 (2026-05-25): L23 Lifecycle Curator tile. Shows the brain's
+    # PROACTIVE moat-health view (composite + findings + unknown_dims)
+    # right next to the reactive integrity block. User asked "where do
+    # I view these?" — this is the one rendered surface.
+    lifecycle_block = ""
+    try:
+        from flask import current_app
+        with current_app.test_client() as _client:
+            _rlc = _client.get("/api/v1/brain/lifecycle/findings")
+            if _rlc.status_code == 200:
+                _lf = _rlc.get_json() or {}
+                _ch = _lf.get("composite_health")
+                _fc = int(_lf.get("findings_count") or 0)
+                _findings = _lf.get("findings") or []
+                _unknown = _lf.get("unknown_dims") or []
+                _pct = round(float(_ch) * 100, 1) if _ch is not None else None
+                # color by composite
+                if _pct is None:
+                    _lc, _lbg, _lbd = ("var(--tx2)", "rgba(156,163,175,0.08)", "rgba(156,163,175,0.3)")
+                elif _pct >= 80:
+                    _lc, _lbg, _lbd = ("var(--green)", "rgba(16,185,129,0.12)", "rgba(16,185,129,0.4)")
+                elif _pct >= 60:
+                    _lc, _lbg, _lbd = ("var(--amber)", "rgba(245,158,11,0.12)", "rgba(245,158,11,0.4)")
+                else:
+                    _lc, _lbg, _lbd = ("var(--red)", "rgba(239,68,68,0.10)", "rgba(239,68,68,0.4)")
+                # finding pills (top 5)
+                _finding_pills = ""
+                for _f in _findings[:5]:
+                    _dim = _h(str(_f.get("dim", "")))
+                    _finding_pills += (
+                        f'<span style="display:inline-flex;align-items:center;gap:0.35rem;'
+                        f'padding:0.25rem 0.6rem;border-radius:99px;background:rgba(245,158,11,0.12);'
+                        f'color:var(--amber);font-size:0.74rem;font-weight:600;margin:0.2rem;">'
+                        f'{_dim}</span>'
+                    )
+                _unknown_note = ""
+                if _unknown:
+                    _u_list = ", ".join(_h(str(u)) for u in _unknown[:3])
+                    _unknown_note = (
+                        f'<div style="font-size:0.78rem;color:var(--tx2);margin-top:0.4rem;">'
+                        f'unknown (endpoint unavailable): {_u_list}</div>'
+                    )
+                _pct_display = f"{_pct:.0f}" if _pct is not None else "—"
+                lifecycle_block = (
+                    f'<div style="background:{_lbg};border:1px solid {_lbd};'
+                    f'border-radius:10px;padding:1.1rem 1.3rem;margin:0.4rem 0;'
+                    f'display:flex;gap:1.2rem;align-items:center;flex-wrap:wrap;">'
+                    f'<div style="flex:0 0 auto;font-family:JetBrains Mono,monospace;'
+                    f'font-size:3rem;font-weight:800;line-height:1;color:{_lc};'
+                    f'min-width:80px;text-align:center;">{_pct_display}</div>'
+                    f'<div style="flex:1;min-width:240px;">'
+                    f'<div style="font-size:0.72rem;font-family:JetBrains Mono,monospace;'
+                    f'color:var(--tx2);text-transform:uppercase;letter-spacing:0.1em;'
+                    f'margin-bottom:0.35rem;">L23 Lifecycle Curator — composite health · '
+                    f'<span style="color:{_lc};font-weight:700">{_fc} weak dim{"s" if _fc != 1 else ""}</span></div>'
+                    f'<div style="color:var(--tx);font-size:0.95rem;line-height:1.4;'
+                    f'margin-bottom:0.5rem;">'
+                    f'Proactive moat-health audit. 10 dimensions (server-card freshness, '
+                    f'ai-citations trend, press cadence, topic-pulse, platform activity, '
+                    f'registry presence, brain vocab, organism vitality, page integrity, '
+                    f'value shipped). Opus 4.7 proposes new capabilities for weak dims '
+                    f'every 2h via brain-lifecycle-curator cron.</div>'
+                    f'<div style="margin-left:-0.2rem;">{_finding_pills}</div>'
+                    f'{_unknown_note}'
+                    f'<a href="/api/v1/brain/lifecycle/findings?force=1" style="color:var(--acc-light);'
+                    f'font-size:0.78rem;text-decoration:none;border-bottom:1px dotted '
+                    f'rgba(129,140,248,0.5);margin-top:0.6rem;display:inline-block;margin-right:1rem;">'
+                    f'view findings JSON</a>'
+                    f'<a href="/api/v1/brain/lifecycle/proposals" style="color:var(--acc-light);'
+                    f'font-size:0.78rem;text-decoration:none;border-bottom:1px dotted '
+                    f'rgba(129,140,248,0.5);margin-top:0.6rem;display:inline-block;">'
+                    f'Opus proposals stream</a>'
+                    f'</div></div>'
+                )
+    except Exception:
+        lifecycle_block = ""
+
     # Render proposals (newest first)
     if proposals:
         prop_blocks = []
@@ -590,7 +667,7 @@ def brain_page():
             .replace("{{pending_count}}", str(pending_count))
             .replace("{{log_count}}", str(len(state["log"])))
             .replace("{{verdict_banner}}", verdict_banner)
-            .replace("{{grade_block}}", grade_block + value_shipped_block + integrity_block)
+            .replace("{{grade_block}}", grade_block + value_shipped_block + integrity_block + lifecycle_block)
             .replace("{{proposals_html}}", proposals_html)
             .replace("{{persistence_html}}", persistence_html)
             .replace("{{log_html}}", log_html)

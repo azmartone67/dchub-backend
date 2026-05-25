@@ -21,6 +21,13 @@ on:
         description: "Set true to skip the PR open step (just prints diff)"
         required: false
         default: "false"
+  schedule:
+    # r40 (2026-05-25): weekly auto-attempt. The workflow's first step
+    # no-ops if PR_SUBMIT_TOKEN secret is absent, and the clone step
+    # no-ops if dchub.cloud is already in the README. So this cron is
+    # safe to run every week even before the secret is provisioned —
+    # once added, the next Sunday-04:17 UTC tick auto-opens the PR.
+    - cron: '17 4 * * 0'
 
 permissions:
   contents: read

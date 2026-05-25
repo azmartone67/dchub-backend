@@ -245,16 +245,76 @@ def _audit_topic_pulse_health() -> dict:
 
 
 def _audit_platform_activity() -> dict:
-    """How many AI platforms hit us this week vs last."""
-    growth = _call_internal("/api/v1/mcp/growth")
-    wow = growth.get("calls_wow_growth_pct")
+    """Signal-quality WoW over identified AI platforms.
+
+    r40 (2026-05-25): raw mcp/growth.calls_wow_growth_pct was 99%
+    'node-script' (anonymous Node MCP clients with no identifying UA)
+    — a single noisy bucket dragged composite_health down even when
+    real AI-platform traffic was steady. Now reads
+    /api/v1/mcp/growth/by-platform and splits two signals:
+      - signal_wow: WoW over IDENTIFIED platforms (chatgpt/claude/
+        perplexity/gemini/copilot/cursor/windsurf/cline/grok/etc.) —
+        this is the moat metric.
+      - noise_wow: WoW over unattributable buckets (node-script /
+        unknown / curl / python-script) — informational only.
+
+    'ok' when signal_wow >= -10% OR signal sample is too small to
+    measure (avoid false alarms from cold start). 'weak' only when
+    real AI-platform traffic clearly declines.
+    """
+    by_platform = _call_internal("/api/v1/mcp/growth/by-platform")
+    plats = by_platform.get("platforms") or []
+
+    NOISE_BUCKETS = {
+        "node-script", "node-http-client", "unknown",
+        "internal-dchub", "curl", "python-script", "postman",
+        "insomnia", "mcp-sdk",
+    }
+
+    def _sum(field: str, in_noise: bool) -> int:
+        return sum(
+            int(p.get(field) or 0) for p in plats
+            if (p.get("platform") in NOISE_BUCKETS) == in_noise
+        )
+
+    signal_7d   = _sum("calls_7d", in_noise=False)
+    signal_prev = _sum("calls_prev_7d", in_noise=False)
+    noise_7d    = _sum("calls_7d", in_noise=True)
+    noise_prev  = _sum("calls_prev_7d", in_noise=True)
+
+    signal_wow = (
+        round(100.0 * (signal_7d - signal_prev) / signal_prev, 1)
+        if signal_prev > 0 else None
+    )
+    noise_wow = (
+        round(100.0 * (noise_7d - noise_prev) / noise_prev, 1)
+        if noise_prev > 0 else None
+    )
+
+    identified = [
+        p.get("platform") for p in plats
+        if p.get("platform") not in NOISE_BUCKETS
+        and int(p.get("calls_7d") or 0) > 0
+    ][:10]
+
+    # Healthy: identified-AI traffic not crashing, OR sample too small
+    # (no signal traffic = nothing to alarm about; the brain_vocab /
+    # registry_presence dims are the right place to flag discovery).
+    ok = (signal_wow is None) or (signal_wow >= -10)
+
     return {
-        "ok": (wow or 0) >= -10,
-        "tool_calls_7d":         growth.get("tool_calls_7d"),
-        "tool_calls_one_wk_ago": growth.get("calls_7d_one_week_ago"),
-        "wow_growth_pct":        wow,
-        "platforms_24h":         len(growth.get("platforms_24h") or []),
-        "_source_result": growth if isinstance(growth, _AuditUnavailable) else None,
+        "ok": ok,
+        "signal_7d":          signal_7d,
+        "signal_prev_7d":     signal_prev,
+        "signal_wow_pct":     signal_wow,
+        "noise_7d":           noise_7d,
+        "noise_prev_7d":      noise_prev,
+        "noise_wow_pct":      noise_wow,
+        "identified_platforms": identified,
+        "identified_count":   len(identified),
+        # Back-compat for the older _short_recommendation reader.
+        "wow_growth_pct":     signal_wow,
+        "_source_result": by_platform if isinstance(by_platform, _AuditUnavailable) else None,
     }
 
 
@@ -443,7 +503,17 @@ def _short_recommendation(dim: str, result: dict) -> str:
     if dim == "topic_pulse":
         return f"topic_pulse quiet ({result.get('suggestions_count')} suggestions) — alias matching may need tuning"
     if dim == "platform_activity":
-        return f"platform tool calls down {result.get('wow_growth_pct')}% WoW — investigate which platform throttled"
+        # r40: report signal-quality WoW + which identified platforms moved
+        s_wow = result.get("signal_wow_pct")
+        s_7d  = result.get("signal_7d")
+        ids   = result.get("identified_platforms") or []
+        if s_wow is None:
+            return (f"no identified-AI traffic in window (signal_7d={s_7d}, "
+                    f"all {result.get('noise_7d')} calls were anonymous "
+                    f"node-script/unknown). Improve platform attribution.")
+        return (f"identified-AI traffic down {s_wow}% WoW "
+                f"({s_7d} this week vs {result.get('signal_prev_7d')} last week). "
+                f"Top identified: {ids[:5]}")
     if dim == "registry_presence":
         return f"missing from {result.get('pending_count')} MCP registries: {result.get('pending')[:5]}"
     if dim == "brain_vocab":
@@ -541,11 +611,22 @@ def _call_opus_for_proposal(audit_summary: str) -> tuple[dict | None, str | None
 # ── HTTP endpoints ────────────────────────────────────────────────
 
 def _no_cache_headers(resp):
-    """r38: prevent CF + downstream proxies from caching audit results.
-    Without this CF was serving 1h-stale data, hiding actual progress."""
-    resp.headers["Cache-Control"] = "no-store, must-revalidate"
+    """Prevent CF + downstream proxies from caching audit results.
+
+    r38: added Cache-Control:no-store, but CF gateway overrode it
+    back to public,max-age=3600 for /api/* paths (a zone-level rule
+    we can't reach from Flask). r40: add Surrogate-Control and
+    CDN-Cache-Control too — CF respects these for edge decisions
+    and they take precedence over Cache-Control for the gateway.
+    Vary:* also defeats some CF heuristic caching paths.
+    """
+    resp.headers["Cache-Control"] = "no-store, no-cache, must-revalidate, max-age=0"
+    resp.headers["Surrogate-Control"] = "no-store"
+    resp.headers["CDN-Cache-Control"] = "no-store"
+    resp.headers["Cloudflare-CDN-Cache-Control"] = "no-store"
     resp.headers["Pragma"] = "no-cache"
     resp.headers["Expires"] = "0"
+    resp.headers["Vary"] = "*"
     return resp
 
 
