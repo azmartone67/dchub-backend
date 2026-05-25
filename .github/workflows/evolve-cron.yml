@@ -96,6 +96,7 @@ on:
     # runway to land + insert distribution rows before this fires
     # publish-now to actually push them to LinkedIn + X.
     - cron: '25 13 * * *'
+    - cron: '30 17 * * *'   # r34i: afternoon supplemental press (force_topic=afternoon_pulse)
     # Phase II (2026-05-17) — weekly AI citation probe, Mondays 12:00 UTC.
     # Asks Claude each canonical prompt ("best DC market intelligence?",
     # "where to build a 100MW DC in the US?", etc.) and records whether
@@ -669,6 +670,45 @@ jobs:
   # releases. This cron makes publishing a workflow-level guarantee.
   # 25-min offset from the 13:00 UTC press release leaves enough time for
   # the press to land + queue distribution rows before we try to publish.
+  # r34i (2026-05-25): afternoon supplement — second piece per UTC day.
+  # Doubles the auto-press cadence (target: 13/30d → ~25/30d). Fires at
+  # 17:30 UTC daily (= 10:30am PT / 1:30pm ET — peak US afternoon for
+  # social engagement). Uses ?force_topic= so the morning piece + this
+  # afternoon piece dedup independently on (date, topic) instead of
+  # blocking each other on (date) alone.
+  marketing_afternoon_supplement:
+    if: github.event.schedule == '30 17 * * *' || (github.event_name == 'workflow_dispatch' && (inputs.phase == 'marketing_afternoon' || inputs.phase == 'all'))
+    runs-on: ubuntu-latest
+    timeout-minutes: 4
+    steps:
+      - name: Trigger afternoon supplemental press
+        env:
+          ADMIN_KEY: ${{ secrets.DCHUB_ADMIN_KEY }}
+        run: |
+          if [ -z "$ADMIN_KEY" ]; then
+            echo "::warning::DCHUB_ADMIN_KEY not set — skipping afternoon piece"
+            exit 0
+          fi
+          response=$(curl -sS --max-time 60 -X POST \
+            -H "X-Admin-Key: $ADMIN_KEY" \
+            -H "Content-Type: application/json" \
+            "https://dchub-backend-production.up.railway.app/api/v1/marketing/auto-generate?force_topic=afternoon_pulse" \
+            || echo '{"ok":false,"error":"curl_fail"}')
+          echo "$response" | head -c 2000
+          echo
+          echo "$response" | python3 -c "
+          import json, sys
+          try: d = json.load(sys.stdin)
+          except Exception: print('::warning::non-JSON'); sys.exit(0)
+          if d.get('skipped'):
+              print(f'::notice::afternoon piece skipped — {d.get(\"reason\",\"?\")}')
+          elif d.get('generated'):
+              gen = d.get('generated', {})
+              print(f'::notice::afternoon piece OK — {gen.get(\"slug\",\"?\")[:60]}')
+          else:
+              print(f'::warning::unexpected — {json.dumps(d)[:300]}')
+          " || true
+
   marketing_publish_now:
     if: github.event.schedule == '25 13 * * *' || (github.event_name == 'workflow_dispatch' && (inputs.phase == 'marketing_publish_now' || inputs.phase == 'all'))
     runs-on: ubuntu-latest

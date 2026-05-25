@@ -1472,15 +1472,34 @@ def auto_generate():
     """Generate one autonomous press release for today's signals.
        Idempotent: if today already has an auto-release, returns 200 with
        skipped=true so cron retries are safe.
+
+       2026-05-25 r34i: optional ?force_topic= param unlocks a second
+       piece per day (target: lift count_30d 13 → ~25). The dedup query
+       includes source_topic when force_topic is set, so a morning piece
+       (auto-picked topic) and an afternoon piece (force_topic=
+       afternoon_pulse) coexist without one blocking the other. The
+       afternoon cron lives in evolve-cron.yml at 17:30 UTC.
     """
     today = date.today().isoformat()
+    force_topic = (request.args.get("force_topic") or "").strip() or None
     c = _conn()
     if c is None:
         return jsonify(ok=False, error="no_database"), 503
     try:
+        # Dedup query: by-topic when force_topic is set (allows multiple
+        # pieces per day if they're distinct topics); else by-day legacy
+        # behavior (preserves the morning cron's idempotency contract).
         with c.cursor() as cur:
-            cur.execute("""SELECT id, slug, title, press_release_id FROM auto_press_releases
-                           WHERE generated_for = %s LIMIT 1""", (today,))
+            if force_topic:
+                cur.execute("""SELECT id, slug, title, press_release_id
+                                 FROM auto_press_releases
+                                WHERE generated_for = %s
+                                  AND source_topic = %s
+                                LIMIT 1""", (today, force_topic))
+            else:
+                cur.execute("""SELECT id, slug, title, press_release_id
+                                 FROM auto_press_releases
+                                WHERE generated_for = %s LIMIT 1""", (today,))
             existing = cur.fetchone()
         if existing:
             # Phase MM (2026-05-15): if today's release exists but the
@@ -1569,7 +1588,18 @@ def auto_generate():
     # retry, a single transient Claude error → no press release for the
     # entire day. Now we try 3 attempts: primary topic → primary topic
     # with simpler prompt → last-resort platform_pulse topic.
-    topic, topic_reason = _pick_daily_topic(signals)
+    # r34i (2026-05-25): force_topic override unlocks 2/day cadence.
+    # When passed (typically by the afternoon cron with a distinct slug
+    # like "afternoon_pulse"), skip the weekday-themed picker entirely
+    # and use the caller's slug + a generic reason. Source_topic gets
+    # set to force_topic downstream so the by-topic dedup recognizes
+    # this distinct piece on subsequent ticks.
+    if force_topic:
+        topic = force_topic
+        topic_reason = (f"Afternoon slot — operator-forced topic slug "
+                        f"'{force_topic}' to unlock 2nd piece this UTC day.")
+    else:
+        topic, topic_reason = _pick_daily_topic(signals)
     signals["daily_topic"] = topic
     signals["daily_topic_reason"] = topic_reason
 
