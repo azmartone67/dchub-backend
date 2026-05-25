@@ -23997,6 +23997,40 @@ try:
 except Exception as _e:
     print(f"[main] auth_context register failed: {_e}", file=sys.stderr)
 
+# ──────────────────────────────────────────────────────────────────────
+# Phase ZZZZZ-round46 (2026-05-25) — Funnel + moat extensions.
+# Diagnosis: 9,885 paywall hits / 0 dev-key activations in 14 days.
+# Each blueprint wrapped in try/except so any one register failure
+# doesn't take down boot (mirrors the rest of this file's pattern).
+# ──────────────────────────────────────────────────────────────────────
+try:
+    from routes.onboarding_page import onboarding_bp
+    app.register_blueprint(onboarding_bp)
+    print("[main] onboarding_bp registered: /onboard/<code> + /api/v1/onboard/activated")
+except Exception as _e:
+    print(f"[main] onboarding_bp register failed: {_e}", file=sys.stderr)
+
+try:
+    from routes.hyperscaler_rss import hyperscaler_rss_bp
+    app.register_blueprint(hyperscaler_rss_bp)
+    print("[main] hyperscaler_rss_bp registered: /hyperscaler-deals.rss (+ aliases)")
+except Exception as _e:
+    print(f"[main] hyperscaler_rss_bp register failed: {_e}", file=sys.stderr)
+
+try:
+    from routes.ai_capacity_daily import ai_capacity_daily_bp
+    app.register_blueprint(ai_capacity_daily_bp)
+    print("[main] ai_capacity_daily_bp registered: /ai-capacity-index/today.{json,txt} + badge.svg")
+except Exception as _e:
+    print(f"[main] ai_capacity_daily_bp register failed: {_e}", file=sys.stderr)
+
+try:
+    from routes.seo_agent_alternates import register_alternate_hook
+    register_alternate_hook(app)
+    print("[main] seo_agent_alternates registered: after_request hook injecting <link rel='alternate'>")
+except Exception as _e:
+    print(f"[main] seo_agent_alternates register failed: {_e}", file=sys.stderr)
+
 # === Brain v2 · Layer 3 freshness fields ===
 try:
     from flask import jsonify as _bv2_jsonify
