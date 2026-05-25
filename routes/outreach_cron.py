@@ -105,8 +105,15 @@ def _send_resend(to_email, subject, html, text):
     req = urllib.request.Request(
         "https://api.resend.com/emails",
         data=body,
-        headers={"Authorization": f"Bearer {RESEND_KEY}",
-                  "Content-Type": "application/json"},
+        headers={
+            "Authorization": f"Bearer {RESEND_KEY}",
+            "Content-Type":  "application/json",
+            # r39.3 (2026-05-25): explicit UA — Cloudflare WAF on
+            # api.resend.com returns 1010 "banned signature" for urllib
+            # default UA. Mimic a real browser/API client.
+            "User-Agent":    "DCHub-Outreach/1.0 (+https://dchub.cloud; api@dchub.cloud)",
+            "Accept":        "application/json",
+        },
         method="POST",
     )
     try:
@@ -131,8 +138,12 @@ def _send_sendgrid(to_email, subject, html, text):
     req = urllib.request.Request(
         "https://api.sendgrid.com/v3/mail/send",
         data=body,
-        headers={"Authorization": f"Bearer {SENDGRID_KEY}",
-                  "Content-Type": "application/json"},
+        headers={
+            "Authorization": f"Bearer {SENDGRID_KEY}",
+            "Content-Type":  "application/json",
+            "User-Agent":    "DCHub-Outreach/1.0 (+https://dchub.cloud; api@dchub.cloud)",
+            "Accept":        "application/json",
+        },
         method="POST",
     )
     try:
