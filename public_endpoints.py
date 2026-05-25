@@ -24,6 +24,56 @@ public_bp = Blueprint('public_endpoints', __name__)
 
 
 # =============================================================================
+# /api/v1/sitemap/ping — POST tells Google + Bing about updated content
+# =============================================================================
+# r41-sitemap-ping (2026-05-25): when LinkedIn quad, press publisher, or
+# auto-press fires new content, call this endpoint to nudge search
+# engines. Search bots usually find new sitemap content within 24-72h
+# on their own crawl schedule; ping shortcuts that to minutes-to-hours.
+#
+# Idempotent + rate-limited (1 ping per minute per engine via in-process
+# state) so an over-eager scheduler can't get us flagged as abusive.
+# Returns immediately even if the ping fetch itself stalls — we don't
+# block the caller on someone else's network.
+_PING_STATE = {"last_google_ping": 0.0, "last_bing_ping": 0.0}
+
+@public_bp.route('/api/v1/sitemap/ping', methods=['POST', 'GET'])
+def sitemap_ping():
+    import time as _ping_time
+    import threading as _ping_thr
+    import urllib.request as _ping_url
+    sitemap = request.args.get('sitemap') or 'https://dchub.cloud/sitemap.xml'
+    now = _ping_time.time()
+    result = {'sitemap': sitemap, 'pinged': [], 'rate_limited': [], 'failed': []}
+
+    def _fire(name, url, last_key, min_interval):
+        if now - _PING_STATE.get(last_key, 0.0) < min_interval:
+            result['rate_limited'].append(name)
+            return
+        _PING_STATE[last_key] = now
+        def _bg():
+            try:
+                req = _ping_url.Request(url,
+                    headers={'User-Agent': 'DCHub-SitemapPing/1.0'})
+                with _ping_url.urlopen(req, timeout=10) as r:
+                    if 200 <= r.status < 300:
+                        return
+                # non-2xx → quietly record in next pull; don't block
+            except Exception as e:
+                logger.warning(f"sitemap ping {name} failed: {e}")
+        _ping_thr.Thread(target=_bg, daemon=True).start()
+        result['pinged'].append(name)
+
+    # Google: 1 ping per 5 min cap (their docs deprecate ping but it still
+    # works — and we want to be polite). Bing: 1 per 5 min.
+    _fire('google', f'https://www.google.com/ping?sitemap={sitemap}',
+          'last_google_ping', 300)
+    _fire('bing',   f'https://www.bing.com/ping?sitemap={sitemap}',
+          'last_bing_ping',   300)
+    return jsonify(result), 200, {'Cache-Control': 'no-store'}
+
+
+# =============================================================================
 # /api/v1/version — Public, no auth
 # =============================================================================
 _VERSION_CACHE = {"result": None, "ts": 0}

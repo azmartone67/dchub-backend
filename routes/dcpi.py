@@ -3456,9 +3456,56 @@ def embed_widget(slug):
                     "#f59e0b" if excess_score >= 40 else "#ef4444")
     verdict_color = {"BUILD": "#10b981", "CAUTION": "#f59e0b",
                      "AVOID": "#ef4444"}.get(s["verdict"], "#9ca3af")
+    # r41-dcpi-jsonld (2026-05-25): Dataset + Place schema.org JSON-LD
+    # so search engines / AI crawlers recognize this as structured data.
+    # Google rewards Dataset markup with rich snippets in result pages
+    # and the existing check_schema_org_coverage_low detector stops
+    # flagging /dcpi/<slug> pages. Composite score in JSON-LD lets
+    # AI agents quote "DCPI score 73.1, BUILD" with a citation source.
+    import json as _json_jl
+    _composite = derive_composite_score(
+        s.get('excess_power_score'), s.get('constraint_score'),
+        s.get('time_to_power_months'), s.get('verdict'),
+    )
+    _jsonld = _json_jl.dumps({
+        "@context": "https://schema.org",
+        "@type": "Dataset",
+        "name": f"DCPI Score — {s['market_name']}",
+        "description": (f"Data Center Power Index (DCPI) score for "
+                        f"{s['market_name']}: {_composite}/100 — "
+                        f"verdict {s['verdict']}. Excess power "
+                        f"{excess_score}, constraint {constraint_score}, "
+                        f"time-to-power ~{ttp} months. ISO: {s['iso']}."),
+        "url": f"https://dchub.cloud/dcpi/{slug}",
+        "creator": {"@type": "Organization", "name": "DC Hub",
+                    "url": "https://dchub.cloud"},
+        "license": "https://dchub.cloud/dcpi#methodology",
+        "isAccessibleForFree": True,
+        "keywords": ["data center", "power availability", "ISO",
+                     s['iso'], s['state'], s['verdict'], "DCPI"],
+        "spatialCoverage": {
+            "@type": "Place",
+            "name": f"{s['market_name']}, {s['state']}",
+            "addressRegion": s['state'], "addressCountry": "US",
+        },
+        "variableMeasured": [
+            {"@type": "PropertyValue", "name": "composite_score",
+             "value": _composite, "minValue": 0, "maxValue": 100},
+            {"@type": "PropertyValue", "name": "excess_power_score",
+             "value": excess_score, "minValue": 0, "maxValue": 100},
+            {"@type": "PropertyValue", "name": "constraint_score",
+             "value": constraint_score, "minValue": 0, "maxValue": 100},
+            {"@type": "PropertyValue", "name": "verdict",
+             "value": s['verdict']},
+        ],
+        "dateModified": (s.get('computed_at').isoformat()
+                          if hasattr(s.get('computed_at'), 'isoformat')
+                          else str(s.get('computed_at') or '')),
+    }, separators=(',', ':'))
     html = f"""<!doctype html><html lang="en"><head><meta charset="utf-8">
 <meta name="viewport" content="width=device-width,initial-scale=1">
 <title>DCPI · {s['market_name']}</title>
+<script type="application/ld+json">{_jsonld}</script>
 <style>
 *{{margin:0;box-sizing:border-box}}
 body{{font-family:-apple-system,BlinkMacSystemFont,sans-serif;background:#0a0a12;color:#fff;padding:18px;border-radius:12px}}

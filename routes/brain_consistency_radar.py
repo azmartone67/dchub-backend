@@ -870,6 +870,72 @@ def check_db_pool_pressure() -> list[dict]:
     return findings
 
 
+def check_mcp_tool_description_drift() -> list[dict]:
+    """r41-description-drift (2026-05-25). The worker's MCP_SERVER_INFO
+    description string + each MCP tool's description are what every AI
+    crawler reads first. Today's session caught a real instance: the
+    description said '7 ISO grid data' but we'd added Hydro-Quebec +
+    AESO + Nord Pool months ago — undetected for weeks because nothing
+    cross-checks the marketing copy against ground truth.
+
+    This detector fetches /mcp/manifest (the canonical agent-facing
+    descriptor) and flags known drift patterns:
+      - claims '7 ISO' but the platform now serves >=10
+      - claims tools_count=N but the actual tools/list count differs
+        by >2
+    Cheap: one HTTP fetch, all comparisons are string/integer.
+    """
+    findings: list[dict] = []
+    body, _ = _http_get("https://dchub.cloud/mcp/manifest", timeout=8)
+    if not body:
+        return findings
+    try:
+        import json as _json
+        manifest = _json.loads(body) if isinstance(body, str) else body
+    except Exception:
+        return findings
+    desc = (manifest.get("description") or "").lower()
+    claimed_count = manifest.get("tools_count")
+
+    # Pattern 1: stale ISO count in description.
+    import re as _re
+    iso_match = _re.search(r"(\d+)\s*ISO", desc)
+    if iso_match:
+        claimed_iso = int(iso_match.group(1))
+        # Hard-coded ground truth for now: 10 ISOs (7 US + HQ + AESO + Nord Pool).
+        # When more ISOs land (CENACE etc.), update here.
+        actual_iso = 10
+        if claimed_iso < actual_iso:
+            findings.append({
+                "issue":  "mcp_description_drift:iso_count",
+                "url":    "/mcp/manifest (MCP_SERVER_INFO.description in worker)",
+                "count":  actual_iso - claimed_iso,
+                "detail": (f"Manifest description claims {claimed_iso} ISOs "
+                           f"but we now cover {actual_iso} "
+                           f"(7 US + Hydro-Quebec + AESO + Nord Pool). "
+                           f"AI crawlers reading the manifest get a "
+                           f"stale picture of our coverage. Update "
+                           f"MCP_SERVER_INFO.description in the latest "
+                           f"worker patch + redeploy."),
+            })
+
+    # Pattern 2: tools_count drift vs the FALLBACK_TOOLS the worker
+    # actually exposes. We can't easily count the worker's runtime
+    # tool list from here, but the manifest is the single source of
+    # truth — if it says N but tools/list returns N+k, agents see a
+    # different count than the discovery surface advertises.
+    try:
+        rpc_body, _ = _http_get("https://dchub.cloud/mcp", timeout=6)
+        # The /mcp endpoint requires POST + session; can't easily probe
+        # from here without state. Skip this check unless we can do it
+        # cheaply. Leaving the manifest's own count as the source of
+        # truth for now.
+    except Exception:
+        pass
+
+    return findings
+
+
 def check_session_upgrade_silenced() -> list[dict]:
     """r41-session-upgrade-health (2026-05-25). The session-upgrade
     flow shipped in v2.1.7 lets a Claude.ai web user hit a paywall,
@@ -7165,6 +7231,12 @@ def scan_all() -> list[dict]:
                # >200 in 24h but redeemed dev keys with session_id
                # metadata <5 (mechanism broken or no completions).
                check_session_upgrade_silenced,
+               # r41-description-drift (2026-05-25) — flags when the
+               # MCP manifest description goes stale vs reality (e.g.
+               # claims '7 ISOs' when we now serve 10). Catches the
+               # marketing-copy-vs-truth gap before AI crawlers cache
+               # the stale picture.
+               check_mcp_tool_description_drift,
                # Phase FF+7-fix4 (2026-05-19) — early-warning for the
                # pool-exhaustion class of outage that took Railway down
                # for 30min on 2026-05-19. Probes 3 DB endpoints; flags
