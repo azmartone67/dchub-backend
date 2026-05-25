@@ -363,10 +363,18 @@ def _post_to_linkedin(text, landing_url, og_image_url):
 
 
 def _already_posted(slot_date, slot_hour):
+    """r50.2 (2026-05-25): only treat SUCCESSFUL posts as 'already posted'.
+    Previously any row (success=False included) locked the slot, so a
+    UnboundLocalError-style failure at 08:00 made us unable to retry
+    until tomorrow. Now failures auto-permit retry on the next cron tick.
+    """
     if not (_pg and _dsn()): return False
     try:
         with _conn() as c, c.cursor() as cur:
-            cur.execute("SELECT 1 FROM linkedin_quad_posts WHERE slot_date=%s AND slot_hour=%s",
+            cur.execute("""SELECT 1 FROM linkedin_quad_posts
+                           WHERE slot_date=%s AND slot_hour=%s
+                             AND success = TRUE
+                           LIMIT 1""",
                          (slot_date, slot_hour))
             return cur.fetchone() is not None
     except Exception:
@@ -414,7 +422,13 @@ def run():
         }), 200
 
     slot_date = now.date()
-    if _already_posted(slot_date, target_slot["hour"]):
+    # r50.2 (2026-05-25): ?force=1 bypasses the already-posted check
+    # entirely, so the operator can re-run a slot after a fix lands
+    # even if the day's row exists. _already_posted itself now only
+    # treats success=TRUE rows as locking (failed rows auto-permit
+    # retry on the next cron tick).
+    bypass = (request.args.get("force") or "").lower() in ("1", "true", "yes")
+    if not bypass and _already_posted(slot_date, target_slot["hour"]):
         return jsonify({"skipped": True, "reason": "already_posted_this_slot",
                          "slot": target_slot}), 200
 
