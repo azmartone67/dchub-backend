@@ -1468,6 +1468,7 @@ def api_leaderboard():
         SELECT DISTINCT ON (market_slug)
             market_slug, market_name, iso, state,
             excess_power_score, constraint_score, quality_score,
+            time_to_power_months,
             verdict, computed_at,
             ('https://dchub.cloud/dcpi/' || market_slug) AS url
         FROM market_power_scores
@@ -1478,7 +1479,20 @@ def api_leaderboard():
         cur.execute(sql, params)
         rows = cur.fetchall()
 
-    rows.sort(key=lambda r: -(r.get("excess_power_score") or 0))
+    # r41-leaderboard-composite (2026-05-25): add composite_score so the
+    # leaderboard's rank is consistent with /api/v1/dcpi/scores?sort=composite.
+    # Pre-fix the leaderboard sorted by excess_power_score only; agents
+    # asking for "top markets" got a single-component rank, not the
+    # verdict-aware multi-component composite. Now: composite is in
+    # every row AND drives the rank (top of list = highest composite).
+    for r in rows:
+        r["composite_score"] = derive_composite_score(
+            r.get("excess_power_score"),
+            r.get("constraint_score"),
+            r.get("time_to_power_months"),
+            r.get("verdict"),
+        )
+    rows.sort(key=lambda r: -(r.get("composite_score") or 0))
     rows = rows[:limit]
     for r in rows:
         if r.get("computed_at"):
