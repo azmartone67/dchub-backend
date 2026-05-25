@@ -189,7 +189,7 @@ def run_ingestion(get_db):
                         source_url, source_name, description,
                         ai_detected, confidence, status
                     ) VALUES (
-                        %(deal_hash)s, %(buyer)s, %(seller)s, %(deal_type)s,
+                        %(deal_hash) ON CONFLICT DO NOTHINGs, %(buyer)s, %(seller)s, %(deal_type)s,
                         %(deal_value_usd)s, %(deal_value_str)s, %(deal_date)s,
                         %(source_url)s, %(source_name)s, %(description)s,
                         true, 70, 'active'
