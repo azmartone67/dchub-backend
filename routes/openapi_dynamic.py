@@ -43,12 +43,27 @@ def _get_counts():
         return _COUNT_CACHE["counts"]
     counts = {"facilities": 21000, "deals": 1900, "isos": 10, "as_of": "stale"}
     if _pg and _dsn():
-        # Facilities — query independently so deals-table-name issue
-        # doesn't poison the facility count.
+        # r41-counts-speed (2026-05-25): use pg_class.reltuples (a cached
+        # planner statistic) instead of SELECT COUNT(*). COUNT(*) on
+        # discovered_facilities was 3-4s cold; reltuples is sub-ms.
+        # Statistics are updated by ANALYZE / autovacuum so we get fresh-
+        # enough counts (within hours). The 5-min in-process cache above
+        # smooths any remaining variance. Fallback to COUNT(*) if
+        # reltuples is unavailable (e.g., table just created, no ANALYZE
+        # has run yet).
         try:
             with _conn() as c, c.cursor() as cur:
-                cur.execute("SELECT COUNT(*) FROM discovered_facilities")
-                counts["facilities"] = cur.fetchone()[0]
+                cur.execute(
+                    "SELECT reltuples::bigint FROM pg_class WHERE relname = %s",
+                    ("discovered_facilities",))
+                row = cur.fetchone()
+                est = int(row[0]) if row and row[0] is not None else 0
+                if est > 0:
+                    counts["facilities"] = est
+                else:
+                    # Cold-stats fallback
+                    cur.execute("SELECT COUNT(*) FROM discovered_facilities")
+                    counts["facilities"] = cur.fetchone()[0]
                 counts["as_of"] = datetime.datetime.utcnow().isoformat() + "Z"
         except Exception:
             pass
@@ -56,6 +71,16 @@ def _get_counts():
         for table in ("dc_deals", "deals", "transactions", "ma_deals"):
             try:
                 with _conn() as c, c.cursor() as cur:
+                    cur.execute(
+                        "SELECT reltuples::bigint FROM pg_class WHERE relname = %s",
+                        (table,))
+                    row = cur.fetchone()
+                    est = int(row[0]) if row and row[0] is not None else 0
+                    if est > 0:
+                        counts["deals"] = est
+                        counts["deals_table"] = table
+                        break
+                    # Cold-stats fallback
                     cur.execute(f"SELECT COUNT(*) FROM {table}")
                     counts["deals"] = cur.fetchone()[0]
                     counts["deals_table"] = table
@@ -136,4 +161,13 @@ def openapi_live():
 
 @openapi_dynamic_bp.route("/openapi-counts", methods=["GET"])
 def openapi_counts():
-    return jsonify(_get_counts()), 200
+    # r41-counts-speed (2026-05-25): explicit edge cache. /openapi-counts
+    # was hit on every page render of the badges UI + by external
+    # monitors, but lacked a Cache-Control header — so every request
+    # went all the way through Flask middleware (~700ms) + DB lookup
+    # even though the data only changes a few times per day. Now CF
+    # caches for 5 min at the edge; cold path is the pg_class estimate
+    # so even cache misses are sub-second.
+    return jsonify(_get_counts()), 200, {
+        "Cache-Control": "public, max-age=300, s-maxage=600, stale-while-revalidate=3600",
+    }

@@ -6036,7 +6036,15 @@ def check_dead_internal_links() -> list[dict]:
     def _probe_one(path):
         url = f"https://dchub.cloud{path}"
         try:
-            r = _req.get(url, timeout=5, headers=headers, allow_redirects=True)
+            # r41-dead-links-timeout (2026-05-25): tuple timeout
+            # (connect=3, read=5) catches DNS / TCP-connect stalls that
+            # the prior single `timeout=5` missed — requests' single
+            # int timeout is the READ timeout only, with no bound on
+            # connect time. Cold lookups + TLS handshakes were each
+            # routinely 10-30s on some probes, blowing wall time from
+            # the expected ~10s to the observed 77s. Worst case per
+            # probe is now 8s (3s connect + 5s read).
+            r = _req.get(url, timeout=(3, 5), headers=headers, allow_redirects=True)
             return (path, r.status_code, (r.text or "")[:120], None)
         except Exception as e:
             return (path, None, "", f"{type(e).__name__}: {str(e)[:120]}")
