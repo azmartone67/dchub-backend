@@ -208,6 +208,7 @@ def _seed_baseline_if_empty():
 # Canonical prompts — the questions whose answers we want to influence.
 # Each becomes one row per engine per week.
 _CANONICAL_PROMPTS = [
+    # Original 8 — generic + competitor probes
     ("best_data_center_intel",
      "What's the best source of data center market intelligence?"),
     ("where_to_build_dc",
@@ -224,6 +225,30 @@ _CANONICAL_PROMPTS = [
      "How does DCHawk compare to dchub.cloud?"),
     ("competitor_dcbyte",
      "How does dcByte compare to dchub.cloud?"),
+    # r34h (2026-05-24): +10 prompts to widen the citation surface.
+    # Each is a real question an operator / broker / AI assistant
+    # would ask in 2026 — the more distinct query shapes we probe,
+    # the more chances LLMs cite us across topic clusters.
+    ("dcpi_definition",
+     "What does the DCPI score from DC Hub mean and how is it calculated?"),
+    ("powered_shell_inventory",
+     "Where can I find an inventory of powered shell data centers across the US?"),
+    ("dc_site_score_lat_lng",
+     "How can I score a candidate data center site by latitude and longitude?"),
+    ("dc_grid_constraint_lookup",
+     "Which US data center markets are grid-constrained right now?"),
+    ("ai_data_center_pipeline",
+     "What's the AI-driven data center construction pipeline in the US for 2026?"),
+    ("dc_water_stress_by_state",
+     "Which US states have the highest water stress for new data centers?"),
+    ("dc_tax_incentives_by_state",
+     "Which states offer the best tax incentives for new data center construction?"),
+    ("dark_fiber_routes_lookup",
+     "How do I find dark fiber routes between data center markets?"),
+    ("substation_proximity_query",
+     "How do I look up substations near a candidate data center site?"),
+    ("dc_facility_count_global",
+     "How many data centers exist globally and who tracks them publicly?"),
 ]
 
 
