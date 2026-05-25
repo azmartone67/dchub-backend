@@ -23182,6 +23182,16 @@ try:
 except Exception as _lbod_e:
     print(f"[main] linkedin_best_of_day_bp register failed: {_lbod_e}", flush=True)
 
+# Phase ZZZZZ-round47.11 (2026-05-25): daily cross-post email — wraps
+# best-of-day in a one-click Resend SMTP email to the operator at
+# 21:30 UTC. Closes the loop on "share to personal feed daily".
+try:
+    from routes.cross_post_email import cross_post_email_bp
+    app.register_blueprint(cross_post_email_bp)
+    print("[main] cross_post_email_bp registered: /api/v1/linkedin-quad/email-best", flush=True)
+except Exception as _cpe_e:
+    print(f"[main] cross_post_email_bp register failed: {_cpe_e}", flush=True)
+
 # Phase ZZZZZ-round37.1 (2026-05-24): single cron heartbeat endpoint
 # Railway service-level cron only takes ONE expression, so collapse all
 # scheduled warmers behind a single HTTP endpoint that dispatches by UTC

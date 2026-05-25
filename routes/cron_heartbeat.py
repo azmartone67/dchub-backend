@@ -97,6 +97,37 @@ _DISPATCH = [
      f"{BASE}/api/v1/iso-queue/ingest",
      "POST",
      lambda now: now.hour == 6 and now.minute < 5),
+
+    # r47.11 (2026-05-25): LinkedIn quad rotation — 4 posts/day at fixed
+    # UTC slots 08/12/16/20. Endpoint internally filters by current UTC
+    # hour + idempotency-checks `linkedin_quad_posts.UNIQUE(slot_date,slot_hour)`,
+    # so calling at :00/:05 of slot hours is safe even if both fire.
+    # Without this entry, the quad only ran via manual force triggers and
+    # all 4 slots fired in one 4-minute burst (LinkedIn spam-throttled).
+    ("linkedin_quad_slot_08",
+     f"{BASE}/api/v1/linkedin-quad/run",
+     "POST",
+     lambda now: now.hour == 8 and now.minute < 10),
+    ("linkedin_quad_slot_12",
+     f"{BASE}/api/v1/linkedin-quad/run",
+     "POST",
+     lambda now: now.hour == 12 and now.minute < 10),
+    ("linkedin_quad_slot_16",
+     f"{BASE}/api/v1/linkedin-quad/run",
+     "POST",
+     lambda now: now.hour == 16 and now.minute < 10),
+    ("linkedin_quad_slot_20",
+     f"{BASE}/api/v1/linkedin-quad/run",
+     "POST",
+     lambda now: now.hour == 20 and now.minute < 10),
+
+    # r47.11 (2026-05-25): daily cross-post email — fires after slot_20
+    # so the email body contains the freshest post for the day's
+    # personal-feed reshare. 21:30 UTC = 4:30 PM ET / 5:30 PM CT.
+    ("cross_post_email_daily",
+     f"{BASE}/api/v1/linkedin-quad/email-best",
+     "POST",
+     lambda now: now.hour == 21 and now.minute >= 30 and now.minute < 35),
 ]
 
 
