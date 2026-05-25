@@ -18,8 +18,11 @@ Endpoint:
 import os
 import json
 import datetime
+import smtplib
 import urllib.request
 import urllib.error
+from email.mime.multipart import MIMEMultipart
+from email.mime.text import MIMEText
 from contextlib import contextmanager
 
 from flask import Blueprint, jsonify, request
@@ -95,34 +98,37 @@ def _build_email(lead):
 
 
 def _send_resend(to_email, subject, html, text):
-    body = json.dumps({
-        "from": f"{FROM_NAME} <{FROM_EMAIL}>",
-        "to":   [to_email],
-        "subject": subject,
-        "html": html,
-        "text": text,
-    }).encode()
-    req = urllib.request.Request(
-        "https://api.resend.com/emails",
-        data=body,
-        headers={
-            "Authorization": f"Bearer {RESEND_KEY}",
-            "Content-Type":  "application/json",
-            # r39.3 (2026-05-25): explicit UA — Cloudflare WAF on
-            # api.resend.com returns 1010 "banned signature" for urllib
-            # default UA. Mimic a real browser/API client.
-            "User-Agent":    "DCHub-Outreach/1.0 (+https://dchub.cloud; api@dchub.cloud)",
-            "Accept":        "application/json",
-        },
-        method="POST",
-    )
+    """r39.4 (2026-05-25): Resend via SMTP (port 587 + STARTTLS), NOT
+    HTTPS. The HTTPS API at api.resend.com is fronted by Cloudflare WAF
+    which 1010-bans Railway's static outbound IP (162.220.232.99).
+    SMTP bypasses HTTP WAF entirely. Resend supports SMTP with:
+      host:     smtp.resend.com
+      port:     587 (STARTTLS) or 465 (SSL)
+      username: resend  (literal)
+      password: <RESEND_API_KEY>
+    """
+    msg = MIMEMultipart("alternative")
+    msg["Subject"] = subject
+    msg["From"]    = f"{FROM_NAME} <{FROM_EMAIL}>"
+    msg["To"]      = to_email
+    msg.attach(MIMEText(text, "plain"))
+    msg.attach(MIMEText(html, "html"))
     try:
-        with urllib.request.urlopen(req, timeout=15) as resp:
-            return resp.status, resp.read(1024).decode("utf-8", "replace")
-    except urllib.error.HTTPError as e:
-        return e.code, e.read(1024).decode("utf-8", "replace")
+        with smtplib.SMTP("smtp.resend.com", 587, timeout=20) as srv:
+            srv.starttls()
+            srv.login("resend", RESEND_KEY)
+            srv.sendmail(FROM_EMAIL, [to_email], msg.as_string())
+        return 200, "smtp_send_ok"
+    except smtplib.SMTPAuthenticationError as e:
+        return 401, f"smtp_auth_failed: {e.smtp_code} {e.smtp_error[:120]}"
+    except smtplib.SMTPRecipientsRefused as e:
+        return 550, f"recipient_refused: {str(e)[:120]}"
+    except smtplib.SMTPDataError as e:
+        return e.smtp_code, f"smtp_data_error: {e.smtp_error[:120]}"
+    except smtplib.SMTPException as e:
+        return 500, f"smtp_error: {type(e).__name__}: {str(e)[:120]}"
     except Exception as e:
-        return 0, f"{type(e).__name__}: {e}"
+        return 0, f"{type(e).__name__}: {str(e)[:120]}"
 
 
 def _send_sendgrid(to_email, subject, html, text):
