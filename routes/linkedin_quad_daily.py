@@ -418,21 +418,54 @@ def run():
         return jsonify({"skipped": True, "reason": "already_posted_this_slot",
                          "slot": target_slot}), 200
 
-    # Build payload for the slot
-    if target_slot["topic"] == "dcpi_mover":
-        payload = _build_dcpi_mover()
-    elif target_slot["topic"] == "hyperscaler_deal":
-        payload = _build_hyperscaler_deal()
-    elif target_slot["topic"] == "ai_capex_index":
-        payload = _build_ai_capex_top5()
-    elif target_slot["topic"] == "industry_pulse":
-        payload = _build_industry_pulse()
-    else:
-        payload = {}
-
-    text = _format_post(target_slot, payload)
+    # r49 (2026-05-25): use the new Claude-composed content engine.
+    # Engine rotates through 6 story types (capability_spotlight,
+    # energy_narrative, dcpi_scoop, shipped_this_week, hyperscaler_drama,
+    # market_anomaly). Each pulls real DB data + asks Sonnet to compose
+    # a storytelling post in DC Hub's voice. Falls back to story-aware
+    # static templates if Anthropic API unavailable. Theme-diversity
+    # dedup tracks last 14d to avoid repeats.
+    #
+    # Per-slot story-type preferences (engine still varies within each):
+    #   dcpi_mover       → dcpi_scoop / market_anomaly / energy_narrative
+    #   hyperscaler_deal → hyperscaler_drama / capability_spotlight / shipped
+    #   ai_capex_index   → capability_spotlight / market_anomaly / dcpi_scoop
+    #   industry_pulse   → energy_narrative / hyperscaler_drama / shipped
+    payload = {}
+    text = None
     landing = LANDING_URL_MAP[target_slot["topic"]]
-    og_url = OG_IMAGE_MAP[target_slot["topic"]]
+    og_url  = OG_IMAGE_MAP[target_slot["topic"]]
+    try:
+        from routes.linkedin_content_engine import compose_story_post
+        composed = compose_story_post(slot_topic=target_slot["topic"])
+        text = composed.get("text")
+        # Engine returns its own landing + og_image per story-type —
+        # prefer those when available (more accurate match).
+        if composed.get("landing_url"):  landing = composed["landing_url"]
+        if composed.get("og_image_url"): og_url = composed["og_image_url"]
+        payload = {
+            "story_type": composed.get("story_type"),
+            "source":     composed.get("source"),
+            "data_used":  composed.get("data_used"),
+        }
+    except Exception as _e_eng:
+        # Engine itself errored — fall back to the legacy generators
+        if target_slot["topic"] == "dcpi_mover":
+            payload = _build_dcpi_mover()
+        elif target_slot["topic"] == "hyperscaler_deal":
+            payload = _build_hyperscaler_deal()
+        elif target_slot["topic"] == "ai_capex_index":
+            payload = _build_ai_capex_top5()
+        elif target_slot["topic"] == "industry_pulse":
+            payload = _build_industry_pulse()
+        else:
+            payload = {}
+        text = _format_post(target_slot, payload)
+        payload["engine_error"] = f"{type(_e_eng).__name__}: {str(_e_eng)[:120]}"
+
+    if not text:
+        # Absolute last resort
+        text = _format_post(target_slot, payload)
 
     # r48 (2026-05-25): 14-day content dedup. Even with per-slot
     # uniqueness, the same TEXT can repeat if upstream data is stale.
