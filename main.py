@@ -6816,21 +6816,37 @@ except Exception as e:
 try:
     from content_publisher import init_content_tables, start_auto_publisher
     init_content_tables()  # table init is idempotent + safe on both
-    if not IS_FAILOVER:
+    # r47.4 (2026-05-25): env-gate the spam-cluster auto-publisher. Was
+    # draining social_media_posts (17 queued, 67 published) every container
+    # restart — 44 "manual" type posts/day clustered at restart-times.
+    # LinkedIn algorithm throttles burst patterns. Quad rotation (4/day
+    # at fixed UTC slots via linkedin_quad_daily.py) is the desired
+    # behavior. Default OFF; set DCHUB_AUTOPUB_LEGACY=1 to re-enable.
+    _legacy_autopub = os.environ.get("DCHUB_AUTOPUB_LEGACY", "").strip() in ("1", "true", "yes")
+    if not IS_FAILOVER and _legacy_autopub:
         start_auto_publisher()
-        logger.info("✅ LinkedIn auto-publisher launched (Neon-migrated)")
-    else:
+        logger.info("✅ LinkedIn legacy auto-publisher launched (DCHUB_AUTOPUB_LEGACY=1)")
+    elif IS_FAILOVER:
         logger.info("⏸️ LinkedIn auto-publisher PAUSED (IS_FAILOVER=true)")
+    else:
+        logger.info("⏸️ LinkedIn legacy auto-publisher DISABLED — quad rotation (4/day fixed slots) is primary. Set DCHUB_AUTOPUB_LEGACY=1 to restore.")
 except Exception as e:
     logger.warning(f"⚠️ LinkedIn auto-publisher skipped: {e}")
 
 try:
     from content_publisher import start_twitter_publisher
-    if not IS_FAILOVER:
+    # r47.4 (2026-05-25): same env gate. X/Twitter publisher had the same
+    # restart-burst pattern. Currently no X-quad equivalent so this disables
+    # X posting entirely until DCHUB_AUTOPUB_LEGACY=1 — acceptable since
+    # X engagement was negligible.
+    _legacy_autopub_x = os.environ.get("DCHUB_AUTOPUB_LEGACY", "").strip() in ("1", "true", "yes")
+    if not IS_FAILOVER and _legacy_autopub_x:
         start_twitter_publisher()
-        logger.info("✅ Twitter/X auto-publisher launched (Neon-migrated)")
-    else:
+        logger.info("✅ Twitter/X legacy auto-publisher launched")
+    elif IS_FAILOVER:
         logger.info("⏸️ Twitter/X auto-publisher PAUSED (IS_FAILOVER=true)")
+    else:
+        logger.info("⏸️ Twitter/X legacy auto-publisher DISABLED — set DCHUB_AUTOPUB_LEGACY=1 to restore.")
 except Exception as e:
     logger.warning(f"⚠️ Twitter/X auto-publisher skipped: {e}")
 
@@ -23135,6 +23151,36 @@ try:
     print("[main] tax_incentives_bp registered: /tax-incentives", flush=True)
 except Exception as _ti_e:
     print(f"[main] tax_incentives_bp register failed: {_ti_e}", flush=True)
+
+# Phase ZZZZZ-round47.7-47.10 (2026-05-25): master shell
+#   /team           — founder bio + Brain v2 acknowledgment
+#   /case-studies   — auto-pulled press + deal proof (until named cases land)
+#   /api/v1/admin/outreach/mcp-registry/mark-defunct — cleanup endpoint
+#   /api/v1/linkedin-quad/best-of-day — cross-post helper for personal feed
+try:
+    from routes.team_landing import team_bp
+    app.register_blueprint(team_bp)
+    print("[main] team_bp registered: /team", flush=True)
+except Exception as _tm_e:
+    print(f"[main] team_bp register failed: {_tm_e}", flush=True)
+try:
+    from routes.case_studies_landing import case_studies_bp
+    app.register_blueprint(case_studies_bp)
+    print("[main] case_studies_bp registered: /case-studies", flush=True)
+except Exception as _cs_e:
+    print(f"[main] case_studies_bp register failed: {_cs_e}", flush=True)
+try:
+    from routes.mcp_registry_cleanup import mcp_registry_cleanup_bp
+    app.register_blueprint(mcp_registry_cleanup_bp)
+    print("[main] mcp_registry_cleanup_bp registered: defunct-list + mark-defunct", flush=True)
+except Exception as _mrc_e:
+    print(f"[main] mcp_registry_cleanup_bp register failed: {_mrc_e}", flush=True)
+try:
+    from routes.linkedin_best_of_day import linkedin_best_of_day_bp
+    app.register_blueprint(linkedin_best_of_day_bp)
+    print("[main] linkedin_best_of_day_bp registered: /api/v1/linkedin-quad/best-of-day", flush=True)
+except Exception as _lbod_e:
+    print(f"[main] linkedin_best_of_day_bp register failed: {_lbod_e}", flush=True)
 
 # Phase ZZZZZ-round37.1 (2026-05-24): single cron heartbeat endpoint
 # Railway service-level cron only takes ONE expression, so collapse all
