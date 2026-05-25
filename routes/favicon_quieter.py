@@ -13,6 +13,7 @@ from flask import Blueprint, redirect
 favicon_bp = Blueprint("favicon_quieter", __name__)
 
 
+# AUTO-REPAIR: duplicate route '/favicon.ico' also in main.py:14034 — review and remove one
 @favicon_bp.route("/favicon.ico")
 def favicon():
     # 301 redirect to dchub.cloud's canonical favicon — browsers cache the
