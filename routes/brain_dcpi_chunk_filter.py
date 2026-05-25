@@ -36,7 +36,7 @@ def true_health():
         return jsonify({**out, "error": "no_db"}), 200
     try:
         with _conn() as c, c.cursor(cursor_factory=psycopg2.extras.RealDictCursor) as cur:
-            cur.execute("""SELECT id, started_at, source, markets_scored, error_count FROM dcpi_runs WHERE started_at > NOW() - INTERVAL %s ORDER BY started_at DESC""", ("24 hours",))
+            cur.execute('''SELECT id, started_at, source, markets_scored, error_count FROM dcpi_runs WHERE started_at > NOW() - INTERVAL '24 hours' ORDER BY started_at DESC''')
             rows = cur.fetchall()
     except Exception as e:
         return jsonify({**out, "error": f"{type(e).__name__}: {str(e)[:140]}"}), 500

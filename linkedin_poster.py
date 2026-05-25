@@ -235,6 +235,13 @@ def _get_valid_token():
 def post_to_linkedin(text, link_url=None, link_title=None, link_desc=None, image_bytes=None):
 
     # Phase 194: optional image upload (UGC POST media asset flow)
+    # r44 (2026-05-25): LinkedIn deprecated digitalmediaAsset URNs in
+    # /v2/ugcPosts — now requires urn:li:image:* from the new Images API.
+    # Until that migration ships, skip image upload entirely. Posts go
+    # text-only with link preview (link_url still works).
+    if os.environ.get("LINKEDIN_SKIP_IMAGE_UPLOAD", "1") == "1":
+        image_bytes = None  # Force text-only path
+
     _image_urn = None
     if image_bytes is not None:
         try:
