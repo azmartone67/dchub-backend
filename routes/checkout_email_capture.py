@@ -129,7 +129,7 @@ _CAPTURE_HTML = """<!DOCTYPE html>
 <h1>One step before checkout</h1>
 <p class="lead">You're upgrading from <code>__TOOL__</code>. Leave your email so we can send your API key + receipt immediately after Stripe completes.</p>
 
-<form method="post" action="/pricing/checkout/submit">
+<form method="post" action="https://api.dchub.cloud/pricing/checkout/submit">
   <input type="hidden" name="tool" value="__TOOL__">
   <input type="hidden" name="tier" value="__TIER__">
   <label for="email">Work email</label>
