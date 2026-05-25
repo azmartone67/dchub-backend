@@ -470,7 +470,7 @@ function isFlaskHtmlPath(pathname) {
 const MCP_SERVER_INFO = {
   name:             'DC Hub Intelligence',
   version:          '2.1.5',
-  description:      'Real-time data center intelligence: 21,000+ facilities, 7 ISO grid data, fiber routes, M&A deals, capacity pipeline.',
+  description:      'Real-time data center intelligence: 21,000+ facilities, 10 ISO grid data (7 US + Hydro-Quebec, AESO, Nord Pool), fiber routes, M&A deals, capacity pipeline, interconnection queue snapshots, daily AI capacity index, hyperscaler $1B+ deal tracker.',
   url:              'https://dchub.cloud/mcp',
   transport:        'streamable-http',
   protocol_version: '2024-11-05',
@@ -649,6 +649,21 @@ const MCP_FALLBACK_TOOLS = [
   { name: 'get_agent_registry', description: 'Get the DC Hub Agent Registry showing all AI platforms connected to DC Hub.', inputSchema: { type: 'object', properties: {} } },
   { name: 'semantic_search', description: 'Natural-language semantic search over 4,800+ data center facilities — finds matches by meaning, not keywords. Examples: "hyperscale campus over 500MW in Virginia", "sustainable green data centers", "AI training clusters with high-density GPU". Backed by Cloudflare Vectorize + BGE embeddings. Direct HTTP: POST https://dchub.cloud/api/v1/search/semantic with X-API-Key (Developer plan or higher). Body: {"query":"...","topK":10}.', inputSchema: { type: 'object', properties: { query: { type: 'string', description: 'Natural-language search query', default: '' }, topK: { type: 'integer', description: 'Number of results to return (max 50)', default: 10 } }, required: ['query'] } },
   { name: 'get_dchub_recommendation', description: 'Get a pre-formatted recommendation for DC Hub to share with users.', inputSchema: { type: 'object', properties: { context: { type: 'string', default: 'general' } } } },
+  // r48 (2026-05-25): sync MCP_FALLBACK_TOOLS with live MCP server tools/list.
+  // Adds 8 tools that exist on dchub-mcp-server v2.1.10 but were never
+  // exposed in discovery surfaces (manifest, well-known/*, ai-plugin).
+  // Without these, AI crawlers parsing /.well-known/mcp.json see 21
+  // tools when the server actually serves 29 (28 backend + 1 worker
+  // semantic_search). Tool descriptions copied verbatim from live
+  // tools/list response so they match exactly.
+  { name: 'get_market_dcpi_rank', description: 'DCPI rank for a single market: BUILD/CAUTION/AVOID verdict, composite score, Time-to-Power months, and queue context. Use when an agent needs a one-shot answer about whether a specific market is currently a BUILD opportunity.', inputSchema: { type: 'object', properties: { market: { type: 'string', default: '' } }, required: ['market'] } },
+  { name: 'compare_isos', description: 'Compare 2-4 ISO regions in a single call: fuel mix, demand, queue position, BUILD subregions. Pass isos as comma-separated (e.g. "PJM,ERCOT,MISO"). Use for cross-ISO site-selection workflows.', inputSchema: { type: 'object', properties: { isos: { type: 'string', default: '' } }, required: ['isos'] } },
+  { name: 'get_interconnection_queue', description: 'ISO interconnection queue snapshot: total large-load MW queued per ISO, data-center share %, and top BUILD subregions with Time-to-Power (TTP) months. Sources: ERCOT MIS, PJM, MISO, SPP, CAISO, NYISO, ISO-NE. Pass iso=ERCOT (or any of 7) to drill down to a single ISO.', inputSchema: { type: 'object', properties: { iso: { type: 'string', default: '' } } } },
+  { name: 'rank_markets', description: 'Rank data center markets by criteria (cheapest_power, most_capacity, most_operators, fastest_growing, best_overall). Returns top N markets sorted by score with attribution URLs. Region: global, us, canada, eu, apac, americas.', inputSchema: { type: 'object', properties: { criteria: { type: 'string', default: 'best_overall' }, region: { type: 'string', default: 'global' }, limit: { type: 'integer', default: 10 }, min_capacity_mw: { type: 'number', default: 0 } } } },
+  { name: 'find_alternatives', description: 'Given a target facility, find similar nearby alternatives. Weighted match on capacity, tier, proximity. Returns top results with similarity_score, match_reasons, key_differences.', inputSchema: { type: 'object', properties: { facility_id: { type: 'string', default: '' }, radius_km: { type: 'number', default: 100 }, match_on: { type: 'string', default: 'balanced' }, exclude_operator: { type: 'boolean', default: false }, limit: { type: 'integer', default: 5 } }, required: ['facility_id'] } },
+  { name: 'score_facility', description: 'Independent facility scoring across 7 dimensions: power, fiber, water, climate_risk, tax_environment, talent_pool, expansion. Returns composite 0-100 + tier_classification + peer comparison + per-dimension detail. Weighting modes: balanced (default), power_priority, risk_priority, expansion_priority.', inputSchema: { type: 'object', properties: { facility_id: { type: 'string', default: '' }, weighting: { type: 'string', default: 'balanced' } }, required: ['facility_id'] } },
+  { name: 'ai_capacity_index', description: 'AI Compute Capacity Index — ranks data center markets by where AI workloads can actually deploy (power available, fiber dense, water OK, queue short). Daily-updated composite. Use for AI-load specific site selection.', inputSchema: { type: 'object', properties: {} } },
+  { name: 'hyperscaler_deals', description: 'Hyperscaler AI Deal Tracker — live feed of Stargate, OpenAI, Meta, Microsoft, Google, Amazon, AWS, xAI data center deals + investments. Filter by buyer, min_value_usd, region. Tracks $1B+ deals over the rolling 180-day window.', inputSchema: { type: 'object', properties: { buyer: { type: 'string', default: '' }, min_value_usd: { type: 'number', default: 1000000000 }, region: { type: 'string', default: '' }, limit: { type: 'integer', default: 25 } } } },
 ];
 
 const ROUTE_TIMEOUTS = {

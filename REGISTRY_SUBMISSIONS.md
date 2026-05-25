@@ -12,12 +12,27 @@ canonical metadata from the top section across all of them.
 Name:            DC Hub Intelligence
 URL:             https://dchub.cloud/mcp
 Transport:       streamable-http
+Server version:  2.1.10 (dchub-mcp-server)
 Description:     Real-time data center intelligence — 21,000+ facilities
-                 across 140+ countries, 7 ISO grid data, fiber routes,
-                 $324B+ M&A transactions, interconnection queue snapshots,
-                 daily AI capacity index. Used for site selection, market
-                 analysis, and capacity tracking.
-Tool count:      21 (20 backend + 1 worker-served semantic_search)
+                 across 140+ countries, 10 ISO grid data (7 US ISOs +
+                 Hydro-Quebec, AESO, Nord Pool), fiber routes, $324B+
+                 M&A transactions, interconnection queue snapshots,
+                 daily AI capacity index, hyperscaler $1B+ deal tracker,
+                 BUILD/CAUTION/AVOID DCPI verdicts per market. Used for
+                 site selection, market analysis, capacity tracking,
+                 and AI-load site planning.
+Tool count:      29 (28 backend + 1 worker-served semantic_search)
+Tools highlight: search_facilities, get_market_intel, get_market_dcpi_rank,
+                 compare_isos, get_intelligence_index, list_transactions,
+                 get_news, get_pipeline, get_interconnection_queue,
+                 get_grid_data, analyze_site, compare_sites,
+                 get_infrastructure, get_fiber_intel, get_energy_prices,
+                 get_renewable_energy, get_tax_incentives, get_water_risk,
+                 get_grid_intelligence, get_agent_registry,
+                 get_backup_status, get_dchub_recommendation,
+                 rank_markets, find_alternatives, score_facility,
+                 ai_capacity_index, hyperscaler_deals, get_facility,
+                 semantic_search (worker-served, Vectorize-backed)
 Authentication:  Optional X-API-Key header
                  - Anonymous: 10 calls/day
                  - Free dev key (60-sec email signup): 1,000 calls/day
@@ -90,7 +105,7 @@ PR template (likely a JSON file in their registry directory):
   "url": "https://dchub.cloud/mcp",
   "transport": "streamable-http",
   "description": "Real-time data center intelligence — 21,000+ facilities, 7 ISO grid data, M&A transactions, fiber routes, interconnection queue snapshots, daily AI capacity index.",
-  "tools_count": 21,
+  "tools_count": 29,
   "auth": {
     "type": "api_key_header",
     "header": "X-API-Key",
