@@ -57,10 +57,14 @@ TIER_PRICE_LABEL = {
 }
 
 
-def resolve_tier(tool: str, tier_param: str) -> str:
-    """Pick the right tier — explicit param wins, then tool lookup, then default."""
+def resolve_tier(tool: str, tier_param: str, budget_hint: str = "") -> str:
+    """Pick the right tier — explicit param wins, then budget hint, then tool lookup,
+    then default. r45.1 (2026-05-25): added budget hint for downsell flow."""
     if tier_param and tier_param.lower() in STRIPE_LINKS:
         return tier_param.lower()
+    # r45.1: ?budget=tight, ?budget=cheap, ?intent=starter → starter ($9/mo)
+    if budget_hint and budget_hint.lower() in ("tight", "cheap", "starter", "low"):
+        return "starter"
     if tool and tool in TOOL_TIER_MAP:
         return TOOL_TIER_MAP[tool]
     return "developer"

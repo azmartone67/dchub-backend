@@ -130,6 +130,10 @@ _CAPTURE_HTML = """<!DOCTYPE html>
 </div>
 
 <a class="skip" href="__STRIPE_URL__">Skip email — go straight to Stripe →</a>
+
+<div class="pane" style="background:#fef3c7;border-color:#fbbf24;margin-top:14px;font-size:.85rem">
+  💡 <b>Not ready for __TIER_LABEL__?</b> Start with <b>Starter — $9/mo</b>: same data sample as Developer, lighter cap. <a href="https://api.dchub.cloud/pricing/checkout/start?tier=starter&tool=__TOOL__" style="color:#92400e;font-weight:600">Switch to Starter →</a>
+</div>
 </body></html>"""
 
 
@@ -139,7 +143,7 @@ def start():
     tier_param = (request.args.get("tier") or "").strip()
     tier = _resolve_tier(tool, tier_param)
     stripe_url = STRIPE_LINKS[tier]
-    price = {"starter":"$19/mo","developer":"$49/mo","pro":"$199/mo","enterprise":"Custom"}.get(tier, "—")
+    price = {"starter":"$9/mo","developer":"$49/mo","pro":"$199/mo","enterprise":"Custom"}.get(tier, "—")
     html = (_CAPTURE_HTML
             .replace("__TOOL__", tool or "MCP")
             .replace("__TIER__", tier)
