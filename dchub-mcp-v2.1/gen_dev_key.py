@@ -47,7 +47,7 @@ def cmd_mint(args):
         cur.execute(
             """INSERT INTO mcp_dev_keys
                  (api_key, developer_id, email, tier, status, metadata)
-               VALUES (%s, %s, %s, %s, 'active', %s::jsonb)""",
+               VALUES (%s, %s, %s, %s, 'active', %s::jsonb) ON CONFLICT DO NOTHING""",
             (api_key, developer_id, args.email, args.tier, json.dumps(metadata)),
         )
 
