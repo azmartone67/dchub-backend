@@ -1205,7 +1205,7 @@ _FAST_HEALTH_HEADERS = [
     ('Cache-Control', 'no-store'),
     ('X-Fast-Path', 'wsgi-health'),
 ]
-_FAST_HEALTH_PATHS = frozenset(['/health', '/alive'])
+_FAST_HEALTH_PATHS = frozenset(['/health', '/alive', '/healthz', '/livez', '/readyz'])
 
 
 def _make_fast_health_wsgi(downstream):
