@@ -153,6 +153,7 @@ def process_pending():
     return jsonify(out), 200
 
 
+# AUTO-REPAIR: duplicate route '/status' also in ai_orchestrator.py:911 — review and remove one
 @lead_enrich_bp.route("/status", methods=["GET"])
 def status():
     out = {
