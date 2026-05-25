@@ -161,6 +161,7 @@ def _send_sendgrid(to_email, subject, html, text):
         return 0, f"{type(e).__name__}: {e}"
 
 
+# AUTO-REPAIR: duplicate route '/process-pending' also in routes/lead_enrichment.py:110 — review and remove one
 @outreach_cron_bp.route("/process-pending", methods=["POST", "GET"])
 def process_pending():
     started = datetime.datetime.utcnow()
@@ -265,6 +266,7 @@ def process_pending():
     out["elapsed_ms"] = int((datetime.datetime.utcnow() - started).total_seconds() * 1000)
     return jsonify(out), 200 if out["failed"] == 0 else 207
 
+# AUTO-REPAIR: duplicate route '/status' also in ai_orchestrator.py:911 — review and remove one
 
 @outreach_cron_bp.route("/status", methods=["GET"])
 def status():
