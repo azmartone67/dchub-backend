@@ -184,7 +184,7 @@ def submit():
                 cur.execute("""
                     INSERT INTO identified_checkout_signals
                       (email, tool, tier, stripe_url, user_agent, ip)
-                    VALUES (%s, %s, %s, %s, %s, %s)
+                    VALUES (%s, %s, %s, %s, %s, %s) ON CONFLICT DO NOTHING
                 """, (email, tool or None, tier, stripe_url, ua, ip))
                 c.commit()
         except Exception:
