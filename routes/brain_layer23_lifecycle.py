@@ -827,6 +827,40 @@ def _audit_unique_sessions() -> dict:
     }
 
 
+def _audit_internal_bot_storm() -> dict:
+    """r51 (2026-05-25): detect when our own probes are DOSing Railway.
+
+    Reads the internal-bot circuit-breaker's state and flags weak if
+    ANY bucket is currently over the rate limit. The breaker itself
+    auto-protects the origin, but the audit surface tells the brain
+    'a probe is misconfigured — fix the cron, not just throttle it.'
+
+    User-reported symptom this catches: platform-wide 503s caused by
+    one cron firing too often. Without this audit, the only signal
+    was Cloudflare 429s in a separate dashboard.
+    """
+    state = _call_internal("/api/v1/admin/internal-bot-cb")
+    if isinstance(state, _AuditUnavailable):
+        return {
+            "ok": True,
+            "verdict": "circuit-breaker-not-deployed-yet",
+            "_source_result": state,
+        }
+    buckets = state.get("buckets") or {}
+    over_limit_buckets = [
+        b for b, info in buckets.items()
+        if info.get("over_limit")
+    ]
+    return {
+        "ok": len(over_limit_buckets) == 0,
+        "limit_per_min":     state.get("limit_per_min"),
+        "buckets_tracked":   len(buckets),
+        "buckets_over_limit": over_limit_buckets,
+        "verdict": ("storming" if over_limit_buckets else "healthy"),
+        "_source_result": None,
+    }
+
+
 def _audit_tool_conversion_health() -> dict:
     """r41 (2026-05-25): demand-trapped tools — agents WANT them but
     can't convert past the paywall.
@@ -907,6 +941,8 @@ def _run_full_audit(force: bool = False) -> dict:
         "self_pruning":           _audit_self_pruning,
         # r46 (2026-05-25): competitive position on MCP ecosystem
         "ecosystem_position":     _audit_ecosystem_position,
+        # r51 (2026-05-25): detect our own probes DOSing Railway
+        "internal_bot_storm":     _audit_internal_bot_storm,
     }
     audits: dict = {}
     try:
@@ -1053,6 +1089,11 @@ def _short_recommendation(dim: str, result: dict) -> str:
                 f"{result.get('expected_total')} watched MCP registries "
                 f"(competitors visible in {result.get('competitors_visible_in')}). "
                 f"Submit via PATCHES/REGISTRY_SUBMISSIONS_r45/ drafts.")
+    if dim == "internal_bot_storm":
+        buckets = result.get("buckets_over_limit") or []
+        return (f"internal probes DOSing Railway — buckets over limit: {buckets}. "
+                f"Reduce cron frequency or back-off interval for these UAs. "
+                f"This is the brain detecting its own probes hammer the origin.")
     return "see full audit JSON"
 
 

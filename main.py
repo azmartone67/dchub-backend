@@ -24030,6 +24030,35 @@ try:
 except Exception as _ssw_e:
     print(f"[main] surveillance_sweep wiring failed: {_ssw_e}", file=sys.stderr, flush=True)
 
+# r51 (2026-05-25): internal-bot circuit breaker. Diagnosed root cause
+# of the platform-wide 503 storm — our own probes (151k req/day from
+# a single IP) were hammering Railway, getting 429 back, then real
+# user traffic competed for the same capacity and 503'd. The breaker
+# returns 429 to internal UAs that exceed 30 req/min so they back off
+# instead of monopolizing the origin.
+try:
+    from routes.internal_bot_circuit_breaker import (
+        register_internal_bot_circuit_breaker, get_circuit_breaker_state)
+    register_internal_bot_circuit_breaker(app)
+    # Observability endpoint — admin-keyed
+    @app.route('/api/v1/admin/internal-bot-cb', methods=['GET'])
+    def _internal_bot_cb_state():
+        return jsonify(get_circuit_breaker_state()), 200
+    print("[main] internal_bot_circuit_breaker attached", flush=True)
+except Exception as _cbe:
+    print(f"[main] internal_bot_circuit_breaker wiring failed: {_cbe}", file=sys.stderr, flush=True)
+
+# r51-B (2026-05-25): missing facilities/by-market + /by-provider
+# endpoints that /ai-inventory and other pages fetch + 404 today.
+# Plus /api/v1/stats/canonical — single truth source so homepage,
+# /daily, Gemini, and AI agents stop disagreeing about facility count.
+try:
+    from routes.facilities_by_dims import facilities_by_dims_bp
+    app.register_blueprint(facilities_by_dims_bp)
+    print("[main] facilities_by_dims_bp registered: /by-market /by-provider /stats/canonical", flush=True)
+except Exception as _fbde:
+    print(f"[main] facilities_by_dims wiring failed: {_fbde}", file=sys.stderr, flush=True)
+
 # Phase r32 (2026-05-24): Media as a living organism — single vital-
 # signs rollup composing press cadence + LinkedIn velocity + source-of-
 # truth + topic pulse + journalist outreach + winback into ONE 0-100
