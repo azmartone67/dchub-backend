@@ -1210,9 +1210,14 @@ _FAST_HEALTH_PATHS = frozenset(['/health', '/alive', '/healthz', '/livez', '/rea
 
 def _make_fast_health_wsgi(downstream):
     def _wsgi(environ, start_response):
-        if (environ.get('REQUEST_METHOD') == 'GET'
+        # r46.5: include HEAD — CF Pages does HEAD probes for cache validation
+        # and saw 48.4s tail latency through Flask routing (caused 522s).
+        if (environ.get('REQUEST_METHOD') in ('GET', 'HEAD')
                 and environ.get('PATH_INFO') in _FAST_HEALTH_PATHS):
             start_response('200 OK', _FAST_HEALTH_HEADERS)
+            # HEAD returns empty body per HTTP semantics
+            if environ.get('REQUEST_METHOD') == 'HEAD':
+                return [b'']
             return [_FAST_HEALTH_BODY]
         return downstream(environ, start_response)
     return _wsgi
@@ -23145,26 +23150,10 @@ except Exception as _lq_e:
 # r45 (2026-05-25): explicit per-blueprint registration (batch loop in r44
 # was failing silently — Flask blueprint name conflicts get swallowed).
 
-try:
-    from routes.linkedin_token_reset import linkedin_token_reset_bp
-    app.register_blueprint(linkedin_token_reset_bp)
-    print("[main] linkedin_token_reset_bp registered", flush=True)
-except Exception as _e:
-    print(f"[main] linkedin_token_reset_bp register failed: {_e}", flush=True)
-
-try:
-    from routes.brain_dcpi_chunk_filter import brain_dcpi_filter_bp
-    app.register_blueprint(brain_dcpi_filter_bp)
-    print("[main] brain_dcpi_filter_bp registered", flush=True)
-except Exception as _e:
-    print(f"[main] brain_dcpi_filter_bp register failed: {_e}", flush=True)
-
-try:
-    from routes.hyperscaler_reclassify import hyperscaler_reclassify_bp
-    app.register_blueprint(hyperscaler_reclassify_bp)
-    print("[main] hyperscaler_reclassify_bp registered", flush=True)
-except Exception as _e:
-    print(f"[main] hyperscaler_reclassify_bp register failed: {_e}", flush=True)
+# r46.5 (2026-05-25): linkedin_token_reset/brain_dcpi_filter/hyperscaler_reclassify
+# removed from this block — they're re-registered below under their Phase-ZZZZZ-round43
+# blocks with more descriptive log messages. Keeping both caused
+# "blueprint name already registered" startup errors x3.
 
 try:
     from routes.market_intel_preview import market_intel_preview_bp

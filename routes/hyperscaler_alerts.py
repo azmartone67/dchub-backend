@@ -259,15 +259,19 @@ def sweep():
                     # r41.1: simplified LIKE filter (regex with backslashes in
                     # psycopg2 f-string was failing silently). Catches "$10B",
                     # "$10 billion", "10 billion", "$1.5B" etc.
-                    cur.execute(f"""
+                    # r46.5: use raw f-string to avoid SyntaxWarning on \$.
+                    # The $ is a literal char in SQL LIKE — no escape needed —
+                    # but earlier rounds left \$ in place and Python warned on
+                    # every boot. rf""" silences the warning.
+                    cur.execute(rf"""
                         SELECT id, title, source, url, published_date,
                                COALESCE({col_summary}, '') AS body
                         FROM news
                         WHERE (LOWER(title) LIKE '%%billion%%'
                             OR LOWER(title) LIKE '%%trillion%%'
                             OR LOWER(title) LIKE '%% b %%'
-                            OR LOWER(title) LIKE '%%\$%%b%%'
-                            OR LOWER(title) LIKE '%%\$%%m%%')
+                            OR LOWER(title) LIKE '%%$%%b%%'
+                            OR LOWER(title) LIKE '%%$%%m%%')
                           AND published_date > CURRENT_DATE - INTERVAL '14 days'
                         ORDER BY published_date DESC LIMIT 200
                     """)
