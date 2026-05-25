@@ -295,8 +295,21 @@ def post_to_linkedin(text, link_url=None, link_title=None, link_desc=None, image
         "lifecycleState": "PUBLISHED",
     }
 
-    # Add article attachment if link provided
-    if link_url:
+    # r48 (2026-05-25) BUG FIX: when image_bytes was provided AND uploaded
+    # successfully (_image_urn populated), attach it to the post. Without
+    # this block the upload happened but the URN was orphaned — every
+    # post went out TEXT-ONLY despite the image upload "succeeding".
+    # Image takes priority over article link (LinkedIn can't have both).
+    if _image_urn:
+        payload["content"] = {
+            "media": {
+                "id": _image_urn,
+                "title": link_title or "DC Hub · Data Center Intelligence",
+                "altText": link_desc or "DC Hub Media — data-center intelligence",
+            }
+        }
+    # Add article attachment if no image but link provided
+    elif link_url:
         payload["content"] = {
             "article": {
                 "source": link_url,

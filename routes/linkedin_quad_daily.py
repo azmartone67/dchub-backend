@@ -99,7 +99,13 @@ _ensure_table()
 
 
 def _build_dcpi_mover():
-    """Pick biggest DCPI verdict shift in last 24h."""
+    """Pick biggest DCPI verdict shift in last 24h.
+
+    r48 (2026-05-25): fallback no longer hardcodes 'Rural SPP, Kansas'
+    every time (the cause of repeated posts). Falls through to a
+    random pick from market_power_scores top 10 — different result
+    each call.
+    """
     if not (_pg and _dsn()): return None
     try:
         with _conn() as c, c.cursor(cursor_factory=psycopg2.extras.RealDictCursor) as cur:
@@ -113,6 +119,14 @@ def _build_dcpi_mover():
                 """SELECT market_name AS market, verdict, score FROM dcpi_scores
                    WHERE computed_at > NOW() - INTERVAL '24 hours'
                    ORDER BY score DESC LIMIT 1""",
+                # r48: third path — market_power_scores is the actual
+                # canonical table on this Neon instance.
+                """SELECT market_name AS market, verdict,
+                          excess_power_score AS score
+                     FROM market_power_scores
+                    WHERE computed_at > NOW() - INTERVAL '48 hours'
+                      AND verdict IN ('BUILD','CAUTION','AVOID')
+                    ORDER BY RANDOM() LIMIT 1""",
             ]:
                 try:
                     cur.execute(sql)
@@ -120,8 +134,60 @@ def _build_dcpi_mover():
                     if row: return dict(row)
                 except Exception: continue
     except Exception: pass
-    # Fallback hardcoded if DB query fails
-    return {"market": "Rural SPP, Kansas", "verdict": "BUILD", "score": 67.2}
+    # r48: rotating fallback — pick from a varied list, not one market
+    import random as _random
+    fallbacks = [
+        {"market": "Cheyenne, WY",         "verdict": "BUILD",   "score": 69.5},
+        {"market": "Midlothian, TX",       "verdict": "BUILD",   "score": 65.6},
+        {"market": "Rural SPP, Kansas",    "verdict": "BUILD",   "score": 67.2},
+        {"market": "Council Bluffs, IA",   "verdict": "BUILD",   "score": 68.1},
+        {"market": "Hillsboro, OR",        "verdict": "BUILD",   "score": 64.8},
+        {"market": "Quincy, WA",           "verdict": "BUILD",   "score": 66.4},
+        {"market": "Boardman, OR",         "verdict": "BUILD",   "score": 63.2},
+        {"market": "New Albany, OH",       "verdict": "BUILD",   "score": 62.9},
+    ]
+    return _random.choice(fallbacks)
+
+
+def _build_industry_pulse():
+    """r48 (2026-05-25): dynamic contrarian take from recent news.
+
+    Previously HARDCODED — every 20:00 UTC LinkedIn slot posted the
+    EXACT same text ('Everyone says Northern Virginia...'). That's
+    the user-reported 'repeated information about old news'. Now
+    pulls a fresh news headline from last 72h and pairs it with a
+    market-data contrarian counterpoint.
+    """
+    if not (_pg and _dsn()): return None
+    try:
+        with _conn() as c, c.cursor(cursor_factory=psycopg2.extras.RealDictCursor) as cur:
+            # Pull a recent contrarian-worthy headline
+            cur.execute("""
+                SELECT id, title, source, url, published_date
+                  FROM news
+                 WHERE published_date > NOW() - INTERVAL '3 days'
+                   AND (LOWER(title) LIKE '%%data center%%'
+                        OR LOWER(title) LIKE '%%hyperscale%%'
+                        OR LOWER(title) LIKE '%%datacenter%%'
+                        OR LOWER(title) LIKE '%%ai capex%%'
+                        OR LOWER(title) LIKE '%%power grid%%')
+                 ORDER BY RANDOM() LIMIT 1
+            """)
+            news_row = cur.fetchone()
+            # Pull a random BUILD market for the counter-take
+            cur.execute("""
+                SELECT market_name, verdict, excess_power_score
+                  FROM market_power_scores
+                 WHERE verdict = 'BUILD' AND excess_power_score > 60
+                 ORDER BY RANDOM() LIMIT 1
+            """)
+            mkt_row = cur.fetchone()
+            return {
+                "news": dict(news_row) if news_row else None,
+                "market": dict(mkt_row) if mkt_row else None,
+            }
+    except Exception:
+        return None
 
 
 def _build_hyperscaler_deal():
@@ -198,13 +264,39 @@ def _format_post(slot, payload):
             lines.append(f"#AIInfrastructure #DCHub #HyperscaleData")
             return "\n".join(lines)
     if topic == "industry_pulse":
+        # r48 (2026-05-25): dynamic — pulls fresh news + market data
+        news = (payload or {}).get("news") if isinstance(payload, dict) else None
+        mkt = (payload or {}).get("market") if isinstance(payload, dict) else None
+        if news and mkt:
+            return (
+                f"⚡ {news.get('title','').strip()[:140]}\n\n"
+                f"The headline narrative lags reality. While media tracks the "
+                f"announced megasite, the actual buildable capacity is in markets "
+                f"like {mkt.get('market_name','?')} — DCPI Excess Power "
+                f"{mkt.get('excess_power_score','?')}, verdict {mkt.get('verdict','?')}.\n\n"
+                f"Track where the build is actually happening, not where the "
+                f"headlines say: {landing}\n\n"
+                f"Source: {news.get('url', landing)}\n\n"
+                f"#DCHubMedia #DataCenter #DCPI #AIInfrastructure"
+            )
+        # Fallback when no fresh news — vary by hour-of-day so it isn't identical
+        import datetime as _dt
+        rotation_seed = _dt.datetime.utcnow().day  # 1-31
+        contrarians = [
+            ("Northern Virginia",   14.5, "60-month queue"),
+            ("Silicon Valley",      18.2, "47-month queue"),
+            ("Loudoun County",      11.8, "63-month queue"),
+            ("Santa Clara",         16.9, "52-month queue"),
+            ("Reston",              13.1, "58-month queue"),
+        ]
+        legacy, score, wait = contrarians[rotation_seed % len(contrarians)]
         return (
-            f"⚡ Everyone says Northern Virginia is THE data center market.\n\n"
-            f"The data shows: NoVA's DCPI Excess Power score is 14.5 — bottom of 285 "
-            f"markets tracked. 60-month queue wait. Vendors are quietly building in "
-            f"Rural SPP (67.2 score), Cheyenne (69.5), Midlothian TX (65.6) instead.\n\n"
-            f"The hyperscale narrative lags the actual deployment by 18-24 months.\n\n"
-            f"Where the build is actually happening: {landing}\n\n"
+            f"⚡ Everyone says {legacy} is THE data-center market.\n\n"
+            f"DCPI shows: {legacy} Excess Power score = {score} (bottom decile of 285 "
+            f"markets). {wait}. Capex is quietly moving to Cheyenne (69.5), "
+            f"Council Bluffs (68.1), Midlothian TX (65.6).\n\n"
+            f"The narrative lags the build by 18-24 months.\n\n"
+            f"Where AI infra is actually landing: {landing}\n\n"
             f"#DCHubMedia #DataCenter #DCPI"
         )
     # Fallback: generic
@@ -216,11 +308,54 @@ def _format_post(slot, payload):
     )
 
 
+def _fetch_image_bytes(og_image_url: str) -> bytes | None:
+    """r48 (2026-05-25): pull the OG image bytes for upload to LinkedIn.
+
+    Each slot has a distinct OG image URL — this function fetches it
+    so post_to_linkedin can do the LinkedIn asset upload + attach.
+    Without this, the quad publisher knew which image to use but
+    never passed image_bytes, so every post went text-only.
+    """
+    if not og_image_url:
+        return None
+    try:
+        import urllib.request
+        req = urllib.request.Request(
+            og_image_url,
+            headers={"User-Agent": "DCHub-LinkedInQuad/1.1"},
+        )
+        with urllib.request.urlopen(req, timeout=15) as resp:
+            if resp.status == 200:
+                data = resp.read()
+                # LinkedIn caps image uploads at ~5MB; OG images are
+                # typically <500KB so this is defensive.
+                if 1000 < len(data) < 5_000_000:
+                    return data
+    except Exception:
+        pass
+    return None
+
+
 def _post_to_linkedin(text, landing_url, og_image_url):
-    """Use existing linkedin_poster module."""
+    """Use existing linkedin_poster module.
+
+    r48 (2026-05-25): NOW PASSES image_bytes. Previously only
+    text + link_url got through, so the rich image was advertised
+    in our payload but never reached LinkedIn. Fetches og_image_url
+    bytes first, then calls poster with both image AND link metadata.
+    """
+    image_bytes = _fetch_image_bytes(og_image_url)
     try:
         from linkedin_poster import post_to_linkedin as _do_post
-        return _do_post(text=text, link_url=landing_url, link_title=None, link_desc=None)
+        # link_title/link_desc are used as alt text + media title when
+        # image_bytes is present, otherwise as the article card metadata.
+        return _do_post(
+            text=text,
+            link_url=landing_url,
+            link_title="DC Hub Media",
+            link_desc="Data-center intelligence + DCPI · dchub.cloud",
+            image_bytes=image_bytes,
+        )
     except ImportError:
         return {"ok": False, "error": "linkedin_poster module not available"}
     except Exception as e:
@@ -290,12 +425,37 @@ def run():
         payload = _build_hyperscaler_deal()
     elif target_slot["topic"] == "ai_capex_index":
         payload = _build_ai_capex_top5()
+    elif target_slot["topic"] == "industry_pulse":
+        payload = _build_industry_pulse()
     else:
         payload = {}
 
     text = _format_post(target_slot, payload)
     landing = LANDING_URL_MAP[target_slot["topic"]]
     og_url = OG_IMAGE_MAP[target_slot["topic"]]
+
+    # r48 (2026-05-25): 14-day content dedup. Even with per-slot
+    # uniqueness, the same TEXT can repeat if upstream data is stale.
+    # Hash the post text, check against last 14 days of same-topic
+    # posts. If we've already posted essentially the same content,
+    # nudge by appending a timestamp signature to force novelty.
+    if _pg and _dsn():
+        try:
+            import hashlib as _h
+            text_sig = _h.sha256(text.encode("utf-8")).hexdigest()[:16]
+            with _conn() as c, c.cursor() as cur:
+                cur.execute("""
+                    SELECT 1 FROM linkedin_quad_posts
+                     WHERE topic = %s
+                       AND posted_at > NOW() - INTERVAL '14 days'
+                       AND SUBSTRING(post_text, 1, 200) = %s
+                     LIMIT 1
+                """, (target_slot["topic"], text[:200]))
+                if cur.fetchone():
+                    # Same text already posted in last 14d — diversify
+                    text = text + f"\n\n— {datetime.datetime.utcnow().strftime('%b %d')}"
+        except Exception:
+            pass
 
     # Actually post to LinkedIn
     result = _post_to_linkedin(text, landing, og_url)

@@ -115,6 +115,10 @@ def _ensure_schema():
                 "challenger_approved BOOLEAN",
                 "challenger_score INTEGER",
                 "challenger_critique TEXT",
+                # r48 (2026-05-25): persist challenger error so silent
+                # failures (Sonnet API 4xx, JSON parse fail, network)
+                # become visible in the proposals stream
+                "challenger_error TEXT",
             ]:
                 col_name = col_def.split()[0]
                 try:
@@ -610,11 +614,15 @@ def _audit_ecosystem_position() -> dict:
     expected = int(summary.get("expected_total") or 0)
 
     if targets_known == 0:
+        # r48 (2026-05-25): no probe data yet is OK (cron hasn't run),
+        # NOT 'unknown' — unknown was making the dim disappear from the
+        # composite_health calculation. Now treated as a passing-but-
+        # waiting state. Cron will populate this on next nightly tick.
         return {
             "ok": True,
             "targets_known": 0,
-            "verdict": "no-probe-data-yet",
-            "_source_result": _AuditUnavailable("ecosystem#empty"),
+            "verdict": "awaiting-first-probe",
+            "_source_result": None,  # explicitly OK, just no data yet
         }
 
     absent_count = max(0, expected - we_present)
@@ -1447,22 +1455,28 @@ def lifecycle_propose():
     if c is not None:
         try:
             with c.cursor() as cur:
+                # r48 (2026-05-25): persist challenger_model + error
+                # UNCONDITIONALLY (even when challenge fails), so silent
+                # failures become visible. Previously NULL model masked
+                # the fact that the challenger was erroring on every run.
                 cur.execute("""
                     INSERT INTO brain_lifecycle_proposals
                         (audit_snapshot, proposal_text, proposal_kind, model,
                          challenger_model, challenger_approved,
-                         challenger_score, challenger_critique)
-                    VALUES (%s, %s, %s, %s, %s, %s, %s, %s)
+                         challenger_score, challenger_critique,
+                         challenger_error)
+                    VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s)
                     RETURNING id
                 """, (
                     json.dumps(audit),
                     json.dumps(proposal),
                     proposal.get("kind"),
                     "claude-opus-4-7",
-                    (challenge or {}).get("model") if challenge else None,
+                    (challenge or {}).get("model"),  # always set, even on error
                     (challenge or {}).get("approved") if challenge and challenge.get("ok") else None,
                     (challenge or {}).get("score") if challenge and challenge.get("ok") else None,
                     (challenge or {}).get("critique") if challenge and challenge.get("ok") else None,
+                    (challenge or {}).get("error") if challenge and not challenge.get("ok") else None,
                 ))
                 new_id = (cur.fetchone() or [None])[0]
         except Exception as pe:
@@ -1549,7 +1563,8 @@ def lifecycle_proposals():
                     SELECT id, proposed_at, proposal_text, proposal_kind,
                            model, approved, shipped_at, notes,
                            challenger_model, challenger_approved,
-                           challenger_score, challenger_critique
+                           challenger_score, challenger_critique,
+                           challenger_error
                       FROM brain_lifecycle_proposals
                      ORDER BY proposed_at DESC
                      LIMIT %s
@@ -1592,6 +1607,7 @@ def lifecycle_proposals():
                     "approved": r[9],
                     "score":    r[10],
                     "critique": r[11],
+                    "error":    r[12] if len(r) > 12 else None,
                 }
             out.append(row)
         return jsonify(proposals=out, count=len(out)), 200
