@@ -22856,6 +22856,26 @@ try:
 except Exception as _dcpia_e:
     print(f"[main] dcpi compare alias failed: {_dcpia_e}", file=sys.stderr)
 
+# r36 (2026-05-25): canonical citation MCP tool — every AI platform
+# calling our MCP gets the SAME citation block (inline / footnote /
+# academic / press / dcpi) so quotations of DC Hub data look uniform
+# across model outputs. Moat work for AI-citations dashboard.
+try:
+    from routes.mcp_citation import mcp_citation_bp
+    app.register_blueprint(mcp_citation_bp)
+except Exception as _mccit_e:
+    print(f"[main] mcp_citation wiring failed: {_mccit_e}", file=sys.stderr)
+
+# r36 (2026-05-25): explainDCPI MCP tool — returns methodology +
+# per-component weights + verdict logic + plain-English summary
+# for any DCPI market. Companion to getDCPI (the score) so LLMs
+# can answer "why is Phoenix BUILD?" with grounded reasoning.
+try:
+    from routes.mcp_explain_dcpi import mcp_explain_dcpi_bp
+    app.register_blueprint(mcp_explain_dcpi_bp)
+except Exception as _mcedcpi_e:
+    print(f"[main] mcp_explain_dcpi wiring failed: {_mcedcpi_e}", file=sys.stderr)
+
 # phase 109E: register DCPI digest
 app.register_blueprint(dcpi_digest_bp)
 

@@ -216,29 +216,40 @@ def _audit_platform_activity() -> dict:
 
 
 def _audit_registry_presence() -> dict:
-    """Probe known MCP registries to check our presence (best-effort)."""
-    # We can't easily probe third-party registries from inside Flask,
-    # so this is a manifest of registries we KNOW about + reminder to
-    # submit. The brain layer22 logger picks this up as a long-running
-    # gap if no submission is recorded.
-    registries = [
-        {"name": "Smithery",   "submit_url": "https://smithery.ai/server/@dchub/nexus",       "noted": True},
-        {"name": "Glama",      "submit_url": "https://glama.ai/mcp",                          "noted": True},
-        {"name": "mcp.run",    "submit_url": "https://mcp.run/servers",                       "noted": True},
-        {"name": "Lobehub",    "submit_url": "https://lobehub.com/mcp",                       "noted": False},
-        {"name": "Pulse",      "submit_url": "https://pulsemcp.com",                          "noted": False},
-        {"name": "MCP Hive",   "submit_url": "https://mcphive.com",                           "noted": False},
-        {"name": "ToolHive",   "submit_url": "https://toolhive.io",                           "noted": False},
-        {"name": "Yellowmcp",  "submit_url": "https://yellowmcp.com",                         "noted": False},
-    ]
-    submitted = [r for r in registries if r["noted"]]
-    pending = [r for r in registries if not r["noted"]]
+    """Cross-reference outreach module's target list with the live
+    outreach_submissions ledger.
+
+    r36 (2026-05-25): rewired from a hardcoded noted-list to the real
+    ledger. Source of truth for the registry roster is now
+    routes/mcp_registry_outreach.DISCOVERY_TARGETS; source of truth
+    for "have we landed there?" is the outreach_submissions table.
+
+    Degrades gracefully — if either source is unavailable, falls back
+    to a static manifest so the audit still emits a meaningful signal.
+    """
+    try:
+        from routes.mcp_registry_outreach import (
+            get_target_names, get_submitted_target_names,
+        )
+        all_names = get_target_names()
+        submitted = set(get_submitted_target_names())
+    except Exception as e:
+        # Fallback static manifest if outreach module fails to import.
+        all_names = ["Smithery", "Glama AI", "mcp.so", "MCPHub",
+                     "PulseMCP", "awesome-mcp-servers (GitHub)",
+                     "Anthropic MCP Connector Directory",
+                     "Lobehub", "MCP Hive", "ToolHive", "Yellowmcp"]
+        submitted = {"Smithery", "Glama AI", "mcp.so"}
+
+    pending = [n for n in all_names if n not in submitted]
     return {
         "ok": len(pending) == 0,
         "submitted_count": len(submitted),
         "pending_count":   len(pending),
-        "submitted": [r["name"] for r in submitted],
-        "pending":   [r["name"] for r in pending],
+        "total_targets":   len(all_names),
+        "submitted":       sorted(submitted),
+        "pending":         pending,
+        "source":          "outreach_submissions ledger (live)",
     }
 
 

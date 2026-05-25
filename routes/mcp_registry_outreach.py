@@ -151,7 +151,106 @@ DISCOVERY_TARGETS = [
         "audit_signal":None,
         "description": "Anthropic's curated directory. No public submission API; sales outreach pending.",
     },
+    # r36 (2026-05-25): Added the 4 registries L23 lifecycle audit
+    # flagged missing. Submission methods are best-effort — most of
+    # these directories don't expose a programmatic submit endpoint, so
+    # 'manual' is the default and the cron logs a 'manual_pending'
+    # outcome rather than blowing up.
+    {
+        "key":         "lobehub",
+        "name":        "Lobehub",
+        "homepage":    "https://lobehub.com/mcp",
+        "submit_url":  "https://lobehub.com/mcp/submit",
+        "submit_method":"manual",
+        "manual_url":  "https://lobehub.com/mcp/submit",
+        "audit_url":   "https://lobehub.com/mcp/dchub",
+        "audit_signal":"DC Hub",
+        "audit_browser_ua": True,
+        "description": "Lobehub MCP directory. Pending submission.",
+    },
+    {
+        "key":         "mcp_hive",
+        "name":        "MCP Hive",
+        "homepage":    "https://mcphive.com",
+        "submit_url":  "https://mcphive.com/submit",
+        "submit_method":"manual",
+        "manual_url":  "https://mcphive.com/submit",
+        "audit_url":   "https://mcphive.com/servers/dchub",
+        "audit_signal":"DC Hub",
+        "audit_browser_ua": True,
+        "description": "MCP Hive aggregator. Pending submission.",
+    },
+    {
+        "key":         "toolhive",
+        "name":        "ToolHive",
+        "homepage":    "https://toolhive.io",
+        "submit_url":  "https://toolhive.io/submit",
+        "submit_method":"manual",
+        "manual_url":  "https://toolhive.io/submit",
+        "audit_url":   "https://toolhive.io/tools/dchub",
+        "audit_signal":"DC Hub",
+        "audit_browser_ua": True,
+        "description": "ToolHive directory. Pending submission.",
+    },
+    {
+        "key":         "yellowmcp",
+        "name":        "Yellowmcp",
+        "homepage":    "https://yellowmcp.com",
+        "submit_url":  "https://yellowmcp.com/submit",
+        "submit_method":"manual",
+        "manual_url":  "https://yellowmcp.com/submit",
+        "audit_url":   "https://yellowmcp.com/servers/dchub",
+        "audit_signal":"DC Hub",
+        "audit_browser_ua": True,
+        "description": "Yellowmcp catalog. Pending submission.",
+    },
 ]
+
+
+# r36 (2026-05-25): exposed for lifecycle L23 audit (cross-references
+# the live ledger instead of relying on a hardcoded noted-list).
+def get_target_names() -> list[str]:
+    """Names of all discovery targets known to this module."""
+    return [t["name"] for t in DISCOVERY_TARGETS]
+
+
+def get_submitted_target_names() -> list[str]:
+    """Names of targets we're confident are LIVE on the registry.
+
+    Two sources combined:
+      1. Targets marked `submit_method='refresh_only'` are
+         pre-confirmed listings (we manually verified live + the
+         DISCOVERY_TARGETS comment block records the listing URL).
+      2. Any target with a ledger row whose outcome signals presence
+         (success | verified | listed | audit_pass | refresh_ok).
+
+    Best-effort — returns refresh_only set on DB error so the audit
+    still emits useful pending vs. submitted ratios.
+    """
+    confirmed = {t["name"] for t in DISCOVERY_TARGETS
+                 if t.get("submit_method") == "refresh_only"}
+
+    conn = _db()
+    if not conn:
+        return sorted(confirmed)
+    try:
+        with conn, conn.cursor() as cur:
+            cur.execute(
+                """SELECT DISTINCT target_name
+                   FROM outreach_submissions
+                   WHERE outcome IN ('success', 'verified', 'listed',
+                                     'audit_pass', 'refresh_ok')"""
+            )
+            for (name,) in cur.fetchall():
+                confirmed.add(name)
+    except Exception:
+        pass
+    finally:
+        try:
+            conn.close()
+        except Exception:
+            pass
+    return sorted(confirmed)
 
 
 # ──────────────────────────────────────────────────────────────────
