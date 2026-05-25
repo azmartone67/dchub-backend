@@ -29,7 +29,7 @@ stripe_direct_bp = Blueprint("stripe_direct_upgrade", __name__)
 STRIPE_LINKS = {
     "starter":    "https://buy.stripe.com/8x2dRa5sS0x75uteGuaZi0g",
     "developer":  "https://buy.stripe.com/7sY5kE8F4fs13ml0PEaZi0c",
-    "pro":        "https://buy.stripe.com/dRm7sM6wW7Zz1edgOCaZi07",
+    "pro":        "https://buy.stripe.com/eVq5kE4oOfs13mleGuaZi0h",
     "enterprise": "https://buy.stripe.com/fZueVe5sS6Vv7CB41QaZi0a",
 }
 
