@@ -36,7 +36,10 @@ outreach_cron_bp = Blueprint("outreach_cron", __name__,
 # Env-var driven provider selection
 RESEND_KEY    = os.environ.get("RESEND_API_KEY", "").strip()
 SENDGRID_KEY  = os.environ.get("SENDGRID_API_KEY", "").strip()
-FROM_EMAIL    = os.environ.get("OUTREACH_FROM_EMAIL", "api@dchub.cloud").strip()
+# Default sender: onboarding@resend.dev works WITHOUT domain verification
+# (Resend allows sends from their test domain for any account). Once
+# dchub.cloud is verified in Resend dashboard, set OUTREACH_FROM_EMAIL=api@dchub.cloud
+FROM_EMAIL    = os.environ.get("OUTREACH_FROM_EMAIL", "onboarding@resend.dev").strip()
 FROM_NAME     = os.environ.get("OUTREACH_FROM_NAME", "DC Hub").strip()
 
 
