@@ -156,6 +156,14 @@ CREATE TABLE IF NOT EXISTS mcp_growth_snapshots (
 );
 CREATE INDEX IF NOT EXISTS ix_mcp_growth_snapshot_date
     ON mcp_growth_snapshots(snapshot_date DESC);
+
+-- r44 (2026-05-25): add session_id column to mcp_tool_calls.
+-- Modern MCP transport passes Mcp-Session-Id as an HTTP header;
+-- we capture it at write time so unique_sessions_7d becomes a real
+-- moat metric even when UA + clientInfo are empty.
+ALTER TABLE mcp_tool_calls ADD COLUMN IF NOT EXISTS session_id TEXT;
+CREATE INDEX IF NOT EXISTS ix_mcp_tool_calls_session_id
+    ON mcp_tool_calls (session_id) WHERE session_id IS NOT NULL;
 """
 
 def _ensure_schema():
@@ -246,6 +254,36 @@ def _compute_growth() -> dict:
                 out["unique_ips_7d"] = int((cur.fetchone() or {"n":0})["n"] or 0)
             except Exception:
                 pass
+
+            # ── r44 (2026-05-25): Unique MCP sessions (7d, 30d) ──
+            # session_id now captured from Mcp-Session-Id HTTP header at
+            # write time. Real moat metric independent of UA / clientInfo:
+            # counts how many distinct MCP clients are pinging us, even
+            # when none identify themselves. Filters null + obvious test
+            # placeholders ('test','demo','anonymous').
+            try:
+                cur.execute("""
+                    SELECT
+                      COUNT(DISTINCT session_id) FILTER (
+                        WHERE created_at >= NOW() - INTERVAL '7 days'
+                          AND session_id IS NOT NULL
+                          AND session_id NOT IN ('test','demo','anonymous','')
+                      ) AS sessions_7d,
+                      COUNT(DISTINCT session_id) FILTER (
+                        WHERE created_at >= NOW() - INTERVAL '30 days'
+                          AND session_id IS NOT NULL
+                          AND session_id NOT IN ('test','demo','anonymous','')
+                      ) AS sessions_30d
+                      FROM mcp_tool_calls
+                """)
+                row = cur.fetchone() or {}
+                out["unique_sessions_7d"] = int(row.get("sessions_7d") or 0)
+                out["unique_sessions_30d"] = int(row.get("sessions_30d") or 0)
+            except Exception:
+                # Column won't exist until the ALTER TABLE in _SCHEMA_DDL
+                # has run — degrade silently.
+                out["unique_sessions_7d"] = None
+                out["unique_sessions_30d"] = None
 
             # ── Signals + conversions ──
             try:

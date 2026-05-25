@@ -36,13 +36,16 @@ from flask import Blueprint, jsonify, current_app, request
 media_organism_bp = Blueprint("media_organism", __name__)
 
 
-# r39 (2026-05-25): 60s in-memory cache. The organism rollup composes
-# 6 test_client calls (each one its own DB query); under load the
-# whole compose runs 9-15s. Without this cache, the L23 audit + the
-# dashboard + the hourly cron all triggered fresh composes back-to-
-# back. Cache turns repeat hits into ~0ms returns.
+# r39 (2026-05-25): in-memory cache. The organism rollup composes
+# 7 test_client calls (each one its own DB query); under load the
+# whole compose runs 9-18s.
+# r44 (2026-05-25): TTL bumped 60s → 300s to align with the L23
+# audit's 5-min cache. The hourly media-organism-tick cron pre-warms
+# this; with 5-min TTL the audit nearly always hits warm. Worst-case
+# stale of organism data on dashboards is 5min — acceptable for a
+# moat-health rollup metric.
 _ORGANISM_CACHE: dict = {"at": 0.0, "value": None}
-_ORGANISM_TTL = 60.0
+_ORGANISM_TTL = 300.0
 
 
 def _call(tc, path):

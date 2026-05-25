@@ -551,7 +551,18 @@ def track_tool_call():
     # present). Recover real attribution by joining on session_id.
     _r_platform = str(body.get("platform") or "").strip()
     _r_client = str(body.get("client_name") or body.get("client") or "").strip()
-    _r_session = body.get("session_id")
+    # r44 (2026-05-25): prefer the modern Mcp-Session-Id HTTP header
+    # (per MCP transport spec) over the body field. Modern MCP clients
+    # send the session identity in headers; older proxies also pass it
+    # in body. Take header first, body as fallback. Stable across all
+    # tool calls from the same client → unique session count is now a
+    # real attribution metric.
+    _r_session = (
+        request.headers.get("Mcp-Session-Id")
+        or request.headers.get("mcp-session-id")
+        or request.headers.get("X-Mcp-Session-Id")
+        or body.get("session_id")
+    )
     _GENERIC = ("", "mcp", "mcp-worker", "unknown", "anonymous")
 
     # Phase XX (2026-05-16): UUID detection. The funnel showed 5 of the
@@ -634,11 +645,14 @@ def track_tool_call():
             #
             # Now: prefer real client_name → client → 'unknown'. Never
             # leak transport plumbing IDs into analytics.
+            # r44 (2026-05-25): store session_id from Mcp-Session-Id
+            # header (captured into _r_session above). Column added via
+            # mcp_growth._SCHEMA_DDL ALTER ... ADD COLUMN IF NOT EXISTS.
             _c_lt.execute(
                 """INSERT INTO mcp_tool_calls
                        (tool_name, platform, client_name, params, success,
-                        response_time_ms, ip_address, user_agent)
-                   VALUES (%s, %s, %s, %s, %s, %s, %s, %s)""",
+                        response_time_ms, ip_address, user_agent, session_id)
+                   VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s)""",
                 (
                     str(tool)[:200],
                     (_r_platform or 'mcp-worker')[:80],
@@ -648,6 +662,7 @@ def track_tool_call():
                     int((body.get('duration_ms') or body.get('response_time_ms') or 0) or 0),
                     (request.headers.get('X-Forwarded-For') or request.remote_addr or '')[:64],
                     (request.headers.get('User-Agent') or '')[:300],
+                    (str(_r_session)[:200] if _r_session else None),
                 )
             )
             _db_lt.commit()
