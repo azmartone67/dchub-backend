@@ -374,17 +374,28 @@ def derive_verdict(constraint: float, excess: float) -> str:
     return "AVOID"
 
 
-def derive_composite_score(excess, constraint, ttp_months):
+def derive_composite_score(excess, constraint, ttp_months, verdict=None):
     """Single-number 0-100 ranking score derived from the three published
-    DCPI components. Mirrors derive_verdict's logic: high excess +
-    low constraint + fast time-to-power = high composite.
+    DCPI components, with a verdict-aware quality multiplier.
 
     r41-dcpi-composite (2026-05-25): added so AI agents calling
     /api/v1/dcpi/scores can sort markets by a single sortable value
     without having to recombine the components themselves. The verdict
-    field (BUILD/CAUTION/AVOID) gives the headline, the composite gives
-    the rank. Deterministic from the three already-published fields —
-    no DB schema change, no recompute needed.
+    field (BUILD/CAUTION/AVOID/LOW_SIGNAL) gives the headline, the
+    composite gives the rank.
+
+    r41.1 (2026-05-25): added verdict multiplier. Without it, a market
+    with missing data showing as constraint=0/ttp=0 (i.e. LOW_SIGNAL)
+    scored 80.8 — above legitimate BUILD markets at 73.1, because the
+    formula couldn't distinguish 'no constraints' from 'no data'. The
+    verdict layer already knows which markets are trustworthy, so we
+    use it as the quality gate:
+
+      BUILD:      1.00 (full weight — trusted, actionable)
+      CAUTION:    0.85 (slight discount — trusted but bordered)
+      AVOID:      0.60 (penalty — known issues)
+      LOW_SIGNAL: 0.35 (heavy penalty — data integrity unknown)
+      else/null:  1.00 (no verdict yet — neutral, trust components)
 
     Weights match the verdict thresholds:
       excess_power_score:   60% (primary signal in derive_verdict)
@@ -394,7 +405,14 @@ def derive_composite_score(excess, constraint, ttp_months):
     e = float(excess or 0)
     c = float(constraint or 0)
     t = min(float(ttp_months or 0), 60.0)
-    composite = (e * 0.6) + ((100 - c) * 0.3) + ((1 - t / 60.0) * 100 * 0.1)
+    raw = (e * 0.6) + ((100 - c) * 0.3) + ((1 - t / 60.0) * 100 * 0.1)
+    multiplier = {
+        'BUILD':      1.00,
+        'CAUTION':    0.85,
+        'AVOID':      0.60,
+        'LOW_SIGNAL': 0.35,
+    }.get((verdict or '').upper(), 1.00)
+    composite = raw * multiplier
     return round(max(0.0, min(100.0, composite)), 1)
 
 
@@ -842,10 +860,12 @@ def api_scores():
         # r41-dcpi-composite (2026-05-25): include a sortable single-number
         # composite_score so agents can rank markets without recombining
         # the three components themselves. See derive_composite_score().
+        # r41.1: pass verdict so LOW_SIGNAL markets don't outrank trusted ones.
         r["composite_score"] = derive_composite_score(
             r.get("excess_power_score"),
             r.get("constraint_score"),
             r.get("time_to_power_months"),
+            r.get("verdict"),
         )
 
     # Phase MM Bundle 9: apply filters (server-side instead of client-side).
@@ -951,10 +971,12 @@ def api_score_market(slug):
     if row.get("computed_at"): row["computed_at"] = row["computed_at"].isoformat()
     # r41-dcpi-composite (2026-05-25): include sortable composite_score
     # alongside the existing component scores for consistency with /scores.
+    # r41.1: verdict-aware so LOW_SIGNAL markets don't outrank trusted ones.
     row["composite_score"] = derive_composite_score(
         row.get("excess_power_score"),
         row.get("constraint_score"),
         row.get("time_to_power_months"),
+        row.get("verdict"),
     )
     return jsonify(row), 200
 
