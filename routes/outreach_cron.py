@@ -242,6 +242,7 @@ def process_pending():
         out["results"].append({
             "id": lead["id"], "email": email, "status": status,
             "ok": ok, "provider": provider,
+            "error_body": body[:300] if not ok else None,  # r39.2 — surface Resend error
         })
 
     out["elapsed_ms"] = int((datetime.datetime.utcnow() - started).total_seconds() * 1000)
