@@ -75,6 +75,7 @@ def _trigger_auto_generate(force_topic=None):
         return {"status": 0, "error": f"{type(e).__name__}: {str(e)[:140]}"}
 
 
+# AUTO-REPAIR: duplicate route '/run' also in ai_orchestrator.py:916 — review and remove one
 @press_restart_bp.route("/run", methods=["GET", "POST"])
 def run():
     """Cron-callable. Generates press release if cadence too low."""
@@ -101,6 +102,7 @@ def run():
         "at": datetime.datetime.utcnow().isoformat() + "Z",
     }), 200
 
+# AUTO-REPAIR: duplicate route '/status' also in ai_orchestrator.py:911 — review and remove one
 
 @press_restart_bp.route("/status", methods=["GET"])
 def status():
