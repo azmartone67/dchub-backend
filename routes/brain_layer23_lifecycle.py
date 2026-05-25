@@ -416,6 +416,31 @@ def _audit_value_shipped() -> dict:
     }
 
 
+def _audit_tool_conversion_health() -> dict:
+    """r41 (2026-05-25): demand-trapped tools — agents WANT them but
+    can't convert past the paywall.
+
+    /api/v1/mcp/growth surfaces tools_with_zero_conversions (50+ paywall
+    signals from a single user with 0 conversions). High-demand tools
+    stuck at the paywall are pure leakage: identified product-market
+    fit + a pricing/CTA problem. Each trapped tool = a slot in the
+    funnel we're not filling.
+
+    'weak' when count > 5 trapped tools (sustained leakage). Below
+    that is normal market exploration.
+    """
+    growth = _call_internal("/api/v1/mcp/growth")
+    trapped = growth.get("tools_with_zero_conversions") or []
+    n = len(trapped) if isinstance(trapped, list) else 0
+    return {
+        "ok": n <= 5,
+        "trapped_count": n,
+        "trapped_tools": (trapped[:8] if isinstance(trapped, list) else None),
+        "verdict": "leaking" if n > 5 else ("watch" if n > 2 else "healthy"),
+        "_source_result": growth if isinstance(growth, _AuditUnavailable) else None,
+    }
+
+
 # r38 (2026-05-25): module-level cache so repeated /findings hits
 # within 5min reuse the audit result. _run_full_audit takes ~17s
 # (10 sequential test_client calls); without this cache, the
@@ -442,16 +467,18 @@ def _run_full_audit(force: bool = False) -> dict:
 
     t0 = time.time()
     audits = {
-        "server_card_drift":   _audit_server_card_drift(),
-        "ai_citations_trend":  _audit_ai_citations_trend(),
-        "press_cadence":       _audit_press_cadence(),
-        "topic_pulse":         _audit_topic_pulse_health(),
-        "platform_activity":   _audit_platform_activity(),
-        "registry_presence":   _audit_registry_presence(),
-        "brain_vocab":         _audit_brain_vocab_growth(),
-        "organism":            _audit_organism(),
-        "page_integrity":      _audit_page_integrity(),
-        "value_shipped":       _audit_value_shipped(),
+        "server_card_drift":      _audit_server_card_drift(),
+        "ai_citations_trend":     _audit_ai_citations_trend(),
+        "press_cadence":          _audit_press_cadence(),
+        "topic_pulse":            _audit_topic_pulse_health(),
+        "platform_activity":      _audit_platform_activity(),
+        "registry_presence":      _audit_registry_presence(),
+        "brain_vocab":            _audit_brain_vocab_growth(),
+        "organism":               _audit_organism(),
+        "page_integrity":         _audit_page_integrity(),
+        "value_shipped":          _audit_value_shipped(),
+        # r41 (2026-05-25): demand-trapped tools — paywall leakage
+        "tool_conversion_health": _audit_tool_conversion_health(),
     }
     # Per-dim status — ok / weak / unknown. Findings only includes
     # 'weak' (actionable). 'unknown' surfaces as an audit-level
@@ -524,6 +551,11 @@ def _short_recommendation(dim: str, result: dict) -> str:
         return f"page integrity {result.get('site_score')}/100, breakdown={result.get('breakdown')}"
     if dim == "value_shipped":
         return f"brain shipped only {result.get('total_7d')}/7d — investigate why cycle slowed"
+    if dim == "tool_conversion_health":
+        trapped = result.get("trapped_tools") or []
+        names = [(t.get("tool") if isinstance(t, dict) else str(t)) for t in trapped[:5]]
+        return (f"{result.get('trapped_count')} tools demand-trapped at paywall "
+                f"(50+ signals, 0 conversions). Top: {names}. Pricing/CTA work needed.")
     return "see full audit JSON"
 
 
@@ -708,12 +740,59 @@ def lifecycle_propose():
             try: c.close()
             except Exception: pass
 
+    # r41 (2026-05-25): autonomy bridge. When the caller passes
+    # ?auto_issue=1 (admin gated, default OFF), hand the Opus proposal
+    # to L22 auto-code which opens a GitHub Issue for it. Closes the
+    # lifecycle loop: brain audits → brain proposes → brain drafts
+    # an implementation request. Issue is the unit of work the human
+    # reviews; PR follow-through is L22's next iteration.
+    issue_result = None
+    auto_issue = (request.args.get("auto_issue") or "").lower() in ("1", "true", "yes")
+    if auto_issue:
+        try:
+            from routes.brain_layer22_auto_code import _draft_pr
+            kind = (proposal.get("kind") or "lifecycle_capability")
+            ttl = (proposal.get("title")
+                   or f"[brain-l23] New capability proposal: {kind}")
+            body = (
+                "**Auto-drafted by Brain L23 Lifecycle Curator**\n"
+                "([routes/brain_layer23_lifecycle.py]"
+                "(https://github.com/azmartone67/dchub-backend/blob/main/routes/brain_layer23_lifecycle.py))\n\n"
+                "> [!NOTE]\n"
+                "> Opus 4.7 (reasoning tier) proposed this capability based\n"
+                "> on the moat audit below. Human review required before\n"
+                "> implementation. This is a SEED, not a PR.\n\n"
+                "## Proposal\n"
+                f"```json\n{json.dumps(proposal, indent=2)[:3500]}\n```\n\n"
+                "## Triggering audit findings\n"
+                f"composite_health={audit.get('composite_health')}\n"
+                f"weak_dims={[f['dim'] for f in (audit.get('findings') or [])]}\n"
+                f"unknown_dims={audit.get('unknown_dims')}\n\n"
+                "## Provenance\n"
+                f"proposal_id (DB): {new_id}\n"
+                f"model: claude-opus-4-7\n"
+                f"audit_generated_at: {audit.get('generated_at')}\n"
+                "\nFull audit JSON: /api/v1/brain/lifecycle/findings?force=1\n"
+                "Proposal stream: /api/v1/brain/lifecycle/proposals\n"
+            )
+            draft = {
+                "recipe": "lifecycle_capability_seed",
+                "title": ttl[:120],
+                "body": body,
+                "labels": ["brain-l23-lifecycle", "capability-proposal",
+                           f"kind-{kind[:30]}"],
+            }
+            issue_result = _draft_pr(draft, dry_run=False)
+        except Exception as ie:
+            issue_result = {"ok": False, "error": f"{type(ie).__name__}: {str(ie)[:160]}"}
+
     return jsonify(
         ok=True,
         proposal_id=new_id,
         proposal=proposal,
         audit_findings=audit.get("findings"),
         composite_health=audit.get("composite_health"),
+        issue_drafted=issue_result,
     ), 200
 
 
