@@ -1178,6 +1178,47 @@ except Exception as _e:
 app = Flask(__name__, static_folder='static', static_url_path='/static')
 
 
+# ─────────────────────────────────────────────────────────────
+# r41-fast-health (2026-05-25): WSGI-level fast path for /health
+# and /alive. Bypasses Flask routing + the 7 before_request hooks
+# + 4 after_request hooks + Werkzeug URL matching (which iterates
+# through ~2000 registered routes). Measured baseline pre-fix was
+# ~670ms server-side on a literal `return {"status":"ok"}`. The
+# overhead was cumulative middleware cost on every request, not
+# one expensive thing.
+#
+# Liveness probes (Railway healthcheckPath, external monitors)
+# now resolve in <5ms, freeing thread capacity for real requests.
+# Critically: when the radar/discovery cycles tie up most of the
+# 16 gthread workers, /health continues to return instantly so
+# Railway's container-restart logic doesn't trigger a false
+# unhealthy → restart loop.
+#
+# Only matches exact paths /health and /alive. Anything else
+# (including /health/deep, /api/health, /health.json) falls
+# through to Flask normally.
+# ─────────────────────────────────────────────────────────────
+_FAST_HEALTH_BODY = b'{"status":"ok"}'
+_FAST_HEALTH_HEADERS = [
+    ('Content-Type', 'application/json'),
+    ('Content-Length', str(len(_FAST_HEALTH_BODY))),
+    ('Cache-Control', 'no-store'),
+    ('X-Fast-Path', 'wsgi-health'),
+]
+_FAST_HEALTH_PATHS = frozenset(['/health', '/alive'])
+
+
+def _make_fast_health_wsgi(downstream):
+    def _wsgi(environ, start_response):
+        if (environ.get('REQUEST_METHOD') == 'GET'
+                and environ.get('PATH_INFO') in _FAST_HEALTH_PATHS):
+            start_response('200 OK', _FAST_HEALTH_HEADERS)
+            return [_FAST_HEALTH_BODY]
+        return downstream(environ, start_response)
+    return _wsgi
+
+
+app.wsgi_app = _make_fast_health_wsgi(app.wsgi_app)
 
 
 
