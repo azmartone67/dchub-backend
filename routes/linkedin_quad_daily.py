@@ -339,23 +339,42 @@ def _fetch_image_bytes(og_image_url: str) -> bytes | None:
 def _post_to_linkedin(text, landing_url, og_image_url):
     """Use existing linkedin_poster module.
 
-    r48 (2026-05-25): NOW PASSES image_bytes. Previously only
-    text + link_url got through, so the rich image was advertised
-    in our payload but never reached LinkedIn. Fetches og_image_url
-    bytes first, then calls poster with both image AND link metadata.
+    r48 (2026-05-25): NOW PASSES image_bytes.
+    r50.3 (2026-05-25): NORMALIZE return to dict. linkedin_poster.
+      post_to_linkedin returns a (ok, dict) TUPLE, but downstream
+      _record + the JSON response both expect a dict with .get('ok')
+      / .get('post_urn') / .get('error'). The tuple shape caused
+      _record's AttributeError-on-.get-of-tuple to be silently
+      swallowed, so successful posts never updated the DB row
+      (status endpoint kept reporting the old failed state).
     """
     image_bytes = _fetch_image_bytes(og_image_url)
     try:
         from linkedin_poster import post_to_linkedin as _do_post
         # link_title/link_desc are used as alt text + media title when
         # image_bytes is present, otherwise as the article card metadata.
-        return _do_post(
+        raw = _do_post(
             text=text,
             link_url=landing_url,
             link_title="DC Hub Media",
             link_desc="Data-center intelligence + DCPI · dchub.cloud",
             image_bytes=image_bytes,
         )
+        # Normalize: tuple → dict
+        if isinstance(raw, tuple) and len(raw) == 2:
+            ok, meta = raw
+            meta = meta or {}
+            return {
+                "ok":       bool(ok),
+                "urn":      meta.get("post_urn") or meta.get("urn") or meta.get("id"),
+                "post_urn": meta.get("post_urn"),
+                "status":   meta.get("status"),
+                "error":    meta.get("error", ""),
+            }
+        # Already a dict (or unexpected shape)
+        if isinstance(raw, dict):
+            return raw
+        return {"ok": False, "error": f"unexpected return shape: {type(raw).__name__}"}
     except ImportError:
         return {"ok": False, "error": "linkedin_poster module not available"}
     except Exception as e:
