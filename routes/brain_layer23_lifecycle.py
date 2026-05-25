@@ -119,6 +119,65 @@ def _ensure_schema():
                     )
                 except Exception:
                     pass
+            # r45 (2026-05-25): lifecycle health history — snapshots
+            # composite_health every audit run so the brain can detect
+            # its own moat trajectory over time, not just point-in-time.
+            cur.execute("""
+                CREATE TABLE IF NOT EXISTS brain_lifecycle_history (
+                    id BIGSERIAL PRIMARY KEY,
+                    at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+                    composite_health REAL NOT NULL,
+                    findings_count INT NOT NULL DEFAULT 0,
+                    unknown_count INT NOT NULL DEFAULT 0,
+                    weak_dims JSONB,
+                    elapsed_ms INT
+                )
+            """)
+            cur.execute(
+                "CREATE INDEX IF NOT EXISTS ix_blh_at "
+                "ON brain_lifecycle_history (at DESC)"
+            )
+    except Exception:
+        pass
+    finally:
+        try: c.close()
+        except Exception: pass
+
+
+# r45 (2026-05-25): snapshot helper. Called by _run_full_audit at the
+# tail of every fresh compose. Idempotent + best-effort — never raises.
+# 5-min audit cache + per-audit-cycle snapshot means we get one row
+# per actual compose, not per cache hit.
+_HISTORY_LAST_SNAPSHOT_AT: float = 0.0
+_HISTORY_MIN_GAP_SECONDS = 300.0
+
+
+def _snapshot_history(composite: float, findings_count: int,
+                       unknown_count: int, weak_dims: list,
+                       elapsed_ms: int) -> None:
+    """Persist a row to brain_lifecycle_history. Throttled to 5min."""
+    global _HISTORY_LAST_SNAPSHOT_AT
+    now = time.time()
+    if (now - _HISTORY_LAST_SNAPSHOT_AT) < _HISTORY_MIN_GAP_SECONDS:
+        return
+    c = _conn()
+    if c is None:
+        return
+    try:
+        with c.cursor() as cur:
+            cur.execute("""
+                INSERT INTO brain_lifecycle_history
+                    (composite_health, findings_count, unknown_count,
+                     weak_dims, elapsed_ms)
+                VALUES (%s, %s, %s, %s, %s)
+            """, (
+                float(composite),
+                int(findings_count),
+                int(unknown_count),
+                json.dumps(weak_dims),
+                int(elapsed_ms),
+            ))
+        _HISTORY_LAST_SNAPSHOT_AT = now
     except Exception:
         pass
     finally:
@@ -297,18 +356,45 @@ def _audit_ai_citations_trend() -> dict:
 
 
 def _audit_press_cadence() -> dict:
-    """Auto-press releases — at or near 1/day after the r34i 2/day fix."""
+    """Auto-press releases — at or near 1/day after the r34i 2/day fix.
+
+    r45 (2026-05-25): honor WoW trend. If count is below 30d target but
+    7d count is growing relative to prior 7d, that's progress — mark
+    ok with verdict 'progressing'. Pure point-in-time count was
+    pessimistic during a known-good ramp-up period.
+    """
     health = _call_internal("/api/v1/media/press-health")
     count_30d = int(health.get("press_releases_30d") or 0)
     days_since = float(health.get("days_since_last_press") or 999)
+    count_7d  = int(health.get("press_releases_7d")
+                    or health.get("count_7d") or 0)
+    count_prev_7d = int(health.get("press_releases_prev_7d")
+                        or health.get("count_prev_7d") or 0)
     target = 24
+
+    # Original "fully healthy" criteria
+    is_at_target = count_30d >= 20 and days_since < 2
+    # New "progressing" criteria: 7d > prev 7d AND days_since acceptable
+    is_progressing = (count_7d > count_prev_7d and days_since < 4)
+
+    if is_at_target:
+        verdict = "healthy"
+    elif is_progressing:
+        verdict = "progressing"
+    else:
+        verdict = health.get("verdict") or "weak"
+
     return {
-        "ok": count_30d >= 20 and days_since < 2,
+        # ok if at target OR progressing — both are acceptable trajectories
+        "ok": is_at_target or is_progressing,
         "count_30d": count_30d,
         "target_30d": target,
+        "count_7d": count_7d,
+        "count_prev_7d": count_prev_7d,
         "days_since_last": days_since,
-        "verdict": health.get("verdict"),
+        "verdict": verdict,
         "gap_to_target": max(0, target - count_30d),
+        "trend_delta_7d": count_7d - count_prev_7d,
         "_source_result": health if isinstance(health, _AuditUnavailable) else None,
     }
 
@@ -504,6 +590,80 @@ def _audit_value_shipped() -> dict:
     }
 
 
+def _audit_composite_trend() -> dict:
+    """r45 (2026-05-25): is the moat-health composite climbing over time?
+
+    Reads brain_lifecycle_history (snapshotted every audit cycle) and
+    compares the 7d average with the 14d-7d-prior average. Positive
+    delta = trajectory good. Negative delta = brain is losing ground;
+    audit findings should not be ignored.
+
+    'ok' when:
+      - history has fewer than 5 rows (not enough data yet — don't alarm), OR
+      - 7d mean >= prior 7d mean (flat or climbing)
+
+    'weak' only when there's enough history AND it's declining.
+    """
+    _ensure_schema()
+    c = _conn()
+    if c is None:
+        return {
+            "ok": True, "verdict": "unknown (no DB)",
+            "_source_result": _AuditUnavailable("brain_lifecycle_history#db"),
+        }
+    try:
+        with c.cursor() as cur:
+            cur.execute("""
+                SELECT
+                    COUNT(*) FILTER (WHERE at >= NOW() - INTERVAL '7 days')   AS n_7d,
+                    AVG(composite_health) FILTER (WHERE at >= NOW() - INTERVAL '7 days') AS avg_7d,
+                    AVG(composite_health) FILTER (WHERE at >= NOW() - INTERVAL '14 days'
+                                                    AND at <  NOW() - INTERVAL '7 days') AS avg_prev_7d,
+                    COUNT(*) AS n_total
+                FROM brain_lifecycle_history
+            """)
+            row = cur.fetchone() or [0, None, None, 0]
+            n_7d, avg_7d, avg_prev_7d, n_total = row
+    except Exception as e:
+        return {
+            "ok": True, "verdict": "unknown (query failed)",
+            "error": str(e)[:120],
+            "_source_result": _AuditUnavailable("brain_lifecycle_history#query"),
+        }
+    finally:
+        try: c.close()
+        except Exception: pass
+
+    n_total = int(n_total or 0)
+    a7  = float(avg_7d) if avg_7d is not None else None
+    ap7 = float(avg_prev_7d) if avg_prev_7d is not None else None
+    delta = (a7 - ap7) if (a7 is not None and ap7 is not None) else None
+
+    # Not enough data → ok (don't alarm)
+    if n_total < 5 or delta is None:
+        return {
+            "ok": True,
+            "rows_total": n_total,
+            "rows_last_7d": int(n_7d or 0),
+            "avg_7d": round(a7, 3) if a7 is not None else None,
+            "avg_prev_7d": round(ap7, 3) if ap7 is not None else None,
+            "delta": None,
+            "verdict": "building-baseline",
+            "_source_result": None,
+        }
+
+    return {
+        "ok": delta >= 0,
+        "rows_total": n_total,
+        "rows_last_7d": int(n_7d or 0),
+        "avg_7d": round(a7, 3),
+        "avg_prev_7d": round(ap7, 3),
+        "delta": round(delta, 3),
+        "verdict": "climbing" if delta > 0.02 else ("flat" if delta >= 0 else "declining"),
+        "_source_result": None,
+    }
+
+
 def _audit_unique_sessions() -> dict:
     """r44 (2026-05-25): unique MCP sessions in last 7d.
 
@@ -614,6 +774,8 @@ def _run_full_audit(force: bool = False) -> dict:
         "tool_conversion_health": _audit_tool_conversion_health,
         # r44 (2026-05-25): unique MCP sessions — pure-volume signal
         "unique_sessions":        _audit_unique_sessions,
+        # r45 (2026-05-25): meta-signal — is the composite climbing?
+        "composite_trend":        _audit_composite_trend,
     }
     audits: dict = {}
     try:
@@ -668,16 +830,30 @@ def _run_full_audit(force: bool = False) -> dict:
         round(ok_n / len(countable), 2) if countable else 0.0
     )
 
+    elapsed_ms = int((time.time() - t0) * 1000)
     out = {
         "audits": audits,
         "findings": findings,
         "unknown_dims": unknown_dims,
         "composite_health": composite_health,
-        "elapsed_ms": int((time.time() - t0) * 1000),
+        "elapsed_ms": elapsed_ms,
         "generated_at": datetime.datetime.utcnow().isoformat() + "Z",
     }
     _AUDIT_CACHE["at"] = now
     _AUDIT_CACHE["value"] = out
+    # r45 (2026-05-25): snapshot to history table for trend analysis.
+    # Best-effort + throttled to 5min so we get one row per fresh compose,
+    # not per cache hit.
+    try:
+        _snapshot_history(
+            composite=composite_health,
+            findings_count=len(findings),
+            unknown_count=len(unknown_dims),
+            weak_dims=[f.get("dim") for f in findings],
+            elapsed_ms=elapsed_ms,
+        )
+    except Exception:
+        pass
     return out
 
 
@@ -688,7 +864,15 @@ def _short_recommendation(dim: str, result: dict) -> str:
     if dim == "ai_citations_trend":
         return f"ai_citations declining (wow_delta={result.get('wow_delta')}); add more canonical prompts or seed more user citations"
     if dim == "press_cadence":
-        return f"press cadence {result.get('count_30d')}/{result.get('target_30d')} — need {result.get('gap_to_target')} more in next 30d (afternoon cron should help)"
+        # r45: include trend delta in the recommendation
+        td = result.get("trend_delta_7d")
+        trend_note = ""
+        if td is not None and td > 0:
+            trend_note = f" (climbing — 7d up {td} vs prior 7d, will resolve naturally)"
+        elif td is not None and td < 0:
+            trend_note = f" (declining — 7d down {abs(td)} vs prior 7d, investigate cron)"
+        return (f"press cadence {result.get('count_30d')}/{result.get('target_30d')} — "
+                f"need {result.get('gap_to_target')} more in next 30d{trend_note}")
     if dim == "topic_pulse":
         return f"topic_pulse quiet ({result.get('suggestions_count')} suggestions) — alias matching may need tuning"
     if dim == "platform_activity":
@@ -722,6 +906,12 @@ def _short_recommendation(dim: str, result: dict) -> str:
         s7 = result.get("sessions_7d")
         return (f"only {s7} unique MCP sessions/7d — check Mcp-Session-Id "
                 f"capture path or investigate traffic dip (30d={result.get('sessions_30d')})")
+    if dim == "composite_trend":
+        d = result.get("delta")
+        a7 = result.get("avg_7d")
+        ap7 = result.get("avg_prev_7d")
+        return (f"composite health declining — 7d avg {a7} vs prior 7d {ap7} "
+                f"(Δ={d}). Investigate which dim regressed via history endpoint.")
     return "see full audit JSON"
 
 
@@ -1092,3 +1282,81 @@ def lifecycle_proposal_ship(proposal_id: int):
     """Mark a proposal as shipped (capability implemented)."""
     body, code = _proposal_action(proposal_id, "ship")
     return jsonify(body), code
+
+
+# r45 (2026-05-25): lifecycle history — moat-health trajectory over time.
+# Powers the composite_trend audit dim. Consumed by dashboard charts
+# (TBD) so the operator can SEE the brain's verdict on itself across
+# days, not just at any given moment.
+@brain_lifecycle_bp.route("/api/v1/brain/lifecycle/history", methods=["GET"])
+def lifecycle_history():
+    """Return composite_health snapshots from brain_lifecycle_history.
+
+    Query:
+      ?limit=N       max rows (default 60, capped 200)
+      ?days=N        only rows from last N days (default 30)
+    """
+    _ensure_schema()
+    try:
+        limit = min(int(request.args.get("limit", 60)), 200)
+    except Exception:
+        limit = 60
+    try:
+        days = max(1, min(int(request.args.get("days", 30)), 365))
+    except Exception:
+        days = 30
+
+    c = _conn()
+    if c is None:
+        return jsonify({"ok": False, "error": "db_unreachable",
+                        "rows": []}), 200
+    try:
+        with c.cursor() as cur:
+            cur.execute(f"""
+                SELECT at, composite_health, findings_count,
+                       unknown_count, weak_dims, elapsed_ms
+                  FROM brain_lifecycle_history
+                 WHERE at >= NOW() - INTERVAL '{days} days'
+                 ORDER BY at DESC
+                 LIMIT %s
+            """, (limit,))
+            rows = cur.fetchall()
+        out = []
+        for r in rows:
+            wd = r[4]
+            if isinstance(wd, str):
+                try: wd = json.loads(wd)
+                except Exception: wd = []
+            out.append({
+                "at": r[0].isoformat() if r[0] else None,
+                "composite_health": float(r[1]) if r[1] is not None else None,
+                "findings_count":   int(r[2] or 0),
+                "unknown_count":    int(r[3] or 0),
+                "weak_dims":        wd or [],
+                "elapsed_ms":       int(r[5] or 0) if r[5] is not None else None,
+            })
+        # Compute summary stats for quick consumption
+        if out:
+            heads = [x["composite_health"] for x in out
+                     if x["composite_health"] is not None]
+            summary = {
+                "rows":          len(out),
+                "latest":        out[0]["composite_health"] if out else None,
+                "min":           min(heads) if heads else None,
+                "max":           max(heads) if heads else None,
+                "mean":          round(sum(heads) / len(heads), 3) if heads else None,
+            }
+        else:
+            summary = {"rows": 0}
+        resp = jsonify({
+            "ok": True,
+            "history": out,
+            "summary": summary,
+            "params": {"limit": limit, "days": days},
+        })
+        return _no_cache_headers(resp), 200
+    except Exception as e:
+        return jsonify({"ok": False, "error": str(e)[:200]}), 200
+    finally:
+        try: c.close()
+        except Exception: pass
