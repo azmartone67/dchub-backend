@@ -111,8 +111,29 @@ def _ensure_schema():
 
 # ── audit signal collectors (one per moat dimension) ─────────────
 
-def _call_internal(path: str) -> dict:
-    """In-process GET via test_client. Returns {} on any failure."""
+# r38 (2026-05-25): sentinel value so audit functions can distinguish
+# "endpoint returned empty/timeout" from "endpoint returned real data
+# that happens to have None values". Without this, a single slow
+# sub-endpoint marks its dim as 'weak' (since `score: None` fails the
+# threshold check) — misleading; the dim is actually 'unknown'.
+class _AuditUnavailable:
+    """Marker that a sub-endpoint failed (timeout / non-200 / crash)."""
+    __slots__ = ("path",)
+    def __init__(self, path: str): self.path = path
+    def __bool__(self): return False
+    def get(self, *a, **kw): return None
+    def __repr__(self): return f"<unavailable:{self.path}>"
+
+
+def _call_internal(path: str, timeout: float = 8.0):
+    """In-process GET via test_client.
+
+    Returns the parsed JSON dict on success, or an _AuditUnavailable
+    marker on any failure / non-200 / timeout. The marker is falsy
+    and .get() returns None, so existing callers keep working — but
+    callers that want to distinguish 'real None' from 'never got a
+    response' can `isinstance(result, _AuditUnavailable)`.
+    """
     try:
         with current_app.test_client() as tc:
             r = tc.get(path)
@@ -120,13 +141,30 @@ def _call_internal(path: str) -> dict:
                 return r.get_json() or {}
     except Exception:
         pass
-    return {}
+    return _AuditUnavailable(path)
+
+
+def _ok_or_unknown(result, ok: bool):
+    """Return ('ok' | 'weak' | 'unknown') for a single dim result.
+
+    'unknown' is the verdict when the sub-endpoint was unavailable —
+    distinct from 'weak' (sub-endpoint answered, but value below
+    threshold). Composite health counts only ok+weak, never unknown.
+    """
+    if isinstance(result, _AuditUnavailable):
+        return "unknown"
+    return "ok" if ok else "weak"
 
 
 def _audit_server_card_drift() -> dict:
     """Stats_live in the server-card vs reality from /api/health."""
     card = _call_internal("/.well-known/mcp/server-card.json")
     health = _call_internal("/api/health")
+    # r38: track whichever upstream is unavailable so _run_full_audit
+    # can mark this dim 'unknown' instead of falsely 'weak'.
+    _src = card if isinstance(card, _AuditUnavailable) else (
+        health if isinstance(health, _AuditUnavailable) else None
+    )
     claimed = (card.get("stats_live") or {})
     actual = {
         "facilities": health.get("facility_count"),
@@ -148,8 +186,9 @@ def _audit_server_card_drift() -> dict:
     return {
         "ok": len(drift) == 0,
         "drift": drift,
-        "claimed": claimed,
+        "claimed": claimed if not isinstance(card, _AuditUnavailable) else None,
         "actual": actual,
+        "_source_result": _src,
     }
 
 
@@ -170,6 +209,7 @@ def _audit_ai_citations_trend() -> dict:
             "declining"
         ),
         "ai_citations_7d": sot.get("ai_citations_7d"),
+        "_source_result": sot if isinstance(sot, _AuditUnavailable) else None,
     }
 
 
@@ -186,6 +226,7 @@ def _audit_press_cadence() -> dict:
         "days_since_last": days_since,
         "verdict": health.get("verdict"),
         "gap_to_target": max(0, target - count_30d),
+        "_source_result": health if isinstance(health, _AuditUnavailable) else None,
     }
 
 
@@ -199,6 +240,7 @@ def _audit_topic_pulse_health() -> dict:
         "suggestions_count": n,
         "news_in_window": news,
         "verdict": "healthy" if n > 0 else "quiet",
+        "_source_result": tp if isinstance(tp, _AuditUnavailable) else None,
     }
 
 
@@ -212,6 +254,7 @@ def _audit_platform_activity() -> dict:
         "tool_calls_one_wk_ago": growth.get("calls_7d_one_week_ago"),
         "wow_growth_pct":        wow,
         "platforms_24h":         len(growth.get("platforms_24h") or []),
+        "_source_result": growth if isinstance(growth, _AuditUnavailable) else None,
     }
 
 
@@ -265,6 +308,7 @@ def _audit_brain_vocab_growth() -> dict:
         "shipped_with_proof": shipped,
         "avg_confidence": avg_conf,
         "verdict": "growing" if total >= 35 else "stagnant",
+        "_source_result": classes if isinstance(classes, _AuditUnavailable) else None,
     }
 
 
@@ -277,6 +321,7 @@ def _audit_organism() -> dict:
         "verdict":        org.get("verdict"),
         "weakest_channel": org.get("weakest_channel"),
         "weakest_score":   org.get("weakest_channel_score"),
+        "_source_result": org if isinstance(org, _AuditUnavailable) else None,
     }
 
 
@@ -288,6 +333,7 @@ def _audit_page_integrity() -> dict:
         "site_score":  pi.get("site_score"),
         "site_verdict": pi.get("site_verdict"),
         "breakdown":   pi.get("verdict_breakdown"),
+        "_source_result": pi if isinstance(pi, _AuditUnavailable) else None,
     }
 
 
@@ -299,11 +345,34 @@ def _audit_value_shipped() -> dict:
         "total_7d":  vs.get("total_shipped_7d"),
         "total_30d": vs.get("total_shipped_30d"),
         "verdict":   vs.get("verdict"),
+        "_source_result": vs if isinstance(vs, _AuditUnavailable) else None,
     }
 
 
-def _run_full_audit() -> dict:
-    """All 10 audits in one pass. Returns a single summary dict."""
+# r38 (2026-05-25): module-level cache so repeated /findings hits
+# within 5min reuse the audit result. _run_full_audit takes ~17s
+# (10 sequential test_client calls); without this cache, the
+# dashboard + cron + manual probes all triggered fresh full audits.
+_AUDIT_CACHE: dict = {"at": 0.0, "value": None}
+_AUDIT_TTL_SECONDS = 300.0  # 5 minutes
+
+
+def _run_full_audit(force: bool = False) -> dict:
+    """All 10 audits in one pass. Memoized for 5min unless force=True.
+
+    Returns a single summary dict. Each audit dim now carries a
+    'status' field in {ok, weak, unknown}; composite_health counts
+    only ok vs (ok+weak) — 'unknown' dimensions are excluded so
+    transient upstream slowness doesn't drag the moat metric down.
+    """
+    now = time.time()
+    if (not force and _AUDIT_CACHE["value"] is not None
+            and (now - _AUDIT_CACHE["at"]) < _AUDIT_TTL_SECONDS):
+        c = dict(_AUDIT_CACHE["value"])
+        c["served_from_cache"] = True
+        c["cache_age_seconds"] = round(now - _AUDIT_CACHE["at"], 1)
+        return c
+
     t0 = time.time()
     audits = {
         "server_card_drift":   _audit_server_card_drift(),
@@ -317,25 +386,43 @@ def _run_full_audit() -> dict:
         "page_integrity":      _audit_page_integrity(),
         "value_shipped":       _audit_value_shipped(),
     }
-    # Aggregate findings = list of (dim, status, recommendation)
+    # Per-dim status — ok / weak / unknown. Findings only includes
+    # 'weak' (actionable). 'unknown' surfaces as an audit-level
+    # diagnostic so we know an endpoint needs attention without
+    # falsely flagging the dim itself.
     findings = []
+    unknown_dims = []
     for dim, result in audits.items():
-        if not result.get("ok"):
+        upstream = result.get("_source_result")  # set by audit fns below
+        status = _ok_or_unknown(upstream, bool(result.get("ok")))
+        result["status"] = status
+        if status == "weak":
             findings.append({
                 "dim": dim,
                 "status": "weak",
                 "summary": _short_recommendation(dim, result),
             })
+        elif status == "unknown":
+            unknown_dims.append(dim)
+    # composite_health: ok / (ok + weak). Excludes unknowns entirely.
+    countable = [r for r in audits.values()
+                 if r.get("status") in ("ok", "weak")]
+    ok_n = sum(1 for r in countable if r.get("status") == "ok")
     composite_health = (
-        sum(1 for r in audits.values() if r.get("ok")) / max(len(audits), 1)
+        round(ok_n / len(countable), 2) if countable else 0.0
     )
-    return {
+
+    out = {
         "audits": audits,
         "findings": findings,
-        "composite_health": round(composite_health, 2),
+        "unknown_dims": unknown_dims,
+        "composite_health": composite_health,
         "elapsed_ms": int((time.time() - t0) * 1000),
         "generated_at": datetime.datetime.utcnow().isoformat() + "Z",
     }
+    _AUDIT_CACHE["at"] = now
+    _AUDIT_CACHE["value"] = out
+    return out
 
 
 def _short_recommendation(dim: str, result: dict) -> str:
@@ -446,23 +533,45 @@ def _call_opus_for_proposal(audit_summary: str) -> tuple[dict | None, str | None
 
 # ── HTTP endpoints ────────────────────────────────────────────────
 
+def _no_cache_headers(resp):
+    """r38: prevent CF + downstream proxies from caching audit results.
+    Without this CF was serving 1h-stale data, hiding actual progress."""
+    resp.headers["Cache-Control"] = "no-store, must-revalidate"
+    resp.headers["Pragma"] = "no-cache"
+    resp.headers["Expires"] = "0"
+    return resp
+
+
 @brain_lifecycle_bp.route("/api/v1/brain/lifecycle/audit", methods=["GET"])
 def lifecycle_audit():
-    """Run full 10-dimension audit + return findings + composite score."""
-    return jsonify(_run_full_audit()), 200
+    """Run full 10-dimension audit + return findings + composite score.
+
+    Query: ?force=1 bypasses the 5min in-memory cache.
+    """
+    force = (request.args.get("force") or "").lower() in ("1", "true", "yes")
+    resp = jsonify(_run_full_audit(force=force))
+    return _no_cache_headers(resp), 200
 
 
 @brain_lifecycle_bp.route("/api/v1/brain/lifecycle/findings", methods=["GET"])
 def lifecycle_findings():
-    """Just the actionable findings (no full audit payload). Cheap call."""
-    audit = _run_full_audit()
-    return jsonify({
+    """Just the actionable findings (no full audit payload). Cheap call.
+
+    Query: ?force=1 bypasses the 5min in-memory cache.
+    """
+    force = (request.args.get("force") or "").lower() in ("1", "true", "yes")
+    audit = _run_full_audit(force=force)
+    resp = jsonify({
         "ok": len(audit.get("findings") or []) == 0,
         "composite_health": audit.get("composite_health"),
         "findings": audit.get("findings"),
         "findings_count": len(audit.get("findings") or []),
+        "unknown_dims": audit.get("unknown_dims"),
         "generated_at": audit.get("generated_at"),
-    }), 200
+        "served_from_cache": audit.get("served_from_cache", False),
+        "cache_age_seconds": audit.get("cache_age_seconds"),
+    })
+    return _no_cache_headers(resp), 200
 
 
 @brain_lifecycle_bp.route("/api/v1/brain/lifecycle/propose", methods=["POST"])
