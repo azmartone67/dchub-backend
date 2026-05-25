@@ -23090,6 +23090,16 @@ try:
 except Exception as _di_e:
     print(f"[main] dcpi_intl_bp register failed: {_di_e}", flush=True)
 
+# Phase ZZZZZ-round47.2 (2026-05-25): public /architecture landing — was
+# referenced by nav_config_routes, site_sentinel, brain_consistency_radar
+# as a canonical page but never built. SEO + pitch surface.
+try:
+    from routes.architecture_landing import architecture_bp
+    app.register_blueprint(architecture_bp)
+    print("[main] architecture_bp registered: /architecture", flush=True)
+except Exception as _arc_e:
+    print(f"[main] architecture_bp register failed: {_arc_e}", flush=True)
+
 # Phase ZZZZZ-round37.1 (2026-05-24): single cron heartbeat endpoint
 # Railway service-level cron only takes ONE expression, so collapse all
 # scheduled warmers behind a single HTTP endpoint that dispatches by UTC
