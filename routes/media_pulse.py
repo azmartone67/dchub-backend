@@ -371,27 +371,26 @@ def api_topic_pulse():
             # time.
             markets_full: list = []
 
-        # r34g+1 (2026-05-24): populate markets_full from /api/v1/dcpi/scores
-        # AFTER the parent cursor block closes — calling test_client while
-        # holding an open psycopg2 cursor on the same connection was
-        # blocking the nested request's own DB lookup. Now the parent
-        # connection is released, test_client runs cleanly.
+        # r34g+2 (2026-05-24): real root cause — media_pulse._conn() reads
+        # only DATABASE_URL, but the 285 markets live in NEON_DATABASE_URL.
+        # The two env vars point at different databases in this stack;
+        # dcpi._conn() falls through to NEON_DATABASE_URL so its
+        # /api/v1/dcpi/scores endpoint sees the real data.
+        # Fix: import dcpi._conn() and use it directly here. One source
+        # of truth for the markets query.
         try:
-            from flask import current_app
-            with current_app.test_client() as _dctc:
-                _dr = _dctc.get("/api/v1/dcpi/scores?limit=500")
-                if _dr.status_code == 200:
-                    _dd = _dr.get_json() or {}
-                    for s in (_dd.get("scores") or []):
-                        markets_full.append({
-                            "market_slug":          s.get("market_slug"),
-                            "market_name":          s.get("market_name"),
-                            "state":                s.get("state"),
-                            "iso":                  s.get("iso"),
-                            "verdict":              s.get("verdict"),
-                            "excess_power_score":   s.get("excess_power_score"),
-                            "constraint_score":     s.get("constraint_score"),
-                        })
+            from routes.dcpi import _conn as _dcpi_conn
+            with _dcpi_conn() as _mcc:
+                with _mcc.cursor(cursor_factory=psycopg2.extras.RealDictCursor) as _mcur:
+                    _mcur.execute("""
+                        SELECT DISTINCT ON (market_slug)
+                               market_slug, market_name, state, iso, verdict,
+                               excess_power_score, constraint_score
+                          FROM market_power_scores
+                         WHERE published = true
+                         ORDER BY market_slug, computed_at DESC
+                    """)
+                    markets_full.extend(dict(r) for r in _mcur.fetchall())
         except Exception:
             pass  # graceful — match against empty market list
 
