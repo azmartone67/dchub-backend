@@ -5441,23 +5441,41 @@ def check_rest_endpoint_leakage() -> list[dict]:
     to gate it" failure mode that Round 4 surfaced.
 
     Cheap to run: probes the platform's OWN endpoints, no external API
-    calls, ~7 GETs total. Fails-closed: if the probe itself errors,
-    return empty findings (don't false-positive on network noise)."""
+    calls. Fails-closed: if the probe itself errors, return empty
+    findings (don't false-positive on network noise).
+
+    r41-leakage-parallel (2026-05-25): parallelized the per-endpoint
+    HTTP probes. Pre-fix serial loop hit 38.7s wall time (top single
+    detector after r41's other parallelization fixes exposed it).
+    With ~10s/probe timeout × N endpoints, the cumulative time was
+    busting the 25s scan budget. 6-worker pool: ~5-10s wall time.
+    """
     findings: list[dict] = []
     try:
         import requests as _req
     except Exception:
         return findings
-    for path in _BREACH_PROBE_ENDPOINTS:
+
+    import concurrent.futures as _cf
+
+    def _probe_one(path):
         try:
             r = _req.get(f"https://dchub.cloud{path}",
                          timeout=10,
                          headers={"User-Agent": "dchub-breach-detector/1.0"})
-        except Exception:
+            return (path, r.status_code, r.text or "", None)
+        except Exception as e:
+            return (path, None, "", e)
+
+    with _cf.ThreadPoolExecutor(max_workers=6,
+                                 thread_name_prefix="breach-probe") as ex:
+        results = list(ex.map(_probe_one, _BREACH_PROBE_ENDPOINTS))
+
+    for path, status, body, err in results:
+        if err is not None:
             continue  # network noise — don't flag
-        if r.status_code != 200:
+        if status != 200:
             continue  # 402/403/404 is the gate working; skip
-        body = r.text or ""
         size = len(body)
         if size <= _BREACH_SIZE_THRESHOLD_BYTES:
             continue  # small enough that it's probably a teaser/single-item
