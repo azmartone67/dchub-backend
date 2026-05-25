@@ -59,6 +59,7 @@ def _hit(url, timeout=10):
         return {"status": 0, "error": f"{type(e).__name__}"}
 
 
+# AUTO-REPAIR: duplicate route '/warm' also in routes/grid_cache_warmer.py:47 — review and remove one
 @brain_warming_bp.route("/warm", methods=["GET", "POST"])
 def warm():
     started = datetime.datetime.utcnow()
@@ -146,6 +147,7 @@ def detectors():
 
     return jsonify(out), 200
 
+# AUTO-REPAIR: duplicate route '/health' also in index_api.py:516 — review and remove one
 
 @brain_warming_bp.route("/health", methods=["GET"])
 def health():
