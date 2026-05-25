@@ -192,7 +192,7 @@ _LANDING_HD = """<!DOCTYPE html>
 <meta name="description" content="Live ticker of hyperscaler AI capex: Stargate, Oracle, CoreWeave, AMD, NVIDIA. $-figures and MW extracted. Updated every 10 min.">
 <meta property="og:title" content="Hyperscaler AI Deal Tracker">
 <meta property="og:description" content="Live $1B+/week AI capex deals — typed feed with dollars + megawatts.">
-<meta property="og:image" content="https://dchub.cloud/static/og/landing-hyperscaler-deals.png">
+<meta property="og:image" content="https://api.dchub.cloud/static/og/landing-hyperscaler-deals.png">
 <link rel="canonical" href="https://dchub.cloud/hyperscaler-deals">
 <link rel="stylesheet" href="https://dchub.cloud/static/dchub-brand.css">
 <style>
