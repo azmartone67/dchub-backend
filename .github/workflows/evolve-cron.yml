@@ -131,7 +131,7 @@ on:
         description: 'Which phase to run on demand'
         required: true
         type: choice
-        options: [all, brain, outreach, audit, marketing, linkedin, testimonials, agent_vendor, weekly_digest, market_alerts, freshness_radar, brain_probe_outcomes, weekly_media_digest, marketing_rescue, marketing_publish_now, hot_leads_preview, hot_leads_send_top_5, hot_leads_send_top_50, free_users_dryrun, free_users_send, energy_verify, testimonial_probe, ai_citations_probe, autopilot_verify, packages_refresh]
+        options: [all, brain, outreach, audit, marketing, linkedin, testimonials, agent_vendor, weekly_digest, market_alerts, freshness_radar, brain_probe_outcomes, weekly_media_digest, marketing_rescue, marketing_publish_now, marketing_afternoon, hot_leads_preview, hot_leads_send_top_5, hot_leads_send_top_50, free_users_dryrun, free_users_send, energy_verify, testimonial_probe, ai_citations_probe, autopilot_verify, packages_refresh]
         default: all
       dry_run:
         description: 'Dry-run (preview audience + body, do NOT send emails) — DEFAULT TRUE for manual dispatch'
