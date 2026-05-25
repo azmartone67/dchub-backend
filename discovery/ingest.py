@@ -159,7 +159,7 @@ def run_ingestion(data_dir, run_date):
 
         cur.execute("""
             INSERT INTO discovery_runs (run_date, started_at, status)
-            VALUES (%s, NOW(), 'running')
+            VALUES (%s, NOW() ON CONFLICT DO NOTHING, 'running')
             ON CONFLICT (run_date) DO UPDATE SET started_at=NOW(), status='running'
             RETURNING id
         """, (run_date,))
