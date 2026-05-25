@@ -376,6 +376,23 @@ def init_free_tier_gate(app, get_db_conn):
         if not is_gated(path):
             return None
 
+        # r41-internal-bypass (2026-05-25): brain radar, scheduler, MCP
+        # server backend probes ship X-Internal-Key. Previously the gate
+        # only honored JWT or X-API-Key, so every brain-radar probe to
+        # /api/v1/fiber/intel et al got 401 — radar went blind to those
+        # endpoints. Now we accept the canonical internal-key (validated
+        # against DCHUB_INTERNAL_KEY / DCHUB_SYNC_KEY / INTERNAL_WORKER_SECRET
+        # env vars via internal_auth.is_valid_internal_key, constant-time
+        # compare). Lazy import to avoid a circular dep at module load.
+        try:
+            from internal_auth import is_valid_internal_key
+            if is_valid_internal_key(request.headers.get('X-Internal-Key')):
+                return None
+        except Exception:
+            # If internal_auth can't be imported, fall through to the
+            # regular auth path — never block a real user on this.
+            pass
+
         token = request.headers.get('Authorization')
         user = get_user_from_jwt(token, get_db_conn)
 
