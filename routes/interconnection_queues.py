@@ -62,14 +62,16 @@ def _serialize(r):
 @interconnection_queues_bp.route("/api/v1/interconnection-queue/snapshot")
 def api_snapshot():
     snap = _latest_snapshot()
-    total_gw = sum((r["queued_load_total_gw"] or 0) for r in snap)
-    dc_gw = sum((r["queued_load_data_center_gw"] or 0) for r in snap)
+    # r47.1: Postgres NUMERIC -> Decimal; cast to float BEFORE arithmetic
+    # so we don't mix float/Decimal (TypeError otherwise).
+    total_gw = float(sum((r["queued_load_total_gw"] or 0) for r in snap))
+    dc_gw    = float(sum((r["queued_load_data_center_gw"] or 0) for r in snap))
     return jsonify({
         "as_of": snap[0]["as_of"].isoformat() if snap else None,
         "iso_count": len(snap),
         "totals": {
-            "queued_load_gw": float(total_gw),
-            "queued_load_data_center_gw": float(dc_gw),
+            "queued_load_gw": total_gw,
+            "queued_load_data_center_gw": dc_gw,
             "dc_share_pct": round(100.0 * dc_gw / total_gw, 1) if total_gw else None,
         },
         "by_iso": [_serialize(r) for r in snap],
@@ -116,8 +118,9 @@ def _row_html(r):
 @interconnection_queues_bp.route("/interconnection-queues")
 def landing():
     snap = _latest_snapshot()
-    total_gw = sum((r["queued_load_total_gw"] or 0) for r in snap)
-    dc_gw = sum((r["queued_load_data_center_gw"] or 0) for r in snap)
+    # r47.1: cast Decimal -> float before arithmetic (same bug as api_snapshot)
+    total_gw = float(sum((r["queued_load_total_gw"] or 0) for r in snap))
+    dc_gw    = float(sum((r["queued_load_data_center_gw"] or 0) for r in snap))
     dc_share = round(100.0 * dc_gw / total_gw, 0) if total_gw else 0
 
     jsonld = {

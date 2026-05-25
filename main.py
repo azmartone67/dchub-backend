@@ -24071,6 +24071,16 @@ try:
 except Exception as _e:
     print(f"[main] interconnection_queues_bp register failed: {_e}", file=sys.stderr)
 
+# r47.2 (2026-05-25): daily ingest cron for ISO queue snapshots.
+# Fired by cron_heartbeat at 06:00 UTC; hits ERCOT/PJM/MISO/SPP/CAISO/
+# NYISO/ISO-NE public pages and UPSERTs whatever it parses.
+try:
+    from routes.iso_queue_ingest import iso_queue_ingest_bp
+    app.register_blueprint(iso_queue_ingest_bp)
+    print("[main] iso_queue_ingest_bp registered: /api/v1/iso-queue/ingest{,/<iso>,/status}")
+except Exception as _e:
+    print(f"[main] iso_queue_ingest_bp register failed: {_e}", file=sys.stderr)
+
 # === Brain v2 · Layer 3 freshness fields ===
 try:
     from flask import jsonify as _bv2_jsonify

@@ -88,6 +88,15 @@ _DISPATCH = [
      f"{BASE}/api/v1/outreach/process-pending?limit=25",
      "POST",
      lambda now: now.minute >= 15 and now.minute < 20),
+
+    # r47 (2026-05-25): ISO interconnection queue ingest — daily at 06:00 UTC.
+    # Hits ERCOT MIS, PJM tracker, MISO GIQ, SPP, CAISO, NYISO, ISO-NE
+    # public pages. UPSERTS only the fields that successfully parse, so
+    # the seeded Q1-2026 data persists on scrape failure.
+    ("iso_queue_ingest_daily",
+     f"{BASE}/api/v1/iso-queue/ingest",
+     "POST",
+     lambda now: now.hour == 6 and now.minute < 5),
 ]
 
 
