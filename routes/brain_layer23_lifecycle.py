@@ -169,7 +169,7 @@ def _snapshot_history(composite: float, findings_count: int,
                 INSERT INTO brain_lifecycle_history
                     (composite_health, findings_count, unknown_count,
                      weak_dims, elapsed_ms)
-                VALUES (%s, %s, %s, %s, %s)
+                VALUES (%s, %s, %s, %s, %s) ON CONFLICT DO NOTHING
             """, (
                 float(composite),
                 int(findings_count),
@@ -1331,7 +1331,7 @@ def lifecycle_propose():
                 cur.execute("""
                     INSERT INTO brain_lifecycle_proposals
                         (audit_snapshot, proposal_text, proposal_kind, model)
-                    VALUES (%s, %s, %s, %s)
+                    VALUES (%s, %s, %s, %s) ON CONFLICT DO NOTHING
                     RETURNING id
                 """, (
                     json.dumps(audit),
