@@ -374,6 +374,30 @@ def derive_verdict(constraint: float, excess: float) -> str:
     return "AVOID"
 
 
+def derive_composite_score(excess, constraint, ttp_months):
+    """Single-number 0-100 ranking score derived from the three published
+    DCPI components. Mirrors derive_verdict's logic: high excess +
+    low constraint + fast time-to-power = high composite.
+
+    r41-dcpi-composite (2026-05-25): added so AI agents calling
+    /api/v1/dcpi/scores can sort markets by a single sortable value
+    without having to recombine the components themselves. The verdict
+    field (BUILD/CAUTION/AVOID) gives the headline, the composite gives
+    the rank. Deterministic from the three already-published fields —
+    no DB schema change, no recompute needed.
+
+    Weights match the verdict thresholds:
+      excess_power_score:   60% (primary signal in derive_verdict)
+      (100 - constraint):   30% (lower constraint = better)
+      time-to-power factor: 10% (capped at 60 months)
+    """
+    e = float(excess or 0)
+    c = float(constraint or 0)
+    t = min(float(ttp_months or 0), 60.0)
+    composite = (e * 0.6) + ((100 - c) * 0.3) + ((1 - t / 60.0) * 100 * 0.1)
+    return round(max(0.0, min(100.0, composite)), 1)
+
+
 # ─── Phase SS DCPI v2 components ───────────────────────────────────
 # Two additional 0..100 scores that complement the v1 excess/constraint
 # duo. Computed on demand (no schema change) so v1 consumers keep
@@ -815,6 +839,14 @@ def api_scores():
     for r in rows:
         if r.get("computed_at"):
             r["computed_at"] = r["computed_at"].isoformat()
+        # r41-dcpi-composite (2026-05-25): include a sortable single-number
+        # composite_score so agents can rank markets without recombining
+        # the three components themselves. See derive_composite_score().
+        r["composite_score"] = derive_composite_score(
+            r.get("excess_power_score"),
+            r.get("constraint_score"),
+            r.get("time_to_power_months"),
+        )
 
     # Phase MM Bundle 9: apply filters (server-side instead of client-side).
     if verdict_filter:
@@ -828,6 +860,9 @@ def api_scores():
         rows.sort(key=lambda r: -(r.get("constraint_score") or 0))
     elif sort_by in ("time_to_power", "time_to_power_months", "ttp"):
         rows.sort(key=lambda r: (r.get("time_to_power_months") or 1e9))
+    elif sort_by in ("composite", "composite_score", "rank"):
+        # r41-dcpi-composite: default rank for agents asking "top markets"
+        rows.sort(key=lambda r: -(r.get("composite_score") or 0))
     else:
         rows.sort(key=lambda r: -(r.get("excess_power_score") or 0))
 
@@ -914,6 +949,13 @@ def api_score_market(slug):
         row = cur.fetchone()
     if not row: return jsonify(error="market not found", slug=slug), 404
     if row.get("computed_at"): row["computed_at"] = row["computed_at"].isoformat()
+    # r41-dcpi-composite (2026-05-25): include sortable composite_score
+    # alongside the existing component scores for consistency with /scores.
+    row["composite_score"] = derive_composite_score(
+        row.get("excess_power_score"),
+        row.get("constraint_score"),
+        row.get("time_to_power_months"),
+    )
     return jsonify(row), 200
 
 
