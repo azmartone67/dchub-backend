@@ -147,6 +147,7 @@ def detectors():
     return jsonify(out), 200
 
 
+# AUTO-REPAIR: duplicate route '/health' also in index_api.py:516 — review and remove one
 @brain_warming_bp.route("/health", methods=["GET"])
 def health():
     return jsonify({
