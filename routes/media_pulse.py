@@ -406,6 +406,15 @@ def api_topic_pulse():
             # debugging — instead of silent empty list.
             out["_markets_error"] = f"{type(_me).__name__}: {str(_me)[:120]}"
         out["_markets_loaded"] = len(markets_full)
+        out["_news_items_loaded"] = len(news_items)
+        # Sample a few news titles + a sample market name so we can see
+        # whether the matching is failing because content doesn't overlap.
+        out["_sample_news_titles"] = [
+            (n.get("title") or "")[:80] for n in news_items[:3]
+        ]
+        out["_sample_market_names"] = [
+            m.get("market_name") for m in markets_full[:3]
+        ]
 
         # r34f (2026-05-24): aliased matching. The previous logic only
         # matched the literal market_name (or first word) — too strict for
