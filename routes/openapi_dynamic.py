@@ -43,16 +43,25 @@ def _get_counts():
         return _COUNT_CACHE["counts"]
     counts = {"facilities": 21000, "deals": 1900, "isos": 10, "as_of": "stale"}
     if _pg and _dsn():
+        # Facilities — query independently so deals-table-name issue
+        # doesn't poison the facility count.
         try:
             with _conn() as c, c.cursor() as cur:
                 cur.execute("SELECT COUNT(*) FROM discovered_facilities")
                 counts["facilities"] = cur.fetchone()[0]
-            with _conn() as c, c.cursor() as cur:
-                cur.execute("SELECT COUNT(*) FROM dc_deals")
-                counts["deals"] = cur.fetchone()[0]
-            counts["as_of"] = datetime.datetime.utcnow().isoformat() + "Z"
+                counts["as_of"] = datetime.datetime.utcnow().isoformat() + "Z"
         except Exception:
             pass
+        # Deals — table name varies; try the common names in order.
+        for table in ("dc_deals", "deals", "transactions", "ma_deals"):
+            try:
+                with _conn() as c, c.cursor() as cur:
+                    cur.execute(f"SELECT COUNT(*) FROM {table}")
+                    counts["deals"] = cur.fetchone()[0]
+                    counts["deals_table"] = table
+                    break
+            except Exception:
+                continue
     _COUNT_CACHE["counts"] = counts
     _COUNT_CACHE["ts"] = time.time()
     return counts

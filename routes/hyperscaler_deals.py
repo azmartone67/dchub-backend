@@ -35,9 +35,16 @@ HYPERSCALER_KEYWORDS = [
     "elon ai", "xai", "grok", "musk ai",
 ]
 
-# Patterns to extract dollar figures + MW
-RE_DOLLAR = re.compile(r"\$\s?([\d,]+(?:\.\d+)?)\s?(billion|B|million|M|trillion|T)\b", re.I)
-RE_MW = re.compile(r"([\d,]+(?:\.\d+)?)\s?(MW|GW|gigawatts?|megawatts?)\b", re.I)
+# Patterns to extract dollar figures + MW — broader regex catches:
+#   "$10B", "$10 billion", "10 billion dollars", "$10.5bn",
+#   "10MW", "10 megawatts", "10GW", "10 gigawatt", "10-MW"
+RE_DOLLAR = re.compile(
+    r"(?:\$\s?([\d,]+(?:\.\d+)?)\s?(billion|trillion|million|[BMT])\b"
+    r"|\b([\d,]+(?:\.\d+)?)\s?(billion|trillion|million)\s+(?:dollars?|USD))",
+    re.I)
+RE_MW = re.compile(
+    r"\b([\d,]+(?:\.\d+)?)\s?-?\s?(MW|GW|TW|gigawatts?|megawatts?|terawatts?)\b",
+    re.I)
 
 
 def _dsn():
@@ -55,10 +62,13 @@ def _extract_dollars(text):
     if not text: return None
     m = RE_DOLLAR.search(text)
     if not m: return None
-    num = float(m.group(1).replace(",", ""))
-    unit = m.group(2).lower()
-    if unit in ("b", "billion"): return {"value": num * 1e9, "display": f"${num}B"}
-    if unit in ("m", "million"): return {"value": num * 1e6, "display": f"${num}M"}
+    # Two regex branches: $XXunit OR XXunit dollars
+    num_str = m.group(1) or m.group(3)
+    unit    = (m.group(2) or m.group(4) or "").lower()
+    if not num_str: return None
+    num = float(num_str.replace(",", ""))
+    if unit in ("b", "billion"):  return {"value": num * 1e9, "display": f"${num}B"}
+    if unit in ("m", "million"):  return {"value": num * 1e6, "display": f"${num}M"}
     if unit in ("t", "trillion"): return {"value": num * 1e12, "display": f"${num}T"}
     return None
 
