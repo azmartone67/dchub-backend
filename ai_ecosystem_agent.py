@@ -224,7 +224,7 @@ Return ONLY valid JSON."""
                         id, name, description, category, headquarters,
                         services, ai_keywords, ai_summary, ai_enriched,
                         submitted_at, status, verified
-                    ) VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s)
+                    ) VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s) ON CONFLICT DO NOTHING
                 ''', (
                     company_id,
                     company['name'],
