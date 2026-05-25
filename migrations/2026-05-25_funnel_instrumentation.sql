@@ -32,6 +32,10 @@ WHERE k.status='active'
 GROUP BY k.api_key, k.email, k.tier, k.created_at;
 
 -- Paywall attribution view (by inferred source)
+-- r46.5 (2026-05-25): DROP IF EXISTS prefix added — an earlier rev of this
+-- view shipped with `unique_sessions`; CREATE OR REPLACE can't rename a
+-- view column. Dropping first lets replay clean up the schema drift.
+DROP VIEW IF EXISTS v_paywall_attribution;
 CREATE OR REPLACE VIEW v_paywall_attribution AS
 SELECT
   date_trunc('day', timestamp) AS day,
