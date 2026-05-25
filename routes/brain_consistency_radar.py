@@ -870,6 +870,89 @@ def check_db_pool_pressure() -> list[dict]:
     return findings
 
 
+def check_session_upgrade_silenced() -> list[dict]:
+    """r41-session-upgrade-health (2026-05-25). The session-upgrade
+    flow shipped in v2.1.7 lets a Claude.ai web user hit a paywall,
+    follow the redeem URL, get a dev key, and have their MCP session
+    upgraded in-place so the next paid-tool call returns real data —
+    closing the gap where Claude.ai's connector UI can't attach an
+    X-API-Key header.
+
+    The whole mechanism is silent if it ever breaks (the user just
+    keeps seeing paywalls forever, with no error message). This
+    detector flags the silent-break case:
+      - paywall_hit > 200 in 24h (significant demand exists)
+      - api_keys created with metadata.session_id < 5 in 24h
+        (~no one successfully completed the redeem flow)
+
+    Cause is usually one of:
+      1. Flask /api/v1/mcp/trial-check didn't deploy with the
+         tier_upgrade extension (server.mjs gets {trial_used} only,
+         no tier_upgrade ever fires)
+      2. The redeem POST stopped persisting metadata.session_id on
+         the dev key (api_keys row exists but session_id is null)
+      3. server.mjs deployment regressed v2.1.7 → an earlier version
+    """
+    findings: list[dict] = []
+    body, _ = _http_get("http://localhost:8080/api/v1/redeem/funnel-stats",
+                        timeout=5)
+    if not body:
+        return findings
+    try:
+        import json as _json
+        d = _json.loads(body) if isinstance(body, str) else body
+    except Exception:
+        return findings
+    fc = d.get("funnel_counts") or {}
+    paywall = int(fc.get("paywall_hit") or 0)
+    if paywall < 200:
+        return findings  # not enough demand to draw conclusions
+    # Query for keys created via redeem in the trailing 24h.
+    conn = _db()
+    if conn is None:
+        return findings
+    try:
+        with conn.cursor() as cur:
+            try:
+                # Tolerant of both schemas: metadata JSONB and TEXT.
+                cur.execute("""
+                    SELECT COUNT(*) FROM api_keys
+                     WHERE created_at >= NOW() - INTERVAL '24 hours'
+                       AND (
+                            (metadata::text LIKE '%%session_id%%')
+                            OR (
+                                CASE WHEN pg_typeof(metadata)::text = 'jsonb'
+                                THEN metadata::jsonb ? 'session_id'
+                                ELSE FALSE END
+                            )
+                       )
+                """)
+                redeemed_24h = int((cur.fetchone() or [0])[0])
+            except Exception:
+                return findings
+    finally:
+        try: conn.close()
+        except Exception: pass
+    if redeemed_24h >= 5:
+        return findings  # flow is firing
+    findings.append({
+        "issue":  "session_upgrade_silenced",
+        "url":    "/api/v1/mcp/trial-check (Flask) + server.mjs session-upgrade path",
+        "count":  redeemed_24h,
+        "detail": (f"paywall_hit={paywall:,} in 24h but only "
+                   f"redeemed_24h={redeemed_24h} dev keys persisted "
+                   f"metadata.session_id. The session-upgrade flow that "
+                   f"closes the Claude.ai paid-tool gap (v2.1.7+) is "
+                   f"either silently broken OR genuinely no one is "
+                   f"completing the redeem form. Check: "
+                   f"(1) trial-check returns tier_upgrade for known "
+                   f"redeemed sessions, "
+                   f"(2) redeem POST persists metadata.session_id, "
+                   f"(3) server.mjs version >= 2.1.7."),
+    })
+    return findings
+
+
 def check_paywall_click_leak() -> list[dict]:
     """Phase FF+7 (2026-05-19) — flag the conversion leak L14 identified
     as the real root cause of the funnel collapse: paywall_hit → click
@@ -7076,6 +7159,12 @@ def scan_all() -> list[dict]:
                # Watches /redeem/funnel-stats; fires if rate < 0.5% on
                # >500 paywall hits. Recovery target: 5%+ click-through.
                check_paywall_click_leak,
+               # r41-session-upgrade-health (2026-05-25) — watches for
+               # silent breaks in the Claude.ai session-upgrade flow
+               # shipped in MCP server v2.1.7. Flags when paywall_hit
+               # >200 in 24h but redeemed dev keys with session_id
+               # metadata <5 (mechanism broken or no completions).
+               check_session_upgrade_silenced,
                # Phase FF+7-fix4 (2026-05-19) — early-warning for the
                # pool-exhaustion class of outage that took Railway down
                # for 30min on 2026-05-19. Probes 3 DB endpoints; flags
