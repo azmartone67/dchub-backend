@@ -692,7 +692,7 @@ def lifecycle_propose():
                 cur.execute("""
                     INSERT INTO brain_lifecycle_proposals
                         (audit_snapshot, proposal_text, proposal_kind, model)
-                    VALUES (%s, %s, %s, %s)
+                    VALUES (%s, %s, %s, %s) ON CONFLICT DO NOTHING
                     RETURNING id
                 """, (
                     json.dumps(audit),
