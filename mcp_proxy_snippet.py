@@ -23,6 +23,8 @@ endpoint (/mcp) for everything. No more /sse + /messages split.
 # import requests as http_requests   (or whatever alias you use)
 # from flask import request, jsonify, Response
 
+# AUTO-REPAIR: duplicate route '/mcp' also in main.py:6102 — review and remove one
+# AUTO-REPAIR: duplicate route '/mcp/' also in main.py:6369 — review and remove one
 @app.route('/mcp', methods=['GET', 'POST', 'DELETE', 'OPTIONS'])
 @app.route('/mcp/', methods=['GET', 'POST', 'DELETE', 'OPTIONS'])
 def mcp_proxy():
