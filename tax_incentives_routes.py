@@ -231,6 +231,7 @@ def setup_tax_incentive_routes(app, db=None):
         
         return jsonify({'status': 'success', 'data': state})
     
+# AUTO-REPAIR: duplicate route '/api/v1/tax-incentives/<abbr>' also in tax_incentives_routes.py:223 — review and remove one
     @app.route('/api/v1/tax-incentives/<abbr>', methods=['PUT', 'OPTIONS'])
     def update_state_incentive(abbr):
         """Admin endpoint to update a state's incentive data"""
