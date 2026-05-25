@@ -23100,6 +23100,15 @@ try:
 except Exception as _arc_e:
     print(f"[main] architecture_bp register failed: {_arc_e}", flush=True)
 
+# Phase ZZZZZ-round47.3 (2026-05-25): public /changelog auto-built from
+# press_releases — turns the daily press cadence into a velocity signal.
+try:
+    from routes.changelog_landing import changelog_bp
+    app.register_blueprint(changelog_bp)
+    print("[main] changelog_bp registered: /changelog", flush=True)
+except Exception as _cl_e:
+    print(f"[main] changelog_bp register failed: {_cl_e}", flush=True)
+
 # Phase ZZZZZ-round37.1 (2026-05-24): single cron heartbeat endpoint
 # Railway service-level cron only takes ONE expression, so collapse all
 # scheduled warmers behind a single HTTP endpoint that dispatches by UTC
