@@ -276,11 +276,20 @@ def listings():
                 """, params)
                 rows = cur.fetchall()
                 if status_filter == "all":
-                    cur.execute("SELECT COUNT(*) FROM spare_capacity_listings")
+                    cur.execute("SELECT COUNT(*) AS n FROM spare_capacity_listings")
                 else:
-                    cur.execute("SELECT COUNT(*) FROM spare_capacity_listings WHERE status = %s",
+                    cur.execute("SELECT COUNT(*) AS n FROM spare_capacity_listings WHERE status = %s",
                                 (status_filter,))
-                total = int((cur.fetchone() or [0])[0] or 0)
+                # r48 (2026-05-25): the cursor is RealDictCursor — fetchone()
+                # returns a dict like {"n": N}, NOT a tuple. The previous
+                # (cur.fetchone() or [0])[0] raised KeyError because dict
+                # access with integer 0 is invalid. Sentinel was flagging
+                # /api/v1/spare-capacity/listings as body_too_small because
+                # the query exception was caught and an empty 92-byte
+                # placeholder was returned every scan. Using a named column
+                # alias + dict access fixes the read.
+                _row = cur.fetchone()
+                total = int((_row or {}).get("n", 0) or 0)
         except Exception as _qe:
             # Query failed (table missing, transaction aborted, etc.) —
             # return empty 200 so this public LIST endpoint stays alive.
