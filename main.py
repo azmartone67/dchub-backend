@@ -23109,6 +23109,33 @@ try:
 except Exception as _cl_e:
     print(f"[main] changelog_bp register failed: {_cl_e}", flush=True)
 
+# Phase ZZZZZ-round47.4 (2026-05-25): /security landing — enterprise
+# pitch surface, security posture + audit roadmap.
+try:
+    from routes.security_landing import security_bp
+    app.register_blueprint(security_bp)
+    print("[main] security_bp registered: /security", flush=True)
+except Exception as _sec_e:
+    print(f"[main] security_bp register failed: {_sec_e}", flush=True)
+
+# Phase ZZZZZ-round47.5 (2026-05-25): /blog → 301 to /news — kills 404
+# and consolidates blog/news traffic.
+try:
+    from routes.blog_redirect import blog_redirect_bp
+    app.register_blueprint(blog_redirect_bp)
+    print("[main] blog_redirect_bp registered: /blog → 301 /news", flush=True)
+except Exception as _bl_e:
+    print(f"[main] blog_redirect_bp register failed: {_bl_e}", flush=True)
+
+# Phase ZZZZZ-round47.6 (2026-05-25): /tax-incentives landing — SEO
+# surface, renders top 15 states free + CTA for full 50 via free key.
+try:
+    from routes.tax_incentives_landing import tax_incentives_bp
+    app.register_blueprint(tax_incentives_bp)
+    print("[main] tax_incentives_bp registered: /tax-incentives", flush=True)
+except Exception as _ti_e:
+    print(f"[main] tax_incentives_bp register failed: {_ti_e}", flush=True)
+
 # Phase ZZZZZ-round37.1 (2026-05-24): single cron heartbeat endpoint
 # Railway service-level cron only takes ONE expression, so collapse all
 # scheduled warmers behind a single HTTP endpoint that dispatches by UTC
