@@ -34,21 +34,50 @@ def whoami():
     # Split on whitespace to defend against contaminated env vars
     token = token.split()[0]
     try:
-        req = urllib.request.Request(
+        # r41.1: try multiple endpoints in order — /v2/me requires only
+        # r_liteprofile (common scope). /v2/userinfo needs openid which
+        # many older apps don't have.
+        endpoints = [
+            "https://api.linkedin.com/v2/me",
             "https://api.linkedin.com/v2/userinfo",
-            headers={
-                "Authorization": f"Bearer {token}",
-                "User-Agent":    "DCHub-LinkedInWhoami/1.0",
-                "Accept":        "application/json",
-            },
-        )
-        with urllib.request.urlopen(req, timeout=10) as resp:
-            body = json.loads(resp.read())
+        ]
+        last_err = None
+        for ep in endpoints:
+            try:
+                req = urllib.request.Request(
+                    ep,
+                    headers={
+                        "Authorization": f"Bearer {token}",
+                        "User-Agent":    "DCHub-LinkedInWhoami/1.0",
+                        "Accept":        "application/json",
+                        "LinkedIn-Version": "202401",
+                    },
+                )
+                with urllib.request.urlopen(req, timeout=10) as resp:
+                    body = json.loads(resp.read())
+                    return jsonify({
+                        "ok":       True,
+                        "status":   resp.status,
+                        "endpoint": ep,
+                        "profile":  body,
+                        "scopes_hint": "Need w_organization_social to post as company page; w_member_social to post as profile.",
+                    }), 200
+            except urllib.error.HTTPError as e:
+                body = e.read().decode("utf-8", "replace")[:300]
+                last_err = (e.code, body, ep)
+                continue
+            except Exception as e:
+                last_err = (0, str(e)[:200], ep)
+                continue
+
+        if last_err:
+            code, body, ep = last_err
             return jsonify({
-                "ok":      True,
-                "status":  resp.status,
-                "profile": body,
-                "scopes_hint": "If 'name' / 'email' missing, token lacks userinfo scope. For post-as-organization, ensure w_organization_social.",
+                "ok":           False,
+                "status":       code,
+                "endpoint_tried": ep,
+                "linkedin_response": body,
+                "interpretation": _interpret_linkedin_error(code, body),
             }), 200
     except urllib.error.HTTPError as e:
         body = e.read().decode("utf-8", "replace")[:500]

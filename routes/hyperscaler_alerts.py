@@ -125,14 +125,20 @@ def sweep():
             # Try news table with various column names
             for col_summary in ("summary", "description", "''"):
                 try:
+                    # r41.1: simplified LIKE filter (regex with backslashes in
+                    # psycopg2 f-string was failing silently). Catches "$10B",
+                    # "$10 billion", "10 billion", "$1.5B" etc.
                     cur.execute(f"""
                         SELECT id, title, source, url, published_date,
                                COALESCE({col_summary}, '') AS body
                         FROM news
                         WHERE (LOWER(title) LIKE '%%billion%%'
-                               OR title ~ '\\$[0-9]+\\s?[BT]')
-                          AND published_date > CURRENT_DATE - INTERVAL '7 days'
-                        ORDER BY published_date DESC LIMIT 100
+                            OR LOWER(title) LIKE '%%trillion%%'
+                            OR LOWER(title) LIKE '%% b %%'
+                            OR LOWER(title) LIKE '%%\$%%b%%'
+                            OR LOWER(title) LIKE '%%\$%%m%%')
+                          AND published_date > CURRENT_DATE - INTERVAL '14 days'
+                        ORDER BY published_date DESC LIMIT 200
                     """)
                     rows = cur.fetchall()
                     break
