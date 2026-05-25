@@ -1465,10 +1465,24 @@ def env_stripe_check():
 @_require_internal
 def trial_check():
     """server.mjs calls this to ask: has session_id already consumed its
-    free preview for this tool? Returns {trial_used, prior_calls}.
+    free preview for this tool? Returns {trial_used, prior_calls,
+    tier_upgrade}.
 
     A trial is "used" if mcp_call_log has any prior status='ok' OR
     status='trial_used' row for the same (session_id, tool) combo.
+
+    r41-session-upgrade (2026-05-25): also returns `tier_upgrade` when
+    the session has a redeemed dev key. When a Claude.ai web user hits
+    a paywall and follows the redeem URL, the redeem handler at
+    routes/redeem_routes.py creates a dev key with
+    metadata.session_id = <this session_id>. Subsequent paid-tool
+    attempts in the SAME chat session can then be upgraded in-place,
+    closing the Claude.ai gap (their custom-connector UI can't attach
+    an X-API-Key header, so without this their session is stuck at
+    free tier forever).
+
+    server.mjs treats tier_upgrade as a directive to update
+    sessionMeta.tier — see r41-session-upgrade in server.mjs.
     """
     body = request.get_json(silent=True) or {}
     session_id = body.get("session_id")
@@ -1476,8 +1490,11 @@ def trial_check():
     if not session_id or not tool:
         return jsonify({"trial_used": True, "prior_calls": 0,
                         "reason": "missing_session_or_tool"}), 200
+
+    out = {"trial_used": True, "prior_calls": 0}
     try:
         with _pool.connection() as conn, conn.cursor() as cur:
+            # Trial-eligibility check (existing behavior)
             cur.execute(
                 """SELECT COUNT(*) FROM mcp_call_log
                    WHERE session_id = %s
@@ -1486,7 +1503,39 @@ def trial_check():
                 (session_id, tool),
             )
             prior = cur.fetchone()[0]
-        return jsonify({"trial_used": prior > 0, "prior_calls": prior}), 200
+            out["trial_used"]  = prior > 0
+            out["prior_calls"] = prior
+
+            # r41-session-upgrade: was this session redeemed? Look for a
+            # dev key whose JSON metadata records this session_id. The
+            # metadata column is JSONB so the ->> operator gives O(log n)
+            # lookup with a GIN index, or O(n) sequential scan. With ~13
+            # paid keys total, even a sequential scan is sub-millisecond.
+            try:
+                cur.execute(
+                    """SELECT plan
+                       FROM api_keys
+                       WHERE metadata::jsonb ->> 'session_id' = %s
+                         AND is_active = 1
+                       ORDER BY id DESC
+                       LIMIT 1""",
+                    (session_id,),
+                )
+                row = cur.fetchone()
+                if row and row[0]:
+                    plan = str(row[0]).lower()
+                    # Only suggest an upgrade for plans that actually
+                    # unlock paid tools — never accidentally "upgrade"
+                    # someone to a lower tier than they already have.
+                    if plan in ('developer', 'pro', 'enterprise', 'founding'):
+                        out["tier_upgrade"] = plan
+            except Exception:
+                # Schema variants in the wild (metadata stored as TEXT
+                # in some envs vs JSONB in others). Don't fail the whole
+                # trial-check on a session-upgrade lookup error.
+                pass
+
+        return jsonify(out), 200
     except Exception as e:
         return jsonify({"trial_used": True, "prior_calls": 0,
                         "error": str(e)}), 200
