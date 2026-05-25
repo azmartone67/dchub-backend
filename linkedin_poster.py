@@ -234,12 +234,19 @@ def _get_valid_token():
 
 def post_to_linkedin(text, link_url=None, link_title=None, link_desc=None, image_bytes=None):
 
-    # Phase 194: optional image upload (UGC POST media asset flow)
-    # r44 (2026-05-25): LinkedIn deprecated digitalmediaAsset URNs in
-    # /v2/ugcPosts — now requires urn:li:image:* from the new Images API.
-    # Until that migration ships, skip image upload entirely. Posts go
-    # text-only with link preview (link_url still works).
-    if os.environ.get("LINKEDIN_SKIP_IMAGE_UPLOAD", "1") == "1":
+    # r50 (2026-05-25): MODERN /rest/images?action=initializeUpload flow.
+    # The old /v2/assets?action=registerUpload returns a urn:li:digitalmedia
+    # Asset URN, which /rest/posts rejects with 422 "Allowed URN types are
+    # document, image, video". The new Images API returns urn:li:image:*
+    # directly. Two-step flow:
+    #   1) POST /rest/images?action=initializeUpload → {uploadUrl, image}
+    #   2) PUT bytes to uploadUrl
+    # Then attach `image` (an urn:li:image:*) to the post payload.
+    #
+    # LINKEDIN_SKIP_IMAGE_UPLOAD env kill-switch (default "0" = attempt
+    # upload) preserved so the operator can disable images instantly if
+    # LinkedIn API misbehaves.
+    if os.environ.get("LINKEDIN_SKIP_IMAGE_UPLOAD", "0") == "1":
         image_bytes = None  # Force text-only path
 
     _image_urn = None
@@ -250,25 +257,43 @@ def post_to_linkedin(text, link_url=None, link_title=None, link_desc=None, image
             _company = os.environ.get("LINKEDIN_COMPANY_ID", "").strip()
             if _token and _company:
                 _author = f"urn:li:organization:{_company}"
-                _h = {"Authorization": f"Bearer {_token}", "X-Restli-Protocol-Version": "2.0.0"}
-                # Register upload
+                _h_init = {
+                    "Authorization":     f"Bearer {_token}",
+                    "LinkedIn-Version":  "202601",
+                    "X-Restli-Protocol-Version": "2.0.0",
+                    "Content-Type":      "application/json",
+                }
+                # Step 1: initialize upload — returns uploadUrl + image URN
                 _reg = requests.post(
-                    "https://api.linkedin.com/v2/assets?action=registerUpload",
-                    headers={**_h, "Content-Type": "application/json"},
-                    json={"registerUploadRequest": {
-                        "recipes": ["urn:li:digitalmediaRecipe:feedshare-image"],
-                        "owner": _author,
-                        "serviceRelationships": [{"relationshipType":"OWNER","identifier":"urn:li:userGeneratedContent"}],
-                    }},
+                    "https://api.linkedin.com/rest/images?action=initializeUpload",
+                    headers=_h_init,
+                    json={"initializeUploadRequest": {"owner": _author}},
                     timeout=15,
                 )
                 if _reg.status_code in (200, 201):
-                    _rj = _reg.json()["value"]
-                    _upload_url = _rj["uploadMechanism"]["com.linkedin.digitalmedia.uploading.MediaUploadHttpRequest"]["uploadUrl"]
-                    _image_urn = _rj["asset"]
-                    requests.put(_upload_url, headers={"Authorization": f"Bearer {_token}"}, data=image_bytes, timeout=30)
+                    _v = (_reg.json() or {}).get("value", {})
+                    _upload_url = _v.get("uploadUrl")
+                    _image_urn  = _v.get("image")  # urn:li:image:*
+                    if _upload_url and _image_urn:
+                        # Step 2: PUT bytes
+                        _put = requests.put(
+                            _upload_url,
+                            headers={"Authorization": f"Bearer {_token}"},
+                            data=image_bytes,
+                            timeout=30,
+                        )
+                        if _put.status_code not in (200, 201):
+                            import logging as _l; _l.getLogger("linkedin").warning(
+                                f"r50 image PUT failed: {_put.status_code} {_put.text[:160]}")
+                            _image_urn = None  # don't reference an unuploaded image
+                    else:
+                        import logging as _l; _l.getLogger("linkedin").warning(
+                            f"r50 init missing uploadUrl/image: {_v}")
+                else:
+                    import logging as _l; _l.getLogger("linkedin").warning(
+                        f"r50 initializeUpload failed: {_reg.status_code} {_reg.text[:160]}")
         except Exception as _e:
-            import logging as _l; _l.getLogger("linkedin").warning(f"phase194 image upload err: {_e}")
+            import logging as _l; _l.getLogger("linkedin").warning(f"r50 image upload err: {_e}")
 
     """Post content to the DC Hub LinkedIn company page.
     
