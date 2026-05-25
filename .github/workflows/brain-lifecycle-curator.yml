@@ -62,19 +62,37 @@ jobs:
             echo "::warning::DCHUB_ADMIN_KEY not set — skipping Opus proposal"
             exit 0
           fi
-          response=$(curl -sS --max-time 90 -X POST \
+          # r42 (2026-05-25): cron now passes ?auto_issue=1 which
+          # activates the L23→L22 autonomy bridge added in r41-backend.
+          # When Opus returns a proposal, L22 _draft_pr() is invoked to
+          # open a GitHub issue with the proposal + audit + provenance.
+          # Without this flag, proposals would just sit in the
+          # brain_lifecycle_proposals table forever.
+          response=$(curl -sS --max-time 120 -X POST \
             -H "X-Admin-Key: $ADMIN_KEY" \
-            "$BASE/api/v1/brain/lifecycle/propose" \
+            "$BASE/api/v1/brain/lifecycle/propose?auto_issue=1" \
             || echo '{"ok":false,"error":"curl_fail"}')
-          echo "$response" | head -c 2500
+          echo "$response" > propose.json
+          echo "$response" | head -c 3000
           echo
           python3 - <<'PY'
-          import json, sys
-          d = json.loads(open('audit.json').read())  # reuse audit
-          # We can't capture the propose response cleanly here without
-          # also wiring stdin — but the response was already echoed
-          # above. Just surface a notice.
-          print(f"::notice::Opus proposal triggered for {d.get('findings_count', 0)} weak dimensions")
+          import json
+          try:
+              p = json.load(open('propose.json'))
+          except Exception:
+              p = {}
+          a = json.load(open('audit.json'))
+          n_weak = int(a.get('findings_count') or 0)
+          pid = p.get('proposal_id')
+          issue = (p.get('issue_drafted') or {})
+          if issue.get('ok') and issue.get('pr_url'):
+              print(f"::notice::Opus proposal #{pid} → GH issue {issue.get('pr_url')}")
+          elif issue.get('dry_run'):
+              print(f"::notice::Opus proposal #{pid} drafted (dry-run; set _DRY_RUN=false or GITHUB_TOKEN to open issue)")
+          elif issue.get('error'):
+              print(f"::warning::Opus proposal #{pid} captured but issue draft failed: {issue.get('error')}")
+          else:
+              print(f"::notice::Opus proposal #{pid} captured for {n_weak} weak dims (no issue draft attempt)")
           PY
 
       - name: Compact summary for the run log

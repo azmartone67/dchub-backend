@@ -102,6 +102,23 @@ def _ensure_schema():
                 "CREATE INDEX IF NOT EXISTS ix_blp_proposed_at "
                 "ON brain_lifecycle_proposals (proposed_at DESC)"
             )
+            # r42 (2026-05-25): proposal lifecycle columns. dismissed_at
+            # for "not pursuing" decisions, reviewed_by for audit trail,
+            # gh_issue_url + gh_issue_number for the L22 autonomy bridge.
+            for col_def in [
+                "dismissed_at TIMESTAMPTZ",
+                "reviewed_by TEXT",
+                "gh_issue_url TEXT",
+                "gh_issue_number INTEGER",
+            ]:
+                col_name = col_def.split()[0]
+                try:
+                    cur.execute(
+                        f"ALTER TABLE brain_lifecycle_proposals "
+                        f"ADD COLUMN IF NOT EXISTS {col_def}"
+                    )
+                except Exception:
+                    pass
     except Exception:
         pass
     finally:
@@ -466,20 +483,56 @@ def _run_full_audit(force: bool = False) -> dict:
         return c
 
     t0 = time.time()
-    audits = {
-        "server_card_drift":      _audit_server_card_drift(),
-        "ai_citations_trend":     _audit_ai_citations_trend(),
-        "press_cadence":          _audit_press_cadence(),
-        "topic_pulse":            _audit_topic_pulse_health(),
-        "platform_activity":      _audit_platform_activity(),
-        "registry_presence":      _audit_registry_presence(),
-        "brain_vocab":            _audit_brain_vocab_growth(),
-        "organism":               _audit_organism(),
-        "page_integrity":         _audit_page_integrity(),
-        "value_shipped":          _audit_value_shipped(),
+    # r42 (2026-05-25): parallelize the 11 audit functions.
+    # Each calls _call_internal (a test_client GET, which holds the
+    # GIL only during request setup/teardown — actual upstream wait
+    # releases it). Wall time was ~11s sequential. ThreadPoolExecutor
+    # at max_workers=8 collapses it to ~max(slow_call) ≈ 2-3s. Captures
+    # current_app for thread propagation so test_client works in workers.
+    from concurrent.futures import ThreadPoolExecutor
+    from flask import copy_current_request_context
+
+    _audit_fns = {
+        "server_card_drift":      _audit_server_card_drift,
+        "ai_citations_trend":     _audit_ai_citations_trend,
+        "press_cadence":          _audit_press_cadence,
+        "topic_pulse":            _audit_topic_pulse_health,
+        "platform_activity":      _audit_platform_activity,
+        "registry_presence":      _audit_registry_presence,
+        "brain_vocab":            _audit_brain_vocab_growth,
+        "organism":               _audit_organism,
+        "page_integrity":         _audit_page_integrity,
+        "value_shipped":          _audit_value_shipped,
         # r41 (2026-05-25): demand-trapped tools — paywall leakage
-        "tool_conversion_health": _audit_tool_conversion_health(),
+        "tool_conversion_health": _audit_tool_conversion_health,
     }
+    audits: dict = {}
+    try:
+        # Push the current app context manually for each worker thread
+        # so test_client / current_app inside audit fns keep working.
+        # (copy_current_request_context isn't enough — it preserves
+        # REQUEST context but test_client itself wants an app context.)
+        _app = current_app._get_current_object()  # type: ignore
+
+        def _wrap(name, fn):
+            with _app.app_context():
+                try:
+                    return name, fn()
+                except Exception as e:
+                    return name, {"ok": False, "error": f"{type(e).__name__}: {str(e)[:120]}",
+                                  "_source_result": _AuditUnavailable(f"audit:{name}")}
+
+        with ThreadPoolExecutor(max_workers=8) as ex:
+            for name, result in ex.map(lambda kv: _wrap(*kv), _audit_fns.items()):
+                audits[name] = result
+    except Exception:
+        # Fall back to sequential on any thread-pool failure.
+        for name, fn in _audit_fns.items():
+            try:
+                audits[name] = fn()
+            except Exception as e:
+                audits[name] = {"ok": False, "error": f"{type(e).__name__}: {str(e)[:120]}",
+                                "_source_result": _AuditUnavailable(f"audit:{name}")}
     # Per-dim status — ok / weak / unknown. Findings only includes
     # 'weak' (actionable). 'unknown' surfaces as an audit-level
     # diagnostic so we know an endpoint needs attention without
@@ -835,3 +888,94 @@ def lifecycle_proposals():
     finally:
         try: c.close()
         except Exception: pass
+
+
+# r42 (2026-05-25): proposal lifecycle actions. The dashboard tile +
+# the L22 autonomy bridge can flood the proposals stream; these
+# endpoints let the operator (or eventually the brain itself) act on
+# proposals without poking the DB directly.
+
+def _proposal_action(proposal_id: int, action: str) -> tuple[dict, int]:
+    """Shared body for approve / dismiss / mark-shipped."""
+    if not (request.headers.get("X-Admin-Key") == ADMIN_KEY or
+            request.args.get("admin_key") == ADMIN_KEY) and ADMIN_KEY:
+        return {"ok": False, "error": "admin_key_required"}, 401
+
+    reviewer = (request.headers.get("X-Reviewer")
+                or request.args.get("by") or "operator")[:60]
+    notes = (request.get_json(silent=True) or {}).get("notes") or ""
+
+    _ensure_schema()
+    c = _conn()
+    if c is None:
+        return {"ok": False, "error": "db_unreachable"}, 200
+    try:
+        with c.cursor() as cur:
+            if action == "approve":
+                cur.execute("""
+                    UPDATE brain_lifecycle_proposals
+                       SET approved = TRUE,
+                           reviewed_by = %s,
+                           notes = COALESCE(NULLIF(%s, ''), notes)
+                     WHERE id = %s
+                 RETURNING id, approved
+                """, (reviewer, notes, proposal_id))
+            elif action == "dismiss":
+                cur.execute("""
+                    UPDATE brain_lifecycle_proposals
+                       SET approved = FALSE,
+                           dismissed_at = NOW(),
+                           reviewed_by = %s,
+                           notes = COALESCE(NULLIF(%s, ''), notes)
+                     WHERE id = %s
+                 RETURNING id, approved
+                """, (reviewer, notes, proposal_id))
+            elif action == "ship":
+                cur.execute("""
+                    UPDATE brain_lifecycle_proposals
+                       SET shipped_at = NOW(),
+                           reviewed_by = %s,
+                           notes = COALESCE(NULLIF(%s, ''), notes)
+                     WHERE id = %s
+                 RETURNING id, shipped_at
+                """, (reviewer, notes, proposal_id))
+            else:
+                return {"ok": False, "error": f"unknown_action:{action}"}, 400
+            row = cur.fetchone()
+            if not row:
+                return {"ok": False, "error": "proposal_not_found",
+                        "proposal_id": proposal_id}, 404
+        return {"ok": True, "proposal_id": proposal_id, "action": action,
+                "reviewed_by": reviewer}, 200
+    except Exception as e:
+        return {"ok": False, "error": f"{type(e).__name__}: {str(e)[:140]}"}, 200
+    finally:
+        try: c.close()
+        except Exception: pass
+
+
+@brain_lifecycle_bp.route(
+    "/api/v1/brain/lifecycle/proposals/<int:proposal_id>/approve",
+    methods=["POST"])
+def lifecycle_proposal_approve(proposal_id: int):
+    """Mark a proposal as approved by a reviewer."""
+    body, code = _proposal_action(proposal_id, "approve")
+    return jsonify(body), code
+
+
+@brain_lifecycle_bp.route(
+    "/api/v1/brain/lifecycle/proposals/<int:proposal_id>/dismiss",
+    methods=["POST"])
+def lifecycle_proposal_dismiss(proposal_id: int):
+    """Mark a proposal as dismissed (not pursuing)."""
+    body, code = _proposal_action(proposal_id, "dismiss")
+    return jsonify(body), code
+
+
+@brain_lifecycle_bp.route(
+    "/api/v1/brain/lifecycle/proposals/<int:proposal_id>/ship",
+    methods=["POST"])
+def lifecycle_proposal_ship(proposal_id: int):
+    """Mark a proposal as shipped (capability implemented)."""
+    body, code = _proposal_action(proposal_id, "ship")
+    return jsonify(body), code
