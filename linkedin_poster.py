@@ -252,7 +252,12 @@ def post_to_linkedin(text, link_url=None, link_title=None, link_desc=None, image
     _image_urn = None
     if image_bytes is not None:
         try:
-            import os, requests
+            # r50.1 (2026-05-25): NEVER re-import os here — it's already
+            # at module-level (line 42). A local `import os` would mark
+            # `os` as function-local for the ENTIRE function, breaking
+            # the earlier os.environ.get("LINKEDIN_SKIP_IMAGE_UPLOAD")
+            # check with UnboundLocalError.
+            import requests
             _token = os.environ.get("LINKEDIN_ACCESS_TOKEN", "").strip()
             _company = os.environ.get("LINKEDIN_COMPANY_ID", "").strip()
             if _token and _company:
