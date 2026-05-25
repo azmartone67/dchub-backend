@@ -123,17 +123,36 @@ def ingest_ercot():
             return True, parsed, "; ".join(debug + ["no_landing_reachable"])
 
         # Find PDFs — EXCLUDE MORA (operational reliability, not queue data).
-        # Prefer URLs with INR / large-load / interconnection-request /
-        # board / queue / load patterns. Score by relevance.
+        # Reality check (r47.5): /gridinfo/resource doesn't actually surface
+        # large-load interconnection queue PDFs — those live in TAC/RPG/
+        # board meeting packets buried in /calendar. What IS regularly
+        # surfaced there: CDR (Capacity, Demand and Reserves) reports
+        # which contain load forecast aggregates including AI/data center
+        # load growth. Score CDR high so we at least grab the most
+        # recent CDR PDF as a load-context proxy when no INR PDF exists.
         pdf_urls = re.findall(r'https?://[^\s"\'<>]+\.pdf', landing, re.IGNORECASE)
         non_mora = [u for u in pdf_urls if "mora" not in u.lower()]
         def _score(u):
             u_lower = u.lower()
             score = 0
-            for kw, pts in [("large-load", 10), ("inr", 8), ("interconnection-request", 8),
-                            ("interconnection_request", 8), ("queue", 6), ("load", 4),
-                            ("board", 2), ("planning", 2), ("highlights", 1)]:
+            for kw, pts in [
+                # Direct queue/large-load keywords (rare in /gridinfo/resource)
+                ("large-load", 12), ("inr", 10),
+                ("interconnection-request", 10), ("interconnection_request", 10),
+                ("queue", 8), ("large_load", 10),
+                # CDR-class reports — proxy for load context
+                ("capacitydemand", 6), ("capacity_demand", 6),
+                ("capacityandreserves", 6), ("reserves", 4),
+                # Load-specific fallbacks
+                ("load", 5), ("demand", 4),
+                # Board/planning context
+                ("board", 3), ("planning", 3),
+                ("elcc", 2), ("highlights", 1),
+            ]:
                 if kw in u_lower: score += pts
+            # Prefer recent dates (filename or path date)
+            m = re.search(r"(20\d{2})", u)
+            if m and int(m.group(1)) >= 2025: score += 3
             return score
         ranked = sorted(non_mora, key=_score, reverse=True)
         pdf_url = ranked[0] if ranked and _score(ranked[0]) > 0 else None
@@ -218,9 +237,14 @@ def ingest_pjm():
         except Exception as e:
             debug.append(f"landing_fail: {type(e).__name__}")
         candidates += [
-            "https://www.pjm.com/pjmfiles/pub/planning/downloads/xlsx/ProjectsActive.xlsx",
+            # r47.5 (2026-05-25): probed live and confirmed 200 OK:
+            "https://www.pjm.com/-/media/planning/gen-and-trans-planning/queue-reports/active-queue.xlsx",
+            "https://www.pjm.com/-/media/planning/gen-and-trans-planning/queue-reports/active-queue.xls",
+            "https://www.pjm.com/-/media/planning/services-requests/active-queue.xlsx",
+            "https://www.pjm.com/library/-/media/documents/planning/queue/active-queue.xlsx",
+            # Older paths — keep as last-ditch fallback (return 24KB HTML or 404)
             "https://www.pjm.com/-/media/planning/gen-and-trans-planning/queue-reports/active-queue.ashx",
-            "https://www.pjm.com/library/-/media/documents/planning/queue/active-queue.ashx",
+            "https://www.pjm.com/pjmfiles/pub/planning/downloads/xlsx/ProjectsActive.xlsx",
             "https://www.pjm.com/pub/planning/downloads/xls/ProjectsActive.xlsx",
             "https://www.pjm.com/pub/planning/downloads/xls/ProjectsActive.xls",
         ]
