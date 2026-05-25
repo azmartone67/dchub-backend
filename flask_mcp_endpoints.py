@@ -678,8 +678,8 @@ def track_tool_call():
             cur.execute(
                 """INSERT INTO mcp_call_log
                      (timestamp, tool, params, platform, api_key, tier,
-                      session_id, status, duration_ms)
-                   VALUES (%s, %s, %s::jsonb, %s, %s, %s, %s, %s, %s)""",
+                      session_id, status, duration_ms, referrer, user_agent)
+                   VALUES (%s, %s, %s::jsonb, %s, %s, %s, %s, %s, %s, %s, %s)""",
                 (
                     ts_dt, tool, params,
                     (_r_platform or body.get("platform")),
@@ -688,6 +688,9 @@ def track_tool_call():
                     body.get("session_id"),
                     body.get("status"),
                     (body.get('duration_ms') or (body.get('response_time_ms') or body.get('duration_ms'))),
+                    # r46 (2026-05-25): attribution for v_paywall_attribution view
+                    body.get("referer") or body.get("referrer"),
+                    (body.get("user_agent") or "")[:500] or None,
                 ),
             )
     except Exception as e:
