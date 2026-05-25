@@ -202,7 +202,7 @@ def _enrich_one(email):
                     INSERT INTO user_enrichment
                         (email, domain, company, industry, employee_count,
                          country, linkedin_url, provider, raw, enriched_at)
-                    VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, NOW())
+                    VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, NOW() ON CONFLICT DO NOTHING)
                     ON CONFLICT (email) DO UPDATE SET
                         company         = EXCLUDED.company,
                         industry        = EXCLUDED.industry,
