@@ -31,3 +31,7 @@ psycopg[binary]>=3.2
 psycopg2-binary>=2.9
 Pillow>=10.0.0
 matplotlib>=3.7
+
+# r47.3 (2026-05-25): ISO queue parsers — ERCOT PDFs (pypdf), PJM XLSX (openpyxl)
+pypdf>=4.0
+openpyxl>=3.1
