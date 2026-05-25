@@ -226,7 +226,12 @@ def _stage_facilities_batch(conn, rows, batch_size=200):
             ))
         try:
             c = conn.cursor()
-            execute_values(c, """
+            # fetch=True is REQUIRED to get RETURNING rows from every
+            # internal sub-batch. Without it, cursor.fetchall() returns
+            # only the LAST sub-batch's rows (default page_size=100),
+            # causing severe undercounting at our 200-row chunk size.
+            # See psycopg2.extras.execute_values docs.
+            returned = execute_values(c, """
                 INSERT INTO discovered_facilities
                 (source, source_id, name, provider, city, state, country,
                  latitude, longitude, power_mw, status, address, source_url,
@@ -237,9 +242,9 @@ def _stage_facilities_batch(conn, rows, batch_size=200):
                     confidence_score = GREATEST(discovered_facilities.confidence_score,
                                                 EXCLUDED.confidence_score)
                 RETURNING (xmax = 0) AS inserted
-            """, values)
+            """, values, fetch=True)
             # xmax = 0 → fresh insert; xmax != 0 → UPDATE branch fired (duplicate)
-            for (inserted,) in c.fetchall():
+            for (inserted,) in (returned or []):
                 if inserted:
                     total_added += 1
                 else:
