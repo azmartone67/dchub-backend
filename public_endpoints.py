@@ -26,8 +26,28 @@ public_bp = Blueprint('public_endpoints', __name__)
 # =============================================================================
 # /api/v1/version — Public, no auth
 # =============================================================================
+_VERSION_CACHE = {"result": None, "ts": 0}
+
 @public_bp.route('/api/v1/version', methods=['GET'])
 def get_version():
+    # r41-version-speed (2026-05-25): pre-fix this endpoint did 3 COUNT(*)
+    # calls on facilities + deals on every request (4-5s cold, ~700ms
+    # warm) AND had no Cache-Control so CF couldn't edge-cache it.
+    # Hit by every monitor, dashboard, and AI-discovery crawler that
+    # checks "what version is dchub on?". Fixes:
+    #   (1) replace COUNT(*) with pg_class.reltuples (sub-ms planner
+    #       statistic) — facilities is 21k rows, country DISTINCT is
+    #       the slow one; keep that as-is since reltuples can't
+    #       express DISTINCT.
+    #   (2) 60s in-process cache so concurrent requests share work.
+    #   (3) Cache-Control header so CF edge-caches 5min, with stale-
+    #       while-revalidate so the first request after expiry never
+    #       blocks waiting for our DB.
+    import time as _t
+    if _VERSION_CACHE["result"] and (_t.time() - _VERSION_CACHE["ts"]) < 60:
+        return jsonify(_VERSION_CACHE["result"]), 200, {
+            "Cache-Control": "public, max-age=300, s-maxage=600, stale-while-revalidate=3600",
+        }
     result = {
         'version': APP_VERSION,
         'build': APP_BUILD,
@@ -41,25 +61,32 @@ def get_version():
     try:
         conn = get_read_db()
         cursor = conn.cursor()
+        # facilities count via planner statistic (instant)
         try:
-            cursor.execute("SELECT COUNT(*) FROM facilities")
+            cursor.execute(
+                "SELECT reltuples::bigint FROM pg_class WHERE relname = 'facilities'")
             row = cursor.fetchone()
             if row and row[0]:
-                result['facilities'] = row[0]
+                result['facilities'] = int(row[0])
         except Exception:
             pass
+        # markets — DISTINCT can't use reltuples; keep COUNT but with
+        # 60s in-process cache so it only runs once per minute.
         try:
-            cursor.execute("SELECT COUNT(DISTINCT country) FROM facilities WHERE country IS NOT NULL")
+            cursor.execute(
+                "SELECT COUNT(DISTINCT country) FROM facilities WHERE country IS NOT NULL")
             row = cursor.fetchone()
             if row and row[0]:
                 result['markets'] = row[0]
         except Exception:
             pass
+        # deals count via planner statistic
         try:
-            cursor.execute("SELECT COUNT(*) FROM deals")
+            cursor.execute(
+                "SELECT reltuples::bigint FROM pg_class WHERE relname = 'deals'")
             row = cursor.fetchone()
             if row and row[0]:
-                result['deals'] = row[0]
+                result['deals'] = int(row[0])
         except Exception:
             pass
     except Exception as e:
@@ -70,7 +97,11 @@ def get_version():
                 conn.close()
             except Exception:
                 pass
-    return jsonify(result)
+    _VERSION_CACHE["result"] = result
+    _VERSION_CACHE["ts"] = _t.time()
+    return jsonify(result), 200, {
+        "Cache-Control": "public, max-age=300, s-maxage=600, stale-while-revalidate=3600",
+    }
 
 
 # =============================================================================
