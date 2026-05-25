@@ -23080,6 +23080,16 @@ try:
 except Exception as _gw_e:
     print(f"[main] grid_warmer_bp register failed: {_gw_e}", flush=True)
 
+# Phase ZZZZZ-round47.1 (2026-05-25): public /dcpi/intl landing page —
+# fills the gap where Pages worker advertised /dcpi/intl but backend
+# returned 404. Renders AESO + Hydro-Québec + Nord Pool snapshots.
+try:
+    from routes.dcpi_intl_landing import dcpi_intl_bp
+    app.register_blueprint(dcpi_intl_bp)
+    print("[main] dcpi_intl_bp registered: /dcpi/intl + /dcpi/international + health", flush=True)
+except Exception as _di_e:
+    print(f"[main] dcpi_intl_bp register failed: {_di_e}", flush=True)
+
 # Phase ZZZZZ-round37.1 (2026-05-24): single cron heartbeat endpoint
 # Railway service-level cron only takes ONE expression, so collapse all
 # scheduled warmers behind a single HTTP endpoint that dispatches by UTC
