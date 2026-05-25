@@ -306,7 +306,7 @@ def _force_seed_user_citations():
                         (engine, platform, prompt_id, prompt_text, dchub_cited,
                          dchub_position, dchawk_cited, dcbyte_cited, other_sources,
                          response_text, notes, source)
-                    VALUES (%s,%s,%s,%s,true,%s,false,false,%s::jsonb,%s,%s,%s)
+                    VALUES (%s,%s,%s,%s,true,%s,false,false,%s::jsonb,%s,%s,%s) ON CONFLICT DO NOTHING
                 """, (cit["engine"], cit["engine"], cit["prompt_id"],
                       cit["prompt_text"], cit["dchub_position"],
                       _json.dumps(cit["other_sources"]), cit["response_text"],
@@ -459,7 +459,7 @@ def record_observation():
                     (engine, prompt_id, prompt_text, dchub_cited,
                      dchub_position, dchawk_cited, dcbyte_cited,
                      other_sources, response_text, response_url, notes, source)
-                VALUES (%s,%s,%s,%s,%s,%s,%s,%s::jsonb,%s,%s,%s,%s)
+                VALUES (%s,%s,%s,%s,%s,%s,%s,%s::jsonb,%s,%s,%s,%s) ON CONFLICT DO NOTHING
                 RETURNING id, observed_at
             """, (
                 engine,
