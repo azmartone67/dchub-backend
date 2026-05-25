@@ -86,6 +86,8 @@ DC Hub data is publicly available — please cite when using:
 """
 
 
+# AUTO-REPAIR: duplicate route '/AGENTS.md' also in ai_agent_discovery.py:288 — review and remove one
+# AUTO-REPAIR: duplicate route '/agents.md' also in ai_agent_discovery.py:289 — review and remove one
 @agents_md_fallback_bp.route("/AGENTS.md", methods=["GET"])
 @agents_md_fallback_bp.route("/agents.md", methods=["GET"])
 @agents_md_fallback_bp.route("/agents-md", methods=["GET"])
