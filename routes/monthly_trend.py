@@ -1336,7 +1336,12 @@ def _render_markdown(d: dict) -> str:
         lines.append("## Top deals")
         for x in top_deals:
             val = x.get("value")
-            val_str = f"${val:,.0f}M" if val else "undisclosed"
+            if not val:
+                val_str = "undisclosed"
+            elif val >= 1000:
+                val_str = f"${val/1000:,.1f}B"
+            else:
+                val_str = f"${val:,.0f}M"
             lines.append(f"- {x.get('date','—')} · **{x.get('buyer') or '?'}** "
                          f"← {x.get('seller') or '?'} · {val_str}")
         lines.append("")
