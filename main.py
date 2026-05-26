@@ -24314,13 +24314,32 @@ except Exception as _bste:
     print(f"[main] brain_self_test wiring failed: {_bste}", file=sys.stderr, flush=True)
 
 # r56 (2026-05-25): universal paywall hint middleware — every 4xx
-# response from /api/* now embeds _upgrade_hint inline
+# response from /api/* now embeds _upgrade_hint inline.
+# r57 (2026-05-25): also exposes /api/v1/admin/funnel-ab + variants
+#   endpoints for measuring conversion lift across A/B/C copy variants.
 try:
-    from routes.paywall_hint_middleware import register_paywall_hint_middleware
+    from routes.paywall_hint_middleware import (
+        register_paywall_hint_middleware,
+        paywall_ab_admin_bp,
+    )
     register_paywall_hint_middleware(app)
-    print("[main] paywall_hint_middleware attached", flush=True)
+    app.register_blueprint(paywall_ab_admin_bp)
+    print("[main] paywall_hint_middleware attached (A/B/C variants live)", flush=True)
 except Exception as _phm:
     print(f"[main] paywall_hint_middleware wiring failed: {_phm}", file=sys.stderr, flush=True)
+
+# r57 (2026-05-25): L22 promoted from Issue-drafter to actual PR-writer
+# for the route_alias_404 recipe ONLY. Gated by DCHUB_L22_REAL_PR=1
+# env so it defaults to DRY_RUN — no surprise PRs to azmartone67.
+try:
+    from routes.brain_layer22_pr_writer import brain_l22_pr_writer_bp
+    app.register_blueprint(brain_l22_pr_writer_bp)
+    print("[main] brain_l22_pr_writer_bp registered "
+          "(/api/v1/brain/l22/route-alias-pr, /api/v1/brain/l22/pr-writer/status)",
+          flush=True)
+except Exception as _l22pr:
+    print(f"[main] brain_l22_pr_writer wiring failed: {_l22pr}",
+          file=sys.stderr, flush=True)
 
 # Phase r32 (2026-05-24): Media as a living organism — single vital-
 # signs rollup composing press cadence + LinkedIn velocity + source-of-

@@ -192,6 +192,31 @@ _MARKETS_HARDCODED = [
     ("pacific-nw-rural",    "Rural Pacific NW",       "OR", "WECC",  44.50, -120.00),
     ("rural-spp",           "Rural SPP",              "KS", "SPP",   38.50, -98.50),
     ("upper-michigan",      "Upper Peninsula MI",     "MI", "MISO",  46.50, -87.50),
+    # r57 (2026-05-25): International expansion. 15 markets across UK,
+    # EU, APAC, Canada. State codes use country-region pairs so the
+    # downstream UI can group by sovereign. ISOs are real grid operators
+    # registered upstream: NGESO (UK), EirGrid (IE), ENTSOE-* (EU),
+    # NORDPOOL (Nordic), TEPCO/KEPCO (JP), AEMO (AU), EMA (SG), IESO
+    # (Ontario), HQ (Québec), BCH (British Columbia).
+    #
+    # iso_defaults gets matching entries below so the scorer doesn't
+    # silently fall back to WECC and emit fake US-style verdicts.
+    ("london",              "London",                 "UK", "NGESO",     51.51,  -0.13),
+    ("manchester",          "Manchester",             "UK", "NGESO",     53.48,  -2.24),
+    ("dublin",              "Dublin",                 "IE", "EirGrid",   53.35,  -6.26),
+    ("frankfurt",           "Frankfurt",              "DE", "ENTSOE-DE", 50.11,   8.68),
+    ("amsterdam",           "Amsterdam",              "NL", "ENTSOE-NL", 52.37,   4.90),
+    ("paris",               "Paris",                  "FR", "ENTSOE-FR", 48.86,   2.35),
+    ("marseille",           "Marseille",              "FR", "ENTSOE-FR", 43.30,   5.37),
+    ("stockholm",           "Stockholm",              "SE", "NORDPOOL",  59.33,  18.06),
+    ("tokyo",               "Tokyo",                  "JP", "TEPCO",     35.68, 139.69),
+    ("osaka",               "Osaka",                  "JP", "KEPCO",     34.69, 135.50),
+    ("sydney",              "Sydney",                 "AU", "AEMO",     -33.87, 151.21),
+    ("melbourne",           "Melbourne",              "AU", "AEMO",     -37.81, 144.96),
+    ("singapore",           "Singapore",              "SG", "EMA",        1.35, 103.82),
+    ("toronto",             "Toronto",                "ON", "IESO",      43.65, -79.38),
+    ("montreal",            "Montréal",               "QC", "HQ",        45.50, -73.57),
+    ("vancouver",           "Vancouver",              "BC", "BCH",       49.28,-123.12),
 ]
 
 # Phase 214: try dynamic 132-market list first, fall back to hardcoded 30
@@ -310,7 +335,36 @@ def _state_to_iso(state: str) -> str:
     }.get((state or "").upper(), "")
 
 
-MARKETS = _load_markets_dynamic() or _MARKETS_HARDCODED
+# r57 (2026-05-25): Splice the international markets in even when the
+# dynamic loader succeeds. The dynamic loader filters
+# `country = 'US' OR country = 'USA'` so it never returns the new UK/
+# EU/APAC/CA set. Without this splice the daily recompute would still
+# only score US markets after r57 ships.
+_INTL_MARKETS = [m for m in _MARKETS_HARDCODED
+                  if isinstance(m, tuple) and len(m) >= 4
+                  and m[3] in ("NGESO", "EirGrid", "ENTSOE-DE",
+                                 "ENTSOE-NL", "ENTSOE-FR", "NORDPOOL",
+                                 "TEPCO", "KEPCO", "AEMO", "EMA",
+                                 "IESO", "HQ", "BCH")]
+
+
+def _build_markets_list():
+    """r57: always-includes-intl market list builder. Tries the dynamic
+    US loader, then unions on the international set. Falls back to
+    pure hardcoded if dynamic fails."""
+    dyn = _load_markets_dynamic()
+    if dyn:
+        # Avoid dupes by slug (dynamic loader could in theory pick up
+        # a city that happens to share a slug with intl).
+        dyn_slugs = {m[0] if isinstance(m, tuple) else m.get("slug")
+                      for m in dyn}
+        merged = list(dyn) + [m for m in _INTL_MARKETS
+                                if m[0] not in dyn_slugs]
+        return merged
+    return _MARKETS_HARDCODED
+
+
+MARKETS = _build_markets_list()
 
 
 
@@ -598,6 +652,36 @@ def gather_metrics_for_market(market: tuple) -> dict:
                    "queue_approval_rate_pct": 60, "btm_headroom_mw": 350},
         "TVA":    {"queue_wait_months": 22, "reserve_margin_pct": 19.5, "curtailment_pct": 1.0,
                    "queue_approval_rate_pct": 65, "btm_headroom_mw": 250},
+        # r57 (2026-05-25): International ISO defaults. Sourced from
+        # ENTSO-E 2024 winter outlook, AEMO ESOO 2024, IESO Annual
+        # Planning Outlook, EirGrid Generation Capacity Statement 2024,
+        # NGESO ETYS 2024, METI/OCCTO Japan, EMA Singapore stats.
+        "NGESO":    {"queue_wait_months": 84, "reserve_margin_pct": 9.0, "curtailment_pct": 7.5,
+                     "queue_approval_rate_pct": 25, "btm_headroom_mw": 150},
+        "EirGrid":  {"queue_wait_months": 60, "reserve_margin_pct": 8.5, "curtailment_pct": 11.0,
+                     "queue_approval_rate_pct": 20, "btm_headroom_mw": 100},
+        "ENTSOE-DE":{"queue_wait_months": 72, "reserve_margin_pct": 10.5, "curtailment_pct": 5.5,
+                     "queue_approval_rate_pct": 35, "btm_headroom_mw": 220},
+        "ENTSOE-NL":{"queue_wait_months": 96, "reserve_margin_pct": 11.0, "curtailment_pct": 6.0,
+                     "queue_approval_rate_pct": 15, "btm_headroom_mw": 80},
+        "ENTSOE-FR":{"queue_wait_months": 48, "reserve_margin_pct": 16.5, "curtailment_pct": 2.0,
+                     "queue_approval_rate_pct": 45, "btm_headroom_mw": 300},
+        "NORDPOOL": {"queue_wait_months": 36, "reserve_margin_pct": 22.0, "curtailment_pct": 8.5,
+                     "queue_approval_rate_pct": 55, "btm_headroom_mw": 450},
+        "TEPCO":    {"queue_wait_months": 42, "reserve_margin_pct": 14.0, "curtailment_pct": 1.5,
+                     "queue_approval_rate_pct": 50, "btm_headroom_mw": 180},
+        "KEPCO":    {"queue_wait_months": 36, "reserve_margin_pct": 16.5, "curtailment_pct": 1.0,
+                     "queue_approval_rate_pct": 50, "btm_headroom_mw": 160},
+        "AEMO":     {"queue_wait_months": 30, "reserve_margin_pct": 13.5, "curtailment_pct": 9.5,
+                     "queue_approval_rate_pct": 50, "btm_headroom_mw": 350},
+        "EMA":      {"queue_wait_months": 24, "reserve_margin_pct": 18.0, "curtailment_pct": 0.5,
+                     "queue_approval_rate_pct": 60, "btm_headroom_mw": 50},
+        "IESO":     {"queue_wait_months": 30, "reserve_margin_pct": 17.5, "curtailment_pct": 3.5,
+                     "queue_approval_rate_pct": 55, "btm_headroom_mw": 250},
+        "HQ":       {"queue_wait_months": 18, "reserve_margin_pct": 24.0, "curtailment_pct": 4.5,
+                     "queue_approval_rate_pct": 70, "btm_headroom_mw": 500},
+        "BCH":      {"queue_wait_months": 24, "reserve_margin_pct": 21.0, "curtailment_pct": 5.0,
+                     "queue_approval_rate_pct": 60, "btm_headroom_mw": 280},
     }
     base = iso_defaults.get(iso, iso_defaults["WECC"])
     for k, v in base.items():
@@ -631,6 +715,60 @@ def gather_metrics_for_market(market: tuple) -> dict:
                                 "stranded_capacity_mw": 800, "queue_approval_rate_pct": 70, "demand_growth_yoy_pct": 1},
         "central-washington":  {"queue_wait_months": 22, "reserve_margin_pct": 23.0, "curtailment_pct": 4.0,
                                 "queue_approval_rate_pct": 60, "demand_growth_yoy_pct": 4},
+        # r57 (2026-05-25): International overrides. Calibrated from
+        # NGESO connection-queue reform (May 2024), Singapore IMDA's
+        # 2024 data-center moratorium guidance, Hydro-Québec's stated
+        # 5 GW available capacity, EirGrid's data-center moratorium.
+        "london":              {"queue_wait_months": 144, "reserve_margin_pct": 7.0, "curtailment_pct": 5.5,
+                                "queue_approval_rate_pct": 10, "demand_growth_yoy_pct": 11,
+                                "btm_headroom_mw": 50},
+        "manchester":          {"queue_wait_months": 96, "reserve_margin_pct": 9.0, "curtailment_pct": 6.5,
+                                "queue_approval_rate_pct": 20, "demand_growth_yoy_pct": 8,
+                                "btm_headroom_mw": 100},
+        "dublin":              {"queue_wait_months": 72, "reserve_margin_pct": 7.5, "curtailment_pct": 13.0,
+                                "queue_approval_rate_pct": 5,  "demand_growth_yoy_pct": 14,
+                                "btm_headroom_mw": 80},  # de-facto moratorium
+        "frankfurt":           {"queue_wait_months": 84, "reserve_margin_pct": 9.5, "curtailment_pct": 6.0,
+                                "queue_approval_rate_pct": 25, "demand_growth_yoy_pct": 9,
+                                "btm_headroom_mw": 180},
+        "amsterdam":           {"queue_wait_months": 120, "reserve_margin_pct": 10.0, "curtailment_pct": 5.5,
+                                "queue_approval_rate_pct": 10, "demand_growth_yoy_pct": 12,
+                                "btm_headroom_mw": 60},   # grid congestion
+        "paris":               {"queue_wait_months": 42, "reserve_margin_pct": 18.0, "curtailment_pct": 1.5,
+                                "queue_approval_rate_pct": 50, "demand_growth_yoy_pct": 6,
+                                "btm_headroom_mw": 320},
+        "marseille":           {"queue_wait_months": 36, "reserve_margin_pct": 17.0, "curtailment_pct": 2.5,
+                                "queue_approval_rate_pct": 55, "demand_growth_yoy_pct": 5,
+                                "btm_headroom_mw": 280},
+        "stockholm":           {"queue_wait_months": 30, "reserve_margin_pct": 26.0, "curtailment_pct": 9.0,
+                                "queue_approval_rate_pct": 60, "demand_growth_yoy_pct": 7,
+                                "stranded_capacity_mw": 350,  # hydro surplus
+                                "btm_headroom_mw": 500},
+        "tokyo":               {"queue_wait_months": 48, "reserve_margin_pct": 12.0, "curtailment_pct": 1.0,
+                                "queue_approval_rate_pct": 45, "demand_growth_yoy_pct": 6,
+                                "btm_headroom_mw": 150},
+        "osaka":               {"queue_wait_months": 36, "reserve_margin_pct": 15.5, "curtailment_pct": 0.5,
+                                "queue_approval_rate_pct": 50, "demand_growth_yoy_pct": 4,
+                                "btm_headroom_mw": 140},
+        "sydney":              {"queue_wait_months": 36, "reserve_margin_pct": 12.5, "curtailment_pct": 10.5,
+                                "queue_approval_rate_pct": 45, "demand_growth_yoy_pct": 7,
+                                "btm_headroom_mw": 280},
+        "melbourne":           {"queue_wait_months": 30, "reserve_margin_pct": 14.0, "curtailment_pct": 9.0,
+                                "queue_approval_rate_pct": 50, "demand_growth_yoy_pct": 6,
+                                "btm_headroom_mw": 310},
+        "singapore":           {"queue_wait_months": 36, "reserve_margin_pct": 12.0, "curtailment_pct": 0.2,
+                                "queue_approval_rate_pct": 30, "demand_growth_yoy_pct": 5,
+                                "btm_headroom_mw": 30},   # IMDA moratorium-era, eased 2022
+        "toronto":             {"queue_wait_months": 30, "reserve_margin_pct": 16.5, "curtailment_pct": 3.5,
+                                "queue_approval_rate_pct": 55, "demand_growth_yoy_pct": 5,
+                                "btm_headroom_mw": 220},
+        "montreal":            {"queue_wait_months": 14, "reserve_margin_pct": 28.0, "curtailment_pct": 4.5,
+                                "queue_approval_rate_pct": 75, "demand_growth_yoy_pct": 8,
+                                "stranded_capacity_mw": 1500,  # HQ's flagship surplus pitch
+                                "btm_headroom_mw": 600},
+        "vancouver":           {"queue_wait_months": 24, "reserve_margin_pct": 22.0, "curtailment_pct": 5.0,
+                                "queue_approval_rate_pct": 60, "demand_growth_yoy_pct": 4,
+                                "btm_headroom_mw": 300},
     }
     if slug in slug_overrides:
         metrics.update({k: v for k, v in slug_overrides[slug].items() if v is not None})

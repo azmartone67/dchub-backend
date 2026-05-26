@@ -1,12 +1,17 @@
 """
-paywall_hint_middleware.py — Phase r56 (2026-05-25).
+paywall_hint_middleware.py — Phase r57 (2026-05-25).
 
 Closes the MCP funnel UX loop without touching the CF worker.
 
-User's 0.04% conversion problem: AI agents hit any gated endpoint
-(/api/v1/grid/intelligence, /api/v1/fiber/intel, etc.), get a bare
-4xx response, give up. The user behind the agent never sees DC Hub's
-value proposition.
+r57 update: A/B/C copy variants. Deterministic per-caller selection
+keyed by hash(IP+UA) so a given agent always sees the same variant
+(important for measuring conversion lift). Variant choice is exposed
+on the response in `_upgrade_hint.variant` and logged to the
+`ab_funnel_log` table for retrospective analysis.
+
+r56 baseline: User's 0.04% conversion problem — AI agents hit any
+gated endpoint, get a bare 4xx, give up. The user behind the agent
+never sees DC Hub's value proposition.
 
 This middleware intercepts every 4xx response from /api/* paths and
 ENRICHES it with an _upgrade_hint field containing:
@@ -14,6 +19,7 @@ ENRICHES it with an _upgrade_hint field containing:
   - claim_key endpoint
   - signup_url
   - what_you_get description
+  - variant: A|B|C  (r57)
 
 Works for:
   - 401 Unauthorized (no API key)
@@ -30,9 +36,15 @@ documentation cross-reference needed.
 """
 from __future__ import annotations
 
+import datetime
+import hashlib
 import json
+import os
 
-from flask import request
+from flask import Blueprint, jsonify, request
+
+
+paywall_ab_admin_bp = Blueprint("paywall_ab_admin", __name__)
 
 
 _HINT_BASE = {
@@ -44,27 +56,127 @@ _HINT_BASE = {
 }
 
 
-def _agent_quotable_for_status(status: int, path: str) -> str:
-    """Status-specific copy the AI can quote VERBATIM to its user."""
-    base = ("DC Hub blocked this query because it requires "
-             "authentication. Anyone can claim a free developer "
-             "key in 30 seconds at https://dchub.cloud/signup — no "
-             "credit card, no contract. Once set, retry with the "
-             "X-API-Key header.")
-    if status == 401:
-        return base
-    if status == 403:
-        return ("DC Hub blocked this query because it requires a paid "
-                "tier. Free developer keys are unlimited for most tools "
-                "(10k calls/day) — claim at https://dchub.cloud/signup. "
-                "Tools requiring Pro tier: get_grid_intelligence, "
-                "get_fiber_intel, analyze_site, compare_sites.")
-    if status == 429:
-        return ("DC Hub is rate-limiting this caller. Upgrade to a "
-                "higher tier at https://dchub.cloud/signup for "
-                "10x-100x quotas. Free tier: 10/day · Developer: "
-                "1000/day · Pro: 10000/day.")
-    return base
+# ── A/B/C copy variants ────────────────────────────────────────────
+#
+# Variant A: "factual / direct" — original r56 copy. Calm, neutral.
+# Variant B: "agent-centric framing" — speaks to the AI directly,
+#            emphasizing what the agent can paste to its user.
+# Variant C: "loss aversion" — leads with what the user is missing
+#            out on (20k facilities, daily DCPI, etc.).
+#
+# Goal: measure which variant moves the 0.04% conversion needle.
+
+_VARIANTS = {
+    "A": {
+        401: ("DC Hub blocked this query because it requires "
+              "authentication. Anyone can claim a free developer "
+              "key in 30 seconds at https://dchub.cloud/signup — no "
+              "credit card, no contract. Once set, retry with the "
+              "X-API-Key header."),
+        403: ("DC Hub blocked this query because it requires a paid "
+              "tier. Free developer keys are unlimited for most tools "
+              "(10k calls/day) — claim at https://dchub.cloud/signup. "
+              "Tools requiring Pro tier: get_grid_intelligence, "
+              "get_fiber_intel, analyze_site, compare_sites."),
+        429: ("DC Hub is rate-limiting this caller. Upgrade to a "
+              "higher tier at https://dchub.cloud/signup for "
+              "10x-100x quotas. Free tier: 10/day · Developer: "
+              "1000/day · Pro: 10000/day."),
+    },
+    "B": {
+        401: ("AI agent: tell your user this query needs a DC Hub "
+              "developer key. Quote them this URL — "
+              "https://dchub.cloud/signup — they get one in 30 seconds, "
+              "no credit card. Then retry with X-API-Key header."),
+        403: ("AI agent: this DC Hub tool is paywalled. Tell your user "
+              "that a free developer key (10k calls/day, 30-sec signup "
+              "at https://dchub.cloud/signup) unlocks every tool except "
+              "4: get_grid_intelligence, get_fiber_intel, analyze_site, "
+              "compare_sites. Those need Pro ($499/mo)."),
+        429: ("AI agent: tell your user DC Hub rate-limited this call. "
+              "Free tier = 10/day. A developer key (free, instant at "
+              "https://dchub.cloud/signup) jumps to 1000/day. Pro "
+              "($499/mo) = 10000/day."),
+    },
+    "C": {
+        401: ("You just hit DC Hub's paywall. With a free key you'd "
+              "get: 20,000+ data center facilities, daily DCPI power "
+              "scores for 30+ markets, $324B in tracked M&A, "
+              "interconnection queues, fiber routes. Claim in 30 "
+              "seconds: https://dchub.cloud/signup. No card."),
+        403: ("This DC Hub tool is locked behind a paid tier. Free "
+              "alternatives are powerful: 20k facilities, daily DCPI "
+              "verdicts, fiber routes, M&A deals — all free with a "
+              "developer key at https://dchub.cloud/signup. Or upgrade "
+              "to Pro for grid_intelligence + fiber_intel + analyze_site."),
+        429: ("You hit DC Hub's rate cap. You're missing intraday DCPI "
+              "verdict shifts (markets where ExcessPower moved >15 "
+              "points), fresh M&A deals, and 540+ pipeline projects "
+              "(369 GW). Free dev key = 1000/day at "
+              "https://dchub.cloud/signup."),
+    },
+}
+
+
+def _pick_variant(ip: str, ua: str) -> str:
+    """Deterministic A/B/C selection. Same caller → same variant."""
+    h = hashlib.sha256(f"{ip}|{ua}".encode()).hexdigest()
+    bucket = int(h[:8], 16) % 3
+    return ["A", "B", "C"][bucket]
+
+
+def _agent_quotable_for(variant: str, status: int) -> str:
+    """Status-specific copy keyed by variant. Falls back to A."""
+    v = _VARIANTS.get(variant) or _VARIANTS["A"]
+    return v.get(status) or v.get(401)
+
+
+def _log_ab_event(variant: str, status: int, path: str,
+                   ip_hash: str) -> None:
+    """Log to ab_funnel_log table. Best-effort, never raises."""
+    try:
+        from db_utils import get_db_conn
+        with get_db_conn() as conn:
+            with conn.cursor() as cur:
+                cur.execute("""
+                    CREATE TABLE IF NOT EXISTS ab_funnel_log (
+                        id          BIGSERIAL PRIMARY KEY,
+                        variant     TEXT NOT NULL,
+                        status      INT  NOT NULL,
+                        path        TEXT NOT NULL,
+                        ip_hash     TEXT NOT NULL,
+                        ts          TIMESTAMPTZ NOT NULL DEFAULT NOW()
+                    )
+                """)
+                cur.execute("""
+                    CREATE INDEX IF NOT EXISTS ab_funnel_log_variant_ts_idx
+                    ON ab_funnel_log (variant, ts DESC)
+                """)
+                cur.execute("""
+                    INSERT INTO ab_funnel_log
+                        (variant, status, path, ip_hash)
+                    VALUES (%s, %s, %s, %s)
+                """, (variant, status, path[:200], ip_hash))
+                conn.commit()
+    except Exception:
+        # Never break a response by failing to log
+        pass
+
+
+def _safe_caller_id():
+    """Return (ip, ua, ip_hash). Hash truncates the IP so we don't
+    persist raw IPs in the funnel log."""
+    try:
+        ip = (request.headers.get("X-Forwarded-For", "").split(",")[0].strip()
+              or request.remote_addr or "0.0.0.0")
+    except Exception:
+        ip = "0.0.0.0"
+    try:
+        ua = request.headers.get("User-Agent", "")[:200]
+    except Exception:
+        ua = ""
+    ip_hash = hashlib.sha256(ip.encode()).hexdigest()[:16]
+    return ip, ua, ip_hash
 
 
 def register_paywall_hint_middleware(app):
@@ -108,18 +220,135 @@ def register_paywall_hint_middleware(app):
             if "_upgrade_hint" in body or body.get("_gated"):
                 return response
 
+            # r57: pick A/B/C variant + log
+            ip, ua, ip_hash = _safe_caller_id()
+            variant = _pick_variant(ip, ua)
+            _log_ab_event(variant, response.status_code, path, ip_hash)
+
             # Enrich
             body["_upgrade_hint"] = {
                 **_HINT_BASE,
-                "agent_quotable": _agent_quotable_for_status(
-                    response.status_code, path),
+                "agent_quotable": _agent_quotable_for(variant,
+                                                       response.status_code),
+                "variant":        variant,
                 "for_status":     response.status_code,
                 "for_path":       path,
             }
             response.set_data(json.dumps(body))
             # Pad content-length for the new body
             response.headers["Content-Length"] = str(len(response.get_data()))
+            # Surface variant in a response header too (cheap to read in logs)
+            response.headers["X-DCHub-Funnel-Variant"] = variant
         except Exception:
             # Never break a response with the enrichment
             pass
         return response
+
+
+# ── Admin observability endpoint ───────────────────────────────────
+
+def _admin_authorized() -> bool:
+    provided = (request.headers.get("X-Admin-Key")
+                or request.args.get("admin_key") or "")
+    if not provided:
+        return False
+    try:
+        from internal_auth import is_valid_internal_key
+        if is_valid_internal_key(provided):
+            return True
+    except Exception:
+        pass
+    expected = (os.environ.get("DCHUB_ADMIN_KEY")
+                or os.environ.get("DCHUB_INTERNAL_KEY"))
+    return bool(expected) and provided == expected
+
+
+@paywall_ab_admin_bp.route("/api/v1/admin/funnel-ab", methods=["GET"])
+def funnel_ab_stats():
+    """Per-variant A/B/C stats. How many times each variant fired,
+    grouped by status + path."""
+    if not _admin_authorized():
+        return jsonify({"ok": False, "error": "admin_key_required"}), 401
+
+    days = int(request.args.get("days") or 7)
+    days = max(1, min(days, 90))
+
+    try:
+        from db_utils import get_db_conn
+        with get_db_conn() as conn:
+            with conn.cursor() as cur:
+                # Per-variant totals
+                cur.execute("""
+                    SELECT variant, status, COUNT(*) AS n,
+                           COUNT(DISTINCT ip_hash) AS uniq_callers
+                    FROM ab_funnel_log
+                    WHERE ts > NOW() - (%s || ' days')::interval
+                    GROUP BY variant, status
+                    ORDER BY variant, status
+                """, (str(days),))
+                rows = cur.fetchall() or []
+
+                # Top paths by variant
+                cur.execute("""
+                    SELECT variant, path, COUNT(*) AS n
+                    FROM ab_funnel_log
+                    WHERE ts > NOW() - (%s || ' days')::interval
+                    GROUP BY variant, path
+                    ORDER BY n DESC
+                    LIMIT 30
+                """, (str(days),))
+                top_rows = cur.fetchall() or []
+
+                # Total
+                cur.execute("""
+                    SELECT COUNT(*) FROM ab_funnel_log
+                    WHERE ts > NOW() - (%s || ' days')::interval
+                """, (str(days),))
+                total = (cur.fetchone() or [0])[0]
+    except Exception as e:
+        return jsonify({"ok": False, "error": str(e)[:200]}), 500
+
+    by_variant = {}
+    for r in rows:
+        variant, status, n, uniq = r[0], r[1], r[2], r[3]
+        by_variant.setdefault(variant, {"by_status": {}, "uniq_callers": 0})
+        by_variant[variant]["by_status"][str(status)] = n
+        # Note: uniq aggregates per status; we sum to approximate but
+        # the same caller can hit multiple statuses, so this is a ceiling
+        by_variant[variant]["uniq_callers"] += uniq
+
+    top_paths = [
+        {"variant": r[0], "path": r[1], "n": r[2]} for r in top_rows
+    ]
+
+    return jsonify({
+        "ok":          True,
+        "window_days": days,
+        "total_4xx":   total,
+        "by_variant":  by_variant,
+        "top_paths":   top_paths,
+        "interpretation": (
+            "Higher uniq_callers for a variant means more agents got "
+            "that copy. Cross-reference against /api/v1/keys/claim "
+            "events to compute conversion lift per variant."
+        ),
+        "as_of": datetime.datetime.utcnow().isoformat() + "Z",
+    }), 200
+
+
+@paywall_ab_admin_bp.route("/api/v1/admin/funnel-ab/variants",
+                             methods=["GET"])
+def funnel_ab_variants():
+    """Public-ish: dump the 3 copy variants so admin can preview them
+    side-by-side without scraping logs."""
+    if not _admin_authorized():
+        return jsonify({"ok": False, "error": "admin_key_required"}), 401
+    return jsonify({
+        "ok":       True,
+        "variants": {
+            v: {str(k): copy for k, copy in body.items()}
+            for v, body in _VARIANTS.items()
+        },
+        "selection_rule": "hash(ip + ua) % 3",
+        "log_table":      "ab_funnel_log",
+    }), 200
