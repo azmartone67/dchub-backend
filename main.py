@@ -4537,6 +4537,15 @@ _CACHE_PATHS: dict = {
     '/data/growth.json':          (300,  'audit growth roll-up'),
     '/api/v1/markets/list':       (1800, 'markets list — stable catalog'),
     '/api/v1/markets/list-rich':  (1800, 'markets list rich'),
+    # r47.31 (2026-05-26): agent-facing feeds need to be CDN-cacheable.
+    # The endpoints set their own Cache-Control headers (24h / 1h) but
+    # this after_request hook above wins; without these entries the
+    # blanket /api/* rule below stamps them with no-store, defeating the
+    # entire point of publishing a `cache_ttl_seconds` field to agents.
+    '/api/v1/agents/capabilities.json': (86400, 'agent capabilities — daily bake'),
+    '/api/v1/agents/capabilities':      (86400, 'agent capabilities (alias)'),
+    '/api/v1/agents/citations.json':    (3600,  'agent citations — hourly'),
+    '/api/v1/agents/citations':         (3600,  'agent citations (alias)'),
 }
 
 @app.after_request
