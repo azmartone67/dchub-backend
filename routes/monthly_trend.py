@@ -1041,6 +1041,38 @@ def _render_html(d: dict, *, partner: str = "") -> str:
     DC Hub · neutral data layer for data center infrastructure · {label} trend snapshot<br>
     <a href="/">dchub.cloud</a> · <a href="/cited-by">cited by</a> · <a href="/advertise">partnerships</a> · <a href="/api-docs">API docs</a>
   </div>
+
+  <!-- r41-license-footer (2026-05-25): visible CC-BY-4.0 declaration
+       backing up the LinkedIn partnership post claim ("Daily refresh.
+       CC-BY-4.0. AI-agent native"). Anyone clicking through from the
+       post sees the license front-and-center, with a citation block
+       they can copy verbatim. -->
+  <div style="margin-top:28px;padding:18px 22px;border:1px solid var(--border, #e2e8f0);border-radius:10px;font-size:13.5px;line-height:1.65;color:var(--text-dim, #94a3b8)">
+    <div style="margin-bottom:8px">
+      <span style="display:inline-block;padding:3px 9px;background:#10b981;color:#0a0e1a;font-weight:700;border-radius:4px;font-size:11px;letter-spacing:.5px;margin-right:10px">CC-BY-4.0</span>
+      <strong style="color:#e2e8f0">Open data, free to cite.</strong>
+      Licensed under <a rel="license" href="https://creativecommons.org/licenses/by/4.0/" style="color:#60a5fa">Creative Commons Attribution 4.0 International</a>.
+      Use in your research, press, or investor deck — attribution required, no fee, no NDA, no embargo.
+    </div>
+    <div>
+      <strong style="color:#e2e8f0">Cite as:</strong>
+      <code style="background:rgba(255,255,255,.06);padding:2px 6px;border-radius:3px;font-size:12px;color:#c7d2fe">DC Hub. (2026). Monthly Data Center Trend Report. https://dchub.cloud/reports/monthly. Licensed CC-BY-4.0.</code>
+    </div>
+  </div>
+
+  <script type="application/ld+json">
+  {{
+    "@context": "https://schema.org",
+    "@type": "Report",
+    "name": "DC Hub Monthly Data Center Trend Report — {label}",
+    "url": "https://dchub.cloud/reports/monthly",
+    "license": "https://creativecommons.org/licenses/by/4.0/",
+    "isAccessibleForFree": true,
+    "creator": {{"@type": "Organization", "name": "DC Hub", "url": "https://dchub.cloud"}},
+    "datePublished": "{d.get('generated_at','')}",
+    "inLanguage": "en"
+  }}
+  </script>
 </div>
 </body>
 </html>"""
