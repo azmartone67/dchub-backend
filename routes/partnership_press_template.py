@@ -26,6 +26,8 @@ import datetime
 from contextlib import contextmanager
 from flask import Blueprint, jsonify, request
 
+import os as _os
+
 try:
     import psycopg2 as _pg
 except Exception:
@@ -156,31 +158,52 @@ def _build_release(track):
     }
 
 
-def _insert_press_release(release):
-    """Insert into press_releases table (idempotent by slug)."""
+def _insert_press_release(release, auto_publish=False):
+    """Insert into press_releases table as DRAFT by default (idempotent by slug).
+
+    r47.23 (2026-05-26): default to `published=FALSE` so generated content
+    goes into a review queue first. Operator must explicitly approve via
+    /api/v1/partnerships/press/approve/<slug> before it shows up on
+    /press-release/<slug> or RSS / changelog / news feeds.
+
+    auto_publish=True is only honored when caller passes admin auth — used
+    for emergency overrides, not the routine cron path.
+    """
     if not (_pg and _dsn()):
         return {"ok": False, "error": "no_db"}
     try:
         with _conn() as c, c.cursor() as cur:
             # Check for existing slug
-            cur.execute("SELECT id FROM press_releases WHERE slug = %s", (release["slug"],))
+            cur.execute("SELECT id, published FROM press_releases WHERE slug = %s", (release["slug"],))
             existing = cur.fetchone()
             if existing:
-                return {"ok": True, "id": existing[0], "slug": release["slug"], "existed": True}
+                return {"ok": True, "id": existing[0], "slug": release["slug"],
+                        "existed": True, "published": bool(existing[1])}
 
             cur.execute("""
                 INSERT INTO press_releases
                   (title, subheadline, summary, body, slug, source, source_url,
                    category, date, published_date, published, created_at, published_at)
-                VALUES (%s, %s, %s, %s, %s, %s, %s, %s, CURRENT_DATE, CURRENT_DATE, TRUE, NOW(), NOW())
+                VALUES (%s, %s, %s, %s, %s, %s, %s, %s, CURRENT_DATE, CURRENT_DATE, %s, NOW(),
+                        CASE WHEN %s THEN NOW() ELSE NULL END)
                 RETURNING id
             """, (release["title"], release["subheadline"], release["summary"],
                   release["body"], release["slug"], release["source"],
-                  release["source_url"], release["category"]))
+                  release["source_url"], release["category"],
+                  bool(auto_publish), bool(auto_publish)))
             new_id = cur.fetchone()[0]
-            return {"ok": True, "id": int(new_id), "slug": release["slug"], "existed": False}
+            return {"ok": True, "id": int(new_id), "slug": release["slug"],
+                    "existed": False, "published": bool(auto_publish)}
     except Exception as e:
         return {"ok": False, "error": f"{type(e).__name__}: {str(e)[:160]}"}
+
+
+def _is_admin(req):
+    expected = os.environ.get("DCHUB_ADMIN_KEY", "").strip()
+    if not expected:
+        return False
+    got = req.headers.get("X-Admin-Key", "").strip()
+    return bool(got and got == expected)
 
 
 @partnership_press_bp.route("/preview", methods=["GET"])
@@ -199,7 +222,11 @@ def preview():
 
 @partnership_press_bp.route("/run", methods=["GET", "POST"])
 def run():
-    """Cron-callable. Creates this ISO-week's partnership press release."""
+    """Cron-callable. Creates this ISO-week's partnership press release
+    as a DRAFT (published=FALSE). Operator must call /approve to publish.
+
+    Pass ?auto_publish=1 + X-Admin-Key to skip the draft state (emergency only).
+    """
     slug = (request.args.get("slug") or "").strip().lower()
     if slug:
         track = next((t for t in _LINKEDIN_TRACKS if t["slug"] == slug), None)
@@ -208,8 +235,15 @@ def run():
     else:
         track = _pick_track()
 
+    # r47.23: auto_publish only when admin-authenticated. Default = draft.
+    auto = (request.args.get("auto_publish") or "").lower() in ("1", "true", "yes")
+    if auto and not _is_admin(request):
+        return jsonify({"error": "unauthorized",
+                        "hint": "auto_publish=1 requires X-Admin-Key. "
+                                "Without admin, content is created as a draft."}), 401
+
     release = _build_release(track)
-    result = _insert_press_release(release)
+    result = _insert_press_release(release, auto_publish=auto)
     return jsonify({
         "ok":        result.get("ok"),
         "track":     track["slug"],
@@ -217,10 +251,136 @@ def run():
         "title":     release["title"],
         "id":        result.get("id"),
         "existed":   result.get("existed", False),
+        "published": result.get("published", False),
         "error":     result.get("error"),
         "press_url": f"https://dchub.cloud/press-release/{release['slug']}",
+        "approve_url": f"https://api.dchub.cloud/api/v1/partnerships/press/approve/{release['slug']}",
+        "review_hint": ("Draft created — NOT publicly visible yet. "
+                        "Review at /api/v1/partnerships/press/preview-draft/{slug}, "
+                        "then POST to /approve/{slug} with X-Admin-Key to publish.")
+                       if not result.get("published") else "Published immediately (admin override).",
         "at":        datetime.datetime.utcnow().isoformat() + "Z",
     }), 200 if result.get("ok") else 500
+
+
+@partnership_press_bp.route("/approve/<slug>", methods=["POST"], strict_slashes=False)
+def approve(slug):
+    """Flip a draft press release to published=TRUE. Admin-only."""
+    if not _is_admin(request):
+        return jsonify({"error": "unauthorized", "hint": "X-Admin-Key required"}), 401
+    if not (_pg and _dsn()):
+        return jsonify({"error": "no_db"}), 503
+    try:
+        with _conn() as c, c.cursor() as cur:
+            cur.execute("""
+                UPDATE press_releases
+                   SET published = TRUE, published_at = NOW()
+                 WHERE slug = %s AND category = 'partnership'
+                 RETURNING id, title
+            """, (slug,))
+            r = cur.fetchone()
+            if not r:
+                return jsonify({"error": "not_found",
+                                "hint": "Slug must exist + be category=partnership"}), 404
+            return jsonify({
+                "ok":      True,
+                "id":      int(r[0]),
+                "slug":    slug,
+                "title":   r[1],
+                "press_url": f"https://dchub.cloud/press-release/{slug}",
+                "at":      datetime.datetime.utcnow().isoformat() + "Z",
+            }), 200
+    except Exception as e:
+        return jsonify({"error": str(e)[:140]}), 500
+
+
+@partnership_press_bp.route("/reject/<slug>", methods=["POST", "DELETE"], strict_slashes=False)
+def reject(slug):
+    """Delete a draft press release. Admin-only."""
+    if not _is_admin(request):
+        return jsonify({"error": "unauthorized", "hint": "X-Admin-Key required"}), 401
+    if not (_pg and _dsn()):
+        return jsonify({"error": "no_db"}), 503
+    try:
+        with _conn() as c, c.cursor() as cur:
+            cur.execute("""
+                DELETE FROM press_releases
+                 WHERE slug = %s AND category = 'partnership'
+                   AND published = FALSE
+                 RETURNING id, title
+            """, (slug,))
+            r = cur.fetchone()
+            if not r:
+                return jsonify({"error": "not_found_or_already_published",
+                                "hint": "Only unpublished partnership drafts can be rejected via this endpoint."}), 404
+            return jsonify({"ok": True, "deleted_id": int(r[0]),
+                            "deleted_title": r[1], "slug": slug}), 200
+    except Exception as e:
+        return jsonify({"error": str(e)[:140]}), 500
+
+
+@partnership_press_bp.route("/drafts", methods=["GET"])
+def drafts():
+    """List pending partnership press drafts awaiting approval."""
+    if not (_pg and _dsn()):
+        return jsonify({"drafts": []}), 200
+    try:
+        with _conn() as c, c.cursor() as cur:
+            cur.execute("""
+                SELECT id, slug, title, subheadline, created_at
+                  FROM press_releases
+                 WHERE category = 'partnership' AND published = FALSE
+                 ORDER BY created_at DESC LIMIT 50
+            """)
+            drafts_list = [{
+                "id":          r[0],
+                "slug":        r[1],
+                "title":       r[2],
+                "subheadline": r[3],
+                "created_at":  r[4].isoformat() if r[4] else None,
+                "preview_url": f"https://api.dchub.cloud/api/v1/partnerships/press/preview-draft/{r[1]}",
+                "approve_url": f"https://api.dchub.cloud/api/v1/partnerships/press/approve/{r[1]}",
+                "reject_url":  f"https://api.dchub.cloud/api/v1/partnerships/press/reject/{r[1]}",
+            } for r in cur.fetchall()]
+        return jsonify({
+            "count":  len(drafts_list),
+            "drafts": drafts_list,
+            "hint":   "POST to approve_url with X-Admin-Key to publish. POST to reject_url to delete.",
+        }), 200, {"Cache-Control": "no-store"}
+    except Exception as e:
+        return jsonify({"error": str(e)[:140], "drafts": []}), 200
+
+
+@partnership_press_bp.route("/preview-draft/<slug>", methods=["GET"])
+def preview_draft(slug):
+    """Render the full body of a draft so operator can review before approving."""
+    if not (_pg and _dsn()):
+        return jsonify({"error": "no_db"}), 503
+    try:
+        with _conn() as c, c.cursor() as cur:
+            cur.execute("""
+                SELECT id, slug, title, subheadline, summary, body, created_at, published
+                  FROM press_releases
+                 WHERE slug = %s AND category = 'partnership'
+            """, (slug,))
+            r = cur.fetchone()
+            if not r:
+                return jsonify({"error": "not_found"}), 404
+            return jsonify({
+                "id":          r[0],
+                "slug":        r[1],
+                "title":       r[2],
+                "subheadline": r[3],
+                "summary":     r[4],
+                "body":        r[5],
+                "created_at":  r[6].isoformat() if r[6] else None,
+                "published":   bool(r[7]),
+                "char_count":  len(r[5] or ""),
+                "approve_url": f"https://api.dchub.cloud/api/v1/partnerships/press/approve/{r[1]}",
+                "reject_url":  f"https://api.dchub.cloud/api/v1/partnerships/press/reject/{r[1]}",
+            }), 200, {"Cache-Control": "no-store"}
+    except Exception as e:
+        return jsonify({"error": str(e)[:140]}), 500
 
 
 @partnership_press_bp.route("/status", methods=["GET"])

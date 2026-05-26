@@ -273,36 +273,279 @@ def _post_to_linkedin(text, landing_url):
         return {"ok": False, "error": f"{type(e).__name__}: {str(e)[:200]}"}
 
 
+def _is_admin(req):
+    expected = os.environ.get("DCHUB_ADMIN_KEY", "").strip()
+    if not expected:
+        return False
+    got = req.headers.get("X-Admin-Key", "").strip()
+    return bool(got and got == expected)
+
+
+def _ensure_drafts_table():
+    if not (_pg and _dsn()):
+        return
+    try:
+        with _conn() as c, c.cursor() as cur:
+            cur.execute("""
+                CREATE TABLE IF NOT EXISTS linkedin_partnership_drafts (
+                    id           SERIAL PRIMARY KEY,
+                    iso_year     INT NOT NULL,
+                    iso_week     INT NOT NULL,
+                    track_slug   TEXT NOT NULL,
+                    headline     TEXT,
+                    body         TEXT,
+                    url          TEXT,
+                    created_at   TIMESTAMPTZ DEFAULT NOW(),
+                    approved_at  TIMESTAMPTZ,
+                    posted_at    TIMESTAMPTZ,
+                    linkedin_urn TEXT,
+                    status       TEXT DEFAULT 'pending',
+                    UNIQUE(iso_year, iso_week)
+                )
+            """)
+    except Exception:
+        pass
+
+
+_ensure_drafts_table()
+
+
 @linkedin_partnership_bp.route("/run", methods=["GET", "POST"])
 def run():
-    """Cron-callable. Fires the current ISO-week's partnership track."""
+    """Cron-callable. Generates a DRAFT for the current ISO-week's partnership
+    track. r47.23: does NOT auto-post to LinkedIn anymore — operator must
+    POST /approve to fire to LinkedIn. Pass auto_publish=1 + admin key for
+    emergency override.
+    """
     iso_year, iso_week = _current_iso_week()
     bypass = (request.args.get("force") or "").lower() in ("1", "true", "yes")
-    if not bypass and _already_posted(iso_year, iso_week):
-        return jsonify({"skipped": True, "reason": "already_posted_this_week",
-                         "iso_year": iso_year, "iso_week": iso_week}), 200
+    auto_publish = (request.args.get("auto_publish") or "").lower() in ("1", "true", "yes")
+
+    if auto_publish and not _is_admin(request):
+        return jsonify({"error": "unauthorized",
+                        "hint": "auto_publish=1 requires X-Admin-Key. Without admin, only drafts are created."}), 401
 
     track = _pick_track()
     if (request.args.get("slug") or "").strip():
-        # Manual override: ?slug=cbre
-        slug = request.args.get("slug").strip().lower()
-        match = next((t for t in _TRACKS if t["slug"] == slug), None)
+        slug_q = request.args.get("slug").strip().lower()
+        match = next((t for t in _TRACKS if t["slug"] == slug_q), None)
         if match: track = match
 
-    text = f"{track['body']}\n\n{track['url']}"
-    result = _post_to_linkedin(text, track["url"])
-    _record(iso_year, iso_week, track, result)
+    # Check / create draft (idempotent on iso_year+iso_week)
+    if not (_pg and _dsn()):
+        return jsonify({"error": "no_db"}), 503
 
-    return jsonify({
-        "ok":          result.get("ok"),
-        "iso_year":    iso_year,
-        "iso_week":    iso_week,
-        "track":       track["slug"],
-        "anchor":      track["anchor"],
-        "url":         track["url"],
-        "linkedin":    result,
-        "at":          datetime.datetime.utcnow().isoformat() + "Z",
-    }), 200 if result.get("ok") else 502
+    try:
+        with _conn() as c, c.cursor() as cur:
+            cur.execute("""
+                SELECT id, status, posted_at, linkedin_urn
+                  FROM linkedin_partnership_drafts
+                 WHERE iso_year=%s AND iso_week=%s
+            """, (iso_year, iso_week))
+            existing = cur.fetchone()
+            if existing and not bypass:
+                draft_id, status, posted_at, urn = existing
+                return jsonify({
+                    "skipped": True,
+                    "reason":  "already_has_draft_this_week",
+                    "draft_id": draft_id,
+                    "status":   status,
+                    "posted_at": posted_at.isoformat() if posted_at else None,
+                    "linkedin_urn": urn,
+                    "preview_url":  f"https://api.dchub.cloud/api/v1/linkedin-partnership/drafts/{draft_id}",
+                    "approve_url":  f"https://api.dchub.cloud/api/v1/linkedin-partnership/approve/{draft_id}",
+                }), 200
+
+            # If forcing OR auto-publishing, may need to clean up existing
+            if existing and (bypass or auto_publish):
+                cur.execute("DELETE FROM linkedin_partnership_drafts WHERE iso_year=%s AND iso_week=%s",
+                            (iso_year, iso_week))
+
+            cur.execute("""
+                INSERT INTO linkedin_partnership_drafts
+                  (iso_year, iso_week, track_slug, headline, body, url, status)
+                VALUES (%s, %s, %s, %s, %s, %s, %s)
+                RETURNING id
+            """, (iso_year, iso_week, track["slug"], track["headline"],
+                  track["body"], track["url"],
+                  "approved" if auto_publish else "pending"))
+            draft_id = cur.fetchone()[0]
+
+            # If admin asked for auto-publish, fire immediately
+            posted_urn = None
+            if auto_publish:
+                text = f"{track['body']}\n\n{track['url']}"
+                result = _post_to_linkedin(text, track["url"])
+                posted_urn = result.get("urn")
+                cur.execute("""
+                    UPDATE linkedin_partnership_drafts
+                       SET posted_at=NOW(), linkedin_urn=%s, status=%s,
+                           approved_at=NOW()
+                     WHERE id=%s
+                """, (posted_urn, "posted" if result.get("ok") else "post_failed", draft_id))
+                # Also keep legacy table in sync
+                _record(iso_year, iso_week, track, result)
+
+        return jsonify({
+            "ok":          True,
+            "draft_id":    draft_id,
+            "iso_year":    iso_year,
+            "iso_week":    iso_week,
+            "track":       track["slug"],
+            "anchor":      track["anchor"],
+            "url":         track["url"],
+            "status":      "posted" if auto_publish else "pending_review",
+            "linkedin_urn": posted_urn,
+            "preview_url": f"https://api.dchub.cloud/api/v1/linkedin-partnership/drafts/{draft_id}",
+            "approve_url": f"https://api.dchub.cloud/api/v1/linkedin-partnership/approve/{draft_id}",
+            "reject_url":  f"https://api.dchub.cloud/api/v1/linkedin-partnership/reject/{draft_id}",
+            "review_hint": ("Draft saved — NOT posted to LinkedIn. POST /approve/<id> with "
+                            "X-Admin-Key to fire it.")
+                           if not auto_publish else "Posted to LinkedIn (admin override).",
+            "at":          datetime.datetime.utcnow().isoformat() + "Z",
+        }), 200
+    except Exception as e:
+        return jsonify({"error": f"{type(e).__name__}: {str(e)[:160]}"}), 500
+
+
+@linkedin_partnership_bp.route("/drafts", methods=["GET"])
+def list_drafts():
+    if not (_pg and _dsn()):
+        return jsonify({"drafts": []}), 200
+    try:
+        with _conn() as c, c.cursor() as cur:
+            cur.execute("""
+                SELECT id, iso_year, iso_week, track_slug, headline, body, url,
+                       created_at, approved_at, posted_at, status, linkedin_urn
+                  FROM linkedin_partnership_drafts
+                 ORDER BY created_at DESC LIMIT 30
+            """)
+            drafts = [{
+                "id":           r[0],
+                "iso_year":     r[1], "iso_week": r[2],
+                "track":        r[3],
+                "headline":     r[4],
+                "body_preview": (r[5] or "")[:200],
+                "url":          r[6],
+                "created_at":   r[7].isoformat() if r[7] else None,
+                "approved_at":  r[8].isoformat() if r[8] else None,
+                "posted_at":    r[9].isoformat() if r[9] else None,
+                "status":       r[10],
+                "linkedin_urn": r[11],
+                "approve_url":  f"https://api.dchub.cloud/api/v1/linkedin-partnership/approve/{r[0]}",
+                "reject_url":   f"https://api.dchub.cloud/api/v1/linkedin-partnership/reject/{r[0]}",
+            } for r in cur.fetchall()]
+        return jsonify({"count": len(drafts), "drafts": drafts}), 200, {"Cache-Control": "no-store"}
+    except Exception as e:
+        return jsonify({"error": str(e)[:140], "drafts": []}), 200
+
+
+@linkedin_partnership_bp.route("/drafts/<int:draft_id>", methods=["GET"])
+def view_draft(draft_id):
+    if not (_pg and _dsn()):
+        return jsonify({"error": "no_db"}), 503
+    try:
+        with _conn() as c, c.cursor() as cur:
+            cur.execute("""
+                SELECT id, iso_year, iso_week, track_slug, headline, body, url,
+                       created_at, status, posted_at, linkedin_urn
+                  FROM linkedin_partnership_drafts
+                 WHERE id = %s
+            """, (draft_id,))
+            r = cur.fetchone()
+            if not r:
+                return jsonify({"error": "not_found"}), 404
+            return jsonify({
+                "id":           r[0],
+                "iso_year":     r[1], "iso_week": r[2],
+                "track":        r[3],
+                "headline":     r[4],
+                "body":         r[5],
+                "url":          r[6],
+                "char_count":   len(r[5] or ""),
+                "created_at":   r[7].isoformat() if r[7] else None,
+                "status":       r[8],
+                "posted_at":    r[9].isoformat() if r[9] else None,
+                "linkedin_urn": r[10],
+                "approve_url":  f"https://api.dchub.cloud/api/v1/linkedin-partnership/approve/{r[0]}",
+                "reject_url":   f"https://api.dchub.cloud/api/v1/linkedin-partnership/reject/{r[0]}",
+            }), 200, {"Cache-Control": "no-store"}
+    except Exception as e:
+        return jsonify({"error": str(e)[:140]}), 500
+
+
+@linkedin_partnership_bp.route("/approve/<int:draft_id>", methods=["POST"])
+def approve_draft(draft_id):
+    """Fire the draft to LinkedIn. Admin only."""
+    if not _is_admin(request):
+        return jsonify({"error": "unauthorized", "hint": "X-Admin-Key required"}), 401
+    if not (_pg and _dsn()):
+        return jsonify({"error": "no_db"}), 503
+    try:
+        with _conn() as c, c.cursor() as cur:
+            cur.execute("""
+                SELECT id, iso_year, iso_week, track_slug, body, url, status
+                  FROM linkedin_partnership_drafts WHERE id = %s
+            """, (draft_id,))
+            r = cur.fetchone()
+            if not r:
+                return jsonify({"error": "not_found"}), 404
+            if r[6] in ("posted",):
+                return jsonify({"error": "already_posted",
+                                "hint": "This draft was already posted to LinkedIn."}), 409
+
+            track = next((t for t in _TRACKS if t["slug"] == r[3]), None)
+            text = f"{r[4]}\n\n{r[5]}"
+            result = _post_to_linkedin(text, r[5])
+
+            cur.execute("""
+                UPDATE linkedin_partnership_drafts
+                   SET approved_at=NOW(),
+                       posted_at=NOW(),
+                       linkedin_urn=%s,
+                       status=%s
+                 WHERE id=%s
+            """, ((result.get("urn") or None),
+                  "posted" if result.get("ok") else "post_failed",
+                  draft_id))
+
+            # Mirror to legacy table for /status compatibility
+            if track:
+                _record(int(r[1]), int(r[2]), track, result)
+
+            return jsonify({
+                "ok":           result.get("ok"),
+                "draft_id":     draft_id,
+                "track":        r[3],
+                "linkedin_urn": result.get("urn"),
+                "error":        result.get("error", ""),
+                "at":           datetime.datetime.utcnow().isoformat() + "Z",
+            }), 200 if result.get("ok") else 502
+    except Exception as e:
+        return jsonify({"error": str(e)[:160]}), 500
+
+
+@linkedin_partnership_bp.route("/reject/<int:draft_id>", methods=["POST", "DELETE"])
+def reject_draft(draft_id):
+    """Delete a draft without posting. Admin only."""
+    if not _is_admin(request):
+        return jsonify({"error": "unauthorized", "hint": "X-Admin-Key required"}), 401
+    if not (_pg and _dsn()):
+        return jsonify({"error": "no_db"}), 503
+    try:
+        with _conn() as c, c.cursor() as cur:
+            cur.execute("""
+                DELETE FROM linkedin_partnership_drafts
+                 WHERE id = %s AND status != 'posted'
+                 RETURNING id, track_slug
+            """, (draft_id,))
+            r = cur.fetchone()
+            if not r:
+                return jsonify({"error": "not_found_or_posted",
+                                "hint": "Cannot reject an already-posted draft."}), 404
+            return jsonify({"ok": True, "deleted_id": int(r[0]), "track": r[1]}), 200
+    except Exception as e:
+        return jsonify({"error": str(e)[:140]}), 500
 
 
 @linkedin_partnership_bp.route("/status", methods=["GET"])
