@@ -321,6 +321,82 @@ def attach_market_narrative(s: dict, risks: list, opps: list) -> str | None:
     return text
 
 
+def _build_energy_prompt(d: dict, kind: str = "energy_monthly",
+                          audience: str = "default") -> str:
+    """Energy report prompt — focuses on power-availability shifts,
+    verdict distribution, ISO health, and interconnection-queue depth.
+    Different lens from the M&A-focused monthly/quarterly reports."""
+    window = "month" if kind == "energy_monthly" else "quarter"
+    audience_block = _audience_block(audience)
+
+    verdicts = d.get("verdict_distribution") or {}
+    build = (d.get("top_build_markets") or [])[:5]
+    avoid = (d.get("top_avoid_markets") or [])[:5]
+    isos = (d.get("iso_rollup") or [])[:6]
+    queue = d.get("interconnection_queue") or {}
+    grid = d.get("grid_mix_now") or []
+
+    facts = {
+        "window": window,
+        "markets_scored_total": d.get("markets_scored_total"),
+        "verdict_distribution": verdicts,
+        "top_build_markets": [{"market": m.get("market"), "iso": m.get("iso"),
+                                "composite": m.get("composite"),
+                                "ttp_months": m.get("ttp_months")}
+                               for m in build],
+        "top_avoid_markets": [{"market": m.get("market"), "iso": m.get("iso"),
+                                "constraint": m.get("constraint")}
+                               for m in avoid],
+        "iso_rollup_top": [{"iso": b.get("iso"), "build_pct": b.get("build_pct"),
+                            "avg_excess": b.get("avg_excess"),
+                            "avg_constraint": b.get("avg_constraint"),
+                            "avg_ttp": b.get("avg_ttp")}
+                           for b in isos],
+        "interconnection_queue": {
+            "total_mw_queued": queue.get("total_mw_queued"),
+            "data_center_share_pct": queue.get("data_center_share_pct"),
+        },
+        "grid_mix_snapshot": grid,
+    }
+
+    return f"""You are a senior research analyst at DC Hub drafting the
+executive summary for the {window}ly Data Center Energy Report.
+Reader: a hyperscaler power/site-selection lead, a PE/infra capital
+allocator, or a grid-and-energy journalist. Voice: CBRE/JLL H2
+energy-and-power chapter — confident, specific, willing to take a
+position, no hype.
+
+This report is POWER- and GRID-focused, NOT M&A-focused. Lead with
+the verdict distribution or the BUILD/AVOID watch list — name
+specific markets, specific ISOs, specific MW figures from the facts.
+
+Write {'250 words across 2 paragraphs' if window == 'month' else '350 words across 3 paragraphs'}.
+
+Paragraph 1 — THE POWER MAP NOW: what's the dominant signal in the
+DCPI verdict distribution? Which ISO is the most BUILD-friendly?
+Which is the most stressed? Lead with a specific number or named
+market.
+
+Paragraph 2 — THE STRUCTURAL READ: what does this distribution mean
+for the next 2 quarters? Take a position on power-availability
+direction. Reference queue depth + curtailment + TTP from the facts.
+{'' if window == 'month' else 'Paragraph 3 — THE WATCH LIST: which 2-3 markets or ISO shifts should the reader monitor heading into next quarter? Pull from top_build / top_avoid / iso_rollup_top — name specifics.'}
+
+{audience_block}
+
+DO NOT:
+- Use bullets or section headers
+- Reference DC Hub by name in the prose
+- Hallucinate any number not in the facts block
+- Hedge — take a position
+
+Facts (live as of {d.get('as_of_date')}):
+{json.dumps(facts, indent=2, default=str)}
+
+Write only the paragraphs. No preamble, no sign-off.
+"""
+
+
 def _call_claude(prompt: str) -> str | None:
     """Single Claude call. Returns narrative text or None on failure.
     Uses haiku — cheap, fast, plenty for analyst prose."""
@@ -389,7 +465,9 @@ def attach_narrative(d: dict, kind: str = "monthly",
 
     # Cache miss — build prompt and call
     try:
-        if kind == "quarterly":
+        if kind in ("energy_monthly", "energy_quarterly"):
+            prompt = _build_energy_prompt(d, kind=kind, audience=audience)
+        elif kind == "quarterly":
             prompt = _build_quarterly_prompt(d, audience=audience)
         else:
             prompt = _build_monthly_prompt(d, audience=audience)
