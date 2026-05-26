@@ -148,3 +148,63 @@ def funnel_diag():
             })
 
     return jsonify(out), 200
+
+
+@mcp_funnel_bp.route("/anon-ua-breakdown", methods=["GET"])
+def anon_ua_breakdown():
+    """Phase r51-cluster (2026-05-26). 99.7% of paywall hits classify as
+    mcp_client='mcp' (no clientInfo on init). To decide whether to keep
+    optimizing UI prompts or pivot to programmatic-consumer outreach,
+    we need to know if those hits are 3 IPs hammering or 300 diffuse.
+
+    Returns the top 50 (ip_hash, user_agent) pairs from the unclassified
+    bucket over the last 7 days, with counts. ip_hash is sha256-prefix
+    so we don't leak full IPs in the response.
+    """
+    if _pg is None:
+        return jsonify({"error": "psycopg2 not available"}), 500
+    import hashlib
+    try:
+        rows = []
+        with _conn() as c, c.cursor() as cur:
+            cur.execute(
+                """
+                SELECT ip_address, user_agent, mcp_client,
+                       COUNT(*) AS hits,
+                       MIN(created_at) AS first_seen,
+                       MAX(created_at) AS last_seen
+                  FROM mcp_upgrade_signals
+                 WHERE created_at > NOW() - INTERVAL '7 days'
+                   AND (mcp_client IS NULL OR mcp_client IN ('mcp', 'unknown', ''))
+                 GROUP BY 1, 2, 3
+                 ORDER BY hits DESC
+                 LIMIT 50
+                """
+            )
+            for ip, ua, mc, hits, first_seen, last_seen in cur.fetchall():
+                ip_clean = (str(ip or '').split(',')[0].strip())
+                ip_hash = hashlib.sha256(ip_clean.encode('utf-8')).hexdigest()[:12] if ip_clean else None
+                rows.append({
+                    "ip_hash":    ip_hash,
+                    "user_agent": (ua or '')[:200],
+                    "mcp_client": mc,
+                    "hits":       int(hits),
+                    "first_seen": first_seen.isoformat() if first_seen else None,
+                    "last_seen":  last_seen.isoformat() if last_seen else None,
+                })
+        total = sum(r["hits"] for r in rows)
+        top5_pct = (sum(r["hits"] for r in rows[:5]) * 100.0 / total) if total else 0.0
+        return jsonify({
+            "at":                     datetime.datetime.utcnow().isoformat() + "Z",
+            "rows":                   rows,
+            "total_hits_in_sample":   total,
+            "distinct_ip_ua_pairs":   len(rows),
+            "top5_concentration_pct": round(top5_pct, 1),
+            "interpretation": (
+                "Top-5 >=80% = handful of programmatic consumers (email-outreach play). "
+                "Top-5 <30% = diffuse traffic (UI/discovery play). "
+                "30-80% = mixed."
+            ),
+        }), 200
+    except Exception as e:
+        return jsonify({"error": str(e)[:200]}), 500
