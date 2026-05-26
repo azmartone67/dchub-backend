@@ -100,6 +100,12 @@ def _compute_source_of_truth() -> dict:
         "score":                    0,
         "ai_citations_7d":          0,
         "ai_cited_pct":             0.0,
+        # r49 (2026-05-25): track DISTINCT engines that cite us, not just
+        # total observations. Citation BREADTH (5 engines: ChatGPT,
+        # Claude, Gemini, Perplexity, Groq) is a stronger source-of-truth
+        # signal than citation VOLUME (could be one engine citing 30x).
+        "distinct_engines_cited_7d": 0,
+        "distinct_engines_cited_30d": 0,
         "news_mentions_7d":         0,
         "news_mentions_30d":        0,
         "auto_press_7d":            0,
@@ -111,12 +117,16 @@ def _compute_source_of_truth() -> dict:
     if c is None: return out
     try:
         with c.cursor() as cur:
-            # AI citations
+            # AI citations + distinct engines (citation breadth)
             try:
                 cur.execute("""
                     SELECT COUNT(*) FILTER (WHERE observed_at >= NOW() - INTERVAL '7 days') AS total,
                            COUNT(*) FILTER (WHERE dchub_cited = true
-                                             AND observed_at >= NOW() - INTERVAL '7 days') AS cited
+                                             AND observed_at >= NOW() - INTERVAL '7 days') AS cited,
+                           COUNT(DISTINCT engine) FILTER (WHERE dchub_cited = true
+                                             AND observed_at >= NOW() - INTERVAL '7 days') AS distinct_7d,
+                           COUNT(DISTINCT engine) FILTER (WHERE dchub_cited = true
+                                             AND observed_at >= NOW() - INTERVAL '30 days') AS distinct_30d
                       FROM ai_citations
                 """)
                 r = cur.fetchone()
@@ -124,6 +134,8 @@ def _compute_source_of_truth() -> dict:
                     total_obs = int(r[0] or 0)
                     cited = int(r[1] or 0)
                     out["ai_citations_7d"] = cited
+                    out["distinct_engines_cited_7d"]  = int(r[2] or 0)
+                    out["distinct_engines_cited_30d"] = int(r[3] or 0)
                     if total_obs > 0:
                         out["ai_cited_pct"] = round(100.0 * cited / total_obs, 1)
             except Exception:
@@ -189,26 +201,50 @@ def _compute_source_of_truth() -> dict:
         except Exception: pass
 
     # Compose score
+    # r49 (2026-05-25): re-balanced to reward citation BREADTH heavily.
+    # Old formula penalized DC Hub for being cited by 5 distinct AI
+    # engines but only ~7 raw observations — the cited-by-5-engines
+    # fact got 15 pts out of 100 even though it's the strongest moat
+    # signal we have. New ladder:
+    #   AI citations volume (0-20) +
+    #   AI citations breadth (0-25) +  ← new component
+    #   News mentions (0-25) +
+    #   Auto-press health (0-25) +
+    #   Citation diversity bonus (0-5)
+    # = 100 max. A platform cited by 5 distinct engines with 7
+    # observations + 8 auto-press releases now scores ~55, which is the
+    # honest read.
     score = 0
-    # AI citations: 0-35 pts
+    # AI citations VOLUME: 0-20 pts (was 0-35)
     cited = out["ai_citations_7d"]
-    if   cited >= 30: score += 35
-    elif cited >= 10: score += 25
-    elif cited >= 3:  score += 15
+    if   cited >= 30: score += 20
+    elif cited >= 10: score += 15
+    elif cited >= 3:  score += 10
     elif cited >= 1:  score += 5
-    # News mentions: 0-35 pts (vs competitor baseline)
+    # AI citations BREADTH (distinct engines): 0-25 pts — NEW
+    breadth = out["distinct_engines_cited_7d"]
+    if   breadth >= 5: score += 25   # cited by 5+ distinct AI platforms
+    elif breadth >= 3: score += 18
+    elif breadth >= 2: score += 10
+    elif breadth >= 1: score += 5
+    # News mentions: 0-25 pts (was 0-35)
     mentions = out["news_mentions_7d"]
-    if   mentions >= 10: score += 35
-    elif mentions >= 5:  score += 25
-    elif mentions >= 2:  score += 15
+    if   mentions >= 10: score += 25
+    elif mentions >= 5:  score += 18
+    elif mentions >= 2:  score += 10
     elif mentions >= 1:  score += 5
-    # Auto-press health: 0-30 pts (7+ per week with 5+ unique markets = full)
+    # Auto-press health: 0-25 pts (was 0-30; press is our own output —
+    # capped to leave room for external signals)
     aw = out["auto_press_7d"]
     uw = out["unique_markets_in_press_7d"]
-    if   aw >= 7 and uw >= 5: score += 30
-    elif aw >= 5 and uw >= 3: score += 20
+    if   aw >= 7 and uw >= 5: score += 25
+    elif aw >= 5 and uw >= 3: score += 18
     elif aw >= 3:              score += 10
     elif aw >= 1:              score += 5
+    # Diversity bonus: +5 if 30d breadth also high (sustained citation
+    # spread, not just one-week burst)
+    if out["distinct_engines_cited_30d"] >= 5:
+        score += 5
     out["score"] = max(0, min(100, score))
 
     # Score interpretation
