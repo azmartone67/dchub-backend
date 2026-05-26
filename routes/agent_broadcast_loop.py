@@ -100,10 +100,14 @@ _TARGETS = [
      "https://api.dchub.cloud/api/v1/agents/capabilities.json", "GET", "self"),
     ("self_agents_md",
      "https://dchub.cloud/AGENTS.md", "GET", "self"),
+    # r47.26.1 (2026-05-26): dchub.cloud Pages worker doesn't route
+    # /agent.json or /.well-known/mcp-server.json (the dchubapiproxy
+    # zone worker doesn't know those paths). api.dchub.cloud goes
+    # straight to Flask via /api/* allowlist + works fine.
     ("self_agent_json",
-     "https://dchub.cloud/agent.json", "GET", "self"),
+     "https://api.dchub.cloud/agent.json", "GET", "self"),
     ("self_well_known",
-     "https://dchub.cloud/.well-known/mcp-server.json", "GET", "self"),
+     "https://api.dchub.cloud/.well-known/mcp-server.json", "GET", "self"),
 ]
 
 
