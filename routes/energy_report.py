@@ -23,15 +23,24 @@ existing reports. Same auto-narrative + brain-drift detector wiring.
 
 import os
 import json
+import time
 import logging
 import datetime as _dt
 import html as _html
+from concurrent.futures import ThreadPoolExecutor
 from flask import Blueprint, Response, jsonify, request
 
 logger = logging.getLogger(__name__)
 energy_report_bp = Blueprint("energy_report", __name__)
 
 _CC_LINK_HEADER = '<https://creativecommons.org/licenses/by/4.0/>; rel="license"'
+
+# r42n (2026-05-26): cache the gathered energy data for 5 min. First
+# call: ~3-5s (parallel fetches). Cached calls: <100ms. Without this
+# every API request triggered 4-6 sequential HTTP calls + a fresh
+# Claude narrative — the 21.8s p95 was killing CF worker timeouts.
+_GATHER_CACHE: dict[str, dict] = {}  # window -> {data, computed_at}
+_GATHER_TTL = 300  # 5 minutes
 
 
 def _license_block(window: str) -> dict:
@@ -49,12 +58,20 @@ def _license_block(window: str) -> dict:
 
 
 def _gather_energy(window: str) -> dict:
-    """Pull live DCPI + interconnection data into a single report dict.
+    """Pull live DCPI + interconnection data, cached 5 minutes."""
+    now = time.monotonic()
+    cached = _GATHER_CACHE.get(window)
+    if cached and (now - cached["computed_at"]) < _GATHER_TTL:
+        # Return a copy so callers can attach narrative without polluting cache
+        return dict(cached["data"])
+    data = _gather_energy_uncached(window)
+    _GATHER_CACHE[window] = {"data": data, "computed_at": now}
+    return dict(data)
 
-    window: 'monthly' | 'quarterly' (same data, different framing —
-    quarterly emphasizes structural shifts, monthly emphasizes the
-    current snapshot).
-    """
+
+def _gather_energy_uncached(window: str) -> dict:
+    """Actual gather logic — kept separate so the cache wrapper above
+    can be a simple lookup-or-recompute."""
     out = {
         "window": window,
         "as_of_date": _dt.date.today().isoformat(),
@@ -70,19 +87,23 @@ def _gather_energy(window: str) -> dict:
     BASE = "http://localhost:8080"
 
     # ── 1. DCPI verdict distribution + leaderboard ─────────────────
-    # r42m (2026-05-26): /api/v1/dcpi/leaderboard caps at 100 rows AND
-    # ranks by composite_score, which pushes AVOID markets (negative
-    # composites) out of the top-100 window. Fetch each verdict
-    # explicitly so the distribution is honest.
+    # r42n (2026-05-26): parallelize 4 verdict fetches. Sequential was
+    # 8-12s (each 2-3s); parallel runs in max(t) ≈ 3s.
     leaderboard = []
-    for v in ("BUILD", "CAUTION", "AVOID", "LOW_SIGNAL"):
+
+    def _fetch_verdict(v):
         try:
             r = requests.get(f"{BASE}/api/v1/dcpi/leaderboard",
                               params={"verdict": v, "limit": 100}, timeout=6)
-            chunk = (r.json() or {}).get("leaderboard") or []
-            leaderboard.extend(chunk)
+            return (r.json() or {}).get("leaderboard") or []
         except Exception as e:
             out.setdefault("_leaderboard_errs", []).append(f"{v}: {str(e)[:80]}")
+            return []
+
+    with ThreadPoolExecutor(max_workers=4) as ex:
+        for chunk in ex.map(_fetch_verdict,
+                            ("BUILD", "CAUTION", "AVOID", "LOW_SIGNAL")):
+            leaderboard.extend(chunk)
 
     verdicts = {"BUILD": 0, "CAUTION": 0, "AVOID": 0, "LOW_SIGNAL": 0}
     for row in leaderboard:
@@ -160,24 +181,28 @@ def _gather_energy(window: str) -> dict:
     except Exception as e:
         out["interconnection_queue"] = {"_err": str(e)[:120]}
 
-    # ── 4. Grid mix snapshot across major ISOs ────────────────────
-    grid_mix = []
-    for iso in ("PJM", "ERCOT", "CAISO", "MISO", "SPP"):
+    # ── 4. Grid mix snapshot across major ISOs (parallel) ─────────
+    def _fetch_grid(iso):
         try:
             r = requests.get(f"{BASE}/api/v1/grid/status",
-                              params={"iso": iso}, timeout=4)
+                              params={"iso": iso}, timeout=3)
             if r.status_code == 200:
                 g = r.json() or {}
-                grid_mix.append({
+                return {
                     "iso": iso,
                     "renewable_pct": g.get("renewable_pct"),
                     "carbon_g_per_kwh": g.get("carbon_g_per_kwh"),
                     "current_demand_mw": g.get("current_demand_mw")
                                           or g.get("demand_mw"),
-                })
+                }
         except Exception:
             pass
-    out["grid_mix_now"] = grid_mix
+        return None
+
+    with ThreadPoolExecutor(max_workers=5) as ex:
+        out["grid_mix_now"] = [g for g in ex.map(
+            _fetch_grid, ("PJM", "ERCOT", "CAISO", "MISO", "SPP")
+        ) if g]
 
     # ── 5. vs proprietary research framing ────────────────────────
     out["vs_proprietary_research"] = {
