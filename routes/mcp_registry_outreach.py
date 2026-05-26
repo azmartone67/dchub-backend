@@ -235,11 +235,20 @@ def get_submitted_target_names() -> list[str]:
         return sorted(confirmed)
     try:
         with conn, conn.cursor() as cur:
+            # r49.6 (2026-05-25): expand the "submitted" outcome set to
+            # include `pr_filed` and `issue_filed`. These are real,
+            # auditable submission states (an open PR or filed issue
+            # is a submission — the maintainer hasn't merged yet, but
+            # we DID submit). Previously they sat in limbo; the
+            # registry_presence audit flagged us as "missing from
+            # awesome-mcp-servers" even though PR #6820 has been
+            # OPEN with all checks passing since 2026-05-23.
             cur.execute(
                 """SELECT DISTINCT target_name
                    FROM outreach_submissions
                    WHERE outcome IN ('success', 'verified', 'listed',
-                                     'audit_pass', 'refresh_ok')"""
+                                     'audit_pass', 'refresh_ok',
+                                     'pr_filed', 'issue_filed')"""
             )
             for (name,) in cur.fetchall():
                 confirmed.add(name)
