@@ -63,12 +63,16 @@ RESULT=$(curl -sS -X POST "$BASE/api/v1/admin/partner-key/issue" \
   -H "Content-Type: application/json" \
   --data @<(cat <<JSON
 {
-  "partner_slug": "reveal-nlr",
-  "email":        "$CONTACT_EMAIL",
-  "name":         "$CONTACT_NAME",
-  "company":      "$CONTACT_COMPANY",
-  "plan":         "$PLAN",
-  "label":        "NLR Year-1 Research Seed (FY 2026, \$3K) → Year-2 Strategic Partnership (\$10K). reVeal Characterize integration, NLR/PR-6A20-99256. Full API surface (25+ endpoints) Day 1. Partnership rights active: co-authorship, reference, conference, reVeal v2 first-look."
+  "partner_slug":    "reveal-nlr",
+  "email":           "$CONTACT_EMAIL",
+  "name":            "$CONTACT_NAME",
+  "company":         "$CONTACT_COMPANY",
+  "plan":            "$PLAN",
+  "label":           "NLR Year-1 Research Seed (FY 2026, \$3K) → Year-2 Strategic Partnership (\$10K). reVeal Characterize integration, NLR/PR-6A20-99256. Full API surface (25+ endpoints) Day 1. Partnership rights active: co-authorship, reference, conference, reVeal v2 first-look.",
+  "stripe_url":      "https://buy.stripe.com/cNi3cwaNc0x75utdCqaZi0e",
+  "amount_usd_year": 3000,
+  "term_months":     12,
+  "renewal_terms":   "Year 2+ converts to Strategic Partnership at \$10K/yr when NLR's dedicated DC-siting funding closes. CPI-U capped. 60-day written notice. NDA + MOU + License Agreement target execution within 90 days."
 }
 JSON
 ))

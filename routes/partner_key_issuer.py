@@ -62,7 +62,10 @@ def _db_conn():
 
 def _ensure_partner_table():
     """Auxiliary table tracking which keys were issued as partner keys
-    (so /audit can filter). Doesn't replace api_keys — supplements it."""
+    (so /audit can filter). Doesn't replace api_keys — supplements it.
+
+    r75 (2026-05-26): added stripe_url + amount_usd_year + term_months
+    so renewal conversations can pull the original deal terms inline."""
     c = _db_conn()
     if not c: return
     try:
@@ -81,6 +84,15 @@ def _ensure_partner_table():
                     UNIQUE (key_prefix)
                 )
             """)
+            # r75 columns — added idempotently after the create
+            for col_sql in (
+                "ALTER TABLE partner_keys_issued ADD COLUMN IF NOT EXISTS stripe_url TEXT",
+                "ALTER TABLE partner_keys_issued ADD COLUMN IF NOT EXISTS amount_usd_year INTEGER",
+                "ALTER TABLE partner_keys_issued ADD COLUMN IF NOT EXISTS term_months INTEGER",
+                "ALTER TABLE partner_keys_issued ADD COLUMN IF NOT EXISTS renewal_terms TEXT",
+            ):
+                try: cur.execute(col_sql)
+                except Exception: pass
             cur.execute("""
                 CREATE INDEX IF NOT EXISTS partner_keys_issued_slug_idx
                     ON partner_keys_issued (partner_slug, issued_at DESC)
@@ -113,6 +125,19 @@ def issue_partner_key():
     plan         = (data.get("plan") or "developer").strip().lower()
     label        = (data.get("label") or f"{partner_slug} partner key").strip()
     company      = (data.get("company") or "").strip()
+    # r75: optional deal-terms fields (all best-effort, no validation)
+    stripe_url      = (data.get("stripe_url") or "").strip()
+    amount_usd_year = data.get("amount_usd_year")
+    try:
+        amount_usd_year = int(amount_usd_year) if amount_usd_year else None
+    except Exception:
+        amount_usd_year = None
+    term_months    = data.get("term_months")
+    try:
+        term_months = int(term_months) if term_months else None
+    except Exception:
+        term_months = None
+    renewal_terms = (data.get("renewal_terms") or "").strip()
 
     if not partner_slug or not email:
         return jsonify({
@@ -206,12 +231,17 @@ def issue_partner_key():
                    rate_limit_tier, plan))
 
             # Record in partner audit log
+            # r75: persist deal terms (stripe_url, amount_usd_year,
+            # term_months, renewal_terms) alongside the key
             cur.execute("""
                 INSERT INTO partner_keys_issued
-                    (partner_slug, key_prefix, user_email, plan, label, issued_by)
-                VALUES (%s, %s, %s, %s, %s, %s)
+                    (partner_slug, key_prefix, user_email, plan, label,
+                     stripe_url, amount_usd_year, term_months,
+                     renewal_terms, issued_by)
+                VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s)
             """, (partner_slug, key_prefix, email, plan, label,
-                   "admin-curl"))
+                   stripe_url or None, amount_usd_year, term_months,
+                   renewal_terms or None, "admin-curl"))
             c.commit()
 
     except Exception as e:
@@ -257,7 +287,9 @@ def audit_partner_keys():
         with c.cursor() as cur:
             cur.execute("""
                 SELECT id, partner_slug, key_prefix, user_email, plan,
-                       label, issued_at, revoked_at, issued_by
+                       label, issued_at, revoked_at, issued_by,
+                       stripe_url, amount_usd_year, term_months,
+                       renewal_terms
                   FROM partner_keys_issued
                  ORDER BY issued_at DESC
                  LIMIT 200
@@ -275,16 +307,20 @@ def audit_partner_keys():
         "ok":    True,
         "count": len(rows),
         "keys":  [{
-            "id":           r[0],
-            "partner_slug": r[1],
-            "key_prefix":   r[2],
-            "user_email":   r[3],
-            "plan":         r[4],
-            "label":        r[5],
-            "issued_at":    r[6].isoformat() if r[6] else None,
-            "revoked_at":   r[7].isoformat() if r[7] else None,
-            "is_active":    r[7] is None,
-            "issued_by":    r[8],
+            "id":            r[0],
+            "partner_slug":  r[1],
+            "key_prefix":    r[2],
+            "user_email":    r[3],
+            "plan":          r[4],
+            "label":         r[5],
+            "issued_at":     r[6].isoformat() if r[6] else None,
+            "revoked_at":    r[7].isoformat() if r[7] else None,
+            "is_active":     r[7] is None,
+            "issued_by":     r[8],
+            "stripe_url":    r[9],
+            "amount_usd_year": r[10],
+            "term_months":   r[11],
+            "renewal_terms": r[12],
         } for r in rows],
     }), 200
 

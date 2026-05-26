@@ -22,6 +22,13 @@ STRIPE_LINKS = {
     "pro_annual":      "https://buy.stripe.com/6oU00k6wW7ZzcWV9maaZi03",  # ~$2,000/yr (~17% off)
     "enterprise":      "https://buy.stripe.com/fZueVe5sS6Vv7CB41QaZi0a",  # Custom
     "enterprise_annual": "https://buy.stripe.com/dRmdRa4oO1Bb9KJ2XMaZi0b",  # Custom annual
+    # r75 (2026-05-26): partnership-specific subscription links. NOT shown
+    # in public pricing — these are bespoke per landed deal. First entry:
+    # NLR's Year-1 Research Seed at $3K/yr (90% off Strategic Partnership
+    # list of $10K, 97% off Enterprise $100K list). Includes full API
+    # surface + partnership rights from Day 1. Converts to Strategic at
+    # $10K in Year 2 when NLR's dedicated DC-siting funding closes.
+    "research_seed_nlr": "https://buy.stripe.com/cNi3cwaNc0x75utdCqaZi0e",  # $3,000/yr (NLR FY 2026)
 }
 
 # Tool → recommended tier mapping. Tools gated at Pro require Pro plan;
@@ -54,6 +61,7 @@ TIER_PRICE_LABEL = {
     "pro_annual": "$2,000/yr",
     "enterprise": "Custom",
     "enterprise_annual": "Custom annual",
+    "research_seed_nlr": "$3,000/yr (NLR FY 2026 Research Seed)",
 }
 
 
