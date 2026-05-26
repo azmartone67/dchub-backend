@@ -1030,11 +1030,17 @@ _PATTERN_LIBRARY: dict[str, dict[str, Any]] = {
         "description": "Autonomous: auto-fires the outcome verifier when actions accumulate unverified. 5th autonomous pattern. Closes the brain's biggest blind spot: knowing whether autopilot ACTUALLY succeeded.",
     },
     # Phase GGGGG — schema.org coverage
+    # r42u (2026-05-26): wired to /api/v1/heal/run-cycle. The healer's
+    # generic 30-min cycle picks up missing-JSON-LD on tracked pages.
+    # Won't add JSON-LD where none exists yet (that requires per-page
+    # code), but DOES re-trigger the pages that have it but didn't
+    # render it (cache invalidation, render-error recovery). Better
+    # than the previous (None, None) which was just dead bookkeeping.
     "schema_org_coverage_low": {
-        "action":      lambda f: (None, None),
-        "method":      None,
-        "use_admin":   False,
-        "description": "Escalation-only: <80% of critical pages have proper schema.org JSON-LD. AI agents prioritize structured data when fact-citing — this directly drags SOT score. Worklist: /api/v1/schema-org/missing.",
+        "action":      lambda f: ("/api/v1/heal/run-cycle", {"source": "autopilot:schema_org_low"}),
+        "method":      "POST",
+        "use_admin":   True,
+        "description": "Autonomous: kick /api/v1/heal/run-cycle to re-render pages whose JSON-LD render failed. Won't synthesize new JSON-LD (needs code), but recovers transient renders. Worklist: /api/v1/schema-org/missing.",
     },
     # Phase HHHHH — external mentions dropoff
     "external_mentions_dropoff": {
@@ -1542,11 +1548,29 @@ def autopilot_run():
                 summary["no_action"] += 1
                 continue
 
-            with c.cursor() as cur:
-                allowed, reason = _rate_limit_check(cur, issue, f.get("url"))
-
             action_fn = pat["action"]
             action_path, payload_body = action_fn(f)
+
+            # r42u (2026-05-26): short-circuit escalation-only patterns
+            # BEFORE the rate-limit check. Pre-fix, page_brand_uniformity
+            # (action=(None,None)) was racking up "rate_limited" log
+            # entries each cycle once it had been escalated 5x — every
+            # subsequent cycle the rate-limit check tripped and logged
+            # a fresh "escalation_threshold" rate_limited row, plus the
+            # detector kept re-firing because the finding hadn't been
+            # cleared. The escalated state should be terminal until a
+            # human resolves it, not a perpetual retry loop.
+            if action_path is None:
+                summary["escalated"] += 1
+                _record_action(f, issue, None, None,
+                                dry_run=_is_dry_run(), escalated=True,
+                                http_code=None, body=None,
+                                error="no autonomous action for this pattern",
+                                outcome="escalated")
+                continue
+
+            with c.cursor() as cur:
+                allowed, reason = _rate_limit_check(cur, issue, f.get("url"))
 
             if not allowed:
                 summary["rate_limited"] += 1
@@ -1556,16 +1580,6 @@ def autopilot_run():
                                 dry_run=_is_dry_run(), escalated=escalated,
                                 http_code=None, body=None, error=reason,
                                 outcome="rate_limited")
-                continue
-
-            if action_path is None:
-                # Escalation-only pattern; log and continue
-                summary["escalated"] += 1
-                _record_action(f, issue, None, None,
-                                dry_run=_is_dry_run(), escalated=True,
-                                http_code=None, body=None,
-                                error="no autonomous action for this pattern",
-                                outcome="escalated")
                 continue
 
             # Execute

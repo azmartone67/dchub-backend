@@ -2060,6 +2060,20 @@ def check_surface_health_critical() -> list[dict]:
 
     for sid, surface, score in results:
         if score is not None and score < 40:
+            # r42u (2026-05-26): skip surfaces with ZERO events 7d — they
+            # don't have enough data to judge. Pre-fix the detector was
+            # flagging 30+ "surface_health_critical:auto_*" findings every
+            # cycle, each at score ≈ 35 (the 50-15-for-zero-events baseline).
+            # All escalated immediately (no autonomous fix exists) and
+            # polluted the autopilot recent-actions log. Real human-
+            # actionable findings drowned in this noise.
+            try:
+                _p = surface.pulse() or {}
+                if (_p.get("events_7d") or 0) == 0 and (_p.get("events_24h") or 0) == 0:
+                    continue  # not enough data — skip silently
+            except Exception:
+                pass
+
             findings.append({
                 "issue":  f"surface_health_critical:{sid}",
                 "url":    f"surface_telemetry: surface_id={sid}",
