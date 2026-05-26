@@ -70,13 +70,19 @@ def _gather_energy(window: str) -> dict:
     BASE = "http://localhost:8080"
 
     # ── 1. DCPI verdict distribution + leaderboard ─────────────────
-    try:
-        r = requests.get(f"{BASE}/api/v1/dcpi/leaderboard",
-                          params={"limit": 500}, timeout=8)
-        leaderboard = (r.json() or {}).get("leaderboard") or []
-    except Exception as e:
-        leaderboard = []
-        out["_leaderboard_err"] = str(e)[:120]
+    # r42m (2026-05-26): /api/v1/dcpi/leaderboard caps at 100 rows AND
+    # ranks by composite_score, which pushes AVOID markets (negative
+    # composites) out of the top-100 window. Fetch each verdict
+    # explicitly so the distribution is honest.
+    leaderboard = []
+    for v in ("BUILD", "CAUTION", "AVOID", "LOW_SIGNAL"):
+        try:
+            r = requests.get(f"{BASE}/api/v1/dcpi/leaderboard",
+                              params={"verdict": v, "limit": 100}, timeout=6)
+            chunk = (r.json() or {}).get("leaderboard") or []
+            leaderboard.extend(chunk)
+        except Exception as e:
+            out.setdefault("_leaderboard_errs", []).append(f"{v}: {str(e)[:80]}")
 
     verdicts = {"BUILD": 0, "CAUTION": 0, "AVOID": 0, "LOW_SIGNAL": 0}
     for row in leaderboard:
