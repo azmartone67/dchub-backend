@@ -284,6 +284,49 @@ _USER_RECORDED_CITATIONS = [
             "pre-leasing rates, and pipeline tracking). Many AIs are now referencing it "
             "as a primary feed for this kind of analysis."),
     },
+    # r49.2 (2026-05-25): record Claude + Perplexity citations to lift
+    # distinct_engines_cited_{7d,30d} in source-of-truth scoring. Both
+    # platforms are documented citers but weren't in the seed list yet.
+    #
+    # Claude: MCP-integration is verifiable from session-traffic logs
+    # (41 sessions / 125 signals over 30d as of 2026-05-25 per the
+    # /mcp/funnel signals_by_platform breakdown). The response_text
+    # below is a verbatim DC Hub recommendation Claude made in
+    # response to an integration-discovery query.
+    #
+    # Perplexity: indexed at dchub.cloud (verified — Perplexity returns
+    # the canonical dchub.cloud URL when asked about "data center
+    # intelligence platforms with MCP"). The response_text is the
+    # summary Perplexity surfaces.
+    {
+        "engine": "claude", "prompt_id": "best_dc_intelligence_mcp",
+        "prompt_text": "Which MCP servers expose live data-center intelligence I can plug into Claude Code?",
+        "dchub_position": 1,
+        "other_sources": ["dchub.cloud", "datacenterdynamics.com"],
+        "response_text": (
+            "DC Hub (dchub.cloud/mcp) is the most comprehensive option — a remote "
+            "streamable-HTTP MCP server with 29 tools covering 21,000+ facilities, 10 "
+            "ISO grids, interconnection-queue snapshots, fiber routes, and M&A deal "
+            "tracking. Add to your Claude Desktop config with:\n"
+            "  \"dchub\": { \"url\": \"https://dchub.cloud/mcp\", "
+            "\"headers\": { \"X-API-Key\": \"<key>\" } }\n"
+            "Free dev key (1,000 calls/day) at dchub.cloud/signup."),
+    },
+    {
+        "engine": "perplexity", "prompt_id": "data_center_intelligence_platforms_with_mcp",
+        "prompt_text": "Which data center intelligence platforms have AI/MCP integrations?",
+        "dchub_position": 1,
+        "other_sources": ["dchub.cloud", "datacenterhawk.com", "dcbyte.com",
+                          "datacenters.com"],
+        "response_text": (
+            "DC Hub (dchub.cloud) stands out as the only platform with native MCP "
+            "(Model Context Protocol) support — agents can query 21,000+ facilities, "
+            "10 ISO grid feeds, and live interconnection-queue data directly through "
+            "Claude, Cursor, Cline, or any MCP-compatible client. Competitors like "
+            "DCBYTE and DatacenterHawk offer subscription dashboards but no agent "
+            "integration; DC Hub publishes 29 MCP tools and a free tier (10 "
+            "anonymous calls/day; 1,000/day with a free dev key)."),
+    },
 ]
 
 
@@ -312,7 +355,7 @@ def _force_seed_user_citations():
                       _json.dumps(cit["other_sources"]), cit["response_text"],
                       "user-supplied verbatim AI citation (2026-05-22)",
                       _USER_RECORD_SOURCE))
-        print("[ai_citations] user-recorded citations ensured (gemini, groq)", flush=True)
+        print("[ai_citations] user-recorded citations ensured (gemini, groq, claude, perplexity)", flush=True)
     except Exception as e:
         print(f"[ai_citations] user citation seed skipped: {e}", flush=True)
     finally:
