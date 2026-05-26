@@ -152,10 +152,21 @@ def _recent_partner_mention(slug):
 
 
 def _build_email(track, personal_note=""):
-    """Produce subject + html + text from the track. r47.20: auto-personalize
-    by injecting a recent press-release reference about this partner when
-    operator hasn't provided their own personal_note."""
-    subject = f"DC Hub + {track['slug'].upper()} — {track['headline'][:80]}"
+    """Produce subject + html + text from the track. r47.20 auto-personalize +
+    r47.22 Switzerland-model framing: every opener makes clear this is an
+    open invitation, not an announcement of an executed partnership."""
+    partner_name_map = {
+        "dchawk":  "DCHawk",
+        "dcbyte":  "DCByte",
+        "dcd":     "Data Center Dynamics",
+        "dcf":     "Data Center Frontier",
+        "cbre":    "CBRE",
+        "jll":     "JLL",
+        "partners": "your team",
+    }
+    partner_label = partner_name_map.get(track["slug"], track["slug"].upper())
+
+    subject = f"DC Hub → {partner_label}: open partnership invitation (Switzerland model)"
 
     if personal_note:
         intro = personal_note.strip()
@@ -166,19 +177,20 @@ def _build_email(track, personal_note=""):
             intro = (
                 f"Hi —\n\n"
                 f"We covered \"{mention['title']}\" {mention['rel']} on our "
-                f"daily press cadence — figured you'd want to see it first hand: "
-                f"{mention['url']}\n\n"
-                f"While I had your address, also wanted to flag the partnership "
-                f"track DC Hub just opened that's directly relevant to "
-                f"{track['slug'].upper()}.\n"
+                f"daily press cadence — figured you'd want to see it: {mention['url']}\n\n"
+                f"While I had your address, I'm also reaching out about an open partnership "
+                f"invitation DC Hub has published for {partner_label}. It's an "
+                f"invitation, not an announcement — we'd love to hear if there's interest."
             )
         else:
             intro = (
                 f"Hi —\n\n"
-                f"I run DC Hub, the neutral live-data layer beneath the "
-                f"data-center research industry. We're cited by 96+ AI platforms "
-                f"(ChatGPT, Claude, Gemini, Cursor, Cline) and just opened a public "
-                f"partnership track that includes {track['slug'].upper()}.\n"
+                f"I'm Jonathan, founder of DC Hub — the neutral, live data layer beneath the "
+                f"data-center research industry (cited by 96+ AI platforms including ChatGPT, "
+                f"Claude, Gemini, Cursor, Cline). We've just published an open partnership "
+                f"invitation for {partner_label} as part of our 'Switzerland model'. "
+                f"No partnership currently exists; we're publicly extending the offer to see "
+                f"if there's interest."
             )
 
     # r47.17: emails use /go/partners/<slug> click-tracker URL so we
@@ -188,16 +200,21 @@ def _build_email(track, personal_note=""):
     tracked_root = f"https://api.dchub.cloud/go/partners?src=email"
 
     text = (
-        f"{intro}\n"
+        f"{intro}\n\n"
         f"{track['headline']}\n"
         f"{'─' * len(track['headline'])}\n\n"
         f"{track['body']}\n\n"
-        f"Full track: {tracked_url}\n"
-        f"Comparison vs CBRE / JLL / DCHawk: {tracked_root}\n\n"
-        f"Happy to keep this short — what's the easiest first step on your side?\n\n"
+        f"Full open invitation: {tracked_url}\n"
+        f"All six Switzerland-model invitations: {tracked_root}\n\n"
+        f"This isn't a bulk send — happy to keep it conversational. What's the easiest "
+        f"first step on your side? Even a polite \"not now\" is useful for us so we know "
+        f"we're not pestering.\n\n"
         f"Jonathan Martone\n"
         f"Founder, DC Hub\n"
-        f"jm@dchub.cloud · https://www.linkedin.com/in/jonathanmartone/\n"
+        f"jm@dchub.cloud · https://www.linkedin.com/in/jonathanmartone/\n\n"
+        f"P.S. To be crystal clear: this is an open invitation, not an announcement of "
+        f"any executed partnership. If we ever publish about a partnership with you, "
+        f"it'll be because we've actually signed something together.\n"
     )
 
     # Plain-text-to-HTML conversion that preserves paragraph structure

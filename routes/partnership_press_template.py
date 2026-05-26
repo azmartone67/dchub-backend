@@ -81,39 +81,62 @@ def _build_release(track):
         pass
 
     slug_root = track["slug"]
+    # r47.22 (2026-05-26): Switzerland-model framing. Each press release
+    # describes a PUBLISHED OPEN INVITATION — never an executed deal.
+    # Wording must make clear no agreement exists yet.
+    partner_name_map = {
+        "dchawk":  "DCHawk",
+        "dcbyte":  "DCByte",
+        "dcd":     "Data Center Dynamics",
+        "dcf":     "Data Center Frontier",
+        "cbre":    "CBRE",
+        "jll":     "JLL",
+    }
     if slug_root == "partners":
-        title = (f"DC Hub Opens Six Partnership Tracks for Brokers, Publications, "
-                  f"and Facility Databases — Live Data Layer, CC-BY-4.0")
-        subheadline = (f"{facilities:,}-facility intelligence platform invites CBRE, JLL, "
-                        f"DCHawk, DCByte, DCD, DCF, plus tier-1 analysts to join the "
-                        f"'Switzerland' partnership program.")
+        title = (f"DC Hub Publishes Open Partnership Invitations Under "
+                  f"the 'Switzerland' Model — CC-BY-4.0, No Channel Conflict")
+        subheadline = (f"{facilities:,}-facility intelligence platform extends public "
+                        f"invitations to brokers, publications, facility databases, and "
+                        f"analyst firms. No deals announced; specific opening asks listed "
+                        f"openly at dchub.cloud/partners.")
     else:
-        # Per-anchor headline derived from the LinkedIn headline
-        title = f"DC Hub Opens Partnership Track With {track['headline'].split(' — ')[0].split(' + ')[0].split(' →')[0].strip()}"
-        subheadline = (f"Week of {today}: dedicated partnership outreach for the "
-                        f"{track['slug']} track at dchub.cloud/partners{track['anchor'] or ''}.")
+        partner_label = partner_name_map.get(slug_root, slug_root.upper())
+        title = (f"DC Hub Publishes Open Partnership Invitation to "
+                  f"{partner_label} — Switzerland Model, No Channel Conflict")
+        subheadline = (f"Week of {today}: DC Hub publishes a specific opening offer for "
+                        f"{partner_label} at dchub.cloud/partners{track['anchor'] or ''}. "
+                        f"No partnership currently exists; this is a public invitation, "
+                        f"not an announcement of any executed agreement.")
 
     body = (
+        f"DC Hub today published an open partnership invitation as part of its "
+        f"'Switzerland model' program. **No partnership has been signed**; the body of this "
+        f"release is the specific opening offer DC Hub is publicly extending. The full set "
+        f"of open invitations lives at https://dchub.cloud/partners.\n\n"
+        f"---\n\n"
         f"{track['body']}\n\n"
+        f"---\n\n"
         f"Today's snapshot from DC Hub's live data layer: {facilities:,} tracked facilities "
         f"across 170+ countries, {markets} markets scored daily by the DC Hub Power Index "
         f"(DCPI), {deals:,} historical M&A deals, and integrations with 96+ AI platforms via "
         f"the streamable-http MCP server at dchub.cloud/mcp.\n\n"
-        f"### About this partnership track\n\n"
-        f"DC Hub publishes all six partnership invitations openly at "
-        f"https://dchub.cloud/partners. Each track starts with a single, specific ask — "
-        f"no decks, no NDAs, no channel conflicts. Standard $9/mo developer tier, $199/mo "
-        f"PRO, custom enterprise. CC-BY-4.0 by default.\n\n"
+        f"### About the Switzerland model\n\n"
+        f"DC Hub does not compete with brokers, publications, facility databases, or "
+        f"analyst firms. We're the neutral live data layer beneath them. We publish six "
+        f"open invitations at https://dchub.cloud/partners — each starts with a single, "
+        f"specific opening ask, no decks, no NDAs, no exclusivity. Standard $9/mo "
+        f"developer tier, $199/mo PRO, custom enterprise. CC-BY-4.0 by default.\n\n"
         f"### Try the data without signing up\n\n"
-        f"- {track['url']} — this track's full pitch\n"
-        f"- https://dchub.cloud/reports/monthly — live monthly report (competes with CBRE H2)\n"
+        f"- {track['url']} — this invitation's full text\n"
+        f"- https://dchub.cloud/reports/monthly — live monthly report\n"
         f"- https://dchub.cloud/reports/quarterly-deep — quarterly equivalent\n"
         f"- https://dchub.cloud/dcpi — 286 markets with daily verdicts\n"
         f"- https://dchub.cloud/.well-known/mcp.json — full MCP manifest\n\n"
         f"### Contact\n\n"
         f"For partnership inquiries: partnerships@dchub.cloud. For editorial use of "
         f"the live data: editorial@dchub.cloud. Press: press@dchub.cloud. "
-        f"All endpoints CC-BY-4.0 by default."
+        f"All endpoints CC-BY-4.0 by default. **No partnership announcement has been "
+        f"made by either party in this release; this is an open invitation only.**"
     )
 
     summary = (track["body"].split("\n\n")[0])[:280]

@@ -53,119 +53,124 @@ _TRACKS = [
     {
         "slug": "partners",
         "anchor": None,
-        "headline": "The Switzerland of data center intelligence",
+        "headline": "DC Hub: the Switzerland model — open invitations published",
         "url": "https://dchub.cloud/partners",
-        "body": """We don't compete with brokers, publications, or facility databases. We feed them.
+        "body": """DC Hub is publishing an open invitation today to brokers, publications, facility databases, and analyst firms across the data-center industry. We're not announcing any signed deal — we're publicly extending an offer, under our Switzerland model: neutral, CC-BY-4.0, no channel conflict.
 
-DC Hub is the neutral, live data layer beneath the data-center research industry. The same backend ChatGPT, Claude, Gemini, and Perplexity cite when their users ask about data centers — and the same one we'll quietly power inside your stack, your newsletter, your dashboard, or your next research drop.
+If you're DCHawk, DCByte, CBRE, JLL, Data Center Dynamics, Data Center Frontier, Gartner, IDC, Synergy Research, 451 Research, Omdia — or anyone else working in this space — there's a specific track ready for you at dchub.cloud/partners.
 
-Six partnership tracks open right now:
-→ DCHawk · bidirectional facility-data exchange
-→ DCByte · EMEA cross-licensing
-→ Data Center Dynamics · live data for editorial
-→ Data Center Frontier · sponsored research
-→ CBRE · MCP license for the broker team
-→ JLL · parallel pilot, no channel conflict
+What we bring: live data layer beneath the static reports the rest of the industry publishes quarterly. 21,405 tracked facilities globally, 286 markets scored daily by DCPI, $324B+ in tracked M&A. Already cited by ChatGPT, Claude, Gemini, Perplexity, Cursor, and 90+ other AI platforms.
 
-No NDAs. CC-BY-4.0. Standard $9/mo dev tier, $199/mo PRO, custom enterprise. One conversation, six tracks: dchub.cloud/partners""",
+What we'd love in return: cross-licensing, editorial collaboration, co-branded research drops, or a paid MCP feed your brokers/analysts can query. Each track has one specific opening ask — no decks, no NDAs.
+
+Read the six open invitations and tell us which one resonates: dchub.cloud/partners""",
     },
     {
         "slug": "dchawk",
         "anchor": "#dchawk",
-        "headline": "DCHawk + DC Hub — bidirectional facility coverage",
+        "headline": "DC Hub publishes open invitation: bidirectional facility exchange with DCHawk",
         "url": "https://dchub.cloud/partners#dchawk",
-        "body": """DCHawk's depth on North-American sub-markets is sharp. DC Hub's depth on LATAM + APAC + EMEA-non-FLAP, plus M&A pipeline + grid intelligence + AI-citation flow, is sharp the other way.
+        "body": """We don't have a partnership with DCHawk. We're publishing an open invitation for one — under the Switzerland model.
 
-So here's the open ask: 30-day data-exchange pilot. We expose 500 of our highest-confidence non-FLAP facilities via your API. You expose 500 of your highest-confidence FLAP records via ours. Both sides report join-rate + value lifted. No money changes hands. Written framework only triggers if both sides see >15% incremental coverage.
+DCHawk's depth on North-American sub-markets is sharp. DC Hub's depth on LATAM + APAC + EMEA-non-FLAP, plus M&A pipeline + grid intelligence + AI-citation flow, is sharp the other way. Complementary, not competing.
 
-We have 21,405 tracked facilities globally. 286 markets scored daily by DCPI. 1,972 M&A deals tracked. We're cited by 96+ AI platforms (ChatGPT, Claude, Gemini, Cursor, Cline, more).
+Our specific opening offer: a 30-day data-exchange pilot. We'd expose 500 of our highest-confidence non-FLAP facilities via DCHawk's API; we'd ask DCHawk to expose 500 of their highest-confidence FLAP records via ours. Both sides report join-rate + value lifted. No money changes hands during the pilot. A written commercial framework only triggers if both sides see >15% incremental coverage.
 
-Try the data right now — no signup:
+We have 21,405 tracked facilities globally. 286 markets scored daily by DCPI. 1,972 M&A deals tracked. We're cited by 96+ AI platforms.
+
+Try our data right now — no signup, CC-BY-4.0:
 → /api/v1/facilities?country=GB&limit=10
 → /api/v1/dcpi/scores?limit=25
 → /.well-known/mcp.json
 
-DCHawk team — partnerships@dchub.cloud. Full pitch at dchub.cloud/partners#dchawk""",
+To anyone at DCHawk reading this — partnerships@dchub.cloud. The full open invitation lives at dchub.cloud/partners#dchawk.""",
     },
     {
         "slug": "cbre",
         "anchor": "#cbre",
-        "headline": "CBRE H2 2025 → DC Hub live equivalent (same data, no 6-month lag)",
+        "headline": "DC Hub publishes open invitation: live data feed for CBRE Data Center Solutions",
         "url": "https://dchub.cloud/partners#cbre",
-        "body": """CBRE's H2 2025 Data Center Trends report is the most-cited piece in the industry. It's also six months stale by the time it drops in November — and locked behind a CBRE-© license.
+        "body": """We don't have a partnership with CBRE. We're publishing an open invitation for one — under our Switzerland model. No channel conflict; we're not in brokerage and never will be.
 
-DC Hub publishes the same dataset live. Daily refresh. CC-BY-4.0. AI-agent native (29 MCP tools). 286 markets scored vs CBRE's tier-1-only set. International coverage on AESO + Hydro-Québec + Nord Pool that's not in any of the broker decks.
+CBRE's semi-annual Data Center Trends report is the most-cited piece in the industry. We admire it — and we think we can complement it. Our DCPI generates a similar dataset live, daily, CC-BY-4.0, AI-agent native. 286 markets vs the tier-1 focus of broker reports. International coverage (AESO, Hydro-Québec, Nord Pool) that's not in the broker decks.
 
-For CBRE brokers, the data is ready to query right now:
+Our specific opening offer: a 90-day MCP-server pilot for one CBRE Data Center Solutions team. We'd set up Slack or Microsoft Copilot integration in 48 hours so CBRE brokers can query the data inside their existing workflow. Free during the pilot; standard CBRE+ feed pricing after.
+
+For any CBRE broker reading this — try the data right now, no login required:
 → /reports/quarterly-deep · live quarterly equivalent
 → /dcpi · 14 BUILD, 64 AVOID, 141 CAUTION markets today
 → /transactions · 1,972 historical M&A deals, $324B+ tracked
+→ /dcpi/intl · AESO + Hydro-Québec + Nord Pool
 
-The open ask: 90-day MCP-server pilot for one CBRE Data Center Solutions team. We set up Slack or Microsoft Copilot integration in 48 hours. Free during pilot; standard CBRE+ feed pricing after.
-
-partnerships@dchub.cloud · full pitch at dchub.cloud/partners#cbre""",
+partnerships@dchub.cloud · the full open invitation lives at dchub.cloud/partners#cbre""",
     },
     {
         "slug": "dcd",
         "anchor": "#dcd",
-        "headline": "Data Center Dynamics editorial — live numbers for every story",
+        "headline": "DC Hub publishes open invitation: live data for Data Center Dynamics editorial",
         "url": "https://dchub.cloud/partners#dcd",
-        "body": """DCD has the audience. We have the data. Most DCD pieces cite a static report (CBRE, JLL, Synergy) that's already 6 months old by publication. DC Hub generates the same numbers fresh, refreshed every 24 hours.
+        "body": """We don't have a partnership with DCD. We're publishing an open invitation for one — under our Switzerland model. CC-BY-4.0 from day one, no exclusivity.
 
-Three feeds your editorial team can pull right now, byline-cited use, CC-BY-4.0:
+DCD has the audience and the editorial muscle. We have the live data behind the stories. Most industry pieces still cite a static report from CBRE, JLL, or Synergy that's already 6 months old by publication. DC Hub generates the same numbers fresh, refreshed every 24 hours.
+
+Three feeds DCD's editorial team can pull right now, byline-cited use, CC-BY-4.0:
 → /reports/monthly · full DCPI rankings + M&A + supply pipeline
-→ /changelog · daily press cadence (17 in last 30 days)
+→ /changelog · daily press cadence
 → /hyperscaler-deals · $1B+ tracker with headlines + source URLs
 
-Sample byline: "Per DC Hub's live DCPI, Midlothian, TX leads BUILD rankings at composite 48.0, edging Williston, ND (47.6) and Cheyenne, WY (47.0)..."
+Sample byline you could publish tomorrow: "Per DC Hub's live DCPI, Midlothian, TX leads BUILD rankings at composite 48.0, edging Williston, ND (47.6) and Cheyenne, WY (47.0)..."
 
-The open ask: one co-branded data piece for an upcoming DCD print issue or event. We provide a 1-page dataset, DCD wraps the editorial. Both names byline. Free. If engagement works, recurring monthly piece.
+Our specific opening offer: one co-branded data piece for an upcoming DCD print issue or event. We'd provide a 1-page dataset; DCD would wrap the editorial. Both names byline. Free. If engagement works, optional recurring monthly piece.
 
-editorial@dchub.cloud · full pitch at dchub.cloud/partners#dcd""",
+For anyone at DCD reading this — editorial@dchub.cloud · the full open invitation lives at dchub.cloud/partners#dcd""",
     },
     {
         "slug": "jll",
         "anchor": "#jll",
-        "headline": "JLL Data Centers — parallel pilot, no channel conflict with CBRE",
+        "headline": "DC Hub publishes open invitation: parallel data feed for JLL Data Centers",
         "url": "https://dchub.cloud/partners#jll",
-        "body": """JLL competes head-on with CBRE in data center brokerage. We're Switzerland — both can have their own pipe to DC Hub's live intelligence layer, no shared data, no leaks across.
+        "body": """We don't have a partnership with JLL. We're publishing an open invitation for one — same Switzerland model offer we're extending to CBRE, in parallel. We don't compete with either; we feed both.
 
-What JLL gets: dual-broker dashboard with JLL-branded portal, pipeline + M&A intelligence (we're tracking $324B+ historical deal volume + live pipeline), JLL-co-branded "Market Velocity" report quarterly powered by our dataset, lead-share split on pocket-listing inquiries from JLL-actively-brokered metros.
+What we'd love to offer JLL: a JLL-branded portal into DC Hub's live intelligence layer. Pipeline + M&A intelligence — we're tracking $324B+ historical deal volume + live pipeline. A JLL-co-branded "Market Velocity" report quarterly powered by our dataset. Lead-share split on pocket-listing inquiries from JLL-actively-brokered metros.
 
-The open ask: 90-day MCP pilot for one JLL Data Centers regional team (we'd suggest Americas given our coverage density). Same shape as the CBRE pilot — runs in parallel, isolated data planes.
+Our specific opening offer: a 90-day MCP pilot for one JLL Data Centers regional team (we'd suggest Americas given our coverage density). Same shape as the CBRE invitation — runs in parallel, isolated data planes, no leak across.
 
-Try the data right now, no login:
+For any JLL broker reading this — try the data right now, no login:
 → /dcpi (286 markets, daily verdicts)
 → /transactions (1,972 deals)
 → /reports/quarterly-deep (live H2-equivalent)
 
-partnerships@dchub.cloud · full pitch at dchub.cloud/partners#jll""",
+partnerships@dchub.cloud · the full open invitation lives at dchub.cloud/partners#jll""",
     },
     {
         "slug": "dcf",
         "anchor": "#dcf",
-        "headline": "Data Center Frontier — live data widgets in every article",
+        "headline": "DC Hub publishes open invitation: live data widgets for Data Center Frontier",
         "url": "https://dchub.cloud/partners#dcf",
-        "body": """Same pattern as DCD with a North America focus. DCF reports lean heavily on industry-source citations — JLL, CBRE, Synergy. We're the upstart citation source growing fastest in AI-platform reach.
+        "body": """We don't have a partnership with Data Center Frontier. We're publishing an open invitation for one — same Switzerland-model offer we're extending to DCD.
 
-What DCF gets: "DCF Live Data" widget — a paragraph at the bottom of every DCF article auto-populated from our API ("As of today, DC Hub tracks 21,405 operational facilities globally, +XX in the last 30 days..."). Weekly market-pulse newsletter co-distribution. Joint annual deep-dive sponsorship — e.g. "AI Build-Out Pipeline Q3 2026" with us providing the dataset, DCF the editorial polish.
+DCF's reports lean on industry-source citations — JLL, CBRE, Synergy. We're the upstart citation source growing fastest in AI-platform reach. We'd love to offer something simple: a "DCF Live Data" widget — a paragraph at the bottom of every DCF article auto-populated from our API ("As of today, DC Hub tracks 21,405 operational facilities globally, +XX in the last 30 days...").
 
-The open ask: one sponsored research piece this quarter. We'd suggest "Where the next 10 GW of AI capacity is actually breaking ground." We provide the dataset, DCF writes editorial. Footer attribution + link-back. Free.
+Other ideas on the table: weekly market-pulse newsletter co-distribution. Joint annual deep-dive sponsorship — e.g. "Where the next 10 GW of AI capacity is actually breaking ground" with us providing the dataset, DCF the editorial polish.
 
-editorial@dchub.cloud · full pitch at dchub.cloud/partners#dcf""",
+Our specific opening offer: one sponsored research piece this quarter, our dataset + DCF's editorial. Footer attribution + link-back. Free.
+
+For anyone at DCF reading this — editorial@dchub.cloud · the full open invitation lives at dchub.cloud/partners#dcf""",
     },
     {
         "slug": "dcbyte",
         "anchor": "#dcbyte",
-        "headline": "DCByte — EMEA capacity exchange, joint AI citation",
+        "headline": "DC Hub publishes open invitation: EMEA capacity exchange with DCByte",
         "url": "https://dchub.cloud/partners#dcbyte",
-        "body": """DCByte's EMEA capacity dataset is the regional standard. Our European footprint is thinner (1,400 facilities across 16 countries). Our intelligence layers (grid, M&A pipeline, AI-citation footprint) are deeper than what DCByte exposes via their UI.
+        "body": """We don't have a partnership with DCByte. We're publishing an open invitation for one — under our Switzerland model, no exclusivity, CC-BY-4.0.
 
-Regional cross-licensing makes both sides bigger: DCByte gets our intelligence layers + AI citation reach. We get authoritative EMEA capacity rows. Joint AI distribution — DCByte's brand cited alongside ours in every Claude/ChatGPT/Gemini EMEA answer.
+DCByte's EMEA capacity dataset is the regional standard. Our European footprint is thinner (1,400 facilities across 16 countries). Our intelligence layers (grid, M&A pipeline, AI-citation footprint) are deeper than what DCByte exposes today.
 
-The open ask: one Frankfurt or London market as proof-of-concept. They contribute their full capacity dataset for that metro; we power their public-facing market page with our intelligence layers. Co-branded URL: dcbyte.com/market/frankfurt with footer "Intelligence layer by DC Hub." 60-day trial.
+Regional cross-licensing could make both sides bigger. We'd offer DCByte access to our intelligence layers + AI citation reach. In return, we'd ask for authoritative EMEA capacity rows. Joint AI distribution — DCByte's brand cited alongside ours in every Claude/ChatGPT/Gemini EMEA answer about data centers.
 
-partnerships@dchub.cloud · full pitch at dchub.cloud/partners#dcbyte""",
+Our specific opening offer: one Frankfurt or London market as proof-of-concept. DCByte contributes their full capacity dataset for that metro; we power their public-facing market page with our intelligence layers. Co-branded URL: dcbyte.com/market/frankfurt with footer "Intelligence layer by DC Hub." 60-day trial.
+
+For anyone at DCByte reading this — partnerships@dchub.cloud · the full open invitation lives at dchub.cloud/partners#dcbyte""",
     },
 ]
 
