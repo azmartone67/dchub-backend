@@ -39,6 +39,9 @@ def _dsn():
 @contextmanager
 def _conn():
     c = _pg.connect(_dsn())
+    # r47.13.1: autocommit so a single failed query doesn't abort the
+    # transaction and silently break all subsequent sections of the report.
+    c.autocommit = True
     try: yield c
     finally: c.close()
 
@@ -56,99 +59,111 @@ def _gather(quarter_window=False):
         return out
 
     try:
-        with _conn() as c, c.cursor() as cur:
+        with _conn() as c:
+            # r47.13.1: autocommit means each query is independent.
+            # Each section gets its own cursor + try/except so failures
+            # don't cascade.
+
             # ─── EXECUTIVE SUMMARY ──────────────────────────────────
-            cur.execute("SELECT COUNT(*) FROM discovered_facilities")
-            out["total_facilities"] = cur.fetchone()[0]
-            cur.execute("SELECT COUNT(*) FROM market_power_scores")
-            out["markets_scored"] = cur.fetchone()[0]
-            cur.execute(f"SELECT COUNT(*) FROM discovered_facilities WHERE created_at > NOW() - {interval}")
-            try: out["facilities_added"] = cur.fetchone()[0]
+            try:
+                with c.cursor() as cur:
+                    cur.execute("SELECT COUNT(*) FROM discovered_facilities")
+                    out["total_facilities"] = cur.fetchone()[0]
             except Exception:
-                conn_local = c; conn_local.rollback()
-                cur.execute("SELECT COUNT(*) FROM discovered_facilities")
+                out["total_facilities"] = 0
+            try:
+                with c.cursor() as cur:
+                    cur.execute("SELECT COUNT(*) FROM market_power_scores")
+                    out["markets_scored"] = cur.fetchone()[0]
+            except Exception:
+                out["markets_scored"] = 0
+            try:
+                with c.cursor() as cur:
+                    cur.execute(f"SELECT COUNT(*) FROM discovered_facilities WHERE created_at > NOW() - {interval}")
+                    out["facilities_added"] = cur.fetchone()[0]
+            except Exception:
                 out["facilities_added"] = 0
 
             # ─── DCPI VERDICT DISTRIBUTION ──────────────────────────
             try:
-                c.rollback()  # in case prior failed
-            except Exception: pass
-            try:
-                with c.cursor() as cur2:
-                    cur2.execute("""
+                with c.cursor() as cur:
+                    cur.execute("""
                         SELECT verdict, COUNT(*) FROM market_power_scores
                          GROUP BY verdict ORDER BY 2 DESC
                     """)
-                    verdicts = {(r[0] or 'UNKNOWN'): r[1] for r in cur2.fetchall()}
+                    verdicts = {(r[0] or 'UNKNOWN'): r[1] for r in cur.fetchall()}
                 out["verdicts"] = verdicts
             except Exception as e:
                 out["verdicts"] = {"error": str(e)[:80]}
 
             # ─── TOP 25 BUILD MARKETS ────────────────────────────────
+            # r47.13.1: schema has excess_power_score + constraint_score +
+            # time_to_power_months as sub-scores; no stored composite. We
+            # compute composite as (excess_power_score - constraint_score).
             try:
-                with c.cursor() as cur3:
-                    cur3.execute("""
-                        SELECT market_name, state, iso, composite_score, verdict,
-                               excess_power_score, constraint_score, ttp_score
+                with c.cursor() as cur:
+                    cur.execute("""
+                        SELECT market_name, state, iso, verdict,
+                               excess_power_score, constraint_score,
+                               time_to_power_months
                           FROM market_power_scores
-                         WHERE verdict = 'BUILD'
-                         ORDER BY composite_score DESC NULLS LAST LIMIT 25
+                         WHERE verdict = 'BUILD' AND published = TRUE
+                         ORDER BY (COALESCE(excess_power_score,0) - COALESCE(constraint_score,0)) DESC
+                         LIMIT 25
                     """)
                     out["top_build_markets"] = [{
                         "market": r[0], "state": r[1], "iso": r[2],
-                        "composite": float(r[3] or 0),
-                        "verdict": r[4],
-                        "excess_power": float(r[5] or 0),
-                        "constraint": float(r[6] or 0),
-                        "ttp": float(r[7] or 0),
-                    } for r in cur3.fetchall()]
+                        "verdict": r[3],
+                        "excess_power": float(r[4] or 0),
+                        "constraint": float(r[5] or 0),
+                        "ttp": float(r[6] or 0),
+                        "composite": float((r[4] or 0) - (r[5] or 0)),
+                    } for r in cur.fetchall()]
             except Exception as e:
                 out["top_build_markets"] = []
+                out["_top_build_err"] = str(e)[:120]
 
             # ─── TOP 10 AVOID MARKETS (the warnings) ────────────────
             try:
-                with c.cursor() as cur4:
-                    cur4.execute("""
-                        SELECT market_name, state, iso, composite_score,
-                               constraint_score
+                with c.cursor() as cur:
+                    cur.execute("""
+                        SELECT market_name, state, iso,
+                               constraint_score, excess_power_score
                           FROM market_power_scores
-                         WHERE verdict = 'AVOID'
+                         WHERE verdict = 'AVOID' AND published = TRUE
                          ORDER BY constraint_score DESC NULLS LAST LIMIT 10
                     """)
                     out["top_avoid_markets"] = [{
                         "market": r[0], "state": r[1], "iso": r[2],
-                        "composite": float(r[3] or 0),
-                        "constraint": float(r[4] or 0),
-                    } for r in cur4.fetchall()]
+                        "constraint": float(r[3] or 0),
+                        "composite": float((r[4] or 0) - (r[3] or 0)),
+                    } for r in cur.fetchall()]
             except Exception:
                 out["top_avoid_markets"] = []
 
             # ─── SUPPLY PIPELINE BY STATUS ──────────────────────────
             try:
-                with c.cursor() as cur5:
-                    cur5.execute("""
-                        SELECT LOWER(COALESCE(status,'unknown')) AS status,
+                with c.cursor() as cur:
+                    cur.execute("""
+                        SELECT LOWER(COALESCE(status,'unknown')) AS s,
                                COUNT(*),
                                COALESCE(SUM(power_mw), 0)
                           FROM discovered_facilities
                          GROUP BY LOWER(COALESCE(status,'unknown'))
                          ORDER BY 2 DESC
                     """)
-                    pipeline = []
-                    for r in cur5.fetchall():
-                        pipeline.append({
-                            "status": r[0],
-                            "count":  int(r[1]),
-                            "mw":     float(r[2] or 0),
-                        })
-                    out["pipeline_by_status"] = pipeline
+                    out["pipeline_by_status"] = [
+                        {"status": r[0], "count": int(r[1]),
+                         "mw": float(r[2] or 0)}
+                        for r in cur.fetchall()
+                    ]
             except Exception:
                 out["pipeline_by_status"] = []
 
             # ─── TOP 15 OPERATORS BY FACILITY COUNT ─────────────────
             try:
-                with c.cursor() as cur6:
-                    cur6.execute("""
+                with c.cursor() as cur:
+                    cur.execute("""
                         SELECT provider, COUNT(*), COALESCE(SUM(power_mw),0)
                           FROM discovered_facilities
                          WHERE provider IS NOT NULL AND provider != ''
@@ -158,23 +173,27 @@ def _gather(quarter_window=False):
                     out["top_operators"] = [{
                         "operator": r[0], "facilities": int(r[1]),
                         "mw": float(r[2] or 0),
-                    } for r in cur6.fetchall()]
+                    } for r in cur.fetchall()]
             except Exception:
                 out["top_operators"] = []
 
             # ─── M&A SUMMARY (window) ───────────────────────────────
             try:
-                with c.cursor() as cur7:
-                    cur7.execute(f"""
-                        SELECT COUNT(*),
-                               COALESCE(SUM(value), 0)
+                with c.cursor() as cur:
+                    cur.execute(f"""
+                        SELECT COUNT(*), COALESCE(SUM(value), 0)
                           FROM deals
                          WHERE date >= CURRENT_DATE - {interval}
                     """)
-                    r = cur7.fetchone()
+                    r = cur.fetchone()
                     out["ma_count"] = int(r[0] or 0)
                     out["ma_total_value_m"] = float(r[1] or 0)
-                    cur7.execute(f"""
+            except Exception:
+                out["ma_count"] = 0
+                out["ma_total_value_m"] = 0
+            try:
+                with c.cursor() as cur:
+                    cur.execute(f"""
                         SELECT date, buyer, seller, value, mw
                           FROM deals
                          WHERE value IS NOT NULL AND value > 0
@@ -186,15 +205,14 @@ def _gather(quarter_window=False):
                         "buyer": r[1], "seller": r[2],
                         "value_m": float(r[3] or 0),
                         "mw": float(r[4] or 0),
-                    } for r in cur7.fetchall()]
+                    } for r in cur.fetchall()]
             except Exception:
-                out["ma_count"] = 0
                 out["ma_top_deals"] = []
 
             # ─── $1B+ HYPERSCALER DEALS (always-window) ─────────────
             try:
-                with c.cursor() as cur8:
-                    cur8.execute("""
+                with c.cursor() as cur:
+                    cur.execute("""
                         SELECT detected_at, actor, value_display, headline, url
                           FROM hyperscaler_alerts
                          ORDER BY detected_at DESC LIMIT 10
@@ -203,15 +221,15 @@ def _gather(quarter_window=False):
                         "detected_at": r[0].isoformat() if r[0] else None,
                         "actor": r[1], "value": r[2],
                         "headline": r[3], "url": r[4],
-                    } for r in cur8.fetchall()]
+                    } for r in cur.fetchall()]
             except Exception:
                 out["hyperscaler_deals"] = []
 
             # ─── PRESS RELEASE COUNT (cadence proof) ────────────────
             try:
-                with c.cursor() as cur9:
-                    cur9.execute(f"SELECT COUNT(*) FROM press_releases WHERE created_at > NOW() - {interval}")
-                    out["press_count"] = cur9.fetchone()[0]
+                with c.cursor() as cur:
+                    cur.execute(f"SELECT COUNT(*) FROM press_releases WHERE created_at > NOW() - {interval}")
+                    out["press_count"] = int(cur.fetchone()[0] or 0)
             except Exception:
                 out["press_count"] = 0
 
