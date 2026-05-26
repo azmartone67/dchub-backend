@@ -98,14 +98,29 @@ fi
 
 GIVEN_NAME="${CONTACT_NAME%% *}"   # first word of name for casual greeting
 
+# Title-case the plan once for reuse (macOS bash 3.2 compatible).
+PLAN_TITLE="$(printf %s "$PLAN" | tr '[:lower:]' '[:upper:]' | cut -c1)$(printf %s "$PLAN" | cut -c2-)"
+
+# Tier-appropriate framing for the addendum body. The endpoint surface
+# is the same in both cases (per the License Schedule A.5 + NLR partner
+# rights flag in routes/partner_key_issuer.py), but the framing differs:
+# Developer = pre-execution Research Seed; Enterprise = post-License.
+if [ "$PLAN" = "enterprise" ]; then
+  TIER_LINE="unlocked at your Enterprise tier — none of the Developer paywalls"
+  KEY_LABEL="Enterprise API key"
+else
+  TIER_LINE="active under your NLR Research Seed terms — partner key, full Schedule A surface"
+  KEY_LABEL="$PLAN_TITLE API key (NLR Research Seed)"
+fi
+
 echo
 echo "════════════════════════════════════════════════════════════════"
-echo "✅ $(printf %s "$PLAN" | tr '[:lower:]' '[:upper:]' | cut -c1)$(printf %s "$PLAN" | cut -c2-) key issued for $GIVEN_NAME."
+echo "✅ $PLAN_TITLE key issued for $GIVEN_NAME."
 echo "════════════════════════════════════════════════════════════════"
 echo
 echo "  Key:    $API_KEY"
 echo "  Header: X-API-Key"
-echo "  Tier:   $(printf %s "$PLAN" | tr '[:lower:]' '[:upper:]' | cut -c1)$(printf %s "$PLAN" | cut -c2-)"
+echo "  Tier:   $PLAN_TITLE"
 echo
 echo "Smoke test (Ashburn VA — composite + 2050 forecast):"
 echo "  curl -H \"X-API-Key: $API_KEY\" \\"
@@ -116,11 +131,11 @@ echo
 cat <<TECH
 $GIVEN_NAME — technical onboarding details:
 
-  Your Enterprise API key: $API_KEY
+  Your $KEY_LABEL: $API_KEY
   Header on every request: X-API-Key
 
-The full reVeal Characterize feature-set mapping (all 9 endpoints
-unlocked at your Enterprise tier — none of the Developer paywalls):
+The full reVeal Characterize feature-set mapping (10 endpoints
+$TIER_LINE):
 
   /api/v1/site-forecast        composite + 2050 forecast (headline)
   /api/v1/grid-intelligence    reserve margin + queue depth

@@ -14,12 +14,17 @@ Open-source reVeal package on GitHub: **NatLabRockies**.
 
 | Role                  | Name              | Email                          | Status |
 |-----------------------|-------------------|--------------------------------|--------|
-| Strategic (JSC)       | Gabriel Zuckerman | Gabriel.Zuckerman@nlr.gov      | Active |
-| Technical (JSC)       | Galen Maclaurin   | TBC @nlr.gov                   | Pending key |
-| Integrator (added by Gabe) | Ian *(last name TBC)* | TBC                  | Pending key |
+| Strategic (JSC)       | Gabriel Zuckerman | Gabriel.Zuckerman@nlr.gov      | Developer key active (2026-05-26) |
+| Technical (JSC)       | Galen Maclaurin   | Galen.Maclaurin@nlr.gov        | Developer key active (2026-05-26) |
+| Integrator            | Ian Christie      | Ian.Christie@nlr.gov           | Developer key active (2026-05-26) |
 | DC Hub (JSC)          | Jonathan Martone  | azmartone@gmail.com            | — |
 
-**Action**: confirm Galen and Ian's emails to mint Developer keys.
+> NLR domain rename: NLR formerly used `@NREL.gov`. All future
+> correspondence routes through `@NLR.gov`. No `@NREL.gov` email
+> addresses remain in our codebase; remaining `NREL` references all
+> point at the separate U.S. National Renewable Energy Laboratory
+> data APIs (`developer.nrel.gov`), which is a distinct organization
+> and stays labeled NREL.
 
 ---
 
@@ -166,11 +171,11 @@ stays ≥ 90% off commercial rate. 60-day non-renewal notice.
 - [ ] NLR sends mutual NDA (their standard form)
 - [ ] DC Hub counsel reviews + countersigns (1-day target)
 - [ ] Stripe subscription procured by NLR ($3K via PO, net-30)
-- [ ] Galen + Ian emails → DC Hub mints Developer keys via `scripts/r72_onboard_reveal_nlr.sh`
+- [x] Gabriel + Galen + Ian → Developer keys minted 2026-05-26 via `scripts/r72_onboard_reveal_nlr.sh`
 
 ### Phase 2 — Weeks 2–4
 - [ ] MOU (02) + Publication Protocol (04) signed together (Schedule C attached)
-- [ ] JSC kickoff meeting (Gabriel + Galen + Jonathan)
+- [ ] JSC kickoff meeting (Gabriel + Galen + Ian + Jonathan)
 - [ ] Pilot scope confirmed in MOU Schedule A (regions + priority limitation = transmission hosting capacity)
 
 ### Phase 3 — Weeks 5–8
@@ -228,8 +233,8 @@ stays ≥ 90% off commercial rate. 60-day non-renewal notice.
 
 ## Open questions for Gabe / NLR Legal
 
-1. Galen Maclaurin's email (assume `Galen.Maclaurin@nlr.gov`?)
-2. Ian's last name + email
+1. ~~Galen Maclaurin's email~~ — confirmed `Galen.Maclaurin@nlr.gov`
+2. ~~Ian's last name + email~~ — confirmed `Ian Christie / Ian.Christie@nlr.gov`
 3. NLR's exact operating entity legal name (for `[NLR Operating Entity Legal Name]` placeholder)
 4. DOE prime contract number (for Acknowledgments + License recitals)
 5. NLR's preferred governing-law jurisdiction (Delaware works for DC Hub; federal law applies to NLR-specific provisions)
