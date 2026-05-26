@@ -97,13 +97,20 @@ def _upsert_fiber_route(conn, route):
     cur = conn.cursor()
     try:
         cur.execute("SAVEPOINT fiber_upsert")
+        # r49 (2026-05-25): dropped start_point/end_point columns from
+        # the INSERT — the production fiber_routes schema only has
+        # start_location/end_location. Every upsert was failing with
+        # `column "start_point" does not exist`, which is why the
+        # autonomous-brain-fiber crawler ingested 0 rows for 196 runs.
+        # The legacy *_point columns were planned but never migrated
+        # in; start_location is the canonical text address.
         cur.execute("""
             INSERT INTO fiber_routes
                 (name, provider, route_type, start_location, end_location,
-                 start_point, end_point, distance_miles, fiber_count,
+                 distance_miles, fiber_count,
                  capacity, status, start_lat, start_lng, end_lat, end_lng,
                  source, source_id, discovered_at)
-            VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, NOW())
+            VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, NOW())
             ON CONFLICT (source, source_id) DO UPDATE SET
                 name = EXCLUDED.name,
                 provider = EXCLUDED.provider,
@@ -116,8 +123,6 @@ def _upsert_fiber_route(conn, route):
             route.get('route_type', 'long_haul'),
             route.get('start_location', ''),
             route.get('end_location', ''),
-            route.get('start_location', ''),  # start_point = start_location
-            route.get('end_location', ''),     # end_point = end_location
             route.get('route_miles'),           # → distance_miles
             route.get('fiber_count'),
             f"{route.get('fiber_count', 0)} fibers" if route.get('fiber_count') else None,  # capacity
