@@ -23450,6 +23450,15 @@ try:
 except Exception as _pd_e:
     print(f"[main] partnership_dashboard_bp register failed: {_pd_e}", flush=True)
 
+# Phase ZZZZZ-round47.24 (2026-05-26): one-page admin review UI for
+# partnership drafts (press + LinkedIn). Auth via localStorage admin key.
+try:
+    from routes.partnership_admin_dashboard import partnership_admin_bp
+    app.register_blueprint(partnership_admin_bp)
+    print("[main] partnership_admin_bp registered: /admin/partnerships/review", flush=True)
+except Exception as _padm_e:
+    print(f"[main] partnership_admin_bp register failed: {_padm_e}", flush=True)
+
 # Phase ZZZZZ-round37.1 (2026-05-24): single cron heartbeat endpoint
 # Railway service-level cron only takes ONE expression, so collapse all
 # scheduled warmers behind a single HTTP endpoint that dispatches by UTC
