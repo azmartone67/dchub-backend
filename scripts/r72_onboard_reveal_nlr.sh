@@ -53,7 +53,16 @@ if [ -z "$CONTACT_NAME" ]; then
 fi
 
 CONTACT_COMPANY="${CONTACT_COMPANY:-NLR}"
-PLAN="${PLAN:-enterprise}"
+# r76-a (2026-05-26): default back to developer. NLR contract (NDA + MOU
+# + License Agreement) targets 90-day execution per Jonathan's email to
+# Gabe. Until the License Agreement is signed, the partnership operates
+# on a Developer-tier key — full API surface, no Pro-only gates beyond
+# what already exists. Flip to PLAN=enterprise on this script call AFTER
+# the contract executes:
+#   PLAN=enterprise CONTACT_EMAIL=... ./scripts/r72_onboard_reveal_nlr.sh
+# Idempotent partner-key/issue revokes the prior Developer row + mints
+# an Enterprise replacement, so the upgrade is a one-shell-line cutover.
+PLAN="${PLAN:-developer}"
 BASE="${DCHUB_API_BASE:-https://dchub-backend-production.up.railway.app}"
 
 echo "→ Issuing ${PLAN}-tier key for $CONTACT_NAME ($CONTACT_EMAIL)…"

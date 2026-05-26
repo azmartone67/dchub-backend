@@ -45,6 +45,39 @@ partner_landing_bp = Blueprint("partner_landing", __name__)
 # routes/ai_lab_outreach.py — when r63's outreach module needs a
 # slug, it MUST match a slug here so the email link resolves.
 _PARTNERS = {
+    "nlr": {
+        "name":     "NLR (reVeal)",
+        "tagline":  "Live infrastructure data for reVeal's Characterize module.",
+        "hero":     ("NLR's reVeal model identifies suitable data-center "
+                       "sites. DC Hub is the live data pipeline — substations, "
+                       "fiber, water, energy prices, carbon intensity, climate "
+                       "risk, interconnection-queue depth — all updated daily "
+                       "from FERC/ISO/EIA/EPA/USGS. Year-1 Research Seed price "
+                       "calibrated to NLR's stated budget; all partnership "
+                       "rights (co-authorship, reference, conference, reVeal "
+                       "v2 first-look) active Day 1."),
+        "value_bullets": [
+            "10 reVeal-specific endpoints already shipped (cell-bulk, grid-export, validation-feed, social-acceptance, climate-risk, carbon-intensity, geothermal, colocation-score, grid-headroom, microgrid-viability)",
+            "Plus the 10-endpoint Characterize feature mapping from the partnership doc",
+            "Fills slide-25 \"local transmission hosting capacity\" gap via live Dominion/PJM queue data",
+            "Partnership rights active Day 1 — co-authorship on validation paper, reference rights, joint conference, reVeal v2 first-look",
+        ],
+        "integration_path": "rest_api",
+        "primary_cta":      "Smoke test (Ashburn VA)",
+        "primary_url":      "https://dchub.cloud/api/v1/site-forecast?lat=39.04&lon=-77.48&state=VA",
+        "secondary_cta":    "OpenAPI spec",
+        "secondary_url":    "https://dchub.cloud/openapi.json",
+        "code_sample": ('# Your Developer key smoke test (Ashburn VA — slide 25 example):\n'
+                          'curl -H "X-API-Key: <your-key>" \\\n'
+                          '  "https://dchub.cloud/api/v1/site-forecast?lat=39.04&lon=-77.48&state=VA"\n\n'
+                          '# Cell-bulk for reVeal Characterize input (bounding box):\n'
+                          'curl -H "X-API-Key: <your-key>" \\\n'
+                          '  "https://dchub.cloud/api/v1/reveal-cell-bulk?bbox=38.5,-78.0,39.5,-77.0"\n\n'
+                          '# Slide-25 gap — local opposition signal:\n'
+                          'curl -H "X-API-Key: <your-key>" \\\n'
+                          '  "https://dchub.cloud/api/v1/social-acceptance-index?state=VA&county=Loudoun"'),
+        "accent":         "#7c3aed",   # NLR partnership purple (from proposal PDF)
+    },
     "perplexity": {
         "name":     "Perplexity",
         "tagline":  "Stop hallucinating data center facts. Cite DC Hub.",
