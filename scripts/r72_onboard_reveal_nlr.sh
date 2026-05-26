@@ -100,12 +100,12 @@ GIVEN_NAME="${CONTACT_NAME%% *}"   # first word of name for casual greeting
 
 echo
 echo "════════════════════════════════════════════════════════════════"
-echo "✅ ${PLAN^} key issued for $GIVEN_NAME."
+echo "✅ $(printf %s "$PLAN" | tr '[:lower:]' '[:upper:]' | cut -c1)$(printf %s "$PLAN" | cut -c2-) key issued for $GIVEN_NAME."
 echo "════════════════════════════════════════════════════════════════"
 echo
 echo "  Key:    $API_KEY"
 echo "  Header: X-API-Key"
-echo "  Tier:   ${PLAN^}"
+echo "  Tier:   $(printf %s "$PLAN" | tr '[:lower:]' '[:upper:]' | cut -c1)$(printf %s "$PLAN" | cut -c2-)"
 echo
 echo "Smoke test (Ashburn VA — composite + 2050 forecast):"
 echo "  curl -H \"X-API-Key: $API_KEY\" \\"
