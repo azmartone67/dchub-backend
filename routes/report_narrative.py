@@ -36,19 +36,53 @@ _CACHE_TTL = 3600  # 1 hour
 _CACHE: dict[str, dict] = {}  # key -> {"text", "computed_at"}
 
 
-def _cache_key(kind: str, d: dict) -> str:
-    """Stable key per (kind, period). Monthly uses year+month if present;
-    quarterly + comprehensive monthly fall back to generated_at date so
-    we don't share cache across days."""
+def _cache_key(kind: str, d: dict, audience: str = "default") -> str:
+    """Stable key per (kind, period, audience). Monthly uses year+month
+    if present; quarterly + comprehensive monthly fall back to generated_at
+    date so we don't share cache across days. Audience suffix lets us
+    cache per-tone variants (journalist/pe/agent) independently."""
+    suffix = f":{audience}" if audience and audience != "default" else ""
     if kind == "monthly" and d.get("year") and d.get("month"):
-        return f"monthly:{d.get('year')}:{d.get('month')}"
-    # Comprehensive report path — no year/month/quarter fields, use the
-    # generated_at date so cache rolls over once per UTC day.
+        return f"monthly:{d.get('year')}:{d.get('month')}{suffix}"
     gen = (d.get("generated_at") or d.get("as_of_date") or "unknown")[:10]
-    return f"{kind}:{gen}"
+    return f"{kind}:{gen}{suffix}"
 
 
-def _build_monthly_prompt(d: dict) -> str:
+# r42e (2026-05-25): audience-specific tone overrides. The structured-
+# data is identical; only the prompt voice changes. Each audience gets
+# its own cache slot so we don't have to invalidate when toggling.
+_AUDIENCE_HEADERS = {
+    "journalist": (
+        "Voice: like a senior reporter at the Wall Street Journal or "
+        "Bloomberg writing the lede paragraph of a sector piece. Lead "
+        "with the most quotable sentence — one a reporter could lift "
+        "into their own copy with attribution. Concrete names, "
+        "concrete numbers, no jargon. Avoid hedging."
+    ),
+    "pe": (
+        "Voice: like a senior private-equity analyst writing a deal-"
+        "committee memo. Lead with the capital-flow signal. Frame "
+        "everything in terms of returns, risk-adjusted basis, multiples, "
+        "and exit windows. Name acquirer types (sovereign, mega-cap, "
+        "growth-PE, REIT) and capital-stack implications. Take a "
+        "directional position on where the basis is going."
+    ),
+    "agent": (
+        "Voice: like a research analyst writing a structured digest for "
+        "an LLM reader. Use one or two short sentences per claim. Surface "
+        "named entities (markets, companies, ISOs, MW figures) explicitly. "
+        "Prefer parseable phrasing. Still 2 paragraphs, still prose — "
+        "but optimized so an AI agent can extract facts cleanly."
+    ),
+}
+
+
+def _audience_block(audience: str) -> str:
+    """Return the audience-tone block to inject into the base prompt."""
+    return _AUDIENCE_HEADERS.get(audience, "")
+
+
+def _build_monthly_prompt(d: dict, audience: str = "default") -> str:
     """Strip the report dict to the analyst-relevant signals and ask
     Claude to write 250 words in CBRE/JLL house style — but with the
     explicit positioning that we are *complementary*, not competing."""
@@ -86,6 +120,7 @@ def _build_monthly_prompt(d: dict) -> str:
         "ai_tool_calls_month": ai.get("tool_calls_month"),
         "ai_mom_pct": ai.get("mom_pct"),
     }
+    audience_block = _audience_block(audience)
     return f"""You are a senior research analyst at DC Hub, a data center
 intelligence platform. You are drafting the executive summary for the
 {label} monthly trend report. Your reader is a hyperscaler exec, a
@@ -96,6 +131,8 @@ or JLL H2 outlook — confident, specific, sober, no hype. Lead with the
 single most important signal from the data below. Name specific markets
 and specific dollar/MW figures. Avoid generic phrases like "robust" or
 "strong activity" — say *what* and *how much*.
+
+{audience_block}
 
 Paragraph 1 — THE MONTH: the headline number and the story behind it.
 What did capital do? Where did it land? Which markets stood out?
@@ -120,7 +157,7 @@ Write only the 2 paragraphs. No preamble, no sign-off.
 """
 
 
-def _build_quarterly_prompt(d: dict) -> str:
+def _build_quarterly_prompt(d: dict, audience: str = "default") -> str:
     """Quarterly deep-dive narrative — built on the comprehensive_report
     data shape (window, top_build_markets, hyperscaler_deals, etc.)."""
     window = d.get("window", "quarter")
@@ -162,11 +199,14 @@ def _build_quarterly_prompt(d: dict) -> str:
                            "mw": o.get("mw")} for o in operators],
         "press_releases_this_window": d.get("press_count"),
     }
+    audience_block = _audience_block(audience)
     return f"""You are a senior research analyst at DC Hub drafting the
 executive summary for the {label} {window} deep-dive (a {window_days}-day
 window). Reader: a hyperscaler CFO, a data-center private-equity partner,
 or a sector journalist. Voice: CBRE/JLL H2 outlook — confident, specific,
 willing to take a position, no hype.
+
+{audience_block}
 
 Write 350 words across 3 paragraphs:
 
@@ -227,8 +267,15 @@ def _call_claude(prompt: str) -> str | None:
         return None
 
 
-def attach_narrative(d: dict, kind: str = "monthly") -> dict:
+def attach_narrative(d: dict, kind: str = "monthly",
+                       audience: str = "default") -> dict:
     """Add `narrative_summary` to the report dict, in-place.
+
+    audience: 'default' | 'journalist' | 'pe' | 'agent'
+      - default:    CBRE/JLL house style (sober analyst voice)
+      - journalist: WSJ/Bloomberg lede style (quotable, concrete)
+      - pe:         Deal-committee memo (capital flow + basis + exit windows)
+      - agent:      LLM-reader friendly (named entities surfaced, parseable)
 
     - Cache hit (within TTL): adds the field instantly with cache_age_seconds
     - Cache miss + key present: synchronous LLM call (~3-5s on haiku), then cache
@@ -240,13 +287,14 @@ def attach_narrative(d: dict, kind: str = "monthly") -> dict:
     if not _ANTHROPIC_KEY:
         return d  # silent — no field added
 
-    key = _cache_key(kind, d)
+    key = _cache_key(kind, d, audience)
     now = time.monotonic()
     cached = _CACHE.get(key)
     if cached and (now - cached["computed_at"]) < _CACHE_TTL:
         d["narrative_summary"] = {
             "text": cached["text"],
             "model": _MODEL,
+            "audience": audience,
             "generated_at": cached["generated_at"],
             "cache_age_seconds": int(now - cached["computed_at"]),
         }
@@ -255,11 +303,11 @@ def attach_narrative(d: dict, kind: str = "monthly") -> dict:
     # Cache miss — build prompt and call
     try:
         if kind == "quarterly":
-            prompt = _build_quarterly_prompt(d)
+            prompt = _build_quarterly_prompt(d, audience=audience)
         else:
-            prompt = _build_monthly_prompt(d)
+            prompt = _build_monthly_prompt(d, audience=audience)
     except Exception as e:
-        logger.warning(f"narrative prompt build failed for {kind}: {e}")
+        logger.warning(f"narrative prompt build failed for {kind}/{audience}: {e}")
         return d
 
     text = _call_claude(prompt)
@@ -275,6 +323,7 @@ def attach_narrative(d: dict, kind: str = "monthly") -> dict:
     d["narrative_summary"] = {
         "text": text,
         "model": _MODEL,
+        "audience": audience,
         "generated_at": generated_at,
         "cache_age_seconds": 0,
     }
