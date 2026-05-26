@@ -306,7 +306,7 @@ def _track_visit(slug: str) -> None:
                 """)
                 cur.execute("""
                     INSERT INTO partner_visits (slug, ip_hash, ua, referer)
-                    VALUES (%s, %s, %s, %s)
+                    VALUES (%s, %s, %s, %s) ON CONFLICT DO NOTHING
                 """, (slug, ip_hash, ua, referer))
                 c.commit()
         except Exception:

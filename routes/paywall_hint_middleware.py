@@ -171,7 +171,7 @@ def _log_ab_event(variant: str, status: int, path: str,
                 cur.execute("""
                     INSERT INTO ab_funnel_log
                         (variant, status, path, ip_hash)
-                    VALUES (%s, %s, %s, %s)
+                    VALUES (%s, %s, %s, %s) ON CONFLICT DO NOTHING
                 """, (variant, status, path[:200], ip_hash))
                 conn.commit()
     except Exception:

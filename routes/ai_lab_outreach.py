@@ -414,7 +414,7 @@ def draft_one(slug):
                 cur.execute("""
                     INSERT INTO ai_lab_outreach_drafts
                         (target_slug, subject, body, contact_url, status)
-                    VALUES (%s, %s, %s, %s, 'draft')
+                    VALUES (%s, %s, %s, %s, 'draft') ON CONFLICT DO NOTHING
                     RETURNING id
                 """, (slug, subject, body, target.get("contact_url")))
                 new_id = (cur.fetchone() or [None])[0]
@@ -457,7 +457,7 @@ def draft_all():
                     cur.execute("""
                         INSERT INTO ai_lab_outreach_drafts
                             (target_slug, subject, body, contact_url, status)
-                        VALUES (%s, %s, %s, %s, 'draft')
+                        VALUES (%s, %s, %s, %s, 'draft') ON CONFLICT DO NOTHING
                         RETURNING id
                     """, (target["slug"], subject, body, target.get("contact_url")))
                     new_id = (cur.fetchone() or [None])[0]
