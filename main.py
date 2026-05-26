@@ -23825,6 +23825,20 @@ try:
 except Exception as _pki_e:
     print(f"[main] partner_key_issuer_bp register failed: {_pki_e}", flush=True)
 
+# r73-a (2026-05-26): api_integration_wiring exposed /api/v1/carbon,
+# /climate, /risk, /water/stress via register_api_integration_routes(app)
+# but nothing called it on startup — so those 4 routes 404'd silently.
+# Caught when Gabriel/reVeal's Characterize integration needed the water
+# layer (slide 21 of the partnership doc identified water_availability
+# as the lowest-importance feature flagged for swap with DC Hub live
+# USGS readings — but he couldn't even hit the endpoint).
+try:
+    from routes.api_integration_wiring import register_api_integration_routes
+    register_api_integration_routes(app)
+    print("[main] register_api_integration_routes called: /api/v1/{carbon,climate,risk,water/stress}", flush=True)
+except Exception as _air_e:
+    print(f"[main] register_api_integration_routes failed: {_air_e}", flush=True)
+
 # r45 (2026-05-25): explicit per-blueprint registration (batch loop in r44
 # was failing silently — Flask blueprint name conflicts get swallowed).
 

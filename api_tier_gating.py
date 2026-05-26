@@ -379,6 +379,17 @@ def validate_api_key(api_key):
         conn = psycopg2.connect(database_url, connect_timeout=5)
         cur = conn.cursor()
         key_hash = hashlib.sha256(api_key.encode()).hexdigest()
+        # r73-b (2026-05-26): try BOTH the SHA256-hashed lookup (this
+        # module's original contract) AND the raw-key lookup (the
+        # legacy main.py:10656 + routes/partner_key_issuer pattern).
+        # The codebase has two storage conventions in api_keys.key_hash
+        # depending on which mint path was used:
+        #   - api_tier_gating.generate_api_key:  stores SHA256 hash
+        #   - main.py:10656 INSERT (auth_handler): stores raw key_str
+        #   - routes/partner_key_issuer (r72):    stores raw key_str
+        # Trying both lets ANY mint path produce a working key without
+        # forcing a one-shot DB migration. Hashed lookup first (covers
+        # the older keys); raw fallback covers the newer partner keys.
         cur.execute("""
             SELECT u.id, u.email, u.plan, u.role, ak.rate_limit_tier
             FROM api_keys ak
@@ -387,6 +398,16 @@ def validate_api_key(api_key):
             LIMIT 1
         """, (key_hash,))
         row = cur.fetchone()
+        if not row:
+            # Fallback: lookup by RAW key_str (legacy + partner-key path)
+            cur.execute("""
+                SELECT u.id, u.email, u.plan, u.role, ak.rate_limit_tier
+                FROM api_keys ak
+                JOIN users u ON ak.user_id = u.id
+                WHERE ak.key_hash = %s AND ak.is_active = 1
+                LIMIT 1
+            """, (api_key,))
+            row = cur.fetchone()
         cur.close()
         
         if row:
