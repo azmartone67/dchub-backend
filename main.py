@@ -23316,6 +23316,17 @@ try:
 except Exception as _cpe_e:
     print(f"[main] cross_post_email_bp register failed: {_cpe_e}", flush=True)
 
+# Phase ZZZZZ-round47.13 (2026-05-25): comprehensive monthly + quarterly
+# reports — competes head-on with CBRE H2 2025 + JLL N.A. Data Centers.
+# Live data, machine-readable, daily-refresh, CC-BY-4.0. Used by /partners
+# to show the live alternative to CBRE/JLL static PDFs.
+try:
+    from routes.comprehensive_report import comprehensive_report_bp
+    app.register_blueprint(comprehensive_report_bp)
+    print("[main] comprehensive_report_bp registered: /reports/{monthly,quarterly-deep} + JSON", flush=True)
+except Exception as _cr_e:
+    print(f"[main] comprehensive_report_bp register failed: {_cr_e}", flush=True)
+
 # Phase ZZZZZ-round37.1 (2026-05-24): single cron heartbeat endpoint
 # Railway service-level cron only takes ONE expression, so collapse all
 # scheduled warmers behind a single HTTP endpoint that dispatches by UTC
