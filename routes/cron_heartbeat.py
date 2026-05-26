@@ -139,6 +139,16 @@ _DISPATCH = [
      f"{BASE}/api/v1/linkedin-partnership/run",
      "POST",
      lambda now: now.weekday() == 2 and now.hour == 14 and now.minute < 10),
+
+    # r47.15 (2026-05-25): weekly partnership press release. Fires
+    # Tuesday 13:00 UTC (9 AM ET, ahead of Wed LinkedIn) so press
+    # publishes → LinkedIn amplifies → email follows. Endpoint is
+    # idempotent on the slug ("partnership-<track>-<isoyear>-w<isoweek>"),
+    # so the 10-min window is safe.
+    ("partnership_press_weekly",
+     f"{BASE}/api/v1/partnerships/press/run",
+     "POST",
+     lambda now: now.weekday() == 1 and now.hour == 13 and now.minute < 10),
 ]
 
 

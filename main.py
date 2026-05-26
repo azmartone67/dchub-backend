@@ -23358,6 +23358,30 @@ try:
 except Exception as _lpw_e:
     print(f"[main] linkedin_partnership_bp register failed: {_lpw_e}", flush=True)
 
+# Phase ZZZZZ-round47.15-17 (2026-05-25): partnership amplification trio
+#   .15  partnership_press_template     — weekly press release per anchor
+#   .16  partnership_email_drafts       — pre-staged paste-ready emails
+#   .17  partnership_click_tracker      — /go/partners/<slug> redirects + stats
+# All three reuse the same 7-track rotation as linkedin_partnership_weekly.
+try:
+    from routes.partnership_press_template import partnership_press_bp
+    app.register_blueprint(partnership_press_bp)
+    print("[main] partnership_press_bp registered: /api/v1/partnerships/press/{run,preview,status}", flush=True)
+except Exception as _pp_e:
+    print(f"[main] partnership_press_bp register failed: {_pp_e}", flush=True)
+try:
+    from routes.partnership_email_drafts import partnership_email_bp
+    app.register_blueprint(partnership_email_bp)
+    print("[main] partnership_email_bp registered: /api/v1/partnerships/email/<slug>{,/send,/log}", flush=True)
+except Exception as _pe_e:
+    print(f"[main] partnership_email_bp register failed: {_pe_e}", flush=True)
+try:
+    from routes.partnership_click_tracker import partnership_click_bp
+    app.register_blueprint(partnership_click_bp)
+    print("[main] partnership_click_bp registered: /go/partners/<slug> + /api/v1/partnerships/clicks/{stats,recent}", flush=True)
+except Exception as _pc_e:
+    print(f"[main] partnership_click_bp register failed: {_pc_e}", flush=True)
+
 # Phase ZZZZZ-round37.1 (2026-05-24): single cron heartbeat endpoint
 # Railway service-level cron only takes ONE expression, so collapse all
 # scheduled warmers behind a single HTTP endpoint that dispatches by UTC
