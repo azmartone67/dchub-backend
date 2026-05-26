@@ -50,9 +50,16 @@ paywall_ab_admin_bp = Blueprint("paywall_ab_admin", __name__)
 _HINT_BASE = {
     "claim_key":       "POST https://dchub.cloud/api/v1/keys/claim",
     "signup_url":      "https://dchub.cloud/signup",
+    "starter_url":     "https://buy.stripe.com/8x2dRa5sS0x75uteGuaZi0g",  # $9/mo
+    "developer_url":   "https://buy.stripe.com/7sY5kE8F4fs13mI0PEaZi0c",  # $49/mo
     "preview_url":     "https://dchub.cloud/api/v1/mcp/preview/<tool>",
     "upgrade_hint":    "https://dchub.cloud/api/v1/upgrade-hint",
-    "what_you_get":    "10k MCP tool calls/day on free tier. No credit card.",
+    # r48 (2026-05-25): "10k MCP tool calls/day on free tier" was WRONG —
+    # free tier is actually 10/day. Fixed copy + added direct Stripe links
+    # so agents can pass a $9 quick-buy URL to the user rather than just
+    # the signup form.
+    "what_you_get":    "Free dev key (email signup, no credit card) = 1,000 calls/day. $9/mo Starter = 10,000/day. $49/mo Developer = unlimited paid tools.",
+    "pricing_quick":   "Anonymous 10/day · Free key 1K/day · $9 Starter 10K/day · $49 Developer unlimited",
 }
 
 
