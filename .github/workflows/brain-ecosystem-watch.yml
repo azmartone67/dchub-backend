@@ -9,7 +9,11 @@ name: Brain Ecosystem Watch (Daily MCP-registry probe)
 
 on:
   schedule:
-    - cron: '43 6 * * *'
+    # r56 (2026-05-25): bumped from once daily to every 6 hours.
+    # User report: /ecosystem stale + targets_known=0 → cron never
+    # produced data. Quad-fires give us 4 chances per day to populate
+    # the watch table even if registry probes 403 intermittently.
+    - cron: '43 6,12,18,0 * * *'
   workflow_dispatch: {}
 
 permissions:
@@ -31,17 +35,34 @@ jobs:
             echo "::warning::DCHUB_ADMIN_KEY not set — skipping"
             exit 0
           fi
-          response=$(curl -sS --max-time 60 -X POST \
+          # r56 (2026-05-25): capture http_code separately so silent
+          # failures (admin-key drift, endpoint moved, Railway down)
+          # surface as ::error:: in GH Actions logs instead of "ok"
+          # confusion.
+          http_code=$(curl -sS --max-time 60 -X POST \
             -H "X-Admin-Key: $ADMIN_KEY" \
-            "$BASE/api/v1/brain/ecosystem/watch" \
-            || echo '{"ok":false,"error":"curl_fail"}')
-          echo "$response" | head -c 2500
+            -o /tmp/eco.body -w "%{http_code}" \
+            "$BASE/api/v1/brain/ecosystem/watch" || echo "000")
+          body=$(cat /tmp/eco.body 2>/dev/null || echo "{}")
+          echo "HTTP $http_code · body (first 2500 chars):"
+          echo "$body" | head -c 2500
           echo
-          python3 - <<'PY'
-          import json, sys
-          d = json.loads("""$(echo "$response" | tr -d '\n')""") if False else {}
-          # We can't reliably parse $response in heredoc, but the response
-          # was echoed above and L23's ecosystem_position dim will read
-          # the latest finding from DB on next audit tick.
-          print("::notice::Ecosystem watch tick complete — L23 audit will surface findings on next composite refresh.")
+          if [ "$http_code" = "401" ] || [ "$http_code" = "403" ]; then
+            echo "::error::Ecosystem watch returned $http_code — DCHUB_ADMIN_KEY drift"
+            exit 1
+          fi
+          if [ "$http_code" != "200" ]; then
+            echo "::warning::Ecosystem watch returned $http_code — endpoint may have moved"
+            exit 0
+          fi
+          python3 - <<PY
+          import json
+          try:
+              d = json.loads("""$body""")
+              tc = d.get('targets_count', 0)
+              wp = d.get('we_present_count', 0)
+              cs = d.get('competition_seen_count', 0)
+              print(f"::notice::Ecosystem watch: {tc} targets probed, we present in {wp}, competition in {cs}")
+          except Exception as e:
+              print(f"::warning::ecosystem parse: {e}")
           PY

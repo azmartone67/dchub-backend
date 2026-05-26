@@ -401,6 +401,112 @@ def _try_recipe_missing_route(pattern_key: str, count: int) -> dict | None:
     }
 
 
+def _try_recipe_high_5xx(pattern_key: str, count: int) -> dict | None:
+    """r56 (2026-05-25): persistent 5xx pattern → draft a 'why is this
+    failing' investigation issue.
+
+    Different from 404 recipes (those propose fixes); 5xx means the
+    backend is crashing. Drafts an investigation request with the
+    pattern + recent count, asking operator to inspect logs.
+    """
+    import re
+    m = re.match(r"(\w+)\s+(/\S+)\s+\[(\d+)\]", pattern_key)
+    if not m: return None
+    method, path, status = m.group(1), m.group(2), m.group(3)
+    if not status.startswith("5"): return None
+    if _is_forbidden_path(path): return None
+    if _already_drafted("high_5xx_pattern", path):
+        return None
+
+    title = f"[brain-l22] {status} spike on {method} {path} ({count}x in 1h)"
+    return {
+        "recipe": "high_5xx_pattern",
+        "target_path": path,
+        "title": title,
+        "body": _build_pr_body(
+            recipe="high_5xx_pattern",
+            trigger={"method": method, "path": path,
+                      "count": count, "status": int(status)},
+            target=path,
+            diff_summary=(
+                f"Backend handler for `{method} {path}` is raising "
+                f"{status} consistently. {count}x in last hour.\n\n"
+                f"Likely causes:\n"
+                f"- Unhandled exception in the view function\n"
+                f"- Database connection pool exhaustion\n"
+                f"- Downstream API timeout\n"
+                f"- Memory pressure / OOM\n\n"
+                f"Action: tail Railway logs filtered to `{path}`, find "
+                f"the stack trace, wrap the failing block in try/except "
+                f"with degraded-200 response or fix the root cause."),
+            rationale=(
+                f"5xx pattern doesn't auto-fix — root cause varies. "
+                f"L22 flags it so the operator investigates before "
+                f"users notice. This recipe drafts ISSUES, never PRs."),
+            verification=(
+                f"After fix, monitor /api/v1/brain/http-errors/patterns "
+                f"— the {status}-on-{path} count should drop to 0 "
+                f"within an hour."),
+        ),
+        "labels": ["brain-l22-auto-code", "recipe-high-5xx",
+                   "confidence-investigation-only",
+                   f"status-{status}"],
+    }
+
+
+def _try_recipe_gone_410_alias(pattern_key: str, count: int) -> dict | None:
+    """r56 (2026-05-25): for repeated 404s on KNOWN-OBSOLETE paths
+    (e.g. /old-blog/*, /v0/api/*), draft a 410 Gone response handler
+    instead of a 404 — tells crawlers to stop checking.
+
+    Heuristic for 'obsolete': URL contains 'old' segment, or matches
+    a /v0/ / /beta/ / /legacy/ pattern.
+    """
+    import re
+    m = re.match(r"(\w+)\s+(/\S+)\s+\[(\d+)\]", pattern_key)
+    if not m: return None
+    method, path, status = m.group(1), m.group(2), m.group(3)
+    if status != "404": return None
+    if _is_forbidden_path(path): return None
+    # Heuristic match
+    obsolete_markers = ["/old", "/legacy/", "/v0/", "/beta/", "/deprecated/",
+                         "/archive/", "/old-"]
+    if not any(marker in path.lower() for marker in obsolete_markers):
+        return None
+    if _already_drafted("gone_410_alias", path):
+        return None
+
+    title = f"[brain-l22] Convert {path} 404 → 410 Gone ({count}x)"
+    return {
+        "recipe": "gone_410_alias",
+        "target_path": path,
+        "title": title,
+        "body": _build_pr_body(
+            recipe="gone_410_alias",
+            trigger={"method": method, "path": path,
+                      "count": count, "status": 404},
+            target=path,
+            diff_summary=(
+                f"`{path}` is an obsolete URL pattern (matches obsolete "
+                f"heuristic). Return HTTP 410 Gone instead of 404 so "
+                f"crawlers (Google, AI agents) permanently de-index it.\n\n"
+                f"Add to main.py:\n"
+                f"```python\n"
+                f"@app.route('{path}')\n"
+                f"def _gone_{path.replace('/', '_').replace('-', '_')}():\n"
+                f"    return jsonify(gone=True, hint='Use the v1 path'), 410\n"
+                f"```"),
+            rationale=(
+                f"The {count}x 404s in 1h indicate crawlers still try "
+                f"this URL. 410 stops the retry — saves origin capacity "
+                f"+ improves SEO signal."),
+            verification=f"After deploy, curl {path} — expect 410.",
+        ),
+        "labels": ["brain-l22-auto-code", "recipe-gone-410",
+                   "confidence-medium"],
+    }
+
+
 def _scan_and_draft(dry_run: bool) -> dict:
     """Pull recent findings + L21 ring buffer; match against recipes; draft.
 
@@ -428,7 +534,14 @@ def _scan_and_draft(dry_run: bool) -> dict:
                 "count": n,
                 "confidence": "medium",
             }
+            # r56 (2026-05-25): recipe ladder — try in order from
+            # safest (route alias = 1-line code change) to most
+            # diagnostic (high_5xx = investigation only).
             draft = _try_recipe_route_alias(synthetic)
+            if not draft:
+                draft = _try_recipe_gone_410_alias(key, n)
+            if not draft:
+                draft = _try_recipe_high_5xx(key, n)
             if not draft:
                 draft = _try_recipe_missing_route(key, n)
             if not draft:

@@ -24265,6 +24265,15 @@ try:
 except Exception as _bste:
     print(f"[main] brain_self_test wiring failed: {_bste}", file=sys.stderr, flush=True)
 
+# r56 (2026-05-25): universal paywall hint middleware — every 4xx
+# response from /api/* now embeds _upgrade_hint inline
+try:
+    from routes.paywall_hint_middleware import register_paywall_hint_middleware
+    register_paywall_hint_middleware(app)
+    print("[main] paywall_hint_middleware attached", flush=True)
+except Exception as _phm:
+    print(f"[main] paywall_hint_middleware wiring failed: {_phm}", file=sys.stderr, flush=True)
+
 # Phase r32 (2026-05-24): Media as a living organism — single vital-
 # signs rollup composing press cadence + LinkedIn velocity + source-of-
 # truth + topic pulse + journalist outreach + winback into ONE 0-100
