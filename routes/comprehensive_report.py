@@ -161,12 +161,18 @@ def _gather(quarter_window=False):
                 out["pipeline_by_status"] = []
 
             # ─── TOP 15 OPERATORS BY FACILITY COUNT ─────────────────
+            # r47.14: exclude "Unknown"/sentinel placeholders. The 1,618
+            # OpenStreetMap-sourced rows with provider='Unknown' are real
+            # facilities but the operator field wasn't parsed during ingest;
+            # they dominate the ranking falsely. Report them in their own
+            # counter so the data quality issue is visible.
             try:
                 with c.cursor() as cur:
                     cur.execute("""
                         SELECT provider, COUNT(*), COALESCE(SUM(power_mw),0)
                           FROM discovered_facilities
-                         WHERE provider IS NOT NULL AND provider != ''
+                         WHERE provider IS NOT NULL
+                           AND provider NOT IN ('Unknown','unknown','UNKNOWN','N/A','n/a','-','')
                          GROUP BY provider
                          ORDER BY 2 DESC LIMIT 15
                     """)
@@ -176,30 +182,74 @@ def _gather(quarter_window=False):
                     } for r in cur.fetchall()]
             except Exception:
                 out["top_operators"] = []
+            # Count of un-attributed facilities so the report can footnote them
+            try:
+                with c.cursor() as cur:
+                    cur.execute("""
+                        SELECT COUNT(*) FROM discovered_facilities
+                         WHERE provider IS NULL OR provider IN
+                             ('Unknown','unknown','UNKNOWN','N/A','n/a','-','')
+                    """)
+                    out["unattributed_facilities"] = int(cur.fetchone()[0])
+            except Exception:
+                out["unattributed_facilities"] = 0
 
             # ─── M&A SUMMARY (window) ───────────────────────────────
+            # r47.14: deals.date is sparsely populated (412 of 1972). When the
+            # window-filtered count is < 5, broaden to "current calendar year"
+            # via the `year` integer column (412 rows populated, 195 in 2026).
             try:
                 with c.cursor() as cur:
                     cur.execute(f"""
                         SELECT COUNT(*), COALESCE(SUM(value), 0)
                           FROM deals
-                         WHERE date >= CURRENT_DATE - {interval}
+                         WHERE date::date >= CURRENT_DATE - {interval}
                     """)
                     r = cur.fetchone()
-                    out["ma_count"] = int(r[0] or 0)
-                    out["ma_total_value_m"] = float(r[1] or 0)
+                    win_count = int(r[0] or 0)
+                    win_value = float(r[1] or 0)
             except Exception:
-                out["ma_count"] = 0
-                out["ma_total_value_m"] = 0
+                win_count, win_value = 0, 0
+            if win_count < 5:
+                # fall back to year-to-date
+                try:
+                    with c.cursor() as cur:
+                        cur.execute("""
+                            SELECT COUNT(*), COALESCE(SUM(value), 0)
+                              FROM deals
+                             WHERE year = EXTRACT(YEAR FROM CURRENT_DATE)
+                        """)
+                        r = cur.fetchone()
+                        out["ma_count"] = int(r[0] or 0)
+                        out["ma_total_value_m"] = float(r[1] or 0)
+                        out["ma_window_used"] = "year-to-date"
+                except Exception:
+                    out["ma_count"] = 0
+                    out["ma_total_value_m"] = 0
+            else:
+                out["ma_count"] = win_count
+                out["ma_total_value_m"] = win_value
+                out["ma_window_used"] = f"last_{out['window_days']}_days"
+
             try:
                 with c.cursor() as cur:
-                    cur.execute(f"""
-                        SELECT date, buyer, seller, value, mw
-                          FROM deals
-                         WHERE value IS NOT NULL AND value > 0
-                           AND date >= CURRENT_DATE - {interval}
-                         ORDER BY value DESC LIMIT 10
-                    """)
+                    # If we fell back to year-to-date, pull top deals matching
+                    if out.get("ma_window_used") == "year-to-date":
+                        cur.execute("""
+                            SELECT date, buyer, seller, value, mw
+                              FROM deals
+                             WHERE value IS NOT NULL AND value > 0
+                               AND year = EXTRACT(YEAR FROM CURRENT_DATE)
+                             ORDER BY value DESC LIMIT 10
+                        """)
+                    else:
+                        cur.execute(f"""
+                            SELECT date, buyer, seller, value, mw
+                              FROM deals
+                             WHERE value IS NOT NULL AND value > 0
+                               AND date::date >= CURRENT_DATE - {interval}
+                             ORDER BY value DESC LIMIT 10
+                        """)
                     out["ma_top_deals"] = [{
                         "date": (r[0].isoformat() if hasattr(r[0],"isoformat") else str(r[0])),
                         "buyer": r[1], "seller": r[2],

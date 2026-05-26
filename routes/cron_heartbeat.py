@@ -128,6 +128,17 @@ _DISPATCH = [
      f"{BASE}/api/v1/linkedin-quad/email-best",
      "POST",
      lambda now: now.hour == 21 and now.minute >= 30 and now.minute < 35),
+
+    # r47.14 (2026-05-25): weekly partnership LinkedIn post. Cycles
+    # through 7 anchors (one per ISO week) targeting /partners and
+    # the per-partner anchors (#dchawk, #cbre, #dcd, etc.). Wed 14:00 UTC
+    # = 10 AM ET, peak LinkedIn organic engagement window. Endpoint
+    # idempotency-checks by ISO year+week, so the 10-min fire window
+    # is safe.
+    ("linkedin_partnership_weekly",
+     f"{BASE}/api/v1/linkedin-partnership/run",
+     "POST",
+     lambda now: now.weekday() == 2 and now.hour == 14 and now.minute < 10),
 ]
 
 

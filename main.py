@@ -3325,6 +3325,27 @@ def handle_well_known():
                     "intelligence": "/intelligence",
                     "transparency": "/transparency",
                 },
+                # r56 (2026-05-25): canonical recovery path for any
+                # AI agent that hits a 401/403/429. Every Flask 4xx
+                # response from /api/* also embeds _upgrade_hint
+                # inline via paywall_hint_middleware, but agents that
+                # read this manifest at first contact can pre-load
+                # the path.
+                "when_blocked": {
+                    "_description": (
+                        "If your agent gets a 401/403/429 from any "
+                        "DC Hub API endpoint, hit /api/v1/upgrade-hint "
+                        "for the human-readable recovery path. Also "
+                        "every 4xx response auto-embeds an _upgrade_hint "
+                        "field with agent-quotable copy + claim URL."
+                    ),
+                    "upgrade_hint":     "/api/v1/upgrade-hint?from={tool_name}",
+                    "tool_preview":     "/api/v1/mcp/preview/{tool_name}",
+                    "preview_manifest": "/api/v1/mcp/preview-manifest",
+                    "claim_key":        "/api/v1/keys/claim",
+                    "signup":           "/signup",
+                    "free_tier":        {"calls_per_day": 10000, "results_per_call": 5},
+                },
             },
 
             "data_coverage": {
@@ -23326,6 +23347,16 @@ try:
     print("[main] comprehensive_report_bp registered: /reports/{monthly,quarterly-deep} + JSON", flush=True)
 except Exception as _cr_e:
     print(f"[main] comprehensive_report_bp register failed: {_cr_e}", flush=True)
+
+# Phase ZZZZZ-round47.14 (2026-05-25): weekly partnership LinkedIn post.
+# Cycles through 7 anchors (partners/dchawk/dcbyte/dcd/dcf/cbre/jll)
+# at one per ISO week. Fires from cron_heartbeat at Wed 14:00 UTC.
+try:
+    from routes.linkedin_partnership_weekly import linkedin_partnership_bp
+    app.register_blueprint(linkedin_partnership_bp)
+    print("[main] linkedin_partnership_bp registered: /api/v1/linkedin-partnership/{run,status,preview}", flush=True)
+except Exception as _lpw_e:
+    print(f"[main] linkedin_partnership_bp register failed: {_lpw_e}", flush=True)
 
 # Phase ZZZZZ-round37.1 (2026-05-24): single cron heartbeat endpoint
 # Railway service-level cron only takes ONE expression, so collapse all
