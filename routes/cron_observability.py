@@ -154,6 +154,13 @@ def last_fired():
                               "/api/v1/cron/heartbeat has stopped. Common sources: "
                               "Railway service cron, GitHub Actions, cron-job.org, "
                               "EasyCron. Restart whichever was wired."),
-        }), 200
+        }), 200, {
+            # r47.18.1: no-store so CF edge doesn't cache "healthy=false" from
+            # before cron was wired and serve it forever after. This endpoint
+            # is a real-time health probe; it MUST always hit Flask.
+            "Cache-Control":     "no-store, no-cache, must-revalidate, max-age=0",
+            "CDN-Cache-Control": "no-store",
+            "Surrogate-Control": "no-store",
+        }
     except Exception as e:
         return jsonify({"error": f"{type(e).__name__}: {str(e)[:140]}"}), 500
