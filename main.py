@@ -24183,6 +24183,30 @@ try:
 except Exception as _fbde:
     print(f"[main] facilities_by_dims wiring failed: {_fbde}", file=sys.stderr, flush=True)
 
+# r54 (2026-05-25): integrations health verifier
+try:
+    from routes.integrations_health import integrations_health_bp
+    app.register_blueprint(integrations_health_bp)
+    print("[main] integrations_health_bp registered", flush=True)
+except Exception as _ihe:
+    print(f"[main] integrations_health wiring failed: {_ihe}", file=sys.stderr, flush=True)
+
+# r54 (2026-05-25): DCPI per-market freshness watchdog
+try:
+    from routes.dcpi_freshness_watchdog import dcpi_freshness_bp
+    app.register_blueprint(dcpi_freshness_bp)
+    print("[main] dcpi_freshness_bp registered", flush=True)
+except Exception as _dfwe:
+    print(f"[main] dcpi_freshness wiring failed: {_dfwe}", file=sys.stderr, flush=True)
+
+# r54 (2026-05-25): testimonials seeder
+try:
+    from routes.testimonials_seeder import testimonials_seeder_bp
+    app.register_blueprint(testimonials_seeder_bp)
+    print("[main] testimonials_seeder_bp registered", flush=True)
+except Exception as _tse:
+    print(f"[main] testimonials_seeder wiring failed: {_tse}", file=sys.stderr, flush=True)
+
 # Phase r32 (2026-05-24): Media as a living organism — single vital-
 # signs rollup composing press cadence + LinkedIn velocity + source-of-
 # truth + topic pulse + journalist outreach + winback into ONE 0-100

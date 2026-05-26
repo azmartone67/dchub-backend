@@ -827,6 +827,41 @@ def _audit_unique_sessions() -> dict:
     }
 
 
+def _audit_dcpi_freshness() -> dict:
+    """r54 (2026-05-25): per-market DCPI staleness detection.
+
+    User reported Grand Forks 2wk stale despite 4x/day cron. Reads
+    /api/v1/dcpi/freshness which buckets all 286 markets by age.
+    Flags weak when >5 markets are >3d stale (silent cron failures
+    on specific markets).
+    """
+    f = _call_internal("/api/v1/dcpi/freshness")
+    if isinstance(f, _AuditUnavailable):
+        return {
+            "ok": True,
+            "verdict": "endpoint-not-deployed-yet",
+            "_source_result": f,
+        }
+    stats = f.get("stats") or {}
+    stale_3d = int(stats.get("stale_3_7d") or 0) + int(stats.get("stale_7d") or 0)
+    return {
+        "ok": stale_3d <= 5,
+        "total_markets":    int(stats.get("total") or 0),
+        "fresh_24h":        int(stats.get("fresh_24h") or 0),
+        "stale_1_3d":       int(stats.get("stale_1_3d") or 0),
+        "stale_3_7d":       int(stats.get("stale_3_7d") or 0),
+        "stale_7d_plus":    int(stats.get("stale_7d") or 0),
+        "stale_3d_total":   stale_3d,
+        "oldest_market":    ((f.get("oldest_15") or [{}])[0]).get("market_name"),
+        "verdict": (
+            "all-fresh" if stale_3d == 0 else
+            "minor-drift" if stale_3d <= 5 else
+            "silent-cron-failures"
+        ),
+        "_source_result": None,
+    }
+
+
 def _audit_internal_bot_storm() -> dict:
     """r51 (2026-05-25): detect when our own probes are DOSing Railway.
 
@@ -943,6 +978,8 @@ def _run_full_audit(force: bool = False) -> dict:
         "ecosystem_position":     _audit_ecosystem_position,
         # r51 (2026-05-25): detect our own probes DOSing Railway
         "internal_bot_storm":     _audit_internal_bot_storm,
+        # r54 (2026-05-25): per-market DCPI staleness detection
+        "dcpi_freshness":         _audit_dcpi_freshness,
     }
     audits: dict = {}
     try:
@@ -1094,6 +1131,10 @@ def _short_recommendation(dim: str, result: dict) -> str:
         return (f"internal probes DOSing Railway — buckets over limit: {buckets}. "
                 f"Reduce cron frequency or back-off interval for these UAs. "
                 f"This is the brain detecting its own probes hammer the origin.")
+    if dim == "dcpi_freshness":
+        return (f"DCPI silent cron failures — {result.get('stale_3d_total')} markets "
+                f"stale 3d+ (oldest: {result.get('oldest_market')}). Force re-score "
+                f"via POST /api/v1/dcpi/recompute/<slug>?force=1 to surface the trace.")
     return "see full audit JSON"
 
 
