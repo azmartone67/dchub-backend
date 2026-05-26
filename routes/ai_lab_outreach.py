@@ -301,7 +301,12 @@ daily-refreshing public scorecard of data center power availability
 
 {integration_block}
 
-Three things {name} can do today:
+I built a page for {name} specifically — every value bullet,
+integration sample, and CTA tailored to your team's use case:
+
+  → https://dchub.cloud/partners/{slug}
+
+Three things {name} can do from that page today:
 
 1. Free dev key in 30 seconds (instant, no credit card):
      curl -X POST https://dchub.cloud/api/v1/keys/claim \\
