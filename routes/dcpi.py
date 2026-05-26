@@ -2872,6 +2872,24 @@ buttons.forEach(b => b.addEventListener('click', () => {
 </script>
 
 
+<!-- r66-a (2026-05-26): Cited-by strip — proof that ChatGPT, Claude,
+     Gemini, Perplexity, and Groq quote DCPI. Linked to /cited-by for
+     the full citation gallery + per-platform examples. Lives right
+     above the "Cite this index" block so readers see the social
+     proof, THEN the citation format. -->
+<div style="background:linear-gradient(135deg,rgba(34,211,238,0.05) 0%,rgba(139,92,246,0.05) 100%);border:1px solid rgba(34,211,238,0.18);border-radius:12px;padding:24px 28px;margin:32px auto;max-width:760px;font-family:system-ui">
+  <div style="font-size:11px;color:#a78bfa;text-transform:uppercase;letter-spacing:.14em;margin-bottom:14px;font-weight:700">Cited by AI</div>
+  <div style="display:flex;flex-wrap:wrap;gap:10px 14px;align-items:center;margin-bottom:12px">
+    <span style="background:rgba(255,255,255,.06);color:#e8eef8;padding:6px 12px;border-radius:999px;font-size:13px;font-weight:600">ChatGPT</span>
+    <span style="background:rgba(255,255,255,.06);color:#e8eef8;padding:6px 12px;border-radius:999px;font-size:13px;font-weight:600">Claude</span>
+    <span style="background:rgba(255,255,255,.06);color:#e8eef8;padding:6px 12px;border-radius:999px;font-size:13px;font-weight:600">Gemini</span>
+    <span style="background:rgba(255,255,255,.06);color:#e8eef8;padding:6px 12px;border-radius:999px;font-size:13px;font-weight:600">Perplexity</span>
+    <span style="background:rgba(255,255,255,.06);color:#e8eef8;padding:6px 12px;border-radius:999px;font-size:13px;font-weight:600">Groq</span>
+    <span style="color:#9eb5d8;font-size:13px">· and 10+ AI platforms</span>
+  </div>
+  <p style="color:#cbd5ff;font-size:14px;margin:0 0 12px;line-height:1.55">ChatGPT, Gemini, and Groq all named DC Hub in independent answers within a single week — Groq quoted DCPI's ERCOT 410 GW interconnection-queue numbers verbatim. <a href="/cited-by" style="color:#22d3ee;text-decoration:none;font-weight:600">See the full citations →</a></p>
+</div>
+
 <div style="background:#11121a;border:1px solid #1f2030;border-radius:12px;padding:20px;margin:32px auto;max-width:760px;font-family:system-ui">
   <div style="font-size:12px;color:#9eb5d8;text-transform:uppercase;letter-spacing:.1em;margin-bottom:8px">Cite this index</div>
   <code style="display:block;background:rgba(255,255,255,.03);padding:12px;border-radius:6px;color:#e8eef8;font-size:13px;margin-bottom:8px">DC Hub. (2026). Data Center Power Index v2. https://dchub.cloud/dcpi</code>

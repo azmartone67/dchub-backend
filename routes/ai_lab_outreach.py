@@ -575,3 +575,114 @@ def mark_sent(draft_id):
         "subject":     row[1],
         "sent_at":     row[2].isoformat() if row[2] else None,
     }), 200
+
+
+# r66-b (2026-05-26): bulk mark-sent for the workflow where you email
+# all 9 targets in one sitting and want to flag them sent in one call
+# instead of firing 9 separate POSTs. Marks the LATEST per-slug draft
+# of each target as 'sent' — or, if ?slugs=a,b,c is passed, only
+# those targets. Useful after a session of "I just blasted 9 emails."
+
+@ai_lab_outreach_bp.route(
+    "/api/v1/admin/ai-lab-outreach/sent-all", methods=["POST"]
+)
+def mark_sent_all():
+    """Mark the latest draft for each (or specified) target as sent."""
+    if not _admin_authorized():
+        return jsonify({"ok": False, "error": "admin_key_required"}), 401
+    _ensure_table()
+
+    only_slugs_arg = (request.args.get("slugs") or "").strip()
+    only_slugs = ([s.strip() for s in only_slugs_arg.split(",") if s.strip()]
+                   if only_slugs_arg else None)
+    if only_slugs:
+        valid = {t["slug"] for t in _TARGETS}
+        invalid = [s for s in only_slugs if s not in valid]
+        if invalid:
+            return jsonify({
+                "ok":     False,
+                "error":  "unknown_slugs",
+                "invalid_slugs": invalid,
+                "valid_slugs":   sorted(valid),
+            }), 400
+
+    target_slugs = only_slugs or [t["slug"] for t in _TARGETS]
+
+    c = _db_conn()
+    if not c:
+        return jsonify({"ok": False, "error": "db_unavailable"}), 200
+
+    marked = []
+    skipped = []
+    try:
+        with c.cursor() as cur:
+            for slug in target_slugs:
+                cur.execute("""
+                    WITH latest AS (
+                        SELECT id FROM ai_lab_outreach_drafts
+                         WHERE target_slug = %s
+                         ORDER BY created_at DESC
+                         LIMIT 1
+                    )
+                    UPDATE ai_lab_outreach_drafts d
+                       SET status = 'sent', sent_at = NOW()
+                      FROM latest
+                     WHERE d.id = latest.id
+                       AND d.status != 'sent'
+                 RETURNING d.id, d.target_slug, d.subject, d.sent_at
+                """, (slug,))
+                row = cur.fetchone()
+                if row:
+                    marked.append({
+                        "draft_id":    row[0],
+                        "target_slug": row[1],
+                        "subject":     (row[2] or "")[:80],
+                        "sent_at":     row[3].isoformat() if row[3] else None,
+                    })
+                else:
+                    # Either no draft exists, or it was already sent
+                    cur.execute("""
+                        SELECT id, status, sent_at FROM ai_lab_outreach_drafts
+                         WHERE target_slug = %s
+                         ORDER BY created_at DESC
+                         LIMIT 1
+                    """, (slug,))
+                    existing = cur.fetchone()
+                    if existing:
+                        skipped.append({
+                            "target_slug": slug,
+                            "draft_id":    existing[0],
+                            "status":      existing[1],
+                            "reason":      "already_sent" if existing[1] == "sent"
+                                              else f"status={existing[1]}",
+                            "sent_at":     existing[2].isoformat() if existing[2] else None,
+                        })
+                    else:
+                        skipped.append({
+                            "target_slug": slug,
+                            "reason":      "no_draft_exists",
+                            "hint":        f"POST /api/v1/admin/ai-lab-outreach/draft/{slug} first",
+                        })
+            c.commit()
+    except Exception as e:
+        try: c.close()
+        except Exception: pass
+        return jsonify({"ok": False, "error": str(e)[:200]}), 200
+    finally:
+        try: c.close()
+        except Exception: pass
+
+    return jsonify({
+        "ok":            True,
+        "marked_count":  len(marked),
+        "skipped_count": len(skipped),
+        "marked":        marked,
+        "skipped":       skipped,
+        "ran_at":        datetime.datetime.utcnow().isoformat() + "Z",
+        "scoped":        ("all 9 targets" if not only_slugs
+                            else f"{len(only_slugs)} selected: {only_slugs}"),
+        "next_step":     ("To track responses, hit "
+                            "POST /api/v1/admin/ai-lab-outreach/respond/<id> "
+                            "with body {\"response_text\":\"...\"}. "
+                            "(That endpoint is queued for a future round.)"),
+    }), 200
