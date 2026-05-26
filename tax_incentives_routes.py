@@ -154,19 +154,27 @@ def setup_tax_incentive_routes(app, db=None):
             results.sort(key=lambda s: s.get('name', ''))
         
         # Phase WW (2026-05-17) — soft-paywall the bulk 50-state dump.
-        # Anon callers were getting full 16KB of incentive data; MCP
-        # equivalent get_tax_incentives is gated at IDENTIFIED. Now:
-        # anon/free sees top-rated 10 states + upgrade CTA; IDENTIFIED+
-        # sees all 50. Per-state lookup (/api/v1/tax-incentives/<abbr>)
-        # stays FREE as the discovery hook.
-        _PREVIEW_CAP = 10
+        # r52 (2026-05-25) — REWRITTEN. The old version capped anon to
+        # 10 states which broke /tax-incentives map (user asked 3x).
+        # Now: anon ALWAYS gets all 50 states with STRUCTURAL fields
+        # (abbr, name, fips, has_incentive, rating) so the map renders.
+        # Rich DETAIL fields (summary, details, source, min_investment,
+        # jobs_required, duration) are gated to IDENTIFIED+ — the map
+        # still colors every state, anon clicks reveal the upgrade CTA.
+        _STRUCTURAL_FIELDS = {
+            'abbr', 'name', 'fips', 'has_incentive', 'rating',
+            'sales_tax', 'property_tax', 'income_tax', 'electricity_tax',
+        }
         _gated = False
         _total = len(results)
         try:
             from util.tier_gate import resolve_tier, Tier as _T
             _tier, _ = resolve_tier()
-            if _tier < _T.IDENTIFIED and _total > _PREVIEW_CAP:
-                results = results[:_PREVIEW_CAP]
+            if _tier < _T.IDENTIFIED:
+                results = [
+                    {k: v for k, v in s.items() if k in _STRUCTURAL_FIELDS}
+                    for s in results
+                ]
                 _gated = True
         except Exception:
             pass
@@ -179,15 +187,15 @@ def setup_tax_incentive_routes(app, db=None):
         }
         if _gated:
             out['_gated'] = True
-            out['_preview_only'] = True
-            out['_total_available'] = _total
-            out['_hidden_count'] = _total - _PREVIEW_CAP
+            out['_detail_gated'] = True
+            out['_total_states'] = _total
             out['_required_tier'] = "IDENTIFIED"
             out['_upgrade_cta'] = (
-                f"Showing top {_PREVIEW_CAP} of {_total} US-state tax "
-                f"incentive profiles. Get all {_total} states (sales/property/"
-                f"income/electricity tax detail, rating, summary) free — "
-                f"POST /api/v1/keys/claim for a key in 30s."
+                f"All {_total} US states shown with structural fields "
+                f"(rating, has_incentive, tax-type flags). Get full "
+                f"detail (summary, duration, min investment, jobs "
+                f"required, source) free — POST /api/v1/keys/claim "
+                f"for a key in 30s."
             )
             out['_signup_url'] = "https://dchub.cloud/signup"
         return jsonify(out)
