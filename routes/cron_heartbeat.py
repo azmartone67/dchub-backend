@@ -149,6 +149,14 @@ _DISPATCH = [
      f"{BASE}/api/v1/partnerships/press/run",
      "POST",
      lambda now: now.weekday() == 1 and now.hour == 13 and now.minute < 10),
+
+    # r47.26 (2026-05-26): hourly agent broadcast — re-pings MCP registries
+    # + our own discovery surfaces so other agents pick up changes within
+    # 1 hour. Fires every hour at :05 past the hour.
+    ("agent_broadcast_hourly",
+     f"{BASE}/api/v1/agents/broadcast",
+     "POST",
+     lambda now: now.minute >= 5 and now.minute < 10),
 ]
 
 

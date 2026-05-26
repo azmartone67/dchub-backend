@@ -23498,6 +23498,23 @@ try:
 except Exception as _padm_e:
     print(f"[main] partnership_admin_bp register failed: {_padm_e}", flush=True)
 
+# Phase ZZZZZ-round47.25-26 (2026-05-26): 24/7 agent broadcast layer
+#   .25  agent_capabilities_feed  — live machine-first capabilities JSON
+#   .26  agent_broadcast_loop     — hourly broadcast to MCP registries +
+#                                    own discovery surfaces
+try:
+    from routes.agent_capabilities_feed import agent_capabilities_bp
+    app.register_blueprint(agent_capabilities_bp)
+    print("[main] agent_capabilities_bp registered: /api/v1/agents/capabilities.json", flush=True)
+except Exception as _ac_e:
+    print(f"[main] agent_capabilities_bp register failed: {_ac_e}", flush=True)
+try:
+    from routes.agent_broadcast_loop import agent_broadcast_bp
+    app.register_blueprint(agent_broadcast_bp)
+    print("[main] agent_broadcast_bp registered: /api/v1/agents/broadcast{,/status,s}", flush=True)
+except Exception as _ab_e:
+    print(f"[main] agent_broadcast_bp register failed: {_ab_e}", flush=True)
+
 # Phase ZZZZZ-round37.1 (2026-05-24): single cron heartbeat endpoint
 # Railway service-level cron only takes ONE expression, so collapse all
 # scheduled warmers behind a single HTTP endpoint that dispatches by UTC
