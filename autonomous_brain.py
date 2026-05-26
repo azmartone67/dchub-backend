@@ -779,6 +779,56 @@ class AutonomousBrain:
 
         return results
 
+    def _has_new_announcements(self) -> tuple[bool, int]:
+        """r49.5 (2026-05-25): cheap pre-flight check — skip the full
+        cycle (capacity + deals + 8 other extractors, ~25 sec total)
+        when no new news has landed since last run. State stored in
+        brain_state.last_processed_announcement_id. With cron firing
+        every 5 min and news ingesting 6 feeds every ~30 min, ~5 of 6
+        cycles previously did 25 seconds of work to find 0 new rows.
+        This drops idle-cycle cost from 25s → ~150ms."""
+        try:
+            conn = get_db()
+            try:
+                cur = conn.cursor()
+                cur.execute("SELECT MAX(id) FROM announcements")
+                max_id = (cur.fetchone() or [0])[0] or 0
+                cur.execute("SELECT state_value FROM brain_state "
+                            "WHERE state_key = 'last_processed_announcement_id'")
+                row = cur.fetchone()
+                last_id = 0
+                if row and row[0] is not None:
+                    try:
+                        last_id = int(row[0]) if isinstance(row[0], (int, str)) else int(row[0].get('id', 0))
+                    except Exception:
+                        last_id = 0
+                cur.close()
+                return (max_id > last_id, max_id)
+            finally:
+                conn.close()
+        except Exception as e:
+            logger.warning(f"_has_new_announcements pre-flight failed: {e}")
+            return (True, 0)  # On error, do the full cycle — fail-open
+
+    def _save_last_processed_announcement(self, max_id: int) -> None:
+        try:
+            conn = get_db()
+            try:
+                cur = conn.cursor()
+                cur.execute("""
+                    INSERT INTO brain_state (state_key, state_value, updated_at)
+                    VALUES ('last_processed_announcement_id', %s::jsonb, CURRENT_TIMESTAMP)
+                    ON CONFLICT (state_key) DO UPDATE
+                       SET state_value = EXCLUDED.state_value,
+                           updated_at  = CURRENT_TIMESTAMP
+                """, (str(max_id),))
+                conn.commit()
+                cur.close()
+            finally:
+                conn.close()
+        except Exception as e:
+            logger.warning(f"_save_last_processed_announcement failed: {e}")
+
     def run_autonomous_cycle(self) -> Dict:
         """Run a complete autonomous learning cycle"""
         start_time = datetime.now()
@@ -798,7 +848,28 @@ class AutonomousBrain:
             'apis': {},
         }
 
-        logger.info(f"Autonomous Brain - Cycle {results['cycle_id']} starting...")
+        # r49.5: skip the full cycle if no new announcements since last run.
+        # Saves ~25s of CPU per skipped cycle. Quality/API checks still run
+        # (they don't depend on news), so the brain stays alive — just not
+        # re-scanning the same 500 articles every 5 minutes.
+        has_new, current_max_id = self._has_new_announcements()
+        if not has_new:
+            elapsed_ms = int((datetime.now() - start_time).total_seconds() * 1000)
+            logger.info(f"Autonomous Brain - Cycle {results['cycle_id']} skipped "
+                        f"(no new announcements since id={current_max_id}, "
+                        f"pre-flight {elapsed_ms}ms)")
+            results.update({
+                'skipped': True,
+                'skip_reason': 'no_new_announcements',
+                'last_processed_announcement_id': current_max_id,
+                'pre_flight_ms': elapsed_ms,
+            })
+            self.state['total_cycles'] += 1
+            self._save_state()
+            return results
+
+        logger.info(f"Autonomous Brain - Cycle {results['cycle_id']} starting... "
+                    f"(news_max_id={current_max_id})")
 
         try:
             results['capacity'] = self.extract_capacity_from_news()
@@ -882,6 +953,11 @@ class AutonomousBrain:
         self.state['autonomous_actions'] = self.state.get('autonomous_actions', [])[-99:] + [action]
 
         self._save_state()
+
+        # r49.5: persist the cursor so the next cycle can skip if no new
+        # announcements have arrived (saves 25s of CPU per idle cycle).
+        if current_max_id > 0:
+            self._save_last_processed_announcement(current_max_id)
 
         duration = (datetime.now() - start_time).total_seconds()
         results['duration_seconds'] = duration
