@@ -58,14 +58,38 @@ def _license_block(window: str) -> dict:
 
 
 def _gather_energy(window: str) -> dict:
-    """Pull live DCPI + interconnection data, cached 5 minutes."""
-    now = time.monotonic()
-    cached = _GATHER_CACHE.get(window)
-    if cached and (now - cached["computed_at"]) < _GATHER_TTL:
-        # Return a copy so callers can attach narrative without polluting cache
-        return dict(cached["data"])
+    """Pull live DCPI + interconnection data, cached 5 minutes.
+
+    r42o (2026-05-26): try Redis first (shared across gunicorn workers)
+    so we don't waste a 4-fetch + LLM round-trip per worker per cycle.
+    Falls back to per-process dict if Redis is unavailable."""
+    cache_key = f"dchub:energy_report:{window}"
+
+    # Try Redis first (shared)
+    try:
+        from redis_cache import cache_get, cache_set
+        cached = cache_get(cache_key)
+        if cached:
+            return dict(cached)
+    except Exception:
+        cached = None
+
+    # Fall back to per-process dict
+    if not cached:
+        now = time.monotonic()
+        local = _GATHER_CACHE.get(window)
+        if local and (now - local["computed_at"]) < _GATHER_TTL:
+            return dict(local["data"])
+
     data = _gather_energy_uncached(window)
-    _GATHER_CACHE[window] = {"data": data, "computed_at": now}
+
+    # Write to both caches
+    try:
+        from redis_cache import cache_set
+        cache_set(cache_key, data, ttl=_GATHER_TTL)
+    except Exception:
+        pass
+    _GATHER_CACHE[window] = {"data": data, "computed_at": time.monotonic()}
     return dict(data)
 
 
@@ -522,6 +546,42 @@ def _render_html(d: dict, window: str) -> str:
 <link rel="canonical" href="https://dchub.cloud/reports/energy/{window}">
 <meta property="og:title" content="DC Hub — {label} Energy Report">
 <meta property="og:description" content="{total} markets scored · {verdicts.get('BUILD',0)} BUILD · {verdicts.get('AVOID',0)} AVOID · daily refresh · CC-BY-4.0">
+<script type="application/ld+json">{json.dumps({
+  "@context": "https://schema.org",
+  "@type": ["Dataset", "Report"],
+  "name": f"DC Hub — {label} Data Center Energy Report",
+  "description": (f"Live data-center energy + power-availability report. "
+                  f"{total} markets scored by DCPI, BUILD/AVOID watch lists, "
+                  f"ISO health rollup, interconnection-queue depth."),
+  "url": f"https://dchub.cloud/reports/energy/{window}",
+  "sameAs": f"https://dchub.cloud/api/v1/reports/energy/{window}",
+  "datePublished": d.get("generated_at", ""),
+  "license": "https://creativecommons.org/licenses/by/4.0/",
+  "creator": {"@type": "Organization", "name": "DC Hub", "url": "https://dchub.cloud"},
+  "publisher": {"@type": "Organization", "name": "DC Hub", "url": "https://dchub.cloud"},
+  "keywords": ["data center", "DCPI", "power availability", "interconnection queue",
+                "BUILD verdict", "ISO grid", "renewable curtailment"],
+  "spatialCoverage": "Global · 10 ISOs (7 US + Hydro-Quebec + AESO + Nord Pool)",
+  "temporalCoverage": "Daily refresh, current period",
+  "isAccessibleForFree": True,
+  "distribution": [
+    {"@type": "DataDownload", "encodingFormat": "application/json",
+     "contentUrl": f"https://dchub.cloud/api/v1/reports/energy/{window}"},
+    {"@type": "DataDownload", "encodingFormat": "text/markdown",
+     "contentUrl": f"https://dchub.cloud/reports/energy/{window}.md"},
+    {"@type": "DataDownload", "encodingFormat": "text/html",
+     "contentUrl": f"https://dchub.cloud/reports/energy/{window}"},
+  ],
+  "variableMeasured": [
+    {"@type": "PropertyValue", "name": "DCPI Composite Score", "minValue": -100, "maxValue": 100,
+     "description": "Verdict-aware composite power-availability score per market"},
+    {"@type": "PropertyValue", "name": "Excess Power Score", "minValue": 0, "maxValue": 100},
+    {"@type": "PropertyValue", "name": "Constraint Score", "minValue": 0, "maxValue": 100},
+    {"@type": "PropertyValue", "name": "Time to Power (months)"},
+    {"@type": "PropertyValue", "name": "DCPI Verdict",
+     "description": "BUILD | CAUTION | AVOID | LOW_SIGNAL"},
+  ],
+})}</script>
 <style>
   body {{ margin:0; background:#0a0e1a; color:#e5e7eb; font-family:-apple-system,BlinkMacSystemFont,Inter,sans-serif; line-height:1.55 }}
   .wrap {{ max-width:1000px; margin:0 auto; padding:60px 28px 100px }}
