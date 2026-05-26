@@ -338,7 +338,7 @@ const MCP_BACKEND     = 'https://dchub-mcp-server-production-4d2e.up.railway.app
 // dchub-frontend Pages worker v4.24.0-switzerland failover chain so
 // api.dchub.cloud has the same resilience as dchub.cloud.
 const RENDER_BACKEND  = 'https://dchub-backend-render.onrender.com';
-const WORKER_VERSION = '4.9.13-version-sync';
+const WORKER_VERSION = '4.9.14-free-preview-squeeze';
 
 // v4.9.8: convert 429 responses into a structured signup nudge so
 // rate-limited attention becomes funnel entry. Detects JSON vs HTML
@@ -607,8 +607,16 @@ const GATED_TOOLS = new Set([
 // ============================================================
 // MCP TIER DEFINITIONS (v4.4.0)
 // ============================================================
+// r49.8 (2026-05-26): free results_limit 5→2. 7d data showed 990
+// unique sessions hit the paywall and 0 converted — the 5-result
+// preview was generous enough that agents got the answer from the
+// preview and never surfaced the paywall CTA to the user. Tightening
+// to 2 forces substantive queries to actually trigger the paywall
+// message that includes the $9 Starter Stripe link. Two results is
+// enough for "yes there's data on this market" but not enough to
+// answer most questions (top 5 facilities, top 10 markets, etc.).
 const MCP_TIERS = {
-  free:       { name: 'Free',       daily_limit: 10,     results_limit: 5,     fields_truncated: true,  export_allowed: false },
+  free:       { name: 'Free',       daily_limit: 10,     results_limit: 2,     fields_truncated: true,  export_allowed: false },
   developer:  { name: 'Developer',  daily_limit: 1000,   results_limit: 100,   fields_truncated: false, export_allowed: true  },
   pro:        { name: 'Pro',        daily_limit: 10000,  results_limit: 500,   fields_truncated: false, export_allowed: true  },
   enterprise: { name: 'Enterprise', daily_limit: 100000, results_limit: 10000, fields_truncated: false, export_allowed: true  },

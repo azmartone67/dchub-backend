@@ -252,48 +252,116 @@ FORM_HTML = """<!DOCTYPE html>
 <html lang="en">
 <head>
 <meta charset="utf-8">
-<title>Get your free DC Hub dev key</title>
+<title>Unlock __TOOLS_DISPLAY__ — DC Hub free dev key</title>
 <meta name="viewport" content="width=device-width, initial-scale=1">
 <style>
   * { box-sizing: border-box; }
-  body { font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", system-ui, sans-serif;
-         max-width: 480px; margin: 0 auto; padding: 4rem 1.5rem;
-         color: #111; background: #fafafa; line-height: 1.55; }
-  h1 { font-size: 1.5rem; margin: 0 0 0.5rem; font-weight: 600; }
-  .sub { color: #555; margin: 0 0 1.5rem; font-size: 0.95rem; }
-  .badge { display: inline-block; background: #e8f5e9; color: #1b5e20;
-           padding: 0.2rem 0.6rem; border-radius: 4px; font-size: 0.8rem;
-           font-weight: 600; margin-bottom: 1rem; }
-  input[type="email"] { width: 100%; padding: 0.85rem 1rem; border: 1.5px solid #d0d0d0;
-          border-radius: 8px; font-size: 1rem; background: #fff;
-          margin: 1rem 0 0.75rem; transition: border-color 0.15s; }
-  input[type="email"]:focus { outline: 0; border-color: #1976d2; }
-  button { background: #1976d2; color: #fff; border: 0; padding: 0.85rem 1.5rem;
-           border-radius: 8px; font-size: 1rem; font-weight: 600; cursor: pointer;
-           width: 100%; transition: background 0.15s; }
-  button:hover { background: #1565c0; }
-  ul.bullets { padding-left: 1.2rem; margin: 1rem 0; color: #555; font-size: 0.92rem; }
-  ul.bullets li { margin: 0.3rem 0; }
-  .note { font-size: 0.8rem; color: #888; margin-top: 2rem; padding-top: 1rem;
-          border-top: 1px solid #eee; }
-  code { font-family: "SF Mono", Monaco, Consolas, monospace; font-size: 0.78rem;
-         background: #f0f0f0; padding: 1px 4px; border-radius: 3px; }
+  body { font-family: "DM Sans", -apple-system, BlinkMacSystemFont, "Segoe UI", system-ui, sans-serif;
+         max-width: 560px; margin: 0 auto; padding: 3rem 1.5rem 6rem;
+         color: #e6e9f5; background: rgb(5,8,16); line-height: 1.6; }
+  h1 { font-size: 1.75rem; margin: 0 0 0.5rem; font-weight: 700;
+       letter-spacing: -0.02em; color: #fff; line-height: 1.2; }
+  .sub { color: #9aa3bd; margin: 0 0 2rem; font-size: 0.98rem; }
+  .badge { display: inline-flex; align-items: center; gap: 8px;
+           background: rgba(34,211,238,.10); color: #22d3ee;
+           padding: 6px 14px; border-radius: 999px;
+           font-size: 0.72rem; font-weight: 700; letter-spacing: .12em;
+           text-transform: uppercase; margin-bottom: 1.25rem; }
+  .badge .dot { width:6px;height:6px;background:#22d3ee;border-radius:50%;
+                animation:pulse 2s ease-in-out infinite; }
+  @keyframes pulse{0%,100%{opacity:1}50%{opacity:.4}}
+  .tools-hit { background: rgba(34,211,238,.06);
+               border: 1px solid rgba(34,211,238,.18);
+               border-radius: 10px; padding: 16px 18px; margin: 0 0 1.5rem;
+               font-size: 0.9rem; color: #cbd5ff; }
+  .tools-hit strong { color: #22d3ee; font-weight: 600; }
+  input[type="email"] { width: 100%; padding: 14px 16px;
+          border: 1.5px solid rgba(255,255,255,.18); border-radius: 10px;
+          font-size: 1rem; background: rgba(255,255,255,.04);
+          color: #fff; margin: 0 0 12px;
+          font-family: inherit; transition: border-color 0.15s; }
+  input[type="email"]::placeholder { color: #6a7390; }
+  input[type="email"]:focus { outline: 0; border-color: #22d3ee;
+                              background: rgba(34,211,238,.05); }
+  button { background: linear-gradient(135deg,#22d3ee,#a855f7);
+           color: #0a0f1f; border: 0; padding: 14px 24px;
+           border-radius: 10px; font-size: 1rem; font-weight: 700;
+           cursor: pointer; width: 100%; font-family: inherit;
+           transition: transform 0.15s, box-shadow 0.15s; }
+  button:hover { transform: translateY(-1px);
+                  box-shadow: 0 8px 24px rgba(34,211,238,.25); }
+  .what-you-get { margin: 2rem 0 0; }
+  .what-you-get h2 { font-size: 0.78rem; color: #6a7390;
+                       text-transform: uppercase; letter-spacing: .12em;
+                       margin: 0 0 12px; font-weight: 700; }
+  .tier-row { display: flex; align-items: baseline; justify-content: space-between;
+              padding: 12px 0; border-bottom: 1px solid rgba(255,255,255,.06);
+              font-size: 0.92rem; }
+  .tier-row:last-child { border-bottom: 0; }
+  .tier-name { color: #fff; font-weight: 600; }
+  .tier-name .price { color: #22d3ee; margin-left: 8px; font-weight: 500; }
+  .tier-detail { color: #9aa3bd; font-size: 0.85rem; text-align: right; }
+  .upgrade-row { background: rgba(168,85,247,.08);
+                  border: 1px solid rgba(168,85,247,.22);
+                  border-radius: 10px; padding: 14px 16px; margin: 1.5rem 0;
+                  display: flex; align-items: center; justify-content: space-between; gap: 12px; }
+  .upgrade-row .text { font-size: 0.88rem; color: #cbd5ff; }
+  .upgrade-row .text strong { color: #fff; }
+  .upgrade-row a { background: #a855f7; color: #fff;
+                    padding: 8px 16px; border-radius: 8px;
+                    font-size: 0.85rem; font-weight: 600;
+                    text-decoration: none; white-space: nowrap; }
+  .upgrade-row a:hover { background: #9333ea; }
+  .note { font-size: 0.78rem; color: #6a7390; margin-top: 2rem;
+          padding-top: 1.25rem; border-top: 1px solid rgba(255,255,255,.06);
+          line-height: 1.5; }
+  code { font-family: "JetBrains Mono", "SF Mono", Monaco, Consolas, monospace;
+         font-size: 0.78rem; background: rgba(255,255,255,.06);
+         padding: 1px 6px; border-radius: 4px; color: #cbd5ff; }
 </style>
 </head>
 <body>
-  <span class="badge">DC Hub Free Dev Tier</span>
-  <h1>Get your free dev key</h1>
-  <p class="sub">60 seconds, just your email. No password. No spam. We'll send your key within an hour.</p>
+  <span class="badge"><span class="dot"></span>Free dev tier · 60 sec signup</span>
+  <h1>Unlock __TOOLS_DISPLAY__</h1>
+  <p class="sub">Your AI assistant tried __TOOLS_COUNT__ from the DC Hub MCP server but ran into the free-tier limit. One email → one key → done.</p>
+
+  __TOOLS_HIT_BLOCK__
+
   <form method="post">
     <input type="email" name="email" placeholder="you@company.com" required autofocus>
-    <button type="submit">Send me my dev key</button>
+    <button type="submit">Send me my dev key →</button>
   </form>
-  <ul class="bullets">
-    <li>25 free MCP tool calls/day across 14 paid tools</li>
-    <li>Real-time grid intelligence, market intel, infrastructure data</li>
-    <li>Upgrade to Pro ($49/mo) for unlimited any time</li>
-  </ul>
-  <p class="note">Session: <code>__SESSION_SHORT__</code></p>
+
+  <div class="upgrade-row">
+    <div class="text"><strong>Need more than 1,000 calls/day?</strong> $9/mo Starter unlocks 10,000/day instantly.</div>
+    <a href="https://buy.stripe.com/8x2dRa5sS0x75uteGuaZi0g" target="_blank">$9/mo →</a>
+  </div>
+
+  <div class="what-you-get">
+    <h2>The ladder</h2>
+    <div class="tier-row">
+      <span class="tier-name">Anonymous <span class="price">free</span></span>
+      <span class="tier-detail">10 calls/day · 2 results per query</span>
+    </div>
+    <div class="tier-row">
+      <span class="tier-name">Free dev key <span class="price">free</span></span>
+      <span class="tier-detail">1,000 calls/day · email signup</span>
+    </div>
+    <div class="tier-row">
+      <span class="tier-name">Starter <span class="price">$9/mo</span></span>
+      <span class="tier-detail">10,000 calls/day · most popular</span>
+    </div>
+    <div class="tier-row">
+      <span class="tier-name">Developer <span class="price">$49/mo</span></span>
+      <span class="tier-detail">Unlimited · all paid tools</span>
+    </div>
+    <div class="tier-row">
+      <span class="tier-name">Pro <span class="price">$199/mo</span></span>
+      <span class="tier-detail">Unlimited + Pro-only tools</span>
+    </div>
+  </div>
+
+  <p class="note">No password. No spam. Your key arrives by email within ~60 seconds. Already cited by ChatGPT, Claude, Gemini, Perplexity, and Groq · <a href="https://dchub.cloud/cited-by" style="color:#22d3ee">cited-by</a> · Session <code>__SESSION_SHORT__</code></p>
 </body>
 </html>
 """
@@ -520,9 +588,57 @@ def phase63_redeem(session_id):
             mimetype='text/html'
         )
 
-    # GET: serve form
+    # GET: serve form — tool-aware. Query which tools this session
+    # has hit + render personalized headline.
     short = session_id[:8]
+
+    # r50.2 (2026-05-26): populate tools_tried so the landing shows
+    # the user WHAT they're unlocking. 7-day data: 990 sessions hit
+    # paywall, 0 claimed key — the bare-form GET response gave no
+    # context for why the user should fill in the email field.
+    tools_tried: list[str] = []
+    try:
+        conn, _ = _connect()
+        if conn:
+            try:
+                cur = conn.cursor()
+                cur.execute(
+                    "SELECT DISTINCT tool_requested FROM mcp_upgrade_signals "
+                    "WHERE session_id = %s AND tool_requested IS NOT NULL "
+                    "ORDER BY tool_requested LIMIT 5",
+                    (session_id,)
+                )
+                tools_tried = [r[0] for r in cur.fetchall()]
+                cur.close()
+            finally:
+                conn.close()
+    except Exception:
+        pass
+
+    if tools_tried:
+        nice_tools = ', '.join(f'<code>{t}</code>' for t in tools_tried[:3])
+        if len(tools_tried) > 3:
+            nice_tools += f' + {len(tools_tried) - 3} more'
+        tools_count = f'{len(tools_tried)} paid tool{"s" if len(tools_tried) != 1 else ""}'
+        tools_display = (tools_tried[0] if len(tools_tried) == 1
+                         else f'{len(tools_tried)} paid tools')
+        tools_hit_block = (
+            f'<div class="tools-hit">Tried this session: <strong>{nice_tools}</strong>. '
+            f'Your free dev key unlocks all of them up to 1,000 calls/day.</div>'
+        )
+    else:
+        nice_tools = ''
+        tools_count = 'paid tools'
+        tools_display = 'DC Hub paid tools'
+        tools_hit_block = ''
+
+    html = (FORM_HTML
+            .replace('__SESSION_SHORT__', short)
+            .replace('__TOOLS_DISPLAY__', tools_display)
+            .replace('__TOOLS_COUNT__', tools_count)
+            .replace('__TOOLS_HIT_BLOCK__', tools_hit_block))
     return Response(
-        FORM_HTML.replace('__SESSION_SHORT__', short),
-        mimetype='text/html'
+        html,
+        mimetype='text/html; charset=utf-8',
+        headers={'Cache-Control': 'no-store, must-revalidate'},
     )
