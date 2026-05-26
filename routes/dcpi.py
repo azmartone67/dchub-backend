@@ -1124,6 +1124,27 @@ def api_score_market(slug):
         row.get("time_to_power_months"),
         row.get("verdict"),
     )
+
+    # r42h (2026-05-25): include the per-market analyst narrative when
+    # the LLM is configured. Lets MCP-aware agents (Claude.ai, Claude
+    # Code, anything calling /api/v1/dcpi/scores/<slug>) pull the same
+    # interpretation that human readers get on the HTML page. ?narrative=0
+    # opts out for cost-sensitive callers.
+    from flask import request as _req
+    if (_req.args.get("narrative") or "1") != "0":
+        try:
+            from routes.report_narrative import attach_market_narrative
+            risks = row.get("top_risks_json") or []
+            opps = row.get("top_opportunities_json") or []
+            narr = attach_market_narrative(row, risks, opps)
+            if narr:
+                row["narrative"] = {
+                    "text": narr,
+                    "model": "claude-haiku-4-5-20251001",
+                    "license": "CC-BY-4.0",
+                }
+        except Exception:
+            pass
     return jsonify(row), 200
 
 
