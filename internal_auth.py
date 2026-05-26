@@ -71,9 +71,10 @@ def is_valid_internal_key(header_value):
             return True
 
     # Legacy fallback (logs on hit so we can track remaining hardcoded callers)
+    # r53 (2026-05-25): rate-limit the warning. User reported Railway logs
+    # spammed with this line — once per request × 100s req/min was burying
+    # real errors. Now log at most once per (UA, path) pair per 5 min.
     if LEGACY_OK and header_value in _LEGACY_KEYS:
-        # Enrich the warning with request context so Phase 2 triage can
-        # identify exactly which caller still sends a hardcoded value.
         ctx = "startup/no-request-context"
         try:
             from flask import request, has_request_context
@@ -82,7 +83,18 @@ def is_valid_internal_key(header_value):
                 ctx = f"{request.method} {request.path} ua={ua}"
         except Exception:
             pass
-        log.warning("internal_auth: legacy hardcoded key accepted — migrate caller [%s]", ctx)
+        # 5-min throttle keyed by ctx (UA+path)
+        import time as _t
+        _now = _t.time()
+        global _LEGACY_LOG_LAST
+        try:
+            _LEGACY_LOG_LAST  # type: ignore
+        except NameError:
+            _LEGACY_LOG_LAST = {}  # type: ignore
+        last = _LEGACY_LOG_LAST.get(ctx, 0)  # type: ignore
+        if _now - last > 300:
+            log.warning("internal_auth: legacy hardcoded key accepted — migrate caller [%s]", ctx)
+            _LEGACY_LOG_LAST[ctx] = _now  # type: ignore
         return True
 
     return False

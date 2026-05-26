@@ -13,7 +13,12 @@ name: Daily R2 render (heroic-reprieve /refresh)
 
 on:
   schedule:
-    - cron: '30 14 * * *'   # 14:30 UTC daily
+    # r53 (2026-05-25): bumped from once daily to TWICE daily so if
+    # the first attempt fails (e.g. REFRESH_SECRET drift), the second
+    # auto-recovers without manual intervention. /daily was 2 months
+    # stale before this — single point of failure was unacceptable.
+    - cron: '30 14 * * *'   # 14:30 UTC primary
+    - cron: '30 02 * * *'   # 02:30 UTC fallback (12h later)
   workflow_dispatch: {}
 
 permissions:
@@ -38,10 +43,23 @@ jobs:
           else
             HEADER_ARGS=(-H "X-Refresh-Secret: $REFRESH_SECRET")
           fi
-          response=$(curl -sS --max-time 60 -X POST "${HEADER_ARGS[@]}" \
-            "$DAILY_BASE/refresh" \
-            || echo '{"queued":false,"error":"curl_fail"}')
-          echo "$response"
+          # r53 (2026-05-25): capture HTTP code separately so 401/403/500
+          # don't get silently buried in parsed-JSON body checks. /daily
+          # had been 2 months stale because /refresh was returning 401
+          # (REFRESH_SECRET drift between this repo's secret and the
+          # heroic-reprieve Railway env). Now we fail loudly.
+          http_code=$(curl -sS --max-time 60 -X POST "${HEADER_ARGS[@]}" \
+            -o /tmp/refresh.body -w "%{http_code}" \
+            "$DAILY_BASE/refresh" || echo "000")
+          response=$(cat /tmp/refresh.body 2>/dev/null || echo '{}')
+          echo "HTTP $http_code · body: $response"
+          if [ "$http_code" = "401" ] || [ "$http_code" = "403" ]; then
+            echo "::error::Daily /refresh returned $http_code — REFRESH_SECRET mismatch between GH Actions secret and heroic-reprieve Railway env. Rotate one to match the other."
+            exit 1
+          fi
+          if [ "$http_code" != "200" ] && [ "$http_code" != "202" ]; then
+            echo "::warning::Daily /refresh returned $http_code — service may be down or path moved"
+          fi
           # /refresh queues a background task — log the queued flag so
           # we can spot regressions. Actual render completion happens
           # async; check /snapshot the next tick for the freshly written
