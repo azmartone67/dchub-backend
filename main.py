@@ -23814,6 +23814,17 @@ try:
 except Exception as _mus_e:
     print(f"[main] mcp_usage_self_bp register failed: {_mus_e}", flush=True)
 
+# r72 (2026-05-26): partner API key issuer — admin-keyed endpoint that
+# mints Developer/Pro tier keys for landed partnerships (first user:
+# Gabriel @ reVeal/NLR per DCHub_reVeal_Partnership.pdf, v2.5.7).
+# Companion: scripts/r72_onboard_reveal_nlr.sh
+try:
+    from routes.partner_key_issuer import partner_key_issuer_bp
+    app.register_blueprint(partner_key_issuer_bp)
+    print("[main] partner_key_issuer_bp registered: /api/v1/admin/partner-key/{issue,audit,revoke}", flush=True)
+except Exception as _pki_e:
+    print(f"[main] partner_key_issuer_bp register failed: {_pki_e}", flush=True)
+
 # r45 (2026-05-25): explicit per-blueprint registration (batch loop in r44
 # was failing silently — Flask blueprint name conflicts get swallowed).
 
