@@ -104,15 +104,82 @@ def _is_admin(req):
     return bool(got and got == expected)
 
 
+_PARTNER_KEYWORDS = {
+    "dchawk":  ["dchawk", "dc hawk"],
+    "dcbyte":  ["dcbyte", "dc byte"],
+    "dcd":     ["data center dynamics", "datacenterdynamics", " dcd "],
+    "dcf":     ["data center frontier", "datacenterfrontier"],
+    "cbre":    ["cbre", "data center solutions"],
+    "jll":     ["jll", "jones lang lasalle"],
+    "partners": ["partnership", "partnerships", "industry"],
+}
+
+
+def _recent_partner_mention(slug):
+    """Query press_releases for a recent mention of this partner so the
+    email opener can reference something specific. Returns dict with
+    title + date + relative phrase, or None if nothing relevant in 60d."""
+    keywords = _PARTNER_KEYWORDS.get(slug.lower(), [])
+    if not keywords or not (_pg and _dsn()):
+        return None
+    try:
+        with _conn() as c, c.cursor() as cur:
+            # Find a press release where title or body mentions the partner
+            conds = " OR ".join(["LOWER(title) LIKE %s OR LOWER(body) LIKE %s"] * len(keywords))
+            params = []
+            for kw in keywords:
+                params.extend([f"%{kw.lower()}%", f"%{kw.lower()}%"])
+            cur.execute(f"""
+                SELECT title, slug, created_at
+                  FROM press_releases
+                 WHERE created_at > NOW() - INTERVAL '60 days'
+                   AND ({conds})
+                 ORDER BY created_at DESC LIMIT 1
+            """, params)
+            r = cur.fetchone()
+            if r:
+                days_ago = (datetime.datetime.utcnow() - r[2].replace(tzinfo=None)).days if r[2] else 0
+                rel = "yesterday" if days_ago <= 1 else f"{days_ago} days ago" if days_ago < 30 else "last month"
+                return {
+                    "title":   r[0],
+                    "slug":    r[1],
+                    "rel":     rel,
+                    "url":     f"https://dchub.cloud/press-release/{r[1]}",
+                }
+    except Exception:
+        pass
+    return None
+
+
 def _build_email(track, personal_note=""):
-    """Produce subject + html + text from the track."""
+    """Produce subject + html + text from the track. r47.20: auto-personalize
+    by injecting a recent press-release reference about this partner when
+    operator hasn't provided their own personal_note."""
     subject = f"DC Hub + {track['slug'].upper()} — {track['headline'][:80]}"
-    intro = personal_note.strip() if personal_note else (
-        f"Hi —\n\nI run DC Hub, the neutral live-data layer beneath the "
-        f"data-center research industry. We're cited by 96+ AI platforms "
-        f"(ChatGPT, Claude, Gemini, Cursor, Cline) and just opened a public "
-        f"partnership track that includes {track['slug'].upper()}.\n"
-    )
+
+    if personal_note:
+        intro = personal_note.strip()
+    else:
+        # Try to find a recent press mention to make the opener concrete
+        mention = _recent_partner_mention(track["slug"])
+        if mention:
+            intro = (
+                f"Hi —\n\n"
+                f"We covered \"{mention['title']}\" {mention['rel']} on our "
+                f"daily press cadence — figured you'd want to see it first hand: "
+                f"{mention['url']}\n\n"
+                f"While I had your address, also wanted to flag the partnership "
+                f"track DC Hub just opened that's directly relevant to "
+                f"{track['slug'].upper()}.\n"
+            )
+        else:
+            intro = (
+                f"Hi —\n\n"
+                f"I run DC Hub, the neutral live-data layer beneath the "
+                f"data-center research industry. We're cited by 96+ AI platforms "
+                f"(ChatGPT, Claude, Gemini, Cursor, Cline) and just opened a public "
+                f"partnership track that includes {track['slug'].upper()}.\n"
+            )
 
     # r47.17: emails use /go/partners/<slug> click-tracker URL so we
     # can attribute partnership clicks to the email channel separately

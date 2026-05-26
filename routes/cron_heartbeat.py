@@ -167,6 +167,16 @@ def heartbeat():
     elapsed_ms = int((datetime.datetime.utcnow() - started).total_seconds() * 1000)
     ran = [r for r in results if not r.get("skipped")]
     healthy = sum(1 for r in ran if 200 <= r.get("status", 0) < 400)
+
+    # r47.18 (2026-05-26): log this heartbeat fire so /api/v1/cron/last-fired
+    # can show "external scheduler is alive (last fire 4 min ago)". Best-
+    # effort — never raises.
+    try:
+        from routes.cron_observability import log_heartbeat
+        log_heartbeat(jobs_run=len(ran), jobs_total=len(_DISPATCH), elapsed_ms=elapsed_ms)
+    except Exception:
+        pass
+
     return jsonify({
         "at": started.isoformat() + "Z",
         "elapsed_ms": elapsed_ms,

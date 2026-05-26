@@ -23382,6 +23382,30 @@ try:
 except Exception as _pc_e:
     print(f"[main] partnership_click_bp register failed: {_pc_e}", flush=True)
 
+# Phase ZZZZZ-round47.18-21 (2026-05-26): observability + auto-personalize + dashboard
+#   .18  cron_observability       — heartbeat fire log + /last-fired endpoint
+#   .19  worker_drift_monitor     — track /mcp/manifest version drift
+#   .21  partnership_dashboard    — unified campaign view across all 4 channels
+# (.20 is the auto-personalize patch in partnership_email_drafts.py)
+try:
+    from routes.cron_observability import cron_observability_bp
+    app.register_blueprint(cron_observability_bp)
+    print("[main] cron_observability_bp registered: /api/v1/cron/last-fired", flush=True)
+except Exception as _co_e:
+    print(f"[main] cron_observability_bp register failed: {_co_e}", flush=True)
+try:
+    from routes.worker_drift_monitor import worker_drift_bp
+    app.register_blueprint(worker_drift_bp)
+    print("[main] worker_drift_bp registered: /api/v1/admin/drift-check", flush=True)
+except Exception as _wd_e:
+    print(f"[main] worker_drift_bp register failed: {_wd_e}", flush=True)
+try:
+    from routes.partnership_dashboard import partnership_dashboard_bp
+    app.register_blueprint(partnership_dashboard_bp)
+    print("[main] partnership_dashboard_bp registered: /partnerships/dashboard + JSON", flush=True)
+except Exception as _pd_e:
+    print(f"[main] partnership_dashboard_bp register failed: {_pd_e}", flush=True)
+
 # Phase ZZZZZ-round37.1 (2026-05-24): single cron heartbeat endpoint
 # Railway service-level cron only takes ONE expression, so collapse all
 # scheduled warmers behind a single HTTP endpoint that dispatches by UTC
