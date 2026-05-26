@@ -384,3 +384,162 @@ def force_recompute_market(market_slug):
         "elapsed_seconds":  round(elapsed, 2),
         "computed_at":      datetime.datetime.utcnow().isoformat() + "Z",
     }), 200
+
+
+# ── r58 (2026-05-25) ───────────────────────────────────────────────
+# recompute-missing: walks MARKETS, finds slugs ABSENT from
+# market_power_scores, scores + INSERTs them. Closes the gap left by
+# r57's intl expansion — the 16 new markets are in MARKETS but
+# 0 are in the DB, so the daily cron's UPDATE-only path never
+# touches them.
+#
+# Also auto-fires when called WITHOUT an admin key — only when the
+# request comes from a trusted internal source (X-Internal-Cron
+# header set by GH Actions). This lets us put it on a cron without
+# rotating admin keys, while still keeping random users off it.
+
+@dcpi_freshness_bp.route(
+    "/api/v1/dcpi/recompute-missing", methods=["POST"]
+)
+def recompute_missing_markets():
+    """r58 (2026-05-25): score every MARKETS entry that's MISSING from
+    market_power_scores. Idempotent — re-running is a no-op once
+    everything is filled in.
+
+    Params:
+      ?max=N       cap how many to do per call (default 30; intl set is 16)
+      ?dry_run=1   list candidates without writing
+
+    Auth: admin key OR X-Internal-Cron header matching DCHUB_CRON_SECRET.
+    """
+    # Auth: admin OR internal-cron
+    is_admin = _admin_authorized()
+    cron_secret_env = os.environ.get("DCHUB_CRON_SECRET", "")
+    cron_secret_hdr = request.headers.get("X-Internal-Cron", "")
+    is_cron = bool(cron_secret_env) and cron_secret_hdr == cron_secret_env
+    if not (is_admin or is_cron):
+        return jsonify({"ok": False, "error": "admin_key_required"}), 401
+
+    try:
+        max_n = max(1, min(int(request.args.get("max", 30)), 100))
+    except Exception:
+        max_n = 30
+    dry_run = (request.args.get("dry_run") or "").lower() in ("1", "true", "yes")
+
+    # Get the canonical MARKETS list + the set of slugs already in DB
+    try:
+        from routes.dcpi import (
+            MARKETS, gather_metrics_for_market,
+            compute_constraint_score, compute_excess_power_score,
+            estimate_time_to_power, derive_verdict, derive_top_signals,
+            _conn as _dcpi_conn,
+        )
+    except Exception as e:
+        return jsonify({"ok": False,
+                         "error": f"dcpi_module_unavailable: {e}"}), 500
+
+    c = _conn()
+    if not c:
+        return jsonify({"ok": False, "error": "db_unavailable"}), 200
+    try:
+        with c.cursor() as cur:
+            cur.execute("SELECT DISTINCT market_slug FROM market_power_scores")
+            present = {row[0] for row in cur.fetchall()}
+    except Exception as e:
+        try: c.close()
+        except Exception: pass
+        return jsonify({"ok": False, "error": str(e)[:200]}), 200
+    finally:
+        try: c.close()
+        except Exception: pass
+
+    # Identify missing markets (handle both tuple + dict shapes the
+    # MARKETS loader can emit — see _load_markets_dynamic).
+    def _market_slug(m):
+        if isinstance(m, tuple) and m:
+            return m[0]
+        if isinstance(m, dict):
+            return m.get("slug")
+        return None
+
+    missing = []
+    for m in MARKETS:
+        slug = _market_slug(m)
+        if slug and slug not in present:
+            missing.append(m)
+        if len(missing) >= max_n:
+            break
+
+    if dry_run:
+        return jsonify({
+            "ok":         True,
+            "dry_run":    True,
+            "count":      len(missing),
+            "candidates": [_market_slug(m) for m in missing],
+        }), 200
+
+    import json as _json
+    inserted = 0
+    failed = []
+    for m in missing:
+        # Normalize to tuple shape gather_metrics expects
+        if isinstance(m, dict):
+            mt = (m.get("slug"), m.get("name"), m.get("state"),
+                  m.get("iso"), m.get("latitude"), m.get("longitude"))
+        else:
+            mt = m
+        slug = mt[0]
+        try:
+            metrics = gather_metrics_for_market(mt)
+            c_score = compute_constraint_score(metrics)
+            e_score = compute_excess_power_score(metrics)
+            ttp     = estimate_time_to_power(metrics)
+            verdict = derive_verdict(c_score, e_score)
+            risks, opps = derive_top_signals(mt, metrics, c_score, e_score)
+
+            with _dcpi_conn() as wc, wc.cursor() as wcur:
+                # r58 (2026-05-25): set published=true so the inserted
+                # row appears on /dcpi immediately (every public-facing
+                # query has WHERE published=true; rows default to NULL
+                # in the schema and would otherwise stay invisible).
+                wcur.execute("""
+                    INSERT INTO market_power_scores (
+                        market_slug, market_name, state, iso, latitude, longitude,
+                        constraint_score, excess_power_score, time_to_power_months,
+                        queue_capacity_mw, queue_wait_months, reserve_margin_pct,
+                        gen_additions_12mo_mw, curtailment_pct, stranded_capacity_mw,
+                        emergency_count_30d,
+                        top_risks_json, top_opportunities_json, verdict,
+                        published, computed_at
+                    )
+                    VALUES (%s,%s,%s,%s,%s,%s, %s,%s,%s, %s,%s,%s,
+                             %s,%s,%s, %s, %s,%s,%s, TRUE, NOW())
+                """, (
+                    slug, mt[1], mt[2], mt[3], mt[4], mt[5],
+                    c_score, e_score, ttp,
+                    metrics.get("queue_capacity_mw"),
+                    metrics.get("queue_wait_months"),
+                    metrics.get("reserve_margin_pct"),
+                    metrics.get("gen_additions_12mo_mw"),
+                    metrics.get("curtailment_pct"),
+                    metrics.get("stranded_capacity_mw"),
+                    metrics.get("emergency_count_30d") or 0,
+                    _json.dumps(risks), _json.dumps(opps), verdict,
+                ))
+                wc.commit()
+            inserted += 1
+        except Exception as e:
+            failed.append({"slug": slug,
+                            "error": f"{type(e).__name__}: {str(e)[:160]}"})
+
+    return jsonify({
+        "ok":            True,
+        "attempted":     len(missing),
+        "inserted":      inserted,
+        "failed_count":  len(failed),
+        "failed_sample": failed[:5],
+        "remaining_in_markets": max(0, sum(1 for m in MARKETS
+                                            if _market_slug(m)) - len(present) - inserted),
+        "hint":          ("Re-run if remaining_in_markets > 0 (cap is "
+                           f"{max_n}/call). Idempotent — safe to cron."),
+    }), 200

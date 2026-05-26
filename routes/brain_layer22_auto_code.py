@@ -283,11 +283,59 @@ def _draft_pr(draft: dict, dry_run: bool) -> dict:
                  branch=None, error="GITHUB_TOKEN not set")
         return {"ok": False, "error": "GITHUB_TOKEN not set"}
 
-    # NOTE: this MVP creates an ISSUE not a PR — building a real PR
-    # requires writing the file change, which means committing to a
-    # branch on disk. For safety, we open an issue with the suggested
-    # diff text. Operator clicks 'Code → branch → edit file' from the
-    # issue to apply. Real diff-write comes in the next iteration.
+    # r58 (2026-05-25): autonomy promotion for route_alias_404.
+    # When the recipe is route_alias_404 AND DCHUB_L22_REAL_PR=1 in
+    # env, defer to the PR-writer in brain_layer22_pr_writer.py
+    # which actually clones, patches, commits, pushes, and opens a
+    # PR. If that returns ok=True we record the PR url and stop.
+    # If it fails for ANY reason (env missing, fork unavailable,
+    # canonical route not found via regex), we fall back to opening
+    # an Issue — the operator still gets a paper trail.
+    #
+    # This is the missing wiring from r57: PR-writer existed but
+    # was only callable via the manual admin endpoint. Now the L22
+    # scan loop autoroutes to it for the whitelisted recipe.
+    if (draft.get("recipe") == "route_alias_404"
+            and os.environ.get("DCHUB_L22_REAL_PR", "0") == "1"):
+        try:
+            from routes.brain_layer22_pr_writer import open_route_alias_pr
+            trigger = draft.get("trigger") or {}
+            # derive src/dst from the diff_summary text we already
+            # built — it has the pattern in @app.route('...')
+            import re as _re
+            ds = draft.get("body") or ""
+            m_src = _re.search(r"@app\.route\('([^']+)'\)\s+alias", ds)
+            m_dst = _re.search(r"existing handler for\s*\n?'([^']+)'", ds)
+            if m_src and m_dst:
+                pr_res = open_route_alias_pr(
+                    src_path=m_src.group(1),
+                    dst_path=m_dst.group(1),
+                    trigger_count=int(trigger.get("count") or 0),
+                    rationale=(draft.get("title") or "")[:200],
+                )
+                if pr_res.get("ok"):
+                    _record(draft, dry_run=False,
+                             pr_url=pr_res.get("pr_url"),
+                             pr_number=None,
+                             branch=pr_res.get("branch"),
+                             error=None)
+                    return {"ok": True,
+                            "pr_url": pr_res.get("pr_url"),
+                            "branch": pr_res.get("branch"),
+                            "via": "brain_layer22_pr_writer",
+                            **draft}
+                # Fall through to Issue on PR failure (operator
+                # still gets a record + can apply manually)
+                print(f"[L22] PR-writer failed for {draft.get('title')}: "
+                      f"{pr_res.get('error') or pr_res.get('stage')} "
+                      f"— falling back to Issue", flush=True)
+        except Exception as _prw_err:
+            print(f"[L22] PR-writer import/call exception: {_prw_err} "
+                  f"— falling back to Issue", flush=True)
+
+    # MVP fallback: open an Issue (always works given GITHUB_TOKEN).
+    # The Issue carries the suggested diff text + verification steps;
+    # operator clicks 'Code → branch → edit file' to apply.
     try:
         import requests
         body = draft["body"] + "\n\n---\n\n*MVP shipping note: this " \

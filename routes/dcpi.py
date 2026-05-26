@@ -925,6 +925,14 @@ def recompute_all_scores(source: str = "manual",
                 if cur.rowcount == 0:
                     # No existing row for this slug — insert a fresh one.
                     # Safe plain INSERT: the UPDATE just proved 0 rows match.
+                    # r58 (2026-05-25): set published=TRUE so the new row
+                    # appears on /dcpi. The column defaults to NULL and
+                    # every public-facing query filters WHERE published=true;
+                    # the omission was silently hiding any newly added
+                    # markets from the dashboard. Caught when r57's 16
+                    # international markets sat at 0 visible despite
+                    # being in MARKETS — same root cause as the 89-ghost
+                    # incident from r55, just on the INSERT side.
                     cur.execute("""
                         INSERT INTO market_power_scores (
                             market_name, state, iso, latitude, longitude,
@@ -933,9 +941,9 @@ def recompute_all_scores(source: str = "manual",
                             gen_additions_12mo_mw, curtailment_pct, stranded_capacity_mw,
                             emergency_count_30d,
                             top_risks_json, top_opportunities_json, verdict,
-                            market_slug, computed_at
+                            market_slug, published, computed_at
                         )
-                        VALUES (%s,%s,%s,%s,%s, %s,%s,%s, %s,%s,%s, %s,%s,%s, %s, %s,%s,%s, %s, NOW())
+                        VALUES (%s,%s,%s,%s,%s, %s,%s,%s, %s,%s,%s, %s,%s,%s, %s, %s,%s,%s, %s, TRUE, NOW())
                     """, _vals + (slug,))
                 c.commit()
             scored += 1
