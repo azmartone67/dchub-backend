@@ -395,8 +395,14 @@ jonathan@dchub.cloud · dchub.cloud/pricing
     "/api/v1/admin/funnel/near-converters", methods=["GET"]
 )
 def near_converters():
-    """Top 30 callers with ≥5 paid-tool 403s in last 30d, each with
-    a personalized outreach-draft body ready to send."""
+    """Top callers with ≥min_paid_403 paid-tool 403s in last N days.
+
+    r71-a (2026-05-26): defaults to is_likely_real_user=true. The top
+    "near-converter" on launch was a UA="mcp" 721-signals/day bot —
+    not a sales lead. Heuristic now filters those out by default so
+    the list surfaces ACTUAL prospects. Pass ?include_bots=1 to opt
+    back into the raw unfiltered list.
+    """
     if not _admin_authorized():
         return jsonify({"ok": False, "error": "admin_key_required"}), 401
 
@@ -406,10 +412,44 @@ def near_converters():
         days = max(1, min(int(request.args.get("days") or 30), 90))
     except Exception:
         limit, min_p403, days = 30, 5, 30
+    include_bots = (request.args.get("include_bots") or "").lower() in (
+        "1", "true", "yes")
 
-    rows = _fetch_near_converters(min_p403, limit, days)
-    # Attach personalized draft to each
+    # Fetch a larger pool so post-filter we still hit `limit` reals.
+    fetch_limit = limit * 4 if not include_bots else limit
+    rows = _fetch_near_converters(min_p403, fetch_limit, days)
+
+    # Enrich each row with the is_likely_real_user heuristic from the
+    # deep-dive endpoint, then filter unless include_bots=1.
+    real_rows = []
+    bots_filtered = []
     for r in rows:
+        deep = _deep_history_for_caller(r.get("user_agent") or r.get("client_name") or "")
+        sig_per_day = (deep.get("total_signals", 0) /
+                        max(1, deep.get("days_active", 1)))
+        tool_diversity = len(deep.get("tools_attempted") or [])
+        is_real = (tool_diversity >= 3 and
+                    deep.get("days_active", 0) >= 2 and
+                    sig_per_day < 200)
+        r["is_likely_real_user"] = is_real
+        r["signals_per_day"] = round(sig_per_day, 1)
+        r["days_active"] = deep.get("days_active")
+        if include_bots or is_real:
+            real_rows.append(r)
+        else:
+            bots_filtered.append({
+                "caller_id":      r.get("caller_id"),
+                "platform":       r.get("platform"),
+                "paid_403_count": r.get("paid_403_count"),
+                "signals_per_day": r["signals_per_day"],
+                "reason":         "high-rate scraper (>200 signals/day)",
+            })
+        if len(real_rows) >= limit:
+            break
+
+    # Attach personalized draft to each (only real users — bots don't
+    # get a draft, they're not prospects)
+    for r in real_rows:
         r["outreach_draft"] = _draft_near_converter_pitch(r)
         r["outreach_subject"] = (
             f"DC Hub Pro — you've been calling "
@@ -422,13 +462,94 @@ def near_converters():
         "as_of":           datetime.datetime.utcnow().isoformat() + "Z",
         "window_days":     days,
         "min_paid_403":    min_p403,
-        "near_converter_count": len(rows),
-        "near_converters": rows,
+        "include_bots":    include_bots,
+        "near_converter_count": len(real_rows),
+        "near_converters": real_rows,
+        "bots_filtered_count":  len(bots_filtered),
+        "bots_filtered_sample": bots_filtered[:10],
         "paid_tools_in_scope": sorted(PAID_TOOLS),
-        "note":            ("These callers are your highest-ROI conversion "
-                              "targets. Each entry includes a personalized "
-                              "draft. To track sent: POST /api/v1/admin/funnel/"
-                              "near-converters/<caller_id>/sent"),
+        "note":            ("Real-user prospects only by default. Add "
+                              "?include_bots=1 to see scrapers too. Bot "
+                              "watchlist: /api/v1/admin/funnel/bots-detected"),
+    }), 200
+
+
+# r71-b (2026-05-26): bot watchlist endpoint. The /near-converters
+# filter hides scrapers; this endpoint SURFACES them so the operator
+# can decide whether to add CF firewall rules.
+
+@mcp_usage_self_bp.route(
+    "/api/v1/admin/funnel/bots-detected", methods=["GET"]
+)
+def bots_detected():
+    """Callers flagged as bots (is_likely_real_user=false) ranked by
+    wasted compute. Includes recommended action per row."""
+    if not _admin_authorized():
+        return jsonify({"ok": False, "error": "admin_key_required"}), 401
+
+    try:
+        min_p403 = max(1, int(request.args.get("min_paid_403") or 50))
+        days = max(1, min(int(request.args.get("days") or 30), 90))
+        limit = max(1, min(int(request.args.get("limit") or 30), 100))
+    except Exception:
+        min_p403, days, limit = 50, 30, 30
+
+    rows = _fetch_near_converters(min_p403, limit * 4, days)
+    bots = []
+    for r in rows:
+        deep = _deep_history_for_caller(r.get("user_agent") or r.get("client_name") or "")
+        sig_per_day = (deep.get("total_signals", 0) /
+                        max(1, deep.get("days_active", 1)))
+        tool_diversity = len(deep.get("tools_attempted") or [])
+        is_real = (tool_diversity >= 3 and
+                    deep.get("days_active", 0) >= 2 and
+                    sig_per_day < 200)
+        if is_real:
+            continue
+        # Wasted compute estimate: avg 50ms per 403 response * total signals
+        wasted_ms = deep.get("total_signals", 0) * 50
+        # Recommended action
+        if sig_per_day >= 1000:
+            action = ("BLOCK at CF level — > 1000 signals/day is abuse. "
+                        "Add Cloudflare firewall rule: "
+                        "(http.request.uri.path matches \"^/api/v1/(grid|fiber|"
+                        "analyze|compare)\" and http.user_agent eq \""
+                        + (r.get('user_agent') or '')[:60] + "\") → BLOCK.")
+        elif sig_per_day >= 200:
+            action = ("RATE-LIMIT — > 200 signals/day. Add CF rate-limit "
+                        "rule capping this UA at 100 req/hour on /api/v1/*.")
+        else:
+            action = "MONITOR — borderline; keep watching."
+
+        bots.append({
+            "caller_id":         r.get("caller_id"),
+            "platform_sniffed":  r.get("platform"),
+            "full_ua":           r.get("user_agent") or r.get("client_name"),
+            "paid_403_count":    r.get("paid_403_count"),
+            "total_signals":     deep.get("total_signals", 0),
+            "signals_per_day":   round(sig_per_day, 1),
+            "tools_attempted":   tool_diversity,
+            "days_active":       deep.get("days_active"),
+            "wasted_compute_ms_est": wasted_ms,
+            "wasted_compute_hours_est": round(wasted_ms / 3_600_000, 2),
+            "recommended_action": action,
+        })
+        if len(bots) >= limit:
+            break
+
+    return jsonify({
+        "ok":             True,
+        "as_of":          datetime.datetime.utcnow().isoformat() + "Z",
+        "window_days":    days,
+        "min_paid_403":   min_p403,
+        "bot_count":      len(bots),
+        "bots":           bots,
+        "total_wasted_hours_est": round(
+            sum(b.get("wasted_compute_hours_est", 0) for b in bots), 2),
+        "note":           ("These callers waste Railway compute with no "
+                            "conversion intent. Add CF firewall rules from "
+                            "recommended_action to free up capacity for "
+                            "actual prospects."),
     }), 200
 
 
