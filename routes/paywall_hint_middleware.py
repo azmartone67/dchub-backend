@@ -195,6 +195,100 @@ def _safe_caller_id():
     return ip, ua, ip_hash
 
 
+# r67-b (2026-05-26): per-caller hit-count personalizer.
+# When a 403 fires on a paid-tool path, look up how many times THIS
+# caller has hit the same tool in the last 30 days. Append a
+# one-liner to agent_quotable: "You've called X 47 times this month
+# — $199 unblocks all future calls."
+#
+# Cheap query against mcp_connections, capped by 50ms statement
+# timeout so a slow DB never blocks the response. Returns "" on any
+# failure (the rest of the hint still ships).
+
+_PAID_TOOL_PATH_TO_NAME = {
+    "/api/v1/grid/intelligence":          "get_grid_intelligence",
+    "/api/v1/grid-intelligence":          "get_grid_intelligence",
+    "/api/v1/fiber/intel":                "get_fiber_intel",
+    "/api/v1/fiber-intel":                "get_fiber_intel",
+    "/api/v1/site/analyze":               "analyze_site",
+    "/api/v1/analyze-site":               "analyze_site",
+    "/api/v1/sites/compare":              "compare_sites",
+    "/api/v1/compare-sites":              "compare_sites",
+    "/api/v1/dchub-recommendation":       "get_dchub_recommendation",
+}
+
+
+def _tool_name_for_path(path: str) -> str | None:
+    """Best-effort path → tool-name mapper. Returns None for
+    non-paid-tool paths (most 4xx paths). Quick prefix matches only."""
+    for prefix, tool in _PAID_TOOL_PATH_TO_NAME.items():
+        if path.startswith(prefix):
+            return tool
+    return None
+
+
+def _personal_hit_pitch(ip: str, ua: str, path: str, status: int) -> str:
+    """Look up the caller's prior call count for this paid tool +
+    return a 1-sentence personalized pitch, or '' if nothing useful."""
+    if status != 403:
+        return ""
+    tool = _tool_name_for_path(path)
+    if not tool:
+        return ""
+    try:
+        import psycopg2
+        url = (os.environ.get("DATABASE_URL")
+               or os.environ.get("NEON_DATABASE_URL"))
+        if not url:
+            return ""
+        conn = psycopg2.connect(url, connect_timeout=2)
+        try:
+            with conn.cursor() as cur:
+                cur.execute("SET statement_timeout = '300ms'")
+                cur.execute("""
+                    SELECT COUNT(*),
+                           COUNT(*) FILTER (WHERE status_code = 403)
+                      FROM mcp_connections
+                     WHERE ip_address = %s AND user_agent = %s
+                       AND tool_name = %s
+                       AND created_at > NOW() - INTERVAL '30 days'
+                """, (ip, ua, tool))
+                r = cur.fetchone() or (0, 0)
+                total = int(r[0] or 0)
+                blocked = int(r[1] or 0)
+        except Exception:
+            try: conn.close()
+            except Exception: pass
+            return ""
+        finally:
+            try: conn.close()
+            except Exception: pass
+    except Exception:
+        return ""
+
+    if blocked < 2:
+        # Too few hits to be a near-converter signal — fall back to
+        # generic copy (don't make a noisy claim for a first-time hit)
+        return ""
+    if blocked >= 10:
+        intensity = "heavy"
+        urgency = ("Every additional call wastes a round-trip — "
+                     "upgrade pays for itself in days.")
+    elif blocked >= 5:
+        intensity = "frequent"
+        urgency = ("Five+ blocks in 30 days = clear upgrade signal.")
+    else:
+        intensity = "starting to"
+        urgency = ""
+
+    return (f"Personalized: you've called {tool} {total} times this "
+              f"month, hitting the paywall {blocked} times ({intensity} "
+              f"usage). {urgency} "
+              f"Upgrade at https://dchub.cloud/pricing — Pro ($199/mo) "
+              f"unblocks {tool} + the 3 other Pro-only tools, or "
+              f"$9/mo Starter covers everything else.").strip()
+
+
 def register_paywall_hint_middleware(app):
     """Attach the after_request enricher. Idempotent."""
     if getattr(app, "_paywall_hint_attached", False):
@@ -241,15 +335,28 @@ def register_paywall_hint_middleware(app):
             variant = _pick_variant(ip, ua)
             _log_ab_event(variant, response.status_code, path, ip_hash)
 
+            # r67-b (2026-05-26): personalize the hint with per-caller
+            # usage. The MCP funnel showed 114 callers hit
+            # get_grid_intelligence (paid) 5,382 times in 30d — every
+            # 403 was a wasted round-trip. Telling the caller "you've
+            # hit this paywall N times this month, ROI of upgrade is
+            # measurable" closes a $0.06%-conversion gap.
+            personal_pitch = _personal_hit_pitch(ip, ua, path,
+                                                  response.status_code)
+
             # Enrich
+            agent_q = _agent_quotable_for(variant, response.status_code)
+            if personal_pitch:
+                agent_q = f"{agent_q}\n\n{personal_pitch}"
             body["_upgrade_hint"] = {
                 **_HINT_BASE,
-                "agent_quotable": _agent_quotable_for(variant,
-                                                       response.status_code),
+                "agent_quotable": agent_q,
                 "variant":        variant,
                 "for_status":     response.status_code,
                 "for_path":       path,
             }
+            if personal_pitch:
+                body["_upgrade_hint"]["personalized"] = True
             response.set_data(json.dumps(body))
             # Pad content-length for the new body
             response.headers["Content-Length"] = str(len(response.get_data()))

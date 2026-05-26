@@ -23666,6 +23666,18 @@ try:
 except Exception as _acs_e:
     print(f"[main] ai_citation_scraper_bp register failed: {_acs_e}", flush=True)
 
+# r67 (2026-05-26): MCP funnel personalization + near-converter outreach.
+# Reads mcp_connections to surface per-caller usage. Used by both the
+# paywall middleware (to personalize the upgrade pitch) and a new admin
+# endpoint listing the top 30 free-tier users with ≥5 paid-tool 403s
+# in 30d — those are the 115 near-converters from the funnel dashboard.
+try:
+    from routes.mcp_usage_self import mcp_usage_self_bp
+    app.register_blueprint(mcp_usage_self_bp)
+    print("[main] mcp_usage_self_bp registered: /api/v1/mcp/usage/me, /api/v1/admin/funnel/near-converters", flush=True)
+except Exception as _mus_e:
+    print(f"[main] mcp_usage_self_bp register failed: {_mus_e}", flush=True)
+
 # r45 (2026-05-25): explicit per-blueprint registration (batch loop in r44
 # was failing silently — Flask blueprint name conflicts get swallowed).
 
