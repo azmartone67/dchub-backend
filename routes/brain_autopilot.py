@@ -1276,6 +1276,13 @@ def _execute_action(action_path: str, payload: dict, use_admin: bool) -> tuple[i
         data = json.dumps(payload or {}).encode("utf-8") if payload else b"{}"
         req = urllib.request.Request(url, data=data, method="POST")
         req.add_header("Content-Type", "application/json")
+        # r42t (2026-05-26): identify ourselves so the rate-limiter
+        # bypasses us. Pre-fix every autopilot action was 429'd by the
+        # IP/UA limiter, even with valid X-Admin-Key, because the
+        # limiter didn't check the admin header. Defense in depth:
+        # both X-DC-Probe AND X-Admin-Key now bypass rate-limit.
+        req.add_header("X-DC-Probe", "autopilot")
+        req.add_header("User-Agent", "dchub-autopilot/1.0 (brain-recovery)")
         if use_admin:
             ak = _admin_key()
             if ak: req.add_header("X-Admin-Key", ak)

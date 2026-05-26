@@ -6,6 +6,7 @@ from internal_auth import is_valid_internal_key
 # No external dependencies - pure Python stdlib
 # ============================================================================
 
+import os
 import time
 import logging
 from functools import wraps
@@ -234,7 +235,17 @@ def rate_limit_before():
     probe_marker = (request.headers.get('X-DC-Probe') or '').lower()
     if probe_marker in ('site-sentinel', 'brain-radar', 'self-heal',
                           'dc-brain-site-probe', 'dc-security-audit',
-                          'dc-healer'):
+                          'dc-healer', 'autopilot'):
+        return None
+
+    # r42t (2026-05-26): bypass on X-Admin-Key match. The brain
+    # autopilot's _execute_action sends X-Admin-Key but no X-DC-Probe;
+    # was getting throttled, leading to 1,869 actions/24h ALL failing
+    # rate_limited — root cause of the persistent data_freshness_sla_
+    # breach stack (1,375 findings). free_tier_gate already bypasses
+    # on this header; mirror it here.
+    _admin_env = os.environ.get("DCHUB_ADMIN_KEY", "")
+    if _admin_env and request.headers.get('X-Admin-Key') == _admin_env:
         return None
 
     # Phase ZZZZZ-round6c (2026-05-23): Bypass Railway's own internal
