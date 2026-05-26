@@ -23515,6 +23515,16 @@ try:
 except Exception as _ab_e:
     print(f"[main] agent_broadcast_bp register failed: {_ab_e}", flush=True)
 
+# Phase ZZZZZ-round47.28 (2026-05-26): citation receipts — public social
+# proof endpoint that other agents fetch to see which AI platforms use
+# DC Hub today → makes them more likely to cite us too.
+try:
+    from routes.agent_citations import agent_citations_bp
+    app.register_blueprint(agent_citations_bp)
+    print("[main] agent_citations_bp registered: /api/v1/agents/citations.json", flush=True)
+except Exception as _act_e:
+    print(f"[main] agent_citations_bp register failed: {_act_e}", flush=True)
+
 # Phase ZZZZZ-round37.1 (2026-05-24): single cron heartbeat endpoint
 # Railway service-level cron only takes ONE expression, so collapse all
 # scheduled warmers behind a single HTTP endpoint that dispatches by UTC

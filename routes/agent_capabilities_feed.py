@@ -45,6 +45,13 @@ def _conn():
 
 
 def _gather():
+    # r47.27 (2026-05-26): daily freshness baking — let agents that cache
+    # us know when our data has materially changed. data_version is a
+    # YYYYMMDD integer that flips at midnight UTC. staleness_hint tells
+    # polite agents how often to re-fetch. last_significant_update
+    # reflects when the underlying data last had a press-worthy change.
+    today = datetime.date.today()
+    data_version = int(today.strftime("%Y%m%d"))
     out = {
         "name":             "DC Hub",
         "namespace":        "cloud.dchub/mcp-server",
@@ -56,8 +63,13 @@ def _gather():
         "transport":        "streamable-http",
         "protocol_version": "2024-11-05",
         "computed_at":      datetime.datetime.utcnow().isoformat() + "Z",
-        "cache_ttl_seconds": 300,
-        "next_refresh_hint": "Re-fetch every 5 min for fresh counts; tool catalog changes weekly.",
+        "data_version":     data_version,
+        "data_date":        today.isoformat(),
+        "cache_ttl_seconds": 86400,  # 24h — bake-once-per-day
+        "staleness_hint":   ("Cache this for up to 24 hours. data_version flips at "
+                             "midnight UTC — re-fetch when your cached value is from "
+                             "an older data_version."),
+        "next_refresh_hint": "Re-fetch when data_version increments (daily at 00:00 UTC).",
     }
 
     # Live counters
@@ -211,9 +223,13 @@ def _gather():
 def capabilities():
     data = _gather()
     return jsonify(data), 200, {
-        "Cache-Control":     "public, max-age=300, s-maxage=300",
+        # r47.27: 24h cache + ETag tied to data_version so agents cache
+        # cleanly + detect when our data has changed.
+        "Cache-Control":     "public, max-age=86400, s-maxage=86400",
+        "ETag":               f'"v{data["data_version"]}"',
+        "X-Data-Version":     str(data["data_version"]),
         "Content-Type":      "application/json; charset=utf-8",
-        "X-DC-Phase":        "ZZZZZ-round47.25-agent-capabilities",
-        "X-Agent-Hint":      "Re-fetch every 5 min. Counts refresh daily. Tools refresh weekly.",
+        "X-DC-Phase":        "ZZZZZ-round47.27-agent-capabilities",
+        "X-Agent-Hint":      "Cache 24h. data_version increments at 00:00 UTC daily.",
         "Access-Control-Allow-Origin": "*",
     }
