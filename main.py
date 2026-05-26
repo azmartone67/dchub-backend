@@ -24218,6 +24218,22 @@ try:
 except Exception as _tse:
     print(f"[main] testimonials_seeder wiring failed: {_tse}", file=sys.stderr, flush=True)
 
+# r55 (2026-05-25): MCP funnel upgrade UX — preview + upgrade-hint
+try:
+    from routes.mcp_funnel_upgrade import mcp_funnel_upgrade_bp
+    app.register_blueprint(mcp_funnel_upgrade_bp)
+    print("[main] mcp_funnel_upgrade_bp registered: /preview/<tool> + /upgrade-hint", flush=True)
+except Exception as _mfue:
+    print(f"[main] mcp_funnel_upgrade wiring failed: {_mfue}", file=sys.stderr, flush=True)
+
+# r55 (2026-05-25): brain self-test — single-call health check
+try:
+    from routes.brain_self_test import brain_self_test_bp
+    app.register_blueprint(brain_self_test_bp)
+    print("[main] brain_self_test_bp registered: /api/v1/brain/self-test", flush=True)
+except Exception as _bste:
+    print(f"[main] brain_self_test wiring failed: {_bste}", file=sys.stderr, flush=True)
+
 # Phase r32 (2026-05-24): Media as a living organism — single vital-
 # signs rollup composing press cadence + LinkedIn velocity + source-of-
 # truth + topic pulse + journalist outreach + winback into ONE 0-100

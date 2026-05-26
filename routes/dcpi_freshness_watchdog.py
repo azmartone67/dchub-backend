@@ -137,6 +137,149 @@ def dcpi_freshness():
 
 
 @dcpi_freshness_bp.route(
+    "/api/v1/dcpi/recompute-stale", methods=["POST"]
+)
+def recompute_stale_markets():
+    """r55 (2026-05-25): batch-rescore every market that's stale >7d.
+
+    User observation: 89 markets stuck at 351 hours stale because the
+    canonical MARKETS list in routes/dcpi.py shrank (from ~286 → ~197),
+    but market_power_scores still has the older rows. Cron's chunk-by-
+    offset iteration never touches them. This endpoint walks the DB
+    directly + rescores each, surfacing any silent gather_metrics
+    failures along the way.
+
+    Params:
+      ?max=N         cap how many markets to attempt (default 50)
+      ?dry_run=1     just list candidates, don't rescore
+
+    Admin-keyed.
+    """
+    if not _admin_authorized():
+        return jsonify({"ok": False, "error": "admin_key_required"}), 401
+
+    try:
+        max_n = max(1, min(int(request.args.get("max", 50)), 200))
+    except Exception:
+        max_n = 50
+    dry_run = (request.args.get("dry_run") or "").lower() in ("1", "true", "yes")
+
+    # Find stale market slugs straight from the DB
+    c = _conn()
+    if not c:
+        return jsonify({"ok": False, "error": "db_unavailable"}), 200
+    try:
+        with c.cursor(cursor_factory=psycopg2.extras.RealDictCursor) as cur:
+            cur.execute("""
+                WITH latest AS (
+                    SELECT DISTINCT ON (market_slug)
+                           market_slug, market_name, state, iso,
+                           latitude, longitude, computed_at
+                      FROM market_power_scores
+                     ORDER BY market_slug, computed_at DESC
+                )
+                SELECT market_slug, market_name, state, iso,
+                       latitude, longitude, computed_at,
+                       EXTRACT(EPOCH FROM (NOW() - computed_at))/3600 AS hours_stale
+                  FROM latest
+                 WHERE computed_at < NOW() - INTERVAL '7 days'
+                 ORDER BY computed_at ASC
+                 LIMIT %s
+            """, (max_n,))
+            stale_rows = cur.fetchall()
+    except Exception as e:
+        try: c.close()
+        except Exception: pass
+        return jsonify({"ok": False, "error": str(e)[:200]}), 200
+    finally:
+        try: c.close()
+        except Exception: pass
+
+    if dry_run:
+        return jsonify({
+            "ok":         True,
+            "dry_run":    True,
+            "count":      len(stale_rows),
+            "candidates": [
+                {"slug": r["market_slug"], "name": r["market_name"],
+                 "iso": r["iso"], "hours_stale": round(float(r["hours_stale"] or 0), 1)}
+                for r in stale_rows
+            ],
+        }), 200
+
+    # Real rescoring path — uses the scoring helpers directly so we
+    # don't depend on the slug being in the canonical MARKETS list
+    try:
+        from routes.dcpi import (
+            gather_metrics_for_market,
+            compute_constraint_score, compute_excess_power_score,
+            estimate_time_to_power, derive_verdict, derive_top_signals,
+            _conn as _dcpi_conn,
+        )
+    except Exception as e:
+        return jsonify({"ok": False,
+                         "error": f"dcpi_module_unavailable: {e}"}), 500
+
+    import json as _json
+    rescored = 0
+    failed = []
+    for row in stale_rows:
+        slug = row["market_slug"]
+        # Reconstruct the market tuple from the DB row (this is the
+        # whole point — the canonical MARKETS list no longer has them
+        # but the DB row preserved name/state/iso/lat/lon at last score)
+        m = (slug, row["market_name"], row["state"], row["iso"],
+             row["latitude"], row["longitude"])
+        try:
+            metrics = gather_metrics_for_market(m)
+            c_score = compute_constraint_score(metrics)
+            e_score = compute_excess_power_score(metrics)
+            ttp     = estimate_time_to_power(metrics)
+            verdict = derive_verdict(c_score, e_score)
+            risks, opps = derive_top_signals(m, metrics, c_score, e_score)
+            _vals = (
+                row["market_name"], row["state"], row["iso"],
+                row["latitude"], row["longitude"],
+                c_score, e_score, ttp,
+                metrics.get("queue_capacity_mw"), metrics.get("queue_wait_months"),
+                metrics.get("reserve_margin_pct"),
+                metrics.get("gen_additions_12mo_mw"),
+                metrics.get("curtailment_pct"),
+                metrics.get("stranded_capacity_mw"),
+                metrics.get("emergency_count_30d") or 0,
+                _json.dumps(risks), _json.dumps(opps), verdict,
+            )
+            with _dcpi_conn() as wc, wc.cursor() as wcur:
+                wcur.execute("""
+                    UPDATE market_power_scores SET
+                        market_name=%s, state=%s, iso=%s, latitude=%s, longitude=%s,
+                        constraint_score=%s, excess_power_score=%s,
+                        time_to_power_months=%s,
+                        queue_capacity_mw=%s, queue_wait_months=%s,
+                        reserve_margin_pct=%s,
+                        gen_additions_12mo_mw=%s, curtailment_pct=%s,
+                        stranded_capacity_mw=%s, emergency_count_30d=%s,
+                        top_risks_json=%s, top_opportunities_json=%s,
+                        verdict=%s, computed_at=NOW()
+                    WHERE market_slug=%s
+                """, _vals + (slug,))
+                wc.commit()
+            rescored += 1
+        except Exception as e:
+            failed.append({"slug": slug, "error": f"{type(e).__name__}: {str(e)[:160]}"})
+
+    return jsonify({
+        "ok":            True,
+        "attempted":     len(stale_rows),
+        "rescored":      rescored,
+        "failed_count":  len(failed),
+        "failed_sample": failed[:5],
+        "hint":          ("Run again to clear more (capped at "
+                           f"{max_n}/call). Add ?dry_run=1 to preview without writing."),
+    }), 200
+
+
+@dcpi_freshness_bp.route(
     "/api/v1/dcpi/recompute/<market_slug>", methods=["POST"]
 )
 def force_recompute_market(market_slug):

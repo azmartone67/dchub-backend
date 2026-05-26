@@ -1,0 +1,58 @@
+name: Visitor Intel Email Backfill
+
+# r55 (2026-05-25): /api/v1/admin/upgrade-pool/backfill-emails exists
+# but has never run. User report from r51 era showed visitor intel
+# shows 0 identified visitors with ≥3 hits — the addressable pool
+# is empty because nothing's been populating it. This cron fires
+# the backfill daily at 08:00 UTC.
+#
+# The endpoint scans MCP paywall signals + tool calls for emails
+# extracted via the X-API-Key → developer_keys lookup, plus any
+# clientInfo.email field on the initialize handshake, and writes
+# them to the upgrade_pool table.
+
+on:
+  schedule:
+    - cron: '0 8 * * *'    # 08:00 UTC daily (mid-morning Europe, dawn US)
+  workflow_dispatch: {}
+
+permissions:
+  contents: read
+
+env:
+  BASE: https://dchub-backend-production.up.railway.app
+
+jobs:
+  backfill:
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    steps:
+      - name: Hit /backfill-emails
+        env:
+          ADMIN_KEY: ${{ secrets.DCHUB_ADMIN_KEY }}
+        run: |
+          set -euo pipefail
+          if [ -z "${ADMIN_KEY:-}" ]; then
+            echo "::error::DCHUB_ADMIN_KEY missing — cron cannot run"
+            exit 1
+          fi
+          http_code=$(curl -sS -X POST --max-time 60 \
+            -H "X-Admin-Key: $ADMIN_KEY" \
+            -o /tmp/backfill.body -w "%{http_code}" \
+            "$BASE/api/v1/admin/upgrade-pool/backfill-emails" \
+            || echo "000")
+          body=$(cat /tmp/backfill.body 2>/dev/null || echo "")
+          echo "HTTP $http_code · body: $body"
+          if [ "$http_code" != "200" ] && [ "$http_code" != "202" ]; then
+            echo "::warning::backfill returned $http_code — endpoint may have moved or DCHUB_ADMIN_KEY drifted"
+            exit 0
+          fi
+          # Surface counts
+          python3 - <<PY
+          import json
+          try:
+              d = json.loads("""$body""")
+              print(f"::notice::Backfill: scanned={d.get('scanned')} emails_added={d.get('added')} dupes={d.get('dupes')}")
+          except Exception:
+              pass
+          PY
