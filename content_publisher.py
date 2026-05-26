@@ -674,9 +674,22 @@ _twitter_publisher_running = False
 def start_twitter_publisher():
     """Phase FF+3 (2026-05-13): parallel auto-publisher for X/Twitter.
     Same shape as the LinkedIn loop. Runs every 6h, max 2/day, gated
-    on TWITTER_BEARER_TOKEN OR the OAuth1 quad."""
+    on TWITTER_BEARER_TOKEN OR the OAuth1 quad.
+
+    r41-twitter-disabled (2026-05-25): DISABLED. Three OAuth token
+    rotations all failed with 'keys and tokens from a Twitter
+    developer App that is attached to a Project' (X API v2 requires
+    apps to live inside a Project; the existing app is a legacy
+    standalone). Until the dev-portal app is migrated into a Project,
+    every cycle just generates 403 log noise. Early-return short-
+    circuits the loop entirely. To re-enable: migrate the app, then
+    delete this guard.
+    """
     global _twitter_publisher_running
     if _twitter_publisher_running:
+        return
+    if os.environ.get('TWITTER_PUBLISHER_ENABLED', 'false').lower() not in ('1', 'true', 'yes'):
+        logger.info("X/Twitter auto-publisher DISABLED — set TWITTER_PUBLISHER_ENABLED=true to re-enable once app is in a Project")
         return
     _twitter_publisher_running = True
 

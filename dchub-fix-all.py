@@ -335,10 +335,20 @@ print("\n📄 index.html")
 STATS_SCRIPT = r"""<script>
 (function(){
     fetch('/api/v1/stats').then(r=>r.json()).then(s=>{
+        var live=(s.total_facilities||s.facilities||21000);
+        var liveStr=live.toLocaleString()+'+';
+        // r41-hero-facilities (2026-05-25): #hero-facilities is the
+        // homepage hero span. Pre-fix the healer kept detecting the
+        // stale '21,000+' string and refused to swap (meta/prose rule).
+        // Now we update it in-place client-side so the number stays
+        // honest without the healer needing to touch it.
+        var hero=document.getElementById('hero-facilities');
+        if(hero) hero.textContent=liveStr;
+        // Existing behavior — keep the .metric-value / .feature-stat /
+        // td.check rewrites for back-compat with older landing pages.
         document.querySelectorAll('.metric-value, .feature-stat, td.check').forEach(el=>{
-            if(el.textContent.includes('20,000')){
-                var n=(s.total_facilities||20000).toLocaleString();
-                el.textContent=el.textContent.replace(/20,000\+?/,n+'+');
+            if(el.textContent.includes('20,000')||el.textContent.includes('21,000')){
+                el.textContent=el.textContent.replace(/(20|21|22|23|24|25),000\+?/,liveStr);
             }
         });
     }).catch(()=>{});
