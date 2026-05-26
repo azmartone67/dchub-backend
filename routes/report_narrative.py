@@ -234,6 +234,93 @@ Write only the 3 paragraphs. No preamble, no sign-off.
 """
 
 
+def _build_market_prompt(s: dict, risks: list, opps: list) -> str:
+    """Per-market DCPI prompt. Tighter (100 words, 1 paragraph) than the
+    monthly/quarterly summaries because the page already shows the
+    numbers — narrative adds the *interpretation*."""
+    name = s.get("market_name") or s.get("market_slug") or "this market"
+    iso = s.get("iso") or "—"
+    state = s.get("state") or "—"
+    verdict = s.get("verdict") or "LOW_SIGNAL"
+
+    facts = {
+        "market": name,
+        "state":  state,
+        "iso":    iso,
+        "verdict": verdict,
+        "excess_power_score": s.get("excess_power_score"),
+        "constraint_score":   s.get("constraint_score"),
+        "composite_score":    s.get("composite_score"),
+        "time_to_power_months": s.get("time_to_power_months"),
+        "queue_wait_months":    s.get("queue_wait_months"),
+        "reserve_margin_pct":   s.get("reserve_margin_pct"),
+        "gen_additions_12mo_mw": s.get("gen_additions_12mo_mw"),
+        "curtailment_pct":     s.get("curtailment_pct"),
+        "stranded_capacity_mw": s.get("stranded_capacity_mw"),
+        "top_risks":         risks,
+        "top_opportunities": opps,
+    }
+    return f"""You are a senior research analyst at DC Hub writing a
+single-paragraph market read for the {name} ({state}, {iso}) market
+page. Reader: a developer/PE analyst/journalist evaluating this
+specific market. The numbers below are already shown on the page —
+your job is to add the INTERPRETATION, not restate them.
+
+Write ONE paragraph, ~100 words, in the voice of a CBRE/JLL per-
+market H2 paragraph. Lead with the single most important signal
+(power gap? queue wait? curtailment opportunity?). Take a position
+on what a developer should DO based on the verdict ({verdict}). Name
+the risk OR the opportunity that matters most for *this* market —
+don't just generalize.
+
+DO NOT:
+- Repeat the scores in the prose (page shows them)
+- Use bullets or headers
+- Hedge — take a position
+- Mention "DC Hub" by name
+
+Facts:
+{json.dumps(facts, indent=2, default=str)}
+
+Write the paragraph only. No preamble.
+"""
+
+
+def attach_market_narrative(s: dict, risks: list, opps: list) -> str | None:
+    """Returns a narrative string for the market detail page, or None.
+    Cached per (slug, generated_at-date). Different signature from
+    attach_narrative() because the dcpi route holds the dict in a
+    template variable rather than in JSON response."""
+    if not isinstance(s, dict) or not _ANTHROPIC_KEY:
+        return None
+
+    slug = s.get("market_slug") or s.get("market_name") or "unknown"
+    date_key = _dt.date.today().isoformat()
+    key = f"market:{slug}:{date_key}"
+    now = time.monotonic()
+
+    cached = _CACHE.get(key)
+    if cached and (now - cached["computed_at"]) < _CACHE_TTL:
+        return cached["text"]
+
+    try:
+        prompt = _build_market_prompt(s, risks or [], opps or [])
+    except Exception as e:
+        logger.warning(f"market narrative prompt failed for {slug}: {e}")
+        return None
+
+    text = _call_claude(prompt)
+    if not text:
+        return None
+
+    _CACHE[key] = {
+        "text": text,
+        "computed_at": now,
+        "generated_at": _dt.datetime.utcnow().isoformat() + "Z",
+    }
+    return text
+
+
 def _call_claude(prompt: str) -> str | None:
     """Single Claude call. Returns narrative text or None on failure.
     Uses haiku — cheap, fast, plenty for analyst prose."""

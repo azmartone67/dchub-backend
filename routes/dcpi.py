@@ -3122,6 +3122,17 @@ h1 {
     {% else %}🔴 AVOID FOR NEW BUILDS — Severe constraints, multi-year wait{% endif %}
   </div>
 
+  {% if narrative %}
+  <div style="background:rgba(99,102,241,0.06);border-left:3px solid var(--acc);
+              padding:1.4rem 1.8rem;border-radius:8px;margin:1.5rem 0 2rem;
+              font-size:1.02rem;line-height:1.7;color:#e5e7eb">
+    <div style="font-family:'JetBrains Mono',monospace;font-size:0.72rem;
+                text-transform:uppercase;letter-spacing:0.12em;color:var(--acc);
+                margin-bottom:0.6rem">Analyst read · auto-generated · claude-haiku</div>
+    {{ narrative }}
+  </div>
+  {% endif %}
+
   <div class="scoreboard">
     <div class="sb">
       <div class="v {{ 'green' if s.excess_power_score>=65 else 'orange' if s.excess_power_score>=40 else 'red' }}">{{ s.excess_power_score }}</div>
@@ -3407,7 +3418,22 @@ def public_market_page(slug):
     if s.get("computed_at"): s["computed_at"] = s["computed_at"].isoformat()
     risks = s.get("top_risks_json") or []
     opps = s.get("top_opportunities_json") or []
-    market_html = render_template_string(DCPI_MARKET_TEMPLATE, s=s, risks=risks, opps=opps)
+
+    # r42g (2026-05-25): per-market analyst narrative. ~100 words,
+    # 1 paragraph, in CBRE/JLL per-market H2 voice. Silent no-op when
+    # ANTHROPIC_API_KEY absent. Cached 1h per (slug, date). Cost ~$0.001
+    # × 285 markets × 1 cache cycle/day = ~$0.30/day if every market is
+    # read at least once.
+    narrative_text = ""
+    try:
+        from routes.report_narrative import attach_market_narrative
+        narrative_text = attach_market_narrative(s, risks, opps) or ""
+    except Exception:
+        pass
+
+    market_html = render_template_string(DCPI_MARKET_TEMPLATE, s=s,
+                                          risks=risks, opps=opps,
+                                          narrative=narrative_text)
     market_resp = Response(market_html, mimetype="text/html")
     market_resp.headers["Content-Security-Policy"] = _DCPI_CSP  # phase 284
     return market_resp
