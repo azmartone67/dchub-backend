@@ -226,6 +226,17 @@ def rate_limit_before():
     if raw_ip in ('127.0.0.1', '::1', 'localhost'):
         return None
 
+    # r42r (2026-05-26): Sentinel + brain self-probes send X-DC-Probe
+    # identifying themselves; bypass rate limit regardless of IP/UA so
+    # the platform's own health checks never appear "broken" in the
+    # Sentinel dashboard. Catches 14/67 sentinel failures that all read
+    # HTTP 429 — self-inflicted, not real degradation.
+    probe_marker = (request.headers.get('X-DC-Probe') or '').lower()
+    if probe_marker in ('site-sentinel', 'brain-radar', 'self-heal',
+                          'dc-brain-site-probe', 'dc-security-audit',
+                          'dc-healer'):
+        return None
+
     # Phase ZZZZZ-round6c (2026-05-23): Bypass Railway's own internal
     # IP ranges. Our brain-radar, dchub-selfheal, healer, sentinel, etc.
     # all hit dchub.cloud from Railway infrastructure to verify endpoint
