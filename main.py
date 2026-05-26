@@ -6860,7 +6860,16 @@ def mcp_manifest():
         manifest["tools_source"] = "live"
     else:
         manifest["tools_source"] = "fallback_static"
-    return jsonify(manifest), 200, {'Access-Control-Allow-Origin': '*'}
+    # r47.12.1: tell CF + downstream caches NOT to cache this — the live
+    # mirror has its own 5-min in-process cache, that's the source of
+    # truth for cadence. Without no-store, CF was holding the OLD 1.26.0
+    # manifest for ~hour while Railway already served v2.1.10.
+    return jsonify(manifest), 200, {
+        'Access-Control-Allow-Origin': '*',
+        'Cache-Control': 'no-store, max-age=0',
+        'CDN-Cache-Control': 'no-store',
+        'Surrogate-Control': 'no-store',
+    }
 
 try:
     from ai_orchestrator import setup_orchestrator_routes, get_orchestrator
