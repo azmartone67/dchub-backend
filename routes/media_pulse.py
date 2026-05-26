@@ -222,8 +222,12 @@ def _compute_source_of_truth() -> dict:
     elif cited >= 3:  score += 10
     elif cited >= 1:  score += 5
     # AI citations BREADTH (distinct engines): 0-25 pts — NEW
+    # r49.3 (2026-05-25): finer-grained buckets so each new engine earns
+    # incremental score. Was: ≥3=18, ≥5=25 (3-engine plateau).
+    # Now: each tier from 1→5 lifts the score.
     breadth = out["distinct_engines_cited_7d"]
     if   breadth >= 5: score += 25   # cited by 5+ distinct AI platforms
+    elif breadth >= 4: score += 22
     elif breadth >= 3: score += 18
     elif breadth >= 2: score += 10
     elif breadth >= 1: score += 5
@@ -241,10 +245,9 @@ def _compute_source_of_truth() -> dict:
     elif aw >= 5 and uw >= 3: score += 18
     elif aw >= 3:              score += 10
     elif aw >= 1:              score += 5
-    # Diversity bonus: +5 if 30d breadth also high (sustained citation
-    # spread, not just one-week burst)
-    if out["distinct_engines_cited_30d"] >= 5:
-        score += 5
+    # Diversity bonus: sustained citation spread, not just one-week burst
+    if   out["distinct_engines_cited_30d"] >= 5: score += 5
+    elif out["distinct_engines_cited_30d"] >= 4: score += 3
     out["score"] = max(0, min(100, score))
 
     # Score interpretation
