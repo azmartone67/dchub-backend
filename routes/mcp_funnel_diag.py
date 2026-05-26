@@ -150,6 +150,93 @@ def funnel_diag():
     return jsonify(out), 200
 
 
+@mcp_funnel_bp.route("/signal-attribution", methods=["GET"])
+def signal_attribution():
+    """Phase r51-attr (2026-05-26). The anon-ua-breakdown showed all 3,299
+    paywall hits have (null IP, empty UA). Before optimizing further, we
+    need to know WHERE those rows are written from. This exposes raw
+    distributions: signal_type, has_ip%, has_ua%, has_session%, has_email%,
+    tool concentration, and the latest 10 raw rows (with hash-redacted IPs)
+    so we can see the actual shape of what's being captured.
+    """
+    if _pg is None:
+        return jsonify({"error": "psycopg2 not available"}), 500
+    import hashlib
+    out = {"at": datetime.datetime.utcnow().isoformat() + "Z"}
+    try:
+        with _conn() as c, c.cursor() as cur:
+            # Signal-type distribution
+            cur.execute(
+                """SELECT COALESCE(signal_type, '(null)'), COUNT(*)
+                     FROM mcp_upgrade_signals
+                    WHERE created_at > NOW() - INTERVAL '7 days'
+                 GROUP BY 1 ORDER BY 2 DESC"""
+            )
+            out["signal_types_7d"] = {r[0]: int(r[1]) for r in cur.fetchall()}
+            # Capture quality
+            cur.execute(
+                """SELECT
+                     COUNT(*) AS total,
+                     COUNT(*) FILTER (WHERE ip_address IS NOT NULL AND ip_address <> '') AS has_ip,
+                     COUNT(*) FILTER (WHERE user_agent IS NOT NULL AND user_agent <> '') AS has_ua,
+                     COUNT(*) FILTER (WHERE session_id IS NOT NULL AND session_id <> '') AS has_session,
+                     COUNT(*) FILTER (WHERE user_email IS NOT NULL AND user_email <> '') AS has_email,
+                     COUNT(*) FILTER (WHERE mcp_client IS NOT NULL AND mcp_client NOT IN ('','mcp','unknown')) AS has_client,
+                     COUNT(*) FILTER (WHERE api_key IS NOT NULL AND api_key <> '') AS has_api_key
+                   FROM mcp_upgrade_signals
+                  WHERE created_at > NOW() - INTERVAL '7 days'"""
+            )
+            r = cur.fetchone()
+            total = max(int(r[0] or 0), 1)
+            out["capture_quality_7d"] = {
+                "total":       int(r[0] or 0),
+                "has_ip_pct":      round(100.0 * (r[1] or 0) / total, 1),
+                "has_ua_pct":      round(100.0 * (r[2] or 0) / total, 1),
+                "has_session_pct": round(100.0 * (r[3] or 0) / total, 1),
+                "has_email_pct":   round(100.0 * (r[4] or 0) / total, 1),
+                "has_client_pct":  round(100.0 * (r[5] or 0) / total, 1),
+                "has_api_key_pct": round(100.0 * (r[6] or 0) / total, 1),
+            }
+            # 10 latest raw rows (UA/IP-hash redacted)
+            cur.execute(
+                """SELECT created_at, signal_type, tool_requested, tier_current,
+                          session_id, user_agent, ip_address, mcp_client, message_shown
+                     FROM mcp_upgrade_signals
+                    WHERE created_at > NOW() - INTERVAL '7 days'
+                 ORDER BY created_at DESC LIMIT 10"""
+            )
+            latest = []
+            for created, st, tool, tier, sid, ua, ip, mc, msg in cur.fetchall():
+                ip_clean = (str(ip or '').split(',')[0].strip())
+                ip_hash = hashlib.sha256(ip_clean.encode('utf-8')).hexdigest()[:12] if ip_clean else None
+                latest.append({
+                    "at":             created.isoformat() if created else None,
+                    "signal_type":    st,
+                    "tool":           tool,
+                    "tier":           tier,
+                    "session_id":     (sid or '')[:16] + "..." if sid else None,
+                    "ip_hash":        ip_hash,
+                    "user_agent":     (ua or '')[:80],
+                    "mcp_client":     mc,
+                    "msg_first_80c":  (msg or '')[:80],
+                })
+            out["latest_10"] = latest
+            # Top distinct session_ids by hit count — same session repeatedly?
+            cur.execute(
+                """SELECT COALESCE(NULLIF(session_id, ''), '(null)'), COUNT(*)
+                     FROM mcp_upgrade_signals
+                    WHERE created_at > NOW() - INTERVAL '7 days'
+                 GROUP BY 1 ORDER BY 2 DESC LIMIT 10"""
+            )
+            out["top_sessions_7d"] = [
+                {"session_prefix": (s[:16] + "...") if s and s != '(null)' else s, "hits": int(n)}
+                for s, n in cur.fetchall()
+            ]
+        return jsonify(out), 200
+    except Exception as e:
+        return jsonify({"error": str(e)[:200]}), 500
+
+
 @mcp_funnel_bp.route("/anon-ua-breakdown", methods=["GET"])
 def anon_ua_breakdown():
     """Phase r51-cluster (2026-05-26). 99.7% of paywall hits classify as
