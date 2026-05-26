@@ -564,10 +564,17 @@ def partners_index():
     return Response(html, mimetype="text/html; charset=utf-8")
 
 
-@partner_landing_bp.route("/partners/<slug>", methods=["GET"])
+@partner_landing_bp.route("/partners/<slug>", methods=["GET"], strict_slashes=False)
 def partner_page(slug):
-    """Full HTML landing page for one partner."""
-    p = _PARTNERS.get(slug)
+    """Full HTML landing page for one partner.
+
+    r77.4 (2026-05-26): added `strict_slashes=False` + case-insensitive
+    slug lookup so /partners/nlr, /partners/nlr/, /partners/NLR, and
+    /partners/Nlr all resolve to the same page. Trailing-slash + ALL-CAPS
+    are the two ways NLR contacts copy-paste URLs in practice; both used
+    to 404 because Flask's default route matcher is exact + case-sensitive.
+    """
+    p = _PARTNERS.get(slug) or _PARTNERS.get((slug or "").lower())
     if not p:
         return Response(
             f"<h1>Unknown partner: {slug}</h1>"
@@ -575,15 +582,20 @@ def partner_page(slug):
             f"<p><a href='/partners'>← All partners</a></p>",
             status=404, mimetype="text/html"
         )
-    _track_visit(slug)
-    html = _render_partner_page(slug, p)
+    _track_visit(slug.lower() if slug else slug)
+    html = _render_partner_page(slug.lower() if slug else slug, p)
     return Response(html, mimetype="text/html; charset=utf-8")
 
 
-@partner_landing_bp.route("/api/v1/partners/<slug>", methods=["GET"])
+@partner_landing_bp.route("/api/v1/partners/<slug>", methods=["GET"], strict_slashes=False)
 def partner_json(slug):
-    """JSON shape — for AI agents introspecting the partner config."""
-    p = _PARTNERS.get(slug)
+    """JSON shape — for AI agents introspecting the partner config.
+
+    r77.4: same trailing-slash + case-insensitive treatment as
+    /partners/<slug> above. Agents pasting links from press releases
+    or LinkedIn cards may add either.
+    """
+    p = _PARTNERS.get(slug) or _PARTNERS.get((slug or "").lower())
     if not p:
         return jsonify({"ok": False, "error": "unknown_partner",
                           "valid_slugs": list(_PARTNERS.keys())}), 404
