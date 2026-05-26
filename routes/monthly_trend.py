@@ -1316,8 +1316,11 @@ def _render_markdown(d: dict) -> str:
     lines.append(f"- **{(h.get('total_mw') or 0)/1000:,.1f} GW** total power (operational + pipeline)")
     if h.get("facilities_added_month") is not None:
         lines.append(f"- **{h.get('facilities_added_month', 0):,}** new facilities discovered this month")
+    # value is in $M (see _compute_report); divide by 1000 → $B
+    _val_m = curr.get('value', 0) or 0
+    _val_b = _val_m / 1000.0
     lines.append(f"- **{curr.get('count', 0):,}** M&A deals tracked "
-                 f"(${curr.get('value', 0):,.1f}B disclosed value · "
+                 f"(${_val_b:,.1f}B disclosed value · "
                  f"{curr.get('mw', 0):,.0f} MW changing hands)")
     lines.append("")
 
