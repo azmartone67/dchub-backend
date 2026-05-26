@@ -62,8 +62,11 @@ def _gather_energy(window: str) -> dict:
 
     r42o (2026-05-26): try Redis first (shared across gunicorn workers)
     so we don't waste a 4-fetch + LLM round-trip per worker per cycle.
-    Falls back to per-process dict if Redis is unavailable."""
-    cache_key = f"dchub:energy_report:{window}"
+    Falls back to per-process dict if Redis is unavailable.
+
+    r42q (2026-05-26): bumped cache_key version (v2) to force-invalidate
+    yesterday's poisoned quarterly entry (7-markets-all-BUILD state)."""
+    cache_key = f"dchub:energy_report:v2:{window}"
 
     # Try Redis first (shared)
     try:
@@ -82,6 +85,14 @@ def _gather_energy(window: str) -> dict:
             return dict(local["data"])
 
     data = _gather_energy_uncached(window)
+
+    # r42q (2026-05-26): refuse to cache poisoned data. If the gather
+    # surfaced a partial-fetch poison flag, skip the cache write so
+    # the next reader re-fetches with fresh upstream state.
+    if data.get("_partial_cache_poison"):
+        logger.warning(f"energy_report({window}): partial-cache poison "
+                        f"({data.get('_failed_verdicts')}), skipping cache write")
+        return dict(data)
 
     # Write to both caches
     try:
@@ -114,20 +125,35 @@ def _gather_energy_uncached(window: str) -> dict:
     # r42n (2026-05-26): parallelize 4 verdict fetches. Sequential was
     # 8-12s (each 2-3s); parallel runs in max(t) ≈ 3s.
     leaderboard = []
+    verdict_results = {}
 
     def _fetch_verdict(v):
         try:
             r = requests.get(f"{BASE}/api/v1/dcpi/leaderboard",
-                              params={"verdict": v, "limit": 100}, timeout=6)
-            return (r.json() or {}).get("leaderboard") or []
+                              params={"verdict": v, "limit": 100}, timeout=8)
+            return v, (r.json() or {}).get("leaderboard") or []
         except Exception as e:
             out.setdefault("_leaderboard_errs", []).append(f"{v}: {str(e)[:80]}")
-            return []
+            return v, None  # None signals failure (vs empty-list = no markets)
 
     with ThreadPoolExecutor(max_workers=4) as ex:
-        for chunk in ex.map(_fetch_verdict,
-                            ("BUILD", "CAUTION", "AVOID", "LOW_SIGNAL")):
-            leaderboard.extend(chunk)
+        for v, chunk in ex.map(_fetch_verdict,
+                                ("BUILD", "CAUTION", "AVOID", "LOW_SIGNAL")):
+            verdict_results[v] = chunk
+            if chunk:
+                leaderboard.extend(chunk)
+
+    # r42q (2026-05-26): partial-cache poison detector. If 3+ of 4
+    # verdict fetches returned None (failure), the data is unreliable
+    # — refuse to cache so the next caller re-fetches. Yesterday's
+    # quarterly was poisoned for hours because only BUILD succeeded
+    # once and the cache held a "7 markets, all BUILD" view that was
+    # 1/25th of reality.
+    _failed = sum(1 for v, c in verdict_results.items() if c is None)
+    if _failed >= 3:
+        out["_partial_cache_poison"] = True
+        out["_failed_verdicts"] = [v for v, c in verdict_results.items() if c is None]
+        # Caller checks _partial_cache_poison to skip the Redis write.
 
     verdicts = {"BUILD": 0, "CAUTION": 0, "AVOID": 0, "LOW_SIGNAL": 0}
     for row in leaderboard:
