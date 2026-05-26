@@ -415,16 +415,33 @@ def list_surfaces():
         resp.headers["Access-Control-Allow-Origin"] = "*"
         return resp, 200
 
-    out = []
-    for sid, surface in sorted(SURFACES.items()):
+    # r41-surfaces-parallel (2026-05-25): parallelize health_score() calls.
+    # Each call does 2 DB queries (pulse + growth) ≈ 250ms each. With 65
+    # surfaces that's ~32s serial — past Railway's 30s gunicorn timeout,
+    # so /api/v1/surfaces was returning 503 backend-unreachable via the
+    # Cloudflare worker fallback. Same parallelization we applied to
+    # check_surface_health_critical in the brain consistency-radar; now
+    # ~4-6s wall time via 8-worker pool. Capped at 8 workers so we don't
+    # exhaust the DB pool (50 max, plenty of headroom for other traffic).
+    import concurrent.futures as _cf
+
+    sorted_items = sorted(SURFACES.items())
+
+    def _score_one(item):
+        sid, surface = item
         try:
-            score = surface.health_score()
+            return sid, surface, surface.health_score()
         except Exception:
-            score = None
-        out.append({
-            **surface.to_dict(),
-            "health_score": score,
-        })
+            return sid, surface, None
+
+    out = []
+    with _cf.ThreadPoolExecutor(max_workers=8,
+                                 thread_name_prefix="surfaces-api") as ex:
+        for sid, surface, score in ex.map(_score_one, sorted_items):
+            out.append({
+                **surface.to_dict(),
+                "health_score": score,
+            })
     payload = {
         "surfaces":  out,
         "count":     len(out),

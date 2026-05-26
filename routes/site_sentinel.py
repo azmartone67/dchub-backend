@@ -113,7 +113,12 @@ _MANIFEST: list[dict] = [
 
     # Phase BBBB + CCCC (2026-05-16) — new surfaces shipped today.
     {"path": "/spare-capacity",          "category": "high",   "min_bytes": 3000, "label": "Spare Capacity", "wants_nav": True},
-    {"path": "/api/v1/spare-capacity/listings", "category": "normal", "min_bytes": 200, "label": "Spare Capacity API"},
+    # r41-sentinel-thresholds (2026-05-25): lowered min_bytes 200→80.
+    # The endpoint returns a valid empty-state JSON shape
+    # {"count":0,"listings":[],"total":0,...} ≈ 127 bytes — correct
+    # behavior when no spare-capacity submissions exist yet, was
+    # triggering a false-positive "body_too_small" finding.
+    {"path": "/api/v1/spare-capacity/listings", "category": "normal", "min_bytes": 80, "label": "Spare Capacity API"},
     {"path": "/api/v1/developers/funnel","category": "normal", "min_bytes": 100, "label": "Developers Funnel API"},
 
     # Phase GGGG-JJJJ (2026-05-16) — new surfaces from master shell

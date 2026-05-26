@@ -12988,6 +12988,20 @@ def facility_by_slug(slug):
     keeps working too. The brain SHOULD have caught this — a new
     detector (check_repeated_404_patterns) now watches for exactly this
     failure mode."""
+    # r41-facilities-reserved-paths (2026-05-25): the catchall <path:slug>
+    # was swallowing literal sub-paths like /facilities/delta because
+    # Flask's routing matches by registration order and the facilities_delta
+    # blueprint registers AFTER this app.route. Sentinel reported this as
+    # a 404 "Invalid slug" with seen=42 cycles. Delegate to the real
+    # delta handler here so the dispatch works regardless of blueprint
+    # registration order. Add more reserved literal segments as needed.
+    if slug == 'delta':
+        try:
+            from routes.facilities_delta import facilities_delta as _fd_handler
+            return _fd_handler()
+        except Exception as _e_fd:
+            return jsonify({'success': False, 'error': 'delta handler unavailable',
+                            'detail': str(_e_fd)[:200]}), 503
     parts = slug.rsplit('-', 1)
     if len(parts) != 2 or len(parts[1]) != 8:
         return jsonify({'success': False, 'error': 'Invalid slug'}), 404
