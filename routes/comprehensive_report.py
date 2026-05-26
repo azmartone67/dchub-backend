@@ -665,3 +665,119 @@ def quarterly_json():
     return jsonify(d), 200, {"Cache-Control": "public, max-age=900",
                              "Link": _CC_LINK_HEADER,
                              "X-License": "CC-BY-4.0"}
+
+
+# ── r42b: narrative-only shortcut (2026-05-25) ───────────────────────
+@comprehensive_report_bp.route("/api/v1/reports/quarterly-deep/narrative",
+                                methods=["GET"], strict_slashes=False)
+def quarterly_narrative_only():
+    """Minimal payload: just the LLM exec summary + period + license.
+    For Substack/LinkedIn embeds + journalist quote-pulls."""
+    d = _attach_narrative_safe(_attach_license(_gather(quarter_window=True), "quarterly"), "quarterly")
+    narr = d.get("narrative_summary") or {}
+    import datetime as _dt
+    label = f"Q{(_dt.date.today().month - 1)//3 + 1} {_dt.date.today().year}"
+    out = {
+        "quarter_label": label,
+        "window_days":   d.get("window_days"),
+        "narrative":     narr.get("text"),
+        "model":         narr.get("model"),
+        "generated_at":  narr.get("generated_at"),
+        "permalink":     "https://dchub.cloud/reports/quarterly-deep",
+        "full_report":   "https://dchub.cloud/api/v1/reports/quarterly-deep",
+        "license":       d.get("license"),
+    }
+    return jsonify(out), 200, {"Cache-Control": "public, max-age=900",
+                                "Access-Control-Allow-Origin": "*",
+                                "Link": _CC_LINK_HEADER,
+                                "X-License": "CC-BY-4.0"}
+
+
+# ── r42c: markdown view (2026-05-25) ─────────────────────────────────
+@comprehensive_report_bp.route("/reports/quarterly-deep.md",
+                                methods=["GET"], strict_slashes=False)
+def quarterly_md():
+    """Paste-ready markdown view of the quarterly deep-dive."""
+    d = _attach_narrative_safe(_gather(quarter_window=True), "quarterly")
+    return Response(_render_markdown_quarter(d),
+                    mimetype="text/markdown; charset=utf-8",
+                    headers={"Cache-Control": "public, max-age=900",
+                             "Access-Control-Allow-Origin": "*",
+                             "Link": _CC_LINK_HEADER})
+
+
+def _render_markdown_quarter(d: dict) -> str:
+    """Paste-ready quarterly markdown. Designed for journalist briefings,
+    private-equity desks, hyperscaler comms teams."""
+    import datetime as _dt
+    label = f"Q{(_dt.date.today().month - 1)//3 + 1} {_dt.date.today().year}"
+    window_days = d.get("window_days", 90)
+    narr = d.get("narrative_summary") or {}
+    narr_text = (narr.get("text") or "").strip()
+    build = (d.get("top_build_markets") or [])[:5]
+    avoid = (d.get("top_avoid_markets") or [])[:5]
+    hyperscaler = (d.get("hyperscaler_deals") or [])[:5]
+
+    lines = []
+    lines.append(f"# DC Hub — {label} Quarterly Deep-Dive")
+    lines.append(f"_Live data, {window_days}-day window._ "
+                 f"[Full report](https://dchub.cloud/reports/quarterly-deep) · "
+                 f"[JSON](https://dchub.cloud/api/v1/reports/quarterly-deep) · "
+                 f"CC-BY-4.0")
+    lines.append("")
+
+    if narr_text:
+        lines.append("## Executive summary")
+        lines.append(f"_auto-generated · {narr.get('model','claude')} · "
+                     f"{(narr.get('generated_at') or '')[:10]}_")
+        lines.append("")
+        lines.append(narr_text)
+        lines.append("")
+
+    lines.append("## Headline numbers")
+    lines.append(f"- **{(d.get('total_facilities') or 0):,}** facilities tracked")
+    lines.append(f"- **{d.get('markets_scored', 0)}** markets scored by DCPI")
+    lines.append(f"- **{d.get('ma_count', 0)}** M&A deals "
+                 f"(${(d.get('ma_total_value_m') or 0)/1000:,.1f}B disclosed) "
+                 f"in last {window_days} days")
+    if d.get("press_count"):
+        lines.append(f"- **{d.get('press_count')}** press releases tracked")
+    lines.append("")
+
+    if build:
+        lines.append("## Top BUILD markets")
+        for m in build:
+            score = m.get("score")
+            score_str = f"{score:.0f}/100" if score is not None else "—"
+            lines.append(f"- **{m.get('market','?')}** "
+                         f"({m.get('iso','—')}) · DCPI {score_str}")
+        lines.append("")
+
+    if avoid:
+        lines.append("## Top AVOID flags")
+        for m in avoid:
+            reason = m.get("reason") or m.get("verdict") or "—"
+            lines.append(f"- **{m.get('market','?')}** · {reason}")
+        lines.append("")
+
+    if hyperscaler:
+        lines.append("## Hyperscaler $1B+ deals")
+        for h in hyperscaler:
+            val = h.get("value_b")
+            val_str = f"${val:,.1f}B" if val else "undisclosed"
+            mw = h.get("mw")
+            mw_str = f" · {mw:,.0f} MW" if mw else ""
+            lines.append(f"- **{h.get('buyer','?')}** "
+                         f"acquired **{h.get('target','?')}** · "
+                         f"{val_str}{mw_str}")
+        lines.append("")
+
+    lines.append("## Attribution")
+    lines.append("DC Hub. (2026). Quarterly Deep Report. "
+                 "https://dchub.cloud/reports/quarterly-deep. Licensed CC-BY-4.0.")
+    lines.append("")
+    lines.append("---")
+    lines.append(f"_Generated {(d.get('generated_at') or '')[:19].replace('T',' ')} UTC · "
+                 f"[/api/v1/reports/quarterly-deep](https://dchub.cloud/api/v1/reports/quarterly-deep) · "
+                 f"[/llms.txt](https://dchub.cloud/llms.txt)_")
+    return "\n".join(lines)

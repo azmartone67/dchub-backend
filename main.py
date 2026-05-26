@@ -23382,6 +23382,16 @@ try:
 except Exception as _cr_e:
     print(f"[main] comprehensive_report_bp register failed: {_cr_e}", flush=True)
 
+# r42d (2026-05-25): /sample landing page — live preview of narratives
+# + curl one-liners + share buttons. Marketing surface that turns
+# "we have an API" into "you can have one in 30 seconds."
+try:
+    from routes.sample_landing import sample_landing_bp
+    app.register_blueprint(sample_landing_bp)
+    print("[main] sample_landing_bp registered: /sample", flush=True)
+except Exception as _sl_e:
+    print(f"[main] sample_landing_bp register failed: {_sl_e}", flush=True)
+
 # Phase ZZZZZ-round47.14 (2026-05-25): weekly partnership LinkedIn post.
 # Cycles through 7 anchors (partners/dchawk/dcbyte/dcd/dcf/cbre/jll)
 # at one per ISO week. Fires from cron_heartbeat at Wed 14:00 UTC.

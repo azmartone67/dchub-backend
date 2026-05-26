@@ -1240,6 +1240,115 @@ def monthly_json_specific(year: int, month: int):
     return resp
 
 
+# ── r42b: narrative-only shortcut (2026-05-25) ───────────────────────
+@monthly_trend_bp.route("/api/v1/reports/monthly/narrative",
+                         methods=["GET"], strict_slashes=False)
+def monthly_narrative_only():
+    """Minimal payload: just the LLM exec summary + period + license.
+    Designed for Substack/LinkedIn embeds, journalist quote-pulls,
+    and the 'free preview' surface in partnerships."""
+    d = _attach_narrative_safe(_attach_license(_compute_report()))
+    narr = d.get("narrative_summary") or {}
+    out = {
+        "month_label":  d.get("month_label"),
+        "month":        d.get("month"),
+        "year":         d.get("year"),
+        "as_of_date":   d.get("as_of_date"),
+        "narrative":    narr.get("text"),
+        "model":        narr.get("model"),
+        "generated_at": narr.get("generated_at"),
+        "permalink":    f"https://dchub.cloud/reports/monthly/{d.get('year')}-{d.get('month'):02d}" if d.get("year") and d.get("month") else "https://dchub.cloud/reports/monthly",
+        "full_report":  "https://dchub.cloud/api/v1/reports/monthly",
+        "license":      d.get("license"),
+    }
+    resp = jsonify(out)
+    resp.headers["Cache-Control"] = "public, max-age=900"
+    resp.headers["Access-Control-Allow-Origin"] = "*"
+    resp.headers["Link"] = '<https://creativecommons.org/licenses/by/4.0/>; rel="license"'
+    return resp
+
+
+# ── r42c: markdown view (2026-05-25) ─────────────────────────────────
+@monthly_trend_bp.route("/reports/monthly.md", methods=["GET"],
+                        strict_slashes=False)
+def monthly_md():
+    """Plaintext-markdown view of the monthly report. Paste-ready into
+    Slack, Discord, blog posts, journalist briefings."""
+    d = _attach_narrative_safe(_compute_report())
+    return Response(_render_markdown(d),
+                    mimetype="text/markdown; charset=utf-8",
+                    headers={"Cache-Control": "public, max-age=900",
+                             "Access-Control-Allow-Origin": "*",
+                             "Link": '<https://creativecommons.org/licenses/by/4.0/>; rel="license"'})
+
+
+def _render_markdown(d: dict) -> str:
+    """Compose a paste-ready markdown report. Stays under ~3KB so it
+    survives Slack/LinkedIn editors without truncation."""
+    label = d.get("month_label") or f"{d.get('year')}-{d.get('month')}"
+    h = d.get("headline") or {}
+    df = d.get("deal_flow") or {}
+    curr = df.get("current") or {}
+    narr = d.get("narrative_summary") or {}
+    narr_text = (narr.get("text") or "").strip()
+    top_mkts = (d.get("top_markets") or [])[:5]
+    top_deals = (d.get("top_deals") or [])[:5]
+    as_of = d.get("as_of_date", "")
+
+    lines = []
+    lines.append(f"# DC Hub — {label} Monthly Trend Snapshot")
+    lines.append(f"_Live data as of {as_of}._ "
+                 f"[Full report](https://dchub.cloud/reports/monthly) · "
+                 f"[JSON](https://dchub.cloud/api/v1/reports/monthly) · "
+                 f"CC-BY-4.0")
+    lines.append("")
+
+    if narr_text:
+        lines.append("## Executive summary")
+        lines.append(f"_auto-generated · {narr.get('model','claude')} · "
+                     f"{(narr.get('generated_at') or '')[:10]}_")
+        lines.append("")
+        lines.append(narr_text)
+        lines.append("")
+
+    lines.append("## Headline numbers")
+    lines.append(f"- **{h.get('facilities_total', 0):,}** facilities tracked")
+    lines.append(f"- **{(h.get('total_mw') or 0)/1000:,.1f} GW** total power (operational + pipeline)")
+    if h.get("facilities_added_month") is not None:
+        lines.append(f"- **{h.get('facilities_added_month', 0):,}** new facilities discovered this month")
+    lines.append(f"- **{curr.get('count', 0):,}** M&A deals tracked "
+                 f"(${curr.get('value', 0):,.1f}B disclosed value · "
+                 f"{curr.get('mw', 0):,.0f} MW changing hands)")
+    lines.append("")
+
+    if top_mkts:
+        lines.append("## Top markets by operating MW")
+        for m in top_mkts:
+            lines.append(f"- **{m.get('market','?')}** — "
+                         f"{m.get('total_mw', 0):,.0f} MW "
+                         f"({m.get('facilities', 0):,} facilities)")
+        lines.append("")
+
+    if top_deals:
+        lines.append("## Top deals")
+        for x in top_deals:
+            val = x.get("value")
+            val_str = f"${val:,.0f}M" if val else "undisclosed"
+            lines.append(f"- {x.get('date','—')} · **{x.get('buyer') or '?'}** "
+                         f"← {x.get('seller') or '?'} · {val_str}")
+        lines.append("")
+
+    lines.append("## Attribution")
+    lines.append("DC Hub. (2026). Monthly Data Center Trend Report. "
+                 "https://dchub.cloud/reports/monthly. Licensed CC-BY-4.0.")
+    lines.append("")
+    lines.append("---")
+    lines.append(f"_Generated {d.get('generated_at', '')[:19].replace('T',' ')} UTC · "
+                 f"[/api/v1/reports/monthly](https://dchub.cloud/api/v1/reports/monthly) · "
+                 f"[/llms.txt](https://dchub.cloud/llms.txt)_")
+    return "\n".join(lines)
+
+
 @monthly_trend_bp.route("/api/v1/reports/monthly/archive", methods=["POST"])
 def monthly_archive():
     """Admin: snapshot a closed month into monthly_reports so the
