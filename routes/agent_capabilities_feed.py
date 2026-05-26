@@ -21,6 +21,8 @@ Endpoint:
 import os
 import datetime
 import json
+import threading
+import time
 from contextlib import contextmanager
 from flask import Blueprint, jsonify, request
 
@@ -30,6 +32,18 @@ except Exception:
     _pg = None
 
 agent_capabilities_bp = Blueprint("agent_capabilities_feed", __name__)
+
+# r47.31 (2026-05-26): process-local memo cache. The endpoint advertises
+# cache_ttl_seconds=86400, so the server should hold the same data — there's
+# no value in re-running 5+ DB queries per request when the answer changes
+# at midnight UTC. Without this, a cold/busy Railway burst causes the Pages
+# worker's subrequest to time out at ~5s, dropping us to 503 fallback.
+#
+# Keyed by data_version (YYYYMMDD int). One stale-while-revalidate slot
+# per worker process. Lock-guarded so concurrent requests don't pile up
+# on the same recompute.
+_CAPS_CACHE: dict = {"data_version": None, "payload": None, "computed_at": 0.0}
+_CAPS_LOCK = threading.Lock()
 
 
 def _dsn():
@@ -216,20 +230,49 @@ def _gather():
     return out
 
 
+def _cached_gather():
+    """r47.31: serve from process-local memo if data_version hasn't flipped.
+
+    data_version is a YYYYMMDD int — same value all day, increments at
+    midnight UTC. If our cached payload's data_version matches today's,
+    return it directly (no DB hop). Otherwise recompute under lock.
+
+    Cuts request time from ~5-20s (cold DB) to ~0.5ms after the first
+    request of the day. Matches the cache_ttl_seconds=86400 we advertise.
+    """
+    today_version = int(datetime.date.today().strftime("%Y%m%d"))
+    cached = _CAPS_CACHE.get("payload")
+    if cached and _CAPS_CACHE.get("data_version") == today_version:
+        return cached
+
+    with _CAPS_LOCK:
+        # Re-check under lock: another thread may have just refreshed.
+        cached = _CAPS_CACHE.get("payload")
+        if cached and _CAPS_CACHE.get("data_version") == today_version:
+            return cached
+        fresh = _gather()
+        _CAPS_CACHE["payload"]      = fresh
+        _CAPS_CACHE["data_version"] = today_version
+        _CAPS_CACHE["computed_at"]  = time.time()
+        return fresh
+
+
 @agent_capabilities_bp.route("/api/v1/agents/capabilities.json",
                               methods=["GET"], strict_slashes=False)
 @agent_capabilities_bp.route("/api/v1/agents/capabilities",
                               methods=["GET"], strict_slashes=False)
 def capabilities():
-    data = _gather()
+    data = _cached_gather()
     return jsonify(data), 200, {
         # r47.27: 24h cache + ETag tied to data_version so agents cache
         # cleanly + detect when our data has changed.
+        # r47.31: backed by process-local memo cache (see _cached_gather).
         "Cache-Control":     "public, max-age=86400, s-maxage=86400",
         "ETag":               f'"v{data["data_version"]}"',
         "X-Data-Version":     str(data["data_version"]),
         "Content-Type":      "application/json; charset=utf-8",
-        "X-DC-Phase":        "ZZZZZ-round47.27-agent-capabilities",
+        "X-DC-Phase":        "ZZZZZ-round47.31-agent-capabilities-memo",
         "X-Agent-Hint":      "Cache 24h. data_version increments at 00:00 UTC daily.",
+        "X-DC-Server-Cache": "memo",
         "Access-Control-Allow-Origin": "*",
     }

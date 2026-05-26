@@ -22,6 +22,8 @@ Endpoint:
 """
 import os
 import datetime
+import threading
+import time
 from contextlib import contextmanager
 from flask import Blueprint, jsonify
 
@@ -31,6 +33,15 @@ except Exception:
     _pg = None
 
 agent_citations_bp = Blueprint("agent_citations", __name__)
+
+# r47.31 (2026-05-26): process-local memo. Citations advertises a 1h CDN
+# cache, but the underlying query against 109K+ row mcp_call_log is heavy
+# enough that a cold Pages-worker subrequest can time out at ~5s. Hold for
+# 600s per worker process — well under the public 1h TTL, so freshness is
+# preserved, but DB pressure drops to one query / 10 min per worker.
+_CITES_CACHE: dict = {"payload": None, "computed_at": 0.0}
+_CITES_LOCK = threading.Lock()
+_CITES_TTL_SECONDS = 600
 
 
 def _dsn():
@@ -201,18 +212,42 @@ def _gather_citations():
     return out
 
 
+def _cached_gather_citations():
+    """r47.31: serve from process-local memo for up to 10 minutes.
+
+    Falls under the advertised 1h CDN cache, so consumers still see
+    fresh-enough data, but each worker process only re-queries
+    mcp_call_log once per 600s instead of per request. Lock-guarded.
+    """
+    now = time.time()
+    cached = _CITES_CACHE.get("payload")
+    if cached and (now - _CITES_CACHE.get("computed_at", 0.0)) < _CITES_TTL_SECONDS:
+        return cached
+
+    with _CITES_LOCK:
+        cached = _CITES_CACHE.get("payload")
+        now = time.time()
+        if cached and (now - _CITES_CACHE.get("computed_at", 0.0)) < _CITES_TTL_SECONDS:
+            return cached
+        fresh = _gather_citations()
+        _CITES_CACHE["payload"]     = fresh
+        _CITES_CACHE["computed_at"] = now
+        return fresh
+
+
 @agent_citations_bp.route("/api/v1/agents/citations.json",
                            methods=["GET"], strict_slashes=False)
 @agent_citations_bp.route("/api/v1/agents/citations",
                            methods=["GET"], strict_slashes=False)
 def citations():
-    data = _gather_citations()
+    data = _cached_gather_citations()
     return jsonify(data), 200, {
         # 1h cache — citation rates change throughout the day, not by minute
         "Cache-Control": "public, max-age=3600, s-maxage=3600",
         "X-Data-Version": str(data.get("data_version", "")),
         "Content-Type":  "application/json; charset=utf-8",
-        "X-DC-Phase":    "ZZZZZ-round47.28-agent-citations",
+        "X-DC-Phase":    "ZZZZZ-round47.31-agent-citations-memo",
         "X-Agent-Hint":  "Cache 1h. Used by other agents as social-proof.",
+        "X-DC-Server-Cache": "memo-600s",
         "Access-Control-Allow-Origin": "*",
     }
