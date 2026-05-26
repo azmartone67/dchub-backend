@@ -37,6 +37,44 @@ linkedin_quad_bp = Blueprint("linkedin_quad_daily", __name__,
                               url_prefix="/api/v1/linkedin-quad")
 
 
+# r61-c (2026-05-25) — Narrative arc threading.
+# linkedin_quad fires 4 disjoint posts/day. Without an arc reference,
+# each post stands alone and the week's messaging lacks continuity.
+# This helper pulls the active arc (set by narrative_arc.py, r60) and
+# returns a one-line callout to append to every post body.
+# Cached for 60s so 4 sequential slot fires share the same arc lookup.
+_ARC_CACHE = {"line": "", "fetched_at": 0.0}
+_ARC_CACHE_TTL = 60  # seconds
+
+
+def _arc_reference() -> str:
+    """Best-effort. Returns '' if arc endpoint is unreachable so a
+    failed arc lookup NEVER blocks a LinkedIn post."""
+    import time as _t
+    now = _t.time()
+    if _ARC_CACHE["line"] and (now - _ARC_CACHE["fetched_at"]) < _ARC_CACHE_TTL:
+        return _ARC_CACHE["line"]
+    try:
+        import urllib.request, json as _j
+        base = os.environ.get("DCHUB_INTERNAL_API", "http://localhost:8080")
+        with urllib.request.urlopen(
+            f"{base}/api/v1/narrative/current", timeout=4
+        ) as r:
+            d = _j.loads(r.read().decode("utf-8"))
+        arc_title = (d.get("arc") or "")[:90].strip()
+        anchor    = d.get("anchor_url") or ""
+        if arc_title:
+            line = f"\n\n📌 This week at DC Hub: {arc_title}"
+            if anchor and anchor != "https://dchub.cloud":
+                line += f"\n{anchor}"
+            _ARC_CACHE["line"] = line
+            _ARC_CACHE["fetched_at"] = now
+            return line
+    except Exception:
+        pass
+    return ""
+
+
 SLOTS = [
     {"hour":  8, "topic": "dcpi_mover",         "style": "data",       "title": "DCPI Mover · 24h"},
     {"hour": 12, "topic": "hyperscaler_deal",   "style": "narrative",  "title": "Hyperscaler AI Deal"},
@@ -225,7 +263,37 @@ def _build_ai_capex_top5():
 
 
 def _format_post(slot, payload):
-    """Compose a 2900-char LinkedIn post for the slot's style + topic."""
+    """Compose a 2900-char LinkedIn post for the slot's style + topic.
+
+    r61-c (2026-05-25): every post body now gets a trailing arc
+    reference (via _arc_reference()) so the 4 daily slots thread
+    together under the active weekly narrative. If the arc endpoint
+    is unreachable, _arc_reference returns '' and the post still
+    ships — the threading is purely additive.
+    """
+    body = _format_post_base(slot, payload)
+    arc_line = _arc_reference()
+    # Append before the trailing hashtag line for visual hierarchy.
+    # Simple heuristic: if the body ends with hashtags (starts with #),
+    # insert arc line above them; else just append.
+    lines = body.rstrip().split("\n")
+    if arc_line:
+        # Find last non-empty hashtag line
+        for i in range(len(lines) - 1, -1, -1):
+            ln = lines[i].strip()
+            if ln.startswith("#"):
+                # Insert arc above the hashtag block
+                lines.insert(i, arc_line.strip())
+                break
+        else:
+            lines.append(arc_line.strip())
+    return "\n".join(lines)
+
+
+def _format_post_base(slot, payload):
+    """The original body-only formatter. Kept separate so the arc
+    reference appender in _format_post wraps it cleanly without
+    duplicating 80 lines of style-specific logic."""
     topic, style, landing = slot["topic"], slot["style"], LANDING_URL_MAP[slot["topic"]]
 
     if topic == "dcpi_mover" and payload:

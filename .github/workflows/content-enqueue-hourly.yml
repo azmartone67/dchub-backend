@@ -1,0 +1,85 @@
+name: Content enqueue (every 2h — constant drumbeat)
+
+# r61-b (2026-05-25): keeps the social_media_posts queue continuously
+# primed so the LinkedIn / Twitter / Bluesky publisher loops always
+# have fresh material to draw from.
+#
+# Backstory: content_publisher.py runs three publisher threads:
+#   - LinkedIn  (active, every 6h, max 3/day)
+#   - Twitter   (DISABLED — needs app in Twitter dev Project)
+#   - Bluesky   (active if env set, every 6h, max 3/day)
+# All three read from social_media_posts WHERE status='approved'.
+# Until r61, that table only got fresh rows when a press release
+# published — meaning 1 row/day at best.
+#
+# This cron hits /api/v1/content-engine/enqueue every 2h, which:
+#   1. Picks a random recent DCPI-mover market (from live DB)
+#   2. Reads the current narrative arc for thread continuity
+#   3. Shapes 3 platform-specific posts (LI 280-char + X 280-char +
+#      Bsky 300-char) and inserts them as 'approved'
+#   4. Dedups within a 4h window so duplicate-topic spam is impossible
+#
+# Net effect: queue stays primed at ~12 fresh rows/day; publishers
+# never run empty; AI-agent broadcast feed has fresh dcpi_verdict_shift
+# signal every poll.
+
+on:
+  schedule:
+    # Every 2h on the :17 minute mark — off-cycle from:
+    #   linkedin-quad-daily   (:05)
+    #   media-organism-tick   (:22)
+    #   dcpi-recompute-missing(:37)
+    #   ecosystem-watch       (:43)
+    #   press-scan-daily      (13:00 daily only)
+    - cron: '17 */2 * * *'
+  workflow_dispatch: {}
+
+permissions:
+  contents: read
+
+env:
+  BASE: https://dchub-backend-production.up.railway.app
+
+jobs:
+  enqueue:
+    runs-on: ubuntu-latest
+    timeout-minutes: 3
+    steps:
+      - name: Fire content-engine/enqueue
+        env:
+          ADMIN_KEY: ${{ secrets.DCHUB_ADMIN_KEY }}
+        run: |
+          if [ -z "${ADMIN_KEY:-}" ]; then
+            echo "::warning::DCHUB_ADMIN_KEY not set — skipping"
+            exit 0
+          fi
+          http=$(curl -sS --max-time 60 -X POST \
+            -H "X-Admin-Key: $ADMIN_KEY" \
+            -o /tmp/enq.json -w "%{http_code}" \
+            "$BASE/api/v1/content-engine/enqueue" || echo "000")
+          body=$(cat /tmp/enq.json 2>/dev/null || echo '{}')
+          echo "HTTP $http"
+          echo "$body" | python3 -m json.tool 2>/dev/null || echo "$body"
+
+          # Single-line summary for the GH Actions log
+          python3 - <<'PY' || true
+          import json
+          try:
+              with open('/tmp/enq.json') as f: d = json.load(f)
+              if d.get('ok'):
+                  n  = d.get('enqueued_count', 0)
+                  sk = d.get('skipped_count', 0)
+                  arc = d.get('arc_title') or '(no arc)'
+                  topic = d.get('topic_market') or '?'
+                  print(f"::notice::Content enqueue: +{n} new, {sk} dedup-skipped · topic={topic} · arc={arc[:60]}")
+              else:
+                  print(f"::warning::enqueue failed: {d.get('error','?')}")
+          except Exception as e:
+              print(f"::warning::output parse: {e}")
+          PY
+
+      - name: Snapshot queue status
+        run: |
+          curl -sS --max-time 20 \
+            "$BASE/api/v1/content-engine/status" \
+            | python3 -m json.tool || echo "(status fetch failed — non-fatal)"

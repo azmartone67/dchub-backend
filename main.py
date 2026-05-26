@@ -23535,6 +23535,17 @@ try:
 except Exception as _na_e:
     print(f"[main] narrative_arc_bp register failed: {_na_e}", flush=True)
 
+# r61 (2026-05-25): content-engine enqueue — the constant drumbeat.
+# Every 2h via .github/workflows/content-enqueue-hourly.yml, drops 3
+# fresh posts (LI + X + Bsky) into social_media_posts so the existing
+# publisher loops never run empty.
+try:
+    from routes.content_enqueue import content_enqueue_bp
+    app.register_blueprint(content_enqueue_bp)
+    print("[main] content_enqueue_bp registered: /api/v1/content-engine/{enqueue,status}", flush=True)
+except Exception as _ce_e:
+    print(f"[main] content_enqueue_bp register failed: {_ce_e}", flush=True)
+
 # r45 (2026-05-25): explicit per-blueprint registration (batch loop in r44
 # was failing silently — Flask blueprint name conflicts get swallowed).
 
