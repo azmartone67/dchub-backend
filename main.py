@@ -23546,6 +23546,18 @@ try:
 except Exception as _ce_e:
     print(f"[main] content_enqueue_bp register failed: {_ce_e}", flush=True)
 
+# r62 (2026-05-25): X/Twitter credential diagnostic — verifies OAuth
+# WITHOUT going through the daily publisher loop. User has rotated
+# keys 3x; this endpoint surfaces the exact failure mode (auth_failed
+# / app_not_in_project / missing_tweet_write_scope) instead of
+# generic 403 log noise.
+try:
+    from routes.twitter_diagnostic import twitter_diagnostic_bp
+    app.register_blueprint(twitter_diagnostic_bp)
+    print("[main] twitter_diagnostic_bp registered: /api/v1/admin/twitter/{diagnose,test-tweet}", flush=True)
+except Exception as _td_e:
+    print(f"[main] twitter_diagnostic_bp register failed: {_td_e}", flush=True)
+
 # r45 (2026-05-25): explicit per-blueprint registration (batch loop in r44
 # was failing silently — Flask blueprint name conflicts get swallowed).
 
