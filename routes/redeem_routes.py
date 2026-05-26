@@ -362,6 +362,45 @@ FORM_HTML = """<!DOCTYPE html>
   </div>
 
   <p class="note">No password. No spam. Your key arrives by email within ~60 seconds. Already cited by ChatGPT, Claude, Gemini, Perplexity, and Groq · <a href="https://dchub.cloud/cited-by" style="color:#22d3ee">cited-by</a> · Session <code>__SESSION_SHORT__</code></p>
+
+  <script>
+    // r51-track (2026-05-26): fire funnel events. Before this, the redeem
+    // page was untracked — lifetime stats showed 1 click across 18,889
+    // paywall hits because /api/v1/redeem/view + /click were never called
+    // by anything. Now: /click on page-open (the redeem URL was opened =
+    // a click), /view after DOMContentLoaded, /submit on form submit.
+    // sendBeacon survives page-unload races.
+    (function () {
+      var token = '__SESSION_ID__';
+      function beacon(path, source) {
+        try {
+          var url = path + '?source=' + encodeURIComponent(source) + '&token=' + encodeURIComponent(token);
+          if (navigator.sendBeacon) { navigator.sendBeacon(url); }
+          else { fetch(url, { method: 'POST', keepalive: true, credentials: 'omit' }).catch(function () {}); }
+        } catch (e) { /* best effort */ }
+      }
+      beacon('/api/v1/redeem/click', 'redeem-page-open');
+      window.addEventListener('DOMContentLoaded', function () {
+        beacon('/api/v1/redeem/view', 'redeem-page-render');
+      });
+      var form = document.querySelector('form');
+      if (form) {
+        form.addEventListener('submit', function () {
+          try {
+            var url = '/api/v1/redeem/submit?source=email-form&token=' + encodeURIComponent(token);
+            if (navigator.sendBeacon) { navigator.sendBeacon(url); }
+            else { fetch(url, { method: 'POST', keepalive: true, credentials: 'omit' }).catch(function () {}); }
+          } catch (e) { /* best effort */ }
+        });
+      }
+      document.querySelectorAll('a[href^="https://buy.stripe.com/"]').forEach(function (a) {
+        a.addEventListener('click', function () {
+          var tier = a.href.indexOf('8x2dRa5sS') >= 0 ? 'starter-9' : 'developer-49';
+          beacon('/api/v1/redeem/click', 'stripe-' + tier);
+        });
+      });
+    })();
+  </script>
 </body>
 </html>
 """
@@ -633,6 +672,7 @@ def phase63_redeem(session_id):
         tools_hit_block = ''
 
     html = (FORM_HTML
+            .replace('__SESSION_ID__', session_id)
             .replace('__SESSION_SHORT__', short)
             .replace('__TOOLS_DISPLAY__', tools_display)
             .replace('__TOOLS_COUNT__', tools_count)
