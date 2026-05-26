@@ -195,6 +195,56 @@ def _safe_caller_id():
     return ip, ua, ip_hash
 
 
+# r70-c (2026-05-26): platform-targeted paywall hint.
+# When the requesting UA matches a known agent class (Claude / Cursor
+# / ChatGPT / Perplexity / Gemini / Groq), append a 1-line CTA tailored
+# to that platform's onboarding ergonomics, with the partner landing
+# page URL pre-filled. Reduces friction from generic /signup to a
+# page that already knows who you are.
+
+_PLATFORM_HINTS = {
+    "claude":     {"name": "Claude",
+                    "url":  "https://dchub.cloud/partners/perplexity",  # placeholder; will swap once /partners/claude exists
+                    "cta":  ("Claude user — claim a Claude-optimized "
+                             "DC Hub key in 30s at https://dchub.cloud/signup?ref=claude. "
+                             "Pre-fills client_name so your usage tracks correctly.")},
+    "cursor":     {"name": "Cursor",
+                    "url":  "https://dchub.cloud/signup?ref=cursor",
+                    "cta":  ("Cursor user — Cursor MCP support is first-class "
+                             "on DC Hub. Free key (1k calls/day) at "
+                             "https://dchub.cloud/signup?ref=cursor.")},
+    "chatgpt":    {"name": "ChatGPT / OpenAI",
+                    "url":  "https://dchub.cloud/signup?ref=chatgpt",
+                    "cta":  ("ChatGPT / OpenAI user — claim a key at "
+                             "https://dchub.cloud/signup?ref=chatgpt to keep "
+                             "DC Hub citations live in your answers.")},
+    "perplexity": {"name": "Perplexity",
+                    "url":  "https://dchub.cloud/partners/perplexity",
+                    "cta":  ("Perplexity user — see the dedicated partner page "
+                             "at https://dchub.cloud/partners/perplexity (built for "
+                             "your citation engine).")},
+    "gemini":     {"name": "Gemini",
+                    "url":  "https://dchub.cloud/partners/gemini",
+                    "cta":  ("Gemini / DeepMind user — partner page at "
+                             "https://dchub.cloud/partners/gemini covers the "
+                             "non-Google competitive-intel use case.")},
+    "groq":       {"name": "Groq",
+                    "url":  "https://dchub.cloud/partners/groq",
+                    "cta":  ("Groq user — partner page at "
+                             "https://dchub.cloud/partners/groq covers location "
+                             "transparency for your inference customers.")},
+}
+
+
+def _platform_targeted_cta(ua: str) -> str:
+    """Return a platform-specific CTA when UA matches a known agent."""
+    ua_low = (ua or "").lower()
+    for needle, info in _PLATFORM_HINTS.items():
+        if needle in ua_low:
+            return info["cta"]
+    return ""
+
+
 # r67-b (2026-05-26): per-caller hit-count personalizer.
 # When a 403 fires on a paid-tool path, look up how many times THIS
 # caller has hit the same tool in the last 30 days. Append a
@@ -348,6 +398,15 @@ def register_paywall_hint_middleware(app):
             agent_q = _agent_quotable_for(variant, response.status_code)
             if personal_pitch:
                 agent_q = f"{agent_q}\n\n{personal_pitch}"
+
+            # r70-c: platform-targeted CTA on top of the personalized
+            # block. If the UA matches Claude / Cursor / Perplexity /
+            # Gemini / Groq / ChatGPT, append a 1-line CTA pointing at
+            # that platform's partner landing page or pre-filled signup.
+            platform_cta = _platform_targeted_cta(ua)
+            if platform_cta:
+                agent_q = f"{agent_q}\n\n{platform_cta}"
+
             body["_upgrade_hint"] = {
                 **_HINT_BASE,
                 "agent_quotable": agent_q,
@@ -357,6 +416,12 @@ def register_paywall_hint_middleware(app):
             }
             if personal_pitch:
                 body["_upgrade_hint"]["personalized"] = True
+            if platform_cta:
+                # Surface which platform we targeted (for funnel A/B logs)
+                for needle in _PLATFORM_HINTS:
+                    if needle in (ua or "").lower():
+                        body["_upgrade_hint"]["platform_targeted"] = needle
+                        break
             response.set_data(json.dumps(body))
             # Pad content-length for the new body
             response.headers["Content-Length"] = str(len(response.get_data()))

@@ -436,7 +436,20 @@ def near_converters():
     "/api/v1/admin/funnel/near-converters/<caller_id>", methods=["GET"]
 )
 def near_converter_detail(caller_id):
-    """Deep-dive on one near-converter."""
+    """r70-a (2026-05-26): deep-dive on one near-converter.
+
+    Returns:
+      - base aggregate (from /near-converters list)
+      - FULL mcp_client UA string (not just sniffed platform)
+      - all signal_types broken down (paywall_hit / paid_tool_blocked /
+        redeem_url_viewed / etc.) so we see the funnel stage
+      - tool-call SEQUENCE — what they tried BEFORE the paid tools
+      - days_active + signals_per_day rate
+      - is_likely_real_user heuristic: tool diversity + temporal spread
+      - identity_hints: if their mcp_client UA has an IP / org / hostname
+        we can pattern-match to (Claude Desktop, Cursor, etc.)
+      - personalized outreach_draft tailored to the platform sniffed
+    """
     if not _admin_authorized():
         return jsonify({"ok": False, "error": "admin_key_required"}), 401
 
@@ -448,13 +461,143 @@ def near_converter_detail(caller_id):
             "ok":    False,
             "error": "near_converter_not_found",
             "hint":  ("caller_id is first 16 chars of "
-                       "sha256(ip|ua). May have rolled off the "
+                       "sha256(mcp_client). May have rolled off the "
                        "90-day window."),
         }), 404
-    match["outreach_draft"]   = _draft_near_converter_pitch(match)
-    match["outreach_subject"] = (
+
+    # Dig into the full mcp_upgrade_signals history for this UA
+    mcp_client_ua = match.get("user_agent") or match.get("client_name") or ""
+    deep = _deep_history_for_caller(mcp_client_ua)
+
+    # is_likely_real_user heuristic
+    sig_per_day = (deep.get("total_signals", 0) /
+                    max(1, deep.get("days_active", 1)))
+    tool_diversity = len(deep.get("tools_attempted") or [])
+    is_real = (tool_diversity >= 3 and
+                deep.get("days_active", 0) >= 2 and
+                sig_per_day < 200)  # < 200/day = not a runaway bot
+    bot_signal = ""
+    if not is_real:
+        if tool_diversity < 3:
+            bot_signal = "low tool diversity (< 3 distinct tools)"
+        elif deep.get("days_active", 0) < 2:
+            bot_signal = "single-day burst (no return visits)"
+        elif sig_per_day >= 200:
+            bot_signal = f"high rate ({sig_per_day:.0f} signals/day) — script-like"
+
+    match["full_ua"]           = mcp_client_ua
+    match["signals_by_type"]   = deep.get("signals_by_type") or {}
+    match["tools_attempted"]   = deep.get("tools_attempted") or []
+    match["tool_sequence"]     = deep.get("tool_sequence") or []
+    match["days_active"]       = deep.get("days_active")
+    match["signals_per_day"]   = round(sig_per_day, 2)
+    match["is_likely_real_user"] = is_real
+    match["bot_signal"]        = bot_signal or None
+    match["identity_hints"]    = _identity_hints_from_ua(mcp_client_ua)
+    match["outreach_draft"]    = _draft_near_converter_pitch(match)
+    match["outreach_subject"]  = (
         f"DC Hub Pro — you've been calling "
         f"{next(iter(match.get('paid_403_by_tool') or {'get_grid_intelligence':0}))} "
         f"a lot lately"
     )
     return jsonify({"ok": True, "near_converter": match}), 200
+
+
+def _deep_history_for_caller(mcp_client: str) -> dict:
+    """Pull every signal for this mcp_client UA from the last 90 days."""
+    if not mcp_client:
+        return {}
+    c = _db_conn()
+    if not c: return {}
+    try:
+        with c.cursor() as cur:
+            # Signals-by-type
+            cur.execute("""
+                SELECT signal_type, COUNT(*) AS n
+                  FROM mcp_upgrade_signals
+                 WHERE mcp_client = %s
+                   AND created_at > NOW() - INTERVAL '90 days'
+                 GROUP BY signal_type
+                 ORDER BY n DESC
+            """, (mcp_client,))
+            sigs_by_type = {r[0]: int(r[1] or 0) for r in (cur.fetchall() or [])}
+
+            # All tools attempted + counts
+            cur.execute("""
+                SELECT tool_requested, COUNT(*) AS n
+                  FROM mcp_upgrade_signals
+                 WHERE mcp_client = %s
+                   AND tool_requested IS NOT NULL
+                   AND created_at > NOW() - INTERVAL '90 days'
+                 GROUP BY tool_requested
+                 ORDER BY n DESC
+                 LIMIT 30
+            """, (mcp_client,))
+            tools = [{"tool": r[0], "count": int(r[1] or 0)}
+                      for r in (cur.fetchall() or [])]
+
+            # Tool sequence — first 50 calls in chronological order
+            cur.execute("""
+                SELECT tool_requested, signal_type, created_at
+                  FROM mcp_upgrade_signals
+                 WHERE mcp_client = %s
+                   AND tool_requested IS NOT NULL
+                 ORDER BY created_at ASC
+                 LIMIT 50
+            """, (mcp_client,))
+            seq = [{"tool": r[0], "signal_type": r[1],
+                     "ts": r[2].isoformat() if r[2] else None}
+                    for r in (cur.fetchall() or [])]
+
+            # Days active
+            cur.execute("""
+                SELECT COUNT(DISTINCT DATE(created_at)) AS days,
+                       COUNT(*) AS total
+                  FROM mcp_upgrade_signals
+                 WHERE mcp_client = %s
+                   AND created_at > NOW() - INTERVAL '90 days'
+            """, (mcp_client,))
+            row = cur.fetchone() or (0, 0)
+            days_active = int(row[0] or 0)
+            total_signals = int(row[1] or 0)
+        return {
+            "signals_by_type":  sigs_by_type,
+            "tools_attempted":  tools,
+            "tool_sequence":    seq,
+            "days_active":      days_active,
+            "total_signals":    total_signals,
+        }
+    except Exception:
+        return {}
+    finally:
+        try: c.close()
+        except Exception: pass
+
+
+def _identity_hints_from_ua(ua: str) -> dict:
+    """Pattern-match the mcp_client string for org/version/host hints."""
+    if not ua: return {}
+    ua_low = ua.lower()
+    hints: dict = {}
+    # Claude Desktop pattern: "claude-desktop/0.7.x"
+    import re as _re
+    m = _re.search(r"claude[-_]desktop[/\s]([\d.]+)", ua_low)
+    if m: hints["claude_desktop_version"] = m.group(1)
+    m = _re.search(r"cursor[/\s]([\d.]+)", ua_low)
+    if m: hints["cursor_version"] = m.group(1)
+    m = _re.search(r"openai[-_]agent[/\s]([\d.]+)", ua_low)
+    if m: hints["openai_agent_version"] = m.group(1)
+    # Generic MCP SDK
+    m = _re.search(r"mcp[-_]sdk[/\s]([\d.]+)", ua_low)
+    if m: hints["mcp_sdk_version"] = m.group(1)
+    m = _re.search(r"python/([\d.]+)", ua_low)
+    if m: hints["python_version"] = m.group(1)
+    m = _re.search(r"node\.?js?[/\s]([\d.]+)", ua_low)
+    if m: hints["nodejs_version"] = m.group(1)
+    # If we have NO platform hints, it's likely a raw script
+    if not hints:
+        if "python" in ua_low:    hints["likely_platform"] = "Python script (no SDK)"
+        elif "node" in ua_low:    hints["likely_platform"] = "Node.js script (no SDK)"
+        elif "curl" in ua_low:    hints["likely_platform"] = "curl (manual testing)"
+        elif "mcp" in ua_low:     hints["likely_platform"] = "Generic MCP client"
+    return hints
