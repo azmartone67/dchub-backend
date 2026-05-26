@@ -261,7 +261,18 @@ def upgrade_hint():
                            "label": "Enterprise — dedicated support",
                            "contact": "api@dchub.cloud"},
         },
-    }), 200
+    }), 200, {
+        # r48 (2026-05-25): The zone-level CF worker (out-of-repo,
+        # 4.34.15-r45-pages-force-redeploy) was caching this endpoint
+        # for max-age=3600 despite the backend setting cdn-cache-control:
+        # no-store. The Cache-Control header on the *response itself*
+        # (not the cdn- variant) is the only thing that worker respects.
+        # Without this, tier-table fixes take an hour to propagate.
+        "Cache-Control": "no-store, no-cache, must-revalidate, max-age=0",
+        "Pragma": "no-cache",
+        "Expires": "0",
+        "X-DC-Phase": "r48-funnel-fix",
+    }
 
 
 @mcp_funnel_upgrade_bp.route(
