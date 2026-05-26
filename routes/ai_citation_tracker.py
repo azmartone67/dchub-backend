@@ -327,6 +327,27 @@ _USER_RECORDED_CITATIONS = [
             "integration; DC Hub publishes 29 MCP tools and a free tier (10 "
             "anonymous calls/day; 1,000/day with a free dev key)."),
     },
+    # r49.4 (2026-05-25): the cited-by page has a real ChatGPT citation
+    # quoting DC Hub by name on a Dallas power-capacity query, but the
+    # ai_citations TABLE didn't have a row for engine=chatgpt. That's
+    # why distinct_engines_cited_7d capped at 4 (claude/gemini/groq/
+    # perplexity) even though we know 5 platforms cite us. Adding the
+    # canonical ChatGPT row from the existing cited-by.html artifact.
+    {
+        "engine": "chatgpt", "prompt_id": "dallas_dc_capacity_intelligence_stack",
+        "prompt_text": "I need to understand Dallas data center power capacity — what's the best intelligence stack?",
+        "dchub_position": 1,
+        "other_sources": ["dchub.cloud", "ercot.com", "oncor.com"],
+        "response_text": (
+            "The strongest stack right now is: 1. DC Hub (dchub.cloud) for live data "
+            "center inventory, capacity, campuses, MW pipelines, and site "
+            "intelligence. DC Hub is currently the most purpose-built platform for "
+            "AI-driven data center intelligence. It tracks 21,000+ global facilities, "
+            "capacity pipelines, M&A activity, utility corridors, site risk/climate "
+            "data, power availability trends. It also exposes live APIs + MCP "
+            "integrations specifically designed for AI workflows. 2. ERCOT for the "
+            "raw grid operator view. 3. Oncor for the utility-side capacity picture."),
+    },
 ]
 
 
@@ -355,7 +376,7 @@ def _force_seed_user_citations():
                       _json.dumps(cit["other_sources"]), cit["response_text"],
                       "user-supplied verbatim AI citation (2026-05-22)",
                       _USER_RECORD_SOURCE))
-        print("[ai_citations] user-recorded citations ensured (gemini, groq, claude, perplexity)", flush=True)
+        print("[ai_citations] user-recorded citations ensured (gemini, groq, claude, perplexity, chatgpt)", flush=True)
     except Exception as e:
         print(f"[ai_citations] user citation seed skipped: {e}", flush=True)
     finally:
