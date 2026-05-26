@@ -224,21 +224,42 @@ def upgrade_hint():
         "tool":              tool or "<unspecified>",
         "platform_hint":     platform or None,
         "agent_quotable":    (
-            f"{base} Claim your key at https://dchub.cloud/signup "
-            f"(no credit card, no contract). Once set, retry with "
+            f"{base} A free key (1,000 calls/day, no credit card) is at "
+            f"https://dchub.cloud/signup. Paid plans start at $9/mo "
+            f"for 10,000 calls/day. Once you have a key, retry with the "
             f"X-API-Key header."
         ),
         "user_facing_url":   "https://dchub.cloud/signup",
         "machine_endpoint":  "https://dchub.cloud/api/v1/keys/claim",
-        "what_you_get":      "10k MCP tool calls/day on the free tier.",
+        "what_you_get":      "1,000 MCP tool calls/day for free with email signup. $9/mo for 10K/day. $49/mo for unlimited paid tools.",
+        # r48 (2026-05-25): tier values aligned with worker + Stripe links.
+        # Prior version had free=10000 vs developer=1000 (developer was numerically
+        # LESS than free), causing agents to interpret blocked queries as "user
+        # already has a generous free tier" and skip the signup CTA. Fixed:
+        # ascending limits with $9 Starter slot now included.
         "tiers": {
-            "free":         {"calls_per_day": 10000, "results_per_call": 5},
-            "developer":    {"calls_per_day": 1000,  "results_per_call": 25,
-                              "price_usd_month": 0},
-            "pro":          {"calls_per_day": 10000, "results_per_call": 500,
-                              "price_usd_month": 199},
-            "enterprise":   {"calls_per_day": 100000, "results_per_call": 5000,
-                              "price_usd_month": "custom"},
+            "anonymous":  {"calls_per_day": 10,         "results_per_call": 1,
+                           "price_usd_month": 0,         "needs_key": False,
+                           "label": "No signup, 10/day"},
+            "free":       {"calls_per_day": 1000,       "results_per_call": 25,
+                           "price_usd_month": 0,         "needs_key": "email signup",
+                           "label": "Free dev key — 1,000/day",
+                           "signup_url": "https://dchub.cloud/signup"},
+            "starter":    {"calls_per_day": 10000,      "results_per_call": 100,
+                           "price_usd_month": 9,
+                           "label": "$9/mo Starter — 10,000/day",
+                           "stripe_url": "https://buy.stripe.com/8x2dRa5sS0x75uteGuaZi0g"},
+            "developer":  {"calls_per_day": "unlimited","results_per_call": 500,
+                           "price_usd_month": 49,
+                           "label": "$49/mo Developer — unlimited paid tools",
+                           "stripe_url": "https://buy.stripe.com/7sY5kE8F4fs13mI0PEaZi0c"},
+            "pro":        {"calls_per_day": "unlimited","results_per_call": 5000,
+                           "price_usd_month": 199,
+                           "label": "$199/mo Pro — unlimited + Pro tools"},
+            "enterprise": {"calls_per_day": "unlimited","results_per_call": "unlimited",
+                           "price_usd_month": "custom",
+                           "label": "Enterprise — dedicated support",
+                           "contact": "api@dchub.cloud"},
         },
     }), 200
 
