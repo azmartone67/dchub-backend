@@ -1,0 +1,71 @@
+name: DCPI auto-press (≥15pt shifts every 6h)
+
+# r64-b (2026-05-25): every 6h scan market_power_scores for any market
+# whose excess_power_score moved ≥15pts week-over-week OR whose
+# verdict flipped between BUILD/AVOID/CAUTION. When detected, drafts
+# a press release + INSERTs into press_releases as published=TRUE.
+#
+# Why 6h: DCPI itself recomputes every 4h, so 6h gives every market
+# at least one fresh score before the next press scan. Idempotent —
+# the endpoint dedupes within a 7-day window per market, so a market
+# stuck above threshold won't spam.
+#
+# Off-cycle from press-scan-daily (13:00 UTC) so the daily LinkedIn
+# carousel picks up overnight auto-press without contention.
+
+on:
+  schedule:
+    # Every 6h at :11 — off-cycle from:
+    #   linkedin-quad   (:05)
+    #   content-enqueue (:17)
+    #   organism-tick   (:22)
+    #   recompute-missing (:37)
+    #   ecosystem-watch (:43)
+    - cron: '11 3,9,15,21 * * *'
+  workflow_dispatch: {}
+
+permissions:
+  contents: read
+
+env:
+  BASE: https://dchub-backend-production.up.railway.app
+
+jobs:
+  scan:
+    runs-on: ubuntu-latest
+    timeout-minutes: 4
+    steps:
+      - name: Scan DCPI for ≥15pt shifts
+        env:
+          ADMIN_KEY: ${{ secrets.DCHUB_ADMIN_KEY }}
+        run: |
+          set -euo pipefail
+          if [ -z "${ADMIN_KEY:-}" ]; then
+            echo "::warning::DCHUB_ADMIN_KEY not set — skipping"
+            exit 0
+          fi
+          http=$(curl -sS --max-time 60 -X POST \
+            -H "X-Admin-Key: $ADMIN_KEY" \
+            -o /tmp/ap.json -w "%{http_code}" \
+            "$BASE/api/v1/dcpi/auto-press/scan" || echo "000")
+          body=$(cat /tmp/ap.json 2>/dev/null || echo '{}')
+          echo "HTTP $http"
+          echo "$body" | python3 -m json.tool 2>/dev/null || echo "$body"
+
+          python3 - <<'PY' || true
+          import json
+          try:
+              with open('/tmp/ap.json') as f: d = json.load(f)
+              n  = d.get('drafted_count', 0)
+              sk = d.get('skipped_count', 0)
+              det = d.get('shifts_detected', 0)
+              if n:
+                  for it in d.get('drafted',[])[:5]:
+                      print(f"::notice::DCPI auto-press: {it.get('market')} (Δ{it.get('delta')}pts) → {it.get('slug')}")
+              elif sk and det:
+                  print(f"::notice::DCPI auto-press: {det} shifts detected, all deduped (already in press_releases)")
+              else:
+                  print(f"::notice::DCPI auto-press: no ≥15pt shifts in last 7d")
+          except Exception as e:
+              print(f"::warning::output parse: {e}")
+          PY

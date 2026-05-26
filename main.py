@@ -23570,6 +23570,37 @@ try:
 except Exception as _alo_e:
     print(f"[main] ai_lab_outreach_bp register failed: {_alo_e}", flush=True)
 
+# r64 (2026-05-25): closing the outreach loop.
+#  a. /partners/<slug> — per-target personalized landing pages so
+#     the r63 outreach emails link to a page built for THAT company
+#     instead of generic /signup. Tracks visits + conversions.
+#  b. DCPI auto-press — when a market moves ≥15pts WoW or flips
+#     verdict (BUILD/AVOID/CAUTION), auto-drafts a press release.
+#     Every shift = free press copy.
+#  c. AI citation scraper — daily probes Claude/GPT/Perplexity/Gemini
+#     to detect whether DC Hub gets cited. Populates ai_citations
+#     which agent_broadcast surfaces automatically.
+try:
+    from routes.partner_landing import partner_landing_bp
+    app.register_blueprint(partner_landing_bp)
+    print("[main] partner_landing_bp registered: /partners{,/<slug>}, /api/v1/partners, /api/v1/admin/partner-visits", flush=True)
+except Exception as _pl_e:
+    print(f"[main] partner_landing_bp register failed: {_pl_e}", flush=True)
+
+try:
+    from routes.dcpi_auto_press import dcpi_auto_press_bp
+    app.register_blueprint(dcpi_auto_press_bp)
+    print("[main] dcpi_auto_press_bp registered: /api/v1/dcpi/auto-press/{scan,recent}", flush=True)
+except Exception as _dap_e:
+    print(f"[main] dcpi_auto_press_bp register failed: {_dap_e}", flush=True)
+
+try:
+    from routes.ai_citation_scraper import ai_citation_scraper_bp
+    app.register_blueprint(ai_citation_scraper_bp)
+    print("[main] ai_citation_scraper_bp registered: /api/v1/admin/citations/{probe,recent}, /api/v1/citations/by-agent", flush=True)
+except Exception as _acs_e:
+    print(f"[main] ai_citation_scraper_bp register failed: {_acs_e}", flush=True)
+
 # r45 (2026-05-25): explicit per-blueprint registration (batch loop in r44
 # was failing silently — Flask blueprint name conflicts get swallowed).
 

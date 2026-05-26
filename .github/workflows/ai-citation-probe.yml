@@ -1,0 +1,75 @@
+name: AI citation probe (daily — are we being cited?)
+
+# r64-c (2026-05-25): daily probe of Claude / GPT / Perplexity / Gemini
+# with seed questions to detect whether DC Hub got cited. Populates
+# ai_citations table. agent_broadcast feed automatically surfaces
+# fresh citations as `kind=ai_citation` items so cross-channel
+# messaging picks up the signal.
+#
+# Provider keys are env-gated on the backend — missing keys = that
+# provider silently skipped. No probe fails the whole run.
+
+on:
+  schedule:
+    # Once daily at 11:11 UTC — after the major LLM providers have
+    # had time to crawl overnight news, before the LinkedIn 12:00
+    # slot fires.
+    - cron: '11 11 * * *'
+  workflow_dispatch:
+    inputs:
+      provider:
+        description: 'limit probe to one provider (claude|gpt|perplexity|gemini)'
+        required: false
+        default: ''
+
+permissions:
+  contents: read
+
+env:
+  BASE: https://dchub-backend-production.up.railway.app
+
+jobs:
+  probe:
+    runs-on: ubuntu-latest
+    timeout-minutes: 6
+    steps:
+      - name: Probe LLM providers for DC Hub citations
+        env:
+          ADMIN_KEY: ${{ secrets.DCHUB_ADMIN_KEY }}
+          ONLY_PROVIDER: ${{ github.event.inputs.provider }}
+        run: |
+          set -euo pipefail
+          if [ -z "${ADMIN_KEY:-}" ]; then
+            echo "::warning::DCHUB_ADMIN_KEY not set — skipping"
+            exit 0
+          fi
+          url="$BASE/api/v1/admin/citations/probe"
+          if [ -n "${ONLY_PROVIDER:-}" ]; then
+            url="$url?provider=$ONLY_PROVIDER"
+          fi
+          http=$(curl -sS --max-time 240 -X POST \
+            -H "X-Admin-Key: $ADMIN_KEY" \
+            -o /tmp/cit.json -w "%{http_code}" \
+            "$url" || echo "000")
+          body=$(cat /tmp/cit.json 2>/dev/null || echo '{}')
+          echo "HTTP $http"
+          echo "$body" | python3 -m json.tool 2>/dev/null || echo "$body"
+
+          python3 - <<'PY' || true
+          import json
+          try:
+              with open('/tmp/cit.json') as f: d = json.load(f)
+              s = d.get('summary') or {}
+              chk = s.get('checked', 0)
+              cit = s.get('cited', 0)
+              rate = d.get('citation_rate')
+              if chk:
+                  print(f"::notice::Citation probe: {cit}/{chk} cited (rate={rate})")
+                  pp = s.get('per_provider') or {}
+                  for agent, info in pp.items():
+                      print(f"::notice::  {agent}: {info.get('cited',0)}/{info.get('checked',0)} cited")
+              else:
+                  print(f"::warning::Citation probe: 0 questions checked — provider keys missing?")
+          except Exception as e:
+              print(f"::warning::output parse: {e}")
+          PY
