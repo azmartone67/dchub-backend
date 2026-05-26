@@ -46,6 +46,17 @@ partner_landing_bp = Blueprint("partner_landing", __name__)
 # slug, it MUST match a slug here so the email link resolves.
 _PARTNERS = {
     "nlr": {
+        # r77.6 (2026-05-26) — partnership is pre-execution. NDA + MOU + License
+        # are all still in draft/redline. MOU Article VII (when executed) restricts
+        # NLR to factual references only — no endorsement of commercial products,
+        # no enumeration of contractual rights in public materials. Current full
+        # page leaked commercial terms ($3K Research Seed, Year-2 Strategic pricing)
+        # and declared NLR-conferred rights ("co-authorship, conference, reVeal v2
+        # first-look active Day 1") as if executed. Pulled until Gabriel Zuckerman
+        # signs off on a sanitized public version. URL still resolves (200) so
+        # email signature links don't break — renderer short-circuits to a clean
+        # "pending publication" stub when pre_execution=True is set.
+        "pre_execution": True,
         "name":     "NLR (reVeal)",
         "tagline":  "Live infrastructure data for reVeal's Characterize module.",
         "hero":     ("NLR's reVeal model identifies suitable data-center "
@@ -351,6 +362,63 @@ def _track_visit(slug: str) -> None:
         pass
 
 
+def _render_pre_execution_stub(slug: str, p: dict) -> str:
+    """Sanitized page for partnerships still in legal redline (NDA / MOU /
+    License unexecuted). Discloses ONLY the existence of an engagement
+    conversation, no commercial terms, no enumeration of rights, no
+    suggestion of endorsement. Style matches the dark-mode site theme.
+
+    Goal: counterparty's General Counsel can read this page without finding
+    anything they'd object to — but the URL keeps resolving so links in
+    email signatures and outreach drafts don't 404.
+    """
+    name = p.get("name", slug)
+    accent = p.get("accent", "#7c3aed")
+    return f"""<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>DC Hub × {name} — engagement in progress</title>
+  <meta name="description" content="DC Hub engagement with {name} — public details pending counsel review." />
+  <meta name="robots" content="noindex,nofollow" />
+  <link rel="canonical" href="https://dchub.cloud/partners/{slug}" />
+  <style>
+    :root {{ --accent: {accent}; --bg: #0a0a0a; --fg: #e5e7eb; --muted: #9ca3af; --card: #111827; --border: #1f2937; }}
+    * {{ box-sizing: border-box; }}
+    body {{ font-family: 'DM Sans', -apple-system, BlinkMacSystemFont, 'Segoe UI', sans-serif; background: var(--bg); color: var(--fg); margin: 0; min-height: 100vh; display: flex; align-items: center; justify-content: center; padding: 24px; line-height: 1.6; }}
+    .card {{ max-width: 560px; background: var(--card); border: 1px solid var(--border); border-radius: 12px; padding: 40px; }}
+    .kicker {{ font-size: 13px; color: var(--muted); text-transform: uppercase; letter-spacing: 0.08em; display: flex; align-items: center; gap: 8px; margin-bottom: 12px; }}
+    .dot {{ width: 8px; height: 8px; border-radius: 50%; background: var(--accent); display: inline-block; }}
+    h1 {{ font-size: 28px; margin: 0 0 16px; font-weight: 700; }}
+    p {{ color: var(--muted); margin: 0 0 16px; }}
+    .footer {{ margin-top: 28px; padding-top: 20px; border-top: 1px solid var(--border); font-size: 13px; color: var(--muted); }}
+    a {{ color: var(--accent); text-decoration: none; }}
+    a:hover {{ text-decoration: underline; }}
+    code {{ font-family: 'SF Mono', Consolas, monospace; background: rgba(255,255,255,0.05); padding: 2px 6px; border-radius: 3px; font-size: 13px; color: var(--fg); }}
+  </style>
+</head>
+<body>
+  <div class="card">
+    <div class="kicker"><span class="dot"></span> Engagement in progress</div>
+    <h1>DC Hub × {name}</h1>
+    <p>A research engagement between DC Hub and {name} is currently in
+    legal review. Public details — including engagement scope, terms,
+    and joint work products — will be published once counsel on both
+    sides signs off on the language.</p>
+    <p>For questions about DC Hub's research-tier data licensing program,
+    contact <a href="mailto:partnerships@dchub.cloud">partnerships@dchub.cloud</a>.</p>
+    <div class="footer">
+      DC Hub — data center intelligence platform.
+      <a href="/">dchub.cloud</a> ·
+      <a href="/openapi.json">OpenAPI</a> ·
+      <a href="/partners">All partners</a>
+    </div>
+  </div>
+</body>
+</html>"""
+
+
 def _render_partner_page(slug: str, p: dict) -> str:
     """Build the HTML for one target. Inline CSS, dark theme, DM Sans."""
     accent = p["accent"]
@@ -582,8 +650,20 @@ def partner_page(slug):
             f"<p><a href='/partners'>← All partners</a></p>",
             status=404, mimetype="text/html"
         )
-    _track_visit(slug.lower() if slug else slug)
-    html = _render_partner_page(slug.lower() if slug else slug, p)
+    canonical_slug = slug.lower() if slug else slug
+    _track_visit(canonical_slug)
+
+    # r77.6 — pre-execution partners (NDA/MOU/License still in draft) render a
+    # sanitized stub that does NOT reveal commercial terms or claim
+    # contractually-conferred rights. URL still returns 200 so email-signature
+    # links don't break and admin previews still work. Once partnership executes
+    # AND the counterparty signs off on the public copy, flip pre_execution=False
+    # to re-enable the full page.
+    if p.get("pre_execution"):
+        html = _render_pre_execution_stub(canonical_slug, p)
+        return Response(html, mimetype="text/html; charset=utf-8")
+
+    html = _render_partner_page(canonical_slug, p)
     return Response(html, mimetype="text/html; charset=utf-8")
 
 
