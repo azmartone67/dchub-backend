@@ -1,0 +1,75 @@
+name: DCPI Recompute Missing (daily self-heal)
+
+# r59-a (2026-05-25): closes the autonomy gap left by r57+r58.
+#
+# When new markets are added to MARKETS in routes/dcpi.py, the
+# dcpi-daily.yml chunked recompute would EVENTUALLY pick them up
+# via its UPDATE-or-INSERT path — but only on whichever chunk's
+# offset range happens to contain the new slug. With 16 intl
+# markets jammed at the end of MARKETS, that's offset >=300,
+# which is the LAST chunk of the day, so worst-case wait is
+# ~18 hours.
+#
+# This cron fires recompute-missing every 4 hours. It's
+# idempotent (no-op if remaining_in_markets == 0) and cheap
+# (each call only INSERTs markets that aren't in DB yet — 0 SQL
+# writes once filled in).
+#
+# Pairs with the r58 published=TRUE INSERT fix in dcpi.py so
+# new markets land visible to /dcpi by default.
+
+on:
+  schedule:
+    # Off-cycle from dcpi-daily (which fires at :05) so we don't
+    # contend for Railway's DCPI scoring path.
+    - cron: '37 2,8,14,20 * * *'
+  workflow_dispatch: {}
+
+permissions:
+  contents: read
+
+env:
+  BASE: https://dchub-backend-production.up.railway.app
+  MAX:  50    # cap per call (we'll loop below for any spillover)
+
+jobs:
+  fill_missing:
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    steps:
+      - name: Fill markets missing from market_power_scores
+        env:
+          ADMIN_KEY: ${{ secrets.DCHUB_ADMIN_KEY }}
+        run: |
+          if [ -z "${ADMIN_KEY:-}" ]; then
+            echo "::warning::DCHUB_ADMIN_KEY not set — skipping"
+            exit 0
+          fi
+          # Loop up to 3 times — caps total inserts at 150/run while
+          # still allowing slack for a big MARKETS expansion. The
+          # endpoint is idempotent so re-running is a no-op once
+          # remaining_in_markets == 0.
+          for attempt in 1 2 3; do
+            echo "─── recompute-missing attempt ${attempt} ──────────"
+            body=$(curl -sS --max-time 60 -X POST \
+              -H "X-Admin-Key: $ADMIN_KEY" \
+              "$BASE/api/v1/dcpi/recompute-missing?max=$MAX" \
+              || echo '{"ok":false,"error":"curl_failed"}')
+            echo "$body" | python3 -m json.tool || echo "$body"
+            inserted=$(echo "$body" \
+              | python3 -c "import sys,json;
+try:
+  d = json.load(sys.stdin); print(d.get('inserted',0))
+except Exception: print(0)" 2>/dev/null || echo 0)
+            remaining=$(echo "$body" \
+              | python3 -c "import sys,json;
+try:
+  d = json.load(sys.stdin); print(d.get('remaining_in_markets',0))
+except Exception: print(0)" 2>/dev/null || echo 0)
+            echo "::notice::Attempt $attempt inserted=$inserted remaining=$remaining"
+            if [ "$inserted" = "0" ] || [ "$remaining" = "0" ]; then
+              echo "✅ all caught up (inserted=$inserted remaining=$remaining)"
+              break
+            fi
+            sleep 2
+          done

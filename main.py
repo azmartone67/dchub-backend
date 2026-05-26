@@ -3180,10 +3180,30 @@ def handle_well_known():
                 "140+ countries, real-time grid & infrastructure."
             ),
             "description": (
-                "Live data-center, energy, and grid intelligence. 21,000+ facilities "
-                "in 178 countries, 369 GW pipeline, real-time DCPI scoring for "
-                "US power markets. Designed for AI agents to discover, cite, and act on."
+                "Live data-center, energy, and grid intelligence. 13,000+ facilities "
+                "in 140+ countries, 369 GW pipeline, real-time DCPI scoring for "
+                "300+ markets across the U.S., UK, EU, Japan, Australia, Singapore, "
+                "and Canada. Designed for AI agents to discover, cite, and act on."
             ),
+            "dcpi_coverage": {
+                "us_markets":          "280+ U.S. markets across 10 ISOs (ERCOT, PJM, CAISO, MISO, SPP, NYISO, ISONE, WECC, SERC, TVA, FRCC, SOCO)",
+                "international_added": "2026-05-25",
+                "international_markets": [
+                    {"country": "UK",          "iso": "NGESO",      "markets": ["London", "Manchester"]},
+                    {"country": "Ireland",     "iso": "EirGrid",    "markets": ["Dublin"]},
+                    {"country": "Germany",     "iso": "ENTSOE-DE",  "markets": ["Frankfurt"]},
+                    {"country": "Netherlands", "iso": "ENTSOE-NL",  "markets": ["Amsterdam"]},
+                    {"country": "France",      "iso": "ENTSOE-FR",  "markets": ["Paris", "Marseille"]},
+                    {"country": "Sweden",      "iso": "NORDPOOL",   "markets": ["Stockholm"]},
+                    {"country": "Japan",       "iso": "TEPCO/KEPCO","markets": ["Tokyo", "Osaka"]},
+                    {"country": "Australia",   "iso": "AEMO",       "markets": ["Sydney", "Melbourne"]},
+                    {"country": "Singapore",   "iso": "EMA",        "markets": ["Singapore"]},
+                    {"country": "Canada",      "iso": "IESO/HQ/BCH","markets": ["Toronto", "Montréal", "Vancouver"]},
+                ],
+                "press_release":       "https://dchub.cloud/press/releases/dcpi-international.html",
+                "filter_by_iso":       "GET /api/v1/dcpi/scores?iso=<NGESO|AEMO|ENTSOE-DE|...>",
+                "compare_isos_tool":   "MCP tool compare_isos — head-to-head ranking across all 23 ISOs/grid operators",
+            },
             "homepage": "https://dchub.cloud",
             "url": "https://dchub.cloud",
             "documentation": "https://dchub.cloud/for-ai.html",
