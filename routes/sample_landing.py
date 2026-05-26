@@ -17,13 +17,22 @@ URL: /sample (HTML, public, no auth)
 """
 
 import os
+import time
 import html as _html
 import datetime as _dt
 import logging
+from concurrent.futures import ThreadPoolExecutor
 from flask import Blueprint, Response, request
 
 logger = logging.getLogger(__name__)
 sample_landing_bp = Blueprint("sample_landing", __name__)
+
+# r42p (2026-05-26): /sample timed out at 20s+ overnight because 3
+# sequential sub-fetches (monthly + quarterly + dcpi) compound. Parallel
+# fetch + 5min Redis-shared cache gets cold-call under 8s and hot calls
+# under 200ms across all gunicorn workers.
+_SAMPLE_CACHE: dict[str, dict] = {}
+_SAMPLE_TTL = 300  # 5 minutes
 
 
 def _safe_pull_monthly(audience: str = "default"):
@@ -140,12 +149,52 @@ def sample_agent():
     return _render_sample(audience="agent")
 
 
+def _gather_sample_data(audience: str) -> dict:
+    """Parallelize the 3 sub-fetches and cache the combined result.
+
+    Pre-fix: sequential ~5-8s each = 20s+ total → CF worker timeout.
+    Post-fix: max(t) ≈ 8s cold, <200ms hot (5min Redis cache)."""
+    cache_key = f"dchub:sample:{audience}"
+    # Try Redis shared cache first
+    try:
+        from redis_cache import cache_get
+        cached = cache_get(cache_key)
+        if cached:
+            return cached
+    except Exception:
+        pass
+    # Per-process fallback
+    now = time.monotonic()
+    local = _SAMPLE_CACHE.get(audience)
+    if local and (now - local["computed_at"]) < _SAMPLE_TTL:
+        return local["data"]
+
+    with ThreadPoolExecutor(max_workers=3) as ex:
+        f_monthly = ex.submit(_safe_pull_monthly, audience)
+        f_quarterly = ex.submit(_safe_pull_quarterly, audience)
+        f_dcpi = ex.submit(_safe_pull_dcpi_top)
+        result = {
+            "monthly":   f_monthly.result(),
+            "quarterly": f_quarterly.result(),
+            "dcpi_top":  f_dcpi.result(),
+        }
+
+    try:
+        from redis_cache import cache_set
+        cache_set(cache_key, result, ttl=_SAMPLE_TTL)
+    except Exception:
+        pass
+    _SAMPLE_CACHE[audience] = {"data": result, "computed_at": time.monotonic()}
+    return result
+
+
 def _render_sample(audience: str = "default"):
     """Render the live-sample landing page with audience-specific framing."""
     page = _AUDIENCE_PAGE.get(audience, _AUDIENCE_PAGE["default"])
-    monthly = _safe_pull_monthly(audience=audience)
-    quarterly = _safe_pull_quarterly(audience=audience)
-    dcpi_top = _safe_pull_dcpi_top()
+    bundle = _gather_sample_data(audience)
+    monthly = bundle["monthly"]
+    quarterly = bundle["quarterly"]
+    dcpi_top = bundle["dcpi_top"]
 
     m_narr = (monthly.get("narrative_summary") or {}).get("text", "")
     q_narr = (quarterly.get("narrative_summary") or {}).get("text", "")
