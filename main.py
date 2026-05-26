@@ -23558,6 +23558,18 @@ try:
 except Exception as _td_e:
     print(f"[main] twitter_diagnostic_bp register failed: {_td_e}", flush=True)
 
+# r63 (2026-05-25): targeted outreach campaign for the 9 AI labs +
+# GPU clouds the founder wants citing DC Hub as a resource
+# (Perplexity, Groq, Gemini, Mistral, NVIDIA, CoreWeave, Lambda,
+# TensorWave, Core42). Per-target personalized pitch generator +
+# draft store + send-tracking. Admin-keyed.
+try:
+    from routes.ai_lab_outreach import ai_lab_outreach_bp
+    app.register_blueprint(ai_lab_outreach_bp)
+    print("[main] ai_lab_outreach_bp registered: /api/v1/admin/ai-lab-outreach/{targets,draft,draft-all,drafts,sent}", flush=True)
+except Exception as _alo_e:
+    print(f"[main] ai_lab_outreach_bp register failed: {_alo_e}", flush=True)
+
 # r45 (2026-05-25): explicit per-blueprint registration (batch loop in r44
 # was failing silently — Flask blueprint name conflicts get swallowed).
 
