@@ -47,11 +47,24 @@ def _conn():
 
 # UA pattern → platform name + role
 _UA_RULES = [
+    # Direct platform tags (mcp-server sets these in `platform` column from
+    # MCP initialize clientInfo.name)
+    ("claude",          "Claude (Anthropic)",     "AI assistant"),
+    ("chatgpt",         "ChatGPT (OpenAI)",       "AI assistant"),
+    ("perplexity",      "Perplexity",             "AI search"),
+    ("cursor",          "Cursor",                 "AI IDE"),
+    ("cline",           "Cline",                  "AI coding agent"),
+    ("groq",            "Groq",                   "AI inference"),
+    ("nvidia",          "NVIDIA AI",              "AI inference"),
+    ("gemini",          "Gemini (Google)",        "AI assistant"),
+    ("copilot",         "GitHub Copilot",         "AI coding"),
+    ("grok",            "Grok (xAI)",             "AI assistant"),
+    ("windsurf",        "Windsurf",               "AI IDE"),
+    ("continue",        "Continue.dev",           "AI coding agent"),
+    # UA-substring fallbacks
     ("claudebot",       "Claude (Anthropic)",     "AI assistant"),
     ("mcp-remote",      "Claude Desktop",         "MCP client"),
     ("gptbot",          "ChatGPT (OpenAI)",       "AI assistant"),
-    ("chatgpt",         "ChatGPT (OpenAI)",       "AI assistant"),
-    ("perplexity",      "Perplexity",             "AI search"),
     ("perplexitybot",   "Perplexity",             "AI search"),
     ("cursor",          "Cursor",                 "AI IDE"),
     ("cline",           "Cline",                  "AI coding agent"),
@@ -98,17 +111,23 @@ def _gather_citations():
 
     try:
         with _conn() as c, c.cursor() as cur:
-            # Pull all UA strings + counts from mcp_call_log
+            # r47.28.1 (2026-05-26): the upstream dchub-mcp-server tags every
+            # tracked call with `platform` based on the MCP initialize
+            # clientInfo.name — that's where 'claude' / 'chatgpt' / 'cursor'
+            # actually land. user_agent is the mcp-server's own outbound UA
+            # ('node'), not the originating client. Cross-classify both.
             cur.execute("""
-                SELECT user_agent,
+                SELECT COALESCE(NULLIF(platform,''), user_agent, '') AS signal,
                        COUNT(*)                                                   AS total,
                        COUNT(*) FILTER (WHERE timestamp > NOW() - INTERVAL '7 days')  AS d7,
                        COUNT(*) FILTER (WHERE timestamp > NOW() - INTERVAL '30 days') AS d30,
                        MIN(timestamp) AS first_seen,
                        MAX(timestamp) AS last_seen
                   FROM mcp_call_log
-                 WHERE user_agent IS NOT NULL AND user_agent != ''
-                 GROUP BY user_agent
+                 WHERE COALESCE(NULLIF(platform,''), user_agent) IS NOT NULL
+                   AND COALESCE(NULLIF(platform,''), user_agent) NOT IN
+                       ('mcp', 'node', 'curl', 'diag', 'phase9i', 'phase9j', 'unknown')
+                 GROUP BY signal
                  ORDER BY 2 DESC
                  LIMIT 200
             """)
