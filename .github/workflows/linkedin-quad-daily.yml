@@ -1,0 +1,96 @@
+name: LinkedIn quad-daily (4 posts/day at 8 / 12 / 16 / 20 UTC)
+
+# r60-a (2026-05-25): wires up the dormant linkedin_quad_daily.py engine.
+#
+# Backstory: routes/linkedin_quad_daily.py shipped in r40 with full
+# topic-detection + LinkedIn posting logic, designed to spread 4
+# distinct posts across the day:
+#
+#   08:00 UTC — DCPI Mover         (data style)
+#   12:00 UTC — Hyperscaler Deal   (narrative style)
+#   16:00 UTC — AI Capex Index     (listicle style)
+#   20:00 UTC — Industry Pulse     (contrarian style)
+#
+# But no cron ever fired it. The endpoint's slot-router (`now.hour ==
+# slot["hour"] and now.minute < 15`) means we just need to invoke
+# /run at any minute :00-:14 of each target hour and it auto-picks
+# the right slot.
+#
+# Today's evidence: the only 4 posts in linkedin_quad_posts (status
+# endpoint) all timestamp 13:50-13:53 UTC — a single manual batch.
+# Net effect of this cron: 1 post/day → 4 posts/day, ~3x LinkedIn
+# feed surface area, on a tight intelligent rotation.
+#
+# Idempotency: the endpoint's _already_posted check prevents
+# double-posting in the same (slot_date, slot_hour) bucket. Re-running
+# is safe; the second call returns {"skipped":true,"reason":"already_posted"}.
+
+on:
+  schedule:
+    # All four slots fire at :05 — 5 min past the hour gives the slot
+    # router's minute<15 window plenty of margin.
+    - cron: '5 8 * * *'    # DCPI Mover
+    - cron: '5 12 * * *'   # Hyperscaler Deal
+    - cron: '5 16 * * *'   # AI Capex Index
+    - cron: '5 20 * * *'   # Industry Pulse
+  workflow_dispatch:
+    inputs:
+      force_topic:
+        description: 'force a specific topic (dcpi_mover|hyperscaler_deal|ai_capex_index|industry_pulse)'
+        required: false
+        default: ''
+
+permissions:
+  contents: read
+
+env:
+  BASE: https://dchub-backend-production.up.railway.app
+
+jobs:
+  post:
+    runs-on: ubuntu-latest
+    timeout-minutes: 4
+    steps:
+      - name: Fire LinkedIn quad-daily slot
+        env:
+          ADMIN_KEY: ${{ secrets.DCHUB_ADMIN_KEY }}
+          FORCE_TOPIC: ${{ github.event.inputs.force_topic }}
+        run: |
+          set -euo pipefail
+          # Manual workflow_dispatch can pass force_topic to override
+          # the slot router. Scheduled cron just hits /run with no args
+          # and the endpoint auto-picks via UTC hour.
+          if [ -n "${FORCE_TOPIC:-}" ]; then
+            url="$BASE/api/v1/linkedin-quad/run?force=1&topic=$FORCE_TOPIC"
+            echo "manual override → $url"
+          else
+            url="$BASE/api/v1/linkedin-quad/run"
+            echo "scheduled fire → $url (hour: $(date -u +%H))"
+          fi
+          # Admin key gates write paths inside; the /run endpoint
+          # itself doesn't require it for cron-style invocations, but
+          # we send it anyway so internal-audit logging works.
+          http=$(curl -sS --max-time 90 -X POST \
+            -H "X-Admin-Key: ${ADMIN_KEY:-anon}" \
+            -o /tmp/quad.json -w "%{http_code}" "$url" || echo "000")
+          body=$(cat /tmp/quad.json 2>/dev/null || echo '{}')
+          echo "HTTP $http"
+          echo "$body" | python3 -m json.tool 2>/dev/null || echo "$body"
+
+          # Surface useful single-line notice
+          python3 - <<'PY' || true
+          import json
+          try:
+              with open('/tmp/quad.json') as f: d = json.load(f)
+              if d.get('skipped'):
+                  print(f"::notice::Quad-daily skipped: {d.get('reason')}")
+              elif d.get('ok') or d.get('success'):
+                  t = d.get('topic') or d.get('slot',{}).get('topic')
+                  hr = d.get('slot_hour') or d.get('slot',{}).get('hour')
+                  print(f"::notice::Quad-daily posted: hour={hr} topic={t}")
+              else:
+                  err = d.get('error') or d.get('linkedin_error') or 'unknown'
+                  print(f"::warning::Quad-daily reported failure: {str(err)[:200]}")
+          except Exception as e:
+              print(f"::warning::quad-daily output parse: {e}")
+          PY

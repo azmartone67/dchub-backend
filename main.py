@@ -23517,6 +23517,24 @@ try:
 except Exception as _lq_e:
     print(f"[main] linkedin_quad_bp register failed: {_lq_e}", flush=True)
 
+# r60 (2026-05-25): always-on messaging engine — agent broadcast feed
+# + narrative-arc story spine. Used by AI agents polling for "what's
+# new at DC Hub" and by every channel (LinkedIn quad, press, X) to
+# reinforce a single weekly narrative thread.
+try:
+    from routes.agent_broadcast import agent_broadcast_bp
+    app.register_blueprint(agent_broadcast_bp)
+    print("[main] agent_broadcast_bp registered: /api/v1/agent-broadcast{,/today,/dcpi-shifts,/rss,/subscribers}", flush=True)
+except Exception as _ab_e:
+    print(f"[main] agent_broadcast_bp register failed: {_ab_e}", flush=True)
+
+try:
+    from routes.narrative_arc import narrative_arc_bp
+    app.register_blueprint(narrative_arc_bp)
+    print("[main] narrative_arc_bp registered: /api/v1/narrative/{current,refresh}", flush=True)
+except Exception as _na_e:
+    print(f"[main] narrative_arc_bp register failed: {_na_e}", flush=True)
+
 # r45 (2026-05-25): explicit per-blueprint registration (batch loop in r44
 # was failing silently — Flask blueprint name conflicts get swallowed).
 
