@@ -306,6 +306,13 @@ def init_free_tier_gate(app, get_db_conn):
         # Bypass internal MCP server calls
         if request.headers.get("X-Internal-Key") in (os.environ.get("DCHUB_INTERNAL_KEY", ""), os.environ.get("DCHUB_SYNC_KEY", "")):
             return None
+        # r42l (2026-05-26): also bypass on X-Admin-Key match. Otherwise
+        # admin endpoints (/api/v1/dcpi/recompute, /api/v1/reports/monthly/archive,
+        # etc.) get blocked by the gate before the endpoint's own admin
+        # check runs — admin can't even reach the route to call it.
+        _admin_key = os.environ.get("DCHUB_ADMIN_KEY", "")
+        if _admin_key and request.headers.get("X-Admin-Key") == _admin_key:
+            return None
         # Phase ZZZZZ-round22c (2026-05-23): /land-power map endpoint
         # bypass. The user's main complaint was 401/403 errors on map
         # data. enforce_free_tier runs BEFORE any route decorator and
