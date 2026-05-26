@@ -535,7 +535,64 @@ DC Hub — the live data layer beneath the data-center research industry. ·
 · <a href="/transparency">Live ops</a> · <a href="/changelog">Changelog</a>
 · <a href="/architecture">Architecture</a>
 </p>
+
+<!-- r41-license-footer (2026-05-25): explicit CC-BY-4.0 declaration so
+     anyone reading the page (including LinkedIn click-throughs from the
+     "DC Hub publishes the same dataset live. Daily refresh. CC-BY-4.0"
+     partnership post) sees the license front-and-center. -->
+<div style="margin-top:32px;padding:16px 20px;border-top:1px solid rgba(255,255,255,.08);font-size:13px;color:#9ca3af;line-height:1.6">
+  <span style="display:inline-block;padding:2px 8px;background:#10b981;color:#fff;font-weight:700;border-radius:4px;font-size:11px;letter-spacing:.5px;margin-right:8px">CC-BY-4.0</span>
+  <strong style="color:#e2e8f0">Open data, free to cite.</strong>
+  This report is licensed under
+  <a rel="license" href="https://creativecommons.org/licenses/by/4.0/" style="color:#60a5fa">Creative Commons Attribution 4.0 International</a>.
+  Use it in your research, your press, your investor deck — attribution required, no fee, no NDA, no embargo.
+  <br>
+  <strong style="color:#e2e8f0">Cite as:</strong>
+  <code style="background:rgba(255,255,255,.08);padding:2px 6px;border-radius:3px;font-size:12px">DC Hub. (2026). """ + ("Quarterly Deep Report" if d.get('window') == "quarter" else "Monthly Trend Report") + """. https://dchub.cloud/reports/""" + ("quarterly-deep" if d.get('window') == "quarter" else "monthly") + """. Licensed CC-BY-4.0.</code>
+</div>
+
+<script type="application/ld+json">
+{
+  "@context": "https://schema.org",
+  "@type": "Report",
+  "name": \"""" + ("DC Hub Quarterly Deep Report" if d.get('window') == "quarterly-deep" else "DC Hub Monthly Trend Report") + """\",
+  "url": "https://dchub.cloud/reports/""" + ("quarterly-deep" if d.get('window') == "quarter" else "monthly") + """",
+  "license": "https://creativecommons.org/licenses/by/4.0/",
+  "isAccessibleForFree": true,
+  "creator": {"@type": "Organization", "name": "DC Hub", "url": "https://dchub.cloud"},
+  "datePublished": \"""" + str(d.get('generated_at', '')) + """\",
+  "inLanguage": "en"
+}
+</script>
 </body></html>"""
+
+
+# r41-license-block (2026-05-25): declare CC-BY-4.0 inline + via Link
+# header so the LinkedIn post's claim ('Daily refresh. CC-BY-4.0.')
+# is backed up by the response itself. Anyone clicking through can
+# see the license without needing a separate /license page.
+def _attach_license(d, window_kind):
+    if not isinstance(d, dict):
+        return d
+    surface = "Quarterly Deep Report" if window_kind == "quarterly" else "Monthly Trend Report"
+    url = f"https://dchub.cloud/reports/{'quarterly-deep' if window_kind == 'quarterly' else 'monthly'}"
+    d["license"] = {
+        "name": "Creative Commons Attribution 4.0 International",
+        "id":   "CC-BY-4.0",
+        "url":  "https://creativecommons.org/licenses/by/4.0/",
+        "citation": (f"DC Hub. (2026). {surface}. {url}. "
+                     f"Licensed CC-BY-4.0."),
+        "attribution_required": True,
+        "commercial_use_allowed": True,
+        "vs_proprietary_research": (
+            "Cite freely with attribution. No license fee, no NDA, no "
+            "embargo. Compare to CBRE / DCD / 451 Research reports."
+        ),
+    }
+    return d
+
+
+_CC_LINK_HEADER = '<https://creativecommons.org/licenses/by/4.0/>; rel="license"'
 
 
 @comprehensive_report_bp.route("/reports/monthly", methods=["GET"], strict_slashes=False)
@@ -543,6 +600,8 @@ def monthly_html():
     d = _gather(quarter_window=False)
     return Response(_render_html(d), mimetype="text/html",
                     headers={"Cache-Control": "public, max-age=900, s-maxage=3600",
+                             "Link": _CC_LINK_HEADER,
+                             "X-License": "CC-BY-4.0",
                              "X-DC-Phase": "ZZZZZ-round47.13-comprehensive-monthly"})
 
 
@@ -551,16 +610,24 @@ def quarterly_html():
     d = _gather(quarter_window=True)
     return Response(_render_html(d), mimetype="text/html",
                     headers={"Cache-Control": "public, max-age=900, s-maxage=3600",
+                             "Link": _CC_LINK_HEADER,
+                             "X-License": "CC-BY-4.0",
                              "X-DC-Phase": "ZZZZZ-round47.13-comprehensive-quarterly"})
 
 
 @comprehensive_report_bp.route("/api/v1/reports/monthly.json", methods=["GET"], strict_slashes=False)
 @comprehensive_report_bp.route("/api/v1/reports/monthly", methods=["GET"], strict_slashes=False)
 def monthly_json():
-    return jsonify(_gather(quarter_window=False)), 200, {"Cache-Control": "public, max-age=900"}
+    d = _attach_license(_gather(quarter_window=False), "monthly")
+    return jsonify(d), 200, {"Cache-Control": "public, max-age=900",
+                             "Link": _CC_LINK_HEADER,
+                             "X-License": "CC-BY-4.0"}
 
 
 @comprehensive_report_bp.route("/api/v1/reports/quarterly-deep.json", methods=["GET"], strict_slashes=False)
 @comprehensive_report_bp.route("/api/v1/reports/quarterly-deep", methods=["GET"], strict_slashes=False)
 def quarterly_json():
-    return jsonify(_gather(quarter_window=True)), 200, {"Cache-Control": "public, max-age=900"}
+    d = _attach_license(_gather(quarter_window=True), "quarterly")
+    return jsonify(d), 200, {"Cache-Control": "public, max-age=900",
+                             "Link": _CC_LINK_HEADER,
+                             "X-License": "CC-BY-4.0"}

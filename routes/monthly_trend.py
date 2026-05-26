@@ -1069,12 +1069,33 @@ def monthly_html_specific(year: int, month: int):
                     headers={"Cache-Control": "public, max-age=3600"})
 
 
+def _attach_license(d):
+    """r41-license-block (2026-05-25): declare CC-BY-4.0 inline so the
+    LinkedIn post's claim ('CC-BY-4.0. AI-agent native') is backed up
+    by the response body. Anyone clicking through can see the license
+    + citation format without needing a separate license file. Adds
+    Link header per RFC 5988 so machine readers also pick it up."""
+    if not isinstance(d, dict):
+        return d
+    d["license"] = {
+        "name": "Creative Commons Attribution 4.0 International",
+        "id":   "CC-BY-4.0",
+        "url":  "https://creativecommons.org/licenses/by/4.0/",
+        "citation": ("DC Hub. (2026). Monthly Data Center Trend Report. "
+                     "https://dchub.cloud/reports/monthly. Licensed CC-BY-4.0."),
+        "attribution_required": True,
+        "commercial_use_allowed": True,
+    }
+    return d
+
+
 @monthly_trend_bp.route("/api/v1/reports/monthly", methods=["GET"])
 def monthly_json_current():
-    d = _compute_report()
+    d = _attach_license(_compute_report())
     resp = jsonify(d)
     resp.headers["Cache-Control"] = "public, max-age=900"
     resp.headers["Access-Control-Allow-Origin"] = "*"
+    resp.headers["Link"] = '<https://creativecommons.org/licenses/by/4.0/>; rel="license"'
     return resp
 
 
@@ -1083,10 +1104,11 @@ def monthly_json_current():
 def monthly_json_specific(year: int, month: int):
     if month < 1 or month > 12:
         return jsonify(ok=False, error="invalid_month"), 400
-    d = _compute_report(year, month)
+    d = _attach_license(_compute_report(year, month))
     resp = jsonify(d)
     resp.headers["Cache-Control"] = "public, max-age=3600"
     resp.headers["Access-Control-Allow-Origin"] = "*"
+    resp.headers["Link"] = '<https://creativecommons.org/licenses/by/4.0/>; rel="license"'
     return resp
 
 
