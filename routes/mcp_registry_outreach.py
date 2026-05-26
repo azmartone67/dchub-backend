@@ -209,9 +209,32 @@ DISCOVERY_TARGETS = [
 
 # r36 (2026-05-25): exposed for lifecycle L23 audit (cross-references
 # the live ledger instead of relying on a hardcoded noted-list).
+# r49.7 (2026-05-25): registries with verified-dead submission URLs
+# (404 on /submit, no programmatic submit path). Excluded from the
+# L23 registry_presence audit until/unless they re-emerge. Keeping
+# them in DISCOVERY_TARGETS as a historical record but filtering on
+# read so the brain dashboard doesn't keep flagging us as "missing
+# from five 404 pages."
+_DEAD_REGISTRY_KEYS = {
+    "mcphub",     # mcphub.io/submit → 404 verified 2026-05-25
+    "lobehub",    # lobehub.com/mcp/submit → 404
+    "mcp_hive",   # mcphive.com/submit → 404
+    "toolhive",   # toolhive.io/submit → not reachable
+    "yellowmcp",  # yellowmcp.com/submit → 404
+}
+
+
 def get_target_names() -> list[str]:
-    """Names of all discovery targets known to this module."""
-    return [t["name"] for t in DISCOVERY_TARGETS]
+    """Names of all discovery targets known to this module.
+
+    r49.7: filter out _DEAD_REGISTRY_KEYS — registries whose submit
+    URLs return 404 and have no alternative submission path. They
+    remain in DISCOVERY_TARGETS for historical reference but are
+    excluded here so the L23 audit doesn't keep flagging us against
+    dead URLs.
+    """
+    return [t["name"] for t in DISCOVERY_TARGETS
+            if t.get("key") not in _DEAD_REGISTRY_KEYS]
 
 
 def get_submitted_target_names() -> list[str]:
