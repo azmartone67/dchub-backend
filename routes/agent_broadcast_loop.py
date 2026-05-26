@@ -170,6 +170,75 @@ def broadcast():
     }), 200 if healthy == len(_TARGETS) else 207
 
 
+@agent_broadcast_bp.route("/api/v1/agents/broadcast/unhealthy",
+                           methods=["GET"], strict_slashes=False)
+def unhealthy():
+    """r68-d (2026-05-26): /api/v1/agents/broadcast returns
+    targets_healthy=8/10 but doesn't tell the operator WHICH 2 are
+    failing. This endpoint surfaces the failing targets with their
+    latest status_code + error note from agent_broadcast_log so the
+    operator can fix or document them in one click.
+
+    No auth — visibility into platform health is a public signal."""
+    out = []
+    if not (_pg and _dsn()):
+        return jsonify({"error": "no_db", "unhealthy": []}), 200
+    try:
+        with _conn() as c, c.cursor() as cur:
+            # Latest row per target — anything not 2xx/3xx is unhealthy
+            cur.execute("""
+                SELECT DISTINCT ON (target)
+                       target, target_url, method, status_code,
+                       elapsed_ms, note, fired_at
+                  FROM agent_broadcast_log
+                 ORDER BY target, fired_at DESC
+            """)
+            rows = cur.fetchall() or []
+        for r in rows:
+            sc = int(r[3] or 0)
+            healthy = 200 <= sc < 400
+            if not healthy:
+                out.append({
+                    "target":       r[0],
+                    "url":          r[1],
+                    "method":       r[2],
+                    "status_code":  sc,
+                    "elapsed_ms":   r[4],
+                    "error_note":   r[5] or "",
+                    "last_check":   r[6].isoformat() if r[6] else None,
+                    "likely_fix":   _likely_fix_for(r[0], r[1], sc, r[5] or ""),
+                })
+    except Exception as e:
+        return jsonify({"error": str(e)[:200], "unhealthy": []}), 200
+
+    return jsonify({
+        "checked_at":   datetime.datetime.utcnow().isoformat() + "Z",
+        "unhealthy_count": len(out),
+        "unhealthy":    out,
+        "hint":         ("Each entry has a `likely_fix` heuristic. To "
+                          "trigger a re-broadcast: POST /api/v1/agents/broadcast"),
+    }), 200
+
+
+def _likely_fix_for(target: str, url: str, status: int, note: str) -> str:
+    """Heuristic remediation suggestion per failure mode."""
+    if status == 404:
+        return (f"Route missing — check Flask route + worker _routes.json "
+                  f"for {url}. Same singular/plural pattern as the /partners fix.")
+    if status == 403:
+        return ("CF block — check worker PHASE_282_RAILWAY_PATHS sets + "
+                "_routes.json include for this path. Could be loop guard.")
+    if status in (502, 503, 504):
+        return f"Upstream timeout — Railway slow or down for {url}. Check /alive."
+    if status == 0:
+        return ("DNS/network — probably an unreachable URL or worker tab "
+                "intercepting. Check that {url} resolves.")
+    if "ssl" in (note or "").lower() or "certificate" in (note or "").lower():
+        return "TLS cert issue — likely a subdomain CNAME drift or expired cert."
+    return ("Check Railway logs for this path + verify the route is "
+              "registered. Worker drift is another possibility.")
+
+
 @agent_broadcast_bp.route("/api/v1/agents/broadcasts",
                            methods=["GET"], strict_slashes=False)
 def history():

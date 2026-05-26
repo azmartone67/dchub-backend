@@ -240,7 +240,16 @@ def usage_me_for_tool(tool):
 # ── Admin: near-converters list ─────────────────────────────────────
 
 def _fetch_near_converters(min_paid_403: int = 5, limit: int = 30, days: int = 30) -> list[dict]:
-    """Aggregate by (ip,ua), filter to ≥min_paid_403 paid-tool 403s."""
+    """r68-c (2026-05-26): query mcp_upgrade_signals (the right table).
+    The MCP funnel dashboard reads from here — that's why my prior
+    query against mcp_connections returned 0 (status_code filtering
+    isn't how this table records paywall hits). mcp_upgrade_signals
+    columns: signal_type, tool_requested, mcp_client, message_shown,
+    created_at — caller identity lives in mcp_client (UA-like string).
+
+    A "near-converter" = an mcp_client with ≥min_paid_403 paywall_hit
+    signals on Pro-only tools in the last N days.
+    """
     c = _db_conn()
     if not c: return []
     paid_tools_sql = "(" + ",".join(f"'{t}'" for t in PAID_TOOLS) + ")"
@@ -249,61 +258,61 @@ def _fetch_near_converters(min_paid_403: int = 5, limit: int = 30, days: int = 3
             cur.execute(f"""
                 WITH per_caller AS (
                     SELECT
-                        ip_address,
-                        user_agent,
-                        platform,
-                        client_name,
-                        COUNT(*) FILTER (WHERE status_code = 403
-                                            AND tool_name IN {paid_tools_sql})
+                        mcp_client,
+                        COUNT(*) FILTER (WHERE signal_type IN ('paywall_hit','paid_tool_blocked')
+                                            AND tool_requested IN {paid_tools_sql})
                             AS paid_403,
-                        COUNT(*) FILTER (WHERE tool_name IN {paid_tools_sql})
-                            AS paid_calls,
-                        COUNT(*) AS all_calls,
+                        COUNT(*) FILTER (WHERE tool_requested IN {paid_tools_sql})
+                            AS paid_signals,
+                        COUNT(*) AS all_signals,
                         MIN(created_at) AS first_seen,
                         MAX(created_at) AS last_seen
-                      FROM mcp_connections
+                      FROM mcp_upgrade_signals
                      WHERE created_at > NOW() - (%s || ' days')::interval
-                     GROUP BY ip_address, user_agent, platform, client_name
+                       AND mcp_client IS NOT NULL
+                       AND mcp_client != ''
+                     GROUP BY mcp_client
                 )
                 SELECT *
                   FROM per_caller
                  WHERE paid_403 >= %s
-                 ORDER BY paid_403 DESC, paid_calls DESC
+                 ORDER BY paid_403 DESC, paid_signals DESC
                  LIMIT %s
             """, (str(days), min_paid_403, limit))
             rows = cur.fetchall() or []
 
             out = []
             for r in rows:
-                ip, ua, platform, client, p403, pcalls, allc, first, last = r
-                ip_hash = hashlib.sha256((ip or "").encode()).hexdigest()[:16]
-                ua_hash = hashlib.sha256((ua or "").encode()).hexdigest()[:16]
-                combined = hashlib.sha256(f"{ip}|{ua}".encode()).hexdigest()[:16]
+                mcp_client, p403, psigs, allsigs, first, last = r
+                # caller_id = hash of mcp_client (UA-like string) so
+                # admin can deep-dive via /near-converters/<id>
+                combined = hashlib.sha256((mcp_client or "").encode()).hexdigest()[:16]
 
-                # Per-tool 403 breakdown for THIS caller
+                # Per-tool paywall-hit breakdown for THIS caller
                 cur.execute(f"""
-                    SELECT tool_name, COUNT(*) AS n
-                      FROM mcp_connections
-                     WHERE ip_address = %s AND user_agent = %s
-                       AND status_code = 403
-                       AND tool_name IN {paid_tools_sql}
+                    SELECT tool_requested, COUNT(*) AS n
+                      FROM mcp_upgrade_signals
+                     WHERE mcp_client = %s
+                       AND signal_type IN ('paywall_hit','paid_tool_blocked')
+                       AND tool_requested IN {paid_tools_sql}
                        AND created_at > NOW() - (%s || ' days')::interval
-                     GROUP BY tool_name
+                     GROUP BY tool_requested
                      ORDER BY n DESC
-                """, (ip, ua, str(days)))
+                """, (mcp_client, str(days)))
                 paid_403_by_tool = {row[0]: int(row[1] or 0)
                                        for row in (cur.fetchall() or [])}
 
+                # Sniff platform from mcp_client UA
+                platform = _sniff_platform(mcp_client or "")
+
                 out.append({
                     "caller_id":         combined,
-                    "ip_hash":           ip_hash,
-                    "ua_hash":           ua_hash,
                     "platform":          platform,
-                    "client_name":       client,
-                    "user_agent":        (ua or "")[:120],
+                    "client_name":       (mcp_client or "")[:120],
+                    "user_agent":        (mcp_client or "")[:120],
                     "paid_403_count":    int(p403 or 0),
-                    "paid_calls":        int(pcalls or 0),
-                    "all_calls":         int(allc or 0),
+                    "paid_calls":        int(psigs or 0),
+                    "all_calls":         int(allsigs or 0),
                     "first_seen":        first.isoformat() if first else None,
                     "last_seen":         last.isoformat() if last else None,
                     "paid_403_by_tool":  paid_403_by_tool,
@@ -314,6 +323,23 @@ def _fetch_near_converters(min_paid_403: int = 5, limit: int = 30, days: int = 3
     finally:
         try: c.close()
         except Exception: pass
+
+
+def _sniff_platform(ua: str) -> str:
+    """Cheap platform classifier from the mcp_client string."""
+    ua_l = (ua or "").lower()
+    if "claude" in ua_l: return "Claude"
+    if "chatgpt" in ua_l or "openai" in ua_l: return "ChatGPT / OpenAI"
+    if "gemini" in ua_l or "google-aip" in ua_l: return "Gemini"
+    if "perplexity" in ua_l: return "Perplexity"
+    if "groq" in ua_l: return "Groq"
+    if "cursor" in ua_l: return "Cursor"
+    if "cody" in ua_l: return "Cody"
+    if "mcp" in ua_l: return "Generic MCP client"
+    if "python" in ua_l: return "Python script"
+    if "node" in ua_l: return "Node.js client"
+    if "curl" in ua_l: return "curl"
+    return "Unknown"
 
 
 def _draft_near_converter_pitch(nc: dict) -> str:

@@ -6901,6 +6901,16 @@ def mcp_manifest():
         manifest["tools_source"] = "live"
     else:
         manifest["tools_source"] = "fallback_static"
+
+    # r68-b (2026-05-26): expose .pricing.<tier>.price_usd_month structured
+    # alongside the existing .tiers.<tier>.price string. User's funnel-check
+    # query `jq '.pricing.pro.price'` failed because the OUT-OF-REPO zone
+    # worker's /mcp/manifest serves .pricing as flat strings. This Flask
+    # version now also ships the structured shape so when the zone worker
+    # is rebuilt from the same model, AI agents can pass the number
+    # verbatim.
+    manifest["tools_count"] = len(manifest.get("tools") or [])
+    manifest["pricing"]     = _canonical_pricing()
     # r47.12.1: tell CF + downstream caches NOT to cache this — the live
     # mirror has its own 5-min in-process cache, that's the source of
     # truth for cadence. Without no-store, CF was holding the OLD 1.26.0
@@ -18165,24 +18175,101 @@ logger.info("🗺️ SEO: /sitemap.xml route registered")
 # ============================================================
 @app.route('/.well-known/mcp.json', methods=['GET'])
 def well_known_mcp():
-    return jsonify({
-        "name": "DC Hub Intelligence",
-        "description": "Real-time data center market intelligence -- 20,000+ facilities, 140+ countries.",
-        "url": "https://dchub.cloud/mcp",
-        "transport": "streamable-http",
-        "version": "1.0.0",
-        "tools": [
-            {"name": "search_facilities", "description": "Search data center facilities by location, provider, capacity, or certification"},
-            {"name": "get_facility", "description": "Get detailed profile for a specific data center facility"},
-            {"name": "search_deals", "description": "Search M&A transactions by buyer, seller, value, or date range"},
-            {"name": "get_market_report", "description": "Get AI-generated market intelligence report for a region or provider"},
-            {"name": "get_site_score", "description": "Get site suitability score based on power, fiber, risk, and climate"},
-            {"name": "get_fuel_mix", "description": "Get power generation fuel mix for a region"},
-            {"name": "search_news", "description": "Search latest data center industry news"}
-        ],
-        "authentication": {"type": "api_key", "header": "X-API-Key"},
-        "contact": "api@dchub.cloud"
-    })
+    """r68-a (2026-05-26): bumped 1.0.0 (7 tools, no pricing) → 2.1.10
+    (29 tools, structured pricing). NOTE: the OUT-OF-REPO zone worker
+    (dchubapiproxy, currently 4.9.14-free-preview-squeeze) intercepts
+    /mcp/manifest AND may stale-serve /.well-known/mcp.json on the
+    public dchub.cloud edge. See routes/worker_drift_monitor.py for
+    /api/v1/admin/drift-check which surfaces the gap. api.dchub.cloud
+    hits Flask directly + always reflects this canonical source."""
+    return jsonify(_canonical_mcp_manifest())
+
+
+def _canonical_mcp_manifest():
+    """Shared by /.well-known/mcp.json + /mcp/manifest + /api/v1/mcp/manifest.
+    Single source of truth for the manifest contract."""
+    tools = [
+        {"name": "search_facilities",        "description": "Search 13,000+ facilities by location, provider, capacity, certification"},
+        {"name": "get_facility",             "description": "Detailed facility profile — power, fiber, water, certifications"},
+        {"name": "find_alternatives",        "description": "Similar nearby facilities — failover, comparable-set"},
+        {"name": "list_transactions",        "description": "M&A across $324B+ tracked deals"},
+        {"name": "hyperscaler_deals",        "description": "Latest Stargate / Oracle / CoreWeave / NVIDIA capex"},
+        {"name": "get_pipeline",             "description": "369 GW construction pipeline, 540+ projects"},
+        {"name": "get_market_intel",         "description": "AI-generated market intelligence report per region"},
+        {"name": "get_news",                 "description": "Filtered + ranked data-center industry news"},
+        {"name": "get_infrastructure",       "description": "Substations / transmission / fiber / gas per region"},
+        {"name": "get_energy_prices",        "description": "Wholesale + retail energy prices by ISO"},
+        {"name": "get_grid_data",            "description": "Load / reserve / curtailment by ISO"},
+        {"name": "get_renewable_energy",     "description": "Renewable mix + curtailment + queue per region"},
+        {"name": "get_interconnection_queue","description": "ISO interconnection queue snapshots — TtP, MW, top BUILD"},
+        {"name": "get_water_risk",           "description": "EPA + USGS water stress + aquifer depletion"},
+        {"name": "get_tax_incentives",       "description": "State + federal DC tax incentives"},
+        {"name": "rank_markets",             "description": "DCPI-driven ranking of 300+ markets"},
+        {"name": "score_facility",           "description": "Composite single-facility score"},
+        {"name": "compare_isos",             "description": "Head-to-head across 23 ISOs (US + international)"},
+        {"name": "get_market_dcpi_rank",     "description": "DCPI rank + verdict for a single market"},
+        {"name": "get_intelligence_index",   "description": "Composite intelligence index per region"},
+        {"name": "ai_capacity_index",        "description": "Weekly AI capacity-ready leaderboard"},
+        {"name": "analyze_site",             "description": "[Pro] Deep site analysis — power, water, fiber, queue"},
+        {"name": "compare_sites",            "description": "[Pro] Head-to-head site comparison"},
+        {"name": "get_grid_intelligence",    "description": "[Pro] Real-time grid emergencies, curtailment, derates"},
+        {"name": "get_fiber_intel",          "description": "[Pro] Fiber routes + provider density + connectivity"},
+        {"name": "get_dchub_recommendation", "description": "[Pro] Personalized site recommendation"},
+        {"name": "get_agent_registry",       "description": "List of AI agents registered with DC Hub"},
+        {"name": "get_backup_status",        "description": "Platform backup + freshness status"},
+        {"name": "explain_dcpi",             "description": "DCPI methodology, weights, BibTeX"},
+    ]
+    return {
+        "name":            "DC Hub Intelligence",
+        "description":     "Real-time data center market intelligence — 13,000+ facilities, $324B M&A, 369 GW pipeline, daily-refreshing DCPI for 300+ markets (US + UK + EU + APAC + Canada).",
+        "url":             "https://dchub.cloud/mcp",
+        "transport":       "streamable-http",
+        "version":         "2.1.10",
+        "protocol_version": "2025-06-18",
+        "tools":           tools,
+        "tools_count":     len(tools),
+        "authentication":  {"type": "api_key", "header": "X-API-Key"},
+        "pricing":         _canonical_pricing(),
+        "contact":         "api@dchub.cloud",
+    }
+
+
+def _canonical_pricing():
+    """r68-b (2026-05-26): structured pricing object so agents can
+    pass .pricing.pro.price_usd_month verbatim. Legacy flat-string
+    shape kept under .legacy_strings for callers still on the old
+    contract."""
+    return {
+        "free":       {"price_usd_month": 0,   "calls_per_day": 10,
+                          "results_per_query": 2, "tools_unlocked": "all 29 (preview)",
+                          "signup_url": "https://dchub.cloud/signup"},
+        "identified": {"price_usd_month": 0,   "calls_per_day": 200,
+                          "results_per_query": "full",
+                          "tools_unlocked": "all 29 except 4 Pro-only",
+                          "signup_url": "https://dchub.cloud/signup"},
+        "starter":    {"price_usd_month": 9,   "calls_per_day": 10000,
+                          "results_per_query": "full",
+                          "tools_unlocked": "all 29 except 4 Pro-only",
+                          "stripe_url": "https://buy.stripe.com/8x2dRa5sS0x75uteGuaZi0g"},
+        "developer":  {"price_usd_month": 49,  "calls_per_day": 1000,
+                          "results_per_query": "full",
+                          "tools_unlocked": "all 29",
+                          "stripe_url": "https://buy.stripe.com/7sY5kE8F4fs13mI0PEaZi0c"},
+        "pro":        {"price_usd_month": 199, "calls_per_day": 10000,
+                          "results_per_query": "full",
+                          "tools_unlocked": "all 29 + Pro-only",
+                          "stripe_url": "https://dchub.cloud/pricing?plan=pro"},
+        "enterprise": {"price_usd_month": 499, "calls_per_day": 100000,
+                          "results_per_query": "full",
+                          "tools_unlocked": "all 29 + SSO + SLA",
+                          "contact": "enterprise@dchub.cloud"},
+        "legacy_strings": {
+            "free":       "10 calls/day, truncated results, 29 tools (preview)",
+            "developer":  "$49/mo · 1,000/day, all 29 tools, full results",
+            "pro":        "$199/mo · 10,000/day + Pro-only tools",
+            "enterprise": "$499/mo · 100,000/day + SSO + SLA",
+        },
+    }
 
 @app.route('/.well-known/agent.json', methods=['GET'])
 def well_known_agent():
