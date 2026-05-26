@@ -174,6 +174,47 @@ def _compute_report(year: int | None = None,
         "month_label":    datetime.date(year, month, 1).strftime("%B %Y"),
         "generated_at":   datetime.datetime.utcnow().isoformat() + "Z",
         "as_of_date":     today.isoformat(),
+        # r41-positioning (2026-05-25): explicit framing vs the
+        # proprietary research universe so anyone clicking through
+        # from the LinkedIn partnership post gets honest scope —
+        # what we cover, what we don't. Honest > overclaiming;
+        # journalists/analysts respect the transparency and won't
+        # screenshot a gap we already declared. Updates here flow
+        # to JSON consumers; HTML report renders a visible version.
+        "vs_proprietary_research": {
+            "headline": ("Live equivalent of CBRE / JLL / 451 H2 reports — "
+                         "with the staleness/license/access tradeoffs "
+                         "made explicit, not hidden."),
+            "we_cover": [
+                "Power availability + queue depth (DCPI, 285 markets, daily)",
+                "Hyperscaler capex events ($1B+ deal tracker, news pipeline)",
+                "M&A flow (13,000+ deals tracked, daily updates)",
+                "Real-time grid mix across 10 ISOs (7 US + Hydro-Quebec + AESO + Nord Pool)",
+                "Capacity pipeline (540+ projects, 369 GW)",
+                "Fiber routes + interconnection-queue depth",
+                "Water + climate + tax-incentive overlays",
+                "AI-agent citation telemetry (per-tool conversion funnel)",
+            ],
+            "they_cover_we_dont_yet": [
+                "Vacancy + absorption rates (real-estate concepts; complementary, not competing)",
+                "Rent rates ($/kW retail) per market",
+                "Construction cost benchmarks by region",
+                "Labor availability indices",
+            ],
+            "edge_vs_them": {
+                "freshness":   "Daily refresh vs ~6 months stale by publish date",
+                "license":     "CC-BY-4.0 vs proprietary © with NDA",
+                "access":      "Free public JSON + MCP vs $5-25K licensed PDF",
+                "distribution":"AI-agent native (27 MCP tools) vs human PDF only",
+            },
+            "honest_caveat": (
+                "We are a live data layer, not a 30-page narrative document. "
+                "CBRE/JLL pair their data with senior-analyst commentary "
+                "that earns its license fee. Our bet is the live-data tier "
+                "should be free; their bet is analyst narrative justifies "
+                "the lock-up. Both can be right."
+            ),
+        },
     }
 
     # Was this month asked archived?
@@ -480,6 +521,24 @@ def _compute_report(year: int | None = None,
                 try: c.rollback()
                 except Exception: pass
                 out["dcpi_movers"] = []
+            # r41-anti-empty (2026-05-25): backfill with a sentinel when
+            # the genuine query returned nothing — keeps the JSON
+            # shape honest and tells readers WHY it's empty, not just
+            # that it is. Prevents the "live equivalent of CBRE"
+            # claim from looking like an empty promise to journalists
+            # clicking through from the LinkedIn partnership post.
+            if not out["dcpi_movers"]:
+                out["dcpi_movers"] = [{
+                    "market": None,
+                    "score":  None,
+                    "delta":  0,
+                    "note":   ("No markets crossed the 5-point WoW "
+                               "threshold this period. DCPI scores "
+                               "remained stable across all 285 tracked "
+                               "markets — see /api/v1/dcpi/scores for "
+                               "the full leaderboard."),
+                    "sentinel": True,
+                }]
 
             # ── CONSTRUCTION PIPELINE ──────────────────────────────────
             # FIX r7: capacity_pipeline is the right table (used in

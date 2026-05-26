@@ -870,6 +870,120 @@ def check_db_pool_pressure() -> list[dict]:
     return findings
 
 
+def check_report_content_drift() -> list[dict]:
+    """r41-report-quality (2026-05-25). The monthly + quarterly-deep
+    reports are dchub's strongest claim-to-fame ('live equivalent of
+    CBRE H2 2025'). The architecture is dynamic — they regenerate per
+    request — but the CONTENT can drift toward empty/broken sections
+    silently if upstream signal pipelines stop producing data:
+
+      - dcpi_movers: [] → DCPI weekly-mover detection broken OR
+        thresholds set too high so no markets ever qualify
+      - brand_pulse.citation_score_pct: 0.0 → citation tracker
+        scraping no external press mentions
+      - hyperscaler_deals: [] in quarterly → news pipeline regression
+      - generated_at > 25 hours old → cache stuck OR cron not firing
+
+    Any of these would be invisible from a smoke-test pass (HTTP 200 +
+    valid JSON shape) but visibly empty to a journalist clicking
+    through from the LinkedIn 'CC-BY-4.0. AI-agent native' partnership
+    post. We catch it ourselves before they do.
+    """
+    findings: list[dict] = []
+    for window, url in [
+        ("monthly",          "http://localhost:8080/api/v1/reports/monthly"),
+        ("quarterly-deep",   "http://localhost:8080/api/v1/reports/quarterly-deep"),
+    ]:
+        body, _ = _http_get(url, timeout=8)
+        if not body:
+            findings.append({
+                "issue":  f"report_unreachable:{window}",
+                "url":    url,
+                "count":  1,
+                "detail": (f"{window} report endpoint did not return — "
+                           f"could be slow path or genuine outage. "
+                           f"This is the LinkedIn-partnership-post "
+                           f"surface; if it's down, the post becomes "
+                           f"a credibility problem."),
+            })
+            continue
+        try:
+            import json as _json
+            d = _json.loads(body) if isinstance(body, str) else body
+        except Exception:
+            continue
+
+        # Drift check 1: dcpi_movers empty
+        movers = d.get("dcpi_movers")
+        if isinstance(movers, list) and len(movers) == 0:
+            findings.append({
+                "issue":  f"report_empty_section:{window}.dcpi_movers",
+                "url":    url,
+                "count":  0,
+                "detail": (f"{window} report has dcpi_movers=[]. Either "
+                           f"the WoW-delta threshold is too aggressive "
+                           f"(no markets move >5pts) or DCPI recompute "
+                           f"isn't producing per-week deltas. Backfill "
+                           f"with a 'no movers this period' sentinel "
+                           f"in compute_report() so the JSON shape "
+                           f"never looks broken to readers."),
+            })
+
+        # Drift check 2: brand_pulse zero (citation tracker broken)
+        bp = d.get("brand_pulse") or {}
+        score = bp.get("citation_score_pct")
+        if isinstance(score, (int, float)) and score == 0.0:
+            findings.append({
+                "issue":  f"report_zero_signal:{window}.brand_pulse",
+                "url":    url,
+                "count":  0,
+                "detail": (f"{window} report brand_pulse.citation_score_pct "
+                           f"= 0.0. Either no external press has cited "
+                           f"dchub in the window (real PR gap, not a "
+                           f"code bug — see [[source_of_truth]] memory) "
+                           f"OR the citation detector is missing "
+                           f"crawl targets. Cross-check against "
+                           f"check_ai_citations_stale_v2 to disambiguate."),
+            })
+
+        # Drift check 3: quarterly's hyperscaler_deals empty
+        if window == "quarterly-deep":
+            hd = d.get("hyperscaler_deals")
+            if isinstance(hd, list) and len(hd) == 0:
+                findings.append({
+                    "issue":  f"report_empty_section:{window}.hyperscaler_deals",
+                    "url":    url,
+                    "count":  0,
+                    "detail": (f"Quarterly report has hyperscaler_deals=[] "
+                               f"— news pipeline isn't extracting $1B+ "
+                               f"capex events. Run /api/v1/hyperscaler-"
+                               f"alerts/sweep to backfill OR check the "
+                               f"news ingestion log for last 24h."),
+                })
+
+        # Drift check 4: generated_at staleness
+        ts = d.get("generated_at") or ""
+        try:
+            import datetime as _dt
+            gen = _dt.datetime.fromisoformat(ts.replace("Z", "+00:00"))
+            now = _dt.datetime.now(_dt.timezone.utc)
+            age_h = (now - gen).total_seconds() / 3600.0
+            if age_h > 25.0:
+                findings.append({
+                    "issue":  f"report_stale:{window}",
+                    "url":    url,
+                    "count":  int(age_h),
+                    "detail": (f"{window} report generated_at is {age_h:.1f}h "
+                               f"old (SLA: <24h). 'Daily refresh' claim "
+                               f"in the LinkedIn post breaks here. "
+                               f"Check cron + CF cache invalidation."),
+                })
+        except Exception:
+            pass
+
+    return findings
+
+
 def check_mcp_tool_description_drift() -> list[dict]:
     """r41-description-drift (2026-05-25). The worker's MCP_SERVER_INFO
     description string + each MCP tool's description are what every AI
@@ -7237,6 +7351,14 @@ def scan_all() -> list[dict]:
                # marketing-copy-vs-truth gap before AI crawlers cache
                # the stale picture.
                check_mcp_tool_description_drift,
+               # r41-report-quality (2026-05-25) — watches our own
+               # monthly + quarterly-deep reports for empty sections,
+               # zero brand_pulse, stale generated_at. The reports are
+               # what the LinkedIn partnership post points at; if they
+               # drift toward looking empty, the 'live equivalent of
+               # CBRE' claim falls apart visibly. Self-aware quality
+               # gate.
+               check_report_content_drift,
                # Phase FF+7-fix4 (2026-05-19) — early-warning for the
                # pool-exhaustion class of outage that took Railway down
                # for 30min on 2026-05-19. Probes 3 DB endpoints; flags
