@@ -981,6 +981,28 @@ def check_report_content_drift() -> list[dict]:
         except Exception:
             pass
 
+        # Drift check 5 (r42, 2026-05-25): narrative_summary should be
+        # present when ANTHROPIC_API_KEY is set. Missing field means the
+        # LLM call failed or the env var was rotated out — the report
+        # still works (CBRE-equivalent data) but loses the analyst voice
+        # we promised to compete with their narrative depth.
+        import os as _os
+        if (_os.environ.get("ANTHROPIC_API_KEY") or "").strip():
+            narr = d.get("narrative_summary")
+            if not isinstance(narr, dict) or not (narr.get("text") or "").strip():
+                findings.append({
+                    "issue":  f"report_no_narrative:{window}",
+                    "url":    url,
+                    "count":  1,
+                    "detail": (f"{window} report missing narrative_summary "
+                               f"despite ANTHROPIC_API_KEY being set. Check "
+                               f"routes/report_narrative.py: model availability, "
+                               f"prompt size, or 25s timeout. Without the "
+                               f"narrative, the CBRE/JLL gap claim weakens — "
+                               f"we sell freshness + license, but they sell "
+                               f"the analyst voice in the prose."),
+                })
+
     return findings
 
 

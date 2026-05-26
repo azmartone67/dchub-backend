@@ -877,6 +877,29 @@ def _render_html(d: dict, *, partner: str = "") -> str:
             f'Prepared for {partner_clean} · {label}</p>'
         )
 
+    # r42-narrative (2026-05-25): LLM-generated executive summary, if attached.
+    narr = d.get("narrative_summary") or {}
+    narr_text = (narr.get("text") or "").strip()
+    if narr_text:
+        # Convert paragraph breaks to <p> blocks; HTML-escape to avoid XSS.
+        import html as _html
+        paragraphs = [p.strip() for p in narr_text.split("\n\n") if p.strip()]
+        para_html = "\n".join(f"<p>{_html.escape(p)}</p>" for p in paragraphs)
+        gen_at = narr.get("generated_at", "")
+        executive_html = (
+            f'<section style="margin-top:40px;padding:28px 32px;'
+            f'background:rgba(99,102,241,.06);border-left:3px solid var(--violet);'
+            f'border-radius:6px">'
+            f'<div style="font-family:var(--mono);font-size:11px;'
+            f'text-transform:uppercase;letter-spacing:.12em;color:var(--violet);'
+            f'margin-bottom:14px">Executive summary · auto-generated · '
+            f'{narr.get("model", "claude")} · {gen_at[:10]}</div>'
+            f'<div style="font-size:16px;line-height:1.65;color:#e5e7eb">{para_html}</div>'
+            f'</section>'
+        )
+    else:
+        executive_html = ""
+
     permalink = pk.get("permalink", "")
 
     return f"""<!doctype html>
@@ -983,6 +1006,8 @@ def _render_html(d: dict, *, partner: str = "") -> str:
     <h1>{label} <span class="grad">in data centers.</span></h1>
     <p class="lede">A live monthly readout of the global data center market: facilities discovered, capacity changed hands, deal volume, AI-agent queries, and per-market trends. Every number is pulled from DC Hub's live ingest pipeline — no spreadsheet versioning, no quarterly lag.</p>
   </div>
+
+  {executive_html}
 
   <div class="share-row">
     <a class="share-btn" href="#press-kit">📋 Press-kit quotes</a>
@@ -1142,7 +1167,7 @@ def _render_html(d: dict, *, partner: str = "") -> str:
                         strict_slashes=False)
 def monthly_html_current():
     partner = (request.args.get("partner") or "").strip()
-    d = _compute_report()
+    d = _attach_narrative_safe(_compute_report())
     return Response(_render_html(d, partner=partner),
                     mimetype="text/html",
                     headers={"Cache-Control": "public, max-age=900"})
@@ -1154,7 +1179,7 @@ def monthly_html_specific(year: int, month: int):
     if month < 1 or month > 12:
         return Response("Invalid month", status=400)
     partner = (request.args.get("partner") or "").strip()
-    d = _compute_report(year, month)
+    d = _attach_narrative_safe(_compute_report(year, month))
     return Response(_render_html(d, partner=partner),
                     mimetype="text/html",
                     headers={"Cache-Control": "public, max-age=3600"})
@@ -1180,9 +1205,21 @@ def _attach_license(d):
     return d
 
 
+def _attach_narrative_safe(d):
+    """r42-narrative (2026-05-25): add LLM-generated executive summary.
+    Silent no-op if ANTHROPIC_API_KEY not set or call fails — never
+    breaks the report response. Cached 1h, so first reader pays ~3s,
+    next 1000 hit cache."""
+    try:
+        from routes.report_narrative import attach_narrative
+        return attach_narrative(d, kind="monthly")
+    except Exception:
+        return d
+
+
 @monthly_trend_bp.route("/api/v1/reports/monthly", methods=["GET"])
 def monthly_json_current():
-    d = _attach_license(_compute_report())
+    d = _attach_narrative_safe(_attach_license(_compute_report()))
     resp = jsonify(d)
     resp.headers["Cache-Control"] = "public, max-age=900"
     resp.headers["Access-Control-Allow-Origin"] = "*"
@@ -1195,7 +1232,7 @@ def monthly_json_current():
 def monthly_json_specific(year: int, month: int):
     if month < 1 or month > 12:
         return jsonify(ok=False, error="invalid_month"), 400
-    d = _attach_license(_compute_report(year, month))
+    d = _attach_narrative_safe(_attach_license(_compute_report(year, month)))
     resp = jsonify(d)
     resp.headers["Cache-Control"] = "public, max-age=3600"
     resp.headers["Access-Control-Allow-Origin"] = "*"

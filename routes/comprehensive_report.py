@@ -390,6 +390,28 @@ def _render_html(d, title_suffix=""):
 
     verdict_svg = _verdict_bar(d.get("verdicts", {}))
 
+    # r42-narrative (2026-05-25): inject LLM exec summary if attached.
+    narr = d.get("narrative_summary") or {}
+    narr_text = (narr.get("text") or "").strip()
+    if narr_text:
+        import html as _html
+        paragraphs = [p.strip() for p in narr_text.split("\n\n") if p.strip()]
+        para_html = "\n".join(f"<p>{_html.escape(p)}</p>" for p in paragraphs)
+        gen_at = narr.get("generated_at", "")
+        executive_html = (
+            f'<div style="margin:32px 0;padding:24px 28px;'
+            f'background:rgba(99,102,241,.06);border-left:3px solid #6366f1;'
+            f'border-radius:6px">'
+            f'<div style="font-family:ui-monospace,Menlo,monospace;font-size:11px;'
+            f'text-transform:uppercase;letter-spacing:.12em;color:#6366f1;'
+            f'margin-bottom:12px">Executive summary · auto-generated · '
+            f'{narr.get("model", "claude")} · {gen_at[:10]}</div>'
+            f'<div style="font-size:15.5px;line-height:1.65">{para_html}</div>'
+            f'</div>'
+        )
+    else:
+        executive_html = ""
+
     return f"""<!DOCTYPE html>
 <html lang="en"><head>
 <meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1">
@@ -455,6 +477,8 @@ def _render_html(d, title_suffix=""):
     <div class="stat"><div class="stat-num">{d.get('press_count',0)}</div><div class="stat-label">Press Drops</div><div class="stat-sub">last {d['window_days']} days · daily cadence</div></div>
   </div>
 </div>
+
+{executive_html}
 
 <h2>DCPI verdict distribution</h2>
 <p class="section-intro">Every market gets scored daily. <span class="pill">BUILD</span> markets pass excess-power
@@ -595,9 +619,19 @@ def _attach_license(d, window_kind):
 _CC_LINK_HEADER = '<https://creativecommons.org/licenses/by/4.0/>; rel="license"'
 
 
+def _attach_narrative_safe(d, kind):
+    """r42-narrative (2026-05-25): LLM exec summary. Silent no-op without
+    ANTHROPIC_API_KEY or on failure. 1h cache, so first reader pays ~3s."""
+    try:
+        from routes.report_narrative import attach_narrative
+        return attach_narrative(d, kind=kind)
+    except Exception:
+        return d
+
+
 @comprehensive_report_bp.route("/reports/monthly", methods=["GET"], strict_slashes=False)
 def monthly_html():
-    d = _gather(quarter_window=False)
+    d = _attach_narrative_safe(_gather(quarter_window=False), "monthly")
     return Response(_render_html(d), mimetype="text/html",
                     headers={"Cache-Control": "public, max-age=900, s-maxage=3600",
                              "Link": _CC_LINK_HEADER,
@@ -607,7 +641,7 @@ def monthly_html():
 
 @comprehensive_report_bp.route("/reports/quarterly-deep", methods=["GET"], strict_slashes=False)
 def quarterly_html():
-    d = _gather(quarter_window=True)
+    d = _attach_narrative_safe(_gather(quarter_window=True), "quarterly")
     return Response(_render_html(d), mimetype="text/html",
                     headers={"Cache-Control": "public, max-age=900, s-maxage=3600",
                              "Link": _CC_LINK_HEADER,
@@ -618,7 +652,7 @@ def quarterly_html():
 @comprehensive_report_bp.route("/api/v1/reports/monthly.json", methods=["GET"], strict_slashes=False)
 @comprehensive_report_bp.route("/api/v1/reports/monthly", methods=["GET"], strict_slashes=False)
 def monthly_json():
-    d = _attach_license(_gather(quarter_window=False), "monthly")
+    d = _attach_narrative_safe(_attach_license(_gather(quarter_window=False), "monthly"), "monthly")
     return jsonify(d), 200, {"Cache-Control": "public, max-age=900",
                              "Link": _CC_LINK_HEADER,
                              "X-License": "CC-BY-4.0"}
@@ -627,7 +661,7 @@ def monthly_json():
 @comprehensive_report_bp.route("/api/v1/reports/quarterly-deep.json", methods=["GET"], strict_slashes=False)
 @comprehensive_report_bp.route("/api/v1/reports/quarterly-deep", methods=["GET"], strict_slashes=False)
 def quarterly_json():
-    d = _attach_license(_gather(quarter_window=True), "quarterly")
+    d = _attach_narrative_safe(_attach_license(_gather(quarter_window=True), "quarterly"), "quarterly")
     return jsonify(d), 200, {"Cache-Control": "public, max-age=900",
                              "Link": _CC_LINK_HEADER,
                              "X-License": "CC-BY-4.0"}
