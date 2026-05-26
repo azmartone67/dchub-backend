@@ -6663,13 +6663,120 @@ def mcp_proxy():
 # a sibling route — /api/v1/* is NOT intercepted by the zone worker, so
 # AI agents discovering DC Hub via the registry files (mcp.json,
 # glama.json) reach a working manifest immediately.
+#
+# r47.12 (2026-05-25): version + tool list now fetched LIVE from the
+# dchub-mcp-server (POST /mcp initialize + tools/list) with a 5-min
+# cache. Eliminates version drift (manifest was stuck at 1.26.0 / 24
+# tools while live server was v2.1.10 / 29 tools).
+import time as _t_mod
+import urllib.request as _ur_mod
+import json as _json_mod
+_MCP_LIVE_CACHE = {"data": None, "fetched_at": 0}
+_MCP_LIVE_TTL_SEC = 300
+
+
+def _fetch_live_mcp_metadata():
+    """Initialize + tools/list against the live MCP server. Returns
+    (version, tools_list) or (None, None) on any error so the caller
+    falls through to a static minimal manifest."""
+    now = _t_mod.time()
+    cached = _MCP_LIVE_CACHE.get("data")
+    if cached and (now - _MCP_LIVE_CACHE["fetched_at"]) < _MCP_LIVE_TTL_SEC:
+        return cached
+    try:
+        # Step 1: initialize
+        init_payload = {
+            "jsonrpc": "2.0", "id": 1, "method": "initialize",
+            "params": {
+                "protocolVersion": "2024-11-05",
+                "capabilities": {},
+                "clientInfo": {"name": "manifest-mirror", "version": "1"},
+            },
+        }
+        req = _ur_mod.Request(
+            "https://dchub.cloud/mcp",
+            data=_json_mod.dumps(init_payload).encode("utf-8"),
+            headers={
+                "Content-Type": "application/json",
+                "Accept": "application/json, text/event-stream",
+                "User-Agent": "DCHub-Manifest-Mirror/1.0",
+            },
+            method="POST",
+        )
+        session_id = None
+        version = None
+        with _ur_mod.urlopen(req, timeout=8) as resp:
+            session_id = resp.headers.get("Mcp-Session-Id") or resp.headers.get("mcp-session-id")
+            body = resp.read().decode("utf-8", errors="ignore")
+            # SSE body — find the JSON data line
+            for line in body.split("\n"):
+                if line.startswith("data:"):
+                    try:
+                        d = _json_mod.loads(line[5:].strip())
+                        version = (d.get("result") or {}).get("serverInfo", {}).get("version")
+                        break
+                    except Exception:
+                        pass
+        if not session_id:
+            raise RuntimeError("no session id from MCP server")
+
+        # Step 2: tools/list
+        list_payload = {"jsonrpc": "2.0", "id": 2, "method": "tools/list", "params": {}}
+        req2 = _ur_mod.Request(
+            "https://dchub.cloud/mcp",
+            data=_json_mod.dumps(list_payload).encode("utf-8"),
+            headers={
+                "Content-Type": "application/json",
+                "Accept": "application/json, text/event-stream",
+                "Mcp-Session-Id": session_id,
+                "User-Agent": "DCHub-Manifest-Mirror/1.0",
+            },
+            method="POST",
+        )
+        tools = []
+        with _ur_mod.urlopen(req2, timeout=10) as resp2:
+            body2 = resp2.read().decode("utf-8", errors="ignore")
+            for line in body2.split("\n"):
+                if line.startswith("data:"):
+                    try:
+                        d2 = _json_mod.loads(line[5:].strip())
+                        tools = (d2.get("result") or {}).get("tools") or []
+                        break
+                    except Exception:
+                        pass
+        if version and tools:
+            data = {
+                "version": version,
+                "tools": [
+                    {
+                        "name": t.get("name"),
+                        "description": (t.get("description") or "")[:280],
+                    }
+                    for t in tools
+                ],
+            }
+            _MCP_LIVE_CACHE["data"] = data
+            _MCP_LIVE_CACHE["fetched_at"] = now
+            return data
+    except Exception:
+        pass
+    # Return stale cache if available rather than fallback static
+    return _MCP_LIVE_CACHE.get("data")
+
+
 @app.route('/api/v1/mcp/manifest', methods=['GET'])
 @app.route('/mcp/manifest', methods=['GET'])
 def mcp_manifest():
-    """Serve MCP manifest for AI agent discovery"""
+    """Serve MCP manifest for AI agent discovery.
+
+    r47.12: version + tools pulled LIVE from dchub-mcp-server with 5-min
+    cache. Falls back to a minimal static manifest only if the live fetch
+    has never succeeded (cold start with MCP server unreachable).
+    """
+    live = _fetch_live_mcp_metadata()
     manifest = {
         "name": "DC Hub Nexus",
-        "version": "1.26.0",
+        "version": (live or {}).get("version") or "2.1.10",
         "description": "Data Center Intelligence Platform - Access 50,000+ global data center facilities, real-time market intelligence, M&A transactions, news, and infrastructure data.",
         "homepage": "https://dchub.cloud",
         "documentation": "https://dchub.cloud/api/docs",
@@ -6745,6 +6852,14 @@ def mcp_manifest():
             "step_5": "Add X-API-Key header with your Developer key to unlock full data"
         }
     }
+    # r47.12: if the live fetch succeeded, the live tool list reflects the
+    # current server state — replace the hardcoded list. If live failed,
+    # the hardcoded fallback above remains so AI agents still get SOMETHING.
+    if live and live.get("tools"):
+        manifest["tools"] = live["tools"]
+        manifest["tools_source"] = "live"
+    else:
+        manifest["tools_source"] = "fallback_static"
     return jsonify(manifest), 200, {'Access-Control-Allow-Origin': '*'}
 
 try:
