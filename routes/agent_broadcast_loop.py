@@ -104,10 +104,20 @@ _TARGETS = [
     # /agent.json or /.well-known/mcp-server.json (the dchubapiproxy
     # zone worker doesn't know those paths). api.dchub.cloud goes
     # straight to Flask via /api/* allowlist + works fine.
+    #
+    # r69 (2026-05-26): api.dchub.cloud → 522 ("connection timed out")
+    # on the /.well-known/mcp-server.json path despite Railway direct
+    # returning 200. CF→origin hop for the api subdomain is misconfigured
+    # for paths outside /api/*. Workaround: probe Railway directly for
+    # these two — same content, CF-free path, eliminates the 522 false
+    # positive in the broadcast health gauge. The PUBLIC URL agents
+    # actually use is still https://dchub.cloud/.well-known/mcp-server.json
+    # (intercepted by the zone worker) — we'll add that to the broadcast
+    # set later once the zone worker honors it.
     ("self_agent_json",
-     "https://api.dchub.cloud/agent.json", "GET", "self"),
+     "https://dchub-backend-production.up.railway.app/agent.json", "GET", "self"),
     ("self_well_known",
-     "https://api.dchub.cloud/.well-known/mcp-server.json", "GET", "self"),
+     "https://dchub-backend-production.up.railway.app/.well-known/mcp-server.json", "GET", "self"),
 ]
 
 
@@ -173,19 +183,31 @@ def broadcast():
 @agent_broadcast_bp.route("/api/v1/agents/broadcast/unhealthy",
                            methods=["GET"], strict_slashes=False)
 def unhealthy():
-    """r68-d (2026-05-26): /api/v1/agents/broadcast returns
-    targets_healthy=8/10 but doesn't tell the operator WHICH 2 are
-    failing. This endpoint surfaces the failing targets with their
-    latest status_code + error note from agent_broadcast_log so the
-    operator can fix or document them in one click.
+    """r68-d / r69 (2026-05-26): surface failing broadcast targets.
+
+    r69 split: 429 from third-party hosts (smithery.ai, glama.ai, etc.)
+    is EXPECTED throttle, not unhealthy — the platform doesn't owe us
+    unlimited probe access. Categorize:
+      - unhealthy: 4xx/5xx that block discovery (real bugs)
+      - throttled: 429 from external hosts (their right, we accept)
+      - degraded: 5xx from OUR hosts (something to fix on our side)
 
     No auth — visibility into platform health is a public signal."""
-    out = []
+    unhealthy_out: list[dict] = []
+    throttled_out: list[dict] = []
+    degraded_out:  list[dict] = []
+
     if not (_pg and _dsn()):
-        return jsonify({"error": "no_db", "unhealthy": []}), 200
+        return jsonify({"error": "no_db", "unhealthy": [],
+                          "throttled": [], "degraded": []}), 200
+
+    # Hosts WE own — 5xx here is degraded (fix it). External hosts get
+    # the "throttled" bucket on 429 instead of "unhealthy".
+    OWN_HOSTS = ("dchub.cloud", "dchub-backend-production.up.railway.app",
+                 "api.dchub.cloud", "dchub-backend-production-f7dd.up.railway.app")
+
     try:
         with _conn() as c, c.cursor() as cur:
-            # Latest row per target — anything not 2xx/3xx is unhealthy
             cur.execute("""
                 SELECT DISTINCT ON (target)
                        target, target_url, method, status_code,
@@ -196,27 +218,50 @@ def unhealthy():
             rows = cur.fetchall() or []
         for r in rows:
             sc = int(r[3] or 0)
+            url = r[1] or ""
             healthy = 200 <= sc < 400
-            if not healthy:
-                out.append({
-                    "target":       r[0],
-                    "url":          r[1],
-                    "method":       r[2],
-                    "status_code":  sc,
-                    "elapsed_ms":   r[4],
-                    "error_note":   r[5] or "",
-                    "last_check":   r[6].isoformat() if r[6] else None,
-                    "likely_fix":   _likely_fix_for(r[0], r[1], sc, r[5] or ""),
-                })
+            if healthy:
+                continue
+            is_own = any(h in url for h in OWN_HOSTS)
+            entry = {
+                "target":       r[0],
+                "url":          url,
+                "method":       r[2],
+                "status_code":  sc,
+                "elapsed_ms":   r[4],
+                "error_note":   r[5] or "",
+                "last_check":   r[6].isoformat() if r[6] else None,
+                "likely_fix":   _likely_fix_for(r[0], url, sc, r[5] or ""),
+            }
+            # External + 429 → expected throttle
+            if sc == 429 and not is_own:
+                entry["likely_fix"] = (f"{r[0]} rate-limited our probe. "
+                                          "Their right — they still receive "
+                                          "DC Hub submissions, just throttle "
+                                          "the health-check pings. No fix needed.")
+                throttled_out.append(entry)
+            # Our host + 5xx → degraded
+            elif 500 <= sc < 600 and is_own:
+                degraded_out.append(entry)
+            # Everything else → unhealthy (404, 403, 522 on api.dchub.cloud, etc.)
+            else:
+                unhealthy_out.append(entry)
     except Exception as e:
-        return jsonify({"error": str(e)[:200], "unhealthy": []}), 200
+        return jsonify({"error": str(e)[:200], "unhealthy": [],
+                          "throttled": [], "degraded": []}), 200
 
     return jsonify({
-        "checked_at":   datetime.datetime.utcnow().isoformat() + "Z",
-        "unhealthy_count": len(out),
-        "unhealthy":    out,
-        "hint":         ("Each entry has a `likely_fix` heuristic. To "
-                          "trigger a re-broadcast: POST /api/v1/agents/broadcast"),
+        "checked_at":      datetime.datetime.utcnow().isoformat() + "Z",
+        "unhealthy_count": len(unhealthy_out),
+        "throttled_count": len(throttled_out),
+        "degraded_count":  len(degraded_out),
+        "unhealthy":       unhealthy_out,
+        "throttled":       throttled_out,
+        "degraded":        degraded_out,
+        "hint":            ("unhealthy = real bugs · throttled = expected "
+                              "(external rate-limit) · degraded = our 5xx "
+                              "to fix. POST /api/v1/agents/broadcast to "
+                              "re-probe."),
     }), 200
 
 
