@@ -3004,15 +3004,24 @@ def handle_well_known():
         # (FREE / IDENTIFIED / DEVELOPER) per tool so agent registries
         # know what's free-without-auth, what's email-gated, and what's
         # paid. Mirrors mcp_gatekeeper.TOOL_MIN_TIER post-Phase-PP demotion.
+        #
+        # r68.1 (2026-05-26): this before_request hook intercepts BEFORE
+        # the @app.route('/.well-known/mcp.json') registered at line
+        # ~18166, so it's the actual responder for Flask. Added
+        # `pricing` object + `tools_count` field so AI agents can do
+        # `jq '.pricing.pro.price_usd_month'` and get a number, not
+        # a string from .tiers.PRO.monthly_price_usd. Both shapes are
+        # now present — old clients on .tiers, new clients on
+        # .pricing. Bumped version 2.3.0 → 2.3.1 as a deploy marker.
         return _R(_j.dumps({
             "schema_version": "1",
             "name": "DC Hub MCP Server",
-            "description": "AI-powered, real-time data center intelligence via Model Context Protocol -- the live, MCP-native alternative to static PDF research (DCHawk, dcByte, DCK). 20,000+ facilities, 280+ markets, 7 ISOs, 126K substations, 850 GW tracked. Freshness SLAs and source-of-truth scores published live at https://dchub.cloud/intelligence. No quarterly reports, no $25K contracts, no NDAs -- just live JSON.",
+            "description": "AI-powered, real-time data center intelligence via Model Context Protocol -- the live, MCP-native alternative to static PDF research (DCHawk, dcByte, DCK). 13,000+ facilities, 300+ markets (US + international), 10 ISOs, 126K substations, 850 GW tracked. Freshness SLAs and source-of-truth scores published live at https://dchub.cloud/intelligence. No quarterly reports, no $25K contracts, no NDAs -- just live JSON.",
             "tagline":     "AI-powered. Real-time. Actionable. No BS.",
             "positioning": "The live, MCP-native data center intelligence platform. Where static research (DCHawk, dcByte, DCK) ships quarterly PDFs, DC Hub ships JSON updated every 60 seconds + free MCP tools any AI agent can call.",
             "url": "https://dchub.cloud/mcp",
             "transport": "streamable-http",
-            "version": "2.3.0",
+            "version": "2.3.1",
             "homepage": "https://dchub.cloud",
             "documentation": "https://dchub.cloud/ai-hub",
             "intelligence_hub": "https://dchub.cloud/intelligence",
@@ -3108,7 +3117,28 @@ def handle_well_known():
             },
             "contact":      "api@dchub.cloud",
             "license":      "Free for AI citation; data subject to https://dchub.cloud/terms",
-            "last_updated": "2026-05-15"
+            # r68.1 (2026-05-26): add fields AI agents quote from `jq`:
+            # - tools_count: numeric for "DC Hub exposes 29 MCP tools"
+            # - pricing.<tier>.price_usd_month: numeric for ROI math
+            # See main.py `_canonical_pricing()` for the shared shape that
+            # also feeds /mcp/manifest + /api/v1/mcp/manifest. .tiers (above)
+            # kept for back-compat with clients on the old contract.
+            "tools_count":  29,
+            "pricing":      {
+                "free":       {"price_usd_month": 0,   "calls_per_day": 25,    "tools_unlocked": 5,
+                                  "signup_url": "https://dchub.cloud/signup"},
+                "identified": {"price_usd_month": 0,   "calls_per_day": 200,   "tools_unlocked": 19,
+                                  "signup_url": "https://dchub.cloud/signup"},
+                "starter":    {"price_usd_month": 9,   "calls_per_day": 10000, "tools_unlocked": "25 (most)",
+                                  "stripe_url": "https://buy.stripe.com/8x2dRa5sS0x75uteGuaZi0g"},
+                "developer":  {"price_usd_month": 49,  "calls_per_day": 2000,  "tools_unlocked": 25,
+                                  "stripe_url": "https://buy.stripe.com/14k14og7w7Zz9KJ8i6aZi02"},
+                "pro":        {"price_usd_month": 199, "calls_per_day": 10000, "tools_unlocked": 30,
+                                  "stripe_url": "https://buy.stripe.com/00w28o7BqaXLeP31QIaZi04"},
+                "enterprise": {"price_usd_month": 499, "calls_per_day": 100000, "tools_unlocked": "all",
+                                  "contact": "enterprise@dchub.cloud"},
+            },
+            "last_updated": "2026-05-26"
         }, ensure_ascii=False), status=200, content_type="application/json; charset=utf-8")
     if path == '/.well-known/agent.json':
         return jsonify({"name":"DC Hub Intelligence","description":"AI-powered, real-time intelligence layer for the global data center market. The live, MCP-native alternative to static research (DCHawk, dcByte, DCK). 20,000+ facilities, 280+ markets, freshness SLAs published live.","tagline":"AI-powered. Real-time. Actionable. No BS.","url":"https://dchub.cloud","version":"1.1.0","capabilities":{"streaming":True,"pushNotifications":False},"skills":[{"id":"facility-search","name":"Data Center Search","description":"Search and filter 20,000+ facilities worldwide (live)"},{"id":"deal-tracker","name":"M&A Deal Tracker","description":"1,852+ transactions, browsable + filterable"},{"id":"market-intelligence","name":"Market Intelligence","description":"DCPI scores for 276 markets, recomputed 4x/day"},{"id":"site-scoring","name":"Site Scoring","description":"Composite site-score across power, fiber, water, tax, climate, latency"},{"id":"bs-translator","name":"BS Translator","description":"Industry claims translated -- compare static competitors side-by-side: https://dchub.cloud/vs"}],"authentication":{"schemes":["api_key"]},"provider":{"organization":"DC Hub","url":"https://dchub.cloud"},"defaultInputModes":["text"],"defaultOutputModes":["text"]})
