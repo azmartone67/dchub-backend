@@ -260,6 +260,133 @@ def signal_attribution():
         return jsonify({"error": str(e)[:200]}), 500
 
 
+@mcp_funnel_bp.route("/backfill-empty-city", methods=["GET", "POST"])
+def backfill_empty_city():
+    """Phase r-citybackfill (2026-05-27). ~5,382 of 19,542 mapable rows in
+    discovered_facilities have city='' or NULL — 27% of the dataset.
+    Search misses them entirely ('reno' returns 2 instead of 48). Many are
+    real named facilities (Meta Gallatin, Facebook Altoona, etc.) that
+    were ingested with lat/lon but no reverse-geocoded address.
+
+    Backfills city + state + market by finding the nearest non-empty-city
+    facility within ~25km via Euclidean distance on lat/lon. Idempotent.
+
+    Dry-run by default. Pass ?execute=1 to commit. Internal-key required.
+    Pass ?limit=N (default 100) to bound how many rows are updated per
+    call (the LATERAL nearest-neighbor join is O(N×M) — running 5K rows
+    at once could timeout the Railway request).
+    """
+    from flask import request as _req
+    import os as _os
+    _sent = _req.headers.get("X-Internal-Key", "") or ""
+    _allowed = {"dchub-internal-sync-2026"}
+    for _name in ("DCHUB_INTERNAL_KEY", "INTERNAL_KEY", "MCP_INTERNAL_KEY"):
+        _v = _os.environ.get(_name)
+        if _v:
+            _allowed.add(_v)
+    if not _sent or _sent not in _allowed:
+        return jsonify({"error": "forbidden"}), 403
+    if _pg is None:
+        return jsonify({"error": "psycopg2 not available"}), 500
+
+    execute = (_req.args.get("execute") or "").lower() in ("1", "true", "yes")
+    try:
+        limit = max(1, min(int(_req.args.get("limit") or 100), 1000))
+    except (TypeError, ValueError):
+        limit = 100
+
+    try:
+        with _conn() as c, c.cursor() as cur:
+            # First — how many candidates are there?
+            cur.execute("""
+                SELECT COUNT(*) FROM discovered_facilities
+                 WHERE (city IS NULL OR city = '')
+                   AND latitude IS NOT NULL AND longitude IS NOT NULL
+            """)
+            total_empty = int((cur.fetchone() or [0])[0])
+
+            # Dry-run preview: top 3 (empty row, nearest match) pairs
+            cur.execute("""
+                SELECT e.id, e.name, e.latitude, e.longitude,
+                       n.city, n.state, n.market, n.name AS donor_name,
+                       SQRT(POWER(n.latitude - e.latitude, 2)
+                          + POWER(n.longitude - e.longitude, 2)) AS dist_deg
+                  FROM discovered_facilities e
+                  CROSS JOIN LATERAL (
+                    SELECT city, state, market, name, latitude, longitude
+                      FROM discovered_facilities
+                     WHERE (city IS NOT NULL AND city <> '')
+                       AND latitude IS NOT NULL AND longitude IS NOT NULL
+                       AND ABS(latitude - e.latitude) < 0.25
+                       AND ABS(longitude - e.longitude) < 0.25
+                     ORDER BY POWER(latitude - e.latitude, 2)
+                            + POWER(longitude - e.longitude, 2) ASC
+                     LIMIT 1
+                  ) n
+                 WHERE (e.city IS NULL OR e.city = '')
+                   AND e.latitude IS NOT NULL AND e.longitude IS NOT NULL
+                 LIMIT 3
+            """)
+            preview_rows = []
+            for r in cur.fetchall():
+                preview_rows.append({
+                    "id":          r[0],
+                    "empty_name":  r[1],
+                    "lat":         float(r[2]) if r[2] is not None else None,
+                    "lon":         float(r[3]) if r[3] is not None else None,
+                    "donor_city":  r[4],
+                    "donor_state": r[5],
+                    "donor_market": r[6],
+                    "donor_name":  r[7],
+                    "dist_deg":    round(float(r[8] or 0), 4),
+                })
+
+            result = {
+                "total_empty_city": total_empty,
+                "dry_run":          not execute,
+                "rows_updated":     0,
+                "limit":            limit,
+                "sample_matches":   preview_rows,
+            }
+
+            if execute and total_empty > 0:
+                # Pick `limit` rows, find their nearest donor, update in one shot.
+                # The CTE materializes the picks so the UPDATE doesn't re-run the
+                # LATERAL for each row.
+                cur.execute("""
+                    WITH picks AS (
+                      SELECT e.id AS empty_id, n.city, n.state, n.market
+                        FROM discovered_facilities e
+                        CROSS JOIN LATERAL (
+                          SELECT city, state, market
+                            FROM discovered_facilities
+                           WHERE (city IS NOT NULL AND city <> '')
+                             AND latitude IS NOT NULL AND longitude IS NOT NULL
+                             AND ABS(latitude - e.latitude) < 0.25
+                             AND ABS(longitude - e.longitude) < 0.25
+                           ORDER BY POWER(latitude - e.latitude, 2)
+                                  + POWER(longitude - e.longitude, 2) ASC
+                           LIMIT 1
+                        ) n
+                       WHERE (e.city IS NULL OR e.city = '')
+                         AND e.latitude IS NOT NULL AND e.longitude IS NOT NULL
+                       LIMIT %s
+                    )
+                    UPDATE discovered_facilities df
+                       SET city   = COALESCE(NULLIF(df.city, ''), picks.city),
+                           state  = COALESCE(NULLIF(df.state, ''), picks.state),
+                           market = COALESCE(df.market, picks.market)
+                      FROM picks
+                     WHERE df.id = picks.empty_id
+                """, (limit,))
+                result["rows_updated"] = cur.rowcount
+                c.commit()
+
+        return jsonify(result), 200
+    except Exception as e:
+        return jsonify({"error": str(e)[:300]}), 500
+
+
 @mcp_funnel_bp.route("/anon-ua-breakdown", methods=["GET"])
 def anon_ua_breakdown():
     """Phase r51-cluster (2026-05-26). 99.7% of paywall hits classify as
