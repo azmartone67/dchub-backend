@@ -275,7 +275,7 @@ def _process_batch(conn, batch, stats, name_index, geo_index):
                 c.execute("""
                     INSERT INTO discovery_approvals
                     (discovered_facility_id, source, action, match_reason, promoted_facility_id)
-                    VALUES (%s, %s, 'duplicate_skipped', 'name_match', %s)
+                    VALUES (%s, %s, 'duplicate_skipped', 'name_match', %s) ON CONFLICT DO NOTHING
                 """, (disc['id'], disc['source'], match_id))
                 c = conn.cursor()
                 c.execute("""
@@ -294,7 +294,7 @@ def _process_batch(conn, batch, stats, name_index, geo_index):
                 c.execute("""
                     INSERT INTO discovery_approvals
                     (discovered_facility_id, source, action, match_reason, promoted_facility_id)
-                    VALUES (%s, %s, 'flagged_review', 'geo_match', %s)
+                    VALUES (%s, %s, 'flagged_review', 'geo_match', %s) ON CONFLICT DO NOTHING
                 """, (disc['id'], disc['source'], geo_match_id))
                 stats['flagged_review'] += 1
                 continue
@@ -304,7 +304,7 @@ def _process_batch(conn, batch, stats, name_index, geo_index):
                 c.execute("""
                     INSERT INTO discovery_approvals
                     (discovered_facility_id, source, action, match_reason)
-                    VALUES (%s, %s, 'flagged_review', 'untrusted_source')
+                    VALUES (%s, %s, 'flagged_review', 'untrusted_source') ON CONFLICT DO NOTHING
                 """, (disc['id'], disc['source']))
                 stats['flagged_review'] += 1
                 continue
@@ -322,7 +322,7 @@ def _process_batch(conn, batch, stats, name_index, geo_index):
                     (id, name, provider, city, state, country, latitude, longitude,
                      power_mw, sqft, status, source, source_id, source_url,
                      confidence, first_seen, last_updated)
-                    VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s)
+                    VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s) ON CONFLICT DO NOTHING
                 """, (
                     facility_id,
                     disc['name'],
@@ -347,7 +347,7 @@ def _process_batch(conn, batch, stats, name_index, geo_index):
                 c.execute("""
                     INSERT INTO discovery_approvals
                     (discovered_facility_id, source, action, match_reason, promoted_facility_id)
-                    VALUES (%s, %s, 'approved', NULL, %s)
+                    VALUES (%s, %s, 'approved', NULL, %s) ON CONFLICT DO NOTHING
                 """, (disc['id'], disc['source'], facility_id))
 
                 c = conn.cursor()
@@ -380,7 +380,7 @@ def _process_batch(conn, batch, stats, name_index, geo_index):
                 c.execute("""
                     INSERT INTO discovery_approvals
                     (discovered_facility_id, source, action, match_reason)
-                    VALUES (%s, %s, 'duplicate_skipped', 'unique_constraint')
+                    VALUES (%s, %s, 'duplicate_skipped', 'unique_constraint') ON CONFLICT DO NOTHING
                 """, (disc['id'], disc['source']))
                 c = conn.cursor()
                 c.execute("""
