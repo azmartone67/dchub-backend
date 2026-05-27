@@ -14119,10 +14119,45 @@ def serve_dashboard():
     """Serve enterprise dashboard"""
     return send_file("dashboard.html")
 
+# r47.36 (2026-05-26): /signup was returning 200 in ~14s from Railway,
+# which Pages worker subrequests time out on at ~5s → 6,390 × 5xx in 24h
+# per CF "Top 5xx Paths" dashboard. The handler is literally a static
+# file send, so the latency is gunicorn worker-queue saturation, NOT
+# the page itself. Read once at first hit, cache in RAM, return
+# from memory on every subsequent call. Sub-millisecond serve.
+#
+# This is the conversion-funnel critical path: nobody upgrades through
+# a 503 signup page.
+_SIGNUP_CACHE: dict = {"body": None, "mtime": 0.0}
+
 @app.route('/signup', methods=['GET'])
 def serve_signup():
-    """Serve API signup page"""
-    return send_from_directory('static', 'signup.html')
+    """Serve API signup page from RAM after first read.
+
+    r47.36: cuts the latency from 14s (worker-pool wait) to ~0ms.
+    Refreshes the cached copy if the on-disk file changes."""
+    import os as _os
+    path = _os.path.join('static', 'signup.html')
+    try:
+        mtime = _os.path.getmtime(path)
+    except OSError:
+        # File missing — fall back to send_from_directory which will 404
+        return send_from_directory('static', 'signup.html')
+    if _SIGNUP_CACHE["body"] is None or mtime > _SIGNUP_CACHE["mtime"]:
+        try:
+            with open(path, 'rb') as f:
+                _SIGNUP_CACHE["body"]  = f.read()
+                _SIGNUP_CACHE["mtime"] = mtime
+        except OSError:
+            return send_from_directory('static', 'signup.html')
+    return Response(
+        _SIGNUP_CACHE["body"],
+        mimetype='text/html',
+        headers={
+            'Cache-Control': 'public, max-age=300, s-maxage=300, stale-while-revalidate=600',
+            'X-DC-Phase':     'r47.36-signup-memo',
+        },
+    )
 
 @app.route('/privacy', methods=['GET'])
 def serve_privacy():

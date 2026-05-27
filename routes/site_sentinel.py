@@ -139,7 +139,11 @@ _MANIFEST: list[dict] = [
     {"path": "/api/v1/mcp/manifest",     "category": "high",   "min_bytes": 1000, "label": "MCP Manifest (api/v1)"},
 
     # Research / brand
-    {"path": "/research/grid-intelligence","category":"normal","min_bytes": 2000,"label": "Grid Intel"},
+    # r47.36 (2026-05-26): old path /research/grid-intelligence redirects
+    # 302 → /api/v1/research/grid-intelligence which returns a 945-byte
+    # JSON, tripping body_too_small. The actual page (HTML) lives at
+    # /grid-intelligence — point at the canonical surface.
+    {"path": "/grid-intelligence","category":"normal","min_bytes": 2000,"label": "Grid Intel"},
     {"path": "/press",                   "category": "normal", "min_bytes": 2000, "label": "Press"},
     {"path": "/gdci",                    "category": "normal", "min_bytes": 2000, "label": "GDCI"},
     {"path": "/testimonials",            "category": "normal", "min_bytes": 2000, "label": "Testimonials"},
@@ -332,15 +336,27 @@ def _scan_one(entry: dict) -> dict:
         # though real users hit them fine). Switching to a recent
         # Chrome UA passes the bot check while keeping the request
         # identifiable via the X-DC-Probe header for our own log analysis.
-        r = requests.get(url, timeout=15, headers={
+        # r47.36 (2026-05-26): include X-Internal-Key so sentinel probes
+        # bypass the free-tier gate + transactions-browser paywall + WAF
+        # Custom Rules that returned 403 on /transactions et al.
+        # Brain class `site_url_unhealthy` recommends fixing the probe,
+        # not loosening the public gate.
+        import os as _os
+        _ik = (_os.environ.get("DCHUB_INTERNAL_KEY")
+               or _os.environ.get("DCHUB_SYNC_KEY") or "")
+        _hdrs = {
             "User-Agent": ("Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) "
                            "AppleWebKit/537.36 (KHTML, like Gecko) "
                            "Chrome/120.0.0.0 Safari/537.36 "
                            "DCHub-Sentinel/2.0"),
-            "X-DC-Probe": "site-sentinel",
+            "X-DC-Probe":    "site-sentinel",
             "Cache-Control": "no-cache",
-            "Accept": "text/html,application/json,application/xhtml+xml,*/*;q=0.8",
-        }, stream=True, allow_redirects=True)
+            "Accept":        "text/html,application/json,application/xhtml+xml,*/*;q=0.8",
+        }
+        if _ik:
+            _hdrs["X-Internal-Key"] = _ik
+        r = requests.get(url, timeout=15, headers=_hdrs,
+                          stream=True, allow_redirects=True)
         body = r.raw.read(64 * 1024, decode_content=True) if r.raw else r.content[:64*1024]
         out["elapsed_ms"] = int((time.time() - t0) * 1000)
         out["status_code"] = r.status_code

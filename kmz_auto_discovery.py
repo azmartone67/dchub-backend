@@ -1004,6 +1004,15 @@ class KMZAutoDiscovery:
         offset = 0
         total_fetched = 0
 
+        # r47.36 (2026-05-26): the watchdog was logging FORCED RECLAIM at
+        # 60-73s on this call site every cycle. Root cause: the original
+        # try/except had the conn allocation INSIDE the try, but the
+        # release was inside the same try AFTER the while loop — so any
+        # exception in the loop bypassed the release, requiring the
+        # 60s watchdog to reclaim. Restructure: conn allocation guarded
+        # by an outer try/finally so release is unconditional.
+        conn = None
+        cur = None
         try:
             conn = _conn()
             cur = conn.cursor()
@@ -1113,15 +1122,26 @@ class KMZAutoDiscovery:
                     logger.debug(f"ArcGIS page fetch error at offset {offset}: {e}")
                     break
 
-            conn.commit()
-            cur.close()
-            _release(conn)
+            try:
+                conn.commit()
+            except Exception:
+                pass
 
             if results['routes_found'] > 0:
                 logger.info(f"  {source_name}: {results['routes_found']} routes, {results['total_km']:.1f} km (fetched {total_fetched} features)")
 
         except Exception as e:
             logger.debug(f"ArcGIS route fetch error for {source_name}: {e}")
+        finally:
+            # r47.36: GUARANTEED release on every exit path. Previously
+            # only reached on the happy path → 60-73s watchdog reclaims
+            # whenever the loop raised.
+            if cur is not None:
+                try: cur.close()
+                except Exception: pass
+            if conn is not None:
+                try: _release(conn)
+                except Exception: pass
 
         return results
 

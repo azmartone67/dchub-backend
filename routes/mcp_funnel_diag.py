@@ -275,8 +275,16 @@ def purge_synthetic_signals():
     """
     from flask import request as _req
     import os as _os
-    internal_key_env = _os.environ.get("DCHUB_INTERNAL_KEY", "dchub-internal-sync-2026")
-    if _req.headers.get("X-Internal-Key") != internal_key_env:
+    # Tolerant internal-key check — mirror flask_mcp_endpoints._require_internal
+    # so any of DCHUB_INTERNAL_KEY / INTERNAL_KEY / MCP_INTERNAL_KEY (whichever
+    # the operator set) is accepted, plus the literal fallback.
+    _sent = _req.headers.get("X-Internal-Key", "") or ""
+    _allowed = {"dchub-internal-sync-2026"}
+    for _name in ("DCHUB_INTERNAL_KEY", "INTERNAL_KEY", "MCP_INTERNAL_KEY"):
+        _v = _os.environ.get(_name)
+        if _v:
+            _allowed.add(_v)
+    if not _sent or _sent not in _allowed:
         return jsonify({"error": "forbidden"}), 403
     if _pg is None:
         return jsonify({"error": "psycopg2 not available"}), 500

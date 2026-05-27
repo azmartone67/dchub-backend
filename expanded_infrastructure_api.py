@@ -634,6 +634,11 @@ def get_hifld_gas_pipelines():
     state = request.args.get('state')
     limit = min(request.args.get('limit', 100, type=int), 500)
 
+    # r47.36 (2026-05-26): guarantee conn release on every exit path —
+    # the prior try/except left conn dangling whenever c.execute raised,
+    # which is what showed up as 67s FORCED RECLAIM in Railway logs.
+    conn = None
+    c = None
     try:
         from db_utils import get_db
         conn = get_db()
@@ -720,6 +725,20 @@ def get_hifld_gas_pipelines():
             'count': 0,
             'pipelines': []
         }), 500
+    finally:
+        # r47.36: GUARANTEED conn release. Earlier code returned 500
+        # from the except handler without releasing → 67s watchdog
+        # reclaim every time gas_pipelines erred under load.
+        if c is not None:
+            try: c.close()
+            except Exception: pass
+        if conn is not None:
+            try:
+                from main import return_pg_connection as _rpg
+                _rpg(conn)
+            except Exception:
+                try: conn.close()
+                except Exception: pass
 
 
 @expanded_infra_bp.route('/api/v2/infrastructure/railroads', methods=['GET'])
