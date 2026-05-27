@@ -23692,6 +23692,22 @@ try:
 except Exception as _er_e:
     print(f"[main] energy_report_bp register failed: {_er_e}", flush=True)
 
+# r43-A (2026-05-27): DCPI verdict-shift email alerts (subscription).
+try:
+    from routes.dcpi_alerts import dcpi_alerts_bp
+    app.register_blueprint(dcpi_alerts_bp)
+    print("[main] dcpi_alerts_bp registered: /api/v1/alerts/dcpi/{subscribe,unsubscribe,check,stats}", flush=True)
+except Exception as _da_e:
+    print(f"[main] dcpi_alerts_bp register failed: {_da_e}", flush=True)
+
+# r43-B (2026-05-27): Brain Layer 5 free-form codegen via Claude.
+try:
+    from routes.brain_layer5_codegen import brain_layer5_bp
+    app.register_blueprint(brain_layer5_bp)
+    print("[main] brain_layer5_bp registered: /api/v1/brain/layer5/{propose,proposals}", flush=True)
+except Exception as _l5_e:
+    print(f"[main] brain_layer5_bp register failed: {_l5_e}", flush=True)
+
 # Phase ZZZZZ-round47.14 (2026-05-25): weekly partnership LinkedIn post.
 # Cycles through 7 anchors (partners/dchawk/dcbyte/dcd/dcf/cbre/jll)
 # at one per ISO week. Fires from cron_heartbeat at Wed 14:00 UTC.

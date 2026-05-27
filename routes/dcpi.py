@@ -1145,7 +1145,131 @@ def api_score_market(slug):
                 }
         except Exception:
             pass
+
+    # r43-C (2026-05-27): forecast block — linear trend extrapolation
+    # from the last 30 days of market_power_scores history. Adds the
+    # "where will this market be in 6/12/24 months?" question that
+    # CBRE/JLL gate behind their H2 outlook reports. Skipped if there
+    # aren't enough historical samples (<3 data points in 30d).
+    try:
+        with _conn() as c2, c2.cursor(cursor_factory=psycopg2.extras.RealDictCursor) as cur2:
+            cur2.execute("""
+                SELECT computed_at, excess_power_score, constraint_score,
+                       time_to_power_months
+                  FROM market_power_scores
+                 WHERE market_slug = %s
+                   AND computed_at >= NOW() - INTERVAL '30 days'
+                 ORDER BY computed_at ASC
+            """, (slug,))
+            hist = cur2.fetchall() or []
+        row["forecast"] = _compute_forecast(hist, row)
+    except Exception:
+        row["forecast"] = {"available": False, "reason": "history_query_failed"}
+
     return jsonify(row), 200
+
+
+def _compute_forecast(history: list[dict], current: dict) -> dict:
+    """Linear extrapolation of excess/constraint scores + TTP. Returns
+    forecast_6mo, forecast_12mo, forecast_24mo and a probability of
+    verdict change. Conservative — surfaces uncertainty if data is
+    insufficient or trend is noisy."""
+    if not history or len(history) < 3:
+        return {
+            "available": False,
+            "reason": "insufficient_history",
+            "samples_in_30d": len(history) if history else 0,
+            "note": "Need ≥3 daily DCPI samples in last 30 days to project.",
+        }
+
+    import datetime as _dt
+    now = _dt.datetime.now(_dt.timezone.utc)
+
+    def _trend(field):
+        """Returns (slope_per_day, current_value). slope is units per day."""
+        xs, ys = [], []
+        for h in history:
+            ts = h.get("computed_at")
+            if not ts: continue
+            if ts.tzinfo is None:
+                ts = ts.replace(tzinfo=_dt.timezone.utc)
+            days_ago = (now - ts).total_seconds() / 86400.0
+            x = -days_ago  # so most recent is highest x
+            y = h.get(field)
+            if y is None: continue
+            xs.append(x)
+            ys.append(float(y))
+        if len(xs) < 3:
+            return None, None
+        n = len(xs)
+        mean_x = sum(xs) / n
+        mean_y = sum(ys) / n
+        num = sum((xs[i] - mean_x) * (ys[i] - mean_y) for i in range(n))
+        den = sum((xs[i] - mean_x) ** 2 for i in range(n))
+        if den == 0:
+            return 0.0, mean_y
+        slope = num / den
+        return slope, ys[-1]  # current = most recent observed value
+
+    excess_slope, excess_now = _trend("excess_power_score")
+    constraint_slope, constraint_now = _trend("constraint_score")
+    ttp_slope, ttp_now = _trend("time_to_power_months")
+
+    if excess_slope is None or constraint_slope is None:
+        return {"available": False, "reason": "insufficient_field_data"}
+
+    def _project(now_val, slope, days):
+        if now_val is None or slope is None:
+            return None
+        v = now_val + slope * days
+        return round(max(0, min(100, v)), 1)
+
+    def _project_ttp(now_val, slope, days):
+        if now_val is None or slope is None:
+            return None
+        v = now_val + slope * days
+        return round(max(0, v), 1)
+
+    def _verdict_for(excess, constraint):
+        if excess is None or constraint is None:
+            return None
+        if excess >= 60 and constraint < 40:
+            return "BUILD"
+        if excess < 30 or constraint > 70:
+            return "AVOID"
+        return "CAUTION"
+
+    current_verdict = current.get("verdict")
+    forecasts = {}
+    for label, days in (("3mo", 90), ("6mo", 180), ("12mo", 365), ("24mo", 730)):
+        e = _project(excess_now, excess_slope, days)
+        c = _project(constraint_now, constraint_slope, days)
+        t = _project_ttp(ttp_now, ttp_slope, days)
+        v = _verdict_for(e, c)
+        forecasts[label] = {
+            "excess_power_score": e,
+            "constraint_score":   c,
+            "time_to_power_months": t,
+            "implied_verdict":    v,
+            "verdict_change_from_now": (v != current_verdict) if (v and current_verdict) else None,
+        }
+
+    return {
+        "available":           True,
+        "method":              "linear_regression",
+        "samples_in_30d":      len(history),
+        "trend_per_day": {
+            "excess_power_score":     round(excess_slope, 3),
+            "constraint_score":       round(constraint_slope, 3),
+            "time_to_power_months":   round(ttp_slope, 3) if ttp_slope is not None else None,
+        },
+        "projection":          forecasts,
+        "license":             "CC-BY-4.0",
+        "disclaimer":          ("Linear extrapolation of last 30 days. Not a "
+                                "guarantee. Real markets shift discontinuously "
+                                "around grid policy + capex announcements. "
+                                "Use as a directional signal, not a target."),
+    }
 
 
 # ─── Phase SS DCPI v2 enrichment endpoint ──────────────────────────
