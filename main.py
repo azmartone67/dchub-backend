@@ -2710,7 +2710,25 @@ def require_plan(min_plan='pro'):
     def decorator(f):
         @_early_wraps(f)
         def wrapper(*args, **kwargs):
-            # Origin bypass -- dchub.cloud frontend skips plan check (API/MCP excluded)
+            # r43-G (2026-05-27): replace forgeable Referer-string check
+            # with HMAC-signed session cookie. Real browsers from
+            # dchub.cloud get the cookie automatically (set on every
+            # HTML response via _issue_session_cookie after_request
+            # hook); scrapers running raw curl can't forge HMAC.
+            #
+            # Bypass logic ladder:
+            #   1. Valid session cookie (real browser) → bypass (any path)
+            #   2. Origin/Referer = dchub.cloud + non-API path → bypass
+            #      (legacy path during cookie migration; kept for safety
+            #      while we measure scraper drop. Remove in r44 if
+            #      scraper traffic does drop.)
+            #   3. _MAP_BYPASS_PATHS (below) → bypass for known map data
+            try:
+                from routes.session_cookie import validate_cookie
+                if validate_cookie():
+                    return f(*args, **kwargs)
+            except Exception:
+                pass
             origin = request.headers.get("Origin", "") or request.headers.get("Referer", "")
             if "dchub.cloud" in origin and not request.path.startswith("/api/") and request.path not in ("/mcp", "/mcp/"):
                 return f(*args, **kwargs)
@@ -2780,10 +2798,25 @@ def require_plan(min_plan='pro'):
                 "/api/v2/risk",
                 "/api/auth/me",       # session check — should not 401 the dchub.cloud user
             )
+            # r43-G (2026-05-27): the Referer-string check below is the
+            # legacy fallback. Primary auth is the session cookie above.
+            # We keep the Referer path active during migration (some
+            # legacy XHR map layers may not send cookies cross-origin
+            # yet) but log [LEGACY REFERER MAP BYPASS] so we can see
+            # if it's still actively used after the cookie migration
+            # bakes in. Remove this whole block in r44 if scraper traffic
+            # drops + no legitimate-user errors surface.
             if (request.method == "GET"
                     and "dchub.cloud" in origin
                     and any(request.path == p or request.path.startswith(p + "/")
                             for p in _MAP_BYPASS_PATHS)):
+                try:
+                    logging.getLogger('dchub.referer_bypass').info(
+                        f"[LEGACY REFERER MAP BYPASS] path={request.path} "
+                        f"ip={request.headers.get('CF-Connecting-IP','?')} "
+                        f"ua={(request.headers.get('User-Agent','') or '')[:80]}"
+                    )
+                except Exception: pass
                 return f(*args, **kwargs)
             # Internal MCP bypass -- trust calls from our own MCP server
             internal_key = request.headers.get("X-Internal-Key", "")
@@ -2845,6 +2878,29 @@ def _check_request_timeout(response):
                 f"SLOW REQUEST: {request.method} {request.path} took {elapsed:.1f}s (>{_REQUEST_TIMEOUT}s)"
             )
     return response
+
+
+# r43-G (2026-05-27): Issue HMAC-signed session cookie on HTML responses.
+# Replaces the forgeable Referer-string match that anyone could spoof
+# with `curl -H "Referer: dchub.cloud"`. Real browsers load HTML first
+# (cookie issued) then JS fetches API (cookie sent automatically).
+# Scrapers running raw curl never get the HTML pre-flight → no cookie.
+@app.after_request
+def _issue_session_cookie(response):
+    try:
+        if response.status_code >= 400:
+            return response
+        ct = (response.content_type or "").lower()
+        if "text/html" not in ct:
+            return response
+        if request.path.startswith("/api/") or request.path in ("/mcp", "/mcp/"):
+            return response
+        from routes.session_cookie import validate_cookie, set_cookie_on_response
+        if validate_cookie():
+            return response  # already has fresh cookie
+        return set_cookie_on_response(response)
+    except Exception:
+        return response
 
 # =============================================================================
 # RATE LIMITING MIDDLEWARE - Token bucket, plan-aware, CF-IP based
