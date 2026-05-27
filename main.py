@@ -22046,7 +22046,7 @@ def create_press_release():
         import psycopg2
         conn = psycopg2.connect(os.getenv("DATABASE_URL"))
         cur = conn.cursor()
-        cur.execute("INSERT INTO press_releases (title,slug,category,date,subheadline,body,meta_description,published) VALUES (%s,%s,%s,%s,%s,%s,%s,%s) ON CONFLICT (slug) DO UPDATE SET title=EXCLUDED.title,body=EXCLUDED.body,published=EXCLUDED.published RETURNING id",
+        cur.execute("INSERT INTO press_releases (title,slug,category,date,subheadline,body,meta_description,published) VALUES (%s,%s,%s,%s,%s,%s,%s,%s) ON CONFLICT (slug) DO UPDATE SET title=EXCLUDED.title,body=EXCLUDED.body,subheadline=EXCLUDED.subheadline,meta_description=EXCLUDED.meta_description,category=EXCLUDED.category,published=EXCLUDED.published RETURNING id",
             (data.get("title"),data.get("slug"),data.get("category","Press Release"),data.get("date"),data.get("subheadline"),data.get("body"),data.get("meta_description"),data.get("published",True)))
         row = cur.fetchone()
         conn.commit(); cur.close(); conn.close()
@@ -22055,7 +22055,7 @@ def create_press_release():
         return jsonify({"error": str(e)}), 500
         conn = db.engine.raw_connection()
         cur = conn.cursor()
-        cur.execute("INSERT INTO press_releases (title,slug,category,date,subheadline,body,meta_description,published) VALUES (%s,%s,%s,%s,%s,%s,%s,%s) ON CONFLICT (slug) DO UPDATE SET title=EXCLUDED.title,body=EXCLUDED.body,published=EXCLUDED.published RETURNING id",
+        cur.execute("INSERT INTO press_releases (title,slug,category,date,subheadline,body,meta_description,published) VALUES (%s,%s,%s,%s,%s,%s,%s,%s) ON CONFLICT (slug) DO UPDATE SET title=EXCLUDED.title,body=EXCLUDED.body,subheadline=EXCLUDED.subheadline,meta_description=EXCLUDED.meta_description,category=EXCLUDED.category,published=EXCLUDED.published RETURNING id",
             (data.get("title"),data.get("slug"),data.get("category","Press Release"),data.get("date"),data.get("subheadline"),data.get("body"),data.get("meta_description"),data.get("published",True)))
         row = cur.fetchone()
         conn.commit(); cur.close(); conn.close()
