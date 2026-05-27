@@ -23681,20 +23681,22 @@ try:
 except Exception as _ch_e:
     print(f"[main] cron_heartbeat_bp register failed: {_ch_e}", flush=True)
 
-# r47.32 (2026-05-26): infra_data_bp was orphaned — the blueprint exists in
-# routes/infrastructure_data_routes.py (submarine_cables, infrastructure
-# stats, +power-plants/transmission-lines as a secondary registration) but
-# was never registered. That's why /api/v1/submarine-cables 404'd from the
-# land-power map. The file exposes a register_infra_data_routes(app, get_db)
-# helper that injects the DB function — calling app.register_blueprint
-# directly leaves _get_db=None and every handler 500s with
-# "'NoneType' object is not callable". Use the helper.
-try:
-    from routes.infrastructure_data_routes import register_infra_data_routes
-    register_infra_data_routes(app, get_pg_connection)
-    print("[main] infra_data_bp registered: /api/v1/submarine-cables + /api/v1/infrastructure/stats", flush=True)
-except Exception as _idb_e:
-    print(f"[main] infra_data_bp register failed: {_idb_e}", flush=True)
+# r47.32 (2026-05-26): infra_data_bp is orphaned for a reason — the
+# blueprint's SQL expects a `name` column on `submarine_cables` that the
+# live Neon schema doesn't have. Registering it surfaced a 500 ("column
+# name does not exist") which is worse than the existing 404 for the
+# land-power map's submarine-cables layer (404 → layer just doesn't render;
+# 500 → noise in logs + broken UX).
+#
+# Leaving disabled until the SQL is aligned with the actual schema. The
+# /api/v1/cable-landing-points endpoint the frontend calls also doesn't
+# exist anywhere — both should be addressed together in a follow-up.
+# try:
+#     from routes.infrastructure_data_routes import register_infra_data_routes
+#     register_infra_data_routes(app, get_pg_connection)
+#     print("[main] infra_data_bp registered: ...", flush=True)
+# except Exception as _idb_e:
+#     print(f"[main] infra_data_bp register failed: {_idb_e}", flush=True)
 
 # Phase ZZZZZ-round38 (2026-05-25): email capture before Stripe checkout
 try:
