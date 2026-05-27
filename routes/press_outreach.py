@@ -457,7 +457,7 @@ def _generate_pitch(contact: dict, angle: dict) -> dict:
                 f"{data.get('constraint', 0):.1f}/100). For context: only "
                 f"~14 of 286 markets we track hit BUILD this week, and only "
                 f"the top 3 clear the Excess Power 65/100 line.\n\n")
-        offer = (f"For an {outlet} angle on where hyperscale-class capacity "
+        offer = (f"For a {outlet} angle on where hyperscale-class capacity "
                  f"is materializing outside the traditional FLAP markets, "
                  f"this is the story. Live page + methodology at "
                  f"{angle.get('url')}. I can send the full top-14 BUILD list "
@@ -488,7 +488,7 @@ def _generate_pitch(contact: dict, angle: dict) -> dict:
                 f"{data.get('calls_30d', 0):,}. Claude, ChatGPT, Perplexity, "
                 f"Gemini, Copilot, Grok, and 96+ other AI platforms now "
                 f"actively cite the dataset.\n\n"
-                f"For an {outlet} story on what AI infrastructure looks "
+                f"For a {outlet} story on what AI infrastructure looks "
                 f"like when the agents are the customers, this is the "
                 f"directly-measurable headline number — verified citations "
                 f"at {angle.get('url')}.\n\n")
@@ -509,7 +509,7 @@ def _generate_pitch(contact: dict, angle: dict) -> dict:
                 f"That's the first methodology-consistent DC-power index "
                 f"covering Hydro-Québec, AESO (Alberta), and 15 Nord Pool "
                 f"zones alongside the 7 US ISOs we already track.\n\n")
-        offer = (f"For an {outlet} story on how the AI-buildout supply "
+        offer = (f"For a {outlet} story on how the AI-buildout supply "
                  f"curve looks outside US-FLAP markets, this is fresh data. "
                  f"Live international index: {angle.get('url')}. I can "
                  f"send the per-country DCPI snapshot + the methodology "
@@ -820,6 +820,80 @@ def approve_draft(draft_id):
                           "sent": ok, "to": email, "subject": subj}), 200
     except Exception as e:
         return jsonify({"error": str(e)[:200]}), 500
+
+
+@press_outreach_bp.route("/api/v1/admin/press-outreach/drafts/clear-pending",
+                          methods=["POST"], strict_slashes=False)
+def clear_pending_drafts():
+    """Discard all pending drafts. Useful after editing contact_name /
+    contact_email on the underlying contacts — old drafts were generated
+    with NULL fields ("Hi there" → "Hi Reed"). Run /generate-drafts after
+    to repopulate with refreshed contact info.
+
+    Only touches status='pending'. Approved / sent / rejected stay for audit."""
+    if not _is_admin(request):
+        return jsonify({"error": "unauthorized"}), 401
+    if not (_pg and _dsn()):
+        return jsonify({"error": "no_db"}), 503
+    try:
+        with _conn() as c, c.cursor() as cur:
+            cur.execute("""
+                UPDATE press_pitch_drafts
+                   SET status = 'rejected',
+                       notes  = COALESCE(notes, '') || ' [auto-cleared via clear-pending]'
+                 WHERE status = 'pending'
+            """)
+            n = cur.rowcount
+        return jsonify({"ok": True, "cleared": n,
+                          "hint": "Now POST /generate-drafts to rebuild with fresh contact info."}), 200
+    except Exception as e:
+        return jsonify({"error": str(e)[:200]}), 500
+
+
+@press_outreach_bp.route("/api/v1/admin/press-outreach/diagnostics",
+                          methods=["GET"], strict_slashes=False)
+def diagnostics():
+    """Health check: which env vars are set, which contacts have emails,
+    whether Resend is wired correctly."""
+    if not _is_admin(request):
+        return jsonify({"error": "unauthorized"}), 401
+
+    resend_set    = bool(os.environ.get("RESEND_API_KEY"))
+    internal_set  = bool(os.environ.get("DCHUB_INTERNAL_KEY"))
+    admin_set     = bool(os.environ.get("DCHUB_ADMIN_KEY"))
+
+    contacts_with_email = 0
+    total_contacts = 0
+    if _pg and _dsn():
+        try:
+            with _conn() as c, c.cursor() as cur:
+                cur.execute("SELECT COUNT(*) FROM press_contacts WHERE active = TRUE")
+                total_contacts = int((cur.fetchone() or [0])[0])
+                cur.execute("""SELECT COUNT(*) FROM press_contacts
+                                WHERE active = TRUE
+                                  AND contact_email IS NOT NULL
+                                  AND contact_email <> ''""")
+                contacts_with_email = int((cur.fetchone() or [0])[0])
+        except Exception:
+            pass
+
+    ready = resend_set and contacts_with_email > 0
+    return jsonify({
+        "ready_to_send":             ready,
+        "resend_api_key_set":        resend_set,
+        "dchub_internal_key_set":    internal_set,
+        "dchub_admin_key_set":       admin_set,
+        "total_contacts":            total_contacts,
+        "contacts_with_email":       contacts_with_email,
+        "contacts_missing_email":    total_contacts - contacts_with_email,
+        "next_steps": (
+            "Set RESEND_API_KEY env on Railway + populate contact_email "
+            "on top-priority outlets via POST /contacts/upsert. "
+            "Then re-run /generate-drafts and approve from the dashboard."
+            if not ready else
+            "All systems go. Approve drafts at /admin/partnerships/review."
+        ),
+    }), 200
 
 
 @press_outreach_bp.route("/api/v1/admin/press-outreach/reject/<int:draft_id>",
