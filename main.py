@@ -4546,6 +4546,16 @@ _CACHE_PATHS: dict = {
     '/api/v1/agents/capabilities':      (86400, 'agent capabilities (alias)'),
     '/api/v1/agents/citations.json':    (3600,  'agent citations — hourly'),
     '/api/v1/agents/citations':         (3600,  'agent citations (alias)'),
+    # r47.32 (2026-05-26): land-power map endpoints. Every map load was
+    # firing 9 fresh requests at Railway because /api/* defaulted to
+    # no-store, and these aren't on the allowlist. User reported "really
+    # slow" on the live map. Each one was 800-1100ms Railway-direct.
+    # Power-plants + transmission-lines are intentionally excluded — they're
+    # paywall-gated (per-tier responses), so CDN caching would leak data.
+    '/api/v1/gas-pipelines':            (1800, 'gas pipelines — KMZ-derived, daily ingest'),
+    '/api/v1/gas-compressor-stations':  (3600, 'gas compressors — static stub data'),
+    '/api/v1/gas-processing-plants':    (3600, 'gas processing — static stub data'),
+    '/api/v1/interconnect-queue':       (1800, 'interconnect queue — LBNL static summary'),
 }
 
 @app.after_request
@@ -23670,6 +23680,18 @@ try:
     print("[main] cron_heartbeat_bp registered: /api/v1/cron/heartbeat (single-cron dispatcher)", flush=True)
 except Exception as _ch_e:
     print(f"[main] cron_heartbeat_bp register failed: {_ch_e}", flush=True)
+
+# r47.32 (2026-05-26): infra_data_bp was orphaned — the blueprint exists in
+# routes/infrastructure_data_routes.py (submarine_cables, infrastructure
+# stats, +power-plants/transmission-lines as a secondary registration) but
+# was never registered. That's why /api/v1/submarine-cables 404'd from the
+# land-power map. Register it here so the submarine-cables layer loads.
+try:
+    from routes.infrastructure_data_routes import infra_data_bp
+    app.register_blueprint(infra_data_bp)
+    print("[main] infra_data_bp registered: /api/v1/submarine-cables + /api/v1/infrastructure/stats", flush=True)
+except Exception as _idb_e:
+    print(f"[main] infra_data_bp register failed: {_idb_e}", flush=True)
 
 # Phase ZZZZZ-round38 (2026-05-25): email capture before Stripe checkout
 try:
