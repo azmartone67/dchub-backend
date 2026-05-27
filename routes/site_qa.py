@@ -159,7 +159,14 @@ def _fetch(url, timeout=15):
     """Fetch and return (http_code, text, response_ms)."""
     started = time.time()
     full_url = BASE_URL + url if not url.startswith("http") else url
-    req = urllib.request.Request(full_url, headers={"User-Agent": "dchub-site-qa/1.0"})
+    # r42ag (2026-05-27): X-DC-Probe header identifies the self-heal QA
+    # probe to the rate-limiter so /markets/chicago etc. don't 429 on
+    # our own health checks. Pre-fix sentinel had the same bug — UA
+    # alone wasn't recognized.
+    req = urllib.request.Request(full_url, headers={
+        "User-Agent": "dchub-site-qa/1.0",
+        "X-DC-Probe": "self-heal",
+    })
     try:
         with urllib.request.urlopen(req, timeout=timeout) as resp:
             text = resp.read().decode("utf-8", errors="replace")
