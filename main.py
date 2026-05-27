@@ -23685,10 +23685,13 @@ except Exception as _ch_e:
 # routes/infrastructure_data_routes.py (submarine_cables, infrastructure
 # stats, +power-plants/transmission-lines as a secondary registration) but
 # was never registered. That's why /api/v1/submarine-cables 404'd from the
-# land-power map. Register it here so the submarine-cables layer loads.
+# land-power map. The file exposes a register_infra_data_routes(app, get_db)
+# helper that injects the DB function — calling app.register_blueprint
+# directly leaves _get_db=None and every handler 500s with
+# "'NoneType' object is not callable". Use the helper.
 try:
-    from routes.infrastructure_data_routes import infra_data_bp
-    app.register_blueprint(infra_data_bp)
+    from routes.infrastructure_data_routes import register_infra_data_routes
+    register_infra_data_routes(app, get_pg_connection)
     print("[main] infra_data_bp registered: /api/v1/submarine-cables + /api/v1/infrastructure/stats", flush=True)
 except Exception as _idb_e:
     print(f"[main] infra_data_bp register failed: {_idb_e}", flush=True)
