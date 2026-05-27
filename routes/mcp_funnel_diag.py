@@ -260,6 +260,84 @@ def signal_attribution():
         return jsonify({"error": str(e)[:200]}), 500
 
 
+@mcp_funnel_bp.route("/purge-synthetic-signals", methods=["GET", "POST"])
+def purge_synthetic_signals():
+    """Phase r51-purge (2026-05-26). One-shot cleanup of legacy synthetic
+    rows in mcp_upgrade_signals — rows logged BEFORE the r51-clean
+    write-side filter took effect. Without this, the 7d funnel stays
+    polluted until the rows naturally age out.
+
+    Dry-run by default (returns the count that would be deleted).
+    Pass ?execute=1 to actually run the DELETE.
+
+    Requires X-Internal-Key header matching DCHUB_INTERNAL_KEY env var
+    so this isn't publicly callable.
+    """
+    from flask import request as _req
+    import os as _os
+    internal_key_env = _os.environ.get("DCHUB_INTERNAL_KEY", "dchub-internal-sync-2026")
+    if _req.headers.get("X-Internal-Key") != internal_key_env:
+        return jsonify({"error": "forbidden"}), 403
+    if _pg is None:
+        return jsonify({"error": "psycopg2 not available"}), 500
+    execute = (_req.args.get("execute") or "").lower() in ("1", "true", "yes")
+    try:
+        with _conn() as c, c.cursor() as cur:
+            # Count matching rows first
+            cur.execute("""
+                SELECT COUNT(*), MIN(created_at), MAX(created_at)
+                  FROM mcp_upgrade_signals
+                 WHERE LOWER(mcp_client) LIKE 'dchub-%'
+                    OR LOWER(mcp_client) LIKE 'step2_%'
+                    OR LOWER(mcp_client) LIKE 'qa-%'
+                    OR LOWER(mcp_client) LIKE 'probe-%'
+                    OR LOWER(mcp_client) LIKE 'test-%'
+                    OR LOWER(mcp_client) LIKE 'monitor-%'
+                    OR LOWER(mcp_client) LIKE 'r51-%'
+                    OR LOWER(mcp_client) LIKE 'r52-%'
+                    OR LOWER(mcp_client) LIKE 'hn-prepost%'
+                    OR LOWER(mcp_client) LIKE 'paywall-probe%'
+                    OR LOWER(mcp_client) LIKE 'funnel-test%'
+                    OR LOWER(mcp_client) LIKE 'e2e-%'
+                    OR LOWER(mcp_client) LIKE 'recheck%'
+                    OR LOWER(mcp_client) LIKE 'healthcheck%'
+            """)
+            count, min_at, max_at = cur.fetchone()
+            count = int(count or 0)
+            result = {
+                "matched_rows":  count,
+                "earliest":      min_at.isoformat() if min_at else None,
+                "latest":        max_at.isoformat() if max_at else None,
+                "dry_run":       not execute,
+                "executed":      False,
+                "rows_deleted":  0,
+            }
+            if execute and count > 0:
+                cur.execute("""
+                    DELETE FROM mcp_upgrade_signals
+                     WHERE LOWER(mcp_client) LIKE 'dchub-%'
+                        OR LOWER(mcp_client) LIKE 'step2_%'
+                        OR LOWER(mcp_client) LIKE 'qa-%'
+                        OR LOWER(mcp_client) LIKE 'probe-%'
+                        OR LOWER(mcp_client) LIKE 'test-%'
+                        OR LOWER(mcp_client) LIKE 'monitor-%'
+                        OR LOWER(mcp_client) LIKE 'r51-%'
+                        OR LOWER(mcp_client) LIKE 'r52-%'
+                        OR LOWER(mcp_client) LIKE 'hn-prepost%'
+                        OR LOWER(mcp_client) LIKE 'paywall-probe%'
+                        OR LOWER(mcp_client) LIKE 'funnel-test%'
+                        OR LOWER(mcp_client) LIKE 'e2e-%'
+                        OR LOWER(mcp_client) LIKE 'recheck%'
+                        OR LOWER(mcp_client) LIKE 'healthcheck%'
+                """)
+                result["rows_deleted"] = cur.rowcount
+                result["executed"] = True
+                c.commit()
+        return jsonify(result), 200
+    except Exception as e:
+        return jsonify({"error": str(e)[:300]}), 500
+
+
 @mcp_funnel_bp.route("/anon-ua-breakdown", methods=["GET"])
 def anon_ua_breakdown():
     """Phase r51-cluster (2026-05-26). 99.7% of paywall hits classify as
