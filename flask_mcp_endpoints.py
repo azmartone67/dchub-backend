@@ -855,6 +855,32 @@ def mcp_funnel():
             )
             out["tool_calls_7d"] = cur.fetchone()[0]
 
+            # r42x (2026-05-26): lifetime aggregate so press releases can
+            # cite "N total tool calls since launch" as a moat metric.
+            # Uses pg_class.reltuples for instant approximation (no full
+            # scan); falls back to COUNT(*) if reltuples is unavailable.
+            try:
+                cur.execute(
+                    "SELECT reltuples::bigint FROM pg_class WHERE relname = 'mcp_tool_calls'"
+                )
+                _approx = (cur.fetchone() or [0])[0]
+                out["tool_calls_total"] = int(_approx) if _approx else 0
+                # If pg_class is stale (0 or way off), correct with COUNT
+                if out["tool_calls_total"] == 0 or out["tool_calls_total"] < out["tool_calls_7d"]:
+                    cur.execute("SELECT COUNT(*) FROM mcp_tool_calls")
+                    out["tool_calls_total"] = int((cur.fetchone() or [0])[0])
+            except Exception:
+                out["tool_calls_total"] = None
+
+            # 30-day window — useful for monthly press cadence
+            try:
+                cur.execute(
+                    "SELECT COUNT(*) FROM mcp_tool_calls WHERE created_at >= NOW() - INTERVAL '30 days'"
+                )
+                out["tool_calls_30d"] = int((cur.fetchone() or [0])[0])
+            except Exception:
+                out["tool_calls_30d"] = None
+
             cur.execute(
                 "SELECT COUNT(*) FROM mcp_upgrade_signals WHERE created_at >= NOW() - INTERVAL '7 days'"
             )
