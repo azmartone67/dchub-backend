@@ -1697,8 +1697,15 @@ def autopilot_library():
 # does the synchronous full compute.
 import time as _time
 _HEARTBEAT_CACHE = {"payload": None, "ts": 0.0}
-_HEARTBEAT_TTL_S         = 300.0  # 5 min — fresh enough for dashboards
-_HEARTBEAT_STALE_GRACE_S = 600.0  # 10 min — serve stale rather than time out
+# r42af (2026-05-27): operator caught /intelligence dashboard repeatedly
+# showing "WARMING" because cache had gone cold (>15 min). Widening:
+# fresh 30 min, stale-grace 4 hours. Background recompute still fires
+# on first read past TTL — stale data served meanwhile. With a brain
+# tier dashboard polling every 60s, the cache should effectively never
+# expire during business hours, and the worst-case experience is "data
+# is 4h old" instead of "data unavailable, retry".
+_HEARTBEAT_TTL_S         = 1800.0  # 30 min — fresh enough for dashboards
+_HEARTBEAT_STALE_GRACE_S = 14400.0 # 4h — serve stale rather than show warming
 # Phase ZZZZZ-round32 (2026-05-24): single-flight lock for cold-start
 # compute so concurrent cold requests don't pile up identical scans.
 _HEARTBEAT_COMPUTING = {"in_progress": False}
