@@ -289,6 +289,145 @@ def _group_by_value(d: dict) -> dict:
     return out
 
 
+@mcp_platform_backfill_bp.route("/api/v1/admin/mcp/backfill-via-keys/diagnose",
+                                 methods=["GET"], strict_slashes=False)
+def diagnose_key_join():
+    """r47.35.1: explain why backfill-via-keys returns 0.
+
+    Compares the key formats in mcp_call_log vs mcp_dev_keys vs api_keys
+    side-by-side so the operator can see whether the JOIN is failing on
+    format mismatch (hashed vs raw vs prefix). Prefixes only — never
+    returns full keys."""
+    if not _is_internal_key(request):
+        return jsonify({"error": "unauthorized"}), 401
+    if not (_pg and _dsn()):
+        return jsonify({"error": "no_db"}), 503
+
+    out: dict = {
+        "mcp_call_log_backlog": {"distinct_keys": 0, "sample": []},
+        "mcp_dev_keys":         {"count": 0, "sample": []},
+        "api_keys":             {"count": 0, "sample": []},
+    }
+    try:
+        with _conn() as c, c.cursor() as cur:
+            # mcp_call_log: the 27 unclassified keys + their call counts
+            cur.execute("""
+                SELECT api_key, COUNT(*) AS n
+                  FROM mcp_call_log
+                 WHERE (platform IN ('mcp','','unknown') OR platform IS NULL)
+                   AND api_key IS NOT NULL AND api_key <> ''
+                 GROUP BY api_key
+                 ORDER BY n DESC
+                 LIMIT 30
+            """)
+            rows = cur.fetchall() or []
+            out["mcp_call_log_backlog"]["distinct_keys"] = len(rows)
+            out["mcp_call_log_backlog"]["sample"] = [{
+                "api_key_prefix": (r[0] or '')[:14] + '…',
+                "api_key_len":    len(r[0] or ''),
+                "call_count":     int(r[1]),
+            } for r in rows[:15]]
+
+            # mcp_dev_keys: format of api_key column
+            cur.execute("""
+                SELECT api_key, email, tier
+                  FROM mcp_dev_keys
+                 WHERE api_key IS NOT NULL AND api_key <> ''
+                 ORDER BY last_used_at DESC NULLS LAST
+                 LIMIT 15
+            """)
+            dev_rows = cur.fetchall() or []
+            out["mcp_dev_keys"]["count"] = len(dev_rows)
+            out["mcp_dev_keys"]["sample"] = [{
+                "api_key_prefix": (r[0] or '')[:14] + '…',
+                "api_key_len":    len(r[0] or ''),
+                "email_domain":   (r[1] or '').split('@')[-1] if r[1] else '',
+                "tier":           r[2],
+            } for r in dev_rows]
+
+            # api_keys: format of key_hash + key_prefix
+            cur.execute("""
+                SELECT key_hash, key_prefix, name, plan
+                  FROM api_keys
+                 WHERE is_active = 1 OR is_active_bool = TRUE
+                 ORDER BY last_used DESC NULLS LAST
+                 LIMIT 15
+            """)
+            ak_rows = cur.fetchall() or []
+            out["api_keys"]["count"] = len(ak_rows)
+            out["api_keys"]["sample"] = [{
+                "hash_prefix":   (r[0] or '')[:14] + '…',
+                "hash_len":      len(r[0] or ''),
+                "key_prefix":    (r[1] or '')[:14] + '…',
+                "name":          (r[2] or '')[:40],
+                "plan":          r[3],
+            } for r in ak_rows]
+    except Exception as e:
+        return jsonify({"error": str(e)[:300]}), 500
+
+    out["diagnosis_hint"] = (
+        "Compare api_key_prefix + api_key_len across the three tables. "
+        "If mcp_call_log stores 64-char hex hashes while mcp_dev_keys stores "
+        "32-char tokens, the JOIN can't find overlaps. Fix: either (a) hash "
+        "the dev key the same way before lookup, or (b) UPDATE individual "
+        "rows via the top-N keys here with manual platform tagging via "
+        "POST /api/v1/admin/mcp/tag-key (X-Admin-Key)."
+    )
+    return jsonify(out), 200
+
+
+@mcp_platform_backfill_bp.route("/api/v1/admin/mcp/tag-key",
+                                 methods=["POST"], strict_slashes=False)
+def tag_key_manual():
+    """r47.35.1: manual one-shot tag for a specific api_key prefix.
+
+    Body: {"api_key_prefix": "dche56…", "platform": "claude"}
+    Or:   {"api_key": "<full key>", "platform": "claude"}
+
+    Tags every mcp_call_log row whose api_key matches that prefix as
+    the supplied platform. Surgical fix when you know which dev key
+    belongs to which client and the JOIN heuristics can't see it."""
+    if not _is_internal_key(request):
+        return jsonify({"error": "unauthorized"}), 401
+    if not (_pg and _dsn()):
+        return jsonify({"error": "no_db"}), 503
+
+    data = request.get_json(silent=True) or {}
+    prefix = (data.get("api_key_prefix") or "").strip()
+    full   = (data.get("api_key") or "").strip()
+    plat   = (data.get("platform") or "").strip().lower()
+    if not plat:
+        return jsonify({"error": "platform required"}), 400
+    if not (prefix or full):
+        return jsonify({"error": "api_key_prefix or api_key required"}), 400
+
+    try:
+        with _conn() as c, c.cursor() as cur:
+            if full:
+                cur.execute("""
+                    UPDATE mcp_call_log SET platform = %s
+                     WHERE api_key = %s
+                       AND (platform IN ('mcp','','unknown') OR platform IS NULL)
+                """, (plat, full))
+                updated = cur.rowcount
+            else:
+                cur.execute("""
+                    UPDATE mcp_call_log SET platform = %s
+                     WHERE api_key LIKE %s
+                       AND (platform IN ('mcp','','unknown') OR platform IS NULL)
+                """, (plat, prefix + '%'))
+                updated = cur.rowcount
+    except Exception as e:
+        return jsonify({"error": str(e)[:300]}), 500
+
+    return jsonify({
+        "ok":       True,
+        "updated":  updated,
+        "platform": plat,
+        "matched":  "full_key" if full else f"prefix:{prefix}",
+    }), 200
+
+
 @mcp_platform_backfill_bp.route("/api/v1/admin/mcp/backfill-via-keys/preview",
                                  methods=["GET"], strict_slashes=False)
 def preview_backfill_via_keys():
