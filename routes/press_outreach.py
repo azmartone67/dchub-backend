@@ -84,7 +84,8 @@ def _conn():
 _SCHEMA = """
 CREATE TABLE IF NOT EXISTS press_contacts (
     id                BIGSERIAL PRIMARY KEY,
-    outlet            TEXT NOT NULL,
+    outlet            TEXT NOT NULL UNIQUE,  -- r47.38.2: simplified — one row per outlet,
+                                              -- contact_email updates in-place
     beat              TEXT,                -- data_centers | ai_infra | m_and_a | energy_grid | telecom
     contact_name      TEXT,
     contact_email     TEXT,
@@ -99,8 +100,7 @@ CREATE TABLE IF NOT EXISTS press_contacts (
     total_coverage    INTEGER DEFAULT 0,
     active            BOOLEAN DEFAULT TRUE,
     created_at        TIMESTAMPTZ DEFAULT NOW(),
-    updated_at        TIMESTAMPTZ DEFAULT NOW(),
-    UNIQUE (outlet, COALESCE(contact_email, ''))
+    updated_at        TIMESTAMPTZ DEFAULT NOW()
 );
 CREATE INDEX IF NOT EXISTS press_contacts_priority_idx
   ON press_contacts (active, priority DESC);
@@ -246,8 +246,7 @@ def _ensure_schema_and_seed():
                         (outlet, beat, contact_name, contact_email,
                          priority, pitch_style, notes)
                     VALUES (%s, %s, NULL, NULL, %s, %s, %s)
-                    ON CONFLICT (outlet, COALESCE(contact_email, ''))
-                      DO NOTHING
+                    ON CONFLICT (outlet) DO NOTHING
                 """, (row["outlet"], row["beat"], row["priority"],
                        row["pitch_style"], row["notes"]))
         logger.info(f"[press_outreach] seeded {len(_SEED_CONTACTS)} outlets")
@@ -698,15 +697,15 @@ def upsert_contact():
                      contact_twitter, contact_linkedin,
                      priority, pitch_style, notes)
                 VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s)
-                ON CONFLICT (outlet, COALESCE(contact_email, ''))
-                  DO UPDATE SET
+                ON CONFLICT (outlet) DO UPDATE SET
                     beat            = EXCLUDED.beat,
-                    contact_name    = EXCLUDED.contact_name,
-                    contact_twitter = EXCLUDED.contact_twitter,
-                    contact_linkedin = EXCLUDED.contact_linkedin,
+                    contact_name    = COALESCE(EXCLUDED.contact_name, press_contacts.contact_name),
+                    contact_email   = COALESCE(EXCLUDED.contact_email, press_contacts.contact_email),
+                    contact_twitter = COALESCE(EXCLUDED.contact_twitter, press_contacts.contact_twitter),
+                    contact_linkedin = COALESCE(EXCLUDED.contact_linkedin, press_contacts.contact_linkedin),
                     priority        = EXCLUDED.priority,
                     pitch_style     = EXCLUDED.pitch_style,
-                    notes           = EXCLUDED.notes,
+                    notes           = COALESCE(EXCLUDED.notes, press_contacts.notes),
                     updated_at      = NOW()
                 RETURNING id
             """, (outlet, d.get("beat"), d.get("contact_name"),
