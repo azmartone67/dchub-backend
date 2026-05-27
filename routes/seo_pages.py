@@ -177,20 +177,39 @@ def facility_page(id_or_slug: str):
         return _error_page("Database temporarily unavailable", 503)
 
     row = None
+    # r-facility-slug-md5 (2026-05-27): the map + explorer build slugs as
+    # `<provider>-<name>-<MD5(id)[:8]>`. The previous name-slug match here
+    # only resolved the middle portion ("switch-tahoe-reno"), not the full
+    # hash-suffixed slug ("switch-ltd-switch-tahoe-reno-311abb49"). The
+    # /api/v1/facility/<slug> JSON endpoint at main.py:13070 uses the
+    # MD5-hash resolution. Mirror that here so the HTML facility page
+    # works for the same slug clients send.
+    hash8 = None
+    try:
+        _parts = id_or_slug.rsplit('-', 1)
+        if len(_parts) == 2 and len(_parts[1]) == 8 and all(ch in '0123456789abcdef' for ch in _parts[1].lower()):
+            hash8 = _parts[1].lower()
+    except Exception:
+        hash8 = None
     try:
         with c.cursor(cursor_factory=psycopg2.extras.RealDictCursor) as cur:
             # Round 33: query discovered_facilities (21k rows, primary table)
             # rather than legacy facilities (12k rows). discovered_facilities
             # has integer SERIAL IDs, no tier/sqft/certifications columns.
+            # Match strategy (in order):
+            #   1. integer id direct: /facility/3885
+            #   2. MD5-hash slug suffix: /facility/anything-<8hex>
+            #   3. name-slug fallback: /facility/switch-tahoe-reno
             cur.execute("""
                 SELECT id, name, provider, address, city, state, country,
                        latitude, longitude, power_mw, status,
                        source, source_url, confidence_score, last_updated
                   FROM discovered_facilities
                  WHERE (CAST(id AS TEXT) = %s)
+                    OR (%s IS NOT NULL AND LEFT(MD5(id::text), 8) = %s)
                     OR LOWER(REPLACE(REPLACE(COALESCE(name,''),' ','-'),',','')) = LOWER(%s)
                  LIMIT 1
-            """, (id_or_slug, id_or_slug))
+            """, (id_or_slug, hash8, hash8, id_or_slug))
             row = cur.fetchone()
 
         if not row:
