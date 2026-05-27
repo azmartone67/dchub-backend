@@ -227,6 +227,7 @@ def run_extraction() -> dict:
 # Endpoints
 # ---------------------------------------------------------------------------
 
+# AUTO-REPAIR: duplicate route '/extract' also in routes/iso_caiso.py:145 — review and remove one
 @iso_ercot_bp.route("/extract", methods=["POST", "GET"])
 def trigger_extract():
     """Run extraction now. Public endpoint — safe because writes are dedupe'd."""
@@ -234,6 +235,7 @@ def trigger_extract():
     status_code = 200 if summary.get("status") == "ok" else 500
     return jsonify(summary), status_code
 
+# AUTO-REPAIR: duplicate route '/latest' also in routes/iso_caiso.py:151 — review and remove one
 
 @iso_ercot_bp.route("/latest", methods=["GET"])
 def latest():
@@ -290,6 +292,7 @@ def history():
         count=len(rows),
         points=[{"timestamp": ts, "value": v, "unit": u} for ts, v, u in rows],
     ), 200
+# AUTO-REPAIR: duplicate route '/health' also in main.py:3528 — review and remove one
 
 
 @iso_ercot_bp.route("/health", methods=["GET"])

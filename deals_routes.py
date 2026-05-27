@@ -1309,6 +1309,7 @@ def trigger_news_sync():
             'error': str(e)
         }), 500
 
+# AUTO-REPAIR: duplicate route '/api/v1/news' also in api_fixes.py:149 — review and remove one
 @deals_bp.route('/api/v1/news', methods=['GET'])
 def get_v1_news():
     """V1 alias for news endpoint"""
