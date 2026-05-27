@@ -464,6 +464,54 @@ def backfill_market_by_bbox():
         return jsonify({"error": str(e)[:300]}), 500
 
 
+@mcp_funnel_bp.route("/backfill-market-from-city", methods=["POST"])
+def backfill_market_from_city():
+    """Phase r-marketfromcity (2026-05-27). After the bbox-based market
+    backfill covered ~150 major DC metros, ~5,820 rows still had no
+    market. They're long-tail cities outside any bbox. This endpoint
+    copies city → market for all rows where market is null/empty/Unknown
+    AND city is non-empty. Every facility gets SOME market label so
+    search has at least one searchable token.
+
+    Idempotent. Internal-key required. Dry-run by default, ?execute=1
+    commits.
+    """
+    from flask import request as _req
+    import os as _os
+    _sent = _req.headers.get("X-Internal-Key", "") or ""
+    _allowed = {"dchub-internal-sync-2026"}
+    for _name in ("DCHUB_INTERNAL_KEY", "INTERNAL_KEY", "MCP_INTERNAL_KEY"):
+        _v = _os.environ.get(_name)
+        if _v:
+            _allowed.add(_v)
+    if not _sent or _sent not in _allowed:
+        return jsonify({"error": "forbidden"}), 403
+    if _pg is None:
+        return jsonify({"error": "psycopg2 not available"}), 500
+    execute = (_req.args.get("execute") or "").lower() in ("1", "true", "yes")
+    try:
+        with _conn() as c, c.cursor() as cur:
+            cur.execute("""
+                SELECT COUNT(*) FROM discovered_facilities
+                 WHERE (market IS NULL OR market = '' OR LOWER(market) = 'unknown')
+                   AND city IS NOT NULL AND city <> ''
+            """)
+            candidates = int((cur.fetchone() or [0])[0])
+            result = {"candidates": candidates, "dry_run": not execute, "rows_updated": 0}
+            if execute and candidates > 0:
+                cur.execute("""
+                    UPDATE discovered_facilities
+                       SET market = city
+                     WHERE (market IS NULL OR market = '' OR LOWER(market) = 'unknown')
+                       AND city IS NOT NULL AND city <> ''
+                """)
+                result["rows_updated"] = cur.rowcount
+                c.commit()
+        return jsonify(result), 200
+    except Exception as e:
+        return jsonify({"error": str(e)[:300]}), 500
+
+
 @mcp_funnel_bp.route("/anon-ua-breakdown", methods=["GET"])
 def anon_ua_breakdown():
     """Phase r51-cluster (2026-05-26). 99.7% of paywall hits classify as
