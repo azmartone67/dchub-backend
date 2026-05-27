@@ -360,6 +360,12 @@ def heartbeat(source_id):
 
             # Update source aggregates
             if status == "success":
+                # r47.39 (2026-05-26): auto-re-enable archived sources
+                # when they start reporting again. The archive-stale
+                # endpoint flipped enabled=FALSE on never-ran sources;
+                # if one of them WAS actually running and we'd just
+                # never wired the heartbeat, this first successful ping
+                # flips it back on automatically.
                 cur.execute(
                     """UPDATE source_registry SET
                           last_run_at         = NOW(),
@@ -368,6 +374,7 @@ def heartbeat(source_id):
                           total_runs          = total_runs + 1,
                           total_rows_ingested = total_rows_ingested + COALESCE(%s, 0),
                           last_error          = NULL,
+                          enabled             = TRUE,
                           updated_at          = NOW()
                        WHERE id = %s""",
                     (rows_affected, source_id),

@@ -974,6 +974,24 @@ class AutonomousBrain:
         except Exception as e:
             logger.debug(f"   (non-fatal) extraction_intelligence write failed: {e}")
 
+        # r47.39 (2026-05-26): inline heartbeat. The Phase 92 wrapper at
+        # line ~1289 wraps `run_brain_cycle` from globals(), but the
+        # actual cycle runs through this method on the class instance —
+        # the wrapper never sees it. Fire directly so the source-registry
+        # `backend-autonomous-brain` row stops showing "never ran".
+        try:
+            from dchub_heartbeat import heartbeat as _hb
+            rows = int(results.get("total_new_rows", 0) or 0)
+            _hb(
+                "backend-autonomous-brain",
+                status="success",
+                rows_affected=rows,
+                duration_ms=int(duration * 1000),
+                metadata={"cycle_id": results.get("cycle_id")},
+            )
+        except Exception:
+            pass  # best-effort, never blocks the cycle
+
         return results
 
     def _record_cycle_to_extraction_intelligence(self, results: Dict, duration: float):
