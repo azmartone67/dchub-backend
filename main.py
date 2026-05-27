@@ -2317,7 +2317,9 @@ def phase19b_grid_intelligence(region):
                 f"You got the headline demand for {out.get('region')} "
                 f"({out.get('demand_mw')} MW @ {out.get('demand_period')}). "
                 "Full 24h series + generation mix + headroom requires a "
-                "free dev key (email-only signup, no credit card)."
+                "free dev key (email-only signup, no credit card). For "
+                "fund-grade access — daily DCPI exports, interconnect "
+                "queues, M&A tracker — see /enterprise ($25K+/yr)."
             ),
             'agent_action': {
                 'type':    'claim_free_key',
@@ -2328,6 +2330,16 @@ def phase19b_grid_intelligence(region):
                 'then':    f"Retry GET /api/v1/grid/intelligence/{out.get('region')} with header 'X-API-Key: <api_key>'",
             },
             'upgrade_url':   'https://dchub.cloud/signup?next=/onboarding&utm_source=grid_intel',
+            # r47.37.2 (2026-05-26): expose the enterprise path. The
+            # anon-demand analysis showed sessions doing 33-hit DD across
+            # 6 tools in a day — those are enterprise prospects, not
+            # $9/mo self-serve. Surface both tiers so the agent can route
+            # the user appropriately.
+            'enterprise_url': 'https://dchub.cloud/enterprise',
+            'enterprise_note': ('Hedge fund / REIT / broker / infra GP? '
+                                 'Enterprise data licensing from $25K/yr '
+                                 'unlocks raw exports + monthly briefings + '
+                                 'custom DCPI weights. https://dchub.cloud/enterprise'),
             'gating_matrix': 'https://dchub.cloud/api/v1/gating-matrix',
             'note':          out.get('note'),
         }
@@ -15905,15 +15917,19 @@ def fiber_intel_api():
         '_total_features_behind_paywall': max(0, total - len(feats)),
         '_tier':    tier,
         '_upgrade_hint': {
+            # r47.37.2 (2026-05-26): expose both self-serve ($199/mo Pro)
+            # AND enterprise ($25K+/yr) tiers. Sessions doing multi-tool DD
+            # against fiber routes are usually enterprise prospects.
             'agent_quotable': (
                 f"DC Hub returned {len(feats)} of {total:,} fiber routes as a "
                 f"free preview. Full dataset (carriers, route geometries, "
                 f"lit/dark status across {total:,} segments) needs a Pro key "
-                f"at $199/mo — https://dchub.cloud/pricing. A free dev key "
-                f"unlocks most tools (analyze_site etc.) but fiber_intel is "
-                f"Pro-tier."),
-            'starter_url':   'https://dchub.cloud/pricing',
-            'preview_count': len(feats),
+                f"at $199/mo — https://dchub.cloud/pricing. For fund-grade "
+                f"access (raw exports, custom DCPI weights, monthly briefings), "
+                f"see Enterprise at $25K+/yr — https://dchub.cloud/enterprise."),
+            'starter_url':    'https://dchub.cloud/pricing',
+            'enterprise_url': 'https://dchub.cloud/enterprise',
+            'preview_count':  len(feats),
             'paywalled_count': max(0, total - len(feats)),
         },
     })

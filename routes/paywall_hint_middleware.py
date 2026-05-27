@@ -54,12 +54,21 @@ _HINT_BASE = {
     "developer_url":   "https://buy.stripe.com/7sY5kE8F4fs13mI0PEaZi0c",  # $49/mo
     "preview_url":     "https://dchub.cloud/api/v1/mcp/preview/<tool>",
     "upgrade_hint":    "https://dchub.cloud/api/v1/upgrade-hint",
+    # r47.37.2 (2026-05-26): expose the enterprise data-licensing surface
+    # alongside the self-serve tiers. Anon-demand analysis showed heavy
+    # sessions (33+ tool calls in a day across 6 tools) doing real
+    # due-diligence work — those are enterprise prospects, not $9/mo
+    # self-serve buyers. The signup_url path was the only CTA before;
+    # add enterprise_url so the agent can route the user to the right
+    # tier based on use-case complexity.
+    "enterprise_url":  "https://dchub.cloud/enterprise",
+    "enterprise_quick": "For hedge fund / REIT / broker / infra GP use: $25K+/yr data licensing with raw exports, custom DCPI weights, monthly briefings. https://dchub.cloud/enterprise",
     # r48 (2026-05-25): "10k MCP tool calls/day on free tier" was WRONG —
     # free tier is actually 10/day. Fixed copy + added direct Stripe links
     # so agents can pass a $9 quick-buy URL to the user rather than just
     # the signup form.
     "what_you_get":    "Free dev key (email signup, no credit card) = 1,000 calls/day. $9/mo Starter = 10,000/day. $49/mo Developer = unlimited paid tools.",
-    "pricing_quick":   "Anonymous 10/day · Free key 1K/day · $9 Starter 10K/day · $49 Developer unlimited",
+    "pricing_quick":   "Anonymous 10/day · Free key 1K/day · $9 Starter 10K/day · $49 Developer unlimited · $25K+/yr Enterprise data licensing",
 }
 
 
