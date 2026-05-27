@@ -577,6 +577,86 @@ def _classify_post_for_dedup(text: str) -> str:
     return "other"
 
 
+# r42z admin: enqueue a custom-authored post and (optionally) publish
+# it immediately. Used when operator writes a specific post (e.g. an
+# updated press-release announcement) and wants it on the wire NOW,
+# bypassing the 6h cron + per-class dedup. The 'publish_now' flag
+# triggers /api/admin/publish/linkedin inline so the post hits LinkedIn
+# in one round-trip instead of two.
+@content_bp.route('/api/admin/publish/enqueue-custom', methods=['POST'])
+def enqueue_custom():
+    if not _check_admin(request):
+        return jsonify({'error': 'Unauthorized'}), 401
+    data = request.get_json(force=True) or {}
+    content = (data.get('content') or '').strip()
+    platform = (data.get('platform') or 'linkedin').strip().lower()
+    publish_now = bool(data.get('publish_now', False))
+    if not content or len(content) < 20:
+        return jsonify({'success': False,
+                        'error': 'content required (min 20 chars)'}), 400
+    if platform not in ('linkedin', 'twitter', 'bluesky'):
+        return jsonify({'success': False,
+                        'error': "platform must be linkedin|twitter|bluesky"}), 400
+
+    conn = _get_db()
+    cur = conn.cursor()
+    try:
+        cur.execute("""
+            INSERT INTO social_media_posts (content, platform, status, created_at)
+            VALUES (%s, %s, 'approved', NOW())
+            RETURNING id
+        """, (content, platform))
+        row = cur.fetchone()
+        new_id = row['id'] if hasattr(row, 'get') else (row[0] if row else None)
+        conn.commit()
+    except Exception as e:
+        try: conn.rollback()
+        except Exception: pass
+        try: conn.close()
+        except Exception: pass
+        return jsonify({'success': False, 'error': str(e)[:200]}), 500
+
+    out = {'success': True, 'post_id': new_id, 'platform': platform,
+           'status': 'approved'}
+
+    if publish_now and platform == 'linkedin':
+        access_token = os.environ.get('LINKEDIN_ACCESS_TOKEN', '').strip()
+        if not access_token:
+            out['published'] = False
+            out['publish_error'] = 'LINKEDIN_ACCESS_TOKEN not configured'
+            try: conn.close()
+            except Exception: pass
+            return jsonify(out), 200
+        # Pull URL hint for rich link-card share (LinkedIn scrapes og:image)
+        try:
+            import re as _re_url
+            _m = _re_url.search(r'https?://[^\s)>\]]+', content)
+            _art_url = _m.group(0).rstrip('.,') if _m else None
+            _art_title = (content.strip().split('\n', 1)[0].strip())[:180] or None
+        except Exception:
+            _art_url = None
+            _art_title = None
+        ok, result = _post_to_linkedin(content, access_token,
+                                         article_url=_art_url,
+                                         article_title=_art_title)
+        now = datetime.utcnow().isoformat() + 'Z'
+        if ok:
+            cur.execute("""UPDATE social_media_posts
+                              SET status = 'published',
+                                  posted_at = %s, published_at = %s,
+                                  publish_platform = 'linkedin'
+                            WHERE id = %s""", (now, now, new_id))
+            conn.commit()
+            out['published'] = True
+            out['linkedin_post_id'] = result
+        else:
+            out['published'] = False
+            out['publish_error'] = result
+    try: conn.close()
+    except Exception: pass
+    return jsonify(out), 200
+
+
 # r42v admin: bulk-reject queued posts matching a content pattern.
 # Used to clean up stale auto-generated content (Tony Bishop reposts,
 # targeted partner-attack posts, etc.) without dropping the whole queue.
