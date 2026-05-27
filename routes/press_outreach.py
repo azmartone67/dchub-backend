@@ -675,6 +675,91 @@ def list_contacts():
         return jsonify({"error": str(e)[:200]}), 500
 
 
+@press_outreach_bp.route("/api/v1/admin/press-outreach/contacts/bulk-upsert",
+                          methods=["POST"], strict_slashes=False)
+def bulk_upsert_contacts():
+    """r47.40 (2026-05-27): one curl, many contacts.
+
+    Body: {"contacts": [
+        {"outlet":"...", "contact_name":"...", "contact_email":"...", ...},
+        ...
+    ]}
+
+    Each entry has the same shape as /contacts/upsert. Returns one
+    response with per-contact result + total count. Idempotent — re-runs
+    only update existing rows.
+
+    Useful when you've gathered 5-20 journalist emails at once and don't
+    want to fire 20 separate curls."""
+    if not _is_admin(request):
+        return jsonify({"error": "unauthorized"}), 401
+    if not (_pg and _dsn()):
+        return jsonify({"error": "no_db"}), 503
+
+    data = request.get_json(silent=True) or {}
+    contacts = data.get("contacts") or []
+    if not isinstance(contacts, list) or not contacts:
+        return jsonify({"error": "body needs {\"contacts\": [...]}"}), 400
+
+    results = []
+    upserted = 0
+    failed = 0
+    try:
+        with _conn() as c, c.cursor() as cur:
+            for entry in contacts[:50]:  # bound at 50 per call
+                outlet = (entry.get("outlet") or "").strip()
+                if not outlet:
+                    results.append({"error": "missing outlet", "entry": entry})
+                    failed += 1
+                    continue
+                try:
+                    cur.execute("""
+                        INSERT INTO press_contacts
+                            (outlet, beat, contact_name, contact_email,
+                             contact_twitter, contact_linkedin,
+                             priority, pitch_style, notes)
+                        VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s)
+                        ON CONFLICT (outlet) DO UPDATE SET
+                            beat            = EXCLUDED.beat,
+                            contact_name    = COALESCE(EXCLUDED.contact_name, press_contacts.contact_name),
+                            contact_email   = COALESCE(EXCLUDED.contact_email, press_contacts.contact_email),
+                            contact_twitter = COALESCE(EXCLUDED.contact_twitter, press_contacts.contact_twitter),
+                            contact_linkedin = COALESCE(EXCLUDED.contact_linkedin, press_contacts.contact_linkedin),
+                            priority        = EXCLUDED.priority,
+                            pitch_style     = EXCLUDED.pitch_style,
+                            notes           = COALESCE(EXCLUDED.notes, press_contacts.notes),
+                            updated_at      = NOW()
+                        RETURNING id
+                    """, (
+                        outlet, entry.get("beat"),
+                        entry.get("contact_name"), entry.get("contact_email"),
+                        entry.get("contact_twitter"), entry.get("contact_linkedin"),
+                        int(entry.get("priority", 5)),
+                        entry.get("pitch_style", "narrative"),
+                        entry.get("notes"),
+                    ))
+                    new_id = int(cur.fetchone()[0])
+                    results.append({
+                        "id":     new_id, "outlet": outlet,
+                        "email":  entry.get("contact_email"),
+                    })
+                    upserted += 1
+                except Exception as e:
+                    results.append({"error": str(e)[:120], "outlet": outlet})
+                    failed += 1
+    except Exception as e:
+        return jsonify({"error": str(e)[:300]}), 500
+
+    return jsonify({
+        "ok":         True,
+        "upserted":   upserted,
+        "failed":     failed,
+        "results":    results,
+        "next_step":  ("Run POST /generate-drafts to rebuild pitch drafts "
+                        "now that contacts have emails populated."),
+    }), 200
+
+
 @press_outreach_bp.route("/api/v1/admin/press-outreach/contacts/upsert",
                           methods=["POST"], strict_slashes=False)
 def upsert_contact():

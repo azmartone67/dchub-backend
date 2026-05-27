@@ -518,7 +518,16 @@ def scan_all() -> list[dict]:
 
 
 def latest_results() -> list[dict]:
-    """Read the last persisted scan (much cheaper than re-scanning)."""
+    """Read the last persisted scan (much cheaper than re-scanning).
+
+    r47.40 (2026-05-27): filter to paths in the CURRENT _MANIFEST. Paths
+    that used to be tracked but have been removed (e.g. /grid-hub which
+    we replaced with /grid, /research/grid-intelligence which we replaced
+    earlier) still have rows in site_sentinel_results. Without this
+    filter, retired paths kept showing up as "unhealthy Grid Intel"
+    forever, even though the manifest had already moved on. Now the
+    read mirrors what the next scan will actually probe."""
+    current_paths = {m["path"] for m in _MANIFEST}
     c = _conn()
     if c is None: return []
     out: list[dict] = []
@@ -531,8 +540,9 @@ def latest_results() -> list[dict]:
                            elapsed_ms, healthy, reason, checked_at,
                            last_healthy_at, has_nav, stale_days, data_age_src
                       FROM site_sentinel_results
+                     WHERE path = ANY(%s)
                      ORDER BY healthy ASC, category ASC, path ASC
-                """)
+                """, (list(current_paths),))
                 for r in cur.fetchall():
                     out.append({
                         "path":        r["path"],
