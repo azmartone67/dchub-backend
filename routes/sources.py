@@ -207,7 +207,16 @@ def list_sources():
             datetime.fromisoformat(r["last_success_at"]) if r.get("last_success_at") else None,
             r["cadence_seconds"],
         )
-    return jsonify(count=len(rows), sources=rows), 200
+    # r47.39.2 (2026-05-26): the Pages worker was caching this list for
+    # 1h, so the dashboard showed stale data even seconds after fresh
+    # heartbeats. The source-registry status is real-time observability
+    # — caching defeats the purpose. Mark it no-store + private so CF
+    # passes it through unmodified.
+    return jsonify(count=len(rows), sources=rows), 200, {
+        "Cache-Control":     "no-store, no-cache, must-revalidate, max-age=0",
+        "CDN-Cache-Control": "no-store",
+        "X-DC-Phase":        "r47.39.2-sources-no-cache",
+    }
 
 
 # ---------------------------------------------------------------------------
