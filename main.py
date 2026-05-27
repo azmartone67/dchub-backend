@@ -23867,6 +23867,20 @@ try:
 except Exception as _elb_e:
     print(f"[main] enterprise_leads_bp register failed: {_elb_e}", flush=True)
 
+# r47.38 (2026-05-26): smart journalist outreach. Replaces the
+# "spam every market shift to LinkedIn" pattern with targeted, narrative
+# pitches per (publication, story-angle). Pre-seeds press_contacts with
+# 20 real DC-beat outlets (operator fills in contact_email at /contacts).
+# Story-angle detector scans for DCPI shifts, M&A deals, AI citation
+# milestones, international expansions. Draft-then-approve gate.
+try:
+    from routes.press_outreach import press_outreach_bp, _ensure_schema_and_seed as _po_seed
+    app.register_blueprint(press_outreach_bp)
+    _po_seed()
+    print("[main] press_outreach_bp registered: /api/v1/admin/press-outreach/{scan-angles,generate-drafts,contacts,drafts,approve,reject}", flush=True)
+except Exception as _po_e:
+    print(f"[main] press_outreach_bp register failed: {_po_e}", flush=True)
+
 # Phase ZZZZZ-round38 (2026-05-25): email capture before Stripe checkout
 try:
     from routes.checkout_email_capture import checkout_email_bp

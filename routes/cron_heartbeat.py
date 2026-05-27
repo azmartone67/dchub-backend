@@ -179,6 +179,20 @@ _DISPATCH = [
      f"{BASE}/api/v1/admin/enterprise/leads/sweep?top=10&min_hits=5",
      "POST",
      lambda now: now.weekday() == 0 and now.hour == 15 and now.minute < 10),
+
+    # r47.38 (2026-05-26): weekly press pitch drafting. Scans the
+    # platform for newsworthy story angles (DCPI verdict shifts, top
+    # M&A deals, AI citation milestones, international expansions),
+    # generates personalized pitch DRAFTS targeting beat reporters at
+    # 20 seeded outlets (Bisnow, DCD, WSJ, Bloomberg, etc.). Drafts
+    # must be approved at /admin/partnerships/review before sending —
+    # same safety gate as enterprise leads + partnership press.
+    # Fires Thursday 14:00 UTC (10 AM ET — journalists' Thursday pitch
+    # window before Friday wind-down). Idempotent over 14d.
+    ("press_outreach_drafts_weekly",
+     f"{BASE}/api/v1/admin/press-outreach/generate-drafts?top=3&min_priority=6",
+     "POST",
+     lambda now: now.weekday() == 3 and now.hour == 14 and now.minute < 10),
 ]
 
 

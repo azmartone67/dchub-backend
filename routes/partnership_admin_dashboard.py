@@ -103,6 +103,32 @@ def _gather_pending():
             except Exception:
                 pass
 
+            # r47.38: pending press pitch drafts (journalist outreach)
+            try:
+                with c.cursor() as cur:
+                    cur.execute("""
+                        SELECT d.id, d.subject, d.body, d.angle_key, d.score,
+                               d.created_at, c.outlet, c.contact_name,
+                               c.contact_email, c.beat
+                          FROM press_pitch_drafts d
+                          LEFT JOIN press_contacts c ON c.id = d.contact_id
+                         WHERE d.status = 'pending'
+                         ORDER BY d.score DESC NULLS LAST, d.created_at DESC LIMIT 20
+                    """)
+                    out["press_pitches"] = [{
+                        "id":            r[0], "subject": r[1] or "",
+                        "body":          r[2] or "", "angle_key": r[3] or "",
+                        "score":         float(r[4] or 0),
+                        "created_at":    r[5].isoformat() if r[5] else None,
+                        "outlet":        r[6] or "(unset)",
+                        "contact_name":  r[7] or "(unset)",
+                        "contact_email": r[8] or "",
+                        "beat":          r[9] or "",
+                    } for r in cur.fetchall()]
+            except Exception:
+                pass
+            out.setdefault("press_pitches", [])
+
             # Pending LinkedIn drafts
             with c.cursor() as cur:
                 cur.execute("""
@@ -272,6 +298,37 @@ def review():
         for i in data.get("inquiries", [])
     ) or '<tr><td colspan="5" class="empty">No inbound inquiries yet — /enterprise just shipped.</td></tr>'
 
+    # r47.38: press pitch draft cards (smart journalist outreach)
+    press_pitch_cards = ""
+    for pp in data.get("press_pitches", []):
+        email_link = (f'<a href="mailto:{_esc(pp["contact_email"])}">{_esc(pp["contact_email"])}</a>'
+                      if pp.get("contact_email") else
+                      '<span style="color:#ef4444">⚠ no contact_email — set via /contacts/upsert before send</span>')
+        press_pitch_cards += f"""
+    <div class="card draft" data-kind="press_pitch" data-id="{pp['id']}">
+      <div class="card-head">
+        <span class="badge press_pitch">PRESS PITCH · {_esc(pp.get('angle_key','?'))}</span>
+        <span class="card-meta">score {pp['score']:.1f} · {_esc(pp.get('beat',''))} · {_esc((pp['created_at'] or '')[:16].replace('T',' '))}</span>
+      </div>
+      <h3 class="card-title">{_esc(pp['outlet'])} · {_esc(pp.get('contact_name','(unset)'))}</h3>
+      <div class="card-meta-row">To: {email_link}</div>
+      <div class="card-meta-row"><b>Subject:</b> {_esc(pp['subject'])}</div>
+      <details>
+        <summary>Show full email body ({len(pp['body'])} chars)</summary>
+        <pre class="card-body">{_esc(pp['body'])}</pre>
+      </details>
+      <div class="card-actions">
+        <button class="btn btn-approve" data-action="approve"
+                data-url="/api/v1/admin/press-outreach/approve/{pp['id']}">
+          ✓ Approve &amp; send via Resend
+        </button>
+        <button class="btn btn-reject" data-action="reject"
+                data-url="/api/v1/admin/press-outreach/reject/{pp['id']}">
+          ✗ Reject
+        </button>
+      </div>
+    </div>"""
+
     html = f"""<!DOCTYPE html>
 <html lang="en"><head>
 <meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1">
@@ -304,6 +361,7 @@ def review():
  .badge.press{{background:#e0e7ff;color:#3730a3}}
  .badge.linkedin{{background:#dbeafe;color:#1e40af}}
  .badge.enterprise{{background:linear-gradient(135deg,#8b5cf6,#6366f1);color:#fff}}
+ .badge.press_pitch{{background:linear-gradient(135deg,#f59e0b,#ef4444);color:#fff;font-family:ui-monospace,monospace;font-size:.65rem;letter-spacing:.04em}}
  .card-meta-row code{{background:#f1f5f9;padding:1px 6px;border-radius:3px;font-size:.8rem}}
  .card-actions{{display:flex;gap:8px;margin-top:12px}}
  .btn{{padding:8px 14px;border:none;border-radius:6px;cursor:pointer;font-size:.85rem;font-weight:600;font-family:inherit}}
@@ -368,6 +426,12 @@ def review():
  <thead><tr><th>Firm</th><th>Contact</th><th>Tier</th><th>Use case</th><th>Received</th></tr></thead>
  <tbody>{inquiry_rows}</tbody>
 </table>
+
+<h2>
+ Press pitch drafts <span style="background:linear-gradient(135deg,#f59e0b,#ef4444);color:#fff;padding:1px 8px;border-radius:999px;font-size:.65rem;margin-left:6px;letter-spacing:.06em">JOURNALIST OUTREACH</span>
+ <span class="section-count">{len(data.get('press_pitches', []))} pending</span>
+</h2>
+{press_pitch_cards or '<div class="empty-state">No press pitch drafts pending. The Thursday 14:00 UTC cron scans for newsworthy story angles (DCPI shifts, M&amp;A, AI citation milestones, intl expansions) and drafts pitches against the seeded press_contacts list. Add specific editor emails via POST /api/v1/admin/press-outreach/contacts/upsert before approving — drafts without an email won\\'t send.</div>'}
 
 <h2>
  Recently published press

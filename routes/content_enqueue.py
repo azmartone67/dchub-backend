@@ -148,21 +148,65 @@ def _pick_recent_news() -> dict | None:
 # ── Per-platform content shapers ────────────────────────────────────
 
 def _shape_linkedin(mover: dict, arc: dict | None) -> str:
-    """~280-char punchy LinkedIn post with arc thread."""
+    """r47.38 (2026-05-26): narrative LinkedIn post, not a status-line spam.
+
+    Previous version emitted '📍 Chantilly · PJM · DCPI verdict: AVOID' which
+    is unreadable to humans + unactionable for journalists / prospects. User
+    flagged it as 'spam and ugly texts on linkedin' during the dchub-media
+    inspection. New shape:
+      • Leads with the *reason this market shifted* (1 sentence of context)
+      • One sentence of investor-relevant implication
+      • One data point + live page link
+      • Stripped #spam hashtags down to 2-3 relevant ones
+    """
+    verdict = (mover.get('verdict') or '').upper()
+    name    = mover.get('name', '?')
+    iso     = mover.get('iso', '?')
+    excess  = mover.get('excess') or 0
+    constr  = mover.get('constraint') or 0
+    slug    = mover.get('slug', '')
+
+    # Verdict-specific opener — narrative framing, not data dump
+    if verdict == 'BUILD':
+        opener = (f"{name} flipped to BUILD on the DC Hub Power Index "
+                  f"this week.")
+        implication = (f"For developers screening {iso} for AI training capacity, "
+                       f"this is the second-tier signal you wait for: grid "
+                       f"headroom is materializing faster than the queue depth "
+                       f"can absorb.")
+    elif verdict == 'AVOID':
+        opener = (f"{name} ({iso}) just shifted to AVOID on the DC Hub "
+                  f"Power Index.")
+        implication = (f"That's typically a 12-18 month signal: the interconnect "
+                       f"queue + transmission constraints have tipped past the "
+                       f"point where new MW can land without renegotiating "
+                       f"timeline assumptions. Site-selectors should re-screen.")
+    elif verdict == 'CAUTION':
+        opener = (f"{name} moved into CAUTION territory on the DC Hub "
+                  f"Power Index.")
+        implication = (f"Watch the next two DCPI cycles. CAUTION markets are "
+                       f"where the highest IRR plays sit — early in the "
+                       f"constraint curve, before AVOID prices it out — but "
+                       f"the window typically closes in 1-2 quarters.")
+    else:
+        opener = (f"{name} ({iso}) updated on the DC Hub Power Index.")
+        implication = (f"Excess Power {excess:.0f}/100 against Constraint {constr:.0f}/100 "
+                       f"frames where the market sits in the AI-buildout cycle.")
+
     arc_line = ""
     if arc:
-        hook = (arc.get("channel_hooks") or {}).get("linkedin") or ""
-        # extract the arc title for a one-line callout
         arc_title = (arc.get("arc") or "")[:80]
         if arc_title:
-            arc_line = f"\n\nPart of our current narrative: {arc_title}"
+            arc_line = f"\n\nContext: {arc_title}"
 
     return (
-        f"📍 {mover['name']} · {mover['iso']} · DCPI verdict: {mover['verdict']}\n\n"
-        f"Excess Power: {mover['excess']:.1f}/100  ·  Constraint: {mover['constraint']:.1f}/100\n\n"
-        f"Live page: https://dchub.cloud/dcpi/{mover['slug']}"
+        f"{opener}\n\n"
+        f"{implication}\n\n"
+        f"DCPI inputs: Excess Power {excess:.0f}/100 · Grid Constraint "
+        f"{constr:.0f}/100. Daily-refreshed score, methodology + sources "
+        f"on the live page: https://dchub.cloud/dcpi/{slug}"
         f"{arc_line}\n\n"
-        f"#datacenter #dcpi #{mover['iso'].lower().replace('-','')} #powergrid"
+        f"#datacenter #DCPI #{iso.replace('-','').lower()}"
     )
 
 
