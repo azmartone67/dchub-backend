@@ -2924,14 +2924,40 @@ def get_facilities():
 
 @app.route('/api/v1/map', methods=['GET'])
 def api_v1_map():
-    """Public map endpoint - returns basic fields for all facilities for map display."""
+    """Public map endpoint - returns basic fields for all facilities for map display.
+
+    r-map-coverage (2026-05-27): raised the hard cap 10K → 30K so the map
+    can serve all ~19,542 facilities-with-lat/lon in a single fetch (was
+    silently truncating at 10K — when the implicit ORDER BY power_mw DESC
+    pulled the top-10K, smaller markets like Reno were dropped entirely).
+    Also added optional `bbox=W,S,E,N` so the frontend can do efficient
+    viewport-scoped fetches at high zoom. Pairs with map.html limit raise.
+    """
     conn = None
     try:
         conn = get_read_db()
         c = conn.cursor()
         limit = request.args.get('limit', 5000, type=int)
         offset = request.args.get('offset', 0, type=int)
-        limit = min(limit, 10000)
+        # r-map-coverage: raised hard cap 10000 → 30000 (covers full 19,542
+        # facility-with-coords inventory + headroom for new ingest).
+        limit = min(limit, 30000)
+
+        # r-map-coverage: optional viewport filter. bbox = "minLon,minLat,maxLon,maxLat".
+        # When present, restricts to facilities inside that box → cheap and
+        # correct for zoomed-in views. When absent, returns the global set
+        # (capped at `limit`).
+        bbox_param = request.args.get('bbox', '').strip()
+        bbox_sql = ""
+        bbox_args = []
+        if bbox_param:
+            try:
+                w, s, e, n = [float(v) for v in bbox_param.split(',')]
+                if -180 <= w <= 180 and -180 <= e <= 180 and -90 <= s <= 90 and -90 <= n <= 90 and w < e and s < n:
+                    bbox_sql = " AND df.longitude BETWEEN %s AND %s AND df.latitude BETWEEN %s AND %s"
+                    bbox_args = [w, e, s, n]
+            except (ValueError, TypeError):
+                pass  # malformed bbox — silently fall back to global
 
         # Phase FF+8 (2026-05-19): expanded payload for FiberLocator-style
         # popups. Adds facility_type, sqft, market, and a correlated
@@ -2940,7 +2966,7 @@ def api_v1_map():
         # with 200 carriers doesn't blow up the response — the popup only
         # needs a glanceable list anyway. If perf becomes an issue, add
         # an index on carrier_facility_presence(dchub_facility_id).
-        c.execute("""
+        c.execute(f"""
             SELECT df.id, df.name, df.provider, df.city, df.state, df.country,
                    df.market AS region, df.market, df.latitude, df.longitude,
                    COALESCE(df.power_mw, f.power_mw) AS power_mw,
@@ -2957,10 +2983,10 @@ def api_v1_map():
                    ) AS fiber_providers
             FROM discovered_facilities df
             LEFT JOIN facilities f ON f.id = df.merged_facility_id
-            WHERE df.latitude IS NOT NULL AND df.longitude IS NOT NULL
+            WHERE df.latitude IS NOT NULL AND df.longitude IS NOT NULL{bbox_sql}
             ORDER BY COALESCE(df.power_mw, f.power_mw) DESC NULLS LAST
             LIMIT %s OFFSET %s
-        """, (limit, offset))
+        """, tuple(bbox_args + [limit, offset]))
 
         rows = c.fetchall()
         cols = [desc[0] for desc in c.description]
