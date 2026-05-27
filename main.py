@@ -23708,6 +23708,24 @@ try:
 except Exception as _l5_e:
     print(f"[main] brain_layer5_bp register failed: {_l5_e}", flush=True)
 
+# r43-D (2026-05-27): wire news_slug_route — operator caught LinkedIn
+# Post Inspector showing canonical=/press for /news/<slug> press
+# releases because news_slug_route.register() was defined but never
+# called. Backend was 404ing those URLs → CF Pages SPA fallback served
+# the wrong template. Now Flask renders the proper press-release HTML
+# with correct canonical, og:image (per-slug PNG), and JSON-LD.
+try:
+    import news_slug_route as _nsr
+    def _get_pg(): return _pg_pool_obj.getconn() if _pg_pool_obj else None
+    def _ret_pg(conn):
+        try:
+            if _pg_pool_obj and conn: _pg_pool_obj.putconn(conn)
+        except Exception: pass
+    _nsr.register(app, _get_pg, _ret_pg)
+    print("[main] news_slug_route registered: /news/<slug> press-release HTML", flush=True)
+except Exception as _nsr_e:
+    print(f"[main] news_slug_route register failed: {_nsr_e}", flush=True)
+
 # Phase ZZZZZ-round47.14 (2026-05-25): weekly partnership LinkedIn post.
 # Cycles through 7 anchors (partners/dchawk/dcbyte/dcd/dcf/cbre/jll)
 # at one per ISO week. Fires from cron_heartbeat at Wed 14:00 UTC.
