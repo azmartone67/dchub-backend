@@ -317,6 +317,7 @@ def backfill_empty_city():
                       FROM discovered_facilities
                      WHERE (city IS NOT NULL AND city <> '')
                        AND latitude IS NOT NULL AND longitude IS NOT NULL
+                       AND NOT (latitude = 0 AND longitude = 0)
                        AND ABS(latitude - e.latitude) < 0.25
                        AND ABS(longitude - e.longitude) < 0.25
                      ORDER BY POWER(latitude - e.latitude, 2)
@@ -325,6 +326,7 @@ def backfill_empty_city():
                   ) n
                  WHERE (e.city IS NULL OR e.city = '')
                    AND e.latitude IS NOT NULL AND e.longitude IS NOT NULL
+                   AND NOT (e.latitude = 0 AND e.longitude = 0)
                  LIMIT 3
             """)
             preview_rows = []
