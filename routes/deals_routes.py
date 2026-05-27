@@ -67,23 +67,32 @@ def init_deals_routes(require_plan, protect_data, get_db, pg_connection, get_ai_
 
 
 def _lazy_protect_data(f):
-    """Wrapper that defers to injected protect_data at request time."""
+    """r43-F (2026-05-27): FAIL-CLOSED. See sibling /deals_routes.py."""
     @wraps(f)
     def wrapper(*args, **kwargs):
         if _protect_data is not None:
             return _protect_data(f)(*args, **kwargs)
-        return f(*args, **kwargs)
+        from flask import jsonify as _j, current_app as _ca
+        try: _ca.logger.error(f"[GATE LEAK] _protect_data not wired for {f.__name__}")
+        except Exception: pass
+        return _j(ok=False, error="gate_not_wired",
+                  hint="Server data-protection gate misconfigured."), 503
     return wrapper
 
 
 def _lazy_require_plan(plan_name):
-    """Wrapper that defers to injected require_plan at request time."""
+    """r43-F (2026-05-27): FAIL-CLOSED. See sibling /deals_routes.py."""
     def decorator(f):
         @wraps(f)
         def wrapper(*args, **kwargs):
             if _require_plan is not None:
                 return _require_plan(plan_name)(f)(*args, **kwargs)
-            return f(*args, **kwargs)
+            from flask import jsonify as _j, current_app as _ca
+            try: _ca.logger.error(
+                f"[GATE LEAK] _require_plan({plan_name}) not wired for {f.__name__}")
+            except Exception: pass
+            return _j(ok=False, error="gate_not_wired", required_plan=plan_name,
+                      hint=f"This endpoint requires the {plan_name} tier."), 503
         return wrapper
     return decorator
 

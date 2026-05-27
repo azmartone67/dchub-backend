@@ -47,12 +47,22 @@ def init_discovery_routes(require_plan, protect_data, get_db_func, is_railway):
     _IS_RAILWAY = is_railway
 
 def _lazy_require_plan(min_plan='pro'):
+    """r43-F (2026-05-27): FAIL-CLOSED. Same audit-driven fix as
+    deals_routes._lazy_require_plan. Previously a bypass when
+    _require_plan was None (injection race / partial init) which left
+    paid endpoints wide open."""
     def decorator(f):
         @wraps(f)
         def wrapper(*args, **kwargs):
             if _require_plan:
                 return _require_plan(min_plan)(f)(*args, **kwargs)
-            return f(*args, **kwargs)
+            from flask import jsonify as _j, current_app as _ca
+            try: _ca.logger.error(
+                f"[GATE LEAK] _require_plan({min_plan}) not wired for {f.__name__}")
+            except Exception: pass
+            return _j(ok=False, error="gate_not_wired", required_plan=min_plan,
+                      hint=f"This endpoint requires the {min_plan} tier. "
+                            f"Server gate misconfigured."), 503
         return wrapper
     return decorator
 
