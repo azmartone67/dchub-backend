@@ -545,6 +545,90 @@ def publish_linkedin():
         logger.warning(f"LinkedIn publish failed for post {post_id}: {result}")
         return jsonify({'success': False, 'error': result})
 
+# r42v (2026-05-26): content classification for per-class daily dedup.
+# Without this, the publisher could fire 3 "DCPI verdict" posts in a row
+# (operator caught Chantilly/Edison/Buffalo AVOID posts at 3-4m apart).
+# Classification is lightweight pattern-match on the first ~200 chars.
+def _classify_post_for_dedup(text: str) -> str:
+    """Return a coarse class tag so we can rate-limit per-class daily.
+    Goal: max 1 'dcpi_verdict' per day, max 1 'partnership_invite' per
+    day, etc. Returns 'other' for posts that don't match any known class."""
+    if not text:
+        return "other"
+    t = text[:300].lower()
+    # 1. DCPI verdict pin posts (📍 X · ISO · DCPI verdict: AVOID...)
+    if "dcpi verdict:" in t or ("📍" in text[:30] and "dcpi" in t):
+        return "dcpi_verdict"
+    # 2. Partnership-track posts (Switzerland model, open invitation)
+    if "switzerland model" in t or "open invitation" in t or "partnerships@dchub.cloud" in t:
+        return "partnership_invite"
+    # 3. Daily intelligence digest
+    if "daily intelligence" in t or "daily digest" in t or "🗞" in text[:30]:
+        return "daily_digest"
+    # 4. MCP / AI-agent integration pitch
+    if "mcp server" in t or "mcp api" in t or "ai agent" in t or "score_facility" in t:
+        return "mcp_pitch"
+    # 5. Per-tool / per-feature press
+    if "tony bishop" in t:
+        return "tony_bishop"
+    # 6. Capacity/coverage milestones
+    if "added" in t and "markets" in t:
+        return "coverage_milestone"
+    return "other"
+
+
+# r42v admin: bulk-reject queued posts matching a content pattern.
+# Used to clean up stale auto-generated content (Tony Bishop reposts,
+# targeted partner-attack posts, etc.) without dropping the whole queue.
+@content_bp.route('/api/admin/publish/purge-queue', methods=['POST'])
+def purge_queue():
+    if not _check_admin(request):
+        return jsonify({'error': 'Unauthorized'}), 401
+    data = request.get_json(force=True) or {}
+    pattern = (data.get('pattern') or '').strip()
+    platform = (data.get('platform') or '').strip().lower() or None
+    if not pattern:
+        return jsonify({'success': False,
+                        'error': 'pattern required (text substring, case-insensitive)'}), 400
+    if len(pattern) < 3:
+        return jsonify({'success': False,
+                        'error': 'pattern too short (min 3 chars)'}), 400
+    conn = _get_db()
+    cur = conn.cursor()
+    try:
+        if platform:
+            cur.execute("""UPDATE social_media_posts
+                              SET status = 'rejected', updated_at = NOW()
+                            WHERE status IN ('approved', 'draft')
+                              AND platform = %s
+                              AND content ILIKE %s
+                            RETURNING id""",
+                        (platform, f'%{pattern}%'))
+        else:
+            cur.execute("""UPDATE social_media_posts
+                              SET status = 'rejected', updated_at = NOW()
+                            WHERE status IN ('approved', 'draft')
+                              AND content ILIKE %s
+                            RETURNING id""",
+                        (f'%{pattern}%',))
+        rejected_ids = [r['id'] if hasattr(r, 'get') else r[0] for r in (cur.fetchall() or [])]
+        conn.commit()
+        return jsonify({
+            'success': True,
+            'pattern': pattern,
+            'platform': platform or 'all',
+            'rejected_count': len(rejected_ids),
+            'rejected_ids': rejected_ids[:50],  # cap for response size
+        }), 200
+    except Exception as e:
+        try: conn.rollback()
+        except Exception: pass
+        return jsonify({'success': False, 'error': str(e)[:200]}), 500
+    finally:
+        try: conn.close()
+        except Exception: pass
+
+
 _auto_publisher_running = False
 
 def start_auto_publisher():
@@ -603,16 +687,55 @@ def start_auto_publisher():
                 cur.execute("SELECT COUNT(*) AS n FROM social_media_posts WHERE status = 'approved'")
                 _row = cur.fetchone() or {}
                 _queued = _row.get('n', 0) if hasattr(_row, 'get') else (_row[0] if _row else 0)
-                _drain_budget = (DAILY_CAP - published_today) if _queued > 10 else 1
+                # r42v (2026-05-26): cap drain at 1 per loop iteration.
+                # Pre-fix the publisher drained up to 3 posts per fire when
+                # the queue exceeded 10 — visible to operator as three
+                # back-to-back AVOID posts (Chantilly/Edison/Buffalo) at
+                # 3m/4m/4m timestamps. Looked like a spam bot. Now: one
+                # post per 6h cron fire, max 3/day at most (the natural
+                # 6h * 4 = 24h drain). Better cadence, better signal.
+                _drain_budget = 1
                 _attempts = 0
+                # Track which "content_class" patterns we've published TODAY
+                # so we can avoid double-firing the same post type. Pattern
+                # detection is lightweight: look at the first line of the
+                # body. Each pattern can publish at most 1/24h.
+                _seen_classes_today = set()
+                try:
+                    cur.execute("""SELECT content FROM social_media_posts
+                                    WHERE status = 'published'
+                                      AND publish_platform = 'linkedin'
+                                      AND published_at LIKE %s""", (today + '%',))
+                    for (_pub_text,) in cur.fetchall() if False else []:
+                        pass
+                    # cur.fetchall() returns RealDictRow rows; reread properly
+                    cur.execute("""SELECT content FROM social_media_posts
+                                    WHERE status = 'published'
+                                      AND publish_platform = 'linkedin'
+                                      AND published_at LIKE %s""", (today + '%',))
+                    for _row in cur.fetchall() or []:
+                        _txt = _row.get('content') if hasattr(_row, 'get') else (_row[0] if _row else '')
+                        _seen_classes_today.add(_classify_post_for_dedup(_txt or ''))
+                except Exception:
+                    pass
                 while _attempts < _drain_budget:
-                    cur.execute("SELECT id, content FROM social_media_posts WHERE status = 'approved' AND platform = 'linkedin' ORDER BY created_at ASC LIMIT 1")
-                    row = cur.fetchone()
+                    # Find next approved post that's not a duplicate class
+                    cur.execute("SELECT id, content FROM social_media_posts WHERE status = 'approved' AND platform = 'linkedin' ORDER BY created_at ASC LIMIT 20")
+                    candidates = cur.fetchall() or []
+                    if not candidates:
+                        cur.execute("SELECT id, content FROM social_media_posts WHERE status = 'approved' ORDER BY created_at ASC LIMIT 20")
+                        candidates = cur.fetchall() or []
+
+                    row = None
+                    for _cand in candidates:
+                        _ctext = _cand.get('content') if hasattr(_cand, 'get') else (_cand[1] if _cand else '')
+                        _cls = _classify_post_for_dedup(_ctext or '')
+                        if _cls not in _seen_classes_today:
+                            row = _cand
+                            _seen_classes_today.add(_cls)
+                            break
                     if not row:
-                        cur.execute("SELECT id, content FROM social_media_posts WHERE status = 'approved' ORDER BY created_at ASC LIMIT 1")
-                        row = cur.fetchone()
-                    if not row:
-                        logger.debug("Auto-publisher: No approved posts to publish")
+                        logger.debug("Auto-publisher: No approved posts to publish (or all classes already fired today)")
                         break
                     post_id = row['id']
                     content_text = row['content']

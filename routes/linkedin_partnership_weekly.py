@@ -53,17 +53,17 @@ _TRACKS = [
     {
         "slug": "partners",
         "anchor": None,
-        "headline": "DC Hub: the Switzerland model — open invitations published",
+        "headline": "DC Hub is open to partnerships — Switzerland model, all comers welcome",
         "url": "https://dchub.cloud/partners",
-        "body": """DC Hub is publishing an open invitation today to brokers, publications, facility databases, and analyst firms across the data-center industry. We're not announcing any signed deal — we're publicly extending an offer, under our Switzerland model: neutral, CC-BY-4.0, no channel conflict.
+        "body": """DC Hub is open to collaboration with every facility database, broker, publication, and analyst firm in the data-center industry. We're not announcing any signed deal — we're publicly extending an open invitation to anyone whose work intersects with ours.
 
-If you're DCHawk, DCByte, CBRE, JLL, Data Center Dynamics, Data Center Frontier, Gartner, IDC, Synergy Research, 451 Research, Omdia — or anyone else working in this space — there's a specific track ready for you at dchub.cloud/partners.
+Our model is simple: Switzerland — neutral, CC-BY-4.0, no channel conflict. We don't broker; we don't replace anyone's offering. We're the live data layer underneath whatever you're already building.
 
-What we bring: live data layer beneath the static reports the rest of the industry publishes quarterly. 21,405 tracked facilities globally, 286 markets scored daily by DCPI, $324B+ in tracked M&A. Already cited by ChatGPT, Claude, Gemini, Perplexity, Cursor, and 90+ other AI platforms.
+What we bring: 21,405 tracked facilities globally, 286 markets scored daily by DCPI, $324B+ in tracked M&A, real-time grid intelligence across 10 ISOs. Already cited by ChatGPT, Claude, Gemini, Perplexity, Cursor, and 90+ other AI platforms.
 
-What we'd love in return: cross-licensing, editorial collaboration, co-branded research drops, or a paid MCP feed your brokers/analysts can query. Each track has one specific opening ask — no decks, no NDAs.
+What we'd love in return: cross-licensing, editorial collaboration, co-branded research drops, or a paid MCP feed your team can query. The specific shape is up to you.
 
-Read the six open invitations and tell us which one resonates: dchub.cloud/partners""",
+If you're at DCHawk, DCByte, DCD, DCF, CBRE, JLL, 451 Research, Synergy, Omdia, Gartner, IDC, or anywhere else in this space — let's talk: partnerships@dchub.cloud · dchub.cloud/partners""",
     },
     {
         "slug": "dchawk",
@@ -183,8 +183,17 @@ def _current_iso_week():
 
 
 def _pick_track():
-    """Rotate through tracks by ISO week so each anchor fires once per
-    7-week cycle. Index = isoweek % len(_TRACKS)."""
+    """r42v (2026-05-26): operator feedback was that the partner-specific
+    tracks (dchawk/cbre/dcd/jll/dcf/dcbyte) came across as confrontational
+    when auto-posted weekly. The generic 'partners' track conveys the
+    same Switzerland-model invitation without singling anyone out. Lock
+    the rotation to the generic track only. The partner-specific tracks
+    remain in _TRACKS for reference + direct link use (partnership_press
+    _template.py uses them by slug) but are excluded from auto-rotation."""
+    for t in _TRACKS:
+        if t.get("slug") == "partners":
+            return t
+    # Fallback to old behavior if generic track is somehow missing
     _, week = _current_iso_week()
     return _TRACKS[week % len(_TRACKS)]
 
