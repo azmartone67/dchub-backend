@@ -87,7 +87,10 @@
         { label: 'Developers',         href: '/developers',           desc: 'SDKs, guides & integration docs' },
         { label: 'AI Integrations',    href: '/ai-integrations',      desc: 'MCP status · platform connections' },
         { label: 'AI Hub',             href: '/ai',                   desc: 'Claude · ChatGPT · Gemini landing' },
-        { label: 'Visitor Map',        href: '/visitor-map',          desc: 'Where AI agents call from · live heatmap', badge: 'NEW' },
+        // r42ac (2026-05-27): /visitor-map 404s in production —
+        // visitor-map.html wasn't deployed to CF Pages (see
+        // STEP_BY_STEP.md item 4). Removed from nav until the static
+        // file ships. The /api/v1/visitor-map JSON endpoint still works.
         { label: 'AI Wars',            href: '/ai-wars',              desc: 'Live AI platform benchmarks',       badge: 'LIVE' },
         { label: 'Ecosystem',          href: '/ecosystem',            desc: '76 vendors & partners' },
         { label: 'Assets Explorer',    href: '/assets',               desc: '20,000+ searchable facilities' },
@@ -102,7 +105,11 @@
         { label: 'Press Releases',    href: '/press',           desc: 'Media kit & company news',     badge: 'NEW' },
         { label: 'GDCI',              href: '/gdci',            desc: 'Global Data Center Index',     badge: 'NEW' },
         { label: 'AI Validation',     href: '/testimonials',    desc: 'What AI says about DC Hub' },
-        { label: 'vs Competitors',    href: '/vs',              desc: 'Static research vs live MCP',    badge: 'NEW' },
+        // r42ac (2026-05-27): /vs (bare) renders as /vs/cbre by default
+        // but operator wants the partner page that names everyone equally,
+        // not a competitor-attack URL. Point nav at /partners (the new
+        // generic Switzerland-model invitation page).
+        { label: 'Partners',          href: '/partners',        desc: 'Switzerland model — open invitations', badge: 'NEW' },
         { label: 'Live Pulse',        href: '/intelligence',    desc: 'Platform health · auto-refresh 60s', badge: 'NEW' },
         { label: 'Announcements',     href: '/announcements',   desc: 'Product updates & releases' },
         { label: 'Architecture',      href: '/architecture',    desc: 'Platform design & roadmap' },
@@ -339,7 +346,7 @@
     html += '<a href="/press" class="dchub-drawer-item"><span>Press Releases</span><span class="dchub-nav-badge new-badge">NEW</span></a>';
     html += '<a href="/gdci" class="dchub-drawer-item"><span>GDCI</span><span class="dchub-nav-badge new-badge">NEW</span></a>';
     html += '<a href="/testimonials" class="dchub-drawer-item">AI Validation</a>';
-    html += '<a href="/vs" class="dchub-drawer-item"><span>vs Competitors</span><span class="dchub-nav-badge new-badge">NEW</span></a>';
+    html += '<a href="/partners" class="dchub-drawer-item"><span>Partners</span><span class="dchub-nav-badge new-badge">NEW</span></a>';
     html += '<a href="/intelligence" class="dchub-drawer-item"><span>Live Pulse</span><span class="dchub-nav-badge new-badge">NEW</span></a>';
     html += '<a href="/announcements" class="dchub-drawer-item">Announcements</a>';
     html += '<a href="/architecture" class="dchub-drawer-item">Architecture</a>';

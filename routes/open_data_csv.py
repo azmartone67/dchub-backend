@@ -203,7 +203,27 @@ def manifest():
 
 @open_data_csv_bp.route("/api/v1/open-data/<slug>.csv", methods=["GET"])
 def serve_csv(slug):
-    """Stream a single dataset as CSV with attribution header."""
+    """Stream a single dataset as CSV with attribution header.
+
+    r42ab (2026-05-27): bulk downloads now require a free dev key. The
+    citation/prose use-case (AI agents, journalist quotes, per-market
+    drill) stays free; only the BULK CSV grab requires email signup.
+    Rationale: 25 free dev keys claimed, 1 paid conversion — gating
+    the bulk grab is the lowest-friction nudge that still leaves the
+    CC-BY-4.0 citation moat intact."""
+    from flask import request as _req
+    api_key = (_req.headers.get('X-API-Key') or _req.args.get('api_key') or '').strip()
+    if not api_key:
+        return jsonify(
+            ok=False,
+            error="free_key_required",
+            message=("Bulk CSV downloads require a free DC Hub dev key. "
+                     "Per-market data, narratives, and citation use stay free."),
+            claim_free_key="https://dchub.cloud/signup",
+            attribution_required="DC Hub · CC-BY-4.0 · https://dchub.cloud",
+            alternative="Cite specific markets free at https://dchub.cloud/dcpi/<slug>",
+        ), 401, {"WWW-Authenticate": 'X-API-Key realm="DC Hub open data"'}
+
     meta = _DATASETS.get(slug)
     if not meta:
         return jsonify(

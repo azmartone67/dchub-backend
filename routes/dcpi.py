@@ -2551,6 +2551,16 @@ footer a:hover { color: var(--acc-light); }
 
   <div class="section-h"><span class="pip"></span>📊 Index View</div>
 
+  {% if gated_to_anon %}
+  <div style="background:linear-gradient(135deg,rgba(99,102,241,.10),rgba(168,85,247,.06));border:1px solid rgba(99,102,241,.35);border-radius:10px;padding:20px 24px;margin:0 0 24px;display:flex;justify-content:space-between;align-items:center;gap:20px;flex-wrap:wrap">
+    <div style="flex:1;min-width:280px">
+      <div style="font-family:'JetBrains Mono',monospace;font-size:11px;text-transform:uppercase;letter-spacing:.12em;color:#a855f7;margin-bottom:6px">Showing {{ count }} of {{ total_rows }} markets</div>
+      <div style="font-size:15px;line-height:1.5;color:#e5e7eb">You're viewing the <strong>top 5 BUILD + top 20 AVOID/CAUTION</strong>. Claim a free DC Hub dev key (60 sec, just your email) to unlock all {{ total_rows }} scored markets + ISO drill + daily refresh.</div>
+    </div>
+    <a href="https://dchub.cloud/signup?source=dcpi_anon_cap" style="background:#6366f1;color:#fff;padding:11px 22px;border-radius:6px;font-weight:600;text-decoration:none;font-size:14px;white-space:nowrap">Claim free key →</a>
+  </div>
+  {% endif %}
+
   <!-- phase 271: verdict tabs — Actionable is default so credibility-grade
        verdicts get visual primacy; Monitoring keeps LOW_SIGNAL covered but
        demoted; All preserves the full-coverage claim. Counts are accurate
@@ -3304,12 +3314,33 @@ def public_dashboard():
     _ACTIONABLE = {"BUILD", "CAUTION", "AVOID"}
     count_actionable = sum(1 for r in rows if (r.get("verdict") or "") in _ACTIONABLE)
     count_low_signal = sum(1 for r in rows if (r.get("verdict") or "") == "LOW_SIGNAL")
+
+    # r42ab (2026-05-27): anon-tier cap on /dcpi. Operator observed 25
+    # free dev keys claimed with 1 paid conversion — too much value
+    # was reaching anonymous users to motivate signup. Now anon sees
+    # top 5 BUILD + top 20 AVOID/CAUTION = 25 cards. Free-key callers
+    # (X-API-Key in querystring or header) see the full set. Per-market
+    # detail pages stay free (AI-citation moat preserved).
+    from flask import request as _req
+    _has_key = bool((_req.headers.get('X-API-Key') or _req.args.get('api_key') or '').strip())
+    _total_rows = len(rows)
+    if not _has_key and _total_rows > 25:
+        _build = [r for r in rows if (r.get("verdict") or "") == "BUILD"][:5]
+        _avoid_caution = [r for r in rows
+                           if (r.get("verdict") or "") in ("AVOID", "CAUTION")][:20]
+        rows = _build + _avoid_caution
+        _gated_to_anon = True
+    else:
+        _gated_to_anon = False
+
     html = render_template_string(
         DCPI_INDEX_TEMPLATE,
         scores=rows,
         count=len(rows),
         count_actionable=count_actionable,
         count_low_signal=count_low_signal,
+        gated_to_anon=_gated_to_anon,
+        total_rows=_total_rows,
     )
     # phase 284: ship a Content-Security-Policy header on /dcpi so the
     # dchub-frontend qa-csp-parse preflight CI doesn't fail on this page.
