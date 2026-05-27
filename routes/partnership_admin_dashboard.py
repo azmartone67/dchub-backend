@@ -431,7 +431,7 @@ def review():
  Press pitch drafts <span style="background:linear-gradient(135deg,#f59e0b,#ef4444);color:#fff;padding:1px 8px;border-radius:999px;font-size:.65rem;margin-left:6px;letter-spacing:.06em">JOURNALIST OUTREACH</span>
  <span class="section-count">{len(data.get('press_pitches', []))} pending</span>
 </h2>
-{press_pitch_cards or '<div class="empty-state">No press pitch drafts pending. The Thursday 14:00 UTC cron scans for newsworthy story angles (DCPI shifts, M&amp;A, AI citation milestones, intl expansions) and drafts pitches against the seeded press_contacts list. Add specific editor emails via POST /api/v1/admin/press-outreach/contacts/upsert before approving — drafts without an email won\\'t send.</div>'}
+{press_pitch_cards or '<div class="empty-state">No press pitch drafts pending. The Thursday 14:00 UTC cron scans for newsworthy story angles (DCPI shifts, M&amp;A, AI citation milestones, intl expansions) and drafts pitches against the seeded press_contacts list. Add specific editor emails via POST /api/v1/admin/press-outreach/contacts/upsert before approving — drafts without an email cannot send.</div>'}
 
 <h2>
  Recently published press
