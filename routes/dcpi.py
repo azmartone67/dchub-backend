@@ -1061,19 +1061,21 @@ def api_scores():
         return resp
 
     # Phase WW (2026-05-17) — soft-paywall the bulk dump.
-    # Live probe showed anon callers were getting all 285 markets (112KB)
-    # for free — the platform's flagship dataset wide open. MCP equivalent
-    # (get_dcpi_market / get_dcpi_scores) is gated at IDENTIFIED. Web was
-    # leaking. Now: anon/free gets the top 10 markets + clear upgrade CTA;
-    # IDENTIFIED+ gets the full set. Single-market lookup
-    # (/api/v1/dcpi/scores/<slug>) stays FREE — that's the discovery hook.
+    # r43-E (2026-05-27): operator audit caught the `not limit` bypass —
+    # anon callers were adding ?limit=500 and walking away with all 232
+    # markets (102KB) for free. That's why Pro Map sign-ups were zero
+    # despite high demand. Now: anon cap is enforced REGARDLESS of
+    # ?limit parameter. Single-market lookup (/api/v1/dcpi/scores/<slug>)
+    # stays FREE — that's the discovery hook for AI agents + journalists.
     _PREVIEW_CAP = 10
     _gated = False
     _total_rows = len(rows)
     try:
         from util.tier_gate import resolve_tier, Tier as _T
         _tier, _ = resolve_tier()
-        if _tier < _T.IDENTIFIED and _total_rows > _PREVIEW_CAP and not limit:
+        # Cap the anon limit hard. Identified+ can still pass ?limit
+        # for pagination; anon is locked to 10 regardless.
+        if _tier < _T.IDENTIFIED and _total_rows > _PREVIEW_CAP:
             rows = rows[:_PREVIEW_CAP]
             _gated = True
     except Exception:
