@@ -109,6 +109,244 @@ def _classify(ua: str, referrer: str) -> str:
     return ""
 
 
+# r47.35 (2026-05-26): the first backfill attempt found 0 reclassifiable
+# rows because `mcp_call_log.user_agent` is always 'node' (the dchub-mcp-
+# server's outbound UA) and `referrer` is empty for server-to-server
+# JSON-RPC. The historical client identity is genuinely lost from those
+# columns. But we still have ONE recoverable signal: `api_key`. Each MCP
+# caller registered with a developer email + an api_key name, and those
+# fields routinely encode the client ("claude-prod", "cursor-test",
+# "azmartone+chatgpt@…"). This second backfill mines those tables to
+# build a key → platform lookup and applies it across mcp_call_log.
+
+def _classify_key_attribution(email: str, name: str, metadata) -> str:
+    """Same rule set as _classify(), but applied to key-attribution
+    fields instead of UA/referrer. Returns a platform tag or ''."""
+    blobs = []
+    for v in (email, name):
+        if v:
+            blobs.append(v.lower())
+    # metadata can be jsonb dict or a JSON-encoded string
+    if metadata:
+        try:
+            if isinstance(metadata, dict):
+                for k, v in metadata.items():
+                    if isinstance(v, str):
+                        blobs.append(f"{k.lower()}:{v.lower()}")
+            elif isinstance(metadata, str):
+                blobs.append(metadata.lower())
+        except Exception:
+            pass
+    if not blobs:
+        return ""
+    blob = " ".join(blobs)
+    for pat, tag in _RULES:
+        if pat in blob:
+            return tag
+    return ""
+
+
+def _build_key_to_platform_lookup(cur) -> dict:
+    """Build {api_key: platform_tag} from mcp_dev_keys + api_keys.
+
+    mcp_dev_keys.email / .metadata + api_keys.name are the strongest
+    signals. Returns only keys we could classify — anything else stays
+    in the generic 'mcp' bucket truthfully.
+    """
+    lookup: dict = {}
+
+    # Source 1: mcp_dev_keys.email + metadata
+    try:
+        cur.execute("""
+            SELECT api_key, COALESCE(email, ''), metadata
+              FROM mcp_dev_keys
+             WHERE api_key IS NOT NULL AND api_key <> ''
+        """)
+        for api_key, email, metadata in cur.fetchall():
+            tag = _classify_key_attribution(email, "", metadata)
+            if tag:
+                lookup[api_key] = tag
+    except Exception:
+        pass
+
+    # Source 2: api_keys.name (the key's human-assigned label)
+    # Join on key_hash → mcp_call_log.api_key fails if formats differ,
+    # so we instead match by full key for keys whose `name` looks
+    # platform-identifying. Skip if no overlap.
+    try:
+        cur.execute("""
+            SELECT key_hash, key_prefix, COALESCE(name, '')
+              FROM api_keys
+             WHERE name IS NOT NULL AND name <> ''
+        """)
+        for key_hash, key_prefix, name in cur.fetchall():
+            tag = _classify_key_attribution("", name, None)
+            if not tag:
+                continue
+            # Two possible storage shapes for mcp_call_log.api_key —
+            # raw vs hashed. Cover both.
+            if key_hash and key_hash not in lookup:
+                lookup[key_hash] = tag
+            if key_prefix and key_prefix not in lookup:
+                lookup[key_prefix] = tag
+    except Exception:
+        pass
+
+    return lookup
+
+
+@mcp_platform_backfill_bp.route("/api/v1/admin/mcp/backfill-via-keys",
+                                 methods=["POST"], strict_slashes=False)
+def backfill_via_keys():
+    """JOIN-based reclassifier. Use after the UA-pattern backfill returns 0.
+
+    Admin only (X-Admin-Key or X-Internal-Key). Mines mcp_dev_keys +
+    api_keys for client-identifying attribution (email patterns, name
+    labels, metadata.client) and applies it to mcp_call_log rows where
+    platform is still generic. Returns updated counts per platform.
+
+    Idempotent. Safe to re-run."""
+    if not _is_internal_key(request):
+        return jsonify({"error": "unauthorized"}), 401
+    if not (_pg and _dsn()):
+        return jsonify({"error": "no_db"}), 503
+
+    try:
+        max_rows = int(request.args.get("max", 100000))
+    except (TypeError, ValueError):
+        max_rows = 100000
+    max_rows = max(1000, min(max_rows, 500000))
+
+    updated_by_platform: dict = {}
+    total_updated = 0
+    keys_classified = 0
+    keys_seen = 0
+
+    try:
+        with _conn() as c, c.cursor() as cur:
+            lookup = _build_key_to_platform_lookup(cur)
+            keys_classified = len(lookup)
+
+            cur.execute("""
+                SELECT COUNT(DISTINCT api_key)
+                  FROM mcp_call_log
+                 WHERE (platform IN ('mcp', '', 'unknown') OR platform IS NULL)
+                   AND api_key IS NOT NULL AND api_key <> ''
+            """)
+            keys_seen = int((cur.fetchone() or [0])[0])
+
+            if lookup:
+                # Single-pass UPDATE per platform tag — much faster than
+                # per-row updates. Bound by max_rows total via a CTE.
+                running_total = 0
+                for plat, keys_for_plat in _group_by_value(lookup).items():
+                    if running_total >= max_rows:
+                        break
+                    remaining = max_rows - running_total
+                    cur.execute("""
+                        WITH targets AS (
+                          SELECT id FROM mcp_call_log
+                           WHERE (platform IN ('mcp','','unknown')
+                                  OR platform IS NULL)
+                             AND api_key = ANY(%s)
+                           ORDER BY id DESC
+                           LIMIT %s
+                        )
+                        UPDATE mcp_call_log m
+                           SET platform = %s
+                          FROM targets t
+                         WHERE m.id = t.id
+                        RETURNING m.id
+                    """, (keys_for_plat, remaining, plat))
+                    n = len(cur.fetchall())
+                    if n:
+                        updated_by_platform[plat] = n
+                        total_updated += n
+                        running_total += n
+    except Exception as e:
+        return jsonify({"error": str(e)[:300]}), 500
+
+    return jsonify({
+        "ok":              True,
+        "keys_classified": keys_classified,
+        "distinct_keys_in_backlog": keys_seen,
+        "updated":         total_updated,
+        "by_platform":     dict(sorted(updated_by_platform.items(),
+                                        key=lambda kv: -kv[1])),
+        "hint":            ("Re-run if you raise ?max=. Keys not in the "
+                             "lookup are genuinely anonymous — the original "
+                             "developer didn't put a platform hint in their "
+                             "email or key name. Future r47.30 platform "
+                             "tagging covers those going forward."),
+    }), 200
+
+
+def _group_by_value(d: dict) -> dict:
+    """Invert {key: tag} → {tag: [key, key, ...]}."""
+    out: dict = {}
+    for k, v in d.items():
+        out.setdefault(v, []).append(k)
+    return out
+
+
+@mcp_platform_backfill_bp.route("/api/v1/admin/mcp/backfill-via-keys/preview",
+                                 methods=["GET"], strict_slashes=False)
+def preview_backfill_via_keys():
+    """Read-only preview: what the JOIN-based backfill WOULD reclassify.
+
+    Same admin auth. Counts (a) how many keys we can classify, (b) how
+    many of those keys actually appear in mcp_call_log's 'mcp'/'unknown'
+    backlog, (c) how many rows would update. No writes."""
+    if not _is_internal_key(request):
+        return jsonify({"error": "unauthorized"}), 401
+    if not (_pg and _dsn()):
+        return jsonify({"error": "no_db"}), 503
+
+    try:
+        with _conn() as c, c.cursor() as cur:
+            lookup = _build_key_to_platform_lookup(cur)
+            keys_classified = len(lookup)
+
+            cur.execute("""
+                SELECT COUNT(DISTINCT api_key)
+                  FROM mcp_call_log
+                 WHERE (platform IN ('mcp', '', 'unknown') OR platform IS NULL)
+                   AND api_key IS NOT NULL AND api_key <> ''
+            """)
+            keys_in_backlog = int((cur.fetchone() or [0])[0])
+
+            # Per-platform: how many rows would update
+            would_by_platform: dict = {}
+            for plat, keys_for_plat in _group_by_value(lookup).items():
+                cur.execute("""
+                    SELECT COUNT(*) FROM mcp_call_log
+                     WHERE (platform IN ('mcp','','unknown')
+                            OR platform IS NULL)
+                       AND api_key = ANY(%s)
+                """, (keys_for_plat,))
+                n = int((cur.fetchone() or [0])[0])
+                if n:
+                    would_by_platform[plat] = n
+    except Exception as e:
+        return jsonify({"error": str(e)[:300]}), 500
+
+    sample_keys = list(lookup.items())[:8]  # first 8 for sanity check
+    return jsonify({
+        "keys_classified":           keys_classified,
+        "distinct_keys_in_backlog":  keys_in_backlog,
+        "would_update_by_platform":  dict(sorted(would_by_platform.items(),
+                                                  key=lambda kv: -kv[1])),
+        "would_update_total":        sum(would_by_platform.values()),
+        "sample_classifications":    [{"api_key_prefix": (k or '')[:8] + '…',
+                                        "platform": v}
+                                       for k, v in sample_keys],
+        "hint":                      ("If would_update_total is 0 you have "
+                                       "no email/name hints to mine. Add "
+                                       "platform=X into mcp_dev_keys.metadata "
+                                       "for known keys, then re-run."),
+    }), 200
+
+
 @mcp_platform_backfill_bp.route("/api/v1/admin/mcp/backfill-platforms",
                                  methods=["POST"], strict_slashes=False)
 def backfill_platforms():
