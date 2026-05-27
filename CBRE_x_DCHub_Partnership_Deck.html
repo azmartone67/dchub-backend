@@ -1,0 +1,553 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<title>CBRE × DC Hub — Live Intelligence Partnership</title>
+<meta name="viewport" content="width=1920">
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link href="https://fonts.googleapis.com/css2?family=Instrument+Sans:wght@400;500;600;700;800&family=JetBrains+Mono:wght@500;600;700&display=swap" rel="stylesheet">
+<style>
+  :root {
+    --cbre-green: #003F2D;
+    --cbre-green-bright: #17E88F;
+    --cbre-cream: #CAD1D3;
+    --dch-indigo: #6366f1;
+    --dch-purple: #a855f7;
+    --dch-grad: linear-gradient(135deg, #6366f1, #a855f7);
+    --ink: #0a0e1a;
+    --ink-2: #1a2238;
+    --paper: #fafaf7;
+    --text-mute: #6b7280;
+    --border: rgba(0, 63, 45, 0.12);
+  }
+  * { box-sizing: border-box; margin: 0; padding: 0; }
+  html, body { background: #0a0e1a; font-family: 'Instrument Sans', -apple-system, BlinkMacSystemFont, system-ui, sans-serif; color: var(--ink); }
+  .deck { display: flex; flex-direction: column; gap: 40px; padding: 40px 20px; align-items: center; }
+  .slide {
+    width: 1280px; height: 720px;            /* 16:9, 720p reference */
+    background: var(--paper);
+    box-shadow: 0 24px 64px rgba(0,0,0,.5);
+    position: relative;
+    overflow: hidden;
+    padding: 56px 64px;
+    display: flex; flex-direction: column;
+    border-radius: 4px;
+  }
+  .slide.dark { background: var(--cbre-green); color: var(--paper); }
+  .slide.gradient {
+    background: linear-gradient(135deg, var(--cbre-green) 0%, #003F2D 50%, #001F18 100%);
+    color: var(--paper);
+  }
+  .slide.purple {
+    background: linear-gradient(135deg, #1a2238 0%, #6366f1 100%);
+    color: var(--paper);
+  }
+  .eyebrow { font-family: 'JetBrains Mono', monospace; font-size: 11px; letter-spacing: .18em; text-transform: uppercase; color: var(--cbre-green-bright); font-weight: 600; margin-bottom: 18px; }
+  .slide.dark .eyebrow, .slide.gradient .eyebrow, .slide.purple .eyebrow { color: var(--cbre-green-bright); }
+  h1 { font-size: 60px; font-weight: 800; letter-spacing: -0.025em; line-height: 1.05; margin: 0 0 20px; }
+  h1.huge { font-size: 76px; }
+  h2 { font-size: 38px; font-weight: 700; letter-spacing: -0.018em; line-height: 1.1; margin: 0 0 18px; }
+  h3 { font-size: 22px; font-weight: 700; margin: 0 0 10px; letter-spacing: -.005em; }
+  .sub { font-size: 18px; color: var(--text-mute); line-height: 1.5; max-width: 920px; }
+  .slide.dark .sub, .slide.gradient .sub, .slide.purple .sub { color: rgba(255,255,255,.78); }
+  .footer { position: absolute; left: 64px; right: 64px; bottom: 28px; display: flex; justify-content: space-between; align-items: center; font-size: 11px; font-family: 'JetBrains Mono', monospace; color: var(--text-mute); letter-spacing: .06em; text-transform: uppercase; }
+  .slide.dark .footer, .slide.gradient .footer, .slide.purple .footer { color: rgba(255,255,255,.45); }
+  .footer .pageno { color: var(--cbre-green); font-weight: 700; }
+  .slide.dark .footer .pageno, .slide.gradient .footer .pageno, .slide.purple .footer .pageno { color: var(--cbre-green-bright); }
+  .logo-row { display: flex; align-items: center; gap: 18px; margin-bottom: 36px; }
+  .logo-cbre { font-family: 'Instrument Sans', sans-serif; font-weight: 800; font-size: 22px; color: var(--cbre-green); letter-spacing: .04em; padding: 6px 14px; border: 2px solid var(--cbre-green); border-radius: 2px; }
+  .slide.dark .logo-cbre, .slide.gradient .logo-cbre, .slide.purple .logo-cbre { color: var(--cbre-green-bright); border-color: var(--cbre-green-bright); }
+  .logo-dchub { font-family: 'Instrument Sans', sans-serif; font-weight: 800; font-size: 22px; background: var(--dch-grad); -webkit-background-clip: text; -webkit-text-fill-color: transparent; padding: 6px 14px; border: 2px solid var(--dch-indigo); border-radius: 2px; }
+  .logo-x { font-family: 'JetBrains Mono', monospace; color: var(--text-mute); font-size: 24px; font-weight: 600; }
+  .slide.dark .logo-x, .slide.gradient .logo-x, .slide.purple .logo-x { color: rgba(255,255,255,.5); }
+
+  /* Stat grids */
+  .stats-grid { display: grid; grid-template-columns: repeat(4, 1fr); gap: 24px; margin-top: 36px; }
+  .stat { background: rgba(255,255,255,.04); border: 1px solid rgba(255,255,255,.10); border-radius: 8px; padding: 28px 24px; }
+  .slide:not(.dark):not(.gradient):not(.purple) .stat { background: white; border-color: var(--border); box-shadow: 0 1px 2px rgba(0,0,0,.04); }
+  .stat .num { font-size: 48px; font-weight: 800; letter-spacing: -.025em; color: var(--cbre-green); font-family: 'Instrument Sans', sans-serif; line-height: 1; margin-bottom: 8px; }
+  .slide.dark .stat .num, .slide.gradient .stat .num, .slide.purple .stat .num { color: var(--cbre-green-bright); }
+  .stat .label { font-size: 13px; font-weight: 600; color: var(--text-mute); text-transform: uppercase; letter-spacing: .06em; margin-bottom: 4px; }
+  .slide.dark .stat .label, .slide.gradient .stat .label, .slide.purple .stat .label { color: rgba(255,255,255,.6); }
+  .stat .note { font-size: 12px; color: var(--text-mute); line-height: 1.45; margin-top: 8px; }
+  .slide.dark .stat .note, .slide.gradient .stat .note, .slide.purple .stat .note { color: rgba(255,255,255,.55); }
+
+  /* Two-column */
+  .two-col { display: grid; grid-template-columns: 1fr 1fr; gap: 32px; margin-top: 24px; flex: 1; }
+  .col-card { background: white; border: 1px solid var(--border); border-radius: 8px; padding: 28px 28px 24px; }
+  .col-card.dark { background: rgba(255,255,255,.05); border-color: rgba(255,255,255,.12); color: var(--paper); }
+  .col-card .col-head { font-family: 'JetBrains Mono', monospace; font-size: 11px; letter-spacing: .14em; color: var(--cbre-green); text-transform: uppercase; font-weight: 600; margin-bottom: 14px; }
+  .col-card.dark .col-head { color: var(--cbre-green-bright); }
+  .col-card h3 { color: var(--cbre-green); font-size: 24px; }
+  .col-card.dark h3 { color: var(--paper); }
+  .col-card ul { list-style: none; padding: 0; margin: 14px 0 0; }
+  .col-card li { padding: 9px 0 9px 24px; position: relative; font-size: 14.5px; color: #333; line-height: 1.5; border-top: 1px solid var(--border); }
+  .col-card li:first-child { border-top: 0; }
+  .col-card.dark li { color: rgba(255,255,255,.85); border-color: rgba(255,255,255,.1); }
+  .col-card li::before { content: ""; position: absolute; left: 4px; top: 18px; width: 10px; height: 2px; background: var(--cbre-green); }
+  .col-card.dark li::before { background: var(--cbre-green-bright); }
+  .col-card li b { color: var(--cbre-green); font-weight: 600; }
+  .col-card.dark li b { color: var(--cbre-green-bright); }
+
+  /* Tables */
+  table.gap { width: 100%; border-collapse: collapse; margin-top: 28px; background: white; border-radius: 8px; overflow: hidden; box-shadow: 0 1px 3px rgba(0,0,0,.05); }
+  table.gap th { background: var(--cbre-green); color: var(--paper); padding: 14px 18px; font-size: 13px; text-transform: uppercase; letter-spacing: .05em; text-align: left; font-weight: 600; }
+  table.gap th:last-child { background: var(--ink); }
+  table.gap td { padding: 16px 18px; font-size: 14.5px; vertical-align: top; border-top: 1px solid var(--border); }
+  table.gap td:first-child { background: rgba(0,63,45,.03); color: var(--cbre-green); font-weight: 600; font-size: 13px; width: 28%; }
+  table.gap td:last-child { font-weight: 500; color: #1a2238; }
+  table.gap td b { color: var(--cbre-green); }
+
+  /* Phase cards */
+  .phase-grid { display: grid; grid-template-columns: repeat(3, 1fr); gap: 18px; margin-top: 28px; flex: 1; }
+  .phase { background: white; border: 1px solid var(--border); border-radius: 8px; padding: 24px; display: flex; flex-direction: column; position: relative; }
+  .phase.dark { background: rgba(255,255,255,.05); border-color: rgba(255,255,255,.12); color: var(--paper); }
+  .phase .phase-num { font-family: 'JetBrains Mono', monospace; font-size: 11px; letter-spacing: .14em; color: var(--cbre-green); font-weight: 700; margin-bottom: 8px; text-transform: uppercase; }
+  .phase.dark .phase-num { color: var(--cbre-green-bright); }
+  .phase h4 { font-size: 19px; font-weight: 700; margin-bottom: 4px; color: var(--ink); line-height: 1.25; }
+  .phase.dark h4 { color: var(--paper); }
+  .phase .price-tag { display: inline-block; font-family: 'JetBrains Mono', monospace; font-size: 12px; padding: 4px 10px; background: var(--cbre-green); color: var(--paper); border-radius: 99px; margin: 10px 0 14px; font-weight: 600; }
+  .phase .price-tag.zero { background: var(--cbre-green-bright); color: var(--cbre-green); }
+  .phase .price-tag.rev { background: var(--dch-indigo); color: var(--paper); }
+  .phase ul { list-style: none; padding: 0; }
+  .phase li { padding: 6px 0 6px 18px; position: relative; font-size: 13.5px; line-height: 1.45; color: #333; }
+  .phase.dark li { color: rgba(255,255,255,.82); }
+  .phase li::before { content: "→"; position: absolute; left: 0; color: var(--cbre-green); font-weight: 700; }
+  .phase.dark li::before { color: var(--cbre-green-bright); }
+  .phase .anchor { margin-top: auto; padding-top: 14px; border-top: 1px solid var(--border); font-size: 12px; color: var(--text-mute); font-style: italic; }
+  .phase.dark .anchor { border-color: rgba(255,255,255,.1); color: rgba(255,255,255,.55); }
+  .phase.lead { border: 2px solid var(--cbre-green-bright); box-shadow: 0 0 0 4px rgba(23,232,143,.15); }
+
+  /* Roadmap */
+  .roadmap { display: grid; grid-template-columns: repeat(3, 1fr); gap: 0; margin-top: 28px; }
+  .road-step { padding: 24px 24px 24px 50px; border-left: 2px solid rgba(255,255,255,.18); position: relative; }
+  .road-step:first-child { border-left: 0; }
+  .road-step .step-num { position: absolute; left: 0; top: 22px; width: 30px; height: 30px; border-radius: 99px; background: var(--cbre-green-bright); color: var(--cbre-green); display: flex; align-items: center; justify-content: center; font-weight: 800; font-size: 13px; font-family: 'JetBrains Mono', monospace; }
+  .road-step:not(:first-child) .step-num { left: -16px; }
+  .road-step h4 { font-size: 17px; font-weight: 700; margin-bottom: 6px; color: var(--paper); }
+  .road-step .when { font-size: 12px; color: var(--cbre-green-bright); font-family: 'JetBrains Mono', monospace; text-transform: uppercase; letter-spacing: .08em; font-weight: 600; margin-bottom: 12px; }
+  .road-step ul { list-style: none; padding: 0; }
+  .road-step li { padding: 5px 0 5px 16px; position: relative; font-size: 13px; line-height: 1.5; color: rgba(255,255,255,.82); }
+  .road-step li::before { content: "•"; position: absolute; left: 0; color: var(--cbre-green-bright); }
+
+  /* Title cover */
+  .cover-wrap { flex: 1; display: flex; flex-direction: column; justify-content: center; }
+  .cover-meta { font-family: 'JetBrains Mono', monospace; font-size: 11px; letter-spacing: .2em; text-transform: uppercase; color: rgba(255,255,255,.5); margin-top: 30px; }
+
+  /* Deal callouts */
+  .deals { display: grid; grid-template-columns: repeat(2, 1fr); gap: 14px; margin-top: 24px; }
+  .deal { background: white; border: 1px solid var(--border); border-radius: 8px; padding: 16px 20px; display: flex; gap: 16px; align-items: center; }
+  .deal .v { font-family: 'JetBrains Mono', monospace; font-size: 24px; font-weight: 700; color: var(--cbre-green); min-width: 120px; }
+  .deal .t { font-size: 14px; line-height: 1.4; color: #333; }
+
+  /* Closing */
+  .closing-stat { font-size: 96px; font-weight: 800; letter-spacing: -.03em; line-height: 1; color: var(--cbre-green-bright); margin: 24px 0; }
+  .cta { display: inline-flex; align-items: center; gap: 12px; padding: 14px 28px; background: var(--cbre-green-bright); color: var(--cbre-green); border-radius: 8px; font-weight: 700; font-size: 16px; margin-top: 24px; }
+
+  /* Slide number badges */
+  .slide-no { position: absolute; top: 28px; right: 32px; font-family: 'JetBrains Mono', monospace; font-size: 11px; color: var(--text-mute); letter-spacing: .12em; font-weight: 600; }
+  .slide.dark .slide-no, .slide.gradient .slide-no, .slide.purple .slide-no { color: rgba(255,255,255,.4); }
+
+  /* Print */
+  @page { size: 13.33in 7.5in; margin: 0; }
+  @media print {
+    body, html { background: white; }
+    .deck { gap: 0; padding: 0; }
+    .slide { box-shadow: none; page-break-after: always; border-radius: 0; }
+    .slide:last-child { page-break-after: auto; }
+  }
+</style>
+</head>
+<body>
+<div class="deck">
+
+<!-- ───────────────── Slide 1: COVER ───────────────── -->
+<section class="slide gradient">
+  <div class="slide-no">01 / 10</div>
+  <div class="cover-wrap">
+    <div class="logo-row">
+      <span class="logo-cbre">CBRE</span>
+      <span class="logo-x">×</span>
+      <span class="logo-dchub">DC Hub</span>
+    </div>
+    <div class="eyebrow">Partnership Proposal · 2026</div>
+    <h1 class="huge">Live Intelligence<br>for CBRE's H2 Report</h1>
+    <p class="sub" style="margin-top:24px;font-size:22px;line-height:1.5;max-width:780px;">
+      The most trusted name in commercial real estate, powered by the industry's most comprehensive live data layer.
+    </p>
+    <div class="cover-meta">CONFIDENTIAL · For Pat Lynch · DC Hub · dchub.cloud</div>
+  </div>
+  <div class="footer">
+    <span>Jonathan Martone · jonathan@dchub.cloud</span>
+    <span><span class="pageno">01</span> / 10</span>
+  </div>
+</section>
+
+<!-- ───────────────── Slide 2: INDUSTRY CHANGED ───────────────── -->
+<section class="slide">
+  <div class="slide-no">02 / 10</div>
+  <div class="eyebrow">Setting the stage</div>
+  <h2>The market moved faster than H2 2025 could capture.</h2>
+  <p class="sub">CBRE's H2 2025 report (Feb 25, 2026) defined the year's narrative. Six weeks later, the underlying numbers had already shifted. The industry now needs both — authoritative semi-annual analysis <em>and</em> a live data layer that keeps the analysis current.</p>
+  <div class="stats-grid">
+    <div class="stat">
+      <div class="label">Vacancy · Primary Markets</div>
+      <div class="num">1.4<span style="font-size:30px">%</span></div>
+      <div class="note">Record low, year-end 2025</div>
+    </div>
+    <div class="stat">
+      <div class="label">Net Absorption</div>
+      <div class="num">2,497<span style="font-size:30px"> MW</span></div>
+      <div class="note">All-time record · +38% YoY</div>
+    </div>
+    <div class="stat">
+      <div class="label">Aligned acquisition</div>
+      <div class="num">$40<span style="font-size:30px">B</span></div>
+      <div class="note">BlackRock / MGX / AIIP · Q4 2025</div>
+    </div>
+    <div class="stat">
+      <div class="label">Stargate planned</div>
+      <div class="num">7<span style="font-size:30px"> GW</span></div>
+      <div class="note">$400B over 3 years · OpenAI/Oracle/SoftBank</div>
+    </div>
+  </div>
+  <p class="sub" style="margin-top:28px;font-size:16px;font-style:italic;">
+    CBRE has the brand and brokerage flow. DC Hub has the live data infrastructure.<br>
+    The opportunity is to combine both — without changing CBRE's editorial cadence.
+  </p>
+  <div class="footer">
+    <span>Sources: CBRE NA Data Center Trends H2 2025 · CBRE 2026 U.S. Real Estate Outlook · DC Hub live (dchub.cloud)</span>
+    <span><span class="pageno">02</span> / 10</span>
+  </div>
+</section>
+
+<!-- ───────────────── Slide 3: CBRE TODAY ───────────────── -->
+<section class="slide">
+  <div class="slide-no">03 / 10</div>
+  <div class="eyebrow">CBRE Today</div>
+  <h2>The category-defining brand — built for editorial cadence, not live consumption.</h2>
+  <div class="two-col">
+    <div class="col-card">
+      <div class="col-head">Strengths</div>
+      <h3 style="color:var(--cbre-green);">What CBRE owns outright</h3>
+      <ul>
+        <li><b>Global CRE authority</b> — every Fortune 500 occupier reads CBRE Research</li>
+        <li><b>30+ DC Solutions specialists</b> — the largest dedicated DC practice in CRE</li>
+        <li><b>Deal flow visibility</b> — brokerage commissions on the largest leases in the industry</li>
+        <li><b>Trusted analyst desk</b> — H1/H2 report is the most-cited reference document</li>
+        <li><b>Enterprise client roster</b> — REITs, sovereign funds, hyperscalers on retainer</li>
+        <li><b>8-market deep coverage</b> — Atlanta, Chicago, Dallas, Hillsboro, NY Tri-State, NoVa, Phoenix, Silicon Valley</li>
+      </ul>
+    </div>
+    <div class="col-card">
+      <div class="col-head">Strategic Gaps</div>
+      <h3 style="color:var(--cbre-green);">Where the next 5 years go</h3>
+      <ul>
+        <li><b>Twice-yearly cadence</b> — H2 figures are 6 months stale by Q3</li>
+        <li><b>No live facility database</b> — narratives reference CBRE-tracked subsets, not the full 21K+ universe</li>
+        <li><b>No MCP / agent integration</b> — Claude, ChatGPT, Gemini can't cite CBRE Research live</li>
+        <li><b>No machine-readable products</b> — clients increasingly want JSON, not PDF</li>
+        <li><b>No recurring data-product revenue</b> — research bundled into advisory, not sold as live SaaS</li>
+        <li><b>Competitive pressure</b> — JLL DCS, Cushman, Newmark all on the same PDF cadence; first to live wins</li>
+      </ul>
+    </div>
+  </div>
+  <div class="footer">
+    <span>Read: gaps are infrastructure-shaped — not editorial. Easy to close together.</span>
+    <span><span class="pageno">03</span> / 10</span>
+  </div>
+</section>
+
+<!-- ───────────────── Slide 4: CBRE 2026 OUTLOOK × DC HUB ───────────────── -->
+<section class="slide">
+  <div class="slide-no">04 / 10</div>
+  <div class="eyebrow">CBRE Already Told Us What's Needed in 2026</div>
+  <h2>Every trend CBRE flagged in the 2026 Outlook is already a live DC Hub data layer.</h2>
+  <p class="sub" style="margin-bottom:14px;">From <i>CBRE U.S. Real Estate Market Outlook 2026</i> (Jan 2026) — Chapter 7: Data Centers. CBRE's own forecast reads as a checklist of what's hard to track on a semi-annual cycle. DC Hub already tracks all of it, by the day.</p>
+  <table class="gap">
+    <thead>
+      <tr>
+        <th>CBRE 2026 Outlook (verbatim)</th>
+        <th>DC Hub already tracks this · live</th>
+      </tr>
+    </thead>
+    <tbody>
+      <tr>
+        <td>"Power cost and delivery speed now outweigh connectivity in site selection."</td>
+        <td><b>Retail + wholesale rates</b> per state · <b>ISO real-time prices</b> across 10 grids · interconnection queue with BUILD/CAUTION/AVOID verdicts.</td>
+      </tr>
+      <tr>
+        <td>"Behind-the-meter strategies are accelerating — on-site wind, solar, batteries."</td>
+        <td><b>NREL renewable generation</b> by site · <b>EIA capacity</b> by fuel type · live ISO fuel-mix.</td>
+      </tr>
+      <tr>
+        <td>"300-MW-plus deliveries in under 36 months now supersedes pure connectivity."</td>
+        <td><b>Interconnection queue snapshots</b> per ISO · time-to-power (TTP) months · <b>substations + transmission</b> within 50km of any lat/lon.</td>
+      </tr>
+      <tr>
+        <td>"Greenfield development along I-20 — AL, MS, LA, GA, FL, SC, NC, VA, PA."</td>
+        <td><b>21,000+ facilities</b> across all 9 named states · <b>540+ projects in pipeline</b> · <b>natural gas pipeline</b> proximity per parcel.</td>
+      </tr>
+      <tr>
+        <td>"AI inference workloads scaling toward edge data centers."</td>
+        <td><b>AI Capacity Index</b> ranks 280+ markets by AI-deploy readiness · <b>hyperscaler $1B+ deal tracker</b> (Stargate, Hyperion, Aligned).</td>
+      </tr>
+      <tr>
+        <td>"AI-related occupiers paying premiums for 10-MW-plus contiguous blocks."</td>
+        <td><b>Facility-level capacity data</b> · <b>operator portfolios</b> · find_alternatives + score_facility on contiguous power capacity.</td>
+      </tr>
+    </tbody>
+  </table>
+  <div class="footer">
+    <span>CBRE Research, January 2026 (data: December 2025) — already 6+ months stale by H2 2026 publication.</span>
+    <span><span class="pageno">04</span> / 10</span>
+  </div>
+</section>
+
+<!-- ───────────────── Slide 5: VISION ───────────────── -->
+<section class="slide">
+  <div class="slide-no">05 / 10</div>
+  <div class="eyebrow">The Vision</div>
+  <h2>CBRE Live DC Intelligence — three products, one platform.</h2>
+  <p class="sub">Each product slots into an existing CBRE revenue motion. None require CBRE to learn a new business model.</p>
+  <div class="phase-grid">
+    <div class="phase lead">
+      <div class="phase-num">Product 01 · Anchor</div>
+      <h4>CBRE H2 Live</h4>
+      <span class="price-tag zero">Phase 1 · $0 to CBRE</span>
+      <ul>
+        <li>DC Hub powers live data inside H2 2026 report</li>
+        <li>Cited as "Data: DC Hub" — CBRE keeps editorial control</li>
+        <li>Pat's discretion only — no procurement, no legal cycle</li>
+      </ul>
+      <div class="anchor">Closes in weeks. Builds the trust for Products 2 + 3.</div>
+    </div>
+    <div class="phase">
+      <div class="phase-num">Product 02 · Revenue</div>
+      <h4>CBRE × DC Hub Live Intelligence</h4>
+      <span class="price-tag rev">Phase 2 · 20% rev share to DC Hub</span>
+      <ul>
+        <li>Live dashboard sold inside CBRE Insights subscription</li>
+        <li>21K facilities, M&amp;A, pipeline, energy, fiber — refreshed continuously</li>
+        <li>CBRE owns pricing + customer relationship</li>
+      </ul>
+      <div class="anchor">CBRE recognizes 80%. DC Hub earns 20% on net new attributable subs.</div>
+    </div>
+    <div class="phase">
+      <div class="phase-num">Product 03 · Tools</div>
+      <h4>CBRE Site Selection Pro</h4>
+      <span class="price-tag">Phase 3 · $10–25K / broker / yr</span>
+      <ul>
+        <li>Internal Land + Power map for the 30-person DC Solutions team</li>
+        <li>Substations, transmission, fiber, FEMA, drought, seismic on parcel data</li>
+        <li>Used to win mandates + score sites + prep briefings</li>
+      </ul>
+      <div class="anchor">$150K–$750K annual envelope. Self-funding from broker productivity.</div>
+    </div>
+  </div>
+  <div class="footer">
+    <span>All three branded under CBRE. DC Hub attribution per agreed level.</span>
+    <span><span class="pageno">05</span> / 10</span>
+  </div>
+</section>
+
+<!-- ───────────────── Slide 6: REVENUE ARCHITECTURE ───────────────── -->
+<section class="slide dark">
+  <div class="slide-no">06 / 10</div>
+  <div class="eyebrow">Revenue Architecture</div>
+  <h2 style="color:var(--paper);">A three-phase commercial path designed to land in weeks, not quarters.</h2>
+  <div class="phase-grid">
+    <div class="phase dark lead">
+      <div class="phase-num">Phase 1</div>
+      <h4 style="color:var(--paper);">Data Citation Partnership</h4>
+      <span class="price-tag zero">$0 — procurement-free</span>
+      <ul>
+        <li><b style="color:var(--cbre-green-bright);">CBRE gives:</b> Data byline on H2 2026 + intro to Research lead</li>
+        <li><b style="color:var(--cbre-green-bright);">DC Hub gives:</b> Live feed + Q&amp;A desk access + CBRE logo on dchub.cloud cited-by page</li>
+        <li><b style="color:var(--cbre-green-bright);">Why now:</b> Closes in weeks · Pat-discretion · Builds the champion for Phase 2/3</li>
+      </ul>
+      <div class="anchor" style="color:rgba(255,255,255,.6);">Target: cited in H2 2026 publication.</div>
+    </div>
+    <div class="phase dark">
+      <div class="phase-num">Phase 2</div>
+      <h4 style="color:var(--paper);">Revenue Share (Co-Branded Sub)</h4>
+      <span class="price-tag rev">20% to DC Hub on net new MRR</span>
+      <ul>
+        <li><b style="color:var(--cbre-green-bright);">Pricing:</b> Set by CBRE inside Insights ($20–50K/seat typical CBRE range)</li>
+        <li><b style="color:var(--cbre-green-bright);">Attribution:</b> Mutually agreed tracking + quarterly recon</li>
+        <li><b style="color:var(--cbre-green-bright);">Payout:</b> 45 days after quarter close</li>
+      </ul>
+      <div class="anchor" style="color:rgba(255,255,255,.6);">CBRE owns customer. DC Hub powers the tier.</div>
+    </div>
+    <div class="phase dark">
+      <div class="phase-num">Phase 3</div>
+      <h4 style="color:var(--paper);">Enterprise Broker License</h4>
+      <span class="price-tag">$10–25K / broker / yr</span>
+      <ul>
+        <li><b style="color:var(--cbre-green-bright);">For:</b> ~30 DC Solutions specialists globally</li>
+        <li><b style="color:var(--cbre-green-bright);">Includes:</b> Land+Power map, 50+ layers, site scoring, MCP/API</li>
+        <li><b style="color:var(--cbre-green-bright);">Envelope:</b> $150K–$750K annually depending on seat count</li>
+      </ul>
+      <div class="anchor" style="color:rgba(255,255,255,.6);">Tools that win $M+ mandates pay back immediately.</div>
+    </div>
+  </div>
+  <div class="footer">
+    <span>No phase requires the next. Each is independently profitable for CBRE.</span>
+    <span><span class="pageno">06</span> / 10</span>
+  </div>
+</section>
+
+<!-- ───────────────── Slide 7: MECHANICS ───────────────── -->
+<section class="slide">
+  <div class="slide-no">07 / 10</div>
+  <div class="eyebrow">Partnership Mechanics</div>
+  <h2>Who delivers what.</h2>
+  <div class="two-col">
+    <div class="col-card" style="background:rgba(99,102,241,.05);border-color:rgba(99,102,241,.25);">
+      <div class="col-head" style="color:var(--dch-indigo);">DC Hub delivers</div>
+      <h3 style="color:var(--dch-indigo);">The live intelligence layer</h3>
+      <ul>
+        <li><b>REST + MCP APIs</b> — programmatic access, rate-limited, enterprise auth</li>
+        <li><b>Real-time data pipeline</b> — 60s freshness SLA on key surfaces</li>
+        <li><b>Land + Power map embed</b> — iframe or JS SDK, brandable</li>
+        <li><b>50+ government data layers</b> — HIFLD, EIA, FEMA, USGS, NREL</li>
+        <li><b>29 MCP tools</b> — pre-integrated with Claude, Cursor, Cline, Continue</li>
+        <li><b>99.9% uptime SLA</b> — credit-backed</li>
+        <li><b>Dedicated integration support</b> — named account manager</li>
+      </ul>
+    </div>
+    <div class="col-card">
+      <div class="col-head">CBRE delivers</div>
+      <h3>The brand + distribution</h3>
+      <ul>
+        <li><b>Brand authority</b> — the most-cited name in CRE</li>
+        <li><b>Editorial credibility</b> — H1/H2 report cycle + 8-market coverage</li>
+        <li><b>Institutional client base</b> — REITs, sovereign funds, hyperscalers</li>
+        <li><b>DC Solutions practice</b> — 30+ specialists with deal-flow visibility</li>
+        <li><b>Research desk</b> — analyst commentary that turns data into narrative</li>
+        <li><b>Subscription infrastructure</b> — CBRE Insights pricing, billing, success</li>
+      </ul>
+    </div>
+  </div>
+  <p class="sub" style="margin-top:24px;font-style:italic;">
+    Phase 1 integration timeline: 2–4 weeks. First citations published in next H2 cycle.
+  </p>
+  <div class="footer">
+    <span>Each side brings what the other can't build economically.</span>
+    <span><span class="pageno">07</span> / 10</span>
+  </div>
+</section>
+
+<!-- ───────────────── Slide 8: ROADMAP ───────────────── -->
+<section class="slide gradient">
+  <div class="slide-no">08 / 10</div>
+  <div class="eyebrow">Deployment Roadmap</div>
+  <h2 style="color:var(--paper);">From conversation to citation in 8 weeks.</h2>
+  <div class="roadmap">
+    <div class="road-step">
+      <div class="step-num">1</div>
+      <div class="when">Weeks 1–4 · Phase 1</div>
+      <h4>Data Partnership Stand-up</h4>
+      <ul>
+        <li>API key + sandbox for CBRE Research desk</li>
+        <li>Data feed validation vs H1 2026 figures</li>
+        <li>Cited data points agreed (facility count, M&amp;A YTD, pipeline GW, energy/fiber)</li>
+        <li>Editorial review of "DC Hub" data byline</li>
+      </ul>
+    </div>
+    <div class="road-step">
+      <div class="step-num">2</div>
+      <div class="when">Months 3–6 · Phase 2</div>
+      <h4>Co-Branded Subscription Launch</h4>
+      <ul>
+        <li>White-label dashboard built on DC Hub components</li>
+        <li>CBRE Research defines pricing tier inside Insights</li>
+        <li>Attribution tracking + analytics implemented</li>
+        <li>Pilot launch to 5–10 anchor clients</li>
+      </ul>
+    </div>
+    <div class="road-step">
+      <div class="step-num">3</div>
+      <div class="when">Month 6+ · Phase 3</div>
+      <h4>Broker License Rollout</h4>
+      <ul>
+        <li>DC Solutions broker onboarding + training</li>
+        <li>Custom layers per common deal type</li>
+        <li>Tied to first attributable deal win</li>
+        <li>Self-funding within Year 1 from broker productivity</li>
+      </ul>
+    </div>
+  </div>
+  <div class="footer">
+    <span>Phase 1 anchored on H2 2026 report cycle · Aug 2026 editorial close · Feb 2027 publication.</span>
+    <span><span class="pageno">08</span> / 10</span>
+  </div>
+</section>
+
+<!-- ───────────────── Slide 9: MOAT ───────────────── -->
+<section class="slide">
+  <div class="slide-no">09 / 10</div>
+  <div class="eyebrow">Why this creates a moat</div>
+  <h2>Neither JLL DCS, Cushman, nor Newmark can ship this in 2026.</h2>
+  <div class="two-col">
+    <div class="col-card">
+      <div class="col-head">Value to CBRE</div>
+      <h3>What CBRE wins</h3>
+      <ul>
+        <li><b>First major CRE firm with live DC intelligence</b> — JLL, Cushman, Newmark all still PDF-cadence</li>
+        <li><b>AI-era positioning</b> — CBRE data becomes citable by Claude, ChatGPT, Gemini</li>
+        <li><b>Recurring revenue line</b> — turn H2 audience into CBRE Insights subscribers</li>
+        <li><b>Broker productivity</b> — Land+Power map cuts site prep from days to hours</li>
+        <li><b>Defensive moat</b> — by the time competitors copy, CBRE has the brand association</li>
+      </ul>
+    </div>
+    <div class="col-card">
+      <div class="col-head">Value to DC Hub</div>
+      <h3>What DC Hub wins</h3>
+      <ul>
+        <li><b>Most credible CRE logo in the industry</b> — CBRE validates the platform</li>
+        <li><b>Distribution to hyperscaler clients</b> — CBRE relationships open occupier teams</li>
+        <li><b>Citation in the most-read DC report</b> — H2 2026 inclusion drives Tier-1 attention</li>
+        <li><b>Brokerage deal flow</b> — pipeline informs which markets to deepen data on</li>
+        <li><b>Enterprise positioning</b> — CBRE seat license validates DC Hub for other CRE firms</li>
+      </ul>
+    </div>
+  </div>
+  <div class="footer">
+    <span>The combination is defensible. Neither side can rebuild what the other has.</span>
+    <span><span class="pageno">09</span> / 10</span>
+  </div>
+</section>
+
+<!-- ───────────────── Slide 10: CLOSING ───────────────── -->
+<section class="slide gradient">
+  <div class="slide-no">10 / 10</div>
+  <div class="cover-wrap">
+    <div class="eyebrow">Closing</div>
+    <h1 style="font-size:60px;line-height:1.05;">Let's make H2 2026<br>the most-cited DC report<br>in the category.</h1>
+    <p class="sub" style="margin-top:30px;font-size:22px;max-width:840px;">
+      CBRE keeps the brand and editorial control. DC Hub becomes the live data layer. The industry gets clarity neither could deliver alone.
+    </p>
+    <div style="margin-top:32px;display:flex;gap:24px;align-items:center;">
+      <span class="cta">Phase 1 starts at zero cost →</span>
+      <span style="color:rgba(255,255,255,.7);font-size:15px;">30-minute walkthrough · same week · in person or video</span>
+    </div>
+    <div class="cover-meta" style="margin-top:48px;">
+      Jonathan Martone · Founder, DC Hub · jonathan@dchub.cloud · dchub.cloud<br>
+      dchub.cloud/vs/cbre — competitive positioning · dchub.cloud/cited-by — receipts
+    </div>
+  </div>
+  <div class="footer">
+    <span class="logo-row" style="margin:0;gap:12px;">
+      <span class="logo-cbre">CBRE</span>
+      <span class="logo-x">×</span>
+      <span class="logo-dchub">DC Hub</span>
+    </span>
+    <span><span class="pageno">10</span> / 10</span>
+  </div>
+</section>
+
+</div>
+</body>
+</html>
