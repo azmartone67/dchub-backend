@@ -15,6 +15,8 @@ Tables required (already created by bulk loaders):
     - submarine_cable_landings (landing points)
 """
 import math
+import time
+import threading
 import logging
 from flask import Blueprint, request, jsonify
 
@@ -31,6 +33,7 @@ def register_infra_data_routes(app, get_db_func):
     logger.info("   📍 /api/v1/power-plants (13K+ EIA plants)")
     logger.info("   ⚡ /api/v1/transmission-lines (94K+ HIFLD lines)")
     logger.info("   🌊 /api/v1/submarine-cables (690 cables + landings)")
+    logger.info("   📡 /api/v1/cable-landing-points (cable_landing_points table)")
 
 
 def _safe_float(val):
@@ -38,6 +41,39 @@ def _safe_float(val):
         return float(val) if val is not None else None
     except:
         return None
+
+
+# r47.33 (2026-05-26): process-local memo for the heavy land-power-map
+# endpoints. Geographic data is the same for any caller hitting the same
+# query-param set — power_plants_eia has 13K rows, transmission_lines_eia
+# has 94K. Doing the bounding-box scan + ORDER BY on every authed map
+# load was the unhidden source of the "really slow" report. Cache by
+# normalized query-params; TTL 600s (matches what we'd advertise as
+# acceptable lag for static-ish geographic data).
+#
+# Keyed by (endpoint, normalized-params-tuple). Lock-guarded.
+_INFRA_MEMO: dict = {}
+_INFRA_LOCK = threading.Lock()
+_INFRA_TTL_SECONDS = 600
+
+
+def _memo_get(key):
+    entry = _INFRA_MEMO.get(key)
+    if not entry:
+        return None
+    if (time.time() - entry['t']) > _INFRA_TTL_SECONDS:
+        return None
+    return entry['v']
+
+
+def _memo_set(key, value):
+    with _INFRA_LOCK:
+        _INFRA_MEMO[key] = {'v': value, 't': time.time()}
+        # bound memory: at most 200 cached query shapes
+        if len(_INFRA_MEMO) > 200:
+            oldest = sorted(_INFRA_MEMO.items(), key=lambda kv: kv[1]['t'])[:50]
+            for k, _ in oldest:
+                _INFRA_MEMO.pop(k, None)
 
 
 # ═══════════════════════════════════════════════════════════════
@@ -81,6 +117,17 @@ def get_power_plants():
     except:
         min_mw = None
 
+    # r47.33: memo by normalized params. Lat/lng quantized to 0.25° so
+    # nearby map pans hit the same cache slot.
+    cache_key = ('power-plants',
+                 round(lat, 2) if lat is not None else None,
+                 round(lng, 2) if lng is not None else None,
+                 radius, state_filter, fuel_filter, min_mw,
+                 min(limit, 500))
+    cached = _memo_get(cache_key)
+    if cached is not None:
+        return jsonify(cached)
+
     conn = None
     try:
         conn = _get_db()
@@ -89,7 +136,7 @@ def get_power_plants():
         query = """SELECT id, plant_id, name, utility_name, state, city, county,
                    primary_fuel, technology, nameplate_capacity_mw, max_output_mw,
                    natural_gas_mw, solar_mw, wind_mw, nuclear_mw, coal_mw,
-                   lat, lng FROM power_plants_eia 
+                   lat, lng FROM power_plants_eia
                    WHERE lat IS NOT NULL AND lng IS NOT NULL"""
         params = []
 
@@ -128,7 +175,7 @@ def get_power_plants():
                 'lat': float(r[16]), 'lng': float(r[17])
             })
 
-        return jsonify({
+        payload = {
             'success': True,
             'plants': plants,
             'count': len(plants),
@@ -137,8 +184,11 @@ def get_power_plants():
                 'fuel': fuel_filter or 'all',
                 'min_mw': min_mw,
                 'spatial': lat is not None and lng is not None
-            }
-        })
+            },
+            '_cache': 'miss',
+        }
+        _memo_set(cache_key, {**payload, '_cache': 'hit'})
+        return jsonify(payload)
     except Exception as e:
         return jsonify({'success': False, 'error': str(e)}), 500
     finally:
@@ -191,6 +241,17 @@ def get_transmission_lines():
     except:
         min_voltage = None
 
+    # r47.33: memo by normalized params — 94K-row table makes this the
+    # single most expensive map endpoint.
+    cache_key = ('transmission-lines',
+                 round(lat, 2) if lat is not None else None,
+                 round(lng, 2) if lng is not None else None,
+                 radius, state_filter, min_voltage, owner_filter,
+                 min(limit, 500))
+    cached = _memo_get(cache_key)
+    if cached is not None:
+        return jsonify(cached)
+
     conn = None
     try:
         conn = _get_db()
@@ -233,7 +294,7 @@ def get_transmission_lines():
                 'state': r[7]
             })
 
-        return jsonify({
+        payload = {
             'success': True,
             'lines': lines,
             'count': len(lines),
@@ -242,8 +303,11 @@ def get_transmission_lines():
                 'min_voltage': min_voltage,
                 'owner': owner_filter or 'all',
                 'spatial': lat is not None and lng is not None
-            }
-        })
+            },
+            '_cache': 'miss',
+        }
+        _memo_set(cache_key, {**payload, '_cache': 'hit'})
+        return jsonify(payload)
     except Exception as e:
         return jsonify({'success': False, 'error': str(e)}), 500
     finally:
@@ -288,21 +352,35 @@ def get_submarine_cables():
     except:
         radius = 200
 
+    # r47.33: memo for submarine-cables (joins two tables)
+    cache_key = ('submarine-cables',
+                 round(lat, 2) if lat is not None else None,
+                 round(lng, 2) if lng is not None else None,
+                 radius, country_filter, min(limit, 1000))
+    cached = _memo_get(cache_key)
+    if cached is not None:
+        return jsonify(cached)
+
     conn = None
     try:
         conn = _get_db()
         cur = conn.cursor()
 
-        # Get cables
-        cur.execute("SELECT id, cable_id, name, color, length_km, rfs, owners, url FROM submarine_cables LIMIT %s",
+        # r47.33: align with live Neon schema. The original code expected
+        # `name`/`rfs`/`color`/`url` columns that don't exist on the live
+        # `submarine_cables` table — actual columns are `cable_name`,
+        # `rfs_year`, plus `status` and `source` instead of `color`/`url`.
+        cur.execute("""SELECT id, cable_id, cable_name, length_km, rfs_year,
+                              owners, status, source
+                         FROM submarine_cables LIMIT %s""",
                     [min(limit, 1000)])
         cable_rows = cur.fetchall()
         cables = []
         for r in cable_rows:
             cables.append({
-                'id': r[0], 'cable_id': r[1], 'name': r[2], 'color': r[3],
-                'length_km': _safe_float(r[4]), 'rfs': r[5],
-                'owners': r[6], 'url': r[7]
+                'id': r[0], 'cable_id': r[1], 'name': r[2],
+                'length_km': _safe_float(r[3]), 'rfs_year': r[4],
+                'owners': r[5], 'status': r[6], 'source': r[7],
             })
 
         # Get landing points (with optional spatial filter)
@@ -335,13 +413,134 @@ def get_submarine_cables():
         except:
             landings = []
 
-        return jsonify({
+        payload = {
             'success': True,
             'cables': cables,
             'cable_count': len(cables),
             'landings': landings,
-            'landing_count': len(landings)
-        })
+            'landing_count': len(landings),
+            '_cache': 'miss',
+        }
+        _memo_set(cache_key, {**payload, '_cache': 'hit'})
+        return jsonify(payload)
+    except Exception as e:
+        return jsonify({'success': False, 'error': str(e)}), 500
+    finally:
+        if conn:
+            try:
+                from main import return_pg_connection
+                return_pg_connection(conn)
+            except:
+                try: conn.close()
+                except: pass
+
+
+# ═══════════════════════════════════════════════════════════════
+# CABLE LANDING POINTS API — frontend land-power-map dependency
+# ═══════════════════════════════════════════════════════════════
+# r47.33 (2026-05-26): /js/land-power-app.js fires a request to
+# /api/v1/cable-landing-points?limit=2000 that previously 404'd because
+# the table had no route. The `cable_landing_points` table (9 cols) is
+# distinct from `submarine_cable_landings` (7 cols) — the former has
+# per-cable city/country attribution, the latter aggregates landings
+# with `cable_ids` text. Surface both via dedicated endpoints.
+
+@infra_data_bp.route('/api/v1/cable-landing-points', methods=['GET'])
+def get_cable_landing_points():
+    """Cable landing points with optional spatial / country filtering.
+
+    Backs the submarine-cable landings overlay on the land-power map.
+    Query params:
+        lat, lng, radius (miles) — spatial bounding box
+        country — exact match (case-insensitive)
+        cable_name — partial match (ILIKE)
+        limit — max results (default 500, cap 2000)
+    """
+    lat = request.args.get('lat', None)
+    lng = request.args.get('lng', None)
+    radius = request.args.get('radius', 200)
+    country_filter = request.args.get('country', '').upper()
+    cable_name_filter = request.args.get('cable_name', '')
+    limit = request.args.get('limit', 500, type=int)
+
+    try:
+        lat = float(lat) if lat is not None else None
+    except:
+        lat = None
+    try:
+        lng = float(lng) if lng is not None else None
+    except:
+        lng = None
+    try:
+        radius = int(float(radius)) if radius else 200
+    except:
+        radius = 200
+
+    cache_key = ('cable-landing-points',
+                 round(lat, 2) if lat is not None else None,
+                 round(lng, 2) if lng is not None else None,
+                 radius, country_filter, cable_name_filter,
+                 min(limit, 2000))
+    cached = _memo_get(cache_key)
+    if cached is not None:
+        return jsonify(cached)
+
+    conn = None
+    try:
+        conn = _get_db()
+        cur = conn.cursor()
+
+        query = """SELECT id, cable_id, cable_name, country, city, lat, lng, source
+                     FROM cable_landing_points
+                    WHERE lat IS NOT NULL AND lng IS NOT NULL"""
+        params = []
+
+        if lat is not None and lng is not None:
+            lat_d = radius / 69.0
+            lng_d = radius / (69.0 * max(math.cos(math.radians(lat)), 0.1))
+            query += " AND lat BETWEEN %s AND %s AND lng BETWEEN %s AND %s"
+            params.extend([lat - lat_d, lat + lat_d, lng - lng_d, lng + lng_d])
+
+        if country_filter:
+            query += " AND UPPER(country) = %s"
+            params.append(country_filter)
+
+        if cable_name_filter:
+            query += " AND cable_name ILIKE %s"
+            params.append(f"%{cable_name_filter}%")
+
+        query += " ORDER BY cable_name NULLS LAST LIMIT %s"
+        params.append(min(limit, 2000))
+
+        cur.execute(query, params)
+        rows = cur.fetchall()
+
+        points = []
+        for r in rows:
+            points.append({
+                'id': r[0],
+                'cable_id': r[1],
+                'cable_name': r[2],
+                'country': r[3],
+                'city': r[4],
+                'lat': _safe_float(r[5]),
+                'lng': _safe_float(r[6]),
+                'source': r[7],
+            })
+
+        payload = {
+            'success': True,
+            'points': points,
+            'count': len(points),
+            'filters': {
+                'country': country_filter or 'all',
+                'cable_name': cable_name_filter or 'all',
+                'spatial': lat is not None and lng is not None,
+            },
+            '_cache': 'miss',
+        }
+        _memo_set(cache_key, {**payload, '_cache': 'hit'})
+        return jsonify(payload)
     except Exception as e:
         return jsonify({'success': False, 'error': str(e)}), 500
     finally:

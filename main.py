@@ -23681,22 +23681,18 @@ try:
 except Exception as _ch_e:
     print(f"[main] cron_heartbeat_bp register failed: {_ch_e}", flush=True)
 
-# r47.32 (2026-05-26): infra_data_bp is orphaned for a reason — the
-# blueprint's SQL expects a `name` column on `submarine_cables` that the
-# live Neon schema doesn't have. Registering it surfaced a 500 ("column
-# name does not exist") which is worse than the existing 404 for the
-# land-power map's submarine-cables layer (404 → layer just doesn't render;
-# 500 → noise in logs + broken UX).
-#
-# Leaving disabled until the SQL is aligned with the actual schema. The
-# /api/v1/cable-landing-points endpoint the frontend calls also doesn't
-# exist anywhere — both should be addressed together in a follow-up.
-# try:
-#     from routes.infrastructure_data_routes import register_infra_data_routes
-#     register_infra_data_routes(app, get_pg_connection)
-#     print("[main] infra_data_bp registered: ...", flush=True)
-# except Exception as _idb_e:
-#     print(f"[main] infra_data_bp register failed: {_idb_e}", flush=True)
+# r47.33 (2026-05-26): infra_data_bp registration — SQL aligned with live
+# Neon schema (submarine_cables uses `cable_name`/`rfs_year`, not `name`/`rfs`)
+# and missing /api/v1/cable-landing-points endpoint added. All 4 routes also
+# wear a process-local memo (600s TTL, keyed by quantized query-params) so
+# the heavy 13K-row power_plants / 94K-row transmission_lines scans only
+# hit the DB once per area per worker per 10 min.
+try:
+    from routes.infrastructure_data_routes import register_infra_data_routes
+    register_infra_data_routes(app, get_pg_connection)
+    print("[main] infra_data_bp registered: /api/v1/{power-plants,transmission-lines,submarine-cables,cable-landing-points,infrastructure/stats}", flush=True)
+except Exception as _idb_e:
+    print(f"[main] infra_data_bp register failed: {_idb_e}", flush=True)
 
 # Phase ZZZZZ-round38 (2026-05-25): email capture before Stripe checkout
 try:
