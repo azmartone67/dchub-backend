@@ -141,9 +141,11 @@ _MANIFEST: list[dict] = [
     # Research / brand
     # r47.36 (2026-05-26): old path /research/grid-intelligence redirects
     # 302 → /api/v1/research/grid-intelligence which returns a 945-byte
-    # JSON, tripping body_too_small. The actual page (HTML) lives at
-    # /grid-intelligence — point at the canonical surface.
-    {"path": "/grid-intelligence","category":"normal","min_bytes": 2000,"label": "Grid Intel"},
+    # JSON, tripping body_too_small. The HTML page exists at
+    # /grid-intelligence in Flask but the Pages worker doesn't proxy
+    # that path → 404 via dchub.cloud. /grid-hub is the canonical
+    # CDN-reachable grid surface (10K+ bytes, healthy in sentinel).
+    {"path": "/grid-hub","category":"normal","min_bytes": 2000,"label": "Grid Intel"},
     {"path": "/press",                   "category": "normal", "min_bytes": 2000, "label": "Press"},
     {"path": "/gdci",                    "category": "normal", "min_bytes": 2000, "label": "GDCI"},
     {"path": "/testimonials",            "category": "normal", "min_bytes": 2000, "label": "Testimonials"},
