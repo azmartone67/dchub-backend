@@ -23793,6 +23793,38 @@ try:
 except Exception as _mpb_e:
     print(f"[main] mcp_platform_backfill_bp register failed: {_mpb_e}", flush=True)
 
+# r47.37 (2026-05-26): enterprise revenue pipeline.
+#
+# Two new blueprints that turn the MCP-funnel "118 free-tier users hit
+# paid tools 5,544 times" finding into actual enterprise contracts:
+#
+# enterprise_inquiry_bp — captures inquiries from the new /enterprise
+#   data-licensing page. POST /api/v1/enterprise/inquiry stores the
+#   inquiry + emails the admin inbox. Pipeline view at
+#   GET /api/v1/admin/enterprise/inquiries.
+#
+# enterprise_leads_bp — automated lead detection. Sweep identifies
+#   top free-tier users by paid-tool demand (mcp_call_log JOIN
+#   mcp_dev_keys), generates personalized outreach drafts. Same
+#   draft-then-approve gate as partnership_press / linkedin_partnership.
+#   Cron-tickable so the sweep runs weekly without manual trigger.
+try:
+    from routes.enterprise_inquiry import enterprise_inquiry_bp, _ensure_schema as _ei_schema
+    app.register_blueprint(enterprise_inquiry_bp)
+    _ei_schema()
+    print("[main] enterprise_inquiry_bp registered: POST /api/v1/enterprise/inquiry + admin pipeline", flush=True)
+except Exception as _eib_e:
+    print(f"[main] enterprise_inquiry_bp register failed: {_eib_e}", flush=True)
+
+try:
+    from routes.enterprise_leads_sweep import (
+        enterprise_leads_bp, _ensure_schema as _el_schema)
+    app.register_blueprint(enterprise_leads_bp)
+    _el_schema()
+    print("[main] enterprise_leads_bp registered: /api/v1/admin/enterprise/leads/{sweep,drafts,approve,reject,pipeline-stats}", flush=True)
+except Exception as _elb_e:
+    print(f"[main] enterprise_leads_bp register failed: {_elb_e}", flush=True)
+
 # Phase ZZZZZ-round38 (2026-05-25): email capture before Stripe checkout
 try:
     from routes.checkout_email_capture import checkout_email_bp

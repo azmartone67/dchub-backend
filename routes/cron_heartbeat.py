@@ -34,10 +34,19 @@ BASE = "https://api.dchub.cloud"
 def _hit(url, method="POST", timeout=30):
     try:
         data = b"" if method == "POST" else None
+        _headers = {"User-Agent": "DCHub-CronHeartbeat/1.0",
+                    "X-DC-Internal-Cron": "1"}
+        # r47.37 (2026-05-26): include X-Internal-Key so admin-gated
+        # endpoints (e.g. /api/v1/admin/enterprise/leads/sweep) can
+        # authorize cron-originated calls without exposing the route
+        # publicly. Falls back gracefully if env not set — non-admin
+        # endpoints in the dispatch list don't need it.
+        _ik = os.environ.get("DCHUB_INTERNAL_KEY") or os.environ.get("DCHUB_SYNC_KEY")
+        if _ik:
+            _headers["X-Internal-Key"] = _ik
         req = urllib.request.Request(
             url, data=data, method=method,
-            headers={"User-Agent": "DCHub-CronHeartbeat/1.0",
-                     "X-DC-Internal-Cron": "1"},
+            headers=_headers,
         )
         with urllib.request.urlopen(req, timeout=timeout) as resp:
             body = resp.read(512)
@@ -157,6 +166,19 @@ _DISPATCH = [
      f"{BASE}/api/v1/agents/broadcast",
      "POST",
      lambda now: now.minute >= 5 and now.minute < 10),
+
+    # r47.37 (2026-05-26): weekly enterprise leads sweep. Identifies
+    # top free-tier users by paid-tool demand (5+ hits/30d on
+    # get_grid_intelligence, get_fiber_intel, analyze_site, etc.),
+    # generates personalized outreach drafts into enterprise_lead_drafts.
+    # Endpoint is idempotent (dedupes against any draft created in the
+    # last 30d for the same email), so the 10-min window is safe.
+    # Fires Monday 15:00 UTC (11 AM ET — start of week, fresh inboxes).
+    # Drafts must be approved at /admin/partnerships/review before sending.
+    ("enterprise_leads_sweep_weekly",
+     f"{BASE}/api/v1/admin/enterprise/leads/sweep?top=10&min_hits=5",
+     "POST",
+     lambda now: now.weekday() == 0 and now.hour == 15 and now.minute < 10),
 ]
 
 

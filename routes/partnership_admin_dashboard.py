@@ -42,7 +42,8 @@ def _conn():
 
 
 def _gather_pending():
-    out = {"press": [], "linkedin": [], "approved_press": [], "posted_linkedin": []}
+    out = {"press": [], "linkedin": [], "approved_press": [],
+           "posted_linkedin": [], "enterprise_leads": [], "inquiries": []}
     if not (_pg and _dsn()):
         return out
     try:
@@ -60,6 +61,47 @@ def _gather_pending():
                     "subheadline": r[3] or "", "summary": r[4] or "",
                     "body": r[5] or "", "created_at": r[6].isoformat() if r[6] else None,
                 } for r in cur.fetchall()]
+
+            # r47.37: pending enterprise lead drafts (outbound outreach)
+            try:
+                with c.cursor() as cur:
+                    cur.execute("""
+                        SELECT id, email, paid_hits_30d, top_tools, score,
+                               subject, body, created_at
+                          FROM enterprise_lead_drafts
+                         WHERE status = 'pending'
+                         ORDER BY score DESC NULLS LAST, created_at DESC LIMIT 20
+                    """)
+                    out["enterprise_leads"] = [{
+                        "id": r[0], "email": r[1],
+                        "paid_hits_30d": int(r[2] or 0),
+                        "top_tools": r[3] or [],
+                        "score": float(r[4] or 0),
+                        "subject": r[5] or "", "body": r[6] or "",
+                        "created_at": r[7].isoformat() if r[7] else None,
+                    } for r in cur.fetchall()]
+            except Exception:
+                pass
+
+            # r47.37: new inbound enterprise inquiries (last 14d, status=new)
+            try:
+                with c.cursor() as cur:
+                    cur.execute("""
+                        SELECT id, name, email, firm, tier_requested,
+                               use_case, notes, created_at
+                          FROM enterprise_inquiries
+                         WHERE status = 'new'
+                            OR created_at > NOW() - INTERVAL '14 days'
+                         ORDER BY created_at DESC LIMIT 20
+                    """)
+                    out["inquiries"] = [{
+                        "id": r[0], "name": r[1], "email": r[2], "firm": r[3],
+                        "tier_requested": r[4] or "", "use_case": r[5] or "",
+                        "notes": r[6] or "",
+                        "created_at": r[7].isoformat() if r[7] else None,
+                    } for r in cur.fetchall()]
+            except Exception:
+                pass
 
             # Pending LinkedIn drafts
             with c.cursor() as cur:
@@ -192,6 +234,44 @@ def review():
         for p in data["posted_linkedin"]
     ) or '<tr><td colspan="4" class="empty">—</td></tr>'
 
+    # r47.37: enterprise lead drafts (outbound outreach) — same approve/reject pattern
+    enterprise_cards = ""
+    for ld in data.get("enterprise_leads", []):
+        tools_chip = ", ".join(ld.get("top_tools", [])[:3]) or "—"
+        enterprise_cards += f"""
+    <div class="card draft" data-kind="enterprise" data-id="{ld['id']}">
+      <div class="card-head">
+        <span class="badge enterprise">ENTERPRISE OUTREACH</span>
+        <span class="card-meta">{ld['paid_hits_30d']:,} paid hits/30d · score {ld['score']:.0f} · {_esc((ld['created_at'] or '')[:16].replace('T',' '))}</span>
+      </div>
+      <h3 class="card-title">{_esc(ld['email'])}</h3>
+      <div class="card-meta-row">Top tools: <code>{_esc(tools_chip)}</code></div>
+      <div class="card-meta-row"><b>Subject:</b> {_esc(ld['subject'])}</div>
+      <details>
+        <summary>Show full email body ({len(ld['body'])} chars)</summary>
+        <pre class="card-body">{_esc(ld['body'])}</pre>
+      </details>
+      <div class="card-actions">
+        <button class="btn btn-approve" data-action="approve"
+                data-url="/api/v1/admin/enterprise/leads/approve/{ld['id']}">
+          ✓ Approve &amp; send via Resend
+        </button>
+        <button class="btn btn-reject" data-action="reject"
+                data-url="/api/v1/admin/enterprise/leads/reject/{ld['id']}">
+          ✗ Reject
+        </button>
+      </div>
+    </div>"""
+
+    # r47.37: inbound inquiries from /enterprise page — read-only, link to inbox
+    inquiry_rows = "".join(
+        f'<tr><td>{_esc(i["firm"][:40])}</td><td><a href="mailto:{_esc(i["email"])}">{_esc(i["name"][:30])}</a></td>'
+        f'<td>{_esc(i["tier_requested"])}</td>'
+        f'<td>{_esc(i["use_case"][:40])}</td>'
+        f'<td>{_esc((i["created_at"] or "")[:16].replace("T", " "))}</td></tr>'
+        for i in data.get("inquiries", [])
+    ) or '<tr><td colspan="5" class="empty">No inbound inquiries yet — /enterprise just shipped.</td></tr>'
+
     html = f"""<!DOCTYPE html>
 <html lang="en"><head>
 <meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1">
@@ -223,6 +303,8 @@ def review():
  .badge{{display:inline-block;padding:3px 10px;border-radius:4px;font-size:.7rem;font-weight:600;letter-spacing:.05em;text-transform:uppercase}}
  .badge.press{{background:#e0e7ff;color:#3730a3}}
  .badge.linkedin{{background:#dbeafe;color:#1e40af}}
+ .badge.enterprise{{background:linear-gradient(135deg,#8b5cf6,#6366f1);color:#fff}}
+ .card-meta-row code{{background:#f1f5f9;padding:1px 6px;border-radius:3px;font-size:.8rem}}
  .card-actions{{display:flex;gap:8px;margin-top:12px}}
  .btn{{padding:8px 14px;border:none;border-radius:6px;cursor:pointer;font-size:.85rem;font-weight:600;font-family:inherit}}
  .btn-approve{{background:#22c55e;color:#fff}}
@@ -271,6 +353,21 @@ def review():
  <span class="section-count">{len(data['linkedin'])} pending</span>
 </h2>
 {linkedin_cards or '<div class="empty-state">No LinkedIn drafts pending. The Wednesday cron will create one this week.</div>'}
+
+<h2>
+ Enterprise outreach drafts <span style="background:#8b5cf6;color:#fff;padding:1px 8px;border-radius:999px;font-size:.65rem;margin-left:6px;letter-spacing:.06em">REVENUE</span>
+ <span class="section-count">{len(data.get('enterprise_leads', []))} pending</span>
+</h2>
+{enterprise_cards or '<div class="empty-state">No enterprise outreach drafts pending. The Monday 15:00 UTC cron generates 10 leads/week from free-tier users with high paid-tool demand.</div>'}
+
+<h2>
+ Inbound enterprise inquiries
+ <span class="section-count">{len(data.get('inquiries', []))} new/recent</span>
+</h2>
+<table>
+ <thead><tr><th>Firm</th><th>Contact</th><th>Tier</th><th>Use case</th><th>Received</th></tr></thead>
+ <tbody>{inquiry_rows}</tbody>
+</table>
 
 <h2>
  Recently published press
