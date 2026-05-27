@@ -15837,12 +15837,51 @@ def fiber_routes_public_api():
 # both internal callers (radar, redeem) get real data and the radar's
 # tier-consistency check has something to compare against.
 @app.route('/api/v1/fiber/intel', methods=['GET'])
-@require_plan('pro')
 def fiber_intel_api():
-    """Alias of /api/v1/fiber/routes — kept for compatibility with the
-    redeem-flow + brain-radar callers that hardcode this path.
-    Same response shape, same Pro gate."""
-    return jsonify(_build_fiber_routes_geojson())
+    """Alias of /api/v1/fiber/routes with free-tier teaser.
+
+    r47.34 (2026-05-26): brain class `mcp_demand_gap_unaddressed` flagged
+    5,080 paywall hits from 119 distinct free users hitting this tool —
+    second-largest unaddressed-demand signal in the funnel. Per the class's
+    own remediation recipe ("add a free-tier teaser response — 1-3 results
+    free, full data behind X-API-Key"), this returns the first 3 fiber
+    routes + an explicit `_upgrade_hint` for unauthenticated callers,
+    and the full FeatureCollection once the caller authenticates."""
+    full = _build_fiber_routes_geojson()
+    # Detect caller tier inline — avoids @require_plan's hard 401 path
+    # which the paywall_hint_middleware has to retrofit. We branch first.
+    tier = 'anonymous'
+    try:
+        from map_tier_gating import _detect_caller_tier
+        tier = (_detect_caller_tier(request) or 'anonymous').lower()
+    except Exception:
+        pass
+
+    if tier in ('pro', 'enterprise', 'founding', 'internal', 'admin'):
+        return jsonify(full)
+
+    # Free-tier teaser: 3 features + cap context + upgrade hint
+    feats = (full.get('features') or [])[:3] if isinstance(full, dict) else []
+    total = len((full.get('features') or [])) if isinstance(full, dict) else 0
+    return jsonify({
+        'type':     'FeatureCollection',
+        'features': feats,
+        '_teaser':  True,
+        '_total_features_behind_paywall': max(0, total - len(feats)),
+        '_tier':    tier,
+        '_upgrade_hint': {
+            'agent_quotable': (
+                f"DC Hub returned {len(feats)} of {total:,} fiber routes as a "
+                f"free preview. Full dataset (carriers, route geometries, "
+                f"lit/dark status across {total:,} segments) needs a Pro key "
+                f"at $199/mo — https://dchub.cloud/pricing. A free dev key "
+                f"unlocks most tools (analyze_site etc.) but fiber_intel is "
+                f"Pro-tier."),
+            'starter_url':   'https://dchub.cloud/pricing',
+            'preview_count': len(feats),
+            'paywalled_count': max(0, total - len(feats)),
+        },
+    })
 
 logger.info("✅ Fiber routes endpoints registered: /api/v1/fiber/sources, /api/v1/fiber/routes, /api/v1/fiber/intel")
 
@@ -23693,6 +23732,31 @@ try:
     print("[main] infra_data_bp registered: /api/v1/{power-plants,transmission-lines,submarine-cables,cable-landing-points,infrastructure/stats}", flush=True)
 except Exception as _idb_e:
     print(f"[main] infra_data_bp register failed: {_idb_e}", flush=True)
+
+# r47.34 (2026-05-26): operator_profiles_bp closes the brain class
+# `operator_profile_gap`. Seeds operator_metadata table on boot with
+# AWS / Digital Realty / Equinix (the three operators the brain
+# explicitly named in today's backlog) and exposes /api/v1/operators/
+# <canonical>/profile + /api/v1/operators/profiles.
+try:
+    from routes.operator_profiles import (
+        operator_profiles_bp, ensure_table_and_seed as _seed_ops)
+    app.register_blueprint(operator_profiles_bp)
+    _seed_ops()
+    print("[main] operator_profiles_bp registered: /api/v1/operators/<canonical>/profile + /profiles", flush=True)
+except Exception as _opp_e:
+    print(f"[main] operator_profiles_bp register failed: {_opp_e}", flush=True)
+
+# r47.34 (2026-05-26): mcp_platform_backfill_bp — one-shot reclassifier
+# for the ~109K historical mcp_call_log rows tagged 'mcp' (generic
+# catch-all) that the r47.30 detectPlatformFromInit fix can only correct
+# going forward. Run via POST /api/v1/admin/mcp/backfill-platforms (X-Admin-Key).
+try:
+    from routes.mcp_platform_backfill import mcp_platform_backfill_bp
+    app.register_blueprint(mcp_platform_backfill_bp)
+    print("[main] mcp_platform_backfill_bp registered: POST /api/v1/admin/mcp/backfill-platforms (admin)", flush=True)
+except Exception as _mpb_e:
+    print(f"[main] mcp_platform_backfill_bp register failed: {_mpb_e}", flush=True)
 
 # Phase ZZZZZ-round38 (2026-05-25): email capture before Stripe checkout
 try:

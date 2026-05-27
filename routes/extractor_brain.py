@@ -747,7 +747,22 @@ def dashboard():
             f'<div class="card"><h3>Sources Active (7d)</h3><div class="kpi">{len(quality)}</div></div>',
             f'<div class="card"><h3>Top Changes Today</h3><div class="kpi">{len(insight["top_changes"])}</div></div>',
             f'<div class="card"><h3>Anomalies (24h)</h3><div class="kpi">{len(insight["top_anomalies"])}</div></div>',
-            f'<div class="card"><h3>ISOs Reporting</h3><div class="kpi">{len(insight.get("metric_summary", {}))}</div></div>',
+            # r47.34 (2026-05-26): when daily_insights hasn't aggregated
+            # today's grid metrics yet (early morning before the rollup
+            # cron, or transient gap), avoid showing a misleading "0 ISOs
+            # Reporting" headline. Surface the live `/api/v1/grid/totals`
+            # signal alongside so the user knows the underlying ingestion
+            # is fine — only the daily aggregator is behind.
+            (f'<div class="card"><h3>ISOs Reporting</h3>'
+              f'<div class="kpi">{len(insight.get("metric_summary", {}))}</div></div>'
+             if insight.get("metric_summary")
+             else '<div class="card"><h3>ISOs Reporting</h3>'
+                   '<div class="kpi" style="color:#999">…</div>'
+                   '<div class="muted" style="font-size:.75rem">'
+                   'Daily rollup not yet aggregated. '
+                   '<a href="/api/v1/grid/totals" style="color:#6366f1">'
+                   'Live ISO data</a> &middot; ingest sources active above.'
+                   '</div></div>'),
             '</div>']
 
     # Source quality breakdown

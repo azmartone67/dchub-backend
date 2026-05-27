@@ -131,14 +131,28 @@ _VARIANTS = {
               "projects. Free dev key = 1,000/day at "
               "https://dchub.cloud/signup. Or $9/mo for 10,000/day."),
     },
+    # r47.34 (2026-05-26): variant D — minimum-viable CTA. The first three
+    # variants all drop 30-50 words on the agent. Funnel data shows 0.048%
+    # paywall→click — every extra word is a place the agent's user can lose
+    # the URL. Variant D collapses to one sentence + the URL. We rotate it
+    # in at 25% so the conversion-rate diff between A/B/C/D is measurable.
+    "D": {
+        401: "DC Hub needs a key. Free in 30s: https://dchub.cloud/signup",
+        403: "Paid tool. Cheapest unlock $9/mo: https://dchub.cloud/pricing",
+        429: "Rate cap. Free key = 1K/day: https://dchub.cloud/signup",
+    },
 }
 
 
 def _pick_variant(ip: str, ua: str) -> str:
-    """Deterministic A/B/C selection. Same caller → same variant."""
+    """Deterministic A/B/C/D selection. Same caller → same variant.
+
+    r47.34: 4-way split so the new minimum-viable CTA (D) gets ~25%
+    of traffic alongside the original three. /api/v1/admin/paywall-ab/stats
+    rolls this up so we can see which variant moves 0.048% paywall→click."""
     h = hashlib.sha256(f"{ip}|{ua}".encode()).hexdigest()
-    bucket = int(h[:8], 16) % 3
-    return ["A", "B", "C"][bucket]
+    bucket = int(h[:8], 16) % 4
+    return ["A", "B", "C", "D"][bucket]
 
 
 def _agent_quotable_for(variant: str, status: int) -> str:

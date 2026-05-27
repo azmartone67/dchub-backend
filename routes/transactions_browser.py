@@ -18,6 +18,8 @@ from __future__ import annotations
 
 import os
 import json
+import time
+import threading
 import datetime
 from flask import Blueprint, jsonify, request, Response, abort
 import psycopg2
@@ -25,6 +27,17 @@ import psycopg2.extras
 
 
 transactions_browser_bp = Blueprint("transactions_browser", __name__)
+
+# r47.34 (2026-05-26): /transactions has been failing sentinel as a 15s
+# timeout. Profile shows the cost is SELECT * FROM deals ORDER BY date DESC
+# LIMIT 100 + an unbounded COUNT(*) — `deals.date` is TEXT with no index,
+# so Postgres can't use an index-only scan; every render does a sort
+# over 2K+ rows. ~90% of traffic hits page 1 with no filters (the SEO
+# crawl path), so memoize that one shape for 60s and the heavy work
+# happens once per minute instead of once per request.
+_DEALS_MEMO: dict = {}
+_DEALS_LOCK = threading.Lock()
+_DEALS_TTL_SECONDS = 60
 
 
 def _conn():
@@ -43,11 +56,23 @@ def _fetch_deals(limit: int = 100, offset: int = 0,
                   buyer: str | None = None, min_mw: int | None = None) -> tuple[list[dict], int]:
     """Returns (deals, total_count).
 
+    r47.34: page-1 / no-filter requests (the SEO crawl path + default
+    HTML view) hit a 60s memo before touching Postgres. Anything with a
+    filter or pagination skips the memo — those are bespoke enough that
+    caching them rarely helps and risks stale results.
+
     Phase JJJ-2 (2026-05-16): defensive query. Initial implementation
     assumed id+value+mw columns; live revealed only buyer/date/market/
     region/seller/type are returned by the deals API. The `deals` table
     schema varies across deploys — defensively SELECT * + extract what
     we find. Plus explicit error logging so failures surface."""
+    is_cacheable = (offset == 0 and limit == 100
+                    and not year and not region and not buyer and not min_mw)
+    if is_cacheable:
+        entry = _DEALS_MEMO.get('page1')
+        if entry and (time.time() - entry['t']) < _DEALS_TTL_SECONDS:
+            return entry['rows'], entry['total']
+
     c = _conn()
     if c is None: return [], 0
     try:
@@ -96,6 +121,9 @@ def _fetch_deals(limit: int = 100, offset: int = 0,
                 except Exception as qe2:
                     print(f"[transactions_browser] fallback select failed: {qe2}")
                     rows = []
+        if is_cacheable:
+            with _DEALS_LOCK:
+                _DEALS_MEMO['page1'] = {'rows': rows, 'total': total, 't': time.time()}
         return rows, total
     except Exception as e:
         print(f"[transactions_browser] _fetch_deals outer: {e}")
