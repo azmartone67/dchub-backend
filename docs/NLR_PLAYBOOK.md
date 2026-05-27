@@ -6,6 +6,62 @@ Everything you need for the next 30-90 days of the NLR engagement — reply scri
 
 ---
 
+## §0 — How to resume this work in a new conversation
+
+When you fork or start a fresh Claude conversation to continue NLR work, paste **one** of the two seed prompts below. Both are designed to give a new Claude full context in ~3-5 minutes of self-reading.
+
+### Seed A — Universal (use 90% of the time)
+
+```
+Continuing NLR partnership work. Read these three docs in order:
+  - docs/NLR_PLAYBOOK.md         (operational state + reply variants + timeline)
+  - docs/NLR_MOU_v1.md           (the MOU we sent Gabe)
+  - docs/NLR_PARTNERSHIP_ROADMAP.md (background + history)
+
+State as of 2026-05-26:
+  - MOU v1 sent to Gabriel.Zuckerman@nlr.gov
+  - 3 Developer keys live: Gabriel + Galen.Maclaurin + Ian.Christie @nlr.gov
+  - /partners/nlr = sanitized stub (no leak, pre-execution)
+  - 4 emails in Gmail Drafts (3 onboarding + 1 courtesy ask) — may or may not be sent yet, confirm with me
+  - CF Pages flap RESOLVED; worker v4.34.22-r77 stable
+
+Today: [PASTE WHAT JUST HAPPENED HERE]
+```
+
+### Seed B — Menu Form (fast for common cases)
+
+```
+Continuing NLR partnership work. Context: read docs/NLR_PLAYBOOK.md + docs/NLR_MOU_v1.md.
+Last session (2026-05-26): MOU sent to Gabe, 3 keys live, /partners/nlr stub deployed.
+
+Today, one of:
+  [ ] Gabe acknowledged receipt — draft response per Playbook §2 Variant 1A
+  [ ] Counsel sent redlines — paste below, prep v2
+  [ ] Counsel sent redlined .docx — attached, please review against canonical v1
+  [ ] Gabe approved/signed — execution mode: flip /partners/nlr to public copy, draft post-execution press release per Playbook §2
+  [ ] No response yet (Day __) — should we send a gentle nudge?
+  [ ] Unrelated NLR task: ______
+
+Details: _______
+```
+
+### What carries forward automatically (don't re-explain)
+
+The new Claude already has access to:
+
+| Item | Where it lives |
+|---|---|
+| All committed code/docs in `dchub-backend` and `dchub-frontend` | Both repos accessible via Bash/Read tools |
+| Persistent memory notes — project context, deploy architecture, CF Pages flap resolution, MCP auth chain, etc. | `~/.claude/projects/.../memory/` (global across forks) |
+| Gmail draft IDs | This Playbook §5 |
+| Stripe link, key prefixes, file paths, code paths | This Playbook §5 |
+| The unified MOU v1 (markdown + docx) | `docs/NLR_MOU_v1.md` + `.docx` |
+| Workflow state (deploy-pages.yml retry-loop, auto-deploys disabled in CF Dashboard) | Visible at runtime via probe |
+
+The new Claude won't need re-introduction to any of this. Just paste the seed + the new event.
+
+---
+
 ## Where we are right now
 
 | Item | State |
