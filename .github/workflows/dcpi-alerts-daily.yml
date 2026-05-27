@@ -1,0 +1,43 @@
+name: DCPI Alerts (daily verdict-shift digest)
+on:
+  schedule:
+    # r43-A (2026-05-27): fires once daily at 14:00 UTC = 09:00 ET /
+    # 06:00 PT. Sends a digest email to every active subscriber whose
+    # tracked markets shifted BUILD/CAUTION/AVOID since the last check.
+    # If no markets shifted, no email goes out — same-state days are
+    # silent by design. Subscribe at POST /api/v1/alerts/dcpi/subscribe.
+    - cron: '0 14 * * *'
+  workflow_dispatch: {}
+jobs:
+  send-alerts:
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    steps:
+      - name: Fire DCPI verdict-shift check + send digest
+        # Hits Railway directly to avoid the CF Worker 15s timeout. The
+        # check pulls all active subscriptions + diffs each market's
+        # current verdict against last_known_verdicts, sends email via
+        # the existing email_service.send_email infrastructure, and
+        # updates last_known_verdicts so the next call only fires on
+        # NEW shifts. Idempotent — safe to retry within the same day.
+        run: |
+          if [ -z "${{ secrets.DCHUB_ADMIN_KEY }}" ]; then
+            echo "::warning::DCHUB_ADMIN_KEY secret missing — skipping"
+            exit 0
+          fi
+          echo "─── Firing DCPI alerts check ──────────────────"
+          RESPONSE=$(curl -sS -X POST --max-time 120 \
+            "https://dchub-backend-production.up.railway.app/api/v1/alerts/dcpi/check" \
+            -H "X-Admin-Key: ${{ secrets.DCHUB_ADMIN_KEY }}")
+          echo "${RESPONSE}" | python3 -m json.tool || echo "::warning::Non-JSON response"
+
+          # Parse + summarize for the run log
+          SUBS=$(echo "${RESPONSE}" | python3 -c "import sys, json; print((json.load(sys.stdin) or {}).get('subscribers_checked', 0))" 2>/dev/null || echo "0")
+          SENT=$(echo "${RESPONSE}" | python3 -c "import sys, json; print((json.load(sys.stdin) or {}).get('emails_sent', 0))" 2>/dev/null || echo "0")
+          NO_SHIFTS=$(echo "${RESPONSE}" | python3 -c "import sys, json; print((json.load(sys.stdin) or {}).get('no_shifts', 0))" 2>/dev/null || echo "0")
+          echo ""
+          echo "═══════════════════════════════════════════════"
+          echo "Subscribers checked: ${SUBS}"
+          echo "Emails sent:         ${SENT}"
+          echo "No shifts (silent):  ${NO_SHIFTS}"
+          echo "═══════════════════════════════════════════════"
