@@ -479,7 +479,7 @@ def scan_all() -> list[dict]:
                                last_healthy_at, has_nav, stale_days,
                                data_age_src, content_hash,
                                prev_content_hash, prev_bytes)
-                            VALUES (%s,%s,%s,%s,%s,%s,%s,%s, NOW(),
+                            VALUES (%s,%s,%s,%s,%s,%s,%s,%s, NOW() ON CONFLICT DO NOTHING,
                                     CASE WHEN %s THEN NOW() ELSE NULL END,
                                     %s, %s, %s, %s, NULL, NULL)
                             ON CONFLICT (path) DO UPDATE SET

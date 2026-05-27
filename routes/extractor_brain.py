@@ -431,7 +431,7 @@ def observe():
             """INSERT INTO extraction_intelligence
                   (source_id, outcome, rows_inserted, duration_ms, error,
                    anomaly_score, observations, proposed_fix)
-               VALUES (%s, %s, %s, %s, %s, %s, %s, %s)
+               VALUES (%s, %s, %s, %s, %s, %s, %s, %s) ON CONFLICT DO NOTHING
                RETURNING id""",
             (source_id, outcome, rows_inserted, duration_ms, error_text,
              anomaly_score, json.dumps(observations), proposed_fix),
@@ -451,6 +451,7 @@ def observe():
 # GET /insights — daily-rolled summary
 # ---------------------------------------------------------------------------
 
+# AUTO-REPAIR: duplicate route '/insights' also in ai_orchestrator.py:951 — review and remove one
 @extractor_brain_bp.route("/insights", methods=["GET"])
 def get_insights():
     _ensure_tables()
@@ -493,6 +494,7 @@ def get_insights():
 # ---------------------------------------------------------------------------
 # GET /anomalies — recent anomalies
 # ---------------------------------------------------------------------------
+# AUTO-REPAIR: duplicate route '/anomalies' also in ai_orchestrator.py:959 — review and remove one
 
 @extractor_brain_bp.route("/anomalies", methods=["GET"])
 def get_anomalies():
@@ -709,6 +711,7 @@ def ask():
 
 # ---------------------------------------------------------------------------
 # GET /dashboard — HTML view
+# AUTO-REPAIR: duplicate route '/dashboard' also in main.py:14155 — review and remove one
 # ---------------------------------------------------------------------------
 
 @extractor_brain_bp.route("/dashboard", methods=["GET"])
@@ -818,6 +821,7 @@ def dashboard():
 
 
 # ---------------------------------------------------------------------------
+# AUTO-REPAIR: duplicate route '/health' also in main.py:3566 — review and remove one
 # GET /health
 # ---------------------------------------------------------------------------
 
