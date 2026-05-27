@@ -117,16 +117,34 @@ def _ensure_tables() -> None:
 # ---------------------------------------------------------------------------
 
 def _check_auth() -> Optional[tuple]:
-    expected = os.environ.get("DCHUB_ADMIN_SECRET", "dchub-admin-secret-2026")
+    """r47.39 (2026-05-26): accept any of three admin secrets. The PR
+    Publisher + a few legacy callers send 'dchub-admin-secret-2026' as
+    a bearer — that worked when DCHUB_ADMIN_SECRET wasn't set, then
+    started 401'ing once we set DCHUB_ADMIN_KEY on Railway. Brain class
+    `legacy_hardcoded_key_accepted` flags exactly this — widen accepted
+    keys until every caller migrates."""
     presented = ""
     auth = request.headers.get("Authorization", "")
     if auth.startswith("Bearer "):
         presented = auth[len("Bearer "):]
     elif request.headers.get("X-Admin-Key"):
         presented = request.headers["X-Admin-Key"]
-    if not presented or not hmac.compare_digest(presented, expected):
+    elif request.headers.get("X-Internal-Key"):
+        presented = request.headers["X-Internal-Key"]
+
+    if not presented:
         return jsonify(error="unauthorized"), 401
-    return None
+
+    candidates = [
+        os.environ.get("DCHUB_ADMIN_SECRET", ""),
+        os.environ.get("DCHUB_ADMIN_KEY", ""),
+        os.environ.get("DCHUB_INTERNAL_KEY", ""),
+        "dchub-admin-secret-2026",   # legacy fallback (PR Publisher etc.)
+    ]
+    for c in candidates:
+        if c and hmac.compare_digest(presented, c):
+            return None
+    return jsonify(error="unauthorized"), 401
 
 
 # ---------------------------------------------------------------------------
@@ -375,6 +393,92 @@ def heartbeat(source_id):
     except Exception as e:
         return jsonify(error=f"heartbeat failed: {type(e).__name__}: {e}"), 500
     return jsonify(run_id=run_id, status="recorded"), 200
+
+
+# ---------------------------------------------------------------------------
+# POST /archive-stale — disable sources that never reported in
+# ---------------------------------------------------------------------------
+# r47.39 (2026-05-26): user inspected the source registry, saw
+# 4 fresh / 8 stale / 4 dead / 33 NEVER RUN. The 33 includes:
+#   - 15 "cowork-*" sources from a planned-but-never-deployed setup
+#   - CF Workers (dchub-selfheal, dchub-cron, mcp-proxy) that ARE running
+#     per CF analytics but don't call /heartbeat
+#   - Backend scripts (seed_comprehensive_deals, fiber_integration, etc.)
+#     that may or may not run as advertised
+#
+# The "never ran in N days since registration" cohort is dead weight —
+# they clutter the dashboard but don't represent real data flow. Archive
+# them with enabled=FALSE so fresh/stale/dead counts reflect reality.
+
+@sources_bp.route("/archive-stale", methods=["POST"])
+def archive_stale():
+    """Disable sources whose `last_success_at IS NULL` AND were registered
+    more than N days ago. Default N=7 — anything registered a week ago
+    that hasn't heartbeat once is dead weight.
+
+    Params:
+      ?older_than_days=N    threshold (default 7)
+      ?id_prefix=cowork-    only archive matching prefix (e.g. cowork-, phase90-)
+      ?dry_run=1            preview without modifying
+
+    Idempotent. Re-runs are safe (only flips enabled=TRUE → FALSE)."""
+    err = _check_auth()
+    if err is not None:
+        return err
+    _ensure_tables()
+
+    try:
+        older_than = int(request.args.get("older_than_days", 7))
+    except (TypeError, ValueError):
+        older_than = 7
+    older_than = max(1, min(older_than, 365))
+    id_prefix  = (request.args.get("id_prefix") or "").strip()
+    dry_run    = request.args.get("dry_run") == "1"
+
+    sql_filter = """
+        last_success_at IS NULL
+          AND created_at < NOW() - INTERVAL %s
+          AND enabled = TRUE
+    """
+    params: list = [f"{older_than} days"]
+    if id_prefix:
+        sql_filter += " AND id LIKE %s"
+        params.append(id_prefix + "%")
+
+    try:
+        with _conn() as c, c.cursor() as cur:
+            cur.execute(
+                f"SELECT id, name, tier FROM source_registry WHERE {sql_filter}",
+                params,
+            )
+            candidates = [{"id": r[0], "name": r[1], "tier": r[2]}
+                          for r in cur.fetchall()]
+            archived = 0
+            if not dry_run and candidates:
+                cur.execute(
+                    f"""UPDATE source_registry SET enabled = FALSE,
+                                                    updated_at = NOW(),
+                                                    notes = COALESCE(notes, '')
+                                                            || ' [auto-archived ' || NOW()::text
+                                                            || ': never reported]'
+                          WHERE {sql_filter}""",
+                    params,
+                )
+                archived = cur.rowcount
+                c.commit()
+    except Exception as e:
+        return jsonify(error=f"archive failed: {type(e).__name__}: {e}"), 500
+
+    return jsonify({
+        "dry_run":          dry_run,
+        "older_than_days":  older_than,
+        "id_prefix":        id_prefix or None,
+        "matched":          len(candidates),
+        "archived":         archived,
+        "candidates":       candidates,
+        "hint": ("Set ?dry_run=0 (or omit) to actually flip enabled=FALSE. "
+                  "Filter by ?id_prefix=cowork- to scope to the Cowork ghost rows."),
+    }), 200
 
 
 # ---------------------------------------------------------------------------
