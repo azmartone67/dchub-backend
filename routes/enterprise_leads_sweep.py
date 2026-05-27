@@ -256,12 +256,77 @@ def run_sweep():
     except Exception as e:
         return jsonify({"error": str(e)[:300]}), 500
 
+    # r47.37.1: when 0 candidates, run a diagnostic so the operator
+    # understands WHY. Most paywall demand is anonymous (no key, no email)
+    # and our sweep only finds registered free-tier users — that's by
+    # design, but it's surprising the first time you run it on a young
+    # platform where most callers haven't signed up yet.
+    diagnostic = {}
+    if candidates == 0:
+        try:
+            with _conn() as c, c.cursor() as cur:
+                # Total paid-tool hits in window
+                cur.execute(f"""
+                    SELECT COUNT(*) FROM mcp_call_log
+                     WHERE timestamp > NOW() - INTERVAL '30 days'
+                       AND tool IN ({paid_tools_sql})
+                """)
+                total_paid_hits = int((cur.fetchone() or [0])[0])
+
+                # By tier (NULL key = anon)
+                cur.execute(f"""
+                    SELECT COALESCE(k.tier, '_anonymous') AS tier_bucket,
+                           COUNT(*) AS hits,
+                           COUNT(DISTINCT m.api_key) AS distinct_keys
+                      FROM mcp_call_log m
+                      LEFT JOIN mcp_dev_keys k ON k.api_key = m.api_key
+                     WHERE m.timestamp > NOW() - INTERVAL '30 days'
+                       AND m.tool IN ({paid_tools_sql})
+                     GROUP BY COALESCE(k.tier, '_anonymous')
+                     ORDER BY hits DESC
+                """)
+                by_tier = [{
+                    "tier":          r[0],
+                    "paid_hits_30d": int(r[1]),
+                    "distinct_keys": int(r[2] or 0),
+                } for r in cur.fetchall()]
+
+                # Free-tier keys with ANY paid-tool hit (even just 1)
+                cur.execute(f"""
+                    SELECT COUNT(DISTINCT m.api_key)
+                      FROM mcp_call_log m
+                      JOIN mcp_dev_keys k ON k.api_key = m.api_key
+                     WHERE m.timestamp > NOW() - INTERVAL '30 days'
+                       AND m.tool IN ({paid_tools_sql})
+                       AND k.tier IN ('free', 'developer')
+                """)
+                free_with_paid_hits = int((cur.fetchone() or [0])[0])
+
+            diagnostic = {
+                "total_paid_tool_hits_30d":     total_paid_hits,
+                "free_keys_with_any_paid_hit":  free_with_paid_hits,
+                "hits_by_tier":                 by_tier,
+                "interpretation":                (
+                    "Sweep returned 0 because no registered free-tier "
+                    "user made enough paid-tool calls to qualify. "
+                    "Most demand is anonymous (_anonymous bucket in "
+                    "hits_by_tier) — those callers have no email, so "
+                    "this sweep can't reach them. The /enterprise "
+                    "inquiry form is the right surface for inbound. "
+                    "The sweep will start finding candidates once free "
+                    "tier sign-ups start using the platform heavily."
+                ),
+            }
+        except Exception:
+            pass
+
     return jsonify({
         "ok":           True,
         "candidates":   candidates,
         "drafted":      len(drafted),
         "skipped_dupe": skipped_dupe,
         "leads":        drafted,
+        "diagnostic":   diagnostic,
         "review_url":   "/admin/partnerships/review",
         "hint":         "Review drafts then POST /approve/<id> to send via Resend.",
     }), 200
@@ -388,6 +453,100 @@ def reject_draft(draft_id):
         return jsonify({"ok": True, "id": draft_id, "rejected": n > 0}), 200
     except Exception as e:
         return jsonify({"error": str(e)[:200]}), 500
+
+
+@enterprise_leads_bp.route("/api/v1/admin/enterprise/leads/anonymous-demand",
+                            methods=["GET"], strict_slashes=False)
+def anonymous_demand():
+    """Admin — where the unaddressable paywall demand is concentrated.
+
+    Anonymous callers (no api_key OR not in mcp_dev_keys) can't be
+    emailed, but we can see WHICH tools they hit and from WHAT IPs
+    (hashed). If a single hashed-IP shows up with hundreds of paid-tool
+    hits, that's a real prospect — they're just not signed up yet.
+
+    Use this to:
+      - Spot organizations doing heavy due-diligence anonymously
+      - Reach out via the tools they're hitting (which signals intent)
+      - Improve free-tier teasers for tools where anon demand is high
+
+    Returns aggregated counts, never raw IPs."""
+    if not _is_admin(request):
+        return jsonify({"error": "unauthorized"}), 401
+    if not (_pg and _dsn()):
+        return jsonify({"error": "no_db"}), 503
+
+    paid_tools_sql = ",".join(f"'{t}'" for t in _PAID_TOOLS)
+    try:
+        with _conn() as c, c.cursor(cursor_factory=psycopg2.extras.RealDictCursor) as cur:
+            # Top tools by anonymous paid-tool hits
+            cur.execute(f"""
+                SELECT m.tool, COUNT(*) AS hits,
+                       COUNT(DISTINCT m.session_id) AS distinct_sessions
+                  FROM mcp_call_log m
+                  LEFT JOIN mcp_dev_keys k ON k.api_key = m.api_key
+                 WHERE m.timestamp > NOW() - INTERVAL '30 days'
+                   AND m.tool IN ({paid_tools_sql})
+                   AND k.api_key IS NULL    -- no matching dev key = anonymous
+                 GROUP BY m.tool
+                 ORDER BY hits DESC LIMIT 12
+            """)
+            top_tools = [dict(r) for r in cur.fetchall()]
+
+            # Top hashed sessions / IPs (anonymous heavies)
+            cur.execute(f"""
+                SELECT
+                  LEFT(COALESCE(m.session_id, ''), 12) AS session_prefix,
+                  COUNT(*) AS hits,
+                  COUNT(DISTINCT m.tool) AS distinct_tools,
+                  ARRAY_AGG(DISTINCT m.tool ORDER BY m.tool) AS tools_attempted,
+                  MIN(m.timestamp) AS first_seen,
+                  MAX(m.timestamp) AS last_seen
+                  FROM mcp_call_log m
+                  LEFT JOIN mcp_dev_keys k ON k.api_key = m.api_key
+                 WHERE m.timestamp > NOW() - INTERVAL '30 days'
+                   AND m.tool IN ({paid_tools_sql})
+                   AND k.api_key IS NULL
+                   AND m.session_id IS NOT NULL AND m.session_id <> ''
+                 GROUP BY LEFT(COALESCE(m.session_id, ''), 12)
+                HAVING COUNT(*) >= 5
+                 ORDER BY hits DESC LIMIT 20
+            """)
+            heavy_anon = [dict(r) for r in cur.fetchall()]
+            for h in heavy_anon:
+                for k in ('first_seen', 'last_seen'):
+                    if h.get(k): h[k] = h[k].isoformat()
+                if isinstance(h.get('tools_attempted'), list):
+                    h['tools_attempted'] = list(h['tools_attempted'])[:6]
+
+            # Platform breakdown for the anon traffic
+            cur.execute(f"""
+                SELECT COALESCE(NULLIF(m.platform,''), 'unknown') AS platform,
+                       COUNT(*) AS hits
+                  FROM mcp_call_log m
+                  LEFT JOIN mcp_dev_keys k ON k.api_key = m.api_key
+                 WHERE m.timestamp > NOW() - INTERVAL '30 days'
+                   AND m.tool IN ({paid_tools_sql})
+                   AND k.api_key IS NULL
+                 GROUP BY platform
+                 ORDER BY hits DESC LIMIT 10
+            """)
+            platforms = [dict(r) for r in cur.fetchall()]
+    except Exception as e:
+        return jsonify({"error": str(e)[:200]}), 500
+
+    return jsonify({
+        "window":              "30 days",
+        "top_anon_tools":      top_tools,
+        "heavy_anon_sessions": heavy_anon,
+        "anon_by_platform":    platforms,
+        "hint":                ("Heavy anonymous sessions on paid tools = real "
+                                 "prospects who haven't signed up. Add a free-key "
+                                 "CTA into the response payload of the top tools "
+                                 "they hit (already done for fiber/intel in r47.34). "
+                                 "Convert them by sign-up, then they enter the "
+                                 "weekly /sweep candidate pool."),
+    }), 200
 
 
 @enterprise_leads_bp.route("/api/v1/admin/enterprise/leads/pipeline-stats",
