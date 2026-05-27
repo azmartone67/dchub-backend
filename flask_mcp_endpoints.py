@@ -881,6 +881,54 @@ def mcp_funnel():
             except Exception:
                 out["tool_calls_30d"] = None
 
+            # r42y (2026-05-26): pull the TRUE lifetime number from the
+            # ai_cumulative aggregate table — same source as the public
+            # /api/public/mcp-count widget (389K+ across all platforms,
+            # not just the 126K mcp_tool_calls row count). Press copy
+            # should cite ai_agent_requests_total as the headline.
+            try:
+                cur.execute("SELECT COALESCE(SUM(total_requests), 0) FROM ai_cumulative")
+                out["ai_agent_requests_total"] = int((cur.fetchone() or [0])[0])
+            except Exception:
+                out["ai_agent_requests_total"] = None
+
+            try:
+                cur.execute(
+                    "SELECT platform, name, total_requests FROM ai_cumulative "
+                    "ORDER BY total_requests DESC LIMIT 10"
+                )
+                out["ai_agent_top_platforms"] = [
+                    {"platform": r[0], "name": r[1], "requests": int(r[2] or 0)}
+                    for r in cur.fetchall()
+                ]
+            except Exception:
+                out["ai_agent_top_platforms"] = []
+
+            # Pre-calculated acceleration fields for press copy. Ratio
+            # of recent-to-lifetime is the genuine moat story.
+            try:
+                _ai_total = out.get("ai_agent_requests_total") or out.get("tool_calls_total") or 0
+                _30 = out.get("tool_calls_30d") or 0
+                _7 = out.get("tool_calls_7d") or 0
+                if _ai_total > 0 and _30 > 0:
+                    out["pct_30d_of_lifetime"] = round(100.0 * _30 / _ai_total, 1)
+                    out["pct_7d_of_lifetime"]  = round(100.0 * _7  / _ai_total, 1)
+                    out["annualized_run_rate_from_7d"] = int(_7 * 52)
+                else:
+                    out["pct_30d_of_lifetime"] = None
+                    out["pct_7d_of_lifetime"]  = None
+                    out["annualized_run_rate_from_7d"] = None
+                # Press-ready single-sentence signal
+                if out.get("ai_agent_requests_total"):
+                    _t = out["ai_agent_requests_total"]
+                    out["press_headline_metric"] = (
+                        f"DC Hub has served {_t:,} AI-agent requests "
+                        f"across Claude, ChatGPT, Gemini, Copilot, "
+                        f"Perplexity, and more since launch."
+                    )
+            except Exception:
+                pass
+
             cur.execute(
                 "SELECT COUNT(*) FROM mcp_upgrade_signals WHERE created_at >= NOW() - INTERVAL '7 days'"
             )
