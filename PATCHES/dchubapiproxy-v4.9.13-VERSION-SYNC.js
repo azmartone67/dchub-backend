@@ -1,6 +1,46 @@
 /**
- * DC Hub API Proxy Worker v4.9.12 — defer /pricing/upgrade to Flask
+ * DC Hub API Proxy Worker v4.9.16 — starter-tier sync (+ /mcp/manifest inline)
  * ================================================================================
+ * v4.9.16 CHANGES (May 26 2026) — Phase r49.10:
+ *   - FIX: /mcp/manifest inline pricing was missed in v4.9.15. Still
+ *          said `pro $199 / enterprise $499` with no Starter. Now adds
+ *          anonymous + free + starter $9 + developer + pro + enterprise
+ *          matching .well-known/mcp.json. Exposes starter_url +
+ *          developer_url + cited_by at top level.
+ *
+ * v4.9.15 CHANGES (May 26 2026) — Phase r49.9:
+ *   - SYNC: MCP_SERVER_INFO.version 2.1.5 → 2.1.11 (matches live
+ *          dchub-mcp-server). Discovery surfaces (.well-known/mcp.json,
+ *          mcp/server-card.json) were stuck on 2.1.5 even after the
+ *          tool list moved to 29.
+ *   - ADD: $9 Starter tier across pricing blocks (.well-known/mcp.json,
+ *          .well-known/mcp/server-card.json). Also exposes starter_url
+ *          + developer_url Stripe direct-buy URLs at top level so AI
+ *          agents discovering via these manifests can paste a Stripe
+ *          link inline. Pairs with the c334511 isError=true patch +
+ *          the tool-aware redeem landing (20cc228b).
+ *   - FIX: MCP_LANDING_HTML_V1 description "40 tools" → "29 tools"
+ *          (matches every other surface).
+ *
+ * v4.9.14 CHANGES (May 26 2026) — Phase r49.8:
+ *   - SQUEEZE: free results_limit 5→2. 7-day data showed 990 unique
+ *          sessions hit the paywall and 0 converted — agents were
+ *          getting enough data from the 5-result preview to answer
+ *          users without ever surfacing the $9 Starter Stripe link.
+ *          Tightening to 2 results forces substantive queries to
+ *          actually trigger the paywall message. Pairs with the
+ *          dchub-mcp-server isError=true patch (c334511) and the
+ *          tool-aware redeem landing (20cc228b) shipped in parallel.
+ *   - PRESERVES: everything from v4.9.13 + earlier.
+ *
+ * v4.9.13 CHANGES (May 25 2026) — Phase r48:
+ *   - ADD: 8 new MCP tools to MCP_FALLBACK_TOOLS so /.well-known/mcp.json
+ *          + /mcp/manifest match the live dchub-mcp-server v2.1.10
+ *          tool list. Pre-r48 the discovery surfaces advertised 21
+ *          tools when the server actually serves 29.
+ *   - UPD: MCP_SERVER_INFO.description with interconnection queue +
+ *          AI capacity + hyperscaler deal tracker callouts; 10 ISOs.
+ *
  * v4.9.12 CHANGES (May 25 2026) — Phase ZZZZZ-round38.6:
  *   - REMOVE: Inline /pricing/upgrade + /pricing handlers. They had
  *          hardcoded STRIPE_DEVELOPER_CHECKOUT URL pointing at the
@@ -338,7 +378,7 @@ const MCP_BACKEND     = 'https://dchub-mcp-server-production-4d2e.up.railway.app
 // dchub-frontend Pages worker v4.24.0-switzerland failover chain so
 // api.dchub.cloud has the same resilience as dchub.cloud.
 const RENDER_BACKEND  = 'https://dchub-backend-render.onrender.com';
-const WORKER_VERSION = '4.9.14-free-preview-squeeze';
+const WORKER_VERSION = '4.9.16-starter-tier-sync';
 
 // v4.9.8: convert 429 responses into a structured signup nudge so
 // rate-limited attention becomes funnel entry. Detects JSON vs HTML
@@ -469,7 +509,7 @@ function isFlaskHtmlPath(pathname) {
 // ─────────────────────────────────────────────────────────────────
 const MCP_SERVER_INFO = {
   name:             'DC Hub Intelligence',
-  version:          '2.1.5',
+  version:          '2.1.11',
   description:      'Real-time data center intelligence: 21,000+ facilities, 10 ISO grid data (7 US + Hydro-Quebec, AESO, Nord Pool), fiber routes, M&A deals, capacity pipeline, interconnection queue snapshots, daily AI capacity index, hyperscaler $1B+ deal tracker.',
   url:              'https://dchub.cloud/mcp',
   transport:        'streamable-http',
@@ -491,7 +531,7 @@ const MCP_LANDING_HTML_V1 = `<!DOCTYPE html>
 <html lang="en"><head>
 <meta charset="utf-8"><meta name="viewport" content="width=device-width, initial-scale=1">
 <title>Connect DC Hub MCP · Claude, Cursor, Cline</title>
-<meta name="description" content="Add DC Hub's MCP server to any AI agent runtime. 40 tools, 21,000+ facilities, no signup for free tier.">
+<meta name="description" content="Add DC Hub's MCP server to any AI agent runtime. 29 tools, 21,000+ facilities, no signup for free tier.">
 <link rel="preconnect" href="https://fonts.googleapis.com">
 <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
 <link href="https://fonts.googleapis.com/css2?family=Instrument+Sans:wght@400;500;600;700;800&family=JetBrains+Mono:wght@500;600;700&display=swap" rel="stylesheet">
@@ -525,7 +565,7 @@ const MCP_LANDING_HTML_V1 = `<!DOCTYPE html>
 <header>
   <div class="eyebrow">Model Context Protocol · MCP Server</div>
   <h1>Connect DC Hub to your AI in 30 seconds.</h1>
-  <p class="lead">Native MCP server. 40 tools covering 21,000+ facilities, M&amp;A, grid intelligence, fiber, water risk, tax incentives. No signup needed for the free tier.</p>
+  <p class="lead">Native MCP server. 29 tools covering 21,000+ facilities, M&amp;A, grid intelligence, fiber, water risk, tax incentives. No signup needed for the free tier.</p>
 </header>
 
 <div class="urlbox">
@@ -1781,12 +1821,17 @@ function wellKnownResponse(pathname) {
       tools_count:    MCP_FALLBACK_TOOLS.length,
       authentication: { type: 'api_key', header: 'X-API-Key', optional_for: ['free_tier'] },
       pricing: {
-        free_tier:  `10 requests/day, ${MCP_FALLBACK_TOOLS.length} tools available, 5 results per call`,
-        developer:  `$49/mo — 1,000 requests/day, all ${MCP_FALLBACK_TOOLS.length} tools, full results`,
-        pro:        '$199/mo — 10,000 requests/day',
-        enterprise: 'Custom — 100,000 requests/day',
+        anonymous:  '10 calls/day, no signup, 2 results per query',
+        free_tier:  `Free dev key (email signup) — 1,000 calls/day, ${MCP_FALLBACK_TOOLS.length} tools, no credit card`,
+        starter:    '$9/mo — 10,000 calls/day, unlocks every paid tool except Pro-only ones',
+        developer:  `$49/mo — unlimited paid tools, full result sets, all ${MCP_FALLBACK_TOOLS.length} tools`,
+        pro:        '$199/mo — unlimited + Pro tools (grid_intelligence, fiber_intel, analyze_site, compare_sites)',
+        enterprise: 'Custom — dedicated support, SLAs, custom integrations',
       },
       gated_tools:   ['get_intelligence_index', 'compare_sites', 'analyze_site', 'get_infrastructure', 'get_fiber_intel', 'get_grid_intelligence'],
+      starter_url:   'https://buy.stripe.com/8x2dRa5sS0x75uteGuaZi0g',
+      developer_url: 'https://buy.stripe.com/7sY5kE8F4fs13mI0PEaZi0c',
+      cited_by:      ['ChatGPT', 'Claude', 'Gemini', 'Perplexity', 'Groq'],
       contact:       MCP_SERVER_INFO.contact,
       documentation: MCP_SERVER_INFO.documentation,
       signup_url:    MCP_SERVER_INFO.signup_url,
@@ -1812,11 +1857,15 @@ function wellKnownResponse(pathname) {
       tools_count:    MCP_FALLBACK_TOOLS.length,
       gated_tools:    ['get_intelligence_index', 'compare_sites', 'analyze_site', 'get_infrastructure', 'get_fiber_intel', 'get_grid_intelligence'],
       pricing: {
-        free:       `10 calls/day, 5 results per call, ${MCP_FALLBACK_TOOLS.length} tools`,
-        developer:  `$49/mo — 1,000 calls/day, all ${MCP_FALLBACK_TOOLS.length} tools, full results`,
-        pro:        '$199/mo — 10,000 calls/day',
-        enterprise: 'Custom — 100,000 calls/day',
+        anonymous:  '10 calls/day, no signup, 2 results per query',
+        free:       `Free dev key (email signup) — 1,000 calls/day, ${MCP_FALLBACK_TOOLS.length} tools`,
+        starter:    '$9/mo — 10,000 calls/day, unlocks paid tools',
+        developer:  `$49/mo — unlimited paid tools, all ${MCP_FALLBACK_TOOLS.length} tools, full results`,
+        pro:        '$199/mo — unlimited + Pro tools',
+        enterprise: 'Custom — dedicated support, SLAs',
       },
+      starter_url:   'https://buy.stripe.com/8x2dRa5sS0x75uteGuaZi0g',
+      developer_url: 'https://buy.stripe.com/7sY5kE8F4fs13mI0PEaZi0c',
       documentation: MCP_SERVER_INFO.documentation,
       signup_url:    MCP_SERVER_INFO.signup_url,
     }, null, 2), { status: 200, headers: { ...headers, 'Content-Type': 'application/json; charset=utf-8' } });
@@ -2371,11 +2420,16 @@ export default {
         tools_count:     MCP_FALLBACK_TOOLS.length,
         tools_endpoint:  'POST /mcp with {"jsonrpc":"2.0","id":1,"method":"tools/list"}',
         pricing: {
-          free:       `10 calls/day, truncated results, ${MCP_FALLBACK_TOOLS.length} tools available`,
-          developer:  `$49/mo — 1,000/day, all ${MCP_FALLBACK_TOOLS.length} tools, full results`,
-          pro:        '$199/mo — 10,000/day',
-          enterprise: '$499/mo — 100,000/day',
+          anonymous:  '10 calls/day, no signup, 2 results per query',
+          free:       `Free dev key (email signup) — 1,000 calls/day, ${MCP_FALLBACK_TOOLS.length} tools, no credit card`,
+          starter:    '$9/mo — 10,000 calls/day, unlocks every paid tool except Pro-only ones',
+          developer:  `$49/mo — unlimited paid tools, all ${MCP_FALLBACK_TOOLS.length} tools, full results`,
+          pro:        '$199/mo — unlimited + Pro tools (grid_intelligence, fiber_intel, analyze_site, compare_sites)',
+          enterprise: 'Custom — dedicated support, SLAs, custom integrations',
         },
+        starter_url:   'https://buy.stripe.com/8x2dRa5sS0x75uteGuaZi0g',
+        developer_url: 'https://buy.stripe.com/7sY5kE8F4fs13mI0PEaZi0c',
+        cited_by:      ['ChatGPT', 'Claude', 'Gemini', 'Perplexity', 'Groq'],
         documentation: MCP_SERVER_INFO.documentation,
         signup_url:    MCP_SERVER_INFO.signup_url,
       }, null, 2), {
