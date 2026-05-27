@@ -398,6 +398,7 @@ def get_infrastructure_layer(layer_id):
     return jsonify(response)
 
 
+# AUTO-REPAIR: duplicate route '/api/v2/infrastructure/hifld/substations' also in hifld_neon_routes.py:35 — review and remove one
 @expanded_infra_bp.route('/api/v2/infrastructure/hifld/substations', methods=['GET'])
 def get_substations():
     """Query substations from Neon PostgreSQL (with ArcGIS fallback)."""
@@ -495,6 +496,7 @@ def get_substations():
             'substations': []
         }), 500
 
+# AUTO-REPAIR: duplicate route '/api/v2/infrastructure/hifld/transmission' also in hifld_neon_routes.py:122 — review and remove one
 
 @expanded_infra_bp.route('/api/v2/infrastructure/hifld/transmission', methods=['GET'])
 def get_hifld_transmission():
@@ -623,6 +625,7 @@ def get_hifld_transmission():
             'count': 0,
             'transmission_lines': []
         }), 500
+# AUTO-REPAIR: duplicate route '/api/v2/infrastructure/hifld/gas-pipelines' also in hifld_neon_routes.py:80 — review and remove one
 
 
 @expanded_infra_bp.route('/api/v2/infrastructure/hifld/gas-pipelines', methods=['GET'])
