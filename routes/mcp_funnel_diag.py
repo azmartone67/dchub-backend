@@ -580,30 +580,38 @@ def users_inspect():
             """)
             cols = {r[0] for r in cur.fetchall()}
             out["_mcp_conversions_cols"] = sorted(list(cols))[:20]
-            # Build the SELECT dynamically based on what columns exist
-            has_email = "email" in cols
-            has_devid = "developer_id" in cols or "key_id" in cols
-            email_col = "email" if has_email else ("NULL::text AS email")
+            # r-userinsp-cols (2026-05-27): mcp_conversions canonical schema:
+            #   user_email, plan_to, mrr_cents, source, stripe_customer_id,
+            #   stripe_subscription_id, attribution_signal_id, created_at
+            # plan_to = current plan; plan_from = previous (for upgrades)
+            email_col = "user_email" if "user_email" in cols else ("email" if "email" in cols else "NULL::text")
+            plan_col  = "plan_to"    if "plan_to"    in cols else ("plan"  if "plan"  in cols else "NULL::text")
+            src_col   = "source"     if "source"     in cols else "NULL::text"
+            stripe_col = "stripe_customer_id" if "stripe_customer_id" in cols else "NULL::text"
             cur.execute(f"""
-                SELECT {email_col}, plan, mrr_cents, created_at,
-                       EXTRACT(DAY FROM NOW() - created_at)::int AS days_old
+                SELECT {email_col}, {plan_col}, mrr_cents, created_at,
+                       EXTRACT(DAY FROM NOW() - created_at)::int AS days_old,
+                       {src_col}, {stripe_col}
                   FROM mcp_conversions
                  WHERE (mrr_cents IS NOT NULL AND mrr_cents > 0)
-                    OR plan ILIKE '%research%' OR plan ILIKE '%founding%'
+                    OR {plan_col} ILIKE '%research%' OR {plan_col} ILIKE '%founding%'
                  ORDER BY mrr_cents DESC NULLS LAST
                  LIMIT 25
             """)
             paying = []
-            for email, plan, mrr_cents, created_at, days_old in cur.fetchall():
+            for email, plan, mrr_cents, created_at, days_old, src, stripe_id in cur.fetchall():
                 paying.append({
                     "email":       _mask_email(email),
                     "plan":        plan,
                     "mrr_usd":     round((mrr_cents or 0) / 100.0, 2),
                     "days_active": int(days_old or 0),
                     "created_at":  created_at.isoformat() if created_at else None,
+                    "source":      src,
+                    "has_stripe":  bool(stripe_id),
                 })
             out["paying_customers"] = paying
             out["paying_customer_count"] = len(paying)
+            out["paying_total_mrr_usd"] = round(sum(p["mrr_usd"] for p in paying), 2)
     except Exception as e:
         out["paying_customers_error"] = str(e)[:160]
 
@@ -673,16 +681,51 @@ def users_inspect():
                  ORDER BY calls DESC
                  LIMIT 20
             """)
+            # r-userinsp-actions (2026-05-27): classify each session + suggest
+            # a concrete next-step action. Three buckets:
+            #   1. Identical tool sweep + 10+ calls → likely scraper/aggregator.
+            #      Recommend rate-limit watch or contact-form prompt.
+            #   2. Hit a PRO tool (grid_intelligence/fiber_intel/analyze_site/
+            #      compare_sites) → high-intent. Next paywall surfaces the
+            #      $9 Starter CTA — wait + watch for conversion.
+            #   3. Varied free-tier tools → real user discovering. Next paid
+            #      tool call surfaces redeem URL — wait for email signup.
+            PRO_TOOLS = {'analyze_site', 'compare_sites', 'get_grid_intelligence',
+                         'get_fiber_intel', 'get_dchub_recommendation'}
+            SCRAPER_SIGNATURE = {'get_agent_registry', 'get_energy_prices', 'get_facility',
+                                 'get_fiber_intel', 'get_grid_data'}
             anons = []
             for platform, sid, calls, tools, last_seen in cur.fetchall():
+                tool_set = set(tools or [])
+                hit_pro = bool(tool_set & PRO_TOOLS)
+                scraper_match = len(tool_set & SCRAPER_SIGNATURE) >= 4 and calls >= 10
+                if scraper_match:
+                    action = ("SCRAPER pattern (identical 4+ tool sweep, 10+ calls). "
+                              "Not a conversion target. Consider per-session rate limit or "
+                              "X-DC-Welcome header on next response asking to identify.")
+                elif hit_pro:
+                    action = ("HIGH-INTENT — hit a Pro tool. r51 isError paywall will surface "
+                              "the $9 Starter Stripe link on next call. Watch this session for "
+                              "redeem-URL click within 24h.")
+                else:
+                    action = ("REAL USER exploring free tools. They'll hit a metrics-tool "
+                              "paywall (now $9 Starter gated) within a few more calls. The redeem "
+                              "URL in the trial_preview response is the conversion vehicle.")
                 anons.append({
-                    "platform":   platform,
-                    "session":    (sid or "")[:16] + "..." if sid else None,
-                    "calls_7d":   int(calls or 0),
-                    "top_tools":  list(tools or [])[:5],
-                    "last_seen":  last_seen.isoformat() if last_seen else None,
+                    "platform":     platform,
+                    "session":      (sid or "")[:16] + "..." if sid else None,
+                    "calls_7d":     int(calls or 0),
+                    "top_tools":    list(tools or [])[:5],
+                    "last_seen":    last_seen.isoformat() if last_seen else None,
+                    "classification": "scraper" if scraper_match else ("high_intent" if hit_pro else "real_user"),
+                    "action_pitch": action,
                 })
             out["high_activity_anon"] = anons
+            out["high_activity_anon_summary"] = {
+                "scraper_sessions":     sum(1 for a in anons if a["classification"] == "scraper"),
+                "high_intent_sessions": sum(1 for a in anons if a["classification"] == "high_intent"),
+                "real_user_sessions":   sum(1 for a in anons if a["classification"] == "real_user"),
+            }
     except Exception as e:
         out["high_activity_anon_error"] = str(e)[:160]
 
