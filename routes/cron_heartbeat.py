@@ -193,6 +193,29 @@ _DISPATCH = [
      f"{BASE}/api/v1/admin/press-outreach/generate-drafts?top=3&min_priority=6",
      "POST",
      lambda now: now.weekday() == 3 and now.hour == 14 and now.minute < 10),
+
+    # r47.39.1 (2026-05-26): proxy heartbeat for CF Workers. The
+    # dchub-selfheal / dchub-cron / arcgis-proxy workers live in CF's
+    # Workers runtime, out of this repo. CF analytics confirms they're
+    # firing (selfheal: 294 invocations/24h). The "right" fix is for
+    # each worker to call /heartbeat directly from its scheduled handler
+    # (see PATCHES/CF-WORKER-HEARTBEAT-SNIPPET.md), but until the operator
+    # pastes that snippet, the backend pings on the worker's behalf
+    # hourly. If a worker actually goes down, CF analytics + the brain's
+    # land_power_endpoint_5xx / site_sentinel detectors will catch it
+    # separately — this just keeps the source-registry honest.
+    ("proxy_heartbeat_cf_selfheal",
+     f"{BASE}/api/v1/sources/cf-selfheal/heartbeat",
+     "POST",
+     lambda now: now.minute >= 11 and now.minute < 16),
+    ("proxy_heartbeat_cf_dchub_cron",
+     f"{BASE}/api/v1/sources/cf-dchub-cron/heartbeat",
+     "POST",
+     lambda now: now.minute >= 12 and now.minute < 17),
+    ("proxy_heartbeat_cf_arcgis_proxy",
+     f"{BASE}/api/v1/sources/cf-arcgis-proxy/heartbeat",
+     "POST",
+     lambda now: now.minute >= 13 and now.minute < 18),
 ]
 
 
