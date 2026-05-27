@@ -2929,7 +2929,12 @@ DCPI_MARKET_TEMPLATE = """<!DOCTYPE html>
 <meta name="viewport" content="width=device-width, initial-scale=1">
 <meta property="og:title" content="DCPI {{ s.market_name }} · Excess {{ s.excess_power_score }} · Constraint {{ s.constraint_score }}">
 <meta property="og:description" content="{{ s.verdict }} · ~{{ (s.time_to_power_months or 0)|round(0)|int }} months to power. Updated daily.">
-<meta property="og:image" content="https://dchub.cloud/dcpi/og/{{ s.market_slug }}.svg">
+<meta property="og:image" content="https://dchub.cloud/dcpi/og/{{ s.market_slug }}.png">
+<meta property="og:image:width" content="1200">
+<meta property="og:image:height" content="630">
+<meta property="og:image:type" content="image/png">
+<meta name="twitter:card" content="summary_large_image">
+<meta name="twitter:image" content="https://dchub.cloud/dcpi/og/{{ s.market_slug }}.png">
 <link href="https://fonts.googleapis.com/css2?family=JetBrains+Mono:wght@400;500;600;700&family=Inter:wght@400;500;600;700;800&display=swap" rel="stylesheet">
 <style>
 :root {
@@ -3637,6 +3642,114 @@ def og_card(slug):
 </svg>"""
     return Response(svg, mimetype="image/svg+xml",
                     headers={"Cache-Control": "public, max-age=600, must-revalidate"})
+
+
+# r42w (2026-05-26): PNG OG card for /dcpi/<slug>. LinkedIn cards render
+# SVG inconsistently — most posts come back with bare-link, no thumbnail.
+# PIL-based 1200x630 PNG renders reliably in every platform's link card.
+@dcpi_bp.route("/dcpi/og/<slug>.png", methods=["GET"])
+def og_card_png(slug):
+    """1200x630 PNG card for LinkedIn/X/Bluesky/Slack link-card previews."""
+    _ensure_tables()
+    with _conn() as c, c.cursor(cursor_factory=psycopg2.extras.RealDictCursor) as cur:
+        cur.execute("""SELECT * FROM market_power_scores WHERE market_slug = %s
+                       ORDER BY computed_at DESC LIMIT 1""", (slug,))
+        s = cur.fetchone()
+    if not s:
+        return Response("not found", status=404)
+
+    from PIL import Image, ImageDraw, ImageFont
+    import io as _io
+
+    excess = int(s.get("excess_power_score") or 0)
+    constraint = int(s.get("constraint_score") or 0)
+    ttp = int(s.get("time_to_power_months") or 0)
+    market = s.get("market_name") or slug
+    iso = s.get("iso") or "—"
+    verdict = s.get("verdict") or "—"
+
+    verdict_color = {"BUILD": (16, 185, 129),
+                     "CAUTION": (245, 158, 11),
+                     "AVOID": (239, 68, 68)}.get(verdict, (156, 163, 175))
+    excess_color = ((16, 185, 129) if excess >= 65 else
+                    (245, 158, 11) if excess >= 40 else (239, 68, 68))
+
+    img = Image.new("RGB", (1200, 630), (10, 10, 18))
+    draw = ImageDraw.Draw(img)
+
+    # Subtle gradient background — two-tone vertical
+    for y in range(630):
+        t = y / 630.0
+        r = int(10 + t * 16)
+        g = int(10 + t * 16)
+        b = int(18 + t * 30)
+        draw.line([(0, y), (1200, y)], fill=(r, g, b))
+
+    # Top brand strip
+    draw.rectangle([(0, 0), (1200, 6)], fill=(99, 102, 241))
+
+    # Fonts (graceful fallback if not available)
+    try:
+        f_label = ImageFont.truetype("/System/Library/Fonts/Helvetica.ttc", 22)
+        f_market = ImageFont.truetype("/System/Library/Fonts/Helvetica.ttc", 64)
+        f_iso = ImageFont.truetype("/System/Library/Fonts/Helvetica.ttc", 28)
+        f_score = ImageFont.truetype("/System/Library/Fonts/Helvetica.ttc", 96)
+        f_score_lbl = ImageFont.truetype("/System/Library/Fonts/Helvetica.ttc", 20)
+        f_verdict = ImageFont.truetype("/System/Library/Fonts/Helvetica.ttc", 40)
+        f_foot = ImageFont.truetype("/System/Library/Fonts/Helvetica.ttc", 20)
+    except (OSError, IOError):
+        f_label = ImageFont.load_default()
+        f_market = ImageFont.load_default()
+        f_iso = ImageFont.load_default()
+        f_score = ImageFont.load_default()
+        f_score_lbl = ImageFont.load_default()
+        f_verdict = ImageFont.load_default()
+        f_foot = ImageFont.load_default()
+
+    draw.text((60, 50), "DCPI · DC HUB POWER INDEX", fill=(156, 163, 175), font=f_label)
+    draw.text((60, 105), market[:30], fill=(255, 255, 255), font=f_market)
+    draw.text((60, 195), f"{iso}", fill=(156, 163, 175), font=f_iso)
+
+    # Verdict pill
+    pill_x, pill_y = 60, 250
+    verdict_text = verdict
+    bbox = draw.textbbox((pill_x, pill_y), verdict_text, font=f_verdict)
+    pw = (bbox[2] - bbox[0]) + 40
+    ph = (bbox[3] - bbox[1]) + 16
+    draw.rounded_rectangle([(pill_x - 10, pill_y - 8),
+                             (pill_x - 10 + pw, pill_y - 8 + ph)],
+                            radius=12, fill=verdict_color)
+    draw.text((pill_x + 10, pill_y - 4), verdict_text,
+              fill=(10, 14, 26), font=f_verdict)
+
+    # Score blocks
+    draw.text((60, 360), "Excess Power", fill=(156, 163, 175), font=f_score_lbl)
+    draw.text((60, 390), f"{excess}", fill=excess_color, font=f_score)
+
+    constraint_color = ((239, 68, 68) if constraint >= 70 else
+                        (245, 158, 11) if constraint >= 45 else (16, 185, 129))
+    draw.text((420, 360), "Constraint", fill=(156, 163, 175), font=f_score_lbl)
+    draw.text((420, 390), f"{constraint}", fill=constraint_color, font=f_score)
+
+    draw.text((780, 360), "Time to Power", fill=(156, 163, 175), font=f_score_lbl)
+    draw.text((780, 390), f"{ttp}mo", fill=(255, 255, 255), font=f_score)
+
+    # Footer
+    draw.text((60, 570), f"dchub.cloud/dcpi/{slug}  ·  CC-BY-4.0",
+              fill=(156, 163, 175), font=f_foot)
+
+    buf = _io.BytesIO()
+    img.save(buf, format="PNG", optimize=True)
+    buf.seek(0)
+    return Response(
+        buf.read(),
+        mimetype="image/png",
+        headers={
+            "Cache-Control": "public, max-age=3600, s-maxage=3600",
+            "X-DC-Card-Slug": slug,
+            "X-DC-Card-Format": "png",
+        },
+    )
 
 
 # === Phase FF (2026-05-21): three live-bug fixes ===
