@@ -235,11 +235,12 @@ def check_and_send():
                 continue
 
             # Build digest email
-            shift_lines = "\n".join(
-                f"  • {s['market']}: <strong>{s['from']}</strong> → <strong>{s['to']}</strong>"
-                f' (<a href="https://dchub.cloud/dcpi/{s[\"market\"]}">view →</a>)'
-                for s in shifts
-            )
+            def _shift_line(s):
+                slug = s['market']
+                return (f"  • {slug}: <strong>{s['from']}</strong> → "
+                        f"<strong>{s['to']}</strong> "
+                        f'(<a href="https://dchub.cloud/dcpi/{slug}">view →</a>)')
+            shift_lines = "\n".join(_shift_line(s) for s in shifts)
             subject = f"DC Hub · {len(shifts)} DCPI verdict shift{'s' if len(shifts) > 1 else ''}"
             html = (
                 f"<h2>DCPI verdict shifts in your tracked markets</h2>"
