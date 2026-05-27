@@ -512,6 +512,179 @@ def backfill_market_from_city():
         return jsonify({"error": str(e)[:300]}), 500
 
 
+@mcp_funnel_bp.route("/users/inspect", methods=["GET"])
+def users_inspect():
+    """Phase r-userinsp (2026-05-27). Who is using DC Hub, what are they
+    consuming, and where's the upgrade opportunity?
+
+    Returns three buckets:
+      1. tier_counts — total users at each tier
+      2. paying_customers — every Stripe-active user with their tool mix
+      3. high_activity_anon — anonymous sessions with >5 calls (warm leads)
+      4. upgrade_candidates — free-key users approaching daily limits
+         (top conversion opportunities for Starter pitch)
+
+    Emails masked (first 3 chars + @domain) so this is safe to share.
+    Internal-key required.
+    """
+    from flask import request as _req
+    import os as _os
+    _sent = _req.headers.get("X-Internal-Key", "") or ""
+    _allowed = {"dchub-internal-sync-2026"}
+    for _name in ("DCHUB_INTERNAL_KEY", "INTERNAL_KEY", "MCP_INTERNAL_KEY"):
+        _v = _os.environ.get(_name)
+        if _v:
+            _allowed.add(_v)
+    if not _sent or _sent not in _allowed:
+        return jsonify({"error": "forbidden"}), 403
+    if _pg is None:
+        return jsonify({"error": "psycopg2 not available"}), 500
+
+    def _mask_email(e):
+        if not e or "@" not in str(e):
+            return None
+        e = str(e)
+        local, _, domain = e.partition("@")
+        return (local[:3] + "***@" + domain) if local else e
+
+    out = {"at": datetime.datetime.utcnow().isoformat() + "Z"}
+    try:
+        with _conn() as c, c.cursor() as cur:
+            # ── 1. Tier counts (everyone with a dev key) ──
+            cur.execute("""
+                SELECT COALESCE(tier, 'free') AS tier, COUNT(*) AS n
+                  FROM mcp_dev_keys
+                 WHERE status = 'active'
+                 GROUP BY 1 ORDER BY 2 DESC
+            """)
+            out["tier_counts"] = {r[0]: int(r[1]) for r in cur.fetchall()}
+
+            # ── 2. Paying customers (Stripe-active) with tool mix ──
+            # mcp_conversions has plan/mrr. Join to mcp_call_log for usage.
+            try:
+                cur.execute("""
+                    SELECT email, plan, mrr_cents, created_at,
+                           EXTRACT(DAY FROM NOW() - created_at)::int AS days_old
+                      FROM mcp_conversions
+                     WHERE mrr_cents > 0
+                       OR plan ILIKE '%research%' OR plan ILIKE '%founding%'
+                     ORDER BY mrr_cents DESC NULLS LAST
+                     LIMIT 25
+                """)
+                paying = []
+                for email, plan, mrr_cents, created_at, days_old in cur.fetchall():
+                    paying.append({
+                        "email":      _mask_email(email),
+                        "plan":       plan,
+                        "mrr_usd":    round((mrr_cents or 0) / 100.0, 2),
+                        "days_active": int(days_old or 0),
+                        "created_at": created_at.isoformat() if created_at else None,
+                    })
+                out["paying_customers"] = paying
+                out["paying_customer_count"] = len(paying)
+            except Exception as e:
+                out["paying_customers_error"] = str(e)[:160]
+
+            # ── 3. Free-key users with high tool-call volume (upgrade candidates) ──
+            # mcp_dev_keys has the keys; mcp_call_log has the activity.
+            try:
+                cur.execute("""
+                    WITH usage AS (
+                      SELECT api_key, COUNT(*) AS calls,
+                             COUNT(DISTINCT tool) AS distinct_tools,
+                             MAX(timestamp) AS last_seen,
+                             array_agg(DISTINCT tool ORDER BY tool) AS tools
+                        FROM mcp_call_log
+                       WHERE api_key IS NOT NULL AND api_key <> ''
+                         AND timestamp > NOW() - INTERVAL '30 days'
+                       GROUP BY api_key
+                    )
+                    SELECT k.email, k.tier, k.created_at,
+                           u.calls, u.distinct_tools, u.last_seen, u.tools
+                      FROM mcp_dev_keys k
+                      JOIN usage u ON u.api_key = k.api_key
+                     WHERE k.status = 'active'
+                       AND COALESCE(k.tier, 'free') = 'free'
+                     ORDER BY u.calls DESC
+                     LIMIT 25
+                """)
+                upgrades = []
+                for email, tier, created_at, calls, dt, last_seen, tools in cur.fetchall():
+                    upgrades.append({
+                        "email":          _mask_email(email),
+                        "tier":           tier or "free",
+                        "calls_30d":      int(calls or 0),
+                        "distinct_tools": int(dt or 0),
+                        "last_seen":      last_seen.isoformat() if last_seen else None,
+                        "top_tools":      list(tools or [])[:5],
+                        "upgrade_pitch":  (
+                            f"{int(calls or 0)} calls/30d ≈ {int(calls or 0) // 30}/day. "
+                            + ("Hitting limits — pitch $9 Starter (10K/day)." if (calls or 0) >= 500 else
+                               "Engaged user — pitch $49 Developer once they hit caps.")
+                        ),
+                    })
+                out["upgrade_candidates"] = upgrades
+            except Exception as e:
+                out["upgrade_candidates_error"] = str(e)[:160]
+
+            # ── 4. Anonymous sessions with activity (warm leads, pre-email) ──
+            try:
+                cur.execute("""
+                    SELECT platform, session_id, COUNT(*) AS calls,
+                           array_agg(DISTINCT tool ORDER BY tool) AS tools,
+                           MAX(timestamp) AS last_seen
+                      FROM mcp_call_log
+                     WHERE (api_key IS NULL OR api_key = '')
+                       AND timestamp > NOW() - INTERVAL '7 days'
+                       AND platform NOT LIKE 'dchub-%'
+                       AND platform NOT LIKE 'loop%'
+                       AND platform NOT LIKE 'r51%'
+                       AND platform NOT LIKE 'r52%'
+                       AND platform NOT LIKE 'leak%'
+                       AND platform NOT LIKE '%test%'
+                       AND platform NOT LIKE '%probe%'
+                       AND platform NOT LIKE 'gate-audit%'
+                       AND platform NOT LIKE 'trial-%'
+                     GROUP BY platform, session_id
+                    HAVING COUNT(*) > 3
+                     ORDER BY calls DESC
+                     LIMIT 20
+                """)
+                anons = []
+                for platform, sid, calls, tools, last_seen in cur.fetchall():
+                    anons.append({
+                        "platform":   platform,
+                        "session":    (sid or "")[:16] + "..." if sid else None,
+                        "calls_7d":   int(calls or 0),
+                        "top_tools":  list(tools or [])[:5],
+                        "last_seen":  last_seen.isoformat() if last_seen else None,
+                    })
+                out["high_activity_anon"] = anons
+            except Exception as e:
+                out["high_activity_anon_error"] = str(e)[:160]
+
+            # ── 5. Tool-mix across all users (what's actually consumed) ──
+            try:
+                cur.execute("""
+                    SELECT tool, COUNT(*) AS calls,
+                           COUNT(DISTINCT api_key) AS unique_users
+                      FROM mcp_call_log
+                     WHERE timestamp > NOW() - INTERVAL '7 days'
+                       AND tool IS NOT NULL AND tool <> ''
+                     GROUP BY 1 ORDER BY 2 DESC LIMIT 15
+                """)
+                out["top_tools_7d"] = [
+                    {"tool": r[0], "calls": int(r[1]), "unique_users": int(r[2] or 0)}
+                    for r in cur.fetchall()
+                ]
+            except Exception as e:
+                out["top_tools_7d_error"] = str(e)[:160]
+
+        return jsonify(out), 200
+    except Exception as e:
+        return jsonify({"error": str(e)[:300]}), 500
+
+
 @mcp_funnel_bp.route("/anon-ua-breakdown", methods=["GET"])
 def anon_ua_breakdown():
     """Phase r51-cluster (2026-05-26). 99.7% of paywall hits classify as
