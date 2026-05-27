@@ -80,7 +80,23 @@ def funnel_diag():
         with _conn() as c, c.cursor() as cur:
             cur.execute(
                 "SELECT COUNT(*)::int FROM mcp_upgrade_signals "
-                "WHERE created_at > NOW() - INTERVAL '7 days' "
+                "WHERE created_at > NOW() - INTERVAL '7 days'
+                   AND (mcp_client IS NULL OR (
+                       LOWER(mcp_client) NOT LIKE 'dchub-%'
+                       AND LOWER(mcp_client) NOT LIKE 'step2_%'
+                       AND LOWER(mcp_client) NOT LIKE 'qa-%'
+                       AND LOWER(mcp_client) NOT LIKE 'probe-%'
+                       AND LOWER(mcp_client) NOT LIKE 'test-%'
+                       AND LOWER(mcp_client) NOT LIKE 'monitor-%'
+                       AND LOWER(mcp_client) NOT LIKE 'r51-%'
+                       AND LOWER(mcp_client) NOT LIKE 'r52-%'
+                       AND LOWER(mcp_client) NOT LIKE 'hn-prepost%'
+                       AND LOWER(mcp_client) NOT LIKE 'paywall-probe%'
+                       AND LOWER(mcp_client) NOT LIKE 'funnel-test%'
+                       AND LOWER(mcp_client) NOT LIKE 'e2e-%'
+                       AND LOWER(mcp_client) NOT LIKE 'recheck%'
+                       AND LOWER(mcp_client) NOT LIKE 'healthcheck%'
+                   )) "
                 "AND user_email IS NOT NULL AND user_email != ''")
             out["stages"]["3_identified_signals_7d"] = cur.fetchone()[0]
     except Exception as e:
@@ -117,7 +133,23 @@ def funnel_diag():
             cur.execute(
                 "SELECT tool_requested, COUNT(*)::int "
                 "FROM mcp_upgrade_signals "
-                "WHERE created_at > NOW() - INTERVAL '7 days' "
+                "WHERE created_at > NOW() - INTERVAL '7 days'
+                   AND (mcp_client IS NULL OR (
+                       LOWER(mcp_client) NOT LIKE 'dchub-%'
+                       AND LOWER(mcp_client) NOT LIKE 'step2_%'
+                       AND LOWER(mcp_client) NOT LIKE 'qa-%'
+                       AND LOWER(mcp_client) NOT LIKE 'probe-%'
+                       AND LOWER(mcp_client) NOT LIKE 'test-%'
+                       AND LOWER(mcp_client) NOT LIKE 'monitor-%'
+                       AND LOWER(mcp_client) NOT LIKE 'r51-%'
+                       AND LOWER(mcp_client) NOT LIKE 'r52-%'
+                       AND LOWER(mcp_client) NOT LIKE 'hn-prepost%'
+                       AND LOWER(mcp_client) NOT LIKE 'paywall-probe%'
+                       AND LOWER(mcp_client) NOT LIKE 'funnel-test%'
+                       AND LOWER(mcp_client) NOT LIKE 'e2e-%'
+                       AND LOWER(mcp_client) NOT LIKE 'recheck%'
+                       AND LOWER(mcp_client) NOT LIKE 'healthcheck%'
+                   )) "
                 "AND tool_requested IS NOT NULL "
                 "GROUP BY tool_requested ORDER BY 2 DESC LIMIT 10")
             out["top_tools_blocked_7d"] = {r[0]: r[1] for r in cur.fetchall()}
@@ -170,6 +202,22 @@ def signal_attribution():
                 """SELECT COALESCE(signal_type, '(null)'), COUNT(*)
                      FROM mcp_upgrade_signals
                     WHERE created_at > NOW() - INTERVAL '7 days'
+                   AND (mcp_client IS NULL OR (
+                       LOWER(mcp_client) NOT LIKE 'dchub-%'
+                       AND LOWER(mcp_client) NOT LIKE 'step2_%'
+                       AND LOWER(mcp_client) NOT LIKE 'qa-%'
+                       AND LOWER(mcp_client) NOT LIKE 'probe-%'
+                       AND LOWER(mcp_client) NOT LIKE 'test-%'
+                       AND LOWER(mcp_client) NOT LIKE 'monitor-%'
+                       AND LOWER(mcp_client) NOT LIKE 'r51-%'
+                       AND LOWER(mcp_client) NOT LIKE 'r52-%'
+                       AND LOWER(mcp_client) NOT LIKE 'hn-prepost%'
+                       AND LOWER(mcp_client) NOT LIKE 'paywall-probe%'
+                       AND LOWER(mcp_client) NOT LIKE 'funnel-test%'
+                       AND LOWER(mcp_client) NOT LIKE 'e2e-%'
+                       AND LOWER(mcp_client) NOT LIKE 'recheck%'
+                       AND LOWER(mcp_client) NOT LIKE 'healthcheck%'
+                   ))
                  GROUP BY 1 ORDER BY 2 DESC"""
             )
             out["signal_types_7d"] = {r[0]: int(r[1]) for r in cur.fetchall()}
@@ -183,7 +231,23 @@ def signal_attribution():
                      COUNT(*) FILTER (WHERE user_email IS NOT NULL AND user_email <> '') AS has_email,
                      COUNT(*) FILTER (WHERE mcp_client IS NOT NULL AND mcp_client NOT IN ('','mcp','unknown')) AS has_client
                    FROM mcp_upgrade_signals
-                  WHERE created_at > NOW() - INTERVAL '7 days'"""
+                  WHERE created_at > NOW() - INTERVAL '7 days'
+                   AND (mcp_client IS NULL OR (
+                       LOWER(mcp_client) NOT LIKE 'dchub-%'
+                       AND LOWER(mcp_client) NOT LIKE 'step2_%'
+                       AND LOWER(mcp_client) NOT LIKE 'qa-%'
+                       AND LOWER(mcp_client) NOT LIKE 'probe-%'
+                       AND LOWER(mcp_client) NOT LIKE 'test-%'
+                       AND LOWER(mcp_client) NOT LIKE 'monitor-%'
+                       AND LOWER(mcp_client) NOT LIKE 'r51-%'
+                       AND LOWER(mcp_client) NOT LIKE 'r52-%'
+                       AND LOWER(mcp_client) NOT LIKE 'hn-prepost%'
+                       AND LOWER(mcp_client) NOT LIKE 'paywall-probe%'
+                       AND LOWER(mcp_client) NOT LIKE 'funnel-test%'
+                       AND LOWER(mcp_client) NOT LIKE 'e2e-%'
+                       AND LOWER(mcp_client) NOT LIKE 'recheck%'
+                       AND LOWER(mcp_client) NOT LIKE 'healthcheck%'
+                   ))"""
             )
             r = cur.fetchone()
             total = max(int(r[0] or 0), 1)
@@ -201,6 +265,22 @@ def signal_attribution():
                           session_id, user_agent, ip_address, mcp_client, message_shown
                      FROM mcp_upgrade_signals
                     WHERE created_at > NOW() - INTERVAL '7 days'
+                   AND (mcp_client IS NULL OR (
+                       LOWER(mcp_client) NOT LIKE 'dchub-%'
+                       AND LOWER(mcp_client) NOT LIKE 'step2_%'
+                       AND LOWER(mcp_client) NOT LIKE 'qa-%'
+                       AND LOWER(mcp_client) NOT LIKE 'probe-%'
+                       AND LOWER(mcp_client) NOT LIKE 'test-%'
+                       AND LOWER(mcp_client) NOT LIKE 'monitor-%'
+                       AND LOWER(mcp_client) NOT LIKE 'r51-%'
+                       AND LOWER(mcp_client) NOT LIKE 'r52-%'
+                       AND LOWER(mcp_client) NOT LIKE 'hn-prepost%'
+                       AND LOWER(mcp_client) NOT LIKE 'paywall-probe%'
+                       AND LOWER(mcp_client) NOT LIKE 'funnel-test%'
+                       AND LOWER(mcp_client) NOT LIKE 'e2e-%'
+                       AND LOWER(mcp_client) NOT LIKE 'recheck%'
+                       AND LOWER(mcp_client) NOT LIKE 'healthcheck%'
+                   ))
                  ORDER BY created_at DESC LIMIT 10"""
             )
             latest = []
@@ -224,6 +304,22 @@ def signal_attribution():
                 """SELECT COALESCE(NULLIF(session_id, ''), '(null)'), COUNT(*)
                      FROM mcp_upgrade_signals
                     WHERE created_at > NOW() - INTERVAL '7 days'
+                   AND (mcp_client IS NULL OR (
+                       LOWER(mcp_client) NOT LIKE 'dchub-%'
+                       AND LOWER(mcp_client) NOT LIKE 'step2_%'
+                       AND LOWER(mcp_client) NOT LIKE 'qa-%'
+                       AND LOWER(mcp_client) NOT LIKE 'probe-%'
+                       AND LOWER(mcp_client) NOT LIKE 'test-%'
+                       AND LOWER(mcp_client) NOT LIKE 'monitor-%'
+                       AND LOWER(mcp_client) NOT LIKE 'r51-%'
+                       AND LOWER(mcp_client) NOT LIKE 'r52-%'
+                       AND LOWER(mcp_client) NOT LIKE 'hn-prepost%'
+                       AND LOWER(mcp_client) NOT LIKE 'paywall-probe%'
+                       AND LOWER(mcp_client) NOT LIKE 'funnel-test%'
+                       AND LOWER(mcp_client) NOT LIKE 'e2e-%'
+                       AND LOWER(mcp_client) NOT LIKE 'recheck%'
+                       AND LOWER(mcp_client) NOT LIKE 'healthcheck%'
+                   ))
                  GROUP BY 1 ORDER BY 2 DESC LIMIT 10"""
             )
             out["top_sessions_7d"] = [
@@ -260,6 +356,22 @@ def anon_ua_breakdown():
                        MAX(created_at) AS last_seen
                   FROM mcp_upgrade_signals
                  WHERE created_at > NOW() - INTERVAL '7 days'
+                   AND (mcp_client IS NULL OR (
+                       LOWER(mcp_client) NOT LIKE 'dchub-%'
+                       AND LOWER(mcp_client) NOT LIKE 'step2_%'
+                       AND LOWER(mcp_client) NOT LIKE 'qa-%'
+                       AND LOWER(mcp_client) NOT LIKE 'probe-%'
+                       AND LOWER(mcp_client) NOT LIKE 'test-%'
+                       AND LOWER(mcp_client) NOT LIKE 'monitor-%'
+                       AND LOWER(mcp_client) NOT LIKE 'r51-%'
+                       AND LOWER(mcp_client) NOT LIKE 'r52-%'
+                       AND LOWER(mcp_client) NOT LIKE 'hn-prepost%'
+                       AND LOWER(mcp_client) NOT LIKE 'paywall-probe%'
+                       AND LOWER(mcp_client) NOT LIKE 'funnel-test%'
+                       AND LOWER(mcp_client) NOT LIKE 'e2e-%'
+                       AND LOWER(mcp_client) NOT LIKE 'recheck%'
+                       AND LOWER(mcp_client) NOT LIKE 'healthcheck%'
+                   ))
                    AND (mcp_client IS NULL OR mcp_client IN ('mcp', 'unknown', ''))
                  GROUP BY 1, 2, 3
                  ORDER BY hits DESC

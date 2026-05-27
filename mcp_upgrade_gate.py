@@ -75,6 +75,38 @@ def validate_key_tier(api_key: str = "") -> str:
         pass
     return "free"
 
+_SYNTHETIC_CLIENT_PREFIXES = (
+    'dchub-',          # dchub-selfheal, dchub-cron, dchub-* monitoring workers
+    'step2_',          # step2_test and similar test labels
+    'qa-',             # QA harnesses
+    'probe-',          # uptime probes
+    'test-',           # generic test
+    'monitor-',        # synthetic monitors
+    'healthcheck',     # health checks
+    'r51-',            # r51-* probes from this session
+    'r52-',
+    'hn-prepost',      # HN pre-post checklist
+    'paywall-probe',   # our own paywall probes
+    'funnel-test',
+    'e2e-',            # end-to-end test labels
+    'recheck',         # recheck-* / recheck-anon probes
+    'r51-loop',        # the /loop iteration probes
+)
+
+
+def _is_synthetic(mcp_client):
+    """Return True if mcp_client looks like our own monitoring or test
+    traffic rather than a real user. Used to skip funnel logging so the
+    /api/v1/mcp/conversion-funnel + /signal-attribution endpoints reflect
+    actual paying-customer behavior, not our self-healing CF worker's
+    constant probes.
+    """
+    if not mcp_client:
+        return False
+    c = str(mcp_client).strip().lower()
+    return any(c.startswith(p) for p in _SYNTHETIC_CLIENT_PREFIXES)
+
+
 def fire_upgrade_signal(*, signal_type, tool_requested=None, tier_current="free",
                         tier_required="paid", message_shown=None, mcp_client=None,
                         user_agent=None, daily_usage=None, daily_limit=None,
@@ -87,7 +119,16 @@ def fire_upgrade_signal(*, signal_type, tool_requested=None, tier_current="free"
     so the signal row gets the addressable identifier. Closes the
     0.0% email-capture-rate gap that left /upgrade-pool/preview
     returning 0 candidates against 15,826 signals.
+
+    r51-clean (2026-05-26): skip rows from synthetic clients (dchub-selfheal,
+    test/probe labels). Pre-r51-clean, /signal-attribution showed 100% of
+    3,248 7-day hits came from synthetic traffic — the "0% conversion"
+    headline was measuring our own monitoring bot. Synthetic clients are
+    identified by _SYNTHETIC_CLIENT_PREFIXES match against mcp_client.
     """
+    # r51-clean: short-circuit synthetic traffic before any DB work
+    if _is_synthetic(mcp_client):
+        return None
     # phase62j_chain_fallback -- pull IP/UA from Flask request scope
     try:
         from flask import request as _req, has_request_context as _hrc

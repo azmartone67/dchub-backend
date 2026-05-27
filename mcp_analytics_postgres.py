@@ -193,11 +193,34 @@ SIGNAL_TIER_TEASE = 'tier_teaser_shown'    # Saw a "upgrade for more" message
 SIGNAL_REPEATED_FREE = 'power_free_user'    # 5+ sessions on free tier
 
 
+_SYNTHETIC_CLIENT_PREFIXES = (
+    'dchub-', 'step2_', 'qa-', 'probe-', 'test-', 'monitor-',
+    'healthcheck', 'r51-', 'r52-', 'hn-prepost', 'paywall-probe',
+    'funnel-test', 'e2e-', 'recheck',
+)
+
+
+def _is_synthetic_client(mcp_client):
+    """Match mcp_client against synthetic prefixes — dchub-selfheal et al.
+    Identical to the helper in mcp_upgrade_gate.py; duplicated here so
+    log_upgrade_signal's caller doesn't have to import the other module.
+    See mcp_upgrade_gate.fire_upgrade_signal for the discovery story
+    (r51-clean, 2026-05-26 — synthetic traffic was 100% of paywall hits).
+    """
+    if not mcp_client:
+        return False
+    c = str(mcp_client).strip().lower()
+    return any(c.startswith(p) for p in _SYNTHETIC_CLIENT_PREFIXES)
+
+
 def log_upgrade_signal(get_db, signal_type, tool_requested=None,
                        session_id=None, user_email=None, ip_address=None,
                        tier_current='free', tier_required='developer',
                        daily_usage=0, daily_limit=25,
                        message_shown=None, mcp_client=None, user_agent=None):
+    # r51-clean (2026-05-26): skip synthetic traffic. See module docstring.
+    if _is_synthetic_client(mcp_client):
+        return None
     # phase62b_request_fallback -- pull IP from request if caller didn't pass
     try:
         if not ip_address:
