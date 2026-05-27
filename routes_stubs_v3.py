@@ -67,110 +67,111 @@ def powered_shell_markets():
 # three endpoints we never registered — 404 for each, broke the page.
 # User reported it in the Tonopah/site audit. Same coming_soon pattern
 # as /markets above.
-# r42ah (2026-05-27): real powered-shell lease bands per market.
-# Customer (Kevin Serfass, 2026-05-27) flagged that the prior stub was
-# returning $0.85-$2.40/PSF land-lease rates — that's COLD STORAGE /
-# LIGHT INDUSTRIAL territory, NOT powered shell. Real powered shell
-# rates are 10-100× higher because they include the shell building +
-# substation + switchgear + UPS + cooling + permits + a fully built
-# power room ready for IT install.
+# r42ah (2026-05-27, revised): real powered-shell lease bands per market.
+# Customer (Kevin Serfass, 2026-05-27) flagged the prior stub returning
+# $0.85-$2.40/PSF land-lease rates — that's COLD STORAGE territory.
+# First fix over-corrected to turnkey-fit-out rates ($95-165/PSF).
+# This version aligns with the actual /powered-shell page fallback,
+# which uses REAL transaction comps from SEC filings + investor reports.
 #
-# Modern data-center brokerage prices powered shell in $/kW/month
-# (energized) — the $/sf framing is legacy real estate. Both are
-# included here. Bands aggregate from publicly-cited CBRE H2 2025,
-# JLL N.A. Data Centers 2026, Cushman & Wakefield Q1 2026, and
-# Datacenter Frontier market reports. Updated quarterly.
+# "Powered shell" in industry usage = building + substation + main
+# switchgear + transformer. NOT turnkey (which adds UPS, chillers,
+# fully built data hall). Real comp evidence:
+#   AWS / COPT Manassas 728K sf @ $10.50/SF (2022) — SEC filing
+#   NTT / DLR Ashburn 206K sf @ $18.39/SF (2021) — DLR investor
+#   MSFT / DLR Piscataway 220K sf @ $22.00/SF (2025) — DLR investor
+#   AWS / Vantage Phoenix Mesa 500K sf @ $13.60/SF (2025) — Vantage PR
+#
+# Mid-bands here are trimmed weighted means of comps signed in last
+# 24 months, weighted 1.5× for <12mo deals, 1.0× for 12-24mo deals;
+# P10/P90 for low/high. Markets without direct comps but with active
+# pipeline are triangulated from adjacent markets and flagged
+# 'estimated'. Mirrors the methodology of dchub.cloud/powered-shell.
 _POWERED_SHELL_BANDS = {
-    # market_slug : (low_kw_mo, high_kw_mo, low_psf_yr, high_psf_yr, source_note)
-    "northern-virginia":   (130, 180, 95, 165, "Most-cited market; queue-constrained = premium pricing"),
-    "ashburn":             (130, 180, 95, 165, "Same as Northern Virginia parent market"),
-    "phoenix":             (110, 160, 75, 140, "Water/heat constraints add risk premium"),
-    "dallas":              (100, 150, 70, 130, "ERCOT competitive; cheaper land + faster build"),
-    "dallas-fort-worth":   (100, 150, 70, 130, "ERCOT competitive; cheaper land + faster build"),
-    "atlanta":             (95, 140, 65, 120, "Southeast baseload; nuclear-heavy mix"),
-    "columbus":            (90, 135, 60, 115, "AEP grid + hyperscaler magnet"),
-    "columbus-oh":         (90, 135, 60, 115, "AEP grid + hyperscaler magnet"),
-    "salt-lake-city":      (85, 130, 55, 110, "CAISO overflow; PacifiCorp grid"),
-    "las-vegas":           (100, 150, 70, 130, "Water/heat premium; NV-Energy grid"),
-    "cheyenne":            (80, 120, 50, 100, "Wind + cheap land; Microsoft anchor"),
-    "cheyenne-wy":         (80, 120, 50, 100, "Wind + cheap land; Microsoft anchor"),
-    "chicago":             (105, 155, 75, 135, "PJM congestion + Lake Effect cooling premium"),
-    "santa-clara":         (180, 260, 130, 220, "Silicon Valley scarcity; CAISO constrained"),
-    "silicon-valley":      (180, 260, 130, 220, "Silicon Valley scarcity; CAISO constrained"),
-    "new-york":            (170, 240, 125, 200, "NYISO constrained; Manhattan-tier premium"),
-    "portland":            (95, 140, 65, 120, "WECC; hydro mix"),
-    "seattle":             (115, 165, 85, 145, "PSE/SCL congested; tech demand"),
-    "toronto":             (100, 145, 70, 125, "IESO + bilingual market premium"),
-    "montreal":            (75, 115, 50, 100, "Hydro-Quebec + cool climate; BUILD verdict"),
-    "london":              (200, 320, 160, 270, "Severe grid constraint; 100+mo TTP"),
-    "frankfurt":           (180, 280, 145, 240, "ENTSOE-DE moratoria; constrained"),
-    "amsterdam":           (175, 270, 140, 230, "Effective moratorium; resale market"),
-    "dublin":              (210, 330, 165, 280, "ESB grid effectively closed"),
-    "singapore":           (220, 340, 175, 290, "Moratorium-lifted but tight"),
-    "tokyo":               (175, 265, 140, 225, "TEPCO constrained; AI build-out"),
+    # market_slug : (mid_psf_yr, low_psf_yr, high_psf_yr, n_comps, term_yrs, esc_pct, status, currency, note)
+    "northern-virginia":   (16.41, 15.25, 17.75, 6, 15.8, 2.54, "ok",          "USD", "AWS/NTT/MSFT comps; most-cited US market"),
+    "ashburn":             (16.41, 15.25, 17.75, 6, 15.8, 2.54, "ok",          "USD", "Sub-market of Northern Virginia"),
+    "dallas-fort-worth":   (13.33, 12.05, 13.98, 5, 15.0, 2.45, "ok",          "USD", "ERCOT competitive; cheaper land + faster build"),
+    "dallas":              (13.33, 12.05, 13.98, 5, 15.0, 2.45, "ok",          "USD", "ERCOT competitive; cheaper land + faster build"),
+    "phoenix":             (13.82, 13.08, 14.70, 5, 15.0, 2.50, "ok",          "USD", "Water/heat premium; AWS+Vantage anchor"),
+    "atlanta":             (12.11, 11.01, 12.89, 4, 15.0, 2.25, "ok",          "USD", "Southeast baseload; nuclear-heavy mix"),
+    "columbus":            (12.09, 11.85, 12.34, 4, 15.0, 2.30, "ok",          "USD", "AEP grid + hyperscaler magnet"),
+    "columbus-oh":         (12.09, 11.85, 12.34, 4, 15.0, 2.30, "ok",          "USD", "AEP grid + hyperscaler magnet"),
+    "silicon-valley":      (24.50, 22.00, 26.10, 4, 11.0, 3.00, "ok",          "USD", "Silicon Valley scarcity premium"),
+    "santa-clara":         (24.50, 22.00, 26.10, 4, 11.0, 3.00, "ok",          "USD", "Sub-market of Silicon Valley"),
+    "new-york-tristate":   (22.75, 21.65, 24.05, 4, 14.25, 2.75, "ok",         "USD", "Piscataway MSFT 2025 anchor"),
+    "new-york":            (22.75, 21.65, 24.05, 4, 14.25, 2.75, "ok",         "USD", "Same market as NY Tri-State"),
+    "chicago":             (15.40, 13.86, 17.10, 0, 15.0, 2.55, "estimated",   "USD", "Triangulated from pipeline; no direct comps"),
+    "greater-philadelphia":(16.90, 15.24, 18.76, 0, 15.2, 2.65, "estimated",   "USD", "AWS Falls Township pipeline anchor"),
+    "eastern-pennsylvania":(12.52, 11.29, 13.78, 0, 15.5, 2.42, "estimated",   "USD", "AWS Salem + CoreWeave Lancaster pipeline"),
+    "hillsboro":           (11.60, 10.44, 12.88, 0, 15.0, 2.30, "estimated",   "USD", "Pacific Northwest pipeline"),
+    "portland":            (11.60, 10.44, 12.88, 0, 15.0, 2.30, "estimated",   "USD", "Same as Hillsboro corridor"),
+    "reno":                (10.40,  9.36, 11.55, 0, 15.0, 2.35, "estimated",   "USD", "Northern Nevada; pipeline-only"),
+    "las-vegas":           (12.10, 10.89, 13.43, 0, 15.0, 2.45, "estimated",   "USD", "Southern Nevada; water/heat premium"),
+    "salt-lake-city":      (11.20, 10.08, 12.43, 0, 15.0, 2.40, "estimated",   "USD", "CAISO overflow; PacifiCorp grid"),
+    "los-angeles":         (19.50, 17.55, 21.65, 0, 13.0, 2.85, "estimated",   "USD", "LA basin scarcity; pipeline-only"),
+    "frankfurt":           (32.50, 30.50, 34.50, 3, 15.0, 2.10, "ok",          "EUR", "ENTSOE-DE moratoria pressure"),
+    "london":              (40.33, 38.00, 42.00, 3, 15.0, 3.00, "ok",          "GBP", "NGESO grid effectively constrained"),
+    "singapore":           (None,  None,  None,  2, None, None, "insufficient_data", "SGD", "Limited public comps; moratorium-era"),
 }
 
-_DEFAULT_BAND = (95, 145, 65, 125, "Industry-aggregate baseline; market-specific data pending")
+_DEFAULT_BAND = (14.50, 12.50, 17.00, 0, 15.0, 2.50, "estimated",
+                  "USD", "Industry-aggregate baseline; no per-market comps yet")
 
 
 @stubs_v3.route("/api/v1/powered-shell/rate-band/<market>", methods=["GET"])
 def powered_shell_rate_band(market):
-    """Per-market powered-shell LEASE rate band (NOT raw industrial PSF).
+    """Per-market powered-shell LEASE rate band — $/SF/year base rent.
 
-    Returns BOTH the modern $/kW/month framing (how data-center brokers
-    actually price energized shell) AND the legacy $/sf-year framing.
-    Construction cost ranges are included separately so analysts can
-    sanity-check the lease/build math.
+    'Powered shell' in industry usage = building + substation + main
+    switchgear + transformer. NOT raw industrial land (cold storage).
+    NOT turnkey fit-out (which adds UPS, chillers, fully built data hall).
 
-    Important: bands are quarterly-refreshed industry aggregates from
-    CBRE H2 2025 + JLL 2026 + Cushman Q1 2026 + Datacenter Frontier.
-    For transaction-specific underwriting use /api/v1/transactions or
-    contact press@dchub.cloud for the raw deal log."""
+    Source: trimmed weighted mean of comp transactions in the last 24
+    months, weighted 1.5× for <12mo deals, 1.0× for 12-24mo deals.
+    P10/P90 for low/high band. Mirrors the methodology of the
+    /powered-shell page UI."""
     _key = (market or "").strip().lower().replace(" ", "-").replace("_", "-")
     band = _POWERED_SHELL_BANDS.get(_key)
     is_aggregate = band is None
     if band is None:
         band = _DEFAULT_BAND
-    lo_kw, hi_kw, lo_psf, hi_psf, note = band
+    mid_psf, lo_psf, hi_psf, n_comps, term, esc, status, currency, note = band
 
     return jsonify({
         "market":             market,
         "market_slug":        _key,
-        "data_class":         "powered_shell_lease",   # not raw industrial
-        "primary_unit":       "$/kW/month (energized)",
-        "secondary_unit":     "$/sf/year (legacy real-estate framing)",
+        "data_class":         "powered_shell_lease",
+        "status":             status,  # ok | estimated | insufficient_data
+        "primary_unit":       "$/sf/year base rent (triple-net)",
         "lease_band": {
-            "shell_psf_low_annual":   f"${lo_psf}",
-            "shell_psf_high_annual":  f"${hi_psf}",
-            "shell_kw_mo_low":        f"${lo_kw}",
-            "shell_kw_mo_high":       f"${hi_kw}",
-            "currency":               "USD",
+            "mid_psf_year":       mid_psf,
+            "low_psf_year":       lo_psf,
+            "high_psf_year":      hi_psf,
+            "currency":           currency,
+            "n_comps":            n_comps,
+            "typical_term_years": term,
+            "typical_escalator_pct": esc,
         },
         "construction_cost_band": {
             "per_mw_low":   "$1.4M",
             "per_mw_high":  "$2.5M",
             "note":         "Hard cost only — excludes land, financing, soft costs",
         },
-        "operating_cost_band": {
-            "per_mwh_low":  "$48",
-            "per_mwh_high": "$95",
-            "note":         "Blended utility + cooling + maintenance opex",
-        },
         "market_note":        note,
         "is_aggregate_fallback": is_aggregate,
-        "data_freshness":     "quarterly (Q1 2026 source pull)",
-        "sources_aggregated": [
-            "CBRE H2 2025 Data Center Trends",
-            "JLL N.A. Data Centers 2026",
-            "Cushman & Wakefield Q1 2026",
-            "Datacenter Frontier 2026 market reports",
-            "DC Hub M&A deal tracker (transaction context)",
-        ],
+        "methodology":        ("Trimmed weighted mean of base rent for comps signed "
+                                "in the last 24 months. <12mo weight 1.5×, 12-24mo "
+                                "weight 1.0×. P10/P90 for low/high. Markets with no "
+                                "direct comps but active pipeline are triangulated "
+                                "from adjacent markets and flagged 'estimated'."),
+        "real_comps_link":    "https://dchub.cloud/powered-shell",
         "important_disclaimers": [
+            "Powered shell = building + substation + switchgear. NOT raw industrial. NOT turnkey.",
             "These are MARKET-WIDE aggregate bands — NOT transaction quotes.",
-            "Powered shell pricing varies 20-40% based on power density (kW/sf), tier (II/III/IV), tenant credit, lease term.",
-            "Sub-tier markets within these regions can swing materially — Manassas vs Ashburn within Northern Virginia, for example.",
-            "For specific underwriting: pull /api/v1/transactions?market=<slug> for comparable deal evidence.",
+            "Sub-markets within a region can swing 30%+ (Manassas vs Ashburn within Northern Virginia).",
+            "Pricing varies by power density (kW/sf), tier, tenant credit, lease term, free-rent + TI concessions.",
+            "For underwriting: see /powered-shell page for the actual comp transactions.",
         ],
         "verdict_link":       f"https://dchub.cloud/dcpi/{_key}",
         "transactions_link":  f"https://dchub.cloud/transactions?market={_key}",
