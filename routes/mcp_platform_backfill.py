@@ -379,14 +379,23 @@ def diagnose_key_join():
 @mcp_platform_backfill_bp.route("/api/v1/admin/mcp/tag-key",
                                  methods=["POST"], strict_slashes=False)
 def tag_key_manual():
-    """r47.35.1: manual one-shot tag for a specific api_key prefix.
+    """r47.35.1: manual one-shot tag for a specific api_key (prefix or full).
 
-    Body: {"api_key_prefix": "dche56…", "platform": "claude"}
-    Or:   {"api_key": "<full key>", "platform": "claude"}
+    Body fields:
+      api_key_prefix  — partial prefix match (api_key LIKE prefix%)
+      api_key         — exact full-key match (faster, more precise)
+      platform        — target tag (required)
+      from_platform   — optional, comma-separated list of CURRENT platform
+                        values to widen the UPDATE filter. Default:
+                        'mcp,,unknown'. Pass an explicit list to re-tag
+                        rows already tagged something else (fix typos).
 
-    Tags every mcp_call_log row whose api_key matches that prefix as
-    the supplied platform. Surgical fix when you know which dev key
-    belongs to which client and the JOIN heuristics can't see it."""
+    r47.35.2: chunked UPDATE. The original implementation issued ONE
+    big UPDATE for the 109K-row key — the Pages worker's 5s subrequest
+    timeout cancelled the request before Postgres acknowledged the
+    commit. Now we loop in 5,000-row chunks so each commit is fast
+    (<200ms) and the total round-trip stays comfortably under the
+    worker's timeout window."""
     if not _is_internal_key(request):
         return jsonify({"error": "unauthorized"}), 401
     if not (_pg and _dsn()):
@@ -401,29 +410,55 @@ def tag_key_manual():
     if not (prefix or full):
         return jsonify({"error": "api_key_prefix or api_key required"}), 400
 
+    # Build the "current platform" filter list. Default = generic buckets.
+    from_raw = (data.get("from_platform") or "").strip()
+    if from_raw:
+        from_platforms = [p.strip() for p in from_raw.split(',') if p.strip()]
+    else:
+        from_platforms = ['mcp', '', 'unknown']
+
+    # Match condition
+    if full:
+        match_sql = "api_key = %s"
+        match_param = full
+    else:
+        match_sql = "api_key LIKE %s"
+        match_param = prefix + '%'
+
+    CHUNK = 5000
+    total_updated = 0
+    chunks = 0
     try:
         with _conn() as c, c.cursor() as cur:
-            if full:
-                cur.execute("""
-                    UPDATE mcp_call_log SET platform = %s
-                     WHERE api_key = %s
-                       AND (platform IN ('mcp','','unknown') OR platform IS NULL)
-                """, (plat, full))
-                updated = cur.rowcount
-            else:
-                cur.execute("""
-                    UPDATE mcp_call_log SET platform = %s
-                     WHERE api_key LIKE %s
-                       AND (platform IN ('mcp','','unknown') OR platform IS NULL)
-                """, (plat, prefix + '%'))
-                updated = cur.rowcount
+            while True:
+                chunks += 1
+                cur.execute(f"""
+                    WITH targets AS (
+                        SELECT id FROM mcp_call_log
+                         WHERE {match_sql}
+                           AND platform = ANY(%s)
+                         LIMIT {CHUNK}
+                    )
+                    UPDATE mcp_call_log m SET platform = %s
+                      FROM targets t WHERE m.id = t.id
+                """, (match_param, from_platforms, plat))
+                n = cur.rowcount or 0
+                total_updated += n
+                if n < CHUNK:
+                    break
+                # Safety: don't loop forever on a bad UPDATE
+                if chunks > 200:
+                    break
     except Exception as e:
-        return jsonify({"error": str(e)[:300]}), 500
+        return jsonify({"error": str(e)[:300],
+                         "partial_updated": total_updated}), 500
 
     return jsonify({
         "ok":       True,
-        "updated":  updated,
+        "updated":  total_updated,
+        "chunks":   chunks,
         "platform": plat,
+        "from_platform": from_platforms,
         "matched":  "full_key" if full else f"prefix:{prefix}",
     }), 200
 
