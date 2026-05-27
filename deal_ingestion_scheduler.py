@@ -175,38 +175,55 @@ def run_ingestion(get_db):
     # this connection after 76s because we never called conn.close(). Add
     # try/finally so the connection always returns to pool — even on
     # exception. Prevents pool-exhaustion cascade under load.
-    inserted, updated, errors = 0, 0, 0
+    # r42ai (2026-05-27): batch INSERT via execute_values. Pre-fix this
+    # looped 314 sequential INSERTs which collectively exceeded Neon's
+    # statement_timeout (~30s under load) → "canceling statement due
+    # to statement timeout" silently dropping all new deal data. Batch
+    # insert collapses 314 round-trips into 1; ON CONFLICT still
+    # upserts the confidence-bump for re-seen deals.
+    inserted, errors = 0, 0
     conn = None
     try:
+        from psycopg2.extras import execute_values
         conn = get_db()
         cur = conn.cursor()
-        for d in deals:
+
+        # Convert dict rows to positional tuples in stable column order
+        _cols = ("deal_hash", "buyer", "seller", "deal_type",
+                  "deal_value_usd", "deal_value_str", "deal_date",
+                  "source_url", "source_name", "description")
+        rows = [tuple(d.get(c) for c in _cols) for d in deals]
+
+        # 200-row chunks keep each round-trip well under statement_timeout
+        # even on slow Neon-warm states. 314 deals → 2 chunks.
+        CHUNK = 200
+        for i in range(0, len(rows), CHUNK):
+            batch = rows[i:i + CHUNK]
             try:
-                cur.execute("""
+                execute_values(
+                    cur,
+                    """
                     INSERT INTO ai_deals (
                         deal_hash, buyer, seller, deal_type,
                         deal_value_usd, deal_value_str, deal_date,
                         source_url, source_name, description,
                         ai_detected, confidence, status
-                    ) VALUES (
-                        %(deal_hash)s, %(buyer)s, %(seller)s, %(deal_type)s,
-                        %(deal_value_usd)s, %(deal_value_str)s, %(deal_date)s,
-                        %(source_url)s, %(source_name)s, %(description)s,
-                        true, 70, 'active'
-                    )
+                    ) VALUES %s
                     ON CONFLICT (deal_hash) DO UPDATE SET
                         updated_at = NOW(),
                         confidence = GREATEST(ai_deals.confidence, EXCLUDED.confidence)
-                """, d)
-                if cur.rowcount > 0:
-                    inserted += 1
+                    """,
+                    batch,
+                    template="(%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, true, 70, 'active')",
+                )
+                inserted += len(batch)
+                conn.commit()
             except Exception as e:
-                errors += 1
-                logger.warning(f"  Insert error: {e}")
-                conn.rollback()
+                errors += len(batch)
+                logger.warning(f"  Batch insert error ({len(batch)} rows): {e}")
+                try: conn.rollback()
+                except Exception: pass
                 cur = conn.cursor()
-                continue
-        conn.commit()
         cur.close()
     except Exception as e:
         logger.error(f"  DB error: {e}")
