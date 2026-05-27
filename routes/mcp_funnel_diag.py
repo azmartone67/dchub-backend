@@ -389,6 +389,81 @@ def backfill_empty_city():
         return jsonify({"error": str(e)[:300]}), 500
 
 
+@mcp_funnel_bp.route("/backfill-market-by-bbox", methods=["POST"])
+def backfill_market_by_bbox():
+    """Phase r-marketbackfill (2026-05-27). The post-city-backfill state
+    left McCarran-tagged facilities in the Reno corridor invisible to a
+    'reno' search because the matchesFacility frontend logic checks each
+    field as substring. McCarran is administratively distinct but
+    functionally Reno metro. Same issue affects every multi-city US
+    metro (Ashburn corridor, Dallas-Plano-Frisco, etc.).
+
+    This endpoint takes a JSON body { bbox: [W,S,E,N], market: "Name" }
+    and stamps that market on every row inside the bbox whose market is
+    null / empty / 'Unknown'.
+
+    Dry-run by default. ?execute=1 commits. Internal-key required.
+    """
+    from flask import request as _req
+    import os as _os
+    _sent = _req.headers.get("X-Internal-Key", "") or ""
+    _allowed = {"dchub-internal-sync-2026"}
+    for _name in ("DCHUB_INTERNAL_KEY", "INTERNAL_KEY", "MCP_INTERNAL_KEY"):
+        _v = _os.environ.get(_name)
+        if _v:
+            _allowed.add(_v)
+    if not _sent or _sent not in _allowed:
+        return jsonify({"error": "forbidden"}), 403
+    if _pg is None:
+        return jsonify({"error": "psycopg2 not available"}), 500
+
+    body = _req.get_json(silent=True) or {}
+    bbox = body.get("bbox") or []
+    market = (body.get("market") or "").strip()
+    if (not isinstance(bbox, list) or len(bbox) != 4 or
+        not market or len(market) > 80):
+        return jsonify({"error": "expected {bbox:[W,S,E,N], market:'Name'}"}), 400
+    try:
+        w, s, e, n = [float(v) for v in bbox]
+    except (TypeError, ValueError):
+        return jsonify({"error": "bbox must be 4 floats"}), 400
+    if not (-180 <= w <= 180 and -180 <= e <= 180 and -90 <= s <= 90 and -90 <= n <= 90 and w < e and s < n):
+        return jsonify({"error": "invalid bbox"}), 400
+
+    execute = (_req.args.get("execute") or "").lower() in ("1", "true", "yes")
+    try:
+        with _conn() as c, c.cursor() as cur:
+            cur.execute("""
+                SELECT COUNT(*) FROM discovered_facilities
+                 WHERE latitude IS NOT NULL AND longitude IS NOT NULL
+                   AND longitude BETWEEN %s AND %s
+                   AND latitude BETWEEN %s AND %s
+                   AND (market IS NULL OR market = '' OR LOWER(market) = 'unknown')
+            """, (w, e, s, n))
+            candidates = int((cur.fetchone() or [0])[0])
+            result = {
+                "bbox":          [w, s, e, n],
+                "market":        market,
+                "candidates":    candidates,
+                "dry_run":       not execute,
+                "rows_updated":  0,
+            }
+            if execute and candidates > 0:
+                cur.execute("""
+                    UPDATE discovered_facilities
+                       SET market = %s
+                     WHERE latitude IS NOT NULL AND longitude IS NOT NULL
+                       AND longitude BETWEEN %s AND %s
+                       AND latitude BETWEEN %s AND %s
+                       AND (market IS NULL OR market = '' OR LOWER(market) = 'unknown')
+                """, (market, w, e, s, n))
+                result["rows_updated"] = cur.rowcount
+                c.commit()
+        return jsonify(result), 200
+    except Exception as e:
+        return jsonify({"error": str(e)[:300]}), 500
+
+
 @mcp_funnel_bp.route("/anon-ua-breakdown", methods=["GET"])
 def anon_ua_breakdown():
     """Phase r51-cluster (2026-05-26). 99.7% of paywall hits classify as
