@@ -598,7 +598,7 @@ def purge_queue():
     try:
         if platform:
             cur.execute("""UPDATE social_media_posts
-                              SET status = 'rejected', updated_at = NOW()
+                              SET status = 'rejected'
                             WHERE status IN ('approved', 'draft')
                               AND platform = %s
                               AND content ILIKE %s
@@ -606,7 +606,7 @@ def purge_queue():
                         (platform, f'%{pattern}%'))
         else:
             cur.execute("""UPDATE social_media_posts
-                              SET status = 'rejected', updated_at = NOW()
+                              SET status = 'rejected'
                             WHERE status IN ('approved', 'draft')
                               AND content ILIKE %s
                             RETURNING id""",
