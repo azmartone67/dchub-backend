@@ -548,9 +548,15 @@ def users_inspect():
         return (local[:3] + "***@" + domain) if local else e
 
     out = {"at": datetime.datetime.utcnow().isoformat() + "Z"}
+
+    # r-userinsp-fix (2026-05-27): each query block uses its OWN connection
+    # so one failure (e.g., missing column) doesn't abort the whole transaction
+    # and cascade-kill the rest. Postgres aborts the transaction on any error
+    # within a block, so isolated connections = isolated failures.
+
+    # ── 1. Tier counts (everyone with a dev key) ──
     try:
         with _conn() as c, c.cursor() as cur:
-            # ── 1. Tier counts (everyone with a dev key) ──
             cur.execute("""
                 SELECT COALESCE(tier, 'free') AS tier, COUNT(*) AS n
                   FROM mcp_dev_keys
@@ -558,131 +564,147 @@ def users_inspect():
                  GROUP BY 1 ORDER BY 2 DESC
             """)
             out["tier_counts"] = {r[0]: int(r[1]) for r in cur.fetchall()}
-
-            # ── 2. Paying customers (Stripe-active) with tool mix ──
-            # mcp_conversions has plan/mrr. Join to mcp_call_log for usage.
-            try:
-                cur.execute("""
-                    SELECT email, plan, mrr_cents, created_at,
-                           EXTRACT(DAY FROM NOW() - created_at)::int AS days_old
-                      FROM mcp_conversions
-                     WHERE mrr_cents > 0
-                       OR plan ILIKE '%research%' OR plan ILIKE '%founding%'
-                     ORDER BY mrr_cents DESC NULLS LAST
-                     LIMIT 25
-                """)
-                paying = []
-                for email, plan, mrr_cents, created_at, days_old in cur.fetchall():
-                    paying.append({
-                        "email":      _mask_email(email),
-                        "plan":       plan,
-                        "mrr_usd":    round((mrr_cents or 0) / 100.0, 2),
-                        "days_active": int(days_old or 0),
-                        "created_at": created_at.isoformat() if created_at else None,
-                    })
-                out["paying_customers"] = paying
-                out["paying_customer_count"] = len(paying)
-            except Exception as e:
-                out["paying_customers_error"] = str(e)[:160]
-
-            # ── 3. Free-key users with high tool-call volume (upgrade candidates) ──
-            # mcp_dev_keys has the keys; mcp_call_log has the activity.
-            try:
-                cur.execute("""
-                    WITH usage AS (
-                      SELECT api_key, COUNT(*) AS calls,
-                             COUNT(DISTINCT tool) AS distinct_tools,
-                             MAX(timestamp) AS last_seen,
-                             array_agg(DISTINCT tool ORDER BY tool) AS tools
-                        FROM mcp_call_log
-                       WHERE api_key IS NOT NULL AND api_key <> ''
-                         AND timestamp > NOW() - INTERVAL '30 days'
-                       GROUP BY api_key
-                    )
-                    SELECT k.email, k.tier, k.created_at,
-                           u.calls, u.distinct_tools, u.last_seen, u.tools
-                      FROM mcp_dev_keys k
-                      JOIN usage u ON u.api_key = k.api_key
-                     WHERE k.status = 'active'
-                       AND COALESCE(k.tier, 'free') = 'free'
-                     ORDER BY u.calls DESC
-                     LIMIT 25
-                """)
-                upgrades = []
-                for email, tier, created_at, calls, dt, last_seen, tools in cur.fetchall():
-                    upgrades.append({
-                        "email":          _mask_email(email),
-                        "tier":           tier or "free",
-                        "calls_30d":      int(calls or 0),
-                        "distinct_tools": int(dt or 0),
-                        "last_seen":      last_seen.isoformat() if last_seen else None,
-                        "top_tools":      list(tools or [])[:5],
-                        "upgrade_pitch":  (
-                            f"{int(calls or 0)} calls/30d ≈ {int(calls or 0) // 30}/day. "
-                            + ("Hitting limits — pitch $9 Starter (10K/day)." if (calls or 0) >= 500 else
-                               "Engaged user — pitch $49 Developer once they hit caps.")
-                        ),
-                    })
-                out["upgrade_candidates"] = upgrades
-            except Exception as e:
-                out["upgrade_candidates_error"] = str(e)[:160]
-
-            # ── 4. Anonymous sessions with activity (warm leads, pre-email) ──
-            try:
-                cur.execute("""
-                    SELECT platform, session_id, COUNT(*) AS calls,
-                           array_agg(DISTINCT tool ORDER BY tool) AS tools,
-                           MAX(timestamp) AS last_seen
-                      FROM mcp_call_log
-                     WHERE (api_key IS NULL OR api_key = '')
-                       AND timestamp > NOW() - INTERVAL '7 days'
-                       AND platform NOT LIKE 'dchub-%'
-                       AND platform NOT LIKE 'loop%'
-                       AND platform NOT LIKE 'r51%'
-                       AND platform NOT LIKE 'r52%'
-                       AND platform NOT LIKE 'leak%'
-                       AND platform NOT LIKE '%test%'
-                       AND platform NOT LIKE '%probe%'
-                       AND platform NOT LIKE 'gate-audit%'
-                       AND platform NOT LIKE 'trial-%'
-                     GROUP BY platform, session_id
-                    HAVING COUNT(*) > 3
-                     ORDER BY calls DESC
-                     LIMIT 20
-                """)
-                anons = []
-                for platform, sid, calls, tools, last_seen in cur.fetchall():
-                    anons.append({
-                        "platform":   platform,
-                        "session":    (sid or "")[:16] + "..." if sid else None,
-                        "calls_7d":   int(calls or 0),
-                        "top_tools":  list(tools or [])[:5],
-                        "last_seen":  last_seen.isoformat() if last_seen else None,
-                    })
-                out["high_activity_anon"] = anons
-            except Exception as e:
-                out["high_activity_anon_error"] = str(e)[:160]
-
-            # ── 5. Tool-mix across all users (what's actually consumed) ──
-            try:
-                cur.execute("""
-                    SELECT tool, COUNT(*) AS calls,
-                           COUNT(DISTINCT api_key) AS unique_users
-                      FROM mcp_call_log
-                     WHERE timestamp > NOW() - INTERVAL '7 days'
-                       AND tool IS NOT NULL AND tool <> ''
-                     GROUP BY 1 ORDER BY 2 DESC LIMIT 15
-                """)
-                out["top_tools_7d"] = [
-                    {"tool": r[0], "calls": int(r[1]), "unique_users": int(r[2] or 0)}
-                    for r in cur.fetchall()
-                ]
-            except Exception as e:
-                out["top_tools_7d_error"] = str(e)[:160]
-
-        return jsonify(out), 200
     except Exception as e:
-        return jsonify({"error": str(e)[:300]}), 500
+        out["tier_counts_error"] = str(e)[:160]
+
+    # ── 2. Paying customers (Stripe-active) — mcp_conversions schema unknown ──
+    # Try a few common column shapes; the table has plan + mrr_cents per
+    # funnel-stages, but might not have email directly. Join via developer_id
+    # to mcp_dev_keys if needed.
+    try:
+        with _conn() as c, c.cursor() as cur:
+            # First introspect mcp_conversions columns
+            cur.execute("""
+                SELECT column_name FROM information_schema.columns
+                 WHERE table_name = 'mcp_conversions' ORDER BY ordinal_position
+            """)
+            cols = {r[0] for r in cur.fetchall()}
+            out["_mcp_conversions_cols"] = sorted(list(cols))[:20]
+            # Build the SELECT dynamically based on what columns exist
+            has_email = "email" in cols
+            has_devid = "developer_id" in cols or "key_id" in cols
+            email_col = "email" if has_email else ("NULL::text AS email")
+            cur.execute(f"""
+                SELECT {email_col}, plan, mrr_cents, created_at,
+                       EXTRACT(DAY FROM NOW() - created_at)::int AS days_old
+                  FROM mcp_conversions
+                 WHERE (mrr_cents IS NOT NULL AND mrr_cents > 0)
+                    OR plan ILIKE '%research%' OR plan ILIKE '%founding%'
+                 ORDER BY mrr_cents DESC NULLS LAST
+                 LIMIT 25
+            """)
+            paying = []
+            for email, plan, mrr_cents, created_at, days_old in cur.fetchall():
+                paying.append({
+                    "email":       _mask_email(email),
+                    "plan":        plan,
+                    "mrr_usd":     round((mrr_cents or 0) / 100.0, 2),
+                    "days_active": int(days_old or 0),
+                    "created_at":  created_at.isoformat() if created_at else None,
+                })
+            out["paying_customers"] = paying
+            out["paying_customer_count"] = len(paying)
+    except Exception as e:
+        out["paying_customers_error"] = str(e)[:160]
+
+    # ── 3. Free-key users with high tool-call volume (upgrade candidates) ──
+    try:
+        with _conn() as c, c.cursor() as cur:
+            cur.execute("""
+                WITH usage AS (
+                  SELECT api_key, COUNT(*) AS calls,
+                         COUNT(DISTINCT tool) AS distinct_tools,
+                         MAX(timestamp) AS last_seen,
+                         array_agg(DISTINCT tool ORDER BY tool) AS tools
+                    FROM mcp_call_log
+                   WHERE api_key IS NOT NULL AND api_key <> ''
+                     AND timestamp > NOW() - INTERVAL '30 days'
+                   GROUP BY api_key
+                )
+                SELECT k.email, k.tier, k.created_at,
+                       u.calls, u.distinct_tools, u.last_seen, u.tools
+                  FROM mcp_dev_keys k
+                  JOIN usage u ON u.api_key = k.api_key
+                 WHERE k.status = 'active'
+                   AND COALESCE(k.tier, 'free') = 'free'
+                 ORDER BY u.calls DESC
+                 LIMIT 25
+            """)
+            upgrades = []
+            for email, tier, created_at, calls, dt, last_seen, tools in cur.fetchall():
+                upgrades.append({
+                    "email":          _mask_email(email),
+                    "tier":           tier or "free",
+                    "calls_30d":      int(calls or 0),
+                    "distinct_tools": int(dt or 0),
+                    "last_seen":      last_seen.isoformat() if last_seen else None,
+                    "top_tools":      list(tools or [])[:5],
+                    "upgrade_pitch":  (
+                        f"{int(calls or 0)} calls/30d ≈ {int(calls or 0) // 30}/day. "
+                        + ("Hitting limits — pitch $9 Starter (10K/day)." if (calls or 0) >= 500 else
+                           "Engaged user — pitch $49 Developer once they hit caps.")
+                    ),
+                })
+            out["upgrade_candidates"] = upgrades
+    except Exception as e:
+        out["upgrade_candidates_error"] = str(e)[:160]
+
+    # ── 4. Anonymous sessions with activity (warm leads, pre-email) ──
+    try:
+        with _conn() as c, c.cursor() as cur:
+            cur.execute("""
+                SELECT platform, session_id, COUNT(*) AS calls,
+                       array_agg(DISTINCT tool ORDER BY tool) AS tools,
+                       MAX(timestamp) AS last_seen
+                  FROM mcp_call_log
+                 WHERE (api_key IS NULL OR api_key = '')
+                   AND timestamp > NOW() - INTERVAL '7 days'
+                   AND platform NOT LIKE 'dchub-%'
+                   AND platform NOT LIKE 'loop%'
+                   AND platform NOT LIKE 'r51%'
+                   AND platform NOT LIKE 'r52%'
+                   AND platform NOT LIKE 'leak%'
+                   AND platform NOT LIKE '%test%'
+                   AND platform NOT LIKE '%probe%'
+                   AND platform NOT LIKE 'gate-audit%'
+                   AND platform NOT LIKE 'trial-%'
+                 GROUP BY platform, session_id
+                HAVING COUNT(*) > 3
+                 ORDER BY calls DESC
+                 LIMIT 20
+            """)
+            anons = []
+            for platform, sid, calls, tools, last_seen in cur.fetchall():
+                anons.append({
+                    "platform":   platform,
+                    "session":    (sid or "")[:16] + "..." if sid else None,
+                    "calls_7d":   int(calls or 0),
+                    "top_tools":  list(tools or [])[:5],
+                    "last_seen":  last_seen.isoformat() if last_seen else None,
+                })
+            out["high_activity_anon"] = anons
+    except Exception as e:
+        out["high_activity_anon_error"] = str(e)[:160]
+
+    # ── 5. Tool-mix across all users (what's actually consumed) ──
+    try:
+        with _conn() as c, c.cursor() as cur:
+            cur.execute("""
+                SELECT tool, COUNT(*) AS calls,
+                       COUNT(DISTINCT api_key) AS unique_users
+                  FROM mcp_call_log
+                 WHERE timestamp > NOW() - INTERVAL '7 days'
+                   AND tool IS NOT NULL AND tool <> ''
+                 GROUP BY 1 ORDER BY 2 DESC LIMIT 15
+            """)
+            out["top_tools_7d"] = [
+                {"tool": r[0], "calls": int(r[1]), "unique_users": int(r[2] or 0)}
+                for r in cur.fetchall()
+            ]
+    except Exception as e:
+        out["top_tools_7d_error"] = str(e)[:160]
+
+    return jsonify(out), 200
 
 
 @mcp_funnel_bp.route("/anon-ua-breakdown", methods=["GET"])
