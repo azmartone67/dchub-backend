@@ -181,8 +181,7 @@ def signal_attribution():
                      COUNT(*) FILTER (WHERE user_agent IS NOT NULL AND user_agent <> '') AS has_ua,
                      COUNT(*) FILTER (WHERE session_id IS NOT NULL AND session_id <> '') AS has_session,
                      COUNT(*) FILTER (WHERE user_email IS NOT NULL AND user_email <> '') AS has_email,
-                     COUNT(*) FILTER (WHERE mcp_client IS NOT NULL AND mcp_client NOT IN ('','mcp','unknown')) AS has_client,
-                     COUNT(*) FILTER (WHERE api_key IS NOT NULL AND api_key <> '') AS has_api_key
+                     COUNT(*) FILTER (WHERE mcp_client IS NOT NULL AND mcp_client NOT IN ('','mcp','unknown')) AS has_client
                    FROM mcp_upgrade_signals
                   WHERE created_at > NOW() - INTERVAL '7 days'"""
             )
@@ -195,7 +194,6 @@ def signal_attribution():
                 "has_session_pct": round(100.0 * (r[3] or 0) / total, 1),
                 "has_email_pct":   round(100.0 * (r[4] or 0) / total, 1),
                 "has_client_pct":  round(100.0 * (r[5] or 0) / total, 1),
-                "has_api_key_pct": round(100.0 * (r[6] or 0) / total, 1),
             }
             # 10 latest raw rows (UA/IP-hash redacted)
             cur.execute(

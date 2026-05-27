@@ -87,3 +87,6 @@ qa-stale-results.json
 qa-state/
 dchub-frontend/index.legacy-2026-05-11.html.bak
 .claude/
+
+# Microsoft Office lock files (created when a .docx/.xlsx/.pptx is open)
+~$*
