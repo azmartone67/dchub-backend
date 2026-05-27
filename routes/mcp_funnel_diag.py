@@ -318,8 +318,8 @@ def backfill_empty_city():
                      WHERE (city IS NOT NULL AND city <> '')
                        AND latitude IS NOT NULL AND longitude IS NOT NULL
                        AND NOT (latitude = 0 AND longitude = 0)
-                       AND ABS(latitude - e.latitude) < 0.25
-                       AND ABS(longitude - e.longitude) < 0.25
+                       AND ABS(latitude - e.latitude) < 0.5
+                       AND ABS(longitude - e.longitude) < 0.5
                      ORDER BY POWER(latitude - e.latitude, 2)
                             + POWER(longitude - e.longitude, 2) ASC
                      LIMIT 1
