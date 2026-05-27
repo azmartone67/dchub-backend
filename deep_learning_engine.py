@@ -761,7 +761,7 @@ class DeepLearningEngine:
             cursor.execute('''
                 INSERT INTO transaction_intelligence 
                 (transaction_hash, buyer, target, deal_type, value_millions, source_url, confidence)
-                VALUES (%s, %s, %s, %s, %s, %s, %s)
+                VALUES (%s, %s, %s, %s, %s, %s, %s) ON CONFLICT DO NOTHING
             ''', (tx['hash'], tx['buyer'], tx['target'], tx['deal_type'],
                   tx.get('value_millions'), tx.get('source_url'), tx.get('confidence', 0.5)))
             
@@ -781,7 +781,7 @@ class DeepLearningEngine:
             cursor.execute('''
                 INSERT INTO capacity_tracking 
                 (operator, location, capacity_mw, status, source, confidence)
-                VALUES (%s, %s, %s, %s, %s, %s)
+                VALUES (%s, %s, %s, %s, %s, %s) ON CONFLICT DO NOTHING
             ''', (cap.get('operator'), cap.get('location'), cap.get('capacity_mw'),
                   cap.get('status', 'planned'), cap.get('source_url'), cap.get('confidence', 0.5)))
             
@@ -800,7 +800,7 @@ class DeepLearningEngine:
             
             cursor.execute('''
                 INSERT INTO discovered_sources (domain, url, source_type, discovery_method)
-                VALUES (%s, %s, %s, 'deep_learning')
+                VALUES (%s, %s, %s, 'deep_learning') ON CONFLICT DO NOTHING
             ''', (urlparse(url).netloc, url, source_type))
             
             is_new = cursor.rowcount > 0
@@ -885,7 +885,7 @@ class DeepLearningEngine:
             
             cursor.execute('''
                 INSERT INTO learning_log (learning_type, items_processed, items_learned, duration_seconds)
-                VALUES (%s, %s, %s, %s)
+                VALUES (%s, %s, %s, %s) ON CONFLICT DO NOTHING
             ''', ('full_cycle', 100, items_learned, results.get('duration', 0)))
             
             conn.commit()
