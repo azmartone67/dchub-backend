@@ -440,7 +440,10 @@ def _render_page(title, subheadline, body, category, date_human, slug, meta,
 <meta property="og:url" content="{canonical}">
 <meta property="og:type" content="article">
 <meta property="og:site_name" content="DC Hub">
-<meta property="og:image" content="https://dchub.cloud/og-default.png">
+<meta property="og:image" content="https://dchub.cloud/api/v1/og/today/{slug}.png">
+<meta property="og:image:width" content="1200">
+<meta property="og:image:height" content="630">
+<meta property="og:image:type" content="image/png">
 <meta property="article:published_time" content="{_html.escape(date_human)}">
 <meta property="article:section" content="{_html.escape(category)}">
 <meta property="article:author" content="DC Hub">
@@ -448,7 +451,7 @@ def _render_page(title, subheadline, body, category, date_human, slug, meta,
 <meta name="twitter:site" content="@dchubcloud">
 <meta name="twitter:title" content="{title_esc}">
 <meta name="twitter:description" content="{desc_esc}">
-<meta name="twitter:image" content="https://dchub.cloud/og-default.png">
+<meta name="twitter:image" content="https://dchub.cloud/api/v1/og/today/{slug}.png">
 {jsonld}
 {_STYLES}
 </head><body><div class="wrap">
