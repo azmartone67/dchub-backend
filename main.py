@@ -2886,8 +2886,33 @@ def require_plan(min_plan='pro'):
 # REQUEST TIMEOUT MIDDLEWARE - Kill requests after 30 seconds, return 504
 # =============================================================================
 import signal
+import collections as _collections
 
 _REQUEST_TIMEOUT = 30
+
+# #3 continuous optimization (r43-H, 2026-05-28): per-ROUTE latency tracker.
+# In-memory, per-replica, rolling 200-sample window keyed by the matched URL
+# RULE (e.g. '/markets/<slug>', NOT the raw path — that avoids unbounded
+# cardinality). Surfaced at /api/v1/brain/latency so the brain watches p95
+# continuously instead of only logging the >30s spikes. Cheap + exception-safe
+# so it can run in the after_request hook on every request.
+_ROUTE_LATENCY: dict = {}
+_ROUTE_LATENCY_MAX_RULES = 400
+
+def _record_latency(rule, elapsed):
+    try:
+        e = _ROUTE_LATENCY.get(rule)
+        if e is None:
+            if len(_ROUTE_LATENCY) >= _ROUTE_LATENCY_MAX_RULES:
+                return
+            e = {"d": _collections.deque(maxlen=200), "max": 0.0, "n": 0}
+            _ROUTE_LATENCY[rule] = e
+        e["d"].append(elapsed)
+        e["n"] += 1
+        if elapsed > e["max"]:
+            e["max"] = elapsed
+    except Exception:
+        pass
 
 @app.before_request
 def _start_request_timer():
@@ -2898,11 +2923,47 @@ def _check_request_timeout(response):
     start = getattr(request, '_start_time', None)
     if start:
         elapsed = time.time() - start
+        try:
+            rule = getattr(getattr(request, 'url_rule', None), 'rule', None) or '<unmatched>'
+            _record_latency(rule, elapsed)
+        except Exception:
+            pass
         if elapsed > _REQUEST_TIMEOUT:
             logging.getLogger('request_timeout').warning(
                 f"SLOW REQUEST: {request.method} {request.path} took {elapsed:.1f}s (>{_REQUEST_TIMEOUT}s)"
             )
     return response
+
+
+@app.route('/api/v1/brain/latency', methods=['GET'])
+def brain_route_latency():
+    """#3 continuous optimization: per-route p50/p95/max latency (in-memory,
+    rolling 200-sample window, this replica). p95>=2s routes are candidates for
+    caching / pagination / background work."""
+    def _pct(vals, p):
+        if not vals:
+            return None
+        k = max(0, min(len(vals) - 1, int(round((p / 100.0) * (len(vals) - 1)))))
+        return round(vals[k], 3)
+    rows = []
+    for rule, e in list(_ROUTE_LATENCY.items()):
+        vals = sorted(e["d"])
+        if not vals:
+            continue
+        rows.append({
+            "route": rule, "samples": len(vals), "total_seen": e["n"],
+            "p50_s": _pct(vals, 50), "p95_s": _pct(vals, 95),
+            "max_s": round(e["max"], 3),
+        })
+    rows.sort(key=lambda r: (r["p95_s"] or 0), reverse=True)
+    candidates = [r for r in rows if (r["p95_s"] or 0) >= 2.0]
+    return jsonify({
+        "tracked_routes": len(rows),
+        "slowest": rows[:25],
+        "optimization_candidates": candidates,
+        "note": ("p95>=2s routes are candidates for caching / pagination / "
+                 "background tasks. In-memory per-replica, rolling 200-sample window."),
+    })
 
 
 # r43-G (2026-05-27): Issue HMAC-signed session cookie on HTML responses.
