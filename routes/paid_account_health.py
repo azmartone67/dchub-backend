@@ -367,6 +367,7 @@ def mint_key():
 
     user_id = None
     plan = 'free'
+    regenerate = bool(data.get('regenerate'))
     try:
         with _get_pg() as conn:
             cur = conn.cursor()
@@ -380,10 +381,16 @@ def mint_key():
                  WHERE user_id = %s AND COALESCE(is_active, 1) = 1 LIMIT 1
             """, (user_id,))
             existing = cur.fetchone()
-            if existing:
+            if existing and not regenerate:
                 return jsonify({'success': True, 'already_has_key': True,
                                 'key_prefix': existing[0], 'email': email,
-                                'note': 'active key already exists — not minting a duplicate'})
+                                'note': 'active key already exists — pass {"regenerate": true} to '
+                                        'deactivate it and mint a fresh deliverable key'})
+            if existing and regenerate:
+                # Deactivate all current active keys so the new one is the
+                # single source (used when the prior key's raw value was lost).
+                cur.execute("UPDATE api_keys SET is_active = 0 WHERE user_id = %s", (user_id,))
+                conn.commit()
     except Exception as e:
         logger.error(f"mint-key lookup failed: {e}", exc_info=True)
         return jsonify({'success': False, 'error': str(e)}), 500
