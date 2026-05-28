@@ -353,16 +353,23 @@ def deep_dive_html(slug):
  "about":{{"@type":"Place","name":"{name}"}},
  "description":"Live data-center market analysis. DCPI score {stats.get('dcpi_score','?')}/100."
 }}</script>
-<style>body{{font-family:Georgia,serif;max-width:760px;margin:0 auto;padding:2rem 1rem;color:#1f2937;line-height:1.7}}
-h1{{font-family:-apple-system,sans-serif;margin:0 0 .25rem;font-size:2rem}}
-.sub{{color:#6b7280;font-family:-apple-system,sans-serif;margin:0 0 1.5rem;font-size:.9rem}}
-.stats{{display:grid;grid-template-columns:repeat(auto-fit,minmax(140px,1fr));gap:.5rem;margin:1rem 0 2rem;background:#f5f5fa;padding:1rem 1.25rem;border-radius:8px;font-family:-apple-system,sans-serif}}
-.stat{{font-size:.85rem;color:#6b7280}}
-.stat b{{display:block;font-size:1.4rem;color:#1f2937}}
-p{{margin:1rem 0;font-size:1.08rem}}
-.foot{{color:#9ca3af;font-size:.85rem;margin-top:2rem;font-family:-apple-system,sans-serif}}
-.foot a{{color:#6366f1;text-decoration:none}}
-.foot a:hover{{text-decoration:underline}}</style>
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link href="https://fonts.googleapis.com/css2?family=Instrument+Sans:wght@400;500;600;700&family=JetBrains+Mono:wght@400;500;600&display=swap" rel="stylesheet">
+<style>
+:root{{--bg:#0a0a0f;--surf:#131319;--b:rgba(255,255,255,0.08);--tx:#fafafa;--mut:#a1a1aa;--dim:#71717a;--ind:#818cf8;--grad:linear-gradient(135deg,#6366f1,#a855f7)}}
+*{{box-sizing:border-box}}
+body{{font-family:'Instrument Sans',-apple-system,BlinkMacSystemFont,sans-serif;max-width:760px;margin:0 auto;padding:2.5rem 1.25rem;background:var(--bg);color:#d4d4d8;line-height:1.75;-webkit-font-smoothing:antialiased}}
+h1{{font-weight:700;letter-spacing:-.02em;margin:0 0 .25rem;font-size:2.1rem;color:var(--tx)}}
+.sub{{color:var(--dim);margin:0 0 1.75rem;font-size:.82rem;font-family:'JetBrains Mono',monospace}}
+.stats{{display:grid;grid-template-columns:repeat(auto-fit,minmax(140px,1fr));gap:.75rem;margin:1rem 0 2.25rem}}
+.stat{{background:var(--surf);border:1px solid var(--b);border-radius:12px;padding:.9rem 1.1rem;font-size:.68rem;color:var(--dim);text-transform:uppercase;letter-spacing:.06em;font-family:'JetBrains Mono',monospace}}
+.stat b{{display:block;font-size:1.5rem;color:var(--tx);margin-top:.35rem;letter-spacing:0;text-transform:none}}
+p{{margin:1.1rem 0;font-size:1.06rem}}
+a{{color:var(--ind)}}
+.foot{{color:var(--dim);font-size:.82rem;margin-top:2.5rem;padding-top:1.25rem;border-top:1px solid var(--b);font-family:'JetBrains Mono',monospace}}
+.foot a{{color:var(--ind);text-decoration:none}}
+.foot a:hover{{text-decoration:underline}}
+</style>
 </head><body>
 <h1>{name}</h1>
 <p class="sub">Data Center Market Deep-Dive · {r.get('word_count') or 0} words · generated {gen_at} by Claude haiku from live DC Hub data</p>
@@ -586,17 +593,25 @@ def market_short_html(slug):
  "description":"{desc}",
  "url":"https://dchub.cloud/markets/{slug_norm}"
 }}</script>
-<style>body{{font-family:-apple-system,sans-serif;max-width:760px;margin:0 auto;padding:2rem 1rem;color:#1f2937;line-height:1.7}}
-h1{{margin:0 0 .25rem;font-size:2rem}}
-.sub{{color:#6b7280;margin:0 0 1.5rem;font-size:.9rem}}
-.stats{{display:grid;grid-template-columns:repeat(auto-fit,minmax(140px,1fr));gap:.5rem;margin:1rem 0 2rem;background:#f5f5fa;padding:1rem 1.25rem;border-radius:8px}}
-.stat{{font-size:.85rem;color:#6b7280}}
-.stat b{{display:block;font-size:1.4rem;color:#1f2937}}
-.foot{{color:#9ca3af;font-size:.85rem;margin-top:2rem}}
-.foot a{{color:#6366f1;text-decoration:none}}
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link href="https://fonts.googleapis.com/css2?family=Instrument+Sans:wght@400;500;600;700&family=JetBrains+Mono:wght@400;500;600&display=swap" rel="stylesheet">
+<style>
+:root{{--bg:#0a0a0f;--surf:#131319;--b:rgba(255,255,255,0.08);--tx:#fafafa;--mut:#a1a1aa;--dim:#71717a;--ind:#818cf8;--grad:linear-gradient(135deg,#6366f1,#a855f7)}}
+*{{box-sizing:border-box}}
+body{{font-family:'Instrument Sans',-apple-system,BlinkMacSystemFont,sans-serif;max-width:760px;margin:0 auto;padding:2.5rem 1.25rem;background:var(--bg);color:#d4d4d8;line-height:1.75;-webkit-font-smoothing:antialiased}}
+h1{{margin:0 0 .25rem;font-size:2.1rem;font-weight:700;letter-spacing:-.02em;color:var(--tx)}}
+h2{{font-size:1.15rem;font-weight:600;color:var(--tx);margin:2rem 0 .5rem}}
+.sub{{color:var(--dim);margin:0 0 1.75rem;font-size:.82rem;font-family:'JetBrains Mono',monospace}}
+.stats{{display:grid;grid-template-columns:repeat(auto-fit,minmax(140px,1fr));gap:.75rem;margin:1rem 0 2rem}}
+.stat{{background:var(--surf);border:1px solid var(--b);border-radius:12px;padding:.9rem 1.1rem;font-size:.68rem;color:var(--dim);text-transform:uppercase;letter-spacing:.06em;font-family:'JetBrains Mono',monospace}}
+.stat b{{display:block;font-size:1.5rem;color:var(--tx);margin-top:.35rem;letter-spacing:0;text-transform:none}}
+a{{color:var(--ind)}}
+.foot{{color:var(--dim);font-size:.82rem;margin-top:2.5rem;padding-top:1.25rem;border-top:1px solid var(--b);font-family:'JetBrains Mono',monospace}}
+.foot a{{color:var(--ind);text-decoration:none}}
 .foot a:hover{{text-decoration:underline}}
-.note{{color:#9ca3af;font-size:.8rem;margin:-.5rem 0 1.5rem;line-height:1.5}}
-ul{{padding-left:1.25rem}}</style>
+.note{{color:var(--dim);font-size:.82rem;margin:-.25rem 0 1.5rem;line-height:1.55}}
+ul{{padding-left:1.25rem}} li{{margin:.3rem 0}}
+</style>
 </head><body>
 <h1>{name}</h1>
 <p class="sub">Data Center Market · {md.get('region','—')}</p>
