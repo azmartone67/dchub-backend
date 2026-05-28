@@ -62,6 +62,44 @@ def _fetch_facility_by_slug(slug: str) -> dict | None:
         return None
 
 
+def _market_dcpi(city: str, state: str) -> dict | None:
+    """Best-effort DCPI verdict for the facility's market (by city/state) so
+    the profile shows real intelligence, not just sparse metadata."""
+    cands = []
+    if city:
+        cands.append(city.lower().replace(" ", "-"))
+        cands.append(city.lower().split(",")[0].strip().replace(" ", "-"))
+    if state:
+        cands.append(state.lower())
+    cands = [c for c in cands if c]
+    if not cands:
+        return None
+    try:
+        from main import get_read_db
+        conn = get_read_db()
+        if not conn:
+            return None
+        try:
+            c = conn.cursor()
+            c.execute("""
+                SELECT market_slug, market_name, iso, verdict,
+                       excess_power_score, constraint_score, time_to_power_months
+                  FROM market_power_scores
+                 WHERE LOWER(market_slug) = ANY(%s) OR LOWER(state) = ANY(%s)
+                 ORDER BY computed_at DESC LIMIT 1
+            """, (cands, cands))
+            row = c.fetchone()
+            if not row:
+                return None
+            return dict(zip([d[0] for d in c.description], row))
+        finally:
+            try: conn.close()
+            except Exception: pass
+    except Exception as e:
+        logger.warning(f"facility_profile dcpi failed: {e}")
+        return None
+
+
 def _esc(s) -> str:
     """HTML-escape."""
     return (str(s or "")
@@ -114,34 +152,66 @@ def _render_profile(fac: dict, slug: str) -> str:
             "longitude": float(lng),
         }
 
-    # Compact stats grid
+    # Enriched stat cards — only render values we actually have (sparse rows
+    # with power_mw=0 / blank fields used to render a wall of empties).
+    def _has(v):
+        return v not in (None, "", 0, 0.0, "0", "Unknown", "unknown")
     stats = []
-    if power:    stats.append(("Power", f"{power} MW"))
-    if status:   stats.append(("Status", status))
-    if region:   stats.append(("Region", region))
-    if lat and lng:
-        stats.append(("Coordinates", f"{lat:.4f}, {lng:.4f}"))
-
+    if _has(power):                    stats.append(("Power", f"{power} MW"))
+    if _has(status):                   stats.append(("Status", str(status).title()))
+    if _has(region):                   stats.append(("Market", region))
+    if _has(city) and city != region:  stats.append(("City", city))
+    if _has(state):                    stats.append(("State", state))
+    if _has(country):                  stats.append(("Country", country))
+    if lat and lng:                    stats.append(("Coordinates", f"{float(lat):.4f}, {float(lng):.4f}"))
+    if _has(address):                  stats.append(("Address", address))
     stats_html = "".join(
         f'<div class="stat-card"><div class="stat-label">{_esc(label)}</div>'
         f'<div class="stat-value">{_esc(value)}</div></div>'
         for label, value in stats
     )
 
+    # DCPI market-intelligence block (best-effort — this is an intelligence
+    # platform, so a facility page should carry its market's DCPI verdict).
+    _dcpi = _market_dcpi(city, state)
+    dcpi_html = ""
+    if _dcpi:
+        _verdict = (_dcpi.get("verdict") or "").upper()
+        _vcolor = "#10b981" if _verdict == "BUILD" else ("#ef4444" if _verdict == "AVOID" else "#f59e0b")
+        _mslug = _dcpi.get("market_slug") or ""
+        _mname = _dcpi.get("market_name") or region or "this market"
+        _chips = []
+        if _dcpi.get("iso"):                              _chips.append(("ISO", _esc(_dcpi.get("iso"))))
+        if _dcpi.get("excess_power_score") is not None:   _chips.append(("Excess-power", _esc(_dcpi.get("excess_power_score"))))
+        if _dcpi.get("constraint_score") is not None:     _chips.append(("Constraint", _esc(_dcpi.get("constraint_score"))))
+        if _dcpi.get("time_to_power_months") is not None: _chips.append(("Time-to-power", f'{_esc(_dcpi.get("time_to_power_months"))} mo'))
+        _chips_html = "".join(
+            f'<div class="chip"><span class="chip-l">{l}</span><span class="chip-v">{v}</span></div>'
+            for l, v in _chips)
+        _dlink = f'<a href="/dcpi/{_esc(_mslug)}" class="link">Full DCPI breakdown &rarr;</a>' if _mslug else ""
+        dcpi_html = (
+            '<div class="section"><div class="section-head">'
+            '<h2>Market intelligence</h2>'
+            f'<span class="verdict" style="color:{_vcolor};border-color:{_vcolor}">{_esc(_verdict or "NEUTRAL")}</span>'
+            '</div>'
+            f'<p class="section-sub">Data Center Power Index verdict for {_esc(_mname)} &mdash; the market this facility sits in.</p>'
+            f'<div class="chips">{_chips_html}</div>{_dlink}</div>'
+        )
+
     map_block = ""
     if lat and lng:
         # Cheap inline map preview via OpenStreetMap static tile
         bbox = f"{float(lng)-0.05},{float(lat)-0.04},{float(lng)+0.05},{float(lat)+0.04}"
         map_block = f"""
-        <div class="map-block">
-          <iframe width="100%" height="320" frameborder="0" scrolling="no"
+        <div class="section">
+          <div class="section-head"><h2>Location</h2></div>
+          <iframe width="100%" height="320" frameborder="0" scrolling="no" loading="lazy"
             marginheight="0" marginwidth="0"
             src="https://www.openstreetmap.org/export/embed.html?bbox={bbox}&layer=mapnik&marker={lat},{lng}"
-            style="border:1px solid #2a2a2e;border-radius:12px"
-            loading="lazy"></iframe>
-          <p style="margin-top:8px;color:#888;font-size:13px">
+            style="border:1px solid var(--b);border-radius:12px;display:block;margin-top:8px"></iframe>
+          <p style="margin-top:10px">
             <a href="https://www.openstreetmap.org/?mlat={lat}&amp;mlon={lng}#map=14/{lat}/{lng}"
-               target="_blank" style="color:#6366f1">Open in OpenStreetMap →</a>
+               target="_blank" class="link" style="margin-top:0">Open in OpenStreetMap &rarr;</a>
           </p>
         </div>
         """
@@ -164,42 +234,56 @@ def _render_profile(fac: dict, slug: str) -> str:
 <meta name="twitter:title" content="{_esc(name)}">
 <meta name="twitter:description" content="{_esc(desc[:200])}">
 <link rel="preconnect" href="https://fonts.googleapis.com">
-<link href="https://fonts.googleapis.com/css2?family=Instrument+Sans:wght@400;500;600;700&display=swap" rel="stylesheet">
+<link href="https://fonts.googleapis.com/css2?family=Instrument+Sans:wght@400;500;600;700&family=JetBrains+Mono:wght@400;500;600&display=swap" rel="stylesheet">
 <script type="application/ld+json">{_json.dumps(schema, indent=2)}</script>
 <style>
+  :root{{--bg:#0a0a0f;--surf:#131319;--surf2:#1a1a22;--b:rgba(255,255,255,0.08);--tx:#fafafa;--mut:#a1a1aa;--dim:#71717a;--ind:#818cf8;--indd:#6366f1;--vio:#a855f7;--grad:linear-gradient(135deg,#6366f1,#a855f7)}}
   *{{margin:0;padding:0;box-sizing:border-box}}
-  body{{font-family:'Instrument Sans',-apple-system,sans-serif;background:#09090b;color:#fafafa;line-height:1.6}}
-  .header{{background:linear-gradient(135deg,#141417 0%,#09090b 100%);padding:20px;border-bottom:1px solid rgba(255,255,255,0.04)}}
-  .header-inner{{max-width:1200px;margin:0 auto;display:flex;justify-content:space-between;align-items:center}}
-  .logo{{font-size:24px;font-weight:700;color:#fbbf24;text-decoration:none}}
-  .nav a{{color:#888;text-decoration:none;margin-left:24px}}
-  .nav a:hover{{color:#fff}}
-  .breadcrumb{{max-width:1200px;margin:20px auto;padding:0 20px;font-size:14px;color:#666}}
-  .breadcrumb a{{color:#6366f1;text-decoration:none}}
-  .container{{max-width:1200px;margin:0 auto;padding:20px}}
-  .facility-header{{background:linear-gradient(135deg,#141417 0%,#0c0c0f 100%);border-radius:16px;padding:32px;margin-bottom:24px;border:1px solid rgba(255,255,255,0.04)}}
-  .facility-title{{font-size:32px;font-weight:700;margin-bottom:8px}}
-  .facility-provider{{color:#fbbf24;font-size:18px;margin-bottom:16px}}
-  .facility-location{{color:#888;font-size:16px;display:flex;align-items:center;gap:8px;flex-wrap:wrap}}
-  .stats-grid{{display:grid;grid-template-columns:repeat(auto-fit,minmax(200px,1fr));gap:16px;margin-bottom:24px}}
-  .stat-card{{background:#141417;border-radius:12px;padding:20px;border:1px solid rgba(255,255,255,0.04)}}
-  .stat-label{{color:#888;font-size:13px;text-transform:uppercase;letter-spacing:.04em;margin-bottom:6px}}
-  .stat-value{{font-size:24px;font-weight:600;color:#fafafa}}
-  .map-block{{background:#141417;border-radius:12px;padding:16px;margin-bottom:24px;border:1px solid rgba(255,255,255,0.04)}}
-  .data-source{{color:#666;font-size:13px;text-align:center;padding:24px 0;border-top:1px solid rgba(255,255,255,0.04);margin-top:32px}}
-  .cta-bar{{background:linear-gradient(135deg,rgba(99,102,241,0.10) 0%,rgba(155,114,203,0.04) 100%);border:1px solid rgba(99,102,241,0.2);border-radius:12px;padding:20px;margin-bottom:24px;text-align:center}}
-  .cta-bar a{{color:#a5b4fc;text-decoration:none;font-weight:600}}
-  .nav-hidden{{display:none}}
+  body{{font-family:'Instrument Sans',-apple-system,BlinkMacSystemFont,sans-serif;background:var(--bg);color:var(--tx);line-height:1.6;-webkit-font-smoothing:antialiased}}
+  .header{{border-bottom:1px solid var(--b);padding:16px 0;position:sticky;top:0;background:rgba(10,10,15,0.85);backdrop-filter:blur(10px);z-index:10}}
+  .header-inner,.container,.breadcrumb{{max-width:1080px;margin:0 auto;padding:0 24px}}
+  .header-inner{{display:flex;justify-content:space-between;align-items:center}}
+  .logo{{font-size:21px;font-weight:700;color:var(--tx);text-decoration:none;letter-spacing:-.02em}}
+  .logo span{{background:var(--grad);-webkit-background-clip:text;background-clip:text;-webkit-text-fill-color:transparent}}
+  .nav a{{color:var(--mut);text-decoration:none;margin-left:22px;font-size:14px;font-weight:500}}
+  .nav a:hover{{color:var(--tx)}}
+  .breadcrumb{{margin:22px auto 0;font-size:12px;color:var(--dim);font-family:'JetBrains Mono',monospace}}
+  .breadcrumb a{{color:var(--ind);text-decoration:none}}
+  .container{{padding-top:4px;padding-bottom:64px}}
+  .hero{{padding:34px 0 6px}}
+  .hero h1{{font-size:34px;font-weight:700;letter-spacing:-.02em;margin-bottom:6px}}
+  .hero .prov{{color:var(--ind);font-size:16px;font-weight:500;margin-bottom:12px}}
+  .hero .loc{{color:var(--mut);font-size:15px}}
+  .stats-grid{{display:grid;grid-template-columns:repeat(auto-fit,minmax(170px,1fr));gap:14px;margin:24px 0}}
+  .stat-card{{background:var(--surf);border:1px solid var(--b);border-radius:14px;padding:18px 20px}}
+  .stat-label{{color:var(--dim);font-size:11px;text-transform:uppercase;letter-spacing:.08em;margin-bottom:8px;font-family:'JetBrains Mono',monospace}}
+  .stat-value{{font-size:19px;font-weight:600;font-family:'JetBrains Mono',monospace;word-break:break-word}}
+  .section{{background:var(--surf);border:1px solid var(--b);border-radius:16px;padding:24px;margin:18px 0}}
+  .section-head{{display:flex;align-items:center;justify-content:space-between;gap:12px;margin-bottom:6px}}
+  .section-head h2{{font-size:18px;font-weight:600}}
+  .section-sub{{color:var(--mut);font-size:14px;margin-bottom:16px}}
+  .verdict{{font-family:'JetBrains Mono',monospace;font-size:12px;font-weight:700;letter-spacing:.06em;padding:5px 12px;border:1px solid;border-radius:999px;white-space:nowrap}}
+  .chips{{display:flex;flex-wrap:wrap;gap:10px}}
+  .chip{{background:var(--surf2);border:1px solid var(--b);border-radius:10px;padding:10px 14px;min-width:118px}}
+  .chip-l{{display:block;color:var(--dim);font-size:11px;text-transform:uppercase;letter-spacing:.06em;font-family:'JetBrains Mono',monospace}}
+  .chip-v{{display:block;font-size:18px;font-weight:600;font-family:'JetBrains Mono',monospace;margin-top:4px}}
+  .link{{display:inline-block;margin-top:16px;color:var(--ind);text-decoration:none;font-weight:600;font-size:14px}}
+  .map-block{{padding:0;overflow:hidden}}
+  .cta{{background:linear-gradient(135deg,rgba(99,102,241,0.12),rgba(168,85,247,0.06));border:1px solid rgba(99,102,241,0.25);border-radius:16px;padding:22px 24px;margin:18px 0;display:flex;flex-wrap:wrap;gap:10px 18px;align-items:center;justify-content:center;text-align:center}}
+  .cta a{{color:var(--ind);text-decoration:none;font-weight:600;font-size:14px}}
+  .cta .primary{{background:var(--grad);color:#fff;padding:10px 18px;border-radius:9px}}
+  .foot{{color:var(--dim);font-size:13px;text-align:center;padding-top:24px;border-top:1px solid var(--b);margin-top:30px}}
+  .foot a{{color:var(--ind);text-decoration:none}}
 </style>
 </head>
 <body>
   <header class="header">
     <div class="header-inner">
-      <a href="/" class="logo">DC Hub</a>
+      <a href="/" class="logo">DC<span>Hub</span></a>
       <nav class="nav">
         <a href="/land-power-map">Map</a>
         <a href="/markets">Markets</a>
-        <a href="/intelligence">Intelligence</a>
+        <a href="/dcpi">DCPI</a>
         <a href="/api-docs">API</a>
       </nav>
     </div>
@@ -210,29 +294,27 @@ def _render_profile(fac: dict, slug: str) -> str:
   </div>
 
   <div class="container">
-    <div class="facility-header">
-      <h1 class="facility-title">{_esc(name)}</h1>
-      <div class="facility-provider">{_esc(provider)}</div>
-      <div class="facility-location">
-        <span>📍 {_esc(loc_short)}</span>
-        {f'<span style="color:#666">·</span><span>{_esc(address)}</span>' if address else ''}
-      </div>
+    <div class="hero">
+      <h1>{_esc(name)}</h1>
+      {f'<div class="prov">{_esc(provider)}</div>' if (provider and provider.strip().lower() != name.strip().lower()) else ''}
+      <div class="loc">📍 {_esc(loc_short)}</div>
     </div>
 
-    <div class="stats-grid">
-      {stats_html}
-    </div>
+    <div class="stats-grid">{stats_html}</div>
+
+    {dcpi_html}
 
     {map_block}
 
-    <div class="cta-bar">
-      Need API access to this data? <a href="/ai">Get a free MCP key →</a> ·
+    <div class="cta">
+      <a class="primary" href="/sites/{_esc(slug)}">View full capacity report &rarr;</a>
+      <a href="/ai">Get a free MCP key</a>
       <a href="/cited-by">Cited by ChatGPT, Gemini + 13 AI platforms</a>
     </div>
 
-    <div class="data-source">
-      Data source: DC Hub global infrastructure database ·
-      <a href="/api/v1/facilities/{_esc(slug)}" style="color:#6366f1">View raw JSON</a>
+    <div class="foot">
+      Data: DC Hub global infrastructure database ·
+      <a href="/api/v1/facilities/{_esc(slug)}">Raw JSON</a>
     </div>
   </div>
 
