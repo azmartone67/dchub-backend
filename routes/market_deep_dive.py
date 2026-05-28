@@ -25,7 +25,7 @@ from __future__ import annotations
 import os
 import re
 import datetime
-from flask import Blueprint, Response, jsonify, request, abort
+from flask import Blueprint, Response, jsonify, request, abort, redirect
 
 
 market_deep_dive_bp = Blueprint("market_deep_dive", __name__)
@@ -336,6 +336,7 @@ def deep_dive_html(slug):
     stats = r.get("key_stats") or {}
     html = f"""<!doctype html><html lang=en>
 <head><meta charset=utf-8>
+<meta name="market-slug" content="{slug}">
 <title>{name} Market Deep-Dive · DC Hub</title>
 <meta name="description" content="{name} data center market analysis. DCPI score {stats.get('dcpi_score','?')}/100, {stats.get('facility_count',0)} facilities, {stats.get('total_mw',0):,.0f} MW. Updated {gen_at}.">
 <meta name="robots" content="index,follow,max-snippet:-1">
@@ -436,6 +437,19 @@ def market_short_html(slug):
     """Top-level /markets/<slug>. Prefers the cached deep-dive narrative;
     falls back to a minimal SEO shell so QA never sees a 404."""
     slug_norm = (slug or "").lower().strip()
+
+    # r43-H (2026-05-28): canonical-consolidation 301s. Several alias slugs
+    # point at the same physical market (Ashburn IS the core of Northern
+    # Virginia, NoVA == Northern Virginia, DFW == Dallas). Rendering both
+    # is duplicate content; redirect the alias to the canonical market page.
+    _CANONICAL_REDIRECT = {
+        'ashburn': 'northern-virginia',
+        'nova': 'northern-virginia',
+        'dfw': 'dallas',
+    }
+    if slug_norm in _CANONICAL_REDIRECT:
+        return redirect(f"/markets/{_CANONICAL_REDIRECT[slug_norm]}", code=301)
+
     # If the cached deep-dive exists, redirect-through (serve same HTML)
     r = read_deep_dive(slug_norm)
     if r:
@@ -532,8 +546,34 @@ def market_short_html(slug):
             f"{md.get('vacancy_rate','?')}% vacancy, "
             f"${md.get('avg_asking_rate','?')}/kW/mo asking. Live DC Hub data.")
 
+    # r43-H (2026-05-28): only render metric tiles that have REAL values.
+    # Showing bare "—" for research-only metrics (vacancy/asking/YoY) that
+    # we don't track for smaller markets made the page look broken (the
+    # repeated "Reno is white/no data" reports). Now we show the metrics we
+    # have (clean), and a one-line note for the research metrics we don't.
+    def _has(v):
+        return v not in (None, '', '—', '-', '?')
+    _metric_defs = [
+        ('Inventory',     md.get('inventory_mw'),         '', ' MW'),
+        ('Facilities',    md.get('num_facilities'),       '', ''),
+        ('Under Constr.', md.get('under_construction_mw'),'', ' MW'),
+        ('Vacancy',       md.get('vacancy_rate'),         '', '%'),
+        ('Asking Rate',   md.get('avg_asking_rate'),      '$', '/kW/mo'),
+        ('YoY Price',     md.get('yoy_price_change'),     '', '%'),
+    ]
+    _tiles = [f'<div class="stat">{lab}<b>{pre}{val}{suf}</b></div>'
+              for lab, val, pre, suf in _metric_defs if _has(val)]
+    _missing = [lab for lab, val, pre, suf in _metric_defs if not _has(val)]
+    stats_html = "\n".join(_tiles) or '<div class="stat">Facilities<b>—</b></div>'
+    note_html = ""
+    if _missing:
+        note_html = (f'<p class="note">Pricing, vacancy & YoY for {name} aren\'t in our '
+                     f'CBRE/JLL research coverage yet — facility counts and capacity above '
+                     f'are live from our infrastructure database.</p>')
+
     html = f"""<!doctype html><html lang=en>
 <head><meta charset=utf-8>
+<meta name="market-slug" content="{slug_norm}">
 <title>{name} Data Center Market · DC Hub</title>
 <meta name="description" content="{desc}">
 <meta name="robots" content="index,follow">
@@ -555,18 +595,15 @@ h1{{margin:0 0 .25rem;font-size:2rem}}
 .foot{{color:#9ca3af;font-size:.85rem;margin-top:2rem}}
 .foot a{{color:#6366f1;text-decoration:none}}
 .foot a:hover{{text-decoration:underline}}
+.note{{color:#9ca3af;font-size:.8rem;margin:-.5rem 0 1.5rem;line-height:1.5}}
 ul{{padding-left:1.25rem}}</style>
 </head><body>
 <h1>{name}</h1>
 <p class="sub">Data Center Market · {md.get('region','—')}</p>
 <div class="stats">
- <div class="stat">Inventory<b>{md.get('inventory_mw','—')} MW</b></div>
- <div class="stat">Vacancy<b>{md.get('vacancy_rate','—')}%</b></div>
- <div class="stat">Asking Rate<b>${md.get('avg_asking_rate','—')}/kW/mo</b></div>
- <div class="stat">Facilities<b>{md.get('num_facilities','—')}</b></div>
- <div class="stat">YoY Price<b>{md.get('yoy_price_change','—')}%</b></div>
- <div class="stat">Under Constr.<b>{md.get('under_construction_mw','—')} MW</b></div>
+{stats_html}
 </div>
+{note_html}
 {providers_html}
 {highlights_html}
 <p class="foot">Deep-dive narrative: <a href="/markets/{slug_norm}/deep-dive">/markets/{slug_norm}/deep-dive</a> ·
