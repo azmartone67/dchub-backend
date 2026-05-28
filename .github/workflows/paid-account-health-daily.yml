@@ -1,0 +1,47 @@
+name: Paid-account health audit (daily)
+on:
+  schedule:
+    # r43-H (2026-05-27): fires once daily at 13:30 UTC = 08:30 ET /
+    # 05:30 PT. Audits every paying user (developer/pro/enterprise/
+    # founding tier) for login-blocking conditions: missing password
+    # hash AND no Google OAuth, no API key, password-reset tokens
+    # about to expire. Triggered by the Carl Braun incident where a
+    # paying Pro customer got stranded mid-signup because his 1-hour
+    # reset link expired before he clicked it.
+    - cron: '30 13 * * *'
+  workflow_dispatch: {}
+jobs:
+  audit:
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    steps:
+      - name: Fire paid-account health check + email summary if findings
+        run: |
+          if [ -z "${{ secrets.DCHUB_ADMIN_KEY }}" ]; then
+            echo "::warning::DCHUB_ADMIN_KEY secret missing — skipping"
+            exit 0
+          fi
+          echo "─── Running paid-account health audit ──────────"
+          RESPONSE=$(curl -sS --max-time 60 \
+            "https://dchub-backend-production.up.railway.app/api/v1/admin/paid-account-health/check?email=1" \
+            -H "X-Admin-Key: ${{ secrets.DCHUB_ADMIN_KEY }}")
+          echo "${RESPONSE}" | python3 -m json.tool || echo "::warning::Non-JSON response"
+
+          # Summarize for the run log
+          TOTAL=$(echo "${RESPONSE}"     | python3 -c "import sys, json; print((json.load(sys.stdin) or {}).get('paid_users_total', 0))" 2>/dev/null || echo "0")
+          HEALTHY=$(echo "${RESPONSE}"   | python3 -c "import sys, json; print((json.load(sys.stdin) or {}).get('healthy_total', 0))"    2>/dev/null || echo "0")
+          PROBLEMS=$(echo "${RESPONSE}"  | python3 -c "import sys, json; print((json.load(sys.stdin) or {}).get('problem_count', 0))"   2>/dev/null || echo "0")
+          EMAILED=$(echo "${RESPONSE}"   | python3 -c "import sys, json; print((json.load(sys.stdin) or {}).get('summary_emailed', False))" 2>/dev/null || echo "False")
+          echo ""
+          echo "═══════════════════════════════════════════════"
+          echo "Paid users total:    ${TOTAL}"
+          echo "Healthy:             ${HEALTHY}"
+          echo "Problem accounts:    ${PROBLEMS}"
+          echo "Summary emailed:     ${EMAILED}"
+          echo "═══════════════════════════════════════════════"
+
+          # Fail the run loudly if there are problem accounts and we couldn't email
+          if [ "${PROBLEMS}" != "0" ] && [ "${EMAILED}" != "True" ]; then
+            echo "::error::${PROBLEMS} paid account(s) have problems and email send failed — investigate manually"
+            exit 1
+          fi

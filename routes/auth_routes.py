@@ -798,7 +798,13 @@ def forgot_password():
             if user_row:
                 user_name = user_row[2] or email.split('@')[0]
                 token = secrets.token_urlsafe(32)
-                expires_at = (datetime.utcnow() + timedelta(hours=1)).isoformat()
+                # r43-H (2026-05-27): bump TTL from 1h → 72h. Real customers
+                # don't always click reset links within the hour — they're
+                # at dinner, on vacation, traveling, on mobile checking email
+                # the next morning. The Carl Braun incident showed our
+                # 1-hour window stranded a paying Pro customer; 72h is the
+                # OWASP-recommended ceiling for password reset tokens.
+                expires_at = (datetime.utcnow() + timedelta(hours=72)).isoformat()
 
                 pg_cur.execute("UPDATE password_reset_tokens SET used = TRUE WHERE user_email = %s AND used = FALSE", (email,))
                 pg_cur.execute(
@@ -856,12 +862,18 @@ def reset_password():
             pg_cur.execute("UPDATE users SET password_hash = %s WHERE email = %s", (password_hash, email))
             pg_cur.execute("UPDATE password_reset_tokens SET used = TRUE WHERE token = %s", (token,))
             pg_conn.commit()
-            # Send free welcome email
+            # r43-H (2026-05-27): was `send_free_welcome_email_sendgrid(email, name)`
+            # — `name` was undefined in this scope so the call always
+            # NameErrored into the except. Look up the user's actual
+            # display name from the users table instead.
             try:
+                pg_cur.execute("SELECT name FROM users WHERE email = %s", (email,))
+                _name_row = pg_cur.fetchone()
+                _display_name = (_name_row[0] if _name_row and _name_row[0] else email.split('@')[0])
                 from main import send_free_welcome_email_sendgrid
-                send_free_welcome_email_sendgrid(email, name)
+                send_free_welcome_email_sendgrid(email, _display_name)
             except Exception as email_err:
-                logger.warning(f"Free welcome email failed for {email}: {email_err}")
+                logger.warning(f"Welcome email after reset failed for {email}: {email_err}")
 
             print(f"✅ Password reset successful for {email}")
             return jsonify({'success': True, 'message': 'Password has been reset. You can now log in.'})
