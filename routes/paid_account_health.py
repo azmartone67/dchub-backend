@@ -287,7 +287,70 @@ def fix_reset_for_email():
         return jsonify({'success': False, 'error': str(e)}), 500
 
 
+# Map a plan → the role (api access tier) it should carry. Mirrors the
+# Stripe webhook's plan_tier_map: founding members get pro-level access.
+_PLAN_ROLE = {
+    "founding": "pro", "pro": "pro", "enterprise": "enterprise",
+    "developer": "developer", "starter": "starter", "free": "user",
+}
+
+
+@paid_health_bp.route('/api/v1/admin/paid-account-health/set-tier', methods=['POST'])
+def set_tier():
+    """Operator shortcut: correct a user's tier on the users table.
+
+    Built for the Carl Braun case — his account had plan='founding' but
+    role=NULL + subscription_status=NULL (provisioned before the webhook
+    set those), so login encoded role->'user' and the platform treated
+    a paying founding member as free. Sets plan/role/subscription_status
+    atomically. Admin-gated.
+    """
+    if not _admin_ok():
+        return jsonify({'error': 'admin_key_required'}), 401
+    data = request.get_json(silent=True) or {}
+    email = (data.get('email') or '').lower().strip()
+    plan = (data.get('plan') or '').lower().strip()
+    if not email or not plan:
+        return jsonify({'error': 'email and plan required'}), 400
+    # role defaults from the plan→role map unless explicitly overridden
+    role = (data.get('role') or _PLAN_ROLE.get(plan) or 'user').lower().strip()
+    sub_status = data.get('subscription_status', 'active')
+
+    try:
+        with _get_pg() as conn:
+            cur = conn.cursor()
+            cur.execute("SELECT id, plan, role, subscription_status FROM users WHERE LOWER(email) = %s", (email,))
+            before = cur.fetchone()
+            if not before:
+                return jsonify({'success': False, 'error': f'No user found with email {email}'}), 404
+            cur.execute("""
+                UPDATE users
+                   SET plan = %s, role = %s, subscription_status = %s, plan_updated_at = NOW()
+                 WHERE LOWER(email) = %s
+            """, (plan, role, sub_status, email))
+            # Also bump any active API key's rate-limit tier so programmatic
+            # access matches the corrected plan.
+            try:
+                cur.execute("""
+                    UPDATE api_keys SET rate_limit_tier = %s, plan = %s
+                     WHERE user_id = (SELECT id FROM users WHERE LOWER(email) = %s)
+                       AND COALESCE(is_active, 1) = 1
+                """, (role, plan, email))
+            except Exception as _ke:
+                logger.warning(f"set-tier: api_keys update skipped: {_ke}")
+            conn.commit()
+            return jsonify({
+                'success': True,
+                'email': email,
+                'before': {'plan': before[1], 'role': before[2], 'subscription_status': before[3]},
+                'after': {'plan': plan, 'role': role, 'subscription_status': sub_status},
+            })
+    except Exception as e:
+        logger.error(f"set-tier failed: {e}", exc_info=True)
+        return jsonify({'success': False, 'error': str(e)}), 500
+
+
 def register(app, get_pg_fn):
     init(get_pg_fn)
     app.register_blueprint(paid_health_bp)
-    print("[main] paid_account_health registered: /api/v1/admin/paid-account-health/check + /fix-reset")
+    print("[main] paid_account_health registered: /api/v1/admin/paid-account-health/check + /fix-reset + /set-tier")
