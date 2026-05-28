@@ -966,6 +966,17 @@ def recompute_all_scores(source: str = "manual",
 # ---------------------------------------------------------------------------
 # JSON endpoints
 # ---------------------------------------------------------------------------
+def _dcpi_cap():
+    """Resolve the caller's DCPI row cap (None == unlimited). Fails safe to
+    the tightest (anonymous) cap so a resolve error never opens the gate."""
+    try:
+        from util.tier_gate import resolve_tier, dcpi_cap_for
+        _tier, _ = resolve_tier()
+        return dcpi_cap_for(_tier)
+    except Exception:
+        return 3
+
+
 @dcpi_bp.route("/api/v1/dcpi/scores", methods=["GET"])
 def api_scores():
     """List DCPI scores. Query params:
@@ -2069,6 +2080,16 @@ def api_iso_deep_dive(iso_code):
     top_build = [_normalize_iso_row(r) for r in _iso_top_markets(iso_code, "BUILD", 5)]
     top_avoid = [_normalize_iso_row(r) for r in _iso_top_markets(iso_code, "AVOID", 5)]
 
+    # 2026-05-28 — gate the per-market lists by tier (was fully open). The
+    # ISO stats block stays (it's an aggregate teaser); the underlying
+    # per-market BUILD/AVOID picks are the paid content.
+    _cap, _gated = _dcpi_cap(), False
+    if _cap is not None:
+        if len(top_build) > _cap:
+            top_build, _gated = top_build[:_cap], True
+        if len(top_avoid) > _cap:
+            top_avoid, _gated = top_avoid[:_cap], True
+
     body = {
         "iso": iso_code,
         "iso_name": _ISO_NAMES.get(iso_code, iso_code),
@@ -2080,8 +2101,16 @@ def api_iso_deep_dive(iso_code):
         "citation": (f"DC Hub DCPI · {iso_code} ISO intelligence. "
                       f"https://dchub.cloud/dcpi/iso/{iso_code.lower()}"),
     }
+    if _gated:
+        body["_gated"] = True
+        body["_preview_only"] = True
+        body["_upgrade_cta"] = (
+            "Showing a preview of this ISO's market picks. Upgrade for the "
+            "full BUILD/AVOID list — dchub.cloud/pricing")
+        body["_pricing_url"] = "https://dchub.cloud/pricing"
     resp = jsonify(body)
-    resp.headers["Cache-Control"] = "public, max-age=300, must-revalidate"
+    resp.headers["Cache-Control"] = "private, max-age=300, must-revalidate"
+    resp.headers["Vary"] = "X-API-Key, Authorization"
     resp.headers["Access-Control-Allow-Origin"] = "*"
     return resp, 200
 
@@ -2101,31 +2130,50 @@ def api_iso_comparison():
     _ensure_tables()
     rows = [_normalize_iso_row(r) for r in _aggregate_iso_stats()]
 
+    # 2026-05-28 — this is the flagship "DCPI++" strategic view and was
+    # fully open. Gate it: free/anon get a capped teaser of the ISO table
+    # and the "best for X" rankings; paid tiers get the full diagnostic.
+    _total = len(rows)
+    _cap = _dcpi_cap()
+    _gated = _cap is not None and _total > _cap
+    _rank_n = _cap if _cap is not None else 5
+    _isos = rows[:_cap] if _gated else rows
+
     body = {
         "as_of": max((r.get("latest_computed_at") or "" for r in rows), default=None),
-        "count": len(rows),
-        "isos": rows,
+        "count": len(_isos),
+        "isos": _isos,
         "rankings": {
             # Build a sortable "best for X" view — handy for journalists.
             "fastest_interconnect": sorted(
                 [r for r in rows if r.get("avg_queue_wait_months") is not None],
-                key=lambda r: r["avg_queue_wait_months"])[:5],
+                key=lambda r: r["avg_queue_wait_months"])[:_rank_n],
             "cheapest_power": sorted(
                 [r for r in rows if r.get("avg_kwh_cents") is not None],
-                key=lambda r: r["avg_kwh_cents"])[:5],
+                key=lambda r: r["avg_kwh_cents"])[:_rank_n],
             "most_build_verdicts": sorted(
-                rows, key=lambda r: -(r.get("build_count") or 0))[:5],
+                rows, key=lambda r: -(r.get("build_count") or 0))[:_rank_n],
             "highest_excess_capacity": sorted(
-                rows, key=lambda r: -(r.get("avg_excess") or 0))[:5],
+                rows, key=lambda r: -(r.get("avg_excess") or 0))[:_rank_n],
             "most_curtailment_risk": sorted(
                 [r for r in rows if r.get("avg_curtailment_pct") is not None],
-                key=lambda r: -(r["avg_curtailment_pct"]))[:5],
+                key=lambda r: -(r["avg_curtailment_pct"]))[:_rank_n],
         },
         "methodology_url": "https://dchub.cloud/dcpi#methodology",
         "citation": "DC Hub DCPI · ISO comparison. https://dchub.cloud/dcpi/iso-comparison",
     }
+    if _gated:
+        body["_gated"] = True
+        body["_preview_only"] = True
+        body["_total_available"] = _total
+        body["_hidden_count"] = _total - _cap
+        body["_upgrade_cta"] = (
+            f"Showing {_cap} of {_total} ISOs. Upgrade for the full "
+            f"cross-ISO diagnostic — dchub.cloud/pricing")
+        body["_pricing_url"] = "https://dchub.cloud/pricing"
     resp = jsonify(body)
-    resp.headers["Cache-Control"] = "public, max-age=300, must-revalidate"
+    resp.headers["Cache-Control"] = "private, max-age=300, must-revalidate"
+    resp.headers["Vary"] = "X-API-Key, Authorization"
     resp.headers["Access-Control-Allow-Origin"] = "*"
     return resp, 200
 
@@ -3754,7 +3802,31 @@ def api_history():
             "excess": float(r["excess"] or 0),
             "constraint": float(r["constraint"] or 0),
         })
-    return jsonify(series=series, count=len(series)), 200
+
+    # 2026-05-28 — was open: returned the full 30-day time series for EVERY
+    # market. Cap the number of market series by tier; the time series is
+    # premium content.
+    _total = len(series)
+    _cap = _dcpi_cap()
+    payload = {"series": series, "count": _total}
+    if _cap is not None and _total > _cap:
+        kept = dict(list(series.items())[:_cap])
+        payload = {
+            "series": kept,
+            "count": len(kept),
+            "_gated": True,
+            "_preview_only": True,
+            "_total_available": _total,
+            "_hidden_count": _total - _cap,
+            "_upgrade_cta": (
+                f"Showing {_cap} of {_total} market history series. Upgrade "
+                f"for full time-series — dchub.cloud/pricing"),
+            "_pricing_url": "https://dchub.cloud/pricing",
+        }
+    resp = jsonify(**payload)
+    resp.headers["Cache-Control"] = "private, max-age=300"
+    resp.headers["Vary"] = "X-API-Key, Authorization"
+    return resp, 200
 
 
 

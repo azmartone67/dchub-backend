@@ -8,6 +8,17 @@ def _conn():
     db = os.environ.get("DATABASE_URL") or os.environ.get("NEON_DATABASE_URL")
     return psycopg2.connect(db, sslmode="require")
 
+
+def _dcpi_cap():
+    """Caller's DCPI row cap (None == unlimited). Fails safe to the
+    tightest (anonymous) cap so a resolve error never opens the gate."""
+    try:
+        from util.tier_gate import resolve_tier, dcpi_cap_for
+        _tier, _ = resolve_tier()
+        return dcpi_cap_for(_tier)
+    except Exception:
+        return 3
+
 @dcpi_mcp_bp.route("/api/v1/mcp/dcpi", methods=["GET", "POST"])
 def get_dcpi():
     """MCP tool: getDCPI(market_slug) — returns full DCPI scoring for a market."""
@@ -51,7 +62,16 @@ def compare_dcpi():
     for r in rows:
         if r.get("computed_at"): r["computed_at"] = r["computed_at"].isoformat()
     rows.sort(key=lambda r: -(r.get("excess_power_score") or 0))
-    return jsonify({
+
+    # 2026-05-28 — was open: a caller could pass every market slug and pull
+    # the whole dataset via enumeration. Cap the returned comparison rows by
+    # tier so this can't be used as a bulk-exfil side door.
+    _total = len(rows)
+    _cap = _dcpi_cap()
+    _gated = _cap is not None and _total > _cap
+    if _gated:
+        rows = rows[:_cap]
+    out = {
         "tool": "compareDCPI",
         "markets_requested": markets,
         "ranked_by_excess": [
@@ -62,7 +82,20 @@ def compare_dcpi():
         ],
         "winner": rows[0]["market_name"] if rows else None,
         "source": "https://dchub.cloud/dcpi",
-    }), 200
+    }
+    if _gated:
+        out["_gated"] = True
+        out["_preview_only"] = True
+        out["_total_available"] = _total
+        out["_hidden_count"] = _total - _cap
+        out["_upgrade_cta"] = (
+            f"Comparing {_cap} of {_total} requested markets. Upgrade to "
+            f"compare more — dchub.cloud/pricing")
+        out["_pricing_url"] = "https://dchub.cloud/pricing"
+    resp = jsonify(out)
+    resp.headers["Cache-Control"] = "private, max-age=120"
+    resp.headers["Vary"] = "X-API-Key, Authorization"
+    return resp, 200
 
 @dcpi_mcp_bp.route("/api/v1/mcp/dcpi/movers", methods=["GET"])
 def dcpi_movers():
@@ -90,5 +123,23 @@ def dcpi_movers():
             LIMIT 10
         """)
         rows = cur.fetchall()
-    return jsonify({"tool": "getDCPIMovers", "movers": rows,
-                    "source": "https://dchub.cloud/dcpi"}), 200
+
+    # 2026-05-28 — was open. Cap by tier like the other movers surface.
+    _total = len(rows)
+    _cap = _dcpi_cap()
+    out = {"tool": "getDCPIMovers", "movers": rows,
+           "source": "https://dchub.cloud/dcpi"}
+    if _cap is not None and _total > _cap:
+        out["movers"] = rows[:_cap]
+        out["_gated"] = True
+        out["_preview_only"] = True
+        out["_total_available"] = _total
+        out["_hidden_count"] = _total - _cap
+        out["_upgrade_cta"] = (
+            f"Showing {_cap} of {_total} movers. Upgrade for all — "
+            f"dchub.cloud/pricing")
+        out["_pricing_url"] = "https://dchub.cloud/pricing"
+    resp = jsonify(out)
+    resp.headers["Cache-Control"] = "private, max-age=120"
+    resp.headers["Vary"] = "X-API-Key, Authorization"
+    return resp, 200
