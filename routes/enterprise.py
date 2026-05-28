@@ -172,7 +172,7 @@ def api_enterprise_contact():
             cur.execute("""
                 INSERT INTO enterprise_inquiries
                   (org_name, email, use_case, expected_volume, source_ip, user_agent, relay_status)
-                VALUES (%s, %s, %s, %s, %s, %s, %s)
+                VALUES (%s, %s, %s, %s, %s, %s, %s) ON CONFLICT DO NOTHING
             """, (org, email, use_case, volume, src_ip,
                   payload["user_agent"], relay_status))
             c.commit()
