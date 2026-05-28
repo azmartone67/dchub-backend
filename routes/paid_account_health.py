@@ -350,7 +350,56 @@ def set_tier():
         return jsonify({'success': False, 'error': str(e)}), 500
 
 
+@paid_health_bp.route('/api/v1/admin/paid-account-health/mint-key', methods=['POST'])
+def mint_key():
+    """Provision an API key for a paid account that has none (the
+    'no_api_key' warning). Built for Carl Braun — founding member whose
+    pro-level access works but who had no key to USE the MCP/API benefits.
+    Returns the raw key ONCE (it's only stored hashed). Idempotent: if an
+    active key already exists, returns its prefix instead of minting a dupe.
+    """
+    if not _admin_ok():
+        return jsonify({'error': 'admin_key_required'}), 401
+    data = request.get_json(silent=True) or {}
+    email = (data.get('email') or '').lower().strip()
+    if not email:
+        return jsonify({'error': 'email required'}), 400
+
+    user_id = None
+    plan = 'free'
+    try:
+        with _get_pg() as conn:
+            cur = conn.cursor()
+            cur.execute("SELECT id, plan FROM users WHERE LOWER(email) = %s", (email,))
+            row = cur.fetchone()
+            if not row:
+                return jsonify({'success': False, 'error': f'No user found with email {email}'}), 404
+            user_id, plan = row[0], (row[1] or 'free')
+            cur.execute("""
+                SELECT key_prefix FROM api_keys
+                 WHERE user_id = %s AND COALESCE(is_active, 1) = 1 LIMIT 1
+            """, (user_id,))
+            existing = cur.fetchone()
+            if existing:
+                return jsonify({'success': True, 'already_has_key': True,
+                                'key_prefix': existing[0], 'email': email,
+                                'note': 'active key already exists — not minting a duplicate'})
+    except Exception as e:
+        logger.error(f"mint-key lookup failed: {e}", exc_info=True)
+        return jsonify({'success': False, 'error': str(e)}), 500
+
+    # Mint via the canonical generator (its own connection). Returns raw key.
+    try:
+        from api_tier_gating import generate_api_key
+        raw_key = generate_api_key(user_id, email, plan, f'{plan.title()} API Key')
+        return jsonify({'success': True, 'email': email, 'plan': plan,
+                        'api_key': raw_key, 'note': 'raw key shown ONCE — deliver to customer'})
+    except Exception as e:
+        logger.error(f"mint-key generate failed: {e}", exc_info=True)
+        return jsonify({'success': False, 'error': str(e)}), 500
+
+
 def register(app, get_pg_fn):
     init(get_pg_fn)
     app.register_blueprint(paid_health_bp)
-    print("[main] paid_account_health registered: /api/v1/admin/paid-account-health/check + /fix-reset + /set-tier")
+    print("[main] paid_account_health registered: check + fix-reset + set-tier + mint-key")
