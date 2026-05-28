@@ -353,18 +353,41 @@ def init_api_keys_table():
     print("  ✅ api_keys table ready (with tier support)")
 
 
-def generate_api_key(user_id, email, plan='free', name='Default'):
-    """Generate a new API key for a user, return the raw key (only shown once)."""
-    raw_key = f"dchub_{plan[:2]}_{secrets.token_hex(24)}"
+def generate_api_key(user_id, email=None, plan='free', name='Default'):
+    """Generate a new API key for a user, return the raw key (only shown once).
+
+    r43-H (2026-05-28): FIXED — the old INSERT referenced a non-existent
+    `email` column, so this errored on EVERY call ("column \"email\" of
+    relation \"api_keys\" does not exist"). That silently broke every
+    auto-provision path through here (likely why several paid accounts
+    had no key). Now matches the live schema / the Stripe webhook's
+    working INSERT exactly. `email` is kept as an (unused) param for
+    backwards-compat with existing callers. rate_limit_tier uses the
+    EFFECTIVE api tier (founding→pro, research_seed→enterprise) so the
+    key's quota matches the plan's benefits.
+    """
+    try:
+        import tier_registry
+        api_tier = tier_registry.api_tier(plan)
+    except Exception:
+        api_tier = {'founding': 'pro', 'research_seed': 'enterprise'}.get(plan, plan)
+    _prefix_map = {'developer': 'dchub_dev_', 'pro': 'dchub_pro_', 'enterprise': 'dchub_ent_'}
+    key_prefix_str = _prefix_map.get(api_tier, 'dchub_dev_')
+    raw_key = key_prefix_str + secrets.token_urlsafe(32)
     key_hash = hashlib.sha256(raw_key.encode()).hexdigest()
     key_prefix = raw_key[:16]
 
     conn = get_db()
     c = conn.cursor()
+    # Same column set the webhook (handle_checkout_completed) uses — known
+    # to match the live api_keys table. NO `email` column exists.
     c.execute("""
-        INSERT INTO api_keys (key_hash, key_prefix, user_id, email, plan, name, created_at)
-        VALUES (%s, %s, %s, %s, %s, %s, %s)
-    """, (key_hash, key_prefix, user_id, email, plan, name, datetime.now(timezone.utc).isoformat()))
+        INSERT INTO api_keys (user_id, key_hash, key_prefix, name, permissions,
+                              rate_limit_tier, is_active, created_at, usage_count,
+                              plan, calls_today, calls_total)
+        VALUES (%s, %s, %s, %s, '["read","write"]', %s, 1, %s, 0, %s, 0, 0)
+    """, (user_id, key_hash, key_prefix, name, api_tier,
+          datetime.now(timezone.utc).isoformat(), plan))
     conn.commit()
     conn.close()
 
@@ -1318,18 +1341,27 @@ def _auto_provision_api_key(email, plan):
         conn.close()
         return
 
-    user_id = user['id']
+    # r43-H: cursor-agnostic — get_db() may return tuple OR dict rows.
+    user_id = user['id'] if isinstance(user, dict) else user[0]
+
+    # Effective api tier for the key's rate-limit (founding→pro, etc.)
+    try:
+        import tier_registry
+        api_tier = tier_registry.api_tier(plan)
+    except Exception:
+        api_tier = {'founding': 'pro', 'research_seed': 'enterprise'}.get(plan, plan)
 
     # Check if they already have a key
     c.execute("SELECT id FROM api_keys WHERE user_id = %s AND is_active = 1", (user_id,))
     existing = c.fetchone()
 
     if existing:
-        # Upgrade existing key's plan
-        c.execute("UPDATE api_keys SET plan = %s WHERE user_id = %s AND is_active = 1", (plan, user_id))
+        # r43-H: bump BOTH plan and rate_limit_tier so quota matches benefits
+        c.execute("UPDATE api_keys SET plan = %s, rate_limit_tier = %s "
+                  "WHERE user_id = %s AND is_active = 1", (plan, api_tier, user_id))
         conn.commit()
         conn.close()
-        print(f"  ↑ Upgraded existing API key to {plan} for {email}")
+        print(f"  ↑ Upgraded existing API key to {plan} (tier {api_tier}) for {email}")
     else:
         conn.close()
         key = generate_api_key(user_id, email, plan, f'{plan.title()} API Key')
