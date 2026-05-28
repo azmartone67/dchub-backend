@@ -21137,6 +21137,42 @@ def _start_background_tasks():
 threading.Timer(180, _start_background_tasks).start()
 logger.info("⏳ Background tasks deferred: %d tasks will start in 180s with 15s stagger", len(_deferred_bg_threads))
 
+
+# r43-H (2026-05-28): boot-time cache pre-warm. The in-memory caches (grid
+# intelligence, /brain dashboard, /dcpi pages) reset on every restart; on a
+# single replica that recycles workers / redeploys, the FIRST visitor after a
+# restart eats the cold load. Hit the hot routes once on boot via localhost so
+# real users land on warm caches. Fires at +60s (server + deferred DB ready),
+# runs sooner than the 180s task batch. Best-effort, spaced, never blocks.
+def _prewarm_caches():
+    try:
+        import requests as _rq
+    except Exception:
+        return
+    base = "http://127.0.0.1:8080"
+    H = {"User-Agent": "DCHub-Prewarm/1.0"}
+    paths = (
+        [f"/api/v1/grid/intelligence/{iso}" for iso in
+         ("ERCOT", "PJM", "CAISO", "MISO", "NYISO", "SPP", "ISONE")]
+        + [f"/dcpi/{s}" for s in
+           ("ashburn", "dallas", "atlanta", "chicago", "phoenix", "reno")]
+        + ["/brain", "/transactions"]
+    )
+    warmed = 0
+    for p in paths:
+        try:
+            r = _rq.get(base + p, headers=H, timeout=25)
+            if getattr(r, "ok", False):
+                warmed += 1
+        except Exception:
+            pass
+        time.sleep(2)  # space out — never thundering-herd our own single replica
+    logger.info("🔥 Cache pre-warm: %d/%d hot routes warmed", warmed, len(paths))
+
+if IS_RAILWAY:
+    threading.Timer(60, _prewarm_caches).start()
+    logger.info("🔥 Cache pre-warm scheduled (+60s after boot)")
+
 # --- Start Staggered Crawler Scheduler ---
 if CRAWLER_SCHEDULER_AVAILABLE:
     try:
