@@ -37,10 +37,16 @@ jobs:
             echo "::warning::DCHUB_ADMIN_KEY not set — skipping babysit"
             exit 0
           fi
-          response=$(curl -sS --max-time 60 -X POST \
+          # r43-H (2026-05-27): hit Railway DIRECTLY, not dchub.cloud. The
+          # babysit endpoint fans out to N heal sub-requests (up to ~20s
+          # each), which routinely exceeds the CF Worker edge timeout and
+          # returned 503 — so the babysitter never actually healed loops.
+          # The action endpoint should be reliable; the public-path probes
+          # (regression-canary) still test through dchub.cloud separately.
+          response=$(curl -sS --max-time 110 -X POST \
             -H "X-Admin-Key: $ADMIN_KEY" \
             -H "Content-Type: application/json" \
-            "https://dchub.cloud/api/v1/system/loops/babysit" \
+            "https://dchub-backend-production.up.railway.app/api/v1/system/loops/babysit" \
             || echo '{"summary":{"fired":0,"failed":1},"error":"curl_fail"}')
           echo "$response" > /tmp/babysit.json
           echo "$response" | head -c 4000

@@ -42,7 +42,7 @@ import os
 import sys
 from datetime import datetime, timezone
 from typing import Any
-from flask import Blueprint, jsonify
+from flask import Blueprint, jsonify, request
 
 system_loops_bp = Blueprint("system_loops", __name__)
 
@@ -246,15 +246,33 @@ def _probe_testimonial_ingest(cur) -> dict:
         "SELECT MAX(COALESCE(posted_at, captured_at)) FROM ai_testimonials_auto",
         "SELECT COUNT(*) FROM ai_testimonials_auto WHERE COALESCE(posted_at, captured_at) > NOW() - INTERVAL '24 hours'")
     age = _hours_since(last)
+    err = _take_err()
+    # r43-H (2026-05-27): testimonial_ingest is ORGANIC — it scrapes
+    # HN/Reddit/MCP for dchub mentions. Going quiet for days is a
+    # LEGITIMATE steady state for a young product (dchub_self_heal.py
+    # already documents "testimonial_ingest is excluded — legitimately
+    # zero some weeks"). The old _classify(age) returned 'dead' purely
+    # from data age, which forced /api/v1/system/loops overall=critical
+    # 24/7, firing the regression canary + P0 alerts on a non-problem.
+    # Now: 'dead' ONLY if the probe query itself errored (table missing /
+    # schema drift = real). Fresh data → 'alive'; quiet but queryable →
+    # 'idle' (counts as healthy). The ingest endpoint's own 200/500 is
+    # the real liveness signal, and the babysitter fires it regardless.
+    if err:
+        status = "dead"
+    elif age is not None and age <= 6.0:
+        status = "alive"
+    else:
+        status = "idle"
     return {
         "name": "testimonial_ingest",
         "cadence_hours": 6.0,
         "last_event_at": last.isoformat() if last else None,
         "age_hours": round(age, 2) if age is not None else None,
-        "status": _classify(age, 6.0),
+        "status": status,
         "output_24h": count_24h,
-        "error": _take_err(),
-        "note": "Phase MM wired ai_testimonials_auto into feed-v3. 0 here may mean no fresh HN/Reddit dchub mentions (legit) OR cron not firing.",
+        "error": err,
+        "note": "Organic HN/Reddit/MCP citation scrape. idle=quiet (legit); dead=probe query failed.",
     }
 
 
