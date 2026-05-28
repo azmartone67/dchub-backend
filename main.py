@@ -2179,7 +2179,10 @@ def alias_research_grid_intelligence():
 # payload for 5 min: repeat probes become instant and the pool stays free.
 # Gating still runs per-request on the cached copy.
 _GRID_INTEL_CACHE = {}      # region -> (expires_epoch, out_dict)
-_GRID_INTEL_TTL = 300       # seconds
+_GRID_INTEL_TTL = 1800      # seconds — EIA RTO data is hourly, so a 30-min cache
+                            # is plenty fresh and cuts the brain's per-ISO cold
+                            # misses ~6x (latency tracker showed grid p50 still
+                            # 2.9s under the old 300s TTL). (was 300)
 
 
 def _grid_intel_fetch(region, rto_code):
@@ -2247,10 +2250,15 @@ def _grid_intel_fetch(region, rto_code):
     except Exception as e:
         out['eia_genmix_error'] = type(e).__name__ + ': ' + str(e)[:200]
 
-    # 3) Our own grid-headroom endpoint for substation context
+    # 3) Our own grid-headroom endpoint for substation context.
+    # r43-H (2026-05-28): call it on LOCALHOST, not the public dchub.cloud URL —
+    # this is a server-to-server call, so going out through Cloudflare and back
+    # to Railway was a pointless edge round-trip (and a self-through-edge
+    # deadlock risk on 1 replica). Supplementary data, so keep it best-effort
+    # with a short timeout.
     try:
-        r = _rq.get(f'https://dchub.cloud/api/v1/grid-headroom/{region}',
-                    headers=H, timeout=5)
+        r = _rq.get(f'http://127.0.0.1:8080/api/v1/grid-headroom/{region}',
+                    headers=H, timeout=4)
         if r.ok:
             out['headroom'] = r.json()
     except Exception as e:
