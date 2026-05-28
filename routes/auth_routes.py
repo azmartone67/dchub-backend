@@ -158,7 +158,7 @@ def send_password_reset_email(email, name, reset_url):
                         <p style="text-align: center; margin: 30px 0;">
                             <a href="{reset_url}" style="background: #2563eb; color: white; padding: 12px 24px; border-radius: 6px; text-decoration: none; font-weight: bold;">Reset Password</a>
                         </p>
-                        <p style="color: #666; font-size: 14px;">This link expires in 1 hour. If you didn't request this, you can safely ignore this email.</p>
+                        <p style="color: #666; font-size: 14px;">This link is valid for 72 hours. If you didn't request this, you can safely ignore this email.</p>
                         <hr style="border: none; border-top: 1px solid #e5e7eb; margin: 20px 0;">
                         <p style="color: #999; font-size: 12px;">DC Hub — Data Center Market Intelligence</p>
                     </div>

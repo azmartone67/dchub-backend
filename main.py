@@ -9555,8 +9555,14 @@ def create_checkout_session():
                 'quantity': 1,
             }],
             mode='subscription',
-            success_url=f'https://dchub.cloud/dashboard.html%spayment=success&plan={plan}&session_id={{CHECKOUT_SESSION_ID}}',
-            cancel_url='https://dchub.cloud/dashboard.html%spayment=cancelled',
+            # r43-H (2026-05-27): was `dashboard.html%spayment=success` —
+            # the `%s` was a leftover from a printf-style format that never
+            # got converted to f-string `?`. Browsers treated `%sp` as a
+            # malformed percent-escape and the whole "?payment=success&..."
+            # ended up in the path, so the dashboard never saw the query
+            # string. Customers landed on a 404 after paying.
+            success_url=f'https://dchub.cloud/dashboard.html?payment=success&plan={plan}&session_id={{CHECKOUT_SESSION_ID}}',
+            cancel_url='https://dchub.cloud/dashboard.html?payment=cancelled',
             metadata={
                 'user_id': str(request.user.get('user_id', '')),
                 'plan': plan
@@ -10276,7 +10282,27 @@ def send_welcome_email_sendgrid(to_email, raw_api_key, plan_name='pro', temp_pas
         try:
             sg_key = os.environ.get('SENDGRID_API_KEY', '')
             if not sg_key:
-                print(f"⚠️ SENDGRID_API_KEY not set, skipping welcome email for {to_email}")
+                # r43-H (2026-05-27): was a silent skip. Now alerts admin
+                # so we can manually deliver the temp_password / api_key
+                # to the paying customer before they think the signup
+                # broke. Carl-Braun-style lockouts started here.
+                print(f"⚠️ SENDGRID_API_KEY not set, CANNOT send welcome email for {to_email}")
+                try:
+                    send_admin_alert_email(
+                        f'🚨 URGENT: Welcome email NOT delivered to {to_email}',
+                        f'<h2>Paying customer cannot log in — manual recovery needed</h2>'
+                        f'<p><b>Email:</b> {to_email}</p>'
+                        f'<p><b>Plan:</b> {plan_name}</p>'
+                        f'<p><b>API key (deliver to customer):</b> <code>{raw_api_key}</code></p>'
+                        f'<p><b>Temp password (deliver to customer):</b> '
+                        f'<code>{temp_password or "(none — existing account)"}</code></p>'
+                        f'<p><b>Why:</b> SENDGRID_API_KEY env var missing in Railway. '
+                        f'The customer paid but the welcome email never sent.</p>'
+                        f'<p><b>Next step:</b> Send the customer the values above by '
+                        f'hand AND set SENDGRID_API_KEY in Railway resourceful-essence env.</p>'
+                    )
+                except Exception as _ae:
+                    print(f"⚠️ Admin alert ALSO failed: {_ae}")
                 return
             from sendgrid import SendGridAPIClient
             from sendgrid.helpers.mail import Mail, Email, To, Content, HtmlContent
