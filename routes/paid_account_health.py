@@ -388,12 +388,37 @@ def mint_key():
         logger.error(f"mint-key lookup failed: {e}", exc_info=True)
         return jsonify({'success': False, 'error': str(e)}), 500
 
-    # Mint via the canonical generator (its own connection). Returns raw key.
+    # Mint using the SAME column set the Stripe webhook uses. NOTE:
+    # api_tier_gating.generate_api_key() is broken against the live schema
+    # (it INSERTs a non-existent `email` column → that's likely why these
+    # accounts never got a key). We replicate the webhook's working INSERT.
     try:
-        from api_tier_gating import generate_api_key
-        raw_key = generate_api_key(user_id, email, plan, f'{plan.title()} API Key')
+        import secrets as _sec, hashlib as _hl
+        from datetime import datetime as _dt
+        # founding → pro api tier (rate_limit_tier); key prefix mirrors tier
+        try:
+            import tier_registry
+            api_tier = tier_registry.api_tier(plan)
+        except Exception:
+            api_tier = {'founding': 'pro'}.get(plan, plan)
+        _prefix_map = {'developer': 'dchub_dev_', 'pro': 'dchub_pro_',
+                       'enterprise': 'dchub_ent_'}
+        key_prefix_str = _prefix_map.get(api_tier, 'dchub_dev_')
+        raw_key = key_prefix_str + _sec.token_urlsafe(32)
+        key_hash = _hl.sha256(raw_key.encode()).hexdigest()
+        key_prefix = raw_key[:raw_key.rindex('_') + 1]
+        now = _dt.utcnow().isoformat()
+        with _get_pg() as conn:
+            cur = conn.cursor()
+            cur.execute(
+                "INSERT INTO api_keys (user_id, key_hash, key_prefix, name, permissions, "
+                "rate_limit_tier, is_active, created_at, usage_count, plan, calls_today, calls_total) "
+                "VALUES (%s, %s, %s, %s, '[\"read\",\"write\"]', %s, 1, %s, 0, %s, 0, 0)",
+                (user_id, key_hash, key_prefix, f'{email} {plan.title()} Key', api_tier, now, plan))
+            conn.commit()
         return jsonify({'success': True, 'email': email, 'plan': plan,
-                        'api_key': raw_key, 'note': 'raw key shown ONCE — deliver to customer'})
+                        'api_tier': api_tier, 'api_key': raw_key,
+                        'note': 'raw key shown ONCE — deliver to customer'})
     except Exception as e:
         logger.error(f"mint-key generate failed: {e}", exc_info=True)
         return jsonify({'success': False, 'error': str(e)}), 500
