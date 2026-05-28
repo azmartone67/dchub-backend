@@ -634,6 +634,14 @@ def system_loops():
         loops=loops,
         elapsed_ms=int((datetime.now(timezone.utc) - started).total_seconds() * 1000),
     )
-    # Short CF cache — keep the dashboard fresh but absorb traffic spikes.
-    resp.headers["Cache-Control"] = "public, max-age=30, stale-while-revalidate=60"
+    # r43-H (2026-05-27): MUST be no-store. This is a real-time liveness
+    # endpoint. The old `public, max-age=30` got overridden by the CF
+    # Worker to max-age=3600 (1h) — the worker only honors the origin's
+    # cache header when it says no-store/private — so the regression
+    # canary + dashboard read a stale "critical" for up to an hour after
+    # the loops actually recovered, defeating the whole point of a health
+    # probe. no-store + CDN-Cache-Control:no-store makes the worker's
+    # origin-honor guard preserve it and skip the edge cache entirely.
+    resp.headers["Cache-Control"] = "no-store, no-cache, must-revalidate, max-age=0"
+    resp.headers["CDN-Cache-Control"] = "no-store"
     return resp, 200
