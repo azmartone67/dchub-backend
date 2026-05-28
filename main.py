@@ -3089,6 +3089,30 @@ def api_v1_map():
         # facility-with-coords inventory + headroom for new ingest).
         limit = min(limit, 30000)
 
+        # 2026-05-28 — TIER GATE. This endpoint dumped the entire proprietary
+        # discovered_facilities table (names, operators, power_mw, sqft, fiber
+        # providers, exact coords) to anyone, up to 30K rows. Gate it: lower
+        # tiers get fewer dots, masked fields, and city-level coords; paid
+        # tiers get full detail. Cookie-aware tier detection mirrors the
+        # working energy paywall (~main.py:22867). Fails closed to anonymous.
+        def _map_decode_jwt(_t):
+            try:
+                import jwt as _jwt_mod
+                return _jwt_mod.decode(_t, JWT_SECRET, algorithms=['HS256'])
+            except Exception:
+                return None
+        _map_tier = 'anonymous'
+        try:
+            from map_tier_gating import _detect_caller_tier
+            _mt, _ = _detect_caller_tier(decode_jwt_func=_map_decode_jwt)
+            _map_tier = (_mt or 'anonymous').lower()
+        except Exception:
+            _map_tier = 'anonymous'
+        _MAP_TIER_CAP = {'anonymous': 25, 'free': 35, 'identified': 50, 'developer': 1000}
+        _map_full = _map_tier in ('pro', 'enterprise', 'founding', 'internal', 'admin')
+        if not _map_full:
+            limit = min(limit, _MAP_TIER_CAP.get(_map_tier, 25))
+
         # r-map-coverage: optional viewport filter. bbox = "minLon,minLat,maxLon,maxLat".
         # When present, restricts to facilities inside that box → cheap and
         # correct for zoomed-in views. When absent, returns the global set
@@ -3158,13 +3182,50 @@ def api_v1_map():
         c.execute("SELECT COUNT(*) FROM discovered_facilities WHERE latitude IS NOT NULL AND longitude IS NOT NULL")
         total = c.fetchone()[0]
 
-        return jsonify({
+        # 2026-05-28 — apply per-tier field masking + coord coarsening. Paid
+        # tiers (pro+) keep the full record. Developer keeps operational
+        # fields + full coords. Free/identified/anon get a basic card with
+        # city-level (~11km) coords so the exact site + specs stay paywalled.
+        if not _map_full:
+            if _map_tier == 'developer':
+                _allowed = {'id', 'name', 'provider', 'city', 'state', 'country',
+                            'region', 'market', 'status', 'power_mw',
+                            'facility_type', 'slug', 'latitude', 'longitude'}
+                facilities = [{k: v for k, v in f.items() if k in _allowed}
+                              for f in facilities]
+            else:
+                _allowed = {'id', 'name', 'city', 'state', 'country', 'region',
+                            'market', 'status', 'slug'}
+                masked = []
+                for f in facilities:
+                    g = {k: v for k, v in f.items() if k in _allowed}
+                    if f.get('latitude') is not None and f.get('longitude') is not None:
+                        try:
+                            g['latitude'] = round(float(f['latitude']), 1)
+                            g['longitude'] = round(float(f['longitude']), 1)
+                        except (TypeError, ValueError):
+                            pass
+                    masked.append(g)
+                facilities = masked
+
+        payload = {
             'success': True,
             'data': facilities,
             'total': total,
+            'showing': len(facilities),
             'limit': limit,
-            'offset': offset
-        })
+            'offset': offset,
+            'tier': _map_tier,
+        }
+        if not _map_full:
+            payload['_gated'] = True
+            payload['_upgrade_cta'] = (
+                f"Showing {len(facilities)} of {total} facilities with basic "
+                f"fields and approximate locations. Upgrade for exact "
+                f"coordinates, power, and full specs — dchub.cloud/pricing")
+            payload['_pricing_url'] = "https://dchub.cloud/pricing"
+            payload['_signup_url'] = "https://dchub.cloud/signup"
+        return jsonify(payload)
     except Exception as e:
         return jsonify({'success': False, 'error': str(e)}), 500
     finally:
