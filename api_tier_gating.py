@@ -109,7 +109,10 @@ TIER_RATE_LIMITS = {
     'anon':        5,
     'free':       10,
     'identified': 50,
-    'founding':   1000,
+    # r43-H (2026-05-27): founding is Pro-equivalent for BENEFITS, not
+    # just access. It was getting developer-level limits (1000/day) —
+    # founding members paid for Pro-tier benefits, so match pro (5000).
+    'founding':   5000,
     'developer':  1000,
     'pro':        5000,
     'enterprise': 100000,
@@ -124,7 +127,7 @@ TIER_DAILY_RECORD_CAPS = {
     'anon':       50,
     'free':       50,
     'identified': 200,
-    'founding':   500,
+    'founding':   5000,   # r43-H: founding == pro benefits (was 500)
     'developer':  500,
     'pro':        5000,
     'enterprise': 999999,
@@ -137,7 +140,7 @@ TIER_PAGE_CAPS = {
     'anon':       1,
     'free':       2,
     'identified': 5,
-    'founding':   10,
+    'founding':   50,    # r43-H: founding == pro benefits (was 10)
     'developer':  10,
     'pro':        50,
     'enterprise': 999,

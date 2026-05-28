@@ -321,7 +321,8 @@ def check_tier_consistency() -> list[dict]:
         # "web higher than MCP" flag for get_energy_prices. Align the
         # ranks to the Tier enum so equal tiers don't trip the gate.
         WEB_TIER_RANK = {"free": 0, "identified": 1, "starter": 2,
-                          "developer": 3, "pro": 4, "enterprise": 5}
+                          "developer": 3, "pro": 4, "founding": 4,
+                          "enterprise": 5}  # r43-H: founding == pro
         web_rank = WEB_TIER_RANK.get(web_min_tier, -1)
         mcp_rank = mcp_tier.value if hasattr(mcp_tier, "value") else 0
         if web_min_tier and web_rank > mcp_rank:

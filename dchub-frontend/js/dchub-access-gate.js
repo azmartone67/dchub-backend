@@ -19,7 +19,7 @@
   var LOGIN_URL = '/login.html';
   var PRICING_URL = '/pricing';
   var API_BASE = 'https://dchub.cloud';
-  var TIER_HIERARCHY = { anonymous: 0, free: 0, registered: 1, pro: 2, enterprise: 3 };
+  var TIER_HIERARCHY = { anonymous: 0, free: 0, registered: 1, identified: 1, starter: 1, developer: 1, pro: 2, founding: 2, enterprise: 3 };  // r43-H: founding==pro
   var FOUNDING_TOTAL = 50;
   var FOUNDING_SEATS_CLAIMED = 3;
   var _seatsRemaining = FOUNDING_TOTAL - FOUNDING_SEATS_CLAIMED;

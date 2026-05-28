@@ -82,6 +82,11 @@ _TIER_RANK = {
     "STARTER":    1,
     "DEVELOPER":  2,
     "PRO":        3,
+    # r43-H (2026-05-27): FOUNDING was MISSING here — require_tier('pro')
+    # (rank 3) denied founding members (fell to .get default) on
+    # transactions / market intel / grid data. Founding is Pro-equivalent,
+    # so it shares pro's rank.
+    "FOUNDING":   3,
     "ENTERPRISE": 4,
 }
 

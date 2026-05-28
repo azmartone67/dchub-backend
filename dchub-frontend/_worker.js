@@ -109,6 +109,7 @@ const MCP_TIERS = {
   free:       { name: 'Free',       daily_limit: 10,     results_limit: 5,     fields_truncated: true,  export_allowed: false },
   developer:  { name: 'Developer',  daily_limit: 1000,   results_limit: 100,   fields_truncated: false, export_allowed: true  },
   pro:        { name: 'Pro',        daily_limit: 10000,  results_limit: 500,   fields_truncated: false, export_allowed: true  },
+  founding:   { name: 'Founding',   daily_limit: 10000,  results_limit: 500,   fields_truncated: false, export_allowed: true  },  // r43-H: founding==pro
   enterprise: { name: 'Enterprise', daily_limit: 100000, results_limit: 10000, fields_truncated: false, export_allowed: true  },
 };
 

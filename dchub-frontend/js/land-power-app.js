@@ -558,7 +558,7 @@
                 }).catch(function() {});
         }
 
-        var PLAN_RANK_LP = {free:0, developer:1, pro:2, enterprise:3};
+        var PLAN_RANK_LP = {free:0, starter:1, developer:1, founding:2, pro:2, enterprise:3};  // r43-H: founding==pro
         function _lpRank(p) { return PLAN_RANK_LP[(p||'free').toLowerCase()] || 0; }
         function planRank(p) { return _lpRank(p); } // alias
         // Gate model (matches original land-power-map gating):
