@@ -27,21 +27,26 @@ jobs:
             -H "X-Admin-Key: ${{ secrets.DCHUB_ADMIN_KEY }}")
           echo "${RESPONSE}" | python3 -m json.tool || echo "::warning::Non-JSON response"
 
-          # Summarize for the run log
+          # Summarize for the run log. problem_count = LOGIN-BLOCKED
+          # customers (the alert-worthy signal); warning_count = degraded
+          # but self-recoverable (no API key, reset token expiring).
           TOTAL=$(echo "${RESPONSE}"     | python3 -c "import sys, json; print((json.load(sys.stdin) or {}).get('paid_users_total', 0))" 2>/dev/null || echo "0")
           HEALTHY=$(echo "${RESPONSE}"   | python3 -c "import sys, json; print((json.load(sys.stdin) or {}).get('healthy_total', 0))"    2>/dev/null || echo "0")
-          PROBLEMS=$(echo "${RESPONSE}"  | python3 -c "import sys, json; print((json.load(sys.stdin) or {}).get('problem_count', 0))"   2>/dev/null || echo "0")
+          LOCKED=$(echo "${RESPONSE}"    | python3 -c "import sys, json; print((json.load(sys.stdin) or {}).get('problem_count', 0))"   2>/dev/null || echo "0")
+          WARNINGS=$(echo "${RESPONSE}"  | python3 -c "import sys, json; print((json.load(sys.stdin) or {}).get('warning_count', 0))"   2>/dev/null || echo "0")
           EMAILED=$(echo "${RESPONSE}"   | python3 -c "import sys, json; print((json.load(sys.stdin) or {}).get('summary_emailed', False))" 2>/dev/null || echo "False")
           echo ""
           echo "═══════════════════════════════════════════════"
           echo "Paid users total:    ${TOTAL}"
           echo "Healthy:             ${HEALTHY}"
-          echo "Problem accounts:    ${PROBLEMS}"
+          echo "LOCKED OUT:          ${LOCKED}  (login-blocked — urgent)"
+          echo "Warnings:            ${WARNINGS}  (no API key / token expiring)"
           echo "Summary emailed:     ${EMAILED}"
           echo "═══════════════════════════════════════════════"
 
-          # Fail the run loudly if there are problem accounts and we couldn't email
-          if [ "${PROBLEMS}" != "0" ] && [ "${EMAILED}" != "True" ]; then
-            echo "::error::${PROBLEMS} paid account(s) have problems and email send failed — investigate manually"
+          # Fail the run loudly ONLY if a paying customer is login-blocked
+          # and we couldn't email the alert. Warnings never fail the run.
+          if [ "${LOCKED}" != "0" ] && [ "${EMAILED}" != "True" ]; then
+            echo "::error::${LOCKED} paying customer(s) LOCKED OUT and alert email failed — investigate now"
             exit 1
           fi

@@ -69,15 +69,31 @@ def check_paid_health():
                 ORDER BY created_at DESC NULLS LAST
             """)
             users = cur.fetchall()
-            paid_total = len(users)
 
             for u in users:
                 user_id, email, name, plan, created_at, pwd_hash, google_id = u
-                problems = []
+                email_l = (email or '').lower()
+
+                # ─── Skip seed/test/internal accounts ─────────────────
+                # Don't cry wolf over data that isn't a real external
+                # customer: .example/.test TLDs are seed rows, and the
+                # owner's own +stripe / dchub.cloud accounts aren't
+                # paying customers. Keeps the daily alert signal clean.
+                if (email_l.endswith('.example') or email_l.endswith('.test')
+                        or 'example.' in email_l or '@dchub.cloud' in email_l
+                        or '+stripe' in email_l):
+                    continue
+                paid_total += 1
+
+                # critical = customer literally cannot log in.
+                # warnings = degraded but self-recoverable (still counts,
+                # just doesn't trigger the loud daily escalation).
+                critical = []
+                warnings = []
 
                 # ─── Can they log in at all? ──────────────────────────
                 if not pwd_hash and not google_id:
-                    problems.append(
+                    critical.append(
                         'no_login_method (missing password_hash AND google_id — '
                         'customer cannot sign in by any path)'
                     )
@@ -102,7 +118,7 @@ def check_paid_health():
                             except Exception:
                                 exp_at = None
                         if exp_at and exp_at < (datetime.utcnow() + timedelta(hours=2)):
-                            problems.append(
+                            warnings.append(
                                 f'reset_token_expiring_soon (in '
                                 f'{int((exp_at - datetime.utcnow()).total_seconds() / 60)}min) — '
                                 f'send a fresh link before it expires'
@@ -130,7 +146,9 @@ def check_paid_health():
                     n_keys = (cur.fetchone() or [0])[0]
                     cur.execute("RELEASE SAVEPOINT sp_keys")
                     if n_keys == 0:
-                        problems.append('no_api_key (paid tier without active API key — programmatic access broken)')
+                        warnings.append('no_api_key (paid tier without active API key — '
+                                        'programmatic/MCP access unavailable until they '
+                                        'generate one from the dashboard; NOT a login blocker)')
                 except Exception as _e:
                     try:
                         cur.execute("ROLLBACK TO SAVEPOINT sp_keys")
@@ -138,15 +156,20 @@ def check_paid_health():
                         pass
                     logger.warning(f"api_keys check failed for {email}: {_e}")
 
-                if problems:
+                if critical or warnings:
                     findings.append({
                         'user_id': user_id,
                         'email': email,
                         'name': name,
                         'plan': plan,
                         'created_at': str(created_at) if created_at else None,
-                        'problems': problems,
+                        'critical': critical,
+                        'warnings': warnings,
                     })
+                    if not critical:
+                        # warnings-only accounts still count as "healthy"
+                        # for the can-they-log-in headline.
+                        healthy_total += 1
                 else:
                     healthy_total += 1
 
@@ -154,31 +177,39 @@ def check_paid_health():
         logger.error(f"paid-account-health check failed: {e}", exc_info=True)
         return jsonify({'success': False, 'error': str(e)}), 500
 
-    # Optional email summary
+    # Split findings: critical (can't log in) vs warnings-only.
+    critical_findings = [f for f in findings if f.get('critical')]
+    warning_findings = [f for f in findings if not f.get('critical') and f.get('warnings')]
+
+    # Email summary ONLY fires on critical findings — a login-blocked
+    # paying customer. Warnings (no API key, reset token expiring) are
+    # returned in the JSON for the dashboard but don't trigger the loud
+    # daily alert, so the signal stays meaningful.
     summary_emailed = False
-    if request.args.get('email') == '1' and findings:
+    if request.args.get('email') == '1' and critical_findings:
         try:
             from email_service import send_email
-            problem_count = len(findings)
             html_rows = ''
-            for f in findings:
+            for f in critical_findings:
                 html_rows += (
                     f'<tr><td>{f["email"]}</td><td>{f["plan"]}</td>'
-                    f'<td>{"; ".join(f["problems"])}</td></tr>'
+                    f'<td>{"; ".join(f["critical"])}</td></tr>'
                 )
             html = f'''
 <h2>DC Hub — Daily Paid-Account Health Check</h2>
-<p><strong>{problem_count}</strong> paid account(s) have login-blocking issues
-({healthy_total} of {paid_total} healthy).</p>
+<p><strong>{len(critical_findings)}</strong> paying customer(s) CANNOT LOG IN
+({healthy_total} of {paid_total} healthy). Fix immediately via
+/api/v1/admin/paid-account-health/fix-reset.</p>
 <table border="1" cellpadding="6" style="border-collapse: collapse; font-family: monospace; font-size: 13px;">
-<tr><th>Email</th><th>Plan</th><th>Problems</th></tr>
+<tr><th>Email</th><th>Plan</th><th>Critical issue</th></tr>
 {html_rows}
 </table>
-<p style="color:#666; font-size:11px;">Run admin/paid-account-health/check by hand to investigate any row.</p>
+<p style="color:#666; font-size:11px;">{len(warning_findings)} account(s) also have
+non-blocking warnings (no API key / reset token expiring) — see the JSON endpoint.</p>
 '''
             send_email(
                 to='azmartone@gmail.com',
-                subject=f'⚠️ DC Hub — {problem_count} paid account(s) need attention',
+                subject=f'🚨 DC Hub — {len(critical_findings)} paying customer(s) LOCKED OUT',
                 html=html,
             )
             summary_emailed = True
@@ -189,8 +220,12 @@ def check_paid_health():
         'success': True,
         'paid_users_total': paid_total,
         'healthy_total': healthy_total,
-        'problem_count': len(findings),
-        'findings': findings,
+        # problem_count now means LOGIN-BLOCKED (the alert-worthy signal),
+        # not "any finding". Warnings are tracked separately.
+        'problem_count': len(critical_findings),
+        'warning_count': len(warning_findings),
+        'critical_findings': critical_findings,
+        'warning_findings': warning_findings,
         'summary_emailed': summary_emailed,
         'as_of': datetime.utcnow().isoformat() + 'Z',
     })
