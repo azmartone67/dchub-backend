@@ -3536,6 +3536,16 @@ except Exception:
     )
 
 
+# r43-H (2026-05-28): per-slug rendered-page cache. #3's latency tracker
+# flagged /dcpi/<slug> at p95 4.37s — each render runs gather_metrics_for_market
+# (DB + ISO baseline) plus a Claude narrative call on the first read per slug
+# per hour. DCPI scores recompute every ~4h and the narrative is already cached
+# 1h, so a 10-min rendered-HTML cache is plenty fresh and makes repeat loads
+# instant. Keyed by the canonical slug (aliases 301-redirect before render).
+_DCPI_PAGE_CACHE: dict = {}
+_DCPI_PAGE_TTL = 600
+
+
 @dcpi_bp.route("/dcpi/<slug>", methods=["GET"], strict_slashes=False)
 def public_market_page(slug):
     _ensure_tables()
@@ -3596,6 +3606,18 @@ def public_market_page(slug):
         r.headers["Content-Security-Policy"] = _DCPI_CSP
         return r
 
+    # r43-H: serve the cached rendered page if fresh (skips the metric backfill
+    # + the Claude narrative call). slug here is canonical — aliases already
+    # 301-redirected above, so a hit can't leak the wrong market.
+    import time as _t
+    _now = _t.time()
+    _ch = _DCPI_PAGE_CACHE.get(slug)
+    if _ch and _ch[0] > _now:
+        _cr = Response(_ch[1], mimetype="text/html")
+        _cr.headers["Content-Security-Policy"] = _DCPI_CSP
+        _cr.headers["X-DC-Cache"] = "hit"
+        return _cr
+
     # Phase RR (2026-05-14): backfill lite-scored markets. ~250+ markets
     # are scored by the LITE path (bulk_dcpi_score / api lite recompute),
     # which only writes constraint_score + excess_power_score and leaves
@@ -3650,8 +3672,12 @@ def public_market_page(slug):
     market_html = render_template_string(DCPI_MARKET_TEMPLATE, s=s,
                                           risks=risks, opps=opps,
                                           narrative=narrative_text)
+    # r43-H: cache the rendered page (bounded — ~285 markets max).
+    if len(_DCPI_PAGE_CACHE) < 500:
+        _DCPI_PAGE_CACHE[slug] = (_now + _DCPI_PAGE_TTL, market_html)
     market_resp = Response(market_html, mimetype="text/html")
     market_resp.headers["Content-Security-Policy"] = _DCPI_CSP  # phase 284
+    market_resp.headers["X-DC-Cache"] = "miss"
     return market_resp
 
 
