@@ -658,6 +658,94 @@ REGISTRY: list[ErrorClass] = [
         confidence=0.85,
         notes="Requires IPINFO_TOKEN. No-op if absent. Cached 24h per-IP — effectively free after first run.",
     ),
+
+    # ── r43-H (2026-05-28) — self-learning: tonight's hand-fixes registered
+    # so the brain recognizes (and the gated-auto-fix layer can heal) the next
+    # occurrence instead of letting these recur silently.
+    ErrorClass(
+        id="cf_worker_version_drift",
+        pattern=r"worker[ _-]?version[ _-]?drift|x-dc-worker-version.*(switzerland|4\.24\.0)|live=\S+ canonical=\S+",
+        fix_template="redeploy_canonical_cf_worker",
+        description=(
+            "The live Cloudflare Pages worker version drifted from the canonical "
+            "WORKER_VERSION in ~/dchub-frontend/_worker.js. Root cause class: a "
+            "SECOND deployer (the dchub-backend repo's deploy-frontend.yml) pushed "
+            "a STALE subdir worker over the canonical one on every backend push, "
+            "and the brain/cron push to that repo constantly → endemic flap "
+            "(/facilities 404, /transactions + /markets CF timeouts) while the "
+            "backend itself was healthy. FIX: (1) primary — disable the stale "
+            "deployer's push trigger; (2) gated auto-heal — redeploy the canonical "
+            "worker (wrangler pages deploy) via the worker-drift-guard workflow."
+        ),
+        confidence=0.9,
+        shipped_proof="4ece11e2",
+        notes="Auto-healed by ~/dchub-frontend worker-drift-guard.yml (commit d990b4bd). The 4.24.0-switzerland string is the stale-worker tell.",
+    ),
+    ErrorClass(
+        id="cross_link_slug_404",
+        pattern=r"Market not found:\s*\S+|/dcpi/[a-z-]+.*404|/(markets|dcpi|facilities)/\S+ .*404",
+        fix_template="add_slug_alias_map",
+        description=(
+            "Two route families canonicalize the same place to DIFFERENT slugs, so "
+            "inbound cross-links 404. Concretely: /markets/* uses METRO slugs "
+            "(northern-virginia) while /dcpi/* keys on CITY slugs (ashburn), so "
+            "/dcpi/northern-virginia 404'd — it was the #1 4xx path at ~6.6k/day. "
+            "FIX: add a metro→city (or city→metro) alias map in the 404'ing route "
+            "that 301-redirects aliases to the canonical slug. Keep the two maps "
+            "(they are inverses) in sync. See memory dchub-market-slug-conventions."
+        ),
+        confidence=0.85,
+        shipped_proof="b5f5ae02",
+        notes="Verify a slug resolves by probing it (200 vs 404); the DCPI scores API is tier-gated so you can't list slugs anonymously.",
+    ),
+    ErrorClass(
+        id="external_call_uncached_flap",
+        pattern=r"SLOW REQUEST.*grid/intelligence|3 synchronous (upstream|external) calls|self-call.*dchub\.cloud",
+        fix_template="add_ttl_cache_to_external_endpoint",
+        description=(
+            "A handler makes synchronous external/self HTTP calls on every request "
+            "and the brain hammers it (e.g. /api/v1/grid/intelligence across 7 ISOs "
+            "every cycle). On 1 Railway replica that saturates the gthread pool → "
+            "unrelated pages 524 and the healthcheck flaps the container. FIX: add a "
+            "short in-process TTL cache (data is hourly), trim per-call timeouts, and "
+            "NEVER make a synchronous self-call to another dchub.cloud route (it "
+            "blocks a worker waiting on the same 1-replica pool). See memory "
+            "dchub-backend-1-replica-flapping."
+        ),
+        confidence=0.85,
+        shipped_proof="24b9251c",
+    ),
+    ErrorClass(
+        id="unindexed_sort_statement_timeout",
+        pattern=r"canceling statement due to statement timeout|ORDER BY COALESCE\(|inserting index tuple",
+        fix_template="cap_statement_timeout_serve_stale",
+        description=(
+            "A page query sorts a large table on an unindexed/computed expression "
+            "(e.g. ORDER BY COALESCE(date,...)) while the table is under write "
+            "contention — it holds a worker the full 30s, the request is killed, the "
+            "cache never warms, and the page times out on every load. FIX: SET "
+            "statement_timeout to a few seconds so the worker is freed, serve the "
+            "last-good memo on abort, and switch to an index-eligible ORDER BY."
+        ),
+        confidence=0.8,
+        shipped_proof="2f9122e6",
+    ),
+    ErrorClass(
+        id="text_int_id_predicate",
+        pattern=r"operator does not exist: text = integer|text\s*=\s*integer",
+        fix_template="cast_id_to_text_in_predicate",
+        description=(
+            "A query compares a TEXT id column to an integer literal (WHERE id = "
+            "12285) — Postgres raises 'operator does not exist: text = integer', "
+            "which on a non-autocommit connection aborts the whole transaction and "
+            "breaks every later query in the handler. FIX: compare with id::text = "
+            "%s (string param), or set the connection autocommit for read-only "
+            "endpoints so one bad query can't poison the rest."
+        ),
+        confidence=0.9,
+        shipped_proof="13084e8e",
+        notes="Bit /api/v1/sites/<ident>/capacity-report; facilities.id is TEXT, discovered_facilities.id is INT — id::text works for both.",
+    ),
 ]
 
 
