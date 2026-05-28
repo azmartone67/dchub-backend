@@ -104,11 +104,33 @@ def test_frontend_js_maps_have_founding():
     assert not fails, "Frontend tier maps missing founding:\n" + "\n".join(fails)
 
 
+# ── 4. generate_api_key must match the live api_keys schema ─────────
+def test_generate_api_key_matches_schema():
+    """r43-H regression guard: generate_api_key INSERTed a non-existent
+    `email` column and errored on every call, silently breaking key
+    auto-provisioning. Lock the column set to the real schema."""
+    src_path = os.path.join(ROOT, "api_tier_gating.py")
+    src = open(src_path, encoding="utf-8").read()
+    i = src.index("def generate_api_key")
+    # first INSERT INTO api_keys after the function start is this function's
+    j = src.index("INSERT INTO api_keys", i)
+    cols = src[j: src.index("VALUES", j)]
+    fails = []
+    if "email" in cols:
+        fails.append("generate_api_key INSERT references a non-existent `email` column")
+    for required in ("user_id", "key_hash", "key_prefix", "rate_limit_tier",
+                     "is_active", "plan"):
+        if required not in cols:
+            fails.append(f"generate_api_key INSERT missing required column: {required}")
+    assert not fails, "generate_api_key schema drift:\n" + "\n".join(fails)
+
+
 if __name__ == "__main__":
     rc = 0
     for fn in (test_registry_founding_equals_pro,
                test_backend_maps_founding_equals_pro,
-               test_frontend_js_maps_have_founding):
+               test_frontend_js_maps_have_founding,
+               test_generate_api_key_matches_schema):
         _FAILURES.clear()
         try:
             fn()
