@@ -2170,6 +2170,110 @@ def alias_research_grid_intelligence():
 
 
 # --- phase 19b: grid intelligence aggregate endpoint -----------------------
+# ── grid-intelligence TTL cache (r43-H, 2026-05-28) ───────────────────────
+# The 3 upstream calls in _grid_intel_fetch (2× EIA + 1 self-call to
+# grid-headroom) took ~31s/request and the brain hammered them across 7 ISOs
+# every cycle. On 1 Railway replica that saturated the gthread worker pool —
+# /transactions, /markets, /signup started 524'ing and the healthcheck
+# tripped → container flapping. EIA RTO data is hourly, so cache the assembled
+# payload for 5 min: repeat probes become instant and the pool stays free.
+# Gating still runs per-request on the cached copy.
+_GRID_INTEL_CACHE = {}      # region -> (expires_epoch, out_dict)
+_GRID_INTEL_TTL = 300       # seconds
+
+
+def _grid_intel_fetch(region, rto_code):
+    """Expensive upstream assembly for phase19b_grid_intelligence. Cached by
+    _grid_intel_cached. Timeouts trimmed (15→8, 8→5) so a cache miss can't
+    hold a worker for ~38s."""
+    out = {'region': region, 'rto_code': rto_code}
+    try:
+        import requests as _rq
+    except Exception:
+        out['fetch_error'] = 'requests unavailable'
+        return out
+    H = {'User-Agent': 'DCHub-Grid/1.0 (https://dchub.cloud)',
+         'Accept': 'application/json'}
+
+    # 1) Real-time demand from EIA
+    try:
+        eia_key = os.environ.get('EIA_API_KEY', '')
+        params = {
+            'frequency': 'hourly', 'data[0]': 'value',
+            'facets[respondent][]': rto_code, 'facets[type][]': 'D',
+            'sort[0][column]': 'period', 'sort[0][direction]': 'desc',
+            'offset': 0, 'length': 24,
+        }
+        if eia_key: params['api_key'] = eia_key
+        r = _rq.get('https://api.eia.gov/v2/electricity/rto/region-data/data',
+                    params=params, headers=H, timeout=8)
+        if r.ok:
+            data = (r.json() or {}).get('response', {}).get('data', [])
+            if data:
+                latest = data[0]
+                out['demand_mw'] = latest.get('value')
+                out['demand_period'] = latest.get('period')
+                out['demand_24h'] = [{'period': d.get('period'),
+                                      'mw': d.get('value')} for d in data]
+        else:
+            out['eia_demand_error'] = f'HTTP {r.status_code}'
+    except Exception as e:
+        out['eia_demand_error'] = type(e).__name__ + ': ' + str(e)[:200]
+
+    # 2) Generation mix from EIA (current + 24h)
+    try:
+        eia_key = os.environ.get('EIA_API_KEY', '')
+        params = {
+            'frequency': 'hourly', 'data[0]': 'value',
+            'facets[respondent][]': rto_code,
+            'facets[fueltype][]': ['NG','COL','NUC','SUN','WND','WAT','OTH'],
+            'sort[0][column]': 'period', 'sort[0][direction]': 'desc',
+            'offset': 0, 'length': 168,  # 7 days × 24h
+        }
+        if eia_key: params['api_key'] = eia_key
+        r = _rq.get('https://api.eia.gov/v2/electricity/rto/fuel-type-data/data',
+                    params=params, headers=H, timeout=8)
+        if r.ok:
+            data = (r.json() or {}).get('response', {}).get('data', [])
+            latest_by_fuel = {}
+            for d in data:
+                fuel = d.get('fueltype')
+                if fuel and fuel not in latest_by_fuel:
+                    latest_by_fuel[fuel] = {'mw': d.get('value'),
+                                            'period': d.get('period')}
+            out['generation_mix'] = latest_by_fuel
+        else:
+            out['eia_genmix_error'] = f'HTTP {r.status_code}'
+    except Exception as e:
+        out['eia_genmix_error'] = type(e).__name__ + ': ' + str(e)[:200]
+
+    # 3) Our own grid-headroom endpoint for substation context
+    try:
+        r = _rq.get(f'https://dchub.cloud/api/v1/grid-headroom/{region}',
+                    headers=H, timeout=5)
+        if r.ok:
+            out['headroom'] = r.json()
+    except Exception as e:
+        out['headroom_error'] = type(e).__name__ + ': ' + str(e)[:200]
+
+    out['note'] = 'EIA hourly RTO data via api.eia.gov/v2/electricity/rto. ' + \
+                  ('Set EIA_API_KEY env var on Railway for higher rate limits.' if not os.environ.get('EIA_API_KEY') else '')
+    return out
+
+
+def _grid_intel_cached(region, rto_code):
+    import time as _t
+    now = _t.time()
+    hit = _GRID_INTEL_CACHE.get(region)
+    if hit and hit[0] > now:
+        return dict(hit[1])
+    out = _grid_intel_fetch(region, rto_code)
+    # Only cache a useful result — don't pin a total upstream failure for 5 min.
+    if out.get('demand_mw') is not None or out.get('generation_mix'):
+        _GRID_INTEL_CACHE[region] = (now + _GRID_INTEL_TTL, dict(out))
+    return out
+
+
 @app.route('/api/v1/grid/intelligence/<region>', methods=['GET'])
 def phase19b_grid_intelligence(region):
     """Aggregate grid view for an ISO/region.
@@ -2187,88 +2291,9 @@ def phase19b_grid_intelligence(region):
         return jsonify({'error': 'unknown region',
                         'supported': list(EIA_RTO_MAP.keys())}), 400
 
-    out = {'region': region, 'rto_code': rto_code}
-
-    try:
-        import requests as _rq
-    except Exception:
-        return jsonify({'error': 'requests unavailable'}), 500
-
-    H = {'User-Agent': 'DCHub-Grid/1.0 (https://dchub.cloud)',
-         'Accept': 'application/json'}
-
-    # 1) Real-time demand from EIA
-    try:
-        eia_key = os.environ.get('EIA_API_KEY', '')
-        params = {
-            'frequency': 'hourly',
-            'data[0]': 'value',
-            'facets[respondent][]': rto_code,
-            'facets[type][]': 'D',  # D = demand
-            'sort[0][column]': 'period',
-            'sort[0][direction]': 'desc',
-            'offset': 0,
-            'length': 24,
-        }
-        if eia_key: params['api_key'] = eia_key
-        r = _rq.get('https://api.eia.gov/v2/electricity/rto/region-data/data',
-                    params=params, headers=H, timeout=15)
-        if r.ok:
-            data = (r.json() or {}).get('response', {}).get('data', [])
-            if data:
-                latest = data[0]
-                out['demand_mw'] = latest.get('value')
-                out['demand_period'] = latest.get('period')
-                # 24h demand series
-                out['demand_24h'] = [{'period': d.get('period'),
-                                      'mw': d.get('value')} for d in data]
-        else:
-            out['eia_demand_error'] = f'HTTP {r.status_code}'
-    except Exception as e:
-        out['eia_demand_error'] = type(e).__name__ + ': ' + str(e)[:200]
-
-    # 2) Generation mix from EIA (current + 24h)
-    try:
-        eia_key = os.environ.get('EIA_API_KEY', '')
-        params = {
-            'frequency': 'hourly',
-            'data[0]': 'value',
-            'facets[respondent][]': rto_code,
-            'facets[fueltype][]': ['NG','COL','NUC','SUN','WND','WAT','OTH'],
-            'sort[0][column]': 'period',
-            'sort[0][direction]': 'desc',
-            'offset': 0,
-            'length': 168,  # 7 days × 24h
-        }
-        if eia_key: params['api_key'] = eia_key
-        r = _rq.get('https://api.eia.gov/v2/electricity/rto/fuel-type-data/data',
-                    params=params, headers=H, timeout=15)
-        if r.ok:
-            data = (r.json() or {}).get('response', {}).get('data', [])
-            # Latest snapshot per fuel
-            latest_by_fuel = {}
-            for d in data:
-                fuel = d.get('fueltype')
-                if fuel and fuel not in latest_by_fuel:
-                    latest_by_fuel[fuel] = {'mw': d.get('value'),
-                                            'period': d.get('period')}
-            out['generation_mix'] = latest_by_fuel
-        else:
-            out['eia_genmix_error'] = f'HTTP {r.status_code}'
-    except Exception as e:
-        out['eia_genmix_error'] = type(e).__name__ + ': ' + str(e)[:200]
-
-    # 3) Try to call our own grid-headroom endpoint for substation context
-    try:
-        r = _rq.get(f'https://dchub.cloud/api/v1/grid-headroom/{region}',
-                    headers=H, timeout=8)
-        if r.ok:
-            out['headroom'] = r.json()
-    except Exception as e:
-        out['headroom_error'] = type(e).__name__ + ': ' + str(e)[:200]
-
-    out['note'] = 'EIA hourly RTO data via api.eia.gov/v2/electricity/rto. ' + \
-                  ('Set EIA_API_KEY env var on Railway for higher rate limits.' if not os.environ.get('EIA_API_KEY') else '')
+    # Assembled payload (3 upstream calls) — cached 5 min to keep the worker
+    # pool free under the brain's repeated per-ISO probing. See _grid_intel_*.
+    out = _grid_intel_cached(region, rto_code)
 
     # Phase ZZZZZ-round12 (2026-05-23): close the paywall hole between
     # the MCP tool (Tier.IDENTIFIED) and this HTTP endpoint (was wide
