@@ -1040,6 +1040,32 @@ def api_scores():
     # endpoint was clocking 1.7s for 2 rows pre-fix because the SELECT
     # DISTINCT ON does a full scan + sort. ETag based on max(computed_at)
     # so any actual recompute busts the cache; otherwise 304 short-circuits.
+    # Phase WW (2026-05-17) — soft-paywall the bulk dump.
+    # r43-E (2026-05-27): operator audit caught the `not limit` bypass —
+    # anon callers were adding ?limit=500 and walking away with all 232
+    # markets (102KB) for free. That's why Pro Map sign-ups were zero
+    # despite high demand. Single-market lookup (/api/v1/dcpi/scores/<slug>)
+    # stays FREE — that's the discovery hook for AI agents + journalists.
+    #
+    # 2026-05-28 — per-tier caps. The old code only capped tier < IDENTIFIED,
+    # but free signed-up users ARE IDENTIFIED, so they walked away with the
+    # full set (the "free still sees everything" leak). Caps now come from
+    # the central DCPI_PREVIEW_CAP table: anon 3, free 5, starter 25,
+    # developer 100, pro+ unlimited. The cap is resolved BEFORE the ETag so
+    # it participates in cache identity, and the response is marked private
+    # so a shared/CDN cache can't serve a Pro payload to an anon caller.
+    _total_rows = len(rows)
+    _required_tier = "IDENTIFIED"
+    try:
+        from util.tier_gate import resolve_tier, dcpi_cap_for
+        _tier, _ = resolve_tier()
+        _cap = dcpi_cap_for(_tier)
+    except Exception:
+        _cap = 3  # fail safe: tightest cap
+    _gated = _cap is not None and _total_rows > _cap
+    if _gated:
+        rows = rows[:_cap]
+
     max_ts = ""
     if rows:
         # rows is sorted by either constraint/excess/ttp, not by computed_at,
@@ -1049,37 +1075,21 @@ def api_scores():
         except Exception:
             max_ts = ""
     import hashlib as _hl
-    etag_src = f"{len(rows)}|{max_ts}|{verdict_filter}|{iso_filter}|{state_filter}|{sort_by}|{limit}"
+    etag_src = (f"{len(rows)}|{max_ts}|{verdict_filter}|{iso_filter}|"
+                f"{state_filter}|{sort_by}|{limit}|cap={_cap}")
     etag = '"' + _hl.md5(etag_src.encode()).hexdigest()[:16] + '"'
+
+    # Tier-varying body → never let a shared cache key on URL alone.
+    _cache_control = "private, max-age=120"
 
     if_none_match = request.headers.get("If-None-Match", "")
     if if_none_match and if_none_match == etag:
         from flask import Response as _Resp
         resp = _Resp(status=304)
         resp.headers["ETag"] = etag
-        resp.headers["Cache-Control"] = "public, max-age=120, stale-while-revalidate=300"
+        resp.headers["Cache-Control"] = _cache_control
+        resp.headers["Vary"] = "X-API-Key, Authorization"
         return resp
-
-    # Phase WW (2026-05-17) — soft-paywall the bulk dump.
-    # r43-E (2026-05-27): operator audit caught the `not limit` bypass —
-    # anon callers were adding ?limit=500 and walking away with all 232
-    # markets (102KB) for free. That's why Pro Map sign-ups were zero
-    # despite high demand. Now: anon cap is enforced REGARDLESS of
-    # ?limit parameter. Single-market lookup (/api/v1/dcpi/scores/<slug>)
-    # stays FREE — that's the discovery hook for AI agents + journalists.
-    _PREVIEW_CAP = 10
-    _gated = False
-    _total_rows = len(rows)
-    try:
-        from util.tier_gate import resolve_tier, Tier as _T
-        _tier, _ = resolve_tier()
-        # Cap the anon limit hard. Identified+ can still pass ?limit
-        # for pagination; anon is locked to 10 regardless.
-        if _tier < _T.IDENTIFIED and _total_rows > _PREVIEW_CAP:
-            rows = rows[:_PREVIEW_CAP]
-            _gated = True
-    except Exception:
-        pass
 
     payload = {"scores": rows, "count": len(rows), "sort": sort_by,
                "filters": {"verdict": verdict_filter, "iso": iso_filter,
@@ -1088,20 +1098,22 @@ def api_scores():
         payload["_gated"] = True
         payload["_preview_only"] = True
         payload["_total_available"] = _total_rows
-        payload["_hidden_count"] = _total_rows - _PREVIEW_CAP
-        payload["_required_tier"] = "IDENTIFIED"
+        payload["_hidden_count"] = _total_rows - _cap
+        payload["_required_tier"] = _required_tier
         payload["_upgrade_cta"] = (
-            f"Showing top {_PREVIEW_CAP} of {_total_rows} DCPI markets. "
+            f"Showing top {_cap} of {_total_rows} DCPI markets. "
             f"Get all {_total_rows} markets (BUILD/CAUTION/AVOID verdicts, "
-            f"constraint scores, excess power scores, time-to-power) free — "
-            f"claim a key in 30s: POST /api/v1/keys/claim or pass X-API-Key "
-            f"header (auto-trial mints inline on 402 responses)."
+            f"constraint scores, excess power scores, time-to-power) by "
+            f"upgrading — claim a key in 30s: POST /api/v1/keys/claim or pass "
+            f"X-API-Key header (auto-trial mints inline on 402 responses)."
         )
         payload["_signup_url"] = "https://dchub.cloud/signup"
+        payload["_pricing_url"] = "https://dchub.cloud/pricing"
 
     resp = jsonify(**payload)
     resp.headers["ETag"] = etag
-    resp.headers["Cache-Control"] = "public, max-age=120, stale-while-revalidate=300"
+    resp.headers["Cache-Control"] = _cache_control
+    resp.headers["Vary"] = "X-API-Key, Authorization"
     return resp, 200
 
 
@@ -1719,7 +1731,33 @@ def api_movers():
             LIMIT 10
         """)
         rows = cur.fetchall()
-    return jsonify(movers=rows), 200
+
+    # 2026-05-28 — gate the movers list by tier like /scores. Previously
+    # ungated, so free/anon callers saw all 10 movers + deltas for free.
+    _total_rows = len(rows)
+    try:
+        from util.tier_gate import resolve_tier, dcpi_cap_for
+        _tier, _ = resolve_tier()
+        _cap = dcpi_cap_for(_tier)
+    except Exception:
+        _cap = 3  # fail safe: tightest cap
+    payload = {"movers": rows}
+    if _cap is not None and _total_rows > _cap:
+        payload["movers"] = rows[:_cap]
+        payload["_gated"] = True
+        payload["_preview_only"] = True
+        payload["_total_available"] = _total_rows
+        payload["_hidden_count"] = _total_rows - _cap
+        payload["_upgrade_cta"] = (
+            f"Showing {_cap} of {_total_rows} DCPI movers. Upgrade to see "
+            f"every market on the move — dchub.cloud/pricing"
+        )
+        payload["_signup_url"] = "https://dchub.cloud/signup"
+        payload["_pricing_url"] = "https://dchub.cloud/pricing"
+    resp = jsonify(**payload)
+    resp.headers["Cache-Control"] = "private, max-age=120"
+    resp.headers["Vary"] = "X-API-Key, Authorization"
+    return resp, 200
 
 
 # phase 267: public, machine-readable leaderboard so the DCPI is citable
@@ -1787,6 +1825,23 @@ def api_leaderboard():
         )
     rows.sort(key=lambda r: -(r.get("composite_score") or 0))
     rows = rows[:limit]
+
+    # 2026-05-28 — gate the leaderboard by tier. Previously fully ungated:
+    # any caller could pull up to 100 fully-detailed markets (JSON or CSV)
+    # for free, bypassing the /scores soft-paywall entirely. Now the row
+    # count is capped to the caller's DCPI cap (anon 3 … pro+ unlimited).
+    _total_rows = len(rows)
+    _gated = False
+    try:
+        from util.tier_gate import resolve_tier, dcpi_cap_for
+        _tier, _ = resolve_tier()
+        _cap = dcpi_cap_for(_tier)
+    except Exception:
+        _cap = 3  # fail safe: tightest cap
+    if _cap is not None and _total_rows > _cap:
+        rows = rows[:_cap]
+        _gated = True
+
     for r in rows:
         if r.get("computed_at"):
             r["computed_at"] = r["computed_at"].isoformat()
@@ -1813,7 +1868,10 @@ def api_leaderboard():
             w.writerow(row)
         resp = Response(buf.getvalue(), mimetype="text/csv")
         resp.headers["Content-Disposition"] = 'attachment; filename="dcpi-leaderboard.csv"'
-        resp.headers["Cache-Control"] = "public, max-age=300, must-revalidate"
+        # Tier-varying body → private so a shared cache can't serve a paid
+        # caller's full CSV to a free/anon caller.
+        resp.headers["Cache-Control"] = "private, max-age=300, must-revalidate"
+        resp.headers["Vary"] = "X-API-Key, Authorization"
         return resp
 
     body = {
@@ -1826,12 +1884,26 @@ def api_leaderboard():
         "methodology_url": "https://dchub.cloud/dcpi#methodology",
         "citation": "DC Hub Data Center Power Index. https://dchub.cloud/dcpi",
     }
+    if _gated:
+        body["_gated"] = True
+        body["_preview_only"] = True
+        body["_total_available"] = _total_rows
+        body["_hidden_count"] = _total_rows - _cap
+        body["_upgrade_cta"] = (
+            f"Showing top {_cap} of {_total_rows} DCPI markets. "
+            f"Upgrade for the full leaderboard — dchub.cloud/pricing"
+        )
+        body["_signup_url"] = "https://dchub.cloud/signup"
+        body["_pricing_url"] = "https://dchub.cloud/pricing"
     # Phase 299 (fix PR #21 regression): restore the response wrapper that
     # was accidentally dropped. Without these lines the Flask handler returns
     # None → Flask falls back to a generic HTML error page → CDN caches it
     # → leaderboard endpoint broken for every consumer.
     resp = jsonify(body)
-    resp.headers["Cache-Control"] = "public, max-age=300, must-revalidate"
+    # Tier-varying body → private so a shared cache can't serve a paid
+    # caller's full leaderboard to a free/anon caller.
+    resp.headers["Cache-Control"] = "private, max-age=300, must-revalidate"
+    resp.headers["Vary"] = "X-API-Key, Authorization"
     resp.headers["Access-Control-Allow-Origin"] = "*"
     return resp, 200
 
