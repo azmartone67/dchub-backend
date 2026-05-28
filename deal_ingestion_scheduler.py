@@ -170,6 +170,23 @@ def run_ingestion(get_db):
         logger.info("  No new deals to insert")
         return
 
+    # r43-H (2026-05-28): dedup by deal_hash BEFORE the batched upsert. The
+    # extractor can emit the same deal twice in one run (one article matched
+    # by two search queries), and `ON CONFLICT (deal_hash) DO UPDATE` raises
+    # "cannot affect row a second time" when two rows in ONE command share the
+    # conflict key — which failed the WHOLE batch (logs: 299 extracted, 0
+    # inserted, 299 errors). Keep the first occurrence of each deal_hash.
+    _seen, _deduped = set(), []
+    for _d in deals:
+        _h = _d.get("deal_hash")
+        if _h in _seen:
+            continue
+        _seen.add(_h)
+        _deduped.append(_d)
+    if len(_deduped) != len(deals):
+        logger.info(f"  Deduped {len(deals) - len(_deduped)} same-batch duplicate deal_hash(es)")
+    deals = _deduped
+
     # 3. Upsert into Neon
     # Phase ZZZZ-conn-fix (2026-05-18): pool watchdog was force-reclaiming
     # this connection after 76s because we never called conn.close(). Add
