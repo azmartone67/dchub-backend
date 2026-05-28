@@ -295,6 +295,7 @@ def register_discovery_routes(app):
     # =========================================================================
     # /.well-known/mcp/server-card.json — MCP Server Card
     # =========================================================================
+# AUTO-REPAIR: duplicate route '/.well-known/mcp/server-card.json' also in backend_patch_mcp_routes.py:90 — review and remove one
     @app.route('/.well-known/mcp/server-card.json')
     @app.route('/mcp-server-card.json')  # Railway alias (/.well-known/ blocked on Railway)
     def serve_mcp_server_card():
@@ -630,6 +631,7 @@ DC Hub publishes the **DCPI** — a 0-100 power-availability score for 285 US da
 
     # =========================================================================
     # /llms-full.txt — Full API documentation for LLMs
+# AUTO-REPAIR: duplicate route '/llms-full.txt' also in ai_agent_discovery.py:465 — review and remove one
     # =========================================================================
     @app.route('/llms-full.txt')
     def serve_llms_full_txt():

@@ -38,6 +38,7 @@ def _conn():
     finally: c.close()
 
 
+# AUTO-REPAIR: duplicate route '/health' also in main.py:3647 — review and remove one
 @dcpi_health_bp.route("/health", methods=["GET"])
 def health():
     """Inspect dcpi_runs table or fallback to dcpi_scores recompute history."""
