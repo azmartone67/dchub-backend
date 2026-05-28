@@ -87,6 +87,13 @@ _MANIFEST: list[dict] = [
     {"path": "/news",                    "category": "high", "min_bytes": 3000, "label": "News",             "wants_nav": True, "max_age_days": 2},
     {"path": "/daily",                   "category": "high", "min_bytes": 3000, "label": "Daily Report",     "wants_nav": True, "max_age_days": 1},
     {"path": "/markets/",                "category": "high", "min_bytes": 3000, "label": "Markets",          "wants_nav": True},
+    # r43-H (2026-05-28): per-slug deep-link canaries. The /dcpi/northern-virginia
+    # cross-link 404 (#1 4xx path, ~6.6k/day) was invisible because the manifest
+    # only polled the /markets/ + /dcpi index, never a per-slug page. These
+    # canonical slugs return 200 and exercise the exact route families that broke,
+    # so a regression now trips the sentinel instead of silently 404ing.
+    {"path": "/markets/northern-virginia", "category": "high", "min_bytes": 2000, "label": "Market page (per-slug render)"},
+    {"path": "/dcpi/ashburn",              "category": "high", "min_bytes": 2000, "label": "DCPI page (per-slug render)"},
     {"path": "/land-power",              "category": "high", "min_bytes": 3000, "label": "Land + Power",     "wants_nav": True},
     {"path": "/land-power-map",          "category": "high", "min_bytes": 3000, "label": "L+P Map"},
     {"path": "/map",                     "category": "high", "min_bytes": 3000, "label": "Facility Map"},
