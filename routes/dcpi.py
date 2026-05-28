@@ -3560,6 +3560,21 @@ def public_market_page(slug):
             candidates.append(slug[:-len(suf)])
             break
 
+    # r43-H (2026-05-28): metro→city slug aliases. The /markets/ pages
+    # canonicalize to METRO slugs (northern-virginia, dallas-fort-worth) but
+    # market_power_scores keys on the dominant CITY (ashburn, dallas). Inbound
+    # /dcpi/<metro> links from /market-intelligence and /markets/<metro> 404'd
+    # (e.g. /dcpi/northern-virginia). Map known metros to their DCPI city slug;
+    # the cand!=slug branch below then 301-redirects to the canonical
+    # /dcpi/<city>. This is the inverse of market_deep_dive._CANONICAL_REDIRECT.
+    _DCPI_METRO_ALIASES = {
+        'northern-virginia': 'ashburn', 'n-virginia': 'ashburn', 'nova': 'ashburn',
+        'dallas-fort-worth': 'dallas', 'dallas-ft-worth': 'dallas', 'dfw': 'dallas',
+    }
+    _alias = _DCPI_METRO_ALIASES.get(slug.lower())
+    if _alias:
+        candidates.append(_alias)
+
     s = None
     with _conn() as c, c.cursor(cursor_factory=psycopg2.extras.RealDictCursor) as cur:
         for cand in candidates:
