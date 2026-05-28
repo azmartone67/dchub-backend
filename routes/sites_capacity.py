@@ -194,17 +194,17 @@ def _peer_facilities(cur, city, state, exclude_id):
             """SELECT id, name, provider, power_mw, status
                  FROM facilities
                 WHERE LOWER(city) = LOWER(%s)
-                  AND id <> %s
+                  AND id::text <> %s
                 ORDER BY power_mw DESC NULLS LAST LIMIT 6""",
-            (city, exclude_id or 0))
+            (city, str(exclude_id or '')))
     else:
         cur.execute(
             """SELECT id, name, provider, power_mw, status
                  FROM facilities
                 WHERE UPPER(state) = UPPER(%s)
-                  AND id <> %s
+                  AND id::text <> %s
                 ORDER BY power_mw DESC NULLS LAST LIMIT 6""",
-            (state, exclude_id or 0))
+            (state, str(exclude_id or '')))
     return [
         {"id": r[0], "name": r[1], "provider": r[2],
          "power_mw": _as_float(r[3]), "status": r[4]}
