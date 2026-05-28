@@ -56,16 +56,8 @@ jobs:
               "$BASE/api/v1/dcpi/recompute-missing?max=$MAX" \
               || echo '{"ok":false,"error":"curl_failed"}')
             echo "$body" | python3 -m json.tool || echo "$body"
-            inserted=$(echo "$body" \
-              | python3 -c "import sys,json;
-try:
-  d = json.load(sys.stdin); print(d.get('inserted',0))
-except Exception: print(0)" 2>/dev/null || echo 0)
-            remaining=$(echo "$body" \
-              | python3 -c "import sys,json;
-try:
-  d = json.load(sys.stdin); print(d.get('remaining_in_markets',0))
-except Exception: print(0)" 2>/dev/null || echo 0)
+            inserted=$(echo "$body" | python3 -c "import sys,json; print(json.load(sys.stdin).get('inserted',0))" 2>/dev/null || echo 0)
+            remaining=$(echo "$body" | python3 -c "import sys,json; print(json.load(sys.stdin).get('remaining_in_markets',0))" 2>/dev/null || echo 0)
             echo "::notice::Attempt $attempt inserted=$inserted remaining=$remaining"
             if [ "$inserted" = "0" ] || [ "$remaining" = "0" ]; then
               echo "✅ all caught up (inserted=$inserted remaining=$remaining)"
