@@ -239,6 +239,40 @@ h1 .grad{background:var(--gradient);-webkit-background-clip:text;background-clip
 </html>"""
 
 
+# r43-H (2026-05-28): /brain made 4 sequential in-process sub-requests
+# (self-assessment, value-shipped, page-integrity, lifecycle/findings), each
+# expensive, stacking to ~16s p95 (the latency tracker flagged it). It's a
+# dashboard — 90s-stale is fine — so memoize each sub-call by path. On a cache
+# hit the expensive .get() is skipped entirely; the page logic is unchanged.
+class _CachedResp:
+    def __init__(self, status_code, json_data):
+        self.status_code = status_code
+        self._json = json_data
+    def get_json(self):
+        return self._json
+
+_INTERNAL_GET_CACHE: dict = {}
+_INTERNAL_GET_TTL = 90
+
+def _cached_internal_get(path, client, ttl=_INTERNAL_GET_TTL):
+    import time as _t
+    now = _t.time()
+    hit = _INTERNAL_GET_CACHE.get(path)
+    if hit and hit[0] > now:
+        return hit[1]
+    try:
+        rv = client.get(path)
+        try:
+            jd = rv.get_json()
+        except Exception:
+            jd = None
+        resp = _CachedResp(rv.status_code, jd)
+    except Exception:
+        resp = _CachedResp(0, None)
+    _INTERNAL_GET_CACHE[path] = (now + ttl, resp)
+    return resp
+
+
 @brain_v2_public_bp.route("/brain", methods=["GET"])
 def brain_page():
     state = _get_state()
@@ -295,7 +329,7 @@ def brain_page():
     try:
         from flask import current_app
         with current_app.test_client() as _client:
-            _r = _client.get("/api/v1/brain/self-assessment")
+            _r = _cached_internal_get("/api/v1/brain/self-assessment", _client)
             if _r.status_code == 200:
                 _sa = _r.get_json() or {}
                 _grade = _sa.get("grade", "I")
@@ -371,7 +405,7 @@ def brain_page():
     try:
         from flask import current_app
         with current_app.test_client() as _client:
-            _rv = _client.get("/api/v1/brain/value-shipped")
+            _rv = _cached_internal_get("/api/v1/brain/value-shipped", _client)
             if _rv.status_code == 200:
                 _vs = _rv.get_json() or {}
                 _vd = _vs.get("verdict", "silent")
@@ -446,7 +480,7 @@ def brain_page():
     try:
         from flask import current_app
         with current_app.test_client() as _client:
-            _ri = _client.get("/api/v1/sentinel/page-integrity")
+            _ri = _cached_internal_get("/api/v1/sentinel/page-integrity", _client)
             if _ri.status_code == 200:
                 _ig = _ri.get_json() or {}
                 _isc = float(_ig.get("site_score") or 0)
@@ -512,7 +546,7 @@ def brain_page():
     try:
         from flask import current_app
         with current_app.test_client() as _client:
-            _rlc = _client.get("/api/v1/brain/lifecycle/findings")
+            _rlc = _cached_internal_get("/api/v1/brain/lifecycle/findings", _client)
             if _rlc.status_code == 200:
                 _lf = _rlc.get_json() or {}
                 _ch = _lf.get("composite_health")
