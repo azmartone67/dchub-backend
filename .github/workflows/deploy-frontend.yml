@@ -12,17 +12,17 @@
 name: Deploy frontend to Cloudflare Pages
 
 on:
-  # Run on every push to main, not just dchub-frontend/** changes. The
-  # paths-filter caused recurring "I shipped it but prod is stale" pain:
-  # any dchub-frontend/ change followed by a backend-only commit would
-  # never re-deploy the frontend, leaving prod behind on whatever the
-  # last frontend-touching commit happened to be. `wrangler pages deploy`
-  # is idempotent (only changed files actually upload — typical run says
-  # "Uploaded 2 files (2399 already uploaded)"), so running on every
-  # main push costs ~1 min of CI per backend-only push and eliminates an
-  # entire deploy-staleness bug class.
-  push:
-    branches: [main]
+  # r43-H (2026-05-28): PUSH TRIGGER DISABLED — this was the endemic flap.
+  # This workflow deploys the ~/dchub-backend/dchub-frontend/ SUBDIR, whose
+  # _worker.js is the stale 4.24.0-switzerland. The CANONICAL frontend is the
+  # standalone ~/dchub-frontend repo (4.34.25), deployed by its OWN
+  # deploy-pages.yml. Running this on every backend push redeployed the stale
+  # worker over the good one — and because the brain/cron commit to THIS repo
+  # constantly, prod flapped continuously: /facilities 404'd and
+  # /transactions + /markets timed out via Cloudflare while the backend itself
+  # was healthy. Manual-only now (workflow_dispatch). Do NOT re-enable the push
+  # trigger until the subdir worker is synced to the canonical version.
+  # See memory reference_dchub_prod_alias_pin / reference_dchub_cf_pages_flap_*.
   workflow_dispatch:
     inputs:
       project_name:
