@@ -485,6 +485,12 @@ def market_short_html(slug):
                         guard = ("AND (country='US' OR country='USA' "
                                  "OR country IS NULL OR country='')")
                         with c2.cursor() as cur:
+                            # NOTE: the `status ILIKE %s` placeholder sits in
+                            # the SELECT (textually BEFORE the WHERE city/state
+                            # placeholders), so psycopg2 binds it FIRST — the
+                            # construction pattern must lead the params list,
+                            # not trail it. (RAILWAY_EXCLUSION uses %% literals,
+                            # no placeholders.)
                             cur.execute(f"""
                                 SELECT COUNT(*),
                                        COALESCE(SUM(power_mw),0),
@@ -492,7 +498,7 @@ def market_short_html(slug):
                                                          THEN power_mw ELSE 0 END),0)
                                   FROM discovered_facilities
                                  WHERE ({where}) {guard} {RAILWAY_EXCLUSION}
-                            """, params + ['%construction%'])
+                            """, ['%construction%'] + params)
                             row = cur.fetchone()
                         if row and row[0]:
                             md["num_facilities"] = int(row[0])
