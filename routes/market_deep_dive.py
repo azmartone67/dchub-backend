@@ -480,7 +480,10 @@ def market_short_html(slug):
                             if len(city) == 2 and city.isupper():
                                 conds.append("state = %s"); params.append(city)
                             else:
-                                conds.append("city ILIKE %s"); params.append(f"%{city}%")
+                                # exact match (+ "City, ST" prefix) — NOT
+                                # substring, to avoid reno→Grenoble bleed.
+                                conds.append("(LOWER(city) = LOWER(%s) OR city ILIKE %s)")
+                                params.append(city); params.append(f"{city},%")
                         where = " OR ".join(conds)
                         guard = ("AND (country='US' OR country='USA' "
                                  "OR country IS NULL OR country='')")

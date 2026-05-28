@@ -11696,8 +11696,17 @@ def get_market_stats(market):
                 conditions.append('state = %s')
                 params.append(city)
             else:
-                conditions.append('city ILIKE %s')
-                params.append(f'%{city}%')
+                # r43-H (2026-05-27): was `city ILIKE '%city%'` (substring),
+                # which cross-matched other regions — e.g. "reno" matched
+                # "G­renoble" (France), "phoenix" matched "Phoenixville, PA".
+                # The country guard hid most of it in counts but the
+                # recent-facilities sample leaked foreign cities. Exact
+                # case-insensitive match (same pattern seo_pages.py uses)
+                # plus a "City, ST"-prefix form so we still catch facilities
+                # stored with a trailing state, without the substring bleed.
+                conditions.append('(LOWER(city) = LOWER(%s) OR city ILIKE %s)')
+                params.append(city)
+                params.append(f'{city},%')
 
         where_clause = ' OR '.join(conditions)
         country_guard = "AND (country = 'US' OR country = 'USA' OR country IS NULL OR country = '')"
