@@ -91,6 +91,7 @@ def manifest():
     ], generated_at=datetime.datetime.utcnow().isoformat()+"Z"), 200
 
 
+# AUTO-REPAIR: duplicate route '/research' also in main.py:2719 — review and remove one
 @open_data_bp.route("/research", methods=["GET"])
 def research_landing():
     try:
