@@ -785,3 +785,94 @@ def summary() -> dict:
             for c in REGISTRY
         ],
     }
+
+
+# ── #4 de-noise / triage (r43-H, 2026-05-28) ─────────────────────────────
+# The brain's work-queue mixes fixable CODE bugs with unactionable BUSINESS
+# KPIs (funnel/conversion/dedup) that dominate by count and bury real bugs —
+# the user's "work queue swamped" observation. These functions split findings
+# so "what the brain can fix" is separable from "a metric a human must move."
+
+# Business KPIs — NOT code-fixable (conversion/demand/abuse signals).
+_KPI_TYPES = {
+    "funnel_leak_critical", "funnel_conversion_critical",
+    "trial_to_paid_stagnation", "mcp_conversion_stale_critical",
+    "auto_trial_signal_mint_mismatch", "mcp_funnel_concentration_top5",
+    "mcp_demand_gap_unaddressed", "addressable_demand_unconverted",
+    "operator_profile_gap", "social_publish_silent_failure",
+    "enterprise_bot_present", "privacy_traffic_share_high",
+    "hosting_traffic_share_high", "suspicious_admin_scan",
+}
+# Data freshness / ingestion — auto-recoverable via brain_autopilot REFRESH_MAP.
+_DATA_TYPES = {"data_freshness_sla_breach", "dedup_backlog_large"}
+# Platform / deploy — needs a dashboard action or an infra auto-heal
+# (e.g. the worker-drift guard), not a code PR.
+_INFRA_TYPES = {
+    "cf_pages_deploy_stuck", "render_pipeline_blocked", "render_flapping",
+    "cf_worker_version_drift", "slow_request_ratio", "slow_route_p95",
+    "site_url_unreachable", "site_url_unhealthy", "site_sentinel_unhealthy",
+    "site_url_empty_body", "site_url_error_in_body", "land_power_endpoint_5xx",
+    "land_power_endpoint_unreachable", "neon_replication_paging",
+}
+
+
+def classify_finding_type(ftype: str, text: str = "") -> str:
+    """Bucket a finding into: business_kpi | data | infra | code_bug |
+    unknown. 'code_bug' = matches a registered ErrorClass with a code
+    remediation (the gated-auto-fix candidates). `text` is the full label —
+    used for the regex fallback when the type token alone isn't decisive
+    (e.g. a raw log line like 'operator does not exist: text = integer')."""
+    t = (ftype or "").strip().lower()
+    if t in _KPI_TYPES:
+        return "business_kpi"
+    if t in _DATA_TYPES:
+        return "data"
+    if t in _INFRA_TYPES:
+        return "infra"
+    if any(c.id == t for c in REGISTRY):
+        return "code_bug"
+    return "code_bug" if (match(t) or match(text)) else "unknown"
+
+
+def _finding_type_of(label: str) -> str:
+    """Leading 'type:' token of a finding label —
+    'funnel_leak_critical: paywall…' -> 'funnel_leak_critical'."""
+    return (label or "").split(":", 1)[0].strip()
+
+
+def triage_findings(findings_map: dict) -> dict:
+    """Split the merged {url: {label: count}} work-queue into actionable
+    buckets. code_bug entries are enriched with their matched ErrorClass
+    (recipe + shipped_proof + auto_fixable flag). De-noise (#4)."""
+    buckets = {"code_bug": [], "infra": [], "data": [], "business_kpi": [], "unknown": []}
+    for url, labels in (findings_map or {}).items():
+        if not isinstance(labels, dict):
+            continue
+        for label, count in labels.items():
+            ftype = _finding_type_of(label)
+            cat = classify_finding_type(ftype, label)
+            entry = {"url": url, "type": ftype, "label": label, "count": count}
+            if cat == "code_bug":
+                ec = next((c for c in REGISTRY if c.id == ftype), None) or match(label) or match(ftype)
+                if ec:
+                    entry.update({
+                        "error_class": ec.id,
+                        "fix_template": ec.fix_template,
+                        "confidence": ec.confidence,
+                        "shipped_proof": ec.shipped_proof,
+                        # gated auto-fix candidate: proven (shipped) + high confidence
+                        "auto_fixable": bool(ec.shipped_proof and ec.confidence >= 0.9),
+                    })
+            buckets[cat].append(entry)
+    counts = {k: len(v) for k, v in buckets.items()}
+    return {
+        "buckets": buckets,
+        "counts": counts,
+        "actionable_now": buckets["code_bug"] + buckets["infra"],
+        "auto_fixable": [e for e in buckets["code_bug"] if e.get("auto_fixable")],
+        "summary": (
+            f"{counts['code_bug']} code-bug + {counts['infra']} infra findings are "
+            f"actionable; {counts['business_kpi']} business-KPI findings are signals "
+            f"(not code-fixable); {counts['data']} data-freshness (auto-recovered)."
+        ),
+    }
