@@ -242,7 +242,7 @@ h1 .grad{background:var(--gradient);-webkit-background-clip:text;background-clip
 # r43-H (2026-05-28): /brain made 4 sequential in-process sub-requests
 # (self-assessment, value-shipped, page-integrity, lifecycle/findings), each
 # expensive, stacking to ~16s p95 (the latency tracker flagged it). It's a
-# dashboard — 90s-stale is fine — so memoize each sub-call by path. On a cache
+# dashboard — a few minutes stale is fine — so memoize each sub-call by path. On a cache
 # hit the expensive .get() is skipped entirely; the page logic is unchanged.
 class _CachedResp:
     def __init__(self, status_code, json_data):
@@ -252,7 +252,7 @@ class _CachedResp:
         return self._json
 
 _INTERNAL_GET_CACHE: dict = {}
-_INTERNAL_GET_TTL = 90
+_INTERNAL_GET_TTL = 300   # 5 min — /brain's data barely changes; 90s re-cooled before the next visit
 
 def _cached_internal_get(path, client, ttl=_INTERNAL_GET_TTL):
     import time as _t
