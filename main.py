@@ -9701,6 +9701,14 @@ def stripe_webhook():
 
     global last_webhook_time, last_webhook_status
 
+    # r43-H (2026-05-27): track whether the checkout handler failed so we
+    # can return 500 at the end → Stripe retries (handler is idempotent
+    # via ON CONFLICT). Previously the webhook always returned 200 even
+    # when the handler crashed, so a transient DB blip permanently lost
+    # the upgrade. A paying customer with no account is far worse than a
+    # few Stripe retries.
+    _checkout_handler_failed = False
+
     if event_type == 'checkout.session.completed':
         try:
             handle_checkout_completed(data)
@@ -9833,6 +9841,9 @@ def stripe_webhook():
 
             last_webhook_time = datetime.utcnow().isoformat() + 'Z'
             last_webhook_status = 'error'
+            # r43-H: signal the end-of-function return to send 500 so
+            # Stripe retries this event (idempotent handler).
+            _checkout_handler_failed = True
 
             c_email = (
                 data.get('customer_email') or
@@ -9895,13 +9906,22 @@ def stripe_webhook():
         last_webhook_time = datetime.utcnow().isoformat() + 'Z'
         last_webhook_status = 'ok_unknown_type'
 
-    # Count as "ok" only if no errored branch incremented (which would
-    # have left errored == received). Keep the math simple: ok =
-    # received - errored. The endpoint always returns 200 either way
-    # so Stripe doesn't retry (handler errors are OUR problem; they're
-    # already logged + counted; making Stripe retry won't help).
     if _evt_bucket["errored"] < _evt_bucket["received"]:
         _evt_bucket["ok"] = _evt_bucket["received"] - _evt_bucket["errored"]
+
+    # r43-H (2026-05-27): if the checkout.session.completed handler
+    # crashed, return 500 so Stripe RETRIES the event. The handler is
+    # idempotent (users + api_keys use ON CONFLICT), so a retry after a
+    # transient DB/Neon cold-start failure safely completes the upgrade
+    # that would otherwise be lost forever. We scope this to checkout
+    # only — subscription.* handlers stay 200 (they're best-effort tier
+    # syncs, not the make-or-break account-provisioning path). Stripe
+    # caps retries with exponential backoff over ~3 days and the admin
+    # alert already fired, so a persistent bug surfaces loudly rather
+    # than silently dropping a paying customer.
+    if _checkout_handler_failed:
+        return jsonify({'received': False, 'error': 'handler_failed_will_retry'}), 500
+
     return jsonify({'received': True})
 
 
@@ -10275,8 +10295,34 @@ def stripe_webhook_test():
 # The canonical version lives in routes/public_endpoints.py via public_bp
 # and is registered in the blueprint init block — same data, cleaner pattern.
 
-def send_welcome_email_sendgrid(to_email, raw_api_key, plan_name='pro', temp_password=None):
-    """Send welcome email with API key (and login password for new accounts) via SendGrid"""
+def _log_welcome_email(to_email, plan_name, status):
+    """r43-H: record a welcome-email send attempt + outcome so the daily
+    paid-account audit can reconcile (catch customers whose welcome email
+    never sent). Best-effort: never raises, auto-creates the table."""
+    try:
+        _pg_execute("""
+            CREATE TABLE IF NOT EXISTS welcome_email_log (
+                id SERIAL PRIMARY KEY,
+                email TEXT NOT NULL,
+                plan TEXT,
+                status TEXT NOT NULL,
+                attempted_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
+            )
+        """)
+        _pg_execute(
+            "INSERT INTO welcome_email_log (email, plan, status) VALUES (%s, %s, %s)",
+            (to_email, plan_name, status))
+    except Exception as _e:
+        print(f"⚠️ _log_welcome_email failed (non-fatal): {_e}")
+
+
+def send_welcome_email_sendgrid(to_email, raw_api_key, plan_name='pro', temp_password=None, reset_url=None):
+    """Send welcome email with API key (and login password for new accounts) via SendGrid.
+
+    r43-H: reset_url is a 72h self-serve "set your password" link. When
+    present it's shown as the PRIMARY login CTA so a lost/spam-filtered
+    temp_password never strands the customer.
+    """
     import threading
     def _send():
         try:
@@ -10296,6 +10342,8 @@ def send_welcome_email_sendgrid(to_email, raw_api_key, plan_name='pro', temp_pas
                         f'<p><b>API key (deliver to customer):</b> <code>{raw_api_key}</code></p>'
                         f'<p><b>Temp password (deliver to customer):</b> '
                         f'<code>{temp_password or "(none — existing account)"}</code></p>'
+                        f'<p><b>Set-password link (72h):</b> '
+                        f'<code>{reset_url or "(none)"}</code></p>'
                         f'<p><b>Why:</b> SENDGRID_API_KEY env var missing in Railway. '
                         f'The customer paid but the welcome email never sent.</p>'
                         f'<p><b>Next step:</b> Send the customer the values above by '
@@ -10303,6 +10351,9 @@ def send_welcome_email_sendgrid(to_email, raw_api_key, plan_name='pro', temp_pas
                     )
                 except Exception as _ae:
                     print(f"⚠️ Admin alert ALSO failed: {_ae}")
+                # r43-H: record the failed attempt so the daily audit +
+                # reconciliation can see this customer never got their email.
+                _log_welcome_email(to_email, plan_name, status='failed_no_sendgrid_key')
                 return
             from sendgrid import SendGridAPIClient
             from sendgrid.helpers.mail import Mail, Email, To, Content, HtmlContent
@@ -10311,7 +10362,27 @@ def send_welcome_email_sendgrid(to_email, raw_api_key, plan_name='pro', temp_pas
             subject = f"Welcome to DC Hub {plan_display} - Your API Key Inside"
 
             password_section = ""
-            if temp_password:
+            if reset_url:
+                # r43-H: lead with a "set your own password" link — the
+                # most reliable path. Show the temp password underneath
+                # as a fallback so both routes work.
+                _temp_pw_fallback = ""
+                if temp_password:
+                    _temp_pw_fallback = f"""
+    <p style="font-size:14px; color:#6a6a7a; margin-top:16px;">Prefer to use a temporary password instead? Sign in with the email above and this one-time password, then change it in settings:</p>
+    <div class="key-box">
+      <div class="key-label">Temporary Password</div>
+      {temp_password}
+    </div>"""
+                password_section = f"""
+    <h2 style="margin-top: 32px;">Set Your Password</h2>
+    <p>Your account email is <strong>{to_email}</strong>. Click below to choose a password and sign in (link valid for 72 hours):</p>
+    <p style="text-align:center;">
+      <a href="{reset_url}" class="cta">Set Your Password &amp; Sign In →</a>
+    </p>
+    {_temp_pw_fallback}
+"""
+            elif temp_password:
                 password_section = f"""
     <h2 style="margin-top: 32px;">Your Login Credentials</h2>
     <p>Use these to sign in at <a href="https://dchub.cloud/dashboard" style="color: #00d4ff;">dchub.cloud/dashboard</a>:</p>
@@ -10392,7 +10463,7 @@ p {{ font-size: 16px; color: #4a4a5a; margin-bottom: 16px; line-height: 1.6; }}
 
     <p>Or search for facilities near a location:</p>
     <div class="code">curl -H "X-API-Key: {raw_api_key}" \\
-  https://dchub.cloud/api/v1/facilities%scountry=US&amp;limit=10</div>
+  https://dchub.cloud/api/v1/facilities?country=US&amp;limit=10</div>
 
     <p style="text-align: center;">
       <a href="https://dchub.cloud/dashboard" class="cta">Go to Your Dashboard →</a>
@@ -10422,8 +10493,27 @@ p {{ font-size: 16px; color: #4a4a5a; margin-bottom: 16px; line-height: 1.6; }}
             sg = SendGridAPIClient(sg_key)
             response = sg.send(message)
             print(f"📧 Welcome email sent to {to_email} CC jonathan@dchub.cloud (status: {response.status_code})")
+            # r43-H: record outcome so the daily audit can reconcile.
+            _ok = 200 <= int(getattr(response, 'status_code', 0) or 0) < 300
+            _log_welcome_email(to_email, plan_name,
+                               status=('sent' if _ok else f'sendgrid_{response.status_code}'))
         except Exception as e:
             print(f"❌ Welcome email failed for {to_email}: {e}")
+            # r43-H: a hard send failure means a paying customer may not
+            # have their credentials. Record it + alert so we can recover.
+            _log_welcome_email(to_email, plan_name, status=f'exception:{str(e)[:80]}')
+            try:
+                send_admin_alert_email(
+                    f'🚨 Welcome email FAILED to send to {to_email}',
+                    f'<p>SendGrid threw on welcome email for paying customer '
+                    f'<b>{to_email}</b> ({plan_name}).</p>'
+                    f'<p><b>API key:</b> <code>{raw_api_key}</code></p>'
+                    f'<p><b>Set-password link (72h):</b> <code>{reset_url or "(none)"}</code></p>'
+                    f'<p><b>Error:</b> {str(e)}</p>'
+                    f'<p>Deliver the link/key to the customer by hand.</p>'
+                )
+            except Exception:
+                pass
     threading.Thread(target=_send, daemon=True).start()
 
 def send_free_welcome_email_sendgrid(to_email, name=''):
@@ -10798,7 +10888,30 @@ def handle_checkout_completed(session):
             print(f"✨ Created new user account for {customer_email} (id: {new_user_id})")
             print(f"🔑 Generated {plan_name} API key: {key_prefix}...")
 
-            send_welcome_email_sendgrid(customer_email, raw_key, plan_name, temp_password=temp_password)
+            # r43-H (2026-05-27): self-serve recovery path. The temp_password
+            # above is only ever delivered via the welcome email — if that
+            # email is filtered to spam or never arrives, the customer is
+            # locked out with no way to recover (the Carl Braun lockout).
+            # Mint a 72h password-reset token now and pass the link to the
+            # welcome email so the customer can ALWAYS set their own
+            # password, even if they never see / lose the temp password.
+            reset_url = None
+            try:
+                _reset_token = sec.token_urlsafe(32)
+                _reset_expires = (datetime.utcnow() + timedelta(hours=72)).isoformat()
+                _pg_execute(
+                    "UPDATE password_reset_tokens SET used = TRUE WHERE user_email = %s AND used = FALSE",
+                    (customer_email,))
+                _pg_execute(
+                    "INSERT INTO password_reset_tokens (user_email, token, expires_at) VALUES (%s, %s, %s)",
+                    (customer_email, _reset_token, _reset_expires))
+                reset_url = f"https://dchub.cloud/reset-password.html?token={_reset_token}"
+                print(f"🔗 Set-password link minted for {customer_email} (72h)")
+            except Exception as _rt_err:
+                print(f"⚠️ Could not mint reset token for {customer_email} (non-fatal): {_rt_err}")
+
+            send_welcome_email_sendgrid(customer_email, raw_key, plan_name,
+                                        temp_password=temp_password, reset_url=reset_url)
 
         elif customer_email:
             resolved_user_id = user_id
