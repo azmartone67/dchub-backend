@@ -988,6 +988,42 @@ def brain_error_classes():
         return jsonify({"error": str(e), "total_classes": 0, "classes": []}), 500
 
 
+# #4 de-noise (r43-H, 2026-05-28): split the brain's work-queue into what it
+# can actually FIX (code bugs + infra) vs unactionable business KPIs
+# (funnel/conversion/dedup) that dominate by count. Read-only; merges the same
+# get_last_*_findings() sources /api/v1/heal/findings uses, then classifies.
+@brain_v2_bp.get("/api/v1/brain/findings/triage")
+def brain_findings_triage():
+    """De-noised view of the work-queue. Buckets: code_bug (with matched
+    ErrorClass + auto_fixable flag), infra, data, business_kpi, unknown."""
+    try:
+        from routes.brain_error_classes import triage_findings
+    except Exception as e:
+        return jsonify({"error": f"classifier unavailable: {str(e)[:120]}"}), 500
+    try:
+        import dchub_self_heal as h
+    except Exception as e:
+        return jsonify({"error": f"self-heal module unavailable: {str(e)[:120]}"}), 200
+    merged: dict = {}
+    for fn_name in ("get_last_backend_findings", "get_last_funnel_findings",
+                    "get_last_radar_findings", "get_last_html_findings",
+                    "get_last_qa_findings", "get_last_asset_findings",
+                    "get_last_api_contract_findings"):
+        fn = getattr(h, fn_name, None)
+        if not callable(fn):
+            continue
+        try:
+            raw = fn() or {}
+            for url, labels in raw.items():
+                if isinstance(labels, dict):
+                    merged.setdefault(url, {}).update(labels)
+        except Exception:
+            continue
+    out = triage_findings(merged)
+    out["source_findings"] = sum(len(v) for v in merged.values() if isinstance(v, dict))
+    return jsonify(out)
+
+
 @brain_v2_bp.get("/api/v1/brain/status")
 def brain_status():
     """Public health check — proves the layer is loaded + reports activation.
