@@ -74,9 +74,21 @@ def _fetch_deals(limit: int = 100, offset: int = 0,
             return entry['rows'], entry['total']
 
     c = _conn()
-    if c is None: return [], 0
+    if c is None:
+        # DB unreachable — serve the last-good memo rather than an empty table.
+        stale = _DEALS_MEMO.get('page1') if is_cacheable else None
+        return (stale['rows'], stale['total']) if stale else ([], 0)
     try:
         with c.cursor(cursor_factory=psycopg2.extras.RealDictCursor) as cur:
+            # r43-H (2026-05-28): cap each query at 5s. The deals table is
+            # under write contention (the crawler's INSERTs hit
+            # statement_timeout), and without this cap a slow sort held a
+            # gunicorn worker the full 30s — the request was killed, the 60s
+            # memo never warmed, and /transactions timed out on EVERY load.
+            # The cap frees the worker; the no-ORDER-BY fallback below and the
+            # serve-stale paths cover an aborted query so the page still renders.
+            try: cur.execute("SET statement_timeout = 5000")
+            except Exception: pass
             where_clauses = []
             params: list = []
             if year:
@@ -107,7 +119,7 @@ def _fetch_deals(limit: int = 100, offset: int = 0,
             try:
                 cur.execute(f"""
                     SELECT * FROM deals{where_sql}
-                     ORDER BY COALESCE(date, '1970-01-01') DESC
+                     ORDER BY date DESC NULLS LAST
                      LIMIT %s OFFSET %s
                 """, params + [limit, offset])
                 rows = cur.fetchall()
@@ -127,7 +139,9 @@ def _fetch_deals(limit: int = 100, offset: int = 0,
         return rows, total
     except Exception as e:
         print(f"[transactions_browser] _fetch_deals outer: {e}")
-        return [], 0
+        # serve the last-good memo on any failure so the page still renders
+        stale = _DEALS_MEMO.get('page1') if is_cacheable else None
+        return (stale['rows'], stale['total']) if stale else ([], 0)
     finally:
         try: c.close()
         except Exception: pass
