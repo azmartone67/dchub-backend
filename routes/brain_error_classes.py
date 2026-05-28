@@ -746,6 +746,23 @@ REGISTRY: list[ErrorClass] = [
         shipped_proof="13084e8e",
         notes="Bit /api/v1/sites/<ident>/capacity-report; facilities.id is TEXT, discovered_facilities.id is INT — id::text works for both.",
     ),
+    ErrorClass(
+        id="on_conflict_batch_duplicate",
+        pattern=r"ON CONFLICT DO UPDATE command cannot affect row a second time|cannot affect row a second time",
+        fix_template="dedup_batch_by_conflict_key",
+        description=(
+            "A batched INSERT … ON CONFLICT (key) DO UPDATE (execute_values) had "
+            "TWO rows with the SAME conflict key in ONE command — Postgres raises "
+            "'cannot affect row a second time' and fails the WHOLE batch (e.g. "
+            "deal ingestion: 299 extracted, 0 inserted, 299 errors). FIX: dedup "
+            "the rows by the conflict key before executing — keep one row per key. "
+            "Distinct from on_conflict_target_mismatch (partial-index predicate "
+            "mismatch); this is same-batch duplicate keys."
+        ),
+        confidence=0.9,
+        shipped_proof="3cb03e9c",
+        notes="Hit the ai_deals upsert in deal_ingestion_scheduler.py — the extractor can emit one article twice (matched by two queries).",
+    ),
 ]
 
 
