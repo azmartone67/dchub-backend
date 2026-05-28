@@ -39,7 +39,9 @@ sites_capacity_bp = Blueprint("sites_capacity", __name__)
 
 def _conn():
     import psycopg2
-    return psycopg2.connect(os.environ.get("DATABASE_URL"), connect_timeout=8)
+    c = psycopg2.connect(os.environ.get("DATABASE_URL"), connect_timeout=8)
+    c.autocommit = True   # read-only module — keep each query independent so a
+    return c              # type/missing-column error can't poison the rest.
 
 
 def _norm_slug(s):
@@ -54,33 +56,60 @@ def _as_float(v):
 
 
 def _resolve_site(cur, ident):
-    """Resolve a site by numeric id, slug, or fuzzy name. Returns a row
-    from facilities (or discovered_facilities as fallback)."""
+    """Resolve a site by numeric id, hashed slug (provider-name-<8hex>, the
+    /api/v1/facility URL format), or fuzzy name. Searches BOTH
+    discovered_facilities and facilities.
+
+    r43-H (2026-05-28): the old version did `WHERE id = int(ident)` against
+    facilities, whose id is TEXT → 'operator does not exist: text = integer',
+    which aborted the (non-autocommit) transaction and broke the whole report.
+    It also only searched `facilities` for slugs/names and had no handler for
+    the hashed-slug format, so /sites/<slug> always 404'd. Now: compare with
+    `id::text` (never type-errors), add the LEFT(MD5(id::text),8) slug match
+    that /api/v1/facility uses, and fall back to a reduced column set if a
+    table lacks source/first_seen."""
     cols = ("id, name, provider, city, state, country, latitude, longitude, "
             "status, power_mw, source, first_seen")
+    safe_cols = ("id, name, provider, city, state, country, latitude, longitude, "
+                 "status, power_mw, NULL AS source, NULL AS first_seen")
+    tables = ("discovered_facilities", "facilities")
+    s = str(ident).strip()
 
-    if str(ident).isdigit():
-        cur.execute(f"SELECT {cols} FROM facilities WHERE id = %s", (int(ident),))
-        row = cur.fetchone()
-        if row:
-            return row, 'facilities'
-        cur.execute(f"SELECT {cols} FROM discovered_facilities WHERE id = %s",
-                    (int(ident),))
-        row = cur.fetchone()
-        if row:
-            return row, 'discovered_facilities'
+    def _q(tbl, where, params):
+        for cset in (cols, safe_cols):
+            try:
+                cur.execute(f"SELECT {cset} FROM {tbl} WHERE {where} LIMIT 1", params)
+                return cur.fetchone()
+            except Exception:
+                try: cur.connection.rollback()
+                except Exception: pass
+        return None
 
-    # Slug/name fuzzy match — strip hyphens, lowercase, ILIKE.
-    name_q = ident.replace("-", " ").replace("_", " ").strip()
+    # 1) exact id — compare as text so a TEXT or INT id column both work
+    if s.isdigit():
+        for tbl in tables:
+            row = _q(tbl, "id::text = %s", (s,))
+            if row:
+                return row, tbl
+
+    # 2) hashed slug — /api/v1/facility builds slugs ending in LEFT(MD5(id::text),8)
+    tail = s.rsplit("-", 1)[-1].lower()
+    if len(tail) == 8 and all(ch in "0123456789abcdef" for ch in tail):
+        for tbl in tables:
+            row = _q(tbl, "LEFT(MD5(id::text), 8) = %s", (tail,))
+            if row:
+                return row, tbl
+
+    # 3) fuzzy name match — strip hyphens and any trailing 8-hex id token
+    name_q = s.replace("-", " ").replace("_", " ").strip()
+    parts = name_q.split()
+    if parts and len(parts[-1]) == 8 and all(ch in "0123456789abcdef" for ch in parts[-1].lower()):
+        name_q = " ".join(parts[:-1]).strip()
     if name_q:
-        cur.execute(
-            f"SELECT {cols} FROM facilities "
-            f"WHERE LOWER(name) ILIKE %s "
-            f"ORDER BY power_mw DESC NULLS LAST LIMIT 1",
-            (f"%{name_q.lower()}%",))
-        row = cur.fetchone()
-        if row:
-            return row, 'facilities'
+        for tbl in tables:
+            row = _q(tbl, "LOWER(name) ILIKE %s ORDER BY power_mw DESC NULLS LAST", (f"%{name_q.lower()}%",))
+            if row:
+                return row, tbl
     return None, None
 
 
