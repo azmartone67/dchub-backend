@@ -48,24 +48,37 @@ def init_autopilot_routes(require_plan, require_auth, get_db,
 
 # ── Lazy decorator wrappers ────────────────────────────────────
 def _plan(level):
+    """r43-F (2026-05-27): FAIL-CLOSED. See deals_routes._lazy_require_plan.
+    Operator audit found this decorator was no-op'ing when _require_plan
+    wasn't injected, leaving every auto_pilot endpoint wide open."""
     def decorator(f):
         from functools import wraps
         @wraps(f)
         def wrapper(*a, **kw):
             if _require_plan:
                 return _require_plan(level)(f)(*a, **kw)
-            return f(*a, **kw)
+            from flask import jsonify as _j, current_app as _ca
+            try: _ca.logger.error(
+                f"[GATE LEAK] auto_pilot._require_plan({level}) not wired for {f.__name__}")
+            except Exception: pass
+            return _j(ok=False, error="gate_not_wired", required_plan=level,
+                      hint=f"This endpoint requires {level} tier."), 503
         return wrapper
     return decorator
 
 
 def _auth(f):
+    """r43-F: FAIL-CLOSED auth wrapper."""
     from functools import wraps
     @wraps(f)
     def wrapper(*a, **kw):
         if _require_auth:
             return _require_auth(f)(*a, **kw)
-        return f(*a, **kw)
+        from flask import jsonify as _j, current_app as _ca
+        try: _ca.logger.error(
+            f"[GATE LEAK] auto_pilot._require_auth not wired for {f.__name__}")
+        except Exception: pass
+        return _j(ok=False, error="auth_gate_not_wired"), 503
     return wrapper
 
 
@@ -295,16 +308,19 @@ def autopilot_status():
 
 @autopilot_bp.route('/api/autopilot/stats')
 def autopilot_stats():
-    """Get auto-discovery statistics"""
-    try:
-        if _require_plan:
-            check = _require_plan('enterprise')(lambda: None)
-            # Will raise/return 403 if not enterprise
-    except:
-        pass
-    if not _discovery_engine:
-        return jsonify({'error': 'Auto-pilot not initialized'}), 503
-    return jsonify(_discovery_engine.get_stats())
+    """Get auto-discovery statistics. r43-F: FAIL-CLOSED — was a no-op
+    in the try/except. Enterprise tier required."""
+    if _require_plan:
+        # Properly invoke the decorator so the gate runs
+        @_require_plan('enterprise')
+        def _gated():
+            if not _discovery_engine:
+                return jsonify({'error': 'Auto-pilot not initialized'}), 503
+            return jsonify(_discovery_engine.get_stats())
+        return _gated()
+    # Fail-closed: refuse if gate isn't wired
+    return jsonify(ok=False, error="gate_not_wired",
+                   required_plan="enterprise"), 503
 
 
 @autopilot_bp.route('/api/autopilot/pending')

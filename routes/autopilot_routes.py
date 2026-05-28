@@ -64,13 +64,19 @@ def init_autopilot_routes(require_plan, require_auth, get_db,
 
 # ── Lazy decorator wrappers ────────────────────────────────────
 def _plan(level):
+    """r43-F (2026-05-27): FAIL-CLOSED. See deals_routes pattern."""
     def decorator(f):
         from functools import wraps
         @wraps(f)
         def wrapper(*a, **kw):
             if _require_plan:
                 return _require_plan(level)(f)(*a, **kw)
-            return f(*a, **kw)
+            from flask import jsonify as _j, current_app as _ca
+            try: _ca.logger.error(
+                f"[GATE LEAK] autopilot_routes._require_plan({level}) not wired for {f.__name__}")
+            except Exception: pass
+            return _j(ok=False, error="gate_not_wired", required_plan=level,
+                      hint=f"This endpoint requires {level} tier."), 503
         return wrapper
     return decorator
 
@@ -81,7 +87,12 @@ def _auth(f):
     def wrapper(*a, **kw):
         if _require_auth:
             return _require_auth(f)(*a, **kw)
-        return f(*a, **kw)
+        # r43-F: FAIL-CLOSED on auth too
+        from flask import jsonify as _j, current_app as _ca
+        try: _ca.logger.error(
+            f"[GATE LEAK] autopilot_routes._require_auth not wired for {f.__name__}")
+        except Exception: pass
+        return _j(ok=False, error="auth_gate_not_wired"), 503
     return wrapper
 
 
