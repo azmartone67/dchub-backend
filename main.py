@@ -12933,6 +12933,22 @@ import time as _t_stats
 _STATS_CACHE = {"value": None, "ts": 0}
 _STATS_TTL = 300  # 5min
 
+@app.route('/api/v1/tiers', methods=['GET'])
+def get_tiers():
+    """r43-H: canonical tier registry (single source of truth). Lets the
+    frontend mirror tier ranks/labels/benefits instead of hard-coding
+    them, so the founding==pro rule can't drift per-page again."""
+    try:
+        import tier_registry
+        from flask import jsonify as _j
+        resp = _j({'success': True, **tier_registry.as_public_dict()})
+        resp.headers['Cache-Control'] = 'public, max-age=300'
+        return resp
+    except Exception as e:
+        from flask import jsonify as _j
+        return _j({'success': False, 'error': str(e)}), 500
+
+
 @app.route('/api/v1/stats', methods=['GET'])
 def get_stats():
     """Get aggregate statistics — cached 5min to keep /land-power fast."""
