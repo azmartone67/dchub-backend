@@ -88,6 +88,9 @@ _TIER_RANK = {
     # so it shares pro's rank.
     "FOUNDING":   3,
     "ENTERPRISE": 4,
+    # r43-H (2026-05-28): research_seed (NLR custom institutional contract)
+    # is enterprise-equivalent. Was missing here → require_tier denied NLR.
+    "RESEARCH_SEED": 4,
 }
 
 

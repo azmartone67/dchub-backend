@@ -116,6 +116,7 @@ TIER_RATE_LIMITS = {
     'developer':  1000,
     'pro':        5000,
     'enterprise': 100000,
+    'research_seed': 100000,  # r43-H: NLR custom == enterprise
     'admin':      999999,
 }
 
@@ -131,6 +132,7 @@ TIER_DAILY_RECORD_CAPS = {
     'developer':  500,
     'pro':        5000,
     'enterprise': 999999,
+    'research_seed': 999999,  # r43-H: NLR == enterprise
     'admin':      999999,
 }
 
@@ -144,6 +146,7 @@ TIER_PAGE_CAPS = {
     'developer':  10,
     'pro':        50,
     'enterprise': 999,
+    'research_seed': 999,  # r43-H: NLR == enterprise
     'admin':      999,
 }
 

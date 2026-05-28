@@ -111,6 +111,7 @@ const MCP_TIERS = {
   pro:        { name: 'Pro',        daily_limit: 10000,  results_limit: 500,   fields_truncated: false, export_allowed: true  },
   founding:   { name: 'Founding',   daily_limit: 10000,  results_limit: 500,   fields_truncated: false, export_allowed: true  },  // r43-H: founding==pro
   enterprise: { name: 'Enterprise', daily_limit: 100000, results_limit: 10000, fields_truncated: false, export_allowed: true  },
+  research_seed: { name: 'Research', daily_limit: 100000, results_limit: 10000, fields_truncated: false, export_allowed: true  },  // r43-H: NLR == enterprise
 };
 
 const TRUNCATABLE_TOOLS = new Set([

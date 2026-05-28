@@ -49,6 +49,7 @@ TIER_LIMITS = {
     'pro':        dict(**_PRO),
     'founding':   dict(**_PRO),  # founding == pro benefits
     'enterprise': dict(rate_limit=100000, record_cap=999999, page_cap=999, mcp_daily=100000, mcp_results=10000),
+    'research_seed': dict(rate_limit=100000, record_cap=999999, page_cap=999, mcp_daily=100000, mcp_results=10000),  # NLR == enterprise
     'admin':      dict(rate_limit=999999, record_cap=999999, page_cap=999, mcp_daily=999999, mcp_results=99999),
 }
 
