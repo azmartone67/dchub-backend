@@ -21151,22 +21151,32 @@ def _prewarm_caches():
         return
     base = "http://127.0.0.1:8080"
     H = {"User-Agent": "DCHub-Prewarm/1.0"}
+    # User-facing PAGES + their backing APIs first (what a human or the
+    # dashboard actually hits), then the grid API. The earlier version warmed
+    # grid first and sequentially — the slow cold grid fetches (~150s total)
+    # meant a visitor could still hit a cold /brain or /dcpi. Now: pages first,
+    # in a small parallel pool, so the whole set is hot within ~30s.
     paths = (
-        [f"/api/v1/grid/intelligence/{iso}" for iso in
-         ("ERCOT", "PJM", "CAISO", "MISO", "NYISO", "SPP", "ISONE")]
+        ["/brain", "/transactions", "/api/v1/markets/list"]
         + [f"/dcpi/{s}" for s in
            ("ashburn", "dallas", "atlanta", "chicago", "phoenix", "reno")]
-        + ["/brain", "/transactions"]
+        + [f"/api/v1/grid/intelligence/{iso}" for iso in
+           ("ERCOT", "PJM", "CAISO", "MISO", "NYISO", "SPP", "ISONE")]
     )
-    warmed = 0
-    for p in paths:
+    def _hit(p):
         try:
-            r = _rq.get(base + p, headers=H, timeout=25)
-            if getattr(r, "ok", False):
-                warmed += 1
+            r = _rq.get(base + p, headers=H, timeout=30)
+            return 1 if getattr(r, "ok", False) else 0
         except Exception:
-            pass
-        time.sleep(2)  # space out — never thundering-herd our own single replica
+            return 0
+    warmed = 0
+    try:
+        from concurrent.futures import ThreadPoolExecutor
+        with ThreadPoolExecutor(max_workers=3) as ex:   # gentle on the single replica
+            warmed = sum(ex.map(_hit, paths))
+    except Exception:
+        for p in paths:
+            warmed += _hit(p)
     logger.info("🔥 Cache pre-warm: %d/%d hot routes warmed", warmed, len(paths))
 
 if IS_RAILWAY:
