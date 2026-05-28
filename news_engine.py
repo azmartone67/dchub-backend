@@ -403,7 +403,7 @@ def update_feed_health(url, name, success, article_count=0, db_path=NEWS_DB_PATH
 def fetch_google_news(query, max_results=20):
     articles = []
     try:
-        url = f"https://news.google.com/rss/search%sq={quote_plus(query)}&hl=en-US&gl=US&ceid=US:en"
+        url = f"https://news.google.com/rss/search?q={quote_plus(query)}&hl=en-US&gl=US&ceid=US:en"
         feed = feedparser.parse(url, agent='Mozilla/5.0 (compatible; DCHub/3.0; +https://dchub.cloud)')
         for entry in feed.entries[:max_results]:
             title = entry.get('title','').strip()

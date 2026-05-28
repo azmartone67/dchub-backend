@@ -1200,8 +1200,8 @@ def register_stripe_v2_routes(app):
                 payment_method_types=['card'],
                 line_items=[{'price': price_id, 'quantity': 1}],
                 mode='subscription',
-                success_url=f'https://dchub.cloud/dashboard.html%spayment=success&plan={plan}',
-                cancel_url='https://dchub.cloud/pricing%spayment=cancelled',
+                success_url=f'https://dchub.cloud/dashboard.html?payment=success&plan={plan}',
+                cancel_url='https://dchub.cloud/pricing?payment=cancelled',
                 metadata={'plan': plan, 'email': email},
                 allow_promotion_codes=True,
             )

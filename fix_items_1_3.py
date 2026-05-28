@@ -290,7 +290,7 @@ def fix_peeringdb_netfac():
     max_pages = 20  # Safety cap: 20K records max
     
     for page in range(max_pages):
-        url = f"https://www.peeringdb.com/api/netfac%slimit={limit}&skip={offset}&depth=0"
+        url = f"https://www.peeringdb.com/api/netfac?limit={limit}&skip={offset}&depth=0"
         print(f"  Page {page+1} (offset={offset})...")
         
         try:

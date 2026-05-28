@@ -137,7 +137,7 @@ class EIA860MIngester:
             # Fallback: try EIA bulk API
             if self.api_key:
                 logger.info("Trying EIA bulk API fallback...")
-                bulk_url = f"https://api.eia.gov/v2/electricity/facility-fuel/data/%sapi_key={self.api_key}&frequency=monthly"
+                bulk_url = f"https://api.eia.gov/v2/electricity/facility-fuel/data/?api_key={self.api_key}&frequency=monthly"
                 # Note: Bulk API returns JSON, different parsing needed
                 raise NotImplementedError(
                     "Bulk API JSON parsing not yet implemented. "

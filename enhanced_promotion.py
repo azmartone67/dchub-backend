@@ -633,7 +633,7 @@ API Documentation: {self.site_url}/api/v1
         # Ping Google (for Gemini)
         try:
             sitemap_url = f"{self.site_url}/sitemap.xml"
-            google_ping = f"https://www.google.com/ping%ssitemap={quote(sitemap_url, safe='')}"
+            google_ping = f"https://www.google.com/ping?sitemap={quote(sitemap_url, safe='')}"
             response = requests.get(google_ping, timeout=10)
             results['google_gemini'] = {'status': 'success' if response.status_code == 200 else 'failed', 'code': response.status_code}
         except Exception as e:
@@ -641,7 +641,7 @@ API Documentation: {self.site_url}/api/v1
         
         # Ping Bing (for Copilot)
         try:
-            bing_ping = f"https://www.bing.com/ping%ssitemap={quote(sitemap_url, safe='')}"
+            bing_ping = f"https://www.bing.com/ping?sitemap={quote(sitemap_url, safe='')}"
             response = requests.get(bing_ping, timeout=10)
             results['bing_copilot'] = {'status': 'success' if response.status_code == 200 else 'failed', 'code': response.status_code}
         except Exception as e:

@@ -523,7 +523,7 @@ def generate_market_post():
     market = random.choice(markets)
 
     try:
-        resp = req.get(f'https://dchub.cloud/api/market-report%smarket={market.replace(" ", "+")}', timeout=15)
+        resp = req.get(f'https://dchub.cloud/api/market-report?market={market.replace(" ", "+")}', timeout=15)
         data = resp.json()
         m = data.get('market', data.get('data', data))
     except Exception as e:

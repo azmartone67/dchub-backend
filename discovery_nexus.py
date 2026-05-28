@@ -1034,7 +1034,7 @@ class CloudsceneSource(BaseSource):
         for region, countries in self.FALLBACK_REGIONS.items():
             for country in countries:
                 try:
-                    url = f"https://cloudscene.com/search%sq={quote_plus(country)}+data+center"
+                    url = f"https://cloudscene.com/search?q={quote_plus(country)}+data+center"
                     resp = self._safe_request(url)
                     if not resp:
                         continue

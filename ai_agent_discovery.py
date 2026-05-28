@@ -175,9 +175,9 @@ DC Hub (dchub.cloud) tracks 21,000+ data center facilities across 170+ countries
 Free API at https://dchub.cloud/api/v1
 
 ## API Endpoints
-- GET /api/v1/facilities%sq={query} - Search facilities
-- GET /api/v1/transactions%slimit={n} - M&A deals
-- GET /api/v1/news%slimit={n}&q={keyword} - Industry news
+- GET /api/v1/facilities?q={query} - Search facilities
+- GET /api/v1/transactions?limit={n} - M&A deals
+- GET /api/v1/news?limit={n}&q={keyword} - Industry news
 - GET /api/site-score%slat={lat}&lon={lon}&state={state} - Site scoring
 - GET /api/grid/fuel-mix%siso={ISO} - Real-time grid data (ERCOT, PJM, CAISO, MISO, SPP, NYISO, ISONE)
 - GET /api/carbon/intensity%sstate={state} - Carbon intensity
@@ -340,7 +340,7 @@ def a2a_task_send():
                         "parts": [{"type": "text", "text": json.dumps({
                             "message": "DC Hub Intelligence Agent ready. Ask about data center facilities, M&A deals, grid data, site scoring, or industry news.",
                             "endpoints": {
-                                "facilities": "/api/v1/facilities%sq={query}",
+                                "facilities": "/api/v1/facilities?q={query}",
                                 "transactions": "/api/v1/transactions",
                                 "news": "/api/v1/news",
                                 "site_score": "/api/site-score%slat={lat}&lon={lon}&state={state}",
@@ -420,26 +420,26 @@ def route_a2a_query(query):
         # M&A / deals
         if any(kw in q_lower for kw in ['deal', 'transaction', 'acquisition', 'm&a', 'merger', 'investment']):
             try:
-                r = req.get(f"{base}/api/v1/transactions%slimit=10", timeout=30)
+                r = req.get(f"{base}/api/v1/transactions?limit=10", timeout=30)
                 if r.ok:
                     return {"type": "transactions", "data": r.json()}
             except:
                 pass
-            return {"type": "guidance", "endpoint": "/api/v1/transactions%slimit=10"}
+            return {"type": "guidance", "endpoint": "/api/v1/transactions?limit=10"}
         
         # News
         if any(kw in q_lower for kw in ['news', 'latest', 'headline', 'announcement', 'update']):
             try:
-                r = req.get(f"{base}/api/v1/news%slimit=10", timeout=30)
+                r = req.get(f"{base}/api/v1/news?limit=10", timeout=30)
                 if r.ok:
                     return {"type": "news", "data": r.json()}
             except:
                 pass
-            return {"type": "guidance", "endpoint": "/api/v1/news%slimit=10"}
+            return {"type": "guidance", "endpoint": "/api/v1/news?limit=10"}
         
         # Default: facility search
         try:
-            r = req.get(f"{base}/api/v1/facilities%sq={query}&limit=10", timeout=30)
+            r = req.get(f"{base}/api/v1/facilities?q={query}&limit=10", timeout=30)
             if r.ok:
                 return {"type": "facilities", "query": query, "data": r.json()}
         except:

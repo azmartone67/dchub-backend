@@ -10815,6 +10815,14 @@ def handle_checkout_completed(session):
         else:
             if payment_link_id:
                 print(f"⚠️ Unknown payment_link ID: '{payment_link_id}' — add to payment_link_plan_map! Falling back to amount detection.")
+            # r43-H (2026-05-27): track whether the amount cleanly matched a
+            # known price. The `else` default below assigns 'pro' to ANY
+            # unrecognized amount — so a currency-converted or promo amount
+            # could silently mis-tier a paying customer (e.g. someone who
+            # paid for enterprise lands on pro). When the match is fuzzy we
+            # still provision (never block the customer) but alert an admin
+            # to verify the tier.
+            _amount_ambiguous = False
             if amount_dollars == 49 or (45 <= amount_dollars <= 55):
                 plan_name, api_tier = 'developer', 'developer'
             elif amount_dollars == 99 or (95 <= amount_dollars <= 105):
@@ -10833,9 +10841,27 @@ def handle_checkout_completed(session):
                 plan_name, api_tier = 'enterprise', 'enterprise'
             elif amount_dollars >= 500:
                 plan_name, api_tier = 'enterprise', 'enterprise'
+                _amount_ambiguous = True  # >=500 but not an exact enterprise price
             else:
                 plan_name, api_tier = 'pro', 'pro'
+                _amount_ambiguous = True  # unrecognized amount → default guess
             print(f"💰 Plan from amount (${amount_dollars}): {plan_name}")
+            if _amount_ambiguous:
+                try:
+                    send_admin_alert_email(
+                        f'⚠️ DC Hub: ambiguous payment amount — verify tier for {customer_email or "unknown"}',
+                        f'<h2>Plan was GUESSED from an unrecognized amount</h2>'
+                        f'<p><b>Email:</b> {customer_email or "(none)"}</p>'
+                        f'<p><b>Amount paid:</b> ${amount_dollars}</p>'
+                        f'<p><b>Assigned tier:</b> {plan_name} (api: {api_tier})</p>'
+                        f'<p><b>Stripe session:</b> {session.get("id", "N/A")}</p>'
+                        f'<p>The amount did not match a known price exactly, so we '
+                        f'defaulted the tier. Verify the customer got the tier they '
+                        f'paid for — if not, fix their plan + add the price to '
+                        f'payment_link_plan_map / the amount table.</p>'
+                    )
+                except Exception:
+                    pass
 
         stripe_cust = session.get('customer', '')
 

@@ -279,6 +279,15 @@ def register_user():
                             max_age=30 * 24 * 60 * 60)
             return resp
     except Exception as e:
+        # r43-H (2026-05-27): the SELECT-then-INSERT above isn't atomic, so
+        # two simultaneous signups with the same email can both pass the
+        # existence check and one hits the email UNIQUE constraint. Detect
+        # that specific case and return the proper 409 instead of a
+        # confusing generic 500 ("Registration failed") that makes the
+        # customer think the service is broken.
+        _msg = str(e).lower()
+        if 'unique' in _msg or 'duplicate' in _msg or 'already exists' in _msg:
+            return jsonify({'error': 'Email already registered'}), 409
         logger.error(f"Registration error: {e}")
         return jsonify({'error': 'Registration failed'}), 500
 

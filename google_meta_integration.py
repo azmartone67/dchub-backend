@@ -283,7 +283,7 @@ def meta_llama_integration():
         "function_calling": {
             "search_datacenters": {
                 "description": "Search for data centers by location or provider",
-                "url": f"{BASE_URL}/api/v1/facilities%ssearch={{query}}"
+                "url": f"{BASE_URL}/api/v1/facilities?search={{query}}"
             },
             "get_deals": {
                 "description": "Get data center M&A deals",

@@ -574,7 +574,7 @@ def _call_google(prompt, max_tokens=1000):
 
     import requests
     r = requests.post(
-        f'https://gateway.ai.cloudflare.com/v1/4bb33ec40ef02f9f4b41dc97668d5a52/dchub/google-ai-studio/v1beta/models/gemini-2.0-flash:generateContent%skey={key}',
+        f'https://gateway.ai.cloudflare.com/v1/4bb33ec40ef02f9f4b41dc97668d5a52/dchub/google-ai-studio/v1beta/models/gemini-2.0-flash:generateContent?key={key}',
         headers={'Content-Type': 'application/json'},
         json={
             'contents': [{'parts': [{'text': f"{SYSTEM_PROMPT}\n\n{prompt}"}]}],

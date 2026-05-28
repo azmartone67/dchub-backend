@@ -149,7 +149,7 @@ def test_railway_health():
 
 def test_railway_neon_data():
     """Verify Railway serves real data from Neon by doing a facility search."""
-    r, ms = timed_get(f"{RAILWAY_DIRECT}/api/v1/facilities%sq=ashburn&limit=2")
+    r, ms = timed_get(f"{RAILWAY_DIRECT}/api/v1/facilities?q=ashburn&limit=2")
     if r.status_code == 200:
         try:
             data = r.json()
@@ -238,7 +238,7 @@ def test_neon_facility_count():
             return "fail", "0 facilities in health response"
 
     # Fallback: use search to estimate
-    r2, _ = timed_get(f"{RAILWAY_DIRECT}/api/v1/facilities%sq=data+center&limit=1")
+    r2, _ = timed_get(f"{RAILWAY_DIRECT}/api/v1/facilities?q=data+center&limit=1")
     if r2.status_code == 200:
         data2 = r2.json()
         total = data2.get("total_matching", 0)
@@ -248,7 +248,7 @@ def test_neon_facility_count():
     return "fail", "Could not verify facility count"
 
 def test_neon_deals():
-    r, ms = timed_get(f"{RAILWAY_DIRECT}/api/v1/deals%slimit=1")
+    r, ms = timed_get(f"{RAILWAY_DIRECT}/api/v1/deals?limit=1")
     if r.status_code == 200:
         try:
             data = r.json()
@@ -261,7 +261,7 @@ def test_neon_deals():
     return "fail", f"HTTP {r.status_code}, {ms}ms"
 
 def test_neon_news():
-    r, ms = timed_get(f"{RAILWAY_DIRECT}/api/v1/news%slimit=1")
+    r, ms = timed_get(f"{RAILWAY_DIRECT}/api/v1/news?limit=1")
     if r.status_code == 200:
         return "pass", f"News accessible, {ms}ms"
     elif r.status_code in [401, 403]:
@@ -272,15 +272,15 @@ def test_neon_consistency():
     """Both backends return data from the same Neon DB."""
     if RUNNING_ON_REPLIT:
         # Can't hit Replit directly, so verify via Worker
-        r1, _ = timed_get(f"{RAILWAY_DIRECT}/api/v1/facilities%sq=equinix&limit=1")
+        r1, _ = timed_get(f"{RAILWAY_DIRECT}/api/v1/facilities?q=equinix&limit=1")
         r2, _ = timed_get(f"{CLOUDFLARE_API}/v1/facilities%sq=equinix&limit=1")
         if r1.status_code == 200 and r2.status_code == 200:
             return "pass", "Railway direct + Worker proxy both return Equinix results"
         return "warn", f"Railway={r1.status_code}, Worker={r2.status_code}"
 
     # If not on Replit, test both backends directly
-    r1, _ = timed_get(f"{RAILWAY_DIRECT}/api/v1/facilities%sq=equinix&limit=1")
-    r2, _ = timed_get(f"{REPLIT_DIRECT}/api/v1/facilities%sq=equinix&limit=1")
+    r1, _ = timed_get(f"{RAILWAY_DIRECT}/api/v1/facilities?q=equinix&limit=1")
+    r2, _ = timed_get(f"{REPLIT_DIRECT}/api/v1/facilities?q=equinix&limit=1")
     if r1.status_code == 200 and r2.status_code == 200:
         return "pass", "Both backends return Equinix results from shared Neon DB"
     return "warn", f"Railway={r1.status_code}, Replit={r2.status_code}"
@@ -328,7 +328,7 @@ def test_provider_diversity():
 
     # Neon verified through Railway data
     try:
-        r, _ = timed_get(f"{RAILWAY_DIRECT}/api/v1/facilities%sq=test&limit=1")
+        r, _ = timed_get(f"{RAILWAY_DIRECT}/api/v1/facilities?q=test&limit=1")
         data = r.json()
         if data.get("total_matching", 0) > 0 or len(data.get("data", [])) > 0:
             providers["Neon PostgreSQL"] = "✓"

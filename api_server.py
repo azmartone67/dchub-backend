@@ -996,8 +996,8 @@ def create_checkout_session():
                 'quantity': 1,
             }],
             mode='subscription',
-            success_url=f'https://dchub.cloud/dashboard.html%spayment=success&plan={plan}',
-            cancel_url='https://dchub.cloud/dashboard.html%spayment=cancelled',
+            success_url=f'https://dchub.cloud/dashboard.html?payment=success&plan={plan}',
+            cancel_url='https://dchub.cloud/dashboard.html?payment=cancelled',
             metadata={
                 'user_id': str(request.user.get('user_id', '')),
                 'plan': plan

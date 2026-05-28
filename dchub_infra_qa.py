@@ -181,7 +181,7 @@ def test_railway_neon_connection():
 
 def test_railway_facility_search():
     """Railway returns facility search results from Neon."""
-    r = get(f"{RAILWAY_DIRECT}/api/v1/facilities%sq=ashburn&limit=3")
+    r = get(f"{RAILWAY_DIRECT}/api/v1/facilities?q=ashburn&limit=3")
     if r.status_code == 200:
         try:
             data = r.json()
@@ -381,8 +381,8 @@ def test_no_single_point_of_failure():
 def test_shared_database():
     """Both backends share the same Neon database."""
     try:
-        r1 = get(f"{RAILWAY_DIRECT}/api/v1/facilities%sq=equinix&limit=1")
-        r2 = get(f"{REPLIT_DIRECT}/api/v1/facilities%sq=equinix&limit=1")
+        r1 = get(f"{RAILWAY_DIRECT}/api/v1/facilities?q=equinix&limit=1")
+        r2 = get(f"{REPLIT_DIRECT}/api/v1/facilities?q=equinix&limit=1")
         if r1.status_code == 200 and r2.status_code == 200:
             # Both should return similar results since they hit the same Neon DB
             return "pass", "Both backends return search results from shared Neon DB"
