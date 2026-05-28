@@ -84,9 +84,16 @@ PLAN_LEVELS = {
     'anon':      -1,         # alias used by some callers
     'free':       0,         # legacy free (no email)
     'identified': 1,         # email-only signup, no card — the "taste" tier
-    'founding':   2,         # Founding members — Pro-equivalent
     'developer':  3,         # $49/mo Developer
     'pro':        4,
+    # r43-H (2026-05-27): founding was ranked 2 — BELOW developer(3) and
+    # pro(4) — despite the "Pro-equivalent" comment. So require_plan('pro')
+    # (level 4) denied every founding member (level 2), and they saw "free"
+    # access despite paying (the Carl Braun report). Founding is sold as
+    # Pro-equivalent and the Stripe webhook maps founding→api_tier 'pro',
+    # so it belongs at the pro level. Placed AFTER pro so the value is
+    # unambiguous.
+    'founding':   4,         # Founding members — Pro-equivalent (was 2: bug)
     'enterprise': 5,
     'research_seed': 5,      # research-institution tier, enterprise-equivalent
     'admin':      99,
