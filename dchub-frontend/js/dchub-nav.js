@@ -163,7 +163,7 @@
     } catch(e) { return 'free'; }
   }
   function planRank(p) {
-    return {free:0,developer:1,pro:2,enterprise:3}[(p||'free').toLowerCase()] || 0;
+    return {free:0,starter:1,developer:1,founding:2,pro:2,enterprise:3}[(p||'free').toLowerCase()] || 0;  // r43-H: founding was missing → free
   }
   function getInitials(user) {
     if (!user || !user.name) return '?';
@@ -234,8 +234,8 @@
     });
 
     // Right side — plan badge + auth
-    var planColors = {free:'#3d4a5c',developer:'#00c8f0',pro:'#00d98a',enterprise:'#9f7afa'};
-    var planLabels = {free:'Free',developer:'Developer',pro:'Pro',enterprise:'Enterprise'};
+    var planColors = {free:'#3d4a5c',starter:'#00c8f0',developer:'#00c8f0',pro:'#00d98a',founding:'#f5c451',enterprise:'#9f7afa'};
+    var planLabels = {free:'Free',starter:'Starter',developer:'Developer',pro:'Pro',founding:'Founding',enterprise:'Enterprise'};
     var planColor = planColors[plan] || planColors.free;
     var planLabel = planLabels[plan] || 'Free';
 
