@@ -65,7 +65,8 @@ def check_paid_health():
             cur.execute("""
                 SELECT id, email, name, plan, created_at, password_hash, google_id
                 FROM users
-                WHERE LOWER(plan) IN ('developer', 'pro', 'enterprise', 'founding')
+                WHERE LOWER(plan) IN ('starter', 'developer', 'pro', 'enterprise',
+                                      'founding', 'research_seed')
                 ORDER BY created_at DESC NULLS LAST
             """)
             users = cur.fetchall()
