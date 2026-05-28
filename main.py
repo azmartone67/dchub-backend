@@ -2956,13 +2956,17 @@ def brain_route_latency():
             "max_s": round(e["max"], 3),
         })
     rows.sort(key=lambda r: (r["p95_s"] or 0), reverse=True)
-    candidates = [r for r in rows if (r["p95_s"] or 0) >= 2.0]
+    # Candidates = SUSTAINED slow routes (>=5 samples) so one-off background
+    # jobs (/api/jobs/*, n=1 deep reports) don't masquerade as hot-path
+    # regressions. The full ranked list stays in `slowest` for visibility.
+    candidates = [r for r in rows if (r["p95_s"] or 0) >= 2.0 and r["samples"] >= 5]
     return jsonify({
         "tracked_routes": len(rows),
         "slowest": rows[:25],
         "optimization_candidates": candidates,
-        "note": ("p95>=2s routes are candidates for caching / pagination / "
-                 "background tasks. In-memory per-replica, rolling 200-sample window."),
+        "note": ("Candidates = p95>=2s AND >=5 samples (sustained, not one-off "
+                 "jobs) — fix via caching / pagination / background tasks. "
+                 "In-memory per-replica, rolling 200-sample window."),
     })
 
 
