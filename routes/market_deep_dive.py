@@ -459,6 +459,53 @@ def market_short_html(slug):
         # haven't yet pulled rich data. Better than 404 for SEO + QA.
         md = {"region": "—", "inventory_mw": "—", "vacancy_rate": "—",
               "avg_asking_rate": "—", "num_facilities": "—"}
+        # r43-H (2026-05-27): an all-"—" page looks broken (user reported
+        # /markets/reno). MARKET_DATA only covers curated major markets, but
+        # the live discovered_facilities table has real counts for smaller
+        # ones like Reno. Pull facility count + capacity from the DB using
+        # the SAME MARKET_ALIASES + US country-guard the authoritative
+        # /api/v1/markets/<m> endpoint uses (the country guard is what keeps
+        # 'Reno' from matching 'Grenoble' etc. in the count). Research-only
+        # metrics (vacancy, asking rate, YoY) stay "—" when we genuinely
+        # lack CBRE/JLL coverage for the market.
+        try:
+            from main import MARKET_ALIASES, RAILWAY_EXCLUSION
+            cities = MARKET_ALIASES.get(slug_norm.replace('-', ' '))
+            if cities:
+                c2 = _conn()
+                if c2 is not None:
+                    try:
+                        conds, params = [], []
+                        for city in cities:
+                            if len(city) == 2 and city.isupper():
+                                conds.append("state = %s"); params.append(city)
+                            else:
+                                conds.append("city ILIKE %s"); params.append(f"%{city}%")
+                        where = " OR ".join(conds)
+                        guard = ("AND (country='US' OR country='USA' "
+                                 "OR country IS NULL OR country='')")
+                        with c2.cursor() as cur:
+                            cur.execute(f"""
+                                SELECT COUNT(*),
+                                       COALESCE(SUM(power_mw),0),
+                                       COALESCE(SUM(CASE WHEN status ILIKE %s
+                                                         THEN power_mw ELSE 0 END),0)
+                                  FROM discovered_facilities
+                                 WHERE ({where}) {guard} {RAILWAY_EXCLUSION}
+                            """, params + ['%construction%'])
+                            row = cur.fetchone()
+                        if row and row[0]:
+                            md["num_facilities"] = int(row[0])
+                            if row[1]:
+                                md["inventory_mw"] = round(float(row[1]))
+                            if row[2]:
+                                md["under_construction_mw"] = round(float(row[2]))
+                            md["region"] = "North America"
+                    finally:
+                        try: c2.close()
+                        except Exception: pass
+        except Exception:
+            pass
 
     highlights_html = ""
     hl = md.get("highlights") or []
