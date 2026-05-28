@@ -83,49 +83,60 @@ def check_paid_health():
                     )
 
                 # ─── Pending pwd reset about to expire ────────────────
-                cur.execute("""
-                    SELECT token, expires_at
-                    FROM password_reset_tokens
-                    WHERE user_email = %s AND used = FALSE
-                      AND expires_at > NOW()
-                    ORDER BY expires_at DESC LIMIT 1
-                """, (email,))
-                pwt = cur.fetchone()
-                if pwt:
-                    exp_at = pwt[1]
-                    if isinstance(exp_at, str):
-                        try:
-                            exp_at = datetime.fromisoformat(exp_at.replace('Z', ''))
-                        except Exception:
-                            exp_at = None
-                    if exp_at and exp_at < (datetime.utcnow() + timedelta(hours=2)):
-                        problems.append(
-                            f'reset_token_expiring_soon (in '
-                            f'{int((exp_at - datetime.utcnow()).total_seconds() / 60)}min) — '
-                            f'send a fresh link before it expires'
-                        )
-
-                # ─── API key present? (paid customers should have one) ─
                 try:
+                    cur.execute("SAVEPOINT sp_pwt")
                     cur.execute("""
-                        SELECT count(*) FROM api_keys
-                        WHERE email = %s AND (revoked IS NULL OR revoked = FALSE)
+                        SELECT token, expires_at
+                        FROM password_reset_tokens
+                        WHERE user_email = %s AND used = FALSE
+                          AND expires_at > NOW()
+                        ORDER BY expires_at DESC LIMIT 1
                     """, (email,))
-                    n_keys = (cur.fetchone() or [0])[0]
-                    if n_keys == 0:
-                        problems.append('no_api_key (paid tier without API key — programmatic access broken)')
+                    pwt = cur.fetchone()
+                    cur.execute("RELEASE SAVEPOINT sp_pwt")
+                    if pwt:
+                        exp_at = pwt[1]
+                        if isinstance(exp_at, str):
+                            try:
+                                exp_at = datetime.fromisoformat(exp_at.replace('Z', ''))
+                            except Exception:
+                                exp_at = None
+                        if exp_at and exp_at < (datetime.utcnow() + timedelta(hours=2)):
+                            problems.append(
+                                f'reset_token_expiring_soon (in '
+                                f'{int((exp_at - datetime.utcnow()).total_seconds() / 60)}min) — '
+                                f'send a fresh link before it expires'
+                            )
                 except Exception as _e:
-                    # Table might be named differently — try mcp_dev_keys
                     try:
-                        cur.execute("""
-                            SELECT count(*) FROM mcp_dev_keys
-                            WHERE email = %s
-                        """, (email,))
-                        n_keys = (cur.fetchone() or [0])[0]
-                        if n_keys == 0:
-                            problems.append('no_mcp_dev_key (paid tier — MCP access not provisioned)')
+                        cur.execute("ROLLBACK TO SAVEPOINT sp_pwt")
                     except Exception:
                         pass
+                    logger.warning(f"reset-token check failed for {email}: {_e}")
+
+                # ─── API key present? (paid customers should have one) ─
+                # api_keys is keyed by user_id (NOT email) and uses an
+                # is_active flag (NOT a `revoked` column). A failed query
+                # here aborts the whole transaction in psycopg2, so each
+                # sub-check runs inside its own SAVEPOINT and rolls back
+                # to it on error — that way one schema mismatch can't
+                # poison the rest of the audit loop.
+                try:
+                    cur.execute("SAVEPOINT sp_keys")
+                    cur.execute("""
+                        SELECT count(*) FROM api_keys
+                        WHERE user_id = %s AND COALESCE(is_active, 1) = 1
+                    """, (user_id,))
+                    n_keys = (cur.fetchone() or [0])[0]
+                    cur.execute("RELEASE SAVEPOINT sp_keys")
+                    if n_keys == 0:
+                        problems.append('no_api_key (paid tier without active API key — programmatic access broken)')
+                except Exception as _e:
+                    try:
+                        cur.execute("ROLLBACK TO SAVEPOINT sp_keys")
+                    except Exception:
+                        pass
+                    logger.warning(f"api_keys check failed for {email}: {_e}")
 
                 if problems:
                     findings.append({
