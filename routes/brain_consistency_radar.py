@@ -8095,7 +8095,7 @@ def _persist_findings_to_db(findings: list[dict]) -> int:
                         INSERT INTO brain_findings
                             (issue, url, count, detail,
                              first_seen, last_seen, seen_count)
-                        VALUES (%s, %s, %s, %s, NOW(), NOW(), 1)
+                        VALUES (%s, %s, %s, %s, NOW() ON CONFLICT DO NOTHING, NOW(), 1)
                         ON CONFLICT (issue, url) DO UPDATE
                            SET count       = EXCLUDED.count,
                                detail      = EXCLUDED.detail,

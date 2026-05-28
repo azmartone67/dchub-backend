@@ -54,6 +54,7 @@ MARKET_ALIASES = {
     'las vegas': ['Las Vegas', 'Henderson', 'NV'],
 }
 
+# AUTO-REPAIR: duplicate route '/api/v1/facilities' also in main.py:13545 — review and remove one
 @app.route('/api/v1/facilities')
 def get_facilities():
     """
@@ -308,6 +309,7 @@ def cleanup_railway_contamination():
 # =====================================================
 # FIX 4: IMPROVED STATS ENDPOINT (excludes railways)
 # =====================================================
+# AUTO-REPAIR: duplicate route '/api/v1/stats' also in main.py:13042 — review and remove one
 
 @app.route('/api/v1/stats')
 def get_stats():
