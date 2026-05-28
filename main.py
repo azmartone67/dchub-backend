@@ -23790,16 +23790,6 @@ try:
 except Exception as _l5_e:
     print(f"[main] brain_layer5_bp register failed: {_l5_e}", flush=True)
 
-# r43-H (2026-05-27): Daily paid-account health audit. Triggered by the
-# Carl Braun incident where a paying Pro customer got stranded mid-signup
-# (1h password reset TTL expired before he clicked the email link).
-try:
-    from routes import paid_account_health
-    paid_account_health.register(app, _get_pg)
-    print("[main] paid_account_health registered: /api/v1/admin/paid-account-health/{check,fix-reset}", flush=True)
-except Exception as _pah_e:
-    print(f"[main] paid_account_health register failed: {_pah_e}", flush=True)
-
 # r43-D (2026-05-27): wire news_slug_route — operator caught LinkedIn
 # Post Inspector showing canonical=/press for /news/<slug> press
 # releases because news_slug_route.register() was defined but never
@@ -23817,6 +23807,19 @@ try:
     print("[main] news_slug_route registered: /news/<slug> press-release HTML", flush=True)
 except Exception as _nsr_e:
     print(f"[main] news_slug_route register failed: {_nsr_e}", flush=True)
+
+# r43-H (2026-05-27): Daily paid-account health audit. Triggered by the
+# Carl Braun incident where a paying Pro customer got stranded mid-signup
+# (1h password reset TTL expired before he clicked the email link).
+# IMPORTANT: must come AFTER the news_slug_route block above because
+# that block is where _get_pg() is defined; placing this block before
+# silently NameError'd into the except, leaving the routes unregistered.
+try:
+    from routes import paid_account_health
+    paid_account_health.register(app, _get_pg)
+    print("[main] paid_account_health registered: /api/v1/admin/paid-account-health/{check,fix-reset}", flush=True)
+except Exception as _pah_e:
+    print(f"[main] paid_account_health register failed: {_pah_e}", flush=True)
 
 # Phase ZZZZZ-round47.14 (2026-05-25): weekly partnership LinkedIn post.
 # Cycles through 7 anchors (partners/dchawk/dcbyte/dcd/dcf/cbre/jll)
