@@ -68,6 +68,20 @@ def _ensure_fiber_routes_table():
                 conn.commit()
             except Exception:
                 conn.rollback()
+        # r43-H (2026-05-29): the seed upsert writes `capacity` + `discovered_at`,
+        # but the production fiber_routes schema (from infrastructure_discovery)
+        # never had them → every seed upsert failed "column capacity does not
+        # exist" and 0 carrier routes were written. Idempotent ALTERs bring the
+        # table in line with the INSERT (same schema-drift class as the r49
+        # start_point/end_point fix). ADD COLUMN IF NOT EXISTS is a no-op if
+        # the column already exists, so this is safe on every schema variant.
+        for _col, _ddl in (("capacity", "TEXT"),
+                            ("discovered_at", "TIMESTAMPTZ DEFAULT NOW()")):
+            try:
+                cur.execute(f"ALTER TABLE fiber_routes ADD COLUMN IF NOT EXISTS {_col} {_ddl}")
+                conn.commit()
+            except Exception:
+                conn.rollback()
         cur.close()
         return True
     except Exception as e:

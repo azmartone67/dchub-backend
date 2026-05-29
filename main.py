@@ -16219,7 +16219,7 @@ def _build_fiber_routes_geojson(max_features=None):
                     "start_point": row_dict.get('start_location', ''),
                     "end_point": row_dict.get('end_location', ''),
                     "distance_km": row_dict.get('distance_miles'),
-                    "capacity": row_dict.get('capacity_label', ''),
+                    "capacity": row_dict.get('capacity', ''),
                     "color": row_dict.get('color', ''),
                 },
                 "geometry": {
