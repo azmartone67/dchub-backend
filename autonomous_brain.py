@@ -792,7 +792,16 @@ class AutonomousBrain:
             try:
                 cur = conn.cursor()
                 cur.execute("SELECT MAX(id) FROM announcements")
-                max_id = (cur.fetchone() or [0])[0] or 0
+                # r43-H (2026-05-28): announcements.id can come back as TEXT, so
+                # MAX(id) was a str → `max_id > last_id` raised "'>' not supported
+                # between 'str' and 'int'", failing the pre-flight. Fail-open then
+                # ran the full ~25s cycle every 5 min instead of the 150ms skip —
+                # self-inflicted load. Coerce to int.
+                _raw_max = (cur.fetchone() or [0])[0]
+                try:
+                    max_id = int(_raw_max) if _raw_max is not None else 0
+                except (TypeError, ValueError):
+                    max_id = 0
                 cur.execute("SELECT state_value FROM brain_state "
                             "WHERE state_key = 'last_processed_announcement_id'")
                 row = cur.fetchone()

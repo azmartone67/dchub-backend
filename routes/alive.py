@@ -27,6 +27,7 @@ from __future__ import annotations
 import os
 import time
 import datetime
+import threading
 from flask import Blueprint, jsonify, Response
 import psycopg2
 import psycopg2.extras
@@ -36,7 +37,16 @@ alive_bp = Blueprint("alive", __name__)
 
 
 _ALIVE_CACHE: dict = {"data": None, "ts": 0.0}
-_ALIVE_TTL = 30.0
+# r43-H (2026-05-28): bumped 30s→120s. _build_vitals() calls the brain
+# consistency radar synchronously and takes ~34s, so a 30s TTL meant the
+# cache was always stale → every request rebuilt → the build (>30s) blew
+# past gunicorn's 30s budget and hard-timed-out (000). The build now runs
+# in a background thread (stale-while-revalidate, below); a longer TTL just
+# trims how often that background rebuild fires.
+_ALIVE_TTL = 120.0
+# Single-flight guard so only one background refresh runs at a time.
+_ALIVE_REFRESH_LOCK = threading.Lock()
+_ALIVE_REFRESHING = {"flag": False}
 
 
 def _conn():
@@ -91,6 +101,10 @@ def _build_vitals() -> dict:
 
     try:
         with conn.cursor() as cur:
+            # Bound every query so a slow scan degrades to a partial vital
+            # sign instead of hanging the (background) build.
+            try: cur.execute("SET statement_timeout = 4000")
+            except Exception: pass
             # ── Data freshness summary ──
             try:
                 cur.execute("SELECT to_regclass('public.source_registry')")
@@ -230,14 +244,59 @@ def _build_vitals() -> dict:
     return vitals
 
 
+def _refresh_vitals_bg():
+    """Rebuild vitals into the cache. Single-flight: a second caller while
+    one refresh is in flight is a no-op (avoids piling up 34s builds)."""
+    with _ALIVE_REFRESH_LOCK:
+        if _ALIVE_REFRESHING["flag"]:
+            return
+        _ALIVE_REFRESHING["flag"] = True
+
+    def _run():
+        try:
+            fresh = _build_vitals()
+            _ALIVE_CACHE["data"] = fresh
+            _ALIVE_CACHE["ts"]   = time.time()
+        except Exception:
+            pass
+        finally:
+            _ALIVE_REFRESHING["flag"] = False
+
+    threading.Thread(target=_run, daemon=True).start()
+
+
 def _get_cached_vitals() -> dict:
+    """Stale-while-revalidate. The request path never pays the ~34s build
+    cost: fresh cache → return it; stale cache → return stale + kick a
+    background refresh; cold (no data yet) → wait briefly for the first
+    build, else return a lightweight 'warming' payload so we never hang."""
     now = time.time()
-    if _ALIVE_CACHE["data"] and (now - _ALIVE_CACHE["ts"]) < _ALIVE_TTL:
-        return _ALIVE_CACHE["data"]
-    data = _build_vitals()
-    _ALIVE_CACHE["data"] = data
-    _ALIVE_CACHE["ts"]   = now
-    return data
+    data = _ALIVE_CACHE["data"]
+    if data and (now - _ALIVE_CACHE["ts"]) < _ALIVE_TTL:
+        return data
+
+    _refresh_vitals_bg()
+
+    if data is not None:
+        return data  # serve stale immediately while the refresh runs
+
+    # Truly cold (process just booted): give the first build a short window,
+    # otherwise return a minimal alive payload and let the bg thread fill it.
+    deadline = now + 8.0
+    while time.time() < deadline:
+        if _ALIVE_CACHE["data"] is not None:
+            return _ALIVE_CACHE["data"]
+        time.sleep(0.25)
+    return {
+        "alive":      True,
+        "warming":    True,
+        "checked_at": datetime.datetime.now(datetime.timezone.utc).isoformat(),
+        "version":    "2.0.0",
+        "data_freshness": {"green": 0, "yellow": 0, "red": 0, "never_ran": 0,
+                           "disabled": 0, "total": 0},
+        "mcp_flow": {}, "brain": {"by_severity": {}}, "dcpi": {},
+        "international": {}, "agentic_heartbeat_score": None,
+    }
 
 
 @alive_bp.route("/api/v1/alive", methods=["GET", "OPTIONS"])

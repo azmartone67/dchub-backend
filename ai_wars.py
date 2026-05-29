@@ -92,6 +92,29 @@ def _init_tables():
         )
     """)
 
+    # r43-H (2026-05-28): ALTER-friendly backfill. CREATE TABLE IF NOT EXISTS
+    # no-ops when wars_platforms already exists in an OLDER shape (a pre-cherry-
+    # pick deploy created it without icon_url etc.), so the dynamic-platforms
+    # load SELECT raised 'column "icon_url" does not exist' and 500'd the path
+    # (logged as "Could not load dynamic platforms"). ADD COLUMN IF NOT EXISTS
+    # is idempotent and survives any prior partial-schema state.
+    for _col, _ddl in (
+        ("name",            "TEXT"),
+        ("color",           "TEXT DEFAULT '#666666'"),
+        ("provider",        "TEXT DEFAULT ''"),
+        ("api_endpoint",    "TEXT DEFAULT ''"),
+        ("icon_url",        "TEXT DEFAULT ''"),
+        ("auto_registered", "INTEGER DEFAULT 0"),
+        ("status",          "TEXT DEFAULT 'active'"),
+        ("registered_at",   "TEXT DEFAULT (NOW())"),
+        ("last_seen",       "TEXT DEFAULT (NOW())"),
+        ("metadata",        "TEXT DEFAULT '{}'"),
+    ):
+        try:
+            c.execute(f"ALTER TABLE wars_platforms ADD COLUMN IF NOT EXISTS {_col} {_ddl}")
+        except Exception:
+            pass
+
     c.execute("""
         CREATE TABLE IF NOT EXISTS wars_battles (
             id TEXT PRIMARY KEY,

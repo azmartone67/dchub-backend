@@ -43,6 +43,31 @@ def _admin_ok():
     return sent in _INTERNAL_KEYS
 
 
+# ── Performance guards (r43-H, 2026-05-28) ──────────────────────────
+# /api/v1/audience/summary was hard-timing-out (000 at 35-38s): four
+# collectors run sequentially, each doing unindexed COUNT(*) full-scans
+# over mcp_tool_calls / ai_usage_tracking (the latter compares a TEXT
+# timestamp, so no index applies). No per-query timeout meant one slow
+# scan hung the whole request past gunicorn's 30s budget, and the cold
+# request never produced a 200 for CF's max-age=300 to cache — so EVERY
+# cold hit re-timed-out. Fix: (1) bound each query with statement_timeout
+# so a slow scan degrades to partial data instead of hanging; (2) memoize
+# the whole summary for 10 min so steady-state hits are instant.
+import time as _time
+
+_STMT_TIMEOUT_MS = 5000
+
+def _bound(cur):
+    """Cap any single query so it degrades instead of hanging the request."""
+    try:
+        cur.execute(f"SET statement_timeout = {int(_STMT_TIMEOUT_MS)}")
+    except Exception:
+        pass
+
+_SUMMARY_TTL = 600  # seconds
+_SUMMARY_CACHE = {"exp": 0.0, "data": None}
+
+
 # ── Data collectors (each independent, fail-safe) ───────────────────
 
 def _mcp_signals():
@@ -58,6 +83,7 @@ def _mcp_signals():
            "distinct_clients_7d": 0, "top_tools": []}
     try:
         with conn.cursor() as cur:
+            _bound(cur)
             cur.execute(
                 "SELECT COUNT(*) FROM mcp_tool_calls "
                 "WHERE created_at >= NOW() - INTERVAL '7 days'"
@@ -101,6 +127,7 @@ def _ai_platform_signals():
     out = {"distinct_platforms": 0, "total_requests_30d": 0, "top_platforms": []}
     try:
         with conn.cursor() as cur:
+            _bound(cur)
             cur.execute(
                 "SELECT COUNT(DISTINCT platform) FROM ai_usage_tracking "
                 "WHERE platform IS NOT NULL "
@@ -190,6 +217,7 @@ def _facility_count():
             return 0
         try:
             with conn.cursor() as cur:
+                _bound(cur)
                 cur.execute(
                     "SELECT COUNT(*) FROM discovered_facilities "
                     "WHERE COALESCE(is_duplicate, 0) = 0"
@@ -224,7 +252,7 @@ def _plausible_signals():
         r = requests.get(
             base,
             headers={"Authorization": f"Bearer {token}"},
-            params=params, timeout=10,
+            params=params, timeout=4,
         )
         if r.status_code == 200:
             data = r.json().get("results") or {}
@@ -245,6 +273,16 @@ def audience_summary():
     """Public — feeds the /advertise page hero stats.
     No auth; safe to expose all numbers (they're already on the
     /alive operator dashboard)."""
+    # Serve the memoized summary if fresh (10-min TTL). Keeps the
+    # expensive collector scans off the request path in steady state.
+    now = _time.time()
+    cached = _SUMMARY_CACHE.get("data")
+    if cached is not None and _SUMMARY_CACHE.get("exp", 0) > now:
+        resp = jsonify(cached)
+        resp.headers["Cache-Control"] = "public, max-age=300, stale-while-revalidate=600"
+        resp.headers["X-Cache"] = "hit"
+        return resp
+
     mcp = _mcp_signals()
     ai = _ai_platform_signals()
     facilities = _facility_count()
@@ -273,9 +311,13 @@ def audience_summary():
         out["human_visitors_30d"] = plausible["visitors_30d"]
         out["pageviews_30d"] = plausible["pageviews_30d"]
 
+    _SUMMARY_CACHE["data"] = out
+    _SUMMARY_CACHE["exp"] = _time.time() + _SUMMARY_TTL
+
     resp = jsonify(out)
     # Cache 5 min at edge — these don't change minute to minute
     resp.headers["Cache-Control"] = "public, max-age=300, stale-while-revalidate=600"
+    resp.headers["X-Cache"] = "miss"
     return resp
 
 
