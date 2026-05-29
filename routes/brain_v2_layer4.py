@@ -488,6 +488,26 @@ def trigger_learn():
     data_findings = [i for i in novel_candidates if _is_data_placeholder(i)]
     novel_candidates = [i for i in novel_candidates if not _is_data_placeholder(i)]
 
+    # Phase r43-H (2026-05-29): stop the data-placeholder spin-loop. These
+    # em-dash "— placeholder" findings skip the Claude path, so they never
+    # accrued a false-positive count — and re-logged "data_placeholder_routed"
+    # every cycle forever (128× on the homepage, 101× on dc-hub-media, 77× on
+    # /pricing). They're benign cells that need a live-data binding, not a text
+    # fix, and re-routing them hourly just makes the brain look busy-but-stuck.
+    # Drop ones already confirmed as repeat non-fixables; each remaining route
+    # bumps mark_false_positive() below, so after 3 cycles they fall into this
+    # set and stop re-surfacing.
+    if _STORE_OK:
+        try:
+            _dp_suppressed = _store.list_false_positives(min_refused=3)
+            if _dp_suppressed:
+                data_findings = [
+                    i for i in data_findings
+                    if (i.get("issue"), i.get("url") or "") not in _dp_suppressed
+                ]
+        except Exception:
+            pass
+
     # Phase SS (2026-05-14): drop confirmed false positives. An issue
     # Claude has REFUSED 3+ times isn't a real fixable placeholder —
     # re-attempting it just burns the hourly Claude budget. The 11
@@ -540,6 +560,11 @@ def trigger_learn():
                 _store.set_persistence_outcome(
                     issue.get("issue") or "", issue.get("url") or "",
                     "data_placeholder_routed")
+                # r43-H: count each route as a "confirmed non-text-fixable"
+                # so after min_refused (3) cycles it joins the suppressed set
+                # above and stops re-surfacing — killing the spin-loop.
+                _store.mark_false_positive(
+                    issue.get("issue") or "", issue.get("url") or "")
             except Exception:
                 pass
         results.append({"issue": issue.get("issue"),
