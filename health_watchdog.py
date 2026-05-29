@@ -350,8 +350,19 @@ class HealthWatchdog:
             logger.debug("News cleanup failed: %s", str(e)[:80])
 
     def _watchdog_loop(self):
-        time.sleep(30)
-        logger.info("Watchdog: Initial delay complete, starting checks")
+        # r43-H (2026-05-29): grace period raised 30s → 300s. Boot runs heavy
+        # startup work (cache pre-warm hitting 16 routes, deal ingestion,
+        # discovery, the brain) that saturates the single replica for ~3-5 min,
+        # so /api/v1/stats (the self-response check) is legitimately slow during
+        # that window. With only a 30s grace the watchdog counted those boot
+        # failures and recycled the container MID-BOOT → re-boot → re-saturate =
+        # a self-sustaining restart loop (site-wide 503 for ~20 min, observed
+        # after the 2026-05-29 deploys). A 300s grace lets the boot finish before
+        # the first check, so the watchdog only ever catches genuine post-boot
+        # hangs. Railway's own healthcheck (healthcheckTimeout=300) guards the
+        # boot itself, so nothing is left unmonitored.
+        time.sleep(300)
+        logger.info("Watchdog: Initial 300s grace complete, starting checks")
 
         while self._running:
             try:
