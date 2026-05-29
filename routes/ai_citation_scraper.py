@@ -393,14 +393,20 @@ def citations_by_agent():
         return jsonify({"ok": False, "error": "db_unavailable"}), 200
     try:
         with c.cursor() as cur:
+            # r43-H (2026-05-28): schema-drift fix. ai_citations has `engine`
+            # (the AI platform) and `dchub_cited`, NOT `agent_name`/`is_cited`
+            # (those live in the separate ai_testimonials table). The drifted
+            # query raised 'column "agent_name" does not exist', 500ing the
+            # AI-citation surface. Output key stays `agent_name` (= engine) so
+            # the /audit dashboard + media organism keep working.
             cur.execute("""
-                SELECT agent_name,
+                SELECT engine,
                        COUNT(*) FILTER (WHERE observed_at > NOW() - INTERVAL '30 days') AS probes_30d,
-                       COUNT(*) FILTER (WHERE is_cited AND observed_at > NOW() - INTERVAL '30 days') AS cited_30d,
-                       COUNT(*) FILTER (WHERE is_cited AND observed_at > NOW() - INTERVAL '7 days') AS cited_7d,
-                       MAX(observed_at) FILTER (WHERE is_cited) AS last_cited_at
+                       COUNT(*) FILTER (WHERE dchub_cited AND observed_at > NOW() - INTERVAL '30 days') AS cited_30d,
+                       COUNT(*) FILTER (WHERE dchub_cited AND observed_at > NOW() - INTERVAL '7 days') AS cited_7d,
+                       MAX(observed_at) FILTER (WHERE dchub_cited) AS last_cited_at
                   FROM ai_citations
-                 GROUP BY agent_name
+                 GROUP BY engine
                  ORDER BY cited_30d DESC
             """)
             rows = cur.fetchall() or []
