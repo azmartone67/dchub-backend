@@ -763,6 +763,24 @@ REGISTRY: list[ErrorClass] = [
         shipped_proof="3cb03e9c",
         notes="Hit the ai_deals upsert in deal_ingestion_scheduler.py — the extractor can emit one article twice (matched by two queries).",
     ),
+    ErrorClass(
+        id="schema_drift_column_missing",
+        pattern=r'column "[^"]+" does not exist|UndefinedColumn',
+        fix_template="align_query_to_live_schema",
+        description=(
+            "A query references a column that isn't in the live table — schema "
+            "drift. Usually the column (a) lives in a SIBLING table (e.g. "
+            "agent_name is in ai_testimonials, not ai_citations), (b) was renamed "
+            "(is_cited → dchub_cited; engine vs agent_name), or (c) a migration "
+            "never ran on this deploy. FIX: confirm the live table's real columns, "
+            "then point the query at the right column/table — don't assume the "
+            "column name. If it's a genuinely missing migration, add ALTER TABLE "
+            "ADD COLUMN IF NOT EXISTS (autocommit) so it backfills idempotently."
+        ),
+        confidence=0.85,
+        shipped_proof="caf6cca4",
+        notes="3x this session: citations/by-agent (agent_name/is_cited), ai-wars (icon_url), announcements (str vs int). The 500 surfaces the FIRST bad column; there may be more in the same query.",
+    ),
 ]
 
 
