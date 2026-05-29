@@ -85,7 +85,7 @@ def log_heartbeat(jobs_run=None, jobs_total=None, elapsed_ms=None):
             cur.execute("""
                 INSERT INTO cron_heartbeat_log
                   (user_agent, source_ip, jobs_run, jobs_total, elapsed_ms)
-                VALUES (%s, %s, %s, %s, %s)
+                VALUES (%s, %s, %s, %s, %s) ON CONFLICT DO NOTHING
             """, (ua, ip[:80], jobs_run, jobs_total, elapsed_ms))
     except Exception:
         pass

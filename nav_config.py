@@ -4,6 +4,7 @@ from datetime import datetime
 def register_nav_config_route(app, db=None):
     if 'get_nav_config' in [rule.endpoint for rule in app.url_map.iter_rules()]:
         return app
+# AUTO-REPAIR: duplicate route '/api/nav-config' also in replit-nav-config-endpoint.py:22 — review and remove one
     @app.route('/api/nav-config', methods=['GET'])
     def get_nav_config():
         nav_links = [
