@@ -40,14 +40,16 @@ class Tier(IntEnum):
     """Mirror of mcp_gatekeeper.Tier so REST gating matches MCP gating."""
     ANONYMOUS = 0
     IDENTIFIED = 1
-    DEVELOPER = 2
-    PRO = 3
-    ENTERPRISE = 4
+    STARTER = 2
+    DEVELOPER = 3
+    PRO = 4
+    ENTERPRISE = 5
 
 
 TIER_NAME = {
     Tier.ANONYMOUS: "Anonymous",
     Tier.IDENTIFIED: "Identified",
+    Tier.STARTER: "Starter",
     Tier.DEVELOPER: "Developer",
     Tier.PRO: "Pro",
     Tier.ENTERPRISE: "Enterprise",
@@ -58,6 +60,7 @@ TIER_NAME = {
 _PLAN_TO_TIER = {
     "free":       Tier.ANONYMOUS,
     "identified": Tier.IDENTIFIED,
+    "starter":    Tier.STARTER,
     "dev":        Tier.DEVELOPER,
     "developer":  Tier.DEVELOPER,
     "pro":        Tier.PRO,
@@ -65,6 +68,30 @@ _PLAN_TO_TIER = {
     "enterprise": Tier.ENTERPRISE,
     "ent":        Tier.ENTERPRISE,
 }
+
+
+# DCPI bulk-list row caps. DCPI is the flagship product and the main
+# upgrade driver, so the free funnel is deliberately tight: anonymous
+# sees a teaser, free (identified) a little more, paid tiers scale up
+# to unlimited at Pro. None == unlimited. Applied uniformly across the
+# bulk surfaces (/scores, /leaderboard, /movers). Single-market lookups
+# (/scores/<slug>) and the open-data /data/* dumps stay free by design.
+DCPI_PREVIEW_CAP = {
+    Tier.ANONYMOUS:  3,
+    Tier.IDENTIFIED: 5,
+    Tier.STARTER:    25,
+    Tier.DEVELOPER:  100,
+    Tier.PRO:        None,
+    Tier.ENTERPRISE: None,
+}
+
+
+def dcpi_cap_for(tier: "Tier") -> int | None:
+    """Row cap for a tier on DCPI bulk surfaces; None == unlimited.
+
+    Fails safe to the tightest (anonymous) cap for any unknown tier.
+    """
+    return DCPI_PREVIEW_CAP.get(tier, DCPI_PREVIEW_CAP[Tier.ANONYMOUS])
 
 
 def _conn():
