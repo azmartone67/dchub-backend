@@ -262,6 +262,39 @@ def capacity_report(ident):
                 "first_seen": first_seen.isoformat() if first_seen and hasattr(first_seen, 'isoformat') else first_seen,
             }
 
+            # r43-H (2026-05-28): tier gate. This one-call brief bundles the
+            # proprietary DCPI verdict + market capacity rollup + peers, and
+            # was fully ungated (any curl got it). Anonymous external callers
+            # now get basic facility metadata + a teaser; paid keys, internal
+            # callers, and real browsers get the full bundle. Gating here —
+            # after the cheap site lookup, before the heavy market/DCPI/peer/
+            # news queries — also saves that work on anonymous scraper hits.
+            _privileged = True
+            try:
+                from routes.tier_gate import caller_is_privileged
+                _privileged = caller_is_privileged("IDENTIFIED")
+            except Exception:
+                _privileged = True  # fail open on gate-infra error
+            if not _privileged:
+                return jsonify(
+                    ok=True,
+                    site=site,
+                    _teaser=True,
+                    _upgrade_hint={
+                        "message": ("Site brief preview. Sign up free (email "
+                                    "only) at https://dchub.cloud/api/v1/keys/claim "
+                                    "for the full report — market capacity "
+                                    "rollup, DCPI verdict, peer facilities, and "
+                                    "news — or unlock everything with Pro "
+                                    "($199/mo): https://dchub.cloud/pricing."),
+                        "claim_free_key": "https://dchub.cloud/api/v1/keys/claim",
+                        "pricing":        "https://dchub.cloud/pricing",
+                        "behind_gate": ["capacity", "dcpi", "pipeline",
+                                        "peer_facilities", "news"],
+                    },
+                    generated_at=datetime.now(timezone.utc).isoformat(),
+                ), 200
+
             # Capacity rollup for this market (operator-agnostic — the
             # site is part of the market's total pipeline).
             pipeline = _capacity_for_market(cur, city, state)

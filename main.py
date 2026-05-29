@@ -16138,11 +16138,16 @@ def fiber_sources():
         try: conn.close()
         except Exception: pass
 
-def _build_fiber_routes_geojson():
+def _build_fiber_routes_geojson(max_features=None):
     """Shared body for the gated and public fiber-routes endpoints.
     Returns a GeoJSON FeatureCollection dict. Prefers full polyline
     geometry from the `coordinates` column, falling back to a 2-point
-    LineString for legacy rows."""
+    LineString for legacy rows.
+
+    max_features: teaser cap. When set, the SQL LIMIT is reduced to it
+    (so anon teasers don't pay the full 2000-row / 8s scan), and the
+    result carries `_full_total` = the unfiltered count behind the
+    paywall so the upgrade hint can cite the real number."""
     carrier = request.args.get('carrier')
     route_type = request.args.get('type')
     # `class` buckets the messy route_type taxonomy into the UI's three
@@ -16161,6 +16166,8 @@ def _build_fiber_routes_geojson():
 
         limit = request.args.get('limit', 2000, type=int)
         limit = min(max(limit, 1), 20000)
+        if max_features is not None:
+            limit = min(limit, max(int(max_features), 1))
 
         query = 'SELECT * FROM fiber_routes WHERE (start_lat IS NOT NULL OR coordinates IS NOT NULL)'
         params = []
@@ -16221,7 +16228,16 @@ def _build_fiber_routes_geojson():
                 }
             })
 
-        return {"type": "FeatureCollection", "features": features, "total": len(features)}
+        result = {"type": "FeatureCollection", "features": features, "total": len(features)}
+        if max_features is not None:
+            # Teaser path: cite the real full count (ignores carrier/type
+            # filters — the marketing number is "all fiber routes available").
+            try:
+                cursor.execute("SELECT COUNT(*) FROM fiber_routes WHERE (start_lat IS NOT NULL OR coordinates IS NOT NULL)")
+                result["_full_total"] = int(cursor.fetchone()[0])
+            except Exception:
+                result["_full_total"] = len(features)
+        return result
     except Exception as e:
         return {"type": "FeatureCollection", "features": [], "total": 0, "note": str(e)}
     finally:
@@ -16230,20 +16246,106 @@ def _build_fiber_routes_geojson():
             except Exception: pass
 
 
+def _fiber_full_access_ok():
+    """True iff the caller may receive the FULL fiber dataset. Fails closed.
+
+    Full access = paid API key (developer/pro/enterprise/founding),
+    internal MCP key, admin radar key, OR a real dchub.cloud browser
+    (r43-G HMAC session cookie, or a same-origin GET whose Referer/Origin
+    is dchub.cloud — the Land & Power map's fetch carries this; a raw
+    scraper curl does not). Everyone else (anon scrapers, free-tier API
+    callers) gets the 3-route teaser, closing the 645KB leak that served
+    the paid fiber dataset to any unauthenticated caller."""
+    # 1. internal MCP key
+    try:
+        if is_valid_internal_key(request.headers.get("X-Internal-Key", "")):
+            return True
+    except Exception:
+        pass
+    # 2. admin radar key (X-Admin-Key == DCHUB_ADMIN_KEY)
+    try:
+        import hmac as _h
+        _ah = (request.headers.get("X-Admin-Key", "") or "").split()
+        _ac = _ah[0] if _ah else ""
+        _ae = (os.environ.get("DCHUB_ADMIN_KEY", "") or "").split()
+        _ae = _ae[0] if _ae else ""
+        if _ac and _ae and _h.compare_digest(_ac, _ae):
+            return True
+    except Exception:
+        pass
+    # 3. paid API key (X-API-Key / dchub_ bearer) → DB tier lookup
+    try:
+        from map_tier_gating import _detect_caller_tier, _normalize_tier
+        _tier, _info = _detect_caller_tier()
+        if _normalize_tier(_tier) in ("developer", "pro"):
+            return True
+    except Exception:
+        pass
+    # 4. real dchub.cloud browser: r43-G signed session cookie
+    try:
+        from routes.session_cookie import validate_cookie
+        if validate_cookie():
+            return True
+    except Exception:
+        pass
+    # 5. ...or same-origin GET (browser map fetch sends Referer; curl doesn't)
+    try:
+        _origin = request.headers.get("Origin", "") or request.headers.get("Referer", "")
+        if request.method == "GET" and "dchub.cloud" in _origin:
+            return True
+    except Exception:
+        pass
+    return False
+
+
+def _fiber_teaser_response():
+    """Small teaser: first 3 fiber routes + an agent-quotable upgrade hint
+    citing the full count behind the paywall. Cheap (LIMIT 3 + COUNT) so
+    anon callers don't trigger the full 2000-row scan."""
+    sample = _build_fiber_routes_geojson(max_features=3)
+    feats = (sample.get('features') or [])[:3] if isinstance(sample, dict) else []
+    total = int(sample.get('_full_total', sample.get('total', 0)) or 0)
+    return {
+        'type': 'FeatureCollection',
+        'features': feats,
+        '_teaser': True,
+        '_total_features_behind_paywall': max(0, total - len(feats)),
+        '_upgrade_hint': {
+            'agent_quotable': (
+                f"DC Hub returned {len(feats)} of {total:,} fiber routes as a "
+                f"free preview. Full dataset (carriers, route geometries, "
+                f"lit/dark status across {total:,} segments) needs a Pro key "
+                f"at $199/mo — https://dchub.cloud/pricing. For fund-grade "
+                f"access (raw exports, custom DCPI weights, monthly briefings), "
+                f"see Enterprise at $25K+/yr — https://dchub.cloud/enterprise."),
+            'starter_url':     'https://dchub.cloud/pricing',
+            'enterprise_url':  'https://dchub.cloud/enterprise',
+            'preview_count':   len(feats),
+            'paywalled_count': max(0, total - len(feats)),
+        },
+    }
+
+
 @app.route('/api/v1/fiber/routes', methods=['GET'])
 @require_plan('pro')
 def fiber_routes_api():
-    """Get fiber routes with optional filtering, returns GeoJSON (Pro/API tier)."""
-    return jsonify(_build_fiber_routes_geojson())
+    """Fiber routes GeoJSON. Full dataset for paid/internal/browser callers;
+    3-route teaser otherwise. The in-handler gate fails closed regardless of
+    how the caller reached here (require_plan has a map-Referer bypass that
+    previously leaked the full 645KB set to any anonymous curl)."""
+    if _fiber_full_access_ok():
+        return jsonify(_build_fiber_routes_geojson())
+    return jsonify(_fiber_teaser_response())
 
 
 @app.route('/api/v1/fiber/routes/public', methods=['GET'])
 def fiber_routes_public_api():
-    """Public read-only fiber routes for the Land & Power map overlay.
-    Mirrors /api/v1/map's ungated pattern — the carrier backbone overlay
-    is part of the free map experience; the gated /api/v1/fiber/routes
-    remains for API/developer customers."""
-    return jsonify(_build_fiber_routes_geojson())
+    """Land & Power map fiber overlay. Real dchub.cloud browsers (cookie or
+    same-origin Referer) and paid keys get the full backbone; anonymous
+    scrapers get the 3-route teaser instead of the full paid dataset."""
+    if _fiber_full_access_ok():
+        return jsonify(_build_fiber_routes_geojson())
+    return jsonify(_fiber_teaser_response())
 
 
 # Phase ZZZZZ-round6 (2026-05-23): /api/v1/fiber/intel was referenced
@@ -16263,46 +16365,18 @@ def fiber_intel_api():
     own remediation recipe ("add a free-tier teaser response — 1-3 results
     free, full data behind X-API-Key"), this returns the first 3 fiber
     routes + an explicit `_upgrade_hint` for unauthenticated callers,
-    and the full FeatureCollection once the caller authenticates."""
-    full = _build_fiber_routes_geojson()
-    # Detect caller tier inline — avoids @require_plan's hard 401 path
-    # which the paywall_hint_middleware has to retrofit. We branch first.
-    tier = 'anonymous'
-    try:
-        from map_tier_gating import _detect_caller_tier
-        tier = (_detect_caller_tier(request) or 'anonymous').lower()
-    except Exception:
-        pass
+    and the full FeatureCollection once the caller authenticates.
 
-    if tier in ('pro', 'enterprise', 'founding', 'internal', 'admin'):
-        return jsonify(full)
-
-    # Free-tier teaser: 3 features + cap context + upgrade hint
-    feats = (full.get('features') or [])[:3] if isinstance(full, dict) else []
-    total = len((full.get('features') or [])) if isinstance(full, dict) else 0
-    return jsonify({
-        'type':     'FeatureCollection',
-        'features': feats,
-        '_teaser':  True,
-        '_total_features_behind_paywall': max(0, total - len(feats)),
-        '_tier':    tier,
-        '_upgrade_hint': {
-            # r47.37.2 (2026-05-26): expose both self-serve ($199/mo Pro)
-            # AND enterprise ($25K+/yr) tiers. Sessions doing multi-tool DD
-            # against fiber routes are usually enterprise prospects.
-            'agent_quotable': (
-                f"DC Hub returned {len(feats)} of {total:,} fiber routes as a "
-                f"free preview. Full dataset (carriers, route geometries, "
-                f"lit/dark status across {total:,} segments) needs a Pro key "
-                f"at $199/mo — https://dchub.cloud/pricing. For fund-grade "
-                f"access (raw exports, custom DCPI weights, monthly briefings), "
-                f"see Enterprise at $25K+/yr — https://dchub.cloud/enterprise."),
-            'starter_url':    'https://dchub.cloud/pricing',
-            'enterprise_url': 'https://dchub.cloud/enterprise',
-            'preview_count':  len(feats),
-            'paywalled_count': max(0, total - len(feats)),
-        },
-    })
+    r43-H (2026-05-28): the old inline tier check called
+    `_detect_caller_tier(request)` — but that function's first arg is
+    `decode_jwt_func`, not the request, and it returns a (tier, info)
+    tuple, so `.lower()` raised and the except swallowed it → EVERY
+    caller (including paid) got the teaser. Now shares the fail-closed
+    `_fiber_full_access_ok()` helper, so paid/internal/browser callers
+    finally get the full set here too."""
+    if _fiber_full_access_ok():
+        return jsonify(_build_fiber_routes_geojson())
+    return jsonify(_fiber_teaser_response())
 
 logger.info("✅ Fiber routes endpoints registered: /api/v1/fiber/sources, /api/v1/fiber/routes, /api/v1/fiber/intel")
 

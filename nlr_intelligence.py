@@ -23,6 +23,51 @@ def _no_cache(resp):
 
 
 # ---------------------------------------------------------------------------
+# Tier gating (r43-H, 2026-05-28)
+# These derived-intelligence routes (substation headroom, colocation /
+# microgrid / geothermal scores) were fully ungated — a raw `curl` got the
+# complete analysis the MCP catalog declares as `identified`-tier. Now
+# anonymous external scrapers get a headline teaser + upgrade hint, while
+# paid keys, the MCP/internal callers, the brain radar, the grid-intel
+# self-call (localhost), and real dchub.cloud browsers still get full data.
+# ---------------------------------------------------------------------------
+
+def _nlr_privileged():
+    """True → full data. Fails OPEN on infra error so a gate hiccup never
+    breaks the product or the internal grid-intel self-call; only a clean
+    'anonymous' verdict teasers the caller."""
+    try:
+        from routes.tier_gate import caller_is_privileged
+        return caller_is_privileged("IDENTIFIED")
+    except Exception:
+        return True
+
+
+def _nlr_teaser(full, headline_keys, feature_name):
+    """Shape-agnostic teaser: echo the caller's location + the named
+    headline metric(s), drop the granular breakdown, attach an upgrade
+    hint pointing at the free (email-only) tier first."""
+    teaser = {
+        "success": True,
+        "_teaser": True,
+        "location": (full or {}).get("location"),
+        "_upgrade_hint": {
+            "message": (
+                f"{feature_name} preview. Sign up free (email only) at "
+                f"https://dchub.cloud/api/v1/keys/claim for the full "
+                f"breakdown, or unlock everything with Pro ($199/mo) — "
+                f"https://dchub.cloud/pricing."),
+            "claim_free_key": "https://dchub.cloud/api/v1/keys/claim",
+            "pricing":        "https://dchub.cloud/pricing",
+        },
+    }
+    for k in (headline_keys or []):
+        if isinstance(full, dict) and k in full:
+            teaser[k] = full[k]
+    return teaser
+
+
+# ---------------------------------------------------------------------------
 # DB helper — pulls the live Neon connection from main.py
 # ---------------------------------------------------------------------------
 
@@ -291,7 +336,7 @@ def geothermal_potential():
             except Exception: pass
 
     aries_compat = geo_score >= 50
-    return jsonify({
+    _geo_result = {
         "success": True,
         "location": {"lat": lat, "lon": lon, "state": state},
         "geothermal_potential": {
@@ -309,7 +354,13 @@ def geothermal_potential():
             "note": "NLR/NREL EGS research zones mapped. See nlr.gov/geothermal for full dataset.",
         },
         "source": "DC Hub + USGS EGS Atlas + EIA-860",
-    })
+    }
+    if not _nlr_privileged():
+        t = _nlr_teaser(_geo_result, [], "Geothermal potential analysis")
+        t["geothermal_score"] = geo_score
+        t["classification"] = _geo_classification(geo_score)
+        return jsonify(t)
+    return jsonify(_geo_result)
 
 
 # ---------------------------------------------------------------------------
@@ -362,7 +413,7 @@ def colocation_score():
     carbon_reduction = round((solar_sc + wind_sc) / 2 * 0.9, 1)
     ppa_discount = round((renew_sc - 50) * 0.8, 1) if renew_sc > 50 else 0
 
-    return jsonify({
+    _colo_result = {
         "success": True,
         "location": {"lat": lat, "lon": lon, "state": state},
         "colocation_score": score,
@@ -391,7 +442,12 @@ def colocation_score():
         },
         "nlr_colocation_flag": nlr_flag,
         "source": "DC Hub NLR Intelligence Layer",
-    })
+    }
+    if not _nlr_privileged():
+        return jsonify(_nlr_teaser(
+            _colo_result, ["colocation_score", "rating"],
+            "Colocation suitability score"))
+    return jsonify(_colo_result)
 
 
 # ---------------------------------------------------------------------------
@@ -451,7 +507,7 @@ def grid_headroom():
     else:
         rating = "Constrained — <200 MW estimated available"
 
-    return jsonify({
+    result = {
         "success": True,
         "location": {"lat": lat, "lon": lon, "state": state},
         "grid_headroom": {
@@ -468,7 +524,15 @@ def grid_headroom():
             "Actual interconnection queue and utility availability "
             "require direct utility confirmation."
         ),
-    })
+    }
+    if not _nlr_privileged():
+        # Teaser: keep the headline rating/count, withhold the specific
+        # substation names + distances (the proprietary geocoded detail).
+        t = _nlr_teaser(result, ["grid_headroom"], "Grid headroom analysis")
+        t["caveat"] = result["caveat"]
+        t["source"] = result["source"]
+        return jsonify(t)
+    return jsonify(result)
 
 
 # ---------------------------------------------------------------------------
@@ -517,7 +581,7 @@ def microgrid_viability():
         "dc_powerplant_concept": geo_sc >= 80 and mg_score >= 75,
     }
 
-    return jsonify({
+    _mg_result = {
         "success": True,
         "location": {"lat": lat, "lon": lon, "state": state},
         "capacity_mw_analyzed": capacity_mw,
@@ -541,7 +605,12 @@ def microgrid_viability():
             "reference": "nlr.gov/news — In Alaska, a Data Center Inside a Power Plant, Inside a Microgrid",
         },
         "source": "DC Hub NLR Intelligence Layer + EIA + USGS",
-    })
+    }
+    if not _nlr_privileged():
+        return jsonify(_nlr_teaser(
+            _mg_result, ["capacity_mw_analyzed", "microgrid_score", "viability"],
+            "Microgrid viability analysis"))
+    return jsonify(_mg_result)
 
 
 # ---------------------------------------------------------------------------

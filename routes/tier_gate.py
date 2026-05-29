@@ -152,6 +152,70 @@ def _resolve_caller_tier() -> tuple[str, dict]:
     return "FREE", {"source": "anonymous", **debug}
 
 
+def caller_is_privileged(min_tier: str = "IDENTIFIED") -> bool:
+    """True if the caller may receive FULL data on a *teaser-gated* data
+    endpoint. Unlike `require_tier` (a hard 402), this is for endpoints we
+    want to keep returning 200 for everyone but show only a teaser to
+    anonymous scrapers. It combines tier rank with internal/browser trust
+    signals so we never teaser our own server-to-server calls, the brain
+    radar, logged-in web users, or the Land & Power map.
+
+    Trusted signals (any one → True):
+      1. caller tier rank >= min_tier (paid/identified API key or cookie)
+      2. internal MCP key (X-Internal-Key) or admin radar key (X-Admin-Key)
+      3. internal server-to-server call (loopback remote_addr or DCHub UA)
+      4. real dchub.cloud browser (r43-G session cookie or same-origin GET)
+
+    Returns False only for an unknown anonymous external caller."""
+    # 1. tier rank
+    try:
+        tier, _ = _resolve_caller_tier()
+        if _TIER_RANK.get(tier.upper(), 0) >= _TIER_RANK.get(min_tier.upper(), 0):
+            return True
+    except Exception:
+        pass
+    # 2. internal / admin keys
+    try:
+        from internal_auth import is_valid_internal_key
+        if is_valid_internal_key(request.headers.get("X-Internal-Key", "")):
+            return True
+    except Exception:
+        pass
+    try:
+        import os as _os, hmac as _hmac
+        _ac = (request.headers.get("X-Admin-Key", "") or "").split()
+        _ac = _ac[0] if _ac else ""
+        _ae = (_os.environ.get("DCHUB_ADMIN_KEY", "") or "").split()
+        _ae = _ae[0] if _ae else ""
+        if _ac and _ae and _hmac.compare_digest(_ac, _ae):
+            return True
+    except Exception:
+        pass
+    # 3. internal server-to-server call (loopback or our own UA prefix).
+    #    Public traffic arrives via CF→Railway proxy, so remote_addr is the
+    #    proxy IP, never loopback — only true self-calls are 127.0.0.1/::1.
+    try:
+        ua = request.headers.get("User-Agent", "") or ""
+        if request.remote_addr in ("127.0.0.1", "::1", "localhost") or ua.startswith("DCHub"):
+            return True
+    except Exception:
+        pass
+    # 4. real dchub.cloud browser
+    try:
+        from routes.session_cookie import validate_cookie
+        if validate_cookie():
+            return True
+    except Exception:
+        pass
+    try:
+        origin = request.headers.get("Origin", "") or request.headers.get("Referer", "")
+        if request.method == "GET" and "dchub.cloud" in origin:
+            return True
+    except Exception:
+        pass
+    return False
+
+
 def _gate_response(current_tier: str, required_tier: str,
                    gate_id: str, preview: dict | None = None):
     """Standardized 402 response — conversion-friendly. Includes
