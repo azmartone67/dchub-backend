@@ -4021,13 +4021,90 @@ IS_RENDER  = (
     os.environ.get("RENDER", "").lower() in ("true", "1", "yes")
     or bool(os.environ.get("RENDER_SERVICE_ID"))
 )
+
+# ── Multi-replica leader election (r43-H, 2026-05-29) ──────────────────
+# Moving from 1 Railway replica to 2+ for rolling-restart resilience (so a
+# single replica's reboot no longer takes the whole site to 503). BUT every
+# background singleton below — the autonomous brain, schedulers, discovery,
+# the social/press publishers, email senders — is only IN-PROCESS guarded.
+# Two replicas would each run a full copy → duplicate LinkedIn/X/Bluesky
+# posts, duplicate emails, double brain commits. So exactly ONE replica may
+# run background work: the one that wins a *session-held* Postgres advisory
+# lock. Other replicas behave like a read-only failover (serve HTTP only).
+# A lone replica always wins (no contention) → single-replica behavior is
+# unchanged. We DEFAULT to leader on any DB error so a hiccup can never
+# silently disable all background work on a solo replica.
+_LEADER_LOCK_KEY = 462700001   # unique app-wide advisory-lock id (≠ self_heal 7727227)
+_leader_conn = None            # kept open to hold the session lock
+_IS_LEADER = False
+
+def _acquire_leadership():
+    """Win (or not) the background-work leader lock. Returns True if leader."""
+    global _leader_conn, _IS_LEADER
+    if not IS_RAILWAY:
+        return False  # non-Railway (Render/Replit) = failover, never bg leader
+    try:
+        import psycopg2 as _pg
+        _db = os.environ.get("DATABASE_URL")
+        if not _db:
+            _IS_LEADER = True
+            return True
+        _c = _pg.connect(_db, sslmode="require", connect_timeout=5)
+        _c.autocommit = True
+        _cur = _c.cursor()
+        _cur.execute("SELECT pg_try_advisory_lock(%s)", (_LEADER_LOCK_KEY,))
+        _won = bool(_cur.fetchone()[0])
+        _cur.close()
+        if _won:
+            _leader_conn = _c     # KEEP open — closing it releases the lock
+            _IS_LEADER = True
+            return True
+        _c.close()
+        _IS_LEADER = False
+        return False
+    except Exception:
+        _IS_LEADER = True         # DB unreachable at boot → assume solo replica
+        return True
+
+_acquire_leadership()
+
+def _leadership_monitor():
+    """Keep the leader's lock-connection alive; let a standby take over if the
+    leader dies. Takeover = exit(1) so Railway reboots us and we re-elect as
+    leader with background work initialized (the bg startup is import-time)."""
+    import time as _lt
+    while True:
+        _lt.sleep(45)
+        try:
+            if _IS_LEADER and _leader_conn is not None:
+                try:
+                    _k = _leader_conn.cursor(); _k.execute("SELECT 1"); _k.fetchone(); _k.close()
+                except Exception:
+                    logger.warning("🗳️ Leader lock-connection lost — exiting to force clean re-election")
+                    os._exit(1)
+            elif IS_RAILWAY and not _IS_LEADER:
+                if _acquire_leadership() and _IS_LEADER:
+                    logger.warning("🗳️ Acquired leadership (prior leader gone) — rebooting as LEADER")
+                    os._exit(1)
+        except Exception:
+            pass
+
 # DCHUB_FAILOVER=1 lets any deployment opt into failover mode regardless
 # of the cloud (e.g. future Fly.io or Cloudflare Containers).
 IS_FAILOVER = (
     IS_RENDER
     or os.environ.get("DCHUB_FAILOVER", "").lower() in ("true", "1", "yes")
+    or (IS_RAILWAY and not _IS_LEADER)   # non-leader Railway replica → read-only
 )
 IS_PRIMARY = IS_RAILWAY and not IS_FAILOVER
+if IS_RAILWAY:
+    logger.info("🗳️ Leader election: this replica is %s",
+                "LEADER — runs all background work" if _IS_LEADER
+                else "STANDBY — read-only, serves HTTP only")
+    try:
+        threading.Thread(target=_leadership_monitor, daemon=True, name="leadership").start()
+    except Exception as _e:
+        logger.warning("leadership monitor failed to start: %s", _e)
 
 ENABLE_DISCOVERY_THREADS = IS_RAILWAY and not IS_FAILOVER
 if IS_RAILWAY and not IS_FAILOVER:
