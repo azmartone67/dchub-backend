@@ -6283,6 +6283,19 @@ _INTERNAL_LINK_PROBES = [
 ]
 
 
+# r43-H (2026-05-29): TTL result-cache for the dead-link sweep. This detector
+# probes ~60 internal URLs (each via CF→backend) on EVERY radar scan, and many
+# brain GH workflows trigger radar scans — CF analytics showed the
+# dchub-brain-deadlink-probe UA doing ~101k req/day, the single biggest source
+# of backend self-traffic and a big chunk of the 429/saturation that's been
+# flapping the replica. Dead-link state changes slowly, so re-probing all 60
+# URLs on every scan is pure waste. Cache the whole result for 30 min: the
+# first scan in a window does the probes; every other caller in that window
+# gets the cached findings (0 probes). ~101k/day → ~3k/day, no loss of
+# detection latency that matters for a health check.
+_DEADLINK_CACHE = {"ts": 0.0, "findings": None}
+_DEADLINK_TTL_S = 1800  # 30 min
+
 def check_dead_internal_links() -> list[dict]:
     """Phase RRR-newsletter (2026-05-18) — probe every high-traffic
     internal URL and flag any that 404 or 5xx. Catches the dead-link
@@ -6301,6 +6314,12 @@ def check_dead_internal_links() -> list[dict]:
     except Exception:
         return findings
     import time as _t
+    now = _t.time()
+    # Serve the cached sweep result if still fresh — dedups the ~60-URL probe
+    # across every brain workflow that hits the radar inside the TTL window.
+    if (_DEADLINK_CACHE["findings"] is not None
+            and (now - _DEADLINK_CACHE["ts"]) < _DEADLINK_TTL_S):
+        return list(_DEADLINK_CACHE["findings"])
     headers = {"User-Agent": "dchub-brain-deadlink-probe/1.0"}
 
     # Expand the probe list with auto-discovered nested slugs.
@@ -6394,6 +6413,9 @@ def check_dead_internal_links() -> list[dict]:
             # Some admin endpoints will 401/403 anonymously — that's
             # correct behavior, not a dead link. Skip.
             pass
+    # Cache this sweep so concurrent/subsequent radar callers reuse it.
+    _DEADLINK_CACHE["ts"] = now
+    _DEADLINK_CACHE["findings"] = list(findings)
     return findings
 
 

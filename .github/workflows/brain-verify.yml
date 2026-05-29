@@ -11,7 +11,7 @@ name: Brain Outcome Verifier
 
 on:
   schedule:
-    - cron: '*/7 * * * *'   # every 7 min — slightly off the autopilot's 30min cycle so they don't collide
+    - cron: '*/20 * * * *'   # r43-H: 7→20 min. Outcome-verify granularity doesn't need 7-min cadence (autopilot itself runs */30); cuts this workflow's self-traffic ~3x as part of the brain-self-probe reduction.
   workflow_dispatch: {}
 
 permissions:
