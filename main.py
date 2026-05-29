@@ -27181,26 +27181,44 @@ def _mcp_upgrade_prompt():
     })
 
 
+# r43-H (2026-05-28): the funnel opened a NEW Neon connection PER count (11x)
+# → ~33s of connect overhead → CF 503. Use ONE shared connection for all
+# counts, cap each query at 6s, and cache the result 5 min (funnel stats barely
+# move). safe_count keeps its per-query isolation (a missing table → {_error}).
+_MCP_FUNNEL_CACHE = {"data": None, "t": 0.0}
+_MCP_FUNNEL_TTL = 300
+
 @app.route("/api/v1/mcp/conversion-funnel", methods=["GET"])
 def _mcp_conversion_funnel():
-    """Step-by-step conversion funnel with per-query isolation so one
-       missing table doesn't 503 the whole endpoint."""
-    import os, psycopg2
+    """Step-by-step conversion funnel. One DB connection + 5-min cache so it
+    can't 503 (was 11 separate Neon connects ≈ 33s)."""
+    import os, psycopg2, time as _t
     from flask import jsonify
+    _now = _t.time()
+    if _MCP_FUNNEL_CACHE["data"] is not None and (_now - _MCP_FUNNEL_CACHE["t"]) < _MCP_FUNNEL_TTL:
+        return jsonify(_MCP_FUNNEL_CACHE["data"])
     DATABASE_URL = os.environ.get("DATABASE_URL")
     if not DATABASE_URL:
         return jsonify({"error": "no DATABASE_URL"}), 500
 
+    _conn = None
+    try:
+        _conn = psycopg2.connect(DATABASE_URL, connect_timeout=5)
+        _conn.autocommit = True
+        try:
+            with _conn.cursor() as _c0:
+                _c0.execute("SET statement_timeout = 6000")  # 6s cap per count
+        except Exception:
+            pass
+    except Exception as e:
+        return jsonify({"error": f"db_connect: {str(e)[:120]}"}), 503
+
     def safe_count(sql):
         try:
-            conn = psycopg2.connect(DATABASE_URL, connect_timeout=5)
-            try:
-                with conn.cursor() as cur:
-                    cur.execute(sql)
-                    r = cur.fetchone()
-                    return int(r[0]) if r else 0
-            finally:
-                conn.close()
+            with _conn.cursor() as cur:
+                cur.execute(sql)
+                r = cur.fetchone()
+                return int(r[0]) if r else 0
         except Exception as e:
             return {"_error": str(e)[:100]}
 
@@ -27242,6 +27260,12 @@ def _mcp_conversion_funnel():
             rates[f"{keys[i]} → {keys[i+1]}"] = f"{(b/a*100):.2f}%"
     funnel["conversion_rates"] = rates
     funnel["leak_diagnosis"] = _diagnose_funnel_leak(funnel)
+    _MCP_FUNNEL_CACHE["data"] = funnel
+    _MCP_FUNNEL_CACHE["t"] = _now
+    try:
+        _conn.close()
+    except Exception:
+        pass
     return jsonify(funnel)
 
 
