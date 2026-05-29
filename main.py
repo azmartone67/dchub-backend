@@ -14865,6 +14865,9 @@ def api_signup():
     try:
         conn = get_db()
         c = conn.cursor()
+        # r43-I: the `signups` table was never created anywhere, so the INSERT
+        # below aborted the txn and 500'd EVERY signup. Ensure it exists first.
+        _ensure_signup_utm_cols(conn)
 
         c.execute("SELECT id FROM api_keys WHERE user_id = %s", (email,))
         existing = c.fetchone()
@@ -14940,12 +14943,32 @@ def api_signup():
 _SIGNUP_UTM_COLS_READY = False
 
 def _ensure_signup_utm_cols(conn):
-    """Idempotently add the UTM columns to `signups` (once per process)."""
+    """Idempotently ensure the `signups` table exists (with UTM columns), once
+    per process. CRITICAL r43-I finding: `signups` was NEVER created anywhere,
+    so /api/signup's `INSERT INTO signups` raised "relation does not exist",
+    aborting the transaction → conn.commit() failed → the whole signup 500'd
+    (the api_keys INSERT rolled back too). So this UNBREAKS public signup, not
+    just attribution. CREATE first, then ALTER (defensive for any pre-existing
+    table missing the utm columns)."""
     global _SIGNUP_UTM_COLS_READY
     if _SIGNUP_UTM_COLS_READY:
         return
     try:
         c = conn.cursor()
+        c.execute("""
+            CREATE TABLE IF NOT EXISTS signups (
+                id            SERIAL PRIMARY KEY,
+                email         TEXT UNIQUE,
+                company       TEXT,
+                use_case      TEXT,
+                source        TEXT,
+                created_at    TEXT,
+                utm_source    TEXT,
+                utm_tool      TEXT,
+                utm_medium    TEXT,
+                utm_campaign  TEXT
+            )
+        """)
         for _col in ("utm_source", "utm_tool", "utm_medium", "utm_campaign"):
             c.execute(f"ALTER TABLE signups ADD COLUMN IF NOT EXISTS {_col} TEXT")
         conn.commit()
