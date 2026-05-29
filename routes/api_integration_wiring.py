@@ -301,6 +301,30 @@ def get_eia_rates_from_neon(state=None):
         if conn: _return_db(conn, error=True)
         return []
 
+def _site_risk_gate(rows, gate_id):
+    """r43-H (2026-05-28): the site-risk HTTP endpoints (carbon/climate/risk/
+    water) returned full datasets to ANY anonymous caller — bypassing the MCP
+    gating where get_water_risk etc. are already Tier.IDENTIFIED. Gate them to
+    IDENTIFIED to match: a keyed or logged-in caller (X-API-Key / dchub_token /
+    Authorization Bearer — what site-planner-panel.js sends) gets full data;
+    anonymous gets a 3-row teaser + sign-up CTA. Returns a gate Response when
+    the caller is below IDENTIFIED, else None. Fails OPEN on any helper error so
+    a gating glitch can never 500 the endpoint."""
+    try:
+        from routes.tier_gate import _resolve_caller_tier, _gate_response
+        tier, _ = _resolve_caller_tier()
+        if str(tier).upper() not in ("FREE", "ANON", "ANONYMOUS", ""):
+            return None  # IDENTIFIED+ (free dev key, logged-in, paid) → full data
+        sample = rows[:3] if isinstance(rows, list) else []
+        total = len(rows) if isinstance(rows, list) else 0
+        return _gate_response(
+            str(tier).upper() or "FREE", "IDENTIFIED", gate_id,
+            preview={"sample": sample, "total_available": total,
+                     "note": "Free sign-up (email only, no card) unlocks the full dataset."})
+    except Exception:
+        return None  # never break the endpoint over a gate error
+
+
 def _register_carbon_route(app):
     @app.route("/api/v1/carbon", methods=["GET"])
     def api_carbon_intensity():
@@ -324,6 +348,9 @@ def _register_carbon_route(app):
             rows = [_safe_json(dict(zip(cols, r))) for r in cur.fetchall()]
             cur.close()
             _return_db(conn)
+            _g = _site_risk_gate(rows, "site_risk_carbon")
+            if _g is not None:
+                return _g
             return jsonify({"source":"EPA eGRID","count":len(rows),"data":rows})
         except Exception as e:
             logger.error(f"Carbon route error: {e}")
@@ -355,6 +382,9 @@ def _register_climate_route(app):
                 rows.append(_safe_json(d))
             cur.close()
             _return_db(conn)
+            _g = _site_risk_gate(rows, "site_risk_climate")
+            if _g is not None:
+                return _g
             return jsonify({"source":"NASA POWER","count":len(rows),"data":rows})
         except Exception as e:
             logger.error(f"Climate route error: {e}")
@@ -382,6 +412,9 @@ def _register_risk_route(app):
             rows = [_safe_json(dict(zip(cols, r))) for r in cur.fetchall()]
             cur.close()
             _return_db(conn)
+            _g = _site_risk_gate(rows, "site_risk_fema")
+            if _g is not None:
+                return _g
             return jsonify({"source":"FEMA NRI","count":len(rows),"data":rows})
         except Exception as e:
             logger.error(f"Risk route error: {e}")
@@ -413,6 +446,9 @@ def _register_water_route(app):
                 rows.append(_safe_json(d))
             cur.close()
             _return_db(conn)
+            _g = _site_risk_gate(rows, "site_risk_water")
+            if _g is not None:
+                return _g
             return jsonify({"source":"USGS","count":len(rows),"data":rows})
         except Exception as e:
             logger.error(f"Water stress route error: {e}")
