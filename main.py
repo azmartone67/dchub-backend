@@ -14894,6 +14894,30 @@ def api_signup():
         except Exception:
             pass
 
+        # r43-I (2026-05-29): best-effort UTM attribution for the MCP relay
+        # funnel. Runs AFTER commit so it can NEVER affect signup success. The
+        # MCP paywall hands agents a `…/signup?utm_source=mcp&utm_tool=<x>`
+        # link; dchub-nav.js stores it first-touch in the dch_utm cookie, and
+        # we record it here so /api/v1/mcp/relay-funnel can finally show
+        # MCP-signal → signup conversion (it read 0 because the origin was
+        # never captured, not because nobody converted).
+        try:
+            _utm = _parse_signup_utm(data, request)
+            if _utm.get("utm_source"):
+                _ensure_signup_utm_cols(conn)
+                _uc = conn.cursor()
+                _uc.execute(
+                    "UPDATE signups SET utm_source=%s, utm_tool=%s, "
+                    "utm_medium=%s, utm_campaign=%s WHERE email=%s",
+                    (_utm.get("utm_source"), _utm.get("utm_tool"),
+                     _utm.get("utm_medium"), _utm.get("utm_campaign"), email))
+                conn.commit()
+                _uc.close()
+                logger.info("[relay-funnel] signup attributed: %s ← utm_source=%s tool=%s",
+                            email, _utm.get("utm_source"), _utm.get("utm_tool"))
+        except Exception as _utm_e:
+            logger.warning("[relay-funnel] utm capture skipped (non-fatal): %s", _utm_e)
+
         logger.info(f"New API signup: {email} ({company})")
 
         return jsonify({
@@ -14910,6 +14934,125 @@ def api_signup():
     finally:
         try: conn.close()
         except Exception: pass
+
+
+# ── MCP relay-funnel attribution (r43-I, 2026-05-29) ──────────────────────
+_SIGNUP_UTM_COLS_READY = False
+
+def _ensure_signup_utm_cols(conn):
+    """Idempotently add the UTM columns to `signups` (once per process)."""
+    global _SIGNUP_UTM_COLS_READY
+    if _SIGNUP_UTM_COLS_READY:
+        return
+    try:
+        c = conn.cursor()
+        for _col in ("utm_source", "utm_tool", "utm_medium", "utm_campaign"):
+            c.execute(f"ALTER TABLE signups ADD COLUMN IF NOT EXISTS {_col} TEXT")
+        conn.commit()
+        c.close()
+        _SIGNUP_UTM_COLS_READY = True
+    except Exception:
+        try: conn.rollback()
+        except Exception: pass
+
+
+def _parse_signup_utm(data, req):
+    """Best-effort first-touch UTM: POST body → dch_utm cookie → Referer query.
+    The dch_utm cookie is set first-touch by dchub-nav.js when a human lands via
+    an agent-relayed `?utm_source=mcp&utm_tool=…` link, so it survives the
+    navigation to /signup. Never raises."""
+    keys = ("utm_source", "utm_tool", "utm_medium", "utm_campaign")
+    out = {}
+    try:
+        for k in keys:
+            v = (data or {}).get(k)
+            if v:
+                out[k] = str(v)[:120]
+        if out.get("utm_source"):
+            return out
+    except Exception:
+        pass
+    try:
+        from urllib.parse import parse_qs
+        ck = req.cookies.get("dch_utm") or ""
+        if ck:
+            q = parse_qs(ck)
+            for k in keys:
+                if q.get(k):
+                    out[k] = q[k][0][:120]
+        if out.get("utm_source"):
+            return out
+    except Exception:
+        pass
+    try:
+        from urllib.parse import urlparse, parse_qs
+        ref = req.headers.get("Referer", "") or ""
+        if ref:
+            q = parse_qs(urlparse(ref).query)
+            for k in keys:
+                if q.get(k):
+                    out[k] = q[k][0][:120]
+    except Exception:
+        pass
+    return out
+
+
+@app.route('/api/v1/mcp/relay-funnel', methods=['GET'])
+def mcp_relay_funnel():
+    """The MCP relay → signup funnel. Agents hit the paywall (upgrade_signals)
+    and relay a `utm_source=mcp` signup link to the human; humans who sign up
+    via it land in signups.utm_source. Before r43-I this read 0 because the
+    origin was never captured — not because nobody converted."""
+    out = {"as_of": datetime.utcnow().isoformat()}
+    conn = None
+    try:
+        conn = get_db()
+        cur = conn.cursor()
+        try: cur.execute("SET statement_timeout = 5000")
+        except Exception: pass
+
+        def _count(sql):
+            try:
+                cur.execute(sql)
+                return int((cur.fetchone() or [0])[0] or 0)
+            except Exception:
+                try: conn.rollback()
+                except Exception: pass
+                return None
+
+        out["upgrade_signals_30d"] = _count(
+            "SELECT COUNT(*) FROM mcp_upgrade_signals "
+            "WHERE created_at >= NOW() - INTERVAL '30 days'")
+        out["total_signups_30d"] = _count(
+            "SELECT COUNT(*) FROM signups "
+            "WHERE created_at >= NOW() - INTERVAL '30 days'")
+        out["mcp_attributed_signups_30d"] = _count(
+            "SELECT COUNT(*) FROM signups WHERE utm_source ILIKE 'mcp%' "
+            "AND created_at >= NOW() - INTERVAL '30 days'")
+        out["mcp_attributed_signups_all"] = _count(
+            "SELECT COUNT(*) FROM signups WHERE utm_source ILIKE 'mcp%'")
+        try:
+            cur.execute(
+                "SELECT COALESCE(utm_tool,'(none)'), COUNT(*) FROM signups "
+                "WHERE utm_source ILIKE 'mcp%' GROUP BY 1 ORDER BY 2 DESC LIMIT 10")
+            out["signups_by_tool"] = [{"tool": r[0], "signups": int(r[1])}
+                                       for r in cur.fetchall()]
+        except Exception:
+            try: conn.rollback()
+            except Exception: pass
+            out["signups_by_tool"] = []
+        out["note"] = ("relay funnel = agents relay utm_source=mcp signup links; "
+                       "mcp_attributed_signups are humans who signed up via them. "
+                       "Capture added r43-I; backfills forward from now.")
+    except Exception as e:
+        out["error"] = str(e)[:200]
+    finally:
+        if conn:
+            try: conn.close()
+            except Exception: pass
+    resp = jsonify(out)
+    resp.headers["Cache-Control"] = "public, max-age=120"
+    return resp
 
 # =============================================================================
 # API ALIASES (Frontend Compatibility)
