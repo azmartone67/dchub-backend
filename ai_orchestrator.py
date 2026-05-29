@@ -433,13 +433,13 @@ JSON only, no markdown."""
                 for deal in predictions.get('next_deals', [])[:3]:
                     cursor.execute('''
                         INSERT INTO ai_predictions (prediction_type, prediction_data, confidence, timeframe)
-                        VALUES (%s, %s, %s, %s)
+                        VALUES (%s, %s, %s, %s) ON CONFLICT DO NOTHING
                     ''', ('deal', json.dumps(deal), deal.get('confidence', 0.5), '6_months'))
                 
                 for hotspot in predictions.get('emerging_hotspots', []):
                     cursor.execute('''
                         INSERT INTO ai_predictions (prediction_type, prediction_data, confidence, timeframe)
-                        VALUES (%s, %s, %s, %s)
+                        VALUES (%s, %s, %s, %s) ON CONFLICT DO NOTHING
                     ''', ('market_growth', json.dumps(hotspot), hotspot.get('confidence', 0.5), '12_months'))
                 
                 conn.commit()
@@ -597,7 +597,7 @@ JSON only, no markdown."""
                 cursor.execute('''
                     INSERT INTO opportunity_alerts 
                     (alert_type, title, description, entities, priority)
-                    VALUES (%s, %s, %s, %s, %s)
+                    VALUES (%s, %s, %s, %s, %s) ON CONFLICT DO NOTHING
                 ''', (
                     opp.get('type', 'general'),
                     opp.get('title', '')[:200],
@@ -731,7 +731,7 @@ JSON only, no markdown."""
                 cursor.execute('''
                     INSERT INTO agent_knowledge_share 
                     (from_agent, insight_type, insight_data, confidence)
-                    VALUES (%s, %s, %s, %s)
+                    VALUES (%s, %s, %s, %s) ON CONFLICT DO NOTHING
                 ''', (
                     'orchestrator',
                     insight.get('insight_type', 'general'),
@@ -908,10 +908,12 @@ def setup_orchestrator_routes(app):
     
     orchestrator_bp = Blueprint('orchestrator', __name__, url_prefix='/api/orchestrator')
     
+# AUTO-REPAIR: duplicate route '/status' also in enhanced_promotion.py:839 — review and remove one
     @orchestrator_bp.route('/status')
     def status():
         orch = get_orchestrator()
         return jsonify(orch.get_status())
+# AUTO-REPAIR: duplicate route '/run' also in enhanced_promotion.py:844 — review and remove one
     
     @orchestrator_bp.route('/run', methods=['POST'])
     def run_cycle():
