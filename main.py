@@ -15007,6 +15007,11 @@ def mcp_relay_funnel():
     conn = None
     try:
         conn = get_db()
+        # Ensure the utm_* columns exist so the queries below return 0 (not
+        # null) before the first attributed signup. signups.created_at is a
+        # TEXT isoformat string, so we use all-time counts here rather than a
+        # fragile TEXT-vs-TIMESTAMP date comparison.
+        _ensure_signup_utm_cols(conn)
         cur = conn.cursor()
         try: cur.execute("SET statement_timeout = 5000")
         except Exception: pass
@@ -15023,12 +15028,7 @@ def mcp_relay_funnel():
         out["upgrade_signals_30d"] = _count(
             "SELECT COUNT(*) FROM mcp_upgrade_signals "
             "WHERE created_at >= NOW() - INTERVAL '30 days'")
-        out["total_signups_30d"] = _count(
-            "SELECT COUNT(*) FROM signups "
-            "WHERE created_at >= NOW() - INTERVAL '30 days'")
-        out["mcp_attributed_signups_30d"] = _count(
-            "SELECT COUNT(*) FROM signups WHERE utm_source ILIKE 'mcp%' "
-            "AND created_at >= NOW() - INTERVAL '30 days'")
+        out["total_signups_all"] = _count("SELECT COUNT(*) FROM signups")
         out["mcp_attributed_signups_all"] = _count(
             "SELECT COUNT(*) FROM signups WHERE utm_source ILIKE 'mcp%'")
         try:
