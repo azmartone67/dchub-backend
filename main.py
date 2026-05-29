@@ -16247,55 +16247,24 @@ def _build_fiber_routes_geojson(max_features=None):
 
 
 def _fiber_full_access_ok():
-    """True iff the caller may receive the FULL fiber dataset. Fails closed.
+    """True iff the caller may receive the FULL fiber dataset. Fails CLOSED.
 
-    Full access = paid API key (developer/pro/enterprise/founding),
-    internal MCP key, admin radar key, OR a real dchub.cloud browser
-    (r43-G HMAC session cookie, or a same-origin GET whose Referer/Origin
-    is dchub.cloud — the Land & Power map's fetch carries this; a raw
-    scraper curl does not). Everyone else (anon scrapers, free-tier API
-    callers) gets the 3-route teaser, closing the 645KB leak that served
-    the paid fiber dataset to any unauthenticated caller."""
-    # 1. internal MCP key
+    Full access = paying tier (developer/pro/founding/enterprise) via
+    X-API-Key or a logged-in dchub_token cookie, internal MCP / admin key,
+    the loopback self-call, or a real browser (r43-G HMAC session cookie).
+    Everyone else (anonymous scrapers, free / identified callers) gets the
+    3-route teaser.
+
+    Delegates to the shared routes.tier_gate.caller_is_privileged so the
+    "full vs teaser" rule is identical across every gated endpoint. We do
+    NOT trust Origin/Referer: the CF worker injects a dchub.cloud Referer
+    on every proxied request, so it's present for scrapers too — trusting
+    it is exactly what leaked the 645KB dataset to anonymous curl."""
     try:
-        if is_valid_internal_key(request.headers.get("X-Internal-Key", "")):
-            return True
+        from routes.tier_gate import caller_is_privileged
+        return caller_is_privileged("DEVELOPER")
     except Exception:
-        pass
-    # 2. admin radar key (X-Admin-Key == DCHUB_ADMIN_KEY)
-    try:
-        import hmac as _h
-        _ah = (request.headers.get("X-Admin-Key", "") or "").split()
-        _ac = _ah[0] if _ah else ""
-        _ae = (os.environ.get("DCHUB_ADMIN_KEY", "") or "").split()
-        _ae = _ae[0] if _ae else ""
-        if _ac and _ae and _h.compare_digest(_ac, _ae):
-            return True
-    except Exception:
-        pass
-    # 3. paid API key (X-API-Key / dchub_ bearer) → DB tier lookup
-    try:
-        from map_tier_gating import _detect_caller_tier, _normalize_tier
-        _tier, _info = _detect_caller_tier()
-        if _normalize_tier(_tier) in ("developer", "pro"):
-            return True
-    except Exception:
-        pass
-    # 4. real dchub.cloud browser: r43-G signed session cookie
-    try:
-        from routes.session_cookie import validate_cookie
-        if validate_cookie():
-            return True
-    except Exception:
-        pass
-    # 5. ...or same-origin GET (browser map fetch sends Referer; curl doesn't)
-    try:
-        _origin = request.headers.get("Origin", "") or request.headers.get("Referer", "")
-        if request.method == "GET" and "dchub.cloud" in _origin:
-            return True
-    except Exception:
-        pass
-    return False
+        return False
 
 
 def _fiber_teaser_response():

@@ -191,25 +191,23 @@ def caller_is_privileged(min_tier: str = "IDENTIFIED") -> bool:
             return True
     except Exception:
         pass
-    # 3. internal server-to-server call (loopback or our own UA prefix).
-    #    Public traffic arrives via CF→Railway proxy, so remote_addr is the
-    #    proxy IP, never loopback — only true self-calls are 127.0.0.1/::1.
+    # 3. internal server-to-server call — loopback only. Public traffic
+    #    arrives via the CF→Railway proxy, so remote_addr is the proxy IP,
+    #    never loopback; only true self-calls (the grid-intel headroom
+    #    fetch to 127.0.0.1:8080) are loopback. We do NOT trust the
+    #    User-Agent ("DCHub…") — a CF client can forge any UA.
     try:
-        ua = request.headers.get("User-Agent", "") or ""
-        if request.remote_addr in ("127.0.0.1", "::1", "localhost") or ua.startswith("DCHub"):
+        if request.remote_addr in ("127.0.0.1", "::1", "localhost"):
             return True
     except Exception:
         pass
-    # 4. real dchub.cloud browser
+    # 4. real dchub.cloud browser: r43-G signed session cookie ONLY.
+    #    Origin/Referer is intentionally NOT trusted — the CF worker injects
+    #    a dchub.cloud Referer on every proxied request, so it's true for
+    #    scrapers too (that injection leaked the gated datasets to anon curl).
     try:
         from routes.session_cookie import validate_cookie
         if validate_cookie():
-            return True
-    except Exception:
-        pass
-    try:
-        origin = request.headers.get("Origin", "") or request.headers.get("Referer", "")
-        if request.method == "GET" and "dchub.cloud" in origin:
             return True
     except Exception:
         pass
