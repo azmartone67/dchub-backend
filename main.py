@@ -18856,6 +18856,16 @@ def serve_sitemap_xml():
         ('/grid/nyiso',    '0.8', 'daily'),
         ('/grid/isone',    '0.8', 'daily'),
         ('/grid/spp',      '0.8', 'daily'),
+        # seo (2026-05-29): /built-for-ai is the flagship agent-readability
+        # comparison page (the campaign thesis — only DC-intelligence source an
+        # LLM can both QUERY and CITE). LIVE + 200 on the apex. Priority 0.9.
+        ('/built-for-ai',  '0.9', 'weekly'),
+        # /state-of-power ships with the energy agent. It currently 404s, and
+        # listing a 404 in the sitemap reintroduces the exact Search-Console
+        # "Redirect/404 error" anti-pattern fixed in r43-J (the 1,367 dead
+        # /locations URLs). Left commented so it's a one-line uncomment the
+        # moment the page returns 200 — do NOT enable until then.
+        # ('/state-of-power', '0.9', 'daily'),
     ]
     for path, pri, freq in static_pages:
         urls.append(f'  <url><loc>https://dchub.cloud{path}</loc><lastmod>{today}</lastmod><changefreq>{freq}</changefreq><priority>{pri}</priority></url>')

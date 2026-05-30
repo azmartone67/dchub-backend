@@ -3258,6 +3258,40 @@ DCPI_MARKET_TEMPLATE = """<!DOCTYPE html>
 <meta property="og:image:type" content="image/png">
 <meta name="twitter:card" content="summary_large_image">
 <meta name="twitter:image" content="https://dchub.cloud/dcpi/og/{{ s.market_slug }}.png">
+<link rel="canonical" href="https://dchub.cloud/dcpi/{{ s.market_slug }}">
+<meta name="robots" content="index,follow,max-snippet:-1,max-image-preview:large">
+<!-- seo: per-market DCPI structured data so AI Overviews + agents ingest the
+     load-bearing numbers (Excess Power score, Constraint score, verdict, ISO,
+     coordinates) directly. schema.org Dataset is the type Google Dataset
+     Search + LLM crawlers index. Values emitted via Jinja |tojson so they're
+     correctly JSON-escaped/typed; geo is omitted when lat/long are null. -->
+<script type="application/ld+json">
+{
+  "@context": "https://schema.org",
+  "@type": "Dataset",
+  "name": {{ (s.market_name ~ " — Data Center Power Index (DCPI)")|tojson }},
+  "description": {{ ((s.market_name ~ ": DCPI verdict " ~ (s.verdict or "LOW_SIGNAL") ~ ". Excess Power score " ~ ((s.excess_power_score or 0)|round(1)) ~ "/100, Grid Constraint score " ~ ((s.constraint_score or 0)|round(1)) ~ "/100" ~ (", ISO " ~ s.iso if s.iso else "") ~ ". Recomputed daily by DC Hub from interconnection-queue, capacity-pipeline, and grid-emergency signals."))|tojson }},
+  "url": "https://dchub.cloud/dcpi/{{ s.market_slug }}",
+  "creator": {"@type": "Organization", "name": "DC Hub", "url": "https://dchub.cloud"},
+  "publisher": {"@type": "Organization", "name": "DC Hub", "url": "https://dchub.cloud"},
+  "isAccessibleForFree": true,
+  "isPartOf": {"@type": "Dataset", "name": "Data Center Power Index (DCPI)", "url": "https://dchub.cloud/dcpi"},
+  "keywords": {{ (("data center power, DCPI, " ~ s.market_name ~ ", grid constraint, excess power, " ~ (s.iso or "ISO") ~ ", site selection, " ~ (s.verdict or "LOW_SIGNAL")))|tojson }},
+  "temporalCoverage": "2024-01-01/..",
+  "citation": "DC Hub Data Center Power Index, dchub.cloud/dcpi",
+  "spatialCoverage": {
+    "@type": "Place",
+    "name": {{ ((s.market_name ~ (", " ~ s.state if s.state else "")))|tojson }}{% if s.latitude is not none and s.longitude is not none %},
+    "geo": {"@type": "GeoCoordinates", "latitude": {{ s.latitude|tojson }}, "longitude": {{ s.longitude|tojson }}}{% endif %}
+  },
+  "variableMeasured": [
+    {"@type": "PropertyValue", "name": "Excess Power Score", "value": {{ ((s.excess_power_score or 0)|round(1))|tojson }}, "minValue": 0, "maxValue": 100, "description": "Higher = more available/stranded power capacity"},
+    {"@type": "PropertyValue", "name": "Grid Constraint Score", "value": {{ ((s.constraint_score or 0)|round(1))|tojson }}, "minValue": 0, "maxValue": 100, "description": "Higher = more impediment to new data-center builds"},
+    {"@type": "PropertyValue", "name": "DCPI Verdict", "value": {{ (s.verdict or "LOW_SIGNAL")|tojson }}, "description": "BUILD / CAUTION / AVOID / LOW_SIGNAL"}{% if s.iso %},
+    {"@type": "PropertyValue", "name": "ISO / Grid Operator", "value": {{ s.iso|tojson }}}{% endif %}
+  ]
+}
+</script>
 <link href="https://fonts.googleapis.com/css2?family=JetBrains+Mono:wght@400;500;600;700&family=Inter:wght@400;500;600;700;800&display=swap" rel="stylesheet">
 <style>
 :root {

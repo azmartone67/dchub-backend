@@ -578,6 +578,40 @@ def market_short_html(slug):
                      f'CBRE/JLL research coverage yet — facility counts and capacity above '
                      f'are live from our infrastructure database.</p>')
 
+    # seo: enrich the market JSON-LD with the load-bearing numbers (total MW,
+    # facility count, under-construction MW) as schema.org PropertyValues so AI
+    # Overviews + agents ingest the figures as structured data, not just prose.
+    # Built via json.dumps (guaranteed-valid + correctly escaped) rather than
+    # hand-written JSON in the f-string. No new DB query — reuses `md` already
+    # in scope, so the hot /markets/<slug> path stays fast. Only emits metrics
+    # that pass _has(); geo/coords live on the richer /dcpi/<slug> Dataset page.
+    import json as _ldjson
+    _measured = []
+    if _has(md.get('inventory_mw')):
+        _measured.append({"@type": "PropertyValue", "name": "Total Capacity",
+                          "value": md.get('inventory_mw'), "unitText": "MW"})
+    if _has(md.get('num_facilities')):
+        _measured.append({"@type": "PropertyValue", "name": "Facilities",
+                          "value": md.get('num_facilities')})
+    if _has(md.get('under_construction_mw')):
+        _measured.append({"@type": "PropertyValue", "name": "Under Construction",
+                          "value": md.get('under_construction_mw'), "unitText": "MW"})
+    _market_ld = {
+        "@context": "https://schema.org",
+        "@type": "Place",
+        "name": name,
+        "description": desc,
+        "url": f"https://dchub.cloud/markets/{slug_norm}",
+        "additionalType": "https://schema.org/Place",
+        "isPartOf": {"@type": "Dataset", "name": "DC Hub Data Center Market Intelligence",
+                     "url": "https://dchub.cloud/markets"},
+    }
+    if _has(md.get('region')):
+        _market_ld["containedInPlace"] = {"@type": "Place", "name": md.get('region')}
+    if _measured:
+        _market_ld["additionalProperty"] = _measured
+    _market_jsonld = _ldjson.dumps(_market_ld, ensure_ascii=False)
+
     html = f"""<!doctype html><html lang=en>
 <head><meta charset=utf-8>
 <meta name="market-slug" content="{slug_norm}">
@@ -587,12 +621,7 @@ def market_short_html(slug):
 <link rel="canonical" href="https://dchub.cloud/markets/{slug_norm}">
 <meta property="og:title" content="{name} Data Center Market · DC Hub">
 <meta property="og:description" content="{desc}">
-<script type="application/ld+json">{{
- "@context":"https://schema.org","@type":"Place",
- "name":"{name}",
- "description":"{desc}",
- "url":"https://dchub.cloud/markets/{slug_norm}"
-}}</script>
+<script type="application/ld+json">{_market_jsonld}</script>
 <link rel="preconnect" href="https://fonts.googleapis.com">
 <link href="https://fonts.googleapis.com/css2?family=Instrument+Sans:wght@400;500;600;700&family=JetBrains+Mono:wght@400;500;600&display=swap" rel="stylesheet">
 <style>
