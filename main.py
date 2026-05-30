@@ -24751,6 +24751,17 @@ try:
     from routes.content_enqueue import content_enqueue_bp
     app.register_blueprint(content_enqueue_bp)
     print("[main] content_enqueue_bp registered: /api/v1/content-engine/{enqueue,status}", flush=True)
+    # One-time idempotent seed of the "DC Hub vs. the Industry" campaign posts
+    # into the LinkedIn publish queue. Primary only (Render is read-only
+    # failover); daemon thread so it never blocks boot; marker-guarded so it
+    # won't re-seed across restarts.
+    if not os.environ.get("RENDER"):
+        import threading as _camp_th
+        from routes.content_enqueue import seed_smash_mouth_campaign as _seed_camp
+        _camp_th.Thread(
+            target=lambda: print(f"[main] smash-mouth campaign seed: {_seed_camp()}", flush=True),
+            daemon=True,
+        ).start()
 except Exception as _ce_e:
     print(f"[main] content_enqueue_bp register failed: {_ce_e}", flush=True)
 

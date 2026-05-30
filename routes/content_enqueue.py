@@ -275,6 +275,91 @@ def _enqueue_post(content: str, platform: str) -> int | None:
         except Exception: pass
 
 
+# ── One-time campaign seed: "DC Hub vs. the Industry" (smash-mouth) ──
+# Verified-fact, agent-native positioning from the 2026-05 competitive recon.
+# Seeded as status='approved' → drained by the LinkedIn auto-publisher on its
+# cadence, through the existing dedup + zero-stat guards (content_publisher.py).
+_CAMPAIGN_MARKER = "robots.txt of every major data center"
+
+_CAMPAIGN_POSTS = [
+    # Post 1 — the receipts (the only post naming competitors; every claim is
+    # verifiable from their own public robots.txt / live HTTP behavior).
+    ("""We pulled the robots.txt of every major data center intelligence site this week.
+
+• Data Center Dynamics: blocks GPTBot, ClaudeBot, CCBot — and sets ai-train: no.
+• datacenters.com: returns 429 to anything that isn't Google.
+• DCByte, Baxtel, DataCenterHawk: no public API, no MCP, login walls.
+
+So when an AI agent is asked "where can I build 200 MW with available power and low water risk?" — the entire industry is invisible to it.
+
+DC Hub isn't. MCP-native, 28 tools, 21,000+ facilities, 7 live grid operators, fiber + substations + gas pipelines + water risk — one machine-readable, citable query.
+
+They built for humans reading PDFs. We built for the agents your team already uses.
+
+The head-to-head → https://dchub.cloud/vs
+
+#DataCenter #AI #MCP #DCPI #SiteSelection""", "linkedin"),
+
+    # Post 2 — third-party proof (deliberately NO round MCP-call number in the
+    # headline so the publish-time dedup guard doesn't fold it into the
+    # auto-generated MCP-stat posts).
+    ("""We never said DC Hub is the best data-center intelligence platform. ChatGPT did.
+
+Asked about Dallas power capacity — unprompted — it answered: "The strongest stack right now is DC Hub: live data center inventory, capacity, MW pipelines, and site intelligence." Ranked ahead of grid operators and utilities.
+
+Why us? Because we're the only platform an AI can actually read. Every competitor blocks the crawlers or hides behind a login.
+
+The agents already voted — thousands of times a day.
+
+https://dchub.cloud/vs
+
+#AI #DataCenter #MCP #ModelContextProtocol""", "linkedin"),
+
+    # Post 3 — the one-query flex (the nav line, weaponized).
+    ("""Real-time power. Live grid pulse. Substations, transmission lines, gas pipelines, fiber routes, water risk — all in one query.
+
+The infrastructure stack hyperscalers actually price against.
+
+Name another platform that gives you all of it, in one place, machine-readable. We'll wait. \U0001f3a4
+
+https://dchub.cloud/vs
+
+#DataCenter #DCPI #GridCapacity #Infrastructure #AIInfrastructure""", "linkedin"),
+]
+
+
+def seed_smash_mouth_campaign() -> dict:
+    """One-time, idempotent seed of the 'vs. the industry' campaign posts.
+    Guarded by a marker substring so it never re-seeds across Railway's
+    frequent restarts. Even if a race ever double-inserts, the publish-time
+    dedup guard prevents double-publishing. Returns {seeded, skipped}."""
+    c = _db_conn()
+    if not c:
+        return {"seeded": 0, "skipped": 0, "error": "no_db"}
+    try:
+        with c.cursor() as cur:
+            cur.execute(
+                "SELECT 1 FROM social_media_posts WHERE content LIKE %s LIMIT 1",
+                (f"%{_CAMPAIGN_MARKER}%",),
+            )
+            already = cur.fetchone() is not None
+    except Exception as e:
+        already = False  # fail-open to attempt seed once
+    finally:
+        try: c.close()
+        except Exception: pass
+
+    if already:
+        return {"seeded": 0, "skipped": len(_CAMPAIGN_POSTS),
+                "reason": "already_seeded"}
+
+    seeded = 0
+    for content, platform in _CAMPAIGN_POSTS:
+        if _enqueue_post(content, platform):
+            seeded += 1
+    return {"seeded": seeded, "skipped": len(_CAMPAIGN_POSTS) - seeded}
+
+
 # ── Endpoints ───────────────────────────────────────────────────────
 
 @content_enqueue_bp.route(
