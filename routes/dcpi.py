@@ -3726,21 +3726,30 @@ def public_dashboard():
 
     # r42ab (2026-05-27): anon-tier cap on /dcpi. Operator observed 25
     # free dev keys claimed with 1 paid conversion — too much value
-    # was reaching anonymous users to motivate signup. Now anon sees
-    # top 5 BUILD + top 20 AVOID/CAUTION = 25 cards. Free-key callers
-    # (X-API-Key in querystring or header) see the full set. Per-market
-    # detail pages stay free (AI-citation moat preserved).
+    # was reaching anonymous users to motivate signup. Originally anon saw
+    # only top 5 BUILD + top 20 AVOID/CAUTION = 25 cards; free-key callers
+    # (X-API-Key in querystring or header) saw the full set.
+    #
+    # r42ab-followup (2026-05-30): surface ALL published markets in the
+    # index grid for every visitor. The page only had ~25 of the 232
+    # published market_power_scores rows reaching anon viewers, which
+    # made the public coverage claim ("{{ count }} MARKETS SCORED") and
+    # the verdict tabs (Actionable / Monitoring / All) badly undercount —
+    # the "All" tab showed 25, the "Monitoring"/LOW_SIGNAL tab rendered
+    # empty for anon. The catalog (market name, ISO, state, top-level
+    # Excess/Constraint, BUILD/CAUTION/AVOID verdict) is the free
+    # discovery hook; the PAID moat (county-level drill, >5pt move
+    # alerts, branded PDF export) is unchanged and still gated via the
+    # Pro CTA + the per-market detail pages stay free for AI citation.
+    # ADDITIVE: anon now sees more (all) markets rather than fewer.
+    # To re-introduce an anon row cap, restore the `_has_key` slice below.
     from flask import request as _req
     _has_key = bool((_req.headers.get('X-API-Key') or _req.args.get('api_key') or '').strip())
     _total_rows = len(rows)
-    if not _has_key and _total_rows > 25:
-        _build = [r for r in rows if (r.get("verdict") or "") == "BUILD"][:5]
-        _avoid_caution = [r for r in rows
-                           if (r.get("verdict") or "") in ("AVOID", "CAUTION")][:20]
-        rows = _build + _avoid_caution
-        _gated_to_anon = True
-    else:
-        _gated_to_anon = False
+    # No row cap: render the full published catalog. Numeric scores stay on
+    # the cards (they are the free top-level teaser); the Pro paywall below
+    # is what protects the county-level numbers + alerts + export.
+    _gated_to_anon = False
 
     html = render_template_string(
         DCPI_INDEX_TEMPLATE,
