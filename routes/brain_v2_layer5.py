@@ -754,6 +754,18 @@ def mark_proposal_pr(proposal_id):
             conn.commit()
         if not row:
             return jsonify(ok=False, error="proposal_not_found"), 404
+        # Phase r60-evolution: notify on L5 proposal acceptance.
+        try:
+            from routes.brain_evolution import log_notification as _logn
+            _logn(
+                kind="l5_proposal_pr_opened",
+                summary=f"Brain Layer 5 proposal #{proposal_id} → PR opened",
+                detail={"proposal_id": proposal_id, "pr_url": pr_url},
+                url=pr_url,
+                severity="win",
+            )
+        except Exception:
+            pass
         return jsonify(ok=True, proposal_id=proposal_id, pr_url=pr_url), 200
     except Exception as e:
         return jsonify(ok=False, error=str(e)[:200]), 500

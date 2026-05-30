@@ -24997,6 +24997,22 @@ try:
 except Exception as _e:
     print(f"[main] brain_autopilot register failed: {_e}", file=sys.stderr)
 
+# Phase r60-evolution (2026-05-29): longitudinal evolution view.
+# Exposes /api/v1/brain/evolution (autonomy + learning deltas + 0-100
+# score) and /api/v1/brain/notifications (per-decision feed). The
+# evolution snapshot is ALSO merged into /brain/heartbeat as an
+# `evolution` sub-block so existing dashboard consumers light up
+# without any wiring change. Registration is non-fatal — if this
+# blueprint fails to load the heartbeat just won't expose the
+# `evolution` sub-block (consumers ignore unknown keys).
+try:
+    from routes.brain_evolution import brain_evolution_bp
+    app.register_blueprint(brain_evolution_bp)
+    print("🧠 Brain Evolution: ✅ Registered (/brain/evolution + "
+          "/brain/notifications)")
+except Exception as _e:
+    print(f"[main] brain_evolution register failed: {_e}", file=sys.stderr)
+
 # Phase r33-F (2026-05-21): autopilot auto-action helpers. Provides
 # three endpoints that power the three upgraded auto-actions:
 #   POST /api/v1/admin/route-redirect/add      (404_spike action)

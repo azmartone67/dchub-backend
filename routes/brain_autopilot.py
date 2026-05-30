@@ -1598,6 +1598,32 @@ def autopilot_run():
                 "issue": issue, "pattern": issue, "endpoint": action_path,
                 "outcome": outcome, "http_code": http_code,
             })
+            # Phase r60-evolution: emit a brain_notifications row + tagged
+            # stderr line so the operator FEELS the brain working. Fire-and-
+            # forget; failure to log here never affects the action loop.
+            try:
+                from routes.brain_evolution import log_notification as _logn
+                if outcome == "executed_ok":
+                    _logn(
+                        kind="autopilot_action",
+                        summary=f"Auto-fixed finding '{issue}' via {action_path}",
+                        detail={"issue": issue, "http_code": http_code,
+                                "endpoint": action_path},
+                        url=f.get("url"),
+                        severity="win",
+                    )
+                elif outcome == "execution_failed":
+                    _logn(
+                        kind="autopilot_action_failed",
+                        summary=f"Autopilot tried '{issue}' but {action_path} returned {http_code}",
+                        detail={"issue": issue, "http_code": http_code,
+                                "endpoint": action_path,
+                                "error": (error or "")[:200]},
+                        url=f.get("url"),
+                        severity="warn",
+                    )
+            except Exception:
+                pass
     finally:
         try: c.close()
         except Exception: pass
@@ -1939,6 +1965,31 @@ def _compute_heartbeat_sync():
             }
     except Exception as _se:
         out["surfaces"] = {"error": str(_se)[:160]}
+
+    # ── Phase r60-evolution (2026-05-29): evolution sub-block ──
+    # Merge a compact slice of the evolution snapshot into heartbeat so
+    # existing dashboard consumers see "how is brain getting better
+    # over time?" without any wiring change. Full payload + per-window
+    # detail lives at /api/v1/brain/evolution. Fail-soft: if the
+    # evolution module is missing or its compute raises, we just omit
+    # the sub-block.
+    try:
+        from routes.brain_evolution import compute_evolution_snapshot
+        ev = compute_evolution_snapshot()
+        if ev and ev.get("ok"):
+            out["evolution"] = {
+                "score":                     ev.get("evolution_score"),
+                "verdict":                   ev.get("verdict"),
+                "findings_resolved_7d":      ev.get("findings_resolved_7d"),
+                "autonomous_actions_24h":    ev.get("autonomous_actions_24h"),
+                "decisions_taken_30d":       ev.get("decisions_taken_30d"),
+                "layer_5_proposals_30d":     ev.get("layer_5_proposals_30d"),
+                "top_3_resolved_finding_types":
+                    ev.get("top_3_resolved_finding_types"),
+            }
+    except Exception as _ee:
+        # Don't let evolution failure break the heartbeat
+        out["evolution"] = {"error": str(_ee)[:160]}
 
     # ── Verdict ──
     det = out.get("detector") or {}
