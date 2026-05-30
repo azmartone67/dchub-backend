@@ -3009,12 +3009,29 @@ footer a:hover { color: var(--acc-light); }
     });
   </script>
 
+  <div id="pro-cta-block">
   <div class="section-h"><span class="pip"></span>🔓 Pro Access</div>
   <div class="cta-banner">
     <h2>Drill to county level. Get alerts. Export branded PDFs.</h2>
     <p>Pro shows scores at the county level so you can pinpoint where the headroom actually lives. Plus alert when any market moves &gt;5 points and one-click PDF export for your buyers. $199/mo.</p>
     <a class="btn" href="/pricing">Upgrade to Pro →</a>
   </div>
+  </div>
+  <script>
+  /* r44 (2026-05-30): hide the "Upgrade to Pro" CTA for users who are ALREADY
+     paid — it was shown to everyone, including enterprise, which read as broken.
+     Defensive: only hides on a confirmed paid tier; leaves it for anon/free or
+     on any fetch failure. */
+  (function(){ try { fetch('/api/v1/me/tier', {credentials:'include'})
+    .then(function(r){ return r.json(); })
+    .then(function(d){
+      var t = ((d && (d.tier || d.plan)) || '').toLowerCase();
+      if (['pro','enterprise','founding','developer','starter','admin'].indexOf(t) >= 0) {
+        var b = document.getElementById('pro-cta-block');
+        if (b) b.style.display = 'none';
+      }
+    }).catch(function(){}); } catch(e){} })();
+  </script>
 
   <div class="section-h"><span class="pip"></span>📋 Methodology</div>
   <p style="color:var(--tx2);font-size:0.92rem;max-width:720px;">

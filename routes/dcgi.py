@@ -120,27 +120,77 @@ _PRICE_CEIL = 12.0
 def _gas_state_rollup():
     """Per-state gas access + cost + DCGI. Fail-soft: returns ({}, err) on
     any DB error so the caller can degrade gracefully. Time-capped (8s) to
-    protect the 2-replica backend from a slow query starving the worker pool."""
+    protect the 2-replica backend from a slow query starving the worker pool.
+
+    The gas_pipelines.state column is empty for ~all rows, but lat/lng ARE
+    populated, so we derive the 2-letter state code in Python from coordinates
+    via eia_gas_bulk_loader.lat_lng_to_state (imported defensively). If that
+    helper can't be imported we fall back to the legacy state-column grouping
+    so this never crashes."""
     states = {}
+
+    # Defensive import: if the lat/lng->state helper is unavailable, fall back
+    # to the old state-column SQL grouping (legacy behavior, never crash).
+    try:
+        from eia_gas_bulk_loader import lat_lng_to_state as _lat_lng_to_state
+    except Exception:
+        _lat_lng_to_state = None
+
     try:
         with conn() as c, c.cursor() as cur:
             cur.execute("SET statement_timeout = 8000")
-            cur.execute(
-                """
-                SELECT UPPER(state) AS st,
-                       COUNT(*) AS n,
-                       COUNT(DISTINCT operator) AS ops,
-                       SUM(CASE WHEN pipeline_type = 'interstate' THEN 1 ELSE 0 END) AS inter
-                FROM gas_pipelines
-                WHERE state IS NOT NULL AND state <> '' AND LENGTH(state) = 2
-                GROUP BY UPPER(state)
-                """
-            )
-            for st, n, ops, inter in cur.fetchall():
-                states[st] = {
-                    "state": st, "pipelines": int(n or 0),
-                    "operators": int(ops or 0), "interstate": int(inter or 0),
-                }
+            if _lat_lng_to_state is not None:
+                # Pull raw rows (no state filter — the column is empty) and
+                # derive each row's state from coordinates in Python.
+                cur.execute(
+                    """
+                    SELECT lat, lng, operator, pipeline_type
+                    FROM gas_pipelines
+                    """
+                )
+                # Per-state accumulators; operators dedup via a set.
+                ops_sets = {}
+                for lat, lng, operator, ptype in cur.fetchall():
+                    if lat is None or lng is None:
+                        continue
+                    try:
+                        st = _lat_lng_to_state(float(lat), float(lng))
+                    except Exception:
+                        st = ""
+                    if not st or len(st) != 2:
+                        continue
+                    st = st.upper()
+                    bucket = states.get(st)
+                    if bucket is None:
+                        bucket = {"state": st, "pipelines": 0,
+                                  "operators": 0, "interstate": 0}
+                        states[st] = bucket
+                        ops_sets[st] = set()
+                    bucket["pipelines"] += 1
+                    if ptype == "interstate":
+                        bucket["interstate"] += 1
+                    if operator:
+                        ops_sets[st].add(operator)
+                for st, bucket in states.items():
+                    bucket["operators"] = len(ops_sets.get(st, ()))
+            else:
+                # Legacy fallback: group by the (mostly empty) state column.
+                cur.execute(
+                    """
+                    SELECT UPPER(state) AS st,
+                           COUNT(*) AS n,
+                           COUNT(DISTINCT operator) AS ops,
+                           SUM(CASE WHEN pipeline_type = 'interstate' THEN 1 ELSE 0 END) AS inter
+                    FROM gas_pipelines
+                    WHERE state IS NOT NULL AND state <> '' AND LENGTH(state) = 2
+                    GROUP BY UPPER(state)
+                    """
+                )
+                for st, n, ops, inter in cur.fetchall():
+                    states[st] = {
+                        "state": st, "pipelines": int(n or 0),
+                        "operators": int(ops or 0), "interstate": int(inter or 0),
+                    }
             # Latest industrial / electric-power gas price per state.
             cur.execute(
                 """
@@ -495,6 +545,114 @@ def pipeline_report_html():
         "Machine-readable: <a href=\"/api/v1/reports/pipeline\">/api/v1/reports/pipeline</a> · "
         "<a href=\"/api/v1/dcgi/scores\">/api/v1/dcgi/scores</a> · "
         "<a href=\"/api/v1/dcgi/operators\">/api/v1/dcgi/operators</a><br>"
+        "License: CC BY 4.0 &mdash; cite &ldquo;DC Hub Data Center Gas Index (DCGI), dchub.cloud&rdquo;."
+        "</div></div></body></html>")
+
+    resp = Response(html, mimetype="text/html")
+    resp.headers["Cache-Control"] = "public, max-age=120, s-maxage=300"
+    resp.headers["Link"] = "<https://creativecommons.org/licenses/by/4.0/>; rel=\"license\""
+    return resp
+
+
+@dcgi_bp.route("/dcgi", methods=["GET"])
+def dcgi_html():
+    """Branded /dcgi landing page — the full per-state DCGI table plus the
+    midstream operator registry. Mirrors pipeline_report_html() and reuses the
+    same _REPORT_CSS + _report_payload(). The /pipeline-report page leads with
+    the 'gas behind the grid' narrative; this page is the index itself."""
+    p = _report_payload()
+    nat = p["national"]
+
+    # Full per-state ranking (not just the top gas-advantaged slice). Re-derive
+    # the complete ranked list so the index page shows every scored state.
+    states, _err = _gas_state_rollup()
+    states = states or {}
+    ranked = sorted(states.values(), key=lambda s: s["dcgi"], reverse=True)
+
+    rows = []
+    for s in ranked:
+        price = s.get("gas_price")
+        price_txt = ("$%.2f" % price) if price else "—"
+        rows.append(
+            "<tr><td><b>{st}</b></td>"
+            "<td class=n>{dcgi}</td>"
+            "<td class=n><span class=bar><i style=\"width:{accw}%\"></i></span> {acc}</td>"
+            "<td class=n>{cost}</td>"
+            "<td class=n>{pipes}</td>"
+            "<td class=n>{ops}</td>"
+            "<td class=n>{price}</td>"
+            "<td><span class=\"v {vc}\">{v}</span></td></tr>".format(
+                st=s["state"], dcgi=s["dcgi"], acc=s["gas_access_score"],
+                accw=int(s["gas_access_score"]), cost=s["gas_cost_score"],
+                pipes=s["pipelines"], ops=s["operators"], price=price_txt,
+                vc=_vclass(s["verdict"]), v=s["verdict"]))
+    state_rows = "".join(rows) or "<tr><td colspan=8 class=note>Scoring warming up…</td></tr>"
+
+    op_rows = []
+    for o in p["midstream_operators"]:
+        if not o["tracked"]:
+            continue
+        op_rows.append(
+            "<tr><td><b>{name}</b><div class=note>{note}</div></td>"
+            "<td>{type}</td><td>{hq}</td><td class=n>{seg}</td></tr>".format(
+                name=o["name"], note=o["note"], type=o["type"], hq=o["hq"],
+                seg=o["pipeline_segments"]))
+    op_rows_html = "".join(op_rows) or "<tr><td colspan=4 class=note>Registry warming up…</td></tr>"
+
+    jsonld = {
+        "@context": "https://schema.org", "@type": "Dataset",
+        "name": "DC Hub Data Center Gas Index (DCGI)",
+        "description": "Per-state natural-gas suitability index for data-center power siting.",
+        "creator": {"@type": "Organization", "name": "DC Hub", "url": "https://dchub.cloud"},
+        "license": "https://creativecommons.org/licenses/by/4.0/",
+        "url": "https://dchub.cloud/dcgi",
+    }
+
+    html = (
+        "<!doctype html><html lang=en><head><meta charset=utf-8>"
+        "<meta name=viewport content=\"width=device-width,initial-scale=1\">"
+        "<title>DCGI — Data Center Gas Index</title>"
+        "<meta name=description content=\"Data Center Gas Index (DCGI): every US state "
+        "scored on natural-gas suitability for siting AI data-center power load, plus a "
+        "live midstream-operator registry. CC BY 4.0.\">"
+        "<link rel=canonical href=\"https://dchub.cloud/dcgi\">"
+        "<meta property=\"og:title\" content=\"DCGI — Data Center Gas Index\">"
+        "<meta property=\"og:description\" content=\"DCGI: per-state gas-to-power siting index for data centers.\">"
+        "<style>" + _REPORT_CSS + "</style>"
+        "<script type=\"application/ld+json\">" + json.dumps(jsonld) + "</script>"
+        "</head><body><div class=wrap>"
+        "<div class=kick>DC Hub · Data Center Gas Index</div>"
+        "<h1>DCGI &mdash; Data Center Gas Index</h1>"
+        "<p class=sub>The gas analog to DCPI: every US state scored on natural-gas "
+        "suitability for siting data-center power load. Grid interconnect queues run "
+        "5&ndash;7 years &mdash; so behind-the-meter gas is how AI capacity gets "
+        "energized now.</p>"
+        "<div class=stats>"
+        "<div class=stat><b>" + str(nat["pipeline_segments"]) + "</b><span>Pipeline segments tracked</span></div>"
+        "<div class=stat><b>" + str(nat["states_scored"]) + "</b><span>States scored</span></div>"
+        "<div class=stat><b>" + str(nat["distinct_operators"]) + "</b><span>Distinct operators</span></div>"
+        "<div class=stat><b>" + str(nat["midstreams_tracked"]) + "</b><span>Megacap midstreams</span></div>"
+        "<div class=stat><b>" + str(nat["gas_advantaged_states"]) + "</b><span>Gas-advantaged states</span></div>"
+        "</div>"
+        "<h2>Per-state DCGI ranking</h2>"
+        "<table><thead><tr><th>State</th><th class=n>DCGI</th><th class=n>Gas access</th>"
+        "<th class=n>Cost</th><th class=n>Pipelines</th><th class=n>Operators</th>"
+        "<th class=n>$/Mcf</th><th>Verdict</th></tr></thead><tbody>"
+        + state_rows +
+        "</tbody></table>"
+        "<p class=note>DCGI = 0.60 &times; gas access + 0.40 &times; gas cost. "
+        "Access blends pipeline density, operator diversity and interstate share. "
+        "<a href=\"/api/v1/dcgi/methodology\">Full methodology &rarr;</a></p>"
+        "<h2>Midstream operator registry &mdash; the gas behind the markets</h2>"
+        "<table><thead><tr><th>Parent midstream</th><th>Type</th><th>HQ</th>"
+        "<th class=n>Segments</th></tr></thead><tbody>"
+        + op_rows_html +
+        "</tbody></table>"
+        "<div class=foot>"
+        "Data: EIA natural-gas pipeline geodata + EIA gas prices. "
+        "Machine-readable: <a href=\"/api/v1/dcgi/scores\">/api/v1/dcgi/scores</a> · "
+        "<a href=\"/api/v1/dcgi/operators\">/api/v1/dcgi/operators</a> · "
+        "narrative report: <a href=\"/pipeline-report\">/pipeline-report</a><br>"
         "License: CC BY 4.0 &mdash; cite &ldquo;DC Hub Data Center Gas Index (DCGI), dchub.cloud&rdquo;."
         "</div></div></body></html>")
 

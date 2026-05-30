@@ -88,7 +88,80 @@ from mcp.server.fastmcp import FastMCP
 # ═══ Gatekeeper (auth + rate limiting + tier gating) ═══
 
 
-from mcp_gatekeeper import gate, finalize, GatekeeperMiddleware, init_db, _load_keys_from_db
+from mcp_gatekeeper import gate, finalize as _gatekeeper_finalize, GatekeeperMiddleware, init_db, _load_keys_from_db
+
+# ═══════════════════════════════════════════════════════════════════════════
+# ATTRIBUTION WRAPPER — the "everyone cites us" flywheel (2026-05-30, jm)
+# ═══════════════════════════════════════════════════════════════════════════
+# Every successful MCP tool response in this file is returned via finalize().
+# The gatekeeper's finalize() is the single central layer that parses the
+# tool's JSON, applies tier truncation/redaction, attaches _meta, and re-
+# serializes. We wrap it HERE (one central place, NOT per-tool) so that every
+# successful response carries machine- and human-readable attribution. When an
+# AI agent relays DC Hub data downstream, these fields travel with it so we get
+# cited (we serve 390k+ agent requests/day).
+#
+# Design constraints (low-risk, additive-only):
+#   • ADDITIVE: only inject `source`/`license`/`citation` when absent — never
+#     overwrite existing keys, never touch the tool's actual data, never remove.
+#   • Top-level keys for structured JSON dict responses; a compact one-line
+#     `citation` for plain-text / non-dict payloads (appended, not replacing).
+#   • SKIP error payloads — don't decorate failures ({"error": ...} or
+#     {"success": False}). Attribution on an error reads as if the error came
+#     "from DC Hub" and adds noise to error handling on the client side.
+#   • Defensive: any exception falls back to the gatekeeper's exact output, so
+#     this can never break the response schema or any error path.
+#
+# Because every call site already calls `finalize(...)`, rebinding the name
+# `finalize` to this wrapper gives all ~22 tools attribution with zero per-tool
+# edits and zero schema changes.
+
+DCHUB_ATTRIBUTION_SOURCE = "DC Hub — dchub.cloud"
+DCHUB_ATTRIBUTION_LICENSE = "CC BY 4.0"
+DCHUB_ATTRIBUTION_CITATION = "Source: DC Hub (dchub.cloud), CC BY 4.0"
+
+
+def finalize(result_json: str, tool_name: str) -> str:
+    """Central response wrapper: run the gatekeeper finalize, then additively
+    attach DC Hub attribution to every successful response.
+
+    Wraps mcp_gatekeeper.finalize (rebound to _gatekeeper_finalize on import).
+    Never raises and never alters existing data — on any error or unexpected
+    shape it returns the gatekeeper output verbatim.
+    """
+    out = _gatekeeper_finalize(result_json, tool_name)
+    try:
+        data = json.loads(out)
+    except (json.JSONDecodeError, TypeError, ValueError):
+        # Plain-text / non-JSON response: append a compact one-line citation
+        # without disturbing the existing body.
+        try:
+            text = out if isinstance(out, str) else str(out)
+            if DCHUB_ATTRIBUTION_CITATION not in text:
+                return f"{text}\n\n{DCHUB_ATTRIBUTION_CITATION}"
+        except Exception:
+            pass
+        return out
+
+    # Only decorate top-level JSON objects; leave arrays/scalars untouched.
+    if not isinstance(data, dict):
+        return out
+
+    # Skip error payloads — attribution belongs on data, not on failures.
+    if data.get("error") is not None or data.get("success") is False:
+        return out
+
+    # ADDITIVE only: never overwrite a key the tool already set.
+    data.setdefault("source", DCHUB_ATTRIBUTION_SOURCE)
+    data.setdefault("license", DCHUB_ATTRIBUTION_LICENSE)
+    data.setdefault("citation", DCHUB_ATTRIBUTION_CITATION)
+
+    try:
+        return json.dumps(data, indent=2, default=str)
+    except Exception:
+        # Re-serialization failed for some exotic value — return the
+        # gatekeeper's already-valid output rather than risk a broken schema.
+        return out
 
 # === pydantic >=2.10 compat shim for mcp 1.26.0 ===
 # Upstream `mcp/server/fastmcp/utilities/func_metadata.py:_create_wrapped_model`
