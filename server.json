@@ -1,7 +1,7 @@
 {
   "$schema": "https://static.modelcontextprotocol.io/schemas/2025-12-11/server.schema.json",
   "name": "cloud.dchub/mcp-server",
-  "description": "Live data center intelligence for AI agents: 21,000+ facilities, 51 grid regions (10 ISOs + 43 utility balancing authorities), the daily DCPI power index (232 markets) + DCGI gas index (47 states), gas pipelines, fiber routes, interconnection queues, water risk, tax incentives, and $324B+ in M&A.",
+  "description": "Data center intel for AI agents: 21k+ facilities, 51 grids, power+gas indices, fiber, $324B M&A.",
   "repository": {
     "url": "https://github.com/azmartone67/dchub-backend",
     "source": "github"
