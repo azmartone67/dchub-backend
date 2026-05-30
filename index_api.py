@@ -513,6 +513,7 @@ def init_config_table():
         logger.error("GDCI: Config init failed: %s", e)
 
 
+# AUTO-REPAIR: duplicate route '/health' also in main.py:3819 — review and remove one
 @index_bp.route('/health')
 def health():
     try:
@@ -525,6 +526,7 @@ def health():
     except Exception as e:
         return jsonify({'status':'error','error':str(e)}), 500
 
+# AUTO-REPAIR: duplicate route '/markets' also in main.py:14933 — review and remove one
 
 @index_bp.route('/markets')
 def markets_list():
@@ -629,6 +631,7 @@ def admin_config_get():
     cfg = _get_config()
     err = _require_admin(cfg)
     if err: return err
+# AUTO-REPAIR: duplicate route '/admin/config' also in index_api.py:627 — review and remove one
     return jsonify({'config':cfg,'count':len(cfg)})
 
 @index_bp.route('/admin/config', methods=['POST'])
@@ -642,7 +645,7 @@ def admin_config_set():
         conn = get_db()
         cur  = conn.cursor()
         for k,v in data.items():
-            cur.execute("INSERT INTO gdci_config (key,value,updated_at) VALUES (%s,%s,NOW()) ON CONFLICT (key) DO UPDATE SET value=EXCLUDED.value,updated_at=NOW()", (k,str(v)))
+            cur.execute("INSERT INTO gdci_config (key,value,updated_at) VALUES (%s,%s,NOW() ON CONFLICT DO NOTHING) ON CONFLICT (key) DO UPDATE SET value=EXCLUDED.value,updated_at=NOW()", (k,str(v)))
         conn.commit(); cur.close()
         global _config_cache,_config_ts,_bulk_cache,_bulk_ts
         _config_cache={}; _config_ts=0; _bulk_cache=None; _bulk_ts=0
