@@ -81,15 +81,22 @@ _PJM_FUEL_REFERENCE = {
 }
 
 # Map grid_data fuel_* metric_name suffixes → display labels. The EIA v2
-# extractor (parse_eia_v2_fuel_mix, prefix "fuel_") writes rows like
-# fuel_natural_gas / fuel_nuclear / fuel_coal into grid_data.
+# extractor (parse_eia_v2_fuel_mix, prefix "fuel_") writes rows keyed by the
+# EIA-930 fuel code lower-cased: fuel_ng / fuel_nuc / fuel_col / fuel_wnd /
+# fuel_wat / fuel_sun / fuel_oth / fuel_oil. Cover both the EIA codes and the
+# spelled-out forms so labels always read cleanly.
 _FUEL_LABELS = {
-    "natural_gas": "Natural gas", "gas": "Natural gas", "ng": "Natural gas",
-    "nuclear": "Nuclear", "nuc": "Nuclear",
-    "coal": "Coal",
-    "wind": "Wind", "solar": "Solar", "hydro": "Hydro",
-    "oil": "Oil", "petroleum": "Oil",
-    "other": "Other", "storage": "Storage", "battery": "Storage",
+    # EIA-930 codes
+    "ng": "Natural gas", "nuc": "Nuclear", "col": "Coal", "wnd": "Wind",
+    "wat": "Hydro", "sun": "Solar", "oth": "Other", "oil": "Oil",
+    "ts": "Storage", "geo": "Geothermal", "bio": "Biomass",
+    # spelled-out / alternate forms
+    "natural_gas": "Natural gas", "gas": "Natural gas",
+    "nuclear": "Nuclear", "coal": "Coal",
+    "wind": "Wind", "solar": "Solar", "hydro": "Hydro", "water": "Hydro",
+    "petroleum": "Oil", "other": "Other",
+    "storage": "Storage", "battery": "Storage", "geothermal": "Geothermal",
+    "biomass": "Biomass",
 }
 
 _FUEL_CACHE = {"data": None, "at": 0.0}
