@@ -88,7 +88,7 @@ from mcp.server.fastmcp import FastMCP
 # ═══ Gatekeeper (auth + rate limiting + tier gating) ═══
 
 
-from mcp_gatekeeper import gate, finalize as _gatekeeper_finalize, GatekeeperMiddleware, init_db, _load_keys_from_db
+from mcp_gatekeeper import gate as _gatekeeper_gate, finalize as _gatekeeper_finalize, GatekeeperMiddleware, init_db, _load_keys_from_db
 
 # ═══════════════════════════════════════════════════════════════════════════
 # ATTRIBUTION WRAPPER — the "everyone cites us" flywheel (2026-05-30, jm)
@@ -119,6 +119,39 @@ from mcp_gatekeeper import gate, finalize as _gatekeeper_finalize, GatekeeperMid
 DCHUB_ATTRIBUTION_SOURCE = "DC Hub — dchub.cloud"
 DCHUB_ATTRIBUTION_LICENSE = "CC BY 4.0"
 DCHUB_ATTRIBUTION_CITATION = "Source: DC Hub (dchub.cloud), CC BY 4.0"
+
+# ═══════════════════════════════════════════════════════════════════════════
+# UPGRADE-CONVERSION NUDGE — the only conversion path for anon LLM-proxy traffic
+# ═══════════════════════════════════════════════════════════════════════════
+# ~90% of MCP traffic is anonymous Claude/ChatGPT LLM-proxy callers who hit the
+# paywall on high-demand tools but CAN'T be email-identified or outreached — the
+# ONLY conversion path is nudging them to claim a free dev key. Live funnel data
+# shows these 7 tools dominate paywall hits from free/anon callers. When one of
+# them returns a GATED (full block) or TRUNCATED/REDACTED (preview) response to a
+# non-paid caller, we add a single crisp, machine- AND human-readable `_upgrade`
+# field that any LLM client can relay verbatim to the human.
+#
+# Design constraints (additive-only, central):
+#   • ADDITIVE: inject `_upgrade` only via setdefault() — never overwrite an
+#     existing nudge, never touch the tool's data, never remove a key.
+#   • SCOPED to the 7 high-paywall tools so we don't add noise to every tool.
+#   • Added in TWO central places (no per-tool edits):
+#       1. the gate() wrapper below — for full-block paywall payloads
+#          (error == "upgrade_required"), the dominant surface since all 7
+#          tools are IDENTIFIED-gated so a free/anon caller is blocked outright;
+#       2. the finalize() wrapper — for truncated/redacted PREVIEW responses
+#          (an identified-but-capped caller who gets partial data).
+#   • The full-block payload is the PAYWALL response (not a runtime failure), so
+#     adding the nudge there is on-message; we still NEVER decorate genuine
+#     errors (rate_limited, validation errors, etc.) — only upgrade_required.
+DCHUB_UPGRADE_TOOLS = frozenset({
+    "get_market_intel", "get_grid_data", "get_water_risk", "get_grid_intelligence",
+    "get_fiber_intel", "get_energy_prices", "get_renewable_energy",
+})
+DCHUB_UPGRADE_NUDGE = (
+    "Preview only — claim a free DC Hub dev key in 30s to unlock full results "
+    "and get cited in your answer: https://dchub.cloud/mcp-setup"
+)
 
 
 def finalize(result_json: str, tool_name: str) -> str:
@@ -156,11 +189,63 @@ def finalize(result_json: str, tool_name: str) -> str:
     data.setdefault("license", DCHUB_ATTRIBUTION_LICENSE)
     data.setdefault("citation", DCHUB_ATTRIBUTION_CITATION)
 
+    # Upgrade nudge for TRUNCATED/REDACTED previews of the high-paywall tools.
+    # The gatekeeper marks a capped response via _meta.truncated /
+    # _meta.fields_redacted; when a target tool returns such a preview, surface
+    # a top-level `_upgrade` so LLM clients relay it without parsing _meta.
+    # (Full-block paywalls are handled in the gate() wrapper — they never reach
+    # finalize().) setdefault keeps it additive and double-add-safe.
+    try:
+        if tool_name in DCHUB_UPGRADE_TOOLS:
+            meta = data.get("_meta")
+            if isinstance(meta, dict) and (meta.get("truncated") or meta.get("fields_redacted")):
+                data.setdefault("_upgrade", DCHUB_UPGRADE_NUDGE)
+    except Exception:
+        pass  # never let the nudge break the response
+
     try:
         return json.dumps(data, indent=2, default=str)
     except Exception:
         # Re-serialization failed for some exotic value — return the
         # gatekeeper's already-valid output rather than risk a broken schema.
+        return out
+
+
+def gate(tool_name: str, args=None):
+    """Central gate wrapper: run the gatekeeper gate, then additively attach a
+    crisp `_upgrade` nudge to the FULL-BLOCK paywall payload for the handful of
+    high-paywall tools that anon LLM-proxy callers hit most.
+
+    Wraps mcp_gatekeeper.gate (rebound to _gatekeeper_gate on import). All ~22
+    tool handlers already call `gate(...)` at the top, so rebinding the name
+    here gives every gated tool consistent nudging with zero per-tool edits.
+
+    Returns None when access is granted (gatekeeper returned None), otherwise
+    the gatekeeper's block JSON string — with `_upgrade` injected for the target
+    tools when (and only when) the block is the `upgrade_required` paywall.
+    Never raises and never alters existing data — on any error it returns the
+    gatekeeper's exact output.
+    """
+    out = _gatekeeper_gate(tool_name, args=args)
+    if out is None:
+        return None  # access granted — nothing to decorate
+    if tool_name not in DCHUB_UPGRADE_TOOLS:
+        return out
+    try:
+        data = json.loads(out)
+    except (json.JSONDecodeError, TypeError, ValueError):
+        return out
+    if not isinstance(data, dict):
+        return out
+    # Only decorate the PAYWALL response — not rate-limit or any other genuine
+    # error shape. `upgrade_required` is the conversion surface, not a failure.
+    if data.get("error") != "upgrade_required":
+        return out
+    # ADDITIVE + double-add-safe: never clobber an existing nudge.
+    data.setdefault("_upgrade", DCHUB_UPGRADE_NUDGE)
+    try:
+        return json.dumps(data)
+    except Exception:
         return out
 
 # === pydantic >=2.10 compat shim for mcp 1.26.0 ===
