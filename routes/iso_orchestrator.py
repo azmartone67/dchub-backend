@@ -73,9 +73,10 @@ def extract_all():
         # not this orchestrator, so it no longer runs the dead extractor.
         ("iso_tva",   "TVA"),     # ← Phase HH — Tennessee Valley
         ("iso_bpa",   "BPA"),     # ← Phase HH — Pacific NW
-        # 2026-05-30: non-ISO utility/co-op balancing authorities (16 BAs:
-        # APS/SRP/FPL + big IOUs + co-ops). run_extraction() fans out all 16
-        # in parallel internally, so this single slot stays under the timeout.
+        # 2026-05-30: non-ISO utility/co-op balancing authorities (40+ BAs:
+        # APS/SRP/FPL + big IOUs + Pacific-NW PUDs + WAPA + co-ops).
+        # run_extraction() fans out all of them in parallel internally
+        # (max_workers=12), so this single slot stays under the timeout.
         ("eia_utility_bas", "UTILITY_BAS"),
     ]
 

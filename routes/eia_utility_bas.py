@@ -71,6 +71,44 @@ _BAS = [
     # ── Generation & transmission co-ops (the user asked for co-op power) ──
     {"code": "AECI", "eia": "AECI", "name": "Associated Electric Cooperative","region": "Missouri co-op",      "type": "co-op"},
     {"code": "SEC",  "eia": "SEC",  "name": "Seminole Electric Cooperative","region": "Florida co-op",         "type": "co-op"},
+    # ── 2026-05-30 NATIONAL SWEEP — the user asked to "add them all". Every
+    # remaining major non-ISO EIA-930 balancing authority, prioritized by
+    # data-center relevance. Pacific NW PUDs (Quincy/Wenatchee) are THE
+    # hyperscaler cluster; WAPA federal PMAs + Southeast munis fill the rest.
+    # Any code that returns 0 rows post-deploy gets pruned (verify loop). ──
+    # Pacific Northwest (Quincy/Wenatchee/Portland DC clusters)
+    {"code": "PGE",  "eia": "PGE",  "name": "Portland General Electric",   "region": "Oregon (Portland)",       "type": "IOU"},
+    {"code": "PSEI", "eia": "PSEI", "name": "Puget Sound Energy",          "region": "Washington (Seattle E)",  "type": "IOU"},
+    {"code": "SCL",  "eia": "SCL",  "name": "Seattle City Light",          "region": "Washington (Seattle)",    "type": "public"},
+    {"code": "TPWR", "eia": "TPWR", "name": "Tacoma Power",                "region": "Washington (Tacoma)",     "type": "public"},
+    {"code": "AVA",  "eia": "AVA",  "name": "Avista",                      "region": "WA/ID (Spokane)",         "type": "IOU"},
+    {"code": "CHPD", "eia": "CHPD", "name": "Chelan County PUD",           "region": "Washington (Wenatchee)",  "type": "public"},
+    {"code": "DOPD", "eia": "DOPD", "name": "Douglas County PUD",          "region": "Washington (E Wenatchee)","type": "public"},
+    {"code": "GCPD", "eia": "GCPD", "name": "Grant County PUD",            "region": "Washington (Quincy DCs)", "type": "public"},
+    {"code": "NWMT", "eia": "NWMT", "name": "NorthWestern Energy",         "region": "Montana",                 "type": "IOU"},
+    # California (non-CAISO islands)
+    {"code": "LDWP", "eia": "LDWP", "name": "LA Dept of Water & Power",    "region": "California (Los Angeles)","type": "public"},
+    {"code": "BANC", "eia": "BANC", "name": "Balancing Auth N. California (SMUD)","region": "California (Sacramento)","type": "public"},
+    {"code": "IID",  "eia": "IID",  "name": "Imperial Irrigation District","region": "California (Imperial)",   "type": "public"},
+    {"code": "TIDC", "eia": "TIDC", "name": "Turlock Irrigation District", "region": "California (Turlock)",     "type": "public"},
+    # Desert Southwest
+    {"code": "EPE",  "eia": "EPE",  "name": "El Paso Electric",            "region": "TX/NM (El Paso)",         "type": "IOU"},
+    {"code": "TEPC", "eia": "TEPC", "name": "Tucson Electric Power",       "region": "Arizona (Tucson)",        "type": "IOU"},
+    # WAPA federal power marketing administrations
+    {"code": "WACM", "eia": "WACM", "name": "WAPA Rocky Mountain Region",  "region": "CO/WY/NE (federal)",      "type": "federal"},
+    {"code": "WALC", "eia": "WALC", "name": "WAPA Desert Southwest",       "region": "AZ/NM/CA (federal)",      "type": "federal"},
+    {"code": "WAUW", "eia": "WAUW", "name": "WAPA Upper Great Plains West", "region": "MT/ND/SD (federal)",     "type": "federal"},
+    # Southeast (Carolinas, Florida munis, Gulf co-op)
+    {"code": "CPLE", "eia": "CPLE", "name": "Duke Energy Progress East",   "region": "NC/SC",                   "type": "IOU"},
+    {"code": "CPLW", "eia": "CPLW", "name": "Duke Energy Progress West",   "region": "Western NC",              "type": "IOU"},
+    {"code": "SC",   "eia": "SC",   "name": "Santee Cooper",               "region": "South Carolina (public)", "type": "public"},
+    {"code": "JEA",  "eia": "JEA",  "name": "JEA",                         "region": "Florida (Jacksonville)",  "type": "public"},
+    {"code": "TAL",  "eia": "TAL",  "name": "City of Tallahassee",         "region": "Florida (Tallahassee)",   "type": "public"},
+    {"code": "GVL",  "eia": "GVL",  "name": "Gainesville Regional Utilities","region": "Florida (Gainesville)", "type": "public"},
+    {"code": "AEC",  "eia": "AEC",  "name": "PowerSouth Energy Cooperative","region": "AL/FL co-op",            "type": "co-op"},
+    # Kentucky / Mid-continent federal
+    {"code": "LGEE", "eia": "LGEE", "name": "Louisville Gas & Electric / KU","region": "Kentucky",              "type": "IOU"},
+    {"code": "SPA",  "eia": "SPA",  "name": "Southwestern Power Admin",    "region": "AR/OK/MO (federal)",      "type": "federal"},
 ]
 
 _BY_CODE = {b["code"]: b for b in _BAS}
@@ -122,11 +160,12 @@ def extract_one(ba: dict) -> dict:
 
 def run_extraction() -> dict:
     """Orchestrator entry — extract EVERY registered BA. Parallel (I/O-bound
-    EIA calls) so all 16 finish in ~2-3s and fit the orchestrator's per-slot
-    timeout. Fail-soft per BA so one EIA hiccup never blocks the rest."""
+    EIA calls) so all BAs finish in a few seconds and fit the orchestrator's
+    per-slot timeout even at 40+ BAs. Fail-soft per BA so one EIA hiccup never
+    blocks the rest."""
     from concurrent.futures import ThreadPoolExecutor
     started = time.time()
-    with ThreadPoolExecutor(max_workers=8) as pool:
+    with ThreadPoolExecutor(max_workers=12) as pool:
         results = list(pool.map(extract_one, _BAS))
     ok = sum(1 for r in results if r.get("status") == "ok" and r.get("rows_inserted", 0) > 0)
     return {
