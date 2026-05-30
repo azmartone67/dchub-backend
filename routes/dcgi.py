@@ -43,6 +43,7 @@ surface; raw per-pipeline rows stay enterprise-gated on /api/v1/gas-pipelines):
   GET /pipeline-report              shareable HTML report
 """
 import json
+import math
 import time
 
 from flask import Blueprint, jsonify, request, Response
@@ -111,6 +112,55 @@ def _clamp(x, lo=0.0, hi=100.0):
     return max(lo, min(hi, x))
 
 
+# State lookup by lat/lng (approximate bounding boxes). Inlined VERBATIM from
+# eia_gas_bulk_loader.STATE_BOXES / lat_lng_to_state so this module never depends
+# on importing that script at runtime — under gunicorn the external import
+# silently fails and dropped the rollup into the broken empty-state-column
+# fallback, returning 0 states (ok=False). Keeping the mapping local fixes that.
+_STATE_BOXES = {
+    'AL': (30.2, 35.0, -88.5, -84.9), 'AK': (51.2, 71.4, -179.1, -129.9),
+    'AZ': (31.3, 37.0, -114.8, -109.0), 'AR': (33.0, 36.5, -94.6, -89.6),
+    'CA': (32.5, 42.0, -124.4, -114.1), 'CO': (37.0, 41.0, -109.1, -102.0),
+    'CT': (41.0, 42.1, -73.7, -71.8), 'DE': (38.5, 39.8, -75.8, -75.0),
+    'FL': (24.5, 31.0, -87.6, -80.0), 'GA': (30.4, 35.0, -85.6, -80.8),
+    'HI': (18.9, 22.2, -160.2, -154.8), 'ID': (42.0, 49.0, -117.2, -111.0),
+    'IL': (37.0, 42.5, -91.5, -87.5), 'IN': (37.8, 41.8, -88.1, -84.8),
+    'IA': (40.4, 43.5, -96.6, -90.1), 'KS': (37.0, 40.0, -102.1, -94.6),
+    'KY': (36.5, 39.1, -89.6, -81.9), 'LA': (29.0, 33.0, -94.0, -89.0),
+    'ME': (43.1, 47.5, -71.1, -66.9), 'MD': (38.0, 39.7, -79.5, -75.0),
+    'MA': (41.2, 42.9, -73.5, -69.9), 'MI': (41.7, 48.3, -90.4, -82.4),
+    'MN': (43.5, 49.4, -97.2, -89.5), 'MS': (30.2, 35.0, -91.7, -88.1),
+    'MO': (36.0, 40.6, -95.8, -89.1), 'MT': (44.4, 49.0, -116.0, -104.0),
+    'NE': (40.0, 43.0, -104.1, -95.3), 'NV': (35.0, 42.0, -120.0, -114.0),
+    'NH': (42.7, 45.3, -72.6, -70.7), 'NJ': (38.9, 41.4, -75.6, -73.9),
+    'NM': (31.3, 37.0, -109.1, -103.0), 'NY': (40.5, 45.0, -79.8, -71.9),
+    'NC': (33.8, 36.6, -84.3, -75.5), 'ND': (45.9, 49.0, -104.0, -96.6),
+    'OH': (38.4, 42.0, -84.8, -80.5), 'OK': (33.6, 37.0, -103.0, -94.4),
+    'OR': (42.0, 46.3, -124.6, -116.5), 'PA': (39.7, 42.3, -80.5, -74.7),
+    'RI': (41.1, 42.0, -71.9, -71.1), 'SC': (32.0, 35.2, -83.4, -78.5),
+    'SD': (42.5, 45.9, -104.1, -96.4), 'TN': (35.0, 36.7, -90.3, -81.6),
+    'TX': (25.8, 36.5, -106.6, -93.5), 'UT': (37.0, 42.0, -114.1, -109.0),
+    'VT': (42.7, 45.0, -73.4, -71.5), 'VA': (36.5, 39.5, -83.7, -75.2),
+    'WA': (45.5, 49.0, -124.8, -116.9), 'WV': (37.2, 40.6, -82.6, -77.7),
+    'WI': (42.5, 47.1, -92.9, -86.8), 'WY': (41.0, 45.0, -111.1, -104.1),
+}
+
+
+def _lat_lng_to_state(lat, lng):
+    best = None
+    best_dist = 999
+    for state, (s, n, w, e) in _STATE_BOXES.items():
+        if s <= lat <= n and w <= lng <= e:
+            # Center distance for tiebreaking
+            clat = (s + n) / 2
+            clng = (w + e) / 2
+            dist = math.sqrt((lat - clat)**2 + (lng - clng)**2)
+            if dist < best_dist:
+                best_dist = dist
+                best = state
+    return best or ''
+
+
 # Gas-price scale for the cost score, $/Mcf. Industrial/electric delivered
 # gas typically ranges ~$2.50 (Gulf) to ~$12 (New England constrained).
 _PRICE_FLOOR = 2.5
@@ -124,18 +174,11 @@ def _gas_state_rollup():
 
     The gas_pipelines.state column is empty for ~all rows, but lat/lng ARE
     populated, so we derive the 2-letter state code in Python from coordinates
-    via eia_gas_bulk_loader.lat_lng_to_state (imported defensively). If that
-    helper can't be imported we fall back to the legacy state-column grouping
-    so this never crashes."""
+    via the module-level _lat_lng_to_state (inlined from eia_gas_bulk_loader,
+    NOT imported — the runtime import silently failed under gunicorn and dropped
+    us into the broken empty-state-column fallback). The legacy state-column
+    grouping is kept only as a defensive guard so this never crashes."""
     states = {}
-
-    # Defensive import: if the lat/lng->state helper is unavailable, fall back
-    # to the old state-column SQL grouping (legacy behavior, never crash).
-    try:
-        from eia_gas_bulk_loader import lat_lng_to_state as _lat_lng_to_state
-    except Exception:
-        _lat_lng_to_state = None
-
     try:
         with conn() as c, c.cursor() as cur:
             cur.execute("SET statement_timeout = 8000")
