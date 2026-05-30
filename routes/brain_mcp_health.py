@@ -79,6 +79,11 @@ def check_mcp_health() -> list[dict]:
     base = os.environ.get("MCP_HEALTH_BASE", "https://dchub.cloud")
 
     # ── 1. Live tool catalog (the canonical /api/v1/mcp/tools.json) ──
+    # 2026-05-29: was `return findings` on err — that silenced ALL other
+    # checks (pricing, server card, DCPI movers) whenever the catalog
+    # briefly returned 429 from a probe burst. Now we set live_tools=[]
+    # and SKIP the checks that need it, but let the rest run. The
+    # catalog-unreachable finding still surfaces as the headline issue.
     live, err = _fetch_json(f"{base}/api/v1/mcp/tools.json")
     if err:
         findings.append({
@@ -88,10 +93,10 @@ def check_mcp_health() -> list[dict]:
             "detail": f"Live MCP tool catalog unreachable ({err}). Registries "
                       f"crawling this URL see no manifest.",
         })
-        return findings  # nothing else makes sense without the catalog
-
-    live_tools = _flatten_tools(live.get("tools") if isinstance(live, dict) else live)
-    live_count = len(live_tools)
+        live_tools, live_count = [], None
+    else:
+        live_tools = _flatten_tools(live.get("tools") if isinstance(live, dict) else live)
+        live_count = len(live_tools)
 
     # ── 2. .well-known/mcp-tools.json count must match live ──
     wk, wk_err = _fetch_json(f"{base}/.well-known/mcp-tools.json")
@@ -103,7 +108,7 @@ def check_mcp_health() -> list[dict]:
             "detail": f".well-known/mcp-tools.json unreachable ({wk_err}). "
                       f"Most registry crawlers use this URL.",
         })
-    else:
+    elif live_count is not None:
         wk_count = len(_flatten_tools(wk.get("tools") if isinstance(wk, dict) else wk))
         if wk_count != live_count:
             findings.append({
@@ -166,7 +171,45 @@ def check_mcp_health() -> list[dict]:
                            f"Some discovery surfaces reject incomplete cards."),
             })
 
-    # ── 6. DCPI movers freshness — the /dc-hub-media "Movers" rail ──
+    # ── 6a. AI testimonials freshness — the /dc-hub-media citations rail ──
+    # 2026-05-29: investigation showed every row in /api/v1/testimonials/live
+    # has posted_at=2026-03-06 (~84 days old). The auto-ingest cron
+    # (HackerNews + Reddit + MCP-derived → ai_testimonials_auto) stopped
+    # producing fresh items. The dchub_media_hub aggregator's merge+sort
+    # now picks the freshest of what exists, but if all rows are stale
+    # the citations rail still shows ancient quotes. Flag the ingest gap.
+    tt, tt_err = _fetch_json(f"{base}/api/v1/testimonials/live?limit=1")
+    if not tt_err and isinstance(tt, dict):
+        items = tt.get("items") or []
+        if items:
+            newest_ts = (items[0].get("posted_at")
+                         or items[0].get("captured_at")
+                         or items[0].get("created_at") or "")
+            try:
+                import datetime as _dt
+                # Strip Z + parse — we only need rough day-staleness
+                ts = newest_ts.split("+")[0].rstrip("Z").split(".")[0]
+                newest = _dt.datetime.fromisoformat(ts) if ts else None
+                if newest:
+                    age_days = (_dt.datetime.utcnow() - newest).days
+                    if age_days > 14:
+                        findings.append({
+                            "issue":  "testimonials_auto_ingest_stale",
+                            "url":    f"{base}/api/v1/testimonials/live",
+                            "count":  age_days,
+                            "detail": (f"Newest AI testimonial is {age_days} days "
+                                       f"old (2026-03-06 area). The auto-ingest "
+                                       f"cron (HackerNews/Reddit/MCP-derived → "
+                                       f"ai_testimonials_auto) appears stuck. "
+                                       f"The citations rail on /dc-hub-media is "
+                                       f"now sort-correct but has no fresh items "
+                                       f"to surface. Check the ingest job + "
+                                       f"upstream source matches for 'dchub'."),
+                        })
+            except Exception:
+                pass
+
+    # ── 6b. DCPI movers freshness — the /dc-hub-media "Movers" rail ──
     # 2026-05-29: investigation showed /api/v1/dcpi/movers returns every
     # market with excess_delta_7d=0.0 and prev_excess=null. The week_ago
     # CTE filters market_power_scores for rows with computed_at < NOW()-7d
