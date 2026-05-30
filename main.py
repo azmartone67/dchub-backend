@@ -23991,6 +23991,19 @@ app.register_blueprint(qa_patterns_bp)
 # phase 108: register DCPI blueprint
 app.register_blueprint(dcpi_bp)
 
+# Phase 268 (2026-05-29): one-time backfill bootstrap for the DCPI
+# snapshot table. Idempotent — short-circuits if dcpi_daily_snapshots
+# already has rows. This seeds "today" as a baseline so the
+# /api/v1/dcpi/movers endpoint has SOMETHING to LEFT JOIN against
+# during the 7-day warmup window. Real movers values appear from day 8.
+# Guarded by advisory lock so multi-worker startup is safe.
+try:
+    from routes.dcpi import backfill_dcpi_snapshots_if_empty as _dcpi_seed
+    _seed_res = _dcpi_seed()
+    print(f"[main] dcpi snapshot backfill: {_seed_res}", file=sys.stderr)
+except Exception as _dcpi_seed_err:
+    print(f"[main] dcpi snapshot backfill skipped: {_dcpi_seed_err}", file=sys.stderr)
+
 # phase 109B: register outreach
 app.register_blueprint(outreach_bp)
 

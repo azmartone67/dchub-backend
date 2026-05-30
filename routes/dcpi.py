@@ -153,7 +153,161 @@ def _ensure_tables():
                 notes        TEXT
             )
         """)
+        # ──────────────────────────────────────────────────────────────────
+        # Phase 268 (2026-05-29) — daily DCPI snapshot table for movers
+        #
+        # The /api/v1/dcpi/movers and /api/v1/dcpi/trending endpoints had
+        # a `week_ago` CTE that SELECTed from market_power_scores WHERE
+        # computed_at < NOW() - INTERVAL '7 days'. But every writer to
+        # that table is UPDATE-in-place (UNIQUE on market_slug, enforced
+        # in Phase 215), so each slug has exactly ONE row with a recent
+        # computed_at. The week_ago CTE returned 0 rows for every slug,
+        # so excess_delta_7d was always 0, sorted arbitrarily, output
+        # meaningless.
+        #
+        # Fix: persist a daily snapshot per market into a NEW table,
+        # `dcpi_daily_snapshots`, and have movers read prev_excess from
+        # (snapshot_date < CURRENT_DATE - 7) rows. Snapshot written by
+        # the existing facility-snapshot-daily.yml cron (one more curl).
+        #
+        # Why a new table name (not market_power_scores_history): the
+        # legacy *_history table was created by dchub_self_heal.py via
+        # `LIKE market_power_scores INCLUDING ALL` which inherits the
+        # UNIQUE(market_slug) constraint — incompatible with per-day
+        # snapshots. New table avoids the migration risk.
+        cur.execute("""
+            CREATE TABLE IF NOT EXISTS dcpi_daily_snapshots (
+                id                  SERIAL PRIMARY KEY,
+                snapshot_date       DATE NOT NULL,
+                market_slug         TEXT NOT NULL,
+                market_name         TEXT,
+                excess_power_score  REAL,
+                constraint_score    REAL,
+                verdict             TEXT,
+                captured_at         TIMESTAMPTZ NOT NULL DEFAULT NOW()
+            )
+        """)
+        cur.execute("""
+            CREATE UNIQUE INDEX IF NOT EXISTS uq_dcpi_daily_snapshots_day_slug
+                ON dcpi_daily_snapshots(snapshot_date, market_slug)
+        """)
+        cur.execute("CREATE INDEX IF NOT EXISTS ix_dcpi_daily_snapshots_slug_date "
+                    "ON dcpi_daily_snapshots(market_slug, snapshot_date DESC)")
+        cur.execute("CREATE INDEX IF NOT EXISTS ix_dcpi_daily_snapshots_date "
+                    "ON dcpi_daily_snapshots(snapshot_date DESC)")
         c.commit()
+
+
+# Phase 268 (2026-05-29) — snapshot writer + backfill bootstrap. Both
+# guarded by pg_try_advisory_lock so even with multiple gunicorn workers
+# (or transient 2-replica states) only one runs at a time. The backfill
+# is idempotent: it no-ops if dcpi_daily_snapshots already has rows.
+_DCPI_SNAPSHOT_LOCK_ID = 268052901  # arbitrary stable int for advisory lock
+_DCPI_BACKFILL_LOCK_ID = 268052902
+
+def _try_advisory_lock(cur, lock_id: int) -> bool:
+    try:
+        cur.execute("SELECT pg_try_advisory_lock(%s)", (lock_id,))
+        return bool((cur.fetchone() or [False])[0])
+    except Exception:
+        return False
+
+def _advisory_unlock(cur, lock_id: int) -> None:
+    try:
+        cur.execute("SELECT pg_advisory_unlock(%s)", (lock_id,))
+        cur.fetchone()
+    except Exception:
+        pass
+
+
+def write_dcpi_snapshot() -> dict:
+    """Persist today's market_power_scores snapshot into dcpi_daily_snapshots.
+
+    Idempotent per (snapshot_date, market_slug) via ON CONFLICT upsert.
+    Leader-gated via pg_try_advisory_lock so concurrent calls are safe.
+    Called by the daily cron (facility-snapshot-daily.yml).
+    """
+    _ensure_tables()
+    out: dict = {"ok": False}
+    try:
+        with _conn() as c, c.cursor() as cur:
+            if not _try_advisory_lock(cur, _DCPI_SNAPSHOT_LOCK_ID):
+                return {"ok": True, "skipped": "another_writer_holds_lock",
+                        "rows_inserted": 0}
+            try:
+                cur.execute("""
+                    INSERT INTO dcpi_daily_snapshots
+                        (snapshot_date, market_slug, market_name,
+                         excess_power_score, constraint_score, verdict)
+                    SELECT CURRENT_DATE, market_slug, market_name,
+                           excess_power_score, constraint_score, verdict
+                      FROM market_power_scores
+                     WHERE COALESCE(published, true) = true
+                    ON CONFLICT (snapshot_date, market_slug) DO UPDATE
+                       SET market_name        = EXCLUDED.market_name,
+                           excess_power_score = EXCLUDED.excess_power_score,
+                           constraint_score   = EXCLUDED.constraint_score,
+                           verdict            = EXCLUDED.verdict,
+                           captured_at        = NOW()
+                """)
+                rows = cur.rowcount
+                c.commit()
+                out = {"ok": True, "rows_inserted": int(rows),
+                        "snapshot_date": datetime.date.today().isoformat()}
+            finally:
+                _advisory_unlock(cur, _DCPI_SNAPSHOT_LOCK_ID)
+    except Exception as e:
+        out = {"ok": False, "error": f"{type(e).__name__}: {str(e)[:200]}"}
+    return out
+
+
+def backfill_dcpi_snapshots_if_empty() -> dict:
+    """One-time bootstrap: if dcpi_daily_snapshots is empty, seed it with
+    today's market_power_scores rows. This gives movers a baseline of
+    "today" so the table isn't NULL-tolerant forever — real 7d deltas
+    show up 7 days after this bootstrap.
+
+    Safe to call repeatedly: the empty-check guards against re-running,
+    and the advisory lock guards against multi-worker races.
+    """
+    _ensure_tables()
+    out: dict = {"ok": False, "backfilled": False}
+    try:
+        with _conn() as c, c.cursor() as cur:
+            if not _try_advisory_lock(cur, _DCPI_BACKFILL_LOCK_ID):
+                return {"ok": True, "skipped": "another_writer_holds_lock",
+                        "backfilled": False}
+            try:
+                cur.execute("SELECT COUNT(*) FROM dcpi_daily_snapshots")
+                existing = int((cur.fetchone() or [0])[0] or 0)
+                if existing > 0:
+                    out = {"ok": True, "backfilled": False,
+                            "existing_rows": existing,
+                            "reason": "table_already_populated"}
+                else:
+                    # First-ever bootstrap. Seed with today's scores so
+                    # movers has a baseline to subtract from (deltas will
+                    # all be 0 today, real deltas start day 8).
+                    cur.execute("""
+                        INSERT INTO dcpi_daily_snapshots
+                            (snapshot_date, market_slug, market_name,
+                             excess_power_score, constraint_score, verdict)
+                        SELECT CURRENT_DATE, market_slug, market_name,
+                               excess_power_score, constraint_score, verdict
+                          FROM market_power_scores
+                         WHERE COALESCE(published, true) = true
+                        ON CONFLICT (snapshot_date, market_slug) DO NOTHING
+                    """)
+                    rows = cur.rowcount
+                    c.commit()
+                    out = {"ok": True, "backfilled": True,
+                            "rows_inserted": int(rows),
+                            "snapshot_date": datetime.date.today().isoformat()}
+            finally:
+                _advisory_unlock(cur, _DCPI_BACKFILL_LOCK_ID)
+    except Exception as e:
+        out = {"ok": False, "error": f"{type(e).__name__}: {str(e)[:200]}"}
+    return out
 
 
 # ---------------------------------------------------------------------------
@@ -1693,7 +1847,18 @@ def dcpi_ask():
 @dcpi_bp.route("/api/v1/dcpi/movers", methods=["GET"])
 def api_movers():
     _ensure_tables()
-    # Compare latest score vs 7-day-ago score per market
+    # Phase 268 (2026-05-29): rewrite week_ago to read from the new
+    # dcpi_daily_snapshots table. Previously read from market_power_scores
+    # WHERE computed_at < NOW() - 7d, but every writer to that table is
+    # UPDATE-in-place (UNIQUE on market_slug), so each slug had exactly
+    # ONE row with a recent timestamp — the CTE returned 0 rows for every
+    # market and excess_delta_7d was always 0.
+    #
+    # New behavior: pick the closest snapshot ≥7 days old per slug. If
+    # no snapshot is old enough yet (e.g. day 0-7 of the bootstrap),
+    # prev_excess is NULL and the COALESCE-fallback keeps the delta at 0
+    # — same NULL-tolerant behavior the old query had, just for a real
+    # reason now (bootstrap window) instead of broken logic.
     with _conn() as c, c.cursor(cursor_factory=psycopg2.extras.RealDictCursor) as cur:
         cur.execute("""
             WITH latest AS (
@@ -1706,9 +1871,9 @@ def api_movers():
                 SELECT DISTINCT ON (market_slug)
                     market_slug, excess_power_score AS prev_excess,
                     constraint_score AS prev_constraint
-                FROM market_power_scores
-                WHERE computed_at < NOW() - INTERVAL '7 days'
-                ORDER BY market_slug, computed_at DESC
+                FROM dcpi_daily_snapshots
+                WHERE snapshot_date <= CURRENT_DATE - INTERVAL '7 days'
+                ORDER BY market_slug, snapshot_date DESC
             )
             SELECT l.market_slug, l.market_name, l.now_excess, l.now_constraint,
                    w.prev_excess, w.prev_constraint,
@@ -2219,6 +2384,28 @@ def api_recompute():
     res["chunk_offset"]        = offset
     res["chunk_limit"]         = limit
     return jsonify(res), 200
+
+
+@dcpi_bp.route("/api/v1/dcpi/snapshot", methods=["POST"])
+def api_snapshot():
+    """Phase 268 (2026-05-29) — admin/cron endpoint that writes today's
+    market_power_scores into dcpi_daily_snapshots. The /api/v1/dcpi/movers
+    week_ago lookup reads from this table; without daily snapshots, the
+    movers endpoint can never compute a real delta (every score row in
+    market_power_scores is UPDATE-in-place, so its computed_at is always
+    "now"). Idempotent per day: rerunning UPDATES the existing rows.
+
+    Driven by .github/workflows/facility-snapshot-daily.yml at 05:17 UTC
+    (piggybacking on the existing daily cron — no new schedule needed).
+    """
+    expected = os.environ.get("DCHUB_ADMIN_KEY") or os.environ.get("DCHUB_INTERNAL_KEY")
+    provided = request.headers.get("X-Admin-Key") or request.args.get("admin_key")
+    if expected and provided != expected:
+        return jsonify(error="unauthorized"), 401
+    # Bootstrap first (no-op after first call), then write today's row.
+    backfill = backfill_dcpi_snapshots_if_empty()
+    snap     = write_dcpi_snapshot()
+    return jsonify(snapshot=snap, backfill=backfill), 200
 
 
 # ---------------------------------------------------------------------------
@@ -3716,6 +3903,9 @@ def api_history():
 def api_trending():
     """Top 5 weekly movers, formatted for ticker display."""
     _ensure_tables()
+    # Phase 268 (2026-05-29): same fix as /api/v1/dcpi/movers — read
+    # week_ago from dcpi_daily_snapshots (real history) instead of
+    # market_power_scores (UPDATE-in-place, always recent).
     with _conn() as c, c.cursor(cursor_factory=psycopg2.extras.RealDictCursor) as cur:
         cur.execute("""
             WITH latest AS (
@@ -3724,9 +3914,9 @@ def api_trending():
             ),
             week_ago AS (
               SELECT DISTINCT ON (market_slug) market_slug, excess_power_score AS prev_e
-              FROM market_power_scores
-              WHERE computed_at < NOW() - INTERVAL '7 days'
-              ORDER BY market_slug, computed_at DESC
+              FROM dcpi_daily_snapshots
+              WHERE snapshot_date <= CURRENT_DATE - INTERVAL '7 days'
+              ORDER BY market_slug, snapshot_date DESC
             )
             SELECT l.market_slug, l.market_name, l.now_e,
                    COALESCE(l.now_e - w.prev_e, 0) AS delta_7d

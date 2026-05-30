@@ -33,6 +33,21 @@ jobs:
             -H "X-Admin-Key: $ADMIN_KEY" \
             "https://dchub.cloud/api/v1/radar/snapshot" \
             | python3 -m json.tool
+      # Phase 268 (2026-05-29): snapshot today's DCPI scores into
+      # dcpi_daily_snapshots so /api/v1/dcpi/movers has 7d-old rows to
+      # diff against. Previously, movers tried to read week_ago from
+      # market_power_scores — but every writer there is UPDATE-in-place
+      # (UNIQUE on market_slug), so the CTE always returned 0 rows and
+      # excess_delta_7d was always 0. Idempotent UPSERT per (date, slug).
+      # Hits Railway-direct to avoid CF edge timeouts on the chunked write.
+      - name: Write daily DCPI snapshot
+        env:
+          ADMIN_KEY: ${{ secrets.DCHUB_ADMIN_KEY }}
+        run: |
+          curl -sS --max-time 60 -X POST \
+            -H "X-Admin-Key: $ADMIN_KEY" \
+            "https://dchub-backend-production.up.railway.app/api/v1/dcpi/snapshot" \
+            | python3 -m json.tool || true
       # Phase TTTT (2026-05-16): daily citation-hunter probe — asks
       # Claude 5 data-center research questions, tracks DC Hub mention
       # share. Requires ANTHROPIC_API_KEY env on Railway.
