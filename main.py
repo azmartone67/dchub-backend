@@ -3431,7 +3431,7 @@ def handle_well_known():
     if path == '/.well-known/security.txt':
         return Response("Contact: mailto:security@dchub.cloud\nPreferred-Languages: en\nCanonical: https://dchub.cloud/.well-known/security.txt\nPolicy: https://dchub.cloud/terms\nExpires: 2027-01-01T00:00:00.000Z", mimetype="text/plain")
     if path == '/.well-known/mcp-registry-auth':
-        return Response("v=MCPv1; k=ed25519; p=8LE9YOct4SKYuIJT8JGMK6z9lhfPMbCM5pQCp5FTRBg=", mimetype="text/plain")
+        return Response("v=MCPv1; k=ed25519; p=ClgJ51i8YWYU+UtKJlz4H3owY44Dhnr3jGLVH1VXAgc=", mimetype="text/plain")
     if path == '/.well-known/llms.txt':
         # Phase SS (2026-05-14): some agents probe /.well-known/llms.txt
         # per the newer convention. The canonical file is the static
