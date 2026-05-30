@@ -296,7 +296,7 @@ DC Hub isn't. MCP-native, 28 tools, 21,000+ facilities, 7 live grid operators, f
 
 They built for humans reading PDFs. We built for the agents your team already uses.
 
-The head-to-head → https://dchub.cloud/vs
+The head-to-head → https://dchub.cloud/built-for-ai
 
 #DataCenter #AI #MCP #DCPI #SiteSelection""", "linkedin"),
 
@@ -311,7 +311,7 @@ Why us? Because we're the only platform an AI can actually read. Every competito
 
 The agents already voted — thousands of times a day.
 
-https://dchub.cloud/vs
+https://dchub.cloud/built-for-ai
 
 #AI #DataCenter #MCP #ModelContextProtocol""", "linkedin"),
 
@@ -322,7 +322,7 @@ The infrastructure stack hyperscalers actually price against.
 
 Name another platform that gives you all of it, in one place, machine-readable. We'll wait. \U0001f3a4
 
-https://dchub.cloud/vs
+https://dchub.cloud/built-for-ai
 
 #DataCenter #DCPI #GridCapacity #Infrastructure #AIInfrastructure""", "linkedin"),
 ]
@@ -338,6 +338,17 @@ def seed_smash_mouth_campaign() -> dict:
         return {"seeded": 0, "skipped": 0, "error": "no_db"}
     try:
         with c.cursor() as cur:
+            # Repoint any already-seeded rows from the shadowed /vs slug to the
+            # canonical /built-for-ai page (/vs is a pre-existing per-competitor
+            # head-to-head route). Idempotent: once no row contains the old URL
+            # the WHERE clause stops matching.
+            cur.execute(
+                "UPDATE social_media_posts "
+                "SET content = REPLACE(content, 'dchub.cloud/vs', 'dchub.cloud/built-for-ai') "
+                "WHERE content LIKE %s AND content LIKE %s",
+                (f"%{_CAMPAIGN_MARKER}%", "%dchub.cloud/vs%"),
+            )
+            c.commit()
             cur.execute(
                 "SELECT 1 FROM social_media_posts WHERE content LIKE %s LIMIT 1",
                 (f"%{_CAMPAIGN_MARKER}%",),
