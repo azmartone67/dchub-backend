@@ -18758,6 +18758,27 @@ def serve_sitemap_xml():
         ('/reports/quarterly-deep', '0.9', 'daily'),
         ('/reports/energy/monthly',   '0.9', 'daily'),
         ('/reports/energy/quarterly', '0.9', 'daily'),
+        # r43-SEO (2026-05-30): ISO + grid intelligence pages were entirely
+        # absent from the sitemap, so the "energy intelligence" / "ISO" /
+        # "grid headroom" keyword surface had nothing for Google to index.
+        # Priority 0.9 — these are core differentiated surfaces.
+        ('/grid-intelligence', '0.9', 'daily'),
+        ('/iso',           '0.9', 'daily'),
+        ('/iso/pjm',       '0.8', 'daily'),
+        ('/iso/ercot',     '0.8', 'daily'),
+        ('/iso/caiso',     '0.8', 'daily'),
+        ('/iso/miso',      '0.8', 'daily'),
+        ('/iso/nyiso',     '0.8', 'daily'),
+        ('/iso/isone',     '0.8', 'daily'),
+        ('/iso/spp',       '0.8', 'daily'),
+        ('/grid',          '0.9', 'daily'),
+        ('/grid/pjm',      '0.8', 'daily'),
+        ('/grid/ercot',    '0.8', 'daily'),
+        ('/grid/caiso',    '0.8', 'daily'),
+        ('/grid/miso',     '0.8', 'daily'),
+        ('/grid/nyiso',    '0.8', 'daily'),
+        ('/grid/isone',    '0.8', 'daily'),
+        ('/grid/spp',      '0.8', 'daily'),
     ]
     for path, pri, freq in static_pages:
         urls.append(f'  <url><loc>https://dchub.cloud{path}</loc><lastmod>{today}</lastmod><changefreq>{freq}</changefreq><priority>{pri}</priority></url>')
@@ -18885,7 +18906,10 @@ def serve_sitemap_xml():
             seen_slugs.add(full_slug)
             urls.append(f'  <url><loc>https://dchub.cloud/facilities/{full_slug}</loc><lastmod>{today}</lastmod><changefreq>monthly</changefreq><priority>0.5</priority></url>')
 
-    xml = '<%sxml version="1.0" encoding="UTF-8"%s>\n<urlset xmlns="http://www.sitemaps.org/schemas/sitemap/0.9">\n' + '\n'.join(urls) + '\n</urlset>'
+    # NOTE: do NOT use an f-string here — '<?xml ... ?>' contains '?', and a prior
+    # regression replaced '?' with '%s' (the same bug class fixed in task #4).
+    # Use a plain string so '<?xml' renders literally.
+    xml = '<?xml version="1.0" encoding="UTF-8"?>\n<urlset xmlns="http://www.sitemaps.org/schemas/sitemap/0.9">\n' + '\n'.join(urls) + '\n</urlset>'
 
     resp = make_response(xml)
     resp.headers['Content-Type'] = 'application/xml'

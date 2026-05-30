@@ -552,11 +552,58 @@ def grid_intelligence_landing():
     if not cards:
         cards.append('<div class="card"><p style="color:var(--dch-text-mute)">'
                      'Grid regions seeding — refresh in 60s.</p></div>')
+    # r43-SEO (2026-05-30): JSON-LD for /grid-intelligence. Schema.org
+    # Dataset describes the live ISO/grid-headroom data product; the
+    # BreadcrumbList connects it to /intelligence in Google's surface.
+    # Keywords are picked to match high-impression queries: "ISO",
+    # "grid headroom", "interconnect queue", "data center power".
+    _region_count = len(rows) if rows else 7
+    _jsonld = (
+        '<script type="application/ld+json">'
+        '{"@context":"https://schema.org","@graph":['
+        '{"@type":"Dataset",'
+        '"name":"DC Hub Grid Intelligence — Per-ISO Capacity, Queue & Headroom",'
+        '"alternateName":["Grid Headroom Intelligence","ISO Interconnection Queue Tracker"],'
+        '"description":"Live per-ISO grid intelligence covering PJM, ERCOT, CAISO, MISO, NYISO, ISO-NE, and SPP. '
+        'Tracks interconnection queue depth, capacity factor by fuel source, real-time headroom, '
+        'and per-market data-center-suitable load capacity. Used for site-selection diligence and '
+        'energy-intelligence research.",'
+        '"url":"https://dchub.cloud/grid-intelligence",'
+        '"sameAs":"https://dchub.cloud/grid-intelligence",'
+        '"creator":{"@type":"Organization","name":"DC Hub","url":"https://dchub.cloud"},'
+        '"publisher":{"@type":"Organization","name":"DC Hub","url":"https://dchub.cloud"},'
+        '"keywords":"ISO, grid intelligence, interconnect queue, data center power, energy intelligence, '
+        'PJM, ERCOT, CAISO, MISO, NYISO, ISO-NE, SPP, grid headroom, capacity factor, '
+        'data center site selection",'
+        '"isAccessibleForFree":true,'
+        '"spatialCoverage":{"@type":"Place","name":"United States"},'
+        '"temporalCoverage":"2024-01-01/..",'
+        '"variableMeasured":["interconnection queue GW","capacity factor","grid headroom","fuel mix","peak demand"],'
+        '"distribution":['
+        '{"@type":"DataDownload","encodingFormat":"application/json",'
+        '"contentUrl":"https://dchub.cloud/api/v1/grid-intelligence","name":"All ISO regions (current)"},'
+        '{"@type":"DataDownload","encodingFormat":"application/json",'
+        '"contentUrl":"https://dchub.cloud/api/v1/grid-intelligence/caiso","name":"Per-region snapshot"}'
+        ']},'
+        '{"@type":"BreadcrumbList","itemListElement":['
+        '{"@type":"ListItem","position":1,"name":"DC Hub","item":"https://dchub.cloud/"},'
+        '{"@type":"ListItem","position":2,"name":"Intelligence","item":"https://dchub.cloud/intelligence"},'
+        '{"@type":"ListItem","position":3,"name":"Grid Intelligence","item":"https://dchub.cloud/grid-intelligence"}'
+        ']},'
+        '{"@type":"WebSite","name":"DC Hub","url":"https://dchub.cloud",'
+        '"potentialAction":{"@type":"SearchAction",'
+        '"target":{"@type":"EntryPoint","urlTemplate":"https://dchub.cloud/search?q={search_term_string}"},'
+        '"query-input":"required name=search_term_string"}}'
+        ']}'
+        '</script>'
+    )
+
     return _Resp(f'''<!DOCTYPE html><html lang="en"><head>
 <meta charset="utf-8"><meta name="viewport" content="width=device-width, initial-scale=1">
 <title>DC Hub · Grid Intelligence — Per-ISO Capacity & Queue</title>
 <meta name="description" content="Grid intelligence for every major US ISO. Interconnect queue, capacity factor, fuel mix, and per-market headroom.">
 <link rel="canonical" href="https://dchub.cloud/grid-intelligence">
+{_jsonld}
 <link rel="preconnect" href="https://fonts.googleapis.com">
 <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
 <link href="https://fonts.googleapis.com/css2?family=Instrument+Sans:wght@400;500;600;700;800&family=JetBrains+Mono:wght@500;700&display=swap" rel="stylesheet">
@@ -585,10 +632,34 @@ header p{{color:var(--dch-text-mute);font-size:1.05rem;line-height:1.6;max-width
 <div class="grid">
 {''.join(cards)}
 </div>
+
+<section style="margin:48px 0 8px;padding:24px;background:var(--dch-surface);border:1px solid var(--dch-border);border-radius:12px">
+<h2 style="font-size:1.2rem;margin:0 0 12px">What this surface tracks</h2>
+<p style="color:var(--dch-text-mute);line-height:1.65;margin:0 0 14px">
+DC Hub grid intelligence is the live operational picture of every U.S. interconnection
+across the seven major ISOs and balancing authorities — PJM, ERCOT, CAISO, MISO,
+NYISO, ISO-NE, and SPP. For each region we surface three things that matter to
+anyone underwriting a data center build: <b>interconnect queue depth</b> (how
+many GW of new generation and load are waiting on grid studies), <b>capacity
+factor and fuel mix</b> (where the marginal MWh actually comes from), and
+<b>real-time headroom</b> (the gap between current load and firm capacity, which
+governs whether a hyperscale tenant can land 200 MW in the next study cycle).
+The same per-ISO signals flow into the <a href="/dcpi">Data Center Power Index
+(DCPI)</a>, the daily 0–100 score that ranks 200+ U.S. markets on whether
+they're <b>BUILD</b>, <b>CAUTION</b>, <b>AVOID</b>, or <b>LOW_SIGNAL</b>. If
+you're going site-by-site, jump to a specific market on the
+<a href="/markets">markets index</a> — every market page links back to its
+serving ISO so the energy-intelligence and site-selection views stay in sync.
+For agents, the same data is exposed as JSON at <code>/api/v1/grid-intelligence</code>
+and through the <a href="/mcp">DC Hub MCP server</a>.
+</p>
+</section>
+
 <div class="footer">
   Machine-readable: <a href="/api/v1/grid-intelligence">/api/v1/grid-intelligence</a> ·
   Per-region JSON: <a href="/api/v1/grid-intelligence/caiso">/api/v1/grid-intelligence/&lt;id&gt;</a> ·
-  <a href="/intelligence">All intelligence surfaces →</a>
+  <a href="/intelligence">All intelligence surfaces →</a> ·
+  <a href="/dcpi">DCPI methodology →</a>
 </div>
 </div>
 </body></html>''', mimetype='text/html')

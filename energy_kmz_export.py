@@ -464,7 +464,11 @@ def generate_all_kml(market=None):
 # =============================================================================
 
 def _build_kml_header(title, description):
-    return f"""<%sxml version="1.0" encoding="UTF-8"%s>
+    # NOTE: keep the XML declaration as a plain string literal — the same
+    # %s-in-XML-header regression that broke /sitemap.xml (main.py:18888)
+    # had also corrupted this KML header. Use string concatenation so '?' survives.
+    xml_decl = '<?xml version="1.0" encoding="UTF-8"?>'
+    return xml_decl + f"""
 <kml xmlns="http://www.opengis.net/kml/2.2">
 <Document>
   <name>{_xml_escape(title)}</name>
