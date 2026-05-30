@@ -15582,7 +15582,9 @@ def daily_cron():
 
         # Step 2: Post to LinkedIn
         try:
-            from linkedin_autopost import create_text_post, get_valid_token
+            # r-image-required (2026-05-30): no longer import create_text_post
+            # here — the daily digest MUST post with a rich image (see below).
+            from linkedin_autopost import get_valid_token
 
             # Get latest articles - last 2 days to handle UTC offset
             articles = []
@@ -15602,6 +15604,26 @@ def daily_cron():
                     cur.execute("SELECT title, summary, url, source, category FROM announcements ORDER BY published_date DESC LIMIT 50")
                     articles = [{'title': r[0], 'summary': r[1], 'url': r[2], 'source': r[3], 'category': r[4]} for r in cur.fetchall()]
 
+            # r-dedup (2026-05-30): de-duplicate headlines case-insensitively
+            # BEFORE composing. Live evidence: a posted digest listed
+            # "GITEX AI EUROPE" twice. The announcements table can hold
+            # near-identical rows (same story, different id/source/url), so a
+            # plain LIMIT 50 surfaced the same headline more than once.
+            # Defensive: wrapped so a malformed row can never break the cron.
+            try:
+                _seen_titles = set()
+                _deduped = []
+                for _a in articles:
+                    _t = (_a.get('title') or '').strip()
+                    _key = _t.casefold()
+                    if not _key or _key in _seen_titles:
+                        continue
+                    _seen_titles.add(_key)
+                    _deduped.append(_a)
+                articles = _deduped
+            except Exception as _dedup_err:
+                logger.warning(f"[daily_cron] headline dedup skipped: {_dedup_err}")
+
             today_str = datetime.now().strftime('%B %d, %Y')
             dates_found = sorted(set(a.get('published_at','')[:10] for a in articles if a.get('published_at')), reverse=True)
             digest_date = dates_found[0] if dates_found else date.today().isoformat()
@@ -15617,12 +15639,91 @@ def daily_cron():
             post_lines.append('\n#DataCenter #Infrastructure #CloudComputing #AI #DigitalInfrastructure')
             post_text = '\n'.join(post_lines)
 
+            # r-image-required (2026-05-30): the daily digest must ship WITH a
+            # rich image — NEVER text-only. Live evidence: a text-only digest
+            # went out (no image). Two-tier image source:
+            #   1) dchub_media.Generator.generate_chart_png — the canonical
+            #      rendered daily chart (same image the /preview route shows).
+            #   2) static OG digest fallback bytes if the generator is
+            #      unavailable / returns nothing.
+            # If BOTH fail, we HOLD the post (skip) rather than degrade to a
+            # text-only post. Holding is safe: the cron re-fires daily and the
+            # quad publisher still covers the feed in the meantime.
+            def _daily_digest_image_bytes():
+                # Tier 1: freshly rendered daily chart
+                try:
+                    from dchub_media import Aggregator, Generator
+                    _payload = Aggregator().today_payload()
+                    _png = Generator().generate_chart_png(_payload)
+                    if _png and 1000 < len(_png) < 5_000_000:
+                        return _png
+                except Exception as _img_e1:
+                    logger.warning(f"[daily_cron] chart image gen failed: {_img_e1}")
+                # Tier 2: static OG digest image
+                for _og_url in (
+                    "https://api.dchub.cloud/static/og/landing-dcpi.png",
+                    "https://api.dchub.cloud/static/og/default.png",
+                ):
+                    try:
+                        import urllib.request as _u
+                        _req = _u.Request(_og_url, headers={"User-Agent": "DCHub-DailyDigest/1.0"})
+                        with _u.urlopen(_req, timeout=15) as _r:
+                            if getattr(_r, "status", 200) == 200:
+                                _b = _r.read()
+                                if _b and 1000 < len(_b) < 5_000_000:
+                                    return _b
+                    except Exception as _img_e2:
+                        logger.warning(f"[daily_cron] OG image fetch failed ({_og_url}): {_img_e2}")
+                return None
+
             token = get_valid_token()
-            if token:
-                result = create_text_post(post_text, token)
-                results['linkedin'] = {'success': True, 'post_id': str(result)[:100] if result else None, 'articles_used': len(articles)}
-            else:
+            if not token:
                 results['linkedin'] = {'success': False, 'error': 'No valid LinkedIn token'}
+            else:
+                image_bytes = _daily_digest_image_bytes()
+                if not image_bytes:
+                    # No image → HOLD. Do NOT post the raw text-only digest.
+                    results['linkedin'] = {
+                        'success': False,
+                        'held': True,
+                        'reason': 'no_image_available_holding_post_not_text_only',
+                        'articles_used': len(articles),
+                    }
+                    logger.warning("[daily_cron] LinkedIn digest HELD — no rich image available; refusing text-only post")
+                else:
+                    # Post WITH image via the image-capable poster. It uploads
+                    # the bytes → urn:li:image and attaches it. Returns
+                    # (ok: bool, meta: dict). meta.image_attached tells us
+                    # whether the image actually made it onto the post.
+                    from linkedin_poster import post_to_linkedin as _post_with_image
+                    _ok, _meta = _post_with_image(
+                        text=post_text,
+                        link_url=digest_url,
+                        link_title="DC Hub Daily Intelligence",
+                        link_desc="Daily data-center intelligence digest · dchub.cloud",
+                        image_bytes=image_bytes,
+                    )
+                    _meta = _meta or {}
+                    _img_attached = bool(_meta.get("image_attached"))
+                    if _ok and _img_attached:
+                        results['linkedin'] = {
+                            'success': True,
+                            'post_id': str(_meta.get('post_urn') or _meta.get('urn') or '')[:100],
+                            'articles_used': len(articles),
+                            'image_attached': True,
+                        }
+                    else:
+                        # Posted text-only (image dropped) OR failed → treat as
+                        # held so we never silently ship a text-only digest.
+                        results['linkedin'] = {
+                            'success': False,
+                            'held': True,
+                            'reason': 'image_not_attached_or_post_failed',
+                            'image_attached': _img_attached,
+                            'error': str(_meta.get('error', ''))[:200],
+                            'articles_used': len(articles),
+                        }
+                        logger.warning(f"[daily_cron] LinkedIn digest HELD — image not attached (ok={_ok}, attached={_img_attached})")
 
         except Exception as e:
             results['linkedin'] = {'error': str(e)}

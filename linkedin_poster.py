@@ -372,7 +372,15 @@ def post_to_linkedin(text, link_url=None, link_title=None, link_desc=None, image
                 INSERT INTO linkedin_posts (post_urn, content, post_type, status)
                 VALUES (%s, %s, %s, 'success')
             """, (post_urn, text[:500], 'manual'))
-            return True, {'post_urn': post_urn, 'status': 'published'}
+            # r-image-required (2026-05-30): expose whether an image actually
+            # made it onto this post. _image_urn is set ONLY when the image
+            # upload (initializeUpload + PUT bytes) succeeded AND was attached
+            # to the payload above. Callers that require a rich image (the
+            # daily-intelligence digest) gate on this to avoid shipping a
+            # post that silently degraded to text-only. Additive key —
+            # existing callers ignore it.
+            return True, {'post_urn': post_urn, 'status': 'published',
+                          'image_attached': bool(_image_urn)}
         else:
             error_msg = resp.text[:500]
             # Log failure
@@ -380,7 +388,8 @@ def post_to_linkedin(text, link_url=None, link_title=None, link_desc=None, image
                 INSERT INTO linkedin_posts (content, post_type, status, error)
                 VALUES (%s, %s, 'failed', %s)
             """, (text[:500], 'manual', error_msg))
-            return False, {'error': error_msg, 'status_code': resp.status_code}
+            return False, {'error': error_msg, 'status_code': resp.status_code,
+                           'image_attached': bool(_image_urn)}
 
     except Exception as e:
         error_msg = str(e)
