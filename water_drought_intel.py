@@ -13,6 +13,7 @@ Endpoints:
 import time
 import logging
 import requests
+from datetime import datetime, timedelta, timezone
 from flask import Blueprint, request, jsonify
 
 logger = logging.getLogger(__name__)
@@ -195,11 +196,28 @@ def get_groundwater():
         return jsonify({'success': False, 'error': str(e)}), 502
 
 
+# USDM state-statistics requires the state's 2-digit FIPS code as `aoi`
+# (the 2-letter abbreviation returns zero rows). Mirrors the same map the
+# frontend uses in water-drought-layer.js.
+_STATE_FIPS = {
+    'AL': '01', 'AK': '02', 'AZ': '04', 'AR': '05', 'CA': '06', 'CO': '08', 'CT': '09', 'DE': '10',
+    'DC': '11', 'FL': '12', 'GA': '13', 'HI': '15', 'ID': '16', 'IL': '17', 'IN': '18', 'IA': '19',
+    'KS': '20', 'KY': '21', 'LA': '22', 'ME': '23', 'MD': '24', 'MA': '25', 'MI': '26', 'MN': '27',
+    'MS': '28', 'MO': '29', 'MT': '30', 'NE': '31', 'NV': '32', 'NH': '33', 'NJ': '34', 'NM': '35',
+    'NY': '36', 'NC': '37', 'ND': '38', 'OH': '39', 'OK': '40', 'OR': '41', 'PA': '42', 'RI': '44',
+    'SC': '45', 'SD': '46', 'TN': '47', 'TX': '48', 'UT': '49', 'VT': '50', 'VA': '51', 'WA': '53',
+    'WV': '54', 'WI': '55', 'WY': '56',
+}
+
+
 @water_bp.route('/api/v2/water/drought', methods=['GET'])
 def get_drought():
     """
-    Get current drought conditions from US Drought Monitor.
-    
+    Get current drought conditions from the US Drought Monitor (updated
+    weekly, Thursdays). Returns the most recent week's CATEGORICAL area
+    percentages (non-overlapping, sum ~100) in the *_pct shape the
+    land-power map's water-drought-layer.js consumes directly.
+
     Query params:
         state: Two-letter state code (required, e.g., 'AZ')
     """
@@ -207,33 +225,62 @@ def get_drought():
     if not state or len(state) != 2:
         return jsonify({'success': False, 'error': 'Two-letter state code required'}), 400
 
+    fips = _STATE_FIPS.get(state)
+    if not fips:
+        return jsonify({'success': False, 'error': f'Unknown state code: {state}'}), 400
+
     cache_key = f"drought:{state}"
     cached = _get_cache(cache_key, ttl=DROUGHT_CACHE_TTL)
     if cached:
         return jsonify({'success': True, **cached})
 
-    # US Drought Monitor API
+    # GetDroughtSeverityStatisticsByAreaPercent needs aoi=<FIPS>, a date
+    # window, and statisticsType=2 (categorical / non-cumulative). Pull the
+    # last ~5 weeks and keep the most recent row.
     url = "https://usdmdataservices.unl.edu/api/StateStatistics/GetDroughtSeverityStatisticsByAreaPercent"
+    today = datetime.now(timezone.utc).date()
+    start = today - timedelta(days=42)
+    params = {
+        'aoi': fips,
+        'startdate': start.strftime('%-m/%-d/%Y'),
+        'enddate': today.strftime('%-m/%-d/%Y'),
+        'statisticsType': 2,
+    }
     try:
-        resp = requests.get(f"{url}?aoi={state}", timeout=15, headers={'Accept': 'application/json'})
-        if resp.status_code == 200:
-            data = resp.json()
-            
-            # Parse drought levels
-            result = {
-                'state': state,
-                'drought_data': data[:5] if isinstance(data, list) else data,
-                'source': 'US Drought Monitor'
-            }
-        else:
-            # Fallback: try simpler endpoint
-            result = {
-                'state': state,
-                'drought_data': [],
-                'note': 'Drought Monitor API returned non-200',
-                'source': 'US Drought Monitor'
-            }
+        resp = requests.get(url, params=params, timeout=15,
+                            headers={'Accept': 'application/json'})
+        if resp.status_code != 200:
+            return jsonify({'success': False, 'state': state,
+                            'error': f'USDM API returned {resp.status_code}',
+                            'source': 'US Drought Monitor'}), 502
 
+        rows = resp.json()
+        if not isinstance(rows, list) or not rows:
+            return jsonify({'success': False, 'state': state,
+                            'error': 'USDM API returned no rows',
+                            'source': 'US Drought Monitor'}), 502
+
+        # Most recent week (rows are typically newest-first, but sort to be safe).
+        rows.sort(key=lambda r: r.get('mapDate') or '', reverse=True)
+        latest = rows[0]
+
+        def _pct(key):
+            try:
+                return round(float(latest.get(key) or 0), 2)
+            except (TypeError, ValueError):
+                return 0.0
+
+        result = {
+            'state': state,
+            'map_date': (latest.get('mapDate') or '')[:10],
+            'none_pct': _pct('none'),
+            'd0_pct': _pct('d0'),
+            'd1_pct': _pct('d1'),
+            'd2_pct': _pct('d2'),
+            'd3_pct': _pct('d3'),
+            'd4_pct': _pct('d4'),
+            'source': 'US Drought Monitor',
+        }
         _set_cache(cache_key, result)
         return jsonify({'success': True, **result})
 
