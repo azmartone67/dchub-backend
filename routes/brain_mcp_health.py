@@ -76,7 +76,18 @@ def check_mcp_health() -> list[dict]:
       {issue, url, count, detail}
     """
     findings: list[dict] = []
-    base = os.environ.get("MCP_HEALTH_BASE", "https://dchub.cloud")
+    # 2026-05-29: default was https://dchub.cloud — but the brain runs INSIDE
+    # Railway, so self-probes through CF round-trip to the edge and back, AND
+    # trip CF's rate limiter when 6 sequential probes fire (the burst from a
+    # single radar cycle was getting 429'd, hiding all downstream findings
+    # behind a single "catalog unreachable" headline). Default to the Railway-
+    # direct hostname so the detector talks to the same Flask app directly,
+    # no CF round-trip, no rate limit. Override via env if the public-edge
+    # behavior is what's being audited.
+    base = os.environ.get(
+        "MCP_HEALTH_BASE",
+        "https://dchub-backend-production.up.railway.app",
+    )
 
     # ── 1. Live tool catalog (the canonical /api/v1/mcp/tools.json) ──
     # 2026-05-29: was `return findings` on err — that silenced ALL other
