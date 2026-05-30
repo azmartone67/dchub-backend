@@ -426,6 +426,14 @@ def _render_partner_page(slug: str, p: dict) -> str:
         f"      <li><span class=\"check\">✓</span> {b}</li>"
         for b in p["value_bullets"]
     )
+    # Cross-partner interconnect — link the other live partner pages so the
+    # /partners network is navigable + each page passes internal link equity.
+    # Skip self + any pre-execution stub (e.g. NLR).
+    related = [(s, q) for s, q in _PARTNERS.items()
+               if s != slug and not q.get("pre_execution")]
+    related_html = " · ".join(
+        f'<a href="/partners/{s}">{q["name"]}</a>' for s, q in related
+    ) or '<a href="/partners">all partners</a>'
     return f"""<!DOCTYPE html>
 <html lang="en">
 <head>
@@ -529,6 +537,15 @@ def _render_partner_page(slug: str, p: dict) -> str:
       color:#7a8094;font-size:.88rem;line-height:1.6;
     }}
     .footer-note a{{color:#a8a8f0}}
+    .livestrip{{display:flex;flex-wrap:wrap;gap:10px;margin:0 0 40px}}
+    .livestrip .ls-item{{
+      background:rgba(255,255,255,.04);border:1px solid rgba(255,255,255,.08);
+      border-radius:999px;padding:7px 15px;font-size:.82rem;color:#9aa3bd;
+      font-family:"JetBrains Mono",ui-monospace,monospace;
+    }}
+    .livestrip .ls-item b{{color:{accent};font-weight:700}}
+    .livestrip .ls-live{{color:#34d399;font-size:.7rem;vertical-align:middle;animation:pulse 2s ease-in-out infinite}}
+    .related{{color:#9aa3bd;font-size:.95rem;line-height:1.9;margin:0 0 8px}}
     @media (max-width:640px){{
       h1{{font-size:2rem}}
       .tagline{{font-size:1.15rem}}
@@ -552,6 +569,14 @@ def _render_partner_page(slug: str, p: dict) -> str:
     <p class="tagline">{p['tagline']}</p>
     <p class="hero">{p['hero']}</p>
 
+    <div class="livestrip" id="dch-live" aria-live="polite">
+      <span class="ls-item"><span class="ls-live">●</span> live</span>
+      <span class="ls-item"><b id="ls-calls">—</b> MCP calls · 7d</span>
+      <span class="ls-item"><b id="ls-fac">21,000+</b> facilities</span>
+      <span class="ls-item"><b id="ls-mkt">233</b> markets · 10 ISOs</span>
+      <span class="ls-item"><b id="ls-build">live DCPI</b></span>
+    </div>
+
     <h2>What {p['name']} unlocks</h2>
     <ul class="bullets">
 {bullets_html}
@@ -565,6 +590,9 @@ def _render_partner_page(slug: str, p: dict) -> str:
       <a class="cta cta-secondary" href="{p['secondary_url']}">{p['secondary_cta']}</a>
     </div>
 
+    <h2>Also wired into</h2>
+    <p class="related">DC Hub feeds the same live intelligence to {related_html}.</p>
+
     <p class="footer-note">
       Want a 20-min walkthrough? Reply directly to
       <a href="mailto:jonathan@dchub.cloud?subject=DC Hub × {p['name']}">jonathan@dchub.cloud</a>
@@ -574,6 +602,26 @@ def _render_partner_page(slug: str, p: dict) -> str:
     </p>
   </div>
   <script src="/js/dchub-nav.js?v=phase262-1778556606"></script>
+  <script>
+  // Dynamic live-data strip — fetched client-side (no backend render load on
+  // the single replica), graceful fallback to the static defaults on any error.
+  (async function(){{
+    try {{
+      const f = await fetch('/api/v1/mcp/funnel').then(r=>r.ok?r.json():null).catch(()=>null);
+      const c = f && (f.tool_calls_7d || f.tool_calls_30d || f.calls_7d || f.calls);
+      if (c) document.getElementById('ls-calls').textContent = Number(c).toLocaleString();
+    }} catch(e){{}}
+    try {{
+      const d = await fetch('/api/v1/dcpi/leaderboard?limit=1').then(r=>r.ok?r.json():null).catch(()=>null);
+      const arr = d && (d.leaderboard || d.markets || d);
+      const row = Array.isArray(arr) ? arr[0] : null;
+      if (row && row.market_name) {{
+        const sc = (row.excess_power_score!=null) ? (' '+Math.round(row.excess_power_score)) : '';
+        document.getElementById('ls-build').textContent = 'Top BUILD: '+row.market_name+sc;
+      }}
+    }} catch(e){{}}
+  }})();
+  </script>
 </body>
 </html>
 """
