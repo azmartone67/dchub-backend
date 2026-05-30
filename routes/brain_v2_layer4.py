@@ -460,6 +460,19 @@ def trigger_learn():
         # placeholders (__FOO__, {{x}}) have no em-dash and stay text-fixable.
         return "—" in (i.get("issue") or "")
 
+    # r63 (2026-05-29): compute the confirmed-false-positive set ONCE up front
+    # (was recomputed twice below). Reused to (1) stop bumping persistence for
+    # already-suppressed data placeholders — which is what kept seen_count
+    # climbing to "×155" even after r43-H routed them — and (2) gate the
+    # per-cycle re-log of "data_placeholder_routed" so the Learning-log tail
+    # stops filling with the same routed-placeholder rows every 30 min.
+    _suppressed_fp = set()
+    if _STORE_OK:
+        try:
+            _suppressed_fp = _store.list_false_positives(min_refused=3)
+        except Exception:
+            _suppressed_fp = set()
+
     # Phase S (2026-05-12): "learn from errors it misses" — track every
     # issue's persistence in Postgres, then prioritize the most-stuck
     # ones (high seen_count, no successful proposal yet) for this learn
@@ -467,6 +480,16 @@ def trigger_learn():
     # worklist where the brain's repeated failures bubble up.
     for i in issues:
         if _is_asset_issue(i) or i.get("issue") in KNOWN:
+            continue
+        # r63: a data placeholder already confirmed as a repeat non-text-fixable
+        # (refused/routed >= 3 times) must NOT keep bumping seen_count — that
+        # was the spin-loop: a benign em-dash cell re-counted every cycle made
+        # the brain look busy-but-stuck (the "data_placeholder_routed ×155").
+        # The em-dash detector source is already silenced for the benign pages
+        # (dchub_self_heal r43-J EMDASH_IGNORE_URLS); this stops any residual
+        # placeholder on other URLs from accreting once it's confirmed benign.
+        if (_is_data_placeholder(i)
+                and (i.get("issue"), i.get("url") or "") in _suppressed_fp):
             continue
         if _STORE_OK:
             try:
@@ -496,33 +519,24 @@ def trigger_learn():
     # fix, and re-routing them hourly just makes the brain look busy-but-stuck.
     # Drop ones already confirmed as repeat non-fixables; each remaining route
     # bumps mark_false_positive() below, so after 3 cycles they fall into this
-    # set and stop re-surfacing.
-    if _STORE_OK:
-        try:
-            _dp_suppressed = _store.list_false_positives(min_refused=3)
-            if _dp_suppressed:
-                data_findings = [
-                    i for i in data_findings
-                    if (i.get("issue"), i.get("url") or "") not in _dp_suppressed
-                ]
-        except Exception:
-            pass
+    # set and stop re-surfacing. r63: reuse the _suppressed_fp set computed
+    # once above (was a redundant 2nd DB fetch).
+    if _suppressed_fp:
+        data_findings = [
+            i for i in data_findings
+            if (i.get("issue"), i.get("url") or "") not in _suppressed_fp
+        ]
 
     # Phase SS (2026-05-14): drop confirmed false positives. An issue
     # Claude has REFUSED 3+ times isn't a real fixable placeholder —
     # re-attempting it just burns the hourly Claude budget. The 11
     # wasted `refused` cycles on the phantom /markets placeholder are
-    # exactly what this prevents.
-    if _STORE_OK:
-        try:
-            _fp = _store.list_false_positives(min_refused=3)
-            if _fp:
-                novel_candidates = [
-                    i for i in novel_candidates
-                    if (i.get("issue"), i.get("url") or "") not in _fp
-                ]
-        except Exception:
-            pass
+    # exactly what this prevents. r63: reuse _suppressed_fp (was a 3rd fetch).
+    if _suppressed_fp:
+        novel_candidates = [
+            i for i in novel_candidates
+            if (i.get("issue"), i.get("url") or "") not in _suppressed_fp
+        ]
 
     # ...prioritized by persistence (most-stuck first). When the store is
     # unavailable we fall back to "first N in feed order" which matches

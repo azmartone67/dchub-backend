@@ -971,6 +971,186 @@ def _classify_post_for_dedup(text: str) -> str:
     return "other"
 
 
+# ---------------------------------------------------------------------------
+# r63 (2026-05-29) — pre-publish media-judgment guard.
+#
+# WHY: DC Hub Media posted near-duplicate LinkedIn posts that the existing
+# per-CLASS dedup (_classify_post_for_dedup + _seen_classes_today) could not
+# catch, because:
+#   (1) ENTITY-BLINDNESS — "Montréal 65.2 Excess Power BUILD" and "MCP ~142k
+#       tool calls" both fall through to the catch-all "other" class, and two
+#       "other" posts never collide. The class tag is too coarse.
+#   (2) TODAY-ONLY WINDOW — _seen_classes_today is rebuilt every loop from only
+#       posts with published_at LIKE today%, so a 2nd Montréal post 13h later
+#       crossed the UTC-midnight boundary and saw an empty seen-set.
+#   (3) NO ZERO-STAT GUARD — "DC Hub MCP served 0 AI tool calls" was eligible
+#       to publish (embarrassing "0 MCP requests" zero-stat post).
+#
+# This guard is ENTITY-level and time-windowed: it looks at the actual
+# market+verdict and the headline metric of each candidate, compares against a
+# rolling N-day window of already-published posts (crosses midnight), and
+# hard-blocks zero/null headline stats. It is a pre-publish FILTER, not a
+# rewrite — fail-open on any error so it can never make distribution worse.
+# ---------------------------------------------------------------------------
+
+# Lookback window for entity-level dedup. 5 days sits inside the spec's
+# 3-7d band: long enough to stop the "same Montréal BUILD twice this week"
+# repeats, short enough that a genuinely-changed verdict can re-post within
+# the week.
+_DEDUP_LOOKBACK_DAYS = 5
+
+# Headline-metric extractor. Matches the handful of quotable stats the press
+# engine leads with (marketing_engine._pick_daily_topic). Each entry yields a
+# (metric_label, numeric_value) so we can (a) block zero/null values and
+# (b) dedup on the metric label across the lookback window.
+_METRIC_PATTERNS = [
+    # "DC Hub MCP served 142,318 AI tool calls in the last 24h"
+    ("mcp_tool_calls",
+     _re_legacy.compile(r'MCP\s+served\s+([\d,]+)\s+(?:AI\s+)?tool\s+calls', _re_legacy.I)),
+    # generic "<N> AI tool calls" / "<N> tool calls" fallback (surge posts)
+    ("mcp_tool_calls",
+     _re_legacy.compile(r'([\d,]+)\s+(?:AI\s+)?tool\s+calls', _re_legacy.I)),
+    # "<N> MCP requests" / "<N> MCP API requests" (the 0-stat case)
+    ("mcp_requests",
+     _re_legacy.compile(r'([\d,]+)\s+MCP(?:\s+API)?\s+requests', _re_legacy.I)),
+    # "added 1,204 facilities in the last 7 days" / coverage milestones
+    ("coverage_added",
+     _re_legacy.compile(r'added\s+([\d,]+)\s+\w+\s+in\s+the\s+last', _re_legacy.I)),
+    # "<N> unique (AI )callers/agents"
+    ("unique_callers",
+     _re_legacy.compile(r'([\d,]+)\s+unique\s+(?:AI\s+)?(?:callers|agents)', _re_legacy.I)),
+]
+
+
+def _post_headline_signature(text: str) -> dict:
+    """Extract the entity signature of a post for dedup + zero-stat checks.
+
+    Returns a dict:
+      {
+        "market_verdict": "montreal|build" | None,   # market slug + verdict
+        "metric_label":   "mcp_tool_calls" | None,    # headline stat kind
+        "metric_value":   142318.0 | None,            # parsed numeric value
+        "zero_stat":      True | False,               # headline stat is 0/null
+      }
+    Robust across BOTH the structured "📍 X · ISO · DCPI verdict: BUILD" shape
+    AND the free-text "Montréal leads the BUILD ranking ..." shape. Never
+    raises — returns an all-None signature on any parse failure (fail-open)."""
+    sig = {"market_verdict": None, "metric_label": None,
+           "metric_value": None, "zero_stat": False}
+    if not text:
+        return sig
+    try:
+        # --- market + verdict ------------------------------------------------
+        # 1) structured pin header (reuses the legacy DCPI parser regex)
+        m = _LEGACY_HEADER.search(text)
+        if m:
+            name = (m.group(1) or "").strip().lower()
+            verdict = (m.group(3) or "").strip().upper()
+            slug = _re_legacy.sub(r'[^a-z0-9]+', '-', name).strip('-')
+            if slug and verdict:
+                sig["market_verdict"] = f"{slug}|{verdict}"
+        # 2) /dcpi/<slug> link + a verdict word anywhere in the body
+        if not sig["market_verdict"]:
+            lk = _LEGACY_LINK.search(text)
+            vd = _re_legacy.search(r'\b(BUILD|AVOID|CAUTION|HOLD)\b', text)
+            if lk and vd:
+                slug = (lk.group(1) or "").strip().lower()
+                if slug:
+                    sig["market_verdict"] = f"{slug}|{vd.group(1).upper()}"
+        # 3) free-text "<Market> leads the BUILD ranking" / "<Market> flagged
+        #    AVOID" (the marketing_engine dcpi_leader / dcpi_warning shapes)
+        if not sig["market_verdict"]:
+            ft = _re_legacy.search(
+                r'^\s*([A-Z][\w .\'\-éÉ]{2,40}?)\s+(?:leads the\s+(BUILD|AVOID)\b'
+                r'|flagged\s+(BUILD|AVOID)\b)',
+                text, _re_legacy.M)
+            if ft:
+                name = (ft.group(1) or "").strip().lower()
+                verdict = (ft.group(2) or ft.group(3) or "").strip().upper()
+                slug = _re_legacy.sub(r'[^a-z0-9]+', '-', name).strip('-')
+                if slug and verdict:
+                    sig["market_verdict"] = f"{slug}|{verdict}"
+
+        # --- headline metric -------------------------------------------------
+        for label, pat in _METRIC_PATTERNS:
+            mm = pat.search(text)
+            if not mm:
+                continue
+            try:
+                val = float((mm.group(1) or "0").replace(",", ""))
+            except (TypeError, ValueError):
+                continue
+            sig["metric_label"] = label
+            sig["metric_value"] = val
+            if val <= 0:
+                sig["zero_stat"] = True
+            break
+    except Exception:
+        # Fail-open: a parse failure must never block legitimate posts.
+        return {"market_verdict": None, "metric_label": None,
+                "metric_value": None, "zero_stat": False}
+    return sig
+
+
+def _should_skip_publish(cur, content_text: str, platform: str):
+    """Pre-publish media-judgment filter. Returns (skip: bool, reason: str).
+
+    Decision order (skip on the FIRST hit):
+      (b) ZERO-STAT GUARD — never publish a post whose headline metric parses
+          to 0/null ("DC Hub MCP served 0 AI tool calls"). These read as
+          "the platform did nothing today" and damage credibility.
+      (a) ENTITY DEDUP — skip if the SAME market+verdict OR the SAME headline
+          metric was already published (this platform) within the last
+          _DEDUP_LOOKBACK_DAYS. Uses a rolling time window queried fresh from
+          the DB, so it catches near-dupes posted hours apart ACROSS the UTC
+          midnight boundary (the bug the today-only seen-set missed).
+
+    FAIL-OPEN: any DB / parse error returns (False, "") so a transient blip
+    never dark-holds the publisher. The caller logs the reason when skip=True.
+    """
+    sig = _post_headline_signature(content_text or "")
+
+    # (b) zero / null headline stat — hard block, no DB needed.
+    if sig.get("zero_stat"):
+        return True, (f"zero-stat headline ({sig.get('metric_label')}="
+                      f"{sig.get('metric_value')}) — refusing to publish a "
+                      f"'platform did nothing' post")
+
+    # Nothing entity-identifiable → let the per-class dedup handle it.
+    if not sig.get("market_verdict") and not sig.get("metric_label"):
+        return False, ""
+
+    # (a) entity-level lookback across the rolling window (crosses midnight).
+    try:
+        cutoff = (datetime.utcnow()
+                  - timedelta(days=_DEDUP_LOOKBACK_DAYS)).isoformat()
+        cur.execute(
+            "SELECT content FROM social_media_posts "
+            "WHERE status = 'published' AND publish_platform = %s "
+            "AND published_at >= %s "
+            "ORDER BY published_at DESC LIMIT 60",
+            (platform, cutoff))
+        rows = cur.fetchall() or []
+    except Exception:
+        # Fail-open on any DB error.
+        return False, ""
+
+    for r in rows:
+        prev = r.get('content') if hasattr(r, 'get') else (r[0] if r else '')
+        psig = _post_headline_signature(prev or "")
+        if (sig.get("market_verdict")
+                and psig.get("market_verdict") == sig.get("market_verdict")):
+            return True, (f"duplicate market+verdict '{sig['market_verdict']}' "
+                          f"already posted to {platform} within "
+                          f"{_DEDUP_LOOKBACK_DAYS}d")
+        if (sig.get("metric_label")
+                and psig.get("metric_label") == sig.get("metric_label")):
+            return True, (f"duplicate headline metric '{sig['metric_label']}' "
+                          f"already posted to {platform} within "
+                          f"{_DEDUP_LOOKBACK_DAYS}d")
+    return False, ""
+
+
 # r42z admin: enqueue a custom-authored post and (optionally) publish
 # it immediately. Used when operator writes a specific post (e.g. an
 # updated press-release announcement) and wants it on the wire NOW,
@@ -1331,12 +1511,26 @@ def start_auto_publisher():
                     for _cand in candidates:
                         _ctext = _cand.get('content') if hasattr(_cand, 'get') else (_cand[1] if _cand else '')
                         _cls = _classify_post_for_dedup(_ctext or '')
-                        if _cls not in _seen_classes_today:
-                            row = _cand
-                            _seen_classes_today.add(_cls)
-                            break
+                        if _cls in _seen_classes_today:
+                            continue
+                        # r63 (2026-05-29): entity-level + zero-stat judgment.
+                        # Catches near-dupes the coarse class tag misses (two
+                        # "Montréal BUILD" or "MCP tool-call surge" posts both
+                        # land in class "other"), AND blocks "0 tool calls"
+                        # zero-stat posts. Skipping a candidate here naturally
+                        # rotates to a DIFFERENT topic in the same drain.
+                        _skip, _why = _should_skip_publish(cur, _ctext or '', 'linkedin')
+                        if _skip:
+                            logger.warning(
+                                "Auto-publisher: SKIPPED LinkedIn candidate %s for dedup/judgment — %s",
+                                (_cand.get('id') if hasattr(_cand, 'get') else (_cand[0] if _cand else '?')),
+                                _why)
+                            continue
+                        row = _cand
+                        _seen_classes_today.add(_cls)
+                        break
                     if not row:
-                        logger.debug("Auto-publisher: No approved posts to publish (or all classes already fired today)")
+                        logger.debug("Auto-publisher: No approved posts to publish (or all classes/entities already fired)")
                         break
                     post_id = row['id']
                     content_text = row['content']
@@ -1493,6 +1687,13 @@ def start_twitter_publisher():
                     continue
                 post_id = row['id']
                 content_text = row['content']
+                # r63 (2026-05-29): same entity-level + zero-stat judgment as
+                # the LinkedIn loop. Twitter picks a single oldest row, so a
+                # skip just defers to the next cycle (no rotation here).
+                _skip, _why = _should_skip_publish(cur, content_text or '', 'twitter')
+                if _skip:
+                    logger.warning("Twitter auto-publisher: SKIPPED post %s for dedup/judgment — %s", post_id, _why)
+                    continue
                 success, result = _post_to_twitter(content_text)
                 now = datetime.utcnow().isoformat() + 'Z'
                 if success:
@@ -1609,6 +1810,14 @@ def start_bluesky_publisher():
                         break
                     post_id = row['id']
                     content_text = row['content']
+                    # r63 (2026-05-29): entity-level + zero-stat judgment.
+                    # Bluesky re-selects the same oldest row each drain
+                    # iteration (no exclusion), so on a skip we BREAK to end
+                    # this cycle's drain rather than spin on the same row.
+                    _skip, _why = _should_skip_publish(cur, content_text or '', 'bluesky')
+                    if _skip:
+                        logger.warning("Bluesky auto-publisher: SKIPPED post %s for dedup/judgment — %s", post_id, _why)
+                        break
                     ok, result = _post_to_bluesky(content_text)
                     now = datetime.utcnow().isoformat() + 'Z'
                     if ok:
