@@ -4760,6 +4760,54 @@ _CACHE_PATHS: dict = {
     '/api/v1/interconnect-queue':       (1800, 'interconnect queue — LBNL static summary'),
 }
 
+# r43-htmlcache (2026-05-29): SITE-SPEED FIX. The dominant cause of the
+# ~39% CF cache-hit ratio is that no public HTML page emits an `s-maxage`
+# directive, so Cloudflare classifies every market/DCPI/operator page as
+# cf-cache-status: DYNAMIC and forwards 100% of HTML traffic to the single
+# Railway replica (which then eats a 12-14s cold render incl. a synchronous
+# Claude call on /dcpi/<slug>). These pages are anonymous, non-per-user, and
+# change at most a few times a day — they are safe to edge-cache.
+#
+# These are HTML surfaces (not /api/*), so they get a SHORT browser TTL
+# (max-age=60 — a reader's own refresh shows fresh data quickly) but a
+# longer SHARED/edge TTL (s-maxage=300 — CF serves the cached copy to
+# everyone else and only re-origins every 5 min). stale-while-revalidate
+# lets CF serve the slightly-stale copy instantly while it refreshes in the
+# background, so no reader ever waits on the cold render after the first.
+#
+# Applied centrally here (not in the route handlers) because the
+# add_security_headers after_request hook below is the final authority on
+# Cache-Control and would otherwise overwrite anything a handler set — the
+# exact reason these pages were stuck at DYNAMIC. Prefix-matched the same
+# way as _CACHE_PATHS so '/markets' also covers '/markets/dallas', etc.
+# DELIBERATELY EXCLUDES facility profile pages and any per-tier/paywalled
+# surface — only catalog-style public pages are listed.
+_HTML_CACHE_PATHS: dict = {
+    '/markets':   (60, 300, 'market intelligence pages — anon, slow-changing'),
+    '/dcpi':      (60, 300, 'DCPI per-market pages — anon, recomputed 4x/day'),
+    '/operators': (60, 300, 'operator leaderboard + profiles — anon catalog'),
+}
+
+
+def _match_html_cache(path: str):
+    """Return (browser_ttl, shared_ttl) for an edge-cacheable public HTML
+    page, or None. Exact match first, then prefix ('/markets' covers
+    '/markets/dallas') — mirrors the _CACHE_PATHS matching above so the
+    two policies behave identically."""
+    try:
+        hit = _HTML_CACHE_PATHS.get(path)
+        if hit is None:
+            for prefix in _HTML_CACHE_PATHS:
+                if path.startswith(prefix + '/'):
+                    hit = _HTML_CACHE_PATHS[prefix]
+                    break
+        if hit is None:
+            return None
+        return (hit[0], hit[1])
+    except Exception:
+        return None
+
+
 @app.after_request
 def add_cache_headers(response):
     """Phase ZZZZ-cache-lift v2: attach Cache-Control to high-traffic
@@ -8538,6 +8586,20 @@ def add_security_headers(response):
         response.headers['Cache-Control'] = 'public, max-age=60, stale-while-revalidate=300'
     elif path.startswith('/api/') or path.startswith('/mcp'):
         response.headers['Cache-Control'] = 'no-store, no-cache, must-revalidate, max-age=0'
+    elif (response.status_code == 200 and request.method in ('GET', 'HEAD')
+          and _match_html_cache(path) is not None):
+        # r43-htmlcache (2026-05-29): edge-cacheable public HTML pages.
+        # Short browser TTL + longer shared (CF) TTL so Cloudflare stops
+        # forwarding 100% of market/DCPI/operator HTML to the single
+        # Railway replica. Fixes the ~39% cache-hit ratio + 12-14s repeat
+        # loads. SWR lets CF serve instantly while refreshing in the bg.
+        _bmax, _smax = _match_html_cache(path)
+        response.headers['Cache-Control'] = (
+            f'public, max-age={_bmax}, s-maxage={_smax}, '
+            f'stale-while-revalidate=600')
+        existing_vary = response.headers.get('Vary', '')
+        if 'Accept' not in existing_vary:
+            response.headers['Vary'] = (existing_vary + ', Accept').lstrip(', ')
     else:
         response.headers['Cache-Control'] = 'public, max-age=300, stale-while-revalidate=3600'
 

@@ -110,7 +110,18 @@ def register_capture(app):
     if getattr(app, "_http_capture_registered", False):
         return
     app._http_capture_registered = True
-    _ensure_table()
+    # r43-bootfix (2026-05-29): do NOT call _ensure_table() here.
+    # register_capture() runs at module-import time in main.py (~line 1556),
+    # which is BEFORE main.get_db is defined (~line 4224). The eager
+    # `from main import get_db` therefore hit a partially-initialized
+    # `main` and raised "cannot import name 'get_db'", logged every boot as
+    # "[http-capture] table create failed". It was cosmetic (the table got
+    # created moments later) but it was real boot noise. The background
+    # flush thread started just below calls _flush_to_db() after a 30s
+    # sleep, and _flush_to_db() does its own CREATE TABLE IF NOT EXISTS on
+    # its connection — by then `main` is fully initialized. So table
+    # creation is simply deferred to first flush; nothing else needs it
+    # sooner (reads tolerate a missing table).
 
     @app.after_request
     def _capture_errors(response):

@@ -891,9 +891,19 @@ def check_report_content_drift() -> list[dict]:
     post. We catch it ourselves before they do.
     """
     findings: list[dict] = []
+    # r43-radarfix (2026-05-29): DROPPED the quarterly-deep probe. The
+    # quarterly-deep report is a heavy dynamic render that routinely takes
+    # 12-14s on the single Railway replica, so this synchronous GET (8s
+    # timeout) timed out almost every scan → "[brain-radar] .../reports/
+    # quarterly-deep TimeoutError" false negative every cycle, while also
+    # piling self-inflicted load onto the one worker (the exact flapping
+    # class we've been fighting). The monthly report is light and covers
+    # the same drift signals (dcpi_movers, brand_pulse, generated_at
+    # staleness), so we keep that one and lose only the quarterly-only
+    # hyperscaler_deals=[] check — an acceptable trade vs hammering the
+    # single replica every scan.
     for window, url in [
         ("monthly",          "http://localhost:8080/api/v1/reports/monthly"),
-        ("quarterly-deep",   "http://localhost:8080/api/v1/reports/quarterly-deep"),
     ]:
         body, _ = _http_get(url, timeout=8)
         if not body:
@@ -1061,14 +1071,13 @@ def check_mcp_tool_description_drift() -> list[dict]:
     # tool list from here, but the manifest is the single source of
     # truth — if it says N but tools/list returns N+k, agents see a
     # different count than the discovery surface advertises.
-    try:
-        rpc_body, _ = _http_get("https://dchub.cloud/mcp", timeout=6)
-        # The /mcp endpoint requires POST + session; can't easily probe
-        # from here without state. Skip this check unless we can do it
-        # cheaply. Leaving the manifest's own count as the source of
-        # truth for now.
-    except Exception:
-        pass
+    # r43-radarfix (2026-05-29): REMOVED the GET probe to
+    # https://dchub.cloud/mcp here. /mcp is POST-only (JSON-RPC + session),
+    # so a GET always returned HTTP 405 → "[brain-radar] .../mcp HTTP 405"
+    # logged every scan as a false negative, AND the probe was already a
+    # dead no-op (its result was never used — the manifest's own count is
+    # the source of truth). Dropping it removes the log noise and a needless
+    # request to the single Railway replica with zero loss of signal.
 
     return findings
 

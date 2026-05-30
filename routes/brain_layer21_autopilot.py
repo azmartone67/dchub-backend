@@ -276,6 +276,19 @@ def _autopilot_loop():
     # Warm-up: wait 2 min before first tick so the http_capture buffer
     # has had time to fill with real traffic
     time.sleep(120)
+    # r43-bootfix (2026-05-29): ensure the table HERE, after the warmup
+    # sleep, instead of in start_autopilot(). start_autopilot() runs at
+    # main.py module-import time (~line 1575) BEFORE main.get_db is defined
+    # (~line 4224), so the eager `from main import get_db` raised "cannot
+    # import name 'get_db' from partially initialized module 'main'",
+    # logged every boot as "[L21] table create failed". Running it post-
+    # warmup guarantees `main` is fully initialized AND happens before the
+    # first _record_action() INSERT below (which does a bare INSERT and
+    # relies on the table already existing).
+    try:
+        _ensure_table()
+    except Exception as e:
+        logger.warning(f"[L21-autopilot] deferred table ensure failed: {e}")
     while True:
         try:
             res = _one_tick(dry_run=False)
@@ -293,7 +306,10 @@ def start_autopilot():
     if _autopilot_started:
         return
     _autopilot_started = True
-    _ensure_table()
+    # r43-bootfix (2026-05-29): _ensure_table() moved INTO _autopilot_loop
+    # (after its 120s warmup) so it no longer runs at main.py import time,
+    # when main.get_db isn't defined yet → "[L21] table create failed"
+    # boot warning. The loop ensures the table before its first tick / INSERT.
     threading.Thread(target=_autopilot_loop, daemon=True,
                      name="brain-l21-autopilot").start()
     logger.info(f"[L21-autopilot] started — tick every "
