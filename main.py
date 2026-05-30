@@ -18816,29 +18816,36 @@ def serve_sitemap_xml():
         # falls back to just the index page rather than failing.
         pass
 
-    # ---- Location pages (from DB) ----
-    # URL format: /locations/{country-code} or /locations/{country-code}-{state-code}
-    # Matches frontend: /locations/usa-il, /locations/us-ny, /locations/pl
-    seen_locations = set()
-    for row in loc_rows:
-        cc = row[0] if row[0] else ''
-        st = row[1] if row[1] else ''
-        cc_lower = cc.lower().strip()
-        if not cc_lower:
-            continue
-
-        # Country-only page
-        if cc_lower not in seen_locations:
-            seen_locations.add(cc_lower)
-            urls.append(f'  <url><loc>https://dchub.cloud/locations/{cc_lower}</loc><lastmod>{today}</lastmod><changefreq>weekly</changefreq><priority>0.7</priority></url>')
-
-        # Country-state page (e.g., us-ny, usa-il)
-        if st:
-            st_lower = st.lower().strip()
-            combo = f"{cc_lower}-{st_lower}"
-            if combo not in seen_locations:
-                seen_locations.add(combo)
-                urls.append(f'  <url><loc>https://dchub.cloud/locations/{combo}</loc><lastmod>{today}</lastmod><changefreq>weekly</changefreq><priority>0.6</priority></url>')
+    # ---- Location pages (CURATED static list) ----
+    # r43-J (2026-05-30): the previous DB-loop emitted 1,367 country+state combos
+    # from facilities data (e.g. 'us-vlaams-brabant', 'id-central java') — almost
+    # ALL of them 404'd because dchub-frontend/locations/ only has 107 actual
+    # static pages. Google Search Console reported "1.37K pages aren't indexed:
+    # Redirect error" — a near-exact match for that 1,367. Replaced with the 107
+    # known-good slugs (mirrors the markets hardcoded list above) so the sitemap
+    # only tells Google about pages that actually exist.
+    _LOCATION_STATIC_SLUGS = [  # 107 curated, all backed by dchub-frontend/locations/<slug>.html
+        'ae', 'at', 'au', 'au-nsw', 'au-vic', 'australia',
+        'australia-nsw', 'be', 'br', 'br-rj', 'br-sp', 'brazil',
+        'ca', 'ca-ab', 'ca-on', 'ca-qc', 'ch', 'ch-ge',
+        'ch-zh', 'cl', 'cn', 'de', 'de-hessen', 'de-hessia',
+        'dk', 'es', 'es-madrid', 'fi', 'fr', 'france',
+        'gb', 'gb-england', 'germany', 'hk', 'hk-hong-kong', 'hong-kong',
+        'id', 'id-jakarta', 'ie', 'in', 'in-karnataka', 'in-maharashtra',
+        'in-tamil-nadu', 'in-uttar-pradesh', 'ireland', 'it', 'japan', 'jp',
+        'jp-osaka', 'jp-tokyo', 'kr', 'mx', 'my', 'netherlands',
+        'ng', 'ng-lagos', 'nl', 'pl', 'pl-masovian-voivodeship', 'ru',
+        'se', 'sg', 'singapore', 'th', 'tr', 'uk',
+        'us', 'us-az', 'us-ca', 'us-co', 'us-ct', 'us-dc',
+        'us-fl', 'us-ga', 'us-il', 'us-ks', 'us-ky', 'us-ma',
+        'us-md', 'us-mn', 'us-mo', 'us-nc', 'us-ne', 'us-nj',
+        'us-nv', 'us-ny', 'us-oh', 'us-ok', 'us-or', 'us-pa',
+        'us-tn', 'us-tx', 'us-ut', 'us-va', 'us-wa', 'usa',
+        'usa-az', 'usa-ca', 'usa-co', 'usa-ga', 'usa-il', 'usa-nv',
+        'usa-ny', 'usa-tx', 'usa-va', 'usa-wa', 'za',
+    ]
+    for _slug in _LOCATION_STATIC_SLUGS:
+        urls.append(f'  <url><loc>https://dchub.cloud/locations/{_slug}</loc><lastmod>{today}</lastmod><changefreq>weekly</changefreq><priority>0.6</priority></url>')
 
     # ---- Facility pages (from DB) ----
     # URL format: /facilities/{provider-slug}-{name-slug}-{hash8}

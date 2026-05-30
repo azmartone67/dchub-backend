@@ -1401,6 +1401,20 @@ HTML_BAD_PATTERNS = {
     "stuck aria-busy":            _hp_re.compile(r'aria-busy="true"[^>]*>\s*[—\-]\s*<'),
 }
 
+# r43-J (2026-05-30): URLs where the "— placeholder" pattern matches LEGITIMATE
+# em-dash typography (separators, prose, design accents) rather than broken data
+# bindings. Brain v2 correctly classifies these as "needs data-binding, not text
+# fix" and routes them — but the healer kept re-detecting them every cycle, so
+# brain_issue_persistence.seen_count climbed forever (155×/, 128×/dc-hub-media,
+# 103×/pricing on 2026-05-30) and the dashboard still SHOWED them in the stuck
+# worklist despite the routing. Skip the "— placeholder" pattern on these
+# known-benign pages so they stop accreting seen_count.
+EMDASH_IGNORE_URLS = {
+    "https://dchub.cloud/",
+    "https://dchub.cloud/dc-hub-media",
+    "https://dchub.cloud/pricing",
+}
+
 HTML_PROBE_URLS = [
     "https://dchub.cloud/",
     "https://dchub.cloud/pricing",
@@ -1527,6 +1541,11 @@ def fix_html_quality_scan():
         scan_body = _hp_re.sub(r"\s+[a-zA-Z_:][\w:.-]*\s*=\s*'[^']*'", '', scan_body)
         page_hits = {}
         for label, needle in HTML_BAD_PATTERNS.items():
+            # r43-J: skip "— placeholder" on URLs where the em-dash is legit
+            # typography (homepage / dc-hub-media / pricing). Stops the
+            # brain_issue_persistence worklist from accreting these forever.
+            if label == "— placeholder" and url in EMDASH_IGNORE_URLS:
+                continue
             if hasattr(needle, "findall"):  # re.Pattern
                 n = len(needle.findall(scan_body))
             else:
