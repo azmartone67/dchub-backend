@@ -271,23 +271,42 @@ def _run_test(name, category, url, check_kind, severity):
 
 
 def run_full_qa_suite():
-    """Run ALL tests and persist results. Returns summary dict."""
+    """Run ALL tests and persist results. Returns summary dict.
+
+    2026-05-30: fetches now run through a small thread pool (max 5 concurrent)
+    instead of strictly sequentially. Probing ~28 URLs one-at-a-time — several
+    of them 12-14s (slow market pages) — summed to 100s+. When trigger_run()
+    ran this in-request that 100s+ HELD the single gthread worker past
+    gunicorn's request timeout → SIGKILL → worker restart → site-wide flap.
+    The QA crawler meant to DETECT outages was CAUSING them.
+
+    Capped concurrency keeps wall-clock to ~15-25s (≈ slowest few probes) while
+    deliberately NOT firing 28 simultaneous self-requests at the single-replica
+    backend (which would just move the saturation, not fix it). Combined with
+    backgrounding in trigger_run(), the worker is never blocked."""
     _ensure_tables()
     started = time.time()
     results = []
 
-    for name, category, url, check_kind, severity in ALL_TESTS:
+    from concurrent.futures import ThreadPoolExecutor
+
+    def _safe_run(args):
+        name, category, url, check_kind, severity = args
         try:
-            r = _run_test(name, category, url, check_kind, severity)
-            results.append(r)
+            return _run_test(name, category, url, check_kind, severity)
         except Exception as e:
-            results.append({
+            return {
                 "test_name": name, "test_category": category, "url": url,
                 "expected": check_kind, "status": "fail",
                 "severity": severity, "error_detail": f"runner exception: {e}",
                 "proposed_fix": None,
                 "actual": None, "response_ms": 0, "http_code": 0,
-            })
+            }
+
+    # max_workers=5: faster than sequential (~5x) but gentle on 1 replica.
+    with ThreadPoolExecutor(max_workers=5) as ex:
+        for r in ex.map(_safe_run, ALL_TESTS):
+            results.append(r)
 
     # Persist all results
     with _conn() as c, c.cursor() as cur:
@@ -364,15 +383,61 @@ def _update_alerts(results):
 # Endpoints
 # ---------------------------------------------------------------------------
 
+_QA_RUN_STATE = {"running": False, "last_started": None}
+
+
 @site_qa_bp.route("/run", methods=["GET", "POST"])
 def trigger_run():
-    """Run the full QA suite now and return summary."""
-    summary = run_full_qa_suite()
-    # Strip large 'actual' field from response
-    summary["results"] = [
-        {k: v for k, v in r.items() if k != "actual"} for r in summary["results"]
-    ]
-    return jsonify(summary), (200 if summary["failed"] == 0 else 207)
+    """Trigger the full QA suite. 2026-05-30: NON-BLOCKING by default.
+
+    Run synchronously this probed ~28 URLs (several 12-14s) for 106s total
+    and HELD the single gthread worker past gunicorn's timeout → SIGKILL →
+    site-wide flap. The monitor was the outage. The GitHub Actions cron
+    (.github/workflows/site-qa.yml) POSTs here on a schedule, so every cron
+    tick was a self-inflicted worker block.
+
+    Now: kick the suite in a daemon thread, return 202 immediately. Results
+    persist to site_qa_results within ~20s; poll /api/v1/qa/report for them.
+    An in-progress guard collapses overlapping cron ticks into one run.
+
+    ?sync=1 forces the old blocking behavior (manual debugging only; never
+    let the cron use it)."""
+    import threading as _threading
+    from flask import request as _req
+
+    if _req.args.get("sync") == "1":
+        summary = run_full_qa_suite()
+        summary["results"] = [
+            {k: v for k, v in r.items() if k != "actual"} for r in summary["results"]
+        ]
+        return jsonify(summary), (200 if summary["failed"] == 0 else 207)
+
+    if _QA_RUN_STATE["running"]:
+        return jsonify({
+            "started": False,
+            "reason": "a QA run is already in progress",
+            "last_started": _QA_RUN_STATE["last_started"],
+            "note": "results land in /api/v1/qa/report when complete",
+        }), 200
+
+    def _bg():
+        _QA_RUN_STATE["running"] = True
+        try:
+            run_full_qa_suite()
+        except Exception as e:
+            import sys
+            print(f"[site-qa] background run crashed: {e}", file=sys.stderr, flush=True)
+        finally:
+            _QA_RUN_STATE["running"] = False
+
+    _QA_RUN_STATE["last_started"] = datetime.now(timezone.utc).isoformat()
+    _threading.Thread(target=_bg, daemon=True).start()
+    return jsonify({
+        "started": True,
+        "mode": "background",
+        "started_at": _QA_RUN_STATE["last_started"],
+        "note": "QA suite running in background; poll /api/v1/qa/report for results",
+    }), 202
 
 
 @site_qa_bp.route("/report", methods=["GET"])
