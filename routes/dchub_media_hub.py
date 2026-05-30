@@ -299,6 +299,23 @@ def media_aggregate():
                     })
             except Exception: c.rollback()
 
+        # 2026-05-29: the canonical + auto arms each sort internally,
+        # but the merged list was returned in arm-order. The page does
+        # .slice(0, 4) and rendered only the 4 oldest "canonical" rows
+        # (Meta/Grok testimonials from Mar 6, ~84d stale) even though
+        # the auto-ingested arm had fresh items from this week. Re-sort
+        # the merged list by posted_at DESC so the freshest 4 always
+        # surface, regardless of which arm produced them.
+        try:
+            out["rails"]["testimonials"].sort(
+                key=lambda x: (x.get("posted_at") or ""),
+                reverse=True,
+            )
+            # cap at 8 — the page consumes 4; the rest is buffer
+            out["rails"]["testimonials"] = out["rails"]["testimonials"][:8]
+        except Exception:
+            pass  # never fail the aggregate over a sort glitch
+
         # ── Rail: live MCP pulse ────────────────────────────────────
         with c.cursor() as cur:
             try:

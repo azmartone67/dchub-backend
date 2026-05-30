@@ -1790,7 +1790,14 @@ def brain_heartbeat():
     resp.headers["Cache-Control"] = "no-cache, no-store, must-revalidate"
     resp.headers["Access-Control-Allow-Origin"] = "*"
     resp.headers["Retry-After"] = "30"
-    return resp, 202   # Accepted, processing async
+    # 2026-05-29: was HTTP 202 — semantically correct but sentinel + uptime
+    # monitors + the brain self-probe all classify non-200 as "unhealthy",
+    # so a 15-min idle window briefly turned the brain-heartbeat row red
+    # while the cache warmed. The "warming" verdict in the JSON body is
+    # the right signal for code that cares; HTTP 200 keeps dumb pollers
+    # green. (Genuine outages still surface via the verdict field +
+    # _cached/_warming booleans, not the status code.)
+    return resp, 200
 
 def _compute_heartbeat_async():
     """Run the full heartbeat compute in a daemon thread. Writes result

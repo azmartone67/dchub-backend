@@ -184,10 +184,20 @@ def media_organism():
     else:
         li = (body.get("components") or {}).get("linkedin") or {}
         li_7d = int(li.get("sent_7d") or 0)
-        score, verdict = _score_component(li_7d, 70, 35, max_value=14)
+        # 2026-05-29: max_value 14 → 7. The 14 came from a 2-per-day
+        # aspirational cadence, but the actual auto-publisher fires
+        # ONCE per day (auto_press_daily cron at 13:00 UTC), so a
+        # healthy channel naturally plateaus at sent_7d≈7. With
+        # max_value=14, hitting the intended cadence scored 50/100
+        # ("weak") and the dashboard rolled up to 43 even though the
+        # channel was operating exactly as designed. Re-anchoring to
+        # 7 makes 1/day = 100 score = "healthy", with the same
+        # 70/35 % thresholds for healthy/weak.
+        score, verdict = _score_component(li_7d, 70, 35, max_value=7)
         components["linkedin"] = {
             "score": score, "verdict": verdict,
             "sent_7d": li_7d, "sent_24h": int(li.get("sent_24h") or 0),
+            "target_cadence_per_week": 7,
         }
 
     # 3. Source-of-truth

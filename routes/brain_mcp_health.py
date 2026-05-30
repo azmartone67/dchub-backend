@@ -166,6 +166,46 @@ def check_mcp_health() -> list[dict]:
                            f"Some discovery surfaces reject incomplete cards."),
             })
 
+    # ── 6. DCPI movers freshness — the /dc-hub-media "Movers" rail ──
+    # 2026-05-29: investigation showed /api/v1/dcpi/movers returns every
+    # market with excess_delta_7d=0.0 and prev_excess=null. The week_ago
+    # CTE filters market_power_scores for rows with computed_at < NOW()-7d
+    # and finds none — the recompute job UPDATEs the table in place rather
+    # than INSERTing snapshot rows. Result: empty movers feed + no DCPI
+    # alert press releases. Surface as a brain finding so the snapshot
+    # gap is visible while we design the snapshot cron + history table.
+    mv, mv_err = _fetch_json(f"{base}/api/v1/dcpi/movers")
+    if not mv_err and isinstance(mv, dict):
+        movers = mv.get("movers") or []
+        if movers:
+            null_prev = sum(1 for m in movers if m.get("prev_excess") is None)
+            zero_delta = sum(1 for m in movers if (m.get("excess_delta_7d") or 0) == 0)
+            # If EVERY mover has null prev_excess, the snapshot is missing
+            if null_prev == len(movers) and len(movers) >= 5:
+                findings.append({
+                    "issue":  "dcpi_snapshot_history_missing",
+                    "url":    f"{base}/api/v1/dcpi/movers",
+                    "count":  len(movers),
+                    "detail": (f"DCPI movers feed returns {len(movers)} markets but "
+                               f"every prev_excess is null — market_power_scores "
+                               f"has no rows older than 7 days. The recompute job "
+                               f"updates in place; need a weekly snapshot cron + "
+                               f"history table so WoW deltas can compute. Empty "
+                               f"movers feed → empty 'Biggest Movers' rail on "
+                               f"/dc-hub-media + zero DCPI-alert auto-press."),
+                })
+            elif zero_delta == len(movers):
+                # Snapshot exists but all deltas are zero (DCPI genuinely flat)
+                findings.append({
+                    "issue":  "dcpi_movers_flat_week",
+                    "url":    f"{base}/api/v1/dcpi/movers",
+                    "count":  len(movers),
+                    "detail": (f"DCPI movers all zero this week ({len(movers)} markets "
+                               f"checked). Either DCPI is genuinely flat (no action) "
+                               f"OR the recompute job didn't run. Verify "
+                               f"market_power_scores has fresh computed_at values."),
+                })
+
     return findings
 
 
