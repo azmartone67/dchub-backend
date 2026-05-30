@@ -1,75 +1,58 @@
-# Official MCP Registry — DNS Auth Setup (~3 min total)
+# Official MCP Registry — DNS Auth Setup
 
-## Step 1 — Add the TXT record at the APEX (not a subdomain)
+> 🔐 **SECURITY (2026-05-30):** The previous private key was committed to this
+> PUBLIC repo and is therefore **compromised**. It has been **rotated**. The new
+> private key lives ONLY at `~/.mcp-publisher/dchub-registry-key.hex` (mode 600,
+> outside any repo) and must **never** be pasted into a tracked file again.
+> Old (dead) public key was `/hgVylyu8...HOe8=`; current is below.
 
-⚠️ **Critical:** the TXT record goes on the **apex domain** (`dchub.cloud`), NOT a subdomain like `_mcp-publisher`. MCP DNS auth uses the apex like SPF, not a selector like DKIM. The registry source code has a comment explicitly warning about this — apparently it's the #1 cause of "no MCP public key found" errors.
+## Step 1 — Apex TXT record (not a subdomain)
 
-Open your already-logged-in Cloudflare tab and go to:
+⚠️ The TXT record goes on the **apex domain** (`dchub.cloud`), NOT a subdomain.
+MCP DNS auth uses the apex like SPF, not a selector like DKIM. Apex-vs-selector
+confusion is the #1 cause of "no MCP public key found" errors.
+
+Cloudflare → DNS records:
 **https://dash.cloudflare.com/4bb33ec40ef02f9f4b41dc97668d5a52/dchub.cloud/dns/records**
-
-Click **Add record** and fill in:
 
 | Field | Value |
 |---|---|
 | Type | `TXT` |
-| Name | `@` (apex — Cloudflare displays this as just `dchub.cloud`) |
-| Content | `v=MCPv1; k=ed25519; p=/hgVylyu8smrR9gCL5w6eno6Hn8Dav0DA9WYDhOHOe8=` |
+| Name | `@` (apex — shown as `dchub.cloud`) |
+| Content | `v=MCPv1; k=ed25519; p=ClgJ51i8YWYU+UtKJlz4H3owY44Dhnr3jGLVH1VXAgc=` |
 | TTL | Auto |
-| Proxy status | DNS only (TXT records aren't proxiable anyway) |
+| Proxy | DNS only |
 
-Click **Save**.
+Replace the OLD `v=MCPv1; ... p=/hgVylyu8...` record's content with the value above
+(edit the existing record, or delete it and add this one). `p=` is base64.
 
-If you already created the `_mcp-publisher.dchub.cloud` TXT record, you can **delete it** — it's harmless but unused.
-
-**About the value:** the `p=` part is the public key in **base64**, not hex. The private key in Step 3 is still **hex** — same key, two encodings.
-
-## Step 2 — Wait ~60 sec, flush local DNS cache, then verify
-
-macOS aggressively caches DNS. Flush so the next `dig` is fresh:
+## Step 2 — Wait ~60s, flush DNS cache, verify
 
 ```bash
 sudo dscacheutil -flushcache && sudo killall -HUP mDNSResponder
 dig +short TXT dchub.cloud | grep -i mcpv1
-# expect: "v=MCPv1; k=ed25519; p=/hgVylyu8smr..."
+# expect the ClgJ51i8... value
 ```
 
-## Step 3 — Log in + publish
+## Step 3 — Log in + publish (private key read from the secure file, never inline)
 
 ```bash
 cd /Users/jonathanmartone/dchub-backend
-mcp-publisher login dns \
-  --domain dchub.cloud \
-  --private-key 410f61cdcbbc456dc43bfa8a7646f44b82cf7a9851b1e5351047b32ab5361259
-
+mcp-publisher login dns --domain dchub.cloud \
+  --private-key "$(cat ~/.mcp-publisher/dchub-registry-key.hex)"
 mcp-publisher publish
 ```
 
-Expected output:
-```
-Publishing to https://registry.modelcontextprotocol.io...
-✓ Successfully published cloud.dchub/mcp-server v2.1.10
-```
-
-## Step 4 — Verify the update is live
+## Step 4 — Verify live
 
 ```bash
-curl -s "https://registry.modelcontextprotocol.io/v0/servers?search=dchub" | python3 -c "import json,sys; s=json.load(sys.stdin)['servers'][0]['server']; print(s['name'], 'v'+s['version']); print(s['description'][:120])"
+curl -s "https://registry.modelcontextprotocol.io/v0/servers?search=dchub" \
+ | python3 -c "import json,sys;[print(x['server']['name'],'v'+x['server']['version']) for x in json.load(sys.stdin)['servers'] if x['server']['name']=='cloud.dchub/mcp-server']"
 ```
-
-Expected:
-```
-cloud.dchub/mcp-server v2.1.10
-Data center intelligence: 21,000+ facilities, 10 ISO grids, M&A, interconnection queue, AI capacity.
-```
-
-## What this updates
-
-The existing `cloud.dchub/mcp-server` listing on the Official MCP Registry — bumps from v1.0.0 (March 2026, "20K facilities") to v2.1.10 ("21K facilities, 10 ISO grids, interconnection queue, AI capacity"). The remote URL `https://dchub.cloud/mcp` is already correct.
-
-**Downstream effect:** PulseMCP (16K-server directory) auto-ingests from the Official MCP Registry weekly. Within ~7 days of this publish, your PulseMCP listing also refreshes to v2.1.10 for free.
 
 ## Reference
-
 - mcp-publisher CLI: `/usr/local/bin/mcp-publisher`
-- Registry DNS handler source: https://github.com/modelcontextprotocol/registry/blob/main/internal/api/handlers/v0/auth/dns.go
-- Apex-vs-selector confusion: see issues [#385](https://github.com/modelcontextprotocol/registry/issues/385), [#1103](https://github.com/modelcontextprotocol/registry/issues/1103), [#1126](https://github.com/modelcontextprotocol/registry/issues/1126)
+- Key generation (ed25519): `openssl genpkey -algorithm ed25519` →
+  seed hex = `openssl pkey -outform DER | tail -c 32 | xxd -p -c 64`;
+  pub b64 = `openssl pkey -pubout -outform DER | tail -c 32 | base64`
+- Registry DNS handler: https://github.com/modelcontextprotocol/registry/blob/main/internal/api/handlers/v0/auth/dns.go

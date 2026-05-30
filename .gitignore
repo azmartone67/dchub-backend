@@ -90,3 +90,7 @@ dchub-frontend/index.legacy-2026-05-11.html.bak
 
 # Microsoft Office lock files (created when a .docx/.xlsx/.pptx is open)
 ~$*
+
+# MCP registry signing key — never commit (rotated 2026-05-30 after public-repo leak)
+*registry-key*.hex
+*.key.hex
