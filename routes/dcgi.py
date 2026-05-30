@@ -112,6 +112,63 @@ def _clamp(x, lo=0.0, hi=100.0):
     return max(lo, min(hi, x))
 
 
+# ── Tier gating (2026-05-30) ────────────────────────────────────────────────
+# Mirror DCPI's api_scores() soft-paywall EXACTLY so logged-in paid users
+# aren't wrongly gated. The numeric DCGI values (dcgi / gas_access /
+# gas_cost + pipeline / operator counts + raw price) are the PAID product;
+# non-paid callers (anon / free / identified) get the catalog — state code +
+# the GAS-ADVANTAGED/ADEQUATE/GAS-CONSTRAINED verdict as a teaser — with the
+# numbers masked SERVER-SIDE so they can't be scraped or unblurred.
+#
+# resolve_tier() only reads X-API-Key / Bearer JWT, NOT the website's session
+# cookie, so a logged-in web user looks anonymous to it (that's why an
+# enterprise user could see "Upgrade"). So we ALSO run the cookie-aware
+# _detect_caller_tier() that /pockets + DCPI use and take the MORE privileged
+# of the two — this never downgrades a paid caller. Fully defensive: any
+# failure leaves the resolved plan at its current value (worst case the
+# response is gated, never a crash). developer+ (and cookie-authed pro/
+# enterprise/founding/internal/admin) get the full numbers.
+_DCGI_PAID_PLANS = {"starter", "developer", "pro", "founding", "enterprise",
+                    "admin", "internal"}
+_DCGI_PLAN_RANK = {"anonymous": 0, "anon": 0, "free": 0, "identified": 1,
+                   "starter": 2, "developer": 3, "pro": 4, "founding": 4,
+                   "enterprise": 5, "admin": 6, "internal": 6}
+# Numeric "gold" fields masked for non-paid. Identity (state) + verdict stay.
+_DCGI_MASK_FIELDS = ("dcgi", "gas_access_score", "gas_cost_score",
+                     "pipelines", "operators", "interstate",
+                     "gas_price", "gas_price_sector", "gas_price_period")
+
+
+def _dcgi_resolve_plan():
+    """Resolve the caller's plan name (lowercased). Mirrors DCPI api_scores().
+    Never raises — defaults to 'anonymous' and only ever upgrades from there."""
+    plan = "anonymous"
+    try:
+        from util.tier_gate import resolve_tier
+        _t, _ctx = resolve_tier()
+        plan = (_ctx.get("plan") or _t.name).lower()
+    except Exception:
+        pass
+    try:
+        from map_tier_gating import _detect_caller_tier
+
+        def _dec(_tok):
+            try:
+                import jwt as _j
+                from main import JWT_SECRET
+                return _j.decode(_tok, JWT_SECRET, algorithms=["HS256"])
+            except Exception:
+                return None
+
+        _ct, _ = _detect_caller_tier(decode_jwt_func=_dec)
+        _ct = (_ct or "anon").lower()
+        if _DCGI_PLAN_RANK.get(_ct, -1) > _DCGI_PLAN_RANK.get(plan, -1):
+            plan = _ct
+    except Exception:
+        pass
+    return plan
+
+
 # State lookup by lat/lng (approximate bounding boxes). Inlined VERBATIM from
 # eia_gas_bulk_loader.STATE_BOXES / lat_lng_to_state so this module never depends
 # on importing that script at runtime — under gunicorn the external import
@@ -408,7 +465,32 @@ def dcgi_scores():
     limit = request.args.get("limit", type=int)
     if limit:
         ranked = ranked[:limit]
-    resp = jsonify({
+
+    # ── Soft-paywall the numeric scores (2026-05-30) ─────────────────────────
+    # Mirrors DCPI api_scores(): non-paid (anon / free / identified) callers
+    # get the full state catalog + verdict teaser, but the numeric DCGI fields
+    # are masked to null server-side. Paid (developer+ / cookie-authed) get the
+    # full numbers. The single-state lookup /api/v1/dcgi/scores/<state> and the
+    # /dcgi + /pipeline-report HTML pages are intentionally left as the
+    # discovery hook (HTML shows the teaser). Defensive: a resolver failure
+    # leaves plan='anonymous' so worst case is gated, never a crash.
+    _total_states = len(ranked)
+    _gated = False
+    _plan = _dcgi_resolve_plan()
+    _paid = _plan in _DCGI_PAID_PLANS
+    if not _paid:
+        _masked = []
+        for _s in ranked:
+            _s = dict(_s)
+            for _k in _DCGI_MASK_FIELDS:
+                if _k in _s:
+                    _s[_k] = None
+            _s["locked"] = True
+            _masked.append(_s)
+        ranked = _masked
+        _gated = True
+
+    payload = {
         "ok": True,
         "index": "Data Center Gas Index (DCGI)",
         "count": len(ranked),
@@ -416,7 +498,20 @@ def dcgi_scores():
         "states": ranked,
         "methodology": "/api/v1/dcgi/methodology",
         "license": "CC BY 4.0",
-    })
+    }
+    if _gated:
+        payload["_gated"] = True
+        payload["_total_available"] = _total_states
+        payload["_locked_fields"] = list(_DCGI_MASK_FIELDS)
+        payload["_required_tier"] = "pro"
+        payload["_upgrade_cta"] = (
+            "State list + GAS-ADVANTAGED/ADEQUATE/GAS-CONSTRAINED verdicts are "
+            "free. The numeric DCGI scores (gas-access, gas-cost, composite "
+            "DCGI) plus pipeline / operator counts are Pro — unlock all "
+            f"{_total_states} states with scores at https://dchub.cloud/pricing."
+        )
+        payload["_signup_url"] = "https://dchub.cloud/pricing"
+    resp = jsonify(payload)
     return _cache(resp), 200
 
 
