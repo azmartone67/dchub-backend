@@ -84,7 +84,7 @@ def record_redeem_attempt(
                        (session_id, email, ip_hash, user_agent,
                         email_send_ok, email_send_error,
                         api_key_created, api_key_id, extra)
-                   VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s::jsonb)
+                   VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s::jsonb) ON CONFLICT DO NOTHING
                    RETURNING id""",
                 (
                     session_id, email, ip_hash,
@@ -180,6 +180,7 @@ def diagnose_email(email):
     ), 200
 
 
+# AUTO-REPAIR: duplicate route '/health' also in main.py:3758 — review and remove one
 @redeem_diagnostic_bp.route("/health", methods=["GET"])
 def health():
     """Test connectivity to common email services."""

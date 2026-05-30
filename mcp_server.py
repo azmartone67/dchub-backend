@@ -213,6 +213,7 @@ TOOL_DEFINITIONS = [
 ]
 
 
+# AUTO-REPAIR: duplicate route '/mcp/manifest' also in main.py:7175 — review and remove one
 @mcp_bp.route('/mcp/manifest', methods=['GET'])
 def get_manifest():
     """Return MCP manifest describing this server's capabilities"""
@@ -301,6 +302,7 @@ def health_check():
         "timestamp": datetime.utcnow().isoformat()
     })
 
+# AUTO-REPAIR: duplicate route '/.well-known/mcp.json' also in main.py:19087 — review and remove one
 
 @mcp_bp.route('/.well-known/mcp.json', methods=['GET'])
 def well_known_mcp():

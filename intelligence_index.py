@@ -35,6 +35,7 @@ import random
 def register_intelligence_index(app):
     """Call this once: register_intelligence_index(app)"""
 
+# AUTO-REPAIR: duplicate route '/api/agents/intelligence-index' also in main.py:21985 — review and remove one
     @app.route('/api/agents/intelligence-index', methods=['GET'])
     def intelligence_index():
         """

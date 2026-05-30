@@ -12,12 +12,14 @@ from flask import Blueprint, request, jsonify
 weekly_public_newsletter_bp = Blueprint("weekly_public_newsletter", __name__)
 
 
+# AUTO-REPAIR: duplicate route '/api/v1/weekly/ping' also in main.py:1655 — review and remove one
 @weekly_public_newsletter_bp.route("/api/v1/weekly/ping", methods=["GET"])
 def weekly_ping():
     """Minimal liveness check — returns ok if blueprint is registered."""
     return jsonify(ok=True, blueprint="weekly_public_newsletter",
                    version="minimal-2026-05-18")
 
+# AUTO-REPAIR: duplicate route '/api/v1/weekly/subscribe' also in main.py:1659 — review and remove one
 
 @weekly_public_newsletter_bp.route("/api/v1/weekly/subscribe", methods=["POST", "OPTIONS"])
 def subscribe():
@@ -71,6 +73,7 @@ def subscribe():
                    next_send="Monday 13:00 UTC")
     resp.headers["Access-Control-Allow-Origin"] = "*"
     return resp, 200
+# AUTO-REPAIR: duplicate route '/api/v1/weekly/subscribers' also in main.py:1962 — review and remove one
 
 
 @weekly_public_newsletter_bp.route("/api/v1/weekly/subscribers", methods=["GET"])

@@ -44,6 +44,7 @@ def _conn():
         return None
 
 
+# AUTO-REPAIR: duplicate route '/api/v1/facilities/by-market' also in main.py:13634 — review and remove one
 @facilities_by_dims_bp.route("/api/v1/facilities/by-market", methods=["GET"])
 def facilities_by_market():
     """Top markets by facility count, with sample names per market."""
@@ -109,6 +110,7 @@ def facilities_by_market():
         return jsonify({"ok": False, "error": str(e)[:160],
                          "markets": []}), 200
 
+# AUTO-REPAIR: duplicate route '/api/v1/facilities/by-provider' also in main.py:13665 — review and remove one
 
 @facilities_by_dims_bp.route("/api/v1/facilities/by-provider", methods=["GET"])
 def facilities_by_provider():
