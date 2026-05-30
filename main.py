@@ -24118,9 +24118,18 @@ app.register_blueprint(iso_bpa_bp)   # Bonneville Power Administration
 try:
     from routes.eia_utility_bas import register_eia_utility_bas
     register_eia_utility_bas(app)
-    print("[main] eia_utility_bas registered: /api/v1/utility/* (16 non-ISO BAs)", flush=True)
+    print("[main] eia_utility_bas registered: /api/v1/utility/* (43 non-ISO BAs)", flush=True)
 except Exception as _eub_e:
     print(f"[main] eia_utility_bas register failed: {_eub_e}", flush=True)
+# 2026-05-30: Data Center Gas Index (DCGI) — gas analog to DCPI. Per-state
+# gas-to-power siting index + midstream-operator registry + shareable
+# pipeline report. Built on gas_pipelines + eia_gas_prices we already ingest.
+try:
+    from routes.dcgi import register_dcgi
+    register_dcgi(app)
+    print("[main] dcgi registered: /api/v1/dcgi/* + /pipeline-report", flush=True)
+except Exception as _dcgi_e:
+    print(f"[main] dcgi register failed: {_dcgi_e}", flush=True)
 app.register_blueprint(grid_snapshot_bp)
 app.register_blueprint(sec_edgar_bp)
 app.register_blueprint(extractor_brain_bp)
