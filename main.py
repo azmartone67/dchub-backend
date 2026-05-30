@@ -15625,10 +15625,15 @@ def daily_cron():
                 logger.warning(f"[daily_cron] headline dedup skipped: {_dedup_err}")
 
             today_str = datetime.now().strftime('%B %d, %Y')
-            dates_found = sorted(set(a.get('published_at','')[:10] for a in articles if a.get('published_at')), reverse=True)
-            digest_date = dates_found[0] if dates_found else date.today().isoformat()
-            # Use the most recent date that has articles, not today's UTC date
-            digest_date = dates_found[0] if dates_found else (date.today() - timedelta(days=1)).isoformat()
+            # 2026-05-30: the daily digest is generated + published TODAY, so
+            # date it today — and use the SAME datetime.now() basis as today_str
+            # above so the URL date and the post's "{today_str}" title can never
+            # drift apart. The prior dates_found logic was DEAD: the articles
+            # SELECT yields title/summary/url/source/category with NO
+            # 'published_at' key, so dates_found was always empty and digest_date
+            # always fell to a yesterday fallback — the digest_url pointed at the
+            # wrong (prior) date while the title said today.
+            digest_date = datetime.now().strftime('%Y-%m-%d')
             digest_url = 'https://dchub.cloud/news/digest-' + digest_date
             post_lines = [f'📊 DC Hub Daily Intelligence — {today_str}\n']
             for i, a in enumerate(articles[:5], 1):
