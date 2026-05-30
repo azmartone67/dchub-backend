@@ -3003,6 +3003,21 @@ def _issue_session_cookie(response):
             return response
         if request.path.startswith("/api/") or request.path in ("/mcp", "/mcp/"):
             return response
+        # 2026-05-30 (r43-cache): do NOT issue the session cookie on PUBLIC,
+        # edge-cacheable catalog pages. A Set-Cookie header makes Cloudflare
+        # classify the response as DYNAMIC (CF never edge-caches a Set-Cookie
+        # response) — that was the REAL reason the s-maxage cache fix (823b81af)
+        # left these pages at cf-cache-status: DYNAMIC and the 39% hit ratio
+        # unchanged. These pages serve NO gated data, so the cookie adds nothing
+        # here; it is still issued on the homepage, the map, and every other
+        # interactive page, and the /api/* tier gate still requires it. Scoped to
+        # markets + operators ONLY. /dcpi is deliberately EXCLUDED: its index
+        # path varies by API key (anon cap vs full set), so it must stay
+        # uncacheable — leaving the cookie on it keeps CF correctly DYNAMIC.
+        _cpath = request.path
+        if (_cpath == "/markets" or _cpath.startswith("/markets/")
+                or _cpath == "/operators" or _cpath.startswith("/operators/")):
+            return response
         from routes.session_cookie import validate_cookie, set_cookie_on_response
         if validate_cookie():
             return response  # already has fresh cookie
