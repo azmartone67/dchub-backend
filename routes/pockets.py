@@ -100,6 +100,72 @@ _PAID_TIERS = {"starter", "developer", "pro", "founding", "enterprise",
                "internal", "admin"}
 
 
+# ── JSON soft-paywall (2026-05-30) ───────────────────────────────────
+# The /pockets HTML page already masks the gold fields with lock glyphs,
+# but the JSON API behind it (/api/v1/pockets/top, /for-me, /movers)
+# returned the SAME preview rows with FULL real premium numbers to
+# anonymous callers — the API leaked exactly what the page hides. Mirror
+# routes/dcpi.py api_scores() and routes/dcgi.py dcgi_scores(): non-paid
+# callers (anon / free / identified) keep the market NAME + state + ISO +
+# verdict label as a teaser, but every numeric premium field is nulled
+# SERVER-SIDE so it can't be scraped or unblurred. Paid callers (X-API-Key
+# OR logged-in session cookie, resolved by the same cookie-aware
+# _detect_tier the file already uses) get the full numbers unchanged.
+#
+# NOTE on `why`: _rationale() bakes the raw scores into a sentence
+# ("strong excess capacity (85)"), so it is ALSO gold — masking the
+# numbers but leaving `why` would just re-leak them in prose. We null it
+# for gated callers and swap in a generic upsell teaser.
+_POCKET_MASK_FIELDS = ("rank_score", "excess_power_score", "constraint_score",
+                       "time_to_power_months", "delta_7d", "personal_score")
+
+
+def _mask_pockets_for_tier(rows: list[dict], tier: str) -> tuple[list[dict], bool]:
+    """Return (rows, gated). For PAID tiers, rows pass through untouched.
+    For non-paid callers, return FRESH per-row copies with every numeric
+    premium field (and the score-derived `why`) nulled — never mutating the
+    shared _fetch_pockets cache, so a paid caller right after never sees
+    a poisoned/masked row. Fully defensive: any failure leaves rows as-is
+    only when the caller is already paid; otherwise it still gates."""
+    try:
+        if (tier or "anonymous").lower() in _PAID_TIERS:
+            return rows, False
+    except Exception:
+        # Unknown/garbled tier → treat as non-paid (gate, never leak).
+        pass
+    masked: list[dict] = []
+    for _r in rows:
+        _r = dict(_r)  # copy so the in-process cache stays full-fidelity
+        for _k in _POCKET_MASK_FIELDS:
+            if _k in _r:
+                _r[_k] = None
+        # `why` is derived from the raw scores → also gold. Replace, don't leak.
+        if "why" in _r:
+            _r["why"] = "Upgrade to unlock the DCPI score, momentum and rationale"
+        _r["locked"] = True
+        masked.append(_r)
+    return masked, True
+
+
+def _apply_gated_markers(payload: dict, gated: bool, total_available: int) -> dict:
+    """Attach the standard _gated / _required_tier='pro' markers + upsell,
+    mirroring dcpi.api_scores() and dcgi.dcgi_scores(). No-op for paid."""
+    if not gated:
+        return payload
+    payload["_gated"] = True
+    payload["_total_available"] = total_available
+    payload["_locked_fields"] = list(_POCKET_MASK_FIELDS)
+    payload["_required_tier"] = "pro"
+    payload["_upgrade_cta"] = (
+        "Market names + BUILD/HOLD/AVOID verdicts are free. The numeric "
+        "DCPI scores (rank, excess-power, grid-constraint, time-to-power) "
+        "and 7-day momentum are Pro — unlock every pocket with scores at "
+        "https://dchub.cloud/pricing."
+    )
+    payload["_signup_url"] = "https://dchub.cloud/pricing"
+    return payload
+
+
 # ── In-process cache ─────────────────────────────────────────────────
 _CACHE: dict = {"data": None, "expires_at": 0.0}
 _CACHE_TTL = 300  # 5 min
@@ -234,10 +300,14 @@ def pockets_top():
         rows = [r for r in rows if (r["state"] or "").upper() == state_filter]
 
     truncated = max(0, len(rows) - effective_limit)
+    total_available = len(rows)
     rows = rows[:effective_limit]
 
     for r in rows:
         r["why"] = _rationale(r)
+
+    # Soft-paywall: non-paid callers keep name+state+ISO+verdict, numbers nulled.
+    rows, _gated = _mask_pockets_for_tier(rows, tier)
 
     payload = {
         "ok": True,
@@ -249,6 +319,7 @@ def pockets_top():
         "filter": {"state": state_filter or None},
         "pockets": rows,
     }
+    _apply_gated_markers(payload, _gated, total_available)
     if truncated > 0 and tier in ("anonymous", "free", "identified"):
         payload["upgrade"] = {
             "label": "Upgrade to see all pockets",
@@ -329,10 +400,15 @@ def pockets_for_me():
         r["personal_score"] = round(_personal_score(r), 1)
     rows.sort(key=lambda x: -x["personal_score"])
 
+    total_available = len(rows)
     truncated = max(0, len(rows) - cap)
     rows = rows[:cap]
     for r in rows:
         r["why"] = _rationale(r)
+
+    # Soft-paywall: personalized numbers (rank/excess/ttp/momentum + the
+    # personal_score derived from them) are Pro; non-paid keep the teaser.
+    rows, _gated = _mask_pockets_for_tier(rows, tier)
 
     payload = {
         "ok": True,
@@ -358,6 +434,7 @@ def pockets_for_me():
             "+2 for pockets trending up ≥5pts/7d."
         ),
     }
+    _apply_gated_markers(payload, _gated, total_available)
     resp = jsonify(payload)
     resp.headers["Cache-Control"] = "private, max-age=120"
     return resp, 200
@@ -375,6 +452,16 @@ def pockets_movers():
     up_movers = sorted(with_delta, key=lambda r: -(r["delta_7d"] or 0))[:cap]
     down_movers = sorted(with_delta, key=lambda r: (r["delta_7d"] or 0))[:cap]
 
+    # Soft-paywall (2026-05-30): movers ARE the momentum numbers — masking
+    # per-row delta to null isn't enough because the rising/falling SORT order
+    # would still leak which markets are moving. So for non-paid callers we
+    # null the numbers AND drop the delta-sorted lists entirely (mirroring the
+    # HTML, which only shows the mover callout to paid). Paid → full lists.
+    total_available = len(with_delta)
+    gated = (tier or "anonymous").lower() not in _PAID_TIERS
+    if gated:
+        up_movers, down_movers = [], []
+
     payload = {
         "ok": True,
         "as_of": datetime.datetime.utcnow().isoformat() + "Z",
@@ -384,6 +471,7 @@ def pockets_movers():
         "rising": up_movers,
         "falling": down_movers,
     }
+    _apply_gated_markers(payload, gated, total_available)
     return jsonify(payload), 200
 
 
