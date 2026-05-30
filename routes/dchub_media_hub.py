@@ -833,7 +833,18 @@ def agent_vendor_email_digest():
 def testimonials_ingest():
     """Admin-gated cron entry point. Runs the three ingest sources and
        writes new rows to ai_testimonials_auto. Idempotent (UNIQUE on
-       source + external_id). Each source fails soft."""
+       source + external_id). Each source fails soft.
+
+       r54+ (2026-05-29): always writes a `cron_heartbeat` row so the
+       /api/v1/system/loops probe never reports last_event_at=null. The
+       heartbeat row is approved=false and is filtered out of every
+       reader query (live, aggregate, RSS, JSON Feed), so it's invisible
+       on every public surface but visible to the cron-staleness
+       detector. Without it, an organic ingest run with zero matches
+       (the common case for a young brand on HN/Reddit) leaves the
+       probe in the same state as a totally dead cron, which is what
+       triggered the 84-day stale finding.
+    """
     auth_err = _require_admin()
     if auth_err: return auth_err
 
@@ -843,36 +854,183 @@ def testimonials_ingest():
         "mcp_derived":  _ingest_mcp_derived(),
     }
     total_new = sum(r.get("new", 0) for r in results.values())
+    # r54+ heartbeat — always upsert one captured_at=NOW() row even on
+    # zero-match runs. Same UNIQUE(source, external_id) idempotency,
+    # one row per day keeps the table from growing unbounded.
+    hb = _write_ingest_heartbeat(total_new, results)
+    print(f"[testimonials_ingest] total_new={total_new} "
+          f"hn_new={results.get('hackernews',{}).get('new',0)} "
+          f"reddit_new={results.get('reddit',{}).get('new',0)} "
+          f"mcp_new={results.get('mcp_derived',{}).get('new',0)} "
+          f"heartbeat={hb.get('written')}",
+          flush=True)
     return jsonify(
         ok=True,
         total_new=total_new,
         sources=results,
+        heartbeat=hb,
         as_of=datetime.now(timezone.utc).isoformat(),
     ), 200
 
 
+def _write_ingest_heartbeat(total_new: int, src_results: dict) -> dict:
+    """r54+ (2026-05-29): write a single approved=false row with
+       source='cron_heartbeat' and external_id=YYYY-MM-DD-HH so the
+       /system/loops probe always sees a fresh captured_at even when
+       all three sources legitimately returned zero matches.
+
+       Filtered out of every public reader: testimonials/live (line
+       1115+ gates source NOT IN heartbeat), aggregate (line 286+),
+       /testimonials/auto, /testimonials/wall. Visible only to the
+       internal probe + admin endpoints.
+    """
+    out = {"written": False, "errors": []}
+    c = _conn()
+    if c is None:
+        out["errors"].append("no_database")
+        return out
+    try:
+        now = datetime.now(timezone.utc)
+        ext_id = now.strftime("%Y-%m-%d-%H")
+        quote_text = (f"Cron heartbeat — ingest fired at {now.isoformat()}. "
+                      f"total_new={total_new}; "
+                      f"hn={src_results.get('hackernews',{}).get('new',0)}, "
+                      f"reddit={src_results.get('reddit',{}).get('new',0)}, "
+                      f"mcp={src_results.get('mcp_derived',{}).get('new',0)}.")
+        with c, c.cursor() as cur:
+            cur.execute("""
+                INSERT INTO ai_testimonials_auto
+                    (source, external_id, agent_name, platform,
+                     quote, url, posted_at, sentiment,
+                     approved, raw_payload)
+                VALUES (%s, %s, %s, %s,
+                        %s, %s,
+                        %s, %s,
+                        %s, %s)
+                ON CONFLICT (source, external_id) DO UPDATE SET
+                    captured_at = NOW(),
+                    quote = EXCLUDED.quote,
+                    raw_payload = EXCLUDED.raw_payload
+                RETURNING id;
+            """, (
+                "cron_heartbeat",
+                ext_id,
+                "cron",
+                "internal",
+                quote_text,
+                "",
+                now,
+                "neutral",
+                False,  # always unapproved — invisible to all readers
+                json.dumps({"total_new": total_new,
+                            "sources": {k: v.get("new", 0)
+                                        for k, v in src_results.items()},
+                            "errors": {k: v.get("errors", [])[:3]
+                                       for k, v in src_results.items()
+                                       if v.get("errors")}}),
+            ))
+            out["written"] = bool(cur.fetchone())
+    except Exception as e:
+        out["errors"].append(str(e)[:200])
+    finally:
+        try: c.close()
+        except Exception: pass
+    return out
+
+
+# r54+ (2026-05-29): broadened brand-mention detection. The cron had
+# been searching ONLY for the exact string "dchub.cloud" — which returns
+# 0 HN/Reddit hits even when the brand IS being discussed as "DC Hub"
+# or bare "dchub". This list defines variants we search for; the
+# follow-up text filter ALSO uses these to confirm the match is real
+# (not a coincidental "DC++ Hub" reference from the 2000s).
+_BRAND_QUERIES = ("dchub.cloud", "dchub", '"DC Hub"')
+# Tight inclusion regex run on result text — at least one of these
+# must appear or we skip. Forces the match to mean THE dchub.cloud
+# brand, not unrelated "DC hub" (data center hub, Direct Connect hub,
+# etc.) hits. Keep both forms because:
+#   - "dchub.cloud" / "dchub" — our brand string
+#   - "DC Hub" + data-center context — also our brand, but requires
+#      a co-occurring data-center / AI / power keyword to avoid noise
+# Pattern A — our brand string in any form (always pass)
+_BRAND_DIRECT = re.compile(r"dchub(?:\.cloud)?", re.IGNORECASE)
+# Pattern B — 'DC Hub' (space or hyphen), but ONLY if a data-center /
+# AI / power keyword appears within 80 chars. Without the proximity
+# gate, we'd match every 'IRC DC hub' / 'Direct Connect hub' post
+# from the 2000s.
+_BRAND_DC_HUB = re.compile(r"dc[\s\-]+hub", re.IGNORECASE)
+_BRAND_CONTEXT = re.compile(
+    r"(data\s*center|datacenter|\bai\b|\bmcp\b|market|power|grid|"
+    r"infrastructure|colo|hyperscal|dcpi)",
+    re.IGNORECASE,
+)
+
+
+def _is_real_brand_mention(text: str) -> bool:
+    """Tight gate. Pass only if the text mentions the dchub.cloud brand
+       in a recognizable way — accepts 'dchub' or 'dchub.cloud' bare;
+       accepts 'DC Hub' / 'DC-Hub' ONLY when a data-center / AI / power
+       keyword sits within 80 chars (the same paragraph). Rejects the
+       long tail of unrelated 'DC++ Hub' / 'IRC hub' / 'Direct Connect
+       hub' hits that any bare 'dc hub' search picks up.
+    """
+    if not text:
+        return False
+    if _BRAND_DIRECT.search(text):
+        return True
+    m = _BRAND_DC_HUB.search(text)
+    if not m:
+        return False
+    # Window check — context keyword within 80 chars of the match
+    lo = max(0, m.start() - 80)
+    hi = min(len(text), m.end() + 80)
+    return bool(_BRAND_CONTEXT.search(text[lo:hi]))
+
+
 def _ingest_hackernews() -> dict:
-    """HackerNews Algolia search for 'dchub.cloud' mentions. Free API."""
-    out = {"source": "hackernews", "new": 0, "errors": []}
+    """HackerNews Algolia search for brand mentions. Free, no key.
+
+       r54+ (2026-05-29): broadened query set — the old code searched
+       only 'dchub.cloud' which returns 0 hits. Now searches each
+       variant in _BRAND_QUERIES, dedupes by HN objectID, and runs
+       _is_real_brand_mention on the matched text to filter out the
+       large body of unrelated 'DC hub' (Direct Connect, networking)
+       hits that bare 'dchub' picks up.
+    """
+    out = {"source": "hackernews", "new": 0, "queried": 0,
+           "matched": 0, "errors": []}
     try:
         from urllib.request import Request, urlopen
         from urllib.parse import quote
-        url = ("https://hn.algolia.com/api/v1/search?query=" +
-               quote("dchub.cloud") + "&tags=(story,comment)&hitsPerPage=30")
-        req = Request(url, headers={"User-Agent": "DCHubBot/1.0"})
-        with urlopen(req, timeout=10) as r:
-            d = json.loads(r.read().decode("utf-8"))
+        seen_ids = set()
+        all_hits = []
+        for q in _BRAND_QUERIES:
+            try:
+                url = ("https://hn.algolia.com/api/v1/search?query=" +
+                       quote(q) + "&tags=(story,comment)&hitsPerPage=20")
+                req = Request(url, headers={"User-Agent": "DCHubBot/1.0"})
+                with urlopen(req, timeout=10) as r:
+                    d = json.loads(r.read().decode("utf-8"))
+                for hit in d.get("hits", []):
+                    hid = str(hit.get("objectID") or "")
+                    if hid and hid not in seen_ids:
+                        seen_ids.add(hid)
+                        all_hits.append(hit)
+                out["queried"] += 1
+            except Exception as e:
+                out["errors"].append(f"hn_query_{q}: {str(e)[:100]}")
         c = _conn()
         if c is None:
             out["errors"].append("no_database")
             return out
         try:
-            for hit in d.get("hits", []):
+            for hit in all_hits:
                 hn_id = str(hit.get("objectID") or "")
                 text = (hit.get("story_text") or hit.get("comment_text")
                         or hit.get("title") or "")
-                if not text or "dchub" not in text.lower():
+                if not _is_real_brand_mention(text):
                     continue
+                out["matched"] += 1
                 hn_url = f"https://news.ycombinator.com/item?id={hn_id}"
                 with c, c.cursor() as cur:
                     # Parameterize inline string literals so the
@@ -912,29 +1070,64 @@ def _ingest_hackernews() -> dict:
 
 
 def _ingest_reddit() -> dict:
-    """Reddit search for 'dchub' across r/datacenter, r/MachineLearning, r/sysadmin.
-       Free, no auth needed for read-only search."""
-    out = {"source": "reddit", "new": 0, "errors": []}
+    """Reddit search for brand mentions. Free, no auth.
+
+       r54+ (2026-05-29): two fixes — (1) broadened query set like HN
+       (the literal 'dchub.cloud' returned 0); (2) www.reddit.com began
+       returning a 'whoa there, pardner' bot-block page mid-2026, so we
+       fall back to old.reddit.com which still serves JSON to identified
+       bots. Tight brand-confirm filter on results to avoid the 2000s
+       'DC Hub' DC++ networking false-positives.
+    """
+    out = {"source": "reddit", "new": 0, "queried": 0,
+           "matched": 0, "blocked": 0, "errors": []}
     try:
         from urllib.request import Request, urlopen
         from urllib.parse import quote
-        url = ("https://www.reddit.com/search.json?q=" +
-               quote("dchub.cloud") + "&limit=30&sort=new")
-        req = Request(url, headers={
-            "User-Agent": "DCHubBot/1.0 (+https://dchub.cloud)"})
-        with urlopen(req, timeout=10) as r:
-            d = json.loads(r.read().decode("utf-8"))
+        seen_ids = set()
+        all_posts = []
+        for q in _BRAND_QUERIES:
+            for host in ("old.reddit.com", "www.reddit.com"):
+                try:
+                    url = (f"https://{host}/search.json?q=" +
+                           quote(q) + "&limit=20&sort=new")
+                    req = Request(url, headers={
+                        "User-Agent": "DCHubBot/1.0 (+https://dchub.cloud; "
+                                       "contact: press@dchub.cloud)"})
+                    with urlopen(req, timeout=10) as r:
+                        body = r.read().decode("utf-8", errors="replace")
+                    # Reddit's bot-block page returns 200 with an HTML
+                    # body even though we requested .json. Detect by
+                    # leading char — JSON starts with '{' or '['.
+                    body_stripped = body.lstrip()
+                    if not body_stripped.startswith(("{", "[")):
+                        out["blocked"] += 1
+                        continue
+                    d = json.loads(body)
+                    for child in d.get("data", {}).get("children", []):
+                        post = child.get("data", {}) or {}
+                        rid = post.get("id") or ""
+                        if rid and rid not in seen_ids:
+                            seen_ids.add(rid)
+                            all_posts.append(post)
+                    out["queried"] += 1
+                    # If one host worked, no need to try the other for
+                    # this query — they serve the same data.
+                    break
+                except Exception as e:
+                    out["errors"].append(
+                        f"reddit_query_{host}_{q}: {str(e)[:100]}")
         c = _conn()
         if c is None:
             out["errors"].append("no_database")
             return out
         try:
-            for child in d.get("data", {}).get("children", []):
-                post = child.get("data", {}) or {}
+            for post in all_posts:
                 rid = post.get("id") or ""
                 text = (post.get("selftext") or post.get("title") or "")
-                if not text or "dchub" not in text.lower():
+                if not _is_real_brand_mention(text):
                     continue
+                out["matched"] += 1
                 with c, c.cursor() as cur:
                     cur.execute("""
                         INSERT INTO ai_testimonials_auto
