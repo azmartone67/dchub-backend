@@ -235,6 +235,7 @@ def register_transactions_news_api(app):
     print("✅ DC Hub API v3 loaded - 100 deals, 15 companies, 12 news feeds")
     
     # ----- DEALS -----
+# AUTO-REPAIR: duplicate route '/api/deals' also in deals_routes.py:408 — review and remove one
     @app.route('/api/deals')
     def dchub_api_get_deals():
         limit = request.args.get('limit', 50, type=int)
@@ -277,6 +278,7 @@ def register_transactions_news_api(app):
             return jsonify({"success": True, "company": DCHUB_COMPANIES[company_id]})
         return jsonify({"success": False, "error": "Company not found"}), 404
     
+# AUTO-REPAIR: duplicate route '/api/dc-markets' also in deals_routes.py:887 — review and remove one
     # ----- MARKETS -----
     @app.route('/api/dc-markets')
     def dchub_api_get_markets():
@@ -287,6 +289,7 @@ def register_transactions_news_api(app):
         if market_id in DCHUB_MARKETS:
             return jsonify({"success": True, "market": DCHUB_MARKETS[market_id]})
         return jsonify({"success": False, "error": "Market not found"}), 404
+# AUTO-REPAIR: duplicate route '/api/news-feed' also in deals_routes.py:1248 — review and remove one
     
     # ----- NEWS (unique endpoint name) -----
     @app.route('/api/news-feed')
