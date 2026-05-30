@@ -142,6 +142,63 @@ if _bg_neon_url and 'neon' in _bg_neon_url.lower():
     except Exception as _bg_e:
         print(f"BOOT GUARD: Hostname check failed: {_bg_e}")
 # =================================================================
+# FORCE IPv4 EGRESS — Claude API reachability fix
+# -----------------------------------------------------------------
+# Added: 2026-05-30. api.anthropic.com was failing with
+# [Errno 101] Network unreachable because the service's IPv6 egress
+# is broken (the Railway IPv6 toggle did NOT fix it). Everything
+# else (EIA, Neon, etc.) works fine over the IPv4 static egress
+# (162.220.232.99). So we force IPv4 DNS resolution process-wide,
+# very early at startup and BEFORE any brain threads start, so that
+# ALL outbound (requests / urllib / httpx / anthropic SDK) takes the
+# working IPv4 path. This unblocks L4 healer, L5 codegen, L23 Opus
+# proposals, and report narratives.
+#
+# Implementation: wrap socket.getaddrinfo and drop AF_INET6 results
+# (return only AF_INET). Also flip urllib3's HAS_IPV6 flag off so its
+# connection pool never even attempts an IPv6 socket. Fully guarded,
+# logged, reversible, and skippable via DCHUB_FORCE_IPV4=0. Since
+# IPv4 already works for all current outbound, this is safe.
+# Reverse at runtime with: socket.getaddrinfo = socket._dchub_orig_getaddrinfo
+# =================================================================
+try:
+    if _bg_os.environ.get("DCHUB_FORCE_IPV4", "1").lower() not in ("0", "false", "no"):
+        import socket as _ip4_socket
+        # Only patch once; store original for reversibility.
+        if not getattr(_ip4_socket, "_dchub_ipv4_forced", False):
+            _ip4_orig_getaddrinfo = _ip4_socket.getaddrinfo
+            _ip4_socket._dchub_orig_getaddrinfo = _ip4_orig_getaddrinfo
+
+            def _dchub_ipv4_only_getaddrinfo(*args, **kwargs):
+                """Drop-in for socket.getaddrinfo that filters out IPv6
+                (AF_INET6) results, forcing all outbound onto IPv4.
+                Falls back to the unfiltered result if filtering would
+                leave nothing resolvable (defensive — never break DNS)."""
+                results = _ip4_orig_getaddrinfo(*args, **kwargs)
+                ipv4 = [r for r in results if r[0] == _ip4_socket.AF_INET]
+                return ipv4 if ipv4 else results
+
+            _ip4_socket.getaddrinfo = _dchub_ipv4_only_getaddrinfo
+            _ip4_socket._dchub_ipv4_forced = True
+
+            # Belt-and-suspenders: tell urllib3 (used by requests / the
+            # anthropic SDK transport) that IPv6 is unavailable, so its
+            # connection helper never tries an AF_INET6 socket first.
+            try:
+                import urllib3.util.connection as _ip4_u3conn
+                _ip4_u3conn.HAS_IPV6 = False
+            except Exception:
+                pass  # urllib3 may not be importable this early; getaddrinfo patch still covers it.
+
+            print("FORCE IPv4: IPv4-egress forced (socket.getaddrinfo AF_INET6 results dropped; urllib3 HAS_IPV6=False)")
+        else:
+            print("FORCE IPv4: already active (skipping re-patch)")
+    else:
+        print("FORCE IPv4: disabled via DCHUB_FORCE_IPV4=0 (IPv6 egress NOT filtered)")
+except Exception as _ip4_e:
+    # Never crash startup over the egress patch — log and continue.
+    print(f"FORCE IPv4: patch failed (continuing without IPv4-force): {_ip4_e}")
+# =================================================================
 """# Force redeploy v2.3 - Feb 26 2026
 # v94 -- Power Plant Coordinate Enrichment (Phase 2) Feb 25 2026
 # v93 -- AI Testimonials + Dashboard Stats Fixes Feb 25 2026
