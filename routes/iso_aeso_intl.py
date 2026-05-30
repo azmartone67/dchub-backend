@@ -197,6 +197,18 @@ def http_snapshot():
     }), 200
 
 
+@iso_aeso_intl_bp.route("/latest", methods=["GET"])
+def http_latest():
+    # 2026-05-30: parity alias for the other ISOs' /latest, and the
+    # replacement for the deprecated iso_aeso.py /latest (which returned []).
+    # Served at /api/v1/iso/aeso/latest (canonical alias) + /aeso-intl/latest.
+    return jsonify({
+        "iso": ISO_CODE,
+        "method": "baseline_model_v1",
+        "metrics": _baseline_snapshot(),
+    }), 200
+
+
 @iso_aeso_intl_bp.route("/dcpi-score", methods=["GET"])
 def http_dcpi_score():
     return jsonify(compute_dcpi_score()), 200

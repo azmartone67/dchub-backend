@@ -67,7 +67,10 @@ def extract_all():
         ("iso_spp",   "SPP"),
         ("iso_isone", "ISONE"),
         ("iso_ieso",  "IESO"),    # ← Phase HH — Ontario
-        ("iso_aeso",  "AESO"),    # ← Phase HH — Alberta
+        # ("iso_aeso", "AESO") removed 2026-05-30 — the US-realtime extractor
+        # persisted 0 rows since registration. AESO is served by the
+        # iso_aeso_intl baseline model (at /api/v1/iso/aeso + /aeso-intl),
+        # not this orchestrator, so it no longer runs the dead extractor.
         ("iso_tva",   "TVA"),     # ← Phase HH — Tennessee Valley
         ("iso_bpa",   "BPA"),     # ← Phase HH — Pacific NW
     ]

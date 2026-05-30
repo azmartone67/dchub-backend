@@ -23941,7 +23941,9 @@ from routes.iso_isone import iso_isone_bp
 from routes.iso_pjm import iso_pjm_bp  # Phase GG (2026-05-13) — 7th ISO
 # Phase HH (2026-05-13) — 4 more grid operators: 7 → 11 coverage
 from routes.iso_ieso import iso_ieso_bp  # Ontario
-from routes.iso_aeso import iso_aeso_bp  # Alberta
+# routes.iso_aeso (US-realtime) DEPRECATED 2026-05-30 — its _aeso_urls()
+# extractor persisted 0 rows since registration. Canonical /api/v1/iso/aeso
+# now aliases the working iso_aeso_intl baseline (see registration below).
 from routes.iso_tva  import iso_tva_bp   # Tennessee Valley Authority
 from routes.iso_bpa  import iso_bpa_bp   # Bonneville Power Administration
 from routes.grid_snapshot import grid_snapshot_bp
@@ -24045,7 +24047,16 @@ app.register_blueprint(iso_isone_bp)
 app.register_blueprint(iso_pjm_bp)  # Phase GG (2026-05-13) — 7th ISO
 # Phase HH (2026-05-13) — 4 more grid operators: 7 → 11 coverage
 app.register_blueprint(iso_ieso_bp)  # Ontario
-app.register_blueprint(iso_aeso_bp)  # Alberta
+# iso_aeso.py (US-realtime) deprecated 2026-05-30 — persisted 0 rows. Register
+# a SECOND alias of the working baseline iso_aeso_intl_bp under the canonical
+# /api/v1/iso/aeso so the user-facing AESO endpoint serves real data. Guarded:
+# a missing iso_aeso_intl_bp (intl import failure above) must not crash boot.
+try:
+    app.register_blueprint(iso_aeso_intl_bp, url_prefix="/api/v1/iso/aeso",
+                           name="iso_aeso_canonical")
+    print("[main] iso_aeso canonical alias → iso_aeso_intl baseline registered", flush=True)
+except Exception as _ae_alias_e:
+    print(f"[main] iso_aeso canonical alias not registered: {_ae_alias_e}", flush=True)
 app.register_blueprint(iso_tva_bp)   # Tennessee Valley Authority
 app.register_blueprint(iso_bpa_bp)   # Bonneville Power Administration
 app.register_blueprint(grid_snapshot_bp)

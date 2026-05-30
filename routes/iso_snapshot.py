@@ -30,8 +30,12 @@ from flask import Blueprint, jsonify, request
 iso_snapshot_bp = Blueprint("iso_snapshot", __name__)
 
 # The 11 ISOs the platform tracks (matches routes/heartbeat.py).
+# 'AESO' removed 2026-05-30: its US-realtime extractor (iso_aeso.py) persisted
+# 0 rows, so it surfaced here as a misleading markets_scored=0 row AND
+# duplicated the working baseline AESO appended from _INTL_ISOS below. AESO now
+# appears exactly ONCE in /iso/comparison — the baseline-model entry.
 _KNOWN_ISOS = ['ERCOT', 'CAISO', 'NYISO', 'MISO', 'PJM', 'SPP',
-               'ISONE', 'IESO', 'AESO', 'TVA', 'BPA']
+               'ISONE', 'IESO', 'TVA', 'BPA']
 
 # Phase ZZZZZ-round54 (2026-05-29) — international ISOs that ship via
 # baseline_model_v1 from sibling iso_*_intl modules. Comparison rollup
@@ -43,7 +47,7 @@ _INTL_ISOS = [
     {"code": "HYDROQUEBEC", "module": "routes.iso_hydroquebec",
      "label": "Hydro-Québec", "region": "Canada (QC)"},
     {"code": "AESO",        "module": "routes.iso_aeso_intl",
-     "label": "AESO (intl)", "region": "Canada (AB)"},
+     "label": "AESO", "region": "Canada (AB)"},
     {"code": "NORDPOOL",    "module": "routes.iso_nordpool_intl",
      "label": "Nord Pool",   "region": "Nordics + Baltics"},
 ]
