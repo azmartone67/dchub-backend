@@ -7723,6 +7723,18 @@ def scan_all() -> list[dict]:
                check_cf_kv_namespace_pressure):
         detectors.append(fn)
 
+    # r43-L (2026-05-30): MCP discoverability/health — continuously detects
+    # drift across the static MCP discovery surfaces (.well-known, static
+    # manifests, tool descriptions, pricing tiers) so registry/agent crawlers
+    # see consistent metadata. Findings surface in the standard brain pipeline.
+    try:
+        from routes.brain_mcp_health import check_mcp_health
+        detectors.append(check_mcp_health)
+    except Exception as _e_mcp:
+        import sys as _sys
+        print(f"[radar] brain_mcp_health detector skipped: {_e_mcp}",
+              file=_sys.stderr)
+
     # Phase ZZZZZ-round17 (2026-05-23) — security/breach detectors.
     # The user explicitly asked: "can we also enhance brain to detect any
     # bugs or gate breaches or security breaches for that matter, want

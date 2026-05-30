@@ -1281,6 +1281,16 @@ try:
         app.register_blueprint(brain_directives_bp)  # Phase FF+directives — operator directive intake
     except Exception as _e:
         print(f"[main] brain_directives_bp not registered: {_e}", flush=True)
+    # r43-L (2026-05-30): MCP discoverability/health detector — continuously
+    # watches for tool-count drift, weak descriptions, missing pricing tiers,
+    # and unreachable .well-known surfaces. Findings flow into the brain's
+    # consistency-radar pipeline so static-file drift surfaces in the dashboard
+    # instead of accumulating silently until the next manual scrub.
+    try:
+        from routes.brain_mcp_health import register_brain_mcp_health
+        register_brain_mcp_health(app)
+    except Exception as _e:
+        print(f"[main] brain_mcp_health not registered: {_e}", flush=True)
     try:
         from routes.brain_guardrails import brain_guardrails_bp
         app.register_blueprint(brain_guardrails_bp)  # Stage 5 — autonomy guardrails + auto-remediate consumer
