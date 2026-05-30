@@ -24113,6 +24113,14 @@ except Exception as _ae_alias_e:
     print(f"[main] iso_aeso canonical alias not registered: {_ae_alias_e}", flush=True)
 app.register_blueprint(iso_tva_bp)   # Tennessee Valley Authority
 app.register_blueprint(iso_bpa_bp)   # Bonneville Power Administration
+# 2026-05-30: non-ISO utility / co-op balancing authorities (APS/SRP/FPL +
+# big IOUs + co-ops) via EIA-930 — fills the "Non-ISO/Varies" gap.
+try:
+    from routes.eia_utility_bas import register_eia_utility_bas
+    register_eia_utility_bas(app)
+    print("[main] eia_utility_bas registered: /api/v1/utility/* (16 non-ISO BAs)", flush=True)
+except Exception as _eub_e:
+    print(f"[main] eia_utility_bas register failed: {_eub_e}", flush=True)
 app.register_blueprint(grid_snapshot_bp)
 app.register_blueprint(sec_edgar_bp)
 app.register_blueprint(extractor_brain_bp)
