@@ -166,7 +166,13 @@ def _build_manifest() -> dict:
     }
 
 
+# r43-K (2026-05-30): also serve at /api/v1/mcp/tools (no `.json`) — many
+# MCP registries + agent crawlers try the canonical URL without an extension
+# first and got a 404 (confirmed via probe), which silently dropped DC Hub
+# from their auto-indexing. The .json suffix is convention here, not in the
+# wider MCP discovery ecosystem.
 @mcp_tool_catalog_bp.route("/api/v1/mcp/tools.json", methods=["GET", "OPTIONS"])
+@mcp_tool_catalog_bp.route("/api/v1/mcp/tools",      methods=["GET", "OPTIONS"])
 def api_tool_manifest():
     if "OPTIONS" == (__import__("flask").request.method):
         resp = jsonify(ok=True)
