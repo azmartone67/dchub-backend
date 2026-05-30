@@ -902,6 +902,31 @@ def get_gas_pipelines():
     except (ValueError, TypeError):
         radius = 50
 
+    # 2026-05-30 anti-bulk-scrape: this endpoint feeds the land-power map's gas
+    # overlay (spatial viewport queries — few rows) so we keep it WORKING, but
+    # an unpaid caller must not be able to pull the top-500 of the 32K-row table
+    # in one shot. Cap non-paid callers to a teaser; paid callers (API key OR a
+    # logged-in session cookie) get the full set. Cookie-aware so the map's
+    # authenticated users aren't throttled. Public EIA geodata + capacity is
+    # already NULL, so this is anti-scrape, not a premium-intel gate.
+    _GP_NONPAID_CAP = 50
+    _gp_paid = False
+    try:
+        from map_tier_gating import _detect_caller_tier
+        def _gp_dec(_t):
+            try:
+                import jwt as _j
+                from main import JWT_SECRET
+                return _j.decode(_t, JWT_SECRET, algorithms=['HS256'])
+            except Exception:
+                return None
+        _gp_ct, _ = _detect_caller_tier(decode_jwt_func=_gp_dec)
+        _gp_paid = (_gp_ct or 'anonymous').lower() in (
+            'starter', 'developer', 'pro', 'founding', 'enterprise', 'admin', 'internal')
+    except Exception:
+        _gp_paid = False
+    _gp_eff_limit = min(limit, 500) if _gp_paid else min(limit, _GP_NONPAID_CAP)
+
     try:
         with _pg_connection() as conn:
             c = conn.cursor()
@@ -931,7 +956,7 @@ def get_gas_pipelines():
                 params.append(pipeline_type)
 
             query += " ORDER BY diameter_inches DESC NULLS LAST LIMIT %s"
-            params.append(min(limit, 500))
+            params.append(_gp_eff_limit)
 
             c.execute(query, params)
             rows = c.fetchall()

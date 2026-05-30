@@ -133,7 +133,7 @@ def extract_one(ba: dict) -> dict:
     summary = {"code": code, "eia": eia, "name": ba["name"],
                "metrics_extracted": 0, "rows_inserted": 0}
     try:
-        text, url = fetch_first_working(_eia_urls(eia), ua="dchub-eia-ba/1.0")
+        text, url = fetch_first_working(_eia_urls(eia), ua="dchub-eia-ba/1.0", timeout=4, total_budget=5)
         summary["fetched_url"] = scrub_url(url)  # hide api_key in echoed url
         metrics = {}
         if "api.eia.gov/v2/" in url:
@@ -165,7 +165,7 @@ def run_extraction() -> dict:
     blocks the rest."""
     from concurrent.futures import ThreadPoolExecutor
     started = time.time()
-    with ThreadPoolExecutor(max_workers=12) as pool:
+    with ThreadPoolExecutor(max_workers=24) as pool:
         results = list(pool.map(extract_one, _BAS))
     ok = sum(1 for r in results if r.get("status") == "ok" and r.get("rows_inserted", 0) > 0)
     return {

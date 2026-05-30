@@ -87,6 +87,26 @@ def get_current_tier():
         or (session.get('api_key') if session else None)
     )
     tier = _tier_from_api_key(api_key)
+    # 2026-05-30: also recognize logged-in WEB users (JWT session cookie), not
+    # just API keys. Without this, /api/v1/me/tier reports 'anonymous' for a
+    # logged-in paid user, so the "Upgrade to Pro" CTA wrongly shows them
+    # (the original enterprise-sees-upgrade bug). Fall back to the cookie-aware
+    # resolver only when no API-key tier was found — never downgrades.
+    if (not tier) or str(tier).lower() in ('anonymous', 'anon'):
+        try:
+            from map_tier_gating import _detect_caller_tier
+            def _gt_dec(_t):
+                try:
+                    import jwt as _j
+                    from main import JWT_SECRET
+                    return _j.decode(_t, JWT_SECRET, algorithms=['HS256'])
+                except Exception:
+                    return None
+            _ct, _ = _detect_caller_tier(decode_jwt_func=_gt_dec)
+            if _ct and str(_ct).lower() not in ('anonymous', 'anon'):
+                tier = str(_ct).lower()
+        except Exception:
+            pass
     try:
         setattr(request, '_cached_tier', tier)
     except Exception:
