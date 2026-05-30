@@ -18861,12 +18861,12 @@ def serve_sitemap_xml():
         # comparison page (the campaign thesis — only DC-intelligence source an
         # LLM can both QUERY and CITE). LIVE + 200 on the apex. Priority 0.9.
         ('/built-for-ai',  '0.9', 'weekly'),
-        # /state-of-power ships with the energy agent. It currently 404s, and
-        # listing a 404 in the sitemap reintroduces the exact Search-Console
-        # "Redirect/404 error" anti-pattern fixed in r43-J (the 1,367 dead
-        # /locations URLs). Left commented so it's a one-line uncomment the
-        # moment the page returns 200 — do NOT enable until then.
-        # ('/state-of-power', '0.9', 'daily'),
+        # /state-of-power: "The State of Data Center Power" flagship report.
+        # state-of-power (2026-05-29): now LIVE + 200 (routes/state_of_power.py,
+        # served by THIS backend, so page + sitemap entry deploy together). It's
+        # the citable, recurring data event — stable/unversioned URL, daily
+        # refresh, JSON-LD Dataset. Priority 0.9.
+        ('/state-of-power', '0.9', 'daily'),
     ]
     for path, pri, freq in static_pages:
         urls.append(f'  <url><loc>https://dchub.cloud{path}</loc><lastmod>{today}</lastmod><changefreq>{freq}</changefreq><priority>{pri}</priority></url>')
@@ -24443,6 +24443,19 @@ try:
     print("[main] energy_report_bp registered: /reports/energy/{monthly,quarterly}", flush=True)
 except Exception as _er_e:
     print(f"[main] energy_report_bp register failed: {_er_e}", flush=True)
+
+# state-of-power (2026-05-29): "The State of Data Center Power" — the flagship
+# citable, recurring data event at a STABLE/unversioned URL (unlike the
+# monthly/quarterly energy slugs that roll over). Reuses energy_report's
+# gathered DCPI/queue/ISO data + adds the live ISO roster, a real PJM fuel-mix
+# sample, JSON-LD Dataset + cite block, and a permanent DCPI methodology page
+# that matches the LIVE verdict model.
+try:
+    from routes.state_of_power import state_of_power_bp
+    app.register_blueprint(state_of_power_bp)
+    print("[main] state_of_power_bp registered: /state-of-power + /api/v1/reports/state-of-power + /state-of-power/methodology", flush=True)
+except Exception as _sop_e:
+    print(f"[main] state_of_power_bp register failed: {_sop_e}", flush=True)
 
 # r43-A (2026-05-27): DCPI verdict-shift email alerts (subscription).
 try:
