@@ -379,6 +379,7 @@ def funnel_stats():
     }), 200
 
 
+# AUTO-REPAIR: duplicate route '/health' also in main.py:3819 — review and remove one
 @redeem_tracking_bp.route("/health", methods=["GET"])
 def health():
     _ensure_table()

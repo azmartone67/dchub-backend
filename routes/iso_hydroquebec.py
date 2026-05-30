@@ -236,6 +236,7 @@ def compute_dcpi_score():
 # ─────────────────────────────────────────────────────────────────────
 # HTTP routes — match the pattern of other iso_*.py blueprints
 # ─────────────────────────────────────────────────────────────────────
+# AUTO-REPAIR: duplicate route '/run' also in enhanced_promotion.py:844 — review and remove one
 @iso_hydroquebec_bp.route("/run", methods=["POST", "GET"])
 def http_run():
     """Trigger extraction + return summary. Usually called by the
@@ -244,6 +245,7 @@ def http_run():
     status = 200 if not summary.get("errors") else 207
     return jsonify(summary), status
 
+# AUTO-REPAIR: duplicate route '/snapshot' also in routes/iso_nordpool_intl.py:206 — review and remove one
 
 @iso_hydroquebec_bp.route("/snapshot", methods=["GET"])
 def http_snapshot():
@@ -262,11 +264,13 @@ def http_snapshot():
         }), 200
     except Exception as e:
         return jsonify({"error": str(e), "iso": ISO_CODE}), 500
+# AUTO-REPAIR: duplicate route '/dcpi-score' also in routes/iso_nordpool_intl.py:220 — review and remove one
 
 
 @iso_hydroquebec_bp.route("/dcpi-score", methods=["GET"])
 def http_dcpi_score():
     """Per-ISO DCPI scoring contribution. Feeds the master DCPI roll-up."""
+# AUTO-REPAIR: duplicate route '/health' also in main.py:3819 — review and remove one
     return jsonify(compute_dcpi_score()), 200
 
 
