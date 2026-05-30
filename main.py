@@ -2371,9 +2371,13 @@ def phase19b_grid_intelligence(region):
     EIA_RTO_MAP = {
         'PJM': 'PJM', 'MISO': 'MISO', 'ERCOT': 'ERCO',
         'CAISO': 'CISO', 'NYISO': 'NYIS', 'SPP': 'SWPP',
-        'ISONE': 'ISNE', 'NEISO': 'ISNE',
+        # ISO-NE: accept the canonical hyphenated form used everywhere else on
+        # the site (api-docs, intelligence, interconnection-queue, the explorer
+        # dropdown) — it was 400ing while only ISONE/NEISO worked.
+        'ISONE': 'ISNE', 'NEISO': 'ISNE', 'ISO-NE': 'ISNE', 'ISO NE': 'ISNE',
     }
-    rto_code = EIA_RTO_MAP.get(region)
+    # Normalize separators so PJM / iso-ne / iso_ne / "iso ne" all resolve.
+    rto_code = EIA_RTO_MAP.get(region) or EIA_RTO_MAP.get(region.replace('-', '').replace('_', '').replace(' ', ''))
     if not rto_code:
         return jsonify({'error': 'unknown region',
                         'supported': list(EIA_RTO_MAP.keys())}), 400
