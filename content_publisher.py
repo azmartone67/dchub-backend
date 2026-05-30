@@ -241,6 +241,131 @@ def content_edit(item_id):
     conn.close()
     return jsonify({'success': True})
 
+def _extract_og_image_url(page_url):
+    """r51 (2026-05-29): scrape <meta property="og:image"> from a URL.
+
+    Returns the absolute og:image URL string or None. Best-effort —
+    any failure (network, HTML parse, missing tag) returns None so the
+    caller falls back to the ARTICLE-share path (LinkedIn does its own
+    OG scrape downstream).
+
+    We need this because the LinkedIn /v2/ugcPosts ARTICLE share has
+    a flaky og:image scrape (5 recent posts shipped without any image
+    despite valid og:image tags on dchub.cloud/dcpi/<slug>). The fix
+    is to FETCH the image server-side and ATTACH the binary directly
+    via /rest/images, which LinkedIn renders 100% of the time.
+    """
+    if not page_url:
+        return None
+    try:
+        import re as _re
+        from urllib.parse import urljoin as _urljoin
+        r = requests.get(page_url,
+                          headers={'User-Agent': 'DCHub-LinkedInPublisher/1.0'},
+                          timeout=10, allow_redirects=True)
+        if r.status_code != 200:
+            return None
+        html = r.text[:200_000]  # cap to first 200KB; meta tags are in <head>
+        # Match either property="og:image" or name="og:image", and either
+        # attribute order (content="..." first vs property="..." first).
+        m = _re.search(
+            r'<meta[^>]+(?:property|name)=["\']og:image["\'][^>]+content=["\']([^"\']+)["\']',
+            html, _re.IGNORECASE)
+        if not m:
+            m = _re.search(
+                r'<meta[^>]+content=["\']([^"\']+)["\'][^>]+(?:property|name)=["\']og:image["\']',
+                html, _re.IGNORECASE)
+        if not m:
+            return None
+        img_url = m.group(1).strip()
+        if not img_url.startswith(('http://', 'https://')):
+            img_url = _urljoin(page_url, img_url)
+        return img_url
+    except Exception:
+        return None
+
+
+def _fetch_image_bytes_for_linkedin(image_url):
+    """r51 (2026-05-29): fetch image bytes for LinkedIn asset upload.
+
+    Returns bytes (or None). Defensive size cap — LinkedIn rejects
+    images <1KB (transparent gif fallbacks) and >5MB. Pattern lifted
+    from routes/linkedin_quad_daily.py:_fetch_image_bytes (proven
+    working in the 4×/day quad publisher).
+    """
+    if not image_url:
+        return None
+    try:
+        r = requests.get(image_url,
+                          headers={'User-Agent': 'DCHub-LinkedInPublisher/1.0'},
+                          timeout=15, allow_redirects=True)
+        if r.status_code != 200:
+            return None
+        data = r.content
+        if not (1000 < len(data) < 5_000_000):
+            return None
+        return data
+    except Exception:
+        return None
+
+
+def _upload_image_to_linkedin(image_bytes, access_token, org_id):
+    """r51 (2026-05-29): upload binary image to LinkedIn, return image URN.
+
+    Uses the MODERN /rest/images?action=initializeUpload flow (the
+    same flow linkedin_poster.post_to_linkedin r50 uses for the
+    /rest/posts endpoint). Returns urn:li:image:* on success, or None
+    on any failure (caller falls back to legacy ARTICLE share — image
+    upload is best-effort, never blocks the post).
+
+    Two-step:
+      1) POST /rest/images?action=initializeUpload → {uploadUrl, image URN}
+      2) PUT bytes to uploadUrl
+    """
+    if not image_bytes or not access_token or not org_id:
+        return None
+    try:
+        author = f"urn:li:organization:{org_id}"
+        init_headers = {
+            'Authorization': f'Bearer {access_token}',
+            'LinkedIn-Version': '202601',
+            'X-Restli-Protocol-Version': '2.0.0',
+            'Content-Type': 'application/json',
+        }
+        init_resp = requests.post(
+            'https://api.linkedin.com/rest/images?action=initializeUpload',
+            headers=init_headers,
+            json={'initializeUploadRequest': {'owner': author}},
+            timeout=15,
+        )
+        if init_resp.status_code not in (200, 201):
+            logger.warning(
+                "r51 image initializeUpload failed: %s %s",
+                init_resp.status_code, init_resp.text[:200])
+            return None
+        v = (init_resp.json() or {}).get('value', {})
+        upload_url = v.get('uploadUrl')
+        image_urn = v.get('image')
+        if not (upload_url and image_urn):
+            logger.warning("r51 init response missing uploadUrl/image: %s", v)
+            return None
+        put_resp = requests.put(
+            upload_url,
+            headers={'Authorization': f'Bearer {access_token}'},
+            data=image_bytes,
+            timeout=30,
+        )
+        if put_resp.status_code not in (200, 201):
+            logger.warning(
+                "r51 image PUT failed: %s %s",
+                put_resp.status_code, put_resp.text[:200])
+            return None
+        return image_urn
+    except Exception as e:
+        logger.warning("r51 image upload exception: %s", e)
+        return None
+
+
 def _post_to_linkedin(content_text, access_token, article_url=None,
                        article_title=None, article_description=None,
                        article_thumbnail_url=None):
@@ -265,17 +390,123 @@ def _post_to_linkedin(content_text, access_token, article_url=None,
       • previewing the rewritten content of legacy short posts
       • local-dev smoke tests
     Disable by unsetting the env var.
+
+    r51 (2026-05-29): IMAGE-FIRST path. When article_url is present,
+    we now try to fetch its og:image and UPLOAD it directly as a
+    LinkedIn /rest/images asset, then attach via /rest/posts. That
+    renders a proper image-card post (much higher engagement than the
+    text-only or scraped-article shares user was seeing — 5 recent
+    posts shipped imageless despite valid og:image tags). On ANY
+    image failure we fall back to the previous /v2/ugcPosts ARTICLE
+    share, which leans on LinkedIn's own OG scrape. So images are
+    always best-effort — they never block the post going out.
+
+    Kill-switch: LINKEDIN_ATTACH_IMAGES=0 disables image upload
+    entirely (returns to pre-r51 behaviour). Default = enabled.
     """
     _dry = (os.environ.get('LINKEDIN_PUBLISHER_DRY_RUN', '') or '').strip().lower()
     if _dry in ('1', 'true', 'yes', 'on'):
         _preview = (content_text or '')[:240].replace('\n', ' / ')
+        # r51: surface what the image-attach path WOULD have done, so dry-run
+        # also exercises the og:image resolution (catches "page has no
+        # og:image" before the cron actually fires for real).
+        _attach_dry = os.environ.get('LINKEDIN_ATTACH_IMAGES', '1').strip() != '0'
+        _img_preview = "image=skip(no-url)"
+        if _attach_dry and article_url:
+            _og = (article_thumbnail_url
+                    or _extract_og_image_url(article_url))
+            if _og:
+                _img_preview = f"image=would-attach({_og})"
+            else:
+                _img_preview = f"image=fallback-ARTICLE(no og:image on {article_url})"
         logger.warning(
-            "LINKEDIN_PUBLISHER_DRY_RUN active — NOT posting (would have sent: %s%s)",
+            "LINKEDIN_PUBLISHER_DRY_RUN active — NOT posting (would have sent: %s%s · %s)",
             _preview,
             "..." if len(content_text or '') > 240 else "",
+            _img_preview,
         )
         return True, f"urn:li:share:DRY_RUN:{int(time.time())}"
     DCHUB_ORG_ID = (os.environ.get('LINKEDIN_ORG_ID', '110894959') or '110894959').strip()
+
+    # r51: IMAGE-FIRST attempt (modern /rest/posts + /rest/images). Gated by
+    # env so operator can disable instantly if LinkedIn API misbehaves.
+    _attach_images = os.environ.get('LINKEDIN_ATTACH_IMAGES', '1').strip() != '0'
+    if _attach_images and article_url:
+        # 1. Resolve OG image — caller can pass article_thumbnail_url to skip
+        #    the OG-scrape round-trip (used by press-release publisher which
+        #    already knows /api/v1/og/today/<slug>.png).
+        _og_url = (article_thumbnail_url
+                    or _extract_og_image_url(article_url))
+        if _og_url:
+            _img_bytes = _fetch_image_bytes_for_linkedin(_og_url)
+            if _img_bytes:
+                _image_urn = _upload_image_to_linkedin(
+                    _img_bytes, access_token, DCHUB_ORG_ID)
+                if _image_urn:
+                    # Modern /rest/posts shape — IMAGE attached, article_url
+                    # also appears as a clickable hyperlink in the body text
+                    # (LinkedIn linkifies URLs in `commentary` automatically).
+                    _h_post = {
+                        'Authorization': f'Bearer {access_token}',
+                        'LinkedIn-Version': '202601',
+                        'X-Restli-Protocol-Version': '2.0.0',
+                        'Content-Type': 'application/json',
+                    }
+                    _payload = {
+                        'author': f'urn:li:organization:{DCHUB_ORG_ID}',
+                        'commentary': content_text,
+                        'visibility': 'PUBLIC',
+                        'distribution': {
+                            'feedDistribution': 'MAIN_FEED',
+                            'targetEntities': [],
+                            'thirdPartyDistributionChannels': [],
+                        },
+                        'lifecycleState': 'PUBLISHED',
+                        'content': {
+                            'media': {
+                                'id': _image_urn,
+                                'title': (article_title or 'DC Hub')[:200],
+                                'altText': (article_description
+                                              or article_title
+                                              or 'DC Hub data center intelligence')[:300],
+                            }
+                        },
+                    }
+                    try:
+                        _r = requests.post(
+                            'https://api.linkedin.com/rest/posts',
+                            json=_payload, headers=_h_post, timeout=20)
+                        if _r.status_code in (200, 201):
+                            _urn = (_r.headers.get('x-restli-id')
+                                     or _r.headers.get('X-LinkedIn-Id')
+                                     or 'posted-with-image')
+                            logger.info(
+                                "r51 LinkedIn IMAGE post succeeded: urn=%s "
+                                "(article=%s og=%s)", _urn, article_url, _og_url)
+                            return True, _urn
+                        logger.warning(
+                            "r51 /rest/posts (image) failed: %s %s — "
+                            "falling through to ARTICLE share",
+                            _r.status_code, _r.text[:200])
+                    except Exception as _e:
+                        logger.warning(
+                            "r51 /rest/posts exception: %s — falling through", _e)
+                else:
+                    logger.info(
+                        "r51: image upload returned no URN, falling through "
+                        "to ARTICLE share for %s", article_url)
+            else:
+                logger.info(
+                    "r51: couldn't fetch image bytes from %s, falling through",
+                    _og_url)
+        else:
+            logger.info(
+                "r51: no og:image found on %s, falling through to ARTICLE share",
+                article_url)
+
+    # LEGACY PATH (pre-r51 behaviour, also r51 fallback when image upload
+    # fails / is disabled / no URL in body). Builds an ARTICLE share that
+    # leans on LinkedIn's own OG:image scrape — flaky but valid.
     headers = {
         'Authorization': f'Bearer {access_token}',
         'Content-Type': 'application/json',
@@ -552,7 +783,24 @@ def publish_linkedin():
         conn.close()
         return jsonify({'success': False, 'error': f"Post status is '{row['status']}', must be approved or draft"}), 400
     content_text = row['content']
-    success, result = _post_to_linkedin(content_text, access_token)
+    # r51 (2026-05-29): extract URL from body so manual publishes also get
+    # the IMAGE-attach path (otherwise this endpoint sent imageless text-only
+    # posts even after the auto-publisher started attaching images).
+    _art_url = None
+    _art_title = None
+    try:
+        import re as _re_url
+        _m = _re_url.search(r'https?://[^\s)>\]]+', content_text or '')
+        if _m:
+            _art_url = _m.group(0).rstrip('.,')
+            _first_line = (content_text or '').strip().split('\n', 1)[0].strip()
+            _art_title = _first_line[:180] or None
+    except Exception:
+        _art_url = None
+        _art_title = None
+    success, result = _post_to_linkedin(content_text, access_token,
+                                          article_url=_art_url,
+                                          article_title=_art_title)
     now = datetime.utcnow().isoformat() + 'Z'
     if success:
         cur.execute("UPDATE social_media_posts SET status = 'published', posted_at = %s, published_at = %s, publish_platform = 'linkedin' WHERE id = %s", (now, now, post_id))
