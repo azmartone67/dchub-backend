@@ -33,6 +33,77 @@ iso_snapshot_bp = Blueprint("iso_snapshot", __name__)
 _KNOWN_ISOS = ['ERCOT', 'CAISO', 'NYISO', 'MISO', 'PJM', 'SPP',
                'ISONE', 'IESO', 'AESO', 'TVA', 'BPA']
 
+# Phase ZZZZZ-round54 (2026-05-29) — international ISOs that ship via
+# baseline_model_v1 from sibling iso_*_intl modules. Comparison rollup
+# now includes these so the user-facing map can render all 14 ISOs in
+# one table. They don't have DCPI markets in market_power_scores yet,
+# so we surface their LMP + carbon intensity + renewable_pct + demand
+# from their snapshot endpoints instead.
+_INTL_ISOS = [
+    {"code": "HYDROQUEBEC", "module": "routes.iso_hydroquebec",
+     "label": "Hydro-Québec", "region": "Canada (QC)"},
+    {"code": "AESO",        "module": "routes.iso_aeso_intl",
+     "label": "AESO (intl)", "region": "Canada (AB)"},
+    {"code": "NORDPOOL",    "module": "routes.iso_nordpool_intl",
+     "label": "Nord Pool",   "region": "Nordics + Baltics"},
+]
+
+
+def _intl_snapshot_row(iso_def):
+    """Build a comparison-row dict from an international ISO's baseline
+    snapshot. Best-effort import + best-effort field extraction so a
+    broken intl module never poisons the comparison endpoint.
+    Returns None on hard failure (skipped from rollup)."""
+    try:
+        mod = __import__(iso_def["module"], fromlist=["_baseline_snapshot",
+                                                       "GENERATION_MIX",
+                                                       "INSTALLED_CAPACITY_MW",
+                                                       "RENEWABLE_PCT"])
+    except Exception:
+        return None
+    try:
+        snap = mod._baseline_snapshot() or {}
+    except Exception:
+        snap = {}
+    def _mv(key):
+        v = snap.get(key)
+        if isinstance(v, dict):
+            return v.get("value")
+        return v
+    # Carbon intensity + renewable share are the headline metrics
+    # international markets compete on. LMP (spot price) maps to the
+    # same column as US LMPs so the frontend can render one table.
+    spot_usd = (_mv("spot_price_usd_per_mwh")
+                or _mv("avg_lmp_usd_per_mwh")
+                or _mv("day_ahead_price_usd_per_mwh"))
+    return {
+        "iso": iso_def["code"],
+        "iso_label": iso_def["label"],
+        "region": iso_def["region"],
+        "data_method": "baseline_model_v1",
+        "markets_scored": 0,
+        "build_count": 0,
+        "caution_count": 0,
+        "avoid_count": 0,
+        "avg_excess_power_score": None,
+        "avg_constraint_score": None,
+        "avg_time_to_power_months": None,
+        "pipeline_projects": 0,
+        "pipeline_total_mw": None,
+        "facility_count": 0,
+        "total_facility_mw": None,
+        "heartbeat_status": "baseline",
+        "heartbeat_age_hours": 0,
+        # Intl-specific metrics — frontend uses these when DCPI is missing
+        "lmp_usd_per_mwh": _as_float(spot_usd),
+        "carbon_intensity_g_kwh": _as_float(_mv("carbon_intensity")),
+        "renewable_pct": _as_float(snap.get("renewable_pct")
+                                   or _mv("renewable_pct")
+                                   or getattr(mod, "RENEWABLE_PCT", None)),
+        "demand_mw": _as_float(_mv("demand_mw")),
+        "installed_capacity_mw": getattr(mod, "INSTALLED_CAPACITY_MW", None),
+    }
+
 
 def _conn():
     import psycopg2
@@ -218,7 +289,13 @@ def iso_snapshot(iso_code):
 @iso_snapshot_bp.route("/api/v1/iso/comparison", methods=["GET"])
 def iso_comparison():
     """Head-to-head: every tracked ISO with its DCPI rollup + pipeline +
-    facility footprint, ranked by avg excess-power score."""
+    facility footprint, ranked by avg excess-power score.
+
+    Phase ZZZZZ-round54: now includes 3 international ISOs (HYDROQUEBEC,
+    AESO-intl, NORDPOOL) from sibling baseline-model modules. These show
+    up with `data_method: 'baseline_model_v1'` and carry intl-specific
+    metrics (lmp_usd_per_mwh, carbon_intensity_g_kwh, renewable_pct).
+    """
     out = []
     try:
         with _conn() as c, c.cursor() as cur:
@@ -229,6 +306,7 @@ def iso_comparison():
                 heartbeat = _heartbeat_for_iso(cur, iso) or {}
                 out.append({
                     "iso": iso,
+                    "data_method": "realtime",
                     "markets_scored": dcpi.get("markets_scored", 0),
                     "build_count": (dcpi.get("by_verdict") or {}).get("BUILD", 0),
                     "caution_count": (dcpi.get("by_verdict") or {}).get("CAUTION", 0),
@@ -245,6 +323,14 @@ def iso_comparison():
                 })
     except Exception as e:
         return jsonify(ok=False, error=str(e)[:300]), 200
+
+    # Append intl ISOs after US/CA real-time set. Best-effort — a
+    # broken module is skipped (does NOT 500 the endpoint).
+    for iso_def in _INTL_ISOS:
+        row = _intl_snapshot_row(iso_def)
+        if row:
+            out.append(row)
+
     # Rank by avg excess-power (best opportunity first); push None to end.
     out.sort(key=lambda r: (r["avg_excess_power_score"] is None,
                              -(r["avg_excess_power_score"] or 0)))
@@ -253,4 +339,9 @@ def iso_comparison():
         generated_at=datetime.now(timezone.utc).isoformat(),
         isos=out,
         ranking_by="avg_excess_power_score",
+        iso_count=len(out),
+        coverage={
+            "realtime_us_ca": _KNOWN_ISOS,
+            "baseline_intl": [d["code"] for d in _INTL_ISOS],
+        },
     ), 200
