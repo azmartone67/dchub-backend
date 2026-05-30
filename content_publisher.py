@@ -254,7 +254,27 @@ def _post_to_linkedin(content_text, access_token, article_url=None,
     LinkedIn extracts the link-card image from the URL's og:image meta
     tag — buildPressReleaseHtml in _worker.js points that at the
     /api/v1/og/today/<slug>.png dynamic card endpoint.
+
+    r62 (2026-05-29): respects LINKEDIN_PUBLISHER_DRY_RUN env flag.
+    When set to "1"/"true"/"yes", the LinkedIn API call is skipped and
+    a synthetic urn:li:share:DRY_RUN:<ts> is returned. The caller
+    treats this as success (marks the post 'published') so dry-run
+    fully exercises the pipeline including dedup classification + row
+    state transitions WITHOUT firing an actual share. Useful for:
+      • verifying queue draining behaves correctly after a fix
+      • previewing the rewritten content of legacy short posts
+      • local-dev smoke tests
+    Disable by unsetting the env var.
     """
+    _dry = (os.environ.get('LINKEDIN_PUBLISHER_DRY_RUN', '') or '').strip().lower()
+    if _dry in ('1', 'true', 'yes', 'on'):
+        _preview = (content_text or '')[:240].replace('\n', ' / ')
+        logger.warning(
+            "LINKEDIN_PUBLISHER_DRY_RUN active — NOT posting (would have sent: %s%s)",
+            _preview,
+            "..." if len(content_text or '') > 240 else "",
+        )
+        return True, f"urn:li:share:DRY_RUN:{int(time.time())}"
     DCHUB_ORG_ID = (os.environ.get('LINKEDIN_ORG_ID', '110894959') or '110894959').strip()
     headers = {
         'Authorization': f'Bearer {access_token}',
@@ -545,6 +565,132 @@ def publish_linkedin():
         logger.warning(f"LinkedIn publish failed for post {post_id}: {result}")
         return jsonify({'success': False, 'error': result})
 
+# r62 (2026-05-29): legacy short-DCPI-post detector + auto-rewriter.
+# Even after r47.38 fixed the generator, the queue still contains rows
+# enqueued before the fix. Publisher drains 1 per 6h, so without a
+# rewrite gate those legacy posts can keep landing on LinkedIn for
+# weeks. Operator flagged seeing "📍 Coeur d'Alene · WECC · DCPI
+# verdict: CAUTION / Excess Power: 44.8/100 · Constraint: 41.1/100 /
+# Live page: <link>" on dchub-media's LinkedIn — that's the pre-r47.38
+# shape draining out. Fix:
+#   1. detect the shape (3-5 lines, 'DCPI verdict:' + 'Excess Power:'
+#      + 'Live page:' markers).
+#   2. parse market/iso/verdict/excess/constraint out of the body.
+#   3. rebuild via _shape_linkedin (the post-r47.38 rich shape) so the
+#      post that lands on LinkedIn matches what content_enqueue would
+#      produce TODAY for the same DCPI signal.
+# This rewrite is persisted back to social_media_posts.content before
+# publish so the dchub-media admin queue + audit logs reflect the real
+# post that went out.
+import re as _re_legacy
+
+_LEGACY_SHORT_DCPI = _re_legacy.compile(
+    r'^[^\S\r\n]*📍.+·.+·\s*DCPI verdict:\s*(BUILD|CAUTION|AVOID|HOLD|LOW_SIGNAL)',
+    _re_legacy.IGNORECASE | _re_legacy.MULTILINE,
+)
+
+
+def _is_legacy_short_dcpi_shape(text: str) -> bool:
+    """Detect the pre-r47.38 short DCPI verdict post shape.
+
+    Pattern (rendered):
+      📍 Coeur d'Alene · WECC · DCPI verdict: CAUTION
+      Excess Power: 44.8/100 · Constraint: 41.1/100
+      Live page: https://dchub.cloud/dcpi/<slug>
+
+    Heuristic: matches the pin+verdict header AND contains
+    'Excess Power:' (colon-form is legacy; new shape uses
+    'Excess Power N/100' without the colon).
+    """
+    if not text:
+        return False
+    if not _LEGACY_SHORT_DCPI.search(text):
+        return False
+    if 'Excess Power:' not in text:
+        return False
+    # New rich shape is >= 600 chars; legacy is <= 250. If it's long,
+    # it's already been rewritten or was always rich.
+    return len(text) <= 400
+
+
+_LEGACY_HEADER = _re_legacy.compile(
+    r'📍\s*(.+?)\s*·\s*(.+?)\s*·\s*DCPI verdict:\s*(BUILD|CAUTION|AVOID|HOLD|LOW_SIGNAL)',
+    _re_legacy.IGNORECASE,
+)
+_LEGACY_SCORES = _re_legacy.compile(
+    r'Excess Power:\s*([\d.]+)\s*/\s*100\s*·\s*Constraint:\s*([\d.]+)\s*/\s*100',
+    _re_legacy.IGNORECASE,
+)
+_LEGACY_LINK = _re_legacy.compile(
+    r'https?://dchub\.cloud/dcpi/([a-z0-9\-]+)',
+    _re_legacy.IGNORECASE,
+)
+
+
+def _parse_legacy_short_dcpi(text: str) -> dict | None:
+    """Extract market/iso/verdict/excess/constraint/slug from legacy text.
+    Returns None if parsing fails (caller should leave post untouched).
+    """
+    if not text:
+        return None
+    hdr = _LEGACY_HEADER.search(text)
+    if not hdr:
+        return None
+    name = (hdr.group(1) or '').strip()
+    iso = (hdr.group(2) or '').strip()
+    verdict = (hdr.group(3) or '').strip().upper()
+
+    excess = 0.0
+    constr = 0.0
+    sc = _LEGACY_SCORES.search(text)
+    if sc:
+        try:
+            excess = float(sc.group(1) or 0)
+            constr = float(sc.group(2) or 0)
+        except (TypeError, ValueError):
+            pass
+
+    slug = ''
+    lk = _LEGACY_LINK.search(text)
+    if lk:
+        slug = (lk.group(1) or '').strip().lower()
+    if not slug:
+        # fall back to a slugified market name
+        slug = _re_legacy.sub(r'[^a-z0-9]+', '-', name.lower()).strip('-')
+
+    return {
+        'name': name or '?',
+        'slug': slug or 'unknown',
+        'verdict': verdict or 'HOLD',
+        'iso': iso or '?',
+        'excess': excess,
+        'constraint': constr,
+    }
+
+
+def _rewrite_legacy_to_rich(text: str) -> str | None:
+    """Take a legacy short DCPI post, parse it, and return the rich
+    shape from routes/content_enqueue._shape_linkedin (single source of
+    truth for the DCPI narrative template).
+
+    Returns the new content string on success, None on failure
+    (publisher then falls back to the legacy text — never worse than
+    before).
+    """
+    mover = _parse_legacy_short_dcpi(text)
+    if not mover:
+        return None
+    try:
+        # Lazy import to avoid circular dep at module load.
+        from routes.content_enqueue import _shape_linkedin
+    except Exception:
+        return None
+    try:
+        return _shape_linkedin(mover, None)
+    except Exception:
+        return None
+
+
 # r42v (2026-05-26): content classification for per-class daily dedup.
 # Without this, the publisher could fire 3 "DCPI verdict" posts in a row
 # (operator caught Chantilly/Edison/Buffalo AVOID posts at 3-4m apart).
@@ -709,6 +855,133 @@ def purge_queue():
         except Exception: pass
 
 
+# r62 (2026-05-29): admin tools for the legacy short-DCPI cleanup.
+
+@content_bp.route('/api/admin/publish/sanitize-queue', methods=['POST'])
+def sanitize_queue():
+    """Bulk-rewrite all queued (approved/draft) LinkedIn posts that
+    match the pre-r47.38 short DCPI shape, in-place to the rich shape.
+
+    Without this, the auto-publisher only rewrites posts as it drains
+    them (1 per 6h). With 30+ legacy rows queued, the operator would
+    still see ugly posts on dchub-media for weeks. This endpoint
+    drains the legacy bucket in one shot.
+
+    Set ?dry_run=1 to preview which rows WOULD be rewritten without
+    persisting changes. Returns count + first 5 before/after samples.
+    """
+    if not _check_admin(request):
+        return jsonify({'error': 'Unauthorized'}), 401
+    dry_run = (request.args.get('dry_run', '0') or '0').strip().lower() in ('1', 'true', 'yes')
+    conn = _get_db()
+    cur = conn.cursor()
+    try:
+        cur.execute("""
+            SELECT id, content FROM social_media_posts
+             WHERE status IN ('approved', 'draft')
+               AND (platform = 'linkedin' OR platform IS NULL)
+             ORDER BY created_at ASC
+             LIMIT 500
+        """)
+        rows = cur.fetchall() or []
+        samples = []
+        rewritten_count = 0
+        skipped_count = 0
+        for r in rows:
+            rid = r['id'] if hasattr(r, 'get') else r[0]
+            text = r['content'] if hasattr(r, 'get') else r[1]
+            if not _is_legacy_short_dcpi_shape(text or ''):
+                continue
+            new_text = _rewrite_legacy_to_rich(text or '')
+            if not new_text or len(new_text) <= len(text or ''):
+                skipped_count += 1
+                continue
+            if len(samples) < 5:
+                samples.append({
+                    'id': rid,
+                    'before_chars': len(text or ''),
+                    'after_chars': len(new_text),
+                    'before_preview': (text or '')[:160],
+                    'after_preview': new_text[:240],
+                })
+            if not dry_run:
+                try:
+                    cur.execute(
+                        "UPDATE social_media_posts SET content = %s WHERE id = %s",
+                        (new_text, rid),
+                    )
+                except Exception:
+                    skipped_count += 1
+                    continue
+            rewritten_count += 1
+        if not dry_run:
+            conn.commit()
+        return jsonify({
+            'success':         True,
+            'dry_run':         dry_run,
+            'scanned':         len(rows),
+            'rewritten_count': rewritten_count,
+            'skipped_count':   skipped_count,
+            'samples':         samples,
+        }), 200
+    except Exception as e:
+        try: conn.rollback()
+        except Exception: pass
+        return jsonify({'success': False, 'error': str(e)[:200]}), 500
+    finally:
+        try: conn.close()
+        except Exception: pass
+
+
+@content_bp.route('/api/admin/publish/preview-rewrite', methods=['GET', 'POST'])
+def preview_rewrite():
+    """Preview the legacy-to-rich rewrite for a single queued post or
+    for arbitrary text. Never writes. Useful for verifying the new
+    template renders before flipping the env flag off.
+
+    Usage:
+      GET  /api/admin/publish/preview-rewrite?id=123
+      POST /api/admin/publish/preview-rewrite  body: {"content": "..."}
+    """
+    if not _check_admin(request):
+        return jsonify({'error': 'Unauthorized'}), 401
+    raw = None
+    rid = request.args.get('id') or (request.get_json(silent=True) or {}).get('id')
+    if rid:
+        try:
+            rid_int = int(rid)
+        except (TypeError, ValueError):
+            return jsonify({'success': False, 'error': 'id must be integer'}), 400
+        conn = _get_db()
+        try:
+            cur = conn.cursor()
+            cur.execute("SELECT content FROM social_media_posts WHERE id = %s", (rid_int,))
+            r = cur.fetchone()
+            if not r:
+                return jsonify({'success': False, 'error': 'not_found'}), 404
+            raw = r['content'] if hasattr(r, 'get') else r[0]
+        finally:
+            try: conn.close()
+            except Exception: pass
+    else:
+        body = request.get_json(silent=True) or {}
+        raw = body.get('content') or ''
+
+    is_legacy = _is_legacy_short_dcpi_shape(raw or '')
+    parsed = _parse_legacy_short_dcpi(raw or '') if is_legacy else None
+    rewritten = _rewrite_legacy_to_rich(raw or '') if is_legacy else None
+    return jsonify({
+        'success':      True,
+        'is_legacy':    is_legacy,
+        'parsed':       parsed,
+        'original':     raw,
+        'original_chars':  len(raw or ''),
+        'rewritten':    rewritten,
+        'rewritten_chars': len(rewritten or '') if rewritten else 0,
+        'dry_run_env':  (os.environ.get('LINKEDIN_PUBLISHER_DRY_RUN', '') or '').strip().lower() in ('1','true','yes','on'),
+    }), 200
+
+
 _auto_publisher_running = False
 
 def start_auto_publisher():
@@ -819,6 +1092,35 @@ def start_auto_publisher():
                         break
                     post_id = row['id']
                     content_text = row['content']
+                    # r62 (2026-05-29): legacy-shape quality gate. If this row
+                    # is a pre-r47.38 short DCPI post (📍 X · ISO · DCPI
+                    # verdict: VVV / Excess Power: ... / Live page: ...),
+                    # rewrite it to the rich narrative shape BEFORE publish.
+                    # Without this, queue rows enqueued days ago keep landing
+                    # on LinkedIn as "ugly short" posts despite the generator
+                    # being fixed. We also persist the rewrite back to the
+                    # row so the audit log shows what actually went out.
+                    if _is_legacy_short_dcpi_shape(content_text or ''):
+                        rewritten = _rewrite_legacy_to_rich(content_text or '')
+                        if rewritten and len(rewritten) > len(content_text or ''):
+                            try:
+                                cur.execute(
+                                    "UPDATE social_media_posts SET content = %s WHERE id = %s",
+                                    (rewritten, post_id),
+                                )
+                                conn.commit()
+                            except Exception as _e_rw:
+                                logger.warning(
+                                    "Legacy-rewrite persist failed for post %s: %s",
+                                    post_id, _e_rw,
+                                )
+                            content_text = rewritten
+                            logger.info(
+                                "Rewrote legacy short-DCPI post %s to rich shape (was %d chars, now %d)",
+                                post_id,
+                                len(row.get('content') or '') if hasattr(row, 'get') else len(row[1] or ''),
+                                len(rewritten),
+                            )
                     # Phase FF (#1): promote text-only posts to rich ARTICLE
                     # shares so LinkedIn renders the rotating og:today card (the
                     # "4 designs"). Extract the first URL + a title from the body;
