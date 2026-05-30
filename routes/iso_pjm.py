@@ -25,6 +25,7 @@ from flask import Blueprint, jsonify
 from routes._iso_common import (
     fetch_first_working, parse_json_numeric, parse_csv_numeric_columns,
     persist_metrics, latest_for_iso, health_for_iso,
+    parse_eia_v2_fuel_mix, scrub_url,
 )
 
 try:
@@ -42,28 +43,27 @@ PJM_API_KEY = os.environ.get("DCHUB_PJM_API_KEY", "").strip()
 def _pjm_urls():
     """Ordered URL list — first non-HTML response wins.
 
-    Phase GG+ (2026-05-13): reordered after live test showed
-    dataminer2.pjm.com returns the JS SPA's HTML landing page (200 OK
-    but no data). EIA EBA is the most reliable free endpoint for PJM
-    fuel-mix data and goes FIRST. Dataminer 2 last (kept for the day
-    PJM exposes a proper download path)."""
-    urls = [
-        # EIA Form 930 — free, no-auth, returns JSON. Works for ALL 7 ISOs.
-        # Path A: structured fuel-type-data feed
-        "https://www.eia.gov/electricity/data/eia930/api/region/PJM/fuel-type-data",
-        # Path B: alternate EIA endpoint (in case path A migrates)
-        "https://api.eia.gov/v2/electricity/rto/fuel-type-data/data/?frequency=hourly&data[0]=value&facets[respondent][]=PJM&sort[0][column]=period&sort[0][direction]=desc&offset=0&length=12",
-        # PJM API (subscription) — sends key via Ocp-Apim-Subscription-Key
+    2026-05-30 FIX: lead with the AUTHENTICATED EIA v2 endpoint, mirroring
+    the working iso_bpa.py extractor. Root cause of PJM persisting 0 rows
+    since registration: the old list led with UNauthenticated EIA URLs
+    (api.eia.gov/v2 REQUIRES api_key — without it the request fails or
+    returns no data), and the no-auth www.eia.gov path returns a shape the
+    numeric parser can't read. So fetch_first_working fell all the way
+    through to dataminer2.pjm.com, which serves the JS SPA HTML shell
+    (200 OK, ~1.5KB, no data) → parse → {} → persist 0 rows. EIA_API_KEY
+    is already set in env (same key iso_bpa/iso_isone use)."""
+    eia_key = os.environ.get("EIA_API_KEY", "")
+    return [
+        # PRIMARY: api.eia.gov v2 PJM region (authenticated; ~800ms from Railway).
+        # Parsed by parse_eia_v2_fuel_mix in run_extraction (same as BPA).
+        f"https://api.eia.gov/v2/electricity/rto/fuel-type-data/data/?api_key={eia_key}&frequency=hourly&data[0]=value&facets[respondent][]=PJM&sort[0][column]=period&sort[0][direction]=desc&length=12",
+        # Fallback: PJM API (subscription) — sends key via Ocp-Apim-Subscription-Key
         # if DCHUB_PJM_API_KEY is set. The fetch helper handles the header.
         "https://api.pjm.com/api/v1/gen_by_fuel/data?rowCount=24&order=desc&download=true",
-        # Dataminer 2 — only works if the URL returns CSV directly (not
-        # the SPA shell). Kept for future use.
+        # Last resort: Dataminer 2 (usually the SPA shell — kept only in case
+        # PJM ever exposes a direct CSV path).
         "https://dataminer2.pjm.com/feed/gen_by_fuel/download?format=csv&period=current",
-        "https://dataminer2.pjm.com/feed/gen_by_fuel/data?period=current",
-        # Legacy HTML page (CSV redirect, sometimes still works)
-        "https://www.pjm.com/pub/account/lmpgen/realtime/byfuelmix.csv",
     ]
-    return urls
 
 
 def _pjm_headers():
@@ -85,12 +85,18 @@ def run_extraction():
         # arbitrary headers; the PJM API key goes through env-aware
         # urllib path below if needed.
         text, url = fetch_first_working(_pjm_urls(), ua="dchub-iso-pjm/1.0")
-        summary["fetched_url"] = url
+        # scrub_url hides the embedded EIA api_key from the echoed /extract response
+        summary["fetched_url"] = scrub_url(url)
         summary["html_size"]   = len(text)
 
-        # PJM Dataminer 2 returns either JSON or CSV depending on `format=` param.
-        # Try JSON first (newer feeds), then CSV (older feeds + EIA fallback).
-        metrics = parse_json_numeric(text)
+        # 2026-05-30: EIA v2 parser first when the winning URL is api.eia.gov/v2
+        # (same path BPA uses), then JSON, then CSV. Previously this only tried
+        # JSON/CSV, which couldn't parse the EIA v2 envelope shape.
+        metrics = {}
+        if "api.eia.gov/v2/" in url:
+            metrics = parse_eia_v2_fuel_mix(text, prefix="fuel_")
+        if not metrics:
+            metrics = parse_json_numeric(text)
         if not metrics:
             metrics = parse_csv_numeric_columns(text, prefix="fuel_")
         summary["metrics_extracted"] = len(metrics)
