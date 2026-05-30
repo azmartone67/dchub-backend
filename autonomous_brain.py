@@ -791,12 +791,15 @@ class AutonomousBrain:
             conn = get_db()
             try:
                 cur = conn.cursor()
-                cur.execute("SELECT MAX(id) FROM announcements")
-                # r43-H (2026-05-28): announcements.id can come back as TEXT, so
-                # MAX(id) was a str → `max_id > last_id` raised "'>' not supported
-                # between 'str' and 'int'", failing the pre-flight. Fail-open then
-                # ran the full ~25s cycle every 5 min instead of the 150ms skip —
-                # self-inflicted load. Coerce to int.
+                # 2026-05-30 FLATLINE FIX: announcements.id is a TEXT md5-hex PK,
+                # so the r43-H `int(MAX(id))` ALWAYS raised ValueError → max_id fell
+                # back to 0 → the gate "0 > 0" was False → the brain SKIPPED EVERY
+                # cycle ("no new announcements since id=0") and has been flat-lined
+                # since 2026-05-28. Use COUNT(*) as the freshness watermark instead:
+                # it's numeric, increases with new rows, and id-type-agnostic. The
+                # stored watermark (below) is now this count, so the gate fires the
+                # moment new announcements land.
+                cur.execute("SELECT COUNT(*) FROM announcements")
                 _raw_max = (cur.fetchone() or [0])[0]
                 try:
                     max_id = int(_raw_max) if _raw_max is not None else 0
