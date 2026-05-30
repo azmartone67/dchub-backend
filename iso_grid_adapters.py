@@ -100,7 +100,7 @@ def store_records(records: list[dict]) -> int:
                         INSERT INTO grid_telemetry
                             (iso, zone, observed_at, online_gen_mw, load_mw,
                              headroom_mw, reserve_margin_pct, fuel_mix, source)
-                        VALUES (%s,%s,COALESCE(%s,NOW()),%s,%s,%s,%s,%s::jsonb,%s)
+                        VALUES (%s,%s,COALESCE(%s,NOW() ON CONFLICT DO NOTHING),%s,%s,%s,%s,%s::jsonb,%s)
                     """, (
                         r.get("iso"), r.get("zone"), r.get("observed_at"),
                         r.get("online_gen_mw"), r.get("load_mw"),
