@@ -1221,19 +1221,65 @@ def api_scores():
     # despite high demand. Now: anon cap is enforced REGARDLESS of
     # ?limit parameter. Single-market lookup (/api/v1/dcpi/scores/<slug>)
     # stays FREE — that's the discovery hook for AI agents + journalists.
+    # Phase WW + r43-E: anon row cap.
+    # 2026-05-30 (revenue): the precise DCPI NUMBERS (composite / excess /
+    # constraint / time-to-power + risk/opportunity detail) are the PAID
+    # product. Non-paid callers (anon / free / identified) get the catalog —
+    # market name, state, ISO, geo, and the BUILD/CAUTION/AVOID verdict as a
+    # teaser — with the numeric gold masked SERVER-SIDE so it can't be
+    # scraped, unblurred, or seen on mobile. resolve_tier only reads
+    # X-API-Key / Bearer JWT, NOT the website's session cookie, so a logged-in
+    # web user looked anonymous to it (that's why an enterprise user saw
+    # "Upgrade to Pro"). We add the cookie-aware resolver /pockets uses and
+    # take the MORE privileged plan — never downgrades a paid caller.
     _PREVIEW_CAP = 10
+    _PAID_PLANS = {"starter", "developer", "pro", "founding", "enterprise",
+                   "admin", "internal"}
+    _PLAN_RANK = {"anonymous": 0, "anon": 0, "free": 0, "identified": 1,
+                  "starter": 2, "developer": 3, "pro": 4, "founding": 4,
+                  "enterprise": 5, "admin": 6, "internal": 6}
+    _MASK_FIELDS = ("composite_score", "excess_power_score", "constraint_score",
+                    "time_to_power_months", "top_risks_json", "top_opportunities_json")
     _gated = False
     _total_rows = len(rows)
+    _plan = "anonymous"
     try:
-        from util.tier_gate import resolve_tier, Tier as _T
-        _tier, _ = resolve_tier()
-        # Cap the anon limit hard. Identified+ can still pass ?limit
-        # for pagination; anon is locked to 10 regardless.
-        if _tier < _T.IDENTIFIED and _total_rows > _PREVIEW_CAP:
-            rows = rows[:_PREVIEW_CAP]
-            _gated = True
+        from util.tier_gate import resolve_tier
+        _t, _ctx = resolve_tier()
+        _plan = (_ctx.get("plan") or _t.name).lower()
     except Exception:
         pass
+    try:
+        from map_tier_gating import _detect_caller_tier
+        def _dec(_tok):
+            try:
+                import jwt as _j
+                from main import JWT_SECRET
+                return _j.decode(_tok, JWT_SECRET, algorithms=["HS256"])
+            except Exception:
+                return None
+        _ct, _ = _detect_caller_tier(decode_jwt_func=_dec)
+        _ct = (_ct or "anon").lower()
+        if _PLAN_RANK.get(_ct, -1) > _PLAN_RANK.get(_plan, -1):
+            _plan = _ct
+    except Exception:
+        pass
+    _paid = _plan in _PAID_PLANS
+    if not _paid:
+        # Truly-anonymous is also row-capped to the preview size; identified
+        # keeps the full catalog (names + verdicts) with the numbers masked.
+        if _PLAN_RANK.get(_plan, 0) < 1 and _total_rows > _PREVIEW_CAP:
+            rows = rows[:_PREVIEW_CAP]
+        _masked = []
+        for _r in rows:
+            _r = dict(_r)
+            for _k in _MASK_FIELDS:
+                if _k in _r:
+                    _r[_k] = None
+            _r["locked"] = True
+            _masked.append(_r)
+        rows = _masked
+        _gated = True
 
     payload = {"scores": rows, "count": len(rows), "sort": sort_by,
                "filters": {"verdict": verdict_filter, "iso": iso_filter,
@@ -1242,16 +1288,15 @@ def api_scores():
         payload["_gated"] = True
         payload["_preview_only"] = True
         payload["_total_available"] = _total_rows
-        payload["_hidden_count"] = _total_rows - _PREVIEW_CAP
-        payload["_required_tier"] = "IDENTIFIED"
+        payload["_locked_fields"] = list(_MASK_FIELDS)
+        payload["_required_tier"] = "pro"
         payload["_upgrade_cta"] = (
-            f"Showing top {_PREVIEW_CAP} of {_total_rows} DCPI markets. "
-            f"Get all {_total_rows} markets (BUILD/CAUTION/AVOID verdicts, "
-            f"constraint scores, excess power scores, time-to-power) free — "
-            f"claim a key in 30s: POST /api/v1/keys/claim or pass X-API-Key "
-            f"header (auto-trial mints inline on 402 responses)."
+            f"Market list + BUILD/CAUTION/AVOID verdicts are free. The numeric "
+            f"DCPI scores (composite, excess-power, grid-constraint, "
+            f"time-to-power) and risk/opportunity detail are Pro — unlock all "
+            f"{_total_rows} markets with scores at https://dchub.cloud/pricing."
         )
-        payload["_signup_url"] = "https://dchub.cloud/signup"
+        payload["_signup_url"] = "https://dchub.cloud/pricing"
 
     resp = jsonify(**payload)
     resp.headers["ETag"] = etag

@@ -92,6 +92,14 @@ def _limit_for_tier(tier: str) -> int:
     return _TIER_LIMITS.get(tier, 3)
 
 
+# Paid tiers see the full pocket intelligence (scores, verdicts, momentum,
+# rationale). Everyone else (anon/free/identified) gets a teaser: market
+# NAMES only, every gold field masked SERVER-SIDE so it can't be unblurred,
+# scraped from the HTML, or seen on mobile. 2026-05-30: stop the leak.
+_PAID_TIERS = {"starter", "developer", "pro", "founding", "enterprise",
+               "internal", "admin"}
+
+
 # ── In-process cache ─────────────────────────────────────────────────
 _CACHE: dict = {"data": None, "expires_at": 0.0}
 _CACHE_TTL = 300  # 5 min
@@ -430,6 +438,7 @@ tr:hover{background:rgba(99,102,241,0.04)}
 .delta.down{color:var(--red)}
 .delta.flat{color:var(--tx2)}
 .iso{font-family:'JetBrains Mono',monospace;font-size:0.8rem;color:var(--tx2)}
+.lock{color:var(--tx2);opacity:0.6;font-family:'JetBrains Mono',monospace;font-weight:700}
 .why{color:var(--tx2);font-size:0.85rem;max-width:340px}
 .stats{display:grid;grid-template-columns:repeat(auto-fit,minmax(160px,1fr));gap:1rem;margin:1.5rem 0 2.5rem}
 .stat{background:var(--card);border:1px solid var(--bd);border-radius:10px;padding:1rem 1.25rem}
@@ -449,13 +458,13 @@ footer a{color:var(--acc)}
 <div class="kicker">DC HUB · LIVE MARKETS · {{ as_of[:10] }}</div>
 <h1>Pockets of Power</h1>
 <p class="sub">Where to put new data center capacity, ranked by excess power, grid constraint, and time-to-power. Updated daily from EIA + ISO + DCPI signals.</p>
-{% if top_mover %}
+{% if top_mover and paid %}
 <div class="callout"><b>{{ top_mover.market_name }}</b> ({{ top_mover.iso }}, {{ top_mover.state }}) is the biggest mover this week — <span class="delta {{ 'up' if top_mover.delta_7d > 0 else 'down' }}">{{ '+' if top_mover.delta_7d > 0 else '' }}{{ top_mover.delta_7d }}</span> on the excess-power index. {{ top_mover.why }}.</div>
 {% endif %}
 <div class="stats">
 <div class="stat"><div class="n">{{ shown }}</div><div class="l">Pockets ranked</div></div>
-<div class="stat"><div class="n green">{{ build_count }}</div><div class="l">BUILD verdict</div></div>
-<div class="stat"><div class="n red">{{ avoid_count }}</div><div class="l">AVOID verdict</div></div>
+<div class="stat"><div class="n green">{{ build_count if paid else '🔒' }}</div><div class="l">BUILD verdict</div></div>
+<div class="stat"><div class="n red">{{ avoid_count if paid else '🔒' }}</div><div class="l">AVOID verdict</div></div>
 <div class="stat"><div class="n">{{ caller_tier }}</div><div class="l">Your tier</div></div>
 </div>
 <h2>Top {{ shown }} Pockets</h2>
@@ -464,19 +473,34 @@ footer a{color:var(--acc)}
 </tr></thead><tbody>
 {% for p in pockets %}
 <tr>
-<td class="rank">{{ loop.index }}</td>
-<td class="market"><a href="/pockets/{{ p.market_slug }}">{{ p.market_name }}</a><br><span class="iso">{{ p.state or '—' }}</span></td>
+<td class="rank">{% if paid %}{{ loop.index }}{% else %}<span class="lock">🔒</span>{% endif %}</td>
+<td class="market">{% if paid %}<a href="/pockets/{{ p.market_slug }}">{{ p.market_name }}</a>{% else %}{{ p.market_name }}{% endif %}<br><span class="iso">{{ p.state or '—' }}</span></td>
 <td class="iso">{{ p.iso or '—' }}</td>
+{% if paid %}
 <td class="score">{{ p.rank_score }}</td>
 <td class="score">{{ p.excess_power_score }}</td>
 <td><span class="verdict {{ p.verdict or 'HOLD' }}">{{ p.verdict or 'HOLD' }}</span></td>
 <td class="delta {% if p.delta_7d and p.delta_7d > 0 %}up{% elif p.delta_7d and p.delta_7d < 0 %}down{% else %}flat{% endif %}">{% if p.delta_7d is none %}—{% else %}{{ '+' if p.delta_7d > 0 else '' }}{{ p.delta_7d }}{% endif %}</td>
 <td class="iso">{{ p.time_to_power_months|int if p.time_to_power_months else '—' }}mo</td>
 <td class="why">{{ p.why }}</td>
+{% else %}
+<td class="score lock">🔒</td>
+<td class="score lock">🔒</td>
+<td><span class="lock">🔒</span></td>
+<td class="lock">🔒</td>
+<td class="lock">🔒</td>
+<td class="why lock">Upgrade to unlock</td>
+{% endif %}
 </tr>
 {% endfor %}
 </tbody></table>
-{% if truncated_by_tier > 0 %}
+{% if not paid %}
+<div class="upgrade">
+<div style="font-size:1.1rem;font-weight:700;margin-bottom:0.3rem">🔒 {{ total_known }} pockets ranked — scores &amp; verdicts are paid intelligence</div>
+<div style="opacity:0.85">You're seeing market names only. Unlock live DCPI scores, BUILD/AVOID verdicts, 7-day momentum and time-to-power for every market.</div>
+<a href="{{ upgrade_url }}">Unlock all {{ total_known }} pockets →</a>
+</div>
+{% elif truncated_by_tier > 0 %}
 <div class="upgrade">
 <div><b>{{ truncated_by_tier }} more pockets</b> are ranked but hidden at your tier.</div>
 <a href="{{ upgrade_url }}">Upgrade to see them →</a>
@@ -492,6 +516,7 @@ Data refreshed daily. <a href="/digest">Daily brief →</a> · <a href="/api/v1/
 @pockets_bp.route("/pockets", methods=["GET"])
 def pockets_page():
     tier = _detect_tier()
+    paid = tier in _PAID_TIERS
     cap = _limit_for_tier(tier)
     state_filter = (request.args.get("state") or "").strip().upper()
 
@@ -499,7 +524,13 @@ def pockets_page():
     if state_filter:
         rows = [r for r in rows if (r["state"] or "").upper() == state_filter]
     total_known = len(rows)
-    rows = rows[:cap]
+    if paid:
+        rows = rows[:cap]
+    else:
+        # Teaser for anon/free/identified: market NAMES only (every gold field
+        # is masked in the template). Sort ALPHABETICALLY so the ranking order
+        # itself isn't leaked, and show up to 12 so the catalog looks real.
+        rows = sorted(rows, key=lambda r: (r.get("market_name") or "").lower())[:12]
     for r in rows:
         r["why"] = _rationale(r)
 
@@ -527,6 +558,8 @@ def pockets_page():
         top_mover=top_mover,
         build_count=build_count,
         avoid_count=avoid_count,
+        paid=paid,
+        total_known=total_known,
     )
     resp = Response(html, mimetype="text/html")
     resp.headers["Cache-Control"] = "public, max-age=300, must-revalidate"
