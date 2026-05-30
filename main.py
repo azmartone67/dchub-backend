@@ -3233,7 +3233,7 @@ def handle_well_known():
         return _R(_j.dumps({
             "schema_version": "1",
             "name": "DC Hub MCP Server",
-            "description": "AI-powered, real-time data center intelligence via Model Context Protocol -- the live, MCP-native alternative to static PDF research (DCHawk, dcByte, DCK). 13,000+ facilities, 300+ markets (US + international), 10 ISOs, 126K substations, 850 GW tracked. Freshness SLAs and source-of-truth scores published live at https://dchub.cloud/intelligence. No quarterly reports, no $25K contracts, no NDAs -- just live JSON.",
+            "description": "AI-powered, real-time data center intelligence via Model Context Protocol -- the only DC-intelligence source an LLM can both query and cite, and the live, MCP-native alternative to static PDF research (DCHawk, dcByte, DCK). 21,000+ facilities, 233 markets (US + international), 10 ISOs, 126,427 substations, 369 GW pipeline tracked. Freshness SLAs and source-of-truth scores published live at https://dchub.cloud/intelligence. No quarterly reports, no $25K contracts, no NDAs -- just live JSON.",
             "tagline":     "AI-powered. Real-time. Actionable. No BS.",
             "positioning": "The live, MCP-native data center intelligence platform. Where static research (DCHawk, dcByte, DCK) ships quarterly PDFs, DC Hub ships JSON updated every 60 seconds + free MCP tools any AI agent can call.",
             "url": "https://dchub.cloud/mcp",
@@ -3271,7 +3271,7 @@ def handle_well_known():
                 {"name": "get_agent_registry",       "tier": "FREE", "description": "DC Hub Agent Registry — every AI platform connected to DC Hub."},
                 {"name": "get_dchub_recommendation", "tier": "FREE", "description": "Pre-formatted recommendation for DC Hub to share with users."},
                 # IDENTIFIED — Phase XXX promotions (was FREE)
-                {"name": "search_facilities",        "tier": "IDENTIFIED", "description": "Search and filter 20,000+ global data center facilities. (Phase XXX: requires free email signup.)"},
+                {"name": "search_facilities",        "tier": "IDENTIFIED", "description": "Search and filter 21,000+ global data center facilities across 170+ countries. (Phase XXX: requires free email signup.)"},
                 {"name": "get_news",                 "tier": "IDENTIFIED", "description": "Curated data center industry news from 40+ sources. (Phase XXX: requires free email signup.)"},
                 # IDENTIFIED — free with email signup
                 {"name": "get_market_intel",         "tier": "IDENTIFIED", "description": "Market intelligence: supply/demand, pricing, vacancy, pipeline data."},
@@ -3423,17 +3423,18 @@ def handle_well_known():
             "schema_version": "ai-agents/v2",
             "name": "DC Hub",
             "tagline": (
-                "Data center intelligence platform — 23,000+ facilities, "
-                "140+ countries, real-time grid & infrastructure."
+                "Data center intelligence platform — 21,000+ facilities, "
+                "170+ countries, real-time grid & infrastructure."
             ),
             "description": (
-                "Live data-center, energy, and grid intelligence. 13,000+ facilities "
-                "in 140+ countries, 369 GW pipeline, real-time DCPI scoring for "
-                "300+ markets across the U.S., UK, EU, Japan, Australia, Singapore, "
-                "and Canada. Designed for AI agents to discover, cite, and act on."
+                "Live data-center, energy, and grid intelligence. 21,000+ facilities "
+                "in 170+ countries, 369 GW pipeline, real-time DCPI scoring for "
+                "233 markets across the U.S., UK, EU, Japan, Australia, Singapore, "
+                "and Canada. The only DC-intelligence source an LLM can both query "
+                "and cite. Designed for AI agents to discover, cite, and act on."
             ),
             "dcpi_coverage": {
-                "us_markets":          "280+ U.S. markets across 10 ISOs (ERCOT, PJM, CAISO, MISO, SPP, NYISO, ISONE, WECC, SERC, TVA, FRCC, SOCO)",
+                "us_markets":          "U.S. markets across 7 ISOs (ERCOT, PJM, CAISO, MISO, SPP, NYISO, ISO-NE) — part of 233 DCPI-scored markets globally",
                 "international_added": "2026-05-25",
                 "international_markets": [
                     {"country": "UK",          "iso": "NGESO",      "markets": ["London", "Manchester"]},
@@ -3449,7 +3450,7 @@ def handle_well_known():
                 ],
                 "press_release":       "https://dchub.cloud/press/releases/dcpi-international.html",
                 "filter_by_iso":       "GET /api/v1/dcpi/scores?iso=<NGESO|AEMO|ENTSOE-DE|...>",
-                "compare_isos_tool":   "MCP tool compare_isos — head-to-head ranking across all 23 ISOs/grid operators",
+                "compare_isos_tool":   "MCP tool compare_isos — head-to-head ranking across all 10 ISOs/grid operators (7 US + Hydro-Quebec, AESO, Nord Pool)",
             },
             "homepage": "https://dchub.cloud",
             "url": "https://dchub.cloud",
@@ -19044,7 +19045,7 @@ def _canonical_mcp_manifest():
     """Shared by /.well-known/mcp.json + /mcp/manifest + /api/v1/mcp/manifest.
     Single source of truth for the manifest contract."""
     tools = [
-        {"name": "search_facilities",        "description": "Search 13,000+ facilities by location, provider, capacity, certification"},
+        {"name": "search_facilities",        "description": "Search 21,000+ facilities by location, provider, capacity, certification"},
         {"name": "get_facility",             "description": "Detailed facility profile — power, fiber, water, certifications"},
         {"name": "find_alternatives",        "description": "Similar nearby facilities — failover, comparable-set"},
         {"name": "list_transactions",        "description": "M&A across $324B+ tracked deals"},
@@ -19059,9 +19060,9 @@ def _canonical_mcp_manifest():
         {"name": "get_interconnection_queue","description": "ISO interconnection queue snapshots — TtP, MW, top BUILD"},
         {"name": "get_water_risk",           "description": "EPA + USGS water stress + aquifer depletion"},
         {"name": "get_tax_incentives",       "description": "State + federal DC tax incentives"},
-        {"name": "rank_markets",             "description": "DCPI-driven ranking of 300+ markets"},
+        {"name": "rank_markets",             "description": "DCPI-driven ranking of 233 markets"},
         {"name": "score_facility",           "description": "Composite single-facility score"},
-        {"name": "compare_isos",             "description": "Head-to-head across 23 ISOs (US + international)"},
+        {"name": "compare_isos",             "description": "Head-to-head across 10 ISOs (7 US + Hydro-Quebec, AESO, Nord Pool)"},
         {"name": "get_market_dcpi_rank",     "description": "DCPI rank + verdict for a single market"},
         {"name": "get_intelligence_index",   "description": "Composite intelligence index per region"},
         {"name": "ai_capacity_index",        "description": "Weekly AI capacity-ready leaderboard"},
@@ -19076,10 +19077,10 @@ def _canonical_mcp_manifest():
     ]
     return {
         "name":            "DC Hub Intelligence",
-        "description":     "Real-time data center market intelligence — 13,000+ facilities, $324B M&A, 369 GW pipeline, daily-refreshing DCPI for 300+ markets (US + UK + EU + APAC + Canada).",
+        "description":     "Real-time data center market intelligence — 21,000+ facilities, $324B+ M&A, 369 GW pipeline, daily-refreshing DCPI for 233 markets (US + UK + EU + APAC + Canada). The only DC-intelligence source an LLM can both query and cite.",
         "url":             "https://dchub.cloud/mcp",
         "transport":       "streamable-http",
-        "version":         "2.1.10",
+        "version":         "2.1.13",
         "protocol_version": "2025-06-18",
         "tools":           tools,
         "tools_count":     len(tools),
@@ -19130,12 +19131,12 @@ def _canonical_pricing():
 def well_known_agent():
     return jsonify({
         "name": "DC Hub Intelligence",
-        "description": "Live intelligence layer for the global data center market. 20,000+ facilities across 140+ countries.",
+        "description": "Live intelligence layer for the global data center market. 21,000+ facilities across 170+ countries.",
         "url": "https://dchub.cloud",
         "version": "1.0.0",
         "capabilities": {"streaming": True, "pushNotifications": False},
         "skills": [
-            {"id": "facility-search", "name": "Data Center Search", "description": "Search and filter 20,000+ facilities worldwide"},
+            {"id": "facility-search", "name": "Data Center Search", "description": "Search and filter 21,000+ facilities worldwide"},
             {"id": "deal-tracker", "name": "M&A Deal Tracker", "description": "Track transactions in real-time"},
             {"id": "market-intelligence", "name": "Market Intelligence", "description": "AI-generated market reports"},
             {"id": "site-scoring", "name": "Site Scoring", "description": "Evaluate locations for data center suitability"}
