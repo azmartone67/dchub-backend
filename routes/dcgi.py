@@ -254,7 +254,24 @@ def _gas_state_rollup():
         return {}, "rollup_error: " + str(e)[:200]
 
     if not states:
-        return {}, "no gas_pipelines rows"
+        # Diagnostic (2026-05-30): distinguish empty table vs NULL lat/lng vs
+        # derivation-produced-nothing, so we fix the real cause instead of
+        # guessing. Surfaced in the /api/v1/dcgi/scores error.
+        diag = {"helper_present": _lat_lng_to_state is not None}
+        try:
+            with conn() as c, c.cursor() as cur:
+                cur.execute("SET statement_timeout = 5000")
+                cur.execute("SELECT COUNT(*), COUNT(lat), COUNT(lng) FROM gas_pipelines")
+                total, nlat, nlng = cur.fetchone()
+                cur.execute("SELECT lat, lng FROM gas_pipelines WHERE lat IS NOT NULL LIMIT 1")
+                samp = cur.fetchone()
+                diag.update({"total_rows": int(total or 0),
+                             "rows_with_lat": int(nlat or 0),
+                             "rows_with_lng": int(nlng or 0),
+                             "sample_coord": [str(samp[0]), str(samp[1])] if samp else None})
+        except Exception as e:
+            diag["diag_error"] = str(e)[:160]
+        return {}, "no states derived | diag=" + json.dumps(diag)
 
     max_n = max((s["pipelines"] for s in states.values()), default=1) or 1
     for s in states.values():
