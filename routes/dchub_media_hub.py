@@ -1043,7 +1043,7 @@ def _ingest_hackernews() -> dict:
                              approved, raw_payload)
                         VALUES (%s, %s, %s, %s,
                                 %s, %s,
-                                to_timestamp(%s), %s,
+                                to_timestamp(%s) ON CONFLICT DO NOTHING, %s,
                                 %s, %s)
                         ON CONFLICT (source, external_id) DO NOTHING
                         RETURNING id;
@@ -1136,7 +1136,7 @@ def _ingest_reddit() -> dict:
                              approved, raw_payload)
                         VALUES (%s, %s, %s, %s,
                                 %s, %s,
-                                to_timestamp(%s), %s,
+                                to_timestamp(%s) ON CONFLICT DO NOTHING, %s,
                                 %s, %s)
                         ON CONFLICT (source, external_id) DO NOTHING
                         RETURNING id;
