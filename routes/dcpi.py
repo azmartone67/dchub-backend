@@ -3746,10 +3746,35 @@ def public_dashboard():
     from flask import request as _req
     _has_key = bool((_req.headers.get('X-API-Key') or _req.args.get('api_key') or '').strip())
     _total_rows = len(rows)
-    # No row cap: render the full published catalog. Numeric scores stay on
-    # the cards (they are the free top-level teaser); the Pro paywall below
-    # is what protects the county-level numbers + alerts + export.
-    _gated_to_anon = False
+    # 2026-05-30: keep the full 232-market catalog for AUTHENTICATED viewers
+    # (API key OR a logged-in session cookie — incl. the operator), but a
+    # truly-anonymous visitor gets the capped r42ab teaser so we don't give the
+    # whole catalog away (the prior commit removed the cap for EVERYONE, which
+    # re-opened the anon leak). resolve_tier/_has_key miss the website session
+    # cookie, so consult the same cookie-aware resolver /pockets uses.
+    _authed = _has_key
+    if not _authed:
+        try:
+            from map_tier_gating import _detect_caller_tier
+            def _dec(_t):
+                try:
+                    import jwt as _j
+                    from main import JWT_SECRET
+                    return _j.decode(_t, JWT_SECRET, algorithms=['HS256'])
+                except Exception:
+                    return None
+            _ct, _ = _detect_caller_tier(decode_jwt_func=_dec)
+            _authed = bool(_ct and str(_ct).lower() not in ('anonymous', 'anon'))
+        except Exception:
+            pass
+    _gated_to_anon = not _authed
+    if _gated_to_anon:
+        # Anon teaser: top 5 BUILD + top 20 others = 25 cards (full count still
+        # shown in the header + verdict tabs as the breadth hook).
+        _builds = [r for r in rows if (r.get('verdict') or '') == 'BUILD'][:5]
+        _others = [r for r in rows if (r.get('verdict') or '') != 'BUILD'][:20]
+        rows = _builds + _others
+        rows.sort(key=lambda r: -(r.get("excess_power_score") or 0))
 
     html = render_template_string(
         DCPI_INDEX_TEMPLATE,
