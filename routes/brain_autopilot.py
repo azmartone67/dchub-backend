@@ -1562,6 +1562,40 @@ def autopilot_run():
             # human resolves it, not a perpetual retry loop.
             if action_path is None:
                 summary["escalated"] += 1
+                # r43-fix#4 (2026-05-30): the dominant escalation path
+                # (~900/day) recorded a brain_autopilot_actions row but never
+                # emitted a brain_notifications row, so escalations never
+                # surfaced in the notification feed. Emit one — but ONLY on
+                # the FIRST escalation of a given (issue, url), so a chronic
+                # unresolved finding doesn't re-notify every cycle. Detection
+                # + write are both fully guarded; failure NEVER affects the
+                # action loop. Done BEFORE _record_action so the "first" check
+                # doesn't see the row we're about to write.
+                try:
+                    _first_escalation = True
+                    with c.cursor() as _ecur:
+                        _ecur.execute("""
+                            SELECT 1 FROM brain_autopilot_actions
+                             WHERE pattern_name = %s
+                               AND COALESCE(finding_url,'') = %s
+                               AND outcome = 'escalated'
+                             LIMIT 1
+                        """, (issue, f.get("url") or ""))
+                        _first_escalation = _ecur.fetchone() is None
+                    if _first_escalation:
+                        from routes.brain_evolution import log_notification as _logn
+                        _logn(
+                            kind="autopilot_escalation",
+                            summary=f"Escalated finding '{issue}' to human — no autonomous action for this pattern",
+                            detail={"issue": issue,
+                                    "endpoint": None,
+                                    "reason": "no autonomous action for this pattern"},
+                            url=f.get("url"),
+                            severity="warn",
+                        )
+                except Exception:
+                    try: c.rollback()
+                    except Exception: pass
                 _record_action(f, issue, None, None,
                                 dry_run=_is_dry_run(), escalated=True,
                                 http_code=None, body=None,

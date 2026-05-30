@@ -1276,6 +1276,18 @@ try:
     app.register_blueprint(brain_v2_bp)  # phase 289 — Brain v2 Layer 4 self-learning
     app.register_blueprint(brain_v2_public_bp)  # phase 300 — public /brain transparency page
     app.register_blueprint(brain_v2_layer5_bp)  # phase RR-3 — code-level proposals
+    # r43-fix#2 (2026-05-30): brain_proposed_code_fixes was only created
+    # lazily inside the Claude-gated /learn-code handler, which the brain
+    # never reaches — so L5 proposals silently failed ("relation does not
+    # exist" swallowed by _safe_one) and the dashboard showed 0. Create the
+    # table at STARTUP. _init_table() is idempotent (CREATE TABLE IF NOT
+    # EXISTS). Fully guarded — a DB hiccup here must NEVER crash startup.
+    try:
+        from routes.brain_v2_layer5 import _init_table as _l5_init_table
+        _ok = _l5_init_table()
+        print(f"[main] brain_v2_layer5._init_table() at startup: ok={_ok}", flush=True)
+    except Exception as _e:
+        print(f"[main] brain_v2_layer5._init_table() startup skipped: {_e}", flush=True)
     try:
         from routes.brain_directives import brain_directives_bp
         app.register_blueprint(brain_directives_bp)  # Phase FF+directives — operator directive intake
