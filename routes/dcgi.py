@@ -234,22 +234,31 @@ def _gas_state_rollup():
                         "state": st, "pipelines": int(n or 0),
                         "operators": int(ops or 0), "interstate": int(inter or 0),
                     }
-            # Latest industrial / electric-power gas price per state.
-            cur.execute(
-                """
-                SELECT DISTINCT ON (UPPER(state)) UPPER(state) AS st, price, sector, period
-                FROM eia_gas_prices
-                WHERE price IS NOT NULL AND price > 0 AND (
-                    sector ILIKE '%%indus%%' OR sector ILIKE '%%electric%%'
-                    OR sector IN ('PIN', 'PEU'))
-                ORDER BY UPPER(state), period DESC
-                """
-            )
-            for st, price, sector, period in cur.fetchall():
-                if st in states:
-                    states[st]["gas_price"] = round(float(price), 3)
-                    states[st]["gas_price_sector"] = sector
-                    states[st]["gas_price_period"] = str(period)
+            # Latest industrial / electric-power gas price per state — OPTIONAL.
+            # 2026-05-30: this is the cost FACTOR only; a failure here (e.g.
+            # eia_gas_prices not present in this DB) must NOT discard the
+            # already-built state rollup (it just leaves cost neutral). Own
+            # try + rollback so a missing table can't abort the whole function
+            # — that bug was zeroing every DCGI score in production.
+            try:
+                cur.execute(
+                    """
+                    SELECT DISTINCT ON (UPPER(state)) UPPER(state) AS st, price, sector, period
+                    FROM eia_gas_prices
+                    WHERE price IS NOT NULL AND price > 0 AND (
+                        sector ILIKE '%%indus%%' OR sector ILIKE '%%electric%%'
+                        OR sector IN ('PIN', 'PEU'))
+                    ORDER BY UPPER(state), period DESC
+                    """
+                )
+                for st, price, sector, period in cur.fetchall():
+                    if st in states:
+                        states[st]["gas_price"] = round(float(price), 3)
+                        states[st]["gas_price_sector"] = sector
+                        states[st]["gas_price_period"] = str(period)
+            except Exception:
+                try: c.rollback()
+                except Exception: pass
     except Exception as e:
         return {}, "rollup_error: " + str(e)[:200]
 
