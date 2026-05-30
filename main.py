@@ -4055,6 +4055,45 @@ IS_FAILOVER = (
 )
 IS_PRIMARY = IS_RAILWAY and not IS_FAILOVER
 
+# ── Cross-replica leader election (2026-05-30) ──────────────────────────
+# crawler_scheduler's fcntl file lock only dedupes WORKERS on one container —
+# NOT separate Railway replicas. To keep singleton work (Bluesky publisher,
+# Autonomous Brain, legacy publishers) singleton when dchub-backend scales to
+# 2+ replicas, hold a Postgres SESSION-level advisory lock on a DEDICATED
+# long-lived connection (the DB is shared across replicas, so the lock is
+# global — exactly one replica wins → it's the leader). Fail-OPEN: any DB
+# error → assume leader, because (a) a single replica must always run these,
+# and (b) content_publisher's dedup guard is the backstop against double
+# posts, so failing open can never silence publishing.
+_LEADER_LOCK_ID = 911714323
+_LEADER_LOCK_CONN = None  # kept open for the process lifetime to hold the lock
+def _acquire_leader_lock():
+    global _LEADER_LOCK_CONN
+    try:
+        import psycopg2 as _pgll
+        _u = os.environ.get("DATABASE_URL") or os.environ.get("NEON_DATABASE_URL")
+        if not _u:
+            return True  # no DB configured → fail open
+        _c = _pgll.connect(_u, connect_timeout=5)
+        _c.autocommit = True
+        with _c.cursor() as _cur:
+            _cur.execute("SELECT pg_try_advisory_lock(%s)", (_LEADER_LOCK_ID,))
+            _got = bool((_cur.fetchone() or [False])[0])
+        if _got:
+            _LEADER_LOCK_CONN = _c  # hold the connection open → hold the lock
+            return True
+        _c.close()
+        return False
+    except Exception as _e:
+        print(f"[leader-election] advisory-lock check failed, failing OPEN: {_e}", flush=True)
+        return True
+
+IS_LEADER = (not IS_FAILOVER) and _acquire_leader_lock()
+print(("👑 LEADER replica — owns publishers/brain/singleton crons" if IS_LEADER
+       else ("⏸️ FAILOVER — singleton work vetoed" if IS_FAILOVER
+             else "🧍 FOLLOWER replica — publishers/brain deferred to the leader")),
+      flush=True)
+
 ENABLE_DISCOVERY_THREADS = IS_RAILWAY and not IS_FAILOVER
 if IS_RAILWAY and not IS_FAILOVER:
     ENABLE_BACKGROUND_SCHEDULERS = False  # external scheduler service runs jobs
@@ -7313,7 +7352,7 @@ try:
     # at fixed UTC slots via linkedin_quad_daily.py) is the desired
     # behavior. Default OFF; set DCHUB_AUTOPUB_LEGACY=1 to re-enable.
     _legacy_autopub = os.environ.get("DCHUB_AUTOPUB_LEGACY", "").strip() in ("1", "true", "yes")
-    if not IS_FAILOVER and _legacy_autopub:
+    if not IS_FAILOVER and _legacy_autopub and IS_LEADER:
         start_auto_publisher()
         logger.info("✅ LinkedIn legacy auto-publisher launched (DCHUB_AUTOPUB_LEGACY=1)")
     elif IS_FAILOVER:
@@ -7330,7 +7369,7 @@ try:
     # X posting entirely until DCHUB_AUTOPUB_LEGACY=1 — acceptable since
     # X engagement was negligible.
     _legacy_autopub_x = os.environ.get("DCHUB_AUTOPUB_LEGACY", "").strip() in ("1", "true", "yes")
-    if not IS_FAILOVER and _legacy_autopub_x:
+    if not IS_FAILOVER and _legacy_autopub_x and IS_LEADER:
         start_twitter_publisher()
         logger.info("✅ Twitter/X legacy auto-publisher launched")
     elif IS_FAILOVER:
@@ -7342,11 +7381,13 @@ except Exception as e:
 
 try:
     from content_publisher import start_bluesky_publisher
-    if not IS_FAILOVER:
+    if not IS_FAILOVER and IS_LEADER:
         start_bluesky_publisher()
-        logger.info("✅ Bluesky auto-publisher launched (Neon-migrated)")
-    else:
+        logger.info("✅ Bluesky auto-publisher launched (Neon-migrated) [leader]")
+    elif IS_FAILOVER:
         logger.info("⏸️ Bluesky auto-publisher PAUSED (IS_FAILOVER=true)")
+    else:
+        logger.info("⏸️ Bluesky auto-publisher PAUSED (follower replica — leader owns it)")
 except Exception as e:
     logger.warning(f"⚠️ Bluesky auto-publisher skipped: {e}")
 
@@ -7440,6 +7481,8 @@ try:
     # only; primary owns all brain work.
     if IS_FAILOVER:
         logger.info("⏸️ Autonomous Brain scheduler PAUSED (IS_FAILOVER=true — primary owns brain)")
+    elif not IS_LEADER:
+        logger.info("⏸️ Autonomous Brain scheduler PAUSED (follower replica — leader owns brain)")
     elif ENABLE_BACKGROUND_SCHEDULERS or _brain_enabled:
         def _start_autonomous_brain():
             import time
