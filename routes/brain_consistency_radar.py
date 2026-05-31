@@ -1868,13 +1868,27 @@ def check_mcp_demand_gap() -> list[dict]:
             # logs every radar cycle. Falls back to a no-result if the
             # column also doesn't exist on this deploy.
             try:
+                # r36 (2026-05-31): gate on DISTINCT callers, not raw signal
+                # COUNT(*). A single power-key looping a tool's paywall thousands
+                # of times (one key = 8,999 calls in the funnel) tripped the old
+                # `COUNT(*) >= 50` and got reported as "the strongest expressed
+                # demand on the platform" — when it's ONE caller. Require >=15
+                # DISTINCT callers so this flags genuine broad demand that isn't
+                # converting (same distinct-caller correction as r35 + C1).
                 cur.execute("""
                     WITH paid_demand AS (
-                      SELECT tool_requested AS tool, COUNT(*) AS signals
+                      SELECT tool_requested AS tool,
+                             COUNT(*) AS signals,
+                             COUNT(DISTINCT COALESCE(NULLIF(user_email,''),
+                                                     NULLIF(mcp_client,''),
+                                                     NULLIF(tool_requested,''))) AS callers
                         FROM mcp_upgrade_signals
                        WHERE created_at >= NOW() - INTERVAL '7 days'
                          AND tool_requested IS NOT NULL
-                       GROUP BY tool_requested HAVING COUNT(*) >= 50
+                       GROUP BY tool_requested
+                      HAVING COUNT(DISTINCT COALESCE(NULLIF(user_email,''),
+                                                     NULLIF(mcp_client,''),
+                                                     NULLIF(tool_requested,''))) >= 15
                     ),
                     converted AS (
                       SELECT tool_name AS tool, COUNT(*) AS convs
@@ -1883,25 +1897,26 @@ def check_mcp_demand_gap() -> list[dict]:
                          AND redeemed_at >= NOW() - INTERVAL '7 days'
                        GROUP BY tool_name
                     )
-                    SELECT p.tool, p.signals
+                    SELECT p.tool, p.signals, p.callers
                       FROM paid_demand p LEFT JOIN converted c USING (tool)
                      WHERE COALESCE(c.convs, 0) = 0
-                     ORDER BY p.signals DESC LIMIT 1
+                     ORDER BY p.callers DESC LIMIT 1
                 """)
                 r = cur.fetchone()
             except Exception as _e:
                 print(f"[radar] check_mcp_demand_gap inner query: {_e}")
                 return findings
             if r:
-                tool, sigs = r[0], int(r[1] or 0)
+                tool, sigs, callers = r[0], int(r[1] or 0), int(r[2] or 0)
                 findings.append({
                     "issue":  "mcp_demand_gap_unaddressed",
                     "url":    f"mcp_upgrade_signals: tool={tool}",
-                    "count":  sigs,
-                    "detail": (f"Tool '{tool}' had {sigs} paywall-hit signals in "
-                               f"7d but ZERO conversions. The strongest expressed "
-                               f"demand on the platform; investigate the CTA, the "
-                               f"tier threshold, or build a free-tier preview."),
+                    "count":  callers,
+                    "detail": (f"Tool '{tool}' had {callers} DISTINCT callers hit "
+                               f"its paywall in 7d ({sigs} raw signals) but ZERO "
+                               f"conversions — genuine broad demand that isn't "
+                               f"converting. Investigate the CTA, the tier "
+                               f"threshold, or build a free-tier preview."),
                 })
     finally:
         try: conn.close()
@@ -5167,6 +5182,24 @@ def check_conversion_rate_floor() -> list[dict]:
                      WHERE created_at >= NOW() - INTERVAL '30 days'
                 """)
                 signals = int((cur.fetchone() or [0])[0] or 0)
+                # r36 (2026-05-31): the conversion RATE must be per DISTINCT
+                # caller, not per raw signal. mcp_upgrade_signals is dominated by
+                # a few power-keys looping thousands of calls (one key alone =
+                # 8,999 search_facilities calls, 0_unique_keys:1 in the funnel),
+                # so conversions / raw-signals pins at ~0% forever and this
+                # detector screamed a "0.000% conversion crisis" every cycle over
+                # what is really a handful of callers — the same artifact r35 + C1
+                # removed from the other funnel detectors. Gate + rate on distinct
+                # callers so the floor reflects real demand.
+                cur.execute("""
+                    SELECT COUNT(DISTINCT COALESCE(
+                               NULLIF(user_email,''),
+                               NULLIF(mcp_client,''),
+                               NULLIF(tool_requested,'')))
+                      FROM mcp_upgrade_signals
+                     WHERE created_at >= NOW() - INTERVAL '30 days'
+                """)
+                distinct_callers = int((cur.fetchone() or [0])[0] or 0)
                 cur.execute("""
                     SELECT COUNT(*) FROM mcp_pair_codes
                      WHERE redeemed_at IS NOT NULL
@@ -5175,9 +5208,9 @@ def check_conversion_rate_floor() -> list[dict]:
                 conversions = int((cur.fetchone() or [0])[0] or 0)
             except Exception:
                 return findings
-            if signals < 1000:
-                return findings  # not enough data to be meaningful
-            rate = 100.0 * conversions / signals
+            if distinct_callers < 25:
+                return findings  # a few looping power-keys, not broad demand
+            rate = 100.0 * conversions / max(distinct_callers, 1)
             FLOOR = float(os.environ.get("DCHUB_MIN_CONVERSION_PCT", "0.5"))
             if rate < FLOOR:
                 findings.append({
@@ -5185,7 +5218,8 @@ def check_conversion_rate_floor() -> list[dict]:
                     "url":    "mcp_upgrade_signals + mcp_pair_codes / 30d",
                     "count":  int(rate * 100),  # basis points
                     "detail": (f"30-day MCP conversion rate is {rate:.3f}% "
-                               f"({conversions} conversions / {signals} signals) "
+                               f"({conversions} conversions / {distinct_callers} "
+                               f"DISTINCT paywall callers; {signals} raw signals) "
                                f"— below the {FLOOR}% floor. Either tighten "
                                f"more tools to IDENTIFIED+, raise the FREE "
                                f"daily cap pressure, or improve the paywall "
