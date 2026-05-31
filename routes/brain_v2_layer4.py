@@ -30,7 +30,7 @@ Environment
                        returns 503 — never blocks the heal cycle.
   DCHUB_BRAIN_MODEL   default: claude-sonnet-4-5 (fast + cheap enough
                        for a 5-min cron).
-  DCHUB_BRAIN_MAX_LEARN   default: 3 per cycle (rate-cap learning so
+  DCHUB_BRAIN_MAX_LEARN   default: 10 per cycle (rate-cap learning so
                        a single broken page can't burn the model budget).
 
 Endpoints
@@ -82,7 +82,12 @@ try:
                    or _brain_model_for("inspector"))
 except Exception:
     BRAIN_MODEL = os.environ.get("DCHUB_BRAIN_MODEL", "claude-opus-4-7")
-BRAIN_MAX_LEARN = int(os.environ.get("DCHUB_BRAIN_MAX_LEARN", "3"))
+# 2026-05-30 WIDEN LEARNING SURFACE: raised default 3 → 10. With ~95 live
+# actionable_backend_issues and only 3 reaching the model per cycle, the
+# review queue was starved. 10/cycle widens throughput while still rate-
+# capping model spend (override with DCHUB_BRAIN_MAX_LEARN). Proposals still
+# land in the review queue only — no auto-PR / auto-apply.
+BRAIN_MAX_LEARN = int(os.environ.get("DCHUB_BRAIN_MAX_LEARN", "10"))
 ADMIN_KEY = os.environ.get("DCHUB_ADMIN_KEY") or os.environ.get("DCHUB_INTERNAL_KEY")
 
 # Phase S (2026-05-12): in-memory state is now a FALLBACK only. The
@@ -279,7 +284,18 @@ def _call_claude(prompt: str, system: str) -> tuple[str | None, str | None]:
     except urllib.error.HTTPError as e:
         return None, f"http_{e.code}"
     except Exception as e:
-        return None, f"call_fail: {str(e)[:120]}"
+        # 2026-05-30 EGRESS DIAGNOSTICS: the prior `str(e)[:120]` truncation hid
+        # the actual cause of Claude-call failures. On Railway the common failure
+        # is "[Errno 101] Network is unreachable" from an IPv6-only DNS answer
+        # (the brain resolves api.anthropic.com to AAAA, Railway has no outbound
+        # IPv6) — which got clipped to an unactionable "call_fail: <HTTPSConn...".
+        # Log the FULL exception repr (type + message + errno) and return it
+        # un-truncated so it lands intact in the caller's `api_error` field
+        # (see learn-backend-issues handler) and shows up in /proposed-fixes.
+        full = repr(e)
+        print(f"[brain_v2_layer4] _call_claude egress failure: {full}",
+              file=sys.stderr)
+        return None, f"call_fail: {full}"
 
 
 _LEARN_SYSTEM = (

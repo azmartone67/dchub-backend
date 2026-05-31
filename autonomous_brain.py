@@ -791,15 +791,37 @@ class AutonomousBrain:
             conn = get_db()
             try:
                 cur = conn.cursor()
-                # 2026-05-30 FLATLINE FIX: announcements.id is a TEXT md5-hex PK,
-                # so the r43-H `int(MAX(id))` ALWAYS raised ValueError → max_id fell
-                # back to 0 → the gate "0 > 0" was False → the brain SKIPPED EVERY
-                # cycle ("no new announcements since id=0") and has been flat-lined
-                # since 2026-05-28. Use COUNT(*) as the freshness watermark instead:
-                # it's numeric, increases with new rows, and id-type-agnostic. The
-                # stored watermark (below) is now this count, so the gate fires the
-                # moment new announcements land.
-                cur.execute("SELECT COUNT(*) FROM announcements")
+                # 2026-05-30 WATERMARK FIX (round 2): the prior COUNT(*) watermark
+                # is NON-MONOTONIC. auto_fix_quality_issues() runs
+                #   DELETE FROM announcements WHERE length(title) < 10
+                # every cycle, so when deletes ≈ inserts the count stalls and the
+                # gate "max_id > last_id" stays False forever → the brain SKIPS
+                # every cycle again (same flat-line failure mode as the r43-H
+                # int(MAX(id)) bug). Use MAX(discovered_at) epoch instead.
+                #
+                # Why discovered_at (verified against live DB 2026-05-30):
+                #   - announcements has NO created_at column; id is a TEXT md5 PK.
+                #   - discovered_at is set to NOW() on every INSERT *and* every
+                #     ON CONFLICT DO UPDATE (see main.py news ingest), so it is
+                #     strictly monotonic — new/re-seen rows always push it forward,
+                #     and DELETEs can never lower an existing MAX.
+                #   - It is stored as TEXT but is 100% clean (0/9544 null/malformed)
+                #     and casts to timestamptz (infrastructure_discovery.py already
+                #     does discovered_at::timestamptz).
+                #   - published_date is rejected: it is feed-provided and contained
+                #     FUTURE dates (MAX = 2026-06-30) that would pin the watermark
+                #     ahead and re-break the gate.
+                # The CASE-regex guard means a malformed row is treated as NULL
+                # rather than raising, and COALESCE(...,0) handles the empty table —
+                # so this query CANNOT throw, preserving the fail-open below. The
+                # epoch is a monotonically increasing bigint, which slots straight
+                # into the existing integer stored-watermark plumbing.
+                cur.execute(
+                    "SELECT COALESCE(EXTRACT(EPOCH FROM MAX("
+                    "  CASE WHEN discovered_at ~ '^[0-9]{4}-[0-9]{2}-[0-9]{2}' "
+                    "       THEN discovered_at::timestamptz END))::bigint, 0) "
+                    "FROM announcements"
+                )
                 _raw_max = (cur.fetchone() or [0])[0]
                 try:
                     max_id = int(_raw_max) if _raw_max is not None else 0
@@ -877,6 +899,24 @@ class AutonomousBrain:
                 'pre_flight_ms': elapsed_ms,
             })
             self.state['total_cycles'] += 1
+            # 2026-05-30 FREEZE VISIBILITY: previously the skip path bumped
+            # total_cycles but left last_cycle/autonomous_actions untouched, so a
+            # paused or flat-lined brain looked identical to "healthy_quiet" on
+            # /api/autonomous/status and /heartbeat. Mirror the full-run path's
+            # last_cycle write and log an explicit 'skipped' action so a stalled
+            # brain is visibly stalled (and the action stream shows why).
+            now_iso = datetime.now().isoformat()
+            self.state['last_cycle'] = now_iso
+            skip_action = {
+                'type': 'skipped',
+                'reason': 'no_new_announcements',
+                'ts': now_iso,
+                'cycle': results['cycle_id'],
+                'last_processed_announcement_id': current_max_id,
+            }
+            self.state['autonomous_actions'] = (
+                self.state.get('autonomous_actions', [])[-99:] + [skip_action]
+            )
             self._save_state()
             return results
 

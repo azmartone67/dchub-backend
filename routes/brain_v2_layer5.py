@@ -61,6 +61,7 @@ from flask import Blueprint, jsonify, request
 # Reuse Layer 4's Anthropic client + admin gate
 from routes.brain_v2_layer4 import (
     _call_claude, ANTHROPIC_API_KEY, BRAIN_MODEL, _require_admin,
+    BRAIN_MAX_LEARN,
 )
 
 brain_v2_layer5_bp = Blueprint("brain_v2_layer5", __name__)
@@ -453,7 +454,15 @@ def learn_backend_issues():
                        reason="no_actionable_backend_issues",
                        as_of=datetime.now(timezone.utc).isoformat()), 200
 
+    # 2026-05-30 WIDEN LEARNING SURFACE: the loop already iterates the full
+    # actionable_backend_issues list (~95 live), but only issues whose url is
+    # in BACKEND_ISSUE_SOURCE_FILES are code-fixable and reach _call_claude.
+    # Bound the model calls to BRAIN_MAX_LEARN (now 10, was effectively 3) so a
+    # large finding set can't burn the model budget in one cron tick, while
+    # still iterating every issue so unmapped ones get a recorded outcome.
+    # Proposals go to the review queue only — no auto-PR / auto-apply here.
     results = []
+    claude_calls = 0
     for issue in backend_issues:
         url = issue.get("url", "")          # e.g. dchub://cron/dcpi_recompute
         label = issue.get("issue", "")[:300]
@@ -463,6 +472,12 @@ def learn_backend_issues():
         source_files = BACKEND_ISSUE_SOURCE_FILES.get(url, [])
         if not source_files:
             results.append({"url": url, "outcome": "no_source_map"})
+            continue
+
+        # Rate-cap the code-fixable issues fed to the model this cycle. Issues
+        # beyond the cap are deferred to the next cron tick (recorded, not lost).
+        if claude_calls >= BRAIN_MAX_LEARN:
+            results.append({"url": url, "outcome": "deferred_rate_cap"})
             continue
 
         excerpts = {}
@@ -483,8 +498,11 @@ def learn_backend_issues():
             "note": f"backend_cron_scan issue: {label[:200]}",
         }
         prompt = _build_code_prompt(loop_state, excerpts, babysitter_log=[])
+        claude_calls += 1
         text, err = _call_claude(prompt, _LEARN_CODE_SYSTEM)
         if err or not text:
+            # err now carries the full exception repr from _call_claude
+            # (egress diagnostics fix) so api_error rows are diagnosable.
             results.append({"url": url, "outcome": f"claude_error: {err}"})
             continue
 
@@ -509,6 +527,8 @@ def learn_backend_issues():
         ok=True,
         as_of=datetime.now(timezone.utc).isoformat(),
         issues_examined=len(backend_issues),
+        claude_calls=claude_calls,
+        max_learn_per_cycle=BRAIN_MAX_LEARN,
         results=results,
     ), 200
 
