@@ -5378,7 +5378,18 @@ def check_data_freshness_sla_breach() -> list[dict]:
         ("discovered_facilities",  "discovered_at",24,   "facility discovery queue"),
         ("facilities",             "first_seen",   336,  "canonical facilities"),
         ("news_items",             "published_at", 6,    "news ingest"),
-        ("press_releases",         "published_at", 36,   "press releases"),
+        # r36 (2026-05-31): 36→168. press_releases is EVENT-DRIVEN, not a fixed
+        # cadence: dcpi_auto_press (the writer) only publishes on a >=15pt DCPI
+        # 7-day market shift, so multi-day quiet stretches are normal when the
+        # index is stable (verified: cron fires every 6h + succeeds, but
+        # /api/v1/dcpi/auto-press/recent = 0 — no qualifying event in 5 days, not
+        # a broken cron). A 36h SLA guaranteed a false breach in any quiet week.
+        # 168h matches the weekly-event tier (same as ai_citations below) and
+        # still catches a genuinely-stuck pipeline. NOTE (product lever, not
+        # changed here): the 10-14pt moves become DRAFTS in press_releases_queue
+        # that need review to publish — publishing those, or lowering the
+        # auto-publish threshold, is how you'd make press refresh more often.
+        ("press_releases",         "published_at", 168,  "press releases (event-driven)"),
         ("ai_citations",           "observed_at",  168,  "AI citations (weekly)"),
         ("monthly_reports",        "created_at",   744,  "monthly trend snapshot"),
         # Phase r33-D (2026-05-21) — infrastructure layer SLAs. HIFLD
