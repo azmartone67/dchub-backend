@@ -141,17 +141,31 @@ def extract_all():
 
 @iso_orchestrator_bp.route("/health", methods=["GET"])
 def health():
-    # 2026-05-31: registered_isos = the 10 North-American grid operators with
-    # working live extractors (drop AESO — its US-realtime extractor was
-    # removed 2026-05-30; it now lives in the iso_aeso_intl baseline model,
-    # not this orchestrator). Plus 43 US utility BAs via the eia_utility_bas
-    # slot (counted separately, not in iso_count).
+    # 2026-05-31: registered_isos = the 10 North-American grid operators this
+    # orchestrator runs. AESO was dropped 2026-05-30 (its US-realtime extractor
+    # was removed; it now lives in the iso_aeso_intl baseline model). Plus 43
+    # US utility BAs via the eia_utility_bas slot (counted separately).
+    #
+    # method per operator (2026-05-31, #100 ISO coverage expansion):
+    #   9 LIVE feeds — ERCOT/CAISO/NYISO/ISONE pull native ISO feeds; MISO/PJM/
+    #     BPA/TVA pull the authenticated EIA-930 balancing-authority feed (MISO
+    #     repointed to EIA-930 today — its api.misoenergy.org Data Broker feed
+    #     went "no data"); SPP pulls its real-time market page.
+    #   1 MODELED — IESO (Ontario) is now a modeled baseline (iso_ieso.py).
+    #     reports.ieso.ca went behind Okta SAML SSO (no longer auth-free) and
+    #     Ontario is outside EIA-930, so there is no auth-free live feed. It
+    #     still WRITES real grid_data rows, anchored to IESO's published 2024
+    #     mix — same honest treatment as the other Canadian operators (AESO,
+    #     Hydro-Québec). So this is strictly "9 live + 1 modeled", not 10 live.
     return jsonify(
         status="ok",
         registered_isos=["ERCOT", "CAISO", "NYISO", "MISO", "PJM", "SPP", "ISONE",
                           "IESO", "TVA", "BPA"],
         endpoint="/api/v1/iso/all/extract",
         iso_count=10,
+        live_feed_count=9,
+        modeled_baseline_count=1,
+        modeled_isos=["IESO"],
         utility_bas_count=43,
         future_isos=["ESO (UK)", "AEMO (AU)", "EirGrid (IE)"],
     ), 200
