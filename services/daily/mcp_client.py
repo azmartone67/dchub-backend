@@ -248,8 +248,16 @@ def fetch_snapshot() -> dict:
     # ONLY as the genuine-failure fallback in the except block below (which also
     # covers a no-network local dev). DRY_RUN no longer suppresses live data.
     try:
-        url = API_BASE.rstrip("/") + "/facilities/state-status-counts"
-        headers = {"User-Agent": "dchub-daily/5.0"}
+        # r37c (2026-05-31): cache-bust + no-cache. A Cloudflare zone cache rule
+        # caches /api/* responses (cf-cache-status: EXPIRED was observed despite
+        # the endpoint's private/no-store headers), so a plain GET here was being
+        # served a STALE per-state snapshot cached during a backend deploy window
+        # — /daily's /refresh couldn't pull the new count even though the origin
+        # had it. A unique _cb param + no-cache header forces a fresh origin hit.
+        import time as _time
+        url = (API_BASE.rstrip("/")
+               + f"/facilities/state-status-counts?_cb={int(_time.time())}")
+        headers = {"User-Agent": "dchub-daily/5.0", "Cache-Control": "no-cache"}
         if API_KEY:
             headers["X-API-Key"] = API_KEY  # optional — endpoint is public
         r = httpx.get(url, headers=headers, timeout=30.0)
