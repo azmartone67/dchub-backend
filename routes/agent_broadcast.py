@@ -557,6 +557,12 @@ def _build_broadcast(days: int, kinds: list[str] | None = None) -> dict:
         items += _fetch_ecosystem_changes(days)
     if not kinds or "why_dchub" in kinds:
         items += _fetch_why_dchub()
+    if not kinds or "coverage_win" in kinds:
+        try:
+            from routes.brain_coverage_radar import coverage_wins
+            items += coverage_wins(days)
+        except Exception:
+            pass
 
     # Sort by weight desc, then ts desc
     items.sort(key=lambda x: (-int(x.get("weight") or 0),
@@ -578,7 +584,7 @@ def _build_broadcast(days: int, kinds: list[str] | None = None) -> dict:
                                 "RSS variant at /api/v1/agent-broadcast/rss."),
         "kinds_available": [
             "press_release", "dcpi_verdict_shift",
-            "ai_citation", "ecosystem_change", "why_dchub",
+            "ai_citation", "ecosystem_change", "why_dchub", "coverage_win",
         ],
         "sister_endpoints": {
             "today":        "/api/v1/agent-broadcast/today",

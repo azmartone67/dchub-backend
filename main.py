@@ -25685,6 +25685,12 @@ try:
 except Exception as _e:
     print(f"[main] brain_consistency_radar register failed: {_e}", file=sys.stderr)
 
+try:
+    from routes.brain_coverage_radar import brain_coverage_radar_bp
+    app.register_blueprint(brain_coverage_radar_bp)  # GET /api/v1/brain/coverage-gaps
+except Exception as _e:
+    print(f"[main] brain_coverage_radar register failed: {_e}", file=sys.stderr)
+
 # Phase AAA (2026-05-16): brain autopilot — the autonomous-action loop.
 # Reads /api/v1/heal/findings, matches actionable_backend_issues against a
 # safe pattern library, executes remediations (rate-limited + idempotent),
@@ -27830,6 +27836,16 @@ def _compute_heal_findings():
             })
     except Exception as _e:
         logger.warning("consistency_radar scan failed: %s", _e)
+
+    # Coverage radar (2026-05-31): self-aware DCPI/DCGI/ISO/gas gap detector.
+    # Cap at the top-3 priority gaps so coverage findings don't crowd the
+    # brain's ~10/cycle proposal budget (the rest stay visible at
+    # /api/v1/brain/coverage-gaps). coverage_findings() is fully guarded.
+    try:
+        from routes.brain_coverage_radar import coverage_findings as _coverage_findings
+        actionable_backend.extend((_coverage_findings() or [])[:3])
+    except Exception as _e:
+        logger.warning("coverage_radar findings failed: %s", _e)
 
     return {
         "findings": findings,
