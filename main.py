@@ -13707,12 +13707,20 @@ def facilities_state_status_counts():
     try:
         conn = get_read_db()
         c = conn.cursor()
+        # r37 (2026-05-31): count EVERY tracked US facility, not just the subset
+        # with an exactly-mapped status. Previously this required a non-blank
+        # status AND only added facilities whose status was in the op/uc/ann
+        # sets (the if/elif/elif had no else) — so NULL-status and unmapped-
+        # status facilities were silently dropped, undercounting /daily and
+        # making it look small/static. Now: include blank status, and default
+        # anything not explicitly under-construction/announced to OPERATIONAL
+        # (a tracked data center is operational unless stated otherwise). The
+        # headline total now reflects — and grows with — the full US set.
         c.execute("""
-            SELECT UPPER(TRIM(state)) AS st, LOWER(TRIM(status)) AS status, COUNT(*)
+            SELECT UPPER(TRIM(state)) AS st, LOWER(TRIM(COALESCE(status,''))) AS status, COUNT(*)
             FROM facilities
             WHERE country IN ('US', 'USA', 'United States')
               AND state IS NOT NULL AND TRIM(state) <> ''
-              AND status IS NOT NULL AND TRIM(status) <> ''
             GROUP BY 1, 2
         """)
         rows = c.fetchall()
@@ -13723,12 +13731,12 @@ def facilities_state_status_counts():
                 continue
             b = states.setdefault(name, {'name': name, 'op': 0, 'uc': 0, 'ann': 0})
             n = int(n or 0)
-            if status in _DAILY_STATUS_OP:
-                b['op'] += n
-            elif status in _DAILY_STATUS_UC:
+            if status in _DAILY_STATUS_UC:
                 b['uc'] += n
             elif status in _DAILY_STATUS_ANN:
                 b['ann'] += n
+            else:
+                b['op'] += n  # operational default (incl. blank/unmapped status)
         out = sorted(states.values(),
                      key=lambda r: r['op'] + r['uc'] + r['ann'], reverse=True)
         result = {
