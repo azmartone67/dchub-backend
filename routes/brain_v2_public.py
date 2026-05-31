@@ -193,9 +193,11 @@ h1 .grad{background:var(--gradient);-webkit-background-clip:text;background-clip
 
   <div class="kpis">
     <div class="kpi"><div class="v {{status_class}}">{{status_text}}</div><div class="l">Layer 4 status</div></div>
-    <div class="kpi"><div class="v">{{total_proposals}}</div><div class="l">Proposed fixes</div></div>
-    <div class="kpi"><div class="v green">{{approved_count}}</div><div class="l">Approved (≥2 cycles)</div></div>
-    <div class="kpi"><div class="v amber">{{pending_count}}</div><div class="l">Pending review</div></div>
+    <div class="kpi"><div class="v {{code_proposals_class}}">{{code_proposals_count}}</div><div class="l">Code proposals (Layer 5)</div></div>
+    <div class="kpi"><div class="v {{actionable_class}}">{{actionable_count}}</div><div class="l">Open actionable findings</div></div>
+    <div class="kpi"><div class="v">{{total_proposals}}</div><div class="l">HTML fixes (Layer 4)</div></div>
+    <div class="kpi"><div class="v green">{{approved_count}}</div><div class="l">HTML fixes approved (≥2 cycles)</div></div>
+    <div class="kpi"><div class="v amber">{{pending_count}}</div><div class="l">HTML fixes pending review</div></div>
     <div class="kpi"><div class="v">{{log_count}}</div><div class="l">Learning attempts (logged)</div></div>
   </div>
 
@@ -204,7 +206,16 @@ h1 .grad{background:var(--gradient);-webkit-background-clip:text;background-clip
   {{grade_block}}
 
   <div class="section">
-    <h2 class="section-title">Recent proposals</h2>
+    <h2 class="section-title">Layer 5 — Code Proposals</h2>
+    <p style="color:var(--tx2);font-size:14px;margin:-6px 0 14px">Backend/source-level fixes the brain wrote for real Python files (not HTML data-cells). Each is stored in <code>brain_proposed_code_fixes</code>, never auto-applied — high-confidence ones open a draft PR for human review.</p>
+    <div class="card-list">
+{{code_proposals_html}}
+    </div>
+  </div>
+
+  <div class="section">
+    <h2 class="section-title">Layer 4 — HTML fixes</h2>
+    <p style="color:var(--tx2);font-size:14px;margin:-6px 0 14px">Stale-string / placeholder substitutions on the public site. "0 pending" here means nothing is broken to fix — the real backend work lives in Layer 5 above.</p>
     <div class="card-list">
 {{proposals_html}}
     </div>
@@ -239,7 +250,7 @@ h1 .grad{background:var(--gradient);-webkit-background-clip:text;background-clip
 
   <p class="foot">
     As of {{as_of}}.
-    <a href="/freshness">Data freshness</a> · <a href="/dcpi">DCPI</a> · <a href="/api/v1/heal/findings">Heal findings</a> · <a href="/audit/">Audit</a>
+    <a href="/freshness">Data freshness</a> · <a href="/dcpi">DCPI</a> · <a href="/api/v1/brain/proposed-code">Code proposals (Layer 5)</a> · <a href="/audit/">Audit</a>
   </p>
 </div>
 </body>
@@ -298,10 +309,19 @@ def brain_page():
     verdict = state.get("verdict", "unknown")
     verdict_detail = state.get("verdict_detail", "")
     _VERDICT_DISPLAY = {
+        "healthy":         ("HEALTHY", "green",
+                            "Healthy — the self-learning loop is running"),
         "healthy_quiet":   ("HEALTHY", "green",
                             "Healthy — quiet because there's nothing to fix"),
         "healthy_working": ("WORKING", "green",
                             "Healthy — actively proposing fixes"),
+        # r-brain5 (2026-05-31): healthy_backlog was falling through to the
+        # amber "UNKNOWN" default — making a perfectly healthy loop look
+        # broken. Layer 4 correctly produces 0 HTML fixes; the open work is
+        # backend/infra findings that route to Layer 5 + autopilot (shown in
+        # their own tiles below). So this is GREEN, not UNKNOWN.
+        "healthy_backlog": ("HEALTHY", "green",
+                            "Healthy — Layer 4 is clean; open work routes to Layer 5 + autopilot"),
         "warming_up":      ("WARMING UP", "amber",
                             "Warming up — first learn pass pending"),
         "stalled":         ("STALLED", "red",
@@ -622,6 +642,76 @@ def brain_page():
     except Exception:
         lifecycle_block = ""
 
+    # r-brain5 (2026-05-31): Layer 5 — Code Proposals. The /brain page
+    # was rendering ONLY Layer 4 (HTML data-cell fixes), so it flatlined at
+    # "0 proposed / No proposals yet" even though Layer 5 has real backend
+    # code proposals and the loop is working. Pull the public, no-auth
+    # GET /api/v1/brain/proposed-code (count + items[loop_name, file_path,
+    # confidence, status, rationale, proposed_at]) via the same cached
+    # in-process test_client helper used by every block above. Purely
+    # additive + fully guarded: any error/empty state degrades to a clean
+    # "0 — none pending" card and can never 500 the page.
+    code_proposals_count = 0
+    code_proposals_class = "amber"
+    code_proposals_html = (
+        '<div class="empty">0 — none pending. Layer 5 writes source-code '
+        'proposals when the brain finds a backend/infra fix; none are queued '
+        'right now.</div>'
+    )
+    try:
+        from flask import current_app
+        with current_app.test_client() as _client:
+            _rcp = _cached_internal_get("/api/v1/brain/proposed-code", _client)
+            if _rcp.status_code == 200:
+                _cp = _rcp.get_json() or {}
+                _cp_items = _cp.get("items") or []
+                code_proposals_count = int(_cp.get("count") or len(_cp_items) or 0)
+                code_proposals_class = "green" if code_proposals_count > 0 else "amber"
+                if _cp_items:
+                    _cp_blocks = []
+                    for _it in _cp_items[:8]:
+                        _loop = _h(str(_it.get("loop_name") or "?"))
+                        _fp = _h(str(_it.get("file_path") or "?"))
+                        _status = _h(str(_it.get("status") or "proposed"))
+                        try:
+                            _conf = float(_it.get("confidence") or 0)
+                        except Exception:
+                            _conf = 0.0
+                        _rat = _h((str(_it.get("rationale") or ""))[:300])
+                        _at = _h((str(_it.get("proposed_at") or ""))[:19])
+                        # badge: approved-ish / high-confidence = green, else amber
+                        if _status in ("approved", "merged", "pr_open") or _conf >= 0.85:
+                            _bcls = "approved"
+                        else:
+                            _bcls = "pending"
+                        _btext = f"{_status} · conf {_conf:.2f}"
+                        _cp_blocks.append(
+                            f'<div class="proposal">'
+                            f'<div class="head">'
+                            f'<span class="label">{_loop}</span>'
+                            f'<span class="badge {_bcls}">{_h(_btext)}</span>'
+                            f'</div>'
+                            f'<div class="meta"><code>{_fp}</code>'
+                            + (f' · {_rat}' if _rat else '')
+                            + (f' · proposed {_at}' if _at else '')
+                            + '</div>'
+                            f'</div>'
+                        )
+                    code_proposals_html = "\n".join(_cp_blocks)
+    except Exception:
+        # Keep the graceful default card + 0 count; never break the page.
+        pass
+
+    # r-brain5: actionable-findings count tile. _get_state() already
+    # surfaces this (the ~92-117 open backend/SEO/infra findings that route
+    # to Layer 5 + autopilot, NOT Layer 4 HTML edits). Show it as a KPI so
+    # "0 HTML fixes" is read alongside the real open-work number.
+    try:
+        actionable_count = int(state.get("actionable_findings_count") or 0)
+    except Exception:
+        actionable_count = 0
+    actionable_class = "amber" if actionable_count > 0 else "green"
+
     # Render proposals (newest first)
     if proposals:
         prop_blocks = []
@@ -703,12 +793,17 @@ def brain_page():
     html = (_BRAIN_PAGE_TEMPLATE
             .replace("{{status_text}}", _h(status_text))
             .replace("{{status_class}}", _h(status_class))
+            .replace("{{code_proposals_count}}", str(code_proposals_count))
+            .replace("{{code_proposals_class}}", _h(code_proposals_class))
+            .replace("{{actionable_count}}", str(actionable_count))
+            .replace("{{actionable_class}}", _h(actionable_class))
             .replace("{{total_proposals}}", str(len(proposals)))
             .replace("{{approved_count}}", str(approved_count))
             .replace("{{pending_count}}", str(pending_count))
             .replace("{{log_count}}", str(len(state["log"])))
             .replace("{{verdict_banner}}", verdict_banner)
             .replace("{{grade_block}}", grade_block + value_shipped_block + integrity_block + lifecycle_block)
+            .replace("{{code_proposals_html}}", code_proposals_html)
             .replace("{{proposals_html}}", proposals_html)
             .replace("{{persistence_html}}", persistence_html)
             .replace("{{log_html}}", log_html)
