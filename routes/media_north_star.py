@@ -217,9 +217,19 @@ def _build_table_select(cols: set[str], table: str,
 
 def _scalar(cur, sql: str, params: tuple = ()) -> int:
     """Run a COUNT-style query, return int(0) on any failure (and roll
-    back so the connection stays usable for the next query)."""
+    back so the connection stays usable for the next query).
+
+    IMPORTANT: when there are no params, call execute(sql) WITHOUT a
+    params arg. The synthetic-row exclusion embeds literal LIKE patterns
+    ('%cron%' etc.); passing a params tuple makes psycopg2 treat those
+    '%' as parameter placeholders and raise — silently zeroing every
+    count. Single-arg execute leaves '%' literal, matching how the
+    recent/by_platform queries already run."""
     try:
-        cur.execute(sql, params)
+        if params:
+            cur.execute(sql, params)
+        else:
+            cur.execute(sql)
         row = cur.fetchone()
         return int(row[0]) if row and row[0] is not None else 0
     except Exception:
