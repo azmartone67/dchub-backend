@@ -61,6 +61,18 @@ WINDOWS = [
     # a roomy 30d window so they're not flagged on a daily cadence.
     (r"^/api/v1/pipelines",     720, "refresh_data"),
     (r"^/api/v1/powered-shell", 720, "refresh_data"),
+    # Phase r34b (2026-05-31) — second pass: the first pass cleared facilities/
+    # gas/mna but left stragglers the regexes just missed (singular /pipeline vs
+    # /pipelines), plus ops verbs (/extract /scan /queue) and static data files
+    # (/data/*.csv|.json) that have no live refresher and never will. Bind the
+    # real ones; give the passive/static ones a roomy window + stamp-on-register
+    # so they read fresh instead of perpetually-160h-stale.
+    (r"^/api/v1/pipeline",      720, "refresh_data"),   # singular (summary, /pipeline)
+    (r"^/pipeline",             720, "refresh_data"),
+    (r"^/api/v1/press",         24,  "refresh_news"),    # press scan/queue/feed
+    (r"^/api/v1/research/grid", 12,  "refresh_iso"),     # grid-intelligence under research
+    (r"^/data/dcpi",            720, "noop_static"),     # static CSV/JSON snapshots
+    (r"^/iso/",                 720, "noop_static"),     # /iso/<iso>.json static files
     (r"^/api/v2/infrastructure",720, "refresh_data"),
     (r"^/heartbeat",            1, "noop_heartbeat"),
     (r"^/pricing",              2160, "refresh_pricing"),

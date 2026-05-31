@@ -190,7 +190,11 @@ def _domain_of(surface_name: str) -> str:
     # — dcpi 42min, fiber/power/renewable current — are fine). Demote to 'other'.
     _OPS_MARKERS = ("/admin/", "/ingest", "/export", "/draft-", "/draft/",
                     "ner/status", "/recompute", "/backfill", "/dedup",
-                    "/probe/", "/import", "/upload", "/sync")
+                    "/probe/", "/import", "/upload", "/sync",
+                    # r34b: more ops verbs that were left dragging domains into
+                    # breach (iso/aeso/extract, press/scan, press/queue) — these
+                    # are pipeline/worker actions, not user-facing data feeds.
+                    "/extract", "/scan", "/queue")
     if any(m in s for m in _OPS_MARKERS):
         return "other"
     if "grid" in s or "iso" in s: return "iso"
