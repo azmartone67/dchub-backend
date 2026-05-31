@@ -75,7 +75,9 @@ DB_PATH = "dc_nexus.db"
 def init_email_tables():
     """Initialize email-related database tables"""
     with _db_conn() as conn:
-        return _init_email_tables(conn)
+        result = _init_email_tables(conn)
+        conn.commit()
+        return result
 
 
 def _init_email_tables(conn):
