@@ -894,12 +894,12 @@ Allow: /
 # AGENTS.md: https://dchub.cloud/AGENTS.md
 
 # Sitemaps (r35 2026-05-24): include round-33 SEO sitemap-index and
-# per-property sub-sitemaps published from api.dchub.cloud (Flask).
+# per-property sub-sitemaps published from dchub.cloud (Flask).
 Sitemap: https://dchub.cloud/sitemap.xml
-Sitemap: https://api.dchub.cloud/sitemap-index.xml
-Sitemap: https://api.dchub.cloud/sitemap-facilities.xml
-Sitemap: https://api.dchub.cloud/sitemap-markets.xml
-Sitemap: https://api.dchub.cloud/sitemap-grids.xml
+Sitemap: https://dchub.cloud/sitemap-index.xml
+Sitemap: https://dchub.cloud/sitemap-facilities.xml
+Sitemap: https://dchub.cloud/sitemap-markets.xml
+Sitemap: https://dchub.cloud/sitemap-grids.xml
 
 # Host preference
 Host: dchub.cloud
