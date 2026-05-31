@@ -258,44 +258,53 @@ def _call_claude(prompt: str, system: str) -> tuple[str | None, str | None]:
         import urllib.error
     except Exception as e:
         return None, f"stdlib_import_fail: {e}"
-    body = json.dumps({
-        "model": BRAIN_MODEL,
-        "max_tokens": 800,
-        "system": system,
-        "messages": [{"role": "user", "content": prompt}],
-    }).encode("utf-8")
-    req = urllib.request.Request(
-        "https://api.anthropic.com/v1/messages",
-        data=body,
-        headers={
-            "Content-Type": "application/json",
-            "X-API-Key": ANTHROPIC_API_KEY,
-            "Anthropic-Version": "2023-06-01",
-        },
-    )
-    try:
-        with urllib.request.urlopen(req, timeout=20) as r:
-            data = json.loads(r.read().decode("utf-8"))
-        # Anthropic returns content as list of blocks
-        for block in data.get("content", []):
-            if block.get("type") == "text":
-                return block.get("text", ""), None
-        return None, "no_text_block"
-    except urllib.error.HTTPError as e:
-        return None, f"http_{e.code}"
-    except Exception as e:
-        # 2026-05-30 EGRESS DIAGNOSTICS: the prior `str(e)[:120]` truncation hid
-        # the actual cause of Claude-call failures. On Railway the common failure
-        # is "[Errno 101] Network is unreachable" from an IPv6-only DNS answer
-        # (the brain resolves api.anthropic.com to AAAA, Railway has no outbound
-        # IPv6) — which got clipped to an unactionable "call_fail: <HTTPSConn...".
-        # Log the FULL exception repr (type + message + errno) and return it
-        # un-truncated so it lands intact in the caller's `api_error` field
-        # (see learn-backend-issues handler) and shows up in /proposed-fixes.
-        full = repr(e)
-        print(f"[brain_v2_layer4] _call_claude egress failure: {full}",
-              file=sys.stderr)
-        return None, f"call_fail: {full}"
+    # 2026-05-31 MODEL SELF-HEAL: try BRAIN_MODEL, but on a 404/400 (model not
+    # found/invalid — e.g. a bad DCHUB_BRAIN_MODEL env like an unreleased
+    # claude-opus-4-8-* date, which 404'd every Layer-5 call → 0 proposals for
+    # 30d) retry ONCE with a confirmed-valid model so a misconfigured model
+    # can't zero out the whole brain. Other codes (401/429/5xx) don't retry.
+    _FALLBACK_MODEL = "claude-sonnet-4-20250514"
+    _models = [BRAIN_MODEL] + ([_FALLBACK_MODEL] if BRAIN_MODEL != _FALLBACK_MODEL else [])
+    last_err = None
+    for _i, _model in enumerate(_models):
+        body = json.dumps({
+            "model": _model,
+            "max_tokens": 800,
+            "system": system,
+            "messages": [{"role": "user", "content": prompt}],
+        }).encode("utf-8")
+        req = urllib.request.Request(
+            "https://api.anthropic.com/v1/messages",
+            data=body,
+            headers={
+                "Content-Type": "application/json",
+                "X-API-Key": ANTHROPIC_API_KEY,
+                "Anthropic-Version": "2023-06-01",
+            },
+        )
+        try:
+            with urllib.request.urlopen(req, timeout=20) as r:
+                data = json.loads(r.read().decode("utf-8"))
+            for block in data.get("content", []):
+                if block.get("type") == "text":
+                    return block.get("text", ""), None
+            return None, "no_text_block"
+        except urllib.error.HTTPError as e:
+            last_err = f"http_{e.code}"
+            if e.code in (404, 400) and _i + 1 < len(_models):
+                print(f"[brain_v2_layer4] model {_model} -> http_{e.code}; "
+                      f"self-heal retry with {_models[_i+1]}", file=sys.stderr)
+                continue
+            return None, last_err
+        except Exception as e:
+            # EGRESS DIAGNOSTICS (2026-05-30): log the FULL exception repr
+            # (type + message + errno) un-truncated so [Errno 101] IPv6/egress
+            # failures land intact in the caller's api_error / /proposed-fixes.
+            full = repr(e)
+            print(f"[brain_v2_layer4] _call_claude egress failure: {full}",
+                  file=sys.stderr)
+            return None, f"call_fail: {full}"
+    return None, last_err or "all_models_failed"
 
 
 _LEARN_SYSTEM = (
