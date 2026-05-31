@@ -1,0 +1,33 @@
+name: Backfill facility states (k-NN)
+
+'on':
+  workflow_dispatch:
+    inputs:
+      apply:
+        description: 'Write changes? false = dry-run (default), true = persist'
+        type: boolean
+        default: false
+
+jobs:
+  backfill:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+      - name: Install psycopg2
+        run: pip install psycopg2-binary
+      - name: Run backfill
+        env:
+          DATABASE_URL: ${{ secrets.DATABASE_URL }}
+        run: |
+          if [ "${{ inputs.apply }}" = "true" ]; then
+            echo "::notice::Running APPLY mode (writing)"
+            python backfill_facility_states.py --apply
+          else
+            echo "::notice::Running DRY-RUN mode (no writes)"
+            python backfill_facility_states.py
+          fi
