@@ -83,7 +83,7 @@ def _log_click(slug, src=None):
             cur.execute("""
                 INSERT INTO partnership_clicks
                   (track_slug, ip, user_agent, referrer, source)
-                VALUES (%s, %s, %s, %s, %s)
+                VALUES (%s, %s, %s, %s, %s) ON CONFLICT DO NOTHING
             """, (slug, ip[:80], ua, ref, src or ""))
     except Exception:
         pass
