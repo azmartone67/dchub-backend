@@ -15046,7 +15046,35 @@ def market_intelligence_page():
         seo_block = ''
     with open('static/market-intelligence.html', 'r') as f:
         html = f.read()
-    seo_section = f'<div id="seo-prerender" style="display:none" aria-hidden="false"><h1>Data Center Market Intelligence</h1>{seo_block}</div>'
+    # r36 (2026-05-31): schema.org JSON-LD so the page is citable by LLMs and
+    # rich-result-eligible in Google. /markets is backend-served (the in-repo
+    # CF worker proxies it), so the JSON-LD has to be injected HERE — editing
+    # the static markets/index.html in the frontend repo would not reach the
+    # live page. This is what the now-honest jsonld_coverage_check caught.
+    try:
+        _market_count = len(MARKET_DATA)
+    except Exception:
+        _market_count = 0
+    _ld = {
+        "@context": "https://schema.org",
+        "@type": "Dataset",
+        "name": "DC Hub — Data Center Market Intelligence",
+        "description": ("Live vacancy rates, inventory (MW) and asking rates "
+                        f"across {_market_count or 'global'} data center "
+                        "markets, updated continuously."),
+        "url": "https://dchub.cloud/markets",
+        "isAccessibleForFree": True,
+        "creator": {"@type": "Organization", "name": "DC Hub",
+                    "url": "https://dchub.cloud"},
+        "provider": {"@type": "Organization", "name": "DC Hub",
+                     "url": "https://dchub.cloud"},
+        "keywords": ["data center", "market intelligence", "vacancy rate",
+                     "inventory MW", "colocation", "asking rate"],
+        "variableMeasured": ["vacancy_rate", "inventory_mw", "avg_asking_rate"],
+    }
+    jsonld_script = ('<script type="application/ld+json">'
+                     + json.dumps(_ld) + '</script>')
+    seo_section = f'<div id="seo-prerender" style="display:none" aria-hidden="false"><h1>Data Center Market Intelligence</h1>{seo_block}</div>{jsonld_script}'
     html = html.replace('</body>', seo_section + '\n</body>')
     resp = make_response(html)
     resp.headers['Content-Type'] = 'text/html'
@@ -19133,7 +19161,15 @@ def serve_sitemap_xml():
         ('/assets.html', '0.7', 'daily'),
         ('/for-ai.html', '0.7', 'weekly'),
         ('/connect', '0.7', 'weekly'),
-        ('/ai/facts', '0.6', 'weekly'),
+        # r36 (2026-05-31): /ai/facts REMOVED from the sitemap. The page
+        # exists on the backend (200, text/html "Data Center Facts") but
+        # dchub.cloud/ai/facts returns 404 — it isn't routed to the origin by
+        # either the in-repo _worker.js (not in _routes.json include) or the
+        # out-of-repo zone worker (which DOES serve siblings like
+        # /built-for-ai). A 404 URL in the sitemap hurts crawl trust, so it's
+        # strictly better to drop it until the page is wired to resolve on the
+        # public apex. (This is what the now-honest sitemap_404 detector
+        # caught — see Phase r36 in dchub_self_heal.py.)
         ('/llms.txt', '0.5', 'monthly'),
         ('/llms-full.txt', '0.5', 'monthly'),
         # Phase r27/r31 (2026-05-20) — pockets-of-power surface
