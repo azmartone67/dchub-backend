@@ -68,6 +68,7 @@ def integrations_tools():
     }), 200, {"Cache-Control": "public, max-age=600", "Access-Control-Allow-Origin": "*"}
 
 
+# AUTO-REPAIR: duplicate route '/integrations/tools.json' also in main.py:4745 — review and remove one
 @integrations_tools_bp.route("/integrations/tools.json", methods=["GET"])
 def integrations_tools_short():
     """Short-path redirect to the canonical /api/v1/integrations/tools.json."""
