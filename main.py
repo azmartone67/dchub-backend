@@ -26122,6 +26122,21 @@ try:
 except Exception as _tse:
     print(f"[main] testimonials_seeder wiring failed: {_tse}", file=sys.stderr, flush=True)
 
+# Quarterly "State of Power" report — /state-of-power/<quarter> + JSON/CSV.
+# The quarterly_report_bp blueprint is registered once near line 25923; this
+# block re-asserts the wiring next to the other register_blueprint calls and
+# is idempotent — a duplicate registration (ValueError: "already registered")
+# is benign because the routes are already live from the earlier block.
+try:
+    from routes.quarterly_report import quarterly_report_bp
+    app.register_blueprint(quarterly_report_bp)
+    print("[main] quarterly_report_bp registered: /state-of-power/<quarter> + /state-of-power/quarterly + /api/v1/reports/quarterly/<quarter>.{json,csv}", flush=True)
+except ValueError as _qre:
+    # Already registered earlier in this file — routes are live; not an error.
+    print(f"[main] quarterly_report_bp already registered ({_qre}); routes live", flush=True)
+except Exception as _qre2:
+    print(f"[main] quarterly_report wiring failed: {_qre2}", file=sys.stderr, flush=True)
+
 # r55 (2026-05-25): MCP funnel upgrade UX — preview + upgrade-hint
 try:
     from routes.mcp_funnel_upgrade import mcp_funnel_upgrade_bp
