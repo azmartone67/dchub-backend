@@ -189,7 +189,7 @@ def issue_partner_key():
                 cur.execute("""
                     INSERT INTO users (id, email, password_hash, name, company,
                                           role, plan, api_calls_today, api_calls_total)
-                    VALUES (%s, %s, %s, %s, %s, %s, %s, 0, 0)
+                    VALUES (%s, %s, %s, %s, %s, %s, %s, 0, 0) ON CONFLICT DO NOTHING
                 """, (user_id, email, placeholder_pw, name or email.split("@")[0],
                        company, plan, plan))
 
@@ -223,7 +223,7 @@ def issue_partner_key():
                      usage_count, plan, calls_today, calls_total)
                 VALUES
                     (%s, %s, %s, %s, '["read","write"]',
-                     %s, 1, NOW(),
+                     %s, 1, NOW() ON CONFLICT DO NOTHING,
                      0, %s, 0, 0)
                 ON CONFLICT (key_hash) DO UPDATE SET
                     is_active = 1, plan = EXCLUDED.plan
@@ -238,7 +238,7 @@ def issue_partner_key():
                     (partner_slug, key_prefix, user_email, plan, label,
                      stripe_url, amount_usd_year, term_months,
                      renewal_terms, issued_by)
-                VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s)
+                VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s) ON CONFLICT DO NOTHING
             """, (partner_slug, key_prefix, email, plan, label,
                    stripe_url or None, amount_usd_year, term_months,
                    renewal_terms or None, "admin-curl"))
