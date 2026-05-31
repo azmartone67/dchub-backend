@@ -204,7 +204,7 @@ _DCHUB_DIFFERENTIATORS: list[dict] = [
 #    window across the whole worker. This is the "respectful" guarantee.
 # ──────────────────────────────────────────────────────────────────────
 
-_PROBE_TIMEOUT_SECONDS = 6          # per-surface, per-host hard cap
+_PROBE_TIMEOUT_SECONDS = 4          # per-surface hard cap (background-only)
 _PROBE_TTL_SECONDS = 21600          # 6h — never hammer a competitor host
 _PROBE_UA = ("DCHubCompetitiveIntel/1.0 (+https://dchub.cloud; "
              "respectful one-shot agent-readiness probe)")
@@ -513,30 +513,103 @@ def _shape_observation(comp: dict, result: dict, observed_at: str) -> dict:
     }
 
 
+# ── Non-blocking refresh: probes run in a BACKGROUND thread, NEVER in the
+#    request path. The 1-replica backend must never block a worker on 6
+#    competitors' external sites (that was a 20s hang -> CF 503). /positioning
+#    reads the cache only; cold/stale entries return "unknown (refreshing)"
+#    and trigger one background warm, so the next request is hot. The 24x7
+#    cron hits /refresh to keep it warm. ─────────────────────────────────
+_REFRESH_RUNNING = False
+_REFRESH_FLAG_LOCK = threading.Lock()
+
+
+def _refresh_all_blocking():
+    """Probe every competitor (force) to warm _PROBE_CACHE. Runs ONLY in a
+    daemon thread — never call from a request thread."""
+    global _REFRESH_RUNNING
+    try:
+        for comp in _COMPETITORS:
+            try:
+                probe_competitor(comp["slug"], force=True)
+            except Exception:
+                pass
+    finally:
+        with _REFRESH_FLAG_LOCK:
+            _REFRESH_RUNNING = False
+
+
+def _kick_background_refresh() -> bool:
+    """Start a single background warm if one isn't already in flight.
+    Returns True if started, False if one was already running. Non-blocking."""
+    global _REFRESH_RUNNING
+    with _REFRESH_FLAG_LOCK:
+        if _REFRESH_RUNNING:
+            return False
+        _REFRESH_RUNNING = True
+    try:
+        threading.Thread(target=_refresh_all_blocking,
+                         name="competitive-probe-refresh",
+                         daemon=True).start()
+        return True
+    except Exception:
+        with _REFRESH_FLAG_LOCK:
+            _REFRESH_RUNNING = False
+        return False
+
+
+def _read_cached(comp: dict) -> tuple:
+    """READ-ONLY: return (observation, is_fresh). NEVER hits the network.
+    Fresh cached entry → (obs, True); cold/stale → a 'pending' observation
+    (all-unknown + refreshing note) → (obs, False)."""
+    cached = _PROBE_CACHE.get(comp["slug"])
+    if cached:
+        try:
+            age = (datetime.datetime.utcnow()
+                   - cached["_cached_at"]).total_seconds()
+        except Exception:
+            age = _PROBE_TTL_SECONDS + 1
+        if age < _PROBE_TTL_SECONDS:
+            return _shape_observation(comp, cached["result"],
+                                      cached["observed_at"]), True
+    pending = _shape_observation(
+        comp,
+        {"axes": {k: "unknown" for k in
+                  ("llms_txt", "mcp_server",
+                   "machine_readable", "public_api_hint")},
+         "axis_sources": {},
+         "source_url": comp["homepage_url"],
+         "note": ("Probe pending — observations refresh in the background "
+                  "(read-only endpoint never blocks). Re-query shortly.")},
+        _now_iso(),
+    )
+    return pending, False
+
+
 def _comparison(force: bool = False) -> list[dict]:
-    """Build the comparison array for all competitors. If a probe is cold
-    and the network is slow/unavailable, individual entries fall back to
-    all-"unknown" rather than blocking — the function as a whole never
-    raises."""
+    """Build the comparison array READ-ONLY from the probe cache — it NEVER
+    blocks on the network in the request path (1-replica worker safety).
+    Cold/stale entries come back as 'unknown (refreshing)' and we kick a
+    single background warm so the next call is hot. `force` just schedules an
+    immediate background refresh; it never blocks the request."""
     out: list[dict] = []
+    any_cold = False
     for comp in _COMPETITORS:
         try:
-            obs = probe_competitor(comp["slug"], force=force)
+            obs, fresh = _read_cached(comp)
         except Exception:
-            obs = None
-        if obs is None:
-            # Should not happen (slugs are from the registry) but stay safe.
-            obs = _shape_observation(
+            obs, fresh = _shape_observation(
                 comp,
                 {"axes": {k: "unknown" for k in
                           ("llms_txt", "mcp_server",
                            "machine_readable", "public_api_hint")},
-                 "axis_sources": {},
-                 "source_url": comp["homepage_url"],
+                 "axis_sources": {}, "source_url": comp["homepage_url"],
                  "note": "Not yet observed; axes unknown."},
-                _now_iso(),
-            )
+                _now_iso()), False
+        if not fresh:
+            any_cold = True
         out.append(obs)
+    if any_cold or force:
+        _kick_background_refresh()   # non-blocking; warms for next call
     return out
 
 
@@ -627,6 +700,35 @@ def competitive_positioning():
         "methodology": _METHODOLOGY,
     }
     resp = jsonify(payload)
+    for k, v in _cors_headers().items():
+        resp.headers[k] = v
+    return resp, 200
+
+
+# ──────────────────────────────────────────────────────────────────────
+# 4b. POST/GET /api/v1/competitive/refresh  (ADMIN) — warm the probe cache
+#     in the background. The 24x7 brain-ecosystem-watch cron hits this so
+#     /positioning is virtually always hot. Returns IMMEDIATELY; probing
+#     runs in a daemon thread and never blocks a worker.
+# ──────────────────────────────────────────────────────────────────────
+
+@competitive_intel_bp.route(
+    "/api/v1/competitive/refresh", methods=["POST", "GET", "OPTIONS"]
+)
+def competitive_refresh():
+    if request.method == "OPTIONS":
+        return ("", 204, _cors_headers())
+    auth_err = _admin_guard()
+    if auth_err:
+        return auth_err
+    started = _kick_background_refresh()
+    resp = jsonify({
+        "ok": True,
+        "refresh_started": started,
+        "note": ("Background probe warm "
+                 + ("started" if started else "already in flight")
+                 + "; re-query /api/v1/competitive/positioning shortly."),
+    })
     for k, v in _cors_headers().items():
         resp.headers[k] = v
     return resp, 200
