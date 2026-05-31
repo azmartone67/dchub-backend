@@ -2900,6 +2900,12 @@ footer a:hover { color: var(--acc-light); }
     <p class="lede">Real-time power availability across {{ count }} U.S. data center markets. Two scores per market: <strong>Excess Power</strong> (where buyers don't know to look) and <strong>Constraint</strong> (where the queue is dead). The contrarian metric the incumbents won't publish.</p>
   </section>
 
+  <a href="/dcgi" style="display:block;text-decoration:none;background:linear-gradient(135deg,#10b981 0%,#0ea5e9 100%);border-radius:14px;padding:1.6rem 2rem;margin:0 0 2rem;position:relative;overflow:hidden;">
+    <div style="font-family:'JetBrains Mono',monospace;font-size:11px;text-transform:uppercase;letter-spacing:.14em;color:rgba(255,255,255,.82);margin-bottom:6px;">🔥 The other half of the story</div>
+    <div style="font-size:1.25rem;font-weight:800;color:#fff;letter-spacing:-0.01em;">See the gas story &rarr; DC Hub Gas Index (DCGI)</div>
+    <p style="color:rgba(255,255,255,.9);font-size:0.95rem;margin:0.35rem 0 0;max-width:640px;">When the grid queue runs 5&ndash;7 years, behind-the-meter natural gas is how AI capacity actually gets energized. DCGI scores every US state on gas-to-power siting.</p>
+  </a>
+
   <div class="stats-row">
     <div class="stat"><div class="num">{{ count }}</div><div class="label">Markets Scored</div></div>
     <div class="stat"><div class="num">8</div><div class="label">Inputs per Score</div></div>

@@ -718,39 +718,350 @@ def pipeline_report_html():
     return resp
 
 
+# ── /dcgi dashboard — full visual + structural parity with /dcpi ────────────
+# 2026-05-31: the prior /dcgi was a thin ~18KB table reusing _REPORT_CSS. This
+# rewrite mirrors routes/dcpi.py's DCPI_INDEX_TEMPLATE so the two indices look
+# like siblings: same dark dchub-brand palette + Inter/JetBrains-Mono fonts,
+# sticky top-nav, LIVE status strip, hero, stats row, a state LEADERBOARD
+# (the gas analog of DCPI's iso-grid — color-coded GAS-ADVANTAGED / ADEQUATE /
+# GAS-CONSTRAINED), a Chart.js section, an "Ask the Gas Index" box, a Daily
+# Brief subscribe block, a Pro CTA, methodology, footer, JSON-LD Dataset
+# (CC BY 4.0), and a prominent ⚡ cross-link to /dcpi.
+#
+# IMPLEMENTATION NOTE (f-string / brace safety): the template carries hundreds
+# of literal { } in its CSS and inline JS. To avoid %-escaping / .format() /
+# f-string brace pitfalls (the recurring %s-in-f-string bug class), this is a
+# PLAIN string-concatenation build (matching the rest of this module) — NOT an
+# f-string and NOT .format(). The only dynamic Python values are the five
+# national stat numbers, concatenated via + str(...) +, and the JSON-LD via
+# json.dumps(). All CSS/JS braces stay literal and need no escaping.
+#
+# RESILIENCE: the leaderboard + chart are rendered CLIENT-SIDE from
+# /api/v1/dcgi/scores (never /api/v1/dcpi/*). That endpoint soft-paywalls the
+# numeric fields for anonymous callers (masks dcgi / gas_access_score / etc. to
+# null with locked:true), so the JS guards every numeric read against null and
+# degrades each section gracefully — an empty/locked/erroring endpoint shows a
+# friendly message, never a JS crash or blank page.
+
+# Shared dchub-brand dashboard CSS (mirrors DCPI_INDEX_TEMPLATE's <style>),
+# recolored for GAS: emerald accent (gas-advantaged green) + the same
+# amber/red verdict ramp, plus the indigo/violet gradient kept for the
+# power-flywheel cross-link so it visually rhymes with /dcpi.
+_DCGI_DASH_CSS = """
+:root{
+  --bg:#0a0a12; --bg2:#0f1119; --bg3:#181a25; --card:#11121a; --card-hi:#1a1c28;
+  --bd:#1f2030; --bd-hi:#2a2c3e; --tx:#fff; --tx2:#9ca3af; --tx3:#6b7280;
+  --acc:#10b981; --acc-light:#34d399; --acc-vivid:#34d399;
+  --green:#10b981; --orange:#f59e0b; --red:#ef4444;
+  --gradient:linear-gradient(135deg,#10b981 0%,#0ea5e9 100%);
+  --power:linear-gradient(135deg,#6366f1 0%,#a855f7 100%);
+}
+*{box-sizing:border-box}
+body{font-family:'Inter',-apple-system,BlinkMacSystemFont,system-ui,sans-serif;background:var(--bg);color:var(--tx);margin:0;padding:0;line-height:1.55;-webkit-font-smoothing:antialiased}
+code,pre,.mono{font-family:'JetBrains Mono',monospace}
+.top-nav{border-bottom:1px solid var(--bd);background:rgba(10,10,18,0.85);backdrop-filter:blur(8px);position:sticky;top:0;z-index:100}
+.top-nav-inner{max-width:1280px;margin:0 auto;padding:1rem 1.5rem;display:flex;align-items:center;justify-content:space-between;gap:1.5rem}
+.logo{font-weight:800;font-size:1.05rem;color:var(--tx);text-decoration:none;letter-spacing:-0.01em}
+.logo span{color:var(--acc)}
+.nav-links{display:flex;gap:1.5rem;flex-wrap:wrap}
+.nav-links a{color:var(--tx2);text-decoration:none;font-size:0.92rem;font-weight:500;position:relative}
+.nav-links a:hover{color:var(--tx)}
+.nav-links a.active{color:var(--tx)}
+.nav-links a sup{color:var(--green);font-size:0.55rem;font-weight:800;letter-spacing:0.04em;margin-left:0.2rem;vertical-align:super}
+.status-strip{background:var(--bg2);border-bottom:1px solid var(--bd);padding:0.55rem 1.5rem;text-align:center;font-family:'JetBrains Mono',monospace;font-size:0.78rem;color:var(--tx2);letter-spacing:0.04em;text-transform:uppercase}
+.pulse{display:inline-block;width:8px;height:8px;background:var(--green);border-radius:50%;margin-right:0.5rem;animation:pulse 1.6s ease-in-out infinite;vertical-align:middle}
+@keyframes pulse{50%{opacity:0.3;transform:scale(0.85)}}
+.wrap{max-width:1280px;margin:0 auto;padding:3rem 1.5rem}
+.hero{margin-bottom:2rem}
+.hero h1{font-size:clamp(2.4rem,5vw,3.6rem);margin:0 0 1rem;font-weight:800;letter-spacing:-0.025em;line-height:1.05}
+.hero h1 .accent{background:var(--gradient);-webkit-background-clip:text;background-clip:text;color:transparent}
+.hero .lede{color:var(--tx2);font-size:1.1rem;max-width:720px;margin:0 0 1.5rem}
+.stats-row{display:grid;grid-template-columns:repeat(auto-fit,minmax(180px,1fr));gap:1rem;margin:2rem 0 3rem;padding:1.5rem;background:var(--card);border:1px solid var(--bd);border-radius:12px}
+.stat .num{font-family:'JetBrains Mono',monospace;font-size:2rem;font-weight:700;color:var(--tx);letter-spacing:-0.02em}
+.stat .label{color:var(--tx2);font-size:0.72rem;text-transform:uppercase;letter-spacing:0.06em;margin-top:0.3rem}
+.section-h{display:flex;align-items:center;gap:0.6rem;margin:3rem 0 1rem;font-size:0.78rem;font-weight:700;letter-spacing:0.12em;text-transform:uppercase;color:var(--tx2)}
+.section-h .pip{width:4px;height:12px;background:var(--acc);border-radius:2px}
+h2{font-size:1.6rem;font-weight:700;margin:0 0 1rem;letter-spacing:-0.015em}
+.toggle{display:inline-flex;background:var(--card);border:1px solid var(--bd);border-radius:10px;overflow:hidden;margin:0 0 1.5rem}
+.toggle button{background:transparent;color:var(--tx2);border:0;padding:0.7rem 1.25rem;cursor:pointer;font-weight:600;font-size:0.85rem;font-family:inherit;transition:all 0.15s}
+.toggle button.active{background:var(--gradient);color:white}
+.grid{display:grid;grid-template-columns:repeat(auto-fill,minmax(280px,1fr));gap:1rem}
+.card{background:var(--card);border:1px solid var(--bd);border-radius:12px;padding:1.4rem 1.5rem;transition:all 0.18s ease;position:relative;overflow:hidden}
+.card:hover{transform:translateY(-3px);border-color:var(--bd-hi);background:var(--card-hi);box-shadow:0 12px 32px rgba(16,185,129,0.10)}
+.card .market-name{font-size:1.1rem;font-weight:600;margin:0 0 0.25rem;letter-spacing:-0.01em}
+.card .iso{color:var(--tx2);font-family:'JetBrains Mono',monospace;font-size:0.75rem;margin-bottom:1rem}
+.score{font-family:'JetBrains Mono',monospace;font-size:2.6rem;font-weight:800;line-height:1;letter-spacing:-0.04em}
+.score.green{color:var(--green)}
+.score.orange{color:var(--orange)}
+.score.red{color:var(--red)}
+.label{color:var(--tx2);font-size:0.7rem;text-transform:uppercase;letter-spacing:0.08em;margin-top:0.4rem;font-weight:600}
+.verdict{display:inline-block;padding:0.22rem 0.7rem;border-radius:5px;font-size:0.7rem;font-weight:800;letter-spacing:0.06em;margin-top:0.9rem}
+.verdict.adv{background:rgba(16,185,129,0.18);color:var(--green)}
+.verdict.adq{background:rgba(245,158,11,0.18);color:var(--orange)}
+.verdict.con{background:rgba(239,68,68,0.18);color:var(--red)}
+.subline{font-family:'JetBrains Mono',monospace;font-size:0.78rem;color:var(--tx2);margin-top:0.55rem}
+table{width:100%;border-collapse:collapse;background:var(--card);border:1px solid var(--bd);border-radius:12px;overflow:hidden;margin-top:0.5rem}
+th,td{padding:11px 14px;text-align:left;border-bottom:1px solid var(--bd);font-size:14px}
+th{color:var(--tx2);font-weight:600;text-transform:uppercase;letter-spacing:.06em;font-size:11px}
+td.n,th.n{text-align:right;font-variant-numeric:tabular-nums}
+tr:last-child td{border-bottom:none}
+.bar{height:7px;border-radius:4px;background:#23283a;overflow:hidden;min-width:70px;display:inline-block;vertical-align:middle}
+.bar>i{display:block;height:100%;background:linear-gradient(90deg,#10b981,#0ea5e9)}
+.note{color:var(--tx2);font-size:13px;margin-top:8px}
+.cta-banner{background:var(--gradient);padding:2rem 2.25rem;border-radius:14px;margin:3rem 0 2rem;position:relative;overflow:hidden}
+.cta-banner::after{content:'';position:absolute;right:-40px;bottom:-40px;width:200px;height:200px;background:radial-gradient(circle,rgba(255,255,255,0.15),transparent 70%);pointer-events:none}
+.cta-banner h2{margin:0 0 0.4rem;font-size:1.4rem;color:white}
+.cta-banner p{margin:0 0 1.1rem;color:rgba(255,255,255,0.88);font-size:0.95rem;max-width:540px}
+.cta-banner a.btn{display:inline-block;background:white;color:#0b8f63;padding:0.7rem 1.3rem;border-radius:7px;text-decoration:none;font-weight:700;font-size:0.92rem;transition:transform 0.1s}
+.cta-banner a.btn:hover{transform:translateY(-1px)}
+.power-cross{display:block;text-decoration:none;background:var(--power);border-radius:14px;padding:1.6rem 2rem;margin:2rem 0 1rem;position:relative;overflow:hidden;transition:transform 0.12s}
+.power-cross:hover{transform:translateY(-2px)}
+.power-cross .pk{font-family:'JetBrains Mono',monospace;font-size:11px;text-transform:uppercase;letter-spacing:.14em;color:rgba(255,255,255,.82);margin-bottom:6px}
+.power-cross .pt{font-size:1.25rem;font-weight:800;color:#fff;letter-spacing:-0.01em}
+.power-cross .pp{color:rgba(255,255,255,.9);font-size:0.95rem;margin:0.35rem 0 0;max-width:640px}
+footer{border-top:1px solid var(--bd);margin-top:3rem;padding:2rem 0 1rem;color:var(--tx3);font-size:0.84rem}
+footer a{color:var(--tx2)}
+footer a:hover{color:var(--acc-light)}
+@media (max-width:600px){.nav-links{display:none}}
+"""
+
+
+# Client-side hydration for /dcgi. Kept as a separate plain-string constant
+# (no f-string / .format()) so its many literal { } braces need no escaping.
+# Every numeric read is null-guarded because /api/v1/dcgi/scores masks the
+# numeric fields (dcgi / gas_access_score / gas_cost_score / pipelines /
+# operators / gas_price) to null with locked:true for anonymous callers — the
+# leaderboard then shows the verdict-only teaser, and the chart hides itself
+# rather than crashing. Fetches NEVER target /api/v1/dcpi/*.
+_DCGI_DASH_JS = r"""
+(function(){
+  var VCLASS = function(v){
+    if (v === 'GAS-ADVANTAGED') return 'adv';
+    if (v === 'ADEQUATE') return 'adq';
+    return 'con';
+  };
+  var STATE = { rows: [], mode: 'dcgi', locked: false };
+
+  function num(v){ return (v === null || v === undefined) ? null : v; }
+  function scoreClass(v){
+    if (v === null) return '';
+    if (v >= 62) return 'green';
+    if (v >= 42) return 'orange';
+    return 'red';
+  }
+  function fmt(v){ return (v === null || v === undefined) ? '—' : v; }
+
+  function renderGrid(){
+    var grid = document.getElementById('dcgi-grid');
+    if (!grid) return;
+    var rows = STATE.rows.slice();
+    var mode = STATE.mode;
+    rows.sort(function(a,b){
+      var ka = mode === 'access' ? num(a.gas_access_score) : num(a.dcgi);
+      var kb = mode === 'access' ? num(b.gas_access_score) : num(b.dcgi);
+      // null (locked) values sort last but keep stable verdict order otherwise
+      ka = (ka === null) ? -1 : ka; kb = (kb === null) ? -1 : kb;
+      return kb - ka;
+    });
+    if (!rows.length){
+      grid.innerHTML = '<div style="grid-column:1/-1;color:var(--tx2);font-size:0.85rem;padding:14px;text-align:center;">DCGI scoring is being recomputed — check back shortly.</div>';
+      return;
+    }
+    grid.innerHTML = rows.map(function(s){
+      var primary = mode === 'access' ? num(s.gas_access_score) : num(s.dcgi);
+      var primaryLabel = mode === 'access' ? 'Gas Access' : 'DCGI';
+      var vc = VCLASS(s.verdict || '');
+      var pipes = num(s.pipelines), ops = num(s.operators), price = num(s.gas_price);
+      var sub;
+      if (STATE.locked || primary === null){
+        sub = '<div class="subline">🔒 Score is Pro · <a href="/pricing" style="color:var(--acc-light);text-decoration:none">unlock</a></div>';
+      } else {
+        var bits = [];
+        if (pipes !== null) bits.push(pipes + ' pipes');
+        if (ops !== null) bits.push(ops + ' ops');
+        if (price !== null) bits.push('$' + Number(price).toFixed(2) + '/Mcf');
+        sub = '<div class="subline">' + (bits.join(' · ') || '&nbsp;') + '</div>';
+      }
+      var scoreHtml = (primary === null)
+        ? '<div class="score" style="color:var(--tx3)">🔒</div>'
+        : '<div class="score ' + scoreClass(primary) + '">' + primary + '</div>';
+      return '<div class="card">'
+        + '<div class="market-name">' + (s.state || '?') + '</div>'
+        + '<div class="iso">United States · gas</div>'
+        + scoreHtml
+        + '<div class="label">' + primaryLabel + '</div>'
+        + '<div class="verdict ' + vc + '">' + (s.verdict || '—') + '</div>'
+        + sub
+        + '</div>';
+    }).join('');
+  }
+
+  function renderChart(){
+    var canvas = document.getElementById('dcgi-dist-chart');
+    var section = document.getElementById('dcgi-chart-section');
+    if (!canvas || typeof Chart === 'undefined'){ if (section) section.style.display='none'; return; }
+    // Need real numbers — if locked/masked, hide the chart (degrade gracefully).
+    var scored = STATE.rows.filter(function(s){ return num(s.dcgi) !== null; });
+    if (!scored.length){ if (section) section.style.display='none'; return; }
+    scored.sort(function(a,b){ return b.dcgi - a.dcgi; });
+    var top = scored.slice(0, 25);
+    var labels = top.map(function(s){ return s.state; });
+    var data = top.map(function(s){ return s.dcgi; });
+    var bg = top.map(function(s){
+      var v = s.verdict || '';
+      if (v === 'GAS-ADVANTAGED') return '#10b981';
+      if (v === 'ADEQUATE') return '#f59e0b';
+      return '#ef4444';
+    });
+    try {
+      new Chart(canvas, {
+        type: 'bar',
+        data: { labels: labels, datasets: [{ label: 'DCGI', data: data, backgroundColor: bg, borderRadius: 4 }] },
+        options: {
+          responsive: true, maintainAspectRatio: false,
+          plugins: { legend: { display: false } },
+          scales: {
+            x: { ticks: { color: '#9ca3af', maxRotation: 0, autoSkip: true }, grid: { display: false } },
+            y: { ticks: { color: '#9ca3af' }, grid: { color: '#1f2030' }, suggestedMin: 0, suggestedMax: 100 }
+          }
+        }
+      });
+    } catch(e){ if (section) section.style.display='none'; }
+  }
+
+  // Hydrate leaderboard + chart from /api/v1/dcgi/scores (NEVER /api/v1/dcpi).
+  fetch('/api/v1/dcgi/scores').then(function(r){ return r.json(); }).then(function(d){
+    if (!d || d.ok === false){ renderGrid(); renderChart(); return; }
+    STATE.rows = (d && d.states) || [];
+    STATE.locked = !!d._gated;
+    renderGrid();
+    renderChart();
+  }).catch(function(){
+    var grid = document.getElementById('dcgi-grid');
+    if (grid) grid.innerHTML = '<div style="grid-column:1/-1;color:var(--tx2);font-size:0.85rem;padding:14px;text-align:center;">DCGI leaderboard temporarily offline.</div>';
+    var section = document.getElementById('dcgi-chart-section');
+    if (section) section.style.display = 'none';
+  });
+
+  // Toggle: DCGI composite vs Gas Access.
+  var toggleBtns = document.querySelectorAll('.toggle button');
+  toggleBtns.forEach(function(b){
+    b.addEventListener('click', function(){
+      toggleBtns.forEach(function(x){ x.classList.remove('active'); });
+      b.classList.add('active');
+      STATE.mode = b.getAttribute('data-mode') || 'dcgi';
+      renderGrid();
+    });
+  });
+
+  // Daily Brief subscribe — shared /api/v1/digest/subscribe endpoint.
+  var f = document.getElementById('dcgi-sub-form');
+  if (f){
+    f.addEventListener('submit', function(e){
+      e.preventDefault();
+      var em = (document.getElementById('dcgi-sub-email').value || '').trim();
+      var msg = document.getElementById('dcgi-sub-msg');
+      var btn = document.getElementById('dcgi-sub-go');
+      btn.disabled = true; msg.textContent = 'Subscribing...';
+      fetch('/api/v1/digest/subscribe', {
+        method: 'POST', headers: {'Content-Type':'application/json'},
+        body: JSON.stringify({email: em})
+      }).then(function(r){ return r.json(); }).then(function(d){
+        if (d && d.ok){
+          msg.innerHTML = '<span style="color:#10b981">✓ You\'re in. First brief lands tomorrow at 14:00 UTC.</span>';
+          document.getElementById('dcgi-sub-email').value = '';
+        } else {
+          msg.innerHTML = '<span style="color:#ef4444">' + ((d && d.error) || 'error') + '</span>';
+        }
+      }).catch(function(err){
+        msg.innerHTML = '<span style="color:#ef4444">Error: ' + err + '</span>';
+      }).finally(function(){ btn.disabled = false; });
+    });
+  }
+
+  // Ask the Gas Index — reuses /api/v1/dcpi/ask (the shared DC-power Q&A
+  // tool-loop; gas-to-power is a DC power topic). No /api/v1/dcgi/ask exists,
+  // so we frame the prompt for gas but delegate to the working endpoint.
+  (function(){
+    var go = document.getElementById('gask-go');
+    var q = document.getElementById('gask-q');
+    var out = document.getElementById('gask-out');
+    if (!go || !q || !out) return;
+    function showError(m){ out.innerHTML = '<span style="color:#ef4444;">' + m + '</span>'; }
+    function send(){
+      var question = (q.value || '').trim();
+      if (!question){ q.focus(); return; }
+      out.innerHTML = '<em style="color:#9ca3af;">Thinking…</em>';
+      go.disabled = true; go.style.opacity = '0.6';
+      fetch('/api/v1/dcpi/ask?q=' + encodeURIComponent(question), {
+        method: 'GET', headers: { 'Accept': 'application/json' }, credentials: 'same-origin'
+      }).then(function(resp){
+        if (!resp.ok){ return resp.text().then(function(t){ showError('HTTP ' + resp.status + ': ' + t.slice(0,200)); }); }
+        return resp.json().then(function(data){
+          if (data && data.error){ showError(data.error); return; }
+          var answer = (data && data.answer || 'No answer.')
+            .replace(/\n/g, '<br>')
+            .replace(/\[([^\]]+)\]/g, '<strong style="color:#6ee7b7">[$1]</strong>');
+          out.innerHTML = answer;
+        });
+      }).catch(function(e){
+        showError('Error: ' + (e && e.message ? e.message : e));
+      }).finally(function(){ go.disabled = false; go.style.opacity = '1'; });
+    }
+    go.addEventListener('click', send);
+    q.addEventListener('keydown', function(e){
+      if (e.key === 'Enter' && !e.shiftKey){ e.preventDefault(); send(); }
+    });
+  })();
+})();
+"""
+
+
 @dcgi_bp.route("/dcgi", methods=["GET"])
 def dcgi_html():
-    """Branded /dcgi landing page — the full per-state DCGI table plus the
-    midstream operator registry. Mirrors pipeline_report_html() and reuses the
-    same _REPORT_CSS + _report_payload(). The /pipeline-report page leads with
-    the 'gas behind the grid' narrative; this page is the index itself."""
+    """Branded /dcgi dashboard — full visual + structural parity with /dcpi.
+
+    Server renders the shell (nav, hero, stats, section frames, JSON-LD,
+    cross-links) with the five national stat numbers injected from
+    _report_payload(); the state LEADERBOARD, the Chart.js distribution
+    chart, and the midstream-operator registry are hydrated client-side from
+    /api/v1/dcgi/scores + /api/v1/dcgi/operators so they stay fresh and
+    degrade gracefully if an endpoint is empty/locked/down. Mirrors
+    routes/dcpi.py DCPI_INDEX_TEMPLATE (iso-grid, chart section, ask box,
+    subscribe, pro-cta) but every data fetch targets /api/v1/dcgi/*."""
     p = _report_payload()
     nat = p["national"]
 
-    # Full per-state ranking (not just the top gas-advantaged slice). Re-derive
-    # the complete ranked list so the index page shows every scored state.
+    # Static fallback leaderboard + operator rows so the page is never empty
+    # even with JS disabled / before hydration (progressive enhancement).
     states, _err = _gas_state_rollup()
     states = states or {}
     ranked = sorted(states.values(), key=lambda s: s["dcgi"], reverse=True)
 
-    rows = []
+    noscript_rows = []
     for s in ranked:
         price = s.get("gas_price")
         price_txt = ("$%.2f" % price) if price else "—"
-        rows.append(
+        noscript_rows.append(
             "<tr><td><b>{st}</b></td>"
             "<td class=n>{dcgi}</td>"
-            "<td class=n><span class=bar><i style=\"width:{accw}%\"></i></span> {acc}</td>"
+            "<td class=n>{acc}</td>"
             "<td class=n>{cost}</td>"
             "<td class=n>{pipes}</td>"
             "<td class=n>{ops}</td>"
             "<td class=n>{price}</td>"
-            "<td><span class=\"v {vc}\">{v}</span></td></tr>".format(
+            "<td><span class=\"verdict {vc}\">{v}</span></td></tr>".format(
                 st=s["state"], dcgi=s["dcgi"], acc=s["gas_access_score"],
-                accw=int(s["gas_access_score"]), cost=s["gas_cost_score"],
-                pipes=s["pipelines"], ops=s["operators"], price=price_txt,
+                cost=s["gas_cost_score"], pipes=s["pipelines"],
+                ops=s["operators"], price=price_txt,
                 vc=_vclass(s["verdict"]), v=s["verdict"]))
-    state_rows = "".join(rows) or "<tr><td colspan=8 class=note>Scoring warming up…</td></tr>"
+    noscript_table = ("<table><thead><tr><th>State</th><th class=n>DCGI</th>"
+                      "<th class=n>Gas access</th><th class=n>Cost</th>"
+                      "<th class=n>Pipelines</th><th class=n>Operators</th>"
+                      "<th class=n>$/Mcf</th><th>Verdict</th></tr></thead><tbody>"
+                      + ("".join(noscript_rows)
+                         or "<tr><td colspan=8 class=note>Scoring warming up…</td></tr>")
+                      + "</tbody></table>")
 
     op_rows = []
     for o in p["midstream_operators"]:
@@ -764,61 +1075,215 @@ def dcgi_html():
     op_rows_html = "".join(op_rows) or "<tr><td colspan=4 class=note>Registry warming up…</td></tr>"
 
     jsonld = {
-        "@context": "https://schema.org", "@type": "Dataset",
-        "name": "DC Hub Data Center Gas Index (DCGI)",
-        "description": "Per-state natural-gas suitability index for data-center power siting.",
-        "creator": {"@type": "Organization", "name": "DC Hub", "url": "https://dchub.cloud"},
-        "license": "https://creativecommons.org/licenses/by/4.0/",
+        "@context": "https://schema.org",
+        "@type": "Dataset",
+        "name": "Data Center Gas Index (DCGI)",
+        "alternateName": "DCGI",
+        "description": ("Per-state natural-gas suitability index for siting AI "
+                        "data-center power load — the behind-the-meter / gas-to-power "
+                        "thesis. Blends pipeline density, midstream-operator diversity, "
+                        "interstate share and delivered gas price into a 0–100 DCGI with "
+                        "a GAS-ADVANTAGED / ADEQUATE / GAS-CONSTRAINED verdict per state."),
         "url": "https://dchub.cloud/dcgi",
+        "sameAs": "https://dchub.cloud/dcgi",
+        "creator": {"@type": "Organization", "name": "DC Hub", "url": "https://dchub.cloud"},
+        "publisher": {"@type": "Organization", "name": "DC Hub", "url": "https://dchub.cloud"},
+        "keywords": ("data center, natural gas, gas index, pipeline, gas-to-power, "
+                     "behind-the-meter, DCGI, midstream, Energy Transfer, Kinder Morgan, "
+                     "Williams, Transco"),
+        "license": "https://creativecommons.org/licenses/by/4.0/",
+        "isAccessibleForFree": True,
+        "spatialCoverage": {"@type": "Place", "name": "United States"},
+        "distribution": [
+            {"@type": "DataDownload", "encodingFormat": "application/json",
+             "contentUrl": "https://dchub.cloud/api/v1/dcgi/scores",
+             "name": "All state DCGI scores (current)"},
+            {"@type": "DataDownload", "encodingFormat": "application/json",
+             "contentUrl": "https://dchub.cloud/api/v1/dcgi/operators",
+             "name": "Midstream operator registry"},
+        ],
+        "citation": "DC Hub Data Center Gas Index (DCGI). https://dchub.cloud/dcgi",
     }
 
     html = (
-        "<!doctype html><html lang=en><head><meta charset=utf-8>"
-        "<meta name=viewport content=\"width=device-width,initial-scale=1\">"
-        "<title>DCGI — Data Center Gas Index</title>"
-        "<meta name=description content=\"Data Center Gas Index (DCGI): every US state "
-        "scored on natural-gas suitability for siting AI data-center power load, plus a "
-        "live midstream-operator registry. CC BY 4.0.\">"
-        "<link rel=canonical href=\"https://dchub.cloud/dcgi\">"
-        "<meta property=\"og:title\" content=\"DCGI — Data Center Gas Index\">"
-        "<meta property=\"og:description\" content=\"DCGI: per-state gas-to-power siting index for data centers.\">"
-        "<style>" + _REPORT_CSS + "</style>"
+        "<!DOCTYPE html><html lang=\"en\"><head><meta charset=\"utf-8\">"
+        "<title>DCGI · Data Center Gas Index | DC Hub</title>"
+        "<meta name=\"viewport\" content=\"width=device-width, initial-scale=1\">"
+        "<meta name=\"description\" content=\"DCGI (Data Center Gas Index) scores every "
+        "US state on natural-gas suitability for siting AI data-center power load — the "
+        "behind-the-meter / gas-to-power play when the grid queue is 5–7 years. Live "
+        "midstream-operator registry. The gas analog to DCPI. CC BY 4.0.\">"
+        "<meta property=\"og:title\" content=\"DCGI — The Data Center Gas Index | DC Hub\">"
+        "<meta property=\"og:description\" content=\"Every US state scored on gas-to-power "
+        "suitability for data centers. The gas behind the grid — when interconnection "
+        "queues run 5–7 years.\">"
+        "<meta property=\"og:image\" content=\"https://dchub.cloud/dcpi/og.svg\">"
+        "<meta property=\"og:url\" content=\"https://dchub.cloud/dcgi\">"
+        "<meta name=\"twitter:card\" content=\"summary_large_image\">"
+        "<meta name=\"robots\" content=\"index,follow,max-snippet:-1,max-image-preview:large\">"
+        "<link rel=\"canonical\" href=\"https://dchub.cloud/dcgi\">"
         "<script type=\"application/ld+json\">" + json.dumps(jsonld) + "</script>"
-        "</head><body><div class=wrap>"
-        "<div class=kick>DC Hub · Data Center Gas Index</div>"
-        "<h1>DCGI &mdash; Data Center Gas Index</h1>"
-        "<p class=sub>The gas analog to DCPI: every US state scored on natural-gas "
-        "suitability for siting data-center power load. Grid interconnect queues run "
-        "5&ndash;7 years &mdash; so behind-the-meter gas is how AI capacity gets "
-        "energized now.</p>"
-        "<div class=stats>"
-        "<div class=stat><b>" + str(nat["pipeline_segments"]) + "</b><span>Pipeline segments tracked</span></div>"
-        "<div class=stat><b>" + str(nat["states_scored"]) + "</b><span>States scored</span></div>"
-        "<div class=stat><b>" + str(nat["distinct_operators"]) + "</b><span>Distinct operators</span></div>"
-        "<div class=stat><b>" + str(nat["midstreams_tracked"]) + "</b><span>Megacap midstreams</span></div>"
-        "<div class=stat><b>" + str(nat["gas_advantaged_states"]) + "</b><span>Gas-advantaged states</span></div>"
+        "<link href=\"https://fonts.googleapis.com/css2?family=JetBrains+Mono:wght@400;500;600;700&family=Inter:wght@400;500;600;700;800&display=swap\" rel=\"stylesheet\">"
+        "<style>" + _DCGI_DASH_CSS + "</style>"
+        "</head><body>"
+        # ── top nav (mirrors /dcpi) ──
+        "<nav class=\"top-nav\"><div class=\"top-nav-inner\">"
+        "<a class=\"logo\" href=\"/\">DC <span>Hub</span></a>"
+        "<div class=\"nav-links\">"
+        "<a href=\"/\">Home</a>"
+        "<a href=\"/markets\">Markets</a>"
+        "<a href=\"/dcpi\">DCPI</a>"
+        "<a href=\"/dcgi\" class=\"active\">DCGI<sup>NEW</sup></a>"
+        "<a href=\"/land-power\">Land &amp; Power</a>"
+        "<a href=\"/ai\">AI Platform</a>"
+        "<a href=\"/news\">News</a>"
+        "<a href=\"/pricing\">Pricing</a>"
+        "</div></div></nav>"
+        # ── live status strip ──
+        "<div class=\"status-strip\"><span class=\"pulse\"></span>"
+        "LIVE · " + str(nat["states_scored"]) + " STATES SCORED · "
+        + str(nat["pipeline_segments"]) + " PIPELINE SEGMENTS · FREE FOR PRESS CITATION"
         "</div>"
-        "<h2>Per-state DCGI ranking</h2>"
-        "<table><thead><tr><th>State</th><th class=n>DCGI</th><th class=n>Gas access</th>"
-        "<th class=n>Cost</th><th class=n>Pipelines</th><th class=n>Operators</th>"
-        "<th class=n>$/Mcf</th><th>Verdict</th></tr></thead><tbody>"
-        + state_rows +
-        "</tbody></table>"
-        "<p class=note>DCGI = 0.60 &times; gas access + 0.40 &times; gas cost. "
-        "Access blends pipeline density, operator diversity and interstate share. "
-        "<a href=\"/api/v1/dcgi/methodology\">Full methodology &rarr;</a></p>"
-        "<h2>Midstream operator registry &mdash; the gas behind the markets</h2>"
+        "<div class=\"wrap\">"
+        # ── hero ──
+        "<section class=\"hero\">"
+        "<h1>The <span class=\"accent\">Data Center Gas Index</span></h1>"
+        "<p class=\"lede\">The gas analog to DCPI. Every US state scored on natural-gas "
+        "suitability for siting AI data-center power load. Grid interconnect queues run "
+        "5&ndash;7 years &mdash; so <strong>behind-the-meter gas</strong> is increasingly "
+        "how AI capacity actually gets energized this decade. No one else scores the gas "
+        "behind the grid.</p>"
+        "</section>"
+        # ── power-flywheel cross-link (⚡ → /dcpi) ──
+        "<a class=\"power-cross\" href=\"/dcpi\">"
+        "<div class=\"pk\">⚡ The other half of the story</div>"
+        "<div class=\"pt\">See the power story &rarr; DC Hub Power Index (DCPI)</div>"
+        "<p class=\"pp\">Gas is how capacity gets energized when the grid can&rsquo;t. DCPI "
+        "scores the grid itself &mdash; where the interconnection queue is dead and where "
+        "stranded excess power is hiding in plain sight across U.S. markets.</p>"
+        "</a>"
+        # ── stats row ──
+        "<div class=\"stats-row\">"
+        "<div class=\"stat\"><div class=\"num\">" + str(nat["states_scored"]) + "</div><div class=\"label\">States Scored</div></div>"
+        "<div class=\"stat\"><div class=\"num\">" + str(nat["pipeline_segments"]) + "</div><div class=\"label\">Pipeline Segments</div></div>"
+        "<div class=\"stat\"><div class=\"num\">" + str(nat["distinct_operators"]) + "</div><div class=\"label\">Distinct Operators</div></div>"
+        "<div class=\"stat\"><div class=\"num\">" + str(nat["midstreams_tracked"]) + "</div><div class=\"label\">Megacap Midstreams</div></div>"
+        "<div class=\"stat\"><div class=\"num\">" + str(nat["gas_advantaged_states"]) + "</div><div class=\"label\">Gas-Advantaged States</div></div>"
+        "</div>"
+        # ── leaderboard (gas analog of DCPI iso-grid) ──
+        "<div class=\"section-h\"><span class=\"pip\"></span>🔥 State Leaderboard</div>"
+        "<div class=\"toggle\" role=\"tablist\" aria-label=\"Switch score axis\">"
+        "<button class=\"active\" data-mode=\"dcgi\">DCGI · Composite</button>"
+        "<button data-mode=\"access\">Gas Access</button>"
+        "</div>"
+        "<div class=\"grid\" id=\"dcgi-grid\">"
+        "<div style=\"grid-column:1/-1;color:var(--tx2);font-size:0.85rem;padding:14px;text-align:center;border:1px dashed rgba(255,255,255,0.06);border-radius:10px;\">Loading state leaderboard…</div>"
+        "</div>"
+        # ── Chart.js distribution chart (mirrors DCPI chart section) ──
+        "<script src=\"https://cdn.jsdelivr.net/npm/chart.js@4.4.0/dist/chart.umd.min.js\"></script>"
+        "<div id=\"dcgi-chart-section\" style=\"margin:3rem 0;background:#11121a;border:1px solid #1f2030;border-radius:14px;padding:1.5rem;\">"
+        "<div style=\"display:flex;align-items:center;gap:0.6rem;margin-bottom:1rem;\">"
+        "<span style=\"width:4px;height:12px;background:#10b981;border-radius:2px;\"></span>"
+        "<span style=\"font-size:0.78rem;font-weight:700;letter-spacing:0.12em;text-transform:uppercase;color:#9ca3af;\">📊 DCGI by state · distribution</span>"
+        "</div>"
+        "<div style=\"position:relative;height:300px;\"><canvas id=\"dcgi-dist-chart\"></canvas></div>"
+        "</div>"
+        # ── methodology ──
+        "<div class=\"section-h\"><span class=\"pip\"></span>📋 Methodology</div>"
+        "<p style=\"color:var(--tx2);font-size:0.92rem;max-width:760px;\">"
+        "<strong style=\"color:var(--acc-light);\">DCGI</strong> = 0.60 &times; Gas Access + "
+        "0.40 &times; Gas Cost. <strong>Gas Access</strong> blends pipeline density, "
+        "midstream-operator diversity and interstate share (the EIA geofeed publishes no "
+        "per-segment throughput, so this is a relative infrastructure-presence index). "
+        "<strong>Gas Cost</strong> inverts the latest industrial / electric-power delivered "
+        "gas price ($/Mcf). Verdicts: <strong style=\"color:var(--green)\">GAS-ADVANTAGED</strong> "
+        "(dcgi&nbsp;&ge;&nbsp;62 &amp; access&nbsp;&ge;&nbsp;50), "
+        "<strong style=\"color:var(--orange)\">ADEQUATE</strong> (dcgi&nbsp;&ge;&nbsp;42), "
+        "<strong style=\"color:var(--red)\">GAS-CONSTRAINED</strong> (below). "
+        "<a href=\"/api/v1/dcgi/methodology\" style=\"color:var(--acc-light)\">Full methodology &rarr;</a></p>"
+        # ── midstream operator registry ──
+        "<div class=\"section-h\"><span class=\"pip\"></span>🛢️ Midstream Operator Registry</div>"
+        "<p style=\"color:var(--tx2);font-size:0.95rem;max-width:780px;margin-bottom:14px;\">"
+        "Parent midstream companies mapped to the FERC pipeline entities they operate, "
+        "with live segment counts. The value-add no one else publishes: which megacap "
+        "actually controls the gas under this market.</p>"
         "<table><thead><tr><th>Parent midstream</th><th>Type</th><th>HQ</th>"
         "<th class=n>Segments</th></tr></thead><tbody>"
         + op_rows_html +
         "</tbody></table>"
-        "<div class=foot>"
-        "Data: EIA natural-gas pipeline geodata + EIA gas prices. "
+        # ── Pro CTA (mirrors DCPI pro-cta-block) ──
+        "<div id=\"dcgi-pro-cta\">"
+        "<div class=\"section-h\"><span class=\"pip\"></span>🔓 Pro Access</div>"
+        "<div class=\"cta-banner\">"
+        "<h2>Unlock every state&rsquo;s gas scores. Map the operators. Export reports.</h2>"
+        "<p>The state list + GAS-ADVANTAGED / ADEQUATE / GAS-CONSTRAINED verdicts are free. "
+        "Pro unlocks the numeric DCGI scores (gas-access, gas-cost, composite) plus pipeline "
+        "&amp; operator counts for all scored states, and the raw per-pipeline rows. $199/mo.</p>"
+        "<a class=\"btn\" href=\"/pricing\">Upgrade to Pro &rarr;</a>"
+        "</div></div>"
+        "<script>"
+        "(function(){ try{ fetch('/api/v1/me/tier',{credentials:'include'})"
+        ".then(function(r){return r.json();}).then(function(d){"
+        "var t=((d&&(d.tier||d.plan))||'').toLowerCase();"
+        "if(['pro','enterprise','founding','developer','starter','admin'].indexOf(t)>=0){"
+        "var b=document.getElementById('dcgi-pro-cta'); if(b)b.style.display='none';}"
+        "}).catch(function(){}); }catch(e){} })();"
+        "</script>"
+        # ── Daily Brief subscribe (mirrors DCPI dcpi-subscribe; shared endpoint) ──
+        "<div id=\"dcgi-subscribe\" style=\"margin:3rem 0;background:linear-gradient(135deg,rgba(16,185,129,0.10),rgba(14,165,233,0.06));border:1px solid #2a2c3e;border-radius:14px;padding:1.5rem;\">"
+        "<div style=\"display:flex;align-items:center;gap:0.6rem;margin-bottom:0.6rem;\">"
+        "<span style=\"width:4px;height:12px;background:#10b981;border-radius:2px;\"></span>"
+        "<span style=\"font-size:0.78rem;font-weight:700;letter-spacing:0.12em;text-transform:uppercase;color:#9ca3af;\">📬 Daily DC Hub Brief</span>"
+        "</div>"
+        "<h3 style=\"margin:0 0 0.4rem;font-size:1.2rem;font-weight:700;\">Gas + power, every morning.</h3>"
+        "<p style=\"margin:0 0 1rem;color:#9ca3af;font-size:0.92rem;\">Top gas-advantaged states, biggest power movers, news count — emailed Mon&ndash;Fri at 14:00 UTC. Free.</p>"
+        "<form id=\"dcgi-sub-form\" style=\"display:flex;gap:0.5rem;flex-wrap:wrap;\">"
+        "<input type=\"email\" id=\"dcgi-sub-email\" placeholder=\"you@company.com\" required "
+        "style=\"flex:1;min-width:220px;background:#0a0a12;border:1px solid #1f2030;color:white;padding:0.7rem 1rem;border-radius:6px;font-size:0.92rem;outline:none;\">"
+        "<button type=\"submit\" id=\"dcgi-sub-go\" "
+        "style=\"background:linear-gradient(135deg,#10b981,#0ea5e9);color:white;border:0;padding:0.7rem 1.3rem;border-radius:6px;font-weight:700;font-size:0.9rem;cursor:pointer;\">Subscribe &rarr;</button>"
+        "</form>"
+        "<div id=\"dcgi-sub-msg\" style=\"margin-top:0.6rem;font-size:0.85rem;color:#9ca3af;\"></div>"
+        "</div>"
+        # ── Cite block ──
+        "<div style=\"background:#11121a;border:1px solid #1f2030;border-radius:12px;padding:20px;margin:32px auto;max-width:760px;\">"
+        "<div style=\"font-size:12px;color:#9eb5d8;text-transform:uppercase;letter-spacing:.1em;margin-bottom:8px\">Cite this index</div>"
+        "<code style=\"display:block;background:rgba(255,255,255,.03);padding:12px;border-radius:6px;color:#e8eef8;font-size:13px;margin-bottom:8px\">DC Hub. (2026). Data Center Gas Index (DCGI). https://dchub.cloud/dcgi</code>"
+        "<a href=\"/api/v1/dcgi/methodology\" style=\"color:#34d399;font-size:14px;text-decoration:none\">View methodology &rarr;</a>"
+        "</div>"
+        # ── footer ──
+        "<footer>"
+        "<p>This is the free preview. Numeric scores + raw per-pipeline rows via "
+        "<a href=\"/api/v1/dcgi/scores\">API</a>. Narrative report: "
+        "<a href=\"/pipeline-report\">The Gas Behind the Grid &rarr;</a></p>"
+        "<p>Data: EIA natural-gas pipeline geodata + EIA gas prices. "
         "Machine-readable: <a href=\"/api/v1/dcgi/scores\">/api/v1/dcgi/scores</a> · "
         "<a href=\"/api/v1/dcgi/operators\">/api/v1/dcgi/operators</a> · "
-        "narrative report: <a href=\"/pipeline-report\">/pipeline-report</a><br>"
-        "License: CC BY 4.0 &mdash; cite &ldquo;DC Hub Data Center Gas Index (DCGI), dchub.cloud&rdquo;."
-        "</div></div></body></html>")
+        "<a href=\"/api/v1/dcgi/methodology\">/api/v1/dcgi/methodology</a><br>"
+        "License: CC BY 4.0 &mdash; cite &ldquo;DC Hub Data Center Gas Index (DCGI), dchub.cloud&rdquo;. "
+        "© 2026 DC Hub · <a href=\"/dcpi\">DCPI</a> · <a href=\"/pricing\">Pricing</a></p>"
+        "</footer>"
+        "</div>"  # /.wrap
+        # ── noscript fallback table (progressive enhancement) ──
+        "<noscript><div style=\"max-width:1280px;margin:0 auto;padding:0 1.5rem 3rem;\">"
+        "<div class=\"section-h\"><span class=\"pip\"></span>Per-state DCGI ranking</div>"
+        + noscript_table +
+        "</div></noscript>"
+        # ── Ask the Gas Index (mirrors DCPI #ask-the-index; reuses /api/v1/dcpi/ask) ──
+        "<div id=\"ask-the-gas-index\" style=\"position:fixed;bottom:1.5rem;right:1.5rem;width:400px;max-width:calc(100vw - 3rem);background:#11121a;border:1px solid #2a2c3e;border-radius:14px;padding:1.1rem;color:white;box-shadow:0 16px 48px rgba(0,0,0,0.5);z-index:1000;\">"
+        "<div style=\"display:flex;align-items:center;gap:0.5rem;margin-bottom:0.6rem;\">"
+        "<span style=\"display:inline-block;width:8px;height:8px;background:#10b981;border-radius:50%;animation:pulse 1.4s ease-in-out infinite;\"></span>"
+        "<strong style=\"font-size:0.78rem;letter-spacing:0.06em;text-transform:uppercase;color:#9ca3af;\">Ask the Gas Index</strong>"
+        "</div>"
+        "<div id=\"gask-out\" style=\"font-size:0.88rem;line-height:1.55;min-height:80px;color:#ddd;margin-bottom:0.6rem;max-height:340px;overflow-y:auto;padding:0.4rem 0;\">"
+        "Ask about gas-to-power siting for data centers — try: <em style=\"color:#6ee7b7\">which states have the best pipeline access for behind-the-meter gas?</em>"
+        "</div>"
+        "<textarea id=\"gask-q\" placeholder=\"e.g. where can I site gas-fired DC load near cheap gas?\" style=\"width:100%;background:#0a0a12;border:1px solid #1f2030;color:white;padding:0.6rem 0.8rem;border-radius:6px;font-family:inherit;font-size:0.88rem;min-height:54px;resize:none;outline:none;\"></textarea>"
+        "<button id=\"gask-go\" style=\"width:100%;margin-top:0.5rem;background:linear-gradient(135deg,#10b981,#0ea5e9);color:white;border:0;padding:0.6rem;border-radius:6px;font-weight:700;font-size:0.88rem;cursor:pointer;\">Ask DCGI &rarr;</button>"
+        "</div>"
+        # ── client hydration + interactions ──
+        "<script>" + _DCGI_DASH_JS + "</script>"
+        "</body></html>")
 
     resp = Response(html, mimetype="text/html")
     resp.headers["Cache-Control"] = "public, max-age=120, s-maxage=300"
