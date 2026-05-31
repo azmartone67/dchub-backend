@@ -3488,6 +3488,22 @@ def handle_well_known():
                     _live_counts["deals"] = int(_cur.fetchone()[0] or 0)
                 except Exception:
                     pass
+                try:
+                    # r65 adoption metrics: all-time cumulative MCP tool calls +
+                    # distinct AI platforms/callers (monotonic — only grow).
+                    # Consumed by content_enqueue._fetch_dchub_metrics (max()-
+                    # ratcheted), so the weekly LinkedIn metrics post self-updates
+                    # once these exceed the hardcoded 97 / 392,743 floor.
+                    _cur.execute(
+                        "SELECT COUNT(*), "
+                        "COUNT(DISTINCT COALESCE(NULLIF(client_name,''), "
+                        "NULLIF(platform,''), 'unknown')) FROM mcp_tool_calls"
+                    )
+                    _ar = _cur.fetchone() or [0, 0]
+                    _live_counts["agent_requests"] = int(_ar[0] or 0)
+                    _live_counts["ai_platforms"] = int(_ar[1] or 0)
+                except Exception:
+                    pass
         except Exception:
             # Manifest must never fail to serve — fall back to static strings.
             _live_counts = {}
@@ -3708,6 +3724,10 @@ def handle_well_known():
                 ),
                 "capacity_pipeline_gw": "369",
                 "update_frequency": "real-time",
+            },
+            "adoption": {
+                "ai_platforms": _live_counts.get("ai_platforms", 0),
+                "agent_requests": _live_counts.get("agent_requests", 0),
             },
 
             "data_freshness": {
