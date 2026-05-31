@@ -3341,7 +3341,7 @@ def handle_well_known():
             "positioning": "The live, MCP-native data center intelligence platform. Where static research (DCHawk, dcByte, DCK) ships quarterly PDFs, DC Hub ships JSON updated every 60 seconds + free MCP tools any AI agent can call.",
             "url": "https://dchub.cloud/mcp",
             "transport": "streamable-http",
-            "version": "2.3.1",
+            "version": "2.3.2",
             "homepage": "https://dchub.cloud",
             "documentation": "https://dchub.cloud/ai-hub",
             "intelligence_hub": "https://dchub.cloud/intelligence",
@@ -3385,6 +3385,8 @@ def handle_well_known():
                 {"name": "get_water_risk",           "tier": "IDENTIFIED", "description": "Water stress + drought risk for a data center location."},
                 {"name": "get_energy_prices",        "tier": "IDENTIFIED", "description": "Retail electricity rates, natural gas prices, grid status (per state)."},
                 {"name": "get_renewable_energy",     "tier": "IDENTIFIED", "description": "Renewable capacity: solar, wind, combined generation."},
+                {"name": "get_gas_index",            "tier": "IDENTIFIED", "description": "DCGI — Data Center Gas Index: per-state natural-gas suitability (0-100), gas-access/gas-cost sub-scores + GAS-ADVANTAGED/ADEQUATE/GAS-CONSTRAINED verdict."},
+                {"name": "get_grid_scoreboard",      "tier": "IDENTIFIED", "description": "All 7 US ISO grids ranked live by renewable share — fuel mix, gas %, demand. One-call grid comparison."},
                 {"name": "list_transactions",        "tier": "IDENTIFIED", "description": "$324B+ M&A history — buyer, seller, MW, $/kW, date, region."},
                 {"name": "get_pipeline",             "tier": "IDENTIFIED", "description": "540+ active DC projects globally — operator, capacity, status, ETA, pre-leased %."},
                 {"name": "get_infrastructure",       "tier": "IDENTIFIED", "description": "Substations, transmission lines, gas pipelines within 50km of a lat/lon."},
@@ -3438,12 +3440,12 @@ def handle_well_known():
             "contact":      "api@dchub.cloud",
             "license":      "Free for AI citation; data subject to https://dchub.cloud/terms",
             # r68.1 (2026-05-26): add fields AI agents quote from `jq`:
-            # - tools_count: numeric for "DC Hub exposes 29 MCP tools"
+            # - tools_count: numeric for "DC Hub exposes 31 MCP tools"
             # - pricing.<tier>.price_usd_month: numeric for ROI math
             # See main.py `_canonical_pricing()` for the shared shape that
             # also feeds /mcp/manifest + /api/v1/mcp/manifest. .tiers (above)
             # kept for back-compat with clients on the old contract.
-            "tools_count":  29,
+            "tools_count":  31,
             "pricing":      {
                 "free":       {"price_usd_month": 0,   "calls_per_day": 25,    "tools_unlocked": 5,
                                   "signup_url": "https://dchub.cloud/signup"},
