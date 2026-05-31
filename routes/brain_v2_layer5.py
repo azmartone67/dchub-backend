@@ -60,11 +60,25 @@ from flask import Blueprint, jsonify, request
 
 # Reuse Layer 4's Anthropic client + admin gate
 from routes.brain_v2_layer4 import (
-    _call_claude, ANTHROPIC_API_KEY, BRAIN_MODEL, _require_admin,
+    _call_claude, ANTHROPIC_API_KEY, BRAIN_MODEL, _require_admin, ADMIN_KEY,
     BRAIN_MAX_LEARN,
 )
 
 brain_v2_layer5_bp = Blueprint("brain_v2_layer5", __name__)
+
+
+def _admin_guard():
+    """No-arg admin check → returns an error Response tuple, or None if OK.
+
+    FIX 2026-05-31: layer4's _require_admin is a DECORATOR (def _require_admin(fn)),
+    but every Layer-5 endpoint called it INLINE as `_require_admin()` → TypeError
+    "missing 1 required positional argument: 'fn'" on EVERY request. The cron
+    POSTs these endpoints and exits 0 regardless, so it was silent — but it meant
+    Layer 5 generated 0 proposals for ~30 days. This mirrors layer4's key check."""
+    provided = request.headers.get("X-Admin-Key") or request.args.get("admin_key")
+    if ADMIN_KEY and provided != ADMIN_KEY:
+        return jsonify(error="unauthorized", hint="X-Admin-Key header required"), 401
+    return None
 
 
 # ──────────────────────────────────────────────────────────────────
@@ -334,7 +348,7 @@ def learn_code():
     For every chronic-stale loop, generate a code-level proposal.
     Stored in brain_proposed_code_fixes; never auto-applied.
     """
-    auth_err = _require_admin()
+    auth_err = _admin_guard()
     if auth_err: return auth_err
 
     if not ANTHROPIC_API_KEY:
@@ -430,7 +444,7 @@ def learn_code():
 def learn_backend_issues():
     """Process actionable_backend_issues from /heal/findings and emit
     code proposals for each. Same storage + contract as learn_code."""
-    auth_err = _require_admin()
+    auth_err = _admin_guard()
     if auth_err: return auth_err
 
     if not ANTHROPIC_API_KEY:
@@ -656,7 +670,7 @@ def proposed_code_pending_pr():
     Admin-gated because the response includes the full code proposal
     (search/replace text — could leak partial source for paid endpoints).
     """
-    auth_err = _require_admin()
+    auth_err = _admin_guard()
     if auth_err: return auth_err
 
     try:
@@ -751,7 +765,7 @@ def mark_proposal_pr(proposal_id):
     opening a draft PR for a proposal, so the same proposal isn't
     picked up on the next tick.
     """
-    auth_err = _require_admin()
+    auth_err = _admin_guard()
     if auth_err: return auth_err
 
     body = request.get_json(silent=True) or {}
@@ -809,7 +823,7 @@ def mark_proposal_merge_outcome(proposal_id):
     Adds a `merge_outcome` + `merge_outcome_at` column defensively —
     same idempotent ALTER pattern used elsewhere in this module.
     """
-    auth_err = _require_admin()
+    auth_err = _admin_guard()
     if auth_err: return auth_err
 
     body = request.get_json(silent=True) or {}
