@@ -6,6 +6,7 @@ Runs continuously without manual intervention
 
 import json
 import re
+import hashlib
 import logging
 import threading
 import time
@@ -295,6 +296,7 @@ class AutonomousBrain:
 
         except Exception as e:
             logger.error(f"Capacity extraction error: {e}")
+            results['error'] = str(e)
 
         return results
 
@@ -330,7 +332,7 @@ class AutonomousBrain:
                             deal_score += 1
 
                     if deal_score >= 2:
-                        value_match = re.search(r'\$\s*(\d+(%s:\.\d+)%s)\s*(billion|million|B|M)', text, re.IGNORECASE)
+                        value_match = re.search(r'\$\s*(\d+(?:\.\d+)?)\s*(billion|million|B|M)', text, re.IGNORECASE)
                         deal_value = None
                         if value_match:
                             val = float(value_match.group(1))
@@ -368,6 +370,7 @@ class AutonomousBrain:
 
         except Exception as e:
             logger.error(f"Deal extraction error: {e}")
+            results['error'] = str(e)
 
         return results
 
@@ -438,6 +441,7 @@ class AutonomousBrain:
 
         except Exception as e:
             logger.error(f"Quality fix error: {e}")
+            results['error'] = str(e)
 
         return results
 
@@ -545,7 +549,7 @@ class AutonomousBrain:
                             name = (article['title'] or '').strip()[:200]
                             if name:
                                 operator = 'news-extracted'
-                                source_id = f"news_gas_{abs(hash(article['source_url'] or name)) % 10**10}"
+                                source_id = f"news_gas_{int(hashlib.sha1(str(article['source_url'] or name).encode()).hexdigest()[:12], 16)}"
                                 try:
                                     wcur.execute("""
                                         INSERT INTO gas_pipelines
@@ -571,6 +575,7 @@ class AutonomousBrain:
 
         except Exception as e:
             logger.error(f"Gas infrastructure extraction error: {e}")
+            results['error'] = str(e)
 
         return results
 
@@ -615,7 +620,7 @@ class AutonomousBrain:
                             # so the same article dedups across runs.
                             name = (article['title'] or '').strip()[:500]
                             if name:
-                                hifld_id = f"news_{abs(hash(article['source_url'] or name)) % 10**10}"
+                                hifld_id = f"news_{int(hashlib.sha1(str(article['source_url'] or name).encode()).hexdigest()[:12], 16)}"
                                 try:
                                     wcur.execute("""
                                         INSERT INTO transmission_lines
@@ -641,6 +646,7 @@ class AutonomousBrain:
 
         except Exception as e:
             logger.error(f"Transmission infrastructure extraction error: {e}")
+            results['error'] = str(e)
 
         return results
 
@@ -696,7 +702,7 @@ class AutonomousBrain:
                             # source_url → the same article dedups across runs.
                             name = (article['title'] or '').strip()[:200]
                             if name:
-                                source_id = f"news_fiber_{abs(hash(article['source_url'] or name)) % 10**10}"
+                                source_id = f"news_fiber_{int(hashlib.sha1(str(article['source_url'] or name).encode()).hexdigest()[:12], 16)}"
                                 try:
                                     wcur.execute("""
                                         INSERT INTO fiber_routes
@@ -722,6 +728,7 @@ class AutonomousBrain:
 
         except Exception as e:
             logger.error(f"Fiber infrastructure extraction error: {e}")
+            results['error'] = str(e)
 
         return results
 
@@ -842,7 +849,7 @@ class AutonomousBrain:
                 land_patterns = [
                     r'(\d+(?:,\d+)?)\s*(?:acre|hectare)',
                     r'land\s+(?:acquisition|purchase|deal)',
-                    r'site\s+(%s:selection|development)',
+                    r'site\s+(?:selection|development)',
                     r'construction\s+permit',
                 ]
 
@@ -870,6 +877,7 @@ class AutonomousBrain:
 
         except Exception as e:
             logger.error(f"Infrastructure news extraction error: {e}")
+            results['error'] = str(e)
 
         return results
 
@@ -1144,17 +1152,30 @@ class AutonomousBrain:
         """Phase ZZZZZ-round6c: instrument each domain extractor's output
         into the extraction_intelligence table so the brain dashboard
         actually has more than 1 active source."""
-        # Map: domain key in results → source_id + canonical rows-count getter
+        # Map: domain key in results → source_id + canonical rows-count getter.
+        #
+        # rows_key MUST be the real committed-insert count, NOT a per-cycle
+        # regex sub-bucket counter (those re-zero every cycle and increment on
+        # every pattern match regardless of whether a row was actually written,
+        # so the dashboard showed inflated noise — or, post INSERT-fix, 0 — for
+        # the gas/transmission/fiber domains). Use 'added' (the dedup-guarded
+        # rowcount>0 tally) for those three. capacity('new_pipeline') and
+        # deals('deals_found') are already only incremented inside their
+        # committed-INSERT branches, so they are the real counts.
+        #
+        # substation_infrastructure + power_plants are intentionally DROPPED:
+        # their extractors have NO INSERT (they only re-scan articles each
+        # cycle), so their counters are pure per-cycle inflation and they can
+        # never write a row. That data is sourced from HIFLD/EIA elsewhere, not
+        # article-extracted, so they don't belong in the extraction dashboard.
         domains = [
             ('capacity',                   'autonomous-brain-capacity',     'new_pipeline'),
             ('deals',                      'autonomous-brain-deals',        'deals_found'),
             ('quality',                    'autonomous-brain-quality',      'fixed'),
             ('infrastructure',             'autonomous-brain-infra-news',   'fiber_mentions'),
-            ('gas_infrastructure',         'autonomous-brain-gas',          'pipelines'),
-            ('transmission_infrastructure','autonomous-brain-transmission', 'transmission_lines'),
-            ('fiber_infrastructure',       'autonomous-brain-fiber',        'dark_fiber'),
-            ('substation_infrastructure',  'autonomous-brain-substations',  'substations'),
-            ('power_plants',               'autonomous-brain-power-plants', 'natural_gas'),
+            ('gas_infrastructure',         'autonomous-brain-gas',          'added'),
+            ('transmission_infrastructure','autonomous-brain-transmission', 'added'),
+            ('fiber_infrastructure',       'autonomous-brain-fiber',        'added'),
         ]
         try:
             import os, psycopg2
@@ -1186,12 +1207,27 @@ class AutonomousBrain:
                     for key, source_id, rows_key in domains:
                         dr = results.get(key) or {}
                         rows = int(dr.get(rows_key) or 0)
-                        outcome = 'success' if dr else 'skip'
+                        # Outcome honesty: 'success' ONLY when a row was actually
+                        # written this cycle. A non-empty result dict with 0 rows
+                        # is a no-op (nothing new in the article feed), not a
+                        # success — report it as 'idle' so the dashboard stops
+                        # showing healthy 100% for extractors that wrote nothing.
+                        # If the extractor surfaced an exception (it stores the
+                        # message under an 'error' key), record it in the error
+                        # column and mark the run as failed.
+                        err = dr.get('error')
+                        if err:
+                            outcome = 'error'
+                        elif rows > 0:
+                            outcome = 'success'
+                        else:
+                            outcome = 'idle'
                         cur.execute("""
                             INSERT INTO extraction_intelligence
-                                (source_id, outcome, rows_inserted, duration_ms, observations)
-                            VALUES (%s, %s, %s, %s, %s)
+                                (source_id, outcome, rows_inserted, duration_ms, error, observations)
+                            VALUES (%s, %s, %s, %s, %s, %s)
                         """, (source_id, outcome, rows, per_domain_ms,
+                              (str(err)[:2000] if err else None),
                               __import__('json').dumps({"cycle": results.get('cycle_id')})))
                     conn.commit()
             finally:
