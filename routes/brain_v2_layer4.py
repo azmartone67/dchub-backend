@@ -972,8 +972,33 @@ def _brain_age_min(val):
         return None
 
 
+def _cached_actionable_count() -> int:
+    """Cheap read of the open actionable-findings backlog for the verdict.
+
+    Phase r36 (2026-05-31): /api/v1/heal/findings is cache-served and never
+    computes synchronously (the detectors are run by a background thread), so
+    an in-process test-client GET here is a dict read, not a crawl — safe on
+    this hot, public, single-replica endpoint. Returns 0 on any error or
+    while the cache is still warming, so a transient miss can never flip the
+    verdict to a false backlog state."""
+    try:
+        from flask import current_app
+        with current_app.test_client() as _c:
+            r = _c.get("/api/v1/heal/findings")
+            if r.status_code != 200:
+                return 0
+            d = r.get_json() or {}
+        if d.get("_warming_up"):
+            return 0
+        be = d.get("actionable_backend_issues") or []
+        fe = d.get("actionable_frontend_issues") or []
+        return len(be) + len(fe)
+    except Exception:
+        return 0
+
+
 def compute_brain_verdict(has_api_key, run_age_min, stale_min,
-                          pf_count, log_count):
+                          pf_count, log_count, actionable_count=0):
     """The honest, unambiguous Layer-4 state — shared by
     /api/v1/brain/status AND the /brain dashboard so both tell the same
     story. Returns (verdict, verdict_detail).
@@ -985,6 +1010,15 @@ def compute_brain_verdict(has_api_key, run_age_min, stale_min,
     genuinely old) — never on the mere absence of the heartbeat field,
     which is what made the first cut of this verdict cry wolf right
     after deploy.
+
+    Phase r36 (2026-05-31): `actionable_count` closes the detect→escalate
+    gap. The verdict used to look ONLY at Layer-4's own counters (proposals
+    + learning log) and would announce "healthy_quiet — the healer's
+    findings are clean" while /api/v1/heal/findings was sitting on dozens of
+    open actionable issues. The issues weren't text-fixable (they're
+    backend/SEO/infra fixes that route to autopilot + Layer 5), so 0 Layer-4
+    proposals really IS correct — but "findings are clean" was a lie that
+    buried a real backlog. When a backlog exists, say so honestly instead.
     """
     if not has_api_key:
         return ("dormant",
@@ -1002,6 +1036,14 @@ def compute_brain_verdict(has_api_key, run_age_min, stale_min,
             return ("healthy_working",
                     f"Running normally — last pass {run_age_min}m ago, "
                     f"{pf_count} proposal(s) in flight.")
+        if actionable_count > 0:
+            return ("healthy_backlog",
+                    f"Layer 4 is running fine (last pass {run_age_min}m ago) "
+                    f"and correctly produced 0 text-fix proposals — but there "
+                    f"are {actionable_count} open actionable finding(s) that "
+                    f"need backend/SEO/infra fixes, not HTML edits. These "
+                    f"route to autopilot + Layer 5, not Layer 4. See "
+                    f"/api/v1/heal/findings and /api/v1/brain/findings/triage.")
         return ("healthy_quiet",
                 f"Healthy. Last pass {run_age_min}m ago found nothing "
                 f"text-fixable — the healer's findings are clean, so 0 "
@@ -1142,13 +1184,16 @@ def brain_status():
     else:
         health = "stale"
 
+    actionable_count = _cached_actionable_count()
     verdict, verdict_detail = compute_brain_verdict(
-        bool(ANTHROPIC_API_KEY), run_age_min, stale_min, pf_count, log_count)
+        bool(ANTHROPIC_API_KEY), run_age_min, stale_min, pf_count, log_count,
+        actionable_count=actionable_count)
 
     return jsonify(
         layer=4,
         loaded=True,
         active=bool(ANTHROPIC_API_KEY),
+        actionable_findings_count=actionable_count,
         model=BRAIN_MODEL,
         max_learn_per_cycle=BRAIN_MAX_LEARN,
         store_backed=_STORE_OK,

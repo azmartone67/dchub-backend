@@ -1661,7 +1661,15 @@ def fix_sitemap_404_check():
             broken.append((url.replace("https://dchub.cloud", ""), code))
 
     if broken:
-        return True, f"SITEMAP 404s: {len(broken)} of {len(sample)} sampled — {broken[:5]}"
+        # Phase r36 (2026-05-31): honest contract — a detector that FOUND a
+        # problem must return ok=False. These SEO/QA detectors all used to
+        # hardcode `return True` and smuggle the problem into the details
+        # string, so /api/v1/brain/status read every detector as green and
+        # reported "healthy_quiet — findings are clean" while sitting on real
+        # sitemap 404s / missing JSON-LD / contract violations. The `ok` flag
+        # is what downstream (brain status verdict, triage, escalation) keys
+        # on, so it must mean what it says.
+        return False, f"SITEMAP 404s: {len(broken)} of {len(sample)} sampled — {broken[:5]}"
     return True, f"OK: 0/{len(sample)} sitemap URLs return 4xx/5xx"
 
 
@@ -1700,7 +1708,8 @@ def fix_internal_links_check():
             broken.append((path, code))
 
     if broken:
-        return True, f"BROKEN LINKS: {len(broken)} of {len(sample)} homepage hrefs — {broken[:5]}"
+        # Phase r36: honest contract — see fix_sitemap_404_check.
+        return False, f"BROKEN LINKS: {len(broken)} of {len(sample)} homepage hrefs — {broken[:5]}"
     return True, f"OK: 0/{len(sample)} homepage internal links broken"
 
 
@@ -1723,7 +1732,8 @@ def fix_jsonld_coverage_check():
         if 'application/ld+json' not in body:
             missing.append(path)
     if missing:
-        return True, f"NO JSON-LD: {missing}"
+        # Phase r36: honest contract — see fix_sitemap_404_check.
+        return False, f"NO JSON-LD: {missing}"
     return True, "OK: every probed page has schema.org JSON-LD"
 
 
@@ -2173,8 +2183,9 @@ def fix_api_contract_scan():
     if total_violations == 0:
         return True, (f"OK: {len(API_CONTRACT_PROBES)} API + "
                       f"{len(CONTENT_TYPE_PROBES)} content-type contracts honored")
-    return True, (f"{total_violations} contract violations across "
-                  f"{len(findings)} endpoints: " + str(findings)[:280])
+    # Phase r36: honest contract — see fix_sitemap_404_check.
+    return False, (f"{total_violations} contract violations across "
+                   f"{len(findings)} endpoints: " + str(findings)[:280])
 
 
 def get_last_api_contract_findings():

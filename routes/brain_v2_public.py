@@ -50,6 +50,7 @@ def _get_state():
             _proposed_fixes, _learning_log,
             ANTHROPIC_API_KEY, BRAIN_MODEL,
             _STORE_OK, compute_brain_verdict, _brain_age_min,
+            _cached_actionable_count,
         )
     except Exception as e:
         return {"loaded": False, "active": False, "model": "?",
@@ -78,16 +79,22 @@ def _get_state():
     # the truth ("Healthy — nothing to fix") instead of looking broken
     # whenever proposals == 0.
     _last_t = log[-1].get("t") if log else None
+    try:
+        _actionable = _cached_actionable_count()
+    except Exception:
+        _actionable = 0
     verdict, verdict_detail = compute_brain_verdict(
         bool(ANTHROPIC_API_KEY),
         _brain_age_min(last_run_at),
         _brain_age_min(_last_t),
         len(proposed),
         len(log),
+        actionable_count=_actionable,
     )
     result = {
         "loaded": True,
         "active": bool(ANTHROPIC_API_KEY),
+        "actionable_findings_count": _actionable,
         "model": BRAIN_MODEL,
         "store_backed": bool(_STORE_OK),
         "proposed": proposed,
