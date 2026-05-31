@@ -85,15 +85,31 @@ jobs:
             echo "::error::DCHUB_ADMIN_KEY not set"
             exit 1
           fi
-          curl -sS --max-time 30 \
+          # Capture BOTH body and HTTP status. A stale/rotated admin key
+          # makes pending-pr return 401 with a JSON error body; the old
+          # code parsed that as items=[] -> "0 pending" -> exited clean,
+          # silently hiding a broken secret for the loop's ENTIRE history.
+          # Now we assert on the status and fail LOUD on auth errors.
+          HTTP=$(curl -sS --max-time 30 \
             -H "X-Admin-Key: $ADMIN_KEY" \
-            "https://dchub-backend-production.up.railway.app/api/v1/brain/proposed-code/pending-pr?min_confidence=${MIN_CONF}&limit=${LIMIT}" \
-            > /tmp/proposals.json
+            -o /tmp/proposals.json -w "%{http_code}" \
+            "https://dchub-backend-production.up.railway.app/api/v1/brain/proposed-code/pending-pr?min_confidence=${MIN_CONF}&limit=${LIMIT}")
+          echo "pending-pr -> HTTP $HTTP"
+          if [ "$HTTP" = "401" ] || [ "$HTTP" = "403" ]; then
+            echo "::error::pending-pr returned $HTTP — the DCHUB_ADMIN_KEY GitHub secret is stale/invalid (rotated on Railway?). Re-set it (gh secret set DCHUB_ADMIN_KEY) to match the backend ADMIN_KEY. The PR-opener cannot read proposals until then."
+            head -c 300 /tmp/proposals.json; echo
+            exit 1
+          fi
+          if [ "$HTTP" != "200" ]; then
+            echo "::error::pending-pr returned HTTP $HTTP (expected 200)"
+            head -c 300 /tmp/proposals.json; echo
+            exit 1
+          fi
           count=$(python3 -c "import json; print(len(json.load(open('/tmp/proposals.json')).get('items', [])))")
           echo "count=$count" >> $GITHUB_OUTPUT
-          echo "::notice::Fetched $count pending proposals (min_conf=${MIN_CONF})"
+          echo "::notice::Fetched $count pending proposals (min_conf=${MIN_CONF}, http=$HTTP)"
           if [ "$count" = "0" ]; then
-            echo "Nothing to do — exiting clean."
+            echo "Nothing to do — exiting clean (auth OK, queue genuinely empty)."
           fi
 
       - name: Apply proposals + open PRs
