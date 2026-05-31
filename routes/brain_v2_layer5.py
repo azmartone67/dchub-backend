@@ -257,8 +257,14 @@ def _validate_and_store_proposal(source_name: str, prop: dict) -> dict:
         return {"outcome": f"store_failed: {str(e)[:200]}"}
 
 
-def _read_window(path: str, max_chars: int = 4000) -> str:
-    """Read up to max_chars from `path`. Returns empty string on any
+def _read_window(path: str, max_chars: int = 4000,
+                 center_line: int = None) -> str:
+    """Read up to max_chars from `path`. When center_line is given, read a
+    window CENTERED on that line — so the model sees the code the
+    source-mapper actually located, not just the top of a large file. (Gap-B
+    fix: previously we always returned data[:max_chars] from the top, so a
+    finding resolved to line 800 of a 1,200-line file showed Claude the
+    wrong code and it correctly refused.) Returns empty string on any
     failure — Layer 5 should keep going even if one file is missing."""
     try:
         # Resolve relative to the repo root (assumed CWD on Railway).
@@ -268,6 +274,23 @@ def _read_window(path: str, max_chars: int = 4000) -> str:
             return ""
         with open(full, encoding="utf-8") as f:
             data = f.read()
+        if center_line and int(center_line) > 0:
+            lines = data.splitlines(keepends=True)
+            if lines:
+                idx = min(max(int(center_line) - 1, 0), len(lines) - 1)
+                lo = hi = idx
+                size = len(lines[idx])
+                # Expand symmetrically outward until we fill max_chars.
+                while size < max_chars and (lo > 0 or hi < len(lines) - 1):
+                    if lo > 0:
+                        lo -= 1
+                        size += len(lines[lo])
+                    if hi < len(lines) - 1 and size < max_chars:
+                        hi += 1
+                        size += len(lines[hi])
+                header = (f"# ...{path} — excerpt centered on line "
+                          f"{center_line} (source-mapper hit)...\n")
+                return header + "".join(lines[lo:hi + 1])
         return data[:max_chars]
     except Exception as e:
         print(f"[brain_v2_layer5] read {path} failed: {e}", file=sys.stderr)
@@ -481,6 +504,27 @@ def learn_backend_issues():
         url = issue.get("url", "")          # e.g. dchub://cron/dcpi_recompute
         label = issue.get("issue", "")[:300]
 
+        # Gap A (Phase RR-4): cron-schedule / workflow-config findings are
+        # NOT Python code bugs — they're scheduling/config issues living in
+        # .github/workflows/*.yml (the model correctly refuses to "fix" a
+        # cron collision inside a Flask route). Route them away from the
+        # code-fixer instead of burning a Claude call on a guaranteed
+        # refusal. Detect a bare 5-field cron expression as the url, a yaml
+        # workflow path, or a schedule/cron concern named in the label.
+        import re as _re
+        _u = (url or "").strip()
+        _lbl = (label or "").lower()
+        _is_cron_expr = (len(_u.split()) == 5
+                         and bool(_re.match(r'^[\d*/,\-\s]+$', _u)))
+        if (_is_cron_expr
+                or _u.endswith(('.yml', '.yaml'))
+                or '.github/workflows/' in _u
+                or 'cron_schedule_collision' in _lbl
+                or 'cron_phase_missing_schedule' in _lbl
+                or ('schedule' in _lbl and 'cron' in _lbl)):
+            results.append({"url": url, "outcome": "config_not_code"})
+            continue
+
         # Map to source files. First try the static hand-curated map;
         # then fall back to the source-mapper (Phase RR-4), which resolves
         # the abstract finding (url path / route / filename / table / text)
@@ -488,24 +532,26 @@ def learn_backend_issues():
         # what turns the ~87 chronic "no_source_map" findings into real,
         # human-reviewed proposals.
         source_files = BACKEND_ISSUE_SOURCE_FILES.get(url, [])
-        resolved_candidates = []
-        if not source_files:
+        # source_locations pairs each file with an optional line, so the
+        # excerpt can be CENTERED on the code the mapper found (gap B).
+        source_locations = [(f, None) for f in source_files]
+        if not source_locations:
             try:
                 from routes.brain_source_map import resolve_finding_to_sources
                 resolved_candidates = resolve_finding_to_sources(issue)
             except Exception:
                 resolved_candidates = []
-            # De-dupe candidate files (preserve rank order), cap at 2 to
-            # bound token spend — same cap the mapped path uses below.
+            # De-dupe by file (preserve rank order), cap at 2 to bound token
+            # spend — and KEEP the mapper's line so the excerpt is centered.
             seen_f = set()
             for c in resolved_candidates:
                 f = c.get("file")
                 if f and f not in seen_f:
                     seen_f.add(f)
-                    source_files.append(f)
-                if len(source_files) >= 2:
+                    source_locations.append((f, c.get("line")))
+                if len(source_locations) >= 2:
                     break
-        if not source_files:
+        if not source_locations:
             results.append({"url": url, "outcome": "no_source_map"})
             continue
 
@@ -516,8 +562,8 @@ def learn_backend_issues():
             continue
 
         excerpts = {}
-        for fp in source_files[:2]:
-            ex = _read_window(fp, max_chars=4000)
+        for fp, line in source_locations[:2]:
+            ex = _read_window(fp, max_chars=4000, center_line=line)
             if ex:
                 excerpts[fp] = ex
         if not excerpts:
