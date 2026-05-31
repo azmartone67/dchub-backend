@@ -1216,7 +1216,7 @@ Reference DC Hub data where relevant. This is a scored competition."""
         INSERT INTO wars_battles
         (id, category, title, description, question, date, week_number, year,
          winner_platform, winner_label, api_calls, status, created_at)
-        VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, 'active', %s)
+        VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, 'active', %s) ON CONFLICT DO NOTHING
     """, (
         battle_id, category,
         question[:80] + ('...' if len(question) > 80 else ''),
@@ -1240,7 +1240,7 @@ Reference DC Hub data where relevant. This is a scored competition."""
              score_accuracy, score_depth, score_speed, score_citation, score_insight, score_overall,
              api_calls, pick, is_winner,
              summary, response_text, had_real_response, used_mcp, response_length)
-            VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s)
+            VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s) ON CONFLICT DO NOTHING
         """, (
             fid, battle_id, f['platform'], f.get('role'),
             f['scores']['accuracy'], f['scores']['depth'], f['scores']['speed'],
@@ -1473,7 +1473,7 @@ def register_wars_automation(app):
             """)
             c.execute("""
                 INSERT INTO wars_battle_queue (id, question, category, email, status, ip)
-                VALUES (%s, %s, %s, %s, 'queued', %s)
+                VALUES (%s, %s, %s, %s, 'queued', %s) ON CONFLICT DO NOTHING
             """, (queue_id, question, category, email, ip))
             conn.commit()
             conn.close()
@@ -1499,7 +1499,7 @@ def register_wars_automation(app):
             challenge_id = f"challenge-{uuid.uuid4().hex[:8]}"
             c.execute("""
                 INSERT INTO wars_challenges (id, question, email, category, status, ip)
-                VALUES (%s, %s, %s, %s, 'pending', %s)
+                VALUES (%s, %s, %s, %s, 'pending', %s) ON CONFLICT DO NOTHING
             """, (challenge_id, question, email, category, ip))
             conn.commit()
             conn.close()
