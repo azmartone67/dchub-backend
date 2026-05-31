@@ -21460,11 +21460,12 @@ LOCKED_GATE_MANIFEST = {
         '/api/v1/connectivity/facilities',
         '/api/v1/connectivity/score',
         '/api/v1/oilgas/search',
-        '/api/v1/markets/compare',
-        # '/api/v1/search' uses @protect_data (data masking), not @require_plan — moved to freemium
+        # r36 (2026-05-31): '/api/v1/markets/compare', '/api/v1/deals', '/api/deals'
+        # (and '/api/v1/search' earlier) use @protect_data (data masking), NOT
+        # @require_plan — moved to 'freemium' below. They back free public tools, so
+        # gating them Pro was the inconsistency that forced the forgeable-Referer
+        # bypass. pipeline/summary stays in 'pro' (genuinely gated).
         '/api/v1/gas-pipelines',
-        '/api/v1/deals',
-        '/api/deals',
         '/api/v1/grid/caiso/fuelmix',
         '/api/v1/grid/caiso/demand',
         '/api/v1/grid/status',
@@ -21504,6 +21505,11 @@ LOCKED_GATE_MANIFEST = {
         '/api/v1/transactions',
         '/api/transactions',
         '/api/v1/search?q=Ashburn',    # uses @protect_data (masked results), not @require_plan
+        # r36 (2026-05-31): moved from 'pro' — now @protect_data-only (back free
+        # public tools: /compare's compare.html + the announcements deals feed).
+        '/api/v1/markets/compare?markets=chicago,ashburn',
+        '/api/v1/deals',
+        '/api/deals',
     ],
     'public': [
         '/api/v1/stats',

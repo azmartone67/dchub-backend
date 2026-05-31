@@ -591,12 +591,18 @@ def require_plan(min_plan='pro'):
                     '/api/v1/connectivity/score',
                     '/api/v1/grid/overview',
                     '/api/v1/grid/status',
-                    '/api/v1/markets/compare',
-                    '/api/v1/pipeline/summary',
+                    # r36 (2026-05-31): removed markets/compare + v1/deals +
+                    # pipeline/summary (+ dead /api/deals) from this SECOND
+                    # _MAP_BYPASS_PATHS too. This is the api_tier_gating /
+                    # _real_require_plan copy that pipeline/summary actually
+                    # routes through (via deals_routes._lazy_require_plan), which
+                    # is why cleaning only main.py's list left it Referer-bypassable.
+                    # markets/compare + deals are now freemium (@protect_data, no
+                    # @require_plan); pipeline/summary stays Pro but is no longer
+                    # served to anon scrapers via the CF-injected dchub.cloud Referer.
+                    # See reference_dchub_cf_injects_referer.
                     '/api/v1/oilgas/search',
-                    '/api/v1/deals',
                     '/api/facilities',
-                    '/api/deals',
                     '/api/grid/demand',
                     '/api/grid/prices',
                     '/api/grid/all-isos',
