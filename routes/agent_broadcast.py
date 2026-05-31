@@ -71,6 +71,41 @@ def _db_conn():
         return None
 
 
+def _table_cols(cur, table: str) -> set[str]:
+    """Return the set of column names for a table (empty if absent).
+
+    Used to build schema-tolerant SELECTs — the `press_releases` table
+    has drifted across deploys, so we introspect rather than assume.
+    This mirrors the proven runtime-introspection approach in
+    dchub_media.py (Phase 239) that keeps the public feed populated.
+    """
+    try:
+        cur.execute("""
+            SELECT column_name FROM information_schema.columns
+             WHERE table_name = %s
+        """, (table,))
+        return {r[0] for r in (cur.fetchall() or [])}
+    except Exception:
+        return set()
+
+
+def _coalesce_expr(cols: set[str], *candidates: str) -> str:
+    """Build a COALESCE() over only the candidate columns that exist,
+    always ending in '' so the expression is never NULL-typed-only.
+    Returns "''" when none exist."""
+    present = [c for c in candidates if c in cols]
+    if not present:
+        return "''"
+    return "COALESCE(" + ", ".join(present) + ", '')"
+
+
+def _first_col(cols: set[str], *candidates: str) -> str | None:
+    for c in candidates:
+        if c in cols:
+            return c
+    return None
+
+
 def _track_poller():
     """Log who's polling. Used for /subscribers admin view + the
     audit composite to know if AI-agent outreach is producing reads."""
@@ -88,34 +123,71 @@ def _track_poller():
 
 
 def _fetch_press_releases(days: int) -> list[dict]:
-    """Recent press releases from DB."""
+    """Recent press releases from DB.
+
+    NOTE: the live `press_releases` table has drifted across deploys —
+    some rows have slug/body/published_at, others subheadline/date/
+    meta_description/category/source, others content/status. There is no
+    `published` column on the canonical table and `date` is frequently
+    NULL (the real timestamp lives in published_date/created_at). The
+    previous query hard-required `published = TRUE AND date > NOW()-…`,
+    which matched zero rows → empty feed. We now COALESCE over the known
+    column variants (mirroring the proven dchub_media.py aggregator) and
+    order by the best-available timestamp instead of filtering on a
+    column that may not exist. `days` is unused as a hard cut-off here
+    because press cadence is low; the LIMIT + reverse-chron ordering keep
+    the feed fresh. Guarded so a missing table yields [] not a 500.
+    """
     out = []
     c = _db_conn()
     if not c:
         return out
     try:
         with c.cursor() as cur:
-            cur.execute("""
-                SELECT id, slug, title, subheadline, category, date,
-                       meta_description
+            cols = _table_cols(cur, "press_releases")
+            if "title" not in cols:
+                return out
+            # Build a SELECT from only the columns that actually exist on
+            # this deploy's press_releases variant. Timestamp candidates,
+            # body/summary candidates, slug and category are all probed —
+            # so a missing column never raises "column does not exist"
+            # (the bug that, together with `published = TRUE`, kept this
+            # source empty).
+            slug_expr = "slug" if "slug" in cols else "NULL"
+            summary_expr = _coalesce_expr(
+                cols, "meta_description", "summary", "subheadline", "body")
+            cat_expr = "category" if "category" in cols else "NULL"
+            ts_col = _first_col(
+                cols, "published_date", "date", "created_at", "published_at")
+            ts_expr = ts_col if ts_col else "NULL::timestamptz"
+            order_expr = (f"{ts_col} DESC NULLS LAST"
+                          if ts_col else "id DESC")
+            cur.execute(f"""
+                SELECT title,
+                       {slug_expr}    AS slug,
+                       {summary_expr} AS summary,
+                       {cat_expr}     AS category,
+                       {ts_expr}      AS ts
                   FROM press_releases
-                 WHERE published = TRUE
-                   AND date > NOW() - (%s || ' days')::interval
-                 ORDER BY date DESC, id DESC
+                 ORDER BY {order_expr}, id DESC
                  LIMIT 30
-            """, (str(days),))
+            """)
             for r in cur.fetchall() or []:
+                title, slug, summary, category, ts = r
+                url = (f"https://dchub.cloud/news/{slug}"
+                       if slug else "https://dchub.cloud/news")
                 out.append({
                     "kind":    "press_release",
-                    "ts":      r[5].isoformat() if r[5] else None,
-                    "title":   r[2],
-                    "summary": (r[6] or r[3] or "")[:300],
-                    "url":     f"https://dchub.cloud/news/{r[1]}",
+                    "ts":      ts.isoformat() if hasattr(ts, "isoformat") else None,
+                    "title":   title or "(untitled)",
+                    "summary": (summary or "")[:300],
+                    "url":     url,
                     "weight":  85,
-                    "tags":    [r[4] or "press"],
+                    "tags":    [category or "press"],
                 })
     except Exception:
-        pass
+        try: c.rollback()
+        except Exception: pass
     finally:
         try: c.close()
         except Exception: pass
@@ -123,60 +195,104 @@ def _fetch_press_releases(days: int) -> list[dict]:
 
 
 def _fetch_dcpi_verdict_shifts(days: int) -> list[dict]:
-    """DCPI markets whose verdict changed within the window."""
+    """DCPI markets whose verdict changed within the window.
+
+    Two-pass: first try to detect an actual verdict SHIFT (current
+    verdict != the verdict `days` ago). But `market_power_scores` keeps
+    only the latest row per slug — prior rows are archived to
+    `market_power_scores_history` by self-heal — so the self-join
+    usually returns nothing and the feed went empty. When no detectable
+    shift exists, fall back to the CURRENT decisive verdicts
+    (BUILD / AVOID) so agents always see live DCPI signal. This mirrors
+    what DC Hub Media surfaces as "DCPI alerts / verdict shifts".
+    The `market_power_scores` table has no `published` column on some
+    deploys, so the filter is wrapped defensively.
+    """
     out = []
     c = _db_conn()
     if not c:
         return out
     try:
         with c.cursor() as cur:
-            # Find markets whose CURRENT verdict differs from the
-            # verdict they had `days` ago. Self-join on market_slug.
-            cur.execute("""
-                WITH latest AS (
+            # Pass 1: genuine shifts, joining current snapshot against the
+            # history table (where prior verdicts actually live).
+            try:
+                cur.execute("""
+                    WITH latest AS (
+                        SELECT DISTINCT ON (market_slug)
+                               market_slug, market_name, iso, verdict,
+                               excess_power_score, computed_at
+                          FROM market_power_scores
+                         ORDER BY market_slug, computed_at DESC
+                    ),
+                    prior AS (
+                        SELECT DISTINCT ON (market_slug)
+                               market_slug, verdict AS prior_verdict
+                          FROM market_power_scores_history
+                         WHERE computed_at < NOW() - (%s || ' days')::interval
+                         ORDER BY market_slug, computed_at DESC
+                    )
+                    SELECT l.market_slug, l.market_name, l.iso,
+                           p.prior_verdict, l.verdict,
+                           l.excess_power_score, l.computed_at
+                      FROM latest l
+                      JOIN prior  p USING (market_slug)
+                     WHERE p.prior_verdict IS DISTINCT FROM l.verdict
+                     ORDER BY l.computed_at DESC
+                     LIMIT 20
+                """, (str(days),))
+                for r in cur.fetchall() or []:
+                    slug, name, iso, was, now_, ex, ts = r
+                    out.append({
+                        "kind":    "dcpi_verdict_shift",
+                        "ts":      ts.isoformat() if hasattr(ts, "isoformat") else None,
+                        "title":   f"{name} verdict shifted {was} → {now_}",
+                        "summary": (f"DCPI rescored {name} ({iso}). "
+                                     f"Excess power now {ex}. Verdict was "
+                                     f"{was}, now {now_}. See live: "
+                                     f"https://dchub.cloud/dcpi/{slug}"),
+                        "url":     f"https://dchub.cloud/dcpi/{slug}",
+                        "weight":  (90 if (was or "") in ("BUILD", "AVOID")
+                                      or (now_ or "") in ("BUILD", "AVOID")
+                                    else 70),
+                        "tags":    ["dcpi", iso, was, now_],
+                    })
+            except Exception:
+                # history table may not exist on this deploy
+                try: c.rollback()
+                except Exception: pass
+
+            # Pass 2 (fallback): current decisive verdicts. Only used to
+            # backfill when no genuine shift was detected, so the agent
+            # feed is never empty while DCPI data exists.
+            if not out:
+                cur.execute("""
                     SELECT DISTINCT ON (market_slug)
                            market_slug, market_name, iso, verdict,
-                           excess_power_score, constraint_score,
-                           computed_at
+                           excess_power_score, constraint_score, computed_at
                       FROM market_power_scores
-                     WHERE published = TRUE
+                     WHERE verdict IN ('BUILD', 'AVOID')
                      ORDER BY market_slug, computed_at DESC
-                ),
-                prior AS (
-                    SELECT DISTINCT ON (market_slug)
-                           market_slug, verdict AS prior_verdict
-                      FROM market_power_scores
-                     WHERE published = TRUE
-                       AND computed_at < NOW() - (%s || ' days')::interval
-                     ORDER BY market_slug, computed_at DESC
-                )
-                SELECT l.market_slug, l.market_name, l.iso,
-                       p.prior_verdict, l.verdict,
-                       l.excess_power_score, l.computed_at
-                  FROM latest l
-                  JOIN prior  p USING (market_slug)
-                 WHERE p.prior_verdict IS DISTINCT FROM l.verdict
-                 ORDER BY l.computed_at DESC
-                 LIMIT 20
-            """, (str(days),))
-            for r in cur.fetchall() or []:
-                slug, name, iso, was, now_, ex, ts = r
-                out.append({
-                    "kind":    "dcpi_verdict_shift",
-                    "ts":      ts.isoformat() if ts else None,
-                    "title":   f"{name} verdict shifted {was} → {now_}",
-                    "summary": (f"DCPI rescored {name} ({iso}). "
-                                 f"Excess power now {ex}. Verdict was "
-                                 f"{was}, now {now_}. See live: "
-                                 f"https://dchub.cloud/dcpi/{slug}"),
-                    "url":     f"https://dchub.cloud/dcpi/{slug}",
-                    "weight":  (90 if (was or "") in ("BUILD", "AVOID")
-                                  or (now_ or "") in ("BUILD", "AVOID")
-                                else 70),
-                    "tags":    ["dcpi", iso, was, now_],
-                })
+                """)
+                rows = cur.fetchall() or []
+                rows.sort(key=lambda x: x[6] or datetime.datetime.min,
+                          reverse=True)
+                for r in rows[:20]:
+                    slug, name, iso, verdict, ex, con, ts = r
+                    out.append({
+                        "kind":    "dcpi_verdict_shift",
+                        "ts":      ts.isoformat() if hasattr(ts, "isoformat") else None,
+                        "title":   f"{name} DCPI verdict: {verdict}",
+                        "summary": (f"DCPI rates {name} ({iso}) {verdict}. "
+                                     f"Excess power {ex}, constraint {con}. "
+                                     f"Live: https://dchub.cloud/dcpi/{slug}"),
+                        "url":     f"https://dchub.cloud/dcpi/{slug}",
+                        "weight":  90 if (verdict or "") in ("BUILD", "AVOID") else 70,
+                        "tags":    ["dcpi", iso, verdict],
+                    })
     except Exception:
-        pass
+        try: c.rollback()
+        except Exception: pass
     finally:
         try: c.close()
         except Exception: pass
@@ -185,39 +301,67 @@ def _fetch_dcpi_verdict_shifts(days: int) -> list[dict]:
 
 def _fetch_ai_citations(days: int) -> list[dict]:
     """Recent AI-agent citations of dchub.cloud — when ChatGPT,
-    Claude, or Perplexity quoted us in a user-facing response."""
+    Claude, or Perplexity quoted us in a user-facing response.
+
+    The live data lives in `ai_testimonials` (columns: agent_name,
+    platform, quote, url, approved, approved_at, created_at) — the same
+    table DC Hub Media surfaces as testimonials. The previous query
+    pointed at a non-existent `ai_citations` table (to_regclass → NULL →
+    empty), which is the bulk of why the feed read 0. We now read
+    ai_testimonials, mirroring the proven dchub_media.py query, and drop
+    the hard `days` window (testimonials trickle in slowly) in favour of
+    reverse-chron + LIMIT. Column introspection keeps a missing table or
+    column at [] rather than a 500.
+    """
     out = []
     c = _db_conn()
     if not c:
         return out
     try:
         with c.cursor() as cur:
-            # Defensive: table may not exist on all envs
-            cur.execute("""
-                SELECT to_regclass('public.ai_citations')
-            """)
-            if not (cur.fetchone() or [None])[0]:
+            cols = _table_cols(cur, "ai_testimonials")
+            if "quote" not in cols:
+                # table absent or a schema we don't recognise
                 return out
-            cur.execute("""
-                SELECT id, agent_name, cited_url, citation_excerpt,
-                       observed_at
-                  FROM ai_citations
-                 WHERE observed_at > NOW() - (%s || ' days')::interval
-                 ORDER BY observed_at DESC
+            # ai_testimonials has two known variants: the canonical seed
+            # (agent_name/platform/url/approved/approved_at/created_at) and
+            # a minimal self-heal one (quote/author/source/created_at).
+            # Introspect so a missing column never raises.
+            who_expr = _coalesce_expr(
+                cols, "agent_name", "platform", "author", "source")
+            if who_expr == "''":
+                who_expr = "'AI agent'"
+            url_expr = "url" if "url" in cols else "''"
+            ts_col = _first_col(cols, "approved_at", "created_at")
+            ts_expr = ts_col if ts_col else "NULL::timestamp"
+            order_expr = (f"{ts_col} DESC NULLS LAST" if ts_col else "1")
+            where_expr = ("WHERE COALESCE(approved, true) = true"
+                          if "approved" in cols else "")
+            cur.execute(f"""
+                SELECT {who_expr}  AS who,
+                       {url_expr}  AS url,
+                       quote,
+                       {ts_expr}   AS ts
+                  FROM ai_testimonials
+                 {where_expr}
+                 ORDER BY {order_expr}
                  LIMIT 15
-            """, (str(days),))
+            """)
             for r in cur.fetchall() or []:
+                who, url, quote, ts = r
+                who = who or "AI agent"
                 out.append({
                     "kind":    "ai_citation",
-                    "ts":      r[4].isoformat() if r[4] else None,
-                    "title":   f"{r[1]} cited DC Hub",
-                    "summary": (r[3] or "")[:300],
-                    "url":     r[2] or "https://dchub.cloud",
+                    "ts":      ts.isoformat() if hasattr(ts, "isoformat") else None,
+                    "title":   f"{who} cited DC Hub",
+                    "summary": (quote or "")[:300],
+                    "url":     url or "https://dchub.cloud",
                     "weight":  75,
-                    "tags":    ["ai-citation", r[1]],
+                    "tags":    ["ai-citation", who],
                 })
     except Exception:
-        pass
+        try: c.rollback()
+        except Exception: pass
     finally:
         try: c.close()
         except Exception: pass
@@ -226,40 +370,49 @@ def _fetch_ai_citations(days: int) -> list[dict]:
 
 def _fetch_ecosystem_changes(days: int) -> list[dict]:
     """Brain ecosystem-watch findings — new MCP registries, competitor
-    moves, our presence shifts."""
+    moves, our presence shifts.
+
+    The real `brain_ecosystem_watch` schema is: at, target_key,
+    target_name, we_present, competition_seen, http_status, page_bytes,
+    detail. The previous query referenced columns that don't exist
+    (target_url, competition_count, observed_at, notes) and would throw,
+    permanently leaving this source empty. Aligned to the actual columns
+    and ordering on `at`. Guarded so a missing table yields [] not a 500.
+    """
     out = []
     c = _db_conn()
     if not c:
         return out
     try:
         with c.cursor() as cur:
-            cur.execute("""
-                SELECT to_regclass('public.brain_ecosystem_watch')
-            """)
+            cur.execute("SELECT to_regclass('public.brain_ecosystem_watch')")
             if not (cur.fetchone() or [None])[0]:
                 return out
             cur.execute("""
-                SELECT id, target_name, target_url, we_present,
-                       competition_count, observed_at, notes
+                SELECT target_name, we_present, competition_seen,
+                       at, detail
                   FROM brain_ecosystem_watch
-                 WHERE observed_at > NOW() - (%s || ' days')::interval
-                 ORDER BY observed_at DESC
+                 WHERE at > NOW() - (%s || ' days')::interval
+                 ORDER BY at DESC
                  LIMIT 10
             """, (str(days),))
             for r in cur.fetchall() or []:
-                title = (f"Ecosystem: {r[1]} — "
-                          f"we_present={r[3]} competitors={r[4]}")
+                name, we_present, comp_seen, ts, detail = r
+                title = (f"Ecosystem: {name} — "
+                          f"we_present={we_present} "
+                          f"competition={comp_seen}")
                 out.append({
                     "kind":    "ecosystem_change",
-                    "ts":      r[5].isoformat() if r[5] else None,
+                    "ts":      ts.isoformat() if hasattr(ts, "isoformat") else None,
                     "title":   title,
-                    "summary": (r[6] or "")[:300] or title,
-                    "url":     r[2] or "https://dchub.cloud",
+                    "summary": (detail or "")[:300] or title,
+                    "url":     "https://dchub.cloud",
                     "weight":  60,
-                    "tags":    ["ecosystem", r[1]],
+                    "tags":    ["ecosystem", name],
                 })
     except Exception:
-        pass
+        try: c.rollback()
+        except Exception: pass
     finally:
         try: c.close()
         except Exception: pass
