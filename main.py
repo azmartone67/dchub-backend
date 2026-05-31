@@ -13225,6 +13225,111 @@ def _eia_run_ingest(task_id: str):
             pass
 
 
+@app.route('/api/v1/admin/backfill-facility-states', methods=['POST'])
+def backfill_facility_states_endpoint():
+    """Fill the MISSING `state` on US discovered_facilities rows from their
+    coordinates, via k-NN (nearest already-stated facility). Admin-gated.
+
+    Runs on Railway (which HAS DATABASE_URL) — GitHub Actions does NOT have the
+    DB secret, so a CI-script approach dies "DATABASE_URL not set". Same fix
+    pattern as the EIA ingest: Actions/curl triggers this, Railway does the work.
+    k-NN (not bounding boxes) because DCs cluster tightly — a blank Ashburn row's
+    nearest stated neighbour is a VA row, so it resolves to VA (the bbox method
+    mis-assigned Ashburn->MD). Fills blanks ONLY (idempotent, re-runnable).
+
+    POST ?dry=1  -> report what it WOULD do, no writes (default is APPLY).
+    POST ?max=N  -> runaway guard; refuse if assignments exceed N (default 2000).
+    """
+    import os as _os_bf
+    expected = _os_bf.environ.get('DCHUB_ADMIN_KEY') or _os_bf.environ.get('DCHUB_INTERNAL_KEY')
+    provided = (request.headers.get('X-Admin-Key') or request.args.get('admin_key'))
+    if expected and provided != expected:
+        return jsonify(ok=False, error="unauthorized", hint="X-Admin-Key header required"), 401
+
+    dry = request.args.get('dry', '') in ('1', 'true', 'yes')
+    try:
+        max_assign = int(request.args.get('max', '2000'))
+    except Exception:
+        max_assign = 2000
+
+    _US = ('US', 'USA', 'UNITED STATES')
+    _ABBRS = set(_DAILY_US_STATE_NAMES.keys())
+    conn = None
+    try:
+        conn = get_read_db() if dry else get_db()
+        c = conn.cursor()
+        c.execute("""
+            SELECT latitude, longitude, UPPER(TRIM(state))
+            FROM discovered_facilities
+            WHERE UPPER(TRIM(COALESCE(country,''))) IN %s
+              AND state IS NOT NULL AND TRIM(state) <> ''
+              AND latitude IS NOT NULL AND longitude IS NOT NULL
+              AND latitude <> 0 AND longitude <> 0
+        """, (_US,))
+        ref = [(float(la), float(lo), st) for (la, lo, st) in c.fetchall() if st in _ABBRS]
+        if not ref:
+            return jsonify({"ok": False, "error": "no reference rows"}), 503
+
+        c.execute("""
+            SELECT id, latitude, longitude
+            FROM discovered_facilities
+            WHERE UPPER(TRIM(COALESCE(country,''))) IN %s
+              AND (state IS NULL OR TRIM(state) = '')
+              AND latitude IS NOT NULL AND longitude IS NOT NULL
+              AND latitude <> 0 AND longitude <> 0
+        """, (_US,))
+        targets = c.fetchall()
+
+        assignments = []
+        for _id, la, lo in targets:
+            la, lo = float(la), float(lo)
+            best_st, best_d = None, None
+            for rla, rlo, rst in ref:
+                d = (la - rla) ** 2 + (lo - rlo) ** 2
+                if best_d is None or d < best_d:
+                    best_d, best_st = d, rst
+            if best_st and best_d is not None and best_d <= 9.0:
+                assignments.append((_id, best_st))
+
+        tally = {}
+        for _id, st in assignments:
+            tally[st] = tally.get(st, 0) + 1
+        summary = {
+            "ok": True,
+            "mode": "dry-run" if dry else "apply",
+            "reference_rows": len(ref),
+            "target_rows": len(targets),
+            "would_assign": len(assignments),
+            "by_state": dict(sorted(tally.items(), key=lambda kv: -kv[1])),
+        }
+        if dry:
+            return jsonify(summary)
+        if len(assignments) > max_assign:
+            return jsonify({"ok": False, "error": "runaway_guard",
+                            "would_assign": len(assignments), "max": max_assign}), 400
+        n = 0
+        for _id, st in assignments:
+            c.execute("""
+                UPDATE discovered_facilities SET state = %s
+                WHERE id = %s AND (state IS NULL OR TRIM(state) = '')
+            """, (st, _id))
+            n += c.rowcount
+        conn.commit()
+        summary["applied"] = n
+        print(f"[backfill-states] applied {n} state assignments", flush=True)
+        return jsonify(summary)
+    except Exception as e:
+        if conn and not dry:
+            try: conn.rollback()
+            except Exception: pass
+        logger.error("backfill-facility-states error: %s", e)
+        return jsonify({"ok": False, "error": str(e)}), 500
+    finally:
+        if conn:
+            try: conn.close()
+            except Exception: pass
+
+
 @app.route('/api/v1/energy/eia-ingest/status', methods=['GET'])
 def energy_eia_ingest_status():
     """Poll for an in-flight or recently-completed EIA ingest task."""
