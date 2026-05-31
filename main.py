@@ -13280,16 +13280,49 @@ def backfill_facility_states_endpoint():
         """, (_US,))
         targets = c.fetchall()
 
+        # r2 (2026-05-31): HARDENED assignment. The naive nearest-1 k-NN produced
+        # NH=139/UT=84 in the first dry-run — a placeholder-coordinate artifact:
+        # clusters of blank-state rows share one identical bogus lat/lon, so they
+        # all snap to whatever single reference happens to be nearest that point.
+        # Fixes: (a) exclude target rows whose EXACT coord is shared by many rows
+        # (placeholder), (b) k=5 majority vote (one stray reference can't hijack a
+        # cluster), (c) tight distance cap (~0.75 deg ≈ 80km; a real DC is near a
+        # same-state neighbour), (d) require the winning state to be a clear
+        # plurality (>=3 of 5). Skips are counted by reason for the dry-run.
+        _CLUSTER_MAX = 8          # >8 targets at one identical coord => placeholder, skip
+        _MAX_D2 = 0.75 ** 2       # squared-degree cap (~80km)
+        _K = 5                    # neighbours to vote
+        _MIN_VOTES = 3            # winner must hold >=3 of K
+
+        # (a) flag placeholder coordinates among TARGETS
+        from collections import Counter as _Counter
+        _coord_key = lambda la, lo: (round(float(la), 4), round(float(lo), 4))  # ~11m
+        _tcoords = _Counter(_coord_key(la, lo) for _id, la, lo in targets)
+        _placeholder = {k for k, n in _tcoords.items() if n > _CLUSTER_MAX}
+
         assignments = []
+        skipped = {"placeholder_cluster": 0, "too_far": 0, "no_consensus": 0}
         for _id, la, lo in targets:
             la, lo = float(la), float(lo)
-            best_st, best_d = None, None
+            if _coord_key(la, lo) in _placeholder:
+                skipped["placeholder_cluster"] += 1
+                continue
+            # k nearest references within the cap
+            near = []  # (d2, state)
             for rla, rlo, rst in ref:
-                d = (la - rla) ** 2 + (lo - rlo) ** 2
-                if best_d is None or d < best_d:
-                    best_d, best_st = d, rst
-            if best_st and best_d is not None and best_d <= 9.0:
-                assignments.append((_id, best_st))
+                d2 = (la - rla) ** 2 + (lo - rlo) ** 2
+                if d2 <= _MAX_D2:
+                    near.append((d2, rst))
+            if not near:
+                skipped["too_far"] += 1
+                continue
+            near.sort(key=lambda t: t[0])
+            topk = [st for _d, st in near[:_K]]
+            winner, votes = _Counter(topk).most_common(1)[0]
+            if votes >= min(_MIN_VOTES, len(topk)):
+                assignments.append((_id, winner))
+            else:
+                skipped["no_consensus"] += 1
 
         tally = {}
         for _id, st in assignments:
@@ -13297,8 +13330,11 @@ def backfill_facility_states_endpoint():
         summary = {
             "ok": True,
             "mode": "dry-run" if dry else "apply",
+            "method": "knn5_majority+cluster_exclude",
             "reference_rows": len(ref),
             "target_rows": len(targets),
+            "placeholder_coords_excluded": len(_placeholder),
+            "skipped": skipped,
             "would_assign": len(assignments),
             "by_state": dict(sorted(tally.items(), key=lambda kv: -kv[1])),
         }
