@@ -160,6 +160,10 @@ DOMAIN_SLA_HOURS = {
                          # publish window is just noise"), give it cadence+jitter
                          # headroom. 30h still catches a genuine multi-day stall.
     "news":      6,      # /api/news/live  (was 1h, raised to RSS aggregation cadence)
+    "press":     168,    # r36: press releases are EVENT-driven (>=15pt DCPI shifts);
+                         # split out of the 6h news domain so a quiet press week
+                         # isn't a breach (matches the press_releases table SLA in
+                         # brain_consistency_radar). See also _DOMAIN_SOURCE below.
     "mna":       24,     # /api/v1/deals
     "pipeline":  24,     # /api/v1/pipeline
     "fiber":     168,    # /api/v1/connectivity/*
@@ -226,13 +230,90 @@ def _domain_of(surface_name: str) -> str:
     if "renewable" in s or "solar" in s or "wind" in s: return "renewable"
     if "rate" in s or "energy" in s and "gas" not in s: return "power"
     if "dcpi" in s: return "dcpi"
-    if "news" in s or "press" in s: return "news"
+    if "press" in s: return "press"   # r36: event-driven; before news so press
+                                       # surfaces aren't held to the 6h news SLA
+    if "news" in s: return "news"
     if "deal" in s or "transaction" in s or "m&a" in s: return "mna"
     if "pipeline" in s and "gas" not in s: return "pipeline"
     if "fiber" in s or "ix" in s or "connectivity" in s: return "fiber"
     if "gas" in s: return "gas"
     if "facility" in s or "facilities" in s: return "facilities"
     return "other"
+
+
+# ── r36 (2026-05-31): real-data-age override ────────────────────────────────
+# Root cause of the recurring iso/news freshness whack-a-mole: the per-surface
+# `freshness_checks.last_updated` DRIFTS from real data age. The heartbeat
+# re-stamp loop only re-stamps a surface once it's stale per its OWN window
+# (e.g. iso=12h), but the domain SLA is tighter (iso=4h) — so a surface showed
+# 9h "stale" while grid_data was actually <1.5h fresh (the ISO cron is healthy).
+# We were chasing individual surfaces forever.
+#
+# Durable fix: for every domain backed by a real source table, judge the breach
+# on the TABLE's actual freshness (NOW - MAX(ts)) queried at check-time, not on
+# the drifting surface tracking. Cached _DOMAIN_AGE_TTL seconds so /api/v1/
+# freshness stays cheap on the single Railway replica. This mirrors the proven
+# table-based approach in brain_consistency_radar.SLAS.
+_DOMAIN_SOURCE: dict = {
+    # domain -> (table, timestamp_column). MAX(col)::timestamptz is cast on the
+    # single MAX result (index-friendly), tolerant of TEXT ISO-8601 columns.
+    "iso":        ("grid_data",      "timestamp"),      # ISO telemetry, ~1.5h cron
+    "dcpi":       ("dcpi_scores",    "computed_at"),    # daily recompute
+    "news":       ("news_items",     "published_at"),   # RSS ingest
+    "press":      ("press_releases", "published_at"),   # event-driven
+    "mna":        ("ai_deals",       "created_at"),     # deal extractor
+    "gas":        ("gas_pipelines",  "updated_at"),     # EIA/HIFLD
+    "pipeline":   ("gas_pipelines",  "updated_at"),
+    "facilities": ("facilities",     "first_seen"),
+}
+_DOMAIN_AGE_CACHE: dict = {"data": {}, "t": 0.0}
+_DOMAIN_AGE_TTL = 300  # 5 min
+
+
+def _refresh_domain_ages() -> dict:
+    """One connection, one cheap MAX query per data-backed domain. Returns
+    {domain: real_age_hours}. Per-table try/except+rollback so one bad/missing
+    table can't break the rest."""
+    ages: dict = {}
+    c = None
+    try:
+        # NB: psycopg2's `with conn` manages the TRANSACTION, not closing — so
+        # we hold the handle explicitly and close it in finally (avoids the
+        # connection leak A1 just fixed elsewhere). Read-only, so no commit.
+        c = _conn()
+        for dom, (table, col) in _DOMAIN_SOURCE.items():
+            try:
+                with c.cursor() as cur:
+                    cur.execute(
+                        f"SELECT EXTRACT(EPOCH FROM "
+                        f"(NOW() - MAX({col})::timestamptz))/3600.0 FROM {table}"
+                    )
+                    v = (cur.fetchone() or [None])[0]
+                if v is not None:
+                    ages[dom] = float(v)
+            except Exception:
+                try: c.rollback()
+                except Exception: pass
+    except Exception:
+        pass
+    finally:
+        if c is not None:
+            try: c.close()
+            except Exception: pass
+    return ages
+
+
+def _real_domain_age_hours(domain: str):
+    """Cached real data age (hours) for a domain, or None if it has no source
+    table / the query failed (falls back to surface tracking)."""
+    if domain not in _DOMAIN_SOURCE:
+        return None
+    import time as _t
+    now = _t.time()
+    if (now - _DOMAIN_AGE_CACHE["t"]) >= _DOMAIN_AGE_TTL or not _DOMAIN_AGE_CACHE["data"]:
+        _DOMAIN_AGE_CACHE["data"] = _refresh_domain_ages()
+        _DOMAIN_AGE_CACHE["t"] = now
+    return _DOMAIN_AGE_CACHE["data"].get(domain)
 
 
 def _sla_breakdown(surfaces):
@@ -264,21 +345,32 @@ def _sla_breakdown(surfaces):
         # is omitted when status is within_sla (no signal needed).
         stale_list = [{"surface": surf, "age_hours": round(age, 2)}
                        for age, surf in rated[:3] if age > target]
-        if worst_age is None:
+        # r36 (2026-05-31): judge the breach on REAL data age when the domain has
+        # a source table — the per-surface tracking drifts (see _DOMAIN_SOURCE).
+        # If grid_data is <1.5h fresh, iso is within_sla even though some iso
+        # surface's last_updated row says 9h. Falls back to surface age when the
+        # domain has no source / the query failed.
+        real_age = _real_domain_age_hours(domain)
+        effective_age = real_age if real_age is not None else worst_age
+        if effective_age is None:
             status = "unknown"
-        elif worst_age <= target:
+        elif effective_age <= target:
             status = "within_sla"
-        elif worst_age <= target * 2:
+        elif effective_age <= target * 2:
             status = "warning"  # 1-2x the SLA target
         else:
             status = "breach"   # >2x the SLA target
         entry = {
-            "target_hours":     target,
-            "worst_age_hours":  round(worst_age, 2) if worst_age is not None else None,
-            "worst_surface":    worst_surface,
-            "status":           status,
-            "surfaces":         len(ss),
+            "target_hours":         target,
+            "worst_age_hours":      round(effective_age, 2) if effective_age is not None else None,
+            "real_data_age_hours":  round(real_age, 2) if real_age is not None else None,
+            "surface_worst_age_hours": round(worst_age, 2) if worst_age is not None else None,
+            "worst_surface":        worst_surface,
+            "status":               status,
+            "surfaces":             len(ss),
         }
+        # Only surface the stale-surface list when the REAL data is actually
+        # behind (status warning/breach) — otherwise it's just tracking drift.
         if status in ("warning", "breach") and stale_list:
             entry["stale_surfaces"] = stale_list
         out[domain] = entry
