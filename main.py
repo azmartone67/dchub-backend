@@ -15038,7 +15038,14 @@ def news_page():
     html = html.replace('</body>', seo_section + '\n</body>')
     resp = make_response(html)
     resp.headers['Content-Type'] = 'text/html'
-    resp.headers['Cache-Control'] = 'no-cache'
+    # r36 (2026-05-31): was 'no-cache', which forced EVERY hit through to the
+    # single Railway replica (1.05s ttfb: Neon round-trip + disk read). That made
+    # /news fragile — the Site Sentinel logged it as a 0-byte timeout during a
+    # backend flap (it was never a /news bug; it's a slow synchronous page with
+    # no edge cache). News updates hourly at most, so a 5-min edge cache is safe:
+    # it cuts backend load AND lets Cloudflare keep serving /news from cache
+    # while the origin restarts. stale-while-revalidate keeps it warm.
+    resp.headers['Cache-Control'] = 'public, max-age=300, s-maxage=300, stale-while-revalidate=600'
     return resp
 
 @app.route('/market-intelligence')
