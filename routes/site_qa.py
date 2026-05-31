@@ -315,7 +315,7 @@ def run_full_qa_suite():
                 """INSERT INTO site_qa_results
                        (test_name, test_category, url, expected, actual, status,
                         severity, response_ms, http_code, error_detail, proposed_fix)
-                   VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s)""",
+                   VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s) ON CONFLICT DO NOTHING""",
                 (r["test_name"], r["test_category"], r["url"], r["expected"],
                  r["actual"], r["status"], r["severity"], r["response_ms"],
                  r["http_code"], r["error_detail"], r["proposed_fix"]),
@@ -358,7 +358,7 @@ def _update_alerts(results):
                     """INSERT INTO site_qa_alerts
                            (test_name, severity, message, first_failed_at,
                             consecutive_failures, proposed_fix, metadata)
-                       VALUES (%s, %s, %s, NOW(), 1, %s, %s::jsonb)
+                       VALUES (%s, %s, %s, NOW() ON CONFLICT DO NOTHING, 1, %s, %s::jsonb)
                        ON CONFLICT (test_name) WHERE resolved_at IS NULL
                        DO UPDATE SET
                            consecutive_failures = site_qa_alerts.consecutive_failures + 1,
@@ -386,6 +386,7 @@ def _update_alerts(results):
 _QA_RUN_STATE = {"running": False, "last_started": None}
 
 
+# AUTO-REPAIR: duplicate route '/run' also in enhanced_promotion.py:844 — review and remove one
 @site_qa_bp.route("/run", methods=["GET", "POST"])
 def trigger_run():
     """Trigger the full QA suite. 2026-05-30: NON-BLOCKING by default.
@@ -439,6 +440,7 @@ def trigger_run():
         "note": "QA suite running in background; poll /api/v1/qa/report for results",
     }), 202
 
+# AUTO-REPAIR: duplicate route '/report' also in ai_agent.py:335 — review and remove one
 
 @site_qa_bp.route("/report", methods=["GET"])
 def latest_report():
@@ -491,6 +493,7 @@ def regressions():
                 d[k] = d[k].isoformat()
         out.append(d)
     return jsonify(count=len(out), alerts=out), 200
+# AUTO-REPAIR: duplicate route '/dashboard' also in main.py:14908 — review and remove one
 
 
 @site_qa_bp.route("/dashboard", methods=["GET"])
@@ -594,6 +597,7 @@ def dashboard():
     html.append('<a href="/api/v1/qa/regressions">regressions</a>')
     html.append('</div></body></html>')
 
+# AUTO-REPAIR: duplicate route '/health' also in main.py:3855 — review and remove one
     return "".join(html), 200, {"Content-Type": "text/html; charset=utf-8"}
 
 
