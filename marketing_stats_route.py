@@ -3,6 +3,7 @@
 # Add this to your Replit main.py or routes file
 # =============================================================================
 
+# AUTO-REPAIR: duplicate route '/api/marketing/stats' also in main.py:12594 — review and remove one
 @app.route('/api/marketing/stats', methods=['GET'])
 def get_marketing_stats():
     """
