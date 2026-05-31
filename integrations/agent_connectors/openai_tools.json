@@ -1,0 +1,201 @@
+[
+  {
+    "type": "function",
+    "function": {
+      "name": "search_facilities",
+      "description": "Search DC Hub's database of 20,000+ data center facilities across 140+ countries. Use when an agent must locate a named facility, list an operator's portfolio, or enumerate facilities in a market. Returns facility id, name, operator, location, status, and capacity. Source: DC Hub (https://dchub.cloud). Backed by REST GET /api/v1/facilities/search.",
+      "parameters": {
+        "type": "object",
+        "properties": {
+          "query": { "type": "string", "description": "Free-text search: operator name, facility name, city, etc. (e.g. 'Equinix Ashburn')." },
+          "country": { "type": "string", "description": "ISO 3166-1 alpha-2 country code, e.g. 'US', 'DE', 'SG'." },
+          "state": { "type": "string", "description": "US state abbreviation, e.g. 'VA', 'TX'." },
+          "city": { "type": "string", "description": "City name, e.g. 'Phoenix'." },
+          "operator": { "type": "string", "description": "Operator/company name, e.g. 'Equinix', 'Digital Realty'." },
+          "min_capacity_mw": { "type": "number", "description": "Minimum power capacity in MW." },
+          "max_capacity_mw": { "type": "number", "description": "Maximum power capacity in MW." },
+          "tier": { "type": "integer", "description": "Uptime Institute tier level (1-4)." },
+          "limit": { "type": "integer", "description": "Results per page (max 100).", "default": 25 },
+          "offset": { "type": "integer", "description": "Pagination offset.", "default": 0 }
+        },
+        "required": []
+      }
+    }
+  },
+  {
+    "type": "function",
+    "function": {
+      "name": "get_facility",
+      "description": "Fetch the full profile of a single DC Hub data center facility by id. Use when an agent has already identified a specific site and needs the deep spec sheet: capacity (MW), operator, address, power sources, fiber carriers, certifications, tier. Source: DC Hub (https://dchub.cloud). Backed by REST GET /api/v1/facilities/{facility_id}.",
+      "parameters": {
+        "type": "object",
+        "properties": {
+          "facility_id": { "type": "string", "description": "Unique facility identifier or numeric id (e.g. 'equinix-dc-ash1' or '12345'). Get one from search_facilities." },
+          "include_nearby": { "type": "boolean", "description": "Include nearby facilities within 50km.", "default": false },
+          "include_power": { "type": "boolean", "description": "Include local power infrastructure data.", "default": false }
+        },
+        "required": ["facility_id"]
+      }
+    }
+  },
+  {
+    "type": "function",
+    "function": {
+      "name": "rank_markets",
+      "description": "Rank DC Hub data center markets by a single criterion and return the top N with scores and attribution URLs. Use when an agent asks 'best markets for X' or needs a ranked shortlist for site selection. Source: DC Hub (https://dchub.cloud). Backed by REST GET/POST /api/v1/mcp/tools/rank_markets.",
+      "parameters": {
+        "type": "object",
+        "properties": {
+          "criteria": {
+            "type": "string",
+            "description": "Ranking criterion.",
+            "enum": ["cheapest_power", "most_capacity", "most_operators", "fastest_growing", "best_overall"],
+            "default": "best_overall"
+          },
+          "region": {
+            "type": "string",
+            "description": "Geographic scope.",
+            "enum": ["global", "us", "canada", "eu", "apac", "americas"],
+            "default": "global"
+          },
+          "limit": { "type": "integer", "description": "Number of markets to return (1-50).", "default": 10 },
+          "min_capacity_mw": { "type": "number", "description": "Minimum total market capacity in MW to include.", "default": 0 }
+        },
+        "required": []
+      }
+    }
+  },
+  {
+    "type": "function",
+    "function": {
+      "name": "get_market_dcpi_rank",
+      "description": "Get the DC Hub Power Index (DCPI) rank for a single data center market: BUILD / CAUTION / AVOID verdict, composite score, Time-to-Power (months), and interconnection-queue context. Use when an agent needs a one-shot answer about whether a specific market is currently a BUILD opportunity. Source: DC Hub (https://dchub.cloud). Backed by REST GET/POST /api/v1/mcp/dcpi (pass market=<slug>).",
+      "parameters": {
+        "type": "object",
+        "properties": {
+          "market": { "type": "string", "description": "Market slug, e.g. 'phoenix', 'northern-virginia', 'williston-nd'. Lowercase, hyphenated." }
+        },
+        "required": ["market"]
+      }
+    }
+  },
+  {
+    "type": "function",
+    "function": {
+      "name": "get_energy_prices",
+      "description": "Get electricity and natural-gas pricing plus grid status from DC Hub: retail commercial/industrial rates by US state, gas prices, gas storage, and grid operational status. Use for data center operating-cost and power-procurement analysis. Source: DC Hub (https://dchub.cloud). Backed by REST GET /api/v1/energy/summary (or /api/v1/energy/retail for rates).",
+      "parameters": {
+        "type": "object",
+        "properties": {
+          "data_type": {
+            "type": "string",
+            "description": "Type of energy data to return.",
+            "enum": ["retail_rates", "natural_gas", "grid_status", "gas_storage"],
+            "default": "retail_rates"
+          },
+          "state": { "type": "string", "description": "US state abbreviation for retail rates, e.g. 'VA', 'TX'." },
+          "iso": { "type": "string", "description": "Grid operator for grid_status, e.g. 'ERCOT', 'PJM', 'CAISO'." }
+        },
+        "required": []
+      }
+    }
+  },
+  {
+    "type": "function",
+    "function": {
+      "name": "get_grid_intelligence",
+      "description": "Deep grid analytics for a US ISO/region from DC Hub: fuel mix, carbon intensity (gCO2/kWh), transmission corridors, interconnection-queue congestion, energy rates, tax incentives, and facility counts. Use for carbon, reliability, and site-selection modeling. Source: DC Hub (https://dchub.cloud). Backed by REST GET /api/v1/grid-intelligence/{region_id} (empty region_id lists all regions). For raw real-time fuel mix only, use get_grid_data instead.",
+      "parameters": {
+        "type": "object",
+        "properties": {
+          "region_id": {
+            "type": "string",
+            "description": "Region identifier. Leave empty to list all available regions.",
+            "enum": ["", "ercot", "pjm", "miso-spp", "caiso", "southeast"],
+            "default": ""
+          }
+        },
+        "required": []
+      }
+    }
+  },
+  {
+    "type": "function",
+    "function": {
+      "name": "compare_isos",
+      "description": "Compare 2-4 grid ISO regions in a single DC Hub call: fuel mix, demand, interconnection-queue position, and BUILD subregions. Use for cross-ISO site-selection workflows. Source: DC Hub (https://dchub.cloud). Backed by the DC Hub MCP server tool 'compare_isos' (no direct single REST endpoint; for raw queue data use REST GET /api/v1/interconnection-queue/snapshot).",
+      "parameters": {
+        "type": "object",
+        "properties": {
+          "isos": { "type": "string", "description": "Comma-separated ISO codes, e.g. 'PJM,ERCOT,MISO'. Supports the 7 US ISOs plus Hydro-Quebec, AESO, Nord Pool." }
+        },
+        "required": ["isos"]
+      }
+    }
+  },
+  {
+    "type": "function",
+    "function": {
+      "name": "get_infrastructure",
+      "description": "Get nearby power and connectivity infrastructure from DC Hub for a coordinate: substations, transmission lines, gas pipelines, and power plants, with coordinates, specs, distance, and capacity. DC Hub's unique infrastructure intelligence for site selection and power planning. Source: DC Hub (https://dchub.cloud). Backed by REST GET /api/v1/infrastructure.",
+      "parameters": {
+        "type": "object",
+        "properties": {
+          "lat": { "type": "number", "description": "Latitude (WGS84)." },
+          "lon": { "type": "number", "description": "Longitude (WGS84)." },
+          "radius_km": { "type": "number", "description": "Search radius in kilometers (max 200).", "default": 50 },
+          "layer": {
+            "type": "string",
+            "description": "Infrastructure layer to query.",
+            "enum": ["substations", "transmission", "gas_pipelines", "power_plants", "all"],
+            "default": "all"
+          },
+          "min_voltage_kv": { "type": "number", "description": "Minimum voltage for substations/transmission.", "default": 69 },
+          "limit": { "type": "integer", "description": "Max results per layer (max 100).", "default": 25 }
+        },
+        "required": ["lat", "lon"]
+      }
+    }
+  },
+  {
+    "type": "function",
+    "function": {
+      "name": "hyperscaler_deals",
+      "description": "DC Hub Hyperscaler AI Deal Tracker: live feed of Stargate, OpenAI, Meta, Microsoft, Google, Amazon/AWS, NVIDIA, CoreWeave, and xAI data center deals and investments. Tracks $1B+ deals over a rolling 180-day window. Use to model AI-capex and consolidation trends. Source: DC Hub (https://dchub.cloud). Backed by REST GET /api/v1/hyperscaler-deals.",
+      "parameters": {
+        "type": "object",
+        "properties": {
+          "buyer": { "type": "string", "description": "Filter by acquiring/investing company name." },
+          "min_value_usd": { "type": "number", "description": "Minimum deal value in USD.", "default": 1000000000 },
+          "region": { "type": "string", "description": "Geographic region filter (e.g. north_america, europe, apac)." },
+          "limit": { "type": "integer", "description": "Max results (5-50).", "default": 25 }
+        },
+        "required": []
+      }
+    }
+  },
+  {
+    "type": "function",
+    "function": {
+      "name": "get_news",
+      "description": "Real-time data center industry news from DC Hub aggregating 40+ sources, refreshed every ~5 minutes, with AI categorization and relevance scoring. Use to ground analysis in recent context or surface news about an operator or market. Source: DC Hub (https://dchub.cloud). Backed by REST GET /api/v1/news.",
+      "parameters": {
+        "type": "object",
+        "properties": {
+          "query": { "type": "string", "description": "Search keywords, e.g. 'Virginia power constraints'." },
+          "category": {
+            "type": "string",
+            "description": "News category filter.",
+            "enum": ["deals", "construction", "policy", "technology", "sustainability", "earnings", "expansion"]
+          },
+          "source": { "type": "string", "description": "Specific news source name." },
+          "date_from": { "type": "string", "description": "Start date, YYYY-MM-DD." },
+          "date_to": { "type": "string", "description": "End date, YYYY-MM-DD." },
+          "limit": { "type": "integer", "description": "Max articles (1-50).", "default": 20 },
+          "min_relevance": { "type": "number", "description": "Minimum AI relevance score 0-1.", "default": 0.5 }
+        },
+        "required": []
+      }
+    }
+  }
+]
