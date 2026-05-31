@@ -51,8 +51,14 @@ logger = logging.getLogger(__name__)
 # minor revision. If a future call returns 404 (model retired),
 # DCHUB_BRAIN_MODEL_INSPECTOR env var on Railway is the override.
 # Falls back automatically to opus-4-5 via _safe_resolve if 4-7 errors.
-_DEFAULT_INSPECTOR = "claude-opus-4-7"
-_DEFAULT_REASONING = "claude-opus-4-7"
+# 2026-05-31 FIX: claude-opus-4-7 returns HTTP 404 from /v1/messages (not
+# accessible to this account), and layer4._call_claude uses the model RAW without
+# _safe_resolve — so the documented opus-4-7→opus-4-5 fallback never fired and
+# every Layer-5 Claude call 404'd → 0 proposals. Point inspector/reasoning at the
+# confirmed-valid claude-sonnet-4-5 (routine default; the testimonial probe uses
+# it successfully). Override to a valid opus via DCHUB_BRAIN_MODEL when available.
+_DEFAULT_INSPECTOR = "claude-sonnet-4-5"
+_DEFAULT_REASONING = "claude-sonnet-4-5"
 _DEFAULT_ROUTINE   = "claude-sonnet-4-5"
 _DEFAULT_VOICE     = "claude-haiku-3-5"
 # r47 (2026-05-25): challenger tier — independent second opinion on
