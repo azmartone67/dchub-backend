@@ -54,6 +54,7 @@ def _row_to_dict(row, cols):
     return out
 
 
+# AUTO-REPAIR: duplicate route '/latest' also in routes/iso_caiso.py:151 — review and remove one
 @news_digests_read_bp.route("/latest", methods=["GET"])
 def latest():
     sql = f"""
@@ -74,6 +75,7 @@ def latest():
         # Most likely cause: table doesn't exist yet, or column mismatch
         return jsonify(error=f"news_digests query failed: {type(e).__name__}: {e}"), 500
 
+# AUTO-REPAIR: duplicate route '' also in cors_proxy_routes.py:114 — review and remove one
 
 @news_digests_read_bp.route("", methods=["GET"])
 def list_digests():
