@@ -120,12 +120,15 @@ _COMPETITOR_BY_SLUG: dict[str, dict] = {c["slug"]: c for c in _COMPETITORS}
 #      • markets scored ~286 → routes/agent_capabilities_feed.py default
 #        counts.markets_scored = 286 (live-overridden from
 #        market_power_scores). We state "~285+" conservatively.
-#      • grids with live data = 11 US ISOs/BAs + 3 international = 14.
-#        routes/agent_capabilities_feed.py us_isos (PJM,CAISO,ERCOT,MISO,
-#        SPP,NYISO,ISO-NE,TVA,SOCO,FRCC,BPA) + international_isos
-#        (AESO, Hydro-Québec, Nord Pool). We state the VERIFIABLE count;
-#        we deliberately do NOT claim "51 grids" because no in-repo
-#        source supports it.
+#      • grids with live data = 10 North-American grid operators + 43 US
+#        utility balancing authorities = 53 US grid regions. The 10 are the
+#        7 live US ISOs (PJM,CAISO,ERCOT,MISO,SPP,NYISO,ISO-NE — each with a
+#        working extractor in routes/iso_orchestrator.py) plus TVA, BPA and
+#        Ontario's IESO. The 43 utility BAs are live EIA-930
+#        (routes/eia_utility_bas.py). 3 international grids (Hydro-Québec,
+#        AESO, Nord Pool) are a MODELED baseline, NOT live telemetry, so we
+#        cite them as "modeled". We deliberately do NOT claim "51 grids"
+#        (an arithmetic error) and NEVER list SOCO/FRCC as ISOs (no extractor).
 #      • DCPI = "DC Hub Power Index" (routes/dcpi.py), DCGI = "Data
 #        Center Gas Index" (routes/dcgi.py) — both proprietary live
 #        indices computed daily.
@@ -154,12 +157,14 @@ _DCHUB_DIFFERENTIATORS: list[dict] = [
     {
         "key":    "live_grid_data",
         "label":  "Live grid & energy data",
-        "value":  ("Real-time grid data across 11 US ISOs / balancing "
-                   "authorities (PJM, CAISO, ERCOT, MISO, SPP, NYISO, "
-                   "ISO-NE, TVA, SOCO, FRCC, BPA) plus 3 international "
-                   "grids (AESO, Hydro-Québec, Nord Pool)."),
+        "value":  ("Real-time grid data across 10 North-American grid "
+                   "operators (7 US ISOs — PJM, CAISO, ERCOT, MISO, SPP, "
+                   "NYISO, ISO-NE — plus TVA, BPA and Ontario's IESO) and "
+                   "43 US utility balancing authorities, with 3 "
+                   "international grids (Hydro-Québec, AESO, Nord Pool) "
+                   "modeled."),
         "proof":  "https://dchub.cloud/api/v1/reports/state-of-power",
-        "source": "routes/agent_capabilities_feed.py us_isos + international_isos",
+        "source": "routes/agent_capabilities_feed.py na_grid_operators + utility_bas_count + international_isos_modeled",
     },
     {
         "key":    "proprietary_indices",
@@ -783,8 +788,9 @@ def why_dchub():
     pitch = (
         "DC Hub is the agent-native data-center intelligence platform. An "
         "AI agent can query it directly over a live MCP server (25+ tools), "
-        "get real-time grid and energy data across 11 US ISOs / balancing "
-        "authorities plus 3 international grids, read two proprietary daily "
+        "get real-time grid and energy data across 10 ISOs + 43 US utility "
+        "balancing authorities (3 international grids modeled), read two "
+        "proprietary daily "
         "indices (the DC Hub Power Index and the DC Hub Gas Index), and "
         "cite any answer via CC-BY-4.0 datasets with stable URLs and "
         "JSON-LD. It covers 21,000+ facilities and offers a free "

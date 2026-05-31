@@ -87,13 +87,26 @@ def _gather():
     }
 
     # Live counters
+    #
+    # Grid-count canonical framing (2026-05-31): keep these mutually
+    # consistent and literally true.
+    #   • us_isos = the 7 live US ISOs ONLY (each has a working extractor in
+    #     routes/iso_orchestrator.py). NEVER list SOCO/FRCC here — they have
+    #     no extractor and are served (if at all) as utility BAs.
+    #   • na_grid_operators = the 10 North-American grid operators with live
+    #     data = those 7 US ISOs + TVA + BPA + IESO (Ontario).
+    #   • utility_bas_count = 43 US utility balancing authorities (live EIA-930).
+    #   • international_isos_modeled = 3 international grids that are a MODELED
+    #     baseline, NOT live telemetry (Hydro-Québec, AESO, Nord Pool).
     counts = {
         "facilities":       21000,
         "markets_scored":   286,
         "deals_tracked":    1972,
         "countries":        170,
-        "international_isos": ["AESO", "Hydro-Québec", "Nord Pool"],
-        "us_isos":          ["PJM","CAISO","ERCOT","MISO","SPP","NYISO","ISO-NE","TVA","SOCO","FRCC","BPA"],
+        "us_isos":          ["PJM","CAISO","ERCOT","MISO","SPP","NYISO","ISO-NE"],
+        "na_grid_operators": ["PJM","CAISO","ERCOT","MISO","SPP","NYISO","ISO-NE","TVA","BPA","IESO"],
+        "utility_bas_count": 43,
+        "international_isos_modeled": ["Hydro-Québec", "AESO", "Nord Pool"],
         "ai_platforms_citing": 96,
     }
     if _pg and _dsn():
@@ -130,7 +143,7 @@ def _gather():
         {"name": "analyze_site",            "what":  "Score any US location for DC suitability"},
         {"name": "get_intelligence_index",  "what":  "Composite market-health score"},
         {"name": "get_pipeline",            "what":  "Track 369 GW of construction pipeline"},
-        {"name": "get_grid_data",           "what":  "Real-time electricity grid data (18 ISOs)"},
+        {"name": "get_grid_data",           "what":  "Real-time electricity grid data (10 ISOs + 43 utility BAs)"},
         {"name": "get_grid_intelligence",   "what":  "Deep grid intel (congestion, curtailment)"},
         {"name": "get_infrastructure",      "what":  "Substations, transmission lines, gas pipelines"},
         {"name": "get_fiber_intel",         "what":  "Fiber routes, carrier presence, connectivity"},

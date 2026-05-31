@@ -1,7 +1,7 @@
 {
   "name": "dc-hub-intelligence",
   "display_name": "DC Hub Intelligence",
-  "description": "Real-time data center intelligence: 21,000+ facilities, M&A deals, 10 ISO grids (7 US + Hydro-Quebec + AESO + Nord Pool 15 zones), fiber routes, water risk, tax incentives. AI capex deal tracker + AI Compute Capacity Index.",
+  "description": "Real-time data center intelligence: 21,000+ facilities, M&A deals, grid data across 10 North-American grid operators (7 US ISOs plus TVA, BPA and Ontario's IESO) and 43 US utility balancing authorities, plus 3 international grids (Hydro-Québec, AESO, Nord Pool) modeled, fiber routes, water risk, tax incentives. AI capex deal tracker + AI Compute Capacity Index.",
   "url": "https://dchub.cloud/mcp",
   "transport": "streamable-http",
   "protocol_version": "2024-11-05",

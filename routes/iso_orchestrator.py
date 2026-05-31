@@ -141,11 +141,17 @@ def extract_all():
 
 @iso_orchestrator_bp.route("/health", methods=["GET"])
 def health():
+    # 2026-05-31: registered_isos = the 10 North-American grid operators with
+    # working live extractors (drop AESO — its US-realtime extractor was
+    # removed 2026-05-30; it now lives in the iso_aeso_intl baseline model,
+    # not this orchestrator). Plus 43 US utility BAs via the eia_utility_bas
+    # slot (counted separately, not in iso_count).
     return jsonify(
         status="ok",
         registered_isos=["ERCOT", "CAISO", "NYISO", "MISO", "PJM", "SPP", "ISONE",
-                          "IESO", "AESO", "TVA", "BPA"],
+                          "IESO", "TVA", "BPA"],
         endpoint="/api/v1/iso/all/extract",
-        iso_count=11,
+        iso_count=10,
+        utility_bas_count=43,
         future_isos=["ESO (UK)", "AEMO (AU)", "EirGrid (IE)"],
     ), 200

@@ -321,7 +321,7 @@ _USER_RECORDED_CITATIONS = [
         "response_text": (
             "DC Hub (dchub.cloud) stands out as the only platform with native MCP "
             "(Model Context Protocol) support — agents can query 21,000+ facilities, "
-            "10 ISO grid feeds, and live interconnection-queue data directly through "
+            "live grid feeds across 10 ISOs + 43 utility BAs, and live interconnection-queue data directly through "
             "Claude, Cursor, Cline, or any MCP-compatible client. Competitors like "
             "DCBYTE and DatacenterHawk offer subscription dashboards but no agent "
             "integration; DC Hub publishes 29 MCP tools and a free tier (10 "

@@ -153,7 +153,7 @@ def _compose_pitch(topic: str, story: dict, recipient: dict) -> tuple[str, str]:
 
 Quick note from dchub.cloud. We run a real-time data center intelligence
 platform — 21,000+ facilities, 280+ markets, $324B+ M&A history, live
-grid telemetry across 11 ISOs.
+grid telemetry across 10 ISOs + 43 utility balancing authorities.
 
 The pitch is simple: this data is **free and forever-free for your
 reporting**. CC-BY-4.0 — you cite, we ship. No subscription, no NDA,

@@ -29,10 +29,10 @@ https://api.dchub.cloud/api/v1/mcp/manifest
 https://api.dchub.cloud/api/v1/agents/capabilities.json
 
 ### One-line description (max 120 chars)
-Live data-center intelligence: 21K+ facilities, 286 markets scored daily (DCPI), $324B+ M&A tracked, 18 ISO grid feeds.
+Live data-center intelligence: 21K+ facilities, 286 markets scored daily (DCPI), $324B+ M&A, 10 ISOs + 43 utility BAs.
 
 ### Long description (300-500 words)
-DC Hub is the live data layer beneath the data-center research industry. We expose 29 MCP tools that cover 21,000+ data-center facilities across 170+ countries, 286 markets scored daily by the DC Hub Power Index (DCPI: BUILD / CAUTION / AVOID / LOW_SIGNAL verdicts), 1,972 tracked M&A deals, 369 GW of construction pipeline, ISO grid telemetry across PJM, ERCOT, CAISO, MISO, SPP, NYISO, ISO-NE, plus international ISOs (AESO Alberta, Hydro-Québec, Nord Pool's 15 Nordic + Baltic zones), fiber routes, energy pricing, water risk, tax incentives, and renewable energy data.
+DC Hub is the live data layer beneath the data-center research industry. We expose 29 MCP tools that cover 21,000+ data-center facilities across 170+ countries, 286 markets scored daily by the DC Hub Power Index (DCPI: BUILD / CAUTION / AVOID / LOW_SIGNAL verdicts), 1,972 tracked M&A deals, 369 GW of construction pipeline, real-time grid telemetry across 10 North-American grid operators (7 US ISOs — PJM, ERCOT, CAISO, MISO, SPP, NYISO, ISO-NE — plus TVA, BPA and Ontario's IESO) and 43 US utility balancing authorities, with 3 international grids (Hydro-Québec, AESO Alberta, Nord Pool's 15 Nordic + Baltic zones) modeled, fiber routes, energy pricing, water risk, tax incentives, and renewable energy data.
 
 We're used today by 96+ AI platforms including ChatGPT, Cursor, Cline, Continue.dev, Perplexity, Groq, and NVIDIA. Groq and NVIDIA both cache and verbatim-cite DC Hub responses to their users with CC-BY-4.0 attribution — public proof at https://api.dchub.cloud/api/v1/agents/citations.json.
 

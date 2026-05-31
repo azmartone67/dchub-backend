@@ -32,7 +32,9 @@ _FALLBACK = {
     "facilities": 21000,
     "countries": 170,
     "markets": 286,
-    "isos": 7,
+    "isos": 7,               # 7 live US ISOs (ERCOT, CAISO, NYISO, MISO, PJM, SPP, ISO-NE)
+    "grid_operators": 10,    # 10 North-American grid operators w/ live data (7 US ISOs + TVA + BPA + IESO)
+    "utility_bas": 43,       # 43 US utility balancing authorities (live EIA-930)
 }
 
 _TTL_S = 600          # 10-minute cache; these move slowly
@@ -137,8 +139,9 @@ def markets_phrase() -> str:
 
 def headline_blurb() -> str:
     """One-liner generators can drop into a prompt or post, always consistent.
-    e.g. '21,000+ data center facilities across 170+ countries, 286 markets, 7 ISOs'."""
+    e.g. '21,000+ data center facilities across 170+ countries, 286 markets,
+    10 ISOs + 43 utility BAs'."""
     s = get_canonical_stats()
     return (f"{facilities_phrase()} data center facilities across "
             f"{countries_phrase()} countries, {markets_phrase()} markets, "
-            f"{s.get('isos', 7)} ISOs")
+            f"{s.get('grid_operators', 10)} ISOs + {s.get('utility_bas', 43)} utility BAs")

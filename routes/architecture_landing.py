@@ -70,10 +70,11 @@ AI agents query all of it directly. Here's how it fits together.</p>
   <div class="stat"><div class="stat-num" id="s-gw">369 GW</div><div class="stat-label">Pipeline tracked</div></div>
 </div>
 
-<h2>1. Data ingestion — 18 ISO feeds + 11 federal sources</h2>
-<p>DC Hub ingests grid-level data from <b>18 Independent System Operators</b> covering the US (PJM, ERCOT, CAISO,
-MISO, SPP, NYISO, ISO-NE, TVA, SOCO, FRCC, BPA) plus international ISOs (AESO Alberta, Hydro-Québec, Nord Pool
-across 15 Nordic + Baltic zones). Federal data flows in from EIA-860, HIFLD, FERC, FCC Form 477, and ArcGIS
+<h2>1. Data ingestion — 10 ISOs + 43 utility BAs + 11 federal sources</h2>
+<p>DC Hub ingests grid-level data from <b>10 North-American grid operators</b> — the 7 live US ISOs (PJM, ERCOT,
+CAISO, MISO, SPP, NYISO, ISO-NE) plus TVA, BPA and Ontario's IESO — and <b>43 US utility balancing authorities</b>
+(live EIA-930), with 3 international grids (AESO Alberta, Hydro-Québec, Nord Pool across 15 Nordic + Baltic zones)
+modeled. Federal data flows in from EIA-860, HIFLD, FERC, FCC Form 477, and ArcGIS
 FeatureServers. PeeringDB provides carrier facility presence. OSM Overpass supplements fiber routes where
 state KMZ sources are thin.</p>
 

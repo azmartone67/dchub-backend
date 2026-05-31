@@ -1,12 +1,12 @@
 {
   "$schema": "https://static.modelcontextprotocol.io/schemas/2025-12-11/server.schema.json",
   "name": "cloud.dchub/mcp-server",
-  "description": "Data center intel for AI agents: 21k+ facilities, 51 grids, power+gas indices, fiber, $324B M&A.",
+  "description": "Data center intel for AI agents: 21k+ facilities, 53 grids, power+gas indices, fiber, $324B M&A.",
   "repository": {
     "url": "https://github.com/azmartone67/dchub-backend",
     "source": "github"
   },
-  "version": "2.2.0",
+  "version": "2.2.1",
   "websiteUrl": "https://dchub.cloud",
   "remotes": [
     {

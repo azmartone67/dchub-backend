@@ -4,7 +4,7 @@
   "type": "remote-mcp-server",
   "transport": "streamable-http",
   "url": "https://dchub.cloud/mcp",
-  "description": "Live data center, grid, and energy intelligence. 20,000+ facilities globally, 280+ markets with composite DCPI scores, 7 ISOs of real-time grid data, EIA retail electricity rates per state, and $324B+ M&A history — all queryable from Claude Desktop with an instant programmatic-auth free tier.",
+  "description": "Live data center, grid, and energy intelligence. 20,000+ facilities globally, 280+ markets with composite DCPI scores, real-time grid data across 10 North-American grid operators (7 US ISOs plus TVA, BPA and Ontario's IESO) and 43 US utility balancing authorities, EIA retail electricity rates per state, and $324B+ M&A history — all queryable from Claude Desktop with an instant programmatic-auth free tier.",
   "use_cases": [
     {
       "title": "Site selection",

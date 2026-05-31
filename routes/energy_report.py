@@ -114,7 +114,7 @@ def _gather_energy_uncached(window: str) -> dict:
         "data_sources": [
             "market_power_scores (DCPI, 100+ markets, daily recompute)",
             "interconnection_queue (live ISO scrapes)",
-            "grid status (10 ISOs: 7 US + HQ + AESO + Nord Pool)",
+            "grid status (10 grid operators: 7 US ISOs + TVA + BPA + IESO) + 43 US utility balancing authorities",
         ],
     }
 
@@ -262,7 +262,7 @@ def _gather_energy_uncached(window: str) -> dict:
             "Per-market DCPI verdicts (BUILD/CAUTION/AVOID, 100+ markets, daily)",
             "Interconnection-queue depth + data-center share by ISO",
             "Reserve margin + queue-wait + curtailment per market",
-            "Real-time fuel mix + carbon intensity across 10 ISOs",
+            "Real-time fuel mix + carbon intensity across 10 ISOs + 43 utility BAs",
             "Excess-power score + time-to-power (TTP) per market",
         ],
         "they_cover_we_dont_yet": [
@@ -587,7 +587,7 @@ def _render_html(d: dict, window: str) -> str:
   "publisher": {"@type": "Organization", "name": "DC Hub", "url": "https://dchub.cloud"},
   "keywords": ["data center", "DCPI", "power availability", "interconnection queue",
                 "BUILD verdict", "ISO grid", "renewable curtailment"],
-  "spatialCoverage": "Global · 10 ISOs (7 US + Hydro-Quebec + AESO + Nord Pool)",
+  "spatialCoverage": "10 North-American grid operators (7 US ISOs + TVA + BPA + IESO) + 43 US utility balancing authorities; 3 international grids (Hydro-Quebec, AESO, Nord Pool) modeled",
   "temporalCoverage": "Daily refresh, current period",
   "isAccessibleForFree": True,
   "distribution": [
@@ -635,7 +635,7 @@ def _render_html(d: dict, window: str) -> str:
 <div class="wrap">
 <div class="eyebrow">DC Hub · Energy Report · CC-BY-4.0 · {d.get('as_of_date','')}</div>
 <h1>{label} Data Center Energy Report</h1>
-<p class="lede">Live power and grid intelligence across {total} scored markets and 10 ISOs. Verdict shifts, BUILD/AVOID watch lists, interconnection-queue depth, and live fuel mix — refreshed daily, machine-readable, CC-BY-4.0.</p>
+<p class="lede">Live power and grid intelligence across {total} scored markets and 10 ISOs + 43 utility BAs. Verdict shifts, BUILD/AVOID watch lists, interconnection-queue depth, and live fuel mix — refreshed daily, machine-readable, CC-BY-4.0.</p>
 
 <div class="stats">
   <div class="stat"><span class="stat-num">{total}</span><span class="stat-lbl">Markets scored (DCPI)</span></div>

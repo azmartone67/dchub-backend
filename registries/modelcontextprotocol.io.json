@@ -4,7 +4,7 @@
   "url": "https://dchub.cloud/mcp",
   "transport": "streamable-http",
   "discovery": "https://dchub.cloud/.well-known/mcp.json",
-  "description": "Live data center intelligence — 20,000+ facilities across 140+ countries, 280+ markets with DCPI (Data Center Power Index) verdicts, 7 ISOs of real-time grid data, 126,000+ substations + transmission lines, per-state retail electricity rates, fiber routes, water risk, gas infrastructure, $324B+ M&A history. Designed for AI agents — programmatic auth via POST /api/v1/keys/claim returns a free dev key instantly.",
+  "description": "Live data center intelligence — 20,000+ facilities across 140+ countries, 280+ markets with DCPI (Data Center Power Index) verdicts, real-time grid data across 10 North-American grid operators (7 US ISOs plus TVA, BPA and Ontario's IESO) and 43 US utility balancing authorities, 126,000+ substations + transmission lines, per-state retail electricity rates, fiber routes, water risk, gas infrastructure, $324B+ M&A history. Designed for AI agents — programmatic auth via POST /api/v1/keys/claim returns a free dev key instantly.",
   "homepage": "https://dchub.cloud",
   "documentation": "https://dchub.cloud/ai-hub",
   "logo": "https://dchub.cloud/favicon.svg",

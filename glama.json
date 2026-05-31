@@ -1,7 +1,7 @@
 {
   "name": "dchub-mcp-server",
   "displayName": "DC Hub Intelligence",
-  "description": "Real-time data center market intelligence MCP server giving AI agents access to 20,000+ global data center facilities, 975+ M&A transactions, real-time ISO/RTO grid data across 7 US ISOs and 74 load zones, capacity pipeline (21+ GW), site-suitability scoring for any US lat/long, and industry news from 60+ curated sources updated every 5 minutes.",
+  "description": "Real-time data center market intelligence MCP server giving AI agents access to 20,000+ global data center facilities, 975+ M&A transactions, real-time grid data across 10 North-American grid operators (7 US ISOs plus TVA, BPA and Ontario's IESO) and 43 US utility balancing authorities, capacity pipeline (21+ GW), site-suitability scoring for any US lat/long, and industry news from 60+ curated sources updated every 5 minutes.",
   "version": "3.0.0",
   "license": "Apache-2.0",
   "homepage": "https://dchub.cloud",

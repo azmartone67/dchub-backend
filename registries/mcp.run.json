@@ -2,7 +2,7 @@
   "slug": "dchub",
   "name": "DC Hub",
   "tagline": "Live data center, grid, and energy intelligence for AI agents",
-  "description": "20,000+ data center facilities across 140+ countries, 280+ markets with DCPI (Data Center Power Index) BUILD/AVOID verdicts, 126,000+ substations mapped, real-time grid intelligence for 7 ISOs, per-state retail electricity rates, fiber routes, water risk, gas infrastructure, and $324B+ in M&A transaction history. Designed for AI assistants — instant programmatic auth, no browser required.",
+  "description": "20,000+ data center facilities across 140+ countries, 280+ markets with DCPI (Data Center Power Index) BUILD/AVOID verdicts, 126,000+ substations mapped, real-time grid intelligence across 10 North-American grid operators (7 US ISOs plus TVA, BPA and Ontario's IESO) and 43 US utility balancing authorities, per-state retail electricity rates, fiber routes, water risk, gas infrastructure, and $324B+ in M&A transaction history. Designed for AI assistants — instant programmatic auth, no browser required.",
   "url": "https://dchub.cloud/mcp",
   "transport": "streamable-http",
   "homepage": "https://dchub.cloud",
@@ -20,7 +20,7 @@
   "tool_count": 27,
   "highlights": [
     "DCPI: composite power-availability score for 280+ markets, updated daily",
-    "7 ISO real-time grid feeds (PJM, MISO, CAISO, ERCOT, SPP, NYISO, ISO-NE)",
+    "Real-time grid feeds across 10 North-American grid operators (7 US ISOs — PJM, MISO, CAISO, ERCOT, SPP, NYISO, ISO-NE — plus TVA, BPA, IESO) + 43 US utility balancing authorities",
     "Per-state EIA retail electricity rates (industrial / commercial / residential)",
     "Site analyzer: composite score for any lat/lon (paid tier)",
     "Free identified tier (one API call) unlocks 16 high-value tools"

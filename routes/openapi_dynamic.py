@@ -102,7 +102,7 @@ def openapi_live():
             "version": "2.1.2",
             "description": (
                 f"Live data center intelligence: {counts['facilities']:,} facilities, "
-                f"{counts['deals']:,} M&A deals, 10 ISOs (7 US + Hydro-Quebec + AESO + Nord Pool 15 zones), "
+                f"{counts['deals']:,} M&A deals, grid data across 10 North-American grid operators (7 US ISOs plus TVA, BPA and Ontario's IESO) and 43 US utility balancing authorities, "
                 "real-time grid mix, fiber routes, water risk, tax incentives. "
                 f"Counts as of {counts['as_of']}."
             ),

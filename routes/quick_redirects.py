@@ -79,7 +79,7 @@ integrate via MCP (Model Context Protocol) or direct REST.
 - 21,000+ data center facilities, 280+ markets, 178 countries
 - $324B+ M&A history (live + autopilot-curated)
 - DCPI scores: BUILD/CAUTION/AVOID verdicts for 280 markets
-- Live grid telemetry: 11 ISOs (ERCOT, PJM, CAISO, MISO, SPP, NYISO, ISONE, AESO, IESO, BPA, TVA)
+- Live grid telemetry: 10 grid operators (ERCOT, PJM, CAISO, MISO, SPP, NYISO, ISONE, IESO, BPA, TVA) + 43 US utility balancing authorities
 - 50,000+ fiber routes, 126,000 substations, 52,000 transmission lines
 - 1,000+ active DC pipeline projects
 
