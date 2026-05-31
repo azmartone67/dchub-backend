@@ -175,7 +175,7 @@ def _persist_poller(agent_name: str, ua: str, ip_hash: str) -> None:
             cur.execute("""
                 INSERT INTO agent_broadcast_subscribers
                     (agent_name, user_agent, ip_hash, first_seen, last_seen, hits)
-                VALUES (%s, %s, %s, NOW(), NOW(), 1)
+                VALUES (%s, %s, %s, NOW() ON CONFLICT DO NOTHING, NOW(), 1)
                 ON CONFLICT (agent_name, ip_hash) DO UPDATE
                    SET hits       = agent_broadcast_subscribers.hits + 1,
                        last_seen  = NOW(),
