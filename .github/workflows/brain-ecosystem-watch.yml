@@ -66,3 +66,26 @@ jobs:
           except Exception as e:
               print(f"::warning::ecosystem parse: {e}")
           PY
+
+      - name: Warm competitive moat radar
+        env:
+          ADMIN_KEY: ${{ secrets.DCHUB_ADMIN_KEY }}
+        run: |
+          if [ -z "${ADMIN_KEY:-}" ]; then
+            echo "::warning::DCHUB_ADMIN_KEY not set — skipping competitive warm"
+            exit 0
+          fi
+          # Keep the competitive moat radar cache hot 24x7. The probe TTL is
+          # 6h == this cron's cadence, so the agent-facing /positioning
+          # endpoint is virtually always warm. /refresh returns immediately;
+          # the actual probes run in a daemon thread on the backend (the
+          # request path never blocks — 1-replica worker safety).
+          code=$(curl -sS --max-time 30 -X POST \
+            -H "X-Admin-Key: $ADMIN_KEY" \
+            -o /tmp/ci.body -w "%{http_code}" \
+            "$BASE/api/v1/competitive/refresh" || echo "000")
+          echo "competitive/refresh -> HTTP $code · $(head -c 300 /tmp/ci.body 2>/dev/null)"
+          if [ "$code" = "401" ] || [ "$code" = "403" ]; then
+            echo "::error::competitive/refresh $code — DCHUB_ADMIN_KEY drift"
+            exit 1
+          fi
