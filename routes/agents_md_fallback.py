@@ -25,8 +25,11 @@ AGENTS_MD = """# AGENTS.md — DC Hub
 ## What is DC Hub?
 
 DC Hub is the data center intelligence platform for AI agents.
-21,401 facilities, 1,900 M&A deals, 10 ISO grids (7 US + Hydro-Québec
-+ AESO + Nord Pool 15 zones), fiber routes, water risk, tax incentives.
+21,401 facilities, 1,900 M&A deals, real-time grid data across 10
+North-American grid operators (7 US ISOs plus TVA, BPA and Ontario's
+IESO) and 43 US utility balancing authorities — with 3 international
+grids (Hydro-Québec, AESO, Nord Pool) modeled — fiber routes, water
+risk, tax incentives.
 
 ## How to use this with your agent
 
@@ -40,10 +43,11 @@ spec with live counts at https://api.dchub.cloud/openapi-live.json.
 
 1. **facility_intelligence** — search 21k facilities, get profiles, find alternatives
 2. **site_planning** — score lat/lon for data center suitability across 7 dimensions
-3. **grid_intelligence** — real-time fuel mix, prices, carbon intensity (10 ISOs)
+3. **grid_intelligence** — real-time fuel mix, prices, carbon intensity (10 ISOs + 43 utility BAs)
 4. **market_ranking** — rank markets by criteria (cheapest power, most capacity, etc.)
 5. **ai_capex_intel** — hyperscaler deal tracker + AI Compute Capacity Index
 6. **deal_flow** — $324B+ M&A history, hyperscaler capex events
+7. **gas_intelligence** — DCGI per-state natural-gas suitability (0–100): gas-access/cost scores, interstate pipelines, operators, and a GAS-ADVANTAGED/ADEQUATE/GAS-CONSTRAINED verdict (MCP tool `get_gas_index`, feed `/api/v1/dcgi/scores`)
 
 ## Discovery endpoints
 
