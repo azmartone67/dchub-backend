@@ -181,6 +181,18 @@ def _domain_of(surface_name: str) -> str:
     if (s.startswith("/ai/learn") or s.startswith("/ai/schema")
             or s.startswith("/api/agent") or s.startswith("/api/_diagnose")):
         return "other"
+    # Phase r34 (2026-05-31): EXCLUDE operational/internal surfaces for the
+    # same reason. admin dashboards, ingest writers, CSV exports and draft
+    # generators are hit on their own (or no) cadence — their "age" tracks
+    # the last admin/ingest action, NOT user-facing data freshness. They were
+    # dragging iso/news/dcpi/gas/facilities/mna/pipeline into perpetual breach
+    # (all ~155-168h = "last touched a week ago", while the real public feeds
+    # — dcpi 42min, fiber/power/renewable current — are fine). Demote to 'other'.
+    _OPS_MARKERS = ("/admin/", "/ingest", "/export", "/draft-", "/draft/",
+                    "ner/status", "/recompute", "/backfill", "/dedup",
+                    "/probe/", "/import", "/upload", "/sync")
+    if any(m in s for m in _OPS_MARKERS):
+        return "other"
     if "grid" in s or "iso" in s: return "iso"
     if "renewable" in s or "solar" in s or "wind" in s: return "renewable"
     if "rate" in s or "energy" in s and "gas" not in s: return "power"
