@@ -518,6 +518,10 @@ class AutonomousBrain:
                 """)
                 articles = cur.fetchall()
 
+                # Separate cursor for writes so a failed INSERT (which aborts
+                # the txn) can be rolled back without poisoning the read above.
+                wcur = conn.cursor()
+
                 for article in articles:
                     text = f"{article['title']} {article['content'] or ''}"
 
@@ -530,8 +534,35 @@ class AutonomousBrain:
                                 results['lng'] += 1
                             else:
                                 results['pipelines'] += 1
+
+                            # Persist the match. gas_pipelines has no NOT NULL
+                            # columns, but (name, operator) is the unique key
+                            # (gas_pipelines_name_operator_uniq) we conflict on,
+                            # so both must be present and stable. Derive name
+                            # from the article title; tag operator with a
+                            # sentinel so re-runs over the same news dedup
+                            # cleanly instead of inserting duplicates each cycle.
+                            name = (article['title'] or '').strip()[:200]
+                            if name:
+                                operator = 'news-extracted'
+                                source_id = f"news_gas_{abs(hash(article['source_url'] or name)) % 10**10}"
+                                try:
+                                    wcur.execute("""
+                                        INSERT INTO gas_pipelines
+                                        (name, operator, pipeline_type, status, source, source_id)
+                                        VALUES (%s, %s, %s, %s, %s, %s)
+                                        ON CONFLICT (name, operator) DO NOTHING
+                                    """, (name, operator, 'discovered', 'active',
+                                          'news_extraction', source_id[:100]))
+                                    if wcur.rowcount and wcur.rowcount > 0:
+                                        results['added'] += 1
+                                    conn.commit()
+                                except Exception as ins_err:
+                                    conn.rollback()
+                                    logger.debug(f"Gas pipeline insert skipped: {ins_err}")
                             break
 
+                wcur.close()
                 cur.close()
             finally:
                 conn.close()
@@ -559,6 +590,10 @@ class AutonomousBrain:
                 """)
                 articles = cur.fetchall()
 
+                # Separate cursor for writes so a failed INSERT (which aborts
+                # the txn) can be rolled back without poisoning the read above.
+                wcur = conn.cursor()
+
                 for article in articles:
                     text = f"{article['title']} {article['content'] or ''}"
 
@@ -571,8 +606,33 @@ class AutonomousBrain:
                                 results['substations'] += 1
                             else:
                                 results['transmission_lines'] += 1
+
+                            # Persist the match. transmission_lines' only unique
+                            # key is transmission_lines_hifld_id_uniq on
+                            # (hifld_id), so we MUST supply a deterministic,
+                            # non-null hifld_id (NULLs never conflict → a new
+                            # dupe every cycle). Synthesize it from source_url
+                            # so the same article dedups across runs.
+                            name = (article['title'] or '').strip()[:500]
+                            if name:
+                                hifld_id = f"news_{abs(hash(article['source_url'] or name)) % 10**10}"
+                                try:
+                                    wcur.execute("""
+                                        INSERT INTO transmission_lines
+                                        (hifld_id, name, operator, status, line_type, source)
+                                        VALUES (%s, %s, %s, %s, %s, %s)
+                                        ON CONFLICT (hifld_id) DO NOTHING
+                                    """, (hifld_id[:50], name, 'news-extracted',
+                                          'operational', 'discovered', 'news_extraction'))
+                                    if wcur.rowcount and wcur.rowcount > 0:
+                                        results['added'] += 1
+                                    conn.commit()
+                                except Exception as ins_err:
+                                    conn.rollback()
+                                    logger.debug(f"Transmission line insert skipped: {ins_err}")
                             break
 
+                wcur.close()
                 cur.close()
             finally:
                 conn.close()
@@ -602,24 +662,58 @@ class AutonomousBrain:
 
                 carriers = ['Zayo', 'Lumen', 'Crown Castle', 'Windstream', 'Level3', 'Cogent']
 
+                # Separate cursor for writes so a failed INSERT (which aborts
+                # the txn) can be rolled back without poisoning the read above.
+                wcur = conn.cursor()
+
                 for article in articles:
                     text = f"{article['title']} {article['content'] or ''}"
+                    text_lc = text.lower()
 
                     # Check for fiber mentions
                     for pattern in self.fiber_patterns:
                         if re.search(pattern, text, re.IGNORECASE):
-                            if 'dark' in text.lower():
+                            if 'dark' in text_lc:
                                 results['dark_fiber'] += 1
-                            elif 'lit' in text.lower():
+                                route_type = 'dark'
+                            elif 'lit' in text_lc:
                                 results['lit_fiber'] += 1
+                                route_type = 'lit'
+                            else:
+                                route_type = 'discovered'
 
-                            # Check for carrier mentions
+                            # Check for carrier mentions → provider
+                            provider = 'Unknown'
                             for carrier in carriers:
-                                if carrier.lower() in text.lower():
+                                if carrier.lower() in text_lc:
                                     results['carriers'] += 1
+                                    provider = carrier
                                     break
+
+                            # Persist the match. fiber_routes' stable unique key
+                            # is the inline `source_id TEXT UNIQUE`, so conflict
+                            # on (source_id) with a deterministic id derived from
+                            # source_url → the same article dedups across runs.
+                            name = (article['title'] or '').strip()[:200]
+                            if name:
+                                source_id = f"news_fiber_{abs(hash(article['source_url'] or name)) % 10**10}"
+                                try:
+                                    wcur.execute("""
+                                        INSERT INTO fiber_routes
+                                        (name, provider, route_type, status, source, source_id)
+                                        VALUES (%s, %s, %s, %s, %s, %s)
+                                        ON CONFLICT (source_id) DO NOTHING
+                                    """, (name, provider[:100], route_type, 'active',
+                                          'news_extraction', source_id[:100]))
+                                    if wcur.rowcount and wcur.rowcount > 0:
+                                        results['added'] += 1
+                                    conn.commit()
+                                except Exception as ins_err:
+                                    conn.rollback()
+                                    logger.debug(f"Fiber route insert skipped: {ins_err}")
                             break
 
+                wcur.close()
                 cur.close()
             finally:
                 conn.close()
