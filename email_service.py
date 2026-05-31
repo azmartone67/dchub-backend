@@ -27,7 +27,28 @@ from typing import Optional, Dict, List
 import json
 import threading
 import time
+from contextlib import contextmanager
 from db_utils import get_db
+
+
+@contextmanager
+def _db_conn():
+    """Auto-closing wrapper around get_db() — closes on ALL exit paths
+    including exceptions. r36 (2026-05-31): this file ran a daemon email-queue
+    thread that called get_db() per cycle and only closed on the success path,
+    so any send_email/DB exception leaked a connection forever → eventual Neon
+    pool exhaustion (the 1-replica flapping failure mode). Every raw
+    `conn = get_db()` site is converted to `with _db_conn() as conn:`."""
+    conn = None
+    try:
+        conn = get_db()
+        yield conn
+    finally:
+        if conn is not None:
+            try:
+                conn.close()
+            except Exception:
+                pass
 
 # =============================================================================
 # CONFIGURATION
@@ -53,7 +74,11 @@ DB_PATH = "dc_nexus.db"
 
 def init_email_tables():
     """Initialize email-related database tables"""
-    conn = get_db()
+    with _db_conn() as conn:
+        return _init_email_tables(conn)
+
+
+def _init_email_tables(conn):
     c = conn.cursor()
     
     # Email queue table for scheduled sends
@@ -121,7 +146,6 @@ def init_email_tables():
     """)
     
     conn.commit()
-    conn.close()
     print("✅ Email tables initialized")
 
 
@@ -731,7 +755,11 @@ def stop_welcome_series(email: str):
 
 def process_email_queue():
     """Process pending emails in the queue"""
-    conn = get_db()
+    with _db_conn() as conn:
+        return _process_email_queue(conn)
+
+
+def _process_email_queue(conn):
     c = conn.cursor()
     
     # Get emails that are due to be sent
@@ -798,8 +826,7 @@ def process_email_queue():
             results.append({'email_id': email_id, 'success': False, 'error': result['error']})
         
         conn.commit()
-    
-    conn.close()
+
     return results
 
 
