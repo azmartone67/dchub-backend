@@ -25161,6 +25161,17 @@ try:
 except Exception as _ab_e:
     print(f"[main] agent_broadcast_bp register failed: {_ab_e}", flush=True)
 
+# DC Hub Media north-star scoreboard — citation velocity (distinct AI
+# agents/sources citing us per week), deduped across ai_testimonials +
+# ai_testimonials_auto. Schema-introspected, never 500s. The single
+# number the media engine optimizes for.
+try:
+    from routes.media_north_star import media_north_star_bp
+    app.register_blueprint(media_north_star_bp)
+    print("[main] media_north_star_bp registered: /api/v1/media/north-star", flush=True)
+except Exception as _mns_e:
+    print(f"[main] media_north_star_bp register failed: {_mns_e}", flush=True)
+
 try:
     from routes.narrative_arc import narrative_arc_bp
     app.register_blueprint(narrative_arc_bp)
