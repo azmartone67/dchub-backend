@@ -2399,8 +2399,21 @@ def fix_funnel_health_scan():
     issues = 0
     # 1. The biggest single-stage leak the endpoint already identified.
     leak = data.get("biggest_leak")
-    if isinstance(leak, dict) and leak.get("rate") is not None and leak["rate"] < 0.02:
-        label = (f"funnel_leak_critical: {leak.get('between','?')} converting "
+    _between = leak.get("between", "") if isinstance(leak, dict) else ""
+    # r36 (2026-05-31): SUPPRESS the paywall_hit -> click stage. paywall_hit comes
+    # from mcp_upgrade_signals (MCP-agent gate fires, dominated by a few power-
+    # agents looping thousands of calls) while click comes from
+    # redeem_funnel_events (browser). Dividing them is apples-to-oranges and
+    # pins at ~0% forever, so funnel_leak_critical fired every cycle as a false
+    # alarm. (r35 removed the identical artifact from the two consistency-radar
+    # funnel detectors; this is the third one.) Only flag leaks WITHIN the
+    # browser funnel (click->view->submit), where both sides are the same
+    # population. The real MCP demand-vs-conversion gap is caught honestly by
+    # check #2 below (overall paywall->upgrade, both MCP-sourced).
+    if (isinstance(leak, dict) and leak.get("rate") is not None
+            and leak["rate"] < 0.02
+            and not _between.startswith("paywall_hit")):
+        label = (f"funnel_leak_critical: {_between} converting "
                  f"at {leak['rate'] * 100:.3f}% "
                  f"({leak.get('from')} -> {leak.get('to')})")
         _last_funnel_findings.setdefault("dchub://funnel/redeem", {})[label] = max(1, paywall)
