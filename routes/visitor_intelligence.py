@@ -595,7 +595,7 @@ td.mono{font-family:var(--mono);font-size:.85rem}
 {% for u in d.addressable_pool %}<tr><td class="mono">{{ u.email }}</td><td class="mono">{{ u.signals }}</td><td>{{ u.tools|join(', ') }}</td><td class="mono">{{ u.last_seen[:10] if u.last_seen else '—' }}</td></tr>{% endfor %}
 </tbody></table>
 {% else %}
-<p style="color:var(--tx2);font-size:.9rem">No identified visitors meet the threshold yet. Once /api/v1/admin/upgrade-pool/backfill-emails runs, this populates.</p>
+<p style="color:var(--tx2);font-size:.9rem">No email-addressable visitors yet — and that's expected by design, not a bug. ~90% of MCP traffic is anonymous LLM-proxy (Claude/ChatGPT) carrying no email or user-agent, so the email-resolvable pool is near-zero. Read the signals above as a <strong>TAM / demand signal</strong> (how many distinct agents hit the paywall), not an outreach list. The real, actionable demand pool is the MCP funnel's paid-tool usage (e.g. ~130 distinct callers on get_grid_intelligence) — see /api/v1/mcp/funnel.</p>
 {% endif %}
 
 <h2>Tier distribution</h2>
