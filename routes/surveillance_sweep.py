@@ -28,6 +28,7 @@ from __future__ import annotations
 import datetime
 import os
 import time
+import threading
 
 import psycopg2
 from flask import Blueprint, jsonify, current_app, request
@@ -297,34 +298,13 @@ def sentinel_sweep():
 
 _SEC_CACHE: dict = {"computed_at": 0.0, "findings": [], "errors": []}
 _SEC_TTL_SEC = 300
+_SEC_REFRESHING = {"running": False}
 
 
-@surveillance_bp.route("/api/v1/sentinel/security", methods=["GET"])
-def sentinel_security():
-    """Run brain_security_detectors. 5-min cache. ?force=1 bypasses.
-
-    Composed by /sweep — the cache makes that call instant. A separate
-    cron (or workflow_dispatch) can refresh by hitting this endpoint
-    directly with ?force=1.
-    """
-    now = time.time()
-    use_cache = (
-        request.args.get("force") != "1"
-        and (now - _SEC_CACHE["computed_at"]) < _SEC_TTL_SEC
-    )
-    if use_cache and _SEC_CACHE["computed_at"] > 0:
-        return jsonify(
-            ok=len(_SEC_CACHE["findings"]) == 0,
-            from_cache=True,
-            computed_at=datetime.datetime.utcfromtimestamp(
-                _SEC_CACHE["computed_at"]).isoformat() + "Z",
-            findings_count=len(_SEC_CACHE["findings"]),
-            findings=_SEC_CACHE["findings"][:20],
-            detectors_run=5 - len(_SEC_CACHE["errors"]),
-            errors=_SEC_CACHE["errors"],
-        ), 200
-
-    # Cold path — actually run the detectors.
+def _run_security_detectors() -> tuple[list, list]:
+    """Run the 5 security detectors. Each self-probes localhost over HTTP, so
+    this is SLOW (~10-27s cold) and must NEVER run on a gunicorn request
+    thread."""
     findings: list = []
     errors: list = []
     try:
@@ -349,20 +329,69 @@ def sentinel_security():
                 errors.append(f"{name}: {type(_e).__name__}: {str(_e)[:80]}")
     except Exception as _e:
         errors.append(f"import: {type(_e).__name__}: {str(_e)[:80]}")
+    return findings, errors
 
-    _SEC_CACHE["computed_at"] = now
-    _SEC_CACHE["findings"] = findings
-    _SEC_CACHE["errors"] = errors
 
+def _sec_refresh_async():
+    """Single-flight background refresh of the security cache. r36 (2026-05-31):
+    the 5 detectors self-probe localhost over HTTP for ~27s; running them
+    synchronously held a gunicorn request thread that whole time, and the
+    15-min surveillance-sweep cron (plus user traffic) starved the 16-thread
+    pool → /news and even /healthz hung 10-16s. That is THE flapping. Moving the
+    compute to a daemon thread frees the request thread instantly; callers get
+    stale-then-fresh, exactly like /api/v1/heal/findings."""
+    if _SEC_REFRESHING["running"]:
+        return
+    _SEC_REFRESHING["running"] = True
+
+    def _run():
+        try:
+            findings, errors = _run_security_detectors()
+            _SEC_CACHE["findings"] = findings
+            _SEC_CACHE["errors"] = errors
+            _SEC_CACHE["computed_at"] = time.time()
+        except Exception:
+            pass
+        finally:
+            _SEC_REFRESHING["running"] = False
+    threading.Thread(target=_run, daemon=True,
+                     name="sentinel-security-refresh").start()
+
+
+def _sec_response(stale: bool = False, computing: bool = False):
     return jsonify(
-        ok=len(findings) == 0,
-        from_cache=False,
-        computed_at=datetime.datetime.utcfromtimestamp(now).isoformat() + "Z",
-        findings_count=len(findings),
-        findings=findings[:20],
-        detectors_run=5 - len(errors),
-        errors=errors,
-    ), 200
+        ok=len(_SEC_CACHE["findings"]) == 0,
+        from_cache=not computing,
+        stale=stale,
+        computing=computing,
+        computed_at=(datetime.datetime.utcfromtimestamp(
+            _SEC_CACHE["computed_at"]).isoformat() + "Z"
+            if _SEC_CACHE["computed_at"] else None),
+        findings_count=len(_SEC_CACHE["findings"]),
+        findings=_SEC_CACHE["findings"][:20],
+        detectors_run=5 - len(_SEC_CACHE["errors"]),
+        errors=_SEC_CACHE["errors"],
+    ), (202 if computing else 200)
+
+
+@surveillance_bp.route("/api/v1/sentinel/security", methods=["GET"])
+def sentinel_security():
+    """Run brain_security_detectors. 5-min cache, refreshed ASYNC so the slow
+    localhost self-probes never hold a request thread (that thread starvation
+    was the site-wide flap). ?force=1 triggers an immediate background refresh;
+    the fresh result lands on the next poll.
+    """
+    now = time.time()
+    force = request.args.get("force") == "1"
+    have_cache = _SEC_CACHE["computed_at"] > 0
+    fresh = have_cache and (now - _SEC_CACHE["computed_at"]) < _SEC_TTL_SEC
+    if fresh and not force:
+        return _sec_response(stale=False)
+    # stale / forced / first-run → kick a background refresh, NEVER block here
+    _sec_refresh_async()
+    if have_cache:
+        return _sec_response(stale=True)     # serve last result while refreshing
+    return _sec_response(computing=True)     # very first run — nothing cached yet
 
 
 # ── data drift detection (r29c) ───────────────────────────────────
