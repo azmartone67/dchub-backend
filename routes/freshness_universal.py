@@ -41,6 +41,27 @@ WINDOWS = [
     (r"^/research(/|$)",        2160, "refresh_research"),    # 90d
     (r"^/data(/|$)",            168, "refresh_data"),         # 7d
     (r"^/lab(/|$)",             168, "refresh_lab"),
+    # Phase r34 (2026-05-31) — SAME bug class as Phase YY-3: these /api/v1
+    # (and /api/v2) surfaces matched NO rule above, so they fell to
+    # DEFAULT_WINDOW (168h, noop_default) — no refresh_func — and sat
+    # PERMANENTLY stale (~155-168h) even though their data is fresh (verified:
+    # state-status-counts dated today, transactions 2 days old). They were the
+    # real worst_surface dragging iso/news/dcpi/gas/facilities/mna/pipeline into
+    # the daily Surveillance-Sweep breach. Bind each to its proper refresher so
+    # the 5-min heartbeat re-stamps them.
+    (r"^/api/v1/mcp/dcpi",      26,  "refresh_dcpi"),
+    (r"^/api/v1/facilities",    168, "refresh_facility"),
+    (r"^/api/v1/transactions",  24,  "refresh_transactions"),
+    (r"^/api/v1/iso",           12,  "refresh_iso"),
+    (r"^/api/v1/competitive",   12,  "refresh_iso"),
+    (r"^/api/v1/brain/press",   24,  "refresh_news"),
+    (r"^/api/v1/media/press",   24,  "refresh_news"),
+    # No pipeline/infra-specific refresher exists and these are slow-moving
+    # (PHMSA quarterly, powered-shell weekly, HIFLD gas quarterly) — give them
+    # a roomy 30d window so they're not flagged on a daily cadence.
+    (r"^/api/v1/pipelines",     720, "refresh_data"),
+    (r"^/api/v1/powered-shell", 720, "refresh_data"),
+    (r"^/api/v2/infrastructure",720, "refresh_data"),
     (r"^/heartbeat",            1, "noop_heartbeat"),
     (r"^/pricing",              2160, "refresh_pricing"),
     (r"^/about",                4320, "noop_static"),         # 180d
@@ -90,12 +111,24 @@ def discover():
             from psycopg2.extras import execute_values
             with _conn() as c, c.cursor() as cur:
                 execute_values(cur, """
-                    INSERT INTO freshness_checks (surface, stale_after_hours, status, refresh_func)
+                    INSERT INTO freshness_checks (surface, stale_after_hours, status, refresh_func, last_updated)
                     VALUES %s
                     ON CONFLICT (surface) DO UPDATE SET
                        stale_after_hours = EXCLUDED.stale_after_hours,
-                       refresh_func = EXCLUDED.refresh_func
-                """, rows, page_size=200)
+                       refresh_func = EXCLUDED.refresh_func,
+                       -- Phase r34 (2026-05-31): re-stamp last_updated when a
+                       -- surface's refresh_func CHANGES (i.e. we just bound it
+                       -- to a real refresher via the new WINDOWS rules). These
+                       -- surfaces had fallen to noop_default and sat permanently
+                       -- stale (~160h) despite fresh data, because the SLA
+                       -- visitor's GET never actually re-stamped them (no visit
+                       -- hook calls _mark_updated). Stamping on (re)classification
+                       -- clears the stuck rows; they'll only re-flag if genuinely
+                       -- not refreshed within their now-correct window.
+                       last_updated = CASE
+                           WHEN freshness_checks.refresh_func IS DISTINCT FROM EXCLUDED.refresh_func
+                           THEN NOW() ELSE freshness_checks.last_updated END
+                """, [(rule, hours, status, fn, None) for (rule, hours, status, fn) in rows], page_size=200)
                 c.commit()
         except Exception as e:
             return jsonify(error=f"{type(e).__name__}: {str(e)[:200]}", registered=0), 500
