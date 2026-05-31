@@ -230,6 +230,152 @@ def _shape_bluesky(mover: dict, arc: dict | None) -> str:
     )[:300]
 
 
+# ── Metrics-showcase template (r64, 2026-05-30) ─────────────────────
+# A punchy credibility post that weaves DC Hub's AI-adoption + coverage
+# metrics. Distinct from the per-market DCPI shaper above — this is the
+# "why agents trust us" post, run on a LOW (≈weekly) cadence so it never
+# crowds out the daily DCPI movers. It ends with a /built-for-ai (or
+# /ai-capacity-index) URL so it inherits the MANDATORY branded OG card
+# from content_publisher._post_to_linkedin (r64 step 1): even though that
+# page may lack a scrape-able og:image, the publisher now always attaches
+# https://dchub.cloud/api/v1/og/today/<slug>.png.
+
+# Fallback constants — used when the live registry pull fails or omits a
+# field. These are the audit-supplied figures (2026-05-30). The live
+# /api/v1/ai-agents.json currently exposes `data_coverage.facilities`
+# (e.g. "21,418"); the AI-platform / cumulative-request / grid counts are
+# not in that payload yet, so they default to these constants until the
+# registry surfaces them.
+_METRICS_FALLBACK = {
+    "ai_platforms": 97,
+    "agent_requests": 392743,
+    "facilities": 21417,
+    "grids": 51,
+}
+
+# Stable substring present in every metrics-showcase post (the hook's
+# opening clause). Used as the weekly-cadence dedup key — independent of
+# the daily DCPI topic_key — so the LOW-cadence slot can be rate-limited
+# with a content LIKE lookback. Keep in sync with _shape_linkedin_metrics.
+_METRICS_TOPIC_MARKER = "AI agents don't guess about data centers"
+
+
+def _fetch_dchub_metrics() -> dict:
+    """Best-effort live pull of DC Hub expansion metrics for the
+    metrics-showcase post. Reads https://dchub.cloud/api/v1/ai-agents.json
+    (the public agent-registry doc) and overlays any numeric fields it
+    finds onto the audit-supplied fallback constants. NEVER raises — any
+    network/parse miss just leaves the fallback in place, so the post
+    always renders with credible numbers.
+    """
+    metrics = dict(_METRICS_FALLBACK)
+    try:
+        import urllib.request
+
+        def _to_int(v):
+            try:
+                return int(str(v).replace(",", "").strip())
+            except (TypeError, ValueError):
+                return None
+
+        url = (os.environ.get("DCHUB_AI_AGENTS_URL")
+               or "https://dchub.cloud/api/v1/ai-agents.json")
+        req = urllib.request.Request(
+            url, headers={"User-Agent": "DCHub-ContentEngine/1.0"})
+        with urllib.request.urlopen(req, timeout=6) as r:
+            doc = json.loads(r.read().decode("utf-8"))
+
+        # IMPORTANT: coverage metrics only ever RATCHET UP. The fallback
+        # constants are the audited floor; the registry doc enumerates only a
+        # subset of named ISOs (it omits the utility/BA grids counted in the
+        # 51 figure), so a naive override would SHRINK the numbers and make the
+        # post less impressive than reality. Use max() so live data can only
+        # enrich, never downgrade.
+        cov = doc.get("data_coverage") or {}
+        fac = _to_int(cov.get("facilities"))
+        if fac and fac > 0:
+            metrics["facilities"] = max(metrics["facilities"], fac)
+
+        # grids / ISOs — v2 schema lists US ISOs in prose + an
+        # `international_markets` array of {country, iso, markets}.
+        dcpi = doc.get("dcpi_coverage") or {}
+        intl = dcpi.get("international_markets")
+        if isinstance(intl, list) and intl:
+            intl_grids = {
+                (m.get("iso") or "").strip()
+                for m in intl if isinstance(m, dict) and m.get("iso")
+            }
+            # 7 US ISOs (ERCOT, PJM, CAISO, MISO, SPP, NYISO, ISO-NE) + the
+            # distinct international grid operators enumerated in the doc.
+            counted = 7 + len(intl_grids)
+            if counted > 0:
+                metrics["grids"] = max(metrics["grids"], counted)
+
+        # AI-platform / cumulative-request counts — overlay only if the
+        # registry ever starts exposing them (several plausible key names).
+        for key, names in (
+            ("ai_platforms", ("ai_platforms", "platforms",
+                               "unique_ai_platforms", "ai_agent_platforms")),
+            ("agent_requests", ("agent_requests", "ai_agent_requests",
+                                "cumulative_agent_requests", "tool_calls",
+                                "total_requests")),
+        ):
+            for src in (doc, doc.get("adoption") or {},
+                        doc.get("usage") or {}, doc.get("stats") or {}):
+                if not isinstance(src, dict):
+                    continue
+                for n in names:
+                    if n in src:
+                        iv = _to_int(src.get(n))
+                        if iv and iv > 0:
+                            metrics[key] = iv
+                        break
+                else:
+                    continue
+                break
+    except Exception:
+        # Fail-open: keep the fallback constants.
+        return dict(_METRICS_FALLBACK)
+    return metrics
+
+
+def _shape_linkedin_metrics(arc: dict | None = None) -> str:
+    """r64 (2026-05-30): metrics-showcase LinkedIn post.
+
+    Leads with a hook, weaves the live (or fallback) DC Hub adoption +
+    coverage numbers as proof, and ends with a /built-for-ai URL so the
+    publisher's mandatory-image step attaches a branded OG card. Kept to
+    2-3 hashtags to match the de-spammed _shape_linkedin house style.
+    """
+    m = _fetch_dchub_metrics()
+    platforms = m.get("ai_platforms") or _METRICS_FALLBACK["ai_platforms"]
+    requests_n = m.get("agent_requests") or _METRICS_FALLBACK["agent_requests"]
+    facilities = m.get("facilities") or _METRICS_FALLBACK["facilities"]
+    grids = m.get("grids") or _METRICS_FALLBACK["grids"]
+
+    arc_line = ""
+    if arc:
+        arc_title = (arc.get("arc") or "")[:80]
+        if arc_title:
+            arc_line = f"\n\nThis week's arc: {arc_title}"
+
+    return (
+        "AI agents don't guess about data centers — they query DC Hub.\n\n"
+        f"{platforms} AI platforms have now hit our agent endpoints, "
+        f"{requests_n:,} cumulative agent requests and counting.\n\n"
+        "Why they keep coming back: it's the one data-center intelligence "
+        "source an LLM can both read and cite. Every competitor blocks the "
+        "crawlers or hides behind a login.\n\n"
+        f"What's behind the API: {facilities:,} facilities, live grid "
+        f"intelligence across {grids} grids/ISOs, plus fiber, substations, "
+        "gas pipelines and water risk — one machine-readable, citable query.\n\n"
+        "Built for the agents your team already uses: "
+        "https://dchub.cloud/built-for-ai"
+        f"{arc_line}\n\n"
+        "#AI #DataCenter #MCP"
+    )
+
+
 # ── Dedup + enqueue ─────────────────────────────────────────────────
 
 def _already_enqueued_recently(platform: str, topic_key: str) -> bool:
@@ -244,6 +390,32 @@ def _already_enqueued_recently(platform: str, topic_key: str) -> bool:
                    AND content LIKE %s
                    AND created_at > NOW() - (%s || ' hours')::interval
             """, (platform, f"%{topic_key[:60]}%", str(_DEDUP_WINDOW_HOURS)))
+            n = (cur.fetchone() or [0])[0]
+            return int(n or 0) > 0
+    except Exception:
+        return False
+    finally:
+        try: c.close()
+        except Exception: pass
+
+
+def _enqueued_within_days(platform: str, marker: str, days: int) -> bool:
+    """r64 (2026-05-30): LOW-cadence dedup. True if a post containing
+    `marker` was enqueued for `platform` within the last `days` days,
+    REGARDLESS of status (so an already-published weekly post still
+    blocks a re-enqueue). Fail-open (returns False) on any DB error so a
+    transient blip can't permanently suppress the slot."""
+    c = _db_conn()
+    if not c:
+        return False
+    try:
+        with c.cursor() as cur:
+            cur.execute("""
+                SELECT COUNT(*) FROM social_media_posts
+                 WHERE platform = %s
+                   AND content LIKE %s
+                   AND created_at > NOW() - (%s || ' days')::interval
+            """, (platform, f"%{marker[:80]}%", str(int(days))))
             n = (cur.fetchone() or [0])[0]
             return int(n or 0) > 0
     except Exception:
@@ -430,6 +602,29 @@ def enqueue():
     else:
         results["skipped"].append({"platform": "bluesky",
                                      "reason": "dedup_hit"})
+
+    # LinkedIn metrics-showcase — LOW cadence (≈1×/week). r64 (2026-05-30).
+    # The enqueue cron fires every 2h; gating on a 7-day lookback keeps this
+    # credibility post from crowding out the daily DCPI movers above. Uses a
+    # stable marker (the hook's opening clause) so the dedup check is
+    # independent of the daily topic_key. Set DCHUB_METRICS_POST_DISABLED=1
+    # to suppress entirely.
+    if os.environ.get("DCHUB_METRICS_POST_DISABLED", "").strip().lower() \
+            not in ("1", "true", "yes"):
+        if not _enqueued_within_days("linkedin", _METRICS_TOPIC_MARKER, 7):
+            new_id = _enqueue_post(_shape_linkedin_metrics(arc), "linkedin")
+            if new_id:
+                results["enqueued"].append(
+                    {"platform": "linkedin", "id": new_id,
+                     "kind": "metrics_showcase"})
+            else:
+                results["skipped"].append(
+                    {"platform": "linkedin", "kind": "metrics_showcase",
+                     "reason": "insert_failed"})
+        else:
+            results["skipped"].append(
+                {"platform": "linkedin", "kind": "metrics_showcase",
+                 "reason": "weekly_cadence_already_enqueued"})
 
     return jsonify({
         "ok":              True,

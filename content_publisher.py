@@ -366,6 +366,35 @@ def _upload_image_to_linkedin(image_bytes, access_token, org_id):
         return None
 
 
+def _og_today_slug_for(article_url):
+    """r64 (2026-05-30): derive a slug for the guaranteed OG fallback card
+    https://dchub.cloud/api/v1/og/today/<slug>.png.
+
+    The card endpoint (routes/og_cards.py:og_card) NEVER 404s — an unknown
+    slug renders the branded _draw_fallback card — so any slug yields a
+    valid 1200x630 PNG. We still try to reuse the post's real slug (last
+    path segment of article_url, e.g. /news/<slug>, /dcpi/<slug>,
+    /markets/<slug>) so a matching press_releases row produces the richer
+    per-story card. With no URL we use a stable constant.
+    """
+    default = 'dchub-intelligence'
+    if not article_url:
+        return default
+    try:
+        import re as _re_slug
+        from urllib.parse import urlparse as _urlparse
+        path = (_urlparse(article_url).path or '').rstrip('/')
+        seg = path.rsplit('/', 1)[-1] if path else ''
+        # Strip a trailing .png/.html etc. and keep only slug-safe chars.
+        seg = seg.split('?', 1)[0].split('#', 1)[0]
+        if '.' in seg:
+            seg = seg.rsplit('.', 1)[0]
+        seg = _re_slug.sub(r'[^a-zA-Z0-9\-]+', '-', seg).strip('-').lower()
+        return seg or default
+    except Exception:
+        return default
+
+
 def _post_to_linkedin(content_text, access_token, article_url=None,
                        article_title=None, article_description=None,
                        article_thumbnail_url=None):
@@ -411,14 +440,23 @@ def _post_to_linkedin(content_text, access_token, article_url=None,
         # also exercises the og:image resolution (catches "page has no
         # og:image" before the cron actually fires for real).
         _attach_dry = os.environ.get('LINKEDIN_ATTACH_IMAGES', '1').strip() != '0'
-        _img_preview = "image=skip(no-url)"
-        if _attach_dry and article_url:
-            _og = (article_thumbnail_url
-                    or _extract_og_image_url(article_url))
+        if not _attach_dry:
+            _img_preview = "image=skip(LINKEDIN_ATTACH_IMAGES=0)"
+        else:
+            # r64 (2026-05-30): mirror the live image-attach decision so dry-run
+            # surfaces which source the real post WOULD use:
+            #   1. og:image on article_url (existing image-first path), else
+            #   2. the GUARANTEED /api/v1/og/today/<slug>.png branded card.
+            # An image is now MANDATORY (no text-only NONE) unless even the
+            # fallback card can't be fetched.
+            _og = ((article_thumbnail_url or _extract_og_image_url(article_url))
+                   if article_url else None)
             if _og:
-                _img_preview = f"image=would-attach({_og})"
+                _img_preview = f"image=would-attach-og({_og})"
             else:
-                _img_preview = f"image=fallback-ARTICLE(no og:image on {article_url})"
+                _slug = _og_today_slug_for(article_url)
+                _fallback = f"https://dchub.cloud/api/v1/og/today/{_slug}.png"
+                _img_preview = f"image=would-attach-fallback-card({_fallback})"
         logger.warning(
             "LINKEDIN_PUBLISHER_DRY_RUN active — NOT posting (would have sent: %s%s · %s)",
             _preview,
@@ -503,6 +541,88 @@ def _post_to_linkedin(content_text, access_token, article_url=None,
             logger.info(
                 "r51: no og:image found on %s, falling through to ARTICLE share",
                 article_url)
+
+    # r64 (2026-05-30): MANDATORY-IMAGE fallback. Reaching here means the
+    # image-first path did not attach an image (no article_url, no scrape-able
+    # og:image, image fetch/upload/POST failed, OR the page — e.g.
+    # /news/<slug> and bare DCPI/digest posts — simply has no og:image). Before
+    # r64 those all fell to the text-only shareMediaCategory:NONE branch, which
+    # is exactly the imageless LinkedIn posts the operator flagged. We now build
+    # a GUARANTEED branded card from /api/v1/og/today/<slug>.png (og_cards.py
+    # renders a valid 1200x630 PNG for ANY slug — unknown slugs get the DC Hub
+    # _draw_fallback card, never a 404) and attach it via the SAME modern
+    # /rest/posts media flow as the image-first block above. Only if even this
+    # fallback can't be fetched/uploaded/posted do we fall through to NONE.
+    #
+    # Gated by the same LINKEDIN_ATTACH_IMAGES kill-switch (=0 → skip straight
+    # to the legacy path, pre-r51 behaviour). DRY_RUN already returned above.
+    if _attach_images:
+        _fb_slug = _og_today_slug_for(article_url)
+        _fallback = f"https://dchub.cloud/api/v1/og/today/{_fb_slug}.png"
+        _fb_bytes = _fetch_image_bytes_for_linkedin(_fallback)
+        if _fb_bytes:
+            _fb_urn = _upload_image_to_linkedin(
+                _fb_bytes, access_token, DCHUB_ORG_ID)
+            if _fb_urn:
+                _h_post = {
+                    'Authorization': f'Bearer {access_token}',
+                    'LinkedIn-Version': '202601',
+                    'X-Restli-Protocol-Version': '2.0.0',
+                    'Content-Type': 'application/json',
+                }
+                _payload = {
+                    'author': f'urn:li:organization:{DCHUB_ORG_ID}',
+                    'commentary': content_text,
+                    'visibility': 'PUBLIC',
+                    'distribution': {
+                        'feedDistribution': 'MAIN_FEED',
+                        'targetEntities': [],
+                        'thirdPartyDistributionChannels': [],
+                    },
+                    'lifecycleState': 'PUBLISHED',
+                    'content': {
+                        'media': {
+                            'id': _fb_urn,
+                            'title': (article_title or 'DC Hub')[:200],
+                            'altText': (article_description
+                                          or article_title
+                                          or 'DC Hub data center intelligence')[:300],
+                        }
+                    },
+                }
+                try:
+                    _r = requests.post(
+                        'https://api.linkedin.com/rest/posts',
+                        json=_payload, headers=_h_post, timeout=20)
+                    if _r.status_code in (200, 201):
+                        _urn = (_r.headers.get('x-restli-id')
+                                 or _r.headers.get('X-LinkedIn-Id')
+                                 or 'posted-with-fallback-image')
+                        logger.info(
+                            "r64 LinkedIn FALLBACK-CARD post succeeded: urn=%s "
+                            "(article=%s fallback=%s)",
+                            _urn, article_url, _fallback)
+                        return True, _urn
+                    logger.warning(
+                        "r64 /rest/posts (fallback card) failed: %s %s — "
+                        "falling through to text-only NONE",
+                        _r.status_code, _r.text[:200])
+                except Exception as _e:
+                    logger.warning(
+                        "r64 /rest/posts (fallback card) exception: %s — "
+                        "falling through to text-only NONE", _e)
+            else:
+                logger.warning(
+                    "r64: fallback-card upload returned no URN (%s), "
+                    "falling through to text-only NONE", _fallback)
+        else:
+            logger.warning(
+                "r64: couldn't fetch fallback card bytes from %s, "
+                "falling through to text-only NONE", _fallback)
+    else:
+        logger.info(
+            "r64: LINKEDIN_ATTACH_IMAGES=0 — skipping mandatory-image "
+            "fallback, using legacy text/ARTICLE path")
 
     # LEGACY PATH (pre-r51 behaviour, also r51 fallback when image upload
     # fails / is disabled / no URL in body). Builds an ARTICLE share that
