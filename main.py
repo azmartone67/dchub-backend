@@ -13800,15 +13800,34 @@ def facilities_state_status_counts():
         derived_scanned = 0
         derived_recovered = 0
         try:
+            # discovered_facilities carries lat/lon (the curated `facilities`
+            # fallback does not) — select geo only when present so the query
+            # never references a missing column.
+            _has_geo = (_SRC == 'discovered_facilities')
+            _geo_sel = ", latitude, longitude" if _has_geo else ", NULL AS latitude, NULL AS longitude"
+            try:
+                from routes.dcgi import _lat_lng_to_state as _ll2state
+            except Exception:
+                _ll2state = None
             c.execute(f"""
-                SELECT city, address, LOWER(TRIM(COALESCE(status,''))) AS status
+                SELECT city, address, LOWER(TRIM(COALESCE(status,''))) AS status{_geo_sel}
                 FROM {_SRC}
                 WHERE UPPER(TRIM(COALESCE(country, ''))) IN ('US', 'USA', 'UNITED STATES')
                   AND (state IS NULL OR TRIM(state) = '')
             """)
-            for _city, _addr, _status in c.fetchall():
+            for _city, _addr, _status, _lat, _lng in c.fetchall():
                 derived_scanned += 1
+                # r37d (2026-05-31): 1) high-precision address parse, then
+                # 2) lat/lon -> state (bounding box w/ center-distance tiebreak,
+                # the same method DCGI already uses). Most blank-state rows have
+                # no parseable address but DO have coordinates, so this is what
+                # actually grows the count. Still READ-time only (no DB write).
                 _st = _derive_us_state(_city, _addr)
+                if not _st and _ll2state and _lat is not None and _lng is not None:
+                    try:
+                        _st = _ll2state(float(_lat), float(_lng)) or ''
+                    except Exception:
+                        _st = ''
                 if not _st:
                     continue
                 _name = _DAILY_US_STATE_NAMES.get(_st)
