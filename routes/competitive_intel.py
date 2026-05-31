@@ -313,7 +313,15 @@ def _axis_mcp_server(homepage: str) -> tuple:
         base + "/.well-known/oauth-protected-resource/mcp",
         base + "/mcp",
     ]
+    # A REAL MCP signal — not just "non-404". SPA catch-alls return 200 for
+    # every path, so "any non-404 = True" falsely credits competitors with
+    # an MCP server. Require JSON, MCP-specific tokens, or an auth/method
+    # error (typical of a real MCP POST endpoint) — and never HTML.
+    _MCP_TOKENS = ("jsonrpc", "mcpversion", "mcp_version", "protocolversion",
+                   "protocol_version", "modelcontextprotocol", '"tools"',
+                   "text/event-stream", "mcp-session-id")
     saw_404 = False
+    saw_ambiguous = False
     first_url = surfaces[0]
     for url in surfaces:
         r = _http_get(url)
@@ -322,15 +330,23 @@ def _axis_mcp_server(homepage: str) -> tuple:
         status = r["status"]
         if status is None:
             continue
-        if status != 404:
-            # Any non-404 observed signal (200, 401, 405, 406, 5xx…) is a
-            # positive hint that *something* MCP-ish answers here.
-            return True, url
-        saw_404 = True
-    if saw_404:
-        # We reached at least one surface and every reached surface 404'd.
-        return False, first_url
-    return "unknown", first_url     # nothing reachable
+        if status == 404:
+            saw_404 = True
+            continue
+        ctype = r.get("content_type", "") or ""
+        body = r.get("body_snip", "") or ""
+        is_html = "text/html" in ctype
+        is_json = "json" in ctype
+        has_token = any(t in body for t in _MCP_TOKENS)
+        if (is_json or has_token
+                or (status in (401, 405, 406, 415) and not is_html)):
+            return True, url            # confirmed real MCP-ish surface
+        # Reached, non-404, but a generic HTML page → ambiguous, NOT a
+        # confirmed MCP server (kills the SPA catch-all false positive).
+        saw_ambiguous = True
+    if saw_404 and not saw_ambiguous:
+        return False, first_url         # every reached surface cleanly 404'd
+    return "unknown", first_url         # html-only / ambiguous / unreachable
 
 
 def _axis_machine_readable(homepage: str) -> tuple:
@@ -344,7 +360,15 @@ def _axis_machine_readable(homepage: str) -> tuple:
     sitemap_url = base + "/sitemap.xml"
     sm = _http_get(sitemap_url)
     if sm["reachable"] and sm["status"] == 200:
-        return True, sitemap_url
+        _ct = sm.get("content_type", "") or ""
+        _body = sm.get("body_snip", "") or ""
+        # Require REAL XML — an SPA catch-all 200s /sitemap.xml as HTML, which
+        # would be a false positive. Accept only an xml content-type or an
+        # actual sitemap root element, and never text/html.
+        if (("xml" in _ct or "<?xml" in _body or "<urlset" in _body
+                or "<sitemapindex" in _body) and "text/html" not in _ct):
+            return True, sitemap_url
+        # 200 but not real XML → fall through to the JSON-LD homepage check.
 
     # No usable sitemap signal → look for JSON-LD on the homepage.
     hp = _http_get(homepage)
