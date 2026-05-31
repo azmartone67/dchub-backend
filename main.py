@@ -6126,9 +6126,56 @@ def _inject_agent_claim(blocks):
     """Add the agent-native claim path to every gated MCP text block —
     a structured `agent_claim` field plus the claim line prepended to
     any human-facing `message` / `human_message`. Best-effort: a block
-    that isn't JSON (or isn't a dict) passes through untouched."""
+    that isn't JSON (or isn't a dict) passes through untouched.
+
+    Phase r49-conv (2026-05-31) — MINT INLINE, don't just instruct.
+    The funnel diagnostic showed 18,944 anonymous MCP sessions/30d hit
+    paid tools and ~0 claimed a key: this path only TOLD agents to make
+    a *second* POST /keys/claim call, and almost none did (15 claim-
+    starts / 18,945 signals = 0.08%). The REST gate (_gate_response)
+    already mints a working trial key INLINE; the MCP path — 90%+ of
+    traffic — did not. We now mint a deduped trial key here (reused per
+    ip+ua via auto_trial) and EMBED it, so the agent gets a usable key
+    in THIS response and can retry immediately with X-API-Key — zero
+    second call, zero human. Fail-open: any mint error falls back to
+    the static claim instructions (prior behavior)."""
     if not isinstance(blocks, list):
         return blocks
+
+    # Mint ONCE per gated response (deduped per caller inside
+    # mint_trial_for_request → SELECT-reuse for repeat callers, so this
+    # cannot spam inserts). Fail-open to the static claim struct/line.
+    claim_struct = _AGENT_CLAIM_STRUCT
+    claim_line   = _AGENT_CLAIM_LINE
+    try:
+        from routes.auto_trial import mint_trial_for_request
+        _t = mint_trial_for_request(request, "mcp_gate") or {}
+        _key = _t.get("api_key")
+        if _t.get("ok") and _key:
+            _daily = _t.get("daily_calls", 200)
+            claim_struct = {
+                "minted_key":        _key,
+                "retry_with_header": {"X-API-Key": _key},
+                "expires_at":        _t.get("expires_at"),
+                "daily_calls":       _daily,
+                "note": (f"A free trial key has been minted for you — no email, "
+                         f"no browser, no second call. Retry this exact tool with "
+                         f"header `X-API-Key: {_key}` for full data. "
+                         f"{_daily} calls/day, valid 30 days."),
+                "make_permanent": {
+                    "url":    "https://dchub.cloud/api/v1/keys/auto-trial/redeem",
+                    "method": "POST",
+                    "body":   {"api_key": _key, "email": "<your operator's email>"},
+                    "why":    ("Bind an email to keep this key past 30 days and "
+                               "raise the daily cap."),
+                },
+            }
+            claim_line = (f"✨ A free trial key has been minted for you: retry this "
+                          f"tool with header `X-API-Key: {_key}` for full data "
+                          f"(no signup, {_daily} calls/day, 30-day).\n\n")
+    except Exception:
+        pass  # fail-open → static claim instructions (prior behavior)
+
     out = []
     for b in blocks:
         if not isinstance(b, dict) or b.get("type") != "text":
@@ -6140,10 +6187,12 @@ def _inject_agent_claim(blocks):
             out.append(b)
             continue
         if isinstance(d, dict):
-            d.setdefault("agent_claim", _AGENT_CLAIM_STRUCT)
+            d.setdefault("agent_claim", claim_struct)
             for mk in ("message", "human_message"):
-                if isinstance(d.get(mk), str) and "keys/claim" not in d[mk]:
-                    d[mk] = _AGENT_CLAIM_LINE + d[mk]
+                if (isinstance(d.get(mk), str)
+                        and "X-API-Key" not in d[mk]
+                        and "keys/claim" not in d[mk]):
+                    d[mk] = claim_line + d[mk]
             out.append({"type": "text", "text": json.dumps(d)})
         else:
             out.append(b)
