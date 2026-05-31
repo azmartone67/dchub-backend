@@ -1237,7 +1237,7 @@ class GasPipelineDiscovery:
                 (name, operator, pipeline_type, diameter_inches, capacity_mcf, status,
                  lat, lng, city, state, source, source_id)
                 VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s)
-                ON CONFLICT ON CONSTRAINT gas_pipelines_name_operator_uniq DO NOTHING
+                ON CONFLICT (name, operator) DO NOTHING
             ''', (
                 pipeline['name'][:200],
                 pipeline.get('operator', '')[:100],
