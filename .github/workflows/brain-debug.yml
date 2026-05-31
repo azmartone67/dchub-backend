@@ -1,0 +1,36 @@
+name: Brain proposed-code debug summary (manual)
+
+# One-shot diagnostic: dump the raw shape of brain_proposed_code_fixes so we
+# can see WHY /pending-pr returns 0 (SQL WHERE on status/pr_url, or the
+# confidence column). Manual dispatch only. Read-only, admin-gated.
+
+on:
+  workflow_dispatch: {}
+
+permissions:
+  contents: read
+
+env:
+  BASE: https://dchub-backend-production.up.railway.app
+
+jobs:
+  dump:
+    runs-on: ubuntu-latest
+    timeout-minutes: 3
+    steps:
+      - name: Dump pending-pr debug summary
+        env:
+          ADMIN_KEY: ${{ secrets.DCHUB_ADMIN_KEY }}
+        run: |
+          if [ -z "${ADMIN_KEY:-}" ]; then
+            echo "::error::DCHUB_ADMIN_KEY not set"; exit 1
+          fi
+          code=$(curl -sS --max-time 30 \
+            -H "X-Admin-Key: $ADMIN_KEY" \
+            -o /tmp/dbg.json -w "%{http_code}" \
+            "$BASE/api/v1/brain/proposed-code/debug-summary")
+          echo "debug-summary -> HTTP $code"
+          if [ "$code" = "401" ] || [ "$code" = "403" ]; then
+            echo "::error::debug-summary $code — DCHUB_ADMIN_KEY drift"; cat /tmp/dbg.json; exit 1
+          fi
+          python3 -m json.tool < /tmp/dbg.json || cat /tmp/dbg.json

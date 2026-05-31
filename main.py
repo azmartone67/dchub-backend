@@ -1360,6 +1360,14 @@ try:
         print("[main] brain_source_map_bp registered: /api/v1/brain/source-map", flush=True)
     except Exception as _e:
         print(f"[main] brain_source_map_bp not registered: {_e}", flush=True)
+    # 2026-05-31: read-only admin diagnostic for the pending-pr 0-items
+    # mystery — separate module so it ships without touching layer5.
+    try:
+        from routes.brain_proposed_debug import brain_proposed_debug_bp
+        app.register_blueprint(brain_proposed_debug_bp)  # GET /api/v1/brain/proposed-code/debug-summary
+        print("[main] brain_proposed_debug_bp registered: /api/v1/brain/proposed-code/debug-summary", flush=True)
+    except Exception as _e:
+        print(f"[main] brain_proposed_debug_bp not registered: {_e}", flush=True)
     # r43-L (2026-05-30): MCP discoverability/health detector — continuously
     # watches for tool-count drift, weak descriptions, missing pricing tiers,
     # and unreachable .well-known surfaces. Findings flow into the brain's
