@@ -26116,6 +26116,9 @@ try:
 except Exception as _morg_e:
     print(f"[main] media_organism wiring failed: {_morg_e}", file=sys.stderr, flush=True)
 
+from routes.admin_crm_portal import admin_crm_portal_bp  # r49: owner CRM portal /admin/crm
+app.register_blueprint(admin_crm_portal_bp)
+
 # Phase r33 (2026-05-24): Page integrity report — per-URL brain
 # integration + freshness + health score. Answers "is every page on
 # the site dynamic, agentic, learning, evolving?" by walking the
