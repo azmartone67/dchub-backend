@@ -37,6 +37,7 @@ Host: dchub.cloud
 """
 
 
+# AUTO-REPAIR: duplicate route '/robots.txt' also in ai_discovery_routes.py:862 — review and remove one
 @robots_seo_bp.route("/robots.txt")
 def robots_txt():
     return ROBOTS_BODY, 200, {
