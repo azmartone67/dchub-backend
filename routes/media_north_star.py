@@ -150,6 +150,35 @@ def _platform_expr(cols: set[str]) -> str:
     return "COALESCE(" + ", ".join(parts) + ")"
 
 
+def _synthetic_exclusion(cols: set[str]) -> list[str]:
+    """SQL predicates that drop internal/synthetic rows — cron heartbeat
+    log lines, mcp-auto markers, system noise — so they NEVER inflate
+    citation velocity. Mirrors the Phase-299 'mcp-auto' exclusion in
+    dchub_media.py. Without this the auto-ingest's own cron-heartbeat
+    rows (platform='internal', agent_name='cron') get counted as
+    "citations", which is exactly the false-velocity trap the
+    distinct-source counting is meant to avoid. Only names columns that
+    exist on this deploy's variant.
+    """
+    preds: list[str] = []
+    if "platform" in cols:
+        preds.append("(platform IS NULL OR LOWER(platform) "
+                     "NOT IN ('internal', 'system', 'cron'))")
+    if "agent_name" in cols:
+        preds.append("(agent_name IS NULL OR LOWER(agent_name) "
+                     "NOT IN ('cron', 'system', 'mcp-auto', 'dchub', "
+                     "'heartbeat'))")
+    if "source" in cols:
+        preds.append("(source IS NULL OR (LOWER(source) NOT LIKE '%cron%' "
+                     "AND LOWER(source) NOT LIKE '%heartbeat%' "
+                     "AND LOWER(source) NOT LIKE '%mcp-auto%'))")
+    if "quote" in cols:
+        # Belt-and-suspenders: the cron rows self-identify in the quote.
+        preds.append("(quote IS NULL OR LOWER(quote) "
+                     "NOT LIKE 'cron heartbeat%')")
+    return preds
+
+
 def _build_table_select(cols: set[str], table: str,
                         ts_candidates: tuple[str, ...],
                         approval_filter: bool) -> str | None:
@@ -164,12 +193,16 @@ def _build_table_select(cols: set[str], table: str,
         return None
     ts_col = _first_col(cols, *ts_candidates)
     ts_expr = ts_col if ts_col else "NULL::timestamptz"
-    where = ""
+    clauses: list[str] = []
     if approval_filter and "approved" in cols:
         # ai_testimonials is approval-gated. Per spec: when the column
         # exists, count approved-only. The auto table has no real
         # approval workflow on some variants, so it is included whole.
-        where = "WHERE approved = true"
+        clauses.append("approved = true")
+    # Always drop internal/synthetic noise (cron heartbeats etc.) from
+    # BOTH tables so citation velocity reflects real external citations.
+    clauses.extend(_synthetic_exclusion(cols))
+    where = ("WHERE " + " AND ".join(clauses)) if clauses else ""
     return f"""
         SELECT {_src_expr(cols)}      AS src,
                {_url_expr(cols)}      AS url,
