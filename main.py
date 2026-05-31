@@ -13744,23 +13744,31 @@ def facilities_state_status_counts():
     try:
         conn = get_read_db()
         c = conn.cursor()
-        # r37 (2026-05-31): count EVERY tracked US facility, not just the subset
-        # with an exactly-mapped status. Previously this required a non-blank
-        # status AND only added facilities whose status was in the op/uc/ann
-        # sets (the if/elif/elif had no else) — so NULL-status and unmapped-
-        # status facilities were silently dropped, undercounting /daily and
-        # making it look small/static. Now: include blank status, and default
-        # anything not explicitly under-construction/announced to OPERATIONAL
-        # (a tracked data center is operational unless stated otherwise). The
-        # headline total now reflects — and grows with — the full US set.
-        c.execute("""
-            SELECT UPPER(TRIM(state)) AS st, LOWER(TRIM(COALESCE(status,''))) AS status, COUNT(*)
-            FROM facilities
-            WHERE country IN ('US', 'USA', 'United States')
-              AND state IS NOT NULL AND TRIM(state) <> ''
-            GROUP BY 1, 2
-        """)
-        rows = c.fetchall()
+        # r37c (2026-05-31): count discovered_facilities — the platform's
+        # CANONICAL facility table. The site headline (21,418), the public API
+        # (/api/v1/facilities), and the map all count discovered_facilities;
+        # /daily alone counted the smaller curated `facilities` table (~3.8k US,
+        # ~2.5k with a state), which is why its number looked small and diverged
+        # from the site's own headline. discovered_facilities carries the same
+        # state/status/city/address columns. We include blank status and default
+        # anything not explicitly under-construction/announced to OPERATIONAL (a
+        # tracked data center is operational unless stated otherwise). Country
+        # match is case-insensitive. `facilities` stays a safety fallback if the
+        # canonical table ever reads empty on this (read-replica) connection.
+        def _ssc_group(_src):
+            c.execute(f"""
+                SELECT UPPER(TRIM(state)) AS st, LOWER(TRIM(COALESCE(status,''))) AS status, COUNT(*)
+                FROM {_src}
+                WHERE UPPER(TRIM(COALESCE(country, ''))) IN ('US', 'USA', 'UNITED STATES')
+                  AND state IS NOT NULL AND TRIM(state) <> ''
+                GROUP BY 1, 2
+            """)
+            return c.fetchall()
+        _SRC = 'discovered_facilities'
+        rows = _ssc_group(_SRC)
+        if not rows:  # canonical table empty on this connection — fall back
+            _SRC = 'facilities'
+            rows = _ssc_group(_SRC)
         states = {}
         for st, status, n in rows:
             name = _DAILY_US_STATE_NAMES.get(st)
@@ -13784,10 +13792,10 @@ def facilities_state_status_counts():
         derived_scanned = 0
         derived_recovered = 0
         try:
-            c.execute("""
+            c.execute(f"""
                 SELECT city, address, LOWER(TRIM(COALESCE(status,''))) AS status
-                FROM facilities
-                WHERE country IN ('US', 'USA', 'United States')
+                FROM {_SRC}
+                WHERE UPPER(TRIM(COALESCE(country, ''))) IN ('US', 'USA', 'UNITED STATES')
                   AND (state IS NULL OR TRIM(state) = '')
             """)
             for _city, _addr, _status in c.fetchall():
@@ -13821,6 +13829,7 @@ def facilities_state_status_counts():
                        'uc': sum(r['uc'] for r in out),
                        'ann': sum(r['ann'] for r in out)},
             'state_count': len(out),
+            'source_table': _SRC,
             'derived_recovered': derived_recovered,
             'derived_scanned': derived_scanned,
             'generated_at': datetime.utcnow().isoformat(),
