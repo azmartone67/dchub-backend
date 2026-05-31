@@ -4147,7 +4147,9 @@ def _acquire_leader_lock():
         _u = os.environ.get("DATABASE_URL") or os.environ.get("NEON_DATABASE_URL")
         if not _u:
             return True  # no DB configured → fail open
-        _c = _pgll.connect(_u, connect_timeout=5)
+        _c = _pgll.connect(_u, connect_timeout=5,
+                           keepalives=1, keepalives_idle=30,
+                           keepalives_interval=10, keepalives_count=3)
         _c.autocommit = True
         with _c.cursor() as _cur:
             _cur.execute("SELECT pg_try_advisory_lock(%s)", (_LEADER_LOCK_ID,))
@@ -4166,6 +4168,83 @@ print(("👑 LEADER replica — owns publishers/brain/singleton crons" if IS_LEA
        else ("⏸️ FAILOVER — singleton work vetoed" if IS_FAILOVER
              else "🧍 FOLLOWER replica — publishers/brain deferred to the leader")),
       flush=True)
+
+# ── r65 leader-lock self-heal ─────────────────────────────────────────────
+# IS_LEADER above is computed ONCE at import. But Neon can idle-drop the lock
+# connection, silently releasing the advisory lock while IS_LEADER stays True
+# (→ orphaned singleton work) and letting a follower also grab it (→ split
+# brain). Track LIVE leadership in a mutable flag, kept current by a keepalive/
+# re-acquire loop. Singleton run-loops (the brain) gate on is_current_leader(),
+# not the frozen IS_LEADER bool. Fail-OPEN preserved everywhere; IS_FAILOVER
+# always vetoes (Render failover never leads).
+_LEADERSHIP = {'is_leader': bool(IS_LEADER)}
+def is_current_leader():
+    """Live leadership state, re-evaluated every ~30s by the keepalive loop.
+    Long-running singleton loops should check THIS, not the import-time bool."""
+    return bool(_LEADERSHIP.get('is_leader', IS_LEADER))
+
+def _leader_keepalive_loop():
+    """Ping the lock conn; on drop, try to re-acquire (promote) or step down."""
+    global _LEADER_LOCK_CONN
+    import psycopg2 as _pgll
+    while True:
+        try:
+            time.sleep(30)
+            if IS_FAILOVER:
+                _LEADERSHIP['is_leader'] = False  # failover never leads
+                continue
+            _u = os.environ.get("DATABASE_URL") or os.environ.get("NEON_DATABASE_URL")
+            if not _u:
+                _LEADERSHIP['is_leader'] = True   # no DB → fail OPEN
+                continue
+            alive = False
+            if _LEADER_LOCK_CONN is not None:
+                try:
+                    with _LEADER_LOCK_CONN.cursor() as _cur:
+                        _cur.execute("SELECT 1"); _cur.fetchone()
+                    alive = True
+                except Exception:
+                    try: _LEADER_LOCK_CONN.close()
+                    except Exception: pass
+                    _LEADER_LOCK_CONN = None
+            if alive:
+                _LEADERSHIP['is_leader'] = True   # still hold the lock
+                continue
+            # lock conn dead/never held → (re)try to acquire it
+            try:
+                _c = _pgll.connect(_u, connect_timeout=5,
+                                   keepalives=1, keepalives_idle=30,
+                                   keepalives_interval=10, keepalives_count=3)
+                _c.autocommit = True
+                with _c.cursor() as _cur:
+                    _cur.execute("SELECT pg_try_advisory_lock(%s)", (_LEADER_LOCK_ID,))
+                    _got = bool((_cur.fetchone() or [False])[0])
+                if _got:
+                    _LEADER_LOCK_CONN = _c
+                    if not _LEADERSHIP['is_leader']:
+                        print("👑 [leader-election] re-acquired lock → promoted to LEADER", flush=True)
+                    _LEADERSHIP['is_leader'] = True
+                else:
+                    _c.close()
+                    if _LEADERSHIP['is_leader']:
+                        print("🧍 [leader-election] lock held elsewhere → stepping DOWN", flush=True)
+                    _LEADERSHIP['is_leader'] = False
+            except Exception as _e:
+                print(f"[leader-election] re-acquire failed, failing OPEN: {_e}", flush=True)
+                _LEADERSHIP['is_leader'] = True   # DB error → assume leader (dedup backstops)
+        except Exception as _e:
+            print(f"[leader-election] keepalive loop error: {_e}", flush=True)
+
+# Both leader and follower Railway replicas run the loop (follower can promote
+# if the leader dies). Not on failover, not local.
+if IS_RAILWAY and not IS_FAILOVER:
+    try:
+        import threading as _ll_threading
+        _ll_threading.Thread(target=_leader_keepalive_loop, name="leader-keepalive",
+                             daemon=True).start()
+        print("🔁 [leader-election] keepalive/re-acquire loop started", flush=True)
+    except Exception as _e:
+        print(f"[leader-election] could not start keepalive loop: {_e}", flush=True)
 
 ENABLE_DISCOVERY_THREADS = IS_RAILWAY and not IS_FAILOVER
 if IS_RAILWAY and not IS_FAILOVER:

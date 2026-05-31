@@ -1275,6 +1275,20 @@ class AutonomousBrain:
             logger.info(f"Autonomous Brain loop started")
             while self.running and not self._stop_event.is_set():
                 try:
+                    # r65 leader-lock self-heal: re-check LIVE leadership each
+                    # cycle. The advisory lock can drop/transfer at runtime, so a
+                    # demoted ex-leader must STOP singleton work and a promoted
+                    # follower must start. Lazy import dodges the circular import.
+                    _is_leader = True
+                    try:
+                        from main import is_current_leader as _icl
+                        _is_leader = _icl()
+                    except Exception:
+                        _is_leader = True  # can't import → fail OPEN (assume leader)
+                    if not _is_leader:
+                        logger.info("⏸️ Autonomous cycle skipped — not current leader")
+                        self._stop_event.wait(interval_seconds)
+                        continue
                     self.run_autonomous_cycle()
                 except psycopg2.Error as e:
                     logger.error(f"Autonomous cycle database error: {e}")
