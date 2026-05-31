@@ -152,7 +152,13 @@ DOMAIN_SLA_HOURS = {
     "iso":       4,      # /api/v1/grid/<iso>  (was 1h, raised to upstream LMP cadence)
     "power":     168,    # /api/v1/energy/electricity-rates
     "renewable": 168,    # /api/renewable/*
-    "dcpi":      24,     # /api/v1/dcpi/live-count
+    "dcpi":      30,     # /api/v1/dcpi/live-count — r36: 24→30. The dcpi_scores
+                         # recompute runs on a DAILY (~24h) cadence, so a 24h SLA
+                         # is mathematically guaranteed to flicker into breach in
+                         # the window before each daily run (observed 25.4h). Per
+                         # this file's own rule ("anything stricter than upstream's
+                         # publish window is just noise"), give it cadence+jitter
+                         # headroom. 30h still catches a genuine multi-day stall.
     "news":      6,      # /api/news/live  (was 1h, raised to RSS aggregation cadence)
     "mna":       24,     # /api/v1/deals
     "pipeline":  24,     # /api/v1/pipeline
@@ -194,8 +200,27 @@ def _domain_of(surface_name: str) -> str:
                     # r34b: more ops verbs that were left dragging domains into
                     # breach (iso/aeso/extract, press/scan, press/queue) — these
                     # are pipeline/worker actions, not user-facing data feeds.
-                    "/extract", "/scan", "/queue")
+                    "/extract", "/scan", "/queue",
+                    # r36 (2026-05-31): the last 2 breaching domains (iso, dcpi)
+                    # were dragged by non-data surfaces the markers above just
+                    # missed. "-export" catches /api/v1/reveal-grid-export and
+                    # its /status/<job_id> (the "/export" marker only matched a
+                    # leading-slash form, not the hyphenated one). "/search/"
+                    # catches /api/v1/search/grids — a query endpoint, not a
+                    # cadenced feed (its freshness IS the underlying data's,
+                    # tracked elsewhere). Both were classed "iso" via "grid" in
+                    # the path and sat at ~160h (noop_default, never re-stamped).
+                    "-export", "/search/")
     if any(m in s for m in _OPS_MARKERS):
+        return "other"
+    # r36 (2026-05-31): static snapshot exports under /data/ (e.g.
+    # /data/dcpi-current.json, /data/dcpi-history.csv) have NO re-stamp hook —
+    # their freshness row tracks REGISTRATION time (~160h), not the file's real
+    # content age (the files carry no date field), so they sat perpetually
+    # breaching dcpi's SLA. They're static exports, not live feeds — demote to
+    # 'other' like the ops surfaces. The live endpoints that generate this data
+    # stay tracked under their own domain.
+    if s.startswith("/data/") and (s.endswith(".csv") or s.endswith(".json")):
         return "other"
     if "grid" in s or "iso" in s: return "iso"
     if "renewable" in s or "solar" in s or "wind" in s: return "renewable"
