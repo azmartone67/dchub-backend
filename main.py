@@ -2888,12 +2888,18 @@ def require_plan(min_plan='pro'):
                 "/api/v1/grid/status",
                 "/api/v1/grid/caiso/fuelmix",
                 "/api/v1/grid/caiso/demand",
-                "/api/v1/markets/compare",
-                "/api/v1/pipeline/summary",
+                # r36 (2026-05-31): markets/compare + v1/deals + pipeline/summary
+                # removed from this forgeable-Referer bypass. The CF worker
+                # injects a dchub.cloud Referer on EVERY proxied request, so this
+                # "bypass" was serving these Pro-gated endpoints to anon scrapers
+                # through the apex (see reference_dchub_cf_injects_referer).
+                # markets/compare and v1/deals are now honestly freemium
+                # (@protect_data, no @require_plan — same pattern as the existing
+                # /api/deals + /api/v1/search), so they need no bypass. The
+                # genuinely-Pro pipeline/summary stays gated (page-unused).
+                # /api/deals was already freemium — its entry here was dead code.
                 "/api/v1/oilgas/search",
-                "/api/v1/deals",
                 "/api/facilities",
-                "/api/deals",
                 "/api/grid/demand",
                 "/api/grid/prices",
                 "/api/grid/all-isos",
@@ -12200,10 +12206,18 @@ def get_market_stats(market):
 
 
 @app.route('/api/v1/markets/compare', methods=['GET'])
-@require_plan('pro')
 @protect_data
 def compare_markets():
-    """Compare 2-3 markets side-by-side"""
+    """Compare 2-3 markets side-by-side.
+
+    r36 (2026-05-31): dropped @require_plan('pro'). This endpoint backs the
+    FREE, nav-linked public tool at /compare (compare.html does a no-auth
+    fetch), so the only thing that made the tool work was the forgeable
+    dchub.cloud-Referer bypass in require_plan — which the CF worker hands to
+    anon scrapers too. Now honestly freemium via @protect_data (free tier
+    masked/capped, paid keys full) — the same pattern as /api/deals and
+    /api/v1/search. See reference_dchub_cf_injects_referer.
+    """
     markets_param = request.args.get('markets', '')
 
     if not markets_param:

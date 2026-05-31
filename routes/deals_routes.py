@@ -1008,10 +1008,17 @@ def get_gas_pipelines():
 
 
 @deals_bp.route('/api/v1/deals', methods=['GET'])
-@_lazy_require_plan('pro')
 @_lazy_protect_data
 def get_deals_v1():
-    """Alias for deals endpoint - matches frontend expectations"""
+    """Alias for deals endpoint - matches frontend expectations.
+
+    r36 (2026-05-31): dropped @_lazy_require_plan('pro') so this alias matches
+    its sibling /api/deals (get_deals), which is already freemium
+    (@protect_data only). The Pro gate here was inconsistent: /api/deals
+    returned freemium data to anon while /api/v1/deals 403'd them and only let
+    callers through via the forgeable dchub.cloud-Referer map bypass — i.e. it
+    leaked to scrapers via the apex. Now honestly freemium on both aliases.
+    """
     return get_deals()
 
 # =============================================================================
