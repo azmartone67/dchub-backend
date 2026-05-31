@@ -669,7 +669,7 @@ class UserAnalytics:
         """Log a visitor"""
         conn = sqlite3.connect(DB_PATH, timeout=60)
         conn.execute(
-            "INSERT INTO visitors (ip_address, user_agent, referrer, page_visited, visit_time, session_id) VALUES (?,?,?,?,?,?)",
+            "INSERT INTO visitors (ip_address, user_agent, referrer, page_visited, visit_time, session_id) VALUES (?,?,?,?,?,?) ON CONFLICT DO NOTHING",
             (ip_address, user_agent, referrer, page, datetime.now().isoformat(), session_id)
         )
         conn.commit()
@@ -679,7 +679,7 @@ class UserAnalytics:
         """Log a page view"""
         conn = sqlite3.connect(DB_PATH, timeout=60)
         conn.execute(
-            "INSERT INTO page_views (page, visitor_id, view_time, duration_seconds, referrer) VALUES (?,?,?,?,?)",
+            "INSERT INTO page_views (page, visitor_id, view_time, duration_seconds, referrer) VALUES (?,?,?,?,?) ON CONFLICT DO NOTHING",
             (page, visitor_id, datetime.now().isoformat(), duration, referrer)
         )
         conn.commit()
@@ -689,7 +689,7 @@ class UserAnalytics:
         """Log an API call"""
         conn = sqlite3.connect(DB_PATH, timeout=60)
         conn.execute(
-            "INSERT INTO api_usage (endpoint, user_id, ip_address, call_time, response_time_ms, status_code) VALUES (?,?,?,?,?,?)",
+            "INSERT INTO api_usage (endpoint, user_id, ip_address, call_time, response_time_ms, status_code) VALUES (?,?,?,?,?,?) ON CONFLICT DO NOTHING",
             (endpoint, user_id, ip_address, datetime.now().isoformat(), response_time, status_code)
         )
         conn.commit()
@@ -701,7 +701,7 @@ class UserAnalytics:
         conn = sqlite3.connect(DB_PATH, timeout=60)
         try:
             conn.execute(
-                "INSERT INTO users (email, name, company, role, plan, created_at, api_key) VALUES (?,?,?,?,?,?,?)",
+                "INSERT INTO users (email, name, company, role, plan, created_at, api_key) VALUES (?,?,?,?,?,?,?) ON CONFLICT DO NOTHING",
                 (email, name, company, role, plan, datetime.now().isoformat(), api_key)
             )
             conn.commit()
@@ -875,6 +875,7 @@ def setup_admin_routes(app):
         days = request.args.get('days', 7, type=int)
         return jsonify(user_analytics.get_visitor_report(days))
     
+# AUTO-REPAIR: duplicate route '/api/admin/users' also in main.py:18092 — review and remove one
     @app.route('/api/admin/users', methods=['GET'])
     def admin_users():
         """Get user/signup report"""
@@ -900,6 +901,7 @@ def setup_admin_routes(app):
                 'energy_markets': len(ENERGY_MARKETS)
             }
         })
+# AUTO-REPAIR: duplicate route '/api/track/visit' also in routes/track_routes.py:21 — review and remove one
     
     @app.route('/api/track/visit', methods=['POST'])
     def track_visit():
