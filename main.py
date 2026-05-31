@@ -1350,6 +1350,16 @@ try:
         app.register_blueprint(brain_directives_bp)  # Phase FF+directives — operator directive intake
     except Exception as _e:
         print(f"[main] brain_directives_bp not registered: {_e}", flush=True)
+    # Phase RR-4 (2026-05-31): source-mapper — resolves abstract Layer-5
+    # findings (url/route/filename/table/text) to concrete (file, line)
+    # candidates so learn-backend-issues stops emitting no_source_map and
+    # the ~87 chronic findings can become real human-reviewed proposals.
+    try:
+        from routes.brain_source_map import brain_source_map_bp
+        app.register_blueprint(brain_source_map_bp)
+        print("[main] brain_source_map_bp registered: /api/v1/brain/source-map", flush=True)
+    except Exception as _e:
+        print(f"[main] brain_source_map_bp not registered: {_e}", flush=True)
     # r43-L (2026-05-30): MCP discoverability/health detector — continuously
     # watches for tool-count drift, weak descriptions, missing pricing tiers,
     # and unreachable .well-known surfaces. Findings flow into the brain's

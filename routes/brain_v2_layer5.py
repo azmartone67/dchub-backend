@@ -481,9 +481,30 @@ def learn_backend_issues():
         url = issue.get("url", "")          # e.g. dchub://cron/dcpi_recompute
         label = issue.get("issue", "")[:300]
 
-        # Map to source files. If we don't have a mapping, skip — better
-        # to refuse than guess at unknown surfaces.
+        # Map to source files. First try the static hand-curated map;
+        # then fall back to the source-mapper (Phase RR-4), which resolves
+        # the abstract finding (url path / route / filename / table / text)
+        # to concrete (file, line) candidates by walking the repo. This is
+        # what turns the ~87 chronic "no_source_map" findings into real,
+        # human-reviewed proposals.
         source_files = BACKEND_ISSUE_SOURCE_FILES.get(url, [])
+        resolved_candidates = []
+        if not source_files:
+            try:
+                from routes.brain_source_map import resolve_finding_to_sources
+                resolved_candidates = resolve_finding_to_sources(issue)
+            except Exception:
+                resolved_candidates = []
+            # De-dupe candidate files (preserve rank order), cap at 2 to
+            # bound token spend — same cap the mapped path uses below.
+            seen_f = set()
+            for c in resolved_candidates:
+                f = c.get("file")
+                if f and f not in seen_f:
+                    seen_f.add(f)
+                    source_files.append(f)
+                if len(source_files) >= 2:
+                    break
         if not source_files:
             results.append({"url": url, "outcome": "no_source_map"})
             continue
