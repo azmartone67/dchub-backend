@@ -1468,12 +1468,18 @@ try:
     except Exception as _cbe:
         import logging
         logging.getLogger(__name__).warning('cited_by wiring failed: %s', _cbe)
+    # 2026-05-31: /vs is now served by the FACTUAL competitive_seo module
+    # (observed-and-dated competitor facts only, from the moat radar). The
+    # old competitive_vs.py carried UNVERIFIED pricing claims ($25K seat,
+    # $9/mo, "40 tools/96 platforms") — RETIRED here (not registered), so
+    # those routes no longer serve. competitive_seo registers first so it
+    # owns /vs + /vs/<slug> (and beats the quick_redirects /vs 301 below).
     try:
-        from routes.competitive_vs import competitive_vs_bp
-        app.register_blueprint(competitive_vs_bp)
-    except Exception as _cve:
+        from routes.competitive_seo import competitive_seo_bp
+        app.register_blueprint(competitive_seo_bp)
+    except Exception as _cse:
         import logging
-        logging.getLogger(__name__).warning('competitive_vs wiring failed: %s', _cve)
+        logging.getLogger(__name__).warning('competitive_seo wiring failed: %s', _cse)
     # Phase ZZZZ-cf-analytics (2026-05-18): brain's CF account-level
     # health probe (cache rate, traffic, country split via GraphQL API).
     try:
