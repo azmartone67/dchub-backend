@@ -239,12 +239,14 @@ def fetch_snapshot() -> dict:
     """
     import datetime
 
-    if DRY_RUN:
-        log.warning("DRY_RUN — using bundled seed.")
-        snap = _seed_snapshot()
-        snap["source"] = snap.get("source", "Aterio") + " · seed (DRY_RUN)"
-        return snap
-
+    # r37 (2026-05-31): REMOVED the `if DRY_RUN: return seed` short-circuit. A
+    # stale DRY_RUN=1 env var on the heroic-reprieve service was forcing the
+    # bundled 2026-03-31 seed on every render — so /daily was frozen at that
+    # date and count for 2 months, even though /api/v1/facilities/state-status-
+    # counts returns live, GROWING per-state totals (verified: 200, as_of=today,
+    # op 2212 / uc 126 / ann 135). Always try live now; the bundled seed remains
+    # ONLY as the genuine-failure fallback in the except block below (which also
+    # covers a no-network local dev). DRY_RUN no longer suppresses live data.
     try:
         url = API_BASE.rstrip("/") + "/facilities/state-status-counts"
         headers = {"User-Agent": "dchub-daily/5.0"}
