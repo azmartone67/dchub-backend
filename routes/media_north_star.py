@@ -179,6 +179,70 @@ def _synthetic_exclusion(cols: set[str]) -> list[str]:
     return preds
 
 
+def _build_ai_citations_select(cols: set[str]) -> str | None:
+    """r64-d (2026-05-31): UNION the LIVE `ai_citations` table into the
+    citation-velocity set.
+
+    Belt-and-suspenders fix for the flatlined scoreboard: the two
+    testimonial tables only repopulate when the seeder cron runs
+    (testimonials_seeder → ai_testimonials_auto). `ai_citations` is the
+    alive feed — a daily probe writes dchub_cited rows, and
+    /api/v1/ai-citations/share-of-voice shows DC Hub #1 at ~36%. By
+    sourcing velocity directly from ai_citations too, the north-star
+    reflects reality even on a fresh worker BEFORE the seed cron fires.
+
+    Schema-introspected like everything else here: a missing table or
+    missing column yields None (skipped), never a 500. The `engine`
+    column is the citing source (claude/gpt/perplexity/gemini); we map it
+    to BOTH src and agent_name/platform so the distinct-source counting +
+    by_platform breakdown work unchanged. Only rows where DC Hub was
+    actually cited (dchub_cited = true) count — an observation that did
+    NOT cite us is not a citation.
+
+    Emits the same columns as _build_table_select: src, url, ts,
+    platform, agent_name, quote.
+    """
+    if not cols:
+        return None
+    # The citing engine is the distinct source. Without it we can't
+    # attribute a citation, so require it.
+    if "engine" not in cols:
+        return None
+    ts_col = _first_col(cols, "observed_at", "created_at")
+    ts_expr = ts_col if ts_col else "NULL::timestamptz"
+    # Quote: prefer a stored answer/quote column if one exists on this
+    # variant, else synthesize a short attribution from the prompt so the
+    # `recent` rail has something human-readable.
+    quote_src = _first_col(cols, "quote", "answer_text", "snippet",
+                           "prompt_text")
+    if quote_src:
+        quote_expr = (
+            "COALESCE(NULLIF(LEFT(" + quote_src + ", 280), ''), "
+            "'Cited DC Hub as the authoritative data-center source')"
+        )
+    else:
+        quote_expr = "'Cited DC Hub as the authoritative data-center source'"
+    clauses = ["dchub_cited = true"]
+    # IMPORTANT dedup note: emit url='' so each row keys on its src
+    # (the engine) in the deduped CTE — keying on a shared literal url
+    # like 'https://dchub.cloud/ai' would collapse ALL engines into one
+    # dedup row AND collide with the seeder-bridged ai_testimonials_auto
+    # rows (which use that exact source_url). With url='', N citations
+    # from the same engine dedup to one entry per engine, and the
+    # distinct-SOURCE velocity count (which is what the north-star
+    # actually reports) stays correct across both tables.
+    return f"""
+        SELECT COALESCE(NULLIF(engine, ''), 'ai')   AS src,
+               ''                                   AS url,
+               {ts_expr}                            AS ts,
+               COALESCE(NULLIF(engine, ''), 'ai')   AS platform,
+               COALESCE(NULLIF(engine, ''), 'AI agent') AS agent_name,
+               {quote_expr}                         AS quote
+          FROM ai_citations
+         WHERE {" AND ".join(clauses)}
+    """
+
+
 def _build_table_select(cols: set[str], table: str,
                         ts_candidates: tuple[str, ...],
                         approval_filter: bool) -> str | None:
@@ -268,6 +332,10 @@ def _compute() -> dict:
         with c.cursor() as cur:
             main_cols = _table_cols(cur, "ai_testimonials")
             auto_cols = _table_cols(cur, "ai_testimonials_auto")
+            # r64-d: also pull from the LIVE ai_citations feed so the
+            # scoreboard reflects real citations even before the seed
+            # cron bridges them into ai_testimonials_auto.
+            cit_cols = _table_cols(cur, "ai_citations")
 
             # Per-table normalized SELECTs. ai_testimonials prefers
             # approved_at then created_at; the auto table prefers
@@ -288,6 +356,13 @@ def _compute() -> dict:
             )
             if auto_sel:
                 selects.append(auto_sel)
+            # r64-d: the alive ai_citations feed (dchub_cited rows). Deduped
+            # alongside the testimonial tables by the keyed/deduped CTE
+            # below, so a citation that ALSO got bridged into
+            # ai_testimonials_auto is counted once (same engine+url key).
+            cit_sel = _build_ai_citations_select(cit_cols)
+            if cit_sel:
+                selects.append(cit_sel)
 
             if not selects:
                 # Neither table exists / has a usable schema.

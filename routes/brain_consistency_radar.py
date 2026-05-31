@@ -944,18 +944,37 @@ def check_report_content_drift() -> list[dict]:
         bp = d.get("brand_pulse") or {}
         score = bp.get("citation_score_pct")
         if isinstance(score, (int, float)) and score == 0.0:
-            findings.append({
-                "issue":  f"report_zero_signal:{window}.brand_pulse",
-                "url":    url,
-                "count":  0,
-                "detail": (f"{window} report brand_pulse.citation_score_pct "
-                           f"= 0.0. Either no external press has cited "
-                           f"dchub in the window (real PR gap, not a "
-                           f"code bug — see [[source_of_truth]] memory) "
-                           f"OR the citation detector is missing "
-                           f"crawl targets. Cross-check against "
-                           f"check_ai_citations_stale_v2 to disambiguate."),
-            })
+            # r64-d (2026-05-31): SUPPRESS the false alarm. The detector's
+            # own comment said "cross-check against
+            # check_ai_citations_stale_v2 to disambiguate" — now we
+            # actually do. A brand_pulse.citation_score_pct of 0.0 in the
+            # monthly report does NOT mean DC Hub is uncited: the report's
+            # brand_pulse reads the (stale, seeder-fed) testimonial tables,
+            # while the LIVE ai_citations feed shows DC Hub #1 at ~36.4%
+            # share-of-voice. Escalating "zero citation score" while we're
+            # objectively winning share-of-voice is a self-inflicted false
+            # crisis. So: if real share-of-voice > 0, the score is just a
+            # stale-pipeline artifact (already covered by the seeder cron
+            # + ai_citations_cron_silent detector) — don't escalate.
+            sov = _dchub_share_of_voice_pct()
+            if sov is not None and sov > 0.0:
+                pass  # We're being cited (sov% SoV) — stale report metric, not a real gap.
+            else:
+                findings.append({
+                    "issue":  f"report_zero_signal:{window}.brand_pulse",
+                    "url":    url,
+                    "count":  0,
+                    "detail": (f"{window} report brand_pulse.citation_score_pct "
+                               f"= 0.0 AND live ai_citations share-of-voice is "
+                               f"{('0.0%' if sov == 0.0 else 'unavailable')}. "
+                               f"Either no external citations in the window "
+                               f"(real gap, not a code bug — see "
+                               f"[[source_of_truth]] memory) OR the citation "
+                               f"probe/detector is missing crawl targets. "
+                               f"Cross-checked check_ai_citations_stale_v2's "
+                               f"ai_citations table; it did not show DC Hub "
+                               f"being cited, so this is a genuine signal."),
+                })
 
         # Drift check 3: quarterly's hyperscaler_deals empty
         if window == "quarterly-deep":
@@ -1458,6 +1477,48 @@ def _db():
         return c
     except Exception:
         return None
+
+
+def _dchub_share_of_voice_pct() -> Optional[float]:
+    """r64-d (2026-05-31): DC Hub's real AI-citation share-of-voice over
+    the last 30 days, as a %. Mirrors the math behind
+    /api/v1/ai-citations/share-of-voice (which check_ai_citations_stale_v2
+    already monitors) but reads the ai_citations table DIRECTLY rather
+    than via an HTTP self-call — the backend is a single Railway replica
+    and synchronous self-calls inside the radar scan exhaust the worker
+    pool (see reference_dchub_backend_flapping memory).
+
+    Returns:
+      float > 0.0  → DC Hub is being cited (e.g. ~36.4% — we are #1)
+      0.0          → table alive but zero dchub_cited rows in the window
+      None         → table missing / unreadable (caller should NOT treat
+                     None as 'zero': it just means 'can't tell from here')
+    """
+    c = _db()
+    if c is None:
+        return None
+    try:
+        with c.cursor() as cur:
+            cur.execute("SELECT to_regclass('public.ai_citations')")
+            if not (cur.fetchone() or [None])[0]:
+                return None
+            cur.execute("""
+                SELECT COUNT(*) AS total,
+                       SUM(CASE WHEN dchub_cited THEN 1 ELSE 0 END) AS dchub
+                  FROM ai_citations
+                 WHERE observed_at >= NOW() - INTERVAL '30 days'
+            """)
+            row = cur.fetchone() or (0, 0)
+            total = int(row[0] or 0)
+            dchub = int(row[1] or 0)
+            if total <= 0:
+                return None  # no observations → can't compute a share
+            return round(100.0 * dchub / total, 1)
+    except Exception:
+        return None
+    finally:
+        try: c.close()
+        except Exception: pass
 
 
 def check_dcpi_partial_recompute() -> list[dict]:
@@ -4668,14 +4729,26 @@ def check_page_brand_uniformity() -> list[dict]:
             if len(findings) >= 20:
                 break
             if needle in html:
+                # r64-d (2026-05-31): count = 1, NOT html.count(needle).
+                # Each page/pattern is ONE distinct finding. Emitting the
+                # raw occurrence count (a single CSS var like #1e40af can
+                # appear 40+ times on one page) is exactly the
+                # COUNT(*)-not-DISTINCT inflation the signal-inflation rule
+                # warns about: any downstream consumer that SUM()s the
+                # `count` field across these findings ballooned to ~366
+                # "escalated brand-uniformity issues" when the real DISTINCT
+                # open-finding count is ~7. The literal occurrence count is
+                # preserved in `detail` for the operator; `count` is now the
+                # distinct-finding unit so the brain narrates 7, not 366.
+                _occurrences = html.count(needle)
                 findings.append({
                     "issue":  "page_brand_uniformity",
                     "url":    path,
-                    "count":  html.count(needle),
+                    "count":  1,
                     "detail": (f"Page {path} contains off-brand pattern "
-                               f"`{needle}` ({tag}) — {hint}. After "
-                               f"r33-I unification this page is a "
-                               f"regression."),
+                               f"`{needle}` ({tag}, {_occurrences}× on page) "
+                               f"— {hint}. After r33-I unification this "
+                               f"page is a regression."),
                 })
 
         # C. Body-font regressions (regex-checked inside body{} blocks)

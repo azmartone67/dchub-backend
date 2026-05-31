@@ -1,0 +1,94 @@
+name: Testimonials seed (daily — bridge ai_citations → scoreboard)
+
+# r64-d (2026-05-31): daily bridge cron. The AI-citation probe
+# (ai-citation-probe.yml @ 11:11 UTC) populates the alive `ai_citations`
+# table, but `/api/v1/media/north-star` reads the testimonial tables
+# (ai_testimonials / ai_testimonials_auto). The seeder
+# (testimonials_seeder._pull_from_ai_citations) is what bridges fresh
+# citations into ai_testimonials_auto — but it ran on NO cron, so the
+# media north-star scoreboard flatlined at 0 (newest item 86d old)
+# despite DC Hub being #1 at ~36% share-of-voice. This workflow fires
+# the seeder daily, ~30 min AFTER the probe so fresh citations exist to
+# bridge.
+#
+# Auth: X-Admin-Key (secrets.DCHUB_ADMIN_KEY). Same admin key the
+# ai-citation-probe uses; if it drifts, this run fails LOUD (non-zero
+# exit on 401/403) so the breakage surfaces instead of silently
+# re-flatlining the scoreboard.
+
+on:
+  schedule:
+    # 11:41 UTC — 30 min after the 11:11 UTC ai-citation probe, so the
+    # day's fresh citations are already in ai_citations to bridge.
+    - cron: '41 11 * * *'
+  workflow_dispatch:
+    inputs:
+      dry_run:
+        description: 'dry-run (GET, no inserts) — set to 1 to preview'
+        required: false
+        default: ''
+
+permissions:
+  contents: read
+
+env:
+  BASE: https://dchub-backend-production.up.railway.app
+
+jobs:
+  seed:
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    steps:
+      - name: Seed testimonials from fresh AI citations
+        env:
+          ADMIN_KEY: ${{ secrets.DCHUB_ADMIN_KEY }}
+          DRY_RUN: ${{ github.event.inputs.dry_run }}
+        run: |
+          set -euo pipefail
+          if [ -z "${ADMIN_KEY:-}" ]; then
+            echo "::warning::DCHUB_ADMIN_KEY not set — skipping"
+            exit 0
+          fi
+          url="$BASE/api/v1/admin/testimonials/seed"
+          method="POST"
+          if [ -n "${DRY_RUN:-}" ]; then
+            # GET = dry-run per the endpoint contract (no inserts).
+            url="$url?dry_run=1"
+            method="GET"
+          fi
+          http=$(curl -sS --max-time 120 -X "$method" \
+            -H "X-Admin-Key: $ADMIN_KEY" \
+            -o /tmp/seed.json -w "%{http_code}" \
+            "$url" || echo "000")
+          body=$(cat /tmp/seed.json 2>/dev/null || echo '{}')
+          echo "HTTP $http"
+          echo "$body" | python3 -m json.tool 2>/dev/null || echo "$body"
+
+          # Fail LOUD on auth drift — a silent 401/403 here is exactly
+          # how the scoreboard re-flatlined (seeder never ran). Treat
+          # DCHUB_ADMIN_KEY drift as a hard CI failure.
+          if [ "$http" = "401" ] || [ "$http" = "403" ]; then
+            echo "::error::Seeder auth rejected (HTTP $http) — DCHUB_ADMIN_KEY likely drifted vs the backend. The media north-star scoreboard will re-flatline until this is fixed."
+            exit 1
+          fi
+          if [ "$http" != "200" ]; then
+            echo "::warning::Seeder returned HTTP $http (expected 200) — see body above."
+          fi
+
+          python3 - <<'PY' || true
+          import json
+          try:
+              with open('/tmp/seed.json') as f: d = json.load(f)
+              if not d.get('ok'):
+                  print(f"::warning::Seeder ok=false: {d.get('error','?')}")
+              else:
+                  ins = d.get('inserted')
+                  cand = d.get('candidates')
+                  dup = d.get('skipped_duplicate')
+                  if d.get('dry_run'):
+                      print(f"::notice::Seeder DRY-RUN: {cand} candidate(s) would seed.")
+                  else:
+                      print(f"::notice::Seeder: {ins} inserted / {cand} candidates ({dup} dup).")
+          except Exception as e:
+              print(f"::warning::output parse: {e}")
+          PY

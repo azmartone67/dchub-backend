@@ -122,7 +122,17 @@ def _ensure_schema(c):
 
 
 def _pull_from_ai_citations(c) -> list[dict]:
-    """Recent organic AI citations where DC Hub was cited."""
+    """Recent organic AI citations where DC Hub was cited.
+
+    r64-d (2026-05-31): lookback widened 7d → 30d. This seeder ran on NO
+    cron for weeks, so the media north-star scoreboard flatlined (newest
+    testimonial 86d old) even though ai_citations stayed alive and DC Hub
+    is #1 at ~36% share-of-voice. A 7-day window would only repopulate
+    the last week on the first cron run; 30 days lets the initial backfill
+    pull the full recent citation history into ai_testimonials_auto so the
+    scoreboard recovers in one pass. Dedup (quote_hash) makes the wider
+    window safe to re-run daily without duplicating rows.
+    """
     rows = []
     try:
         with c.cursor(cursor_factory=psycopg2.extras.RealDictCursor) as cur:
@@ -131,11 +141,11 @@ def _pull_from_ai_citations(c) -> list[dict]:
                        dchub_position
                   FROM ai_citations
                  WHERE dchub_cited = TRUE
-                   AND observed_at > NOW() - INTERVAL '7 days'
+                   AND observed_at > NOW() - INTERVAL '30 days'
                    AND prompt_text IS NOT NULL
                    AND LENGTH(prompt_text) > 20
                  ORDER BY observed_at DESC
-                 LIMIT 20
+                 LIMIT 50
             """)
             for r in cur.fetchall():
                 quote = (
