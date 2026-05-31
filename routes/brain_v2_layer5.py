@@ -677,8 +677,16 @@ def _calibration_stats(cur) -> dict:
         """)
         rows = cur.fetchall()
     except Exception:
-        # merge_outcome column may not exist yet (no GG#4 callbacks
-        # fired). Degrade gracefully → empty stats → everyone uses base.
+        # merge_outcome column may not exist yet (no GG#4 callbacks fired).
+        # CRITICAL: roll back the failed statement so it doesn't leave the
+        # caller's transaction ABORTED — that aborted txn silently broke
+        # pending-pr for the loop's ENTIRE history (its later SELECT raised
+        # "current transaction is aborted" → caught → items:[] → the PR
+        # opener saw 0 forever). Degrade gracefully → base threshold.
+        try:
+            cur.connection.rollback()
+        except Exception:
+            pass
         return {}
 
     out = {}
@@ -770,6 +778,13 @@ def proposed_code_pending_pr():
                 cur.execute("""
                     ALTER TABLE brain_proposed_code_fixes
                     ADD COLUMN IF NOT EXISTS pr_url TEXT;
+                """)
+                # Root fix: the calibration query reads merge_outcome; if the
+                # live table predates that column, the query aborts the txn
+                # and pending-pr returns 0. Ensure it exists.
+                cur.execute("""
+                    ALTER TABLE brain_proposed_code_fixes
+                    ADD COLUMN IF NOT EXISTS merge_outcome TEXT;
                 """)
                 conn.commit()
             except Exception:
