@@ -257,14 +257,20 @@ def _domain_of(surface_name: str) -> str:
 _DOMAIN_SOURCE: dict = {
     # domain -> (table, timestamp_column). MAX(col)::timestamptz is cast on the
     # single MAX result (index-friendly), tolerant of TEXT ISO-8601 columns.
+    #
+    # SCOPED to the FAST, genuinely-refreshing, drift-prone domains — the ones
+    # that actually whack-a-mole'd (iso/news). r36 note: do NOT map slow/static
+    # INFRASTRUCTURE domains here (gas/pipeline → gas_pipelines.updated_at is a
+    # HIFLD static-import date ~62d old; facilities → first_seen is slow
+    # discovery the brain rates at 336h). Mapping those to a tight 24h domain
+    # SLA turns a real-age read into a FALSE breach. They keep surface tracking
+    # (within_sla today) and their real cadence is already watched by
+    # brain_consistency_radar.SLAS (gas_pipelines 720h, facilities 336h).
     "iso":        ("grid_data",      "timestamp"),      # ISO telemetry, ~1.5h cron
     "dcpi":       ("dcpi_scores",    "computed_at"),    # daily recompute
     "news":       ("news_items",     "published_at"),   # RSS ingest
     "press":      ("press_releases", "published_at"),   # event-driven
     "mna":        ("ai_deals",       "created_at"),     # deal extractor
-    "gas":        ("gas_pipelines",  "updated_at"),     # EIA/HIFLD
-    "pipeline":   ("gas_pipelines",  "updated_at"),
-    "facilities": ("facilities",     "first_seen"),
 }
 _DOMAIN_AGE_CACHE: dict = {"data": {}, "t": 0.0}
 _DOMAIN_AGE_TTL = 300  # 5 min
