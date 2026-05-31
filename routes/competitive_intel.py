@@ -204,7 +204,9 @@ _DCHUB_DIFFERENTIATORS: list[dict] = [
 #    window across the whole worker. This is the "respectful" guarantee.
 # ──────────────────────────────────────────────────────────────────────
 
-_PROBE_TIMEOUT_SECONDS = 4          # per-surface hard cap (background-only)
+_PROBE_TIMEOUT_SECONDS = 8          # per-surface hard cap; background-only, so
+                                    # generous — 4s timed real competitor TLS
+                                    # out and zeroed every axis to "unknown".
 _PROBE_TTL_SECONDS = 21600          # 6h — never hammer a competitor host
 _PROBE_UA = ("DCHubCompetitiveIntel/1.0 (+https://dchub.cloud; "
              "respectful one-shot agent-readiness probe)")
