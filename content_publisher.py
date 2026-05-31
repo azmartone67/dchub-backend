@@ -1212,10 +1212,117 @@ def _post_headline_signature(text: str) -> dict:
     return sig
 
 
+# ---------------------------------------------------------------------------
+# B3 (2026-05-31) — pre-publish QUALITY score.
+#
+# WHY: the publisher only had EXISTENCE-style dedup (per-class + entity-level
+# + zero-stat) before this. That stops *repeats* and *empty* posts, but a
+# thin-but-novel post (no number, no link, no recency cue) still sailed
+# through. B3 adds a positive QUALITY signal so we publish FEWER, HIGHER-signal
+# posts: a post must clear CONTENT_QUALITY_MIN (default 0.5) on a 0..1 scale.
+#
+# The score reuses signals this module already computes — there is no rich
+# "post" object in this pipeline, a post IS its content text (article_url,
+# metric and market are all parsed out of the body), so _quality_score(post)
+# takes the content string:
+#   (a) concrete non-zero stat  → _post_headline_signature().metric_value
+#   (b) freshness               → recency phrases / a current-ish year
+#   (c) novelty                 → _classify_post_for_dedup() class is the
+#                                 existing dedup-class signal; a generic
+#                                 "other" post that names no entity is the
+#                                 low-novelty case
+#   (d) real article_url/link   → the same https?:// regex the publisher uses
+#
+# This is an ADDITIONAL conservative gate layered into _should_skip_publish;
+# it does NOT touch the daily caps. Fail-OPEN for scoring *errors* (if scoring
+# itself throws we log and allow — distribution must never dark-hold on a
+# bug), but fail-CLOSED for a confidently-computed low score.
+# ---------------------------------------------------------------------------
+QUALITY_MIN = float(os.environ.get('CONTENT_QUALITY_MIN', '0.5'))
+
+# Phrases that signal the post references something recent (freshness). Kept
+# in sync with the cadence language marketing_engine leads with ("in the last
+# 24h / 7 days", "today", "this week"). A current-or-recent 4-digit year also
+# counts so dated stats ("2026 interconnection queue") score as fresh.
+_FRESHNESS_RE = _re_legacy.compile(
+    r'\b(?:today|this week|this month|right now|just|latest|breaking|'
+    r'in the last\s+\d+\s*(?:h|hr|hrs|hours|d|day|days|week|weeks)|'
+    r'last\s+\d+\s*(?:h|hr|hrs|hours|days|weeks)|'
+    r'(?:24h|48h|7\s*days|7d|30\s*days|30d))\b',
+    _re_legacy.IGNORECASE)
+_URL_RE = _re_legacy.compile(r'https?://[^\s)>\]]+', _re_legacy.IGNORECASE)
+_RECENT_YEAR_RE = _re_legacy.compile(r'\b(20[2-3]\d)\b')
+
+
+def _quality_score(post) -> float:
+    """Score a candidate post 0.0–1.0 on publish-worthiness. B3 (2026-05-31).
+
+    `post` is the content text (this pipeline has no richer post object —
+    see module note above). Four weighted signals, all reusing existing
+    extractors so the score stays consistent with the dedup layer:
+
+      (a) concrete non-zero stat   0.35  — _post_headline_signature parses a
+                                           numeric headline metric > 0
+      (b) freshness                0.20  — references something recent
+      (c) novelty                  0.25  — names a concrete entity/metric
+                                           (i.e. NOT the catch-all "other"
+                                           dedup class with no signature)
+      (d) real article_url/link    0.20  — a dchub.cloud (or any http) link
+
+    Returns a float in [0,1]. A short/empty body floors low. Designed to be
+    called inside a try/except by the gate so a raising input fails OPEN."""
+    text = (post or "").strip()
+    if not text:
+        return 0.0
+
+    sig = _post_headline_signature(text)
+    score = 0.0
+
+    # (a) concrete, non-zero stat. A parsed headline metric > 0 is the
+    # strongest signal; a bare number elsewhere in the body is a weaker
+    # partial credit (so "added 1,204 facilities" without a recognised
+    # metric label still isn't treated as statless).
+    mv = sig.get("metric_value")
+    if mv is not None and mv > 0:
+        score += 0.35
+    elif _re_legacy.search(r'\b\d[\d,]*(?:\.\d+)?\b', text):
+        score += 0.15
+
+    # (b) freshness — recency phrase or a recent year.
+    if _FRESHNESS_RE.search(text) or _RECENT_YEAR_RE.search(text):
+        score += 0.20
+
+    # (c) novelty — reuse the existing dedup-class signal. A post that
+    # classifies as anything other than the catch-all "other" is about a
+    # known, identifiable topic; an "other" post WITH a parsed entity/metric
+    # signature still counts. Only a truly generic "other" post (no class,
+    # no market_verdict, no metric_label) is treated as low-novelty.
+    cls = _classify_post_for_dedup(text)
+    has_entity = bool(sig.get("market_verdict") or sig.get("metric_label"))
+    if cls != "other" or has_entity:
+        score += 0.25
+
+    # (d) real article_url / link.
+    if _URL_RE.search(text):
+        score += 0.20
+
+    # Clamp (defensive — weights sum to 1.0 but partial-credit paths could
+    # in principle nudge over).
+    if score < 0.0:
+        return 0.0
+    if score > 1.0:
+        return 1.0
+    return round(score, 3)
+
+
 def _should_skip_publish(cur, content_text: str, platform: str):
     """Pre-publish media-judgment filter. Returns (skip: bool, reason: str).
 
     Decision order (skip on the FIRST hit):
+      (q) QUALITY GATE (B3) — skip if _quality_score(content) is below
+          CONTENT_QUALITY_MIN (default 0.5). An ADDITIONAL conservative gate
+          so we publish fewer, higher-signal posts. Fail-OPEN if scoring
+          itself raises (log + allow), fail-CLOSED on a confident low score.
       (b) ZERO-STAT GUARD — never publish a post whose headline metric parses
           to 0/null ("DC Hub MCP served 0 AI tool calls"). These read as
           "the platform did nothing today" and damage credibility.
@@ -1228,6 +1335,21 @@ def _should_skip_publish(cur, content_text: str, platform: str):
     FAIL-OPEN: any DB / parse error returns (False, "") so a transient blip
     never dark-holds the publisher. The caller logs the reason when skip=True.
     """
+    # (q) QUALITY GATE (B3, 2026-05-31). Computed FIRST so a thin post is
+    # filtered before the dedup DB round-trip. Wrapped so a scoring bug
+    # NEVER blocks a post (fail-open); a successfully-computed low score
+    # DOES block (fail-closed) — that's the whole point of the gate.
+    try:
+        _q = _quality_score(content_text or "")
+    except Exception as _qe:
+        logger.warning(
+            "B3 quality-score raised (%s) — failing OPEN, allowing post",
+            _qe)
+        _q = None
+    if _q is not None and _q < QUALITY_MIN:
+        return True, (f"low quality score {_q:.3f} < {QUALITY_MIN:.3f} "
+                      f"(CONTENT_QUALITY_MIN) — refusing thin/low-signal post")
+
     sig = _post_headline_signature(content_text or "")
 
     # (b) zero / null headline stat — hard block, no DB needed.

@@ -53,10 +53,19 @@ from flask import Blueprint, jsonify, request, Response
 agent_broadcast_bp = Blueprint("agent_broadcast", __name__)
 
 
-# In-memory tracking of polling agents (cleared on restart, fine for
-# 24/7 cadence telemetry — the cron presence on the back end is the
-# truth source)
+# In-memory tracking of polling agents (cleared on restart). B2
+# (2026-05-31) makes this DURABLE: we now write-through every poll to the
+# Postgres table `agent_broadcast_subscribers` so subscriber attribution
+# survives Railway restarts. The in-memory dict is kept as a hot cache +
+# a fail-open fallback when the DB is unreachable — a DB blip must NEVER
+# break the feed (the feed is the important path).
 _RECENT_POLLERS: dict[str, dict] = {}
+
+# One-shot guard so we only attempt the CREATE TABLE IF NOT EXISTS once
+# per process (the upsert itself is cheap; the DDL probe is the part we
+# don't want to run on every single poll). Reset to False so a transient
+# failure to create lets a later poll retry.
+_SUBSCRIBERS_TABLE_READY = False
 
 
 def _db_conn():
@@ -106,9 +115,89 @@ def _first_col(cols: set[str], *candidates: str) -> str | None:
     return None
 
 
+def _ensure_subscribers_table(cur) -> bool:
+    """Idempotently create the durable subscriber table. Returns True if
+    the table is (now) usable. B2 (2026-05-31).
+
+    Schema mirrors the in-memory poller shape so the /subscribers endpoint
+    can serve identical rows from either source:
+      agent_name TEXT, user_agent TEXT, ip_hash TEXT,
+      first_seen TIMESTAMPTZ DEFAULT NOW(), last_seen TIMESTAMPTZ,
+      hits BIGINT DEFAULT 0
+    Unique on (agent_name, ip_hash) so the per-poll UPSERT can increment
+    hits + bump last_seen for a returning agent. agent_name is COALESCEd
+    to '' before the key so anonymous (no X-Agent-Name) pollers still get
+    a stable row per ip_hash rather than tripping a NULL-uniqueness gap."""
+    global _SUBSCRIBERS_TABLE_READY
+    if _SUBSCRIBERS_TABLE_READY:
+        return True
+    try:
+        cur.execute("""
+            CREATE TABLE IF NOT EXISTS agent_broadcast_subscribers (
+                agent_name  TEXT        NOT NULL DEFAULT '',
+                user_agent  TEXT,
+                ip_hash     TEXT        NOT NULL,
+                first_seen  TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+                last_seen   TIMESTAMPTZ,
+                hits        BIGINT      NOT NULL DEFAULT 0
+            )
+        """)
+        cur.execute("""
+            CREATE UNIQUE INDEX IF NOT EXISTS
+                agent_broadcast_subscribers_agent_ip_uniq
+            ON agent_broadcast_subscribers (agent_name, ip_hash)
+        """)
+        _SUBSCRIBERS_TABLE_READY = True
+        return True
+    except Exception:
+        return False
+
+
+def _persist_poller(agent_name: str, ua: str, ip_hash: str) -> None:
+    """Write-through one poll to Postgres (UPSERT: increment hits, bump
+    last_seen). Best-effort and fully self-contained — opens, commits and
+    closes its own connection, and swallows every error. The in-memory
+    cache is already updated by the caller, so a DB failure here just
+    means this poll isn't durable; it must never bubble up and break the
+    feed. B2 (2026-05-31). Reuses agent_broadcast's own _db_conn()."""
+    c = _db_conn()
+    if not c:
+        return
+    try:
+        with c.cursor() as cur:
+            if not _ensure_subscribers_table(cur):
+                try: c.rollback()
+                except Exception: pass
+                return
+            # agent_name is part of the unique key, so normalise NULL→''
+            # (a returning anonymous poller from the same ip_hash should
+            # collapse onto one row, not spawn a new one each poll).
+            cur.execute("""
+                INSERT INTO agent_broadcast_subscribers
+                    (agent_name, user_agent, ip_hash, first_seen, last_seen, hits)
+                VALUES (%s, %s, %s, NOW(), NOW(), 1)
+                ON CONFLICT (agent_name, ip_hash) DO UPDATE
+                   SET hits       = agent_broadcast_subscribers.hits + 1,
+                       last_seen  = NOW(),
+                       user_agent = EXCLUDED.user_agent
+            """, (agent_name or "", ua, ip_hash))
+        c.commit()
+    except Exception:
+        try: c.rollback()
+        except Exception: pass
+    finally:
+        try: c.close()
+        except Exception: pass
+
+
 def _track_poller():
     """Log who's polling. Used for /subscribers admin view + the
-    audit composite to know if AI-agent outreach is producing reads."""
+    audit composite to know if AI-agent outreach is producing reads.
+
+    B2 (2026-05-31): write-through to Postgres so subscriber attribution
+    survives restarts. The in-memory dict update stays FIRST and
+    unconditional so tracking never depends on the DB; the durable write
+    is a guarded best-effort tail."""
     ua = (request.headers.get("User-Agent") or "")[:200]
     agent_name = (request.headers.get("X-Agent-Name") or "").strip()[:80]
     ip = (request.headers.get("X-Forwarded-For", "").split(",")[0].strip()
@@ -120,6 +209,13 @@ def _track_poller():
         "last_seen":  datetime.datetime.utcnow().isoformat() + "Z",
         "hits":       (_RECENT_POLLERS.get(key, {}).get("hits", 0) + 1),
     }
+    # Durable write-through. `key` is already a salt-free sha256 of ip|ua;
+    # reuse it as the ip_hash so the table stores no raw IP/UA-derived PII
+    # beyond the (already-capped) user_agent string. Guarded — never raises.
+    try:
+        _persist_poller(agent_name, ua, key)
+    except Exception:
+        pass
 
 
 def _fetch_press_releases(days: int) -> list[dict]:
@@ -547,30 +643,89 @@ def agent_broadcast_rss():
     return resp
 
 
+def _read_subscribers_from_db() -> list[dict] | None:
+    """Read the durable subscriber table, newest-poll first. Returns a
+    list of poller dicts (same shape the in-memory cache produces) or
+    None on any failure so the caller can fall back to in-memory. B2
+    (2026-05-31). Reuses agent_broadcast's own _db_conn()."""
+    c = _db_conn()
+    if not c:
+        return None
+    try:
+        with c.cursor() as cur:
+            # to_regclass avoids a hard error when the table was never
+            # created (e.g. no poll has happened yet this deploy).
+            cur.execute(
+                "SELECT to_regclass('public.agent_broadcast_subscribers')")
+            if not (cur.fetchone() or [None])[0]:
+                return None
+            cur.execute("""
+                SELECT ip_hash, agent_name, user_agent,
+                       first_seen, last_seen, hits
+                  FROM agent_broadcast_subscribers
+                 ORDER BY last_seen DESC NULLS LAST
+                 LIMIT 500
+            """)
+            out: list[dict] = []
+            for r in cur.fetchall() or []:
+                ip_hash, agent_name, ua, first_seen, last_seen, hits = r
+                out.append({
+                    "hash_id":    ip_hash,
+                    "agent_name": agent_name or "",
+                    "ua":         ua or "",
+                    "first_seen": (first_seen.isoformat()
+                                   if hasattr(first_seen, "isoformat") else None),
+                    "last_seen":  (last_seen.isoformat()
+                                   if hasattr(last_seen, "isoformat") else None),
+                    "hits":       int(hits or 0),
+                })
+            return out
+    except Exception:
+        try: c.rollback()
+        except Exception: pass
+        return None
+    finally:
+        try: c.close()
+        except Exception: pass
+
+
 @agent_broadcast_bp.route(
     "/api/v1/agent-broadcast/subscribers", methods=["GET"]
 )
 def agent_broadcast_subscribers():
-    """Admin: who's polling us. In-memory, cleared on restart."""
+    """Admin: who's polling us.
+
+    B2 (2026-05-31): reads from the DURABLE `agent_broadcast_subscribers`
+    table (survives Railway restarts). Falls back to the in-memory cache
+    if the table read fails or returns nothing — so this endpoint keeps
+    working even when the DB is unreachable."""
     if not _admin_authorized():
         return jsonify({"ok": False, "error": "admin_key_required"}), 401
-    rows = []
-    for key, info in _RECENT_POLLERS.items():
-        rows.append({"hash_id": key, **info})
-    rows.sort(key=lambda x: x.get("last_seen") or "", reverse=True)
+
+    source = "postgres"
+    rows = _read_subscribers_from_db()
+    if not rows:  # None (DB error) or [] (table empty) → in-memory fallback
+        source = "in_memory_fallback"
+        rows = []
+        for key, info in _RECENT_POLLERS.items():
+            rows.append({"hash_id": key, **info})
+        rows.sort(key=lambda x: x.get("last_seen") or "", reverse=True)
+
     by_agent: dict[str, int] = {}
     for r in rows:
         n = r.get("agent_name") or "anonymous"
         by_agent[n] = by_agent.get(n, 0) + r.get("hits", 0)
     return jsonify({
         "ok":            True,
+        "source":        source,
         "subscriber_count": len(rows),
         "total_polls":   sum(r.get("hits", 0) for r in rows),
         "by_agent_name": by_agent,
         "recent_50":     rows[:50],
-        "note":          ("Tracking is in-memory, resets on Railway "
-                           "restart. Stable subscribers visible via the "
-                           "by_agent_name aggregate."),
+        "note":          ("Subscribers are persisted to Postgres "
+                           "(agent_broadcast_subscribers) and survive "
+                           "restarts. Falls back to in-memory cache if the "
+                           "DB read fails; check the 'source' field."),
     }), 200
 
 
