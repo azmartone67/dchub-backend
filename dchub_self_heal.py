@@ -2023,10 +2023,18 @@ API_CONTRACT_PROBES = [
     },
     {
         "label": "paywall_response_includes_human_message",
-        # Use a known-gated endpoint that requires a non-existent plan.
-        # /api/v1/markets/compare is still Pro-gated, and the 403 must
-        # carry the rich envelope post-Phase-X.
-        "url":   "https://dchub.cloud/api/v1/markets/compare?markets=chicago,ashburn",
+        # Use a known Pro-gated endpoint whose 403 must carry the rich upgrade
+        # envelope (human_message + one_click_upgrade_url) so the funnel works.
+        # r36 (2026-05-31): repointed from /api/v1/markets/compare to
+        # /api/v1/pipeline/summary. markets/compare was made FREEMIUM
+        # (@protect_data, no @require_plan — it backs the free /compare tool), so
+        # it now returns 200 + data, not a paywall — this probe would false-fail
+        # on it forever. pipeline/summary is still genuinely Pro-gated and its
+        # anon 403 carries the rich envelope (verified). The CF worker injects a
+        # dchub.cloud Referer, but the forgeable-Referer bypass was removed for
+        # pipeline/summary (api_tier_gating _MAP_BYPASS_PATHS), so the apex now
+        # correctly 403s here instead of leaking. See reference_dchub_cf_injects_referer.
+        "url":   "https://dchub.cloud/api/v1/pipeline/summary",
         "validator": lambda d: (
             (True, "ok") if (
                 isinstance(d.get("human_message"), str)
