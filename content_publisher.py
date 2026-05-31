@@ -1542,7 +1542,7 @@ def start_auto_publisher():
         # Phase FF+7 (2026-05-18): 2-min initial delay (was 6h) so first
         # post lands soon after a container restart. Subsequent loops still
         # honor the 6h cadence.
-        logger.info("LinkedIn auto-publisher started (initial 2min, then every 6h, max 3/day)")
+        logger.info("LinkedIn auto-publisher started (initial 2min, then every 6h, cap=LINKEDIN_DAILY_CAP default 6/day)")
         _first = True
         while True:
             # Phase FF+7-fix4 (2026-05-19): hard guarantee that every
@@ -1581,21 +1581,31 @@ def start_auto_publisher():
                 cur.execute("SELECT COUNT(*) AS n FROM social_media_posts WHERE status = 'published' AND publish_platform = 'linkedin' AND published_at LIKE %s", (today + '%',))
                 _row = cur.fetchone() or {}
                 published_today = _row.get('n', 0) if hasattr(_row, 'get') else (_row[0] if _row else 0)
-                DAILY_CAP = 3
+                # r88 (2026-05-31): raise the daily cap MODESTLY + make it
+                # env-overridable to clear the ~189-approved backlog without
+                # spamming LinkedIn. Default 6/day drains ~189 over ~5 weeks.
+                # DO NOT uncap — dumping the whole backlog in a day reads as
+                # a spam bot and risks LinkedIn throttling/ban. Set
+                # LINKEDIN_DAILY_CAP=N in Railway to tune (e.g. 4 to slow,
+                # 8 to clear faster); keep it well under ~10/day.
+                DAILY_CAP = int(os.environ.get('LINKEDIN_DAILY_CAP', '6'))
                 if published_today >= DAILY_CAP:
-                    logger.info(f"Auto-publisher: Already published {published_today} today, skipping")
+                    logger.info(f"Auto-publisher: Already published {published_today} today (cap {DAILY_CAP}), skipping")
                     continue  # finally will close conn
                 cur.execute("SELECT COUNT(*) AS n FROM social_media_posts WHERE status = 'approved'")
                 _row = cur.fetchone() or {}
                 _queued = _row.get('n', 0) if hasattr(_row, 'get') else (_row[0] if _row else 0)
-                # r42v (2026-05-26): cap drain at 1 per loop iteration.
-                # Pre-fix the publisher drained up to 3 posts per fire when
-                # the queue exceeded 10 — visible to operator as three
-                # back-to-back AVOID posts (Chantilly/Edison/Buffalo) at
-                # 3m/4m/4m timestamps. Looked like a spam bot. Now: one
-                # post per 6h cron fire, max 3/day at most (the natural
-                # 6h * 4 = 24h drain). Better cadence, better signal.
-                _drain_budget = 1
+                # r42v (2026-05-26): cap drain at 1 per loop iteration to avoid
+                # three back-to-back AVOID posts (Chantilly/Edison/Buffalo) at
+                # 3m/4m timestamps that looked like a spam bot.
+                # r88 (2026-05-31): with a ~189-post backlog, 1/fire * 4 fires
+                # never reaches the raised cap. When the queue is large, fill
+                # the remaining daily budget THIS fire (each post still spaced
+                # ~8s apart, content-class deduped) so DAILY_CAP actually
+                # governs the rate; otherwise stay at 1/fire for clean cadence.
+                # Same backlog-drain shape the Bluesky loop already uses.
+                _remaining_today = max(DAILY_CAP - published_today, 0)
+                _drain_budget = _remaining_today if _queued > 10 else 1
                 _attempts = 0
                 # Track which "content_class" patterns we've published TODAY
                 # so we can avoid double-firing the same post type. Pattern
