@@ -178,7 +178,7 @@ def _snapshot_history(composite: float, findings_count: int,
                 INSERT INTO brain_lifecycle_history
                     (composite_health, findings_count, unknown_count,
                      weak_dims, elapsed_ms)
-                VALUES (%s, %s, %s, %s, %s)
+                VALUES (%s, %s, %s, %s, %s) ON CONFLICT DO NOTHING
             """, (
                 float(composite),
                 int(findings_count),
@@ -1547,7 +1547,7 @@ def lifecycle_propose():
                          challenger_model, challenger_approved,
                          challenger_score, challenger_critique,
                          challenger_error)
-                    VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s)
+                    VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s) ON CONFLICT DO NOTHING
                     RETURNING id
                 """, (
                     json.dumps(audit),

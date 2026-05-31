@@ -92,6 +92,7 @@ def warm():
     }), 200 if healthy == total else 207
 
 
+# AUTO-REPAIR: duplicate route '/health' also in main.py:3839 — review and remove one
 @grid_warmer_bp.route("/health", methods=["GET"])
 def health():
     return jsonify({"blueprint": "grid_warmer_bp",
