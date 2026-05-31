@@ -1118,13 +1118,38 @@ def check_session_upgrade_silenced() -> list[dict]:
     fc = d.get("funnel_counts") or {}
     paywall = int(fc.get("paywall_hit") or 0)
     if paywall < 200:
-        return findings  # not enough demand to draw conclusions
+        return findings  # not enough raw demand to bother with a DB check
     # Query for keys created via redeem in the trailing 24h.
     conn = _db()
     if conn is None:
         return findings
+    distinct_callers_24h = 0
     try:
         with conn.cursor() as cur:
+            # Phase r35 (2026-05-31): gate on DISTINCT paywall CALLERS, not the
+            # raw paywall_hit volume. paywall_hit is dominated by a handful of
+            # power-agents firing thousands of signals each (one agent's
+            # search_facilities alone = 8,978 fires from a single key), so the
+            # old "paywall>200" guard was trivially true every cycle and this
+            # detector screamed "redeem flow is silently broken!" non-stop even
+            # when the flow was fine and demand was just a few callers. Mirror
+            # the canonical distinct-caller expression the ops dashboard uses
+            # (2b_unique_paywall_callers_7d) over a 24h window: a genuine
+            # "broad demand that isn't converting" signal needs many DISTINCT
+            # callers, not one agent in a loop.
+            try:
+                cur.execute("""
+                    SELECT COUNT(DISTINCT COALESCE(
+                               NULLIF(user_email,''),
+                               NULLIF(mcp_client,''),
+                               NULLIF(tool_requested,'')))
+                      FROM mcp_upgrade_signals
+                     WHERE created_at >= NOW() - INTERVAL '24 hours'
+                """)
+                distinct_callers_24h = int((cur.fetchone() or [0])[0] or 0)
+            except Exception:
+                conn.rollback()
+                distinct_callers_24h = 0
             try:
                 # Tolerant of both schemas: metadata JSONB and TEXT.
                 cur.execute("""
@@ -1145,13 +1170,16 @@ def check_session_upgrade_silenced() -> list[dict]:
     finally:
         try: conn.close()
         except Exception: pass
+    if distinct_callers_24h < 25:
+        return findings  # demand is a few power-agents, not a broad audience
     if redeemed_24h >= 5:
         return findings  # flow is firing
     findings.append({
         "issue":  "session_upgrade_silenced",
         "url":    "/api/v1/mcp/trial-check (Flask) + server.mjs session-upgrade path",
         "count":  redeemed_24h,
-        "detail": (f"paywall_hit={paywall:,} in 24h but only "
+        "detail": (f"{distinct_callers_24h} DISTINCT paywall callers in 24h "
+                   f"(raw paywall_hit={paywall:,}) but only "
                    f"redeemed_24h={redeemed_24h} dev keys persisted "
                    f"metadata.session_id. The session-upgrade flow that "
                    f"closes the Claude.ai paid-tool gap (v2.1.7+) is "
@@ -1184,31 +1212,43 @@ def check_paywall_click_leak() -> list[dict]:
         d = _json.loads(body) if isinstance(body, str) else body
     except Exception:
         return findings
+    # Phase r35 (2026-05-31) — STOP the permanent false-positive. The old
+    # check divided `click` (browser redeem events) by `paywall_hit` (every
+    # MCP gate fire). Those are DIFFERENT populations: paywall_hit is ~19k
+    # events from a handful of MCP KEYS (search_facilities alone = 8,978 calls
+    # from 0_unique_keys=1 — one developer/agent hammering tools), while click/
+    # view/submit are human browser interactions. So click/paywall_hit is
+    # ALWAYS ~0% and the detector fired every single cycle, burying real signal.
+    #
+    # Honest measure: (1) gate on DISTINCT paywall callers, not raw events —
+    # one key generating 9k signals is not 9k lost customers; (2) the real,
+    # actionable leak is the HUMAN sub-funnel view->submit (people who reached
+    # the upgrade form but didn't submit). Fire on THAT, not on the
+    # apples-to-oranges MCP-events-vs-browser-clicks ratio.
     fc = d.get("funnel_counts") or {}
-    paywall = int(fc.get("paywall_hit") or 0)
-    click = int(fc.get("click") or 0)
-    upgrade = int(fc.get("upgrade") or 0)
-    if paywall < 500:
-        return findings
-    click_rate = (click / paywall) if paywall else 0.0
-    if click_rate >= 0.005:
-        return findings
-    findings.append({
-        "issue": "paywall_click_leak_critical",
-        "url": "/api/v1/redeem/funnel-stats",
-        "count": 1,
-        "detail": (f"paywall_hit={paywall:,} but click={click} "
-                   f"(rate={click_rate:.4%}). The upgrade_url in the "
-                   f"paywall response either isn't reaching users or "
-                   f"isn't actionable. Verify the MCP server is emitting "
-                   f"/upgrade?key=... (Phase FF+7) instead of bare "
-                   f"/pricing. Mint endpoint: POST /api/v1/mcp/paywall-"
-                   f"response. Total upgrade=={upgrade} likely came "
-                   f"from non-paywall channels."),
-        "paywall_hits_30d": paywall,
-        "clicks_30d": click,
-        "click_rate_pct": round(click_rate * 100, 4),
-    })
+    by_event = d.get("by_event") or {}
+    rates = d.get("conversion_rates") or {}
+    view = int(fc.get("view") or 0)
+    submit = int(fc.get("submit") or 0)
+    paywall_callers = int((by_event.get("paywall_hit") or {}).get("distinct_users") or 0)
+
+    # Real leak: a meaningful number of humans VIEWED the upgrade form but
+    # 0% submitted. Only fire with enough sample to be real (>=20 views).
+    if view >= 20 and submit == 0:
+        findings.append({
+            "issue": "redeem_form_submit_leak",
+            "url": "/api/v1/redeem/funnel-stats",
+            "count": 1,
+            "detail": (f"{view} humans VIEWED the redeem/upgrade form in 30d "
+                       f"but 0 submitted (view->submit = 0%). The form itself "
+                       f"is the leak — check the redeem page submit flow, "
+                       f"validation, or a broken POST. (paywall_hit volume is "
+                       f"MCP-agent events from {paywall_callers or '~1'} "
+                       f"distinct keys, NOT lost human prospects — ignore that "
+                       f"ratio.)"),
+            "views_30d": view,
+            "submits_30d": submit,
+        })
     return findings
 
 
