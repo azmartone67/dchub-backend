@@ -54,20 +54,24 @@ def _fetch_live(iso):
     if cached and (now - cached[0]) < _LIVE_TTL_SECONDS:
         return cached[1]
 
-    # r33-grid-perf (2026-05-21): localhost call is a recursive
-    # self-fetch — when /grid is busy serving the parent request,
-    # the localhost call waits in the gunicorn queue → cascade hang.
-    # Drop the localhost URL entirely and call Railway directly.
-    # With a 2s timeout per ISO (was 8s) the worst case is parallel-
-    # bounded by ThreadPoolExecutor in grid_hub.
+    # r49-grid-perf (2026-05-31): the PUBLIC Railway edge URL was tried
+    # FIRST with the default python-requests User-Agent. That request
+    # re-enters our own CF/edge → anonymous rate limiter (20rpm) and gets
+    # 429'd, burning ~2s per ISO and NEVER caching (r.ok is False on 429).
+    # On the 1-replica backend this self-inflicted egress storm is one of
+    # the documented worker-pool-starvation paths (PJM timeouts, 5-14s
+    # /grid loads). FIX: call ONLY loopback (in-process WSGI, no edge, no
+    # rate limiter) and send self-identifying headers so the rate limiter's
+    # X-DC-Probe / internal-UA bypass fires even on the loopback path.
+    # A successful loopback response is still cached in _LIVE_CACHE below.
     port = _os.environ.get('PORT', '8080')
     urls = [
-        f'https://dchub-backend-production.up.railway.app/api/v1/grid/intelligence/{iso}',
         f'http://127.0.0.1:{port}/api/v1/grid/intelligence/{iso}',
     ]
+    _self_headers = {'User-Agent': 'dchub-grid/1.0', 'X-DC-Probe': 'self-heal'}
     for u in urls:
         try:
-            r = requests.get(u, timeout=2)  # r33: was 8s → 2s
+            r = requests.get(u, timeout=2, headers=_self_headers)  # r33: 8s→2s
             if r.ok:
                 payload = r.json()
                 # Prefer 'data' key if present; fall back to payload itself

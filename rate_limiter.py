@@ -194,7 +194,7 @@ SKIP_PREFIXES = ('/static/', '/assets/', '/js/', '/css/', '/images/', '/mcp/')
 # Phase FF (2026-05-22): public showcase/content HTML pages get the generous
 # 'public_content' tier instead of the strict anonymous IP cap, so crawlers +
 # visitors aren't 429'd on the flagship citation surfaces. Prefix match.
-PUBLIC_CONTENT_PREFIXES = ('/dcpi', '/markets', '/reports', '/brain/')
+PUBLIC_CONTENT_PREFIXES = ('/dcpi', '/markets', '/reports', '/brain/', '/grid')
 
 
 # ---------------------------------------------------------------------------
@@ -278,10 +278,19 @@ def rate_limit_before():
         )
         if any(m in ua for m in internal_ua_markers) or path in ('/api/health', '/alive'):
             return None
-        # Even without a markeruct UA, Railway-egress IPs hitting public
-        # pages get a generous lift to public_content tier (not the
-        # strict anonymous cap). This catches our own crawlers using
-        # generic Python urllib UA without log-spamming.
+        # r49-selfcall (2026-05-31): this branch used to be a COMMENT ONLY
+        # — it described a "generous lift to public_content tier" but never
+        # actually did anything, so a Railway-egress request with a generic
+        # python-requests UA fell through to the strict anonymous 20rpm cap
+        # and got 429'd. That is exactly the self-call → 429 → worker-pool
+        # starvation path (grid pages re-fetching their own /api over the
+        # edge). Make it real: any request originating from Railway egress
+        # is the platform talking to itself — skip limiting entirely.
+        # (IP alone could be spoofed via XFF, but _get_client_ip() prefers
+        # the CF-Connecting-IP / first XFF hop set by our own edge, and the
+        # blast radius of a forged Railway IP is just "not rate limited",
+        # not auth — acceptable for an internal-traffic bypass.)
+        return None
 
     # Bypass dchub.cloud frontend — the map fires dozens of spatial API
     # calls on every pan/zoom.  These are already gated by the tier-aware

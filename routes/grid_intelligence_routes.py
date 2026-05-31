@@ -172,6 +172,75 @@ def _get_conn():
     return conn
 
 
+# r49-selfcall (2026-05-31): cache the static region list. list_grid_regions
+# opens a fresh psycopg2 connection per request and runs 1 + N queries (the
+# region list, then a per-region grid_corridors COUNT) on every hit. The
+# grid_regions / grid_corridors tables are slow-moving reference data, so on
+# the 1-replica backend this is pure worker-pool pressure for no freshness
+# benefit. Memoize the assembled region list for 5 minutes. Callers get a
+# DEEP COPY so per-request tier-gating slices and the in-place
+# _apply_grid_queue_override mutation never corrupt the shared cache.
+import time as _time
+_REGIONS_CACHE = {"ts": 0.0, "regions": None}
+_REGIONS_TTL_SECONDS = 5 * 60
+
+
+def _load_regions_cached():
+    """Return the assembled grid_regions list (with corridor counts),
+    rebuilding from the DB at most once per _REGIONS_TTL_SECONDS. Returns a
+    fresh deep copy each call so callers can mutate/slice safely. Raises on
+    a cold-cache DB failure so the caller's existing except-block still
+    produces its 500 (behavior preserved); a stale cache is preferred over
+    re-querying on a warm hit."""
+    import copy
+    now = _time.time()
+    cached = _REGIONS_CACHE.get("regions")
+    if cached is not None and (now - _REGIONS_CACHE.get("ts", 0.0)) < _REGIONS_TTL_SECONDS:
+        return copy.deepcopy(cached)
+
+    conn = None
+    try:
+        conn = _get_conn()
+        cur = conn.cursor()
+        cur.execute("""
+            SELECT id, name, iso, status, headline, description,
+                   key_states, total_queue_gw, page_url, sort_order
+            FROM grid_regions
+            ORDER BY sort_order
+        """)
+        rows = cur.fetchall()
+        regions = []
+        for r in rows:
+            cur.execute("SELECT COUNT(*) FROM grid_corridors WHERE region_id = %s", (r[0],))
+            corridor_count = cur.fetchone()[0]
+            regions.append({
+                'id': r[0],
+                'name': r[1],
+                'iso': r[2],
+                'status': r[3],
+                'headline': r[4],
+                'description': r[5],
+                'key_states': r[6],
+                'total_queue_gw': float(r[7]) if r[7] else None,
+                'page_url': r[8],
+                'corridor_count': corridor_count,
+            })
+        _REGIONS_CACHE["regions"] = regions
+        _REGIONS_CACHE["ts"] = _time.time()
+        return copy.deepcopy(regions)
+    except Exception:
+        # On a transient DB error, prefer a stale cache over failing.
+        if cached is not None:
+            return copy.deepcopy(cached)
+        raise
+    finally:
+        if conn:
+            try:
+                conn.close()
+            except Exception:
+                pass
+
+
 def _determine_tier(api_key):
     """Determine user tier from API key (SHA256 hashed) or JWT token. Returns tier string."""
     import hashlib
@@ -669,36 +738,13 @@ and through the <a href="/mcp">DC Hub MCP server</a>.
 def list_grid_regions():
     """List all grid intelligence regions with basic info."""
     _ensure_grid_region_seeds()  # Phase RRR: idempotent seed of CAISO + Southeast
-    conn = None
+    conn = None  # kept for the finally-block contract; loader owns its own conn now
     try:
-        conn = _get_conn()
-        cur = conn.cursor()
-        cur.execute("""
-            SELECT id, name, iso, status, headline, description,
-                   key_states, total_queue_gw, page_url, sort_order
-            FROM grid_regions
-            ORDER BY sort_order
-        """)
-        rows = cur.fetchall()
-
-        regions = []
-        for r in rows:
-            # Get corridor count
-            cur.execute("SELECT COUNT(*) FROM grid_corridors WHERE region_id = %s", (r[0],))
-            corridor_count = cur.fetchone()[0]
-
-            regions.append({
-                'id': r[0],
-                'name': r[1],
-                'iso': r[2],
-                'status': r[3],
-                'headline': r[4],
-                'description': r[5],
-                'key_states': r[6],
-                'total_queue_gw': float(r[7]) if r[7] else None,
-                'page_url': r[8],
-                'corridor_count': corridor_count,
-            })
+        # r49-selfcall (2026-05-31): served from the 5-min module cache
+        # (deep copy) instead of opening a fresh connection + 1+N queries
+        # per request. Per-request gating/override below still mutate the
+        # returned copy safely.
+        regions = _load_regions_cached()
 
 
         # grid fill — Phase B
