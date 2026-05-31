@@ -541,7 +541,7 @@ class DCExpertBrain:
                 if freq > 5:
                     cursor.execute('''
                         INSERT INTO brain_patterns (pattern_type, pattern_data, frequency, last_seen)
-                        VALUES (%s, %s, %s, %s)
+                        VALUES (%s, %s, %s, %s) ON CONFLICT DO NOTHING
                     ''', ('naming', pattern, freq, datetime.now().isoformat()))
             
             conn.commit()
