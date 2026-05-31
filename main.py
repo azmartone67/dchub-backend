@@ -25190,6 +25190,18 @@ try:
 except Exception as _mns_e:
     print(f"[main] media_north_star_bp register failed: {_mns_e}", flush=True)
 
+# Competitive moat radar — factual, agent-first positioning. Surfaces
+# DC Hub's verifiable edges + competitors' OBSERVED agent-readiness gaps
+# (dated/sourced or 'unknown'; never pricing, never fabricated). Feeds
+# agents/MCP at /api/v1/competitive/{positioning,why-dchub} + admin
+# /media-drafts (draft text only, never auto-published).
+try:
+    from routes.competitive_intel import competitive_intel_bp
+    app.register_blueprint(competitive_intel_bp)
+    print("[main] competitive_intel_bp registered: /api/v1/competitive/{positioning,why-dchub,media-drafts}", flush=True)
+except Exception as _ci_e:
+    print(f"[main] competitive_intel_bp register failed: {_ci_e}", flush=True)
+
 try:
     from routes.narrative_arc import narrative_arc_bp
     app.register_blueprint(narrative_arc_bp)
