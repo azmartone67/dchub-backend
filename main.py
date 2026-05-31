@@ -13691,6 +13691,43 @@ _DAILY_STATUS_ANN = {'announced', 'planned', 'planning', 'approved', 'proposed',
                      'in development', 'under development', 'permitting',
                      'development', 'pre-planning'}
 
+# Valid US state/DC abbreviations (reused from the canonical name map).
+_VALID_US_ABBRS = set(_DAILY_US_STATE_NAMES.keys())
+
+
+def _derive_us_state(city, address):
+    """HIGH-PRECISION US state from a facility's address/city — returns a
+    validated 2-letter abbrev or None.
+
+    r37b (2026-05-31): ~6k US facilities have country='US' but a blank `state`,
+    so they never appeared in the /daily state view (the honest live count sat
+    at ~2,473 of an 8,750 US footprint). This recovers the ones whose address
+    unambiguously encodes a state. We parse ONLY (a) a ZIP-anchored abbrev
+    ("…, VA 20147") or (b) a trailing ", <ST>" ("Ashburn, VA"); we NEVER guess
+    from a bare city name. Rows we can't resolve stay uncounted — strictly
+    additive recall, inventing nothing. Read-only (no DB mutation)."""
+    import re
+    # Try address first (most likely to carry "City, ST ZIP"), then city. We
+    # examine each field on its own — concatenating them would push the state
+    # away from the trailing-", ST" anchor.
+    for _raw in (address, city):
+        if not _raw:
+            continue
+        up = str(_raw).upper().strip()
+        if not up:
+            continue
+        # strip a trailing country token so "Ashburn, VA, USA" still resolves
+        up = re.sub(r',?\s*(U\.?S\.?A?\.?|UNITED STATES)\s*$', '', up).strip()
+        # 1) "<ST> <ZIP>"  e.g. ", VA 20147" — strongest signal
+        m = re.search(r'[,\s]([A-Z]{2})\s+\d{5}(?:-\d{4})?\b', up)
+        if m and m.group(1) in _VALID_US_ABBRS:
+            return m.group(1)
+        # 2) trailing ", <ST>"  e.g. "ASHBURN, VA"
+        m = re.search(r',\s*([A-Z]{2})\s*$', up)
+        if m and m.group(1) in _VALID_US_ABBRS:
+            return m.group(1)
+    return None
+
 
 @app.route('/api/v1/facilities/state-status-counts', methods=['GET'])
 def facilities_state_status_counts():
@@ -13737,6 +13774,41 @@ def facilities_state_status_counts():
                 b['ann'] += n
             else:
                 b['op'] += n  # operational default (incl. blank/unmapped status)
+
+        # r37b (2026-05-31): recover US facilities that are MISSING a state but
+        # whose address/city resolves to one (high-precision parse only). These
+        # ~6k rows (country='US', blank state) never appeared in the state view,
+        # which is why the honest live total sat below the true US footprint.
+        # We count them into their derived state at READ time — no DB mutation,
+        # fully reversible, inventing nothing (unresolved rows stay uncounted).
+        derived_scanned = 0
+        derived_recovered = 0
+        try:
+            c.execute("""
+                SELECT city, address, LOWER(TRIM(COALESCE(status,''))) AS status
+                FROM facilities
+                WHERE country IN ('US', 'USA', 'United States')
+                  AND (state IS NULL OR TRIM(state) = '')
+            """)
+            for _city, _addr, _status in c.fetchall():
+                derived_scanned += 1
+                _st = _derive_us_state(_city, _addr)
+                if not _st:
+                    continue
+                _name = _DAILY_US_STATE_NAMES.get(_st)
+                if not _name:
+                    continue
+                _b = states.setdefault(_name, {'name': _name, 'op': 0, 'uc': 0, 'ann': 0})
+                if _status in _DAILY_STATUS_UC:
+                    _b['uc'] += 1
+                elif _status in _DAILY_STATUS_ANN:
+                    _b['ann'] += 1
+                else:
+                    _b['op'] += 1
+                derived_recovered += 1
+        except Exception as _de:
+            logger.warning("state-status-counts derive pass failed: %s", _de)
+
         out = sorted(states.values(),
                      key=lambda r: r['op'] + r['uc'] + r['ann'], reverse=True)
         result = {
@@ -13749,6 +13821,8 @@ def facilities_state_status_counts():
                        'uc': sum(r['uc'] for r in out),
                        'ann': sum(r['ann'] for r in out)},
             'state_count': len(out),
+            'derived_recovered': derived_recovered,
+            'derived_scanned': derived_scanned,
             'generated_at': datetime.utcnow().isoformat(),
         }
         cache_for_degradation('v1_state_status_counts', result)
