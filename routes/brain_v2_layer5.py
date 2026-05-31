@@ -535,6 +535,26 @@ def learn_backend_issues():
         # source_locations pairs each file with an optional line, so the
         # excerpt can be CENTERED on the code the mapper found (gap B).
         source_locations = [(f, None) for f in source_files]
+        # r37 (2026-05-31): DETERMINISTIC filename resolution BEFORE the heuristic
+        # mapper. Many code-fixable findings name their file directly (e.g.
+        # unsafe_db_conn_pattern: url='ai_interconnection.py', detail names it).
+        # The heuristic resolver's text/symbol fallback landed on the WRONG file
+        # in prod — the live learn-backend-issues run handed Claude snippets from
+        # news_digests_read.py / partnership_email_drafts.py for an
+        # ai_interconnection.py finding, so Claude correctly REFUSED every one and
+        # ~0 useful proposals shipped. Resolve any named .py file to its real repo
+        # path first; only fall back to the mapper when no concrete file is named.
+        if not source_locations:
+            import re as _re_fn, os as _os_fn
+            _repo = _os_fn.path.dirname(_os_fn.path.dirname(_os_fn.path.abspath(__file__)))
+            _text = " ".join(str(issue.get(k) or "") for k in ("url", "detail", "issue"))
+            for _fn in _re_fn.findall(r"\b([a-z][a-z0-9_]*\.py)\b", _text):
+                for _cand in (_fn, _os_fn.path.join("routes", _fn)):
+                    if (_os_fn.path.exists(_os_fn.path.join(_repo, _cand))
+                            and _cand not in [p for p, _ in source_locations]):
+                        source_locations.append((_cand, None))
+                if len(source_locations) >= 2:
+                    break
         if not source_locations:
             try:
                 from routes.brain_source_map import resolve_finding_to_sources
