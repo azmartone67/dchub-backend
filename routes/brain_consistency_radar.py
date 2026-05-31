@@ -6569,6 +6569,21 @@ _CRON_INTENTIONAL_MANUAL: set[str] = {
     # is a bulk-import admin endpoint — takes {tenants:[...]} POST body
     # for one-shot data ingest. NOT cron-compatible; intentionally manual.
     "/api/v1/tenants/ingest",
+    # r36 (2026-05-31): the detector only reads dchub-scheduler.py JOBS, so it
+    # was false-flagging endpoints that ARE triggered, just not by that scheduler:
+    #  - the infra refreshers fire EVENT-DRIVEN via brain_autopilot's REFRESH_MAP
+    #    (_action_data_freshness_breach) when transmission_lines/gas_pipelines/
+    #    substations breach their SLA, AND daily-infra-sync.yml runs a full
+    #    /api/jobs/infrastructure-sync daily. A fixed cron on each would just
+    #    duplicate that.
+    "/api/jobs/transmission-refresh",    # autopilot REFRESH_MAP (table SLA breach)
+    "/api/jobs/gas-refresh",             # autopilot REFRESH_MAP (table SLA breach)
+    "/api/jobs/substations-refresh",     # autopilot REFRESH_MAP (table SLA breach)
+    "/api/jobs/infra-refresh-status",    # read-only STATUS endpoint, not a job
+    # /api/v1/narrative/refresh is a force-recompute; the narrative arc already
+    # self-refreshes lazily on GET when its _ARC_TTL_SECONDS cache expires, so it
+    # never goes stale without a cron. The POST is an admin/cron convenience.
+    "/api/v1/narrative/refresh",
 }
 
 
