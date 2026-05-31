@@ -182,7 +182,7 @@ def _record(finding: dict) -> None:
                 INSERT INTO brain_ecosystem_watch
                   (target_key, target_name, we_present, competition_seen,
                    http_status, page_bytes, detail)
-                VALUES (%s, %s, %s, %s, %s, %s, %s)
+                VALUES (%s, %s, %s, %s, %s, %s, %s) ON CONFLICT DO NOTHING
             """, (
                 finding["target_key"], finding["target_name"],
                 finding.get("we_present"), finding.get("competition_seen"),

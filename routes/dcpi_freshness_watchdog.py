@@ -362,7 +362,7 @@ def force_recompute_market(market_slug):
                         top_risks_json, top_opportunities_json, verdict,
                         market_slug, computed_at
                     )
-                    VALUES (%s,%s,%s,%s,%s, %s,%s,%s, %s,%s,%s, %s,%s,%s, %s, %s,%s,%s, %s, NOW())
+                    VALUES (%s,%s,%s,%s,%s, %s,%s,%s, %s,%s,%s, %s,%s,%s, %s, %s,%s,%s, %s, NOW() ON CONFLICT DO NOTHING)
                 """, _vals + (slug,))
             c.commit()
     except Exception as e:
@@ -513,7 +513,7 @@ def recompute_missing_markets():
                         published, computed_at
                     )
                     VALUES (%s,%s,%s,%s,%s,%s, %s,%s,%s, %s,%s,%s,
-                             %s,%s,%s, %s, %s,%s,%s, TRUE, NOW())
+                             %s,%s,%s, %s, %s,%s,%s, TRUE, NOW() ON CONFLICT DO NOTHING)
                 """, (
                     slug, mt[1], mt[2], mt[3], mt[4], mt[5],
                     c_score, e_score, ttp,
