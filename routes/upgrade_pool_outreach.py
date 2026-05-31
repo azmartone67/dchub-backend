@@ -261,6 +261,74 @@ def upgrade_pool_backfill_emails():
             distinct_emails = {r[1] for r in rows if r[1]}
             conn.commit()
 
+            # SECOND RESOLUTION PATH (r33-fwd 2026-05-30): the dchub_-prefix
+            # path above only resolves callers who carried an api-key prefix
+            # in user_agent — that's ~0 for anonymous LLM-proxy traffic
+            # (Claude/ChatGPT calling MCP without an unlocked key), which is
+            # exactly why email_capture_rate was 0.0%. But when one of those
+            # visitors claims a free/dev key via the per-session redeem URL
+            # (/api/v1/redeem/<session_id>), the redeem handler now records
+            # the session->email mapping in TWO places:
+            #   1. redeem_attempts (session_id + email columns), and
+            #   2. mcp_dev_keys (email + metadata->>'session_id').
+            # Join mcp_upgrade_signals.session_id to those and fill the email.
+            # COALESCE the two sources so we resolve from whichever exists.
+            # Idempotent — only fills rows that are still anonymous; never
+            # clobbers an email another path already resolved. Wrapped in its
+            # own try/except so a missing optional table (fresh DB) can't
+            # abort the whole backfill — the first path's commit stands.
+            session_rows: list = []
+            try:
+                cur.execute("""
+                    WITH redeemed AS (
+                      SELECT ra.session_id,
+                             lower(min(ra.email)) AS email
+                        FROM redeem_attempts ra
+                       WHERE ra.session_id IS NOT NULL
+                         AND ra.email IS NOT NULL AND ra.email != ''
+                       GROUP BY ra.session_id
+                    ),
+                    devkeys AS (
+                      SELECT k.metadata->>'session_id' AS session_id,
+                             lower(min(k.email)) AS email
+                        FROM mcp_dev_keys k
+                       WHERE k.metadata->>'session_id' IS NOT NULL
+                         AND k.email IS NOT NULL AND k.email != ''
+                       GROUP BY k.metadata->>'session_id'
+                    ),
+                    resolved AS (
+                      SELECT s.id,
+                             COALESCE(r.email, d.email) AS email
+                        FROM mcp_upgrade_signals s
+                        LEFT JOIN redeemed r ON r.session_id = s.session_id
+                        LEFT JOIN devkeys  d ON d.session_id = s.session_id
+                       WHERE s.created_at > NOW() - INTERVAL %s
+                         AND (s.user_email IS NULL OR s.user_email = '')
+                         AND s.session_id IS NOT NULL
+                         AND COALESCE(r.email, d.email) IS NOT NULL
+                    )
+                    UPDATE mcp_upgrade_signals s
+                       SET user_email = resolved.email
+                      FROM resolved
+                     WHERE s.id = resolved.id
+                       AND (s.user_email IS NULL OR s.user_email = '')
+                    RETURNING s.id, s.user_email
+                """, (f"{days} days",))
+                session_rows = cur.fetchall()
+                conn.commit()
+            except Exception as _sess_e:
+                # Optional source table missing or transient error — keep the
+                # dchub_-prefix results, skip the session path this run.
+                try: conn.rollback()
+                except Exception: pass
+                logger.warning(
+                    f"upgrade_pool: session-redeem resolution path skipped: "
+                    f"{type(_sess_e).__name__}: {_sess_e}"
+                )
+            if session_rows:
+                updated += len(session_rows)
+                distinct_emails |= {r[1] for r in session_rows if r[1]}
+
             # Also count how many email-less rows remain (for next-step
             # diagnosis — these need session_id or IP-based resolution).
             cur.execute("""
@@ -300,10 +368,12 @@ def upgrade_pool_backfill_emails():
         addressable_users_now=addressable,
         message=(
             f"Resolved emails for {updated} signals "
-            f"({len(distinct_emails)} distinct users). "
+            f"({len(distinct_emails)} distinct users) via api-key-prefix + "
+            f"session-redeem paths. "
             f"{remaining_anonymous} signals still anonymous "
-            f"(no api_key prefix in user_agent — likely Claude/ChatGPT "
-            f"calling MCP without an unlocked dev key)."
+            f"(no api_key prefix in user_agent AND no redeem on the session — "
+            f"likely Claude/ChatGPT that hit the paywall but never claimed a "
+            f"key)."
         ),
     ), 200
 

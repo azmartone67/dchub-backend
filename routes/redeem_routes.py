@@ -524,17 +524,48 @@ def phase63_redeem(session_id):
                 mimetype='text/html', status=503
             )
 
+        # IDENTITY-CAPTURE WRITE-BACK (r33-fwd 2026-05-30): this redeem is the
+        # moment an anonymous MCP session is tied to a real email. Stamp
+        # user_email onto every still-anonymous signal row for this session so
+        # the outreach pool (GET /api/v1/mcp/email-distribution ->
+        # addressable_outreach_pool) stops being empty. This is the forward
+        # identity-capture mechanism. It runs in its OWN commit boundary +
+        # try/except/rollback so a failure here can NEVER break the redeem
+        # response (the user still gets their key + success page below). The
+        # guard ensures we only fill rows that are still anonymous and never
+        # clobber an email another path already resolved (idempotent).
+        try:
+            _wb_cur = conn.cursor()
+            _wb_cur.execute(
+                "UPDATE mcp_upgrade_signals "
+                "SET user_email = %s "
+                "WHERE session_id = %s "
+                "  AND (user_email IS NULL OR user_email = '')",
+                (email, session_id)
+            )
+            conn.commit()
+        except Exception as _wb_e:
+            try:
+                conn.rollback()
+            except Exception:
+                pass
+            _p99_logger.warning(
+                f"redeem identity write-back failed session={session_id}: "
+                f"{type(_wb_e).__name__}: {_wb_e}"
+            )
+
         tools_tried = []
         try:
             cur = conn.cursor()
-            # Update every row for this session
+            # Existing IP/UA/notes capture on every row for this session
+            # (append/COALESCE — safe to re-run).
             cur.execute(
                 "UPDATE mcp_upgrade_signals "
-                "SET user_email = %s, ip_address = COALESCE(ip_address, %s), "
+                "SET ip_address = COALESCE(ip_address, %s), "
                 "    user_agent = COALESCE(user_agent, %s), "
                 "    notes = COALESCE(notes, '') || %s "
                 "WHERE session_id = %s",
-                (email, ip, ua,
+                (ip, ua,
                  f"\nphase63_redeem at {datetime.datetime.utcnow().isoformat()}Z",
                  session_id)
             )
