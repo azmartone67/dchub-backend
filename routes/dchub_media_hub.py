@@ -835,15 +835,24 @@ def testimonials_ingest():
        writes new rows to ai_testimonials_auto. Idempotent (UNIQUE on
        source + external_id). Each source fails soft.
 
-       r54+ (2026-05-29): always writes a `cron_heartbeat` row so the
-       /api/v1/system/loops probe never reports last_event_at=null. The
-       heartbeat row is approved=false and is filtered out of every
-       reader query (live, aggregate, RSS, JSON Feed), so it's invisible
-       on every public surface but visible to the cron-staleness
-       detector. Without it, an organic ingest run with zero matches
-       (the common case for a young brand on HN/Reddit) leaves the
-       probe in the same state as a totally dead cron, which is what
-       triggered the 84-day stale finding.
+       r55 (2026-05-31): the ingest no longer writes ANY diagnostic /
+       heartbeat / status row into ai_testimonials_auto. The citations
+       table is for genuine external mentions of DC Hub ONLY.
+
+       Why this changed: r54+ (2026-05-29) had upserted a
+       source='cron_heartbeat', agent_name='cron', platform='internal'
+       row each run so the /api/v1/system/loops probe would see a fresh
+       captured_at. That comment claimed the row was "filtered out of
+       every reader" — but it was NOT: media_north_star.py reads
+       ai_testimonials_auto with approval_filter=False, and the feed-v3
+       UNION in dchub_media.py reads it with no approved gate, so the
+       "Cron heartbeat — ingest fired at..." row leaked into the media
+       feed as a fake citation. It also poisoned every-row counts. The
+       heartbeat is moreover redundant: system_loops._probe_testimonial_
+       ingest was fixed in r43-H (2026-05-27) to only report 'dead' when
+       the probe QUERY errors — a quiet run is 'idle' (healthy) without
+       any sentinel row. So we drop the DB write entirely and emit the
+       heartbeat to the log instead.
     """
     auth_err = _require_admin()
     if auth_err: return auth_err
@@ -854,15 +863,12 @@ def testimonials_ingest():
         "mcp_derived":  _ingest_mcp_derived(),
     }
     total_new = sum(r.get("new", 0) for r in results.values())
-    # r54+ heartbeat — always upsert one captured_at=NOW() row even on
-    # zero-match runs. Same UNIQUE(source, external_id) idempotency,
-    # one row per day keeps the table from growing unbounded.
-    hb = _write_ingest_heartbeat(total_new, results)
+    # r55: heartbeat is a LOG line only — never a citation row.
+    hb = _log_ingest_heartbeat(total_new, results)
     print(f"[testimonials_ingest] total_new={total_new} "
           f"hn_new={results.get('hackernews',{}).get('new',0)} "
           f"reddit_new={results.get('reddit',{}).get('new',0)} "
-          f"mcp_new={results.get('mcp_derived',{}).get('new',0)} "
-          f"heartbeat={hb.get('written')}",
+          f"mcp_new={results.get('mcp_derived',{}).get('new',0)}",
           flush=True)
     return jsonify(
         ok=True,
@@ -873,69 +879,35 @@ def testimonials_ingest():
     ), 200
 
 
-def _write_ingest_heartbeat(total_new: int, src_results: dict) -> dict:
-    """r54+ (2026-05-29): write a single approved=false row with
-       source='cron_heartbeat' and external_id=YYYY-MM-DD-HH so the
-       /system/loops probe always sees a fresh captured_at even when
-       all three sources legitimately returned zero matches.
+def _log_ingest_heartbeat(total_new: int, src_results: dict) -> dict:
+    """r55 (2026-05-31): heartbeat is a LOG LINE, never a DB row.
 
-       Filtered out of every public reader: testimonials/live (line
-       1115+ gates source NOT IN heartbeat), aggregate (line 286+),
-       /testimonials/auto, /testimonials/wall. Visible only to the
-       internal probe + admin endpoints.
+       The ai_testimonials_auto table must contain ONLY genuine external
+       mentions of DC Hub — no cron/system/heartbeat/status rows. The
+       previous _write_ingest_heartbeat upserted a
+       source='cron_heartbeat' citation that leaked into the media feed
+       via the approval_filter=False readers (media_north_star.py,
+       dchub_media.py feed-v3 UNION). It was also redundant: the
+       system_loops testimonial probe was fixed in r43-H to treat a
+       quiet-but-queryable table as 'idle' (healthy), so no sentinel row
+       is needed to keep the cron-staleness probe green.
+
+       This function now just emits a structured stderr log line and
+       returns a small dict for the JSON response. It touches NO
+       database — `written` is always False by design.
     """
-    out = {"written": False, "errors": []}
-    c = _conn()
-    if c is None:
-        out["errors"].append("no_database")
-        return out
-    try:
-        now = datetime.now(timezone.utc)
-        ext_id = now.strftime("%Y-%m-%d-%H")
-        quote_text = (f"Cron heartbeat — ingest fired at {now.isoformat()}. "
-                      f"total_new={total_new}; "
-                      f"hn={src_results.get('hackernews',{}).get('new',0)}, "
-                      f"reddit={src_results.get('reddit',{}).get('new',0)}, "
-                      f"mcp={src_results.get('mcp_derived',{}).get('new',0)}.")
-        with c, c.cursor() as cur:
-            cur.execute("""
-                INSERT INTO ai_testimonials_auto
-                    (source, external_id, agent_name, platform,
-                     quote, url, posted_at, sentiment,
-                     approved, raw_payload)
-                VALUES (%s, %s, %s, %s,
-                        %s, %s,
-                        %s, %s,
-                        %s, %s)
-                ON CONFLICT (source, external_id) DO UPDATE SET
-                    captured_at = NOW(),
-                    quote = EXCLUDED.quote,
-                    raw_payload = EXCLUDED.raw_payload
-                RETURNING id;
-            """, (
-                "cron_heartbeat",
-                ext_id,
-                "cron",
-                "internal",
-                quote_text,
-                "",
-                now,
-                "neutral",
-                False,  # always unapproved — invisible to all readers
-                json.dumps({"total_new": total_new,
-                            "sources": {k: v.get("new", 0)
-                                        for k, v in src_results.items()},
-                            "errors": {k: v.get("errors", [])[:3]
-                                       for k, v in src_results.items()
-                                       if v.get("errors")}}),
-            ))
-            out["written"] = bool(cur.fetchone())
-    except Exception as e:
-        out["errors"].append(str(e)[:200])
-    finally:
-        try: c.close()
-        except Exception: pass
-    return out
+    now = datetime.now(timezone.utc)
+    payload = {
+        "logged_at": now.isoformat(),
+        "total_new": total_new,
+        "sources": {k: v.get("new", 0) for k, v in src_results.items()},
+        "errors": {k: v.get("errors", [])[:3]
+                   for k, v in src_results.items() if v.get("errors")},
+    }
+    # Log only — explicitly NOT a citation row.
+    print(f"[testimonials_ingest] heartbeat (log-only, no DB row): "
+          f"{json.dumps(payload)}", file=sys.stderr, flush=True)
+    return {"written": False, "logged": True, **payload}
 
 
 # r54+ (2026-05-29): broadened brand-mention detection. The cron had
@@ -944,7 +916,16 @@ def _write_ingest_heartbeat(total_new: int, src_results: dict) -> dict:
 # or bare "dchub". This list defines variants we search for; the
 # follow-up text filter ALSO uses these to confirm the match is real
 # (not a coincidental "DC++ Hub" reference from the 2000s).
-_BRAND_QUERIES = ("dchub.cloud", "dchub", '"DC Hub"')
+#
+# r55 (2026-05-31): query the HIGH-SIGNAL terms only. We deliberately
+# DROP bare '"DC Hub"' and bare "DCPI" as *search queries* — on Reddit's
+# full firehose they return mostly unrelated hits (Direct Connect/IRC
+# "DC hub", astrophotography power hubs literally named "DC Hub", the
+# "DCI-P3" monitor colour space mistyped "DCPI", student clubs, …). The
+# brand-name phrase "DC Hub Power Index" is specific enough to query.
+# bare "dchub" stays because it's our handle, but every result is still
+# run through the precision gate below before it can become a citation.
+_BRAND_QUERIES = ("dchub.cloud", "dchub", '"DC Hub Power Index"')
 # Tight inclusion regex run on result text — at least one of these
 # must appear or we skip. Forces the match to mean THE dchub.cloud
 # brand, not unrelated "DC hub" (data center hub, Direct Connect hub,
@@ -952,39 +933,165 @@ _BRAND_QUERIES = ("dchub.cloud", "dchub", '"DC Hub"')
 #   - "dchub.cloud" / "dchub" — our brand string
 #   - "DC Hub" + data-center context — also our brand, but requires
 #      a co-occurring data-center / AI / power keyword to avoid noise
-# Pattern A — our brand string in any form (always pass)
-_BRAND_DIRECT = re.compile(r"dchub(?:\.cloud)?", re.IGNORECASE)
-# Pattern B — 'DC Hub' (space or hyphen), but ONLY if a data-center /
-# AI / power keyword appears within 80 chars. Without the proximity
-# gate, we'd match every 'IRC DC hub' / 'Direct Connect hub' post
-# from the 2000s.
-_BRAND_DC_HUB = re.compile(r"dc[\s\-]+hub", re.IGNORECASE)
+# r55 (2026-05-31): SPLIT the brand patterns into two tiers because the
+# old single _BRAND_DIRECT treated bare "dchub" as an unconditional pass.
+# Once the Reddit source actually started returning results (PullPush
+# fallback), bare "dchub" matched username fragments and slang in totally
+# unrelated subreddits (r/CoinBase, r/GaySnapchatShare, …) and flooded the
+# citations table with garbage. Now:
+#
+#   STRONG (unconditional pass) — strings specific enough that a bare
+#   occurrence is unambiguous:
+#     • "dchub.cloud"          — our exact domain
+#     • "DC Hub Power Index"   — our full coined product phrase
+#
+#   WEAK (pass ONLY with a data-center / AI / power context keyword within
+#   80 chars) — short tokens that collide with unrelated content:
+#     • bare "dchub"           — also a username fragment / slang
+#     • "DCPI"                 — short acronym, collides
+#     • "DC Hub" / "DC-Hub"    — Direct Connect / IRC / networking "DC hub"
+_BRAND_STRONG = re.compile(
+    r"dchub\.cloud|DC\s*Hub\s*Power\s*Index", re.IGNORECASE)
+_BRAND_WEAK = re.compile(
+    r"\bdchub\b|\bDCPI\b|dc[\s\-]+hub", re.IGNORECASE)
+# r55: the context list for WEAK tokens is now STRICT and word-bounded.
+# The earlier loose list (power / market / infrastructure / capacity / ai
+# / colo / fiber / grid) produced 100% false positives on the live Reddit
+# firehose — "colo" even matched inside "colours" (a monitor colour-space
+# post), "power" matched an astrophotography power hub, "market" matched a
+# warez/LAN post, "infrastructure" matched a student club. We keep ONLY
+# unambiguous data-center-domain phrases. A genuine dchub.cloud mention
+# virtually always co-occurs with one of these; the noise does not.
+# NOTE: the context list must NOT contain the WEAK tokens themselves
+# (dchub / DCPI) or they'd self-confirm — e.g. "DCPI-3 colour space"
+# would match the weak token AND its own context. Context is strictly the
+# SURROUNDING data-center vocabulary.
 _BRAND_CONTEXT = re.compile(
-    r"(data\s*center|datacenter|\bai\b|\bmcp\b|market|power|grid|"
-    r"infrastructure|colo|hyperscal|dcpi)",
+    r"(data[\s\-]*cent(?:er|re)|interconnection\s+queue|grid\s+intelligence|"
+    r"site\s+selection|hyperscal(?:e|er)|\bMCP\s+server\b|"
+    r"\bPJM\b|\bERCOT\b|\bCAISO\b|\bMISO\b|\bNYISO\b|\bISONE\b|\bSPP\b|"
+    r"megawatts?\b|\bcolocation\b)",
     re.IGNORECASE,
 )
+# Back-compat alias: external callers/tests historically imported
+# _BRAND_DIRECT. Keep the name pointing at the strong (unconditional)
+# pattern so nothing breaks.
+_BRAND_DIRECT = _BRAND_STRONG
+_BRAND_DC_HUB = re.compile(r"dc[\s\-]+hub", re.IGNORECASE)
 
 
 def _is_real_brand_mention(text: str) -> bool:
-    """Tight gate. Pass only if the text mentions the dchub.cloud brand
-       in a recognizable way — accepts 'dchub' or 'dchub.cloud' bare;
-       accepts 'DC Hub' / 'DC-Hub' ONLY when a data-center / AI / power
-       keyword sits within 80 chars (the same paragraph). Rejects the
-       long tail of unrelated 'DC++ Hub' / 'IRC hub' / 'Direct Connect
-       hub' hits that any bare 'dc hub' search picks up.
+    """Tight gate. Pass when EITHER:
+         (a) a STRONG, unambiguous brand string appears anywhere
+             ("dchub.cloud" or the full "DC Hub Power Index" phrase), OR
+         (b) a WEAK token (bare "dchub", "DCPI", "DC Hub"/"DC-Hub") appears
+             AND a data-center / AI / power context keyword sits within 80
+             chars of it (same paragraph).
+
+       Rejects the long tail of unrelated hits that a bare-token search
+       picks up: 'DC++ hub' / 'IRC hub' / 'Direct Connect hub' networking
+       posts, plus 'dchub' username fragments and slang from off-topic
+       subreddits. The proximity gate is what makes the WEAK tokens safe.
     """
     if not text:
         return False
-    if _BRAND_DIRECT.search(text):
+    # (a) strong, unconditional
+    if _BRAND_STRONG.search(text):
         return True
-    m = _BRAND_DC_HUB.search(text)
+    # (b) weak token + nearby context keyword
+    m = _BRAND_WEAK.search(text)
     if not m:
         return False
-    # Window check — context keyword within 80 chars of the match
     lo = max(0, m.start() - 80)
     hi = min(len(text), m.end() + 80)
     return bool(_BRAND_CONTEXT.search(text[lo:hi]))
+
+
+# r55 (2026-05-31): hard guard — the citations table (ai_testimonials_auto)
+# must contain ONLY genuine external mentions of DC Hub. Any row whose
+# source / agent / platform looks internal (cron, system, heartbeat,
+# status, the synthetic mcp-auto filler, etc.) must NEVER be inserted as
+# a citation. This is enforced centrally in _insert_citation so no
+# single source can reintroduce the pollution.
+_INTERNAL_MARKERS = (
+    "cron", "heartbeat", "system", "internal", "status", "diagnostic",
+    "probe", "mcp-auto", "mcp_auto", "self", "monitor", "uptime",
+)
+
+
+def _looks_internal(*fields: str) -> bool:
+    """True if any of the provided source/agent/platform strings reads as
+       an internal/diagnostic marker rather than a real external author."""
+    for f in fields:
+        low = (f or "").strip().lower()
+        if not low:
+            continue
+        # Exact match (e.g. platform == 'internal', agent == 'cron') OR
+        # the value is dominated by a marker token.
+        for marker in _INTERNAL_MARKERS:
+            if low == marker or low.startswith(marker + " ") \
+               or low.startswith(marker + "-") or low.startswith(marker + "_"):
+                return True
+    return False
+
+
+def _insert_citation(cur, *, source: str, external_id: str, agent_name: str,
+                     platform: str, quote: str, url: str,
+                     posted_ts, sentiment: str, raw_payload,
+                     approved: bool = False) -> bool:
+    """Single funnel for every citation INSERT. Returns True if a NEW row
+       was written.
+
+       Guarantees:
+         1. NEVER inserts an internal/diagnostic row — if source / agent /
+            platform reads internal (cron/system/heartbeat/mcp-auto/…),
+            it logs and returns False. The table stays clean even if a
+            future caller passes junk.
+         2. Requires a real source URL (skips empty-url rows so a citation
+            always links back to its origin).
+         3. Dedups by URL across ALL sources (in addition to the table's
+            UNIQUE(source, external_id)), so the same link can't be
+            re-inserted under a different source/external_id.
+         4. Uses ON CONFLICT (source, external_id) DO NOTHING for the
+            existing per-source idempotency.
+    """
+    # Guard 1 — reject internal/diagnostic rows outright.
+    if _looks_internal(source, agent_name, platform):
+        print(f"[testimonials_ingest] REFUSED internal citation row "
+              f"(source={source!r} agent={agent_name!r} platform={platform!r})",
+              file=sys.stderr, flush=True)
+        return False
+    # Guard 2 — a citation must link back somewhere real.
+    if not (url or "").strip():
+        return False
+    # Guard 3 — URL dedup across every source.
+    try:
+        cur.execute(
+            "SELECT 1 FROM ai_testimonials_auto WHERE url = %s LIMIT 1",
+            (url,))
+        if cur.fetchone():
+            return False
+    except Exception:
+        # If the dedup probe fails, fall through to the ON CONFLICT guard
+        # rather than dropping a potentially-real citation.
+        pass
+    cur.execute("""
+        INSERT INTO ai_testimonials_auto
+            (source, external_id, agent_name, platform,
+             quote, url, posted_at, sentiment,
+             approved, raw_payload)
+        VALUES (%s, %s, %s, %s,
+                %s, %s,
+                %s, %s,
+                %s, %s)
+        ON CONFLICT (source, external_id) DO NOTHING
+        RETURNING id;
+    """, (
+        source, external_id, agent_name, platform,
+        (quote or "")[:1000], url, posted_ts, sentiment,
+        approved, raw_payload,
+    ))
+    return bool(cur.fetchone())
 
 
 def _ingest_hackernews() -> dict:
@@ -1032,34 +1139,29 @@ def _ingest_hackernews() -> dict:
                     continue
                 out["matched"] += 1
                 hn_url = f"https://news.ycombinator.com/item?id={hn_id}"
+                # Epoch → tz-aware datetime for the posted_at column.
+                posted_ts = None
+                try:
+                    epoch = hit.get("created_at_i")
+                    if epoch:
+                        posted_ts = datetime.fromtimestamp(
+                            int(epoch), tz=timezone.utc)
+                except Exception:
+                    posted_ts = None
                 with c, c.cursor() as cur:
-                    # Parameterize inline string literals so the
-                    # regression-lint regex (which terminates at the
-                    # first `'`) sees ON CONFLICT.
-                    cur.execute("""
-                        INSERT INTO ai_testimonials_auto
-                            (source, external_id, agent_name, platform,
-                             quote, url, posted_at, sentiment,
-                             approved, raw_payload)
-                        VALUES (%s, %s, %s, %s,
-                                %s, %s,
-                                to_timestamp(%s), %s,
-                                %s, %s)
-                        ON CONFLICT (source, external_id) DO NOTHING
-                        RETURNING id;
-                    """, (
-                        "hackernews",
-                        hn_id,
-                        hit.get("author", "anonymous"),
-                        "HackerNews",
-                        text[:1000],
-                        hn_url,
-                        hit.get("created_at_i") or 0,
-                        "neutral",
-                        False,
-                        json.dumps(hit)[:6000],
-                    ))
-                    if cur.fetchone():
+                    if _insert_citation(
+                        cur,
+                        source="hackernews",
+                        external_id=hn_id,
+                        agent_name=hit.get("author") or "anonymous",
+                        platform="HackerNews",
+                        quote=text,
+                        url=hn_url,
+                        posted_ts=posted_ts,
+                        sentiment="neutral",
+                        raw_payload=json.dumps(hit)[:6000],
+                        approved=False,
+                    ):
                         out["new"] += 1
         finally:
             try: c.close()
@@ -1069,90 +1171,150 @@ def _ingest_hackernews() -> dict:
     return out
 
 
+def _reddit_permalink(post: dict) -> str:
+    """Build an absolute reddit.com URL for a post from whichever field
+       the upstream provides (reddit.com gives `permalink`; the PullPush
+       archive gives `permalink` and sometimes `full_link`)."""
+    pl = post.get("permalink") or ""
+    if pl:
+        return "https://www.reddit.com" + pl if pl.startswith("/") else pl
+    full = post.get("full_link") or ""
+    if full:
+        return full
+    rid = post.get("id") or ""
+    sub = (post.get("subreddit") or "").strip()
+    if rid and sub:
+        return f"https://www.reddit.com/r/{sub}/comments/{rid}/"
+    return ""
+
+
+def _reddit_fetch_json(url: str, timeout: int = 10):
+    """GET a JSON URL with an identified bot UA. Returns parsed JSON, or
+       raises. Detects reddit.com's HTML bot-block page (which can come
+       back as a 200 OR a 403 with an HTML body) and raises a clear error
+       so the caller falls through to the next source."""
+    from urllib.request import Request, urlopen
+    req = Request(url, headers={
+        "User-Agent": "DCHubBot/1.0 (+https://dchub.cloud; "
+                      "contact: press@dchub.cloud)"})
+    with urlopen(req, timeout=timeout) as r:
+        body = r.read().decode("utf-8", errors="replace")
+    stripped = body.lstrip()
+    if not stripped.startswith(("{", "[")):
+        raise ValueError("non-json body (bot-block / HTML)")
+    return json.loads(body)
+
+
 def _ingest_reddit() -> dict:
     """Reddit search for brand mentions. Free, no auth.
 
-       r54+ (2026-05-29): two fixes — (1) broadened query set like HN
-       (the literal 'dchub.cloud' returned 0); (2) www.reddit.com began
-       returning a 'whoa there, pardner' bot-block page mid-2026, so we
-       fall back to old.reddit.com which still serves JSON to identified
-       bots. Tight brand-confirm filter on results to avoid the 2000s
-       'DC Hub' DC++ networking false-positives.
+       r55 (2026-05-31): ROOT-CAUSE fix for the perpetual reddit=0.
+       Both www.reddit.com and old.reddit.com now return HTTP 403 with an
+       HTML body for /search.json (Reddit hard-blocks unauthenticated
+       JSON scraping as of 2026). urllib raises HTTPError on the 403, so
+       the old code logged the error, skipped the host, and yielded 0 on
+       every run. Two changes:
+         1. We still TRY reddit.com first (cheap; if Reddit ever serves
+            JSON to identified bots again we use it).
+         2. Resilient no-auth fallback: the PullPush archive
+            (api.pullpush.io, the community Pushshift successor) which
+            serves clean JSON for submission + comment search with no key.
+       Results from BOTH paths run through the same tight
+       _is_real_brand_mention gate (PullPush also returns DC++/networking
+       'DC Hub' false-positives) and the central _insert_citation funnel
+       (URL dedup + internal-row guard). Any single host failing is
+       logged and skipped — the pass never crashes.
     """
     out = {"source": "reddit", "new": 0, "queried": 0,
-           "matched": 0, "blocked": 0, "errors": []}
+           "matched": 0, "blocked": 0, "errors": [], "via": []}
     try:
-        from urllib.request import Request, urlopen
         from urllib.parse import quote
         seen_ids = set()
         all_posts = []
+
+        def _add_post(post: dict):
+            rid = (post.get("id") or "").strip()
+            if rid and rid not in seen_ids:
+                seen_ids.add(rid)
+                all_posts.append(post)
+
         for q in _BRAND_QUERIES:
+            got_for_q = False
+            # 1) Direct reddit.com (best provenance if it serves JSON).
             for host in ("old.reddit.com", "www.reddit.com"):
                 try:
                     url = (f"https://{host}/search.json?q=" +
-                           quote(q) + "&limit=20&sort=new")
-                    req = Request(url, headers={
-                        "User-Agent": "DCHubBot/1.0 (+https://dchub.cloud; "
-                                       "contact: press@dchub.cloud)"})
-                    with urlopen(req, timeout=10) as r:
-                        body = r.read().decode("utf-8", errors="replace")
-                    # Reddit's bot-block page returns 200 with an HTML
-                    # body even though we requested .json. Detect by
-                    # leading char — JSON starts with '{' or '['.
-                    body_stripped = body.lstrip()
-                    if not body_stripped.startswith(("{", "[")):
-                        out["blocked"] += 1
-                        continue
-                    d = json.loads(body)
+                           quote(q) + "&limit=20&sort=new&raw_json=1")
+                    d = _reddit_fetch_json(url)
                     for child in d.get("data", {}).get("children", []):
-                        post = child.get("data", {}) or {}
-                        rid = post.get("id") or ""
-                        if rid and rid not in seen_ids:
-                            seen_ids.add(rid)
-                            all_posts.append(post)
+                        _add_post(child.get("data", {}) or {})
                     out["queried"] += 1
-                    # If one host worked, no need to try the other for
-                    # this query — they serve the same data.
-                    break
+                    out["via"].append(host)
+                    got_for_q = True
+                    break  # one host per query is enough
                 except Exception as e:
+                    msg = str(e)
+                    if "403" in msg or "bot-block" in msg or "non-json" in msg:
+                        out["blocked"] += 1
                     out["errors"].append(
-                        f"reddit_query_{host}_{q}: {str(e)[:100]}")
+                        f"reddit_{host}_{q}: {msg[:80]}")
+            # 2) PullPush archive fallback (no auth, currently the only
+            #    reliably-working path). Search submissions + comments.
+            if not got_for_q:
+                for kind in ("submission", "comment"):
+                    try:
+                        url = (f"https://api.pullpush.io/reddit/search/{kind}/"
+                               f"?q=" + quote(q) + "&size=25&sort=desc")
+                        d = _reddit_fetch_json(url)
+                        for post in d.get("data", []) or []:
+                            _add_post(post or {})
+                        out["queried"] += 1
+                        out["via"].append(f"pullpush:{kind}")
+                    except Exception as e:
+                        out["errors"].append(
+                            f"pullpush_{kind}_{q}: {str(e)[:80]}")
+
         c = _conn()
         if c is None:
             out["errors"].append("no_database")
             return out
         try:
             for post in all_posts:
-                rid = post.get("id") or ""
-                text = (post.get("selftext") or post.get("title") or "")
+                rid = (post.get("id") or "").strip()
+                if not rid:
+                    continue
+                # Submissions carry title/selftext; comments carry body.
+                text = (post.get("selftext") or post.get("body")
+                        or post.get("title") or "")
                 if not _is_real_brand_mention(text):
                     continue
                 out["matched"] += 1
+                link = _reddit_permalink(post)
+                # created_utc → tz-aware datetime.
+                posted_ts = None
+                try:
+                    cu = post.get("created_utc")
+                    if cu:
+                        posted_ts = datetime.fromtimestamp(
+                            int(float(cu)), tz=timezone.utc)
+                except Exception:
+                    posted_ts = None
+                sub_label = (post.get("subreddit_name_prefixed")
+                             or ("r/" + (post.get("subreddit") or "?")))
                 with c, c.cursor() as cur:
-                    cur.execute("""
-                        INSERT INTO ai_testimonials_auto
-                            (source, external_id, agent_name, platform,
-                             quote, url, posted_at, sentiment,
-                             approved, raw_payload)
-                        VALUES (%s, %s, %s, %s,
-                                %s, %s,
-                                to_timestamp(%s), %s,
-                                %s, %s)
-                        ON CONFLICT (source, external_id) DO NOTHING
-                        RETURNING id;
-                    """, (
-                        "reddit",
-                        rid,
-                        post.get("author", "anonymous"),
-                        "Reddit · " + (post.get("subreddit_name_prefixed", "r/?")),
-                        text[:1000],
-                        "https://reddit.com" + (post.get("permalink", "") or ""),
-                        post.get("created_utc") or 0,
-                        "neutral",
-                        False,
-                        json.dumps(post)[:6000],
-                    ))
-                    if cur.fetchone():
+                    if _insert_citation(
+                        cur,
+                        source="reddit",
+                        external_id=rid,
+                        agent_name=post.get("author") or "anonymous",
+                        platform="Reddit · " + sub_label,
+                        quote=text,
+                        url=link,
+                        posted_ts=posted_ts,
+                        sentiment="neutral",
+                        raw_payload=json.dumps(post)[:6000],
+                        approved=False,
+                    ):
                         out["new"] += 1
         finally:
             try: c.close()
