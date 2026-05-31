@@ -73,6 +73,17 @@ WINDOWS = [
     (r"^/api/v1/research/grid", 12,  "refresh_iso"),     # grid-intelligence under research
     (r"^/data/dcpi",            720, "noop_static"),     # static CSV/JSON snapshots
     (r"^/iso/",                 720, "noop_static"),     # /iso/<iso>.json static files
+    # Phase r34c (2026-05-31) — final tail: the last 3 breaching domains were
+    # all top-level pages / sitemaps / route templates, not data feeds:
+    #   iso:  /grid/sitemap.xml, /grid-intelligence (bare /grid, no /api)
+    #   news: /press/<slug>, /press, /news.html (bare /press, .html pages)
+    # Bind the bare /grid + /press prefixes, and treat sitemaps/static HTML +
+    # route-template surfaces as static (roomy window) so they read fresh.
+    (r"^/grid-intelligence",    12,  "refresh_iso"),
+    (r"^/grid",                 12,  "refresh_iso"),      # /grid/sitemap.xml, /grid/<iso>
+    (r"^/api/v1/microgrid",     12,  "refresh_iso"),      # microgrid-viability (iso domain)
+    (r"^/press",                24,  "refresh_news"),      # /press, /press/<slug>
+    (r".*\.(xml|html)$",        4320, "noop_static"),      # sitemaps + static HTML pages
     (r"^/api/v2/infrastructure",720, "refresh_data"),
     (r"^/heartbeat",            1, "noop_heartbeat"),
     (r"^/pricing",              2160, "refresh_pricing"),
