@@ -219,6 +219,7 @@ _DISPATCH = [
 ]
 
 
+# AUTO-REPAIR: duplicate route '/heartbeat' also in routes/heartbeat.py:431 — review and remove one
 @cron_heartbeat_bp.route("/heartbeat", methods=["GET", "POST"])
 def heartbeat():
     """Run every job whose predicate returns True for current UTC time."""
@@ -257,6 +258,7 @@ def heartbeat():
                                 "which jobs to actually run based on UTC time."),
     }), 200 if healthy == len(ran) else 207
 
+# AUTO-REPAIR: duplicate route '/health' also in main.py:3845 — review and remove one
 
 @cron_heartbeat_bp.route("/health", methods=["GET"])
 def health():
