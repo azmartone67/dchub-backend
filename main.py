@@ -5017,6 +5017,16 @@ _CACHE_PATHS: dict = {
     '/api/v1/gas-compressor-stations':  (3600, 'gas compressors — static stub data'),
     '/api/v1/gas-processing-plants':    (3600, 'gas processing — static stub data'),
     '/api/v1/interconnect-queue':       (1800, 'interconnect queue — LBNL static summary'),
+    # r64 (2026-06-01): facility detail JSON — public, non-per-user data
+    # (id/name/city/state/lat/lng/MW/status, identical for everyone — verified
+    # NOT tier-gated at facility_by_slug). The Meta-ExternalAgent crawler
+    # machine-guns this endpoint (dozens/min) and it was no-store + a
+    # LEFT(MD5(id::text),8) seq-scan over ~5,700 rows, starving the single
+    # gunicorn worker → 14-25s renders site-wide (the flapping ROOT CAUSE per
+    # the 2026-06-01 health sweep). Edge-caching lets CF absorb the crawl so AI
+    # agents index freely WITHOUT DoSing the origin. Singular prefix only —
+    # uniquely scopes to /facility/<slug>, never /facilities/by-market|delta.
+    '/api/v1/facility':                 (1800, 'facility detail JSON — public, absorbs the crawler storm'),
 }
 
 # r43-htmlcache (2026-05-29): SITE-SPEED FIX. The dominant cause of the
