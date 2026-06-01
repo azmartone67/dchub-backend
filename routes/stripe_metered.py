@@ -260,6 +260,16 @@ def _stripe_meter_event(stripe_key, value, customer_id):
 # link it to the Stripe customer, and email it. No usage-reporting needed for
 # this product (it's a fixed-quantity sub, not the pure-metered price).
 _USAGE_PRODUCT_ID = os.environ.get("DCHUB_USAGE_PRODUCT_ID", "prod_UccyUrO1iq7LrN")
+# Known usage-based product IDs: the meter product the user first named AND the
+# product the live payment link (buy.stripe.com/9B69AU…) actually created. The
+# name match ("Usage-Based") below is the real safety net — confirmed working —
+# so a new product/price still can't break detection.
+_USAGE_PRODUCT_IDS = set(
+    p.strip() for p in os.environ.get(
+        "DCHUB_USAGE_PRODUCT_IDS",
+        _USAGE_PRODUCT_ID + ",prod_Ucfy3mA5xrBiwE"
+    ).split(",") if p.strip()
+)
 
 
 def _stripe_get(path, stripe_key):
@@ -273,12 +283,18 @@ def _stripe_get(path, stripe_key):
 
 
 def _qty_to_tier(qty):
-    """Map purchased units → nearest existing paid tier (existing gate caps;
-    no per-key-cap change needed)."""
-    if qty <= 500:   return "starter"
-    if qty <= 1000:  return "developer"
-    if qty <= 10000: return "pro"
-    return "enterprise"
+    """Map a usage-based purchase → access tier stored in mcp_dev_keys.tier.
+
+    HARD CONSTRAINT (the bug that silently broke the live webhook): the
+    mcp_dev_keys.tier CHECK allows ONLY ('free','paid','enterprise'), and the
+    MCP gate (server.mjs applyTierGate) fully unlocks ONLY 'paid'/'enterprise'.
+    So 'starter'/'developer'/'pro' would BOTH violate the DB constraint AND
+    fail to unlock the paid tools. Every paid usage purchase therefore maps to
+    'paid' (full tools, pro-level daily cap); only large prepaid buckets
+    (≥10k units) get 'enterprise' (uncapped) — matching link_metered_key. The
+    purchased quantity is recorded in the key metadata for billing, not as the
+    access cap."""
+    return "enterprise" if (qty or 0) >= 10000 else "paid"
 
 
 def handle_usage_based_checkout(session):
@@ -302,7 +318,7 @@ def handle_usage_based_checkout(session):
             prod = (it.get("price") or {}).get("product")
             prod_id = prod.get("id") if isinstance(prod, dict) else prod
             prod_nm = prod.get("name", "") if isinstance(prod, dict) else ""
-            if prod_id == _USAGE_PRODUCT_ID or "Usage-Based" in str(prod_nm):
+            if prod_id in _USAGE_PRODUCT_IDS or "Usage-Based" in str(prod_nm):
                 qty = int(it.get("quantity") or 100)
                 break
         if qty is None:
@@ -489,7 +505,7 @@ def recover_usage_key():
         cu = _stripe_get("/v1/customers/%s" % customer, stripe_key) or {}
         email_ov = ((cu.get("email") or "").strip().lower()) or None
 
-    is_usage = (prod_id == _USAGE_PRODUCT_ID) or ("Usage-Based" in str(prod_nm))
+    is_usage = (prod_id in _USAGE_PRODUCT_IDS) or ("Usage-Based" in str(prod_nm))
     tier = _qty_to_tier(qty or 100)
 
     _ensure_metered_keys()
