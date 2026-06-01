@@ -269,6 +269,7 @@ def get_company(company_id):
     
     return jsonify({'company': company, 'success': True})
 
+# AUTO-REPAIR: duplicate route '/api/ecosystem' also in ecosystem_routes.py:184 — review and remove one
 @ecosystem_bp.route('/api/ecosystem', methods=['POST'])
 def submit_company():
     """Submit a new company to the ecosystem"""
@@ -304,7 +305,7 @@ def submit_company():
             twitter_url, founded_year, employee_count, facility_count, total_mw,
             ai_enriched, ai_summary, ai_keywords, submitted_by, submitted_at,
             status
-        ) VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s)
+        ) VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s) ON CONFLICT DO NOTHING
     ''', (
         company_id,
         data['name'],
@@ -334,7 +335,7 @@ def submit_company():
     cursor.execute('''
         INSERT INTO ecosystem_submissions (
             company_id, submitted_at, submitter_email, submitter_name, status
-        ) VALUES (%s, %s, %s, %s, %s)
+        ) VALUES (%s, %s, %s, %s, %s) ON CONFLICT DO NOTHING
     ''', (
         company_id,
         now,
@@ -634,7 +635,7 @@ def seed_ecosystem_data():
             INSERT INTO ecosystem_companies (
                 id, name, description, category, website, headquarters,
                 facility_count, verified, featured, status, submitted_at, approved_at
-            ) VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s)
+            ) VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s) ON CONFLICT DO NOTHING
         ''', (
             company_id,
             company['name'],
@@ -697,6 +698,7 @@ def list_integrations():
         'total_active': active_count,
         'total_syncs': total_syncs
     })
+# AUTO-REPAIR: duplicate route '/api/ecosystem/integrations' also in ecosystem_routes.py:668 — review and remove one
 
 @ecosystem_bp.route('/api/ecosystem/integrations', methods=['POST'])
 def register_integration():
@@ -722,7 +724,7 @@ def register_integration():
         (id, company_id, company_name, api_key, api_endpoint, webhook_url,
          data_types, sync_direction, sync_frequency, status, created_at, 
          updated_at, contact_email, documentation_url)
-        VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s)
+        VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s) ON CONFLICT DO NOTHING
     ''', (
         integration_id,
         data.get('company_id'),
@@ -827,7 +829,7 @@ def receive_push_data():
     now = datetime.now().isoformat()
     cursor.execute('''
         INSERT INTO integration_logs (integration_id, action, direction, records_count, status, timestamp)
-        VALUES (%s, %s, %s, %s, %s, %s)
+        VALUES (%s, %s, %s, %s, %s, %s) ON CONFLICT DO NOTHING
     ''', (integration['id'], f'push_{data_type}', 'inbound', len(records), 'received', now))
     
     cursor.execute('''
@@ -976,7 +978,7 @@ def register_webhook():
     
     cursor.execute('''
         INSERT INTO integration_logs (integration_id, action, direction, records_count, status, timestamp)
-        VALUES (%s, %s, %s, %s, %s, %s)
+        VALUES (%s, %s, %s, %s, %s, %s) ON CONFLICT DO NOTHING
     ''', (integration['id'], 'webhook_registered', 'config', 0, 'success', now))
     
     conn.commit()
