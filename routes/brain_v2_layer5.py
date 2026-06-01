@@ -81,6 +81,45 @@ def _admin_guard():
     return None
 
 
+@brain_v2_layer5_bp.post("/api/v1/brain/proposed-code/neutralize")
+def neutralize_proposed_code():
+    """r67 one-off cleanup: neutralize specific proposals by id so the PR-opener
+    SKIPS them — sets pr_url to a sentinel + status='rejected' (pending-pr filters
+    WHERE pr_url IS NULL AND status='proposed', so either excludes them). Used to
+    retire the pre-guard SQLite-conversion hallucinations; the Postgres-stack guard
+    in _LEARN_CODE_SYSTEM now prevents new ones. Idempotent (only flips rows still
+    'proposed'). Gate: X-Admin-Key==ADMIN_KEY OR X-Internal-Key (dchub-internal-sync-2026)."""
+    ok = bool(ADMIN_KEY) and (request.headers.get("X-Admin-Key") or request.args.get("admin_key")) == ADMIN_KEY
+    if not ok:
+        try:
+            from internal_auth import is_valid_internal_key
+            ok = is_valid_internal_key(request.headers.get("X-Internal-Key", ""))
+        except Exception:
+            ok = False
+    if not ok:
+        return jsonify(ok=False, error="unauthorized"), 401
+    d = request.get_json(silent=True) or {}
+    ids = [int(x) for x in (d.get("ids") or []) if str(x).isdigit()]
+    reason = (d.get("reason") or "neutralized")[:120]
+    if not ids:
+        return jsonify(ok=False, error="ids[] required"), 400
+    try:
+        import psycopg2
+        url = os.environ.get("NEON_DATABASE_URL") or os.environ.get("DATABASE_URL")
+        with psycopg2.connect(url, connect_timeout=5) as conn, conn.cursor() as cur:
+            cur.execute("""
+                UPDATE brain_proposed_code_fixes
+                   SET status = 'rejected', pr_url = %s
+                 WHERE id = ANY(%s) AND COALESCE(status,'proposed') = 'proposed'
+                 RETURNING id
+            """, ("neutralized:" + reason, ids))
+            flipped = [r[0] for r in cur.fetchall()]
+            conn.commit()
+        return jsonify(ok=True, neutralized=flipped, requested=ids), 200
+    except Exception as e:
+        return jsonify(ok=False, error=str(e)[:200]), 500
+
+
 # ──────────────────────────────────────────────────────────────────
 # Loop → source-file map. The Layer 5 prompt grabs a window of code
 # from these files so Claude has the actual implementation context,

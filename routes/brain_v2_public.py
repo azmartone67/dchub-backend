@@ -60,7 +60,20 @@ def _get_state():
                 "error": str(e)[:200]}
 
     proposed = list(_proposed_fixes)
-    log = list(_learning_log)
+    # r67: read the DURABLE learning log from Postgres (brain_v2_store) so it
+    # survives gunicorn-worker restarts and reflects the real recent stream — the
+    # in-memory _learning_log resets per process (and was showing weeks-stale rows
+    # on whichever worker answered). Fall back to in-memory if the store is down,
+    # so this can never blank the panel.
+    log = []
+    if _STORE_OK:
+        try:
+            from routes import brain_v2_store as _bstore
+            log = _bstore.list_log(limit=40) or []
+        except Exception:
+            log = []
+    if not log:
+        log = list(_learning_log)
     persistence: list = []
     last_run_at = None
     if _STORE_OK:
