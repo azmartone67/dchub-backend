@@ -110,9 +110,38 @@ def _recently_issued_titles() -> set[str]:
 
 def _open_issue(chain: dict) -> tuple[bool, str]:
     """Open one GitHub issue for a causal chain. Returns (ok, url_or_err)."""
+    # r65 (2026-06-01): runtime kill switch — set BRAIN_L15_DISABLE=1 in
+    # Railway to halt ALL auto-issue creation instantly without a deploy.
+    import os as _os
+    if _os.environ.get("BRAIN_L15_DISABLE", "") in ("1", "true", "True", "yes"):
+        return False, "disabled_via_env"
     if not _GITHUB_TOKEN:
         return False, "no_github_token"
     title = chain.get("title", "Brain L14 auto-action")[:120]
+    # r65: HARD dedup against GitHub itself. The local brain_auto_actions
+    # dedup table failed to prevent re-creation and FLOODED 100+ identical
+    # "404 spike" issues (#3-#949), emailing a real repo watcher. Before
+    # creating, query GitHub for an OPEN issue with this exact title and skip
+    # if one exists. FAIL CLOSED — on ANY search error, do NOT create (better
+    # to miss one issue than to spam a human's inbox). Makes the flood
+    # structurally impossible regardless of the local-table dedup state.
+    _full_title = f"[brain-l15] {title}"
+    try:
+        import requests as _rq
+        _sr = _rq.get(
+            "https://api.github.com/search/issues",
+            headers={"Authorization": f"Bearer {_GITHUB_TOKEN}",
+                     "Accept": "application/vnd.github+json"},
+            params={"q": f'repo:{_GITHUB_REPO} is:issue is:open in:title "{_full_title}"'},
+            timeout=10,
+        )
+        if _sr.status_code != 200:
+            return False, f"dedup_search_http_{_sr.status_code}_skip"
+        for _it in (_sr.json() or {}).get("items", []):
+            if (_it.get("title") or "") == _full_title:
+                return False, f"dedup_existing_open_issue_#{_it.get('number')}"
+    except Exception as _e:
+        return False, f"dedup_search_error_skip_{type(_e).__name__}"
     syms = chain.get("symptoms", []) or []
     body_lines = [
         f"**Auto-opened by Brain L15** ([routes/brain_layer15_auto_action.py](https://github.com/{_GITHUB_REPO}/blob/main/routes/brain_layer15_auto_action.py))",
