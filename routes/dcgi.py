@@ -1438,10 +1438,10 @@ def dcgi_state_html(state):
 <html lang="en">
 <head>
 <meta charset="utf-8">
-<title>DCGI · {full_name} ({st}) · DC Hub</title>
+<title>Data Center Gas Index · {full_name} ({st}) · DC Hub</title>
 <meta name="description" content="Data Center Gas Index (DCGI) for {full_name}. Verdict: {verdict}. Pipeline segments, midstream operators, and gas-to-power siting analysis from DC Hub.">
 <link rel="canonical" href="{canonical}">
-<meta property="og:title" content="DCGI · {full_name} — {verdict}">
+<meta property="og:title" content="Data Center Gas Index · {full_name} — {verdict}">
 <meta property="og:type" content="article">
 <meta property="og:url" content="{canonical}">
 <style>
@@ -1478,7 +1478,7 @@ footer a{{color:var(--tx2);text-decoration:none}}
 <div class="wrap">
   <div class="crumbs"><a href="/">DC Hub</a> · <a href="/dcgi">DCGI</a> · {full_name}</div>
   <h1>{full_name} <span class="st">({st})</span></h1>
-  <p class="lede">Data Center Gas Index — gas-to-power siting verdict for behind-the-meter or grid-supplement DC load.</p>
+  <p class="lede"><strong>Data Center Gas Index (DCGI)</strong> — gas-to-power siting verdict for behind-the-meter or grid-supplement data-center load. Pipeline access × delivered gas cost.</p>
   <span class="verdict {verdict_class}">{verdict}</span>
 
   <div class="metrics">
