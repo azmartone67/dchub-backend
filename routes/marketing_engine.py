@@ -2000,6 +2000,24 @@ def publish_now():
     releases = []
     try:
         with c.cursor() as cur:
+            # r58c (2026-06-01): expire stale approved posts (>5 days old)
+            # before draining. The drain publishes newest-first, so old posts
+            # starve in the queue — and a 12-day-old "afternoon_pulse" should
+            # NOT publish as fresh news anyway. Expiring them clears the
+            # backlog (was ~216) and stops the delivery-rate metric from
+            # counting intentionally-skipped stale rows as failures. status is
+            # free-text TEXT (no CHECK). Fail-soft — never blocks the drain.
+            try:
+                cur.execute("""
+                    UPDATE social_media_posts
+                       SET status = 'expired'
+                     WHERE status = 'approved'
+                       AND created_at < NOW() - INTERVAL '5 days'
+                """)
+                c.commit()
+            except Exception:
+                try: c.rollback()
+                except Exception: pass
             if slug:
                 # Single explicit slug — admin testing path
                 cur.execute("""
