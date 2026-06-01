@@ -84,6 +84,16 @@ _RULES = [
     ("google-extended", "gemini"),
     ("googlebot",       "googlebot"),
     ("groq",            "groq"),
+    # r61: keep in sync with ai_tracking.AI_PLATFORMS so backfill tags the
+    # same partners the live classifier now recognizes.
+    ("cohere",          "cohere"),
+    ("cohere-ai",       "cohere"),
+    ("youbot",          "you"),
+    ("you.com",         "you"),
+    ("huggingface",     "huggingface"),
+    ("hf_hub",          "huggingface"),
+    ("mistralai",       "mistral"),
+    ("mistral",         "mistral"),
     ("nvidia",          "nvidia"),
     ("grok",            "grok"),
     ("copilot",         "copilot"),

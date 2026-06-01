@@ -82,6 +82,14 @@ AI_PLATFORMS = {
     "cohere":     {"name": "Cohere",     "color": "#39594d", "company": "Cohere",     "agents": ["cohere-ai"]},
     "you":        {"name": "You.com",    "color": "#6c5ce7", "company": "You.com",    "agents": ["YouBot"]},
     "smithery":   {"name": "Smithery",   "color": "#f59e0b", "company": "Smithery",   "agents": ["Smithery", "smithery"]},
+    # r61 (2026-05-31): close live-classifier gaps for partners the user
+    # asked about. groq was already in the backfill _RULES + citations but
+    # missing here (so live groq MCP traffic fell to mcp_generic). HF's
+    # python client sets `hf_hub/<ver>` in its UA; Mistral's agents send
+    # "mistral"/"mistralai".
+    "groq":        {"name": "Groq",         "color": "#f55036", "company": "Groq",         "agents": ["Groq", "groq"]},
+    "huggingface": {"name": "Hugging Face", "color": "#ff9d00", "company": "Hugging Face", "agents": ["huggingface", "hf_hub", "HuggingFace"]},
+    "mistral":     {"name": "Mistral",      "color": "#ff7000", "company": "Mistral AI",   "agents": ["mistralai", "Mistral", "mistral"]},
 }
 
 # Endpoints that indicate AI platform activity
