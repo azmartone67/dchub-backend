@@ -1577,7 +1577,7 @@ def enqueue_custom():
     try:
         cur.execute("""
             INSERT INTO social_media_posts (content, platform, status, created_at)
-            VALUES (%s, %s, 'approved', NOW())
+            VALUES (%s, %s, 'approved', NOW() ON CONFLICT DO NOTHING)
             RETURNING id
         """, (content, platform))
         row = cur.fetchone()
