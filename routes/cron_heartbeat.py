@@ -200,30 +200,32 @@ _DISPATCH = [
     # Claude takes >5s to respond, the worker times out and serves 503.
     # User hit this on first-time-of-day "where can I get 100 MW in 12
     # months". Fix: hit the 6 most-asked chat questions every 30 min
-    # so the demo cache stays hot. Cost: ~6 Claude calls/hr = trivial.
+    # so the demo cache stays hot. Cost: ~12 Claude calls/hr = trivial.
+    # NOTE: GET method only — the handler reads ?q= for GET, body for POST,
+    # and _hit posts an empty body which would 400 before computing.
     ("dcpi_chat_prewarm_top_questions",
      f"{BASE}/api/v1/dcpi/ask?q=where+can+I+get+100+MW+in+12+months",
-     "POST",
+     "GET",
      lambda now: now.minute % 30 == 18),
     ("dcpi_chat_prewarm_build_markets",
      f"{BASE}/api/v1/dcpi/ask?q=top+BUILD+markets+this+week",
-     "POST",
+     "GET",
      lambda now: now.minute % 30 == 19),
     ("dcpi_chat_prewarm_iso_compare",
      f"{BASE}/api/v1/dcpi/ask?q=compare+ERCOT+PJM+and+CAISO+by+excess+power",
-     "POST",
+     "GET",
      lambda now: now.minute % 30 == 20),
     ("dcpi_chat_prewarm_cheyenne",
      f"{BASE}/api/v1/dcpi/ask?q=what+is+the+DCPI+for+Cheyenne",
-     "POST",
+     "GET",
      lambda now: now.minute % 30 == 21),
     ("dcpi_chat_prewarm_northern_va",
      f"{BASE}/api/v1/dcpi/ask?q=what+is+the+DCPI+for+Northern+Virginia",
-     "POST",
+     "GET",
      lambda now: now.minute % 30 == 22),
     ("dcpi_chat_prewarm_international",
      f"{BASE}/api/v1/dcpi/ask?q=which+international+markets+score+BUILD",
-     "POST",
+     "GET",
      lambda now: now.minute % 30 == 23),
 
     # r47.39.1 (2026-05-26): proxy heartbeat for CF Workers. The
