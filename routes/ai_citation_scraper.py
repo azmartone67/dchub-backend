@@ -90,6 +90,69 @@ def _admin_or_cron_authorized() -> bool:
     return bool(cron_env) and cron_hdr == cron_env
 
 
+@ai_citation_scraper_bp.route("/api/v1/admin/citations/backfill-disclaimers", methods=["POST"])
+def backfill_citation_disclaimers():
+    """r66 one-time (re-runnable, idempotent) cleanup: flip the cited-flag to
+    FALSE for ai_citations rows whose response is actually an LLM DISCLAIMER —
+    mislabeled as a citation before the _detect_citation fix. Output is already
+    protected (the source picker skips them + the publish gate blocks them); this
+    corrects the citation COUNTS / analytics so 'wins' reflect real endorsements.
+    Schema has drifted across code paths, so columns are introspected at runtime
+    (flag: dchub_cited and/or is_cited; text: response_text/response_excerpt/...).
+    dry_run by default. Gate: X-Admin-Key==DCHUB_ADMIN_KEY, X-Internal-Cron, OR
+    X-Internal-Key (dchub-internal-sync-2026)."""
+    ok = _admin_or_cron_authorized()
+    if not ok:
+        try:
+            from internal_auth import is_valid_internal_key
+            ok = is_valid_internal_key(request.headers.get("X-Internal-Key", ""))
+        except Exception:
+            ok = False
+    if not ok:
+        return jsonify({"ok": False, "error": "admin auth required"}), 403
+
+    d = request.get_json(silent=True) or {}
+    dry_run = bool(d.get("dry_run", True))
+    c = _db_conn()
+    if c is None:
+        return jsonify({"ok": False, "error": "no_db"}), 503
+    try:
+        with c.cursor() as cur:
+            cur.execute("""SELECT column_name FROM information_schema.columns
+                            WHERE table_name = 'ai_citations'""")
+            cols = {r[0] for r in cur.fetchall()}
+            flag_cols = [x for x in ("dchub_cited", "is_cited") if x in cols]
+            text_cols = [x for x in ("response_text", "response_excerpt",
+                                     "citation_excerpt", "question") if x in cols]
+            if not flag_cols or not text_cols:
+                return jsonify({"ok": False, "error": "schema_unexpected",
+                                "columns": sorted(cols)}), 500
+            text_expr = "COALESCE(" + ",".join(text_cols) + ",'')"
+            where_true = " OR ".join("%s = true" % fc for fc in flag_cols)  # fc from fixed allowlist
+            cur.execute("SELECT id, %s FROM ai_citations WHERE %s ORDER BY id DESC LIMIT 5000"
+                        % (text_expr, where_true))
+            rows = cur.fetchall() or []
+            bad_ids = [r[0] for r in rows if _is_disclaimer(r[1] or "")]
+            result = {"ok": True, "flag_cols": flag_cols, "text_cols": text_cols,
+                      "scanned_cited_true": len(rows),
+                      "disclaimer_rows_found": len(bad_ids),
+                      "dry_run": dry_run, "sample_ids": bad_ids[:10]}
+            if not dry_run and bad_ids:
+                set_clause = ", ".join("%s = false" % fc for fc in flag_cols)
+                cur.execute("UPDATE ai_citations SET %s WHERE id = ANY(%%s)" % set_clause,
+                            (bad_ids,))
+                c.commit()
+                result["flipped"] = cur.rowcount
+            return jsonify(result), 200
+    except Exception as e:
+        try: c.rollback()
+        except Exception: pass
+        return jsonify({"ok": False, "error": str(e)[:200]}), 500
+    finally:
+        try: c.close()
+        except Exception: pass
+
+
 def _ensure_table():
     c = _db_conn()
     if not c: return
