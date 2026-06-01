@@ -864,9 +864,14 @@ def mcp_funnel():
     # numbers ship in the response — `tool_calls_7d` stays as the gross
     # count for backward compat (brain detectors / mcp_growth.py still
     # read it) and `tool_calls_7d_real` is what the UI should highlight.
+    # r65-qa (#3): 'unknown' REMOVED — it was zeroing out tool_calls_7d_real.
+    # The CF worker strips the client UA so legit external MCP traffic falls to
+    # 'unknown'; lumping it with probes classified 100% of 7d traffic as probe
+    # → real KPI structurally read 0. Per this list's own sibling comment below,
+    # 'unknown' is real external traffic we couldn't sub-classify, NOT a probe.
     _PROBE_PLATFORMS = (
         'curl', 'python-script', 'node-script',
-        'postman', 'insomnia', 'unknown', 'verify',
+        'postman', 'insomnia', 'verify',
     )
     # r61: internal/self + registry-scanner client names that crush the
     # funnel's per-platform conversion rate to ~0% (they emit signals but
@@ -892,6 +897,8 @@ def mcp_funnel():
         " AND COALESCE(LOWER(mcp_client),'') NOT LIKE 'loop%' "
         " AND COALESCE(LOWER(mcp_client),'') NOT LIKE 'dchub-%' "
         " AND COALESCE(LOWER(mcp_client),'') NOT LIKE 'local-agent-mode%' "
+        " AND COALESCE(LOWER(mcp_client),'') NOT LIKE 'leakaudit%' "
+        " AND COALESCE(LOWER(mcp_client),'') NOT LIKE 'trial-leak%' "
         " AND COALESCE(LOWER(mcp_client),'') NOT LIKE '%-probe' "
         " AND COALESCE(LOWER(mcp_client),'') NOT LIKE '%-health' "
         " AND COALESCE(LOWER(mcp_client),'') NOT LIKE '%-scanner' "

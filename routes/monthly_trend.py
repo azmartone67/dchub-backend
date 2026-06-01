@@ -899,12 +899,22 @@ def _render_html(d: dict, *, partner: str = "") -> str:
         f'<td style="text-align:right">{m["total_mw"]:,.0f}</td></tr>'
         for m in (d.get("top_markets") or [])
     ]
-    mover_rows = [
-        f'<tr><td><strong>{m["market"]}</strong></td>'
-        f'<td style="text-align:right">{m["score"]}/100</td>'
-        f'<td style="text-align:right">{_delta_html(m["delta"])}</td></tr>'
-        for m in (d.get("dcpi_movers") or [])
-    ]
+    mover_rows = []
+    for m in (d.get("dcpi_movers") or []):
+        # The data layer backfills a sentinel row {market:None, score:None,
+        # note:...} when no market crossed the WoW threshold yet (early in the
+        # period). Render the note, not the raw None/None/+0.0% garbage row.
+        if m.get("sentinel") or m.get("market") is None or m.get("score") is None:
+            note = m.get("note") or "No markets crossed the weekly movement threshold yet this period."
+            mover_rows.append(
+                f'<tr><td colspan="3" style="color:#71717a;font-style:italic;padding:14px 0">{note}</td></tr>'
+            )
+            continue
+        mover_rows.append(
+            f'<tr><td><strong>{m["market"]}</strong></td>'
+            f'<td style="text-align:right">{m["score"]}/100</td>'
+            f'<td style="text-align:right">{_delta_html(m["delta"])}</td></tr>'
+        )
     pipeline_rows = [
         f'<tr><td><strong>{m["market"]}</strong></td>'
         f'<td style="text-align:right">{m["projects"]:,}</td>'

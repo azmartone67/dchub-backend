@@ -187,6 +187,7 @@ def _collect_signals() -> dict:
         "ai_usage_24h": {"tool_calls": 0, "unique_callers": 0},
         "new_facilities_24h": [],
         "recent_ai_citation": None,
+        "recent_deals": [],
     }
     c = _conn()
     if c is None:
@@ -411,6 +412,34 @@ def _collect_signals() -> dict:
         except Exception as e:
             print(f"[marketing_engine] coverage_growth probe failed: {e}", file=sys.stderr)
             out["coverage_growth_7d"] = []
+
+        # ── r65-qa (#6): recent M&A deals WITH real value/MW ──────────────
+        # Without this the theme_deals / ma_pulse topics ran with NO deal data
+        # in the prompt, so Claude (correctly forbidden from inventing numbers)
+        # emitted value-less "→ Deal — Google" stubs — the broken LinkedIn post
+        # the user flagged. Feeding real rows lets it render "Buyer/Seller —
+        # $X.XB / NNN MW"; the picker below skips the deals topic when empty.
+        try:
+            with c.cursor() as cur:
+                cur.execute("""
+                    SELECT date, buyer, seller, value, mw
+                      FROM deals
+                     WHERE buyer IS NOT NULL AND buyer != ''
+                       AND (value IS NOT NULL OR mw IS NOT NULL)
+                     ORDER BY date DESC NULLS LAST
+                     LIMIT 6
+                """)
+                out["recent_deals"] = [
+                    {"date":   (r[0].isoformat() if hasattr(r[0], "isoformat") else (str(r[0]) if r[0] else "")),
+                     "buyer":  r[1], "seller": r[2],
+                     "value_m": (float(r[3]) if r[3] is not None else None),
+                     "mw":      (float(r[4]) if r[4] is not None else None)}
+                    for r in cur.fetchall()
+                ]
+        except Exception:
+            try: c.rollback()
+            except Exception: pass
+            out["recent_deals"] = []
     finally:
         try: c.close()
         except Exception: pass
@@ -583,6 +612,37 @@ def _theme_for_weekday() -> tuple[str, str]:
     return THEMES[wd]
 
 
+def _deals_reason(signals: dict) -> str | None:
+    """r65-qa (#6): build a deals-topic reason string FROM real deal rows so
+    Claude has concrete buyer/seller/value/MW to write about. Returns None when
+    there are no usable deals — the picker then SKIPS the deals topic instead of
+    letting Claude emit value-less 'Deal - Company' stubs (the broken post the
+    user flagged). No em-dashes (LinkedIn flags them)."""
+    deals = signals.get("recent_deals") or []
+    lines = []
+    for d in deals[:4]:
+        buyer = (str(d.get("buyer") or "")).strip()
+        if not buyer:
+            continue
+        seller = (str(d.get("seller") or "")).strip()
+        parts = []
+        v = d.get("value_m")
+        if v:
+            parts.append(f"${v/1000:.1f}B" if v >= 1000 else f"${v:.0f}M")
+        mw = d.get("mw")
+        if mw:
+            parts.append(f"{mw:.0f} MW")
+        detail = " / ".join(parts)
+        who = f"{buyer} acquired {seller}" if seller and seller not in ("?",) else buyer
+        lines.append(f"{who}{(' (' + detail + ')') if detail else ''}")
+    if not lines:
+        return None
+    return ("M&A pulse: recent data-center transactions DC Hub tracked. "
+            + "; ".join(lines)
+            + ". Lead with the largest by value, state buyer/seller and value/MW "
+              "exactly as given, do NOT invent figures, link dchub.cloud.")
+
+
 def _pick_daily_topic(signals: dict) -> tuple[str, str]:
     """Phase LL: pick the most newsworthy topic for today's auto-press,
     with guaranteed fallbacks so the cron never goes a day without
@@ -748,7 +808,13 @@ def _pick_daily_topic(signals: dict) -> tuple[str, str]:
     # This is the guard that prevents the "Cheyenne 4 days in a row" repeat.
     try:
         theme_topic, theme_reason = _theme_for_weekday()
-        if not _topic_dedup(theme_topic):
+        if theme_topic == "theme_deals":
+            # r65-qa (#6): only run the deals theme when we have REAL deal rows;
+            # otherwise fall through to the rotation instead of stubbing.
+            _dr = _deals_reason(signals)
+            if _dr and not _topic_dedup(theme_topic):
+                return theme_topic, _dr
+        elif not _topic_dedup(theme_topic):
             return theme_topic, theme_reason
     except NameError:
         pass  # test environment without the helper — fall through to rotation
@@ -769,7 +835,17 @@ def _pick_daily_topic(signals: dict) -> tuple[str, str]:
         ("ma_pulse", "M&A pulse: recent data center transactions + valuation trends."),
         ("methodology_explainer", "Methodology explainer: how DC Hub's DCPI scoring works + what each axis measures."),
     ]
-    return rotation[day_idx]
+    topic, reason = rotation[day_idx]
+    if topic == "ma_pulse":
+        # r65-qa (#6): feed real deal rows into the reason, or — if there are
+        # none — substitute the evergreen methodology explainer so the engine
+        # never publishes value-less "Deal - Company" stubs.
+        _dr = _deals_reason(signals)
+        if _dr:
+            return topic, _dr
+        return ("methodology_explainer",
+                "Methodology explainer: how DC Hub's DCPI scoring works + what each axis measures.")
+    return topic, reason
 
 
 # Phase LL+1: ultra-safe last-resort topic. If everything else fails

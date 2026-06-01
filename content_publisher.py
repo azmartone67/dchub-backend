@@ -1252,6 +1252,11 @@ _FRESHNESS_RE = _re_legacy.compile(
     _re_legacy.IGNORECASE)
 _URL_RE = _re_legacy.compile(r'https?://[^\s)>\]]+', _re_legacy.IGNORECASE)
 _RECENT_YEAR_RE = _re_legacy.compile(r'\b(20[2-3]\d)\b')
+# r65-qa (#6): the value-less M&A stub template the user flagged — a bullet line
+# that's just "Deal - Google" / "→ Deal — Blackstone" with NO $ or MW. Matches
+# →/•/-/* bullets and em-dash/hyphen/colon separators.
+_DEAL_STUB_RE = _re_legacy.compile(
+    r'(?mi)^\s*(?:[→••*\-]\s*)?deal\s*[—:\-]\s*[A-Za-z][\w&.\' ]{1,40}\s*$')
 
 
 def _quality_score(post) -> float:
@@ -1275,6 +1280,18 @@ def _quality_score(post) -> float:
     if not text:
         return 0.0
 
+    # r65-qa (#6): hard-floor the broken M&A stub template. A "Deal - Google"
+    # line with named companies but zero $/MW is exactly the value-less stub the
+    # user flagged — it slipped through before because the date in the URL slug
+    # faked freshness + number credit. Refuse it outright.
+    if _DEAL_STUB_RE.search(text) and not _re_legacy.search(r'\$|\bMW\b', text):
+        return 0.1
+
+    # r65-qa (#6): strip URLs before the number/freshness checks so a post can't
+    # earn "concrete stat" + "fresh" credit purely from the YYYY-MM-DD in its own
+    # /news/<slug> link — the real number/year must be in the human-readable body.
+    text_nourl = _URL_RE.sub(' ', text)
+
     sig = _post_headline_signature(text)
     score = 0.0
 
@@ -1285,11 +1302,12 @@ def _quality_score(post) -> float:
     mv = sig.get("metric_value")
     if mv is not None and mv > 0:
         score += 0.35
-    elif _re_legacy.search(r'\b\d[\d,]*(?:\.\d+)?\b', text):
+    elif _re_legacy.search(r'\b\d[\d,]*(?:\.\d+)?\b', text_nourl):
         score += 0.15
 
-    # (b) freshness — recency phrase or a recent year.
-    if _FRESHNESS_RE.search(text) or _RECENT_YEAR_RE.search(text):
+    # (b) freshness — recency phrase or a recent year (URL-stripped: the slug
+    # date no longer counts).
+    if _FRESHNESS_RE.search(text_nourl) or _RECENT_YEAR_RE.search(text_nourl):
         score += 0.20
 
     # (c) novelty — reuse the existing dedup-class signal. A post that

@@ -177,7 +177,7 @@ def _enrich_top_anon_ips(days: int = 7, limit: int = 25) -> dict:
                     SELECT ip_address, COUNT(*) AS signals,
                            COUNT(DISTINCT session_id) AS sessions
                       FROM mcp_upgrade_signals
-                     WHERE created_at > NOW() - INTERVAL %s
+                     WHERE created_at > NOW() - INTERVAL %s """ + _CLIENT_EXCL + """
                        AND (user_email IS NULL OR user_email = '')
                        AND ip_address IS NOT NULL
                        AND ip_address != ''
@@ -209,6 +209,37 @@ def _enrich_top_anon_ips(days: int = 7, limit: int = 25) -> dict:
     out["ips"] = ips_out
     out["count"] = len(ips_out)
     return out
+
+
+# r65-qa (#7): mirror the MCP funnel's internal/self-client exclusion
+# (flask_mcp_endpoints.py:879) so visitor-intelligence stops counting our own
+# probes / loops / tests / scanners as paywall signals (dchub-selfheal=57,
+# pipeline_mcp=30, mcp-probe, loop*, leakaudit* were inflating every counter).
+# 'mcp' and 'unknown' are intentionally KEPT — real, unclassifiable external
+# traffic. IMPORTANT: every _compute query passes a bound %s (days) param, so
+# literal % in the LIKE patterns is DOUBLED to %% (psycopg2 renders %%→% only
+# when params are present; the funnel uses single % because it binds none).
+_INTERNAL_CLIENTS = (
+    'node', 'dchub-selfheal', 'dchub-mcp-test', 'mcp-probe', 'mcp-test',
+    'pipeline_mcp', 'canary', 'mcp-remote-fallback-test',
+    'registry-health-checker', 'mcp-shield-scanner', 'yellowmcp-health',
+    'glama-health', 'chiark-prober', 'fabrique-noauth-probe',
+    'agentpulse', 'mcpscoringengine', 'mcp-extractor',
+    'curl', 'python-script', 'node-script', 'postman', 'insomnia', 'verify',
+)
+_excl_in = ",".join("'" + str(p).replace("'", "''") + "'" for p in sorted(set(_INTERNAL_CLIENTS)))
+_CLIENT_EXCL = (
+    f" AND COALESCE(LOWER(mcp_client),'') NOT IN ({_excl_in}) "
+    " AND COALESCE(LOWER(mcp_client),'') NOT LIKE 'loop%%' "
+    " AND COALESCE(LOWER(mcp_client),'') NOT LIKE 'dchub-%%' "
+    " AND COALESCE(LOWER(mcp_client),'') NOT LIKE 'local-agent-mode%%' "
+    " AND COALESCE(LOWER(mcp_client),'') NOT LIKE 'leakaudit%%' "
+    " AND COALESCE(LOWER(mcp_client),'') NOT LIKE 'trial-leak%%' "
+    " AND COALESCE(LOWER(mcp_client),'') NOT LIKE '%%-probe' "
+    " AND COALESCE(LOWER(mcp_client),'') NOT LIKE '%%-health' "
+    " AND COALESCE(LOWER(mcp_client),'') NOT LIKE '%%-scanner' "
+    " AND COALESCE(LOWER(mcp_client),'') NOT LIKE '%%-checker' "
+)
 
 
 def _compute(days: int = 7) -> dict:
@@ -248,7 +279,7 @@ def _compute(days: int = 7) -> dict:
                   COUNT(*) FILTER (WHERE COALESCE(converted, false))      AS conversions,
                   COUNT(*) FILTER (WHERE COALESCE(outreach_sent, false))  AS outreached
                 FROM mcp_upgrade_signals
-                WHERE created_at > NOW() - INTERVAL %s
+                WHERE created_at > NOW() - INTERVAL %s """ + _CLIENT_EXCL + """
             """, (f"{days} days",))
             r = cur.fetchone()
             if r:
@@ -272,7 +303,7 @@ def _compute(days: int = 7) -> dict:
                                        ORDER BY tool_requested)
                              FILTER (WHERE tool_requested IS NOT NULL) AS top_tools
                       FROM mcp_upgrade_signals
-                     WHERE created_at > NOW() - INTERVAL %s
+                     WHERE created_at > NOW() - INTERVAL %s """ + _CLIENT_EXCL + """
                      GROUP BY COALESCE(NULLIF(mcp_client, ''), 'unknown')
                      ORDER BY signals DESC
                      LIMIT 10
@@ -299,7 +330,7 @@ def _compute(days: int = 7) -> dict:
                            COUNT(DISTINCT mcp_client)
                              FILTER (WHERE mcp_client IS NOT NULL) AS distinct_clients
                       FROM mcp_upgrade_signals
-                     WHERE created_at > NOW() - INTERVAL %s
+                     WHERE created_at > NOW() - INTERVAL %s """ + _CLIENT_EXCL + """
                        AND tool_requested IS NOT NULL
                      GROUP BY tool_requested
                      ORDER BY hits DESC
@@ -328,7 +359,7 @@ def _compute(days: int = 7) -> dict:
                              FILTER (WHERE tool_requested IS NOT NULL) AS tools,
                            MAX(created_at) AS last_seen
                       FROM mcp_upgrade_signals
-                     WHERE created_at > NOW() - INTERVAL %s
+                     WHERE created_at > NOW() - INTERVAL %s """ + _CLIENT_EXCL + """
                        AND user_email IS NOT NULL AND user_email != ''
                        AND COALESCE(converted, false) = false
                        AND COALESCE(outreach_sent, false) = false
@@ -356,7 +387,7 @@ def _compute(days: int = 7) -> dict:
                     SELECT COALESCE(NULLIF(tier_current, ''), 'unknown') AS tier,
                            COUNT(*)                                       AS signals
                       FROM mcp_upgrade_signals
-                     WHERE created_at > NOW() - INTERVAL %s
+                     WHERE created_at > NOW() - INTERVAL %s """ + _CLIENT_EXCL + """
                      GROUP BY COALESCE(NULLIF(tier_current, ''), 'unknown')
                      ORDER BY signals DESC
                 """, (f"{days} days",))
@@ -389,7 +420,7 @@ def _compute(days: int = 7) -> dict:
                       COUNT(*)                       AS signals,
                       COUNT(DISTINCT session_id)     AS sessions
                     FROM mcp_upgrade_signals
-                    WHERE created_at > NOW() - INTERVAL %s
+                    WHERE created_at > NOW() - INTERVAL %s """ + _CLIENT_EXCL + """
                       AND (user_email IS NULL OR user_email = '')
                     GROUP BY ua_class
                     ORDER BY signals DESC

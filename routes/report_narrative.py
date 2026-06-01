@@ -45,6 +45,17 @@ try:
     _HTTP_TIMEOUT = float(os.environ.get("NARRATIVE_HTTP_TIMEOUT") or 4.0)
 except (TypeError, ValueError):
     _HTTP_TIMEOUT = 4.0
+# r65-qa (#2): the 4s foreground cap was self-defeating for the boot prewarmer —
+# it GETs /dcpi pages (UA 'DCHub-Prewarm') specifically to WARM the cache, but
+# haiku+TLS from Railway routinely exceeds 4s, so every prewarm call timed out
+# and the cache (and therefore real visitors) stayed cold. The prewarmer is a
+# background thread with its own 30s HTTP budget, so _call_claude gives it a
+# generous timeout; foreground visitors keep the fast 4s degrade-to-no-narrative
+# behavior. Tunable via NARRATIVE_WARM_TIMEOUT.
+try:
+    _WARM_TIMEOUT = float(os.environ.get("NARRATIVE_WARM_TIMEOUT") or 18.0)
+except (TypeError, ValueError):
+    _WARM_TIMEOUT = 18.0
 
 
 # RENDER-PERF (2026-06-01): the per-worker dict caches above are flushed every
@@ -467,6 +478,16 @@ def _call_claude(prompt: str) -> str | None:
     narrative and backfills it on a later warm cache hit."""
     if not _ANTHROPIC_KEY:
         return None
+    # r65-qa (#2): foreground gets the fast 4s cap; the boot prewarmer (UA
+    # 'DCHub-Prewarm', its own 30s GET budget) gets the generous warm timeout so
+    # it can actually generate + cache the narrative for later visitors.
+    _to = _HTTP_TIMEOUT
+    try:
+        from flask import request, has_request_context
+        if has_request_context() and "prewarm" in (request.headers.get("User-Agent", "") or "").lower():
+            _to = _WARM_TIMEOUT
+    except Exception:
+        pass
     try:
         import requests
         r = requests.post(
@@ -481,7 +502,7 @@ def _call_claude(prompt: str) -> str | None:
                 "max_tokens": 800,
                 "messages": [{"role": "user", "content": prompt}],
             },
-            timeout=_HTTP_TIMEOUT,
+            timeout=_to,
         )
         if r.status_code != 200:
             logger.warning(f"narrative API {r.status_code}: {r.text[:200]}")
