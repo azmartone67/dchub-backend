@@ -404,7 +404,14 @@ def sentinel_security():
 
 _DRIFT_TABLES = (
     "discovered_facilities",
-    "announcements",
+    # NOTE: 'announcements' intentionally EXCLUDED (r-sweep-fix 2026-06-01).
+    # It is purge-driven by design (news_engine.py 90d DELETE + main.py 30d
+    # archive→announcements_archive), so its row count legitimately SHRINKS.
+    # The drift detector uses a monotonic high-water baseline (new=max(base,n)),
+    # so a pruned table trips the -5% threshold forever (the false "announcements
+    # dropped 30.42%" RED). Drift-detection is for UNEXPECTED loss, not scheduled
+    # pruning — its real freshness is tracked elsewhere. Re-add only with a
+    # rolling/decaying baseline or an allowed_shrink flag.
     "deals",
     "fiber_routes",
     "substations",

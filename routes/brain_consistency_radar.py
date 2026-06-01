@@ -5484,7 +5484,7 @@ def check_data_freshness_sla_breach() -> list[dict]:
         ("market_power_scores",    "computed_at",  48,   "market power scores"),
         ("discovered_facilities",  "discovered_at",24,   "facility discovery queue"),
         ("facilities",             "first_seen",   336,  "canonical facilities"),
-        ("news_items",             "published_at", 6,    "news ingest"),
+        ("news_articles",          "published_at", 6,    "news ingest"),
         # r36 (2026-05-31): 36→168. press_releases is EVENT-DRIVEN, not a fixed
         # cadence: dcpi_auto_press (the writer) only publishes on a >=15pt DCPI
         # 7-day market shift, so multi-day quiet stretches are normal when the

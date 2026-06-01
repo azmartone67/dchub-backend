@@ -268,7 +268,7 @@ _DOMAIN_SOURCE: dict = {
     # brain_consistency_radar.SLAS (gas_pipelines 720h, facilities 336h).
     "iso":        ("grid_data",      "timestamp"),      # ISO telemetry, ~1.5h cron
     "dcpi":       ("dcpi_scores",    "computed_at"),    # daily recompute
-    "news":       ("news_items",     "published_at"),   # RSS ingest
+    "news":       ("news_articles",  "published_at"),   # live RSS table served by /api/news/live (news_items is a phantom/variant — caused a permanent false SLA breach)
     "press":      ("press_releases", "published_at"),   # event-driven
     "mna":        ("ai_deals",       "created_at"),     # deal extractor
 }
