@@ -332,13 +332,18 @@ def handle_usage_based_checkout(session):
                         ON CONFLICT (api_key) DO UPDATE SET active = TRUE, stripe_customer_id = EXCLUDED.stripe_customer_id
                     """, (api_key, customer, session.get("subscription")))
             c.commit()
+        email_ok, email_detail = (False, "no_email_address")
         if email and api_key:
             try:
                 from routes.redeem_routes import _p99_send_email
-                _p99_send_email(email, api_key, [])
-            except Exception:
-                pass
-        return {"ok": True, "tier": tier, "qty": qty, "emailed": bool(email),
+                email_ok, email_detail = _p99_send_email(email, api_key, [])
+            except Exception as _ee:
+                email_ok, email_detail = False, f"{type(_ee).__name__}: {str(_ee)[:120]}"
+        # honest status: emailed == the send actually succeeded (Resend/SMTP 2xx),
+        # NOT merely "an address existed". The webhook print surfaces email_detail
+        # so a silent delivery failure is diagnosable in the Railway log.
+        return {"ok": True, "tier": tier, "qty": qty, "emailed": email_ok,
+                "email_detail": str(email_detail)[:200],
                 "key_short": (api_key or "")[:12] + "…"}
     except Exception as e:
         return {"ok": False, "error": str(e)[:160]}
@@ -388,6 +393,167 @@ def link_metered_key():
     return jsonify({"ok": True, "api_key_short": api_key[:10] + "...",
                     "stripe_customer_id": cust, "access_tier": "enterprise",
                     "billing": "metered", "meter_event": _METER_EVENT}), 200
+
+
+@stripe_metered_bp.route("/recover-usage-key", methods=["POST"])
+def recover_usage_key():
+    """Admin diagnostic + recovery for a usage-based (prod_UccyUrO1iq7LrN)
+    subscription that PAID but never got its key (the live checkout.session.completed
+    path failed). Two jobs:
+      1. DIAGNOSE delivery — reports pending_webhooks for recent
+         checkout.session.completed events. >0 ⇒ Stripe could NOT get a 2xx from
+         our endpoint (signature mismatch / proxy altered the raw body / timeout).
+         =0 ⇒ delivered & acknowledged (so the gap is downstream: handler or email).
+      2. RECOVER — fetch the sub/session from Stripe, confirm it's the usage
+         product, and (dry_run:false) issue + email the dch_live_ key sized to the
+         purchased quantity. Idempotent per customer; reuses the live webhook logic.
+    Returns only a SHORT key prefix — the full key is delivered solely by email
+    (so it never lands in a log). If email fails, email_detail names the cause.
+    Gate: X-Internal-Key (dchub-internal-sync-2026) OR X-Admin-Key==DCHUB_ADMIN_KEY.
+    Body: {subscription_id?, session_id?, customer_id?, email?, dry_run?:true}
+    """
+    import secrets as _secrets
+    hdr_admin = (request.headers.get("X-Admin-Key", "") or "").strip()
+    expected  = (os.environ.get("DCHUB_ADMIN_KEY", "")
+                 or os.environ.get("DCHUB_INTERNAL_KEY", "")).strip()
+    ok_admin  = bool(expected) and hdr_admin == expected
+    ok_intl   = False
+    try:
+        from internal_auth import is_valid_internal_key
+        ok_intl = is_valid_internal_key(request.headers.get("X-Internal-Key", ""))
+    except Exception:
+        ok_intl = False
+    if not (ok_admin or ok_intl):
+        return jsonify({"error": "admin auth required (X-Admin-Key or X-Internal-Key)"}), 403
+
+    stripe_key = (os.environ.get("STRIPE_SECRET_KEY", "")
+                  or os.environ.get("STRIPE_API_KEY", "")).strip()
+    if not stripe_key:
+        return jsonify({"error": "no STRIPE_SECRET_KEY on backend"}), 503
+
+    d = request.get_json(silent=True) or {}
+    sub_id   = (d.get("subscription_id") or "").strip() or None
+    sess_id  = (d.get("session_id") or "").strip() or None
+    cust_in  = (d.get("customer_id") or "").strip() or None
+    email_ov = ((d.get("email") or "").strip().lower()) or None
+    dry_run  = bool(d.get("dry_run", True))
+
+    # --- 1. delivery diagnosis ------------------------------------------
+    diag = {}
+    try:
+        ev = _stripe_get("/v1/events?type=checkout.session.completed&limit=10", stripe_key)
+        evs = [{"id": e.get("id"), "created": e.get("created"),
+                "pending_webhooks": e.get("pending_webhooks")}
+               for e in (ev or {}).get("data", [])]
+        diag = {
+            "recent_checkout_events": len(evs),
+            "events_with_pending_webhooks": sum(1 for e in evs if (e.get("pending_webhooks") or 0) > 0),
+            "sample": evs[:5],
+            "interpretation": ("pending_webhooks>0 ⇒ Stripe couldn't get a 2xx (signature/"
+                               "proxy/timeout). =0 ⇒ delivered+acked (gap is handler or email)."),
+        }
+    except Exception as _e:
+        diag = {"error": str(_e)[:160]}
+
+    # --- 2. resolve product / qty / customer ----------------------------
+    prod_id = prod_nm = None
+    qty = None
+    customer = cust_in
+    sub_status = None
+    if sess_id:
+        li = _stripe_get("/v1/checkout/sessions/%s/line_items?limit=10&expand[]=data.price.product" % sess_id, stripe_key)
+        for it in (li or {}).get("data", []):
+            prod = (it.get("price") or {}).get("product")
+            prod_id = prod.get("id") if isinstance(prod, dict) else prod
+            prod_nm = prod.get("name", "") if isinstance(prod, dict) else ""
+            qty = int(it.get("quantity") or 100); break
+        sess = _stripe_get("/v1/checkout/sessions/%s" % sess_id, stripe_key) or {}
+        customer = customer or sess.get("customer")
+        email_ov = email_ov or (((sess.get("customer_details") or {}).get("email")) or sess.get("customer_email"))
+        sub_status = "via_session"
+    elif sub_id:
+        sub = _stripe_get("/v1/subscriptions/%s?expand[]=items.data.price.product" % sub_id, stripe_key)
+        if not sub:
+            return jsonify({"error": "subscription not found / Stripe fetch failed", "diag": diag}), 404
+        sub_status = sub.get("status")
+        customer = customer or sub.get("customer")
+        for it in ((sub.get("items") or {}).get("data") or []):
+            prod = (it.get("price") or {}).get("product")
+            prod_id = prod.get("id") if isinstance(prod, dict) else prod
+            prod_nm = prod.get("name", "") if isinstance(prod, dict) else ""
+            qty = int(it.get("quantity") or 100); break
+    else:
+        return jsonify({"error": "subscription_id or session_id required", "diag": diag}), 400
+
+    if not email_ov and customer:
+        cu = _stripe_get("/v1/customers/%s" % customer, stripe_key) or {}
+        email_ov = ((cu.get("email") or "").strip().lower()) or None
+
+    is_usage = (prod_id == _USAGE_PRODUCT_ID) or ("Usage-Based" in str(prod_nm))
+    tier = _qty_to_tier(qty or 100)
+
+    _ensure_metered_keys()
+    existing = None
+    try:
+        with _conn() as c, c.cursor() as cur:
+            if customer:
+                cur.execute("SELECT api_key FROM metered_keys WHERE stripe_customer_id=%s LIMIT 1", (customer,))
+                r = cur.fetchone()
+                if r:
+                    existing = r[0]
+    except Exception:
+        pass
+
+    base = {"diag": diag, "subscription_id": sub_id, "session_id": sess_id,
+            "customer": customer, "subscription_status": sub_status,
+            "product_id": prod_id, "product_name": prod_nm,
+            "is_usage_product": is_usage, "qty": qty, "tier": tier,
+            "email": email_ov,
+            "existing_key_short": ((existing or "")[:12] + "…") if existing else None,
+            "webhook_ran_already": bool(existing)}
+
+    if not is_usage:
+        base["action"] = "skip_not_usage_product"
+        return jsonify(base), 200
+    if dry_run:
+        base["action"] = "dry_run — re-POST with dry_run:false to issue + email the key"
+        return jsonify(base), 200
+
+    # --- 3. issue (idempotent) + email (capture real send status) -------
+    api_key = existing
+    try:
+        with _conn() as c, c.cursor() as cur:
+            if not api_key:
+                api_key = "dch_live_" + _secrets.token_hex(16)
+                cur.execute("""INSERT INTO mcp_dev_keys (api_key, developer_id, email, tier, status, metadata)
+                    VALUES (%s,%s,%s,%s,'active',%s::jsonb) ON CONFLICT (api_key) DO NOTHING""",
+                    (api_key, "dev_" + _secrets.token_hex(8), (email_ov or None), tier,
+                     json.dumps({"source": "recover_usage_key", "qty": qty,
+                                 "stripe_customer_id": customer})))
+                if customer:
+                    cur.execute("""INSERT INTO metered_keys (api_key, stripe_customer_id, subscription_id, active, last_reported_at, linked_at)
+                        VALUES (%s,%s,%s,TRUE,NOW(),NOW())
+                        ON CONFLICT (api_key) DO UPDATE SET active=TRUE, stripe_customer_id=EXCLUDED.stripe_customer_id""",
+                        (api_key, customer, sub_id))
+            c.commit()
+    except Exception as e:
+        base["action"] = "db_error"; base["error"] = str(e)[:200]
+        return jsonify(base), 500
+
+    email_ok, email_detail = (False, "no_email_address")
+    if email_ov and api_key:
+        try:
+            from routes.redeem_routes import _p99_send_email
+            email_ok, email_detail = _p99_send_email(email_ov, api_key, [])
+        except Exception as _ee:
+            email_ok, email_detail = False, f"{type(_ee).__name__}: {str(_ee)[:160]}"
+
+    base["action"] = "issued"
+    base["api_key_short"] = (api_key or "")[:12] + "…"
+    base["reused_existing"] = bool(existing)
+    base["email_ok"] = email_ok
+    base["email_detail"] = str(email_detail)[:300]
+    return jsonify(base), 200
 
 
 @stripe_metered_bp.route("/report-to-stripe", methods=["POST"])
