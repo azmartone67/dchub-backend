@@ -121,6 +121,77 @@ def init_content_tables():
         try: conn.close()
         except Exception: pass
 
+def _media_block_category(reason: str) -> str:
+    r = (reason or "").lower()
+    if "disclaimer" in r:                       return "ai_disclaimer_as_validation"
+    if "duplicate" in r or "hook" in r:         return "duplicate_post"
+    if "zero-stat" in r:                        return "zero_stat"
+    if "stub" in r or "deal" in r:              return "value_less_deal_stub"
+    if "low quality" in r or "editor rejected" in r: return "thin_or_offbrand"
+    return "other"
+
+
+@content_bp.route('/api/v1/media/self-critique', methods=['GET'])
+def media_self_critique():
+    """r66 EVOLVING-MEDIA visibility: what the publish gate REJECTED in the last
+    7 days (by category), the reject rate vs what shipped, and the exact lessons
+    now fed back into the generator's prompt. This is how the brain (and you) can
+    SEE DC Hub Media learning from its own mistakes. Open read — quality
+    telemetry, no secrets."""
+    _labels = {
+        "ai_disclaimer_as_validation": "quoting an AI disclaiming knowledge as 'validation'",
+        "duplicate_post": "duplicating a recent post (same hook/story)",
+        "zero_stat": "a headline stat that is 0/empty",
+        "value_less_deal_stub": "a value-less deal stub (no $/MW)",
+        "thin_or_offbrand": "thin/low-signal or off-brand content",
+        "other": "other quality issues",
+    }
+    out = {"window_days": 7, "blocked_total": 0, "blocked_by_category": {},
+           "published_7d": 0, "reject_rate": None, "recent_blocks": [],
+           "lessons_fed_to_generator": []}
+    conn = _get_db()
+    if conn is None:
+        out["error"] = "no_db"
+        return jsonify(out), 200
+    try:
+        with conn.cursor() as cur:
+            rows = []
+            try:
+                cur.execute("""SELECT reason, created_at FROM media_review_log
+                    WHERE decision = 'blocked'
+                      AND created_at > NOW() - INTERVAL '7 days'
+                    ORDER BY created_at DESC LIMIT 500""")
+                rows = cur.fetchall() or []
+            except Exception:
+                rows = []  # table may not exist until the first block
+            cats = {}
+            for row in rows:
+                reason = row.get('reason') if hasattr(row, 'get') else row[0]
+                cats[_media_block_category(reason)] = cats.get(_media_block_category(reason), 0) + 1
+            out["blocked_total"] = len(rows)
+            out["blocked_by_category"] = dict(sorted(cats.items(), key=lambda x: -x[1]))
+            out["recent_blocks"] = [
+                {"category": _media_block_category(r.get('reason') if hasattr(r, 'get') else r[0]),
+                 "reason": ((r.get('reason') if hasattr(r, 'get') else r[0]) or "")[:140]}
+                for r in rows[:8]]
+            try:
+                cur.execute("""SELECT COUNT(*) FROM social_media_posts
+                    WHERE status='published' AND publish_platform='linkedin'
+                      AND published_at >= (NOW() - INTERVAL '7 days')""")
+                pr = cur.fetchone()
+                out["published_7d"] = int((pr.get('count') if hasattr(pr, 'get') else pr[0]) or 0)
+            except Exception:
+                pass
+    finally:
+        try: conn.close()
+        except Exception: pass
+    _tot = out["blocked_total"] + out["published_7d"]
+    out["reject_rate"] = round(out["blocked_total"] / _tot, 3) if _tot else None
+    out["lessons_fed_to_generator"] = [
+        f"{n}× {_labels.get(k, k)}" for k, n in out["blocked_by_category"].items()]
+    return jsonify(out), 200
+
+
 @content_bp.route('/api/admin/content/stats', methods=['GET'])
 def content_stats():
     if not _check_admin(request):
@@ -1443,6 +1514,44 @@ def _editor_review(content_text: str):
         return True, f"editor-skip:{type(e).__name__}"
 
 
+_media_review_ready = False
+
+
+def _record_media_block(platform: str, reason: str, content: str = ""):
+    """r66 EVOLVING-MEDIA LOOP: persist every gate REJECTION (with reason) so the
+    generator can learn from its own mistakes (lessons fed back into the prompt
+    by marketing_engine._inject_editorial_lessons) and the brain can see the
+    quality trend (/api/v1/media/self-critique). Fail-soft — telemetry must NEVER
+    break or block publishing."""
+    global _media_review_ready
+    try:
+        conn = _get_db()
+        if conn is None:
+            return
+        try:
+            with conn.cursor() as cur:
+                if not _media_review_ready:
+                    cur.execute("""CREATE TABLE IF NOT EXISTS media_review_log (
+                        id BIGSERIAL PRIMARY KEY, platform TEXT,
+                        decision TEXT DEFAULT 'blocked', reason TEXT,
+                        content_excerpt TEXT,
+                        created_at TIMESTAMPTZ DEFAULT NOW())""")
+                    cur.execute("CREATE INDEX IF NOT EXISTS media_review_log_ts "
+                                "ON media_review_log(created_at DESC)")
+                    conn.commit()
+                    _media_review_ready = True
+                cur.execute(
+                    "INSERT INTO media_review_log (platform, decision, reason, content_excerpt) "
+                    "VALUES (%s,'blocked',%s,%s)",
+                    (platform, (reason or "")[:300], (content or "")[:280]))
+                conn.commit()
+        finally:
+            try: conn.close()
+            except Exception: pass
+    except Exception:
+        pass
+
+
 def _should_skip_publish(cur, content_text: str, platform: str):
     """Pre-publish media-judgment filter. Returns (skip: bool, reason: str).
 
@@ -1956,6 +2065,7 @@ def start_auto_publisher():
                         _chook = _opening_hook(_ctext or '')
                         if _chook and _chook in _seen_hooks_run:
                             logger.warning("Auto-publisher: SKIPPED LinkedIn candidate (same-fire duplicate hook '%s')", _chook[:48])
+                            _record_media_block('linkedin', 'same-fire duplicate hook', _ctext)   # r66
                             continue
                         # r63 (2026-05-29): entity-level + zero-stat judgment.
                         # Catches near-dupes the coarse class tag misses (two
@@ -1969,6 +2079,7 @@ def start_auto_publisher():
                                 "Auto-publisher: SKIPPED LinkedIn candidate %s for dedup/judgment — %s",
                                 (_cand.get('id') if hasattr(_cand, 'get') else (_cand[0] if _cand else '?')),
                                 _why)
+                            _record_media_block('linkedin', _why, _ctext)   # r66 evolving loop
                             continue
                         row = _cand
                         _seen_classes_today.add(_cls)

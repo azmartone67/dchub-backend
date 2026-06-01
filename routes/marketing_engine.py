@@ -930,6 +930,55 @@ def _inject_live_stats(system_prompt: str) -> str:
         return system_prompt
 
 
+def _inject_editorial_lessons(system_prompt: str) -> str:
+    """r66 EVOLVING-MEDIA LOOP: append the engine's OWN recent gate REJECTIONS
+    (categorized, last 7d) to the generation prompt so it stops repeating the
+    same mistakes at GENERATION time — not just gets blocked at publish. This is
+    what makes DC Hub Media 'know better': the editor's rejections become the
+    next generation's guardrails. Reads media_review_log (written by
+    content_publisher._record_media_block). Fail-safe → original prompt."""
+    try:
+        c = _conn()
+        if c is None:
+            return system_prompt
+        cats = {}
+        try:
+            with c.cursor() as cur:
+                cur.execute("""SELECT reason FROM media_review_log
+                    WHERE decision = 'blocked'
+                      AND created_at > NOW() - INTERVAL '7 days'
+                      AND reason IS NOT NULL LIMIT 500""")
+                for row in cur.fetchall() or []:
+                    r = (row[0] or "").lower()
+                    if "disclaimer" in r:
+                        k = "quoting an AI that DISCLAIMS knowledge as if it were 'validation' (never showcase 'I don't have info' responses)"
+                    elif "duplicate" in r or "hook" in r:
+                        k = "duplicating a recent post — same hook/story (vary the angle, pick a different topic)"
+                    elif "zero-stat" in r:
+                        k = "leading with a headline stat that is 0 / empty"
+                    elif "stub" in r or "deal" in r:
+                        k = "a value-less deal stub (a 'Deal - Company' line with no $ or MW)"
+                    elif "low quality" in r or "editor rejected" in r:
+                        k = "thin, low-signal, off-brand, or cringe/over-claiming content"
+                    else:
+                        k = "other quality issues"
+                    cats[k] = cats.get(k, 0) + 1
+        finally:
+            try: c.close()
+            except Exception: pass
+        if not cats:
+            return system_prompt
+        top = sorted(cats.items(), key=lambda x: -x[1])[:5]
+        lessons = "\n".join(f"- {n}× {k}" for k, n in top)
+        return system_prompt + (
+            "\n\nRECENT EDITORIAL REJECTIONS (last 7 days) — drafts BLOCKED before "
+            "publishing for these reasons. DO NOT repeat any of them:\n" + lessons +
+            "\nWrite this post so it would clear the editor on all of the above."
+        )
+    except Exception:
+        return system_prompt
+
+
 def _call_claude_marketing(prompt: str) -> tuple[dict | None, str | None]:
     """Single Anthropic call. Returns (parsed_json, error)."""
     if not ANTHROPIC_API_KEY:
@@ -938,7 +987,7 @@ def _call_claude_marketing(prompt: str) -> tuple[dict | None, str | None]:
     body = json.dumps({
         "model": MARKETING_MODEL,
         "max_tokens": 1500,
-        "system": _inject_live_stats(_MARKETING_SYSTEM),
+        "system": _inject_editorial_lessons(_inject_live_stats(_MARKETING_SYSTEM)),
         "messages": [{"role": "user", "content": prompt}],
     }).encode("utf-8")
     req = Request("https://api.anthropic.com/v1/messages", data=body, headers={
