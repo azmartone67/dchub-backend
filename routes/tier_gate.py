@@ -362,6 +362,19 @@ def rate_limit(per_minute: int = 60, key_fn=None):
         from functools import wraps
         @wraps(fn)
         def wrapper(*a, **kw):
+            # r58b (2026-06-01): exempt trusted internal callers from the rate
+            # limiter. The brain-radar self-probes (X-Internal-Key, hitting
+            # localhost:8080) were getting 429'd on /redeem/funnel-stats,
+            # /reports/monthly, /freshness/radar, /ai-citations/history,
+            # /brain/memory/stats — server-to-server traffic, not abuse.
+            # Fail-open: any error falls through to normal rate limiting.
+            try:
+                from internal_auth import is_valid_internal_key
+                if (is_valid_internal_key(request.headers.get("X-Internal-Key", ""))
+                        or request.remote_addr in ("127.0.0.1", "::1", "localhost")):
+                    return fn(*a, **kw)
+            except Exception:
+                pass
             # Build a stable key per caller
             if key_fn:
                 try: key = str(key_fn(request))
