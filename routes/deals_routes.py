@@ -626,7 +626,8 @@ def _get_transactions_free():
 
     deals = SAMPLE_DEALS.copy()
     loaded_from_db = False
-    true_total = None   # real COUNT(*) across the whole table (not the LIMIT 200 page)
+    true_total = None      # two-party COUNT(*) (buyer AND seller present) — the displayable feed
+    total_tracked = None   # raw COUNT(*) over the whole table incl. single-party capex/contract rows
 
     pg_url = os.environ.get('DATABASE_URL', '')
     if pg_url:
@@ -655,9 +656,16 @@ def _get_transactions_free():
                         "  AND COALESCE(LOWER(seller),'') NOT IN ('tbd','unknown','n/a','')"
                     )
                     true_total = pg_cur.fetchone()[0]
+                    # Raw total incl. single-party capex/AI-contract announcements
+                    # (legitimately have no "seller"). This is the honest
+                    # "transactions tracked" number the State-of-Market report
+                    # cites, and matches the platform health deal_count.
+                    pg_cur.execute("SELECT COUNT(*) FROM deals")
+                    total_tracked = pg_cur.fetchone()[0]
                 except Exception as _ce:
                     logger.warning(f"deals COUNT(*) failed, falling back to page len: {_ce}")
                     true_total = None
+                    total_tracked = None
             if db_deals:
                 # Live wins completely — no seed merge.
                 deals = db_deals
@@ -687,6 +695,7 @@ def _get_transactions_free():
         'data': basic_deals,
         'count': len(basic_deals),
         'total_matching': total_matching,
+        'total_tracked': total_tracked if (loaded_from_db and total_tracked is not None) else total_matching,
         'full_results_available': total_matching > FREE_LIMIT,
         'data_source': 'live' if loaded_from_db else 'fallback_seed',
         'tier': 'free',
