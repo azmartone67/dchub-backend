@@ -80,11 +80,14 @@ verdict and get the EIA/HIFLD/ISO row IDs.
   what at which facility. CBRE has that from leasing engagements.
 - **Limited tenant credit risk view** — your team has direct exposure to
   underwriting; we have public-facing signals only.
-- **International ISO coverage gap** — capabilities feed shows 0
-  international ISOs RIGHT NOW (data-quality issue we're tracking).
-  Hydro-Québec / AESO / Nord Pool ingestion runs but the ISO-tagged
-  rollup isn't materializing in today's bake. Honest answer: "we're
-  fixing this in the next sprint." Don't oversell it.
+- **International ISO depth gap** — capabilities feed reports 3 modeled
+  grids with calibrated thresholds (Hydro-Québec, AESO, Nord Pool).
+  Dashboard scores ~12 more international markets using ISO defaults
+  (NGESO, ENTSOE-DE/FR/NL, KEPCO, TEPCO, AEMO, EMA, IESO, BCH).
+  The depth gap is that calibration outside North America still needs
+  local reserve-margin / curtailment overrides — same calibration
+  pattern we applied to Cheyenne, Williston, etc. Honest answer:
+  "calibration coverage outside HQ/AESO/Nord Pool runs through Q3."
 
 ---
 

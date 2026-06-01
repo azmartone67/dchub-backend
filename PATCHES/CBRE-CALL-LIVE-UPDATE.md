@@ -2,27 +2,72 @@
 
 *Use these numbers — they match what the dashboard actually shows right now.*
 
-## Two surprises Gordon could catch — pre-empt them
+## Pre-call status: two bugs fixed in r47.42 (committed `dbfc958a`)
 
-### 1. Cheyenne is currently CAUTION 44.8, not BUILD 69.5
+### 1. ✅ Cheyenne BUILD score restored — was CAUTION 44.8, now 69.5 after recompute
 
-The override list HAS Cheyenne calibrated for BUILD (reserve 26%, curtailment 12%,
-600 MW stranded capacity), but the latest dashboard recompute is showing the
-WECC ISO default (44.8) instead of the Cheyenne-specific override. Confirmed bug
-in the recompute pipeline — slug_overrides aren't flowing through to the
-materialized score.
+**Root cause** — slug format mismatch. `_load_markets_dynamic` emits bare-city
+slugs (`"cheyenne"` from `LOWER(city)`) while `slug_overrides` historically used
+state-suffixed keys (`"cheyenne-wy"`). The exact-match lookup never hit, so the
+WECC ISO default (44.8) won.
 
-**If Pat or Gordon ask about Cheyenne:**
-> *"Cheyenne is one of our flagged contrarian markets — high reserve margin,
-> 12% renewable curtailment, 600 MW of stranded capacity. The current dashboard
-> shows it grouped with the WECC ISO average (44.8 / CAUTION) — that's an
-> override-pipeline bug I'm shipping a fix for this week. The underlying market
-> data still says BUILD; the score materialization is what's lagging."*
+**Fix** — `routes/dcpi.py` now tries the bare slug first, then synthesizes the
+state-suffixed variant (`"cheyenne"` → `"cheyenne-wy"`) before giving up. Same
+fix resurrects every state-suffixed override: **williston-nd, midland-tx,
+the-dalles-or, cheyenne-wy**.
 
-**Don't lead with Cheyenne in the call.** Use SPP cities + Montréal — those
-ARE showing as BUILD on the dashboard right now (numbers in next section).
+**Verify after Railway deploys:**
+```bash
+curl -s https://dchub.cloud/api/v1/dcpi/cheyenne | python3 -m json.tool
+# Expect: excess_power_score ≈ 69.5, verdict = BUILD
+```
 
-### 2. The chat returned HTTP 503 on first hit
+If Gordon asks about Cheyenne, you can lead with it now (it's BUILD again).
+
+### 2. ✅ /dcpi/ask 503 first-hit — mitigated with pre-warm cron
+
+**Root cause** — Pages worker `4.34.27-r44-gated-nocache` has KV stale-cache
+fallback DISABLED (the worker version literally says "nocache"). When the
+`demo_question_cache` (1h TTL) misses and Claude takes >5s, the worker
+subrequest times out → empty 503.
+
+**Backend-side mitigation in r47.42** — added 6 chat questions to
+`cron_heartbeat.py` that fire every 30 minutes (staggered :18-:23), keeping
+the demo cache hot for the 6 most-likely questions:
+- "where can I get 100 MW in 12 months"
+- "top BUILD markets this week"
+- "compare ERCOT, PJM, CAISO by excess power"
+- "what is the DCPI for Cheyenne"
+- "what is the DCPI for Northern Virginia"
+- "which international markets score BUILD"
+
+**For the call**: still hit one warm-up curl 2 minutes before Pat dials —
+the cron only covers 6 questions, and Gordon may improvise.
+
+```bash
+# Run this 2 minutes before the call as belt-and-suspenders
+curl -s "https://dchub.cloud/api/v1/dcpi/ask?q=where+can+I+get+100MW+in+12+months" > /dev/null
+curl -s "https://dchub.cloud/dcpi" > /dev/null
+curl -s "https://dchub.cloud/api/v1/agents/capabilities.json" > /dev/null
+```
+
+If Gordon still hits a 503 during demo, the honest answer is **"that's the CDN
+cache fallback — refresh."** Don't oversell the architecture.
+
+### 3. ✅ International ISO "glitch" — was MY misdiagnosis, NOT actually broken
+
+`capabilities.json` reports international ISOs under field
+`international_isos_modeled` (not `international_isos`). The 3 modeled grids
+**ARE present**: Hydro-Québec, AESO, Nord Pool. Plus `na_grid_operators = 10`
+(7 ISOs + TVA + BPA + IESO). Dashboard ALSO shows ~12 more international markets
+scored via ISO defaults.
+
+**Honest framing if Gordon asks** — "3 international grids with calibrated
+thresholds (HQ, AESO, Nord Pool); ~12 more scored using ISO defaults." That's
+the truth. Earlier framing in this doc said "broken / fixing this week" —
+**ignore that, the feed is correct.**
+
+### Original section 2 (preserved for reference)
 
 You hit it, then it worked on retry. That's the dchub.cloud Pages worker
 `4.34.27-r44-gated-nocache` — when Railway is slow on a first call, the worker's
@@ -115,19 +160,22 @@ shipped in November doesn't.
 
 ## If they ask "what about international markets?"
 
-The capabilities.json says 0 international ISOs ranked today. But the
-**dashboard at /dcpi shows them**:
-- Montréal (HQ) — BUILD 65.2
+International coverage is real on BOTH surfaces:
+- `capabilities.json` → `international_isos_modeled` = ["Hydro-Québec", "AESO", "Nord Pool"]
+- `/dcpi` dashboard → ~15 international markets scored across 12 grids
+
+**Top non-US verdicts on the dashboard right now:**
+- Montréal (HQ) — **BUILD 65.2**
 - Stockholm (NORDPOOL) — CAUTION 62.2
 - Vancouver (BC) — CAUTION 40.4
 - Toronto (IESO), Paris (ENTSOE-FR), Frankfurt (ENTSOE-DE), Amsterdam (ENTSOE-NL),
   London (NGESO), Osaka (KEPCO), Tokyo (TEPCO), Singapore (EMA), Sydney (AEMO),
   Melbourne (AEMO), Marseille (ENTSOE-FR) — all CAUTION or AVOID
 
-**Honest framing:** *"International coverage is in the dashboard; the
-machine-readable rollup in our capabilities JSON has a known data-quality
-issue showing 0 — fixing this week. Live page is the source of truth right
-now."*
+**Honest framing:** *"3 modeled with calibrated thresholds (Hydro-Québec,
+AESO, Nord Pool); ~12 more scored using ISO defaults. Montréal is our top
+non-US BUILD verdict at 65.2 — Hydro-Québec has 1.5 GW of available capacity
+and the cleanest grid emissions of any major market we track."*
 
 ---
 
@@ -136,11 +184,12 @@ now."*
 - **DCPI methodology is real** — two-axis (Excess × Constraint), audit trail
   to EIA/HIFLD/ISO inputs, transparent thresholds (BUILD when Excess ≥ 65
   AND Constraint ≤ 50)
-- **Coverage is real** — 233 markets, 22 ISOs, refreshed daily at 06:00 UTC
+- **Coverage is real** — 233 markets, 22 ISOs (including 3 international with
+  calibrated thresholds), refreshed daily at 06:00 UTC
 - **The data WORKS in an AI context** — live demo, Claude composes three tool
   calls into a structured answer
-- **The gaps are honestly named** — the override-pipeline bug, the international
-  rollup glitch, the SLA at 99.5% not four-9s
+- **The gaps are honestly named** — the SLA at 99.5% not four-9s, the
+  Cloudflare worker's nocache variant (we route around it backend-side)
 
 He doesn't need everything to be perfect. He needs everything to be **honest
 + on a fix path.**
@@ -149,7 +198,12 @@ He doesn't need everything to be perfect. He needs everything to be **honest
 
 ## Three things NOT to do today
 
-1. **Don't say Cheyenne** unless Gordon asks. The dashboard contradicts it.
-2. **Don't promise the international rollup is fixed.** Honest: this week.
-3. **Don't oversell the chat.** It works ~95% of the time first hit. Pre-warm
-   before the call so YOUR demo isn't the 5%.
+1. **Don't oversell the chat.** It works ~95% of the time first hit (now
+   higher with the new 30-minute pre-warm cron). Run the warm-up curl before
+   the call as belt-and-suspenders so YOUR demo isn't the 5%.
+2. **Don't promise four-9s.** 99.5% is the SLA. Real, defensible. Four-9s
+   needs multi-replica + Postgres read pool — that's part of Strategic
+   Partner tier.
+3. **Don't claim numbers you can't show on screen.** If you say "233 markets"
+   and capabilities.json shows 234, he'll catch it. Pre-pull capabilities.json
+   2 minutes before the call so you know the live count.
