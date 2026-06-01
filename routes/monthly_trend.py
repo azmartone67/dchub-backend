@@ -562,7 +562,7 @@ def _compute_report(year: int | None = None,
                     "delta":  0,
                     "note":   ("No markets crossed the 5-point WoW "
                                "threshold this period. DCPI scores "
-                               "remained stable across all 285 tracked "
+                               "remained stable across all 232 tracked "
                                "markets — see /api/v1/dcpi/scores for "
                                "the full leaderboard."),
                     "sentinel": True,
