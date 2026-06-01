@@ -786,6 +786,14 @@ h2{font-size:1.6rem;font-weight:700;margin:0 0 1rem;letter-spacing:-0.015em}
 .toggle button{background:transparent;color:var(--tx2);border:0;padding:0.7rem 1.25rem;cursor:pointer;font-weight:600;font-size:0.85rem;font-family:inherit;transition:all 0.15s}
 .toggle button.active{background:var(--gradient);color:white}
 .grid{display:grid;grid-template-columns:repeat(auto-fill,minmax(280px,1fr));gap:1rem}
+/* r47.45 (2026-05-27): card-link wraps each .card so the full card area
+   becomes a clickable region. Same fix as DCPI r47.44 — default-inline
+   anchors collapse to ~0px in CSS grid, making the card look clickable
+   (cursor:pointer) without actually navigating. Add display:block so the
+   anchor participates in the grid as a block-level item; cursor:pointer
+   so the whole card surface still shows the hand. */
+.card-link{display:block;text-decoration:none;color:inherit;cursor:pointer}
+.card-link:focus-visible{outline:2px solid var(--bd-hi);outline-offset:2px;border-radius:14px}
 .card{background:var(--card);border:1px solid var(--bd);border-radius:12px;padding:1.4rem 1.5rem;transition:all 0.18s ease;position:relative;overflow:hidden}
 .card:hover{transform:translateY(-3px);border-color:var(--bd-hi);background:var(--card-hi);box-shadow:0 12px 32px rgba(16,185,129,0.10)}
 .card .market-name{font-size:1.1rem;font-weight:600;margin:0 0 0.25rem;letter-spacing:-0.01em}
@@ -885,14 +893,22 @@ _DCGI_DASH_JS = r"""
       var scoreHtml = (primary === null)
         ? '<div class="score" style="color:var(--tx3)">🔒</div>'
         : '<div class="score ' + scoreClass(primary) + '">' + primary + '</div>';
-      return '<div class="card">'
+      // r47.45 (2026-05-27): wrap the card in an <a class="card-link"> so
+      // clicking the card navigates to the state-level DCGI detail page.
+      // Pre-r47.45 the cards rendered as bare <div>s with cursor:pointer
+      // but no href — clicks did nothing. Same shape as the DCPI hero
+      // cards in routes/dcpi.py: anchor → card div → contents.
+      var stateSlug = encodeURIComponent((s.state || '').toUpperCase());
+      return '<a class="card-link" href="/dcgi/' + stateSlug + '" data-verdict="' + (s.verdict || '') + '">'
+        + '<div class="card">'
         + '<div class="market-name">' + (s.state || '?') + '</div>'
         + '<div class="iso">United States · gas</div>'
         + scoreHtml
         + '<div class="label">' + primaryLabel + '</div>'
         + '<div class="verdict ' + vc + '">' + (s.verdict || '—') + '</div>'
         + sub
-        + '</div>';
+        + '</div>'
+        + '</a>';
     }).join('');
   }
 
@@ -1288,6 +1304,220 @@ def dcgi_html():
     resp = Response(html, mimetype="text/html")
     resp.headers["Cache-Control"] = "public, max-age=120, s-maxage=300"
     resp.headers["Link"] = "<https://creativecommons.org/licenses/by/4.0/>; rel=\"license\""
+    return resp
+
+
+# r47.45 (2026-05-27): per-state HTML detail page. /dcgi cards now link
+# here. Before this route, the JS leaderboard rendered bare <div>s with
+# no anchor — cards looked clickable (cursor:pointer) but did nothing.
+# Mirrors the /dcpi/<slug> pattern (which already existed). Pulls from
+# the same _gas_state_rollup() that powers the API at
+# /api/v1/dcgi/scores/<state>, plus the operators list filtered to
+# operators with footprint in this state, plus a short pipeline-side
+# narrative block. Free preview: state + verdict + qualitative summary;
+# numeric scores (DCGI / Gas Access / Gas Cost) are Pro-gated same as
+# the leaderboard.
+_US_STATE_NAMES = {
+    "AL":"Alabama","AK":"Alaska","AZ":"Arizona","AR":"Arkansas","CA":"California",
+    "CO":"Colorado","CT":"Connecticut","DE":"Delaware","FL":"Florida","GA":"Georgia",
+    "HI":"Hawaii","ID":"Idaho","IL":"Illinois","IN":"Indiana","IA":"Iowa","KS":"Kansas",
+    "KY":"Kentucky","LA":"Louisiana","ME":"Maine","MD":"Maryland","MA":"Massachusetts",
+    "MI":"Michigan","MN":"Minnesota","MS":"Mississippi","MO":"Missouri","MT":"Montana",
+    "NE":"Nebraska","NV":"Nevada","NH":"New Hampshire","NJ":"New Jersey","NM":"New Mexico",
+    "NY":"New York","NC":"North Carolina","ND":"North Dakota","OH":"Ohio","OK":"Oklahoma",
+    "OR":"Oregon","PA":"Pennsylvania","RI":"Rhode Island","SC":"South Carolina",
+    "SD":"South Dakota","TN":"Tennessee","TX":"Texas","UT":"Utah","VT":"Vermont",
+    "VA":"Virginia","WA":"Washington","WV":"West Virginia","WI":"Wisconsin","WY":"Wyoming",
+    "DC":"District of Columbia",
+}
+
+
+@dcgi_bp.route("/dcgi/<state>", methods=["GET"])
+def dcgi_state_html(state):
+    """Per-state DCGI detail. The DCGI dashboard's leaderboard cards link
+    here so users can drill into a state's gas-access / gas-cost / pipeline
+    breakdown. Tier-gated like /dcgi: anon callers see verdict + qualitative
+    narrative; paid callers see the numeric DCGI / gas_access / gas_cost
+    scores. r47.45.
+    """
+    st = (state or "").upper()[:2]
+    if not st or st not in _US_STATE_NAMES:
+        # Be friendly: bounce back to the dashboard rather than serving a
+        # generic 404. /dcgi will load the leaderboard and the user can
+        # find a valid card to click.
+        from flask import redirect
+        return redirect("/dcgi", code=302)
+
+    states, err = _gas_state_rollup()
+    if err or not states or st not in states:
+        # Data not yet baked / recompute window — soft 404 with a hint.
+        full_name = _US_STATE_NAMES.get(st, st)
+        body = (
+            "<!DOCTYPE html><html><head><meta charset='utf-8'>"
+            f"<title>DCGI · {full_name} · DC Hub</title>"
+            "<meta name='robots' content='noindex'></head><body>"
+            f"<h1>DCGI for {full_name} ({st})</h1>"
+            "<p>This state has no DCGI score yet — the rollup recomputes "
+            "hourly. <a href='/dcgi'>Back to the DCGI leaderboard</a>.</p>"
+            "</body></html>")
+        return Response(body, status=404, mimetype="text/html")
+
+    s = states[st]
+    full_name = _US_STATE_NAMES.get(st, st)
+    plan = _dcgi_resolve_plan()
+    paid = plan in _DCGI_PAID_PLANS
+
+    # Operators with footprint in this state (best-effort — _operator_rollup
+    # returns the national list; we keep all tracked operators since
+    # midstream pipelines span multiple states).
+    ops, _ = _operator_rollup()
+    tracked_ops = [o for o in (ops or []) if o.get("tracked")]
+
+    # Pretty-print or lock the numeric fields. Verdict is always public.
+    def n(v):
+        return f"{v}" if v is not None else "—"
+
+    if paid:
+        dcgi_val = n(s.get("dcgi"))
+        access_val = n(s.get("gas_access_score"))
+        cost_val = n(s.get("gas_cost_score"))
+        price_val = f"${s['gas_price']:.2f}" if s.get("gas_price") is not None else "—"
+        score_label = "Live scores"
+    else:
+        dcgi_val = "🔒"
+        access_val = "🔒"
+        cost_val = "🔒"
+        price_val = "🔒"
+        score_label = ('Scores Pro · <a href="/pricing" '
+                       'style="color:#34d399;text-decoration:none">unlock</a>')
+    pipes_val = n(s.get("pipelines"))
+    ops_val = n(s.get("operators"))
+    verdict = s.get("verdict") or "—"
+    verdict_class = _vclass(verdict)
+
+    # Narrative — same flavor as /dcpi/<slug>: state-specific qualitative
+    # interpretation that's free + safe for SEO.
+    narrative = {
+        "GAS-ADVANTAGED": (
+            f"{full_name} sits on top of significant pipeline infrastructure "
+            f"with {pipes_val} segments and {ops_val} midstream operators "
+            "tracked. For data-center load that can't wait 24–60 months on "
+            "the interconnection queue, behind-the-meter natural gas with "
+            "direct offtake from upstream is a deployable path. The "
+            "GAS-ADVANTAGED verdict means both pipeline access and gas "
+            "delivered cost are favorable versus the national median."
+        ),
+        "ADEQUATE": (
+            f"{full_name} has workable pipeline access ({pipes_val} segments, "
+            f"{ops_val} operators tracked) but is closer to the national "
+            "median on either cost or coverage. Suitable for behind-the-meter "
+            "gas-to-power deployment, but operators should expect to negotiate "
+            "harder for capacity and may face higher delivered costs than the "
+            "GAS-ADVANTAGED states."
+        ),
+        "GAS-CONSTRAINED": (
+            f"{full_name} is gas-constrained for new DC load — pipeline "
+            "infrastructure is thinner ({pipes_val} segments) or delivered "
+            "costs are well above the national median. Behind-the-meter "
+            "gas-to-power is a difficult path here; grid-connection or "
+            "renewables + storage is likely the better route. Use the "
+            "DCPI alongside DCGI to find the right state — they answer "
+            "different questions."
+        ),
+    }.get(verdict, "DCGI score is recomputing — check back shortly.")
+    narrative = narrative.format(pipes_val=pipes_val) if "{pipes_val}" in narrative else narrative
+
+    op_rows_html = "".join(
+        f"<li><b>{o['name']}</b> · {o.get('type','—')} · HQ: {o.get('hq','—')} "
+        f"· {o.get('pipeline_segments', 0)} segments</li>"
+        for o in tracked_ops[:25]
+    ) or "<li class='note'>No tracked midstream operators in this view.</li>"
+
+    canonical = f"https://dchub.cloud/dcgi/{st}"
+    html = f"""<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<title>DCGI · {full_name} ({st}) · DC Hub</title>
+<meta name="description" content="Data Center Gas Index (DCGI) for {full_name}. Verdict: {verdict}. Pipeline segments, midstream operators, and gas-to-power siting analysis from DC Hub.">
+<link rel="canonical" href="{canonical}">
+<meta property="og:title" content="DCGI · {full_name} — {verdict}">
+<meta property="og:type" content="article">
+<meta property="og:url" content="{canonical}">
+<style>
+:root{{--bg:#0a0a12;--card:#11121a;--card-hi:#181a26;--bd:#1f2030;--bd-hi:#34d399;--tx:#ffffff;--tx2:#9ca3af;--tx3:#6b7280;--acc:#10b981;--acc-light:#34d399;}}
+*{{box-sizing:border-box}}
+body{{margin:0;background:var(--bg);color:var(--tx);font-family:'Instrument Sans',-apple-system,system-ui,sans-serif;font-size:16px;line-height:1.55}}
+.wrap{{max-width:920px;margin:0 auto;padding:2rem 1.25rem 4rem}}
+.crumbs{{font-size:0.82rem;color:var(--tx2);margin-bottom:1.2rem}}
+.crumbs a{{color:var(--tx2);text-decoration:none}}.crumbs a:hover{{color:var(--acc-light)}}
+h1{{font-size:2.2rem;margin:0 0 0.4rem;font-weight:800;letter-spacing:-0.02em}}
+h1 .st{{color:var(--tx2);font-weight:600}}
+.lede{{color:var(--tx2);margin:0 0 1.5rem;font-size:1.05rem}}
+.verdict{{display:inline-block;padding:0.4rem 0.85rem;border-radius:999px;font-size:0.85rem;font-weight:700;letter-spacing:0.05em}}
+.verdict.adv{{background:rgba(16,185,129,0.15);color:#34d399;border:1px solid rgba(52,211,153,0.4)}}
+.verdict.adq{{background:rgba(245,158,11,0.15);color:#fbbf24;border:1px solid rgba(251,191,36,0.4)}}
+.verdict.con{{background:rgba(239,68,68,0.15);color:#fb7185;border:1px solid rgba(251,113,133,0.4)}}
+.metrics{{display:grid;grid-template-columns:repeat(auto-fit,minmax(140px,1fr));gap:0.6rem;margin:1.5rem 0 2rem}}
+.m{{background:var(--card);border:1px solid var(--bd);border-radius:10px;padding:0.9rem 1rem}}
+.m .l{{font-size:0.7rem;text-transform:uppercase;letter-spacing:0.08em;color:var(--tx2);margin-bottom:0.3rem}}
+.m .v{{font-size:1.6rem;font-weight:800;font-family:'JetBrains Mono',monospace;letter-spacing:-0.02em}}
+.m .v.green{{color:#34d399}}.m .v.orange{{color:#fbbf24}}.m .v.red{{color:#fb7185}}
+.narrative{{background:var(--card);border:1px solid var(--bd);border-radius:10px;padding:1.2rem 1.4rem;margin:1rem 0 2rem;font-size:1rem;line-height:1.65}}
+.ops-list{{list-style:none;padding:0;margin:0;display:grid;gap:0.4rem}}
+.ops-list li{{background:var(--card);border:1px solid var(--bd);border-radius:8px;padding:0.55rem 0.8rem;font-size:0.88rem}}
+.ops-list .note{{color:var(--tx2)}}
+.section-h{{font-size:0.8rem;font-weight:700;letter-spacing:0.1em;text-transform:uppercase;color:var(--tx2);margin:2rem 0 0.7rem}}
+.cta{{margin-top:2rem;background:linear-gradient(135deg,rgba(16,185,129,0.10),rgba(168,85,247,0.06));border:1px solid var(--bd);border-radius:12px;padding:1.2rem 1.4rem;display:flex;align-items:center;justify-content:space-between;flex-wrap:wrap;gap:1rem}}
+.cta a{{color:#34d399;text-decoration:none;font-weight:700}}
+footer{{margin-top:3rem;color:var(--tx3);font-size:0.82rem;border-top:1px solid var(--bd);padding-top:1.2rem}}
+footer a{{color:var(--tx2);text-decoration:none}}
+</style>
+</head>
+<body>
+<div class="wrap">
+  <div class="crumbs"><a href="/">DC Hub</a> · <a href="/dcgi">DCGI</a> · {full_name}</div>
+  <h1>{full_name} <span class="st">({st})</span></h1>
+  <p class="lede">Data Center Gas Index — gas-to-power siting verdict for behind-the-meter or grid-supplement DC load.</p>
+  <span class="verdict {verdict_class}">{verdict}</span>
+
+  <div class="metrics">
+    <div class="m"><div class="l">DCGI</div><div class="v">{dcgi_val}</div></div>
+    <div class="m"><div class="l">Gas Access</div><div class="v">{access_val}</div></div>
+    <div class="m"><div class="l">Gas Cost</div><div class="v">{cost_val}</div></div>
+    <div class="m"><div class="l">Pipelines</div><div class="v">{pipes_val}</div></div>
+    <div class="m"><div class="l">Midstream Ops</div><div class="v">{ops_val}</div></div>
+    <div class="m"><div class="l">$/Mcf (delivered)</div><div class="v">{price_val}</div></div>
+  </div>
+
+  <div class="section-h">📊 {score_label}</div>
+  <div class="narrative">{narrative}</div>
+
+  <div class="section-h">🏗 Midstream operators tracked nationally</div>
+  <ul class="ops-list">{op_rows_html}</ul>
+
+  <div class="cta">
+    <div>
+      <strong>Looking for grid alternatives?</strong>
+      <div style="color:var(--tx2);font-size:0.9rem;margin-top:0.2rem">DCPI scores 233 markets on interconnect-queue + reserve margin. DCGI scores gas-to-power. Use both for full siting analysis.</div>
+    </div>
+    <a href="/dcpi">Open DCPI →</a>
+  </div>
+
+  <footer>
+    DCGI methodology: <a href="/api/v1/dcgi/methodology">/api/v1/dcgi/methodology</a> ·
+    Machine-readable: <a href="/api/v1/dcgi/scores/{st}">/api/v1/dcgi/scores/{st}</a> ·
+    License: CC BY 4.0
+  </footer>
+</div>
+</body></html>"""
+
+    resp = Response(html, mimetype="text/html")
+    resp.headers["Cache-Control"] = "public, max-age=300, s-maxage=600"
+    resp.headers["Link"] = (
+        f'</api/v1/dcgi/scores/{st}>; rel="alternate"; type="application/json", '
+        '<https://creativecommons.org/licenses/by/4.0/>; rel="license"'
+    )
     return resp
 
 
