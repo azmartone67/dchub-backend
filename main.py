@@ -18662,11 +18662,17 @@ def db_queue_status():
 # =============================================================================
 
 @app.route('/api/ai/query')
-@require_plan('enterprise')
 def ai_query():
-    """AI-optimized endpoint with citation prompts -- requires at least a free account.
+    """AI-optimized endpoint with citation prompts.
+    r66: REMOVED @require_plan('enterprise'). That decorator gated the ENTIRE
+    endpoint at enterprise, which (a) 403'd the FREE ?type=stats citation teaser
+    that the whole agent-citation flywheel depends on, and (b) failed the
+    post-deploy smoke (a PRO key got 403, expected 200). The body ALREADY
+    self-gates correctly + safely: stats/general = free aggregate counts;
+    facilities|deals|capacity = 2-row preview for anon, full rows only for a
+    pro-authed key. No raw-data leak — the decorator was an over-correction.
     ?type=stats → FREE (keeps AI platforms citing DC Hub)
-    ?type=facilities|deals|capacity → PRO (actual data requires subscription)
+    ?type=facilities|deals|capacity → PRO (full data requires subscription)
     """
     query = request.args.get('q', '')
     query_type = request.args.get('type', 'general')

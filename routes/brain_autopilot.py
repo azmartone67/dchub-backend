@@ -1946,6 +1946,66 @@ def _compute_heartbeat_sync():
     except Exception as e:
         out["autopilot"] = {"error": str(e)[:160]}
 
+    # ── Media quality (r66 evolving loop) ──
+    # The brain now SEES DC Hub Media's own gate-rejection rate, so a content
+    # regression (a disclaimer-as-citation self-own, a duplicate spike) shows up
+    # in the brain's vitals instead of only on LinkedIn. This is the loop the
+    # user asked for: the editor's rejections become a brain-visible signal.
+    try:
+        if c:
+            with c.cursor() as cur:
+                _cats = {}
+                try:
+                    cur.execute("""
+                        SELECT reason FROM media_review_log
+                         WHERE decision='blocked'
+                           AND created_at > NOW() - INTERVAL '7 days'
+                           AND reason IS NOT NULL LIMIT 500
+                    """)
+                    for row in cur.fetchall() or []:
+                        rr = (row[0] or "").lower()
+                        if "disclaimer" in rr:                 k = "ai_disclaimer"
+                        elif "duplicate" in rr or "hook" in rr: k = "duplicate"
+                        elif "zero-stat" in rr:                k = "zero_stat"
+                        elif "stub" in rr or "deal" in rr:     k = "deal_stub"
+                        elif "low quality" in rr or "editor rejected" in rr: k = "thin_or_offbrand"
+                        else:                                  k = "other"
+                        _cats[k] = _cats.get(k, 0) + 1
+                except Exception:
+                    _cats = {}  # table not created until the first block
+                _blocked = sum(_cats.values())
+                _pub = 0
+                try:
+                    cur.execute("""SELECT COUNT(*) FROM social_media_posts
+                        WHERE status='published' AND publish_platform='linkedin'
+                          AND published_at >= (NOW() - INTERVAL '7 days')""")
+                    _pub = int((cur.fetchone() or [0])[0] or 0)
+                except Exception:
+                    _pub = 0
+                _tot = _blocked + _pub
+                _top = max(_cats.items(), key=lambda x: x[1])[0] if _cats else None
+                _mq = {
+                    "blocked_7d": _blocked, "published_7d": _pub,
+                    "reject_rate": round(_blocked / _tot, 3) if _tot else None,
+                    "top_reject_category": _top, "by_category": _cats,
+                    "self_critique": "/api/v1/media/self-critique",
+                }
+                # A disclaimer-class block is the credibility self-own; a high
+                # reject rate means the generator is producing junk. Either is a
+                # brain-visible alert the autopilot/operator can act on.
+                if _cats.get("ai_disclaimer", 0) > 0:
+                    _mq["status"] = "alert"
+                    _mq["alert"] = (f"{_cats['ai_disclaimer']} disclaimer-as-citation "
+                                    f"post(s) blocked in 7d — media generator regressing")
+                elif _mq["reject_rate"] is not None and _mq["reject_rate"] >= 0.5 and _blocked >= 3:
+                    _mq["status"] = "warn"
+                    _mq["alert"] = f"high media reject rate {_mq['reject_rate']:.0%} (top: {_top})"
+                else:
+                    _mq["status"] = "ok"
+                out["media_quality"] = _mq
+    except Exception as e:
+        out["media_quality"] = {"error": str(e)[:160]}
+
     # ── Layer 5 activity ──
     try:
         if c:

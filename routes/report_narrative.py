@@ -478,13 +478,17 @@ def _call_claude(prompt: str) -> str | None:
     narrative and backfills it on a later warm cache hit."""
     if not _ANTHROPIC_KEY:
         return None
-    # r65-qa (#2): foreground gets the fast 4s cap; the boot prewarmer (UA
-    # 'DCHub-Prewarm', its own 30s GET budget) gets the generous warm timeout so
-    # it can actually generate + cache the narrative for later visitors.
+    # r65/r66 (#2): a REAL foreground page load keeps the fast 4s cap (renders
+    # without the narrative, backfills on a later warm hit). But background/cron
+    # callers (NO request context) AND the boot prewarmer (UA 'DCHub-Prewarm')
+    # get the generous warm timeout — they were the ones spamming "narrative
+    # call failed (4s)" on every cycle (4s can't complete a haiku call), and
+    # they can afford the wait, so they now actually generate + cache.
     _to = _HTTP_TIMEOUT
     try:
         from flask import request, has_request_context
-        if has_request_context() and "prewarm" in (request.headers.get("User-Agent", "") or "").lower():
+        if (not has_request_context()) or \
+           ("prewarm" in (request.headers.get("User-Agent", "") or "").lower()):
             _to = _WARM_TIMEOUT
     except Exception:
         pass
