@@ -2817,6 +2817,26 @@ h2 {
   grid-template-columns: repeat(auto-fill, minmax(280px, 1fr));
   gap: 1rem;
 }
+/* r47.44 (2026-05-27): .card-link is the clickable <a> wrapping each
+   .card. Without explicit display:block it was default-inline, which in
+   a CSS grid context collapses the anchor's hit region to ~0px wide.
+   The card looked clickable (because .card has cursor:pointer) but the
+   click never actually hit the anchor — it landed on the inner <div>,
+   which has no href. Symptom: users hover the BUILD/CAUTION/AVOID cards
+   and nothing happens on click. Caught in the pre-CBRE DCPI sweep.
+   Fix: make the anchor a block participating in the grid, so the whole
+   card becomes one big clickable region.
+*/
+.card-link {
+  display: block;
+  text-decoration: none;
+  color: inherit;
+}
+.card-link:focus-visible {
+  outline: 2px solid var(--bd-hi);
+  outline-offset: 2px;
+  border-radius: 14px;
+}
 .card {
   background: var(--card);
   border: 1px solid var(--bd);
