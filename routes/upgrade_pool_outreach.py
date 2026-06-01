@@ -532,7 +532,7 @@ def upgrade_pool_send():
                         """INSERT INTO brain_findings
                             (issue, url, count, detail, detector, created_at)
                            VALUES ('upgrade_pool_outreach_sent', %s, %s, %s,
-                                   'upgrade_pool_outreach', NOW())""",
+                                   'upgrade_pool_outreach', NOW() ON CONFLICT DO NOTHING)""",
                         ("/api/v1/admin/upgrade-pool/preview", sent,
                          f"sent={sent} failed={failed} "
                          f"sample={','.join(sent_emails[:3])}"),
