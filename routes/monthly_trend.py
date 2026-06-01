@@ -186,7 +186,7 @@ def _compute_report(year: int | None = None,
                          "with the staleness/license/access tradeoffs "
                          "made explicit, not hidden."),
             "we_cover": [
-                "Power availability + queue depth (DCPI, 285 markets, daily)",
+                "Power availability + queue depth (DCPI, 232 markets, daily)",
                 "Hyperscaler capex events ($1B+ deal tracker, news pipeline)",
                 "M&A flow (13,000+ deals tracked, daily updates)",
                 "Real-time grid mix across 10 grid operators (7 US ISOs + TVA + BPA + IESO) + 43 US utility balancing authorities",
