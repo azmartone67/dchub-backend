@@ -602,13 +602,13 @@ def create_developer_trial(email: str, platform: str, get_db=None) -> Dict[str, 
 
             cur.execute("""
                 INSERT INTO api_keys (key, email, rate_limit_tier, daily_limit, is_active, trial_expires_at, created_at)
-                VALUES (%s, %s, 'trial', 1000, true, %s, NOW())
+                VALUES (%s, %s, 'trial', 1000, true, %s, NOW() ON CONFLICT DO NOTHING)
             """, (api_key, email, expires_at))
 
             # Log the registration
             cur.execute("""
                 INSERT INTO platform_health_metrics (metric_category, metric_name, metric_value)
-                VALUES ('mcp_trial', %s, %s)
+                VALUES ('mcp_trial', %s, %s) ON CONFLICT DO NOTHING
             """, (platform, email))
 
             conn.commit()
@@ -684,7 +684,7 @@ def register_mcp_trial_routes(app, get_db):
             cur = conn.cursor()
             cur.execute("""
                 INSERT INTO mcp_registrations (email, platform, registered_at)
-                VALUES (%s, %s, NOW())
+                VALUES (%s, %s, NOW() ON CONFLICT DO NOTHING)
                 ON CONFLICT (email) DO UPDATE SET
                     platform = EXCLUDED.platform,
                     last_seen = NOW()

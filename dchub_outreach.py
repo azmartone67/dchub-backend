@@ -159,7 +159,7 @@ def log_send(email, subject, template_key, success, resend_id, response_body, dr
             cur.execute("""
                 INSERT INTO email_outreach_log
                 (email, subject, template_key, success, resend_id, response_body, dry_run)
-                VALUES (%s, %s, %s, %s, %s, %s, %s);
+                VALUES (%s, %s, %s, %s, %s, %s, %s) ON CONFLICT DO NOTHING;
             """, (email, subject[:300], template_key, success, resend_id, (response_body or "")[:1000], dry_run))
             c.commit()
     except Exception:
