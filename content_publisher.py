@@ -1257,6 +1257,44 @@ _RECENT_YEAR_RE = _re_legacy.compile(r'\b(20[2-3]\d)\b')
 # →/•/-/* bullets and em-dash/hyphen/colon separators.
 _DEAL_STUB_RE = _re_legacy.compile(
     r'(?mi)^\s*(?:[→••*\-]\s*)?deal\s*[—:\-]\s*[A-Za-z][\w&.\' ]{1,40}\s*$')
+# r65-qa (citation self-own): an LLM DISCLAIMING knowledge is NOT a citation/
+# endorsement — showcasing "I don't have specific current information about these
+# two services" as "third-party AI validation" is a credibility own-goal. Block
+# any post quoting these. (User-flagged 2026-06-01: two "Claude cited DC Hub"
+# posts quoted Claude saying it had no info on DCHawk vs dchub.cloud.)
+_LLM_DISCLAIMER_RE = _re_legacy.compile(
+    r"(?i)("
+    r"I(?:'m| am)?\s+(?:don'?t|do not|cannot|can'?t|not able|unable|not familiar|not aware|not sure)\b[^.\n]{0,60}"
+    r"(?:specific|current|real[- ]?time|access|enough|accurate|information|compare|comparison|provide|verify|confirm|familiar)"
+    r"|don'?t have (?:specific|current|real[- ]?time|enough|access|any)\b"
+    r"|lack(?:ed)?\s+(?:current\s+)?specifics"
+    r"|no (?:specific|current|reliable)\s+(?:current\s+)?information"
+    r"|as of my (?:last|knowledge|training)\b"
+    r"|knowledge cut[- ]?off"
+    r"|to give you an accurate comparison"
+    r"|without (?:more|current|additional)\s+(?:information|context|data)"
+    r")")
+
+
+def _opening_hook(text: str) -> str:
+    """r65-qa: normalized opening line of a post for near-dup detection. Two
+    variants that share the same hook (e.g. both open 'ChatGPT just called DC
+    Hub the most purpose-built platform...') collapse to the same key, even when
+    their bodies diverge and they carry no market/metric signature (which is why
+    the entity-dedup missed the 4 duplicate citation posts)."""
+    if not text:
+        return ""
+    first = ""
+    for ln in str(text).splitlines():
+        ln = ln.strip()
+        if len(ln) >= 12:
+            first = ln
+            break
+    if not first:
+        first = str(text).strip()[:160]
+    norm = _re_legacy.sub(r'[^a-z ]+', ' ', first.lower())
+    words = [w for w in norm.split() if w]
+    return " ".join(words[:10])
 
 
 def _quality_score(post) -> float:
@@ -1353,6 +1391,16 @@ def _should_skip_publish(cur, content_text: str, platform: str):
     FAIL-OPEN: any DB / parse error returns (False, "") so a transient blip
     never dark-holds the publisher. The caller logs the reason when skip=True.
     """
+    _text = content_text or ""
+    # (d) r65-qa: NEVER showcase a post that quotes an LLM DISCLAIMING knowledge
+    # ("I don't have specific current information about these two services... to
+    # give you an accurate comparison"). That reads as the opposite of an
+    # endorsement — a credibility self-own. Hard block, ahead of every other
+    # signal. User-flagged 2026-06-01.
+    if _LLM_DISCLAIMER_RE.search(_text):
+        return True, ("LLM-disclaimer quote — refusing to showcase an "
+                      "'I don't have current info' LLM response as AI validation")
+
     # (q) QUALITY GATE (B3, 2026-05-31). Computed FIRST so a thin post is
     # filtered before the dedup DB round-trip. Wrapped so a scoring bug
     # NEVER blocks a post (fail-open); a successfully-computed low score
@@ -1376,11 +1424,13 @@ def _should_skip_publish(cur, content_text: str, platform: str):
                       f"{sig.get('metric_value')}) — refusing to publish a "
                       f"'platform did nothing' post")
 
-    # Nothing entity-identifiable → let the per-class dedup handle it.
-    if not sig.get("market_verdict") and not sig.get("metric_label"):
-        return False, ""
-
-    # (a) entity-level lookback across the rolling window (crosses midnight).
+    # Fetch recent published for BOTH the opening-hook dedup (ALL posts) and the
+    # entity dedup (posts with a market/metric signature). r65-qa: this block
+    # previously bailed with (False,"") for posts lacking an entity signature —
+    # so citation posts ("ChatGPT/Claude cited DC Hub...") skipped dedup
+    # ENTIRELY, which is exactly how 4 near-identical citation variants shipped
+    # at once. Now every post is hook-deduped.
+    _hook = _opening_hook(_text)
     try:
         cutoff = (datetime.utcnow()
                   - timedelta(days=_DEDUP_LOOKBACK_DAYS)).isoformat()
@@ -1388,7 +1438,7 @@ def _should_skip_publish(cur, content_text: str, platform: str):
             "SELECT content FROM social_media_posts "
             "WHERE status = 'published' AND publish_platform = %s "
             "AND published_at >= %s "
-            "ORDER BY published_at DESC LIMIT 60",
+            "ORDER BY published_at DESC LIMIT 80",
             (platform, cutoff))
         rows = cur.fetchall() or []
     except Exception:
@@ -1397,17 +1447,24 @@ def _should_skip_publish(cur, content_text: str, platform: str):
 
     for r in rows:
         prev = r.get('content') if hasattr(r, 'get') else (r[0] if r else '')
-        psig = _post_headline_signature(prev or "")
-        if (sig.get("market_verdict")
-                and psig.get("market_verdict") == sig.get("market_verdict")):
-            return True, (f"duplicate market+verdict '{sig['market_verdict']}' "
-                          f"already posted to {platform} within "
-                          f"{_DEDUP_LOOKBACK_DAYS}d")
-        if (sig.get("metric_label")
-                and psig.get("metric_label") == sig.get("metric_label")):
-            return True, (f"duplicate headline metric '{sig['metric_label']}' "
-                          f"already posted to {platform} within "
-                          f"{_DEDUP_LOOKBACK_DAYS}d")
+        # (c) opening-hook dedup — catches near-identical VARIANTS (same hook,
+        # divergent body) even when they carry no market/metric signature.
+        if _hook and _opening_hook(prev or "") == _hook:
+            return True, (f'duplicate opening hook ("{_hook[:48]}…") already '
+                          f"posted to {platform} within {_DEDUP_LOOKBACK_DAYS}d")
+        # (a) entity-level dedup — same market+verdict OR same headline metric.
+        if sig.get("market_verdict") or sig.get("metric_label"):
+            psig = _post_headline_signature(prev or "")
+            if (sig.get("market_verdict")
+                    and psig.get("market_verdict") == sig.get("market_verdict")):
+                return True, (f"duplicate market+verdict '{sig['market_verdict']}' "
+                              f"already posted to {platform} within "
+                              f"{_DEDUP_LOOKBACK_DAYS}d")
+            if (sig.get("metric_label")
+                    and psig.get("metric_label") == sig.get("metric_label")):
+                return True, (f"duplicate headline metric '{sig['metric_label']}' "
+                              f"already posted to {platform} within "
+                              f"{_DEDUP_LOOKBACK_DAYS}d")
     return False, ""
 
 
@@ -1752,6 +1809,7 @@ def start_auto_publisher():
                 # detection is lightweight: look at the first line of the
                 # body. Each pattern can publish at most 1/24h.
                 _seen_classes_today = set()
+                _seen_hooks_run = set()   # r65-qa: in-run opening-hook dedup (same-fire variants)
                 try:
                     cur.execute("""SELECT content FROM social_media_posts
                                     WHERE status = 'published'
@@ -1767,6 +1825,7 @@ def start_auto_publisher():
                     for _row in cur.fetchall() or []:
                         _txt = _row.get('content') if hasattr(_row, 'get') else (_row[0] if _row else '')
                         _seen_classes_today.add(_classify_post_for_dedup(_txt or ''))
+                        _seen_hooks_run.add(_opening_hook(_txt or ''))
                 except Exception:
                     pass
                 while _attempts < _drain_budget:
@@ -1783,6 +1842,13 @@ def start_auto_publisher():
                         _cls = _classify_post_for_dedup(_ctext or '')
                         if _cls in _seen_classes_today:
                             continue
+                        # r65-qa: same-fire opening-hook guard — blocks a 2nd
+                        # variant sharing the same hook within ONE drain, before
+                        # the prior publish commits (the citation-dup case).
+                        _chook = _opening_hook(_ctext or '')
+                        if _chook and _chook in _seen_hooks_run:
+                            logger.warning("Auto-publisher: SKIPPED LinkedIn candidate (same-fire duplicate hook '%s')", _chook[:48])
+                            continue
                         # r63 (2026-05-29): entity-level + zero-stat judgment.
                         # Catches near-dupes the coarse class tag misses (two
                         # "Montréal BUILD" or "MCP tool-call surge" posts both
@@ -1798,6 +1864,8 @@ def start_auto_publisher():
                             continue
                         row = _cand
                         _seen_classes_today.add(_cls)
+                        if _chook:
+                            _seen_hooks_run.add(_chook)
                         break
                     if not row:
                         logger.debug("Auto-publisher: No approved posts to publish (or all classes/entities already fired)")

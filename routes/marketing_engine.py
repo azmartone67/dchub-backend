@@ -222,13 +222,33 @@ def _collect_signals() -> dict:
                      WHERE dchub_cited = true
                        AND response_text IS NOT NULL AND response_text <> ''
                        AND observed_at > NOW() - INTERVAL '14 days'
-                     ORDER BY observed_at DESC LIMIT 1
+                     ORDER BY observed_at DESC LIMIT 5
                 """)
-                r = cur.fetchone()
-                if r:
+                # r65-qa (citation self-own): an LLM DISCLAIMING knowledge is NOT
+                # an endorsement. Skip any "I don't have specific current info..."
+                # / "lacked current specifics" response so the showcase topic is
+                # only ever built from a REAL citation. (The publish gate also
+                # hard-blocks these, but don't even pick the topic off one.)
+                _DISCLAIMER_MARKERS = (
+                    "don't have specific", "do not have specific",
+                    "don't have current", "do not have current",
+                    "lacked current specific", "lack current specific",
+                    "don't have access", "do not have access",
+                    "as of my last", "knowledge cutoff", "knowledge cut-off",
+                    "to give you an accurate comparison",
+                    "don't have enough information", "not familiar with",
+                    "no specific current information",
+                    "cannot provide", "can't provide", "unable to provide",
+                    "don't have real-time", "do not have real-time",
+                )
+                for r in (cur.fetchall() or []):
+                    _ql = (r[2] or "").lower()
+                    if any(m in _ql for m in _DISCLAIMER_MARKERS):
+                        continue   # disclaimer, not an endorsement — skip
                     out["recent_ai_citation"] = {
                         "engine": r[0], "prompt": r[1],
                         "quote": (r[2] or "")[:600], "url": r[3]}
+                    break
         except Exception:
             pass
 
