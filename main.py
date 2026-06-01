@@ -5109,6 +5109,63 @@ def add_cache_headers(response):
         pass
     return response
 
+
+# 2026-05-28 — the /markets pages (index + /markets/<slug>) are served
+# from Railway origin and shipped with NO Content-Security-Policy header,
+# which the CSP & Asset Watch sentinel flags as missing-csp-header. Every
+# asset they load (self-hosted JS, Google Fonts, the CF Insights beacon,
+# the /api/market-intelligence fetch) is already permitted by the site's
+# canonical policy, so we stamp that exact policy here. SCOPED to /markets
+# only — the map and every other surface are deliberately untouched so this
+# can't tighten anything that currently renders.
+_MARKETS_CSP = (
+    "default-src 'self'; "
+    "script-src 'self' 'unsafe-inline' https://cdnjs.cloudflare.com "
+        "https://unpkg.com https://cdn.jsdelivr.net https://www.googletagmanager.com "
+        "https://accounts.google.com https://static.cloudflareinsights.com https://plausible.io; "
+    "script-src-elem 'self' 'unsafe-inline' https://cdnjs.cloudflare.com "
+        "https://unpkg.com https://cdn.jsdelivr.net https://www.googletagmanager.com "
+        "https://accounts.google.com https://static.cloudflareinsights.com https://plausible.io; "
+    "style-src 'self' 'unsafe-inline' https://fonts.googleapis.com "
+        "https://cdnjs.cloudflare.com https://accounts.google.com; "
+    "style-src-elem 'self' 'unsafe-inline' https://fonts.googleapis.com "
+        "https://cdnjs.cloudflare.com https://accounts.google.com; "
+    "img-src 'self' data: https:; "
+    "font-src 'self' data: https: https://fonts.gstatic.com; "
+    "connect-src 'self' https://plausible.io "
+        "https://dchub-backend-production.up.railway.app "
+        "https://dchub-backend-production-f7dd.up.railway.app "
+        "https://dchub-api-production.up.railway.app "
+        "https://dchub-backend-render.onrender.com https://cdnjs.cloudflare.com "
+        "https://cdn.jsdelivr.net https://unpkg.com https://gateway.ai.cloudflare.com "
+        "https://www.google-analytics.com https://stats.g.doubleclick.net "
+        "https://accounts.google.com https://cloudflareinsights.com https://www.google.com "
+        "https://nominatim.openstreetmap.org https://overpass-api.de "
+        "https://overpass.kumi.systems https://overpass.private.coffee https://*.arcgis.com "
+        "https://geo.dot.gov https://*.usgs.gov https://carto.nationalmap.gov "
+        "https://hazards.fema.gov https://geodata.epa.gov https://geocoding.geo.census.gov "
+        "https://*.r2.dev https://pub-1870647-1a3884f1eae0fc54ed7d41341.r2.dev; "
+    "frame-src 'self' https://accounts.google.com; "
+    "frame-ancestors 'self'; base-uri 'self'; form-action 'self'; "
+    "report-uri /api/csp-report"
+)
+
+
+@app.after_request
+def add_markets_csp(response):
+    """Attach the canonical CSP to the /markets pages only (additive — never
+    overrides an existing CSP, never touches non-/markets paths)."""
+    try:
+        path = request.path
+        is_markets = path == '/markets' or path == '/markets/' or path.startswith('/markets/')
+        if (is_markets
+                and 'Content-Security-Policy' not in response.headers
+                and 'text/html' in (response.headers.get('Content-Type') or '')):
+            response.headers['Content-Security-Policy'] = _MARKETS_CSP
+    except Exception:
+        pass
+    return response
+
 # Setup Google & Meta Integration Routes
 try:
     setup_google_routes(app)
