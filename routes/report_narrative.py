@@ -35,6 +35,52 @@ _MODEL = "claude-haiku-4-5-20251001"
 _CACHE_TTL = 3600  # 1 hour
 _CACHE: dict[str, dict] = {}  # key -> {"text", "computed_at"}
 
+# RENDER-PERF (2026-06-01): the narrative call runs SYNCHRONOUSLY inline on a
+# /dcpi/<slug> cache miss and blocks the gunicorn thread + page render. Cap the
+# in-request cost so a slow/hung Anthropic call can't make a cold page take 25s.
+# On timeout we return None and the caller renders the page WITHOUT a narrative
+# (it backfills on a later warm hit — the feature is preserved, just deferred).
+# Tunable via NARRATIVE_HTTP_TIMEOUT env var; default 4s.
+try:
+    _HTTP_TIMEOUT = float(os.environ.get("NARRATIVE_HTTP_TIMEOUT") or 4.0)
+except (TypeError, ValueError):
+    _HTTP_TIMEOUT = 4.0
+
+
+# RENDER-PERF (2026-06-01): the per-worker dict caches above are flushed every
+# time gunicorn recycles a worker (--max-requests in the Procfile) and aren't
+# shared across workers. Front them with the already-connected, cross-worker
+# Redis helper (redis_cache.py — same pattern energy_report.py uses) so a warm
+# narrative survives a recycle and a cold /dcpi/<slug> render skips the inline
+# Anthropic call. Redis is a BEST-EFFORT layer in front of the dict: any
+# import/connection/serialization error falls through to the dict unchanged.
+# redis_cache.cache_get/set already swallow their own errors and no-op when
+# REDIS_URL is unset, so these wrappers stay quiet too.
+def _redis_get_text(key: str):
+    """Return cached narrative text from Redis, or None on miss/any error."""
+    try:
+        from redis_cache import cache_get
+        payload = cache_get(f"narrative:{key}")
+        if isinstance(payload, dict):
+            txt = payload.get("text")
+            return txt or None
+    except Exception:
+        pass
+    return None
+
+
+def _redis_set_text(key: str, text: str, generated_at: str) -> None:
+    """Best-effort write narrative text to Redis with the module TTL. No-op on
+    any error (incl. REDIS_URL unset). Redis governs expiry via setex, so we do
+    NOT store the process-local time.monotonic() value here."""
+    try:
+        from redis_cache import cache_set
+        cache_set(f"narrative:{key}",
+                  {"text": text, "generated_at": generated_at},
+                  ttl=_CACHE_TTL)
+    except Exception:
+        pass
+
 
 def _cache_key(kind: str, d: dict, audience: str = "default") -> str:
     """Stable key per (kind, period, audience). Monthly uses year+month
@@ -303,6 +349,17 @@ def attach_market_narrative(s: dict, risks: list, opps: list) -> str | None:
     if cached and (now - cached["computed_at"]) < _CACHE_TTL:
         return cached["text"]
 
+    # RENDER-PERF: cross-worker Redis layer (survives gunicorn recycle). On a
+    # hit, warm the local dict so subsequent same-worker reads stay dict-fast.
+    r_text = _redis_get_text(key)
+    if r_text:
+        _CACHE[key] = {
+            "text": r_text,
+            "computed_at": now,
+            "generated_at": _dt.datetime.utcnow().isoformat() + "Z",
+        }
+        return r_text
+
     try:
         prompt = _build_market_prompt(s, risks or [], opps or [])
     except Exception as e:
@@ -313,11 +370,13 @@ def attach_market_narrative(s: dict, risks: list, opps: list) -> str | None:
     if not text:
         return None
 
+    generated_at = _dt.datetime.utcnow().isoformat() + "Z"
     _CACHE[key] = {
         "text": text,
         "computed_at": now,
-        "generated_at": _dt.datetime.utcnow().isoformat() + "Z",
+        "generated_at": generated_at,
     }
+    _redis_set_text(key, text, generated_at)
     return text
 
 
@@ -399,7 +458,13 @@ Write only the paragraphs. No preamble, no sign-off.
 
 def _call_claude(prompt: str) -> str | None:
     """Single Claude call. Returns narrative text or None on failure.
-    Uses haiku — cheap, fast, plenty for analyst prose."""
+    Uses haiku — cheap, fast, plenty for analyst prose.
+
+    RENDER-PERF (2026-06-01): timeout is capped at _HTTP_TIMEOUT (default 4s,
+    was 25s) because this runs synchronously inline on a /dcpi/<slug> cache
+    miss and blocks the gunicorn thread + page render. On timeout the except
+    below returns None; every caller already renders gracefully without a
+    narrative and backfills it on a later warm cache hit."""
     if not _ANTHROPIC_KEY:
         return None
     try:
@@ -416,7 +481,7 @@ def _call_claude(prompt: str) -> str | None:
                 "max_tokens": 800,
                 "messages": [{"role": "user", "content": prompt}],
             },
-            timeout=25,
+            timeout=_HTTP_TIMEOUT,
         )
         if r.status_code != 200:
             logger.warning(f"narrative API {r.status_code}: {r.text[:200]}")
@@ -460,6 +525,25 @@ def attach_narrative(d: dict, kind: str = "monthly",
             "audience": audience,
             "generated_at": cached["generated_at"],
             "cache_age_seconds": int(now - cached["computed_at"]),
+        }
+        return d
+
+    # RENDER-PERF: cross-worker Redis layer (survives gunicorn recycle). On a
+    # hit, warm the local dict and emit the field without an LLM round-trip.
+    r_text = _redis_get_text(key)
+    if r_text:
+        generated_at = _dt.datetime.utcnow().isoformat() + "Z"
+        _CACHE[key] = {
+            "text": r_text,
+            "computed_at": now,
+            "generated_at": generated_at,
+        }
+        d["narrative_summary"] = {
+            "text": r_text,
+            "model": _MODEL,
+            "audience": audience,
+            "generated_at": generated_at,
+            "cache_age_seconds": 0,
         }
         return d
 
