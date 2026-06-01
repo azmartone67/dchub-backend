@@ -1299,7 +1299,7 @@ class KMZAutoDiscovery:
             cur.execute('''
                 INSERT INTO kmz_discovery_log
                 (source_name, source_url, source_type, routes_found, total_km, status)
-                VALUES (%s, %s, %s, %s, %s, %s)
+                VALUES (%s, %s, %s, %s, %s, %s) ON CONFLICT DO NOTHING
             ''', (
                 'auto_discovery_cycle',
                 'scheduler',
