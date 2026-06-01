@@ -868,6 +868,35 @@ def mcp_funnel():
         'curl', 'python-script', 'node-script',
         'postman', 'insomnia', 'unknown', 'verify',
     )
+    # r61: internal/self + registry-scanner client names that crush the
+    # funnel's per-platform conversion rate to ~0% (they emit signals but
+    # never convert — see reference_dchub_mcp_signal_inflation). Excluded
+    # from signals_by_platform_30d so the funnel reflects EXTERNAL agent
+    # demand. Pattern families (loop*, dchub-*, *-probe/-health/-scanner/
+    # -checker, local-agent-mode*) are matched separately via NOT LIKE.
+    # 'unknown' is intentionally NOT excluded here — it's real external
+    # traffic we couldn't sub-classify, not self-traffic.
+    _INTERNAL_PLATFORMS = (
+        'node', 'dchub-selfheal', 'dchub-mcp-test', 'mcp-probe', 'mcp-test',
+        'pipeline_mcp', 'canary', 'mcp-remote-fallback-test',
+        'registry-health-checker', 'mcp-shield-scanner', 'yellowmcp-health',
+        'glama-health', 'chiark-prober', 'fabrique-noauth-probe',
+        'agentpulse', 'mcpscoringengine', 'mcp-extractor',
+        'curl', 'python-script', 'node-script', 'postman', 'insomnia', 'verify',
+    )
+    _excl_in = ",".join(
+        "'" + str(p).replace("'", "''") + "'" for p in sorted(set(_INTERNAL_PLATFORMS)))
+    # No bound params in the signals query, so literal % in LIKE is safe.
+    _signal_excl_clause = (
+        f" AND COALESCE(LOWER(mcp_client),'') NOT IN ({_excl_in}) "
+        " AND COALESCE(LOWER(mcp_client),'') NOT LIKE 'loop%' "
+        " AND COALESCE(LOWER(mcp_client),'') NOT LIKE 'dchub-%' "
+        " AND COALESCE(LOWER(mcp_client),'') NOT LIKE 'local-agent-mode%' "
+        " AND COALESCE(LOWER(mcp_client),'') NOT LIKE '%-probe' "
+        " AND COALESCE(LOWER(mcp_client),'') NOT LIKE '%-health' "
+        " AND COALESCE(LOWER(mcp_client),'') NOT LIKE '%-scanner' "
+        " AND COALESCE(LOWER(mcp_client),'') NOT LIKE '%-checker' "
+    )
     out = {}
     try:
         with _pool.connection() as conn, conn.cursor() as cur:
@@ -1008,8 +1037,9 @@ def mcp_funnel():
                           COUNT(DISTINCT ip_address) AS unique_ips,
                           COUNT(*) FILTER (WHERE converted = TRUE) AS converted
                        FROM mcp_upgrade_signals
-                       WHERE created_at >= NOW() - INTERVAL '30 days'
-                       GROUP BY platform
+                       WHERE created_at >= NOW() - INTERVAL '30 days'"""
+                    + _signal_excl_clause +
+                    """ GROUP BY platform
                        ORDER BY signals DESC
                        LIMIT 20"""
                 )
