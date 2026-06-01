@@ -924,8 +924,25 @@ def gather_metrics_for_market(market: tuple) -> dict:
                                 "queue_approval_rate_pct": 60, "demand_growth_yoy_pct": 4,
                                 "btm_headroom_mw": 300},
     }
-    if slug in slug_overrides:
-        metrics.update({k: v for k, v in slug_overrides[slug].items() if v is not None})
+    # r47.42 (2026-05-27): slug-tolerant override lookup.
+    # _load_markets_dynamic emits bare-city slugs ("cheyenne" from LOWER(city))
+    # while slug_overrides historically used state-suffixed keys
+    # ("cheyenne-wy", "williston-nd", "midland-tx", "the-dalles-or"). Mismatch
+    # → override never applies → WECC ISO default wins → dashboard shows 44.8
+    # for Cheyenne when calibration actually puts it at 69.5 (BUILD). Same
+    # silent regression for every state-suffixed override key.
+    # Fix: try the bare slug first, then synthesize state-suffixed variants
+    # using the state from the market tuple. First match wins.
+    _state_lc = (state or "").lower()
+    _slug_candidates = [
+        slug,                                 # "cheyenne"      (dynamic)
+        f"{slug}-{_state_lc}" if _state_lc else None,  # "cheyenne-wy"  (hardcoded shape)
+    ]
+    for _candidate in _slug_candidates:
+        if _candidate and _candidate in slug_overrides:
+            metrics.update({k: v for k, v in slug_overrides[_candidate].items()
+                            if v is not None})
+            break
 
     # Demand growth default
     if metrics.get("demand_growth_yoy_pct") is None:

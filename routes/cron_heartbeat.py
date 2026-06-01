@@ -194,6 +194,38 @@ _DISPATCH = [
      "POST",
      lambda now: now.weekday() == 3 and now.hour == 14 and now.minute < 10),
 
+    # r47.42 (2026-05-27): /dcpi/ask chat pre-warm. The Pages worker
+    # variant 4.34.27-r44-gated-nocache disabled KV stale-cache fallback;
+    # when a chat question misses the demo_question_cache (1h TTL) and
+    # Claude takes >5s to respond, the worker times out and serves 503.
+    # User hit this on first-time-of-day "where can I get 100 MW in 12
+    # months". Fix: hit the 6 most-asked chat questions every 30 min
+    # so the demo cache stays hot. Cost: ~6 Claude calls/hr = trivial.
+    ("dcpi_chat_prewarm_top_questions",
+     f"{BASE}/api/v1/dcpi/ask?q=where+can+I+get+100+MW+in+12+months",
+     "POST",
+     lambda now: now.minute % 30 == 18),
+    ("dcpi_chat_prewarm_build_markets",
+     f"{BASE}/api/v1/dcpi/ask?q=top+BUILD+markets+this+week",
+     "POST",
+     lambda now: now.minute % 30 == 19),
+    ("dcpi_chat_prewarm_iso_compare",
+     f"{BASE}/api/v1/dcpi/ask?q=compare+ERCOT+PJM+and+CAISO+by+excess+power",
+     "POST",
+     lambda now: now.minute % 30 == 20),
+    ("dcpi_chat_prewarm_cheyenne",
+     f"{BASE}/api/v1/dcpi/ask?q=what+is+the+DCPI+for+Cheyenne",
+     "POST",
+     lambda now: now.minute % 30 == 21),
+    ("dcpi_chat_prewarm_northern_va",
+     f"{BASE}/api/v1/dcpi/ask?q=what+is+the+DCPI+for+Northern+Virginia",
+     "POST",
+     lambda now: now.minute % 30 == 22),
+    ("dcpi_chat_prewarm_international",
+     f"{BASE}/api/v1/dcpi/ask?q=which+international+markets+score+BUILD",
+     "POST",
+     lambda now: now.minute % 30 == 23),
+
     # r47.39.1 (2026-05-26): proxy heartbeat for CF Workers. The
     # dchub-selfheal / dchub-cron / arcgis-proxy workers live in CF's
     # Workers runtime, out of this repo. CF analytics confirms they're
