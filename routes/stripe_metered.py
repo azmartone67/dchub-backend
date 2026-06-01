@@ -196,66 +196,159 @@ def get_usage():
     }), 200
 
 
-@stripe_metered_bp.route("/report-to-stripe", methods=["POST"])
-def report_to_stripe():
-    """Admin/cron: batch-report yesterday's overage to Stripe.
+# ── r59-conv (2026-06-01): NEW Stripe Meters API ───────────────────────────
+# The owner built a usage Meter (event_name `dchub_api_call`) + a usage-based
+# price (price_1TdNixJ9ey2ATcQldRAdlc7z). This replaces the legacy stub +
+# SubscriptionItem.create_usage_record path. We bill from mcp_call_log (the
+# real, populated per-key call source — /track-usage was never wired, so
+# api_usage_meter is empty) and report to the Meter per metered customer.
+# metered_keys maps api_key → stripe_customer_id (sales-assisted onboarding).
+_METER_EVENT      = os.environ.get("DCHUB_STRIPE_METER_EVENT", "dchub_api_call")
+_METERED_PRICE_ID = os.environ.get("DCHUB_METERED_PRICE_ID",
+                                   "price_1TdNixJ9ey2ATcQldRAdlc7z")
 
-    For each (api_key, day) where reported_to_stripe=FALSE and the
-    user has crossed their tier's included threshold, send a
-    SubscriptionItem.create_usage_record to Stripe.
 
-    Currently stubbed — returns what WOULD be reported. Wire up real
-    Stripe calls after the Stripe metered-price + subscription-items
-    are set up per the round-32 monetization/stripe-metered-billing.md doc.
+def _ensure_metered_keys():
+    """Idempotent: api_key → Stripe customer mapping for usage-based billing."""
+    sql = """
+        CREATE TABLE IF NOT EXISTS metered_keys (
+            api_key            TEXT PRIMARY KEY,
+            stripe_customer_id TEXT NOT NULL,
+            subscription_id    TEXT,
+            active             BOOLEAN NOT NULL DEFAULT TRUE,
+            last_reported_at   TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+            linked_at          TIMESTAMPTZ NOT NULL DEFAULT NOW()
+        );
     """
-    admin_key = request.headers.get("X-Admin-Key", "")
-    expected = os.environ.get("DCHUB_ADMIN_KEY", "")
+    try:
+        with _conn() as c, c.cursor() as cur:
+            cur.execute(sql); c.commit()
+        return True
+    except Exception:
+        return False
+
+
+def _stripe_meter_event(stripe_key, value, customer_id):
+    """POST a billing meter event (new Stripe Meters API). Returns (ok, detail)."""
+    import urllib.error
+    data = urllib.parse.urlencode({
+        "event_name": _METER_EVENT,
+        "payload[value]": str(int(value)),
+        "payload[stripe_customer_id]": customer_id,
+    }).encode()
+    req = urllib.request.Request(
+        "https://api.stripe.com/v1/billing/meter_events", data=data,
+        headers={"Authorization": "Bearer " + stripe_key,
+                 "Content-Type": "application/x-www-form-urlencoded"},
+        method="POST")
+    try:
+        with urllib.request.urlopen(req, timeout=12) as r:
+            return (r.status < 300), r.read().decode("utf-8", "replace")[:160]
+    except urllib.error.HTTPError as e:
+        try: body = e.read().decode("utf-8", "replace")[:200]
+        except Exception: body = ""
+        return False, "http_%s:%s" % (e.code, body)
+    except Exception as e:
+        return False, "%s:%s" % (type(e).__name__, str(e)[:160])
+
+
+@stripe_metered_bp.route("/link-metered-key", methods=["POST"])
+def link_metered_key():
+    """Admin: link a dchub api_key to a Stripe customer on the usage-based
+    plan (sales-assisted onboarding). Body: {api_key, stripe_customer_id,
+    subscription_id?}. Also flips the key's mcp_dev_keys tier to 'metered'."""
+    admin_key = (request.headers.get("X-Admin-Key", "")
+                 or request.headers.get("X-Internal-Key", ""))
+    expected = (os.environ.get("DCHUB_ADMIN_KEY", "")
+                or os.environ.get("DCHUB_INTERNAL_KEY", ""))
     if not expected or admin_key != expected:
         return jsonify({"error": "admin auth required"}), 403
+    d = request.get_json(silent=True) or {}
+    api_key = (d.get("api_key") or "").strip()
+    cust    = (d.get("stripe_customer_id") or "").strip()
+    sub     = (d.get("subscription_id") or "").strip() or None
+    if not api_key or not cust.startswith("cus_"):
+        return jsonify({"error": "api_key + valid stripe_customer_id (cus_...) required"}), 400
+    _ensure_metered_keys()
+    try:
+        with _conn() as c, c.cursor() as cur:
+            cur.execute("""
+                INSERT INTO metered_keys
+                    (api_key, stripe_customer_id, subscription_id, active, last_reported_at, linked_at)
+                VALUES (%s, %s, %s, TRUE, NOW(), NOW())
+                ON CONFLICT (api_key) DO UPDATE
+                  SET stripe_customer_id = EXCLUDED.stripe_customer_id,
+                      subscription_id    = EXCLUDED.subscription_id,
+                      active             = TRUE
+            """, (api_key, cust, sub))
+            try:
+                # Access tier = 'enterprise' so the gate unlocks everything at
+                # an uncapped daily limit (metered customers pay per call, not
+                # capped). The gate (applyTierGate) only honors 'paid'/
+                # 'enterprise' — 'metered' would be unrecognized → blocked. The
+                # metered_keys row is the source of truth that this is usage-billed.
+                cur.execute("UPDATE mcp_dev_keys SET tier = 'enterprise' WHERE api_key = %s", (api_key,))
+            except Exception:
+                pass
+            c.commit()
+    except Exception as e:
+        return jsonify({"error": str(e)[:200]}), 500
+    return jsonify({"ok": True, "api_key_short": api_key[:10] + "...",
+                    "stripe_customer_id": cust, "access_tier": "enterprise",
+                    "billing": "metered", "meter_event": _METER_EVENT}), 200
 
-    stripe_key = os.environ.get("STRIPE_API_KEY", "")
-    price_id   = os.environ.get("STRIPE_OVERAGE_PRICE_ID", "")
-    dry_run    = not (stripe_key and price_id) or request.args.get("dry_run") == "1"
 
+@stripe_metered_bp.route("/report-to-stripe", methods=["POST"])
+def report_to_stripe():
+    """Admin/cron: report each metered customer's API-call usage since their
+    last report to the Stripe Meter (new billing/meter_events API). Bills from
+    mcp_call_log (the real per-key call source). DRY-RUN by default — goes live
+    only with a Stripe key set AND ?dry_run=0. Safe no-op with no metered keys.
+    """
+    admin_key = (request.headers.get("X-Admin-Key", "")
+                 or request.headers.get("X-Internal-Key", ""))
+    expected = (os.environ.get("DCHUB_ADMIN_KEY", "")
+                or os.environ.get("DCHUB_INTERNAL_KEY", ""))
+    if not expected or admin_key != expected:
+        return jsonify({"error": "admin auth required"}), 403
+    stripe_key = (os.environ.get("STRIPE_API_KEY", "")
+                  or os.environ.get("STRIPE_SECRET_KEY", ""))
+    dry_run = (not stripe_key) or request.args.get("dry_run", "1") == "1"
+    _ensure_metered_keys()
+    results = []
     try:
         with _conn() as c, c.cursor(cursor_factory=psycopg2.extras.RealDictCursor) as cur:
-            cur.execute("""
-                SELECT api_key, tier, usage_date, calls_count
-                  FROM api_usage_meter
-                 WHERE reported_to_stripe = FALSE
-                   AND usage_date < CURRENT_DATE
-                 ORDER BY usage_date, api_key
-                 LIMIT 500
-            """)
-            pending = [dict(r) for r in cur.fetchall()]
+            cur.execute("SELECT api_key, stripe_customer_id, last_reported_at "
+                        "FROM metered_keys WHERE active = TRUE")
+            keys = [dict(r) for r in cur.fetchall()]
+            for k in keys:
+                cur.execute("""
+                    SELECT COUNT(*) AS n FROM mcp_call_log
+                     WHERE api_key = %s AND timestamp > %s AND timestamp < NOW()
+                """, (k["api_key"], k["last_reported_at"]))
+                n = int((cur.fetchone() or {}).get("n") or 0)
+                rec = {"api_key_short": k["api_key"][:10] + "...",
+                       "customer": k["stripe_customer_id"], "calls": n}
+                if n <= 0:
+                    rec["status"] = "no_new_usage"; results.append(rec); continue
+                if dry_run:
+                    rec["status"] = "dry_run"; results.append(rec); continue
+                ok, detail = _stripe_meter_event(stripe_key, n, k["stripe_customer_id"])
+                rec["status"] = "reported" if ok else "error"
+                rec["detail"] = detail
+                if ok:
+                    cur.execute("UPDATE metered_keys SET last_reported_at = NOW() "
+                                "WHERE api_key = %s", (k["api_key"],))
+                    c.commit()
+                results.append(rec)
     except Exception as e:
-        return jsonify({"error": str(e)}), 500
-
-    to_report = []
-    for r in pending:
-        limits = TIER_LIMITS.get(r["tier"], TIER_LIMITS["free"])
-        if not limits["overage_per_call"]:
-            continue   # free tier — no overage billing
-        # NOTE: in production, look up monthly cumulative to determine
-        # how much of THIS day was overage vs included. For dry-run
-        # we just report all calls as overage candidates.
-        to_report.append({
-            "api_key_short": r["api_key"][:8] + "...",
-            "tier":          r["tier"],
-            "usage_date":    r["usage_date"].isoformat(),
-            "calls":         r["calls_count"],
-            "tier_overage_per_call": limits["overage_per_call"],
-            "would_charge_usd": round(r["calls_count"] * limits["overage_per_call"], 4),
-        })
-
+        return jsonify({"error": str(e)[:200], "results": results}), 500
     return jsonify({
-        "mode": "dry_run" if dry_run else "live",
-        "pending_records":      len(pending),
-        "would_report_to_stripe": len(to_report),
-        "sample":               to_report[:10],
-        "total_overage_usd":    round(sum(x["would_charge_usd"] for x in to_report), 2),
-        "stripe_configured":    bool(stripe_key and price_id),
-        "setup_doc":            "See PATCHES/ROADMAP-2026-Q3/monetization/stripe-metered-billing.md",
+        "mode":         "dry_run" if dry_run else "live",
+        "meter_event":  _METER_EVENT,
+        "metered_price": _METERED_PRICE_ID,
+        "metered_keys": len(results),
+        "results":      results[:25],
     }), 200
 
 

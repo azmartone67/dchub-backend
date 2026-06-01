@@ -1,0 +1,39 @@
+name: stripe-metered-report
+# Reports each metered customer's API-call usage (from mcp_call_log) to the
+# Stripe Meter (event_name=dchub_api_call, price_1TdNixJ9ey2ATcQldRAdlc7z).
+#
+# SAFE BY DESIGN:
+#   • No-op until a metered customer is linked via POST /api/v1/billing/link-metered-key
+#   • The SCHEDULED run is DRY-RUN (logs what WOULD bill, never charges)
+#   • To do a LIVE report: Actions → Run workflow → live = 1 (manual dispatch)
+#
+# GO-LIVE checklist (after the first metered customer is set up in Stripe):
+#   1. POST /api/v1/billing/link-metered-key {api_key, stripe_customer_id: cus_...}
+#   2. Run this workflow manually with live=1, confirm the event appears on the
+#      Stripe Meter "DC Hub API Calls" (Stripe → Billing → Meters)
+#   3. Once confident, change DRY default below from '1' to '0' so the daily
+#      schedule bills automatically.
+on:
+  schedule:
+    - cron: '17 9 * * *'   # daily 09:17 UTC
+  workflow_dispatch:
+    inputs:
+      live:
+        description: 'Set to 1 to report LIVE to Stripe (default = dry-run)'
+        required: false
+        default: '0'
+jobs:
+  report:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Report metered usage to Stripe meter
+        env:
+          ADMIN_KEY: ${{ secrets.DCHUB_ADMIN_KEY }}
+        run: |
+          DRY='1'
+          if [ "${{ github.event.inputs.live }}" = "1" ]; then DRY='0'; fi
+          echo "report-to-stripe dry_run=$DRY"
+          curl -sS -X POST \
+            "https://dchub-backend-production.up.railway.app/api/v1/billing/report-to-stripe?dry_run=$DRY" \
+            -H "X-Admin-Key: $ADMIN_KEY" \
+            -w "\nHTTP %{http_code}\n" | head -c 4000
