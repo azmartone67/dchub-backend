@@ -125,6 +125,27 @@ def validate_key():
         row = cur.fetchone()
 
     if not row or row[3] != "active":
+        # r55-conv (2026-05-31): auto-trial keys (dch_trial_, minted by the
+        # REST gate / /keys/auto-mint / anon-grace) live in auto_trial_keys,
+        # NOT mcp_dev_keys — so they validated as invalid here and the entire
+        # inline-mint funnel issued non-working keys. Recognize them via the
+        # existing validate_trial_key() and report tier 'free' so the Node
+        # gate's KEYED_FREE_BONUS unlock applies to the 5 demand tools (a
+        # higher tier would fall through applyTierGate to the PAID_ONLY block).
+        # Fail-soft: any error → original valid:false.
+        try:
+            from routes.auto_trial import validate_trial_key
+            _ok, _reason = validate_trial_key(api_key)
+            if _ok:
+                return jsonify({
+                    "valid":        True,
+                    "tier":         "free",
+                    "developer_id": None,
+                    "email":        None,
+                    "source":       "auto_trial",
+                }), 200
+        except Exception:
+            pass
         return jsonify({"valid": False, "tier": "free"}), 200
 
     try:
