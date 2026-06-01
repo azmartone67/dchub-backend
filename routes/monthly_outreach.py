@@ -319,7 +319,7 @@ def send_outreach():
                     INSERT INTO monthly_outreach_log
                       (year, month, recipients, succeeded, failed,
                        permalink, triggered_by, sent_at)
-                    VALUES (%s,%s,%s,%s,%s,%s,%s,NOW())
+                    VALUES (%s,%s,%s,%s,%s,%s,%s,NOW() ON CONFLICT DO NOTHING)
                     ON CONFLICT (year, month) DO UPDATE SET
                       recipients   = monthly_outreach_log.recipients + EXCLUDED.recipients,
                       succeeded    = monthly_outreach_log.succeeded  + EXCLUDED.succeeded,

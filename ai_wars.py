@@ -199,7 +199,7 @@ def _init_tables():
         for key, info in PLATFORMS.items():
             c.execute("""
                 INSERT INTO wars_platforms (platform, name, color, provider, auto_registered)
-                VALUES (%s, %s, %s, %s, 0)
+                VALUES (%s, %s, %s, %s, 0) ON CONFLICT DO NOTHING
             """, (key, info['name'], info['color'], info['provider']))
         conn.commit()
 
@@ -233,7 +233,7 @@ def _seed_data(conn):
             INSERT INTO wars_platform_stats
             (platform, total_battles, total_wins, total_api_calls,
              avg_accuracy, avg_depth, avg_speed, avg_citation, avg_insight, overall_score, updated_at)
-            VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s)
+            VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s) ON CONFLICT DO NOTHING
         """, (*s, now))
 
     # Seed battles
@@ -349,7 +349,7 @@ def _seed_data(conn):
             INSERT INTO wars_battles
             (id, category, title, description, date, week_number, year,
              winner_platform, winner_label, api_calls, status, created_at)
-            VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, 'active', %s)
+            VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, 'active', %s) ON CONFLICT DO NOTHING
         """, (b['id'], b['category'], b['title'], b['description'],
               b['date'], b['week_number'], b['year'],
               b['winner_platform'], b['winner_label'], b['api_calls'], now))
@@ -361,7 +361,7 @@ def _seed_data(conn):
                 (id, battle_id, platform, role,
                  score_accuracy, score_depth, score_speed, score_citation, score_insight, score_overall,
                  api_calls, pick, is_winner)
-                VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s)
+                VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s) ON CONFLICT DO NOTHING
             """, (fid, b['id'], f[0], f[1],
                   f[2], f[3], f[4], f[5], f[6], f[7], f[8], f[9],
                   1 if f[0] == b.get('winner_platform') else 0))
@@ -523,6 +523,7 @@ def register_ai_wars_routes(app):
         return jsonify({'success': True, 'battle': battle})
 
     # ─── POST /api/v1/ai-wars/battles ───
+# AUTO-REPAIR: duplicate route '/api/v1/ai-wars/battles' also in ai_wars.py:439 — review and remove one
     @app.route('/api/v1/ai-wars/battles', methods=['POST', 'OPTIONS'])
     def ai_wars_create_battle():
         """Create a new battle (admin endpoint)."""
@@ -544,7 +545,7 @@ def register_ai_wars_routes(app):
                 INSERT INTO wars_battles
                 (id, category, title, description, date, week_number, year,
                  winner_platform, winner_label, api_calls, status, created_at)
-                VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, 'active', %s)
+                VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, 'active', %s) ON CONFLICT DO NOTHING
             """, (
                 battle_id,
                 data.get('category', 'stump-the-ai'),
@@ -567,7 +568,7 @@ def register_ai_wars_routes(app):
                     (id, battle_id, platform, role,
                      score_accuracy, score_depth, score_speed, score_citation,
                      score_insight, score_overall, api_calls, pick, is_winner)
-                    VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s)
+                    VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s) ON CONFLICT DO NOTHING
                 """, (
                     fid, battle_id, f['platform'], f.get('role'),
                     f.get('score_accuracy', 0), f.get('score_depth', 0),
@@ -611,7 +612,7 @@ def register_ai_wars_routes(app):
         try:
             c.execute("""
                 INSERT INTO wars_votes (id, battle_id, platform, voter_ip)
-                VALUES (%s, %s, %s, %s)
+                VALUES (%s, %s, %s, %s) ON CONFLICT DO NOTHING
             """, (vote_id, battle_id, platform, voter_ip))
             conn.commit()
             conn.close()
@@ -823,7 +824,7 @@ def register_ai_wars_routes(app):
             c.execute("""
                 INSERT INTO wars_platforms
                 (platform, name, color, provider, api_endpoint, icon_url, auto_registered, status, registered_at, last_seen, metadata)
-                VALUES (%s, %s, %s, %s, %s, %s, 1, 'pending', %s, %s, %s)
+                VALUES (%s, %s, %s, %s, %s, %s, 1, 'pending', %s, %s, %s) ON CONFLICT DO NOTHING
             """, (slug, data['name'], data.get('color', '#666666'), data.get('provider', ''),
                   data.get('api_endpoint', ''), data.get('icon_url', ''),
                   now, now, metadata))
@@ -833,7 +834,7 @@ def register_ai_wars_routes(app):
                 INSERT INTO wars_platform_stats
                 (platform, total_battles, total_wins, total_api_calls,
                  avg_accuracy, avg_depth, avg_speed, avg_citation, avg_insight, overall_score, updated_at)
-                VALUES (%s, 0, 0, 0, 0, 0, 0, 0, 0, 0, %s)
+                VALUES (%s, 0, 0, 0, 0, 0, 0, 0, 0, 0, %s) ON CONFLICT DO NOTHING
             """, (slug, now))
 
             conn.commit()
@@ -900,7 +901,7 @@ def register_ai_wars_routes(app):
         c.execute("""
             INSERT INTO wars_platforms
             (platform, name, color, provider, auto_registered, status, registered_at, last_seen, metadata)
-            VALUES (%s, %s, %s, %s, 1, 'pending', %s, %s, %s)
+            VALUES (%s, %s, %s, %s, 1, 'pending', %s, %s, %s) ON CONFLICT DO NOTHING
         """, (slug, name, data.get('color', '#666666'), data.get('provider', ''),
               now, now, json.dumps({'auto_detected': True, 'user_agent': ua[:200]})))
 
@@ -908,7 +909,7 @@ def register_ai_wars_routes(app):
             INSERT INTO wars_platform_stats
             (platform, total_battles, total_wins, total_api_calls,
              avg_accuracy, avg_depth, avg_speed, avg_citation, avg_insight, overall_score, updated_at)
-            VALUES (%s, 0, 0, 0, 0, 0, 0, 0, 0, 0, %s)
+            VALUES (%s, 0, 0, 0, 0, 0, 0, 0, 0, 0, %s) ON CONFLICT DO NOTHING
         """, (slug, now))
 
         conn.commit()

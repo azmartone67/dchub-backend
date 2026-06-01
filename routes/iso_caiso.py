@@ -165,6 +165,7 @@ def latest():
     return jsonify(iso="CAISO", metrics=list(by_metric.values())), 200
 
 
+# AUTO-REPAIR: duplicate route '/health' also in main.py:3871 — review and remove one
 @iso_caiso_bp.route("/health", methods=["GET"])
 def health():
     with _conn() as c, c.cursor() as cur:
