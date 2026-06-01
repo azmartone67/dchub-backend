@@ -2180,6 +2180,24 @@ def _mark_published(post_id: int, platform: str) -> None:
                 SET status = %s, published_at = NOW(), publish_platform = %s
                 WHERE id = %s
             """, ("published", platform, post_id))
+            # r60-conv (2026-06-01, #118): also stamp the parent press release's
+            # linkedin_sent_at so /distribution/health reflects reality. The
+            # delivery metric reads auto_press_releases.linkedin_sent_at, but no
+            # actual publish path wrote it (only the once-daily share-email did),
+            # which mathematically floored the metric near ~53% even though posts
+            # publish fine. Idempotent (IS NULL); fail-soft (own try/except).
+            if platform == "linkedin":
+                try:
+                    cur.execute("""
+                        UPDATE auto_press_releases
+                           SET linkedin_sent_at = NOW()
+                         WHERE press_release_id = (
+                                 SELECT press_release_id FROM social_media_posts WHERE id = %s
+                               )
+                           AND linkedin_sent_at IS NULL
+                    """, (post_id,))
+                except Exception:
+                    pass
         c.commit()
     except Exception as e:
         print(f"[publish-now] mark_published failed: {e}", file=sys.stderr)

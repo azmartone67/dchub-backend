@@ -893,13 +893,12 @@ Allow: /
 # MCP: https://dchub.cloud/.well-known/mcp/server-card.json
 # AGENTS.md: https://dchub.cloud/AGENTS.md
 
-# Sitemaps (r35 2026-05-24): include round-33 SEO sitemap-index and
-# per-property sub-sitemaps published from dchub.cloud (Flask).
+# Sitemaps (r60 2026-06-01): advertise ONLY the live dynamic /sitemap.xml
+# (14,779 /facilities/<slug> URLs, all 200, self-canonical). The sub-sitemaps
+# were stale STATIC files serving dead slugs (~2,002 × 404) + a 404
+# /sitemap-grids.xml — removed so Google stops re-crawling dead URLs (the
+# bulk of the ~13K "redirect/not-found" in Search Console).
 Sitemap: https://dchub.cloud/sitemap.xml
-Sitemap: https://dchub.cloud/sitemap-index.xml
-Sitemap: https://dchub.cloud/sitemap-facilities.xml
-Sitemap: https://dchub.cloud/sitemap-markets.xml
-Sitemap: https://dchub.cloud/sitemap-grids.xml
 
 # Host preference
 Host: dchub.cloud
