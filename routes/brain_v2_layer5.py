@@ -501,6 +501,19 @@ def learn_backend_issues():
     results = []
     claude_calls = 0
     for issue in backend_issues:
+        # r64 (2026-06-01): populate brain MEMORY (persistence + temporal) from
+        # the BACKEND finding stream too. Previously only Layer-4's heal loop
+        # wrote these, and it iterates actionable_FRONTEND_issues — currently 0
+        # items (site frontend is clean) — so memory_depth was stuck at ~2 rows
+        # / 1-of-4 while the real 84-deep backlog flows through HERE untracked.
+        # Wrapped so a telemetry hiccup never breaks the learn loop.
+        try:
+            from routes.brain_v2_store import bump_persistence as _bp
+            from routes.brain_learning import bump_temporal as _bt
+            _bp(issue_label=(issue.get("issue") or "")[:300], url=issue.get("url") or "")
+            _bt(issue.get("issue") or "", issue.get("url") or "")
+        except Exception:
+            pass
         url = issue.get("url", "")          # e.g. dchub://cron/dcpi_recompute
         label = issue.get("issue", "")[:300]
 
@@ -970,6 +983,20 @@ def mark_proposal_merge_outcome(proposal_id):
             conn.commit()
         if not row:
             return jsonify(ok=False, error="proposal_not_found"), 404
+        # r64 (2026-06-01): bridge the merge outcome into brain_fix_outcomes so
+        # self-assessment fix_success finally has a denominator. The prober
+        # (probe_outcomes) only checks Layer-4 TEXT proposals — of which there
+        # are 0 — so fix_success read null forever, even though CODE PRs DO
+        # carry a real merged_healthy/reverted signal; it just never reached the
+        # outcomes table the grade reads. Wrapped so it can't fail the endpoint.
+        try:
+            from routes.brain_learning import record_proposal_outcome
+            record_proposal_outcome(
+                proposal_id, 'code',
+                still_broken=(outcome == 'merged_reverted'),
+                evidence_note=f"post-merge guard: {outcome}")
+        except Exception:
+            pass
         return jsonify(ok=True, proposal_id=proposal_id, outcome=outcome), 200
     except Exception as e:
         return jsonify(ok=False, error=str(e)[:200]), 500
