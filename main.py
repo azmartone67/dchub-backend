@@ -11620,6 +11620,36 @@ def handle_invoice_paid(invoice):
     except Exception as e:
         print(f"[dunning] invoice_paid pg update failed for {customer_id}: {e}")
 
+    # r46-restore (2026-06-01): RESTORE-ON-RENEWAL. A prior-payer pulled to
+    # 'free' by the dunning guard (handle_payment_failed, demoted_reason=
+    # 'dunning_prior_payer') whose card later succeeds via Stripe's automatic
+    # retry fires invoice.paid (NOT a new checkout), so without this they'd
+    # stay locked on free tier despite paying again. The demote only lowered
+    # api_keys.rate_limit_tier and left api_keys.plan intact, so restore the
+    # tier FROM plan and clear the demote stamp. Scoped strictly to
+    # demoted_reason='dunning_prior_payer' so we never touch a manually-set or
+    # first-charge demote. Idempotent.
+    try:
+        _pg_execute(
+            """UPDATE api_keys
+                  SET rate_limit_tier = plan, last_used_at = NOW()
+                WHERE user_id IN (
+                      SELECT id FROM users
+                       WHERE stripe_customer_id = %s
+                         AND demoted_reason = 'dunning_prior_payer'
+                         AND demoted_at IS NOT NULL)""",
+            (customer_id,),
+        )
+        _pg_execute(
+            """UPDATE users
+                  SET demoted_at = NULL, demoted_reason = NULL
+                WHERE stripe_customer_id = %s
+                  AND demoted_reason = 'dunning_prior_payer'""",
+            (customer_id,),
+        )
+    except Exception as e:
+        print(f"[dunning] restore-on-renewal failed for {customer_id}: {e}")
+
     # SQLite mirror (best-effort)
     try:
         conn = get_db()
@@ -11710,21 +11740,36 @@ def handle_payment_failed(invoice):
 
     # First-charge-never-succeeded guard.
     DEMOTE_AFTER_N_FAILURES = 2
+    # Prior-payer renewal-lapse guard (r46, 2026-05-31): a customer who HAS
+    # paid before (paid_count >= 1) but whose RENEWAL has now failed several
+    # retries in a row was previously untouched until Stripe finally canceled
+    # (~21 days of full paid access, or never if stripe_customer_id is
+    # unlinked). After 4 consecutive failures, pull them to 'free' too. Same
+    # conservative shape as the first-charge guard: KEY STAYS ACTIVE, users.plan
+    # is preserved, demote is idempotent via demoted_at IS NULL, and a later
+    # successful payment / subscription.updated->active restores the tier — we
+    # do NOT touch the canceled / subscription.deleted full-revoke path.
+    DEMOTE_PRIOR_PAYER_AFTER_N_FAILURES = 4
     demoted_users = []
     for row in (pg_rows or []):
         user_id, paid_count, failed_count, plan, email = row
         paid_count = int(paid_count or 0)
         failed_count = int(failed_count or 0)
+        demote_reason = None
         if paid_count == 0 and failed_count >= DEMOTE_AFTER_N_FAILURES:
+            demote_reason = 'first_charge_never_succeeded'
+        elif paid_count >= 1 and failed_count >= DEMOTE_PRIOR_PAYER_AFTER_N_FAILURES:
+            demote_reason = 'dunning_prior_payer'
+        if demote_reason:
             try:
                 # Mark the demote (idempotent — only if not already
-                # demoted, so a 3rd failure doesn't reset the clock).
+                # demoted, so a later failure doesn't reset the clock).
                 _pg_execute(
                     """UPDATE users
                           SET demoted_at = NOW(),
-                              demoted_reason = 'first_charge_never_succeeded'
+                              demoted_reason = %s
                         WHERE id = %s AND demoted_at IS NULL""",
-                    (user_id,),
+                    (demote_reason, user_id),
                 )
                 # Pull rate limit to 'free' — KEY STAYS ACTIVE so the
                 # recovery flow continues to work.
@@ -11736,15 +11781,21 @@ def handle_payment_failed(invoice):
                     (now_iso, user_id),
                 )
                 demoted_users.append({"user_id": user_id, "email": email, "plan": plan,
-                                      "paid": paid_count, "failed": failed_count})
+                                      "paid": paid_count, "failed": failed_count,
+                                      "reason": demote_reason})
                 print(
-                    f"🪫 Dunning demote: user_id={user_id} email={email} "
+                    f"🪫 Dunning demote ({demote_reason}): user_id={user_id} email={email} "
                     f"customer={customer_id} plan={plan} paid={paid_count} "
                     f"failed={failed_count} attempt={attempt_count} "
                     f"→ rate_limit_tier=free (key stays active)"
                 )
             except Exception as e:
                 print(f"[dunning] demote failed for user_id={user_id}: {e}")
+    # FOLLOW-UP (needs DB access, not done here): some lapsed renewals never
+    # demote because their users.stripe_customer_id is NULL/unlinked, so this
+    # UPDATE ... WHERE stripe_customer_id matches no row. A one-off backfill of
+    # stripe_customer_id (from Stripe customer email → users.email) is required
+    # for those; out of scope for this webhook-only change.
 
     print(f"⚠️ Payment failed for customer: {customer_id} (attempt #{attempt_count})"
           + (f" — demoted {len(demoted_users)} user(s)" if demoted_users else ""))
