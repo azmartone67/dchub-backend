@@ -1,0 +1,60 @@
+name: MCP identity backfill (signals + upgrade-pool emails)
+
+# r33-identity (2026-05-31): ~100% of mcp_upgrade_signals rows have NULL
+# user_email, so the conversion join (on user_email) matches nothing.
+# session_id IS populated, and emails arrive later at /notify + /checkout.
+# These two admin endpoints already exist and are idempotent, but nothing
+# scheduled them — so the backfill never ran. POST both every 6h.
+#   - /admin/email-capture/backfill-signals : join mcp_email_capture(session_id)
+#     -> mcp_upgrade_signals to populate user_email on past anonymous signals.
+#   - /admin/upgrade-pool/backfill-emails    : regex-extract a key prefix from
+#     user_agent, join api_keys -> users, populate user_email.
+# Both run on Railway (which HAS DATABASE_URL); GitHub Actions has no DB
+# secret, same reason backfill-states.yml POSTs a Railway endpoint instead.
+# Auth: X-Internal-Key is the only header accepted by BOTH endpoints
+# (email-capture/backfill-signals reads X-Internal-Key only); the secret
+# value DCHUB_ADMIN_KEY is in both modules' accepted-key fallback set.
+
+'on':
+  schedule:
+    - cron: '17 */6 * * *'
+  workflow_dispatch: {}
+
+permissions:
+  contents: read
+
+env:
+  BASE: https://dchub-backend-production.up.railway.app
+
+jobs:
+  backfill:
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    steps:
+      - name: Backfill signals from captured emails (by session_id)
+        env:
+          ADMIN_KEY: ${{ secrets.DCHUB_ADMIN_KEY }}
+        run: |
+          if [ -z "${ADMIN_KEY:-}" ]; then
+            echo "::error::DCHUB_ADMIN_KEY secret not set"
+            exit 1
+          fi
+          code=$(curl -s -o /tmp/sig.json -w "%{http_code}" --max-time 90 -X POST \
+            -H "X-Internal-Key: $ADMIN_KEY" \
+            "$BASE/api/v1/admin/email-capture/backfill-signals")
+          echo "HTTP $code"; cat /tmp/sig.json
+          if [ "$code" != "200" ]; then exit 1; fi
+
+      - name: Backfill upgrade-pool emails (key prefix -> users)
+        env:
+          ADMIN_KEY: ${{ secrets.DCHUB_ADMIN_KEY }}
+        run: |
+          if [ -z "${ADMIN_KEY:-}" ]; then
+            echo "::error::DCHUB_ADMIN_KEY secret not set"
+            exit 1
+          fi
+          code=$(curl -s -o /tmp/pool.json -w "%{http_code}" --max-time 90 -X POST \
+            -H "X-Internal-Key: $ADMIN_KEY" \
+            "$BASE/api/v1/admin/upgrade-pool/backfill-emails")
+          echo "HTTP $code"; cat /tmp/pool.json
+          if [ "$code" != "200" ]; then exit 1; fi

@@ -146,7 +146,14 @@ def fire_upgrade_signal(*, signal_type, tool_requested=None, tier_current="free"
                            _req.args.get('api_key'))
                 if not api_key:
                     auth = _req.headers.get('Authorization', '')
-                    if auth.startswith('Bearer ') and auth[7:].startswith('dchub_'):
+                    # r33-identity (2026-05-31): also lift anonymous
+                    # dch_live_/dch_trial_ bearer tokens, not just dchub_.
+                    # Anonymous MCP callers present these on the paywall;
+                    # capturing them lets a later redeem/backfill resolve
+                    # the email. ~100% of signal rows were NULL user_email
+                    # because we threw these away here.
+                    if auth.startswith('Bearer ') and auth[7:].startswith(
+                            ('dchub_', 'dch_live_', 'dch_trial_')):
                         api_key = auth[7:]
     except Exception:
         pass
@@ -170,6 +177,23 @@ def fire_upgrade_signal(*, signal_type, tool_requested=None, tier_current="free"
                 row = cur.fetchone()
                 if row and row[0]:
                     user_email = row[0]
+        except Exception:
+            pass
+    # r33-identity (2026-05-31): persist a stable caller identity even when
+    # there's no dchub_ key. session_id is already stored below; additionally,
+    # if an anonymous dch_live_/dch_trial_ key is present and we could NOT
+    # resolve an email from it, embed its prefix into user_agent so a later
+    # redeem/backfill can resolve the email. This mirrors the existing
+    # /admin/upgrade-pool/backfill-emails path, which regex-extracts an api-key
+    # prefix from the user_agent column to join api_keys -> users. Only fires
+    # when the key isn't already present in user_agent, so it's idempotent and
+    # doesn't disturb the dchub_/email-resolved path above.
+    if (not user_email and api_key
+            and api_key.startswith(('dch_live_', 'dch_trial_'))):
+        try:
+            _key_tag = api_key[:24]
+            if _key_tag and _key_tag not in (user_agent or ''):
+                user_agent = ((user_agent or '') + f' key={_key_tag}').strip()
         except Exception:
             pass
     try:

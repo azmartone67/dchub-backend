@@ -539,6 +539,15 @@ def checkout_initiate():
             if r and r.get("code"): ref = r["code"]
         except Exception: pass
 
+    # r33-identity (2026-05-31): last-resort, thread the MCP session_id into
+    # client_reference_id when we still have no ref (the common anonymous
+    # case — no api_key, no pre-minted code). The upgrade signal row carries
+    # this same session_id, so a Stripe conversion webhook can match the
+    # payment back to the signal on session_id. Closes the ~100%-NULL
+    # user_email gap on the conversion join, since session_id is populated.
+    if not ref and sid:
+        ref = sid
+
     # Build the Stripe Payment Link URL with customer_email + client_reference_id
     from urllib.parse import urlencode
     params = {
