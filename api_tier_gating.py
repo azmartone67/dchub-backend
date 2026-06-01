@@ -385,7 +385,7 @@ def generate_api_key(user_id, email=None, plan='free', name='Default'):
         INSERT INTO api_keys (user_id, key_hash, key_prefix, name, permissions,
                               rate_limit_tier, is_active, created_at, usage_count,
                               plan, calls_today, calls_total)
-        VALUES (%s, %s, %s, %s, '["read","write"]', %s, 1, %s, 0, %s, 0, 0)
+        VALUES (%s, %s, %s, %s, '["read","write"]', %s, 1, %s, 0, %s, 0, 0) ON CONFLICT DO NOTHING
     """, (user_id, key_hash, key_prefix, name, api_tier,
           datetime.now(timezone.utc).isoformat(), plan))
     conn.commit()
@@ -1084,7 +1084,7 @@ def increment_daily_records(user_key, tier, records_count, endpoint=''):
         cur = conn.cursor()
         cur.execute("""
             INSERT INTO daily_record_usage (user_key, usage_date, records_served, endpoint_hits, tier, last_endpoint, last_access)
-            VALUES (%s, %s, %s, 1, %s, %s, NOW())
+            VALUES (%s, %s, %s, 1, %s, %s, NOW() ON CONFLICT DO NOTHING)
             ON CONFLICT (user_key, usage_date) DO UPDATE SET
                 records_served = daily_record_usage.records_served + %s,
                 endpoint_hits = daily_record_usage.endpoint_hits + 1,
