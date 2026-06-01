@@ -504,7 +504,13 @@ def visitor_intel_public():
             "unique_sessions_7d":      int(totals.get("unique_sessions", 0)),
             "distinct_mcp_clients_7d": int(totals.get("unique_mcp_clients", 0)),
             "identified_users_7d":     int(totals.get("unique_known_visitors", 0)),
-            "conversions_30d":         int(totals.get("conversions", 0)),
+            # r61: was mislabeled "conversions_30d" but _compute(days=7) means
+            # this is a 7d count. Also expose a real session→conversion rate so
+            # the KPI isn't a bare number next to an inflated signal count.
+            "conversions_7d":          int(totals.get("conversions", 0)),
+            "conversion_rate_pct": round(
+                int(totals.get("conversions", 0))
+                / max(int(totals.get("unique_sessions", 0)), 1) * 100, 2),
         },
         # Top tools by paywall-hit volume — surfaces what the market
         # most wants (without naming who).
