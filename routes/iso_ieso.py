@@ -233,11 +233,13 @@ def latest_for_iso(iso):
     return list(by.values())
 
 
+# AUTO-REPAIR: duplicate route '/extract' also in routes/iso_caiso.py:145 — review and remove one
 @iso_ieso_bp.route("/extract", methods=["POST", "GET"])
 def trigger():
     s = run_extraction()
     return jsonify(s), (200 if s.get("status") == "ok" else 500)
 
+# AUTO-REPAIR: duplicate route '/snapshot' also in routes/iso_nordpool_intl.py:206 — review and remove one
 
 @iso_ieso_bp.route("/snapshot", methods=["GET"])
 def snapshot():
@@ -252,11 +254,13 @@ def snapshot():
         "installed_capacity_mw": INSTALLED_CAPACITY_MW,
         "renewable_pct": RENEWABLE_PCT,
     }), 200
+# AUTO-REPAIR: duplicate route '/latest' also in routes/iso_caiso.py:151 — review and remove one
 
 
 @iso_ieso_bp.route("/latest", methods=["GET"])
 def latest():
     return jsonify(iso=ISO_CODE, method="baseline_model_v1",
+# AUTO-REPAIR: duplicate route '/health' also in main.py:3871 — review and remove one
                    metrics=latest_for_iso(ISO_CODE)), 200
 
 
