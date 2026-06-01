@@ -626,6 +626,7 @@ def _get_transactions_free():
 
     deals = SAMPLE_DEALS.copy()
     loaded_from_db = False
+    true_total = None   # real COUNT(*) across the whole table (not the LIMIT 200 page)
 
     pg_url = os.environ.get('DATABASE_URL', '')
     if pg_url:
@@ -641,6 +642,22 @@ def _get_transactions_free():
                     if buyer.lower() in ['tbd', 'unknown', 'n/a', ''] or seller.lower() in ['tbd', 'unknown', 'n/a', '']:
                         continue
                     db_deals.append({'id': row[0], 'date': row[1], 'year': row[2], 'buyer': buyer, 'seller': seller, 'value': row[5], 'mw': row[6], 'type': row[7], 'region': row[8], 'market': row[9]})
+                # True total across the ENTIRE table. The LIMIT 200 above only
+                # bounds the rows we page through for display; reporting
+                # len(deals) as total_matching made the State-of-Market report
+                # headline show "3" (the free row cap) / "70" (200-row page)
+                # instead of the real database size. Mirror the buyer/seller
+                # quality filter exactly (NULL -> '' -> excluded).
+                try:
+                    pg_cur.execute(
+                        "SELECT COUNT(*) FROM deals "
+                        "WHERE COALESCE(LOWER(buyer),'')  NOT IN ('tbd','unknown','n/a','') "
+                        "  AND COALESCE(LOWER(seller),'') NOT IN ('tbd','unknown','n/a','')"
+                    )
+                    true_total = pg_cur.fetchone()[0]
+                except Exception as _ce:
+                    logger.warning(f"deals COUNT(*) failed, falling back to page len: {_ce}")
+                    true_total = None
             if db_deals:
                 # Live wins completely — no seed merge.
                 deals = db_deals
@@ -655,7 +672,9 @@ def _get_transactions_free():
 
 
     deals.sort(key=lambda x: x.get('date') or '', reverse=True)
-    total_matching = len(deals)
+    # Prefer the real COUNT(*); fall back to page length only if the count
+    # query was unavailable (e.g. seed-fallback path with no DB).
+    total_matching = true_total if (loaded_from_db and true_total is not None) else len(deals)
     limited = deals[:FREE_LIMIT]
 
     basic_deals = []
