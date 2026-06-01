@@ -205,7 +205,7 @@ def _compute_report(year: int | None = None,
                 "freshness":   "Daily refresh vs ~6 months stale by publish date",
                 "license":     "CC-BY-4.0 vs proprietary © with NDA",
                 "access":      "Free public JSON + MCP vs $5-25K licensed PDF",
-                "distribution":"AI-agent native (27 MCP tools) vs human PDF only",
+                "distribution":"AI-agent native (31 MCP tools) vs human PDF only",
             },
             "honest_caveat": (
                 "We are a live data layer, not a 30-page narrative document. "
@@ -249,6 +249,34 @@ def _compute_report(year: int | None = None,
             prev_lo, prev_hi = _month_bounds(py, pm)
             yy, ym = _prior_year_same_month(year, month)
             yago_lo, yago_hi = _month_bounds(yy, ym)
+
+            # ── r45 (2026-06-01): PARTIAL-MONTH (MTD) day-matching. ──────
+            # When the report is for the CURRENT, still-open month, the
+            # window curr_lo..curr_hi spans the whole month but only a few
+            # days of data exist. Comparing that month-to-date against the
+            # FULL prior month produced every "-100% MoM / -99.8%" artifact
+            # the user saw on a June-1 load (0 facilities vs 595; 243 queries
+            # vs ~110k). Honest fix: for the current month, compare
+            # like-for-like — clamp every comparison window to the SAME
+            # number of elapsed days. June-1-so-far vs May-1-so-far, not
+            # vs all of May. Closed/archived months keep full-month windows.
+            is_partial = (year, month) == (today.year, today.month)
+            days_elapsed = None
+            if is_partial:
+                # Data exists through 'today'; cap the current window at
+                # tomorrow (exclusive) and match the prior windows to the
+                # same day-of-month span so MoM/YoY are pace-comparable.
+                days_elapsed = (today - curr_lo).days + 1  # inclusive of today
+                curr_hi = today + datetime.timedelta(days=1)
+
+                def _clamp_to_elapsed(lo):
+                    # Same elapsed-day window starting at the period's day 1.
+                    return lo + datetime.timedelta(days=days_elapsed)
+                prev_hi = min(prev_hi, _clamp_to_elapsed(prev_lo))
+                yago_hi = min(yago_hi, _clamp_to_elapsed(yago_lo))
+
+            out["is_partial_month"] = is_partial
+            out["days_elapsed"] = days_elapsed
 
             # ── HEADLINE: facilities, total MW (point-in-time, end of month)
             # FIX r7 (2026-05-20): switched cumulative totals from
@@ -801,6 +829,28 @@ def _render_html(d: dict, *, partner: str = "") -> str:
     pk      = d.get("press_kit") or {}
     label   = d.get("month_label", "")
 
+    # r45 (2026-06-01): honest partial-month framing. On a still-open month
+    # the comparisons are month-to-date vs the same elapsed window last
+    # month/year (see _compute_report MTD clamp), so say so plainly instead
+    # of letting "New this month: 0 · -100% MoM" read as a collapse.
+    _is_partial = d.get("is_partial_month", False)
+    _days_elapsed = d.get("days_elapsed")
+    _mtd_suffix = ""
+    _mtd_banner = ""
+    if _is_partial and _days_elapsed:
+        _de = int(_days_elapsed)
+        _plural = "s" if _de != 1 else ""
+        _mtd_suffix = " (MTD)"
+        _mtd_banner = (
+            '<div style="margin:14px 0 0;padding:10px 14px;border-radius:8px;'
+            'background:rgba(129,140,248,.10);border:1px solid rgba(129,140,248,.3);'
+            'font-size:.86rem;color:var(--dch-text-mute,#94a3b8)">'
+            f'⏳ <b>Month-to-date</b> — {label} is still open ({_de} day{_plural} '
+            f'elapsed). MoM / YoY compare the same {_de}-day window last month and '
+            'last year (like-for-like pace), not a full month. Full-month numbers '
+            'finalize when the month closes.'
+            '</div>')
+
     # FIX r7: when calendar month has no deals, surface the trailing
     # 30-day numbers so the tile + table aren't empty for a healthy
     # database. UI label switches to "Trailing 30d" so attribution stays
@@ -1005,6 +1055,7 @@ def _render_html(d: dict, *, partner: str = "") -> str:
     <div class="eyebrow">Monthly trend snapshot</div>
     <h1>{label} <span class="grad">in data centers.</span></h1>
     <p class="lede">A live monthly readout of the global data center market: facilities discovered, capacity changed hands, deal volume, AI-agent queries, and per-market trends. Every number is pulled from DC Hub's live ingest pipeline — no spreadsheet versioning, no quarterly lag.</p>
+    {_mtd_banner}
   </div>
 
   {executive_html}
@@ -1033,7 +1084,7 @@ def _render_html(d: dict, *, partner: str = "") -> str:
       </div>
       <div class="stat">
         <span class="stat-val">{h.get('facilities_added_month',0):,}</span>
-        <span class="stat-lbl">New this month</span>
+        <span class="stat-lbl">New{_mtd_suffix or ' this month'}</span>
         <div class="stat-sub">{_delta_html(h.get('facilities_mom_pct'))} MoM · {_delta_html(h.get('facilities_yoy_pct'))} YoY</div>
       </div>
       <div class="stat">
@@ -1115,7 +1166,7 @@ def _render_html(d: dict, *, partner: str = "") -> str:
     <p class="lede">This snapshot is regenerated every time the page is loaded — no quarterly lag, no spreadsheet versioning. Historical months are immutable: <code>/reports/monthly/2026-04</code> always shows April 2026's numbers as snapshotted when April closed. Same data is also available via:</p>
     <ul style="color:var(--text-dim);font-size:13.5px;margin-top:14px;padding-left:22px;line-height:1.8">
       <li>REST API — <code style="color:#c7d2fe">/api/v1/reports/monthly</code></li>
-      <li>MCP server — <code style="color:#c7d2fe">https://dchub.cloud/mcp</code> (40 tools for AI agents)</li>
+      <li>MCP server — <code style="color:#c7d2fe">https://dchub.cloud/mcp</code> (31 tools for AI agents)</li>
       <li>Live ops dashboard — <a href="/transparency" style="color:#c7d2fe">/transparency</a></li>
       <li>Quarterly snapshot (legacy format) — <a href="/reports/quarterly" style="color:#c7d2fe">/reports/quarterly</a></li>
     </ul>
