@@ -105,7 +105,7 @@ def track_usage():
         with _conn() as c, c.cursor() as cur:
             cur.execute("""
                 INSERT INTO api_usage_meter (api_key, tier, usage_date, calls_count, last_call_at, updated_at)
-                VALUES (%s, %s, %s, 1, NOW(), NOW())
+                VALUES (%s, %s, %s, 1, NOW() ON CONFLICT DO NOTHING, NOW())
                 ON CONFLICT (api_key, usage_date) DO UPDATE
                 SET calls_count = api_usage_meter.calls_count + 1,
                     last_call_at = NOW(),
@@ -344,7 +344,7 @@ def handle_usage_based_checkout(session):
                 if customer:
                     cur.execute("""
                         INSERT INTO metered_keys (api_key, stripe_customer_id, subscription_id, active, last_reported_at, linked_at)
-                        VALUES (%s, %s, %s, TRUE, NOW(), NOW())
+                        VALUES (%s, %s, %s, TRUE, NOW() ON CONFLICT DO NOTHING, NOW())
                         ON CONFLICT (api_key) DO UPDATE SET active = TRUE, stripe_customer_id = EXCLUDED.stripe_customer_id
                     """, (api_key, customer, session.get("subscription")))
             c.commit()
@@ -388,7 +388,7 @@ def link_metered_key():
             cur.execute("""
                 INSERT INTO metered_keys
                     (api_key, stripe_customer_id, subscription_id, active, last_reported_at, linked_at)
-                VALUES (%s, %s, %s, TRUE, NOW(), NOW())
+                VALUES (%s, %s, %s, TRUE, NOW() ON CONFLICT DO NOTHING, NOW())
                 ON CONFLICT (api_key) DO UPDATE
                   SET stripe_customer_id = EXCLUDED.stripe_customer_id,
                       subscription_id    = EXCLUDED.subscription_id,
@@ -548,7 +548,7 @@ def recover_usage_key():
                                  "stripe_customer_id": customer})))
                 if customer:
                     cur.execute("""INSERT INTO metered_keys (api_key, stripe_customer_id, subscription_id, active, last_reported_at, linked_at)
-                        VALUES (%s,%s,%s,TRUE,NOW(),NOW())
+                        VALUES (%s,%s,%s,TRUE,NOW() ON CONFLICT DO NOTHING,NOW())
                         ON CONFLICT (api_key) DO UPDATE SET active=TRUE, stripe_customer_id=EXCLUDED.stripe_customer_id""",
                         (api_key, customer, sub_id))
             c.commit()
@@ -626,6 +626,7 @@ def report_to_stripe():
     }), 200
 
 
+# AUTO-REPAIR: duplicate route '/health' also in main.py:3871 — review and remove one
 @stripe_metered_bp.route("/health", methods=["GET"])
 def billing_health():
     table_ok = _ensure_table()

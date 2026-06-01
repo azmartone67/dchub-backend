@@ -140,7 +140,7 @@ def _record_capture(email, source, *, session_id=None, tool=None,
                 INSERT INTO mcp_email_capture
                 (email, session_id, tool, source, api_key_hint,
                  referer, user_agent, ip_address)
-                VALUES (%s, %s, %s, %s, %s, %s, %s, %s)
+                VALUES (%s, %s, %s, %s, %s, %s, %s, %s) ON CONFLICT DO NOTHING
                 RETURNING id
             """, (
                 email.strip().lower(),
