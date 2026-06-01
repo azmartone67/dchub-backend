@@ -57,6 +57,74 @@ def _set_cached(key, value):
             _cache_ttl.pop(k, None)
 
 
+# ── 2026-05-28 — tier teaser ────────────────────────────────────────────────
+# These endpoints read public EIA/EPA data but are a core upgrade hook, so
+# they get a value-first teaser instead of a hard wall: free/anon callers see
+# a small sample + an upgrade CTA; paid tiers see everything. Applied at the
+# response boundary (one blueprint after_request) so it covers the cache-hit
+# returns too. Single-plant /detail and /summary stay free as the discovery
+# hook. Tier detection is cookie/key-aware and fails closed to anonymous.
+_PP_PAID = {'pro', 'enterprise', 'founding', 'internal', 'admin'}
+_PP_PREVIEW = {'anonymous': 3, 'free': 3, 'identified': 5, 'developer': 50}
+_PP_LIST_KEYS = {
+    '/api/v1/power-plants/nearby':     ['plants'],
+    '/api/v1/power-plants/generation': ['plants'],
+    '/api/v1/power-plants/permits':    ['facilities'],
+    '/api/v1/power-plants/water-risk': ['power_plants', 'discharge_permits'],
+}
+
+
+def _pp_tier():
+    def _dec(_t):
+        try:
+            import jwt as _j
+            secret = os.environ.get('JWT_SECRET') or os.environ.get('SECRET_KEY', '')
+            return _j.decode(_t, secret, algorithms=['HS256'])
+        except Exception:
+            return None
+    try:
+        from map_tier_gating import _detect_caller_tier
+        t, _ = _detect_caller_tier(decode_jwt_func=_dec)
+        return (t or 'anonymous').lower()
+    except Exception:
+        return 'anonymous'
+
+
+@power_plant_bp.after_request
+def _pp_tease(resp):
+    try:
+        keys = _PP_LIST_KEYS.get(request.path)
+        if not keys or resp.status_code != 200 or not resp.is_json:
+            return resp
+        tier = _pp_tier()
+        if tier in _PP_PAID:
+            return resp
+        cap = _PP_PREVIEW.get(tier, 3)
+        data = resp.get_json(silent=True)
+        if not isinstance(data, dict):
+            return resp
+        hidden = 0
+        for k in keys:
+            v = data.get(k)
+            if isinstance(v, list) and len(v) > cap:
+                hidden += len(v) - cap
+                data[k] = v[:cap]
+        if hidden > 0:
+            data['_gated'] = True
+            data['_preview_only'] = True
+            data['_hidden_count'] = hidden
+            data['_tier'] = tier
+            data['_upgrade_cta'] = (
+                f"Free preview — showing a sample. {hidden} more records are "
+                f"behind a paid plan. Full coverage + exact data: dchub.cloud/pricing")
+            data['_pricing_url'] = "https://dchub.cloud/pricing"
+            data['_signup_url'] = "https://dchub.cloud/signup"
+            resp.set_data(json.dumps(data))
+    except Exception:
+        pass
+    return resp
+
+
 def _eia_request(path, params=None):
     """Make a request to EIA API v2."""
     import urllib.request
