@@ -629,6 +629,7 @@ def _attach_narrative_safe(d, kind):
         return d
 
 
+# AUTO-REPAIR: duplicate route '/reports/monthly' also in routes/monthly_trend.py:1217 — review and remove one
 @comprehensive_report_bp.route("/reports/monthly", methods=["GET"], strict_slashes=False)
 def monthly_html():
     d = _attach_narrative_safe(_gather(quarter_window=False), "monthly")
@@ -649,6 +650,7 @@ def quarterly_html():
                              "X-DC-Phase": "ZZZZZ-round47.13-comprehensive-quarterly"})
 
 
+# AUTO-REPAIR: duplicate route '/api/v1/reports/monthly' also in routes/monthly_trend.py:1271 — review and remove one
 @comprehensive_report_bp.route("/api/v1/reports/monthly.json", methods=["GET"], strict_slashes=False)
 @comprehensive_report_bp.route("/api/v1/reports/monthly", methods=["GET"], strict_slashes=False)
 def monthly_json():
