@@ -728,7 +728,12 @@ def _render_index() -> str:
   h1{{font-size:2.6rem;font-weight:800;letter-spacing:-.025em;margin:0 0 .4rem}}
   .sub{{color:#a1a1aa;font-size:1.05rem;margin:0 0 2rem;max-width:74ch}}
   .grid{{display:grid;grid-template-columns:repeat(auto-fit,minmax(260px,1fr));gap:14px;margin:1.4rem 0}}
-  .card{{background:#0f1119;border:1px solid rgba(255,255,255,.08);border-radius:12px;padding:20px 22px;text-decoration:none;color:inherit;transition:.15s}}
+  /* r47.46 (2026-05-27): display:block — /vs/* index renders `<a class="card">`
+     with block-level <div class="card-h"> + <p> children. Without explicit
+     display:block, default-inline anchors collapse their hit region in CSS
+     grid. Same fix as r47.44 (/dcpi), r47.45 (/dcgi). text-decoration +
+     color already set so visual is identical. */
+  .card{{display:block;background:#0f1119;border:1px solid rgba(255,255,255,.08);border-radius:12px;padding:20px 22px;text-decoration:none;color:inherit;transition:.15s}}
   .card:hover{{border-color:#818cf8;transform:translateY(-2px)}}
   .card-h{{font-weight:800;font-size:1.2rem;margin-bottom:.3rem}}
   .card-h .vs{{color:#a855f7;margin:0 .35rem}}

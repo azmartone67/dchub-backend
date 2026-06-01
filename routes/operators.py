@@ -437,7 +437,15 @@ padding:2rem 1rem;color:var(--dch-text);line-height:1.55;background:var(--dch-bg
 h1{{margin:0 0 .25rem;font-size:2rem}}
 .sub{{color:var(--dch-text-mute);margin:0 0 1.5rem}}
 .grid{{display:grid;grid-template-columns:repeat(auto-fit,minmax(180px,1fr));gap:.75rem;margin:1rem 0 2rem}}
-.card{{background:var(--dch-surface);padding:1rem 1.2rem;border-radius:8px;border:1px solid var(--dch-border)}}
+/* r47.46 (2026-05-27): defensive display:block + a-as-card hygiene. The
+   similar-operators block renders `<a class="card" href="/operators/X">`
+   with block-level <div> children inside the anchor. Without explicit
+   display:block, default-inline anchors collapse their hit region in a
+   CSS grid layout — cards look clickable (cursor:pointer) but clicks
+   land on the inner divs (no href) instead of the anchor. Same bug class
+   we fixed on /dcpi (r47.44) and /dcgi (r47.45). text-decoration + color
+   carry over so the link still reads as a card. */
+.card{{display:block;background:var(--dch-surface);padding:1rem 1.2rem;border-radius:8px;border:1px solid var(--dch-border);text-decoration:none;color:inherit}}
 .card-label{{font-size:.72rem;text-transform:uppercase;letter-spacing:.08em;color:var(--dch-text-mute);font-weight:600}}
 .card-metric{{font-size:1.8rem;font-weight:800;color:var(--dch-text);line-height:1;margin-top:.3rem}}
 h2{{font-size:1rem;color:var(--dch-text-mute);text-transform:uppercase;letter-spacing:.08em;margin:1.5rem 0 .5rem}}
