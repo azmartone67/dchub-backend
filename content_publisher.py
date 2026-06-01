@@ -1371,6 +1371,78 @@ def _quality_score(post) -> float:
     return round(score, 3)
 
 
+_EDITOR_MODEL = os.environ.get("EDITOR_REVIEW_MODEL", "claude-haiku-4-5-20251001")
+try:
+    _EDITOR_TIMEOUT = float(os.environ.get("EDITOR_REVIEW_TIMEOUT", "8") or 8)
+except (TypeError, ValueError):
+    _EDITOR_TIMEOUT = 8.0
+
+
+def _editor_review(content_text: str):
+    """r66 'knows better' layer — a final editor-in-chief LLM pass that reads the
+    draft like a sharp B2B comms director and BLOCKS anything embarrassing that
+    the deterministic gates didn't hard-code: an AI disclaiming knowledge dressed
+    up as 'validation', fabricated/unverifiable specifics, cringe self-
+    congratulation, off-brand or thin content. Generalizes the hard-coded guards
+    to catch NOVEL embarrassment.
+
+    Returns (publish: bool, reason: str). FAIL-OPEN: no key / any error / non-200
+    / unparseable → (True, "editor-skip:...") so a flaky LLM never dark-holds the
+    queue — the deterministic gate already blocks every KNOWN-bad class, this is
+    an additional judgment layer on top, not the floor."""
+    key = (os.environ.get("ANTHROPIC_API_KEY") or "").strip()
+    text = (content_text or "").strip()
+    if not key or not text:
+        return True, "editor-skip:no-key-or-empty"
+    sys_prompt = (
+        "You are the Editor-in-Chief of DC Hub, a serious data-center & energy "
+        "intelligence company. Approve or REJECT one draft social post before it "
+        "ships to LinkedIn. REJECT (publish=false) if ANY is true:\n"
+        "1. It quotes/paraphrases an AI or LLM DISCLAIMING knowledge or hedging "
+        "(e.g. 'I don't have specific current information', 'I'm not sure', 'as of "
+        "my last update', 'lacked current specifics'). Framing that as a citation "
+        "or 'validation' is a humiliating self-own.\n"
+        "2. It presents a non-endorsement, refusal, or generic mention AS an "
+        "endorsement/citation.\n"
+        "3. It states specific numbers, quotes, company names, or facts that look "
+        "fabricated, internally inconsistent, or unverifiable.\n"
+        "4. It is cringe/desperate/over-claiming, or off-brand for a credible B2B "
+        "data company.\n"
+        "5. It is thin, empty, or a broken template (placeholder text, bare "
+        "'Deal - Company' with no value/MW, zero-value stats).\n"
+        "Otherwise APPROVE. Be strict: when in doubt about embarrassment or "
+        "accuracy, REJECT. Reply with STRICT JSON only, no prose: "
+        '{"publish": true|false, "reason": "<=12 words"}.'
+    )
+    try:
+        import requests as _rq
+        import json as _json
+        r = _rq.post(
+            "https://api.anthropic.com/v1/messages",
+            headers={"x-api-key": key, "anthropic-version": "2023-06-01",
+                     "content-type": "application/json"},
+            json={"model": _EDITOR_MODEL, "max_tokens": 120,
+                  "system": sys_prompt,
+                  "messages": [{"role": "user",
+                                "content": "DRAFT POST:\n\n" + text[:2000]}]},
+            timeout=_EDITOR_TIMEOUT)
+        if r.status_code != 200:
+            return True, f"editor-skip:http{r.status_code}"
+        blocks = (r.json() or {}).get("content") or []
+        out = "".join(b.get("text", "") for b in blocks
+                      if b.get("type") == "text").strip()
+        m = _re_legacy.search(r'\{.*\}', out, _re_legacy.DOTALL)
+        if not m:
+            return True, "editor-skip:noparse"
+        verdict = _json.loads(m.group(0))
+        if verdict.get("publish") is False:
+            return False, ("editor rejected — "
+                           + str(verdict.get("reason", "no reason"))[:90])
+        return True, "editor-ok"
+    except Exception as e:
+        return True, f"editor-skip:{type(e).__name__}"
+
+
 def _should_skip_publish(cur, content_text: str, platform: str):
     """Pre-publish media-judgment filter. Returns (skip: bool, reason: str).
 
@@ -1465,6 +1537,17 @@ def _should_skip_publish(cur, content_text: str, platform: str):
                 return True, (f"duplicate headline metric '{sig['metric_label']}' "
                               f"already posted to {platform} within "
                               f"{_DEDUP_LOOKBACK_DAYS}d")
+
+    # (e) r66 EDITOR-IN-CHIEF — final holistic judgment on the survivors. Only
+    # posts that already cleared every deterministic guard reach here, so the
+    # LLM cost is bounded. Fail-OPEN inside _editor_review, so this can only ever
+    # ADD blocks, never dark-hold on an LLM blip.
+    try:
+        _ok, _why = _editor_review(_text)
+        if not _ok:
+            return True, _why
+    except Exception:
+        pass
     return False, ""
 
 
@@ -1729,6 +1812,21 @@ def preview_rewrite():
 
 _auto_publisher_running = False
 
+def _is_publish_leader() -> bool:
+    """r66: only the LEADER replica auto-publishes — kills the 2-replica
+    double-post (the same story shipped twice within a minute, e.g. the 4
+    citation dups). Deferred import (main imports this module, so no top-level
+    import) + FAIL-OPEN: if leadership can't be determined, return True so we
+    never silence publishing by accident (worst case = prior behaviour, which
+    the dedup + editor gate still catch). Re-checked every fire, so a
+    promotion / step-down is honoured within one cycle."""
+    try:
+        from main import is_current_leader
+        return bool(is_current_leader())
+    except Exception:
+        return True
+
+
 def start_auto_publisher():
     global _auto_publisher_running
     if _auto_publisher_running:
@@ -1742,6 +1840,16 @@ def start_auto_publisher():
         logger.info("LinkedIn auto-publisher started (initial 2min, then every 6h, cap=LINKEDIN_DAILY_CAP default 6/day)")
         _first = True
         while True:
+            # r66: leader-only publish — a non-leader replica skips this fire so
+            # the same queue isn't drained twice (the double-post root cause).
+            # Fail-open + re-checked every cycle; polls leadership every 30 min.
+            if not _is_publish_leader():
+                logger.debug("LinkedIn auto-publisher: not leader this cycle — skipping")
+                try:
+                    time.sleep(1800)
+                except Exception:
+                    pass
+                continue
             # Phase FF+7-fix4 (2026-05-19): hard guarantee that every
             # iteration closes its DB connection, even when sub-operations
             # raise. The earlier loop had `conn = _get_db()` then ~50 lines

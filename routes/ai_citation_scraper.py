@@ -124,6 +124,34 @@ def _ensure_table():
         except Exception: pass
 
 
+# r66 (fix-once-and-for-all): an LLM that MENTIONS DC Hub while DISCLAIMING
+# knowledge is NOT a citation. The old detector flagged any "dchub" mention as
+# cited — so a "How does DCHawk compare to dchub.cloud?" query where Claude
+# answered "I don't have specific current information about these two services"
+# got recorded as dchub_cited=true, then showcased as "Claude cited DC Hub!".
+# That is the ORIGIN of the self-own posts. Disclaimer responses are recorded as
+# checked-not-cited so they never enter the showcase pool.
+_DISCLAIMER_MARKERS = (
+    "don't have specific", "do not have specific",
+    "don't have current", "do not have current",
+    "don't have real-time", "do not have real-time",
+    "don't have access", "do not have access",
+    "don't have enough information", "do not have enough information",
+    "lacked current specific", "lack current specific",
+    "no specific current information", "not familiar with",
+    "as of my last", "knowledge cutoff", "knowledge cut-off",
+    "to give you an accurate comparison",
+    "cannot provide", "can't provide", "unable to provide",
+    "i'm not able to", "i am not able to", "i don't have information",
+    "do not have information", "i'm not sure", "i am not sure",
+)
+
+
+def _is_disclaimer(text: str) -> bool:
+    low = (text or "").lower()
+    return any(m in low for m in _DISCLAIMER_MARKERS)
+
+
 def _detect_citation(text: str) -> tuple[bool, str, str]:
     """Returns (is_cited, citation_excerpt, cited_url)."""
     if not text: return False, "", ""
@@ -131,6 +159,11 @@ def _detect_citation(text: str) -> tuple[bool, str, str]:
     needles = ["dchub.cloud", "dc hub", "dchub", "data center power index", "dcpi"]
     found = next((n for n in needles if n in lower), None)
     if not found:
+        return False, "", ""
+    # r66: a mention wrapped in a knowledge-disclaimer is NOT a positive citation
+    # — recording it produces "AI cited us!" posts that quote the AI admitting it
+    # knows nothing. Record as checked-not-cited instead.
+    if _is_disclaimer(text):
         return False, "", ""
     # Snip 200-char excerpt around the needle
     idx = lower.find(found)
