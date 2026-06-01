@@ -337,7 +337,7 @@ def _render_facility(f: dict, nearby: list) -> str:
 <section id="cta">
   <h2>Get more facility intelligence</h2>
   <p>This page shows the public summary. The full facility profile includes M&amp;A history, lease comparables, power profile breakdown, fiber carrier presence, water risk score, and competitive analysis.</p>
-  <a href="/api/v1/facility/{_esc_attr(fac_id)}/report" class="cta">Generate full PDF report</a>
+  <a href="/pricing?ref=facility-{_esc_attr(fac_id)}-report" class="cta">Generate full PDF report</a>
   <a href="/signup?from=facility-{_esc_attr(fac_id)}" class="cta secondary">Or: free MCP API access</a>
 </section>
 
@@ -483,7 +483,7 @@ def _render_market(slug, city, state, facilities, stats) -> str:
 <section id="cta">
   <h2>Get the {_h(city)} market report</h2>
   <p>The full report includes lease comparables, pipeline projects, grid capacity analysis, and competitive landscape.</p>
-  <a href="/api/v1/market/{_esc_attr(slug)}/report" class="cta">Generate market report (PDF)</a>
+  <a href="/pricing?ref=market-{_esc_attr(slug)}-report" class="cta">Generate market report (PDF)</a>
   <a href="/signup?from=market-{_esc_attr(slug)}" class="cta secondary">Or: free MCP API access</a>
 </section>"""
 
