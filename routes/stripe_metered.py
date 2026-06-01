@@ -362,15 +362,36 @@ def billing_health():
     except Exception:
         n_records = -1
 
+    # r61-conv: metered go-live readiness — lets the owner verify the two
+    # confirms (STRIPE_SECRET_KEY present + the meter event_name the code
+    # sends) without exposing any secret value.
+    metered_linked = -1
+    try:
+        _ensure_metered_keys()
+        with _conn() as c, c.cursor() as cur:
+            cur.execute("SELECT COUNT(*) FROM metered_keys WHERE active = TRUE")
+            metered_linked = int(cur.fetchone()[0])
+    except Exception:
+        pass
+    _stripe_present = bool(os.environ.get("STRIPE_SECRET_KEY") or os.environ.get("STRIPE_API_KEY"))
+
     return jsonify({
         "ok": True,
         "blueprint": "stripe_metered_bp",
-        "version": "round-34-v1",
+        "version": "round-61-meters-api",
         "table_ok": table_ok,
         "total_usage_records": n_records,
         "stripe_configured": {
-            "api_key":   bool(os.environ.get("STRIPE_API_KEY")),
-            "price_id":  bool(os.environ.get("STRIPE_OVERAGE_PRICE_ID")),
+            "api_key":    bool(os.environ.get("STRIPE_API_KEY")),
+            "secret_key": bool(os.environ.get("STRIPE_SECRET_KEY")),
+            "price_id":   bool(os.environ.get("STRIPE_OVERAGE_PRICE_ID")),
+        },
+        "metered_readiness": {
+            "meter_event":         _METER_EVENT,
+            "metered_price":       _METERED_PRICE_ID,
+            "stripe_key_present":  _stripe_present,
+            "metered_keys_linked": metered_linked,
+            "live_ready":          _stripe_present,
         },
         "tier_limits": TIER_LIMITS,
         "endpoints": [
