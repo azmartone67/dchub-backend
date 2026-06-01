@@ -1179,24 +1179,25 @@ def brain_status():
         except Exception:
             pass
 
-    # Legacy `health` field — kept so older dashboard code keeps
-    # rendering. The new `verdict` is the truthful one.
-    health = "dormant"
-    if not ANTHROPIC_API_KEY:
-        health = "dormant"
-    elif stale_min is None:
-        health = "active" if log_count > 0 else "dormant"
-    elif stale_min < 90:
-        health = "active"
-    elif stale_min < 360:
-        health = "quiet"
-    else:
-        health = "stale"
-
     actionable_count = _cached_actionable_count()
     verdict, verdict_detail = compute_brain_verdict(
         bool(ANTHROPIC_API_KEY), run_age_min, stale_min, pf_count, log_count,
         actionable_count=actionable_count)
+
+    # Legacy `health` field — kept so older dashboard code keeps rendering,
+    # but r61 DERIVES it from the authoritative `verdict` so the two can
+    # never contradict. They used to be computed independently (health off
+    # stale_min, verdict off the full picture), so health="quiet" could ship
+    # next to verdict="healthy_working". Preserves the four legacy values old
+    # dashboards switch on: active / quiet / stale / dormant.
+    health = {
+        "dormant":         "dormant",
+        "stalled":         "stale",
+        "healthy_working": "active",
+        "healthy_backlog": "active",
+        "healthy_quiet":   "quiet",
+        "warming_up":      "active",
+    }.get(verdict, "active")
 
     return jsonify(
         layer=4,
