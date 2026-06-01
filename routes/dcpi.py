@@ -97,6 +97,37 @@ def _dcpi_dynamic_markets():
 dcpi_bp = Blueprint("dcpi", __name__)
 
 # ---------------------------------------------------------------------------
+# Metro → City slug aliases (was a local in /dcpi/<slug> HTML route; r47.43
+# promoted to module level so the API endpoint can apply the same mapping).
+#
+# Why: /markets/* canonicalizes to METRO slugs (northern-virginia,
+# dallas-fort-worth, silicon-valley) but market_power_scores keys on the
+# dominant CITY (ashburn, dallas, santa-clara). Without this map, the natural
+# URL transform /markets/<metro> → /dcpi/<metro> 404s.
+#
+# Pre-r47.43 we had northern-virginia and dallas-fort-worth covered but had
+# silently dropped silicon-valley — caught by the pre-CBRE DCPI sweep.
+# Both call sites (HTML page handler + API endpoint) now read from this
+# single dict, so future additions are one-edit fixes.
+# ---------------------------------------------------------------------------
+DCPI_METRO_ALIASES = {
+    # Northern Virginia cluster → Ashburn
+    'northern-virginia': 'ashburn',
+    'n-virginia':        'ashburn',
+    'nova':              'ashburn',
+    # Dallas-Fort Worth → Dallas
+    'dallas-fort-worth': 'dallas',
+    'dallas-ft-worth':   'dallas',
+    'dfw':               'dallas',
+    # Silicon Valley → Santa Clara (r47.43 — was 404'ing)
+    'silicon-valley':    'santa-clara',
+    'sv':                'santa-clara',
+    'bay-area':          'santa-clara',
+    'sf-bay-area':       'santa-clara',
+    'south-bay':         'santa-clara',
+}
+
+# ---------------------------------------------------------------------------
 # DB
 # ---------------------------------------------------------------------------
 def _conn():
@@ -1324,14 +1355,38 @@ def api_scores():
 @dcpi_bp.route("/api/v1/dcpi/scores/<slug>", methods=["GET"])
 def api_score_market(slug):
     _ensure_tables()
+    # r47.43 (2026-05-27): metro→city alias resolution. The HTML route at
+    # /dcpi/<slug> already 301-redirects metro slugs to their canonical city
+    # (northern-virginia → ashburn, silicon-valley → santa-clara, etc.). The
+    # API endpoint had no equivalent, so AI agents hitting the canonical
+    # metro slug got "market not found" instead of the city's row. Match
+    # the HTML behavior by trying the alias when the original slug misses;
+    # surface BOTH the requested slug and the resolved canonical so the
+    # caller knows what was returned.
+    requested_slug = slug
+    candidates = [slug]
+    _alias = DCPI_METRO_ALIASES.get(slug.lower())
+    if _alias and _alias not in candidates:
+        candidates.append(_alias)
+    row = None
+    matched_slug = None
     with _conn() as c, c.cursor(cursor_factory=psycopg2.extras.RealDictCursor) as cur:
-        cur.execute("""
-            SELECT * FROM market_power_scores
-             WHERE market_slug = %s
-             ORDER BY computed_at DESC LIMIT 1
-        """, (slug,))
-        row = cur.fetchone()
+        for cand in candidates:
+            cur.execute("""
+                SELECT * FROM market_power_scores
+                 WHERE market_slug = %s
+                 ORDER BY computed_at DESC LIMIT 1
+            """, (cand,))
+            row = cur.fetchone()
+            if row:
+                matched_slug = cand
+                break
     if not row: return jsonify(error="market not found", slug=slug), 404
+    # If we resolved via alias, tell the caller — preserves transparency for
+    # programmatic clients building URLs from the canonical slug.
+    if matched_slug and matched_slug != requested_slug:
+        row["_requested_slug"] = requested_slug
+        row["_canonical_slug"] = matched_slug
     if row.get("computed_at"): row["computed_at"] = row["computed_at"].isoformat()
     # r41-dcpi-composite (2026-05-25): include sortable composite_score
     # alongside the existing component scores for consistency with /scores.
@@ -3917,11 +3972,11 @@ def public_market_page(slug):
     # (e.g. /dcpi/northern-virginia). Map known metros to their DCPI city slug;
     # the cand!=slug branch below then 301-redirects to the canonical
     # /dcpi/<city>. This is the inverse of market_deep_dive._CANONICAL_REDIRECT.
-    _DCPI_METRO_ALIASES = {
-        'northern-virginia': 'ashburn', 'n-virginia': 'ashburn', 'nova': 'ashburn',
-        'dallas-fort-worth': 'dallas', 'dallas-ft-worth': 'dallas', 'dfw': 'dallas',
-    }
-    _alias = _DCPI_METRO_ALIASES.get(slug.lower())
+    # r47.43 (2026-05-27): map now defined at module level (DCPI_METRO_ALIASES)
+    # so the API endpoint can apply the same alias logic. Added silicon-valley
+    # → santa-clara — the third of the big-three US metros where /markets/*
+    # gives 200 but /dcpi/* gave 404. Caught by pre-CBRE DCPI sweep.
+    _alias = DCPI_METRO_ALIASES.get(slug.lower())
     if _alias:
         candidates.append(_alias)
 
