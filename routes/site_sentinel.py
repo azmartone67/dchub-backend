@@ -367,8 +367,26 @@ def _scan_one(entry: dict) -> dict:
         }
         if _ik:
             _hdrs["X-Internal-Key"] = _ik
-        r = requests.get(url, timeout=15, headers=_hdrs,
-                          stream=True, allow_redirects=True)
+        # r-sentinel-retry (2026-05-31): the slowest-render pages
+        # (/dcpi/<slug>, /markets/<slug>, /operators, /grid/<iso>) were
+        # red-flagged on a SINGLE transient self-call timeout even though
+        # external curl returns 200 in ~1s — worker-pool contention on the
+        # 2-replica backend (same class as the brain self-DDoS). Retry
+        # transient Timeout/ConnectionError up to 3x before giving up so a
+        # momentary blip can't flip a healthy page to RED.
+        r = None
+        for _attempt in range(3):
+            try:
+                r = requests.get(url, timeout=15, headers=_hdrs,
+                                  stream=True, allow_redirects=True)
+                break
+            except (requests.exceptions.Timeout,
+                    requests.exceptions.ConnectionError):
+                if _attempt < 2:
+                    time.sleep(0.5 * (_attempt + 1))
+                    t0 = time.time()
+                    continue
+                raise
         body = r.raw.read(64 * 1024, decode_content=True) if r.raw else r.content[:64*1024]
         out["elapsed_ms"] = int((time.time() - t0) * 1000)
         out["status_code"] = r.status_code
