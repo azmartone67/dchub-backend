@@ -489,6 +489,7 @@ def _record(slot_date, slot_hour, topic, style, text, landing, og_url, result):
         pass
 
 
+# AUTO-REPAIR: duplicate route '/run' also in enhanced_promotion.py:844 — review and remove one
 @linkedin_quad_bp.route("/run", methods=["GET", "POST"])
 def run():
     """Cron-callable. Fires the slot matching current UTC hour."""
@@ -608,6 +609,7 @@ def run():
         "at":       now.isoformat() + "Z",
     }), 200
 
+# AUTO-REPAIR: duplicate route '/status' also in enhanced_promotion.py:839 — review and remove one
 
 @linkedin_quad_bp.route("/status", methods=["GET"])
 def status():

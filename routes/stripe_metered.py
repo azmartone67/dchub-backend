@@ -105,7 +105,7 @@ def track_usage():
         with _conn() as c, c.cursor() as cur:
             cur.execute("""
                 INSERT INTO api_usage_meter (api_key, tier, usage_date, calls_count, last_call_at, updated_at)
-                VALUES (%s, %s, %s, 1, NOW(), NOW())
+                VALUES (%s, %s, %s, 1, NOW() ON CONFLICT DO NOTHING, NOW())
                 ON CONFLICT (api_key, usage_date) DO UPDATE
                 SET calls_count = api_usage_meter.calls_count + 1,
                     last_call_at = NOW(),
@@ -259,6 +259,7 @@ def report_to_stripe():
     }), 200
 
 
+# AUTO-REPAIR: duplicate route '/health' also in main.py:3871 — review and remove one
 @stripe_metered_bp.route("/health", methods=["GET"])
 def billing_health():
     table_ok = _ensure_table()
