@@ -227,7 +227,80 @@ def generate_for_market(slug: str) -> dict:
     return out
 
 
+# RENDER-PERF (2026-06-01): read_deep_dive() hits Postgres on EVERY per-slug
+# deep-dive render (/markets/<slug>, /markets/<slug>/deep-dive, and the JSON
+# endpoint), and there is no in-process cache — so each cold render eats a DB
+# round-trip while the boot path is already saturating the worker pool. Front it
+# with the already-connected, cross-worker Redis helper (redis_cache.py — same
+# best-effort pattern report_narrative.py uses) so a warm deep-dive survives a
+# gunicorn recycle and is shared across workers/replicas. Deep-dives regenerate
+# only on a daily cron, so a short TTL is plenty fresh.
+#
+# Redis is BEST-EFFORT in front of the live DB read: ANY import/connection/
+# serialization/parse error falls through to the unchanged DB query below.
+# cache_get/set already swallow their own errors and no-op when REDIS_URL is
+# unset. SERIALIZATION TRAP: the row's `generated_at` is a datetime and callers
+# do `.isoformat()` / `.strftime()` on it — json round-trips it to a STRING, so
+# on a Redis hit we re-hydrate it back to a datetime to keep read_deep_dive()'s
+# return shape byte-for-byte identical to the DB path. If re-hydration fails for
+# any reason we treat it as a cache MISS (fall through to the DB) rather than
+# returning a malformed dict. We store only the JSON-safe projection (ISO string
+# for generated_at) — Redis setex governs expiry via _DEEP_DIVE_TTL.
+_DEEP_DIVE_TTL = 900  # mirrors the deep-dive Cache-Control: public, max-age=900
+
+
+def _redis_get_deep_dive(slug: str) -> dict | None:
+    """Return a re-hydrated deep-dive row dict from Redis, or None on
+    miss / any error (caller then falls through to the live DB query)."""
+    try:
+        from redis_cache import cache_get
+        payload = cache_get(f"deep_dive:{slug}")
+        if not isinstance(payload, dict) or not payload:
+            return None
+        out = dict(payload)
+        # Re-hydrate generated_at (stored as ISO string) back to a datetime so
+        # downstream .isoformat()/.strftime() calls behave exactly as on the DB
+        # path. A None timestamp is preserved as None (callers guard for it).
+        ga = out.get("generated_at")
+        if ga is None:
+            return out
+        if isinstance(ga, str):
+            out["generated_at"] = datetime.datetime.fromisoformat(ga)
+            return out
+        # Unexpected type — don't risk a malformed row; force a DB read.
+        return None
+    except Exception:
+        return None
+
+
+def _redis_set_deep_dive(slug: str, r: dict) -> None:
+    """Best-effort write a deep-dive row to Redis with the module TTL. Stores a
+    JSON-safe projection (generated_at as ISO string). No-op on any error."""
+    try:
+        from redis_cache import cache_set
+        ga = r.get("generated_at")
+        payload = {
+            "market_slug": r.get("market_slug"),
+            "market_name": r.get("market_name"),
+            "narrative_md": r.get("narrative_md"),
+            "key_stats": r.get("key_stats"),
+            "word_count": r.get("word_count"),
+            "generated_at": ga.isoformat() if hasattr(ga, "isoformat") else ga,
+            "model_used": r.get("model_used"),
+        }
+        cache_set(f"deep_dive:{slug}", payload, ttl=_DEEP_DIVE_TTL)
+    except Exception:
+        pass
+
+
 def read_deep_dive(slug: str) -> dict | None:
+    # RENDER-PERF: cross-worker Redis layer in front of the DB (survives a
+    # gunicorn recycle). On any miss/error this returns None and we fall through
+    # to the unchanged live query below.
+    _cached = _redis_get_deep_dive(slug)
+    if _cached is not None:
+        return _cached
+
     c = _conn()
     if c is None: return None
     try:
@@ -242,7 +315,10 @@ def read_deep_dive(slug: str) -> dict | None:
             """, (slug,))
             r = cur.fetchone()
             if not r: return None
-            return dict(r)
+            r = dict(r)
+            # Write-through so the next worker/replica skips this DB round-trip.
+            _redis_set_deep_dive(slug, r)
+            return r
     finally:
         try: c.close()
         except Exception: pass

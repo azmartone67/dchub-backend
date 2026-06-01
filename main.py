@@ -13588,6 +13588,21 @@ import time as _t_stats
 _STATS_CACHE = {"value": None, "ts": 0}
 _STATS_TTL = 300  # 5min
 
+# BOOT-RESILIENCE (2026-06-01): cold-boot fast path for the watchdog probe.
+# health_watchdog._check_self_response() probes GET /api/v1/stats every 90s
+# with a 10s timeout. During the ~2-3min cold boot the 5-min memo above is
+# still empty, so that probe would otherwise trigger the FULL ~15-query slow
+# path against a cold/contended DB pool — which can exceed 10s and false-trip
+# the watchdog (→ mid-boot SIGKILL → re-boot → re-saturate loop). We record
+# the process start time and, while the memo is still cold AND we are inside
+# the boot window, serve a fast lightweight payload (the degradation cache if
+# present, else a minimal {success, booting} stub) so the probe gets a quick
+# 200. The moment the memo warms (first full run) OR the boot window elapses,
+# /api/v1/stats behaves EXACTLY as before for every real caller — this only
+# ever short-circuits the cold-boot gap, never the steady state.
+_STATS_PROC_START = _t_stats.monotonic()
+_STATS_BOOT_GRACE_S = int(os.environ.get("STATS_BOOT_GRACE_S", "210"))  # ~watchdog 300s grace − margin
+
 @app.route('/api/v1/tiers', methods=['GET'])
 def get_tiers():
     """r43-H: canonical tier registry (single source of truth). Lets the
@@ -13620,6 +13635,39 @@ def get_stats():
         resp.headers["X-Cache-Age"] = str(age)
         resp.headers["Cache-Control"] = "public, max-age=60"
         return resp
+
+    # BOOT-RESILIENCE (2026-06-01): cold-boot fast path. The memo is cold
+    # (handled above). If we are still inside the boot window, do NOT run the
+    # ~15-query slow path here — that is exactly what can blow the watchdog's
+    # 10s self-response probe and trigger a mid-boot kill loop. Instead return
+    # a fast lightweight 200 so the probe (and any early visitor) doesn't hang.
+    # Prefer the degradation cache (real numbers from a prior boot, if this
+    # worker has any); otherwise a minimal honest "booting" stub. This branch
+    # is unreachable once the memo is warm, so steady-state callers are
+    # unaffected. X-Cache=BOOT lets us observe it in logs/headers.
+    if (now - _STATS_PROC_START) < _STATS_BOOT_GRACE_S:
+        try:
+            _deg, _deg_age = get_degraded_data('v1_stats')
+        except Exception:
+            _deg, _deg_age = None, None
+        if _deg:
+            _boot_payload = dict(_deg)
+            _boot_payload.setdefault('_cache', {})
+            _boot_payload['_cache']['served_from'] = 'boot-degraded'
+            _boot_payload['_cache']['age_seconds'] = round(_deg_age or 0)
+        else:
+            _boot_payload = {
+                'success': True,
+                'booting': True,
+                'facilities': 0, 'markets': 0, 'deals': 0,
+                'generated_at': datetime.utcnow().isoformat(),
+                '_cache': {'served_from': 'boot-stub'},
+            }
+        _bresp = jsonify(_boot_payload)
+        _bresp.headers["X-Cache"] = "BOOT"
+        _bresp.headers["Cache-Control"] = "no-store"  # don't let an edge cache the stub
+        return _bresp
+
     conn = None
     try:
         conn = get_read_db()
@@ -22227,8 +22275,27 @@ logger.info("⏳ Background tasks deferred: %d tasks will start in 180s with 15s
 # intelligence, /brain dashboard, /dcpi pages) reset on every restart; on a
 # single replica that recycles workers / redeploys, the FIRST visitor after a
 # restart eats the cold load. Hit the hot routes once on boot via localhost so
-# real users land on warm caches. Fires at +60s (server + deferred DB ready),
-# runs sooner than the 180s task batch. Best-effort, spaced, never blocks.
+# real users land on warm caches.
+#
+# BOOT-RESILIENCE (2026-06-01): DEFERRED + SERIALIZED. The previous version
+# fired at +60s in a 3-worker PARALLEL pool, hammering all 16 routes at once.
+# On the single replica (gunicorn --threads 16) those pre-warm hits landed
+# squarely in the cold-boot saturation window — deal-ingestion + the brain
+# startup + the 180s deferred-task batch were already competing for the same
+# 16 threads, so the slow self-requested /dcpi /markets renders (the very
+# routes a real visitor needs) timed out and the page flapped. Two changes,
+# both conservative and fully reversible:
+#   (1) start at +200s instead of +60s — AFTER the 180s background-task batch
+#       has begun launching and the heaviest cold-boot work has cleared, so
+#       the pre-warm no longer competes during the critical boot window; and
+#   (2) hit the routes ONE AT A TIME with a 4s gap between each (was a
+#       max_workers=3 parallel burst) so pre-warm never occupies more than a
+#       single thread at a time and can't starve real traffic.
+# It still RUNS (just later + gentler) — the caches are warm well before the
+# 5-min memo / degradation windows matter. Best-effort, never blocks boot.
+_PREWARM_DELAY_S = int(os.environ.get("PREWARM_DELAY_S", "200"))   # start after boot settles
+_PREWARM_STAGGER_S = float(os.environ.get("PREWARM_STAGGER_S", "4"))  # gap between hits
+
 def _prewarm_caches():
     try:
         import requests as _rq
@@ -22237,10 +22304,7 @@ def _prewarm_caches():
     base = "http://127.0.0.1:8080"
     H = {"User-Agent": "DCHub-Prewarm/1.0"}
     # User-facing PAGES + their backing APIs first (what a human or the
-    # dashboard actually hits), then the grid API. The earlier version warmed
-    # grid first and sequentially — the slow cold grid fetches (~150s total)
-    # meant a visitor could still hit a cold /brain or /dcpi. Now: pages first,
-    # in a small parallel pool, so the whole set is hot within ~30s.
+    # dashboard actually hits), then the grid API.
     paths = (
         ["/brain", "/transactions", "/api/v1/markets/list"]
         + [f"/dcpi/{s}" for s in
@@ -22255,18 +22319,22 @@ def _prewarm_caches():
         except Exception:
             return 0
     warmed = 0
-    try:
-        from concurrent.futures import ThreadPoolExecutor
-        with ThreadPoolExecutor(max_workers=3) as ex:   # gentle on the single replica
-            warmed = sum(ex.map(_hit, paths))
-    except Exception:
-        for p in paths:
-            warmed += _hit(p)
-    logger.info("🔥 Cache pre-warm: %d/%d hot routes warmed", warmed, len(paths))
+    # SERIAL + staggered: one outstanding self-request at a time so the
+    # pre-warm holds at most a single thread and never bursts the pool.
+    for i, p in enumerate(paths):
+        if i > 0:
+            try:
+                time.sleep(_PREWARM_STAGGER_S)
+            except Exception:
+                pass
+        warmed += _hit(p)
+    logger.info("🔥 Cache pre-warm: %d/%d hot routes warmed (serial, +%ds)",
+                warmed, len(paths), _PREWARM_DELAY_S)
 
 if IS_RAILWAY:
-    threading.Timer(60, _prewarm_caches).start()
-    logger.info("🔥 Cache pre-warm scheduled (+60s after boot)")
+    threading.Timer(_PREWARM_DELAY_S, _prewarm_caches).start()
+    logger.info("🔥 Cache pre-warm scheduled (+%ds after boot, serial %.0fs stagger)",
+                _PREWARM_DELAY_S, _PREWARM_STAGGER_S)
 
 # --- Start Staggered Crawler Scheduler ---
 if CRAWLER_SCHEDULER_AVAILABLE:

@@ -9,7 +9,7 @@ from datetime import datetime, timedelta
 logger = logging.getLogger('watchdog')
 
 class HealthWatchdog:
-    def __init__(self, app=None, check_interval=90, max_failures=5):
+    def __init__(self, app=None, check_interval=90, max_failures=5, boot_grace_seconds=None):
         self.app = app
         self.check_interval = check_interval
         self.max_failures = max_failures
@@ -18,6 +18,33 @@ class HealthWatchdog:
         self.last_check_status = 'starting'
         self.last_check_details = {}
         self.start_time = time.time()
+        # BOOT-RESILIENCE (2026-06-01): explicit boot grace tracked off a start
+        # timestamp. The cold boot runs heavy startup work (cache pre-warm,
+        # deal ingestion, the brain) that saturates the single replica for
+        # ~2-3 min, so /api/v1/stats (the self_response probe) is legitimately
+        # slow during that window. Counting those boot-window failures recycled
+        # the container MID-BOOT → re-boot → re-saturate = a self-sustaining
+        # restart loop. While within the grace we still RUN the health check
+        # (and surface its result), but we never let consecutive_failures
+        # accumulate from boot noise — it is reset to 0 each grace-window check.
+        # After the grace elapses the watchdog behaves exactly as before, so a
+        # genuinely hung container is still killed (grace + max_failures ×
+        # check_interval). Default 180s (the documented cold-boot saturation
+        # window); overridable via WATCHDOG_BOOT_GRACE_SECONDS without a deploy.
+        # NOTE: this is intentionally BOUNDED (not check_interval × max_failures)
+        # so it only covers the boot window and does NOT meaningfully delay
+        # genuine-hang detection. It is additive to the loop's existing initial
+        # sleep, so in the current config the first real check already lands
+        # after this window — this guard is the explicit guarantee that boot
+        # noise can never carry into the kill counter.
+        if boot_grace_seconds is None:
+            try:
+                boot_grace_seconds = int(os.environ.get("WATCHDOG_BOOT_GRACE_SECONDS", "180"))
+            except (TypeError, ValueError):
+                boot_grace_seconds = 180
+            if boot_grace_seconds <= 0:
+                boot_grace_seconds = 180
+        self.boot_grace_seconds = boot_grace_seconds
         self.total_checks = 0
         self.total_restarts = 0
         self.restart_history = []
@@ -237,6 +264,25 @@ class HealthWatchdog:
 
         self.last_check_details = details
 
+        # BOOT-RESILIENCE (2026-06-01): boot grace. If we are still inside the
+        # boot window, NEVER let a failed check accumulate consecutive_failures
+        # (the value the kill decision reads). The boot legitimately runs the
+        # single replica hot for a couple of minutes, so /api/v1/stats can be
+        # slow / time out — that is expected, not a hang. We still run + record
+        # the check (so /api/health/watchdog shows the real boot state), but we
+        # hold consecutive_failures at 0 so the watchdog cannot recycle the
+        # container mid-boot. Once grace elapses this branch is skipped and the
+        # normal failure-counting / kill logic resumes unchanged.
+        in_boot_grace = (time.time() - self.start_time) < self.boot_grace_seconds
+        if in_boot_grace and not all_ok:
+            self.consecutive_failures = 0
+            failed = [k for k, v in details.items() if not v['healthy']]
+            self.last_check_status = 'booting'
+            logger.info("Health check soft-fail during boot grace (%.0fs left): %s",
+                        self.boot_grace_seconds - (time.time() - self.start_time),
+                        ', '.join(failed))
+            return all_ok
+
         if all_ok:
             self.consecutive_failures = 0
             self.last_check_status = 'healthy'
@@ -244,7 +290,7 @@ class HealthWatchdog:
             self.consecutive_failures += 1
             failed = [k for k, v in details.items() if not v['healthy']]
             self.last_check_status = 'degraded' if self.consecutive_failures < self.max_failures else 'critical'
-            logger.warning("Health check failed (%d/%d): %s", 
+            logger.warning("Health check failed (%d/%d): %s",
                           self.consecutive_failures, self.max_failures, ', '.join(failed))
 
         return all_ok
@@ -402,6 +448,8 @@ class HealthWatchdog:
             'total_checks': self.total_checks,
             'consecutive_failures': self.consecutive_failures,
             'max_failures_before_restart': self.max_failures,
+            'boot_grace_seconds': self.boot_grace_seconds,
+            'in_boot_grace': uptime < self.boot_grace_seconds,
             'total_restarts': self.total_restarts,
             'last_check_time': self.last_check_time.isoformat() if self.last_check_time else None,
             'last_check_details': self.last_check_details,
@@ -454,9 +502,12 @@ def register_watchdog_routes(app):
         return jsonify({'error': 'watchdog not initialized'}), 503
 
 
-def init_watchdog(app, check_interval=90, max_failures=5):
+def init_watchdog(app, check_interval=90, max_failures=5, boot_grace_seconds=None):
     """Start the watchdog background thread (call after routes are registered)."""
     global watchdog_instance
-    watchdog_instance = HealthWatchdog(app=app, check_interval=check_interval, max_failures=max_failures)
+    watchdog_instance = HealthWatchdog(
+        app=app, check_interval=check_interval, max_failures=max_failures,
+        boot_grace_seconds=boot_grace_seconds,
+    )
     watchdog_instance.start()
     return watchdog_instance

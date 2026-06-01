@@ -39,6 +39,38 @@ def _user_tier(req):
 _LIVE_CACHE: dict = {}            # iso → (timestamp_epoch, response_dict)
 _LIVE_TTL_SECONDS = 5 * 60        # 5 minutes
 
+# RENDER-PERF (2026-06-01): the per-worker _LIVE_CACHE above is wiped on every
+# gunicorn worker recycle and isn't shared across workers/replicas, so a cold
+# /grid or /grid/<ISO> render re-eats the slow upstream ISO fetch. Front it with
+# the already-connected, cross-worker Redis helper (redis_cache.py — same
+# best-effort pattern report_narrative.py uses) so a warm ISO payload survives a
+# recycle. Redis is BEST-EFFORT in front of the dict: any import/connection/
+# serialization error falls through to the dict path unchanged. cache_get/set
+# already swallow their own errors and no-op when REDIS_URL is unset, so these
+# wrappers stay quiet too. We store ONLY the response dict (NOT the process-local
+# epoch timestamp) — Redis setex governs expiry via _LIVE_TTL_SECONDS.
+def _redis_get_live(iso):
+    """Return a cached ISO payload dict from Redis, or None on miss/any error."""
+    try:
+        from redis_cache import cache_get
+        payload = cache_get(f"grid_live:{iso}")
+        if isinstance(payload, dict) and payload:
+            return payload
+    except Exception:
+        pass
+    return None
+
+
+def _redis_set_live(iso, inner) -> None:
+    """Best-effort write an ISO payload dict to Redis with the module TTL.
+    No-op on any error (incl. REDIS_URL unset)."""
+    try:
+        from redis_cache import cache_set
+        cache_set(f"grid_live:{iso}", inner, ttl=_LIVE_TTL_SECONDS)
+    except Exception:
+        pass
+
+
 def _fetch_live(iso):
     """Internal call to /api/v1/grid/intelligence/<iso>.
 
@@ -53,6 +85,18 @@ def _fetch_live(iso):
     cached = _LIVE_CACHE.get(iso)
     if cached and (now - cached[0]) < _LIVE_TTL_SECONDS:
         return cached[1]
+
+    # RENDER-PERF: cross-worker Redis layer (survives gunicorn recycle). On a
+    # hit, warm the local dict with a fresh local timestamp so subsequent
+    # same-worker reads stay dict-fast; we deliberately DON'T trust the
+    # original epoch (Redis setex already enforced freshness on its side).
+    _r_inner = _redis_get_live(iso)
+    if _r_inner:
+        _LIVE_CACHE[iso] = (now, _r_inner)
+        if len(_LIVE_CACHE) > 100:
+            oldest_key = min(_LIVE_CACHE, key=lambda k: _LIVE_CACHE[k][0])
+            _LIVE_CACHE.pop(oldest_key, None)
+        return _r_inner
 
     # r49-grid-perf (2026-05-31): the PUBLIC Railway edge URL was tried
     # FIRST with the default python-requests User-Agent. That request
@@ -86,6 +130,9 @@ def _fetch_live(iso):
                     if len(_LIVE_CACHE) > 100:
                         oldest_key = min(_LIVE_CACHE, key=lambda k: _LIVE_CACHE[k][0])
                         _LIVE_CACHE.pop(oldest_key, None)
+                    # RENDER-PERF: write-through to the cross-worker Redis layer
+                    # so the next worker/replica skips the slow upstream fetch.
+                    _redis_set_live(iso, inner)
                     return inner
         except Exception:
             continue

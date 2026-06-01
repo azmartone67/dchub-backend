@@ -3961,6 +3961,39 @@ _DCPI_PAGE_CACHE: dict = {}
 _DCPI_PAGE_TTL = 600
 
 
+# RENDER-PERF (2026-06-01): _DCPI_PAGE_CACHE above is a per-gunicorn-worker dict
+# wiped on every worker recycle and not shared across workers/replicas, so a cold
+# /dcpi/<slug> re-runs gather_metrics_for_market + the inline Claude narrative
+# call (the documented dcpi cold-render timeout). Front it with the already-
+# connected, cross-worker Redis helper (redis_cache.py — same best-effort pattern
+# report_narrative.py uses) so a warm rendered page survives a recycle. Redis is
+# BEST-EFFORT in front of the dict: any import/connection/serialization error
+# falls through to the dict path unchanged. cache_get/set already swallow their
+# own errors and no-op when REDIS_URL is unset. We store ONLY the rendered HTML
+# string (NOT the process-local expiry epoch) — Redis setex governs expiry via
+# _DCPI_PAGE_TTL.
+def _redis_get_page(slug: str):
+    """Return cached rendered DCPI page HTML from Redis, or None on miss/error."""
+    try:
+        from redis_cache import cache_get
+        payload = cache_get(f"dcpi_page:{slug}")
+        if isinstance(payload, str) and payload:
+            return payload
+    except Exception:
+        pass
+    return None
+
+
+def _redis_set_page(slug: str, html: str) -> None:
+    """Best-effort write rendered DCPI page HTML to Redis with the module TTL.
+    No-op on any error (incl. REDIS_URL unset)."""
+    try:
+        from redis_cache import cache_set
+        cache_set(f"dcpi_page:{slug}", html, ttl=_DCPI_PAGE_TTL)
+    except Exception:
+        pass
+
+
 @dcpi_bp.route("/dcpi/<slug>", methods=["GET"], strict_slashes=False)
 def public_market_page(slug):
     _ensure_tables()
@@ -4033,6 +4066,19 @@ def public_market_page(slug):
         _cr.headers["X-DC-Cache"] = "hit"
         return _cr
 
+    # RENDER-PERF: cross-worker Redis layer (survives gunicorn recycle). On a
+    # hit, warm the local dict (with a fresh local expiry) so subsequent same-
+    # worker reads stay dict-fast, and serve the page without the metric
+    # backfill + the inline Claude narrative call.
+    _r_html = _redis_get_page(slug)
+    if _r_html:
+        if len(_DCPI_PAGE_CACHE) < 500:
+            _DCPI_PAGE_CACHE[slug] = (_now + _DCPI_PAGE_TTL, _r_html)
+        _cr = Response(_r_html, mimetype="text/html")
+        _cr.headers["Content-Security-Policy"] = _DCPI_CSP
+        _cr.headers["X-DC-Cache"] = "hit"
+        return _cr
+
     # Phase RR (2026-05-14): backfill lite-scored markets. ~250+ markets
     # are scored by the LITE path (bulk_dcpi_score / api lite recompute),
     # which only writes constraint_score + excess_power_score and leaves
@@ -4090,6 +4136,9 @@ def public_market_page(slug):
     # r43-H: cache the rendered page (bounded — ~285 markets max).
     if len(_DCPI_PAGE_CACHE) < 500:
         _DCPI_PAGE_CACHE[slug] = (_now + _DCPI_PAGE_TTL, market_html)
+    # RENDER-PERF: write-through to the cross-worker Redis layer so the next
+    # worker/replica skips the metric backfill + inline narrative call.
+    _redis_set_page(slug, market_html)
     market_resp = Response(market_html, mimetype="text/html")
     market_resp.headers["Content-Security-Policy"] = _DCPI_CSP  # phase 284
     market_resp.headers["X-DC-Cache"] = "miss"
