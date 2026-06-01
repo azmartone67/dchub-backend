@@ -227,6 +227,20 @@ def rate_limit_before():
     if raw_ip in ('127.0.0.1', '::1', 'localhost'):
         return None
 
+    # r58c (2026-06-01): trusted internal callers bypass entirely, regardless
+    # of remote_addr. The brain's radar/layer self-calls to localhost:8080 are
+    # the documented 429 storm (brain-radar HTTP 429 on funnel-stats /
+    # reports/monthly / freshness/radar / ai-citations/history / memory/stats).
+    # The loopback check above SHOULD catch them, but under 2 Railway replicas
+    # the self-call can surface with a non-loopback remote_addr; the X-Internal-
+    # Key check is IP-independent so it always exempts the platform's own probes.
+    # (The prior fix 53e7fa79 added this to tier_gate.py's per-route decorator,
+    # which NONE of these endpoints use — it was a no-op. This is the limiter
+    # that actually runs as a before_request hook.) is_valid_internal_key is
+    # imported at module top.
+    if is_valid_internal_key(request.headers.get('X-Internal-Key', '')):
+        return None
+
     # r42r (2026-05-26): Sentinel + brain self-probes send X-DC-Probe
     # identifying themselves; bypass rate limit regardless of IP/UA so
     # the platform's own health checks never appear "broken" in the

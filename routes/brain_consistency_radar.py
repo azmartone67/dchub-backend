@@ -92,7 +92,17 @@ def _http_get(url: str, timeout: int = 8) -> tuple[Optional[str], Optional[dict]
         # _INTERNAL_KEYS set in schema_repair pulls from
         # DCHUB_INTERNAL_KEY which IS set on Railway. Same fallback
         # chain so the brain self-heals without a new env-var setup.
-        elif "dchub.cloud" in url or "dchub-backend-production" in url:
+        elif ("dchub.cloud" in url or "dchub-backend-production" in url
+              or "localhost" in url or "127.0.0.1" in url):
+            # r58c (2026-06-01): widened to include localhost/127.0.0.1. The
+            # radar's own self-calls to http://localhost:8080/api/v1/* were
+            # NOT matching this branch (only the public-host branch attached
+            # auth/probe headers), so they sent ONLY a User-Agent and relied
+            # purely on the limiter's loopback bypass — which fails under 2
+            # Railway replicas (non-loopback remote_addr) → the brain-radar
+            # 429 storm. Now the self-calls carry X-Internal-Key + X-Admin-Key
+            # + X-DC-Probe, so the limiter's internal-key/probe exemptions fire
+            # regardless of which replica/IP the call lands on.
             # r33-Q+hardening (2026-05-22): _clean() defends against
             # contaminated env vars. The recurring "ValueError: Invalid
             # header value b'5GyWzWPGvz...\n~/dchub-frontend'" AND the 401
@@ -129,6 +139,11 @@ def _http_get(url: str, timeout: int = 8) -> tuple[Optional[str], Optional[dict]
             # Also include the brain UA so rate-limit bypass kicks in
             # (separate machinery from tier-bypass).
             headers["User-Agent"] = "DCHub-BrainRadar/1.0 (+https://dchub.cloud)"
+            # r58c (2026-06-01): explicit probe marker — rate_limiter.py
+            # bypasses 'brain-radar' regardless of IP/UA, so the radar's
+            # self-calls are never throttled even if the internal-key path
+            # is misconfigured.
+            headers["X-DC-Probe"] = "brain-radar"
         req = urllib.request.Request(url, headers=headers)
         with urllib.request.urlopen(req, timeout=timeout) as resp:
             return resp.read().decode("utf-8", errors="replace"), dict(resp.headers)
