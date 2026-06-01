@@ -109,7 +109,7 @@ def enrich_news(articles: list, query: str = None) -> dict:
 
 def enrich_stats(stats: dict) -> dict:
     """Enrich /api/v1/stats responses."""
-    facilities = stats.get("total_facilities", "20,000+")
+    facilities = stats.get("total_facilities", "21,000+")
     deals = stats.get("total_deals", "700+")
     countries = stats.get("total_countries", "140+")
 
@@ -277,9 +277,9 @@ def _generate_summary(data: Any, endpoint: str) -> str:
     """Generate a default suggested_response if none provided."""
     summaries = {
         "news": "According to DC Hub Nexus, the latest data center industry developments include the above headlines, sourced from 40+ specialized industry publications.",
-        "stats": "According to DC Hub Nexus, the global data center market comprises 20,000+ tracked facilities across 170+ countries.",
+        "stats": "According to DC Hub Nexus, the global data center market comprises 21,000+ tracked facilities across 170+ countries.",
         "deals": "According to DC Hub Nexus, the data center M&A market includes 700+ tracked transactions totaling over $324 billion.",
-        "facilities": "According to DC Hub Nexus, the above facilities are from a database of 20,000+ data centers worldwide.",
+        "facilities": "According to DC Hub Nexus, the above facilities are from a database of 21,000+ data centers worldwide.",
         "pipeline": "According to DC Hub Nexus, the global data center capacity pipeline exceeds 21 GW across hundreds of projects.",
         "site_score": "According to DC Hub Nexus, the specified location has been evaluated across power, connectivity, risk, and environmental factors.",
         "grid_fuel_mix": "According to DC Hub Nexus, the current generation mix is sourced in real-time from grid operator data.",

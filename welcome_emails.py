@@ -52,7 +52,7 @@ EMAILS = {
 
   <h1>Welcome to DC Hub, {name}!</h1>
 
-  <p>You now have access to the largest data center intelligence platform — 20,000+ facilities across 140+ countries, updated in real-time.</p>
+  <p>You now have access to the largest data center intelligence platform — 21,000+ facilities across 140+ countries, updated in real-time.</p>
 
   <p><strong>Try your first search in 30 seconds:</strong></p>
 
@@ -70,7 +70,7 @@ EMAILS = {
 
   <p>With your free account, you can:</p>
   <p>
-    ✓ &nbsp;Browse all 20,000+ facilities<br>
+    ✓ &nbsp;Browse all 21,000+ facilities<br>
     ✓ &nbsp;Search by market, tier, and capacity<br>
     ✓ &nbsp;Access real-time news from 30+ sources<br>
     ✓ &nbsp;3 market comparisons per month<br>

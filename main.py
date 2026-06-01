@@ -13843,6 +13843,16 @@ def get_stats():
         # always set by the try/except blocks above; this is
         # defense-in-depth so a future refactor can't reintroduce a
         # masking fake number.)
+        # r68 (security · Nico audit): user/subscriber/plan counts are internal
+        # BUSINESS data and must NOT be public — they were leaking on every
+        # /api/v1/stats call (active_subscribers, users_by_plan free/pro/ent,
+        # total_users, new_users_7d/30d), handing competitors our size + mix.
+        # Stripped from the public payload; this data remains available in the
+        # admin CRM portal (admin-gated). Done BEFORE caching so the 5-min memo
+        # only ever stores this public-safe shape (cache-hit path can't leak).
+        for _k in ('users_by_plan', 'active_subscribers', 'total_users',
+                   'new_users_7d', 'new_users_30d'):
+            stats.pop(_k, None)
         result = {
             'success': True,
             'data': stats,
@@ -13858,11 +13868,6 @@ def get_stats():
             'gas_pipelines': stats.get('total_gas_pipelines', 0),
             'transmission_lines': stats.get('total_transmission_lines', 0),
             'transmission_lines_source': stats.get('transmission_lines_source'),
-            'users': stats.get('total_users', 0),
-            'new_users_7d': stats.get('new_users_7d', 0),
-            'new_users_30d': stats.get('new_users_30d', 0),
-            'active_subscribers': stats.get('active_subscribers', 0),
-            'users_by_plan': stats.get('users_by_plan', {})
         }
         cache_for_degradation('v1_stats', result)
         # Phase ZZZZ-stats-cache (2026-05-18): memo-store so next 5 min

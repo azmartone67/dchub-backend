@@ -974,7 +974,7 @@ class ProtocolAdapter:
                 return related
         return [
             {"endpoint": "/api/news", "description": "Latest industry news"},
-            {"endpoint": "/api/facilities", "description": "Search 20,000+ facilities"},
+            {"endpoint": "/api/facilities", "description": "Search 21,000+ facilities"},
         ]
 
     def _build_suggested_response(self, data: dict, endpoint: str) -> str:
@@ -1520,7 +1520,7 @@ class MCPGateway:
         data_freshness schedule, and rate_limits. Live-counted active
         platforms + real facility/news/deal counts from the DB so the
         manifest stays self-truthful instead of drifting against the
-        hard-coded "20,000+".
+        hard-coded "21,000+".
         """
         import datetime as _dt
 
@@ -1560,7 +1560,7 @@ class MCPGateway:
             ),
             "description": (
                 "Comprehensive data center intelligence platform — "
-                "20,000+ facilities, 140+ countries, real-time M&A, "
+                "21,000+ facilities, 140+ countries, real-time M&A, "
                 "capacity pipeline, energy infrastructure."
             ),
             "homepage": self.base_url,
@@ -1688,14 +1688,14 @@ class MCPGateway:
                 "facilities": (
                     f"{live_counts['facilities']:,}"
                     if live_counts.get("facilities")
-                    else "20,000+"
+                    else "21,000+"
                 ),
                 "countries": "140+",
                 "capacity_tracked_mw": "19,500+",
                 "news_articles": (
                     f"{live_counts['news_articles']:,}"
                     if live_counts.get("news_articles")
-                    else "13,000+"
+                    else "21,000+"
                 ),
                 "deals_tracked": (
                     f"{live_counts['deals']:,}"
