@@ -10179,6 +10179,18 @@ def stripe_webhook():
             except Exception as _pce:
                 print(f"⚠️ Conversion-play redemption error (non-fatal): {_pce}")
 
+            # r62-conv (2026-06-01): self-serve auto-key for the usage-based
+            # (metered) payment link (prod_UccyUrO1iq7LrN). Issues + emails a
+            # key sized to the purchased quantity. Fail-soft — never breaks the
+            # webhook or subscription/welcome handling below.
+            try:
+                from routes.stripe_metered import handle_usage_based_checkout
+                _ub = handle_usage_based_checkout(data)
+                if _ub and _ub.get("ok"):
+                    print(f"💳 Usage-based auto-key issued: {_ub}")
+            except Exception as _ube:
+                print(f"⚠️ usage-based auto-key error (non-fatal): {_ube}")
+
             customer_email = (
                 data.get('customer_email') or
                 data.get('customer_details', {}).get('email') or ''

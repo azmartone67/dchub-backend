@@ -252,6 +252,98 @@ def _stripe_meter_event(stripe_key, value, customer_id):
         return False, "%s:%s" % (type(e).__name__, str(e)[:160])
 
 
+# r62-conv (2026-06-01): self-serve auto-key for the usage-based payment link.
+# The link (buy.stripe.com/9B69AU…) is a QUANTITY subscription on product
+# prod_UccyUrO1iq7LrN ($0.01/unit/mo, customer picks 1-10000 units). On
+# checkout.session.completed the main.py webhook calls handle_usage_based_checkout
+# (fail-soft) → auto-issue a dch_live_ key sized to the purchased quantity,
+# link it to the Stripe customer, and email it. No usage-reporting needed for
+# this product (it's a fixed-quantity sub, not the pure-metered price).
+_USAGE_PRODUCT_ID = os.environ.get("DCHUB_USAGE_PRODUCT_ID", "prod_UccyUrO1iq7LrN")
+
+
+def _stripe_get(path, stripe_key):
+    req = urllib.request.Request("https://api.stripe.com" + path,
+                                 headers={"Authorization": "Bearer " + stripe_key}, method="GET")
+    try:
+        with urllib.request.urlopen(req, timeout=12) as r:
+            return json.loads(r.read().decode("utf-8", "replace"))
+    except Exception:
+        return None
+
+
+def _qty_to_tier(qty):
+    """Map purchased units → nearest existing paid tier (existing gate caps;
+    no per-key-cap change needed)."""
+    if qty <= 500:   return "starter"
+    if qty <= 1000:  return "developer"
+    if qty <= 10000: return "pro"
+    return "enterprise"
+
+
+def handle_usage_based_checkout(session):
+    """Fail-soft. Auto-issue + email a key for a usage-based (prod_UccyUrO1iq7LrN)
+    subscription checkout. No-op for any other checkout. Idempotent per customer."""
+    import secrets as _secrets
+    try:
+        stripe_key = (os.environ.get("STRIPE_SECRET_KEY", "")
+                      or os.environ.get("STRIPE_API_KEY", ""))
+        if not stripe_key or not isinstance(session, dict):
+            return {"ok": False, "skip": "no_key_or_session"}
+        sid = session.get("id")
+        email = (((session.get("customer_details") or {}).get("email"))
+                 or session.get("customer_email") or "").strip().lower()
+        customer = session.get("customer") or ""
+        li = (_stripe_get(
+            "/v1/checkout/sessions/%s/line_items?limit=10&expand[]=data.price.product" % sid,
+            stripe_key) if sid else None)
+        qty = None
+        for it in (li or {}).get("data", []):
+            prod = (it.get("price") or {}).get("product")
+            prod_id = prod.get("id") if isinstance(prod, dict) else prod
+            prod_nm = prod.get("name", "") if isinstance(prod, dict) else ""
+            if prod_id == _USAGE_PRODUCT_ID or "Usage-Based" in str(prod_nm):
+                qty = int(it.get("quantity") or 100)
+                break
+        if qty is None:
+            return {"ok": False, "skip": "not_usage_based"}
+        tier = _qty_to_tier(qty)
+        _ensure_metered_keys()
+        api_key = None
+        with _conn() as c, c.cursor() as cur:
+            if customer:
+                cur.execute("SELECT api_key FROM metered_keys WHERE stripe_customer_id = %s LIMIT 1", (customer,))
+                row = cur.fetchone()
+                if row:
+                    api_key = row[0]
+            if not api_key:
+                api_key = "dch_live_" + _secrets.token_hex(16)
+                cur.execute("""
+                    INSERT INTO mcp_dev_keys (api_key, developer_id, email, tier, status, metadata)
+                    VALUES (%s, %s, %s, %s, 'active', %s::jsonb)
+                    ON CONFLICT (api_key) DO NOTHING
+                """, (api_key, "dev_" + _secrets.token_hex(8), (email or None), tier,
+                      json.dumps({"source": "usage_based_checkout", "qty": qty,
+                                  "stripe_customer_id": customer})))
+                if customer:
+                    cur.execute("""
+                        INSERT INTO metered_keys (api_key, stripe_customer_id, subscription_id, active, last_reported_at, linked_at)
+                        VALUES (%s, %s, %s, TRUE, NOW(), NOW())
+                        ON CONFLICT (api_key) DO UPDATE SET active = TRUE, stripe_customer_id = EXCLUDED.stripe_customer_id
+                    """, (api_key, customer, session.get("subscription")))
+            c.commit()
+        if email and api_key:
+            try:
+                from routes.redeem_routes import _p99_send_email
+                _p99_send_email(email, api_key, [])
+            except Exception:
+                pass
+        return {"ok": True, "tier": tier, "qty": qty, "emailed": bool(email),
+                "key_short": (api_key or "")[:12] + "…"}
+    except Exception as e:
+        return {"ok": False, "error": str(e)[:160]}
+
+
 @stripe_metered_bp.route("/link-metered-key", methods=["POST"])
 def link_metered_key():
     """Admin: link a dchub api_key to a Stripe customer on the usage-based
