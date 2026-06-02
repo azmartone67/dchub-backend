@@ -591,7 +591,8 @@ def draft_press_from_citations():
         with c.cursor() as cur:
             cur.execute("""
                 SELECT id, engine, prompt_id, prompt_text, response_text,
-                       response_url, observed_at, other_sources, dchub_position
+                       response_url, observed_at, other_sources, dchub_position,
+                       COALESCE(source, '')
                 FROM ai_citations
                 WHERE dchub_cited = TRUE
                   AND observed_at > NOW() - INTERVAL %s
@@ -599,6 +600,21 @@ def draft_press_from_citations():
                 LIMIT 50
             """, (f"{days} days",))
             rows = cur.fetchall()
+
+        # r62-qa honesty guards:
+        #  - disclaimer: never press a response where the model DISCLAIMS
+        #    knowledge (the prior "Claude says it has no info" self-own).
+        #  - self-solicited: rows from our own canonical prompts / hand-seeds
+        #    (source auto_cron*/user_recorded*/seed/baseline) are NOT organic
+        #    third-party endorsements — we asked the question. They get an
+        #    honest "in response to a … query" headline, never "X Cites DC Hub".
+        import re as _re_qa
+        _DISCLAIMER_RE = _re_qa.compile(
+            r"(don'?t|do not|cannot|can'?t|unable to|no)\s+(have|provide|access|find)"
+            r"|i (don'?t|do not) have (specific|current|real[- ]?time|access)"
+            r"|as an ai|i'?m not able to|no specific (current )?information",
+            _re_qa.I)
+        _SELF_SOLICITED_RE = _re_qa.compile(r"^(auto_cron|user_recorded|seed|baseline|auto cited)", _re_qa.I)
 
         candidates = []
         for r in rows:
@@ -611,6 +627,13 @@ def draft_press_from_citations():
             observed_at = r[6] if not hasattr(r, "get") else r.get("observed_at")
             other_sources = (r[7] if not hasattr(r, "get") else r.get("other_sources")) or []
             dchub_position = r[8] if not hasattr(r, "get") else r.get("dchub_position")
+            source = (r[9] if not hasattr(r, "get") else r.get("source")) or ""
+
+            # honesty guard 1: never press a disclaiming response.
+            if _DISCLAIMER_RE.search(response_text or ""):
+                continue
+            # honesty guard 2: is this our own solicited query (not organic)?
+            _self_solicited = bool(_SELF_SOLICITED_RE.match(source.strip()))
 
             # Parse other_sources (jsonb)
             try:
@@ -641,7 +664,13 @@ def draft_press_from_citations():
             engine_display = {"chatgpt": "ChatGPT", "gemini": "Google Gemini",
                               "claude": "Claude", "perplexity": "Perplexity"}.get(
                                   engine.lower(), engine.title())
-            title = f"{engine_display} Cites DC Hub{position_phrase} for Data Center Intelligence{peer_phrase}"[:160]
+            if _self_solicited:
+                # Honest framing: WE asked the model a direct question; this is
+                # not an organic, in-the-wild citation. Never imply discovery.
+                title = (f"Asked to Compare Data-Center Sources, {engine_display} "
+                         f"Named DC Hub a Primary Reference")[:160]
+            else:
+                title = f"{engine_display} Cites DC Hub{position_phrase} for Data Center Intelligence{peer_phrase}"[:160]
 
             # Body: the verbatim quote + context
             body = f"""<article>
@@ -651,9 +680,7 @@ def draft_press_from_citations():
 <blockquote style="border-left:4px solid #4285f4;padding:12px 18px;background:#f8fafc;margin:18px 0;font-size:1.05rem;line-height:1.6">
 {response_text[:1500]}
 </blockquote>
-<p>This citation is part of the growing pattern of AI platforms naming
-DC Hub (dchub.cloud) as a primary source for data-center industry
-intelligence. Live testimonials and citation tracking at
+<p>{('When asked directly to evaluate data-center intelligence sources, ' + engine_display + ' named DC Hub (dchub.cloud) among its primary references.') if _self_solicited else ('This citation is part of the growing pattern of AI platforms naming DC Hub (dchub.cloud) as a primary source for data-center industry intelligence.')} Live testimonials and citation tracking at
 <a href="https://dchub.cloud/cited-by">dchub.cloud/cited-by</a>.</p>
 {f'<p><strong>Source:</strong> <a href="{response_url}" rel="nofollow">{response_url}</a></p>' if response_url else ''}
 </article>"""

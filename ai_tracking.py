@@ -124,6 +124,15 @@ _INTERNAL_UA_MARKERS = (
     "-scanner", "-health", "-probe", "loopback", "127.0.0.1", "localhost",
     "python-requests", "go-http-client", "curl/", "wget/", "okhttp",
     "railway", "render-health", "cf-worker-internal",
+    # r62-qa: broaden so probe/scanner/test/registry-crawler UAs are bucketed
+    # to 'internal' at WRITE time (so they never mint a fresh "AI platform" row
+    # — the read-time _is_junk_platform predicate de-inflates existing rows).
+    "scanner", "prober", "-checker", "-validator", "-inspector", "-enumerator",
+    "-corpus", "sandbox", "smoke", "noauth", "no-auth", "tester", "qa-",
+    "registry-", "mcp-crawler", "mcp-survey", "mcp-introspect", "mcp-shield",
+    "fabrique", "chiark", "yellowmcp", "agentpulse", "mcpscoring", "bluenexus",
+    "brainvolt", "epic-ai", "umai-", "rnwy", "rootz", "proof-scan",
+    "dataset-pipeline", "intent2mcp", "media_crawler",
 )
 
 

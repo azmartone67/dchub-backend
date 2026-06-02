@@ -418,6 +418,24 @@ def _scan_one(entry: dict) -> dict:
         else:
             allowed = {expected}
         if out["status_code"] not in allowed:
+            # r62-qa: a Cloudflare WAF / anti-bot challenge served to OUR OWN
+            # self-probe (403 + challenge page) is NOT a page outage — real
+            # visitors load the page fine. This produced a false "Pricing down"
+            # critical finding. Treat a CF-challenge 403 as a soft skip, not a
+            # broken page.
+            if out["status_code"] in (403, 503):
+                _csnip = ""
+                try:
+                    _csnip = (body.decode("utf-8", "ignore") if isinstance(body, bytes)
+                              else (body or ""))[:2000].lower()
+                except Exception:
+                    _csnip = ""
+                if any(m in _csnip for m in (
+                        "just a moment", "cf-challenge", "/cdn-cgi/challenge",
+                        "attention required", "cloudflare", "ray id")):
+                    out["healthy"] = True
+                    out["reason"] = "waf_challenge_skipped"
+                    return out
             out["reason"] = f"http_status:{out['status_code']}"
             return out
         if out["bytes"] < min_bytes:
