@@ -29,6 +29,7 @@ import os
 import time
 import datetime
 import xml.etree.ElementTree as ET
+from concurrent.futures import ThreadPoolExecutor, as_completed
 from contextlib import contextmanager
 
 import psycopg2 as _pg
@@ -217,16 +218,35 @@ def _zone_snapshot(code):
     }
 
 
+# Short in-process cache so the scoreboard + map + direct callers share ONE
+# fan-out instead of each hammering 12 ENTSO-E endpoints. 5-min TTL — well
+# fresh for grid data (ENTSO-E itself lags ~1-2h) and keeps us far under the
+# 400 req/min limit.
+_SNAP_CACHE = {"data": None, "ts": 0.0}
+_SNAP_TTL = 300
+
+
 def _live_snapshot():
     """Aggregate EU snapshot across all reachable zones + per-zone detail.
-    None only if the token is unset or EVERY zone failed (LIVE-only)."""
+    Fans out the ~12 zones in PARALLEL (sequential was 12-24s — long enough to
+    blow the scoreboard's edge/tool timeout) and caches for 5 min. None only if
+    the token is unset or EVERY zone failed (LIVE-only)."""
     if not _token():
         return None
+    now = time.time()
+    if _SNAP_CACHE["data"] is not None and (now - _SNAP_CACHE["ts"]) < _SNAP_TTL:
+        return _SNAP_CACHE["data"]
     zones = {}
-    for code in _ZONES:
-        snap = _zone_snapshot(code)
-        if snap:
-            zones[code] = snap
+    with ThreadPoolExecutor(max_workers=min(len(_ZONES), 12)) as pool:
+        futs = {pool.submit(_zone_snapshot, code): code for code in _ZONES}
+        for fut in as_completed(futs, timeout=25):
+            code = futs[fut]
+            try:
+                snap = fut.result(timeout=16)
+                if snap:
+                    zones[code] = snap
+            except Exception:
+                pass
     if not zones:
         return None
     agg_total = sum(z["generation_total_mw"] for z in zones.values())
@@ -243,7 +263,10 @@ def _live_snapshot():
         "gas_pct": {"value": round(100.0 * agg_gas / agg_total, 1) if agg_total else 0, "unit": "pct"},
         "active_zones": {"value": len(zones), "unit": "count"},
     }
-    return {"metrics": metrics, "zones": zones}
+    result = {"metrics": metrics, "zones": zones}
+    _SNAP_CACHE["data"] = result
+    _SNAP_CACHE["ts"] = now
+    return result
 
 
 def _persist_metrics(snap):
