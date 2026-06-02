@@ -45,11 +45,7 @@ jobs:
           LIVE_TOOLS=$(echo "$LIVE_JSON" | python3 -c "import json,sys;print(json.load(sys.stdin).get('tools','?'))" 2>/dev/null)
           LIVE_VER=$(echo "$LIVE_JSON"  | python3 -c "import json,sys;print(json.load(sys.stdin).get('version','?'))" 2>/dev/null)
           LOCAL_VER=$(python3 -c "import json;print(json.load(open('server.json'))['version'])")
-          REG_VER=$(curl -s --max-time 20 "https://registry.modelcontextprotocol.io/v0/servers?search=cloud.dchub" \
-            | python3 -c "import json,sys
-d=json.load(sys.stdin).get('servers',[])
-vs=[x['server']['version'] for x in d if x['server'].get('name')=='cloud.dchub/mcp-server']
-print(vs[-1] if vs else 'none')" 2>/dev/null)
+          REG_VER=$(curl -s --max-time 20 "https://registry.modelcontextprotocol.io/v0/servers?search=cloud.dchub" | python3 -c "import json,sys; d=json.load(sys.stdin).get('servers',[]); vs=[x['server']['version'] for x in d if x['server'].get('name')=='cloud.dchub/mcp-server']; print(vs[-1] if vs else 'none')" 2>/dev/null)
           SMITHERY_HTTP=$(curl -s -o /dev/null -w "%{http_code}" --max-time 20 "https://smithery.ai/servers/azmartone67/dchub")
           echo "live_tools=$LIVE_TOOLS"   >> "$GITHUB_OUTPUT"
           echo "live_ver=$LIVE_VER"       >> "$GITHUB_OUTPUT"

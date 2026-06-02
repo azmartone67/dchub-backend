@@ -48,11 +48,7 @@ jobs:
       - name: Check what's already published
         id: live
         run: |
-          LIVE=$(curl -s "https://registry.modelcontextprotocol.io/v0/servers?search=cloud.dchub" \
-            | python3 -c "import json,sys
-data=json.load(sys.stdin).get('servers',[])
-vs=[x['server']['version'] for x in data if x['server'].get('name')=='cloud.dchub/mcp-server']
-print(vs[-1] if vs else 'none')")
+          LIVE=$(curl -s "https://registry.modelcontextprotocol.io/v0/servers?search=cloud.dchub" | python3 -c "import json,sys; data=json.load(sys.stdin).get('servers',[]); vs=[x['server']['version'] for x in data if x['server'].get('name')=='cloud.dchub/mcp-server']; print(vs[-1] if vs else 'none')")
           echo "live=$LIVE" >> "$GITHUB_OUTPUT"
           echo "Live registry version: $LIVE"
 
@@ -85,10 +81,4 @@ print(vs[-1] if vs else 'none')")
         if: steps.ver.outputs.local != steps.live.outputs.live
         run: |
           sleep 5
-          curl -s "https://registry.modelcontextprotocol.io/v0/servers?search=cloud.dchub" \
-            | python3 -c "import json,sys
-data=json.load(sys.stdin).get('servers',[])
-m=[x['server'] for x in data if x['server'].get('name')=='cloud.dchub/mcp-server']
-print('Published versions:', [s['version'] for s in m])
-assert any(s['version']=='${{ steps.ver.outputs.local }}' for s in m), 'new version not visible yet'
-print('OK: v${{ steps.ver.outputs.local }} is live')"
+          curl -s "https://registry.modelcontextprotocol.io/v0/servers?search=cloud.dchub" | python3 -c "import json,sys; data=json.load(sys.stdin).get('servers',[]); m=[x['server'] for x in data if x['server'].get('name')=='cloud.dchub/mcp-server']; print('Published versions:', [s['version'] for s in m]); assert any(s['version']=='${{ steps.ver.outputs.local }}' for s in m), 'new version not visible yet'; print('OK: v${{ steps.ver.outputs.local }} is live')"
