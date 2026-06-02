@@ -494,75 +494,124 @@ def brain_outcomes():
 @brain_learning_bp.route("/api/v1/brain/probe-outcomes", methods=["POST", "GET"])
 @_require_admin
 def probe_outcomes():
-    """Re-check approved-and-applied proposals at +24h and +7d windows.
+    """Make fix_success MEASURABLE — but ONLY on fixes that were genuinely
+    APPLIED. Mirrors each genuinely-applied autopilot action into
+    brain_fix_outcomes (the table self-assessment's fix_success_rate reads),
+    re-checking whether its original finding is still present.
 
-    For each approved text proposal that was last_seen recently AND we
-    haven't outcome-checked yet, ask: 'did the underlying pattern stop
-    appearing?' Records the answer in brain_fix_outcomes.
+    VALIDITY (r65, 2026-06-01) — this used to score approved Layer-4 TEXT
+    proposals via a fuzzy ILIKE persistence heuristic. That was a LIE:
+    `brain_proposed_fixes.approved` only means approval_count>=2 (the same
+    find/replace SUGGESTION was seen on >=2 healer cycles) — it has NO
+    applied_at column and NOTHING auto-applies a Layer-4 text proposal to a
+    file. Scoring un-applied suggestions as fix_worked/fix_failed fabricated
+    the headline metric. So we now measure ONLY genuinely-applied fixes:
+
+      • Autopilot (L21) actions that actually executed an action_endpoint
+        with a 2xx — brain_autopilot_actions.outcome='executed_ok'. These
+        ARE applied (a real cron/cache/refresh endpoint fired). For each one
+        older than a 6h settle window that we haven't mirrored yet, we record
+        still_broken = is the original (finding_issue, finding_url) STILL in
+        brain_findings? — the same in-process findings table Layer-5 / the
+        autopilot verifier read (NOT an HTTP self-call to /heal/findings).
+        Where the autopilot verifier has already computed outcome_verified
+        (TRUE=resolved/FALSE=still broken) we reuse THAT (it's the same
+        check) rather than re-deriving it.
+
+      • Code proposals whose merge_outcome is set (merged_healthy /
+        merged_reverted) already flow into brain_fix_outcomes via
+        record_proposal_outcome() at mark-merge time (brain_v2_layer5 r64), so
+        they need no probing here.
+
+    Skips anything not genuinely applied. It is intentionally better for
+    fix_success to stay honestly null than to report a fabricated number.
+
+    SETTLE_HOURS gives an applied fix time to propagate before we judge it.
     """
     _ensure_schema()
+    SETTLE_HOURS = 6
+    FINDINGS_FRESH_MIN = 30   # a finding is "still present" if seen this recently
     checked = 0
     new_outcomes = 0
     errors = []
     try:
         with _conn() as c, c.cursor() as cur:
-            # Find approved text proposals from the last 30 days that
-            # don't already have an outcome record in the last 24h.
+            # GENUINELY-APPLIED FIXES ONLY: autopilot actions that actually
+            # executed an endpoint with a 2xx (outcome='executed_ok'), settled
+            # for >= SETTLE_HOURS, not already mirrored into brain_fix_outcomes.
+            # outcome_verified (when set by the autopilot verifier cron) is the
+            # SAME present/absent check, so carry it through directly.
             try:
                 cur.execute("""
-                    SELECT bp.id, bp.find, bp.last_seen_at,
-                           COALESCE(bp.proposed_at, bp.last_seen_at) AS applied_at
-                      FROM brain_proposed_fixes bp
-                     WHERE bp.approved = TRUE
-                       AND COALESCE(bp.proposed_at, bp.last_seen_at) > NOW() - INTERVAL '30 days'
+                    SELECT a.id, a.finding_issue, a.finding_url,
+                           a.started_at, a.outcome_verified
+                      FROM brain_autopilot_actions a
+                     WHERE a.outcome = 'executed_ok'
+                       AND a.finding_issue IS NOT NULL
+                       AND a.started_at <= NOW() - (%s * INTERVAL '1 hour')
+                       AND a.started_at >  NOW() - INTERVAL '30 days'
                        AND NOT EXISTS (
                            SELECT 1 FROM brain_fix_outcomes bo
-                            WHERE bo.proposal_id = bp.id
-                              AND bo.proposal_kind = 'text'
-                              AND bo.checked_at > NOW() - INTERVAL '24 hours')
-                     ORDER BY bp.last_seen_at DESC NULLS LAST LIMIT 50""")
+                            WHERE bo.proposal_id = a.id
+                              AND bo.proposal_kind = 'autopilot')
+                     ORDER BY a.started_at DESC NULLS LAST LIMIT 100""",
+                    (SETTLE_HOURS,))
                 candidates = cur.fetchall()
             except Exception as e:
                 candidates = []
-                errors.append(f"candidate-select: {str(e)[:120]}")
+                errors.append(f"autopilot-select: {str(e)[:120]}")
 
-            # The "did it actually fix?" signal: the issue is "still broken"
-            # if the SAME find_text appears in a fresh /heal/findings scan.
-            # We approximate by checking the existing persistence table —
-            # if the issue's last_seen_at moved FORWARD after applied_at,
-            # the fix didn't stick.
-            for prop_id, find_txt, last_seen, applied_at in candidates:
+            for act_id, issue, url, applied_at, verified in candidates:
                 checked += 1
                 try:
-                    # Heuristic: was this find_text seen in persistence after applied_at?
-                    cur.execute("""
-                        SELECT MAX(last_seen_at) FROM brain_issue_persistence
-                         WHERE issue_label ILIKE %s""",
-                        (f"%{(find_txt or '')[:40]}%",))
-                    row = cur.fetchone()
-                    persistence_last = row[0] if row else None
-                    still_broken = (persistence_last is not None
-                                    and applied_at is not None
-                                    and persistence_last > applied_at + timedelta(hours=24))
+                    # Prefer the autopilot verifier's own result (same check);
+                    # else re-derive in-process from brain_findings(issue,url).
+                    if verified is not None:
+                        # outcome_verified TRUE  => finding resolved (fixed)
+                        # outcome_verified FALSE => finding still present
+                        still_broken = (verified is False)
+                        evidence = ("autopilot outcome_verified="
+                                    f"{bool(verified)} (verifier re-checked "
+                                    "brain_findings)")
+                    else:
+                        # Same query the autopilot verifier uses: is this exact
+                        # finding still freshly present in brain_findings?
+                        cur.execute("""
+                            SELECT 1 FROM brain_findings
+                             WHERE issue = %s AND COALESCE(url,'') = %s
+                               AND last_seen > NOW() - (%s * INTERVAL '1 minute')
+                             LIMIT 1""",
+                            (issue, (url or ''), FINDINGS_FRESH_MIN))
+                        still_broken = cur.fetchone() is not None
+                        evidence = ("finding "
+                                    + ("still present in" if still_broken
+                                       else "absent from")
+                                    + f" brain_findings (<{FINDINGS_FRESH_MIN}m)")
                     cur.execute("""
                         INSERT INTO brain_fix_outcomes
                             (proposal_id, proposal_kind, applied_at,
-                             checked_at, still_broken, evidence_note,
-                             check_count)
-                        VALUES (%s, %s, %s, NOW(), %s, %s, 1)
+                             checked_at, still_broken, evidence_url,
+                             evidence_note, check_count)
+                        VALUES (%s, 'autopilot', %s, NOW(), %s, %s, %s, 1)
                         ON CONFLICT DO NOTHING""",
-                        (prop_id, "text", applied_at, bool(still_broken),
-                         f"persistence_last={persistence_last.isoformat() if persistence_last else 'none'}"))
+                        (act_id, applied_at, bool(still_broken),
+                         (url or '')[:300], evidence[:500]))
                     new_outcomes += 1
                 except Exception as e:
-                    errors.append(f"prop_id={prop_id}: {str(e)[:60]}")
+                    errors.append(f"act_id={act_id}: {str(e)[:60]}")
                     if len(errors) >= 5:
                         break
     except Exception as e:
         return jsonify(ok=False, error=str(e)[:200]), 200
 
-    return jsonify(ok=True, candidates_checked=checked,
+    return jsonify(ok=True,
+                   measured_source="applied_autopilot_actions",
+                   candidates_checked=checked,
                    new_outcomes_recorded=new_outcomes,
+                   note=("Only genuinely-applied fixes are scored. Approved "
+                         "Layer-4 text proposals are NOT applied and are no "
+                         "longer probed (would fabricate fix_success). Code "
+                         "merges flow in via record_proposal_outcome."),
                    errors=errors[:5], generated_at=now_iso()), 200
 
 
