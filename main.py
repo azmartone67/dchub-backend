@@ -13477,6 +13477,284 @@ def backfill_facility_states_endpoint():
             except Exception: pass
 
 
+# ─────────────────────────────────────────────────────────────────────────────
+# International infrastructure ingest (OpenStreetMap Overpass) → `substations`
+# ─────────────────────────────────────────────────────────────────────────────
+# WHY: the GDCI scorer in index_api.py (_load_bulk / _score_market_from_bulk)
+# computes the DHPW sub-score for substations by reading the EXACT table+columns:
+#       SELECT LOWER(city), LOWER(country), SUM(capacity_mva), SUM(available_mva)
+#       FROM substations GROUP BY LOWER(city), LOWER(country)
+# (index_api.py line ~307). The international DCPI metros (London, Frankfurt, …)
+# had NO rows in `substations` because the US loaders (HIFLD) are US-only. This
+# admin route runs the REAL OpenStreetMap Overpass ingest (intl_infra_ingest.py)
+# and writes the substation points it returns into `substations` so they are at
+# least visible/queryable for non-US markets.
+#
+# HONESTY (NON-NEGOTIABLE — read before changing):
+#   * Every value written comes verbatim from OSM. Nothing is fabricated.
+#   * OSM substation tags carry NO MVA rating, and the `substations` table has NO
+#     `available_mva` column at all. The DHPW headroom formula needs BOTH
+#     capacity_mva AND available_mva. Therefore these ingested points DO NOT and
+#     MUST NOT produce a DHPW score — capacity_mva is written as NULL (honest),
+#     never a guessed number, and available_mva is left untouched. Ingesting a
+#     point raises *coverage/count*, it does NOT manufacture a headroom score.
+#     This avoids a hidden apples-to-oranges metric: a non-US market scored with
+#     real MW-density (DHCI) but no substation MVA stays transparently un-scored
+#     on DHPW (value=null), exactly like before — we never inflate it to look
+#     comparable to a US market that has real MVA data.
+#   * The per-metro result exposes substations_written + an explicit
+#     dhpw_scoreable=false flag and a data_coverage label so the asymmetry is
+#     transparent rather than buried.
+#   * If Overpass returns nothing for a metro, nothing is written for it (a real
+#     0 is an honest answer — no placeholder rows).
+#   * Idempotent: ON CONFLICT (source_id) DO NOTHING, source_id = osm:<type>:<id>.
+#   * Only power=substation elements are written (the table+DHPW path this feeds);
+#     OSM power plants are NOT shoe-horned in (they'd need total_mw the points
+#     lack, and a different table). Their counts are surfaced for transparency.
+#
+# Reuses intl_infra_ingest.fetch_intl / INTL_METROS / _select_metros — the real
+# Overpass logic is imported, never duplicated here.
+_INTL_INFRA_TASKS: dict = {}
+_INTL_INFRA_TASKS_LOCK = _eia_threading.Lock()
+_INTL_INFRA_TASK_TTL = 3600  # purge finished tasks after 1h
+
+
+def _intl_infra_purge_stale():
+    now = _eia_time.time()
+    with _INTL_INFRA_TASKS_LOCK:
+        stale = [k for k, v in _INTL_INFRA_TASKS.items()
+                 if v.get("finished_at") and (now - v["finished_at"]) > _INTL_INFRA_TASK_TTL]
+        for k in stale:
+            _INTL_INFRA_TASKS.pop(k, None)
+
+
+def _intl_infra_city_token(rec: dict) -> str:
+    """City value to store so the GDCI DHPW path (city_kw substring match on
+    LOWER(city)) can hit. Prefer the metro display's leading token (verbatim
+    from intl_infra_ingest.INTL_METROS, e.g. 'London, UK' -> 'London'); this is
+    geographic labelling, NOT a fabricated data value. classify_element() puts
+    that display string in rec['country']."""
+    disp = (rec.get("country") or "").strip()
+    if disp:
+        return disp.split(",")[0].strip()[:100]
+    return ""
+
+
+def _intl_infra_run_ingest(task_id: str, metros: list):
+    """Background worker: real Overpass fetch via intl_infra_ingest, then
+    idempotent insert of ONLY substation points into the `substations` table
+    (the exact table+columns the GDCI DHPW sub-score reads). No fabrication."""
+    import traceback as _tb
+    started = _eia_time.time()
+    conn = None
+    try:
+        import sys as _sys, os as _os3
+        _bdir = _os3.path.dirname(_os3.path.abspath(__file__))
+        if _bdir not in _sys.path:
+            _sys.path.insert(0, _bdir)
+        import intl_infra_ingest as _iii
+
+        # 1) REAL fetch (imported logic — not duplicated). Honest per-metro report.
+        records, report = _iii.fetch_intl(metros)
+
+        # 2) Write ONLY substations into `substations` (DHPW reads this table).
+        #    Columns that exist there (infrastructure_discovery.py CREATE TABLE):
+        #    name, operator, substation_type, voltage_kv, lat, lng, city, state,
+        #    country, source, source_id. capacity_mva stays NULL (OSM has none);
+        #    available_mva is intentionally NOT written (no such column).
+        conn = get_db()
+        if conn is None:
+            with _INTL_INFRA_TASKS_LOCK:
+                _INTL_INFRA_TASKS[task_id] = {
+                    "status": "error",
+                    "result": {"ok": False, "error": "db_connection_failed",
+                               "hint": "get_db() returned None — check DATABASE_URL on Railway"},
+                    "started_at": started, "finished_at": _eia_time.time()}
+            return
+
+        cur = conn.cursor()
+        cur.execute("SELECT to_regclass('public.substations')")
+        if (cur.fetchone() or [None])[0] is None:
+            cur.close()
+            with _INTL_INFRA_TASKS_LOCK:
+                _INTL_INFRA_TASKS[task_id] = {
+                    "status": "error",
+                    "result": {"ok": False, "error": "table_missing",
+                               "hint": "`substations` table absent — init_infrastructure_tables() must run first"},
+                    "started_at": started, "finished_at": _eia_time.time()}
+            return
+
+        sql = (
+            "INSERT INTO substations "
+            "(name, operator, substation_type, voltage_kv, capacity_mva, lat, lng, "
+            " city, state, country, source, source_id) "
+            "VALUES (%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s) "
+            "ON CONFLICT (source_id) DO NOTHING"
+        )
+        inserted = subs_seen = plants_skipped = 0
+        for r in records:
+            if r.get("infra_type") != "substation":
+                plants_skipped += 1  # OSM power plants — not written to substations
+                continue
+            subs_seen += 1
+            otype = r.get("osm_type") or ""
+            oid = r.get("osm_id")
+            source_id = f"osm:{otype}:{oid}"
+            cur.execute(sql, (
+                (r.get("name") or "")[:300],
+                (r.get("operator") or "")[:300],
+                (r.get("substation_type") or "")[:100],
+                r.get("voltage_kv"),          # REAL or NULL — verbatim from OSM
+                None,                          # capacity_mva: OSM has NO MVA → NULL, never guessed
+                r.get("lat"),
+                r.get("lon"),
+                _intl_infra_city_token(r),     # geographic label for DHPW city match
+                "",                            # state: N/A for non-US metros
+                (r.get("iso_code") or "")[:8], # ISO2 country code, verbatim
+                "osm_overpass_intl",
+                source_id,
+            ))
+            inserted += cur.rowcount
+        conn.commit()
+        cur.close()
+
+        # 3) Per-metro transparency: substations contribute to coverage/count but
+        #    NOT to a DHPW headroom score (no MVA). Expose that explicitly.
+        per_metro = {}
+        for key, vals in report.items():
+            subs = int(vals.get("substations", 0) or 0)
+            per_metro[key] = {
+                "display": vals.get("display", key),
+                "status": vals.get("status", "unknown"),
+                "substations_found": subs,
+                "power_plants_found": int(vals.get("power_plants", 0) or 0),
+                # honest coverage label for the DHPW-substation component:
+                "dhpw_substation_scoreable": False,
+                "data_coverage": ("points_only_no_mva" if subs > 0 else
+                                  ("source_unavailable" if vals.get("status") == "source_unavailable"
+                                   else "none")),
+            }
+
+        result = {
+            "ok": True,
+            "source": _iii.OVERPASS_SOURCE_URL,
+            "metros_queried": len(metros),
+            "substation_points_returned": subs_seen,
+            "substations_inserted_new": inserted,
+            "substations_already_present": max(0, subs_seen - inserted),
+            "power_plants_skipped": plants_skipped,
+            "target_table": "substations",
+            "target_columns_for_dhpw": ["city", "country", "capacity_mva", "available_mva"],
+            "honesty_note": (
+                "OSM substation tags carry NO MVA rating and `substations` has NO "
+                "available_mva column; the DHPW headroom formula needs both, so "
+                "these points are written with capacity_mva=NULL and DO NOT produce "
+                "a DHPW score (no fabrication, no inflation). They raise coverage "
+                "and are queryable; they do not manufacture an apples-to-oranges "
+                "score vs. US markets that have real MVA data."),
+            "per_metro": per_metro,
+        }
+        with _INTL_INFRA_TASKS_LOCK:
+            _INTL_INFRA_TASKS[task_id] = {"status": "done", "result": result,
+                                          "started_at": started,
+                                          "finished_at": _eia_time.time()}
+        print(f"[intl-infra-ingest] inserted {inserted} new substations "
+              f"({subs_seen} returned, {plants_skipped} plants skipped)", flush=True)
+    except Exception as e:
+        try:
+            if conn: conn.rollback()
+        except Exception:
+            pass
+        with _INTL_INFRA_TASKS_LOCK:
+            _INTL_INFRA_TASKS[task_id] = {
+                "status": "error",
+                "result": {"ok": False, "error": str(e)[:300],
+                           "traceback": _tb.format_exc()[-500:]},
+                "started_at": started, "finished_at": _eia_time.time()}
+    finally:
+        try:
+            if conn: conn.close()
+        except Exception:
+            pass
+
+
+@app.route('/api/v1/admin/ingest-intl-infra', methods=['POST'])
+def admin_ingest_intl_infra():
+    """Admin-gated. Run the REAL OpenStreetMap Overpass international
+    infrastructure ingest (intl_infra_ingest.py) and write the returned
+    substation points into the `substations` table — the exact table+columns
+    the GDCI DHPW sub-score reads (index_api.py _load_bulk line ~307).
+
+    Async by design (~30 non-US metros over a shared, polite-rate Overpass API
+    is slow): returns 202 {"started": true, ...} immediately and runs on a
+    background thread. Idempotent (ON CONFLICT (source_id) DO NOTHING).
+
+    Optional: ?metros=frankfurt,tokyo,tel-aviv  (substring match on metro key,
+    same semantics as intl_infra_ingest --metros).
+
+    HONESTY: writes ONLY verbatim OSM values. capacity_mva is NULL (OSM has no
+    MVA); available_mva (a column that does not exist) is never touched; OSM
+    power plants are not written. These points therefore do NOT yield a DHPW
+    score — see result.honesty_note + per_metro.dhpw_substation_scoreable.
+    """
+    import os as _os4
+    expected = _os4.environ.get("DCHUB_ADMIN_KEY") or _os4.environ.get("DCHUB_INTERNAL_KEY")
+    provided = (request.headers.get("X-Admin-Key") or request.args.get("admin_key"))
+    if not expected or provided != expected:
+        return jsonify(ok=False, error="unauthorized",
+                       hint="X-Admin-Key header required"), 403
+
+    try:
+        import sys as _sys, os as _os5
+        _bdir = _os5.path.dirname(_os5.path.abspath(__file__))
+        if _bdir not in _sys.path:
+            _sys.path.insert(0, _bdir)
+        import intl_infra_ingest as _iii
+    except Exception as e:
+        return jsonify(ok=False, error="ingest_module_import_failed",
+                       detail=str(e)[:200]), 500
+
+    metros_arg = (request.args.get("metros") or "").strip()
+    metros = _iii._select_metros(["--metros", metros_arg] if metros_arg else [])
+    if not metros:
+        return jsonify(ok=False, error="no_metros_matched",
+                       hint="?metros= substring matched no intl_infra_ingest metro key"), 400
+
+    _intl_infra_purge_stale()
+    task_id = _eia_uuid.uuid4().hex
+    with _INTL_INFRA_TASKS_LOCK:
+        _INTL_INFRA_TASKS[task_id] = {"status": "running", "result": None,
+                                      "started_at": _eia_time.time(),
+                                      "finished_at": None}
+    t = _eia_threading.Thread(target=_intl_infra_run_ingest,
+                              args=(task_id, metros), daemon=True)
+    t.start()
+    return jsonify(started=True, ok=True, task_id=task_id, status="running",
+                   metros_queued=len(metros),
+                   target_table="substations",
+                   poll_url=f"/api/v1/admin/ingest-intl-infra/status?id={task_id}",
+                   hint="GET poll_url for the result. Overpass over ~30 metros is slow."), 202
+
+
+@app.route('/api/v1/admin/ingest-intl-infra/status', methods=['GET'])
+def admin_ingest_intl_infra_status():
+    """Poll for an in-flight or recently-completed intl-infra ingest task."""
+    task_id = (request.args.get("id") or "").strip()
+    if not task_id:
+        return jsonify(ok=False, error="missing_id",
+                       usage="?id=<task_id from POST /api/v1/admin/ingest-intl-infra>"), 400
+    _intl_infra_purge_stale()
+    with _INTL_INFRA_TASKS_LOCK:
+        task = _INTL_INFRA_TASKS.get(task_id)
+    if not task:
+        return jsonify(ok=False, error="task_not_found",
+                       hint="Task ID unknown or expired (>1h finished)."), 404
+    elapsed = round((task.get("finished_at") or _eia_time.time()) - task["started_at"], 2)
+    return jsonify(ok=True, task_id=task_id, status=task["status"],
+                   started_at=task["started_at"], finished_at=task.get("finished_at"),
+                   elapsed_seconds=elapsed, result=task["result"])
+
+
 @app.route('/api/v1/energy/eia-ingest/status', methods=['GET'])
 def energy_eia_ingest_status():
     """Poll for an in-flight or recently-completed EIA ingest task."""

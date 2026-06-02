@@ -232,6 +232,15 @@ def _score_label(s):
     if s >= 40:   return 'Balanced'
     return "Buyer's Market"
 
+def _coverage_label(n):
+    """Honest data-coverage label from the count of non-null sub-scores (0-5).
+    Lets consumers see that a market scored on 2 components is NOT comparable
+    to one scored on all 5 — no hidden apples-to-oranges ranking."""
+    if n >= 5: return 'full'
+    if n >= 2: return 'partial'
+    if n == 1: return 'minimal'
+    return 'none'
+
 def _safe_q(cur, sql, params=()):
     try:
         cur.execute(sql, params)
@@ -474,7 +483,26 @@ def _score_market_from_bulk(market, bulk, cfg):
                 break
 
     active    = [(v,w) for v,w in [(dhci_val,weights['dhci']),(dhri_val,weights['dhri']),(dhpi_val,weights['dhpi']),(dhdi_val,weights['dhdi']),(dhpw_val,weights['dhpw'])] if v is not None]
+    # composite = weighted mean of the NON-NULL real sub-scores only (unchanged
+    # behavior). A market with zero real sub-scores keeps composite_score=None —
+    # we never invent a number.
     composite = round(sum(v*w for v,w in active)/sum(w for _,w in active), 1) if active else None
+
+    # TRANSPARENCY (r67): expose how many of the 5 real sub-scores actually had
+    # data, plus a coverage label. This makes the cross-market ranking honest:
+    # an international market scored on 1-2 components is visibly distinct from a
+    # US market scored on all 5. Counts the SAME sub-scores that feed `composite`.
+    sub_values        = [dhci_val, dhri_val, dhpi_val, dhdi_val, dhpw_val]
+    components_scored = sum(1 for v in sub_values if v is not None)
+    data_coverage     = _coverage_label(components_scored)
+
+    # REAL distinct signal (not folded into composite, not MVA headroom): the
+    # count of real facility records (incl. PeeringDB-sourced) matched to this
+    # market. For many international markets PeeringDB facilities load with
+    # power_mw=NULL, so they contribute zero MW (DHCI/DHPI stay null) yet their
+    # presence is a real, verifiable footprint. Surfaced transparently as a
+    # labeled COUNT — never converted into a score, so it cannot inflate ranking.
+    facility_footprint = int(op_cnt) + int(pi_cnt)
 
     return {
         'market_id':       mid,
@@ -484,12 +512,20 @@ def _score_market_from_bulk(market, bulk, cfg):
         'composite_score': composite,
         'composite_label': _score_label(composite),
         'composite_color': _score_color(composite),
+        'components_scored': components_scored,
+        'data_coverage':     data_coverage,
         'computed_at':     datetime.now(timezone.utc).isoformat(),
         'dhci': {'value': dhci_val, **(dhci_d or {})},
         'dhri': {'value': dhri_val, **(dhri_d or {})},
         'dhpi': {'value': dhpi_val, **(dhpi_d or {})},
         'dhdi': {'value': dhdi_val, **(dhdi_d or {})},
         'dhpw': {'value': dhpw_val, **dhpw_d},
+        # Real, distinctly-labeled facility-presence signal (count of matched
+        # facility records, including PeeringDB). Informational only; excluded
+        # from composite to avoid an apples-to-oranges metric.
+        'facility_footprint': {'matched_facility_count': facility_footprint,
+                               'source': 'facilities_table_incl_peeringdb',
+                               'scored': False},
         'connectivity': {},
     }
 
@@ -555,7 +591,13 @@ def markets_list():
         results = _get_all_markets_scored()
         if region:
             results = [m for m in results if m.get('region') == region]
-        return jsonify({'markets':results,'count':len(results),'scored':sum(1 for m in results if m.get('composite_score') is not None),'generated_at':datetime.now(timezone.utc).isoformat()})
+        coverage_breakdown = defaultdict(int)
+        for m in results:
+            coverage_breakdown[m.get('data_coverage', 'none')] += 1
+        return jsonify({'markets':results,'count':len(results),
+                        'scored':sum(1 for m in results if m.get('composite_score') is not None),
+                        'coverage_breakdown':dict(coverage_breakdown),
+                        'generated_at':datetime.now(timezone.utc).isoformat()})
     except Exception as e:
         return jsonify({'error':str(e)}), 500
 
@@ -574,6 +616,12 @@ def composite():
         vac    = round(sum((m.get('dhci',{}).get('vacancy_pct') or 0)*(m.get('dhci',{}).get('operational_mw') or 0) for m in scored)/max(op_mw,1),2) if op_mw>0 else None
         score  = round(avg, 1)
         month  = datetime.now(timezone.utc).strftime('%B %Y')
+        # Transparency: of the markets that contribute to this global average,
+        # how many scored on full (5) vs partial (2-4) vs minimal (1) data.
+        coverage_breakdown = defaultdict(int)
+        for m in scored:
+            coverage_breakdown[m.get('data_coverage', 'none')] += 1
+        full_cov = coverage_breakdown.get('full', 0)
         return jsonify({
             'issue':              f"{month} Issue",
             'composite_score':    score,
@@ -584,6 +632,8 @@ def composite():
             'total_pipeline_mw':  round(pi_mw,1),
             'markets_covered':    len(scored),
             'markets_with_data':  len(scored),
+            'markets_full_coverage': full_cov,
+            'coverage_breakdown':    dict(coverage_breakdown),
             'citation':           f"According to the DC Hub Global Data Center Index (GDCI), the global composite score reached {score} in {month}, indicating a {_score_label(score).lower()} environment across {len(scored)} tracked markets. Source: DC Hub GDCI, dchub.cloud/index",
             'generated_at':       datetime.now(timezone.utc).isoformat(),
         })
