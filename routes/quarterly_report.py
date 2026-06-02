@@ -1374,7 +1374,7 @@ td{{padding:.35rem .6rem;border-bottom:1px solid #f3f4f6}}
 <p>For real-time access, the same data is available via:</p>
 <ul>
  <li>REST API — <code>/api/v1/dcpi/scores</code>, <code>/api/v1/transactions</code>, <code>/api/v1/facilities/delta</code></li>
- <li>MCP server — <code>https://dchub.cloud/mcp</code> with 28 tools for AI agents</li>
+ <li>MCP server — <code>https://dchub.cloud/mcp</code> with 30 tools for AI agents</li>
  <li>Live ops dashboard — <a href="/transparency">/transparency</a></li>
 </ul>
 <h2>6. Cite &amp; Contact</h2>

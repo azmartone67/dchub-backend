@@ -48,7 +48,7 @@ CLAIMS = [
         "category": "AI / agent access",
         "claim":         "\"AI-ready data platform\"",
         "translation":   "Static PDF you upload into ChatGPT yourself, then beg it to find a number",
-        "dchub":         "Native Model Context Protocol (MCP) server at /mcp — Claude, GPT, Gemini, Perplexity call it directly. 28 tools, 4,000+ calls in the last 14 days.",
+        "dchub":         "Native Model Context Protocol (MCP) server at /mcp — Claude, GPT, Gemini, Perplexity call it directly. 30 tools, 4,000+ calls in the last 14 days.",
         "proof_url":     "/mcp/tools",
         "proof_label":   "See the 28 live MCP tools",
     },
@@ -257,7 +257,7 @@ def _render_html() -> str:
 <div class="cta">
   <h2>Stop reading PDFs. Start asking your AI.</h2>
   <p>Every claim above links to a live endpoint. Every endpoint speaks JSON + MCP. Point Claude, GPT, Gemini, or Perplexity at us — they'll answer in seconds.</p>
-  <a href="/mcp/tools">See the 28 MCP tools →</a>
+  <a href="/mcp/tools">See the 30 MCP tools →</a>
   <a href="/intelligence">Watch the platform breathe →</a>
   <a href="/dcpi/totals">Total power + being built →</a>
 </div>

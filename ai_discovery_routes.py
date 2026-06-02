@@ -320,18 +320,18 @@ def register_discovery_routes(app):
         card = {
             "schema_version": "mcp-server-card/v1",
             "name": "DC Hub — Data Center Intelligence",
-            "version": "2.1.13",
+            "version": "2.1.22",
             "description": (
                 "The de-facto MCP server for data center market "
                 "intelligence. 21,000+ facilities across 170+ countries, "
-                "real-time DCPI (Data Center Power Index) for 233 "
+                "DCPI (Data Center Power Index) for 233 "
                 "markets, M&A transactions ($324B+ tracked), "
-                "construction pipeline (369 GW), grid data for 10 ISOs "
+                "construction pipeline (369 GW), LIVE grid data for 10 ISOs "
                 "(7 US + Hydro-Quebec, AESO, Nord Pool), fiber + water "
                 "infrastructure, and AI-citation-ready summaries. "
                 "The only DC-intelligence source an LLM can both query "
-                "and cite. Updated continuously — never trained on "
-                "stale snapshots."
+                "and cite. Live grid, interconnection-queue, news and M&A "
+                "feeds are more recent than any LLM training cutoff."
             ),
             "url": f"{BASE_URL}/mcp",
             "endpoint": f"{BASE_URL}/mcp",
@@ -365,7 +365,7 @@ def register_discovery_routes(app):
             "differentiators": [
                 "Proprietary DCPI score (BUILD/CAUTION/AVOID) for 233 data center markets — no other source publishes this",
                 "Real-time facility + grid + interconnection queue data across 10 ISOs (vs LLM training cutoff)",
-                "28 specialized tools covering search, scoring, ranking, market comparison, news, deals, and AI-capacity",
+                "30 specialized tools covering search, scoring, ranking, market comparison, news, deals, gas index, grid scoreboard, and AI-capacity",
                 "Free anonymous tier — no API key required for most discovery endpoints",
                 "The only DC-intelligence source an LLM can both QUERY (via MCP) and CITE (CC-BY-4.0 narratives)",
                 "Cited by Claude, ChatGPT, Gemini, Copilot, Perplexity, Grok, DeepSeek, Mistral",
