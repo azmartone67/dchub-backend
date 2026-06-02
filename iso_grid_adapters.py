@@ -95,6 +95,10 @@ def store_records(records: list[dict]) -> int:
     try:
         with c, c.cursor() as cur:
             for r in records:
+                # Honest fail-closed markers carry no telemetry — never persist
+                # them as data rows (would write a misleading all-NULL record).
+                if r.get("source_unavailable"):
+                    continue
                 try:
                     cur.execute("""
                         INSERT INTO grid_telemetry
@@ -170,20 +174,24 @@ ISO_REGISTRY = {
               "env": "CAISO", "impl": "fetch_caiso",
               "note": "Today's Outlook CSVs (fuelsource + demand) — public, no auth."},
     "PJM":   {"auth": "key", "base": "https://api.pjm.com/api/v1",
-              "env": "PJM", "impl": None,
-              "note": "Data Miner 2 — needs Ocp-Apim-Subscription-Key."},
-    "MISO":  {"auth": "public", "base": "https://api.misoenergy.org/MISORTWD",
-              "env": "MISO", "impl": None,
-              "note": "Real-time web display JSON feeds — public."},
-    "SPP":   {"auth": "public", "base": "https://portal.spp.org/file-browser-api",
-              "env": "SPP", "impl": None,
-              "note": "Marketplace portal CSV — public, path-based."},
+              "env": "PJM", "impl": "fetch_pjm",
+              "note": "Data Miner 2 — needs Ocp-Apim-Subscription-Key. "
+                      "Fails closed (source_unavailable) without PJM_API_KEY."},
+    "MISO":  {"auth": "public", "base": "https://public-api.misoenergy.org/api",
+              "env": "MISO", "impl": "fetch_miso",
+              "note": "Public RT API (FuelMix + RealTimeTotalLoad) — no auth. "
+                      "Legacy MISORTWDDataBroker host now returns no data."},
+    "SPP":   {"auth": "public", "base": "https://portal.spp.org/chart-api",
+              "env": "SPP", "impl": "fetch_spp",
+              "note": "Public portal chart API (gen-mix + load-forecast "
+                      "'Actual Load') — no auth."},
     "NYISO": {"auth": "public", "base": "http://mis.nyiso.com/public/csv",
               "env": "NYISO", "impl": "fetch_nyiso",
               "note": "Public CSV by report (rtfuelmix + pal) — no auth."},
     "ISONE": {"auth": "basic", "base": "https://webservices.iso-ne.com/api/v1.1",
-              "env": "ISONE", "impl": None,
-              "note": "Web Services — HTTP basic auth (account user/pass)."},
+              "env": "ISONE", "impl": "fetch_isone",
+              "note": "Web Services — HTTP basic auth (account user/pass). "
+                      "Fails closed without ISONE_USERNAME/PASSWORD."},
 }
 
 
@@ -408,18 +416,242 @@ def fetch_caiso() -> list[dict]:
         return []
 
 
+# ─────────────────────────────────────────────────────────────────────
+# MISO — public, no auth. The legacy MISORTWDDataBroker host now returns
+# {"error":"no data"} for every messageType (migrated 2025-12). The CURRENT
+# canonical public real-time feed is public-api.misoenergy.org (same feed
+# gridstatus/pyiso use). Verified live 2026-06-02:
+#   GET /api/FuelMix            → {"TotalMW","Fuel":{"Type":[{CATEGORY,ACT,
+#                                  INTERVALEST}]}}  (online gen + fuel mix)
+#   GET /api/RealTimeTotalLoad  → {"LoadInfo":{"FiveMinTotalLoad":
+#                                  [{"Load":{"Time","Value"}}]}}  (actual RT load)
+# We use ONLY the actual 5-min load (FiveMinTotalLoad), never the forecast
+# (MediumTermLoadForecast) or cleared (ClearedMW) series. If MISO returns no
+# data we return [] — never a fabricated number.
+# ─────────────────────────────────────────────────────────────────────
+_MISO_BASE = "https://public-api.misoenergy.org/api"
+
+
+def fetch_miso() -> list[dict]:
+    """MISO system telemetry from the public real-time API. Fail-safe → []."""
+    hdrs = {"User-Agent": "dchub-iso/1.0", "Accept": "application/json"}
+    try:
+        # --- online generation + fuel mix ---
+        fm = _http_json(f"{_MISO_BASE}/FuelMix", headers=hdrs)
+        if not isinstance(fm, dict):
+            return []
+        types = (((fm.get("Fuel") or {}).get("Type")) or [])
+        fuel_mix, sum_act = {}, 0.0
+        for t in types:
+            if not isinstance(t, dict):
+                continue
+            mw = _to_float(t.get("ACT"))
+            cat = (t.get("CATEGORY") or "").strip()
+            if mw is not None and cat:
+                fuel_mix[cat] = round(mw, 1)
+                sum_act += mw
+        # Prefer MISO's own authoritative TotalMW; fall back to Σ ACT.
+        total_gen = _to_float(fm.get("TotalMW"))
+        if total_gen is None:
+            total_gen = sum_act if sum_act > 0 else None
+
+        # --- actual real-time load (latest 5-min point) ---
+        ld = _http_json(f"{_MISO_BASE}/RealTimeTotalLoad", headers=hdrs)
+        load = None
+        five = (((ld or {}).get("LoadInfo") or {}).get("FiveMinTotalLoad")) or []
+        for entry in five:
+            v = _to_float(((entry or {}).get("Load") or {}).get("Value"))
+            if v is not None:
+                load = v   # keep walking → last non-null is the most recent
+        if not total_gen or total_gen <= 0 or load is None or load <= 0:
+            return []
+        return [_record("MISO", "MISO",
+                        online_gen_mw=round(total_gen, 1),
+                        load_mw=round(load, 1),
+                        fuel_mix=fuel_mix,
+                        source="miso:public-api/FuelMix+RealTimeTotalLoad")]
+    except urllib.error.HTTPError as e:
+        print(f"[iso_grid] MISO HTTP {e.code}", flush=True)
+        return []
+    except Exception as e:
+        print(f"[iso_grid] MISO fetch error: {e}", flush=True)
+        return []
+
+
+# ─────────────────────────────────────────────────────────────────────
+# SPP — public, no auth. Real-time chart feeds behind the public SPP portal.
+# Verified live 2026-06-02:
+#   GET /chart-api/gen-mix/asChart       → {"response":{"labels":[ts...],
+#       "datasets":[{"label":<fuel>,"data":[mw...]}]}}  (per-fuel, 5-min,
+#       rolling 2h — latest column = online gen by fuel)
+#   GET /chart-api/load-forecast/asChart → datasets include "Actual Load"
+#       alongside forecasts; we take ONLY the "Actual Load" series' last
+#       non-null point. Forecast/Mid-Term series are never used as load.
+# Returns [] (never a fabricated number) if either feed is unavailable.
+# ─────────────────────────────────────────────────────────────────────
+_SPP_BASE = "https://portal.spp.org/chart-api"
+
+
+def _spp_last_point(datasets: list, want_label: str | None = None):
+    """From a SPP chart dataset list, return the latest non-null value.
+    If want_label is given, restrict to that single series; otherwise the
+    caller is summing — see fetch_spp. Returns float | None."""
+    series = None
+    if want_label is not None:
+        for ds in datasets or []:
+            if isinstance(ds, dict) and (ds.get("label") or "").strip().lower() == want_label.lower():
+                series = ds.get("data") or []
+                break
+        if series is None:
+            return None
+    else:
+        series = []
+    last = None
+    for v in series:
+        fv = _to_float(v)
+        if fv is not None:
+            last = fv
+    return last
+
+
+def fetch_spp() -> list[dict]:
+    """SPP system telemetry from the public portal chart API. Fail-safe → []."""
+    hdrs = {"User-Agent": "Mozilla/5.0 dchub-iso/1.0", "Accept": "application/json"}
+    try:
+        # --- generation mix: latest column across all fuel datasets ---
+        gm = _http_json(f"{_SPP_BASE}/gen-mix/asChart", headers=hdrs)
+        gresp = (gm or {}).get("response") or {}
+        gdatasets = gresp.get("datasets") or []
+        glabels = gresp.get("labels") or []
+        if not gdatasets or not glabels:
+            return []
+        # Find the latest time index for which at least one fuel has a value,
+        # then read every fuel at that same index → one consistent snapshot.
+        n = min(len(glabels), max((len(ds.get("data") or []) for ds in gdatasets), default=0))
+        if n <= 0:
+            return []
+        snap_idx = None
+        for i in range(n - 1, -1, -1):
+            if any(_to_float((ds.get("data") or [None] * n)[i]) is not None
+                   for ds in gdatasets if isinstance(ds, dict)):
+                snap_idx = i
+                break
+        if snap_idx is None:
+            return []
+        fuel_mix, total_gen = {}, 0.0
+        for ds in gdatasets:
+            if not isinstance(ds, dict):
+                continue
+            data = ds.get("data") or []
+            if snap_idx >= len(data):
+                continue
+            mw = _to_float(data[snap_idx])
+            label = (ds.get("label") or "").strip()
+            if mw is not None and label:
+                fuel_mix[label] = round(mw, 1)
+                total_gen += mw
+
+        # --- actual load: ONLY the "Actual Load" series' latest non-null ---
+        lf = _http_json(f"{_SPP_BASE}/load-forecast/asChart", headers=hdrs)
+        ldatasets = ((lf or {}).get("response") or {}).get("datasets") or []
+        load = _spp_last_point(ldatasets, want_label="Actual Load")
+
+        if total_gen <= 0 or load is None or load <= 0:
+            return []
+        return [_record("SPP", "SPP",
+                        online_gen_mw=round(total_gen, 1),
+                        load_mw=round(load, 1),
+                        fuel_mix=fuel_mix,
+                        source="spp:portal/gen-mix+load-forecast(Actual Load)")]
+    except urllib.error.HTTPError as e:
+        print(f"[iso_grid] SPP HTTP {e.code}", flush=True)
+        return []
+    except Exception as e:
+        print(f"[iso_grid] SPP fetch error: {e}", flush=True)
+        return []
+
+
+# ─────────────────────────────────────────────────────────────────────
+# Credentialed ISOs we do NOT have keys for — PJM (key) & ISO-NE (basic).
+# These FAIL CLOSED: they read their env var and, when absent, return an
+# explicit {"source_unavailable": True, "needs": <ENV_VAR>} marker record.
+# They NEVER fabricate a number. (ERCOT already has its own real auth path in
+# fetch_ercot; these two are pure honest stubs until creds exist.)
+# ─────────────────────────────────────────────────────────────────────
+def _unavailable(iso: str, needs: str, base: str, note: str) -> dict:
+    """Honest fail-closed marker — no numbers, names the real source + the
+    exact env var required to enable it. Carries no telemetry fields."""
+    return {
+        "iso": iso, "zone": None,
+        "observed_at": datetime.datetime.now(datetime.timezone.utc).isoformat(),
+        "online_gen_mw": None, "load_mw": None, "headroom_mw": None,
+        "reserve_margin_pct": None, "fuel_mix": {},
+        "source_unavailable": True, "needs": needs,
+        "source": f"{iso.lower()}:credential-required",
+        "endpoint": base, "note": note,
+    }
+
+
+def fetch_pjm() -> list[dict]:
+    """PJM Data Miner 2 — requires PJM_API_KEY (Ocp-Apim-Subscription-Key).
+    We have no key, so this FAILS CLOSED with an honest marker (never a number).
+    Real source: https://api.pjm.com/api/v1 (instantaneous_dispatch_rates /
+    gen_by_fuel + inst_load). Wire extraction here once PJM_API_KEY is set."""
+    key = _env("PJM_API_KEY")
+    base = ISO_REGISTRY["PJM"]["base"]
+    if not key:
+        return [_unavailable("PJM", "PJM_API_KEY", base,
+                             "PJM Data Miner 2 requires Ocp-Apim-Subscription-Key.")]
+    # Key present but extraction not yet wired/verified → stay honest (no fake).
+    print("[iso_grid] PJM_API_KEY present but extraction not yet implemented; "
+          "returning source_unavailable (no fabricated data).", flush=True)
+    return [_unavailable("PJM", "PJM_API_KEY", base,
+                         "PJM key set but gen/load extraction not yet wired.")]
+
+
+def fetch_isone() -> list[dict]:
+    """ISO-NE Web Services — requires ISONE_USERNAME + ISONE_PASSWORD (HTTP
+    basic). We have no credentials, so this FAILS CLOSED with an honest marker
+    (never a number). Real source: https://webservices.iso-ne.com/api/v1.1
+    (/genfuelmix/current + /fiveminutesystemload/current)."""
+    user, pw = _env("ISONE_USERNAME"), _env("ISONE_PASSWORD")
+    base = ISO_REGISTRY["ISONE"]["base"]
+    if not (user and pw):
+        return [_unavailable("ISONE", "ISONE_USERNAME+ISONE_PASSWORD", base,
+                             "ISO-NE Web Services requires HTTP basic auth.")]
+    print("[iso_grid] ISO-NE credentials present but extraction not yet "
+          "implemented; returning source_unavailable (no fabricated data).",
+          flush=True)
+    return [_unavailable("ISONE", "ISONE_USERNAME+ISONE_PASSWORD", base,
+                         "ISO-NE creds set but gen/load extraction not yet wired.")]
+
+
 # Dispatch table — maps impl names to functions.
 _IMPL = {"fetch_ercot": fetch_ercot,
          "fetch_nyiso": fetch_nyiso,
-         "fetch_caiso": fetch_caiso}
+         "fetch_caiso": fetch_caiso,
+         "fetch_miso": fetch_miso,
+         "fetch_spp": fetch_spp,
+         "fetch_pjm": fetch_pjm,
+         "fetch_isone": fetch_isone}
+
+
+# Adapters that FAIL CLOSED with an honest marker even when creds are absent
+# (so the missing-credential signal is visible to probes, never silent).
+_FAIL_CLOSED_IMPLS = {"fetch_pjm", "fetch_isone"}
 
 
 def fetch_iso(iso: str) -> list[dict]:
-    """Fetch one ISO's telemetry. Returns [] for unimplemented/credless. Safe."""
+    """Fetch one ISO's telemetry. Returns [] for unimplemented/credless. Safe.
+    Fail-closed adapters still run without creds so they can surface their
+    honest {"source_unavailable": True, "needs": ...} marker."""
     cfg = ISO_REGISTRY.get(iso)
-    if not cfg or not _has_creds(iso):
+    if not cfg:
         return []
-    fn = _IMPL.get(cfg.get("impl") or "")
+    impl = cfg.get("impl") or ""
+    if not _has_creds(iso) and impl not in _FAIL_CLOSED_IMPLS:
+        return []
+    fn = _IMPL.get(impl)
     if not fn:
         return []   # registered but not yet implemented
     try:

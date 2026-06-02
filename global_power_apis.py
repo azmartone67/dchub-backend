@@ -1,10 +1,30 @@
 """
 Global Power APIs Integration
-- Electricity Maps (190+ countries carbon intensity)
-- UK Carbon Intensity API (UK regional data)
-- ENTSO-E (European grid data)
+- Electricity Maps (190+ countries carbon intensity)  [token: ELECTRICITY_MAPS_API_TOKEN]
+- UK Carbon Intensity API (UK regional data)          [free, no token]
+- ENTSO-E (European grid data)                        [token: ENTSOE_API_TOKEN]
+- ENTSOG (European gas transmission data)             [free public API]
+- AEMO NEM (Australian electricity market)            [free public API]
+
+FAIL-CLOSED CONTRACT
+--------------------
+This module NEVER returns a fabricated number labeled as a real source.
+A source that requires an API token we do not have returns an honest
+``{"source_unavailable": True, "source": "...", "needs_token_env": "...",
+"estimated": False}`` so callers can render "data unavailable" instead of a
+fake reading. Any value that is genuinely an estimate is labeled
+``"estimated": True`` with ``"source": "estimate"`` — never the real
+source name.
+
+Verifiable upstream endpoints used here:
+  Electricity Maps : https://api.electricitymap.org/v3  (header: auth-token)
+  UK Carbon Int.   : https://api.carbonintensity.org.uk (no auth)
+  ENTSO-E          : https://web-api.tp.entsoe.eu/api    (?securityToken=)
+  ENTSOG           : https://transparency.entsog.eu/api/v1 (no auth)
+  AEMO NEM         : https://visualisations.aemo.com.au/aemo/apps/api/report/ELEC_NEM_SUMMARY (no auth)
 """
 
+import os
 import requests
 import logging
 from datetime import datetime, timedelta
@@ -38,10 +58,39 @@ def get_cached(key, fetch_func, ttl=CACHE_DURATION):
 
 
 class ElectricityMapsAPI:
-    """Electricity Maps - Global carbon intensity and power mix"""
-    
+    """Electricity Maps - Global carbon intensity and power mix.
+
+    Requires an API token (free + paid tiers) sent as the ``auth-token``
+    header per https://docs.electricitymaps.com/. Without the token the
+    public v3 API returns 401, so we FAIL CLOSED rather than invent a
+    carbon-intensity number.
+    """
+
     BASE_URL = "https://api.electricitymap.org/v3"
-    
+    TOKEN_ENV = "ELECTRICITY_MAPS_API_TOKEN"
+    SOURCE = "Electricity Maps (api.electricitymap.org)"
+
+    @classmethod
+    def _token(cls):
+        return os.environ.get(cls.TOKEN_ENV)
+
+    @classmethod
+    def _auth_headers(cls):
+        token = cls._token()
+        return {'auth-token': token} if token else {}
+
+    @classmethod
+    def _unavailable(cls, zone, detail):
+        """Honest fail-closed payload — no fabricated values."""
+        return {
+            'source_unavailable': True,
+            'source': cls.SOURCE,
+            'needs_token_env': cls.TOKEN_ENV,
+            'zone': zone,
+            'estimated': False,
+            'detail': detail,
+        }
+
     ZONES = {
         'US-CAL-CISO': 'California (CAISO)',
         'US-TEX-ERCO': 'Texas (ERCOT)',
@@ -77,72 +126,64 @@ class ElectricityMapsAPI:
     
     @classmethod
     def get_carbon_intensity(cls, zone='US-CAL-CISO'):
-        """Get current carbon intensity for a zone"""
+        """Get current carbon intensity for a zone.
+
+        Token-gated. Returns the live Electricity Maps payload, or an honest
+        ``source_unavailable`` dict when the token is missing / the call fails.
+        """
         def fetch():
+            if not cls._token():
+                return cls._unavailable(zone, f"{cls.TOKEN_ENV} not set")
             url = f"{cls.BASE_URL}/carbon-intensity/latest"
             params = {'zone': zone}
-            resp = requests.get(url, params=params, timeout=10)
+            try:
+                resp = requests.get(url, params=params, headers=cls._auth_headers(), timeout=10)
+            except requests.RequestException as e:
+                return cls._unavailable(zone, f"request error: {type(e).__name__}")
             if resp.status_code == 200:
                 return resp.json()
-            elif resp.status_code == 401:
-                return cls._get_fallback_data(zone)
-            return None
+            return cls._unavailable(zone, f"upstream HTTP {resp.status_code}")
         return get_cached(f"em_carbon_{zone}", fetch)
-    
+
     @classmethod
     def get_power_breakdown(cls, zone='US-CAL-CISO'):
-        """Get power generation breakdown by source"""
+        """Get power generation breakdown by source.
+
+        Token-gated; fails closed with ``source_unavailable`` (never a
+        fabricated generation mix) when the token is missing or upstream errors.
+        """
         def fetch():
+            if not cls._token():
+                return cls._unavailable(zone, f"{cls.TOKEN_ENV} not set")
             url = f"{cls.BASE_URL}/power-breakdown/latest"
             params = {'zone': zone}
-            resp = requests.get(url, params=params, timeout=10)
+            try:
+                resp = requests.get(url, params=params, headers=cls._auth_headers(), timeout=10)
+            except requests.RequestException as e:
+                return cls._unavailable(zone, f"request error: {type(e).__name__}")
             if resp.status_code == 200:
                 return resp.json()
-            elif resp.status_code == 401:
-                return cls._get_fallback_breakdown(zone)
-            return None
+            return cls._unavailable(zone, f"upstream HTTP {resp.status_code}")
         return get_cached(f"em_power_{zone}", fetch)
-    
+
     @classmethod
     def get_zones(cls):
-        """Get available zones"""
+        """Get available zones.
+
+        The zone *list* is static reference metadata (zone codes + human
+        labels), not a measured value, so returning ``cls.ZONES`` when the
+        live ``/zones`` directory is unreachable is not a fabricated reading.
+        """
         def fetch():
             url = f"{cls.BASE_URL}/zones"
-            resp = requests.get(url, timeout=10)
-            if resp.status_code == 200:
-                return resp.json()
+            try:
+                resp = requests.get(url, headers=cls._auth_headers(), timeout=10)
+                if resp.status_code == 200:
+                    return resp.json()
+            except requests.RequestException:
+                pass
             return cls.ZONES
         return get_cached("em_zones", fetch, ttl=3600)
-    
-    @classmethod
-    def _get_fallback_data(cls, zone):
-        """Fallback data when API unavailable"""
-        fallback = {
-            'US-CAL-CISO': {'carbonIntensity': 210, 'fossilFuelPercentage': 35},
-            'US-TEX-ERCO': {'carbonIntensity': 380, 'fossilFuelPercentage': 55},
-            'US-NY-NYIS': {'carbonIntensity': 280, 'fossilFuelPercentage': 45},
-            'GB': {'carbonIntensity': 180, 'fossilFuelPercentage': 40},
-            'DE': {'carbonIntensity': 350, 'fossilFuelPercentage': 50},
-            'FR': {'carbonIntensity': 50, 'fossilFuelPercentage': 8},
-        }
-        return fallback.get(zone, {'carbonIntensity': 300, 'fossilFuelPercentage': 50, 'estimated': True})
-    
-    @classmethod
-    def _get_fallback_breakdown(cls, zone):
-        """Fallback power breakdown"""
-        return {
-            'zone': zone,
-            'powerConsumptionBreakdown': {
-                'nuclear': 20,
-                'gas': 30,
-                'coal': 15,
-                'wind': 15,
-                'solar': 10,
-                'hydro': 8,
-                'other': 2
-            },
-            'estimated': True
-        }
 
 
 class UKCarbonIntensityAPI:
@@ -238,10 +279,112 @@ class UKCarbonIntensityAPI:
 
 
 class ENTSOEAPI:
-    """ENTSO-E Transparency Platform - European Grid Data"""
-    
+    """ENTSO-E Transparency Platform - European Grid Data.
+
+    Token-gated (``securityToken`` query param, free registration at
+    https://transparency.entsoe.eu/usrm/user/createPublicUser). Every
+    measured value (load, generation, price, cross-border flow) is fetched
+    live from the Transparency Platform XML API. When the token is missing
+    or upstream fails we FAIL CLOSED with an honest ``source_unavailable``
+    payload — no fabricated MW or EUR/MWh numbers.
+    """
+
     BASE_URL = "https://web-api.tp.entsoe.eu/api"
-    
+    TOKEN_ENV = "ENTSOE_API_TOKEN"
+    SOURCE = "ENTSO-E Transparency Platform"
+    TIMEOUT_S = 12
+
+    @classmethod
+    def _token(cls):
+        return os.environ.get(cls.TOKEN_ENV)
+
+    @classmethod
+    def _unavailable(cls, area, detail, **extra):
+        """Honest fail-closed payload for an ENTSO-E area — no fake values."""
+        payload = {
+            'source_unavailable': True,
+            'source': cls.SOURCE,
+            'needs_token_env': cls.TOKEN_ENV,
+            'area': area,
+            'area_name': cls.AREAS.get(area, {}).get('name', area),
+            'estimated': False,
+            'detail': detail,
+            'timestamp': datetime.now().isoformat(),
+        }
+        payload.update(extra)
+        return payload
+
+    @staticmethod
+    def _strip_ns(tag):
+        return tag.split('}', 1)[1] if '}' in tag else tag
+
+    @classmethod
+    def _window(cls):
+        """ENTSO-E wants YYYYMMDDHHmm UTC. Pull last 24h so a current
+        reading is available even off-peak/weekends."""
+        now = datetime.utcnow().replace(minute=0, second=0, microsecond=0)
+        start = now - timedelta(hours=24)
+        return start.strftime('%Y%m%d%H%M'), now.strftime('%Y%m%d%H%M')
+
+    @classmethod
+    def _fetch_xml(cls, params):
+        """Single live call to the Transparency Platform. Returns raw XML
+        body, or None on missing-token / non-200 / network error."""
+        token = cls._token()
+        if not token:
+            return None
+        qs = '&'.join(f"{k}={v}" for k, v in params.items())
+        url = f"{cls.BASE_URL}?securityToken={token}&{qs}"
+        try:
+            resp = requests.get(url, timeout=cls.TIMEOUT_S,
+                                headers={'User-Agent': 'dchub-entsoe/1.0'})
+            if resp.status_code == 200:
+                return resp.text
+            logger.warning("ENTSO-E %s %s -> HTTP %s",
+                           params.get('documentType', '?'),
+                           params.get('in_Domain', params.get('outBiddingZone_Domain', '?')),
+                           resp.status_code)
+        except requests.RequestException as e:
+            logger.warning("ENTSO-E request error: %s", type(e).__name__)
+        return None
+
+    @classmethod
+    def _collect_series(cls, xml_body):
+        """Parse TimeSeries → Period → Point and return a list of
+        ``(psr_type_or_None, quantities[])`` tuples. Namespace-agnostic."""
+        import xml.etree.ElementTree as ET
+        series = []
+        try:
+            root = ET.fromstring(xml_body)
+        except ET.ParseError:
+            return series
+        for ts in root.iter():
+            if cls._strip_ns(ts.tag) != 'TimeSeries':
+                continue
+            psr_type = None
+            qtys = []
+            for el in ts.iter():
+                name = cls._strip_ns(el.tag)
+                if name == 'psrType' and el.text:
+                    psr_type = el.text.strip()
+                elif name == 'Point':
+                    for child in el:
+                        if cls._strip_ns(child.tag) == 'quantity' and child.text:
+                            try:
+                                qtys.append(float(child.text))
+                            except ValueError:
+                                pass
+            series.append((psr_type, qtys))
+        return series
+
+    @classmethod
+    def _collect_points(cls, xml_body):
+        """Flat list of every <quantity> across all Points (load/price docs)."""
+        pts = []
+        for _psr, qtys in cls._collect_series(xml_body):
+            pts.extend(qtys)
+        return pts
+
     AREAS = {
         'DE_LU': {'name': 'Germany/Luxembourg', 'eic': '10Y1001A1001A82H'},
         'FR': {'name': 'France', 'eic': '10YFR-RTE------C'},
@@ -300,135 +443,404 @@ class ENTSOEAPI:
     
     @classmethod
     def get_load(cls, area='DE_LU'):
-        """Get actual total load for area"""
-        area_info = cls.AREAS.get(area, {})
-        
-        loads = {
-            'DE_LU': {'load_mw': 52000, 'peak_mw': 75000, 'min_mw': 35000},
-            'FR': {'load_mw': 48000, 'peak_mw': 90000, 'min_mw': 30000},
-            'ES': {'load_mw': 28000, 'peak_mw': 42000, 'min_mw': 20000},
-            'IT_NORD': {'load_mw': 25000, 'peak_mw': 38000, 'min_mw': 18000},
-            'NL': {'load_mw': 12000, 'peak_mw': 18000, 'min_mw': 8000},
-            'BE': {'load_mw': 9000, 'peak_mw': 14000, 'min_mw': 6000},
-            'GB': {'load_mw': 32000, 'peak_mw': 52000, 'min_mw': 22000},
-            'PL': {'load_mw': 22000, 'peak_mw': 28000, 'min_mw': 14000},
-            'SE3': {'load_mw': 8000, 'peak_mw': 15000, 'min_mw': 5000},
-            'NO2': {'load_mw': 6000, 'peak_mw': 12000, 'min_mw': 4000},
-        }
-        
-        load_data = loads.get(area, {'load_mw': 10000, 'peak_mw': 15000, 'min_mw': 7000})
-        
-        return {
-            'area': area,
-            'area_name': area_info.get('name', area),
-            'timestamp': datetime.now().isoformat(),
-            'load_mw': load_data['load_mw'],
-            'peak_mw': load_data['peak_mw'],
-            'min_mw': load_data['min_mw'],
-            'unit': 'MW',
-            'source': 'ENTSO-E Transparency Platform'
-        }
+        """Get actual total load for an area (live; fails closed).
+
+        Live ENTSO-E "Actual Total Load" (documentType A65, processType A16)
+        over the last 24h. current_mw = latest point; peak/min from the
+        24h window. No token or no data -> ``source_unavailable`` (no fakes).
+        """
+        def fetch():
+            area_info = cls.AREAS.get(area)
+            if not area_info:
+                return cls._unavailable(area, "unknown area code")
+            if not cls._token():
+                return cls._unavailable(area, f"{cls.TOKEN_ENV} not set")
+            start, end = cls._window()
+            xml_body = cls._fetch_xml({
+                'documentType':          'A65',
+                'processType':           'A16',
+                'outBiddingZone_Domain': area_info['eic'],
+                'periodStart':           start,
+                'periodEnd':             end,
+            })
+            if not xml_body:
+                return cls._unavailable(area, "upstream returned no data")
+            points = cls._collect_points(xml_body)
+            if not points:
+                return cls._unavailable(area, "no load points in response")
+            return {
+                'area': area,
+                'area_name': area_info.get('name', area),
+                'timestamp': datetime.now().isoformat(),
+                'load_mw': round(points[-1], 0),
+                'peak_mw': round(max(points), 0),
+                'min_mw': round(min(points), 0),
+                'unit': 'MW',
+                'window_hours': 24,
+                'estimated': False,
+                'source': cls.SOURCE,
+            }
+        return get_cached(f"entsoe_load_{area}", fetch, ttl=900)
     
+    RENEWABLE_TYPES = frozenset({
+        'Biomass', 'Geothermal', 'Hydro Pumped Storage', 'Hydro Run-of-river',
+        'Hydro Water Reservoir', 'Marine', 'Other renewable', 'Solar',
+        'Wind Offshore', 'Wind Onshore',
+    })
+
     @classmethod
     def get_generation(cls, area='DE_LU'):
-        """Get generation by type for area"""
-        area_info = cls.AREAS.get(area, {})
-        
-        gen_profiles = {
-            'DE_LU': {
-                'Wind Onshore': 15000, 'Solar': 8000, 'Fossil Gas': 12000,
-                'Nuclear': 0, 'Fossil Hard coal': 8000, 'Lignite': 10000,
-                'Hydro Run-of-river': 2000, 'Biomass': 5000
-            },
-            'FR': {
-                'Nuclear': 38000, 'Hydro Run-of-river': 8000, 'Wind Onshore': 5000,
-                'Solar': 3000, 'Fossil Gas': 4000, 'Hydro Water Reservoir': 3000
-            },
-            'GB': {
-                'Wind Offshore': 8000, 'Wind Onshore': 5000, 'Fossil Gas': 12000,
-                'Nuclear': 5000, 'Solar': 2000, 'Biomass': 2000
-            },
-            'ES': {
-                'Wind Onshore': 8000, 'Nuclear': 7000, 'Solar': 5000,
-                'Fossil Gas': 5000, 'Hydro Run-of-river': 2000
-            },
-            'NL': {
-                'Fossil Gas': 6000, 'Wind Offshore': 3000, 'Wind Onshore': 2000,
-                'Solar': 1500, 'Biomass': 500
+        """Get generation by type for an area (live; fails closed).
+
+        Live ENTSO-E "Aggregated Generation per Type" (documentType A75,
+        processType A16). PSR B-codes are mapped to fuel names via
+        ``GENERATION_TYPES``; the latest point per type is used. No token or
+        no data -> ``source_unavailable`` (never a fabricated mix).
+        """
+        def fetch():
+            area_info = cls.AREAS.get(area)
+            if not area_info:
+                return cls._unavailable(area, "unknown area code")
+            if not cls._token():
+                return cls._unavailable(area, f"{cls.TOKEN_ENV} not set")
+            start, end = cls._window()
+            xml_body = cls._fetch_xml({
+                'documentType': 'A75',
+                'processType':  'A16',
+                'in_Domain':    area_info['eic'],
+                'periodStart':  start,
+                'periodEnd':    end,
+            })
+            if not xml_body:
+                return cls._unavailable(area, "upstream returned no data")
+            by_type = {}
+            for psr, qtys in cls._collect_series(xml_body):
+                if not psr or not qtys:
+                    continue
+                fuel = cls.GENERATION_TYPES.get(psr, f"PSR {psr}")
+                # Latest point for this type is the current output.
+                by_type[fuel] = round(by_type.get(fuel, 0.0) + qtys[-1], 0)
+            if not by_type:
+                return cls._unavailable(area, "no generation points in response")
+            total = sum(by_type.values())
+            renewable_pct = None
+            if total > 0:
+                renewable_pct = round(
+                    sum(v for k, v in by_type.items() if k in cls.RENEWABLE_TYPES) / total * 100, 1
+                )
+            return {
+                'area': area,
+                'area_name': area_info.get('name', area),
+                'timestamp': datetime.now().isoformat(),
+                'generation_by_type': by_type,
+                'total_generation_mw': round(total, 0),
+                'renewable_percentage': renewable_pct,
+                'unit': 'MW',
+                'estimated': False,
+                'source': cls.SOURCE,
             }
-        }
-        
-        profile = gen_profiles.get(area, {
-            'Fossil Gas': 5000, 'Wind Onshore': 2000, 'Solar': 1000, 'Nuclear': 2000
-        })
-        
-        total = sum(profile.values())
-        
-        return {
-            'area': area,
-            'area_name': area_info.get('name', area),
-            'timestamp': datetime.now().isoformat(),
-            'generation_by_type': profile,
-            'total_generation_mw': total,
-            'renewable_percentage': round(
-                sum(v for k, v in profile.items() if k in ['Wind Onshore', 'Wind Offshore', 'Solar', 'Hydro Run-of-river', 'Hydro Water Reservoir', 'Biomass']) / total * 100, 1
-            ),
-            'unit': 'MW',
-            'source': 'ENTSO-E Transparency Platform'
-        }
+        return get_cached(f"entsoe_gen_{area}", fetch, ttl=900)
     
     @classmethod
     def get_prices(cls, area='DE_LU'):
-        """Get day-ahead electricity prices"""
-        area_info = cls.AREAS.get(area, {})
-        
-        base_prices = {
-            'DE_LU': 85, 'FR': 78, 'ES': 72, 'IT_NORD': 95,
-            'NL': 88, 'BE': 82, 'GB': 92, 'PL': 68,
-            'SE3': 45, 'NO2': 38, 'FI': 55
-        }
-        
-        base = base_prices.get(area, 75)
-        hour = datetime.now().hour
-        if 7 <= hour <= 9 or 17 <= hour <= 20:
-            base *= 1.3
-        elif 0 <= hour <= 5:
-            base *= 0.7
-        
-        return {
-            'area': area,
-            'area_name': area_info.get('name', area),
-            'timestamp': datetime.now().isoformat(),
-            'price_eur_mwh': round(base, 2),
-            'currency': 'EUR',
-            'unit': 'EUR/MWh',
-            'market': 'Day-Ahead',
-            'source': 'ENTSO-E Transparency Platform'
-        }
+        """Get day-ahead electricity prices for an area (live; fails closed).
+
+        Live ENTSO-E "Day-ahead Prices" (documentType A44; in_Domain and
+        out_Domain both set to the bidding-zone EIC). current_price = latest
+        hourly point; min/max over the published curve. No token or no data
+        -> ``source_unavailable`` (never a synthetic price).
+        """
+        def fetch():
+            area_info = cls.AREAS.get(area)
+            if not area_info:
+                return cls._unavailable(area, "unknown area code")
+            if not cls._token():
+                return cls._unavailable(area, f"{cls.TOKEN_ENV} not set")
+            start, end = cls._window()
+            xml_body = cls._fetch_xml({
+                'documentType': 'A44',
+                'in_Domain':    area_info['eic'],
+                'out_Domain':   area_info['eic'],
+                'periodStart':  start,
+                'periodEnd':    end,
+            })
+            if not xml_body:
+                return cls._unavailable(area, "upstream returned no data")
+            prices = cls._collect_points(xml_body)
+            if not prices:
+                return cls._unavailable(area, "no price points in response")
+            return {
+                'area': area,
+                'area_name': area_info.get('name', area),
+                'timestamp': datetime.now().isoformat(),
+                'price_eur_mwh': round(prices[-1], 2),
+                'min_eur_mwh': round(min(prices), 2),
+                'max_eur_mwh': round(max(prices), 2),
+                'currency': 'EUR',
+                'unit': 'EUR/MWh',
+                'market': 'Day-Ahead',
+                'estimated': False,
+                'source': cls.SOURCE,
+            }
+        return get_cached(f"entsoe_price_{area}", fetch, ttl=900)
     
+    NEIGHBORS = {
+        'DE_LU': ['FR', 'NL', 'BE', 'AT', 'CH', 'PL', 'CZ', 'DK1', 'DK2'],
+        'FR': ['DE_LU', 'ES', 'IT_NORD', 'BE', 'CH', 'GB'],
+        'GB': ['FR', 'NL', 'BE', 'IE'],
+    }
+
     @classmethod
     def get_cross_border_flows(cls, area='DE_LU'):
-        """Get cross-border physical flows"""
-        neighbors = {
-            'DE_LU': ['FR', 'NL', 'BE', 'AT', 'CH', 'PL', 'CZ', 'DK1', 'DK2'],
-            'FR': ['DE_LU', 'ES', 'IT_NORD', 'BE', 'CH', 'GB'],
-            'GB': ['FR', 'NL', 'BE', 'IE'],
-        }
-        
-        area_neighbors = neighbors.get(area, [])
-        flows = {}
-        for n in area_neighbors:
-            import random
-            flows[n] = random.randint(-2000, 2000)
-        
-        return {
-            'area': area,
+        """Get cross-border physical flows for an area (live; fails closed).
+
+        Live ENTSO-E "Physical Flows" (documentType A11). For each neighbor
+        we query both directions (export = out_Domain→in_Domain, import =
+        reverse) and take the net of the latest points. No token -> honest
+        ``source_unavailable``; neighbors with no published data are listed
+        under ``unavailable_neighbors`` rather than given a fabricated value.
+        """
+        def fetch():
+            area_info = cls.AREAS.get(area)
+            if not area_info:
+                return cls._unavailable(area, "unknown area code")
+            if not cls._token():
+                return cls._unavailable(area, f"{cls.TOKEN_ENV} not set",
+                                        note='Positive = export from area, Negative = import to area')
+            start, end = cls._window()
+            home_eic = area_info['eic']
+            flows = {}
+            unavailable = []
+            for n in cls.NEIGHBORS.get(area, []):
+                n_info = cls.AREAS.get(n)
+                if not n_info:
+                    unavailable.append(n)
+                    continue
+                n_eic = n_info['eic']
+                export_xml = cls._fetch_xml({
+                    'documentType': 'A11',
+                    'out_Domain':   home_eic,
+                    'in_Domain':    n_eic,
+                    'periodStart':  start,
+                    'periodEnd':    end,
+                })
+                import_xml = cls._fetch_xml({
+                    'documentType': 'A11',
+                    'out_Domain':   n_eic,
+                    'in_Domain':    home_eic,
+                    'periodStart':  start,
+                    'periodEnd':    end,
+                })
+                exp_pts = cls._collect_points(export_xml) if export_xml else []
+                imp_pts = cls._collect_points(import_xml) if import_xml else []
+                if not exp_pts and not imp_pts:
+                    unavailable.append(n)
+                    continue
+                net = (exp_pts[-1] if exp_pts else 0.0) - (imp_pts[-1] if imp_pts else 0.0)
+                flows[n] = round(net, 0)
+            if not flows:
+                return cls._unavailable(area, "no flow data for any neighbor",
+                                        note='Positive = export from area, Negative = import to area')
+            return {
+                'area': area,
+                'area_name': area_info.get('name', area),
+                'timestamp': datetime.now().isoformat(),
+                'flows': flows,
+                'unavailable_neighbors': unavailable,
+                'net_flow_mw': round(sum(flows.values()), 0),
+                'note': 'Positive = export from area, Negative = import to area',
+                'unit': 'MW',
+                'estimated': False,
+                'source': cls.SOURCE,
+            }
+        return get_cached(f"entsoe_flows_{area}", fetch, ttl=900)
+
+
+class ENTSOGAPI:
+    """ENTSOG Transparency Platform - European gas transmission data.
+
+    Free public JSON API (no token required) at
+    https://transparency.entsog.eu/api/v1/. We fetch live operational data
+    (physical flows / nominations at transmission points). On any network or
+    parse failure we FAIL CLOSED with an honest ``source_unavailable`` payload
+    — never a fabricated gas-flow number.
+
+    Verified endpoint shape (2026-06-02):
+      GET /api/v1/operationaldata?... -> {"meta": {...},
+          "operationaldata": [{"pointKey","pointLabel","operatorLabel",
+          "indicator","value","unit","periodFrom","periodTo", ...}, ...]}
+    Indicators are documented at
+      https://transparency.entsog.eu/  (e.g. "Physical Flow", "Nomination").
+    """
+
+    BASE_URL = "https://transparency.entsog.eu/api/v1"
+    # Optional override token — the public API needs none, but honoring an
+    # env var lets ops point at a credentialed proxy/mirror without a code change.
+    TOKEN_ENV = "ENTSOG_API_TOKEN"
+    SOURCE = "ENTSOG Transparency Platform (transparency.entsog.eu)"
+    TIMEOUT_S = 15
+
+    @classmethod
+    def _headers(cls):
+        token = os.environ.get(cls.TOKEN_ENV)
+        h = {'Accept': 'application/json', 'User-Agent': 'dchub-entsog/1.0'}
+        if token:
+            h['Authorization'] = f"Bearer {token}"
+        return h
+
+    @classmethod
+    def _unavailable(cls, detail, **extra):
+        payload = {
+            'source_unavailable': True,
+            'source': cls.SOURCE,
+            'needs_token_env': None,  # public API; no token required
+            'estimated': False,
+            'detail': detail,
             'timestamp': datetime.now().isoformat(),
-            'flows': flows,
-            'net_flow_mw': sum(flows.values()),
-            'note': 'Positive = export from area, Negative = import to area',
-            'unit': 'MW'
         }
+        payload.update(extra)
+        return payload
+
+    @classmethod
+    def get_operational_data(cls, indicator='Physical Flow', limit=100):
+        """Live operational gas-flow data from ENTSOG (fails closed).
+
+        Returns the parsed ``operationaldata`` records straight from the
+        public API, or an honest ``source_unavailable`` payload on any
+        failure. No values are synthesized.
+        """
+        def fetch():
+            url = f"{cls.BASE_URL}/operationaldata"
+            params = {
+                'limit': max(1, min(int(limit), 1000)),
+                'indicator': indicator,
+                'periodType': 'day',
+            }
+            try:
+                resp = requests.get(url, params=params, headers=cls._headers(),
+                                    timeout=cls.TIMEOUT_S)
+            except requests.RequestException as e:
+                return cls._unavailable(f"request error: {type(e).__name__}",
+                                        indicator=indicator)
+            if resp.status_code != 200:
+                return cls._unavailable(f"upstream HTTP {resp.status_code}",
+                                        indicator=indicator)
+            try:
+                body = resp.json()
+            except ValueError:
+                return cls._unavailable("non-JSON response", indicator=indicator)
+            records = body.get('operationaldata')
+            if records is None:
+                return cls._unavailable("no operationaldata key in response",
+                                        indicator=indicator)
+            return {
+                'indicator': indicator,
+                'timestamp': datetime.now().isoformat(),
+                'count': len(records),
+                'records': records,
+                'unit': 'kWh/d',  # ENTSOG default; authoritative unit is per-record 'unit'
+                'estimated': False,
+                'source': cls.SOURCE,
+            }
+        return get_cached(f"entsog_op_{indicator}_{limit}", fetch, ttl=1800)
+
+
+class AEMONemAPI:
+    """AEMO NEM - Australian National Electricity Market (live, free).
+
+    AEMO publishes a free, unauthenticated JSON summary of the five NEM
+    regions (NSW1, QLD1, SA1, TAS1, VIC1) at
+    https://visualisations.aemo.com.au/aemo/apps/api/report/ELEC_NEM_SUMMARY.
+    We fetch it live; on any failure we FAIL CLOSED with an honest
+    ``source_unavailable`` payload — never a fabricated price or demand.
+
+    Verified response shape (2026-06-02):
+      {"ELEC_NEM_SUMMARY": [{"REGIONID","PRICE","TOTALDEMAND",
+        "SCHEDULEDGENERATION","SEMISCHEDULEDGENERATION","NETINTERCHANGE",
+        "SETTLEMENTDATE", ...}, ...],
+       "ELEC_NEM_SUMMARY_PRICES": [{"REGIONID","RRP", ...}, ...], ...}
+    """
+
+    BASE_URL = "https://visualisations.aemo.com.au/aemo/apps/api/report"
+    SUMMARY_PATH = "ELEC_NEM_SUMMARY"
+    # Public API requires no token; honor an override for a credentialed mirror.
+    TOKEN_ENV = "AEMO_API_TOKEN"
+    SOURCE = "AEMO NEM (visualisations.aemo.com.au)"
+    TIMEOUT_S = 15
+
+    REGIONS = {
+        'NSW1': 'New South Wales',
+        'QLD1': 'Queensland',
+        'SA1':  'South Australia',
+        'TAS1': 'Tasmania',
+        'VIC1': 'Victoria',
+    }
+
+    @classmethod
+    def _headers(cls):
+        token = os.environ.get(cls.TOKEN_ENV)
+        h = {'Accept': 'application/json', 'User-Agent': 'dchub-aemo/1.0'}
+        if token:
+            h['Authorization'] = f"Bearer {token}"
+        return h
+
+    @classmethod
+    def _unavailable(cls, detail, **extra):
+        payload = {
+            'source_unavailable': True,
+            'source': cls.SOURCE,
+            'needs_token_env': None,  # public API; no token required
+            'estimated': False,
+            'detail': detail,
+            'timestamp': datetime.now().isoformat(),
+        }
+        payload.update(extra)
+        return payload
+
+    @classmethod
+    def get_nem_summary(cls, region=None):
+        """Live NEM regional summary (price, demand, generation) — fails closed.
+
+        Returns AEMO's published per-region records verbatim (optionally
+        filtered to one REGIONID), or an honest ``source_unavailable`` payload
+        on any failure. No values are synthesized.
+        """
+        def fetch():
+            url = f"{cls.BASE_URL}/{cls.SUMMARY_PATH}"
+            try:
+                resp = requests.get(url, headers=cls._headers(), timeout=cls.TIMEOUT_S)
+            except requests.RequestException as e:
+                return cls._unavailable(f"request error: {type(e).__name__}")
+            if resp.status_code != 200:
+                return cls._unavailable(f"upstream HTTP {resp.status_code}")
+            try:
+                body = resp.json()
+            except ValueError:
+                return cls._unavailable("non-JSON response")
+            rows = body.get(cls.SUMMARY_PATH)
+            if rows is None:
+                return cls._unavailable(f"no {cls.SUMMARY_PATH} key in response")
+            return {
+                'timestamp': datetime.now().isoformat(),
+                'regions': rows,
+                'prices': body.get('ELEC_NEM_SUMMARY_PRICES', []),
+                'count': len(rows),
+                'unit': 'AUD/MWh (PRICE/RRP); MW (TOTALDEMAND/generation)',
+                'estimated': False,
+                'source': cls.SOURCE,
+            }
+
+        data = get_cached("aemo_nem_summary", fetch, ttl=300)
+        if region and isinstance(data, dict) and not data.get('source_unavailable'):
+            region = region.upper()
+            filtered = [r for r in data.get('regions', []) if r.get('REGIONID') == region]
+            if not filtered:
+                return cls._unavailable(f"region {region} not in live response",
+                                        region=region)
+            return {**data, 'regions': filtered,
+                    'prices': [p for p in data.get('prices', []) if p.get('REGIONID') == region],
+                    'count': len(filtered), 'region': region}
+        return data
 
 
 @global_power_bp.route('/api/power/global/zones')
@@ -574,6 +986,36 @@ def get_europe_flows():
     })
 
 
+@global_power_bp.route('/api/power/europe/gas')
+def get_europe_gas():
+    """Get European gas transmission operational data (ENTSOG, live/free).
+
+    Honors ?indicator= (default 'Physical Flow') and ?limit= (default 100).
+    Fails closed with source_unavailable when upstream is unreachable.
+    """
+    indicator = request.args.get('indicator', 'Physical Flow')
+    limit = request.args.get('limit', 100, type=int)
+    return jsonify({
+        'success': True,
+        **ENTSOGAPI.get_operational_data(indicator=indicator, limit=limit)
+    })
+
+
+@global_power_bp.route('/api/power/australia/nem')
+def get_australia_nem():
+    """Get AEMO NEM regional summary (live/free).
+
+    Honors ?region= (NSW1|QLD1|SA1|TAS1|VIC1) to filter to one region.
+    Fails closed with source_unavailable when upstream is unreachable.
+    """
+    region = request.args.get('region')
+    return jsonify({
+        'success': True,
+        'regions_available': AEMONemAPI.REGIONS,
+        **AEMONemAPI.get_nem_summary(region=region)
+    })
+
+
 @global_power_bp.route('/api/power/summary')
 def get_power_summary():
     """Get summary across all power APIs"""
@@ -619,13 +1061,21 @@ def get_power_summary():
 def register_global_power_routes(app):
     """Register global power API routes"""
     app.register_blueprint(global_power_bp)
+    em_ok = bool(os.environ.get(ElectricityMapsAPI.TOKEN_ENV))
+    entsoe_ok = bool(os.environ.get(ENTSOEAPI.TOKEN_ENV))
     logger.info("✅ Global Power APIs registered")
-    logger.info("   🌍 Electricity Maps: 30+ zones")
-    logger.info("   🇬🇧 UK Carbon Intensity: 14 regions")
-    logger.info("   🇪🇺 ENTSO-E: 23 European areas")
+    logger.info("   🌍 Electricity Maps: 30+ zones (token %s: %s)",
+                ElectricityMapsAPI.TOKEN_ENV, "set" if em_ok else "MISSING → fail-closed")
+    logger.info("   🇬🇧 UK Carbon Intensity: 14 regions (free)")
+    logger.info("   🇪🇺 ENTSO-E: 23 European areas (token %s: %s)",
+                ENTSOEAPI.TOKEN_ENV, "set" if entsoe_ok else "MISSING → fail-closed")
+    logger.info("   🛢️ ENTSOG: EU gas transmission (free public API)")
+    logger.info("   🇦🇺 AEMO NEM: 5 Australian regions (free public API)")
     print("⚡ Global Power APIs: ✅ Registered")
     print("   📍 /api/power/global/zones - All available zones")
-    print("   📍 /api/power/carbon-intensity - Global carbon data")
-    print("   📍 /api/power/uk/* - UK-specific endpoints")
-    print("   📍 /api/power/europe/* - European grid data")
+    print("   📍 /api/power/carbon-intensity - Global carbon data (token-gated, fail-closed)")
+    print("   📍 /api/power/uk/* - UK-specific endpoints (free)")
+    print("   📍 /api/power/europe/* - European grid data (ENTSO-E token-gated, fail-closed)")
+    print("   📍 /api/power/europe/gas - EU gas transmission (ENTSOG, free)")
+    print("   📍 /api/power/australia/nem - AEMO NEM regions (free)")
     print("   📍 /api/power/summary - Multi-region summary")
