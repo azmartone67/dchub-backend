@@ -37,8 +37,11 @@ DEAL_TYPE_PATTERNS = {
     'merger':        r'\b(merge[drs]?|merger|combining)\b',
     'joint_venture': r'\b(joint.%sventure|jv|partnership|teaming)\b',
     'investment':    r'\b(invest(?:s|ed|ing|ment)?|fund(?:s|ed|ing)?|stake|raise[ds]?)\b',
-    'land_acquisition': r'\b(land|site|campus|acre|parcel|property)\b',
-    'divestiture':   r'\b(divest(?:s|ed|ing|iture)?|spin.?off|sell(?:s|ing)?|sold)\b',
+    # r68 (Nico audit #1): REMOVED 'land_acquisition' (land|site|campus|acre|
+    # parcel|property) — it matched nearly EVERY data-center article, turning
+    # routine news into fake "deals". Real land/site deals still classify under
+    # 'acquisition' when an explicit acquisition verb is present.
+    'divestiture':   r'\b(divest(?:s|ed|ing|iture)?|spin.?off)\b',
 }
 
 MONEY_RE = re.compile(r'\$\s*(\d+(?:\.\d+)?)\s*(billion|million|thousand|[KMB])\b', re.I)
@@ -92,8 +95,44 @@ def _extract_companies(text):
 
 
 def _deal_hash(buyer, seller, deal_date, value_str):
-    raw = f"{(buyer or '').strip().lower()}|{(seller or '').strip().lower()}|{deal_date}|{(value_str or '').strip().lower()}"
+    # r68 (Nico audit #2): EXCLUDE deal_date. The same event re-appearing in RSS
+    # on a later day (or parsed to a slightly different date) used to produce a
+    # NEW hash → a new AUTO-<date> row → the same deal multiplied into dozens of
+    # rows, inflating the count. Hashing on parties + value only makes ON CONFLICT
+    # collapse re-sightings into ONE row. (deal_date kept in the signature so call
+    # sites don't change.)
+    raw = f"{(buyer or '').strip().lower()}|{(seller or '').strip().lower()}|{(value_str or '').strip().lower()}"
     return hashlib.md5(raw.encode()).hexdigest()
+
+
+# r68 (Nico audit #1): directional buyer→seller from an EXPLICIT relationship
+# verb only. Replaces the old "first two capitalised words in the headline"
+# heuristic that manufactured fake deals ("Anthropic → xAI", "Nvidia IPO 2026")
+# from any two company-ish names. No verb linking two named entities → not a
+# deal we can stand behind → skipped.
+_DEAL_REL_RE = re.compile(
+    r"\b([A-Z][\w.&'\-]+(?:\s+[A-Z][\w.&'\-]+){0,3})\s+"
+    r"(?:has\s+)?(?:agreed\s+to\s+)?"
+    r"(acquires?|acquired|buys?|bought|to\s+acquire|to\s+buy|merges?\s+with|"
+    r"purchases?|takes?\s+over|snaps?\s+up|invests?\s+in|to\s+invest\s+in|backs?)\s+"
+    r"([A-Z][\w.&'\-]+(?:\s+[A-Z][\w.&'\-]+){0,3})\b"
+)
+_REL_STOP = {'The', 'Data', 'Center', 'Centre', 'New', 'Global', 'AI', 'US',
+             'Report', 'News', 'A', 'An', 'Its', 'Their', 'This', 'That'}
+
+
+def _extract_acquisition(title):
+    """Return (buyer, seller) ONLY from an explicit relationship verb, else
+    (None, None). Directional: 'X acquires/buys/invests in Y' → buyer=X, seller=Y."""
+    m = _DEAL_REL_RE.search(title or '')
+    if not m:
+        return None, None
+    buyer, seller = m.group(1).strip(), m.group(3).strip()
+    if (buyer in _REL_STOP or seller in _REL_STOP
+            or len(buyer) < 3 or len(seller) < 3
+            or buyer.lower() == seller.lower()):
+        return None, None
+    return buyer, seller
 
 
 def _parse_date(published_str):
@@ -145,10 +184,13 @@ def run_ingestion(get_db):
         dtype = _deal_type(text)
         if dtype == 'unknown':
             continue
-        companies = _extract_companies(art['title'])
-        buyer = companies[0] if companies else None
-        seller = companies[1] if len(companies) > 1 else None
-        if not buyer:
+        buyer, seller = _extract_acquisition(art['title'])
+        # r68 (Nico audit #1): publish ONLY a real directional deal — a verb-linked
+        # buyer→seller AND a source link. No explicit relationship verb → skip
+        # (this is what kills the fabricated "first two capitalised words" deals).
+        if not buyer or not seller:
+            continue
+        if not art.get('link'):
             continue
         usd, display = _money_to_usd(text)
         deal_date = _parse_date(art['published'])

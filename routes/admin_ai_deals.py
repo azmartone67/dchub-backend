@@ -70,6 +70,60 @@ def _check_auth() -> Optional[tuple]:
     return None
 
 
+@admin_ai_deals_bp.route("/purge-fabricated", methods=["POST"])
+def purge_fabricated():
+    """r68 (Nico audit #1-2): one-off, dry-run-default cleanup of the ai_deals
+    table. The hardened extractor (deal_ingestion_scheduler r68) prevents NEW
+    fakes/dups; this clears the EXISTING inflation:
+      (a) duplicates  — same buyer+seller+value, keep the newest row only
+      (b) land_garbage — deal_type='land_acquisition' (the removed over-broad type)
+      (c) unsourced   — no source_url (can't verify → shouldn't publish)
+      (d) vague       — no seller (or 'Undisclosed') AND no $ value
+    Gate: X-Admin-Key (DCHUB_ADMIN_SECRET) OR X-Internal-Key (dchub-internal-sync-2026).
+    Body: {dry_run: true}."""
+    err = _check_auth()
+    if err:
+        ok = False
+        try:
+            from internal_auth import is_valid_internal_key
+            ok = is_valid_internal_key(request.headers.get("X-Internal-Key", ""))
+        except Exception:
+            ok = False
+        if not ok:
+            return err
+    dry = bool((request.get_json(silent=True) or {}).get("dry_run", True))
+    _DUP_IDS = """
+        SELECT id FROM (
+          SELECT id, ROW_NUMBER() OVER (
+            PARTITION BY LOWER(COALESCE(buyer,'')), LOWER(COALESCE(seller,'')),
+                         LOWER(COALESCE(deal_value_str,''))
+            ORDER BY deal_date DESC NULLS LAST, id DESC) AS rn
+          FROM ai_deals) t WHERE rn > 1
+    """
+    _UNSOURCED = "COALESCE(source_url,'') = ''"
+    _LAND = "LOWER(COALESCE(deal_type,'')) = 'land_acquisition'"
+    _VAGUE = "(seller IS NULL OR LOWER(seller) = 'undisclosed') AND deal_value_usd IS NULL"
+    out = {"ok": True, "dry_run": dry, "counts": {}, "deleted": {}}
+    try:
+        with _conn() as c, c.cursor() as cur:
+            cur.execute("SELECT COUNT(*) FROM ai_deals"); out["counts"]["total_before"] = cur.fetchone()[0]
+            cur.execute(f"SELECT COUNT(*) FROM ({_DUP_IDS}) x"); out["counts"]["duplicates"] = cur.fetchone()[0]
+            cur.execute(f"SELECT COUNT(*) FROM ai_deals WHERE {_UNSOURCED}"); out["counts"]["unsourced"] = cur.fetchone()[0]
+            cur.execute(f"SELECT COUNT(*) FROM ai_deals WHERE {_LAND}"); out["counts"]["land_garbage"] = cur.fetchone()[0]
+            cur.execute(f"SELECT COUNT(*) FROM ai_deals WHERE {_VAGUE}"); out["counts"]["vague"] = cur.fetchone()[0]
+            if not dry:
+                cur.execute(f"DELETE FROM ai_deals WHERE id IN ({_DUP_IDS})"); out["deleted"]["duplicates"] = cur.rowcount
+                cur.execute(f"DELETE FROM ai_deals WHERE {_LAND}"); out["deleted"]["land_garbage"] = cur.rowcount
+                cur.execute(f"DELETE FROM ai_deals WHERE {_UNSOURCED}"); out["deleted"]["unsourced"] = cur.rowcount
+                cur.execute(f"DELETE FROM ai_deals WHERE {_VAGUE}"); out["deleted"]["vague"] = cur.rowcount
+                c.commit()
+                cur.execute("SELECT COUNT(*) FROM ai_deals"); out["counts"]["total_after"] = cur.fetchone()[0]
+    except Exception as e:
+        out["ok"] = False; out["error"] = str(e)[:200]
+        return jsonify(out), 500
+    return jsonify(out), 200
+
+
 # ---------------------------------------------------------------------------
 # Validation + mapping to deals schema
 # ---------------------------------------------------------------------------
