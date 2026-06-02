@@ -2466,6 +2466,67 @@ def check_mcp_volume_regression() -> list[dict]:
 
 
 # ── Phase DDDDD (2026-05-16) — auto-trial conversion-rate detector ──
+def check_trial_taste_abuse() -> list[dict]:
+    """r62c-conv guardrail. The trial key now unlocks a 7-day FULL taste of
+    get_grid_intelligence + get_fiber_intel (the Pro crown jewels). Healthy
+    use = mint → reconnect → eventually identify/upgrade. ABUSE = many DISTINCT
+    trial keys (rotating IPs) each hammering grid/fiber with ~ZERO email-binds
+    — i.e. farming the free Pro data instead of converting. Fires a WARNING
+    only on a real 24h spike (mint volume + distinct callers) with near-zero
+    identification AND heavy per-key usage, so normal low-conversion days don't
+    trip it. Remedy: tighten TRIAL_DAYS / TRIAL_DAILY_CALLS in
+    routes/auto_trial.py, or add a per-IP mint cap."""
+    conn = _db()
+    if conn is None: return []
+    findings: list[dict] = []
+    try:
+        with conn.cursor() as cur:
+            try:
+                cur.execute("SELECT to_regclass('public.auto_trial_keys')")
+                if not (cur.fetchone() or [None])[0]: return findings
+                cur.execute("""
+                    SELECT COUNT(*),
+                           COUNT(DISTINCT request_ip_hash),
+                           COUNT(*) FILTER (WHERE signed_up_email IS NOT NULL),
+                           COALESCE(SUM(call_count), 0),
+                           COUNT(*) FILTER (WHERE minted_for_tool IN
+                                   ('get_grid_intelligence','get_fiber_intel'))
+                      FROM auto_trial_keys
+                     WHERE minted_at >= NOW() - INTERVAL '24 hours'
+                """)
+                r = cur.fetchone() or (0, 0, 0, 0, 0)
+                minted, distinct_ip, signed, calls, gridfiber = (
+                    int(r[0] or 0), int(r[1] or 0), int(r[2] or 0),
+                    int(r[3] or 0), int(r[4] or 0))
+            except Exception:
+                return findings
+    finally:
+        try: conn.close()
+        except Exception: pass
+
+    # Conservative thresholds — only a genuine spike trips this.
+    MINT_SPIKE_24H = 40    # trials minted in 24h
+    IP_SPIKE_24H   = 30    # distinct caller IPs (rotation signal)
+    if minted < MINT_SPIKE_24H or distinct_ip < IP_SPIKE_24H:
+        return findings
+    signup_rate   = 100.0 * signed / max(1, minted)
+    calls_per_key = calls / max(1, minted)
+    if signup_rate < 3.0 and calls_per_key >= 5:
+        findings.append({
+            "issue":    "trial_taste_abuse_suspected",
+            "severity": "warning",
+            "url":      "/api/v1/keys/auto-trial/stats",
+            "count":    minted,
+            "detail":  (f"24h: {minted} trial keys minted across {distinct_ip} distinct IPs, "
+                        f"{calls} total calls ({calls_per_key:.1f}/key), {signed} email-binds "
+                        f"({signup_rate:.1f}%); {gridfiber} minted on grid/fiber. High mint + heavy "
+                        f"usage with ~zero identification = possible rotating-IP farming of the free "
+                        f"grid/fiber taste (r62c). If sustained: tighten TRIAL_DAYS / "
+                        f"TRIAL_DAILY_CALLS in routes/auto_trial.py or add a per-IP mint cap."),
+        })
+    return findings
+
+
 def check_auto_trial_conversion() -> list[dict]:
     """Tracks whether the auto-mint-trial flow (DDDDD) is actually
     converting agents → signups → upgrades. Fires informational
@@ -7805,6 +7866,11 @@ def scan_all() -> list[dict]:
                # mismatch. Catches the silent failure mode where agents
                # bash the paywall without extracting trial keys.
                check_auto_trial_signal_mint_mismatch,
+               # r62c-conv (2026-06-01) — trial-taste abuse guard. The trial
+               # key now unlocks full grid/fiber for 7d; this flags a
+               # rotating-IP mint spike with ~zero email-binds (farming the
+               # free Pro data instead of converting).
+               check_trial_taste_abuse,
                # Phase RRR-cron-wiring (2026-05-18) — HTTP-cron orphan
                # detector. Sibling to check_orphaned_scheduler_functions
                # — that one catches Thread() loops never started; this
