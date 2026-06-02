@@ -3641,6 +3641,26 @@ def handle_well_known():
                         "JSON-RPC 2.0 protocol. Send `initialize` before "
                         "`tools/list` or `tools/call`."
                     ),
+                    # r37b (2026-06-02): advertise the actual tool surface so an
+                    # agent reading this manifest (the path llms.txt points at)
+                    # sees what it can call without a round-trip to tools/list.
+                    # Synced to the 30 tools registered on the live MCP server
+                    # (dchub-mcp-server/server.mjs) + the static
+                    # /.well-known/ai-agents.json — keep all three in sync.
+                    "tools_count": 30,
+                    "tools": [
+                        "search_facilities", "get_facility", "get_market_intel",
+                        "get_market_dcpi_rank", "get_gas_index", "get_grid_scoreboard",
+                        "compare_isos", "get_intelligence_index", "list_transactions",
+                        "get_news", "get_pipeline", "get_interconnection_queue",
+                        "get_grid_data", "analyze_site", "compare_sites",
+                        "get_infrastructure", "get_fiber_intel", "get_energy_prices",
+                        "get_renewable_energy", "get_tax_incentives", "get_water_risk",
+                        "get_grid_intelligence", "get_agent_registry", "get_backup_status",
+                        "get_dchub_recommendation", "rank_markets", "find_alternatives",
+                        "score_facility", "ai_capacity_index", "hyperscaler_deals",
+                    ],
+                    "tools_manifest": "https://dchub.cloud/.well-known/ai-agents.json",
                 },
                 "rest_api": {
                     "base_url": "https://dchub.cloud/api",
@@ -15325,7 +15345,16 @@ def _is_junk_platform(key: str) -> bool:
 
 @app.route('/api/v1/ai-tracking/stats', methods=['GET'])
 def ai_tracking_stats():
-    """Return aggregate AI tracking stats from Neon ai_cumulative table."""
+    """Return aggregate AI tracking stats from Neon ai_cumulative table.
+
+    HONEST NUMBERS (#61, 2026-06-02): total_platforms already excluded
+    internal/probe/scanner/test rows (r62-qa). But total_requests + requests_7d
+    still SUMMED every row — so the Direct/Mcp/Internal/Mcp_Generic transport
+    buckets (~284k, ~59% of the raw total) inflated the AI-agent headline.
+    Now total_requests / requests_7d are the REAL external-AI-platform totals
+    (junk predicate applied), with the all-inclusive figure preserved as
+    *_including_infrastructure for anyone who needs raw throughput.
+    """
     conn = None
     try:
         conn = get_pg_connection()
@@ -15344,8 +15373,12 @@ def ai_tracking_stats():
         cur.close()
         total_platforms = sum(1 for r in rows
                               if not _is_junk_platform(r[0]) and int(r[1] or 0) > 0)
-        total_requests = sum(int(r[1] or 0) for r in rows)
-        requests_7d = sum(int(r[2] or 0) for r in rows)
+        # Honest AI-agent totals: exclude transport/internal/probe buckets.
+        total_requests = sum(int(r[1] or 0) for r in rows if not _is_junk_platform(r[0]))
+        requests_7d = sum(int(r[2] or 0) for r in rows if not _is_junk_platform(r[0]))
+        # All-inclusive figures kept (clearly labeled) for raw-throughput needs.
+        total_requests_all = sum(int(r[1] or 0) for r in rows)
+        requests_7d_all = sum(int(r[2] or 0) for r in rows)
         last_activity = max((r[3] for r in rows if r[3]), default=None)
         return jsonify({
             "success": True,
@@ -15353,6 +15386,9 @@ def ai_tracking_stats():
                 "total_platforms": total_platforms,
                 "total_requests": int(total_requests),
                 "requests_7d": int(requests_7d),
+                "total_requests_including_infrastructure": int(total_requests_all),
+                "requests_7d_including_infrastructure": int(requests_7d_all),
+                "total_requests_label": "external AI-platform requests (excludes Direct/Mcp/Internal transport + probe/scanner traffic)",
                 "last_activity": str(last_activity) if last_activity else None
             },
             "source": "railway"
@@ -20457,27 +20493,64 @@ def _redirect_orphan_press_release():
 def public_mcp_count():
     """Public unauthed endpoint: total AI-agent connections + per-platform breakdown.
     Used by the /ai page counter widget. Edge-cached 60s.
+
+    HONEST NUMBERS (#61, 2026-06-02): the headline `total` previously summed
+    EVERY ai_cumulative row, so transport/internal buckets — Direct (~143k),
+    Mcp (~103k), Internal (~24k), Mcp_Generic (~7k) — plus ~40 probe/scanner/
+    test UAs counted as "AI-agent requests" (~284k = ~59% of the total). That
+    is dishonest: Direct/Mcp/Internal are our own transport + infra, not
+    external AI platforms. We now gate the headline on `_is_junk_platform`
+    (the SAME predicate /api/v1/ai-tracking/stats uses), so `total` reflects
+    REAL external AI-platform requests (~195k, Claude-led). The all-inclusive
+    figure stays available as `total_including_infrastructure`, and the
+    excluded buckets are listed in `excluded_buckets` for full transparency —
+    nothing is hidden, just correctly labeled.
     """
     try:
         with pg_connection() as pg:
             cur = pg.cursor()
-            cur.execute("SELECT COALESCE(SUM(total_requests), 0) FROM ai_cumulative")
-            total = int(cur.fetchone()[0] or 0)
+            # Pull ALL rows once; classify in Python with _is_junk_platform so
+            # the headline can't be skewed by an infra bucket that happens to
+            # rank in the top-12.
             cur.execute(
                 "SELECT platform, name, company, color, total_requests, last_seen "
-                "FROM ai_cumulative ORDER BY total_requests DESC LIMIT 12"
+                "FROM ai_cumulative ORDER BY total_requests DESC"
             )
-            platforms = [
-                {
-                    "platform": r[0], "name": r[1], "company": r[2],
-                    "color": r[3], "requests": int(r[4] or 0),
-                    "last_seen": (r[5].isoformat() if hasattr(r[5], "isoformat") else str(r[5])) if r[5] else None,
-                }
-                for r in cur.fetchall()
-            ]
+            rows = cur.fetchall()
+
+        def _row(r):
+            return {
+                "platform": r[0], "name": r[1], "company": r[2],
+                "color": r[3], "requests": int(r[4] or 0),
+                "last_seen": (r[5].isoformat() if hasattr(r[5], "isoformat") else str(r[5])) if r[5] else None,
+            }
+
+        ai_rows, infra_rows = [], []
+        total_all = 0
+        for r in rows:
+            req = int(r[4] or 0)
+            total_all += req
+            if _is_junk_platform(r[0]):
+                if req > 0:
+                    infra_rows.append(_row(r))
+            else:
+                ai_rows.append(_row(r))
+
+        ai_total = sum(p["requests"] for p in ai_rows)
+        # Headline platform list = real external AI platforms only, top 12.
+        platforms = sorted(ai_rows, key=lambda p: p["requests"], reverse=True)[:12]
+        # Transparency: show the infra buckets we excluded (top 8 by volume).
+        excluded = sorted(infra_rows, key=lambda p: p["requests"], reverse=True)[:8]
+
         resp = jsonify({
-            "total": total,
+            # Honest headline: external AI-platform requests only.
+            "total": ai_total,
             "platforms": platforms,
+            # Clearly-labeled all-inclusive figure (transport + internal + infra).
+            "total_including_infrastructure": total_all,
+            "total_label": "external AI-platform requests (excludes Direct/Mcp/Internal transport + probe/scanner traffic)",
+            "excluded_buckets": excluded,
+            "excluded_request_total": total_all - ai_total,
             "as_of": datetime.utcnow().isoformat() + "Z",
         })
         resp.headers["Cache-Control"] = "public, max-age=60, s-maxage=60"

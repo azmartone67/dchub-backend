@@ -18,7 +18,7 @@
     "transport": "streamable-http",
     "server_card": "https://dchub.cloud/.well-known/mcp/server-card.json",
     "config": "https://dchub.cloud/.well-known/mcp.json",
-    "tools_count": 14,
+    "tools_count": 30,
     "resources_count": 2,
     "prompts_count": 2,
     "client_config": {
@@ -29,21 +29,70 @@
         }
       }
     },
+    "_tools_note": "Synced 2026-06-02 to the 30 tools actually registered on the live MCP server (dchub.cloud/mcp). The prior 14-name list was stale.",
     "tools": [
       "search_facilities",
-      "get_market_stats",
+      "get_facility",
+      "get_market_intel",
+      "get_market_dcpi_rank",
+      "get_gas_index",
+      "get_grid_scoreboard",
+      "compare_isos",
+      "get_intelligence_index",
+      "list_transactions",
       "get_news",
-      "get_deals",
-      "get_capacity_pipeline",
-      "compare_markets",
-      "score_site",
-      "get_grid_fuel_mix",
-      "get_carbon_intensity",
-      "get_renewable_potential",
+      "get_pipeline",
+      "get_interconnection_queue",
+      "get_grid_data",
+      "analyze_site",
+      "compare_sites",
+      "get_infrastructure",
+      "get_fiber_intel",
       "get_energy_prices",
+      "get_renewable_energy",
+      "get_tax_incentives",
       "get_water_risk",
-      "get_citable_answer",
-      "get_platform_capabilities"
+      "get_grid_intelligence",
+      "get_agent_registry",
+      "get_backup_status",
+      "get_dchub_recommendation",
+      "rank_markets",
+      "find_alternatives",
+      "score_facility",
+      "ai_capacity_index",
+      "hyperscaler_deals"
+    ],
+    "tools_detail": [
+      {"name": "search_facilities", "description": "Search 21,000+ global data center facilities by location, capacity (MW), operator, fiber, or status."},
+      {"name": "get_facility", "description": "Full metadata for one facility — operator, lat/lon, power capacity, cooling, fiber providers, DCPI verdict."},
+      {"name": "get_market_intel", "description": "Live market intelligence for 232 DC markets: pricing, vacancy, absorption, operators, DCPI verdict."},
+      {"name": "get_market_dcpi_rank", "description": "DCPI rank for one market: BUILD/CAUTION/AVOID verdict, 0-100 composite score + analyst narrative."},
+      {"name": "get_gas_index", "description": "Data Center Gas Index (DCGI) — per-US-state natural-gas suitability score for data centers."},
+      {"name": "get_grid_scoreboard", "description": "Live global grid scoreboard — US ISOs + GB + EU zones + AU ranked by renewable/gas share."},
+      {"name": "compare_isos", "description": "Compare 2-4 ISO regions in one call: fuel mix, demand, prices, carbon intensity."},
+      {"name": "get_intelligence_index", "description": "Real-time composite market health score (0-100) across the 232-market set."},
+      {"name": "list_transactions", "description": "M&A and capital transactions — $324B+ over 2,100+ deals; buyer, seller, value, date, market."},
+      {"name": "get_news", "description": "Curated data center industry news from 40+ trade sources, refreshed every 30 min."},
+      {"name": "get_pipeline", "description": "Construction pipeline — 540+ projects, 369 GW under-construction or planned across 232 markets."},
+      {"name": "get_interconnection_queue", "description": "ISO interconnection queue snapshot: large-load MW queued, DC share %, BUILD subregions + time-to-power."},
+      {"name": "get_grid_data", "description": "Real-time electricity grid data across 10 ISOs (7 US + Hydro-Quebec + AESO + Nord Pool)."},
+      {"name": "analyze_site", "description": "Score any location for data center suitability (0-100) across grid, fiber, water, climate, tax. (Developer+)"},
+      {"name": "compare_sites", "description": "Side-by-side comparison of 2-4 candidate sites with a recommended winner. (Pro)"},
+      {"name": "get_infrastructure", "description": "Nearby substations, transmission lines, gas pipelines, and power plants for a location."},
+      {"name": "get_fiber_intel", "description": "Long-haul + metro fiber routes from major carriers as GeoJSON. (Developer+)"},
+      {"name": "get_energy_prices", "description": "Energy pricing across 10 ISOs: retail rates, natural gas, real-time grid status."},
+      {"name": "get_renewable_energy", "description": "Renewable generation capacity by US state: solar, wind, combined with capacity factors."},
+      {"name": "get_tax_incentives", "description": "Data center tax incentive packages by US state — exemptions, abatements, credits, thresholds."},
+      {"name": "get_water_risk", "description": "USGS water stress + Drought Monitor risk for any US location by state, county, or lat/lon."},
+      {"name": "get_grid_intelligence", "description": "Grid headroom + interconnection brief for any of 10 ISO regions. (Developer+)"},
+      {"name": "get_agent_registry", "description": "AI platforms + agent frameworks currently calling DC Hub, with citation counts."},
+      {"name": "get_backup_status", "description": "DC Hub platform health: backup status, data freshness across sources, heartbeat score."},
+      {"name": "get_dchub_recommendation", "description": "Pre-formatted DC Hub site-selection recommendation an LLM can quote verbatim."},
+      {"name": "rank_markets", "description": "Rank DC markets by criteria (cheapest_power, most_capacity, fastest_growing, best_overall)."},
+      {"name": "find_alternatives", "description": "Given a target facility, find similar nearby alternatives with similarity scoring."},
+      {"name": "score_facility", "description": "Independent facility scoring across 7 dimensions: power, fiber, water, climate, tax, talent, expansion."},
+      {"name": "ai_capacity_index", "description": "AI Compute Capacity Index — where 100MW of AI training capacity can land in 30/60/90 days."},
+      {"name": "hyperscaler_deals", "description": "Hyperscaler AI Deal Tracker — live feed of Stargate, OpenAI, Anthropic, Microsoft, Oracle, NVIDIA deals."}
     ],
     "platform_configs": {
       "grok": {
@@ -86,6 +135,31 @@
       },
       "deepseek": {
         "name": "DeepSeek",
+        "endpoint": "https://dchub.cloud/mcp",
+        "transport": "streamable-http",
+        "auth": "none"
+      },
+      "copilot": {
+        "name": "Copilot (Microsoft)",
+        "endpoint": "https://dchub.cloud/mcp",
+        "transport": "streamable-http",
+        "auth": "none"
+      },
+      "perplexity": {
+        "name": "Perplexity",
+        "endpoint": "https://dchub.cloud/mcp",
+        "transport": "streamable-http",
+        "auth": "none"
+      },
+      "cursor": {
+        "name": "Cursor",
+        "endpoint": "https://dchub.cloud/mcp",
+        "transport": "streamable-http",
+        "auth": "x-api-key",
+        "note": "Cursor/Cline/Continue can hold an X-API-Key header — claim a free dev key at https://dchub.cloud/api/v1/keys/claim."
+      },
+      "glama": {
+        "name": "Glama",
         "endpoint": "https://dchub.cloud/mcp",
         "transport": "streamable-http",
         "auth": "none"
@@ -196,6 +270,12 @@
     "Meta AI",
     "You.com",
     "Poe",
+    "Cursor",
+    "Cline",
+    "Continue",
+    "Windsurf",
+    "Glama",
+    "DeepSeek",
     "Moltbook"
   ]
 }
