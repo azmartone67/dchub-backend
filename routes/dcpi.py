@@ -173,6 +173,12 @@ def _ensure_tables():
         """)
         cur.execute("CREATE INDEX IF NOT EXISTS idx_mps_slug ON market_power_scores(market_slug)")
         cur.execute("CREATE INDEX IF NOT EXISTS idx_mps_computed ON market_power_scores(computed_at DESC)")
+        # r65 (2026-06-02): provenance label column. Records whether a market's
+        # power metrics came from a live source vs the static iso_defaults /
+        # slug_overrides. Additive + nullable so it cannot affect any existing
+        # row, score, verdict or writer. Surfaced read-only on /dcpi outputs.
+        cur.execute("ALTER TABLE market_power_scores "
+                    "ADD COLUMN IF NOT EXISTS data_basis_json JSONB")
         cur.execute("""
             CREATE TABLE IF NOT EXISTS dcpi_runs (
                 id           SERIAL PRIMARY KEY,
@@ -784,6 +790,13 @@ def gather_metrics_for_market(market: tuple) -> dict:
         "btm_headroom_mw": None,
     }
 
+    # r65 (2026-06-02): provenance tracking. Record which metrics were filled
+    # from a *live* source (interconnection_queue / capacity_pipeline) so the
+    # public output can honestly label each market "live" vs "modeled_estimate"
+    # vs "mixed". This is label-only metadata — it never feeds the scoring
+    # formulas (compute_* read specific numeric keys; they ignore "data_basis").
+    _live_fields: set[str] = set()
+
     # Best-effort enrichment from existing grid_intelligence + queue tables
     try:
         with _conn() as c, c.cursor() as cur:
@@ -800,6 +813,8 @@ def gather_metrics_for_market(market: tuple) -> dict:
             if row and row[0] is not None:
                 metrics["queue_wait_months"] = float(row[0])
                 metrics["queue_capacity_mw"] = float(row[2] or 0)
+                _live_fields.add("queue_wait_months")
+                _live_fields.add("queue_capacity_mw")
 
             # Generation additions in last 12 months from sec_filings_v2
             # or pipeline data
@@ -810,7 +825,9 @@ def gather_metrics_for_market(market: tuple) -> dict:
                   AND status IN ('approved','construction','testing')
             """, (iso,))
             r = cur.fetchone()
-            if r: metrics["gen_additions_12mo_mw"] = float(r[0] or 0)
+            if r:
+                metrics["gen_additions_12mo_mw"] = float(r[0] or 0)
+                _live_fields.add("gen_additions_12mo_mw")
     except Exception:
         # Tables may not exist yet — that's fine, we use defaults below
         pass
@@ -979,6 +996,46 @@ def gather_metrics_for_market(market: tuple) -> dict:
     if metrics.get("demand_growth_yoy_pct") is None:
         metrics["demand_growth_yoy_pct"] = 4.0
 
+    # r65 (2026-06-02): attach honest provenance label, derived from the
+    # ACTUAL code path above (not the region). Only queue_wait_months,
+    # queue_capacity_mw and gen_additions_12mo_mw can ever come from a live
+    # table (interconnection_queue / capacity_pipeline). Every other score
+    # input is filled from the static iso_defaults / slug_overrides dicts.
+    #   - "live"             → every populated score input came from a live src
+    #   - "modeled_estimate" → none did (pure dict-based estimate)
+    #   - "mixed"            → some live, some modeled (the common real case:
+    #                          live queue data + modeled reserve margin etc.)
+    # NOTE: this is metadata only. It is intentionally stored under a
+    # non-numeric key so the scoring formulas (which .get() specific numeric
+    # keys) never see it and verdicts/scores are byte-identical.
+    _score_input_keys = (
+        "queue_wait_months", "queue_capacity_mw", "reserve_margin_pct",
+        "gen_additions_12mo_mw", "curtailment_pct", "stranded_capacity_mw",
+        "queue_approval_rate_pct", "btm_headroom_mw", "demand_growth_yoy_pct",
+    )
+    _populated = [k for k in _score_input_keys if metrics.get(k) is not None]
+    _live_used = sorted(k for k in _populated if k in _live_fields)
+    _modeled_used = sorted(k for k in _populated if k not in _live_fields)
+    _MODELED_SOURCE = ("2024 ENTSO-E/AEMO/EirGrid grid reports "
+                       "+ published market conditions")
+    if _live_used and not _modeled_used:
+        data_basis = {"data_basis": "live"}
+    elif _live_used and _modeled_used:
+        data_basis = {
+            "data_basis": "mixed",
+            "data_basis_source": _MODELED_SOURCE,
+            "data_basis_note": (
+                "live: " + ", ".join(_live_used) + "; "
+                "modeled: " + ", ".join(_modeled_used)
+            ),
+        }
+    else:
+        data_basis = {
+            "data_basis": "modeled_estimate",
+            "data_basis_source": _MODELED_SOURCE,
+        }
+    metrics["data_basis"] = data_basis
+
     return metrics
 
 
@@ -1103,6 +1160,11 @@ def recompute_all_scores(source: str = "manual",
                 # every row matching the slug (the dedup pass above keeps
                 # that at one), and only INSERTs when none exist. It
                 # cannot raise UniqueViolation.
+                # r65 (2026-06-02): persist the provenance label computed in
+                # gather_metrics_for_market. Last positional value — appended so
+                # the existing score/verdict columns and their values are
+                # untouched. json.dumps(None) → "null" if somehow absent.
+                _data_basis_json = json.dumps(metrics.get("data_basis"))
                 _vals = (
                     name, state, iso, lat, lon,
                     c_score, e_score, ttp,
@@ -1112,6 +1174,7 @@ def recompute_all_scores(source: str = "manual",
                     metrics.get("stranded_capacity_mw"),
                     metrics.get("emergency_count_30d") or 0,
                     json.dumps(risks), json.dumps(opps), verdict,
+                    _data_basis_json,
                 )
                 cur.execute("""
                     UPDATE market_power_scores SET
@@ -1121,6 +1184,7 @@ def recompute_all_scores(source: str = "manual",
                         gen_additions_12mo_mw=%s, curtailment_pct=%s, stranded_capacity_mw=%s,
                         emergency_count_30d=%s,
                         top_risks_json=%s, top_opportunities_json=%s, verdict=%s,
+                        data_basis_json=%s,
                         computed_at=NOW()
                     WHERE market_slug=%s
                 """, _vals + (slug,))
@@ -1143,9 +1207,10 @@ def recompute_all_scores(source: str = "manual",
                             gen_additions_12mo_mw, curtailment_pct, stranded_capacity_mw,
                             emergency_count_30d,
                             top_risks_json, top_opportunities_json, verdict,
+                            data_basis_json,
                             market_slug, published, computed_at
                         )
-                        VALUES (%s,%s,%s,%s,%s, %s,%s,%s, %s,%s,%s, %s,%s,%s, %s, %s,%s,%s, %s, TRUE, NOW())
+                        VALUES (%s,%s,%s,%s,%s, %s,%s,%s, %s,%s,%s, %s,%s,%s, %s, %s,%s,%s, %s, %s, TRUE, NOW())
                     """, _vals + (slug,))
                 c.commit()
             scored += 1
@@ -1198,6 +1263,7 @@ def api_scores():
                 constraint_score, excess_power_score, time_to_power_months,
                 verdict,
                 top_risks_json, top_opportunities_json,
+                data_basis_json,
                 computed_at
             FROM market_power_scores WHERE published = true ORDER BY market_slug, computed_at DESC
         """)
@@ -1205,6 +1271,21 @@ def api_scores():
     for r in rows:
         if r.get("computed_at"):
             r["computed_at"] = r["computed_at"].isoformat()
+        # r65 (2026-06-02): surface the provenance label read-only. The JSONB
+        # column comes back as a dict (or None for legacy/LITE-scored rows);
+        # flatten it onto the output object. Default to modeled_estimate when
+        # absent — those rows are dict-derived by construction (no live source).
+        _db = r.pop("data_basis_json", None)
+        if isinstance(_db, dict) and _db.get("data_basis"):
+            r["data_basis"] = _db.get("data_basis")
+            if _db.get("data_basis_source"):
+                r["data_basis_source"] = _db.get("data_basis_source")
+            if _db.get("data_basis_note"):
+                r["data_basis_note"] = _db.get("data_basis_note")
+        else:
+            r["data_basis"] = "modeled_estimate"
+            r["data_basis_source"] = ("2024 ENTSO-E/AEMO/EirGrid grid reports "
+                                      "+ published market conditions")
         # r41-dcpi-composite (2026-05-25): include a sortable single-number
         # composite_score so agents can rank markets without recombining
         # the three components themselves. See derive_composite_score().
@@ -1388,6 +1469,21 @@ def api_score_market(slug):
         row["_requested_slug"] = requested_slug
         row["_canonical_slug"] = matched_slug
     if row.get("computed_at"): row["computed_at"] = row["computed_at"].isoformat()
+    # r65 (2026-06-02): flatten the provenance label onto the output object.
+    # SELECT * returns the raw data_basis_json (a dict via JSONB, or None for
+    # legacy/LITE rows). Expose a consistent data_basis/data_basis_source pair;
+    # default to modeled_estimate when absent (dict-derived by construction).
+    _db = row.pop("data_basis_json", None)
+    if isinstance(_db, dict) and _db.get("data_basis"):
+        row["data_basis"] = _db.get("data_basis")
+        if _db.get("data_basis_source"):
+            row["data_basis_source"] = _db.get("data_basis_source")
+        if _db.get("data_basis_note"):
+            row["data_basis_note"] = _db.get("data_basis_note")
+    else:
+        row["data_basis"] = "modeled_estimate"
+        row["data_basis_source"] = ("2024 ENTSO-E/AEMO/EirGrid grid reports "
+                                    "+ published market conditions")
     # r41-dcpi-composite (2026-05-25): include sortable composite_score
     # alongside the existing component scores for consistency with /scores.
     # r41.1: verdict-aware so LOW_SIGNAL markets don't outrank trusted ones.
@@ -4111,6 +4207,15 @@ def public_market_page(slug):
                 s["top_risks_json"] = _r
                 s["top_opportunities_json"] = _o
             s["_metrics_source"] = "iso_baseline"
+            # r65 (2026-06-02): carry the freshly-derived provenance label so
+            # the re-derived detail page reflects the same live/modeled basis.
+            _db = _m.get("data_basis")
+            if isinstance(_db, dict) and _db.get("data_basis"):
+                s["data_basis"] = _db.get("data_basis")
+                if _db.get("data_basis_source"):
+                    s["data_basis_source"] = _db.get("data_basis_source")
+                if _db.get("data_basis_note"):
+                    s["data_basis_note"] = _db.get("data_basis_note")
         except Exception:
             pass  # best-effort — fall back to whatever the row carried
 
