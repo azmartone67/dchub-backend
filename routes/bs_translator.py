@@ -273,13 +273,17 @@ def _render_html() -> str:
 </html>"""
 
 
-@bs_translator_bp.route("/vs", methods=["GET"], strict_slashes=False)
+# r-deshadow (2026-06-02): dropped the /vs binding — /vs is owned by
+# competitive_seo.vs_index (the canonical "all comparisons" index page). This
+# BS-translator page keeps its own /bs-translator route. It was previously ALSO
+# bound to /vs, making /vs a 3-way shadow (with competitive_seo + quick_redirects)
+# → permanent shadowed_route:/vs x12 on the consistency radar.
 @bs_translator_bp.route("/bs-translator", methods=["GET"], strict_slashes=False)
 def vs_page():
-    """Customer-facing BS translator page. The brand-positioning surface."""
+    """Customer-facing BS translator page (served at /bs-translator). The brand-positioning surface."""
     try:
         from routes.surface_brain import auto_log
-        auto_log("bs_translator", "view", target="/vs")
+        auto_log("bs_translator", "view", target="/bs-translator")
     except Exception:
         pass
     html = _render_html()

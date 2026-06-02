@@ -46,6 +46,39 @@ def test_registry_founding_equals_pro():
     assert not _FAILURES, "\n".join(_FAILURES)
 
 
+# ── 1b. Pricing is present + canonical (r-price-unify, 2026-06-02) ──
+def test_registry_pricing_canonical():
+    """Guard the price/quota unification. The ops-triage found the same $9
+    quoted as both Starter/10k-day and Developer/500-day, and $49 as both
+    Developer and Pro, across 5 surfaces because no canonical price map
+    existed. tier_registry is now that map; this locks the values (same
+    $9/$49/$199 configured on routes/_stripe_links.py + pricing.html) and
+    asserts /api/v1/tiers exposes price_usd_month + calls_per_day +
+    stripe_link so every surface can read one source instead of hardcoding."""
+    import tier_registry as tr
+    fails = []
+    def c(cond, msg):
+        if not cond:
+            fails.append(msg)
+    # canonical flat-rate monthly prices
+    c(tr.price('starter') == 9,    f"starter price {tr.price('starter')} != 9")
+    c(tr.price('developer') == 49, f"developer price {tr.price('developer')} != 49")
+    c(tr.price('pro') == 199,      f"pro price {tr.price('pro')} != 199")
+    c(tr.price('founding') == tr.price('pro'), "founding price must == pro")
+    # canonical calls/day (mcp_daily) — what the paywall quotes
+    c(tr.calls_per_day('starter') == 500,    f"starter calls/day {tr.calls_per_day('starter')} != 500")
+    c(tr.calls_per_day('developer') == 1000, f"developer calls/day {tr.calls_per_day('developer')} != 1000")
+    c(tr.calls_per_day('pro') == 10000,      f"pro calls/day {tr.calls_per_day('pro')} != 10000")
+    # /api/v1/tiers must expose the fields every surface reads
+    pub = tr.as_public_dict()
+    for t in ('starter', 'developer', 'pro'):
+        row = pub.get('tiers', {}).get(t, {})
+        c(row.get('price_usd_month') is not None, f"{t}: price_usd_month missing from /api/v1/tiers")
+        c(row.get('calls_per_day') is not None,   f"{t}: calls_per_day missing from /api/v1/tiers")
+        c(bool(row.get('stripe_link')),           f"{t}: stripe_link missing from /api/v1/tiers")
+    assert not fails, "Pricing drift detected:\n" + "\n".join(fails)
+
+
 # ── 2. Importable backend maps: founding == pro ─────────────────────
 def test_backend_maps_founding_equals_pro():
     fails = []
@@ -128,6 +161,7 @@ def test_generate_api_key_matches_schema():
 if __name__ == "__main__":
     rc = 0
     for fn in (test_registry_founding_equals_pro,
+               test_registry_pricing_canonical,
                test_backend_maps_founding_equals_pro,
                test_frontend_js_maps_have_founding,
                test_generate_api_key_matches_schema):

@@ -15,9 +15,16 @@ from flask import Blueprint, redirect, Response, jsonify
 quick_redirects_bp = Blueprint("quick_redirects", __name__)
 
 
-@quick_redirects_bp.route("/vs", methods=["GET"], strict_slashes=False)
-def vs_index_redirect():
-    return redirect("/vs/dchawk", code=301)
+# r-deshadow (2026-06-02): /vs is now owned by competitive_seo.vs_index — the
+# real "all comparisons" index page, which didn't exist when this redirect shim
+# was added (back then /vs 404'd, so this 301'd it to /vs/dchawk). Keeping both
+# made /vs a shadow route (Flask serves whichever blueprint registers first),
+# firing shadowed_route:/vs x12 on the radar. Removed the /vs binding so /vs
+# resolves to ONE handler (the comparisons index). /competitive below still
+# 301s to /vs/dchawk for anyone who wants the headline matchup directly.
+# @quick_redirects_bp.route("/vs", methods=["GET"], strict_slashes=False)
+# def vs_index_redirect():
+#     return redirect("/vs/dchawk", code=301)
 
 
 @quick_redirects_bp.route("/industry", methods=["GET"], strict_slashes=False)
