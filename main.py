@@ -19603,6 +19603,12 @@ def ai_facts():
             except:
                 fiber_routes = 128
             try:
+                # NOTE: capacity_mw is the LIVE column (verified via information_schema;
+                # live writer = osm_overpass_loader.py). Do NOT change to total_mw —
+                # that column does NOT exist on the live table and would throw, forcing
+                # the fake 52 / 96318 fallback below onto the AI-citation surface.
+                # (Flagged for "fix" twice; both times the premise was the stale repo
+                # CREATE TABLE in energy_auto_discovery*.py, not the live schema.)
                 pg_cur.execute("SELECT COUNT(*) FROM discovered_power_plants")
                 power_plants = pg_cur.fetchone()[0]
                 pg_cur.execute("SELECT COALESCE(SUM(capacity_mw), 0) FROM discovered_power_plants")

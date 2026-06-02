@@ -288,6 +288,13 @@ def init_energy_tables(conn):
     cur = conn.cursor()
 
     # discovered_power_plants
+    # ⚠️ LIVE-SCHEMA TRUTH (verified via information_schema 2026-06-02):
+    #   For power plants, the live table is owned by osm_overpass_loader.py and
+    #   uses capacity_mw, lat, lng, market, fuel_type, generation_mwh, operator,
+    #   sector. The total_mw / latitude / object_id schema below is SUPERSEDED:
+    #   this CREATE TABLE IF NOT EXISTS no-ops against the migrated live table and
+    #   the HIFLD-style INSERT in sync_power_plants() would fail against it.
+    #   Canonical reader: index_api.py (schema-adaptive). Don't treat this as truth.
     cur.execute("""
         CREATE TABLE IF NOT EXISTS discovered_power_plants (
             id SERIAL PRIMARY KEY,

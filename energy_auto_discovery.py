@@ -187,6 +187,15 @@ def init_energy_tables(conn):
     cur = conn.cursor()
 
     # discovered_power_plants
+    # ⚠️ LIVE-SCHEMA TRUTH (verified via information_schema 2026-06-02):
+    #   The live table is populated by osm_overpass_loader.py and uses
+    #   capacity_mw, lat, lng, market, fuel_type, generation_mwh, operator,
+    #   sector, name, source, state, is_new, discovered_at, last_updated.
+    #   It does NOT have total_mw / latitude / longitude / object_id.
+    #   The DDL below is a STALE HIFLD-era schema; this CREATE TABLE IF NOT
+    #   EXISTS no-ops against the migrated live table. Do NOT treat it as
+    #   canonical and do NOT "fix" capacity_mw queries to total_mw based on
+    #   it — that has misfired twice. Canonical reader: index_api.py.
     cur.execute("""
         CREATE TABLE IF NOT EXISTS discovered_power_plants (
             id SERIAL PRIMARY KEY,
@@ -582,7 +591,9 @@ def register_energy_discovery_routes(app):
 
             # Power plants
             try:
-                cur.execute("SELECT COUNT(*), COALESCE(SUM(total_mw), 0) FROM discovered_power_plants")
+                # Live column is capacity_mw (total_mw doesn't exist on the live
+                # table — see schema-truth note in init_energy_tables above).
+                cur.execute("SELECT COUNT(*), COALESCE(SUM(capacity_mw), 0) FROM discovered_power_plants")
                 row = cur.fetchone()
                 stats['total_power_plants'] = row[0]
                 stats['total_capacity_mw'] = float(row[1])
