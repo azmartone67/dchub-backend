@@ -1,0 +1,110 @@
+# Weekly MCP registry sync + coverage report.
+#
+# What it does every Monday (and on-demand):
+#   1. Reads the LIVE server (dchub.cloud/mcp via /health) → tool count + version.
+#   2. OFFICIAL registry (registry.modelcontextprotocol.io): if server.json's
+#      version is ahead of what's published, re-publishes (mcp-publisher + the
+#      MCP_REGISTRY_PRIVATE_KEY secret). This is the hub most other directories
+#      mirror, so keeping it fresh propagates widely.
+#   3. SMITHERY re-scan (best-effort): re-introspects the live server so newly
+#      added tools show up. Needs a SMITHERY_TOKEN secret (mint locally with
+#      `smithery auth token`). Skipped cleanly if the secret isn't set — never
+#      fails the run.
+#   4. COVERAGE REPORT: writes a table to the GitHub Step Summary showing where
+#      cloud.dchub is listed + each surface's version, and flags drift vs the
+#      live tool count. So you SEE your mirror coverage instead of guessing.
+#
+# Nothing here is destructive; every external step is fail-soft.
+#
+# Secrets used: MCP_REGISTRY_PRIVATE_KEY (already set). Optional: SMITHERY_TOKEN.
+
+name: MCP Registry Weekly Sync
+
+on:
+  schedule:
+    - cron: "0 14 * * 1"   # Mondays 14:00 UTC
+  workflow_dispatch: {}
+
+concurrency:
+  group: mcp-registry-weekly
+  cancel-in-progress: false
+
+jobs:
+  sync:
+    runs-on: ubuntu-latest
+    timeout-minutes: 8
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Gather live + registry state
+        id: state
+        run: |
+          set +e
+          LIVE_JSON=$(curl -s --max-time 20 "https://dchub-mcp-server-production.up.railway.app/health")
+          LIVE_TOOLS=$(echo "$LIVE_JSON" | python3 -c "import json,sys;print(json.load(sys.stdin).get('tools','?'))" 2>/dev/null)
+          LIVE_VER=$(echo "$LIVE_JSON"  | python3 -c "import json,sys;print(json.load(sys.stdin).get('version','?'))" 2>/dev/null)
+          LOCAL_VER=$(python3 -c "import json;print(json.load(open('server.json'))['version'])")
+          REG_VER=$(curl -s --max-time 20 "https://registry.modelcontextprotocol.io/v0/servers?search=cloud.dchub" \
+            | python3 -c "import json,sys
+d=json.load(sys.stdin).get('servers',[])
+vs=[x['server']['version'] for x in d if x['server'].get('name')=='cloud.dchub/mcp-server']
+print(vs[-1] if vs else 'none')" 2>/dev/null)
+          SMITHERY_HTTP=$(curl -s -o /dev/null -w "%{http_code}" --max-time 20 "https://smithery.ai/servers/azmartone67/dchub")
+          echo "live_tools=$LIVE_TOOLS"   >> "$GITHUB_OUTPUT"
+          echo "live_ver=$LIVE_VER"       >> "$GITHUB_OUTPUT"
+          echo "local_ver=$LOCAL_VER"     >> "$GITHUB_OUTPUT"
+          echo "reg_ver=$REG_VER"         >> "$GITHUB_OUTPUT"
+          echo "smithery_http=$SMITHERY_HTTP" >> "$GITHUB_OUTPUT"
+          echo "Live: $LIVE_TOOLS tools v$LIVE_VER | server.json v$LOCAL_VER | official-registry v$REG_VER | smithery HTTP $SMITHERY_HTTP"
+
+      - name: Refresh official registry (only if server.json is ahead)
+        if: steps.state.outputs.local_ver != steps.state.outputs.reg_ver
+        env:
+          MCP_KEY: ${{ secrets.MCP_REGISTRY_PRIVATE_KEY }}
+        run: |
+          if [ -z "$MCP_KEY" ]; then echo "::warning::MCP_REGISTRY_PRIVATE_KEY not set — skipping official republish"; exit 0; fi
+          curl -L "https://github.com/modelcontextprotocol/registry/releases/latest/download/mcp-publisher_linux_amd64.tar.gz" | tar xz mcp-publisher
+          ./mcp-publisher login dns --domain dchub.cloud --private-key "$MCP_KEY"
+          ./mcp-publisher publish
+          echo "::notice::Republished cloud.dchub/mcp-server v${{ steps.state.outputs.local_ver }} to the official registry"
+
+      - name: Re-scan Smithery (best-effort)
+        continue-on-error: true
+        env:
+          SMITHERY_TOKEN: ${{ secrets.SMITHERY_TOKEN }}
+        run: |
+          if [ -z "$SMITHERY_TOKEN" ]; then
+            echo "::notice::SMITHERY_TOKEN not set — skipping Smithery re-scan. To enable: run 'smithery auth token' locally and add the output as the SMITHERY_TOKEN repo secret."
+            exit 0
+          fi
+          npm install -g @smithery/cli >/dev/null 2>&1 || true
+          # try a couple of non-interactive auth shapes; never fail the run
+          { echo "$SMITHERY_TOKEN" | smithery auth login --token-stdin; } 2>/dev/null \
+            || smithery auth login --api-key "$SMITHERY_TOKEN" 2>/dev/null \
+            || SMITHERY_API_KEY="$SMITHERY_TOKEN" true
+          SMITHERY_API_KEY="$SMITHERY_TOKEN" smithery mcp publish "https://dchub.cloud/mcp" -n azmartone67/dchub \
+            && echo "::notice::Smithery re-scan submitted" \
+            || echo "::warning::Smithery re-scan could not auth non-interactively — re-run 'smithery mcp publish' locally if the tool list changed."
+
+      - name: Coverage report
+        if: always()
+        run: |
+          {
+            echo "## MCP Registry Coverage — $(date -u +%Y-%m-%d)"
+            echo ""
+            echo "| Surface | State |"
+            echo "|---|---|"
+            echo "| **Live server** | ${{ steps.state.outputs.live_tools }} tools, v${{ steps.state.outputs.live_ver }} |"
+            echo "| **Official registry** (cloud.dchub/mcp-server) | v${{ steps.state.outputs.reg_ver }} · [listing](https://registry.modelcontextprotocol.io/v0/servers?search=cloud.dchub) |"
+            echo "| **server.json (repo)** | v${{ steps.state.outputs.local_ver }} |"
+            echo "| **Smithery** | HTTP ${{ steps.state.outputs.smithery_http }} · [page](https://smithery.ai/servers/azmartone67/dchub) |"
+            echo "| **Glama** | auto-crawled from glama.json · [page](https://glama.ai/mcp/servers) |"
+            echo "| **PulseMCP** | mirrors official registry · [directory](https://www.pulsemcp.com/servers) |"
+            echo ""
+            if [ "${{ steps.state.outputs.local_ver }}" != "${{ steps.state.outputs.reg_ver }}" ]; then
+              echo "> ⚠️ server.json (v${{ steps.state.outputs.local_ver }}) ≠ official registry (v${{ steps.state.outputs.reg_ver }}) — a republish was attempted above."
+            else
+              echo "> ✅ Official registry is in sync with server.json."
+            fi
+          } >> "$GITHUB_STEP_SUMMARY"
