@@ -70,6 +70,58 @@ def _check_auth() -> Optional[tuple]:
     return None
 
 
+@admin_ai_deals_bp.route("/purge-deals-table", methods=["POST"])
+def purge_deals_table():
+    """r68 (Nico audit #1-3): clean the `deals` table — the /transactions PAGE
+    source (separate from ai_deals). SCOPED TO id LIKE 'AUTO-%' so only
+    auto-scraped rows are touched; curated/seed deals are never deleted. Removes:
+      (a) impossible  — IPO-as-deal (type/notes ~ 'ipo') or self-deal (buyer==seller)
+      (b) unsourced   — AUTO row with no source_url (can't verify)
+      (c) duplicates  — same buyer+seller+value, keep the newest AUTO row
+    dry_run default. Gate: X-Admin-Key (DCHUB_ADMIN_SECRET) OR X-Internal-Key.
+    NOTE: the ~6 auto-writers (deal_scraper/extractor_cron/crawler/brain/auto_pilot)
+    still need extraction-hardening to stop re-accumulation — flagged follow-up."""
+    err = _check_auth()
+    if err:
+        ok = False
+        try:
+            from internal_auth import is_valid_internal_key
+            ok = is_valid_internal_key(request.headers.get("X-Internal-Key", ""))
+        except Exception:
+            ok = False
+        if not ok:
+            return err
+    dry = bool((request.get_json(silent=True) or {}).get("dry_run", True))
+    _AUTO = "id LIKE 'AUTO-%'"
+    _IMPOSSIBLE = (f"{_AUTO} AND ("
+                   "LOWER(COALESCE(type,'')) LIKE '%ipo%' OR LOWER(COALESCE(notes,'')) LIKE '%ipo%' "
+                   "OR (COALESCE(buyer,'')<>'' AND LOWER(COALESCE(buyer,''))=LOWER(COALESCE(seller,''))))")
+    _UNSRC = f"{_AUTO} AND COALESCE(source_url,'') = ''"
+    _DUP = f"""SELECT id FROM (
+          SELECT id, ROW_NUMBER() OVER (
+            PARTITION BY LOWER(COALESCE(buyer,'')), LOWER(COALESCE(seller,'')), COALESCE(value,-1)
+            ORDER BY date DESC NULLS LAST, id DESC) AS rn
+          FROM deals WHERE {_AUTO}) t WHERE rn > 1"""
+    out = {"ok": True, "dry_run": dry, "table": "deals", "counts": {}, "deleted": {}}
+    try:
+        with _conn() as c, c.cursor() as cur:
+            cur.execute("SELECT COUNT(*) FROM deals"); out["counts"]["total_before"] = cur.fetchone()[0]
+            cur.execute(f"SELECT COUNT(*) FROM deals WHERE {_AUTO}"); out["counts"]["auto_rows"] = cur.fetchone()[0]
+            cur.execute(f"SELECT COUNT(*) FROM deals WHERE {_IMPOSSIBLE}"); out["counts"]["impossible"] = cur.fetchone()[0]
+            cur.execute(f"SELECT COUNT(*) FROM deals WHERE {_UNSRC}"); out["counts"]["unsourced_auto"] = cur.fetchone()[0]
+            cur.execute(f"SELECT COUNT(*) FROM ({_DUP}) x"); out["counts"]["duplicates_auto"] = cur.fetchone()[0]
+            if not dry:
+                cur.execute(f"DELETE FROM deals WHERE {_IMPOSSIBLE}"); out["deleted"]["impossible"] = cur.rowcount
+                cur.execute(f"DELETE FROM deals WHERE id IN ({_DUP})"); out["deleted"]["duplicates"] = cur.rowcount
+                cur.execute(f"DELETE FROM deals WHERE {_UNSRC}"); out["deleted"]["unsourced"] = cur.rowcount
+                c.commit()
+                cur.execute("SELECT COUNT(*) FROM deals"); out["counts"]["total_after"] = cur.fetchone()[0]
+    except Exception as e:
+        out["ok"] = False; out["error"] = str(e)[:200]
+        return jsonify(out), 500
+    return jsonify(out), 200
+
+
 @admin_ai_deals_bp.route("/purge-fabricated", methods=["POST"])
 def purge_fabricated():
     """r68 (Nico audit #1-2): one-off, dry-run-default cleanup of the ai_deals
