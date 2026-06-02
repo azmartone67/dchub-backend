@@ -291,6 +291,24 @@ def _run_query(sql, params=()):
         return []
 
 
+_COLCACHE = {}
+def _table_columns(table):
+    """Real column set for `table` from information_schema (process-cached). Lets the
+    GDCI bulk queries ADAPT to the live schema instead of raising UndefinedColumn on
+    drift — substations has no available_mva (documented main.py:13496), and
+    discovered_power_plants is defined with total_mw/state in-repo while some routes
+    query `market`. A missing column degrades the sub-score to null (honest) rather
+    than throwing -> getting swallowed by _run_query -> silently killing DHPW."""
+    if table in _COLCACHE:
+        return _COLCACHE[table]
+    rows = _run_query(
+        "SELECT LOWER(column_name) FROM information_schema.columns "
+        "WHERE table_name = %s AND table_schema = 'public'", (table,))
+    cols = {r[0] for r in rows} if rows else set()
+    _COLCACHE[table] = cols
+    return cols
+
+
 def _load_bulk(cfg, _conn=None):
     fac  = cfg.get('fac_table', 'facilities')
     txn  = cfg.get('txn_table', 'deals')
@@ -305,16 +323,35 @@ def _load_bulk(cfg, _conn=None):
     op_ph = ','.join(['%s']*len(op_st))
     pi_ph = ','.join(['%s']*len(pi_st))
 
-    # Run small/secondary tables FIRST before large facility queries corrupt the connection
+    # Run small/secondary tables FIRST before large facility queries corrupt the connection.
+    # SCHEMA-ADAPTIVE (r66): select only columns that ACTUALLY exist so a drifted column
+    # degrades the sub-score to null instead of raising UndefinedColumn -> swallowed by
+    # _run_query -> silent dead DHPW for EVERY market. (substations has no available_mva;
+    # discovered_power_plants is defined with total_mw/state, while capacity_mw/market
+    # are queried by other routes -> possible live drift either way.)
     pw_rows = []
     if _bool(cfg, 'power_enabled'):
-        pw_rows = _run_query(f"SELECT LOWER(COALESCE({pcol},'')), LOWER(COALESCE({scol},'')), COUNT(*), COALESCE(SUM(capacity_mw),0) FROM {pw} GROUP BY LOWER(COALESCE({pcol},'')), LOWER(COALESCE({scol},''))")
-        logger.info("GDCI: loaded %d power plant rows", len(pw_rows))
+        pcols = _table_columns(pw)
+        loc = next((c for c in (pcol, 'market', 'city', 'state', 'county') if c in pcols), None)
+        stc = next((c for c in (scol, 'state', 'county', 'region') if c in pcols), loc)
+        mwc = next((c for c in ('capacity_mw', 'total_mw', 'mw', 'capacity') if c in pcols), None)
+        if loc and mwc:
+            pw_rows = _run_query(f"SELECT LOWER(COALESCE({loc},'')), LOWER(COALESCE({stc},'')), COUNT(*), COALESCE(SUM({mwc}),0) FROM {pw} GROUP BY LOWER(COALESCE({loc},'')), LOWER(COALESCE({stc},''))")
+        logger.info("GDCI: power plants loc=%s state=%s mw=%s -> %d rows", loc, stc, mwc, len(pw_rows))
 
     sub_rows = []
     if _bool(cfg, 'sub_enabled'):
-        sub_rows = _run_query(f"SELECT LOWER(COALESCE(city,'')), LOWER(COALESCE(country,'')), COALESCE(SUM(capacity_mva),0), COALESCE(SUM(available_mva),0) FROM {sub} GROUP BY LOWER(COALESCE(city,'')), LOWER(COALESCE(country,''))")
-        logger.info("GDCI: loaded %d substation rows", len(sub_rows))
+        scols = _table_columns(sub)
+        # Substations headroom needs available_mva, which does NOT exist (main.py:13496).
+        # Only run if every referenced column is really present; otherwise [] cleanly so
+        # DHPW falls through to the power-plant path instead of throwing.
+        need = {'city', 'country', 'capacity_mva', 'available_mva'}
+        if need.issubset(scols):
+            sub_rows = _run_query(f"SELECT LOWER(COALESCE(city,'')), LOWER(COALESCE(country,'')), COALESCE(SUM(capacity_mva),0), COALESCE(SUM(available_mva),0) FROM {sub} GROUP BY LOWER(COALESCE(city,'')), LOWER(COALESCE(country,''))")
+            logger.info("GDCI: loaded %d substation rows", len(sub_rows))
+        else:
+            logger.info("GDCI: substation headroom skipped (missing %s) — DHPW uses power plants",
+                        sorted(need - scols))
 
     mi_rows = []
     if _bool(cfg, 'mi_enabled'):
@@ -579,7 +616,21 @@ def health():
         cur.execute("SELECT COUNT(*) FROM gdci_config")
         cnt = cur.fetchone()[0]
         cur.close()
-        return jsonify({'status':'ok','db':'connected','config_keys':cnt,'markets_defined':len(MARKETS),'ts':datetime.now(timezone.utc).isoformat()})
+        # r66 DHPW schema diagnostic — confirms the LIVE columns so we can verify the
+        # power/headroom sub-score actually computes (was silently dead on drifted cols).
+        _pw  = _table_columns('discovered_power_plants')
+        _sub = _table_columns('substations')
+        _loc = next((c for c in ('market','city','state','county') if c in _pw), None)
+        _mwc = next((c for c in ('capacity_mw','total_mw','mw','capacity') if c in _pw), None)
+        return jsonify({'status':'ok','db':'connected','config_keys':cnt,'markets_defined':len(MARKETS),
+            'dhpw_schema':{
+                'power_plants_cols': sorted(_pw),
+                'substations_cols':  sorted(_sub),
+                'power_picked':      {'loc': _loc, 'mw': _mwc},
+                'power_dhpw_computable':  bool(_loc and _mwc),
+                'sub_headroom_computable': {'city','country','capacity_mva','available_mva'}.issubset(_sub),
+            },
+            'ts':datetime.now(timezone.utc).isoformat()})
     except Exception as e:
         return jsonify({'status':'error','error':str(e)}), 500
 
