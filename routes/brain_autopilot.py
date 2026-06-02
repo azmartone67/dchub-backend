@@ -1307,6 +1307,13 @@ def _record_action(finding: dict, pattern: str, action_path: str | None,
                     payload: dict | None, dry_run: bool, escalated: bool,
                     http_code: int | None, body: str | None, error: str | None,
                     outcome: str):
+    # Key-truncation parity with the persistence writers + resolution lookups, so
+    # the brain_autopilot_actions.finding_issue <-> brain_issue_persistence.issue_label
+    # match can never silently miss for labels longer than the shortest truncation.
+    try:
+        from routes.brain_v2_store import MAX_ISSUE_LABEL_LEN as _MAXLBL
+    except Exception:
+        _MAXLBL = 200
     c = _conn()
     if c is None: return
     try:
@@ -1319,7 +1326,7 @@ def _record_action(finding: dict, pattern: str, action_path: str | None,
                      started_at, completed_at)
                 VALUES (%s,%s,%s,%s,%s::jsonb,%s,%s,%s,%s,%s,%s,NOW(),NOW())
             """, (
-                str(finding.get("issue",""))[:200],
+                str(finding.get("issue",""))[:_MAXLBL],
                 str(finding.get("url",""))[:500],
                 pattern[:100],
                 (action_path or "")[:500],
@@ -1530,6 +1537,7 @@ def autopilot_run():
         "actioned":           0,
         "rate_limited":       0,
         "escalated":          0,
+        "reopened":           0,
         "no_action":          0,
         "errors":             0,
         "dry_run":            _is_dry_run(),
@@ -1543,6 +1551,61 @@ def autopilot_run():
         for f in issues:
             if not isinstance(f, dict): continue
             issue = f.get("issue") or ""
+            _url = f.get("url") or ""
+
+            # ── INV1 + INV2 (loop-closing, 2026-06-02) ──────────────────
+            # Reconcile this LIVE finding against its resolution lifecycle
+            # in brain_issue_persistence.
+            #
+            #   - If it is currently terminal 'verified_resolved' yet it is
+            #     re-appearing in the live findings feed (10-min window),
+            #     the condition has RE-EMERGED → REGRESSION (INV2). Flip it
+            #     to 'reopened' (bump reopen_count), escalate it to the
+            #     operator as a regression, and let it fall through so the
+            #     brain re-attacks it. A resolved finding is NEVER silently
+            #     re-suppressed.
+            #   - If it is NOT re-appearing, it simply isn't in `issues` and
+            #     we never reach here — so the resolved state keeps it out
+            #     of the action loop (INV1). The learn-worklist filter
+            #     (most_persistent_unfixed) drops resolved findings too.
+            #
+            # All best-effort + fully guarded: a bookkeeping hiccup must
+            # never break the action loop.
+            try:
+                from routes import brain_v2_store as _bs
+                if _bs.is_verified_resolved(issue, _url):
+                    # Re-emergence of a resolved finding = regression.
+                    sig = _bs.bump_persistence_ex(issue, _url)  # flips → reopened
+                    summary["reopened"] = summary.get("reopened", 0) + 1
+                    try:
+                        from routes.brain_evolution import log_notification as _logn
+                        _logn(
+                            kind="autopilot_regression",
+                            summary=(f"REGRESSION: finding '{issue}' re-emerged "
+                                     f"after being verified-resolved — reopened"),
+                            detail={"issue": issue, "url": _url,
+                                    "reopen_count": sig.get("reopen_count"),
+                                    "note": "previously verified_resolved; "
+                                            "detector saw it again"},
+                            url=_url,
+                            severity="warn",
+                        )
+                    except Exception:
+                        pass
+                    # Audit row so the regression shows in /autopilot/recent.
+                    _record_action(f, issue, None, None,
+                                   dry_run=_is_dry_run(), escalated=True,
+                                   http_code=None, body=None,
+                                   error="regression: verified-resolved finding "
+                                         "re-emerged; reopened + escalated",
+                                   outcome="reopened")
+                    # Fall through: the now-reopened finding is re-attacked
+                    # by the normal pattern path below (it is no longer
+                    # 'verified_resolved').
+            except Exception:
+                try: c.rollback()
+                except Exception: pass
+
             pat = _lookup_pattern(issue)
             if not pat:
                 summary["no_action"] += 1

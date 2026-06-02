@@ -138,7 +138,7 @@ def verify_pending(window_minutes: int = 30, max_actions: int = 50) -> dict:
     hours ago that haven't been verified yet, run their verifier,
     persist outcomes."""
     out: dict = {"verified": 0, "succeeded": 0, "failed": 0,
-                  "skipped": 0, "details": [],
+                  "skipped": 0, "resolved": 0, "details": [],
                   "ran_at": datetime.datetime.utcnow().isoformat() + "Z"}
     c = _conn()
     if c is None:
@@ -150,7 +150,8 @@ def verify_pending(window_minutes: int = 30, max_actions: int = 50) -> dict:
             # Find unverified actions in the verification window
             try:
                 cur.execute("""
-                    SELECT a.id, a.pattern_name, a.started_at, a.outcome
+                    SELECT a.id, a.pattern_name, a.started_at, a.outcome,
+                           a.finding_issue, a.finding_url
                       FROM brain_autopilot_actions a
                      WHERE a.started_at <= NOW() - INTERVAL '%s minutes'
                        AND a.started_at >= NOW() - INTERVAL '6 hours'
@@ -186,6 +187,40 @@ def verify_pending(window_minutes: int = 30, max_actions: int = 50) -> dict:
                     """, (a["id"], pattern, a["started_at"], succeeded,
                           evidence, (None if succeeded else evidence)))
                 except Exception: pass
+
+                # ── CLOSE THE LOOP (INV1 + INV3, 2026-06-02) ────────────
+                # Write the outcome BACK to brain_issue_persistence so a
+                # verified-resolved finding stops being re-proposed /
+                # re-acted. This is the missing link the brain never had:
+                # detection → action → VERIFICATION → resolution.
+                #
+                #   succeeded=TRUE  WITH evidence → mark_resolved()
+                #       (terminal 'verified_resolved'; the learn-worklist
+                #        and the action gate both skip it from now on)
+                #   succeeded=FALSE              → mark_attempted_failed()
+                #       (explicitly NOT resolved — stays in the worklist,
+                #        surfaces in /stuck-findings once it piles up)
+                #
+                # INV3 is enforced at BOTH ends: mark_resolved() itself
+                # refuses empty evidence, and we only call it when
+                # succeeded is truthy AND evidence is non-blank — never on
+                # assumption, never on timeout, never on succeeded=FALSE.
+                f_issue = (a.get("finding_issue") or "").strip()
+                f_url = a.get("finding_url") or ""
+                if f_issue:
+                    try:
+                        from routes import brain_v2_store as _bs
+                        if succeeded and (evidence or "").strip():
+                            did = _bs.mark_resolved(f_issue, f_url, evidence)
+                            out["resolved"] = out.get("resolved", 0) + (1 if did else 0)
+                        elif not succeeded:
+                            _bs.mark_attempted_failed(f_issue, f_url, evidence)
+                    except Exception as _we:
+                        # Best-effort: a writeback hiccup must never break
+                        # the verification pass.
+                        out.setdefault("writeback_errors", []).append(
+                            f"{type(_we).__name__}")
+
                 out["details"].append({
                     "action_id": int(a["id"]),
                     "pattern":   pattern,

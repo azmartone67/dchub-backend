@@ -489,6 +489,60 @@ def brain_outcomes():
 
 
 # ─────────────────────────────────────────────────────────────────────
+# INV4 (loop-closing, 2026-06-02) — stuck-findings escalation view
+# ─────────────────────────────────────────────────────────────────────
+@brain_learning_bp.route("/api/v1/brain/stuck-findings", methods=["GET"])
+def brain_stuck_findings():
+    """Read-only HUMAN-review queue: findings the brain has repeatedly
+    failed to resolve (high seen_count, still actively appearing, last
+    outcome NOT verified_resolved). Surfaces, rather than silently looping,
+    the worklist that needs a person — including REGRESSIONS (findings that
+    were verified-resolved then re-emerged, ordered first by reopen_count).
+
+    Purely a view over brain_issue_persistence's lifecycle columns; it
+    triggers NO action and changes NO state. Public read (like the other
+    /brain/* dashboards). Query params:
+      min_count   (default 5)   minimum seen_count to qualify
+      hours       (default 72)  only findings seen within this window
+      limit       (default 50, max 200)
+    """
+    try:
+        min_count = max(1, int(request.args.get("min_count") or 5))
+    except Exception:
+        min_count = 5
+    try:
+        hours = max(1, int(request.args.get("hours") or 72))
+    except Exception:
+        hours = 72
+    try:
+        limit = min(int(request.args.get("limit") or 50), 200)
+    except Exception:
+        limit = 50
+
+    rows = []
+    try:
+        from routes import brain_v2_store as _bs
+        rows = _bs.list_stuck_findings(min_count=min_count, limit=limit,
+                                       stale_after_hours=hours)
+    except Exception as e:
+        return jsonify(ok=False, error=str(e)[:200],
+                       generated_at=now_iso()), 200
+
+    regressions = [r for r in rows if int(r.get("reopen_count") or 0) > 0]
+    return jsonify(
+        ok=True,
+        stuck=rows,
+        count=len(rows),
+        regression_count=len(regressions),
+        criteria={"min_count": min_count, "window_hours": hours,
+                  "limit": limit,
+                  "note": "last_outcome NOT verified_resolved; "
+                          "regressions (reopen_count>0) listed first"},
+        generated_at=now_iso(),
+    ), 200
+
+
+# ─────────────────────────────────────────────────────────────────────
 # 4A — Outcome prober (cron-callable)
 # ─────────────────────────────────────────────────────────────────────
 @brain_learning_bp.route("/api/v1/brain/probe-outcomes", methods=["POST", "GET"])

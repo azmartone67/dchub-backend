@@ -186,6 +186,61 @@ CREATE INDEX IF NOT EXISTS brain_directives_status_idx
 """
 
 
+# Phase loop-closing (2026-06-02): resolution-lifecycle columns on
+# brain_issue_persistence. These ADD COLUMNs take an AccessExclusiveLock,
+# so — exactly like the dcpi.py _ensure_tables fix that killed the
+# 2-replica AccessExclusiveLock deadlock (r66) — we run them ONCE per
+# process, serialized across replicas with a transaction-scoped advisory
+# lock so a concurrent caller WAITS instead of deadlocking. All columns are
+# additive + nullable so they can never affect an existing row/reader.
+#   verified_at         — when an action outcome verified this finding resolved
+#   resolution_evidence — the evidence string proving it (INV3: no resolve w/o it)
+#   reopen_count        — bumped when a verified_resolved finding re-emerges (INV2)
+#   reopened_at         — when the regression was last detected
+_LIFECYCLE_READY = False
+# Stable, module-unique advisory-lock key (distinct from dcpi's 572341001).
+_LIFECYCLE_LOCK_KEY = 572341077
+# Shared truncation length for the persistence key (issue_label / finding_issue).
+# MUST be identical across every writer (brain_v2_layer4/5, brain_autopilot
+# ._record_action) AND the resolution lookups (mark_resolved / mark_attempted_failed
+# / is_verified_resolved) — the writeback matches rows by exact (issue_label, url)
+# equality, so any divergence silently misses for labels longer than the shortest
+# truncation. 200 = the narrowest historical value (brain_autopilot._record_action).
+MAX_ISSUE_LABEL_LEN = 200
+
+
+def _ensure_lifecycle_columns() -> None:
+    """Idempotent + deadlock-safe ADD COLUMN for the resolution lifecycle.
+    Run-once per process; advisory-locked across replicas (dcpi r66 pattern)."""
+    global _LIFECYCLE_READY
+    if _LIFECYCLE_READY:
+        return
+    c = _conn()
+    if c is None:
+        return
+    try:
+        with c, c.cursor() as cur:
+            cur.execute("SELECT pg_advisory_xact_lock(%s)", (_LIFECYCLE_LOCK_KEY,))
+            cur.execute("ALTER TABLE brain_issue_persistence "
+                        "ADD COLUMN IF NOT EXISTS verified_at TIMESTAMPTZ")
+            cur.execute("ALTER TABLE brain_issue_persistence "
+                        "ADD COLUMN IF NOT EXISTS resolution_evidence TEXT")
+            cur.execute("ALTER TABLE brain_issue_persistence "
+                        "ADD COLUMN IF NOT EXISTS reopen_count INT NOT NULL DEFAULT 0")
+            cur.execute("ALTER TABLE brain_issue_persistence "
+                        "ADD COLUMN IF NOT EXISTS reopened_at TIMESTAMPTZ")
+        _LIFECYCLE_READY = True  # idempotent DDL done for this process
+    except Exception as e:
+        # Never raise — a transient failure just means we retry next call.
+        print(f"[brain_v2_store] ensure_lifecycle_columns failed: {e}",
+              file=sys.stderr)
+        try: c.rollback()
+        except Exception: pass
+    finally:
+        try: c.close()
+        except Exception: pass
+
+
 def init_schema() -> bool:
     """Idempotent — safe to call at module import. Returns True on success."""
     c = _conn()
@@ -193,6 +248,8 @@ def init_schema() -> bool:
     try:
         with c, c.cursor() as cur:
             cur.execute(_SCHEMA_DDL)
+        # Additive lifecycle columns (own advisory-locked, run-once path).
+        _ensure_lifecycle_columns()
         return True
     except Exception as e:
         print(f"[brain_v2_store] init_schema failed: {e}", file=sys.stderr)
@@ -379,31 +436,116 @@ def bump_persistence(issue_label: str, url: str = "",
                      last_outcome: str | None = None) -> int:
     """Increment seen_count for this (issue_label, url). Returns the new
        count. Pass last_outcome when you just attempted a learn pass so
-       the worklist filter knows whether to surface this issue again."""
-    if not issue_label: return 0
+       the worklist filter knows whether to surface this issue again.
+
+       INV2 (reopen on regression): if this finding was previously
+       'verified_resolved' and the detector is now seeing it AGAIN, that's
+       a REGRESSION — not a fresh attempt. We flip last_outcome to
+       'reopened', bump reopen_count, and stamp reopened_at so the worklist
+       picks it up again and an operator-visible escalation can fire. A
+       resolved finding is NEVER silently re-suppressed. Use
+       bump_persistence_ex() if you need the reopen signal returned.
+
+       Note: the CASE below only forces 'reopened' when the prior state was
+       terminal-resolved AND no explicit last_outcome was passed for this
+       call. An explicit last_outcome (e.g. from a learn pass) still wins,
+       and crucially mark_resolved() is the ONLY writer of
+       'verified_resolved', so detector re-sightings can never themselves
+       re-resolve a finding (INV3)."""
+    return _bump_persistence_impl(issue_label, url, last_outcome)[0]
+
+
+def bump_persistence_ex(issue_label: str, url: str = "",
+                        last_outcome: str | None = None) -> dict:
+    """Same as bump_persistence but returns a dict with the reopen signal:
+       {'seen_count': int, 'reopened': bool, 'reopen_count': int}. Callers
+       that want to escalate a regression (INV2) use this variant."""
+    seen, reopened, rc = _bump_persistence_impl(issue_label, url, last_outcome)
+    return {"seen_count": seen, "reopened": reopened, "reopen_count": rc}
+
+
+def _bump_persistence_impl(issue_label: str, url: str = "",
+                           last_outcome: str | None = None):
+    """Returns (seen_count, reopened_bool, reopen_count). Internal."""
+    if not issue_label:
+        return (0, False, 0)
     c = _conn()
-    if c is None: return 0
+    if c is None:
+        return (0, False, 0)
+    # Make sure the lifecycle columns exist before we reference them.
+    try:
+        _ensure_lifecycle_columns()
+    except Exception:
+        pass
     try:
         with c, c.cursor() as cur:
-            cur.execute(
-                """
-                INSERT INTO brain_issue_persistence
-                    (issue_label, url, last_outcome,
-                     first_seen_at, last_seen_at, seen_count)
-                VALUES (%s, %s, %s, NOW(), NOW(), 1)
-                ON CONFLICT (issue_label, url) DO UPDATE SET
-                    seen_count   = brain_issue_persistence.seen_count + 1,
-                    last_seen_at = NOW(),
-                    last_outcome = COALESCE(EXCLUDED.last_outcome,
-                                            brain_issue_persistence.last_outcome)
-                RETURNING seen_count;
-                """,
-                (issue_label, url or "", last_outcome),
-            )
-            return int(cur.fetchone()[0])
+            # The CASE detects the regression: prior row was the terminal
+            # 'verified_resolved' AND the caller didn't pass an explicit
+            # outcome for this sighting → this is a re-emergence, so flip to
+            # 'reopened' and bump reopen_count. xmax/the returned was_resolved
+            # flag lets the caller escalate.
+            try:
+                cur.execute(
+                    """
+                    INSERT INTO brain_issue_persistence
+                        (issue_label, url, last_outcome,
+                         first_seen_at, last_seen_at, seen_count)
+                    VALUES (%s, %s, %s, NOW(), NOW(), 1)
+                    ON CONFLICT (issue_label, url) DO UPDATE SET
+                        seen_count   = brain_issue_persistence.seen_count + 1,
+                        last_seen_at = NOW(),
+                        reopen_count = brain_issue_persistence.reopen_count
+                            + (CASE WHEN brain_issue_persistence.last_outcome
+                                         = 'verified_resolved'
+                                    THEN 1 ELSE 0 END),
+                        reopened_at = (CASE WHEN brain_issue_persistence.last_outcome
+                                                 = 'verified_resolved'
+                                            THEN NOW()
+                                            ELSE brain_issue_persistence.reopened_at
+                                       END),
+                        last_outcome = (CASE
+                            WHEN brain_issue_persistence.last_outcome
+                                     = 'verified_resolved'
+                                 AND %s IS NULL
+                                THEN 'reopened'
+                            ELSE COALESCE(EXCLUDED.last_outcome,
+                                          brain_issue_persistence.last_outcome)
+                          END)
+                    RETURNING seen_count,
+                              (brain_issue_persistence.last_outcome = 'reopened'),
+                              reopen_count;
+                    """,
+                    (issue_label, url or "", last_outcome, last_outcome),
+                )
+            except Exception:
+                # Lifecycle columns missing (transient) — fall back to the
+                # original additive upsert so the heal loop never breaks.
+                try: c.rollback()
+                except Exception: pass
+                cur.execute(
+                    """
+                    INSERT INTO brain_issue_persistence
+                        (issue_label, url, last_outcome,
+                         first_seen_at, last_seen_at, seen_count)
+                    VALUES (%s, %s, %s, NOW(), NOW(), 1)
+                    ON CONFLICT (issue_label, url) DO UPDATE SET
+                        seen_count   = brain_issue_persistence.seen_count + 1,
+                        last_seen_at = NOW(),
+                        last_outcome = COALESCE(EXCLUDED.last_outcome,
+                                                brain_issue_persistence.last_outcome)
+                    RETURNING seen_count;
+                    """,
+                    (issue_label, url or "", last_outcome),
+                )
+                row = cur.fetchone()
+                return (int(row[0]) if row else 0, False, 0)
+            row = cur.fetchone()
+            if not row:
+                return (0, False, 0)
+            return (int(row[0]), bool(row[1]), int(row[2] or 0))
     except Exception as e:
         print(f"[brain_v2_store] bump_persistence failed: {e}", file=sys.stderr)
-        return 0
+        return (0, False, 0)
     finally:
         try: c.close()
         except Exception: pass
@@ -426,6 +568,184 @@ def set_persistence_outcome(issue_label: str, url: str, outcome: str) -> bool:
         return True
     except Exception as e:
         print(f"[brain_v2_store] set_persistence_outcome failed: {e}",
+              file=sys.stderr)
+        return False
+    finally:
+        try: c.close()
+        except Exception: pass
+
+
+# ---------------------------------------------------------------------------
+# Resolution lifecycle (loop-closing, 2026-06-02)
+# ---------------------------------------------------------------------------
+# Terminal "this finding is fixed" state. The ONLY writer is mark_resolved(),
+# which REQUIRES verification evidence — that is INV3 (no fabricated
+# resolution). bump_persistence() can only ever flip a row OUT of this state
+# (→ 'reopened') on regression, never INTO it.
+RESOLVED_OUTCOME = "verified_resolved"
+REOPENED_OUTCOME = "reopened"
+FAILED_OUTCOME = "attempted_failed"
+
+
+def mark_resolved(issue_label: str, url: str, evidence: str) -> bool:
+    """INV1 + INV3: mark a finding terminally resolved — but ONLY with
+       explicit verification evidence. Called by the outcome verifier when
+       an autopilot action's outcome is succeeded=TRUE WITH evidence.
+
+       Refuses (returns False) if evidence is empty/blank, so no caller can
+       ever fabricate a resolution on assumption or timeout. Sets
+       last_outcome='verified_resolved', stamps verified_at, and stores the
+       evidence string for audit. Idempotent — re-resolving an already
+       resolved finding just refreshes verified_at/evidence."""
+    if not issue_label:
+        return False
+    ev = (evidence or "").strip()
+    if not ev:
+        # INV3 hard guard: never resolve without evidence.
+        print("[brain_v2_store] mark_resolved REFUSED — empty evidence "
+              f"for ({issue_label!r}, {url!r})", file=sys.stderr)
+        return False
+    c = _conn()
+    if c is None:
+        return False
+    try:
+        _ensure_lifecycle_columns()
+    except Exception:
+        pass
+    try:
+        with c, c.cursor() as cur:
+            # Only touch a row that actually exists (the finding must have
+            # been tracked). UPDATE-not-INSERT so we never invent a finding.
+            cur.execute(
+                """UPDATE brain_issue_persistence
+                       SET last_outcome        = %s,
+                           verified_at         = NOW(),
+                           resolution_evidence = %s,
+                           last_seen_at        = last_seen_at
+                     WHERE issue_label = %s AND url = %s""",
+                (RESOLVED_OUTCOME, ev[:2000],
+                 issue_label[:MAX_ISSUE_LABEL_LEN], url or ""),
+            )
+            return cur.rowcount > 0
+    except Exception as e:
+        print(f"[brain_v2_store] mark_resolved failed: {e}", file=sys.stderr)
+        return False
+    finally:
+        try: c.close()
+        except Exception: pass
+
+
+def mark_attempted_failed(issue_label: str, url: str,
+                          evidence: str | None = None) -> bool:
+    """INV3: an action whose outcome verified succeeded=FALSE records
+       last_outcome='attempted_failed' — explicitly NOT resolved. Never
+       promotes a row to a resolved state. Stores the (failure) evidence
+       for the stuck-findings view. Won't overwrite a current
+       'verified_resolved' (a separate verified success must not be undone
+       by a later failed sibling action)."""
+    if not issue_label:
+        return False
+    c = _conn()
+    if c is None:
+        return False
+    try:
+        _ensure_lifecycle_columns()
+    except Exception:
+        pass
+    try:
+        with c, c.cursor() as cur:
+            cur.execute(
+                """UPDATE brain_issue_persistence
+                       SET last_outcome        = %s,
+                           resolution_evidence = COALESCE(%s, resolution_evidence)
+                     WHERE issue_label = %s AND url = %s
+                       AND COALESCE(last_outcome,'') <> %s""",
+                (FAILED_OUTCOME, (evidence or None),
+                 issue_label[:MAX_ISSUE_LABEL_LEN], url or "",
+                 RESOLVED_OUTCOME),
+            )
+            return cur.rowcount > 0
+    except Exception as e:
+        print(f"[brain_v2_store] mark_attempted_failed failed: {e}",
+              file=sys.stderr)
+        return False
+    finally:
+        try: c.close()
+        except Exception: pass
+
+
+def list_stuck_findings(min_count: int = 5, limit: int = 50,
+                        stale_after_hours: int = 72) -> list[dict]:
+    """INV4: findings with repeated failed/un-attacked attempts that need a
+       HUMAN — high seen_count, still actively appearing, and NOT resolved.
+       Read-only; powers GET /api/v1/brain/stuck-findings. Surfaces, rather
+       than silently looping, the worklist the brain can't auto-fix.
+
+       Stuck = seen_count >= min_count AND last_seen recent AND last_outcome
+       in the 'still broken' set (attempted_failed / reopened / NULL / known
+       non-success learn outcomes). Resolved findings are excluded; reopened
+       (regressed) findings are INCLUDED so a regression that the brain
+       can't re-fix surfaces to a human."""
+    c = _conn()
+    if c is None:
+        return []
+    try:
+        _ensure_lifecycle_columns()
+    except Exception:
+        pass
+    try:
+        with c, c.cursor(cursor_factory=RealDictCursor) as cur:
+            cur.execute(
+                """SELECT issue_label, url, seen_count,
+                          first_seen_at, last_seen_at, last_outcome,
+                          reopen_count, reopened_at,
+                          verified_at, resolution_evidence
+                     FROM brain_issue_persistence
+                    WHERE seen_count >= %s
+                      AND last_seen_at > NOW() - (%s * INTERVAL '1 hour')
+                      AND COALESCE(last_outcome,'') <> %s
+                      AND (last_outcome IS NULL
+                           OR last_outcome NOT IN ('proposed',
+                                                   'approval_count_incremented',
+                                                   'approved'))
+                    ORDER BY reopen_count DESC, seen_count DESC,
+                             last_seen_at DESC
+                    LIMIT %s""",
+                (min_count, stale_after_hours, RESOLVED_OUTCOME, limit),
+            )
+            return [_normalize_row(r) for r in cur.fetchall()]
+    except Exception as e:
+        print(f"[brain_v2_store] list_stuck_findings failed: {e}",
+              file=sys.stderr)
+        return []
+    finally:
+        try: c.close()
+        except Exception: pass
+
+
+def is_verified_resolved(issue_label: str, url: str = "") -> bool:
+    """INV1 (gate helper): True iff this finding is currently in the terminal
+       'verified_resolved' state. The autopilot action gate uses this to SKIP
+       acting on already-resolved findings (stop the infinite re-act). A
+       regression flips the row to 'reopened' (via bump_persistence), so this
+       returns False again the moment the condition re-emerges."""
+    if not issue_label:
+        return False
+    c = _conn()
+    if c is None:
+        return False
+    try:
+        with c, c.cursor() as cur:
+            cur.execute(
+                """SELECT 1 FROM brain_issue_persistence
+                    WHERE issue_label = %s AND url = %s
+                      AND last_outcome = %s
+                    LIMIT 1""",
+                (issue_label[:MAX_ISSUE_LABEL_LEN], url or "", RESOLVED_OUTCOME),
+            )
+            return cur.fetchone() is not None
+    except Exception as e:
+        print(f"[brain_v2_store] is_verified_resolved failed: {e}",
               file=sys.stderr)
         return False
     finally:
@@ -470,7 +790,15 @@ def most_persistent_unfixed(min_count: int = 3, limit: int = 10,
                      AND (last_outcome IS NULL
                           OR last_outcome NOT IN ('proposed',
                                                   'approval_count_incremented',
-                                                  'approved'))
+                                                  'approved',
+                                                  -- INV1: a verified-resolved
+                                                  -- finding drops out of the
+                                                  -- learn worklist so the brain
+                                                  -- stops re-proposing it. If it
+                                                  -- regresses, bump_persistence
+                                                  -- flips it to 'reopened' (NOT in
+                                                  -- this list) and it returns here.
+                                                  'verified_resolved'))
                    ORDER BY seen_count DESC, last_seen_at DESC
                    LIMIT %s""",
                 (min_count, stale_after_hours, limit),

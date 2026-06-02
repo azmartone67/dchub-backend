@@ -519,7 +519,7 @@ def trigger_learn():
         if _STORE_OK:
             try:
                 _store.bump_persistence(
-                    issue_label=i.get("issue") or "",
+                    issue_label=(i.get("issue") or "")[:_store.MAX_ISSUE_LABEL_LEN],
                     url=i.get("url") or "",
                 )
             except Exception:

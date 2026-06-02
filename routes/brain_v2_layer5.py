@@ -574,9 +574,9 @@ def learn_backend_issues():
         # / 1-of-4 while the real 84-deep backlog flows through HERE untracked.
         # Wrapped so a telemetry hiccup never breaks the learn loop.
         try:
-            from routes.brain_v2_store import bump_persistence as _bp
+            from routes.brain_v2_store import bump_persistence as _bp, MAX_ISSUE_LABEL_LEN
             from routes.brain_learning import bump_temporal as _bt
-            _bp(issue_label=(issue.get("issue") or "")[:300], url=issue.get("url") or "")
+            _bp(issue_label=(issue.get("issue") or "")[:MAX_ISSUE_LABEL_LEN], url=issue.get("url") or "")
             _bt(issue.get("issue") or "", issue.get("url") or "")
         except Exception:
             pass
