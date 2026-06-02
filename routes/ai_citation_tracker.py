@@ -827,29 +827,44 @@ def _run_claude_citation_pass() -> dict:
                     continue
                 p = _parse_citations(text)
                 try:
-                    # Phase II-fix (2026-05-17): the ai_citations table
-                    # has BOTH `engine` AND a NOT-NULL `platform` column
-                    # (legacy schema artifact from before Phase UU
-                    # renamed everything to `engine`). Live probe shipped
-                    # 8 INSERTs that all failed with "null value in
-                    # column platform of relation ai_citations". Set
-                    # platform = engine so both NOT NULL constraints are
-                    # satisfied. ON CONFLICT (id) DO NOTHING satisfies
-                    # regression-lint (id is BIGSERIAL so never collides).
+                    # r62-qa: TRUE idempotency per (engine, prompt_id). The old
+                    # `ON CONFLICT (id) DO NOTHING` NEVER collided (id is
+                    # BIGSERIAL), so every weekly run minted a NEW row stamped
+                    # observed_at=NOW() for the same fixed canonical prompts —
+                    # manufacturing "fresh" citation activity (the re-stamp
+                    # drift the freshness-architecture memo warns about) and
+                    # bloating the table. Now: refresh the single most-recent
+                    # auto-cron row for this prompt IN PLACE; only INSERT when
+                    # none exists. One refreshed row per prompt, no accumulation.
+                    # (platform = engine satisfies the legacy NOT-NULL column.)
                     cur.execute("""
-                        INSERT INTO ai_citations
-                            (engine, platform, prompt_id, prompt_text,
-                             dchub_cited, dchub_position, dchawk_cited,
-                             dcbyte_cited, other_sources, response_text,
-                             source)
-                        VALUES (%s, %s, %s, %s, %s, NULL, %s, %s,
-                                %s::jsonb, %s, %s)
-                        ON CONFLICT (id) DO NOTHING
-                    """, ('claude', 'claude', prompt_id, prompt_text,
-                          p["dchub_cited"], p["dchawk_cited"],
-                          p["dcbyte_cited"],
-                          _json.dumps(p["other_sources"]),
-                          text[:2000], 'auto_cron_claude'))
+                        UPDATE ai_citations
+                           SET response_text = %s, dchub_cited = %s,
+                               dchawk_cited = %s, dcbyte_cited = %s,
+                               other_sources = %s::jsonb, observed_at = NOW()
+                         WHERE id = (
+                             SELECT id FROM ai_citations
+                              WHERE engine = 'claude' AND prompt_id = %s
+                                AND source = 'auto_cron_claude'
+                              ORDER BY observed_at DESC LIMIT 1
+                         )
+                    """, (text[:2000], p["dchub_cited"], p["dchawk_cited"],
+                          p["dcbyte_cited"], _json.dumps(p["other_sources"]),
+                          prompt_id))
+                    if cur.rowcount == 0:
+                        cur.execute("""
+                            INSERT INTO ai_citations
+                                (engine, platform, prompt_id, prompt_text,
+                                 dchub_cited, dchub_position, dchawk_cited,
+                                 dcbyte_cited, other_sources, response_text,
+                                 source)
+                            VALUES (%s, %s, %s, %s, %s, NULL, %s, %s,
+                                    %s::jsonb, %s, %s)
+                        """, ('claude', 'claude', prompt_id, prompt_text,
+                              p["dchub_cited"], p["dchawk_cited"],
+                              p["dcbyte_cited"],
+                              _json.dumps(p["other_sources"]),
+                              text[:2000], 'auto_cron_claude'))
                     out["recorded"] += 1
                 except Exception as e:
                     out["errors"].append({"prompt": prompt_id, "err": f"db:{str(e)[:60]}"})
