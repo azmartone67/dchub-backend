@@ -137,8 +137,18 @@ def _conn():
     return psycopg2.connect(db, sslmode="require")
 
 
+_TABLES_READY = False
 def _ensure_tables():
+    # r66: this ran on nearly every DCPI call (9 sites) from BOTH replicas, and
+    # the `ADD COLUMN data_basis_json` below takes an AccessExclusiveLock — so the
+    # concurrent ALTERs deadlocked constantly ([dcpi-fallback] deadlock detected).
+    # Run the idempotent DDL once per process, serialized across replicas with a
+    # transaction-scoped advisory lock so a second caller waits instead of deadlocking.
+    global _TABLES_READY
+    if _TABLES_READY:
+        return
     with _conn() as c, c.cursor() as cur:
+        cur.execute("SELECT pg_advisory_xact_lock(572341001)")
         cur.execute("""
             CREATE TABLE IF NOT EXISTS market_power_scores (
                 id              SERIAL PRIMARY KEY,
@@ -233,6 +243,7 @@ def _ensure_tables():
         cur.execute("CREATE INDEX IF NOT EXISTS ix_dcpi_daily_snapshots_date "
                     "ON dcpi_daily_snapshots(snapshot_date DESC)")
         c.commit()
+    _TABLES_READY = True  # idempotent DDL done for this process — skip on later calls
 
 
 # Phase 268 (2026-05-29) — snapshot writer + backfill bootstrap. Both
