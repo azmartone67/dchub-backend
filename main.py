@@ -22886,6 +22886,21 @@ def api_site_score():
         conn = get_read_db()
         c = conn.cursor()
 
+        def _cols_exist(table, cols):
+            """Return True only if EVERY col in `cols` exists on `table` (live schema).
+            Used to guard infrastructure_layers queries that reference columns
+            (latitude/longitude/layer_type/metadata) absent from the production
+            kmz_processor schema, so a missing column degrades to 0 instead of
+            raising UndefinedColumn. Never invents data; only gates the query."""
+            try:
+                c.execute("""
+                    SELECT COUNT(*) FROM information_schema.columns
+                    WHERE table_name = %s AND column_name = ANY(%s)
+                """, (table, list(cols)))
+                return (c.fetchone()[0] or 0) == len(cols)
+            except Exception:
+                return False
+
         # 1. Nearby facilities (competitive density, ~100km radius)
         c.execute("""
             SELECT COUNT(*) as cnt, COALESCE(SUM(power_mw), 0) as total_mw
@@ -22911,15 +22926,18 @@ def api_site_score():
             pass
 
         # Source B: infrastructure_layers table (4,939+ KMZ features)
+        # Guarded: latitude/longitude/layer_type are absent from the production
+        # kmz_processor schema; gate on live columns so a missing one degrades to 0.
         infra_substations = 0
         try:
-            c.execute("""
-                SELECT COUNT(*) FROM infrastructure_layers
-                WHERE latitude IS NOT NULL AND longitude IS NOT NULL
-                  AND LOWER(layer_type) IN ('substation', 'electric_substation', 'substations', 'power')
-                  AND (latitude - %s)*(latitude - %s) + (longitude - %s)*(longitude - %s) < 0.20
-            """, (lat, lat, lon, lon))
-            infra_substations = c.fetchone()[0] or 0
+            if _cols_exist('infrastructure_layers', ('latitude', 'longitude', 'layer_type')):
+                c.execute("""
+                    SELECT COUNT(*) FROM infrastructure_layers
+                    WHERE latitude IS NOT NULL AND longitude IS NOT NULL
+                      AND LOWER(layer_type) IN ('substation', 'electric_substation', 'substations', 'power')
+                      AND (latitude - %s)*(latitude - %s) + (longitude - %s)*(longitude - %s) < 0.20
+                """, (lat, lat, lon, lon))
+                infra_substations = c.fetchone()[0] or 0
         except Exception:
             pass
 
@@ -22941,31 +22959,39 @@ def api_site_score():
         # 4. Nearby power plants (~80km radius)
         nearby_power_plants = 0
         nearby_generation_mw = 0
+        # Guarded: latitude/longitude/layer_type/metadata are absent from the
+        # production kmz_processor schema; gate on live columns so a missing one
+        # degrades to 0 instead of raising UndefinedColumn.
         try:
-            c.execute("""
-                SELECT COUNT(*), COALESCE(SUM(
-                    CASE WHEN metadata IS NOT NULL 
-                         THEN CAST(NULLIF(metadata->>'capacity_mw', '') AS NUMERIC) 
-                         ELSE 0 END
-                ), 0)
-                FROM infrastructure_layers
-                WHERE latitude IS NOT NULL AND longitude IS NOT NULL
-                  AND LOWER(layer_type) IN ('power_plant', 'power_plants', 'generation')
-                  AND (latitude - %s)*(latitude - %s) + (longitude - %s)*(longitude - %s) < 0.52
-            """, (lat, lat, lon, lon))
-            pp_row = c.fetchone()
-            nearby_power_plants = pp_row[0] or 0
-            nearby_generation_mw = float(pp_row[1] or 0)
+            if _cols_exist('infrastructure_layers', ('latitude', 'longitude', 'layer_type', 'metadata')):
+                c.execute("""
+                    SELECT COUNT(*), COALESCE(SUM(
+                        CASE WHEN metadata IS NOT NULL
+                             THEN CAST(NULLIF(metadata->>'capacity_mw', '') AS NUMERIC)
+                             ELSE 0 END
+                    ), 0)
+                    FROM infrastructure_layers
+                    WHERE latitude IS NOT NULL AND longitude IS NOT NULL
+                      AND LOWER(layer_type) IN ('power_plant', 'power_plants', 'generation')
+                      AND (latitude - %s)*(latitude - %s) + (longitude - %s)*(longitude - %s) < 0.52
+                """, (lat, lat, lon, lon))
+                pp_row = c.fetchone()
+                nearby_power_plants = pp_row[0] or 0
+                nearby_generation_mw = float(pp_row[1] or 0)
         except Exception:
             pass
 
-        # Fallback: discovered_power_plants table
+        # Fallback: discovered_power_plants table.
+        # Live schema (verified via information_schema, not the stale CREATE TABLE
+        # in energy_auto_discovery.py): capacity_mw + lat/lng + market — there is
+        # NO total_mw / latitude / longitude column. Using the real columns so the
+        # SUM actually runs instead of silently throwing UndefinedColumn -> [].
         try:
             c.execute("""
                 SELECT COUNT(*), COALESCE(SUM(capacity_mw), 0)
                 FROM discovered_power_plants
-                WHERE latitude IS NOT NULL AND longitude IS NOT NULL
-                  AND (latitude - %s)*(latitude - %s) + (longitude - %s)*(longitude - %s) < 0.52
+                WHERE lat IS NOT NULL AND lng IS NOT NULL
+                  AND (lat - %s)*(lat - %s) + (lng - %s)*(lng - %s) < 0.52
             """, (lat, lat, lon, lon))
             dpp_row = c.fetchone()
             nearby_power_plants += (dpp_row[0] or 0)

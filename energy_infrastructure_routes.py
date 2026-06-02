@@ -553,24 +553,37 @@ def setup_energy_routes(app):
             print(f"Neon pipeline query error: {e}")
         
         # Transmission lines from Neon (infrastructure_layers)
+        # Schema guard: the production infrastructure_layers table (kmz_processor.py)
+        # has NO latitude/longitude/operator/metadata columns — geometry lives in the
+        # `coordinates` JSONB and attrs in `attributes` JSONB. Only run the spatial
+        # SELECT when the referenced flat columns actually exist; otherwise degrade to
+        # an empty transmission list rather than raising UndefinedColumn (which would
+        # also abort the shared transaction used by the power-plant query below).
         try:
             if _neon_conn:
                 _nc.execute("""
-                    SELECT name, operator, latitude, longitude,
-                           CAST(NULLIF(metadata->>'voltage_kv', '') AS NUMERIC) as voltage
-                    FROM infrastructure_layers
-                    WHERE latitude BETWEEN %s AND %s AND longitude BETWEEN %s AND %s
-                      AND LOWER(layer_name) IN ('transmission', 'transmission_line', 'electric_power_transmission_lines', 'transmission lines')
-                    LIMIT 200
-                """, (bounds['minLat'], bounds['maxLat'], bounds['minLng'], bounds['maxLng']))
-                for row in _nc.fetchall():
-                    transmission.append({
-                        'geometry': {'x': row[3], 'y': row[2]},
-                        'attributes': {
-                            'VOLTAGE': row[4] or 0, 'OWNER': row[1] or 'Unknown',
-                            'STATUS': 'In Service'
-                        }
-                    })
+                    SELECT COUNT(*) FROM information_schema.columns
+                    WHERE table_name = 'infrastructure_layers'
+                      AND column_name IN ('latitude', 'longitude', 'operator', 'metadata')
+                """)
+                _infra_cols_present = (_nc.fetchone() or [0])[0] == 4
+                if _infra_cols_present:
+                    _nc.execute("""
+                        SELECT name, operator, latitude, longitude,
+                               CAST(NULLIF(metadata->>'voltage_kv', '') AS NUMERIC) as voltage
+                        FROM infrastructure_layers
+                        WHERE latitude BETWEEN %s AND %s AND longitude BETWEEN %s AND %s
+                          AND LOWER(layer_name) IN ('transmission', 'transmission_line', 'electric_power_transmission_lines', 'transmission lines')
+                        LIMIT 200
+                    """, (bounds['minLat'], bounds['maxLat'], bounds['minLng'], bounds['maxLng']))
+                    for row in _nc.fetchall():
+                        transmission.append({
+                            'geometry': {'x': row[3], 'y': row[2]},
+                            'attributes': {
+                                'VOLTAGE': row[4] or 0, 'OWNER': row[1] or 'Unknown',
+                                'STATUS': 'In Service'
+                            }
+                        })
         except Exception as e:
             if _neon_conn:
                 try: _neon_conn.rollback()
@@ -578,15 +591,48 @@ def setup_energy_routes(app):
             print(f"Neon transmission query error: {e}")
         
         # Power plants from Neon (discovered_power_plants — 6,900+ records)
+        # Schema guard: the canonical table (energy_auto_discovery.py / _pg.py) defines
+        # total_mw / latitude / longitude (NO capacity_mw / lat / lng / fuel_type /
+        # generation_mwh / operator). A separate OSM loader instead writes capacity_mw /
+        # lat / lng. Resolve the real column names at runtime from information_schema and
+        # alias them to the names the row-mapping below expects, so the query runs on
+        # whichever schema is live and missing columns degrade to NULL (never
+        # UndefinedColumn). Filters, LIMIT, and the capacity-factor math are unchanged.
         try:
             if _neon_conn:
                 _nc.execute("""
-                    SELECT name, fuel_type, capacity_mw, generation_mwh,
-                           operator, status, lat, lng, source
+                    SELECT column_name FROM information_schema.columns
+                    WHERE table_name = 'discovered_power_plants'
+                """)
+                _pp_cols = {r[0] for r in _nc.fetchall()}
+                # Map each logical field -> first matching real column, else SQL NULL.
+                def _pp_pick(candidates, default='NULL'):
+                    for c in candidates:
+                        if c in _pp_cols:
+                            return c
+                    return default
+                _pp_lat = _pp_pick(['latitude', 'lat'])
+                _pp_lng = _pp_pick(['longitude', 'lng'])
+                _pp_cap = _pp_pick(['total_mw', 'capacity_mw'])
+                _pp_fuel = _pp_pick(['fuel_type', 'primary_source'])
+                _pp_gen = _pp_pick(['generation_mwh'])
+                _pp_oper = _pp_pick(['operator'])
+                _pp_status = _pp_pick(['status'])
+                _pp_source = _pp_pick(['source'])
+                # Only apply the spatial bbox filter if real lat/lng columns exist.
+                if _pp_lat != 'NULL' and _pp_lng != 'NULL':
+                    _pp_where = f"WHERE {_pp_lat} BETWEEN %s AND %s AND {_pp_lng} BETWEEN %s AND %s"
+                    _pp_params = (bounds['minLat'], bounds['maxLat'], bounds['minLng'], bounds['maxLng'])
+                else:
+                    _pp_where = ""
+                    _pp_params = ()
+                _nc.execute(f"""
+                    SELECT name, {_pp_fuel}, {_pp_cap}, {_pp_gen},
+                           {_pp_oper}, {_pp_status}, {_pp_lat}, {_pp_lng}, {_pp_source}
                     FROM discovered_power_plants
-                    WHERE lat BETWEEN %s AND %s AND lng BETWEEN %s AND %s
+                    {_pp_where}
                     LIMIT 100
-                """, (bounds['minLat'], bounds['maxLat'], bounds['minLng'], bounds['maxLng']))
+                """, _pp_params)
                 for row in _nc.fetchall():
                     cap_mw = row[2] or 0
                     gen_mwh = row[3] or 0
