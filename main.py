@@ -25196,6 +25196,13 @@ try:
 except Exception as _uk_e:
     print(f"[main] iso_uk_elexon_bp register failed: {_uk_e}", flush=True)
 
+try:
+    from routes.iso_au_aemo import iso_au_aemo_bp
+    app.register_blueprint(iso_au_aemo_bp)
+    print("[main] iso_au_aemo_bp registered — LIVE international grid (AU NEM, AEMO tokenless)", flush=True)
+except Exception as _au_e:
+    print(f"[main] iso_au_aemo_bp register failed: {_au_e}", flush=True)
+
 # Phase ZZZZZ-round34 (2026-05-24): Tier 2 MCP tools — PDF site reports + CSV export
 try:
     from routes.mcp_tier2_reports import mcp_tier2_bp

@@ -73,10 +73,12 @@ def extract_all():
         # not this orchestrator, so it no longer runs the dead extractor.
         ("iso_tva",   "TVA"),     # ← Phase HH — Tennessee Valley
         ("iso_bpa",   "BPA"),     # ← Phase HH — Pacific NW
-        # #60 (2026-06-02): FIRST LIVE international grid. GB via Elexon
-        # Insights (tokenless public API) — real 5-min fuel mix + demand,
-        # NOT a modeled baseline. Feeds the NGESO-tagged DCPI markets (London).
+        # #60 (2026-06-02): LIVE international grids via tokenless public APIs
+        # (real data, NOT modeled baselines). GB = Elexon Insights (5-min fuel
+        # mix + demand); AU = AEMO NEM summary (demand + gen + price). Feed the
+        # NGESO/AEMO-tagged DCPI markets (London, Sydney, Melbourne).
         ("iso_uk_elexon", "NGESO"),
+        ("iso_au_aemo",   "AEMO"),
         # 2026-05-30: non-ISO utility/co-op balancing authorities (40+ BAs:
         # APS/SRP/FPL + big IOUs + Pacific-NW PUDs + WAPA + co-ops).
         # run_extraction() fans out all of them in parallel internally
