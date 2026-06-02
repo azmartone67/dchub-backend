@@ -3854,6 +3854,13 @@ def check_canonical_redirect_loops() -> list[dict]:
                 loc_path = parsed.path or "/"
             except Exception:
                 loc_path = loc
+            # r-redir-norm (2026-06-02): a 308 from /x to /x/ (or vice-versa) is
+            # Flask/Werkzeug trailing-slash canonicalization — a healthy one-hop
+            # 30x->200, NOT a loop. It rstrip-equals the source, which made
+            # /dc-hub-media fire canonical_redirect_loop forever. Skip the
+            # trailing-slash-only case; a real loop has a byte-identical target.
+            if loc_path.rstrip("/") == src.rstrip("/") and loc_path != src:
+                continue
             # Self-loop: redirects to itself
             if loc_path.rstrip("/") == src.rstrip("/"):
                 findings.append({
@@ -7158,6 +7165,31 @@ def check_package_metadata_freshness() -> list[dict]:
     instead of crashing the whole scan."""
     findings: list[dict] = []
     from datetime import datetime, timedelta
+
+    # r-l7-guard (2026-06-02): this L7-authored detector queries
+    # public_install_counts + package_metadata — tables that were NEVER created
+    # anywhere in the backend (the PyPI install-tracker feature was proposed but
+    # never built; grep confirms the names appear only in this file). So the
+    # orphan query below raised UndefinedTable every scan and the except handler
+    # emitted a permanent schema_drift_for_l7_detector finding (stuck x6).
+    # Short-circuit silently until the tables actually exist — no meta-finding.
+    try:
+        _gc = _db()
+        if _gc is None:
+            return findings
+        try:
+            with _gc.cursor() as _gcur:
+                _gcur.execute(
+                    "SELECT to_regclass('public.public_install_counts'), "
+                    "to_regclass('public.package_metadata')")
+                _ex = _gcur.fetchone()
+            if not _ex or not _ex[0] or not _ex[1]:
+                return findings  # feature not built yet — nothing to check, stay quiet
+        finally:
+            try: _gc.close()
+            except Exception: pass
+    except Exception:
+        return findings  # can't even probe existence -> stay silent (no schema_drift noise)
 
     # Check 1: orphaned packages (install activity but no metadata row)
     try:

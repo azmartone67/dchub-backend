@@ -136,7 +136,11 @@ def check_mcp_health() -> list[dict]:
     for t in live_tools:
         if not isinstance(t, dict):
             continue
-        desc = (t.get("description") or "")
+        # r-field-fix (2026-06-02): the live MCP manifest carries the agent-
+        # facing copy in 'summary', not 'description' (every tool has summary,
+        # none has description). Reading only 'description' saw "" for all 30
+        # tools and fired mcp_health_weak_tool_descriptions maximally forever.
+        desc = (t.get("description") or t.get("summary") or "").strip()
         if len(desc) < _WEAK_DESC_THRESHOLD_CHARS:
             weak.append({"name": t.get("name"), "chars": len(desc)})
     if weak:

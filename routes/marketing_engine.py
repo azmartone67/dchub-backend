@@ -2580,6 +2580,16 @@ def _linkedin_configured() -> bool:
 
 
 def _twitter_configured() -> bool:
+    # r-twitter-honest (2026-06-02): "configured" must mean "actually wired to
+    # publish", not merely "tokens present in env". The X publisher
+    # (content_publisher.start_twitter_publisher) hard-disables itself unless
+    # TWITTER_PUBLISHER_ENABLED is truthy — it was turned off 2026-05-25 because
+    # the X dev app isn't inside a Project (every cycle 403'd). Reporting
+    # configured=True off bare tokens while the publisher is off produced a
+    # PERMANENT false social_publish_silent_failure:twitter finding
+    # (configured && published_7d==0 && backlog) and a misleading worker-status.
+    if os.environ.get("TWITTER_PUBLISHER_ENABLED", "").strip().lower() not in ("1", "true", "yes"):
+        return False
     if os.environ.get("TWITTER_BEARER_TOKEN", "").strip():
         return True
     return all(os.environ.get(k, "").strip() for k in (
