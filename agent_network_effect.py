@@ -9,9 +9,96 @@ Usage in main.py:
     register_agent_network(app)
 """
 
-import random
+import os
 from datetime import datetime, timezone
 from flask import jsonify, request, make_response
+
+# Buckets that are NOT external AI platforms — our own infra, probes,
+# health-checkers, scrapers, and generic transport placeholders. Mirrors
+# flask_mcp_endpoints._LIVE_PROOF_NONPLATFORM so the registry counts only
+# real external agents (never inflated by our own traffic).
+_NONPLATFORM = (
+    "", "mcp", "mcp-worker", "mcp_generic", "mcp-generic", "unknown",
+    "unknown-ua", "anonymous", "internal", "internal-dchub", "direct",
+    "node-script", "python-script", "curl", "postman", "probe",
+    "health", "scanner", "checker",
+)
+
+# Pretty display names for known external platforms. Anything not listed
+# falls back to a title-cased version of the raw platform string — we never
+# invent a vendor that isn't actually in the data.
+_PLATFORM_DISPLAY = {
+    "claude": "Claude", "chatgpt": "ChatGPT", "openai": "ChatGPT",
+    "gemini": "Gemini", "copilot": "Copilot", "perplexity": "Perplexity",
+    "grok": "Grok", "deepseek": "DeepSeek", "cursor": "Cursor",
+    "cline": "Cline", "windsurf": "Windsurf", "meta": "Meta AI",
+    "mistral": "Mistral", "cohere": "Cohere",
+}
+
+_UUID_RE_STR = (r"^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-"
+                r"[0-9a-f]{4}-[0-9a-f]{12}$")
+
+
+def _live_agent_rows():
+    """Real per-platform tool-call counts from mcp_tool_calls (last 30d).
+
+    Returns (rows, available). `rows` is a list of dicts derived ENTIRELY
+    from a live DB read; `available` is False when the DB/table is
+    unavailable or there is no external-platform data — in which case the
+    caller must NOT fabricate counts.
+
+    LIVE-SCHEMA TRUTH (verified via information_schema 2026-06-02):
+        mcp_tool_calls(platform TEXT, created_at TIMESTAMP, ...)
+    """
+    import re as _re
+    _uuid = _re.compile(_UUID_RE_STR)
+    url = os.environ.get("NEON_DATABASE_URL") or os.environ.get("DATABASE_URL")
+    if not url:
+        return [], False
+    try:
+        try:
+            import psycopg as _pg
+            conn = _pg.connect(url, autocommit=True)
+        except ImportError:
+            import psycopg2 as _pg  # type: ignore
+            conn = _pg.connect(url)
+            conn.autocommit = True
+        try:
+            cur = conn.cursor()
+            cur.execute(
+                "SELECT LOWER(COALESCE(platform,'')) AS p, "
+                "       COUNT(*) AS n, "
+                "       MAX(created_at) AS last_seen "
+                "FROM mcp_tool_calls "
+                "WHERE created_at >= NOW() - INTERVAL '30 days' "
+                "GROUP BY p ORDER BY n DESC"
+            )
+            raw = cur.fetchall()
+            cur.close()
+        finally:
+            conn.close()
+    except Exception:
+        return [], False
+
+    rows = []
+    for p, n, last_seen in (raw or []):
+        if p in _NONPLATFORM or _uuid.match(p or ""):
+            continue
+        _n = int(n or 0)
+        rows.append({
+            "agent": _PLATFORM_DISPLAY.get(p, p.title() if p else "Unknown"),
+            "platform_key": p,
+            "integration": "MCP (Streamable HTTP)",
+            "status": "active",
+            "tool_calls_30d": _n,
+            # Backward-compat alias for existing consumers (ai.html renders
+            # `total_queries`). This is the SAME real number — not a separate
+            # invented metric — so older UIs show live counts, not 0.
+            "total_queries": _n,
+            "last_active": (last_seen.isoformat()
+                            if hasattr(last_seen, "isoformat") else None),
+        })
+    return rows, True
 
 
 def _cors_json(data, status=200):
@@ -35,79 +122,33 @@ def register_agent_network(app):
 
     @app.route('/api/agents/registry', methods=['GET', 'OPTIONS'])
     def agent_registry():
+        # Master-shell 2 (2026-06-02): DE-HARDCODED. This used to return
+        # invented per-platform query counts (Claude=28500, ChatGPT=24200,
+        # ...). Those were never real. It now reads live per-platform
+        # tool-call counts from mcp_tool_calls (same honest source as
+        # /api/v1/stats/live-proof). If live data is unavailable it returns
+        # an EMPTY registry with data_available=false — it never falls back
+        # to the old fake numbers.
         if request.method == 'OPTIONS':
             return _cors_json({})
         now = datetime.now(timezone.utc)
+        rows, available = _live_agent_rows()
+        # Honest sort: most-active first.
+        rows.sort(key=lambda r: r.get("tool_calls_30d", 0), reverse=True)
         return _cors_json({
             "dc_hub_agent_registry": {
-                "registry_version": "2.0",
+                "registry_version": "3.0-live",
                 "updated_at": now.isoformat(),
-                "total_connected_agents": 7,
-                "agents": [
-                    {
-                        "agent": "Claude",
-                        "platform": "Anthropic",
-                        "integration": "MCP Server (Streamable HTTP)",
-                        "status": "active",
-                        "tier": "champion",
-                        "total_queries": 28500,
-                        "last_active": now.isoformat()
-                    },
-                    {
-                        "agent": "ChatGPT",
-                        "platform": "OpenAI",
-                        "integration": "Custom GPTs + Actions API",
-                        "status": "active",
-                        "tier": "champion",
-                        "total_queries": 24200,
-                        "last_active": now.isoformat()
-                    },
-                    {
-                        "agent": "Gemini",
-                        "platform": "Google",
-                        "integration": "Vertex AI Extensions",
-                        "status": "active",
-                        "tier": "pioneer",
-                        "total_queries": 15800,
-                        "last_active": now.isoformat()
-                    },
-                    {
-                        "agent": "Copilot",
-                        "platform": "Microsoft",
-                        "integration": "Copilot Studio + MCP",
-                        "status": "active",
-                        "tier": "pioneer",
-                        "total_queries": 12400,
-                        "last_active": now.isoformat()
-                    },
-                    {
-                        "agent": "Perplexity",
-                        "platform": "Perplexity AI",
-                        "integration": "Indexed + Schema.org",
-                        "status": "active",
-                        "tier": "explorer",
-                        "total_queries": 9800,
-                        "last_active": now.isoformat()
-                    },
-                    {
-                        "agent": "Grok",
-                        "platform": "xAI",
-                        "integration": "MCP Server Protocol",
-                        "status": "active",
-                        "tier": "explorer",
-                        "total_queries": 6200,
-                        "last_active": now.isoformat()
-                    },
-                    {
-                        "agent": "DeepSeek",
-                        "platform": "DeepSeek",
-                        "integration": "API + llms.txt",
-                        "status": "active",
-                        "tier": "newcomer",
-                        "total_queries": 3100,
-                        "last_active": now.isoformat()
-                    }
-                ]
+                "data_available": available,
+                "window": "30d",
+                # Real distinct external-platform count (0 if no data).
+                "total_connected_agents": len(rows),
+                "agents": rows,
+                "source": ("Live: COUNT(*) + MAX(created_at) per platform from "
+                           "mcp_tool_calls (30d), external buckets only."),
+                "note": (None if available else
+                         "Live usage data unavailable right now; counts are "
+                         "withheld rather than estimated."),
             }
         })
 

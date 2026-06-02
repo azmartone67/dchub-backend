@@ -529,6 +529,11 @@ def fix_backfill_testimonials():
     if not DATABASE_URL: return False, "no DATABASE_URL"
     try:
         with _conn() as c, c.cursor() as cur:
+            # ⚠️ STALE/NARROW vs the live table: live ai_testimonials also has
+            # platform, agent_name, context, category, verified, approved, featured,
+            # query, approved_at, source (verified via information_schema 2026-06-02).
+            # This CREATE TABLE IF NOT EXISTS no-ops against the migrated live table;
+            # do NOT treat it as canonical — the capture INSERTs use the full schema.
             cur.execute("""
                 CREATE TABLE IF NOT EXISTS ai_testimonials (
                     id SERIAL PRIMARY KEY,

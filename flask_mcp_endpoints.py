@@ -39,6 +39,14 @@ from flask import Blueprint, Response, jsonify, request
 
 mcp_bp = Blueprint("mcp_bp", __name__)
 
+# Module-level UUID matcher (session_ids sometimes leak into the platform
+# column upstream; we drop those so platform counts stay honest). Defined at
+# module scope so any handler can use it. Local copies elsewhere predate this.
+import re as _re_mod
+_UUID_RE_MOD = _re_mod.compile(
+    r"^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$"
+)
+
 NEON_URL     = os.environ.get("NEON_DATABASE_URL") or os.environ.get("DATABASE_URL")
 INTERNAL_KEY = os.environ.get("DCHUB_INTERNAL_KEY", "dchub-internal-sync-2026")
 
@@ -417,6 +425,16 @@ def claim_key():
         # Reasoner) identified the bare /pricing redirect as the root
         # cause of paywall_hit→click=0.01% drop-off.
         upgrade_url=f"https://dchub.cloud/upgrade?key={api_key}",
+        # Master-shell 2 (2026-06-02): OPTIONAL, opt-in social-proof capture.
+        # If the agent's operator wants to share how DC Hub helped, POST that
+        # endpoint with {api_key, quote, name?, company?}. Strictly opt-in —
+        # ignoring this changes nothing. Stored unapproved (manual admin
+        # review) and never exposes the key's email.
+        quote_capture_url="https://dchub.cloud/api/v1/keys/claim/quote",
+        quote_capture_note=("Optional: if DC Hub helped, share a short quote "
+                            "via POST /api/v1/keys/claim/quote {api_key, quote}. "
+                            "Opt-in; reviewed by a human before any public use; "
+                            "your email is never shown."),
     ), 200
 
 
@@ -516,6 +534,32 @@ def identify_key():
     except Exception:
         pass
 
+    # Master-shell 2 (2026-06-02): OPTIONAL opt-in quote on identify. If the
+    # operator volunteered a quote alongside their email, capture it to
+    # ai_testimonials UNAPPROVED (source='claim_quote') — never auto-published,
+    # and the email is NOT copied into the testimonial (no PII exposure).
+    quote_captured = False
+    _quote = (str(body.get("quote") or "")).strip()
+    if _quote and len(_quote) >= 15:
+        try:
+            # Redact any email pasted into the quote so we never store PII.
+            _quote_clean = _kc_re.sub(r"[^@\s]+@[^@\s]+\.[^@\s]+", "[redacted]", _quote)[:1500]
+            # Defense-in-depth: redact any email pasted into name/company too (PII
+            # parity with /api/v1/keys/claim/quote) so this path can't store PII either.
+            _name = _kc_re.sub(r"[^@\s]+@[^@\s]+\.[^@\s]+", "[redacted]", str(body.get("name") or "")).strip()[:120]
+            _company = _kc_re.sub(r"[^@\s]+@[^@\s]+\.[^@\s]+", "[redacted]", str(body.get("company") or "")).strip()[:160]
+            with _pool.connection() as conn, conn.cursor() as cur:
+                cur.execute(
+                    """INSERT INTO ai_testimonials
+                           (platform, agent_name, quote, context, category, source, approved)
+                       VALUES ('mcp_agent', %s, %s, %s, 'recommendation', 'claim_quote', FALSE)""",
+                    ((_name or None), _quote_clean, (_company or None)),
+                )
+            quote_captured = True
+        except Exception:
+            # Never fail identify on a capture hiccup.
+            quote_captured = False
+
     masked = email
     try:
         _u, _d = email.split("@", 1)
@@ -527,6 +571,8 @@ def identify_key():
         ok=True,
         identified=True,
         already_identified=already,
+        quote_captured=quote_captured,
+        quote_capture_url="https://dchub.cloud/api/v1/keys/claim/quote",
         email_masked=masked,
         unlocked={
             "daily_calls": int(os.environ.get("MCP_IDENTIFIED_DAILY_LIMIT", "100")),
@@ -1671,3 +1717,262 @@ def trial_check():
     except Exception as e:
         return jsonify({"trial_used": True, "prior_calls": 0,
                         "error": str(e)}), 200
+
+
+# ── GET /api/v1/stats/live-proof — HONEST platform-usage proof ──────────────
+# Master-shell 2 (2026-06-02): the testimonials / social-proof wall must be
+# REAL platform usage, never invented. This endpoint returns counts that ALL
+# trace to a live DB read; if a value is 0 or its source table/column is
+# unavailable, it returns 0 / null with an explicit flag instead of a
+# fabricated number.
+#
+# LIVE-SCHEMA TRUTH (verified via information_schema 2026-06-02 against the
+# Railway origin — /api/v1/admin/schema?table=mcp_tool_calls):
+#   mcp_tool_calls(id, tool_name, platform, client_name, params, success,
+#                  response_time_ms, ip_address, user_agent, created_at,
+#                  session_id)            -- created_at = timestamp col
+#   ai_testimonials(... approved, source, created_at ...)
+#
+# Columns this endpoint reads (cited back in the response as source_columns):
+#   tool_calls_7d / 30d  : COUNT(*)               WHERE created_at >= NOW()-N
+#   distinct_callers_7d  : COUNT(DISTINCT session_id)  -- real per-client id
+#   distinct_ips_7d      : COUNT(DISTINCT ip_address)  -- secondary signal
+#   distinct_platforms   : COUNT(DISTINCT platform) minus internal/probe/
+#                          generic buckets (honest external-vendor count)
+#   approved_testimonials_count : COUNT(*) FROM ai_testimonials
+#                                 WHERE approved = TRUE
+#
+# This is the source of truth for the frontend "N agents use DC Hub" headline
+# and for /api/agents/registry's de-hardcoded counts.
+
+# Buckets that are NOT external AI platforms — our own infra, probes,
+# health-checkers, scrapers, and the generic 'mcp'/'unknown' transport
+# placeholders. Mirrors the funnel's _signal_excl conventions so the
+# platform count is an honest external-vendor number, not inflated by
+# our own traffic. (Memory: dchub MCP signal-inflation — gate on real
+# external callers, never raw COUNT(*).)
+_LIVE_PROOF_NONPLATFORM = (
+    "", "mcp", "mcp-worker", "mcp_generic", "mcp-generic", "unknown",
+    "unknown-ua", "anonymous", "internal", "internal-dchub", "direct",
+    "node-script", "python-script", "curl", "postman", "probe",
+    "health", "scanner", "checker",
+)
+
+
+@mcp_bp.get("/api/v1/stats/live-proof")
+def stats_live_proof():
+    """PUBLIC. Real platform-usage proof — every number traces to a DB read.
+
+    Returns 0 / null + a `data_available: false` flag rather than ever
+    inventing a count. No PII (no emails, no IPs returned — only an
+    aggregate distinct-IP COUNT). Safe to render publicly.
+    """
+    now_iso = datetime.now(timezone.utc).isoformat()
+    out = {
+        "ok": True,
+        "as_of": now_iso,
+        "data_available": False,          # flips true if ANY real read works
+        # Honest defaults — these are NOT displayed as real unless the
+        # matching *_available flag is true.
+        "tool_calls_7d": 0,
+        "tool_calls_30d": 0,
+        "distinct_callers_7d": 0,
+        "distinct_ips_7d": 0,
+        "distinct_platforms": 0,
+        "approved_testimonials_count": 0,
+        "platforms_7d": [],               # [{platform, calls}] external only
+        "flags": {
+            "tool_calls_available": False,
+            "callers_available": False,
+            "platforms_available": False,
+            "testimonials_available": False,
+        },
+        # Cite the exact live columns each number is derived from.
+        "source_columns": {
+            "tool_calls_7d":               "COUNT(*) mcp_tool_calls WHERE created_at >= NOW()-7d",
+            "tool_calls_30d":              "COUNT(*) mcp_tool_calls WHERE created_at >= NOW()-30d",
+            "distinct_callers_7d":         "COUNT(DISTINCT session_id) mcp_tool_calls (7d)",
+            "distinct_ips_7d":             "COUNT(DISTINCT ip_address) mcp_tool_calls (7d)",
+            "distinct_platforms":          "COUNT(DISTINCT platform) mcp_tool_calls (7d, external buckets only)",
+            "approved_testimonials_count": "COUNT(*) ai_testimonials WHERE approved = TRUE",
+        },
+        "note": ("All counts are live reads from mcp_tool_calls + "
+                 "ai_testimonials. A value of 0 with its *_available flag "
+                 "false means no data / table unavailable — never a "
+                 "placeholder."),
+    }
+
+    # 1) Tool-call volume (7d / 30d) — created_at is the verified ts column.
+    try:
+        with _pool.connection() as conn, conn.cursor() as cur:
+            cur.execute(
+                "SELECT COUNT(*) FROM mcp_tool_calls "
+                "WHERE created_at >= NOW() - INTERVAL '7 days'"
+            )
+            out["tool_calls_7d"] = int((cur.fetchone() or [0])[0] or 0)
+            cur.execute(
+                "SELECT COUNT(*) FROM mcp_tool_calls "
+                "WHERE created_at >= NOW() - INTERVAL '30 days'"
+            )
+            out["tool_calls_30d"] = int((cur.fetchone() or [0])[0] or 0)
+        out["flags"]["tool_calls_available"] = True
+        out["data_available"] = True
+    except Exception as e:
+        out["flags"]["tool_calls_error"] = str(e)[:120]
+
+    # 2) Distinct callers (session_id = real per-client attribution; memory:
+    #    any-metric ÷ raw COUNT(*) screams a fake crisis — gate on DISTINCT
+    #    callers) + distinct IPs as a secondary honest signal.
+    try:
+        with _pool.connection() as conn, conn.cursor() as cur:
+            cur.execute(
+                "SELECT COUNT(DISTINCT session_id), COUNT(DISTINCT ip_address) "
+                "FROM mcp_tool_calls "
+                "WHERE created_at >= NOW() - INTERVAL '7 days'"
+            )
+            r = cur.fetchone() or (0, 0)
+            out["distinct_callers_7d"] = int(r[0] or 0)
+            out["distinct_ips_7d"] = int(r[1] or 0)
+        out["flags"]["callers_available"] = True
+        out["data_available"] = True
+    except Exception as e:
+        out["flags"]["callers_error"] = str(e)[:120]
+
+    # 3) Distinct EXTERNAL platforms (7d) — exclude our own infra / probes /
+    #    generic transport buckets so the "N platforms" headline is honest.
+    try:
+        with _pool.connection() as conn, conn.cursor() as cur:
+            cur.execute(
+                "SELECT LOWER(COALESCE(platform, '')) AS p, COUNT(*) AS n "
+                "FROM mcp_tool_calls "
+                "WHERE created_at >= NOW() - INTERVAL '7 days' "
+                "GROUP BY p ORDER BY n DESC"
+            )
+            rows = cur.fetchall() or []
+        externals = [
+            {"platform": p, "calls": int(n or 0)}
+            for (p, n) in rows
+            if p not in _LIVE_PROOF_NONPLATFORM
+            # drop UUID-shaped session leakage that escaped normalization
+            and not _UUID_RE_MOD.match(p)
+        ]
+        out["platforms_7d"] = externals
+        out["distinct_platforms"] = len(externals)
+        out["flags"]["platforms_available"] = True
+        out["data_available"] = True
+    except Exception as e:
+        out["flags"]["platforms_error"] = str(e)[:120]
+
+    # 4) Approved public testimonials — the only ones safe to show.
+    try:
+        with _pool.connection() as conn, conn.cursor() as cur:
+            cur.execute(
+                "SELECT COUNT(*) FROM ai_testimonials WHERE approved = TRUE"
+            )
+            out["approved_testimonials_count"] = int((cur.fetchone() or [0])[0] or 0)
+        out["flags"]["testimonials_available"] = True
+        out["data_available"] = True
+    except Exception as e:
+        out["flags"]["testimonials_error"] = str(e)[:120]
+
+    return jsonify(out), 200
+
+
+# ── POST /api/v1/keys/claim/quote — OPT-IN testimonial capture ─────────────
+# Master-shell 2 (2026-06-02): the honest capture path. ~90% of traffic is
+# anonymous LLM-proxy with no identity; the only place a real human/agent
+# can volunteer a quote is a real-identity touchpoint (they hold a claimed
+# key). This endpoint is STRICTLY OPT-IN — an agent only calls it if its
+# operator chose to share a quote.
+#
+# Stored to ai_testimonials with source='claim_quote' and approved=FALSE
+# (manual admin approval before anything is shown publicly). No email / PII
+# is written here — ai_testimonials has no email column, and we deliberately
+# do NOT copy the key's email into it. The public testimonial shows only the
+# name + company + quote the user chose to share.
+
+@mcp_bp.post("/api/v1/keys/claim/quote")
+def claim_key_quote():
+    """Public, OPT-IN. Attach a volunteered quote to a claimed key.
+
+    Body: {"api_key": "dch_live_...", "quote": "...",
+           "name": "Jane Doe" (optional), "company": "Acme" (optional)}
+
+    The quote is stored UNAPPROVED (approved=FALSE) for manual admin review.
+    Never auto-published, never exposes the key's email.
+    """
+    body = request.get_json(silent=True) or {}
+    api_key = (str(body.get("api_key") or "")).strip()
+    quote = (str(body.get("quote") or "")).strip()
+    # Public-safe identity the user CHOSE to share. Never an email.
+    name = (str(body.get("name") or "")).strip()[:120]
+    company = (str(body.get("company") or "")).strip()[:160]
+
+    if not api_key:
+        return jsonify(ok=False, error="missing_api_key",
+                       message="Pass the api_key you claimed from /api/v1/keys/claim."), 200
+    if not quote or len(quote) < 15:
+        return jsonify(ok=False, error="quote_too_short",
+                       message="Share a sentence or two about how DC Hub helped (min 15 chars)."), 200
+    quote = quote[:1500]
+    # Guard: if someone pastes an email into the quote/name, redact it so we
+    # never store PII even by user error (capture must not expose PII).
+    _email_pat = _kc_re.compile(r"[^@\s]+@[^@\s]+\.[^@\s]+")
+    quote = _email_pat.sub("[redacted]", quote)
+    name = _email_pat.sub("", name).strip()
+
+    # Resolve the key → confirm it exists + pick up its real platform (if the
+    # claim recorded one) so the captured quote is attributed honestly.
+    platform = "mcp_agent"
+    try:
+        with _pool.connection() as conn, conn.cursor() as cur:
+            cur.execute(
+                "SELECT status, metadata FROM mcp_dev_keys WHERE api_key = %s",
+                (api_key,),
+            )
+            row = cur.fetchone()
+            if not row:
+                return jsonify(ok=False, error="unknown_api_key",
+                               message="That key isn't recognized. Claim one at /api/v1/keys/claim."), 200
+            status = row[0]
+            if status and status != "active":
+                return jsonify(ok=False, error="key_inactive",
+                               message=f"That key is {status}."), 200
+            meta = row[1] or {}
+            if isinstance(meta, str):
+                try: meta = json.loads(meta)
+                except Exception: meta = {}
+            _cn = (meta.get("client_name") or "").strip().lower()
+            if _cn and _cn not in _LIVE_PROOF_NONPLATFORM:
+                platform = _cn[:80]
+    except Exception as e:
+        return jsonify(ok=False, error="lookup_failed",
+                       message="Couldn't verify that key right now — your key still works; try again later.",
+                       detail=str(e)[:120]), 200
+
+    # Store UNAPPROVED. agent_name <- user-chosen name; context <- company.
+    # source='claim_quote'; approved defaults FALSE (manual admin approval).
+    try:
+        with _pool.connection() as conn, conn.cursor() as cur:
+            cur.execute(
+                """INSERT INTO ai_testimonials
+                       (platform, agent_name, quote, context, category, source, approved)
+                   VALUES (%s, %s, %s, %s, 'recommendation', 'claim_quote', FALSE)
+                   RETURNING id""",
+                (platform, (name or None), quote, (company or None)),
+            )
+            new_id = (cur.fetchone() or [None])[0]
+    except Exception as e:
+        return jsonify(ok=False, error="storage_failed",
+                       message="Couldn't save that right now — try again later.",
+                       detail=str(e)[:120]), 200
+
+    return jsonify(
+        ok=True,
+        captured=True,
+        id=new_id,
+        approved=False,
+        message=("Thank you — your note was received and is pending review. "
+                 "Nothing is published until a human approves it, and we never "
+                 "share your email."),
+    ), 200
