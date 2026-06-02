@@ -660,6 +660,7 @@ def register_energy_discovery_routes(app):
         data = _phase25_real_counts()
         return jsonify({'success': True, 'data': data})
 
+# AUTO-REPAIR: duplicate route '/api/energy-discovery/health' also in energy_auto_discovery.py:630 — review and remove one
     @app.route('/api/energy-discovery/health', methods=['GET'])
     def energy_discovery_health():
         """Check if HIFLD endpoints are alive."""
@@ -670,6 +671,7 @@ def register_energy_discovery_routes(app):
             'all_healthy': all_alive,
             'sources': results
         })
+# AUTO-REPAIR: duplicate route '/api/energy-discovery/sync-now' also in energy_auto_discovery.py:641 — review and remove one
 
     @app.route('/api/energy-discovery/sync-now', methods=['POST'])
     def energy_discovery_sync_now():

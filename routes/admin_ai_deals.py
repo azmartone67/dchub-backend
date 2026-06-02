@@ -101,7 +101,7 @@ def restore_marquee_deals():
             for d in MARQUEE:
                 cur.execute("""
                     INSERT INTO deals (id, date, year, buyer, seller, value, type, market, notes, verified, source_url, created_at)
-                    VALUES (%s,%s,%s,%s,%s,%s,%s,%s,%s, 1, '', NOW())
+                    VALUES (%s,%s,%s,%s,%s,%s,%s,%s,%s, 1, '', NOW() ON CONFLICT DO NOTHING)
                     ON CONFLICT (id) DO UPDATE SET
                         buyer=EXCLUDED.buyer, seller=EXCLUDED.seller, value=EXCLUDED.value,
                         type=EXCLUDED.type, market=EXCLUDED.market, notes=EXCLUDED.notes,
@@ -369,6 +369,7 @@ def _validate_and_map(p: dict) -> tuple[Optional[dict], Optional[str]]:
 # POST -- insert (or upsert by id)
 # ---------------------------------------------------------------------------
 
+# AUTO-REPAIR: duplicate route '' also in cors_proxy_routes.py:114 — review and remove one
 @admin_ai_deals_bp.route("", methods=["POST"])
 def insert_deal():
     err = _check_auth()
@@ -386,7 +387,7 @@ def insert_deal():
             extraction_confidence, extracted_via, extracted_at, created_at
         )
         VALUES (
-            %(id)s, %(date)s, %(year)s, %(buyer)s, %(seller)s, %(value)s,
+            %(id) ON CONFLICT DO NOTHINGs, %(date)s, %(year)s, %(buyer)s, %(seller)s, %(value)s,
             %(type)s, %(deal_category)s, %(region)s, %(market)s,
             %(source_url)s, %(notes)s, %(verified)s, %(status)s,
             %(extraction_confidence)s, %(extracted_via)s, %(extracted_at)s,
@@ -424,6 +425,7 @@ def insert_deal():
 # ---------------------------------------------------------------------------
 # GET -- list
 # ---------------------------------------------------------------------------
+# AUTO-REPAIR: duplicate route '' also in cors_proxy_routes.py:114 — review and remove one
 
 @admin_ai_deals_bp.route("", methods=["GET"])
 def list_deals():
@@ -478,6 +480,7 @@ def list_deals():
 
 # ---------------------------------------------------------------------------
 # GET /health
+# AUTO-REPAIR: duplicate route '/health' also in main.py:3885 — review and remove one
 # ---------------------------------------------------------------------------
 
 @admin_ai_deals_bp.route("/health", methods=["GET"])

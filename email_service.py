@@ -678,7 +678,7 @@ def start_welcome_series(user_id: str, email: str, name: str = "there"):
     
     c.execute("""
         INSERT INTO welcome_series (id, user_id, email, current_step, started_at, status)
-        VALUES (%s, %s, %s, 0, %s, 'active')
+        VALUES (%s, %s, %s, 0, %s, 'active') ON CONFLICT DO NOTHING
     """, (series_id, user_id, email, datetime.utcnow().isoformat()))
     
     # Schedule all emails in the series
@@ -703,7 +703,7 @@ def start_welcome_series(user_id: str, email: str, name: str = "there"):
         c.execute("""
             INSERT INTO email_queue 
             (id, user_id, email, template_name, subject, body_html, scheduled_at, status, sequence_id, sequence_step, created_at)
-            VALUES (%s, %s, %s, %s, %s, %s, %s, 'scheduled', %s, %s, %s)
+            VALUES (%s, %s, %s, %s, %s, %s, %s, 'scheduled', %s, %s, %s) ON CONFLICT DO NOTHING
         """, (
             email_id,
             user_id,
@@ -971,7 +971,7 @@ def record_email_event(email_id: str, event_type: str, ip: str = None, user_agen
     
     c.execute("""
         INSERT INTO email_tracking (id, email_id, email, event_type, ip_address, user_agent, created_at)
-        VALUES (%s, %s, %s, %s, %s, %s, %s)
+        VALUES (%s, %s, %s, %s, %s, %s, %s) ON CONFLICT DO NOTHING
     """, (
         secrets.token_hex(8),
         email_id,

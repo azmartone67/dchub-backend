@@ -15,6 +15,7 @@ from flask import Blueprint, redirect, Response, jsonify
 quick_redirects_bp = Blueprint("quick_redirects", __name__)
 
 
+# AUTO-REPAIR: duplicate route '/vs' also in routes/bs_translator.py:276 — review and remove one
 @quick_redirects_bp.route("/vs", methods=["GET"], strict_slashes=False)
 def vs_index_redirect():
     return redirect("/vs/dchawk", code=301)

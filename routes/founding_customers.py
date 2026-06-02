@@ -241,7 +241,7 @@ def auto_tag_if_under_cap(
                     INSERT INTO founding_customers
                       (email, plan_at_tag, first_payment_at,
                        stripe_customer_id, notes, contact_status)
-                    VALUES (%s, %s, %s, %s, %s, 'auto-tagged')
+                    VALUES (%s, %s, %s, %s, %s, 'auto-tagged') ON CONFLICT DO NOTHING
                 """, (email, plan, first_payment_at,
                        stripe_customer_id, notes))
             try: c.commit()
