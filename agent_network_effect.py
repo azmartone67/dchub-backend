@@ -60,6 +60,24 @@ def _is_internal_caller(p):
     return any(m in p for m in _INTERNAL_MARKERS)
 
 
+# Allowlist of recognized external AI platforms (substring match). The registry
+# + agent count reflect ONLY these — a denylist can't keep up with the long tail
+# of audit/test/probe one-offs (Scraper-Block-Verify, Leakaudit4, ...).
+# Conservative by design: a brand-new platform not yet listed is undercounted,
+# never noise-inflated. Extend as real platforms appear (cf. partner task).
+_KNOWN_AI_TOKENS = (
+    "claude", "anthropic", "chatgpt", "openai", "gpt", "gemini", "bard",
+    "copilot", "perplexity", "grok", "deepseek", "cursor", "cline",
+    "windsurf", "mistral", "cohere", "llama", "meta", "nvidia", "groq",
+    "huggingface", "phind", "you.com", "poe", "replit",
+)
+def _is_recognized_platform(p):
+    if not p:
+        return False
+    p = p.lower()
+    return any(tok in p for tok in _KNOWN_AI_TOKENS)
+
+
 def _live_agent_rows():
     """Real per-platform tool-call counts from mcp_tool_calls (last 30d).
 
@@ -103,7 +121,8 @@ def _live_agent_rows():
 
     rows = []
     for p, n, last_seen in (raw or []):
-        if _is_internal_caller(p) or _uuid.match(p or ""):
+        # Allowlist: recognized AI platform AND not our own internal traffic.
+        if not _is_recognized_platform(p) or _is_internal_caller(p):
             continue
         _n = int(n or 0)
         rows.append({

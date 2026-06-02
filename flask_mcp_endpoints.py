@@ -1779,6 +1779,24 @@ def _lp_is_internal(p):
     return any(m in p for m in _LP_INTERNAL_MARKERS)
 
 
+# Allowlist of recognized external AI platforms (substring match). distinct_platforms
+# counts ONLY these — a denylist can't keep up with the audit/test long tail
+# (Scraper-Block-Verify, Leakaudit4, single-char noise, ...). Conservative: a new
+# platform not yet listed is undercounted, never noise-inflated. Mirrors
+# agent_network_effect._KNOWN_AI_TOKENS.
+_LP_KNOWN_AI_TOKENS = (
+    "claude", "anthropic", "chatgpt", "openai", "gpt", "gemini", "bard",
+    "copilot", "perplexity", "grok", "deepseek", "cursor", "cline",
+    "windsurf", "mistral", "cohere", "llama", "meta", "nvidia", "groq",
+    "huggingface", "phind", "you.com", "poe", "replit",
+)
+def _lp_is_recognized(p):
+    if not p:
+        return False
+    p = p.lower()
+    return any(tok in p for tok in _LP_KNOWN_AI_TOKENS)
+
+
 @mcp_bp.get("/api/v1/stats/live-proof")
 def stats_live_proof():
     """PUBLIC. Real platform-usage proof — every number traces to a DB read.
@@ -1872,7 +1890,8 @@ def stats_live_proof():
         externals = [
             {"platform": p, "calls": int(n or 0)}
             for (p, n) in rows
-            if p not in _LIVE_PROOF_NONPLATFORM
+            # Allowlist: recognized AI platform AND not internal/probe traffic.
+            if _lp_is_recognized(p) and not _lp_is_internal(p)
             # drop UUID-shaped session leakage that escaped normalization
             and not _UUID_RE_MOD.match(p)
         ]
