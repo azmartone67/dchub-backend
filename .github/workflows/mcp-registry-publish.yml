@@ -1,0 +1,94 @@
+# Auto-publish server.json to the official MCP Registry on every version bump.
+#
+# Why: the registry listing (cloud.dchub/mcp-server) kept drifting because
+# publishing was a manual mcp-publisher dance (install CLI, DNS-login with the
+# ed25519 key, publish from the right dir). This workflow does it on every push
+# that changes server.json — bump the "version" field, push, done.
+#
+# ONE-TIME SETUP (owner):
+#   The ed25519 private key (hex) lives at ~/.mcp-publisher/dchub-registry-key.hex
+#   and is the same key whose PUBLIC half is the dchub.cloud apex TXT record
+#   (v=MCPv1; k=ed25519; p=ClgJ51i8...). Add it as a repo secret — once:
+#
+#     gh secret set MCP_REGISTRY_PRIVATE_KEY < ~/.mcp-publisher/dchub-registry-key.hex
+#
+#   (or GitHub → Settings → Secrets → Actions → New secret
+#    name MCP_REGISTRY_PRIVATE_KEY, value = the hex string).
+#   NEVER commit the key to the repo (it was leaked once and rotated — see
+#   MCP_REGISTRY_DNS_AUTH_TODO.md).
+
+name: Publish to MCP Registry
+
+on:
+  push:
+    branches: [main]
+    paths:
+      - "server.json"
+  workflow_dispatch: {}   # manual "Run workflow" button
+
+concurrency:
+  group: mcp-registry-publish
+  cancel-in-progress: false
+
+jobs:
+  publish:
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Read local version
+        id: ver
+        run: |
+          V=$(python3 -c "import json;print(json.load(open('server.json'))['version'])")
+          echo "local=$V" >> "$GITHUB_OUTPUT"
+          echo "Local server.json version: $V"
+
+      - name: Check what's already published
+        id: live
+        run: |
+          LIVE=$(curl -s "https://registry.modelcontextprotocol.io/v0/servers?search=cloud.dchub" \
+            | python3 -c "import json,sys
+data=json.load(sys.stdin).get('servers',[])
+vs=[x['server']['version'] for x in data if x['server'].get('name')=='cloud.dchub/mcp-server']
+print(vs[-1] if vs else 'none')")
+          echo "live=$LIVE" >> "$GITHUB_OUTPUT"
+          echo "Live registry version: $LIVE"
+
+      - name: Skip if version unchanged
+        if: steps.ver.outputs.local == steps.live.outputs.live
+        run: |
+          echo "::notice::server.json v${{ steps.ver.outputs.local }} is already published — nothing to do. Bump the version to republish."
+          echo "SKIP=1" >> "$GITHUB_ENV"
+
+      - name: Install mcp-publisher
+        if: steps.ver.outputs.local != steps.live.outputs.live
+        run: |
+          curl -L "https://github.com/modelcontextprotocol/registry/releases/latest/download/mcp-publisher_linux_amd64.tar.gz" \
+            | tar xz mcp-publisher
+          ./mcp-publisher --help >/dev/null && echo "mcp-publisher installed"
+
+      - name: Authenticate (DNS) + publish
+        if: steps.ver.outputs.local != steps.live.outputs.live
+        env:
+          MCP_KEY: ${{ secrets.MCP_REGISTRY_PRIVATE_KEY }}
+        run: |
+          if [ -z "$MCP_KEY" ]; then
+            echo "::error::MCP_REGISTRY_PRIVATE_KEY secret is not set. See the header of this workflow for one-time setup."
+            exit 1
+          fi
+          ./mcp-publisher login dns --domain dchub.cloud --private-key "$MCP_KEY"
+          ./mcp-publisher publish
+
+      - name: Verify live
+        if: steps.ver.outputs.local != steps.live.outputs.live
+        run: |
+          sleep 5
+          curl -s "https://registry.modelcontextprotocol.io/v0/servers?search=cloud.dchub" \
+            | python3 -c "import json,sys
+data=json.load(sys.stdin).get('servers',[])
+m=[x['server'] for x in data if x['server'].get('name')=='cloud.dchub/mcp-server']
+print('Published versions:', [s['version'] for s in m])
+assert any(s['version']=='${{ steps.ver.outputs.local }}' for s in m), 'new version not visible yet'
+print('OK: v${{ steps.ver.outputs.local }} is live')"
