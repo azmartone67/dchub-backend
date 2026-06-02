@@ -472,7 +472,13 @@ def _score_market_from_bulk(market, bulk, cfg):
             country_hit = country.upper() in [c.upper() for c in market['country_codes']]
             if city_hit or (not city_kw and country_hit):
                 s_total += float(tmva); s_avail += float(amva)
-        if s_total > 0:
+        # r66: only use the substation HEADROOM when available_mva actually has data.
+        # The column exists but is empty (all 0 — see main.py:13496). Without the
+        # s_avail>0 guard, s_avail=0 -> headroom=0 -> dhpw=100 for EVERY market with
+        # substations, and because this path runs first it short-circuits the real
+        # power-plant capacity_mw signal below. Skip when avail is empty so DHPW
+        # degrades to the meaningful power-plant value (or null), not a degenerate 100.
+        if s_total > 0 and s_avail > 0:
             headroom = (s_avail / s_total) * 100
             dhpw_val = round(min(100, max(0, (1 - headroom/100)*100)), 1)
             dhpw_d   = {'source':'substations','total_mva':round(s_total,1),'avail_mva':round(s_avail,1),'headroom_pct':round(headroom,1)}
