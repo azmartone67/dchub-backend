@@ -1761,15 +1761,22 @@ _LIVE_PROOF_NONPLATFORM = (
 # Pattern guard for DC Hub's OWN internal traffic (self-heal/pipeline/loops/
 # probes) so the "N platforms" headline reflects EXTERNAL adoption only, never
 # self-inflated (the signal-inflation rule). Mirrors agent_network_effect.
-_LP_INTERNAL_PREFIXES = ("dchub-", "dchub_", "loop", "pipeline_mcp", "pipeline-mcp")
+# Substring markers of DC Hub self / test / probe traffic — matched ANYWHERE (the
+# inflators carried the marker mid-string), so the "N platforms" headline counts
+# only real EXTERNAL agents. Real AI platforms (claude/chatgpt/...) contain none.
+_LP_INTERNAL_MARKERS = (
+    "dchub", "selfheal", "self-heal", "self_heal", "pipeline", "probe",
+    "scanner", "checker", "monitor", "health", "heartbeat", "loop",
+    "local-agent", "localhost", "127.0.0.1", "smoke", "warmup", "sentinel",
+    "remote0", "remote1", "step2", "step3", "_test", "-test", "test-", "test_",
+)
 def _lp_is_internal(p):
-    if not p or p in _LIVE_PROOF_NONPLATFORM:
+    if not p:
         return True
-    if any(p.startswith(pre) for pre in _LP_INTERNAL_PREFIXES):
+    p = p.lower()
+    if p in _LIVE_PROOF_NONPLATFORM or len(p) < 3:
         return True
-    if "selfheal" in p or "self-heal" in p or "self_heal" in p:
-        return True
-    return p.endswith(("-probe", "-scanner", "-health", "-checker", "-monitor", "-bot"))
+    return any(m in p for m in _LP_INTERNAL_MARKERS)
 
 
 @mcp_bp.get("/api/v1/stats/live-proof")

@@ -41,15 +41,23 @@ _UUID_RE_STR = (r"^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-"
 # DC Hub's OWN internal traffic must never count as an external "agent" — the
 # registry was showing dchub-selfheal / pipeline_mcp as the top agents, i.e.
 # self-traffic inflating adoption (the signal-inflation rule).
-_INTERNAL_PREFIXES = ("dchub-", "dchub_", "loop", "pipeline_mcp", "pipeline-mcp")
+# Substring markers of DC Hub's own / test / probe traffic — matched ANYWHERE in
+# the platform string. The inflators carried the marker mid-string ("Local-Agent-
+# Mode-dchubVIAmcp-Remote0137", "R51-LOOP-Check", "Step2_TEST"), so prefix-only
+# missed them. Real external AI platforms (claude/chatgpt/gemini/...) contain none.
+_INTERNAL_MARKERS = (
+    "dchub", "selfheal", "self-heal", "self_heal", "pipeline", "probe",
+    "scanner", "checker", "monitor", "health", "heartbeat", "loop",
+    "local-agent", "localhost", "127.0.0.1", "smoke", "warmup", "sentinel",
+    "remote0", "remote1", "step2", "step3", "_test", "-test", "test-", "test_",
+)
 def _is_internal_caller(p):
-    if not p or p in _NONPLATFORM:
+    if not p:
         return True
-    if any(p.startswith(pre) for pre in _INTERNAL_PREFIXES):
+    p = p.lower()
+    if p in _NONPLATFORM or len(p) < 3:   # set members + single/double-char noise
         return True
-    if "selfheal" in p or "self-heal" in p or "self_heal" in p:
-        return True
-    return p.endswith(("-probe", "-scanner", "-health", "-checker", "-monitor", "-bot"))
+    return any(m in p for m in _INTERNAL_MARKERS)
 
 
 def _live_agent_rows():
