@@ -51,6 +51,7 @@ SCHEDULE = [
     ( 7, 19, "facility_discovery",  "_run_facility_discovery"),
     (12,  0, "infrastructure_sync", "_run_infrastructure_sync"),
     ( 3, 15, "kmz_discovery",       "_run_kmz_discovery"),
+    ( 5,  5, "intl_infra_ingest",   "_run_intl_infra_ingest"),
 ]
 
 # ---------------------------------------------------------------------------
@@ -808,6 +809,22 @@ def _run_kmz_discovery():
         logger.error(f"📡 KMZ Discovery: ❌ error — {e}", exc_info=True)
 
 
+def _run_intl_infra_ingest():
+    """Pull REAL international substations (OpenStreetMap Overpass) into the
+    substations table so non-US DCPI metros gain grid-presence coverage on the
+    map. Runs server-side from env DATABASE_URL — no admin key, no HTTP poll
+    (replaces the manual /api/v1/admin/ingest-intl-infra trigger whose in-memory
+    task status doesn't survive the 2-replica load balancer). OSM has no MVA, so
+    this is map PRESENCE only — it does NOT change DCPI headroom scores.
+    Idempotent (ON CONFLICT DO NOTHING)."""
+    try:
+        import intl_infra_ingest
+        rc = intl_infra_ingest.main([])
+        logger.info("🌍 Intl infra ingest (OSM Overpass): done rc=%s", rc)
+    except Exception as e:
+        logger.error("🌍 Intl infra ingest: ❌ error — %s", e, exc_info=True)
+
+
 _RUNNERS = {
     "market_refresh":      _run_market_refresh,
     "news":                _run_news_crawler,
@@ -818,6 +835,7 @@ _RUNNERS = {
     "facility_discovery":  _run_facility_discovery,
     "infrastructure_sync": _run_infrastructure_sync,
     "kmz_discovery":       _run_kmz_discovery,
+    "intl_infra_ingest":   _run_intl_infra_ingest,
 }
 
 
