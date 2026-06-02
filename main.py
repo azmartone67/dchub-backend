@@ -3146,15 +3146,38 @@ except Exception as e:
 # =============================================================================
 _degradation_cache = {}
 _degradation_cache_ttl = 300
+# r62-#110: the per-process dict is EMPTY on a freshly-booted replica, so a
+# cold replica fell through to the /api/v1/stats boot-stub (the root cause of
+# the frozen-counts incident). Mirror the snapshot to a SHARED Redis key so any
+# replica (or a cold one) can serve the last-good real numbers as 'boot-degraded'
+# instead of the stub. 1h TTL covers a boot grace window; fully fail-soft.
+_DEGRADATION_REDIS_TTL = 3600
 
 def cache_for_degradation(key, data):
     _degradation_cache[key] = {'data': data, 'time': time.time()}
+    try:
+        from redis_cache import cache_set as _rc_set
+        _rc_set(f"degraded:{key}", {'data': data, 'ts': time.time()},
+                ttl=_DEGRADATION_REDIS_TTL)
+    except Exception:
+        pass
 
 def get_degraded_data(key):
     entry = _degradation_cache.get(key)
     if entry:
         age = time.time() - entry['time']
         return entry['data'], age
+    # Per-process miss (e.g. a cold-started replica) → fall back to the SHARED
+    # Redis snapshot written by any replica. This is what kills the per-replica
+    # cold-start boot-stub.
+    try:
+        from redis_cache import cache_get as _rc_get
+        shared = _rc_get(f"degraded:{key}")
+        if isinstance(shared, dict) and shared.get('data') is not None:
+            age = time.time() - float(shared.get('ts') or 0)
+            return shared['data'], age
+    except Exception:
+        pass
     return None, None
 
 # =================================================================
