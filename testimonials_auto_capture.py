@@ -63,12 +63,15 @@ def auto_capture_testimonial(platform, agent_name, tool_name, tool_input, tool_o
             conn.close()
             return  # Skip duplicate
         
-        # Insert the testimonial (auto-approved for MCP tool calls)
+        # Capture for HUMAN REVIEW (approved=FALSE). Auto-approving every MCP
+        # tool call inflated the public count with near-duplicate quotes; a human
+        # now curates which captures become public (dedup_hash still blocks exact
+        # repeats, but near-dupes must not auto-publish).
         c.execute("""
-            INSERT INTO ai_testimonials 
-            (platform, agent_name, quote, context, query, category, 
+            INSERT INTO ai_testimonials
+            (platform, agent_name, quote, context, query, category,
              source, approved, dedup_hash, tool_name, created_at)
-            VALUES (%s, %s, %s, %s, %s, %s, 'mcp-auto', TRUE, %s, %s, CURRENT_TIMESTAMP)
+            VALUES (%s, %s, %s, %s, %s, %s, 'mcp-auto', FALSE, %s, %s, CURRENT_TIMESTAMP)
         """, (
             platform or 'unknown',
             agent_name or platform or 'AI Agent',

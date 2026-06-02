@@ -142,7 +142,9 @@ def _write_testimonial(cur, *, source: str, platform: str, agent_name: str,
         (platform, agent_name, quote.strip(),
          f"Probed via {source} on {datetime.now(timezone.utc).date().isoformat()}",
          "What is dchub.cloud?",
-         category, featured, source, True))
+         category, featured, source, False))  # approved=FALSE: pending human
+    # review. Auto-approving every nightly probe inflated the public count with
+    # near-duplicate Claude "DCPI verdicts" quotes; a human now curates.
     return True
 
 
@@ -411,3 +413,74 @@ def purge_refusals():
         except Exception: pass
     return jsonify({"ok": True, "deleted_count": len(deleted),
                     "kept_count": kept, "deleted": deleted})
+
+
+@testimonial_probe_bp.post("/api/v1/testimonials/dedup")
+@_require_admin
+def dedup_testimonials():
+    """Honesty cleanup (2026-06-02): the nightly probe + mcp-auto capture
+    auto-APPROVED hundreds of near-identical Claude "DCPI verdicts" quotes,
+    inflating the public proof wall to ~363 approved. This DEMOTES the excess
+    to approved=FALSE (never deletes) so the wall reflects a believable, DISTINCT
+    set with platform diversity preserved. Idempotent + dry-run-first.
+
+    Query params:
+      dry_run      (default '1')  pass '0'/'false' to actually apply.
+      per_platform (default 6)    keep the N most-recent (featured-first) approved
+                                  testimonials per platform; demote the rest.
+    Every platform with real citations stays represented (N freshest kept) — only
+    the within-platform pile of near-dupes is trimmed. Re-running is a no-op once
+    each platform is already at/under the cap.
+    """
+    dry_run = (request.args.get("dry_run", "1").lower()
+               not in ("0", "false", "no"))
+    try:
+        per_platform = max(1, min(int(request.args.get("per_platform") or 6), 50))
+    except Exception:
+        per_platform = 6
+    conn = _conn()
+    if conn is None:
+        return jsonify({"ok": False, "error": "no_database"}), 500
+    _bp_sql = ("""SELECT COALESCE(NULLIF(TRIM(platform), ''), '(none)') AS p,
+                         COUNT(*)
+                    FROM ai_testimonials WHERE approved = TRUE
+                   GROUP BY p ORDER BY COUNT(*) DESC""")
+    try:
+        with conn, conn.cursor() as cur:
+            cur.execute(_bp_sql)
+            before = [{"platform": r[0], "approved": int(r[1])}
+                      for r in cur.fetchall()]
+            before_total = sum(x["approved"] for x in before)
+            # Demote set = everything beyond the N freshest approved per platform.
+            cur.execute(
+                """WITH ranked AS (
+                       SELECT id,
+                              ROW_NUMBER() OVER (
+                                PARTITION BY LOWER(COALESCE(platform, ''))
+                                ORDER BY COALESCE(featured, FALSE) DESC,
+                                         created_at DESC NULLS LAST, id DESC
+                              ) AS rn
+                         FROM ai_testimonials
+                        WHERE approved = TRUE
+                   )
+                   SELECT id FROM ranked WHERE rn > %s""", (per_platform,))
+            demote_ids = [r[0] for r in cur.fetchall()]
+            out = {"ok": True, "dry_run": dry_run,
+                   "per_platform_cap": per_platform,
+                   "before_total_approved": before_total,
+                   "before_by_platform": before[:40],
+                   "would_demote": len(demote_ids),
+                   "after_total_approved": before_total - len(demote_ids)}
+            if not dry_run and demote_ids:
+                cur.execute(
+                    "UPDATE ai_testimonials SET approved = FALSE "
+                    "WHERE id = ANY(%s) AND approved = TRUE", (demote_ids,))
+                out["demoted"] = cur.rowcount
+                cur.execute(_bp_sql)
+                out["after_by_platform"] = [
+                    {"platform": r[0], "approved": int(r[1])}
+                    for r in cur.fetchall()][:40]
+            return jsonify(out)
+    finally:
+        try: conn.close()
+        except Exception: pass
