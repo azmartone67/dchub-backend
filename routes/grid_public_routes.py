@@ -16,6 +16,9 @@ ISOS = {
     'NYISO':  {'name': 'New York ISO',          'states': 'New York',               'tagline': 'Dense urban grid operator'},
     'ISONE':  {'name': 'ISO New England',       'states': '6 NE states',            'tagline': 'New England grid operator'},
     'SPP':    {'name': 'Southwest Power Pool',  'states': '14 states',              'tagline': 'Wind-rich plains grid'},
+    # #60 (2026-06-02): first LIVE international grids (tokenless real feeds).
+    'NGESO':  {'name': 'Great Britain (NESO)',  'states': 'England, Scotland, Wales', 'tagline': 'Live UK grid — Elexon Insights'},
+    'AEMO':   {'name': 'Australia NEM (AEMO)',  'states': 'NSW, QLD, SA, TAS, VIC',  'tagline': 'Live AU national electricity market'},
 }
 
 # Free tier sees only these — paid tiers unlock all 7
@@ -97,6 +100,27 @@ def _fetch_live(iso):
             oldest_key = min(_LIVE_CACHE, key=lambda k: _LIVE_CACHE[k][0])
             _LIVE_CACHE.pop(oldest_key, None)
         return _r_inner
+
+    # #60 (2026-06-02): international live grids (GB/AU) are served by their own
+    # in-process modules (Elexon / AEMO), not the US /grid/intelligence loopback.
+    # Flatten their live snapshot to the {demand_mw, renewable_pct, …} shape the
+    # grid pages + scoreboard expect. Live-only — empty dict if the feed is down.
+    if iso in ("NGESO", "AEMO"):
+        try:
+            if iso == "NGESO":
+                from routes.iso_uk_elexon import _live_snapshot as _intl_snap
+            else:
+                from routes.iso_au_aemo import _live_snapshot as _intl_snap
+            snap = _intl_snap()
+            if snap:
+                inner = {k: v.get("value") for k, v in snap.items()
+                         if isinstance(v, dict)}
+                _LIVE_CACHE[iso] = (now, inner)
+                _redis_set_live(iso, inner)
+                return inner
+        except Exception:
+            pass
+        return cached[1] if cached else {}
 
     # r49-grid-perf (2026-05-31): the PUBLIC Railway edge URL was tried
     # FIRST with the default python-requests User-Agent. That request
