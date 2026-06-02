@@ -25189,6 +25189,13 @@ try:
 except Exception as _np_e:
     print(f"[main] iso_nordpool_intl_bp register failed: {_np_e}", flush=True)
 
+try:
+    from routes.iso_uk_elexon import iso_uk_elexon_bp
+    app.register_blueprint(iso_uk_elexon_bp)
+    print("[main] iso_uk_elexon_bp registered — FIRST LIVE international grid (GB, Elexon Insights tokenless)", flush=True)
+except Exception as _uk_e:
+    print(f"[main] iso_uk_elexon_bp register failed: {_uk_e}", flush=True)
+
 # Phase ZZZZZ-round34 (2026-05-24): Tier 2 MCP tools — PDF site reports + CSV export
 try:
     from routes.mcp_tier2_reports import mcp_tier2_bp
