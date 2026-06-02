@@ -67,9 +67,17 @@ def _is_internal_key(req):
 # endpoint's _UA_RULES order so reclassification is consistent.
 _RULES = [
     # Direct UA markers
-    ("claude",          "claude"),
-    ("claudebot",       "claude"),
-    ("mcp-remote",      "claude"),
+    ("claudebot",       "claude"),    # Anthropic crawler (specific) — check before bare 'claude'
+    ("claude-user",     "claude"),    # Claude.ai user-initiated fetch
+    ("claude-web",      "claude"),
+    ("anthropic",       "claude"),
+    ("claude",          "claude"),    # bare 'claude' last among the claude markers
+    # r62 (2026-06-01): mcp-remote is the GENERIC OSS bridge that EVERY
+    # platform (and homemade clients) use to reach a streamable-HTTP MCP
+    # server — it carries NO platform identity. The old rule tagged all
+    # of it 'claude', which is the single biggest source of the inflated
+    # Claude bucket (~85k lifetime, provably contaminated). Tag honestly.
+    ("mcp-remote",      "mcp_generic"),
     ("chatgpt",         "chatgpt"),
     ("gptbot",          "chatgpt"),
     ("openai-",         "chatgpt"),

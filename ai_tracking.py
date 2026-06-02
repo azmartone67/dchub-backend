@@ -110,6 +110,33 @@ AI_ENDPOINT_PATTERNS = [
 ]
 
 
+# r62 (2026-06-01): self/internal traffic was inflating named-platform
+# buckets — the brain self-probes ~1/sec and any UA containing a platform
+# substring (e.g. a "claude-helper" health bot, or mcp-remote backfilled
+# to claude) got counted as that platform. The 449k headline was ~57%
+# inflation once these + dead Direct/Mcp buckets are removed. Classify
+# these as 'internal' so the AI dashboards (which iterate AI_PLATFORMS)
+# never surface them as real agent demand.
+_INTERNAL_UA_MARKERS = (
+    "dchub", "dc-hub", "dc hub", "x-dc-probe", "dc-probe",
+    "dchub-brain", "brain-probe", "self-probe", "prewarm", "pre-warm",
+    "healthcheck", "health-check", "uptime", "uptimerobot",
+    "-scanner", "-health", "-probe", "loopback", "127.0.0.1", "localhost",
+    "python-requests", "go-http-client", "curl/", "wget/", "okhttp",
+    "railway", "render-health", "cf-worker-internal",
+)
+
+
+def _is_internal_ua(ua_lower: str) -> bool:
+    """True for our own self-traffic / infra probes / generic HTTP libs
+    that should NOT count as a named AI platform. Kept deliberately
+    conservative: real agent SDKs send identifying substrings (claude,
+    gptbot, mcp, etc.) and are matched BEFORE this in detect_platform,
+    so a generic 'python-requests' here is almost always a probe/script,
+    not a frontier model."""
+    return any(m in ua_lower for m in _INTERNAL_UA_MARKERS)
+
+
 def detect_platform(user_agent: str) -> str:
     """Identify AI platform from User-Agent string.
 
@@ -134,6 +161,14 @@ def detect_platform(user_agent: str) -> str:
     if not user_agent:
         return "direct"
     ua_lower = user_agent.lower()
+    # r62: self-traffic / infra probes first — these were silently
+    # inflating the named-platform buckets (brain self-probe ~1/sec).
+    # Real frontier-model UAs carry identifying substrings (claude,
+    # gptbot, mcp, …) and would match the next loop anyway, so a UA that
+    # ONLY looks like a generic HTTP lib / our own probe is classified
+    # 'internal' and excluded from agent-demand dashboards.
+    if _is_internal_ua(ua_lower):
+        return "internal"
     # Primary: specific AI-platform markers
     for platform_key, info in AI_PLATFORMS.items():
         for agent_sig in info["agents"]:

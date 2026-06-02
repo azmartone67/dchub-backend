@@ -285,16 +285,36 @@ def redeem_endpoint():
 
 @auto_trial_bp.route("/api/v1/keys/auto-trial/stats", methods=["GET"])
 def stats_endpoint():
-    """Public funnel metrics for the auto-trial flow."""
+    """Public funnel metrics for the inline auto-mint flow.
+
+    r62-conv (2026-06-01): rebuilt as an honest 4-stage funnel after the
+    success analysis found 143 distinct agents calling the paid grid/fiber
+    tools but only 2 paid keys. The old endpoint hid the single most
+    important stage — did the agent actually RE-USE the minted key
+    (proving inline-mint works)? — and reported `trials_upgraded` off a
+    column (`upgraded_tier`) that NOTHING ever writes, so it was
+    structurally always 0 (same bug class as the per-platform conv-rate
+    that never coincides). Paid conversion is now computed by JOINing the
+    bound email to a real paid tier in mcp_dev_keys.
+
+        Stage 1  minted     — trial key issued in a paywall response
+        Stage 2  activated  — agent reconnected & USED the key (call_count>0)
+        Stage 3  identified — bound an email via /auto-trial/redeem
+        Stage 4  paid       — that email later holds a paid/enterprise key
+
+    Each stage's drop_pct shows where the conversion engine leaks.
+    """
     c = _conn()
     if c is None: return jsonify(error="no_database"), 503
     out = {
-        "trials_minted_total":    0,
-        "trials_minted_7d":       0,
-        "trials_signed_up":       0,
-        "signed_up_rate_pct":     0.0,
-        "trials_upgraded":        0,
-        "upgrade_rate_pct":       0.0,
+        "trials_minted_total":      0,
+        "trials_minted_7d":         0,
+        "trials_activated":         0,   # reconnected & used the key (NEW)
+        "trials_signed_up":         0,   # bound an email
+        "trials_paid":              0,   # email → real paid/enterprise key (NEW: honest)
+        "activated_rate_pct":       0.0,
+        "signed_up_rate_pct":       0.0,
+        "paid_rate_pct":            0.0,
         "active_unique_callers_7d": 0,
     }
     try:
@@ -304,26 +324,75 @@ def stats_endpoint():
                 cur.execute("""
                     SELECT COUNT(*) AS total,
                            COUNT(*) FILTER (WHERE minted_at >= NOW() - INTERVAL '7 days') AS minted_7d,
+                           COUNT(*) FILTER (WHERE COALESCE(call_count,0) > 0
+                                              OR last_used_at IS NOT NULL) AS activated,
                            COUNT(*) FILTER (WHERE signed_up_email IS NOT NULL) AS signed_up,
-                           COUNT(*) FILTER (WHERE upgraded_tier IS NOT NULL) AS upgraded,
                            COUNT(DISTINCT request_ip_hash) FILTER (WHERE minted_at >= NOW() - INTERVAL '7 days') AS callers_7d
                       FROM auto_trial_keys
                 """)
                 r = cur.fetchone() or (0, 0, 0, 0, 0)
-                total, m7d, su, up, callers = (int(r[0] or 0), int(r[1] or 0),
-                                                int(r[2] or 0), int(r[3] or 0),
-                                                int(r[4] or 0))
-                out["trials_minted_total"]    = total
-                out["trials_minted_7d"]       = m7d
-                out["trials_signed_up"]       = su
-                out["trials_upgraded"]        = up
+                total, m7d, act, su, callers = (int(r[0] or 0), int(r[1] or 0),
+                                                 int(r[2] or 0), int(r[3] or 0),
+                                                 int(r[4] or 0))
+                out["trials_minted_total"]      = total
+                out["trials_minted_7d"]         = m7d
+                out["trials_activated"]         = act
+                out["trials_signed_up"]         = su
                 out["active_unique_callers_7d"] = callers
-                out["signed_up_rate_pct"] = round(100.0 * su / max(1, total), 2)
-                out["upgrade_rate_pct"]   = round(100.0 * up / max(1, total), 2)
+                out["activated_rate_pct"] = round(100.0 * act / max(1, total), 2)
+                out["signed_up_rate_pct"] = round(100.0 * su  / max(1, total), 2)
             except Exception: pass
+
+            # Honest paid conversion: a bound trial email that later holds a
+            # real paid/enterprise key. JOIN to mcp_dev_keys by email. Wrapped
+            # defensively — if the table/columns differ on this deploy we
+            # report 0 paid rather than 500 the whole endpoint.
+            try:
+                cur.execute("""
+                    SELECT COUNT(DISTINCT t.signed_up_email)
+                      FROM auto_trial_keys t
+                      JOIN mcp_dev_keys k
+                        ON lower(k.email) = lower(t.signed_up_email)
+                     WHERE t.signed_up_email IS NOT NULL
+                       AND k.tier IN ('paid','enterprise')
+                """)
+                paid = int((cur.fetchone() or [0])[0] or 0)
+                out["trials_paid"]     = paid
+                out["paid_rate_pct"]   = round(100.0 * paid / max(1, out["trials_minted_total"]), 2)
+            except Exception:
+                try: c.rollback()
+                except Exception: pass
     finally:
         try: c.close()
         except Exception: pass
+
+    # Staged funnel + biggest-leak, so the reader sees WHERE it breaks.
+    m  = out["trials_minted_total"]
+    def _drop(a, b):
+        return None if a == 0 else round(100.0 * (1 - (b / a)), 1)
+    out["funnel"] = {
+        "1_minted":     m,
+        "2_activated":  out["trials_activated"],
+        "3_identified": out["trials_signed_up"],
+        "4_paid":       out["trials_paid"],
+    }
+    out["drop_rates"] = {
+        "1_minted_to_2_activated":     _drop(m,                       out["trials_activated"]),
+        "2_activated_to_3_identified": _drop(out["trials_activated"], out["trials_signed_up"]),
+        "3_identified_to_4_paid":      _drop(out["trials_signed_up"], out["trials_paid"]),
+    }
+    _leak_stage, _leak_drop = None, -1.0
+    for stg, dr in out["drop_rates"].items():
+        if dr is not None and dr > _leak_drop:
+            _leak_drop, _leak_stage = dr, stg
+    out["biggest_leak"] = ({"stage": _leak_stage, "drop_pct": _leak_drop}
+                           if _leak_stage else None)
+    out["legend"] = {
+        "1_minted":     "trial key issued inline in a paywall response",
+        "2_activated":  "agent reconnected and USED the key (call_count>0) — proves inline-mint works",
+        "3_identified": "bound an email via /auto-trial/redeem",
+        "4_paid":       "that email later holds a real paid/enterprise key (JOIN mcp_dev_keys)",
+    }
     out["generated_at"] = datetime.datetime.utcnow().isoformat() + "Z"
     resp = jsonify(out)
     resp.headers["Cache-Control"] = "public, max-age=300"
