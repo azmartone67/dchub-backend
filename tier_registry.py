@@ -54,6 +54,34 @@ TIER_LIMITS = {
 }
 
 
+# ─────────────────────────────────────────────────────────────────────
+# Canonical DISPLAY pricing (r-price-unify, 2026-06-02).
+# Before this, the same $9 was quoted as both "Starter/10,000/day" and
+# "Developer/500/day", and $49 as both "Developer" and "Pro", across 5+
+# surfaces (server.mjs paywall, auto_trial.py, redeem pages) because no
+# canonical price/quota map existed. THIS is now the source of truth for
+# the dollar price; routes/_stripe_links.py is the source of truth for the
+# Stripe Payment Link URL (the price the customer is actually charged on
+# that link). Keep the two in sync — every consumer should read price from
+# here + link from _stripe_links instead of hardcoding. Canonical calls/day
+# per tier = TIER_LIMITS[tier]['mcp_daily'] (free 10 · starter 500 ·
+# developer 1000 · pro 10000 · enterprise 100000).
+# ─────────────────────────────────────────────────────────────────────
+TIER_PRICE_USD_MONTH = {
+    'anonymous':  0,
+    'anon':       0,
+    'free':       0,
+    'identified': 0,
+    'starter':    9,
+    'developer':  49,
+    'pro':        199,
+    'founding':   199,    # == pro
+    'enterprise': None,   # custom / contact sales
+    'research_seed': None,
+    'admin':      None,
+}
+
+
 def _norm(name):
     return (name or 'free').strip().lower()
 
@@ -85,16 +113,48 @@ def limits(tier):
     return TIER_LIMITS.get(_norm(tier), TIER_LIMITS['free'])
 
 
+def price(tier):
+    """Canonical monthly USD price for a tier (None = custom/contact). Unknown → 0."""
+    return TIER_PRICE_USD_MONTH.get(_norm(tier), 0)
+
+
+def calls_per_day(tier):
+    """Canonical MCP calls/day quota for a tier (the number to quote on the paywall)."""
+    return limits(tier).get('mcp_daily', 0)
+
+
+def _stripe_link(tier):
+    """Canonical Stripe Payment Link URL for a tier, or None. Lazy import so a
+    consumer importing tier_registry never depends on routes/ being on the
+    path at import time (tier_registry loads very early + widely)."""
+    try:
+        from routes._stripe_links import STRIPE_LINKS
+        return STRIPE_LINKS.get(_norm(tier))
+    except Exception:
+        return None
+
+
 def paid_plans():
     """Set of tier names that count as paying customers."""
     return {name for name, t in TIERS.items() if t['paid'] and name not in ('admin',)}
 
 
 def as_public_dict():
-    """Serializable registry for GET /api/v1/tiers (frontend mirror)."""
+    """Serializable registry for GET /api/v1/tiers (frontend mirror).
+
+    r-price-unify (2026-06-02): now includes the canonical price_usd_month,
+    calls_per_day (mcp_daily), and stripe_link per tier so every surface
+    (frontend pricing, MCP paywall copy, redeem pages) can read ONE source
+    instead of hardcoding contradictory numbers."""
     return {
         'tiers': {n: {'rank': t['rank'], 'label': t['label'], 'paid': t['paid'],
-                      'api_tier': t['api_tier']} for n, t in TIERS.items()},
+                      'api_tier': t['api_tier'],
+                      'price_usd_month': TIER_PRICE_USD_MONTH.get(n),
+                      'calls_per_day': TIER_LIMITS.get(n, {}).get('mcp_daily'),
+                      'stripe_link': _stripe_link(n)}
+                  for n, t in TIERS.items()},
         'limits': TIER_LIMITS,
+        'pricing': {n: TIER_PRICE_USD_MONTH.get(n) for n in TIERS},
         'rule': 'founding == pro for access and benefits',
+        'price_note': 'price_usd_month: starter 9 · developer 49 · pro 199 · enterprise custom. calls_per_day = mcp_daily.',
     }
