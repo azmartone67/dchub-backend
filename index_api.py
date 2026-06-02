@@ -109,6 +109,28 @@ MARKETS = [
     {'id':'scl', 'name':'Santiago, Chile',           'region':'latam','country_codes':['CL'],'city_kw':['santiago'],'state_kw':[]},
     {'id':'bue', 'name':'Buenos Aires, Argentina',   'region':'latam','country_codes':['AR'],'city_kw':['buenos aires'],'state_kw':[]},
     {'id':'lim', 'name':'Lima, Peru',                'region':'latam','country_codes':['PE'],'city_kw':['lima'],'state_kw':[]},
+    # r66 (2026-06-02): expanded international coverage. Scores come from real
+    # facility/substation bulk data via _score_market_from_bulk (markets with
+    # little local data simply score low — no fabricated jitter).
+    # EMEA
+    {'id':'ber', 'name':'Berlin, Germany',           'region':'emea', 'country_codes':['DE'],'city_kw':['berlin'],'state_kw':[]},
+    {'id':'muc', 'name':'Munich, Germany',           'region':'emea', 'country_codes':['DE'],'city_kw':['munich','munchen','münchen'],'state_kw':[]},
+    {'id':'mrs', 'name':'Marseille, France',         'region':'emea', 'country_codes':['FR'],'city_kw':['marseille'],'state_kw':[]},
+    {'id':'bru', 'name':'Brussels, Belgium',         'region':'emea', 'country_codes':['BE'],'city_kw':['brussels','bruxelles','brussel'],'state_kw':[]},
+    {'id':'lis', 'name':'Lisbon, Portugal',          'region':'emea', 'country_codes':['PT'],'city_kw':['lisbon','lisboa'],'state_kw':[]},
+    {'id':'tlv', 'name':'Tel Aviv, Israel',          'region':'emea', 'country_codes':['IL'],'city_kw':['tel aviv','tel-aviv','petah tikva'],'state_kw':[]},
+    {'id':'doh', 'name':'Doha, Qatar',               'region':'emea', 'country_codes':['QA'],'city_kw':['doha'],'state_kw':[]},
+    {'id':'otp', 'name':'Bucharest, Romania',        'region':'emea', 'country_codes':['RO'],'city_kw':['bucharest','bucuresti','bucurești'],'state_kw':[]},
+    # APAC
+    {'id':'tpe', 'name':'Taipei, Taiwan',            'region':'apac', 'country_codes':['TW'],'city_kw':['taipei','new taipei','taoyuan'],'state_kw':[]},
+    {'id':'hyd', 'name':'Hyderabad, India',          'region':'apac', 'country_codes':['IN'],'city_kw':['hyderabad','telangana'],'state_kw':[]},
+    {'id':'maa', 'name':'Chennai, India',            'region':'apac', 'country_codes':['IN'],'city_kw':['chennai','madras'],'state_kw':[]},
+    {'id':'blr', 'name':'Bangalore, India',          'region':'apac', 'country_codes':['IN'],'city_kw':['bangalore','bengaluru'],'state_kw':[]},
+    {'id':'akl', 'name':'Auckland, New Zealand',     'region':'apac', 'country_codes':['NZ'],'city_kw':['auckland'],'state_kw':[]},
+    {'id':'sgn', 'name':'Ho Chi Minh City, Vietnam', 'region':'apac', 'country_codes':['VN'],'city_kw':['ho chi minh','saigon','hochiminh'],'state_kw':[]},
+    # LATAM
+    {'id':'rio', 'name':'Rio de Janeiro, Brazil',    'region':'latam','country_codes':['BR'],'city_kw':['rio de janeiro'],'state_kw':[]},
+    {'id':'pty', 'name':'Panama City, Panama',       'region':'latam','country_codes':['PA'],'city_kw':['panama city','ciudad de panama'],'state_kw':[]},
 ]
 MARKET_BY_ID = {m['id']: m for m in MARKETS}
 
