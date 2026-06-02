@@ -40,6 +40,26 @@ except ImportError:
 logger = logging.getLogger(__name__)
 
 
+def _infra_caller_is_internal():
+    """True only for the autonomous brain / scheduler (X-Internal-Key) or an
+    admin (X-Admin-Key). Gates the write/sync endpoint, which MUTATES server
+    state (overwrites INFRASTRUCTURE_DATA) and must never be open to anon."""
+    try:
+        from internal_auth import is_valid_internal_key
+        if is_valid_internal_key(request.headers.get('X-Internal-Key', '')):
+            return True
+    except Exception:
+        pass
+    try:
+        import os
+        import hmac as _hmac
+        admin = os.environ.get('DCHUB_ADMIN_KEY', '') or ''
+        hdr = request.headers.get('X-Admin-Key', '') or ''
+        return bool(admin) and _hmac.compare_digest(hdr, admin)
+    except Exception:
+        return False
+
+
 # ============================================
 # NEON DATABASE HELPERS FOR FIBER ROUTES
 # ============================================
@@ -433,6 +453,13 @@ def sync_infrastructure():
     Endpoint for autonomous brain to push discovered infrastructure
     Expects JSON body with fiber_routes, substations, permits, properties arrays
     """
+    # r66 security: this MUTATES server state — was fully open, so any anon POST
+    # could wipe or poison the in-memory fiber/substations/permits/properties
+    # fallback. Require the internal key (the brain/scheduler already ship
+    # X-Internal-Key) or an admin key. Fail closed.
+    if not _infra_caller_is_internal():
+        return jsonify({'success': False, 'error': 'forbidden',
+                        'message': 'infrastructure sync requires an internal or admin key'}), 403
     try:
         data = request.get_json()
         

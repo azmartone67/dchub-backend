@@ -1516,6 +1516,26 @@ def register_infrastructure_routes(app, start_scheduler=True):
 
     @bp.route('/api/infrastructure/sync', methods=['POST'])
     def infrastructure_sync():
+        # r66 security: triggers an EXPENSIVE full sync — was open, so anyone
+        # could hammer it (DoS / worker-pool exhaustion → site flapping). The
+        # real sync already runs via the in-process scheduler (crawler_scheduler
+        # 'infrastructure_sync', every 6h); this HTTP trigger now requires an
+        # internal or admin key. Fail closed.
+        _ok = False
+        try:
+            from internal_auth import is_valid_internal_key
+            _ok = is_valid_internal_key(request.headers.get('X-Internal-Key', ''))
+        except Exception:
+            _ok = False
+        if not _ok:
+            import os
+            import hmac as _hmac
+            _admin = os.environ.get('DCHUB_ADMIN_KEY', '') or ''
+            _hdr = request.headers.get('X-Admin-Key', '') or ''
+            _ok = bool(_admin) and _hmac.compare_digest(_hdr, _admin)
+        if not _ok:
+            return jsonify({"success": False, "error": "forbidden",
+                            "message": "infrastructure sync requires an internal or admin key"}), 403
         result = engine.run_full_sync()
         return jsonify({"success": True, "data": result})
 
