@@ -242,8 +242,207 @@ def _ensure_tables():
                     "ON dcpi_daily_snapshots(market_slug, snapshot_date DESC)")
         cur.execute("CREATE INDEX IF NOT EXISTS ix_dcpi_daily_snapshots_date "
                     "ON dcpi_daily_snapshots(snapshot_date DESC)")
+        # r67 (2026-06-02): the scorer now reads the latest live grid_telemetry
+        # row per ISO/zone (iso_grid_adapters.py writes it; the iso-data-pull
+        # cron populates it every 20 min). That lookup is
+        #   WHERE iso=%s [AND zone=%s] ORDER BY observed_at DESC LIMIT 1
+        # so it wants (iso, zone, observed_at DESC). iso_grid_adapters.ensure_schema()
+        # already creates ix_grid_telemetry_iso_zone_ts, but that DDL only runs
+        # when the pull cron fires; if the scorer's recompute happens first (or
+        # the adapter module never loads in this process) the index would be
+        # absent and the per-market lookup would seq-scan grid_telemetry on every
+        # one of 300+ markets. Create it here too — IF NOT EXISTS makes it a
+        # no-op when the adapter already made it, and it shares this function's
+        # run-once flag + pg_advisory_xact_lock so it's idempotent + deadlock-safe.
+        # CREATE TABLE IF NOT EXISTS guards the (rare) case where the cron has
+        # never run, so grid_telemetry doesn't yet exist — same column shape as
+        # iso_grid_adapters._SCHEMA_DDL (verified live via /api/v1/admin/schema).
+        cur.execute("""
+            CREATE TABLE IF NOT EXISTS grid_telemetry (
+                id                 BIGSERIAL PRIMARY KEY,
+                iso                TEXT NOT NULL,
+                zone               TEXT,
+                observed_at        TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+                online_gen_mw      REAL,
+                load_mw            REAL,
+                headroom_mw        REAL,
+                reserve_margin_pct REAL,
+                fuel_mix           JSONB DEFAULT '{}'::jsonb,
+                source             TEXT
+            )
+        """)
+        cur.execute("CREATE INDEX IF NOT EXISTS ix_grid_telemetry_iso_zone_ts "
+                    "ON grid_telemetry (iso, zone, observed_at DESC)")
         c.commit()
     _TABLES_READY = True  # idempotent DDL done for this process — skip on later calls
+
+
+# ─────────────────────────────────────────────────────────────────────
+# r67 (2026-06-02) — LIVE grid-headroom read.
+#
+# iso_grid_adapters.py pulls real per-ISO online-generation vs. load every
+# 20 min (iso-data-pull.yml cron) and stores it in grid_telemetry. Until now
+# the scorer never read it: compute_excess_power_score fell straight to the
+# hardcoded `reserve_margin_pct or 12`. This wires the live read in.
+#
+# WHAT THE LIVE ROW ACTUALLY CONTAINS (verified live 2026-06-02 against the
+# Railway origin /api/v1/iso/sample/<iso> for MISO/NYISO/CAISO/SPP):
+#   online_gen_mw, load_mw, headroom_mw=(gen-load)   → populated, REAL
+#   reserve_margin_pct                               → NULL (the public
+#       adapters never compute it — they only carry gen/load/headroom)
+# So the live signal we have is the INSTANTANEOUS OPERATING headroom of
+# currently-online generation: headroom_mw / load_mw. That is a *different
+# physical quantity* from the NERC PLANNING reserve margin that
+# compute_excess_power_score's s_reserve term is calibrated for (12%→0,
+# 25%→100, i.e. installed-capacity margin over peak). It legitimately runs
+# slightly negative when a region imports power (all 4 ISOs were -0.1%..-14%
+# at verification time because online gen excludes imports).
+#
+# HONEST SYNTHESIS (never a fabricated number):
+#   live_op_reserve_pct = headroom_mw / load_mw * 100      (real, signed)
+# We use it as a *live delta* on the modeled planning anchor: a grid running
+# tighter-than-balanced (negative op-headroom) shades the planning reserve
+# DOWN; a grid running looser (positive surplus) shades it UP. The modeled
+# iso_default stays the centred anchor (balanced grid → modeled value) so a
+# single 5-min snapshot can't impersonate a planning-reserve study, but the
+# LIVE reading genuinely moves the score in the correct direction. Bounded to
+# ±LIVE_DELTA_CAP_PCT so a transient spike can't dominate. The raw live
+# fields + provenance are stamped into data_basis so the basis is auditable.
+#
+# Cross-process safe: read-only SELECT on its own short-lived connection, one
+# row via the (iso, zone, observed_at DESC) index. Stale rows (older than
+# LIVE_TELEMETRY_MAX_AGE_MIN) are ignored so we never present a dead feed as
+# live — we fall back to the modeled estimate, honestly labelled.
+# ─────────────────────────────────────────────────────────────────────
+LIVE_TELEMETRY_MAX_AGE_MIN = 180   # 3h — pull cron runs every 20 min; 9 misses = stale
+LIVE_DELTA_CAP_PCT = 6.0           # max pp the live op-reserve delta can move the anchor
+# DCPI iso codes whose telemetry zone is the ISO-wide system aggregate the
+# adapters emit (iso == zone). Verified live: MISO/MISO, NYISO/NYCA,
+# CAISO/CAISO, SPP/SPP. We match on iso only (latest row, any zone) so a future
+# multi-zone adapter still resolves to the freshest system reading.
+_TELEMETRY_ISO_CODES = frozenset({"ERCOT", "CAISO", "PJM", "MISO",
+                                  "NYISO", "ISONE", "SPP"})
+
+# Per-ISO read cache. A recompute scores 300+ markets and many share an ISO
+# (dozens of CAISO/PJM markets); without this each one would re-run the same
+# single-row SELECT, hammering the 1-replica Neon pool (the exact pattern behind
+# the documented backend flapping). Only 7 keys max; 60s TTL is far under the
+# 20-min pull cadence so freshness within a recompute is unaffected. Stores the
+# resolved dict (or None) so misses are cached too.
+_TELEMETRY_CACHE: dict = {}
+_TELEMETRY_CACHE_TTL_S = 60
+
+
+def _latest_grid_telemetry(iso: str) -> Optional[dict]:
+    """Return the most-recent live grid_telemetry row for an ISO as a dict, or
+    None when there is no fresh row. Read-only, fail-safe (never raises into
+    the scorer). Only rows newer than LIVE_TELEMETRY_MAX_AGE_MIN qualify, so a
+    dead/paused feed degrades to the modeled estimate instead of masquerading
+    as live. Cached 60s per ISO so a full recompute issues at most one read per
+    ISO per minute (1-replica pool protection)."""
+    if not iso or iso not in _TELEMETRY_ISO_CODES:
+        return None
+    import time as _t
+    _now = _t.time()
+    _hit = _TELEMETRY_CACHE.get(iso)
+    if _hit and (_now - _hit[0]) < _TELEMETRY_CACHE_TTL_S:
+        return _hit[1]
+    row = None
+    _c = None
+    try:
+        _c = _conn()
+        with _c.cursor() as cur:
+            cur.execute(
+                """
+                SELECT iso, zone, observed_at, online_gen_mw, load_mw,
+                       headroom_mw, reserve_margin_pct, source,
+                       EXTRACT(EPOCH FROM (NOW() - observed_at)) / 60.0 AS age_min
+                  FROM grid_telemetry
+                 WHERE iso = %s
+                   AND observed_at >= NOW() - (%s || ' minutes')::interval
+                 ORDER BY observed_at DESC
+                 LIMIT 1
+                """,
+                (iso, str(int(LIVE_TELEMETRY_MAX_AGE_MIN))),
+            )
+            row = cur.fetchone()
+    except Exception:
+        # grid_telemetry may not exist yet (cron never ran) or DB hiccup —
+        # the modeled fallback path handles it. Never fabricate. Do NOT cache a
+        # transient error as a None miss (a brief DB blip shouldn't suppress
+        # live data for the next 60s); just return None for this call.
+        return None
+    finally:
+        # Explicit close: _conn() is a raw psycopg2 connection whose `with`-exit
+        # commits but does NOT close. This runs in the per-cycle scorer, and
+        # DB-pool saturation was a prior flapping cause — so never leak it.
+        if _c is not None:
+            try:
+                _c.close()
+            except Exception:
+                pass
+    result: Optional[dict] = None
+    if row:
+        iso_v, zone_v, observed_at, gen, load, headroom, rmpct, source, age_min = row
+        result = {
+            "iso": iso_v, "zone": zone_v, "observed_at": observed_at,
+            "online_gen_mw": (float(gen) if gen is not None else None),
+            "load_mw": (float(load) if load is not None else None),
+            "headroom_mw": (float(headroom) if headroom is not None else None),
+            "reserve_margin_pct": (float(rmpct) if rmpct is not None else None),
+            "source": source,
+            "age_min": (round(float(age_min), 1) if age_min is not None else None),
+        }
+    # Cache the successful read (row or genuine empty) for the TTL window.
+    _TELEMETRY_CACHE[iso] = (_now, result)
+    return result
+
+
+def _live_operating_reserve_pct(tel: dict) -> Optional[float]:
+    """Real instantaneous operating-reserve % from a telemetry row, signed.
+
+    Prefers an explicit reserve_margin_pct if the adapter ever supplies one
+    (none of the public adapters do today); otherwise derives it from the
+    measured headroom_mw / load_mw. Returns None if neither is computable —
+    NEVER a fabricated value."""
+    if tel is None:
+        return None
+    rmpct = tel.get("reserve_margin_pct")
+    if rmpct is not None:
+        return float(rmpct)
+    headroom = tel.get("headroom_mw")
+    load = tel.get("load_mw")
+    if headroom is not None and load and load > 0:
+        return (float(headroom) / float(load)) * 100.0
+    return None
+
+
+def _reserve_margin_with_live(modeled_anchor: Optional[float],
+                              tel: Optional[dict]) -> tuple[Optional[float], Optional[float]]:
+    """Blend the modeled planning-reserve anchor with the LIVE operating-reserve
+    reading. Returns (effective_reserve_margin_pct, live_op_reserve_pct).
+
+    - live_op_reserve_pct is the real measured signal (signed, may be negative)
+      or None when telemetry can't yield it.
+    - effective_reserve_margin_pct is what the scorer should use: the modeled
+      anchor shaded by the live deviation from a balanced grid (0% op-headroom),
+      capped at ±LIVE_DELTA_CAP_PCT so one 5-min snapshot can't impersonate a
+      planning study. When there's no live signal we return the anchor unchanged
+      (caller then labels it modeled). When there's no anchor either, we return
+      the live value alone rather than inventing one."""
+    live_op = _live_operating_reserve_pct(tel) if tel else None
+    if live_op is None:
+        return modeled_anchor, None
+    # Live deviation from a balanced grid, clamped so it adjusts (not replaces)
+    # the calibrated planning anchor.
+    delta = max(-LIVE_DELTA_CAP_PCT, min(LIVE_DELTA_CAP_PCT, live_op))
+    if modeled_anchor is None:
+        # No modeled anchor for this ISO/region — use the live reading directly
+        # (clamped to a sane planning-reserve floor of 0; we never publish a
+        # negative planning reserve, but we keep the true live_op for the basis).
+        return max(0.0, live_op), live_op
+    effective = float(modeled_anchor) + delta
+    return max(0.0, effective), live_op
 
 
 # Phase 268 (2026-05-29) — snapshot writer + backfill bootstrap. Both
@@ -1003,6 +1202,43 @@ def gather_metrics_for_market(market: tuple) -> dict:
                             if v is not None})
             break
 
+    # ── r67 (2026-06-02): LIVE grid-headroom override of reserve_margin_pct ──
+    # At this point metrics["reserve_margin_pct"] holds the MODELED planning
+    # anchor (iso_default or slug_override). Now read the freshest live
+    # grid_telemetry row for this market's ISO and let the real measured
+    # operating headroom move that anchor BEFORE it reaches the scorer. This is
+    # the whole point of the wiring: the hardcoded value stops being the primary
+    # input the moment a live feed exists for the ISO. No live row (or stale /
+    # non-telemetry ISO) → the modeled anchor is used unchanged, labelled
+    # modeled. We NEVER fabricate: _reserve_margin_with_live only ever returns
+    # the modeled anchor or a value derived from a real measured headroom.
+    _live_tel = _latest_grid_telemetry(iso)
+    _modeled_reserve = metrics.get("reserve_margin_pct")
+    _eff_reserve, _live_op_reserve = _reserve_margin_with_live(
+        _modeled_reserve, _live_tel)
+    if _live_op_reserve is not None:
+        # A real live signal exists for this ISO — it now drives the value.
+        metrics["reserve_margin_pct"] = round(_eff_reserve, 1)
+        _live_fields.add("reserve_margin_pct")
+        # Stash the raw live read so data_basis can expose the basis honestly
+        # (these underscore-prefixed keys are NOT score inputs — compute_* only
+        # read the documented numeric keys, so scores stay a pure function of
+        # reserve_margin_pct et al.).
+        metrics["_live_grid"] = {
+            "iso": _live_tel.get("iso"),
+            "zone": _live_tel.get("zone"),
+            "online_gen_mw": _live_tel.get("online_gen_mw"),
+            "load_mw": _live_tel.get("load_mw"),
+            "headroom_mw": _live_tel.get("headroom_mw"),
+            "operating_reserve_pct": round(_live_op_reserve, 2),
+            "observed_at": (_live_tel.get("observed_at").isoformat()
+                            if _live_tel.get("observed_at") is not None else None),
+            "age_min": _live_tel.get("age_min"),
+            "modeled_reserve_anchor_pct": _modeled_reserve,
+            "effective_reserve_margin_pct": round(_eff_reserve, 1),
+            "source": _live_tel.get("source"),
+        }
+
     # Demand growth default
     if metrics.get("demand_growth_yoy_pct") is None:
         metrics["demand_growth_yoy_pct"] = 4.0
@@ -1045,6 +1281,19 @@ def gather_metrics_for_market(market: tuple) -> dict:
             "data_basis": "modeled_estimate",
             "data_basis_source": _MODELED_SOURCE,
         }
+    # r67 (2026-06-02): when reserve_margin_pct came from a live grid_telemetry
+    # read, expose the measured basis so the honesty is auditable on every
+    # surface that prints data_basis_json — observed_at, real headroom, the
+    # modeled anchor it adjusted, and the upstream source. Per-field provenance
+    # for the reserve margin specifically (the field most consumers care about).
+    _lg = metrics.get("_live_grid")
+    if _lg:
+        # Honest label: the value is a BLEND — the modeled planning-reserve
+        # anchor adjusted by a bounded (±6pp) live operating-reserve delta from
+        # grid_telemetry — NOT a raw measured reserve margin. The full blend
+        # (modeled anchor + operating reserve + effective) is exposed below.
+        data_basis["reserve_margin_basis"] = "modeled_anchor_adjusted_by_live_telemetry"
+        data_basis["reserve_margin_live"] = _lg
     metrics["data_basis"] = data_basis
 
     return metrics

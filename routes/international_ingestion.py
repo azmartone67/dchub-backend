@@ -46,6 +46,22 @@ from typing import Optional
 from flask import Blueprint, jsonify
 
 
+# r67 (2026-06-02): share the ENTSO-E token helper so this module and
+# global_power_apis.py read the SAME env vars (ENTSOE_API_TOKEN OR
+# ENTSOE_TOKEN) — a rename can't break one path while leaving the other. The
+# import is resilient: if global_power_apis can't load in some context we fall
+# back to a local copy with identical semantics (never a third behavior).
+try:
+    from global_power_apis import entsoe_token as _entsoe_token  # type: ignore
+except Exception:
+    def _entsoe_token():  # local fallback — same two names, same semantics
+        for _name in ("ENTSOE_API_TOKEN", "ENTSOE_TOKEN"):
+            _val = (os.environ.get(_name) or "").strip()
+            if _val:
+                return _val
+        return None
+
+
 international_ingestion_bp = Blueprint("international_ingestion", __name__)
 
 
@@ -81,7 +97,7 @@ def _adapter_status() -> list[dict]:
             "adapter":     "entsoe",
             "country":     "EU (DE/NL/FR/IE)",
             "env_var":     "ENTSOE_API_TOKEN",
-            "key_present": bool(os.environ.get("ENTSOE_API_TOKEN")),
+            "key_present": bool(_entsoe_token()),   # r67: ENTSOE_API_TOKEN OR ENTSOE_TOKEN
             "endpoint":    "https://web-api.tp.entsoe.eu/api",
             "rate_limit":  "100 req/min",
             "registration":"https://transparency.entsoe.eu/usrm/user/createPublicUser",
@@ -153,7 +169,7 @@ _ENTSOE_NS = {
 def _entsoe_fetch_xml(params: dict) -> Optional[str]:
     """Single HTTP call to the ENTSO-E Transparency Platform. Returns
     raw XML body or None on any error/non-200."""
-    token = os.environ.get("ENTSOE_API_TOKEN")
+    token = _entsoe_token()   # r67: ENTSOE_API_TOKEN OR ENTSOE_TOKEN
     if not token:
         return None
     qs = "&".join(f"{k}={v}" for k, v in params.items())
@@ -212,7 +228,7 @@ def fetch_entsoe(zone_eic: str) -> Optional[dict]:
 
     Cached for 6 h per zone — see _ENTSOE_CACHE_TTL.
     """
-    if not os.environ.get("ENTSOE_API_TOKEN"):
+    if not _entsoe_token():   # r67: ENTSOE_API_TOKEN OR ENTSOE_TOKEN
         return None
 
     import time

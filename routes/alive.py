@@ -202,11 +202,16 @@ def _build_vitals() -> dict:
                 r = cur.fetchone()
                 if r:
                     vitals["international"]["markets_total"] = int(r[0] or 0)
-                    # live_adapter count requires env-var inspection
+                    # live_adapter count requires env-var inspection.
+                    # r67: ENTSO-E accepts ENTSOE_API_TOKEN OR ENTSOE_TOKEN
+                    # (tuple-of-names entries are satisfied by ANY name set),
+                    # so a token rename can't undercount live adapters here.
                     live = 0
-                    for var in ("ENTSOE_API_TOKEN", "JEPX_API_KEY",
-                                "EMA_API_KEY", "NESO_API_KEY"):
-                        if os.environ.get(var): live += 1
+                    for var in (("ENTSOE_API_TOKEN", "ENTSOE_TOKEN"),
+                                "JEPX_API_KEY", "EMA_API_KEY", "NESO_API_KEY"):
+                        names = var if isinstance(var, tuple) else (var,)
+                        if any((os.environ.get(n) or "").strip() for n in names):
+                            live += 1
                     vitals["international"]["with_live_adapter"] = live
             except Exception:
                 pass

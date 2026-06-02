@@ -57,6 +57,31 @@ def get_cached(key, fetch_func, ttl=CACHE_DURATION):
         return None
 
 
+# ─────────────────────────────────────────────────────────────────────
+# r67 (2026-06-02): ENTSO-E token — accept BOTH env-var names.
+#
+# The token is read in three places (this module's ENTSOEAPI, the separate
+# parser in routes/international_ingestion.py, and the alive/status probes).
+# Railway currently sets ENTSOE_API_TOKEN, but a future rename to the shorter
+# ENTSOE_TOKEN (the name the entsoe-py library uses) would silently break grid
+# data with no error — the fail-closed path just starts returning
+# source_unavailable. Read BOTH names from ONE helper so either works and a
+# rename can't silently regress. Canonical name stays ENTSOE_API_TOKEN (what we
+# report in needs_token_env). Whitespace-stripped; empty string treated as unset.
+# ─────────────────────────────────────────────────────────────────────
+ENTSOE_TOKEN_ENVS = ("ENTSOE_API_TOKEN", "ENTSOE_TOKEN")
+
+
+def entsoe_token():
+    """Return the ENTSO-E security token from either accepted env var, or None.
+    Single source of truth shared across every ENTSO-E read path."""
+    for name in ENTSOE_TOKEN_ENVS:
+        val = (os.environ.get(name) or "").strip()
+        if val:
+            return val
+    return None
+
+
 class ElectricityMapsAPI:
     """Electricity Maps - Global carbon intensity and power mix.
 
@@ -290,13 +315,16 @@ class ENTSOEAPI:
     """
 
     BASE_URL = "https://web-api.tp.entsoe.eu/api"
-    TOKEN_ENV = "ENTSOE_API_TOKEN"
+    TOKEN_ENV = "ENTSOE_API_TOKEN"          # canonical name (reported in needs_token_env)
+    TOKEN_ENVS = ENTSOE_TOKEN_ENVS          # both accepted names
     SOURCE = "ENTSO-E Transparency Platform"
     TIMEOUT_S = 12
 
     @classmethod
     def _token(cls):
-        return os.environ.get(cls.TOKEN_ENV)
+        # r67: accept ENTSOE_API_TOKEN OR ENTSOE_TOKEN via the shared helper so
+        # a future rename can't silently fail the European grid feed.
+        return entsoe_token()
 
     @classmethod
     def _unavailable(cls, area, detail, **extra):
@@ -390,6 +418,19 @@ class ENTSOEAPI:
         'FR': {'name': 'France', 'eic': '10YFR-RTE------C'},
         'ES': {'name': 'Spain', 'eic': '10YES-REE------0'},
         'IT_NORD': {'name': 'Italy North', 'eic': '10Y1001A1001A73I'},
+        # r67 (2026-06-02): full set of Italian bidding zones so Italy returns
+        # live ENTSO-E data instead of failing closed for everything south of
+        # the North zone. EIC codes verified against the canonical entsoe-py
+        # mappings (EnergieID/entsoe-py) — IT_NORD already matched, confirming
+        # the source. If ENTSO-E genuinely has no data for a zone, get_load /
+        # get_generation / get_prices still fail closed honestly
+        # (source_unavailable) — these mappings never fabricate a reading.
+        'IT_CNOR': {'name': 'Italy Centre-North', 'eic': '10Y1001A1001A70O'},
+        'IT_CSUD': {'name': 'Italy Centre-South', 'eic': '10Y1001A1001A71M'},
+        'IT_SUD':  {'name': 'Italy South', 'eic': '10Y1001A1001A788'},
+        'IT_SICI': {'name': 'Italy Sicily', 'eic': '10Y1001A1001A75E'},
+        'IT_SARD': {'name': 'Italy Sardinia', 'eic': '10Y1001A1001A74G'},
+        'IT_CALA': {'name': 'Italy Calabria', 'eic': '10Y1001C--00096J'},
         'NL': {'name': 'Netherlands', 'eic': '10YNL----------L'},
         'BE': {'name': 'Belgium', 'eic': '10YBE----------2'},
         'AT': {'name': 'Austria', 'eic': '10YAT-APG------L'},
@@ -1062,7 +1103,7 @@ def register_global_power_routes(app):
     """Register global power API routes"""
     app.register_blueprint(global_power_bp)
     em_ok = bool(os.environ.get(ElectricityMapsAPI.TOKEN_ENV))
-    entsoe_ok = bool(os.environ.get(ENTSOEAPI.TOKEN_ENV))
+    entsoe_ok = bool(entsoe_token())   # r67: checks ENTSOE_API_TOKEN OR ENTSOE_TOKEN
     logger.info("✅ Global Power APIs registered")
     logger.info("   🌍 Electricity Maps: 30+ zones (token %s: %s)",
                 ElectricityMapsAPI.TOKEN_ENV, "set" if em_ok else "MISSING → fail-closed")
