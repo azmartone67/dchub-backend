@@ -25242,6 +25242,13 @@ try:
 except Exception as _eu_e:
     print(f"[main] iso_eu_entsoe_bp register failed: {_eu_e}", flush=True)
 
+try:
+    from routes.eu_gas_entsog import eu_gas_entsog_bp
+    app.register_blueprint(eu_gas_entsog_bp)
+    print("[main] eu_gas_entsog_bp registered — LIVE EU gas transmission flows (ENTSOG, tokenless, CONTEXT not DCGI)", flush=True)
+except Exception as _eg_e:
+    print(f"[main] eu_gas_entsog_bp register failed: {_eg_e}", flush=True)
+
 # Phase ZZZZZ-round34 (2026-05-24): Tier 2 MCP tools — PDF site reports + CSV export
 try:
     from routes.mcp_tier2_reports import mcp_tier2_bp
