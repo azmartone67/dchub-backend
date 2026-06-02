@@ -38,6 +38,19 @@ _PLATFORM_DISPLAY = {
 _UUID_RE_STR = (r"^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-"
                 r"[0-9a-f]{4}-[0-9a-f]{12}$")
 
+# DC Hub's OWN internal traffic must never count as an external "agent" — the
+# registry was showing dchub-selfheal / pipeline_mcp as the top agents, i.e.
+# self-traffic inflating adoption (the signal-inflation rule).
+_INTERNAL_PREFIXES = ("dchub-", "dchub_", "loop", "pipeline_mcp", "pipeline-mcp")
+def _is_internal_caller(p):
+    if not p or p in _NONPLATFORM:
+        return True
+    if any(p.startswith(pre) for pre in _INTERNAL_PREFIXES):
+        return True
+    if "selfheal" in p or "self-heal" in p or "self_heal" in p:
+        return True
+    return p.endswith(("-probe", "-scanner", "-health", "-checker", "-monitor", "-bot"))
+
 
 def _live_agent_rows():
     """Real per-platform tool-call counts from mcp_tool_calls (last 30d).
@@ -82,7 +95,7 @@ def _live_agent_rows():
 
     rows = []
     for p, n, last_seen in (raw or []):
-        if p in _NONPLATFORM or _uuid.match(p or ""):
+        if _is_internal_caller(p) or _uuid.match(p or ""):
             continue
         _n = int(n or 0)
         rows.append({

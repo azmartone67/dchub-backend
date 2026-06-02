@@ -1758,6 +1758,19 @@ _LIVE_PROOF_NONPLATFORM = (
     "health", "scanner", "checker",
 )
 
+# Pattern guard for DC Hub's OWN internal traffic (self-heal/pipeline/loops/
+# probes) so the "N platforms" headline reflects EXTERNAL adoption only, never
+# self-inflated (the signal-inflation rule). Mirrors agent_network_effect.
+_LP_INTERNAL_PREFIXES = ("dchub-", "dchub_", "loop", "pipeline_mcp", "pipeline-mcp")
+def _lp_is_internal(p):
+    if not p or p in _LIVE_PROOF_NONPLATFORM:
+        return True
+    if any(p.startswith(pre) for pre in _LP_INTERNAL_PREFIXES):
+        return True
+    if "selfheal" in p or "self-heal" in p or "self_heal" in p:
+        return True
+    return p.endswith(("-probe", "-scanner", "-health", "-checker", "-monitor", "-bot"))
+
 
 @mcp_bp.get("/api/v1/stats/live-proof")
 def stats_live_proof():
