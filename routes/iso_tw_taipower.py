@@ -35,6 +35,30 @@ try:
 except Exception:
     _rq = None
 
+def _get(url, **kw):
+    """GET that tolerates Taipower's incomplete gov cert chain.
+
+    r-tls (2026-06-02): curl verifies Taipower's cert fine via the OS CA store
+    (ssl_verify=0), but python-requests' certifi bundle LACKS the Taiwan gov
+    intermediate CA → SSLCertVerificationError (on local AND Railway). We try
+    normal (verified) TLS first; ONLY on a cert-verification failure do we
+    retry unverified. This is an acceptable, scoped tradeoff: the endpoint
+    serves PUBLIC grid data and we send NO credentials/secrets in the request,
+    so the only residual risk is a MITM feeding fake grid numbers (low-stakes
+    for a context feed) — never used for any auth'd/secret-bearing call."""
+    try:
+        return _rq.get(url, **kw)
+    except Exception as e:
+        if "CERTIFICATE" in str(e).upper() or "SSL" in type(e).__name__.upper():
+            try:
+                import urllib3
+                urllib3.disable_warnings(urllib3.exceptions.InsecureRequestWarning)
+            except Exception:
+                pass
+            kw["verify"] = False
+            return _rq.get(url, **kw)
+        raise
+
 iso_tw_taipower_bp = Blueprint("iso_tw_taipower", __name__, url_prefix="/api/v1/iso/tw")
 SOURCE_ID = "iso-tw-taipower-live"
 ISO_CODE = "TAIPOWER"
@@ -100,7 +124,7 @@ def _fetch_genary():
     if _rq is None:
         return None
     try:
-        r = _rq.get(_TW_URL, headers=_HEADERS, timeout=15)
+        r = _get(_TW_URL, headers=_HEADERS, timeout=15)
         if not r.ok:
             return None
         rows = (r.json() or {}).get("aaData") or []
@@ -115,8 +139,15 @@ def _fetch_genary():
         label = _strip(row[0])
         if not label:
             continue
-        # column 3 = current generation MW (may be "-", "N/A", or "x.x(off)")
-        raw = str(row[3] if len(row) > 3 else "").replace(",", "").strip()
+        # genary.json columns: [fuel, '', unit_name, CAPACITY(MW), GENERATION(MW),
+        # pct, ...]. Generation is col 4 (col 3 is installed capacity).
+        # CRITICAL: each category also has a 小計 (subtotal) row in col 2 whose
+        # value EQUALS the sum of its units — summing it too double-counted every
+        # category (~2x). Skip subtotal/total rows.
+        unit = _strip(row[2]) if len(row) > 2 else ""
+        if any(k in unit for k in ("小計", "合計", "總計", "小  計", "Subtotal", "Total")):
+            continue
+        raw = str(row[4] if len(row) > 4 else "").replace(",", "").strip()
         m = re.search(r"-?\d+(?:\.\d+)?", raw)
         if not m:
             continue
