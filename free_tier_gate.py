@@ -330,9 +330,9 @@ def init_free_tier_gate(app, get_db_conn):
                     '/api/v1/infrastructure/substations',
                     '/api/v1/infrastructure/transmission',
                     '/api/v1/infrastructure/power-plants',
-                    '/api/v1/infrastructure/fiber',
-                    '/api/v1/infrastructure/permits',
-                    '/api/v1/infrastructure/properties',
+                    # r66 (2026-06-02): fiber/permits/properties removed — proprietary
+                    # data now Pro-gated at the route (@_infra_require_plan). See the
+                    # matching note in api_tier_gating._MAP_BYPASS_PATHS.
                     '/api/v1/infrastructure/nearby',
                     '/api/v1/infrastructure/summary',
                     '/api/v1/energy/power-plants',

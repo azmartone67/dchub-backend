@@ -233,6 +233,7 @@ def get_infrastructure_summary():
 
 
 @infra_bp.route('/fiber', methods=['GET'])
+@_infra_require_plan('pro')
 def get_fiber_routes():
     """
     Get fiber routes — queries Neon fiber_routes table (1,000+ routes).
@@ -314,6 +315,7 @@ def get_substations():
 
 
 @infra_bp.route('/permits', methods=['GET'])
+@_infra_require_plan('pro')
 def get_permits():
     """
     Get construction permits
@@ -347,6 +349,7 @@ def get_permits():
 
 
 @infra_bp.route('/properties', methods=['GET'])
+@_infra_require_plan('pro')
 def get_properties():
     """
     Get DC properties/land for sale

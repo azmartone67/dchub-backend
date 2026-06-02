@@ -572,9 +572,15 @@ def require_plan(min_plan='pro'):
                     '/api/v1/infrastructure/substations',
                     '/api/v1/infrastructure/transmission',
                     '/api/v1/infrastructure/power-plants',
-                    '/api/v1/infrastructure/fiber',
-                    '/api/v1/infrastructure/permits',
-                    '/api/v1/infrastructure/properties',
+                    # r66 (2026-06-02): fiber/permits/properties REMOVED from the
+                    # referer-bypass + given @_infra_require_plan('pro') on their
+                    # routes. These return proprietary data (fiber: 500 carrier
+                    # routes w/ fiber_count; permits: developer+MW; properties:
+                    # price_per_acre) and were leaking to any anon caller because
+                    # the CF worker injects a dchub.cloud Referer on every request
+                    # (see reference_dchub_cf_injects_referer). The map's own fiber
+                    # preview uses the capped /api/fiber/routes (still open, 20-row
+                    # teaser); MCP keeps full access via X-Internal-Key (STEP 0).
                     '/api/v1/infrastructure/nearby',
                     '/api/v1/infrastructure/summary',
                     '/api/v1/energy/power-plants',
