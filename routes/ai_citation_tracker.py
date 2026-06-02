@@ -570,6 +570,13 @@ def draft_press_from_citations():
     (GET dry-runs by default). Auto-approved if ?auto_approve=true.
     """
     days = int(request.args.get("days", "30"))
+    # r62-qa: HARD freshness floor — a citation is only press-worthy if it was
+    # observed in the last 7 days. The dashboard showed 87-day-old citations
+    # while the press loop kept minting "today"-dated "Claude Cites DC Hub"
+    # releases off the same window param (?days=30 / cron days=7). Clamp the
+    # effective window to <=7d regardless of the param so a stale row can never
+    # be headlined as fresh news (same credibility class as the disclaimer self-own).
+    days = max(1, min(days, 7))
     write = request.args.get("write", "").lower() in ("1", "true", "yes")
     auto_approve = request.args.get("auto_approve", "").lower() in ("1", "true", "yes")
     if request.method == "POST":

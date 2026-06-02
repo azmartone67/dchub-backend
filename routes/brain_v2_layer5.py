@@ -261,6 +261,27 @@ def _validate_and_store_proposal(source_name: str, prop: dict) -> dict:
         return {"outcome": f"malformed: {norm_err}",
                 "rationale": rationale[:200]}
 
+    # r62-qa: DETERMINISTIC SQLite-hallucination reject. DC Hub is 100%
+    # PostgreSQL. The _LEARN_CODE_SYSTEM prompt forbids SQLite, but a system
+    # bullet can be ignored when the source excerpt is full of SQLite-looking
+    # bait (e.g. api_monetization.py's DB_PATH='dc_nexus.db' + is_active=1/0).
+    # A validator cannot be ignored: if any change's REPLACE introduces a
+    # SQLite-only token, reject before storing — no proposal that rewrites
+    # Postgres into SQLite ever reaches the queue / draft-PR opener.
+    import re as _re
+    _SQLITE_TOKENS = _re.compile(
+        r'sqlite_master|PRAGMA\s+table_info|AUTOINCREMENT|import\s+sqlite3|'
+        r'sqlite3\.|\.db[\'"]|cursor\(\)\.execute\([^)]*\?\s*[,)]',
+        _re.I)
+    for _ch in changes:
+        _repl = _ch.get("replace", "") or ""
+        if _SQLITE_TOKENS.search(_repl):
+            return {"outcome": "rejected_sqlite_hallucination",
+                    "file": _ch.get("file"),
+                    "rationale": ("Proposal introduces SQLite-only syntax; DC Hub "
+                                  "is PostgreSQL. Auto-rejected by the deterministic "
+                                  "stack guard.")[:200]}
+
     # Validate EVERY change — all-or-nothing. A multi-file proposal
     # where one search is hallucinated is rejected entirely; applying
     # a partial multi-file fix would leave the codebase half-changed.

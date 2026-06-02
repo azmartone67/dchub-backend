@@ -304,9 +304,7 @@ def _collect_signals() -> dict:
             with c.cursor() as cur:
                 cur.execute("""
                     SELECT COUNT(*),
-                           COUNT(DISTINCT COALESCE(NULLIF(client_name,''),
-                                                    NULLIF(platform,''),
-                                                    ip_address))
+                           COUNT(DISTINCT ip_address)
                     FROM mcp_tool_calls
                     WHERE created_at > NOW() - INTERVAL '24 hours'
                 """)
@@ -2764,9 +2762,7 @@ def marketing_pulse():
         try:
             with c.cursor() as cur:
                 cur.execute("""
-                    SELECT COUNT(DISTINCT COALESCE(NULLIF(client_name,''),
-                                                    NULLIF(platform,''),
-                                                    ip_address))
+                    SELECT COUNT(DISTINCT ip_address)
                     FROM mcp_tool_calls
                     WHERE created_at > NOW() - INTERVAL '7 days'""")
                 out["ai_callers_7d"] = int((cur.fetchone() or (0,))[0])

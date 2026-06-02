@@ -155,7 +155,7 @@ def _build_stats() -> dict:
                 # Schema may not have user_agent yet on every deploy
                 s["mcp_calls_7d_real"] = s["mcp_calls_7d"]
             s["mcp_unique_callers_7d"] = int(_scalar(cur,
-                "SELECT COUNT(DISTINCT COALESCE(NULLIF(client_name,''),NULLIF(platform,''),ip_address)) FROM mcp_tool_calls WHERE created_at > NOW() - INTERVAL '7 days'"))
+                "SELECT COUNT(DISTINCT ip_address) FROM mcp_tool_calls WHERE created_at > NOW() - INTERVAL '7 days'"))
             s["mcp_developers"]    = int(_scalar(cur,
                 "SELECT COUNT(*) FROM mcp_dev_keys"))
 

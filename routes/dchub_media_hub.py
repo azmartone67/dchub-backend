@@ -191,9 +191,7 @@ def media_aggregate():
                 out["live_spine"]["mcp_calls_24h"] = int((cur.fetchone() or (0,))[0])
             except Exception: c.rollback()
             try:
-                cur.execute("""SELECT COUNT(DISTINCT COALESCE(NULLIF(client_name,''),
-                                                               NULLIF(platform,''),
-                                                               ip_address))
+                cur.execute("""SELECT COUNT(DISTINCT ip_address)
                                FROM mcp_tool_calls
                                WHERE created_at > NOW() - INTERVAL '7 days'""")
                 out["live_spine"]["unique_ai_agents_7d"] = int((cur.fetchone() or (0,))[0])
@@ -321,9 +319,7 @@ def media_aggregate():
             try:
                 cur.execute("""
                     SELECT COUNT(*),
-                           COUNT(DISTINCT COALESCE(NULLIF(client_name,''),
-                                                    NULLIF(platform,''),
-                                                    ip_address))
+                           COUNT(DISTINCT ip_address)
                     FROM mcp_tool_calls
                     WHERE created_at > NOW() - INTERVAL '24 hours'
                 """)

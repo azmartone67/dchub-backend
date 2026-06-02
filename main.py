@@ -3542,8 +3542,7 @@ def handle_well_known():
                     # once these exceed the hardcoded 97 / 392,743 floor.
                     _cur.execute(
                         "SELECT COUNT(*), "
-                        "COUNT(DISTINCT COALESCE(NULLIF(client_name,''), "
-                        "NULLIF(platform,''), 'unknown')) FROM mcp_tool_calls"
+                        "COUNT(DISTINCT ip_address) FROM mcp_tool_calls"
                     )
                     _ar = _cur.fetchone() or [0, 0]
                     _live_counts["agent_requests"] = int(_ar[0] or 0)
@@ -14998,6 +14997,31 @@ def ai_tracking_cumulative():
             return_pg_connection(conn)
 
 
+_JUNK_PLATFORM_NAMES = {
+    'direct', 'unknown_ai', 'seo_bot', 'media_crawler', 'unknown', 'test',
+    'mcp-remote-fallback-test', 'internal', 'curl', 'qa', 'probe', 'smoke',
+    'no-auth-test', 'mcp-sandbox', 'test-client', 'canary', 'mcp', 'mcp_generic',
+}
+_JUNK_PLATFORM_RE = re.compile(
+    r'(^qa|^curl|^smoke|^test|^probe|-probe$|prober|-scanner$|scanner|'
+    r'-checker$|-health$|-test$|noauth|no-auth|sandbox|health-check|'
+    r'-validator$|-crawler$|-inspector$|-monitor$|smithery-probe|tester)',
+    re.I,
+)
+def _is_junk_platform(key: str) -> bool:
+    """r62-qa: a platform 'connected/active/tracked' count must exclude our own
+    'internal' bucket (r62) + the ~30 probe/scanner/test UAs that each minted a
+    distinct ai_cumulative row. Used by BOTH the /api/v1/ai-tracking/stats
+    (tracked) and /api/ai/tracking (active) counters so the homepage triple
+    stops over-reporting ~98 when the real named-platform count is ~8."""
+    kl = (key or '').strip().lower()
+    if not kl:
+        return True
+    if kl in _JUNK_PLATFORM_NAMES:
+        return True
+    return bool(_JUNK_PLATFORM_RE.search(kl))
+
+
 @app.route('/api/v1/ai-tracking/stats', methods=['GET'])
 def ai_tracking_stats():
     """Return aggregate AI tracking stats from Neon ai_cumulative table."""
@@ -15005,23 +15029,30 @@ def ai_tracking_stats():
     try:
         conn = get_pg_connection()
         cur = conn.cursor()
+        # r62-qa: total_platforms now excludes internal/probe/scanner/test rows
+        # (junk predicate) instead of a raw COUNT(*) that inflated to ~98/108.
         cur.execute("""
-            SELECT
-                COUNT(*) AS total_platforms,
-                COALESCE(SUM(total_requests), 0) AS total_requests,
-                COALESCE(SUM(requests_7d), 0) AS requests_7d,
-                MAX(last_seen) AS last_activity
+            SELECT platform,
+                   COALESCE(SUM(total_requests), 0) AS total_requests,
+                   COALESCE(SUM(requests_7d), 0)    AS requests_7d,
+                   MAX(last_seen)                   AS last_seen
             FROM ai_cumulative
+            GROUP BY platform
         """)
-        row = cur.fetchone()
+        rows = cur.fetchall()
         cur.close()
+        total_platforms = sum(1 for r in rows
+                              if not _is_junk_platform(r[0]) and int(r[1] or 0) > 0)
+        total_requests = sum(int(r[1] or 0) for r in rows)
+        requests_7d = sum(int(r[2] or 0) for r in rows)
+        last_activity = max((r[3] for r in rows if r[3]), default=None)
         return jsonify({
             "success": True,
             "stats": {
-                "total_platforms": row[0],
-                "total_requests": int(row[1]),
-                "requests_7d": int(row[2]),
-                "last_activity": str(row[3]) if row[3] else None
+                "total_platforms": total_platforms,
+                "total_requests": int(total_requests),
+                "requests_7d": int(requests_7d),
+                "last_activity": str(last_activity) if last_activity else None
             },
             "source": "railway"
         })
@@ -15051,7 +15082,6 @@ def ai_tracking_full():
         platforms = {}
         all_time = 0
         total_7d = 0
-        noise = {'direct', 'unknown_ai', 'seo_bot', 'media_crawler', 'unknown', 'test', 'mcp-remote-fallback-test'}
         active_count = 0
 
         for r in rows:
@@ -15069,7 +15099,9 @@ def ai_tracking_full():
             }
             all_time += req_total
             total_7d += req_7d
-            if key not in noise and req_total > 0:
+            # r62-qa: exclude internal/probe/scanner/test rows from the
+            # "active platforms" count (was inflating ~98; real named ~8).
+            if not _is_junk_platform(key) and req_total > 0:
                 active_count += 1
 
         return jsonify({
@@ -27702,11 +27734,15 @@ def _media_ai_usage_live():
     try:
         with psycopg2.connect(DATABASE_URL, connect_timeout=6) as conn:
             with conn.cursor() as cur:
+                # r62-qa: count DISTINCT ip_address (like /api/v1/mcp/funnel,
+                # which correctly reports 151). The prior COALESCE preferred
+                # client_name, but the MCP-worker insert path writes the literal
+                # 'unknown'/'mcp-worker' on ~every row, so COALESCE always
+                # resolved to the SAME value and COUNT(DISTINCT …) collapsed the
+                # whole window to 1.
                 cur.execute(
                     f"""SELECT COUNT(*) AS calls,
-                              COUNT(DISTINCT COALESCE(NULLIF(client_name, ''),
-                                                       NULLIF(platform, ''),
-                                                       ip_address)) AS users
+                              COUNT(DISTINCT ip_address) AS users
                        FROM mcp_tool_calls
                        WHERE created_at > NOW() - INTERVAL '{window_h} hours'""")
                 row = cur.fetchone() or (0, 0)
@@ -28546,7 +28582,7 @@ def _mcp_conversion_funnel():
         "5_conversions_30d":    safe_count("SELECT COUNT(*) FROM mcp_upgrade_signals WHERE tier_current IN ('pro','paid','enterprise') AND created_at > NOW() - INTERVAL '30 days'"),
         "5b_total_paid_keys":   safe_count("SELECT COUNT(DISTINCT user_email) FROM mcp_upgrade_signals WHERE tier_current IN ('pro','paid','enterprise')"),
         # Phase QQ — extra context counters so the dashboard tells a fuller story.
-        "0_unique_callers_7d":  safe_count("SELECT COUNT(DISTINCT COALESCE(NULLIF(client_name,''),NULLIF(platform,''),ip_address)) FROM mcp_tool_calls WHERE created_at > NOW() - INTERVAL '7 days'"),
+        "0_unique_callers_7d":  safe_count("SELECT COUNT(DISTINCT ip_address) FROM mcp_tool_calls WHERE created_at > NOW() - INTERVAL '7 days'"),
         # mcp_upgrade_signals columns (verified): user_email, tool_requested,
         # signal_type, tier_current, tier_required, mcp_client, message_shown,
         # created_at. No api_key_hash on this table. Coalesce on what exists.
