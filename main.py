@@ -25322,6 +25322,13 @@ try:
 except Exception as _eg_e:
     print(f"[main] eu_gas_entsog_bp register failed: {_eg_e}", flush=True)
 
+try:
+    from routes.iso_tw_taipower import iso_tw_taipower_bp
+    app.register_blueprint(iso_tw_taipower_bp)
+    print("[main] iso_tw_taipower_bp registered — LIVE Taiwan grid (Taipower, tokenfree, APAC #2)", flush=True)
+except Exception as _tw_e:
+    print(f"[main] iso_tw_taipower_bp register failed: {_tw_e}", flush=True)
+
 # Phase ZZZZZ-round34 (2026-05-24): Tier 2 MCP tools — PDF site reports + CSV export
 try:
     from routes.mcp_tier2_reports import mcp_tier2_bp

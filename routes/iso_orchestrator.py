@@ -85,6 +85,10 @@ def extract_all():
         # LIVE-only no-op if ENTSOE_API_Token is unset. Internally fans out to
         # all zones, so this single slot stays under the per-ISO timeout.
         ("iso_eu_entsoe", "ENTSOE"),
+        # APAC #2 (2026-06-02): Taiwan via Taipower real-time generation
+        # (token-free, browser-UA). Top APAC DC market (TSMC + hyperscalers).
+        # LIVE-only. Japan/Korea/India/SG/NZ remain auth-gated/fragmented.
+        ("iso_tw_taipower", "TAIPOWER"),
         # 2026-05-30: non-ISO utility/co-op balancing authorities (40+ BAs:
         # APS/SRP/FPL + big IOUs + Pacific-NW PUDs + WAPA + co-ops).
         # run_extraction() fans out all of them in parallel internally
@@ -169,15 +173,24 @@ def health():
     #     still WRITES real grid_data rows, anchored to IESO's published 2024
     #     mix — same honest treatment as the other Canadian operators (AESO,
     #     Hydro-Québec). So this is strictly "9 live + 1 modeled", not 10 live.
+    # 2026-06-02 (#60): international LIVE grids now shipped — GB (NGESO/Elexon),
+    # AU (AEMO), EU (ENTSO-E, 12 bidding zones), TW (Taipower). The old
+    # future_isos list (UK/AU/EirGrid) is now LIVE (EirGrid/IE is covered by the
+    # ENTSO-E IE_SEM zone). Remaining future = APAC beyond TW/AU, which is
+    # auth-gated/fragmented (Japan OCCTO, Korea KPX, India Grid-India, SG EMA).
     return jsonify(
         status="ok",
         registered_isos=["ERCOT", "CAISO", "NYISO", "MISO", "PJM", "SPP", "ISONE",
                           "IESO", "TVA", "BPA"],
         endpoint="/api/v1/iso/all/extract",
-        iso_count=10,
+        north_america_iso_count=10,
         live_feed_count=9,
         modeled_baseline_count=1,
         modeled_isos=["IESO"],
         utility_bas_count=43,
-        future_isos=["ESO (UK)", "AEMO (AU)", "EirGrid (IE)"],
+        international_live=["NGESO (GB, Elexon)", "AEMO (AU)",
+                            "ENTSOE (EU, 12 zones)", "TAIPOWER (TW)"],
+        future_isos=["Japan (OCCTO/TEPCO)", "Korea (KPX)", "India (Grid-India)",
+                     "Singapore (EMA)"],
+        future_isos_note="APAC beyond TW/AU — auth-gated or fragmented; not cleanly tokenless",
     ), 200
