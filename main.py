@@ -25235,6 +25235,13 @@ try:
 except Exception as _au_e:
     print(f"[main] iso_au_aemo_bp register failed: {_au_e}", flush=True)
 
+try:
+    from routes.iso_eu_entsoe import iso_eu_entsoe_bp
+    app.register_blueprint(iso_eu_entsoe_bp)
+    print("[main] iso_eu_entsoe_bp registered — LIVE Europe grid (ENTSO-E Transparency, ~12 zones, ENTSOE_API_Token)", flush=True)
+except Exception as _eu_e:
+    print(f"[main] iso_eu_entsoe_bp register failed: {_eu_e}", flush=True)
+
 # Phase ZZZZZ-round34 (2026-05-24): Tier 2 MCP tools — PDF site reports + CSV export
 try:
     from routes.mcp_tier2_reports import mcp_tier2_bp

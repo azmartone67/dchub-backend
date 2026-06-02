@@ -79,6 +79,12 @@ def extract_all():
         # NGESO/AEMO-tagged DCPI markets (London, Sydney, Melbourne).
         ("iso_uk_elexon", "NGESO"),
         ("iso_au_aemo",   "AEMO"),
+        # ENTSO-E EU (2026-06-02): ONE token unlocks ~12 major European
+        # DC-market bidding zones (Frankfurt/Paris/Amsterdam/Dublin/Madrid/
+        # Brussels/Warsaw/Vienna + Nordics). LIVE actual-generation-per-type;
+        # LIVE-only no-op if ENTSOE_API_Token is unset. Internally fans out to
+        # all zones, so this single slot stays under the per-ISO timeout.
+        ("iso_eu_entsoe", "ENTSOE"),
         # 2026-05-30: non-ISO utility/co-op balancing authorities (40+ BAs:
         # APS/SRP/FPL + big IOUs + Pacific-NW PUDs + WAPA + co-ops).
         # run_extraction() fans out all of them in parallel internally
