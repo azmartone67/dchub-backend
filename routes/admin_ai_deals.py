@@ -96,7 +96,10 @@ def purge_deals_table():
     _IMPOSSIBLE = (f"{_AUTO} AND ("
                    "LOWER(COALESCE(type,'')) LIKE '%ipo%' OR LOWER(COALESCE(notes,'')) LIKE '%ipo%' "
                    "OR (COALESCE(buyer,'')<>'' AND LOWER(COALESCE(buyer,''))=LOWER(COALESCE(seller,''))))")
-    _UNSRC = f"{_AUTO} AND COALESCE(source_url,'') = ''"
+    # r68: unsourced AUTO rows that ALSO have no value — pure junk. Value-gated so
+    # manually value-corrected marquee deals (Microsoft/OpenAI $13B, Oracle
+    # Stargate $100B at AUTO-* ids) are PRESERVED even though they lack a URL.
+    _UNSRC = f"{_AUTO} AND COALESCE(source_url,'') = '' AND COALESCE(value,0) = 0"
     _DUP = f"""SELECT id FROM (
           SELECT id, ROW_NUMBER() OVER (
             PARTITION BY LOWER(COALESCE(buyer,'')), LOWER(COALESCE(seller,'')), COALESCE(value,-1)
