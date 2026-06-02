@@ -1818,7 +1818,7 @@ def stats_live_proof():
         "distinct_ips_7d": 0,
         "distinct_platforms": 0,
         "approved_testimonials_count": 0,
-        "platforms_7d": [],               # [{platform, calls}] external only
+        "platforms_30d": [],              # [{platform, calls}] recognized external only
         "flags": {
             "tool_calls_available": False,
             "callers_available": False,
@@ -1831,7 +1831,7 @@ def stats_live_proof():
             "tool_calls_30d":              "COUNT(*) mcp_tool_calls WHERE created_at >= NOW()-30d",
             "distinct_callers_7d":         "COUNT(DISTINCT session_id) mcp_tool_calls (7d)",
             "distinct_ips_7d":             "COUNT(DISTINCT ip_address) mcp_tool_calls (7d)",
-            "distinct_platforms":          "COUNT(DISTINCT platform) mcp_tool_calls (7d, external buckets only)",
+            "distinct_platforms":          "COUNT(DISTINCT recognized platform) mcp_tool_calls (30d, allowlist only)",
             "approved_testimonials_count": "COUNT(*) ai_testimonials WHERE approved = TRUE",
         },
         "note": ("All counts are live reads from mcp_tool_calls + "
@@ -1876,14 +1876,18 @@ def stats_live_proof():
     except Exception as e:
         out["flags"]["callers_error"] = str(e)[:120]
 
-    # 3) Distinct EXTERNAL platforms (7d) — exclude our own infra / probes /
+    # 3) Distinct EXTERNAL platforms (30d) — exclude our own infra / probes /
     #    generic transport buckets so the "N platforms" headline is honest.
     try:
         with _pool.connection() as conn, conn.cursor() as cur:
             cur.execute(
+                # 30d window (was 7d): platforms = BREADTH of who integrates, so a
+                # longer lookback is the honest, representative figure — 7d undersold
+                # at 3 because Claude/Anthropic dominate recent traffic. (Callers/IPs
+                # stay 7d: those measure recent activity, not breadth.)
                 "SELECT LOWER(COALESCE(platform, '')) AS p, COUNT(*) AS n "
                 "FROM mcp_tool_calls "
-                "WHERE created_at >= NOW() - INTERVAL '7 days' "
+                "WHERE created_at >= NOW() - INTERVAL '30 days' "
                 "GROUP BY p ORDER BY n DESC"
             )
             rows = cur.fetchall() or []
@@ -1895,7 +1899,7 @@ def stats_live_proof():
             # drop UUID-shaped session leakage that escaped normalization
             and not _UUID_RE_MOD.match(p)
         ]
-        out["platforms_7d"] = externals
+        out["platforms_30d"] = externals
         out["distinct_platforms"] = len(externals)
         out["flags"]["platforms_available"] = True
         out["data_available"] = True
