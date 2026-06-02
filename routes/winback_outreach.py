@@ -300,7 +300,7 @@ def mark_sent():
             cur.execute("""
                 INSERT INTO winback_outreach_sent
                   (platform, method, status, confirmed_by, confirmed_at)
-                VALUES (%s, %s, %s, %s, NOW())
+                VALUES (%s, %s, %s, %s, NOW() ON CONFLICT DO NOTHING)
                 ON CONFLICT DO NOTHING
                 RETURNING id
             """, (platform, "manual", status, who))

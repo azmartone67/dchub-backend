@@ -68,7 +68,7 @@ def auto_capture_testimonial(platform, agent_name, tool_name, tool_input, tool_o
             INSERT INTO ai_testimonials 
             (platform, agent_name, quote, context, query, category, 
              source, approved, dedup_hash, tool_name, created_at)
-            VALUES (%s, %s, %s, %s, %s, %s, 'mcp-auto', TRUE, %s, %s, CURRENT_TIMESTAMP)
+            VALUES (%s, %s, %s, %s, %s, %s, 'mcp-auto', TRUE, %s, %s, CURRENT_TIMESTAMP) ON CONFLICT DO NOTHING
         """, (
             platform or 'unknown',
             agent_name or platform or 'AI Agent',

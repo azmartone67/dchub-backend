@@ -184,7 +184,7 @@ def _insert_press_release(release, auto_publish=False):
                 INSERT INTO press_releases
                   (title, subheadline, summary, body, slug, source, source_url,
                    category, date, published_date, published, created_at, published_at)
-                VALUES (%s, %s, %s, %s, %s, %s, %s, %s, CURRENT_DATE, CURRENT_DATE, %s, NOW(),
+                VALUES (%s, %s, %s, %s, %s, %s, %s, %s, CURRENT_DATE, CURRENT_DATE, %s, NOW() ON CONFLICT DO NOTHING,
                         CASE WHEN %s THEN NOW() ELSE NULL END)
                 RETURNING id
             """, (release["title"], release["subheadline"], release["summary"],
@@ -220,6 +220,7 @@ def preview():
     return jsonify(release), 200
 
 
+# AUTO-REPAIR: duplicate route '/run' also in enhanced_promotion.py:844 — review and remove one
 @partnership_press_bp.route("/run", methods=["GET", "POST"])
 def run():
     """Cron-callable. Creates this ISO-week's partnership press release
@@ -382,6 +383,7 @@ def preview_draft(slug):
     except Exception as e:
         return jsonify({"error": str(e)[:140]}), 500
 
+# AUTO-REPAIR: duplicate route '/status' also in enhanced_promotion.py:839 — review and remove one
 
 @partnership_press_bp.route("/status", methods=["GET"])
 def status():

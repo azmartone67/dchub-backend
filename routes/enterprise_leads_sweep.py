@@ -238,7 +238,7 @@ def run_sweep():
                     INSERT INTO enterprise_lead_drafts
                         (email, api_key, paid_hits_30d, top_tools, score,
                          subject, body, status)
-                    VALUES (%s, %s, %s, %s::jsonb, %s, %s, %s, 'pending')
+                    VALUES (%s, %s, %s, %s::jsonb, %s, %s, %s, 'pending') ON CONFLICT DO NOTHING
                     RETURNING id
                 """, (
                     lead['email'], lead['api_key'], lead['paid_hits_30d'],

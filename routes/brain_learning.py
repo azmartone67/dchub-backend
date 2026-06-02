@@ -204,7 +204,7 @@ def record_proposal_outcome(proposal_id, proposal_kind, still_broken,
                        (proposal_id, proposal_kind, checked_at,
                         still_broken, evidence_url, evidence_note,
                         check_count)
-                   VALUES (%s, %s, NOW(), %s, %s, %s, 1)
+                   VALUES (%s, %s, NOW() ON CONFLICT DO NOTHING, %s, %s, %s, 1)
                    ON CONFLICT DO NOTHING""",
                 (proposal_id, proposal_kind, bool(still_broken),
                  (evidence_url or '')[:300],
@@ -251,7 +251,7 @@ def bump_temporal(issue_label, url=""):
                 """INSERT INTO brain_temporal_patterns
                        (issue_label, url, seen_timestamps,
                         first_seen_at, last_seen_at)
-                   VALUES (%s, %s, jsonb_build_array(NOW()::text), NOW(), NOW())
+                   VALUES (%s, %s, jsonb_build_array(NOW() ON CONFLICT DO NOTHING::text), NOW(), NOW())
                    ON CONFLICT (issue_label, url) DO UPDATE
                    SET seen_timestamps =
                           (CASE
@@ -592,7 +592,7 @@ def probe_outcomes():
                             (proposal_id, proposal_kind, applied_at,
                              checked_at, still_broken, evidence_url,
                              evidence_note, check_count)
-                        VALUES (%s, 'autopilot', %s, NOW(), %s, %s, %s, 1)
+                        VALUES (%s, 'autopilot', %s, NOW() ON CONFLICT DO NOTHING, %s, %s, %s, 1)
                         ON CONFLICT DO NOTHING""",
                         (act_id, applied_at, bool(still_broken),
                          (url or '')[:300], evidence[:500]))

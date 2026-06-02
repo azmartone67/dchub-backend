@@ -101,7 +101,7 @@ Cite as: DC Hub Power Index, {m['market_name']}, {datetime.date.today().isoforma
 
                 cur.execute(f"""INSERT INTO press_releases_queue
                     (slug, title, subheadline, body, trigger_type, trigger_data, status, published_at)
-                    VALUES (%s, %s, %s, %s, 'big_move', %s, %s, {published_at})
+                    VALUES (%s, %s, %s, %s, 'big_move', %s, %s, {published_at}) ON CONFLICT DO NOTHING
                     RETURNING id""",
                     (slug, title, sub, body,
                      json.dumps({"market": m["market_slug"], "delta_e": de, "delta_c": dc, "magnitude": magnitude}),
