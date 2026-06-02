@@ -3171,10 +3171,24 @@ def api_stats_shortcut():
     return redirect(target)
     
 @app.route('/api/facilities')
-@require_plan('pro')
 def get_facilities():
-    limit = min(int(request.args.get('limit', 2000)), 5000)
-    page  = int(request.args.get('page', 1))
+    # r66 "tease, don't expose": this endpoint backs the Land & Power map's
+    # data-center layer (anon preview requests limit=30) AND the proprietary
+    # discovered_facilities bulk. It was @require_plan('pro') + in
+    # _MAP_BYPASS_PATHS, so the CF-injected dchub.cloud Referer let ANY anon
+    # scraper pull 2,000 detailed rows (438KB). Now: a tier-aware cap on an
+    # UNFORGEABLE signal (api-key tier / dchub_token cookie / internal /
+    # loopback / signed session cookie — NOT Referer) via caller_is_privileged.
+    # Anonymous → small teaser, pagination disabled (can't be walked);
+    # identified/paid/logged-in/internal → full. The map (≤30/req) is unaffected.
+    try:
+        from routes.tier_gate import caller_is_privileged
+        _full = caller_is_privileged('IDENTIFIED')
+    except Exception:
+        _full = False  # fail closed to the teaser if the resolver is unavailable
+    _FREE_FACILITIES_CAP = 100
+    limit = min(int(request.args.get('limit', 2000)), 5000 if _full else _FREE_FACILITIES_CAP)
+    page  = int(request.args.get('page', 1)) if _full else 1  # no teaser pagination
     offset = (page - 1) * limit
     try:
         conn = get_db_connection()
@@ -21855,7 +21869,6 @@ except Exception as e:
 # =============================================================================
 LOCKED_GATE_MANIFEST = {
     'pro': [
-        '/api/facilities',
         '/api/grid/demand',
         '/api/grid/prices',
         '/api/v1/energy/gas-storage',
@@ -21919,6 +21932,7 @@ LOCKED_GATE_MANIFEST = {
         '/api/markets',
     ],
     'freemium': [
+        '/api/facilities',             # r66: tier-aware teaser cap (anon=100 rows, no pagination; identified/paid=full). Was 'pro' + Referer-bypassed.
         '/api/v1/facilities',
         '/api/v1/transactions',
         '/api/transactions',
