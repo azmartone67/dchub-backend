@@ -32,6 +32,12 @@ flap minute-to-minute and the probes are mildly expensive).
 
 from __future__ import annotations
 
+import datetime  # r62-fix: several detectors (check_event_submission_pending,
+                 # check_market_deep_dive_stale) use bare `datetime.` with no
+                 # local import → NameError crash when they hit that line. A
+                 # module-level import is the correct file-wide fix; it does not
+                 # conflict with the function-local `from datetime import …`
+                 # aliases (those shadow within their own scope).
 import json
 import os
 import re
@@ -2702,17 +2708,34 @@ def check_event_submission_pending() -> list[dict]:
     finally:
         try: conn.close()
         except Exception: pass
+    # r62-fix: this module has NO top-level `import datetime`; the bare
+    # `datetime.date.today()` below raised NameError the moment the query
+    # returned rows (outside the query guard above) — that was the
+    # consistency_radar_detector_crashed:check_event_submission_pending
+    # finding. Import locally (matching the file's convention) + make the row
+    # loop fully fail-soft: a bad/NULL name or a timestamp-typed deadline can
+    # no longer crash the whole detector.
+    import datetime as _dt
+    today = _dt.date.today()
     for r in rows:
-        name, deadline, starts = r[0], r[1], r[2]
-        days_left = (deadline - datetime.date.today()).days if deadline else None
-        findings.append({
-            "issue":  f"event_submission_pending:{name[:50]}",
-            "url":    "/events",
-            "count":  days_left or 0,
-            "detail": (f"Event '{name}' has a submission deadline in "
-                       f"{days_left} days ({deadline}) and DC Hub hasn't "
-                       f"submitted. Event runs {starts}. Decision needed."),
-        })
+        try:
+            name, deadline, starts = r[0], r[1], r[2]
+            # submission_deadline may come back as date OR datetime depending
+            # on the column type; datetime - date raises TypeError, so
+            # normalize to a date first.
+            _dl = deadline.date() if isinstance(deadline, _dt.datetime) else deadline
+            days_left = (_dl - today).days if _dl else None
+            nm = name or "event"
+            findings.append({
+                "issue":  f"event_submission_pending:{nm[:50]}",
+                "url":    "/events",
+                "count":  days_left or 0,
+                "detail": (f"Event '{nm}' has a submission deadline in "
+                           f"{days_left} days ({deadline}) and DC Hub hasn't "
+                           f"submitted. Event runs {starts}. Decision needed."),
+            })
+        except Exception:
+            continue
     return findings
 
 
