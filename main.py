@@ -3558,18 +3558,24 @@ def handle_well_known():
                 except Exception:
                     pass
                 try:
-                    # r65 adoption metrics: all-time cumulative MCP tool calls +
-                    # distinct AI platforms/callers (monotonic — only grow).
-                    # Consumed by content_enqueue._fetch_dchub_metrics (max()-
-                    # ratcheted), so the weekly LinkedIn metrics post self-updates
-                    # once these exceed the hardcoded 97 / 392,743 floor.
+                    # HONEST adoption metrics (#62, 2026-06-02): the prior raw
+                    # COUNT(*) / COUNT(DISTINCT ip_address) on mcp_tool_calls served
+                    # INFLATED junk straight to agents (269+ "ai_platforms" included
+                    # internal/direct/mcp/mcp_generic transport buckets + ~40 probe/
+                    # scanner/test UAs). We now read the SAME ai_cumulative table and
+                    # apply the SAME _is_junk_platform gate as /api/public/mcp-count
+                    # and /api/v1/ai-tracking/stats, so ai_platforms = real external
+                    # AI-platform count and agent_requests = real external request
+                    # total (never the inflated all-inclusive figure).
                     _cur.execute(
-                        "SELECT COUNT(*), "
-                        "COUNT(DISTINCT ip_address) FROM mcp_tool_calls"
+                        "SELECT platform, COALESCE(SUM(total_requests), 0) "
+                        "FROM ai_cumulative GROUP BY platform"
                     )
-                    _ar = _cur.fetchone() or [0, 0]
-                    _live_counts["agent_requests"] = int(_ar[0] or 0)
-                    _live_counts["ai_platforms"] = int(_ar[1] or 0)
+                    _ac_rows = _cur.fetchall() or []
+                    _ext = [(p, int(t or 0)) for (p, t) in _ac_rows
+                            if not _is_junk_platform(p)]
+                    _live_counts["ai_platforms"] = sum(1 for _, t in _ext if t > 0)
+                    _live_counts["agent_requests"] = sum(t for _, t in _ext)
                 except Exception:
                     pass
         except Exception:
