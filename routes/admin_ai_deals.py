@@ -70,6 +70,50 @@ def _check_auth() -> Optional[tuple]:
     return None
 
 
+@admin_ai_deals_bp.route("/restore-marquee-deals", methods=["POST"])
+def restore_marquee_deals():
+    """r68 RECOVERY: re-insert the 5 marquee deals that the deals-table purge
+    over-deleted (the value-gate hadn't deployed). Values are the team's own
+    curated figures from main.py's deal-repair block. verified=1 so they survive
+    all future purges. Idempotent (ON CONFLICT (id) DO UPDATE). Gate: X-Admin-Key
+    OR X-Internal-Key."""
+    err = _check_auth()
+    if err:
+        ok = False
+        try:
+            from internal_auth import is_valid_internal_key
+            ok = is_valid_internal_key(request.headers.get("X-Internal-Key", ""))
+        except Exception:
+            ok = False
+        if not ok:
+            return err
+    # (id, date, year, buyer, seller, value $M, type, market, notes)
+    MARQUEE = [
+        ("AUTO-20260130-c61567", "2026-01-30", 2026, "Microsoft", "OpenAI", 13000, "investment", "Global", "Microsoft cumulative OpenAI investment"),
+        ("AUTO-20260116-fe900c", "2026-01-16", 2026, "Oracle", "OpenAI (Stargate)", 100000, "jv", "Global", "Oracle Stargate AI infra commitment"),
+        ("AUTO-20260206-281981", "2026-02-06", 2026, "Amazon", "Internal (capex)", 100000, "capex", "Global", "Amazon 2025 AI/cloud capex"),
+        ("AUTO-20260106-d79e96", "2026-01-06", 2026, "Investor group", "xAI", 6000, "investment", "US", "xAI funding round"),
+        ("AUTO-20260126-0897cb", "2026-01-26", 2026, "SoftBank", "OpenAI (Stargate)", None, "investment", "Global", "SoftBank Switch/Stargate infra investment"),
+    ]
+    restored = []
+    try:
+        with _conn() as c, c.cursor() as cur:
+            for d in MARQUEE:
+                cur.execute("""
+                    INSERT INTO deals (id, date, year, buyer, seller, value, type, market, notes, verified, source_url, created_at)
+                    VALUES (%s,%s,%s,%s,%s,%s,%s,%s,%s, 1, '', NOW())
+                    ON CONFLICT (id) DO UPDATE SET
+                        buyer=EXCLUDED.buyer, seller=EXCLUDED.seller, value=EXCLUDED.value,
+                        type=EXCLUDED.type, market=EXCLUDED.market, notes=EXCLUDED.notes,
+                        verified=1, date=EXCLUDED.date, year=EXCLUDED.year
+                """, d[:9])
+                restored.append({"id": d[0], "deal": f"{d[3]} → {d[4]}", "value_m": d[5]})
+            c.commit()
+    except Exception as e:
+        return jsonify(ok=False, error=str(e)[:200], restored=restored), 500
+    return jsonify(ok=True, restored=restored, note="verified=1 — protected from future purges"), 200
+
+
 @admin_ai_deals_bp.route("/purge-deals-table", methods=["POST"])
 def purge_deals_table():
     """r68 (Nico audit #1-3): clean the `deals` table — the /transactions PAGE
@@ -92,7 +136,9 @@ def purge_deals_table():
         if not ok:
             return err
     dry = bool((request.get_json(silent=True) or {}).get("dry_run", True))
-    _AUTO = "id LIKE 'AUTO-%'"
+    # r68: NEVER purge a verified/curated deal, even at an AUTO- id — protects the
+    # manually value-corrected marquee deals from over-deletion (lesson learned).
+    _AUTO = "id LIKE 'AUTO-%' AND COALESCE(verified::text,'') NOT IN ('1','true','t')"
     _IMPOSSIBLE = (f"{_AUTO} AND ("
                    "LOWER(COALESCE(type,'')) LIKE '%ipo%' OR LOWER(COALESCE(notes,'')) LIKE '%ipo%' "
                    "OR (COALESCE(buyer,'')<>'' AND LOWER(COALESCE(buyer,''))=LOWER(COALESCE(seller,''))))")
