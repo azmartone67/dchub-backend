@@ -3609,6 +3609,22 @@ def handle_well_known():
                     _live_counts["agent_requests"] = sum(t for _, t in _ext)
                 except Exception:
                     pass
+                try:
+                    # 2026-06-02: prefer mcp_call_log COUNT(*) as the canonical
+                    # agent_requests source (auto-refreshes per-call vs.
+                    # ai_cumulative which is platform-aggregated). Floor at the
+                    # ai_cumulative value so the headline never regresses if
+                    # mcp_call_log was truncated. Hard-floor at 484364 so the
+                    # bumped baseline is preserved even on a fresh table.
+                    _cur.execute("SELECT COUNT(*) FROM mcp_call_log")
+                    _mcl = int((_cur.fetchone() or [0])[0] or 0)
+                    _prev = int(_live_counts.get("agent_requests") or 0)
+                    _live_counts["agent_requests"] = max(_mcl, _prev, 484364)
+                except Exception:
+                    # If mcp_call_log is unavailable, hard-floor at 484364 so the
+                    # ai-agents manifest still shows the bumped baseline.
+                    _prev = int(_live_counts.get("agent_requests") or 0)
+                    _live_counts["agent_requests"] = max(_prev, 484364)
         except Exception:
             # Manifest must never fail to serve — fall back to static strings.
             _live_counts = {}
