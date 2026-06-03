@@ -395,9 +395,15 @@ def cron_rotate():
 
 @market_deep_dive_bp.route("/markets/<slug>/deep-dive", methods=["GET"])
 def deep_dive_html(slug):
+    # Normalize so /markets/Dublin/deep-dive == /markets/dublin/deep-dive.
+    slug = (slug or "").lower().strip()
     r = read_deep_dive(slug)
     if not r:
-        abort(404)
+        # No deep-dive generated for this market yet. 301 to the canonical
+        # market page instead of 404 — kills the crawler 404 (these showed up
+        # in CF AI-crawl 4xx: /markets/dublin/deep-dive, /centennial-co/...),
+        # preserves link equity, and lands the agent on a real page.
+        return redirect(f"/markets/{slug}", code=301)
     try:
         from routes.surface_brain import auto_log
         auto_log("market_deep_dive", "view", target=slug)
