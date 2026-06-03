@@ -284,16 +284,17 @@ def _draft_pitch(target: dict) -> tuple[str, str]:
             f"also free) unlocks 17 high-value tools."
         )
 
-    subject = (f"DC Hub × {name}: data-center intelligence "
-                f"{name} can cite tomorrow")
+    subject = f"DC Hub × {name}: data-center intelligence you can cite tomorrow"
 
     body = f"""Hi {name} team,
 
 I'm Jonathan Martone, founder of DC Hub (dchub.cloud) — the open
-data center intelligence platform tracking 13,000+ global facilities,
+data center intelligence platform tracking 21,400+ global facilities,
 2,000+ M&A deals, 369 GW of construction pipeline, and the only
 daily-refreshing public scorecard of data center power availability
-(DCPI — Data Center Power Index, dchub.cloud/dcpi).
+(DCPI — Data Center Power Index, dchub.cloud/dcpi). 484K+ AI-agent
+requests served last 30d across Claude, ChatGPT, Gemini, Copilot,
+Perplexity, and 90+ other platforms.
 
 {pitch}
 
