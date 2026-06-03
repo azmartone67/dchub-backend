@@ -522,7 +522,7 @@ def scan_all() -> list[dict]:
                                last_healthy_at, has_nav, stale_days,
                                data_age_src, content_hash,
                                prev_content_hash, prev_bytes)
-                            VALUES (%s,%s,%s,%s,%s,%s,%s,%s, NOW(),
+                            VALUES (%s,%s,%s,%s,%s,%s,%s,%s, NOW() ON CONFLICT DO NOTHING,
                                     CASE WHEN %s THEN NOW() ELSE NULL END,
                                     %s, %s, %s, %s, NULL, NULL)
                             ON CONFLICT (path) DO UPDATE SET
@@ -757,7 +757,7 @@ def verify_outcomes(stuck_hours: float = 2.0) -> dict:
                     cur.execute("""
                         INSERT INTO site_sentinel_resolutions
                           (path, label, prior_reason, downtime_minutes)
-                        VALUES (%s, %s, %s, %s)
+                        VALUES (%s, %s, %s, %s) ON CONFLICT DO NOTHING
                     """, (path, label, reason, downtime_min))
                     out["resolved"].append({
                         "path": path, "label": label, "prior_reason": reason,

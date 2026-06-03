@@ -80,7 +80,7 @@ def setup_test_db():
     c.execute("""
         INSERT INTO users (id, email, password_hash, name, plan, role, 
                           api_calls_today, api_calls_total, created_at, subscription_status)
-        VALUES (%s, %s, %s, %s, %s, %s, 0, 0, %s, 'none')
+        VALUES (%s, %s, %s, %s, %s, %s, 0, 0, %s, 'none') ON CONFLICT DO NOTHING
     """, ('existing_user_001', 'freeuser@example.com',
           hash_password_test('oldpassword123'), 'Free User', 'free', 'free',
           datetime.utcnow().isoformat()))
@@ -91,7 +91,7 @@ def setup_test_db():
     c.execute("""
         INSERT INTO api_keys (user_id, key_hash, key_prefix, name, permissions,
                              rate_limit_tier, is_active, created_at, usage_count, plan)
-        VALUES (%s, %s, %s, %s, '["read"]', 'free', 1, %s, 0, 'free')
+        VALUES (%s, %s, %s, %s, '["read"]', 'free', 1, %s, 0, 'free') ON CONFLICT DO NOTHING
     """, ('existing_user_001', key_hash, raw_key[:12], 'freeuser@example.com Free Key',
           datetime.utcnow().isoformat()))
 

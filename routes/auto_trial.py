@@ -160,7 +160,7 @@ def mint_trial_for_request(req=None, tool_name: str = "") -> dict:
                     INSERT INTO auto_trial_keys
                       (api_key, minted_for_tool, request_ip_hash, request_ua,
                        expires_at)
-                    VALUES (%s, %s, %s, %s, NOW() + INTERVAL '{TRIAL_DAYS} days')
+                    VALUES (%s, %s, %s, %s, NOW() ON CONFLICT DO NOTHING + INTERVAL '{TRIAL_DAYS} days')
                     ON CONFLICT (api_key) DO NOTHING
                     RETURNING expires_at
                 """, (api_key, tool_name[:40] or None, ip_hash, ua))

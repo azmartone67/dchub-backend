@@ -155,6 +155,7 @@ def update_decision(decision_id):
     })
 
 
+# AUTO-REPAIR: duplicate route '/api/v1/decisions' also in decisions.py:42 — review and remove one
 @decisions_bp.route('/api/v1/decisions', methods=['GET'])
 @rate_limit(limit=100, per=60)
 def list_decisions():
