@@ -242,7 +242,7 @@ _PAGE = """<!doctype html><html lang="en"><head><meta charset="utf-8">
  .v{font-weight:700;font-size:11px;padding:2px 8px;border-radius:6px}
  .BUILD{background:rgba(52,211,153,.16);color:var(--grn)}.CAUTION{background:rgba(251,191,36,.16);color:var(--amb)}
  .card{background:var(--card);border:1px solid var(--line);border-radius:14px;padding:20px;margin-top:18px}
- .lock{border-color:rgba(99,102,241,.4)}.cta{display:inline-block;margin-top:10px;background:var(--ind);color:#fff;text-decoration:none;padding:9px 16px;border-radius:8px;font-weight:700}
+ .lock{border-color:rgba(99,102,241,.4)}.lock-badge{display:inline-block;background:var(--ind);color:#fff;font-size:10px;font-weight:700;padding:2px 9px;border-radius:6px;letter-spacing:.08em;margin-bottom:8px}.peek{position:relative;margin:12px 0;border-radius:8px;overflow:hidden;border:1px solid var(--line)}.peek ul{filter:blur(3.5px);margin:0;padding:14px 14px 14px 30px;color:#cbd5e1;font-size:13px;user-select:none;background:rgba(99,102,241,.05)}.peek::after{content:'🔒 Pro';position:absolute;inset:0;display:flex;align-items:center;justify-content:center;font-weight:800;font-size:14px;color:#c4b5fd;background:rgba(10,11,18,.22)}.cta-big{display:inline-block;margin-top:12px;background:var(--ind);color:#fff;text-decoration:none;padding:12px 22px;border-radius:9px;font-weight:800;font-size:15px;box-shadow:0 4px 14px rgba(99,102,241,.35)}.cta-sub{margin-top:7px;font-size:11px;color:#64748b}.cta{display:inline-block;margin-top:10px;background:var(--ind);color:#fff;text-decoration:none;padding:9px 16px;border-radius:8px;font-weight:700}
  a{color:#a5b4fc}
 </style></head><body><div class="wrap">
 <span class="badge">DC Hub · Transition Sentinel</span>
@@ -270,7 +270,7 @@ async function load(){
             ['Avg time-to-power',function(x){return x.avg_time_to_power_months!=null?'~'+x.avg_time_to_power_months+'mo':'—';}]];
   h+='<h2>🌐 ISO Emergence Rollup</h2>'+tbl(d.iso_rollup,icol);
   var t=d.transition_thesis||{};
-  if(t.locked){h+='<div class="card lock"><strong>🎯 Forward thesis locked</strong><p class="sub">'+t.message+'</p><a class="cta" href="'+(t.unlock&&t.unlock.url||'/pricing')+'">Unlock the thesis — Developer $49/mo →</a></div>';}
+  if(t.locked){h+='<div class="card lock"><div class="lock-badge">🔒 PRO · FORWARD THESIS</div><strong>Which grid is about to open up next?</strong><p class="sub">The radar + leaderboard above are free — the forward call is Pro:</p><div class="peek"><ul><li>The #1 emerging ISO — and why now</li><li>The markets to move on first</li><li>The interconnection play before the queue tightens</li></ul></div><a class="cta-big" href="'+(t.unlock&&t.unlock.url||'/pricing')+'">🔓 Unlock the thesis — Developer $49/mo →</a><div class="cta-sub">Cancel anytime · also unlocks the MCP decision tools + raw data</div></div>';}
   else if(t.headline){h+='<div class="card"><strong>'+t.headline+'</strong><p>'+(t.why||'')+'</p><p class="sub">Where to look: '+(t.where_to_look||'')+'</p><p class="sub">Next step: '+(t.next_step||'')+'</p></div>';}
   out.innerHTML=h;
  }catch(e){out.innerHTML='<p class="sub">Error: '+e+'</p>';}

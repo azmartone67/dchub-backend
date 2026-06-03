@@ -332,7 +332,7 @@ _PAGE = """<!doctype html><html lang="en"><head><meta charset="utf-8">
  .v{font-weight:700;font-size:11px;padding:2px 8px;border-radius:6px}
  .BUILD{background:rgba(52,211,153,.16);color:var(--grn)}.CAUTION{background:rgba(251,191,36,.16);color:var(--amb)}.AVOID{background:rgba(248,113,113,.16);color:var(--red)}
  .card{background:var(--card);border:1px solid var(--line);border-radius:14px;padding:20px;margin-top:22px}
- .lock{border-color:rgba(99,102,241,.4)}
+ .lock{border-color:rgba(99,102,241,.4)}.lock-badge{display:inline-block;background:var(--ind);color:#fff;font-size:10px;font-weight:700;padding:2px 9px;border-radius:6px;letter-spacing:.08em;margin-bottom:8px}.peek{position:relative;margin:12px 0;border-radius:8px;overflow:hidden;border:1px solid var(--line)}.peek ul{filter:blur(3.5px);margin:0;padding:14px 14px 14px 30px;color:#cbd5e1;font-size:13px;user-select:none;background:rgba(99,102,241,.05)}.peek::after{content:'🔒 Pro';position:absolute;inset:0;display:flex;align-items:center;justify-content:center;font-weight:800;font-size:14px;color:#c4b5fd;background:rgba(10,11,18,.22)}.cta-big{display:inline-block;margin-top:12px;background:var(--ind);color:#fff;text-decoration:none;padding:12px 22px;border-radius:9px;font-weight:800;font-size:15px;box-shadow:0 4px 14px rgba(99,102,241,.35)}.cta-sub{margin-top:7px;font-size:11px;color:#64748b}
  .cta{display:inline-block;margin-top:10px;background:var(--ind);color:#fff;text-decoration:none;padding:9px 16px;border-radius:8px;font-weight:700}
  li{margin:.3em 0}.flag{color:var(--amb)}
  a{color:#a5b4fc}
@@ -364,7 +364,7 @@ async function run(e){if(e)e.preventDefault();
   d.shortlist.forEach(function(m,i){h+='<tr><td>'+(i+1)+'</td><td><a href="'+m.dcpi_url+'">'+(m.market||'')+'</a> <span style="color:#64748b">'+(m.state||'')+'</span></td><td>'+(m.iso||'')+'</td><td><span class="v '+(m.verdict||'')+'">'+(m.verdict||'')+'</span></td><td>'+(m.excess_power_score!=null?m.excess_power_score:'—')+'</td><td>'+(m.constraint_score!=null?m.constraint_score:'—')+'</td><td>'+(m.time_to_power_months!=null?'~'+m.time_to_power_months+'mo':'—')+'</td></tr>';});
   h+='</tbody></table>';
   var s=d.synthesis||{};
-  if(s.locked){h+='<div class="card lock"><strong>🎯 Decision layer locked</strong><p class="sub">'+s.message+'</p><a class="cta" href="'+(s.unlock&&s.unlock.url||'/pricing')+'">Unlock the verdict — Developer $49/mo →</a></div>';}
+  if(s.locked){var top=(d.shortlist&&d.shortlist[0]&&d.shortlist[0].market)||'your #1 market';h+='<div class="card lock"><div class="lock-badge">🔒 PRO · DECISION LAYER</div><strong>The verdict for '+top+' is one click away.</strong><p class="sub">The shortlist above is free — the <b>answer</b> is Pro:</p><div class="peek"><ul><li>The BUILD / CAUTION / AVOID verdict</li><li>Why — the inputs that drove it</li><li>A step-by-step build sequence</li><li>Risk flags for this market</li></ul></div><a class="cta-big" href="'+(s.unlock&&s.unlock.url||'/pricing')+'">🔓 Unlock the verdict — Developer $49/mo →</a><div class="cta-sub">Cancel anytime · also unlocks the MCP decision tools + raw data</div></div>';}
   else if(s.headline){h+='<div class="card"><strong>'+s.headline+'</strong><p>'+(s.recommendation||'')+'</p>';
    if(s.build_sequence&&s.build_sequence.length){h+='<p class="sub">Build sequence:</p><ol>';s.build_sequence.forEach(function(x){h+='<li>'+x+'</li>';});h+='</ol>';}
    if(s.risk_flags&&s.risk_flags.length){h+='<p class="sub">Risk flags:</p><ul>';s.risk_flags.forEach(function(x){h+='<li class="flag">'+x+'</li>';});h+='</ul>';}

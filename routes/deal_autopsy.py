@@ -290,7 +290,7 @@ _PAGE = """<!doctype html><html lang="en"><head><meta charset="utf-8">
  .v{font-weight:700;font-size:11px;padding:2px 8px;border-radius:6px;margin-left:6px}
  .BUILD{background:rgba(52,211,153,.16);color:var(--grn)}.CAUTION{background:rgba(251,191,36,.16);color:var(--amb)}.AVOID{background:rgba(248,113,113,.16);color:var(--red)}
  .read{margin-top:8px;font-size:13.5px;color:#cbd5e1;border-left:2px solid var(--ind);padding-left:10px}
- .lock{border-color:rgba(99,102,241,.4)}.cta{display:inline-block;margin-top:8px;background:var(--ind);color:#fff;text-decoration:none;padding:9px 16px;border-radius:8px;font-weight:700}
+ .lock{border-color:rgba(99,102,241,.4)}.lock-badge{display:inline-block;background:var(--ind);color:#fff;font-size:10px;font-weight:700;padding:2px 9px;border-radius:6px;letter-spacing:.08em;margin-bottom:8px}.peek{position:relative;margin:12px 0;border-radius:8px;overflow:hidden;border:1px solid var(--line)}.peek ul{filter:blur(3.5px);margin:0;padding:14px 14px 14px 30px;color:#cbd5e1;font-size:13px;user-select:none;background:rgba(99,102,241,.05)}.peek::after{content:'🔒 Pro';position:absolute;inset:0;display:flex;align-items:center;justify-content:center;font-weight:800;font-size:14px;color:#c4b5fd;background:rgba(10,11,18,.22)}.cta-big{display:inline-block;margin-top:12px;background:var(--ind);color:#fff;text-decoration:none;padding:12px 22px;border-radius:9px;font-weight:800;font-size:15px;box-shadow:0 4px 14px rgba(99,102,241,.35)}.cta-sub{margin-top:7px;font-size:11px;color:#64748b}.cta{display:inline-block;margin-top:8px;background:var(--ind);color:#fff;text-decoration:none;padding:9px 16px;border-radius:8px;font-weight:700}
  a{color:#a5b4fc}
 </style></head><body><div class="wrap">
 <span class="badge">DC Hub · Deal Autopsy</span>
@@ -313,7 +313,7 @@ async function load(){
    h+='</div>';
   });
   var a=d.autopsy||{};
-  if(a.locked){h+='<div class="deal lock"><strong>🎯 Autopsy read locked</strong><p class="sub">'+a.message+'</p><a class="cta" href="'+(a.unlock&&a.unlock.url||'/pricing')+'">Unlock the read — Developer $49/mo →</a></div>';}
+  if(a.locked){h+='<div class="deal lock"><div class="lock-badge">🔒 PRO · AUTOPSY READ</div><strong>What is the real play behind each deal?</strong><p class="sub">Deal flow + each market DCPI verdict above are free — the read is Pro:</p><div class="peek"><ul><li>Long-dated land/power option vs near-term build vs queue gamble</li><li>The grid-reality read on every tracked deal</li><li>The smart-money interpretation</li></ul></div><a class="cta-big" href="'+(a.unlock&&a.unlock.url||'/pricing')+'">🔓 Unlock the read — Developer $49/mo →</a><div class="cta-sub">Cancel anytime · also unlocks the MCP decision tools + raw data</div></div>';}
   out.innerHTML=h;
  }catch(e){out.innerHTML='<p class="sub">Error: '+e+'</p>';}
 }
