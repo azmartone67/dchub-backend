@@ -93,10 +93,10 @@ def _gather():
     #   • us_isos = the 7 live US ISOs ONLY (each has a working extractor in
     #     routes/iso_orchestrator.py). NEVER list SOCO/FRCC here — they have
     #     no extractor and are served (if at all) as utility BAs.
-    #   • na_grid_operators = the 10 North-American grid operators with live
+    #   • na_grid_operators = the live grid operators on 4 continents with live
     #     data = those 7 US ISOs + TVA + BPA + IESO (Ontario).
     #   • utility_bas_count = 43 US utility balancing authorities (live EIA-930).
-    #   • international_isos_modeled = 3 international grids that are a MODELED
+    #   • international_isos_modeled = modeled baselines (Hydro-Québec, AESO, Nord Pool) that are a MODELED
     #     baseline, NOT live telemetry (Hydro-Québec, AESO, Nord Pool).
     counts = {
         "facilities":       21000,
@@ -143,7 +143,7 @@ def _gather():
         {"name": "analyze_site",            "what":  "Score any US location for DC suitability"},
         {"name": "get_intelligence_index",  "what":  "Composite market-health score"},
         {"name": "get_pipeline",            "what":  "Track 369 GW of construction pipeline"},
-        {"name": "get_grid_data",           "what":  "Real-time electricity grid data (10 ISOs + 43 utility BAs)"},
+        {"name": "get_grid_data",           "what":  "Real-time electricity grid data (live grids on 4 continents + 43 US utility BAs)"},
         {"name": "get_grid_intelligence",   "what":  "Deep grid intel (congestion, curtailment)"},
         {"name": "get_infrastructure",      "what":  "Substations, transmission lines, gas pipelines"},
         {"name": "get_fiber_intel",         "what":  "Fiber routes, carrier presence, connectivity"},

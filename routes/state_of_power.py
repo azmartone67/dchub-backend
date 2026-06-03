@@ -452,7 +452,7 @@ def _jsonld(d: dict) -> str:
         "description": (
             "The recurring, machine-readable state of where AI data centers can "
             "get power: live BUILD/AVOID markets scored by the Data Center Power "
-            "Index (DCPI), 7 live US ISOs + 3 international grids, real-time fuel "
+            "Index (DCPI), live grids on 4 continents, real-time fuel "
             "mix, and interconnection-queue depth. Refreshed daily, CC-BY-4.0."),
         "url": STABLE_URL,
         "sameAs": "https://dchub.cloud/api/v1/reports/state-of-power",
@@ -465,7 +465,7 @@ def _jsonld(d: dict) -> str:
         "keywords": ["data center", "power availability", "DCPI", "interconnection queue",
                      "ISO grid", "BUILD verdict", "AI data center", "fuel mix",
                      "grid headroom", "site selection"],
-        "spatialCoverage": "Global · 233 markets · 7 live US ISOs + Hydro-Québec, AESO, Nord Pool",
+        "spatialCoverage": "Global · 233 markets · live grids on 4 continents (US/UK/EU/Taiwan/Australia)",
         "temporalCoverage": f"Daily refresh; snapshot as of {d.get('as_of_date','')}",
         "measurementTechnique": "DCPI: Excess Power score + Constraint score → BUILD/CAUTION/AVOID verdict, recomputed daily.",
         "variableMeasured": [
@@ -561,7 +561,7 @@ def _render_html(d: dict) -> str:
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width,initial-scale=1">
 <title>The State of Data Center Power — DC Hub</title>
-<meta name="description" content="The recurring, machine-readable state of where AI data centers can get power. {markets_scored_str} markets scored by DCPI, live BUILD/AVOID verdicts, 7 US ISOs + 3 international grids, real-time fuel mix, interconnection-queue depth. Daily refresh, CC-BY-4.0.">
+<meta name="description" content="The recurring, machine-readable state of where AI data centers can get power. {markets_scored_str} markets scored by DCPI, live BUILD/AVOID verdicts, 7 US ISOs + live UK/EU/Taiwan/Australia grids, real-time fuel mix, interconnection-queue depth. Daily refresh, CC-BY-4.0.">
 <meta name="robots" content="index,follow">
 <link rel="canonical" href="{STABLE_URL}">
 <meta property="og:title" content="The State of Data Center Power">

@@ -23,10 +23,9 @@ AGENT_CARD = {
         "name":         "DC Hub Intelligence",
         "version":      "2.1.2",
         "description":  ("Data center intelligence agent — 21,000+ facilities, "
-                         "M&A deals, grid data across 10 North-American grid operators "
+                         "M&A deals, grid data across live grid operators on 4 continents "
                          "(7 US ISOs plus TVA, BPA and Ontario's IESO) and 43 US utility "
-                         "balancing authorities, with 3 international grids (Hydro-Quebec, "
-                         "AESO, Nord Pool) modeled, "
+                         "balancing authorities, (Hydro-Québec, AESO, Nord Pool remain modeled), "
                          "fiber routes, water risk, tax incentives. AI-capex deal tracker. "
                          "AI Compute Capacity Index."),
         "vendor":       "DC Hub",
@@ -76,7 +75,7 @@ AGENT_CARD = {
         },
         {
             "name":     "grid_intelligence",
-            "summary":  "Real-time grid mix, prices, carbon intensity across 10 ISOs + 43 utility BAs.",
+            "summary":  "Real-time grid mix, prices, carbon intensity across live grids on 4 continents + 43 US utility BAs.",
             "tools":    ["get_grid_data", "get_grid_intelligence", "get_energy_prices"],
             "examples": ["Get current CAISO fuel mix",
                           "Hydro-Quebec carbon intensity right now",
