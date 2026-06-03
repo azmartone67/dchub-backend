@@ -143,6 +143,24 @@ def markets_phrase() -> str:
     return f"{n}"
 
 
+def grid_coverage_phrase(style: str = "full") -> str:
+    """Canonical, drift-proof description of live grid coverage. Every surface
+    (pages, feeds, registries, prompts) should call THIS instead of hardcoding
+    '10 North-American grid operators + 3 international modeled' — that copy
+    pre-dates the #60 global expansion and undersells it.
+      style='full'  → sentence with the regions
+      style='short' → compact tag
+    """
+    if style == "short":
+        return "live grid telemetry on 4 continents (US, UK, EU, Taiwan, Australia)"
+    return ("live grid telemetry across 4 continents — 7 US ISOs (ERCOT, PJM, "
+            "CAISO, MISO, SPP, NYISO, ISO-NE) + TVA/BPA + 43 US balancing "
+            "authorities, Great Britain (NESO), ~12 EU bidding zones (ENTSO-E), "
+            "Taiwan (Taipower) and Australia (AEMO) — all live; plus EU gas "
+            "transmission flows (ENTSOG). (Hydro-Québec, AESO, Nord Pool remain "
+            "modeled baselines.)")
+
+
 def headline_blurb() -> str:
     """One-liner generators can drop into a prompt or post, always consistent.
     e.g. '21,000+ data center facilities across 170+ countries, 232 markets,
