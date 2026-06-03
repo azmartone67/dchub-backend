@@ -57,7 +57,7 @@ jobs:
           echo "verdict=$verdict" >> "$GITHUB_OUTPUT"
           echo "weakest=$weakest" >> "$GITHUB_OUTPUT"
 
-      - name: Auto-fire pitch-draft when topic_pulse hot + outreach quiet
+      - name: Stage journalist pitch drafts for review (press-outreach)
         if: |
           steps.organism.outputs.weakest == 'journalist_outreach' ||
           steps.organism.outputs.verdict == 'dormant' ||
@@ -66,39 +66,30 @@ jobs:
           ADMIN_KEY: ${{ secrets.DCHUB_ADMIN_KEY }}
         run: |
           if [ -z "${ADMIN_KEY:-}" ]; then
-            echo "::warning::DCHUB_ADMIN_KEY not set — skipping auto pitch-draft"
+            echo "::warning::DCHUB_ADMIN_KEY not set — skipping draft generation"
             exit 0
           fi
-          # Pull the top topic suggestion, draft a pitch (does NOT send).
-          # Sending is still gated to the daily outreach-daily.yml cron.
-          topic=$(python3 -c "
-          import json
-          d = json.load(open('organism.json'))
-          comps = d.get('components',{})
-          tp = comps.get('topic_pulse',{})
-          # If suggestions_count > 0 we want to act; otherwise no-op.
-          print(tp.get('suggestions_count',0))
-          ")
-          if [ "$topic" -eq "0" ] 2>/dev/null; then
-              echo "::notice::topic_pulse has 0 suggestions — nothing to draft today"
-              exit 0
-          fi
-          response=$(curl -sS --max-time 60 -X POST \
+          # r48: stage REVIEW-READY journalist pitch drafts into the press-outreach
+          # queue (press_pitch_drafts, status=pending) — personalized per outlet beat
+          # and detected story angle, persisted for review. REPLACES the old ephemeral
+          # /media/pitch-draft (which 400'd on a missing recipient_email and never
+          # persisted). It does NOT send: the operator reviews at
+          # /admin/partnerships/review, adds the specific editor email they know
+          # (we never guess journalist emails), and approves to send via Resend.
+          response=$(curl -sS --max-time 90 -X POST \
             -H "X-Admin-Key: $ADMIN_KEY" \
-            -H "Content-Type: application/json" \
-            "$BASE/api/v1/media/pitch-draft" \
-            -d '{}' \
+            "$BASE/api/v1/admin/press-outreach/generate-drafts?top=3&min_priority=6" \
             || echo '{"ok":false,"error":"curl_fail"}')
           echo "$response" | python3 -c "
           import json, sys
           try:
               d = json.loads(sys.stdin.read())
               if d.get('ok'):
-                  print(f'::notice::pitch-draft queued for {d.get(\"recipient\",\"?\")}')
+                  print(f'::notice::press drafts staged: angles={d.get(\"angles_detected\",0)} drafted={d.get(\"drafted\",0)} dupe-skipped={d.get(\"skipped_dupe\",0)} — review at /admin/partnerships/review')
               else:
-                  print(f'::warning::pitch-draft did not queue: {d.get(\"error\",\"\")[:200]}')
+                  print(f'::warning::generate-drafts did not run: {d.get(\"error\",\"\")[:200]}')
           except Exception as e:
-              print(f'::warning::pitch-draft response parse failed: {e}')
+              print(f'::warning::generate-drafts response parse failed: {e}')
           " || true
 
       - name: Final verdict
