@@ -76,7 +76,7 @@ DCHawk's depth on North-American sub-markets is sharp. DC Hub's depth on LATAM +
 
 Our specific opening offer: a 30-day data-exchange pilot. We'd expose 500 of our highest-confidence non-FLAP facilities via DCHawk's API; we'd ask DCHawk to expose 500 of their highest-confidence FLAP records via ours. Both sides report join-rate + value lifted. No money changes hands during the pilot. A written commercial framework only triggers if both sides see >15% incremental coverage.
 
-We have 21,405 tracked facilities globally. 232 markets scored daily by DCPI. 2,000+ M&A deals tracked. We're cited by 96+ AI platforms.
+We have 21,405 tracked facilities globally. 232 markets scored daily by DCPI. 2,000+ M&A deals tracked. We're cited by Claude and Cursor.
 
 Try our data right now — no signup, CC-BY-4.0:
 → /api/v1/facilities?country=GB&limit=10

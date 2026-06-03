@@ -361,7 +361,7 @@ FORM_HTML = """<!DOCTYPE html>
     </div>
   </div>
 
-  <p class="note">No password. No spam. Your key arrives by email within ~60 seconds. Already cited by ChatGPT, Claude, Gemini, Perplexity, and Groq · <a href="https://dchub.cloud/cited-by" style="color:#22d3ee">cited-by</a> · Session <code>__SESSION_SHORT__</code></p>
+  <p class="note">No password. No spam. Your key arrives by email within ~60 seconds. Already cited by Claude and Cursor · <a href="https://dchub.cloud/cited-by" style="color:#22d3ee">cited-by</a> · Session <code>__SESSION_SHORT__</code></p>
 
   <script>
     // r51-track (2026-05-26): fire funnel events. Before this, the redeem

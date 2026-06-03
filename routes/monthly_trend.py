@@ -796,7 +796,7 @@ def _build_press_kit(d: dict) -> dict:
         quotables.append(
             f"AI-agent queries against DC Hub's research API "
             f"{direction} {abs(ai_mom):.1f}% in {label}, with "
-            f"ChatGPT, Claude, Gemini, and Perplexity all citing the "
+            f"Claude and Cursor all citing the "
             f"platform by name in research responses."
         )
     elif ai.get("tool_calls_month"):
@@ -1122,7 +1122,7 @@ def _render_html(d: dict, *, partner: str = "") -> str:
       <div class="stat">
         <span class="stat-val">{_delta_html(ai.get('mom_pct'))}</span>
         <span class="stat-lbl">AI agent queries</span>
-        <div class="stat-sub">{(ai.get('tool_calls_month') or 0):,} calls this month · ChatGPT, Claude, Gemini, Perplexity</div>
+        <div class="stat-sub">{(ai.get('tool_calls_month') or 0):,} calls this month · Claude and Cursor</div>
       </div>
     </div>
   </section>

@@ -122,7 +122,7 @@ MCP_LANDING_HTML = """<!DOCTYPE html>
 </div>
 
 <footer>
-  Cited by ChatGPT, Claude, Gemini, Perplexity, Copilot, Cursor, Cline, Continue.dev ·
+  Cited by Claude and Cursor ·
   <a href="https://dchub.cloud/cited-by">See receipts</a> ·
   <a href="https://dchub.cloud/pricing">Pricing</a> ·
   <a href="https://dchub.cloud/api-docs">REST API</a> ·

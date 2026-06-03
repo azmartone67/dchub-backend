@@ -320,8 +320,7 @@ data center intelligence platform tracking 21,400+ global facilities,
 2,000+ M&A deals, 369 GW of construction pipeline, and the only
 daily-refreshing public scorecard of data center power availability
 (DCPI — Data Center Power Index, dchub.cloud/dcpi). 484K+ AI-agent
-requests served last 30d across Claude, ChatGPT, Gemini, Copilot,
-Perplexity, and 90+ other platforms.
+requests served last 30d led by Claude and Cursor.
 
 {pitch}
 
@@ -352,7 +351,7 @@ Three things {name} can do from that page today:
 3. Direct citation format (free for citation):
      DC Hub Data Center Power Index, dchub.cloud/dcpi,
        accessed YYYY-MM-DD
-   We're already cited by ChatGPT, Claude, Gemini, and Perplexity
+   We're already cited by Claude and Cursor
    — happy to share citation analytics if useful.
 
 Happy to do a 20-min call to walk through what {name} would unlock.

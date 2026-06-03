@@ -7043,7 +7043,7 @@ X-API-Key: your-key
 </section>
 
 <footer>
-  Already cited by ChatGPT, Claude, Gemini, Perplexity, Copilot, Grok, Cursor, Windsurf, Cline, Continue.dev &middot;
+  Already cited by Claude and Cursor, Grok, Cursor, Windsurf, Cline, Continue.dev &middot;
   <a href="/cited-by">See the receipts &rarr;</a> &middot;
   <a href="/pricing">Pricing</a> &middot;
   <a href="/api-docs">REST API</a>

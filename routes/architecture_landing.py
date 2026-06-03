@@ -98,7 +98,7 @@ demand pressure. Markets get one of four verdicts: <code>BUILD</code> (14 today)
 Northern Virginia.</p>
 <p>International coverage: <a href="/dcpi/intl">AESO + Hydro-Québec + Nord Pool</a>.</p>
 
-<h2>3. MCP server — 23+ tools for AI agents</h2>
+<h2>3. MCP server — 31 tools for AI agents</h2>
 <p>The <a href="/mcp">DC Hub MCP server</a> exposes the full intelligence catalog to Claude, ChatGPT, Cursor,
 Cline, and every other MCP-compatible agent. Tools include <code>search_facilities</code>,
 <code>get_grid_intelligence</code>, <code>compare_sites</code>, <code>get_pipeline</code>,

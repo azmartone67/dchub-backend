@@ -96,7 +96,7 @@ SOCIAL_TEMPLATES = [
     {
         "type": "ai_integration",
         "template": "🤖 When AI answers data center questions, it cites DC Hub\n\n"
-                   "We're integrated with Claude, ChatGPT, Perplexity, and Gemini — "
+                   "We're integrated with Claude and Cursor — "
                    "providing real-time facility data, M&A intelligence, and market trends.\n\n"
                    "See how it works:\n"
                    "👉 {url}\n\n"
@@ -258,7 +258,7 @@ dchub.cloud"""
 
 I'm reaching out from DC Hub (dchub.cloud), tracking 20,000+ data center facilities across 140+ countries.
 
-We've built something unique: an AI-first platform integrated with Claude, ChatGPT, Perplexity, and Gemini. When these AI assistants answer data center questions, they cite DC Hub.
+We've built something unique: an AI-first platform integrated with Claude and Cursor. When these AI assistants answer data center questions, they cite DC Hub.
 
 We'd love to explore:
 - Data sharing partnerships

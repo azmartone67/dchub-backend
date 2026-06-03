@@ -93,7 +93,7 @@ TOOLS = [
      "Hyperscaler AI Deal Tracker — live feed of Stargate, OpenAI, Anthropic, Microsoft, Oracle, CoreWeave, NVIDIA, sovereign-AI deals. Extracts $-figures + MW and classifies by actor. ~$1B+/week typical.",
      'hyperscaler_deals(limit=20)'),
     ("get_agent_registry",    "intelligence",   "free",
-     "AI platforms + agent frameworks currently calling DC Hub (ChatGPT, Claude, Gemini, Perplexity, Copilot, Groq, Cursor, Cline, Continue, Windsurf) with citation counts, tool-usage breakdown, and tier.",
+     "AI platforms + agent frameworks currently calling DC Hub (Claude and Cursor, Groq, Cursor, Cline, Continue, Windsurf) with citation counts, tool-usage breakdown, and tier.",
      'get_agent_registry()'),
     # ── INFRASTRUCTURE ── (the physical-layer signals)
     ("get_grid_data",         "infrastructure", "identified",

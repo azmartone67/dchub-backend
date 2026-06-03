@@ -120,7 +120,7 @@ def _build_release(track):
         f"---\n\n"
         f"Today's snapshot from DC Hub's live data layer: {facilities:,} tracked facilities "
         f"across 170+ countries, {markets} markets scored daily by the DC Hub Power Index "
-        f"(DCPI), {deals:,} historical M&A deals, and integrations with 96+ AI platforms via "
+        f"(DCPI), {deals:,} historical M&A deals, and integrations with Claude, Cursor, and other MCP-capable agents via "
         f"the streamable-http MCP server at dchub.cloud/mcp.\n\n"
         f"### About the Switzerland model\n\n"
         f"DC Hub does not compete with brokers, publications, facility databases, or "

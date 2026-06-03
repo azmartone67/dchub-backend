@@ -309,7 +309,7 @@ def _render_profile(fac: dict, slug: str) -> str:
     <div class="cta">
       <a class="primary" href="/sites/{_esc(slug)}">View full capacity report &rarr;</a>
       <a href="/ai">Get a free MCP key</a>
-      <a href="/cited-by">Cited by ChatGPT, Gemini + 13 AI platforms</a>
+      <a href="/cited-by">Used by Claude and Cursor</a>
     </div>
 
     <div class="foot">

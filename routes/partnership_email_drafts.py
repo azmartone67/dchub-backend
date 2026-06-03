@@ -186,7 +186,7 @@ def _build_email(track, personal_note=""):
             intro = (
                 f"Hi —\n\n"
                 f"I'm Jonathan, founder of DC Hub — the neutral, live data layer beneath the "
-                f"data-center research industry (cited by 96+ AI platforms including ChatGPT, "
+                f"data-center research industry (cited by Claude and Cursor including ChatGPT, "
                 f"Claude, Gemini, Cursor, Cline). We've just published an open partnership "
                 f"invitation for {partner_label} as part of our 'Switzerland model'. "
                 f"No partnership currently exists; we're publicly extending the offer to see "

@@ -157,7 +157,7 @@ _PARTNERS = {
         "secondary_url":    "https://dchub.cloud/mcp",
         "code_sample": ('# Vertex AI function-calling can hit our MCP server directly:\n'
                           'https://dchub.cloud/mcp\n'
-                          '# 23+ tools registered. Server card:\n'
+                          '# 31 tools registered. Server card:\n'
                           'https://dchub.cloud/.well-known/mcp/server-card.json'),
         "accent":         "#3b82f6",
     },
