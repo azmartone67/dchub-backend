@@ -935,8 +935,13 @@ def register_linkedin_routes(app):
 
         success, result = post_to_linkedin(
             text,
-            link_url=link_url,
-            link_title=link_title,
+            # r70 (2026-06-03): default to the canonical landing when the topic
+            # supplies no link — guarantees a RICH article card (LinkedIn unfurls
+            # dchub.cloud's og:image) instead of a bare text-only post. The owner
+            # flagged "non rich image announcements"; topics like the 'static
+            # markets' post returned link_url=None and went out text-only.
+            link_url=(link_url or _phase30c_landing_url()),
+            link_title=(link_title or 'DC Hub — Data Center Intelligence'),
             link_desc='Data Center Intelligence for the AI Era — DC Hub'
         )
 
