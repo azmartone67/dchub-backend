@@ -1037,6 +1037,24 @@ def mcp_funnel():
             )
             out["upgrade_signals_7d"] = cur.fetchone()[0]
 
+            # Item E (2026-06-02): expose real_external_7d alongside the
+            # raw count. Sourced from mcp_funnel_real (the canonical
+            # is_synthetic=FALSE view shipped in 3704c21f / schema_repair.py).
+            # Visitor-intel renders "Total signals: {raw} · External
+            # verified: {real_external}" so both numbers are visible and
+            # the signal-inflation gap is honest. Falls back to None if
+            # the view is missing (idempotent — no schema-repair required).
+            try:
+                cur.execute(
+                    "SELECT COUNT(*) FROM mcp_funnel_real "
+                    "WHERE created_at >= NOW() - INTERVAL '7 days'"
+                )
+                out["real_external_7d"] = int((cur.fetchone() or [0])[0])
+            except Exception:
+                try: conn.rollback()
+                except Exception: pass
+                out["real_external_7d"] = None
+
             cur.execute(
                 "SELECT COUNT(*) FROM mcp_conversions WHERE created_at >= NOW() - INTERVAL '30 days'"
             )

@@ -293,6 +293,25 @@ def _compute(days: int = 7) -> dict:
                     "already_outreached":     int(r[6] or 0),
                 }
 
+            # Item E (2026-06-02): the canonical "external verified" count
+            # from mcp_funnel_real (is_synthetic=FALSE filter shipped in
+            # 3704c21f / schema_repair.py). Visitor-intel now shows BOTH
+            # numbers — raw `total_paywall_signals` AND the filtered
+            # external count — so the inflation gap is honest instead of
+            # implicit. Falls back to None if the view is missing.
+            try:
+                cur.execute("""
+                    SELECT COUNT(*) FROM mcp_funnel_real
+                    WHERE created_at > NOW() - INTERVAL %s
+                """, (f"{days} days",))
+                _real = cur.fetchone()
+                out["totals"]["total_paywall_signals_real_external"] = (
+                    int((_real or [0])[0] or 0))
+            except Exception:
+                try: conn.rollback()
+                except Exception: pass
+                out["totals"]["total_paywall_signals_real_external"] = None
+
             # MCP client breakdown (Claude vs ChatGPT vs Perplexity vs Gemini).
             try:
                 cur.execute("""
@@ -608,7 +627,7 @@ td.mono{font-family:var(--mono);font-size:.85rem}
 
 <h2>Top line</h2>
 <div class="stats">
-<div class="stat"><div class="n">{{ d.totals.total_paywall_signals or 0 }}</div><div class="l">Paywall signals</div></div>
+<div class="stat"><div class="n">{{ d.totals.total_paywall_signals or 0 }}<span style="font-size:.95rem;color:var(--tx2);margin-left:.4rem">&middot; <span style="color:#10b981">{{ d.totals.total_paywall_signals_real_external if d.totals.total_paywall_signals_real_external is not none else '—' }}</span></span></div><div class="l">Total signals &middot; <span style="color:#10b981">External verified</span></div></div>
 <div class="stat"><div class="n">{{ d.totals.unique_sessions or 0 }}</div><div class="l">Unique sessions</div></div>
 <div class="stat"><div class="n">{{ d.totals.unique_known_visitors or 0 }}</div><div class="l">Known (email)</div></div>
 <div class="stat"><div class="n">{{ d.totals.unique_mcp_clients or 0 }}</div><div class="l">MCP clients</div></div>
