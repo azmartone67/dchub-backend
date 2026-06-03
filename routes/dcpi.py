@@ -1395,7 +1395,17 @@ def recompute_all_scores(source: str = "manual",
     # Phase ZZ: chunked slice. When the cron passes offset+limit, only
     # that slice runs in this invocation. Total coverage achieved by
     # running multiple chunks per cron tick (see dcpi-daily.yml).
-    _slice = MARKETS[offset:(offset + limit)] if limit else MARKETS[offset:]
+    # r70 (2026-06-03): rebuild the market list FRESH per recompute run instead
+    # of slicing the module-import-time MARKETS global. If the dynamic-market DB
+    # load failed at import (DATABASE_URL not yet set / transient pool error),
+    # MARKETS was poisoned to ~50 hardcoded markets, so chunks 2-4 (offset>=100)
+    # sliced empty and 180+ markets froze stale. Rebuilding here recovers the
+    # full 200+ dynamic set on every cron tick.
+    try:
+        _markets = _build_markets_list() or MARKETS
+    except Exception:
+        _markets = MARKETS
+    _slice = _markets[offset:(offset + limit)] if limit else _markets[offset:]
     for m in _slice:
         slug, name, state, iso, lat, lon = m
         try:

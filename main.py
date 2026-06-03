@@ -29158,7 +29158,12 @@ def _mcp_upgrade_prompt():
 _MCP_FUNNEL_CACHE = {"data": None, "t": 0.0}
 _MCP_FUNNEL_TTL = 300
 
-@app.route("/api/v1/mcp/conversion-funnel", methods=["GET"])
+# r70 (2026-06-03): DISABLED — shadowed_route. The canonical /api/v1/mcp/conversion-funnel
+# is served by mcp_funnel_bp (routes/mcp_funnel.py), which registers at L25719 BEFORE this
+# @app.route runs, so the blueprint already won dispatch (verified: the live endpoint returns
+# biggest_leak.starting_volume, which only the blueprint computes — this simpler version lacks
+# it). Decorator commented to remove the duplicate registration; fn kept as harmless dead code.
+# @app.route("/api/v1/mcp/conversion-funnel", methods=["GET"])
 def _mcp_conversion_funnel():
     """Step-by-step conversion funnel. One DB connection + 5-min cache so it
     can't 503 (was 11 separate Neon connects ≈ 33s)."""

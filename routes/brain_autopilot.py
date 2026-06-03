@@ -350,6 +350,16 @@ def _action_founding_welcome_rescue(finding: dict) -> tuple[str | None, dict | N
     (deploy lag, Resend hiccup, etc.). Reads the _email field the
     detector attaches and POSTs the send-welcome endpoint."""
     email = finding.get("_email") or ""
+    # r70 (2026-06-03): when findings are persisted to brain_findings and read
+    # back, the extra "_email" field is stripped → this returned (None,None) →
+    # the action ESCALATED instead of EXECUTING (founding customers, incl the
+    # owner, never got welcomed despite the endpoint + Resend working). Fall
+    # back to extracting the email from the detail ("Founding customer <email>…").
+    if not email or "@" not in email:
+        import re as _re
+        _m = _re.search(r"[\w.+-]+@[\w.-]+\.\w+", finding.get("detail") or "")
+        if _m:
+            email = _m.group(0)
     if not email or "@" not in email:
         return (None, None)
     return (
