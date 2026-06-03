@@ -71,6 +71,11 @@ _STATIC_PAGES = [
     ("/pocket-listings", 0.7, "weekly"),
     ("/spare-capacity", 0.7, "weekly"),
     ("/events", 0.7, "weekly"),
+    # r70 (2026-06-03): the 3 new flagship products — live + nav/ticker/MCP-wired
+    # but missing from the sitemap, so crawlers + AI agents couldn't discover them.
+    ("/site-selection", 0.8, "weekly"),
+    ("/grid-transition", 0.8, "weekly"),
+    ("/deal-autopsy", 0.8, "weekly"),
     # /transactions is already listed above
 ]
 
