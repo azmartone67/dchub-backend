@@ -121,6 +121,12 @@ def _query_candidates(min_signals=2, days=30, limit=500):
                         SELECT
                             LOWER(TRIM(user_email)) AS email,
                             COUNT(*) AS signal_count,
+                            COUNT(*) FILTER (
+                                WHERE tool_requested IN (
+                                    'get_grid_intelligence',
+                                    'get_fiber_intel')
+                                  AND created_at > NOW() - INTERVAL '7 days'
+                            ) AS grid_fiber_7d,
                             MIN(created_at) AS first_signal_at,
                             MAX(created_at) AS last_signal_at,
                             MODE() WITHIN GROUP (ORDER BY tool_requested)
@@ -135,7 +141,8 @@ def _query_candidates(min_signals=2, days=30, limit=500):
                         GROUP BY LOWER(TRIM(user_email))
                     )
                     SELECT email, signal_count, top_tool,
-                           first_signal_at, last_signal_at, signal_ids
+                           first_signal_at, last_signal_at, signal_ids,
+                           grid_fiber_7d
                     FROM user_signals
                     WHERE any_converted IS NOT TRUE
                       AND any_outreach_sent IS NOT TRUE
@@ -154,6 +161,10 @@ def _query_candidates(min_signals=2, days=30, limit=500):
                         "first_signal_at": r[3].isoformat() if r[3] else None,
                         "last_signal_at":  r[4].isoformat() if r[4] else None,
                         "signal_ids": list(r[5] or []),
+                        # Item B (2026-06-02): grid+fiber 7d count powers
+                        # the dynamic subject line ("Your N grid queries
+                        # hit a paywall last week").
+                        "grid_fiber_7d": int(r[6] or 0) if len(r) > 6 else 0,
                     }
             except Exception as e:
                 err = f"source_A_failed: {str(e)[:140]}"
@@ -205,6 +216,7 @@ def _query_candidates(min_signals=2, days=30, limit=500):
                             "first_signal_at": r[2].isoformat() if r[2] else None,
                             "last_signal_at":  r[3].isoformat() if r[3] else None,
                             "signal_ids": [],
+                            "grid_fiber_7d": 0,
                         }
                     break  # first variant that runs wins
                 except Exception:
@@ -229,21 +241,40 @@ def _query_candidates(min_signals=2, days=30, limit=500):
         except Exception: pass
 
 
-# r68-rotate (2026-06-02): template registry keyed on signal age (days
-# since last signal). Replaces the hardcoded "we fixed the bug yesterday
-# (May 19)" subject which was 15+ days stale and getting staler every cron.
+# Item B (2026-06-02): subject lines are now ALWAYS dynamic — the subject
+# line carries the user's actual paywall trip count from the last 7d (with
+# preference for grid+fiber, the highest-intent tools). Body intros are
+# age-rotated. This replaces the old hardcoded "We fixed the DC Hub
+# upgrade bug" / "(May 19)" templates which went stale within days.
 # Brain L5 / template-versioning can edit this map without touching code paths.
 _OUTREACH_TEMPLATES = [
-    # (max_days_since_signal, subject, body_intro)
-    (3,   'Quick fix: try DC Hub again',
-           'We saw you hit our paywall a few times this week and want to make sure you got through.'),
-    (10,  'Still trying to access DC Hub data?',
-           'You hit our paywall a few times recently. If a deal or analysis is blocked, we can fast-track access.'),
-    (30,  'DC Hub: live datasets you tried to reach',
-           'A few weeks ago you tried {tool} on DC Hub. Want to pick up where you left off?'),
-    (90,  'Following up — DC Hub access',
-           'A while back you tried {tool}. The catalog grew (29 tools, 485K+ AI-agent requests). Worth another look?'),
+    # (max_days_since_signal, body_intro)
+    (3,
+        'We saw you hit our paywall a few times this week and want to make sure you got through.'),
+    (10,
+        'You hit our paywall a few times recently. If a deal or analysis is blocked, we can fast-track access.'),
+    (30,
+        'A few weeks ago you tried {tool} on DC Hub. Want to pick up where you left off?'),
+    (90,
+        'A while back you tried {tool}. The catalog grew (29 tools, 485K+ AI-agent requests). Worth another look?'),
 ]
+
+
+def _build_subject(candidate: dict) -> str:
+    """Item B (2026-06-02): subject derived from the user's recent
+    paywall trip count. Prefer grid+fiber (highest-intent), fall back
+    to total signal count, fall back to the generic 'paywall trips
+    this week' line if nothing is available."""
+    n = int(candidate.get("grid_fiber_7d") or 0)
+    if n > 0:
+        noun = "grid query" if n == 1 else "grid queries"
+        return f"Your {n} {noun} hit a paywall last week — quick claim?"
+    # Fall back to signal_count if we don't have grid+fiber attribution
+    sc = int(candidate.get("signal_count") or 0)
+    if sc > 0:
+        noun = "DC Hub query" if sc == 1 else "DC Hub queries"
+        return f"Your {sc} {noun} hit a paywall last week — quick claim?"
+    return "Your DC Hub paywall trips this week"
 
 
 def _build_email(candidate: dict) -> dict:
@@ -271,7 +302,10 @@ def _build_email(candidate: dict) -> dict:
         pass
     # Pick the first template whose max-days threshold is >= days_since.
     tpl = next((t for t in _OUTREACH_TEMPLATES if days_since <= t[0]), _OUTREACH_TEMPLATES[-1])
-    subject, intro_tmpl = tpl[1], tpl[2]
+    # Item B (2026-06-02): subject is dynamic per-candidate (no longer in tpl);
+    # intro is still age-rotated from the template registry.
+    subject = _build_subject(candidate)
+    intro_tmpl = tpl[1]
     intro = intro_tmpl.format(tool=tool)
     upgrade_url = (
         f"https://dchub.cloud/upgrade?utm_source=lost_conversion_outreach"
