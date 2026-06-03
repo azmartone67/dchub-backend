@@ -29126,7 +29126,11 @@ def _mcp_conversion_funnel():
     # The old page_views query was always 0 because MCP doesn't write there.
     funnel = {
         "1_tool_calls_7d":      safe_count("SELECT COUNT(*) FROM mcp_tool_calls WHERE created_at > NOW() - INTERVAL '7 days'"),
-        "2_paywall_hits_7d":    safe_count("SELECT COUNT(*) FROM mcp_upgrade_signals WHERE created_at > NOW() - INTERVAL '7 days'"),
+        # Item F (2026-06-02): migrated to canonical mcp_funnel_real view
+        # (is_synthetic=FALSE filter shipped in 3704c21f). The number
+        # surfaced on /api/v1/mcp/conversion-funnel now matches what
+        # /api/v1/mcp/funnel reports as real_external_7d.
+        "2_paywall_hits_7d":    safe_count("SELECT COUNT(*) FROM mcp_funnel_real WHERE created_at > NOW() - INTERVAL '7 days'"),
         # Step 3: human actually visited the redeem URL. mcp_pair_codes.redeem_viewed_at
         # is set by routes/pair_code.py:434-441 on every /redeem/<code> hit.
         "3_upgrade_clicks_7d":  safe_count("SELECT COUNT(*) FROM mcp_pair_codes WHERE redeem_viewed_at IS NOT NULL AND redeem_viewed_at > NOW() - INTERVAL '7 days'"),
@@ -29155,6 +29159,9 @@ def _mcp_conversion_funnel():
             rates[f"{keys[i]} → {keys[i+1]}"] = f"{(b/a*100):.2f}%"
     funnel["conversion_rates"] = rates
     funnel["leak_diagnosis"] = _diagnose_funnel_leak(funnel)
+    # Item F (2026-06-02): readers migrated to mcp_funnel_real view.
+    funnel["canonical_view"] = "mcp_funnel_real"
+    funnel["canonical_view_active"] = True
     _MCP_FUNNEL_CACHE["data"] = funnel
     _MCP_FUNNEL_CACHE["t"] = _now
     try:

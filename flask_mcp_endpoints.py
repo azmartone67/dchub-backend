@@ -1065,9 +1065,13 @@ def mcp_funnel():
             )
             out["keys_by_tier"] = {r[0]: r[1] for r in cur.fetchall()}
 
+            # Item F (2026-06-02): read from canonical mcp_funnel_real view
+            # so the top-tool ranking excludes synthetic/probe traffic
+            # (was previously polluted by dchub-selfheal hammering
+            # get_grid_intelligence).
             cur.execute(
                 """SELECT tool_requested, COUNT(*) AS n
-                   FROM mcp_upgrade_signals
+                   FROM mcp_funnel_real
                    WHERE created_at >= NOW() - INTERVAL '30 days'
                    GROUP BY tool_requested ORDER BY n DESC LIMIT 10"""
             )
@@ -1100,6 +1104,9 @@ def mcp_funnel():
             # many distinct users. Comparing platforms reveals which AI
             # agents convert humans best (Claude vs ChatGPT vs Cursor etc).
             try:
+                # Item F (2026-06-02): migrate to mcp_funnel_real view; the
+                # inline _signal_excl_clause is now provided by the view's
+                # is_synthetic=FALSE filter. Date-range/tier filters kept.
                 cur.execute(
                     """SELECT
                           COALESCE(NULLIF(LOWER(mcp_client), ''), 'unknown') AS platform,
@@ -1107,10 +1114,9 @@ def mcp_funnel():
                           COUNT(DISTINCT session_id) AS sessions,
                           COUNT(DISTINCT ip_address) AS unique_ips,
                           COUNT(*) FILTER (WHERE converted = TRUE) AS converted
-                       FROM mcp_upgrade_signals
-                       WHERE created_at >= NOW() - INTERVAL '30 days'"""
-                    + _signal_excl_clause +
-                    """ GROUP BY platform
+                       FROM mcp_funnel_real
+                       WHERE created_at >= NOW() - INTERVAL '30 days'
+                       GROUP BY platform
                        ORDER BY signals DESC
                        LIMIT 20"""
                 )
@@ -1290,13 +1296,18 @@ def mcp_funnel():
             # upgrade signal to converted=true). Reveals whether some
             # platforms convert fast vs slow.
             try:
+                # Item F (2026-06-02): time-to-convert reads from
+                # mcp_funnel_real so synthetic probes don't skew the
+                # median (probes never convert -> would otherwise inflate
+                # "median days to convert" for the platforms they share
+                # a name with).
                 cur.execute(
                     """WITH per_session AS (
                          SELECT session_id,
                                 COALESCE(NULLIF(LOWER(mcp_client), ''), 'unknown') AS platform,
                                 MIN(created_at) AS first_signal,
                                 MIN(converted_at) FILTER (WHERE converted = TRUE) AS conv_at
-                         FROM mcp_upgrade_signals
+                         FROM mcp_funnel_real
                          WHERE created_at >= NOW() - INTERVAL '90 days'
                          GROUP BY session_id, platform
                        )
@@ -1321,6 +1332,11 @@ def mcp_funnel():
                 out["time_to_convert_90d_error"] = str(e)[:120]
     except Exception as e:
         out["error"] = str(e)
+    # Item F (2026-06-02): readers migrated to mcp_funnel_real (canonical
+    # is_synthetic=FALSE view). Flag flips to True so the dashboard /
+    # brain-radar can tell which release of the funnel is live.
+    out["canonical_view"] = "mcp_funnel_real"
+    out["canonical_view_active"] = True
     return jsonify(out), 200
 
 
@@ -1446,9 +1462,11 @@ def mcp_timeseries():
 
             # Upgrade signals per bucket (= gate fires that emitted an
             # upgrade prompt). This is the key conversion-funnel input.
+            # Item F (2026-06-02): timeseries reads from mcp_funnel_real
+            # so the hourly chart doesn't spike on probe loops.
             cur.execute(f"""
                 SELECT {trunc} AS bin, COUNT(*) AS n
-                FROM mcp_upgrade_signals
+                FROM mcp_funnel_real
                 WHERE created_at >= NOW() - (%s || ' hours')::INTERVAL
                 GROUP BY bin ORDER BY bin
             """, (hours,))

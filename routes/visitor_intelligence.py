@@ -176,8 +176,8 @@ def _enrich_top_anon_ips(days: int = 7, limit: int = 25) -> dict:
                 cur.execute("""
                     SELECT ip_address, COUNT(*) AS signals,
                            COUNT(DISTINCT session_id) AS sessions
-                      FROM mcp_upgrade_signals
-                     WHERE created_at > NOW() - INTERVAL %s """ + _CLIENT_EXCL + """
+                      FROM mcp_funnel_real
+                     WHERE created_at > NOW() - INTERVAL %s """ + """
                        AND (user_email IS NULL OR user_email = '')
                        AND ip_address IS NOT NULL
                        AND ip_address != ''
@@ -263,6 +263,14 @@ def _compute(days: int = 7) -> dict:
     try:
         with conn.cursor() as cur:
             # Top-line totals.
+            # Item E + F (2026-06-02): the top-line `total_paywall_signals`
+            # is now the RAW (unfiltered) count so the visitor-intel widget
+            # can show "Total signals: {raw} · External verified: {real}"
+            # honestly. The "external verified" number is computed in a
+            # separate query below against mcp_funnel_real. Other totals
+            # (unique_sessions, unique_known_visitors, conversions, etc.)
+            # stay as raw counts since they're not synthetic-inflated in
+            # the same way (anon probes share session_ids less often).
             cur.execute("""
                 SELECT
                   COUNT(*)                                                AS total_signals,
@@ -279,7 +287,7 @@ def _compute(days: int = 7) -> dict:
                   COUNT(*) FILTER (WHERE COALESCE(converted, false))      AS conversions,
                   COUNT(*) FILTER (WHERE COALESCE(outreach_sent, false))  AS outreached
                 FROM mcp_upgrade_signals
-                WHERE created_at > NOW() - INTERVAL %s """ + _CLIENT_EXCL + """
+                WHERE created_at > NOW() - INTERVAL %s
             """, (f"{days} days",))
             r = cur.fetchone()
             if r:
@@ -321,8 +329,8 @@ def _compute(days: int = 7) -> dict:
                            array_agg(DISTINCT tool_requested
                                        ORDER BY tool_requested)
                              FILTER (WHERE tool_requested IS NOT NULL) AS top_tools
-                      FROM mcp_upgrade_signals
-                     WHERE created_at > NOW() - INTERVAL %s """ + _CLIENT_EXCL + """
+                      FROM mcp_funnel_real
+                     WHERE created_at > NOW() - INTERVAL %s """ + """
                      GROUP BY COALESCE(NULLIF(mcp_client, ''), 'unknown')
                      ORDER BY signals DESC
                      LIMIT 10
@@ -348,8 +356,8 @@ def _compute(days: int = 7) -> dict:
                            COUNT(DISTINCT session_id)     AS distinct_sessions,
                            COUNT(DISTINCT mcp_client)
                              FILTER (WHERE mcp_client IS NOT NULL) AS distinct_clients
-                      FROM mcp_upgrade_signals
-                     WHERE created_at > NOW() - INTERVAL %s """ + _CLIENT_EXCL + """
+                      FROM mcp_funnel_real
+                     WHERE created_at > NOW() - INTERVAL %s """ + """
                        AND tool_requested IS NOT NULL
                      GROUP BY tool_requested
                      ORDER BY hits DESC
@@ -377,8 +385,8 @@ def _compute(days: int = 7) -> dict:
                                        ORDER BY tool_requested)
                              FILTER (WHERE tool_requested IS NOT NULL) AS tools,
                            MAX(created_at) AS last_seen
-                      FROM mcp_upgrade_signals
-                     WHERE created_at > NOW() - INTERVAL %s """ + _CLIENT_EXCL + """
+                      FROM mcp_funnel_real
+                     WHERE created_at > NOW() - INTERVAL %s """ + """
                        AND user_email IS NOT NULL AND user_email != ''
                        AND COALESCE(converted, false) = false
                        AND COALESCE(outreach_sent, false) = false
@@ -405,8 +413,8 @@ def _compute(days: int = 7) -> dict:
                 cur.execute("""
                     SELECT COALESCE(NULLIF(tier_current, ''), 'unknown') AS tier,
                            COUNT(*)                                       AS signals
-                      FROM mcp_upgrade_signals
-                     WHERE created_at > NOW() - INTERVAL %s """ + _CLIENT_EXCL + """
+                      FROM mcp_funnel_real
+                     WHERE created_at > NOW() - INTERVAL %s """ + """
                      GROUP BY COALESCE(NULLIF(tier_current, ''), 'unknown')
                      ORDER BY signals DESC
                 """, (f"{days} days",))
@@ -438,8 +446,8 @@ def _compute(days: int = 7) -> dict:
                       END AS ua_class,
                       COUNT(*)                       AS signals,
                       COUNT(DISTINCT session_id)     AS sessions
-                    FROM mcp_upgrade_signals
-                    WHERE created_at > NOW() - INTERVAL %s """ + _CLIENT_EXCL + """
+                    FROM mcp_funnel_real
+                    WHERE created_at > NOW() - INTERVAL %s """ + """
                       AND (user_email IS NULL OR user_email = '')
                     GROUP BY ua_class
                     ORDER BY signals DESC
