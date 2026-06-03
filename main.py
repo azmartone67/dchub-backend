@@ -15313,9 +15313,16 @@ def serve_ai_txt():
 
 @app.route('/api/v1/ai-tracking/cumulative', methods=['GET'])
 def ai_tracking_cumulative():
-    """Return all-time cumulative request totals per platform from Neon ai_cumulative table."""
+    """Return all-time cumulative request totals per platform from Neon ai_cumulative table.
+
+    ai_agent_enablement (2026-06-02): by default the response now excludes
+    probe/scanner/test/internal rows via the shared _is_junk_platform
+    predicate (defined below in this module). Pass ?include_noise=1 to
+    bypass the filter and see raw row counts (useful for QA).
+    """
     conn = None
     try:
+        include_noise = request.args.get('include_noise') == '1'
         conn = get_pg_connection()
         cur = conn.cursor()
         cur.execute("""
@@ -15328,6 +15335,9 @@ def ai_tracking_cumulative():
         platforms = []
         total = 0
         for row in rows:
+            # ai_agent_enablement: drop junk platforms unless caller opted in
+            if not include_noise and _is_junk_platform(row[0]):
+                continue
             req_total = int(row[3] or 0)
             platforms.append({
                 "platform": row[0],
@@ -15340,7 +15350,9 @@ def ai_tracking_cumulative():
                 "color": row[7]
             })
             total += req_total
-        return jsonify({"success": True, "platforms": platforms, "total": len(platforms), "source": "railway"})
+        return jsonify({"success": True, "platforms": platforms,
+                        "total": len(platforms), "source": "railway",
+                        "include_noise": include_noise})
     except Exception as e:
         logger.error(f"ai_tracking_cumulative error: {e}")
         return jsonify({"success": False, "error": str(e)}), 500
