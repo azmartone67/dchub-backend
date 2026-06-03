@@ -1,0 +1,58 @@
+name: Announce — Global Grid Coverage (one-time, 8am PT 2026-06-03)
+
+# Queues the #60 global-grid-coverage announcement to LinkedIn + Bluesky at
+# 8am Pacific (PDT) on 2026-06-03 = 15:00 UTC. One-shot: the date guard makes
+# it self-noop on any later firing, so it's safe to leave in the repo (delete
+# after it runs if you like). Manual trigger (workflow_dispatch) ignores the
+# date guard so you can fire it early. Uses the existing DCHUB_ADMIN_KEY secret.
+on:
+  schedule:
+    - cron: '0 15 3 6 *'        # 15:00 UTC on June 3 = 08:00 America/Los_Angeles (PDT)
+  workflow_dispatch: {}
+
+permissions:
+  contents: read
+
+jobs:
+  announce:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Publish global-grid-coverage announcement
+        env:
+          ADMIN_KEY: ${{ secrets.DCHUB_ADMIN_KEY }}
+          MANUAL: ${{ github.event_name == 'workflow_dispatch' }}
+        run: |
+          python3 - <<'PY'
+          import os, json, datetime, urllib.request
+          # One-shot date guard (scheduled runs only fire on the intended day)
+          now = datetime.datetime.utcnow()
+          if os.environ.get("MANUAL") != "true" and not (now.year == 2026 and now.month == 6 and now.day == 3):
+              print(f"skip: not the target date (today {now.date()})"); raise SystemExit(0)
+          key = os.environ.get("ADMIN_KEY", "")
+          if not key:
+              print("ERROR: DCHUB_ADMIN_KEY secret not set"); raise SystemExit(1)
+          content = (
+              "DC Hub just made grid intelligence global.\n\n"
+              "Real-time fuel mix, demand, and grid headroom — now LIVE on 4 continents:\n"
+              "US — 7 ISOs + 43 balancing authorities (EIA)\n"
+              "Great Britain — NESO via Elexon Insights\n"
+              "Europe — ~12 bidding zones via ENTSO-E (Germany, France, Netherlands, Ireland, Spain, Belgium, Poland, Austria, Nordics)\n"
+              "Taiwan — Taipower\n"
+              "Australia — AEMO National Electricity Market\n"
+              "Plus EU gas transmission flows via ENTSOG.\n\n"
+              "All live, not modeled. Free for any AI agent to query over our MCP server, CC-BY-4.0 to cite.\n\n"
+              "Siting an AI data center is now a global question — and the grid is the binding constraint. "
+              "One query answers which market on Earth is greenest, or has the most headroom, right now.\n\n"
+              "Query it: https://dchub.cloud/mcp  ·  See it: https://dchub.cloud/grid-intelligence"
+          )
+          base = "https://dchub.cloud/api/admin/publish/enqueue-custom"
+          for platform in ("linkedin", "bluesky"):
+              body = json.dumps({"content": content, "platform": platform, "publish_now": True}).encode()
+              req = urllib.request.Request(base, data=body, method="POST",
+                    headers={"Content-Type": "application/json", "X-Admin-Key": key})
+              try:
+                  r = urllib.request.urlopen(req, timeout=60)
+                  print(f"{platform}: HTTP {r.status} {r.read()[:200]!r}")
+              except Exception as e:
+                  print(f"{platform}: ERROR {e}")
+          PY
