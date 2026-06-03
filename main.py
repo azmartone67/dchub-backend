@@ -23929,6 +23929,18 @@ except Exception as e:
 try:
     from routes.schema_repair import schema_repair_bp
     app.register_blueprint(schema_repair_bp)
+    # Phase media_no_404 (2026-06-02): single URL-emission chokepoint
+    # so every public dchub.cloud URL posted by social/press/email/RSS
+    # goes through one HEAD-checked code path. Auto-revokes LinkedIn
+    # 404s + republishes on recovery via /api/v1/cron/url-smoke.
+    try:
+        from routes.url_registry import url_registry_bp, ensure_table as _ensure_url_emissions
+        app.register_blueprint(url_registry_bp)
+        try: _ensure_url_emissions()
+        except Exception: pass
+        print("🔗 [url_registry] ready · /api/v1/cron/url-smoke · /api/v1/url-registry/status")
+    except Exception as _e_ur:
+        print(f"⚠️ [url_registry] blueprint failed to register: {_e_ur}")
     # Phase r27-r30 (2026-05-20) — Pockets of Power surface. Makes the
     # market_power_scores asset first-class via /pockets HTML page,
     # /api/v1/pockets/top public JSON, /api/v1/pockets/for-me

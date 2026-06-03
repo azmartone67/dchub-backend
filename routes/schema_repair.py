@@ -167,6 +167,37 @@ SCHEMA_STATEMENTS = [
            ON discovered_facilities(provider, status)
            WHERE status IN ('active','Operational')""",
     ]),
+    ("url_emissions table (media_no_404 chokepoint)", [
+        # Phase media_no_404 (2026-06-02): single registry for every
+        # public URL emitted by DC Hub Media (linkedin/x/email/press/rss).
+        # Pre-post HEAD lives in routes/url_registry.emit; the 5-min cron
+        # /api/v1/cron/url-smoke recomputes HEAD on every published row
+        # in the last 7d and auto-revokes LinkedIn on dead_404.
+        """CREATE TABLE IF NOT EXISTS url_emissions (
+            id              SERIAL PRIMARY KEY,
+            channel         TEXT NOT NULL,
+            kind            TEXT NOT NULL,
+            slug            TEXT NOT NULL,
+            url             TEXT NOT NULL,
+            state           TEXT NOT NULL DEFAULT 'planned',
+            pre_head_status INT,
+            ref_id          TEXT,
+            payload         JSONB,
+            last_smoke_at   TIMESTAMPTZ,
+            smoke_status    INT,
+            revoked_at      TIMESTAMPTZ,
+            revoke_reason   TEXT,
+            republished_at  TIMESTAMPTZ,
+            created_at      TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+            published_at    TIMESTAMPTZ
+        )""",
+        "CREATE INDEX IF NOT EXISTS ix_url_emissions_state ON url_emissions(state)",
+        "CREATE INDEX IF NOT EXISTS ix_url_emissions_url ON url_emissions(url)",
+        "CREATE INDEX IF NOT EXISTS ix_url_emissions_published ON url_emissions(published_at DESC)",
+        """CREATE UNIQUE INDEX IF NOT EXISTS ix_url_emissions_channel_url_active
+           ON url_emissions(channel, url)
+           WHERE state IN ('planned','published')""",
+    ]),
     ("mcp_funnel canonical identity + view", [
         # r68-canonical (2026-06-02): collapse the per-file synthetic-client
         # filter (5 Python copies that drifted across releases) into a SINGLE

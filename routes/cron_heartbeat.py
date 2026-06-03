@@ -74,6 +74,14 @@ _DISPATCH = [
      "POST",
      lambda now: True),
 
+    # Phase media_no_404 (2026-06-02): URL emission registry smoke cron.
+    # Every 5 min HEAD-checks every URL emitted in last 7d; auto-revokes
+    # LinkedIn posts whose landing page returns 4xx and re-emits on recovery.
+    ("url_smoke_5min",
+     f"{BASE}/api/v1/cron/url-smoke",
+     "POST",
+     lambda now: True),
+
     # Brain heartbeat warmer — once per hour at :03 (to spread load)
     ("brain_warmer_hourly",
      f"{BASE}/api/v1/brain-warming/warm",
