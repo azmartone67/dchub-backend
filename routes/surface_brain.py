@@ -397,7 +397,10 @@ def track_event():
 # queries per request. Live timing 3.2s. With caching: <50ms.
 import time as _time_surf
 _SURFACES_CACHE = {"payload": None, "ts": 0.0}
-_SURFACES_TTL_S = 120.0
+_SURFACES_TTL_S = 600.0  # r48: 120→600s. The cold recompute is ~5s (65 surfaces
+# × 2 DB queries, 8-way parallel). A 10-min internal cache + 5-min CF cache (below)
+# means that 5s path fires ~5× less often — keeps a slow telemetry endpoint from
+# occasionally tying up a gunicorn worker. Surface health is slow-changing.
 
 
 # ── Surface APIs ──────────────────────────────────────────────────────
@@ -411,7 +414,7 @@ def list_surfaces():
         resp_data["_cache_age_seconds"] = round(now - _SURFACES_CACHE["ts"], 1)
         resp_data["_cached"] = True
         resp = jsonify(resp_data)
-        resp.headers["Cache-Control"] = "public, max-age=60"
+        resp.headers["Cache-Control"] = "public, max-age=300"
         resp.headers["Access-Control-Allow-Origin"] = "*"
         return resp, 200
 
@@ -451,7 +454,7 @@ def list_surfaces():
     _SURFACES_CACHE["payload"] = payload
     _SURFACES_CACHE["ts"]      = now
     resp = jsonify(payload)
-    resp.headers["Cache-Control"] = "public, max-age=60"
+    resp.headers["Cache-Control"] = "public, max-age=300"
     resp.headers["Access-Control-Allow-Origin"] = "*"
     return resp, 200
 
