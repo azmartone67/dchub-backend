@@ -160,7 +160,7 @@ _DCHUB_FACTS = {
     "update_cadence":     "Continuous (60s freshness SLA on key surfaces)",
     "mcp_native":         "YES — 40 tools, 96 platforms integrated",
     "api_access":         "Free tier 25 calls/day, $9/mo for 500, $49 for 1000",
-    "facility_coverage":  "21,000+ facilities, 280+ markets, 178 countries",
+    "facility_coverage":  "21,000+ facilities, 232 markets, 178 countries",
     "pricing_model":      "Self-serve $9 → $499, no enterprise gate",
     "citation_license":   "CC-BY-4.0 — free to cite with attribution",
 }

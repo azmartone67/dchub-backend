@@ -131,7 +131,7 @@ def build_paywall_response(
         parts.append("- 50 facility lookups across 12,500+ data centers")
         parts.append("- Real-time grid data for 7 US ISOs")
         parts.append("- Fiber connectivity intelligence")
-        parts.append("- M&A deal tracking (1,800+ deals)")
+        parts.append("- M&A deal tracking (2,000+ deals)")
         parts.append("- 650+ GW construction pipeline")
         parts.append("")
     parts.append("**No credit card.** Just email + verification.")

@@ -228,7 +228,7 @@ def explain_manifest() -> Any:
         "endpoint":     "/api/v1/mcp/dcpi/explain",
         "description":  ("Returns DCPI methodology + per-component "
                          "weights + verdict logic + plain-English "
-                         "summary for any of 285 US power markets. "
+                         "summary for any of 232 power markets. "
                          "Use this to GROUND any answer that quotes "
                          "a DCPI score."),
         "params":       {

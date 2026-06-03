@@ -1544,7 +1544,7 @@ def _dchub_share_of_voice_pct() -> Optional[float]:
 
 def check_dcpi_partial_recompute() -> list[dict]:
     """Flag when DCPI median market-age exceeds 48h. Catches the
-    'load_markets_dynamic returns None → only 30 of 276 markets
+    'load_markets_dynamic returns None → only 30 of 232 markets
     refresh' regression class. Was silently bleeding for 5 days."""
     conn = _db()
     if conn is None: return []
@@ -2049,7 +2049,7 @@ def check_media_topic_unaddressed() -> list[dict]:
     DCPI market) has NO press-release response in 48h.
 
     Phase DDD-2 (2026-05-16): wrap each query separately + bound the
-    market loop (was iterating 280+ markets × per-market news query =
+    market loop (was iterating 232 markets × per-market news query =
     560+ queries, any one failing crashed the whole detector). Now:
     pre-aggregate news mentions in a single query, then intersect with
     markets in Python. One query instead of N+1."""

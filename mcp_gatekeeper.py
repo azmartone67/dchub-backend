@@ -152,7 +152,7 @@ TOOL_TIER = {
     "get_geothermal_potential":Tier.IDENTIFIED,  # niche but high-signal
     "get_tax_incentives":      Tier.IDENTIFIED,  # state-level abatements
     "get_microgrid_viability": Tier.IDENTIFIED,  # site-level resilience
-    "get_intelligence_index":  Tier.IDENTIFIED,  # DCPI scores for 280+ markets
+    "get_intelligence_index":  Tier.IDENTIFIED,  # DCPI scores for 232 markets
 
     # DEVELOPER — single-site composite scorer (entry-paid hook)
     "analyze_site":            Tier.DEVELOPER,  # composite lat/lon scorer
@@ -538,7 +538,7 @@ TOOL_TEASER = {
     "get_colocation_score":   "DCPI sub-score breakdown for any market — what's driving the rank.",
     "get_geothermal_potential":"DOE Play Fairway resource scores + estimated MWe for greenfield geothermal.",
     "get_microgrid_viability":"on-site solar/storage/CHP feasibility with NPV across utility-rate scenarios.",
-    "get_intelligence_index": "DCPI index for 280+ markets — score, rank, weekly delta, top movers.",
+    "get_intelligence_index": "DCPI index for 232 markets — score, rank, weekly delta, top movers.",
     "get_backup_status":      "live backup/disaster-recovery telemetry for tracked facilities.",
 
     # Phase GG (2026-05-15) — Bundle 5A: teasers for the 25 new tools.

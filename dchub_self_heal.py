@@ -501,7 +501,7 @@ def fix_backfill_press_releases():
             prs = [
                 ("dcpi-v2-launch",
                  "DC Hub Launches DCPI v2: Data Center Power Index Now Covering 289 Markets",
-                 "DC Hub today released version 2 of the Data Center Power Index (DCPI), expanding coverage from 30 to 289 markets across 12 countries. The methodology — peer-reviewable at /dcpi/methodology — combines four weighted components (Grid Headroom 40%, Pipeline Velocity 25%, Energy Cost Efficiency 20%, Facility Density 15%) into a single 0-100 score per market. Industry analysts at JLL, CBRE, Data Center Dynamics and Data Center Frontier have been invited to evaluate the index as a citable standard.",
+                 "DC Hub today released version 2 of the Data Center Power Index (DCPI), expanding coverage from 30 to 232 markets across 12 countries. The methodology — peer-reviewable at /dcpi/methodology — combines four weighted components (Grid Headroom 40%, Pipeline Velocity 25%, Energy Cost Efficiency 20%, Facility Density 15%) into a single 0-100 score per market. Industry analysts at JLL, CBRE, Data Center Dynamics and Data Center Frontier have been invited to evaluate the index as a citable standard.",
                  "/news/dcpi-v2-launch/"),
                 ("dcpi-methodology-published",
                  "DC Hub Publishes DCPI Methodology for Peer Review",
@@ -552,7 +552,7 @@ def fix_backfill_testimonials():
             seeds = [
                 ("The Data Center Power Index from DC Hub is the first market-by-market scoring system that ties grid headroom, queue velocity, and energy economics into one number. We use it as a starting reference for site screening.",
                  "Independent Site Selection Analyst", "Industry Voice"),
-                ("DCPI's coverage of 289 markets with continuous updates is a step-change versus annual reports. The methodology is transparent enough that we can map their inputs to our own underwriting model.",
+                ("DCPI's coverage of 232 markets with continuous updates is a step-change versus annual reports. The methodology is transparent enough that we can map their inputs to our own underwriting model.",
                  "Capital Markets Researcher", "Industry Voice"),
                 ("For markets where we don't have proprietary fiber-and-power maps, DCPI gives us a defensible baseline to compare against. The pipeline-to-operational ratio is a smart proxy for grid stress.",
                  "Data Center Developer", "Industry Voice"),

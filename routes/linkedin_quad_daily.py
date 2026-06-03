@@ -370,7 +370,7 @@ def _format_post_base(slot, payload):
     # Fallback: generic
     return (
         f"DC Hub Media · {slot['title']}\n\n"
-        f"21,401 data center facilities. 1,941 M&A deals. 10 ISOs tracked in real time.\n\n"
+        f"21,401 data center facilities. 2,000+ M&A deals. 10 ISOs tracked in real time.\n\n"
         f"Live intelligence: {landing}\n\n"
         f"#DCHub #DataCenter #AIInfrastructure"
     )

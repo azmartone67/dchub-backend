@@ -128,7 +128,7 @@ def dcpi_freshness():
             "oldest_15":    oldest,
             "checked_at":   datetime.datetime.utcnow().isoformat() + "Z",
             "purpose":      ("Per-market DCPI freshness. Cron is supposed to "
-                              "refresh all 286 markets every 6h. Markets in "
+                              "refresh all 232 markets every 6h. Markets in "
                               "oldest_15 are silently failing during recompute."),
         }), 200
     except Exception as e:

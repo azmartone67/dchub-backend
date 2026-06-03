@@ -19,7 +19,7 @@ this engine rotates through 6 story types:
   shipped_this_week     — What we built last 7 days (from
                           auto_press_releases + brain_proposed_fixes)
   hyperscaler_drama     — Real recent news + our DCPI contrarian angle
-  market_anomaly        — Biggest WoW score change among 285 markets
+  market_anomaly        — Biggest WoW score change among 232 markets
 
 Each pulls real DB data, then asks Claude Sonnet to compose a
 280-char hook + 2-3 insight beats + CTA + hashtags in DC Hub's voice.
@@ -507,7 +507,7 @@ def _static_fallback(story_type: str, data: dict, landing: str) -> str:
             f"Latest signal from DCPI on {s.get('market_name','a US market')}: "
             f"{first_value}. That single number changes which markets are "
             f"buildable in the next 36 months — and which aren't.\n\n"
-            f"This is why DC Hub scores 285 US power markets weekly "
+            f"This is why DC Hub scores 232 power markets weekly "
             f"instead of relying on press releases.\n\n"
             f"Full methodology + live scores: {landing}\n\n"
             f"#DCPI #PowerGrid #DataCenter #DCHubMedia"
@@ -521,7 +521,7 @@ def _static_fallback(story_type: str, data: dict, landing: str) -> str:
             f"Constraint: {scoop.get('constraint_score','?')}. Time-to-power: "
             f"{scoop.get('time_to_power_months','?')} months.\n\n"
             f"You won't read this on the front page — that's exactly why "
-            f"DC Hub built the Power Index. 285 markets, weekly, "
+            f"DC Hub built the Power Index. 232 markets, weekly, "
             f"data-driven.\n\n"
             f"See the full list: {landing}\n\n"
             f"#DCPI #DataCenter #AIInfrastructure"
@@ -564,7 +564,7 @@ def _static_fallback(story_type: str, data: dict, landing: str) -> str:
             f"Movements this large signal real underlying change — "
             f"new gen additions, queue movement, or demand shifts. AI "
             f"infra teams should investigate.\n\n"
-            f"All 285 markets: {landing}\n\n"
+            f"All 232 markets: {landing}\n\n"
             f"#DCPI #DataCenter #AIInfrastructure"
         )
     return f"DC Hub Media · See {landing}\n\n#DCHub #DataCenter"

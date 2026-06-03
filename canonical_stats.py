@@ -35,6 +35,12 @@ _FALLBACK = {
     "isos": 7,               # 7 live US ISOs (ERCOT, CAISO, NYISO, MISO, PJM, SPP, ISO-NE)
     "grid_operators": 10,    # 10 North-American grid operators w/ live data (7 US ISOs + TVA + BPA + IESO)
     "utility_bas": 43,       # 43 US utility balancing authorities (live EIA-930)
+    # #60 (2026-06-02): live grid telemetry is now GLOBAL — 4 continents.
+    # Intl live grids beyond N. America: Great Britain (NESO/Elexon), ~12 EU
+    # bidding zones (ENTSO-E), Taiwan (Taipower), Australia (AEMO); plus EU gas
+    # transmission flows (ENTSOG, 10 countries). All LIVE, not modeled.
+    "grid_continents": 4,
+    "intl_grid_regions": 15,  # GB(1) + EU(~12) + Taiwan(1) + Australia(1)
 }
 
 _TTL_S = 600          # 10-minute cache; these move slowly
@@ -139,9 +145,10 @@ def markets_phrase() -> str:
 
 def headline_blurb() -> str:
     """One-liner generators can drop into a prompt or post, always consistent.
-    e.g. '21,000+ data center facilities across 170+ countries, 286 markets,
-    10 ISOs + 43 utility BAs'."""
+    e.g. '21,000+ data center facilities across 170+ countries, 232 markets,
+    and live grid telemetry on 4 continents (US, UK, EU, Taiwan, Australia)'."""
     s = get_canonical_stats()
     return (f"{facilities_phrase()} data center facilities across "
-            f"{countries_phrase()} countries, {markets_phrase()} markets, "
-            f"{s.get('grid_operators', 10)} ISOs + {s.get('utility_bas', 43)} utility BAs")
+            f"{countries_phrase()} countries, {markets_phrase()} markets, and "
+            f"live grid telemetry across {s.get('grid_continents', 4)} continents "
+            f"(US, UK, EU, Taiwan, Australia) + {s.get('utility_bas', 43)} US balancing authorities")

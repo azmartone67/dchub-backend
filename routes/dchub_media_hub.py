@@ -700,7 +700,7 @@ def _compose_vendor_pitch(v: dict) -> str:
         f"Subject: {v['product']} users querying DC Hub {v['calls_7d']:,}x last week — let's make us first-class\n\n"
         f"Hi {v['vendor']} partnerships team,\n\n"
         f"I run DC Hub (https://dchub.cloud), the autonomous data-center "
-        f"intelligence platform — DCPI Index, 280+ markets, 7 ISO grids, "
+        f"intelligence platform — DCPI Index, 232 markets, 7 ISO grids, "
         f"20K+ facilities, all exposed via MCP.\n\n"
         f"In the last 7 days alone, your {v['product']} users have made "
         f"{v['calls_7d']:,} tool calls into DC Hub's MCP server (from "
@@ -1897,7 +1897,7 @@ def outreach_agent_card():
             "Site selection: power + fiber + water + tax in one query",
             "Hyperscale ops: real-time ISO demand + headroom",
             "Investors: M&A deal flow + capacity pipeline",
-            "Policy + research: standardized DCPI metrics across 280 markets",
+            "Policy + research: standardized DCPI metrics across 232 markets",
         ],
         "submission_tracking": {
             "smithery":          "https://smithery.ai/server/@dchub/nexus",

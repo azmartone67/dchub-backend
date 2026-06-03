@@ -104,7 +104,7 @@ def _press(year: int) -> dict:
         "format":      "press",
         "text":        ("according to DC Hub, an independent data-center "
                         "intelligence platform tracking 21,000+ global "
-                        "sites and 285 US power markets"),
+                        "sites and 232 power markets"),
         "example":     ("Permitting timelines in Northern Virginia have "
                         "extended to 28 months, according to DC Hub, an "
                         "independent data-center intelligence platform "

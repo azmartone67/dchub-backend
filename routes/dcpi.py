@@ -1503,7 +1503,7 @@ def api_scores():
         state=<state_code>  (filter, Phase MM)
         limit=N  (slice, Phase MM)
     Phase MM Bundle 9 caught in QA sweep: ?verdict= was being IGNORED —
-    all 276 markets were returned regardless of filter. Fix shipped here.
+    all 232 markets were returned regardless of filter. Fix shipped here.
     """
     _ensure_tables()
     sort_by = (request.args.get("sort") or request.args.get("sort_by")
@@ -4486,7 +4486,7 @@ def public_market_page(slug):
     # r42g (2026-05-25): per-market analyst narrative. ~100 words,
     # 1 paragraph, in CBRE/JLL per-market H2 voice. Silent no-op when
     # ANTHROPIC_API_KEY absent. Cached 1h per (slug, date). Cost ~$0.001
-    # × 285 markets × 1 cache cycle/day = ~$0.30/day if every market is
+    # × 232 markets × 1 cache cycle/day = ~$0.30/day if every market is
     # read at least once.
     narrative_text = ""
     try:
@@ -4498,7 +4498,7 @@ def public_market_page(slug):
     market_html = render_template_string(DCPI_MARKET_TEMPLATE, s=s,
                                           risks=risks, opps=opps,
                                           narrative=narrative_text)
-    # r43-H: cache the rendered page (bounded — ~285 markets max).
+    # r43-H: cache the rendered page (bounded — 232 markets max).
     if len(_DCPI_PAGE_CACHE) < 500:
         _DCPI_PAGE_CACHE[slug] = (_now + _DCPI_PAGE_TTL, market_html)
     # RENDER-PERF: write-through to the cross-worker Redis layer so the next
