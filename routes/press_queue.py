@@ -28,6 +28,31 @@ def _ensure():
         c.commit()
 
 
+def _admin_or_cron_authorized() -> bool:
+    """Gate for the auto-publish+email scan. Accepts the admin key (header or
+    query) or the cron secret — the same convention as dcpi_auto_press. WITHOUT
+    this, /api/v1/press/scan was a PUBLIC POST/GET and any caller on the
+    internet could trigger an email blast to every dev-key holder (P0,
+    2026-06-03). dchub-scheduler already sends X-Admin-Key; the two GH crons
+    were updated to send it too."""
+    provided = (request.headers.get("X-Admin-Key")
+                or request.args.get("admin_key") or "")
+    expected = (os.environ.get("DCHUB_ADMIN_KEY")
+                or os.environ.get("DCHUB_INTERNAL_KEY") or "")
+    if expected and provided == expected:
+        return True
+    cron_hdr = request.headers.get("X-Internal-Cron", "")
+    cron_env = os.environ.get("DCHUB_CRON_SECRET", "")
+    return bool(cron_env) and cron_hdr == cron_env
+
+
+def _ensure_optout():
+    with _conn() as c, c.cursor() as cur:
+        cur.execute("""CREATE TABLE IF NOT EXISTS press_email_optout (
+            email TEXT PRIMARY KEY, opted_out_at TIMESTAMPTZ DEFAULT NOW())""")
+        c.commit()
+
+
 @press_queue_bp.route("/api/v1/press/queue", methods=["GET"])
 def list_queue():
     _ensure()
@@ -43,7 +68,13 @@ def list_queue():
 
 @press_queue_bp.route("/api/v1/press/scan", methods=["POST", "GET"])
 def scan_for_drafts():
-    """Phase 129: tiered. >=15 pts auto-publishes, 10-14 stays draft."""
+    """Phase 129: tiered. >=15 pts auto-publishes, 10-14 stays draft.
+
+    r70 (2026-06-03): admin/cron-gated — this auto-publishes AND emails every
+    dev-key holder, so it must never be callable anonymously."""
+    if not _admin_or_cron_authorized():
+        return jsonify(error="auth_required",
+                       hint="send X-Admin-Key (DCHUB_ADMIN_KEY) or X-Internal-Cron"), 401
     _ensure()
     AUTO_PUBLISH_THRESHOLD = 15.0  # auto-publish without human review
     DRAFT_THRESHOLD = 10.0         # draft for review
@@ -136,6 +167,7 @@ def _distribute_published_releases(releases):
     if not api_key: return
     from_email = os.environ.get("DCHUB_FROM_EMAIL", "DC Hub <jonathan@dchub.cloud>")
 
+    _ensure_optout()
     with _conn() as c, c.cursor() as cur:
         cur.execute("""SELECT DISTINCT email FROM mcp_dev_keys WHERE email IS NOT NULL AND email != ''""")
         keys_emails = [r[0] for r in cur.fetchall()]
@@ -144,7 +176,14 @@ def _distribute_published_releases(releases):
             subs_emails = [r[0] for r in cur.fetchall()]
         except Exception:
             subs_emails = []
-        emails = sorted(set(keys_emails + subs_emails))
+        # r70 (2026-06-03): honor opt-outs (CAN-SPAM). Dev-key holders had no
+        # way to unsubscribe from these auto DCPI alerts before.
+        try:
+            cur.execute("SELECT email FROM press_email_optout")
+            optout = {r[0] for r in cur.fetchall()}
+        except Exception:
+            optout = set()
+        emails = sorted(set(keys_emails + subs_emails) - optout)
 
     for rec in releases:
         slug = rec["slug"]
@@ -158,9 +197,13 @@ def _distribute_published_releases(releases):
 <p style="color:#888;font-size:0.85rem;margin-top:2rem;">Sent because you have a DC Hub dev key. <a href="https://dchub.cloud/dcpi">Open DCPI dashboard</a></p>
 </div>"""
         for em in emails:
+            unsub = (f'<p style="color:#aaa;font-size:0.72rem;margin-top:1.2rem;text-align:center;">'
+                     f'You received this as a DC Hub dev-key holder. '
+                     f'<a href="https://dchub.cloud/api/v1/press/unsubscribe?email={em}" style="color:#aaa;">'
+                     f'Unsubscribe from DCPI alerts</a>.</p>')
             try:
                 _rq.post("https://api.resend.com/emails",
-                    json={"from": from_email, "to": [em], "subject": title, "html": html},
+                    json={"from": from_email, "to": [em], "subject": title, "html": html + unsub},
                     headers={"Authorization": f"Bearer {api_key}",
                              "Content-Type": "application/json", "Accept": "application/json",
                              "User-Agent": "Mozilla/5.0 (compatible; DCHub/1.0)"},
@@ -168,6 +211,25 @@ def _distribute_published_releases(releases):
             except Exception:
                 pass
 
+
+
+@press_queue_bp.route("/api/v1/press/unsubscribe", methods=["GET", "POST"])
+def press_unsubscribe():
+    """Public per-address opt-out from DCPI alert emails (CAN-SPAM)."""
+    email = (request.args.get("email")
+             or (request.get_json(silent=True) or {}).get("email") or "").strip().lower()
+    if not email or "@" not in email:
+        return jsonify(error="provide ?email="), 400
+    _ensure_optout()
+    with _conn() as c, c.cursor() as cur:
+        cur.execute("""INSERT INTO press_email_optout (email) VALUES (%s)
+                       ON CONFLICT (email) DO NOTHING""", (email,))
+        c.commit()
+    return Response(
+        "<html><body style='font-family:system-ui;max-width:560px;margin:80px auto;"
+        "text-align:center'><h2>✓ Unsubscribed</h2><p>You will no longer receive "
+        "DC Hub DCPI alert emails.</p><p><a href='https://dchub.cloud'>Return to DC Hub</a>"
+        "</p></body></html>", mimetype="text/html")
 
 
 @press_queue_bp.route("/api/v1/press/<slug>", methods=["GET"])

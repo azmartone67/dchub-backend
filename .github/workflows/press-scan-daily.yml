@@ -7,6 +7,12 @@ jobs:
   scan:
     runs-on: ubuntu-latest
     steps:
-      - run: |
+      - env:
+          ADMIN_KEY: ${{ secrets.DCHUB_ADMIN_KEY }}
+        run: |
+          # /press/scan is admin/cron-gated (it auto-publishes + emails dev-key
+          # holders) — send the admin key. Skip cleanly if the secret is unset.
+          if [ -z "${ADMIN_KEY:-}" ]; then echo "::warning::DCHUB_ADMIN_KEY not set — skipping"; exit 0; fi
           curl -sS -X POST "https://dchub.cloud/api/v1/press/scan" \
+            -H "X-Admin-Key: $ADMIN_KEY" \
             | python3 -m json.tool
