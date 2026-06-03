@@ -1,0 +1,61 @@
+name: brain reasoning layers (L7 / L14 / L16 — r70 wake)
+
+# r70 (2026-06-03): L7 (propose NEW detectors), L14 (causal analysis), and L16
+# (self-critique / prediction calibration) were written but never SCHEDULED — so
+# the brain's LLM reasoning sat dormant, firing only on manual trigger.
+# /api/v1/brain/self-model confirms reasoning_online=True (ANTHROPIC_API_KEY is
+# set), so all they needed was a cron. All three are human-gated — they propose
+# to tables / log predictions and NEVER auto-apply — so running them on a cadence
+# just keeps the reasoning + calibration fresh for human review.
+#
+# Hits the Railway ORIGIN direct (not dchub.cloud): these are 10-30s Claude calls
+# and the CF edge ~15s timeout would kill them (same reason as brain-layer5.yml).
+
+on:
+  schedule:
+    - cron: '15 */6 * * *'   # every 6 hours
+  workflow_dispatch: {}
+
+permissions:
+  contents: read
+
+env:
+  RAILWAY_BASE: https://dchub-backend-production.up.railway.app
+
+jobs:
+  reason:
+    runs-on: ubuntu-latest
+    timeout-minutes: 12
+    steps:
+      - name: L16 — self-critique / prediction calibration
+        env:
+          ADMIN_KEY: ${{ secrets.DCHUB_ADMIN_KEY }}
+        run: |
+          set -euo pipefail
+          if [ -z "${ADMIN_KEY:-}" ]; then echo "::warning::DCHUB_ADMIN_KEY not set — skipping L16"; exit 0; fi
+          curl -sS --max-time 180 -X POST -H "X-Admin-Key: $ADMIN_KEY" \
+            -H "Content-Type: application/json" -d '{}' \
+            "$RAILWAY_BASE/api/v1/brain/self-critique/run" | head -c 2000 || echo '{"ok":false,"error":"curl_fail"}'
+          echo
+
+      - name: L14 — causal analysis
+        env:
+          ADMIN_KEY: ${{ secrets.DCHUB_ADMIN_KEY }}
+        run: |
+          set -euo pipefail
+          if [ -z "${ADMIN_KEY:-}" ]; then echo "::warning::DCHUB_ADMIN_KEY not set — skipping L14"; exit 0; fi
+          curl -sS --max-time 180 -X POST -H "X-Admin-Key: $ADMIN_KEY" \
+            -H "Content-Type: application/json" -d '{}' \
+            "$RAILWAY_BASE/api/v1/brain/causal/analyze" | head -c 2000 || echo '{"ok":false,"error":"curl_fail"}'
+          echo
+
+      - name: L7 — propose new detectors (self-limits to 3/day internally)
+        env:
+          ADMIN_KEY: ${{ secrets.DCHUB_ADMIN_KEY }}
+        run: |
+          set -euo pipefail
+          if [ -z "${ADMIN_KEY:-}" ]; then echo "::warning::DCHUB_ADMIN_KEY not set — skipping L7"; exit 0; fi
+          curl -sS --max-time 180 -X POST -H "X-Admin-Key: $ADMIN_KEY" \
+            -H "Content-Type: application/json" -d '{}' \
+            "$RAILWAY_BASE/api/v1/brain/propose-detector" | head -c 2000 || echo '{"ok":false,"error":"curl_fail"}'
+          echo
