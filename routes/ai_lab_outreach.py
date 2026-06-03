@@ -86,6 +86,7 @@ _TARGETS = [
         "name":        "Groq",
         "category":    "ai_lab",
         "contact_url": "https://groq.com/contact-sales/",
+        "target_email": "partnerships@groq.com",
         "intent_url":  "https://groq.com/about-us/",
         "value_pitch": ("Groq's customers buy inference but care WHERE the LPUs sit. "
                          "DC Hub's per-facility power, water, fiber, and grid intel makes "
@@ -99,6 +100,7 @@ _TARGETS = [
         "name":        "Google DeepMind / Gemini",
         "category":    "ai_lab",
         "contact_url": "https://deepmind.google/about/contact/",
+        "target_email": "press@deepmind.com",
         "intent_url":  "https://deepmind.google/discover/",
         "value_pitch": ("Gemini already has the world's best data center expertise "
                          "(Google's own infra). What it LACKS is competitive intel: "
@@ -130,6 +132,7 @@ _TARGETS = [
         "name":        "NVIDIA",
         "category":    "hyperscaler_oem",
         "contact_url": "https://www.nvidia.com/en-us/contact/",
+        "target_email": "partnerships@nvidia.com",
         "intent_url":  "https://www.nvidia.com/en-us/data-center/",
         "value_pitch": ("Every GPU NVIDIA ships ends up in a data center DC Hub "
                          "tracks. NVIDIA's hyperscaler customers (CoreWeave, Lambda, "
@@ -176,6 +179,7 @@ _TARGETS = [
         "name":        "TensorWave",
         "category":    "gpu_cloud",
         "contact_url": "https://tensorwave.com/contact",
+        "target_email": "partnerships@tensorwave.com",
         "intent_url":  "https://tensorwave.com/about",
         "value_pitch": ("TensorWave is the AMD MI300X-first cloud — differentiates on "
                          "supply availability + power efficiency. DC Hub tracks which "
@@ -191,6 +195,7 @@ _TARGETS = [
         "name":        "Core42 (UAE / G42)",
         "category":    "gpu_cloud",
         "contact_url": "https://www.core42.ai/contact-us",
+        "target_email": "info@core42.ai",
         "intent_url":  "https://www.core42.ai/about-us",
         "value_pitch": ("Core42 operates massive AI compute capacity across UAE + "
                          "expanding globally. DC Hub's recent international expansion "
