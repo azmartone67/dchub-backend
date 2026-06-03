@@ -205,7 +205,7 @@ def _draft_press_release(shift: dict) -> dict:
 
 <p>The shift reflects {angle}.</p>
 
-<p>DCPI scores 300+ data center markets on two axes — ExcessPower (higher = more buildable headroom) and Constraint (higher = more friction to new builds). Markets are recomputed every 4 hours from interconnection-queue, capacity-pipeline, and grid-emergency data across 10 U.S. ISOs plus 13 international grid operators (NGESO, EirGrid, ENTSO-E, AEMO, Nord Pool, TEPCO, KEPCO, EMA, IESO, HQ, BCH).</p>
+<p>DCPI scores 230+ data center markets on two axes — ExcessPower (higher = more buildable headroom) and Constraint (higher = more friction to new builds). Markets are recomputed every 4 hours from interconnection-queue, capacity-pipeline, and grid-emergency data across the major U.S. ISOs (PJM, ERCOT, CAISO, MISO, SPP, NYISO, ISO-NE) plus live international grids via ENTSO-E (Europe), NESO (Great Britain), AEMO (Australia), and Taipower (Taiwan).</p>
 
 <p><strong>Live page for this market:</strong> <a href="https://dchub.cloud/dcpi/{shift['slug']}">dchub.cloud/dcpi/{shift['slug']}</a></p>
 

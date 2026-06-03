@@ -116,7 +116,7 @@ def _detect_dominant_arc() -> dict:
     if not arc:
         arc = {
             "arc":    "DC Hub continues building the open data center intelligence platform",
-            "thesis": "Real-time DCPI for 300+ markets, 21k+ facilities, MCP-accessible to any AI agent.",
+            "thesis": "Real-time DCPI for 230+ markets, MCP-accessible to any AI agent.",
             "anchor_url": "https://dchub.cloud",
             "tags":   ["dchub", "platform"],
             "source": "fallback",

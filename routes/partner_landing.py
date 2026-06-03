@@ -98,7 +98,7 @@ _PARTNERS = {
                        "citation engine that fixes that."),
         "value_bullets": [
             "13,000+ global facilities, daily-refreshed — every facility cited with attribution",
-            "DCPI (Data Center Power Index) — 300+ markets, US + international",
+            "DCPI (Data Center Power Index) — 230+ markets, US + international",
             "2,000+ tracked M&A deals — every deal sourced and linked",
             "369 GW construction pipeline — verifiable, citable, free",
         ],
