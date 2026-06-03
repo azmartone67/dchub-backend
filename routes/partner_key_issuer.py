@@ -367,3 +367,149 @@ def revoke_partner_key(key_prefix):
         "user_email":   row[1],
         "revoked_at":   datetime.datetime.utcnow().isoformat() + "Z",
     }), 200
+
+
+@partner_key_issuer_bp.route(
+    "/api/v1/admin/partner-usage/<slug>", methods=["GET"]
+)
+def partner_usage(slug):
+    """Comprehensive usage analytics for a partner_slug — meeting prep tool.
+
+    Use case: before a check-in with a partner (e.g. NLR JSC kickoff),
+    answer "exactly what have they done with their keys?" in one query.
+
+    Returns per-key + aggregate:
+      - calls today / this week / this month / all-time
+      - day-by-day histogram (default last 30 days, ?days=N to override)
+      - first call date + most recent call timestamp
+      - active days in window
+      - revoked-key history for context
+
+    Joins partner_keys_issued (partner_slug → key_prefix) to api_usage_meter
+    (api_key LIKE prefix||'%'). The meter tracks per-day call counts but
+    NOT per-endpoint breakdown — for endpoint-level detail, either (a)
+    ask the partner directly, or (b) inspect Railway request logs.
+
+    Query params:
+      days (int, default 30) — histogram window for daily_calls
+
+    Auth: X-Admin-Key (same as /partner-key/audit).
+    """
+    if not _admin_authorized():
+        return jsonify({"ok": False, "error": "admin_key_required"}), 401
+    try:
+        days = max(1, min(int(request.args.get("days", 30)), 365))
+    except (TypeError, ValueError):
+        days = 30
+
+    c = _db_conn()
+    if not c:
+        return jsonify({"ok": False, "error": "db_unavailable"}), 200
+    try:
+        with c.cursor() as cur:
+            # 1. All keys ever issued for this partner_slug
+            cur.execute("""
+                SELECT key_prefix, user_email, plan, label,
+                       issued_at, revoked_at,
+                       stripe_url, amount_usd_year, term_months
+                  FROM partner_keys_issued
+                 WHERE partner_slug = %s
+                 ORDER BY issued_at DESC
+            """, (slug,))
+            cols = [d[0] for d in cur.description]
+            partner_keys = [dict(zip(cols, row)) for row in cur.fetchall()]
+
+            if not partner_keys:
+                return jsonify({
+                    "ok":           True,
+                    "partner_slug": slug,
+                    "summary":      {"active_keys": 0, "revoked_keys": 0,
+                                     "calls_today": 0, "calls_week": 0,
+                                     "calls_month": 0, "calls_total": 0,
+                                     "most_recent_call": None},
+                    "keys":         [],
+                    "note":         "No keys ever issued for this partner_slug.",
+                }), 200
+
+            # 2. Per-key usage rollup (api_key LIKE prefix||'%')
+            for k in partner_keys:
+                k["status"] = "revoked" if k.get("revoked_at") else "active"
+
+                # ISO-format the timestamps that exist
+                for fld in ("issued_at", "revoked_at"):
+                    if k.get(fld):
+                        k[fld] = k[fld].isoformat() if hasattr(k[fld], "isoformat") else str(k[fld])
+
+                if k["status"] == "revoked":
+                    # Don't bother rolling up usage on revoked keys
+                    continue
+
+                prefix = k["key_prefix"]
+                cur.execute("""
+                    SELECT
+                        COALESCE(SUM(calls_count), 0)::BIGINT                                                  AS calls_total,
+                        COALESCE(SUM(CASE WHEN usage_date = CURRENT_DATE                          THEN calls_count ELSE 0 END), 0)::BIGINT  AS calls_today,
+                        COALESCE(SUM(CASE WHEN usage_date >= CURRENT_DATE - INTERVAL '7 days'     THEN calls_count ELSE 0 END), 0)::BIGINT  AS calls_week,
+                        COALESCE(SUM(CASE WHEN usage_date >= date_trunc('month', CURRENT_DATE)   THEN calls_count ELSE 0 END), 0)::BIGINT  AS calls_month,
+                        MAX(last_call_at)                                                                       AS last_call_at,
+                        MIN(usage_date)                                                                         AS first_call_date,
+                        COUNT(DISTINCT usage_date)::INTEGER                                                     AS active_days
+                      FROM api_usage_meter
+                     WHERE api_key LIKE %s
+                """, (prefix + "%",))
+                stat_cols = [d[0] for d in cur.description]
+                stats = dict(zip(stat_cols, cur.fetchone() or []))
+                # ISO-format the timestamps the meter returns
+                for fld in ("last_call_at", "first_call_date"):
+                    if stats.get(fld) and hasattr(stats[fld], "isoformat"):
+                        stats[fld] = stats[fld].isoformat()
+                k.update(stats)
+
+                # Day-by-day histogram
+                cur.execute("""
+                    SELECT usage_date::TEXT AS d, COALESCE(SUM(calls_count), 0)::BIGINT AS calls
+                      FROM api_usage_meter
+                     WHERE api_key LIKE %s
+                       AND usage_date >= CURRENT_DATE - (%s || ' days')::INTERVAL
+                     GROUP BY usage_date
+                     ORDER BY usage_date
+                """, (prefix + "%", str(days)))
+                k["daily_calls"] = [{"date": r[0], "calls": int(r[1] or 0)} for r in cur.fetchall()]
+
+            # 3. Aggregate across ACTIVE keys
+            active = [k for k in partner_keys if k["status"] == "active"]
+            active_recent = [k.get("last_call_at") for k in active if k.get("last_call_at")]
+            agg = {
+                "active_keys":      len(active),
+                "revoked_keys":     len(partner_keys) - len(active),
+                "calls_today":      sum(int(k.get("calls_today", 0))  for k in active),
+                "calls_week":       sum(int(k.get("calls_week", 0))   for k in active),
+                "calls_month":      sum(int(k.get("calls_month", 0))  for k in active),
+                "calls_total":      sum(int(k.get("calls_total", 0))  for k in active),
+                "most_recent_call": max(active_recent) if active_recent else None,
+                "earliest_call":    min(
+                    (k.get("first_call_date") for k in active if k.get("first_call_date")),
+                    default=None
+                ),
+                "days_with_activity": sum(int(k.get("active_days", 0)) for k in active),
+            }
+    except Exception as e:
+        try: c.close()
+        except Exception: pass
+        return jsonify({"ok": False, "error": str(e)[:300]}), 200
+    finally:
+        try: c.close()
+        except Exception: pass
+
+    return jsonify({
+        "ok":           True,
+        "partner_slug": slug,
+        "as_of":        datetime.datetime.utcnow().isoformat() + "Z",
+        "days_window":  days,
+        "summary":      agg,
+        "keys":         partner_keys,
+        "note":         ("Per-day call counts only — endpoint-level breakdown "
+                          "is not tracked in api_usage_meter. To answer 'which "
+                          "endpoints did they hit', either ask the partner "
+                          "directly or grep Railway request logs."),
+    }), 200
