@@ -20342,6 +20342,9 @@ def _canonical_mcp_manifest():
         {"name": "get_agent_registry",       "description": "List of AI agents registered with DC Hub"},
         {"name": "get_backup_status",        "description": "Platform backup + freshness status"},
         {"name": "explain_dcpi",             "description": "DCPI methodology, weights, BibTeX"},
+        {"name": "site_selection_canvas",    "description": "Guided siting — capacity + geo + deadline -> ranked market shortlist + (paid) verdict/build-plan"},
+        {"name": "grid_transition_radar",    "description": "Forward radar — where the next hyperscale-friendly grid is emerging (BUILD + headroom + time-to-power) + (paid) thesis"},
+        {"name": "deal_autopsy",             "description": "Tracked M&A x DCPI grid-reality verdict — what's the real play; (paid) per-deal read"},
     ]
     return {
         "name":            "DC Hub Intelligence",
@@ -20365,7 +20368,7 @@ def _canonical_pricing():
     contract."""
     return {
         "free":       {"price_usd_month": 0,   "calls_per_day": 10,
-                          "results_per_query": 2, "tools_unlocked": "all 29 (preview)",
+                          "results_per_query": 2, "tools_unlocked": "all 33 (preview)",
                           "signup_url": "https://dchub.cloud/signup"},
         "identified": {"price_usd_month": 0,   "calls_per_day": 200,
                           "results_per_query": "full",
