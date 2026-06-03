@@ -968,6 +968,78 @@ def brain_opus_queue():
                        as_of=datetime.now(timezone.utc).isoformat()), 500
 
 
+@brain_v2_layer5_bp.get("/api/v1/brain/templated-recipes")
+def brain_templated_recipes():
+    """Item G-followup (2026-06-02): expose L5 proposals with a stable
+    recipe_key for the master-heal workflow to pick up.
+
+    Returns proposals filtered to either:
+      - status='approved' (human-blessed), OR
+      - approval_count >= 2 AND finding_class IN a safe whitelist
+        (the same whitelist used in layer4 to permit HTML-introducing
+        rewrites).
+
+    Groups by recipe_key. The newest row in each group is the one
+    surfaced (latest text + the running approval_count/cycles_seen).
+    """
+    # Same whitelist as routes/brain_v2_layer4.py:189 (single source
+    # of truth there; mirrored here so the response shape stays stable
+    # if layer4 is refactored).
+    _SAFE_FINDING_CLASSES = (
+        "brand_uniformity", "brand_uniform",
+        "class_addition", "brand-uniformity",
+    )
+    try:
+        import psycopg2
+        url = os.environ.get("NEON_DATABASE_URL") or os.environ.get("DATABASE_URL")
+        if not url:
+            return jsonify(ok=False, error="no_db_url",
+                           recipes=[], total=0,
+                           as_of=datetime.now(timezone.utc).isoformat()), 503
+        with psycopg2.connect(url, connect_timeout=5) as conn, conn.cursor() as cur:
+            # DISTINCT ON (recipe_key) keeps the newest row per group.
+            # WHERE clause = (status='approved') OR
+            #                (approval_count>=2 AND finding_class in WL).
+            cur.execute("""
+                SELECT DISTINCT ON (recipe_key)
+                       recipe_key, file_path, finding_class,
+                       search_text, replace_text,
+                       approval_count, cycles_seen, status, proposed_at
+                  FROM brain_proposed_code_fixes
+                 WHERE recipe_key IS NOT NULL
+                   AND (
+                        status = 'approved'
+                     OR (COALESCE(approval_count, 0) >= 2
+                         AND COALESCE(LOWER(finding_class), '')
+                             = ANY(%s))
+                   )
+                 ORDER BY recipe_key, proposed_at DESC
+                 LIMIT 500
+            """, (list(_SAFE_FINDING_CLASSES),))
+            rows = cur.fetchall() or []
+        recipes = [{
+            "recipe_key": r[0],
+            "page_url_template": r[1],
+            "finding_class": r[2],
+            "find_text": r[3],
+            "replace_text": r[4],
+            "approval_count": int(r[5] or 0),
+            "cycles_seen": int(r[6] or 0),
+            "status": r[7],
+        } for r in rows]
+        return jsonify(
+            ok=True,
+            as_of=datetime.now(timezone.utc).isoformat(),
+            whitelist=list(_SAFE_FINDING_CLASSES),
+            recipes=recipes,
+            total=len(recipes),
+        ), 200
+    except Exception as e:
+        return jsonify(ok=False, error=str(e)[:200],
+                       recipes=[], total=0,
+                       as_of=datetime.now(timezone.utc).isoformat()), 500
+
+
 @brain_v2_layer5_bp.get("/api/v1/brain/calibration")
 def brain_calibration():
     """Phase GG#2: public read of the per-source confidence calibration.
