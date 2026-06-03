@@ -26682,6 +26682,16 @@ try:
 except Exception as _e:
     print(f"[main] brain_evolution register failed: {_e}", file=sys.stderr)
 
+# Phase r70 (2026-06-03): Brain SELF-MODEL — the unified self-state the brain
+# reasons over (capabilities + current state + learning + a prompt_digest for
+# the LLM layers). Foundation of self-awareness; read-only, fail-soft.
+try:
+    from routes.brain_self_model import brain_self_model_bp
+    app.register_blueprint(brain_self_model_bp)
+    print("🧠 Brain Self-Model: ✅ Registered (/brain/self-model)")
+except Exception as _e:
+    print(f"[main] brain_self_model register failed: {_e}", file=sys.stderr)
+
 # Phase r33-F (2026-05-21): autopilot auto-action helpers. Provides
 # three endpoints that power the three upgraded auto-actions:
 #   POST /api/v1/admin/route-redirect/add      (404_spike action)
