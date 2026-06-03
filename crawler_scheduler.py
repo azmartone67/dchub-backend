@@ -52,6 +52,11 @@ SCHEDULE = [
     (12,  0, "infrastructure_sync", "_run_infrastructure_sync"),
     ( 3, 15, "kmz_discovery",       "_run_kmz_discovery"),
     ( 5,  5, "intl_infra_ingest",   "_run_intl_infra_ingest"),
+    # r-auto-outreach (2026-06-03): autopilot growth. Once-per-day cap
+    # via same-hour pairing to avoid double-sends. Built on the 24h
+    # per-target Resend guard in ai_lab_outreach._perform_resend_send.
+    (16, 16, "lost_conversion",     "_run_lost_conversion_outreach"),
+    (17, 17, "ai_lab_outreach",     "_run_ai_lab_auto_outreach"),
 ]
 
 # ---------------------------------------------------------------------------
@@ -825,6 +830,60 @@ def _run_intl_infra_ingest():
         logger.error("🌍 Intl infra ingest: ❌ error — %s", e, exc_info=True)
 
 
+def _run_ai_lab_auto_outreach():
+    """Fire /api/v1/admin/ai-lab-outreach/auto-send (loopback). The endpoint
+    sends the latest status='draft' row per target_slug if (a) target_email
+    is set AND (b) no draft for that slug was sent in the last 24h.
+    Polite default: limit=3 to avoid blasting all 9 in one tick.
+    No-ops cleanly if DCHUB_RESEND_API_KEY or DCHUB_ADMIN_KEY are missing."""
+    import requests as _rq
+    key = (os.environ.get("DCHUB_ADMIN_KEY")
+           or os.environ.get("DCHUB_ADMIN_API_KEY") or "")
+    if not key:
+        logger.warning("📧 ai_lab_outreach autopilot: skipped — DCHUB_ADMIN_KEY not set")
+        return
+    base = os.environ.get("DCHUB_INTERNAL_API", "http://127.0.0.1:8080")
+    try:
+        r = _rq.post(
+            f"{base}/api/v1/admin/ai-lab-outreach/auto-send?limit=3",
+            headers={"X-Admin-Key": key, "User-Agent": "dchub-cron-autoreach/1.0"},
+            timeout=60,
+        )
+        d = (r.json() if r.headers.get("content-type", "").startswith("application/json") else {}) or {}
+        logger.info("📧 ai_lab_outreach autopilot: sent=%s skipped=%s candidates=%s",
+                       d.get("sent"), d.get("skipped"), d.get("candidates"))
+    except Exception as e:
+        logger.error("📧 ai_lab_outreach autopilot: error — %s", e)
+
+
+def _run_lost_conversion_outreach():
+    """Fire /api/v1/admin/lost-conversion/send for the lost-conversion pool.
+    Now wired to Resend (was Office 365 SMTP that 503'd silently). Caps at
+    limit=10 to stay polite. Only sends to candidates with min_signals >= 2."""
+    import requests as _rq
+    key = (os.environ.get("DCHUB_ADMIN_KEY")
+           or os.environ.get("DCHUB_INTERNAL_KEY")
+           or os.environ.get("DCHUB_ADMIN_API_KEY") or "")
+    if not key:
+        logger.warning("📧 lost_conversion autopilot: skipped — DCHUB_ADMIN_KEY not set")
+        return
+    base = os.environ.get("DCHUB_INTERNAL_API", "http://127.0.0.1:8080")
+    try:
+        r = _rq.post(
+            f"{base}/api/v1/admin/lost-conversion/send"
+            f"?confirm=true&limit=10&min_signals=2&days=30",
+            headers={"X-Internal-Key": key,
+                       "X-Admin-Key": key,
+                       "User-Agent": "dchub-cron-autoreach/1.0"},
+            timeout=120,
+        )
+        d = (r.json() if r.headers.get("content-type", "").startswith("application/json") else {}) or {}
+        logger.info("📧 lost_conversion autopilot: attempted=%s sent=%s failed=%s",
+                       d.get("attempted"), d.get("sent"), d.get("failed"))
+    except Exception as e:
+        logger.error("📧 lost_conversion autopilot: error — %s", e)
+
+
 _RUNNERS = {
     "market_refresh":      _run_market_refresh,
     "news":                _run_news_crawler,
@@ -836,6 +895,8 @@ _RUNNERS = {
     "infrastructure_sync": _run_infrastructure_sync,
     "kmz_discovery":       _run_kmz_discovery,
     "intl_infra_ingest":   _run_intl_infra_ingest,
+    "ai_lab_outreach":     _run_ai_lab_auto_outreach,
+    "lost_conversion":     _run_lost_conversion_outreach,
 }
 
 
