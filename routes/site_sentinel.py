@@ -687,6 +687,153 @@ def unhealthy_findings() -> list[dict]:
 
 # ── HTTP endpoints ────────────────────────────────────────────────
 
+# ── Outcome verification (r47, 2026-06-03) ──────────────────────────────────
+# The Sentinel DETECTED unhealthy pages but never CLOSED the loop: a chronically
+# broken page (e.g. the /pricing 20s-hang) read as a fresh one-off finding every
+# scan, and a page that recovered left no resolution record. verify_outcomes()
+# re-probes every currently-open finding and classifies the outcome:
+#   • RESOLVED — re-probe healthy now: heal the row + log the recovery (+downtime)
+#                so there's a durable detection→resolution trail the brain can learn from.
+#   • STUCK    — still unhealthy AND down longer than `stuck_hours` (or never
+#                healthy): escalate distinctly so chronic outages stand apart from
+#                transient blips instead of re-firing as "new" every scan.
+#   • FRESH    — still unhealthy but only recently (< stuck_hours): give it time.
+_RESOLUTIONS_SCHEMA = """
+CREATE TABLE IF NOT EXISTS site_sentinel_resolutions (
+    id               BIGSERIAL PRIMARY KEY,
+    path             TEXT NOT NULL,
+    label            TEXT,
+    prior_reason     TEXT,
+    recovered_at     TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+    downtime_minutes INT
+);
+CREATE INDEX IF NOT EXISTS ix_ssr_recovered ON site_sentinel_resolutions(recovered_at DESC);
+"""
+
+
+def verify_outcomes(stuck_hours: float = 2.0) -> dict:
+    """Re-probe every currently-open Sentinel finding and classify each as
+    resolved / stuck / fresh. Closes the detection→resolution loop the Sentinel
+    never had — the missing piece behind the /pricing chronic-hang going
+    un-escalated. Read-mostly: only writes a heal-update + a resolution row
+    when a page has actually recovered."""
+    out: dict = {"checked": 0, "resolved": [], "stuck": [], "fresh": [],
+                 "ran_at": datetime.datetime.utcnow().isoformat() + "Z"}
+    c = _conn()
+    if c is None:
+        out["error"] = "no_database"; return out
+    by_path = {e["path"]: e for e in _MANIFEST}
+    now = datetime.datetime.now(datetime.timezone.utc)
+    try:
+        with c.cursor() as cur:
+            _ensure_schema(cur)
+            cur.execute(_RESOLUTIONS_SCHEMA)
+            cur.execute("""
+                SELECT path, category, label, reason, last_healthy_at
+                  FROM site_sentinel_results
+                 WHERE healthy = FALSE
+            """)
+            rows = cur.fetchall()
+            for path, category, label, reason, last_healthy_at in rows:
+                entry = by_path.get(path)
+                if not entry:
+                    continue  # manifest changed since this row was written
+                out["checked"] += 1
+                scan = _scan_one(entry)
+                if scan.get("healthy"):
+                    downtime_min = None
+                    if last_healthy_at is not None:
+                        try:
+                            downtime_min = int((now - last_healthy_at).total_seconds() // 60)
+                        except Exception:
+                            downtime_min = None
+                    cur.execute("""
+                        UPDATE site_sentinel_results
+                           SET healthy = TRUE, reason = 'ok',
+                               status_code = %s, elapsed_ms = %s,
+                               checked_at = NOW(), last_healthy_at = NOW()
+                         WHERE path = %s
+                    """, (scan.get("status_code"), scan.get("elapsed_ms"), path))
+                    cur.execute("""
+                        INSERT INTO site_sentinel_resolutions
+                          (path, label, prior_reason, downtime_minutes)
+                        VALUES (%s, %s, %s, %s)
+                    """, (path, label, reason, downtime_min))
+                    out["resolved"].append({
+                        "path": path, "label": label, "prior_reason": reason,
+                        "downtime_minutes": downtime_min,
+                    })
+                else:
+                    down_for_h = None
+                    if last_healthy_at is not None:
+                        try:
+                            down_for_h = round((now - last_healthy_at).total_seconds() / 3600.0, 1)
+                        except Exception:
+                            down_for_h = None
+                    is_stuck = (last_healthy_at is None) or \
+                               (down_for_h is not None and down_for_h >= stuck_hours)
+                    item = {"path": path, "label": label,
+                            "reason": scan.get("reason"), "category": category,
+                            "down_for_hours": down_for_h}
+                    (out["stuck"] if is_stuck else out["fresh"]).append(item)
+    except Exception as e:
+        out["error"] = f"{type(e).__name__}:{str(e)[:120]}"
+    finally:
+        try: c.close()
+        except Exception: pass
+    out["resolved_count"] = len(out["resolved"])
+    out["stuck_count"]    = len(out["stuck"])
+    out["fresh_count"]    = len(out["fresh"])
+    return out
+
+
+@site_sentinel_bp.route("/api/v1/sentinel/verify-outcomes", methods=["POST"])
+def sentinel_verify_outcomes():
+    """Admin-only: re-probe open findings, mark each resolved / stuck / fresh."""
+    provided = (request.headers.get("X-Admin-Key")
+                or request.args.get("admin_key") or "").strip()
+    if _ADMIN_KEY and provided != _ADMIN_KEY:
+        return jsonify(error="unauthorized", hint="X-Admin-Key required"), 401
+    try:
+        stuck_hours = float(request.args.get("stuck_hours", 2.0))
+    except Exception:
+        stuck_hours = 2.0
+    return jsonify(verify_outcomes(stuck_hours=stuck_hours)), 200
+
+
+@site_sentinel_bp.route("/api/v1/sentinel/resolutions", methods=["GET"])
+def sentinel_resolutions():
+    """Recent detection→resolution events — what recovered + how long it was down.
+    The closed-loop trail the Sentinel previously lacked."""
+    c = _conn()
+    if c is None:
+        return jsonify(resolutions=[], count=0, error="no_database"), 200
+    rows = []
+    try:
+        with c.cursor() as cur:
+            cur.execute(_RESOLUTIONS_SCHEMA)
+            cur.execute("""
+                SELECT path, label, prior_reason, recovered_at, downtime_minutes
+                  FROM site_sentinel_resolutions
+                 ORDER BY recovered_at DESC LIMIT 50
+            """)
+            for path, label, prior_reason, recovered_at, downtime_minutes in cur.fetchall():
+                rows.append({"path": path, "label": label,
+                             "prior_reason": prior_reason,
+                             "recovered_at": recovered_at.isoformat() if recovered_at else None,
+                             "downtime_minutes": downtime_minutes})
+    except Exception:
+        pass
+    finally:
+        try: c.close()
+        except Exception: pass
+    resp = jsonify(resolutions=rows, count=len(rows),
+                   generated_at=datetime.datetime.utcnow().isoformat() + "Z")
+    resp.headers["Cache-Control"] = "public, max-age=120"
+    resp.headers["Access-Control-Allow-Origin"] = "*"
+    return resp, 200
+
+
 @site_sentinel_bp.route("/api/v1/sentinel/scan", methods=["GET"])
 def sentinel_scan():
     """Return the last persisted scan. Public, cached 5min."""

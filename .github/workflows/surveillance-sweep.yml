@@ -22,6 +22,34 @@ jobs:
     runs-on: ubuntu-latest
     timeout-minutes: 5
     steps:
+      # r47 (2026-06-03): outcome verification BEFORE the fresh scan. Re-probes
+      # the still-open findings from the previous sweep and closes the loop —
+      # logs recoveries (with downtime) and escalates STUCK pages (down > 2h) so
+      # a chronic outage like the /pricing 20s-hang stands apart from a transient
+      # blip. MUST run before scan-now, which would heal recovered rows first and
+      # hide the recovery. Admin-keyed; silently no-ops if key missing.
+      - name: Verify sentinel outcomes (resolved / stuck / fresh)
+        env:
+          ADMIN_KEY: ${{ secrets.DCHUB_ADMIN_KEY }}
+        run: |
+          if [ -z "${ADMIN_KEY:-}" ]; then
+            echo "::notice::DCHUB_ADMIN_KEY not set — skipping outcome verify"
+            exit 0
+          fi
+          curl -sS --max-time 90 -X POST \
+            -H "X-Admin-Key: $ADMIN_KEY" \
+            "$BASE/api/v1/sentinel/verify-outcomes?stuck_hours=2" \
+            | python3 -c "
+          import json, sys
+          try:
+              d = json.load(sys.stdin)
+              print(f'::notice::verify-outcomes: resolved={d.get(\"resolved_count\",0)} stuck={d.get(\"stuck_count\",0)} fresh={d.get(\"fresh_count\",0)}')
+              for s in (d.get('stuck') or []):
+                  print(f'::warning::STUCK {s.get(\"path\")} down {s.get(\"down_for_hours\")}h: {s.get(\"reason\")}')
+          except Exception as e:
+              print(f'::warning::verify-outcomes parse failed: {e}')
+          " || true
+
       # 2026-05-24 r29c: trigger a fresh site_sentinel scan before
       # polling /sweep, so stale page-findings clear on the same 15-min
       # cadence as the sweep itself. Without this, /sweep keeps showing
