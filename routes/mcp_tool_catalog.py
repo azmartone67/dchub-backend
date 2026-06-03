@@ -87,7 +87,7 @@ TOOLS = [
      "Construction pipeline — 540+ projects totaling 369 GW under-construction or planned across 233 markets. Returns project name, operator, MW, status, expected commissioning date, market_slug, country.",
      'get_pipeline(market="northern-virginia", status="construction")'),
     ("list_transactions",     "intelligence",   "identified",
-     "M&A and capital transactions in the data center sector — $324B+ tracked over 2,100+ deals (2019-present). Returns deal name, buyer, seller, value, date, market, target operator, and deal type.",
+     "M&A and capital transactions in the data center sector — 2,000+ tracked deals (2019-present). Returns deal name, buyer, seller, value, date, market, target operator, and deal type.",
      'list_transactions(year=2026, min_value_usd=1000000000)'),
     ("hyperscaler_deals",     "intelligence",   "identified",
      "Hyperscaler AI Deal Tracker — live feed of Stargate, OpenAI, Anthropic, Microsoft, Oracle, CoreWeave, NVIDIA, sovereign-AI deals. Extracts $-figures + MW and classifies by actor. ~$1B+/week typical.",

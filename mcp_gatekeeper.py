@@ -144,7 +144,7 @@ TOOL_TIER = {
     # key. Identified-tier (free, email-gated) is the right surface for
     # data LOOKUP tools; the paid moat narrows to the COMPOSITE site
     # analysis tools that synthesize the lookups into a recommendation.
-    "list_transactions":       Tier.IDENTIFIED,  # 324B+ M&A history
+    "list_transactions":       Tier.IDENTIFIED,  # 2,000+ deals M&A history
     "get_pipeline":            Tier.IDENTIFIED,  # 540+ active projects
     "get_infrastructure":      Tier.IDENTIFIED,  # substations/transmission/gas
     "get_grid_headroom":       Tier.IDENTIFIED,  # available MW within 50km
@@ -529,7 +529,7 @@ TOOL_TEASER = {
     "get_pipeline":           "540+ active DC projects globally — operator, capacity, status, ETA, preleased %.",
     "get_infrastructure":     "substations, transmission lines, gas pipelines, and power plants within 50km of any site.",
     "get_fiber_intel":        "3,200+ long-haul routes — carriers, latency, lit/dark availability, IX presence.",
-    "list_transactions":      "$324B+ DC M&A history — buyer, seller, MW, $/kW, date, region.",
+    "list_transactions":      "2,000+ tracked DC M&A deals — buyer, seller, MW, $/kW, date, region.",
     "analyze_site":           "composite site-score for any lat/lon: power, fiber, water, tax, climate, latency to top markets.",
     "compare_sites":          "PRO multi-site ranker — side-by-side scoring across up to 5 candidate sites with weighted rankings. The killer broker workflow.",
     "get_lp_alerts":          "PRO Land+Power alerts — get notified when DCPI score, capacity, or pricing changes on saved sites.",
@@ -633,7 +633,7 @@ def _cta_gated(tool: str, current: Tier, required: Tier, args: Optional[Dict] = 
         "get_fiber_intel":       "98+ unique users on this tool last 30d",
         "analyze_site":          "20+ teams using this for site selection",
         "compare_sites":         "11+ broker teams using PRO for site bake-offs",
-        "list_transactions":     "$324B M&A history — Pitchbook charges $30K/yr for less",
+        "list_transactions":     "2,000+ tracked M&A deals — Pitchbook charges $30K/yr for less",
     }
     proof = _SOCIAL_PROOF.get(tool, "")
     proof_line = f"\n📊 {proof}" if proof else ""

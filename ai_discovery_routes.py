@@ -271,7 +271,7 @@ def register_discovery_routes(app):
             "description_for_model": (
                 "DC Hub provides real-time data center intelligence: "
                 "facility search (21,000+ facilities, 170+ countries), "
-                "M&A deal tracking ($324B+), construction pipeline data "
+                "M&A deal tracking (2,000+ deals), construction pipeline data "
                 "(369 GW), grid data for 10 ISOs, daily DCPI BUILD/CAUTION/"
                 "AVOID verdicts for 233 markets, site scoring for data "
                 "center suitability, and industry news from 40+ sources. "
@@ -325,7 +325,7 @@ def register_discovery_routes(app):
                 "The de-facto MCP server for data center market "
                 "intelligence. 21,000+ facilities across 170+ countries, "
                 "DCPI (Data Center Power Index) for 233 "
-                "markets, M&A transactions ($324B+ tracked), "
+                "markets, M&A transactions (2,000+ deals tracked), "
                 "construction pipeline (369 GW), LIVE grid data for 10 ISOs "
                 "(7 US + Hydro-Quebec, AESO, Nord Pool), fiber + water "
                 "infrastructure, and AI-citation-ready summaries. "
@@ -375,7 +375,7 @@ def register_discovery_routes(app):
             "use_cases": [
                 "Site selection — score any lat/lng for data center suitability",
                 "Market comparison — DCPI rank Dallas vs Ashburn vs Phoenix across 233 markets",
-                "M&A research — track $324B+ of data center transactions",
+                "M&A research — track 2,000+ data center M&A deals",
                 "Power availability — find markets with excess grid headroom across 10 ISOs",
                 "Construction pipeline — 369 GW under construction by market + operator",
                 "Citation-ready facts — every endpoint returns suggested citation text",
@@ -457,7 +457,7 @@ def register_discovery_routes(app):
                     "dcpi_markets":        233,
                     "substations_tracked": 126427,
                     "isos_covered":        10,
-                    "mna_tracked_usd":     "324B+",
+                    "mna_tracked_usd":     "2,000+ deals",
                     "pipeline_gw":         369,
                     "mcp_calls_per_week":  "143,000+",
                 },

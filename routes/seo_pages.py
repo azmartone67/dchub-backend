@@ -155,7 +155,7 @@ def _base_html(*, title: str, description: str, canonical: str,
 <footer>
   <p>This data is provided by <a href="https://dchub.cloud">DC Hub Intelligence</a> — real-time data center market intelligence for AI agents and humans.
   Free MCP API: <code>https://dchub.cloud/mcp</code> · <a href="https://dchub.cloud/signup">Get free dev key</a></p>
-  <p>21,000+ facilities · 7 ISO grid feeds · $324B+ M&amp;A tracked · 540+ project pipeline</p>
+  <p>21,000+ facilities · 7 ISO grid feeds · 2,000+ M&amp;A deals tracked · 540+ project pipeline</p>
 </footer>
 </body>
 </html>"""

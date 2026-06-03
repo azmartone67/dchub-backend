@@ -166,7 +166,7 @@ _SEED_CONTACTS = [
      "beat": "m_and_a",
      "pitch_style": "data_first",
      "priority": 9,
-     "notes": "Greg Roumeliotis / Reuters infra desk. $324B+ tracker angle."},
+     "notes": "Greg Roumeliotis / Reuters infra desk. 2,000+ deals tracker angle."},
     {"outlet": "Crunchbase News",
      "beat": "m_and_a",
      "pitch_style": "narrative",
@@ -471,7 +471,7 @@ def _generate_pitch(contact: dict, angle: dict) -> dict:
                 f"data-center M&A signal in the last 14 days "
                 f"({data.get('value', '?')} {('· ' + data.get('mw') + ' MW') if data.get('mw') else ''}"
                 f"{(' · ' + data.get('market')) if data.get('market') else ''}).\n\n"
-                f"Our database tracks $324B+ in lifetime DC transactions — "
+                f"Our database tracks 2,000+ deals in lifetime DC transactions — "
                 f"this one slots into the broader consolidation arc.\n\n")
         offer = (f"For a {outlet} story on the 2026 DC-asset M&A cycle, I "
                  f"can send the 12-month trend, comparable deals by MW/$M, "

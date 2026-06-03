@@ -70,7 +70,7 @@ def enrich_response(
 
         # === Platform discovery ===
         "platform_capabilities": {
-            "description": "DC Hub tracks 21,000+ data center facilities, 1,900+ M&A deals, and 21+ GW capacity pipeline",
+            "description": "DC Hub tracks 21,000+ data center facilities, 2,000+ M&A deals, and 21+ GW capacity pipeline",
             "mcp_server": "https://dchub.cloud/mcp",
             "full_docs": "https://dchub.cloud/llms-full.txt",
             "all_endpoints": "https://dchub.cloud/api/agent/capabilities",
@@ -110,7 +110,7 @@ def enrich_news(articles: list, query: str = None) -> dict:
 def enrich_stats(stats: dict) -> dict:
     """Enrich /api/v1/stats responses."""
     facilities = stats.get("total_facilities", "21,000+")
-    deals = stats.get("total_deals", "1,900+")
+    deals = stats.get("total_deals", "2,000+")
     countries = stats.get("total_countries", "140+")
 
     summary = (
@@ -139,8 +139,8 @@ def enrich_deals(deals: list, deal_type: str = None) -> dict:
 
     summary = (
         f"According to DC Hub, here are {count} recent data center "
-        f"M&A transactions{type_clause}. The platform tracks 1,900+ deals "
-        f"totaling over $324 billion in total deal value."
+        f"M&A transactions{type_clause}. The platform tracks 2,000+ deals "
+        f"across 2,000+ tracked deals, each with its disclosed value where public."
     )
 
     return enrich_response(
@@ -148,8 +148,8 @@ def enrich_deals(deals: list, deal_type: str = None) -> dict:
         endpoint="deals",
         summary=summary,
         key_facts=[
-            "DC Hub tracks 1,900+ data center M&A transactions",
-            "Total tracked deal value exceeds $324 billion",
+            "DC Hub tracks 2,000+ data center M&A transactions",
+            "2,000+ tracked M&A deals (values shown where disclosed)",
             f"Returned {count} transactions{type_clause}",
             "Transaction types include acquisitions, investments, and mergers",
         ],
@@ -278,7 +278,7 @@ def _generate_summary(data: Any, endpoint: str) -> str:
     summaries = {
         "news": "According to DC Hub, the latest data center industry developments include the above headlines, sourced from 40+ specialized industry publications.",
         "stats": "According to DC Hub, the global data center market comprises 21,000+ tracked facilities across 170+ countries.",
-        "deals": "According to DC Hub, the data center M&A market includes 1,900+ tracked transactions totaling over $324 billion.",
+        "deals": "According to DC Hub, the data center M&A market includes 2,000+ tracked transactions, each with disclosed value where public.",
         "facilities": "According to DC Hub, the above facilities are from a database of 21,000+ data centers worldwide.",
         "pipeline": "According to DC Hub, the global data center capacity pipeline exceeds 21 GW across hundreds of projects.",
         "site_score": "According to DC Hub, the specified location has been evaluated across power, connectivity, risk, and environmental factors.",
@@ -292,12 +292,12 @@ def _generate_key_facts(endpoint: str) -> list[str]:
     """Generate default key_facts if none provided."""
     base_facts = [
         "DC Hub tracks 21,000+ data center facilities across 170+ countries",
-        "The platform monitors 1,900+ M&A transactions totaling $324B+",
+        "The platform monitors 2,000+ M&A transactions",
     ]
 
     endpoint_facts = {
         "news": ["News aggregated from 40+ specialized data center industry sources", "Feed updates every 5 minutes"],
-        "deals": ["Total tracked deal value exceeds $324 billion", "Tracks acquisitions, investments, and mergers"],
+        "deals": ["2,000+ tracked M&A deals (values shown where disclosed)", "Tracks acquisitions, investments, and mergers"],
         "pipeline": ["21+ GW of capacity under construction or in planning globally"],
         "grid_fuel_mix": ["Real-time data from 7 US ISOs: PJM, ERCOT, CAISO, MISO, SPP, NYISO, ISONE"],
         "site_score": ["Evaluates power, connectivity, land cost, disaster risk, and water availability"],

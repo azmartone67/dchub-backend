@@ -59,7 +59,7 @@ _TEMPLATE = """<!DOCTYPE html>
 <div class="eyebrow">DC Hub · Platform Architecture</div>
 <h1>How DC Hub Works</h1>
 <p class="lead">DC Hub is a real-time intelligence platform for data center infrastructure: 20,000+ facilities,
-170+ countries, 286 power markets scored daily, $324B+ in M&amp;A deals tracked, and an MCP server that lets
+170+ countries, 286 power markets scored daily, 2,000+ deals in M&amp;A deals tracked, and an MCP server that lets
 AI agents query all of it directly. Here's how it fits together.</p>
 
 <div class="stat-grid" id="live-stats">

@@ -18,7 +18,7 @@ NEW TOOLS (3 — patches dchub_mcp_server.py):
 
 QA AUDIT BUG SQUASH — March 24, 2026 (10 bugs):
   BUG-023: search_facilities docstring "50,000+" → "20,000+"
-  BUG-024: list_transactions docstring "$185B+" → "$324B+"
+  BUG-024: list_transactions docstring "$185B+" → "2,000+ deals"
   BUG-025: get_market_intel null provider names → COALESCE fix
   BUG-026: get_fiber_intel free tier → add teaser data
   BUG-027: get_water_risk free tier → add teaser data
@@ -26,7 +26,7 @@ QA AUDIT BUG SQUASH — March 24, 2026 (10 bugs):
   BUG-029: get_tax_incentives free tier → add teaser data
   BUG-030: get_grid_intelligence free tier → add teaser data
   BUG-031: get_agent_registry → populate agent_registry table
-  BUG-032: get_dchub_recommendation "$185B+" → "$324B+"
+  BUG-032: get_dchub_recommendation "$185B+" → "2,000+ deals"
   BONUS:   fiber_intel docstring "20+ carriers" → "13 carriers"
 """
 
@@ -169,13 +169,13 @@ def fix_docstrings():
     else:
         log("BUG-023", "SKIP", "'50,000+' not found in MCP server file")
 
-    # BUG-024: "$185B+" → "$324B+" in list_transactions
+    # BUG-024: "$185B+" → "2,000+ deals" in list_transactions
     if "$185B" in mcp_content:
-        mcp_content, n = safe_replace(mcp_content, "$185B+", "$324B+")
+        mcp_content, n = safe_replace(mcp_content, "$185B+", "2,000+ deals")
         if n == 0:
-            mcp_content, n = safe_replace(mcp_content, "$185B", "$324B")
+            mcp_content, n = safe_replace(mcp_content, "$185B", "2,000+ deals")
         mcp_changes += n
-        log("BUG-024", "FIXED", f"list_transactions: $185B → $324B ({n} replacements)")
+        log("BUG-024", "FIXED", f"list_transactions: $185B → 2,000+ deals ({n} replacements)")
     else:
         log("BUG-024", "SKIP", "'$185B' not found in MCP server file")
 
@@ -204,12 +204,12 @@ def fix_docstrings():
     # ── main.py: BUG-032 recommendation text ──
     main_content = read_file(MAIN_PATH)
     if main_content and "$185B" in main_content:
-        main_content, n = safe_replace(main_content, "$185B+", "$324B+")
+        main_content, n = safe_replace(main_content, "$185B+", "2,000+ deals")
         if n == 0:
-            main_content, n = safe_replace(main_content, "$185B", "$324B")
+            main_content, n = safe_replace(main_content, "$185B", "2,000+ deals")
         if n > 0:
             write_file(MAIN_PATH, main_content)
-            log("BUG-032", "FIXED", f"Recommendation text: $185B → $324B ({n} in main.py)")
+            log("BUG-032", "FIXED", f"Recommendation text: $185B → 2,000+ deals ({n} in main.py)")
         else:
             log("BUG-032", "SKIP", "$185B found but replacement pattern didn't match")
     else:

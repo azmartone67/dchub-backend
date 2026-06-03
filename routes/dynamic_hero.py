@@ -69,7 +69,7 @@ _SEED_MESSAGES = [
     ),
     (
         "Off-market pocket listings.<br>[GRAD]Live deal flow.[/GRAD]",
-        "Sub-MW capacity, brownfield campuses, $324B+ in tracked transactions, M&A pipeline tagged by market tier and DCPI score. The deal book operators don't post publicly.",
+        "Sub-MW capacity, brownfield campuses, 2,000+ tracked transactions, M&A pipeline tagged by market tier and DCPI score. The deal book operators don't post publicly.",
         "deal-flow",
     ),
     (

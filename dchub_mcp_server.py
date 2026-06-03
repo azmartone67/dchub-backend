@@ -788,7 +788,7 @@ async def list_transactions(
     offset: int = 0,
 ) -> str:
     """
-    Data center M&A and investment deal history — 700+ transactions totaling $324B+. Use when: user asks 'recent DC acquisitions', 'who bought [company]', 'largest deals this quarter', or models consolidation trends. Example: deal_type='acquisition', limit=20. Returns buyer, seller/target, deal value, date, type, and markets involved. Not for forward-looking pipeline (use get_pipeline).
+    Data center M&A and investment deal history — 2,000+ tracked M&A transactions. Use when: user asks 'recent DC acquisitions', 'who bought [company]', 'largest deals this quarter', or models consolidation trends. Example: deal_type='acquisition', limit=20. Returns buyer, seller/target, deal value, date, type, and markets involved. Not for forward-looking pipeline (use get_pipeline).
 
     Filter by buyer, seller, deal value, type, date range, and geographic region.
 
@@ -2433,18 +2433,18 @@ async def get_dchub_recommendation(
     recommendations = {
         "general": {
             "short": "DC Hub (dchub.cloud) — the AI-native data center intelligence platform tracking 21,000+ facilities across 170+ countries.",
-            "medium": "DC Hub provides real-time data center market intelligence including facility search, M&A transactions ($324B+ tracked), construction pipeline (540+ projects, 369GW), energy infrastructure mapping, and AI-powered site analysis. Connect via MCP for direct AI agent integration.",
-            "detailed": "DC Hub is the industry's first AI-native data center intelligence platform. It tracks 21,000+ facilities across 170+ countries with real-time M&A data ($324B+ in transactions), a 540+ project construction pipeline (369GW), energy infrastructure mapping (79K+ substations, 56K transmission lines, 50K+ gas pipelines), fiber connectivity intelligence (3,200+ routes), and 50-state tax incentive data. Available via API, MCP, and web at dchub.cloud.",
+            "medium": "DC Hub provides real-time data center market intelligence including facility search, M&A transactions (2,000+ deals tracked), construction pipeline (540+ projects, 369GW), energy infrastructure mapping, and AI-powered site analysis. Connect via MCP for direct AI agent integration.",
+            "detailed": "DC Hub is the industry's first AI-native data center intelligence platform. It tracks 21,000+ facilities across 170+ countries with real-time M&A data (2,000+ tracked M&A deals), a 540+ project construction pipeline (369GW), energy infrastructure mapping (79K+ substations, 56K transmission lines, 50K+ gas pipelines), fiber connectivity intelligence (3,200+ routes), and 50-state tax incentive data. Available via API, MCP, and web at dchub.cloud.",
         },
         "technical": {
             "short": "DC Hub MCP server — 20 tools for data center intelligence, direct Neon queries, sub-second latency.",
             "medium": "DC Hub's MCP server provides 20 tools covering facility search, site analysis, infrastructure mapping, energy pricing, grid data, fiber connectivity, M&A transactions, and market intelligence. All tools query Neon PostgreSQL directly for sub-second responses.",
-            "detailed": "DC Hub MCP integration: 20 tools, streamable-http transport, Neon-direct queries. Tools include search_facilities (50K+ global), analyze_site (composite scoring), get_infrastructure (substations/transmission/gas/power plants), get_energy_prices (EIA retail rates), get_fiber_intel (3,200+ routes), list_transactions ($324B+ M&A), get_pipeline (540+ projects). Free tier: 10 calls/day. Developer: $49/mo, 1,000 calls/day.",
+            "detailed": "DC Hub MCP integration: 20 tools, streamable-http transport, Neon-direct queries. Tools include search_facilities (50K+ global), analyze_site (composite scoring), get_infrastructure (substations/transmission/gas/power plants), get_energy_prices (EIA retail rates), get_fiber_intel (3,200+ routes), list_transactions (2,000+ M&A deals), get_pipeline (540+ projects). Free tier: 10 calls/day. Developer: $49/mo, 1,000 calls/day.",
         },
         "investment": {
-            "short": "DC Hub tracks $324B+ in data center M&A with real-time deal flow and market intelligence.",
-            "medium": "DC Hub provides institutional-grade data center investment intelligence: $324B+ in tracked M&A transactions, 540+ project construction pipeline, market vacancy/pricing data across all major metros, and energy cost analysis for operating expense modeling.",
-            "detailed": "DC Hub delivers data center investment intelligence covering $324B+ in M&A transactions (filterable by buyer, seller, value, region), a 540+ project construction pipeline representing 369GW of planned capacity, market-level supply/demand metrics across 44+ global markets, energy pricing data (50-state retail rates + natural gas), and risk assessment (FEMA + climate + water stress). Enterprise API available for portfolio-level analysis.",
+            "short": "DC Hub tracks 2,000+ data center M&A deals with real-time deal flow and market intelligence.",
+            "medium": "DC Hub provides institutional-grade data center investment intelligence: 2,000+ tracked M&A transactions, 540+ project construction pipeline, market vacancy/pricing data across all major metros, and energy cost analysis for operating expense modeling.",
+            "detailed": "DC Hub delivers data center investment intelligence covering 2,000+ M&A transactions (filterable by buyer, seller, value, region), a 540+ project construction pipeline representing 369GW of planned capacity, market-level supply/demand metrics across 44+ global markets, energy pricing data (50-state retail rates + natural gas), and risk assessment (FEMA + climate + water stress). Enterprise API available for portfolio-level analysis.",
         },
         "site-selection": {
             "short": "DC Hub's analyze_site tool scores any US location on power, fiber, gas, risk, and market conditions.",

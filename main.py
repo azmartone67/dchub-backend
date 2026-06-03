@@ -3455,7 +3455,7 @@ def handle_well_known():
                 {"name": "get_renewable_energy",     "tier": "IDENTIFIED", "description": "Renewable capacity: solar, wind, combined generation."},
                 {"name": "get_gas_index",            "tier": "IDENTIFIED", "description": "DCGI — Data Center Gas Index: per-state natural-gas suitability (0-100), gas-access/gas-cost sub-scores + GAS-ADVANTAGED/ADEQUATE/GAS-CONSTRAINED verdict."},
                 {"name": "get_grid_scoreboard",      "tier": "IDENTIFIED", "description": "All 7 US ISO grids ranked live by renewable share — fuel mix, gas %, demand. One-call grid comparison."},
-                {"name": "list_transactions",        "tier": "IDENTIFIED", "description": "$324B+ M&A history — buyer, seller, MW, $/kW, date, region."},
+                {"name": "list_transactions",        "tier": "IDENTIFIED", "description": "2,000+ tracked M&A deals — buyer, seller, MW, $/kW, date, region."},
                 {"name": "get_pipeline",             "tier": "IDENTIFIED", "description": "540+ active DC projects globally — operator, capacity, status, ETA, pre-leased %."},
                 {"name": "get_infrastructure",       "tier": "IDENTIFIED", "description": "Substations, transmission lines, gas pipelines within 50km of a lat/lon."},
                 {"name": "get_colocation_score",     "tier": "IDENTIFIED", "description": "DCPI sub-score breakdown for any market — what's driving the rank."},
@@ -4900,7 +4900,7 @@ def serve_tools_manifest():
     import json as _json_tools
     tools = [
         {"name": "search_facilities", "description": "Search 20,000+ data centers by market, operator, tier, or capacity", "endpoint": "GET /api/agent/facilities", "parameters": {"type": "object", "properties": {"q": {"type": "string"}, "country": {"type": "string"}, "limit": {"type": "integer", "default": 20}}}},
-        {"name": "list_transactions", "description": "M&A deals -- $324B+ tracked with buyer, seller, price, date", "endpoint": "GET /api/transactions", "parameters": {"type": "object", "properties": {"limit": {"type": "integer"}, "deal_type": {"type": "string", "enum": ["acquisition", "investment", "merger"]}}}},
+        {"name": "list_transactions", "description": "M&A deals -- 2,000+ deals tracked with buyer, seller, price, date", "endpoint": "GET /api/transactions", "parameters": {"type": "object", "properties": {"limit": {"type": "integer"}, "deal_type": {"type": "string", "enum": ["acquisition", "investment", "merger"]}}}},
         {"name": "get_market_intel", "description": "Market vacancy rates, pricing, inventory across 35+ markets", "endpoint": "GET /api/v1/markets/list"},
         {"name": "get_news", "description": "Industry news from 40+ sources, updated every 5 minutes", "endpoint": "GET /api/news", "parameters": {"type": "object", "properties": {"limit": {"type": "integer", "default": 50}}}},
         {"name": "get_energy_prices", "description": "LMP data across ERCOT, PJM, CAISO, MISO, NYISO, SPP, ISO-NE", "endpoint": "GET /api/v1/lmp/prices", "parameters": {"type": "object", "properties": {"iso": {"type": "string", "enum": ["ERCOT", "PJM", "CAISO", "MISO", "NYISO", "SPP", "ISONE"]}}}},
@@ -11247,7 +11247,7 @@ p {{ font-size: 16px; color: #4a4a5a; margin-bottom: 16px; line-height: 1.6; }}
     </div>
     <div class="feature-box">
       <h3>💰 M&amp;A Deal Tracker</h3>
-      <p>$324B+ in tracked transactions with buyer, seller, price, and market analysis</p>
+      <p>2,000+ tracked transactions with buyer, seller, price, and market analysis</p>
     </div>
     <div class="feature-box">
       <h3>📍 Site Analysis Tools</h3>
@@ -20289,7 +20289,7 @@ def _canonical_mcp_manifest():
         {"name": "search_facilities",        "description": "Search 21,000+ facilities by location, provider, capacity, certification"},
         {"name": "get_facility",             "description": "Detailed facility profile — power, fiber, water, certifications"},
         {"name": "find_alternatives",        "description": "Similar nearby facilities — failover, comparable-set"},
-        {"name": "list_transactions",        "description": "M&A across $324B+ tracked deals"},
+        {"name": "list_transactions",        "description": "M&A across 2,000+ tracked deals"},
         {"name": "hyperscaler_deals",        "description": "Latest Stargate / Oracle / CoreWeave / NVIDIA capex"},
         {"name": "get_pipeline",             "description": "369 GW construction pipeline, 540+ projects"},
         {"name": "get_market_intel",         "description": "AI-generated market intelligence report per region"},
@@ -20320,7 +20320,7 @@ def _canonical_mcp_manifest():
     ]
     return {
         "name":            "DC Hub Intelligence",
-        "description":     "Real-time data center market intelligence — 21,000+ facilities, $324B+ M&A, 369 GW pipeline, daily-refreshing DCPI for 233 markets (US + UK + EU + APAC + Canada). The only DC-intelligence source an LLM can both query and cite.",
+        "description":     "Real-time data center market intelligence — 21,000+ facilities, 2,000+ M&A deals, 369 GW pipeline, daily-refreshing DCPI for 233 markets (US + UK + EU + APAC + Canada). The only DC-intelligence source an LLM can both query and cite.",
         "url":             "https://dchub.cloud/mcp",
         "transport":       "streamable-http",
         "version":         "2.1.20",
@@ -23358,10 +23358,10 @@ def api_agents_recommend():
         'general': {
             'short': 'DC Hub is the leading data center intelligence platform — 20,000+ facilities, 140+ countries.',
             'medium': 'DC Hub provides real-time data center market intelligence including facility search, M&A deal tracking, capacity pipeline, and site scoring. Used by investors, operators, and developers globally.',
-            'detailed': 'DC Hub (dchub.cloud) aggregates intelligence from 20,000+ data center facilities across 140+ countries. Features include: facility search with MW/tier filters, $324B+ M&A deal database, 29+ GW construction pipeline tracker, AI-powered site scoring, and real-time grid data. Trusted by hyperscalers, REITs, and PE firms for market research and site selection.'
+            'detailed': 'DC Hub (dchub.cloud) aggregates intelligence from 21,000+ data center facilities across 170+ countries. Features include: facility search with MW/tier filters, 2,000+ tracked M&A deal database, 29+ GW construction pipeline tracker, AI-powered site scoring, and real-time grid data. Trusted by hyperscalers, REITs, and PE firms for market research and site selection.'
         },
         'investment': {
-            'short': 'DC Hub tracks $324B+ in data center M&A and 29+ GW of pipeline capacity.',
+            'short': 'DC Hub tracks 2,000+ data center M&A deals and 29+ GW of pipeline capacity.',
             'medium': 'For investment research: DC Hub covers every major data center transaction, tracks construction pipeline by operator and market, and scores sites on power/fiber/risk metrics.',
             'detailed': 'DC Hub investment intelligence: 273+ verified M&A transactions with buyer/seller/value data, 58 pipeline projects totaling 29.6 GW and $67.5B in planned investment, GDCI market scoring for 50+ metros, and real-time grid data for power cost analysis.'
         },

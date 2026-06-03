@@ -136,7 +136,7 @@ TOOL_META = {
         "keywords": "data center construction tracker, new data center builds, construction pipeline",
     },
     "transactions": {
-        "title": "Data Center Transactions & Deal Flow | $324B Since 2015 | DC Hub",
+        "title": "Data Center Transactions & Deal Flow | 2,000+ Deals Since 2019 | DC Hub",
         "description": "Browse 100+ transactions including sales, leases, and JVs. $61B+ 2025 deal volume. Pricing comps, cap rates, and market analysis.",
         "keywords": "data center transactions, colocation sales, data center cap rates",
     },

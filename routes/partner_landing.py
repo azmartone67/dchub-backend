@@ -99,7 +99,7 @@ _PARTNERS = {
         "value_bullets": [
             "13,000+ global facilities, daily-refreshed — every facility cited with attribution",
             "DCPI (Data Center Power Index) — 300+ markets, US + international",
-            "$324B in tracked M&A deals — every deal sourced and linked",
+            "2,000+ tracked M&A deals — every deal sourced and linked",
             "369 GW construction pipeline — verifiable, citable, free",
         ],
         "integration_path": "mcp_server",
@@ -146,7 +146,7 @@ _PARTNERS = {
                        "fills the not-Google universe."),
         "value_bullets": [
             "13k+ non-Google facilities tracked daily across 140+ countries",
-            "$324B M&A — every hyperscaler acquisition, every PE roll-up",
+            "2,000+ tracked M&A deals — every hyperscaler acquisition, every PE roll-up",
             "DCPI verdicts at every CSP region (AWS, Azure, OCI, CoreWeave, Lambda)",
             "MCP tool ready for Vertex AI + Gemini function-calling integration",
         ],

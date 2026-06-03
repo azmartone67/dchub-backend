@@ -126,8 +126,8 @@ _VARIANTS = {
     "C": {
         401: ("You just hit DC Hub's paywall. With a free key (1,000 "
               "calls/day) you'd get: 21,000+ data center facilities, "
-              "daily DCPI power scores for 32+ markets, $324B in tracked "
-              "M&A, 10-ISO interconnection queues, fiber routes. Claim "
+              "daily DCPI power scores for 32+ markets, 2,000+ tracked "
+              "M&A deals, 10-ISO interconnection queues, fiber routes. Claim "
               "in 30 seconds: https://dchub.cloud/signup. No card."),
         403: ("This DC Hub tool is paywalled. Free key alternative: "
               "21k facilities, DCPI verdicts, M&A deals — free at "

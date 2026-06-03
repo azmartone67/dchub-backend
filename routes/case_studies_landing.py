@@ -148,7 +148,7 @@ back every claim.</p>
   <div class="stat"><div class="stat-num">21,000+</div><div class="stat-label">Facilities</div></div>
   <div class="stat"><div class="stat-num">170+</div><div class="stat-label">Countries</div></div>
   <div class="stat"><div class="stat-num">96+</div><div class="stat-label">AI platforms</div></div>
-  <div class="stat"><div class="stat-num">$324B+</div><div class="stat-label">M&amp;A tracked</div></div>
+  <div class="stat"><div class="stat-num">2,000+ deals</div><div class="stat-label">M&amp;A tracked</div></div>
   <div class="stat"><div class="stat-num">369 GW</div><div class="stat-label">Pipeline</div></div>
 </div>
 

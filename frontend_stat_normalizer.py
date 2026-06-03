@@ -13,7 +13,7 @@ Usage:
     python3 frontend_stat_normalizer.py /path/to/cloudflare-pages-root --dry-run
 
 What it fixes:
-    1. Deals tracked: $51B / $70B / $324B → $324B+ (canonical)
+    1. Deals tracked: legacy $51B / $70B / $324B $-stats → 2,000+ deals (verified count, canonical)
     2. MCP tools count: 11 / 15 → 20 (actual count from /connect)
     3. Facilities: 21,000+ → 20,000+ (consistent with hero)
     4. Pipeline GW: 21+ GW → 369 GW (matches homepage + nav)
@@ -33,15 +33,15 @@ import glob
 # CANONICAL VALUES — Single source of truth
 # ═══════════════════════════════════════════════════════════════
 CANONICAL = {
-    'facilities': '20,000+',
-    'facilities_number': '20000',
-    'countries': '140+',
-    'deals_tracked': '$324B+',
+    'facilities': '21,000+',
+    'facilities_number': '21000',
+    'countries': '170+',
+    'deals_tracked': '2,000+ deals',
     'pipeline_projects': '540+',
     'pipeline_gw': '369 GW',
-    'mcp_tools': '20',
-    'markets': '44',
-    'substations': '79,755',
+    'mcp_tools': '31',
+    'markets': '232',
+    'substations': '126,427',
     'news_sources': '40+',
     'news_articles': '13,900+',
 }
@@ -54,9 +54,9 @@ CANONICAL = {
 
 REPLACEMENTS = [
     # --- Deals tracked ---
-    (r'\$51B\+', '$324B+', 'deals: $51B+ → $324B+'),
-    (r'\$70B\+', '$324B+', 'deals: $70B+ → $324B+'),
-    (r'\$70B\+ volume', '$324B+ volume', 'deals nav: $70B+ → $324B+'),
+    (r'\$51B\+', '2,000+ deals', 'deals: legacy $ stat → verified count'),
+    (r'\$70B\+', '2,000+ deals', 'deals: legacy $ stat → verified count'),
+    (r'\$70B\+ volume', '2,000+ tracked deals', 'deals nav: legacy $ stat → verified count'),
 
     # --- MCP tool count ---
     (r'\b11 MCP [Tt]ools\b', '20 MCP Tools', 'tools: 11 → 20'),
@@ -89,9 +89,9 @@ REPLACEMENTS = [
 # Additional whole-line replacements for specific pages
 PAGE_SPECIFIC_FIXES = {
     'developers.html': [
-        # Fix the stat mismatch: $51B+ → $324B+
-        (r'\$51B\+Deals Tracked', '$324B+Deals Tracked', 'developers hero stat'),
-        (r'\$51B\+', '$324B+', 'developers: all $51B references'),
+        # Normalize legacy deal $ stat → verified deal COUNT
+        (r'\$51B\+Deals Tracked', '2,000+Deals Tracked', 'developers hero stat'),
+        (r'\$51B\+', '2,000+ deals', 'developers: all $51B references'),
     ],
     'connect.html': [
         # Fix tool count in header

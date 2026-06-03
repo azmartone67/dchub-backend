@@ -217,7 +217,7 @@ def _tool_value_blurb(tool: str) -> str:
         "compare_sites": "side-by-side scoring across up to 5 candidate sites",
         "get_tax_incentives": "50-state sales-tax abatements + property exemptions",
         "get_pipeline": "540+ active DC projects — operator, capacity, status, ETA",
-        "list_transactions": "$324B+ M&A history — buyer, seller, MW, $/kW, date",
+        "list_transactions": "2,000+ tracked M&A deals — buyer, seller, MW, $/kW, date",
         "get_intelligence_index": "DCPI index for 280+ markets — rank, weekly delta, top movers",
     }
     return BLURBS.get(tool, f"`{tool}` premium intelligence")

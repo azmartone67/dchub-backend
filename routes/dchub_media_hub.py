@@ -1889,7 +1889,7 @@ def outreach_agent_card():
             "facilities":    "20,000+ in 140+ countries",
             "us_markets":    "280+ tracked daily via DCPI",
             "isos":          ["PJM", "MISO", "ERCOT", "CAISO", "NYISO", "ISONE", "SPP"],
-            "deals":         "$324B+ in tracked M&A transactions",
+            "deals":         "2,000+ tracked M&A transactions",
             "pipeline":      "540+ active construction projects, 369 GW",
             "updated":       "Continuously (every 5-15 min on dynamic sources)",
         },

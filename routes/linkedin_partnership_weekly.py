@@ -59,7 +59,7 @@ _TRACKS = [
 
 Our model is simple: Switzerland — neutral, CC-BY-4.0, no channel conflict. We don't broker; we don't replace anyone's offering. We're the live data layer underneath whatever you're already building.
 
-What we bring: 21,405 tracked facilities globally, 286 markets scored daily by DCPI, $324B+ in tracked M&A, real-time grid intelligence across 10 ISOs. Already cited by ChatGPT, Claude, Gemini, Perplexity, Cursor, and 90+ other AI platforms.
+What we bring: 21,405 tracked facilities globally, 232 markets scored daily by DCPI, 2,000+ tracked M&A deals, real-time grid intelligence across 10 ISOs. Actively used by Claude and Cursor via MCP, with a growing roster of AI agents connecting.
 
 What we'd love in return: cross-licensing, editorial collaboration, co-branded research drops, or a paid MCP feed your team can query. The specific shape is up to you.
 
@@ -99,7 +99,7 @@ Our specific opening offer: a 90-day MCP-server pilot for one CBRE Data Center S
 For any CBRE broker reading this — try the data right now, no login required:
 → /reports/quarterly-deep · live quarterly equivalent
 → /dcpi · 14 BUILD, 64 AVOID, 141 CAUTION markets today
-→ /transactions · 1,972 historical M&A deals, $324B+ tracked
+→ /transactions · 2,000+ historical M&A deals tracked
 → /dcpi/intl · AESO + Hydro-Québec + Nord Pool
 
 partnerships@dchub.cloud · the full open invitation lives at dchub.cloud/partners#cbre""",
@@ -131,7 +131,7 @@ For anyone at DCD reading this — editorial@dchub.cloud · the full open invita
         "url": "https://dchub.cloud/partners#jll",
         "body": """We don't have a partnership with JLL. We're publishing an open invitation for one — same Switzerland model offer we're extending to CBRE, in parallel. We don't compete with either; we feed both.
 
-What we'd love to offer JLL: a JLL-branded portal into DC Hub's live intelligence layer. Pipeline + M&A intelligence — we're tracking $324B+ historical deal volume + live pipeline. A JLL-co-branded "Market Velocity" report quarterly powered by our dataset. Lead-share split on pocket-listing inquiries from JLL-actively-brokered metros.
+What we'd love to offer JLL: a JLL-branded portal into DC Hub's live intelligence layer. Pipeline + M&A intelligence — we're tracking 2,000+ historical M&A deals + live pipeline. A JLL-co-branded "Market Velocity" report quarterly powered by our dataset. Lead-share split on pocket-listing inquiries from JLL-actively-brokered metros.
 
 Our specific opening offer: a 90-day MCP pilot for one JLL Data Centers regional team (we'd suggest Americas given our coverage density). Same shape as the CBRE invitation — runs in parallel, isolated data planes, no leak across.
 

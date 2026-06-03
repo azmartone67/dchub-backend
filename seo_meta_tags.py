@@ -165,10 +165,10 @@ TOOL_META = {
         "schema_type": "Dataset"
     },
     "transactions": {
-        "title": "Data Center Transactions & Deal Flow | $324B Since 2015 | DC Hub",
+        "title": "Data Center Transactions & Deal Flow | 2,000+ Deals Since 2019 | DC Hub",
         "description": "Browse 100+ data center transactions including sales, leases, and joint ventures. $61B+ in 2025 deal volume. Transaction details, pricing comps, cap rates, and market analysis.",
         "keywords": "data center transactions, data center deal flow, colocation sales, data center cap rates, real estate transactions data center",
-        "og_title": "Data Center Transactions — $324B Since 2015 | DC Hub",
+        "og_title": "Data Center Transactions — 2,000+ Deals Since 2019 | DC Hub",
         "og_description": "100+ tracked transactions, $61B+ in 2025 volume. Deal details, pricing comps, and market analysis.",
         "schema_type": "Dataset"
     },

@@ -131,7 +131,7 @@ def og_hyperscaler():
         kicker="HYPERSCALER AI DEAL TRACKER",
         title="Stargate. Oracle. CoreWeave. AMD. Live.",
         subtitle="$-figures + MW extracted automatically · 10-min refresh",
-        stat_a=("$324B+", "M&A TRACKED"),
+        stat_a=("2,000+ deals", "M&A TRACKED"),
         stat_b=("10min", "REFRESH"),
         badge="TICKER",
     ))
