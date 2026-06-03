@@ -1264,6 +1264,25 @@ _FAST_HEALTH_HEADERS = [
 ]
 _FAST_HEALTH_PATHS = frozenset(['/health', '/alive', '/healthz', '/livez', '/readyz'])
 
+# WSGI fast-path for /signup GET — bypasses gthread saturation that
+# was causing intermittent 5xx on the signup page (urgency-9 quick-win).
+# Static HTML is read once at module load; the existing Flask
+# @app.route('/signup') handler stays in place as cold-path fallback
+# (e.g. POST handling, or if the file read failed at startup).
+try:
+    with open('static/signup.html', 'rb') as _fp:
+        _FAST_SIGNUP_BODY = _fp.read()
+    _FAST_SIGNUP_HEADERS = [
+        ('Content-Type', 'text/html; charset=utf-8'),
+        ('Content-Length', str(len(_FAST_SIGNUP_BODY))),
+        ('Cache-Control', 'public, max-age=300, s-maxage=300, stale-while-revalidate=600'),
+        ('X-Fast-Path', 'wsgi-signup'),
+    ]
+except Exception as _e:
+    print(f"WSGI fast-path /signup: disabled ({_e})")
+    _FAST_SIGNUP_BODY = None
+    _FAST_SIGNUP_HEADERS = None
+
 
 def _make_fast_health_wsgi(downstream):
     def _wsgi(environ, start_response):
@@ -1276,6 +1295,12 @@ def _make_fast_health_wsgi(downstream):
             if environ.get('REQUEST_METHOD') == 'HEAD':
                 return [b'']
             return [_FAST_HEALTH_BODY]
+        # /signup GET fast-path (gthread saturation bypass)
+        if (_FAST_SIGNUP_BODY is not None
+                and environ.get('REQUEST_METHOD') == 'GET'
+                and environ.get('PATH_INFO') == '/signup'):
+            start_response('200 OK', _FAST_SIGNUP_HEADERS)
+            return [_FAST_SIGNUP_BODY]
         return downstream(environ, start_response)
     return _wsgi
 
