@@ -287,6 +287,26 @@ SCHEMA_STATEMENTS = [
             WHERE caller_id IS NOT NULL
             GROUP BY caller_id""",
     ]),
+    ("brain_pending_html_fixes (Item D: dry-run HTML insertion queue)", [
+        # Item D (2026-06-02): brain L4 now stages HTML insertion fixes in
+        # this table at status='dry_run' once two fuzzy-matched proposals
+        # cross the 2-cycle gate. NOTHING auto-applies — surface via
+        # /api/v1/brain/pending-html-fixes so a human (or a later
+        # explicit approval cycle) can promote dry_run -> applied.
+        """CREATE TABLE IF NOT EXISTS brain_pending_html_fixes (
+            id              BIGSERIAL PRIMARY KEY,
+            page_url        TEXT,
+            find_text       TEXT,
+            replace_text    TEXT,
+            rationale       TEXT,
+            status          TEXT DEFAULT 'dry_run',
+            approval_count  INT  DEFAULT 0,
+            created_at      TIMESTAMPTZ DEFAULT NOW(),
+            applied_at      TIMESTAMPTZ
+        )""",
+        "CREATE INDEX IF NOT EXISTS ix_brain_pending_html_status ON brain_pending_html_fixes(status)",
+        "CREATE INDEX IF NOT EXISTS ix_brain_pending_html_created ON brain_pending_html_fixes(created_at DESC)",
+    ]),
 ]
 
 

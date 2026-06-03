@@ -735,6 +735,17 @@ def trigger_learn():
             outcome = "approval_count_incremented" if count > 1 else "proposed"
             _log({"issue": issue.get("issue"), "outcome": outcome,
                   "find": find[:80], "count": count, "approved": approved})
+            # Item D (2026-06-02): when an HTML-insertion proposal crosses
+            # the 2-cycle gate, stage it as a dry_run in
+            # brain_pending_html_fixes. Auto-apply remains DISABLED — the
+            # row is surfaced via /api/v1/brain/pending-html-fixes for
+            # explicit promotion.
+            try:
+                if approved and count >= 2:
+                    _stage_dry_run_html_fix(
+                        issue, find, replace, rationale, count)
+            except Exception:
+                pass
             if _STORE_OK:
                 try:
                     _store.set_persistence_outcome(
@@ -789,6 +800,157 @@ def trigger_learn():
         accepted_total=accepted_total,
         store_backed=_STORE_OK,
     ), 200
+
+
+# ---------------------------------------------------------------------------
+# Item D (2026-06-02): dry-run staging for HTML insertion fixes.
+#
+# When 2 fuzzy-matched proposals approve an HTML insertion fix (i.e. the
+# replace introduces NEW HTML — wrapping a bare text node in a styled span,
+# adding a class, etc.), we DO NOT auto-apply. Instead we stage the fix in
+# `brain_pending_html_fixes` (DDL lives in routes/schema_repair.py
+# SCHEMA_STATEMENTS) at status='dry_run'.
+#
+# 1-cycle auto-apply remains DISABLED. The dry-run queue is human-surfaced
+# via /api/v1/brain/pending-html-fixes; promotion to status='applied' is
+# explicit (no code path here promotes it).
+# ---------------------------------------------------------------------------
+
+def _is_html_insertion_fix(find: str, replace: str) -> bool:
+    """True when `replace` introduces HTML markup that `find` lacked.
+    Mirrors the validator's rejection rule in reverse: brain_v2_layer4
+    rejects replace_introduces_html upstream, so this catches the edge
+    case where `find` HAS tags but `replace` adds new classes/wrappers
+    (e.g. inserting class="dchub-brand-uniform" on an existing element).
+    """
+    if not find or not replace:
+        return False
+    has_find_tags = ("<" in find or ">" in find)
+    has_replace_tags = ("<" in replace or ">" in replace)
+    if not has_replace_tags:
+        return False
+    # Existing-tag-but-new-class is the brand_uniformity case.
+    if has_find_tags and has_replace_tags and ("class=" in replace and "class=" not in find):
+        return True
+    # Wrapper-around-leaf-text: <td>—</td> → <td class="v">—</td>
+    if has_find_tags and len(replace) > len(find) and "class=" in replace:
+        return True
+    return False
+
+
+def _stage_dry_run_html_fix(issue: dict, find: str, replace: str,
+                             rationale: str, approval_count: int) -> bool:
+    """Insert a dry_run row in brain_pending_html_fixes. Idempotent: if a
+    row with the same (page_url, find_text, replace_text) already exists,
+    bump approval_count instead of duplicating. Returns True on success."""
+    if approval_count < 2:
+        return False
+    if not _is_html_insertion_fix(find, replace):
+        return False
+    try:
+        from main import get_db
+        conn = get_db()
+    except Exception:
+        return False
+    if conn is None:
+        return False
+    page_url = (issue.get("url") or "")[:1024]
+    try:
+        with conn.cursor() as cur:
+            cur.execute(
+                """SELECT id, approval_count FROM brain_pending_html_fixes
+                   WHERE page_url = %s AND find_text = %s AND replace_text = %s
+                   LIMIT 1""",
+                (page_url, find[:4096], replace[:4096]))
+            row = cur.fetchone()
+            if row:
+                cur.execute(
+                    """UPDATE brain_pending_html_fixes
+                          SET approval_count = %s
+                        WHERE id = %s""",
+                    (max(int(row[1] or 0), int(approval_count)), int(row[0])))
+            else:
+                cur.execute(
+                    """INSERT INTO brain_pending_html_fixes
+                         (page_url, find_text, replace_text, rationale,
+                          status, approval_count)
+                       VALUES (%s, %s, %s, %s, 'dry_run', %s)""",
+                    (page_url, find[:4096], replace[:4096],
+                     (rationale or '')[:1024], int(approval_count)))
+        conn.commit()
+        return True
+    except Exception as e:
+        try: conn.rollback()
+        except Exception: pass
+        print(f"[brain_v2_layer4] dry-run stage failed: {e}", flush=True)
+        return False
+    finally:
+        try: conn.close()
+        except Exception: pass
+
+
+@brain_v2_bp.get("/api/v1/brain/pending-html-fixes")
+def pending_html_fixes():
+    """Item D (2026-06-02): surface the dry-run queue for HTML insertion
+    fixes that crossed the 2-cycle approval gate. Returns rows from
+    brain_pending_html_fixes, newest first. Includes a `status` filter
+    (?status=dry_run|applied) — defaults to dry_run since that's the
+    actionable bucket."""
+    status = (request.args.get("status") or "dry_run").lower().strip()
+    if status not in ("dry_run", "applied", "all"):
+        status = "dry_run"
+    try:
+        from main import get_db
+        conn = get_db()
+    except Exception:
+        conn = None
+    if conn is None:
+        return jsonify(ok=False, error="no_db",
+                        as_of=datetime.now(timezone.utc).isoformat()), 503
+    try:
+        with conn.cursor() as cur:
+            if status == "all":
+                cur.execute(
+                    """SELECT id, page_url, find_text, replace_text, rationale,
+                              status, approval_count, created_at, applied_at
+                         FROM brain_pending_html_fixes
+                        ORDER BY created_at DESC
+                        LIMIT 200""")
+            else:
+                cur.execute(
+                    """SELECT id, page_url, find_text, replace_text, rationale,
+                              status, approval_count, created_at, applied_at
+                         FROM brain_pending_html_fixes
+                        WHERE status = %s
+                        ORDER BY created_at DESC
+                        LIMIT 200""", (status,))
+            rows = cur.fetchall() or []
+        items = [{
+            "id": int(r[0]),
+            "page_url": r[1],
+            "find_text": (r[2] or "")[:200],
+            "replace_text": (r[3] or "")[:200],
+            "rationale": (r[4] or "")[:240],
+            "status": r[5],
+            "approval_count": int(r[6] or 0),
+            "created_at": r[7].isoformat() if r[7] else None,
+            "applied_at": r[8].isoformat() if r[8] else None,
+        } for r in rows]
+        return jsonify(
+            ok=True,
+            as_of=datetime.now(timezone.utc).isoformat(),
+            status_filter=status,
+            count=len(items),
+            note=("Dry-run queue. Auto-apply is DISABLED. "
+                  "Promotion to 'applied' is explicit."),
+            items=items,
+        ), 200
+    except Exception as e:
+        return jsonify(ok=False, error=str(e)[:200],
+                        as_of=datetime.now(timezone.utc).isoformat()), 500
+    finally:
+        try: conn.close()
+        except Exception: pass
 
 
 @brain_v2_bp.get("/api/v1/brain/proposed-fixes")
