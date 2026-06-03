@@ -229,80 +229,83 @@ def _query_candidates(min_signals=2, days=30, limit=500):
         except Exception: pass
 
 
+# r68-rotate (2026-06-02): template registry keyed on signal age (days
+# since last signal). Replaces the hardcoded "we fixed the bug yesterday
+# (May 19)" subject which was 15+ days stale and getting staler every cron.
+# Brain L5 / template-versioning can edit this map without touching code paths.
+_OUTREACH_TEMPLATES = [
+    # (max_days_since_signal, subject, body_intro)
+    (3,   'Quick fix: try DC Hub again',
+           'We saw you hit our paywall a few times this week and want to make sure you got through.'),
+    (10,  'Still trying to access DC Hub data?',
+           'You hit our paywall a few times recently. If a deal or analysis is blocked, we can fast-track access.'),
+    (30,  'DC Hub: live datasets you tried to reach',
+           'A few weeks ago you tried {tool} on DC Hub. Want to pick up where you left off?'),
+    (90,  'Following up — DC Hub access',
+           'A while back you tried {tool}. The catalog grew (29 tools, 485K+ AI-agent requests). Worth another look?'),
+]
+
+
 def _build_email(candidate: dict) -> dict:
-    """Return {subject, html, text} for a single recipient."""
+    """Return {subject, html, text} for a single recipient.
+
+    r68-rotate (2026-06-02): age-rotated templates — the copy never goes
+    stale because the template is picked at send time based on days_since
+    last signal."""
+    import datetime as _dt
     tool = (candidate.get("top_tool") or "DC Hub Pro tools").replace("get_", "").replace("_", " ")
     signal_count = candidate.get("signal_count") or 1
-    subject = "We fixed the DC Hub upgrade bug that blocked your access"
-    html = f"""<!DOCTYPE html>
-<html><head><meta charset="utf-8"></head>
-<body style="font-family:-apple-system,sans-serif;max-width:560px;margin:0 auto;color:#1f2937;line-height:1.55;padding:24px">
-  <h2 style="margin:0 0 16px">Apology + fix from DC Hub</h2>
-
-  <p>Hi —</p>
-
-  <p>Our logs show you tried to access <strong>{tool}</strong> on DC Hub
-  {signal_count} time{'s' if signal_count != 1 else ''} in the last 30 days
-  and hit our paywall. If you tried to upgrade and it didn't seem to work,
-  that's not on you.</p>
-
-  <p>We had two coupled bugs in our checkout attribution pipeline that
-  meant Stripe payments completed but our system didn't flip the
-  associated API key from <code>free</code> to <code>pro</code>.
-  Both bugs landed yesterday (May 19) — here's the postmortem in plain
-  English:</p>
-
-  <ul>
-    <li>The webhook handler used the SHA-256 of an empty string instead of
-    your actual key hash when looking up which row to upgrade. We
-    matched zero rows on every successful checkout.</li>
-    <li>One of two paywall response builders was emitting Stripe payment
-    links without the <code>client_reference_id</code> that the webhook
-    needs to identify your account.</li>
-  </ul>
-
-  <p><strong>Both are fixed.</strong> Try the upgrade again — it'll work this
-  time:</p>
-
-  <p style="text-align:center;margin:24px 0">
-    <a href="https://dchub.cloud/pricing?utm_source=lost_conversion_outreach&amp;utm_content={tool}"
-       style="display:inline-block;padding:14px 28px;background:#10b981;color:#fff;
-              text-decoration:none;border-radius:8px;font-weight:700;font-size:15px">
-      Upgrade to Pro →
-    </a>
-  </p>
-
-  <p>If you already paid and didn't get upgraded, reply to this email with
-  your Stripe receipt and we'll fix it manually within the hour. If you've
-  since moved on to another tool, we get it — and we're sorry we wasted
-  your time.</p>
-
-  <p style="color:#6b7280;font-size:13px;margin-top:32px;border-top:1px solid #e5e7eb;padding-top:16px">
-    DC Hub · Data center intelligence · 21,000+ facilities · Live MCP server<br>
-    <a href="https://dchub.cloud" style="color:#1e40af">dchub.cloud</a>
-    &nbsp;·&nbsp;
-    <a href="https://dchub.cloud/unsubscribe?email={candidate['email']}"
-       style="color:#9ca3af">unsubscribe</a>
-  </p>
-</body></html>
-"""
+    last_seen = candidate.get("last_signal_at") or ''
+    days_since = 30  # default if we can't parse
+    try:
+        if last_seen:
+            if hasattr(last_seen, 'isoformat'):
+                # datetime object
+                dt = last_seen
+                if dt.tzinfo is not None:
+                    dt = dt.replace(tzinfo=None)
+            else:
+                dt = _dt.datetime.fromisoformat(str(last_seen).replace('Z', ''))
+            days_since = max(0, (_dt.datetime.utcnow() - dt).days)
+    except Exception:
+        pass
+    # Pick the first template whose max-days threshold is >= days_since.
+    tpl = next((t for t in _OUTREACH_TEMPLATES if days_since <= t[0]), _OUTREACH_TEMPLATES[-1])
+    subject, intro_tmpl = tpl[1], tpl[2]
+    intro = intro_tmpl.format(tool=tool)
+    upgrade_url = (
+        f"https://dchub.cloud/upgrade?utm_source=lost_conversion_outreach"
+        f"&utm_age={days_since}d&utm_tool={tool}"
+    )
+    html = (
+        f'<!DOCTYPE html><html><body style="font-family:-apple-system,sans-serif;'
+        f'max-width:560px;margin:0 auto;color:#1f2937;line-height:1.55;padding:24px">'
+        f'<p>Hi —</p><p>{intro}</p>'
+        f'<p>Our logs show {signal_count} attempt'
+        f'{"s" if signal_count != 1 else ""} at <strong>{tool}</strong> '
+        f'in the last {days_since} days.</p>'
+        f'<p style="text-align:center;margin:24px 0">'
+        f'<a href="{upgrade_url}" '
+        f'style="display:inline-block;padding:14px 28px;background:#10b981;'
+        f'color:#fff;text-decoration:none;border-radius:8px;font-weight:700">'
+        f'Try DC Hub Pro →</a></p>'
+        f'<p style="color:#6b7280;font-size:13px;margin-top:32px;'
+        f'border-top:1px solid #e5e7eb;padding-top:16px">'
+        f'DC Hub · Data center intelligence<br>'
+        f'<a href="https://dchub.cloud/unsubscribe?email={candidate["email"]}" '
+        f'style="color:#9ca3af">unsubscribe</a></p></body></html>'
+    )
     text = (
-        f"Hi —\n\n"
-        f"Our logs show you tried to access {tool} on DC Hub "
-        f"{signal_count} time{'s' if signal_count != 1 else ''} in the last "
-        f"30 days and hit our paywall. If you tried to upgrade and it "
-        f"didn't seem to work, that's not on you.\n\n"
-        f"We had two coupled bugs in checkout attribution. Payments "
-        f"completed but our system didn't flip your API key from free "
-        f"to pro. Both bugs landed yesterday (May 19) and are fixed.\n\n"
-        f"Try again — it'll work this time:\n"
-        f"https://dchub.cloud/pricing?utm_source=lost_conversion_outreach&utm_content={tool}\n\n"
-        f"If you already paid and didn't get upgraded, reply with your "
-        f"Stripe receipt and we'll fix it manually within the hour.\n\n"
+        f"Hi —\n\n{intro}\n\n"
+        f"Our logs show {signal_count} attempt"
+        f"{'s' if signal_count != 1 else ''} at {tool} in the last "
+        f"{days_since} days.\n\n"
+        f"Try it again: {upgrade_url}\n\n"
         f"— DC Hub team\n"
         f"unsubscribe: https://dchub.cloud/unsubscribe?email={candidate['email']}\n"
     )
-    return {"subject": subject, "html": html, "text": text}
+    return {"subject": subject, "html": html, "text": text,
+            "template_age_bucket": tpl[0]}
 
 
 def _mark_outreach_sent(signal_ids: list, conn=None):

@@ -167,6 +167,95 @@ SCHEMA_STATEMENTS = [
            ON discovered_facilities(provider, status)
            WHERE status IN ('active','Operational')""",
     ]),
+    ("mcp_funnel canonical identity + view", [
+        # r68-canonical (2026-06-02): collapse the per-file synthetic-client
+        # filter (5 Python copies that drifted across releases) into a SINGLE
+        # SQL view definition. Every reader (funnel diag, visitor intel,
+        # outreach, brain consistency radar) queries the view, not the raw
+        # table. Every writer (mcp_signal_canonical.record_signal) inserts
+        # everything; reads gate via is_synthetic.
+        "ALTER TABLE mcp_upgrade_signals ADD COLUMN IF NOT EXISTS caller_id TEXT",
+        """CREATE INDEX IF NOT EXISTS idx_mcp_signals_caller_id
+            ON mcp_upgrade_signals(caller_id) WHERE caller_id IS NOT NULL""",
+        """CREATE INDEX IF NOT EXISTS idx_mcp_signals_session_id
+            ON mcp_upgrade_signals(session_id)
+            WHERE session_id IS NOT NULL AND session_id <> ''""",
+        """CREATE INDEX IF NOT EXISTS idx_mcp_signals_converted_at
+            ON mcp_upgrade_signals(converted_at) WHERE converted_at IS NOT NULL""",
+        # Backfill caller_id for existing rows so retroactive attribution works.
+        """UPDATE mcp_upgrade_signals
+             SET caller_id = COALESCE(
+                    NULLIF(LOWER(TRIM(user_email)), ''),
+                    NULLIF(session_id, ''),
+                    'anon:' || md5(COALESCE(LOWER(mcp_client),'') || '|'
+                                  || SUBSTRING(COALESCE(user_agent,'') FROM 1 FOR 120) || '|'
+                                  || COALESCE(ip_address,''))
+                 )
+           WHERE caller_id IS NULL""",
+        "ALTER TABLE mcp_conversions ADD COLUMN IF NOT EXISTS caller_id TEXT",
+        """UPDATE mcp_conversions SET caller_id = LOWER(TRIM(user_email))
+            WHERE caller_id IS NULL AND user_email IS NOT NULL""",
+        "CREATE INDEX IF NOT EXISTS idx_mcp_conv_caller_id ON mcp_conversions(caller_id)",
+        # The CANONICAL view: every reader queries this, not the raw table.
+        "DROP VIEW IF EXISTS mcp_funnel_callers CASCADE",
+        "DROP VIEW IF EXISTS mcp_funnel_real CASCADE",
+        "DROP VIEW IF EXISTS mcp_funnel_canonical CASCADE",
+        """CREATE OR REPLACE VIEW mcp_funnel_canonical AS
+            SELECT
+              s.id, s.created_at, s.signal_type, s.tool_requested,
+              s.tier_current, s.tier_required,
+              s.session_id, s.user_email, s.ip_address,
+              s.mcp_client, s.user_agent, s.caller_id,
+              s.converted, s.converted_at, s.outreach_sent, s.outreach_sent_at,
+              CASE
+                WHEN COALESCE(LOWER(s.mcp_client),'') IN (
+                  'node','dchub-selfheal','dchub-mcp-test','mcp-probe','mcp-test',
+                  'pipeline_mcp','canary','mcp-remote-fallback-test',
+                  'registry-health-checker','mcp-shield-scanner','yellowmcp-health',
+                  'glama-health','chiark-prober','fabrique-noauth-probe',
+                  'agentpulse','mcpscoringengine','mcp-extractor',
+                  'curl','python-script','node-script','postman','insomnia','verify'
+                ) THEN TRUE
+                WHEN COALESCE(LOWER(s.mcp_client),'') LIKE 'loop%' THEN TRUE
+                WHEN COALESCE(LOWER(s.mcp_client),'') LIKE 'dchub-%' THEN TRUE
+                WHEN COALESCE(LOWER(s.mcp_client),'') LIKE 'local-agent-mode%' THEN TRUE
+                WHEN COALESCE(LOWER(s.mcp_client),'') LIKE 'leakaudit%' THEN TRUE
+                WHEN COALESCE(LOWER(s.mcp_client),'') LIKE 'trial-leak%' THEN TRUE
+                WHEN COALESCE(LOWER(s.mcp_client),'') LIKE '%-probe' THEN TRUE
+                WHEN COALESCE(LOWER(s.mcp_client),'') LIKE '%-health' THEN TRUE
+                WHEN COALESCE(LOWER(s.mcp_client),'') LIKE '%-scanner' THEN TRUE
+                WHEN COALESCE(LOWER(s.mcp_client),'') LIKE '%-checker' THEN TRUE
+                WHEN COALESCE(LOWER(s.mcp_client),'') LIKE 'step2_%' THEN TRUE
+                WHEN COALESCE(LOWER(s.mcp_client),'') LIKE 'qa-%' THEN TRUE
+                WHEN COALESCE(LOWER(s.mcp_client),'') LIKE 'r5_%' THEN TRUE
+                WHEN COALESCE(LOWER(s.mcp_client),'') LIKE 'r6_%' THEN TRUE
+                WHEN COALESCE(LOWER(s.mcp_client),'') LIKE 'hn-prepost%' THEN TRUE
+                WHEN COALESCE(LOWER(s.mcp_client),'') LIKE 'paywall-probe%' THEN TRUE
+                WHEN COALESCE(LOWER(s.mcp_client),'') LIKE 'funnel-test%' THEN TRUE
+                WHEN COALESCE(LOWER(s.mcp_client),'') LIKE 'e2e-%' THEN TRUE
+                WHEN COALESCE(LOWER(s.mcp_client),'') LIKE 'recheck%' THEN TRUE
+                WHEN COALESCE(LOWER(s.mcp_client),'') LIKE 'healthcheck%' THEN TRUE
+                ELSE FALSE
+              END AS is_synthetic
+            FROM mcp_upgrade_signals s""",
+        """CREATE OR REPLACE VIEW mcp_funnel_real AS
+            SELECT * FROM mcp_funnel_canonical WHERE is_synthetic = FALSE""",
+        """CREATE OR REPLACE VIEW mcp_funnel_callers AS
+            SELECT
+              caller_id,
+              MIN(created_at) AS first_signal_at,
+              MAX(created_at) AS last_signal_at,
+              COUNT(*) AS signal_count,
+              BOOL_OR(converted) AS converted,
+              MIN(converted_at) AS converted_at,
+              BOOL_OR(outreach_sent) AS outreached,
+              MAX(user_email) FILTER (WHERE user_email IS NOT NULL AND user_email <> '') AS email,
+              MAX(mcp_client) AS mcp_client,
+              array_agg(DISTINCT tool_requested) FILTER (WHERE tool_requested IS NOT NULL) AS tools
+            FROM mcp_funnel_real
+            WHERE caller_id IS NOT NULL
+            GROUP BY caller_id""",
+    ]),
 ]
 
 

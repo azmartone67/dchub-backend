@@ -1592,6 +1592,21 @@ def stripe_webhook_mcp():
     except Exception as e:
         return jsonify({"error": "db insert failed", "detail": str(e)}), 500
 
+    # r68-canonical (2026-06-02): write-back attribution on signals.converted.
+    # Previously this webhook recorded mcp_conversions but never flipped
+    # signals.converted, so /api/v1/mcp/funnel kept reporting 0% on `mcp`
+    # platform forever. Now matches by email OR session OR caller_id OR
+    # stripe_customer_id so the ~99% of `mcp` signals with NULL email also get flipped.
+    try:
+        from mcp_signal_canonical import mark_signals_converted
+        signal_attribution = mark_signals_converted(
+            email=email,
+            stripe_customer_id=customer_id,
+            session_id=(obj.get('metadata') or {}).get('mcp_session_id'),
+        )
+    except Exception as _e:
+        signal_attribution = {'error': str(_e)[:120]}
+
     return jsonify({
         "ok":                    True,
         "conversion_id":         conv_id,
@@ -1599,6 +1614,7 @@ def stripe_webhook_mcp():
         "attribution_signal_id": attribution_id,
         "plan_to":               plan_to,
         "mrr_cents":             mrr_cents,
+        "signal_attribution":    signal_attribution,
     }), 200
 
 

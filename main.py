@@ -29369,6 +29369,18 @@ def _stripe_webhook_convert():
                         WHERE user_email = %s AND COALESCE(converted, false) = false;
                     """, (email,))
                     results["signals_marked_converted"] = cur.rowcount
+            # 3b. r68-canonical (2026-06-02): write-back attribution via canonical
+            # helper — matches by email OR session_id OR caller_id OR stripe_customer
+            # so the ~99% of 'mcp' platform signals with NULL email also get flipped.
+            try:
+                from mcp_signal_canonical import mark_signals_converted
+                results["signal_attribution"] = mark_signals_converted(
+                    email=email,
+                    stripe_customer_id=(session.get('customer') if isinstance(session.get('customer'), str) else None),
+                    session_id=(session.get('metadata') or {}).get('mcp_session_id'),
+                )
+            except Exception as _e:
+                results["signal_attribution_error"] = str(_e)[:160]
             conn.commit()
         return jsonify({"event": evt_type, "plan": plan, "email": email, "user_id": user_id, "results": results})
     except Exception as e:
