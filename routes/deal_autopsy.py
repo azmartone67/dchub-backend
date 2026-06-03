@@ -48,10 +48,30 @@ def _norm(s):
     return re.sub(r"[^a-z0-9]+", "", (s or "").lower())
 
 
+# Deal geography is often a STATE (or state name), not a metro — map it so we can
+# fall back to that state's representative DCPI market for the grid overlay.
+_STATE_NAMES = {
+    "alabama": "AL", "alaska": "AK", "arizona": "AZ", "arkansas": "AR",
+    "california": "CA", "colorado": "CO", "connecticut": "CT", "delaware": "DE",
+    "florida": "FL", "georgia": "GA", "hawaii": "HI", "idaho": "ID",
+    "illinois": "IL", "indiana": "IN", "iowa": "IA", "kansas": "KS",
+    "kentucky": "KY", "louisiana": "LA", "maine": "ME", "maryland": "MD",
+    "massachusetts": "MA", "michigan": "MI", "minnesota": "MN", "mississippi": "MS",
+    "missouri": "MO", "montana": "MT", "nebraska": "NE", "nevada": "NV",
+    "newhampshire": "NH", "newjersey": "NJ", "newmexico": "NM", "newyork": "NY",
+    "northcarolina": "NC", "northdakota": "ND", "ohio": "OH", "oklahoma": "OK",
+    "oregon": "OR", "pennsylvania": "PA", "rhodeisland": "RI", "southcarolina": "SC",
+    "southdakota": "SD", "tennessee": "TN", "texas": "TX", "utah": "UT",
+    "vermont": "VT", "virginia": "VA", "washington": "WA", "westvirginia": "WV",
+    "wisconsin": "WI", "wyoming": "WY", "districtofcolumbia": "DC",
+}
+
+
 def _market_index():
     """Lookup of normalized market_name / slug / state -> DCPI row."""
     from routes.dcpi import derive_composite_score
     idx = {}
+    by_state = {}
     conn = None
     try:
         conn = _db()
@@ -79,6 +99,11 @@ def _market_index():
             for key in (_norm(d.get("market_slug")), _norm(d.get("market_name"))):
                 if key and key not in idx:
                     idx[key] = d
+            stc = (d.get("state") or "").upper().strip()
+            if stc:
+                cur = by_state.get(stc)
+                if cur is None or (d.get("composite_score") or 0) > (cur.get("composite_score") or 0):
+                    by_state[stc] = d
     except Exception as e:
         logger.warning(f"deal-autopsy: market index failed: {e}")
     finally:
@@ -87,7 +112,7 @@ def _market_index():
                 conn.close()
             except Exception:
                 pass
-    return idx
+    return idx, by_state
 
 
 def _recent_deals(limit):
@@ -121,11 +146,23 @@ def _recent_deals(limit):
     return rows
 
 
-def _match_market(deal, idx):
+def _match_market(deal, idx, by_state):
+    # 1. Direct metro slug/name match.
     for field in ("market", "region"):
         key = _norm(deal.get(field))
         if key and key in idx:
             return idx[key]
+    # 2. State-level fallback: deal geography is often a state (code or name).
+    #    Use that state's highest-composite DCPI market as a representative proxy.
+    for field in ("market", "region", "state"):
+        raw = (deal.get(field) or "").strip()
+        if not raw:
+            continue
+        code = raw.upper() if (len(raw) == 2 and raw.upper() in by_state) else _STATE_NAMES.get(_norm(raw))
+        if code and code in by_state:
+            m = dict(by_state[code])
+            m["_state_proxy"] = code
+            return m
     return None
 
 
@@ -174,6 +211,9 @@ def _deal_public(deal, mk):
             "excess_power_score": mk.get("excess_power_score"),
             "time_to_power_months": mk.get("time_to_power_months"),
             "dcpi_url": f"https://dchub.cloud/dcpi/{mk.get('market_slug')}",
+            # Honest about basis: a metro-direct match vs the state's representative market.
+            "basis": (f"{mk.get('_state_proxy')} state proxy ({mk.get('market_name')})"
+                      if mk.get("_state_proxy") else "metro match"),
         } if mk else None),
     }
 
@@ -190,7 +230,7 @@ def autopsy():
     deals = _recent_deals(limit)
     if not deals:
         return jsonify(ok=False, error="Deal flow temporarily unavailable"), 503
-    idx = _market_index()
+    idx, by_state = _market_index()
 
     try:
         from routes.tier_gate import _resolve_caller_tier
@@ -202,12 +242,16 @@ def autopsy():
     items = []
     matched = 0
     for d in deals:
-        mk = _match_market(d, idx)
+        mk = _match_market(d, idx, by_state)
         if mk:
             matched += 1
         row = _deal_public(d, mk)
         if is_paid:
-            row["autopsy_read"] = _autopsy_read(d, mk)
+            read = _autopsy_read(d, mk)
+            if mk and mk.get("_state_proxy"):
+                read = (f"[Grid-checked via {mk.get('_state_proxy')}'s representative market, "
+                        f"{mk.get('market_name')}] ") + read
+            row["autopsy_read"] = read
         items.append(row)
 
     out = {
