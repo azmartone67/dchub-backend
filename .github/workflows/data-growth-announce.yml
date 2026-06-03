@@ -1,0 +1,109 @@
+name: Data-Growth Announce (weekly — discovery → DC Hub Media)
+
+# The discovery→announce flywheel: the crawlers auto-add new ISO/gas/transmission/
+# data-center data all week (dchub-osm-refresh Sun 2am, data-sync 4x/day, osm-crawl
+# nightly, datacentermap-crawl). This job runs AFTER that weekly cycle (Mondays)
+# and turns the REAL, verified coverage totals into a DC Hub Media announcement —
+# enqueued (publish_now:false) so it goes through the auto-publisher's quality gate
+# + rich-image card, never a raw blast. Numbers come straight from /api/v1/stats
+# (citable), so the editor's "unverifiable metric" reject never trips.
+#
+# Manual trigger (workflow_dispatch) to fire any time. Uses the DCHUB_ADMIN_KEY secret.
+on:
+  schedule:
+    - cron: '0 15 * * 1'        # Mondays 15:00 UTC — after the weekend crawl cycle
+  workflow_dispatch: {}
+
+permissions:
+  contents: read
+
+jobs:
+  announce:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Compose + enqueue the weekly data-growth announcement
+        env:
+          ADMIN_KEY: ${{ secrets.DCHUB_ADMIN_KEY }}
+        run: |
+          python3 - <<'PY'
+          import os, json, re, urllib.request
+
+          API = "https://dchub.cloud"
+          key = os.environ.get("ADMIN_KEY", "")
+          if not key:
+              print("ERROR: DCHUB_ADMIN_KEY secret not set"); raise SystemExit(1)
+
+          def _get(path, timeout=30):
+              try:
+                  req = urllib.request.Request(API + path, headers={"Accept": "application/json"})
+                  with urllib.request.urlopen(req, timeout=timeout) as r:
+                      return json.loads(r.read())
+              except Exception as e:
+                  print(f"fetch {path} failed: {e}")
+                  return {}
+
+          # 1) VERIFIED canonical totals (citable at /api/v1/stats — keeps the post honest).
+          stats = _get("/api/v1/stats")
+          def _n(k):
+              v = stats.get(k)
+              try: return int(v)
+              except (TypeError, ValueError): return None
+          facilities   = _n("facilities")
+          transmission = _n("transmission_lines")
+          gas          = _n("gas_pipelines")
+          markets      = _n("markets")
+
+          # 2) Live ISO count from the brain heartbeat ("covered N ISOs").
+          isos = None
+          try:
+              req = urllib.request.Request(API + "/api/v1/brain/heartbeat", headers={"Accept": "application/json"})
+              with urllib.request.urlopen(req, timeout=30) as r:
+                  raw = r.read().decode("utf-8", "ignore")
+              m = re.search(r"covered (\d+) ISOs", raw)
+              if m: isos = int(m.group(1))
+          except Exception as e:
+              print(f"heartbeat fetch failed: {e}")
+
+          # Need at least the core totals to say anything verifiable.
+          if not facilities or not transmission:
+              print("skip: core verified totals unavailable — refusing to post unsourced numbers")
+              raise SystemExit(0)
+
+          parts = []
+          parts.append(f"{facilities:,} data centers")
+          parts.append(f"{transmission:,} transmission lines")
+          if gas:     parts.append(f"{gas:,} gas pipelines")
+          if markets: parts.append(f"{markets} DCPI markets scored")
+          if isos:    parts.append(f"live grids across {isos} ISOs / balancing authorities")
+          coverage_line = " · ".join(parts)
+
+          content = (
+              "DC Hub keeps getting deeper.\n\n"
+              "This week's live, auto-refreshed coverage:\n"
+              f"{coverage_line}\n\n"
+              "New transmission, gas pipelines, data centers and grid data are crawled and "
+              "added automatically every week — from OSM, EIA, ENTSO-E, ENTSOG, NESO, AEMO, "
+              "Taipower and more. No static snapshots.\n\n"
+              "All of it is free for any AI agent to query over our MCP server, CC-BY-4.0 to cite.\n\n"
+              "See it: https://dchub.cloud  ·  Query it: https://dchub.cloud/mcp"
+          )
+
+          base = API + "/api/admin/publish/enqueue-custom"
+          for platform in ("linkedin", "bluesky"):
+              body = json.dumps({
+                  "content": content,
+                  "platform": platform,
+                  # publish_now:false → queue as 'approved' for the auto-publisher
+                  # (quality gate + rich-image card), not a raw immediate blast.
+                  "publish_now": False,
+              }).encode()
+              req = urllib.request.Request(base, data=body, method="POST",
+                    headers={"Content-Type": "application/json", "X-Admin-Key": key})
+              try:
+                  with urllib.request.urlopen(req, timeout=60) as r:
+                      print(f"{platform}: HTTP {r.status} {r.read()[:200]!r}")
+              except Exception as e:
+                  print(f"{platform}: ERROR {e}")
+
+          print("Enqueued data-growth announcement (queued for auto-publisher vetting).")
+          PY
