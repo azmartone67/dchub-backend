@@ -254,7 +254,7 @@ def pitch_draft():
         "data_url": "https://dchub.cloud/industry/pulse",
         "methodology_url": "https://dchub.cloud/dcpi/methodology",
         "angle_1": "DC industry data is mostly locked behind $25K/yr paywalls (DCHawk, dcByte). Our weekly stat sheet is free.",
-        "angle_2": "AI agents (ChatGPT/Claude/Perplexity/Gemini) auto-cite our MCP server in real time — see /cited-by.",
+        "angle_2": "AI agents (Claude, Cursor) use our MCP server in real time to ground data-center answers, with built-in CC-BY-4.0 attribution — see /cited-by.",
         "angle_3": "Pipeline + DCPI rankings shift weekly. Static quarterly reports miss the inflection points.",
     }
     subject, txt = _compose_pitch(topic, story, recipient)
@@ -360,7 +360,7 @@ def pitch_send():
                 "data_url": "https://dchub.cloud/industry/pulse",
                 "methodology_url": "https://dchub.cloud/dcpi/methodology",
                 "angle_1": "DC industry data is mostly locked behind $25K/yr paywalls (DCHawk, dcByte). Our weekly stat sheet is free.",
-                "angle_2": "AI agents (ChatGPT/Claude/Perplexity/Gemini) auto-cite our MCP server in real time — see /cited-by.",
+                "angle_2": "AI agents (Claude, Cursor) use our MCP server in real time to ground data-center answers, with built-in CC-BY-4.0 attribution — see /cited-by.",
                 "angle_3": "Pipeline + DCPI rankings shift weekly. Static quarterly reports miss the inflection points.",
             }
         subject, txt = _compose_pitch(topic, story, recipient_obj)

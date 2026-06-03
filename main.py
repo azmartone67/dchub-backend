@@ -7887,17 +7887,6 @@ _RATE_LIMIT_BYPASS_PATHS = {
     '/api/v1/stats', '/api/health', '/api/stripe/webhook',
     '/api/stripe/config', '/api/verify-key', '/api/ecosystem/health',
     '/api/v1/map', '/api/v1/facilities/',
-    # r47: admin-gated journalist/press-outreach endpoints. They returned 401 at
-    # THIS tier-gate before their own X-Admin-Key check could run, so the hourly
-    # media-organism cron couldn't draft pitches (journalist_outreach score sat
-    # at 0 since May 19). Each verifies X-Admin-Key in its handler and
-    # DCHUB_ADMIN_KEY is set, so bypassing the tier-gate is safe — it just lets
-    # the admin check run. The cron DRAFTS only (never auto-sends to journalists).
-    '/api/v1/media/pitch-draft', '/api/v1/media/pitch-send',
-    '/api/v1/admin/press-outreach/scan-angles',
-    '/api/v1/admin/press-outreach/generate-drafts',
-    '/api/v1/admin/press-outreach/contacts',
-    '/api/v1/admin/press-outreach/diagnostics',
 }
 
 def _get_request_tier():
