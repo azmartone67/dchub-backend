@@ -6,6 +6,19 @@
 
 ---
 
+## ⚠️ Key finding from 2026-06-03 pre-meeting audit
+
+The `/api/v1/admin/partner-usage/reveal-nlr` query against the 3 active NLR keys returned **0 calls across all keys**, but root-causing the gap discovered we had **NO per-key usage tracking site-wide** — not just for NLR. `api_usage_meter` was orphaned (the `/track-usage` endpoint existed but was never called) and `api_keys.calls_today/calls_total` were SET=0 at INSERT but never INCREMENTed anywhere in the codebase.
+
+This means **we don't actually know whether NLR used their keys this past week or not.** Gabe's email phrasing ("we've had some time to go through the endpoints") could mean either active API calls OR a thorough read of the docs / OpenAPI spec / dchub.cloud surface. Both are valid.
+
+**Fixed in r78-c (2026-06-03)**: shipped an after-request middleware + background flush thread that captures every keyed API call into `api_endpoint_log` (per-call detail), `api_usage_meter` (per-day rollup), and bumps `api_keys.calls_today/calls_total`. From this point forward we have full per-endpoint visibility for every partner key.
+
+### Meeting talking-point spin
+This is actually a **positive story** for the meeting: lead with *"I just shipped real-time usage telemetry today — partnership transparency commitment from MOU Article XIII. From this point forward you can see exactly what you've used, and I can see what's working. Curious to hear from each of you directly — what HAVE you actually been doing with the keys this week?"*
+
+---
+
 ## §1 — Pull the actual usage data BEFORE the meeting
 
 I shipped a new admin endpoint just for this. Run from any shell with `DCHUB_ADMIN_KEY` exported:
