@@ -87,10 +87,21 @@ CREATE INDEX IF NOT EXISTS ix_spare_capacity_state
 """
 
 
+# slow_pages quick-win: once-per-process guard so GET handlers don't
+# re-run the schema DDL on every request. The DDL is IF NOT EXISTS so
+# running it once at the first request is safe; running it on every
+# read added Postgres round-trips to the hot path.
+_SCHEMA_READY = False
+
+
 def _ensure_schema(c):
+    global _SCHEMA_READY
+    if _SCHEMA_READY:
+        return
     try:
         with c.cursor() as cur:
             cur.execute(_SCHEMA)
+        _SCHEMA_READY = True
     except Exception:
         pass
 

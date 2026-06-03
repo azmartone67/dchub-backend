@@ -159,6 +159,14 @@ SCHEMA_STATEMENTS = [
             END IF;
         END $$""",
     ]),
+    ("discovered_facilities operators index", [
+        # slow_pages quick-win: /operators groups by provider over
+        # active rows. Partial index on (provider, status) makes the
+        # filter cheap. IF NOT EXISTS is idempotent.
+        """CREATE INDEX IF NOT EXISTS idx_disc_provider_active
+           ON discovered_facilities(provider, status)
+           WHERE status IN ('active','Operational')""",
+    ]),
 ]
 
 

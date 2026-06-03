@@ -135,12 +135,16 @@ def list_founding():
     if c is None: return jsonify(ok=False, error="no_db"), 503
     try:
         with c.cursor() as cur:
+            # slow_pages quick-win: cap at 200 — the founding-customers
+            # roster is small but we still want a hard ceiling so a
+            # runaway tag never blows up the admin endpoint.
             cur.execute("""
                 SELECT email, tagged_at, plan_at_tag, first_payment_at,
                        stripe_customer_id, contact_status, contacted_at,
                        consented_to_cite, notes
                   FROM founding_customers
                  ORDER BY tagged_at DESC
+                 LIMIT 200
             """)
             rows = []
             for r in cur.fetchall():
@@ -620,6 +624,7 @@ def founders_html():
                            consented_to_cite, notes
                       FROM founding_customers
                      ORDER BY tagged_at ASC
+                     LIMIT 200
                 """)
                 for r in cur.fetchall():
                     total += 1

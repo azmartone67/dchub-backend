@@ -27,11 +27,20 @@ from __future__ import annotations
 
 import os
 import re
+import time
 import datetime
 from flask import Blueprint, Response, jsonify, request, abort
 
 
 operators_bp = Blueprint("operators", __name__)
+
+
+# slow_pages quick-win: tiny in-process TTL cache for the /operators
+# HTML render. Keyed by route name; value is (expires_at, html). 300s
+# TTL — operators churn slowly; saves the top-50 SQL roll-up on every
+# crawler hit. functools.lru_cache won't time out, so use a dict.
+_OPERATORS_TTL_CACHE: dict = {}
+_OPERATORS_TTL_SECS = 300
 
 
 def _conn():
@@ -312,6 +321,14 @@ def operators_index():
         auto_log("operators", "view", target="/operators")
     except Exception: pass
 
+    # slow_pages quick-win: serve cached HTML when fresh. Cache key is
+    # constant ('index') — the page has no per-user state.
+    _cached = _OPERATORS_TTL_CACHE.get("index")
+    if _cached and _cached[0] > time.time():
+        return Response(_cached[1], mimetype="text/html",
+                        headers={"Cache-Control": "public, max-age=600",
+                                 "X-Cache": "hit-ttl"})
+
     c = _conn()
     ops = []
     if c is not None:
@@ -369,8 +386,13 @@ a{{color:#818cf8;text-decoration:none}} a:hover{{text-decoration:underline;color
 <p class="foot">Live: <a href="/api/v1/operators">/api/v1/operators</a> · Brand: <a href="/vs">vs static competitors</a> · Ops: <a href="/transparency">transparency console</a></p>
 <script src="/js/dchub-nav.js" defer></script>
 </body></html>"""
+    # slow_pages quick-win: write to TTL cache (only when we got rows;
+    # don't poison the cache with an empty render if DB was down).
+    if ops:
+        _OPERATORS_TTL_CACHE["index"] = (time.time() + _OPERATORS_TTL_SECS, html)
     return Response(html, mimetype="text/html",
-                    headers={"Cache-Control": "public, max-age=600"})
+                    headers={"Cache-Control": "public, max-age=600",
+                             "X-Cache": "miss"})
 
 
 @operators_bp.route("/operators/<slug>", methods=["GET"])
