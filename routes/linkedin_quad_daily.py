@@ -491,21 +491,61 @@ def _record(slot_date, slot_hour, topic, style, text, landing, og_url, result):
 
 @linkedin_quad_bp.route("/run", methods=["GET", "POST"])
 def run():
-    """Cron-callable. Fires the slot matching current UTC hour."""
+    """Cron-callable. Fires the slot matching current UTC hour.
+
+    Item J-unblock (2026-06-02): off-slot publishing support.
+      - force=true OR ignore_slot=true (query OR JSON body) bypasses the
+        08/12/16/20 UTC slot check entirely, so an operator can publish
+        any time (defaults to the first slot's topic).
+      - manual_copy (JSON body) overrides the topic-rotation default —
+        if provided, that exact text is posted instead of the engine's
+        composition. Lets operators publish a hand-written piece without
+        editing the rotation.
+    """
+    # Merge JSON body + query string into a single param dict so
+    # force/ignore_slot/topic/manual_copy work from either surface. Body
+    # wins on conflicting keys (the explicit override channel).
+    _body = {}
+    try:
+        if request.is_json:
+            _body = request.get_json(silent=True) or {}
+    except Exception:
+        _body = {}
+
+    def _p(key, default=None):
+        v = _body.get(key)
+        if v is None or v == "":
+            v = request.args.get(key)
+        return v if v not in (None, "") else default
+
+    def _truthy(v):
+        return str(v or "").strip().lower() in ("1", "true", "yes", "on")
+
+    _ignore_slot = _truthy(_p("ignore_slot")) or _truthy(_p("force"))
+    _manual_copy = _p("manual_copy")
+
     now = datetime.datetime.utcnow()
     target_slot = None
     for slot in SLOTS:
         if now.hour == slot["hour"] and now.minute < 15:
             target_slot = slot
             break
-    if not target_slot and request.args.get("force"):
-        target_slot = next((s for s in SLOTS if s["topic"] == request.args.get("topic")), SLOTS[0])
+    # force/ignore_slot bypass: when set, pick a slot by ?topic= (if
+    # given and matched) or fall through to the first slot. This is
+    # broader than the old `force AND topic` path, which only worked
+    # if BOTH params were present.
+    if not target_slot and (_ignore_slot or _p("force")):
+        _topic = _p("topic")
+        target_slot = next(
+            (s for s in SLOTS if s["topic"] == _topic), SLOTS[0])
     if not target_slot:
         return jsonify({
             "skipped": True,
             "reason": "no_slot_for_hour",
             "current_hour": now.hour,
             "slot_hours": [s["hour"] for s in SLOTS],
+            "hint": ("Pass force=true or ignore_slot=true (query or "
+                     "JSON body) to publish off-slot."),
         }), 200
 
     slot_date = now.date()
@@ -514,7 +554,9 @@ def run():
     # even if the day's row exists. _already_posted itself now only
     # treats success=TRUE rows as locking (failed rows auto-permit
     # retry on the next cron tick).
-    bypass = (request.args.get("force") or "").lower() in ("1", "true", "yes")
+    # Item J-unblock: ignore_slot also bypasses already-posted (off-slot
+    # publishing is by definition an explicit operator override).
+    bypass = _truthy(_p("force")) or _ignore_slot
     if not bypass and _already_posted(slot_date, target_slot["hour"]):
         return jsonify({"skipped": True, "reason": "already_posted_this_slot",
                          "slot": target_slot}), 200
@@ -568,12 +610,21 @@ def run():
         # Absolute last resort
         text = _format_post(target_slot, payload)
 
+    # Item J-unblock (2026-06-02): manual_copy body override. When set,
+    # short-circuit the engine output AND the 14-day dedup nudge (the
+    # operator knows what they want to post; don't append a date stamp).
+    if _manual_copy and str(_manual_copy).strip():
+        text = str(_manual_copy)
+        payload["manual_copy_override"] = True
+
     # r48 (2026-05-25): 14-day content dedup. Even with per-slot
     # uniqueness, the same TEXT can repeat if upstream data is stale.
     # Hash the post text, check against last 14 days of same-topic
     # posts. If we've already posted essentially the same content,
     # nudge by appending a timestamp signature to force novelty.
-    if _pg and _dsn():
+    # Item J-unblock: skip dedup nudge when manual_copy is set — the
+    # operator chose those exact bytes; don't mutate.
+    if _pg and _dsn() and not (_manual_copy and str(_manual_copy).strip()):
         try:
             import hashlib as _h
             text_sig = _h.sha256(text.encode("utf-8")).hexdigest()[:16]
