@@ -910,11 +910,52 @@ def _is_html_insertion_fix(find: str, replace: str) -> bool:
     return False
 
 
+# Item D-selfheal (2026-06-02): lazy DDL for brain_pending_html_fixes.
+# Mirrors routes/schema_repair.py:290 so the table can be self-created on
+# first hit instead of waiting for a schema_repair admin POST. Idempotent
+# (CREATE TABLE IF NOT EXISTS + IF NOT EXISTS indexes).
+_BRAIN_PENDING_HTML_FIXES_DDL = (
+    """CREATE TABLE IF NOT EXISTS brain_pending_html_fixes (
+        id              BIGSERIAL PRIMARY KEY,
+        page_url        TEXT,
+        find_text       TEXT,
+        replace_text    TEXT,
+        rationale       TEXT,
+        status          TEXT DEFAULT 'dry_run',
+        approval_count  INT  DEFAULT 0,
+        created_at      TIMESTAMPTZ DEFAULT NOW(),
+        applied_at      TIMESTAMPTZ
+    )""",
+    "CREATE INDEX IF NOT EXISTS ix_brain_pending_html_status ON brain_pending_html_fixes(status)",
+    "CREATE INDEX IF NOT EXISTS ix_brain_pending_html_created ON brain_pending_html_fixes(created_at DESC)",
+)
+
+
+def _ensure_brain_pending_html_fixes(cur) -> bool:
+    """Lazy CREATE TABLE + indexes for brain_pending_html_fixes. Safe to
+    call before any SELECT/INSERT. Returns True on success; False if any
+    DDL fails (caller can choose to retry or surface the error).
+
+    NOTE: must be called from a cursor whose transaction is committable
+    by the caller (we don't commit here so the caller controls scope)."""
+    try:
+        for _stmt in _BRAIN_PENDING_HTML_FIXES_DDL:
+            cur.execute(_stmt)
+        return True
+    except Exception as e:
+        print(f"[brain_v2_layer4] lazy DDL failed: {e}", flush=True)
+        return False
+
+
 def _stage_dry_run_html_fix(issue: dict, find: str, replace: str,
                              rationale: str, approval_count: int) -> bool:
     """Insert a dry_run row in brain_pending_html_fixes. Idempotent: if a
     row with the same (page_url, find_text, replace_text) already exists,
-    bump approval_count instead of duplicating. Returns True on success."""
+    bump approval_count instead of duplicating. Returns True on success.
+
+    Item D-selfheal (2026-06-02): on UndefinedTable, lazy CREATE the
+    table inline and retry once. Removes the schema_repair dependency.
+    """
     if approval_count < 2:
         return False
     if not _is_html_insertion_fix(find, replace):
@@ -927,28 +968,47 @@ def _stage_dry_run_html_fix(issue: dict, find: str, replace: str,
     if conn is None:
         return False
     page_url = (issue.get("url") or "")[:1024]
+
+    def _do_upsert(cur):
+        cur.execute(
+            """SELECT id, approval_count FROM brain_pending_html_fixes
+               WHERE page_url = %s AND find_text = %s AND replace_text = %s
+               LIMIT 1""",
+            (page_url, find[:4096], replace[:4096]))
+        row = cur.fetchone()
+        if row:
+            cur.execute(
+                """UPDATE brain_pending_html_fixes
+                      SET approval_count = %s
+                    WHERE id = %s""",
+                (max(int(row[1] or 0), int(approval_count)), int(row[0])))
+        else:
+            cur.execute(
+                """INSERT INTO brain_pending_html_fixes
+                     (page_url, find_text, replace_text, rationale,
+                      status, approval_count)
+                   VALUES (%s, %s, %s, %s, 'dry_run', %s)""",
+                (page_url, find[:4096], replace[:4096],
+                 (rationale or '')[:1024], int(approval_count)))
+
     try:
         with conn.cursor() as cur:
-            cur.execute(
-                """SELECT id, approval_count FROM brain_pending_html_fixes
-                   WHERE page_url = %s AND find_text = %s AND replace_text = %s
-                   LIMIT 1""",
-                (page_url, find[:4096], replace[:4096]))
-            row = cur.fetchone()
-            if row:
-                cur.execute(
-                    """UPDATE brain_pending_html_fixes
-                          SET approval_count = %s
-                        WHERE id = %s""",
-                    (max(int(row[1] or 0), int(approval_count)), int(row[0])))
-            else:
-                cur.execute(
-                    """INSERT INTO brain_pending_html_fixes
-                         (page_url, find_text, replace_text, rationale,
-                          status, approval_count)
-                       VALUES (%s, %s, %s, %s, 'dry_run', %s)""",
-                    (page_url, find[:4096], replace[:4096],
-                     (rationale or '')[:1024], int(approval_count)))
+            try:
+                _do_upsert(cur)
+            except Exception as e:
+                # UndefinedTable surfaces as psycopg2.errors.UndefinedTable
+                # (SQLSTATE 42P01). Match on the SQLSTATE-derived message
+                # so we don't depend on the psycopg2 errors submodule path
+                # (varies across psycopg2 / psycopg3 / pg8000).
+                _msg = str(e).lower()
+                if "does not exist" not in _msg and "undefinedtable" not in _msg:
+                    raise
+                try: conn.rollback()
+                except Exception: pass
+                if not _ensure_brain_pending_html_fixes(cur):
+                    raise
+                conn.commit()
+                _do_upsert(cur)
         conn.commit()
         return True
     except Exception as e:
@@ -981,21 +1041,37 @@ def pending_html_fixes():
                         as_of=datetime.now(timezone.utc).isoformat()), 503
     try:
         with conn.cursor() as cur:
-            if status == "all":
-                cur.execute(
-                    """SELECT id, page_url, find_text, replace_text, rationale,
-                              status, approval_count, created_at, applied_at
-                         FROM brain_pending_html_fixes
-                        ORDER BY created_at DESC
-                        LIMIT 200""")
-            else:
-                cur.execute(
-                    """SELECT id, page_url, find_text, replace_text, rationale,
-                              status, approval_count, created_at, applied_at
-                         FROM brain_pending_html_fixes
-                        WHERE status = %s
-                        ORDER BY created_at DESC
-                        LIMIT 200""", (status,))
+            def _do_select(c):
+                if status == "all":
+                    c.execute(
+                        """SELECT id, page_url, find_text, replace_text, rationale,
+                                  status, approval_count, created_at, applied_at
+                             FROM brain_pending_html_fixes
+                            ORDER BY created_at DESC
+                            LIMIT 200""")
+                else:
+                    c.execute(
+                        """SELECT id, page_url, find_text, replace_text, rationale,
+                                  status, approval_count, created_at, applied_at
+                             FROM brain_pending_html_fixes
+                            WHERE status = %s
+                            ORDER BY created_at DESC
+                            LIMIT 200""", (status,))
+            # Item D-selfheal (2026-06-02): lazy CREATE on UndefinedTable
+            # so the route never 500s with "relation does not exist"
+            # (was the symptom from PR fc8ecabc). One-shot retry.
+            try:
+                _do_select(cur)
+            except Exception as e:
+                _msg = str(e).lower()
+                if "does not exist" not in _msg and "undefinedtable" not in _msg:
+                    raise
+                try: conn.rollback()
+                except Exception: pass
+                if not _ensure_brain_pending_html_fixes(cur):
+                    raise
+                conn.commit()
+                _do_select(cur)
             rows = cur.fetchall() or []
         items = [{
             "id": int(r[0]),
