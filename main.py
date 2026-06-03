@@ -26995,6 +26995,37 @@ try:
 except Exception as _e:
     print(f"[main] autopilot_outcomes register failed: {_e}", file=sys.stderr)
 
+# Phase evolution_measured (2026-06-02): outcome-bound brain. Four blueprints
+# wire the durable fix:
+#   brain_metric_targets    — every output registers a target metric here
+#   metric_observatory      — hourly KPI snapshots, source of truth for deltas
+#   outcome_verifier        — scores targets vs observations, spots regressions
+#   weekly_movement_digest  — daily 'what moved this week' to azmartone
+try:
+    from routes.brain_metric_targets import brain_metric_targets_bp
+    app.register_blueprint(brain_metric_targets_bp)
+    print("[main] brain_metric_targets_bp registered", flush=True)
+except Exception as _e:
+    print(f"[main] brain_metric_targets register failed: {_e}", file=sys.stderr)
+try:
+    from routes.metric_observatory import metric_observatory_bp
+    app.register_blueprint(metric_observatory_bp)
+    print("[main] metric_observatory_bp registered", flush=True)
+except Exception as _e:
+    print(f"[main] metric_observatory register failed: {_e}", file=sys.stderr)
+try:
+    from routes.outcome_verifier import outcome_verifier_bp
+    app.register_blueprint(outcome_verifier_bp)
+    print("[main] outcome_verifier_bp registered", flush=True)
+except Exception as _e:
+    print(f"[main] outcome_verifier register failed: {_e}", file=sys.stderr)
+try:
+    from routes.weekly_movement_digest import weekly_movement_digest_bp
+    app.register_blueprint(weekly_movement_digest_bp)
+    print("[main] weekly_movement_digest_bp registered", flush=True)
+except Exception as _e:
+    print(f"[main] weekly_movement_digest register failed: {_e}", file=sys.stderr)
+
 # Phase GGGGG (2026-05-16): schema.org saturation audit + reusable
 # JSON-LD helper for new pages. Drives SOT score.
 try:

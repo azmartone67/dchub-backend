@@ -258,6 +258,27 @@ _DISPATCH = [
      f"{BASE}/api/v1/sources/cf-arcgis-proxy/heartbeat",
      "POST",
      lambda now: now.minute >= 13 and now.minute < 18),
+
+    # Phase evolution_measured (2026-06-02): outcome-bound brain cron.
+    # Three new schedules.
+    # 1) Hourly: snapshot all tracked KPIs into brain_metric_observations.
+    #    This is the source of truth deltas are computed from.
+    ("metric_observatory_snapshot",
+     f"{BASE}/api/v1/brain/metric-observatory/snapshot",
+     "POST",
+     lambda now: now.minute >= 25 and now.minute < 30),
+    # 2) Every 6h: verify any metric_targets whose verify_at has passed.
+    #    Also fires the regression spotter + auto-revert path.
+    ("outcome_verifier_run",
+     f"{BASE}/api/v1/brain/outcome-verifier/run",
+     "POST",
+     lambda now: now.hour % 6 == 0 and now.minute >= 45 and now.minute < 50),
+    # 3) Daily 13:00 UTC (9 AM ET): compose + send the 'what moved' digest
+    #    to azmartone@gmail.com. The operator's falsifiable scoreboard.
+    ("weekly_movement_digest_daily",
+     f"{BASE}/api/v1/brain/weekly-movement-digest/run?send=true",
+     "POST",
+     lambda now: now.hour == 13 and now.minute < 5),
 ]
 
 
