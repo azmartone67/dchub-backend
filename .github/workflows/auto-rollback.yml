@@ -1,40 +1,49 @@
 name: auto-rollback
 on:
+  push:
+    branches: [main]   # run 5 min after every deploy
   workflow_dispatch:
   schedule:
-    - cron: '*/15 * * * *'   # every 15 min
+    - cron: '*/5 * * * *'   # safety net every 5 min
 jobs:
   check-and-rollback:
     runs-on: ubuntu-latest
     permissions:
       contents: write
+      issues: write
     steps:
       - uses: actions/checkout@v5
         with:
           fetch-depth: 5
           token: ${{ secrets.GITHUB_TOKEN }}
-      - name: Probe /api/v1/health
+      - name: Wait for Railway to settle
+        if: github.event_name == 'push'
+        run: sleep 240   # 4 min — Railway rebuild + warmup
+      - name: Sample SLO 5x over 5min
         id: probe
         run: |
           set +e
-          BODY=$(curl -s --max-time 12 https://dchub.cloud/api/v1/health)
-          SCORE=$(echo "$BODY" | python3 -c 'import sys,json;d=json.loads(sys.stdin.read() or "{}");print(d.get("data",{}).get("score","-1"))' 2>/dev/null || echo -1)
-          ROUTES=$(curl -s --max-time 12 https://dchub.cloud/api/v1/observability/route-audit | python3 -c 'import sys,json;d=json.loads(sys.stdin.read() or "{}");print(d.get("data",{}).get("shadowed_count",0))' 2>/dev/null || echo 0)
-          echo "score=$SCORE" >> $GITHUB_OUTPUT
-          echo "shadows=$ROUTES" >> $GITHUB_OUTPUT
-          echo "Health score: $SCORE | Shadowed routes: $ROUTES"
-      - name: Decide
+          HARD=0
+          BURN_DETAIL=""
+          for i in 1 2 3 4 5; do
+            BODY=$(curl -s --max-time 12 https://dchub.cloud/api/v1/slo/error-budget)
+            VERDICT=$(echo "$BODY" | python3 -c 'import sys,json;d=json.loads(sys.stdin.read() or "{}");print(d.get("verdict","unknown"))' 2>/dev/null || echo unknown)
+            PCT=$(echo "$BODY" | python3 -c 'import sys,json;d=json.loads(sys.stdin.read() or "{}");print(d.get("global_err_pct",-1))' 2>/dev/null || echo -1)
+            WORST=$(echo "$BODY" | python3 -c 'import sys,json;d=json.loads(sys.stdin.read() or "{}");p=(d.get("top_5xx_paths") or [{}])[0];print(p.get("pattern","-"))' 2>/dev/null || echo -)
+            echo "sample $i: verdict=$VERDICT  err_pct=$PCT  worst_path=$WORST"
+            if [ "$VERDICT" = "hard_burn" ]; then
+              HARD=$((HARD+1))
+              BURN_DETAIL="err_pct=$PCT worst=$WORST"
+            fi
+            sleep 60
+          done
+          echo "hard_burn_count=$HARD" >> $GITHUB_OUTPUT
+          echo "burn_detail=$BURN_DETAIL" >> $GITHUB_OUTPUT
+      - name: Decide (rollback only if 3+/5 samples hard_burn)
         id: decide
         run: |
-          SCORE='${{ steps.probe.outputs.score }}'
-          SHADOWS='${{ steps.probe.outputs.shadows }}'
-          # Rollback if score < 70 OR shadowed_count > 0
-          if [ -z "$SCORE" ] || [ "$SCORE" = "-1" ]; then
-            echo "rollback=false" >> $GITHUB_OUTPUT
-            echo "  unable to read score — skipping"
-            exit 0
-          fi
-          if [ "$(printf '%.0f' $SCORE 2>/dev/null || echo 100)" -lt 70 ] || [ "$SHADOWS" -gt 0 ]; then
+          HARD='${{ steps.probe.outputs.hard_burn_count }}'
+          if [ "$HARD" -ge 3 ]; then
             echo "rollback=true" >> $GITHUB_OUTPUT
           else
             echo "rollback=false" >> $GITHUB_OUTPUT
@@ -43,7 +52,7 @@ jobs:
         if: steps.decide.outputs.rollback == 'true'
         run: |
           git config user.email "azmartone@gmail.com"
-          git config user.name "Auto-Rollback Bot"
+          git config user.name "SLO-Gate Bot"
           git revert --no-edit HEAD || { echo "revert failed"; exit 1; }
           git push origin main
       - name: Open issue
@@ -53,8 +62,8 @@ jobs:
           script: |
             github.rest.issues.create({
               owner: context.repo.owner,
-              repo: context.repo.repo,
-              title: `auto-rollback: HEAD reverted (score=${{ steps.probe.outputs.score }}, shadows=${{ steps.probe.outputs.shadows }})`,
-              body: 'Health score dropped below 70 or a shadowed route was detected. The latest commit on main has been auto-reverted.',
-              labels: ['auto-rollback','phase22']
+              repo:  context.repo.repo,
+              title: `slo-gate: HEAD reverted (${{ steps.probe.outputs.burn_detail }})`,
+              body:  'SLO gate: 3+ of 5 post-deploy samples reported hard_burn at /api/v1/slo/error-budget (global 5xx >10% OR any pattern >100 5xx/5min). HEAD reverted automatically. Investigate top_5xx_paths in the SLO endpoint to find the regressing path.',
+              labels: ['slo-gate','auto-rollback']
             })

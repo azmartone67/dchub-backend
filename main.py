@@ -1262,7 +1262,13 @@ _FAST_HEALTH_HEADERS = [
     ('Cache-Control', 'no-store'),
     ('X-Fast-Path', 'wsgi-health'),
 ]
-_FAST_HEALTH_PATHS = frozenset(['/health', '/alive', '/healthz', '/livez', '/readyz'])
+# Phase errors_slo_gate (2026-06-02): /api/health joins the WSGI fast-path
+# so the monitoring signal can NEVER be the load. Previously it ran
+# DB COUNTs on discovered_facilities+deals+announcements; when the pool
+# starved (the exact condition that produces 5xxs) the probe 5xxed too,
+# blinding the monitor precisely when we need it. The richer body is
+# still available at /api/health/deep.
+_FAST_HEALTH_PATHS = frozenset(['/health', '/alive', '/healthz', '/livez', '/readyz', '/api/health'])
 
 # WSGI fast-path for /signup GET — bypasses gthread saturation that
 # was causing intermittent 5xx on the signup page (urgency-9 quick-win).
@@ -26307,6 +26313,27 @@ try:
     print("[main] health_lite_bp registered: /healthz /livez /readyz", flush=True)
 except Exception as _e:
     print(f"[main] health_lite_bp register failed: {_e}", flush=True)
+
+# Phase errors_slo_gate (2026-06-02): self-served SLO endpoint reads
+# brain_http_errors directly so the post-deploy gate can grade on the
+# real 5xx rate users hit, not on a synthetic health score.
+try:
+    from routes.slo_error_budget import slo_bp
+    app.register_blueprint(slo_bp)
+    print("[main] slo_bp registered: /api/v1/slo/error-budget", flush=True)
+except Exception as _e:
+    print(f"[main] slo_bp register failed: {_e}", flush=True)
+
+# Phase errors_slo_gate (2026-06-02): SLO burn detector files a brain
+# finding on every soft_burn/hard_burn so the next regressing path
+# auto-investigates instead of waiting for the user to notice.
+try:
+    from routes.brain_layer14_slo_burn import slo_burn_bp, start_scheduler as _slo_burn_start
+    app.register_blueprint(slo_burn_bp)
+    _slo_burn_start()
+    print("[main] brain_l14_slo_burn registered + scheduler started", flush=True)
+except Exception as _e:
+    print(f"[main] brain_l14_slo_burn register failed: {_e}", flush=True)
 
 # Phase ZZZZZ-round41 (2026-05-25): DCPI cron health + recovery
 try:

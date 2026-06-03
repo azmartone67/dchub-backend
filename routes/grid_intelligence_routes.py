@@ -750,75 +750,12 @@ def list_grid_regions():
         # grid fill — Phase B
 
 
+        # Phase errors_slo_gate (2026-06-02): the only real call uses
+        # `regions` (the actual variable bound at line 747). 11 additional
+        # try/except blocks below referenced undefined names
+        # (data/result/payload/response/out/resp/body), each silently
+        # NameError-burned every request. Removed — kept only the real call.
         try: _apply_grid_queue_override(regions)
-
-
-        except Exception: pass
-
-
-        try: _apply_grid_queue_override(data['regions'])
-
-
-        except Exception: pass
-
-
-        try: _apply_grid_queue_override(result['regions'])
-
-
-        except Exception: pass
-
-
-        try: _apply_grid_queue_override(payload['regions'])
-
-
-        except Exception: pass
-
-
-        try: _apply_grid_queue_override(response['regions'])
-
-
-        except Exception: pass
-
-
-        try: _apply_grid_queue_override(response.get('regions'))
-
-
-        except Exception: pass
-
-
-        try: _apply_grid_queue_override(out['regions'])
-
-
-        except Exception: pass
-
-
-        try: _apply_grid_queue_override(out.get('regions'))
-
-
-        except Exception: pass
-
-
-        try: _apply_grid_queue_override(resp['regions'])
-
-
-        except Exception: pass
-
-
-        try: _apply_grid_queue_override(resp.get('regions'))
-
-
-        except Exception: pass
-
-
-        try: _apply_grid_queue_override(body['regions'])
-
-
-        except Exception: pass
-
-
-        try: _apply_grid_queue_override(body.get('regions'))
-
-
         except Exception: pass
 
 
