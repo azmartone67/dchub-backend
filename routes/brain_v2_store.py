@@ -183,6 +183,46 @@ CREATE TABLE IF NOT EXISTS brain_directives (
 );
 CREATE INDEX IF NOT EXISTS brain_directives_status_idx
     ON brain_directives(status, priority DESC, created_at);
+
+-- Phase brain_evolves (2026-06-02): fuzzy convergence + recipe-key dedupe.
+-- recipe_key collapses whitespace/quote/wording drift so the 2-cycle
+-- approval gate can converge across Claude's natural proposal-to-proposal
+-- variation. Computed in Python (_recipe_key in brain_v2_layer4.py).
+ALTER TABLE brain_proposed_fixes ADD COLUMN IF NOT EXISTS recipe_key TEXT;
+CREATE UNIQUE INDEX IF NOT EXISTS brain_proposed_recipe_key_idx
+    ON brain_proposed_fixes(recipe_key) WHERE recipe_key IS NOT NULL;
+-- Per-finding TTL: attempt_count + unfixable flag. After N>=5 cycles
+-- untried, brain_v2_layer4 flips unfixable_by_current_strategy=TRUE,
+-- routes the NEXT attempt to DCHUB_BRAIN_MODEL_FALLBACK_AFTER_TTL.
+ALTER TABLE brain_issue_persistence ADD COLUMN IF NOT EXISTS attempt_count INT NOT NULL DEFAULT 0;
+ALTER TABLE brain_issue_persistence ADD COLUMN IF NOT EXISTS unfixable_by_current_strategy BOOLEAN NOT NULL DEFAULT FALSE;
+ALTER TABLE brain_issue_persistence ADD COLUMN IF NOT EXISTS escalated_to_human_at TIMESTAMPTZ;
+-- Templated-class fan-out: ONE recipe produces N apply targets.
+CREATE TABLE IF NOT EXISTS brain_proposal_recipes (
+    id              BIGSERIAL PRIMARY KEY,
+    proposal_id     BIGINT REFERENCES brain_proposed_fixes(id) ON DELETE CASCADE,
+    issue_label     TEXT NOT NULL,
+    url_glob        TEXT NOT NULL,
+    search_pattern  TEXT NOT NULL,
+    replace_pattern TEXT NOT NULL,
+    created_at      TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+    auto_apply_safe BOOLEAN NOT NULL DEFAULT FALSE,
+    CONSTRAINT brain_recipes_unique UNIQUE (issue_label, search_pattern, replace_pattern)
+);
+CREATE INDEX IF NOT EXISTS brain_recipes_label_idx ON brain_proposal_recipes(issue_label);
+-- 24h-hold tracking: did the applied fix actually stick?
+CREATE TABLE IF NOT EXISTS brain_fix_holds (
+    id              BIGSERIAL PRIMARY KEY,
+    proposal_id     BIGINT NOT NULL,
+    proposal_kind   TEXT NOT NULL,
+    issue_label     TEXT,
+    applied_at      TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+    held_24h        BOOLEAN,
+    checked_at      TIMESTAMPTZ,
+    regression_evidence TEXT,
+    CONSTRAINT brain_holds_unique UNIQUE (proposal_id, proposal_kind)
+);
+CREATE INDEX IF NOT EXISTS brain_holds_applied_idx ON brain_fix_holds(applied_at DESC);
 """
 
 
@@ -1049,6 +1089,78 @@ def count_open_directives() -> int:
     finally:
         try: c.close()
         except Exception: pass
+
+
+# ---------------------------------------------------------------------------
+# Phase brain_evolves (2026-06-02): fix-hold tracking + recipe helpers.
+# Outcome-bound brain self-grading consumes these. record_fix_hold is called
+# by master-heal right after a brain proposal is applied; fix_hold_stats is
+# the source for /api/v1/brain/fix-hold-rate.
+# ---------------------------------------------------------------------------
+
+def record_fix_hold(proposal_id: int, proposal_kind: str = "text",
+                    issue_label: str | None = None) -> bool:
+    """Idempotent on (proposal_id, proposal_kind). Returns True if a row landed."""
+    c = _conn()
+    if c is None:
+        return False
+    try:
+        with c, c.cursor() as cur:
+            cur.execute(
+                """INSERT INTO brain_fix_holds (proposal_id, proposal_kind, issue_label)
+                   VALUES (%s, %s, %s)
+                   ON CONFLICT (proposal_id, proposal_kind) DO NOTHING""",
+                (int(proposal_id), proposal_kind, (issue_label or "")[:200]),
+            )
+        return True
+    except Exception as e:
+        print(f"[brain_v2_store] record_fix_hold failed: {e}", file=sys.stderr)
+        return False
+    finally:
+        try: c.close()
+        except Exception: pass
+
+
+def fix_hold_stats(window_hours: int = 168) -> dict:
+    """Outcome-based brain grade. Returns 24h-hold rate over the window
+    plus 7-day attempts/held/reverted/pending counts. Source for
+    /api/v1/brain/fix-hold-rate."""
+    out = {
+        "attempts_7d": 0, "held_24h": 0, "reverted_24h": 0,
+        "pending": 0, "hold_rate_24h": None, "attempts_24h": 0,
+    }
+    c = _conn()
+    if c is None:
+        return out
+    try:
+        with c, c.cursor() as cur:
+            cur.execute(
+                """SELECT
+                       COUNT(*)                                                AS attempts,
+                       COUNT(*) FILTER (WHERE held_24h IS TRUE)                AS held,
+                       COUNT(*) FILTER (WHERE held_24h IS FALSE)               AS reverted,
+                       COUNT(*) FILTER (WHERE held_24h IS NULL
+                                          AND applied_at > NOW() - INTERVAL '24 hours') AS pending,
+                       COUNT(*) FILTER (WHERE applied_at > NOW() - INTERVAL '24 hours') AS attempts_24h
+                     FROM brain_fix_holds
+                    WHERE applied_at > NOW() - (%s || ' hours')::INTERVAL""",
+                (str(int(window_hours)),),
+            )
+            r = cur.fetchone() or (0, 0, 0, 0, 0)
+            out["attempts_7d"] = int(r[0] or 0)
+            out["held_24h"] = int(r[1] or 0)
+            out["reverted_24h"] = int(r[2] or 0)
+            out["pending"] = int(r[3] or 0)
+            out["attempts_24h"] = int(r[4] or 0)
+            denom = out["held_24h"] + out["reverted_24h"]
+            if denom > 0:
+                out["hold_rate_24h"] = round(out["held_24h"] / denom, 3)
+    except Exception as e:
+        print(f"[brain_v2_store] fix_hold_stats failed: {e}", file=sys.stderr)
+    finally:
+        try: c.close()
+        except Exception: pass
+    return out
 
 
 # ---------------------------------------------------------------------------

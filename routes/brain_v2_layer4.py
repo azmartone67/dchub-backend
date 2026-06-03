@@ -1080,6 +1080,51 @@ def brain_assessment_alias():
     return redirect("/api/v1/brain/self-assessment", code=307)
 
 
+# Phase brain_evolves (2026-06-02): outcome-based brain grade.
+# Returns 24h-hold rate over the last 7d so the self-test can grade L4
+# by REAL OUTCOMES (not activity volume). The only metric that proves
+# the brain actually applies fixes that stick — the only honest grade.
+@brain_v2_bp.get("/api/v1/brain/fix-hold-rate")
+def fix_hold_rate():
+    """Returns hold_rate_24h, attempts_7d, attempts_24h, held/reverted/pending
+    counts. Self-test consumes this as the L4 verdict input."""
+    try:
+        if not _STORE_OK:
+            return jsonify(hold_rate_24h=None, attempts_24h=0,
+                           reason="store_unavailable"), 200
+        stats = _store.fix_hold_stats(window_hours=168)
+        return jsonify(
+            as_of=datetime.now(timezone.utc).isoformat(),
+            window_hours=168,
+            healthy=((stats.get("hold_rate_24h") or 0) >= 0.7
+                     or stats.get("attempts_7d", 0) < 5),
+            **stats,
+        ), 200
+    except Exception as e:
+        return jsonify(hold_rate_24h=None, error=str(e)[:200]), 200
+
+
+# Master-heal calls this immediately after applying a brain proposal
+# (auto-applied or 2-cycle approved). Creates a brain_fix_holds row so
+# the 24h-hold metric has something to measure. Idempotent on
+# (proposal_id, proposal_kind).
+@brain_v2_bp.post("/api/v1/brain/fix-holds/record")
+def record_fix_holds():
+    body = request.get_json(silent=True) or {}
+    ids = body.get("proposal_ids") or []
+    kind = body.get("kind", "text")
+    label = body.get("issue_label")
+    n = 0
+    if _STORE_OK:
+        for pid in ids:
+            try:
+                if _store.record_fix_hold(int(pid), kind, label):
+                    n += 1
+            except Exception:
+                pass
+    return jsonify(ok=True, recorded=n), 200
+
+
 # Brain error-class registry — what classes of error the brain knows
 # how to recognize + remediate. See routes/brain_error_classes.py.
 # Surfacing this on /brain demonstrates the brain's actual capability
