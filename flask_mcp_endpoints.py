@@ -953,6 +953,68 @@ def mcp_funnel():
     out = {}
     try:
         with _pool.connection() as conn, conn.cursor() as cur:
+            # Item E-selfheal (2026-06-02): lazy CREATE VIEW mcp_funnel_real
+            # if missing. Mirrors routes/schema_repair.py:272 (the canonical
+            # is_synthetic=FALSE view). Wrapped in a broad try/except so a
+            # CREATE failure (permissions, missing base table, etc.) does
+            # NOT 500 the funnel endpoint — readers downstream still degrade
+            # to real_external_7d = None per the Item E fallback pattern.
+            # Idempotent: to_regclass() check + CREATE OR REPLACE.
+            try:
+                cur.execute("SELECT to_regclass('public.mcp_funnel_real')")
+                _exists = (cur.fetchone() or [None])[0]
+                if _exists is None:
+                    # is_synthetic gate identical to schema_repair.py:241-270.
+                    # We use a single CREATE OR REPLACE so concurrent callers
+                    # don't race; if the canonical view exists, we reuse it
+                    # rather than rebuilding the upstream mcp_funnel_canonical.
+                    cur.execute("""
+                        CREATE OR REPLACE VIEW mcp_funnel_real AS
+                            SELECT
+                              s.id, s.created_at, s.signal_type, s.tool_requested,
+                              s.tier_current, s.tier_required,
+                              s.session_id, s.user_email, s.ip_address,
+                              s.mcp_client, s.user_agent,
+                              s.converted, s.converted_at,
+                              s.outreach_sent, s.outreach_sent_at
+                            FROM mcp_upgrade_signals s
+                            WHERE NOT (
+                                COALESCE(LOWER(s.mcp_client),'') IN (
+                                  'node','dchub-selfheal','dchub-mcp-test',
+                                  'mcp-probe','mcp-test','pipeline_mcp','canary',
+                                  'mcp-remote-fallback-test',
+                                  'registry-health-checker','mcp-shield-scanner',
+                                  'yellowmcp-health','glama-health','chiark-prober',
+                                  'fabrique-noauth-probe','agentpulse',
+                                  'mcpscoringengine','mcp-extractor',
+                                  'curl','python-script','node-script',
+                                  'postman','insomnia','verify'
+                                )
+                                OR COALESCE(LOWER(s.mcp_client),'') LIKE 'loop%%'
+                                OR COALESCE(LOWER(s.mcp_client),'') LIKE 'dchub-%%'
+                                OR COALESCE(LOWER(s.mcp_client),'') LIKE 'local-agent-mode%%'
+                                OR COALESCE(LOWER(s.mcp_client),'') LIKE 'leakaudit%%'
+                                OR COALESCE(LOWER(s.mcp_client),'') LIKE 'trial-leak%%'
+                                OR COALESCE(LOWER(s.mcp_client),'') LIKE '%%-probe'
+                                OR COALESCE(LOWER(s.mcp_client),'') LIKE '%%-health'
+                                OR COALESCE(LOWER(s.mcp_client),'') LIKE '%%-scanner'
+                                OR COALESCE(LOWER(s.mcp_client),'') LIKE '%%-checker'
+                            )
+                    """)
+                    conn.commit()
+            except Exception as _ve:
+                # Never block the funnel on view-creation failure; the
+                # downstream try/except for real_external_7d already
+                # degrades cleanly to None.
+                try: conn.rollback()
+                except Exception: pass
+                try:
+                    import logging as _lg
+                    _lg.getLogger(__name__).warning(
+                        "mcp_funnel lazy view create skipped: %s", _ve)
+                except Exception:
+                    pass
+
             cur.execute(
                 "SELECT COUNT(*) FROM mcp_tool_calls WHERE created_at >= NOW() - INTERVAL '7 days'"
             )
