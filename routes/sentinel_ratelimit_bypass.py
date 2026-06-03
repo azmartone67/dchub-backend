@@ -18,21 +18,30 @@ from flask import Blueprint, current_app, request, jsonify
 
 ratelimit_bypass_bp = Blueprint("ratelimit_bypass", __name__)
 
-# Internal UA patterns that should bypass rate limits
+# Internal UA patterns that should bypass rate limits.
+# All patterns stored LOWERCASE; _is_internal lowercases the incoming UA
+# before comparing. r-bypass-ci (2026-06-02): the prior case-sensitive
+# match silently failed for `dchub-brain-radar/1.0` (lowercase) and
+# `dchub-brain-l14/1.0` because the patterns were CamelCase. Result:
+# brain-radar 429'd on every cycle, log spam, and the L14 SLO probe
+# competed with real traffic for the rate-limit bucket.
 INTERNAL_UA_PATTERNS = (
-    "DCHub-",                       # DCHub-Warmer, DCHub-BrainRadar, DCHub-Healer, etc.
-    "DCHub-Sentinel",               # site sentinel
-    "Brain-v2-headless",            # Layer 4 brain probes
+    "dchub-",                       # dchub-warmer, dchub-brainradar, dchub-healer, dchub-brain-radar, dchub-brain-l14, etc.
+    "dchub-sentinel",               # site sentinel
+    "brain-v2-headless",            # Layer 4 brain probes
     "dchub-brain-deadlink-probe",   # dead-link probe
+    "dchub-brain-radar",            # brain consistency radar
+    "dchub-brain-l14",              # SLO burn probe
     "dchub-frontend-health",        # frontend health checks
     "dchub-cors-probe",             # cors probes
-    "GH-Actions-CronHeartbeat",     # GH Actions cron
+    "gh-actions-cronheartbeat",     # GH Actions cron
 )
 
 
 def _is_internal(ua):
     if not ua: return False
-    return any(p in ua for p in INTERNAL_UA_PATTERNS)
+    ua_l = ua.lower()
+    return any(p in ua_l for p in INTERNAL_UA_PATTERNS)
 
 
 @ratelimit_bypass_bp.before_app_request

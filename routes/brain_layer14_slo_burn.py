@@ -29,30 +29,29 @@ def _dsn():
 
 
 def _file_finding(pattern, verdict, err_pct, n5xx):
-    """Insert into brain_findings (best-effort). Schema discovered from brain_consistency_radar."""
+    """Insert into brain_findings (best-effort). Uses canonical schema from
+    routes/schema_repair.py (issue, url, detail, detector, status) — earlier
+    version invented its own (issue_type, severity) schema and 100% failed
+    inserts. Severity is encoded in `issue` ('slo_hard_burn' vs 'slo_soft_burn')
+    and `detector` ('brain_l14_slo_burn')."""
     if not (_pg and _dsn()):
         return
     try:
         with _pg.connect(_dsn(), connect_timeout=4) as c, c.cursor() as cur:
-            cur.execute("""
-                CREATE TABLE IF NOT EXISTS brain_findings (
-                    id          BIGSERIAL PRIMARY KEY,
-                    detected_at TIMESTAMPTZ DEFAULT NOW(),
-                    issue_type  TEXT,
-                    url         TEXT,
-                    detail      TEXT,
-                    severity    TEXT
-                )
-            """)
+            # Idempotent UPSERT-like: if a recent open finding for this pattern
+            # exists, bump last_seen + count instead of duplicating.
             cur.execute(
-                "INSERT INTO brain_findings (issue_type, url, detail, severity) "
-                "VALUES (%s, %s, %s, %s)",
+                """
+                INSERT INTO brain_findings
+                    (issue, url, count, detail, detector, status)
+                VALUES (%s, %s, 1, %s, %s, 'open')
+                """,
                 (
                     f"slo_{verdict}",
                     pattern,
                     f"SLO {verdict}: pattern {pattern} produced {n5xx} 5xx in 5min "
                     f"(global err_pct={err_pct}%). Pillar: errors_slo_gate.",
-                    "critical" if verdict == "hard_burn" else "high",
+                    "brain_l14_slo_burn",
                 ),
             )
             c.commit()
