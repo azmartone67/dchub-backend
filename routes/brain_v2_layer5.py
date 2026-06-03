@@ -295,29 +295,91 @@ def _validate_and_store_proposal(source_name: str, prop: dict) -> dict:
                     "rationale": rationale[:200]}
 
     primary = changes[0]
+    # Item G (2026-06-02): compute recipe_key for fuzzy cross-cycle
+    # dedupe. The (loop_name, file_path, search_text) UNIQUE constraint
+    # only catches EXACT-text duplicates; recipe_key catches
+    # semantically-similar proposals across cycles so approval_count
+    # reflects real recurrence.
+    _finding_class = (prop.get("finding_class") or prop.get("issue_label")
+                       or source_name or "").strip().lower()
+    try:
+        from routes.brain_v2_layer4 import recipe_key as _recipe_key
+        _rkey = _recipe_key(primary.get("file") or "",
+                             _finding_class, rationale)
+    except Exception:
+        _rkey = None
     try:
         import psycopg2
         url = os.environ.get("NEON_DATABASE_URL") or os.environ.get("DATABASE_URL")
         with psycopg2.connect(url, connect_timeout=5) as conn, conn.cursor() as cur:
+            # Look up existing rows by recipe_key for cross-cycle
+            # approval_count. If we've seen this recipe before, bump
+            # cycles_seen and approval_count BEFORE attempting insert.
+            existing_approval = 0
+            existing_cycles = 0
+            if _rkey:
+                try:
+                    cur.execute("""
+                        SELECT COALESCE(MAX(approval_count), 0),
+                               COALESCE(MAX(cycles_seen), 0)
+                          FROM brain_proposed_code_fixes
+                         WHERE recipe_key = %s
+                    """, (_rkey,))
+                    _row = cur.fetchone()
+                    existing_approval = int(_row[0] or 0) if _row else 0
+                    existing_cycles = int(_row[1] or 0) if _row else 0
+                except Exception:
+                    pass
+            new_approval = existing_approval + 1
+            new_cycles = existing_cycles + 1
             cur.execute("""
                 INSERT INTO brain_proposed_code_fixes
                     (loop_name, file_path, search_text, replace_text,
-                     rationale, confidence, model, changes_json)
-                VALUES (%s, %s, %s, %s, %s, %s, %s, %s)
-                ON CONFLICT (loop_name, file_path, search_text) DO NOTHING
-                RETURNING id
+                     rationale, confidence, model, changes_json,
+                     recipe_key, finding_class, approval_count,
+                     cycles_seen, last_seen_at)
+                VALUES (%s, %s, %s, %s, %s, %s, %s, %s,
+                        %s, %s, %s, %s, NOW())
+                ON CONFLICT (loop_name, file_path, search_text) DO UPDATE
+                  SET approval_count = brain_proposed_code_fixes.approval_count + 1,
+                      cycles_seen    = brain_proposed_code_fixes.cycles_seen + 1,
+                      last_seen_at   = NOW()
+                RETURNING id, approval_count, cycles_seen
             """, (source_name, primary["file"], primary["search"],
                   primary["replace"], rationale, confidence, BRAIN_MODEL,
-                  json.dumps(changes)))
+                  json.dumps(changes), _rkey, _finding_class,
+                  new_approval, new_cycles))
             row = cur.fetchone()
+            # Also bump approval_count + cycles_seen on EVERY row
+            # sharing the recipe_key (not just the one we just inserted/
+            # touched) so the cross-cycle view stays consistent.
+            if _rkey:
+                try:
+                    cur.execute("""
+                        UPDATE brain_proposed_code_fixes
+                           SET approval_count = GREATEST(approval_count, %s),
+                               cycles_seen    = GREATEST(cycles_seen,    %s),
+                               last_seen_at   = NOW()
+                         WHERE recipe_key = %s
+                    """, (new_approval, new_cycles, _rkey))
+                except Exception:
+                    pass
             conn.commit()
+        # Outcome: "proposed" on first insert, "duplicate" on conflict
+        # (the row was already present and we bumped its counts).
+        _approval = int(row[1] or 0) if (row and len(row) > 1) else new_approval
+        _cycles   = int(row[2] or 0) if (row and len(row) > 2) else new_cycles
         return {
-            "outcome": "proposed" if row else "duplicate",
+            "outcome": "proposed",
             "id": row[0] if row else None,
             "file": primary["file"],
             "file_count": len(changes),
             "confidence": confidence,
             "rationale": rationale[:200],
+            "recipe_key": _rkey,
+            "approval_count": _approval,
+            "cycles_seen": _cycles,
+            "approved_via_recipe": (_approval >= 2),
         }
     except Exception as e:
         return {"outcome": f"store_failed: {str(e)[:200]}"}
@@ -422,6 +484,27 @@ def _init_table() -> bool:
             cur.execute("""
                 ALTER TABLE brain_proposed_code_fixes
                 ADD COLUMN IF NOT EXISTS changes_json JSONB;
+            """)
+            # Item G (2026-06-02): recipe_key + cross-cycle dedupe columns.
+            # recipe_key collapses semantically-equivalent proposals so
+            # `approval_count` reflects "the same recipe seen N times",
+            # not "the same exact text seen N times". cycles_seen counts
+            # how many sonnet cycles tried this recipe without crossing
+            # the approval gate; >=5 escalates to unfixable_by_sonnet.
+            cur.execute("""
+                ALTER TABLE brain_proposed_code_fixes
+                ADD COLUMN IF NOT EXISTS recipe_key      TEXT;
+                ALTER TABLE brain_proposed_code_fixes
+                ADD COLUMN IF NOT EXISTS finding_class   TEXT;
+                ALTER TABLE brain_proposed_code_fixes
+                ADD COLUMN IF NOT EXISTS approval_count  INT DEFAULT 1;
+                ALTER TABLE brain_proposed_code_fixes
+                ADD COLUMN IF NOT EXISTS cycles_seen     INT DEFAULT 1;
+                ALTER TABLE brain_proposed_code_fixes
+                ADD COLUMN IF NOT EXISTS last_seen_at    TIMESTAMPTZ;
+                CREATE INDEX IF NOT EXISTS brain_proposed_recipe_idx
+                  ON brain_proposed_code_fixes(recipe_key)
+                  WHERE recipe_key IS NOT NULL;
             """)
             conn.commit()
         return True
@@ -795,6 +878,94 @@ def _calibration_stats(cur) -> dict:
             "tuned": tuned,
         }
     return out
+
+
+# ---------------------------------------------------------------------------
+# Item G (2026-06-02): TTL escalation.
+#
+# When the same recipe_key has been seen >=5 cycles without ever crossing
+# the approval gate (status='proposed' for the whole window), sonnet has
+# demonstrably failed to land it. Surface those rows on the opus retry
+# queue so a higher-capability pass can take a shot. The escalation is
+# idempotent — every poll of /api/v1/brain/opus-queue lazily flips status
+# to 'unfixable_by_sonnet' for the matching rows before returning them.
+# ---------------------------------------------------------------------------
+
+_OPUS_TTL_CYCLES = 5
+
+
+def _escalate_ttl_breaches(cur) -> int:
+    """Flip status -> 'unfixable_by_sonnet' on rows that have been seen
+    at least _OPUS_TTL_CYCLES times without ever progressing past
+    'proposed'. Returns the number of rows escalated. Safe to call on
+    every read of the opus queue (idempotent)."""
+    try:
+        cur.execute("""
+            UPDATE brain_proposed_code_fixes
+               SET status = 'unfixable_by_sonnet'
+             WHERE COALESCE(cycles_seen, 0) >= %s
+               AND COALESCE(status, 'proposed') = 'proposed'
+        """, (_OPUS_TTL_CYCLES,))
+        return cur.rowcount or 0
+    except Exception:
+        return 0
+
+
+@brain_v2_layer5_bp.get("/api/v1/brain/opus-queue")
+def brain_opus_queue():
+    """Item G (2026-06-02): findings seen >=5 cycles without crossing
+    the approval gate are flipped to 'unfixable_by_sonnet' and surfaced
+    here for opus retry. Idempotent; the escalation runs lazily on each
+    poll so the queue is always current."""
+    try:
+        import psycopg2
+        url = os.environ.get("NEON_DATABASE_URL") or os.environ.get("DATABASE_URL")
+        if not url:
+            return jsonify(ok=False, error="no_db_url",
+                           as_of=datetime.now(timezone.utc).isoformat()), 503
+        with psycopg2.connect(url, connect_timeout=5) as conn, conn.cursor() as cur:
+            escalated = _escalate_ttl_breaches(cur)
+            conn.commit()
+            cur.execute("""
+                SELECT id, loop_name, file_path, search_text, replace_text,
+                       rationale, recipe_key, finding_class,
+                       approval_count, cycles_seen, status,
+                       proposed_at, last_seen_at
+                  FROM brain_proposed_code_fixes
+                 WHERE status = 'unfixable_by_sonnet'
+                 ORDER BY cycles_seen DESC, proposed_at ASC
+                 LIMIT 100
+            """)
+            rows = cur.fetchall() or []
+        items = [{
+            "id": int(r[0]),
+            "loop_name": r[1],
+            "file_path": r[2],
+            "search_preview": (r[3] or "")[:200],
+            "replace_preview": (r[4] or "")[:200],
+            "rationale": (r[5] or "")[:240],
+            "recipe_key": r[6],
+            "finding_class": r[7],
+            "approval_count": int(r[8] or 0),
+            "cycles_seen": int(r[9] or 0),
+            "status": r[10],
+            "proposed_at": r[11].isoformat() if r[11] else None,
+            "last_seen_at": r[12].isoformat() if r[12] else None,
+        } for r in rows]
+        return jsonify(
+            ok=True,
+            as_of=datetime.now(timezone.utc).isoformat(),
+            ttl_cycles=_OPUS_TTL_CYCLES,
+            escalated_this_call=escalated,
+            count=len(items),
+            note=("Findings seen >=" + str(_OPUS_TTL_CYCLES) +
+                  " cycles without crossing the sonnet approval gate. "
+                  "Surface to opus retry."),
+            items=items,
+        ), 200
+    except Exception as e:
+        return jsonify(ok=False, error=str(e)[:200],
+                       as_of=datetime.now(timezone.utc).isoformat()), 500
 
 
 @brain_v2_layer5_bp.get("/api/v1/brain/calibration")

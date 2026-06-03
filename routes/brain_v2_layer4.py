@@ -149,7 +149,8 @@ def _log(entry: dict) -> None:
         _learning_log.pop(0)
 
 
-def _validate_proposal(find: str, replace: str) -> tuple[bool, str]:
+def _validate_proposal(find: str, replace: str,
+                        finding_class: str = "") -> tuple[bool, str]:
     """Reject obviously-unsafe fix suggestions. Returns (ok, reason).
 
     Phase NN (2026-05-13): bumped the find_too_short floor from 3 → 8
@@ -162,6 +163,14 @@ def _validate_proposal(find: str, replace: str) -> tuple[bool, str]:
     without rejecting legitimate proposals. Auto-expansion (see
     _auto_expand_find below) tries to rescue short finds before this
     validator sees them.
+
+    Item G (2026-06-02): class-aware gate. The default rule
+    `replace_introduces_html` was blocking the brand_uniformity
+    detector's legitimate fix — adding a `class="dchub-brand-uniform"`
+    attribute to an existing element. When finding_class is in the
+    HTML-class-whitelist (currently {brand_uniformity}), we allow
+    replace to introduce HTML markup as long as the structural shape
+    (left of the first '>') is preserved.
     """
     if not find:
         # Empty find = explicit refusal per the prompt contract.
@@ -173,16 +182,74 @@ def _validate_proposal(find: str, replace: str) -> tuple[bool, str]:
         return False, "noop"
     if not replace:
         return False, "empty_replace"
-    # Don't let the model invent HTML tags
+    # Item G: whitelist of finding_class values that may legitimately
+    # add HTML attributes / classes. The class-addition rule is checked
+    # below; the generic "replace_introduces_html" trip is bypassed
+    # only when the finding_class is whitelisted.
+    _HTML_CLASS_WHITELIST = {"brand_uniformity", "brand_uniform",
+                              "class_addition", "brand-uniformity"}
+    _whitelisted = (finding_class or "").strip().lower() in _HTML_CLASS_WHITELIST
+    # Don't let the model invent HTML tags (unless whitelisted)
     if ("<" in replace or ">" in replace) and not ("<" in find or ">" in find):
-        return False, "replace_introduces_html"
+        if not _whitelisted:
+            return False, "replace_introduces_html"
+        # Even whitelisted, refuse if the replacement contains an
+        # entirely new top-level element (would reshape page structure).
+        if replace.lstrip().startswith("<") and "</" in replace:
+            return False, "replace_introduces_html_element_not_whitelisted"
     # Don't allow JS in replacement
     if re.search(r"<script|javascript:|onerror=|onload=", replace, re.I):
         return False, "replace_has_js"
-    # Don't let replace be much longer than find (sanity)
-    if len(replace) > len(find) + 200:
+    # Don't let replace be much longer than find (sanity). Bumped from
+    # +200 to +400 for whitelisted class-addition fixes which carry
+    # longer class lists.
+    _len_budget = 400 if _whitelisted else 200
+    if len(replace) > len(find) + _len_budget:
         return False, "replace_too_long"
     return True, "ok"
+
+
+# Item G (2026-06-02): recipe_key helper — hashes (page_url_template,
+# finding_class, rationale_n_gram) for fuzzy dedupe across cycles.
+# Two cycles with the SAME recipe_key = approved. Lets the brain
+# coalesce semantically-equivalent proposals that differ only in their
+# exact find/replace text (which the existing
+# UNIQUE(loop_name,file_path,search_text) constraint considers distinct).
+def recipe_key(page_url: str = "", finding_class: str = "",
+               rationale: str = "") -> str:
+    """Stable 16-hex-char hash of:
+       - page_url_template: URL path with numeric IDs collapsed to ':n',
+         query-string stripped.
+       - finding_class: normalized issue label (e.g. 'brand_uniformity').
+       - rationale_n_gram: lowercased + whitespace-normalized 5-gram
+         shingle hashed jointly so semantically-similar rationales
+         collapse to the same key.
+
+    Same recipe_key from 2 cycles -> the proposal can be treated as
+    approved without requiring exact text match on find/replace.
+    """
+    import hashlib, re as _re
+    # Normalize URL template
+    u = (page_url or "").strip().lower()
+    u = u.split("?", 1)[0].split("#", 1)[0]
+    u = _re.sub(r"/\d+(?=/|$)", "/:n", u)
+    u = _re.sub(r"/[0-9a-f-]{16,}(?=/|$)", "/:id", u)
+    # Normalize finding class
+    cls = (finding_class or "").strip().lower()
+    cls = _re.sub(r"[^a-z0-9_]+", "_", cls).strip("_")
+    # 5-gram shingles of rationale words; sort + join so order doesn't
+    # change the hash. Pure n-gram set hash is fuzzy enough that two
+    # rationales differing in word order or filler still collide.
+    r = _re.sub(r"\s+", " ", (rationale or "").strip().lower())
+    words = r.split()
+    if len(words) < 5:
+        shingles = (" ".join(words),) if words else ("",)
+    else:
+        shingles = tuple(
+            " ".join(words[i:i+5]) for i in range(len(words) - 4))
+    shingle_blob = "|".join(sorted(set(shingles))[:64])
+    blob = f"{u}\x1f{cls}\x1f{shingle_blob}".encode("utf-8")
+    return hashlib.sha256(blob).hexdigest()[:16]
 
 
 def _auto_expand_find(find: str, snippet: str) -> str:
@@ -643,7 +710,12 @@ def trigger_learn():
         # proposals can clear validation.
         find_pre_expand = find
         find = _auto_expand_find(find, snippet)
-        ok, reason = _validate_proposal(find, replace)
+        # Item G (2026-06-02): pass finding_class so the validator can
+        # whitelist HTML class additions for brand_uniformity (and
+        # similar) without inviting generic HTML invention.
+        _finding_class = (issue.get("issue") or "").strip().lower()
+        ok, reason = _validate_proposal(find, replace,
+                                          finding_class=_finding_class)
         if not ok:
             # Empty-find is the prompt's explicit refusal contract — log
             # as "refused" so the dashboard doesn't mislabel it as a
