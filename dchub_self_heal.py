@@ -500,7 +500,7 @@ def fix_backfill_press_releases():
 
             prs = [
                 ("dcpi-v2-launch",
-                 "DC Hub Launches DCPI v2: Data Center Power Index Now Covering 289 Markets",
+                 "DC Hub Launches DCPI v2: Data Center Power Index Now Covering 232 Markets",
                  "DC Hub today released version 2 of the Data Center Power Index (DCPI), expanding coverage from 30 to 232 markets across 12 countries. The methodology — peer-reviewable at /dcpi/methodology — combines four weighted components (Grid Headroom 40%, Pipeline Velocity 25%, Energy Cost Efficiency 20%, Facility Density 15%) into a single 0-100 score per market. Industry analysts at JLL, CBRE, Data Center Dynamics and Data Center Frontier have been invited to evaluate the index as a citable standard.",
                  "/news/dcpi-v2-launch/"),
                 ("dcpi-methodology-published",
