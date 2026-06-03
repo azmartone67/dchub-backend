@@ -1,10 +1,14 @@
-name: Announce — Global Grid Coverage (one-time, 8am PT 2026-06-03)
+name: Announce — Global Grid Coverage + DCD/DCF pitch (one-time, 8am PT 2026-06-03)
 
-# Queues the #60 global-grid-coverage announcement to LinkedIn + Bluesky at
+# Queues the #60 global-grid-coverage announcement to LinkedIn + Bluesky AND
+# pitches the story to DCD + Data Center Frontier (org press addresses) at
 # 8am Pacific (PDT) on 2026-06-03 = 15:00 UTC. One-shot: the date guard makes
 # it self-noop on any later firing, so it's safe to leave in the repo (delete
 # after it runs if you like). Manual trigger (workflow_dispatch) ignores the
 # date guard so you can fire it early. Uses the existing DCHUB_ADMIN_KEY secret.
+# The journalist step fails SAFE: pitch-send returns 503 if DCHUB_RESEND_API_KEY
+# is unset (no email sent, logged) and has a built-in 7-day per-recipient
+# anti-spam guard. Bill Kleyman (personal gmail) is intentionally NOT auto-sent.
 on:
   schedule:
     - cron: '0 15 3 6 *'        # 15:00 UTC on June 3 = 08:00 America/Los_Angeles (PDT)
@@ -56,3 +60,60 @@ jobs:
               except Exception as e:
                   print(f"{platform}: ERROR {e}")
           PY
+
+      - name: Pitch DCD + DCF journalists (global grid coverage)
+        env:
+          ADMIN_KEY: ${{ secrets.DCHUB_ADMIN_KEY }}
+          MANUAL: ${{ github.event_name == 'workflow_dispatch' }}
+        run: |
+          python3 - <<'PY2'
+          import os, json, datetime, urllib.request, urllib.error
+          now = datetime.datetime.utcnow()
+          if os.environ.get("MANUAL") != "true" and not (now.year == 2026 and now.month == 6 and now.day == 3):
+              print(f"skip: not the target date (today {now.date()})"); raise SystemExit(0)
+          key = os.environ.get("ADMIN_KEY", "")
+          if not key:
+              print("ERROR: DCHUB_ADMIN_KEY secret not set"); raise SystemExit(1)
+          subject = "DC Hub takes live grid intelligence global — free for AI agents, 4 continents"
+          # Org press addresses only. Bill Kleyman (personal gmail) intentionally excluded.
+          recipients = [
+              ("Sebastian", "sebastian.moss@datacenterdynamics.com"),  # Data Center Dynamics
+              ("Rich", "rmiller@datacenterfrontier.com"),               # Data Center Frontier
+          ]
+          def body_for(first):
+              return (
+                  f"Hi {first},\n\n"
+                  "Quick story tip from DC Hub (dchub.cloud), the agent-native data-center & energy intelligence platform.\n\n"
+                  "We just made live grid intelligence global. Real-time fuel mix, demand, and grid headroom are now live across four continents:\n"
+                  "- US: 7 ISOs + 43 balancing authorities (EIA)\n"
+                  "- Great Britain: NESO via Elexon Insights\n"
+                  "- Europe: ~12 ENTSO-E bidding zones (Germany, France, Netherlands, Ireland, Spain, Belgium, Poland, Austria, the Nordics)\n"
+                  "- Taiwan: Taipower\n"
+                  "- Australia: AEMO National Electricity Market\n"
+                  "...plus EU gas transmission flows via ENTSOG.\n\n"
+                  "It is all live, not modeled - and free for any AI agent to query over our MCP server, CC-BY-4.0 to cite. "
+                  "The angle: siting an AI data center is now a global question, and the grid is the binding constraint. "
+                  "One query answers which market on Earth is greenest, or has the most headroom, right now.\n\n"
+                  "Happy to give you a walkthrough or data access if it is useful for a piece.\n\n"
+                  "See it: https://dchub.cloud/grid-intelligence  -  Query it: https://dchub.cloud/mcp\n\n"
+                  "- The DC Hub team"
+              )
+          base = "https://dchub.cloud/api/v1/media/pitch-send"
+          for first, email in recipients:
+              payload = json.dumps({
+                  "recipient_email": email,
+                  "subject": subject,
+                  "body": body_for(first),
+                  "topic": "Global grid intelligence (4 continents)",
+                  "story": "DC Hub made live grid intelligence global across US/GB/EU/Taiwan/Australia + EU gas (ENTSOG).",
+              }).encode()
+              req = urllib.request.Request(base, data=payload, method="POST",
+                    headers={"Content-Type": "application/json", "X-Admin-Key": key})
+              try:
+                  r = urllib.request.urlopen(req, timeout=60)
+                  print(f"{email}: HTTP {r.status} {r.read()[:200]!r}")
+              except urllib.error.HTTPError as e:
+                  print(f"{email}: HTTP {e.code} {e.read()[:200]!r}")
+              except Exception as e:
+                  print(f"{email}: ERROR {e}")
+          PY2
