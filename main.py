@@ -20051,6 +20051,7 @@ def serve_sitemap_xml():
     static_pages = [
         ('/', '1.0', 'daily'),
         ('/land-power', '0.9', 'daily'),
+        ('/site-selection', '0.8', 'weekly'),
         ('/transactions', '0.9', 'daily'),
         ('/news', '0.9', 'hourly'),
         ('/pricing', '0.9', 'monthly'),
@@ -25531,6 +25532,17 @@ app.register_blueprint(qa_patterns_bp)
 
 # phase 108: register DCPI blueprint
 app.register_blueprint(dcpi_bp)
+
+# Site Selection Canvas (2026-06-03): flagship end-to-end siting product.
+# Reuses market_power_scores + derive_composite_score (DCPI, registered above);
+# shortlist is free, the synthesis (decision layer) is gated to Developer/Pro/
+# Enterprise. Guarded so a failure here can never block startup.
+try:
+    from routes.site_selection_canvas import site_selection_canvas_bp
+    app.register_blueprint(site_selection_canvas_bp)
+    print("[main] site_selection_canvas registered: /api/v1/site-selection/canvas + /site-selection", file=sys.stderr)
+except Exception as _ssc_err:
+    print(f"[main] site_selection_canvas registration failed: {_ssc_err}", file=sys.stderr)
 
 # Phase 268 (2026-05-29): one-time backfill bootstrap for the DCPI
 # snapshot table. Idempotent — short-circuits if dcpi_daily_snapshots
