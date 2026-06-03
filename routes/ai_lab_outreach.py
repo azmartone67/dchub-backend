@@ -610,48 +610,38 @@ def mark_sent(draft_id):
 
 
 # r-hybrid-send (2026-06-03): actually deliver an AI-lab outreach draft
-# via Resend (the same provider routes/digest.py + routes/market_alerts.py
-# + routes/monthly_outreach.py use). Caller fires this with a draft_id;
-# we look up the draft, refuse if no target_email (form-only target),
-# POST to Resend, and mark sent on 2xx.
+# via Resend. Caller fires this with a draft_id; we look up, validate, send,
+# and mark sent on 2xx.
 #
-# This is an EXPLICIT-action endpoint: the user has to curl-fire it
-# per draft (or per batch via send-via-resend-all below). It does not
-# auto-fire on draft creation.
+# r-guard (2026-06-03 +): added 24h per-target rate limit. After Perplexity/
+# Mistral/CoreWeave/Lambda each received the same body twice (7min apart
+# due to fresh-draft re-send), we now refuse if ANY draft for the same
+# target_slug was sent in the last 24h. Pass ?force=1 to override (e.g.
+# intentional follow-up with different copy).
+#
+# r-auto (2026-06-03 +): factored core logic into _perform_resend_send()
+# so the new /auto-send cron-fireable endpoint can reuse it.
 
-@ai_lab_outreach_bp.route(
-    "/api/v1/admin/ai-lab-outreach/send-via-resend/<int:draft_id>",
-    methods=["POST"]
-)
-def send_via_resend(draft_id):
-    """Send one drafted AI-lab outreach email via Resend.
 
-    Requires the draft to have target_email populated (the 4 hybrid-eligible
-    labs as of 2026-06-03: perplexity, mistral, coreweave, lambda).
-    Form-only targets return 422 with a clear next-step.
-    """
-    if not _admin_authorized():
-        return jsonify({"ok": False, "error": "admin_key_required"}), 401
-    _ensure_table()
-
+def _perform_resend_send(draft_id: int, force: bool = False) -> tuple:
+    """Send one draft via Resend. Returns (response_dict, http_status).
+    Used by both /send-via-resend/<id> and /auto-send."""
     resend_key = (os.environ.get("DCHUB_RESEND_API_KEY") or "").strip()
     if not resend_key:
-        return jsonify({
+        return {
             "ok":    False,
             "error": "resend_not_configured",
-            "hint":  "Set DCHUB_RESEND_API_KEY in Railway env (the same env "
-                       "var routes/digest.py + routes/market_alerts.py use).",
-        }), 503
+            "hint":  "Set DCHUB_RESEND_API_KEY in Railway env.",
+        }, 503
 
     from_email = os.environ.get(
         "DCHUB_FROM_EMAIL",
         "Jonathan Martone <jonathan@dchub.cloud>",
     )
 
-    # 1. Load the draft.
     c = _db_conn()
     if not c:
-        return jsonify({"ok": False, "error": "db_unavailable"}), 503
+        return {"ok": False, "error": "db_unavailable"}, 503
     try:
         with c.cursor() as cur:
             cur.execute("""
@@ -664,22 +654,21 @@ def send_via_resend(draft_id):
     except Exception as e:
         try: c.close()
         except Exception: pass
-        return jsonify({"ok": False, "error": str(e)[:200]}), 500
+        return {"ok": False, "error": str(e)[:200]}, 500
 
     if not row:
         try: c.close()
         except Exception: pass
-        return jsonify({"ok": False, "error": "draft_not_found",
-                          "draft_id": draft_id}), 404
+        return {"ok": False, "error": "draft_not_found", "draft_id": draft_id}, 404
 
     (_id, target_slug, subject, body, contact_url,
      status, sent_at, target_email, prior_resend_id) = row
 
-    # 2. Refuse if form-only.
+    # 1. Form-only (no target_email).
     if not target_email:
         try: c.close()
         except Exception: pass
-        return jsonify({
+        return {
             "ok":          False,
             "error":       "no_target_email",
             "draft_id":    draft_id,
@@ -690,13 +679,13 @@ def send_via_resend(draft_id):
                               + (contact_url or "<contact_url missing>") +
                               ", then POST /sent/" + str(draft_id) +
                               " to bookkeep."),
-        }), 422
+        }, 422
 
-    # 3. Refuse if already sent (avoid dup-sends).
+    # 2. This specific draft already sent (per-draft dup guard).
     if status == "sent" or sent_at:
         try: c.close()
         except Exception: pass
-        return jsonify({
+        return {
             "ok":          False,
             "error":       "already_sent",
             "draft_id":    draft_id,
@@ -705,7 +694,38 @@ def send_via_resend(draft_id):
             "resend_id":   prior_resend_id,
             "hint":        ("If you want to send again, create a fresh draft "
                               "with POST /draft-all or /draft/" + target_slug),
-        }), 409
+        }, 409
+
+    # 3. 24h per-target rate limit (r-guard). Refuses if ANY draft for the
+    #    same target_slug was sent in the last 24h. force=True overrides.
+    if not force:
+        try:
+            with c.cursor() as cur:
+                cur.execute("""
+                    SELECT id, sent_at FROM ai_lab_outreach_drafts
+                     WHERE target_slug = %s
+                       AND sent_at IS NOT NULL
+                       AND sent_at > NOW() - INTERVAL '24 hours'
+                     ORDER BY sent_at DESC
+                     LIMIT 1
+                """, (target_slug,))
+                recent = cur.fetchone()
+        except Exception:
+            recent = None
+        if recent:
+            try: c.close()
+            except Exception: pass
+            return {
+                "ok":              False,
+                "error":           "rate_limited_24h",
+                "draft_id":        draft_id,
+                "target_slug":     target_slug,
+                "recent_draft_id": recent[0],
+                "recent_sent_at":  recent[1].isoformat() if recent[1] else None,
+                "hint":            ("Already sent to this target within last "
+                                       "24h. Pass ?force=1 to override (e.g. "
+                                       "intentional follow-up with new copy)."),
+            }, 429
 
     # 4. Fire Resend.
     try:
@@ -728,18 +748,18 @@ def send_via_resend(draft_id):
     except Exception as e:
         try: c.close()
         except Exception: pass
-        return jsonify({"ok": False, "error": "resend_call_failed",
-                          "detail": str(e)[:200]}), 502
+        return {"ok": False, "error": "resend_call_failed",
+                  "detail": str(e)[:200]}, 502
 
     if rr.status_code >= 400:
         try: c.close()
         except Exception: pass
-        return jsonify({
+        return {
             "ok":             False,
             "error":          "resend_rejected",
             "resend_status":  rr.status_code,
             "resend_body":    (rr.text or "")[:500],
-        }), 502
+        }, 502
 
     resend_data = {}
     try:
@@ -763,7 +783,7 @@ def send_via_resend(draft_id):
         try: c.close()
         except Exception: pass
 
-    return jsonify({
+    return {
         "ok":           True,
         "draft_id":     draft_id,
         "target_slug":  target_slug,
@@ -772,6 +792,104 @@ def send_via_resend(draft_id):
         "subject":      subject,
         "resend_id":    resend_id,
         "next_step":    "Watch jonathan@dchub.cloud inbox for a reply.",
+    }, 200
+
+
+@ai_lab_outreach_bp.route(
+    "/api/v1/admin/ai-lab-outreach/send-via-resend/<int:draft_id>",
+    methods=["POST"]
+)
+def send_via_resend(draft_id):
+    """Send one drafted AI-lab outreach email via Resend.
+
+    Form-only targets return 422. Recently-sent targets (same slug within
+    24h) return 429 unless ?force=1. Same draft already sent returns 409.
+    """
+    if not _admin_authorized():
+        return jsonify({"ok": False, "error": "admin_key_required"}), 401
+    _ensure_table()
+    force = (request.args.get("force") == "1"
+             or request.args.get("force", "").lower() == "true")
+    resp, status = _perform_resend_send(draft_id, force=force)
+    return jsonify(resp), status
+
+
+@ai_lab_outreach_bp.route(
+    "/api/v1/admin/ai-lab-outreach/auto-send", methods=["POST"]
+)
+def auto_send():
+    """Cron-fireable. For each target_slug, send the LATEST draft if:
+      - status == 'draft' (not yet sent)
+      - target_email is populated (resend-eligible; form-only targets skipped)
+      - no draft for the same slug was sent in the last 24h
+    Caps at ?limit=N (default 20) to stay polite.
+    Returns per-target attempt log with status."""
+    if not _admin_authorized():
+        return jsonify({"ok": False, "error": "admin_key_required"}), 401
+    _ensure_table()
+
+    limit = min(int(request.args.get("limit", "20") or "20"), 100)
+    only_slugs_arg = (request.args.get("slugs") or "").strip()
+    only_slugs = ([s.strip() for s in only_slugs_arg.split(",") if s.strip()]
+                   if only_slugs_arg else None)
+    force = (request.args.get("force") == "1"
+             or request.args.get("force", "").lower() == "true")
+
+    # Find candidates: latest draft per slug, status='draft', has email.
+    # The 24h gate is applied inside _perform_resend_send so the response
+    # log clearly shows which slugs got rate-limited.
+    c = _db_conn()
+    if not c:
+        return jsonify({"ok": False, "error": "db_unavailable"}), 503
+    candidates = []
+    try:
+        with c.cursor() as cur:
+            cur.execute("""
+                SELECT DISTINCT ON (target_slug)
+                       id, target_slug, target_email
+                  FROM ai_lab_outreach_drafts
+                 WHERE status = 'draft'
+                   AND target_email IS NOT NULL
+                   AND target_email <> ''
+                 ORDER BY target_slug, created_at DESC
+                 LIMIT %s
+            """, (limit,))
+            candidates = cur.fetchall() or []
+    except Exception as e:
+        try: c.close()
+        except Exception: pass
+        return jsonify({"ok": False, "error": str(e)[:200]}), 500
+    finally:
+        try: c.close()
+        except Exception: pass
+
+    if only_slugs:
+        candidates = [r for r in candidates if r[1] in only_slugs]
+
+    sent_log, skipped_log = [], []
+    for (draft_id, slug, email) in candidates:
+        resp, http_status = _perform_resend_send(draft_id, force=force)
+        entry = {
+            "draft_id":    draft_id,
+            "target_slug": slug,
+            "target_email": email,
+            "http_status": http_status,
+            "ok":          bool(resp.get("ok")),
+            "resend_id":   resp.get("resend_id"),
+            "error":       resp.get("error"),
+        }
+        (sent_log if resp.get("ok") else skipped_log).append(entry)
+
+    return jsonify({
+        "ok":            True,
+        "as_of":         datetime.datetime.utcnow().isoformat() + "Z",
+        "candidates":    len(candidates),
+        "sent":          len(sent_log),
+        "skipped":       len(skipped_log),
+        "sent_log":      sent_log,
+        "skipped_log":   skipped_log[:25],
+        "next_step":     ("Run again in 24h+ (or pass ?force=1) to drive "
+                           "the next round. Wire this to cron for autopilot."),
     }), 200
 
 

@@ -435,30 +435,58 @@ def send():
     if err:
         return jsonify(error=err), 500
 
-    # Try to import the email sender (best-effort — degrade with error)
-    try:
-        from email_service import send_email
-    except Exception:
-        return jsonify(error="email_service_unavailable",
+    # r-resend (2026-06-03): switched from Office 365 SMTP (email_service.py)
+    # to Resend — matches digest.py, market_alerts.py, monthly_outreach.py,
+    # ai_lab_outreach.py. The SMTP path was failing silently for everyone
+    # without SMTP_USER/SMTP_PASSWORD in env, which masked all lost-conversion
+    # outreach as 503 'email_service_unavailable' even though Resend was
+    # already configured platform-wide.
+    resend_key = (os.environ.get("DCHUB_RESEND_API_KEY") or "").strip()
+    if not resend_key:
+        return jsonify(error="resend_not_configured",
+                       hint="Set DCHUB_RESEND_API_KEY in Railway env (same "
+                              "var used by digest.py and market_alerts.py).",
                        candidates_found=len(cand)), 503
+
+    from_email = os.environ.get(
+        "DCHUB_FROM_EMAIL",
+        "Jonathan Martone <jonathan@dchub.cloud>",
+    )
+
+    import requests as _rq
 
     sent_ok = []
     failed = []
     for c in cand:
         try:
             msg = _build_email(c)
-            # email_service.send_email signature:
-            #   send_email(to_email, subject, html_content, text_content=None)
-            # returns {success: True/False, message_id|error: ...}
-            result = send_email(c["email"], msg["subject"], msg["html"],
-                                text_content=msg["text"])
-            ok = bool(result and result.get("success"))
-            if ok:
+            payload = {
+                "from":     from_email,
+                "to":       [c["email"]],
+                "reply_to": "jonathan@dchub.cloud",
+                "subject":  msg["subject"],
+                "text":     msg["text"] or "",
+            }
+            if msg.get("html"):
+                payload["html"] = msg["html"]
+            rr = _rq.post(
+                "https://api.resend.com/emails",
+                headers={
+                    "Authorization": f"Bearer {resend_key}",
+                    "Content-Type":  "application/json",
+                },
+                json=payload,
+                timeout=15,
+            )
+            if rr.status_code < 400:
                 _mark_outreach_sent(c["signal_ids"])
-                sent_ok.append(c["email"])
+                rd = (rr.json() or {}) if rr.text else {}
+                sent_ok.append({"email": c["email"],
+                                  "resend_id": rd.get("id")})
             else:
-                err = (result or {}).get("error") or str(result)[:120]
-                failed.append({"email": c["email"], "reason": err[:200]})
+                failed.append({"email": c["email"],
+                                "reason": f"resend HTTP {rr.status_code}: "
+                                            f"{(rr.text or '')[:200]}"})
         except Exception as e:
             failed.append({"email": c["email"], "reason": str(e)[:200]})
 
