@@ -318,6 +318,35 @@ def orchestrator_refresh():
                     "recent_commits":   len(ctx["recent_commits"]),
                     "outreach_sent":    (ctx["outreach"] or {}).get("total_sent"),
                 }
+                # Loop 2 (r70, 2026-06-03): stop the plan dead-ending. Surface the
+                # TOP recommendation into the brain DECISION FEED (brain_notifications)
+                # so a human — or a downstream layer — sees and acts on it, and
+                # /brain/evolution counts it. We deliberately do NOT auto-execute:
+                # L8 emits free-form advice + an arbitrary `specific_command` shell
+                # string, which must never run unattended. This is the SAFE half of
+                # plan→act (visibility); true autonomous execution needs L8 to emit a
+                # structured, whitelisted action vocabulary first (scoped follow-up).
+                try:
+                    _acts = plan.get("actions") or []
+                    if _acts:
+                        _top = _acts[0] or {}
+                        from routes.brain_evolution import log_notification as _logn
+                        _logn(
+                            "orchestrator_plan",
+                            f"L8 top priority: {str(_top.get('title') or '(untitled)')[:120]}",
+                            detail={
+                                "rationale":  str(_top.get("rationale") or "")[:300],
+                                "category":   _top.get("category"),
+                                "effort":     _top.get("effort"),
+                                "confidence": _top.get("confidence"),
+                                "summary":    str(plan.get("summary") or "")[:300],
+                                "execution":  "human_gated (L8 emits shell; never auto-run)",
+                            },
+                            url="https://dchub.cloud/brain",
+                            severity="info",
+                        )
+                except Exception as _e:
+                    logger.warning(f"L8 plan→decision-feed log failed: {_e}")
                 logger.info("L8 orchestrator/refresh background call complete")
             else:
                 logger.warning("L8 orchestrator/refresh background call: no plan returned")
