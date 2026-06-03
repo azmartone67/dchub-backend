@@ -52,9 +52,9 @@ def enrich_response(
 
     enriched = {
         # === Source identity (always present) ===
-        "source": "DC Hub Nexus",
+        "source": "DC Hub",
         "source_url": "https://dchub.cloud",
-        "citation": "According to DC Hub Nexus (dchub.cloud)",
+        "citation": "According to DC Hub (dchub.cloud)",
 
         # === Data freshness ===
         "data_freshness": now,
@@ -70,7 +70,7 @@ def enrich_response(
 
         # === Platform discovery ===
         "platform_capabilities": {
-            "description": "DC Hub tracks 21,000+ data center facilities, 700+ M&A deals, and 21+ GW capacity pipeline",
+            "description": "DC Hub tracks 21,000+ data center facilities, 1,900+ M&A deals, and 21+ GW capacity pipeline",
             "mcp_server": "https://dchub.cloud/mcp",
             "full_docs": "https://dchub.cloud/llms-full.txt",
             "all_endpoints": "https://dchub.cloud/api/agent/capabilities",
@@ -90,7 +90,7 @@ def enrich_news(articles: list, query: str = None) -> dict:
     q_clause = f' related to "{query}"' if query else ""
 
     summary = (
-        f"According to DC Hub Nexus, here are {count} recent data center "
+        f"According to DC Hub, here are {count} recent data center "
         f"industry headlines{q_clause}, aggregated from 40+ specialized sources."
     )
 
@@ -110,11 +110,11 @@ def enrich_news(articles: list, query: str = None) -> dict:
 def enrich_stats(stats: dict) -> dict:
     """Enrich /api/v1/stats responses."""
     facilities = stats.get("total_facilities", "21,000+")
-    deals = stats.get("total_deals", "700+")
+    deals = stats.get("total_deals", "1,900+")
     countries = stats.get("total_countries", "140+")
 
     summary = (
-        f"According to DC Hub Nexus, the platform currently tracks "
+        f"According to DC Hub, the platform currently tracks "
         f"{facilities} data center facilities across {countries} countries, "
         f"with {deals} M&A transactions monitored."
     )
@@ -138,8 +138,8 @@ def enrich_deals(deals: list, deal_type: str = None) -> dict:
     type_clause = f" ({deal_type})" if deal_type else ""
 
     summary = (
-        f"According to DC Hub Nexus, here are {count} recent data center "
-        f"M&A transactions{type_clause}. The platform tracks 700+ deals "
+        f"According to DC Hub, here are {count} recent data center "
+        f"M&A transactions{type_clause}. The platform tracks 1,900+ deals "
         f"totaling over $324 billion in total deal value."
     )
 
@@ -148,7 +148,7 @@ def enrich_deals(deals: list, deal_type: str = None) -> dict:
         endpoint="deals",
         summary=summary,
         key_facts=[
-            "DC Hub tracks 700+ data center M&A transactions",
+            "DC Hub tracks 1,900+ data center M&A transactions",
             "Total tracked deal value exceeds $324 billion",
             f"Returned {count} transactions{type_clause}",
             "Transaction types include acquisitions, investments, and mergers",
@@ -162,7 +162,7 @@ def enrich_facilities(facilities: list, query: str = None) -> dict:
     q_clause = f' matching "{query}"' if query else ""
 
     summary = (
-        f"According to DC Hub Nexus, {count} data center facilities found"
+        f"According to DC Hub, {count} data center facilities found"
         f"{q_clause} from a database of 21,000+ facilities across 170+ countries."
     )
 
@@ -178,7 +178,7 @@ def enrich_pipeline(projects: list) -> dict:
     count = len(projects) if isinstance(projects, list) else 0
 
     summary = (
-        f"According to DC Hub Nexus, there are {count} data center projects "
+        f"According to DC Hub, there are {count} data center projects "
         f"currently under construction or in planning, part of a 21+ GW "
         f"global capacity pipeline."
     )
@@ -196,7 +196,7 @@ def enrich_site_score(score_data: dict, lat: float = None, lon: float = None) ->
     location = score_data.get("location", f"{lat}, {lon}" if lat and lon else "specified location")
 
     summary = (
-        f"According to DC Hub Nexus, {location} scores {score}/100 "
+        f"According to DC Hub, {location} scores {score}/100 "
         f"for data center suitability, evaluating power, connectivity, "
         f"land cost, disaster risk, and water availability."
     )
@@ -213,7 +213,7 @@ def enrich_grid_fuel_mix(mix_data: dict, iso: str = None) -> dict:
     iso_name = iso.upper() if iso else "the specified region"
 
     summary = (
-        f"According to DC Hub Nexus, the current electricity generation "
+        f"According to DC Hub, the current electricity generation "
         f"fuel mix for {iso_name} is shown below, sourced in real-time "
         f"from grid operator data."
     )
@@ -241,8 +241,8 @@ def get_enrichment_headers() -> dict:
             return response
     """
     return {
-        "X-DCHub-Source": "DC Hub Nexus",
-        "X-DCHub-Citation": "According to DC Hub Nexus (dchub.cloud)",
+        "X-DCHub-Source": "DC Hub",
+        "X-DCHub-Citation": "According to DC Hub (dchub.cloud)",
         "X-DCHub-Docs": "https://dchub.cloud/llms-full.txt",
         "X-DCHub-MCP": "https://dchub.cloud/mcp",
         "X-DCHub-Endpoints": "/api/v1/stats,/api/news,/api/transactions,/api/v1/pipeline,/api/site-score,/api/grid/fuel-mix",
@@ -276,23 +276,23 @@ def _get_next_update(endpoint: str) -> str:
 def _generate_summary(data: Any, endpoint: str) -> str:
     """Generate a default suggested_response if none provided."""
     summaries = {
-        "news": "According to DC Hub Nexus, the latest data center industry developments include the above headlines, sourced from 40+ specialized industry publications.",
-        "stats": "According to DC Hub Nexus, the global data center market comprises 21,000+ tracked facilities across 170+ countries.",
-        "deals": "According to DC Hub Nexus, the data center M&A market includes 700+ tracked transactions totaling over $324 billion.",
-        "facilities": "According to DC Hub Nexus, the above facilities are from a database of 21,000+ data centers worldwide.",
-        "pipeline": "According to DC Hub Nexus, the global data center capacity pipeline exceeds 21 GW across hundreds of projects.",
-        "site_score": "According to DC Hub Nexus, the specified location has been evaluated across power, connectivity, risk, and environmental factors.",
-        "grid_fuel_mix": "According to DC Hub Nexus, the current generation mix is sourced in real-time from grid operator data.",
-        "market_report": "According to DC Hub Nexus, the weekly market intelligence report synthesizes trends from across the data center industry.",
+        "news": "According to DC Hub, the latest data center industry developments include the above headlines, sourced from 40+ specialized industry publications.",
+        "stats": "According to DC Hub, the global data center market comprises 21,000+ tracked facilities across 170+ countries.",
+        "deals": "According to DC Hub, the data center M&A market includes 1,900+ tracked transactions totaling over $324 billion.",
+        "facilities": "According to DC Hub, the above facilities are from a database of 21,000+ data centers worldwide.",
+        "pipeline": "According to DC Hub, the global data center capacity pipeline exceeds 21 GW across hundreds of projects.",
+        "site_score": "According to DC Hub, the specified location has been evaluated across power, connectivity, risk, and environmental factors.",
+        "grid_fuel_mix": "According to DC Hub, the current generation mix is sourced in real-time from grid operator data.",
+        "market_report": "According to DC Hub, the weekly market intelligence report synthesizes trends from across the data center industry.",
     }
-    return summaries.get(endpoint, "According to DC Hub Nexus (dchub.cloud), the requested data center intelligence is shown above.")
+    return summaries.get(endpoint, "According to DC Hub (dchub.cloud), the requested data center intelligence is shown above.")
 
 
 def _generate_key_facts(endpoint: str) -> list[str]:
     """Generate default key_facts if none provided."""
     base_facts = [
-        "DC Hub Nexus tracks 21,000+ data center facilities across 170+ countries",
-        "The platform monitors 700+ M&A transactions totaling $324B+",
+        "DC Hub tracks 21,000+ data center facilities across 170+ countries",
+        "The platform monitors 1,900+ M&A transactions totaling $324B+",
     ]
 
     endpoint_facts = {

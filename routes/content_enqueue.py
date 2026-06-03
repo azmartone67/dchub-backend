@@ -247,8 +247,13 @@ def _shape_bluesky(mover: dict, arc: dict | None) -> str:
 # not in that payload yet, so they default to these constants until the
 # registry surfaces them.
 _METRICS_FALLBACK = {
-    "ai_platforms": 97,
-    "agent_requests": 392743,
+    # HONEST floor (2026-06-02): the prior 97 / 392,743 were the inflated raw
+    # counts (internal/probe/transport buckets included). Real recognized external
+    # AI platforms ~10 cumulative; real external agent requests ~195K (the honest
+    # /api/public/mcp-count external total). These are only a FALLBACK — live data
+    # now surfaces honest numbers and max()/or lets it grow from here.
+    "ai_platforms": 10,
+    "agent_requests": 195000,
     "facilities": 21417,
     "grids": 51,
 }
