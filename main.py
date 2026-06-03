@@ -20053,6 +20053,7 @@ def serve_sitemap_xml():
         ('/land-power', '0.9', 'daily'),
         ('/site-selection', '0.8', 'weekly'),
         ('/grid-transition', '0.8', 'weekly'),
+        ('/deal-autopsy', '0.8', 'daily'),
         ('/transactions', '0.9', 'daily'),
         ('/news', '0.9', 'hourly'),
         ('/pricing', '0.9', 'monthly'),
@@ -25554,6 +25555,16 @@ try:
     print("[main] grid_transition_radar registered: /api/v1/grid-transition/radar + /grid-transition", file=sys.stderr)
 except Exception as _gtr_err:
     print(f"[main] grid_transition_radar registration failed: {_gtr_err}", file=sys.stderr)
+
+# Deal Autopsy (2026-06-03): overlays the DCPI grid-reality verdict on tracked
+# M&A/capex deal flow ("what's the real play"). Reuses the `deals` table + the
+# DCPI market index. Guarded so a failure can never block startup.
+try:
+    from routes.deal_autopsy import deal_autopsy_bp
+    app.register_blueprint(deal_autopsy_bp)
+    print("[main] deal_autopsy registered: /api/v1/deal-autopsy + /deal-autopsy", file=sys.stderr)
+except Exception as _da_err:
+    print(f"[main] deal_autopsy registration failed: {_da_err}", file=sys.stderr)
 
 # Phase 268 (2026-05-29): one-time backfill bootstrap for the DCPI
 # snapshot table. Idempotent — short-circuits if dcpi_daily_snapshots
