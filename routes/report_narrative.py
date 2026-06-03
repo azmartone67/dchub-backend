@@ -485,13 +485,25 @@ def _call_claude(prompt: str) -> str | None:
     # call failed (4s)" on every cycle (4s can't complete a haiku call), and
     # they can afford the wait, so they now actually generate + cache.
     _to = _HTTP_TIMEOUT
+    is_foreground = True
     try:
         from flask import request, has_request_context
         if (not has_request_context()) or \
            ("prewarm" in (request.headers.get("User-Agent", "") or "").lower()):
             _to = _WARM_TIMEOUT
+            is_foreground = False
     except Exception:
         pass
+    # r70 (2026-06-03): a real foreground visitor's 4s cap NEVER completes a
+    # haiku+TLS call from Railway (needs ~5-8s), so it always timed out — pure
+    # waste: 4s of blocked gunicorn thread + a "narrative call failed (read
+    # timeout=4.0)" log line every cycle, and the page rendered without a
+    # narrative anyway. Skip the blocking call entirely for foreground: the page
+    # renders instantly, and the background prewarmer/cron (which gets the
+    # generous _WARM_TIMEOUT) generates + caches the narrative for the next
+    # visit. No cache poisoning — the caller returns None without caching a miss.
+    if is_foreground:
+        return None
     try:
         import requests
         r = requests.post(

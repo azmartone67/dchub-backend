@@ -11,7 +11,6 @@ Goals:
 5. Track AI platform usage and citations
 """
 
-import sqlite3
 import json
 import os
 import re
@@ -22,7 +21,6 @@ from db_utils import get_db, get_read_db
 
 ai_interconnect_bp = Blueprint('ai_interconnect', __name__)
 
-DB_PATH = 'dc_nexus.db'
 
 
 # Phase FF+25-followup (2026-05-20): conn-leak fix.
