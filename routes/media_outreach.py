@@ -452,6 +452,12 @@ def outreach_log():
         total=total, replied=replied, converted=converted,
         reply_rate_pct=round(replied / max(total, 1) * 100, 1),
         conversion_rate_pct=round(converted / max(total, 1) * 100, 1),
+        # Pre-flight booleans (no secrets leaked) so the 8am journalist pitch
+        # can be verified ahead of time. send_ready == both configured.
+        resend_configured=bool(_RESEND_KEY),
+        admin_key_configured=bool(_ADMIN_KEY),
+        send_ready=bool(_RESEND_KEY and _ADMIN_KEY),
+        last_send_at=(log[0]["sent_at"] if log else None),
         log=log,
     ), 200
 
