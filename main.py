@@ -26345,6 +26345,23 @@ try:
 except Exception as _pki_e:
     print(f"[main] partner_key_issuer_bp register failed: {_pki_e}", flush=True)
 
+# r78-c (2026-06-03) — per-key per-endpoint usage tracker. Discovered
+# while prepping the NLR JSC meeting that NEITHER api_usage_meter NOR
+# api_keys.calls_today/calls_total were being populated anywhere in
+# the codebase: /track-usage was orphaned + counters were SET=0 at
+# INSERT but never INCREMENTed. This wires a before/after_request hook
+# that captures every keyed API call into a buffer + background flush
+# thread. Required for partnership transparency commitments
+# (NLR can see exactly what they've used; we can ground the JSC review
+# in real data).
+try:
+    from routes.api_usage_tracker import api_usage_tracker_bp, install_tracker
+    app.register_blueprint(api_usage_tracker_bp)
+    _ut = install_tracker(app)
+    print(f"[main] api_usage_tracker installed: flush={_ut.get('flush_interval_sec')}s buffer_max={_ut.get('buffer_max')}", flush=True)
+except Exception as _ut_e:
+    print(f"[main] api_usage_tracker install failed: {_ut_e}", flush=True)
+
 # r73-a (2026-05-26): api_integration_wiring exposed /api/v1/carbon,
 # /climate, /risk, /water/stress via register_api_integration_routes(app)
 # but nothing called it on startup — so those 4 routes 404'd silently.
