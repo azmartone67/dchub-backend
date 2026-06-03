@@ -255,6 +255,22 @@ def _run_test(name, category, url, check_kind, severity):
     """Run a single test, return result dict."""
     http_code, text, response_ms = _fetch(url)
     status, error_detail, proposed_fix = _evaluate_check(check_kind, http_code, text)
+    # r47: disambiguate code==0. _fetch has a 15s timeout, so a SLOW failure
+    # (response_ms near budget) means the host IS reachable but its handler HUNG
+    # — a slow DB query, a synchronous upstream/self call, a CF-worker redirect
+    # loop, or worker-pool exhaustion. That is NOT DNS (DNS / connection-refused
+    # fail in <2s). The old blanket "check whether DNS resolves" is exactly what
+    # mis-diagnosed the /pricing 20s hang. Re-point a slow timeout at the handler.
+    if http_code == 0 and (response_ms or 0) >= 10000:
+        proposed_fix = (
+            "Handler/worker TIMEOUT (not DNS). The host is reachable but the page "
+            "took >10s — likely a slow DB query, a synchronous upstream/self call, a "
+            "CF-worker redirect loop, or worker-pool exhaustion. If sibling pages "
+            "return 200, it is route/handler-specific: check that route, the CF "
+            "_routes.json/_redirects for that path, and Railway wall-clock logs."
+        )
+        error_detail = (f"{error_detail} — timed out after {response_ms}ms"
+                        if error_detail else f"timed out after {response_ms}ms")
     return {
         "test_name": name,
         "test_category": category,
