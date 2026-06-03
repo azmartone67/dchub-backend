@@ -1266,8 +1266,79 @@ def _last_action_age_minutes(cur, pattern: str, url: str | None) -> int | None:
     return int(float(r[0]))
 
 
+# ── Loop 3 (r70, 2026-06-03): auto-quarantine chronically-ineffective patterns ──
+# The verifier marks outcome_verified=FALSE when an action ran but the finding
+# didn't clear. A pattern that racks up failures with ZERO verified fixes is just
+# bounce-looping (the "322 re-fired actions" pathology). We bench it for a window,
+# then auto-release so it can retry (the root cause may have changed). This is the
+# brain's action-selection LEARNING — stop doing what demonstrably doesn't work,
+# no human in the loop. Internal-only effect (suppresses actions; never adds any).
+_QUARANTINE_FAIL_THRESHOLD = 3      # verify-failures in 24h with 0 verified fixes
+_QUARANTINE_WINDOW_HOURS   = 24     # bench duration before auto-retry
+_QUAR_CACHE = {"set": frozenset(), "ts": 0.0}
+_QUAR_TTL_S = 60.0
+
+
+def _ensure_quarantine_table():
+    c = _conn()
+    if c is None:
+        return
+    try:
+        with c.cursor() as cur:
+            cur.execute("""CREATE TABLE IF NOT EXISTS brain_pattern_quarantine (
+                pattern_name   TEXT PRIMARY KEY,
+                fail_count     INT NOT NULL DEFAULT 0,
+                quarantined_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+                released_at    TIMESTAMPTZ,
+                last_reason    TEXT
+            )""")
+        c.commit()
+    except Exception:
+        pass
+    finally:
+        try: c.close()
+        except Exception: pass
+
+
+try:
+    _ensure_quarantine_table()
+except Exception:
+    pass
+
+
+def _quarantined_patterns() -> frozenset:
+    """Patterns currently benched (auto-released after _QUARANTINE_WINDOW_HOURS).
+    OWN connection + 60s cache so it NEVER touches the autopilot's transaction;
+    fail-soft to last-known/empty so a DB blip can never over-block real actions."""
+    import time as _t
+    now = _t.time()
+    if (now - _QUAR_CACHE["ts"]) < _QUAR_TTL_S:
+        return _QUAR_CACHE["set"]
+    s = _QUAR_CACHE["set"]
+    c = _conn()
+    if c is not None:
+        try:
+            with c.cursor() as cur:
+                cur.execute("""SELECT pattern_name FROM brain_pattern_quarantine
+                                WHERE released_at IS NULL
+                                  AND quarantined_at >= NOW() - make_interval(hours => %s)""",
+                            (_QUARANTINE_WINDOW_HOURS,))
+                s = frozenset(r[0] for r in cur.fetchall())
+        except Exception:
+            pass
+        finally:
+            try: c.close()
+            except Exception: pass
+    _QUAR_CACHE["set"] = s
+    _QUAR_CACHE["ts"] = now
+    return s
+
+
 def _rate_limit_check(cur, pattern: str, url: str | None) -> tuple[bool, str]:
     """Return (allowed, reason)."""
+    if pattern in _quarantined_patterns():
+        return False, (f"quarantined (>={_QUARANTINE_FAIL_THRESHOLD} verify-failures, "
+                       f"0 verified fixes; auto-retry after {_QUARANTINE_WINDOW_HOURS}h)")
     last_age = _last_action_age_minutes(cur, pattern, url)
     if last_age is not None and last_age < _COOLDOWN_MIN_BETWEEN_SAME_ACTIONS:
         return False, f"cooldown_active ({last_age}min < {_COOLDOWN_MIN_BETWEEN_SAME_ACTIONS}min)"
@@ -2333,6 +2404,39 @@ def autopilot_verify():
                 except Exception as e:
                     summary["errors"] += 1
                     logger.warning("verify action %s: %s", action_id, e)
+
+            # Loop 3 (r70): auto-quarantine patterns whose actions repeatedly
+            # fail verification (>=N verify-failures + 0 verified fixes in 24h).
+            # _rate_limit_check then benches them for _QUARANTINE_WINDOW_HOURS,
+            # after which they auto-release to retry. The brain LEARNING to stop
+            # firing what demonstrably doesn't work (kills the re-fired loop).
+            try:
+                cur.execute("""CREATE TABLE IF NOT EXISTS brain_pattern_quarantine (
+                    pattern_name TEXT PRIMARY KEY, fail_count INT NOT NULL DEFAULT 0,
+                    quarantined_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+                    released_at TIMESTAMPTZ, last_reason TEXT)""")
+                cur.execute("""
+                    INSERT INTO brain_pattern_quarantine
+                        (pattern_name, fail_count, quarantined_at, released_at, last_reason)
+                    SELECT pattern_name,
+                           COUNT(*) FILTER (WHERE outcome_verified IS FALSE),
+                           NOW(), NULL,
+                           'auto: ' || COUNT(*) FILTER (WHERE outcome_verified IS FALSE)
+                             || ' verify-failures, 0 verified fixes in 24h'
+                      FROM brain_autopilot_actions
+                     WHERE verified_at >= NOW() - INTERVAL '24 hours'
+                     GROUP BY pattern_name
+                    HAVING COUNT(*) FILTER (WHERE outcome_verified IS FALSE) >= %s
+                       AND COUNT(*) FILTER (WHERE outcome_verified IS TRUE) = 0
+                    ON CONFLICT (pattern_name) DO UPDATE
+                       SET fail_count = EXCLUDED.fail_count,
+                           quarantined_at = NOW(),
+                           released_at = NULL,
+                           last_reason = EXCLUDED.last_reason
+                """, (_QUARANTINE_FAIL_THRESHOLD,))
+                summary["quarantined"] = max(0, cur.rowcount or 0)
+            except Exception as e:
+                summary["quarantine_error"] = str(e)[:140]
         c.commit()
     finally:
         try: c.close()
