@@ -157,8 +157,10 @@ def _autopsy_read(deal, mk):
 
 def _deal_public(deal, mk):
     val = deal.get("value")
+    _d = deal.get("date")
     return {
-        "date": deal["date"].isoformat() if deal.get("date") else None,
+        # deals.date may be a date/datetime OR already a string — handle both.
+        "date": (_d.isoformat() if hasattr(_d, "isoformat") else (str(_d) if _d else None)),
         "buyer": deal.get("buyer"),
         "seller": deal.get("seller"),
         "type": deal.get("type"),
