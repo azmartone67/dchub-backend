@@ -20052,6 +20052,7 @@ def serve_sitemap_xml():
         ('/', '1.0', 'daily'),
         ('/land-power', '0.9', 'daily'),
         ('/site-selection', '0.8', 'weekly'),
+        ('/grid-transition', '0.8', 'weekly'),
         ('/transactions', '0.9', 'daily'),
         ('/news', '0.9', 'hourly'),
         ('/pricing', '0.9', 'monthly'),
@@ -25543,6 +25544,16 @@ try:
     print("[main] site_selection_canvas registered: /api/v1/site-selection/canvas + /site-selection", file=sys.stderr)
 except Exception as _ssc_err:
     print(f"[main] site_selection_canvas registration failed: {_ssc_err}", file=sys.stderr)
+
+# Grid + Gas Transition Sentinel (2026-06-03): forward-looking "where's the next
+# grid emerging" radar. Same DCPI data foundation as the Canvas; raw radar free,
+# forward thesis gated. Guarded so a failure can never block startup.
+try:
+    from routes.grid_transition_radar import grid_transition_radar_bp
+    app.register_blueprint(grid_transition_radar_bp)
+    print("[main] grid_transition_radar registered: /api/v1/grid-transition/radar + /grid-transition", file=sys.stderr)
+except Exception as _gtr_err:
+    print(f"[main] grid_transition_radar registration failed: {_gtr_err}", file=sys.stderr)
 
 # Phase 268 (2026-05-29): one-time backfill bootstrap for the DCPI
 # snapshot table. Idempotent — short-circuits if dcpi_daily_snapshots
