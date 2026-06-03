@@ -19979,11 +19979,31 @@ def location_meta(slug):
 # =============================================================================
 # SEO: Dynamic Sitemap & Robots.txt (added Feb 2026)
 # =============================================================================
+_SITEMAP_XML_CACHE = {'xml': None, 'ts': 0.0}
+
+
 @app.route('/sitemap.xml')
 def serve_sitemap_xml():
     """Dynamic sitemap for Google — includes all facilities, locations, and market pages."""
     import re as _re
+    import time as _time
     from datetime import datetime as _dt
+
+    # r70 (2026-06-03): server-side TTL cache. This function ran 3 DB queries +
+    # re-appended 233 DCPI market pages on EVERY call (the "sitemap: 233 DCPI
+    # market pages added" log fired ~15x/5min) — wasteful on a flap-prone
+    # 1-replica backend. The Cache-Control:3600 below only helps the CDN;
+    # internal probes (brain/sentinel/worker proxy) hit the origin directly and
+    # re-trigger the full rebuild every time. Memoize the rendered XML for 1h so
+    # repeat calls return instantly without touching the DB or logging.
+    global _SITEMAP_XML_CACHE
+    if _SITEMAP_XML_CACHE.get('xml') and (_time.time() - _SITEMAP_XML_CACHE.get('ts', 0.0) < 3600):
+        _resp = make_response(_SITEMAP_XML_CACHE['xml'])
+        _resp.headers['Content-Type'] = 'application/xml'
+        _resp.headers['Cache-Control'] = 'public, max-age=3600'
+        _resp.headers['X-Sitemap-Cache'] = 'hit'
+        return _resp
+
     today = _dt.now().strftime('%Y-%m-%d')
 
     def slugify(text):
@@ -20240,9 +20260,11 @@ def serve_sitemap_xml():
     # Use a plain string so '<?xml' renders literally.
     xml = '<?xml version="1.0" encoding="UTF-8"?>\n<urlset xmlns="http://www.sitemaps.org/schemas/sitemap/0.9">\n' + '\n'.join(urls) + '\n</urlset>'
 
+    _SITEMAP_XML_CACHE = {'xml': xml, 'ts': _time.time()}
     resp = make_response(xml)
     resp.headers['Content-Type'] = 'application/xml'
     resp.headers['Cache-Control'] = 'public, max-age=3600'
+    resp.headers['X-Sitemap-Cache'] = 'miss'
     return resp
 
 @app.route('/seo-robots.txt')
