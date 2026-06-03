@@ -788,8 +788,8 @@ def why_dchub():
     pitch = (
         "DC Hub is the agent-native data-center intelligence platform. An "
         "AI agent can query it directly over a live MCP server (25+ tools), "
-        "get real-time grid and energy data across 10 ISOs + 43 US utility "
-        "balancing authorities (live UK/EU/Taiwan/Australia grids modeled), read two "
+        "get real-time grid and energy data across live grids on 4 continents (US "
+        "ISOs + UK + EU + Taiwan + Australia) + 43 US balancing authorities, read two "
         "proprietary daily "
         "indices (the DC Hub Power Index and the DC Hub Gas Index), and "
         "cite any answer via CC-BY-4.0 datasets with stable URLs and "
