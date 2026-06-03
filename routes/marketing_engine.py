@@ -1189,7 +1189,13 @@ def _format_linkedin_post(rel: dict) -> str:
     title = (rel.get("title") or "").strip()
     sub   = (rel.get("subheadline") or rel.get("meta_description") or "").strip()
     slug  = rel.get("slug", "")
-    url   = f"https://dchub.cloud/news/{slug}"
+    # linkedin_404 fix: only point to /news/<slug> when the release
+    # is actually published; otherwise fall back to /partners so we
+    # don't post links to 404-ing pages.
+    if rel.get("published") is True and slug:
+        url = f"https://dchub.cloud/news/{slug}"
+    else:
+        url = "https://dchub.cloud/partners"
     parts = [title]
     if sub: parts.append(sub)
     parts.append(f"Full release → {url}")

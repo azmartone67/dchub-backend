@@ -143,12 +143,24 @@ def _build_release(track):
 
     summary = (track["body"].split("\n\n")[0])[:280]
 
+    # linkedin_404 fix: if slug_root already begins with 'partnership-'
+    # (e.g. someone passes a pre-namespaced track slug), strip the
+    # duplicate prefix so we don't emit /news/partnership-partnership-…
+    # which 404s.
+    _root = slug_root.removeprefix("partnership-") if hasattr(str, "removeprefix") else (
+        slug_root[len("partnership-"):] if slug_root.startswith("partnership-") else slug_root
+    )
+    slug = f"partnership-{_root}-{iso_year}-w{iso_week:02d}"
+    # Belt-and-suspenders: also dedupe if any path produced partnership-partnership-
+    if slug.startswith("partnership-partnership-"):
+        slug = slug.replace("partnership-partnership-", "partnership-", 1)
+
     return {
         "title":       title,
         "subheadline": subheadline,
         "summary":     summary,
         "body":        body,
-        "slug":        f"partnership-{slug_root}-{iso_year}-w{iso_week:02d}",
+        "slug":        slug,
         "category":    "partnership",
         "source":      "DC Hub Media",
         "source_url":  track["url"],

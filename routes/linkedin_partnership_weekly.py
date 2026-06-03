@@ -263,7 +263,29 @@ def _record(iso_year, iso_week, track, result):
 
 
 def _post_to_linkedin(text, landing_url):
-    """Reuse linkedin_poster with link preview."""
+    """Reuse linkedin_poster with link preview.
+
+    linkedin_404 fix: HEAD the landing_url first; if it 4xx/5xx or the
+    HEAD itself errors, skip posting so we don't push links to dead pages.
+    """
+    # Pre-post HEAD check — fail-soft, fail-out (never post a dead link)
+    try:
+        import requests as _rq
+        try:
+            _h = _rq.head(landing_url, timeout=5, allow_redirects=True)
+            if _h.status_code >= 400:
+                msg = f"pre-post HEAD {_h.status_code} on {landing_url} — skip"
+                print(f"[linkedin_partnership_weekly] {msg}", file=sys.stderr)
+                return {"ok": False, "error": msg, "skipped": True}
+        except _rq.RequestException as _re:
+            msg = f"pre-post HEAD failed ({type(_re).__name__}) — skip"
+            print(f"[linkedin_partnership_weekly] {msg}: {landing_url}", file=sys.stderr)
+            return {"ok": False, "error": msg, "skipped": True}
+    except Exception:
+        # If `requests` itself can't import, fall through and try posting
+        # rather than block on the safety net.
+        pass
+
     try:
         sys.path.insert(0, "/app")
         from linkedin_poster import post_to_linkedin as _do
