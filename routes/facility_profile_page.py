@@ -107,6 +107,128 @@ def _esc(s) -> str:
             .replace('"', "&quot;"))
 
 
+def _slugify(text: str) -> str:
+    import re as _re2
+    return _re2.sub(r"[^a-z0-9]+", "-", (text or "").lower()).strip("-")
+
+
+def _fac_slug(fac_id, provider, name) -> str:
+    """Canonical facility slug — MUST match the sitemap format
+    /facilities/{provider-slug}-{name-slug}-{md5(id)[:8]} (main.py ~20234) so
+    comparable-facility links resolve to the canonical URL with no duplicate-URL
+    or redirect penalty."""
+    import hashlib as _h
+    src = str(fac_id) if fac_id else f"{provider or ''}{name or ''}"
+    h8 = _h.md5(src.encode()).hexdigest()[:8]
+    ps, ns = _slugify(provider or ""), _slugify(name or "")
+    return f"{ps}-{ns}-{h8}" if ps else f"{ns}-{h8}"
+
+
+def _comparables_html(fac: dict, limit: int = 6) -> str:
+    """Internal-link mesh: other data centers in the same city/market. Adds
+    unique per-page content + crawl depth — the core of turning thin facility
+    pages into indexable ones. Links use the canonical slug (no dup URLs)."""
+    city  = (fac.get("city") or "").strip()
+    state = (fac.get("state") or "").strip()
+    fid   = fac.get("id")
+    if not (city or state):
+        return ""
+    rows = []
+    try:
+        from main import get_read_db
+        conn = get_read_db()
+        if not conn:
+            return ""
+        try:
+            c = conn.cursor()
+            c.execute("""
+                SELECT id, name, provider, power_mw
+                  FROM discovered_facilities
+                 WHERE id <> %s
+                   AND name IS NOT NULL AND name <> ''
+                   AND ( (%s <> '' AND LOWER(city)  = LOWER(%s))
+                      OR (%s <> '' AND LOWER(state) = LOWER(%s)) )
+                 ORDER BY (CASE WHEN %s <> '' AND LOWER(city) = LOWER(%s) THEN 0 ELSE 1 END),
+                          COALESCE(power_mw, 0) DESC
+                 LIMIT %s
+            """, (fid, city, city, state, state, city, city, limit))
+            rows = c.fetchall()
+        finally:
+            try: conn.close()
+            except Exception: pass
+    except Exception as e:
+        logger.warning(f"facility_profile comparables failed: {e}")
+        return ""
+    if not rows:
+        return ""
+    items = []
+    for rid, rname, rprov, rpow in rows:
+        slug = _fac_slug(rid, rprov, rname)
+        extra = ""
+        if rprov and rprov.strip().lower() != (rname or "").strip().lower():
+            extra += f" &middot; {_esc(rprov)}"
+        if rpow and str(rpow) not in ("0", "0.0"):
+            extra += f" &middot; {_esc(rpow)} MW"
+        items.append(
+            f'<li style="margin:4px 0"><a class="link" href="/facilities/{_esc(slug)}">{_esc(rname)}</a>'
+            f'<span style="opacity:.65;font-size:13px">{extra}</span></li>'
+        )
+    where = city or state or "the area"
+    return (
+        '<div class="section"><div class="section-head"><h2>Other data centers nearby</h2></div>'
+        f'<p class="section-sub">Comparable facilities in {_esc(where)} tracked by DC Hub &mdash; '
+        'compare power, operators, and grid context across the market.</p>'
+        f'<ul style="margin:10px 0 0;padding-left:18px">{"".join(items)}</ul></div>'
+    )
+
+
+def _narrative(fac: dict, dcpi) -> str:
+    """Unique, data-grounded intro paragraph — turns a thin templated page into
+    indexable unique prose (every sentence sourced from this facility's data)."""
+    name = fac.get("name") or "This data center"
+    provider = (fac.get("provider") or "").strip()
+    city, state, country = (fac.get("city") or ""), (fac.get("state") or ""), (fac.get("country") or "")
+    power = fac.get("power_mw")
+    status = (fac.get("status") or "").strip()
+    loc = ", ".join([p for p in (city, state, country) if p])
+    bits = []
+    lead = f"<strong>{_esc(name)}</strong> is a data center"
+    if provider and provider.lower() != (name or "").strip().lower():
+        lead += f" operated by {_esc(provider)}"
+    if loc:
+        lead += f" in {_esc(loc)}"
+    bits.append(lead + ".")
+    if power and str(power) not in ("0", "0.0"):
+        s = f"It carries a reported power capacity of {_esc(power)} MW"
+        if status and status.lower() != "unknown":
+            s += f" and is currently {_esc(status.lower())}"
+        bits.append(s + ".")
+    elif status and status.lower() != "unknown":
+        bits.append(f"The facility is currently {_esc(status.lower())}.")
+    if dcpi:
+        v = (dcpi.get("verdict") or "").upper()
+        mname = dcpi.get("market_name") or state or "its regional"
+        iso = dcpi.get("iso") or ""
+        ttp = dcpi.get("time_to_power_months")
+        s = f"It sits in the {_esc(mname)} data-center market"
+        if iso:
+            s += f" on the {_esc(iso)} grid"
+        s += ", which DC Hub's Data Center Power Index"
+        s += f" currently rates <strong>{_esc(v)}</strong>" if v else " scores"
+        if ttp is not None:
+            s += f", with an estimated {_esc(ttp)}-month time-to-power"
+        bits.append(s + ".")
+        interp = {
+            "BUILD":   "For operators evaluating new capacity, this market screens favorably — grid headroom and interconnection timelines are comparatively strong.",
+            "AVOID":   "Operators should weigh interconnection risk here — the market screens constrained on grid headroom and time-to-power.",
+            "CAUTION": "The market shows mixed signals — validate live grid headroom and queue depth before committing capacity.",
+        }.get(v)
+        if interp:
+            bits.append(interp)
+    return ('<p class="section-sub" style="font-size:15.5px;line-height:1.75;'
+            'margin:6px 0 18px;max-width:720px">' + " ".join(bits) + "</p>")
+
+
 def _render_profile(fac: dict, slug: str) -> str:
     """Server-rendered facility profile. Matches the static file
     visual style so transitions between static + dynamic are seamless."""
@@ -197,6 +319,9 @@ def _render_profile(fac: dict, slug: str) -> str:
             f'<p class="section-sub">Data Center Power Index verdict for {_esc(_mname)} &mdash; the market this facility sits in.</p>'
             f'<div class="chips">{_chips_html}</div>{_dlink}</div>'
         )
+
+    narrative_html = _narrative(fac, _dcpi)
+    comps_html = _comparables_html(fac)
 
     map_block = ""
     if lat and lng:
@@ -300,11 +425,15 @@ def _render_profile(fac: dict, slug: str) -> str:
       <div class="loc">📍 {_esc(loc_short)}</div>
     </div>
 
+    {narrative_html}
+
     <div class="stats-grid">{stats_html}</div>
 
     {dcpi_html}
 
     {map_block}
+
+    {comps_html}
 
     <div class="cta">
       <a class="primary" href="/sites/{_esc(slug)}">View full capacity report &rarr;</a>
@@ -353,5 +482,5 @@ text-align:center;padding:80px 20px">
 
     html = _render_profile(fac, slug)
     return Response(html, status=200, mimetype="text/html",
-                    headers={"Cache-Control": "public, max-age=300",
+                    headers={"Cache-Control": "public, max-age=3600",
                              "X-DC-Hub-Source": "facility-profile-dynamic"})
