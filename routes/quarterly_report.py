@@ -1216,7 +1216,10 @@ def _legacy_compute_report_data() -> dict:
                 out["top_build"] = []
             # ─── TOP MARKETS ──────────────────────────────────────────
             # Drop the verified-only filter (was excluding 14k+ rows). Group
-            # over ALL discovered_facilities, ranked by total MW.
+            # over ALL discovered_facilities, ranked by total MW. On the live
+            # table the `market` and `city` columns are sparsely populated;
+            # if the market/city group returns empty, fall back to `state`
+            # (always populated; mirrors /api/v1/facilities/by-state).
             try:
                 cur.execute("""
                     SELECT COALESCE(market, city, '') AS m, COUNT(*) AS n,
@@ -1230,6 +1233,19 @@ def _legacy_compute_report_data() -> dict:
                 out["top_markets"] = [
                     {"market": r[0], "facilities": int(r[1]), "total_mw": float(r[2] or 0)}
                     for r in cur.fetchall() if r[0]]
+                if not out["top_markets"]:
+                    cur.execute("""
+                        SELECT state, COUNT(*) AS n,
+                               COALESCE(SUM(power_mw), 0) AS mw
+                          FROM discovered_facilities
+                         WHERE state IS NOT NULL AND state != ''
+                         GROUP BY state
+                         ORDER BY mw DESC LIMIT 10
+                    """)
+                    out["top_markets"] = [
+                        {"market": r[0], "facilities": int(r[1]),
+                         "total_mw": float(r[2] or 0)}
+                        for r in cur.fetchall() if r[0]]
             except Exception as e:
                 logger.warning(f"quarterly_report top_markets failed: {e}")
                 out["top_markets"] = []
@@ -1308,17 +1324,19 @@ def _legacy_compute_report_data() -> dict:
                 out["ma_summary"]["top_deals"] = []
             # ─── PIPELINE BY MARKET ───────────────────────────────────
             # Drop verified-only filter; add 'announced'/'approved' which are
-            # the live statuses on 50+1 rows respectively. Without them the
-            # pipeline section was missing the bulk of pre-construction work.
+            # the live statuses on 50+1 rows respectively. Same state-fallback
+            # as top_markets when market/city is sparse on the live table.
+            _pipeline_statuses = (
+                "('construction','planned','permitting',"
+                "'under construction','proposed','development',"
+                "'announced','approved','under development','expanding')"
+            )
             try:
-                cur.execute("""
+                cur.execute(f"""
                     SELECT COALESCE(market, city, '') AS m, COUNT(*) AS n,
                            COALESCE(SUM(power_mw), 0) AS mw
                       FROM discovered_facilities
-                     WHERE LOWER(COALESCE(status,'')) IN
-                          ('construction','planned','permitting',
-                           'under construction','proposed','development',
-                           'announced','approved','under development','expanding')
+                     WHERE LOWER(COALESCE(status,'')) IN {_pipeline_statuses}
                        AND COALESCE(market, city) IS NOT NULL
                        AND COALESCE(market, city) != ''
                      GROUP BY COALESCE(market, city)
@@ -1327,6 +1345,20 @@ def _legacy_compute_report_data() -> dict:
                 out["pipeline_by_market"] = [
                     {"market": r[0], "projects": int(r[1]), "mw": float(r[2] or 0)}
                     for r in cur.fetchall() if r[0]]
+                if not out["pipeline_by_market"]:
+                    cur.execute(f"""
+                        SELECT state, COUNT(*) AS n,
+                               COALESCE(SUM(power_mw), 0) AS mw
+                          FROM discovered_facilities
+                         WHERE LOWER(COALESCE(status,'')) IN {_pipeline_statuses}
+                           AND state IS NOT NULL AND state != ''
+                         GROUP BY state
+                         ORDER BY mw DESC LIMIT 10
+                    """)
+                    out["pipeline_by_market"] = [
+                        {"market": r[0], "projects": int(r[1]),
+                         "mw": float(r[2] or 0)}
+                        for r in cur.fetchall() if r[0]]
             except Exception as e:
                 logger.warning(f"quarterly_report pipeline_by_market failed: {e}")
                 out["pipeline_by_market"] = []
