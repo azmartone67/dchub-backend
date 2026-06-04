@@ -5681,11 +5681,22 @@ def mcp_messages_proxy():
         headers = {k: v for k, v in resp.headers.items() if k.lower() not in excluded}
         return resp.content, resp.status_code, headers
     except requests.ConnectionError:
-        return jsonify({'error': 'MCP server not running on port 8888'}), 502
+        return jsonify({'error': f'MCP upstream unreachable: {MCP_INTERNAL_URL}'}), 502
     except Exception as e:
         return jsonify({'error': f'MCP message error: {str(e)}'}), 502
 
-MCP_INTERNAL_URL = 'http://127.0.0.1:8888/mcp'
+# r-mcp-upstream-fix (2026-06-04): the original value 'http://127.0.0.1:8888/mcp'
+# assumed dchub-mcp-server runs as a sidecar on this Railway container. It does
+# NOT — it's a SEPARATE Railway service at dchub-mcp-server-production.up.railway.app.
+# Result of the stale config: every /mcp hit to the Flask host (vs the dchub.cloud
+# CF-worker-proxied path) returned a misleading "MCP server unavailable on port
+# 8888" 503 from the ConnectionError branch below. The CF worker path was always
+# fine because it bypasses Flask. Now points at the real upstream by default and
+# is overridable via MCP_UPSTREAM_URL env var for local dev / staging.
+MCP_INTERNAL_URL = os.environ.get(
+    'MCP_UPSTREAM_URL',
+    'https://dchub-mcp-server-production.up.railway.app/mcp'
+)
 
 MCP_PLATFORM_MAP = {
     'claude': 'Claude', 'claude-desktop': 'Claude', 'anthropic': 'Claude',
@@ -7516,7 +7527,8 @@ def mcp_proxy():
             "jsonrpc": "2.0",
             "error": {
                 "code": -32000,
-                "message": "MCP server unavailable on port 8888. Restart the deployment."
+                "message": f"MCP upstream unreachable ({MCP_INTERNAL_URL}). "
+                              f"Check dchub-mcp-server Railway service health."
             }
         }), 503, {'Access-Control-Allow-Origin': '*'}
 
