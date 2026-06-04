@@ -29406,7 +29406,7 @@ def _mcp_upgrade_prompt():
         "founding_member_offer": {
             "active": spots_remaining > 0,
             "spots_remaining": spots_remaining,
-            "discount": "$99/mo locked for life (offer closes May 31, 2026)",
+            "discount": "$99/mo billed annually ($1,188/year vs $199/mo monthly)",
         },
         "upgrade_url": upgrade_url,
         # NEW Phase 258: email capture
@@ -29419,7 +29419,7 @@ def _mcp_upgrade_prompt():
         ),
         "agent_friendly_message": (
             f"This Pro-tier tool unlocks {meta.get('value_prop', 'full data access')}. "
-            f"Founding-member pricing: $99/mo annual (saves $1,200/year). "
+            f"Annual pricing: $99/mo billed annually (saves $1,200/year vs monthly). "
             f"What's your email? I'll send you a direct upgrade link with the founding-member discount. "
             f"Or upgrade directly: {upgrade_url}"
         ),
