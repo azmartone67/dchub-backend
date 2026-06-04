@@ -1033,7 +1033,7 @@ _DCGI_DASH_JS = r"""
 """
 
 
-@dcgi_bp.route("/dcgi", methods=["GET"])
+@dcgi_bp.route("/dcgi", methods=["GET"], strict_slashes=False)
 def dcgi_html():
     """Branded /dcgi dashboard — full visual + structural parity with /dcpi.
 
@@ -1332,7 +1332,7 @@ _US_STATE_NAMES = {
 }
 
 
-@dcgi_bp.route("/dcgi/<state>", methods=["GET"])
+@dcgi_bp.route("/dcgi/<state>", methods=["GET"], strict_slashes=False)
 def dcgi_state_html(state):
     """Per-state DCGI detail. The DCGI dashboard's leaderboard cards link
     here so users can drill into a state's gas-access / gas-cost / pipeline
