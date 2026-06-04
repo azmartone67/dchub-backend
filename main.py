@@ -9136,7 +9136,16 @@ def add_security_headers(response):
     except Exception:
         _matched_curated = None
 
-    if _matched_curated is not None:
+    # 2026-06-04: tier-sensitive HTML pages must NOT get edge-cached — the
+    # PRO+ paywall banner vs the green confirmation banner are different
+    # bodies, and CF would happily serve a free visitor's banner to a paid
+    # visitor (the Vary header alone is unreliable on CF). Endpoints that
+    # set Cache-Control: private themselves are honored as-is; this prevents
+    # the blanket public/max-age=300 fallback below from overwriting them.
+    _existing_cc = (response.headers.get('Cache-Control') or '').lower()
+    if 'private' in _existing_cc or 'no-store' in _existing_cc:
+        pass  # respect the view's explicit private/no-store directive
+    elif _matched_curated is not None:
         secs = _matched_curated[0] if isinstance(_matched_curated, tuple) else _matched_curated
         response.headers['Cache-Control'] = (
             f'public, max-age={secs}, s-maxage={secs}, stale-while-revalidate=60')
