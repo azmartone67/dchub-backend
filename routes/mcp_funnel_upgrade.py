@@ -252,7 +252,7 @@ def upgrade_hint():
             "developer":  {"calls_per_day": 500,        "results_per_call": 500,
                            "price_usd_month": 49,
                            "label": "$49/mo Developer — 500/day",
-                           "stripe_url": "https://buy.stripe.com/7sY5kE8F4fs13mI0PEaZi0c"},
+                           "stripe_url": "https://buy.stripe.com/7sY5kE8F4fs13ml0PEaZi0c"},
             "pro":        {"calls_per_day": 2000,       "results_per_call": 5000,
                            "price_usd_month": 199,
                            "label": "$199/mo Pro — 2,000/day + Pro tools"},

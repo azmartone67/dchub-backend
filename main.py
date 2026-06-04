@@ -6268,7 +6268,7 @@ _AGENT_CLAIM_STRUCT = {
     "method": "POST",
     "body": {"client_name": "<your agent name>"},
     "returns": "api_key",
-    "note": ("One POST, no email/browser. Free dev key, 100 calls/day. "
+    "note": ("One POST, no email/browser. Free dev key, 10 calls/day. "
              "Then retry the tool with an X-API-Key header."),
 }
 
@@ -20411,7 +20411,7 @@ def _canonical_pricing():
         "developer":  {"price_usd_month": 49,  "calls_per_day": 1000,
                           "results_per_query": "full",
                           "tools_unlocked": "all 29",
-                          "stripe_url": "https://buy.stripe.com/7sY5kE8F4fs13mI0PEaZi0c"},
+                          "stripe_url": "https://buy.stripe.com/7sY5kE8F4fs13ml0PEaZi0c"},
         "pro":        {"price_usd_month": 199, "calls_per_day": 10000,
                           "results_per_query": "full",
                           "tools_unlocked": "all 29 + Pro-only",

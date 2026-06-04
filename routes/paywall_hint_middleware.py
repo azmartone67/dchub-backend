@@ -51,7 +51,7 @@ _HINT_BASE = {
     "claim_key":       "POST https://dchub.cloud/api/v1/keys/claim",
     "signup_url":      "https://dchub.cloud/signup",
     "starter_url":     "https://buy.stripe.com/8x2dRa5sS0x75uteGuaZi0g",  # $9/mo
-    "developer_url":   "https://buy.stripe.com/7sY5kE8F4fs13mI0PEaZi0c",  # $49/mo
+    "developer_url":   "https://buy.stripe.com/7sY5kE8F4fs13ml0PEaZi0c",  # $49/mo
     "preview_url":     "https://dchub.cloud/api/v1/mcp/preview/<tool>",
     "upgrade_hint":    "https://dchub.cloud/api/v1/upgrade-hint",
     # r47.37.2 (2026-05-26): expose the enterprise data-licensing surface

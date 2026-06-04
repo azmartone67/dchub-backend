@@ -103,7 +103,7 @@ Northern Virginia.</p>
 Cline, and every other MCP-compatible agent. Tools include <code>search_facilities</code>,
 <code>get_grid_intelligence</code>, <code>compare_sites</code>, <code>get_pipeline</code>,
 <code>hyperscaler_deals</code>, <code>ai_capacity_index</code>, <code>get_renewable_energy</code>,
-<code>get_water_risk</code>, <code>get_tax_incentives</code>, and more. Tier ladder: free 5 calls/day,
+<code>get_water_risk</code>, <code>get_tax_incentives</code>, and more. Tier ladder: free 10 calls/day,
 Starter $9/mo, Developer $49/mo, Pro $199/mo, Enterprise custom.</p>
 
 <div class="pane dark">
