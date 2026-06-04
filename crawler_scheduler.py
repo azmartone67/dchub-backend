@@ -75,6 +75,14 @@ SCHEDULE = [
     # underlying endpoint /api/v1/markets/gas-pricing/cron has a 90s soft
     # deadline so it cannot overrun the next slot.
     ( 4,  4, "gas_pricing_refresh", "_run_gas_pricing_refresh"),
+    # Brain Layer-15 Tool Calibration Drift (2026-06-04):
+    # Daily test of every registered tool against known-correct (input,
+    # expected range) comp sets. Built after the Site Valuation Engine
+    # v1.0 calibration miss ($2M/MW shipped against $150-800K industry
+    # comp). 02:30 UTC slot chosen because it's empty (between 0/12
+    # infra-sync and 3/15 kmz-discovery) and gives any nightly upstream
+    # refresh time to land. Same-hour-same-day cap → one run/day.
+    ( 2,  2, "tool_calibration",   "_run_tool_calibration_check"),
 ]
 
 # ---------------------------------------------------------------------------
@@ -979,6 +987,30 @@ def _run_gas_pricing_refresh():
         logger.error("⛽ gas_pricing_refresh: error — %s", e)
 
 
+def _run_tool_calibration_check():
+    """Brain Layer-15: daily tool-output drift check vs known-correct
+    (input → expected range) comp sets. Files brain_findings on >2x
+    deviation. Built after the Site Valuation Engine v1.0 calibration
+    miss ($2M/MW shipped against $150-800K industry comp)."""
+    try:
+        from routes.brain_layer15_tool_calibration import (
+            run_tool_calibration_check as _l15_run,
+        )
+        result = _l15_run()
+        logger.info(
+            "🎯 Tool calibration drift check: %d tools, %d findings filed",
+            result.get("tools_checked", 0), result.get("findings_filed", 0),
+        )
+        for name, summary in (result.get("summary") or {}).items():
+            logger.info(
+                "   %s: %d/%d passed (pass_rate=%.2f)",
+                name, summary.get("passed", 0),
+                summary.get("tests_run", 0), summary.get("pass_rate", 0),
+            )
+    except Exception as e:
+        logger.error("🎯 Tool calibration check error: %s", e, exc_info=True)
+
+
 _RUNNERS = {
     "market_refresh":      _run_market_refresh,
     "news":                _run_news_crawler,
@@ -994,6 +1026,7 @@ _RUNNERS = {
     "lost_conversion":     _run_lost_conversion_outreach,
     "auto_interconnect":   _run_auto_interconnect,
     "gas_pricing_refresh": _run_gas_pricing_refresh,
+    "tool_calibration":    _run_tool_calibration_check,
 }
 
 

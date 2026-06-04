@@ -26565,6 +26565,17 @@ except Exception as _mp_e:
     print(f"[main] methodology_pages_bp register failed: {_mp_e}", flush=True)
 
 try:
+    # r-l15-calibration (2026-06-04): daily drift check that compares
+    # tool outputs against known-correct (input → expected range) comp
+    # sets. Files brain_findings on >2x deviation. Built after the
+    # Site Valuation Engine v1.0 $2M/MW vs $150-800K industry comp miss.
+    from routes.brain_layer15_tool_calibration import brain_layer15_bp
+    app.register_blueprint(brain_layer15_bp)
+    print("[main] brain_layer15_bp registered: /api/v1/admin/brain/tool-calibration/run, /api/v1/brain/tool-calibration/status", flush=True)
+except Exception as _l15_e:
+    print(f"[main] brain_layer15_bp register failed: {_l15_e}", flush=True)
+
+try:
     from routes.auto_interconnect import auto_interconnect_bp
     app.register_blueprint(auto_interconnect_bp)
     print("[main] auto_interconnect_bp registered: /api/v1/admin/auto-interconnect/{run,findings,approve/<token>,dismiss/<token>}", flush=True)
