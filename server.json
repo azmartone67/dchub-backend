@@ -1,9 +1,9 @@
 {
   "$schema": "https://static.modelcontextprotocol.io/schemas/2025-12-11/server.schema.json",
-  "name": "cloud.dchub/mcp-server",
-  "description": "Live data-center, power & gas intelligence for AI agents: 33 tools, 21k+ facilities, DCPI/DCGI, M&A.",
+  "name": "io.github.azmartone67/dchub-mcp-server",
+  "description": "Live data-center, power & gas intelligence for AI agents: 33 tools — 21,000+ facilities across 170+ countries, the DC Hub Power Index (DCPI, 232 markets) + Gas Index (DCGI), live grid telemetry for 7 US ISOs, 2,000+ tracked M&A deals, fiber routes, water-stress, renewables, tax incentives.",
   "repository": {
-    "url": "https://github.com/azmartone67/dchub-backend",
+    "url": "https://github.com/azmartone67/dchub-mcp-server",
     "source": "github"
   },
   "version": "2.2.2",
