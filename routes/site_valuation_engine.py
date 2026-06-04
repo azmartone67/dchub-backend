@@ -210,10 +210,14 @@ def _fetch_dcpi(slug: str) -> dict:
             row = None
             matched = None
             for cand in candidates:
+                # market_power_scores schema (from routes/dcpi.py:153) has
+                # excess_power_score, constraint_score, time_to_power_months,
+                # verdict, iso, computed_at but NO composite_score column —
+                # the composite is derived via routes.dcpi.derive_composite_score
+                # in the canonical handler. Mirror that pattern.
                 cur.execute("""
-                    SELECT verdict, composite_score, excess_power_score,
-                           constraint_score, time_to_power_months,
-                           iso, computed_at
+                    SELECT verdict, excess_power_score, constraint_score,
+                           time_to_power_months, iso, computed_at
                       FROM market_power_scores
                      WHERE market_slug = %s
                      ORDER BY computed_at DESC
@@ -226,16 +230,33 @@ def _fetch_dcpi(slug: str) -> dict:
         if not row:
             return {"available": False, "reason": "no_row_for_slug",
                     "slug": slug}
+
+        verdict      = row[0]
+        excess       = float(row[1] or 0)
+        constraint   = float(row[2] or 0)
+        ttp_months   = float(row[3] or 36)
+        iso          = row[4]
+        computed_at  = row[5]
+
+        # Derive composite_score using the canonical formula
+        try:
+            from routes.dcpi import derive_composite_score
+            composite = derive_composite_score(excess, constraint, ttp_months, verdict)
+        except Exception:
+            # Fallback formula if import fails: weighted average
+            # 50% excess + 50% (100 - constraint), then verdict adjustment
+            composite = round((excess + (100 - constraint)) / 2.0, 1)
+
         return {
             "available":             True,
             "slug":                  matched or slug,
-            "verdict":               row[0],
-            "composite_score":       float(row[1] or 0),
-            "excess_power_score":    float(row[2] or 0),
-            "constraint_score":      float(row[3] or 0),
-            "time_to_power_months":  float(row[4] or 36),
-            "iso":                   row[5],
-            "last_updated":          row[6].isoformat() if row[6] else None,
+            "verdict":               verdict,
+            "composite_score":       composite,
+            "excess_power_score":    excess,
+            "constraint_score":      constraint,
+            "time_to_power_months":  ttp_months,
+            "iso":                   iso,
+            "last_updated":          computed_at.isoformat() if computed_at else None,
         }
     except Exception as e:
         return {"available": False, "reason": "query_error",
@@ -541,9 +562,6 @@ def site_value():
             "constraint_score":     dcpi.get("constraint_score"),
             "time_to_power_months": dcpi.get("time_to_power_months"),
             "iso":                  dcpi.get("iso"),
-            "_debug_available":     dcpi.get("available"),
-            "_debug_reason":        dcpi.get("reason"),
-            "_debug_error":         dcpi.get("error"),
         },
     }
 
