@@ -66,9 +66,9 @@ def test_registry_pricing_canonical():
     c(tr.price('pro') == 199,      f"pro price {tr.price('pro')} != 199")
     c(tr.price('founding') == tr.price('pro'), "founding price must == pro")
     # canonical calls/day (mcp_daily) — what the paywall quotes
-    c(tr.calls_per_day('starter') == 500,    f"starter calls/day {tr.calls_per_day('starter')} != 500")
-    c(tr.calls_per_day('developer') == 1000, f"developer calls/day {tr.calls_per_day('developer')} != 1000")
-    c(tr.calls_per_day('pro') == 10000,      f"pro calls/day {tr.calls_per_day('pro')} != 10000")
+    c(tr.calls_per_day('starter') == 200,    f"starter calls/day {tr.calls_per_day('starter')} != 200")
+    c(tr.calls_per_day('developer') == 500, f"developer calls/day {tr.calls_per_day('developer')} != 500")
+    c(tr.calls_per_day('pro') == 2000,      f"pro calls/day {tr.calls_per_day('pro')} != 2000")
     # /api/v1/tiers must expose the fields every surface reads
     pub = tr.as_public_dict()
     for t in ('starter', 'developer', 'pro'):

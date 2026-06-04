@@ -1596,7 +1596,7 @@ class MCPGateway:
                             f"{self.base_url}/api/v1/redeem/"
                             "3fdb85b6-4a40-420d-8bb0-a9ae5f4ac760"
                         ),
-                        "free_tier_calls_per_day": 25,
+                        "free_tier_calls_per_day": 10,
                         "paid_tiers_url": f"{self.base_url}/pricing",
                     },
                     "notes": (

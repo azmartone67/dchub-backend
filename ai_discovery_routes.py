@@ -401,7 +401,7 @@ def register_discovery_routes(app):
                 "free_tier": {
                     "description": "Most discovery endpoints work without a key",
                     "claim_url": f"{BASE_URL}/api/v1/redeem/3fdb85b6-4a40-420d-8bb0-a9ae5f4ac760",
-                    "daily_calls": 25,
+                    "daily_calls": 10,
                 },
                 "paid_tiers_url": f"{BASE_URL}/pricing",
             },
@@ -416,11 +416,11 @@ def register_discovery_routes(app):
             "tools_count": len(_card_tools),
 
             "pricing": {
-                "free":       {"calls_per_day": 25, "results_per_call": 5, "price_usd": 0,
+                "free":       {"calls_per_day": 10, "results_per_call": 5, "price_usd": 0,
                                 "claim_url": f"{BASE_URL}/api/v1/redeem/3fdb85b6-4a40-420d-8bb0-a9ae5f4ac760"},
-                "starter":    {"calls_per_day": 10000, "results_per_call": 50, "price_usd_per_month": 9},
-                "developer":  {"calls_per_day": 1000, "results_per_call": 50, "price_usd_per_month": 49},
-                "pro":        {"calls_per_day": 10000, "results_per_call": 500, "price_usd_per_month": 199},
+                "starter":    {"calls_per_day": 200, "results_per_call": 50, "price_usd_per_month": 9},
+                "developer":  {"calls_per_day": 500, "results_per_call": 50, "price_usd_per_month": 49},
+                "pro":        {"calls_per_day": 2000, "results_per_call": 500, "price_usd_per_month": 199},
                 "enterprise": {"calls_per_day": 100000, "results_per_call": 5000, "price_usd_per_month": "custom"},
             },
 

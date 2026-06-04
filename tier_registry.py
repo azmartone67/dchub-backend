@@ -39,13 +39,13 @@ TIERS = {
 # Per-day benefit limits. founding mirrors pro exactly.
 # (rate_limit = API calls/day, record_cap = unique records/day,
 #  page_cap = max pages/query, mcp_daily = MCP calls/day, mcp_results)
-_PRO = dict(rate_limit=5000, record_cap=5000, page_cap=50, mcp_daily=10000, mcp_results=500)
+_PRO = dict(rate_limit=5000, record_cap=5000, page_cap=50, mcp_daily=2000, mcp_results=500)
 TIER_LIMITS = {
     'anonymous':  dict(rate_limit=5,     record_cap=50,    page_cap=1,  mcp_daily=10,    mcp_results=5),
     'free':       dict(rate_limit=10,    record_cap=50,    page_cap=2,  mcp_daily=10,    mcp_results=5),
     'identified': dict(rate_limit=50,    record_cap=200,   page_cap=5,  mcp_daily=50,    mcp_results=25),
-    'starter':    dict(rate_limit=500,   record_cap=500,   page_cap=10, mcp_daily=500,   mcp_results=50),
-    'developer':  dict(rate_limit=1000,  record_cap=500,   page_cap=10, mcp_daily=1000,  mcp_results=100),
+    'starter':    dict(rate_limit=500,   record_cap=500,   page_cap=10, mcp_daily=200,   mcp_results=50),
+    'developer':  dict(rate_limit=1000,  record_cap=500,   page_cap=10, mcp_daily=500,  mcp_results=100),
     'pro':        dict(**_PRO),
     'founding':   dict(**_PRO),  # founding == pro benefits
     'enterprise': dict(rate_limit=100000, record_cap=999999, page_cap=999, mcp_daily=100000, mcp_results=10000),
@@ -64,8 +64,8 @@ TIER_LIMITS = {
 # Stripe Payment Link URL (the price the customer is actually charged on
 # that link). Keep the two in sync — every consumer should read price from
 # here + link from _stripe_links instead of hardcoding. Canonical calls/day
-# per tier = TIER_LIMITS[tier]['mcp_daily'] (free 10 · starter 500 ·
-# developer 1000 · pro 10000 · enterprise 100000).
+# per tier = TIER_LIMITS[tier]['mcp_daily'] (free 10 · starter 200 ·
+# developer 500 · pro 2000 · enterprise 100000).
 # ─────────────────────────────────────────────────────────────────────
 TIER_PRICE_USD_MONTH = {
     'anonymous':  0,
