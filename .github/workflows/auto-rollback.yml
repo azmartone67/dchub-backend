@@ -5,9 +5,15 @@ on:
   workflow_dispatch:
   schedule:
     - cron: '*/5 * * * *'   # safety net every 5 min
+# r71-stabilize: prevent run-stacking (the 5-min sample loop overlapped the next
+# */5 trigger → continuous self-probe of the single replica). Latest run wins.
+concurrency:
+  group: auto-rollback
+  cancel-in-progress: true
 jobs:
   check-and-rollback:
     runs-on: ubuntu-latest
+    timeout-minutes: 8
     permissions:
       contents: write
       issues: write
