@@ -348,6 +348,40 @@ SCHEMA_STATEMENTS = [
         "CREATE INDEX IF NOT EXISTS ix_mgp_usdmwh_cc_avg ON market_gas_pricing(usd_per_mwh_cc_avg)",
         "CREATE INDEX IF NOT EXISTS ix_mgp_fetched ON market_gas_pricing(fetched_at DESC)",
     ]),
+    ("auto_interconnect_findings (3-stage pipeline notification queue)", [
+        # Auto-interconnect (2026-06-04): novel-UA + pending-bucket findings
+        # surfaced for admin approval. Single-use approve_token; TTL purge
+        # at 30d (unapproved) / 90d (approved). status in: pending, approved,
+        # dismissed, expired. NEVER auto-promoted past stage (b) — outbound
+        # email / dev-key mint require status='approved'.
+        """CREATE TABLE IF NOT EXISTS auto_interconnect_findings (
+            id              BIGSERIAL PRIMARY KEY,
+            user_agent      VARCHAR(500) NOT NULL,
+            vendor          TEXT,
+            version         TEXT,
+            inferred_slug   TEXT,
+            company         TEXT,
+            color           TEXT,
+            source          TEXT NOT NULL DEFAULT 'novel_ua',
+            hits_14d        INTEGER NOT NULL DEFAULT 0,
+            distinct_ips    INTEGER NOT NULL DEFAULT 0,
+            first_seen      TIMESTAMPTZ,
+            last_seen       TIMESTAMPTZ,
+            approve_token   TEXT UNIQUE,
+            status          TEXT NOT NULL DEFAULT 'pending',
+            approved_by_ip  TEXT,
+            approved_by_ua  TEXT,
+            approved_at     TIMESTAMPTZ,
+            promoted_steps  TEXT,
+            ttl_at          TIMESTAMPTZ,
+            created_at      TIMESTAMPTZ NOT NULL DEFAULT NOW()
+        )""",
+        "CREATE UNIQUE INDEX IF NOT EXISTS ix_aif_ua_unique ON auto_interconnect_findings(user_agent) WHERE status IN ('pending','approved')",
+        "CREATE INDEX IF NOT EXISTS ix_aif_status ON auto_interconnect_findings(status)",
+        "CREATE INDEX IF NOT EXISTS ix_aif_token ON auto_interconnect_findings(approve_token)",
+        "CREATE INDEX IF NOT EXISTS ix_aif_created ON auto_interconnect_findings(created_at DESC)",
+        "CREATE INDEX IF NOT EXISTS ix_aif_ttl ON auto_interconnect_findings(ttl_at) WHERE status='pending'",
+    ]),
 ]
 
 

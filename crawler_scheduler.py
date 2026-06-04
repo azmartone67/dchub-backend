@@ -57,6 +57,15 @@ SCHEDULE = [
     # per-target Resend guard in ai_lab_outreach._perform_resend_send.
     (16, 16, "lost_conversion",     "_run_lost_conversion_outreach"),
     (17, 17, "ai_lab_outreach",     "_run_ai_lab_auto_outreach"),
+    # r-auto-interconnect (2026-06-04): scan novel UAs + pending buckets
+    # once daily, write findings + email digest. Endpoint is admin-gated
+    # AND idempotent (UNIQUE index on user_agent for pending/approved
+    # findings — re-runs skip already-promoted UAs). Slot 11/11 chosen
+    # because it's the largest empty hour in the schedule (2h gap from
+    # 9 market_refresh → 12 infrastructure_sync, no overlap with
+    # 16/17 outreach pair). Same-hour same-day means at most one run
+    # per day even with the both-slots scheduler config.
+    (11, 11, "auto_interconnect",   "_run_auto_interconnect"),
 ]
 
 # ---------------------------------------------------------------------------
@@ -884,6 +893,43 @@ def _run_lost_conversion_outreach():
         logger.error("📧 lost_conversion autopilot: error — %s", e)
 
 
+def _run_auto_interconnect():
+    """Fire /api/v1/admin/auto-interconnect/run (loopback). Scans the last 14d
+    of ai_requests + mcp_connections for novel UAs (>=5 hits AND >=2 distinct IPs)
+    that the live detect_platform() buckets as mcp_generic/direct/unknown_ai, plus
+    ai_cumulative rows for known-but-unseeded platforms (groq/cohere/huggingface/
+    mistral/etc.) with no _PARTNERS entry. Auto-promotes in 3 reversible steps
+    (discovered_platforms insert, ai_cumulative name backfill, _PARTNERS_AUTO
+    stub) and emails a single admin digest. Does NOT mint dev keys, does NOT
+    send outbound to discovered domains.
+
+    Runner UA is dchub-cron-autointerconnect/1.0 which the endpoint's
+    _INTERNAL_UA_MARKERS check filters out, so the runner can't promote
+    itself by hitting its own loopback."""
+    import requests as _rq
+    key = (os.environ.get("DCHUB_ADMIN_KEY")
+           or os.environ.get("DCHUB_INTERNAL_KEY")
+           or os.environ.get("DCHUB_ADMIN_API_KEY") or "")
+    if not key:
+        logger.warning("🔌 auto_interconnect: skipped — DCHUB_ADMIN_KEY not set")
+        return
+    base = os.environ.get("DCHUB_INTERNAL_API", "http://127.0.0.1:8080")
+    try:
+        r = _rq.post(
+            f"{base}/api/v1/admin/auto-interconnect/run",
+            headers={"X-Internal-Key": key, "X-Admin-Key": key,
+                       "User-Agent": "dchub-cron-autointerconnect/1.0"},
+            timeout=90,
+        )
+        d = (r.json() if r.headers.get("content-type", "").startswith("application/json") else {}) or {}
+        logger.info("🔌 auto_interconnect: scanned=%s novel=%s promoted=%s findings_written=%s email_sent=%s",
+                       d.get("scanned"), len(d.get("novel_uas", [])),
+                       len(d.get("promoted", [])), d.get("findings_written"),
+                       d.get("email_sent"))
+    except Exception as e:
+        logger.error("🔌 auto_interconnect: error — %s", e)
+
+
 _RUNNERS = {
     "market_refresh":      _run_market_refresh,
     "news":                _run_news_crawler,
@@ -897,6 +943,7 @@ _RUNNERS = {
     "intl_infra_ingest":   _run_intl_infra_ingest,
     "ai_lab_outreach":     _run_ai_lab_auto_outreach,
     "lost_conversion":     _run_lost_conversion_outreach,
+    "auto_interconnect":   _run_auto_interconnect,
 }
 
 

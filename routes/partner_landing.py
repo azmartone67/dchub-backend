@@ -310,6 +310,27 @@ _PARTNERS = {
 }
 
 
+# ── Auto-discovered partners (auto-interconnect pipeline) ────────
+# r-ai (2026-06-04): _PARTNERS_AUTO is the SEPARATE dict the
+# auto-interconnect pipeline writes to. NEVER touch _PARTNERS above
+# (curator-edited) — that dict ships only after a human polishes copy.
+# _PARTNERS_AUTO entries always carry {"auto": True} and a minimal
+# stub shape so /partners/<slug> renders a placeholder. The admin
+# digest links to /api/v1/admin/auto-interconnect/approve/<token>
+# which flips the finding to status='approved'; promoting an entry
+# from _PARTNERS_AUTO → _PARTNERS still requires a manual PR (intentional
+# friction so unpolished copy never goes live).
+_PARTNERS_AUTO: dict = {}
+
+
+def _get_partner_any(slug: str):
+    """Lookup helper used by /partners/<slug>: curator-edited dict wins
+    on collision — auto entries are only surfaced if no curator copy exists."""
+    s = (slug or "").lower()
+    return (_PARTNERS.get(slug) or _PARTNERS.get(s)
+            or _PARTNERS_AUTO.get(slug) or _PARTNERS_AUTO.get(s))
+
+
 def _db_conn():
     try:
         import psycopg2
@@ -631,7 +652,13 @@ def _render_partner_page(slug: str, p: dict) -> str:
 
 @partner_landing_bp.route("/partners", methods=["GET"], strict_slashes=False)
 def partners_index():
-    """Public index of all partner pages."""
+    """Public index of all partner pages.
+
+    r-ai (2026-06-04): now also surfaces _PARTNERS_AUTO stubs at the bottom
+    of the grid (curator-edited _PARTNERS wins on slug collision). Auto
+    entries lack an `accent` color → fall back to violet so the card still
+    renders coherently while the auto-interconnect digest is pending review.
+    """
     cards = []
     for slug, p in _PARTNERS.items():
         cards.append(f"""
@@ -639,6 +666,16 @@ def partners_index():
           <h3>{p['name']}</h3>
           <p>{p['tagline']}</p>
           <span class="arrow" style="color:{p['accent']};">View {p['name']} →</span>
+        </a>""")
+    for slug, p in _PARTNERS_AUTO.items():
+        if slug in _PARTNERS:
+            continue  # curator-edited entry wins
+        accent = p.get("accent") or "#a855f7"
+        cards.append(f"""
+        <a class="card" href="/partners/{slug}" style="--accent:{accent};">
+          <h3>{p.get('name', slug)}</h3>
+          <p>{p.get('tagline', 'Auto-detected — pending curator review')}</p>
+          <span class="arrow" style="color:{accent};">View {p.get('name', slug)} →</span>
         </a>""")
 
     html = f"""<!DOCTYPE html>
@@ -690,11 +727,11 @@ def partner_page(slug):
     are the two ways NLR contacts copy-paste URLs in practice; both used
     to 404 because Flask's default route matcher is exact + case-sensitive.
     """
-    p = _PARTNERS.get(slug) or _PARTNERS.get((slug or "").lower())
+    p = _get_partner_any(slug)
     if not p:
         return Response(
             f"<h1>Unknown partner: {slug}</h1>"
-            f"<p>Valid partners: {', '.join(_PARTNERS.keys())}</p>"
+            f"<p>Valid partners: {', '.join(list(_PARTNERS.keys()) + list(_PARTNERS_AUTO.keys()))}</p>"
             f"<p><a href='/partners'>← All partners</a></p>",
             status=404, mimetype="text/html"
         )
@@ -723,22 +760,27 @@ def partner_json(slug):
     /partners/<slug> above. Agents pasting links from press releases
     or LinkedIn cards may add either.
     """
-    p = _PARTNERS.get(slug) or _PARTNERS.get((slug or "").lower())
+    p = _get_partner_any(slug)
     if not p:
         return jsonify({"ok": False, "error": "unknown_partner",
-                          "valid_slugs": list(_PARTNERS.keys())}), 404
+                          "valid_slugs": list(_PARTNERS.keys()) + list(_PARTNERS_AUTO.keys())}), 404
     return jsonify({"ok": True, "slug": slug, **p}), 200
 
 
 @partner_landing_bp.route("/api/v1/partners", methods=["GET"])
 def partners_list_json():
-    """All 9 partners in JSON."""
+    """All partners (curator-edited + auto-discovered) in JSON."""
+    combined = list(_PARTNERS.items()) + [
+        (s, p) for s, p in _PARTNERS_AUTO.items() if s not in _PARTNERS
+    ]
     return jsonify({
         "ok":     True,
-        "count":  len(_PARTNERS),
-        "slugs":  list(_PARTNERS.keys()),
-        "partners": {slug: {k: p[k] for k in ("name","tagline","integration_path")}
-                     for slug, p in _PARTNERS.items()},
+        "count":  len(combined),
+        "curated_count": len(_PARTNERS),
+        "auto_count":    sum(1 for s in _PARTNERS_AUTO if s not in _PARTNERS),
+        "slugs":  [s for s, _ in combined],
+        "partners": {slug: {k: p.get(k) for k in ("name", "tagline", "integration_path")}
+                     for slug, p in combined},
     }), 200
 
 

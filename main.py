@@ -1478,6 +1478,15 @@ try:
     except Exception as _mdde_early:
         import logging
         logging.getLogger(__name__).warning('market_deep_dive wiring failed: %s', _mdde_early)
+    # Powered Land Gas Pricing (2026-06-04, Phase 1 spine):
+    # Per-DCPI-market Henry Hub spot + regional basis + delivered industrial /
+    # electric tariff + heat-rate-derived $/MWh. PRO-gated (free = teaser).
+    try:
+        from routes.powered_land_gas import powered_land_gas_bp
+        app.register_blueprint(powered_land_gas_bp)
+    except Exception as _plge:
+        import logging
+        logging.getLogger(__name__).warning('powered_land_gas wiring failed: %s', _plge)
     # Phase ZZZZ-brain-L123 (2026-05-18): brain layers 1-3 — PR opener,
     # LLM narrative, finding-outcome memory. Closes the "brain detects
     # but never fixes / never learns" gap the user called out.
@@ -16005,6 +16014,26 @@ def grok_integration():
 def land_power_page():
     return send_from_directory('static', 'land-power.html')
 
+
+# Powered Land — Gas Economics (2026-06-04, Phase 1 spine).
+# Self-contained HTML at static/powered-land.html consumes the new
+# /api/v1/markets/<slug>/gas-pricing + /gas-to-grid endpoints (PRO-gated).
+# Free callers see hub identification + verdict with numbers masked;
+# PRO+ sees the full 4-layer payload + 5 heat-rate $/MWh scenarios.
+@app.route('/powered-land')
+@app.route('/powered-land.html')
+@app.route('/powered-land/<slug>')
+def powered_land_page(slug=None):
+    resp = make_response(send_from_directory('static', 'powered-land.html'))
+    try:
+        # Static-ish shell — short edge cache; tier-gated data is fetched
+        # client-side with credentials:include so gating still works.
+        resp.headers['Cache-Control'] = 'public, max-age=300, s-maxage=300'
+    except Exception:
+        pass
+    return resp
+
+
 @app.route('/login')
 @app.route('/login.html')
 def login_page():
@@ -26463,6 +26492,13 @@ try:
     print("[main] partner_landing_bp registered: /partners{,/<slug>}, /api/v1/partners, /api/v1/admin/partner-visits", flush=True)
 except Exception as _pl_e:
     print(f"[main] partner_landing_bp register failed: {_pl_e}", flush=True)
+
+try:
+    from routes.auto_interconnect import auto_interconnect_bp
+    app.register_blueprint(auto_interconnect_bp)
+    print("[main] auto_interconnect_bp registered: /api/v1/admin/auto-interconnect/{run,findings,approve/<token>,dismiss/<token>}", flush=True)
+except Exception as _ai_e:
+    print(f"[main] auto_interconnect_bp register failed: {_ai_e}", flush=True)
 
 try:
     from routes.dcpi_auto_press import dcpi_auto_press_bp
