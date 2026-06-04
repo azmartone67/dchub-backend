@@ -476,6 +476,40 @@ def partner_usage(slug):
                 """, (prefix + "%", str(days)))
                 k["daily_calls"] = [{"date": r[0], "calls": int(r[1] or 0)} for r in cur.fetchall()]
 
+                # r78-f (2026-06-03): per-endpoint breakdown from api_endpoint_log.
+                # The log table is created by api_usage_tracker.py at install
+                # time; if it doesn't exist yet (e.g. backend pre-r78-c), we
+                # swallow the error and return an empty list rather than
+                # failing the whole partner-usage call.
+                try:
+                    cur.execute("""
+                        SELECT endpoint_path,
+                               COUNT(*)::BIGINT                                   AS calls,
+                               MAX(called_at)                                     AS last_call,
+                               ROUND(AVG(latency_ms)::numeric, 0)::INTEGER        AS avg_latency_ms,
+                               COUNT(*) FILTER (WHERE status >= 200 AND status < 300)::BIGINT AS ok_count,
+                               COUNT(*) FILTER (WHERE status >= 400)::BIGINT              AS err_count
+                          FROM api_endpoint_log
+                         WHERE api_key_prefix = %s
+                           AND called_at >= NOW() - (%s || ' days')::INTERVAL
+                         GROUP BY endpoint_path
+                         ORDER BY calls DESC, endpoint_path
+                    """, (prefix, str(days)))
+                    rows = cur.fetchall()
+                    k["by_endpoint"] = [
+                        {
+                            "endpoint":       r[0],
+                            "calls":          int(r[1] or 0),
+                            "last_call":      r[2].isoformat() if r[2] else None,
+                            "avg_latency_ms": int(r[3]) if r[3] is not None else None,
+                            "ok_count":       int(r[4] or 0),
+                            "err_count":      int(r[5] or 0),
+                        } for r in rows
+                    ]
+                except Exception as _ep_err:
+                    k["by_endpoint"] = []
+                    k["by_endpoint_unavailable"] = str(_ep_err)[:120]
+
             # 3. Aggregate across ACTIVE keys
             active = [k for k in partner_keys if k["status"] == "active"]
             active_recent = [k.get("last_call_at") for k in active if k.get("last_call_at")]
@@ -508,8 +542,161 @@ def partner_usage(slug):
         "days_window":  days,
         "summary":      agg,
         "keys":         partner_keys,
-        "note":         ("Per-day call counts only — endpoint-level breakdown "
-                          "is not tracked in api_usage_meter. To answer 'which "
-                          "endpoints did they hit', either ask the partner "
-                          "directly or grep Railway request logs."),
+        "note":         ("Each active-key entry includes a `by_endpoint` array "
+                          "(per-endpoint counts + avg latency + ok/err split) "
+                          "once api_endpoint_log has data (r78-c+). Daily "
+                          "rollup is in `daily_calls`. Per-day per-key "
+                          "totals come from api_usage_meter."),
+    }), 200
+
+
+# === Self-service: /api/v1/me/usage =====================================
+#
+# r78-f (2026-06-03): NLR JSC asked "exactly what have we used?" — and
+# they should be able to answer that themselves without needing admin
+# access. This endpoint takes any dchub_* API key (their own) and returns
+# their usage: per-day, per-endpoint, latency stats, error rates.
+#
+# Auth: X-API-Key header (caller's own key) — NOT admin auth.
+# Public-facing — for partners to inspect their own usage.
+
+@partner_key_issuer_bp.route("/api/v1/me/usage", methods=["GET"])
+def me_usage():
+    """Self-service usage telemetry for the caller's own API key.
+
+    Pass your key via the standard X-API-Key header (the same one you
+    use for any other dchub.cloud API call). Returns:
+
+      - total calls today / week / month / all-time
+      - first call date + most recent call timestamp
+      - day-by-day histogram (default last 30 days, ?days=N)
+      - per-endpoint breakdown (call counts + avg latency + ok/err)
+
+    Notes:
+      - Tracking started 2026-06-03 (r78-c). Calls made before that
+        date are NOT reflected here.
+      - This endpoint is meant to be called interactively or from
+        partner integration scripts. It does NOT itself count toward
+        your usage stats (the tracker excludes admin/usage paths).
+
+    Example:
+        curl -H "X-API-Key: dchub_developer_..." \\
+          "https://dchub.cloud/api/v1/me/usage?days=14"
+    """
+    api_key = (request.headers.get("X-API-Key") or "").strip()
+    if not api_key or not api_key.startswith("dchub_") or len(api_key) < 24:
+        return jsonify({
+            "ok": False,
+            "error": "valid_dchub_api_key_required",
+            "hint":  "Pass your key via the X-API-Key header. Issue or "
+                     "rotate at partnerships@dchub.cloud."
+        }), 401
+
+    prefix = api_key[:24]  # match what the tracker stores
+    try:
+        days = max(1, min(int(request.args.get("days", 30)), 365))
+    except (TypeError, ValueError):
+        days = 30
+
+    c = _db_conn()
+    if not c:
+        return jsonify({"ok": False, "error": "db_unavailable"}), 200
+
+    try:
+        with c.cursor() as cur:
+            # 1. Verify the key actually exists + is active (don't reveal
+            #    plan/tier publicly — that's a separate concern; just
+            #    confirm the prefix matches a non-revoked key).
+            cur.execute("""
+                SELECT 1 FROM api_keys
+                 WHERE key_prefix = %s AND is_active = 1
+                 LIMIT 1
+            """, (prefix,))
+            if not cur.fetchone():
+                return jsonify({
+                    "ok": False,
+                    "error": "key_not_found_or_inactive",
+                    "hint":  "If you believe this is in error, contact "
+                             "partnerships@dchub.cloud with this prefix: "
+                             f"{prefix}"
+                }), 404
+
+            # 2. Aggregate stats from api_usage_meter
+            cur.execute("""
+                SELECT
+                    COALESCE(SUM(calls_count), 0)::BIGINT  AS calls_total,
+                    COALESCE(SUM(CASE WHEN usage_date = CURRENT_DATE                          THEN calls_count ELSE 0 END), 0)::BIGINT  AS calls_today,
+                    COALESCE(SUM(CASE WHEN usage_date >= CURRENT_DATE - INTERVAL '7 days'     THEN calls_count ELSE 0 END), 0)::BIGINT  AS calls_week,
+                    COALESCE(SUM(CASE WHEN usage_date >= date_trunc('month', CURRENT_DATE)   THEN calls_count ELSE 0 END), 0)::BIGINT  AS calls_month,
+                    MAX(last_call_at)                       AS last_call_at,
+                    MIN(usage_date)                         AS first_call_date,
+                    COUNT(DISTINCT usage_date)::INTEGER     AS active_days
+                  FROM api_usage_meter
+                 WHERE api_key LIKE %s
+            """, (prefix + "%",))
+            stat_cols = [d[0] for d in cur.description]
+            summary = dict(zip(stat_cols, cur.fetchone() or []))
+            for fld in ("last_call_at", "first_call_date"):
+                if summary.get(fld) and hasattr(summary[fld], "isoformat"):
+                    summary[fld] = summary[fld].isoformat()
+
+            # 3. Day-by-day histogram
+            cur.execute("""
+                SELECT usage_date::TEXT AS d, COALESCE(SUM(calls_count), 0)::BIGINT AS calls
+                  FROM api_usage_meter
+                 WHERE api_key LIKE %s
+                   AND usage_date >= CURRENT_DATE - (%s || ' days')::INTERVAL
+                 GROUP BY usage_date
+                 ORDER BY usage_date
+            """, (prefix + "%", str(days)))
+            daily = [{"date": r[0], "calls": int(r[1] or 0)} for r in cur.fetchall()]
+
+            # 4. Per-endpoint breakdown from api_endpoint_log (r78-c+)
+            try:
+                cur.execute("""
+                    SELECT endpoint_path,
+                           COUNT(*)::BIGINT                                   AS calls,
+                           MAX(called_at)                                     AS last_call,
+                           ROUND(AVG(latency_ms)::numeric, 0)::INTEGER        AS avg_latency_ms,
+                           COUNT(*) FILTER (WHERE status >= 200 AND status < 300)::BIGINT AS ok_count,
+                           COUNT(*) FILTER (WHERE status >= 400)::BIGINT              AS err_count
+                      FROM api_endpoint_log
+                     WHERE api_key_prefix = %s
+                       AND called_at >= NOW() - (%s || ' days')::INTERVAL
+                     GROUP BY endpoint_path
+                     ORDER BY calls DESC, endpoint_path
+                """, (prefix, str(days)))
+                rows = cur.fetchall()
+                by_endpoint = [
+                    {
+                        "endpoint":       r[0],
+                        "calls":          int(r[1] or 0),
+                        "last_call":      r[2].isoformat() if r[2] else None,
+                        "avg_latency_ms": int(r[3]) if r[3] is not None else None,
+                        "ok_count":       int(r[4] or 0),
+                        "err_count":      int(r[5] or 0),
+                    } for r in rows
+                ]
+                by_endpoint_note = None
+            except Exception as _ep_err:
+                by_endpoint = []
+                by_endpoint_note = "endpoint-level tracking not yet available"
+    except Exception as e:
+        try: c.close()
+        except Exception: pass
+        return jsonify({"ok": False, "error": str(e)[:200]}), 200
+    finally:
+        try: c.close()
+        except Exception: pass
+
+    return jsonify({
+        "ok":           True,
+        "key_prefix":   prefix,
+        "as_of":        datetime.datetime.utcnow().isoformat() + "Z",
+        "days_window":  days,
+        "summary":      summary,
+        "daily_calls":  daily,
+        "by_endpoint":  by_endpoint,
+        "by_endpoint_note":  by_endpoint_note,
+        "tracking_since":    "2026-06-03 (r78-c). Calls before this date are not reflected.",
     }), 200
