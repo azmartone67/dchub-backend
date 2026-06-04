@@ -322,7 +322,7 @@ def transactions_index():
 <meta property="og:url" content="https://dchub.cloud/transactions">
 <!-- Phase r33-J (2026-05-21): unified brand styling. The previous
      inline CSS hardcoded a white page with #-apple-system font +
-     #1e40af blue, which made /transactions look completely off-brand
+     #6366f1 blue, which made /transactions look completely off-brand
      vs the rest of the site. Now uses brand.css tokens. -->
 <link rel="preconnect" href="https://fonts.googleapis.com">
 <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
@@ -341,7 +341,7 @@ def transactions_index():
 }}
 </script>
 <style>
-  body{{max-width:1300px;margin:1.5rem auto;padding:0 1rem;line-height:1.55}}
+  body{{font-family:'Instrument Sans',-apple-system,sans-serif;max-width:1300px;margin:1.5rem auto;padding:0 1rem;line-height:1.55}}
   h1{{margin:1.5rem 0 .25rem;font-size:1.75rem;letter-spacing:-.02em}}
   h1 + p{{color:var(--dch-text-mute);margin:0 0 1.5rem}}
   .filters{{background:var(--dch-surface);padding:1rem 1.25rem;border-radius:10px;margin-bottom:1rem;

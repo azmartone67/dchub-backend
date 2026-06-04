@@ -2908,6 +2908,8 @@ DCPI_INDEX_TEMPLATE = """<!DOCTYPE html>
 <meta name="twitter:card" content="summary_large_image">
 <meta name="robots" content="index,follow,max-snippet:-1,max-image-preview:large">
 <link rel="canonical" href="https://dchub.cloud/dcpi">
+<link rel="stylesheet" href="/static/dchub-brand.css">
+<script src="/js/dchub-nav.js" defer></script>
 <!-- Phase NNN (2026-05-17) — own the category. datacenterpowerindex.com
      is a vanity domain (GoDaddy 301 → /dcpi). Self-reference via
      <link rel="alternate"> so search engines + AI crawlers know they're

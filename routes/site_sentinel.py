@@ -142,7 +142,13 @@ _MANIFEST: list[dict] = [
     {"path": "/operators",               "category": "high",   "min_bytes": 3000, "label": "Operators Index",   "wants_nav": True},
     {"path": "/founders",                "category": "normal", "min_bytes": 2000, "label": "Founders"},
     {"path": "/integrations/tools.json", "category": "normal", "min_bytes":  200, "label": "Integrations tools.json"},
-    {"path": "/api/v1/iso/zones",        "category": "high",   "min_bytes":  500, "label": "ISO Zones Aggregator"},
+    # r-sentinel (2026-06-04): lowered min_bytes 500->80. The endpoint returns an
+    # honest empty-state {"zones":[],"count":0,...} = 83 bytes because all 10 upstream
+    # /iso/<iso>/zones.json files 404 in prod (they live only in the STALE
+    # backend/dchub-frontend subdir, never deployed; seeded roster-only with
+    # lmp_usd_mwh:null "pending EIA hookup"). 200-status is valid - keep watching it,
+    # but the 500-byte floor was a false-positive body_too_small (mirrors spare-capacity).
+    {"path": "/api/v1/iso/zones",        "category": "high",   "min_bytes":   80, "label": "ISO Zones Aggregator"},
     {"path": "/api/v1/mcp/manifest",     "category": "high",   "min_bytes": 1000, "label": "MCP Manifest (api/v1)"},
 
     # Research / brand
