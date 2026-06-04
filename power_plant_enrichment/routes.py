@@ -204,23 +204,25 @@ def _run_enrichment(job_id: str, sources: list, params: dict, dry_run: bool):
 
         _jobs[job_id]["progress"] = "Matching against DC Hub database..."
 
-        # TODO: Replace with actual DB query
-        # existing_plants = db.session.query(PowerPlant).all()
-        existing_plants = []  # Placeholder
+        # NOTE (r70, 2026-06-03): DB matching against the live plants table is
+        # NOT yet wired (the live table is discovered_power_plants — capacity_mw/
+        # lat/lng; the diff+write is a scoped follow-up with known schema
+        # sharp-edges). We match against an empty set, so every merged plant is
+        # reported as "new" — flagged honestly in the results below so the counts
+        # are never mistaken for a real diff against DC Hub's live DB.
+        existing_plants = []  # not yet wired to discovered_power_plants
 
         results = matcher.match_against_dchub(merged, existing_plants)
 
         # --- Phase 4: Apply updates (if not dry run) ---
 
         if not dry_run and results["updates"]:
-            _jobs[job_id]["progress"] = "Applying database updates..."
-            # TODO: Implement actual DB writes
-            # for update in results["updates"]:
-            #     plant = db.session.query(PowerPlant).get(update["existing_id"])
-            #     for field, value in update["updates"].items():
-            #         setattr(plant, field, value)
-            # db.session.commit()
-            pass
+            # DB writes are NOT implemented yet. Record that honestly instead of
+            # silently no-op'ing as if the write happened — the prior `pass` made
+            # a non-dry-run call look successful while changing nothing.
+            _jobs[job_id]["write_status"] = (
+                "skipped — power-plant DB writes are not implemented; this ran as "
+                "a PREVIEW only (no rows changed)")
 
         # --- Done ---
 
@@ -229,6 +231,10 @@ def _run_enrichment(job_id: str, sources: list, params: dict, dry_run: bool):
             "completed_at": datetime.utcnow().isoformat(),
             "progress": "Done",
             "dry_run": dry_run,
+            "db_matching": ("not_implemented — matched against an empty set; "
+                            "'new_plants' is the full merged candidate set, NOT a "
+                            "true diff vs DC Hub's live plants table"),
+            "effective_mode": "preview",
             "results": {
                 "total_enriched": len(merged),
                 "matched_existing": len(results["updates"]),

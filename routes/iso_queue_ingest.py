@@ -1,7 +1,10 @@
 """
 iso_queue_ingest.py v2 (Phase ZZZZZ-round47.3, 2026-05-25)
 
-Daily ingest of ISO interconnection queue snapshots with REAL parsers.
+Daily ingest of ISO interconnection queue snapshots. REAL parsers for ERCOT +
+PJM only; MISO/SPP/CAISO/NYISO/ISO-NE are heartbeat-only (see below) and are
+NEVER surfaced as live data. Implementing those 5 real parsers is a scoped,
+per-ISO, verify-against-live-format follow-up.
 
 Architecture:
   - Each ISO has its own ingest function returning (ok, parsed_dict, debug)
