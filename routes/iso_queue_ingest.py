@@ -54,7 +54,7 @@ PARSER_STATUS = {
     "SPP":    "real (opsportal GenerateActiveCsv; MAX Summer MW, excl. cessation)",
     "CAISO":  "real (PublicQueueReport.xlsx 'Grid GenerationQueue'; Net MWs to Grid, status=ACTIVE)",
     "NYISO":  "real (public queue XLSX 'Interconnection Queue' sheet, SP MW via openpyxl)",
-    "ISO-NE": "heartbeat-only — Queue Dashboard CSV parser TODO",
+    "ISO-NE": "real (public IRTT Public Queue HTML table, Status=A active, Summer MW)",
 }
 
 
@@ -598,9 +598,86 @@ def ingest_nyiso():
 
 
 def ingest_iso_ne():
-    # TODO: ISO-NE queue dashboard exports CSV at:
-    #   https://www.iso-ne.com/static-assets/documents/.../Interconnection_Queue.csv
-    return _heartbeat("https://www.iso-ne.com/system-planning/connecting-to-the-grid")
+    """ISO-NE — public IRTT "Public Queue" report (HTML table id='publicqueue').
+
+    ISO-NE has no clean CSV/XLSX; the public queue is one big HTML page. GOTCHA:
+    irtt.iso-ne.com does an ASP.NET cookie-detection 302 redirect, so a plain
+    urlopen loops forever — we need a CookieJar opener (the shared _fetch can't).
+    Active = Status code 'A' (W=withdrawn, C=completed); sum Summer MW (fallback
+    Net MW), apples-to-apples with the other generation queues. No auth needed.
+    """
+    debug = []
+    parsed = {}
+    try:
+        import http.cookiejar
+        from lxml import html as _lh
+        url = "https://irtt.iso-ne.com/reports/external"
+        cj = http.cookiejar.CookieJar()
+        opener = urllib.request.build_opener(urllib.request.HTTPCookieProcessor(cj))
+        req = urllib.request.Request(url, headers={"User-Agent": UA, "Accept": "text/html"})
+        with opener.open(req, timeout=60) as resp:
+            body = resp.read()
+            st = resp.status
+        debug.append(f"fetch http_{st} kb={len(body)//1024}")
+        if st != 200 or len(body) < 50000:
+            return False, None, "; ".join(debug + ["fetch_failed_or_small"])
+
+        doc = _lh.fromstring(body)
+        tbls = doc.xpath('//table[@id="publicqueue"]')
+        if not tbls:
+            return True, parsed, "; ".join(debug + ["no_publicqueue_table"])
+        tbl = tbls[0]
+        heads = [(th.text_content() or "").strip() for th in tbl.xpath('.//thead//th')]
+        if not heads:
+            heads = [(c.text_content() or "").strip()
+                     for c in tbl.xpath('.//tr[1]/th | .//tr[1]/td')]
+        idx = {h: i for i, h in enumerate(heads)}
+        ci_status = idx.get("Status")
+        ci_summer = idx.get("Summer MW")
+        ci_net = idx.get("Net MW")
+        if ci_status is None or (ci_summer is None and ci_net is None):
+            return True, parsed, "; ".join(debug + [f"cols_missing heads={heads[:10]}"])
+
+        total_mw = 0.0
+        active_n = 0
+        rows_seen = 0
+        for tr in tbl.xpath('.//tbody//tr'):
+            tds = tr.xpath('./td')
+            if len(tds) <= ci_status:
+                continue
+            rows_seen += 1
+            if rows_seen > 100000:
+                break
+            vals = [(td.text_content() or "").strip() for td in tds]
+            if vals[ci_status].upper() != "A":   # active only
+                continue
+            mw = 0.0
+            for ci in (ci_summer, ci_net):
+                if ci is not None and ci < len(vals):
+                    try:
+                        m = float(vals[ci].replace(",", ""))
+                    except (ValueError, TypeError):
+                        m = 0.0
+                    if m:
+                        mw = m
+                        break
+            if mw <= 0:
+                continue
+            total_mw += mw
+            active_n += 1
+        debug.append(f"rows_seen={rows_seen} active_n={active_n} total_mw={total_mw:.0f}")
+
+        # ISO-NE active queue is ~12-17 GW; <0.5 GW = parse miss.
+        if total_mw < 500:
+            return True, parsed, "; ".join(debug + [f"total_too_small={total_mw:.0f}MW"])
+        parsed["queued_load_total_gw"] = round(total_mw / 1000.0, 1)
+        parsed["source_url"] = url
+        parsed["source_name"] = "ISO-NE IRTT Public Queue (active, Summer MW)"
+        return True, parsed, "; ".join(debug + [f"TOTAL={total_mw/1000:.1f}GW/{active_n}proj"])
+    except urllib.error.HTTPError as e:
+        return False, None, "; ".join(debug + [f"http_error: {e.code}"])
+    except Exception as e:
+        return False, None, "; ".join(debug + [f"error: {type(e).__name__}: {str(e)[:100]}"])
 
 
 INGESTORS = {
