@@ -14508,6 +14508,18 @@ def get_stats():
         resp = jsonify(result)
         resp.headers["X-Cache"] = "MISS"
         resp.headers["Cache-Control"] = "public, max-age=60"
+        # r48.0 (2026-05-27) — deprecated-field signal. Three fields in this
+        # response are aliases of canonical names kept for backward compat.
+        # Any consumer reading them is on a slow upgrade path; surface this
+        # via response headers so log/dashboard consumers see drift, and so
+        # tests/test_canonical_fields.py has a runtime signal as well as the
+        # static lint. RFC 8594 Sunset header points to canonical replacements.
+        resp.headers["X-Deprecated-Fields"] = (
+            "main_facilities=use:total_facilities, "
+            "legacy_facilities_table=use:total_facilities, "
+            "countries=use:total_countries"
+        )
+        resp.headers["Link"] = '<https://dchub.cloud/api/v1/stats>; rel="canonical"'
         return resp
     except Exception as e:
         import traceback; tb = traceback.format_exc(); logger.error("Stats endpoint error: %s\n%s", e, tb)

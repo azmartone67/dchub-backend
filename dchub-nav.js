@@ -817,6 +817,143 @@
     });
   }
 
+  // ─────────────────────────────────────────────────────────────────
+  // r48.0 (2026-05-27) — MASTER TIER MODULE (stabilization sprint A).
+  //
+  // Why: the website stores the JWT in localStorage, but Flask page
+  // renders only read cookies. So every paywall surface (/deal-autopsy,
+  // /dcpi, /capacity-pipeline, ...) independently saw the Pro user as
+  // anon. We kept fixing each page locally and the same bug kept
+  // reappearing on the next paywall page.
+  //
+  // This module is the single source of truth:
+  //   1. Reads the JWT from localStorage (where the sign-in flow puts it)
+  //   2. Calls /api/auth/me once with Bearer to get the canonical plan
+  //   3. Sets <body data-user-tier="pro|developer|founding|enterprise|
+  //      identified|free|anon"> and <body data-user-logged-in="1">
+  //   4. Patches window.fetch so EVERY same-origin /api/* call from THIS
+  //      page automatically carries the Authorization header. Paywall
+  //      pages that fetch JSON then receive UNLOCKED data without any
+  //      page-specific change.
+  //   5. Injects CSS that hides .lock-badge / .deal.lock / [data-locked]
+  //      for users whose tier is paid.
+  //   6. Fires a 'dchub:plan-resolved' CustomEvent so pages that need to
+  //      re-render after tier resolution can subscribe.
+  //
+  // Pages get this for FREE the moment they include <script src="/js/
+  // dchub-nav.js"></script>. No per-page wiring needed.
+  // ─────────────────────────────────────────────────────────────────
+  function initTierModule() {
+    var PLAN_RANK = {
+      anon: 0, anonymous: 0, free: 1, identified: 2,
+      starter: 3, developer: 4, pro: 5, founding: 5,
+      enterprise: 6, admin: 7, internal: 7
+    };
+    var PAID = ['developer', 'pro', 'founding', 'enterprise', 'admin', 'internal', 'starter'];
+    function setBodyTier(tier) {
+      var t = String(tier || 'anon').toLowerCase();
+      if (!document.body) return;
+      document.body.dataset.userTier = t;
+      document.body.dataset.userPlan = t; // alias
+      document.body.dataset.userPaid = PAID.indexOf(t) >= 0 ? '1' : '0';
+      document.body.dataset.userLoggedIn = (t !== 'anon' && t !== 'anonymous') ? '1' : '0';
+    }
+
+    // 1. Optimistic seed from localStorage cache — synchronous, so server-
+    //    rendered lock badges hide IMMEDIATELY for a returning Pro user.
+    var cachedUser = null;
+    try { cachedUser = JSON.parse(localStorage.getItem('dchub_user') || 'null'); } catch (e) {}
+    var token = localStorage.getItem('dchub_token');
+    setBodyTier(cachedUser && cachedUser.plan ? cachedUser.plan : (token ? 'identified' : 'anon'));
+
+    // 2. Patch fetch — auto-add Authorization for same-origin /api calls.
+    //    Idempotent: if the caller already set Authorization, we leave it.
+    if (token && !window.__dchubFetchPatched) {
+      var origFetch = window.fetch.bind(window);
+      window.fetch = function (input, init) {
+        try {
+          var url = (typeof input === 'string') ? input : (input && input.url) || '';
+          var isApi = url.indexOf('/api/') === 0
+                   || url.indexOf(location.origin + '/api/') === 0
+                   || url.indexOf('https://dchub.cloud/api/') === 0
+                   || url.indexOf('https://dchub-backend-production.up.railway.app/api/') === 0;
+          if (isApi) {
+            init = init || {};
+            init.headers = new Headers(init.headers || {});
+            if (!init.headers.has('Authorization')) {
+              init.headers.set('Authorization', 'Bearer ' + token);
+            }
+          }
+        } catch (e) { /* fall through */ }
+        return origFetch(input, init);
+      };
+      window.__dchubFetchPatched = true;
+    }
+
+    // 3. Verify against the server — refresh the cached tier.
+    if (!token) {
+      // Anon. Already set; fire event and stop.
+      window.dispatchEvent(new CustomEvent('dchub:plan-resolved', {
+        detail: { plan: 'anon', user: null, loggedIn: false }
+      }));
+      return;
+    }
+    var ctrl = new AbortController();
+    setTimeout(function () { ctrl.abort(); }, 6000);
+    fetch(API_BASE + '/api/auth/me', {
+      headers: { 'Authorization': 'Bearer ' + token },
+      signal: ctrl.signal
+    }).then(function (r) {
+      if (r.status === 401) {
+        // Token rejected. Clear it so subsequent loads don't keep 401ing.
+        try { localStorage.removeItem('dchub_token'); } catch (e) {}
+        setBodyTier('anon');
+        return null;
+      }
+      return r.json();
+    }).then(function (d) {
+      if (!d || !d.success || !d.user) return;
+      var u = d.user;
+      var plan = (u.plan || 'free').toLowerCase();
+      setBodyTier(plan);
+      try { localStorage.setItem('dchub_user', JSON.stringify(u)); } catch (e) {}
+      window.dispatchEvent(new CustomEvent('dchub:plan-resolved', {
+        detail: { plan: plan, user: u, loggedIn: true }
+      }));
+    }).catch(function () { /* leave optimistic seed in place */ });
+  }
+
+  // Inject the tier-gating CSS once. Selectors are intentionally broad so
+  // every paywall page benefits without changing its own markup.
+  function injectTierStyles() {
+    if (document.getElementById('dchub-tier-styles')) return;
+    var s = document.createElement('style');
+    s.id = 'dchub-tier-styles';
+    s.textContent = [
+      // Hide lock badges + paywall CTAs for paid users.
+      'body[data-user-paid="1"] .lock-badge,',
+      'body[data-user-paid="1"] .deal.lock,',
+      'body[data-user-paid="1"] .pro-cta-block,',
+      'body[data-user-paid="1"] [data-locked-for="anon"],',
+      'body[data-user-paid="1"] [data-locked]{display:none !important}',
+      // Reveal pro-only content that was hidden by default.
+      'body[data-user-paid="1"] [data-pro-only],',
+      'body[data-user-paid="1"] [data-show-for="pro"]{display:block !important}',
+      // Hide sign-in nudge for logged-in users.
+      'body[data-user-logged-in="1"] [data-show-for="anon"]{display:none !important}'
+    ].join('');
+    (document.head || document.documentElement).appendChild(s);
+  }
+
+  // Run the tier module ASAP — before init(), before any page-specific
+  // fetch goes out. It needs document.body, so wait for that.
+  function runTierModule() {
+    injectTierStyles();
+    initTierModule();
+  }
+  if (document.body) runTierModule();
+  else document.addEventListener('DOMContentLoaded', runTierModule);
+
   if (document.readyState === 'loading') document.addEventListener('DOMContentLoaded', init);
   else init();
 

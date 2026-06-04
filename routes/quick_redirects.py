@@ -175,7 +175,10 @@ header{margin:24px 0 32px}
 h1{font-size:2.4rem;margin:0 0 12px;letter-spacing:-.02em;color:#fafafa}
 .lede{color:#a1a1aa;font-size:1.05rem;max-width:720px}
 .grid{display:grid;grid-template-columns:repeat(auto-fit,minmax(220px,1fr));gap:14px;margin:28px 0}
-.card{background:#11121a;border:1px solid rgba(255,255,255,.08);border-radius:12px;padding:18px 20px;text-decoration:none;color:inherit;transition:.15s}
+/* r48.0 (2026-05-27): display:block — anchor-card needs explicit block
+   else its hit region collapses in CSS Grid. Same class of bug as
+   r47.44 / r47.45 / r47.46. Caught by tests/test_anchor_card_clickable.py. */
+.card{display:block;background:#11121a;border:1px solid rgba(255,255,255,.08);border-radius:12px;padding:18px 20px;text-decoration:none;color:inherit;transition:.15s}
 .card:hover{border-color:#818cf8;transform:translateY(-2px)}
 .card .iso{font-family:'JetBrains Mono',ui-monospace,monospace;font-size:.78rem;color:#818cf8;letter-spacing:.06em}
 .card h3{font-size:1.05rem;margin:6px 0 4px;color:#fafafa}

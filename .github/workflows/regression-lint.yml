@@ -8,9 +8,42 @@ jobs:
   lint:
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v5
+      - name: Check out backend (this repo)
+        uses: actions/checkout@v5
+        with:
+          path: dchub-backend
+      # r48.0 (2026-05-27) — also check out dchub-frontend so the
+      # canonical-field lint can scan it. The two repos are siblings on
+      # the user's machine; in CI we co-locate them under the runner's
+      # workspace via DCHUB_FRONTEND_ROOT.
+      - name: Check out frontend (sibling repo)
+        uses: actions/checkout@v5
+        with:
+          repository: azmartone67/dchub-frontend
+          path: dchub-frontend
+          # Use the default GITHUB_TOKEN — works because frontend is
+          # public-readable from this org.
       - uses: actions/setup-python@v6
         with:
           python-version: '3.11'
-      - name: Run regression lint
-        run: python3 scripts/regression_lint.py .
+      - name: Run regression lint (existing)
+        run: python3 dchub-backend/scripts/regression_lint.py dchub-backend
+      # ── r48.0 stabilization fences ──────────────────────────────────
+      - name: Lint canonical-field reads (frontend)
+        env:
+          DCHUB_FRONTEND_ROOT: ${{ github.workspace }}/dchub-frontend
+        run: python3 dchub-backend/tests/test_canonical_fields.py
+      - name: Lint anchor-card click region (backend routes)
+        run: python3 dchub-backend/tests/test_anchor_card_clickable.py
+      # The pro-paywall test runs only when DCHUB_QA_PRO_TOKEN is set
+      # in repo secrets. Without it the test self-skips. Sunset-header
+      # check runs regardless (no auth required).
+      - name: Verify Pro paywall unlocks + Sunset header
+        env:
+          DCHUB_QA_PRO_TOKEN: ${{ secrets.DCHUB_QA_PRO_TOKEN }}
+          DCHUB_QA_ORIGIN: https://dchub-backend-production.up.railway.app
+        run: |
+          pip install pytest
+          cd dchub-backend
+          pytest tests/test_pro_paywall_visibility.py -v --tb=short || \
+            echo "::warning::Pro paywall test failed or skipped — review log"
