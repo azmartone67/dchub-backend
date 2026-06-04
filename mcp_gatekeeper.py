@@ -882,7 +882,7 @@ def _gate(tool_name: str, api_key: Optional[str] = None,
         _STRIPE_BUY_NOW = {
             "starter":    "https://buy.stripe.com/8x2dRa5sS0x75uteGuaZi0g",  # $9/mo
             "developer":  "https://buy.stripe.com/7sY5kE8F4fs13ml0PEaZi0c",  # $49/mo
-            "pro":        "https://buy.stripe.com/dRm7sM6wW7Zz1edgOCaZi07",  # $99/mo
+            "pro":        "https://buy.stripe.com/eVq5kE4oOfs13mleGuaZi0h",  # $199/mo Pro monthly
             "enterprise": "https://buy.stripe.com/fZueVe5sS6Vv7CB41QaZi0a",  # custom
         }
         _required_name = TIER_NAME[required].lower()

@@ -395,7 +395,7 @@ def auto_trial_with_email():
 
 _STRIPE_LINKS = {
     "developer": "https://buy.stripe.com/7sY5kE8F4fs13ml0PEaZi0c",
-    "pro":       "https://buy.stripe.com/dRm7sM6wW7Zz1edgOCaZi07",
+    "pro":       "https://buy.stripe.com/eVq5kE4oOfs13mleGuaZi0h",
     "starter":   "https://buy.stripe.com/8x2dRa5sS0x75uteGuaZi0g",
     "enterprise":"https://buy.stripe.com/fZueVe5sS6Vv7CB41QaZi0a",
 }

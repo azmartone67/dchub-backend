@@ -19,7 +19,7 @@ STRIPE_LINKS = {
     "starter":         "https://buy.stripe.com/8x2dRa5sS0x75uteGuaZi0g",  # $9/mo
     "developer":       "https://buy.stripe.com/7sY5kE8F4fs13ml0PEaZi0c",  # $49/mo
     "pro":             "https://buy.stripe.com/eVq5kE4oOfs13mleGuaZi0h",  # $199/mo (new r38, replaces $299/$2990 link)
-    "pro_annual":      "https://buy.stripe.com/6oU00k6wW7ZzcWV9maaZi03",  # $1,188/yr (50% off $199/mo) - operator set 2026-06-04; UPDATE the Stripe link to charge $1,188 (was noted ~$2,000)
+    "pro_annual":      "https://buy.stripe.com/dRm7sM6wW7Zz1edgOCaZi07",  # $1,188/yr (50% off $199/mo) - operator-provided link dRm7...07, 2026-06-04
     "enterprise":      "https://buy.stripe.com/fZueVe5sS6Vv7CB41QaZi0a",  # Custom
     "enterprise_annual": "https://buy.stripe.com/dRmdRa4oO1Bb9KJ2XMaZi0b",  # Custom annual
     # r75 (2026-05-26): partnership-specific subscription links. NOT shown
