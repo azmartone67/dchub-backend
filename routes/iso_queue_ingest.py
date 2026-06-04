@@ -763,7 +763,8 @@ def ingest_all():
         "isos_with_new_data": with_data,
         "isos_failed":  len(INGESTORS) - healthy,
         "results": results,
-        "note": "Real parsers: ERCOT (pypdf), PJM (openpyxl). Others heartbeat-only. "
+        "note": "Real parsers: ERCOT (PDF), PJM/NYISO/CAISO (XLSX), MISO (JSON), "
+                "SPP (CSV) — 6 of 7. ISO-NE heartbeat-only (queue file URL moved). "
                 "Empty parse result -> heartbeat_touch (no NULL rows inserted).",
     }), 200 if healthy == len(INGESTORS) else 207
 

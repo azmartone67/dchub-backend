@@ -1,0 +1,33 @@
+name: ISO interconnection-queue ingest (daily — 6 real ISOs)
+
+# r70 (2026-06-03): the iso_queue_ingest parsers (ERCOT/PJM/NYISO/MISO/CAISO/SPP)
+# had NO scheduled trigger — so the /interconnection-queue/snapshot sat stale
+# (as_of 2026-03-31) and the 4 new real parsers never produced live data. This
+# daily cron runs the ingest so the queue snapshot stays fresh across all 6 ISOs.
+#
+# Railway-origin-direct: the ingest runs 6 synchronous source fetches + parses
+# (ERCOT PDF / PJM,NYISO,CAISO XLSX / MISO JSON / SPP CSV) and exceeds CF's ~15s
+# edge timeout. The endpoint is open (public-data ingest) + idempotent (_upsert
+# touches, never inserts NULL rows), so no key is needed.
+
+on:
+  schedule:
+    - cron: '50 5 * * *'   # daily 05:50 UTC
+  workflow_dispatch: {}
+
+permissions:
+  contents: read
+
+env:
+  RAILWAY_BASE: https://dchub-backend-production.up.railway.app
+
+jobs:
+  ingest:
+    runs-on: ubuntu-latest
+    timeout-minutes: 12
+    steps:
+      - name: Run ISO-queue ingest
+        run: |
+          set -euo pipefail
+          resp=$(curl -sS --max-time 240 -X POST "$RAILWAY_BASE/api/v1/iso-queue/ingest" || echo '{"error":"curl_fail"}')
+          echo "$resp" | python3 -c "import sys,json; d=json.load(sys.stdin); print('fetched', d.get('isos_fetched'), 'of', d.get('isos_total'), '| with_data', d.get('isos_with_new_data'), '| as_of', d.get('as_of'))" 2>/dev/null || { echo "$resp" | head -c 600; }
