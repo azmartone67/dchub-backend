@@ -76,10 +76,16 @@ def error_budget():
         ][:10]
         worst_path_n5xx = top_paths[0]["n5xx"] if top_paths else 0
 
-        # Verdict ladder — hard wins over soft wins over within.
-        if global_pct >= GLOBAL_ERR_PCT_HARD or worst_path_n5xx >= PER_PATH_5MIN_HARD:
+        # Verdict graded on ABSOLUTE per-path 5xx volume only (worst_path_n5xx).
+        # r80 (2026-06-04): global_pct = global_5xx / COUNT(*) over brain_http_errors,
+        # which is an ERRORS-ONLY table — so it measured "5xx as a share of errors",
+        # NOT as a share of traffic. It structurally pinned at ~90-98% and tripped
+        # hard_burn on essentially every window (a self-feeding false alarm that
+        # produced the bulk of the open slo_hard_burn findings). It is no longer a
+        # verdict input; global_err_pct stays in the payload for context only.
+        if worst_path_n5xx >= PER_PATH_5MIN_HARD:
             verdict = "hard_burn"
-        elif global_pct >= GLOBAL_ERR_PCT_SOFT or worst_path_n5xx >= PER_PATH_5MIN_SOFT:
+        elif worst_path_n5xx >= PER_PATH_5MIN_SOFT:
             verdict = "soft_burn"
         else:
             verdict = "within_budget"

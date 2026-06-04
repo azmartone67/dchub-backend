@@ -131,7 +131,14 @@ def register_capture(app):
                 return response  # only capture errors
             # Skip the radar's own probes (would create feedback loop)
             ua = (request.headers.get("User-Agent") or "")[:200]
-            if "dchub-brain-radar" in ua or "brain-l11" in ua.lower():
+            _ua_l = ua.lower()
+            # r80 (2026-06-04): the SLO gate self-fed — its own 503 on hard_burn +
+            # the L14 prober's 429 were recaptured as fresh errors, making
+            # /api/v1/slo/error-budget its own top 5xx pattern every poll. Skip both
+            # the prober UA and the endpoint path.
+            if ("dchub-brain-radar" in ua or "brain-l11" in _ua_l
+                    or "dchub-brain-l14" in _ua_l
+                    or request.path == "/api/v1/slo/error-budget"):
                 return response
             path = request.path[:300]
             pattern = _collapse_path(path)
