@@ -2,10 +2,11 @@
 iso_queue_ingest.py v2 (Phase ZZZZZ-round47.3, 2026-05-25)
 
 Daily ingest of ISO interconnection queue snapshots. REAL parsers for ERCOT,
-PJM, and NYISO (r70); MISO/SPP/CAISO/ISO-NE remain heartbeat-only (see below)
-and are NEVER surfaced as live data. Implementing the remaining 4 real parsers
-is a scoped, per-ISO, verify-against-live-format follow-up (MISO/CAISO landing
-pages 403/scrape-required, ISO-NE URL moved — NYISO had a stable public XLSX).
+PJM, NYISO, and MISO (r70); SPP/CAISO/ISO-NE remain heartbeat-only (see below)
+and are NEVER surfaced as live data. Remaining real parsers are a scoped,
+verify-against-live-format follow-up: CAISO is reachable (PublicQueueReport.xlsx,
+header at Excel row 4, "MWs" group spans cols 12-15 — needs MW-column
+disambiguation before it's safe); SPP is a DISIS PDF; ISO-NE's queue URL moved.
 
 Architecture:
   - Each ISO has its own ingest function returning (ok, parsed_dict, debug)
@@ -49,7 +50,7 @@ UA = "DCHub-IsoQueueIngest/2.0 (+https://dchub.cloud/interconnection-queues)"
 PARSER_STATUS = {
     "ERCOT":  "real (PDF discovery + pypdf text regex)",
     "PJM":    "real (XLSX direct download + openpyxl aggregate)",
-    "MISO":   "heartbeat-only — DPP CSV parser TODO",
+    "MISO":   "real (public GI-queue JSON API, applicationStatus=Active, summer MW)",
     "SPP":    "heartbeat-only — DISIS PDF parser TODO",
     "CAISO":  "heartbeat-only — Cluster Study CSV parser TODO",
     "NYISO":  "real (public queue XLSX 'Interconnection Queue' sheet, SP MW via openpyxl)",
@@ -359,11 +360,57 @@ def _heartbeat(url):
 
 
 def ingest_miso():
-    # TODO: MISO publishes DPP cluster study CSV at:
-    #   https://cdn.misoenergy.org/...DPP-{yr}-{cluster}.csv
-    # Discovery: scrape https://www.misoenergy.org/planning/resource-utilization/generator-interconnection-queue/
-    # Parser: csv.DictReader, aggregate MW by status='Active', filter to load/data-center types
-    return _heartbeat("https://www.misoenergy.org/markets-and-operations/interconnect/interconnection-queue/")
+    """REAL parser (r70, 2026-06-03). MISO exposes the full GI queue as a public
+    JSON API. Count applicationStatus=='Active' and sum summerNetMW (winterNetMW
+    fallback). Verified live 2026-06-03: 1084 active projects, ~231 GW.
+    Same (ok, parsed, debug) shape as ingest_pjm/ingest_nyiso."""
+    debug = []
+    parsed = {}
+    url = "https://www.misoenergy.org/api/giqueue/getprojects"
+    try:
+        body, st = _fetch(url, timeout=60)
+        debug.append(f"miso http_{st} kb={len(body)//1024}")
+        if st != 200 or not body:
+            return False, None, "; ".join(debug + ["fetch_failed"])
+        rows = json.loads(body)
+        if not isinstance(rows, list):
+            return True, parsed, "; ".join(debug + ["unexpected_json_shape"])
+
+        def _num(x):
+            try: return float(x)
+            except (TypeError, ValueError): return 0.0
+
+        total_mw = 0.0
+        active_n = 0
+        dc_mw = 0.0
+        for p in rows:
+            if not isinstance(p, dict):
+                continue
+            if str(p.get("applicationStatus") or "").strip().lower() != "active":
+                continue
+            mw = _num(p.get("summerNetMW")) or _num(p.get("winterNetMW"))
+            if mw <= 0:
+                continue
+            total_mw += mw
+            active_n += 1
+            ftype = (str(p.get("fuelType") or "") + " "
+                     + str(p.get("facilityType") or "")).lower()
+            if any(k in ftype for k in ("load", "data center", "datacenter")):
+                dc_mw += mw
+
+        debug.append(f"active_n={active_n} total_mw={total_mw:.0f} dc_mw={dc_mw:.0f}")
+        if active_n > 0 and total_mw > 100:
+            parsed["queued_load_total_gw"] = round(total_mw / 1000.0, 1)
+            parsed["source_url"] = url
+            parsed["source_name"] = "MISO GI Queue API (applicationStatus=Active, summer MW)"
+        if dc_mw > 0 and total_mw > 0:
+            parsed["queued_load_data_center_gw"] = round(dc_mw / 1000.0, 1)
+            parsed["queued_load_dc_share_pct"] = round(100.0 * dc_mw / total_mw, 1)
+        return True, parsed, "; ".join(debug)
+    except urllib.error.HTTPError as e:
+        return False, None, "; ".join(debug + [f"http_error: {e.code}"])
+    except Exception as e:
+        return False, None, "; ".join(debug + [f"error: {type(e).__name__}: {str(e)[:120]}"])
 
 
 def ingest_spp():
