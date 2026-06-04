@@ -1,0 +1,60 @@
+name: Power-plant enrichment (EIA/NASA → discovered_power_plants)
+
+# Manual trigger for the owner-approved EIA/NASA → discovered_power_plants write.
+# Uses the DCHUB_ADMIN_KEY secret (the /trigger + /status endpoints are
+# @require_admin_key). ALWAYS dry-run first (preview the real would-write count);
+# set dry_run=false to actually write. Writes are tagged source='eia_nccs_enrichment'
+# and are reversible: DELETE FROM discovered_power_plants WHERE source='eia_nccs_enrichment'.
+# state_filter bounds the run (default VA = the #1 DC market) so the first real
+# write is small + reversible; empty = all states.
+
+on:
+  workflow_dispatch:
+    inputs:
+      dry_run:
+        description: 'true = preview (no writes), false = WRITE'
+        default: 'true'
+      state_filter:
+        description: 'optional 2-letter state (e.g. VA); empty = all states'
+        default: 'VA'
+
+permissions:
+  contents: read
+
+env:
+  RAILWAY_BASE: https://dchub-backend-production.up.railway.app
+
+jobs:
+  enrich:
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    steps:
+      - name: Trigger + poll enrichment
+        env:
+          ADMIN_KEY: ${{ secrets.DCHUB_ADMIN_KEY }}
+          DRY: ${{ github.event.inputs.dry_run }}
+          STATE: ${{ github.event.inputs.state_filter }}
+        run: |
+          set -euo pipefail
+          if [ -z "${ADMIN_KEY:-}" ]; then echo "::warning::DCHUB_ADMIN_KEY not set — skipping"; exit 0; fi
+          DRYVAL=$([ "$DRY" = "false" ] && echo false || echo true)
+          BODY="{\"sources\":[\"eia_860m\",\"nccs\"],\"dry_run\":$DRYVAL"
+          if [ -n "${STATE:-}" ]; then BODY="$BODY,\"state_filter\":\"$STATE\""; fi
+          BODY="$BODY}"
+          echo "POST $RAILWAY_BASE/api/enrichment/trigger  body=$BODY"
+          resp=$(curl -sS --max-time 60 -X POST -H "X-Admin-Key: $ADMIN_KEY" \
+            -H "Content-Type: application/json" -d "$BODY" \
+            "$RAILWAY_BASE/api/enrichment/trigger")
+          echo "trigger: $resp"
+          job=$(printf '%s' "$resp" | python3 -c "import sys,json;print(json.load(sys.stdin).get('job_id',''))" 2>/dev/null || echo "")
+          [ -z "$job" ] && { echo "::error::no job_id returned"; exit 1; }
+          for i in $(seq 1 50); do
+            sleep 12
+            st=$(curl -sS --max-time 30 -H "X-Admin-Key: $ADMIN_KEY" "$RAILWAY_BASE/api/enrichment/status/$job" || echo '{}')
+            status=$(printf '%s' "$st" | python3 -c "import sys,json;print(json.load(sys.stdin).get('status','?'))" 2>/dev/null || echo "?")
+            echo "[$i] status=$status"
+            case "$status" in
+              completed|failed) printf '%s' "$st" | python3 -m json.tool 2>/dev/null || echo "$st"; exit 0;;
+            esac
+          done
+          echo "::warning::timed out waiting for job"
