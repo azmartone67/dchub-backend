@@ -331,6 +331,29 @@ def _run_enrichment(job_id: str, sources: list, params: dict, dry_run: bool):
             },
         })
 
+        # r70: durable result log. The _jobs dict is in-memory + per-gunicorn-
+        # worker, so /status polls (which round-robin workers) can't see a job
+        # created on another worker. Mirror the outcome into the DB-backed brain
+        # decision feed so the enrichment is observable + verifiable across
+        # workers (read it at /api/v1/brain/notifications?kind=power_plant_enrichment).
+        try:
+            from routes.brain_evolution import log_notification as _logn
+            _mode = "preview" if dry_run else "WROTE"
+            _logn(
+                "power_plant_enrichment",
+                (f"Enrichment {_mode}: would_write={would_write} "
+                 f"already_in_db={existing_hits} inserted={inserted} "
+                 f"merged={len(merged)} state={params.get('state_filter') or 'all'}"),
+                detail={"dry_run": dry_run, "merged": len(merged),
+                        "would_write": would_write, "inserted": inserted,
+                        "already_in_db": existing_hits,
+                        "state_filter": params.get("state_filter") or "all",
+                        "match_db_error": _jobs[job_id].get("match_db_error")},
+                severity=("win" if (not dry_run and inserted) else "info"),
+            )
+        except Exception:
+            pass
+
     except Exception as e:
         logger.exception(f"Enrichment job {job_id} failed")
         _jobs[job_id].update({
