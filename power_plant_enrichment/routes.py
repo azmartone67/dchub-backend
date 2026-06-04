@@ -361,3 +361,15 @@ def _run_enrichment(job_id: str, sources: list, params: dict, dry_run: bool):
             "error": str(e),
             "completed_at": datetime.utcnow().isoformat(),
         })
+        # r70: durable FAILURE log too — the success log only fires at the end of
+        # the try, so an early error (EIA ingest, DB phase) was invisible in-memory.
+        # Mirror failures to the brain feed so the cause is observable cross-worker.
+        try:
+            from routes.brain_evolution import log_notification as _logn
+            _logn("power_plant_enrichment",
+                  f"Enrichment FAILED: {type(e).__name__}: {str(e)[:200]}",
+                  detail={"dry_run": dry_run, "error": str(e)[:400],
+                          "phase": _jobs.get(job_id, {}).get("progress")},
+                  severity="warn")
+        except Exception:
+            pass
