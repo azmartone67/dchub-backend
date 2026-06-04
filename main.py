@@ -26590,6 +26590,16 @@ try:
 except Exception as _pki_e:
     print(f"[main] partner_key_issuer_bp register failed: {_pki_e}", flush=True)
 
+# r80 (2026-06-04) — Site Valuation Engine. First seller-side product:
+# "what is my site worth?" with 3-scenario NPV (Grid / Gas BTM / Gas-to-
+# Grid Hybrid) for a (lat, lon, acres, target_mw) tuple. PRO-gated.
+try:
+    from routes.site_valuation_engine import site_valuation_engine_bp
+    app.register_blueprint(site_valuation_engine_bp)
+    print("[main] site_valuation_engine_bp registered: POST /api/v1/site/value + GET /sites/value + methodology", flush=True)
+except Exception as _sve_e:
+    print(f"[main] site_valuation_engine_bp register failed: {_sve_e}", flush=True)
+
 # r79 (2026-06-03) — Redirect blueprint for known-dead URLs. Each entry
 # in routes/redirects_404_killer.py is a URL we caught 404ing in production
 # (some during live demos). The link-check CI workflow now catches new
