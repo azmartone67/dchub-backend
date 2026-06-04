@@ -287,68 +287,93 @@ def _run_enrichment(job_id: str, sources: list, params: dict, dry_run: bool):
                     _cur.execute("""SELECT column_name FROM information_schema.columns
                                     WHERE table_name = 'discovered_power_plants'""")
                     _cols = {r[0] for r in _cur.fetchall()}
-                    # r70f: the live id column is TEXT, NOT NULL, no default
-                    # (the repo DDL claims SERIAL/int but the live column is
-                    # text — the same drift that silently breaks
-                    # osm_overpass_loader and froze the table at ~6,900 rows).
-                    # So we generate a deterministic, traceable TEXT id per
-                    # plant from its EIA-860 plant id (idempotent across re-runs;
-                    # ON CONFLICT DO NOTHING guards id collisions).
+                    # The live id column is TEXT, NOT NULL, no default (repo DDL
+                    # claims SERIAL/int — drift). Generate a deterministic,
+                    # traceable TEXT id per plant from its EIA-860 plant id
+                    # (idempotent; ON CONFLICT DO NOTHING guards id collisions).
                     _need_id = (not dry_run) and ("id" in _cols)
+
+                    # r70h: O(n+m) IN-MEMORY proximity dedup + batched insert.
+                    # The old per-plant `SELECT ... abs(lat-?)<0.02` did one DB
+                    # round-trip PER merged plant — fine for a state (~300) but at
+                    # NATIONWIDE scale (~16k plants vs a ~16k-row table, no spatial
+                    # index) it's O(n*m) round-trips and the worker times out before
+                    # posting any result (the nationwide run hung 25+ min). Instead
+                    # load existing (lat,lng) ONCE, bucket on a 0.02deg grid, and
+                    # check each new plant vs its 3x3 neighbour buckets in memory
+                    # (exact abs<0.02 — same semantics), then ONE batched INSERT.
+                    import hashlib as _hl
+                    _B = 0.02
+                    _buckets = {}
+
+                    def _bkey(la, ln):
+                        return (int(round(la / _B)), int(round(ln / _B)))
+
+                    def _badd(la, ln):
+                        _buckets.setdefault(_bkey(la, ln), []).append((la, ln))
+
+                    def _near(la, ln):
+                        bx, by = _bkey(la, ln)
+                        for dx in (-1, 0, 1):
+                            for dy in (-1, 0, 1):
+                                for (ela, eln) in _buckets.get((bx + dx, by + dy), ()):
+                                    if abs(la - ela) < _B and abs(ln - eln) < _B:
+                                        return True
+                        return False
+
+                    _cur.execute("""SELECT lat, lng FROM discovered_power_plants
+                                    WHERE lat IS NOT NULL AND lng IS NOT NULL""")
+                    for _r in _cur.fetchall():
+                        try:
+                            _badd(float(_r[0]), float(_r[1]))
+                        except (TypeError, ValueError):
+                            continue
+
+                    # Fixed schema-adaptive insert column order; NULL for missing.
+                    _cand = [c for c in ("name", "lat", "lng", "capacity_mw",
+                                         "state", "fuel_type", "source")
+                             if c in _cols]
+                    _icols = (["id"] if _need_id else []) + _cand
+                    _batch = []
+
                     for _p in merged:
                         _lat = _p.get("latitude")
                         _lng = _p.get("longitude")
                         _nm = (_p.get("name") or "").strip()
                         if _lat is None or _lng is None or not _nm:
                             continue
-                        # r70d: dedup by PROXIMITY ALONE (co-location), not
-                        # exact name. The live table is OSM-sourced (different
-                        # naming + coords than EIA), so a name-AND-proximity
-                        # match found 0 of 317 VA plants — i.e. it would have
-                        # duplicated every existing OSM plant under EIA's name.
-                        # Any existing plant within ~0.02deg (~2.2km) is treated
-                        # as the same site. Conservative (may skip a genuinely
-                        # distinct plant within 2.2km of an existing one) — the
-                        # safe direction: under-count beats duplicating.
-                        _cur.execute(
-                            """SELECT 1 FROM discovered_power_plants
-                               WHERE abs(lat - %s) < 0.02 AND abs(lng - %s) < 0.02
-                               LIMIT 1""",
-                            (_lat, _lng))
-                        if _cur.fetchone():
+                        try:
+                            _laf, _lnf = float(_lat), float(_lng)
+                        except (TypeError, ValueError):
+                            continue
+                        if _near(_laf, _lnf):
                             existing_hits += 1
                             continue
                         would_write += 1
                         results["new"].append(_p)
+                        _badd(_laf, _lnf)   # intra-batch dedup: later plants see this one
                         if not dry_run:
-                            _row = {"name": _nm, "lat": _lat, "lng": _lng,
-                                    "capacity_mw": _p.get("capacity_mw"),
-                                    "state": _p.get("state"),
-                                    "fuel_type": _p.get("fuel") or _p.get("prime_mover"),
-                                    "source": "eia_nccs_enrichment"}
-                            _row = {k: v for k, v in _row.items()
-                                    if k in _cols and v is not None}
-                            if {"name", "lat", "lng"} <= set(_row):
-                                _ks = list(_row.keys())
-                                _vals = [_row[k] for k in _ks]
-                                if _need_id:
-                                    _pid = _p.get("eia_plant_id") or _p.get("plant_id")
-                                    if _pid:
-                                        _id_val = f"eia860-{_pid}"
-                                    else:
-                                        import hashlib as _hl
-                                        _id_val = "enr-" + _hl.md5(
-                                            f"{_nm}|{_lat:.4f}|{_lng:.4f}".encode()
-                                        ).hexdigest()[:16]
-                                    _ks = ["id"] + _ks
-                                    _vals = [_id_val] + _vals
-                                _cur.execute(
-                                    f"INSERT INTO discovered_power_plants "
-                                    f"({','.join(_ks)}) VALUES "
-                                    f"({','.join(['%s'] * len(_ks))}) "
-                                    f"ON CONFLICT DO NOTHING",
-                                    _vals)
-                                inserted += _cur.rowcount
+                            _vmap = {"name": _nm, "lat": _laf, "lng": _lnf,
+                                     "capacity_mw": _p.get("capacity_mw"),
+                                     "state": _p.get("state"),
+                                     "fuel_type": _p.get("fuel") or _p.get("prime_mover"),
+                                     "source": "eia_nccs_enrichment"}
+                            if _need_id:
+                                _pid = _p.get("eia_plant_id") or _p.get("plant_id")
+                                _vmap["id"] = (f"eia860-{_pid}" if _pid else
+                                               "enr-" + _hl.md5(
+                                                   f"{_nm}|{_laf:.4f}|{_lnf:.4f}".encode()
+                                               ).hexdigest()[:16])
+                            _batch.append(tuple(_vmap.get(c) for c in _icols))
+
+                    if not dry_run and _batch:
+                        from psycopg2.extras import execute_values
+                        _res = execute_values(
+                            _cur,
+                            f"INSERT INTO discovered_power_plants ({','.join(_icols)}) "
+                            f"VALUES %s ON CONFLICT DO NOTHING RETURNING 1",
+                            _batch, page_size=500, fetch=True)
+                        inserted = len(_res)
                 if not dry_run:
                     _conn.commit()
         except Exception as e:
