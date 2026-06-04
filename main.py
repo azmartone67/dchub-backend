@@ -26945,6 +26945,15 @@ try:
 except Exception as _e:
     print(f"[main] brain_data_growth register failed: {_e}", file=sys.stderr)
 
+# r71 (2026-06-04): ERCOT real-time prices + load (Public API, owner-activated via
+# ERCOT_API_KEY/USERNAME/PASSWORD env vars; clean no-op until then).
+try:
+    from routes.ercot_realtime import ercot_rt_bp
+    app.register_blueprint(ercot_rt_bp)
+    print("⚡ ERCOT real-time: ✅ Registered (/api/v1/ercot/realtime)")
+except Exception as _e:
+    print(f"[main] ercot_realtime register failed: {_e}", file=sys.stderr)
+
 # Phase r70 (2026-06-03): Brain SELF-MODEL — the unified self-state the brain
 # reasons over (capabilities + current state + learning + a prompt_digest for
 # the LLM layers). Foundation of self-awareness; read-only, fail-soft.

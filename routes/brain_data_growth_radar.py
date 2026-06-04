@@ -85,24 +85,50 @@ def _queue_draft(cur, wins, today):
     if cur.fetchone():
         slug = f"{slug}-{int(time.time()) % 100000}"
 
-    title = (f"DC Hub Expands Its Data Moat: "
-             f"{head['label'].title()} {int(head['prev']):,} → {int(head['now']):,}")
+    # Factual TEMPLATE — always-available fallback.
     bullets = "\n".join(
-        f"• {w['label']}: {int(w['prev']):,} → {int(w['now']):,} {w['unit']} "
-        f"(+{w['pct']}%)"
+        f"• {w['label']}: {int(w['prev']):,} → {int(w['now']):,} {w['unit']} (+{w['pct']}%)"
         for w in wins
     )
     sub = "; ".join(f"{w['label']} +{w['pct']}%" for w in wins)[:300]
+    title = (f"DC Hub Expands Its Data Moat: "
+             f"{head['label'].title()} {int(head['prev']):,} → {int(head['now']):,}")
     body = (
         "DC Hub's coverage expanded materially since the last measurement:\n\n"
         f"{bullets}\n\n"
         "Every figure above is queryable live via the DC Hub API and MCP server, "
         "and updates automatically as new ISO interconnection-queue, EIA-860, and "
         "OpenStreetMap infrastructure data lands.\n\n"
-        f"Cite as: DC Hub, {today}, https://dchub.cloud.\n\n"
-        "[DRAFT — auto-queued by the data-growth radar from live DB metrics. "
-        "Review the numbers + framing before publishing; nothing is published "
-        "automatically.]"
+        f"Cite as: DC Hub, {today}, https://dchub.cloud."
+    )
+    # r71b level-up: prefer LLM-quality copy via the marketing engine; fall back to
+    # the template on ANY failure (no key / API error / validation fail). The draft
+    # stays DRAFT-only either way — generation never publishes.
+    try:
+        from routes.marketing_engine import _call_claude_marketing, _validate_release
+        facts = "; ".join(
+            f"{w['label']}: {int(w['prev']):,} -> {int(w['now']):,} {w['unit']} (+{w['pct']}%)"
+            for w in wins)
+        prompt = (
+            "Write a concise, factual press release announcing a data-coverage "
+            "expansion for DC Hub (an agent-native data-center + energy intelligence "
+            f"platform). Use ONLY these verified figures — do NOT invent any numbers "
+            f"or quotes: {facts}. As of {today}. Every figure is queryable live via "
+            "the DC Hub API + MCP. No hype. Return ONLY a JSON object with keys: "
+            f"title, subheadline, body, slug, meta_description. body 250-1200 chars, "
+            f"ending with the line 'Cite as: DC Hub, {today}, https://dchub.cloud'. "
+            "slug lowercase-hyphen, starting 'data-growth-'."
+        )
+        rel, _err = _call_claude_marketing(prompt)
+        if rel and _validate_release(rel)[0]:
+            title = rel.get("title") or title
+            body = rel.get("body") or body
+            sub = (rel.get("subheadline") or sub)[:300]
+    except Exception:
+        pass
+    body = body.rstrip() + (
+        "\n\n[DRAFT — auto-queued by the data-growth radar; review before "
+        "publishing. Nothing publishes automatically.]"
     )
     cur.execute(
         """INSERT INTO press_releases_queue
