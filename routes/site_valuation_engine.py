@@ -116,9 +116,29 @@ _NPV_HORIZON_YEARS                   = 10
 _DISCOUNT_RATE                       = 0.08    # standard infrastructure WACC
 
 # Valuation multiples (per MW + per acre, market-typical)
-_VALUE_PER_MW_USD_BASE               = 2_000_000  # $2M/MW baseline greenfield
-_VALUE_PER_ACRE_USD_BASE             = 75_000     # $75K/acre baseline
-_VALUE_RANGE_SPREAD                  = 0.30       # ±30% low/high envelope
+# v2.0 recalibration (2026-06-04): the prior $2M/MW baseline was 3-13x
+# the user-supplied industry range of $150K-$800K/MW. Recalibrated to
+# the midpoint of that range; verdict multipliers now span the full
+# AVOID(0.40) - BUILD(1.65) envelope; per-acre baseline aligned with
+# industrial-zoned land comps; spread widened from ±30% to ±50% to
+# reflect actual illiquidity of these parcels.
+_VALUE_PER_MW_USD_BASE               = 475_000   # midpoint of $150K-$800K/MW industry range
+_VALUE_PER_ACRE_USD_BASE             = 15_000    # industrial-zoned land, midpoint $5K-$30K/acre
+_VALUE_RANGE_SPREAD                  = 0.50      # ±50% low/high envelope
+
+# Site-readiness premium stack (multiplicative). A fully-shovel-ready
+# parcel (all 6 flags TRUE) gets a 3.35x premium over raw land:
+#   1.30 × 1.25 × 1.10 × 1.20 × 1.30 × 1.20 = 3.35
+# This is how a raw AVOID-tier Phoenix site at ~$200K/MW becomes a
+# $600-700K/MW shovel-ready site (in the upper-mid of the industry range).
+_READINESS_PREMIUMS = {
+    "grid_interconnect_ready": 1.30,  # ISA signed / queue cleared
+    "substation_on_site":      1.25,  # existing sub within parcel
+    "water_secured":           1.10,  # WSA / permit in place
+    "fiber_on_site":           1.20,  # dark fiber tap exists
+    "zoning_approved":         1.30,  # industrial / data-center zoning
+    "permits_in_hand":         1.20,  # SLR / AQMD / etc cleared
+}
 
 
 # ── Nearest DCPI market lookup ────────────────────────────────────
@@ -467,27 +487,51 @@ def _pick_best_fit(scenarios: dict, dcpi: dict, deadline_months: int) -> dict:
 
 
 def _compute_valuation(target_mw: int, acres: float, dcpi: dict,
-                        best_fit: dict, scenarios: dict) -> dict:
-    """Compute $-range valuation. Phase 1 uses industry-multiple baselines
-    adjusted by DCPI verdict and best-fit scenario. Phase 2 will fit a
-    regression against the comparable_sales table."""
-    # Per-MW value adjusted by verdict
+                        best_fit: dict, scenarios: dict,
+                        readiness: dict = None) -> dict:
+    """Compute $-range valuation. v2.0 (2026-06-04) recalibrated to the
+    user-supplied $150K-$800K/MW industry range. Uses:
+      - $475K/MW baseline (midpoint of industry range)
+      - Verdict multipliers spanning 0.40 (AVOID) - 1.65 (BUILD)
+      - Best-fit scenario multiplier (gas_btm premium for fast TTP)
+      - Site-readiness premium stack (6 boolean flags, multiplicative)
+      - ±50% envelope (was ±30% — too tight for illiquid parcels)
+    """
+    # Per-MW value adjusted by verdict (v2.0: wider spread)
     verdict_mult = {
-        "BUILD":   1.20,
-        "CAUTION": 0.95,
-        "AVOID":   0.75,
-        None:      0.95,
-    }.get(dcpi.get("verdict"), 0.95)
+        "BUILD":   1.65,   # premium markets (was 1.20)
+        "CAUTION": 1.00,   # baseline (was 0.95)
+        "AVOID":   0.40,   # deep discount, slow TTP (was 0.75)
+        None:      0.85,
+    }.get(dcpi.get("verdict"), 0.85)
 
     # Best-fit scenario adjustment (BTM premium if grid is constrained)
+    # Tightened from v1.0 (gas_btm 1.10 → 1.05) since the verdict mult
+    # already captures most of the "is grid usable?" signal.
     bestfit_mult = {
         "grid_only":          1.00,
-        "gas_btm":            1.10,  # premium for fast time-to-power
-        "gas_to_grid_hybrid": 1.05,
+        "gas_btm":            1.05,  # small premium for fast time-to-power
+        "gas_to_grid_hybrid": 1.10,  # revenue optionality is worth more than pure BTM
     }.get(best_fit["scenario"], 1.00)
 
-    per_mw_mid = _VALUE_PER_MW_USD_BASE * verdict_mult * bestfit_mult
-    per_acre_mid = _VALUE_PER_ACRE_USD_BASE * verdict_mult
+    # Site-readiness premium stack — new in v2.0.
+    # readiness dict has 6 boolean flags; each TRUE flag multiplies the
+    # baseline by its premium. Raw land (all FALSE) → 1.0x; fully
+    # shovel-ready (all TRUE) → 3.35x. This is the input set v1.0 was
+    # missing — user noted "Phoenix-100MW with grid/water/fiber/zoning
+    # complete should be worth ~$60M" which only resolves when readiness
+    # is in the model.
+    readiness = readiness or {}
+    readiness_mult = 1.0
+    readiness_applied = {}
+    for flag, premium in _READINESS_PREMIUMS.items():
+        if readiness.get(flag):
+            readiness_mult *= premium
+            readiness_applied[flag] = premium
+    readiness_mult = round(readiness_mult, 3)
+
+    per_mw_mid = _VALUE_PER_MW_USD_BASE * verdict_mult * bestfit_mult * readiness_mult
+    per_acre_mid = _VALUE_PER_ACRE_USD_BASE * verdict_mult * readiness_mult
 
     site_value_mid = per_mw_mid * target_mw + per_acre_mid * acres
 
@@ -502,10 +546,19 @@ def _compute_valuation(target_mw: int, acres: float, dcpi: dict,
         "site_value_usd_low":  round(site_value_mid * (1 - spread), 0),
         "site_value_usd_mid":  round(site_value_mid, 0),
         "site_value_usd_high": round(site_value_mid * (1 + spread), 0),
-        "_methodology":        ("Phase 1 baseline: $2M/MW × verdict × best-fit "
-                                  "multiplier + $75K/acre × verdict multiplier, "
-                                  "±30% envelope. Phase 2 fits regression to "
-                                  "comparable_sales table for tighter ranges."),
+        "multipliers": {
+            "verdict_mult":    verdict_mult,
+            "bestfit_mult":    bestfit_mult,
+            "readiness_mult":  readiness_mult,
+            "readiness_applied": readiness_applied,
+        },
+        "_methodology":        ("v2.0: $475K/MW × verdict × best-fit × "
+                                  "site-readiness stack + $15K/acre × verdict × "
+                                  "readiness, ±50% envelope. Verdict spans "
+                                  "AVOID(0.40)-BUILD(1.65). Readiness stack: "
+                                  "grid_interconnect(+30%) × substation(+25%) × "
+                                  "water(+10%) × fiber(+20%) × zoning(+30%) × "
+                                  "permits(+20%), all multiplicative."),
     }
 
 
@@ -526,7 +579,7 @@ def site_value():
         return jsonify({
             "ok": False,
             "error": "invalid_payload",
-            "hint":  "Required: lat, lon, acres, target_mw. Optional: deadline_months.",
+            "hint":  "Required: lat, lon, acres, target_mw. Optional: deadline_months, readiness flags.",
         }), 400
     if not (-90 <= lat <= 90 and -180 <= lon <= 180 and acres > 0 and target_mw > 0):
         return jsonify({
@@ -535,21 +588,33 @@ def site_value():
             "hint":  "lat ∈ [-90,90], lon ∈ [-180,180], acres > 0, target_mw > 0.",
         }), 400
 
+    # v2.0 (2026-06-04): site-readiness flags. Each TRUE flag adds its
+    # premium to the valuation. Accepts a nested "readiness" object OR
+    # flat top-level booleans (e.g. {"grid_interconnect_ready": true}).
+    readiness_raw = payload.get("readiness") or {}
+    readiness = {}
+    for flag in _READINESS_PREMIUMS.keys():
+        val = readiness_raw.get(flag, payload.get(flag, False))
+        readiness[flag] = bool(val)
+
     # Gather data
     slug, state, dist = _nearest_market(lat, lon)
     dcpi = _fetch_dcpi(slug)
     gas = _fetch_gas_economics(slug, state)
     scenarios = _compute_scenarios(target_mw, dcpi, gas)
     best_fit = _pick_best_fit(scenarios, dcpi, deadline_months)
-    valuation = _compute_valuation(target_mw, acres, dcpi, best_fit, scenarios)
+    valuation = _compute_valuation(target_mw, acres, dcpi, best_fit,
+                                     scenarios, readiness=readiness)
     comps = _fetch_comparable_sales(slug, state)
 
     base = {
         "ok":            True,
+        "engine_version": "v2.0",
         "as_of":         _dt.datetime.utcnow().isoformat() + "Z",
         "input":         {"lat": lat, "lon": lon, "acres": acres,
                           "target_mw": target_mw,
-                          "deadline_months": deadline_months},
+                          "deadline_months": deadline_months,
+                          "readiness": readiness},
         "market_context": {
             "nearest_market_slug":  slug,
             "nearest_market_state": state,
@@ -597,13 +662,15 @@ def site_value():
             "signup_url":     "https://dchub.cloud/pricing",
             "stripe_url":     "https://buy.stripe.com/00w28o7BqaXLeP31QIaZi04",
             "what_you_unlock": [
-                "Full $-range valuation envelope (low/mid/high per MW + per acre)",
-                "Grid / Gas-BTM / Gas-to-Grid 10-year NPV comparison",
+                "Full $-range valuation envelope (low/mid/high per MW + per acre, ±50%)",
+                "6 site-readiness premiums (grid/sub/water/fiber/zoning/permits)",
+                "Grid / Gas-BTM / Gas-to-Grid 10-yr Total-Cost-NPV comparison",
                 "CapEx + OpEx breakdown per scenario",
                 "Levelized cost $/MWh per scenario",
                 "Best-fit scenario rationale",
                 "Comparable transactions from $324B+ tracked M&A pipeline",
                 "Live gas hub pricing (Henry Hub + regional basis)",
+                "Multiplier breakdown (verdict × best-fit × readiness stack)",
             ],
         },
     })
@@ -616,14 +683,21 @@ def site_value():
 def site_value_methodology():
     return jsonify({
         "ok":           True,
-        "version":      "Phase 1 (2026-06-04)",
+        "version":      "v2.0 (2026-06-04)",
         "summary":      ("Three-scenario NPV comparison for a (lat, lon, "
-                          "acres, target_mw) tuple: Grid-only, Gas BTM (CCGT), "
-                          "Gas-to-Grid Hybrid. Inputs sourced from DCPI verdict, "
-                          "live gas hub pricing, and 234+ market DCPI scores. "
-                          "Valuation envelope is industry-multiple baseline "
-                          "adjusted by verdict and best-fit scenario, ±30% "
-                          "range. Phase 2 fits regression to comparable sales."),
+                          "acres, target_mw, readiness flags) tuple: Grid-only, "
+                          "Gas BTM (CCGT), Gas-to-Grid Hybrid. Inputs sourced "
+                          "from DCPI verdict, live gas hub pricing, and 234+ "
+                          "market DCPI scores. Valuation envelope is industry-"
+                          "multiple baseline ($475K/MW) × verdict mult × best-"
+                          "fit mult × site-readiness premium stack, ±50% range."),
+        "v2_changelog": [
+            "Recalibrated baseline from $2M/MW → $475K/MW (midpoint of $150K-$800K industry range)",
+            "Widened verdict spread from 0.75-1.20 → 0.40-1.65 (full industry envelope)",
+            "Added 6 site-readiness premiums: grid/substation/water/fiber/zoning/permits (multiplicative, up to 3.35x for shovel-ready)",
+            "Widened envelope from ±30% → ±50% (real-world illiquidity spread)",
+            "Per-acre baseline $75K → $15K (industrial-zoned land comp)",
+        ],
         "constants":   {
             "capex_grid_interconnect_usd_per_kw":  _CAPEX_GRID_INTERCONNECT_USD_PER_KW,
             "capex_gas_ccgt_usd_per_kw":            _CAPEX_GAS_CCGT_USD_PER_KW,
@@ -637,18 +711,39 @@ def site_value_methodology():
             "value_per_acre_usd_base":              _VALUE_PER_ACRE_USD_BASE,
             "value_range_spread":                   _VALUE_RANGE_SPREAD,
         },
+        "verdict_multipliers": {
+            "BUILD":   1.65,
+            "CAUTION": 1.00,
+            "AVOID":   0.40,
+            "null":    0.85,
+        },
+        "bestfit_multipliers": {
+            "grid_only":          1.00,
+            "gas_btm":            1.05,
+            "gas_to_grid_hybrid": 1.10,
+        },
+        "site_readiness_premiums": _READINESS_PREMIUMS,
+        "site_readiness_max_stack": round(
+            1.0 * 1.30 * 1.25 * 1.10 * 1.20 * 1.30 * 1.20, 3
+        ),
         "data_sources": {
             "dcpi_verdict":          "dcpi_scores table — refreshed daily",
             "gas_pricing":           "routes/powered_land_gas.py — EIA v2 API",
             "comparable_sales":      "deals table — $324B+ M&A tracked",
             "market_centroids":      "hand-seeded top-30 markets (Phase 2: full markets table)",
         },
-        "phase_2_roadmap": [
+        "npv_definition": ("10-yr NPV column is a COST-BASIS figure: "
+                           "capex + 10-year discounted opex. Negative because "
+                           "it represents the total cost of power delivery, "
+                           "not net cashflow. Compare scenarios by levelized "
+                           "$/MWh + time-to-power, not by NPV magnitude alone."),
+        "phase_3_roadmap": [
             "Per-utility delivered gas tariff (not state-avg)",
             "Regression-fit valuation envelope from comparable_sales",
             "Live ISO queue depth per scenario time-to-power",
             "Real substation proximity (HIFLD) replacing capex assumption",
             "Custom heat-rate input (currently fixed at 6800 Btu/kWh CCGT)",
+            "Revenue-side NPV (project earnings) so net-NPV is meaningful",
         ],
     }), 200
 
@@ -733,13 +828,42 @@ th { color: var(--muted); font-size: 11px; text-transform: uppercase; letter-spa
     <label>Target MW &nbsp;<span style="color:var(--accent2);font-size:11px">> 0</span><br><input id="target_mw" type="number" step="1" min="1" value="100" required></label>
     <label>Deadline (months)<br><input id="deadline_months" type="number" step="1" min="1" max="120" value="24"></label>
     <label>API Key (PRO unlock)<br><input id="api_key" type="password" placeholder="dchub_..." autocomplete="off"></label>
-    <button type="submit">Calculate valuation →</button>
   </form>
+
+  <!-- v2.0: Site-readiness toggles. Multiplicative premium stack. -->
+  <div style="background:var(--panel);border:1px solid var(--border);border-radius:12px;padding:18px 20px;margin:0 0 16px;">
+    <div style="font-size:11px;color:var(--muted);letter-spacing:0.1em;text-transform:uppercase;font-weight:700;margin-bottom:6px;">
+      Site readiness &nbsp;·&nbsp; toggle what's actually in place
+    </div>
+    <div style="font-size:12px;color:var(--muted);margin-bottom:14px;">
+      Each toggle is a multiplicative premium. Raw land = 1.00×; fully shovel-ready = ~3.35×.
+      A 100 MW Phoenix AVOID parcel goes from ~$20M raw to ~$68M shovel-ready.
+    </div>
+    <div id="readiness-grid" style="display:grid;grid-template-columns:repeat(auto-fit,minmax(220px,1fr));gap:10px;">
+      <label class="rcb"><input type="checkbox" id="r_grid"><span><b>Grid interconnect ready</b><br><span class="rcb-sub">ISA signed / queue cleared &nbsp;·&nbsp; +30%</span></span></label>
+      <label class="rcb"><input type="checkbox" id="r_sub"><span><b>Substation on-site</b><br><span class="rcb-sub">existing sub within parcel &nbsp;·&nbsp; +25%</span></span></label>
+      <label class="rcb"><input type="checkbox" id="r_water"><span><b>Water secured</b><br><span class="rcb-sub">WSA / permit in place &nbsp;·&nbsp; +10%</span></span></label>
+      <label class="rcb"><input type="checkbox" id="r_fiber"><span><b>Fiber on-site</b><br><span class="rcb-sub">dark fiber tap exists &nbsp;·&nbsp; +20%</span></span></label>
+      <label class="rcb"><input type="checkbox" id="r_zoning"><span><b>Zoning approved</b><br><span class="rcb-sub">industrial / data-center zone &nbsp;·&nbsp; +30%</span></span></label>
+      <label class="rcb"><input type="checkbox" id="r_permits"><span><b>Permits in hand</b><br><span class="rcb-sub">SLR / AQMD / etc cleared &nbsp;·&nbsp; +20%</span></span></label>
+    </div>
+    <div style="margin-top:14px;display:flex;align-items:center;gap:12px;flex-wrap:wrap;">
+      <span style="font-size:12px;color:var(--muted)">Current readiness stack:</span>
+      <span id="r-mult" style="font-family:monospace;background:var(--panel2);color:var(--accent2);padding:4px 10px;border-radius:4px;font-weight:700">1.000×</span>
+      <button type="submit" form="valForm" style="margin-left:auto;background:var(--accent);color:#fff;border:0;border-radius:6px;padding:10px 22px;font-size:14px;font-weight:600;cursor:pointer;font-family:inherit;">Calculate valuation →</button>
+    </div>
+    <style>
+      .rcb { display:flex; align-items:flex-start; gap:10px; padding:10px 12px; background:var(--panel2); border:1px solid var(--border); border-radius:8px; cursor:pointer; font-size:13px; color:var(--fg); }
+      .rcb:hover { border-color:var(--accent); }
+      .rcb input { margin-top:4px; accent-color:var(--accent); }
+      .rcb-sub { color:var(--muted); font-size:11px; font-weight:400; }
+    </style>
+  </div>
 
   <div id="results" class="hidden"></div>
 
   <p style="font-size:12px;color:var(--muted);margin-top:32px;">
-    Methodology: <a href="/api/v1/site/value/methodology" style="color:var(--accent2)">/api/v1/site/value/methodology</a> · Phase 1 ships today; Phase 2 adds per-utility tariffs, regression-fit valuation envelope, and live ISO queue depth.
+    Methodology: <a href="/api/v1/site/value/methodology" style="color:var(--accent2)">/api/v1/site/value/methodology</a> · Engine v2.0 (2026-06-04) — recalibrated to industry $150K-$800K/MW range, 6 site-readiness premiums, ±50% envelope. v2.1 adds regression-fit against comparable sales + live ISO queue depth.
   </p>
 </div>
 
@@ -757,6 +881,24 @@ document.querySelectorAll('.preset').forEach(btn => {
     btn.style.borderColor = 'var(--accent)';
     btn.style.color       = '#fff';
   });
+});
+
+// v2.0: live readiness-stack multiplier display
+const READINESS_PREMIUMS = {
+  r_grid:    1.30,  r_sub:     1.25,  r_water: 1.10,
+  r_fiber:   1.20,  r_zoning:  1.30,  r_permits: 1.20,
+};
+function updateReadinessMult() {
+  let m = 1.0;
+  Object.entries(READINESS_PREMIUMS).forEach(([id, premium]) => {
+    if (document.getElementById(id) && document.getElementById(id).checked) m *= premium;
+  });
+  const el = document.getElementById('r-mult');
+  if (el) el.textContent = m.toFixed(3) + '×';
+}
+Object.keys(READINESS_PREMIUMS).forEach(id => {
+  const cb = document.getElementById(id);
+  if (cb) cb.addEventListener('change', updateReadinessMult);
 });
 
 function showFieldError(msg) {
@@ -828,9 +970,20 @@ document.getElementById('valForm').addEventListener('submit', async (e) => {
     return;
   }
 
+  // v2.0: collect 6 site-readiness flags + post them to the API
+  const readiness = {
+    grid_interconnect_ready: document.getElementById('r_grid').checked,
+    substation_on_site:      document.getElementById('r_sub').checked,
+    water_secured:           document.getElementById('r_water').checked,
+    fiber_on_site:           document.getElementById('r_fiber').checked,
+    zoning_approved:         document.getElementById('r_zoning').checked,
+    permits_in_hand:         document.getElementById('r_permits').checked,
+  };
+
   const body = {
     lat, lon, acres, target_mw,
     deadline_months: parseInt(document.getElementById('deadline_months').value || 24),
+    readiness: readiness,
   };
   const apiKey = document.getElementById('api_key').value.trim();
   const headers = { 'Content-Type': 'application/json' };
@@ -871,13 +1024,25 @@ function renderResults(d) {
       </div>`;
 
   if (d.valuation) {
+    const m = d.valuation.multipliers || {};
+    const applied = m.readiness_applied || {};
+    const appliedKeys = Object.keys(applied);
+    const readinessLine = appliedKeys.length === 0
+      ? '<i>raw land — no readiness flags set</i>'
+      : appliedKeys.map(k => k.replace(/_/g, ' ') + ' (+' + Math.round((applied[k]-1)*100) + '%)').join(' · ');
     html += `
       <div class="card">
         <h3>Valuation envelope</h3>
         <div class="stat">${fmtM$(d.valuation.site_value_usd_mid)}</div>
-        <div class="stat-label">midpoint · ${fmtM$(d.valuation.site_value_usd_low)} – ${fmtM$(d.valuation.site_value_usd_high)}</div>
+        <div class="stat-label">midpoint · ${fmtM$(d.valuation.site_value_usd_low)} – ${fmtM$(d.valuation.site_value_usd_high)}  <span style="opacity:0.6">(±50% envelope)</span></div>
         <div style="margin-top:12px;font-size:13px;color:var(--muted)">
           <b>${fmt$(d.valuation['$/mw_mid'])}</b> / MW &nbsp;·&nbsp; <b>${fmt$(d.valuation['$/acre_mid'])}</b> / acre
+        </div>
+        <div style="margin-top:10px;font-size:12px;color:var(--muted);border-top:1px solid var(--border);padding-top:10px">
+          Stack: verdict <b style="color:var(--fg)">${(m.verdict_mult||1).toFixed(2)}×</b>
+          · best-fit <b style="color:var(--fg)">${(m.bestfit_mult||1).toFixed(2)}×</b>
+          · readiness <b style="color:var(--accent2)">${(m.readiness_mult||1).toFixed(3)}×</b>
+          <br><span style="opacity:0.85">Readiness applied: ${readinessLine}</span>
         </div>
       </div>`;
   } else if (d.valuation_teaser) {
@@ -905,7 +1070,7 @@ function renderResults(d) {
         <table style="margin-top:8px;font-size:12px">
           <tr><td>CapEx</td><td style="text-align:right">${fmtM$(s.capex_usd)}</td></tr>
           <tr><td>Annual OpEx</td><td style="text-align:right">${fmtM$(s.annual_opex_usd)}</td></tr>
-          <tr><td>10-yr NPV</td><td style="text-align:right">${fmtM$(s.ten_year_npv_usd)}</td></tr>
+          <tr><td title="capex + 10yr opex discounted; cost-only, not net cashflow">10-yr Total Cost (NPV)</td><td style="text-align:right">${fmtM$(s.ten_year_npv_usd)}</td></tr>
           <tr><td>Time to power</td><td style="text-align:right">${s.time_to_power_months}mo</td></tr>
         </table>
       </div>`;
