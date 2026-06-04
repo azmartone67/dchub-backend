@@ -1220,6 +1220,10 @@ def _legacy_compute_report_data() -> dict:
             # table the `market` and `city` columns are sparsely populated;
             # if the market/city group returns empty, fall back to `state`
             # (always populated; mirrors /api/v1/facilities/by-state).
+            # Primary: group by COALESCE(market, city) — must include the
+            # raw columns in GROUP BY for PG's strict-grouping rule. On the
+            # live table these are sparsely populated, so we also keep a
+            # state-level fallback that always renders something useful.
             try:
                 cur.execute("""
                     SELECT COALESCE(market, city, '') AS m, COUNT(*) AS n,
@@ -1227,7 +1231,7 @@ def _legacy_compute_report_data() -> dict:
                       FROM discovered_facilities
                      WHERE COALESCE(market, city) IS NOT NULL
                        AND COALESCE(market, city) != ''
-                     GROUP BY COALESCE(market, city)
+                     GROUP BY market, city
                      ORDER BY mw DESC LIMIT 10
                 """)
                 out["top_markets"] = [
@@ -1236,9 +1240,7 @@ def _legacy_compute_report_data() -> dict:
             except Exception as e:
                 logger.warning(f"quarterly_report top_markets primary failed: {e}")
                 out["top_markets"] = []
-                out["_top_markets_err"] = str(e)[:200]
-            # Fallback in its OWN try/except so a primary-query exception
-            # doesn't poison the secondary attempt.
+            # State-level fallback in its own try/except.
             if not out.get("top_markets"):
                 try:
                     cur.execute("""
@@ -1255,7 +1257,6 @@ def _legacy_compute_report_data() -> dict:
                         for r in cur.fetchall() if r[0]]
                 except Exception as e:
                     logger.warning(f"quarterly_report top_markets state-fallback failed: {e}")
-                    out["_top_markets_state_err"] = str(e)[:200]
             # ─── M&A SUMMARY ──────────────────────────────────────────
             # deals.date is TEXT (not date) — implicit `>= CURRENT_DATE -
             # INTERVAL` throws operator-does-not-exist. Cast with ::date.
@@ -1346,7 +1347,7 @@ def _legacy_compute_report_data() -> dict:
                      WHERE LOWER(COALESCE(status,'')) IN {_pipeline_statuses}
                        AND COALESCE(market, city) IS NOT NULL
                        AND COALESCE(market, city) != ''
-                     GROUP BY COALESCE(market, city)
+                     GROUP BY market, city
                      ORDER BY mw DESC LIMIT 10
                 """)
                 out["pipeline_by_market"] = [
@@ -1355,7 +1356,6 @@ def _legacy_compute_report_data() -> dict:
             except Exception as e:
                 logger.warning(f"quarterly_report pipeline_by_market primary failed: {e}")
                 out["pipeline_by_market"] = []
-                out["_pipeline_by_market_err"] = str(e)[:200]
             if not out.get("pipeline_by_market"):
                 try:
                     cur.execute(f"""
@@ -1373,7 +1373,6 @@ def _legacy_compute_report_data() -> dict:
                         for r in cur.fetchall() if r[0]]
                 except Exception as e:
                     logger.warning(f"quarterly_report pipeline_by_market state-fallback failed: {e}")
-                    out["_pipeline_by_market_state_err"] = str(e)[:200]
             try:
                 cur.execute("SELECT score_pct FROM citation_scores ORDER BY score_date DESC LIMIT 1")
                 r = cur.fetchone()
