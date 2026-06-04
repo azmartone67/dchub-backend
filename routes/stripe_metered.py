@@ -257,8 +257,12 @@ def _stripe_meter_event(stripe_key, value, customer_id):
 # prod_UccyUrO1iq7LrN ($0.01/unit/mo, customer picks 1-10000 units). On
 # checkout.session.completed the main.py webhook calls handle_usage_based_checkout
 # (fail-soft) → auto-issue a dch_live_ key sized to the purchased quantity,
-# link it to the Stripe customer, and email it. No usage-reporting needed for
-# this product (it's a fixed-quantity sub, not the pure-metered price).
+# link it to the Stripe customer, ENROLL it in metered_keys, and email it. Usage
+# is then reported to the Stripe Meter "DC Hub API Calls" (event_name dchub_api_call)
+# by the report-to-stripe cron (stripe-metered-report.yml) — THAT is what bills.
+# Go-live therefore needs BOTH: the cron running live (dry_run=0) AND the Meter's
+# event_name == dchub_api_call. Else metered subscribers bill $0. (Prior "fixed-
+# quantity / no reporting" note was wrong — this is the metered $0.01/call price.)
 _USAGE_PRODUCT_ID = os.environ.get("DCHUB_USAGE_PRODUCT_ID", "prod_UccyUrO1iq7LrN")
 # Known usage-based product IDs: the meter product the user first named AND the
 # product the live payment link (buy.stripe.com/9B69AU…) actually created. The

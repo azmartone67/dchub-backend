@@ -33,7 +33,17 @@ jobs:
           DRY='1'
           if [ "${{ github.event.inputs.live }}" = "1" ]; then DRY='0'; fi
           echo "report-to-stripe dry_run=$DRY"
-          curl -sS -X POST \
+          resp=$(curl -sS -X POST \
             "https://dchub-backend-production.up.railway.app/api/v1/billing/report-to-stripe?dry_run=$DRY" \
             -H "X-Admin-Key: $ADMIN_KEY" \
-            -w "\nHTTP %{http_code}\n" | head -c 4000
+            -w "\nHTTP %{http_code}")
+          echo "$resp" | head -c 4000; echo
+          # r80 (2026-06-04): fail LOUD if any customer failed to report - the
+          # usual cause is the Stripe Meter event_name != dchub_api_call, which
+          # silently bills $0. (Only meaningful on a live run.)
+          if printf "%s" "$resp" | grep -q '"status": *"error"'; then
+            echo "::error::metered-report: a customer FAILED to report to the Stripe Meter (likely event_name != dchub_api_call) - metered billing may be \$0"; exit 1
+          fi
+          if ! printf "%s" "$resp" | grep -q "HTTP 200"; then
+            echo "::error::metered-report: report-to-stripe returned non-200"; exit 1
+          fi
