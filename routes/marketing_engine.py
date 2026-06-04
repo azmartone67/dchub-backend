@@ -210,10 +210,11 @@ def _collect_signals() -> dict:
                  "excess": r[4], "constraint": r[5]}
                 for r in rows[:3]]
 
-        # Phase FF-polish: most recent AI citation of DC Hub. The citation-quote
-        # post format far outperforms bare-link posts (Gemini/ChatGPT quote posts
-        # got 70/16 impressions + reactions vs 7-17 for link posts). Own
-        # try/except so a missing/empty table can't break signal gathering.
+        # Phase FF-polish: most recent AI citation of DC Hub. Citation-quote posts
+        # have historically outperformed bare-link posts; rather than hardcode a
+        # stale impressions ratio, generation now leans on REAL reader click-through
+        # via _inject_engagement_signal() (r70 measure→learn). Own try/except so a
+        # missing/empty table can't break signal gathering.
         try:
             with c.cursor() as cur:
                 cur.execute("""
@@ -977,6 +978,58 @@ def _inject_editorial_lessons(system_prompt: str) -> str:
         return system_prompt
 
 
+def _inject_engagement_signal(system_prompt: str) -> str:
+    """r70 MEASURE→LEARN: append the engine's OWN best-performing recent posts
+    (ranked by REAL reader click-through on dchub.cloud, from press_engagement)
+    so generation leans toward angles that demonstrably land. Closes the
+    measure→learn half the engine was missing — using the SAME slug-join as
+    og_performance(), no native-social API needed. ADDITIVE + fail-soft → the
+    original prompt (a thin-data week or any query error never blocks
+    generation, and the tuned _pick_daily_topic picker is left untouched)."""
+    try:
+        c = _conn()
+        if c is None:
+            return system_prompt
+        rows = []
+        try:
+            with c.cursor() as cur:
+                cur.execute("""
+                    SELECT a.slug,
+                           COUNT(e.id) FILTER (WHERE e.event_type = 'view') AS views,
+                           COUNT(e.id) FILTER (WHERE e.event_type IN ('click_out','stripe_click')) AS clicks
+                      FROM auto_press_releases a
+                      LEFT JOIN press_engagement e ON e.slug = a.slug
+                     WHERE a.generated_at > NOW() - make_interval(days => 30)
+                     GROUP BY a.slug
+                    HAVING COUNT(e.id) FILTER (WHERE e.event_type = 'view') >= 5
+                     ORDER BY (COUNT(e.id) FILTER (WHERE e.event_type IN ('click_out','stripe_click'))::float
+                               / NULLIF(COUNT(e.id) FILTER (WHERE e.event_type = 'view'), 0)) DESC NULLS LAST
+                     LIMIT 3
+                """)
+                rows = cur.fetchall() or []
+        finally:
+            try: c.close()
+            except Exception: pass
+        if not rows:
+            return system_prompt
+        import re as _re
+        def _angle(slug):
+            s = _re.sub(r'^auto-\d{4}-\d{2}-\d{2}-', '', slug or '')
+            return s.replace('-', ' ').strip() or (slug or '')
+        lines = []
+        for slug, views, clicks in rows:
+            v = int(views or 0); k = int(clicks or 0)
+            ctr = round(100.0 * k / v, 1) if v else 0.0
+            lines.append(f'- "{_angle(slug)}" — {v} views, {k} click-throughs ({ctr}% CTR)')
+        return system_prompt + (
+            "\n\nWHAT'S PERFORMING (your last 30 days, by REAL reader click-through "
+            "on dchub.cloud) — lean toward these proven angles when the day's signals "
+            "allow; do NOT copy them verbatim:\n" + "\n".join(lines)
+        )
+    except Exception:
+        return system_prompt
+
+
 def _call_claude_marketing(prompt: str) -> tuple[dict | None, str | None]:
     """Single Anthropic call. Returns (parsed_json, error)."""
     if not ANTHROPIC_API_KEY:
@@ -985,7 +1038,7 @@ def _call_claude_marketing(prompt: str) -> tuple[dict | None, str | None]:
     body = json.dumps({
         "model": MARKETING_MODEL,
         "max_tokens": 1500,
-        "system": _inject_editorial_lessons(_inject_live_stats(_MARKETING_SYSTEM)),
+        "system": _inject_engagement_signal(_inject_editorial_lessons(_inject_live_stats(_MARKETING_SYSTEM))),
         "messages": [{"role": "user", "content": prompt}],
     }).encode("utf-8")
     req = Request("https://api.anthropic.com/v1/messages", data=body, headers={
