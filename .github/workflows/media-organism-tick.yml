@@ -57,7 +57,7 @@ jobs:
           echo "verdict=$verdict" >> "$GITHUB_OUTPUT"
           echo "weakest=$weakest" >> "$GITHUB_OUTPUT"
 
-      - name: Stage journalist pitch drafts for review (press-outreach)
+      - name: Stage journalist pitch drafts for review (media-outreach)
         if: |
           steps.organism.outputs.weakest == 'journalist_outreach' ||
           steps.organism.outputs.verdict == 'dormant' ||
@@ -69,25 +69,25 @@ jobs:
             echo "::warning::DCHUB_ADMIN_KEY not set — skipping draft generation"
             exit 0
           fi
-          # r48: stage REVIEW-READY journalist pitch drafts into the press-outreach
-          # queue (press_pitch_drafts, status=pending) — personalized per outlet beat
-          # and detected story angle, persisted for review. REPLACES the old ephemeral
-          # /media/pitch-draft (which 400'd on a missing recipient_email and never
-          # persisted). It does NOT send: the operator reviews at
-          # /admin/partnerships/review, adds the specific editor email they know
-          # (we never guess journalist emails), and approves to send via Resend.
+          # r71 (2026-06-04): stage into the WORKING media_outreach pipeline
+          # (media_pitch_drafts, status=pending) with the curated journalist
+          # contacts PRE-FILLED, instead of the email-less press-outreach queue
+          # (which left journalist_outreach at 0 because each draft needed a manual
+          # email add the operator never did). It does NOT send: operator reviews at
+          # GET /api/v1/media/drafts, VERIFIES each email on the masthead, and sends
+          # via POST /api/v1/media/pitch-send (admin, 7-day cooldown). Never auto-sent.
           response=$(curl -sS --max-time 90 -X POST \
             -H "X-Admin-Key: $ADMIN_KEY" \
-            "$BASE/api/v1/admin/press-outreach/generate-drafts?top=3&min_priority=6" \
+            "$BASE/api/v1/media/stage-weekly?top=3" \
             || echo '{"ok":false,"error":"curl_fail"}')
           echo "$response" | python3 -c "
           import json, sys
           try:
               d = json.loads(sys.stdin.read())
               if d.get('ok'):
-                  print(f'::notice::press drafts staged: angles={d.get(\"angles_detected\",0)} drafted={d.get(\"drafted\",0)} dupe-skipped={d.get(\"skipped_dupe\",0)} — review at /admin/partnerships/review')
+                  print(f'::notice::journalist drafts staged: staged={d.get(\"staged\",0)} skipped={d.get(\"skipped\",0)} — review at GET /api/v1/media/drafts, send via /api/v1/media/pitch-send')
               else:
-                  print(f'::warning::generate-drafts did not run: {d.get(\"error\",\"\")[:200]}')
+                  print(f'::warning::stage-weekly did not run: {d.get(\"error\",\"\")[:200]}')
           except Exception as e:
               print(f'::warning::generate-drafts response parse failed: {e}')
           " || true

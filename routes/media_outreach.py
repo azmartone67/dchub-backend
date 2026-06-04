@@ -219,6 +219,132 @@ def journalists():
     ), 200
 
 
+# ── (b) 2026-06-04: pending-draft staging ───────────────────────────
+# journalist_outreach sat at 0 because the media-organism cron staged drafts
+# into press_outreach (blank contacts -> un-sendable), while THIS working
+# pipeline was never triggered. stage-weekly composes pitches for the top
+# journalists and PERSISTS them as 'pending' for the operator to review + send
+# via pitch-send (which keeps the 7-day cooldown + admin gate). Nothing is ever
+# auto-sent to a journalist — the cron only stages drafts.
+_DRAFTS_SCHEMA = """
+CREATE TABLE IF NOT EXISTS media_pitch_drafts (
+    id              BIGSERIAL PRIMARY KEY,
+    recipient_email TEXT NOT NULL,
+    recipient_name  TEXT,
+    publication     TEXT,
+    subject         TEXT NOT NULL,
+    body            TEXT NOT NULL,
+    topic           TEXT,
+    status          TEXT NOT NULL DEFAULT 'pending',
+    created_at      TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+    sent_at         TIMESTAMPTZ
+);
+CREATE INDEX IF NOT EXISTS ix_mpd_status ON media_pitch_drafts(status, created_at DESC);
+"""
+_DRAFTS_INIT = False
+
+def _ensure_drafts_schema():
+    global _DRAFTS_INIT
+    if _DRAFTS_INIT: return
+    try:
+        c = _conn()
+        try:
+            cur = c.cursor(); cur.execute(_DRAFTS_SCHEMA)
+            try: c.commit()
+            except Exception: pass
+            _DRAFTS_INIT = True
+        finally:
+            try: c.close()
+            except Exception: pass
+    except Exception as e:
+        logger.warning(f"media_pitch_drafts schema init failed: {e}")
+
+
+def _default_story():
+    """Evergreen story to pitch around. A later pass can pull the latest press
+    release / top DCPI mover instead."""
+    return {
+        "headline": "Weekly DC industry stat sheet (free, machine-readable, CC-BY-4.0)",
+        "story_paragraph": (
+            "DC Hub publishes a live, machine-readable stat sheet of US/global "
+            "data-center facility counts, M&A volume, pipeline MW, and AI-agent "
+            "adoption — free to cite (CC-BY-4.0), every metric sourced + timestamped."),
+        "data_url": "https://dchub.cloud/industry/pulse",
+        "methodology_url": "https://dchub.cloud/dcpi/methodology",
+        "angle_1": "Most DC industry data is locked behind $25K/yr paywalls (DCHawk, dcByte). Ours is free + primary-source.",
+        "angle_2": "AI agents (Claude, Cursor) query our MCP server live to ground data-center answers, with CC-BY-4.0 attribution — see /cited-by.",
+        "angle_3": "Pipeline + DCPI rankings shift weekly; static quarterly reports miss the inflection points.",
+    }
+
+
+@media_outreach_bp.route("/api/v1/media/stage-weekly", methods=["POST", "GET"])
+def stage_weekly():
+    """Compose + PERSIST pending pitch drafts for the top journalists. Operator
+    reviews at GET /api/v1/media/drafts, sends via pitch-send. Cron-callable
+    (X-Admin-Key OR an internal dchub-* User-Agent). Never auto-sends."""
+    provided = (request.headers.get("X-Admin-Key") or "").strip()
+    _ua = (request.headers.get("User-Agent") or "").lower()
+    _internal = _ua.startswith("dchub-") or "brain" in _ua
+    if _ADMIN_KEY and provided != _ADMIN_KEY and not _internal:
+        return jsonify(error="unauthorized"), 401
+    _ensure_schema(); _ensure_drafts_schema()
+    try: top = max(1, min(int(request.args.get("top", 3)), len(_JOURNALISTS)))
+    except Exception: top = 3
+    story = _default_story()
+    staged, skipped = [], []
+    try:
+        c = _conn(); cur = c.cursor()
+    except Exception as e:
+        return jsonify(ok=False, error=f"db_unavailable: {str(e)[:80]}"), 503
+    try:
+        for j in _JOURNALISTS[:top]:
+            email = j["email"]
+            try:
+                cur.execute("SELECT 1 FROM media_outreach_log WHERE recipient_email=%s AND sent_at >= NOW() - INTERVAL '7 days' LIMIT 1", (email,))
+                if cur.fetchone(): skipped.append({"email": email, "reason": "sent_within_7d"}); continue
+                cur.execute("SELECT 1 FROM media_pitch_drafts WHERE recipient_email=%s AND status='pending' AND created_at >= NOW() - INTERVAL '7 days' LIMIT 1", (email,))
+                if cur.fetchone(): skipped.append({"email": email, "reason": "pending_draft_exists"}); continue
+            except Exception: pass
+            subject, txt = _compose_pitch("industry_pulse", story, j)
+            try:
+                cur.execute("""INSERT INTO media_pitch_drafts (recipient_email, recipient_name, publication, subject, body, topic)
+                               VALUES (%s,%s,%s,%s,%s,%s) RETURNING id""",
+                            (email, j.get("name"), j.get("publication"), subject, txt, "industry_pulse"))
+                staged.append({"id": cur.fetchone()[0], "email": email, "name": j.get("name"),
+                               "publication": j.get("publication"), "subject": subject})
+            except Exception as e:
+                skipped.append({"email": email, "reason": f"insert_failed: {str(e)[:60]}"})
+        try: c.commit()
+        except Exception: pass
+    finally:
+        try: c.close()
+        except Exception: pass
+    return jsonify(ok=True, staged=len(staged), skipped=len(skipped), drafts=staged,
+                   skipped_detail=skipped,
+                   note="Review: GET /api/v1/media/drafts · Send each: POST /api/v1/media/pitch-send (admin, 7-day cooldown). Verify the email on the masthead first."), 200
+
+
+@media_outreach_bp.route("/api/v1/media/drafts", methods=["GET"])
+def list_drafts():
+    """List pending pitch drafts for operator review. Admin-gated."""
+    provided = (request.headers.get("X-Admin-Key") or "").strip()
+    if _ADMIN_KEY and provided != _ADMIN_KEY:
+        return jsonify(error="unauthorized"), 401
+    _ensure_drafts_schema()
+    try:
+        c = _conn(); cur = c.cursor()
+        cur.execute("""SELECT id, recipient_email, recipient_name, publication, subject, body, topic, status, created_at
+                       FROM media_pitch_drafts WHERE status=%s ORDER BY created_at DESC LIMIT 50""",
+                    (request.args.get("status", "pending"),))
+        rows = cur.fetchall(); c.close()
+    except Exception as e:
+        return jsonify(ok=False, error=str(e)[:120]), 503
+    drafts = [{"id": r[0], "recipient_email": r[1], "recipient_name": r[2], "publication": r[3],
+               "subject": r[4], "body": r[5], "topic": r[6], "status": r[7],
+               "created_at": r[8].isoformat() if r[8] else None} for r in rows]
+    return jsonify(ok=True, count=len(drafts), drafts=drafts), 200
+
+
 @media_outreach_bp.route("/api/v1/media/pitch-draft", methods=["POST"])
 def pitch_draft():
     """Draft a pitch for a specific journalist around a topic. Admin-gated.
