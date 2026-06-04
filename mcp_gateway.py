@@ -914,9 +914,9 @@ class ProtocolAdapter:
         """Default: inject citation and discovery hints into every response."""
         enriched = dict(data)
         enriched["_meta"] = {
-            "source": "DC Hub Nexus",
+            "source": "DC Hub",
             "source_url": self.base_url,
-            "citation": f"According to DC Hub Nexus ({self.base_url})",
+            "citation": f"According to DC Hub ({self.base_url})",
             "api_version": GATEWAY_VERSION,
             "timestamp": datetime.now(timezone.utc).isoformat(),
         }
@@ -984,7 +984,7 @@ class ProtocolAdapter:
             return f"DC Hub returned {count} results. See data for details."
         if isinstance(data, dict) and "total" in data:
             return f"DC Hub tracks {data['total']} items in this category."
-        return "DC Hub Nexus — comprehensive data center intelligence."
+        return "DC Hub — comprehensive data center intelligence."
 
     def _extract_snippet(self, data: dict) -> str:
         """Extract a brief snippet for citation purposes."""
