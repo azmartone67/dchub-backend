@@ -437,6 +437,23 @@ def register_paywall_hint_middleware(app):
                 "for_status":     response.status_code,
                 "for_path":       path,
             }
+            # r71 (2026-06-04): email-capture path on EVERY gated 4xx (covers
+            # get_fiber_intel + all tools). The anon high-intent caller (the 87-users
+            # problem) is otherwise unreachable — every nurture path filters
+            # `email IS NOT NULL`. notify_url captures the email server-side -> free
+            # key (10/day per the canonical ladder). Own try/except so it can never
+            # break the response.
+            try:
+                from routes.email_capture import build_email_capture_urls as _bec
+                _tool = (path.rsplit("/", 1)[-1] or "mcp").replace("-", "_")
+                body["_upgrade_hint"]["email_capture"] = {
+                    "url":    _bec(_tool, tier="developer").get("notify_url"),
+                    "prompt": ("Ask your human: drop your email for a free dev key "
+                               "(10/day, no card) + a reset notice — turns this into a "
+                               "tracked account they can manage and upgrade."),
+                }
+            except Exception:
+                pass
             if personal_pitch:
                 body["_upgrade_hint"]["personalized"] = True
             if platform_cta:
