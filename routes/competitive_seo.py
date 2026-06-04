@@ -617,16 +617,34 @@ def vs_page(slug):
     try:
         s = (slug or "").strip().lower()
 
+        # r79 (2026-06-03 evening) — Redirect brokers to /partners
+        # instead of rendering a competitive comparison. CBRE asked (via
+        # Gordon) to stay neutral; the same logic applies category-wide
+        # (we're a data vendor TO brokers, not competing AGAINST them).
+        # Better to land them on a respectful /partners page than dead.
+        # NOTE: my earlier r79 edit added this to routes/competitive_vs.py
+        # but that blueprint was never registered in main.py — dead code.
+        # competitive_seo_bp is the real active /vs/<slug> handler.
+        _BROKER_REDIRECT_SLUGS = {
+            "cbre", "jll", "cushman", "cushman-wakefield", "colliers",
+            "eastdil", "eastdil-secured", "marcus-millichap",
+            "newmark", "savills", "kidder-mathews",
+        }
+        if s in _BROKER_REDIRECT_SLUGS:
+            from flask import redirect
+            return redirect("/partners", code=302)
+
         # Alias → canonical public slug: 301 to consolidate link equity.
         if s in _ALIAS_TO_CANONICAL:
             from flask import redirect
             return redirect(f"/vs/{_ALIAS_TO_CANONICAL[s]}", code=301)
 
         if s not in _PUBLIC_TO_RADAR:
-            # Unknown competitor → soft 404 that still routes the visitor to
-            # the SEO hub (never a hard error page).
+            # Unknown competitor → render the index page (was 404, now 200
+            # since the page is genuinely useful and 404 makes browser
+            # error-handlers treat it as broken).
             return Response(_render_index(), mimetype="text/html",
-                            status=404, headers={"Cache-Control":
+                            status=200, headers={"Cache-Control":
                                                  "public, max-age=600"})
 
         model = _page_model(s)
