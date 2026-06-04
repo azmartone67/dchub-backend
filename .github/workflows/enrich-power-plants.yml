@@ -15,7 +15,7 @@ on:
         description: 'true = preview (no writes), false = WRITE'
         default: 'true'
       state_filter:
-        description: 'optional 2-letter state (e.g. VA); empty = all states'
+        description: '2-letter state (e.g. VA), or ALL for nationwide. (empty input falls back to this default)'
         default: 'VA'
       sources:
         description: 'comma-sep: nccs (light, NASA FeatureServer) and/or eia_860m (heavy Excel). Default nccs.'
@@ -46,7 +46,13 @@ jobs:
           SRC="${SOURCES:-nccs}"
           SRC_JSON=$(printf '%s' "$SRC" | python3 -c "import sys;print('[' + ','.join('\"%s\"'%s.strip() for s in sys.stdin.read().split(',') if s.strip()) + ']')")
           BODY="{\"sources\":$SRC_JSON,\"dry_run\":$DRYVAL"
-          if [ -n "${STATE:-}" ]; then BODY="$BODY,\"state_filter\":\"$STATE\""; fi
+          # ALL/all/* (or empty) => omit state_filter => backend enriches ALL states.
+          # (gh passes the input default 'VA' for an empty -f value, so use the ALL
+          # sentinel for a genuine nationwide run.)
+          case "${STATE:-}" in
+            ""|ALL|all|"*") : ;;
+            *) BODY="$BODY,\"state_filter\":\"$STATE\"" ;;
+          esac
           BODY="$BODY}"
           FEED="$RAILWAY_BASE/api/v1/brain/notifications?limit=200"
           # The enrichment runs in a background thread and its /status is an
