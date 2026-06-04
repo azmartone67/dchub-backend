@@ -1715,8 +1715,8 @@ def autopilot_run():
                 # + write are both fully guarded; failure NEVER affects the
                 # action loop. Done BEFORE _record_action so the "first" check
                 # doesn't see the row we're about to write.
+                _first_escalation = True
                 try:
-                    _first_escalation = True
                     with c.cursor() as _ecur:
                         _ecur.execute("""
                             SELECT 1 FROM brain_autopilot_actions
@@ -1740,6 +1740,14 @@ def autopilot_run():
                 except Exception:
                     try: c.rollback()
                     except Exception: pass
+                # r80 (2026-06-04): write the escalated audit row only on the FIRST
+                # escalation of (issue, url). Pre-fix this ran every */30 cycle, so
+                # ~13 open page_brand_uniformity findings re-escalated into ~182
+                # rows/24h (~42% of all autopilot actions). Escalated is terminal
+                # until a human resolves it; re-recording each cycle is audit spam.
+                # (The notification above was already first-escalation-only.)
+                if not _first_escalation:
+                    continue
                 _record_action(f, issue, None, None,
                                 dry_run=_is_dry_run(), escalated=True,
                                 http_code=None, body=None,
