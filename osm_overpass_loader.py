@@ -145,6 +145,19 @@ def load_power_plants(states=None):
             results[state] = {'count': 0}; continue
         cur = db.cursor()
         ins = 0
+        # r70g: resolve the LIVE columns once. The repo CREATE TABLE is stale —
+        # the live discovered_power_plants has NO `country`, and its `id` is TEXT,
+        # NOT NULL, with no default. The old hardcoded INSERT (with `country`, no
+        # `id`) therefore failed on EVERY row (UndefinedColumn / NotNullViolation),
+        # silently swallowed by the except below -> 0 inserts -> table frozen at
+        # ~6,961 legacy rows. See reference_dchub_power_plants_schema_trap.
+        try:
+            cur.execute("""SELECT column_name FROM information_schema.columns
+                           WHERE table_name='discovered_power_plants'""")
+            _pp_cols = {r[0] for r in cur.fetchall()}
+        except Exception:
+            _pp_cols = {"name", "operator", "fuel_type", "capacity_mw",
+                        "lat", "lng", "state", "source", "id"}
         for el in els:
             tags = el.get('tags', {})
             name = (tags.get('name') or f"OSM-{el.get('id')}")[:200]
@@ -159,13 +172,21 @@ def load_power_plants(states=None):
             lng = el.get('lon') or (el.get('center', {}) or {}).get('lon')
             if not lat or not lng: continue
             try:
-                # Try discovered_power_plants schema; fall back if columns differ
+                # Schema-adaptive INSERT: write only columns that exist on the
+                # LIVE table and ALWAYS supply a deterministic TEXT id
+                # (osm-<type>-<id>, stable -> idempotent re-runs via ON CONFLICT).
+                _row = {"name": name, "operator": op, "fuel_type": source[:80],
+                        "capacity_mw": mw, "lat": lat, "lng": lng,
+                        "state": state, "source": "osm_overpass"}
+                _row = {k: v for k, v in _row.items() if k in _pp_cols}
+                if "id" in _pp_cols:
+                    _row["id"] = f"osm-{el.get('type', 'x')}-{el.get('id')}"
+                _ks = list(_row.keys())
                 cur.execute(
-                    """INSERT INTO discovered_power_plants
-                       (name, operator, fuel_type, capacity_mw, lat, lng, state, country)
-                       VALUES (%s,%s,%s,%s,%s,%s,%s,%s)
-                       ON CONFLICT DO NOTHING""",
-                    (name, op, source[:80], mw, lat, lng, state, 'US'))
+                    f"INSERT INTO discovered_power_plants ({','.join(_ks)}) "
+                    f"VALUES ({','.join(['%s'] * len(_ks))}) "
+                    f"ON CONFLICT DO NOTHING",
+                    [_row[k] for k in _ks])
                 ins += cur.rowcount
             except Exception as e:
                 db.rollback()
