@@ -3406,8 +3406,15 @@ def get_facilities():
     except Exception:
         _full = False  # fail closed to the teaser if the resolver is unavailable
     _FREE_FACILITIES_CAP = 100
-    limit = min(int(request.args.get('limit', 2000)), 5000 if _full else _FREE_FACILITIES_CAP)
-    page  = int(request.args.get('page', 1)) if _full else 1  # no teaser pagination
+    try:
+        limit = min(int(request.args.get('limit', 2000)), 5000 if _full else _FREE_FACILITIES_CAP)
+    except (TypeError, ValueError):
+        limit = _FREE_FACILITIES_CAP
+    try:
+        page = int(request.args.get('page', 1)) if _full else 1  # no teaser pagination
+    except (TypeError, ValueError):
+        page = 1
+    page = max(1, page)
     offset = (page - 1) * limit
     try:
         conn = get_db_connection()
@@ -25399,13 +25406,25 @@ def ap_monitors():
     _t0 = _ap_time.time()
     lat_s = request.args.get('lat')
     lon_s = request.args.get('lon')
-    radius_km = float(request.args.get('radius_km', 500))
-    limit = int(request.args.get('limit', 50))
+    try:
+        radius_km = float(request.args.get('radius_km', 500))
+    except (TypeError, ValueError):
+        radius_km = 500.0
+    try:
+        limit = int(request.args.get('limit', 50))
+    except (TypeError, ValueError):
+        limit = 50
+    _lat_f = _lon_f = None
+    if lat_s and lon_s:
+        try:
+            _lat_f, _lon_f = float(lat_s), float(lon_s)
+        except (TypeError, ValueError):
+            _lat_f = _lon_f = None
     results = []
     for m in _AP_MONITORS:
         item = dict(m)
-        if lat_s and lon_s:
-            dist = _ap_haversine_km(float(lat_s), float(lon_s), m["lat"], m["lon"])
+        if _lat_f is not None and _lon_f is not None:
+            dist = _ap_haversine_km(_lat_f, _lon_f, m["lat"], m["lon"])
             if dist > radius_km: continue
             item["distance_km"] = round(dist, 1)
         item["pct_of_naaqs"] = round(m["dv"]/m["naaqs"]*100, 1)

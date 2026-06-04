@@ -1359,8 +1359,8 @@ def ping_all_ai_platforms():
     
     # URLs to ping for each platform
     ping_targets = {
-        'google_gemini': 'https://www.google.com/ping%ssitemap=https://dchub.cloud/sitemap.xml',
-        'bing_copilot': 'https://www.bing.com/ping%ssitemap=https://dchub.cloud/sitemap.xml',
+        'google_gemini': 'https://www.google.com/ping?sitemap=https://dchub.cloud/sitemap.xml',
+        'bing_copilot': 'https://www.bing.com/ping?sitemap=https://dchub.cloud/sitemap.xml',
         'indexnow': 'https://api.indexnow.org/indexnow'
     }
     

@@ -170,7 +170,10 @@ def _fetch_deals(limit=20):
 
 @hyperscaler_deals_bp.route("/api/v1/hyperscaler-deals", methods=["GET"])
 def api_hyperscaler_deals():
-    limit = max(5, min(50, int(request.args.get("limit", 20))))
+    try:
+        limit = max(5, min(50, int(request.args.get("limit", 20))))
+    except (TypeError, ValueError):
+        limit = 20
     deals, err = _fetch_deals(limit)
     return jsonify({
         "feed_name":   "Hyperscaler AI Deal Tracker",

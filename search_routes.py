@@ -33,7 +33,10 @@ def register_search_routes(app):
     @app.route("/api/search/facilities", methods=["GET"])
     def smart_search_facilities():
         q = request.args.get("q", "").strip()
-        limit = min(int(request.args.get("limit", 8)), 50)
+        try:
+            limit = max(1, min(int(request.args.get("limit", 8)), 50))
+        except (TypeError, ValueError):
+            limit = 8
         state = request.args.get("state", "").strip()
 
         if not q or len(q) < 2:
@@ -44,7 +47,10 @@ def register_search_routes(app):
             conn = _get_conn()
             cur = conn.cursor(cursor_factory=psycopg2.extras.RealDictCursor)
             search = f"%{q}%"
-            state_clause = f"AND UPPER(state) = '{state.upper()}'" if state else ""
+            # SECURITY: parameterize — never interpolate the raw `state` query
+            # param into SQL (was an injection vector). Placeholder + bound value.
+            state_clause = "AND UPPER(state) = %s" if state else ""
+            _state_params = [state.upper()] if state else []
 
             for tbl in _TABLES:
                 try:
@@ -63,7 +69,7 @@ def register_search_routes(app):
                             COALESCE(power_mw, 0) DESC
                         LIMIT %s
                         """,
-                        (search, search, search, f"{q}%", limit),
+                        (search, search, search, *_state_params, f"{q}%", limit),
                     )
                     rows = [dict(r) for r in cur.fetchall()]
                     cur.close()

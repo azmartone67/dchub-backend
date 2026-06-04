@@ -496,7 +496,10 @@ def ship_wins_endpoint():
     GitHub's REST API instead — no auth needed for public repos."""
     import requests as _req
     import datetime as _dt
-    days = int(request.args.get("days", "7"))
+    try:
+        days = max(1, min(int(request.args.get("days", "7")), 90))
+    except (TypeError, ValueError):
+        days = 7
     since = (_dt.datetime.utcnow() - _dt.timedelta(days=days)).strftime("%Y-%m-%dT%H:%M:%SZ")
     repo = os.environ.get("DCHUB_GITHUB_REPO", "azmartone67/dchub-backend")
     try:
