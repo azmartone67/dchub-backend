@@ -185,27 +185,50 @@ def _nearest_market(lat: float, lon: float) -> Tuple[str, str, float]:
 # ── DCPI lookup ───────────────────────────────────────────────────
 
 def _fetch_dcpi(slug: str) -> dict:
-    """Query dcpi_scores table for the verdict + components."""
+    """Query market_power_scores table for the verdict + components.
+
+    Schema reference: routes/dcpi.py:1722 — canonical handler uses
+    `SELECT * FROM market_power_scores WHERE market_slug = %s ORDER BY
+    computed_at DESC LIMIT 1`. We mirror that pattern + try the alias
+    table for metro slugs (northern-virginia → ashburn, etc.).
+    """
     c = _db_conn()
     if c is None:
         return {"available": False, "reason": "db_unavailable"}
     try:
+        # Resolve metro alias if needed (best-effort, swallow errors)
+        candidates = [slug]
+        try:
+            from routes.dcpi import DCPI_METRO_ALIASES
+            _alias = DCPI_METRO_ALIASES.get(slug.lower())
+            if _alias and _alias not in candidates:
+                candidates.append(_alias)
+        except Exception:
+            pass
+
         with c.cursor() as cur:
-            cur.execute("""
-                SELECT verdict, composite_score, excess_power_score,
-                       constraint_score, time_to_power_months,
-                       iso, last_updated
-                  FROM dcpi_scores
-                 WHERE slug = %s
-                 LIMIT 1
-            """, (slug,))
-            row = cur.fetchone()
+            row = None
+            matched = None
+            for cand in candidates:
+                cur.execute("""
+                    SELECT verdict, composite_score, excess_power_score,
+                           constraint_score, time_to_power_months,
+                           iso, computed_at
+                      FROM market_power_scores
+                     WHERE market_slug = %s
+                     ORDER BY computed_at DESC
+                     LIMIT 1
+                """, (cand,))
+                row = cur.fetchone()
+                if row:
+                    matched = cand
+                    break
         if not row:
             return {"available": False, "reason": "no_row_for_slug",
                     "slug": slug}
         return {
             "available":             True,
-            "slug":                  slug,
+            "slug":                  matched or slug,
             "verdict":               row[0],
             "composite_score":       float(row[1] or 0),
             "excess_power_score":    float(row[2] or 0),
