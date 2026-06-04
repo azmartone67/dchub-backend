@@ -19,7 +19,7 @@ STRIPE_LINKS = {
     "starter":         "https://buy.stripe.com/8x2dRa5sS0x75uteGuaZi0g",  # $9/mo
     "developer":       "https://buy.stripe.com/7sY5kE8F4fs13ml0PEaZi0c",  # $49/mo
     "pro":             "https://buy.stripe.com/eVq5kE4oOfs13mleGuaZi0h",  # $199/mo (new r38, replaces $299/$2990 link)
-    "pro_annual":      "https://buy.stripe.com/6oU00k6wW7ZzcWV9maaZi03",  # ~$2,000/yr (~17% off)
+    "pro_annual":      "https://buy.stripe.com/6oU00k6wW7ZzcWV9maaZi03",  # $1,188/yr (50% off $199/mo) - operator set 2026-06-04; UPDATE the Stripe link to charge $1,188 (was noted ~$2,000)
     "enterprise":      "https://buy.stripe.com/fZueVe5sS6Vv7CB41QaZi0a",  # Custom
     "enterprise_annual": "https://buy.stripe.com/dRmdRa4oO1Bb9KJ2XMaZi0b",  # Custom annual
     # r75 (2026-05-26): partnership-specific subscription links. NOT shown
@@ -58,7 +58,7 @@ TIER_PRICE_LABEL = {
     "starter":    "$9/mo",
     "developer":  "$49/mo",
     "pro":        "$199/mo",
-    "pro_annual": "$2,000/yr",
+    "pro_annual": "$1,188/yr",
     "enterprise": "Custom",
     "enterprise_annual": "Custom annual",
     "research_seed_nlr": "$3,000/yr (NLR FY 2026 Research Seed)",
