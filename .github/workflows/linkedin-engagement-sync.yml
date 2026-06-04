@@ -1,0 +1,35 @@
+name: LinkedIn engagement sync (r70 — native measure→learn)
+
+# Pulls native LinkedIn engagement (likes/comments) onto recent posts so the
+# media engine can learn from what actually performs on-platform (the on-site
+# press_engagement loop already feeds generation; this is the native half).
+# Fail-soft: no-ops until the LinkedIn token has the r_organization_social
+# scope. Railway-origin-direct + admin-keyed; skips cleanly if the secret is
+# unset. Verify after a real run: GET /api/linkedin/status or query
+# linkedin_posts.likes/comments.
+
+on:
+  schedule:
+    - cron: '40 14 * * *'   # daily 14:40 UTC
+  workflow_dispatch: {}
+
+permissions:
+  contents: read
+
+env:
+  RAILWAY_BASE: https://dchub-backend-production.up.railway.app
+
+jobs:
+  sync:
+    runs-on: ubuntu-latest
+    timeout-minutes: 8
+    steps:
+      - name: Sync LinkedIn engagement
+        env:
+          ADMIN_KEY: ${{ secrets.DCHUB_ADMIN_KEY }}
+        run: |
+          set -euo pipefail
+          if [ -z "${ADMIN_KEY:-}" ]; then echo "::warning::DCHUB_ADMIN_KEY not set — skipping"; exit 0; fi
+          curl -sS --max-time 120 -X POST -H "X-Admin-Key: $ADMIN_KEY" \
+            "$RAILWAY_BASE/api/linkedin/engagement-sync?days=21" | head -c 1500
+          echo

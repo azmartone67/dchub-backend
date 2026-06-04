@@ -775,6 +775,66 @@ def _check_admin(request):
 
 # ── Route Registration ───────────────────────────────────────
 
+def fetch_linkedin_engagement(days=21):
+    """r70 (2026-06-03): native LinkedIn engagement → completes the measure→learn
+    loop's native half (the on-site press_engagement loop already shipped). For
+    each recent linkedin_posts.post_urn, read socialActions (likes + comments)
+    from the LinkedIn API and store them on the row.
+
+    FAIL-SOFT by design: no token → skip; a 401/403 on the first call (the token
+    lacks r_organization_social scope) → abort early with a reason, never hammer.
+    Idempotently adds likes/comments/engagement_fetched_at columns. Safe to ship
+    before the scope is granted — it just no-ops until then. Returns a summary."""
+    import requests as req
+    import urllib.parse as _up
+    out = {"ok": False, "checked": 0, "updated": 0, "reason": None}
+    token = _get_valid_token()
+    if not token:
+        out["reason"] = "no_token"
+        return out
+    try:
+        _execute("""ALTER TABLE linkedin_posts
+                      ADD COLUMN IF NOT EXISTS likes INT,
+                      ADD COLUMN IF NOT EXISTS comments INT,
+                      ADD COLUMN IF NOT EXISTS engagement_fetched_at TIMESTAMPTZ""")
+    except Exception:
+        pass
+    rows = _execute("""SELECT post_urn FROM linkedin_posts
+                        WHERE post_urn IS NOT NULL AND post_urn <> ''
+                          AND COALESCE(status,'') = 'success'
+                          AND posted_at > NOW() - make_interval(days => %s)
+                        ORDER BY posted_at DESC LIMIT 100""",
+                    (int(days),), fetchall=True) or []
+    headers = {"Authorization": f"Bearer {token}",
+               "X-Restli-Protocol-Version": "2.0.0",
+               "LinkedIn-Version": "202601"}
+    for r in rows:
+        urn = (r.get("post_urn") if isinstance(r, dict) else r[0]) or ""
+        if not str(urn).startswith("urn:li:"):
+            continue
+        out["checked"] += 1
+        try:
+            enc = _up.quote(str(urn), safe="")
+            resp = req.get(f"https://api.linkedin.com/rest/socialActions/{enc}",
+                           headers=headers, timeout=12)
+            if resp.status_code in (401, 403):
+                out["reason"] = f"scope_or_auth_{resp.status_code} (token needs r_organization_social)"
+                break  # whole token lacks access — don't hammer the rest
+            if resp.status_code != 200:
+                continue
+            d = resp.json() or {}
+            likes = int((d.get("likesSummary") or {}).get("totalLikes") or 0)
+            comments = int((d.get("commentsSummary") or {}).get("aggregatedTotalComments") or 0)
+            _execute("""UPDATE linkedin_posts SET likes=%s, comments=%s,
+                          engagement_fetched_at=NOW() WHERE post_urn=%s""",
+                     (likes, comments, urn))
+            out["updated"] += 1
+        except Exception:
+            continue
+    out["ok"] = True
+    return out
+
+
 def register_linkedin_routes(app):
     """Register all LinkedIn-related routes."""
     from flask import request, redirect, jsonify, make_response
@@ -1048,6 +1108,26 @@ def register_linkedin_routes(app):
                 _time.sleep(600)
 
     # ── POST /api/linkedin/seed-token — Bootstrap token from env ─
+    @app.route('/api/linkedin/engagement-sync', methods=['POST', 'GET', 'OPTIONS'])
+    def linkedin_engagement_sync():
+        """r70: pull native LinkedIn engagement (likes/comments) onto recent
+        posts. Admin/cron-gated; fail-soft (no-ops until the token has the
+        r_organization_social scope). Feeds the media measure→learn loop."""
+        if request.method == 'OPTIONS':
+            return ('', 204)
+        import os
+        provided = (request.headers.get("X-Admin-Key")
+                    or request.args.get("admin_key") or "")
+        expected = (os.environ.get("DCHUB_ADMIN_KEY")
+                    or os.environ.get("DCHUB_INTERNAL_KEY") or "")
+        if expected and provided != expected:
+            return jsonify(error="unauthorized"), 401
+        try:
+            days = int(request.args.get("days", 21))
+        except (ValueError, TypeError):
+            days = 21
+        return jsonify(fetch_linkedin_engagement(days=days)), 200
+
     @app.route('/api/linkedin/seed-token', methods=['POST', 'OPTIONS'])
     def linkedin_seed_token():
         """
