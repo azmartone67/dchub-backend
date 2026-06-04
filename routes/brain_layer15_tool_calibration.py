@@ -45,8 +45,11 @@ brain_layer15_bp = Blueprint("brain_layer15_tool_calibration", __name__)
 DRIFT_FACTOR = 2.0
 
 # Internal base URL — uses the same loopback pattern as other crons.
-_INTERNAL_BASE = os.environ.get("DCHUB_INTERNAL_API",
-                                 "http://127.0.0.1:8080")
+# .strip() guards against a trailing newline in the Railway env var
+# (seen in prod 2026-06-04 — the env value had \n appended which made
+# DNS resolution fail with %0a in the hostname).
+_INTERNAL_BASE = (os.environ.get("DCHUB_INTERNAL_API")
+                    or "http://127.0.0.1:8080").strip()
 
 
 def _resolve_admin_key() -> str:
