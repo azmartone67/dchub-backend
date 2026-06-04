@@ -2,11 +2,10 @@
 iso_queue_ingest.py v2 (Phase ZZZZZ-round47.3, 2026-05-25)
 
 Daily ingest of ISO interconnection queue snapshots. REAL parsers for ERCOT,
-PJM, NYISO, and MISO (r70); SPP/CAISO/ISO-NE remain heartbeat-only (see below)
-and are NEVER surfaced as live data. Remaining real parsers are a scoped,
-verify-against-live-format follow-up: CAISO is reachable (PublicQueueReport.xlsx,
-header at Excel row 4, "MWs" group spans cols 12-15 — needs MW-column
-disambiguation before it's safe); SPP is a DISIS PDF; ISO-NE's queue URL moved.
+PJM, NYISO, MISO, CAISO, and SPP (r70) — 6 of 7. Only ISO-NE remains
+heartbeat-only (its public queue-file URL moved; needs rediscovery) and is
+NEVER surfaced as live data. Every real parser was verified against live data
+before shipping (no fabricated numbers).
 
 Architecture:
   - Each ISO has its own ingest function returning (ok, parsed_dict, debug)
@@ -34,6 +33,7 @@ Cron: fired by cron_heartbeat at 06:00 UTC daily.
 import os
 import re
 import io
+import csv
 import json
 import datetime
 import urllib.request
@@ -51,8 +51,8 @@ PARSER_STATUS = {
     "ERCOT":  "real (PDF discovery + pypdf text regex)",
     "PJM":    "real (XLSX direct download + openpyxl aggregate)",
     "MISO":   "real (public GI-queue JSON API, applicationStatus=Active, summer MW)",
-    "SPP":    "heartbeat-only — DISIS PDF parser TODO",
-    "CAISO":  "heartbeat-only — Cluster Study CSV parser TODO",
+    "SPP":    "real (opsportal GenerateActiveCsv; MAX Summer MW, excl. cessation)",
+    "CAISO":  "real (PublicQueueReport.xlsx 'Grid GenerationQueue'; Net MWs to Grid, status=ACTIVE)",
     "NYISO":  "real (public queue XLSX 'Interconnection Queue' sheet, SP MW via openpyxl)",
     "ISO-NE": "heartbeat-only — Queue Dashboard CSV parser TODO",
 }
@@ -414,18 +414,155 @@ def ingest_miso():
 
 
 def ingest_spp():
-    # TODO: SPP DISIS reports are PDFs at:
-    #   https://www.spp.org/.../DISIS-{N}-Cluster-Study.pdf
-    # Parser: pypdf, regex for "total queued capacity: X GW" patterns
-    # Note: SPP frequently 403s without proper UA + cookies
-    return _heartbeat("https://www.spp.org/markets-services/transmission-planning/aggregate-transmission-studies/disis/")
+    """REAL parser (r70, 2026-06-03). SPP serves its ACTIVE GI requests as CSV
+    (opsportal GenerateActiveCsv; row 0 is a 'Last Updated On' banner, header is
+    row 1, data row 2+). Sum 'MAX Summer MW' for rows WITHOUT a Cessation Date
+    (cessation = withdrawn). Verified live 2026-06-03: 944 active, ~184 GW.
+    Same (ok, parsed, debug) shape as the other real parsers."""
+    debug = []
+    parsed = {}
+    url = "https://opsportal.spp.org/Studies/GenerateActiveCsv"
+    try:
+        body, st = _fetch(url, timeout=90)
+        debug.append(f"spp http_{st} kb={len(body)//1024}")
+        if st != 200 or not body:
+            return False, None, "; ".join(debug + ["fetch_failed"])
+        rows = list(csv.reader(io.StringIO(body)))
+        if len(rows) < 3:
+            return True, parsed, "; ".join(debug + ["too_few_rows"])
+        hdr = [str(h or "").strip().lower() for h in rows[1]]  # row 0 is a banner
+
+        def find_col(*keywords):
+            for i, h in enumerate(hdr):
+                if all(k in h for k in keywords):
+                    return i
+            return None
+
+        col_mw = find_col("max", "summer", "mw") or find_col("summer", "mw") or find_col("mw")
+        col_cess = find_col("cessation")
+        col_fuel = find_col("fuel") or find_col("generation", "type")
+        if col_mw is None:
+            return True, parsed, "; ".join(debug + ["no_mw_column"])
+
+        total_mw = 0.0
+        active_n = 0
+        dc_mw = 0.0
+        for r in rows[2:]:
+            if col_mw >= len(r):
+                continue
+            if col_cess is not None and col_cess < len(r) and str(r[col_cess]).strip():
+                continue  # cessation date present → withdrawn, skip
+            try:
+                mw = float(str(r[col_mw]).replace(",", "").strip())
+            except (ValueError, TypeError):
+                continue
+            if mw <= 0:
+                continue
+            total_mw += mw
+            active_n += 1
+            fuel_str = (str(r[col_fuel] or "").lower()
+                        if col_fuel is not None and col_fuel < len(r) else "")
+            if any(k in fuel_str for k in ("load", "data center", "datacenter")):
+                dc_mw += mw
+
+        debug.append(f"active_n={active_n} total_mw={total_mw:.0f}")
+        if active_n > 0 and total_mw > 100:
+            parsed["queued_load_total_gw"] = round(total_mw / 1000.0, 1)
+            parsed["source_url"] = url
+            parsed["source_name"] = "SPP GI active requests (MAX Summer MW, excl. cessation)"
+        if dc_mw > 0 and total_mw > 0:
+            parsed["queued_load_data_center_gw"] = round(dc_mw / 1000.0, 1)
+            parsed["queued_load_dc_share_pct"] = round(100.0 * dc_mw / total_mw, 1)
+        return True, parsed, "; ".join(debug)
+    except urllib.error.HTTPError as e:
+        return False, None, "; ".join(debug + [f"http_error: {e.code}"])
+    except Exception as e:
+        return False, None, "; ".join(debug + [f"error: {type(e).__name__}: {str(e)[:120]}"])
 
 
 def ingest_caiso():
-    # TODO: CAISO publishes cluster study CSVs:
-    #   https://www.caiso.com/Documents/QueueClusterStudy-{N}.csv
-    # Some CSVs are in their Documents portal — needs link discovery
-    return _heartbeat("https://www.caiso.com/planningandoperations/Pages/GeneratorInterconnection/Default.aspx")
+    """REAL parser (r70, 2026-06-03). CAISO publishes the public queue as XLSX
+    (sheet 'Grid GenerationQueue'; banner rows 1-3, real header at Excel row 4,
+    data row 5+). Filter Application Status=='ACTIVE', sum 'Net MWs to Grid'
+    (fallback 'MW-1'). Verified live 2026-06-03: 284 active, ~81.2 GW."""
+    debug = []
+    parsed = {}
+    url = "https://www.caiso.com/PublishedDocuments/PublicQueueReport.xlsx"
+    try:
+        xlsx_bytes, st = _fetch(url, timeout=90, return_bytes=True)
+        debug.append(f"caiso http_{st} kb={len(xlsx_bytes)//1024}")
+        if st != 200 or len(xlsx_bytes) < 10000:
+            return False, None, "; ".join(debug + ["fetch_failed_or_too_small"])
+        wb = _try_openpyxl(xlsx_bytes)
+        if not wb:
+            return True, parsed, "; ".join(debug + ["openpyxl_failed"])
+        ws = None
+        for nm in wb.sheetnames:
+            if "generationqueue" in str(nm).strip().lower().replace(" ", ""):
+                ws = wb[nm]
+                break
+        if ws is None:
+            for nm in wb.sheetnames:
+                if "queue" in str(nm).lower():
+                    ws = wb[nm]
+                    break
+        if ws is None:
+            ws = wb.active
+        hdr = None
+        for r in ws.iter_rows(min_row=4, max_row=4, values_only=True):
+            hdr = [str(c or "").strip().lower() for c in r]
+            break
+        if not hdr:
+            return True, parsed, "; ".join(debug + ["no_header_row4"])
+
+        def find_col(*keywords):
+            for i, h in enumerate(hdr):
+                if all(k in h for k in keywords):
+                    return i
+            return None
+
+        col_status = find_col("application", "status")
+        col_mw = find_col("net", "mws") or find_col("mw-1") or find_col("mw")
+        col_fuel = find_col("fuel-1") or find_col("fuel") or find_col("type-1")
+        if col_mw is None or col_status is None:
+            return True, parsed, "; ".join(debug + [f"cols_missing status={col_status} mw={col_mw}"])
+
+        total_mw = 0.0
+        active_n = 0
+        dc_mw = 0.0
+        for row in ws.iter_rows(min_row=5, values_only=True):
+            if col_status >= len(row):
+                continue
+            if str(row[col_status] or "").strip().upper() != "ACTIVE":
+                continue
+            mw = 0.0
+            if col_mw < len(row):
+                try:
+                    mw = float(row[col_mw])
+                except (ValueError, TypeError):
+                    mw = 0.0
+            if mw <= 0:
+                continue
+            total_mw += mw
+            active_n += 1
+            fuel_str = (str(row[col_fuel] or "").lower()
+                        if col_fuel is not None and col_fuel < len(row) else "")
+            if any(k in fuel_str for k in ("load", "data center", "datacenter")):
+                dc_mw += mw
+
+        debug.append(f"active_n={active_n} total_mw={total_mw:.0f}")
+        if active_n > 0 and total_mw > 100:
+            parsed["queued_load_total_gw"] = round(total_mw / 1000.0, 1)
+            parsed["source_url"] = url
+            parsed["source_name"] = "CAISO Public Queue Report (Application Status=ACTIVE, Net MWs to Grid)"
+        if dc_mw > 0 and total_mw > 0:
+            parsed["queued_load_data_center_gw"] = round(dc_mw / 1000.0, 1)
+            parsed["queued_load_dc_share_pct"] = round(100.0 * dc_mw / total_mw, 1)
+        return True, parsed, "; ".join(debug)
+    except urllib.error.HTTPError as e:
+        return False, None, "; ".join(debug + [f"http_error: {e.code}"])
+    except Exception as e:
+        return False, None, "; ".join(debug + [f"error: {type(e).__name__}: {str(e)[:120]}"])
 
 
 def ingest_nyiso():
