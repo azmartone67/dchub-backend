@@ -1189,7 +1189,16 @@ print("Neon keepalive: SKIPPED")
 _keepalive_logger.info("💓 Neon Keepalive: ✅ Thread started (module-level, immediate first ping + every 4 min)")
 sys.stdout.flush()
 
-from flask import Flask, request, jsonify, Response, send_from_directory, send_file, stream_with_context, make_response, render_template, redirect
+from flask import Flask, request, jsonify, Response, send_from_directory, send_file, stream_with_context, make_response, render_template, redirect, g
+
+# UA-sniff auto-issue (2026-06-04): identify_ai_platform() classifies the
+# caller as a known AI agent so we can mint a trial key BEFORE the
+# paywall fires. Fail-soft import so the app boots if the helper module
+# is ever broken/renamed.
+try:
+    from ai_agent_discovery import identify_ai_platform as _identify_ai_platform
+except Exception:
+    _identify_ai_platform = lambda ua: None
 from google_integration_routes import setup_google_routes
 from google_meta_integration import setup_google_meta_routes
 # DISABLED: Old linkedin_scheduler replaced by linkedin_poster.py (Neon-backed)
@@ -3190,6 +3199,89 @@ def _issue_session_cookie(response):
         return response
 
 # =============================================================================
+# UA-SNIFF AUTO-ISSUE (2026-06-04) - 30-day trial on first AI-agent hit
+# =============================================================================
+# Anonymous AI agents (ChatGPT, Claude, Perplexity, Gemini, Cursor, Bing,
+# etc.) routinely hit /mcp or /api/v1/* and 401 off the paywall instead
+# of POSTing /keys/claim. Net result: 7,839 paywall signals → 0
+# conversions over 7d (per the auto_trial.py preamble).
+#
+# This before_request fires BEFORE the paywall and BEFORE rate limiting.
+# When the caller is a known AI agent UA and has no X-API-Key/Bearer,
+# we mint an IDENTIFIED-tier trial via mint_trial_for_request() (which
+# dedupes by ip_hash+UA inside a 24h window so retries don't fan out
+# into N keys) and stamp the minted key into request.environ so the
+# downstream auth path sees a valid key in the SAME request cycle. The
+# paired after_request emits the key as X-DC-Auto-Issued-Key so agents
+# that DO parse headers can persist + reuse it next call.
+#
+# Internal UAs (dchub-*, loop*, probe, scanner) are excluded — they
+# already auth via internal-key paths, and minting for them would
+# inflate mcp_upgrade_signals with self-traffic (per the brain
+# self-traffic-loop risk in the memory notes).
+def auto_issue_key_for_ai_agents():
+    try:
+        path = request.path or ""
+        # Only intercept the two surfaces that hit the paywall.
+        if not (path == "/mcp" or path.startswith("/api/v1/")):
+            return None
+        # Bail if the caller already has any auth shape.
+        if (request.headers.get("X-API-Key")
+                or request.headers.get("x-api-key")
+                or request.headers.get("Authorization")):
+            return None
+        ua = request.headers.get("User-Agent", "") or ""
+        if not ua:
+            return None
+        # Internal-traffic exclude (mirrors the /api/v1/mcp/funnel
+        # internal-filter list — keeps self-traffic out of the funnel).
+        _ua_low = ua.lower()
+        for _bad in ("dchub-", "loop", "probe", "scanner", "-health"):
+            if _bad in _ua_low:
+                return None
+        # Classify. None == not a known AI agent → don't mint.
+        platform = None
+        try:
+            platform = _identify_ai_platform(ua)
+        except Exception:
+            platform = None
+        # Skip the broad "Bot/Crawler"/Unknown fallback — only mint for an
+        # explicit AI-platform classification (Claude/ChatGPT/Perplexity/
+        # Gemini/Cursor/Bing-Copilot/etc.) so we don't auto-issue to every
+        # /agent/ keyword scanner on the open internet.
+        if not platform or platform in ("Unknown", "Bot/Crawler"):
+            return None
+        # Mint a trial (or reuse the existing one for this ip+UA).
+        try:
+            from routes.auto_trial import mint_trial_for_request
+            trial = mint_trial_for_request(request, tool_name=path[:40])
+        except Exception:
+            trial = None
+        if not trial or not trial.get("ok"):
+            return None
+        key = trial.get("api_key") or ""
+        if not key:
+            return None
+        # Stash on flask.g so the after_request hook can surface it,
+        # AND mutate request.environ so downstream validate_api_key()
+        # picks it up in this same request cycle (WSGI re-reads env).
+        try:
+            g.auto_issued_key = key
+            g.auto_issued_expires = trial.get("expires_at") or ""
+            g.auto_issued_platform = platform
+            request.environ["HTTP_X_API_KEY"] = key
+        except Exception:
+            pass
+        return None
+    except Exception:
+        # Fail-soft: never break the request because the auto-issue hook
+        # threw — the original 401 path is still in place.
+        return None
+
+app.before_request(auto_issue_key_for_ai_agents)
+
+
+# =============================================================================
 # RATE LIMITING MIDDLEWARE - Token bucket, plan-aware, CF-IP based
 # =============================================================================
 try:
@@ -3201,6 +3293,40 @@ except ImportError:
     print("RATE LIMITER: ⚠️ rate_limiter.py not found — rate limiting disabled")
 except Exception as e:
     print(f"RATE LIMITER: ⚠️ Failed to load: {e}")
+
+
+# Paired after_request: surface the auto-issued key on the response so
+# AI agents that read headers can persist + reuse it on subsequent calls
+# without going through the paywall mint dance again.
+@app.after_request
+def emit_auto_issued_key_header(response):
+    try:
+        key = getattr(g, "auto_issued_key", None)
+        if not key:
+            return response
+        response.headers["X-DC-Auto-Issued-Key"] = key
+        response.headers["X-DC-Auto-Issued-Expires"] = (
+            getattr(g, "auto_issued_expires", "") or ""
+        )
+        response.headers["X-DC-Auto-Issued-Platform"] = (
+            getattr(g, "auto_issued_platform", "") or ""
+        )
+        # Expose to JS clients (CORS) — append to any existing list.
+        prior = response.headers.get("Access-Control-Expose-Headers", "") or ""
+        wanted = "X-DC-Auto-Issued-Key, X-DC-Auto-Issued-Expires, X-DC-Auto-Issued-Platform"
+        if prior:
+            response.headers["Access-Control-Expose-Headers"] = f"{prior}, {wanted}"
+        else:
+            response.headers["Access-Control-Expose-Headers"] = wanted
+        # Pitch URLs / per-recipient mints must NOT be edge-cached
+        # (per the rollout-risk audit — outreach pitch URLs are unique
+        # per recipient and an edge HIT would serve a different key
+        # to the wrong caller).
+        response.headers["Cache-Control"] = "no-store"
+    except Exception:
+        pass
+    return response
+
 
 # =============================================================================
 # GRACEFUL DEGRADATION CACHE - Serve cached data when DB is down
