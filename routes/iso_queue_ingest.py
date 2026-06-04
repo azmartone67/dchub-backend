@@ -13,7 +13,7 @@ Architecture:
     row — instead touches the latest existing row's ingested_at + by.
     Keeps the table clean so _latest_snapshot in routes/interconnection_queues.py
     isn't confused by NULL-data heartbeat rows.
-  - Real parsers for ERCOT (PDF via pypdf) and PJM (XLSX via openpyxl).
+  - Real parsers for ERCOT (public GIS Report XLSX) and PJM (XLSX via openpyxl).
   - MISO, SPP, CAISO, NYISO, ISO-NE are heartbeat-only with documented
     upgrade paths in inline TODO comments — each can be promoted to a real
     parser independently as we verify the actual file format.
@@ -48,7 +48,7 @@ NEON_URL = os.environ.get("NEON_DATABASE_URL") or os.environ.get("DATABASE_URL")
 UA = "DCHub-IsoQueueIngest/2.0 (+https://dchub.cloud/interconnection-queues)"
 
 PARSER_STATUS = {
-    "ERCOT":  "real (PDF discovery + pypdf text regex)",
+    "ERCOT":  "real (public GIS Report XLSX, MIS reportTypeId=15933, active Large+Small Gen capacity)",
     "PJM":    "real (XLSX direct download + openpyxl aggregate)",
     "MISO":   "real (public GI-queue JSON API, applicationStatus=Active, summer MW)",
     "SPP":    "real (opsportal GenerateActiveCsv; MAX Summer MW, excl. cessation)",
@@ -97,121 +97,110 @@ def _try_openpyxl(xlsx_bytes):
 
 
 # ══════════════════════════════════════════════════════════════════════
-# ERCOT — Monthly Operational Highlights PDF
-# Discovery: scrape landing → find PDF link → download → pypdf → regex
+# ERCOT — public GIS Report (Generator Interconnection Status), monthly XLSX
+# The market-data Public API (api.ercot.com) needs a subscription key AND a
+# Bearer token (B2C ROPC) and does NOT expose the generation queue anyway.
+# The queue lives in the GIS Report — published monthly as a PUBLIC, no-auth
+# XLSX on the MIS (reportTypeId=15933). Discover the latest GIS_Report_*.xlsx
+# from the public listing, download it, sum active 'Project Details - Large
+# Gen' + '- Small Gen' capacity. Apples-to-apples with the other ISO gen queues.
 # ══════════════════════════════════════════════════════════════════════
 def ingest_ercot():
     debug = []
     parsed = {}
     try:
-        # ERCOT publishes monthly large-load INR reports. The /gridinfo/resource
-        # page is dominated by MORA reports (Monthly Operational Reliability
-        # Assessment — generation-side, NOT load queue). The actual queue
-        # data lives in the large-load planning surface + board materials.
-        candidates = [
-            "https://www.ercot.com/services/comm/mkt_rules/issues/large-load-interconnection",
-            "https://www.ercot.com/services/comm/mkt_rules/issues/large-load-requests",
-            "https://www.ercot.com/about/governance/board",
-            "https://www.ercot.com/gridinfo/resource",
-        ]
-        landing = ""
-        for url in candidates:
-            try:
-                body, st = _fetch(url, timeout=20)
-                debug.append(f"try[{url.split('/')[-1][:24]}] http_{st} len={len(body)}")
-                if st == 200 and len(body) > 1000:
-                    landing = body
+        LISTING = "https://www.ercot.com/misapp/GetReports.do?reportTypeId=15933"
+        DL = "https://www.ercot.com/misdownload/servlets/mirDownload?doclookupId="
+        html, st = _fetch(LISTING, timeout=25)
+        debug.append(f"listing http_{st} len={len(html)}")
+        if st != 200 or len(html) < 2000:
+            return True, parsed, "; ".join(debug + ["listing_unreachable"])
+
+        # Title cell encodes the date + filename:
+        #   RPT.00015933.<seq>.<YYYYMMDD>.<ms>.GIS_Report_<Mon><Year>.xlsx
+        # then the 'Other' column has <a ...mirDownload?doclookupId=NNN>.
+        # Listing is newest-first, so rows[0] is the latest monthly report.
+        rows = re.findall(
+            r'RPT\.00015933\.\d+\.(\d{8})\.\d+\.(GIS_Report_[A-Za-z0-9]+\.xlsx)'
+            r'.*?doclookupId=(\d+)',
+            html, re.S)
+        if not rows:
+            return True, parsed, "; ".join(debug + ["no_gis_xlsx_rows_in_listing"])
+        pubdate, fname, docid = rows[0]
+        debug.append(f"latest={fname} pub={pubdate} docid={docid}")
+
+        xlsx_bytes, st = _fetch(DL + docid, timeout=90, return_bytes=True)
+        debug.append(f"download http_{st} kb={len(xlsx_bytes)//1024}")
+        if st != 200 or len(xlsx_bytes) < 50000:
+            return False, None, "; ".join(debug + ["download_failed_or_small"])
+
+        wb = _try_openpyxl(xlsx_bytes)
+        if not wb:
+            return True, parsed, "; ".join(debug + ["openpyxl_unavailable"])
+
+        def _sum_gen_sheet(sheet_name):
+            """Sum active queued capacity (MW) on a GIS project-detail sheet.
+            Header row = the one whose cells contain 'INR'; capacity col is the
+            first cell starting 'Capacity'. The Large/Small Gen sheets already
+            EXCLUDE cancelled/inactive (those are on separate sheets), so every
+            row with an INR + positive MW is an active queue project."""
+            if sheet_name not in wb.sheetnames:
+                return 0.0, 0
+            ws = wb[sheet_name]
+            hdr_idx = None
+            inr_col = 0
+            cap_col = None
+            for r_i, row in enumerate(ws.iter_rows(min_row=1, max_row=40,
+                                                   values_only=True), 1):
+                cells = [str(c).strip() if c is not None else "" for c in row]
+                if "INR" in cells:
+                    hdr_idx = r_i
+                    inr_col = cells.index("INR")
+                    for j, c in enumerate(cells):
+                        if c.lower().startswith("capacity"):
+                            cap_col = j
+                            break
                     break
-            except urllib.error.HTTPError as e:
-                debug.append(f"try[{url.split('/')[-1][:24]}] http_{e.code}")
-        if not landing:
-            return True, parsed, "; ".join(debug + ["no_landing_reachable"])
+            if hdr_idx is None or cap_col is None:
+                return 0.0, 0
+            total = 0.0
+            n = 0
+            for row in ws.iter_rows(min_row=hdr_idx + 1, values_only=True):
+                if len(row) <= max(cap_col, inr_col):
+                    continue
+                if row[inr_col] is None:
+                    continue
+                try:
+                    mw = float(row[cap_col])
+                except (TypeError, ValueError):
+                    continue
+                if mw <= 0:
+                    continue
+                total += mw
+                n += 1
+            return total, n
 
-        # Find PDFs — EXCLUDE MORA (operational reliability, not queue data).
-        # Reality check (r47.5): /gridinfo/resource doesn't actually surface
-        # large-load interconnection queue PDFs — those live in TAC/RPG/
-        # board meeting packets buried in /calendar. What IS regularly
-        # surfaced there: CDR (Capacity, Demand and Reserves) reports
-        # which contain load forecast aggregates including AI/data center
-        # load growth. Score CDR high so we at least grab the most
-        # recent CDR PDF as a load-context proxy when no INR PDF exists.
-        pdf_urls = re.findall(r'https?://[^\s"\'<>]+\.pdf', landing, re.IGNORECASE)
-        non_mora = [u for u in pdf_urls if "mora" not in u.lower()]
-        def _score(u):
-            u_lower = u.lower()
-            score = 0
-            for kw, pts in [
-                # Direct queue/large-load keywords (rare in /gridinfo/resource)
-                ("large-load", 12), ("inr", 10),
-                ("interconnection-request", 10), ("interconnection_request", 10),
-                ("queue", 8), ("large_load", 10),
-                # CDR-class reports — proxy for load context
-                ("capacitydemand", 6), ("capacity_demand", 6),
-                ("capacityandreserves", 6), ("reserves", 4),
-                # Load-specific fallbacks
-                ("load", 5), ("demand", 4),
-                # Board/planning context
-                ("board", 3), ("planning", 3),
-                ("elcc", 2), ("highlights", 1),
-            ]:
-                if kw in u_lower: score += pts
-            # Prefer recent dates (filename or path date)
-            m = re.search(r"(20\d{2})", u)
-            if m and int(m.group(1)) >= 2025: score += 3
-            return score
-        ranked = sorted(non_mora, key=_score, reverse=True)
-        pdf_url = ranked[0] if ranked and _score(ranked[0]) > 0 else None
-        if not pdf_url:
-            debug.append(f"no_relevant_pdf_links (had {len(pdf_urls)} total, {len(pdf_urls)-len(non_mora)} MORA filtered)")
-            return True, parsed, "; ".join(debug)
-        debug.append(f"chose_pdf=...{pdf_url[-60:]} score={_score(pdf_url)}")
-
-        # Step 3: download + parse
+        lg_mw, lg_n = _sum_gen_sheet("Project Details - Large Gen")
+        sg_mw, sg_n = _sum_gen_sheet("Project Details - Small Gen")
         try:
-            pdf_bytes, st = _fetch(pdf_url, timeout=60, return_bytes=True)
-            debug.append(f"pdf http_{st} size_kb={len(pdf_bytes)//1024}")
-        except urllib.error.HTTPError as e:
-            return False, None, "; ".join(debug + [f"pdf_http_{e.code}"])
+            wb.close()
+        except Exception:
+            pass
+        total_mw = lg_mw + sg_mw
+        total_n = lg_n + sg_n
+        debug.append(f"large={lg_mw/1000:.1f}GW/{lg_n} small={sg_mw/1000:.1f}GW/{sg_n}")
 
-        text = _try_pypdf(pdf_bytes)
-        if not text:
-            return True, parsed, "; ".join(debug + ["pypdf_unavailable_or_failed"])
-        debug.append(f"pdf_text_len={len(text)}")
+        # Sanity: ERCOT's active gen queue is hundreds of GW. <1 GW = parse miss.
+        if total_mw < 1000:
+            return True, parsed, "; ".join(debug + [f"total_too_small={total_mw:.0f}MW"])
 
-        # Step 4: extract numbers via regex
-        # ERCOT INR reports typically say things like:
-        #   "X.X GW of new generation interconnection requests"
-        #   "Total queued large load: X.X GW"
-        for pat in [
-            r"(?:total\s+)?(?:queued|active)\s+(?:large\s+)?load[^.\n]*?(\d{2,4}(?:\.\d)?)\s*GW",
-            r"(\d{3,4}(?:\.\d)?)\s*GW\s+(?:of\s+)?(?:large\s+)?load",
-            r"(\d{3,4}(?:\.\d)?)\s*GW.*?(?:data center|AI|large load)",
-        ]:
-            m = re.search(pat, text, re.IGNORECASE)
-            if m:
-                n = float(m.group(1))
-                if 100 <= n <= 1500:
-                    parsed["queued_load_total_gw"] = n
-                    debug.append(f"matched_total_gw={n} via /{pat[:30]}/")
-                    break
-
-        m = re.search(r"(\d{2,3})\s*%\s*(?:of)?\s*(?:large\s+)?load.*?data\s*center", text, re.IGNORECASE)
-        if m:
-            n = float(m.group(1))
-            if 0 < n <= 100:
-                parsed["queued_load_dc_share_pct"] = n
-                debug.append(f"matched_dc_pct={n}")
-
-        if not parsed:
-            debug.append("regex_found_no_matches_in_pdf_text")
-        else:
-            parsed["source_url"] = pdf_url
-            parsed["source_name"] = "ERCOT Monthly Operational Highlights"
-
-        return True, parsed, "; ".join(debug)
+        month = fname.replace("GIS_Report_", "").replace(".xlsx", "")
+        parsed["queued_load_total_gw"] = round(total_mw / 1000.0, 1)
+        parsed["source_url"] = DL + docid
+        parsed["source_name"] = f"ERCOT GIS Report ({month}, active generation queue)"
+        return True, parsed, "; ".join(debug + [f"TOTAL={total_mw/1000:.1f}GW/{total_n}proj"])
     except Exception as e:
-        return False, None, "; ".join(debug + [f"error: {type(e).__name__}: {str(e)[:80]}"])
-
+        return False, None, "; ".join(debug + [f"error: {type(e).__name__}: {str(e)[:100]}"])
 
 # ══════════════════════════════════════════════════════════════════════
 # PJM — ProjectsActive.xls direct download + aggregate
@@ -763,7 +752,7 @@ def ingest_all():
         "isos_with_new_data": with_data,
         "isos_failed":  len(INGESTORS) - healthy,
         "results": results,
-        "note": "Real parsers: ERCOT (PDF), PJM/NYISO/CAISO (XLSX), MISO (JSON), "
+        "note": "Real parsers: ERCOT/PJM/NYISO/CAISO (XLSX), MISO (JSON), "
                 "SPP (CSV) — 6 of 7. ISO-NE heartbeat-only (queue file URL moved). "
                 "Empty parse result -> heartbeat_touch (no NULL rows inserted).",
     }), 200 if healthy == len(INGESTORS) else 207
@@ -821,7 +810,7 @@ def parser_versions():
         "ua": UA,
         "parsers": PARSER_STATUS,
         "deps": {
-            "pypdf": "required for ERCOT (PDF parsing)",
-            "openpyxl": "required for PJM (XLSX parsing)",
+            "openpyxl": "required for ERCOT/PJM/NYISO/CAISO (XLSX parsing)",
+            "pypdf": "no longer required (ERCOT moved off PDF to the GIS Report XLSX)",
         },
     })

@@ -17,6 +17,9 @@ on:
       state_filter:
         description: 'optional 2-letter state (e.g. VA); empty = all states'
         default: 'VA'
+      sources:
+        description: 'comma-sep: nccs (light, NASA FeatureServer) and/or eia_860m (heavy Excel). Default nccs.'
+        default: 'nccs'
 
 permissions:
   contents: read
@@ -34,11 +37,15 @@ jobs:
           ADMIN_KEY: ${{ secrets.DCHUB_ADMIN_KEY }}
           DRY: ${{ github.event.inputs.dry_run }}
           STATE: ${{ github.event.inputs.state_filter }}
+          SOURCES: ${{ github.event.inputs.sources }}
         run: |
           set -euo pipefail
           if [ -z "${ADMIN_KEY:-}" ]; then echo "::warning::DCHUB_ADMIN_KEY not set — skipping"; exit 0; fi
           DRYVAL=$([ "$DRY" = "false" ] && echo false || echo true)
-          BODY="{\"sources\":[\"eia_860m\",\"nccs\"],\"dry_run\":$DRYVAL"
+          # Build a JSON array from the comma-separated SOURCES input (default nccs).
+          SRC="${SOURCES:-nccs}"
+          SRC_JSON=$(printf '%s' "$SRC" | python3 -c "import sys;print('[' + ','.join('\"%s\"'%s.strip() for s in sys.stdin.read().split(',') if s.strip()) + ']')")
+          BODY="{\"sources\":$SRC_JSON,\"dry_run\":$DRYVAL"
           if [ -n "${STATE:-}" ]; then BODY="$BODY,\"state_filter\":\"$STATE\""; fi
           BODY="$BODY}"
           FEED="$RAILWAY_BASE/api/v1/brain/notifications?limit=200"

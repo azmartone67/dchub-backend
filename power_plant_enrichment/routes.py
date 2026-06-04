@@ -165,6 +165,22 @@ def nccs_layers():
 
 def _run_enrichment(job_id: str, sources: list, params: dict, dry_run: bool):
     """Background enrichment pipeline."""
+    # r70b: early durable breadcrumb. The success/failure logs both fire only
+    # AFTER the heavy EIA-860 ingest; if the worker is OOM-/SIGKILL-ed during
+    # that load (single Railway replica), neither runs and the job is invisible.
+    # Emitting a STARTED record up-front makes "thread started but died mid-run"
+    # distinguishable from "deploy stale / thread never started" in the feed.
+    try:
+        from routes.brain_evolution import log_notification as _logn
+        _logn("power_plant_enrichment",
+              (f"Enrichment STARTED: sources={sources} "
+               f"state={params.get('state_filter') or 'all'} dry_run={dry_run}"),
+              detail={"phase": "started", "sources": sources,
+                      "state_filter": params.get("state_filter") or "all",
+                      "dry_run": dry_run},
+              severity="info")
+    except Exception:
+        pass
     try:
         eia_plants = []
         nccs_plants = []
