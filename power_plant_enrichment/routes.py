@@ -293,12 +293,20 @@ def _run_enrichment(job_id: str, sources: list, params: dict, dry_run: bool):
                         _nm = (_p.get("name") or "").strip()
                         if _lat is None or _lng is None or not _nm:
                             continue
+                        # r70d: dedup by PROXIMITY ALONE (co-location), not
+                        # exact name. The live table is OSM-sourced (different
+                        # naming + coords than EIA), so a name-AND-proximity
+                        # match found 0 of 317 VA plants — i.e. it would have
+                        # duplicated every existing OSM plant under EIA's name.
+                        # Any existing plant within ~0.02deg (~2.2km) is treated
+                        # as the same site. Conservative (may skip a genuinely
+                        # distinct plant within 2.2km of an existing one) — the
+                        # safe direction: under-count beats duplicating.
                         _cur.execute(
                             """SELECT 1 FROM discovered_power_plants
-                               WHERE lower(name) = lower(%s)
-                                 AND abs(lat - %s) < 0.02 AND abs(lng - %s) < 0.02
+                               WHERE abs(lat - %s) < 0.02 AND abs(lng - %s) < 0.02
                                LIMIT 1""",
-                            (_nm, _lat, _lng))
+                            (_lat, _lng))
                         if _cur.fetchone():
                             existing_hits += 1
                             continue
@@ -355,8 +363,9 @@ def _run_enrichment(job_id: str, sources: list, params: dict, dry_run: bool):
             "completed_at": datetime.utcnow().isoformat(),
             "progress": "Done",
             "dry_run": dry_run,
-            "db_matching": ("live — per-plant SQL existence check (name + ~0.02deg) "
-                            "against discovered_power_plants; new rows tagged "
+            "db_matching": ("live — per-plant SQL existence check (co-location "
+                            "within ~0.02deg, name-independent) against "
+                            "discovered_power_plants; new rows tagged "
                             "source='eia_nccs_enrichment' (reversible)"),
             "effective_mode": "preview" if dry_run else "wrote",
             "results": {
