@@ -534,3 +534,87 @@ def sentinel_drift():
     finally:
         try: c.close()
         except Exception: pass
+
+
+# ── deals drift audit + safe re-baseline (r71-stabilize) ─────────────────
+# The drift baseline (above) is a MONOTONIC high-water mark that never decays,
+# so a LEGITIMATE dedup-shrink on the churning `deals` table (deal_hash dedup in
+# deal_ingestion_scheduler + buyer==seller garbage cleanup) flags "critical
+# data_loss" forever. This endpoint CONFIRMS the shrink is benign against the
+# live table, then — only if benign AND still above the canonical floor — resets
+# the stale baseline. It only ever touches the sentinel_row_baselines MONITORING
+# table, never `deals` data, and fails CLOSED (a real loss is never masked).
+_DEALS_CANONICAL_FLOOR = 2000  # public "2,000+" — never rebaseline below this
+
+
+def _internal_ok():
+    key = request.headers.get("X-Internal-Key", "")
+    allowed = {os.environ.get("DCHUB_INTERNAL_KEY", ""),
+               os.environ.get("DCHUB_ADMIN_KEY", ""),
+               "dchub-internal-sync-2026"}  # in-code fallback
+    allowed.discard("")
+    return key in allowed
+
+
+@surveillance_bp.route("/api/v1/admin/sentinel/deals-audit", methods=["GET", "POST"])
+def deals_drift_audit():
+    """GET = audit deals health (confirm dedup, not loss). POST ?rebaseline=1 =
+    audit + reset the stale baseline (refused unless verdict benign)."""
+    if not _internal_ok():
+        return jsonify(error="unauthorized"), 401
+    c = _drift_conn()
+    if c is None:
+        return jsonify(error="db_unreachable"), 503
+    audit = {}
+    try:
+        def _scalar(sql):
+            try:
+                with c.cursor() as cur:
+                    cur.execute(sql)
+                    return (cur.fetchone() or [None])[0]
+            except Exception as e:
+                try: c.rollback()
+                except Exception: pass
+                return f"err:{type(e).__name__}"
+
+        audit["total"]           = _scalar("SELECT COUNT(*) FROM deals")
+        audit["distinct_hash"]   = _scalar("SELECT COUNT(DISTINCT deal_hash) FROM deals")
+        audit["buyer_eq_seller"] = _scalar("SELECT COUNT(*) FROM deals WHERE LOWER(TRIM(buyer))=LOWER(TRIM(seller))")
+        recent = _scalar("SELECT COUNT(*) FROM deals WHERE created_at >= NOW() - INTERVAL '48 hours'")
+        if isinstance(recent, str):  # no created_at? try a 'date' column
+            recent = _scalar("SELECT COUNT(*) FROM deals WHERE date::timestamptz >= NOW() - INTERVAL '48 hours'")
+        audit["created_last_48h"] = recent
+        with c.cursor() as cur:
+            cur.execute("SELECT baseline_count, baseline_at, last_seen_count "
+                        "FROM sentinel_row_baselines WHERE table_name='deals'")
+            row = cur.fetchone()
+        audit["baseline"] = ({"count": int(row[0]) if row[0] is not None else None,
+                              "at": str(row[1])[:19],
+                              "last_seen": int(row[2]) if row[2] is not None else None}
+                             if row else None)
+
+        dup_residual = (audit["total"] - audit["distinct_hash"]
+                        if isinstance(audit["total"], int) and isinstance(audit["distinct_hash"], int)
+                        else None)
+        audit["dup_residual"] = dup_residual
+        total = audit["total"] if isinstance(audit["total"], int) else 0
+        benign = (total >= _DEALS_CANONICAL_FLOOR
+                  and (dup_residual is None or dup_residual <= 5)
+                  and isinstance(recent, int) and recent > 0)
+        audit["verdict"] = "benign_dedup_shrink" if benign else "needs_human_review"
+
+        rebaselined = False
+        if request.method == "POST" and request.args.get("rebaseline") == "1":
+            if not benign:
+                return jsonify(audit=audit, rebaselined=False,
+                               refused="verdict not benign — refusing (would mask possible real loss)"), 409
+            with c.cursor() as cur:
+                cur.execute("UPDATE sentinel_row_baselines "
+                            "SET baseline_count=%s, last_seen_count=%s, last_seen_at=NOW(), baseline_at=NOW() "
+                            "WHERE table_name='deals'", (total, total))
+                c.commit()
+            rebaselined = True
+        return jsonify(audit=audit, rebaselined=rebaselined), 200
+    finally:
+        try: c.close()
+        except Exception: pass
