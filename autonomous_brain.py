@@ -1225,7 +1225,7 @@ class AutonomousBrain:
                         cur.execute("""
                             INSERT INTO extraction_intelligence
                                 (source_id, outcome, rows_inserted, duration_ms, error, observations)
-                            VALUES (%s, %s, %s, %s, %s, %s)
+                            VALUES (%s, %s, %s, %s, %s, %s) ON CONFLICT DO NOTHING
                         """, (source_id, outcome, rows, per_domain_ms,
                               (str(err)[:2000] if err else None),
                               __import__('json').dumps({"cycle": results.get('cycle_id')})))

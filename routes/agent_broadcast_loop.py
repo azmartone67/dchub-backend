@@ -150,7 +150,7 @@ def _log(target, url, method, result):
             cur.execute("""
                 INSERT INTO agent_broadcast_log
                   (target, target_url, method, status_code, elapsed_ms, note)
-                VALUES (%s, %s, %s, %s, %s, %s)
+                VALUES (%s, %s, %s, %s, %s, %s) ON CONFLICT DO NOTHING
             """, (target, url, method, result.get("status_code"),
                   result.get("elapsed_ms"), result.get("note", "")[:300]))
     except Exception:
