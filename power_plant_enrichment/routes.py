@@ -287,6 +287,16 @@ def _run_enrichment(job_id: str, sources: list, params: dict, dry_run: bool):
                     _cur.execute("""SELECT column_name FROM information_schema.columns
                                     WHERE table_name = 'discovered_power_plants'""")
                     _cols = {r[0] for r in _cur.fetchall()}
+                    # r70e: the live table's id is NOT NULL with NO working
+                    # default (the repo DDL says SERIAL but the live column lost
+                    # it — the same reason the canonical osm_overpass_loader
+                    # silently fails to insert and the table is frozen at ~6,900
+                    # legacy rows). Assign explicit ids = MAX(id)+1, incrementing
+                    # per row; precompute the max ONCE (PK still guards collisions).
+                    _next_id = None
+                    if not dry_run and "id" in _cols:
+                        _cur.execute("SELECT COALESCE(MAX(id), 0) FROM discovered_power_plants")
+                        _next_id = (_cur.fetchone()[0] or 0) + 1
                     for _p in merged:
                         _lat = _p.get("latitude")
                         _lng = _p.get("longitude")
@@ -322,11 +332,16 @@ def _run_enrichment(job_id: str, sources: list, params: dict, dry_run: bool):
                                     if k in _cols and v is not None}
                             if {"name", "lat", "lng"} <= set(_row):
                                 _ks = list(_row.keys())
+                                _vals = [_row[k] for k in _ks]
+                                if _next_id is not None:
+                                    _ks = ["id"] + _ks
+                                    _vals = [_next_id] + _vals
+                                    _next_id += 1
                                 _cur.execute(
                                     f"INSERT INTO discovered_power_plants "
                                     f"({','.join(_ks)}) VALUES "
                                     f"({','.join(['%s'] * len(_ks))})",
-                                    [_row[k] for k in _ks])
+                                    _vals)
                                 inserted += 1
                 if not dry_run:
                     _conn.commit()
