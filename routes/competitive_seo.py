@@ -705,6 +705,31 @@ def _render_index() -> str:
         f'<p>{_html.escape(it["category"])}</p></a>'
         for it in items
     )
+    # #57 (r70): render the N-WAY head-to-head matrix from the factual model
+    # (observed-and-dated axes; "—" = not observed; no pricing). Fail-soft → "".
+    try:
+        _m = _head_to_head_model()
+        _comps = _m.get("competitors", [])
+        _axhdr = "".join(f'<th>{_html.escape(c["display_name"])}</th>' for c in _comps)
+        _brows = ""
+        for _ax in _m.get("axes", []):
+            _cells = ""
+            for _c in _comps:
+                _st = ((_c.get("axes") or {}).get(_ax, {}) or {}).get("state", "unknown")
+                _mark = "✓" if _st == "present" else ("✗" if _st == "absent" else "—")
+                _cells += f'<td class="st-{_st}">{_mark}</td>'
+            _brows += (f'<tr><th class="ax">{_html.escape(_ax)}</th>'
+                       f'<td class="st-present">✓</td>{_cells}</tr>')
+        matrix_html = (
+            '<h2 class="mh">Head-to-head: observed capabilities</h2>'
+            '<p class="sub">Each competitor cell is observed from public surfaces and dated, '
+            'or "—" if not observed. No pricing, no fabricated capabilities. '
+            'Machine-readable: <a href="/api/v1/competitive/head-to-head">/api/v1/competitive/head-to-head</a>.</p>'
+            '<div class="mtx-wrap"><table class="mtx"><thead><tr><th class="ax">Capability</th>'
+            f'<th class="dch">DC Hub</th>{_axhdr}</tr></thead><tbody>{_brows}</tbody></table></div>'
+        )
+    except Exception:
+        matrix_html = ""
     return f"""<!doctype html><html lang="en"><head>
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width,initial-scale=1">
@@ -742,12 +767,23 @@ def _render_index() -> str:
   .links a{{color:#818cf8;text-decoration:none;font-size:.92rem;border:1px solid rgba(129,140,248,.3);border-radius:8px;padding:7px 13px}}
   .foot{{color:#71717a;font-size:.84rem;margin-top:2.4rem;border-top:1px solid rgba(255,255,255,.08);padding-top:1.2rem}}
   .foot a{{color:#818cf8;text-decoration:none}}
+  .mh{{font-size:1.5rem;font-weight:800;margin:2.6rem 0 .5rem}}
+  .mtx-wrap{{overflow-x:auto;margin:1rem 0}}
+  .mtx{{border-collapse:collapse;width:100%;font-size:.86rem}}
+  .mtx th,.mtx td{{border:1px solid rgba(255,255,255,.08);padding:8px 10px;text-align:center}}
+  .mtx th.ax{{text-align:left;color:#c7c9d1;font-weight:600}}
+  .mtx thead th{{color:#a1a1aa;font-weight:700;font-size:.78rem}}
+  .mtx th.dch{{color:#818cf8}}
+  .mtx td.st-present{{color:#34d399;font-weight:800}}
+  .mtx td.st-absent{{color:#f87171}}
+  .mtx td.st-unknown{{color:#52525b}}
 </style></head><body>
 <div class="wrap">
   <div class="pill">Factual · Agent-first · No pricing claims</div>
   <h1>DC Hub vs the field</h1>
   <p class="sub">Factual, agent-first comparisons. DC Hub is the agent-native data-center intelligence platform — a live MCP server ({n['mcp_tools']}+ tools), {_html.escape(n['facilities_phrase'])} facilities, open CC-BY-4.0 data, and two daily indices (DCPI + DCGI). Every competitor capability below is observed from public surfaces and dated; we publish no pricing claims about other companies.</p>
   <div class="grid">{cards}</div>
+  {matrix_html}
   <div class="links">
     <a href="/api/v1/competitive/positioning">Full positioning</a>
     <a href="/api/v1/competitive/why-dchub">Why DC Hub</a>
