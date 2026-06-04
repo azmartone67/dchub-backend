@@ -1022,7 +1022,7 @@ jobs:
             echo "::error::DCHUB_ADMIN_KEY secret not set"; exit 1; fi
           response=$(curl -sS --max-time 120 -X POST \
             -H "X-Admin-Key: $ADMIN_KEY" \
-            "https://dchub-backend-production.up.railway.app/api/v1/autopilot/verify-pending" \
+            "https://dchub-backend-production.up.railway.app/api/v1/brain/autopilot/verify-pending" \
             || echo '{"ok":false,"error":"curl_fail"}')
           echo "$response" | head -c 2000
           echo
