@@ -1060,7 +1060,7 @@ def gas_pricing_status():
 
     # Best-effort: count rows + last refresh from market_gas_pricing.
     try:
-        c = _db_conn()
+        c = _conn()
         if c:
             try:
                 with c.cursor() as cur:
