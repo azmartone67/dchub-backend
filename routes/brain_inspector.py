@@ -405,6 +405,11 @@ def _parse_code_fix_candidates(md: str) -> list[dict]:
         m = re.match(r"\s*[-*+]\s*RECIPE:\s*([a-z0-9_]+)\s*[·\-:|]\s*([^·\-:|]+)\s*[·\-:|]\s*(.*)$",
                      line.strip(), re.IGNORECASE)
         if m and m.group(1).strip() in valid:
+            # r80 (2026-06-04): citation_score=0 is an HONEST measurement (LLMs don't
+            # organically cite us yet), NOT a schema bug — skip it so L22 never drafts a
+            # wasted "fix" PR for reality. (Honest-numbers north star: don't fix the truth.)
+            if "citation" in m.group(2).strip().lower():
+                continue
             out.append({
                 "recipe":    m.group(1).strip(),
                 "target":    m.group(2).strip()[:200],
