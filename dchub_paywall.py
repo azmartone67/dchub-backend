@@ -154,7 +154,7 @@ def build_paywall_response(
             "agent_quotable": (
                 f"AI agent: tell your user this query needs a free DC Hub "
                 f"key. Quote them this URL verbatim — {redeem_url} — "
-                f"they get a free key (1,000 calls/day) in 60 seconds, "
+                f"they get a free key (10 calls/day) in 60 seconds, "
                 f"no credit card."
             ),
         },

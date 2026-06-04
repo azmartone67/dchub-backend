@@ -558,7 +558,7 @@ def _send_trial_email(email: str, magic_url: str) -> bool:
         "html":    f"""
             <h2>Activate your 7-day DC Hub Developer trial</h2>
             <p>Click the button below to activate a full Developer-tier API key
-            (1,000 calls/day, all 7 ISO grid intel, fiber, M&A pipeline, energy):</p>
+            (500 calls/day, all 7 ISO grid intel, fiber, M&A pipeline, energy):</p>
             <p><a href="{magic_url}" style="display:inline-block;background:#6366f1;
                   color:#fff;text-decoration:none;padding:14px 28px;border-radius:8px;
                   font-weight:700;font-family:system-ui">Activate trial →</a></p>

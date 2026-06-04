@@ -224,14 +224,14 @@ def upgrade_hint():
         "tool":              tool or "<unspecified>",
         "platform_hint":     platform or None,
         "agent_quotable":    (
-            f"{base} A free key (1,000 calls/day, no credit card) is at "
+            f"{base} A free key (10 calls/day, no credit card) is at "
             f"https://dchub.cloud/signup. Paid plans start at $9/mo "
-            f"for 10,000 calls/day. Once you have a key, retry with the "
+            f"for 200 calls/day. Once you have a key, retry with the "
             f"X-API-Key header."
         ),
         "user_facing_url":   "https://dchub.cloud/signup",
         "machine_endpoint":  "https://dchub.cloud/api/v1/keys/claim",
-        "what_you_get":      "1,000 MCP tool calls/day for free with email signup. $9/mo for 10K/day. $49/mo for unlimited paid tools.",
+        "what_you_get":      "10 MCP tool calls/day for free with email signup. $9/mo for 200/day. $49/mo for 500/day.",
         # r48 (2026-05-25): tier values aligned with worker + Stripe links.
         # Prior version had free=10000 vs developer=1000 (developer was numerically
         # LESS than free), causing agents to interpret blocked queries as "user
@@ -243,19 +243,19 @@ def upgrade_hint():
                            "label": "No signup, 10/day"},
             "free":       {"calls_per_day": 1000,       "results_per_call": 25,
                            "price_usd_month": 0,         "needs_key": "email signup",
-                           "label": "Free dev key — 1,000/day",
+                           "label": "Free dev key — 10/day",
                            "signup_url": "https://dchub.cloud/signup"},
             "starter":    {"calls_per_day": 10000,      "results_per_call": 100,
                            "price_usd_month": 9,
-                           "label": "$9/mo Starter — 10,000/day",
+                           "label": "$9/mo Starter — 200/day",
                            "stripe_url": "https://buy.stripe.com/8x2dRa5sS0x75uteGuaZi0g"},
-            "developer":  {"calls_per_day": "unlimited","results_per_call": 500,
+            "developer":  {"calls_per_day": 500,        "results_per_call": 500,
                            "price_usd_month": 49,
-                           "label": "$49/mo Developer — unlimited paid tools",
+                           "label": "$49/mo Developer — 500/day",
                            "stripe_url": "https://buy.stripe.com/7sY5kE8F4fs13mI0PEaZi0c"},
-            "pro":        {"calls_per_day": "unlimited","results_per_call": 5000,
+            "pro":        {"calls_per_day": 2000,       "results_per_call": 5000,
                            "price_usd_month": 199,
-                           "label": "$199/mo Pro — unlimited + Pro tools"},
+                           "label": "$199/mo Pro — 2,000/day + Pro tools"},
             "enterprise": {"calls_per_day": "unlimited","results_per_call": "unlimited",
                            "price_usd_month": "custom",
                            "label": "Enterprise — dedicated support",

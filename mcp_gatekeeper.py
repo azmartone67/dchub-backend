@@ -462,7 +462,7 @@ class _RateLimiter:
             return (f"Rate limited: {len(win)}/{lim['minute']} calls/min. "
                     f"{'Trial' if is_trial else 'Free'} tier. "
                     f"Upgrade → https://buy.stripe.com/14k14og7w7Zz9KJ8i6aZi02 "
-                    f"($9/mo = 500/day permanent)")
+                    f"($9/mo = 200/day permanent)")
 
         # Per-day
         today = self._today()
@@ -474,7 +474,7 @@ class _RateLimiter:
             return (f"Rate limited: {count}/{lim['day']} calls today. "
                     f"{'Trial' if is_trial else 'Free'} tier. "
                     f"Upgrade → https://buy.stripe.com/14k14og7w7Zz9KJ8i6aZi02 "
-                    f"($9/mo = 500/day, no expiry).")
+                    f"($9/mo = 200/day, no expiry).")
 
         # Record
         win.append(now)
@@ -735,7 +735,7 @@ def _value_unlock_block(tool_name: str, tier: Tier, max_rows: int,
         block["savings_pitch"] = (
             f"This call replaces ~{hrs_saved}h of work from {alt_source}. "
             f"At analyst rates that's ~${int(hrs_saved * 150)} per call; "
-            f"Developer plan is $49/mo for 2000 calls/day.")
+            f"Developer plan is $49/mo for 500 calls/day.")
 
     block["upgrade_url"] = (f"{PRICING_URL}?utm_source=mcp&utm_medium=value-unlock"
                             f"&utm_tool={tool_name}")

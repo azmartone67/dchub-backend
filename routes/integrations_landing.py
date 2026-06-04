@@ -116,8 +116,8 @@ MCP_LANDING_HTML = """<!DOCTYPE html>
 <div class="pane">
   <h2>Tiers</h2>
   <p><b>Free</b>: 10 calls/day, top-5 result truncation. No signup.<br>
-  <b>Developer ($49/mo)</b>: 1,000 calls/day, full data, exports.<br>
-  <b>Pro ($199/mo)</b>: 10k calls/day, gated tools unlocked.<br>
+  <b>Developer ($49/mo)</b>: 500 calls/day, full data, exports.<br>
+  <b>Pro ($199/mo)</b>: 2,000 calls/day, gated tools unlocked.<br>
   <b>Enterprise</b>: SLA, dedicated capacity, MCP 2025-06-18 OAuth. <a href="https://dchub.cloud/enterprise">Talk to sales</a>.</p>
 </div>
 

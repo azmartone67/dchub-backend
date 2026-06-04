@@ -100,7 +100,7 @@ def _agent_claim_line():
         f"`POST {DEV_KEY_CLAIM_URL}` with body "
         "`{\"client_name\": \"<your agent>\"}` → returns a free DC Hub "
         "dev key instantly. Then retry this tool with header "
-        "`X-API-Key: <key>`. Free tier: 100 calls/day.\n\n"
+        "`X-API-Key: <key>`. Free tier: 10 calls/day.\n\n"
     )
 
 
@@ -121,7 +121,7 @@ def _one_click_upgrade_line(tool_name=None, call_count=0, current_tier='free'):
     if not STRIPE_DEVELOPER_LINK:
         return ''
     return (
-        f"⚡ **One-click upgrade to Developer ($49/mo, 1,000 calls/day):** "
+        f"⚡ **One-click upgrade to Developer ($49/mo, 500 calls/day):** "
         f"[{STRIPE_DEVELOPER_LINK}]({STRIPE_DEVELOPER_LINK})\n\n"
     )
 
@@ -198,7 +198,7 @@ def _build_human_message(tool_name, call_count, current_tier, partial_data_summa
             f"{quick}"
             f"**[Upgrade to Developer now → {discount_url}]({discount_url})** "
             f"Apply code `{DISCOUNT_CODE_TIER3}` for 30% off your first month.\n\n"
-            f"_$49/mo unlocks {pretty_tool} + 1,000 calls/day, all 7 ISOs grid intel + fiber + queue analytics._"
+            f"_$49/mo unlocks {pretty_tool} + 500 calls/day, all 7 ISOs grid intel + fiber + queue analytics._"
         )
 
     # Tier 2 — discount + email capture (calls 3-5)
@@ -215,7 +215,7 @@ def _build_human_message(tool_name, call_count, current_tier, partial_data_summa
             f"[Upgrade to Developer →]({discount_url})\n\n"
             f"Not ready? **[Get a 7-day free trial via email →]({email_url})** — "
             f"no credit card, full Developer access for a week.\n\n"
-            f"_Developer unlocks: {pretty_tool}, 1,000 calls/day, all 7 ISO grid intel, fiber routes, queue analytics, API access._"
+            f"_Developer unlocks: {pretty_tool}, 500 calls/day, all 7 ISO grid intel, fiber routes, queue analytics, API access._"
         )
 
     # Tier 1 — standard preview (calls 1-2)
@@ -361,7 +361,7 @@ def build_paywall_response(
         'method': 'POST',
         'body': {'client_name': '<your agent name>'},
         'returns': 'api_key',
-        'note': ('One POST, no email/browser. Free dev key, 100 calls/day. '
+        'note': ('One POST, no email/browser. Free dev key, 10 calls/day. '
                  'Then retry the tool with an X-API-Key header.'),
     }
     if isinstance(base.get('human_message'), str):

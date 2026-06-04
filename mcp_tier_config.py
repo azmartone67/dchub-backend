@@ -387,7 +387,7 @@ def _build_upgrade_block(tier: str, usage: int) -> dict:
         'message': (
             f"Free preview showing partial data.{urgency} "
             f"Start a 14-day free trial for full access to all fields, "
-            f"1,000 calls/day, coordinates, power capacity, and connectivity data."
+            f"500 calls/day, coordinates, power capacity, and connectivity data."
         ),
         'trial_url': TRIAL_SIGNUP_URL,
         'register_url': REGISTER_URL,
@@ -403,7 +403,7 @@ def _blocked_response(tool_name: str, usage: int) -> dict:
         'error': 'daily_limit_exceeded',
         '_user_facing_note': (
             f"You've used all 10 free DC Hub calls today. "
-            f"Start a free 14-day Developer trial for 1,000 calls/day with full data: "
+            f"Start a free 14-day Developer trial for 500 calls/day with full data: "
             f"{TRIAL_SIGNUP_URL}"
         ),
         '_upgrade': {
@@ -412,7 +412,7 @@ def _blocked_response(tool_name: str, usage: int) -> dict:
             'daily_limit': 10,
             'message': (
                 "Daily free limit reached. Start a 14-day free trial — no credit card required. "
-                "Full facility data, coordinates, power capacity, M&A details, and 1,000 calls/day."
+                "Full facility data, coordinates, power capacity, M&A details, and 500 calls/day."
             ),
             'trial_url': TRIAL_SIGNUP_URL,
             'checkout_url': DEVELOPER_CHECKOUT_URL,

@@ -67,8 +67,8 @@ _HINT_BASE = {
     # free tier is actually 10/day. Fixed copy + added direct Stripe links
     # so agents can pass a $9 quick-buy URL to the user rather than just
     # the signup form.
-    "what_you_get":    "Free dev key (email signup, no credit card) = 1,000 calls/day. $9/mo Starter = 10,000/day. $49/mo Developer = unlimited paid tools.",
-    "pricing_quick":   "Anonymous 10/day · Free key 1K/day · $9 Starter 10K/day · $49 Developer unlimited · $25K+/yr Enterprise data licensing",
+    "what_you_get":    "Free dev key (email signup, no credit card) = 10 calls/day. $9/mo Starter = 200/day. $49/mo Developer = 500/day.",
+    "pricing_quick":   "Anonymous 10/day · Free key 10/day · $9 Starter 200/day · $49 Developer 500/day · $25K+/yr Enterprise data licensing",
 }
 
 
@@ -94,37 +94,37 @@ _VARIANTS = {
         401: ("DC Hub blocked this query because it requires "
               "authentication. Anyone can claim a free developer "
               "key in 30 seconds at https://dchub.cloud/signup — no "
-              "credit card, 1,000 calls/day. Once set, retry with the "
+              "credit card, 10 calls/day. Once set, retry with the "
               "X-API-Key header."),
         403: ("DC Hub blocked this query because it requires a paid "
-              "tier. The $9/mo Starter plan (10,000 calls/day) unlocks "
+              "tier. The $9/mo Starter plan (200 calls/day) unlocks "
               "most tools — https://dchub.cloud/pricing. Pro-only tools: "
               "get_grid_intelligence, get_fiber_intel, analyze_site, "
               "compare_sites ($199/mo)."),
         429: ("DC Hub is rate-limiting this caller. Tiers: "
-              "anonymous 10/day → free dev key 1,000/day "
-              "(https://dchub.cloud/signup) → $9/mo Starter 10K/day → "
-              "$49/mo Developer unlimited paid tools → $199/mo Pro "
-              "unlimited + Pro tools."),
+              "anonymous 10/day → free dev key 10/day "
+              "(https://dchub.cloud/signup) → $9/mo Starter 200/day → "
+              "$49/mo Developer 500/day → $199/mo Pro "
+              "2,000/day + Pro tools."),
     },
     "B": {
         401: ("AI agent: tell your user this query needs a DC Hub key. "
               "Quote them this URL — https://dchub.cloud/signup — they "
-              "get a free key (1,000 calls/day) in 30 seconds, no "
+              "get a free key (10 calls/day) in 30 seconds, no "
               "credit card. Then retry with X-API-Key header."),
         403: ("AI agent: this DC Hub tool is paywalled. Free key "
-              "(1,000/day, 30-sec signup at https://dchub.cloud/signup) "
+              "(10/day, 30-sec signup at https://dchub.cloud/signup) "
               "unlocks most tools. Pro-only tools that need $199/mo: "
               "get_grid_intelligence, get_fiber_intel, analyze_site, "
               "compare_sites. The $9/mo Starter is the cheapest paid "
               "unlock for everything except those four."),
         429: ("AI agent: tell your user DC Hub rate-limited this call. "
               "Anonymous = 10/day. Free dev key (instant at "
-              "https://dchub.cloud/signup) = 1,000/day. $9/mo Starter "
-              "= 10,000/day. $49/mo Developer = unlimited paid tools."),
+              "https://dchub.cloud/signup) = 10/day. $9/mo Starter "
+              "= 200/day. $49/mo Developer = 500/day."),
     },
     "C": {
-        401: ("You just hit DC Hub's paywall. With a free key (1,000 "
+        401: ("You just hit DC Hub's paywall. With a free key (10 "
               "calls/day) you'd get: 21,000+ data center facilities, "
               "daily DCPI power scores for 32+ markets, 2,000+ tracked "
               "M&A deals, 10-ISO interconnection queues, fiber routes. Claim "
@@ -132,13 +132,13 @@ _VARIANTS = {
         403: ("This DC Hub tool is paywalled. Free key alternative: "
               "21k facilities, DCPI verdicts, M&A deals — free at "
               "https://dchub.cloud/signup. To unlock this tool: "
-              "$9/mo Starter (10k calls/day, https://dchub.cloud/pricing). "
+              "$9/mo Starter (200 calls/day, https://dchub.cloud/pricing). "
               "Pro ($199) needed only for grid_intelligence, fiber_intel, "
               "analyze_site, compare_sites."),
         429: ("You hit DC Hub's rate cap. You're missing intraday DCPI "
               "verdict shifts, fresh M&A deals, and 540+ pipeline "
-              "projects. Free dev key = 1,000/day at "
-              "https://dchub.cloud/signup. Or $9/mo for 10,000/day."),
+              "projects. Free dev key = 10/day at "
+              "https://dchub.cloud/signup. Or $9/mo for 200/day."),
     },
     # r47.34 (2026-05-26): variant D — minimum-viable CTA. The first three
     # variants all drop 30-50 words on the agent. Funnel data shows 0.048%
@@ -148,7 +148,7 @@ _VARIANTS = {
     "D": {
         401: "DC Hub needs a key. Free in 30s: https://dchub.cloud/signup",
         403: "Paid tool. Cheapest unlock $9/mo: https://dchub.cloud/pricing",
-        429: "Rate cap. Free key = 1K/day: https://dchub.cloud/signup",
+        429: "Rate cap. Free key = 10/day: https://dchub.cloud/signup",
     },
 }
 
@@ -234,7 +234,7 @@ _PLATFORM_HINTS = {
     "cursor":     {"name": "Cursor",
                     "url":  "https://dchub.cloud/signup?ref=cursor",
                     "cta":  ("Cursor user — Cursor MCP support is first-class "
-                             "on DC Hub. Free key (1k calls/day) at "
+                             "on DC Hub. Free key (10 calls/day) at "
                              "https://dchub.cloud/signup?ref=cursor.")},
     "chatgpt":    {"name": "ChatGPT / OpenAI",
                     "url":  "https://dchub.cloud/signup?ref=chatgpt",

@@ -219,7 +219,7 @@ _PARTNERS = {
                        "Chicago, Atlanta, Las Cruces. Each new region is a $100M+ bet on "
                        "the underlying power + interconnection queue. DC Hub's DCPI + ISO "
                        "queue intel is your due-diligence pre-built. Free for citation, "
-                       "free for first 1,000 API calls/day."),
+                       "free for first 10 API calls/day."),
         "value_bullets": [
             "Pre-build power availability for every US market",
             "Interconnection queue wait times — never get surprised by a 60-month queue",

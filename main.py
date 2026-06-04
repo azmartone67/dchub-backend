@@ -3444,17 +3444,17 @@ def handle_well_known():
             "documentation": "https://dchub.cloud/ai-hub",
             "intelligence_hub": "https://dchub.cloud/intelligence",
             "tiers": {
-                "FREE":       {"description": "Anonymous access, no signup, 25 calls/day, 1 row/call (teaser mode)",
+                "FREE":       {"description": "Anonymous access, no signup, 10 calls/day, 1 row/call (teaser mode)",
                                 "tools_count": 5, "monthly_price_usd": 0,
                                 "checkout_url": "https://dchub.cloud/signup"},
                 "IDENTIFIED": {"description": "Free with email signup, 200 calls/day, 5 rows/call",
                                 "tools_count": 19, "monthly_price_usd": 0,
                                 "checkout_url": "https://dchub.cloud/signup"},
-                "DEVELOPER":  {"description": "Best value — full data, 2,000 calls/day, 100 rows/call. Recommended for daily use.",
+                "DEVELOPER":  {"description": "Best value — full data, 500 calls/day, 100 rows/call. Recommended for daily use.",
                                 "tools_count": 25, "monthly_price_usd": 49,
                                 "checkout_url": "https://buy.stripe.com/14k14og7w7Zz9KJ8i6aZi02",
                                 "value_pitch": "Replaces ~2h/call of manual research from CBRE/DCD/EIA reports. At $150/hr analyst rate that's $300+ per call."},
-                "PRO":        {"description": "10,000 calls/day + multi-site comparator + alerts. For broker/buyer teams.",
+                "PRO":        {"description": "2,000 calls/day + multi-site comparator + alerts. For broker/buyer teams.",
                                 "tools_count": 30, "monthly_price_usd": 199,
                                 "checkout_url": "https://buy.stripe.com/00w28o7BqaXLeP31QIaZi04",
                                 "value_pitch": "Replaces $30-80K per multi-site comparison from CBRE/Cushman/JLL."}
@@ -3918,9 +3918,9 @@ def handle_well_known():
 
             "rate_limits": {
                 "anonymous": "60 req/min/IP",
-                "free_tier": "25 calls/day across 14 paid tools",
-                "developer": "1,000 calls/day ($49/mo)",
-                "pro": "10,000 calls/day ($149/mo)",
+                "free_tier": "10 calls/day across 14 paid tools",
+                "developer": "500 calls/day ($49/mo)",
+                "pro": "2,000 calls/day ($199/mo)",
                 "enterprise": "100,000 calls/day (custom)",
             },
 
@@ -5941,7 +5941,7 @@ MCP_USER_NOTES = {
 }
 MCP_RATE_LIMIT_NOTE = (
     f"\u26a0\ufe0f DC Hub free tier limit reached ({MCP_FREE_DAILY_LIMIT} calls/day). "
-    f"The user can unlock 1,000 calls/day with a Developer key at dchub.cloud/developers"
+    f"The user can unlock 500 calls/day with a Developer key at dchub.cloud/developers"
 )
 
 # In-memory daily rate limit tracker: {ip_address: {'date': 'YYYY-MM-DD', 'count': N}}
@@ -6184,7 +6184,7 @@ def _gate_mcp_result(result_content, tool_name, tier):
                     "url": "https://dchub.cloud/pricing#developer",
                     "checkout": "https://buy.stripe.com/7sY5kE8F4fs13ml0PEaZi0c",
                     "price": "$49/mo",
-                    "includes": "1,000 calls/day, full facility data, coordinates, power specs, site scoring, grid data",
+                    "includes": "500 calls/day, full facility data, coordinates, power specs, site scoring, grid data",
                     "note": "Only if you need more than the free identified tier.",
                 },
             }
@@ -6261,7 +6261,7 @@ _AGENT_CLAIM_LINE = (
     "🤖 AI agents — unlock this yourself in one API call (no browser, "
     "no email): POST https://dchub.cloud/api/v1/keys/claim with body "
     '{"client_name": "<your agent>"} -> returns a free dev key instantly. '
-    "Then retry this tool with header X-API-Key: <key>. Free tier: 100 calls/day.\n\n"
+    "Then retry this tool with header X-API-Key: <key>. Free tier: 10 calls/day.\n\n"
 )
 _AGENT_CLAIM_STRUCT = {
     "url": "https://dchub.cloud/api/v1/keys/claim",
@@ -7265,7 +7265,7 @@ def mcp_proxy():
                         "Free tier: all 11 tools available, 5 results per query with basic fields, "
                         "site scoring preview, and 10 calls/day. "
                         "Developer plan ($49/mo): full data with coordinates, power specs, "
-                        "detailed site scoring, real-time grid data, and 1,000 calls/day. "
+                        "detailed site scoring, real-time grid data, and 500 calls/day. "
                         "Get your API key at https://dchub.cloud/pricing#developer "
                         "and include it as X-API-Key header. "
                         "POST /mcp with JSON-RPC body to use tools. "
@@ -7576,14 +7576,14 @@ def mcp_manifest():
             },
             "developer": {
                 "price": "$49/mo",
-                "limits": "Full data, 1,000 calls/day. All fields including coordinates, power_mw, PUE.",
+                "limits": "Full data, 500 calls/day. All fields including coordinates, power_mw, PUE.",
                 "signup": "https://dchub.cloud/pricing#developer",
                 "checkout": "https://buy.stripe.com/7sY5kE8F4fs13ml0PEaZi0c",
                 "tools_available": "all"
             },
             "pro": {
                 "price": "$199/mo",
-                "limits": "Full data, 10,000 calls/day.",
+                "limits": "Full data, 2,000 calls/day.",
                 "signup": "https://dchub.cloud/pricing"
             },
             "enterprise": {
@@ -11181,7 +11181,7 @@ p {{ font-size: 16px; color: #4a4a5a; margin-bottom: 16px; line-height: 1.6; }}
 
     <div class="upgrade-box">
       <h2>Unlock the Full Platform</h2>
-      <p>Upgrade to Pro for 10,000 API calls/day, energy infrastructure data, site analysis tools, and priority support.</p>
+      <p>Upgrade to Pro for 2,000 API calls/day, energy infrastructure data, site analysis tools, and priority support.</p>
       <a href="https://dchub.cloud/dashboard#upgrade" class="upgrade-cta">Upgrade to Pro →</a>
     </div>
 
@@ -11260,7 +11260,7 @@ p {{ font-size: 16px; color: #4a4a5a; margin-bottom: 16px; line-height: 1.6; }}
     <p>Your upgrade is now active. You have full access to the world's most comprehensive data center intelligence platform -- <strong>21,000+ facilities</strong> across <strong>170+ countries</strong>.</p>
     <h2 style="margin-top: 32px;">What You Now Have Access To</h2>
     <div class="feature-box">
-      <h3>⚡ 10,000 API Calls / Day</h3>
+      <h3>⚡ 2,000 API Calls / Day</h3>
       <p>Full programmatic access to facility data, M&amp;A deals, news, and market intelligence</p>
     </div>
     <div class="feature-box">
@@ -15573,7 +15573,7 @@ def ai_learn(topic=None):
     topics = {
         'capabilities': {'tools': 6, 'facilities': '50,000+', 'countries': 140, 'sources': 40},
         'endpoints': {'mcp': '/mcp', 'rest': '/api/v1/', 'discovery': '/api/v1/discovery'},
-        'pricing': {'free': '3 results/basic fields', 'developer': '$49/mo — 1,000 calls/day', 'pro': '$199/mo — 10,000 calls/day', 'enterprise': '$699/mo — 100,000 calls/day'},
+        'pricing': {'free': '3 results/basic fields', 'developer': '$49/mo — 500 calls/day', 'pro': '$199/mo — 2,000 calls/day', 'enterprise': '$699/mo — 100,000 calls/day'},
     }
     if topic and topic in topics:
         return jsonify({'success': True, 'data': topics[topic]})
@@ -15683,7 +15683,7 @@ def ai_discover_endpoint():
         },
         "api_tiers": {
             "free": {"rate_limit": "100/month", "description": "Basic search, limited results"},
-            "pro": {"rate_limit": "10000/day", "description": "Full data, energy endpoints"},
+            "pro": {"rate_limit": "2000/day", "description": "Full data, energy endpoints"},
             "enterprise": {"rate_limit": "100000/day", "description": "All endpoints, priority support"}
         },
         "chatgpt_gpts": [
@@ -20422,8 +20422,8 @@ def _canonical_pricing():
                           "contact": "enterprise@dchub.cloud"},
         "legacy_strings": {
             "free":       "10 calls/day, truncated results, 29 tools (preview)",
-            "developer":  "$49/mo · 1,000/day, all 29 tools, full results",
-            "pro":        "$199/mo · 10,000/day + Pro-only tools",
+            "developer":  "$49/mo · 500/day, all 29 tools, full results",
+            "pro":        "$199/mo · 2,000/day + Pro-only tools",
             "enterprise": "$499/mo · 100,000/day + SSO + SLA",
         },
     }
@@ -29174,7 +29174,7 @@ def _mcp_upgrade_prompt():
         "value_prop": meta.get("value_prop"),
         "what_you_get": [
             "Full results (vs. preview-only on free)",
-            "10,000 API calls/day",
+            "2,000 API calls/day",
             "Export to CSV / Parquet",
             "MCP, REST API, Webhook access",
             "Priority email support",

@@ -333,7 +333,7 @@ FORM_HTML = """<!DOCTYPE html>
   </form>
 
   <div class="upgrade-row">
-    <div class="text"><strong>Need more than 1,000 calls/day?</strong> $9/mo Starter unlocks 10,000/day instantly.</div>
+    <div class="text"><strong>Need more than 10 calls/day?</strong> $9/mo Starter unlocks 200/day instantly.</div>
     <a href="https://buy.stripe.com/8x2dRa5sS0x75uteGuaZi0g" target="_blank">$9/mo →</a>
   </div>
 
@@ -345,19 +345,19 @@ FORM_HTML = """<!DOCTYPE html>
     </div>
     <div class="tier-row">
       <span class="tier-name">Free dev key <span class="price">free</span></span>
-      <span class="tier-detail">1,000 calls/day · email signup</span>
+      <span class="tier-detail">10 calls/day · email signup</span>
     </div>
     <div class="tier-row">
       <span class="tier-name">Starter <span class="price">$9/mo</span></span>
-      <span class="tier-detail">10,000 calls/day · most popular</span>
+      <span class="tier-detail">200 calls/day · most popular</span>
     </div>
     <div class="tier-row">
       <span class="tier-name">Developer <span class="price">$49/mo</span></span>
-      <span class="tier-detail">Unlimited · all paid tools</span>
+      <span class="tier-detail">500 calls/day · all paid tools</span>
     </div>
     <div class="tier-row">
       <span class="tier-name">Pro <span class="price">$199/mo</span></span>
-      <span class="tier-detail">Unlimited + Pro-only tools</span>
+      <span class="tier-detail">2,000 calls/day + Pro-only tools</span>
     </div>
   </div>
 
@@ -451,7 +451,7 @@ SUCCESS_HTML = """<!DOCTYPE html>
             background: #f5f9ff; border: 1px solid #c3dafe;
             padding: 0.8rem 1rem; border-radius: 6px;">
     <strong>Need it now?</strong> Skip the email wait — upgrade to Developer
-    ($49/mo unlimited) right now: <a href="__STRIPE_DEV_LINK__"
+    ($49/mo · 500 calls/day) right now: <a href="__STRIPE_DEV_LINK__"
     style="color:#1976d2;font-weight:600;">checkout in 60 seconds &rarr;</a>
   </p>
   <p style="font-size: 0.75rem; color: #888; margin-top: 0.5rem;">
@@ -694,7 +694,7 @@ def phase63_redeem(session_id):
                          else f'{len(tools_tried)} paid tools')
         tools_hit_block = (
             f'<div class="tools-hit">Tried this session: <strong>{nice_tools}</strong>. '
-            f'Your free dev key unlocks all of them up to 1,000 calls/day.</div>'
+            f'Your free dev key unlocks all of them up to 10 calls/day.</div>'
         )
     else:
         nice_tools = ''

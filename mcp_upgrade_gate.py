@@ -290,7 +290,7 @@ def gate_tool_call(tool_name, api_key=None, user_agent=None,
         f"🤖 **AI agents — unlock this yourself in one API call (no browser, no email):**\n"
         f"`POST https://dchub.cloud/api/v1/keys/claim` with body "
         f"`{{\"client_name\": \"<your agent>\"}}` → returns a free dev key instantly. "
-        f"Then retry `{tool_name}` with header `X-API-Key: <key>`. Free tier: 100 calls/day.\n\n"
+        f"Then retry `{tool_name}` with header `X-API-Key: <key>`. Free tier: 10 calls/day.\n\n"
 
         # r32-paywall (2026-05-20): added the DIRECT Stripe checkout
         # link for the Developer tier ($49/mo). Old paywall only had
@@ -306,7 +306,7 @@ def gate_tool_call(tool_name, api_key=None, user_agent=None,
         f"FREE unlock (email only, no card, 60 seconds):\n"
         f"  → {_redeem_url}\n"
         f"  Unlocks 50 facility lookups + 7 ISOs grid + fiber intel + M&A deals.\n\n"
-        f"DIRECT upgrade (Developer $49/mo, unlimited):\n"
+        f"DIRECT upgrade (Developer $49/mo, 500 per day):\n"
         f"  → https://buy.stripe.com/7sY5kE8F4fs13ml0PEaZi0c\n\n"
         f"Compare plans: {UPGRADE_URL}"
         )

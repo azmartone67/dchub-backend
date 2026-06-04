@@ -131,7 +131,7 @@ SOCIAL_TEMPLATES = [
     },
     {
         "type": "developer_api",
-        "template": "👩‍💻 Free Data Center API — 100 requests/day\n\n"
+        "template": "👩‍💻 Free Data Center API — 10 requests/day\n\n"
                    "Access facility data, market intelligence, M&A deals, "
                    "and construction pipeline data via REST API.\n\n"
                    "Zero-dep Python client included. Get started:\n"
@@ -285,7 +285,7 @@ I've been building DC Hub (dchub.cloud) as a comprehensive data center intellige
 - AI agents that auto-discover new facilities every 5 minutes
 - M&A deal tracker (787+ deals, $10.6B value)
 - Construction pipeline tracking (7.8 GW under construction)
-- Free API with 100 requests/day
+- Free API with 10 requests/day
 
 The unique part: 4 AI agents run 24/7 to discover facilities, track deals, aggregate news from 30+ sources, and generate market intelligence.
 

@@ -110,7 +110,7 @@ for data-center deployment. Minimum investment thresholds, jobs requirements, du
 <div class="pane">
   <h2>{hidden} more states available with a free dev key</h2>
   <p style="margin:.5em 0;font-size:.95rem">Full 50-state coverage + downloadable CSV + MCP query support.
-  Free dev tier: 5 calls/day, no credit card.</p>
+  Free dev tier: 10 calls/day, no credit card.</p>
   <a class="cta" href="/redeem">Claim free key — 30s</a>
 </div>
 
