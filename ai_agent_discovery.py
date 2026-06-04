@@ -44,7 +44,10 @@ DB_PATH = os.environ.get('DB_PATH', 'dc_nexus.db')
 # AI ACCESS TRACKING
 # =============================================================================
 
-# Known AI platform user-agent patterns
+# Known AI platform user-agent patterns.
+# Match is case-insensitive substring (see identify_ai_platform).
+# Add a vendor here when you want UA-sniff auto-issue (main.py:1199) to mint
+# a trial key on their first hit + the dashboard to classify them as Active.
 AI_PLATFORMS = {
     'ChatGPT': ['ChatGPT', 'OpenAI', 'GPTBot'],
     'Claude': ['Claude', 'Anthropic', 'ClaudeBot'],
@@ -61,6 +64,26 @@ AI_PLATFORMS = {
     'OpenClaw': ['OpenClaw', 'openclaw'],
     'You.com': ['YouBot', 'youchat'],
     'DeepSeek': ['DeepSeek', 'Deepseek'],
+    # r-ua-expand (2026-06-04): unlocking auto-issue for the 9 cold-pitch
+    # labs that didn't have UA patterns yet. SDK paths from each vendor's
+    # public Python/JS clients + any documented bot UAs they ship.
+    'Mistral':     ['Mistral', 'mistralai', 'mistral-ai', 'MistralBot'],
+    'Groq':        ['Groq', 'GroqBot', 'groq-sdk', 'groq-python', 'groq-ai'],
+    'HuggingFace': ['HuggingFace', 'huggingface', 'hf-inference',
+                     'transformers/', 'hf-hub', 'huggingface_hub'],
+    'Grok/xAI':    ['Grok', 'xAI', 'grok-ai', 'GrokBot'],
+    'CoreWeave':   ['CoreWeave', 'coreweave', 'coreweave-ai'],
+    'Lambda':      ['LambdaBot', 'lambdalabs', 'lambda-ai', 'Lambda-Inference'],
+    'TensorWave':  ['TensorWave', 'tensorwave'],
+    'NVIDIA':      ['NVIDIA-Inference', 'nvidia-bot', 'NIM-Bot'],
+    'Core42':      ['Core42', 'core42', 'G42-AI', 'g42-ai'],
+    # Adjacent labs likely to integrate via MCP/REST in the next quarter.
+    'AI21':        ['ai21', 'AI21', 'Jurassic'],
+    'Inflection':  ['inflection', 'pi-bot', 'Inflection-AI'],
+    'Adept':       ['Adept', 'adeptai'],
+    'Replicate':   ['replicate', 'Replicate-Bot'],
+    'Together':    ['together-ai', 'TogetherAI'],
+    'Fireworks':   ['fireworks-ai', 'FireworksAI'],
 }
 
 

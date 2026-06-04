@@ -1017,6 +1017,74 @@ def gas_pricing_cron():
     })
 
 
+# r-eia-status (2026-06-04): public-but-anon status endpoint surfacing
+# EIA_API_KEY config + data freshness. Lets the operator curl ONE URL
+# to know whether gas pricing is on real EIA data or the synthetic seed,
+# how many markets are populated, and when the next cron refresh fires.
+# Not admin-gated — the data itself is non-sensitive (boolean + counts),
+# and surfacing it openly makes it easy for the autopilot to self-detect
+# and for the user to spot drift without an admin key.
+@powered_land_gas_bp.route(
+    "/api/v1/markets/gas-pricing/status", methods=["GET"]
+)
+def gas_pricing_status():
+    """Public env+data status for the gas-pricing surface."""
+    eia_set = _eia_key_present()
+    info = {
+        "ok": True,
+        "eia_api_key_set": eia_set,
+        "data_basis": "real_eia" if eia_set else "synthetic_seed",
+        "data_basis_explainer": (
+            "EIA_API_KEY is configured — payloads return live Henry Hub + "
+            "regional basis + delivered tariffs."
+            if eia_set else
+            "EIA_API_KEY is NOT set in Railway env. Payloads return "
+            "representative synthetic values so the surface stays alive, "
+            "but they are NOT priced from live market data. Set the env "
+            "var to flip data_basis to 'real_eia'."
+        ),
+        "setup": {
+            "step_1_register": "https://www.eia.gov/opendata/register.php",
+            "step_2_env_var":  "EIA_API_KEY (Railway → resourceful-essence → dchub-backend → Variables)",
+            "step_3_redeploy": "Railway auto-redeploys on env change; next cron at 04:00 UTC picks it up.",
+            "step_4_verify":   "Re-curl this endpoint; data_basis should be 'real_eia'.",
+        },
+        "cron": {
+            "schedule_utc":    "04:00 daily (crawler_scheduler.SCHEDULE)",
+            "endpoint":        "/api/v1/markets/gas-pricing/cron (admin-gated)",
+            "soft_deadline_s": 90,
+        },
+        "phase_1_markets": list(_PHASE1_MARKETS),
+        "phase_1_market_count": len(_PHASE1_MARKETS),
+    }
+
+    # Best-effort: count rows + last refresh from market_gas_pricing.
+    try:
+        c = _db_conn()
+        if c:
+            try:
+                with c.cursor() as cur:
+                    cur.execute("""
+                        SELECT COUNT(*)::int,
+                               COUNT(*) FILTER (WHERE data_basis = 'real_eia')::int,
+                               COUNT(*) FILTER (WHERE data_basis LIKE 'synthetic%%')::int,
+                               MAX(fetched_at)::text
+                          FROM market_gas_pricing
+                    """)
+                    row = cur.fetchone() or (0, 0, 0, None)
+            finally:
+                try: c.close()
+                except Exception: pass
+            info["rows_total"]            = int(row[0] or 0)
+            info["rows_real_eia"]         = int(row[1] or 0)
+            info["rows_synthetic"]        = int(row[2] or 0)
+            info["last_refresh_at"]       = row[3]
+    except Exception as e:
+        info["rows_lookup_error"] = str(e)[:160]
+
+    return jsonify(info), 200
+
+
 # Programmatic helper for the crawler_scheduler runner. Wraps the cron
 # endpoint in a loopback HTTP call so the schedule + global semaphore
 # still apply (matches _run_ai_lab_auto_outreach pattern).
