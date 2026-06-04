@@ -212,12 +212,19 @@ def vs_json(slug):
 
 @competitive_vs_bp.route("/vs/<slug>", methods=["GET"])
 def vs_page(slug):
-    # r79 (2026-06-03) — CBRE specifically asked (via Gordon, technical lead)
-    # to stay neutral. Unlike JLL and other brokers, they don't want a public
-    # "vs CBRE" comparison page. Honor that by redirecting /vs/cbre →
-    # /partners so the URL still resolves (no broken inbound link from
-    # press materials or social posts) but lands somewhere neutral.
-    if (slug or "").lower() == "cbre":
+    # r79 (2026-06-03) — Redirect known brokers to /partners instead of
+    # 404ing or showing a competitive page. Original list (CBRE only) was
+    # set because CBRE/Gordon explicitly asked to stay neutral. Expanded
+    # 2026-06-03 evening to cover the full broker set found during the
+    # post-demo 404 sweep: JLL, Cushman-Wakefield, Colliers, Eastdil
+    # Secured, Marcus & Millichap. All of these were 404ing — better to
+    # land them on a respectful /partners page than dead.
+    _BROKER_REDIRECT_SLUGS = {
+        "cbre", "jll", "cushman", "cushman-wakefield", "colliers",
+        "eastdil", "eastdil-secured", "marcus-millichap",
+        "newmark", "savills", "kidder-mathews",
+    }
+    if (slug or "").lower() in _BROKER_REDIRECT_SLUGS:
         from flask import redirect
         return redirect("/partners", code=302)
 

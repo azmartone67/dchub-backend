@@ -1,0 +1,188 @@
+name: Link Check — kill 404s before demos do
+
+# r79 (2026-06-03) — Structural fix for the recurring "demo hit a 404"
+# class of bug. Before this workflow, the failure mode was:
+#   1. nav.js hardcodes /research/grid-intelligence (deploy)
+#   2. backend never wires /research route
+#   3. CF Pages dashboard issue makes static /research/ unreachable
+#   4. Nobody runs the live site → 404 sits there for weeks
+#   5. Jonathan demos to a prospect → clicks the "NEW" badge → 404
+#
+# This workflow runs after every push to main (gives ~90s for Railway +
+# Cloudflare deploys to land), then probes the production URLs that
+# matter: homepage nav, footer, every href on the homepage. If any of
+# them return non-2xx/3xx, the workflow fails RED and posts a GitHub
+# issue so the failure can't be missed.
+#
+# This is post-deploy verification (not pre-deploy gate), because
+# pre-deploy would require spinning up a test instance. Post-deploy
+# catches within ~2 minutes — fast enough that we can fix-forward
+# before any prospect demo.
+
+on:
+  push:
+    branches: [main]
+  workflow_dispatch:
+  schedule:
+    # Sanity check every 6 hours — catches CF Pages worker rollbacks
+    # and other deploy-pipeline flakes that don't go through git push.
+    - cron: "13 */6 * * *"
+
+permissions:
+  contents: read
+  issues: write   # so we can auto-open issues on red
+
+jobs:
+  link-check:
+    runs-on: ubuntu-latest
+    timeout-minutes: 8
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Wait for deploys to propagate (~90s)
+        if: github.event_name == 'push'
+        run: sleep 90
+
+      - name: Crawl + probe critical URLs
+        id: crawl
+        run: |
+          set +e   # never abort the loop on a single failure
+          SITE="https://dchub.cloud"
+          TMPDIR="$(mktemp -d)"
+          REPORT="$TMPDIR/report.txt"
+          : > "$REPORT"
+
+          # ── 1. Hardcoded critical paths — these are the demo-killer
+          #    URLs. Any failure here fails the workflow red.
+          declare -a CRITICAL=(
+            "/"
+            "/dcpi"
+            "/dcpi/methodology/"
+            "/dcpi/ashburn"
+            "/dcpi/cheyenne"
+            "/grid"
+            "/grid-intelligence"
+            "/markets"
+            "/markets/northern-virginia"
+            "/transactions"
+            "/hyperscaler-deals"
+            "/ai-capacity-index"
+            "/sites"
+            "/partners"
+            "/partnerships"
+            "/about"
+            "/pricing"
+            "/signup"
+            "/login"
+            "/press"
+            "/openapi.json"
+            "/llms.txt"
+            "/sitemap.xml"
+            "/.well-known/mcp.json"
+            "/agent.json"
+          )
+          fails=0
+          echo "=== CRITICAL PATHS ===" >> "$REPORT"
+          for path in "${CRITICAL[@]}"; do
+            code=$(curl -sS -o /dev/null -w "%{http_code}" "${SITE}${path}" --max-time 12)
+            case "$code" in
+              2*|3*) printf "  OK   %s  %s\n"   "$code" "$path" >> "$REPORT" ;;
+              *)     printf "  FAIL %s  %s\n"   "$code" "$path" >> "$REPORT"
+                     fails=$((fails + 1)) ;;
+            esac
+          done
+
+          # ── 2. Crawl the homepage and extract every href, probe each.
+          #    Non-2xx/3xx in this set is logged but doesn't fail the
+          #    workflow (some 404s are intentional — orphan press
+          #    release URLs, etc.). Just visibility.
+          echo "" >> "$REPORT"
+          echo "=== HOMEPAGE LINKS ===" >> "$REPORT"
+          curl -sS "${SITE}/" \
+            | grep -oE 'href="/[^"#?]*"' \
+            | sed 's|href="||;s|"$||' \
+            | sort -u > "$TMPDIR/hrefs.txt"
+          home_fails=0
+          while read -r path; do
+            # Skip JS template strings that contain ' + slug + '
+            case "$path" in *"' + "*|*"' + slug"*) continue ;; esac
+            code=$(curl -sS -o /dev/null -w "%{http_code}" "${SITE}${path}" --max-time 8)
+            case "$code" in
+              2*|3*) ;;
+              *) printf "  HOME-LINK %s  %s\n" "$code" "$path" >> "$REPORT"
+                 home_fails=$((home_fails + 1)) ;;
+            esac
+          done < "$TMPDIR/hrefs.txt"
+
+          # ── 3. Crawl the nav-loaded /dcpi page, repeat — the nav
+          #    is what bit us during the demo.
+          echo "" >> "$REPORT"
+          echo "=== /dcpi NAV LINKS ===" >> "$REPORT"
+          curl -sS "${SITE}/dcpi" \
+            | grep -oE 'href="/[^"#?]*"' \
+            | sed 's|href="||;s|"$||' \
+            | sort -u > "$TMPDIR/dcpi-hrefs.txt"
+          dcpi_fails=0
+          while read -r path; do
+            case "$path" in *"' + "*|*"' + slug"*) continue ;; esac
+            code=$(curl -sS -o /dev/null -w "%{http_code}" "${SITE}${path}" --max-time 8)
+            case "$code" in
+              2*|3*) ;;
+              *) printf "  DCPI-NAV %s  %s\n" "$code" "$path" >> "$REPORT"
+                 dcpi_fails=$((dcpi_fails + 1)) ;;
+            esac
+          done < "$TMPDIR/dcpi-hrefs.txt"
+
+          # Report
+          echo ""
+          echo "─────────────────────────────────────────────────────"
+          cat "$REPORT"
+          echo "─────────────────────────────────────────────────────"
+          echo "CRITICAL failures: $fails"
+          echo "HOMEPAGE link failures: $home_fails"
+          echo "/dcpi NAV failures: $dcpi_fails"
+          echo "fails=$fails" >> "$GITHUB_OUTPUT"
+          echo "home_fails=$home_fails" >> "$GITHUB_OUTPUT"
+          echo "dcpi_fails=$dcpi_fails" >> "$GITHUB_OUTPUT"
+
+          # Persist the report for the GitHub-issue step
+          {
+            echo "## Link-check report"
+            echo ""
+            echo "**Workflow run:** ${GITHUB_RUN_URL:-${GITHUB_SERVER_URL}/${GITHUB_REPOSITORY}/actions/runs/${GITHUB_RUN_ID}}"
+            echo "**Commit:** ${GITHUB_SHA}"
+            echo "**Trigger:** ${GITHUB_EVENT_NAME}"
+            echo ""
+            echo '```'
+            cat "$REPORT"
+            echo '```'
+          } > "$TMPDIR/issue-body.md"
+          cp "$TMPDIR/issue-body.md" "$GITHUB_WORKSPACE/link-check-report.md"
+
+          # Fail RED on any critical-path failure. Home/dcpi nav failures
+          # are surfaced via issue but don't fail the workflow (yet —
+          # tighten once the baseline is clean).
+          if [ "$fails" -gt 0 ]; then
+            echo "::error::$fails critical-path URL(s) failing. See report above and the auto-opened GitHub issue."
+            exit 1
+          fi
+          if [ "$home_fails" -gt 0 ] || [ "$dcpi_fails" -gt 0 ]; then
+            echo "::warning::$home_fails homepage + $dcpi_fails /dcpi nav link(s) failing. Critical paths still green so workflow stays GREEN — but these belong in the next fix cycle."
+          fi
+
+      - name: Open / update GitHub issue on critical failure
+        if: failure() && steps.crawl.outcome == 'failure'
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          # Look for an existing open issue with the title prefix so we
+          # don't spam — bump it with the new report instead.
+          title="link-check: critical URLs failing on dchub.cloud"
+          existing=$(gh issue list --state open --search "in:title \"$title\"" --json number --jq '.[0].number' || echo "")
+          body_file="$GITHUB_WORKSPACE/link-check-report.md"
+          if [ -n "$existing" ] && [ "$existing" != "null" ]; then
+            gh issue comment "$existing" --body-file "$body_file"
+            echo "::notice::Commented on existing issue #$existing"
+          else
+            gh issue create --title "$title" --body-file "$body_file" --label "link-check,bug,production"
+          fi

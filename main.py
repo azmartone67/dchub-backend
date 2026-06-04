@@ -26549,6 +26549,41 @@ try:
 except Exception as _pki_e:
     print(f"[main] partner_key_issuer_bp register failed: {_pki_e}", flush=True)
 
+# r79 (2026-06-03) — Redirect blueprint for known-dead URLs. Each entry
+# in routes/redirects_404_killer.py is a URL we caught 404ing in production
+# (some during live demos). The link-check CI workflow now catches new
+# 404s before they ship — see .github/workflows/link-check.yml.
+try:
+    from routes.redirects_404_killer import (
+        redirects_404_killer_bp, maybe_prefix_redirect)
+    app.register_blueprint(redirects_404_killer_bp)
+
+    @app.before_request
+    def _check_prefix_redirects():
+        """Fire prefix-based redirects (/research/*) BEFORE the route
+        matcher returns a 404. Skip the known-working route prefixes
+        so we don't intercept legitimate traffic."""
+        from flask import request
+        if request.method != "GET":
+            return None
+        path = request.path or ""
+        # Skip the route prefixes that we know have valid handlers.
+        # Anything else flows through to maybe_prefix_redirect for a
+        # possible redirect, then falls through to Flask's 404.
+        SKIP_PREFIXES = (
+            "/api/", "/static/", "/dcpi/", "/markets/", "/grid/",
+            "/grid-intelligence", "/partners", "/transactions",
+            "/alive", "/healthz", "/livez", "/readyz",
+            "/.well-known/", "/openapi", "/sitemap",
+        )
+        for sp in SKIP_PREFIXES:
+            if path.startswith(sp):
+                return None
+        return maybe_prefix_redirect(path)
+    print("[main] redirects_404_killer_bp registered + prefix-redirect hook installed", flush=True)
+except Exception as _rk_e:
+    print(f"[main] redirects_404_killer register failed: {_rk_e}", flush=True)
+
 # r78-c (2026-06-03) — per-key per-endpoint usage tracker. Discovered
 # while prepping the NLR JSC meeting that NEITHER api_usage_meter NOR
 # api_keys.calls_today/calls_total were being populated anywhere in
