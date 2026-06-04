@@ -161,10 +161,12 @@ def compute_dcpi_score():
     }
 
 
+# AUTO-REPAIR: duplicate route '/run' also in enhanced_promotion.py:844 — review and remove one
 @iso_au_aemo_bp.route("/run", methods=["POST", "GET"])
 def http_run():
     return jsonify(run_extraction()), 200
 
+# AUTO-REPAIR: duplicate route '/snapshot' also in routes/iso_nordpool_intl.py:206 — review and remove one
 
 @iso_au_aemo_bp.route("/snapshot", methods=["GET"])
 def http_snapshot():
@@ -174,10 +176,12 @@ def http_snapshot():
     return jsonify({"iso": ISO_CODE, "live": True,
                     "metrics": {k: v["value"] for k, v in snap.items()},
                     "source": "AEMO ELEC_NEM_SUMMARY"}), 200
+# AUTO-REPAIR: duplicate route '/dcpi-score' also in routes/iso_nordpool_intl.py:220 — review and remove one
 
 
 @iso_au_aemo_bp.route("/dcpi-score", methods=["GET"])
 def http_dcpi_score():
+# AUTO-REPAIR: duplicate route '/health' also in main.py:4152 — review and remove one
     return jsonify(compute_dcpi_score()), 200
 
 

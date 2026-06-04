@@ -300,7 +300,7 @@ def _insert_facility(cur, f: dict) -> tuple[bool, str]:
         INSERT INTO facilities
           (id, name, provider, city, state, country, power_mw,
            status, address, source, source_id)
-        VALUES (%s, %s, %s, %s, %s, %s, 0, %s, %s, 'datacentermap', %s)
+        VALUES (%s, %s, %s, %s, %s, %s, 0, %s, %s, 'datacentermap', %s) ON CONFLICT DO NOTHING
     """, (
         sid, name, f.get("operator"),
         f.get("city"), f.get("state"), f.get("country", ""),
@@ -397,7 +397,7 @@ def _crawl(scope_country: str | None, dry_run: bool) -> dict:
                           (countries, pages_fetched, facilities_seen,
                            facilities_new, facilities_dup, errors,
                            dry_run, finished_at)
-                        VALUES (%s, %s, %s, %s, %s, %s, %s, NOW())
+                        VALUES (%s, %s, %s, %s, %s, %s, %s, NOW() ON CONFLICT DO NOTHING)
                     """, (
                         countries, summary["pages_fetched"],
                         summary["facilities_seen"],

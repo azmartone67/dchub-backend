@@ -292,7 +292,7 @@ def _file_finding(tool_name: str, result: dict) -> bool:
                 """
                 INSERT INTO brain_findings
                     (issue, url, count, detail, detector, status)
-                VALUES (%s, %s, 1, %s, %s, 'open')
+                VALUES (%s, %s, 1, %s, %s, 'open') ON CONFLICT DO NOTHING
                 """,
                 (
                     f"tool_calibration_drift:{tool_name}",

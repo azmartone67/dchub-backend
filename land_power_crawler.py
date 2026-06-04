@@ -373,7 +373,7 @@ def crawl_power_plants(get_db, full_refresh=False):
                         eia_plant_id, name, operator, state, county, city,
                         lat, lon, capacity_mw, fuel_type, fuel_category,
                         prime_mover, status, sector, source, last_updated
-                    ) VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, NOW())
+                    ) VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, NOW() ON CONFLICT DO NOTHING)
                     ON CONFLICT (eia_plant_id)
                     DO UPDATE SET
                         name = EXCLUDED.name,
@@ -524,7 +524,7 @@ def _upsert_substations(cur, batch):
                     hifld_id, name, operator, state, county, city,
                     lat, lon, voltage_kv, max_voltage_kv, min_voltage_kv,
                     sub_type, status, lines_count, source, last_updated
-                ) VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, 'hifld', NOW())
+                ) VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, 'hifld', NOW() ON CONFLICT DO NOTHING)
                 ON CONFLICT (hifld_id)
                 DO UPDATE SET
                     name = EXCLUDED.name,
@@ -638,7 +638,7 @@ def _upsert_transmission(cur, batch):
                 INSERT INTO transmission_lines (
                     hifld_id, name, operator, voltage_kv, from_sub, to_sub,
                     length_miles, state, status, line_type, source, last_updated
-                ) VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, 'hifld', NOW())
+                ) VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, 'hifld', NOW() ON CONFLICT DO NOTHING)
                 ON CONFLICT (hifld_id)
                 DO UPDATE SET
                     name = EXCLUDED.name,
@@ -732,7 +732,7 @@ def crawl_gas_pipelines(get_db, full_refresh=False):
             try:
                 cur.execute("""
                     INSERT INTO gas_pipelines (name, operator, state, commodity, source, last_updated)
-                    VALUES (%s, %s, %s, %s, 'eia-ng', NOW())
+                    VALUES (%s, %s, %s, %s, 'eia-ng', NOW() ON CONFLICT DO NOTHING)
                     ON CONFLICT (name, operator)
                     DO UPDATE SET
                         state = COALESCE(EXCLUDED.state, gas_pipelines.state),
@@ -884,7 +884,7 @@ def generate_market_power_profiles(get_db):
                         power_plant_count, total_generation_mw, solar_mw, wind_mw,
                         natural_gas_mw, nuclear_mw, coal_mw, battery_storage_mw,
                         renewable_pct, power_readiness_score, last_updated
-                    ) VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, NOW())
+                    ) VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, NOW() ON CONFLICT DO NOTHING)
                     ON CONFLICT (market)
                     DO UPDATE SET
                         substation_count = EXCLUDED.substation_count,
@@ -1006,7 +1006,7 @@ def _log_sync(get_db, source, fetched, upserted, skipped, errors, detail, durati
         cur.execute("""
             INSERT INTO land_power_sync_log
             (source, records_fetched, records_upserted, records_skipped, errors, error_detail, duration_seconds)
-            VALUES (%s, %s, %s, %s, %s, %s, %s)
+            VALUES (%s, %s, %s, %s, %s, %s, %s) ON CONFLICT DO NOTHING
         """, (source, fetched, upserted, skipped, errors, detail, round(duration, 2)))
         conn.commit()
     except Exception as e:
