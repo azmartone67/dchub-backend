@@ -165,10 +165,20 @@ DOMAIN_SLA_HOURS = {
                          # isn't a breach (matches the press_releases table SLA in
                          # brain_consistency_radar). See also _DOMAIN_SOURCE below.
     "mna":       24,     # /api/v1/deals
-    "pipeline":  24,     # /api/v1/pipeline
+    # r71-stabilize (2026-06-04): the 3 SLOW/STATIC infra domains below were on
+    # a 24h SLA, but their real upstream cadence is weeks/months (gas+pipeline =
+    # HIFLD static imports; facilities = bursty discovery). With no real-age
+    # source mapped (see _DOMAIN_SOURCE's r36 note explaining WHY mapping them to
+    # a 24h SLA would false-breach), they judged on surface-stamp age — which
+    # drifts to 100h+ and tripped a permanent FALSE "data_freshness" RED on the
+    # surveillance sweep. The DATA is not stale (facilities just grew to 21k via
+    # OSM); the SLA was simply wrong for the cadence. Right-sized to match the
+    # documented brain_consistency_radar.SLAS (gas_pipelines 720h, facilities
+    # 336h) so freshness_public and the brain radar agree.
+    "pipeline":  720,    # /api/v1/pipeline — HIFLD static pipeline infra
     "fiber":     168,    # /api/v1/connectivity/*
-    "gas":       24,     # /api/v1/energy/gas-*
-    "facilities": 24,    # /api/v1/facilities
+    "gas":       720,    # /api/v1/energy/gas-* — gas_pipelines HIFLD static-import
+    "facilities": 336,   # /api/v1/facilities — bursty discovery (brain rates 336h)
 }
 
 
@@ -267,7 +277,11 @@ _DOMAIN_SOURCE: dict = {
     # (within_sla today) and their real cadence is already watched by
     # brain_consistency_radar.SLAS (gas_pipelines 720h, facilities 336h).
     "iso":        ("grid_data",      "timestamp"),      # ISO telemetry, ~1.5h cron
-    "dcpi":       ("dcpi_scores",    "computed_at"),    # daily recompute
+    "dcpi":       ("market_power_scores", "computed_at"),  # r71-stabilize: was
+                  # "dcpi_scores" — NO SUCH TABLE, so the real-age query silently
+                  # failed → fell back to drifting surface age → permanent false
+                  # breach. The real DCPI scores live in market_power_scores
+                  # (see _dcpi_summary); MAX(computed_at) ~= the daily recompute (~1.7h).
     "news":       ("news_articles",  "published_at"),   # live RSS table served by /api/news/live (news_items is a phantom/variant — caused a permanent false SLA breach)
     "press":      ("press_releases", "published_at"),   # event-driven
     "mna":        ("ai_deals",       "created_at"),     # deal extractor
