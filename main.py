@@ -15585,6 +15585,20 @@ def _is_junk_platform(key: str) -> bool:
     return bool(_JUNK_PLATFORM_RE.search(kl))
 
 
+def _is_real_ai_platform(key: str) -> bool:
+    """r80 (2026-06-04): the platforms 'connected/active/tracked' COUNT must be
+    the real NAMED platforms only. _is_junk_platform (a denylist) kept leaking ~44
+    probe/scanner/mcp-tooling rows that don't end in its suffixes, inflating the
+    count ~4x (58 vs ~16 real). Gate the COUNT on the AI_PLATFORMS allowlist (the
+    curated registry) instead — it can't be inflated by a new probe UA. Fail-open
+    to the denylist if the import is unavailable."""
+    try:
+        from ai_tracking import AI_PLATFORMS
+        return (key or '').strip().lower() in AI_PLATFORMS
+    except Exception:
+        return not _is_junk_platform(key)
+
+
 @app.route('/api/v1/ai-tracking/stats', methods=['GET'])
 def ai_tracking_stats():
     """Return aggregate AI tracking stats from Neon ai_cumulative table.
@@ -15614,7 +15628,7 @@ def ai_tracking_stats():
         rows = cur.fetchall()
         cur.close()
         total_platforms = sum(1 for r in rows
-                              if not _is_junk_platform(r[0]) and int(r[1] or 0) > 0)
+                              if _is_real_ai_platform(r[0]) and int(r[1] or 0) > 0)
         # Honest AI-agent totals: exclude transport/internal/probe buckets.
         total_requests = sum(int(r[1] or 0) for r in rows if not _is_junk_platform(r[0]))
         requests_7d = sum(int(r[2] or 0) for r in rows if not _is_junk_platform(r[0]))
@@ -15680,7 +15694,7 @@ def ai_tracking_full():
             total_7d += req_7d
             # r62-qa: exclude internal/probe/scanner/test rows from the
             # "active platforms" count (was inflating ~98; real named ~8).
-            if not _is_junk_platform(key) and req_total > 0:
+            if _is_real_ai_platform(key) and req_total > 0:
                 active_count += 1
 
         return jsonify({
