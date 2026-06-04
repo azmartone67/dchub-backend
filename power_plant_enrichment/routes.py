@@ -29,13 +29,23 @@ _jobs = {}
 
 
 def require_admin_key(f):
-    """Simple API key auth for admin endpoints."""
+    """API-key auth for the enrichment admin endpoints.
+
+    r70 (2026-06-03): previously checked ONLY os.environ['ADMIN_API_KEY'] — a key
+    no cron or workflow sets, so these endpoints were effectively un-authable in
+    practice (every other admin surface uses DCHUB_ADMIN_KEY). Now accepts the
+    platform-standard admin keys (DCHUB_ADMIN_KEY / DCHUB_INTERNAL_KEY) plus the
+    legacy ADMIN_API_KEY for back-compat. Header X-Admin-Key or ?admin_key=."""
     @wraps(f)
     def decorated(*args, **kwargs):
-        key = request.headers.get("X-Admin-Key") or request.args.get("admin_key")
         import os
-        expected = os.environ.get("ADMIN_API_KEY", "")
-        if not expected or key != expected:
+        key = request.headers.get("X-Admin-Key") or request.args.get("admin_key") or ""
+        expected = {k for k in (
+            os.environ.get("DCHUB_ADMIN_KEY"),
+            os.environ.get("DCHUB_INTERNAL_KEY"),
+            os.environ.get("ADMIN_API_KEY"),
+        ) if k}
+        if not expected or key not in expected:
             return jsonify({"error": "Unauthorized"}), 401
         return f(*args, **kwargs)
     return decorated
