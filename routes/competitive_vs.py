@@ -212,6 +212,15 @@ def vs_json(slug):
 
 @competitive_vs_bp.route("/vs/<slug>", methods=["GET"])
 def vs_page(slug):
+    # r79 (2026-06-03) — CBRE specifically asked (via Gordon, technical lead)
+    # to stay neutral. Unlike JLL and other brokers, they don't want a public
+    # "vs CBRE" comparison page. Honor that by redirecting /vs/cbre →
+    # /partners so the URL still resolves (no broken inbound link from
+    # press materials or social posts) but lands somewhere neutral.
+    if (slug or "").lower() == "cbre":
+        from flask import redirect
+        return redirect("/partners", code=302)
+
     data = _vs_data(slug)
     if not data:
         # Render an index page listing all available comparisons
