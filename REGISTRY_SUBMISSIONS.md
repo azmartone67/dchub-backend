@@ -18,7 +18,7 @@ Description:     Real-time data center intelligence — 21,000+ facilities
                  grid operators (7 US ISOs plus TVA, BPA and Ontario's IESO)
                  and 43 US utility balancing authorities, with 3
                  international grids (Hydro-Quebec, AESO, Nord Pool) modeled,
-                 fiber routes, $324B+
+                 fiber routes, 2,000+ deals
                  M&A transactions, interconnection queue snapshots,
                  daily AI capacity index, hyperscaler $1B+ deal tracker,
                  BUILD/CAUTION/AVOID DCPI verdicts per market. Used for

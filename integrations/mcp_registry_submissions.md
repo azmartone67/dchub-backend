@@ -73,7 +73,7 @@ DC Hub is the MCP server for data-center & energy intelligence. 31 tools over 21
 **Long description (use when the field allows >500 chars):**
 ```
 DC Hub is a data-center and energy intelligence MCP server for AI agents. It exposes
-31 tools covering 21,000+ global data-center facilities across 233 markets (US +
+31 tools covering 21,000+ data-center facilities across 233 markets (US +
 international), the proprietary DC Hub Power Index (DCPI) and DC Hub Gas Index (DCGI)
 for ranking markets, live ISO grid telemetry (PJM, ERCOT, CAISO, MISO, SPP, NYISO,
 ISO-NE), fiber-route and carrier intelligence, energy and tax-incentive data,
@@ -283,7 +283,7 @@ Contact:       api@dchub.cloud
             "contact": "api@dchub.cloud",
             "license": "Proprietary — free for AI citation; data per https://dchub.cloud/terms"
           },
-          "overview": "## DC Hub (Remote)\n\nDC Hub is a data-center and energy intelligence MCP server for AI agents. It exposes 31 tools over 21,000+ global data-center facilities across 233 markets (US + international), the proprietary DC Hub Power Index (DCPI) and DC Hub Gas Index (DCGI) for ranking markets, live ISO grid telemetry (PJM, ERCOT, CAISO, MISO, SPP, NYISO, ISO-NE), fiber-route and carrier intelligence, energy and tax-incentive data, water/drought risk, interconnection-queue headroom, and ~1,980 tracked data-center M&A transactions. Used for site selection, market analysis, capacity/pipeline tracking, grid-risk modeling, and AI-load siting. Streamable-HTTP transport with optional X-API-Key authentication; free anonymous tier.",
+          "overview": "## DC Hub (Remote)\n\nDC Hub is a data-center and energy intelligence MCP server for AI agents. It exposes 31 tools over 21,000+ data-center facilities across 233 markets (US + international), the proprietary DC Hub Power Index (DCPI) and DC Hub Gas Index (DCGI) for ranking markets, live ISO grid telemetry (PJM, ERCOT, CAISO, MISO, SPP, NYISO, ISO-NE), fiber-route and carrier intelligence, energy and tax-incentive data, water/drought risk, interconnection-queue headroom, and ~1,980 tracked data-center M&A transactions. Used for site selection, market analysis, capacity/pipeline tracking, grid-risk modeling, and AI-load siting. Streamable-HTTP transport with optional X-API-Key authentication; free anonymous tier.",
           "status": "Active",
           "tier": "Community",
           "tags": [
