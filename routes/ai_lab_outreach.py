@@ -284,12 +284,35 @@ def _draft_pitch(target: dict) -> tuple[str, str]:
     """Build a personalized email subject + body for one target.
 
     Returns (subject, body).
-    """
+
+    2026-06-04: PRE-MINTS a developer key per target and embeds it
+    inline in the pitch body so the recipient can paste curl /
+    MCP-config and be integrated in 30 seconds — no "POST /keys/claim"
+    friction step. Falls back to the original 'claim' CTA if the mint
+    fails (DB down, etc.) so the email always sends."""
     name = target["name"]
     slug = target["slug"]
     pitch = target["value_pitch"]
     integration = target["integration"]
     audience = target["audience_size_hint"]
+
+    # ── Pre-mint a developer key for this partner ──────────────────
+    # Lazy-import to avoid circular import between blueprints at boot.
+    _key = None
+    try:
+        from routes.partner_key_issuer import _issue_internal
+        _mint = _issue_internal(
+            partner_slug=slug,
+            target_email=(target.get("target_email") or ""),
+            plan="developer",
+            label="Cold-pitch pre-claim 2026-06-04",
+            company=name,
+            issued_by="ai-lab-outreach-pitch",
+        )
+        if _mint.get("ok"):
+            _key = _mint.get("key")
+    except Exception:
+        _key = None
 
     if integration == "mcp_server":
         integration_block = (
@@ -309,6 +332,40 @@ def _draft_pitch(target: dict) -> tuple[str, str]:
             f"POST https://dchub.cloud/api/v1/keys/claim — no email "
             f"required, no credit card. Identified tier (email signup, "
             f"also free) unlocks 17 high-value tools."
+        )
+
+    # ── First-CTA block: pre-issued key (when mint succeeded) ──────
+    if _key:
+        key_block = (
+            f"Your DC Hub developer key is pre-issued and active right now:\n"
+            f"\n"
+            f"  Key:  {_key}\n"
+            f"\n"
+            f"  Test it:\n"
+            f"    curl -H 'X-API-Key: {_key}' "
+            f"https://dchub.cloud/api/v1/mcp/funnel | jq\n"
+            f"\n"
+            f"  MCP config (Claude / Cursor / Cline):\n"
+            f"    {{\n"
+            f"      \"mcpServers\": {{\n"
+            f"        \"dchub\": {{\n"
+            f"          \"url\": \"https://dchub.cloud/mcp\",\n"
+            f"          \"headers\": {{\"X-API-Key\": \"{_key}\"}}\n"
+            f"        }}\n"
+            f"      }}\n"
+            f"    }}\n"
+            f"\n"
+            f"  500 calls/day on the dev tier — no credit card. Just paste\n"
+            f"  curl and you're integrated."
+        )
+    else:
+        # Fallback: original claim-by-curl CTA so the email still sends.
+        key_block = (
+            f"Free dev key in 30 seconds (instant, no credit card):\n"
+            f"     curl -X POST https://dchub.cloud/api/v1/keys/claim \\\n"
+            f"       -H 'Content-Type: application/json' \\\n"
+            f"       -d '{{\"client_name\":\"{slug}\"}}'\n"
+            f"   Returns a `dch_live_...` key good for 500 calls/day."
         )
 
     subject = f"DC Hub × {name}: data-center intelligence you can cite tomorrow"
@@ -335,11 +392,7 @@ integration sample, and CTA tailored to your team's use case:
 
 Three things {name} can do from that page today:
 
-1. Free dev key in 30 seconds (instant, no credit card):
-     curl -X POST https://dchub.cloud/api/v1/keys/claim \\
-       -H 'Content-Type: application/json' \\
-       -d '{{"client_name":"{slug}"}}'
-   Returns a `dch_live_...` key good for 1,000 calls/day.
+1. {key_block}
 
 2. AI-agent broadcast feed — structured "what's new at DC Hub":
      https://dchub.cloud/api/v1/agent-broadcast

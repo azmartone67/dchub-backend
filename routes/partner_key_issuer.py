@@ -105,83 +105,87 @@ def _ensure_partner_table():
         except Exception: pass
 
 
-# ── Endpoints ───────────────────────────────────────────────────────
+# ── Internal helper (callable from same-process code, no admin auth) ─
 
-@partner_key_issuer_bp.route(
-    "/api/v1/admin/partner-key/issue", methods=["POST"]
-)
-def issue_partner_key():
-    """Mint a Developer-tier (or higher) API key for a partner.
-    Idempotent on (partner_slug, email) — re-issues if same pair seen
-    again, returning a fresh key + revoking the prior one."""
-    if not _admin_authorized():
-        return jsonify({"ok": False, "error": "admin_key_required"}), 401
+def _issue_internal(
+    partner_slug: str,
+    target_email: str,
+    plan: str = "developer",
+    label: str = "",
+    company: str = "",
+    name: str = "",
+    stripe_url: str = "",
+    amount_usd_year=None,
+    term_months=None,
+    renewal_terms: str = "",
+    issued_by: str = "internal",
+) -> dict:
+    """Mint a partner key WITHOUT admin auth — for in-process callers
+    (e.g. ai_lab_outreach pre-mint). Mirrors issue_partner_key()'s DB
+    logic exactly so the two paths stay one source of truth.
+
+    Returns a dict {ok, key, key_prefix, partner_slug, email, plan,
+    reused (bool), revoked_prior_keys_count, error?}. NEVER raises;
+    fail-soft so a caller can degrade gracefully if DB is down.
+
+    Idempotent on (partner_slug, email) — revokes any prior partner key
+    for the same pair and returns a fresh one.
+    """
     _ensure_partner_table()
 
-    data = request.get_json(silent=True) or {}
-    partner_slug = (data.get("partner_slug") or "").strip().lower()
-    email        = (data.get("email") or "").strip().lower()
-    name         = (data.get("name") or "").strip()
-    plan         = (data.get("plan") or "developer").strip().lower()
-    label        = (data.get("label") or f"{partner_slug} partner key").strip()
-    company      = (data.get("company") or "").strip()
-    # r75: optional deal-terms fields (all best-effort, no validation)
-    stripe_url      = (data.get("stripe_url") or "").strip()
-    amount_usd_year = data.get("amount_usd_year")
+    partner_slug = (partner_slug or "").strip().lower()
+    email        = (target_email or "").strip().lower()
+    plan         = (plan or "developer").strip().lower()
+    label        = (label or f"{partner_slug} partner key").strip()
+    company      = (company or "").strip()
+    name         = (name or "").strip()
     try:
         amount_usd_year = int(amount_usd_year) if amount_usd_year else None
     except Exception:
         amount_usd_year = None
-    term_months    = data.get("term_months")
     try:
         term_months = int(term_months) if term_months else None
     except Exception:
         term_months = None
-    renewal_terms = (data.get("renewal_terms") or "").strip()
 
     if not partner_slug or not email:
-        return jsonify({
+        return {
             "ok":    False,
             "error": "missing_required_fields",
             "required": ["partner_slug", "email"],
-        }), 400
-
+        }
     if plan not in ("free", "developer", "starter", "pro", "enterprise"):
-        return jsonify({
+        return {
             "ok":    False,
             "error": "invalid_plan",
             "valid_plans": ["free", "developer", "starter", "pro", "enterprise"],
-        }), 400
+        }
 
-    # Mint key: prefix carries plan + partner_slug for human readability
-    # in dashboards. Body is 32 cryptographic chars.
+    # Mint key body
     key_body = secrets.token_urlsafe(32).replace("-", "").replace("_", "")[:32]
     key_str = f"dchub_{plan}_{key_body}"
-    key_prefix = f"dchub_{plan}_{key_body[:8]}"  # First 8 chars shown
-    key_hash = key_str   # api_keys.key_hash stores the full string per
-                          # the existing schema (see main.py:10656 INSERT)
+    key_prefix = f"dchub_{plan}_{key_body[:8]}"
+    key_hash = key_str
 
     c = _db_conn()
     if not c:
-        return jsonify({"ok": False, "error": "db_unavailable"}), 200
+        return {"ok": False, "error": "db_unavailable"}
 
+    revoked_count = 0
     try:
         with c.cursor() as cur:
-            # Find or create the user
+            # Find or create user
             user_id = None
             cur.execute("SELECT id FROM users WHERE email = %s", (email,))
             r = cur.fetchone()
             if r:
                 user_id = r[0]
-                # Update plan in case it changed
                 cur.execute("""
                     UPDATE users SET plan = %s, role = %s, name = COALESCE(NULLIF(%s,''), name),
                                        company = COALESCE(NULLIF(%s,''), company)
                      WHERE id = %s
                 """, (plan, plan, name, company, user_id))
             else:
-                # Create new user with random ID + a placeholder password
-                # (partner can set password via /forgot-password later)
                 user_id = secrets.token_hex(16)
                 placeholder_pw = hashlib.sha256(
                     secrets.token_urlsafe(32).encode()
@@ -193,7 +197,6 @@ def issue_partner_key():
                 """, (user_id, email, placeholder_pw, name or email.split("@")[0],
                        company, plan, plan))
 
-            # Revoke any prior partner key for this (partner_slug, email)
             cur.execute("""
                 UPDATE partner_keys_issued
                    SET revoked_at = NOW()
@@ -201,14 +204,12 @@ def issue_partner_key():
                    AND revoked_at IS NULL
             """, (partner_slug, email))
             revoked_count = cur.rowcount
-            # Also deactivate the old api_keys rows for this user
             if revoked_count > 0:
                 cur.execute("""
                     UPDATE api_keys SET is_active = 0
                      WHERE user_id = %s AND is_active = 1
                 """, (user_id,))
 
-            # Mint the new key in api_keys
             rate_limit_tier = {
                 "free":       "free",
                 "developer":  "developer",
@@ -230,9 +231,6 @@ def issue_partner_key():
             """, (user_id, key_hash, key_prefix, label,
                    rate_limit_tier, plan))
 
-            # Record in partner audit log
-            # r75: persist deal terms (stripe_url, amount_usd_year,
-            # term_months, renewal_terms) alongside the key
             cur.execute("""
                 INSERT INTO partner_keys_issued
                     (partner_slug, key_prefix, user_email, plan, label,
@@ -240,19 +238,18 @@ def issue_partner_key():
                      renewal_terms, issued_by)
                 VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s)
             """, (partner_slug, key_prefix, email, plan, label,
-                   stripe_url or None, amount_usd_year, term_months,
-                   renewal_terms or None, "admin-curl"))
+                   (stripe_url or "").strip() or None, amount_usd_year, term_months,
+                   (renewal_terms or "").strip() or None, issued_by))
             c.commit()
-
     except Exception as e:
         try: c.close()
         except Exception: pass
-        return jsonify({"ok": False, "error": str(e)[:300]}), 500
+        return {"ok": False, "error": str(e)[:300]}
     finally:
         try: c.close()
         except Exception: pass
 
-    return jsonify({
+    return {
         "ok":            True,
         "issued_at":     datetime.datetime.utcnow().isoformat() + "Z",
         "partner_slug":  partner_slug,
@@ -260,7 +257,75 @@ def issue_partner_key():
         "plan":          plan,
         "key":           key_str,
         "key_prefix":    key_prefix,
+        "reused":        False,
         "revoked_prior_keys_count": revoked_count,
+    }
+
+
+# ── Endpoints ───────────────────────────────────────────────────────
+
+@partner_key_issuer_bp.route(
+    "/api/v1/admin/partner-key/issue", methods=["POST"]
+)
+def issue_partner_key():
+    """Mint a Developer-tier (or higher) API key for a partner.
+    Idempotent on (partner_slug, email) — re-issues if same pair seen
+    again, returning a fresh key + revoking the prior one.
+
+    Thin delegator to _issue_internal() — kept as the public admin
+    surface; _issue_internal is the same-process pre-mint helper used
+    by ai_lab_outreach._draft_pitch() so the two paths share one
+    source of truth."""
+    if not _admin_authorized():
+        return jsonify({"ok": False, "error": "admin_key_required"}), 401
+
+    data = request.get_json(silent=True) or {}
+    partner_slug = (data.get("partner_slug") or "").strip().lower()
+    email        = (data.get("email") or "").strip().lower()
+    name         = (data.get("name") or "").strip()
+    plan         = (data.get("plan") or "developer").strip().lower()
+    label        = (data.get("label") or f"{partner_slug} partner key").strip()
+    company      = (data.get("company") or "").strip()
+    stripe_url      = (data.get("stripe_url") or "").strip()
+    amount_usd_year = data.get("amount_usd_year")
+    term_months    = data.get("term_months")
+    renewal_terms = (data.get("renewal_terms") or "").strip()
+
+    result = _issue_internal(
+        partner_slug=partner_slug,
+        target_email=email,
+        plan=plan,
+        label=label,
+        company=company,
+        name=name,
+        stripe_url=stripe_url,
+        amount_usd_year=amount_usd_year,
+        term_months=term_months,
+        renewal_terms=renewal_terms,
+        issued_by="admin-curl",
+    )
+
+    if not result.get("ok"):
+        # Map known internal errors to the historical HTTP codes.
+        err = result.get("error", "")
+        if err == "missing_required_fields":
+            return jsonify(result), 400
+        if err == "invalid_plan":
+            return jsonify(result), 400
+        if err == "db_unavailable":
+            return jsonify(result), 200
+        return jsonify(result), 500
+
+    key_str    = result["key"]
+    return jsonify({
+        "ok":            True,
+        "issued_at":     result["issued_at"],
+        "partner_slug":  result["partner_slug"],
+        "email":         result["email"],
+        "plan":          result["plan"],
+        "key":           key_str,
+        "key_prefix":    result["key_prefix"],
+        "revoked_prior_keys_count": result.get("revoked_prior_keys_count", 0),
         "header_usage":  f"X-API-Key: {key_str}",
         "test_call":     (f"curl -H 'X-API-Key: {key_str}' "
                             "'https://dchub.cloud/api/v1/site-forecast"
