@@ -26921,6 +26921,16 @@ try:
 except Exception as _e:
     print(f"[main] brain_evolution register failed: {_e}", file=sys.stderr)
 
+# r71 (2026-06-04): Data-Growth Win Radar — the autonomous-media hook. Detects
+# step-changes in core data metrics (power plants, ISO queue GW, deals, DCPI
+# markets) and QUEUES A DRAFT press release for review (never auto-publishes).
+try:
+    from routes.brain_data_growth_radar import brain_data_growth_bp
+    app.register_blueprint(brain_data_growth_bp)
+    print("🧠 Data-Growth Radar: ✅ Registered (/brain/data-growth-scan)")
+except Exception as _e:
+    print(f"[main] brain_data_growth register failed: {_e}", file=sys.stderr)
+
 # Phase r70 (2026-06-03): Brain SELF-MODEL — the unified self-state the brain
 # reasons over (capabilities + current state + learning + a prompt_digest for
 # the LLM layers). Foundation of self-awareness; read-only, fail-soft.

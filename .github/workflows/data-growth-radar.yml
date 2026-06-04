@@ -1,0 +1,43 @@
+name: Data-Growth Win Radar (queues DRAFT press on data step-changes)
+
+# The autonomous-media hook: detect step-changes in core data metrics
+# (power plants, ISO-queue GW, deals, DCPI markets) and queue a DRAFT press
+# release for human review. NEVER auto-publishes — a human approves via
+# POST /api/v1/press/<slug>/publish (DCHUB_ADMIN_KEY). Daily, after the
+# ingestion crons (OSM/EIA/ISO) have had time to land new data.
+
+on:
+  schedule:
+    - cron: '40 5 * * *'   # 05:40 UTC daily (after OSM/ISO/EIA refreshes)
+  workflow_dispatch:
+    inputs:
+      dry_run:
+        description: 'true = compare only, do not queue a draft or move the baseline'
+        default: 'false'
+
+permissions:
+  contents: read
+
+env:
+  RAILWAY_BASE: https://dchub-backend-production.up.railway.app
+
+jobs:
+  scan:
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    steps:
+      - name: Run data-growth scan
+        env:
+          ADMIN_KEY: ${{ secrets.DCHUB_ADMIN_KEY }}
+          DRY: ${{ github.event.inputs.dry_run }}
+        run: |
+          set -euo pipefail
+          if [ -z "${ADMIN_KEY:-}" ]; then echo "::warning::DCHUB_ADMIN_KEY not set — skipping"; exit 0; fi
+          QS=""
+          [ "${DRY:-}" = "true" ] && QS="?dry_run=1"
+          echo "POST $RAILWAY_BASE/api/v1/brain/data-growth-scan$QS"
+          resp=$(curl -sS --max-time 60 -X POST -H "X-Admin-Key: $ADMIN_KEY" \
+            "$RAILWAY_BASE/api/v1/brain/data-growth-scan$QS")
+          echo "$resp" | python3 -m json.tool 2>/dev/null || echo "$resp"
+          # One-line summary (single-line python to stay YAML-safe inside run:|)
+          echo "$resp" | python3 -c "import sys,json;d=json.load(sys.stdin);w=d.get('wins') or [];print('::notice::data-growth radar: '+('queued draft '+str(d.get('draft_slug'))+' — '+'; '.join(str(x.get('metric'))+' +'+str(x.get('pct'))+'%' for x in w) if w else 'no step-change this run (baseline advanced)'))" 2>/dev/null || true
