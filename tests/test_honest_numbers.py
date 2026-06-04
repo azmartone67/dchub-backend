@@ -94,7 +94,10 @@ def test_no_inflated_platform_counts():
 
 def test_no_inflated_market_counts():
     """DCPI universe is 232/233 — not 276/280+/285/286/289 (SPP-clone inflation)."""
-    pats = [re.compile(r"\b(27[6-9]|28[0-9])\+?\s+(power\s+|US\s+power\s+|DCPI\s+)?markets", re.I)]
+    pats = [re.compile(r"\b(27[6-9]|28[0-9])\+?\s+(power\s+|US\s+power\s+|DCPI\s+)?markets", re.I),
+            # dict-literal form `"markets": 232` — number AFTER the word, so the
+            # phrase pattern above misses it. This is what bit canonical_stats._FALLBACK.
+            re.compile(r'["\']markets["\']\s*:\s*(27[6-9]|28[0-9])\b')]
     hits = _scan(pats)
     assert not hits, ("Re-introduced an inflated DCPI market count — the verified universe "
                       "is 232 (live /api/v1/dcpi/scores=233):\n" + _fmt(hits))
@@ -107,6 +110,21 @@ def test_no_understated_country_count():
     hits = _scan(pats)
     assert not hits, ("Re-introduced the understated '140+ countries' — the verified count "
                       "is 178 (say '170+'):\n" + _fmt(hits))
+
+
+def test_no_understated_facility_count():
+    """Facility coverage is ~21,432 (live /api/v1/stats) — say "21,000+", never the
+    stale "20,000+"/"20,534" understatements. Swept 31 backend .py + a frontend snippet
+    2026-06-03. EXCLUDES the swap-template (marketing_engine.py) + dormant downgrader
+    (frontend_stat_normalizer.py) via _EXCLUDE_FILES — their literals are intentional.
+    The Maine "20,000+ sq ft facilities" tax rule is unaffected (sq ft between the number
+    and 'facilit')."""
+    pats = [re.compile(r"20,000\+\s*facilit", re.I),
+            re.compile(r"\b20,?534\b"),
+            re.compile(r"\b20[Kk]\+?\s*facilit")]
+    hits = _scan(pats)
+    assert not hits, ("Re-introduced an understated facility count — the verified count is "
+                      "~21,432 (say '21,000+'):\n" + _fmt(hits))
 
 
 def test_perf_cache_floors():

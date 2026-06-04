@@ -1,6 +1,6 @@
 """
 DC Hub API Client — Data Center Intelligence
-Drop this file into any Python project for instant access to 20,534+ data centers.
+Drop this file into any Python project for instant access to 21,000+ data centers.
 Zero dependencies (stdlib only). Works with Python 3.7+.
 
 Usage:
@@ -37,7 +37,7 @@ class DCHub:
             return json.loads(r.read())
 
     def search(self, query=None, country=None, limit=20):
-        """Search 20,534+ data center facilities."""
+        """Search 21,000+ data center facilities."""
         return self._get("/api/agent/facilities", {"q": query, "country": country, "limit": limit})
 
     def transactions(self, limit=50, deal_type=None):

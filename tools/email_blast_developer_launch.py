@@ -76,7 +76,7 @@ EMAIL_HTML_TEMPLATE = """\
   </p>
   <hr style="border:none;border-top:1px solid #1e293b;margin:32px 0;">
   <p style="font-size:12px;color:#64748b;line-height:1.5;">
-    DC Hub — data center intelligence for 20,000+ facilities, 170+ countries.<br>
+    DC Hub — data center intelligence for 21,000+ facilities, 170+ countries.<br>
     <a href="https://dchub.cloud/unsubscribe?u={user_id}" style="color:#64748b;">Unsubscribe</a>
     &middot;
     <a href="https://dchub.cloud" style="color:#64748b;">dchub.cloud</a>

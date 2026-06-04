@@ -75,7 +75,7 @@ def setup_google_routes(app):
                     "name": "DC Hub",
                     "alternateName": "DC Hub Nexus",
                     "url": FRONTEND_URL,
-                    "description": "Real-time data center intelligence platform tracking 20,000+ facilities across 170+ countries.",
+                    "description": "Real-time data center intelligence platform tracking 21,000+ facilities across 170+ countries.",
                     "foundingDate": "2024",
                     "founder": {
                         "@type": "Person",
@@ -105,7 +105,7 @@ def setup_google_routes(app):
                     "@type": "Dataset",
                     "@id": f"{FRONTEND_URL}/#facilities-dataset",
                     "name": "Global Data Center Facilities Database",
-                    "description": "Comprehensive database of 20,000+ data center facilities across 170+ countries.",
+                    "description": "Comprehensive database of 21,000+ data center facilities across 170+ countries.",
                     "url": f"{FRONTEND_URL}/facilities",
                     "keywords": ["data centers", "colocation", "cloud infrastructure", "facility database"],
                     "creator": {"@id": f"{FRONTEND_URL}/#organization"},
@@ -189,7 +189,7 @@ def setup_google_routes(app):
             "structured_data": f"{BASE_URL}/api/schema-org",
             "capabilities": {
                 "facility_search": {
-                    "description": "Search 20,000+ data center facilities worldwide",
+                    "description": "Search 21,000+ data center facilities worldwide",
                     "endpoint": f"{BASE_URL}/api/v1/facilities",
                     "method": "GET",
                     "params": ["q", "country", "limit"]
@@ -238,7 +238,7 @@ def setup_google_routes(app):
         """Unified discovery index for all AI platforms."""
         return jsonify({
             "platform": "DC Hub Nexus",
-            "description": "Data Center Intelligence Platform — 20,000+ facilities, 170+ countries",
+            "description": "Data Center Intelligence Platform — 21,000+ facilities, 170+ countries",
             "version": API_VERSION,
             "generated_at": datetime.now(timezone.utc).isoformat(),
             "api_base": BASE_URL,

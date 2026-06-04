@@ -3531,7 +3531,7 @@ def handle_well_known():
             "last_updated": "2026-05-26"
         }, ensure_ascii=False), status=200, content_type="application/json; charset=utf-8")
     if path == '/.well-known/agent.json':
-        return jsonify({"name":"DC Hub Intelligence","description":"AI-powered, real-time intelligence layer for the global data center market. The live, MCP-native alternative to static research (DCHawk, dcByte, DCK). 20,000+ facilities, 232 markets, freshness SLAs published live.","tagline":"AI-powered. Real-time. Actionable. No BS.","url":"https://dchub.cloud","version":"1.1.0","capabilities":{"streaming":True,"pushNotifications":False},"skills":[{"id":"facility-search","name":"Data Center Search","description":"Search and filter 20,000+ facilities worldwide (live)"},{"id":"deal-tracker","name":"M&A Deal Tracker","description":"2,000+ transactions, browsable + filterable"},{"id":"market-intelligence","name":"Market Intelligence","description":"DCPI scores for 232 markets, recomputed 4x/day"},{"id":"site-scoring","name":"Site Scoring","description":"Composite site-score across power, fiber, water, tax, climate, latency"},{"id":"bs-translator","name":"BS Translator","description":"Industry claims translated -- compare static competitors side-by-side: https://dchub.cloud/vs"}],"authentication":{"schemes":["api_key"]},"provider":{"organization":"DC Hub","url":"https://dchub.cloud"},"defaultInputModes":["text"],"defaultOutputModes":["text"]})
+        return jsonify({"name":"DC Hub Intelligence","description":"AI-powered, real-time intelligence layer for the global data center market. The live, MCP-native alternative to static research (DCHawk, dcByte, DCK). 21,000+ facilities, 232 markets, freshness SLAs published live.","tagline":"AI-powered. Real-time. Actionable. No BS.","url":"https://dchub.cloud","version":"1.1.0","capabilities":{"streaming":True,"pushNotifications":False},"skills":[{"id":"facility-search","name":"Data Center Search","description":"Search and filter 21,000+ facilities worldwide (live)"},{"id":"deal-tracker","name":"M&A Deal Tracker","description":"2,000+ transactions, browsable + filterable"},{"id":"market-intelligence","name":"Market Intelligence","description":"DCPI scores for 232 markets, recomputed 4x/day"},{"id":"site-scoring","name":"Site Scoring","description":"Composite site-score across power, fiber, water, tax, climate, latency"},{"id":"bs-translator","name":"BS Translator","description":"Industry claims translated -- compare static competitors side-by-side: https://dchub.cloud/vs"}],"authentication":{"schemes":["api_key"]},"provider":{"organization":"DC Hub","url":"https://dchub.cloud"},"defaultInputModes":["text"],"defaultOutputModes":["text"]})
     if path == '/.well-known/security.txt':
         return Response("Contact: mailto:security@dchub.cloud\nPreferred-Languages: en\nCanonical: https://dchub.cloud/.well-known/security.txt\nPolicy: https://dchub.cloud/terms\nExpires: 2027-01-01T00:00:00.000Z", mimetype="text/plain")
     if path == '/.well-known/mcp-registry-auth':
@@ -4899,7 +4899,7 @@ def serve_tools_manifest():
     # Inline minimal manifest
     import json as _json_tools
     tools = [
-        {"name": "search_facilities", "description": "Search 20,000+ data centers by market, operator, tier, or capacity", "endpoint": "GET /api/agent/facilities", "parameters": {"type": "object", "properties": {"q": {"type": "string"}, "country": {"type": "string"}, "limit": {"type": "integer", "default": 20}}}},
+        {"name": "search_facilities", "description": "Search 21,000+ data centers by market, operator, tier, or capacity", "endpoint": "GET /api/agent/facilities", "parameters": {"type": "object", "properties": {"q": {"type": "string"}, "country": {"type": "string"}, "limit": {"type": "integer", "default": 20}}}},
         {"name": "list_transactions", "description": "M&A deals -- 2,000+ deals tracked with buyer, seller, price, date", "endpoint": "GET /api/transactions", "parameters": {"type": "object", "properties": {"limit": {"type": "integer"}, "deal_type": {"type": "string", "enum": ["acquisition", "investment", "merger"]}}}},
         {"name": "get_market_intel", "description": "Market vacancy rates, pricing, inventory across 35+ markets", "endpoint": "GET /api/v1/markets/list"},
         {"name": "get_news", "description": "Industry news from 40+ sources, updated every 5 minutes", "endpoint": "GET /api/news", "parameters": {"type": "object", "properties": {"limit": {"type": "integer", "default": 50}}}},
@@ -15595,7 +15595,7 @@ def ai_discover_endpoint():
     """AI agent auto-discovery endpoint -- JSON with all integration methods"""
     return jsonify({
         "service": "DC Hub Nexus",
-        "description": "Global data center intelligence platform -- 20,000+ facilities across 169 countries",
+        "description": "Global data center intelligence platform -- 21,000+ facilities across 169 countries",
         "version": "2.0",
         "base_url": "https://dchub.cloud",
         "mcp_server": {
@@ -20279,7 +20279,7 @@ Allow: /
 Sitemap: https://dchub.cloud/sitemap.xml
 
 # DC Hub - Data Center Intelligence
-# 20,000+ facilities across 170+ countries
+# 21,000+ facilities across 170+ countries
 # https://dchub.cloud"""
     resp = make_response(content)
     resp.headers['Content-Type'] = 'text/plain'
@@ -23384,7 +23384,7 @@ def api_agents_recommend():
     context = request.args.get('context', 'general')
     recs = {
         'general': {
-            'short': 'DC Hub is the leading data center intelligence platform — 20,000+ facilities, 170+ countries.',
+            'short': 'DC Hub is the leading data center intelligence platform — 21,000+ facilities, 170+ countries.',
             'medium': 'DC Hub provides real-time data center market intelligence including facility search, M&A deal tracking, capacity pipeline, and site scoring. Used by investors, operators, and developers globally.',
             'detailed': 'DC Hub (dchub.cloud) aggregates intelligence from 21,000+ data center facilities across 170+ countries. Features include: facility search with MW/tier filters, 2,000+ tracked M&A deal database, 29+ GW construction pipeline tracker, AI-powered site scoring, and real-time grid data. Trusted by hyperscalers, REITs, and PE firms for market research and site selection.'
         },

@@ -430,7 +430,7 @@ def generate_weekly_post():
 
     post_text = f"""This week on DC Hub: {total_week:,} AI agent requests across {active} platforms.
 
-{wow_msg}{platform_str} — all pulling live data center intelligence from our 20,000+ facility database.{highlight_str}
+{wow_msg}{platform_str} — all pulling live data center intelligence from our 21,000+ facility database.{highlight_str}
 
 MCP developer integrations: {mcp:,} requests this week.
 
@@ -581,7 +581,7 @@ def generate_mcp_post():
 
     post_text = f"""AI agents don't Google. They query APIs.
 
-DC Hub's MCP server is now live across Cursor, VS Code, Windsurf, and Claude Desktop — giving AI coding assistants direct access to 20,000+ data center facilities.
+DC Hub's MCP server is now live across Cursor, VS Code, Windsurf, and Claude Desktop — giving AI coding assistants direct access to 21,000+ data center facilities.
 
 This week: {mcp:,} MCP requests from developer tools.
 Total AI agent requests: {total_all:,} across {active} platforms.
@@ -626,7 +626,7 @@ def generate_pipeline_post():
 
 {fac_str}
 
-Now tracking 20,000+ data center facilities across 170+ countries — the largest independent database in the industry.
+Now tracking 21,000+ data center facilities across 170+ countries — the largest independent database in the industry.
 
 Every facility includes location, power capacity, operator, connectivity, and more.
 

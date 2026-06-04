@@ -31,7 +31,7 @@ import threading
 _FALLBACK = {
     "facilities": 21000,
     "countries": 170,
-    "markets": 286,
+    "markets": 232,          # 2026-06-03: was 286 (SPP-clone inflation, >true live 232-234 — violated "never above true"); fence missed it (format is "markets": N, not "N markets")
     "isos": 7,               # 7 live US ISOs (ERCOT, CAISO, NYISO, MISO, PJM, SPP, ISO-NE)
     "grid_operators": 10,    # 10 North-American grid operators w/ live data (7 US ISOs + TVA + BPA + IESO)
     "utility_bas": 43,       # 43 US utility balancing authorities (live EIA-930)

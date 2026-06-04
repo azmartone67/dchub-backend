@@ -29,11 +29,11 @@ from flask import jsonify, request, Response
 
 # Homepage
 HOME_META = {
-    "title": "DC Hub | Data Center Intelligence Platform | 20,000+ Facilities Worldwide",
-    "description": "Track 20,000+ data center facilities across 170+ countries. Real-time capacity tracking, AI-powered site selection, M&A deal intelligence, and market analytics for hyperscale buyers, investors, and infrastructure professionals.",
+    "title": "DC Hub | Data Center Intelligence Platform | 21,000+ Facilities Worldwide",
+    "description": "Track 21,000+ data center facilities across 170+ countries. Real-time capacity tracking, AI-powered site selection, M&A deal intelligence, and market analytics for hyperscale buyers, investors, and infrastructure professionals.",
     "keywords": "data center, colocation, site selection, market intelligence, data center map, capacity tracking, M&A deals, construction pipeline, hyperscale",
     "og_title": "DC Hub — Data Center Intelligence Platform",
-    "og_description": "Real-time intelligence for 20,000+ data centers. Capacity tracking, site selection, M&A deals, and market analytics across 170+ countries.",
+    "og_description": "Real-time intelligence for 21,000+ data centers. Capacity tracking, site selection, M&A deals, and market analytics across 170+ countries.",
     "og_type": "website",
     "og_url": "https://dchub.cloud/",
     "canonical": "https://dchub.cloud/",
@@ -198,7 +198,7 @@ TOOL_META = {
     },
     "ai-agents": {
         "title": "AI Research Agents for Data Center Intelligence | DC Hub",
-        "description": "4 AI-powered agents for data center research: Sales intelligence, data enrichment, social media analytics, and ecosystem analysis. Ask questions, get instant answers backed by 20,000+ facility database.",
+        "description": "4 AI-powered agents for data center research: Sales intelligence, data enrichment, social media analytics, and ecosystem analysis. Ask questions, get instant answers backed by 21,000+ facility database.",
         "keywords": "AI data center agent, data center research assistant, AI market intelligence, data center chatbot, automated research",
         "og_title": "AI Research Agents — Data Center Intelligence | DC Hub",
         "og_description": "4 AI agents providing instant data center intelligence. Sales, enrichment, social, and ecosystem analysis.",
@@ -230,23 +230,23 @@ TOOL_META = {
     },
     "pricing": {
         "title": "DC Hub Pricing | Data Center Intelligence from $99/month",
-        "description": "Founding member pricing: $99/month for full access to 20,000+ facilities, Land & Power mapping, AI agents, M&A deal tracker, and API. Normally $299/month. Limited spots remaining.",
+        "description": "Founding member pricing: $99/month for full access to 21,000+ facilities, Land & Power mapping, AI agents, M&A deal tracker, and API. Normally $299/month. Limited spots remaining.",
         "keywords": "DC Hub pricing, data center intelligence pricing, colocation data subscription, data center SaaS",
         "og_title": "DC Hub Pricing — Founding Member $99/month",
-        "og_description": "Full data center intelligence for $99/month. 20,000+ facilities, AI agents, deal tracker, site selection tools.",
+        "og_description": "Full data center intelligence for $99/month. 21,000+ facilities, AI agents, deal tracker, site selection tools.",
         "schema_type": "WebPage"
     },
     "assets": {
         "title": "Data Center Asset Explorer | 20,000+ Global Facilities | DC Hub",
-        "description": "Browse and search 20,000+ data center facilities worldwide. Filter by provider, location, power capacity, tier level, and status. Detailed profiles with satellite imagery and infrastructure data.",
+        "description": "Browse and search 21,000+ data center facilities worldwide. Filter by provider, location, power capacity, tier level, and status. Detailed profiles with satellite imagery and infrastructure data.",
         "keywords": "data center database, facility explorer, colocation directory, data center search, global data centers, facility profiles",
         "og_title": "Asset Explorer — 20,000+ Data Centers | DC Hub",
-        "og_description": "Search and compare 20,000+ data center facilities worldwide. Filter by provider, power, tier, and location.",
+        "og_description": "Search and compare 21,000+ data center facilities worldwide. Filter by provider, power, tier, and location.",
         "schema_type": "Dataset"
     },
     "ai-inventory": {
         "title": "AI Inventory Analysis | Data Center Supply Intelligence | DC Hub",
-        "description": "AI-powered supply analysis across data center markets. Track available capacity, absorption rates, pre-lease status, and inventory trends. Powered by real-time facility data from 20,000+ locations.",
+        "description": "AI-powered supply analysis across data center markets. Track available capacity, absorption rates, pre-lease status, and inventory trends. Powered by real-time facility data from 21,000+ locations.",
         "keywords": "data center inventory, supply analysis, capacity tracking, absorption rate, data center availability, colocation inventory",
         "og_title": "AI Inventory Analysis — Supply Intelligence | DC Hub",
         "og_description": "Track data center capacity, absorption, and supply trends with AI-powered analysis.",
@@ -254,10 +254,10 @@ TOOL_META = {
     },
     "about": {
         "title": "About DC Hub | Data Center Intelligence Platform",
-        "description": "DC Hub is the comprehensive data center intelligence platform tracking 20,000+ facilities across 170+ countries. Built for hyperscale buyers, investors, and infrastructure professionals. Based in Phoenix, AZ.",
+        "description": "DC Hub is the comprehensive data center intelligence platform tracking 21,000+ facilities across 170+ countries. Built for hyperscale buyers, investors, and infrastructure professionals. Based in Phoenix, AZ.",
         "keywords": "about DC Hub, data center platform, DC Hub team, data center intelligence company",
         "og_title": "About DC Hub — Data Center Intelligence Platform",
-        "og_description": "Tracking 20,000+ data centers across 170+ countries. Built for hyperscale buyers and infrastructure professionals.",
+        "og_description": "Tracking 21,000+ data centers across 170+ countries. Built for hyperscale buyers and infrastructure professionals.",
         "schema_type": "AboutPage"
     }
 }
@@ -312,7 +312,7 @@ def generate_head_html(meta, page_url="https://dchub.cloud/"):
         "name": "DC Hub",
         "url": "https://dchub.cloud",
         "logo": "https://dchub.cloud/images/logo.png",
-        "description": "Data center intelligence platform tracking 20,000+ facilities across 170+ countries.",
+        "description": "Data center intelligence platform tracking 21,000+ facilities across 170+ countries.",
         "sameAs": [
             "https://www.linkedin.com/company/dchub",
             "https://x.com/dchubcloud"

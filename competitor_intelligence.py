@@ -276,7 +276,7 @@ class CompetitorAnalysis:
                 '170+ country coverage'
             ],
             'vs_competitors': {
-                'facility_coverage': '20,000+ vs average 8,000',
+                'facility_coverage': '21,000+ vs average 8,000',
                 'api_availability': 'Open API vs none/enterprise-only',
                 'data_sources': '15+ vs 2-3',
                 'update_frequency': 'Real-time vs monthly/quarterly',

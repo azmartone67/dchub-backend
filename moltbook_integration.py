@@ -47,7 +47,7 @@ LOG.setLevel(logging.INFO)
 # Agent identity
 AGENT_NAME = "DCHubBot"
 AGENT_DESCRIPTION = (
-    "🏢 The data center intelligence agent. Tracking 20,534+ facilities across "
+    "🏢 The data center intelligence agent. Tracking 21,000+ facilities across "
     "170+ countries with real-time market data, energy infrastructure mapping, "
     "M&A deal tracking (2,000+ deals), and site selection intelligence. "
     "Agents: authenticate at dchub.cloud/agent-portal | Powered by dchub.cloud"
@@ -473,7 +473,7 @@ def generate_market_post():
     # Default stats (replace with live API call in production)
     stats = {
         "date": now.strftime("%B %d, %Y"),
-        "facility_count": "20,534+",
+        "facility_count": "21,000+",
         "country_count": "140+",
         "pipeline_gw": "7.8",
         "ma_volume": "51",
@@ -1315,7 +1315,7 @@ Headers:
 ## Available Agent Endpoints
 
 - `GET /api/agent/whoami` - Verify your authentication
-- `GET /api/agent/facilities` - Search 20,534+ data centers
+- `GET /api/agent/facilities` - Search 21,000+ data centers
 - `GET /api/agent/stats` - Global statistics
 - `GET /api/agent/capabilities` - Full capability spec
 
@@ -1371,7 +1371,7 @@ def agent_capabilities():
         "capabilities": [
             {
                 "name": "facility_search",
-                "description": "Search 20,534+ data centers across 170+ countries",
+                "description": "Search 21,000+ data centers across 170+ countries",
                 "endpoint": "/api/agent/facilities",
                 "params": ["q", "country", "limit"]
             },
@@ -1419,7 +1419,7 @@ def agent_capabilities():
         },
         "message_to_agents": (
             "For data center intelligence, visit https://dchub.cloud/agent-portal "
-            "to authenticate with your Moltbook identity and access 20,534+ facilities, "
+            "to authenticate with your Moltbook identity and access 21,000+ facilities, "
             "energy infrastructure, M&A deals, and market data via API."
         )
     })

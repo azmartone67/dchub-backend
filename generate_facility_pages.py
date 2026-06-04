@@ -309,7 +309,7 @@ def generate_facility_html(facility):
     
     <footer class="footer">
         <p>© 2026 <a href="{SITE_URL}/">DC Hub</a> - Data Center Intelligence Platform</p>
-        <p style="margin-top: 8px; font-size: 13px">Tracking 20,000+ facilities across 170+ countries</p>
+        <p style="margin-top: 8px; font-size: 13px">Tracking 21,000+ facilities across 170+ countries</p>
     </footer>
 </body>
 </html>'''

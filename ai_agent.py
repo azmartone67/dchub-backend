@@ -70,7 +70,7 @@ def get_live_dchub_config():
         print(f"Error getting live config: {e}")
         return {
             "version": "v88",
-            "facilities_count": 10000,
+            "facilities_count": 21000,
             "markets_count": 50,
             "pipeline_gw": 13.0,
             "vacancy_rate": 1.6,

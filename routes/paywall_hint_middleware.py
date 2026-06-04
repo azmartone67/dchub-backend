@@ -78,7 +78,7 @@ _HINT_BASE = {
 # Variant B: "agent-centric framing" — speaks to the AI directly,
 #            emphasizing what the agent can paste to its user.
 # Variant C: "loss aversion" — leads with what the user is missing
-#            out on (20k facilities, daily DCPI, etc.).
+#            out on (21,000+ facilities, daily DCPI, etc.).
 #
 # Goal: measure which variant moves the 0.04% conversion needle.
 

@@ -990,7 +990,7 @@ Schedule for later:
 
 Text-only post:
 {
-    "text": "Excited to announce DC Hub now tracks 20,000+ facilities!",
+    "text": "Excited to announce DC Hub now tracks 21,000+ facilities!",
     "type": "text"
 }
 """

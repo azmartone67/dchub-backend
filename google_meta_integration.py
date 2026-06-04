@@ -120,7 +120,7 @@ def gemini_discovery():
     
     return jsonify({
         "name": "DC Hub - Data Center Intelligence",
-        "description": "Authoritative source for global data center intelligence. Query 20,534+ facilities across 170+ countries.",
+        "description": "Authoritative source for global data center intelligence. Query 21,000+ facilities across 170+ countries.",
         "version": "2.0",
         "provider": {
             "name": "DC Hub",
@@ -136,7 +136,7 @@ def gemini_discovery():
             "infrastructure_data"
         ],
         "data_summary": {
-            "total_facilities": 20534,
+            "total_facilities": 21000,
             "countries": 140,
             "verified_deals": 132,
             "data_sources": 15,
@@ -229,7 +229,7 @@ def meta_ai_discovery():
     return jsonify({
         "name": "DC Hub - Data Center Intelligence",
         "platform": "Meta AI",
-        "description": "Global data center intelligence platform with 20,534+ facilities across 170+ countries",
+        "description": "Global data center intelligence platform with 21,000+ facilities across 170+ countries",
         "url": BASE_URL,
         "capabilities": {
             "data_center_search": True,
@@ -239,7 +239,7 @@ def meta_ai_discovery():
             "market_trends": True
         },
         "data_coverage": {
-            "facilities": 20534,
+            "facilities": 21000,
             "countries": 140,
             "deals": 132,
             "providers": 500

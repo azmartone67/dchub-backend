@@ -32,7 +32,7 @@ NAV_LINKS = [
             {"icon": "\U0001f310", "label": "GDCI", "desc": "Global market index", "href": "/gdci", "badge": "New"},
             {"icon": "\U0001f680", "label": "AI Pipeline", "desc": "Capacity projects", "href": "/ai-pipeline", "badge": "Live"},
             {"icon": "\U0001f4b0", "label": "AI Deals", "desc": "M&A tracker", "href": "/ai-deals", "badge": "Live"},
-            {"icon": "\U0001f3d7\ufe0f", "label": "Asset Explorer", "desc": "20,000+ facilities", "href": "/assets"},
+            {"icon": "\U0001f3d7\ufe0f", "label": "Asset Explorer", "desc": "21,000+ facilities", "href": "/assets"},
             {"icon": "\U0001f4e6", "label": "AI Inventory", "desc": "Supply analysis", "href": "/ai-inventory"},
             {"icon": "\U0001f3c6", "label": "Rankings", "desc": "State infrastructure rankings", "href": "/rankings", "badge": "New"}
         ]

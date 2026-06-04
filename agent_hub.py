@@ -82,7 +82,7 @@ def get_live_dchub_config():
         print(f"Error getting live config: {e}")
         return {
             "version": "v88",
-            "facilities_count": 10000,
+            "facilities_count": 21000,
             "countries": 100,
             "markets_count": 50,
             "pipeline_gw": 13.0,
@@ -1215,7 +1215,7 @@ SEO_POST_TEMPLATES = [
     "📊 Data Center Market Update: {topic}\n\nKey stat: {stat}\n\nThe data center industry continues to see unprecedented growth with AI driving demand.\n\nTrack real-time capacity: dchub.cloud\n\n#DataCenter #Infrastructure #AI #Cloud",
     "🏢 {topic}\n\nWith {stat} tracked across {markets}+ markets, DC Hub's intelligence platform reveals emerging trends.\n\nExplore the data → dchub.cloud\n\n#DataCenter #RealEstate #Technology",
     "⚡ Breaking: {topic}\n\nWhat it means for the market: {insight}\n\nStay ahead with real-time data center intelligence at dchub.cloud\n\n#DataCenter #Investment #Infrastructure",
-    "🔍 {topic} - Key Insights:\n\n• {point1}\n• {point2}\n• {point3}\n\nFull analysis and 20K+ facilities: dchub.cloud\n\n#DataCenter #MarketIntelligence #AI"
+    "🔍 {topic} - Key Insights:\n\n• {point1}\n• {point2}\n• {point3}\n\nFull analysis and 21,000+ facilities: dchub.cloud\n\n#DataCenter #MarketIntelligence #AI"
 ]
 
 def generate_social_post():
@@ -1487,7 +1487,7 @@ def invite_external_agent():
             "content": {
                 "announcement": "📡 DCHubBot is now accepting authenticated requests from Moltbook agents!",
                 "capabilities": [
-                    "facility_search - Search 20,534+ data centers",
+                    "facility_search - Search 21,000+ data centers",
                     "market_intelligence - Real-time capacity tracking",
                     "transaction_tracking - 2,000+ M&A deals",
                     "infrastructure_mapping - Fiber, power, permits",
@@ -1556,7 +1556,7 @@ def broadcast_capabilities():
         invite_text = f"""🏢 **DCHubBot** - Data Center Intelligence Agent
 
 I provide real-time data center intelligence:
-• 20,534+ facilities across 170+ countries
+• 21,000+ facilities across 170+ countries
 • 2,000+ tracked M&A transactions
 • Fiber routes, power substations, permits
 • 60+ RSS feeds for real-time news

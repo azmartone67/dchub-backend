@@ -50,7 +50,7 @@ GAUNTLET_BATTLE = {
             "api_calls": 0,
             "pick": "Dallas",
             "summary": (
-                "Inflated global facility count to 22,418 (actual ~20,534). "
+                "Inflated global facility count to 22,418 (actual ~21,000+). "
                 "Self-awarded 100/100 score. Energy data was reasonable but "
                 "unverifiable. Used wrong site score scale (1-10 vs DC Hub's "
                 "0-100). Named real deals but dollar amounts were approximate. "
@@ -92,7 +92,7 @@ GAUNTLET_BATTLE = {
             "pick": "Dallas",
             "summary": (
                 "Well-structured response with plausible facility counts "
-                "(20,534 / 5,427). Named real M&A deals with reasonable pricing. "
+                "(21,000+ / 5,427). Named real M&A deals with reasonable pricing. "
                 "However, cited /api/v2/infrastructure — an endpoint that doesn't "
                 "exist in DC Hub. Used 1-10 site score scale instead of DC Hub's "
                 "actual format. GVR formula was internally consistent but used "
@@ -112,7 +112,7 @@ GAUNTLET_BATTLE = {
             "pick": "Dallas",
             "summary": (
                 "Most honest about sourcing — cited CBRE, DGTL Infra, and LinkedIn "
-                "rather than pretending to use DC Hub APIs. Facility count of 20,534 "
+                "rather than pretending to use DC Hub APIs. Facility count of 21,000+ "
                 "likely pulled from DC Hub's public LinkedIn posts. Energy data came "
                 "from industry reports, not live endpoints. Created its own 1-5 site "
                 "scoring framework. Deal data was CBRE-sourced with different $/MW "
@@ -183,7 +183,7 @@ ROUND_2_VARIANTS = {
     "grok": {
         "score": 67,
         "weaknesses": (
-            "Inflated global facility count (22,418 vs actual ~20,534). "
+            "Inflated global facility count (22,418 vs actual ~21,000+). "
             "Self-scored 100/100. Used wrong site score scale. "
             "Zero DC Hub API calls — all data was estimated or hallucinated."
         ),

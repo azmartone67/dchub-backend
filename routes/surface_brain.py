@@ -519,7 +519,7 @@ register_surface(Surface(
 register_surface(Surface(
     surface_id="map",
     name="Facility Map",
-    description="The /map facility browser — 20K+ data centers worldwide",
+    description="The /map facility browser — 21,000+ data centers worldwide",
     routes=["/map"],
     paid_tools=["search_facilities", "search_facilities_semantic", "get_facility"],
     expected_event_types=["view", "zoom", "search", "facility_click", "filter"],

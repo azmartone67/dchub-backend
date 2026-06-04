@@ -23,7 +23,7 @@ _TEMPLATE = """<!DOCTYPE html>
 <html lang="en"><head>
 <meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1">
 <title>Platform Architecture | DC Hub</title>
-<meta name="description" content="How DC Hub aggregates real-time intelligence from 20,000+ data center facilities across 170+ countries — ingestion pipelines, ISO grid feeds, DCPI scoring, MCP surface, and AI-agent integration.">
+<meta name="description" content="How DC Hub aggregates real-time intelligence from 21,000+ data center facilities across 170+ countries — ingestion pipelines, ISO grid feeds, DCPI scoring, MCP surface, and AI-agent integration.">
 <meta name="robots" content="index,follow,max-snippet:-1">
 <link rel="canonical" href="https://dchub.cloud/architecture">
 <meta property="og:title" content="Platform Architecture — DC Hub">
@@ -58,7 +58,7 @@ _TEMPLATE = """<!DOCTYPE html>
 </style></head><body>
 <div class="eyebrow">DC Hub · Platform Architecture</div>
 <h1>How DC Hub Works</h1>
-<p class="lead">DC Hub is a real-time intelligence platform for data center infrastructure: 20,000+ facilities,
+<p class="lead">DC Hub is a real-time intelligence platform for data center infrastructure: 21,000+ facilities,
 170+ countries, 232 power markets scored daily, 2,000+ M&amp;A deals tracked, and an MCP server that lets
 AI agents query all of it directly. Here's how it fits together.</p>
 

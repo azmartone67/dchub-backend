@@ -16,7 +16,7 @@ def register_nav_config_route(app, db=None):
             {"id": "intelligence", "label": "Intelligence", "type": "dropdown", "items": [
                 {"icon": "\ud83d\ude80", "label": "AI Pipeline", "desc": "Capacity projects", "href": "/ai-pipeline", "badge": "Live"},
                 {"icon": "\ud83d\udcb0", "label": "AI Deals", "desc": "M&A tracker", "href": "/ai-deals", "badge": "Live"},
-                {"icon": "\ud83c\udfd7\ufe0f", "label": "Asset Explorer", "desc": "20,000+ facilities", "href": "/assets"},
+                {"icon": "\ud83c\udfd7\ufe0f", "label": "Asset Explorer", "desc": "21,000+ facilities", "href": "/assets"},
                 {"icon": "\ud83d\udce6", "label": "AI Inventory", "desc": "Supply analysis", "href": "/ai-inventory"}
             ]},
             {"id": "tools", "label": "Tools", "type": "dropdown", "items": [
