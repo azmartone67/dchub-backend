@@ -9,7 +9,7 @@ def register_nav_config_route(app, db=None):
         nav_links = [
             {"id": "home", "label": "Home", "href": "/", "type": "link"},
             {"id": "markets", "label": "Markets", "type": "dropdown", "items": [
-                {"icon": "\ud83d\uddfa\ufe0f", "label": "Global Markets", "desc": "Explore 140+ countries", "href": "/markets/"},
+                {"icon": "\ud83d\uddfa\ufe0f", "label": "Global Markets", "desc": "Explore 170+ countries", "href": "/markets/"},
                 {"icon": "\ud83d\udcca", "label": "Market Analysis", "desc": "Trends & insights", "href": "/market-intelligence"},
                 {"icon": "\ud83d\udcc8", "label": "Analytics", "desc": "Data dashboards", "href": "/analytics"}
             ]},

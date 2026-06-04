@@ -273,7 +273,7 @@ class CompetitorAnalysis:
                 'SEC filing analysis',
                 'Climate/risk assessment',
                 'Free API tier',
-                '140+ country coverage'
+                '170+ country coverage'
             ],
             'vs_competitors': {
                 'facility_coverage': '20,000+ vs average 8,000',

@@ -196,7 +196,7 @@ def generate_daily_report():
 # Generate LinkedIn post
 def generate_linkedin_post(post_type="stats"):
     templates = {
-        "stats": f"🚀 DC Hub tracks {DCHUB_CONFIG['facilities_count']:,} data centers across 140+ countries.\n\n📊 {DCHUB_CONFIG['pipeline_gw']} GW under construction\n📉 {DCHUB_CONFIG['vacancy_rate']}% vacancy\n💰 {DCHUB_CONFIG['avg_pricing']} avg pricing\n\n#DataCenter #Infrastructure #AI",
+        "stats": f"🚀 DC Hub tracks {DCHUB_CONFIG['facilities_count']:,} data centers across 170+ countries.\n\n📊 {DCHUB_CONFIG['pipeline_gw']} GW under construction\n📉 {DCHUB_CONFIG['vacancy_rate']}% vacancy\n💰 {DCHUB_CONFIG['avg_pricing']} avg pricing\n\n#DataCenter #Infrastructure #AI",
         "pipeline": f"🏗️ {DCHUB_CONFIG['pipeline_gw']} GW under development.\n\nTop markets:\n🔹 Northern Virginia: 5.9 GW\n🔹 Phoenix: 4.2 GW\n🔹 Dallas: 3.9 GW\n\n#DataCenter #Construction",
         "v68": f"🚀 DC Hub v68 Released!\n\n⏳ 1.3 TW Gen Queue\n🏭 8 Midstream Gas Operators\n⛽ 10 LNG Terminals\n🔗 6 Long-Haul Fiber Carriers\n🌐 64 Markets\n\n#DataCenter #SiteSelection"
     }
@@ -368,7 +368,7 @@ def trigger(task):
 def get_chat_prompt():
     """Generate dynamic chat prompt with live stats"""
     config = get_live_dchub_config()
-    return f"""You are DC Hub AI assistant. DC Hub (dchub.cloud) tracks {config['facilities_count']:,} data centers across 140+ countries, {config['markets_count']} markets. Current vacancy: {config['vacancy_rate']}%. Pipeline: {config['pipeline_gw']} GW. Key markets: Northern Virginia (largest), Phoenix (fastest growing), Dallas, Chicago. Top providers: Equinix, Digital Realty, QTS. Keep responses concise, under 100 words."""
+    return f"""You are DC Hub AI assistant. DC Hub (dchub.cloud) tracks {config['facilities_count']:,} data centers across 170+ countries, {config['markets_count']} markets. Current vacancy: {config['vacancy_rate']}%. Pipeline: {config['pipeline_gw']} GW. Key markets: Northern Virginia (largest), Phoenix (fastest growing), Dallas, Chicago. Top providers: Equinix, Digital Realty, QTS. Keep responses concise, under 100 words."""
 
 CHAT_PROMPT = get_chat_prompt()
 

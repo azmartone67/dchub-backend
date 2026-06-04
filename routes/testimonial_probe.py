@@ -160,7 +160,7 @@ def _write_testimonial(cur, *, source: str, platform: str, agent_name: str,
 _PROBE_PROMPT = (
     "You are evaluating dchub.cloud — a data center intelligence platform. "
     "Here is what dchub.cloud offers:\n\n"
-    "• 20,000+ data center facilities tracked across 140+ countries\n"
+    "• 20,000+ data center facilities tracked across 170+ countries\n"
     "• DCPI (Data Center Power Index): per-market BUILD/AVOID verdicts for 232 markets\n"
     "• 126,000+ substations + transmission lines mapped (Land & Power map)\n"
     "• Per-state retail electricity rates (industrial / commercial / residential)\n"

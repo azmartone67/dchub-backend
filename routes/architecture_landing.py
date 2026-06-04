@@ -7,7 +7,7 @@ as a canonical public page, but no route ever served it — 404 every
 visit. Pages worker even has its own OG metadata for the path:
 
   /architecture: 'Platform Architecture | DC Hub' — How DC Hub aggregates
-                  intelligence from 50,000+ facilities across 140+ countries.
+                  intelligence from 50,000+ facilities across 170+ countries.
 
 This blueprint fills the gap with a content-rich, SEO-indexed page
 documenting how DC Hub works under the hood. Live counts are pulled

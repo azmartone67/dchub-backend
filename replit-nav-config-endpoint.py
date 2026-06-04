@@ -32,7 +32,7 @@ def register_nav_config_route(app, db=None):
             {
                 "id": "markets", "label": "Markets", "type": "dropdown",
                 "items": [
-                    {"icon": "🗺️", "label": "Global Markets", "desc": "Explore 140+ countries", "href": "/markets/"},
+                    {"icon": "🗺️", "label": "Global Markets", "desc": "Explore 170+ countries", "href": "/markets/"},
                     {"icon": "📊", "label": "Market Analysis", "desc": "Trends & insights", "href": "/market-intelligence"},
                     {"icon": "📈", "label": "Analytics", "desc": "Data dashboards", "href": "/analytics"},
                 ]

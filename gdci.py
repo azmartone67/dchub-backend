@@ -293,7 +293,7 @@ GDCI_METHODOLOGY = {
         "of the global data center market. It synthesizes supply-side capacity metrics, "
         "demand signals, capital flows, energy infrastructure readiness, and market liquidity "
         "into a single 0-100 score. Computed from DC Hub's 20,000+ facility database "
-        "across 140+ countries."
+        "across 170+ countries."
     ),
     "scale": {
         "range": "0-100",
@@ -326,7 +326,7 @@ GDCI_METHODOLOGY = {
     },
     "update_frequency": "Hourly (cached), Live on request",
     "data_sources": [
-        "DC Hub facility database (20,000+ facilities, 140+ countries)",
+        "DC Hub facility database (20,000+ facilities, 170+ countries)",
         "DC Hub M&A/deals tracker",
         "DC Hub capacity pipeline analytics",
         "Market intelligence rate data",

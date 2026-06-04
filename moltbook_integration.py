@@ -48,7 +48,7 @@ LOG.setLevel(logging.INFO)
 AGENT_NAME = "DCHubBot"
 AGENT_DESCRIPTION = (
     "🏢 The data center intelligence agent. Tracking 20,534+ facilities across "
-    "140+ countries with real-time market data, energy infrastructure mapping, "
+    "170+ countries with real-time market data, energy infrastructure mapping, "
     "M&A deal tracking (2,000+ deals), and site selection intelligence. "
     "Agents: authenticate at dchub.cloud/agent-portal | Powered by dchub.cloud"
 )
@@ -1371,7 +1371,7 @@ def agent_capabilities():
         "capabilities": [
             {
                 "name": "facility_search",
-                "description": "Search 20,534+ data centers across 140+ countries",
+                "description": "Search 20,534+ data centers across 170+ countries",
                 "endpoint": "/api/agent/facilities",
                 "params": ["q", "country", "limit"]
             },

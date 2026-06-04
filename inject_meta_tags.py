@@ -35,10 +35,10 @@ from pathlib import Path
 
 HOME_META = {
     "title": "DC Hub | Data Center Intelligence Platform | 21,000+ Facilities Worldwide",
-    "description": "Track 21,000+ data center facilities across 140+ countries. Real-time capacity tracking, AI-powered site selection, M&A deal intelligence, and market analytics for hyperscale buyers, investors, and infrastructure professionals.",
+    "description": "Track 21,000+ data center facilities across 170+ countries. Real-time capacity tracking, AI-powered site selection, M&A deal intelligence, and market analytics for hyperscale buyers, investors, and infrastructure professionals.",
     "keywords": "data center, colocation, site selection, market intelligence, data center map, capacity tracking, M&A deals, construction pipeline, hyperscale",
     "og_title": "DC Hub — Data Center Intelligence Platform",
-    "og_description": "Real-time intelligence for 21,000+ data centers. Capacity tracking, site selection, M&A deals, and market analytics across 140+ countries.",
+    "og_description": "Real-time intelligence for 21,000+ data centers. Capacity tracking, site selection, M&A deals, and market analytics across 170+ countries.",
 }
 
 MARKET_META = {
@@ -172,7 +172,7 @@ TOOL_META = {
     },
     "about": {
         "title": "About DC Hub | Data Center Intelligence Platform",
-        "description": "DC Hub tracks 21,000+ data center facilities across 140+ countries. Built for hyperscale buyers, investors, and infrastructure professionals. Based in Phoenix, AZ.",
+        "description": "DC Hub tracks 21,000+ data center facilities across 170+ countries. Built for hyperscale buyers, investors, and infrastructure professionals. Based in Phoenix, AZ.",
         "keywords": "about DC Hub, data center platform, data center intelligence",
     },
     "assets": {
@@ -429,7 +429,7 @@ def process_directory(build_dir):
                 page_name = ' '.join(w.title() for w in slug.split('-'))
                 meta = {
                     'title': f'{page_name} | DC Hub',
-                    'description': f'DC Hub — Data center intelligence platform tracking 21,000+ facilities across 140+ countries. Real-time capacity, site selection, and market analytics.',
+                    'description': f'DC Hub — Data center intelligence platform tracking 21,000+ facilities across 170+ countries. Real-time capacity, site selection, and market analytics.',
                     'keywords': f'data center, DC Hub, {page_name.lower()}',
                 }
                 url = f'https://dchub.cloud/{slug}'

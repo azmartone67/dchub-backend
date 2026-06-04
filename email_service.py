@@ -553,7 +553,7 @@ WELCOME_SERIES_TEMPLATES = {
             
             <h2>Quick recap of what you can do:</h2>
             <ul style="margin: 16px 0 24px 24px; color: #4a4a5a;">
-                <li style="margin-bottom: 8px;">Search 20,000+ data centers across 140+ countries</li>
+                <li style="margin-bottom: 8px;">Search 20,000+ data centers across 170+ countries</li>
                 <li style="margin-bottom: 8px;">Compare markets with real power and fiber data</li>
                 <li style="margin-bottom: 8px;">Generate professional PDF reports</li>
                 <li style="margin-bottom: 8px;">Use AI agents for sales research and content</li>

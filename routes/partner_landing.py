@@ -145,7 +145,7 @@ _PARTNERS = {
                        "Google, interconnection queues at non-Google sites. DC Hub "
                        "fills the not-Google universe."),
         "value_bullets": [
-            "13k+ non-Google facilities tracked daily across 140+ countries",
+            "13k+ non-Google facilities tracked daily across 170+ countries",
             "2,000+ tracked M&A deals — every hyperscaler acquisition, every PE roll-up",
             "DCPI verdicts at every CSP region (AWS, Azure, OCI, CoreWeave, Lambda)",
             "MCP tool ready for Vertex AI + Gemini function-calling integration",

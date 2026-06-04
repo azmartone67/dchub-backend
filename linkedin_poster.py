@@ -620,13 +620,13 @@ def generate_pipeline_post():
             fac_lines.append(line)
         fac_str = chr(10).join(fac_lines)
     else:
-        fac_str = "→ New facilities added daily across 140+ countries"
+        fac_str = "→ New facilities added daily across 170+ countries"
 
     post_text = f"""DC Hub's facility database keeps growing.
 
 {fac_str}
 
-Now tracking 20,000+ data center facilities across 140+ countries — the largest independent database in the industry.
+Now tracking 20,000+ data center facilities across 170+ countries — the largest independent database in the industry.
 
 Every facility includes location, power capacity, operator, connectivity, and more.
 

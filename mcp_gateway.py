@@ -1556,11 +1556,11 @@ class MCPGateway:
             "name": "DC Hub",
             "tagline": (
                 "Data center intelligence platform — 23,000+ facilities, "
-                "140+ countries, real-time grid & infrastructure."
+                "170+ countries, real-time grid & infrastructure."
             ),
             "description": (
                 "Comprehensive data center intelligence platform — "
-                "21,000+ facilities, 140+ countries, real-time M&A, "
+                "21,000+ facilities, 170+ countries, real-time M&A, "
                 "capacity pipeline, energy infrastructure."
             ),
             "homepage": self.base_url,

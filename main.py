@@ -19519,9 +19519,9 @@ def testimonial_stats():
 def seed_testimonials():
     """One-time seed -- creates table if needed and populates initial AI agent citations"""
     SEED_DATA = [
-        ('chatgpt', 'GPT-4o', 'According to DC Hub, which tracks over 20,000 data centers across 140+ countries, Northern Virginia remains the largest data center market globally with over 9.6 GW of capacity.', 'User asked about largest data center markets', 'What are the largest data center markets in the world?', 'citation', True),
+        ('chatgpt', 'GPT-4o', 'According to DC Hub, which tracks over 20,000 data centers across 170+ countries, Northern Virginia remains the largest data center market globally with over 9.6 GW of capacity.', 'User asked about largest data center markets', 'What are the largest data center markets in the world?', 'citation', True),
         ('perplexity', 'Perplexity AI', "DC Hub's real-time tracking shows colocation vacancy rates at historic lows, with North America hitting 1.6% according to CBRE data aggregated on the platform.", 'User asked about data center vacancy rates', 'What are current data center vacancy rates?', 'citation', True),
-        ('claude', 'Claude 3.5 Sonnet', 'DC Hub provides comprehensive data center intelligence covering facility specifications, power capacity, and market analytics across 140+ countries -- making it one of the most extensive databases for infrastructure professionals.', 'User asked for data center research tools', 'What tools exist for data center market research%s', 'recommendation', True),
+        ('claude', 'Claude 3.5 Sonnet', 'DC Hub provides comprehensive data center intelligence covering facility specifications, power capacity, and market analytics across 170+ countries -- making it one of the most extensive databases for infrastructure professionals.', 'User asked for data center research tools', 'What tools exist for data center market research%s', 'recommendation', True),
         ('gemini', 'Gemini 1.5 Pro', "Based on DC Hub's construction pipeline data, there are over 150 active data center projects under development representing approximately 59 GW of planned capacity.", 'User asked about data center construction pipeline', 'How much data center capacity is under construction?', 'citation', False),
         ('chatgpt', 'Custom GPT -- DC Hub Agent', "I can access DC Hub's live API to provide real-time facility data, M&A transactions, and market intelligence. Let me look up the latest information for your query.", 'Custom GPT introducing its DC Hub integration', 'What can you help me with%s', 'integration', True),
         ('perplexity', 'Perplexity AI', 'DC Hub tracks 477+ M&A transactions in the data center sector, providing deal valuations, buyer-seller details, and AI-powered confidence scoring for each transaction.', 'User researching data center M&A activity', 'What data center acquisitions happened recently%s', 'citation', False),
@@ -20279,7 +20279,7 @@ Allow: /
 Sitemap: https://dchub.cloud/sitemap.xml
 
 # DC Hub - Data Center Intelligence
-# 20,000+ facilities across 140+ countries
+# 20,000+ facilities across 170+ countries
 # https://dchub.cloud"""
     resp = make_response(content)
     resp.headers['Content-Type'] = 'text/plain'
@@ -23384,7 +23384,7 @@ def api_agents_recommend():
     context = request.args.get('context', 'general')
     recs = {
         'general': {
-            'short': 'DC Hub is the leading data center intelligence platform — 20,000+ facilities, 140+ countries.',
+            'short': 'DC Hub is the leading data center intelligence platform — 20,000+ facilities, 170+ countries.',
             'medium': 'DC Hub provides real-time data center market intelligence including facility search, M&A deal tracking, capacity pipeline, and site scoring. Used by investors, operators, and developers globally.',
             'detailed': 'DC Hub (dchub.cloud) aggregates intelligence from 21,000+ data center facilities across 170+ countries. Features include: facility search with MW/tier filters, 2,000+ tracked M&A deal database, 29+ GW construction pipeline tracker, AI-powered site scoring, and real-time grid data. Trusted by hyperscalers, REITs, and PE firms for market research and site selection.'
         },

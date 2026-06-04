@@ -30,10 +30,10 @@ from flask import jsonify, request, Response
 # Homepage
 HOME_META = {
     "title": "DC Hub | Data Center Intelligence Platform | 20,000+ Facilities Worldwide",
-    "description": "Track 20,000+ data center facilities across 140+ countries. Real-time capacity tracking, AI-powered site selection, M&A deal intelligence, and market analytics for hyperscale buyers, investors, and infrastructure professionals.",
+    "description": "Track 20,000+ data center facilities across 170+ countries. Real-time capacity tracking, AI-powered site selection, M&A deal intelligence, and market analytics for hyperscale buyers, investors, and infrastructure professionals.",
     "keywords": "data center, colocation, site selection, market intelligence, data center map, capacity tracking, M&A deals, construction pipeline, hyperscale",
     "og_title": "DC Hub — Data Center Intelligence Platform",
-    "og_description": "Real-time intelligence for 20,000+ data centers. Capacity tracking, site selection, M&A deals, and market analytics across 140+ countries.",
+    "og_description": "Real-time intelligence for 20,000+ data centers. Capacity tracking, site selection, M&A deals, and market analytics across 170+ countries.",
     "og_type": "website",
     "og_url": "https://dchub.cloud/",
     "canonical": "https://dchub.cloud/",
@@ -254,10 +254,10 @@ TOOL_META = {
     },
     "about": {
         "title": "About DC Hub | Data Center Intelligence Platform",
-        "description": "DC Hub is the comprehensive data center intelligence platform tracking 20,000+ facilities across 140+ countries. Built for hyperscale buyers, investors, and infrastructure professionals. Based in Phoenix, AZ.",
+        "description": "DC Hub is the comprehensive data center intelligence platform tracking 20,000+ facilities across 170+ countries. Built for hyperscale buyers, investors, and infrastructure professionals. Based in Phoenix, AZ.",
         "keywords": "about DC Hub, data center platform, DC Hub team, data center intelligence company",
         "og_title": "About DC Hub — Data Center Intelligence Platform",
-        "og_description": "Tracking 20,000+ data centers across 140+ countries. Built for hyperscale buyers and infrastructure professionals.",
+        "og_description": "Tracking 20,000+ data centers across 170+ countries. Built for hyperscale buyers and infrastructure professionals.",
         "schema_type": "AboutPage"
     }
 }
@@ -312,7 +312,7 @@ def generate_head_html(meta, page_url="https://dchub.cloud/"):
         "name": "DC Hub",
         "url": "https://dchub.cloud",
         "logo": "https://dchub.cloud/images/logo.png",
-        "description": "Data center intelligence platform tracking 20,000+ facilities across 140+ countries.",
+        "description": "Data center intelligence platform tracking 20,000+ facilities across 170+ countries.",
         "sameAs": [
             "https://www.linkedin.com/company/dchub",
             "https://x.com/dchubcloud"

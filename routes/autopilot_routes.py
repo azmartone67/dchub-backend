@@ -716,7 +716,7 @@ def social_test():
 
     test_message = custom_message or """🚀 DC Hub is live!
 
-Track 20,000+ data centers across 140+ countries.
+Track 20,000+ data centers across 170+ countries.
 Real-time market intelligence for hyperscale infrastructure.
 
 Explore now: https://dchub.cloud

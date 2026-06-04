@@ -100,6 +100,15 @@ def test_no_inflated_market_counts():
                       "is 232 (live /api/v1/dcpi/scores=233):\n" + _fmt(hits))
 
 
+def test_no_understated_country_count():
+    """Country coverage is 178 — say "170+", never the stale "140+" understatement.
+    Swept sitewide 2026-06-03 (26 backend .py + 49 frontend pages); this locks it."""
+    pats = [re.compile(r"\b140\+\s*countr", re.I), re.compile(r"\b140\s+countries\b", re.I)]
+    hits = _scan(pats)
+    assert not hits, ("Re-introduced the understated '140+ countries' — the verified count "
+                      "is 178 (say '170+'):\n" + _fmt(hits))
+
+
 def test_perf_cache_floors():
     """Lock the two cache settings whose drift previously stalled the worker pool."""
     fails = []

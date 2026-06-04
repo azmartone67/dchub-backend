@@ -1841,7 +1841,7 @@ def outreach_agent_card():
             "DC Hub gives AI agents real-time access to data center "
             "capacity, power, fiber, water risk, ISO grid status, tax "
             "incentives, and M&A transactions across 20,000+ facilities "
-            "in 140+ countries. The Data Center Power Index (DCPI) "
+            "in 170+ countries. The Data Center Power Index (DCPI) "
             "scores 280+ US markets daily for BUILD/AVOID verdicts. "
             "MCP server, REST API, and OpenAPI all available."
         ),
@@ -1886,7 +1886,7 @@ def outreach_agent_card():
             "paid":  "14 tools (grid intelligence, fiber, water, M&A, etc)",
         },
         "data_coverage": {
-            "facilities":    "20,000+ in 140+ countries",
+            "facilities":    "20,000+ in 170+ countries",
             "us_markets":    "280+ tracked daily via DCPI",
             "isos":          ["PJM", "MISO", "ERCOT", "CAISO", "NYISO", "ISONE", "SPP"],
             "deals":         "2,000+ tracked M&A transactions",
