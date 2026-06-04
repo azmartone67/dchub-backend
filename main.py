@@ -2317,6 +2317,11 @@ _GRID_INTEL_TTL = 1800      # seconds — EIA RTO data is hourly, so a 30-min ca
                             # is plenty fresh and cuts the brain's per-ISO cold
                             # misses ~6x (latency tracker showed grid p50 still
                             # 2.9s under the old 300s TTL). (was 300)
+_GRID_INTEL_NEG_TTL = 120   # r71 (2026-06-04): negative-cache an EIA-less result for
+                            # 2 min. The old guard refused to store any result lacking
+                            # EIA data, so a transient EIA outage made EVERY call re-pay
+                            # ~16s of upstream timeouts on the 1-replica pool (the silent
+                            # throttle on get_grid_intelligence — the #1 paid-demand tool).
 
 
 def _grid_intel_fetch(region, rto_code):
@@ -2343,7 +2348,7 @@ def _grid_intel_fetch(region, rto_code):
         }
         if eia_key: params['api_key'] = eia_key
         r = _rq.get('https://api.eia.gov/v2/electricity/rto/region-data/data',
-                    params=params, headers=H, timeout=8)
+                    params=params, headers=H, timeout=5)
         if r.ok:
             data = (r.json() or {}).get('response', {}).get('data', [])
             if data:
@@ -2369,7 +2374,7 @@ def _grid_intel_fetch(region, rto_code):
         }
         if eia_key: params['api_key'] = eia_key
         r = _rq.get('https://api.eia.gov/v2/electricity/rto/fuel-type-data/data',
-                    params=params, headers=H, timeout=8)
+                    params=params, headers=H, timeout=5)
         if r.ok:
             data = (r.json() or {}).get('response', {}).get('data', [])
             latest_by_fuel = {}
@@ -2410,9 +2415,12 @@ def _grid_intel_cached(region, rto_code):
     if hit and hit[0] > now:
         return dict(hit[1])
     out = _grid_intel_fetch(region, rto_code)
-    # Only cache a useful result — don't pin a total upstream failure for 5 min.
-    if out.get('demand_mw') is not None or out.get('generation_mix'):
-        _GRID_INTEL_CACHE[region] = (now + _GRID_INTEL_TTL, dict(out))
+    # r71 (2026-06-04): ALWAYS cache. The old guard stored nothing on an EIA-less
+    # result, so when EIA timed out every call re-fetched (~16s) and saturated the
+    # worker pool. Now: full TTL when EIA data is present; a short NEGATIVE TTL when
+    # it isn't, so a transient outage is absorbed for 2 min instead of re-paid per hit.
+    _has_eia = out.get('demand_mw') is not None or bool(out.get('generation_mix'))
+    _GRID_INTEL_CACHE[region] = (now + (_GRID_INTEL_TTL if _has_eia else _GRID_INTEL_NEG_TTL), dict(out))
     return out
 
 

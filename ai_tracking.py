@@ -786,8 +786,17 @@ def update_7d_rolling():
 
 def get_cumulative_totals():
     try:
+        # r71 (2026-06-04): exclude internal buckets + never-used + long-dormant rows
+        # so the PUBLIC platform list isn't padded with probes/scanners pinged once.
+        # Keeps anything genuinely active (requests_7d>0) or seen in the last 30 days.
+        # Honest social-proof for the page journalists land on.
         return _execute(
-            "SELECT platform, total_requests, first_seen, last_seen, requests_7d, name, color, company FROM ai_cumulative ORDER BY total_requests DESC",
+            "SELECT platform, total_requests, first_seen, last_seen, requests_7d, name, color, company "
+            "FROM ai_cumulative "
+            "WHERE total_requests > 0 "
+            "AND platform NOT IN ('internal','mcp','mcp_generic') "
+            "AND (requests_7d > 0 OR last_seen > now() - interval '30 days') "
+            "ORDER BY total_requests DESC",
             fetchall=True
         ) or []
     except Exception:
