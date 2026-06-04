@@ -136,6 +136,7 @@ _INDEX_HTML = """
 
 @methodology_pages_bp.route("/methodology", methods=["GET"], strict_slashes=False)
 @methodology_pages_bp.route("/docs/methodology", methods=["GET"], strict_slashes=False)
+@methodology_pages_bp.route("/api/v1/methodology", methods=["GET"], strict_slashes=False)
 def methodology_index():
     return Response(_page("Methodology", _INDEX_HTML), mimetype="text/html")
 
@@ -145,6 +146,8 @@ def methodology_index():
 @methodology_pages_bp.route("/methodology/queue", methods=["GET"],
                               strict_slashes=False)
 @methodology_pages_bp.route("/docs/methodology/queue", methods=["GET"],
+                              strict_slashes=False)
+@methodology_pages_bp.route("/api/v1/methodology/queue", methods=["GET"],
                               strict_slashes=False)
 def methodology_queue_current():
     """Alias: bare /methodology/queue resolves to current version."""
@@ -319,6 +322,8 @@ Data dictionary: <a href="/methodology/data-dictionary.json">/methodology/data-d
                               strict_slashes=False)
 @methodology_pages_bp.route("/docs/methodology/queue/v1.0", methods=["GET"],
                               strict_slashes=False)
+@methodology_pages_bp.route("/api/v1/methodology/queue/v1.0", methods=["GET"],
+                              strict_slashes=False)
 def methodology_queue_v1_0():
     resp = Response(
         _page("Power Delivery Methodology v1.0", _QUEUE_V1_HTML),
@@ -414,6 +419,8 @@ _DATA_DICTIONARY = {
 @methodology_pages_bp.route("/methodology/data-dictionary.json",
                               methods=["GET"], strict_slashes=False)
 @methodology_pages_bp.route("/docs/methodology/data-dictionary.json",
+                              methods=["GET"], strict_slashes=False)
+@methodology_pages_bp.route("/api/v1/methodology/data-dictionary.json",
                               methods=["GET"], strict_slashes=False)
 def methodology_data_dictionary():
     resp = jsonify(_DATA_DICTIONARY)
