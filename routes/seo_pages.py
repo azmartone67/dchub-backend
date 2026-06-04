@@ -688,6 +688,7 @@ def sitemap_markets():
                     SELECT LOWER(REPLACE(city,' ','-') || '-' || LOWER(state)) AS slug
                       FROM discovered_facilities
                      WHERE city IS NOT NULL AND state IS NOT NULL
+                       AND TRIM(city) <> '' AND TRIM(state) <> ''
                        AND COALESCE(is_duplicate, 0) = 0
                        AND country IN ('US','USA','United States')
                      GROUP BY city, state
@@ -700,9 +701,16 @@ def sitemap_markets():
             try: c.close()
             except Exception: pass
 
+    # r71-seo: skip malformed slugs. Empty/whitespace city or state rows produced
+    # junk like /markets/- and /markets/abu-dhabi- (trailing hyphen) — thin pages
+    # that dilute crawl budget. Don't advertise them in the sitemap.
+    def _valid_market_slug(s):
+        s = (s or "").strip()
+        return (len(s) >= 3 and not s.startswith("-")
+                and not s.endswith("-") and any(ch.isalnum() for ch in s))
     items = '\n'.join(
         f'  <url><loc>https://dchub.cloud/markets/{slug}</loc><changefreq>weekly</changefreq><priority>0.8</priority></url>'
-        for slug in markets
+        for slug in markets if _valid_market_slug(slug)
     )
     xml = f'<?xml version="1.0" encoding="UTF-8"?>\n<urlset xmlns="http://www.sitemaps.org/schemas/sitemap/0.9">\n{items}\n</urlset>'
     return Response(xml, mimetype='application/xml',

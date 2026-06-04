@@ -165,6 +165,23 @@ def _pitch_body(c: dict) -> tuple[str, str]:
     proves we see them, not a generic blast."""
     calls = c.get("calls_14d", 0)
     tool = c.get("top_tool") or "the MCP tools"
+    # r71 #6: operator-digest variant — the human behind an auto-trial agent.
+    # Lead with usage + a ONE-CLICK key-bound upgrade (upgrades the exact key the
+    # agent already uses; no copy/paste). Generated as a DRAFT; send is human-gated.
+    if c.get("tier") == "trial":
+        _key = c.get("api_key_hash") or ""
+        _upg = (f"https://dchub.cloud/upgrade?key={_key}"
+                if _key.startswith("dch_") else "https://dchub.cloud/pricing")
+        _subj = f"Your AI agent made {calls:,} DC Hub calls — keep the data flowing"
+        _txt = (f"Hi —\n\nYour AI agent has been pulling live data-center "
+                f"intelligence from DC Hub — {calls:,} recent calls, mostly on "
+                f"`{tool}`. It's on a free trial key that will expire.\n\n"
+                f"To keep it working — and unlock the full grid/fiber constraint "
+                f"scores your agent keeps hitting the paywall on — upgrade in one "
+                f"click. This link upgrades the exact key your agent already uses, "
+                f"no copy/paste:\n\n  {_upg}\n\nQuestions? Just reply.\n\n"
+                f"— DC Hub\nhttps://dchub.cloud")
+        return _subj, _txt, _txt.replace("\n", "<br>")
     subj = f"You've made {calls:,} DC Hub calls in 14 days — here's what Pro would unlock"
     txt = f"""Hey —
 
