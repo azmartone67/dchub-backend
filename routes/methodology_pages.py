@@ -3,15 +3,22 @@ methodology_pages.py — public landing pages for the methodology URLs cited
 in DC Hub PDFs and citation footnotes.
 
 Background (2026-06-04): the Power Delivery Methodology PDF v1.0 we sent
-to CBRE Research (Gordon Dolven + Pat Lynch) cites URLs that were 404 on
-ship — fatal first impression for an audit-grade document. This blueprint
-closes those URLs:
+to CBRE Research cites URLs that were 404 on ship — fatal first impression
+for an audit-grade document. This blueprint closes those URLs:
 
   /methodology                          — index of versioned methodologies
   /methodology/queue                    — alias to current Power Delivery version
   /methodology/queue/v1.0               — Power Delivery Methodology v1.0 web page
   /methodology/data-dictionary.json     — machine-readable field reference
   /partners/cbre                        — CBRE-specific landing (neutrality preserved)
+
+r-cf-bypass (2026-06-04): the CF zone-level worker is intercepting
+/methodology* and returning Error 1000 ("DNS points to prohibited IP") —
+same pattern as /research/* per reference_dchub_research_path_error1000.md.
+Until the CF dashboard fix lands, every methodology view is ALSO registered
+under /docs/methodology/* which CF Pages proxies cleanly to Flask. The
+PDF cites /methodology/* (preserved for when zone routing is fixed); the
+follow-up corrective email points Gordon at the /docs/methodology/* paths.
 
 Each page renders inline HTML (no Jinja dependency) using the same dark/purple
 visual language as the PDF and the proof deck so the brand stays coherent.
@@ -128,6 +135,7 @@ _INDEX_HTML = """
 """
 
 @methodology_pages_bp.route("/methodology", methods=["GET"], strict_slashes=False)
+@methodology_pages_bp.route("/docs/methodology", methods=["GET"], strict_slashes=False)
 def methodology_index():
     return Response(_page("Methodology", _INDEX_HTML), mimetype="text/html")
 
@@ -135,6 +143,8 @@ def methodology_index():
 # ── /methodology/queue — alias to current version ------------------------
 
 @methodology_pages_bp.route("/methodology/queue", methods=["GET"],
+                              strict_slashes=False)
+@methodology_pages_bp.route("/docs/methodology/queue", methods=["GET"],
                               strict_slashes=False)
 def methodology_queue_current():
     """Alias: bare /methodology/queue resolves to current version."""
@@ -307,6 +317,8 @@ Data dictionary: <a href="/methodology/data-dictionary.json">/methodology/data-d
 
 @methodology_pages_bp.route("/methodology/queue/v1.0", methods=["GET"],
                               strict_slashes=False)
+@methodology_pages_bp.route("/docs/methodology/queue/v1.0", methods=["GET"],
+                              strict_slashes=False)
 def methodology_queue_v1_0():
     resp = Response(
         _page("Power Delivery Methodology v1.0", _QUEUE_V1_HTML),
@@ -400,6 +412,8 @@ _DATA_DICTIONARY = {
 }
 
 @methodology_pages_bp.route("/methodology/data-dictionary.json",
+                              methods=["GET"], strict_slashes=False)
+@methodology_pages_bp.route("/docs/methodology/data-dictionary.json",
                               methods=["GET"], strict_slashes=False)
 def methodology_data_dictionary():
     resp = jsonify(_DATA_DICTIONARY)
