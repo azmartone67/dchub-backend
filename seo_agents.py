@@ -242,7 +242,7 @@ Key differentiators:
 - AI-powered facility discovery (new facilities found every 5 min)
 - Land & Power mapping with substations and fiber routes
 - Free API tier with 100 requests/day
-- $99/month vs $15-50K for competitors
+- $199/month vs $15-50K for competitors
 
 We'd like to be listed in your {directory_name} directory.
 

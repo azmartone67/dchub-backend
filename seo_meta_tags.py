@@ -41,7 +41,7 @@ HOME_META = {
     "schema_extra": {
         "applicationCategory": "BusinessApplication",
         "operatingSystem": "Web",
-        "offers": {"@type": "Offer", "price": "99", "priceCurrency": "USD", "description": "Founding Member pricing"},
+        "offers": {"@type": "Offer", "price": "9", "priceCurrency": "USD", "description": "Plans from $9/month"},
         "aggregateRating": {"@type": "AggregateRating", "ratingValue": "4.8", "ratingCount": "50"}
     }
 }
@@ -229,11 +229,11 @@ TOOL_META = {
         "schema_type": "CollectionPage"
     },
     "pricing": {
-        "title": "DC Hub Pricing | Data Center Intelligence from $99/month",
-        "description": "Founding member pricing: $99/month for full access to 21,000+ facilities, Land & Power mapping, AI agents, M&A deal tracker, and API. Normally $299/month. Limited spots remaining.",
+        "title": "DC Hub Pricing | Data Center Intelligence from $9/month",
+        "description": "Pricing from $9/month for full access to 21,000+ facilities, Land & Power mapping, AI agents, M&A deal tracker, and API.",
         "keywords": "DC Hub pricing, data center intelligence pricing, colocation data subscription, data center SaaS",
-        "og_title": "DC Hub Pricing — Founding Member $99/month",
-        "og_description": "Full data center intelligence for $99/month. 21,000+ facilities, AI agents, deal tracker, site selection tools.",
+        "og_title": "DC Hub Pricing — Plans from $9/month",
+        "og_description": "Data center intelligence from $9/month. 21,000+ facilities, AI agents, deal tracker, site selection tools.",
         "schema_type": "WebPage"
     },
     "assets": {

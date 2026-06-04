@@ -16,7 +16,7 @@ Aggregates data from existing DC Hub tables:
 Tier gating:
   - Free: region summary + 2 corridor headlines + redacted scores + upgrade CTA
   - Developer ($49/mo): all corridors + aggregate scores + energy rates + infra counts
-  - Pro ($99/mo): full sub-scores + facility names + coordinates + CSV export
+  - Pro ($199/mo): full sub-scores + facility names + coordinates + CSV export
 
 Fixes (Mar 23):
   - autocommit=True prevents transaction poisoning across corridor queries
@@ -720,7 +720,7 @@ def get_grid_region(region_id):
             }
         elif tier == 'developer':
             response['_upgrade'] = {
-                'message': 'Developer plan active. Upgrade to Pro ($99/mo) for facility names, exact coordinates, and CSV export.',
+                'message': 'Developer plan active. Upgrade to Pro ($199/mo) for facility names, exact coordinates, and CSV export.',
                 'url': 'https://dchub.cloud/pricing#pro',
             }
 

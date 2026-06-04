@@ -146,7 +146,7 @@ EMAILS = {
 
   <a href="https://dchub.cloud/land-power" class="cta">Explore Land & Power Map →</a>
 
-  <p style="font-size: 13px; color: #888;">Land & Power is available to Pro members. <a href="https://dchub.cloud/pricing" style="color:#00c8ff;">Founding members get it for $99/month — locked forever.</a></p>
+  <p style="font-size: 13px; color: #888;">Land & Power is available to Pro members. <a href="https://dchub.cloud/pricing" style="color:#00c8ff;">Pro members get it for $199/month.</a></p>
 
   <hr class="divider">
 
@@ -216,11 +216,11 @@ EMAILS = {
 
   <p><strong>Ready for unlimited access%s</strong></p>
 
-  <p>Founding Members get everything — unlimited comparisons, PDF reports, full API, Land & Power mapping, and site scoring — for <strong>$99/month, locked forever</strong>.</p>
+  <p>Pro Members get everything — unlimited comparisons, PDF reports, full API, Land & Power mapping, and site scoring — for <strong>$199/month</strong>.</p>
 
   <p style="font-size: 13px; color: #ffb400;">⚡ Only a few founding member spots remain. Once they're gone, Pro starts at $199/month.</p>
 
-  <a href="https://buy.stripe.com/9B6fZi1cCdjT3ml8i6aZi00" class="cta">Become a Founding Member — $99/mo →</a>
+  <a href="https://buy.stripe.com/9B6fZi1cCdjT3ml8i6aZi00" class="cta">Upgrade to Pro — $199/mo →</a>
   <br>
   <a href="https://dchub.cloud/pricing" class="cta-secondary">Compare All Plans →</a>
 

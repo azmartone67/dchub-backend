@@ -156,8 +156,8 @@ TOOL_META = {
         "keywords": "data center API, colocation API, free data center data, MCP protocol",
     },
     "pricing": {
-        "title": "DC Hub Pricing | Data Center Intelligence from $99/month",
-        "description": "Founding member pricing: $99/month for 21,000+ facilities, Land & Power mapping, AI agents, M&A tracker, and API. Normally $299/month.",
+        "title": "DC Hub Pricing | Data Center Intelligence from $9/month",
+        "description": "Pricing from $9/month for 21,000+ facilities, Land & Power mapping, AI agents, M&A tracker, and API.",
         "keywords": "DC Hub pricing, data center intelligence pricing, data center SaaS",
     },
     "ecosystem": {

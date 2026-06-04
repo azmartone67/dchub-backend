@@ -286,7 +286,7 @@ Pro tier ($99/month billed annually, $1,188/yr) unlocks:
   • MCP + REST + Webhooks
   • Priority support
 
-Founding member rate is $99/mo locked for life — offer closes May 31.
+Pro is $199/mo (or $99/mo billed annually).
 
 Direct checkout (utm-tracked so we know it's you): https://dchub.cloud/pricing?utm_source=mcp&utm_email={customer.get('email','')}#pro-annual
 
