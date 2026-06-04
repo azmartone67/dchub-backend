@@ -1,10 +1,11 @@
 """
 iso_queue_ingest.py v2 (Phase ZZZZZ-round47.3, 2026-05-25)
 
-Daily ingest of ISO interconnection queue snapshots. REAL parsers for ERCOT +
-PJM only; MISO/SPP/CAISO/NYISO/ISO-NE are heartbeat-only (see below) and are
-NEVER surfaced as live data. Implementing those 5 real parsers is a scoped,
-per-ISO, verify-against-live-format follow-up.
+Daily ingest of ISO interconnection queue snapshots. REAL parsers for ERCOT,
+PJM, and NYISO (r70); MISO/SPP/CAISO/ISO-NE remain heartbeat-only (see below)
+and are NEVER surfaced as live data. Implementing the remaining 4 real parsers
+is a scoped, per-ISO, verify-against-live-format follow-up (MISO/CAISO landing
+pages 403/scrape-required, ISO-NE URL moved — NYISO had a stable public XLSX).
 
 Architecture:
   - Each ISO has its own ingest function returning (ok, parsed_dict, debug)
@@ -51,7 +52,7 @@ PARSER_STATUS = {
     "MISO":   "heartbeat-only — DPP CSV parser TODO",
     "SPP":    "heartbeat-only — DISIS PDF parser TODO",
     "CAISO":  "heartbeat-only — Cluster Study CSV parser TODO",
-    "NYISO":  "heartbeat-only — Queue Excel parser TODO",
+    "NYISO":  "real (public queue XLSX 'Interconnection Queue' sheet, SP MW via openpyxl)",
     "ISO-NE": "heartbeat-only — Queue Dashboard CSV parser TODO",
 }
 
@@ -381,10 +382,89 @@ def ingest_caiso():
 
 
 def ingest_nyiso():
-    # TODO: NYISO queue tracker Excel:
-    #   https://www.nyiso.com/documents/20142/.../Interconnection_Queue.xlsx
-    # Parser: openpyxl, similar shape to PJM
-    return _heartbeat("https://www.nyiso.com/connecting-to-the-grid")
+    """REAL parser (r70, 2026-06-03). NYISO publishes the full interconnection
+    queue as a stable public XLSX. The 'Interconnection Queue' sheet is the
+    ACTIVE queue (Withdrawn / In Service are separate sheets, so no status
+    filter is needed). MW = 'SP (MW)' = summer-peak. Verified live 2026-06-03:
+    147 active projects, ~24.9 GW. Same (ok, parsed, debug) shape as ingest_pjm."""
+    debug = []
+    parsed = {}
+    url = "https://www.nyiso.com/documents/20142/1407078/NYISO-Interconnection-Queue.xlsx"
+    try:
+        xlsx_bytes, st = _fetch(url, timeout=60, return_bytes=True)
+        debug.append(f"nyiso http_{st} kb={len(xlsx_bytes)//1024}")
+        if st != 200 or len(xlsx_bytes) < 10000:
+            return False, None, "; ".join(debug + ["fetch_failed_or_too_small"])
+        wb = _try_openpyxl(xlsx_bytes)
+        if not wb:
+            return True, parsed, "; ".join(debug + ["openpyxl_failed"])
+        ws = None
+        for nm in wb.sheetnames:
+            if "interconnection queue" in str(nm).strip().lower():
+                ws = wb[nm]
+                break
+        if ws is None:
+            ws = wb.active
+        header = [str(c or "").strip().lower()
+                  for c in next(ws.iter_rows(min_row=1, max_row=1, values_only=True))]
+        debug.append(f"sheet='{ws.title}' cols={len(header)}")
+
+        def find_col(*keywords):
+            for i, h in enumerate(header):
+                if all(k in h for k in keywords):
+                    return i
+            return None
+
+        col_mw   = find_col("sp", "mw") or find_col("mw") or find_col("capacity")
+        col_name = find_col("project") or find_col("name")
+        col_fuel = find_col("fuel") or find_col("type")
+        if col_mw is None:
+            return True, parsed, "; ".join(debug + ["no_mw_column_found"])
+
+        total_mw = 0.0
+        active_n = 0
+        dc_mw = 0.0
+        rows_seen = 0
+        for row in ws.iter_rows(min_row=2, values_only=True):
+            rows_seen += 1
+            if rows_seen > 100000:
+                break
+            if col_mw >= len(row) or row[col_mw] is None:
+                continue
+            try:
+                mw = float(row[col_mw])
+            except (ValueError, TypeError):
+                continue
+            if mw <= 0:
+                continue
+            total_mw += mw
+            active_n += 1
+            name_str = (str(row[col_name] or "").lower()
+                        if col_name is not None and col_name < len(row) else "")
+            fuel_str = (str(row[col_fuel] or "").lower()
+                        if col_fuel is not None and col_fuel < len(row) else "")
+            if any(k in name_str or k in fuel_str for k in (
+                "data center", "datacenter", "ai cluster", "hyperscale",
+                "data ctr", "large load", "load",
+            )):
+                dc_mw += mw
+
+        debug.append(f"rows_seen={rows_seen} active_n={active_n} "
+                     f"total_mw={total_mw:.0f} dc_mw={dc_mw:.0f}")
+
+        if active_n > 0 and total_mw > 100:
+            parsed["queued_load_total_gw"] = round(total_mw / 1000.0, 1)
+            parsed["source_url"] = url
+            parsed["source_name"] = "NYISO Interconnection Queue (active, SP MW)"
+        if dc_mw > 0 and total_mw > 0:
+            parsed["queued_load_data_center_gw"] = round(dc_mw / 1000.0, 1)
+            parsed["queued_load_dc_share_pct"] = round(100.0 * dc_mw / total_mw, 1)
+
+        return True, parsed, "; ".join(debug)
+    except urllib.error.HTTPError as e:
+        return False, None, "; ".join(debug + [f"http_error: {e.code}"])
+    except Exception as e:
+        return False, None, "; ".join(debug + [f"error: {type(e).__name__}: {str(e)[:120]}"])
 
 
 def ingest_iso_ne():
