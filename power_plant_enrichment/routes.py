@@ -287,16 +287,14 @@ def _run_enrichment(job_id: str, sources: list, params: dict, dry_run: bool):
                     _cur.execute("""SELECT column_name FROM information_schema.columns
                                     WHERE table_name = 'discovered_power_plants'""")
                     _cols = {r[0] for r in _cur.fetchall()}
-                    # r70e: the live table's id is NOT NULL with NO working
-                    # default (the repo DDL says SERIAL but the live column lost
-                    # it — the same reason the canonical osm_overpass_loader
-                    # silently fails to insert and the table is frozen at ~6,900
-                    # legacy rows). Assign explicit ids = MAX(id)+1, incrementing
-                    # per row; precompute the max ONCE (PK still guards collisions).
-                    _next_id = None
-                    if not dry_run and "id" in _cols:
-                        _cur.execute("SELECT COALESCE(MAX(id), 0) FROM discovered_power_plants")
-                        _next_id = (_cur.fetchone()[0] or 0) + 1
+                    # r70f: the live id column is TEXT, NOT NULL, no default
+                    # (the repo DDL claims SERIAL/int but the live column is
+                    # text — the same drift that silently breaks
+                    # osm_overpass_loader and froze the table at ~6,900 rows).
+                    # So we generate a deterministic, traceable TEXT id per
+                    # plant from its EIA-860 plant id (idempotent across re-runs;
+                    # ON CONFLICT DO NOTHING guards id collisions).
+                    _need_id = (not dry_run) and ("id" in _cols)
                     for _p in merged:
                         _lat = _p.get("latitude")
                         _lng = _p.get("longitude")
@@ -333,16 +331,24 @@ def _run_enrichment(job_id: str, sources: list, params: dict, dry_run: bool):
                             if {"name", "lat", "lng"} <= set(_row):
                                 _ks = list(_row.keys())
                                 _vals = [_row[k] for k in _ks]
-                                if _next_id is not None:
+                                if _need_id:
+                                    _pid = _p.get("eia_plant_id") or _p.get("plant_id")
+                                    if _pid:
+                                        _id_val = f"eia860-{_pid}"
+                                    else:
+                                        import hashlib as _hl
+                                        _id_val = "enr-" + _hl.md5(
+                                            f"{_nm}|{_lat:.4f}|{_lng:.4f}".encode()
+                                        ).hexdigest()[:16]
                                     _ks = ["id"] + _ks
-                                    _vals = [_next_id] + _vals
-                                    _next_id += 1
+                                    _vals = [_id_val] + _vals
                                 _cur.execute(
                                     f"INSERT INTO discovered_power_plants "
                                     f"({','.join(_ks)}) VALUES "
-                                    f"({','.join(['%s'] * len(_ks))})",
+                                    f"({','.join(['%s'] * len(_ks))}) "
+                                    f"ON CONFLICT DO NOTHING",
                                     _vals)
-                                inserted += 1
+                                inserted += _cur.rowcount
                 if not dry_run:
                     _conn.commit()
         except Exception as e:
