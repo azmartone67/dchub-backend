@@ -709,18 +709,34 @@ th { color: var(--muted); font-size: 11px; text-transform: uppercase; letter-spa
   <h1>What is your site worth?</h1>
   <p class="tagline">3-scenario NPV: <b>Grid</b> vs <b>Gas BTM</b> vs <b>Gas-to-Grid Hybrid</b>. Built for sellers, landowners, and developers pricing power-ready parcels. Powered by DCPI verdicts across 234+ markets and live gas hub pricing.</p>
 
+  <div id="error" class="hidden error" style="margin:0 0 16px;font-size:14px;font-weight:600"></div>
+
+  <div style="background:var(--panel);border:1px solid var(--border);border-radius:12px;padding:18px 20px;margin:0 0 16px;">
+    <div style="font-size:11px;color:var(--muted);letter-spacing:0.1em;text-transform:uppercase;font-weight:700;margin-bottom:10px;">
+      Quick demo locations &nbsp;·&nbsp; click to load
+    </div>
+    <div style="display:flex;gap:8px;flex-wrap:wrap;">
+      <button type="button" class="preset" data-lat="33.45"  data-lon="-112.07" data-acres="50"  data-mw="100" data-label="Phoenix, AZ">Phoenix, AZ</button>
+      <button type="button" class="preset" data-lat="39.04"  data-lon="-77.48"  data-acres="80"  data-mw="200" data-label="Ashburn, VA">Ashburn, VA</button>
+      <button type="button" class="preset" data-lat="32.78"  data-lon="-96.80"  data-acres="60"  data-mw="150" data-label="Dallas, TX">Dallas, TX</button>
+      <button type="button" class="preset" data-lat="41.14"  data-lon="-104.82" data-acres="100" data-mw="150" data-label="Cheyenne, WY">Cheyenne, WY</button>
+      <button type="button" class="preset" data-lat="45.84"  data-lon="-119.71" data-acres="80"  data-mw="100" data-label="Boardman, OR">Boardman, OR</button>
+      <button type="button" class="preset" data-lat="40.08"  data-lon="-82.81"  data-acres="100" data-mw="200" data-label="New Albany, OH">New Albany, OH</button>
+    </div>
+    <style>.preset{background:var(--panel2);color:var(--accent2);border:1px solid var(--border);border-radius:6px;padding:8px 12px;font-size:12px;font-family:inherit;cursor:pointer;font-weight:600}.preset:hover{border-color:var(--accent);color:#fff}</style>
+  </div>
+
   <form id="valForm">
-    <label>Lat<br><input id="lat" type="number" step="0.0001" value="33.45" required></label>
-    <label>Lon<br><input id="lon" type="number" step="0.0001" value="-112.07" required></label>
-    <label>Acres<br><input id="acres" type="number" step="0.1" value="50" required></label>
-    <label>Target MW<br><input id="target_mw" type="number" step="1" value="100" required></label>
-    <label>Deadline (months)<br><input id="deadline_months" type="number" step="1" value="24"></label>
-    <label>API Key (PRO unlock)<br><input id="api_key" type="password" placeholder="dchub_..."></label>
+    <label>Lat &nbsp;<span style="color:var(--accent2);font-size:11px">[-90 → 90]</span><br><input id="lat" type="number" step="0.0001" min="-90" max="90" value="33.45" required></label>
+    <label>Lon &nbsp;<span style="color:var(--accent2);font-size:11px">[-180 → 180, W is negative]</span><br><input id="lon" type="number" step="0.0001" min="-180" max="180" value="-112.07" required></label>
+    <label>Acres &nbsp;<span style="color:var(--accent2);font-size:11px">> 0</span><br><input id="acres" type="number" step="0.1" min="0.1" value="50" required></label>
+    <label>Target MW &nbsp;<span style="color:var(--accent2);font-size:11px">> 0</span><br><input id="target_mw" type="number" step="1" min="1" value="100" required></label>
+    <label>Deadline (months)<br><input id="deadline_months" type="number" step="1" min="1" max="120" value="24"></label>
+    <label>API Key (PRO unlock)<br><input id="api_key" type="password" placeholder="dchub_..." autocomplete="off"></label>
     <button type="submit">Calculate valuation →</button>
   </form>
 
   <div id="results" class="hidden"></div>
-  <div id="error" class="hidden error"></div>
 
   <p style="font-size:12px;color:var(--muted);margin-top:32px;">
     Methodology: <a href="/api/v1/site/value/methodology" style="color:var(--accent2)">/api/v1/site/value/methodology</a> · Phase 1 ships today; Phase 2 adds per-utility tariffs, regression-fit valuation envelope, and live ISO queue depth.
@@ -728,16 +744,92 @@ th { color: var(--muted); font-size: 11px; text-transform: uppercase; letter-spa
 </div>
 
 <script>
+// Quick demo location presets — one click to load + auto-submit-friendly
+document.querySelectorAll('.preset').forEach(btn => {
+  btn.addEventListener('click', () => {
+    document.getElementById('lat').value         = btn.dataset.lat;
+    document.getElementById('lon').value         = btn.dataset.lon;
+    document.getElementById('acres').value       = btn.dataset.acres;
+    document.getElementById('target_mw').value   = btn.dataset.mw;
+    document.getElementById('error').classList.add('hidden');
+    // Visual confirmation
+    document.querySelectorAll('.preset').forEach(b => b.style.borderColor = '');
+    btn.style.borderColor = 'var(--accent)';
+    btn.style.color       = '#fff';
+  });
+});
+
+function showFieldError(msg) {
+  const e = document.getElementById('error');
+  e.innerHTML = msg;
+  e.classList.remove('hidden');
+  e.scrollIntoView({behavior:'smooth', block:'nearest'});
+}
+
+// Pre-flight: catch the common typo where users enter a positive lon
+// > 180 (forgot minus sign + decimal point — e.g. typed "833076" for
+// what they meant as "-83.3076"). Suggest the corrected value
+// instead of letting the API 400 silently.
+function _suggestLonFix(lon) {
+  const abs = Math.abs(lon);
+  if (abs <= 180) return null;
+  // Strip leading zeros + treat the trailing digits as decimal places.
+  // 833076 → assume "83.3076" (US continental west = -83.3076)
+  const s = String(Math.trunc(abs));
+  if (s.length < 4) return null;
+  const intPart = s.slice(0, s.length - 4);
+  const decPart = s.slice(s.length - 4);
+  const candidate = -parseFloat(`${intPart}.${decPart}`);
+  if (candidate >= -180 && candidate <= 0) return candidate;
+  return null;
+}
+
 document.getElementById('valForm').addEventListener('submit', async (e) => {
   e.preventDefault();
   document.getElementById('error').classList.add('hidden');
   document.getElementById('results').classList.add('hidden');
 
+  const lat = parseFloat(document.getElementById('lat').value);
+  let   lon = parseFloat(document.getElementById('lon').value);
+  const acres     = parseFloat(document.getElementById('acres').value);
+  const target_mw = parseInt(document.getElementById('target_mw').value);
+
+  // Client-side range check (browser min/max also enforces, but covers
+  // pasted values + provides a friendlier error than the API's JSON).
+  if (!Number.isFinite(lat) || lat < -90 || lat > 90) {
+    showFieldError('<b>Lat out of range.</b> Use a value between -90 and 90 (e.g. 33.45 for Phoenix).');
+    return;
+  }
+  if (!Number.isFinite(lon) || lon < -180 || lon > 180) {
+    const fix = _suggestLonFix(lon);
+    const hint = fix !== null
+      ? ` Did you mean <b style="color:var(--accent2)">${fix.toFixed(4)}</b>? <button type="button" id="autofixLon" style="background:var(--accent);color:#fff;border:0;padding:4px 10px;border-radius:4px;margin-left:8px;font-weight:600;cursor:pointer">Use ${fix.toFixed(4)}</button>`
+      : ' Remember: longitudes <b>west of Greenwich are NEGATIVE</b> (Phoenix = -112.07, NOT 112.07).';
+    showFieldError(`<b>Lon out of range (${lon}).</b> Use a value between -180 and 180.${hint}`);
+    // Wire the autofix button
+    if (fix !== null) {
+      setTimeout(() => {
+        const btn = document.getElementById('autofixLon');
+        if (btn) btn.addEventListener('click', () => {
+          document.getElementById('lon').value = fix.toFixed(4);
+          document.getElementById('error').classList.add('hidden');
+          document.getElementById('valForm').requestSubmit();
+        });
+      }, 0);
+    }
+    return;
+  }
+  if (!Number.isFinite(acres) || acres <= 0) {
+    showFieldError('<b>Acres must be > 0.</b>');
+    return;
+  }
+  if (!Number.isFinite(target_mw) || target_mw <= 0) {
+    showFieldError('<b>Target MW must be > 0.</b>');
+    return;
+  }
+
   const body = {
-    lat: parseFloat(document.getElementById('lat').value),
-    lon: parseFloat(document.getElementById('lon').value),
-    acres: parseFloat(document.getElementById('acres').value),
-    target_mw: parseInt(document.getElementById('target_mw').value),
+    lat, lon, acres, target_mw,
     deadline_months: parseInt(document.getElementById('deadline_months').value || 24),
   };
   const apiKey = document.getElementById('api_key').value.trim();
@@ -750,15 +842,14 @@ document.getElementById('valForm').addEventListener('submit', async (e) => {
     });
     const d = await r.json();
     if (!d.ok) {
-      document.getElementById('error').textContent = d.hint || d.error || 'Unknown error';
-      document.getElementById('error').classList.remove('hidden');
+      showFieldError(`<b>${d.error || 'error'}:</b> ${d.hint || 'Unknown error'}`);
       return;
     }
     document.getElementById('results').innerHTML = renderResults(d);
     document.getElementById('results').classList.remove('hidden');
+    document.getElementById('results').scrollIntoView({behavior:'smooth', block:'start'});
   } catch (err) {
-    document.getElementById('error').textContent = 'Request failed: ' + err.message;
-    document.getElementById('error').classList.remove('hidden');
+    showFieldError('<b>Request failed:</b> ' + err.message);
   }
 });
 
