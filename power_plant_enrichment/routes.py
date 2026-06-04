@@ -217,6 +217,25 @@ def _run_enrichment(job_id: str, sources: list, params: dict, dry_run: bool):
         if not eia_plants and not nccs_plants:
             _jobs[job_id]["status"] = "failed"
             _jobs[job_id]["error"] = "No data from any source"
+            # r70b: this was a SILENT return (no brain-feed log) — the third
+            # invisible exit besides the per-worker /status. Log it WITH the
+            # soft per-source errors so we can see WHY a source yielded nothing
+            # (e.g. NCCS FeatureServer error, or a state_filter that matched 0).
+            try:
+                from routes.brain_evolution import log_notification as _logn
+                _logn("power_plant_enrichment",
+                      (f"Enrichment NO DATA: sources={sources} "
+                       f"state={params.get('state_filter') or 'all'} "
+                       f"(eia={_jobs[job_id].get('eia_count', 0)} "
+                       f"nccs={_jobs[job_id].get('nccs_count', 0)})"),
+                      detail={"phase": "no_data",
+                              "eia_error": _jobs[job_id].get("eia_error"),
+                              "nccs_error": _jobs[job_id].get("nccs_error"),
+                              "sources": sources,
+                              "state_filter": params.get("state_filter") or "all"},
+                      severity="warn")
+            except Exception:
+                pass
             return
 
         # --- Phase 2: Merge sources ---

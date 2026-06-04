@@ -59,8 +59,10 @@ jobs:
           # cross-worker-durable brain feed via log_notification(kind=
           # power_plant_enrichment); we poll THAT and detect a new record by
           # count (skew-proof — no clock comparison needed).
-          before=$(curl -sS --max-time 30 "$FEED" | python3 -c "import sys,json;print(sum(1 for i in json.load(sys.stdin).get('items',[]) if i.get('kind')=='power_plant_enrichment'))" 2>/dev/null || echo 0)
-          echo "power_plant_enrichment records before trigger: $before"
+          # Count only TERMINAL records (phase != 'started') — the job emits a
+          # STARTED breadcrumb immediately, which must NOT be mistaken for a result.
+          before=$(curl -sS --max-time 30 "$FEED" | python3 -c "import sys,json;print(sum(1 for i in json.load(sys.stdin).get('items',[]) if i.get('kind')=='power_plant_enrichment' and (i.get('detail') or {}).get('phase')!='started'))" 2>/dev/null || echo 0)
+          echo "power_plant_enrichment terminal records before trigger: $before"
           echo "POST $RAILWAY_BASE/api/enrichment/trigger  body=$BODY"
           resp=$(curl -sS --max-time 60 -X POST -H "X-Admin-Key: $ADMIN_KEY" \
             -H "Content-Type: application/json" -d "$BODY" \
@@ -71,7 +73,7 @@ jobs:
           echo "job=$job — polling the brain feed for the durable result (cross-worker)…"
           for i in $(seq 1 40); do
             sleep 12
-            found=$(curl -sS --max-time 30 "$FEED" | BEFORE="$before" python3 -c "import sys,os,json;d=json.load(sys.stdin);items=[i for i in d.get('items',[]) if i.get('kind')=='power_plant_enrichment'];n=items[0] if len(items)>int(os.environ.get('BEFORE','0')) else None;print(json.dumps({'severity':n.get('severity'),'summary':n.get('summary'),'detail':n.get('detail')},indent=2) if n else '')" 2>/dev/null || echo "")
+            found=$(curl -sS --max-time 30 "$FEED" | BEFORE="$before" python3 -c "import sys,os,json;d=json.load(sys.stdin);items=[i for i in d.get('items',[]) if i.get('kind')=='power_plant_enrichment' and (i.get('detail') or {}).get('phase')!='started'];n=items[0] if len(items)>int(os.environ.get('BEFORE','0')) else None;print(json.dumps({'severity':n.get('severity'),'summary':n.get('summary'),'detail':n.get('detail')},indent=2) if n else '')" 2>/dev/null || echo "")
             if [ -n "$found" ]; then echo "=== ENRICHMENT RESULT (from brain feed) ==="; echo "$found"; exit 0; fi
             echo "[$i] no new power_plant_enrichment record yet…"
           done
