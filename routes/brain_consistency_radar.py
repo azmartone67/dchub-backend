@@ -6567,7 +6567,10 @@ _INTERNAL_LINK_PROBES = [
 # gets the cached findings (0 probes). ~101k/day → ~3k/day, no loss of
 # detection latency that matters for a health check.
 _DEADLINK_CACHE = {"ts": 0.0, "findings": None}
-_DEADLINK_TTL_S = 1800  # 30 min
+_DEADLINK_TTL_S = 3600  # r71: 30 → 60 min. CF (2026-06-04) still showed ~61k/day —
+                        # the in-process cache doesn't dedupe across 2 replicas or
+                        # survive restarts. Doubling the window halves sweeps; the
+                        # durable fix (Redis-shared cache spanning replicas) is flagged.
 
 def check_dead_internal_links() -> list[dict]:
     """Phase RRR-newsletter (2026-05-18) — probe every high-traffic

@@ -417,7 +417,12 @@ def start_scheduler():
     # reduction) — still responsive enough for self-healing, but cleans
     # up the "internal probes drowning the backend" pattern. Same
     # rationale as raising L8 watchdog from 60s/3 → 90s/5 in FF+7-survive.
-    _scheduler.add_job(heal_cycle, "interval", minutes=30, id="heal_cycle",
+    # r71: 30 → 60 min. CF (2026-06-04) still showed DCHubHealer ~97k/day
+    # (worse with 2 replicas each running this loop). Halving the interval
+    # halves the per-replica probe volume; self-healing at 60-min latency is
+    # plenty for a health check. (Deeper fix — leader-gate this scheduler so
+    # only 1 replica runs it + a shared cross-replica probe cache — is flagged.)
+    _scheduler.add_job(heal_cycle, "interval", minutes=60, id="heal_cycle",
                        max_instances=1, coalesce=True, misfire_grace_time=300)
     # Also run once 60 seconds after boot
     from datetime import datetime, timedelta
@@ -425,7 +430,7 @@ def start_scheduler():
                        run_date=datetime.utcnow() + timedelta(seconds=60),
                        id="heal_warmup", max_instances=1)
     _scheduler.start()
-    log.info("self_heal scheduler STARTED — heal_cycle every 30 min")
+    log.info("self_heal scheduler STARTED — heal_cycle every 60 min")
     return _scheduler
 
 

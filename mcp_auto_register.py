@@ -57,6 +57,18 @@ SKIP_USER_AGENTS = [
     'curl/', 'wget/', 'httpie/',
     'UptimeRobot', 'StatusCake', 'Pingdom',
     'health-check', 'monitoring',
+    # r71: de-inflate at WRITE time. CF showed ~204k/day of DC Hub's OWN bots
+    # + junk probes/scanners/test-clients (Glama, Poe, Mcpscoringengine,
+    # Test-Client, Postmanclient, No-Auth-Test…) minting fake "platform" rows.
+    # The platform registry must be REAL external AI agents only — skip these
+    # so discovered_platforms stops bloating and read-time filters stop being
+    # load-bearing. (Substring match, case-insensitive.)
+    'dchub', 'deadlink', 'self-heal', 'selfheal', 'brainradar',
+    'brainuniformity', 'redircheck', 'schema-audit', 'heartbeat',
+    'glama', 'mcpscoringengine', 'poe', 'postman', 'no-auth', 'noauth',
+    'researchclient', 'test-client', 'test_client', 'smitheryconnect',
+    'agentdiscoveryindex', 'probe', 'scanner', 'scraper', 'inspector',
+    'validator', 'smoke', 'canary', 'qa-test', 'fastmcpclient',
 ]
 
 
