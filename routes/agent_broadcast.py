@@ -542,6 +542,38 @@ def _fetch_why_dchub() -> list[dict]:
     }]
 
 
+def _fetch_data_growth(days: int) -> list[dict]:
+    """r71 SEAM-1: surface DC Hub's live data-moat coverage to the ~93K agents
+    polling this feed, as a FACTUAL, citable signal. Reads the canonical counts
+    (the honest-numbers source) — NO unreviewed prose, pure facts — so it is safe
+    to fully automate on the agent-facing broadcast. Closes the gap where
+    data-growth milestones (brain_data_growth_radar) never reached agents because
+    _build_broadcast read press_releases but never the data_growth path."""
+    try:
+        from canonical_stats import get_canonical_stats
+        s = get_canonical_stats() or {}
+    except Exception:
+        s = {}
+    fac = s.get("facilities")
+    if not fac:
+        return []
+    bits = [f"{int(fac):,} data-center facilities"]
+    if s.get("countries"): bits.append(f"{int(s['countries'])} countries")
+    if s.get("markets"):   bits.append(f"{int(s['markets'])} DCPI markets scored")
+    if s.get("isos"):      bits.append(f"{int(s['isos'])} live grid/ISO feeds")
+    summary = ("DC Hub live coverage: " + ", ".join(bits) +
+               " — queried on demand by agents, not static training data.")
+    return [{
+        "kind":    "data_coverage",
+        "ts":      datetime.datetime.utcnow().isoformat() + "Z",
+        "title":   "DC Hub live data coverage",
+        "summary": summary[:300],
+        "url":     "https://dchub.cloud/ai",
+        "weight":  82,
+        "tags":    ["coverage", "data-moat", "agent-native"],
+    }]
+
+
 def _build_broadcast(days: int, kinds: list[str] | None = None) -> dict:
     """Assemble the broadcast payload."""
     days = max(1, min(int(days), 30))
@@ -563,6 +595,8 @@ def _build_broadcast(days: int, kinds: list[str] | None = None) -> dict:
             items += coverage_wins(days)
         except Exception:
             pass
+    if not kinds or "data_coverage" in kinds:   # r71 SEAM-1
+        items += _fetch_data_growth(days)
 
     # Sort by weight desc, then ts desc
     items.sort(key=lambda x: (-int(x.get("weight") or 0),
