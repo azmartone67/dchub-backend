@@ -1396,126 +1396,321 @@ def _legacy_compute_report_data() -> dict:
 
 
 def _legacy_render_html(d: dict) -> str:
-    h = d.get("headline") or {}
-    ma = d.get("ma_summary") or {}
-    bp = d.get("brand_pulse") or {}
+    h     = d.get("headline") or {}
+    ma    = d.get("ma_summary") or {}
+    bp    = d.get("brand_pulse") or {}
+    vd    = d.get("dcpi_verdicts") or {}
+    label = d.get("quarter_label", "")
+    as_of = (d.get("generated_at", "") or "")[:10]
+    permalink = "https://dchub.cloud/reports/quarterly"
 
-    movers_rows = "".join(
-        f'<tr><td>{m["market"]}</td><td>{m["score"]}/100</td>'
-        f'<td style="color:{"#16a34a" if m["delta"]>0 else "#dc2626"}">{"+" if m["delta"]>0 else ""}{m["delta"]}</td></tr>'
-        for m in (d.get("dcpi_movers") or [])
-    ) or '<tr><td colspan=3 style="color:#9ca3af">No DCPI movers tracked.</td></tr>'
-    markets_rows = "".join(
-        f'<tr><td>{m["market"]}</td><td>{m["facilities"]:,}</td><td>{m["total_mw"]:,.0f}</td></tr>'
-        for m in (d.get("top_markets") or [])
-    ) or '<tr><td colspan=3 style="color:#9ca3af">No market data.</td></tr>'
-    pipeline_rows = "".join(
-        f'<tr><td>{m["market"]}</td><td>{m["projects"]:,}</td><td>{m["mw"]:,.0f}</td></tr>'
-        for m in (d.get("pipeline_by_market") or [])
-    ) or '<tr><td colspan=3 style="color:#9ca3af">No pipeline tracked.</td></tr>'
-    deals_rows = "".join(
-        f'<tr><td>{x["date"] or "—"}</td><td>{x["buyer"] or "?"}</td><td>{x["seller"] or "?"}</td>'
-        f'<td>${(x["value"] or 0):,.0f}</td><td>{(x["mw"] or 0):,.0f}</td></tr>'
-        for x in (ma.get("top_deals") or [])
-    ) or '<tr><td colspan=5 style="color:#9ca3af">No deals in quarter.</td></tr>'
-    vd = d.get("dcpi_verdicts") or {}
-    build_rows = "".join(
-        f'<tr><td>{m["market"]}</td><td>{m["iso"] or "—"}</td><td>{m["excess"]}</td><td>{m["constraint"]}</td></tr>'
+    # Helper closures mirrored from monthly_trend.py::_render_html.
+    def _delta_html(pct):
+        if pct is None: return '<span style="color:#71717a">—</span>'
+        try:
+            if abs(pct) > 300:
+                return '<span style="color:#71717a" title="Prior window too small to compare">—</span>'
+        except Exception:
+            return '<span style="color:#71717a">—</span>'
+        sign  = "+" if pct >= 0 else ""
+        color = "#10b981" if pct >= 0 else "#ef4444"
+        return f'<span style="color:{color};font-weight:600">{sign}{pct:.1f}%</span>'
+
+    def _td(rows, cols):
+        return "\n".join(rows) if rows else (
+            f'<tr><td colspan="{cols}" style="color:#71717a;text-align:center;padding:18px">'
+            '<em>No data tracked yet for this quarter.</em></td></tr>'
+        )
+
+    def _fmt_b(v):
+        # ma.top_deals values are in $K (same scale as ma.total_value); render
+        # as $X.XB. None/0 → em-dash for honesty.
+        try:
+            if not v: return "—"
+            return f"${(float(v) or 0)/1e3:.1f}B"
+        except Exception:
+            return "—"
+
+    # ── Section row builders ────────────────────────────────────────
+    build_rows = [
+        f'<tr><td><strong>{m["market"]}</strong></td>'
+        f'<td>{m.get("iso") or "—"}</td>'
+        f'<td style="text-align:right">{m.get("excess","")}</td>'
+        f'<td style="text-align:right">{m.get("constraint","")}</td></tr>'
         for m in (d.get("top_build") or [])
-    ) or '<tr><td colspan=4 style="color:#9ca3af">No BUILD markets this quarter.</td></tr>'
+    ]
+    deal_rows = [
+        f'<tr><td>{x.get("date") or "—"}</td>'
+        f'<td><strong>{x.get("buyer") or "?"}</strong></td>'
+        f'<td>{x.get("seller") or "?"}</td>'
+        f'<td style="text-align:right">{_fmt_b(x.get("value"))}</td>'
+        f'<td style="text-align:right">{("—" if not x.get("mw") else format(x["mw"], ",.0f"))}</td></tr>'
+        for x in (ma.get("top_deals") or [])
+    ]
+    market_rows = [
+        f'<tr><td><strong>{m["market"]}</strong></td>'
+        f'<td style="text-align:right">{m.get("facilities",0):,}</td>'
+        f'<td style="text-align:right">{m.get("total_mw",0):,.0f}</td></tr>'
+        for m in (d.get("top_markets") or [])
+    ]
+    mover_rows = [
+        f'<tr><td><strong>{m["market"]}</strong></td>'
+        f'<td style="text-align:right">{m.get("score",0)}/100</td>'
+        f'<td style="text-align:right">{_delta_html(m.get("delta"))}</td></tr>'
+        for m in (d.get("dcpi_movers") or [])
+        if m.get("market") is not None and m.get("score") is not None
+    ]
+    pipeline_rows = [
+        f'<tr><td><strong>{m["market"]}</strong></td>'
+        f'<td style="text-align:right">{m.get("projects",0):,}</td>'
+        f'<td style="text-align:right">{m.get("mw",0):,.0f}</td></tr>'
+        for m in (d.get("pipeline_by_market") or [])
+    ]
 
-    return f"""<!doctype html><html lang=en>
-<head><meta charset=utf-8>
-<title>DC Hub Quarterly Report · {d.get('quarter_label','')}</title>
-<meta name="description" content="DC Hub data-center market intelligence quarterly report. {h.get('facilities',0):,} facilities, {h.get('total_mw',0):,.0f} MW, {ma.get('deal_count',0)} deals tracked. Auto-generated from live data.">
+    # Twitter share text — quarter-scoped.
+    _label_qs = label.replace(" ", "%20")
+
+    return f"""<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<title>DC Hub Quarterly Report · {label}</title>
+<meta name="description" content="DC Hub data center market intelligence — {label} quarterly snapshot. {h.get('facilities',0):,} facilities, {h.get('total_mw',0):,.0f} MW, {ma.get('deal_count',0)} M&amp;A deals tracked. Live data, BUILD/CAUTION/AVOID verdicts, free for journalist use.">
 <meta name="robots" content="index,follow,max-snippet:-1">
-<link rel="canonical" href="https://dchub.cloud/reports/quarterly">
+<link rel="canonical" href="{permalink}">
 <meta property="og:type" content="article">
-<meta property="og:title" content="DC Hub Quarterly — Data Center Market Intelligence · {d.get('quarter_label','')}">
-<meta property="og:description" content="{vd.get('build',0)} BUILD markets, {h.get('facilities',0):,} facilities, {h.get('total_mw',0):,.0f} MW, ${(ma.get('total_value') or 0)/1e3:.1f}B M&amp;A — from DC Hub's live Data Center Power Index.">
+<meta property="og:title" content="DC Hub Quarterly · {label}">
+<meta property="og:description" content="{vd.get('build',0)} BUILD markets, {h.get('facilities',0):,} facilities, {h.get('total_mw',0)/1000:,.1f} GW, ${(ma.get('total_value') or 0)/1e3:.1f}B M&amp;A — from DC Hub's live Data Center Power Index.">
 <meta property="og:image" content="https://dchub.cloud/dcpi/og.svg">
-<meta property="og:url" content="https://dchub.cloud/reports/quarterly">
+<meta property="og:url" content="{permalink}">
 <meta name="twitter:card" content="summary_large_image">
-<meta name="twitter:title" content="DC Hub Quarterly · {d.get('quarter_label','')}">
+<meta name="twitter:title" content="DC Hub Quarterly · {label}">
+<link rel="icon" type="image/svg+xml" href="/icons/icon.svg">
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link href="https://fonts.googleapis.com/css2?family=Instrument+Sans:wght@400;500;600;700;800&family=JetBrains+Mono:wght@500;700&display=swap" rel="stylesheet">
+<link rel="stylesheet" href="/static/dchub-brand.css">
+<script defer src="/js/dchub-brand.js"></script>
+<script defer src="/js/dchub-nav.js"></script>
 <script type="application/ld+json">{{
  "@context":"https://schema.org","@type":"Report",
- "name":"DC Hub Quarterly Report — {d.get('quarter_label','')}",
+ "name":"DC Hub Quarterly Report — {label}",
  "datePublished":"{d.get('generated_at','')}",
  "publisher":{{"@type":"Organization","name":"DC Hub","url":"https://dchub.cloud"}},
  "about":[{{"@type":"Thing","name":"Data Center Market Intelligence"}}],
- "url":"https://dchub.cloud/reports/quarterly"
+ "url":"{permalink}",
+ "isAccessibleForFree":true
 }}</script>
 <style>
-@page {{ size: letter; margin: 1in; }}
-body{{font-family:Georgia,serif;max-width:780px;margin:0 auto;padding:2rem 1rem;color:#1f2937;line-height:1.6}}
-h1{{font-family:-apple-system,sans-serif;font-size:2.2rem;margin:0 0 .25rem;border-bottom:3px solid #6366f1;padding-bottom:.5rem}}
-h2{{font-family:-apple-system,sans-serif;font-size:1.25rem;margin:2rem 0 .5rem;color:#6366f1}}
-.cover{{margin-bottom:2.5rem}}
-.cover .quarter{{color:#6b7280;font-family:-apple-system,sans-serif;font-size:1rem;margin:.25rem 0}}
-.headline{{display:grid;grid-template-columns:repeat(auto-fit,minmax(140px,1fr));gap:.6rem;margin:1.5rem 0;padding:1rem 1.25rem;background:#f9fafb;border-radius:8px;font-family:-apple-system,sans-serif}}
-.headline .stat{{font-size:.78rem;color:#6b7280;text-transform:uppercase}}
-.headline .stat b{{display:block;font-size:1.5rem;color:#1f2937;font-family:Georgia,serif}}
-table{{width:100%;border-collapse:collapse;margin:.5rem 0 1.5rem;font-family:-apple-system,sans-serif;font-size:.9rem}}
-th{{text-align:left;padding:.4rem .6rem;background:#f3f4f6;font-size:.7rem;text-transform:uppercase;color:#6b7280;border-bottom:1px solid #e5e7eb}}
-td{{padding:.35rem .6rem;border-bottom:1px solid #f3f4f6}}
-.print-note{{background:#eef2ff;border:1px solid #c7d2fe;color:#3730a3;padding:.6rem 1rem;border-radius:6px;font-family:-apple-system,sans-serif;font-size:.85rem;margin:1rem 0}}
-@media print {{ .print-note, .nav, .foot {{ display: none !important; }} }}
-.foot{{color:#9ca3af;font-size:.85rem;margin-top:3rem;font-family:-apple-system,sans-serif;text-align:center}}
-.foot a{{color:#6366f1;text-decoration:none}}
+  :root{{
+    --bg:#0a0a0f;--surface:#131319;--surface-2:#1a1a22;
+    --border:rgba(255,255,255,.06);--border-strong:rgba(255,255,255,.1);
+    --text:#f5f5f7;--text-dim:#a1a1aa;--text-faint:#71717a;
+    --indigo:#6366f1;--violet:#a855f7;
+    --grad:linear-gradient(135deg,#6366f1 0%,#a855f7 100%);
+    --grad-soft:linear-gradient(135deg,rgba(99,102,241,.10) 0%,rgba(168,85,247,.10) 100%);
+    --font:'Instrument Sans',-apple-system,BlinkMacSystemFont,sans-serif;
+    --mono:'JetBrains Mono','SF Mono',monospace;
+  }}
+  *,*::before,*::after{{margin:0;padding:0;box-sizing:border-box}}
+  body{{font-family:var(--font);background:var(--bg);color:var(--text);
+       -webkit-font-smoothing:antialiased;line-height:1.55}}
+  ::selection{{background:var(--indigo);color:#fff}}
+  .wrap{{max-width:1080px;margin:0 auto;padding:48px 24px 80px}}
+  header.top{{display:flex;align-items:center;justify-content:space-between;margin-bottom:36px}}
+  header.top a.brand{{display:inline-flex;align-items:center;gap:10px;text-decoration:none;color:var(--text)}}
+  .as-of{{font-family:var(--mono);font-size:11px;text-transform:uppercase;letter-spacing:.1em;color:var(--text-faint)}}
+  .as-of .dot{{display:inline-block;width:6px;height:6px;border-radius:50%;background:var(--violet);box-shadow:0 0 8px var(--violet);margin-right:6px;vertical-align:middle;animation:pulse 2s ease-in-out infinite}}
+  @keyframes pulse{{0%,100%{{opacity:1}}50%{{opacity:.4}}}}
+  .cover{{padding-bottom:36px;margin-bottom:40px;border-bottom:1px solid var(--border)}}
+  .eyebrow{{font-family:var(--mono);font-size:11px;text-transform:uppercase;letter-spacing:.16em;color:var(--violet);font-weight:600;margin-bottom:14px}}
+  h1{{font-size:clamp(2rem,4.2vw,3rem);font-weight:700;letter-spacing:-.03em;line-height:1.05;margin-bottom:16px}}
+  h1 .grad{{background:var(--grad);-webkit-background-clip:text;background-clip:text;color:transparent}}
+  .lede{{color:var(--text-dim);font-size:1.05rem;line-height:1.55;max-width:720px}}
+  section{{margin-bottom:48px}}
+  h2{{font-size:1.25rem;font-weight:700;letter-spacing:-.02em;margin-bottom:18px;display:flex;align-items:center;gap:12px}}
+  h2 .num{{font-family:var(--mono);font-size:11px;color:var(--violet);font-weight:600;background:var(--grad-soft);padding:4px 10px;border-radius:999px;border:1px solid rgba(168,85,247,.22);letter-spacing:.06em}}
+  .grid-4{{display:grid;grid-template-columns:repeat(4,1fr);gap:12px}}
+  .grid-3{{display:grid;grid-template-columns:repeat(3,1fr);gap:12px}}
+  @media (max-width:780px){{.grid-4{{grid-template-columns:repeat(2,1fr)}} .grid-3{{grid-template-columns:1fr}}}}
+  .stat{{background:var(--surface);border:1px solid var(--border);border-radius:14px;padding:22px}}
+  .stat-val{{font-size:1.85rem;font-weight:700;letter-spacing:-.02em;background:var(--grad);-webkit-background-clip:text;background-clip:text;color:transparent;line-height:1.05;display:block}}
+  .stat-lbl{{font-family:var(--mono);font-size:10px;text-transform:uppercase;letter-spacing:.1em;color:var(--text-faint);margin-top:8px;display:block}}
+  .stat-sub{{font-size:12px;color:var(--text-dim);margin-top:6px}}
+  table{{width:100%;border-collapse:collapse;font-size:13.5px;background:var(--surface);border:1px solid var(--border);border-radius:14px;overflow:hidden}}
+  th{{background:var(--surface-2);padding:12px 16px;text-align:left;font-family:var(--mono);font-size:10px;text-transform:uppercase;letter-spacing:.1em;color:var(--text-faint);font-weight:600}}
+  th.r,td.r{{text-align:right}}
+  td{{padding:12px 16px;border-top:1px solid var(--border)}}
+  td strong{{color:#fff}}
+  .share-row{{display:flex;flex-wrap:wrap;gap:10px;margin-top:14px}}
+  .share-btn{{display:inline-flex;align-items:center;gap:8px;padding:9px 16px;border-radius:999px;background:var(--surface);border:1px solid var(--border-strong);font-size:12.5px;font-weight:600;color:var(--text);text-decoration:none;transition:all .15s ease}}
+  .share-btn:hover{{border-color:var(--violet);color:#fff;transform:translateY(-1px)}}
+  .foot{{margin-top:72px;padding-top:36px;border-top:1px solid var(--border);font-family:var(--mono);font-size:11px;color:var(--text-faint);text-align:center;line-height:1.7}}
+  .foot a{{color:var(--text-dim);text-decoration:none;margin:0 8px}}
+  .foot a:hover{{color:var(--text)}}
+  @media print{{
+    body{{background:#fff;color:#0a0a0f;font-family:Georgia,serif}}
+    .stat,table{{background:#f9fafb!important;border-color:#e4e4e7!important}}
+    .stat-val{{background:none!important;-webkit-text-fill-color:#1e1b4b!important;color:#1e1b4b!important}}
+    h1 .grad{{background:none!important;-webkit-text-fill-color:#4338ca!important;color:#4338ca!important}}
+    th{{background:#eef2ff!important;color:#312e81!important}}
+    .share-row{{display:none}}.as-of .dot{{display:none}}
+  }}
 </style>
-</head><body>
-<div class="cover">
- <p class="quarter">DC Hub Industry Report</p>
- <h1>Data Center Market Intelligence</h1>
- <p class="quarter">{d.get('quarter_label','')} · Auto-generated from live data · {d.get('generated_at','')[:10]}</p>
+</head>
+<body>
+<div class="wrap">
+
+  <header class="top">
+    <a href="/" class="brand" data-dchub-brand></a>
+    <span class="as-of"><span class="dot"></span>Live · as of {as_of}</span>
+  </header>
+
+  <div class="cover">
+    <div class="eyebrow">Quarterly market intelligence</div>
+    <h1>{label} <span class="grad">in data centers.</span></h1>
+    <p class="lede">A live quarterly readout of the global data center market: facilities tracked, deal flow, DCPI verdicts (BUILD/CAUTION/AVOID), and per-market construction pipeline. Auto-generated from DC Hub's live ingest pipeline — no 90-day spreadsheet versioning, no quarterly lag.</p>
+  </div>
+
+  <div class="share-row">
+    <a class="share-btn" href="#cite">📋 Cite this report</a>
+    <a class="share-btn" href="javascript:window.print()">📄 Print / PDF</a>
+    <a class="share-btn" href="https://twitter.com/intent/tweet?text=DC%20Hub%20{_label_qs}%20quarterly%20snapshot&url={permalink}" target="_blank">𝕏 Share</a>
+    <a class="share-btn" href="https://www.linkedin.com/sharing/share-offsite/?url={permalink}" target="_blank">in Share</a>
+    <a class="share-btn" href="mailto:?subject=DC%20Hub%20{_label_qs}%20quarterly%20snapshot&body=Live%20data%20center%20market%20intelligence%3A%20{permalink}">✉ Email</a>
+  </div>
+
+  <!-- Headline stats -->
+  <section style="margin-top:48px">
+    <h2><span class="num">01</span>Headline</h2>
+    <div class="grid-4">
+      <div class="stat">
+        <span class="stat-val">{h.get('facilities',0):,}</span>
+        <span class="stat-lbl">Facilities</span>
+        <div class="stat-sub">Cumulative · global</div>
+      </div>
+      <div class="stat">
+        <span class="stat-val">{h.get('total_mw',0)/1000:,.1f} GW</span>
+        <span class="stat-lbl">Power tracked</span>
+        <div class="stat-sub">Operational + pipeline</div>
+      </div>
+      <div class="stat">
+        <span class="stat-val">{ma.get('deal_count',0):,}</span>
+        <span class="stat-lbl">Deals</span>
+        <div class="stat-sub">{("—" if not ma.get('total_mw') else format(ma['total_mw'], ',.0f') + ' MW changed hands')}</div>
+      </div>
+      <div class="stat">
+        <span class="stat-val">{_fmt_b(ma.get('total_value'))}</span>
+        <span class="stat-lbl">Deal $ volume</span>
+        <div class="stat-sub">{ma.get('deal_count',0)} deals · trailing 90 days</div>
+      </div>
+    </div>
+  </section>
+
+  <!-- DCPI verdicts -->
+  <section>
+    <h2><span class="num">02</span>Data Center Power Index · verdict distribution</h2>
+    <p class="lede" style="margin-bottom:22px">DC Hub's <a href="https://dchub.cloud/dcpi" style="color:#c7d2fe">Data Center Power Index</a> scores every tracked U.S. market on excess power vs. grid constraint, then issues a <strong>BUILD / CAUTION / AVOID</strong> verdict — refreshed <em>daily</em>, not quarterly. Distribution across {vd.get('total',0)} scored markets:</p>
+    <div class="grid-4">
+      <div class="stat">
+        <span class="stat-val" style="background:none;-webkit-text-fill-color:#10b981;color:#10b981">{vd.get('build',0)}</span>
+        <span class="stat-lbl">BUILD</span>
+        <div class="stat-sub">Excess power · low constraint</div>
+      </div>
+      <div class="stat">
+        <span class="stat-val" style="background:none;-webkit-text-fill-color:#f59e0b;color:#f59e0b">{vd.get('caution',0)}</span>
+        <span class="stat-lbl">CAUTION</span>
+        <div class="stat-sub">Mixed signals · queue stress</div>
+      </div>
+      <div class="stat">
+        <span class="stat-val" style="background:none;-webkit-text-fill-color:#ef4444;color:#ef4444">{vd.get('avoid',0)}</span>
+        <span class="stat-lbl">AVOID</span>
+        <div class="stat-sub">Severely constrained grid</div>
+      </div>
+      <div class="stat">
+        <span class="stat-val">{vd.get('total',0)}</span>
+        <span class="stat-lbl">Markets scored</span>
+        <div class="stat-sub">Daily refresh · live</div>
+      </div>
+    </div>
+    <div style="margin-top:18px">
+      <table>
+        <thead><tr><th>Top BUILD markets</th><th>ISO</th><th class="r">Excess</th><th class="r">Constraint</th></tr></thead>
+        <tbody>{_td(build_rows, 4)}</tbody>
+      </table>
+    </div>
+  </section>
+
+  <!-- M&A -->
+  <section>
+    <h2><span class="num">03</span>M&amp;A · trailing 90 days</h2>
+    <p class="lede" style="margin-bottom:22px">{ma.get('deal_count',0)} tracked deals · {_fmt_b(ma.get('total_value'))} aggregate value · {(ma.get('total_mw') or 0):,.0f} MW changed hands.</p>
+    <table>
+      <thead><tr><th>Date</th><th>Buyer</th><th>Seller</th><th class="r">Value</th><th class="r">MW</th></tr></thead>
+      <tbody>{_td(deal_rows, 5)}</tbody>
+    </table>
+  </section>
+
+  <!-- Top markets -->
+  <section>
+    <h2><span class="num">04</span>Top markets by operating MW</h2>
+    <table>
+      <thead><tr><th>Market</th><th class="r">Facilities</th><th class="r">Operating MW</th></tr></thead>
+      <tbody>{_td(market_rows, 3)}</tbody>
+    </table>
+  </section>
+
+  <!-- DCPI movers -->
+  <section>
+    <h2><span class="num">05</span>Power Index movers</h2>
+    <table>
+      <thead><tr><th>Market</th><th class="r">DCPI Score</th><th class="r">Δ Week</th></tr></thead>
+      <tbody>{_td(mover_rows, 3)}</tbody>
+    </table>
+  </section>
+
+  <!-- Pipeline -->
+  <section>
+    <h2><span class="num">06</span>Construction pipeline by market</h2>
+    <table>
+      <thead><tr><th>Market</th><th class="r">Projects</th><th class="r">Pipeline MW</th></tr></thead>
+      <tbody>{_td(pipeline_rows, 3)}</tbody>
+    </table>
+  </section>
+
+  <!-- Cite -->
+  <section id="cite">
+    <h2><span class="num">07</span>Cite this report</h2>
+    <p class="lede" style="margin-bottom:18px"><strong style="color:#fff">Cite as:</strong> DC Hub, <em>Data Center Market Intelligence — {label}</em>, {permalink}. Underlying index: DC Hub Data Center Power Index (DCPI), <a href="https://dchub.cloud/dcpi" style="color:#c7d2fe">dchub.cloud/dcpi</a>. Methodology &amp; BibTeX: <a href="https://dchub.cloud/dcpi/methodology" style="color:#c7d2fe">dchub.cloud/dcpi/methodology</a>.</p>
+    <div class="grid-3" style="margin-bottom:18px">
+      <div class="stat">
+        <span class="stat-val">{(bp.get('citation_score') or 0):.0f}%</span>
+        <span class="stat-lbl">Citation score</span>
+        <div class="stat-sub">AI-assistant attribution rate</div>
+      </div>
+      <div class="stat">
+        <span class="stat-val">{bp.get('source_of_truth') or '—'}/100</span>
+        <span class="stat-lbl">Source-of-truth</span>
+        <div class="stat-sub">Editorial usage signal</div>
+      </div>
+      <div class="stat">
+        <span class="stat-val">90d</span>
+        <span class="stat-lbl">Refresh cadence</span>
+        <div class="stat-sub">Page is live · numbers update continuously</div>
+      </div>
+    </div>
+    <p class="lede" style="font-size:.95rem"><strong style="color:#fff">Press &amp; data requests:</strong> <a href="mailto:press@dchub.cloud" style="color:#c7d2fe">press@dchub.cloud</a> — DCPI verdict packages, biggest-mover alerts, and quarterly data available to editorial on request.</p>
+    <p style="color:var(--text-faint);font-size:.85rem;font-style:italic;margin-top:14px">Referenced by leading AI assistants: Gemini calls DC Hub "the definitive platform" for data-center capacity intelligence; ChatGPT, Claude, Perplexity, and Grok cite it as a primary source.</p>
+  </section>
+
+  <div class="foot">
+    DC Hub · live source of truth · {label} quarterly snapshot<br>
+    <a href="/dcpi">Data Center Power Index</a> · <a href="/vs">vs static competitors</a> · <a href="/transparency">ops console</a>
+  </div>
+
 </div>
-<p class="print-note">📄 Use your browser's <strong>Print → Save as PDF</strong> for the PDF artifact your investors expect. Every number on this page comes from a live DC Hub API.</p>
-<div class="headline">
- <div class="stat">Facilities tracked<b>{h.get('facilities',0):,}</b></div>
- <div class="stat">Total MW<b>{h.get('total_mw',0):,.0f}</b></div>
- <div class="stat">Deals (quarter)<b>{ma.get('deal_count',0):,}</b></div>
- <div class="stat">Deal $ volume<b>${(ma.get('total_value') or 0)/1e3:.1f}B</b></div>
- <div class="stat">Citation score<b>{(bp.get('citation_score') or 0):.0f}%</b></div>
- <div class="stat">SOT score<b>{bp.get('source_of_truth') or '—'}/100</b></div>
-</div>
-<h2>The Data Center Power Index — {d.get('quarter_label','')}</h2>
-<p>DC Hub's <a href="https://dchub.cloud/dcpi">Data Center Power Index</a> scores every tracked U.S. market on excess power vs. grid constraint, then issues a <strong>BUILD / CAUTION / AVOID</strong> verdict — refreshed <em>daily</em>, not quarterly. This period's distribution across {vd.get('total',0)} scored markets:</p>
-<div class="headline">
- <div class="stat">BUILD<b style="color:#16a34a">{vd.get('build',0)}</b></div>
- <div class="stat">CAUTION<b style="color:#d97706">{vd.get('caution',0)}</b></div>
- <div class="stat">AVOID<b style="color:#dc2626">{vd.get('avoid',0)}</b></div>
- <div class="stat">Markets scored<b>{vd.get('total',0)}</b></div>
-</div>
-<table><thead><tr><th>Top BUILD markets</th><th>ISO</th><th>Excess</th><th>Constraint</th></tr></thead>
-<tbody>{build_rows}</tbody></table>
-<h2>1. DCPI Top Movers (week-over-week)</h2>
-<table><thead><tr><th>Market</th><th>Score</th><th>Δ</th></tr></thead>
-<tbody>{movers_rows}</tbody></table>
-<h2>2. Top Markets by Operating MW</h2>
-<table><thead><tr><th>Market</th><th>Facilities</th><th>Operating MW</th></tr></thead>
-<tbody>{markets_rows}</tbody></table>
-<h2>3. M&amp;A Summary · last 90 days</h2>
-<p>{ma.get('deal_count',0)} tracked deals · ${(ma.get('total_value') or 0)/1e3:.1f}B aggregate value · {(ma.get('total_mw') or 0):,.0f} MW changed hands.</p>
-<table><thead><tr><th>Date</th><th>Buyer</th><th>Seller</th><th>Value</th><th>MW</th></tr></thead>
-<tbody>{deals_rows}</tbody></table>
-<h2>4. Construction Pipeline by Market</h2>
-<table><thead><tr><th>Market</th><th>Projects</th><th>Pipeline MW</th></tr></thead>
-<tbody>{pipeline_rows}</tbody></table>
-<h2>5. About This Report</h2>
-<p>This report is auto-generated quarterly from DC Hub's live data pipeline. Unlike static-research alternatives (DCHawk, dcByte) that ship printed PDFs every 90 days, this report is regenerated <em>nightly</em> and the underlying numbers update <em>continuously</em>. Every section links back to a live API endpoint at <code>dchub.cloud/api/v1/*</code>.</p>
-<p>For real-time access, the same data is available via:</p>
-<ul>
- <li>REST API — <code>/api/v1/dcpi/scores</code>, <code>/api/v1/transactions</code>, <code>/api/v1/facilities/delta</code></li>
- <li>MCP server — <code>https://dchub.cloud/mcp</code> with 30 tools for AI agents</li>
- <li>Live ops dashboard — <a href="/transparency">/transparency</a></li>
-</ul>
-<h2>6. Cite &amp; Contact</h2>
-<p><strong>Cite this report:</strong> DC Hub, <em>Data Center Market Intelligence — {d.get('quarter_label','')}</em>, dchub.cloud/reports/quarterly. Underlying index: DC Hub Data Center Power Index (DCPI), dchub.cloud/dcpi. Methodology &amp; BibTeX: <a href="https://dchub.cloud/dcpi/methodology">dchub.cloud/dcpi/methodology</a>.</p>
-<p><strong>Press &amp; data requests:</strong> press@dchub.cloud — DCPI verdict packages, biggest-mover alerts, and quarterly data available to editorial on request.</p>
-<p style="color:#6b7280;font-size:.85rem;font-style:italic">Referenced by leading AI assistants: Gemini calls DC Hub "the definitive platform" for data-center capacity intelligence; ChatGPT, Claude, Perplexity, and Grok cite it as a primary source.</p>
-<p class="foot">DC Hub · live source of truth · <a href="/dcpi">Data Center Power Index</a> · <a href="/vs">vs static competitors</a> · <a href="/transparency">ops console</a></p>
-<script src="/js/dchub-nav.js" defer></script>
-</body></html>"""
+</body>
+</html>"""
 
 
 @quarterly_report_bp.route("/reports/quarterly", methods=["GET"],
