@@ -66,13 +66,27 @@ def api_snapshot():
     # so we don't mix float/Decimal (TypeError otherwise).
     total_gw = float(sum((r["queued_load_total_gw"] or 0) for r in snap))
     dc_gw    = float(sum((r["queued_load_data_center_gw"] or 0) for r in snap))
+    # r70 (2026-06-03): per-ISO freshness. Snapshots refresh per-ISO, so the set
+    # can mix today's live data (MISO/SPP/CAISO/NYISO real parsers) with older
+    # seeded rows (ERCOT/PJM/ISO-NE, whose source URLs moved). Surface it honestly
+    # so the headline total is never mistaken for uniformly-fresh — and use the
+    # LATEST date as the top-line as_of (was snap[0], an arbitrary single ISO).
+    _dates = [r["as_of"] for r in snap if r.get("as_of")]
+    _latest = max(_dates) if _dates else None
+    _fresh = sum(1 for r in snap if r.get("as_of") == _latest)
     return jsonify({
-        "as_of": snap[0]["as_of"].isoformat() if snap else None,
+        "as_of": _latest.isoformat() if _latest else None,
         "iso_count": len(snap),
         "totals": {
             "queued_load_gw": total_gw,
             "queued_load_data_center_gw": dc_gw,
             "dc_share_pct": round(100.0 * dc_gw / total_gw, 1) if total_gw else None,
+        },
+        "freshness": {
+            "latest_as_of": _latest.isoformat() if _latest else None,
+            "fresh_iso_count": _fresh,
+            "stale_iso_count": len(snap) - _fresh,
+            "note": "Per-ISO as_of is in by_iso; 'fresh' = refreshed on the latest daily ingest.",
         },
         "by_iso": [_serialize(r) for r in snap],
         "methodology": "DCPI maps ISO queue position + load growth vs signed contracts -> Excess Power / Constraint scoring. Per-ISO BUILD/CAUTION/AVOID verdicts at https://dchub.cloud/dcpi.",
