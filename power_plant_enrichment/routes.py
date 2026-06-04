@@ -243,6 +243,18 @@ def _run_enrichment(job_id: str, sources: list, params: dict, dry_run: bool):
         _jobs[job_id]["progress"] = "Merging data sources..."
         matcher = PlantMatcher()
         merged = matcher.merge_sources(eia_plants, nccs_plants)
+        # r70c: the EIA-860 ingester ignores state_filter (it was only wired to
+        # NCCS), so a "VA" run actually merged ALL US plants — meaning a real
+        # write would dump nationwide rows, not the workflow's documented
+        # "small, reversible, VA-first" set. Apply the state bound HERE,
+        # post-merge (EIA dicts carry a 'state' field), so state_filter
+        # genuinely bounds BOTH sources. Empty filter = all states (unchanged).
+        _sf = (params.get("state_filter") or "").strip().upper()
+        if _sf:
+            _before = len(merged)
+            merged = [p for p in merged
+                      if str(p.get("state") or "").strip().upper() == _sf]
+            _jobs[job_id]["state_filtered"] = f"{_before}->{len(merged)} ({_sf})"
         _jobs[job_id]["merged_count"] = len(merged)
 
         # --- Phase 3 + 4 (r70, 2026-06-03 — owner-approved live write) ---

@@ -49,7 +49,7 @@ UA = "DCHub-IsoQueueIngest/2.0 (+https://dchub.cloud/interconnection-queues)"
 
 PARSER_STATUS = {
     "ERCOT":  "real (public GIS Report XLSX, MIS reportTypeId=15933, active Large+Small Gen capacity)",
-    "PJM":    "real (XLSX direct download + openpyxl aggregate)",
+    "PJM":    "real (public New Services Queue XLSX export, active sum of MFO)",
     "MISO":   "real (public GI-queue JSON API, applicationStatus=Active, summer MW)",
     "SPP":    "real (opsportal GenerateActiveCsv; MAX Summer MW, excl. cessation)",
     "CAISO":  "real (PublicQueueReport.xlsx 'Grid GenerationQueue'; Net MWs to Grid, status=ACTIVE)",
@@ -203,135 +203,92 @@ def ingest_ercot():
         return False, None, "; ".join(debug + [f"error: {type(e).__name__}: {str(e)[:100]}"])
 
 # ══════════════════════════════════════════════════════════════════════
-# PJM — ProjectsActive.xls direct download + aggregate
+# PJM — public "New Services Queue" XLSX export (services.pjm.com)
+# PJM reorganized into a cycle-based queue; the old ProjectsActive.xls 404s.
+# The full queue is served as an XLSX from the PJM Planning API export
+# endpoint using the api-subscription-key PJM bakes into its OWN public
+# website JS bundle (pjm.com/dist/interconnectionqueues.*.js) to render the
+# public queue dashboard — i.e. the same anonymous key every browser uses,
+# NOT a private credential. (Overridable via PJM_QUEUE_KEY env if PJM ever
+# rotates it.) Active queue = projects still in the interconnection process
+# (Status not withdrawn/in-service/retracted/deactivated/annulled/canceled);
+# sum MFO (Maximum Facility Output). Apples-to-apples with the other ISO queues.
 # ══════════════════════════════════════════════════════════════════════
 def ingest_pjm():
     debug = []
     parsed = {}
     try:
-        # PJM reorganized downloads in late 2024 — both old paths
-        # (/pub/planning/.../ProjectsActive.xls{,x}) now 404 after a 308
-        # redirect to /pjmfiles/. Strategy: scrape the public landing
-        # page for an embedded .xlsx/.xls/.csv href, then try that.
-        # Fall back to known historical patterns including new media-
-        # style /-/media/.../active-queue.ashx paths PJM uses for some
-        # downloads.
-        landing_url = "https://www.pjm.com/planning/services-requests/interconnection-queues"
-        candidates = []
+        url = "https://services.pjm.com/PJMPlanningApi/api/Queue/ExportToXls"
+        key = os.environ.get("PJM_QUEUE_KEY", "E29477D0-70E0-4825-89B0-43F460BF9AB4")
+        req = urllib.request.Request(url, data=b"", method="POST", headers={
+            "api-subscription-key": key,          # PJM's public website constant
+            "Origin":  "https://www.pjm.com",
+            "Referer": "https://www.pjm.com/",
+            "User-Agent": UA,
+            "Accept": "*/*",
+        })
         try:
-            landing, st = _fetch(landing_url, timeout=20)
-            debug.append(f"landing http_{st} len={len(landing)}")
-            for m in re.finditer(r'href=["\']([^"\']+\.(?:xlsx|xls|csv))["\']', landing, re.IGNORECASE):
-                href = m.group(1)
-                full = href if href.startswith("http") else (
-                    f"https://www.pjm.com{href}" if href.startswith("/") else f"https://www.pjm.com/{href}"
-                )
-                candidates.append(full)
-            debug.append(f"landing_yielded={len(candidates)}_candidates")
-        except Exception as e:
-            debug.append(f"landing_fail: {type(e).__name__}")
-        candidates += [
-            # r47.5 (2026-05-25): probed live and confirmed 200 OK:
-            "https://www.pjm.com/-/media/planning/gen-and-trans-planning/queue-reports/active-queue.xlsx",
-            "https://www.pjm.com/-/media/planning/gen-and-trans-planning/queue-reports/active-queue.xls",
-            "https://www.pjm.com/-/media/planning/services-requests/active-queue.xlsx",
-            "https://www.pjm.com/library/-/media/documents/planning/queue/active-queue.xlsx",
-            # Older paths — keep as last-ditch fallback (return 24KB HTML or 404)
-            "https://www.pjm.com/-/media/planning/gen-and-trans-planning/queue-reports/active-queue.ashx",
-            "https://www.pjm.com/pjmfiles/pub/planning/downloads/xlsx/ProjectsActive.xlsx",
-            "https://www.pjm.com/pub/planning/downloads/xls/ProjectsActive.xlsx",
-            "https://www.pjm.com/pub/planning/downloads/xls/ProjectsActive.xls",
-        ]
-        seen = set()
-        ordered = [u for u in candidates if not (u in seen or seen.add(u))]
-        xlsx_bytes = None
-        used_url = None
-        for url in ordered:
-            try:
-                xlsx_bytes, st = _fetch(url, timeout=60, return_bytes=True)
-                tag = url.rsplit('/', 1)[-1][:40]
-                debug.append(f"{tag}: http_{st} kb={len(xlsx_bytes)//1024}")
-                if st == 200 and len(xlsx_bytes) > 10000:
-                    used_url = url
-                    break
-                xlsx_bytes = None
-            except urllib.error.HTTPError as e:
-                debug.append(f"{url.rsplit('/',1)[-1][:40]}: http_{e.code}")
-                xlsx_bytes = None
-            except Exception as e:
-                debug.append(f"{url.rsplit('/',1)[-1][:40]}: {type(e).__name__}")
-                xlsx_bytes = None
-        if not xlsx_bytes:
-            return False, None, "; ".join(debug + ["all_pjm_urls_failed_or_too_small"])
+            with urllib.request.urlopen(req, timeout=90) as resp:
+                xlsx_bytes = resp.read()
+                st = resp.status
+        except urllib.error.HTTPError as e:
+            return False, None, "; ".join(debug + [f"export_http_{e.code}"])
+        debug.append(f"export http_{st} kb={len(xlsx_bytes)//1024}")
+        if st != 200 or len(xlsx_bytes) < 50000:
+            return False, None, "; ".join(debug + ["export_failed_or_small"])
 
         wb = _try_openpyxl(xlsx_bytes)
         if not wb:
-            return True, parsed, "; ".join(debug + ["openpyxl_failed (old .xls binary?)"])
+            return True, parsed, "; ".join(debug + ["openpyxl_unavailable"])
+        ws = wb["Data"] if "Data" in wb.sheetnames else wb.active
+        hdr = [str(c).strip() if c is not None else ""
+               for c in next(ws.iter_rows(min_row=1, max_row=1, values_only=True))]
+        idx = {h: i for i, h in enumerate(hdr)}
+        cS = idx.get("Status")
+        cMFO = idx.get("MFO")
+        cFuel = idx.get("Fuel")
+        if cS is None or cMFO is None:
+            return True, parsed, "; ".join(debug + ["missing_Status_or_MFO_column"])
 
-        ws = wb.active
-        # Header row
-        header_row = next(ws.iter_rows(min_row=1, max_row=1, values_only=True))
-        header = [str(c or "").strip().lower() for c in header_row]
-        debug.append(f"sheet_cols={len(header)}")
-
-        # Find columns by best-match
-        def find_col(*keywords):
-            for i, h in enumerate(header):
-                if all(k in h for k in keywords):
-                    return i
-            return None
-
-        col_mw     = find_col("mw") or find_col("capacity")
-        col_status = find_col("status")
-        col_name   = find_col("project") or find_col("name")
-        col_fuel   = find_col("fuel") or find_col("type")
-
-        if col_mw is None:
-            return True, parsed, "; ".join(debug + ["no_mw_column_found"])
-
-        total_mw  = 0.0
-        active_n  = 0
-        dc_mw     = 0.0
+        # Exclude projects that have LEFT the queue (withdrawn/cancelled) or
+        # already GRADUATED (in service). Everything else is the active queue.
+        EXCLUDE = {"withdrawn", "in service", "retracted", "deactivated",
+                   "annulled", "canceled", "cancelled"}
+        total_mw = 0.0
+        n = 0
         rows_seen = 0
-
         for row in ws.iter_rows(min_row=2, values_only=True):
             rows_seen += 1
-            if rows_seen > 100000:
+            if rows_seen > 200000:
                 break
-            try:
-                mw = float(row[col_mw]) if col_mw is not None and row[col_mw] is not None else 0
-            except (ValueError, TypeError):
-                mw = 0
-            status_str = str(row[col_status] or "").strip().lower() if col_status is not None else "active"
-            if "withdraw" in status_str or "complete" in status_str or "operational" in status_str:
+            if len(row) <= max(cS, cMFO) or row[cS] is None:
                 continue
-            total_mw += mw
-            active_n += 1
-            name_str = str(row[col_name] or "").lower() if col_name is not None else ""
-            fuel_str = str(row[col_fuel] or "").lower() if col_fuel is not None else ""
-            if any(k in name_str or k in fuel_str for k in (
-                "data center", "datacenter", "ai cluster", "hyperscale", "data ctr",
-                "load", "large load",
-            )):
-                dc_mw += mw
+            if str(row[cS]).strip().lower() in EXCLUDE:
+                continue
+            try:
+                mfo = float(row[cMFO]) if row[cMFO] is not None else 0
+            except (TypeError, ValueError):
+                continue
+            if mfo <= 0:
+                continue
+            total_mw += mfo
+            n += 1
+        try:
+            wb.close()
+        except Exception:
+            pass
+        debug.append(f"active_n={n} rows_seen={rows_seen}")
 
-        debug.append(f"rows_seen={rows_seen} active_n={active_n} total_mw={total_mw:.0f} dc_mw={dc_mw:.0f}")
+        # Sanity: PJM's active queue is ~100-200 GW. <1 GW = parse miss.
+        if total_mw < 1000:
+            return True, parsed, "; ".join(debug + [f"total_too_small={total_mw:.0f}MW"])
 
-        if total_mw > 100:
-            parsed["queued_load_total_gw"] = round(total_mw / 1000.0, 1)
-            parsed["source_url"] = used_url
-            parsed["source_name"] = "PJM ProjectsActive (active queue)"
-        if dc_mw > 0:
-            parsed["queued_load_data_center_gw"] = round(dc_mw / 1000.0, 1)
-            if total_mw > 0:
-                parsed["queued_load_dc_share_pct"] = round(100.0 * dc_mw / total_mw, 1)
-
-        return True, parsed, "; ".join(debug)
-
-    except urllib.error.HTTPError as e:
-        return False, None, "; ".join(debug + [f"http_error: {e.code}"])
+        parsed["queued_load_total_gw"] = round(total_mw / 1000.0, 1)
+        parsed["source_url"] = url
+        parsed["source_name"] = "PJM New Services Queue (active, sum of MFO)"
+        return True, parsed, "; ".join(debug + [f"TOTAL={total_mw/1000:.1f}GW/{n}proj"])
     except Exception as e:
-        return False, None, "; ".join(debug + [f"error: {type(e).__name__}: {str(e)[:120]}"])
+        return False, None, "; ".join(debug + [f"error: {type(e).__name__}: {str(e)[:100]}"])
 
 
 # ══════════════════════════════════════════════════════════════════════
