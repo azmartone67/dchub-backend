@@ -8,7 +8,7 @@ on:
   schedule:
     # Off-cycle from heartbeat-auto (:08,:23,:38,:53) and auto-rollback
     # (:00/:15) — picks :11,:26,:41,:56 — 15 min cadence.
-    - cron: '11-59/15 * * * *'
+    - cron: '4-59/15 * * * *'
   workflow_dispatch: {}
 
 permissions:

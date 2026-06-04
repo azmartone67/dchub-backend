@@ -95,12 +95,18 @@ jobs:
           curl -sf --max-time 90 -X POST "$RAILWAY/api/kmz-discovery/run" 2>/dev/null | python3 -c "import json,sys; d=json.load(sys.stdin); print('Success:', d.get('success','?'))" 2>/dev/null || echo "KMZ processing timed out"
 
       - name: Evolution and auto-approve
+        env:
+          ADMIN_KEY: ${{ secrets.DCHUB_ADMIN_KEY }}
         run: |
           RAILWAY="https://dchub-backend-production.up.railway.app"
           echo "Step 4/4: Evolution engine + auto-approve..."
-          curl -sf --max-time 60 -X POST "$RAILWAY/api/jobs/evolution" 2>/dev/null | python3 -c "import json,sys; d=json.load(sys.stdin); print('Evolution:', d.get('success','?'))" 2>/dev/null || echo "Evolution timed out"
+          # r80 (2026-06-04): these endpoints require X-Admin-Key; this step was
+          # firing bare curls -> 401 every run while the workflow stayed green,
+          # so the evolution engine + staged-facility auto-approval never ran.
+          if [ -z "${ADMIN_KEY:-}" ]; then echo "::warning::DCHUB_ADMIN_KEY not set — evolution/auto-approve will 401"; fi
+          curl -sf --max-time 60 -X POST -H "X-Admin-Key: $ADMIN_KEY" "$RAILWAY/api/jobs/evolution" 2>/dev/null | python3 -c "import json,sys; d=json.load(sys.stdin); print('Evolution:', d.get('success','?'))" 2>/dev/null || echo "Evolution timed out"
           sleep 3
-          curl -sf --max-time 30 -X POST "$RAILWAY/api/jobs/auto-approve" 2>/dev/null | python3 -c "import json,sys; d=json.load(sys.stdin); print('Auto-approve:', d.get('success','?'))" 2>/dev/null || echo "Auto-approve timed out"
+          curl -sf --max-time 30 -X POST -H "X-Admin-Key: $ADMIN_KEY" "$RAILWAY/api/jobs/auto-approve" 2>/dev/null | python3 -c "import json,sys; d=json.load(sys.stdin); print('Auto-approve:', d.get('success','?'))" 2>/dev/null || echo "Auto-approve timed out"
 
       - name: Warm caches
         run: |

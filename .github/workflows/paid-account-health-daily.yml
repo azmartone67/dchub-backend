@@ -8,7 +8,7 @@ on:
     # about to expire. Triggered by the Carl Braun incident where a
     # paying Pro customer got stranded mid-signup because his 1-hour
     # reset link expired before he clicked it.
-    - cron: '30 13 * * *'
+    - cron: '35 13 * * *'
   workflow_dispatch: {}
 jobs:
   audit:

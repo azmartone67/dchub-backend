@@ -45,7 +45,7 @@ on:
     # Promotion: 13:00 UTC
     - cron: '5 13 * * *'
     # Market report: 14:30 UTC
-    - cron: '30 14 * * *'
+    - cron: '52 14 * * *'
     # Infrastructure sync: 01:00 UTC
     - cron: '0 1 * * *'
 

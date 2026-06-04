@@ -11,7 +11,7 @@ on:
     # Mondays at 14:05 UTC (offset by 5min from the existing 14:00
     # anchor cluster — see brain consistency_radar cron-collision
     # detector for the rationale).
-    - cron: '5 14 * * 1'
+    - cron: '15 14 * * 1'
   workflow_dispatch: {}
 
 jobs:
