@@ -200,29 +200,96 @@ def _run_enrichment(job_id: str, sources: list, params: dict, dry_run: bool):
         merged = matcher.merge_sources(eia_plants, nccs_plants)
         _jobs[job_id]["merged_count"] = len(merged)
 
-        # --- Phase 3: Match against DC Hub DB ---
-
+        # --- Phase 3 + 4 (r70, 2026-06-03 — owner-approved live write) ---
+        # Match merged plants against the LIVE discovered_power_plants by a
+        # per-plant SQL existence check (name + ~0.02deg proximity) — NOT an
+        # in-memory match against the ~96k-row table — and, ONLY when not
+        # dry_run, INSERT genuinely-new plants. Safety rails:
+        #   • SCHEMA-ADAPTIVE: columns read from information_schema at runtime
+        #     (the live table is capacity_mw/lat/lng — repo DDL is wrong; this
+        #     never trusts it). Only columns that actually exist are written.
+        #   • REVERSIBLE: every inserted row is tagged source='eia_nccs_enrichment'
+        #     → undo with DELETE FROM discovered_power_plants WHERE source=...
+        #   • IDEMPOTENT: the existence check means re-runs don't duplicate.
+        #   • dry_run (the DEFAULT) previews the REAL would-write count, no writes.
         _jobs[job_id]["progress"] = "Matching against DC Hub database..."
+        results = {"updates": [], "new": [], "conflicts": []}
+        would_write = 0
+        inserted = 0
+        existing_hits = 0
+        _conn = None
+        try:
+            import os as _os
+            import psycopg2
+            _db = _os.environ.get("DATABASE_URL") or _os.environ.get("NEON_DATABASE_URL")
+            if not _db:
+                _jobs[job_id]["match_db_error"] = "no DATABASE_URL"
+            else:
+                _conn = psycopg2.connect(_db, sslmode="require", connect_timeout=10)
+                with _conn.cursor() as _cur:
+                    _cur.execute("""SELECT column_name FROM information_schema.columns
+                                    WHERE table_name = 'discovered_power_plants'""")
+                    _cols = {r[0] for r in _cur.fetchall()}
+                    for _p in merged:
+                        _lat = _p.get("latitude")
+                        _lng = _p.get("longitude")
+                        _nm = (_p.get("name") or "").strip()
+                        if _lat is None or _lng is None or not _nm:
+                            continue
+                        _cur.execute(
+                            """SELECT 1 FROM discovered_power_plants
+                               WHERE lower(name) = lower(%s)
+                                 AND abs(lat - %s) < 0.02 AND abs(lng - %s) < 0.02
+                               LIMIT 1""",
+                            (_nm, _lat, _lng))
+                        if _cur.fetchone():
+                            existing_hits += 1
+                            continue
+                        would_write += 1
+                        results["new"].append(_p)
+                        if not dry_run:
+                            _row = {"name": _nm, "lat": _lat, "lng": _lng,
+                                    "capacity_mw": _p.get("capacity_mw"),
+                                    "state": _p.get("state"),
+                                    "fuel_type": _p.get("fuel") or _p.get("prime_mover"),
+                                    "source": "eia_nccs_enrichment"}
+                            _row = {k: v for k, v in _row.items()
+                                    if k in _cols and v is not None}
+                            if {"name", "lat", "lng"} <= set(_row):
+                                _ks = list(_row.keys())
+                                _cur.execute(
+                                    f"INSERT INTO discovered_power_plants "
+                                    f"({','.join(_ks)}) VALUES "
+                                    f"({','.join(['%s'] * len(_ks))})",
+                                    [_row[k] for k in _ks])
+                                inserted += 1
+                if not dry_run:
+                    _conn.commit()
+        except Exception as e:
+            try:
+                if _conn is not None:
+                    _conn.rollback()
+            except Exception:
+                pass
+            _jobs[job_id]["match_db_error"] = f"{type(e).__name__}: {str(e)[:150]}"
+        finally:
+            try:
+                if _conn is not None:
+                    _conn.close()
+            except Exception:
+                pass
 
-        # NOTE (r70, 2026-06-03): DB matching against the live plants table is
-        # NOT yet wired (the live table is discovered_power_plants — capacity_mw/
-        # lat/lng; the diff+write is a scoped follow-up with known schema
-        # sharp-edges). We match against an empty set, so every merged plant is
-        # reported as "new" — flagged honestly in the results below so the counts
-        # are never mistaken for a real diff against DC Hub's live DB.
-        existing_plants = []  # not yet wired to discovered_power_plants
-
-        results = matcher.match_against_dchub(merged, existing_plants)
-
-        # --- Phase 4: Apply updates (if not dry run) ---
-
-        if not dry_run and results["updates"]:
-            # DB writes are NOT implemented yet. Record that honestly instead of
-            # silently no-op'ing as if the write happened — the prior `pass` made
-            # a non-dry-run call look successful while changing nothing.
+        _jobs[job_id]["existing_matched"] = existing_hits
+        _jobs[job_id]["would_write"] = would_write
+        if dry_run:
             _jobs[job_id]["write_status"] = (
-                "skipped — power-plant DB writes are not implemented; this ran as "
-                "a PREVIEW only (no rows changed)")
+                f"DRY RUN — would write {would_write} new plant(s); "
+                f"{existing_hits} already present. Re-run with dry_run=false to write.")
+        else:
+            _jobs[job_id]["write_status"] = (
+                f"wrote {inserted} new plant(s) to discovered_power_plants "
+                f"(source='eia_nccs_enrichment'; reversible via "
+                f"DELETE WHERE source='eia_nccs_enrichment')")
 
         # --- Done ---
 
@@ -231,14 +298,15 @@ def _run_enrichment(job_id: str, sources: list, params: dict, dry_run: bool):
             "completed_at": datetime.utcnow().isoformat(),
             "progress": "Done",
             "dry_run": dry_run,
-            "db_matching": ("not_implemented — matched against an empty set; "
-                            "'new_plants' is the full merged candidate set, NOT a "
-                            "true diff vs DC Hub's live plants table"),
-            "effective_mode": "preview",
+            "db_matching": ("live — per-plant SQL existence check (name + ~0.02deg) "
+                            "against discovered_power_plants; new rows tagged "
+                            "source='eia_nccs_enrichment' (reversible)"),
+            "effective_mode": "preview" if dry_run else "wrote",
             "results": {
                 "total_enriched": len(merged),
-                "matched_existing": len(results["updates"]),
-                "new_plants": len(results["new"]),
+                "already_in_db": existing_hits,
+                "new_plants": would_write,
+                "written": inserted,
                 "conflicts": len(results["conflicts"]),
                 "stats": matcher.get_stats(),
             },
