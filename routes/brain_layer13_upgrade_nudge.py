@@ -117,6 +117,39 @@ def _candidates(limit: int = 25) -> list[dict]:
         """, (_MIN_CALLS_14D, f"{_NUDGE_COOLDOWN_DAYS} days", limit))
         rows = [{"api_key_hash": r[0], "calls_14d": r[1], "top_tool": r[2],
                  "email": r[3], "tier": r[4]} for r in cur.fetchall()]
+        # r71-conv #6: ALSO reach the auto-trial OPERATOR pool — operator_email
+        # captured at mint (the ~90 anon grid/fiber power users the users.email
+        # JOIN above can NEVER see, because they never created a users-table row).
+        # Additive + fully guarded (rollback on any error) so it can't break the
+        # primary path. Send stays HUMAN-GATED: send-batch is a manual POST with
+        # no cron — this only makes the pool VISIBLE/reachable, never auto-sends.
+        try:
+            _seen = {(r.get("email") or "").lower() for r in rows}
+            cur.execute("""
+                SELECT t.api_key, COALESCE(t.call_count,0) AS calls,
+                       t.minted_for_tool, t.operator_email
+                  FROM auto_trial_keys t
+                  LEFT JOIN (SELECT email, MAX(sent_at) AS last_sent
+                               FROM brain_upgrade_nudges GROUP BY email) n
+                    ON n.email = t.operator_email
+                 WHERE t.operator_email IS NOT NULL AND t.operator_email <> ''
+                   AND COALESCE(t.call_count,0) >= %s
+                   AND (n.last_sent IS NULL OR n.last_sent < NOW() - INTERVAL %s)
+                 ORDER BY t.call_count DESC NULLS LAST
+                 LIMIT %s
+            """, (_MIN_CALLS_14D, f"{_NUDGE_COOLDOWN_DAYS} days", limit))
+            for r in cur.fetchall() or []:
+                em = (r[3] or "").lower()
+                if em and em not in _seen:
+                    _seen.add(em)
+                    rows.append({"api_key_hash": r[0], "calls_14d": int(r[1] or 0),
+                                 "top_tool": r[2] or "grid/fiber tools",
+                                 "email": em, "tier": "trial"})
+            rows.sort(key=lambda x: int(x.get("calls_14d") or 0), reverse=True)
+        except Exception as _e:
+            try: conn.rollback()
+            except Exception: pass
+            logger.info(f"L13 operator-pool merge skipped: {_e}")
         try: cur.close()
         except Exception: pass
         try: conn.close()
