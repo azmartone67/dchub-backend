@@ -1,0 +1,160 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>Powered Land — Gas Economics | DC Hub</title>
+<meta name="description" content="Per-DCPI-market gas pricing: Henry Hub spot, regional basis at the nearest pricing hub, delivered industrial / electric-power $/MMBtu, and heat-rate-derived gas-to-grid $/MWh across 5 scenarios.">
+<link rel="canonical" href="https://dchub.cloud/powered-land">
+<style>
+  :root{--bg:#0b1220;--card:#121b2e;--ink:#e6ecf8;--mute:#90a0c0;--accent:#5dd2ff;--gold:#ffd55a;--good:#5cd29a;--warn:#ff8a8a;--border:#1f2c47}
+  *{box-sizing:border-box}
+  body{margin:0;padding:0;background:var(--bg);color:var(--ink);font-family:-apple-system,BlinkMacSystemFont,Segoe UI,Roboto,system-ui,sans-serif;line-height:1.55}
+  .wrap{max-width:1100px;margin:0 auto;padding:32px 20px 80px}
+  h1{margin:0 0 6px;font-size:32px;letter-spacing:-0.01em}
+  h2{margin:36px 0 12px;font-size:22px;color:var(--accent)}
+  .sub{color:var(--mute);margin-bottom:28px;max-width:780px}
+  .picker{display:flex;gap:8px;align-items:center;flex-wrap:wrap;margin-bottom:24px}
+  .picker input,.picker select,.picker button{background:#0d1628;color:var(--ink);border:1px solid var(--border);border-radius:8px;padding:10px 14px;font-size:15px;font-family:inherit}
+  .picker button{background:var(--accent);color:#04111c;border:0;font-weight:600;cursor:pointer}
+  .picker button:hover{filter:brightness(1.1)}
+  .card{background:var(--card);border:1px solid var(--border);border-radius:12px;padding:20px 22px;margin-bottom:18px}
+  .stack{display:grid;grid-template-columns:1fr 1fr;gap:18px}
+  @media (max-width:720px){.stack{grid-template-columns:1fr}}
+  .row{display:flex;justify-content:space-between;align-items:baseline;padding:8px 0;border-bottom:1px solid #1a2640}
+  .row:last-child{border-bottom:0}
+  .label{color:var(--mute);font-size:14px}
+  .val{font-variant-numeric:tabular-nums;font-weight:600;font-size:16px}
+  .verdict{display:inline-block;padding:4px 10px;border-radius:6px;font-size:13px;font-weight:600;letter-spacing:0.02em}
+  .v-good{background:rgba(92,210,154,.15);color:var(--good)}
+  .v-adq{background:rgba(255,213,90,.18);color:var(--gold)}
+  .v-bad{background:rgba(255,138,138,.18);color:var(--warn)}
+  .badge{display:inline-block;background:rgba(93,210,255,.15);color:var(--accent);padding:3px 10px;border-radius:6px;font-size:12px;letter-spacing:.05em;text-transform:uppercase;margin-left:8px}
+  .lock{padding:14px 16px;background:rgba(255,213,90,.10);border:1px dashed rgba(255,213,90,.5);border-radius:10px;margin-top:14px}
+  .lock a{color:var(--gold);font-weight:600}
+  .err{color:var(--warn);padding:12px;border:1px solid rgba(255,138,138,.4);border-radius:8px}
+  .meta{color:var(--mute);font-size:12px;margin-top:14px}
+  code{background:#0d1628;padding:2px 6px;border-radius:4px;color:var(--accent)}
+</style>
+</head>
+<body>
+<div class="wrap">
+  <h1>Powered Land &mdash; Gas Economics <span class="badge">PRO</span></h1>
+  <p class="sub">Four-layer gas pricing for every DCPI market: Henry Hub spot, regional basis at the nearest pricing hub, delivered industrial / electric-power $/MMBtu, and heat-rate-derived gas-to-grid $/MWh. The value-add nobody else publishes at this granularity.</p>
+
+  <div class="picker">
+    <select id="slug-picker">
+      <option value="northern-virginia">Northern Virginia</option>
+      <option value="ashburn">Ashburn</option>
+      <option value="dallas-fort-worth">Dallas / Fort Worth</option>
+      <option value="houston">Houston</option>
+      <option value="phoenix">Phoenix</option>
+      <option value="atlanta">Atlanta</option>
+      <option value="chicago">Chicago</option>
+      <option value="silicon-valley">Silicon Valley</option>
+      <option value="new-york">New York</option>
+      <option value="northern-new-jersey">Northern New Jersey</option>
+      <option value="boston">Boston</option>
+      <option value="columbus">Columbus</option>
+      <option value="seattle">Seattle</option>
+      <option value="portland">Portland</option>
+      <option value="miami">Miami</option>
+      <option value="denver">Denver</option>
+      <option value="salt-lake-city">Salt Lake City</option>
+      <option value="charlotte">Charlotte</option>
+      <option value="nashville">Nashville</option>
+    </select>
+    <button id="load-btn">Load Gas Pricing</button>
+    <a href="/api/v1/markets/gas-pricing/methodology" style="margin-left:12px;color:var(--mute);font-size:14px">Methodology &rarr;</a>
+  </div>
+
+  <div id="content"></div>
+
+  <p class="meta">Source: EIA v2 (Henry Hub) + eia_gas_prices (delivered industrial / electric) + DC Hub pricing-hub registry. PRO endpoint: <code>GET /api/v1/markets/&lt;slug&gt;/gas-pricing</code>. PRO heat-rate derivation: <code>GET /api/v1/markets/&lt;slug&gt;/gas-to-grid</code>.</p>
+</div>
+
+<script>
+(function(){
+  function $(id){return document.getElementById(id);}
+  function fmtUSD(v, suffix){
+    if(v===null || v===undefined) return '<span style="color:var(--mute)">$X.XX</span>';
+    var n=Number(v);
+    if(!isFinite(n)) return '—';
+    return '$' + n.toFixed(2) + (suffix||'');
+  }
+  function verdictClass(v){
+    if(v==='GAS-ADVANTAGED') return 'v-good';
+    if(v==='ADEQUATE') return 'v-adq';
+    if(v==='GAS-CONSTRAINED') return 'v-bad';
+    return 'v-adq';
+  }
+  function renderPayload(p, grid){
+    var verd = p.verdict || 'UNKNOWN';
+    var hub = p.pricing_hub_name || '—';
+    var hint = p.upgrade_hint || null;
+    var hintHtml = '';
+    if(hint){
+      hintHtml = '<div class="lock"><strong>PRO feature</strong> — ' + (hint.human_message||'Upgrade to unlock full pricing.') +
+                 ' <a href="' + (hint.signup_url||'/pricing') + '">Upgrade &rarr;</a></div>';
+    }
+    var stack = ''
+      + '<div class="card"><h2 style="margin-top:0">Gas pricing stack</h2>'
+      + '<div class="row"><span class="label">Pricing hub</span><span class="val">'+ hub +'</span></div>'
+      + '<div class="row"><span class="label">Henry Hub spot</span><span class="val">' + fmtUSD(p.henry_hub_spot_usd_mmbtu, ' /MMBtu') + '</span></div>'
+      + '<div class="row"><span class="label">Basis differential</span><span class="val">' + fmtUSD(p.basis_diff_usd_mmbtu, ' /MMBtu') + '</span></div>'
+      + '<div class="row"><span class="label">Hub spot (HH + basis)</span><span class="val">' + fmtUSD(p.hub_spot_usd_mmbtu, ' /MMBtu') + '</span></div>'
+      + '<div class="row"><span class="label">Delivered industrial</span><span class="val">' + fmtUSD(p.delivered_industrial_usd_mmbtu, ' /MMBtu') + '</span></div>'
+      + '<div class="row"><span class="label">Delivered electric power</span><span class="val">' + fmtUSD(p.delivered_electric_usd_mmbtu, ' /MMBtu') + '</span></div>'
+      + '</div>';
+    var s = (grid && grid.scenarios_usd_per_mwh) || {};
+    function fmtMwh(v){
+      if(v===null || v===undefined) return '<span style="color:var(--mute)">$XX.XX</span>';
+      if(typeof v === 'string') return v;
+      var n = Number(v);
+      return '$' + n.toFixed(2) + ' /MWh';
+    }
+    var grid_html = ''
+      + '<div class="card"><h2 style="margin-top:0">Gas-to-grid $/MWh</h2>'
+      + '<div class="row"><span class="label">New CCGT (6,400 Btu/kWh)</span><span class="val">' + fmtMwh(s.new_ccgt_6400_btu_kwh) + '</span></div>'
+      + '<div class="row"><span class="label">Avg CCGT (6,800 Btu/kWh)</span><span class="val">' + fmtMwh(s.avg_ccgt_6800_btu_kwh) + '</span></div>'
+      + '<div class="row"><span class="label">Old CCGT (7,500 Btu/kWh)</span><span class="val">' + fmtMwh(s.old_ccgt_7500_btu_kwh) + '</span></div>'
+      + '<div class="row"><span class="label">Peaker (10,500 Btu/kWh)</span><span class="val">' + fmtMwh(s.peaker_10500_btu_kwh) + '</span></div>'
+      + '<div class="row"><span class="label">Old peaker (12,000 Btu/kWh)</span><span class="val">' + fmtMwh(s.old_peaker_12000_btu_kwh) + '</span></div>'
+      + '</div>';
+    var header = ''
+      + '<div class="card">'
+      + '<h2 style="margin-top:0">' + (p.market_name || p.market_slug) + ' '
+      + '<span class="verdict ' + verdictClass(verd) + '">' + verd + '</span></h2>'
+      + '<div class="meta">State: ' + (p.state || '—') + ' &middot; Hub: ' + hub
+      + ' &middot; Data basis: <code>' + (p.data_basis || '—') + '</code>'
+      + ' &middot; Period: ' + (p.period || '—') + '</div>'
+      + '</div>';
+    var stackBlock = '<div class="stack">' + stack + grid_html + '</div>';
+    return header + stackBlock + hintHtml;
+  }
+  function load(){
+    var slug = $('slug-picker').value;
+    $('content').innerHTML = '<div class="card">Loading ' + slug + '…</div>';
+    Promise.all([
+      fetch('/api/v1/markets/' + slug + '/gas-pricing', {credentials:'include'}).then(function(r){return r.json();}),
+      fetch('/api/v1/markets/' + slug + '/gas-to-grid',  {credentials:'include'}).then(function(r){return r.json();})
+    ]).then(function(arr){
+      var pricing = arr[0]||{}, grid = arr[1]||{};
+      if(pricing.error){ $('content').innerHTML = '<div class="err">'+ pricing.error +'</div>'; return; }
+      $('content').innerHTML = renderPayload(pricing, grid);
+    }).catch(function(e){
+      $('content').innerHTML = '<div class="err">Failed to load: '+ (e && e.message ? e.message : e) +'</div>';
+    });
+  }
+  $('load-btn').addEventListener('click', load);
+  // Resolve slug from path if /powered-land/<slug>
+  var m = (location.pathname||'').match(/\/powered-land\/([a-z0-9-]+)/i);
+  if(m && m[1]){
+    var opt = document.querySelector('#slug-picker option[value="'+m[1]+'"]');
+    if(opt){ $('slug-picker').value = m[1]; } else { var o=document.createElement('option'); o.value=m[1]; o.textContent=m[1]; o.selected=true; $('slug-picker').appendChild(o); }
+  }
+  load();
+})();
+</script>
+</body>
+</html>
