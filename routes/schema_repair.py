@@ -307,6 +307,47 @@ SCHEMA_STATEMENTS = [
         "CREATE INDEX IF NOT EXISTS ix_brain_pending_html_status ON brain_pending_html_fixes(status)",
         "CREATE INDEX IF NOT EXISTS ix_brain_pending_html_created ON brain_pending_html_fixes(created_at DESC)",
     ]),
+    ("market_gas_pricing (Powered Land — Gas Pricing PRO surface, Phase 1)", [
+        # Powered Land Gas Economics (2026-06-04, Phase 1 spine):
+        # Per-DCPI-market gas pricing stack — Henry Hub spot, regional
+        # basis differential at the nearest pricing hub (Algonquin/
+        # Transco Z6/Tetco M3/Chicago Citygate/SoCal Border/Waha/etc.),
+        # delivered industrial $/MMBtu, delivered electric-power $/MMBtu,
+        # and the heat-rate-derived gas-to-grid $/MWh for 5 scenarios
+        # (new CCGT 6,400 Btu/kWh → old peaker 12,000 Btu/kWh).
+        # Refreshed nightly by /api/v1/markets/gas-pricing/cron (admin-gated).
+        # The eia_gas_prices table (already populated by eia_gas_bulk_loader)
+        # supplies the state-level delivered tariffs; this table caches
+        # the per-market roll-up + the derived $/MWh so the public
+        # /api/v1/markets/<slug>/gas-pricing endpoint is one SELECT.
+        """CREATE TABLE IF NOT EXISTS market_gas_pricing (
+            market_slug              TEXT PRIMARY KEY,
+            market_name              TEXT NOT NULL,
+            state                    TEXT,
+            pricing_hub_key          TEXT,
+            pricing_hub_name         TEXT,
+            henry_hub_spot_usd_mmbtu NUMERIC(8,3),
+            basis_diff_usd_mmbtu     NUMERIC(8,3),
+            hub_spot_usd_mmbtu       NUMERIC(8,3),
+            delivered_industrial_usd_mmbtu NUMERIC(8,3),
+            delivered_electric_usd_mmbtu   NUMERIC(8,3),
+            usd_per_mwh_cc_new       NUMERIC(8,2),
+            usd_per_mwh_cc_avg       NUMERIC(8,2),
+            usd_per_mwh_cc_old       NUMERIC(8,2),
+            usd_per_mwh_peaker       NUMERIC(8,2),
+            usd_per_mwh_peaker_old   NUMERIC(8,2),
+            hh_source                TEXT,
+            basis_source             TEXT,
+            delivered_source         TEXT,
+            data_basis               TEXT,
+            fetched_at               TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+            period                   TEXT
+        )""",
+        "CREATE INDEX IF NOT EXISTS ix_mgp_state ON market_gas_pricing(state)",
+        "CREATE INDEX IF NOT EXISTS ix_mgp_hub ON market_gas_pricing(pricing_hub_key)",
+        "CREATE INDEX IF NOT EXISTS ix_mgp_usdmwh_cc_avg ON market_gas_pricing(usd_per_mwh_cc_avg)",
+        "CREATE INDEX IF NOT EXISTS ix_mgp_fetched ON market_gas_pricing(fetched_at DESC)",
+    ]),
 ]
 
 
