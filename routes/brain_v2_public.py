@@ -305,6 +305,7 @@ def _cached_internal_get(path, client, ttl=_INTERNAL_GET_TTL):
 
 
 @brain_v2_public_bp.route("/brain", methods=["GET"])
+@brain_v2_public_bp.route("/brain-live", methods=["GET"])  # r80 (2026-06-04): 200 alias — distribute.html "Watch brain evolve" + the brain's own page-monitor expect /brain-live; it was 404 -> CF worker fell through to Error 1000.
 def brain_page():
     state = _get_state()
     proposals = state["proposed"]
