@@ -26547,6 +26547,15 @@ except Exception as _pl_e:
     print(f"[main] partner_landing_bp register failed: {_pl_e}", flush=True)
 
 try:
+    # r-methodology (2026-06-04): closes the 404 URLs cited in the Power
+    # Delivery Methodology PDF v1.0 sent to CBRE Research today.
+    from routes.methodology_pages import methodology_pages_bp
+    app.register_blueprint(methodology_pages_bp)
+    print("[main] methodology_pages_bp registered: /methodology{,/queue,/queue/v1.0,/data-dictionary.json}, /partners/cbre", flush=True)
+except Exception as _mp_e:
+    print(f"[main] methodology_pages_bp register failed: {_mp_e}", flush=True)
+
+try:
     from routes.auto_interconnect import auto_interconnect_bp
     app.register_blueprint(auto_interconnect_bp)
     print("[main] auto_interconnect_bp registered: /api/v1/admin/auto-interconnect/{run,findings,approve/<token>,dismiss/<token>}", flush=True)
