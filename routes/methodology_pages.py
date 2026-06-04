@@ -134,11 +134,25 @@ _INDEX_HTML = """
 <a href="mailto:jonathan@dchub.cloud">jonathan@dchub.cloud</a> · 48-hour SLA.</p>
 """
 
+def _nocache(resp):
+    """Force-disable any upstream caching of methodology pages.
+    A 404 from this blueprint during a rolling-deploy gap was getting
+    cached by Cloudflare for 1h via the global Flask cache-control
+    middleware (private, max-age=3600). no-store + immediate expiry
+    overrides that so the next correct response replaces the cache."""
+    resp.headers["Cache-Control"] = "no-store, no-cache, must-revalidate, max-age=0"
+    resp.headers["Pragma"] = "no-cache"
+    resp.headers["Expires"] = "0"
+    resp.headers["CDN-Cache-Control"] = "no-store"
+    resp.headers["Surrogate-Control"] = "no-store"
+    return resp
+
+
 @methodology_pages_bp.route("/methodology", methods=["GET"], strict_slashes=False)
 @methodology_pages_bp.route("/docs/methodology", methods=["GET"], strict_slashes=False)
 @methodology_pages_bp.route("/api/v1/methodology", methods=["GET"], strict_slashes=False)
 def methodology_index():
-    return Response(_page("Methodology", _INDEX_HTML), mimetype="text/html")
+    return _nocache(Response(_page("Methodology", _INDEX_HTML), mimetype="text/html"))
 
 
 # ── /methodology/queue — alias to current version ------------------------
@@ -330,7 +344,7 @@ def methodology_queue_v1_0():
         mimetype="text/html",
     )
     resp.headers["X-DC-Methodology-Version"] = "v1.0"
-    return resp
+    return _nocache(resp)
 
 
 # ── /methodology/data-dictionary.json ------------------------------------
@@ -424,9 +438,8 @@ _DATA_DICTIONARY = {
                               methods=["GET"], strict_slashes=False)
 def methodology_data_dictionary():
     resp = jsonify(_DATA_DICTIONARY)
-    resp.headers["Cache-Control"] = "public, max-age=600"
     resp.headers["X-DC-Methodology-Version"] = "v1.0"
-    return resp
+    return _nocache(resp)
 
 
 # ── /partners/cbre — neutrality-respecting landing -----------------------
@@ -474,5 +487,6 @@ Compliance contact: <a href="mailto:jonathan@dchub.cloud">jonathan@dchub.cloud</
 @methodology_pages_bp.route("/partners/cbre", methods=["GET"],
                               strict_slashes=False)
 def partners_cbre():
-    return Response(_page("CBRE Research Engagement", _PARTNERS_CBRE_HTML),
-                    mimetype="text/html")
+    return _nocache(Response(_page("CBRE Research Engagement",
+                                       _PARTNERS_CBRE_HTML),
+                              mimetype="text/html"))
