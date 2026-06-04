@@ -41,20 +41,31 @@ jobs:
           BODY="{\"sources\":[\"eia_860m\",\"nccs\"],\"dry_run\":$DRYVAL"
           if [ -n "${STATE:-}" ]; then BODY="$BODY,\"state_filter\":\"$STATE\""; fi
           BODY="$BODY}"
+          FEED="$RAILWAY_BASE/api/v1/brain/notifications?limit=200"
+          # The enrichment runs in a background thread and its /status is an
+          # in-memory dict that is PER-GUNICORN-WORKER: the POST lands on worker
+          # A, but /status GETs round-robin to B/C/D that never saw the job, so
+          # /status reports "not found" forever and the old poll loop always
+          # timed out (the long-standing "errors before completing" symptom —
+          # the job actually completed fine on worker A). So we DON'T poll
+          # /status. The job mirrors its outcome (success OR failure) into the
+          # cross-worker-durable brain feed via log_notification(kind=
+          # power_plant_enrichment); we poll THAT and detect a new record by
+          # count (skew-proof — no clock comparison needed).
+          before=$(curl -sS --max-time 30 "$FEED" | python3 -c "import sys,json;print(sum(1 for i in json.load(sys.stdin).get('items',[]) if i.get('kind')=='power_plant_enrichment'))" 2>/dev/null || echo 0)
+          echo "power_plant_enrichment records before trigger: $before"
           echo "POST $RAILWAY_BASE/api/enrichment/trigger  body=$BODY"
           resp=$(curl -sS --max-time 60 -X POST -H "X-Admin-Key: $ADMIN_KEY" \
             -H "Content-Type: application/json" -d "$BODY" \
             "$RAILWAY_BASE/api/enrichment/trigger")
           echo "trigger: $resp"
           job=$(printf '%s' "$resp" | python3 -c "import sys,json;print(json.load(sys.stdin).get('job_id',''))" 2>/dev/null || echo "")
-          [ -z "$job" ] && { echo "::error::no job_id returned"; exit 1; }
-          for i in $(seq 1 50); do
+          [ -z "$job" ] && { echo "::error::no job_id returned (trigger rejected? check DCHUB_ADMIN_KEY)"; exit 1; }
+          echo "job=$job — polling the brain feed for the durable result (cross-worker)…"
+          for i in $(seq 1 40); do
             sleep 12
-            st=$(curl -sS --max-time 30 -H "X-Admin-Key: $ADMIN_KEY" "$RAILWAY_BASE/api/enrichment/status/$job" || echo '{}')
-            status=$(printf '%s' "$st" | python3 -c "import sys,json;print(json.load(sys.stdin).get('status','?'))" 2>/dev/null || echo "?")
-            echo "[$i] status=$status"
-            case "$status" in
-              completed|failed) printf '%s' "$st" | python3 -m json.tool 2>/dev/null || echo "$st"; exit 0;;
-            esac
+            found=$(curl -sS --max-time 30 "$FEED" | BEFORE="$before" python3 -c "import sys,os,json;d=json.load(sys.stdin);items=[i for i in d.get('items',[]) if i.get('kind')=='power_plant_enrichment'];n=items[0] if len(items)>int(os.environ.get('BEFORE','0')) else None;print(json.dumps({'severity':n.get('severity'),'summary':n.get('summary'),'detail':n.get('detail')},indent=2) if n else '')" 2>/dev/null || echo "")
+            if [ -n "$found" ]; then echo "=== ENRICHMENT RESULT (from brain feed) ==="; echo "$found"; exit 0; fi
+            echo "[$i] no new power_plant_enrichment record yet…"
           done
-          echo "::warning::timed out waiting for job"
+          echo "::warning::timed out waiting for enrichment result in brain feed"
