@@ -705,7 +705,7 @@ th { color: var(--muted); font-size: 11px; text-transform: uppercase; letter-spa
 </head>
 <body>
 <div class="wrap">
-  <div class="kicker">⌖  Site Valuation Engine  ·  PRO</div>
+  <div class="kicker">⌖  Site Valuation Engine  ·  <span style="background:#0EA5E9;color:#000;padding:2px 8px;border-radius:4px;font-weight:800">PRO+ PREMIUM</span></div>
   <h1>What is your site worth?</h1>
   <p class="tagline">3-scenario NPV: <b>Grid</b> vs <b>Gas BTM</b> vs <b>Gas-to-Grid Hybrid</b>. Built for sellers, landowners, and developers pricing power-ready parcels. Powered by DCPI verdicts across 234+ markets and live gas hub pricing.</p>
 
@@ -860,7 +860,97 @@ function renderResults(d) {
 </body></html>"""
 
 
+# ── PRO+ paywall hero (free / starter visitors see this in place of the form) ─
+
+# Why server-side render instead of client-toggle:
+#   We want the gate to be unambiguous on first paint — search engines,
+#   click-tracked CTAs, and the user's *visible* upgrade signal. The full
+#   tool HTML still loads underneath (hidden) so a paid visitor pasting a
+#   PRO key on the form still works without a round-trip.
+
+_PRO_HERO_BANNER = """
+<div style="background:linear-gradient(135deg,#0EA5E9 0%,#0284C7 60%,#0369A1 100%);
+            border-radius:16px;padding:32px 28px;margin:0 0 28px;
+            box-shadow:0 10px 40px rgba(14,165,233,0.35);position:relative;overflow:hidden;">
+  <div style="display:inline-block;background:rgba(0,0,0,0.35);color:#fff;
+              font-size:11px;font-weight:800;letter-spacing:0.18em;
+              padding:6px 12px;border-radius:999px;text-transform:uppercase;
+              margin-bottom:14px;">
+    🔒 &nbsp; PRO + DEVELOPER + ENTERPRISE ONLY
+  </div>
+  <h2 style="margin:0 0 8px;color:#fff;font-size:30px;font-weight:800;letter-spacing:-0.01em;">
+    Site Valuation Engine is a premium tool
+  </h2>
+  <p style="margin:0 0 20px;color:rgba(255,255,255,0.92);font-size:16px;line-height:1.5;max-width:760px;">
+    Unlock the full 3-scenario NPV engine, comparable-sale envelope, and
+    DCPI verdict-weighted valuation for any US site. Free + Starter
+    visitors get a teaser midpoint only.
+  </p>
+  <div style="display:flex;gap:12px;flex-wrap:wrap;align-items:center;">
+    <a href="/pricing" style="background:#fff;color:#0369A1;font-weight:700;
+       padding:14px 28px;border-radius:8px;text-decoration:none;font-size:15px;
+       box-shadow:0 4px 12px rgba(0,0,0,0.2);">
+      Unlock with PRO — $499/mo &nbsp;→
+    </a>
+    <a href="/pricing#enterprise" style="color:#fff;font-weight:600;
+       padding:14px 4px;text-decoration:underline;font-size:14px;">
+      See Enterprise tiers
+    </a>
+    <span style="color:rgba(255,255,255,0.75);font-size:12px;margin-left:6px;">
+      Already a subscriber? Paste your API key on the form below.
+    </span>
+  </div>
+</div>
+"""
+
+# Minimal PRO+ confirmation banner (so paid users see something too)
+_PRO_OK_BANNER = """
+<div style="background:rgba(16,185,129,0.08);border:1px solid #10b981;
+            border-radius:12px;padding:14px 18px;margin:0 0 24px;
+            color:#10b981;font-size:13px;font-weight:600;
+            display:flex;align-items:center;gap:10px;">
+  <span style="font-size:16px">✓</span>
+  <span>PRO access confirmed — full valuation envelope, NPV envelope, and comparable sales unlocked.</span>
+</div>
+"""
+
+
 @site_valuation_engine_bp.route("/sites/value", methods=["GET"],
                                  strict_slashes=False)
 def site_value_page():
-    return Response(_PAGE_HTML, mimetype="text/html; charset=utf-8")
+    """Render the Site Valuation Engine.
+
+    Tier-aware: free / starter visitors see a prominent PRO+ paywall
+    banner at the top of the page; PRO+ get a green confirmation
+    banner. The form stays accessible in both cases so a subscriber
+    can paste an API key and run live valuations.
+    """
+    try:
+        tier = _resolve_tier()
+    except Exception:
+        tier = "FREE"
+    is_pro_plus = tier in ("PRO", "DEVELOPER", "ENTERPRISE")
+    banner = _PRO_OK_BANNER if is_pro_plus else _PRO_HERO_BANNER
+
+    # Inject the banner directly after the opening <div class="wrap"> so it
+    # is the first thing the visitor sees, above the kicker + form.
+    body = _PAGE_HTML.replace(
+        '<div class="wrap">',
+        '<div class="wrap">\n  ' + banner.strip(),
+        1,
+    )
+    # Stamp the tier into a hidden meta tag for client-side telemetry +
+    # quick diagnostics (curl -s ... | grep dc-tier).
+    body = body.replace(
+        '<title>',
+        f'<meta name="dc-tier" content="{tier}">\n<title>',
+        1,
+    )
+
+    resp = Response(body, mimetype="text/html; charset=utf-8")
+    # Vary on tier-determining headers so CF doesn't serve a free
+    # visitor's banner to a PRO user (and vice versa).
+    resp.headers["Cache-Control"] = "private, no-store, max-age=0"
+    resp.headers["Vary"] = "Cookie, Authorization, X-API-Key"
+    resp.headers["X-DC-Tier"] = tier
+    return resp
