@@ -2676,6 +2676,13 @@ def api_iso_comparison():
     """
     _ensure_tables()
     rows = [_normalize_iso_row(r) for r in _aggregate_iso_stats()]
+    # r47.47 (2026-05-27): drop the null-ISO bucket. 6 rows in
+    # market_power_scores have iso=NULL (international markets that didn't
+    # tag during recompute); the JS rendered them as a "?" ISO row with no
+    # label. Cleaner UX: hide them from the comparison entirely. The
+    # underlying market scores are still visible on /dcpi and per-slug
+    # pages — just not aggregated into a meaningless "?" row.
+    rows = [r for r in rows if (r.get("iso") or "").strip()]
 
     body = {
         "as_of": max((r.get("latest_computed_at") or "" for r in rows), default=None),
@@ -3367,7 +3374,13 @@ footer a:hover { color: var(--acc-light); }
   </a>
 
   <div class="stats-row">
-    <div class="stat"><div class="num">{{ count }}</div><div class="label">Markets Scored</div></div>
+    {# r47.47 (2026-05-27): hero "Markets Scored" is the TOTAL catalog,
+       not the truncated `count` shown in the grid. Anon viewers see 5
+       BUILD + 20 others = 25 rows, but the catalog is the full 233.
+       Using {{ count }} here said "25 Markets Scored" — directly
+       contradicting the upgrade banner below ("Showing 25 of 233 markets").
+       Fixed to total_rows. #}
+    <div class="stat"><div class="num">{{ total_rows }}</div><div class="label">Markets Scored</div></div>
     <div class="stat"><div class="num">8</div><div class="label">Inputs per Score</div></div>
     <div class="stat"><div class="num">06:00 UTC</div><div class="label">Daily Refresh</div></div>
     <div class="stat"><div class="num">FREE</div><div class="label">Press &amp; Citation</div></div>
