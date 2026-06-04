@@ -208,7 +208,7 @@ def ingest_cables(get_db):
                     INSERT INTO subsea_cables
                         (cable_id, name, color, owners, url, length_km, rfs_year, rfs_date,
                          is_planned, geometry_geojson, landing_points_json, updated_at)
-                    VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, NOW())
+                    VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, NOW() ON CONFLICT DO NOTHING)
                     ON CONFLICT (cable_id) DO UPDATE SET
                         name = EXCLUDED.name,
                         owners = EXCLUDED.owners,
@@ -308,7 +308,7 @@ def ingest_landing_points(get_db):
                     INSERT INTO subsea_landing_points
                         (point_id, name, country, country_code, latitude, longitude,
                          cable_ids, cable_count, is_major_hub, updated_at)
-                    VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, NOW())
+                    VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, NOW() ON CONFLICT DO NOTHING)
                     ON CONFLICT (point_id) DO UPDATE SET
                         name = EXCLUDED.name,
                         country = EXCLUDED.country,

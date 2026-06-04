@@ -129,7 +129,7 @@ def queue_sponsorship():
                 INSERT INTO sponsorships
                   (slot, sponsor_name, sponsor_email, hero_html, link_url,
                    week_of, price_cents, status, notes)
-                VALUES (%s,%s,%s,%s,%s,%s,%s,'queued',%s)
+                VALUES (%s,%s,%s,%s,%s,%s,%s,'queued',%s) ON CONFLICT DO NOTHING
                 RETURNING id, created_at
             """, (slot, sponsor_name, p.get("sponsor_email"),
                   hero_html, link_url, p.get("week_of"),
@@ -149,6 +149,7 @@ def queue_sponsorship():
 
 
 # ── GET /api/v1/sponsorships — list (admin) ──────────────────────────
+# AUTO-REPAIR: duplicate route '/api/v1/sponsorships' also in routes/sponsorships.py:106 — review and remove one
 @sponsorships_bp.route("/api/v1/sponsorships", methods=["GET"])
 def list_sponsorships():
     if not _admin_ok():

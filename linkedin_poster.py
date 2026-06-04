@@ -164,7 +164,7 @@ def _save_token(access_token, refresh_token=None, expires_in=5184000, member_urn
 
     _execute("""
         INSERT INTO linkedin_tokens (id, access_token, refresh_token, expires_at, member_urn, company_urn, updated_at)
-        VALUES (1, %s, %s, %s, %s, %s, NOW())
+        VALUES (1, %s, %s, %s, %s, %s, NOW() ON CONFLICT DO NOTHING)
         ON CONFLICT (id) DO UPDATE SET
             access_token = %s,
             refresh_token = COALESCE(%s, linkedin_tokens.refresh_token),
@@ -370,7 +370,7 @@ def post_to_linkedin(text, link_url=None, link_title=None, link_desc=None, image
             # Log success
             _execute("""
                 INSERT INTO linkedin_posts (post_urn, content, post_type, status)
-                VALUES (%s, %s, %s, 'success')
+                VALUES (%s, %s, %s, 'success') ON CONFLICT DO NOTHING
             """, (post_urn, text[:500], 'manual'))
             # r-image-required (2026-05-30): expose whether an image actually
             # made it onto this post. _image_urn is set ONLY when the image
@@ -386,7 +386,7 @@ def post_to_linkedin(text, link_url=None, link_title=None, link_desc=None, image
             # Log failure
             _execute("""
                 INSERT INTO linkedin_posts (content, post_type, status, error)
-                VALUES (%s, %s, 'failed', %s)
+                VALUES (%s, %s, 'failed', %s) ON CONFLICT DO NOTHING
             """, (text[:500], 'manual', error_msg))
             return False, {'error': error_msg, 'status_code': resp.status_code,
                            'image_attached': bool(_image_urn)}
@@ -395,7 +395,7 @@ def post_to_linkedin(text, link_url=None, link_title=None, link_desc=None, image
         error_msg = str(e)
         _execute("""
             INSERT INTO linkedin_posts (content, post_type, status, error)
-            VALUES (%s, 'manual', 'failed', %s)
+            VALUES (%s, 'manual', 'failed', %s) ON CONFLICT DO NOTHING
         """, (text[:500], error_msg))
         return False, {'error': error_msg}
 
