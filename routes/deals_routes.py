@@ -606,15 +606,16 @@ def get_transactions():
             is_authenticated = True
 
     if is_authenticated:
-        if _real_require_plan_ref is not None:
-            @_real_require_plan_ref('pro')
-            @_lazy_protect_data
-            def _authed_transactions():
-                return get_deals()
-            return _authed_transactions()
-        else:
-            return jsonify({'success': False, 'error': 'tier_gating_unavailable',
-                            'message': 'Authentication system is starting up. Please try again in a moment.'}), 503
+        # r80 (2026-06-04): previously gated on _real_require_plan_ref, which is
+        # captured as None at init_deals_routes() time (the real enforcer is assigned
+        # later in main.py), so EVERY keyed/MCP request hard-503'd ("tier_gating_
+        # unavailable"). Use the standard request-time _lazy_require_plan('pro') —
+        # the same gate every other Pro route in this file already uses.
+        @_lazy_require_plan('pro')
+        @_lazy_protect_data
+        def _authed_transactions():
+            return get_deals()
+        return _authed_transactions()
 
     return _get_transactions_free()
 
