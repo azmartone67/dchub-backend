@@ -3776,7 +3776,7 @@ def handle_well_known():
                     )
                     _ac_rows = _cur.fetchall() or []
                     _ext = [(p, int(t or 0)) for (p, t) in _ac_rows
-                            if not _is_junk_platform(p)]
+                            if _is_real_ai_platform(p)]  # r71: allowlist, not leaky denylist
                     _live_counts["ai_platforms"] = sum(1 for _, t in _ext if t > 0)
                     _live_counts["agent_requests"] = sum(t for _, t in _ext)
                 except Exception:
@@ -15637,8 +15637,11 @@ def ai_tracking_stats():
         total_platforms = sum(1 for r in rows
                               if _is_real_ai_platform(r[0]) and int(r[1] or 0) > 0)
         # Honest AI-agent totals: exclude transport/internal/probe buckets.
-        total_requests = sum(int(r[1] or 0) for r in rows if not _is_junk_platform(r[0]))
-        requests_7d = sum(int(r[2] or 0) for r in rows if not _is_junk_platform(r[0]))
+        # r71-honesty: allowlist (not leaky denylist) so the headline total = the
+        # 14 real named platforms, matching total_platforms above. (Denylist let
+        # ~44 junk rows ≈ 6-7K reqs leak into the "external AI" total.)
+        total_requests = sum(int(r[1] or 0) for r in rows if _is_real_ai_platform(r[0]))
+        requests_7d = sum(int(r[2] or 0) for r in rows if _is_real_ai_platform(r[0]))
         # All-inclusive figures kept (clearly labeled) for raw-throughput needs.
         total_requests_all = sum(int(r[1] or 0) for r in rows)
         requests_7d_all = sum(int(r[2] or 0) for r in rows)
@@ -20841,7 +20844,12 @@ def public_mcp_count():
         for r in rows:
             req = int(r[4] or 0)
             total_all += req
-            if _is_junk_platform(r[0]):
+            # r71-honesty: gate the agent-facing headline LIST on the SAME
+            # allowlist as the COUNT (_is_real_ai_platform), not the leaky
+            # denylist — which let ~44 junk rows (Glama, Mcpscoringengine, Poe…)
+            # show up as "top AI platforms" #8/#10 in the public widget while the
+            # count said 14. Now count, list, and totals all = the 14 real ones.
+            if not _is_real_ai_platform(r[0]):
                 if req > 0:
                     infra_rows.append(_row(r))
             else:
