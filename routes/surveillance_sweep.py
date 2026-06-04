@@ -18,7 +18,7 @@ Composed in /sweep:
   - /api/v1/brain/status          — brain layer-4 verdict
   - /api/v1/media/press-health   — press cadence
   - /api/v1/heartbeat/inventory  — stale-surface ratio
-  - /api/health                   — pool / memory / uptime
+  - /api/health/db                — pool / memory / circuit-breaker (in-memory)
   - /api/v1/sentinel/drift       — row-count drift vs baseline (NEW r29c)
 
 Severity rollup: critical > high > medium > none → red / amber / green.
@@ -235,31 +235,55 @@ def sentinel_sweep():
                     "detail": f"baseline={d['baseline']:,}, current={d['current']:,}",
                 })
 
-        # Core health (pool / memory / uptime / version)
-        body, _ = _call(tc, "/api/health")
+        # Core health (pool / memory / circuit-breaker).
+        # r71-stabilize (2026-06-04): was calling /api/health, which on
+        # 2026-06-02 became a WSGI fast-path stub returning only {"status":"ok"}
+        # (so the liveness probe can never BE the load). The sweep kept reading
+        # body["pool"], which was therefore ALWAYS absent → pool_ok ALWAYS False
+        # → permanent false-RED, AND the monitor was blind to real pool
+        # exhaustion (the documented #1 flapping cause). /api/health/db is purely
+        # in-memory (NEVER acquires a DB connection) so it reports true pool
+        # state even under starvation, and returns 503 when degraded.
+        body, code = _call(tc, "/api/health/db")
         pool = body.get("pool") or {}
-        pool_ok = pool.get("status") == "healthy"
+        mem  = body.get("memory") or {}
+        cb   = body.get("circuit_breaker") or {}
+        pool_status = pool.get("status")
+        # Judge on the endpoint's own verdict: 200=healthy, 503=degraded.
+        # A transient unreachable read (code 0) is UNKNOWN, NOT a failure —
+        # a monitor miss must never by itself force severity=red (that is what
+        # compounded the 2026-06-04 US-West networking incident into a false RED).
+        if code == 200:
+            pool_ok = pool_status in ("healthy", "warning") and not cb.get("open")
+        elif code == 503:
+            pool_ok = False
+        else:
+            pool_ok = True
         checks["health"] = {
             "ok": pool_ok,
-            "version": body.get("version"),
-            "uptime_seconds": body.get("uptime_seconds"),
-            "memory_rss_mb": body.get("memory_rss_mb"),
-            "pool_status": pool.get("status"),
+            "http_code": code,
+            "overall": body.get("overall"),
+            "pool_status": pool_status,
             "pool_utilization_pct": pool.get("utilization_pct"),
+            "memory_rss_mb": mem.get("rss_mb"),
+            "circuit_breaker_open": cb.get("open"),
         }
-        if not pool_ok:
+        if not pool_ok and code in (200, 503):
             actions.append({
                 "category": "infrastructure",
                 "priority": "high",
-                "issue": f"pool {pool.get('status')}",
-                "detail": f"util={pool.get('utilization_pct')}% ",
+                "issue": f"pool degraded (status={pool_status or 'n/a'}, code={code})"
+                         + (" + circuit-breaker OPEN" if cb.get("open") else ""),
+                "detail": f"util={pool.get('utilization_pct')}% checked_out={pool.get('checked_out')}",
             })
-        if (body.get("memory_rss_mb") or 0) > 800:
+        # Use the endpoint's own memory.warning flag (config-driven threshold,
+        # currently 3072mb) instead of a stale hardcoded 800mb literal.
+        if mem.get("warning"):
             actions.append({
                 "category": "infrastructure",
                 "priority": "high",
                 "issue": "memory above threshold",
-                "detail": f"{body.get('memory_rss_mb')}mb",
+                "detail": f"{mem.get('rss_mb')}mb / {mem.get('threshold_mb')}mb",
             })
 
     # Severity rollup
@@ -281,7 +305,7 @@ def sentinel_sweep():
         "purpose": (
             "Surveillance rollup — composes /sentinel/findings, "
             "/freshness, /brain/status, /media/press-health, "
-            "/heartbeat/inventory, /sentinel/drift, /api/health. "
+            "/heartbeat/inventory, /sentinel/drift, /api/health/db. "
             "Polled by surveillance-sweep.yml every 15 min. "
             "Severity != green emits ::warning:: in GHA logs."
         ),
