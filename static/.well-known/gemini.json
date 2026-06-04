@@ -1,6 +1,6 @@
 {
   "name": "DC Hub Nexus",
-  "description": "Data Center Intelligence Platform — 20,000+ facilities, M&A tracking, market intel, energy analytics via MCP",
+  "description": "Data Center Intelligence Platform — 21,000+ facilities, M&A tracking, market intel, energy analytics via MCP",
   "mcpServers": {
     "dchub-nexus": {
       "httpUrl": "https://dc-hub-replit-fixedzip--azmartone1.replit.app/mcp",
@@ -26,7 +26,7 @@
     }
   },
   "tools": [
-    {"name": "search_facilities", "description": "Search 20,000+ data center facilities worldwide"},
+    {"name": "search_facilities", "description": "Search 21,000+ data center facilities worldwide"},
     {"name": "get_facility", "description": "Get detailed info about a specific facility"},
     {"name": "list_transactions", "description": "List M&A transactions ($51B+ tracked)"},
     {"name": "get_market_intel", "description": "Market intelligence and trends"},

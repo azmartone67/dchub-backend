@@ -1,6 +1,6 @@
 {
   "name": "DC Hub Nexus",
-  "description": "Data center intelligence platform tracking 20,000+ facilities across 140+ countries. Provides facility search, M&A deal tracking ($51B+), capacity pipeline (21+ GW), real-time energy analytics, site selection scoring, and industry news from 40+ sources via MCP.",
+  "description": "Data center intelligence platform tracking 21,000+ facilities across 170+ countries. Provides facility search, M&A deal tracking ($51B+), capacity pipeline (21+ GW), real-time energy analytics, site selection scoring, and industry news from 40+ sources via MCP.",
   "url": "https://dchub.cloud",
   "version": "3.1.0",
   "provider": {
@@ -18,7 +18,7 @@
     {
       "id": "search-facilities",
       "name": "Search Data Center Facilities",
-      "description": "Search 20,000+ data center facilities by location, operator, market, or country.",
+      "description": "Search 21,000+ data center facilities by location, operator, market, or country.",
       "tags": ["data-center", "colocation", "infrastructure", "facilities"],
       "examples": [
         "Find data centers in Virginia",

@@ -3,7 +3,7 @@
   "name": "dchub",
   "display_name": "DC Hub Nexus",
   "version": "2.0.0",
-  "description": "Global data center intelligence platform — real-time tracking of 20,000+ facilities across 169 countries, M&A deals, capacity pipelines, site risk assessment, and energy infrastructure.",
+  "description": "Global data center intelligence platform — real-time tracking of 21,000+ facilities across 169 countries, M&A deals, capacity pipelines, site risk assessment, and energy infrastructure.",
   "homepage": "https://dchub.cloud",
   "author": "DC Hub Nexus",
   "contact_email": "api@dchub.cloud",
@@ -18,7 +18,7 @@
     {
       "id": "facility_search",
       "name": "Data Center Search",
-      "description": "Search 20,000+ data centers by name, location, provider, or capacity",
+      "description": "Search 21,000+ data centers by name, location, provider, or capacity",
       "endpoint": "GET /api/v1/facilities"
     },
     {

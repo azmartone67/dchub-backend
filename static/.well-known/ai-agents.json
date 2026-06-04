@@ -71,7 +71,7 @@
       {"name": "get_grid_scoreboard", "description": "Live global grid scoreboard — US ISOs + GB + EU zones + AU ranked by renewable/gas share."},
       {"name": "compare_isos", "description": "Compare 2-4 ISO regions in one call: fuel mix, demand, prices, carbon intensity."},
       {"name": "get_intelligence_index", "description": "Real-time composite market health score (0-100) across the 232-market set."},
-      {"name": "list_transactions", "description": "M&A and capital transactions — $324B+ over 2,100+ deals; buyer, seller, value, date, market."},
+      {"name": "list_transactions", "description": "M&A and capital transactions — 2,000+ tracked over 2,100+ deals; buyer, seller, value, date, market."},
       {"name": "get_news", "description": "Curated data center industry news from 40+ trade sources, refreshed every 30 min."},
       {"name": "get_pipeline", "description": "Construction pipeline — 540+ projects, 369 GW under-construction or planned across 232 markets."},
       {"name": "get_interconnection_queue", "description": "ISO interconnection queue snapshot: large-load MW queued, DC share %, BUILD subregions + time-to-power."},

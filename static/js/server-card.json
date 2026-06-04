@@ -2,7 +2,7 @@
   "$schema": "https://static.modelcontextprotocol.io/schemas/2025-12-11/server.schema.json",
   "name": "cloud.dchub/mcp-server",
   "title": "DC Hub — Data Center Intelligence",
-  "description": "Real-time data center market intelligence for AI agents. Search 20,000+ facilities across 140+ countries, track $51B+ in M&A transactions, monitor 29.6 GW construction pipeline, access real-time grid data from 6 US ISOs, score any location for data center suitability, and get AI-powered market recommendations. Used by 34 AI platforms with 280,000+ cumulative API requests.",
+  "description": "Real-time data center market intelligence for AI agents. Search 21,000+ facilities across 170+ countries, track $51B+ in M&A transactions, monitor 29.6 GW construction pipeline, access real-time grid data from 6 US ISOs, score any location for data center suitability, and get AI-powered market recommendations. Used by 34 AI platforms with 280,000+ cumulative API requests.",
   "version": "1.1.0",
   "websiteUrl": "https://dchub.cloud",
   "icons": [
@@ -21,7 +21,7 @@
   "tools": [
     {
       "name": "search_facilities",
-      "description": "Search and filter 20,000+ global data center facilities by location, operator, power capacity, and tier level"
+      "description": "Search and filter 21,000+ global data center facilities by location, operator, power capacity, and tier level"
     },
     {
       "name": "get_facility",

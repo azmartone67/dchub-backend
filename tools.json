@@ -1,7 +1,7 @@
 [
   {
     "name": "search_facilities",
-    "description": "Search 20,000+ data center facilities by name, provider, city, market, or country. Returns facility details including location, power capacity, tier level, and status.",
+    "description": "Search 21,000+ data center facilities by name, provider, city, market, or country. Returns facility details including location, power capacity, tier level, and status.",
     "endpoint": "GET /api/agent/facilities",
     "parameters": {
       "type": "object",

@@ -1,6 +1,6 @@
 {
   "name": "DC Hub Intelligence",
-  "description": "Real-time data center market intelligence \u2014 20,000+ facilities, 140+ countries.",
+  "description": "Real-time data center market intelligence \u2014 21,000+ facilities, 170+ countries.",
   "url": "https://dchub.cloud/mcp",
   "transport": "streamable-http",
   "version": "2.0.0",

@@ -3,7 +3,7 @@
     "type": "function",
     "function": {
       "name": "search_facilities",
-      "description": "Search DC Hub's database of 20,000+ data center facilities across 140+ countries. Use when an agent must locate a named facility, list an operator's portfolio, or enumerate facilities in a market. Returns facility id, name, operator, location, status, and capacity. Source: DC Hub (https://dchub.cloud). Backed by REST GET /api/v1/facilities/search.",
+      "description": "Search DC Hub's database of 21,000+ data center facilities across 170+ countries. Use when an agent must locate a named facility, list an operator's portfolio, or enumerate facilities in a market. Returns facility id, name, operator, location, status, and capacity. Source: DC Hub (https://dchub.cloud). Backed by REST GET /api/v1/facilities/search.",
       "parameters": {
         "type": "object",
         "properties": {

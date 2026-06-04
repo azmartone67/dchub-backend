@@ -491,7 +491,7 @@ function createServer() {
   const I = z.number().int().optional();
   const B = z.boolean().optional();
 
-  trackedTool(srv, 'search_facilities', 'Search 20,000+ global data center facilities.',
+  trackedTool(srv, 'search_facilities', 'Search 21,000+ global data center facilities.',
     { query: S, country: S, state: S, city: S, operator: S, min_capacity_mw: N, max_capacity_mw: N, tier: I, limit: I, offset: I },
     async (a) => ({ content: [{ type: 'text', text: JSON.stringify(await callAPI('/api/v1/facilities', a)) }] }));
 
@@ -506,7 +506,7 @@ function createServer() {
   trackedTool(srv, 'get_intelligence_index', 'Real-time composite market health score.', {},
     async () => ({ content: [{ type: 'text', text: JSON.stringify(await callAPI('/api/agents/intelligence-index')) }] }));
 
-  trackedTool(srv, 'list_transactions', 'M&A transactions — $324B+ tracked.',
+  trackedTool(srv, 'list_transactions', 'M&A transactions — 2,000+ tracked tracked.',
     { buyer: S, seller: S, min_value_usd: N, max_value_usd: N, deal_type: S, date_from: S, date_to: S, region: S, limit: I, offset: I },
     async (a) => ({ content: [{ type: 'text', text: JSON.stringify(await callAPI('/api/v1/deals', a)) }] }));
 

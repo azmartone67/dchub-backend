@@ -4,7 +4,7 @@
   "tools": [
     {
       "name": "search_facilities",
-      "description": "Search DC Hub's database of 10,706+ data center facilities across 140+ countries. Returns facility name, operator, location, capacity, and tier.",
+      "description": "Search DC Hub's database of 10,706+ data center facilities across 170+ countries. Returns facility name, operator, location, capacity, and tier.",
       "input_schema": {
         "type": "object",
         "properties": {

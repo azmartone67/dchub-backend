@@ -1,6 +1,6 @@
 {
   "name": "DC Hub Nexus",
-  "description": "Data center intelligence platform — 20,000+ facilities across 140+ countries. M&A tracking, capacity pipeline, energy analytics, site scoring, and real-time news.",
+  "description": "Data center intelligence platform — 21,000+ facilities across 170+ countries. M&A tracking, capacity pipeline, energy analytics, site scoring, and real-time news.",
   "version": "3.0.0",
   "protocol": "mcp",
   "transport": {
@@ -12,7 +12,7 @@
   "tools": [
     {
       "name": "search_facilities",
-      "description": "Search 20,000+ data center facilities by name, operator, city, or country",
+      "description": "Search 21,000+ data center facilities by name, operator, city, or country",
       "parameters": {
         "query": { "type": "string", "required": true, "description": "Search term" },
         "country": { "type": "string", "required": false, "description": "ISO country code" },
@@ -112,7 +112,7 @@
     }
   ],
   "data_coverage": {
-    "facilities": "20,000+",
+    "facilities": "21,000+",
     "countries": "140+",
     "transactions": "700+ ($51B+)",
     "capacity_pipeline": "21+ GW",

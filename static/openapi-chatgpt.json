@@ -2,7 +2,7 @@
   "openapi": "3.1.0",
   "info": {
     "title": "DC Hub - Data Center Intelligence API",
-    "description": "Access real-time data center intelligence. Query 20,534 facilities across 140+ countries with location, capacity, and provider information.",
+    "description": "Access real-time data center intelligence. Query 20,534 facilities across 170+ countries with location, capacity, and provider information.",
     "version": "1.0.0",
     "contact": {
       "name": "DC Hub",
