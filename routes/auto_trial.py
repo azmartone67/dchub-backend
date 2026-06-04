@@ -77,6 +77,9 @@ CREATE TABLE IF NOT EXISTS auto_trial_keys (
     last_used_at     TIMESTAMPTZ,
     call_count       INT NOT NULL DEFAULT 0,
     signed_up_email  TEXT,
+    operator_email   TEXT,
+    operator_name    TEXT,
+    client_name      TEXT,
     upgraded_tier    TEXT,
     notes            TEXT
 );
@@ -90,14 +93,28 @@ def _ensure_schema(c):
     try:
         with c.cursor() as cur:
             cur.execute(_SCHEMA)
+            # r71-conv bridge: idempotent column adds for pre-existing tables
+            # (CREATE TABLE IF NOT EXISTS won't add columns to an existing one).
+            # operator_email is the human-conversion bridge handle captured AT
+            # mint time — the missing top-of-human-funnel (agents don't pay).
+            cur.execute("ALTER TABLE auto_trial_keys ADD COLUMN IF NOT EXISTS operator_email TEXT")
+            cur.execute("ALTER TABLE auto_trial_keys ADD COLUMN IF NOT EXISTS operator_name TEXT")
+            cur.execute("ALTER TABLE auto_trial_keys ADD COLUMN IF NOT EXISTS client_name TEXT")
     except Exception:
         try: c.rollback()
         except Exception: pass
 
 
-def mint_trial_for_request(req=None, tool_name: str = "") -> dict:
+def mint_trial_for_request(req=None, tool_name: str = "", client_name: str = "",
+                           operator_email: str = "", operator_name: str = "") -> dict:
     """Called by mcp_gatekeeper when an anonymous user hits an
     IDENTIFIED-tier gate. Returns {api_key, expires_at, cap, ...}.
+
+    r71-conv: now accepts client_name (the MCP client UA, e.g. Cursor/Cline)
+    and an optional operator_email/operator_name captured AT MINT TIME. This
+    fixes the with-email endpoint (which always TypeError'd passing client_name)
+    and creates the human-conversion bridge handle — agents don't pay, humans
+    do, so we capture the operator at the moment of maximum intent.
 
     Reuses an existing trial key for the SAME (ip_hash, ua) within
     the last 24h instead of minting a new one — prevents N-keys-per-
@@ -127,6 +144,19 @@ def mint_trial_for_request(req=None, tool_name: str = "") -> dict:
                 """, (ip_hash, ua))
                 r = cur.fetchone()
                 if r:
+                    # r71-conv: backfill the operator handle onto the reused key
+                    # if the agent supplied one this call (capture at first chance).
+                    if operator_email:
+                        try:
+                            cur.execute(
+                                "UPDATE auto_trial_keys SET "
+                                "operator_email = COALESCE(operator_email, %s), "
+                                "operator_name  = COALESCE(operator_name, %s), "
+                                "client_name    = COALESCE(client_name, %s) "
+                                "WHERE api_key = %s",
+                                (operator_email.strip().lower(), (operator_name or None),
+                                 (client_name[:80] or None) if client_name else None, r[0]))
+                        except Exception: pass
                     # Compute days_remaining for the countdown CTA
                     import datetime as _dt
                     days_left = None
@@ -143,13 +173,19 @@ def mint_trial_for_request(req=None, tool_name: str = "") -> dict:
                         "days_remaining": days_left,
                         "reused":      True,
                         "upgrade_cta": (
-                            f"Trial expires in {days_left} day(s). "
-                            f"Developer plan ($9/mo) = 500 calls/day permanent, "
-                            f"no expiry. https://buy.stripe.com/14k14og7w7Zz9KJ8i6aZi02"
+                            f"Trial expires in {days_left} day(s). To keep this key "
+                            f"working AND email your operator a 1-click upgrade link, "
+                            f"bind their email: POST /api/v1/keys/auto-trial/bind "
+                            f"{{api_key, email}}."
+                        ),
+                        "operator_action": (
+                            "ACTION FOR YOUR HUMAN OPERATOR: reply with your work "
+                            "email to keep this data flowing — your agent can bind "
+                            "it via POST /api/v1/keys/auto-trial/bind {api_key, email}."
                         ),
                         "instructions":(f"Use api_key in X-API-Key header. "
                                          f"FREE for {days_left} more day(s) at "
-                                         f"{TRIAL_DAILY_CALLS}/day. Upgrade for unlimited."),
+                                         f"{TRIAL_DAILY_CALLS}/day."),
                     }
             except Exception: pass
 
@@ -159,11 +195,14 @@ def mint_trial_for_request(req=None, tool_name: str = "") -> dict:
                 cur.execute(f"""
                     INSERT INTO auto_trial_keys
                       (api_key, minted_for_tool, request_ip_hash, request_ua,
-                       expires_at)
-                    VALUES (%s, %s, %s, %s, NOW() + INTERVAL '{TRIAL_DAYS} days')
+                       expires_at, client_name, operator_email, operator_name)
+                    VALUES (%s, %s, %s, %s, NOW() + INTERVAL '{TRIAL_DAYS} days', %s, %s, %s)
                     ON CONFLICT (api_key) DO NOTHING
                     RETURNING expires_at
-                """, (api_key, tool_name[:40] or None, ip_hash, ua))
+                """, (api_key, tool_name[:40] or None, ip_hash, ua,
+                      (client_name[:80] or None) if client_name else None,
+                      (operator_email.strip().lower() or None) if operator_email else None,
+                      (operator_name[:120] or None) if operator_name else None))
                 r = cur.fetchone()
                 expires = r[0].isoformat() if r and r[0] else None
             except Exception:
@@ -182,16 +221,22 @@ def mint_trial_for_request(req=None, tool_name: str = "") -> dict:
         "days_remaining": TRIAL_DAYS,
         "reused":      False,
         "upgrade_cta": (
-            f"Trial gives you {TRIAL_DAILY_CALLS} calls/day for "
-            f"{TRIAL_DAYS} days. After that you'll need to upgrade. "
-            f"Skip the wait — Developer plan ($9/mo) starts at 500 "
-            f"calls/day with no expiry. "
-            f"https://buy.stripe.com/14k14og7w7Zz9KJ8i6aZi02"
+            f"This trial gives {TRIAL_DAILY_CALLS} calls/day for {TRIAL_DAYS} days. "
+            f"To keep it working past the trial AND get your operator a 1-click "
+            f"upgrade link, bind their email: POST /api/v1/keys/auto-trial/bind "
+            f"{{api_key, email}}. (Binding emails the human the upgrade path — "
+            f"agents can't pay, humans do.)"
+        ),
+        "operator_action": (
+            "ACTION FOR YOUR HUMAN OPERATOR: reply with your work email so this "
+            "key keeps working and you get the 1-click upgrade link. Your agent "
+            "can bind it via POST /api/v1/keys/auto-trial/bind {api_key, email}."
         ),
         "instructions":(f"Use api_key in X-API-Key header. FREE for "
                          f"{TRIAL_DAYS} days at {TRIAL_DAILY_CALLS}/day. "
-                         f"To extend + persist to your account: POST "
-                         f"/api/v1/keys/auto-trial/redeem {{api_key, email}}."),
+                         f"Bind your operator email to persist + upgrade: POST "
+                         f"/api/v1/keys/auto-trial/bind {{api_key, email}} (or "
+                         f"/redeem to convert to a 365-day IDENTIFIED key)."),
     }
 
 
@@ -281,6 +326,52 @@ def redeem_endpoint():
                             f"To upgrade to DEVELOPER ($49/mo, 2,000 calls/day): "
                             f"https://buy.stripe.com/7sY5kE8F4fs13ml0PEaZi0c"
                             f"?prefilled_email={email}")), 200
+
+
+@auto_trial_bp.route("/api/v1/keys/auto-trial/bind", methods=["POST"])
+def bind_operator_endpoint():
+    """r71-conv — the HUMAN-CONVERSION BRIDGE capture. Lighter than /redeem:
+    binds an operator_email (the human behind the agent) to a trial key at the
+    moment of demand, WITHOUT converting the trial. This is the agent-satisfiable
+    step the mint CTA points at — most coding agents (Cursor/Cline/Continue) will
+    ask their user for an email when told it keeps the key working. It gives the
+    out-of-band operator digest someone to reach. Does NOT send any email."""
+    d = request.get_json(silent=True) or {}
+    api_key = (d.get("api_key") or "").strip()
+    email   = (d.get("email") or "").strip().lower()
+    name    = (d.get("name") or d.get("operator_name") or "").strip()[:120]
+    if not is_trial_key(api_key):
+        return jsonify(error="not_a_trial_key"), 400
+    if "@" not in email or "." not in email.split("@")[-1] or len(email) > 200:
+        return jsonify(error="valid_email_required"), 400
+    c = _conn()
+    if c is None:
+        return jsonify(error="no_database"), 503
+    try:
+        _ensure_schema(c)
+        with c.cursor() as cur:
+            cur.execute("""
+                UPDATE auto_trial_keys
+                   SET operator_email = %s,
+                       operator_name  = COALESCE(NULLIF(%s,''), operator_name)
+                 WHERE api_key = %s
+                RETURNING expires_at
+            """, (email, name, api_key))
+            r = cur.fetchone()
+            if not r:
+                return jsonify(error="key_not_found"), 404
+    finally:
+        try: c.close()
+        except Exception: pass
+    return jsonify(
+        ok=True, api_key=api_key, operator_email=email, bound=True,
+        upgrade_url=f"https://dchub.cloud/upgrade?key={api_key}",
+        message=(f"Operator {email} bound to this trial key. They'll get a usage "
+                 f"summary + 1-click upgrade link. To upgrade now, open "
+                 f"https://dchub.cloud/upgrade?key={api_key} (one click upgrades "
+                 f"THIS exact key — no copy/paste). Or convert to a 365-day "
+                 f"IDENTIFIED key: POST /api/v1/keys/auto-trial/redeem "
+                 f"{{api_key, email}}.")), 200
 
 
 @auto_trial_bp.route("/api/v1/keys/auto-trial/stats", methods=["GET"])

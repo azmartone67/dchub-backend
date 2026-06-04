@@ -346,7 +346,12 @@ def auto_trial_with_email():
     # Try to mint via existing flow
     try:
         from routes.auto_trial import mint_trial_for_request
-        result = mint_trial_for_request(request, tool, client_name=client_name)
+        # r71-conv: pass operator_email so the mint binds it into auto_trial_keys
+        # (the table the trial key actually lives in). Previously this call
+        # ALWAYS TypeError'd (mint had no client_name kwarg) -> mint_failed 100%,
+        # and even on success it wrote email to api_keys (the wrong table).
+        result = mint_trial_for_request(request, tool, client_name=client_name,
+                                        operator_email=email)
         if result and result.get("ok"):
             # Bind email to the minted key
             api_key = result.get("api_key")
