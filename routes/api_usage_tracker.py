@@ -278,6 +278,40 @@ def _flush_loop() -> None:
             pass
 
 
+# Per-worker process-local flag.  r78-e (2026-06-03): gunicorn typically
+# preloads app code in the master process and then fork()s workers.
+# Threads do NOT survive fork — they exist only in the master. So if we
+# start the flusher at install_tracker() time, the worker processes have
+# no flusher and their buffers fill forever. Fix: lazy-start on first
+# request in each worker. Process-local flag means we check once per
+# request (<1µs) and start the thread once per worker process.
+_FLUSHER_STARTED_THIS_PROCESS = False
+_FLUSHER_START_LOCK = threading.Lock()
+
+
+def _ensure_flusher_running() -> None:
+    """Idempotent. Cheap on the hot path: bool check after first call."""
+    global _FLUSHER_STARTED_THIS_PROCESS
+    if _FLUSHER_STARTED_THIS_PROCESS:
+        return
+    with _FLUSHER_START_LOCK:
+        # Re-check under lock (double-check pattern)
+        if _FLUSHER_STARTED_THIS_PROCESS:
+            return
+        # Look for an existing flusher thread in this process (defensive)
+        existing = [t for t in threading.enumerate()
+                    if t.name == "api-usage-flusher" and t.is_alive()]
+        if not existing:
+            try:
+                t = threading.Thread(
+                    target=_flush_loop, daemon=True, name="api-usage-flusher")
+                t.start()
+            except Exception:
+                # If thread start fails, retry on next request
+                return
+        _FLUSHER_STARTED_THIS_PROCESS = True
+
+
 # === Wire-in =========================================================
 
 def install_tracker(app) -> dict:
@@ -290,6 +324,9 @@ def install_tracker(app) -> dict:
 
     @app.before_request
     def _stash_start():
+        # r78-e: lazy-start the bg flusher in this worker process. Free
+        # after first request (process-local bool short-circuits).
+        _ensure_flusher_running()
         g._usage_start_ns = time.time_ns()
         # Capture key + decide trackability cheaply
         ak = (request.headers.get("X-API-Key") or "").strip()
@@ -324,14 +361,16 @@ def install_tracker(app) -> dict:
             pass  # NEVER break responses
         return response
 
-    # Start background flush thread once per process
-    existing = [t for t in threading.enumerate() if t.name == "api-usage-flusher"]
-    if not existing:
-        t = threading.Thread(target=_flush_loop, daemon=True, name="api-usage-flusher")
-        t.start()
+    # r78-e: do NOT start the bg thread here — under gunicorn --preload,
+    # this code runs in the master process and the resulting thread does
+    # not survive fork() into workers. The bg thread is now lazy-started
+    # by _ensure_flusher_running() inside before_request — that runs in
+    # each worker process, after fork, so the thread lives where it can
+    # actually drain the worker's buffer.
 
     return {"ok": True, "flush_interval_sec": _FLUSH_INTERVAL_SEC,
-            "buffer_max": _BUFFER_MAX, "skip_path_prefixes": list(_SKIP_PATH_PREFIXES)}
+            "buffer_max": _BUFFER_MAX, "skip_path_prefixes": list(_SKIP_PATH_PREFIXES),
+            "flusher_start": "lazy (per-worker, on first request)"}
 
 
 # === Manual flush + status endpoints (for ops + smoke-tests) ===========
@@ -361,13 +400,19 @@ def status():
     with _BUFFER_LOCK:
         depth = len(_BUFFER)
         recent = list(_BUFFER[-5:])
+    # Find active flusher threads in this process
+    flushers = [t.name for t in threading.enumerate()
+                if t.name == "api-usage-flusher" and t.is_alive()]
     return jsonify({
-        "ok":                    True,
-        "buffer_depth":          depth,
-        "buffer_max":            _BUFFER_MAX,
-        "sec_since_last_flush":  round(time.time() - _LAST_FLUSH, 1),
-        "flush_interval_sec":    _FLUSH_INTERVAL_SEC,
-        "recent_5_entries":      [
+        "ok":                       True,
+        "process_pid":              os.getpid(),
+        "buffer_depth":             depth,
+        "buffer_max":               _BUFFER_MAX,
+        "sec_since_last_flush":     round(time.time() - _LAST_FLUSH, 1),
+        "flush_interval_sec":       _FLUSH_INTERVAL_SEC,
+        "flusher_started":          _FLUSHER_STARTED_THIS_PROCESS,
+        "flusher_threads_alive":    len(flushers),
+        "recent_5_entries":         [
             {
                 "ts":         e["ts"].isoformat() if hasattr(e["ts"], "isoformat") else str(e["ts"]),
                 "key_prefix": e["key_prefix"],
