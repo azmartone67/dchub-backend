@@ -1133,27 +1133,59 @@ def _legacy_compute_report_data() -> dict:
         return out
     try:
         with c.cursor() as cur:
+            # ─── HEADLINE ─────────────────────────────────────────────
+            # Lead with the canonical TOTAL (matches /api/v1/facilities/delta
+            # total and the comprehensive_report total_facilities). The prior
+            # `merged_at IS NULL AND is_duplicate=0` filter dropped 14k+ rows
+            # and produced a misleading 6,951 investor-facing headline.
             try:
                 cur.execute("""
                     SELECT COUNT(*), COALESCE(SUM(power_mw),0)
                       FROM discovered_facilities
-                     WHERE merged_at IS NULL AND is_duplicate = 0
                 """)
                 r = cur.fetchone() or (0, 0)
                 out["headline"] = {"facilities": int(r[0] or 0), "total_mw": float(r[1] or 0)}
-            except Exception:
-                pass
+            except Exception as e:
+                logger.warning(f"quarterly_report headline failed: {e}")
+            # ─── DCPI MOVERS ──────────────────────────────────────────
+            # `weekly_delta` does not exist on market_power_scores (27 cols,
+            # no such column). Compute delta as current snapshot score minus
+            # the most-recent snapshot >7 days old, per slug. Score formula
+            # mirrors comprehensive_report (excess_power_score - constraint).
             try:
                 cur.execute("""
-                    SELECT market_name, score, weekly_delta
-                      FROM market_power_scores
-                     WHERE published = true AND weekly_delta IS NOT NULL
-                     ORDER BY ABS(weekly_delta) DESC LIMIT 10
+                    WITH cur_s AS (
+                      SELECT DISTINCT ON (market_slug)
+                             market_slug,
+                             market_name,
+                             (COALESCE(excess_power_score,0) - COALESCE(constraint_score,0)) AS score
+                        FROM market_power_scores
+                       WHERE published = true
+                       ORDER BY market_slug, computed_at DESC
+                    ),
+                    prev_s AS (
+                      SELECT DISTINCT ON (market_slug)
+                             market_slug,
+                             (COALESCE(excess_power_score,0) - COALESCE(constraint_score,0)) AS score
+                        FROM market_power_scores
+                       WHERE published = true
+                         AND computed_at < NOW() - INTERVAL '7 days'
+                       ORDER BY market_slug, computed_at DESC
+                    )
+                    SELECT cur_s.market_name,
+                           cur_s.score,
+                           (cur_s.score - COALESCE(prev_s.score, cur_s.score)) AS delta
+                      FROM cur_s
+                      LEFT JOIN prev_s USING(market_slug)
+                     WHERE prev_s.score IS NOT NULL
+                     ORDER BY ABS(cur_s.score - prev_s.score) DESC
+                     LIMIT 10
                 """)
                 out["dcpi_movers"] = [
                     {"market": r[0], "score": int(r[1] or 0), "delta": int(r[2] or 0)}
                     for r in cur.fetchall()]
-            except Exception:
+            except Exception as e:
+                logger.warning(f"quarterly_report dcpi_movers failed: {e}")
                 out["dcpi_movers"] = []
             try:
                 cur.execute("""
@@ -1178,67 +1210,125 @@ def _legacy_compute_report_data() -> dict:
                 out["top_build"] = [
                     {"market": r[0], "iso": r[1], "excess": int(r[2] or 0),
                      "constraint": int(r[3] or 0)} for r in rows]
-            except Exception:
+            except Exception as e:
+                logger.warning(f"quarterly_report dcpi_verdicts/top_build failed: {e}")
                 out["dcpi_verdicts"] = {}
                 out["top_build"] = []
+            # ─── TOP MARKETS ──────────────────────────────────────────
+            # Drop the verified-only filter (was excluding 14k+ rows). Group
+            # over ALL discovered_facilities, ranked by total MW.
             try:
                 cur.execute("""
                     SELECT COALESCE(market, city, '') AS m, COUNT(*) AS n,
                            COALESCE(SUM(power_mw), 0) AS mw
                       FROM discovered_facilities
-                     WHERE merged_at IS NULL AND is_duplicate = 0
-                       AND COALESCE(market, city) IS NOT NULL
+                     WHERE COALESCE(market, city) IS NOT NULL
+                       AND COALESCE(market, city) != ''
                      GROUP BY COALESCE(market, city)
                      ORDER BY mw DESC LIMIT 10
                 """)
                 out["top_markets"] = [
                     {"market": r[0], "facilities": int(r[1]), "total_mw": float(r[2] or 0)}
                     for r in cur.fetchall() if r[0]]
-            except Exception:
+            except Exception as e:
+                logger.warning(f"quarterly_report top_markets failed: {e}")
                 out["top_markets"] = []
+            # ─── M&A SUMMARY ──────────────────────────────────────────
+            # deals.date is TEXT (not date) — implicit `>= CURRENT_DATE -
+            # INTERVAL` throws operator-does-not-exist. Cast with ::date.
+            # deals.id is TEXT (e.g. 'AUTO-20260604-14bfc0') — int() cast
+            # was throwing ValueError on the top_deals loop. Cast to str.
+            # Window fallback to YTD when the 90-day count < 5 (deals.date
+            # is only populated for ~412 of 1,972 rows; comprehensive_report
+            # uses the same fallback at lines 213-232).
             try:
                 cur.execute("""
                     SELECT COUNT(*), COALESCE(SUM(value),0), COALESCE(SUM(mw),0)
                       FROM deals
-                     WHERE date >= (CURRENT_DATE - INTERVAL '90 days')
+                     WHERE date::date >= (CURRENT_DATE - INTERVAL '90 days')
                 """)
                 r = cur.fetchone() or (0, 0, 0)
-                out["ma_summary"] = {"deal_count": int(r[0] or 0),
-                                     "total_value": float(r[1] or 0),
-                                     "total_mw": float(r[2] or 0)}
-                cur.execute("""
-                    SELECT id, date, buyer, seller, value, mw
-                      FROM deals
-                     WHERE value IS NOT NULL
-                       AND date >= (CURRENT_DATE - INTERVAL '90 days')
-                     ORDER BY value DESC LIMIT 5
-                """)
+                win_count = int(r[0] or 0)
+                win_value = float(r[1] or 0)
+                win_mw    = float(r[2] or 0)
+            except Exception as e:
+                logger.warning(f"quarterly_report ma_summary 90d failed: {e}")
+                win_count, win_value, win_mw = 0, 0.0, 0.0
+            if win_count < 5:
+                try:
+                    cur.execute("""
+                        SELECT COUNT(*), COALESCE(SUM(value),0), COALESCE(SUM(mw),0)
+                          FROM deals
+                         WHERE year = EXTRACT(YEAR FROM CURRENT_DATE)
+                    """)
+                    r = cur.fetchone() or (0, 0, 0)
+                    out["ma_summary"] = {
+                        "deal_count": int(r[0] or 0),
+                        "total_value": float(r[1] or 0),
+                        "total_mw": float(r[2] or 0),
+                        "window": "year-to-date",
+                    }
+                except Exception as e:
+                    logger.warning(f"quarterly_report ma_summary YTD failed: {e}")
+                    out["ma_summary"] = {"deal_count": 0, "total_value": 0,
+                                          "total_mw": 0, "window": "year-to-date"}
+            else:
+                out["ma_summary"] = {
+                    "deal_count": win_count,
+                    "total_value": win_value,
+                    "total_mw": win_mw,
+                    "window": "last_90_days",
+                }
+            try:
+                if out["ma_summary"].get("window") == "year-to-date":
+                    cur.execute("""
+                        SELECT id, date, buyer, seller, value, mw
+                          FROM deals
+                         WHERE value IS NOT NULL
+                           AND year = EXTRACT(YEAR FROM CURRENT_DATE)
+                         ORDER BY value DESC LIMIT 5
+                    """)
+                else:
+                    cur.execute("""
+                        SELECT id, date, buyer, seller, value, mw
+                          FROM deals
+                         WHERE value IS NOT NULL
+                           AND date::date >= (CURRENT_DATE - INTERVAL '90 days')
+                         ORDER BY value DESC LIMIT 5
+                    """)
                 out["ma_summary"]["top_deals"] = [{
-                    "id": int(r[0]) if r[0] else None,
+                    "id": str(r[0]) if r[0] else None,
                     "date": r[1].isoformat() if hasattr(r[1], "isoformat") else (str(r[1]) if r[1] else None),
                     "buyer": r[2], "seller": r[3],
                     "value": float(r[4]) if r[4] is not None else None,
                     "mw": float(r[5]) if r[5] is not None else None,
                 } for r in cur.fetchall()]
-            except Exception:
-                out["ma_summary"] = {"deal_count": 0, "total_value": 0, "top_deals": []}
+            except Exception as e:
+                logger.warning(f"quarterly_report ma_summary top_deals failed: {e}")
+                out["ma_summary"]["top_deals"] = []
+            # ─── PIPELINE BY MARKET ───────────────────────────────────
+            # Drop verified-only filter; add 'announced'/'approved' which are
+            # the live statuses on 50+1 rows respectively. Without them the
+            # pipeline section was missing the bulk of pre-construction work.
             try:
                 cur.execute("""
                     SELECT COALESCE(market, city, '') AS m, COUNT(*) AS n,
                            COALESCE(SUM(power_mw), 0) AS mw
                       FROM discovered_facilities
-                     WHERE merged_at IS NULL AND is_duplicate = 0
-                       AND LOWER(COALESCE(status,'')) IN
+                     WHERE LOWER(COALESCE(status,'')) IN
                           ('construction','planned','permitting',
-                           'under construction','proposed','development')
+                           'under construction','proposed','development',
+                           'announced','approved','under development','expanding')
                        AND COALESCE(market, city) IS NOT NULL
+                       AND COALESCE(market, city) != ''
                      GROUP BY COALESCE(market, city)
                      ORDER BY mw DESC LIMIT 10
                 """)
                 out["pipeline_by_market"] = [
                     {"market": r[0], "projects": int(r[1]), "mw": float(r[2] or 0)}
                     for r in cur.fetchall() if r[0]]
-            except Exception:
+            except Exception as e:
+                logger.warning(f"quarterly_report pipeline_by_market failed: {e}")
                 out["pipeline_by_market"] = []
             try:
                 cur.execute("SELECT score_pct FROM citation_scores ORDER BY score_date DESC LIMIT 1")
@@ -1395,14 +1485,17 @@ def report_html():
         pass
     d = _legacy_compute_report_data()
     html = _legacy_render_html(d)
+    # max-age temporarily reduced from 3600→300 so the previously-stale
+    # 6,951/$0 CF edge copy doesn't haunt investor clicks for an hour after
+    # the bug-fix deploy. Restore to 3600 once the stale window clears.
     return Response(html, mimetype="text/html",
-                    headers={"Cache-Control": "public, max-age=3600"})
+                    headers={"Cache-Control": "public, max-age=300"})
 
 
 @quarterly_report_bp.route("/api/v1/reports/quarterly", methods=["GET"])
 def report_json():
     d = _legacy_compute_report_data()
     resp = jsonify(d)
-    resp.headers["Cache-Control"] = "public, max-age=3600"
+    resp.headers["Cache-Control"] = "public, max-age=300"
     resp.headers["Access-Control-Allow-Origin"] = "*"
     return resp, 200
