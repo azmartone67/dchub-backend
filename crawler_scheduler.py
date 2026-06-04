@@ -66,6 +66,15 @@ SCHEDULE = [
     # 16/17 outreach pair). Same-hour same-day means at most one run
     # per day even with the both-slots scheduler config.
     (11, 11, "auto_interconnect",   "_run_auto_interconnect"),
+    # Powered Land Gas Pricing (2026-06-04, Phase 1 spine):
+    # Refresh Henry Hub + basis + delivered tariffs + derive $/MWh per
+    # marquee DCPI market. Slot 04:00 UTC chosen because it's an empty hour
+    # (no overlap with 12/0 infra-sync, 14/2 knowledge-sync, 16/17 outreach
+    # pair, or 11/11 auto_interconnect) AND gives EIA time to publish the
+    # overnight settle. Same-hour-same-day cap → one run per day. The
+    # underlying endpoint /api/v1/markets/gas-pricing/cron has a 90s soft
+    # deadline so it cannot overrun the next slot.
+    ( 4,  4, "gas_pricing_refresh", "_run_gas_pricing_refresh"),
 ]
 
 # ---------------------------------------------------------------------------
@@ -930,6 +939,46 @@ def _run_auto_interconnect():
         logger.error("🔌 auto_interconnect: error — %s", e)
 
 
+def _run_gas_pricing_refresh():
+    """Nightly refresh of market_gas_pricing — fires /api/v1/markets/gas-pricing/cron.
+    Recomputes Henry Hub spot + regional basis + delivered industrial / electric
+    tariffs per Phase-1 marquee DCPI market and upserts the heat-rate-derived
+    $/MWh scenarios. Idempotent (UNIQUE primary key on market_slug). Endpoint
+    has a 90s soft deadline so it cannot overrun the next crawler slot.
+
+    If DCHUB_ADMIN_KEY is unset, falls back to the in-process
+    routes.powered_land_gas.run_gas_pricing_refresh() helper so the cron still
+    works in dev (no HTTP roundtrip required)."""
+    import requests as _rq
+    key = (os.environ.get("DCHUB_ADMIN_KEY")
+           or os.environ.get("DCHUB_INTERNAL_KEY")
+           or os.environ.get("DCHUB_ADMIN_API_KEY") or "")
+    if not key:
+        # Dev / no-key fallback: call the in-process helper directly.
+        try:
+            from routes.powered_land_gas import run_gas_pricing_refresh
+            d = run_gas_pricing_refresh() or {}
+            logger.info("⛽ gas_pricing_refresh (in-proc): refreshed=%s failed=%s",
+                        d.get("refreshed"), d.get("failed"))
+        except Exception as e:
+            logger.error("⛽ gas_pricing_refresh: in-proc fallback error — %s", e)
+        return
+    base = os.environ.get("DCHUB_INTERNAL_API", "http://127.0.0.1:8080")
+    try:
+        r = _rq.post(
+            f"{base}/api/v1/markets/gas-pricing/cron",
+            headers={"X-Admin-Key": key,
+                     "User-Agent": "dchub-cron-gaspricing/1.0"},
+            timeout=120,
+        )
+        d = (r.json() if r.headers.get("content-type", "").startswith("application/json") else {}) or {}
+        logger.info("⛽ gas_pricing_refresh: refreshed=%s failed=%s duration=%ss eia=%s",
+                    d.get("refreshed"), d.get("failed"),
+                    d.get("duration_seconds"), d.get("eia_key_present"))
+    except Exception as e:
+        logger.error("⛽ gas_pricing_refresh: error — %s", e)
+
+
 _RUNNERS = {
     "market_refresh":      _run_market_refresh,
     "news":                _run_news_crawler,
@@ -944,6 +993,7 @@ _RUNNERS = {
     "ai_lab_outreach":     _run_ai_lab_auto_outreach,
     "lost_conversion":     _run_lost_conversion_outreach,
     "auto_interconnect":   _run_auto_interconnect,
+    "gas_pricing_refresh": _run_gas_pricing_refresh,
 }
 
 
