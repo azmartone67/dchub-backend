@@ -1233,7 +1233,14 @@ def _legacy_compute_report_data() -> dict:
                 out["top_markets"] = [
                     {"market": r[0], "facilities": int(r[1]), "total_mw": float(r[2] or 0)}
                     for r in cur.fetchall() if r[0]]
-                if not out["top_markets"]:
+            except Exception as e:
+                logger.warning(f"quarterly_report top_markets primary failed: {e}")
+                out["top_markets"] = []
+                out["_top_markets_err"] = str(e)[:200]
+            # Fallback in its OWN try/except so a primary-query exception
+            # doesn't poison the secondary attempt.
+            if not out.get("top_markets"):
+                try:
                     cur.execute("""
                         SELECT state, COUNT(*) AS n,
                                COALESCE(SUM(power_mw), 0) AS mw
@@ -1246,9 +1253,9 @@ def _legacy_compute_report_data() -> dict:
                         {"market": r[0], "facilities": int(r[1]),
                          "total_mw": float(r[2] or 0)}
                         for r in cur.fetchall() if r[0]]
-            except Exception as e:
-                logger.warning(f"quarterly_report top_markets failed: {e}")
-                out["top_markets"] = []
+                except Exception as e:
+                    logger.warning(f"quarterly_report top_markets state-fallback failed: {e}")
+                    out["_top_markets_state_err"] = str(e)[:200]
             # ─── M&A SUMMARY ──────────────────────────────────────────
             # deals.date is TEXT (not date) — implicit `>= CURRENT_DATE -
             # INTERVAL` throws operator-does-not-exist. Cast with ::date.
@@ -1345,7 +1352,12 @@ def _legacy_compute_report_data() -> dict:
                 out["pipeline_by_market"] = [
                     {"market": r[0], "projects": int(r[1]), "mw": float(r[2] or 0)}
                     for r in cur.fetchall() if r[0]]
-                if not out["pipeline_by_market"]:
+            except Exception as e:
+                logger.warning(f"quarterly_report pipeline_by_market primary failed: {e}")
+                out["pipeline_by_market"] = []
+                out["_pipeline_by_market_err"] = str(e)[:200]
+            if not out.get("pipeline_by_market"):
+                try:
                     cur.execute(f"""
                         SELECT state, COUNT(*) AS n,
                                COALESCE(SUM(power_mw), 0) AS mw
@@ -1359,9 +1371,9 @@ def _legacy_compute_report_data() -> dict:
                         {"market": r[0], "projects": int(r[1]),
                          "mw": float(r[2] or 0)}
                         for r in cur.fetchall() if r[0]]
-            except Exception as e:
-                logger.warning(f"quarterly_report pipeline_by_market failed: {e}")
-                out["pipeline_by_market"] = []
+                except Exception as e:
+                    logger.warning(f"quarterly_report pipeline_by_market state-fallback failed: {e}")
+                    out["_pipeline_by_market_state_err"] = str(e)[:200]
             try:
                 cur.execute("SELECT score_pct FROM citation_scores ORDER BY score_date DESC LIMIT 1")
                 r = cur.fetchone()
