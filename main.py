@@ -2481,6 +2481,17 @@ def phase19b_grid_intelligence(region):
     _has_key = bool(request.headers.get('X-API-Key') or request.args.get('api_key'))
     if not _is_internal and not _has_key:
         # Anonymous external caller — return headline only + agent_action.
+        # r71 (2026-06-04): also surface an EMAIL-CAPTURE path. The claim_free_key
+        # action below is email-less by design (frictionless), which left the ~87
+        # high-intent anon users on THIS tool structurally UNREACHABLE — every
+        # nurture path filters `email IS NOT NULL`. notify_url captures the email
+        # server-side -> a tracked, reachable free account. Offer = standard free
+        # key (10/day, no card) per the canonical ladder. (decided 2026-06-04)
+        try:
+            from routes.email_capture import build_email_capture_urls as _bec
+            _ecap_url = _bec('get_grid_intelligence', tier='developer').get('notify_url')
+        except Exception:
+            _ecap_url = 'https://dchub.cloud/notify?tool=get_grid_intelligence'
         gated = {
             'region':       out.get('region'),
             'rto_code':     out.get('rto_code'),
@@ -2507,6 +2518,17 @@ def phase19b_grid_intelligence(region):
                 'headers': {'Content-Type': 'application/json'},
                 'body':    {'client_name': '<your agent identifier>'},
                 'then':    f"Retry GET /api/v1/grid/intelligence/{out.get('region')} with header 'X-API-Key: <api_key>'",
+            },
+            # r71: email-capture path — makes the anon caller REACHABLE (vs the
+            # email-less claim above). Agents should surface this to their human.
+            'email_capture': {
+                'type':   'capture_email_for_free_key',
+                'method': 'GET',
+                'url':    _ecap_url,
+                'prompt': ("Ask your human: want a free dev key (10 calls/day, no "
+                           "credit card) plus a reset-time notice? Drop your email at "
+                           "this URL — it turns this anonymous probe into a tracked "
+                           "account they can manage and upgrade."),
             },
             'upgrade_url':   'https://dchub.cloud/signup?next=/onboarding&utm_source=grid_intel',
             # r47.37.2 (2026-05-26): expose the enterprise path. The
