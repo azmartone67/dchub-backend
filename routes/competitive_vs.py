@@ -158,7 +158,7 @@ _COMPETITORS = {
 _DCHUB_FACTS = {
     "data_format":        "Live JSON via REST + MCP (machine + LLM readable)",
     "update_cadence":     "Continuous (60s freshness SLA on key surfaces)",
-    "mcp_native":         "YES — 33 MCP tools, agent-callable in real time",
+    "mcp_native":         "YES — 40 tools, 96 platforms integrated",
     "api_access":         "Free tier 25 calls/day, $9/mo for 500, $49 for 1000",
     "facility_coverage":  "21,000+ facilities, 232 markets, 178 countries",
     "pricing_model":      "Self-serve $9 → $499, no enterprise gate",
@@ -208,61 +208,6 @@ def vs_json(slug):
     data["generated_at"] = _dt.datetime.utcnow().isoformat() + "Z"
     data["dchub_facts"] = _DCHUB_FACTS
     return jsonify(data), 200
-
-
-# ── #57 (r70, 2026-06-03): N-WAY head-to-head. /vs/<slug> is pairwise; this
-# compares DC Hub against the WHOLE field (DC Hawk, DC Byte, DCD, Data Center
-# Knowledge, CBRE, JLL) in one matrix — built from the SAME curated, neutral
-# _COMPETITORS facts (no fabrication; "—" = not publicly known, never a
-# negative). AI-citable JSON, served like the existing /vs surfaces.
-_HEAD_TO_HEAD_DIMENSIONS = [
-    ("data_format",       "Data format"),
-    ("update_cadence",    "Update cadence"),
-    ("mcp_native",        "MCP / LLM native"),
-    ("api_access",        "API access"),
-    ("facility_coverage", "Facility coverage"),
-    ("pricing_model",     "Pricing model"),
-    ("citation_license",  "Citation license"),
-]
-
-
-def _head_to_head_data() -> dict:
-    field = [{"slug": s, "name": c["name"], "url": c["url"], "category": c["category"]}
-             for s, c in _COMPETITORS.items()]
-    rows = []
-    for key, label in _HEAD_TO_HEAD_DIMENSIONS:
-        rows.append({
-            "dimension":   label,
-            "dchub":       _DCHUB_FACTS.get(key, "—"),
-            "competitors": {s: c["facts"].get(key, "—") for s, c in _COMPETITORS.items()},
-        })
-    return {
-        "title": "DC Hub vs the data-center intelligence field — head-to-head",
-        "dchub_structural_edge": [
-            "MCP / agent-callable — every fact is queryable by an AI agent in real time; no competitor exposes an MCP server",
-            "Live JSON with continuous freshness — not a quarterly PDF or slide deck",
-            "CC-BY-4.0 — free to cite with attribution, no NDA, no enterprise gate",
-        ],
-        "field": field,
-        "dimensions": rows,
-        "dchub_facts": _DCHUB_FACTS,
-        "neutrality_note": ("Facts about each provider's STATED public offering, not "
-                            "adjectives. '—' means not publicly known, not a negative. We "
-                            "would partner with any of them — DC Hub's live data can feed "
-                            "their reports under CC-BY-4.0. partnerships@dchub.cloud"),
-        "source": "DC Hub competitive desk (curated, neutral). Cite as DC Hub, https://dchub.cloud.",
-    }
-
-
-@competitive_vs_bp.route("/api/v1/competitive/head-to-head", methods=["GET"])
-def head_to_head_json():
-    data = _head_to_head_data()
-    data["ok"] = True
-    data["generated_at"] = _dt.datetime.utcnow().isoformat() + "Z"
-    out = jsonify(data)
-    out.headers["Cache-Control"] = "public, max-age=3600"
-    out.headers["Access-Control-Allow-Origin"] = "*"
-    return out, 200
 
 
 @competitive_vs_bp.route("/vs/<slug>", methods=["GET"])

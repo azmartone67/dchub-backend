@@ -899,6 +899,64 @@ def _build_outreach_drafts() -> list[dict]:
     return drafts
 
 
+# ──────────────────────────────────────────────────────────────────────
+# #57 (r70, 2026-06-03): N-WAY head-to-head — DC Hub vs the WHOLE tracked
+# field in one matrix. Built on the SAME factual contract as the /vs pages:
+# every competitor cell is OBSERVED-AND-DATED from the moat radar (MCP /
+# llms.txt / machine-readable / public-API probe axes) or "Not observed".
+# NO pricing, NO fabricated capabilities, NO adjectives. This replaces the
+# RETIRED competitive_vs.py head-to-head (which carried unverified pricing).
+# ──────────────────────────────────────────────────────────────────────
+def _head_to_head_model() -> dict:
+    competitors = []
+    for pub in _PUBLIC_SLUG_ORDER:
+        radar = _PUBLIC_TO_RADAR.get(pub, "")
+        comp = (_CI_BY_SLUG.get(radar) or {}) if radar else {}
+        obs, _fresh = _observe(radar) if radar else (None, False)
+        rows = _capability_rows(obs)
+        observed_at = (obs or {}).get("observed_at") if obs else None
+        competitors.append({
+            "public_slug":  pub,
+            "display_name": comp.get("display_name") or radar or pub,
+            "category":     _NEUTRAL_FRAMING.get(radar, comp.get("category") or ""),
+            "vs_url":       f"https://dchub.cloud/vs/{pub}",
+            "observed_at":  (observed_at or "")[:10] or None,
+            "axes":         {r["label"]: {"state": r["competitor_state"],
+                                          "observation": r["competitor"]} for r in rows},
+        })
+    base = _capability_rows(None)   # dchub side is constant; competitor side all "unknown"
+    axes = [r["label"] for r in base]
+    dchub_by_axis = {r["label"]: r["dchub"] for r in base}
+    return {
+        "title": "DC Hub vs the data-center intelligence field — observed, dated, agent-native",
+        "method": ("Every competitor cell is OBSERVED-AND-DATED from DC Hub's moat radar "
+                   "(probe axes: MCP server, llms.txt, machine-readable signals, public API) "
+                   "or 'Not observed'. No pricing, no fabricated capabilities, no adjectives. "
+                   "Pairwise detail at /vs/<competitor>."),
+        "axes":         axes,
+        "dchub":        {"by_axis": dchub_by_axis, "edges": _dchub_edges(),
+                         "numbers": _dchub_numbers()},
+        "competitors":  competitors,
+        "as_of":        _today(),
+        "source":       "DC Hub moat radar (observed). Cite as DC Hub, https://dchub.cloud.",
+    }
+
+
+@competitive_seo_bp.route("/api/v1/competitive/head-to-head",
+                          methods=["GET", "OPTIONS"])
+def head_to_head_json():
+    if request.method == "OPTIONS":
+        return ("", 204, _outreach_cors())
+    try:
+        payload = {"ok": True, **_head_to_head_model()}
+    except Exception as e:
+        payload = {"ok": False, "error": str(e)[:160]}
+    resp = jsonify(payload)
+    resp.headers["Cache-Control"] = "public, max-age=900"
+    resp.headers["Access-Control-Allow-Origin"] = "*"
+    return resp, 200
+
+
 @competitive_seo_bp.route("/api/v1/competitive/outreach-drafts",
                           methods=["GET", "OPTIONS"])
 def outreach_drafts():
