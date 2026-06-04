@@ -689,12 +689,20 @@ Explore now: https://dchub.cloud
     results = {}
 
     if platform in ['twitter', 'both']:
-        result = _discovery_engine.social_poster.post_to_twitter(test_message)
+        try:
+            result = _discovery_engine.social_poster.post_to_twitter(test_message)
+            if not isinstance(result, dict): result = {'success': False, 'error': 'no_credentials_or_bad_return'}
+        except Exception as _e:
+            result = {'success': False, 'error': str(_e)[:200]}
         results['twitter'] = result
         logger.info(f"🐦 Twitter test: {'✅ Success' if result.get('success') else '❌ ' + str(result.get('error', 'Failed'))}")
 
     if platform in ['linkedin', 'both']:
-        result = _discovery_engine.social_poster.post_to_linkedin(test_message)
+        try:
+            result = _discovery_engine.social_poster.post_to_linkedin(test_message)
+            if not isinstance(result, dict): result = {'success': False, 'error': 'no_credentials_or_bad_return'}
+        except Exception as _e:
+            result = {'success': False, 'error': str(_e)[:200]}
         results['linkedin'] = result
         logger.info(f"💼 LinkedIn test: {'✅ Success' if result.get('success') else '❌ ' + str(result.get('error', 'Failed'))}")
 
