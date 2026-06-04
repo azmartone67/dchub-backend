@@ -541,6 +541,9 @@ def site_value():
             "constraint_score":     dcpi.get("constraint_score"),
             "time_to_power_months": dcpi.get("time_to_power_months"),
             "iso":                  dcpi.get("iso"),
+            "_debug_available":     dcpi.get("available"),
+            "_debug_reason":        dcpi.get("reason"),
+            "_debug_error":         dcpi.get("error"),
         },
     }
 
