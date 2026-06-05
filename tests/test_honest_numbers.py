@@ -98,8 +98,8 @@ def test_no_324b_inflation():
 
 
 def test_no_inflated_platform_counts():
-    """We're used by Claude + Cursor — not '96+ / 90+ AI platforms'."""
-    pats = [re.compile(r"9[0-9]\+\s*(other\s+)?(AI\s+)?platforms", re.I),
+    """We're used by Claude + Cursor — not '96+ / 96 AI platforms'."""
+    pats = [re.compile(r"9[0-9]\+?\s*(other\s+)?(AI\s+)?platforms", re.I),   # + now OPTIONAL: catches "96 platforms" too (the gap that let competitive_vs.py through)
             re.compile(r"\b2[0-9]\+\s*other\s+AI\s+platforms", re.I)]
     hits = _scan(pats)
     assert not hits, ("Re-introduced an inflated AI-platform count — the verified active "

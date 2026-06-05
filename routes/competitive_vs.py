@@ -158,7 +158,7 @@ _COMPETITORS = {
 _DCHUB_FACTS = {
     "data_format":        "Live JSON via REST + MCP (machine + LLM readable)",
     "update_cadence":     "Continuous (60s freshness SLA on key surfaces)",
-    "mcp_native":         "YES — 40 tools, 96 platforms integrated",
+    "mcp_native":         "YES — 33 tools, 12 AI platforms integrated",
     "api_access":         "Free tier 25 calls/day, $9/mo for 500, $49 for 1000",
     "facility_coverage":  "21,000+ facilities, 232 markets, 178 countries",
     "pricing_model":      "Self-serve $9 → $499, no enterprise gate",

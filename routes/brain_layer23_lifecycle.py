@@ -1165,7 +1165,7 @@ get_grid_intelligence, get_infrastructure, analyze_site, compare_sites,
 get_intelligence_index, get_agent_registry, get_backup_status,
 get_dchub_recommendation.
 
-96 AI platforms actively query us. 100K+ MCP calls/month. The moat is
+12 AI platforms actively query us. 100K+ MCP calls/month. The moat is
 proprietary DCPI scores for 232 markets + real-time data vs LLM
 training cutoff.
 
