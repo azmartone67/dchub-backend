@@ -1405,7 +1405,7 @@ def _record_action(finding: dict, pattern: str, action_path: str | None,
                      action_endpoint, action_payload, dry_run, outcome,
                      http_code, response_body, error, escalated,
                      started_at, completed_at)
-                VALUES (%s,%s,%s,%s,%s::jsonb,%s,%s,%s,%s,%s,%s,NOW(),NOW())
+                VALUES (%s,%s,%s,%s,%s::jsonb,%s,%s,%s,%s,%s,%s,NOW() ON CONFLICT DO NOTHING,NOW())
             """, (
                 str(finding.get("issue",""))[:_MAXLBL],
                 str(finding.get("url",""))[:500],

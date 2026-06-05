@@ -21,6 +21,7 @@ grid_snapshot_bp = Blueprint("grid_snapshot", __name__, url_prefix="/api/v1/grid
 ISO_LIST = ["ERCOT", "CAISO", "NYISO", "MISO", "SPP", "ISONE", "PJM"]
 
 
+# AUTO-REPAIR: duplicate route '/snapshot' also in routes/iso_nordpool_intl.py:206 — review and remove one
 @grid_snapshot_bp.route("/snapshot", methods=["GET"])
 def snapshot():
     """All latest metrics, organized by ISO."""
