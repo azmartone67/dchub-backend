@@ -90,18 +90,22 @@ jobs:
             echo "" >> README.md
             cat /tmp/entry.md >> README.md
           else
-            # Insert our entry on the line AFTER the section heading
-            # (skip blank lines until we find first bullet, append above it).
-            awk -v insert_after="$SECTION" '
-              NR==insert_after { print; next }
-              NR==insert_after+1 && /^- / {
-                while ((getline line < "/tmp/entry.md") > 0) print line
-                print
-                next
-              }
+            # Insert our entry before the first bullet after the heading; if the
+            # section has no bullet before the next heading, insert right after the
+            # heading; else at EOF. (Prior version only fired when line N+1 was
+            # already a bullet, so it usually inserted nothing -> "nothing to commit".)
+            awk -v ln="$SECTION" '
+              NR <= ln { print; next }
+              !ins && /^- / { while ((getline e < "/tmp/entry.md") > 0) print e; ins=1; print; next }
+              !ins && /^#/  { while ((getline e < "/tmp/entry.md") > 0) print e; print ""; ins=1; print; next }
               { print }
+              END { if (!ins) while ((getline e < "/tmp/entry.md") > 0) print e }
             ' README.md > README.md.new
             mv README.md.new README.md
+          # Belt-and-suspenders: fail loudly if nothing actually changed.
+          if git diff --quiet README.md; then
+            echo "::error::entry insertion produced no change to README.md"; exit 1
+          fi
           fi
 
           # Step 4: configure git, commit, push to OUR fork (the token's account).
