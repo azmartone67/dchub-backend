@@ -1978,6 +1978,161 @@ def preview_rewrite():
     }), 200
 
 
+# =============================================================================
+# Publisher operational state (2026-06-05) — pure in-memory, no secrets.
+# Surfaced via the PUBLIC GET /api/v1/dchub-media/publisher-status endpoint
+# (routes/publisher_status.py). Each loop calls _record_boot() once at start
+# (or when the env-gate short-circuits the start) and _record_attempt() once
+# per publish-attempt path. Reads are lock-free single-dict-key copies; the
+# Python interpreter's GIL makes the simple field assignments safe enough
+# for a status panel (no correctness invariants depend on cross-field reads).
+# =============================================================================
+_PUBLISHER_STATE = {
+    "linkedin": {
+        "boot_started":        False,
+        "boot_started_at":     None,
+        "boot_disabled_reason": None,
+        "last_attempt_at":     None,
+        "last_attempt_result": None,  # ok | error | skipped_cap | no_queued
+        "last_error_class":    None,
+        "attempts_24h":        0,
+        "successes_24h":       0,
+        "errors_24h":          0,
+        "_counter_day_utc":    None,  # YYYY-MM-DD; reset trigger
+    },
+    "twitter": {
+        "boot_started":        False,
+        "boot_started_at":     None,
+        "boot_disabled_reason": None,
+        "last_attempt_at":     None,
+        "last_attempt_result": None,
+        "last_error_class":    None,
+        "attempts_24h":        0,
+        "successes_24h":       0,
+        "errors_24h":          0,
+        "_counter_day_utc":    None,
+    },
+    "bluesky": {
+        "boot_started":        False,
+        "boot_started_at":     None,
+        "boot_disabled_reason": None,
+        "last_attempt_at":     None,
+        "last_attempt_result": None,
+        "last_error_class":    None,
+        "attempts_24h":        0,
+        "successes_24h":       0,
+        "errors_24h":          0,
+        "_counter_day_utc":    None,
+    },
+}
+
+
+def _utcnow_iso() -> str:
+    return datetime.utcnow().strftime('%Y-%m-%dT%H:%M:%SZ')
+
+
+def _maybe_reset_24h_counters(platform: str) -> None:
+    """Reset the per-platform attempts/successes/errors counters at UTC
+    midnight. Cheap: one date comparison per attempt. We keep last_* fields
+    untouched so the diagnostic still shows what last happened across the
+    midnight boundary."""
+    today = datetime.utcnow().strftime('%Y-%m-%d')
+    st = _PUBLISHER_STATE.get(platform)
+    if not st:
+        return
+    if st.get('_counter_day_utc') != today:
+        st['attempts_24h']     = 0
+        st['successes_24h']    = 0
+        st['errors_24h']       = 0
+        st['_counter_day_utc'] = today
+
+
+def _record_boot(platform: str, started: bool, reason: str = None) -> None:
+    """Record whether a publisher loop actually booted.
+
+    Called once per process from each start_*_publisher() function:
+      * started=True  → loop thread spawned
+      * started=False → env gate / config short-circuit (reason explains why)
+    Safe to call before _record_attempt; never raises."""
+    try:
+        st = _PUBLISHER_STATE.get(platform)
+        if st is None:
+            return
+        st['boot_started']         = bool(started)
+        st['boot_started_at']      = _utcnow_iso() if started else st['boot_started_at']
+        st['boot_disabled_reason'] = None if started else (reason or 'disabled')
+    except Exception:
+        pass  # status tracking must never break the publisher
+
+
+def _record_attempt(platform: str, result: str, error_class: str = None) -> None:
+    """Record one publish-attempt outcome.
+
+    result is one of: 'ok' | 'error' | 'skipped_cap' | 'no_queued'.
+    Increments the 24h counters (auto-reset at UTC midnight) and stamps
+    last_attempt_at + last_attempt_result. For 'error', also stamps the
+    last_error_class (e.g. 'auth_failed', 'rate_limit', 'network'). Never
+    raises — wrap defensively because publisher loops should not crash on a
+    status-tracker hiccup."""
+    try:
+        st = _PUBLISHER_STATE.get(platform)
+        if st is None:
+            return
+        _maybe_reset_24h_counters(platform)
+        st['last_attempt_at']     = _utcnow_iso()
+        st['last_attempt_result'] = result
+        st['attempts_24h']        = st.get('attempts_24h', 0) + 1
+        if result == 'ok':
+            st['successes_24h'] = st.get('successes_24h', 0) + 1
+            st['last_error_class'] = None
+        elif result == 'error':
+            st['errors_24h'] = st.get('errors_24h', 0) + 1
+            st['last_error_class'] = error_class or 'unknown'
+        # 'skipped_cap' + 'no_queued' do not bump success/error.
+    except Exception:
+        pass
+
+
+def _classify_publish_error(exc_or_msg) -> str:
+    """Best-effort error-class string for the diagnostic. We do NOT leak the
+    raw message (it can contain tokens). Just a coarse tag the operator can
+    use to know what to fix."""
+    try:
+        msg = str(exc_or_msg).lower() if exc_or_msg is not None else ''
+    except Exception:
+        msg = ''
+    if not msg:
+        return 'unknown'
+    if 'unauthorized' in msg or '401' in msg or 'invalid_token' in msg or 'auth' in msg:
+        return 'auth_failed'
+    if '403' in msg or 'forbidden' in msg:
+        return 'forbidden'
+    if '429' in msg or 'rate' in msg or 'too many' in msg:
+        return 'rate_limit'
+    if 'timeout' in msg or 'timed out' in msg:
+        return 'timeout'
+    if 'connection' in msg or 'dns' in msg or 'network' in msg or 'resolve' in msg:
+        return 'network'
+    if '5' in msg and ('500' in msg or '502' in msg or '503' in msg or '504' in msg):
+        return 'server_error'
+    if 'duplicate' in msg or 'dup' in msg:
+        return 'duplicate'
+    return 'other'
+
+
+def get_publisher_status_snapshot() -> dict:
+    """Public read of the per-platform state, sanitized. Used by
+    routes/publisher_status.py. We strip the leading-underscore internal
+    fields (e.g. _counter_day_utc) so the JSON is clean."""
+    out = {}
+    for platform, st in _PUBLISHER_STATE.items():
+        # Refresh counters before reading so a status check after UTC
+        # midnight doesn't show yesterday's tallies.
+        _maybe_reset_24h_counters(platform)
+        out[platform] = {k: v for k, v in st.items() if not k.startswith('_')}
+    return out
+
+
 _auto_publisher_running = False
 
 def _is_publish_leader() -> bool:
@@ -2000,6 +2155,7 @@ def start_auto_publisher():
     if _auto_publisher_running:
         return
     _auto_publisher_running = True
+    _record_boot("linkedin", True)
 
     def _auto_publish_loop():
         # Phase FF+7 (2026-05-18): 2-min initial delay (was 6h) so first
@@ -2064,6 +2220,7 @@ def start_auto_publisher():
                 DAILY_CAP = int(os.environ.get('LINKEDIN_DAILY_CAP', '6'))
                 if published_today >= DAILY_CAP:
                     logger.info(f"Auto-publisher: Already published {published_today} today (cap {DAILY_CAP}), skipping")
+                    _record_attempt("linkedin", "skipped_cap")
                     continue  # finally will close conn
                 cur.execute("SELECT COUNT(*) AS n FROM social_media_posts WHERE status = 'approved'")
                 _row = cur.fetchone() or {}
@@ -2147,6 +2304,8 @@ def start_auto_publisher():
                         break
                     if not row:
                         logger.debug("Auto-publisher: No approved posts to publish (or all classes/entities already fired)")
+                        if _attempts == 0:
+                            _record_attempt("linkedin", "no_queued")
                         break
                     post_id = row['id']
                     content_text = row['content']
@@ -2210,8 +2369,11 @@ def start_auto_publisher():
                         _persist_linkedin_urn(cur, post_id, result, content_text)
                         conn.commit()
                         logger.info(f"Auto-published post {post_id} to LinkedIn (drain {_attempts+1}/{_drain_budget}, queued={_queued}, urn={result})")
+                        _record_attempt("linkedin", "ok")
                     else:
                         logger.warning(f"Auto-publish failed for post {post_id}: {result}")
+                        _record_attempt("linkedin", "error",
+                                         error_class=_classify_publish_error(result))
                         try:
                             cur.execute("UPDATE social_media_posts SET status = 'failed' WHERE id = %s", (post_id,))
                             conn.commit()
@@ -2255,8 +2417,11 @@ def start_twitter_publisher():
         return
     if os.environ.get('TWITTER_PUBLISHER_ENABLED', 'false').lower() not in ('1', 'true', 'yes'):
         logger.info("X/Twitter auto-publisher DISABLED — set TWITTER_PUBLISHER_ENABLED=true to re-enable once app is in a Project")
+        _record_boot("twitter", False,
+                      reason="TWITTER_PUBLISHER_ENABLED missing or false")
         return
     _twitter_publisher_running = True
+    _record_boot("twitter", True)
 
     def _twitter_loop():
         # Phase FF+7 (2026-05-18): 2-min first-run delay so posts go out
@@ -2297,11 +2462,13 @@ def start_twitter_publisher():
                 pub_today = _row.get('n', 0) if hasattr(_row, 'get') else (_row[0] if _row else 0)
                 if pub_today >= 2:
                     logger.info(f"Twitter auto-publisher: already {pub_today} today, skipping")
+                    _record_attempt("twitter", "skipped_cap")
                     continue
                 cur.execute("SELECT id, content FROM social_media_posts WHERE status = 'approved' AND platform = 'twitter' ORDER BY created_at ASC LIMIT 1")
                 row = cur.fetchone()
                 if not row:
                     logger.debug("Twitter auto-publisher: no approved Twitter posts")
+                    _record_attempt("twitter", "no_queued")
                     continue
                 post_id = row['id']
                 content_text = row['content']
@@ -2318,8 +2485,11 @@ def start_twitter_publisher():
                     cur.execute("UPDATE social_media_posts SET status = 'published', posted_at = %s, published_at = %s, publish_platform = 'twitter' WHERE id = %s", (now, now, post_id))
                     conn.commit()
                     logger.info(f"Auto-published post {post_id} to X")
+                    _record_attempt("twitter", "ok")
                 else:
                     logger.warning(f"Twitter auto-publish failed for {post_id}: {result}")
+                    _record_attempt("twitter", "error",
+                                     error_class=_classify_publish_error(result))
             except Exception as e:
                 logger.error(f"Twitter auto-publisher error: {type(e).__name__}: {e}")
                 logger.error(_tb.format_exc())
@@ -2347,6 +2517,7 @@ def start_bluesky_publisher():
     if _bluesky_publisher_running:
         return
     _bluesky_publisher_running = True
+    _record_boot("bluesky", True)
 
     def _bsky_loop():
         # Phase FF+7 (2026-05-18): 2-min first-run delay + 3/day cap.
@@ -2394,6 +2565,7 @@ def start_bluesky_publisher():
                 DAILY_CAP = 3
                 if pub_today >= DAILY_CAP:
                     logger.info(f"Bluesky auto-publisher: already {pub_today} today, skipping")
+                    _record_attempt("bluesky", "skipped_cap")
                     continue  # finally will close conn
 
                 # Phase FF+7 (2026-05-18): Bluesky was filtering for
@@ -2425,6 +2597,8 @@ def start_bluesky_publisher():
                         row = cur.fetchone()
                     if not row:
                         logger.debug("Bluesky auto-publisher: no approved posts")
+                        if _attempts == 0:
+                            _record_attempt("bluesky", "no_queued")
                         break
                     post_id = row['id']
                     content_text = row['content']
@@ -2446,8 +2620,11 @@ def start_bluesky_publisher():
                             ('published', now, now, 'bluesky', post_id))
                         conn.commit()
                         logger.info(f"Auto-published post {post_id} to Bluesky uri={result} (drain {_attempts+1}/{_drain_budget})")
+                        _record_attempt("bluesky", "ok")
                     else:
                         logger.warning(f"Bluesky auto-publish failed for post {post_id}: {result}")
+                        _record_attempt("bluesky", "error",
+                                         error_class=_classify_publish_error(result))
                         try:
                             cur.execute("UPDATE social_media_posts SET status = 'failed' WHERE id = %s", (post_id,))
                             conn.commit()

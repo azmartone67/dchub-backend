@@ -7904,7 +7904,7 @@ except Exception as e:
 # API quota / fights over the social_media_posts table. Failover should
 # serve READS only; primary owns all publishing.
 try:
-    from content_publisher import init_content_tables, start_auto_publisher
+    from content_publisher import init_content_tables, start_auto_publisher, _record_boot as _record_pub_boot
     init_content_tables()  # table init is idempotent + safe on both
     # r47.4 (2026-05-25): env-gate the spam-cluster auto-publisher. Was
     # draining social_media_posts (17 queued, 67 published) every container
@@ -7918,13 +7918,18 @@ try:
         logger.info("✅ LinkedIn legacy auto-publisher launched (DCHUB_AUTOPUB_LEGACY=1)")
     elif IS_FAILOVER:
         logger.info("⏸️ LinkedIn auto-publisher PAUSED (IS_FAILOVER=true)")
-    else:
+        _record_pub_boot("linkedin", False, reason="IS_FAILOVER=true (read-only replica)")
+    elif not _legacy_autopub:
         logger.info("⏸️ LinkedIn legacy auto-publisher DISABLED — quad rotation (4/day fixed slots) is primary. Set DCHUB_AUTOPUB_LEGACY=1 to restore.")
+        _record_pub_boot("linkedin", False, reason="DCHUB_AUTOPUB_LEGACY missing or false")
+    else:
+        # _legacy_autopub set but not leader
+        _record_pub_boot("linkedin", False, reason="not publish leader")
 except Exception as e:
     logger.warning(f"⚠️ LinkedIn auto-publisher skipped: {e}")
 
 try:
-    from content_publisher import start_twitter_publisher
+    from content_publisher import start_twitter_publisher, _record_boot as _record_pub_boot_tw
     # r47.4 (2026-05-25): same env gate. X/Twitter publisher had the same
     # restart-burst pattern. Currently no X-quad equivalent so this disables
     # X posting entirely until DCHUB_AUTOPUB_LEGACY=1 — acceptable since
@@ -7938,20 +7943,26 @@ try:
         logger.info("✅ Twitter/X legacy auto-publisher launched")
     elif IS_FAILOVER:
         logger.info("⏸️ Twitter/X auto-publisher PAUSED (IS_FAILOVER=true)")
-    else:
+        _record_pub_boot_tw("twitter", False, reason="IS_FAILOVER=true (read-only replica)")
+    elif not _legacy_autopub_x:
         logger.info("⏸️ Twitter/X legacy auto-publisher DISABLED — set DCHUB_AUTOPUB_LEGACY=1 to restore.")
+        _record_pub_boot_tw("twitter", False, reason="DCHUB_AUTOPUB_LEGACY missing or false")
+    else:
+        _record_pub_boot_tw("twitter", False, reason="not publish leader")
 except Exception as e:
     logger.warning(f"⚠️ Twitter/X auto-publisher skipped: {e}")
 
 try:
-    from content_publisher import start_bluesky_publisher
+    from content_publisher import start_bluesky_publisher, _record_boot as _record_pub_boot_bs
     if not IS_FAILOVER and IS_LEADER:
         start_bluesky_publisher()
         logger.info("✅ Bluesky auto-publisher launched (Neon-migrated) [leader]")
     elif IS_FAILOVER:
         logger.info("⏸️ Bluesky auto-publisher PAUSED (IS_FAILOVER=true)")
+        _record_pub_boot_bs("bluesky", False, reason="IS_FAILOVER=true (read-only replica)")
     else:
         logger.info("⏸️ Bluesky auto-publisher PAUSED (follower replica — leader owns it)")
+        _record_pub_boot_bs("bluesky", False, reason="not publish leader (follower replica)")
 except Exception as e:
     logger.warning(f"⚠️ Bluesky auto-publisher skipped: {e}")
 
@@ -19510,6 +19521,17 @@ try:
     logger.info("📝 Content Publisher: ✅ Registered")
 except Exception as e:
     logger.warning(f"📝 Content Publisher: ⚠️ Error: {e}")
+
+# 2026-06-05: PUBLIC operational-status endpoint for the three social
+# publisher loops. Auth-free so the user can verify env-var config
+# without DCHUB_ADMIN_KEY. Exposes no secrets — see
+# routes/publisher_status.py docstring.
+try:
+    from routes.publisher_status import register_publisher_status
+    register_publisher_status(app)
+    logger.info("📝 Publisher Status (PUBLIC): ✅ Registered")
+except Exception as e:
+    logger.warning(f"📝 Publisher Status: ⚠️ Error: {e}")
 
 # =============================================================================
 # WRITE QUEUE STATUS (must be at module level for gunicorn)
