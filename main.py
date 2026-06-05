@@ -26824,7 +26824,6 @@ except Exception as _pl_e:
     print(f"[main] partner_landing_bp register failed: {_pl_e}", flush=True)
 
 try:
-<<<<<<< Updated upstream
     # r-methodology (2026-06-04): closes the 404 URLs cited in the Power
     # Delivery Methodology PDF v1.0 sent to CBRE Research today.
     from routes.methodology_pages import methodology_pages_bp
@@ -26845,8 +26844,6 @@ except Exception as _l15_e:
     print(f"[main] brain_layer15_bp register failed: {_l15_e}", flush=True)
 
 try:
-=======
->>>>>>> Stashed changes
     from routes.auto_interconnect import auto_interconnect_bp
     app.register_blueprint(auto_interconnect_bp)
     print("[main] auto_interconnect_bp registered: /api/v1/admin/auto-interconnect/{run,findings,approve/<token>,dismiss/<token>}", flush=True)
