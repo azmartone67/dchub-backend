@@ -56,7 +56,7 @@ def _compute_coverage() -> dict:
                 {"country": r[0], "facilities": int(r[1])}
                 for r in cur.fetchall() if r[0] != '?'
             ]
-            cur.execute("SELECT COUNT(*) FROM facilities")
+            cur.execute("SELECT COUNT(*) FROM discovered_facilities")
             out["total_facilities"] = int((cur.fetchone() or [0])[0] or 0)
             out["countries_tracked"] = len(out["by_country"])
 

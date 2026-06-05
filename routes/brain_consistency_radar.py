@@ -4561,12 +4561,14 @@ def check_coverage_gap_canada() -> list[dict]:
         try:
             with c.cursor() as cur:
                 cur.execute("""
+                    # lint: legacy-facilities-ok — intentional audit of legacy table
                     SELECT COUNT(*) FROM facilities
                      WHERE LOWER(COALESCE(country,'')) IN
                           ('ca','canada','can')
                 """)
                 ca_count = int((cur.fetchone() or [0])[0] or 0)
                 cur.execute("""
+                    # lint: legacy-facilities-ok — intentional audit of legacy table
                     SELECT COUNT(*) FROM facilities
                      WHERE (LOWER(COALESCE(state,'')) = 'ab'
                             OR LOWER(COALESCE(city,'')) LIKE '%calgar%'

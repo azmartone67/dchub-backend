@@ -452,7 +452,7 @@ def _get_facility_count(state, conn=None):
         count_facilities = 0
         try:
             cur.execute("""
-                SELECT COUNT(*) FROM facilities
+                SELECT COUNT(*) FROM discovered_facilities
                 WHERE UPPER(state) = %s
                    OR UPPER(state) = UPPER(%s)
             """, (state_upper, state_full))

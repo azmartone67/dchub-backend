@@ -138,6 +138,7 @@ def diag_for_brain_v2():
             """)
             fac_cols = [{"col": r[0], "type": r[1]} for r in cur.fetchall()]
             out["facilities_cols"] = fac_cols
+            # lint: legacy-facilities-ok — intentional audit of legacy table
             cur.execute("SELECT COUNT(*) FROM facilities")
             out["facilities_total"] = cur.fetchone()[0]
             cur.execute("SELECT status, COUNT(*) FROM facilities GROUP BY status ORDER BY 2 DESC LIMIT 12")

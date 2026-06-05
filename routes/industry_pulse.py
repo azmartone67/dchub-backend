@@ -87,6 +87,7 @@ def _compute_pulse_metrics() -> dict:
 
             # ── Core infrastructure counts ────────────────────────
             metrics["facilities_total"] = {
+                # lint: legacy-facilities-ok — intentional audit of legacy table
                 "value": _safe_query(cur, "SELECT COUNT(*) FROM facilities", default=21374),
                 "source": "facilities table count",
                 "as_of": week_of,

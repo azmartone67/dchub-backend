@@ -243,7 +243,7 @@ def agent_coverage():
                     have["count"] = int(rows[0][0]) if rows else 0
                     have["total_mw"] = float(rows[0][1]) if rows and rows[0][1] else 0
                 else:
-                    rows = _safe_fetchall(cur, "SELECT COUNT(*) FROM facilities")
+                    rows = _safe_fetchall(cur, "SELECT COUNT(*) FROM discovered_facilities")
                     have["count"] = int(rows[0][0]) if rows else 0
                 have["fields"] = ["id", "name", "provider", "city", "state",
                                   "country", "latitude", "longitude", "status",

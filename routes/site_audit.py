@@ -112,7 +112,7 @@ def _gather_audit() -> dict:
     # ── Site footprint ─────────────────────────────────────────────
     out["site"] = {}
     out["site"]["facilities"] = _safe_count(
-        "SELECT COUNT(*) FROM facilities")
+        "SELECT COUNT(*) FROM discovered_facilities")
     out["site"]["deals"] = _safe_count(
         "SELECT COUNT(*) FROM deals")
     out["site"]["press_releases_total"] = _safe_count(

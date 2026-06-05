@@ -665,7 +665,7 @@ def job_market_report():
     try:
         conn = _get_pg()
         cur = conn.cursor()
-        cur.execute("SELECT COUNT(*) FROM facilities")
+        cur.execute("SELECT COUNT(*) FROM discovered_facilities")
         fac_count = cur.fetchone()[0]
         cur.execute("SELECT COUNT(*) FROM deals")
         deal_count = cur.fetchone()[0]

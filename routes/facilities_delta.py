@@ -99,6 +99,7 @@ def _current_counts(cur) -> dict:
     try:
         cur.execute("SELECT to_regclass('public.facilities')")
         if (cur.fetchone() or [None])[0]:
+            # lint: legacy-facilities-ok — "published" delta IS the legacy table
             cur.execute("SELECT COUNT(*) FROM facilities")
             out["published"] = int((cur.fetchone() or [0])[0] or 0)
     except Exception: pass

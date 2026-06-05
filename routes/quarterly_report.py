@@ -1172,12 +1172,22 @@ def _legacy_compute_report_data() -> dict:
                          AND computed_at < NOW() - INTERVAL '7 days'
                        ORDER BY market_slug, computed_at DESC
                     )
+                    -- r48.1 (2026-05-27): exclude zero-delta rows from the
+                    -- "Power Index movers" table. The query previously
+                    -- ranked by ABS(delta) DESC then took top 10 — but when
+                    -- the daily DCPI recompute produces stable scores
+                    -- (which is the steady-state), every row had delta=0
+                    -- and the user saw a table of "+0.0%" entries that
+                    -- said nothing. Filter delta != 0 so we only show
+                    -- markets that actually moved; if fewer than 10
+                    -- moved, just show those.
                     SELECT cur_s.market_name,
                            cur_s.score,
-                           (cur_s.score - COALESCE(prev_s.score, cur_s.score)) AS delta
+                           (cur_s.score - prev_s.score) AS delta
                       FROM cur_s
                       LEFT JOIN prev_s USING(market_slug)
                      WHERE prev_s.score IS NOT NULL
+                       AND cur_s.score IS DISTINCT FROM prev_s.score
                      ORDER BY ABS(cur_s.score - prev_s.score) DESC
                      LIMIT 10
                 """)
@@ -1225,13 +1235,20 @@ def _legacy_compute_report_data() -> dict:
             # live table these are sparsely populated, so we also keep a
             # state-level fallback that always renders something useful.
             try:
+                # r48.1 (2026-05-27): GROUP BY COALESCE(market, city), not
+                # GROUP BY (market, city). The prior 2-column grouping
+                # produced separate rows for every distinct (market, city)
+                # pair — so "Northern Virginia" appeared TWICE in the
+                # quarterly report (once with city='Ashburn', once with
+                # city=NULL aggregating the rest of NoVa, etc). Grouping
+                # by the displayed value collapses those into one row.
                 cur.execute("""
                     SELECT COALESCE(market, city, '') AS m, COUNT(*) AS n,
                            COALESCE(SUM(power_mw), 0) AS mw
                       FROM discovered_facilities
                      WHERE COALESCE(market, city) IS NOT NULL
                        AND COALESCE(market, city) != ''
-                     GROUP BY market, city
+                     GROUP BY COALESCE(market, city, '')
                      ORDER BY mw DESC LIMIT 10
                 """)
                 out["top_markets"] = [
@@ -1340,6 +1357,10 @@ def _legacy_compute_report_data() -> dict:
                 "'announced','approved','under development','expanding')"
             )
             try:
+                # r48.1 (2026-05-27): GROUP BY COALESCE(market, city), same
+                # fix pattern as top_markets above. Otherwise Northern
+                # Virginia appears multiple times once per (market, city)
+                # tuple.
                 cur.execute(f"""
                     SELECT COALESCE(market, city, '') AS m, COUNT(*) AS n,
                            COALESCE(SUM(power_mw), 0) AS mw
@@ -1347,7 +1368,7 @@ def _legacy_compute_report_data() -> dict:
                      WHERE LOWER(COALESCE(status,'')) IN {_pipeline_statuses}
                        AND COALESCE(market, city) IS NOT NULL
                        AND COALESCE(market, city) != ''
-                     GROUP BY market, city
+                     GROUP BY COALESCE(market, city, '')
                      ORDER BY mw DESC LIMIT 10
                 """)
                 out["pipeline_by_market"] = [

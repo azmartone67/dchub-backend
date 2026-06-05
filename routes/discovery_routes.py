@@ -620,6 +620,7 @@ def discovery_status():
         c.execute("SELECT source, COUNT(*) FROM discovered_facilities GROUP BY source ORDER BY COUNT(*) DESC")
         by_source = dict(c.fetchall())
 
+        # lint: legacy-facilities-ok — intentional audit of legacy table
         c.execute("SELECT COUNT(*) FROM facilities")
         main_count = c.fetchone()[0] or 0
 

@@ -286,7 +286,7 @@ def _compute_report(year: int | None = None,
             # discovered_facilities.discovered_at since that's where the
             # timestamp lives.
             facilities_now = int(_safe_scalar(cur,
-                "SELECT COUNT(*) FROM facilities") or 0)
+                "SELECT COUNT(*) FROM discovered_facilities") or 0)
             total_mw_now = float(_safe_scalar(cur, """
                 SELECT COALESCE(SUM(power_mw), 0) FROM facilities
                  WHERE power_mw IS NOT NULL
@@ -308,7 +308,7 @@ def _compute_report(year: int | None = None,
                 # Primary: facilities.first_seen (canonical) — cast to
                 # timestamptz to handle TEXT-typed columns gracefully.
                 n = _safe_scalar(cur, """
-                    SELECT COUNT(*) FROM facilities
+                    SELECT COUNT(*) FROM discovered_facilities
                      WHERE first_seen::timestamptz >= %s
                        AND first_seen::timestamptz <  %s
                 """, (lo, hi))

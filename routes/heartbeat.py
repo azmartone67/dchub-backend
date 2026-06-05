@@ -166,7 +166,7 @@ def refresh_stats():
     try:
         with _conn() as c, c.cursor() as cur:
             try:
-                cur.execute("SELECT COUNT(*) FROM facilities")
+                cur.execute("SELECT COUNT(*) FROM discovered_facilities")
                 fc = cur.fetchone()[0]
             except: fc = None
             try:

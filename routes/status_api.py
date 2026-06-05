@@ -98,8 +98,14 @@ def _build_status_payload():
     # Stats
     st = _safe_jget("/api/v1/stats") or {}
     data = st.get("data") or st
+    # r48.0 (2026-05-27): canonical-field read order. `main_facilities` is
+    # 12,907 (legacy facilities table); `total_facilities` is 21,433
+    # (discovered_facilities — what we actually track and what every other
+    # surface shows). Reading main_facilities FIRST made /system-status
+    # report 12,907 while every other page said 21,000+. Same canonical-
+    # field anti-pattern fenced by tests/test_canonical_fields.py.
     out["stats"] = {
-        "facilities": data.get("main_facilities") or data.get("total_facilities"),
+        "facilities": data.get("total_facilities") or data.get("discovered_facilities_raw") or data.get("main_facilities"),
         "pipeline_projects": data.get("curated_pipeline_count") or data.get("pipeline_count"),
         "users": data.get("total_users") or data.get("users"),
         "countries": data.get("total_countries") or data.get("countries"),

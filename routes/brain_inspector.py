@@ -191,8 +191,21 @@ def _gather_signals() -> dict:
         _try("worker_version",
              """SELECT version, observed_at FROM worker_versions
                  ORDER BY observed_at DESC LIMIT 1""", one=True)
-        # Top facilities counts
+        # Top facilities counts.
+        # r48.1 (2026-05-27): query `discovered_facilities` (canonical,
+        # 21,433 rows), NOT the legacy `facilities` table (12,907 rows).
+        # The brain LLM consumes this signal and narrated "12,907
+        # facilities tracked" in the inspector_brief which then surfaced
+        # on /daily — making the page look stale because every other
+        # page (homepage, /by-the-numbers, /about) shows 21,000+. Same
+        # canonical-table trap that bit /daily before (memory:
+        # dchub_daily_count_gap) and that we just fixed across the
+        # frontend in r48.0.
         _try("facilities_total",
+             """SELECT COUNT(*) FROM discovered_facilities""", one=True)
+        # Keep the legacy count as a secondary signal so the LLM can see
+        # the drift if it ever matters.
+        _try("facilities_legacy_table",
              """SELECT COUNT(*) FROM facilities""", one=True)
         # Phase r14 — facility coverage by country (catches gaps DCHawk
         # / dcByte have that we don't). If Canada/UK/Singapore counts

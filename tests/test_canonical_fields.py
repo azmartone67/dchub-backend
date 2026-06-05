@@ -74,6 +74,27 @@ ANTI_PATTERNS = [
     ),
 ]
 
+
+# ─── Backend-specific anti-patterns ──────────────────────────────────────
+# Same shape as ANTI_PATTERNS but only applied to backend .py files. The
+# backend has its own SQL-level canonical-table trap: COUNT(*) FROM
+# facilities returns 12,907 (legacy), COUNT(*) FROM discovered_facilities
+# returns 21,433 (canonical). Both /daily AND the brain inspector hit this
+# in different forms.
+BACKEND_ANTI_PATTERNS = [
+    (
+        r"SELECT\s+COUNT\(\*\)\s+FROM\s+facilities\b",
+        "Runs `SELECT COUNT(*) FROM facilities` — that's the legacy table "
+        "(~12,907 rows). The canonical table is `discovered_facilities` "
+        "(~21,433 rows). The Inspector brain that powers /daily's narrative "
+        "hit this trap and narrated '12,907 facilities tracked' on a page "
+        "the homepage says is 21,000+. Use `discovered_facilities` for the "
+        "headline count; keep `facilities` only if you specifically need "
+        "the curated subset. See r48.1.",
+        "discovered_facilities",
+    ),
+]
+
 # Files we explicitly DON'T lint — these contain the anti-patterns as
 # REFERENCE strings (this file itself, comments explaining the bug, etc).
 EXEMPT_FILES = {
@@ -147,6 +168,73 @@ def _iter_frontend_files():
             yield path
 
 
+def _iter_backend_files():
+    """Yield Python files under routes/ + main.py (the backend scope)."""
+    backend_root = Path(__file__).resolve().parent.parent
+    routes_dir = backend_root / "routes"
+    if routes_dir.exists():
+        for path in routes_dir.glob("*.py"):
+            if _is_exempt(path):
+                continue
+            yield path
+    main_py = backend_root / "main.py"
+    if main_py.exists() and not _is_exempt(main_py):
+        yield main_py
+
+
+def _scan_file_with_patterns(path: Path, patterns) -> list[tuple[int, str, str, str]]:
+    """Generalized scan that takes its own pattern list (for backend vs
+    frontend lint runs).
+
+    Per-line opt-out: append `# lint: legacy-facilities-ok` (or use a
+    `legacy-facilities-ok` annotation in the preceding comment) to
+    deliberately suppress a finding on a known-intentional query.
+    """
+    findings: list[tuple[int, str, str, str]] = []
+    try:
+        text = path.read_text(encoding="utf-8", errors="ignore")
+    except (OSError, UnicodeDecodeError):
+        return findings
+    lines = text.splitlines()
+    OPT_OUT_TOKENS = ("legacy-facilities-ok", "lint-ok", "lint:ignore")
+    for entry in patterns:
+        if len(entry) == 2:
+            pattern, msg = entry
+            companion = None
+        else:
+            pattern, msg, companion = entry
+        for m in re.finditer(pattern, text, re.IGNORECASE):
+            line_no = text[:m.start()].count("\n") + 1
+            line_text = lines[line_no - 1] if 0 < line_no <= len(lines) else ""
+            match_idx_in_line = line_text.find(m.group(0))
+            stripped = line_text.lstrip()
+            # Skip Python comments + docstring lines + HTML comments.
+            if (stripped.startswith("#") or stripped.startswith("//")
+                    or stripped.startswith("/*") or stripped.startswith("*")
+                    or stripped.startswith("<!--")):
+                continue
+            slash_idx = line_text.find("//")
+            if 0 <= slash_idx < match_idx_in_line:
+                continue
+            hash_idx = line_text.find("#")
+            if 0 <= hash_idx < match_idx_in_line:
+                continue
+            if line_text[:match_idx_in_line].count("`") % 2 == 1:
+                continue
+            if companion:
+                comp_idx = line_text.find(companion)
+                if 0 <= comp_idx < match_idx_in_line:
+                    continue
+            # Per-line opt-out: check the current line + the 2 lines above
+            # for a deliberate suppression annotation.
+            ctx_lines = lines[max(0, line_no - 3):line_no]
+            ctx = " ".join(ctx_lines).lower()
+            if any(tok in ctx for tok in OPT_OUT_TOKENS):
+                continue
+            findings.append((line_no, m.group(0), str(path), msg))
+    return findings
+
+
 def test_no_canonical_field_anti_patterns():
     """Fence: no file in dchub-frontend may use a known wrong field read."""
     if not FRONTEND_ROOT.exists():
@@ -177,11 +265,90 @@ def test_no_canonical_field_anti_patterns():
         raise AssertionError("\n".join(report_lines))
 
 
+# r48.1 (2026-05-27): baseline of KNOWN backend canonical-table findings.
+#
+# When the test was first introduced it exposed 17+ `COUNT(*) FROM
+# facilities` queries across main.py and helpers. Fixing them all in a
+# single sprint risks breaking behaviors that nobody documented — so the
+# test enforces "no NEW additions" instead of demanding "fix everything
+# now". Today's baseline is locked below; new entries fail CI loudly.
+#
+# To resolve a baseline entry: either (1) change the query to
+# `discovered_facilities` and remove the entry from the set, or
+# (2) add a `# lint: legacy-facilities-ok` annotation explaining why the
+# legacy table IS the intentional source for that query, and remove the
+# entry.
+#
+# Format: dict of {relative_path: set_of_line_numbers}. Update as queries
+# are cleaned up. NEVER add to this set without a reason.
+KNOWN_BACKEND_FINDINGS: dict[str, set[int]] = {
+    "main.py": {1849, 8710, 14266, 14344, 14912, 18291, 18705, 18741, 18746, 18752, 23559},
+    "routes/brain_inspector.py": {209},  # secondary signal — see r48.1
+    "routes/sitemap_auto.py":     {203},
+    "routes/site_stats.py":       {88, 92},
+    "routes/facilities_by_dims.py": {192, 194},
+}
+
+
+def test_no_backend_canonical_table_anti_patterns():
+    """Fence: backend (routes/, main.py) may not COUNT(*) from the legacy
+    `facilities` table for headline numbers. Use `discovered_facilities`.
+
+    Known-pending findings from the r48.1 sweep are baselined above.
+    New occurrences fail CI; new fixes can shrink the baseline."""
+    backend_findings: list[tuple[int, str, str, str]] = []
+    for path in _iter_backend_files():
+        backend_findings.extend(_scan_file_with_patterns(path, BACKEND_ANTI_PATTERNS))
+
+    backend_root = Path(__file__).resolve().parent.parent
+    new_findings = []
+    for line_no, match, file_path, msg in backend_findings:
+        try:
+            rel = str(Path(file_path).relative_to(backend_root))
+        except ValueError:
+            rel = str(file_path)
+        known_lines = KNOWN_BACKEND_FINDINGS.get(rel, set())
+        # Allow ±2 line drift (formatting / imports added above shift lines).
+        if any(abs(known - line_no) <= 2 for known in known_lines):
+            continue
+        new_findings.append((line_no, match, file_path, msg))
+
+    if new_findings:
+        report_lines = [
+            "Found NEW backend canonical-table anti-patterns "
+            "(not in KNOWN_BACKEND_FINDINGS baseline):",
+            "",
+        ]
+        for line_no, match, file_path, msg in new_findings:
+            try:
+                rel = Path(file_path).relative_to(backend_root)
+            except ValueError:
+                rel = Path(file_path)
+            report_lines.append(f"  {rel}:{line_no}")
+            report_lines.append(f"    match: {match}")
+            report_lines.append(f"    why:   {msg}")
+            report_lines.append("")
+        report_lines.append(
+            "If this query SHOULD use the legacy `facilities` table, add a "
+            "`# lint: legacy-facilities-ok` annotation explaining why. "
+            "Otherwise switch to `discovered_facilities`."
+        )
+        raise AssertionError("\n".join(report_lines))
+
+
 if __name__ == "__main__":
     # Allow running as `python tests/test_canonical_fields.py` for quick checks.
+    exit_code = 0
     try:
         test_no_canonical_field_anti_patterns()
-        print("OK: no canonical-field anti-patterns found.")
+        print("OK: no canonical-field anti-patterns found in frontend.")
     except AssertionError as e:
         print(str(e))
-        raise SystemExit(1)
+        exit_code = 1
+    try:
+        test_no_backend_canonical_table_anti_patterns()
+        print("OK: no canonical-table anti-patterns found in backend.")
+    except AssertionError as e:
+        print(str(e))
+        exit_code = 1
+    raise SystemExit(exit_code)
