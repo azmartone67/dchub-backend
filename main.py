@@ -19619,6 +19619,17 @@ def get_testimonials():  # v2 neon-backed
             "  AND COALESCE(source, '')     NOT IN ('mcp-auto', 'mcp_auto') "
             "  AND quote IS NOT NULL AND length(quote) > 30 "
             "  AND quote NOT ILIKE '%% searched DC Hub for data center facilities%%' "
+            # r-accuracy (2026-06-04): only REAL, organic citations. Exclude
+            # leading-prompt probe output + metadata-synthesized rows (the
+            # generators are disabled, but old rows persist), and drop any
+            # quote carrying retired inflation (280+/285/286 markets, $324B, 50,000).
+            "  AND COALESCE(source, '') NOT ILIKE '%%probe%%' "
+            "  AND COALESCE(source, '') NOT ILIKE '%%seed%%' "
+            "  AND COALESCE(source, '') NOT ILIKE '%%synth%%' "
+            "  AND COALESCE(source, '') NOT ILIKE '%%solicit%%' "
+            "  AND quote NOT ILIKE '%%280+%%' AND quote NOT ILIKE '%%285 market%%' "
+            "  AND quote NOT ILIKE '%%286 market%%' AND quote NOT ILIKE '%%$324B%%' "
+            "  AND quote NOT ILIKE '%%50,000%%' "
         )
         params = []
 
