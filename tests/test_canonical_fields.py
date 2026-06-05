@@ -271,7 +271,8 @@ def test_no_canonical_field_anti_patterns():
         raise AssertionError("\n".join(report_lines))
 
 
-# r48.1 (2026-05-27): baseline of KNOWN backend canonical-table findings.
+# r48.1 (2026-05-27, refined r48.2): baseline of KNOWN backend canonical-
+# table findings, by file + COUNT.
 #
 # When the test was first introduced it exposed 17+ `COUNT(*) FROM
 # facilities` queries across main.py and helpers. Fixing them all in a
@@ -279,20 +280,23 @@ def test_no_canonical_field_anti_patterns():
 # test enforces "no NEW additions" instead of demanding "fix everything
 # now". Today's baseline is locked below; new entries fail CI loudly.
 #
-# To resolve a baseline entry: either (1) change the query to
-# `discovered_facilities` and remove the entry from the set, or
-# (2) add a `# lint: legacy-facilities-ok` annotation explaining why the
-# legacy table IS the intentional source for that query, and remove the
-# entry.
+# Earlier version of this baseline tracked exact line numbers; r48.2
+# switched to file-level COUNTS because line numbers drift every time
+# main.py is edited. Now we only require that the count per file
+# doesn't INCREASE — additions fail, removals (cleanups) reduce the
+# baseline naturally.
 #
-# Format: dict of {relative_path: set_of_line_numbers}. Update as queries
-# are cleaned up. NEVER add to this set without a reason.
-KNOWN_BACKEND_FINDINGS: dict[str, set[int]] = {
-    "main.py": {1849, 8710, 14266, 14344, 14912, 18291, 18705, 18741, 18746, 18752, 23559},
-    "routes/brain_inspector.py": {209},  # secondary signal — see r48.1
-    "routes/sitemap_auto.py":     {203},
-    "routes/site_stats.py":       {88, 92},
-    "routes/facilities_by_dims.py": {192, 194},
+# To resolve a baseline entry: either (1) change the query to
+# `discovered_facilities` and decrement the count, or (2) add a
+# `# lint: legacy-facilities-ok` annotation explaining why the legacy
+# table IS the intentional source for that query, and decrement the
+# count.
+KNOWN_BACKEND_FINDINGS: dict[str, int] = {
+    "main.py": 11,
+    "routes/brain_inspector.py": 1,  # secondary signal — see r48.1
+    "routes/sitemap_auto.py":     1,
+    "routes/site_stats.py":       2,
+    "routes/facilities_by_dims.py": 2,
 }
 
 
@@ -300,44 +304,54 @@ def test_no_backend_canonical_table_anti_patterns():
     """Fence: backend (routes/, main.py) may not COUNT(*) from the legacy
     `facilities` table for headline numbers. Use `discovered_facilities`.
 
-    Known-pending findings from the r48.1 sweep are baselined above.
-    New occurrences fail CI; new fixes can shrink the baseline."""
+    Known-pending findings from the r48.1 sweep are baselined above by
+    FILE+COUNT (not line number, since line numbers drift). New
+    occurrences in a file that exceed the baseline fail CI; new fixes
+    can shrink the baseline."""
     backend_findings: list[tuple[int, str, str, str]] = []
     for path in _iter_backend_files():
         backend_findings.extend(_scan_file_with_patterns(path, BACKEND_ANTI_PATTERNS))
 
     backend_root = Path(__file__).resolve().parent.parent
-    new_findings = []
-    for line_no, match, file_path, msg in backend_findings:
+    # Group findings by relative path
+    by_file: dict[str, list[tuple[int, str, str, str]]] = {}
+    for entry in backend_findings:
+        line_no, match, file_path, msg = entry
         try:
             rel = str(Path(file_path).relative_to(backend_root))
         except ValueError:
             rel = str(file_path)
-        known_lines = KNOWN_BACKEND_FINDINGS.get(rel, set())
-        # Allow ±2 line drift (formatting / imports added above shift lines).
-        if any(abs(known - line_no) <= 2 for known in known_lines):
-            continue
-        new_findings.append((line_no, match, file_path, msg))
+        by_file.setdefault(rel, []).append(entry)
 
-    if new_findings:
-        report_lines = [
-            "Found NEW backend canonical-table anti-patterns "
-            "(not in KNOWN_BACKEND_FINDINGS baseline):",
-            "",
-        ]
-        for line_no, match, file_path, msg in new_findings:
-            try:
-                rel = Path(file_path).relative_to(backend_root)
-            except ValueError:
-                rel = Path(file_path)
-            report_lines.append(f"  {rel}:{line_no}")
-            report_lines.append(f"    match: {match}")
-            report_lines.append(f"    why:   {msg}")
-            report_lines.append("")
+    # Compare counts per file to the baseline.
+    over_baseline: list[tuple[str, int, int]] = []
+    new_files: list[str] = []
+    for rel, entries in by_file.items():
+        baseline = KNOWN_BACKEND_FINDINGS.get(rel)
+        if baseline is None:
+            new_files.append(rel)
+        elif len(entries) > baseline:
+            over_baseline.append((rel, len(entries), baseline))
+
+    if over_baseline or new_files:
+        report_lines = ["Backend canonical-table baseline violated:", ""]
+        for rel, actual, baseline in over_baseline:
+            report_lines.append(
+                f"  {rel}: {actual} findings (baseline allows {baseline})"
+            )
+        for rel in new_files:
+            report_lines.append(
+                f"  {rel}: NEW — no baseline entry "
+                f"({len(by_file[rel])} findings)"
+            )
+        report_lines.append("")
         report_lines.append(
-            "If this query SHOULD use the legacy `facilities` table, add a "
-            "`# lint: legacy-facilities-ok` annotation explaining why. "
-            "Otherwise switch to `discovered_facilities`."
+            "If a NEW query SHOULD use the legacy `facilities` table, add "
+            "a `# lint: legacy-facilities-ok` annotation explaining why. "
+            "Otherwise switch to `discovered_facilities`. To accept new "
+            "findings into the baseline (e.g. you added a file with known "
+            "legacy queries that haven't been migrated), update "
+            "KNOWN_BACKEND_FINDINGS in tests/test_canonical_fields.py."
         )
         raise AssertionError("\n".join(report_lines))
 
