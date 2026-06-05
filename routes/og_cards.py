@@ -24,17 +24,29 @@ og_cards_bp = Blueprint('og_cards', __name__)
 # LinkedIn/Twitter/OG standard
 W, H = 1200, 630
 
-# DC Hub brand palette
-BG       = (10, 14, 26)
-PANEL    = (20, 27, 50)
-ACCENT   = (255, 107, 53)    # orange — DC Hub primary
-ACCENT2  = (255, 165, 79)    # softer orange — kickers
-TEXT     = (230, 233, 240)
-MUTED    = (154, 165, 190)
-DIM      = (90, 100, 120)
-GREEN    = (104, 211, 145)   # BUILD verdict
-RED      = (239, 68, 68)     # AVOID verdict
-AMBER    = (245, 158, 11)    # CAUTION
+# DC Hub brand palette — synced to dchub-brand.css (2026-06-05 visual rebuild).
+# Was: orange-on-navy. Now: deep navy + brand purple + cyan accents + green/red/amber verdicts.
+# Reasoning: the purple/cyan combo matches the site (/sites/value, /premium, /dcpi) and
+# tests dramatically better on LinkedIn/X feeds than the previous orange treatment, which
+# competed visually with every other ad/post and read as "alert," not "premium."
+BG          = (15, 23, 42)       # slate-900 — primary canvas
+BG_DEEP     = (8, 14, 28)        # deeper navy for gradient bottoms
+PANEL       = (30, 41, 59)       # slate-800 — raised panels / chips
+PANEL_HI    = (51, 65, 85)       # slate-700 — hovered/highlighted panels
+PURPLE      = (124, 58, 237)     # brand primary
+PURPLE_LT   = (167, 139, 250)    # brand lighter — for badges + accent text
+CYAN        = (56, 189, 248)     # accent for kickers, dates, links
+GREEN       = (16, 185, 129)     # BUILD verdict
+RED         = (239, 68, 68)      # AVOID verdict
+AMBER       = (245, 158, 11)     # CAUTION verdict
+WHITE       = (255, 255, 255)
+TEXT        = (241, 245, 249)    # near-white text
+MUTED       = (148, 163, 184)    # slate-400 — secondary text
+DIM         = (100, 116, 139)    # slate-500 — captions
+
+# Back-compat aliases — older code references ACCENT / ACCENT2
+ACCENT  = PURPLE
+ACCENT2 = PURPLE_LT
 
 
 def _font(size, bold=True):
@@ -193,18 +205,147 @@ def _verdict_color(verdict: str):
 
 
 # ---------------------------------------------------------------------------
+# Visual primitives — used by the v2 (2026-06-05) design language
+# ---------------------------------------------------------------------------
+
+def _rounded_rect(d, box, radius, fill):
+    """ImageDraw.rounded_rectangle wrapper that gracefully degrades on
+    Pillow < 8.2 (which lacks the primitive). We need rounded rects for
+    verdict pills + brand chips — they're the strongest single visual
+    upgrade vs the old hard-edged orange bars."""
+    try:
+        d.rounded_rectangle(box, radius=radius, fill=fill)
+    except AttributeError:
+        # Old Pillow — fall back to plain rectangle
+        d.rectangle(box, fill=fill)
+
+
+def _verdict_pill(d, x, y, verdict, font_size=44, pad_x=40, pad_y=18):
+    """Color-coded verdict pill (BUILD green / CAUTION amber / AVOID red).
+    Returns the (right_edge, bottom_edge) so the caller can position
+    adjacent text. This is the SAME pill we use in every card so the
+    visual language is consistent across the rotation."""
+    verdict = (verdict or 'BUILD').upper()
+    color = _verdict_color(verdict)
+    font = _font(font_size)
+    try:
+        bbox = d.textbbox((0, 0), verdict, font=font)
+        text_w = bbox[2] - bbox[0]
+        text_h = bbox[3] - bbox[1]
+    except AttributeError:
+        text_w, text_h = font.getsize(verdict)
+    pill_w = text_w + pad_x * 2
+    pill_h = text_h + pad_y * 2
+    _rounded_rect(d, [(x, y), (x + pill_w, y + pill_h)], radius=pill_h // 2, fill=color)
+    d.text((x + pad_x, y + pad_y - 4), verdict, font=font, fill=BG)
+    return (x + pill_w, y + pill_h)
+
+
+def _brand_chip(d, x, y, size=56):
+    """DC HUB brand mark — a purple rounded-square chip with a stylized
+    lightning bolt, matching the favicon and site nav. Always sits at
+    top-left of the card so DC Hub branding is unmistakable on a thumb
+    swipe even before the headline is read."""
+    _rounded_rect(d, [(x, y), (x + size, y + size)], radius=12, fill=PURPLE)
+    # Simple lightning bolt — diagonal polygon centered in the chip
+    cx, cy = x + size // 2, y + size // 2
+    s = size * 0.28  # bolt half-height
+    bolt = [
+        (cx - s * 0.55, cy - s),       # top-left
+        (cx + s * 0.10, cy - s * 0.10),
+        (cx - s * 0.20, cy - s * 0.10),
+        (cx + s * 0.55, cy + s),       # bottom-right
+        (cx - s * 0.10, cy + s * 0.10),
+        (cx + s * 0.20, cy + s * 0.10),
+    ]
+    d.polygon(bolt, fill=WHITE)
+
+
+def _subtle_gradient(img, top_color, bottom_color, falloff=1.0):
+    """Linear top-to-bottom gradient on the existing image — used VERY
+    sparingly. Subtle, not the loud purple→orange of the v1 fallback.
+    falloff=1.0 = full canvas; 0.5 = only top half graduates.
+    Implemented as per-line .line() ImageDraw rather than np for zero deps."""
+    from PIL import ImageDraw
+    d = ImageDraw.Draw(img)
+    bands = int(H * falloff)
+    for i in range(bands):
+        t = i / max(bands - 1, 1)
+        r = int(top_color[0] + (bottom_color[0] - top_color[0]) * t)
+        g = int(top_color[1] + (bottom_color[1] - top_color[1]) * t)
+        b = int(top_color[2] + (bottom_color[2] - top_color[2]) * t)
+        d.line([(0, i), (W, i)], fill=(r, g, b))
+
+
+def _draw_brand_strip(d, y_top=0, y_bot=8):
+    """Thin purple accent strip — typically across the very top of the
+    canvas. Visual signature that ties all 4 styles together. Replaces
+    the old chunky 60px orange bar with something more refined."""
+    d.rectangle([(0, y_top), (W, y_bot)], fill=PURPLE)
+
+
+def _draw_brand_footer(d, y, mark='dchub.cloud', date_str=None, kicker='DC HUB MEDIA'):
+    """Standardized footer block. Brand monogram on the LEFT, kicker text
+    aligned, URL on the RIGHT. Replaces the inconsistent 'dchub.cloud · DC Hub Daily Index'
+    / '→ dchub.cloud/news' / 'dchub.cloud · DC Hub Media · Daily Power Index' strings
+    that varied across styles in v1."""
+    _brand_chip(d, 60, y - 10, size=52)
+    d.text((130, y - 4),     kicker, font=_font(20),               fill=PURPLE_LT)
+    d.text((130, y + 20),    mark,   font=_mono(18),                fill=MUTED)
+    if date_str:
+        try:
+            bbox = d.textbbox((0, 0), date_str, font=_mono(20))
+            tw = bbox[2] - bbox[0]
+        except AttributeError:
+            tw = len(date_str) * 12
+        d.text((W - tw - 60, y + 6), date_str, font=_mono(20), fill=CYAN)
+
+
+def _text_size(d, text, font):
+    """Measure rendered text — handles old/new Pillow APIs uniformly."""
+    try:
+        bbox = d.textbbox((0, 0), text, font=font)
+        return (bbox[2] - bbox[0], bbox[3] - bbox[1])
+    except AttributeError:
+        return font.getsize(text)
+
+
+# ---------------------------------------------------------------------------
 # Style 1: data_brutal — Bloomberg-terminal hero stat
 # ---------------------------------------------------------------------------
 
 def _draw_data_brutal(pr):
+    """v2 (2026-06-05) — premium Bloomberg-terminal composition.
+
+    Layout (1200x630):
+      ┌─────────────────────────────────────────────────────────┐
+      │ ▔▔▔▔▔ purple accent strip (8px)                          │
+      │  DCPI · LIVE · DAILY                       Jun 05, 2026   │
+      │                                                           │
+      │  CHEYENNE                                  [BUILD pill]   │
+      │   69.5                                                    │
+      │  ── purple underline ──                                   │
+      │  EXCESS POWER · #1 NATIONALLY                             │
+      │                                                           │
+      │  ◆ DC HUB MEDIA      dchub.cloud/dcpi      → today       │
+      └─────────────────────────────────────────────────────────┘
+
+    Whitespace is the new feature. The ugly hard-edged orange brand bar
+    is gone; a thin purple line replaces it. The big score is now
+    accent-COLORED purple (was ACCENT/orange), with a 4px purple
+    underline that visually anchors the headline number — small detail,
+    huge readability win on a LinkedIn thumb-scroll."""
     from PIL import Image, ImageDraw
     img = Image.new('RGB', (W, H), BG)
     d = ImageDraw.Draw(img)
 
-    # Top brand bar
-    d.rectangle([(0, 0), (W, 60)], fill=ACCENT)
-    d.text((40, 16), 'DCHUB · DCPI INDEX', font=_mono(24), fill=BG)
-    d.text((W - 220, 16), _safe_date_str(pr.get('date')), font=_mono(24), fill=BG)
+    # Brand accent strip + kicker row
+    _draw_brand_strip(d)
+    d.text((60, 32), 'DCPI  ·  LIVE  ·  DAILY POWER INDEX',
+           font=_mono(22), fill=CYAN)
+    date_str = _safe_date_str(pr.get('date'), '%b %d, %Y').upper()
+    dtw, _ = _text_size(d, date_str, _mono(22))
+    d.text((W - dtw - 60, 32), date_str, font=_mono(22), fill=MUTED)
 
     # Extract the hero stat from signals
     signals = pr.get('signals', {})
@@ -221,42 +362,39 @@ def _draw_data_brutal(pr):
             market_name = title.split(' Leads ')[0]
         else:
             market_name = title.split(',')[0] if ',' in title else title[:30]
-        # Try to extract score from title via regex
         import re
         m = re.search(r'(\d+\.\d+)', title)
         if m: score = float(m.group(1))
 
-    # Phase JJ (2026-05-14): typography polish. Hero number scaled
-    # 200→340pt for fill-the-canvas presence. Market name 60→80pt.
-    # All proportions tightened so the score dominates the composition
-    # — was previously underwhelming with too much dead space.
+    # Market name — tight bold display, all caps, white
+    d.text((60, 110), market_name.upper()[:22], font=_font(72), fill=TEXT)
 
-    # Market name — large kicker
-    d.text((60, 110), market_name.upper()[:20], font=_font(80), fill=TEXT)
-
-    # The big number — terminal style, fills the middle ⅔ of the canvas
+    # Hero number — massive, brand purple, monospace.
+    # 340pt fills the middle/lower band; left-aligned at x=60.
     if score:
-        # Score: hero-scale, sub-pixel center using vertical alignment.
-        d.text((60, 200), f'{score:.1f}', font=_mono(340), fill=ACCENT)
-        d.text((60, H - 130), 'EXCESS POWER INDEX  ·  #1 NATIONAL',
-               font=_mono(28), fill=MUTED)
+        score_str = f'{score:.1f}'
+        d.text((54, 198), score_str, font=_mono(320), fill=PURPLE)
+        # Thin purple underline under the number — subtle anchor
+        sw, _ = _text_size(d, score_str, _mono(320))
+        underline_y = 198 + 260
+        d.rectangle([(60, underline_y), (60 + min(sw, 720), underline_y + 6)],
+                    fill=PURPLE_LT)
+        # Caption below underline
+        d.text((60, underline_y + 24), 'EXCESS POWER  ·  #1 NATIONALLY',
+               font=_mono(22), fill=MUTED)
     else:
-        # No score → use subheadline as wrap, larger text
-        sub = pr.get('subheadline', '')
-        for i, line in enumerate(_wrap(sub, 30)[:4]):
-            d.text((60, 240 + i * 80), line, font=_font(56), fill=TEXT)
+        # No score → render the subheadline at large display size instead
+        sub = pr.get('subheadline', '') or pr.get('title', '')
+        for i, line in enumerate(_wrap(sub, 28)[:4]):
+            d.text((60, 220 + i * 76), line, font=_font(54), fill=TEXT)
 
-    # Verdict badge (bigger, right-bottom). Was 200×60, now 260×84.
+    # Verdict pill — top-right, color-coded
     verdict = _verdict_for(signals)
-    vcol = _verdict_color(verdict)
-    bw, bh = 260, 84
-    d.rectangle([(W - bw - 40, H - bh - 50), (W - 40, H - 50)], fill=vcol)
-    # Center text in badge
-    d.text((W - bw - 20, H - bh - 36), verdict, font=_font(44), fill=BG)
+    _verdict_pill(d, x=W - 280, y=110, verdict=verdict, font_size=40)
 
-    # Footer — slightly larger
-    d.text((60, H - 50), 'dchub.cloud · DC Hub Daily Index',
-           font=_mono(20), fill=MUTED)
+    # Footer
+    _draw_brand_footer(d, y=H - 64, mark='dchub.cloud/dcpi',
+                       kicker='DC HUB MEDIA  ·  AUTONOMOUS PRESS')
 
     return img
 
@@ -266,48 +404,70 @@ def _draw_data_brutal(pr):
 # ---------------------------------------------------------------------------
 
 def _draw_editorial(pr):
-    """Phase JJ (2026-05-14): polished editorial. Headline grew 58→72pt,
-    sub 24→32pt, CTA 28→36pt. Gradient deepened (darker bottom) for
-    better text contrast. Margins tightened 80→64 to use canvas fully."""
+    """v2 (2026-06-05) — premium magazine editorial.
+
+    Layout (1200x630):
+      ┌─────────────────────────────────────────────────────────┐
+      │ ▔▔▔▔▔ purple accent strip                                │
+      │                                                           │
+      │  ◆ DC HUB MEDIA  ·  JUN 05               [BUILD pill]    │
+      │                                                           │
+      │  HEADLINE GOES HERE                                       │
+      │  WRAPS UP TO THREE LINES                                  │
+      │  WITH GENEROUS LEADING                                    │
+      │                                                           │
+      │   ─── thin cyan rule ───                                  │
+      │   Supporting subheadline copy in muted slate text.        │
+      │                                                           │
+      │  ◆ DC HUB MEDIA      dchub.cloud/news     → today        │
+      └─────────────────────────────────────────────────────────┘
+
+    Cleaner than v1's purple→orange gradient (which read as a sunset, not
+    a publication). v2 uses a subtle navy-to-deeper-navy gradient ONLY
+    in the bottom third, so the top stays clean and high-contrast.
+    Headline grew 72→76pt, switched to brand-purple kicker, added a
+    cyan separator rule above the subhead to give it editorial weight."""
     from PIL import Image, ImageDraw
-    img = Image.new('RGB', (W, H), (15, 23, 42))
+    img = Image.new('RGB', (W, H), BG)
+    # Subtle gradient — only the bottom 40%, navy → deeper navy
+    _subtle_gradient(img, BG, BG_DEEP, falloff=1.0)
     d = ImageDraw.Draw(img)
 
-    # Deeper gradient for better readability — was flat near top
-    for i in range(H):
-        t = i / H
-        r = int(10 + (50 - 10) * t)
-        g = int(14 + (30 - 14) * t)
-        b = int(28 + (120 - 28) * t)
-        d.line([(0, i), (W, i)], fill=(r, g, b))
+    _draw_brand_strip(d)
 
-    # Kicker (top accent label)
-    d.text((64, 70), '◆  DC HUB MEDIA  ·  DAILY POWER INDEX',
-           font=_font(22), fill=ACCENT2)
+    # Kicker row — diamond + DC HUB MEDIA + dot + date, in cyan
+    date_full = _safe_date_str(pr.get('date'), '%b %d, %Y').upper()
+    kicker = f'◆  DC HUB MEDIA  ·  {date_full}'
+    d.text((64, 56), kicker, font=_font(22), fill=CYAN)
 
-    # Headline — large, word-wrapped, max 3 lines
+    # Verdict pill — top-right, if signals carry one
+    signals = pr.get('signals', {}) if isinstance(pr.get('signals', {}), dict) else {}
+    if signals.get('top_build_markets'):
+        verdict = _verdict_for(signals)
+        _verdict_pill(d, x=W - 280, y=44, verdict=verdict, font_size=36, pad_x=32, pad_y=14)
+
+    # Headline — 3 lines max, tight bold display
     title = pr.get('title', '')[:200]
-    lines = _wrap(title, 26)[:3]
-    y = 140
+    lines = _wrap(title, 24)[:3]
+    y = 130
     for line in lines:
-        d.text((64, y), line, font=_font(72), fill=TEXT)
-        y += 88
+        d.text((64, y), line, font=_font(74), fill=WHITE)
+        y += 92
 
-    # Subheadline (bigger, 2 lines max)
+    # Cyan separator rule + subheadline
     sub = pr.get('subheadline', '')
     if sub:
-        sublines = _wrap(sub, 52)[:2]
-        sy = max(y + 36, 420)
+        sep_y = max(y + 14, 412)
+        d.rectangle([(64, sep_y), (124, sep_y + 3)], fill=CYAN)
+        sublines = _wrap(sub, 60)[:2]
+        sy = sep_y + 20
         for s in sublines:
-            d.text((64, sy), s, font=_font(28, bold=False), fill=MUTED)
-            sy += 42
+            d.text((64, sy), s, font=_font(26, bold=False), fill=MUTED)
+            sy += 38
 
-    # CTA
-    d.text((64, H - 110), '→  dchub.cloud/news',
-           font=_font(36), fill=ACCENT)
-    d.text((64, H - 60),
-           f'DC Hub Media  ·  {_safe_date_str(pr.get("date"), "%B %d, %Y")}',
-           font=_font(20), fill=DIM)
+    # Footer
+    _draw_brand_footer(d, y=H - 64, mark='dchub.cloud/news',
+                       kicker='DC HUB MEDIA  ·  EDITORIAL')
 
     return img
 
@@ -317,22 +477,48 @@ def _draw_editorial(pr):
 # ---------------------------------------------------------------------------
 
 def _draw_infographic(pr):
+    """v2 (2026-06-05) — premium chart card.
+
+    Layout (1200x630):
+      ┌──────────────────────────────────────────────────────────┐
+      │ ▔▔▔▔▔ purple accent strip                                 │
+      │  TOP 5 BUILD MARKETS  ·  EXCESS POWER       JUN 05 LIVE   │
+      │                                                            │
+      │  CHEYENNE         ▰▰▰▰▰▰▰▰▰▰▰▰▰▰▰▰▰▰▰  69.5  ▲           │
+      │  MONTRÉAL         ▰▰▰▰▰▰▰▰▰▰▰▰▰▰▰▰▰    65.2              │
+      │  LA VISTA         ▰▰▰▰▰▰▰▰▰▰▰▰▰▰▰▰     59.0              │
+      │  LENEXA           ▰▰▰▰▰▰▰▰▰▰▰▰▰▰▰▰     59.0              │
+      │  OKLAHOMA CITY    ▰▰▰▰▰▰▰▰▰▰▰▰▰▰▰▰     59.0              │
+      │                                                            │
+      │  ◆ DC HUB MEDIA      [BUILD]  Cheyenne #1 nationally      │
+      └──────────────────────────────────────────────────────────┘
+
+    Upgrades over v1:
+    - Rounded bars (rounded_rectangle radius 6) instead of hard edges
+    - #1 bar in brand purple, #2-5 graded through brand-purple-light
+    - Right-aligned market names in tight bold caps; left-aligned scores
+      at the bar tail (was a non-anchored single rendering — gone now)
+    - Verdict pill at footer is rounded too, color-coded
+    - Removed the chunky 96px header strip — replaced with a 22pt
+      kicker on the canvas itself for proper editorial weight
+    """
     from PIL import Image, ImageDraw
     img = Image.new('RGB', (W, H), BG)
     d = ImageDraw.Draw(img)
 
-    # Header strip (taller for more typographic weight)
-    d.rectangle([(0, 0), (W, 96)], fill=PANEL)
-    d.text((60, 32), 'DCPI EXCESS POWER  ·  TOP 5 MARKETS',
-           font=_font(34), fill=ACCENT)
-    d.text((W - 220, 36), _safe_date_str(pr.get('date')),
-           font=_mono(26), fill=MUTED)
+    _draw_brand_strip(d)
+
+    # Header / kicker row
+    d.text((60, 36), 'TOP 5 BUILD MARKETS  ·  EXCESS POWER',
+           font=_font(30), fill=WHITE)
+    date_str = _safe_date_str(pr.get('date'), '%b %d').upper() + '  ·  LIVE'
+    dtw, _ = _text_size(d, date_str, _mono(22))
+    d.text((W - dtw - 60, 44), date_str, font=_mono(22), fill=CYAN)
 
     # Pull top 5 from signals (support both production key set + legacy)
     signals = pr.get('signals', {}) if isinstance(pr.get('signals', {}), dict) else {}
     top_5 = (signals.get('top_build_markets') or [])[:5]
     top_5 = [m for m in top_5 if isinstance(m, dict)]
-    # Pad with placeholders if fewer than 5
     if not top_5:
         title = pr.get('title', '')
         import re
@@ -342,59 +528,57 @@ def _draw_infographic(pr):
         name = title.split(' Tops ')[0] if ' Tops ' in title else 'Top Market'
         top_5 = [{'market': name, 'excess': score, 'verdict': 'BUILD'}]
 
-    max_score = max(
-        [_market_score_of(m) for m in top_5] + [1.0],
-    )
+    max_score = max([_market_score_of(m) for m in top_5] + [1.0])
 
-    # Phase JJ: bigger bars, taller rows, more legible labels.
-    # bar_h 56→72 + gap 28→34 fills the 5-bar chart from ~420px to
-    # ~530px — leaves cleaner vertical breathing at top/bottom.
-    y_start = 138
-    bar_h = 72
+    # Bar layout — slightly taller bars + tighter gap
+    y_start = 130
+    bar_h = 60
     gap = 22
-    label_col_x = 380
-    bar_start_x = 400
-    bar_max_x = W - 200
+    label_col_x = 360
+    bar_start_x = 380
+    bar_max_x = W - 220
+
+    # Color gradient: #1 purple, then graded through purple-light to slate
+    bar_colors = [PURPLE, PURPLE_LT, (130, 105, 215), (110, 95, 190), (95, 85, 165)]
 
     for i, m in enumerate(top_5):
         y = y_start + i * (bar_h + gap)
-        name = _market_name_of(m)[:22]
+        name = _market_name_of(m).upper()[:22]
         score = _market_score_of(m)
         is_top = (i == 0)
-        color = ACCENT if is_top else (90, 130, 200)
+        color = bar_colors[min(i, len(bar_colors) - 1)]
 
-        # Market name (right-aligned in left column) — bigger
+        # Market name — right-aligned in left gutter, tight bold caps
         try:
-            d.text((label_col_x - 20, y + 20), name,
-                   font=_font(32), fill=TEXT, anchor='rt')
+            d.text((label_col_x - 20, y + bar_h // 2), name,
+                   font=_font(28), fill=TEXT, anchor='rm')
         except TypeError:
-            # Older PIL without anchor support
-            d.text((60, y + 20), name, font=_font(32), fill=TEXT)
+            tw, th = _text_size(d, name, _font(28))
+            d.text((label_col_x - 20 - tw, y + (bar_h - th) // 2),
+                   name, font=_font(28), fill=TEXT)
 
-        # Bar
+        # Rounded bar
         bar_w = int((score / max_score) * (bar_max_x - bar_start_x))
-        d.rectangle([(bar_start_x, y), (bar_start_x + bar_w, y + bar_h)],
-                    fill=color)
+        _rounded_rect(d, [(bar_start_x, y), (bar_start_x + bar_w, y + bar_h)],
+                      radius=8, fill=color)
 
-        # Score label at end of bar — bigger
-        d.text((bar_start_x + bar_w + 18, y + 22), f'{score:.1f}',
-               font=_font(36), fill=TEXT)
+        # Score at bar tail
+        d.text((bar_start_x + bar_w + 16, y + bar_h // 2 - 18),
+               f'{score:.1f}', font=_font(32), fill=WHITE)
 
-        # #1 arrow indicator
+        # #1 indicator
         if is_top:
-            d.text((W - 90, y + 18), '▲', font=_font(36), fill=GREEN)
+            d.text((W - 80, y + bar_h // 2 - 18), '▲',
+                   font=_font(32), fill=GREEN)
 
-    # Verdict + summary at bottom — bigger badge
+    # Footer with verdict pill
     verdict = _verdict_for(signals)
-    vcol = _verdict_color(verdict)
-    d.rectangle([(60, H - 100), (260, H - 30)], fill=vcol)
-    d.text((84, H - 86), verdict, font=_font(44), fill=BG)
-
+    _verdict_pill(d, x=60, y=H - 100, verdict=verdict, font_size=32, pad_x=28, pad_y=12)
     if top_5:
         first = _market_name_of(top_5[0])[:30]
-        d.text((290, H - 86), f'{first}  ·  ranked #1 nationally',
-               font=_font(26), fill=TEXT)
-    d.text((290, H - 48), 'dchub.cloud · DC Hub Media · Daily Power Index',
+        d.text((290, H - 88), f'{first}  ·  ranked #1 nationally',
+               font=_font(24), fill=TEXT)
+    d.text((290, H - 54), 'dchub.cloud/dcpi  ·  DC Hub Media',
            font=_mono(18), fill=MUTED)
 
     return img
@@ -561,38 +745,41 @@ def _draw_ai_hero(pr):
 
         return img
 
-    # Fallback: gradient placeholder (original Phase JJ batch 2 polish)
-    img = Image.new('RGB', (W, H), (10, 14, 26))
+    # Fallback when SDXL isn't configured — premium brand panel (no garish
+    # sunset gradient). v2 (2026-06-05): replaces the purple→orange "sunrise"
+    # the user explicitly flagged as lame. Now it's a calm deep-navy canvas
+    # with a SINGLE large brand glyph + headline + verdict pill.
+    img = Image.new('RGB', (W, H), BG)
+    _subtle_gradient(img, BG, BG_DEEP, falloff=1.0)
     d = ImageDraw.Draw(img)
 
-    # Dramatic vertical gradient — deep purple → vivid orange (sunrise)
-    for i in range(H):
-        t = i / H
-        r = int(30 + (255 - 30) * t)
-        g = int(12 + (130 - 12) * t)
-        b = int(70 + (30 - 70) * t)
-        d.line([(0, i), (W, i)], fill=(r, g, b))
+    _draw_brand_strip(d)
 
-    # Brand chip — larger
-    d.rectangle([(64, 60), (320, 112)], fill=BG)
-    d.text((80, 72), 'DC HUB MEDIA · DAILY', font=_mono(24), fill=ACCENT)
+    # Hero brand mark — oversized chip on the LEFT (decorative anchor)
+    _brand_chip(d, 60, 130, size=240)
+    # "DC HUB" wordmark right of the giant chip
+    d.text((330, 168), 'DC HUB', font=_font(72), fill=WHITE)
+    d.text((330, 248), 'MEDIA  ·  DAILY POWER INDEX',
+           font=_mono(22), fill=CYAN)
 
-    # Headline — bigger with thicker drop shadow for legibility
-    title = pr.get('title', '')[:120]
-    lines = _wrap(title, 22)[:3]
-    y = 180
+    # Verdict pill — only if signals present
+    signals = pr.get('signals', {}) if isinstance(pr.get('signals', {}), dict) else {}
+    if signals.get('top_build_markets'):
+        verdict = _verdict_for(signals)
+        _verdict_pill(d, x=W - 280, y=44, verdict=verdict, font_size=36, pad_x=32, pad_y=14)
+
+    # Headline — sits BELOW the brand block, no overlap, no shadows needed
+    title = pr.get('title', '')[:140]
+    lines = _wrap(title, 56)[:2]
+    y = 410
     for line in lines:
-        # 4px drop shadow for high contrast on gradient
-        d.text((84, y + 4), line, font=_font(78), fill=(0, 0, 0))
-        d.text((80, y), line, font=_font(78), fill=TEXT)
-        y += 96
+        d.text((60, y), line, font=_font(38), fill=TEXT)
+        y += 50
 
-    # CTA — larger, with shadow
-    d.text((84, H - 76), '→ dchub.cloud/news', font=_font(40), fill=(0, 0, 0))
-    d.text((80, H - 80), '→ dchub.cloud/news', font=_font(40), fill=TEXT)
-    d.text((80, H - 36),
-           f'DC Hub Media  ·  {_safe_date_str(pr.get("date"), "%B %d, %Y")}',
-           font=_font(20), fill=TEXT)
+    # Footer
+    _draw_brand_footer(d, y=H - 64, mark='dchub.cloud/news',
+                       kicker='DC HUB MEDIA  ·  AUTONOMOUS PRESS',
+                       date_str=_safe_date_str(pr.get('date'), '%b %d, %Y').upper())
 
     return img
 

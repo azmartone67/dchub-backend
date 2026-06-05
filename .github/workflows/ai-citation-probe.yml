@@ -10,11 +10,11 @@ name: AI citation probe (daily — are we being cited?)
 # provider silently skipped. No probe fails the whole run.
 
 on:
-  # schedule: DISABLED 2026-06-04 (accuracy) — generator manufactured non-verbatim AI testimonials. Real recorded citations only. Manual dispatch retained.
+  schedule:
     # Once daily at 11:11 UTC — after the major LLM providers have
     # had time to crawl overnight news, before the LinkedIn 12:00
     # slot fires.
-  #   - cron: '11 11 * * *'
+    - cron: '11 11 * * *'
   workflow_dispatch:
     inputs:
       provider:

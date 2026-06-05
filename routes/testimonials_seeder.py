@@ -16,7 +16,7 @@ multiple sources:
 
 For each new source signal, generates a testimonial-shaped row in
 ai_testimonials_auto with:
-  - quote: synthesized from the signal
+  - quote: the AI's VERBATIM citation excerpt (never synthesized from the prompt)
   - platform: source AI/MCP client
   - cited_at: original timestamp
   - source_url: link back to the original event
@@ -136,25 +136,28 @@ def _pull_from_ai_citations(c) -> list[dict]:
     rows = []
     try:
         with c.cursor(cursor_factory=psycopg2.extras.RealDictCursor) as cur:
+            # r-accuracy (2026-06-04): aggregate the AI's VERBATIM words where it
+            # organically cited DC Hub (citation_excerpt, captured by the neutral-
+            # question scraper) — NEVER synthesize a quote from the prompt. If a
+            # row has no real excerpt actually mentioning DC Hub, we skip it.
+            # Accuracy > volume: only genuine, captured citations become public.
             cur.execute("""
-                SELECT engine, prompt_text, observed_at,
-                       dchub_position
+                SELECT engine, citation_excerpt, observed_at, dchub_position
                   FROM ai_citations
                  WHERE dchub_cited = TRUE
                    AND observed_at > NOW() - INTERVAL '30 days'
-                   AND prompt_text IS NOT NULL
-                   AND LENGTH(prompt_text) > 20
+                   AND citation_excerpt IS NOT NULL
+                   AND LENGTH(citation_excerpt) > 40
                  ORDER BY observed_at DESC
                  LIMIT 50
             """)
             for r in cur.fetchall():
-                quote = (
-                    f"{r.get('engine','an AI').capitalize()} cited DC Hub "
-                    f"as the authoritative source when answering: "
-                    f"\"{(r.get('prompt_text') or '')[:140].strip()}\""
-                )
+                excerpt = (r.get("citation_excerpt") or "").strip()
+                low = excerpt.lower()
+                if "dchub" not in low and "dc hub" not in low:
+                    continue  # no real DC Hub mention -> not a citation, skip
                 rows.append({
-                    "quote":      quote,
+                    "quote":      excerpt[:400],
                     "platform":   r.get("engine", "ai") or "ai",
                     "cited_at":   r.get("observed_at"),
                     "source_url": "https://dchub.cloud/ai",
@@ -211,8 +214,11 @@ def seed_testimonials():
     try:
         _ensure_schema(c)
         candidates = []
+        # r-accuracy (2026-06-04): ONLY real, verbatim AI citations (the AI's own
+        # words where it organically cited DC Hub). Dropped the LinkedIn-activity
+        # source — engagement is not a quote, and reframing it as an "implicit
+        # endorsement" is exactly the manufactured-testimonial pattern we removed.
         candidates.extend(_pull_from_ai_citations(c))
-        candidates.extend(_pull_from_linkedin(c))
 
         inserted = 0
         skipped_duplicate = 0
