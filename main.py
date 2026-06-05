@@ -20667,6 +20667,66 @@ def serve_sitemap_xml():
     resp.headers['X-Sitemap-Cache'] = 'miss'
     return resp
 
+
+# 2026-06-05 (Phase HJ-2) — Admin sitemap cache bust.
+# The /sitemap.xml route holds a 1h in-memory cache to spare the
+# 1-replica Railway backend from rebuilding ~15k URL entries on every
+# crawler hit (~15x/5min). That's normally a win, but when we add new
+# pages (like today's 12 new SEO + Vertex entries) Google's next
+# fetch sees the STALE cached XML until the 1h TTL rolls over.
+# This endpoint forces an immediate rebuild — useful right after a
+# deploy that changes the static_pages list, and right before
+# resubmitting in Google Search Console.
+#
+# Auth: X-Admin-Key header against DCHUB_ADMIN_KEY env (same pattern
+# as the digest broadcast endpoint at main.py:2027). Public callers
+# get 401 — this could be used to force-rebuild expensive payloads
+# in a DoS-like loop otherwise.
+#
+# Usage:
+#   curl -X POST -H "X-Admin-Key: $DCHUB_ADMIN_KEY" \
+#        https://dchub.cloud/api/v1/admin/sitemap/purge
+@app.route('/api/v1/admin/sitemap/purge', methods=['POST'])
+def admin_sitemap_purge():
+    import os
+    admin_key = (os.environ.get('DCHUB_ADMIN_KEY')
+                 or os.environ.get('ADMIN_KEY') or '').strip()
+    provided = (request.headers.get('X-Admin-Key') or '').strip()
+    if admin_key and provided != admin_key:
+        return jsonify(error='unauthorized',
+                       hint='set X-Admin-Key header to DCHUB_ADMIN_KEY'), 401
+    global _SITEMAP_XML_CACHE
+    old_ts = _SITEMAP_XML_CACHE.get('ts', 0.0)
+    old_size = len(_SITEMAP_XML_CACHE.get('xml') or '')
+    _SITEMAP_XML_CACHE = {'xml': None, 'ts': 0.0}
+    # Trigger an immediate rebuild so the very next external fetch is
+    # a HIT and Google's verification fetch lands on fresh XML.
+    try:
+        with app.test_client() as _tc:
+            _r = _tc.get('/sitemap.xml')
+            new_size = len(_r.data) if _r.status_code == 200 else 0
+            # Count URLs in the new XML for the response
+            try:
+                new_url_count = _r.data.decode('utf-8', errors='ignore').count('<url>')
+            except Exception:
+                new_url_count = -1
+    except Exception as _re_e:
+        new_size = 0
+        new_url_count = -1
+    return jsonify({
+        'ok':                  True,
+        'purged':              True,
+        'old_cache_age_sec':   round(__import__('time').time() - old_ts, 1) if old_ts else None,
+        'old_xml_bytes':       old_size,
+        'new_xml_bytes':       new_size,
+        'new_url_count':       new_url_count,
+        'note':                ('Sitemap rebuilt. Next external fetch will '
+                                'serve the fresh XML. Submit to Google Search '
+                                'Console now to ensure Google fetches the new '
+                                'version.'),
+    })
+
+
 @app.route('/seo-robots.txt')
 def serve_seo_robots():
     """SEO-optimized robots.txt with sitemap reference."""
