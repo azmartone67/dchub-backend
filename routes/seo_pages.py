@@ -32,7 +32,7 @@ import os
 import html
 import datetime as _dt
 from typing import Any
-from flask import Blueprint, Response, abort, request
+from flask import Blueprint, Response, abort, redirect, request
 
 try:
     import psycopg2
@@ -735,13 +735,17 @@ def sitemap_grids():
 # Google indexes them on the next crawl.
 @seo_pages_bp.get("/sitemap-landings.xml")
 def sitemap_landings():
+    # round-35: advertise the un-blocked /facility/aws-<code>, /facility/<addr>,
+    # /markets/interxion-frankfurt, /partners/moltbook-api paths. The legacy
+    # /aws/*, /address/*, single-segment paths are CF zone-worker 403-blocked
+    # ("DNS points to prohibited IP"); sitemapping them was wasting crawl budget.
     urls = []
     for code in AWS_REGION_MAP.keys():
-        urls.append(f'  <url><loc>https://dchub.cloud/aws/{code}</loc><changefreq>monthly</changefreq><priority>0.85</priority></url>')
+        urls.append(f'  <url><loc>https://dchub.cloud/facility/aws-{code}</loc><changefreq>monthly</changefreq><priority>0.85</priority></url>')
     for slug in ADDRESS_MAP.keys():
-        urls.append(f'  <url><loc>https://dchub.cloud/address/{slug}</loc><changefreq>monthly</changefreq><priority>0.85</priority></url>')
-    urls.append('  <url><loc>https://dchub.cloud/interxion-frankfurt</loc><changefreq>weekly</changefreq><priority>0.85</priority></url>')
-    urls.append('  <url><loc>https://dchub.cloud/moltbook-api-documentation</loc><changefreq>monthly</changefreq><priority>0.7</priority></url>')
+        urls.append(f'  <url><loc>https://dchub.cloud/facility/{slug}</loc><changefreq>monthly</changefreq><priority>0.85</priority></url>')
+    urls.append('  <url><loc>https://dchub.cloud/markets/interxion-frankfurt</loc><changefreq>weekly</changefreq><priority>0.85</priority></url>')
+    urls.append('  <url><loc>https://dchub.cloud/partners/moltbook-api</loc><changefreq>monthly</changefreq><priority>0.7</priority></url>')
     items = '\n'.join(urls)
     xml = f'<?xml version="1.0" encoding="UTF-8"?>\n<urlset xmlns="http://www.sitemaps.org/schemas/sitemap/0.9">\n{items}\n</urlset>'
     return Response(xml, mimetype='application/xml',
@@ -888,7 +892,10 @@ def _aws_landing_html(meta: dict, code: str) -> str:
         f"and grid intelligence for the {meta['operator']} {meta['city']} "
         f"campus on DC Hub."
     )
-    canonical = f"https://dchub.cloud/aws/{code}"
+    # round-35: moved off /aws/<code> (CF edge-blocked 403 "DNS points to
+    # prohibited IP") onto the un-blocked /facility/aws-<code> prefix.
+    # SEO content body unchanged.
+    canonical = f"https://dchub.cloud/facility/aws-{code}"
     location = ", ".join([s for s in (meta["city"], meta["state"], meta["country"]) if s])
 
     schema = f"""{{
@@ -968,11 +975,18 @@ def _aws_landing_html(meta: dict, code: str) -> str:
     )
 
 
-@seo_pages_bp.get("/aws/<code>")
+@seo_pages_bp.get("/facility/aws-<code>")
 def aws_region_landing(code: str):
-    """AWS region/facility code landing (e.g. /aws/iad36 → IAD36 page)."""
+    """AWS region/facility code landing (e.g. /facility/aws-iad36 → IAD36 page).
+
+    round-35 (2026-06-05): moved from /aws/<code> to /facility/aws-<code>
+    because the CF zone-worker returns HTTP 403 "DNS points to prohibited IP"
+    for the /aws/* prefix (same pattern as the /research/* Error 1000 trap).
+    The /facility/* prefix is on the CF allow-list. Static-prefix match on
+    `aws-` wins over the catch-all /facility/<id_or_slug> in werkzeug routing.
+    """
     code = (code or "").strip().lower()
-    # tolerate /aws/iad-36 typo style
+    # tolerate aws-iad-36 typo style
     code = code.replace("-", "").replace("_", "")
     if code not in AWS_REGION_MAP:
         return _error_page(
@@ -989,6 +1003,16 @@ def aws_region_landing(code: str):
     )
 
 
+# round-35: 301 redirect from CF-blocked /aws/<code> path so any external
+# bookmarks/inbound links still work IF the CF block is ever lifted. While
+# CF blocks the prefix, this redirect never reaches a real user — but it's
+# zero-cost future-proofing and keeps Google's URL canonicalization clean.
+@seo_pages_bp.get("/aws/<code>")
+def aws_region_landing_legacy_redirect(code: str):
+    code = (code or "").strip().lower().replace("-", "").replace("_", "")
+    return redirect(f"/facility/aws-{code}", code=301)
+
+
 # Address landing — /address/<slug>
 def _address_landing_html(meta: dict, slug: str) -> str:
     q = meta["query"]
@@ -998,7 +1022,11 @@ def _address_landing_html(meta: dict, slug: str) -> str:
         f"operator, power capacity, and Silicon Valley market context on "
         f"DC Hub."
     )
-    canonical = f"https://dchub.cloud/address/{slug}"
+    # round-35: moved off /address/<slug> (CF edge-blocked 403 "DNS points to
+    # prohibited IP") onto the un-blocked /facility/<slug> prefix. SEO content
+    # body (h1, meta description, first paragraph with verbatim address query)
+    # unchanged.
+    canonical = f"https://dchub.cloud/facility/{slug}"
 
     schema = f"""{{
   "@context": "https://schema.org",
@@ -1063,10 +1091,12 @@ def _address_landing_html(meta: dict, slug: str) -> str:
     )
 
 
-@seo_pages_bp.get("/address/<slug>")
-def address_landing(slug: str):
-    """Street-address landing (e.g. /address/1725-comstock-st-san-jose)."""
-    slug = (slug or "").strip().lower()
+# round-35: per-address static routes for /facility/<address-slug>.
+# Registered as STATIC paths (one route per ADDRESS_MAP key) so they win
+# specificity over the catch-all /facility/<id_or_slug> in werkzeug routing.
+# Moved off /address/<slug> because the CF zone-worker returns 403 "DNS
+# points to prohibited IP" for the /address/* prefix.
+def _address_landing_response(slug: str) -> Response:
     if slug not in ADDRESS_MAP:
         return _error_page(
             f"Address '{_h(slug)}' not in DC Hub's targeted list.", 404)
@@ -1080,8 +1110,27 @@ def address_landing(slug: str):
     )
 
 
-# Interxion Frankfurt landing — /interxion-frankfurt
-@seo_pages_bp.get("/interxion-frankfurt")
+@seo_pages_bp.get("/facility/1725-comstock-st-san-jose")
+def address_landing_1725_comstock():
+    """Street-address landing for 1725 Comstock St, San Jose."""
+    return _address_landing_response("1725-comstock-st-san-jose")
+
+
+# round-35: 301 redirect from CF-blocked /address/<slug> path for any
+# external bookmarks (no-op while CF blocks the prefix, but future-proof).
+@seo_pages_bp.get("/address/<slug>")
+def address_landing_legacy_redirect(slug: str):
+    slug = (slug or "").strip().lower()
+    return redirect(f"/facility/{slug}", code=301)
+
+
+# Interxion Frankfurt landing — /markets/interxion-frankfurt
+# round-35: moved from single-segment /interxion-frankfurt (CF zone-worker
+# 403 "DNS points to prohibited IP" — single-segment paths are also
+# edge-blocked) to /markets/interxion-frankfurt. Static path wins specificity
+# over the catch-all /markets/<slug>. SEO content (title/h1/meta/first
+# paragraph with verbatim 'Interxion Frankfurt status' query) unchanged.
+@seo_pages_bp.get("/markets/interxion-frankfurt")
 def interxion_frankfurt_landing():
     """Targets 'interxion frankfurt status' — operators researching the
     Digital Realty / Interxion Frankfurt campus + Frankfurt grid status."""
@@ -1091,14 +1140,14 @@ def interxion_frankfurt_landing():
         "data, Frankfurt data center market intelligence, grid status, and "
         "operator capacity rankings. 7 FRA campuses tracked. DC Hub."
     )
-    canonical = "https://dchub.cloud/interxion-frankfurt"
+    canonical = "https://dchub.cloud/markets/interxion-frankfurt"
     schema = """{
   "@context": "https://schema.org",
   "@type": "Place",
   "name": "Interxion Frankfurt — Digital Realty Campus",
   "alternateName": "Interxion FRA",
   "description": "Digital Realty / Interxion Frankfurt data center campus, FRA market intelligence.",
-  "url": "https://dchub.cloud/interxion-frankfurt",
+  "url": "https://dchub.cloud/markets/interxion-frankfurt",
   "address": {"@type":"PostalAddress","addressLocality":"Frankfurt","addressCountry":"Germany"},
   "additionalType": "https://schema.org/DataCenter"
 }"""
@@ -1167,8 +1216,20 @@ def interxion_frankfurt_landing():
     )
 
 
-# Moltbook API documentation landing — /moltbook-api-documentation
-@seo_pages_bp.get("/moltbook-api-documentation")
+# round-35: 301 redirect from CF-blocked /interxion-frankfurt single-segment
+# path. No-op while CF blocks the prefix, future-proof for when it's lifted.
+@seo_pages_bp.get("/interxion-frankfurt")
+def interxion_frankfurt_legacy_redirect():
+    return redirect("/markets/interxion-frankfurt", code=301)
+
+
+# Moltbook API documentation landing — /partners/moltbook-api
+# round-35: moved from single-segment /moltbook-api-documentation (CF
+# zone-worker 403 "DNS points to prohibited IP") to /partners/moltbook-api.
+# Static path wins specificity over the catch-all /partners/<slug> in
+# partner_landing.py. SEO content (title/h1/meta/first paragraph with
+# verbatim 'Moltbook API documentation' query) unchanged.
+@seo_pages_bp.get("/partners/moltbook-api")
 def moltbook_api_landing():
     """Targets 'moltbook api documentation' — moltbook.com is a real
     Reddit-like agent platform DC Hub integrates with (see
@@ -1181,13 +1242,13 @@ def moltbook_api_landing():
         "examples, auth headers, posting + commenting endpoints, and "
         "rate-limit handling for moltbook.com/api/v1."
     )
-    canonical = "https://dchub.cloud/moltbook-api-documentation"
+    canonical = "https://dchub.cloud/partners/moltbook-api"
     schema = """{
   "@context": "https://schema.org",
   "@type": "TechArticle",
   "headline": "Moltbook API Documentation — DC Hub Integration Reference",
   "description": "Moltbook API integration reference using DC Hub's DCHubBot as a worked example.",
-  "url": "https://dchub.cloud/moltbook-api-documentation",
+  "url": "https://dchub.cloud/partners/moltbook-api",
   "about": {"@type":"SoftwareApplication","name":"Moltbook API","applicationCategory":"SocialNetworking"}
 }"""
 
@@ -1280,6 +1341,13 @@ Content-Type: application/json
     )
 
 
+# round-35: 301 redirect from CF-blocked /moltbook-api-documentation
+# single-segment path. No-op while CF blocks the prefix, future-proof.
+@seo_pages_bp.get("/moltbook-api-documentation")
+def moltbook_api_landing_legacy_redirect():
+    return redirect("/partners/moltbook-api", code=301)
+
+
 # ═════════════════════════════════════════════════════════════════════
 # ERROR PAGE
 # ═════════════════════════════════════════════════════════════════════
@@ -1318,13 +1386,25 @@ def seo_health():
         except Exception: pass
     return jsonify(
         ok=True,
-        version="round-34-seo-pages-v2-high-intent-landings",
+        # round-35 (2026-06-05): the 4 high-intent landing prefixes (/aws/*,
+        # /address/*, single-segment /interxion-frankfurt + /moltbook-api-
+        # documentation) were CF zone-worker 403'd "DNS points to prohibited
+        # IP". Re-routed under un-blocked /facility/aws-*, /facility/<addr>,
+        # /markets/interxion-frankfurt, /partners/moltbook-api. Legacy paths
+        # kept as 301 redirects (no-op while CF blocks, future-proof).
+        version="round-35-seo-pages-cf-edge-safe-prefixes",
         routes=["/facility/<id>", "/markets/<slug>", "/grids/<code>",
-                "/aws/<code>", "/address/<slug>",
-                "/interxion-frankfurt", "/moltbook-api-documentation",
+                "/facility/aws-<code>",
+                "/facility/1725-comstock-st-san-jose",
+                "/markets/interxion-frankfurt",
+                "/partners/moltbook-api",
                 "/sitemap-index.xml", "/sitemap-facilities.xml",
                 "/sitemap-markets.xml", "/sitemap-grids.xml",
                 "/sitemap-landings.xml"],
+        legacy_redirects=["/aws/<code> -> /facility/aws-<code>",
+                          "/address/<slug> -> /facility/<slug>",
+                          "/interxion-frankfurt -> /markets/interxion-frankfurt",
+                          "/moltbook-api-documentation -> /partners/moltbook-api"],
         db_ok=db_ok,
         iso_count=len(ISO_REGISTRY),
         aws_codes=list(AWS_REGION_MAP.keys()),
