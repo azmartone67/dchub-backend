@@ -391,16 +391,12 @@ def ecosystem_findings():
         except Exception: pass
 
 
-@brain_ecosystem_watch_bp.route(
-    "/api/v1/brain/ecosystem/coverage", methods=["GET"])
-def ecosystem_coverage():
-    """MCP Growth Sentinel — WIDEN-arm coverage scorecard.
-
-    Where is DC Hub listed / natively discoverable, what's healthy, and what
-    gaps remain (with the submit method for each). Reads the latest watch
-    result per target (the every-6h cron populates it) — DB-read only, so it's
-    fast and single-replica-safe. Public: it's 'where are we listed', not secret.
-    """
+def compute_coverage_scorecard() -> dict:
+    """MCP Growth Sentinel — WIDEN-arm coverage scorecard. Shared by the
+    /api/v1/brain/ecosystem/coverage endpoint AND the brain heartbeat's
+    growth_sentinel block (one source of truth). Reads the latest watch result
+    per target (the every-6h cron populates it) — DB-read only, fast,
+    single-replica-safe."""
     _ensure_schema()
     meta = {t["key"]: t for t in _WATCH_TARGETS}
     latest = {}
@@ -467,7 +463,7 @@ def ecosystem_coverage():
         for t in gaps
         if t["submit_method"] in ("form", "pr", "owner", "claim")
     ]
-    resp = jsonify({
+    return {
         "ok": True,
         "scorecard": {
             "total_targets": len(targets),
@@ -491,6 +487,15 @@ def ecosystem_coverage():
                  "'auto-indexed' = covered via the official-registry crawl. "
                  "'unknown' = probe blocked, not absent."),
         "generated_at": datetime.datetime.utcnow().isoformat() + "Z",
-    })
+    }
+
+
+@brain_ecosystem_watch_bp.route(
+    "/api/v1/brain/ecosystem/coverage", methods=["GET"])
+def ecosystem_coverage():
+    """GET the coverage scorecard (thin wrapper over compute_coverage_scorecard
+    so the brain heartbeat reuses the same computation). Public: it's 'where are
+    we listed', not secret."""
+    resp = jsonify(compute_coverage_scorecard())
     resp.headers["Cache-Control"] = "public, max-age=300"
     return resp, 200

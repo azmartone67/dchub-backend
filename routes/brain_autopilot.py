@@ -2098,6 +2098,25 @@ def _compute_heartbeat_sync():
     except Exception as e:
         out["autopilot"] = {"error": str(e)[:160]}
 
+    # ── Growth Sentinel (WIDEN coverage north-star — r-spine piece 2) ──
+    # One honest at-a-glance MCP-ecosystem reach number, shared with the
+    # /api/v1/brain/ecosystem/coverage scorecard. CONVERT-arm demand/conversion
+    # numbers will join this block in a later phase.
+    try:
+        from routes.brain_ecosystem_watch import compute_coverage_scorecard as _cov
+        _c = _cov()
+        _sc = _c.get("scorecard", {})
+        out["growth_sentinel"] = {
+            "coverage_pct":  _sc.get("coverage_pct"),
+            "covered":       _sc.get("covered"),
+            "gaps":          _sc.get("gaps"),
+            "total_targets": _sc.get("total_targets"),
+            "open_gaps":     [a.get("name") for a in (_c.get("owner_actions") or [])],
+            "by_kind":       _c.get("by_kind"),
+        }
+    except Exception as e:
+        out["growth_sentinel"] = {"error": str(e)[:160]}
+
     # ── Media quality (r66 evolving loop) ──
     # The brain now SEES DC Hub Media's own gate-rejection rate, so a content
     # regression (a disclaimer-as-citation self-own, a duplicate spike) shows up
