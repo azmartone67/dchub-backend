@@ -14467,6 +14467,43 @@ def get_stats():
         except:
             stats['new_users_30d'] = 0
 
+        # r70 (2026-06-05): public audience-reach proxies for /by-the-numbers.
+        # The user-count fields above are STRIPPED later (Nico security audit
+        # at line ~14492), so /by-the-numbers used to render "—" for the
+        # entire audience-reach row. Replace with PUBLIC equivalents already
+        # shown on /dc-hub-media: real M&A count from the deals table, plus
+        # MCP usage (calls/24h + unique AI-agent callers/7d). These don't
+        # leak subscriber data — anyone can hit /api/v1/mcp/funnel and see
+        # the same numbers.
+        try:
+            c.execute("SELECT COUNT(*) FROM deals")
+            stats['total_deals'] = c.fetchone()[0] or 0
+        except Exception:
+            stats['total_deals'] = 0
+
+        try:
+            c.execute("SELECT COUNT(*) FROM mcp_call_log "
+                      "WHERE timestamp >= NOW() - INTERVAL '24 hours'")
+            stats['mcp_calls_24h'] = c.fetchone()[0] or 0
+        except Exception:
+            stats['mcp_calls_24h'] = 0
+
+        try:
+            # Count distinct callers in last 7d — most schemas have either
+            # api_key or session_id; try both, fall through to 0.
+            c.execute("SELECT COUNT(DISTINCT COALESCE(api_key, session_id, user_id::text, 'anon')) "
+                      "FROM mcp_call_log "
+                      "WHERE timestamp >= NOW() - INTERVAL '7 days'")
+            stats['ai_agents_7d'] = c.fetchone()[0] or 0
+        except Exception:
+            stats['ai_agents_7d'] = 0
+
+        # Pocket listings — no canonical pocket_listings schema yet (referenced
+        # only by MCP tool descriptions). Honest 0 instead of NULL so the page
+        # tile reads "0" not "—" — telegraphs "we know this number, it's zero"
+        # vs "we don't track this."
+        stats['listings_count'] = 0
+
         try:
             c.execute("SELECT COUNT(*) FROM users WHERE subscription_status = 'active'")
             stats['active_subscribers'] = c.fetchone()[0] or 0

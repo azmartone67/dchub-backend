@@ -1194,9 +1194,35 @@ def _legacy_compute_report_data() -> dict:
                 out["dcpi_movers"] = [
                     {"market": r[0], "score": int(r[1] or 0), "delta": int(r[2] or 0)}
                     for r in cur.fetchall()]
+                # r70 (2026-06-05): when no markets moved this week (DCPI is
+                # often stable in steady-state — e.g. the new daily recompute
+                # is < 7d old, so the prev_s lookback comes back empty for
+                # every market), the section rendered "No data tracked yet
+                # for this quarter" which is misleading. Fall back to the top
+                # markets BY ABSOLUTE SCORE so the section always shows
+                # something meaningful. The frontend can flag dcpi_movers_mode
+                # to relabel the section header.
+                if not out["dcpi_movers"]:
+                    cur.execute("""
+                        SELECT DISTINCT ON (market_slug)
+                               market_name,
+                               (COALESCE(excess_power_score,0) - COALESCE(constraint_score,0)) AS score
+                          FROM market_power_scores
+                         WHERE published = true
+                         ORDER BY market_slug, computed_at DESC
+                    """)
+                    rows = [(r[0], int(r[1] or 0)) for r in cur.fetchall()]
+                    rows.sort(key=lambda x: x[1], reverse=True)
+                    out["dcpi_movers"] = [
+                        {"market": m, "score": s, "delta": 0}
+                        for m, s in rows[:10]]
+                    out["dcpi_movers_mode"] = "top_score_fallback"
+                else:
+                    out["dcpi_movers_mode"] = "weekly_delta"
             except Exception as e:
                 logger.warning(f"quarterly_report dcpi_movers failed: {e}")
                 out["dcpi_movers"] = []
+                out["dcpi_movers_mode"] = "error"
             try:
                 cur.execute("""
                     WITH latest AS (
@@ -1321,21 +1347,38 @@ def _legacy_compute_report_data() -> dict:
                     "window": "last_90_days",
                 }
             try:
+                # r70 (2026-06-05): wrap in DISTINCT ON subquery to dedupe.
+                # The deals table has multiple rows per buyer/seller/value/mw
+                # tuple (ETL duplication from multiple source feeds), which
+                # made AirTrunk show up TWICE and Stack THREE TIMES in the
+                # rendered top-5 table. DISTINCT ON keeps the most-recent row
+                # for each unique (buyer, seller, value, mw) combination,
+                # then the outer query sorts by value desc + limits to 5.
                 if out["ma_summary"].get("window") == "year-to-date":
                     cur.execute("""
-                        SELECT id, date, buyer, seller, value, mw
-                          FROM deals
-                         WHERE value IS NOT NULL
-                           AND year = EXTRACT(YEAR FROM CURRENT_DATE)
-                         ORDER BY value DESC LIMIT 5
+                        SELECT id, date, buyer, seller, value, mw FROM (
+                            SELECT DISTINCT ON (buyer, seller, value, mw)
+                                   id, date, buyer, seller, value, mw
+                              FROM deals
+                             WHERE value IS NOT NULL
+                               AND year = EXTRACT(YEAR FROM CURRENT_DATE)
+                             ORDER BY buyer, seller, value, mw, date DESC NULLS LAST
+                        ) sub
+                        ORDER BY value DESC, date DESC NULLS LAST
+                        LIMIT 5
                     """)
                 else:
                     cur.execute("""
-                        SELECT id, date, buyer, seller, value, mw
-                          FROM deals
-                         WHERE value IS NOT NULL
-                           AND date::date >= (CURRENT_DATE - INTERVAL '90 days')
-                         ORDER BY value DESC LIMIT 5
+                        SELECT id, date, buyer, seller, value, mw FROM (
+                            SELECT DISTINCT ON (buyer, seller, value, mw)
+                                   id, date, buyer, seller, value, mw
+                              FROM deals
+                             WHERE value IS NOT NULL
+                               AND date::date >= (CURRENT_DATE - INTERVAL '90 days')
+                             ORDER BY buyer, seller, value, mw, date DESC NULLS LAST
+                        ) sub
+                        ORDER BY value DESC, date DESC NULLS LAST
+                        LIMIT 5
                     """)
                 out["ma_summary"]["top_deals"] = [{
                     "id": str(r[0]) if r[0] else None,
@@ -1474,11 +1517,19 @@ def _legacy_render_html(d: dict) -> str:
         f'<td style="text-align:right">{m.get("total_mw",0):,.0f}</td></tr>'
         for m in (d.get("top_markets") or [])
     ]
+    # r70 (2026-06-05): when in top-score fallback mode, the right column
+    # is a rank (#1, #2, ...) instead of a delta; the section header was
+    # also relabeled to "Top Power Index markets" by the renderer below.
+    _movers_mode = d.get("dcpi_movers_mode") or "weekly_delta"
     mover_rows = [
         f'<tr><td><strong>{m["market"]}</strong></td>'
         f'<td style="text-align:right">{m.get("score",0)}/100</td>'
-        f'<td style="text-align:right">{_delta_html(m.get("delta"))}</td></tr>'
-        for m in (d.get("dcpi_movers") or [])
+        f'<td style="text-align:right">'
+        + (f'<span style="color:#94a3b8">#{i+1}</span>'
+           if _movers_mode == "top_score_fallback"
+           else _delta_html(m.get("delta")))
+        + '</td></tr>'
+        for i, m in enumerate(d.get("dcpi_movers") or [])
         if m.get("market") is not None and m.get("score") is not None
     ]
     pipeline_rows = [
@@ -1681,11 +1732,12 @@ def _legacy_render_html(d: dict) -> str:
     </table>
   </section>
 
-  <!-- DCPI movers -->
+  <!-- DCPI movers (or top markets fallback when nothing moved) -->
   <section>
-    <h2><span class="num">05</span>Power Index movers</h2>
+    <h2><span class="num">05</span>{"Top Power Index markets" if d.get("dcpi_movers_mode") == "top_score_fallback" else "Power Index movers"}</h2>
+    {("<p class=\"lede\" style=\"font-size:14px;margin:-8px 0 14px;color:#94a3b8\">No week-over-week movers this period — showing the top 10 by current score.</p>" if d.get("dcpi_movers_mode") == "top_score_fallback" else "")}
     <table>
-      <thead><tr><th>Market</th><th class="r">DCPI Score</th><th class="r">Δ Week</th></tr></thead>
+      <thead><tr><th>Market</th><th class="r">DCPI Score</th><th class="r">{"Rank" if d.get("dcpi_movers_mode") == "top_score_fallback" else "Δ Week"}</th></tr></thead>
       <tbody>{_td(mover_rows, 3)}</tbody>
     </table>
   </section>
