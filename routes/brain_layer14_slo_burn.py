@@ -62,7 +62,8 @@ def _file_finding(pattern, verdict, err_pct, n5xx):
 def _scan_once():
     import requests as _rq
     try:
-        r = _rq.get("http://127.0.0.1:8080/api/v1/slo/error-budget",
+        _port = int(os.environ.get("PORT", 8080))
+        r = _rq.get(f"http://127.0.0.1:{_port}/api/v1/slo/error-budget",
                     timeout=4,
                     headers={"User-Agent": "dchub-brain-l14/1.0",
                              "X-DC-Probe": "slo-burn"})

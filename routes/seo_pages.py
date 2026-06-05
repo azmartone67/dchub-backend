@@ -638,6 +638,7 @@ def sitemap_index():
   <sitemap><loc>https://dchub.cloud/sitemap-facilities.xml</loc><lastmod>{today}</lastmod></sitemap>
   <sitemap><loc>https://dchub.cloud/sitemap-markets.xml</loc><lastmod>{today}</lastmod></sitemap>
   <sitemap><loc>https://dchub.cloud/sitemap-grids.xml</loc><lastmod>{today}</lastmod></sitemap>
+  <sitemap><loc>https://dchub.cloud/sitemap-landings.xml</loc><lastmod>{today}</lastmod></sitemap>
 </sitemapindex>"""
     return Response(xml, mimetype='application/xml',
                      headers={'Cache-Control': 'public, max-age=3600'})
@@ -728,6 +729,557 @@ def sitemap_grids():
                      headers={'Cache-Control': 'public, max-age=3600'})
 
 
+# round-34: high-intent SEO landings sitemap (AWS region codes, addresses,
+# Interxion Frankfurt, Moltbook docs). These are zero-click queries with
+# strong impression volume — sitemapped + linked to from the homepage so
+# Google indexes them on the next crawl.
+@seo_pages_bp.get("/sitemap-landings.xml")
+def sitemap_landings():
+    urls = []
+    for code in AWS_REGION_MAP.keys():
+        urls.append(f'  <url><loc>https://dchub.cloud/aws/{code}</loc><changefreq>monthly</changefreq><priority>0.85</priority></url>')
+    for slug in ADDRESS_MAP.keys():
+        urls.append(f'  <url><loc>https://dchub.cloud/address/{slug}</loc><changefreq>monthly</changefreq><priority>0.85</priority></url>')
+    urls.append('  <url><loc>https://dchub.cloud/interxion-frankfurt</loc><changefreq>weekly</changefreq><priority>0.85</priority></url>')
+    urls.append('  <url><loc>https://dchub.cloud/moltbook-api-documentation</loc><changefreq>monthly</changefreq><priority>0.7</priority></url>')
+    items = '\n'.join(urls)
+    xml = f'<?xml version="1.0" encoding="UTF-8"?>\n<urlset xmlns="http://www.sitemaps.org/schemas/sitemap/0.9">\n{items}\n</urlset>'
+    return Response(xml, mimetype='application/xml',
+                     headers={'Cache-Control': 'public, max-age=3600'})
+
+
+# ═════════════════════════════════════════════════════════════════════
+# HIGH-INTENT QUERY LANDINGS (round-34 SEO, 2026-06-04)
+# ─────────────────────────────────────────────────────────────────────
+# Google Search Console showed 7 high-intent queries with hundreds of
+# impressions and ZERO clicks because no targeted page existed:
+#   - AWS region codes (iad36, db1, kix10, sjc29) — operators searching
+#     for specific AWS facility identifiers; Digital Realty/Equinix host
+#     these campuses, we already have the facilities indexed but the
+#     existing pages don't include the AWS code in title/h1/meta.
+#   - "1725 comstock street" — Digital Realty SJC 1725 Comstock St campus.
+#   - "interxion frankfurt status" — operators researching the Digital
+#     Realty/Interxion Frankfurt campus and grid stability.
+#   - "moltbook api documentation" — moltbook.com is a real Reddit-like
+#     platform DC Hub integrates with (moltbook_integration.py); operators
+#     looking for integration docs land here.
+#
+# Each landing puts the EXACT search query in <title>, <h1>, meta
+# description, AND the first paragraph — the four signals Google's
+# scorer weighs most for query-page relevance.
+#
+# All landings 200 fast (no DB call in the request path for the static
+# AWS / address / interxion / moltbook maps; the canonical facility
+# id resolution is on-demand and cached).
+# ═════════════════════════════════════════════════════════════════════
+
+# AWS region code → (display_query, h1, canonical_facility_slug, operator,
+#                    market_city, market_state, market_slug, country, summary)
+# The slug is the existing static facility URL slug (see
+# dchub-frontend/facilities/ for the canonical files).
+AWS_REGION_MAP = {
+    "iad36": {
+        "query":      "iad36 data center",
+        "h1":         "IAD36 Data Center — Digital Realty Northern Virginia (Ashburn)",
+        "facility_slug": "digital-realty-digital-realty-northern-virginia-iad36-cc7fa9f2",
+        "operator":   "Digital Realty",
+        "city":       "Ashburn",
+        "state":      "VA",
+        "country":    "United States",
+        "market_slug": "ashburn-va",
+        "lat":        39.0015493,
+        "lon":        -77.4793749,
+        "aws_region": "us-east-1 (N. Virginia)",
+        "summary": (
+            "IAD36 is a Digital Realty Northern Virginia data center campus in "
+            "Ashburn, VA, identified by the AWS region code IAD36 (us-east-1). "
+            "Part of the largest data center market in the world."
+        ),
+    },
+    "db1": {
+        "query":      "db1 data center",
+        "h1":         "DB1 Data Center — Equinix Dublin DB1 (Ireland)",
+        "facility_slug": "equinix-equinix-dublin-db1-3be55f49",
+        "operator":   "Equinix",
+        "city":       "Dublin",
+        "state":      "",
+        "country":    "Ireland",
+        "market_slug": "dublin-ie",
+        "lat":        53.34,
+        "lon":        -6.42,
+        "aws_region": "eu-west-1 (Ireland)",
+        "summary": (
+            "DB1 is the Equinix Dublin DB1 data center in Citywest, Dublin, "
+            "Ireland — the most-cited AWS Dublin (eu-west-1) carrier-neutral "
+            "interconnect campus and a hub for European hyperscale capacity."
+        ),
+    },
+    "kix10": {
+        "query":      "kix10 data center",
+        "h1":         "KIX10 Data Center — Digital Realty Osaka (Japan)",
+        "facility_slug": "digital-realty-digital-realty-osaka-kix10-bdaf59fb",
+        "operator":   "Digital Realty",
+        "city":       "Osaka",
+        "state":      "",
+        "country":    "Japan",
+        "market_slug": "osaka-jp",
+        "lat":        34.6937,
+        "lon":        135.5023,
+        "aws_region": "ap-northeast-3 (Osaka)",
+        "summary": (
+            "KIX10 is a Digital Realty Osaka data center serving the AWS "
+            "Osaka region (ap-northeast-3). KIX is the IATA code for Kansai "
+            "International Airport — the standard AWS naming for the Osaka "
+            "metro."
+        ),
+    },
+    "sjc29": {
+        "query":      "sjc29 data center",
+        "h1":         "SJC29 Data Center — Digital Realty Silicon Valley (San Jose)",
+        "facility_slug": "digital-realty-digital-realty-silicon-valley-sjc29-0e364091",
+        "operator":   "Digital Realty",
+        "city":       "San Jose",
+        "state":      "CA",
+        "country":    "United States",
+        "market_slug": "san-jose-ca",
+        "lat":        37.3382,
+        "lon":        -121.8863,
+        "aws_region": "us-west-1 (N. California)",
+        "summary": (
+            "SJC29 is a Digital Realty Silicon Valley data center in San "
+            "Jose, CA serving the AWS us-west-1 region. Part of Digital "
+            "Realty's San Jose / Santa Clara campus cluster."
+        ),
+    },
+}
+
+# Address → existing static facility URL slug
+ADDRESS_MAP = {
+    "1725-comstock-st-san-jose": {
+        "query":      "1725 Comstock Street San Jose data center",
+        "h1":         "Data Center at 1725 Comstock Street, San Jose, CA — Digital Realty SJC Campus",
+        "address":    "1725 Comstock St, San Jose, CA 95054",
+        "facility_slug": "digital-realty-digital-realty-sjc-1725-comstock-st-292e0cd6",
+        "operator":   "Digital Realty",
+        "city":       "San Jose",
+        "state":      "CA",
+        "country":    "United States",
+        "market_slug": "san-jose-ca",
+        "lat":        37.3855,
+        "lon":        -121.9655,
+        "summary": (
+            "1725 Comstock Street, San Jose, CA is a Digital Realty data "
+            "center — part of the company's Silicon Valley SJC campus on "
+            "Comstock Street alongside 1201 and 1525 Comstock (the same "
+            "Santa Clara / North San Jose data center corridor)."
+        ),
+    },
+}
+
+
+def _aws_landing_html(meta: dict, code: str) -> str:
+    """Render a Google-optimized landing page for an AWS region code."""
+    q = meta["query"]
+    # Title-cased query but keep AWS code in UPPER ("IAD36 Data Center", not "Iad36").
+    q_display = code.upper() + " Data Center"
+    title = f"{q_display} — {meta['operator']} {meta['city']} | DC Hub"
+    desc = (
+        f"{q_display}: {meta['summary']} View live power, fiber, water, "
+        f"and grid intelligence for the {meta['operator']} {meta['city']} "
+        f"campus on DC Hub."
+    )
+    canonical = f"https://dchub.cloud/aws/{code}"
+    location = ", ".join([s for s in (meta["city"], meta["state"], meta["country"]) if s])
+
+    schema = f"""{{
+  "@context": "https://schema.org",
+  "@type": "Place",
+  "name": "{_esc_attr(meta['h1'])}",
+  "alternateName": "{_esc_attr(code.upper())}",
+  "description": "{_esc_attr(desc[:200])}",
+  "url": "{canonical}",
+  "address": {{
+    "@type": "PostalAddress",
+    "addressLocality": "{_esc_attr(meta['city'])}",
+    "addressRegion": "{_esc_attr(meta['state'])}",
+    "addressCountry": "{_esc_attr(meta['country'])}"
+  }},
+  "geo": {{"@type": "GeoCoordinates", "latitude": "{meta['lat']}", "longitude": "{meta['lon']}"}},
+  "additionalType": "https://schema.org/DataCenter"
+}}"""
+
+    body = f"""<header class="dc-seo">
+  <nav class="breadcrumb">
+    <a href="/">DC Hub</a> · <a href="/markets/{_esc_attr(meta['market_slug'])}">{_h(meta['city'])}, {_h(meta['state'] or meta['country'])}</a> · {_h(code.upper())}
+  </nav>
+  <h1>{_h(meta['h1'])}</h1>
+  <p class="lede"><strong>{_h(code.upper())}</strong> is the AWS facility code for {_h(meta['operator'])}'s {_h(meta['city'])} campus serving the AWS region <strong>{_h(meta['aws_region'])}</strong>.</p>
+  <div class="badges">
+    <span>{_h(code.upper())}</span>
+    <span>{_h(meta['operator'])}</span>
+    <span>{_h(location)}</span>
+    <span>AWS {_h(meta['aws_region'])}</span>
+  </div>
+</header>
+
+<section id="summary">
+  <h2>What is {_h(code.upper())}?</h2>
+  <p>{_h(meta['summary'])}</p>
+  <table>
+    <tr><th>AWS facility code</th><td><strong>{_h(code.upper())}</strong></td></tr>
+    <tr><th>AWS region</th><td>{_h(meta['aws_region'])}</td></tr>
+    <tr><th>Operator</th><td>{_h(meta['operator'])}</td></tr>
+    <tr><th>Location</th><td>{_h(location)}</td></tr>
+    <tr><th>Coordinates</th><td>{meta['lat']}, {meta['lon']}</td></tr>
+    <tr><th>Canonical facility page</th><td><a href="/facilities/{_esc_attr(meta['facility_slug'])}.html">View full facility profile →</a></td></tr>
+  </table>
+</section>
+
+<section id="market">
+  <h2>{_h(meta['city'])} Data Center Market Context</h2>
+  <p>The {_h(code.upper())} campus is one of many data centers in the {_h(meta['city'])} market. See all operators, total MW, and capacity rankings:</p>
+  <p><a href="/markets/{_esc_attr(meta['market_slug'])}" class="cta secondary">All {_h(meta['city'])} data centers →</a></p>
+</section>
+
+<section id="cta">
+  <h2>Get {_h(code.upper())} intelligence</h2>
+  <p>Full facility profile includes power profile, fiber carriers on-net, water risk, M&amp;A history, and live grid scarcity for the campus's ISO/TSO. Free MCP API access for AI agents.</p>
+  <a href="/facilities/{_esc_attr(meta['facility_slug'])}.html" class="cta">View {_h(code.upper())} full profile</a>
+  <a href="/signup?from=aws-{_esc_attr(code)}" class="cta secondary">Free MCP API access</a>
+</section>
+
+<section id="api">
+  <h2>For AI agents</h2>
+  <pre style="background:#f6f7f9;padding:14px;border-radius:6px;overflow-x:auto;"><code>POST https://dchub.cloud/mcp
+{{
+  "jsonrpc": "2.0", "id": 1, "method": "tools/call",
+  "params": {{
+    "name": "search_facilities",
+    "arguments": {{ "q": "{_h(code.upper())}" }}
+  }}
+}}</code></pre>
+</section>"""
+
+    return _base_html(
+        title=title, description=desc, canonical=canonical,
+        og_image=f"https://dchub.cloud/static/og/aws-{code}.png",
+        schema_jsonld=schema, body_html=body,
+        og_type="business.business",
+    )
+
+
+@seo_pages_bp.get("/aws/<code>")
+def aws_region_landing(code: str):
+    """AWS region/facility code landing (e.g. /aws/iad36 → IAD36 page)."""
+    code = (code or "").strip().lower()
+    # tolerate /aws/iad-36 typo style
+    code = code.replace("-", "").replace("_", "")
+    if code not in AWS_REGION_MAP:
+        return _error_page(
+            f"AWS facility code '{_h(code)}' not in DC Hub's targeted list. "
+            "Known codes: " + ", ".join(c.upper() for c in AWS_REGION_MAP.keys()),
+            404)
+    return Response(
+        _aws_landing_html(AWS_REGION_MAP[code], code),
+        mimetype="text/html",
+        headers={
+            "Cache-Control": "public, max-age=3600, s-maxage=86400",
+            "X-DC-Page-Source": "seo-aws-landing",
+        },
+    )
+
+
+# Address landing — /address/<slug>
+def _address_landing_html(meta: dict, slug: str) -> str:
+    q = meta["query"]
+    title = f"{q} | DC Hub"
+    desc = (
+        f"{meta['address']}. {meta['summary']} View facility specs, "
+        f"operator, power capacity, and Silicon Valley market context on "
+        f"DC Hub."
+    )
+    canonical = f"https://dchub.cloud/address/{slug}"
+
+    schema = f"""{{
+  "@context": "https://schema.org",
+  "@type": "Place",
+  "name": "{_esc_attr(meta['h1'])}",
+  "description": "{_esc_attr(desc[:200])}",
+  "url": "{canonical}",
+  "address": {{
+    "@type": "PostalAddress",
+    "streetAddress": "{_esc_attr(meta['address'])}",
+    "addressLocality": "{_esc_attr(meta['city'])}",
+    "addressRegion": "{_esc_attr(meta['state'])}",
+    "addressCountry": "{_esc_attr(meta['country'])}"
+  }},
+  "geo": {{"@type": "GeoCoordinates", "latitude": "{meta['lat']}", "longitude": "{meta['lon']}"}},
+  "additionalType": "https://schema.org/DataCenter"
+}}"""
+
+    body = f"""<header class="dc-seo">
+  <nav class="breadcrumb">
+    <a href="/">DC Hub</a> · <a href="/markets/{_esc_attr(meta['market_slug'])}">{_h(meta['city'])}, {_h(meta['state'])}</a> · {_h(meta['address'])}
+  </nav>
+  <h1>{_h(meta['h1'])}</h1>
+  <p class="lede">Data center at <strong>{_h(meta['address'])}</strong>, operated by {_h(meta['operator'])}.</p>
+</header>
+
+<section id="summary">
+  <h2>About {_h(meta['address'])}</h2>
+  <p>{_h(meta['summary'])}</p>
+  <table>
+    <tr><th>Street address</th><td>{_h(meta['address'])}</td></tr>
+    <tr><th>Operator</th><td>{_h(meta['operator'])}</td></tr>
+    <tr><th>City</th><td>{_h(meta['city'])}, {_h(meta['state'])}</td></tr>
+    <tr><th>Coordinates</th><td>{meta['lat']}, {meta['lon']}</td></tr>
+    <tr><th>Canonical facility page</th><td><a href="/facilities/{_esc_attr(meta['facility_slug'])}.html">View full facility profile →</a></td></tr>
+  </table>
+</section>
+
+<section id="related">
+  <h2>Nearby Comstock Street Data Centers</h2>
+  <p>Digital Realty's San Jose campus on Comstock Street includes multiple co-located buildings:</p>
+  <ul class="facility-list">
+    <li><a href="/facilities/digital-realty-digital-realty-sjc-1201-comstock-st-7a4315af.html">1201 Comstock St</a> — Digital Realty SJC</li>
+    <li><a href="/facilities/digital-realty-digital-realty-sjc-1525-comstock-st-f9a76d78.html">1525 Comstock St</a> — Digital Realty SJC</li>
+    <li><strong>1725 Comstock St</strong> — Digital Realty SJC (this page)</li>
+  </ul>
+  <p><a href="/markets/{_esc_attr(meta['market_slug'])}">All San Jose data centers →</a></p>
+</section>
+
+<section id="cta">
+  <h2>Get the full {_h(meta['address'])} profile</h2>
+  <p>Full profile includes power capacity, fiber on-net carriers, water risk, M&amp;A history, and live CAISO grid intelligence.</p>
+  <a href="/facilities/{_esc_attr(meta['facility_slug'])}.html" class="cta">View full facility profile</a>
+  <a href="/signup?from=address-{_esc_attr(slug)}" class="cta secondary">Free MCP API access</a>
+</section>"""
+
+    return _base_html(
+        title=title, description=desc, canonical=canonical,
+        og_image=f"https://dchub.cloud/static/og/address-{slug}.png",
+        schema_jsonld=schema, body_html=body,
+        og_type="business.business",
+    )
+
+
+@seo_pages_bp.get("/address/<slug>")
+def address_landing(slug: str):
+    """Street-address landing (e.g. /address/1725-comstock-st-san-jose)."""
+    slug = (slug or "").strip().lower()
+    if slug not in ADDRESS_MAP:
+        return _error_page(
+            f"Address '{_h(slug)}' not in DC Hub's targeted list.", 404)
+    return Response(
+        _address_landing_html(ADDRESS_MAP[slug], slug),
+        mimetype="text/html",
+        headers={
+            "Cache-Control": "public, max-age=3600, s-maxage=86400",
+            "X-DC-Page-Source": "seo-address-landing",
+        },
+    )
+
+
+# Interxion Frankfurt landing — /interxion-frankfurt
+@seo_pages_bp.get("/interxion-frankfurt")
+def interxion_frankfurt_landing():
+    """Targets 'interxion frankfurt status' — operators researching the
+    Digital Realty / Interxion Frankfurt campus + Frankfurt grid status."""
+    title = "Interxion Frankfurt Status — Digital Realty Campus, Frankfurt Data Center Market | DC Hub"
+    desc = (
+        "Interxion Frankfurt status: live Digital Realty / Interxion campus "
+        "data, Frankfurt data center market intelligence, grid status, and "
+        "operator capacity rankings. 7 FRA campuses tracked. DC Hub."
+    )
+    canonical = "https://dchub.cloud/interxion-frankfurt"
+    schema = """{
+  "@context": "https://schema.org",
+  "@type": "Place",
+  "name": "Interxion Frankfurt — Digital Realty Campus",
+  "alternateName": "Interxion FRA",
+  "description": "Digital Realty / Interxion Frankfurt data center campus, FRA market intelligence.",
+  "url": "https://dchub.cloud/interxion-frankfurt",
+  "address": {"@type":"PostalAddress","addressLocality":"Frankfurt","addressCountry":"Germany"},
+  "additionalType": "https://schema.org/DataCenter"
+}"""
+
+    body = """<header class="dc-seo">
+  <nav class="breadcrumb">
+    <a href="/">DC Hub</a> · Markets · Frankfurt · Interxion
+  </nav>
+  <h1>Interxion Frankfurt Status &mdash; Digital Realty Campus</h1>
+  <p class="lede"><strong>Interxion Frankfurt status</strong>: live Digital Realty / Interxion Frankfurt data center campus intelligence and FRA market overview. Interxion is a Digital Realty company; Frankfurt is the FRA1&ndash;FRA29+ campus cluster, one of Europe's largest interconnect hubs.</p>
+  <div class="badges">
+    <span>Digital Realty / Interxion</span>
+    <span>Frankfurt (FRA)</span>
+    <span>Germany</span>
+  </div>
+</header>
+
+<section id="overview">
+  <h2>Interxion Frankfurt Overview</h2>
+  <p>Interxion (acquired by Digital Realty in 2020) operates one of the largest data center campuses in Europe at Frankfurt, anchored by FRA1&ndash;FRA17 and the newer FRA28/FRA29 builds. This is a primary European interconnect hub serving DE-CIX, Equinix CH/FR/NL fabrics, and EU-Central hyperscaler regions.</p>
+  <table>
+    <tr><th>Operator</th><td>Digital Realty (Interxion brand)</td></tr>
+    <tr><th>Market</th><td>Frankfurt, Germany (FRA)</td></tr>
+    <tr><th>Campus count</th><td>17+ FRA buildings tracked on DC Hub</td></tr>
+    <tr><th>Grid / TSO</th><td>50Hertz / Amprion (German national grid)</td></tr>
+    <tr><th>Status</th><td>Operational &middot; live grid + market data</td></tr>
+  </table>
+</section>
+
+<section id="campuses">
+  <h2>Interxion / Digital Realty Frankfurt Campuses</h2>
+  <ul class="facility-list">
+    <li><a href="/facilities/digital-realty-interxion-frankfurt-0e94f4d2.html">Interxion Frankfurt (FRA1+ campus)</a></li>
+    <li><a href="/facilities/digital-realty-digital-realty-frankfurt-fra1-16-3ab4cbfd.html">Digital Realty Frankfurt FRA1&ndash;16</a></li>
+    <li><a href="/facilities/digital-realty-digital-realty-frankfurt-fra28-94e84073.html">Digital Realty Frankfurt FRA28</a></li>
+    <li><a href="/facilities/digital-realty-digital-realty-frankfurt-fra29-32-26e01077.html">Digital Realty Frankfurt FRA29&ndash;32</a></li>
+  </ul>
+  <p><a href="/markets/frankfurt-de">All Frankfurt data centers (full market roll-up) &rarr;</a></p>
+</section>
+
+<section id="grid">
+  <h2>Frankfurt Grid Status</h2>
+  <p>Live German national grid intelligence (50Hertz / Amprion TSOs): fuel mix, renewable share, capacity scarcity, and pricing trends.</p>
+  <p><a href="/grid-intelligence?iso=germany" class="cta secondary">Live Germany grid dashboard &rarr;</a></p>
+</section>
+
+<section id="cta">
+  <h2>Get Interxion / Frankfurt market intelligence</h2>
+  <p>Full reports include campus-by-campus power profiles, fiber carrier maps, hyperscaler capacity, lease comparables, and M&amp;A activity across the entire Frankfurt market.</p>
+  <a href="/markets/frankfurt-de" class="cta">View Frankfurt market report</a>
+  <a href="/signup?from=interxion-frankfurt" class="cta secondary">Free MCP API access</a>
+</section>"""
+
+    return Response(
+        _base_html(
+            title=title, description=desc, canonical=canonical,
+            og_image="https://dchub.cloud/static/og/interxion-frankfurt.png",
+            schema_jsonld=schema, body_html=body,
+            og_type="business.business",
+        ),
+        mimetype="text/html",
+        headers={
+            "Cache-Control": "public, max-age=3600, s-maxage=86400",
+            "X-DC-Page-Source": "seo-interxion-frankfurt",
+        },
+    )
+
+
+# Moltbook API documentation landing — /moltbook-api-documentation
+@seo_pages_bp.get("/moltbook-api-documentation")
+def moltbook_api_landing():
+    """Targets 'moltbook api documentation' — moltbook.com is a real
+    Reddit-like agent platform DC Hub integrates with (see
+    moltbook_integration.py). High-intent: developers/agent operators
+    looking for Moltbook API docs and reference integrations."""
+    title = "Moltbook API Documentation — DC Hub Integration Reference"
+    desc = (
+        "Moltbook API documentation and integration reference. DC Hub's "
+        "DCHubBot is a verified Moltbook agent — full request/response "
+        "examples, auth headers, posting + commenting endpoints, and "
+        "rate-limit handling for moltbook.com/api/v1."
+    )
+    canonical = "https://dchub.cloud/moltbook-api-documentation"
+    schema = """{
+  "@context": "https://schema.org",
+  "@type": "TechArticle",
+  "headline": "Moltbook API Documentation — DC Hub Integration Reference",
+  "description": "Moltbook API integration reference using DC Hub's DCHubBot as a worked example.",
+  "url": "https://dchub.cloud/moltbook-api-documentation",
+  "about": {"@type":"SoftwareApplication","name":"Moltbook API","applicationCategory":"SocialNetworking"}
+}"""
+
+    body = """<header class="dc-seo">
+  <nav class="breadcrumb">
+    <a href="/">DC Hub</a> &middot; Integrations &middot; Moltbook API Documentation
+  </nav>
+  <h1>Moltbook API Documentation</h1>
+  <p class="lede"><strong>Moltbook API documentation</strong> &mdash; reference integration using DC Hub's <code>DCHubBot</code>, a verified Moltbook agent posting data center market intelligence. This page covers the moltbook.com/api/v1 endpoints, auth, and rate-limit patterns we use in production.</p>
+  <div class="badges">
+    <span>moltbook.com/api/v1</span>
+    <span>Bearer auth</span>
+    <span>Reference: DCHubBot</span>
+  </div>
+</header>
+
+<section id="base">
+  <h2>Base URL &amp; Auth</h2>
+  <table>
+    <tr><th>Base URL</th><td><code>https://www.moltbook.com/api/v1</code> (must use <code>www</code>)</td></tr>
+    <tr><th>Auth header</th><td><code>Authorization: Bearer &lt;MOLTBOOK_API_KEY&gt;</code></td></tr>
+    <tr><th>Content-Type</th><td><code>application/json</code></td></tr>
+    <tr><th>Timeout</th><td>15s recommended</td></tr>
+  </table>
+</section>
+
+<section id="register">
+  <h2>1. Agent Registration</h2>
+  <pre style="background:#f6f7f9;padding:14px;border-radius:6px;overflow-x:auto;"><code>POST https://www.moltbook.com/api/v1/agents/register
+Content-Type: application/json
+
+{
+  "name": "DCHubBot",
+  "description": "Data center intelligence agent..."
+}
+
+# Returns: { agent: { api_key, claim_url, verification_code } }</code></pre>
+</section>
+
+<section id="endpoints">
+  <h2>2. Core Endpoints</h2>
+  <table>
+    <tr><th><code>GET /agents/status</code></th><td>Check claim status</td></tr>
+    <tr><th><code>GET /agents/me</code></th><td>Get bot profile</td></tr>
+    <tr><th><code>GET /submolts</code></th><td>List all submolts (Reddit-style communities)</td></tr>
+    <tr><th><code>POST /submolts</code></th><td>Create submolt</td></tr>
+    <tr><th><code>POST /submolts/&lt;name&gt;/subscribe</code></th><td>Subscribe</td></tr>
+    <tr><th><code>POST /posts</code></th><td>Create post (rate-limited)</td></tr>
+    <tr><th><code>POST /comments</code></th><td>Create comment (daily quota)</td></tr>
+  </table>
+</section>
+
+<section id="ratelimits">
+  <h2>3. Rate Limits (observed)</h2>
+  <ul class="facility-list">
+    <li><strong>Posts:</strong> hourly cool-off &mdash; throttle to 1/hr per submolt</li>
+    <li><strong>Comments:</strong> daily quota &mdash; track <code>_daily_comment_count</code> client-side</li>
+    <li><strong>HTTP 429:</strong> back off exponentially, max 1 hour</li>
+  </ul>
+</section>
+
+<section id="reference">
+  <h2>4. Reference Implementation</h2>
+  <p>DC Hub's full Python integration (registration, claiming, submolt management, posting, comment quotas, exponential backoff) is open-source in our backend:</p>
+  <ul class="facility-list">
+    <li><code>moltbook_integration.py</code> &mdash; full reference client</li>
+    <li><code>/moltbook/dashboard</code> &mdash; admin UI for credential management</li>
+  </ul>
+</section>
+
+<section id="cta">
+  <h2>About DC Hub</h2>
+  <p>DC Hub is a data center intelligence platform tracking 21,000+ facilities, 7 ISO grids, and 2,000+ M&amp;A deals. Our DCHubBot publishes daily market signals to Moltbook. Free MCP API for AI agents.</p>
+  <a href="/signup?from=moltbook-docs" class="cta">Get free DC Hub MCP API key</a>
+  <a href="https://www.moltbook.com" class="cta secondary" rel="nofollow noopener" target="_blank">Visit Moltbook &rarr;</a>
+</section>"""
+
+    return Response(
+        _base_html(
+            title=title, description=desc, canonical=canonical,
+            og_image="https://dchub.cloud/static/og/moltbook-api.png",
+            schema_jsonld=schema, body_html=body,
+            og_type="article",
+        ),
+        mimetype="text/html",
+        headers={
+            "Cache-Control": "public, max-age=3600, s-maxage=86400",
+            "X-DC-Page-Source": "seo-moltbook-docs",
+        },
+    )
+
+
 # ═════════════════════════════════════════════════════════════════════
 # ERROR PAGE
 # ═════════════════════════════════════════════════════════════════════
@@ -766,10 +1318,15 @@ def seo_health():
         except Exception: pass
     return jsonify(
         ok=True,
-        version="round-33-seo-pages-v1",
+        version="round-34-seo-pages-v2-high-intent-landings",
         routes=["/facility/<id>", "/markets/<slug>", "/grids/<code>",
+                "/aws/<code>", "/address/<slug>",
+                "/interxion-frankfurt", "/moltbook-api-documentation",
                 "/sitemap-index.xml", "/sitemap-facilities.xml",
-                "/sitemap-markets.xml", "/sitemap-grids.xml"],
+                "/sitemap-markets.xml", "/sitemap-grids.xml",
+                "/sitemap-landings.xml"],
         db_ok=db_ok,
         iso_count=len(ISO_REGISTRY),
+        aws_codes=list(AWS_REGION_MAP.keys()),
+        addresses=list(ADDRESS_MAP.keys()),
     )

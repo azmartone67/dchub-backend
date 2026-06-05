@@ -6569,10 +6569,13 @@ _INTERNAL_LINK_PROBES = [
 # gets the cached findings (0 probes). ~101k/day → ~3k/day, no loss of
 # detection latency that matters for a health check.
 _DEADLINK_CACHE = {"ts": 0.0, "findings": None}
-_DEADLINK_TTL_S = 3600  # r71: 30 → 60 min. CF (2026-06-04) still showed ~61k/day —
-                        # the in-process cache doesn't dedupe across 2 replicas or
-                        # survive restarts. Doubling the window halves sweeps; the
-                        # durable fix (Redis-shared cache spanning replicas) is flagged.
+_DEADLINK_TTL_S = 21600  # r72 (2026-06-04): 60 min → 6 h. CF analytics dashboard
+                         # inflation — dchub-brain-deadlink-probe was 56k/day (the
+                         # single largest probe UA). Dead-link state changes slowly;
+                         # 4 sweeps/day is plenty of detection latency for a self-
+                         # health check, and gives the same coverage at ~1/30th
+                         # the volume. (Durable fix — Redis-shared cache spanning
+                         # replicas — is flagged.)
 
 def check_dead_internal_links() -> list[dict]:
     """Phase RRR-newsletter (2026-05-18) — probe every high-traffic

@@ -422,7 +422,13 @@ def start_scheduler():
     # halves the per-replica probe volume; self-healing at 60-min latency is
     # plenty for a health check. (Deeper fix — leader-gate this scheduler so
     # only 1 replica runs it + a shared cross-replica probe cache — is flagged.)
-    _scheduler.add_job(heal_cycle, "interval", minutes=60, id="heal_cycle",
+    # r72 (2026-06-04): 60 min → 6 h. CF analytics dashboard inflation —
+    # DCHubHealer was 91k/day (24% of 380k daily). 414 probes × ~234 cycles =
+    # ~97k expected; bumping to 6h gives 4 cycles/day = ~1.6k req/day total
+    # (~60x reduction), still well within "responsive enough for a health
+    # check" — failures self-heal within a 6h window. Same coverage at <2%
+    # of the volume.
+    _scheduler.add_job(heal_cycle, "interval", hours=6, id="heal_cycle",
                        max_instances=1, coalesce=True, misfire_grace_time=300)
     # Also run once 60 seconds after boot
     from datetime import datetime, timedelta
@@ -430,7 +436,7 @@ def start_scheduler():
                        run_date=datetime.utcnow() + timedelta(seconds=60),
                        id="heal_warmup", max_instances=1)
     _scheduler.start()
-    log.info("self_heal scheduler STARTED — heal_cycle every 60 min")
+    log.info("self_heal scheduler STARTED — heal_cycle every 6 h")
     return _scheduler
 
 

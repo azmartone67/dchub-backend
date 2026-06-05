@@ -148,6 +148,64 @@ BACKEND_ISSUE_SOURCE_FILES: dict = {
 }
 
 
+# 2026-06-04: per-issue-type prompt hints injected into _build_code_prompt
+# below. Two issue classes were stuck "untried" for 16-31 cycles because the
+# generic _LEARN_CODE_SYSTEM prompt asks Claude to find a "silent correctness
+# bug in a loop handler" — but these issues aren't loop bugs, they're route
+# duplications and seeder coverage gaps. Give Claude an issue-specific
+# diagnosis + the right fix shape, matching the existing config_not_code
+# short-circuit pattern: route the proposer at the actual problem.
+#
+# Keys match the `issue` field on actionable_backend_issues (full string for
+# shadowed_route; prefix-match for coverage_gap_gas:XX where XX is a state).
+_ISSUE_TYPE_PROMPT_HINTS: dict = {
+    "shadowed_route": (
+        "\nISSUE-TYPE GUIDANCE (shadowed_route):\n"
+        "This finding means TWO @app.route / @bp.route registrations exist for "
+        "the SAME URL pattern — Flask silently uses whichever registered first, "
+        "so the other handler is dead code. Your job is NOT to rename a route. "
+        "Find BOTH registrations in the source (grep the URL in the snippets / "
+        "look for duplicate @app.route or @<bp>.route decorators) and propose "
+        "REMOVING the duplicate registration — typically the older/legacy one. "
+        "The `search` should include the @route decorator + its handler "
+        "function (a tight 4-10 line slice). The `replace` should be empty "
+        "OR a one-line comment marking the removal. If only one registration "
+        "is visible in the snippets, refuse (the duplicate lives off-screen)."
+    ),
+    "coverage_gap_gas": (
+        "\nISSUE-TYPE GUIDANCE (coverage_gap_gas):\n"
+        "This finding means a US state code has NO row in market_gas_pricing. "
+        "There are TWO valid fixes — pick whichever the snippets support:\n"
+        "  (A) ADD-TO-SEEDER: locate the state list / seeder loop in "
+        "      routes/powered_land_gas.py (or wherever the gas-pricing crawler "
+        "      iterates states) and propose appending the missing state to "
+        "      the iterated list. This is the right fix for states with real "
+        "      gas pricing data (most CONUS states).\n"
+        "  (B) ALLOWLIST-EXCLUDE: if the state has no producing gas market "
+        "      (e.g. HI, an island grid), propose adding it to a documented "
+        "      INTENTIONAL_GAS_EXCLUSIONS set with a one-line comment "
+        "      explaining why. Create the constant near the top of the seeder "
+        "      module if it doesn't exist.\n"
+        "Prefer (A) when in doubt. Refuse if the seeder file isn't in the "
+        "snippets."
+    ),
+}
+
+
+def _hint_for_issue(issue_label: str) -> str:
+    """Return the issue-type prompt hint for a finding label, or ''.
+    Exact match for 'shadowed_route'; prefix match for 'coverage_gap_gas'
+    (the live label is e.g. 'coverage_gap_gas:RI')."""
+    lbl = (issue_label or "").strip().lower()
+    if not lbl:
+        return ""
+    if lbl == "shadowed_route" or lbl.startswith("shadowed_route:"):
+        return _ISSUE_TYPE_PROMPT_HINTS["shadowed_route"]
+    if lbl.startswith("coverage_gap_gas"):
+        return _ISSUE_TYPE_PROMPT_HINTS["coverage_gap_gas"]
+    return ""
+
+
 _LEARN_CODE_SYSTEM = (
     "You are Brain v2 Layer 5 — the code-fix proposal engine for DC Hub's "
     "autonomous loops. A loop has been stale or dead across multiple cron-"
@@ -697,6 +755,13 @@ def learn_backend_issues():
         # source_locations pairs each file with an optional line, so the
         # excerpt can be CENTERED on the code the mapper found (gap B).
         source_locations = [(f, None) for f in source_files]
+        # 2026-06-04: coverage_gap_gas:XX findings carry the state code as the
+        # url (e.g. "RI"), which the route/file/table indexes can't resolve.
+        # Hand-curate the seeder file so these stop short-circuiting to
+        # no_source_map after 16-31 cycles untried.
+        _lbl_lc = (label or "").strip().lower()
+        if not source_locations and _lbl_lc.startswith("coverage_gap_gas"):
+            source_locations = [("routes/powered_land_gas.py", None)]
         # r37 (2026-05-31): DETERMINISTIC filename resolution BEFORE the heuristic
         # mapper. Many code-fixable findings name their file directly (e.g.
         # unsafe_db_conn_pattern: url='ai_interconnection.py', detail names it).
@@ -760,7 +825,13 @@ def learn_backend_issues():
             "age_hours": None,
             "note": f"backend_cron_scan issue: {label[:200]}",
         }
+        # 2026-06-04: inject issue-type-specific guidance for the two stuck
+        # categories (shadowed_route + coverage_gap_gas:XX). Appended to the
+        # generic prompt so Claude diagnoses the right shape of fix.
+        _hint = _hint_for_issue(label)
         prompt = _build_code_prompt(loop_state, excerpts, babysitter_log=[])
+        if _hint:
+            prompt = prompt + _hint
         claude_calls += 1
         text, err = _call_claude(prompt, _LEARN_CODE_SYSTEM)
         if err or not text:
@@ -989,6 +1060,18 @@ def brain_templated_recipes():
         "brand_uniformity", "brand_uniform",
         "class_addition", "brand-uniformity",
     )
+    # 2026-06-04 FIX: the 2-cycle gate ABOVE only fires when finding_class
+    # is in the 4-entry brand-uniformity whitelist. That means a 0.95
+    # confidence boot-guard syntax fix (finding_class is "boot_syntax" /
+    # "loop_stale" / etc — outside the whitelist) seen even 5+ cycles in
+    # a row still doesn't auto-merge: the proposer keeps re-proposing the
+    # SAME exact fix every cron tick (observed: id X proposed 2026-06-04
+    # AND 2026-06-05 with identical search/replace). Add a confidence-
+    # bypass: a proposal at >=0.95 confidence after a single cycle is as
+    # trustworthy as a brand-whitelist proposal after 2 cycles. Log the
+    # gate decision per-row so the dashboard / logs show WHY a proposal
+    # cleared (or didn't).
+    _HIGH_CONFIDENCE_BYPASS = 0.95
     try:
         import psycopg2
         url = os.environ.get("NEON_DATABASE_URL") or os.environ.get("DATABASE_URL")
@@ -998,13 +1081,22 @@ def brain_templated_recipes():
                            as_of=datetime.now(timezone.utc).isoformat()), 503
         with psycopg2.connect(url, connect_timeout=5) as conn, conn.cursor() as cur:
             # DISTINCT ON (recipe_key) keeps the newest row per group.
-            # WHERE clause = (status='approved') OR
-            #                (approval_count>=2 AND finding_class in WL).
+            # WHERE clause clears a recipe if ANY of:
+            #   (a) status='approved' (human-blessed)
+            #   (b) approval_count>=2 AND finding_class in brand whitelist
+            #       (the original safe-finding-class path)
+            #   (c) confidence>=0.95 (high-confidence bypass — added
+            #       2026-06-04 because real high-confidence syntax fixes
+            #       outside the brand whitelist were stuck in proposed
+            #       indefinitely. confidence is the proposer's own self-
+            #       assessment + survives _validate_and_store_proposal's
+            #       SQLite-hallucination + search-not-found guards.)
             cur.execute("""
                 SELECT DISTINCT ON (recipe_key)
                        recipe_key, file_path, finding_class,
                        search_text, replace_text,
-                       approval_count, cycles_seen, status, proposed_at
+                       approval_count, cycles_seen, status, proposed_at,
+                       confidence
                   FROM brain_proposed_code_fixes
                  WHERE recipe_key IS NOT NULL
                    AND (
@@ -1012,11 +1104,31 @@ def brain_templated_recipes():
                      OR (COALESCE(approval_count, 0) >= 2
                          AND COALESCE(LOWER(finding_class), '')
                              = ANY(%s))
+                     OR COALESCE(confidence, 0.0) >= %s
                    )
                  ORDER BY recipe_key, proposed_at DESC
                  LIMIT 500
-            """, (list(_SAFE_FINDING_CLASSES),))
+            """, (list(_SAFE_FINDING_CLASSES), _HIGH_CONFIDENCE_BYPASS))
             rows = cur.fetchall() or []
+            # Per-row gate reasoning. Visible in Railway logs so the operator
+            # can audit WHY each surfaced recipe cleared (or, if none did,
+            # diagnose what bar each candidate fell short of).
+            for _r in rows:
+                _fc = (_r[2] or "").lower()
+                _ac = int(_r[5] or 0)
+                _st = _r[7]
+                _cf = float(_r[9] or 0.0)
+                if _st == "approved":
+                    _reason = "human_approved"
+                elif _cf >= _HIGH_CONFIDENCE_BYPASS:
+                    _reason = f"high_confidence_bypass(conf={_cf:.2f})"
+                elif _ac >= 2 and _fc in _SAFE_FINDING_CLASSES:
+                    _reason = f"safe_class_2cycle({_fc},approval={_ac})"
+                else:
+                    _reason = "unknown"
+                print(f"[brain-l5-gate] recipe={_r[0][:40]!s} "
+                      f"file={_r[1]} cleared_by={_reason}",
+                      file=sys.stderr)
         recipes = [{
             "recipe_key": r[0],
             "page_url_template": r[1],
