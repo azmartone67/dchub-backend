@@ -662,7 +662,204 @@ def _deals_reason(signals: dict) -> str | None:
               "exactly as given, do NOT invent figures, link dchub.cloud.")
 
 
+# ─────────────────────────────────────────────────────────────────────
+# Engagement-biased topic selection (Phase A+B follow-on).
+#
+# Mirrors the smart_style() epsilon-greedy pattern in routes/og_cards.py:905.
+# We want today's topic pick to lean toward topics that have actually moved
+# the needle on LinkedIn over the last 30 days — but keep the deterministic
+# priority cascade (_pick_daily_topic_cascade) as a fallback whenever there
+# isn't enough signal, OR on the explore tick of the epsilon-greedy roll.
+#
+# Tunables (env, with safe defaults):
+#   DCHUB_TOPIC_EXPLORE_RATE   epsilon — fraction of days we ignore the
+#                              winner and let the cascade run, so every
+#                              topic keeps gathering fresh data
+#   DCHUB_TOPIC_MIN_POSTS      a topic needs at least this many recent
+#                              posts to be considered a real signal
+#   DCHUB_TOPIC_MIN_IMPRESSIONS total impressions across all topics must
+#                              clear this bar before we trust the bias
+# ─────────────────────────────────────────────────────────────────────
+
+_TOPIC_EXPLORE_RATE = float(os.environ.get('DCHUB_TOPIC_EXPLORE_RATE', '0.30'))
+_TOPIC_MIN_POSTS = int(os.environ.get('DCHUB_TOPIC_MIN_POSTS', '2'))
+_TOPIC_MIN_IMPRESSIONS = int(os.environ.get('DCHUB_TOPIC_MIN_IMPRESSIONS', '100'))
+
+# Topics eligible for engagement-biased exploitation. Anything not in this
+# list always falls through to the cascade (e.g. iso_focus / new_facility /
+# the rotation themes — they have their own dedup logic and shouldn't be
+# stolen mid-cascade).
+_BIAS_CANDIDATE_TOPICS = (
+    "theme_deals",
+    "afternoon_pulse",
+    "dcpi_leader",
+    "dcpi_warning",
+    "coverage_milestone",
+    "ai_citation",
+    "industry_pulse",
+)
+
+
+def _topic_performance() -> dict:
+    """Per-topic LinkedIn engagement over the last 30 days.
+
+    Returns {topic: {'avg_impressions': float,
+                     'avg_engagement': float,
+                     'n_posts': int}} or {} on any DB hiccup. Best-effort:
+    never raises. The columns p.impressions / p.likes / p.comments are
+    added in Phase A+B of the LinkedIn-ingest project; this function will
+    just return {} until they exist, and the wrapper will fall through to
+    the cascade — so it's safe to ship ahead of the schema change.
+    """
+    conn = _conn()
+    if conn is None:
+        return {}
+    out = {}
+    try:
+        with conn, conn.cursor() as cur:
+            cur.execute("""
+                SELECT a.source_topic,
+                       AVG(p.impressions)        AS avg_imp,
+                       AVG(p.likes + p.comments) AS avg_eng,
+                       COUNT(*)                  AS n_posts
+                  FROM linkedin_posts p
+                  JOIN auto_press_releases a ON a.slug = p.slug
+                 WHERE p.posted_at > NOW() - INTERVAL '30 days'
+                   AND p.impressions IS NOT NULL
+                 GROUP BY a.source_topic
+            """)
+            for source_topic, avg_imp, avg_eng, n_posts in cur.fetchall():
+                if not source_topic:
+                    continue
+                out[source_topic] = {
+                    'avg_impressions': float(avg_imp or 0),
+                    'avg_engagement':  float(avg_eng or 0),
+                    'n_posts':         int(n_posts or 0),
+                }
+    except Exception as e:
+        # Most common case while Phase A+B columns don't exist yet:
+        # UndefinedColumn → log once, return empty, let cascade run.
+        print(f"[topic-bias] _topic_performance query failed: {e}",
+              file=sys.stderr)
+        return {}
+    finally:
+        try: conn.close()
+        except Exception: pass
+    return out
+
+
+def _topic_bias_log(picked: str, mode: str, score=None) -> None:
+    """Single-line stderr trace so operators can see why each pick fired."""
+    try:
+        score_repr = f"{score:.2f}" if isinstance(score, (int, float)) else "n/a"
+        print(f"[topic-bias] picked={picked} mode={mode} score={score_repr}",
+              file=sys.stderr)
+    except Exception:
+        pass
+
+
+def pick_topic_with_bias(default_topic_picker_fn, candidate_topics,
+                         signals=None):
+    """Epsilon-greedy topic pick biased by 30-day LinkedIn engagement.
+
+    Returns a 3-tuple (result, mode, score):
+      result: (topic_slug, reason) on an exploit pick, else None
+      mode:   'biased'  — exploit pick returned
+              'explore' — epsilon-greedy roll picked exploration; caller
+                          should fall through to the cascade
+              'cascade' — not enough signal to trust; caller should fall
+                          through to the cascade
+      score:  the exploit score (float) on 'biased', else None
+
+    The mode is exposed so the wrapper can log accurately why each daily
+    pick happened (operator visibility was explicit in the spec).
+    """
+    try:
+        perf = _topic_performance()
+    except Exception:
+        return None, 'cascade', None
+
+    if not perf:
+        return None, 'cascade', None
+
+    # Is there ANY topic with enough signal to trust? Same gate as
+    # smart_style(): if global signal is too thin, deterministic logic wins.
+    total_imp = sum(b.get('avg_impressions', 0) * b.get('n_posts', 0)
+                    for b in perf.values())
+    has_any_qualifier = any(
+        (b.get('n_posts', 0) >= _TOPIC_MIN_POSTS and
+         b.get('avg_impressions', 0) * b.get('n_posts', 0) >= _TOPIC_MIN_IMPRESSIONS)
+        for b in perf.values()
+    )
+    if not has_any_qualifier or total_imp < _TOPIC_MIN_IMPRESSIONS:
+        return None, 'cascade', None
+
+    # Deterministic-per-day RNG so a single UTC day picks consistently
+    # (matches the og_cards.smart_style pattern — important for the
+    # afternoon retry to see the same "winner" the morning run saw).
+    import random as _random
+    day = datetime.utcnow().strftime('%Y-%m-%d')
+    rng = _random.Random('topic-bias-' + day)
+
+    if rng.random() < _TOPIC_EXPLORE_RATE:
+        # Explore tick — let the cascade pick something so every topic
+        # keeps accumulating impression data.
+        return None, 'explore', None
+
+    # Exploit — best (0.4*impressions + 0.6*engagement) score among
+    # candidates that individually clear the bar.
+    eligible = []
+    for t in candidate_topics:
+        b = perf.get(t)
+        if not b:
+            continue
+        topic_total_imp = b.get('avg_impressions', 0) * b.get('n_posts', 0)
+        if (b.get('n_posts', 0) >= _TOPIC_MIN_POSTS and
+                topic_total_imp >= _TOPIC_MIN_IMPRESSIONS):
+            score = (b['avg_impressions'] * 0.4) + (b['avg_engagement'] * 0.6)
+            eligible.append((t, score, b))
+
+    if not eligible:
+        return None, 'cascade', None
+
+    eligible.sort(key=lambda kv: kv[1], reverse=True)
+    winner, winner_score, _winner_stats = eligible[0]
+    reason = (f"Engagement-biased pick — '{winner}' has been the strongest "
+              f"LinkedIn performer over the last 30 days "
+              f"(impressions-weighted score {winner_score:.1f}). Lead with "
+              f"the format the audience has rewarded.")
+    return (winner, reason), 'biased', winner_score
+
+
 def _pick_daily_topic(signals: dict) -> tuple[str, str]:
+    """Wrapper: engagement-biased pick first, deterministic cascade second.
+
+    The bias layer is conservative (see pick_topic_with_bias) — it only
+    overrides the cascade when there's clear LinkedIn signal AND the
+    epsilon-greedy roll says "exploit." Everything else falls through to
+    the original Phase LL/MM/NN cascade, which still owns the dedup +
+    market-clash guarantees we rely on.
+    """
+    result, mode, score = None, 'cascade', None
+    try:
+        result, mode, score = pick_topic_with_bias(
+            _pick_daily_topic_cascade, _BIAS_CANDIDATE_TOPICS, signals=signals)
+    except Exception as e:
+        print(f"[topic-bias] wrapper crashed, falling through: {e}",
+              file=sys.stderr)
+        result, mode, score = None, 'cascade', None
+
+    if result is not None:
+        topic, reason = result
+        _topic_bias_log(topic, mode, score=score)
+        return topic, reason
+
+    topic, reason = _pick_daily_topic_cascade(signals)
+    _topic_bias_log(topic, mode, score=score)
+    return topic, reason
+
+
+def _pick_daily_topic_cascade(signals: dict) -> tuple[str, str]:
     """Phase LL: pick the most newsworthy topic for today's auto-press,
     with guaranteed fallbacks so the cron never goes a day without
     output.

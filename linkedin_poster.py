@@ -796,7 +796,11 @@ def fetch_linkedin_engagement(days=21):
         _execute("""ALTER TABLE linkedin_posts
                       ADD COLUMN IF NOT EXISTS likes INT,
                       ADD COLUMN IF NOT EXISTS comments INT,
-                      ADD COLUMN IF NOT EXISTS engagement_fetched_at TIMESTAMPTZ""")
+                      ADD COLUMN IF NOT EXISTS engagement_fetched_at TIMESTAMPTZ,
+                      ADD COLUMN IF NOT EXISTS impressions BIGINT,
+                      ADD COLUMN IF NOT EXISTS clicks BIGINT,
+                      ADD COLUMN IF NOT EXISTS shares BIGINT,
+                      ADD COLUMN IF NOT EXISTS unique_impressions BIGINT""")
     except Exception:
         pass
     rows = _execute("""SELECT post_urn FROM linkedin_posts
@@ -830,6 +834,124 @@ def fetch_linkedin_engagement(days=21):
                      (likes, comments, urn))
             out["updated"] += 1
         except Exception:
+            continue
+    out["ok"] = True
+    return out
+
+
+def fetch_linkedin_impressions(days=21):
+    """r72 (2026-06-05): native LinkedIn IMPRESSIONS / CLICKS / SHARES /
+    UNIQUE_IMPRESSIONS — completes the measure→learn loop's reach signal
+    (engagement above only sees likes/comments, which under-represents passive
+    high-impression posts the algorithm is favoring).
+
+    Reads from /rest/organizationalEntityShareStatistics rather than the
+    per-post socialActions feed: that endpoint takes a List(<urn>...) of recent
+    share URNs and returns `totalShareStatistics.{impressionCount, clickCount,
+    shareCount, uniqueImpressionsCount}` per element. We batch URNs in groups
+    of 20 to stay under URL length limits.
+
+    FAIL-SOFT: no token → skip; first 401/403 (token lacks r_organization_social
+    OR r_organizational_social_feed) → abort with reason. Idempotently adds
+    impressions/clicks/shares/unique_impressions BIGINT columns (also created
+    in fetch_linkedin_engagement above so this can run independently).
+    Returns a summary dict. Safe to schedule before scopes are granted."""
+    import requests as req
+    import urllib.parse as _up
+    out = {"ok": False, "checked": 0, "updated": 0, "reason": None}
+    token = _get_valid_token()
+    if not token:
+        out["reason"] = "no_token"
+        return out
+    # Defensive ALTERs — engagement function adds these too, but running this
+    # function alone (e.g. ad-hoc cron) must still work.
+    try:
+        _execute("""ALTER TABLE linkedin_posts
+                      ADD COLUMN IF NOT EXISTS impressions BIGINT,
+                      ADD COLUMN IF NOT EXISTS clicks BIGINT,
+                      ADD COLUMN IF NOT EXISTS shares BIGINT,
+                      ADD COLUMN IF NOT EXISTS unique_impressions BIGINT,
+                      ADD COLUMN IF NOT EXISTS engagement_fetched_at TIMESTAMPTZ""")
+    except Exception:
+        pass
+    rows = _execute("""SELECT post_urn FROM linkedin_posts
+                        WHERE post_urn IS NOT NULL AND post_urn <> ''
+                          AND COALESCE(status,'') = 'success'
+                          AND posted_at > NOW() - make_interval(days => %s)
+                        ORDER BY posted_at DESC LIMIT 100""",
+                    (int(days),), fetchall=True) or []
+    urns = [(r.get("post_urn") if isinstance(r, dict) else r[0]) or ""
+            for r in rows]
+    # Only share URNs are valid for organizationalEntityShareStatistics.
+    # /rest/posts returns urn:li:share:* (the modern surface) which is OK.
+    # urn:li:ugcPost:* is also accepted by the statistics endpoint.
+    urns = [u for u in urns if isinstance(u, str) and u.startswith("urn:li:")]
+    org_id = (os.environ.get("LINKEDIN_ORG_ID", "110894959") or "110894959").strip()
+    org_urn = f"urn:li:organization:{org_id}"
+    api_ver = (os.environ.get("LINKEDIN_API_VERSION", "202601") or "202601").strip()
+    headers = {"Authorization": f"Bearer {token}",
+               "X-Restli-Protocol-Version": "2.0.0",
+               "LinkedIn-Version": api_ver}
+
+    def _to_int(v):
+        try:
+            return int(v) if v is not None else None
+        except (ValueError, TypeError):
+            return None
+
+    # Batch URNs (LinkedIn caps the URL; 20 is safe).
+    BATCH = 20
+    for i in range(0, len(urns), BATCH):
+        batch = urns[i:i + BATCH]
+        if not batch:
+            continue
+        out["checked"] += len(batch)
+        # shares=List(urn1,urn2,...) — URL-encoded per restli spec.
+        shares_list = "List(" + ",".join(_up.quote(u, safe="") for u in batch) + ")"
+        url = (
+            "https://api.linkedin.com/rest/organizationalEntityShareStatistics"
+            f"?q=organizationalEntity"
+            f"&organizationalEntity={_up.quote(org_urn, safe='')}"
+            f"&shares={shares_list}"
+        )
+        try:
+            resp = req.get(url, headers=headers, timeout=15)
+            if resp.status_code in (401, 403):
+                out["reason"] = (f"scope_or_auth_{resp.status_code} "
+                                  "(token needs r_organization_social)")
+                break
+            if resp.status_code != 200:
+                out["reason"] = f"status_{resp.status_code}: {resp.text[:160]}"
+                continue
+            payload = resp.json() or {}
+            for elem in (payload.get("elements") or []):
+                # The element's "share" field tells us WHICH URN this row maps
+                # to (the API doesn't guarantee response order matches request).
+                share_urn = elem.get("share") or ""
+                stats = elem.get("totalShareStatistics") or {}
+                impressions = _to_int(stats.get("impressionCount"))
+                clicks = _to_int(stats.get("clickCount"))
+                shares = _to_int(stats.get("shareCount"))
+                uniq = _to_int(stats.get("uniqueImpressionsCount"))
+                if not share_urn:
+                    continue
+                try:
+                    _execute(
+                        """UPDATE linkedin_posts
+                              SET impressions=%s,
+                                  clicks=%s,
+                                  shares=%s,
+                                  unique_impressions=%s,
+                                  engagement_fetched_at=NOW()
+                            WHERE post_urn=%s""",
+                        (impressions, clicks, shares, uniq, share_urn),
+                    )
+                    out["updated"] += 1
+                except Exception as e:
+                    logger.warning(
+                        "r72 impressions UPDATE failed urn=%s: %s", share_urn, e)
+        except Exception as e:
+            logger.warning("r72 impressions batch failed: %s", e)
             continue
     out["ok"] = True
     return out
@@ -1110,9 +1232,11 @@ def register_linkedin_routes(app):
     # ── POST /api/linkedin/seed-token — Bootstrap token from env ─
     @app.route('/api/linkedin/engagement-sync', methods=['POST', 'GET', 'OPTIONS'])
     def linkedin_engagement_sync():
-        """r70: pull native LinkedIn engagement (likes/comments) onto recent
-        posts. Admin/cron-gated; fail-soft (no-ops until the token has the
-        r_organization_social scope). Feeds the media measure→learn loop."""
+        """r70 + r72: pull native LinkedIn engagement (likes/comments) AND
+        impressions/clicks/shares/unique_impressions onto recent posts. Both
+        feeds fire so a single cron invocation refreshes the full measure→learn
+        signal set. Admin/cron-gated; fail-soft (no-ops until the token has the
+        r_organization_social scope)."""
         if request.method == 'OPTIONS':
             return ('', 204)
         import os
@@ -1126,7 +1250,10 @@ def register_linkedin_routes(app):
             days = int(request.args.get("days", 21))
         except (ValueError, TypeError):
             days = 21
-        return jsonify(fetch_linkedin_engagement(days=days)), 200
+        engagement = fetch_linkedin_engagement(days=days)
+        impressions = fetch_linkedin_impressions(days=days)
+        return jsonify({"engagement": engagement,
+                        "impressions": impressions}), 200
 
     @app.route('/api/linkedin/seed-token', methods=['POST', 'OPTIONS'])
     def linkedin_seed_token():

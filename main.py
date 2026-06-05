@@ -26732,6 +26732,18 @@ try:
 except Exception as _dap_e:
     print(f"[main] dcpi_auto_press_bp register failed: {_dap_e}", flush=True)
 
+# DC Hub Media accelerator (2026-06-05): viral LinkedIn posts (≥2.0x the
+# 30d impressions baseline within 6h of publish) auto-enqueue identical
+# Twitter + Bluesky cross-posts and get flagged for analyst review. The
+# existing per-platform publisher loops in content_publisher.py pick the
+# approved rows up, so the same 2/day cap applies.
+try:
+    from routes.dchub_media_accelerator import dchub_media_accelerator_bp
+    app.register_blueprint(dchub_media_accelerator_bp)
+    print("[main] dchub_media_accelerator_bp registered: /api/v1/admin/media/accelerator/{scan,recent}", flush=True)
+except Exception as _dma_e:
+    print(f"[main] dchub_media_accelerator_bp register failed: {_dma_e}", flush=True)
+
 try:
     from routes.ai_citation_scraper import ai_citation_scraper_bp
     app.register_blueprint(ai_citation_scraper_bp)

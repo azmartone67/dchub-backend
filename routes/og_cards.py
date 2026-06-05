@@ -864,9 +864,14 @@ _OG_SMART_MIN_TOTAL_VIEWS = int(os.environ.get('DCHUB_OG_MIN_VIEWS', '20'))
 def _style_performance():
     """Per-form-factor engagement over the last 60 days.
 
-    Returns {style: {'views':int,'clicks':int,'posts':set(slugs)}} — or {}
-    on any DB hiccup. The form factor a press release ran is derived from
-    its publish weekday via DAILY_STYLES (same mapping og_performance uses).
+    Returns {style: {'views':int,'clicks':int,'posts':set(slugs),
+                     'li_impressions':int,'li_engagements':int,'li_posts':int}}
+    — or {} on any DB hiccup. The form factor a press release ran is derived
+    from its publish weekday via DAILY_STYLES (same mapping og_performance uses).
+
+    LinkedIn factor (2026-06-05): joins linkedin_posts by slug for the same
+    window. Falls back gracefully (li_* counters stay 0) when linkedin_posts
+    has no slug column yet (Phase A+B not landed) or no impressions data.
     Best-effort: never raises.
     """
     try:
@@ -888,12 +893,50 @@ def _style_performance():
                 if not gen_at:
                     continue
                 style = DAILY_STYLES.get(gen_at.weekday(), 'data_brutal')
-                b = agg.setdefault(style, {'views': 0, 'clicks': 0, 'posts': set()})
+                b = agg.setdefault(style, {
+                    'views': 0, 'clicks': 0, 'posts': set(),
+                    'li_impressions': 0, 'li_engagements': 0, 'li_posts': 0,
+                })
                 b['posts'].add(slug)
                 if event_type == 'view':
                     b['views'] += int(n or 0)
                 elif event_type in ('click_out', 'stripe_click'):
                     b['clicks'] += int(n or 0)
+
+            # LinkedIn engagement factor — joined on slug. Fail-soft: if the
+            # linkedin_posts.slug column doesn't exist yet (pre Phase A+B URN
+            # capture), skip the LinkedIn factor entirely. Same for missing
+            # impressions/shares columns.
+            try:
+                cur.execute("""
+                    SELECT a.slug, a.generated_at,
+                           COALESCE(p.impressions, 0),
+                           COALESCE(p.likes, 0),
+                           COALESCE(p.comments, 0),
+                           COALESCE(p.shares, 0)
+                      FROM auto_press_releases a
+                      LEFT JOIN linkedin_posts p ON p.slug = a.slug
+                     WHERE a.generated_at > NOW() - INTERVAL '60 days'
+                       AND p.impressions IS NOT NULL
+                """)
+                for slug, gen_at, imps, likes, comments, shares in cur.fetchall():
+                    if not gen_at:
+                        continue
+                    style = DAILY_STYLES.get(gen_at.weekday(), 'data_brutal')
+                    b = agg.setdefault(style, {
+                        'views': 0, 'clicks': 0, 'posts': set(),
+                        'li_impressions': 0, 'li_engagements': 0, 'li_posts': 0,
+                    })
+                    b['li_impressions'] += int(imps or 0)
+                    b['li_engagements'] += int((likes or 0) + (comments or 0) + (shares or 0))
+                    b['li_posts'] += 1
+            except Exception as li_err:
+                # linkedin_posts.slug / impressions / shares column missing,
+                # or table doesn't exist — degrade gracefully. Operators see
+                # the skip in stderr; pick still works on pure site CTR.
+                import sys as _sys
+                print(f"[smart-style] LinkedIn factor skipped: {type(li_err).__name__}: {str(li_err)[:160]}",
+                      file=_sys.stderr)
     except Exception:
         return {}
     finally:
@@ -904,7 +947,13 @@ def _style_performance():
 
 def smart_style():
     """Performance-aware form-factor pick. Falls back to todays_style()
-    until there's enough engagement data to judge."""
+    until there's enough engagement data to judge.
+
+    Combined score (2026-06-05): site CTR + LinkedIn engagement rate, weighted
+    by DCHUB_STYLE_SITE_WEIGHT (default 0.60) and DCHUB_STYLE_LI_WEIGHT
+    (default 0.40), both read at call time so they can be tweaked without
+    redeploy. Styles with no LinkedIn data are scored on pure site CTR
+    (no penalty for newer styles)."""
     try:
         agg = _style_performance()
     except Exception:
@@ -925,9 +974,40 @@ def smart_style():
     if rng.random() < _OG_EXPLORE_RATE:
         # Explore — pick uniformly so every form factor keeps gathering data.
         return rng.choice(all_styles)
-    # Exploit — best measured click-through rate among the eligible cohort.
-    best = max(eligible.items(), key=lambda kv: kv[1]['clicks'] / kv[1]['views'])
-    return best[0]
+
+    # Exploit — best COMBINED score (site CTR + LinkedIn engagement). Env
+    # tunables read here so an operator can shift the mix without redeploy.
+    site_w = float(os.environ.get('DCHUB_STYLE_SITE_WEIGHT', '0.60'))
+    li_w = float(os.environ.get('DCHUB_STYLE_LI_WEIGHT', '0.40'))
+
+    def _combined(b):
+        site_ctr = (b['clicks'] / b['views']) if b['views'] > 0 else 0.0
+        li_imps = b.get('li_impressions', 0)
+        if li_imps > 0:
+            li_eng_rate = b.get('li_engagements', 0) / li_imps
+            # Normalize LinkedIn eng rate to 0..1; ~10% is exceptional, clamp.
+            li_norm = min(li_eng_rate * 10.0, 1.0)
+            return site_w * site_ctr + li_w * li_norm, site_ctr, li_eng_rate
+        # No LinkedIn signal for this style yet — pure site CTR, no penalty.
+        return site_ctr, site_ctr, 0.0
+
+    scored = {s: _combined(b) for s, b in eligible.items()}
+    best = max(scored.items(), key=lambda kv: kv[1][0])
+    style, (score, site_ctr, li_eng_rate) = best
+
+    # Stderr log so operators can see the math behind today's pick.
+    try:
+        import sys as _sys
+        print(
+            f"[smart-style] eligible={len(eligible)} picked={style} "
+            f"score={score:.4f} site_ctr={site_ctr:.4f} li_eng_rate={li_eng_rate:.4f} "
+            f"weights=site:{site_w:.2f}/li:{li_w:.2f}",
+            file=_sys.stderr,
+        )
+    except Exception:
+        pass
+
+    return style
 
 
 def _draw_fallback(slug):

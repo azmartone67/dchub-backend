@@ -93,6 +93,33 @@ SCHEDULE = [
     # gives R2 cache + global CF edge time to warm before first morning
     # social scrape. Same-hour-same-day cap → one run/day.
     ( 1,  1, "daily_r2_refresh",   "_run_daily_r2_refresh"),
+    # LinkedIn native engagement + impressions sync (r72, 2026-06-05):
+    # Fetches likes/comments via /rest/socialActions AND impressions/clicks/
+    # shares/unique_impressions via /rest/organizationalEntityShareStatistics
+    # for posts in the last 21 days, populating linkedin_posts.{likes, comments,
+    # impressions, clicks, shares, unique_impressions}. Feeds the media
+    # measure→learn loop with the FULL signal set — passive high-reach posts
+    # (zero comments but big impressions) finally become visible to the
+    # generator. Slot 13/13 UTC: empty hour, same-day cap via same-hour pair.
+    # GitHub Actions cron (linkedin-engagement-sync.yml @ 14:40) ALSO fires
+    # daily — this is a redundant second trigger so a Railway-only deploy
+    # without GH secrets still measures engagement. Endpoint is admin-gated +
+    # fail-soft when the LinkedIn token lacks r_organization_social.
+    (13, 13, "linkedin_engagement_sync", "_run_linkedin_engagement_sync"),
+    # DC Hub Media accelerator (2026-06-05): twice-daily scan for LinkedIn
+    # posts that outperformed the 30d impressions baseline by 2x+ within
+    # 6h of publish — auto-enqueues identical Twitter + Bluesky cross-posts
+    # (status='approved'; existing publisher loops respect the 2/day cap)
+    # and flags the social_media_posts row (accelerate=TRUE, viral_score).
+    # The SCHEDULE harness is hour-based with two slots per entry; we pick
+    # 15 UTC + 23 UTC. 15:00 fires ~2h after linkedin_engagement_sync
+    # (13:00) so today's impressions data is fresh; 23:00 catches
+    # afternoon-post breakthroughs without colliding with 22:00
+    # energy_discovery. The qualifying window is 6h post-publish, so cron
+    # cadence and detection window are aligned. Same-hour-same-day cap →
+    # one run per slot per day. Both slots are empty hours (no overlap
+    # with 14/2 knowledge-sync, 18/19 news/facilities, 20/21 deals/market).
+    (15, 23, "accelerator_scan",   "_run_accelerator_scan"),
 ]
 
 # ---------------------------------------------------------------------------
@@ -1083,6 +1110,68 @@ def _run_tool_calibration_check():
         logger.error("🎯 Tool calibration check error: %s", e, exc_info=True)
 
 
+def _run_linkedin_engagement_sync():
+    """r72 (2026-06-05): pull native LinkedIn engagement + impressions onto
+    recent posts so the media measure→learn loop sees BOTH halves of the
+    signal (likes/comments via socialActions AND impressions/clicks/shares
+    via organizationalEntityShareStatistics).
+
+    FAIL-SOFT: if the token lacks r_organization_social, fetch_* returns
+    `reason: scope_or_auth_403` and we just log + continue — no exception
+    propagates. Same-day cap is provided by SCHEDULE's same-hour pair
+    (13,13), so at most one run per UTC day."""
+    try:
+        from linkedin_poster import (
+            fetch_linkedin_engagement as _fetch_eng,
+            fetch_linkedin_impressions as _fetch_imp,
+        )
+        eng = _fetch_eng(days=21) or {}
+        imp = _fetch_imp(days=21) or {}
+        logger.info(
+            "📈 LinkedIn engagement sync: eng(checked=%d updated=%d reason=%s) "
+            "imp(checked=%d updated=%d reason=%s)",
+            eng.get("checked", 0), eng.get("updated", 0), eng.get("reason"),
+            imp.get("checked", 0), imp.get("updated", 0), imp.get("reason"),
+        )
+    except Exception as e:
+        logger.error("📈 LinkedIn engagement sync error: %s", e, exc_info=True)
+
+
+def _run_accelerator_scan():
+    """DC Hub Media accelerator (2026-06-05): scan LinkedIn posts for
+    breakouts vs the 30d impressions baseline. Any post ≥2.0x baseline
+    AND <6h old AND not yet accelerated gets:
+      (a) social_media_posts row flagged: accelerate=TRUE, viral_score=R
+      (b) identical Twitter + Bluesky cross-posts enqueued
+          (status='approved' — the existing publisher loops respect
+          the 2/day per-platform cap, so we cannot spam).
+    Calls the loopback admin endpoint so the same auth gate applies to
+    cron and to manual triggers."""
+    import requests as _rq
+    key = (os.environ.get("DCHUB_ADMIN_KEY")
+           or os.environ.get("DCHUB_INTERNAL_KEY")
+           or os.environ.get("DCHUB_ADMIN_API_KEY") or "")
+    if not key:
+        logger.warning("📣 accelerator_scan: skipped — DCHUB_ADMIN_KEY not set")
+        return
+    base = os.environ.get("DCHUB_INTERNAL_API", "http://127.0.0.1:8080")
+    try:
+        r = _rq.post(
+            f"{base}/api/v1/admin/media/accelerator/scan",
+            headers={"X-Admin-Key": key,
+                     "User-Agent": "dchub-cron-accelerator/1.0"},
+            timeout=60,
+        )
+        d = (r.json() if r.headers.get("content-type", "").startswith("application/json") else {}) or {}
+        logger.info(
+            "📣 accelerator_scan: scanned=%s accelerated=%s baseline=%s errors=%s",
+            d.get("scanned"), d.get("accelerated"),
+            d.get("baseline"), len(d.get("errors", []) or []),
+        )
+    except Exception as e:
+        logger.error("📣 accelerator_scan: error — %s", e)
+
+
 _RUNNERS = {
     "market_refresh":      _run_market_refresh,
     "news":                _run_news_crawler,
@@ -1099,6 +1188,8 @@ _RUNNERS = {
     "auto_interconnect":   _run_auto_interconnect,
     "gas_pricing_refresh": _run_gas_pricing_refresh,
     "tool_calibration":    _run_tool_calibration_check,
+    "linkedin_engagement_sync": _run_linkedin_engagement_sync,
+    "accelerator_scan":    _run_accelerator_scan,
 }
 
 

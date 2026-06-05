@@ -100,7 +100,11 @@ def init_content_tables():
             except Exception: pass
         except Exception as e:
             logger.warning(f"social_media_posts CREATE skipped: {e}")
-        # Add missing columns idempotently (cheap on PG with IF NOT EXISTS)
+        # Add missing columns idempotently (cheap on PG with IF NOT EXISTS).
+        # accelerate + viral_score added 2026-06-05 for the DC Hub Media
+        # accelerator (routes/dchub_media_accelerator.py): when a LinkedIn
+        # post outperforms the 30d baseline by 2x+ within 6h of publish we
+        # auto-enqueue Twitter + Bluesky cross-posts and flag the row.
         for col_def in [
             "approved_at TEXT",
             "publish_platform TEXT",
@@ -108,6 +112,8 @@ def init_content_tables():
             "bluesky_uri TEXT",
             "twitter_id TEXT",
             "linkedin_urn TEXT",
+            "accelerate BOOLEAN DEFAULT FALSE",
+            "viral_score NUMERIC DEFAULT NULL",
         ]:
             col = col_def.split()[0]
             try:
@@ -766,6 +772,54 @@ def _delete_linkedin_share(share_urn, access_token):
     return False, f"LinkedIn delete error {resp.status_code}: {resp.text[:300]}"
 
 
+def _persist_linkedin_urn(cur, post_id, urn, content_text, slug=None):
+    """r72 (2026-06-05): close the URN capture gap that broke the engagement
+    measure→learn loop.
+       (1) UPDATE social_media_posts.linkedin_urn = <urn>  (column existed but
+           was never populated; the publisher loop dropped the API return value).
+       (2) INSERT INTO linkedin_posts (post_urn, content, post_type, status,
+           posted_at) so fetch_linkedin_engagement(days=21) in linkedin_poster.py
+           — which iterates linkedin_posts.post_urn, NOT
+           social_media_posts.linkedin_urn — picks them up on the next sync.
+
+    FAIL-SOFT: never raises. A URN-persist failure cannot un-do a successful
+    LinkedIn share, so we log + return rather than blowing up the caller. Only
+    persists real URNs (filters DRY_RUN + sentinel strings 'posted',
+    'posted-with-image', 'posted-with-fallback-image')."""
+    if not urn or not isinstance(urn, str):
+        return False
+    if 'DRY_RUN' in urn:
+        return False
+    if not urn.startswith('urn:li:'):
+        # _post_to_linkedin fallback sentinels — useful as a status signal but
+        # the engagement API needs a real urn:li:share:* / urn:li:ugcPost:*.
+        logger.info("r72 skip URN-persist (non-urn sentinel): %s", urn)
+        return False
+    try:
+        cur.execute(
+            "UPDATE social_media_posts SET linkedin_urn = %s WHERE id = %s",
+            (urn, post_id),
+        )
+    except Exception as e:
+        logger.warning("r72 social_media_posts.linkedin_urn UPDATE failed: %s", e)
+    # Mirror into linkedin_posts so the existing engagement reader sees it.
+    # We use the SAME conn/cur (already committed by the caller's UPDATE wrapper)
+    # to keep this atomic with the row state transition to 'published'.
+    try:
+        cur.execute(
+            """INSERT INTO linkedin_posts (post_urn, content, post_type, status,
+                                            posted_at)
+               VALUES (%s, %s, %s, %s, NOW())""",
+            (urn, (content_text or '')[:500], 'auto_press', 'success'),
+        )
+    except Exception as e:
+        # Table may not exist in some dev DBs; linkedin_poster._ensure_tables
+        # creates it on backend boot — log + continue (engagement sync will
+        # no-op for that row, but the share itself was already posted).
+        logger.warning("r72 linkedin_posts INSERT failed (urn=%s): %s", urn, e)
+    return True
+
+
 def _post_to_twitter(content_text):
     """Post to DC Hub X/Twitter account.
 
@@ -995,6 +1049,9 @@ def publish_linkedin():
     now = datetime.utcnow().isoformat() + 'Z'
     if success:
         cur.execute("UPDATE social_media_posts SET status = 'published', posted_at = %s, published_at = %s, publish_platform = 'linkedin' WHERE id = %s", (now, now, post_id))
+        # r72: capture the URN so we can later fetch engagement
+        # (likes/comments/impressions) for this post.
+        _persist_linkedin_urn(cur, post_id, result, content_text)
         conn.commit()
         conn.close()
         logger.info(f"Published post {post_id} to LinkedIn: {result}")
@@ -1729,6 +1786,8 @@ def enqueue_custom():
                                   posted_at = %s, published_at = %s,
                                   publish_platform = 'linkedin'
                             WHERE id = %s""", (now, now, new_id))
+            # r72: persist URN for engagement loop.
+            _persist_linkedin_urn(cur, new_id, result, content)
             conn.commit()
             out['published'] = True
             out['linkedin_post_id'] = result
@@ -2147,8 +2206,10 @@ def start_auto_publisher():
                     now = datetime.utcnow().isoformat() + 'Z'
                     if success:
                         cur.execute("UPDATE social_media_posts SET status = 'published', posted_at = %s, published_at = %s, publish_platform = 'linkedin' WHERE id = %s", (now, now, post_id))
+                        # r72: capture URN → engagement loop can find this post.
+                        _persist_linkedin_urn(cur, post_id, result, content_text)
                         conn.commit()
-                        logger.info(f"Auto-published post {post_id} to LinkedIn (drain {_attempts+1}/{_drain_budget}, queued={_queued})")
+                        logger.info(f"Auto-published post {post_id} to LinkedIn (drain {_attempts+1}/{_drain_budget}, queued={_queued}, urn={result})")
                     else:
                         logger.warning(f"Auto-publish failed for post {post_id}: {result}")
                         try:
