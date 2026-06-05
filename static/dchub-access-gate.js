@@ -443,7 +443,7 @@
         wall.innerHTML = '<div style="text-align:center;max-width:420px;padding:24px">' +
           '<div style="font-size:3rem;margin-bottom:16px">🗺️</div>' +
           '<h3 style="color:#fff;font-size:1.4rem;margin:0 0 10px">Interactive Data Center Map</h3>' +
-          '<p style="color:rgba(255,255,255,0.6);font-size:0.95rem;margin:0 0 8px">13,000+ facilities across 140+ countries</p>' +
+          '<p style="color:rgba(255,255,255,0.6);font-size:0.95rem;margin:0 0 8px">13,000+ facilities across 170+ countries</p>' +
           '<p style="color:rgba(255,255,255,0.5);font-size:0.85rem;margin:0 0 24px">Filter by tier, capacity, provider, and region</p>' +
           '<button style="padding:14px 36px;background:linear-gradient(135deg,#6366f1,#4f46e5);color:#fff;border:none;border-radius:10px;font-weight:700;font-size:15px;cursor:pointer;letter-spacing:.3px">Create Free Account to Explore →</button>' +
           '<div style="margin-top:12px"><a href="/login.html" style="color:#6366f1;font-size:13px;text-decoration:none">Already have an account? Sign in</a></div>' +

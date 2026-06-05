@@ -1,6 +1,6 @@
 openapi: 3.1.0
 info:
-  title: DC Hub Nexus API
+  title: DC Hub API
   description: Data center intelligence platform with 10,000+ facilities, M&A deals, and infrastructure data
   version: 2.0.0
   contact:

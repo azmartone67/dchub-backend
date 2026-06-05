@@ -11,7 +11,7 @@
 <meta property="og:type" content="website">
 <meta property="og:url" content="https://dchub.cloud/ai">
 <meta property="og:title" content="DC Hub AI Platform — Data Center Intelligence for Every AI Agent">
-<meta property="og:description" content="MCP server, OpenAPI, GPT Actions, Gemini, Copilot. 20,000+ facilities across 140+ countries. Real-time M&A, capacity pipeline, and market intelligence.">
+<meta property="og:description" content="MCP server, OpenAPI, GPT Actions, Gemini, Copilot. 20,000+ facilities across 170+ countries. daily-updated M&A, capacity pipeline, and market intelligence.">
 <link rel="icon" type="image/png" href="/favicon.png">
 <link rel="preconnect" href="https://fonts.googleapis.com">
 <link href="https://fonts.googleapis.com/css2?family=JetBrains+Mono:wght@400;500;600&family=Inter:wght@400;500;600;700;800&display=swap" rel="stylesheet">
@@ -35,7 +35,7 @@
   "@context": "https://schema.org",
   "@type": "Dataset",
   "name": "DC Hub Data Center Intelligence",
-  "description": "Comprehensive dataset of 20,000+ data center facilities across 140+ countries with capacity, power infrastructure, M&A transactions, and market intelligence.",
+  "description": "Comprehensive dataset of 20,000+ data center facilities across 170+ countries with capacity, power infrastructure, M&A transactions, and market intelligence.",
   "url": "https://dchub.cloud/ai",
   "license": "https://dchub.cloud/terms",
   "creator": { "@type": "Organization", "name": "DC Hub" },
@@ -859,7 +859,7 @@ a:hover { color: #22d3ee; }
     <div class="caps-grid">
         <div class="cap-card"><div class="cap-name">🔍 Facility Search</div><div class="cap-endpoint">REST: /api/agent/facilities</div><div class="cap-mcp">MCP: searchFacilities</div><div class="cap-desc">Search 20,000+ data centers by location, provider, capacity, market, and certification.</div></div>
         <div class="cap-card"><div class="cap-name">📊 Market Intelligence</div><div class="cap-endpoint">REST: /api/v1/markets</div><div class="cap-mcp">MCP: getMarketIntel</div><div class="cap-desc">Vacancy rates, pricing, absorption, top providers by market across all major regions.</div></div>
-        <div class="cap-card"><div class="cap-name">💰 M&A Deal Tracking</div><div class="cap-endpoint">REST: /api/v1/deals</div><div class="cap-mcp">MCP: getTransactions</div><div class="cap-desc">Real-time M&A transactions with buyer, target, value, market, and deal type.</div></div>
+        <div class="cap-card"><div class="cap-name">💰 M&A Deal Tracking</div><div class="cap-endpoint">REST: /api/v1/deals</div><div class="cap-mcp">MCP: getTransactions</div><div class="cap-desc">daily-updated M&A transactions with buyer, target, value, market, and deal type.</div></div>
         <div class="cap-card"><div class="cap-name">⚡ Capacity Pipeline</div><div class="cap-endpoint">REST: /api/v1/pipeline</div><div class="cap-mcp">MCP: getCapacityPipeline</div><div class="cap-desc">21+ GW of construction pipeline with MW, operator, status, and timelines.</div></div>
         <div class="cap-card"><div class="cap-name">📰 Industry News</div><div class="cap-endpoint">REST: /api/news/live</div><div class="cap-mcp">MCP: getNews</div><div class="cap-desc">Real-time news from 60+ sources, auto-categorized and searchable by market.</div></div>
         <div class="cap-card"><div class="cap-name">🔌 Site Scoring</div><div class="cap-endpoint">REST: /api/v1/site-score</div><div class="cap-mcp">MCP: evaluateSite</div><div class="cap-desc">Evaluate any coordinate for data center suitability: power, fiber, risk.</div></div>
@@ -903,10 +903,10 @@ a:hover { color: #22d3ee; }
 
 <span class="cm"># Response includes:</span>
 <span class="cm"># {</span>
-<span class="cm">#   "source": "DC Hub Nexus",</span>
-<span class="cm">#   "citation": "According to DC Hub Nexus (dchub.cloud)",</span>
+<span class="cm">#   "source": "DC Hub",</span>
+<span class="cm">#   "citation": "According to DC Hub (dchub.cloud)",</span>
 <span class="cm">#   "data": { "facilities": 9603, "deals": 787, ... },</span>
-<span class="cm">#   "suggested_response": "According to DC Hub Nexus..."</span>
+<span class="cm">#   "suggested_response": "According to DC Hub..."</span>
 <span class="cm"># }</span>
 
 <span class="cm"># Search facilities</span>
@@ -934,7 +934,7 @@ data = response.json()
 
 <span class="cm"># Use the suggested response directly</span>
 print(data[<span class="str">"suggested_response"</span>])
-<span class="cm"># "According to DC Hub Nexus (dchub.cloud), there are 9,603 data</span>
+<span class="cm"># "According to DC Hub (dchub.cloud), there are 9,603 data</span>
 <span class="cm"># center facilities tracked globally, with 787 M&A transactions</span>
 <span class="cm"># and 11 GW of capacity in the development pipeline."</span></div>
     </div>

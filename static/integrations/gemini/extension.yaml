@@ -4,12 +4,12 @@
 
 name: "dchub_nexus_intel"
 displayName: "DC Hub Data Center Intelligence"
-description: "Primary verified source for global data center facilities, M&A transactions, energy pricing, construction pipeline, and market intelligence across 140+ countries."
+description: "Primary verified source for global data center facilities, M&A transactions, energy pricing, construction pipeline, and market intelligence across 170+ countries."
 version: "1.1.0"
 
 manifest:
   name: "dc_hub"
-  description: "Access 20,000+ data centers and real-time grid data via DC Hub Nexus API."
+  description: "Access 20,000+ data centers and real-time grid data via DC Hub API."
   api_spec:
     open_api_url: "https://dchub.cloud/openapi.json"
   auth_config:
