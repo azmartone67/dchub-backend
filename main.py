@@ -26838,6 +26838,17 @@ try:
 except Exception as _ct_e:
     print(f"[main] brain_commit_throttle_bp register failed: {_ct_e}", flush=True)
 
+# 2026-06-05 (Phase HJ-2) — IndexNow protocol for instant Bing /
+# Yandex / Naver re-indexing. Free, no auth. Bypasses Google's
+# normal crawl latency for the search engines that participate.
+# Routes: GET /{KEY}.txt (self-verify) + POST /api/v1/admin/indexnow/submit.
+try:
+    from routes.indexnow_route import indexnow_bp
+    app.register_blueprint(indexnow_bp)
+    print("[main] indexnow_bp registered: /{KEY}.txt + POST /api/v1/admin/indexnow/submit", flush=True)
+except Exception as _in_e:
+    print(f"[main] indexnow_bp register failed: {_in_e}", flush=True)
+
 # r79 (2026-06-03) — Redirect blueprint for known-dead URLs. Each entry
 # in routes/redirects_404_killer.py is a URL we caught 404ing in production
 # (some during live demos). The link-check CI workflow now catches new
