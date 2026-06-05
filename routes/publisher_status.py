@@ -207,7 +207,15 @@ def drain_now(platform):
                     "platform": platform,
                     "hint": "Queue is empty for this platform. Nothing to drain.",
                 }), 404
-            post_id, content_text, created_at = row
+            # Cursor may return a tuple OR a dict-like row depending on cursor_factory.
+            # Handle both so the row → variables unpack doesn't pick up column NAMES
+            # instead of values (which was the "content_preview: 'content'" bug).
+            if isinstance(row, dict) or hasattr(row, 'keys'):
+                post_id = row['id']
+                content_text = row['content']
+                created_at = row['created_at']
+            else:
+                post_id, content_text, created_at = row[0], row[1], row[2]
             slug = None  # social_media_posts doesn't carry slug — that lives on press_releases
     except Exception as e:
         return jsonify({"ok": False, "error": "db_read_failed",
@@ -227,8 +235,20 @@ def drain_now(platform):
     fire_error = None
     try:
         ret = post_fn(content_text)
-        # post functions return either a URN string, a dict with 'urn', or None
-        if isinstance(ret, dict):
+        # _post_to_twitter (and the LinkedIn/Bluesky equivalents) actually return
+        # a (success_bool, message_str) tuple — not a URN string or dict as I'd
+        # assumed. Handle all three shapes defensively.
+        urn = None
+        api_error_msg = None
+        if isinstance(ret, tuple) and len(ret) >= 2:
+            # (success, msg_or_urn)
+            success_flag, second = ret[0], ret[1]
+            if success_flag:
+                urn = second  # message contains the URN/ID on success
+            else:
+                api_error_msg = second  # error message
+            result = {"success": success_flag, "detail": second}
+        elif isinstance(ret, dict):
             urn = ret.get('urn') or ret.get('id') or ret.get('post_urn')
             result = ret
         else:
@@ -236,6 +256,12 @@ def drain_now(platform):
             result = {"urn": urn}
 
         success = bool(urn) and not str(urn).startswith('DRY_RUN')
+
+        # If the post function returned a (False, "X API error 403: ...") tuple,
+        # raise it so the catch-block classifies and surfaces it properly
+        # instead of returning ok:true with a tuple in the urn field.
+        if not success and api_error_msg:
+            raise RuntimeError(api_error_msg)
 
         # Update DB row
         try:
