@@ -9230,7 +9230,18 @@ def add_security_headers(response):
         if 'Accept' not in existing_vary:
             response.headers['Vary'] = (existing_vary + ', Accept').lstrip(', ')
     else:
-        response.headers['Cache-Control'] = 'public, max-age=300, stale-while-revalidate=3600'
+        # 2026-06-05 (Phase HJ — cache-hit recovery from 23.95%).
+        # Added s-maxage=300 — without it, CF Pro edge marks the
+        # response cf-cache-status: DYNAMIC and never caches at the
+        # edge. Browser TTL stays at max-age=300; SWR keeps response
+        # warm for the long tail. This is the SINGLE change that
+        # lifts dozens of catalog pages (/grid /partners /vertex
+        # /freshness /enterprise /reports/* /facility/* etc) from
+        # DYNAMIC → HIT and should recover the 39% baseline cache
+        # ratio + take pressure off the single Railway replica.
+        response.headers['Cache-Control'] = ('public, max-age=300, '
+                                              's-maxage=300, '
+                                              'stale-while-revalidate=3600')
 
     # API usage tracking (for Admin Analytics)
     if ADMIN_ANALYTICS_AVAILABLE and user_analytics and request.path.startswith('/api/'):
