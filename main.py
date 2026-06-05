@@ -9242,6 +9242,15 @@ def add_security_headers(response):
         response.headers['Cache-Control'] = ('public, max-age=300, '
                                               's-maxage=300, '
                                               'stale-while-revalidate=3600')
+        # Phase HJ-2: explicit Cloudflare overrides — Cache-Control alone
+        # didn't move cf-cache-status off DYNAMIC even with s-maxage. The
+        # zone-level cache rule needs CDN-Cache-Control + Surrogate-
+        # Control to actually opt the response into edge caching
+        # (memory note #35: "Defeat CF cache override...").
+        response.headers['CDN-Cache-Control'] = ('public, s-maxage=300, '
+                                                  'stale-while-revalidate=3600')
+        response.headers['Surrogate-Control'] = ('public, max-age=300, '
+                                                  'stale-while-revalidate=3600')
 
     # API usage tracking (for Admin Analytics)
     if ADMIN_ANALYTICS_AVAILABLE and user_analytics and request.path.startswith('/api/'):
@@ -14583,6 +14592,15 @@ def get_stats():
         for _k in ('users_by_plan', 'active_subscribers', 'total_users',
                    'new_users_7d', 'new_users_30d'):
             stats.pop(_k, None)
+        # r-stats-markets-fix (2026-06-05): the public 'markets' field used to be
+        # len(top_countries) (~10) — a mislabel that made /api/v1/stats contradict
+        # the site-wide "232 DCPI markets". Source it from the canonical DCPI count
+        # (live COUNT(DISTINCT market_slug) FROM market_power_scores, cached; 232 floor).
+        try:
+            from canonical_stats import get_canonical_stats as _gcs
+            _canon_markets = int(_gcs().get('markets', 232)) or 232
+        except Exception:
+            _canon_markets = 232
         result = {
             'success': True,
             'data': stats,
@@ -14590,7 +14608,7 @@ def get_stats():
             'version': 'v92',
             'build': '93',
             'facilities': stats.get('total_facilities', 0),
-            'markets': len(stats.get('top_countries', {})),
+            'markets': _canon_markets,
             'deals': stats.get('total_announcements', 0),
             'substations': stats.get('total_substations', 0),
             'fiber_routes': stats.get('total_fiber_routes', 0),
