@@ -187,12 +187,16 @@ def drain_now(platform):
                 'twitter':  "publish_platform IN ('twitter','x','all') OR platform = 'twitter'",
                 'bluesky':  "publish_platform IN ('bluesky','all') OR platform = 'bluesky'",
             }[platform]
+            # Schema (from content_publisher.py:init_content_tables, line ~84):
+            # id, content, platform, status, created_at, posted_at, published_at,
+            # publish_platform, bluesky_uri, twitter_id, linkedin_urn, accelerate,
+            # viral_score. NO content_text, NO slug, NO generated_at columns.
             cur.execute(f"""
-                SELECT id, content_text, slug, generated_at
+                SELECT id, content, created_at
                   FROM social_media_posts
                  WHERE status = 'approved'
                    AND ({platform_filter})
-                 ORDER BY generated_at ASC
+                 ORDER BY created_at ASC
                  LIMIT 1
             """)
             row = cur.fetchone()
@@ -203,7 +207,8 @@ def drain_now(platform):
                     "platform": platform,
                     "hint": "Queue is empty for this platform. Nothing to drain.",
                 }), 404
-            post_id, content_text, slug, generated_at = row
+            post_id, content_text, created_at = row
+            slug = None  # social_media_posts doesn't carry slug — that lives on press_releases
     except Exception as e:
         return jsonify({"ok": False, "error": "db_read_failed",
                         "detail": str(e)[:200]}), 500
