@@ -225,7 +225,7 @@ def mcp_registries_scan():
                                 INSERT INTO brain_findings
                                   (finding_kind, subject, url, evidence,
                                    severity, source, created_at)
-                                VALUES (%s, %s, %s, %s, %s, %s, NOW())
+                                VALUES (%s, %s, %s, %s, %s, %s, NOW() ON CONFLICT DO NOTHING)
                                 ON CONFLICT DO NOTHING
                             """, (f["kind"], f["subject"], f["url"],
                                   f["evidence"], f["severity"],

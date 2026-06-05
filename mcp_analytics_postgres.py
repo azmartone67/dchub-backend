@@ -154,7 +154,7 @@ def log_mcp_request(get_db, session_id, tool_name, method, params,
                 (session_id, user_id, user_email, tier, tool_name, method,
                  params_json, response_status, response_time_ms,
                  ip_address, user_agent, mcp_client)
-            VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s)
+            VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s) ON CONFLICT DO NOTHING
         """, (session_id, user_id, user_email, tier, tool_name, method,
               json.dumps(params) if params else None,
               response_status, response_time_ms,
@@ -258,7 +258,7 @@ def log_upgrade_signal(get_db, signal_type, tool_requested=None,
                 (session_id, user_email, ip_address, signal_type, tool_requested,
                  tier_current, tier_required, daily_usage, daily_limit,
                  message_shown, mcp_client, user_agent)
-            VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s)
+            VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s) ON CONFLICT DO NOTHING
             RETURNING id
         """, (session_id, user_email, ip_address, signal_type, tool_requested,
               tier_current, tier_required, daily_usage, daily_limit,
@@ -681,7 +681,7 @@ def register_mcp_analytics_routes(app, get_db):
             c.execute("""
                 INSERT INTO mcp_analytics
                     (tool_name, method, params_json, response_status, ip_address, user_agent)
-                VALUES ('conversion_event', 'track', %s, 'success', %s, %s)
+                VALUES ('conversion_event', 'track', %s, 'success', %s, %s) ON CONFLICT DO NOTHING
             """, (json.dumps(data),
                   request.remote_addr,
                   request.headers.get('User-Agent', '')))
