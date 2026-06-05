@@ -252,6 +252,68 @@ def _nearest_market(lat: float, lon: float) -> Tuple[str, str, float]:
     return best  # type: ignore[return-value]
 
 
+# ── Verdict-subtype classifier (v2.1c — Ashburn moat fix) ────────
+#
+# DCPI verdict AVOID is methodologically right for BOTH a no-demand
+# rust-belt town AND a saturated hyperscale cluster like Ashburn —
+# but the implications for SITE VALUE are opposite:
+#
+#   constrained  → high demand + slow queue → AVOID for new builds,
+#                  BUT shovel-ready parcels are MOAT-protected. The
+#                  constraint IS what makes the interconnected parcel
+#                  valuable. Ashburn / Northern VA / Phoenix / Santa
+#                  Clara live here.
+#   weak_demand  → no growth + open queue → AVOID for any build.
+#                  Rural rust-belt towns. Site value at the floor.
+#   developing   → moderate growth, queue ok → BUILD candidate
+#                  whose verdict mainly tracks readiness.
+#   n/a          → not AVOID; classifier doesn't change anything.
+#
+# Threshold tuning is intentionally conservative — we want the
+# constrained class to fire ONLY when the data really screams
+# "saturated cluster," not for every borderline AVOID.
+
+# Markets known to be constrained even when the recompute hasn't
+# tagged them with per-market metrics yet. Used as a defense-in-depth
+# whitelist so a marquee Tier-1 PJM/CAISO market never gets a
+# generic weak_demand subtype just because the ISO bucket dominates.
+# Update this list as DCPI's per-slug overrides expand.
+_CONSTRAINED_MARQUEES = {
+    "ashburn", "northern-virginia", "columbus", "new-albany",
+    "atlanta", "dallas", "dallas-fort-worth",
+    "phoenix",
+    "santa-clara", "silicon-valley", "los-angeles",
+    "chicago", "richmond",
+    "miami", "tampa", "jacksonville",
+    "london", "frankfurt", "amsterdam", "dublin", "singapore",
+    "tokyo", "sydney",
+}
+
+
+def _compute_verdict_subtype(dcpi: dict, slug: str = "") -> str:
+    """Classify the WHY behind an AVOID verdict."""
+    if not dcpi.get("available"):
+        return "unknown"
+    verdict = (dcpi.get("verdict") or "").upper()
+    if verdict in ("BUILD", "CAUTION"):
+        return "n/a"
+    ttp = float(dcpi.get("time_to_power_months") or 0)
+    excess = float(dcpi.get("excess_power_score") or 0)
+    constraint = float(dcpi.get("constraint_score") or 0)
+    # Constrained: hyperscale cluster — slow queue + measurable
+    # constraint pressure (i.e. real demand bidding against scarce
+    # capacity). The marquee whitelist catches markets where the ISO
+    # bucket dominates but real-world context says "constrained."
+    if ttp >= 36 and constraint >= 50:
+        return "constrained"
+    if slug and slug.lower() in _CONSTRAINED_MARQUEES:
+        return "constrained"
+    # Weak demand: low excess + low constraint = nothing happening
+    if excess < 25 and constraint < 35:
+        return "weak_demand"
+    return "developing"
+
+
 # ── DCPI lookup ───────────────────────────────────────────────────
 
 def _fetch_dcpi(slug: str) -> dict:
@@ -317,7 +379,7 @@ def _fetch_dcpi(slug: str) -> dict:
             # 50% excess + 50% (100 - constraint), then verdict adjustment
             composite = round((excess + (100 - constraint)) / 2.0, 1)
 
-        return {
+        out = {
             "available":             True,
             "slug":                  matched or slug,
             "verdict":               verdict,
@@ -328,6 +390,12 @@ def _fetch_dcpi(slug: str) -> dict:
             "iso":                   iso,
             "last_updated":          computed_at.isoformat() if computed_at else None,
         }
+        # v2.1c — classify AVOID by why. Lets the valuation engine
+        # and the UI distinguish constraint-driven AVOID (Ashburn,
+        # Phoenix) from weak-demand AVOID (rural rust belt). Same
+        # verdict letter, opposite economic implications.
+        out["verdict_subtype"] = _compute_verdict_subtype(out, slug=slug)
+        return out
     except Exception as e:
         return {"available": False, "reason": "query_error",
                 "error": str(e)[:200]}
@@ -820,12 +888,40 @@ def _compute_valuation(target_mw: int, acres: float, dcpi: dict,
       - ±50% envelope (was ±30% — too tight for illiquid parcels)
     """
     # Per-MW value adjusted by verdict (v2.0: wider spread)
-    verdict_mult = {
+    verdict_raw = dcpi.get("verdict")
+    verdict_mult_base = {
         "BUILD":   1.65,   # premium markets (was 1.20)
         "CAUTION": 1.00,   # baseline (was 0.95)
         "AVOID":   0.40,   # deep discount, slow TTP (was 0.75)
         None:      0.85,
-    }.get(dcpi.get("verdict"), 0.85)
+    }.get(verdict_raw, 0.85)
+
+    # v2.1c — Constraint-moat attenuation. When a market is
+    # AVOID-by-constraint (Ashburn, Phoenix, Santa Clara) AND the
+    # parcel has "moat" flags (interconnect / substation / permits)
+    # already in hand, the AVOID penalty should LIFT — the same
+    # scarcity that produced the AVOID verdict is precisely what makes
+    # a shovel-ready parcel valuable. (Greenfield in Ashburn = AVOID,
+    # but a parcel with grid interconnect already signed sells at $1M+
+    # /MW because the queue is closed to everyone else.)
+    #
+    # Attenuation only fires when the verdict is AVOID, the subtype
+    # is constrained (NOT weak_demand), and at least one moat flag is
+    # set. Each flag adds 0.22 to the verdict mult, capped at 1.05.
+    # Weak-demand AVOID gets no attenuation — there's no moat in a
+    # market nobody wants to build in.
+    readiness = readiness or {}
+    subtype = (dcpi.get("verdict_subtype") or "n/a")
+    moat_flags_active = sum(1 for f in
+        ("grid_interconnect_ready", "substation_on_site", "permits_in_hand")
+        if readiness.get(f))
+    moat_attenuation_applied = False
+    if (verdict_raw == "AVOID" and subtype == "constrained"
+            and moat_flags_active >= 1):
+        verdict_mult = min(1.05, verdict_mult_base + (moat_flags_active * 0.22))
+        moat_attenuation_applied = True
+    else:
+        verdict_mult = verdict_mult_base
 
     # Best-fit scenario adjustment (BTM premium if grid is constrained)
     # Tightened from v1.0 (gas_btm 1.10 → 1.05) since the verdict mult
@@ -843,7 +939,7 @@ def _compute_valuation(target_mw: int, acres: float, dcpi: dict,
     # missing — user noted "Phoenix-100MW with grid/water/fiber/zoning
     # complete should be worth ~$60M" which only resolves when readiness
     # is in the model.
-    readiness = readiness or {}
+    # (`readiness` already defaulted above for the moat check)
     readiness_mult = 1.0
     readiness_applied = {}
     for flag, premium in _READINESS_PREMIUMS.items():
@@ -920,12 +1016,29 @@ def _compute_valuation(target_mw: int, acres: float, dcpi: dict,
         "site_sufficiency": suff,
         "multipliers": {
             "verdict_mult":    verdict_mult,
+            "verdict_mult_base": verdict_mult_base,
             "bestfit_mult":    bestfit_mult,
             "readiness_mult":  readiness_mult,
             "readiness_applied": readiness_applied,
             "baseline_per_mw_usd": round(base_per_mw, 0),
             "baseline_source":  baseline_source,
             "band_clamp":      band_status,
+            # v2.1c — constraint-moat attenuation provenance
+            "verdict_subtype": subtype,
+            "moat_attenuation_applied": moat_attenuation_applied,
+            "moat_flags_active": moat_flags_active,
+            "moat_explainer": (
+                f"AVOID-by-{subtype}: shovel-ready parcels in saturated "
+                f"clusters carry a moat premium ({moat_flags_active} of "
+                f"3 moat flags set). Verdict mult lifted "
+                f"from {verdict_mult_base:.2f}× to {verdict_mult:.2f}×."
+                if moat_attenuation_applied else
+                (f"AVOID-by-{subtype}: no moat attenuation. Constraint-"
+                 f"AVOID parcels only carry a moat premium when at least "
+                 f"one of grid_interconnect_ready / substation_on_site / "
+                 f"permits_in_hand is true."
+                 if verdict_raw == "AVOID" and subtype == "constrained"
+                 else None)),
         },
         "_methodology":        ("v2.2: $/MW × MW only (sites trade by the MW; "
                                   "land cost is implicit in every $/MW comp). "
@@ -1031,6 +1144,26 @@ def site_value():
         },
         "dcpi_context":   {
             "verdict":              dcpi.get("verdict"),
+            # v2.1c — subtype distinguishes why a market got AVOID.
+            # constrained (Ashburn/Phoenix/Santa Clara) → the constraint
+            # is the moat; shovel-ready parcels there are premium.
+            # weak_demand (rural rust belt) → no demand, floor value.
+            # developing → moderate, mainly tracks readiness.
+            # n/a → BUILD or CAUTION.
+            "verdict_subtype":      dcpi.get("verdict_subtype"),
+            "verdict_explainer":    {
+                "constrained":  ("High demand + slow queue + low excess capacity. "
+                                  "AVOID for greenfield, but shovel-ready parcels "
+                                  "carry a moat premium because the constraint "
+                                  "blocks competitors."),
+                "weak_demand":  ("Open queue + minimal demand growth. AVOID even "
+                                  "for shovel-ready — no buyers."),
+                "developing":   ("Moderate growth, queue accessible. Verdict mainly "
+                                  "tracks parcel readiness."),
+                "n/a":          ("BUILD or CAUTION verdict — subtype not "
+                                  "applicable."),
+                "unknown":      "DCPI data unavailable for this market.",
+            }.get(dcpi.get("verdict_subtype") or "n/a"),
             "composite_score":      dcpi.get("composite_score"),
             "excess_power_score":   dcpi.get("excess_power_score"),
             "constraint_score":     dcpi.get("constraint_score"),
@@ -1354,7 +1487,7 @@ th { color: var(--muted); font-size: 11px; text-transform: uppercase; letter-spa
   <div id="results" class="hidden"></div>
 
   <p style="font-size:12px;color:var(--muted);margin-top:32px;">
-    Methodology: <a href="/api/v1/site/value/methodology" style="color:var(--accent2)">/api/v1/site/value/methodology</a> · Engine v2.1b (2026-06-04) — per-MW <b>hard-clamped to $150K-$800K industry band</b> (ceiling-saturated for hyperscale-ready BUILD sites); 4 editable assumptions (LMP / gas / heat rate / discount) via the ⚙ panel above; 6 site-readiness premiums; ±50% envelope. v2.2: soft asymptote at ceiling to recover signal between premium tiers.
+    Methodology: <a href="/api/v1/site/value/methodology" style="color:var(--accent2)">/api/v1/site/value/methodology</a> · Engine v2.1c (2026-06-04) — per-MW <b>hard-clamped to $150K-$800K industry band</b>; <b>verdict subtype</b> (constrained / weak_demand / developing) distinguishes Ashburn-class AVOID from rust-belt AVOID; <b>constraint-moat attenuation</b> lifts AVOID-by-constraint sites with grid+sub+permits in hand (Ashburn shovel-ready → ceiling-saturated again, not the AVOID floor); 4 editable assumptions via the ⚙ panel; 6 site-readiness premiums; ±50% envelope.
   </p>
 </div>
 
@@ -1519,16 +1652,38 @@ function fmtM$(v) { return '$' + (v / 1_000_000).toFixed(1) + 'M'; }
 function renderResults(d) {
   const dcpi = d.dcpi_context || {};
   const verdictClass = 'verdict-' + (dcpi.verdict || 'UNKNOWN');
+  // v2.1c — surface the AVOID subtype so users see WHY a market got
+  // its verdict. Constrained AVOID (Ashburn) and weak-demand AVOID
+  // (rural rust belt) get opposite parcel-value implications.
+  const subtype = dcpi.verdict_subtype || 'n/a';
+  const subtypeChip = (subtype !== 'n/a' && subtype !== 'unknown')
+    ? `<span title="${(dcpi.verdict_explainer||'').replace(/"/g,'&quot;')}"
+             style="display:inline-block;margin-left:8px;font-size:10px;letter-spacing:0.08em;text-transform:uppercase;
+                    background:${subtype==='constrained'?'#0EA5E9':(subtype==='weak_demand'?'#dc2626':'var(--panel2)')};
+                    color:${subtype==='constrained'?'#000':'#fff'};
+                    padding:3px 8px;border-radius:4px;font-weight:700;cursor:help;">
+        ${subtype.replace(/_/g,' ')} <span style="opacity:0.7">ⓘ</span>
+      </span>`
+    : '';
+  const subtypeNote = (subtype !== 'n/a' && subtype !== 'unknown' && dcpi.verdict_explainer)
+    ? `<div style="margin-top:8px;font-size:12px;color:var(--muted);background:var(--panel2);border-left:3px solid ${subtype==='constrained'?'var(--accent)':(subtype==='weak_demand'?'#dc2626':'var(--border)')};padding:8px 10px;border-radius:4px;">
+         <b style="color:var(--fg)">Why ${dcpi.verdict}?</b> ${dcpi.verdict_explainer}
+       </div>`
+    : '';
   let html = `
     <div class="row">
       <div class="card">
         <h3>Market context</h3>
-        <div class="verdict ${verdictClass}">${dcpi.verdict || 'unknown'}</div>
+        <div style="display:flex;align-items:center;flex-wrap:wrap;gap:6px;">
+          <div class="verdict ${verdictClass}">${dcpi.verdict || 'unknown'}</div>
+          ${subtypeChip}
+        </div>
         <div class="stat">${(d.market_context.nearest_market_slug || '').replace(/-/g, ' ')}</div>
         <div class="stat-label">${d.market_context.nearest_market_state} · ${d.market_context.miles_from_centroid} mi from centroid · ISO: ${dcpi.iso || 'n/a'}</div>
         <div style="margin-top:12px;font-size:13px;color:var(--muted)">
           DCPI composite: <b>${(dcpi.composite_score || 0).toFixed(1)}</b> · Excess power: <b>${(dcpi.excess_power_score || 0).toFixed(1)}</b> · Time-to-power: <b>${(dcpi.time_to_power_months || 0).toFixed(0)} months</b>
         </div>
+        ${subtypeNote}
       </div>`;
 
   if (d.valuation) {
@@ -1595,10 +1750,11 @@ function renderResults(d) {
           <b>How sites trade:</b> data-center parcels are priced by the MW. Land cost is implicit in every $/MW comp — that's why we don't add $/acre × acres on top (would double-count). Acres are reported above as a build-sufficiency check.
         </div>
         <div style="margin-top:10px;font-size:12px;color:var(--muted);border-top:1px solid var(--border);padding-top:10px">
-          Stack: verdict <b style="color:var(--fg)">${(m.verdict_mult||1).toFixed(2)}×</b>
+          Stack: verdict <b style="color:var(--fg)">${(m.verdict_mult||1).toFixed(2)}×</b>${m.moat_attenuation_applied?`<span style="background:var(--accent);color:#000;font-size:9px;padding:2px 5px;border-radius:3px;margin-left:4px;font-weight:700;letter-spacing:0.05em">MOAT ${(m.verdict_mult_base||0).toFixed(2)}→${(m.verdict_mult||0).toFixed(2)}</span>`:''}
           · best-fit <b style="color:var(--fg)">${(m.bestfit_mult||1).toFixed(2)}×</b>
           · readiness <b style="color:var(--accent2)">${(m.readiness_mult||1).toFixed(3)}×</b>
           <br><span style="opacity:0.85">Readiness applied: ${readinessLine}</span>
+          ${m.moat_explainer?`<br><span style="display:block;margin-top:8px;padding:8px 10px;background:rgba(14,165,233,0.08);border-left:3px solid var(--accent);border-radius:4px;font-size:11px;color:var(--accent2);"><b>Constraint-moat:</b> ${m.moat_explainer}</span>`:''}
         </div>
       </div>`;
   } else if (d.valuation_teaser) {
