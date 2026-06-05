@@ -2627,6 +2627,80 @@ def check_mcp_funnel_concentration() -> list[dict]:
 
 
 # ── Phase ZZZZ (2026-05-16) — market deep-dive coverage detector ──
+def check_growth_sentinel() -> list[dict]:
+    """MCP Growth Sentinel — WIDEN-arm drift alerts (alert-only, r-spine 2026-06-05).
+
+    Makes the ecosystem-coverage sentinel part of the brain's 24x7 loop. Reads
+    the brain_ecosystem_watch table (populated by the every-6h ecosystem cron)
+    and flags native-discoverability / registry DRIFT:
+      - official MCP-registry listing STALE (published version behind the repo)
+        -> agents discover an out-of-date DC Hub
+      - one of our OWN agent-facing surfaces DOWN (manifest / capabilities /
+        ai-agents.json / llms.txt / AGENTS.md) -> native discoverability broken,
+        silently shrinking the funnel
+    Coverage gaps (awesome-mcp etc.) are owner-gated submissions surfaced in
+    /api/v1/brain/ecosystem/coverage — NOT alerted here (would be chronic noise).
+    Alert-only: findings flow to radar -> notifications -> /heartbeat. No
+    autonomous side-effects."""
+    conn = _db()
+    if conn is None:
+        return []
+    findings: list[dict] = []
+    try:
+        with conn.cursor() as cur:
+            try:
+                cur.execute("SELECT to_regclass('public.brain_ecosystem_watch')")
+                if not (cur.fetchone() or [None])[0]:
+                    return findings
+                # latest row per target, only if checked recently (cron alive);
+                # stale watch data is a different detector's concern.
+                cur.execute("""
+                    SELECT DISTINCT ON (target_key)
+                      target_key, we_present, detail, at
+                    FROM brain_ecosystem_watch
+                    WHERE at >= NOW() - INTERVAL '18 hours'
+                    ORDER BY target_key, at DESC
+                """)
+                rows = cur.fetchall()
+            except Exception:
+                return findings
+    finally:
+        try: conn.close()
+        except Exception: pass
+
+    if not rows:
+        return findings
+
+    by = {r[0]: {"present": r[1], "detail": (r[2] or "")} for r in rows}
+
+    off = by.get("official_registry")
+    if off and str(off["detail"]).upper().startswith("STALE"):
+        findings.append({
+            "issue":  "mcp_registry_listing_stale",
+            "url":    "/api/v1/brain/ecosystem/coverage",
+            "count":  1,
+            "detail": (f"Official MCP registry listing is stale: {off['detail']}. "
+                       f"Bump server.json version + push — mcp-registry-publish.yml "
+                       f"republishes via the DNS key. Until then agents discover an "
+                       f"out-of-date DC Hub."),
+        })
+
+    down = sorted(k for k, v in by.items()
+                  if k.startswith("self_") and v["present"] is False)
+    if down:
+        findings.append({
+            "issue":  "native_discoverability_surface_down",
+            "url":    "/api/v1/brain/ecosystem/coverage",
+            "count":  len(down),
+            "detail": (f"{len(down)} agent-facing discovery surface(s) DOWN: "
+                       f"{', '.join(down)}. Agents fetch these to discover + parse "
+                       f"DC Hub natively; a 404/empty here silently shrinks the MCP "
+                       f"funnel. Check the route(s)."),
+        })
+
+    return findings
+
+
 def check_market_deep_dive_stale() -> list[dict]:
     """Flag when the top 10 DCPI markets have deep-dives older than
     30 days OR no deep-dive at all. Cron should keep these fresh."""
@@ -7780,6 +7854,8 @@ def scan_all() -> list[dict]:
                # Phase DDD organism detectors
                check_mcp_growth_declining,
                check_mcp_demand_gap,
+               # Phase r-spine — MCP Growth Sentinel (WIDEN-arm drift alerts)
+               check_growth_sentinel,
                check_source_of_truth_declining,
                check_media_topic_unaddressed,
                # Phase EEE surface-brain detector
