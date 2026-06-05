@@ -20507,6 +20507,27 @@ def serve_sitemap_xml():
         # the citable, recurring data event — stable/unversioned URL, daily
         # refresh, JSON-LD Dataset. Priority 0.9.
         ('/state-of-power', '0.9', 'daily'),
+        # 2026-06-05 (Phase HJ-2 SEO recovery) — 7 SEO landings that were
+        # 403'ing on the CF edge for hours got re-routed under CF-allowed
+        # prefixes (legacy paths now 301 to these via the CF worker). Adding
+        # them to the sitemap so Google's next crawl picks up the new URLs
+        # directly instead of waiting for backlink-driven discovery.
+        ('/facility/aws-iad36',                       '0.7', 'monthly'),
+        ('/facility/aws-db1',                         '0.7', 'monthly'),
+        ('/facility/aws-kix10',                       '0.7', 'monthly'),
+        ('/facility/aws-sjc29',                       '0.7', 'monthly'),
+        ('/markets/interxion-frankfurt',              '0.7', 'monthly'),
+        ('/partners/moltbook-api',                    '0.6', 'monthly'),
+        ('/facility/1725-comstock-st-san-jose',       '0.6', 'monthly'),
+        # 2026-06-05 — Vertex AI / Gemini integration surface (Phase HI).
+        # /vertex is the developer landing; /partners/gemini is the sales-
+        # facing companion. Both serve evergreen content + drive citation-
+        # loop discovery from Gemini-on-Vertex enterprise customers.
+        ('/vertex',                                   '0.9', 'weekly'),
+        ('/partners',                                 '0.8', 'weekly'),
+        ('/partners/gemini',                          '0.8', 'weekly'),
+        ('/partners/nlr',                             '0.7', 'monthly'),
+        ('/openapi-vertex.yaml',                      '0.5', 'monthly'),
     ]
     for path, pri, freq in static_pages:
         urls.append(f'  <url><loc>https://dchub.cloud{path}</loc><lastmod>{today}</lastmod><changefreq>{freq}</changefreq><priority>{pri}</priority></url>')

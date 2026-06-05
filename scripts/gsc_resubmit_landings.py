@@ -40,7 +40,10 @@ import urllib.request
 
 SITE = "https://dchub.cloud"
 SITEMAP_URL = f"{SITE}/sitemap.xml"
-LANDINGS_SITEMAP_URL = f"{SITE}/sitemap-landings.xml"
+# Note: /sitemap-landings.xml lives behind a CF-blocked prefix and 403s
+# at the edge. The main /sitemap.xml now includes all 7 SEO landings +
+# the Vertex pages (Phase HJ-2). One sitemap is enough.
+LANDINGS_SITEMAP_URL = None
 
 # The 7 NEW URLs (CF-routable). These are what Google should re-index.
 NEW_URLS = [
@@ -54,20 +57,46 @@ NEW_URLS = [
 ]
 
 
+# Cloudflare bot-blocks the default Python-urllib UA — every probe gets
+# 403 even though real browsers + curl GET return 200. Use a real Chrome
+# UA so we measure what Google actually sees.
+_BROWSER_UA = ("Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) "
+               "AppleWebKit/537.36 (KHTML, like Gecko) "
+               "Chrome/124.0.0.0 Safari/537.36")
+
+
 def _verify_url(url: str) -> tuple[int, str]:
-    """Return (status_code, content_type) for a HEAD request."""
-    try:
-        req = urllib.request.Request(url, method="HEAD")
-        with urllib.request.urlopen(req, timeout=10) as r:
-            return r.status, r.headers.get("Content-Type", "")
-    except urllib.error.HTTPError as e:
-        return e.code, ""
-    except Exception as e:
-        return 0, str(e)[:60]
+    """Return (status_code, content_type) for a HEAD-then-GET probe.
+
+    CF blocks HEAD from some bot UAs but accepts GET; we try HEAD first
+    (cheap) then fall back to GET if it returns >= 400. Both use a real
+    Chrome UA so CF's bot rules don't fire.
+    """
+    headers = {"User-Agent": _BROWSER_UA}
+    for method in ("HEAD", "GET"):
+        try:
+            req = urllib.request.Request(url, headers=headers, method=method)
+            with urllib.request.urlopen(req, timeout=10) as r:
+                if method == "HEAD" and r.status >= 400:
+                    continue
+                return r.status, r.headers.get("Content-Type", "")
+        except urllib.error.HTTPError as e:
+            if method == "HEAD" and e.code >= 400:
+                continue
+            return e.code, ""
+        except Exception as e:
+            return 0, str(e)[:60]
+    return 0, "all_methods_failed"
 
 
 def ping_sitemap(url: str) -> bool:
-    """Ping Google + Bing about the sitemap. Returns True if either accepted."""
+    """Ping Google + Bing about the sitemap. Returns True if either accepted.
+
+    Uses a real Chrome UA — Google's ping endpoint occasionally bot-blocks
+    raw Python-urllib UAs.
+    """
+    if not url:
+        return False
     targets = [
         f"https://www.google.com/ping?sitemap={urllib.parse.quote(url)}",
         f"https://www.bing.com/ping?sitemap={urllib.parse.quote(url)}",
@@ -75,7 +104,8 @@ def ping_sitemap(url: str) -> bool:
     any_ok = False
     for t in targets:
         try:
-            with urllib.request.urlopen(t, timeout=10) as r:
+            req = urllib.request.Request(t, headers={"User-Agent": _BROWSER_UA})
+            with urllib.request.urlopen(req, timeout=10) as r:
                 ok = 200 <= r.status < 300
                 print(f"  {'✅' if ok else '❌'} {r.status:3d}  {t}")
                 if ok:
@@ -195,7 +225,6 @@ def main():
     print("Step 3: Ping sitemap (Google + Bing)")
     print("=" * 70)
     ping_sitemap(SITEMAP_URL)
-    ping_sitemap(LANDINGS_SITEMAP_URL)
 
     print()
     print("=" * 70)
