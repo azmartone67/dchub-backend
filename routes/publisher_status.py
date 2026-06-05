@@ -111,8 +111,209 @@ def publisher_status():
     return resp
 
 
+def _admin_auth_ok() -> bool:
+    """Admin auth check matching the pattern in routes/twitter_diagnostic.py."""
+    from flask import request as _req
+    provided = (_req.headers.get('X-Admin-Key')
+                or _req.args.get('admin_key') or '').strip()
+    expected = (os.environ.get('DCHUB_ADMIN_KEY')
+                or os.environ.get('DCHUB_INTERNAL_KEY') or '').strip()
+    return bool(expected) and provided == expected
+
+
+@publisher_status_bp.route('/api/v1/admin/dchub-media/<platform>/drain-now', methods=['POST'])
+def drain_now(platform):
+    """Pop the oldest queued post for {platform} (linkedin|twitter|bluesky)
+    and fire it RIGHT NOW, bypassing the 6h initial-sleep gate. Returns the
+    real result so the operator sees auth/scope errors immediately instead
+    of waiting 6h for the first natural tick.
+
+    Admin-gated because:
+      - It triggers actual API spend (one tweet/post)
+      - Could be used to flood if abused
+
+    Hard cap: 1 post per call. Rate-limit: 1 call per 60 seconds via
+    in-memory token.
+
+    Why this exists: the user was watching publisher-status with all
+    loops boot_started=true but last_attempt_result=null because the 6h
+    initial sleep hadn't elapsed. This unblocks immediate verification.
+    """
+    if not _admin_auth_ok():
+        return jsonify({
+            "ok": False,
+            "error": "admin_key_required",
+            "hint": "POST with X-Admin-Key header OR ?admin_key= query param "
+                    "matching DCHUB_ADMIN_KEY env on Railway. If DCHUB_ADMIN_KEY "
+                    "isn't set, set it to any random string in Railway "
+                    "resourceful-essence → Variables.",
+        }), 401
+
+    platform = (platform or '').strip().lower()
+    if platform not in ('linkedin', 'twitter', 'bluesky'):
+        return jsonify({"ok": False, "error": "platform_must_be_linkedin_twitter_or_bluesky"}), 400
+
+    # In-memory rate limit (60s)
+    import time as _time
+    global _LAST_DRAIN_BY_PLATFORM
+    try:
+        _LAST_DRAIN_BY_PLATFORM
+    except NameError:
+        _LAST_DRAIN_BY_PLATFORM = {}
+    now_ts = _time.monotonic()
+    last = _LAST_DRAIN_BY_PLATFORM.get(platform, 0.0)
+    if now_ts - last < 60:
+        return jsonify({
+            "ok": False,
+            "error": "rate_limited",
+            "retry_after_seconds": int(60 - (now_ts - last)),
+        }), 429
+    _LAST_DRAIN_BY_PLATFORM[platform] = now_ts
+
+    # Import lazily so the public status endpoint above doesn't pull
+    # the whole content_publisher module on every request.
+    try:
+        import content_publisher as cp
+    except Exception as e:
+        return jsonify({"ok": False, "error": "import_failed", "detail": str(e)[:200]}), 500
+
+    # Pull oldest queued post
+    try:
+        conn = cp._get_db()
+        with conn.cursor() as cur:
+            # Same platform-name conventions as the loops use
+            platform_filter = {
+                'linkedin': "publish_platform IN ('linkedin','all') OR platform = 'linkedin'",
+                'twitter':  "publish_platform IN ('twitter','x','all') OR platform = 'twitter'",
+                'bluesky':  "publish_platform IN ('bluesky','all') OR platform = 'bluesky'",
+            }[platform]
+            cur.execute(f"""
+                SELECT id, content_text, slug, generated_at
+                  FROM social_media_posts
+                 WHERE status = 'approved'
+                   AND ({platform_filter})
+                 ORDER BY generated_at ASC
+                 LIMIT 1
+            """)
+            row = cur.fetchone()
+            if not row:
+                return jsonify({
+                    "ok": False,
+                    "error": "no_queued_posts",
+                    "platform": platform,
+                    "hint": "Queue is empty for this platform. Nothing to drain.",
+                }), 404
+            post_id, content_text, slug, generated_at = row
+    except Exception as e:
+        return jsonify({"ok": False, "error": "db_read_failed",
+                        "detail": str(e)[:200]}), 500
+
+    # Fire the platform-specific post function
+    poster = {
+        'linkedin': '_post_to_linkedin',
+        'twitter':  '_post_to_twitter',
+        'bluesky':  '_post_to_bluesky',
+    }[platform]
+    post_fn = getattr(cp, poster, None)
+    if not post_fn:
+        return jsonify({"ok": False, "error": f"poster_function_missing: {poster}"}), 500
+
+    result = {}
+    fire_error = None
+    try:
+        ret = post_fn(content_text)
+        # post functions return either a URN string, a dict with 'urn', or None
+        if isinstance(ret, dict):
+            urn = ret.get('urn') or ret.get('id') or ret.get('post_urn')
+            result = ret
+        else:
+            urn = ret
+            result = {"urn": urn}
+
+        success = bool(urn) and not str(urn).startswith('DRY_RUN')
+
+        # Update DB row
+        try:
+            with conn.cursor() as cur2:
+                cur2.execute("""
+                    UPDATE social_media_posts
+                       SET status = %s,
+                           posted_at = NOW(),
+                           publish_platform = %s
+                     WHERE id = %s
+                """, ('published' if success else 'failed', platform, post_id))
+            conn.commit()
+        except Exception as e:
+            logger.warning(f"[drain-now] DB UPDATE failed: {e}")
+
+        # Persist URN if linkedin (the _persist_linkedin_urn helper exists
+        # from the master-shell engagement loop work)
+        if success and platform == 'linkedin':
+            try:
+                cp._persist_linkedin_urn(conn.cursor(), post_id, urn, content_text)
+                conn.commit()
+            except Exception:
+                pass
+
+        # Record into publisher state machine so /publisher-status reflects it
+        try:
+            cp._record_attempt(platform, 'ok' if success else 'error',
+                               error_class=None if success else 'no_urn_returned')
+        except Exception:
+            pass
+
+        return jsonify({
+            "ok": success,
+            "platform": platform,
+            "post_id": post_id,
+            "slug": slug,
+            "urn": urn,
+            "content_preview": (content_text or '')[:120] + ('…' if content_text and len(content_text) > 120 else ''),
+            "status_snapshot": cp.get_publisher_status_snapshot().get('loops', {}).get(platform, {}),
+        }), 200 if success else 502
+
+    except Exception as e:
+        # Classify the error so the operator sees the same error_class
+        # the publisher-status endpoint shows
+        err_class = 'unknown'
+        msg = str(e)
+        if '401' in msg or 'unauthorized' in msg.lower():
+            err_class = 'auth_failed'
+        elif '403' in msg or 'forbidden' in msg.lower():
+            err_class = 'forbidden_scope'
+        elif '429' in msg or 'rate' in msg.lower():
+            err_class = 'rate_limit'
+        elif 'timeout' in msg.lower() or 'timed out' in msg.lower():
+            err_class = 'network_timeout'
+
+        try:
+            cp._record_attempt(platform, 'error', error_class=err_class)
+        except Exception:
+            pass
+        try:
+            conn.close()
+        except Exception:
+            pass
+
+        return jsonify({
+            "ok": False,
+            "platform": platform,
+            "post_id": post_id,
+            "error_class": err_class,
+            "error_detail": msg[:300],
+            "hint": {
+                'auth_failed': "OAuth token doesn't have the scope it needs. "
+                                "For X: regenerate the Access Token AFTER setting "
+                                "App permissions to Read+Write.",
+                'forbidden_scope': "Token is valid but lacks write permission.",
+                'rate_limit': "API rate limit hit — try again in 15 min.",
+            }.get(err_class, "Unclassified — paste error_detail back for diagnosis."),
+        }), 502
+
+
 def register_publisher_status(app):
     """Idempotent blueprint registration. Called from main.py alongside
     the other media/publisher blueprints."""
     app.register_blueprint(publisher_status_bp)
     logger.info("Publisher Status (PUBLIC, no auth): GET /api/v1/dchub-media/publisher-status")
+    logger.info("Publisher Drain (admin-gated): POST /api/v1/admin/dchub-media/<platform>/drain-now")
