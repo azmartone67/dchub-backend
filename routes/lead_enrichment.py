@@ -107,6 +107,7 @@ def _enrich_one(lead_row):
     }
 
 
+# AUTO-REPAIR: duplicate route '/process-pending' also in routes/outreach_cron.py:164 — review and remove one
 @lead_enrich_bp.route("/process-pending", methods=["GET", "POST"])
 def process_pending():
     """Enrich any signal whose notes field doesn't yet contain enrichment JSON."""
@@ -152,6 +153,7 @@ def process_pending():
     out["elapsed_ms"] = int((datetime.datetime.utcnow() - started).total_seconds() * 1000)
     return jsonify(out), 200
 
+# AUTO-REPAIR: duplicate route '/status' also in enhanced_promotion.py:839 — review and remove one
 
 @lead_enrich_bp.route("/status", methods=["GET"])
 def status():
