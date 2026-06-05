@@ -20714,7 +20714,26 @@ def admin_sitemap_purge():
     admin_key = (os.environ.get('DCHUB_ADMIN_KEY')
                  or os.environ.get('ADMIN_KEY') or '').strip()
     provided = (request.headers.get('X-Admin-Key') or '').strip()
-    if admin_key and provided != admin_key:
+    # 2026-06-05 (Phase HJ-2 follow-up) — Fail-closed.
+    # The legacy pattern (used by /api/v1/admin/digest/broadcast and
+    # other admin endpoints) is `if admin_key and provided != admin_key`
+    # which short-circuits to fail-OPEN when no env var is configured.
+    # Verified live earlier today: any value passed as X-Admin-Key (even
+    # "3") succeeded. Blast radius is low (just CPU-burn DoS to force
+    # constant sitemap rebuilds — no data exposed, no state mutated)
+    # but the right pattern is fail-CLOSED: if the env var is missing,
+    # the endpoint refuses to run instead of allowing anonymous use.
+    if not admin_key:
+        return jsonify(
+            error='admin_endpoint_unconfigured',
+            hint=('DCHUB_ADMIN_KEY env var is not set on the Railway '
+                  'service. Generate a key with: python3 -c "import '
+                  'secrets; print(secrets.token_hex(32))" and add it '
+                  'to Railway dashboard → dchub-backend → Variables. '
+                  'This endpoint refuses requests when no key is '
+                  'configured (fail-closed).'),
+        ), 503
+    if provided != admin_key:
         return jsonify(error='unauthorized',
                        hint='set X-Admin-Key header to DCHUB_ADMIN_KEY'), 401
     global _SITEMAP_XML_CACHE
@@ -26805,6 +26824,7 @@ except Exception as _pl_e:
     print(f"[main] partner_landing_bp register failed: {_pl_e}", flush=True)
 
 try:
+<<<<<<< Updated upstream
     # r-methodology (2026-06-04): closes the 404 URLs cited in the Power
     # Delivery Methodology PDF v1.0 sent to CBRE Research today.
     from routes.methodology_pages import methodology_pages_bp
@@ -26825,6 +26845,8 @@ except Exception as _l15_e:
     print(f"[main] brain_layer15_bp register failed: {_l15_e}", flush=True)
 
 try:
+=======
+>>>>>>> Stashed changes
     from routes.auto_interconnect import auto_interconnect_bp
     app.register_blueprint(auto_interconnect_bp)
     print("[main] auto_interconnect_bp registered: /api/v1/admin/auto-interconnect/{run,findings,approve/<token>,dismiss/<token>}", flush=True)
