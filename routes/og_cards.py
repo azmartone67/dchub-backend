@@ -242,23 +242,27 @@ def _verdict_pill(d, x, y, verdict, font_size=44, pad_x=40, pad_y=18):
 
 
 def _brand_chip(d, x, y, size=56):
-    """DC HUB brand mark — a purple rounded-square chip with a stylized
-    lightning bolt, matching the favicon and site nav. Always sits at
-    top-left of the card so DC Hub branding is unmistakable on a thumb
-    swipe even before the headline is read."""
-    _rounded_rect(d, [(x, y), (x + size, y + size)], radius=12, fill=PURPLE)
-    # Simple lightning bolt — diagonal polygon centered in the chip
-    cx, cy = x + size // 2, y + size // 2
-    s = size * 0.28  # bolt half-height
-    bolt = [
-        (cx - s * 0.55, cy - s),       # top-left
-        (cx + s * 0.10, cy - s * 0.10),
-        (cx - s * 0.20, cy - s * 0.10),
-        (cx + s * 0.55, cy + s),       # bottom-right
-        (cx - s * 0.10, cy + s * 0.10),
-        (cx + s * 0.20, cy + s * 0.10),
-    ]
-    d.polygon(bolt, fill=WHITE)
+    """DC HUB brand mark — a purple rounded-square chip with a white "DC"
+    wordmark centered inside. Matches the favicon's visual weight better
+    than a stylized lightning bolt (which became a thin slash at large
+    chip sizes; the bolt polygon didn't scale). Always sits at top-left
+    of the card so DC Hub branding is unmistakable on a thumb swipe even
+    before the headline is read."""
+    _rounded_rect(d, [(x, y), (x + size, y + size)],
+                  radius=max(8, size // 6), fill=PURPLE)
+    # "DC" wordmark inside the chip — tight bold, proportionally sized
+    font_size = max(int(size * 0.42), 14)
+    f = _font(font_size)
+    try:
+        bbox = d.textbbox((0, 0), 'DC', font=f)
+        text_w = bbox[2] - bbox[0]
+        text_h = bbox[3] - bbox[1]
+    except AttributeError:
+        text_w, text_h = f.getsize('DC')
+    # Center the text inside the chip
+    tx = x + (size - text_w) // 2
+    ty = y + (size - text_h) // 2 - int(size * 0.05)  # nudge up slightly
+    d.text((tx, ty), 'DC', font=f, fill=WHITE)
 
 
 def _subtle_gradient(img, top_color, bottom_color, falloff=1.0):
@@ -370,17 +374,22 @@ def _draw_data_brutal(pr):
     d.text((60, 110), market_name.upper()[:22], font=_font(72), fill=TEXT)
 
     # Hero number — massive, brand purple, monospace.
-    # 340pt fills the middle/lower band; left-aligned at x=60.
+    # Position the underline using FONT SIZE (em-box), not textbbox —
+    # textbbox returns the tight glyph bbox which doesn't include the
+    # font's descender region, so a measurement-based underline cuts
+    # THROUGH the number. font.size + 0.10 padding clears all descenders.
     if score:
         score_str = f'{score:.1f}'
-        d.text((54, 198), score_str, font=_mono(320), fill=PURPLE)
-        # Thin purple underline under the number — subtle anchor
-        sw, _ = _text_size(d, score_str, _mono(320))
-        underline_y = 198 + 260
-        d.rectangle([(60, underline_y), (60 + min(sw, 720), underline_y + 6)],
+        FONT_PT = 240
+        score_y = 178
+        score_font = _mono(FONT_PT)
+        d.text((60, score_y), score_str, font=score_font, fill=PURPLE)
+        # Em-box bottom = top + (font_pt * roughly 1.0); add 8% breathing
+        underline_y = score_y + int(FONT_PT * 1.08)
+        sw, _ = _text_size(d, score_str, score_font)
+        d.rectangle([(60, underline_y), (60 + min(sw, 720), underline_y + 5)],
                     fill=PURPLE_LT)
-        # Caption below underline
-        d.text((60, underline_y + 24), 'EXCESS POWER  ·  #1 NATIONALLY',
+        d.text((60, underline_y + 22), 'EXCESS POWER  ·  #1 NATIONALLY',
                font=_mono(22), fill=MUTED)
     else:
         # No score → render the subheadline at large display size instead
@@ -566,10 +575,10 @@ def _draw_infographic(pr):
         d.text((bar_start_x + bar_w + 16, y + bar_h // 2 - 18),
                f'{score:.1f}', font=_font(32), fill=WHITE)
 
-        # #1 indicator
+        # #1 indicator — "#1" label in green, no Unicode glyph deps
         if is_top:
-            d.text((W - 80, y + bar_h // 2 - 18), '▲',
-                   font=_font(32), fill=GREEN)
+            d.text((W - 90, y + bar_h // 2 - 16), '#1',
+                   font=_font(28), fill=GREEN)
 
     # Footer with verdict pill
     verdict = _verdict_for(signals)
