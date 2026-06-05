@@ -14568,7 +14568,12 @@ def get_stats():
         try:
             # Count distinct callers in last 7d — most schemas have either
             # api_key or session_id; try both, fall through to 0.
-            c.execute("SELECT COUNT(DISTINCT COALESCE(api_key, session_id, user_id::text, 'anon')) "
+            # 2026-06-05 (Phase HJ-2): removed user_id::text from COALESCE —
+            # column doesn't exist on mcp_call_log; query was raising
+            # "column user_id does not exist" every ~3min in the Railway
+            # logs (caught by brain finding sweep). Now uses only the two
+            # columns that actually exist on the schema.
+            c.execute("SELECT COUNT(DISTINCT COALESCE(api_key, session_id, 'anon')) "
                       "FROM mcp_call_log "
                       "WHERE timestamp >= NOW() - INTERVAL '7 days'")
             stats['ai_agents_7d'] = c.fetchone()[0] or 0
@@ -16337,9 +16342,10 @@ def api_config():
         "version": "v92"
     })
 
-@app.route('/favicon.ico')
-def favicon():
-    return send_from_directory('static', 'favicon.ico', mimetype='image/x-icon')
+# /favicon.ico is registered by routes/favicon_quieter.py — removing the inline
+# duplicate (2026-06-05 Phase HJ-2 brain-finding sweep). The blueprint version
+# also suppresses noisy 404-on-missing-favicon logs; this inline version was
+# Flask's first-match-wins copy that ran instead. Functional behavior unchanged.
 
 @app.route('/announcements')
 @app.route('/announcements.html')
@@ -26949,6 +26955,18 @@ try:
     print("[main] indexnow_bp registered: /{KEY}.txt + POST /api/v1/admin/indexnow/submit", flush=True)
 except Exception as _in_e:
     print(f"[main] indexnow_bp register failed: {_in_e}", flush=True)
+
+# 2026-06-05 (Phase HJ-2 brain sweep) — MCP registry presence watcher.
+# Probes smithery.ai, mcp.so, awesome-mcp-servers, modelcontextprotocol/
+# servers, and Cursor MCP catalog weekly via GH Actions cron. Files
+# brain findings when DC Hub is missing so the autopilot can ship a
+# submission PR. Companion to .github/workflows/mcp-registry-watch.yml.
+try:
+    from routes.mcp_registry_watch import mcp_registry_watch_bp
+    app.register_blueprint(mcp_registry_watch_bp)
+    print("[main] mcp_registry_watch_bp registered: GET /api/v1/brain/mcp-registries + POST /api/v1/admin/brain/mcp-registries/scan", flush=True)
+except Exception as _mrw_e:
+    print(f"[main] mcp_registry_watch_bp register failed: {_mrw_e}", flush=True)
 
 # r79 (2026-06-03) — Redirect blueprint for known-dead URLs. Each entry
 # in routes/redirects_404_killer.py is a URL we caught 404ing in production

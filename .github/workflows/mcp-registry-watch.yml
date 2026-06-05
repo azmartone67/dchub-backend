@@ -1,0 +1,96 @@
+name: MCP Registry Watch
+
+# Weekly probe of major MCP registries to verify DC Hub presence.
+# When DC Hub is missing from a registry, the scan endpoint files a
+# brain finding so autopilot / human can ship a submission PR.
+#
+# Phase HJ-2 (2026-06-05) — companion to routes/mcp_registry_watch.py.
+# Runs Mondays 14:00 UTC = US-morning. Manually triggerable via
+# workflow_dispatch.
+
+on:
+  schedule:
+    # Mondays 14:00 UTC — Pacific 7AM, Eastern 10AM, EU afternoon.
+    - cron: '0 14 * * 1'
+  workflow_dispatch:
+
+permissions:
+  contents: read
+  issues: write   # so we can open a GitHub issue if a registry drops us
+
+concurrency:
+  group: mcp-registry-watch
+  cancel-in-progress: false
+
+jobs:
+  scan:
+    runs-on: ubuntu-latest
+    timeout-minutes: 8
+    steps:
+      - name: Trigger registry presence scan
+        id: scan
+        env:
+          ADMIN_KEY: ${{ secrets.DCHUB_ADMIN_KEY }}
+        run: |
+          if [ -z "$ADMIN_KEY" ]; then
+            echo "::warning ::DCHUB_ADMIN_KEY secret not set — falling back to public read endpoint"
+            BODY=$(curl -sS "https://dchub.cloud/api/v1/brain/mcp-registries" \
+                        --max-time 30)
+          else
+            BODY=$(curl -sS -X POST \
+                        -H "X-Admin-Key: $ADMIN_KEY" \
+                        "https://dchub.cloud/api/v1/admin/brain/mcp-registries/scan" \
+                        --max-time 30)
+          fi
+          echo "$BODY" | jq -r '.results | to_entries[] | "  \(.value.verdict)\t\(.key)\t\(.value.registry)"' || true
+          PRESENT=$(echo "$BODY" | jq -r '.present // 0')
+          MISSING=$(echo "$BODY" | jq -r '.missing // 0')
+          TOTAL=$(echo "$BODY"   | jq -r '.total   // 0')
+          echo "present=$PRESENT" >> "$GITHUB_OUTPUT"
+          echo "missing=$MISSING" >> "$GITHUB_OUTPUT"
+          echo "total=$TOTAL"     >> "$GITHUB_OUTPUT"
+          {
+            echo "## MCP Registry Watch — $(date -u +%Y-%m-%d)"
+            echo ""
+            echo "**Present in:** $PRESENT / $TOTAL registries"
+            echo "**Missing from:** $MISSING"
+            echo ""
+            echo '```'
+            echo "$BODY" | jq -r '.results | to_entries[] | "\(.value.verdict | ascii_upcase)\t\(.key)"'
+            echo '```'
+            echo ""
+            if [ "$MISSING" -gt 0 ]; then
+              echo "### Missing registries — submission URLs"
+              echo "$BODY" | jq -r '.results | to_entries[] | select(.value.verdict != "present") | "- **\(.value.registry)** → \(.value.submission_url)"'
+            fi
+          } >> "$GITHUB_STEP_SUMMARY"
+
+      - name: Open GitHub issue if DC Hub missing from any registry
+        if: steps.scan.outputs.missing != '0' && steps.scan.outputs.missing != ''
+        uses: actions/github-script@v7
+        with:
+          github-token: ${{ secrets.GITHUB_TOKEN }}
+          script: |
+            const present = '${{ steps.scan.outputs.present }}';
+            const missing = '${{ steps.scan.outputs.missing }}';
+            const total   = '${{ steps.scan.outputs.total }}';
+            const title   = `MCP Registry Watch — DC Hub missing from ${missing}/${total} registries`;
+            // De-dupe: don't open a new issue if one with this exact
+            // title is already open. Closes a feedback loop.
+            const existing = await github.rest.issues.listForRepo({
+              owner:  context.repo.owner,
+              repo:   context.repo.repo,
+              state:  'open',
+              labels: ['mcp-registry-watch'],
+            });
+            if (existing.data.some(i => i.title === title)) {
+              console.log('Issue already open — skipping create.');
+              return;
+            }
+            await github.rest.issues.create({
+              owner:  context.repo.owner,
+              repo:   context.repo.repo,
+              title:  title,
+              labels: ['mcp-registry-watch', 'seo'],
+              body:   `Weekly MCP registry probe found DC Hub missing from ${missing} of ${total} registries.\n\nFor full per-registry status with submission URLs, see https://dchub.cloud/api/v1/brain/mcp-registries.\n\nAuto-filed by .github/workflows/mcp-registry-watch.yml.`,
+            });
