@@ -1639,6 +1639,17 @@ try:
     except Exception as _l14e:
         import logging
         logging.getLogger(__name__).warning('brain_layer14 wiring failed: %s', _l14e)
+    # r48.2 (2026-05-27): Brain Bug-Squash — preemptive bug-class detection.
+    # Companion to scripts/bug_squash.py. Surfaces "code patterns we've
+    # been bitten by twice" as brain_findings entries so the next
+    # inspector_brief + weekly digest sees them BEFORE users report them.
+    # Read-only — files findings, does not auto-remediate.
+    try:
+        from routes.brain_bug_squash import brain_bug_squash_bp
+        app.register_blueprint(brain_bug_squash_bp)
+    except Exception as _bse:
+        import logging
+        logging.getLogger(__name__).warning('brain_bug_squash wiring failed: %s', _bse)
     # Phase FF+7-meta (2026-05-19): Brain L16 — Self-Critique. Verifies
     # predictions, builds calibration data so the brain learns its own
     # accuracy. Closes the prediction-outcome loop. Read by L14 prompt.

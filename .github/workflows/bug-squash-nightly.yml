@@ -1,0 +1,81 @@
+name: bug-squash-nightly
+
+# r48.2 (2026-05-27) — preemptive bug-class detection.
+#
+# Runs scripts/bug_squash.py every night, files findings into the brain
+# brain_findings table via POST /api/v1/brain/bug-squash/file, then those
+# findings flow into the next inspector_brief + weekly digest so we hunt
+# bug classes BEFORE users report them. Read-only — surfaces only,
+# remediation left to humans (per safety boundaries in
+# reference_dchub_autonomy_core.md).
+
+on:
+  schedule:
+    - cron: '0 5 * * *'  # 05:00 UTC daily — after the dcpi-daily 06:00 recompute window
+  workflow_dispatch:
+    inputs:
+      pattern:
+        description: 'Limit to a single pattern id (optional)'
+        required: false
+      file_to_brain:
+        description: 'POST findings to brain (true/false)'
+        required: false
+        default: 'true'
+
+permissions:
+  contents: read
+
+jobs:
+  squash:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Check out backend
+        uses: actions/checkout@v5
+        with:
+          path: dchub-backend
+
+      # The frontend canonical-field pattern needs the sibling repo.
+      - name: Check out frontend
+        uses: actions/checkout@v5
+        with:
+          repository: azmartone67/dchub-frontend
+          path: dchub-frontend
+
+      - uses: actions/setup-python@v6
+        with:
+          python-version: '3.11'
+
+      - name: Run bug_squash (text report)
+        env:
+          DCHUB_FRONTEND_ROOT: ${{ github.workspace }}/dchub-frontend
+        run: |
+          cd dchub-backend
+          # fail-on=never — the brain digest is the right place to surface
+          # these; CI failing every night would be noise.
+          python3 scripts/bug_squash.py --format text --fail-on never
+
+      - name: Run bug_squash + file to brain
+        if: ${{ inputs.file_to_brain != 'false' }}
+        env:
+          DCHUB_FRONTEND_ROOT: ${{ github.workspace }}/dchub-frontend
+          DCHUB_ADMIN_KEY: ${{ secrets.DCHUB_ADMIN_KEY }}
+          DCHUB_BRAIN_URL: https://dchub-backend-production.up.railway.app
+        run: |
+          cd dchub-backend
+          python3 scripts/bug_squash.py \
+            --format json \
+            --file-to-brain \
+            --fail-on never \
+            ${{ inputs.pattern && format('--pattern {0}', inputs.pattern) || '' }} \
+            > squash-output.json
+          echo "::group::Brain file response"
+          tail -20 squash-output.json || true
+          echo "::endgroup::"
+
+      - name: Upload findings artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: bug-squash-findings-${{ github.run_id }}
+          path: dchub-backend/squash-output.json
+          if-no-files-found: ignore
+          retention-days: 30
