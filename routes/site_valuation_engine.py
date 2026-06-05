@@ -1062,11 +1062,24 @@ def site_value():
             # even free visitors see the breakdown + sufficiency.
             "site_value_breakdown":   valuation.get("site_value_breakdown"),
             "site_sufficiency":       valuation.get("site_sufficiency"),
+            # v2.1b — band-clamp metadata is methodology, not gated data.
+            # Surfacing on teaser lets free visitors + tests see the
+            # clamp behavior (in_band / ceiling_saturated / floor_saturated)
+            # without unlocking the full valuation envelope.
+            "$/mw_uncapped":          valuation.get("$/mw_uncapped"),
+            "$/mw_band_floor":        valuation.get("$/mw_band_floor"),
+            "$/mw_band_ceiling":      valuation.get("$/mw_band_ceiling"),
+            "$/mw_band_status":       valuation.get("$/mw_band_status"),
         },
         "scenarios_teaser":  {
             "grid_only":          {"time_to_power_months": scenarios["grid_only"]["time_to_power_months"]},
             "gas_btm":            {"time_to_power_months": scenarios["gas_btm"]["time_to_power_months"]},
             "gas_to_grid_hybrid": {"time_to_power_months": scenarios["gas_to_grid_hybrid"]["time_to_power_months"]},
+            # v2.1b — assumption overrides are user inputs + defaults,
+            # not derived $/MWh. Safe to expose pre-paywall so users can
+            # confirm their LMP / discount / heat-rate overrides took
+            # effect before they upgrade. Full opex math still gated.
+            "_assumptions":       scenarios.get("_assumptions"),
         },
         "upgrade_hint": {
             "human_message":  ("Full 3-scenario NPV + CapEx/OpEx breakdown, "
