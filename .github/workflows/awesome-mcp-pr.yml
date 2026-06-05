@@ -56,7 +56,7 @@ jobs:
           # under the relevant category. punkpeye/awesome-mcp-servers
           # uses simple `- [name](url) - description` entries.
           cat > /tmp/entry.md <<'EOF'
-          - [DC Hub](https://dchub.cloud/mcp) - Data-center intelligence MCP server. 23+ tools covering 21,000+ data-center facilities (170+ countries), 285 US power markets scored by the proprietary DC Hub Power Index (DCPI), $324B+ tracked M&A, 369 GW construction pipeline, ISO grid telemetry (PJM, ERCOT, CAISO, MISO, SPP, NYISO), fiber routes, energy pricing. Free for citation; powering 96+ AI platforms.
+          - [DC Hub](https://dchub.cloud/mcp) - Data-center, power & gas intelligence MCP server. 33 tools covering 21,000+ data-center facilities (170+ countries), 232 US power markets scored by the DC Hub Power Index (DCPI), 2,000+ tracked M&A deals, ISO grid telemetry (PJM, ERCOT, CAISO, MISO, SPP, NYISO), fiber routes, and energy pricing. Free to cite (CC-BY-4.0).
           EOF
           echo "::notice::Entry drafted:"
           cat /tmp/entry.md
@@ -104,23 +104,31 @@ jobs:
             mv README.md.new README.md
           fi
 
-          # Step 4: configure git, commit, push to our fork.
+          # Step 4: configure git, commit, push to OUR fork (the token's account).
           git config user.name  "dchub-cloud-bot"
           git config user.email "bot@dchub.cloud"
-
-          # Use gh to fork if not already forked, then push to fork.
           gh auth setup-git
-          # Check if we already have a fork; create if not.
-          if ! gh repo view dchub-cloud-bot/awesome-mcp-servers >/dev/null 2>&1; then
-            gh repo fork punkpeye/awesome-mcp-servers --clone=false --remote=false
-          fi
+          # Fork to whatever account owns PR_SUBMIT_TOKEN — don't assume a bot
+          # account exists. (Prior bug: hardcoded dchub-cloud-bot + the now-removed
+          # `--remote=false`, which gh rejects when a repo arg is given.)
+          FORK_OWNER="$(gh api user -q .login)"
+          echo "::notice::fork owner (token account) = $FORK_OWNER"
+          # Idempotent fork; pass no flags (gh rejects --remote with a repo arg,
+          # and --clone defaults off). Add the remote ourselves + wait for the
+          # fork to materialize before pushing.
+          gh repo fork punkpeye/awesome-mcp-servers >/dev/null 2>&1 || true
+          for _i in 1 2 3 4 5 6; do
+            gh repo view "$FORK_OWNER/awesome-mcp-servers" >/dev/null 2>&1 && break
+            sleep 3
+          done
           BR="add-dchub-mcp-$(date +%Y%m%d-%H%M)"
-          git remote add fork "https://github.com/dchub-cloud-bot/awesome-mcp-servers.git"
+          git remote add fork "https://github.com/$FORK_OWNER/awesome-mcp-servers.git"
           git checkout -b "$BR"
           git add README.md
           git commit -m "Add DC Hub — data-center intelligence MCP server"
           git push -u fork "$BR"
           echo "BRANCH=$BR" >> "$GITHUB_ENV"
+          echo "FORK_OWNER=$FORK_OWNER" >> "$GITHUB_ENV"
 
       - name: Open PR (skip if already_present or dry_run)
         if: steps.tok.outputs.have_token == 'true' && env.ALREADY_PRESENT != '1' && inputs.dry_run != 'true'
@@ -131,7 +139,7 @@ jobs:
           cd /tmp/amcp
           gh pr create \
             --repo punkpeye/awesome-mcp-servers \
-            --head "dchub-cloud-bot:${BRANCH}" \
+            --head "${FORK_OWNER}:${BRANCH}" \
             --title "Add DC Hub — data-center intelligence MCP server" \
             --body "$(cat <<'EOF'
           ## What
@@ -141,9 +149,9 @@ jobs:
           - **Name:** DC Hub
           - **URL:** https://dchub.cloud/mcp
           - **Server card:** https://dchub.cloud/.well-known/mcp/server-card.json
-          - **Description:** Data-center intelligence MCP server. 23+ tools covering 21,000+ data-center facilities (170+ countries), 285 US power markets scored by the proprietary DC Hub Power Index (DCPI), \$324B+ tracked M&A, 369 GW construction pipeline, ISO grid telemetry (PJM, ERCOT, CAISO, MISO, SPP, NYISO), fiber routes, energy pricing.
-          - **License:** Free for citation.
-          - **Existing distribution:** Listed on Smithery, Glama, mcp.so. Used by 96+ AI platforms.
+          - **Description:** Data-center, power & gas intelligence MCP server. 33 tools covering 21,000+ data-center facilities (170+ countries), 232 US power markets scored by the DC Hub Power Index (DCPI), 2,000+ tracked M&A deals, ISO grid telemetry (PJM, ERCOT, CAISO, MISO, SPP, NYISO), fiber routes, energy pricing.
+          - **License:** Free to cite (CC-BY-4.0).
+          - **Existing distribution:** In the official MCP registry; indexed by mcp.so, Glama, PulseMCP. Compatible with Claude, Cursor, Cline, and other MCP clients.
 
           ## Why this list
           Closes a real gap — there is no other MCP server covering data-center / power-market intelligence at this scope. Existing entries cover finance, dev tools, search, and general data, but not infrastructure.

@@ -3,15 +3,15 @@
 
 name: DC Hub Intelligence
 slug: dchub-intelligence
-tagline: Real-time data center intelligence for AI agents
+tagline: Data-center, power & gas intelligence for AI agents
 description: |
-  20,000+ data center facilities across 140+ countries, indexed and queryable
-  via 50+ MCP tools. Coverage includes M&A transactions (975+ deals), capacity
-  pipeline (21+ GW), real-time ISO/RTO grid data (7 US ISOs, 74 load zones),
+  21,000+ data center facilities across 170+ countries, indexed and queryable
+  via 33 MCP tools. Coverage includes M&A transactions (2,000+ deals), capacity
+  pipeline tracking, real-time ISO/RTO grid data (7 US ISOs, 74 load zones),
   site-suitability scoring for any US lat/long across 12 dimensions, and
   industry news from 60+ curated sources updated every 5 minutes.
 
-  Free tier requires no auth. Paid tier ($12/mo) unlocks deep facility specs,
+  Free tier requires no auth. Paid tier ($9/mo) unlocks deep facility specs,
   capacity-pipeline forecasts, and custom site analysis.
 
 homepage: https://dchub.cloud
@@ -45,7 +45,7 @@ tested_with:
   - Codeium
   - n8n
 
-tools_count: 50
+tools_count: 33
 languages_supported: en
 
 # Top 10 tools (paste here for the form's "key tools" field)

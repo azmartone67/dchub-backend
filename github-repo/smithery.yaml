@@ -1,10 +1,10 @@
 name: dchub-mcp-server
 displayName: DC Hub Intelligence
 description: |
-  Real-time data center market intelligence for AI agents. 20,000+
-  facilities across 140+ countries, 975+ M&A transactions, real-time
+  Data-center, power & gas intelligence for AI agents. 21,000+
+  facilities across 170+ countries, 2,000+ M&A deals, real-time
   ISO/RTO grid data (7 US ISOs, 74 load zones), capacity pipeline
-  tracking (21+ GW), site-suitability scoring, and industry news
+  tracking, site-suitability scoring, and industry news
   refreshed every 5 minutes from 60+ curated sources.
 version: 3.0.0
 icon: https://dchub.cloud/static/icon.png

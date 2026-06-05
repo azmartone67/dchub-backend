@@ -56,7 +56,7 @@ def _live_py_files():
         if any(x in (dp + "/") for x in _EXCLUDE_DIRS):
             continue
         for f in fn:
-            if f.endswith((".py", ".md", ".json")) and f not in _EXCLUDE_FILES:
+            if f.endswith((".py", ".md", ".json", ".yml", ".yaml")) and f not in _EXCLUDE_FILES:
                 yield os.path.join(dp, f)
 
 
