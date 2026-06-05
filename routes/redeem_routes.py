@@ -142,7 +142,7 @@ def _p99_send_email(email, api_key, tools_tried):
         f"  {hint['curl_example']}\n\n"
         f"{hint['next_step']}\n\n"
         f"Unlocks: 50 facility lookups, real-time grid (7 ISOs), fiber intel, M&A deals, 650+ GW pipeline.\n\n"
-        f"Upgrade to Pro at https://dchub.cloud/pricing — $49/mo unlimited.\n"
+        f"Upgrade to Pro at https://dchub.cloud/pricing — $199/mo.\n"
     )
     html_install = (
         '{"mcpServers":{"dchub":{"command":"npx",'

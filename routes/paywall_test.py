@@ -86,7 +86,7 @@ def _build_paywall_payload(tool: str, session_id: str = "") -> dict:
         f"👉 **Human handoff:** get a free dev key here:\n"
         f"{pair['redeem_url']}\n\n"
         f"No credit card. Unlocks 50 facility lookups, real-time grid for 7 ISOs, fiber intel, M&A deals.\n\n"
-        f"_Or upgrade to Pro at {UPGRADE_URL} for $49/mo unlimited access._"
+        f"_Or upgrade to Pro at {UPGRADE_URL} for $199/mo._"
     )
     return {
         "allowed":     False,

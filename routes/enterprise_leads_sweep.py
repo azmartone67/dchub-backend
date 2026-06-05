@@ -12,7 +12,7 @@ This module:
      (paid_tool_hits × distinct_tools_attempted).
   2. DRAFT: generates a personalized outreach email per lead that
      references their actual usage pattern ("I see your team's been
-     pulling Cheyenne power data — would a $499/mo Pro key with raw
+     pulling Cheyenne power data — would a $199/mo Pro key with raw
      exports + monthly briefings help?"). Stored in a drafts table.
   3. APPROVE: admin reviews drafts at /admin/enterprise/leads. Reject
      stays in DB for audit. Approve fires the email via Resend.
@@ -136,7 +136,7 @@ def _generate_draft(lead: dict) -> dict:
         f"DC Hub's analytics flagged your account: {paid_hits} calls "
         f"on paid-tier tools in the last 30 days, primarily {tool_list}. "
         f"That's heavy usage for a free key.\n\n"
-        f"The Pro tier ($499/mo, https://dchub.cloud/pricing) unlocks "
+        f"The Pro tier ($199/mo, https://dchub.cloud/pricing) unlocks "
         f"{pitch} — same endpoints you're already hitting, full data instead "
         f"of teaser responses. Most {domain or 'firms'} that pull at this volume "
         f"are using it for {'site selection' if 'site' in top_tool else 'market intelligence'}.\n\n"

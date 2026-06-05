@@ -296,7 +296,7 @@ def notify_when_free():
             f"We'll notify you the moment your daily limit resets or your trial window opens.</p>"
             f"<p>Want instant access? "
             f"<a href='https://dchub.cloud/pricing?utm_source=notify_welcome'>"
-            f"Upgrade to Pro</a> — $49/mo, cancel anytime.</p>",
+            f"Upgrade to Pro</a> — $199/mo, cancel anytime.</p>",
             text_content=(f"Thanks — you're on the list for {tool or 'DC Hub Pro'}. "
                           f"We'll notify you the moment your daily limit resets.\n\n"
                           f"Want instant access? https://dchub.cloud/pricing?utm_source=notify_welcome")

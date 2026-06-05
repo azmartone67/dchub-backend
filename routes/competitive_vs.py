@@ -159,9 +159,9 @@ _DCHUB_FACTS = {
     "data_format":        "Live JSON via REST + MCP (machine + LLM readable)",
     "update_cadence":     "Continuous (60s freshness SLA on key surfaces)",
     "mcp_native":         "YES — 33 tools, 12 AI platforms integrated",
-    "api_access":         "Free tier 25 calls/day, $9/mo for 500, $49 for 1000",
+    "api_access":         "Free 10 calls/day; Starter $9/mo (200/day); Developer $49/mo (500/day); Pro $199/mo (2,000/day)",
     "facility_coverage":  "21,000+ facilities, 232 markets, 178 countries",
-    "pricing_model":      "Self-serve $9 → $499, no enterprise gate",
+    "pricing_model":      "Self-serve $9 → $699/mo, no sales gate",
     "citation_license":   "CC-BY-4.0 — free to cite with attribution",
 }
 

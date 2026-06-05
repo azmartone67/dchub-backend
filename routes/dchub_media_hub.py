@@ -1877,7 +1877,7 @@ def outreach_agent_card():
                 "signup":     "https://dchub.cloud/signup",
             },
             "paid_tier": {
-                "price":   "$49/mo Pro · Enterprise custom",
+                "price":   "$199/mo Pro · Enterprise custom",
                 "pricing": "https://dchub.cloud/pricing",
             },
         },

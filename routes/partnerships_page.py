@@ -86,7 +86,7 @@ Brokers, analysts, research vendors, trade press, and AI platforms — all run o
 <div class="partner">
 <h3>Research Vendors</h3>
 <div class="who">DCHawk · dcByte · DC Knowledge · Synergy Research · 451 Research · Omdia</div>
-<div class="we">We don't compete with your <b>research products</b> — we make them current. Embed our live MW/pipeline/M&A feeds in your subscriber portals. We're additive: $9/mo developer plan gives you 500 calls/day to enrich your own dashboards.</div>
+<div class="we">We don't compete with your <b>research products</b> — we make them current. Embed our live MW/pipeline/M&A feeds in your subscriber portals. We're additive: $49/mo developer plan gives you 500 calls/day to enrich your own dashboards.</div>
 </div>
 
 <div class="partner">
@@ -122,7 +122,7 @@ Brokers, analysts, research vendors, trade press, and AI platforms — all run o
 <li><b>CC-BY-4.0 by default.</b> Every public surface is citation-clean — no license review needed. Just attribution.</li>
 <li><b>White-label friendly.</b> Embed our data in your client portals. Brand it however you like. The data is the data.</li>
 <li><b>API-first, MCP-native.</b> Our /.well-known/mcp.json is the universal manifest; our REST API is OpenAPI-spec'd. Self-serve from day one.</li>
-<li><b>Reasonable pricing.</b> $0 free tier (teaser). $9/mo developer (500/day, full data). $199/mo PRO (multi-site comparator). Enterprise = SLA + 10K/day + custom. No $25K seats.</li>
+<li><b>Reasonable pricing.</b> $0 free tier (teaser). $49/mo developer (500/day, full data). $199/mo PRO (multi-site comparator). Enterprise = SLA + 10K/day + custom. No $25K seats.</li>
 <li><b>Open about everything.</b> Live audit dashboard, live citation telemetry, methodology pages — total transparency.</li>
 </ol>
 </div>

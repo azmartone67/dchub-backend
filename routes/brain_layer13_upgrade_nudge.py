@@ -201,7 +201,7 @@ it:
   * Direct CSV/JSON exports of any tool's result set
   * Slack/Discord webhook integration for new-facility alerts
 
-Pricing's $9/mo (Developer) or $99/mo (Pro). If you'd like a free
+Pricing's $49/mo (Developer) or $199/mo (Pro). If you'd like a free
 2-week Pro upgrade to see the difference, reply with "yes" and I'll
 flip the key.
 

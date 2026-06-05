@@ -1875,7 +1875,7 @@ _PRO_HERO_BANNER = """
     <a href="/pricing" style="background:#fff;color:#0369A1;font-weight:700;
        padding:14px 28px;border-radius:8px;text-decoration:none;font-size:15px;
        box-shadow:0 4px 12px rgba(0,0,0,0.2);">
-      Unlock with PRO — $499/mo &nbsp;→
+      Unlock with PRO — $199/mo &nbsp;→
     </a>
     <a href="/pricing#enterprise" style="color:#fff;font-weight:600;
        padding:14px 4px;text-decoration:underline;font-size:14px;">
