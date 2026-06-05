@@ -42,28 +42,80 @@ ADMIN_KEY = (os.environ.get("DCHUB_ADMIN_KEY")
 # audit_signal is a case-insensitive substring; presence → we're listed.
 # competition_signal is a substring → competitor entry exists.
 
+# r-widen (2026-06-05): expanded from a 3-registry competition probe into a
+# full ecosystem COVERAGE map for the MCP Growth Sentinel (widen arm). Each
+# target carries:
+#   kind          'official' (registry.modelcontextprotocol.io JSON — reliable) |
+#                 'registry' (3rd-party HTML directory — best-effort, may 403) |
+#                 'self'     (our own agent-facing surface — reliable, we control it)
+#   submit_method how we get/stay listed: 'ci-auto' (mcp-registry-publish.yml) |
+#                 'auto-index' (re-crawls the official registry) | 'claim' |
+#                 'form' | 'pr' | 'owner' | 'native' (our own surface)
+#   submit_url    where the listing lives / where to submit
+# 'official' + 'self' targets are checked via _probe_self (reliable); the rest
+# via _probe (browser-UA HTML, best-effort). competition_signal still feeds L23.
 _WATCH_TARGETS = [
-    {
-        "key": "smithery",
-        "name": "Smithery",
-        "url": "https://smithery.ai/category/data",
-        "self_signal": "dchub",
-        "competition_signal": "data-center",  # any data-center server
-    },
-    {
-        "key": "glama",
-        "name": "Glama",
-        "url": "https://glama.ai/mcp/servers",
-        "self_signal": "dchub",
-        "competition_signal": "data-center",
-    },
-    {
-        "key": "mcp_so",
-        "name": "mcp.so",
-        "url": "https://mcp.so/servers",
-        "self_signal": "dc-hub",
-        "competition_signal": "data center",
-    },
+    # ── official registry: clean JSON API; mcp.so/PulseMCP/Glama auto-index it ──
+    {"key": "official_registry", "name": "Official MCP Registry", "kind": "official",
+     "url": "https://registry.modelcontextprotocol.io/v0/servers?search=dchub",
+     "self_signal": "cloud.dchub", "competition_signal": "",
+     "submit_method": "ci-auto",
+     "submit_url": "https://registry.modelcontextprotocol.io"},
+
+    # ── 3rd-party registries (best-effort HTML probe; many auto-index official) ──
+    {"key": "mcp_so", "name": "mcp.so", "kind": "registry",
+     "url": "https://mcp.so/servers", "self_signal": "dc-hub",
+     "competition_signal": "data center", "submit_method": "auto-index",
+     "submit_url": "https://mcp.so/server/dchub"},
+    {"key": "glama", "name": "Glama", "kind": "registry",
+     "url": "https://glama.ai/mcp/servers", "self_signal": "dchub",
+     "competition_signal": "data-center", "submit_method": "auto-index",
+     "submit_url": "https://glama.ai/mcp/servers"},
+    {"key": "pulsemcp", "name": "PulseMCP", "kind": "registry",
+     "url": "https://www.pulsemcp.com/servers", "self_signal": "dchub",
+     "competition_signal": "data center", "submit_method": "auto-index",
+     "submit_url": "https://www.pulsemcp.com"},
+    {"key": "smithery", "name": "Smithery", "kind": "registry",
+     "url": "https://smithery.ai/category/data", "self_signal": "dchub",
+     "competition_signal": "data-center", "submit_method": "claim",
+     "submit_url": "https://smithery.ai/server/azmartone67/dchub"},
+
+    # ── native discoverability: our OWN surfaces every agent fetches (reliable) ──
+    {"key": "self_mcp_manifest", "name": "Self · MCP manifest", "kind": "self",
+     "url": "https://api.dchub.cloud/api/v1/mcp/manifest", "self_signal": "dchub",
+     "competition_signal": "", "submit_method": "native", "submit_url": ""},
+    {"key": "self_capabilities", "name": "Self · agent capabilities", "kind": "self",
+     "url": "https://api.dchub.cloud/api/v1/agents/capabilities.json",
+     "self_signal": "mcp", "competition_signal": "", "submit_method": "native",
+     "submit_url": ""},
+    {"key": "self_ai_agents_json", "name": "Self · ai-agents.json", "kind": "self",
+     "url": "https://dchub.cloud/api/v1/ai-agents.json", "self_signal": "dchub",
+     "competition_signal": "", "submit_method": "native", "submit_url": ""},
+    {"key": "self_llms_txt", "name": "Self · llms.txt", "kind": "self",
+     "url": "https://dchub.cloud/llms.txt", "self_signal": "dc hub",
+     "competition_signal": "", "submit_method": "native", "submit_url": ""},
+    {"key": "self_agents_md", "name": "Self · AGENTS.md", "kind": "self",
+     "url": "https://dchub.cloud/AGENTS.md", "self_signal": "dc hub",
+     "competition_signal": "", "submit_method": "native", "submit_url": ""},
+
+    # ── expansion targets (the GAPS to widen into — manual/PR submits) ──
+    {"key": "awesome_mcp", "name": "awesome-mcp-servers", "kind": "registry",
+     "url": "https://raw.githubusercontent.com/punkpeye/awesome-mcp-servers/main/README.md",
+     "self_signal": "dchub", "competition_signal": "data center",
+     "submit_method": "pr",
+     "submit_url": "https://github.com/punkpeye/awesome-mcp-servers"},
+    {"key": "lobehub", "name": "LobeHub", "kind": "registry",
+     "url": "https://lobehub.com/mcp/dchub", "self_signal": "dchub",
+     "competition_signal": "data center", "submit_method": "form",
+     "submit_url": "https://github.com/lobehub/lobe-chat-agents/issues"},
+    {"key": "cursor_directory", "name": "Cursor Directory", "kind": "registry",
+     "url": "https://cursor.directory/mcp", "self_signal": "dchub",
+     "competition_signal": "data center", "submit_method": "form",
+     "submit_url": "https://cursor.directory/mcp"},
+    {"key": "mcp_get", "name": "mcp-get", "kind": "registry",
+     "url": "https://mcp-get.com/packages", "self_signal": "dchub",
+     "competition_signal": "data center", "submit_method": "pr",
+     "submit_url": "https://github.com/michaellatman/mcp-get"},
 ]
 
 
@@ -137,7 +189,7 @@ def _probe(target: dict) -> dict:
         },
     )
     try:
-        with urllib.request.urlopen(req, timeout=10) as r:
+        with urllib.request.urlopen(req, timeout=5) as r:
             body = r.read(200_000)  # cap at 200KB so we don't OOM
             status = r.status
     except urllib.error.HTTPError as e:
@@ -170,6 +222,71 @@ def _probe(target: dict) -> dict:
         "page_bytes":       len(body),
         "detail":           "probed ok",
     }
+
+
+def _read_local_server_version() -> str:
+    """Local server.json version — used to flag a STALE official-registry
+    listing (published version behind the repo) so the sentinel catches the
+    'I bumped server.json but the registry still shows the old one' case."""
+    try:
+        here = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+        with open(os.path.join(here, "server.json"), encoding="utf-8") as fh:
+            return str(json.load(fh).get("version") or "")
+    except Exception:
+        return ""
+
+
+def _probe_self(target: dict) -> dict:
+    """Reliable probe for surfaces we control (kind='self') and the official
+    registry JSON (kind='official'). HTTP 200 + signal present = we're live.
+    For the official registry we also compare the published version to the
+    local server.json and flag drift. Unlike _probe (best-effort HTML on
+    bot-protected 3rd-party sites), these checks are deterministic."""
+    req = urllib.request.Request(
+        target["url"],
+        headers={"User-Agent": "dchub-ecosystem-sentinel/1.0",
+                 "Accept": "application/json, text/plain, */*"},
+    )
+    try:
+        with urllib.request.urlopen(req, timeout=5) as r:
+            body = r.read(300_000)
+            status = r.status
+    except urllib.error.HTTPError as e:
+        status, body = e.code, b""
+    except Exception as e:
+        return {"target_key": target["key"], "target_name": target["name"],
+                "we_present": False, "competition_seen": None,
+                "http_status": 0, "page_bytes": 0,
+                "detail": f"{type(e).__name__}: {str(e)[:60]}"}
+
+    text = body.decode("utf-8", "replace")
+    low = text.lower()
+    sig = (target.get("self_signal") or "").lower()
+    present = bool(status == 200 and len(body) > 40 and (not sig or sig in low))
+    detail = "live" if present else f"http_{status}_or_signal_miss"
+
+    if target.get("kind") == "official" and status == 200:
+        try:
+            data = json.loads(text)
+            servers = data.get("servers", []) if isinstance(data, dict) else []
+            vers = [s.get("server", {}).get("version") for s in servers
+                    if s.get("server", {}).get("name") == "cloud.dchub/mcp-server"]
+            present = bool(vers)
+            local_v = _read_local_server_version()
+            pub_v = vers[-1] if vers else None
+            if not pub_v:
+                detail = "NOT in official registry"
+            elif local_v and pub_v != local_v:
+                detail = (f"STALE: published v{pub_v} != local v{local_v} "
+                          f"(bump server.json + push to republish)")
+            else:
+                detail = f"live v{pub_v} (current)"
+        except Exception as e:
+            detail = f"json_parse: {str(e)[:50]}"
+
+    return {"target_key": target["key"], "target_name": target["name"],
+            "we_present": present, "competition_seen": None,
+            "http_status": status, "page_bytes": len(body), "detail": detail}
 
 
 def _record(finding: dict) -> None:
@@ -206,7 +323,8 @@ def ecosystem_watch():
     _ensure_schema()
     findings = []
     for t in _WATCH_TARGETS:
-        f = _probe(t)
+        f = (_probe_self(t) if t.get("kind") in ("self", "official")
+             else _probe(t))
         _record(f)
         findings.append(f)
     return jsonify({
@@ -271,3 +389,90 @@ def ecosystem_findings():
     finally:
         try: c.close()
         except Exception: pass
+
+
+@brain_ecosystem_watch_bp.route(
+    "/api/v1/brain/ecosystem/coverage", methods=["GET"])
+def ecosystem_coverage():
+    """MCP Growth Sentinel — WIDEN-arm coverage scorecard.
+
+    Where is DC Hub listed / natively discoverable, what's healthy, and what
+    gaps remain (with the submit method for each). Reads the latest watch
+    result per target (the every-6h cron populates it) — DB-read only, so it's
+    fast and single-replica-safe. Public: it's 'where are we listed', not secret.
+    """
+    _ensure_schema()
+    meta = {t["key"]: t for t in _WATCH_TARGETS}
+    latest = {}
+    c = _conn()
+    if c is not None:
+        try:
+            with c.cursor() as cur:
+                cur.execute("""
+                    SELECT DISTINCT ON (target_key)
+                      target_key, we_present, http_status, detail, at
+                    FROM brain_ecosystem_watch
+                    ORDER BY target_key, at DESC
+                """)
+                for r in cur.fetchall():
+                    latest[r[0]] = {"we_present": r[1], "http_status": r[2],
+                                    "detail": r[3],
+                                    "at": r[4].isoformat() if r[4] else None}
+        except Exception:
+            pass
+        finally:
+            try: c.close()
+            except Exception: pass
+
+    targets = []
+    for t in _WATCH_TARGETS:
+        lat = latest.get(t["key"], {})
+        present = lat.get("we_present")
+        status = ("live" if present else
+                  ("unknown" if present is None else "missing"))
+        targets.append({
+            "key": t["key"], "name": t["name"], "kind": t.get("kind", "registry"),
+            "we_present": present, "status": status,
+            "submit_method": t.get("submit_method", ""),
+            "submit_url": t.get("submit_url", ""),
+            "http_status": lat.get("http_status"),
+            "detail": lat.get("detail"),
+            "last_checked": lat.get("at"),
+        })
+
+    live = [t for t in targets if t["status"] == "live"]
+    missing = [t for t in targets if t["status"] == "missing"]
+    unknown = [t for t in targets if t["status"] == "unknown"]
+    # gaps that need a human/PR action to close (missing + manual submit path)
+    owner_actions = [
+        {"name": t["name"], "submit_method": t["submit_method"],
+         "submit_url": t["submit_url"], "detail": t["detail"]}
+        for t in missing
+        if t["submit_method"] in ("form", "pr", "owner", "claim")
+    ]
+    checked = len(live) + len(missing)  # exclude never-checked from the %
+    resp = jsonify({
+        "ok": True,
+        "scorecard": {
+            "total_targets": len(targets),
+            "live": len(live),
+            "missing": len(missing),
+            "unknown": len(unknown),
+            "coverage_pct": (round(100.0 * len(live) / checked, 1)
+                             if checked else None),
+        },
+        "by_kind": {
+            k: {"live": sum(1 for t in targets
+                            if t["kind"] == k and t["status"] == "live"),
+                "total": sum(1 for t in targets if t["kind"] == k)}
+            for k in ("official", "registry", "self")
+        },
+        "owner_actions": owner_actions,
+        "targets": targets,
+        "note": ("3rd-party registries are best-effort (many 403/redirect bare "
+                 "probes); 'official' + 'self' targets are deterministic. Treat "
+                 "'unknown' as 'probe blocked', not 'absent'."),
+        "generated_at": datetime.datetime.utcnow().isoformat() + "Z",
+    })
+    resp.headers["Cache-Control"] = "public, max-age=300"
+    return resp, 200
