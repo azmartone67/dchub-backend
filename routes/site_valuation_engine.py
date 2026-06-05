@@ -140,6 +140,21 @@ _READINESS_PREMIUMS = {
     "permits_in_hand":         1.20,  # SLR / AQMD / etc cleared
 }
 
+# v2.1 Phase 3 (2026-06-04) — substation distance → capex tiers.
+# Replaces the fixed _CAPEX_SUBSTATION_BUILD_USD with a HIFLD-derived
+# proximity bucket. Within 5 mi we assume interconnect-only ($1M tap
+# work); 5-25 mi linearly scales to $4M (run a lateral); >25 mi or no
+# sub found = full $8M new-build assumption.
+_SUBSTATION_PROXIMITY_TIERS = [
+    (5.0,  1_000_000, "in_parcel_or_adjacent"),
+    (25.0, 4_000_000, "lateral_build"),
+    (float("inf"), 8_000_000, "new_substation_build"),
+]
+
+# v2.1 — minimum comp count for using market-specific per-MW baseline
+# (regression-fit) instead of the global $475K baseline.
+_MIN_COMPS_FOR_REGRESSION = 8
+
 
 # ── Nearest DCPI market lookup ────────────────────────────────────
 
@@ -376,6 +391,168 @@ def _fetch_comparable_sales(slug: str, state: str, limit: int = 10) -> list:
         _safe_close(c)
 
 
+# ── Phase 3 (v2.1) helpers — graceful-fallback overrides ──────────
+
+def _fetch_nearest_substation(lat: float, lon: float,
+                                max_miles: float = 50.0) -> dict:
+    """v2.1 item 4 — query substations table for nearest sub by haversine
+    distance. Returns the proximity tier + dollar capex assumption that
+    replaces the fixed _CAPEX_SUBSTATION_BUILD_USD. Falls back to
+    'new_substation_build' tier if table missing or no hit."""
+    c = _db_conn()
+    if c is None:
+        return {"available": False, "capex_usd": 8_000_000,
+                  "tier": "new_substation_build", "reason": "db_unavailable"}
+    try:
+        with c.cursor() as cur:
+            # Pre-filter by lat/lon bounding box (50 mi ≈ 0.72 deg lat)
+            # before running haversine — keeps the query fast on a large
+            # substations table.
+            lat_delta = max_miles / 69.0
+            lon_delta = max_miles / max(50.0, 69.0 * math.cos(math.radians(lat)))
+            cur.execute("""
+                SELECT name, lat, lng
+                  FROM substations
+                 WHERE lat BETWEEN %s AND %s
+                   AND lng BETWEEN %s AND %s
+                 LIMIT 200
+            """, (lat - lat_delta, lat + lat_delta,
+                  lon - lon_delta, lon + lon_delta))
+            rows = cur.fetchall() or []
+        if not rows:
+            return {"available": True, "capex_usd": 8_000_000,
+                      "tier": "new_substation_build",
+                      "miles_to_nearest": None,
+                      "reason": "no_sub_within_radius"}
+        # Find the nearest by exact haversine.
+        nearest = None
+        for name, slat, slng in rows:
+            try:
+                d = _haversine_miles(lat, lon, float(slat), float(slng))
+            except (TypeError, ValueError):
+                continue
+            if nearest is None or d < nearest["miles"]:
+                nearest = {"name": name, "miles": d}
+        if nearest is None:
+            return {"available": True, "capex_usd": 8_000_000,
+                      "tier": "new_substation_build",
+                      "miles_to_nearest": None,
+                      "reason": "no_valid_coordinates"}
+        # Walk proximity tiers — first match wins.
+        for max_band, capex, tier_name in _SUBSTATION_PROXIMITY_TIERS:
+            if nearest["miles"] <= max_band:
+                return {
+                    "available":        True,
+                    "capex_usd":        capex,
+                    "tier":             tier_name,
+                    "miles_to_nearest": round(nearest["miles"], 2),
+                    "nearest_name":     nearest["name"],
+                }
+        # Unreachable (last tier has float("inf"))
+        return {"available": True, "capex_usd": 8_000_000,
+                  "tier": "new_substation_build",
+                  "miles_to_nearest": round(nearest["miles"], 2)}
+    except Exception as e:
+        return {"available": False, "capex_usd": 8_000_000,
+                  "tier": "new_substation_build",
+                  "reason": "query_error", "error": str(e)[:200]}
+    finally:
+        _safe_close(c)
+
+
+def _fetch_market_comp_baseline(slug: str, state: str) -> dict:
+    """v2.1 item 2 — regression-fit per-MW baseline from comparable_sales.
+    Queries deals table for transactions in this market with both value_usd
+    and MW info (from name/text parse or explicit column). If we have
+    >= _MIN_COMPS_FOR_REGRESSION sized comps, returns the median per-MW
+    as a market-specific override of the global $475K baseline.
+    """
+    c = _db_conn()
+    if c is None:
+        return {"available": False, "reason": "db_unavailable"}
+    try:
+        with c.cursor() as cur:
+            # Try the canonical deals/transactions tables. Look for rows
+            # with explicit MW (mw_purchased or mw or capacity_mw column)
+            # AND a value_usd. Fall back to text-extraction of MW from the
+            # target/title if structured field missing.
+            for tbl in ("deals", "transactions", "discovered_deals"):
+                try:
+                    cur.execute(f"""
+                        SELECT value_usd, COALESCE(mw, mw_purchased, capacity_mw, 0)::float
+                          FROM {tbl}
+                         WHERE LOWER(COALESCE(market, '')) LIKE %s
+                            AND value_usd > 0
+                            AND COALESCE(mw, mw_purchased, capacity_mw, 0) > 0
+                    """, ("%" + slug + "%",))
+                    rows = cur.fetchall() or []
+                    if rows:
+                        # Compute per-MW for each comp; take median.
+                        per_mws = sorted([float(r[0]) / float(r[1])
+                                            for r in rows
+                                            if r[0] and r[1] and r[1] > 0])
+                        n = len(per_mws)
+                        if n >= _MIN_COMPS_FOR_REGRESSION:
+                            median = per_mws[n // 2]
+                            return {
+                                "available":     True,
+                                "n_comps":       n,
+                                "median_per_mw": round(median, 0),
+                                "p25_per_mw":    round(per_mws[max(0, n // 4)], 0),
+                                "p75_per_mw":    round(per_mws[min(n - 1, (n * 3) // 4)], 0),
+                                "table":         tbl,
+                            }
+                        return {"available": False,
+                                  "reason": f"only_{n}_comps",
+                                  "min_required": _MIN_COMPS_FOR_REGRESSION}
+                except Exception:
+                    continue
+            return {"available": False, "reason": "no_table_matched"}
+    except Exception as e:
+        return {"available": False, "reason": "query_error",
+                  "error": str(e)[:200]}
+    finally:
+        _safe_close(c)
+
+
+def _fetch_live_queue_ttp(iso: str, slug: str) -> dict:
+    """v2.1 item 3 — derive months-to-energization from the live ISO queue
+    snapshot instead of the DCPI's slower-refreshing time_to_power_months
+    field. Calls /api/v1/interconnection-queue/snapshot internally."""
+    if not iso:
+        return {"available": False, "reason": "no_iso_supplied"}
+    try:
+        import requests as _rq
+        base = (os.environ.get("DCHUB_INTERNAL_API")
+                  or "http://127.0.0.1:8080").strip()
+        r = _rq.get(f"{base}/api/v1/interconnection-queue/snapshot",
+                    params={"iso": iso}, timeout=4,
+                    headers={"User-Agent": "dchub-site-valuation/2.1"})
+        if r.status_code != 200:
+            return {"available": False, "reason": f"HTTP {r.status_code}"}
+        d = r.json() or {}
+        by_iso = d.get("by_iso") or {}
+        iso_data = by_iso.get(iso) or by_iso.get(iso.upper()) or {}
+        depth_mw = iso_data.get("active_queue_mw") or iso_data.get("total_mw")
+        velocity = iso_data.get("avg_completions_per_year_mw") or iso_data.get("90d_velocity_mw_per_year")
+        if depth_mw and velocity and velocity > 0:
+            # Months to clear ahead = (queue_depth / annual_velocity) × 12
+            months = round((float(depth_mw) / float(velocity)) * 12, 0)
+            return {
+                "available":       True,
+                "iso":             iso,
+                "queue_depth_mw":  float(depth_mw),
+                "velocity_mw_yr": float(velocity),
+                "months_to_power": months,
+                "source":          "live_iso_queue_snapshot",
+            }
+        return {"available": False, "reason": "iso_metrics_missing_in_snapshot",
+                  "iso_keys": list(iso_data.keys())[:8]}
+    except Exception as e:
+        return {"available": False, "reason": "query_error",
+                  "error": str(e)[:200]}
+
+
 # ── 3-scenario NPV calculator ─────────────────────────────────────
 
 def _npv(annual_cashflows: list, discount_rate: float = _DISCOUNT_RATE) -> float:
@@ -383,7 +560,8 @@ def _npv(annual_cashflows: list, discount_rate: float = _DISCOUNT_RATE) -> float
                for year, cf in enumerate(annual_cashflows))
 
 
-def _compute_scenarios(target_mw: int, dcpi: dict, gas: dict) -> dict:
+def _compute_scenarios(target_mw: int, dcpi: dict, gas: dict,
+                        overrides: dict = None) -> dict:
     """Compute Grid / BTM / Hybrid scenarios. Returns per-scenario:
       - capex_usd
       - annual_opex_usd
@@ -391,14 +569,42 @@ def _compute_scenarios(target_mw: int, dcpi: dict, gas: dict) -> dict:
       - ten_year_npv_usd  (capex + 10yr opex discounted; NEGATIVE because
                             it's a cost-only view at this stage)
       - levelized_usd_per_mwh
+
+    v2.1 overrides dict (all optional):
+      substation_capex_usd  — replaces _CAPEX_SUBSTATION_BUILD_USD (item 4)
+      live_queue_ttp_months — replaces grid_ttp (item 3)
+      heat_rate_ccgt        — replaces _CCGT_HEAT_RATE_BTU_PER_KWH (item 5)
+      heat_rate_peaker      — replaces _PEAKER_HEAT_RATE_BTU_PER_KWH (item 5)
+      gas_usd_mmbtu_override — replaces gas economics (item 1, utility tariff)
     """
+    overrides = overrides or {}
     mw = max(1, int(target_mw))
     kw = mw * 1000
     annual_mwh = mw * _HOURS_PER_YEAR
 
+    # v2.1 item 4 — substation capex from HIFLD proximity (with fallback)
+    sub_capex = float(overrides.get("substation_capex_usd")
+                      or _CAPEX_SUBSTATION_BUILD_USD)
+    # v2.1 item 5 — custom heat rates (default unchanged)
+    heat_rate_ccgt = float(overrides.get("heat_rate_ccgt")
+                           or _CCGT_HEAT_RATE_BTU_PER_KWH)
+    # v2.1 item 1 — utility-tariff override for gas $/MWh in opex calc.
+    # If supplied, recomputes $/MWh = ($/MMBtu × heat_rate × annual_mwh).
+    gas_mmbtu_override = overrides.get("gas_usd_mmbtu_override")
+    if gas_mmbtu_override:
+        # Convert utility tariff $/MMBtu → $/MWh via heat rate.
+        # $/MMBtu × (Btu/kWh / 1e6) × 1000 = $/MWh
+        ccgt_dollars_per_mwh = (float(gas_mmbtu_override)
+                                  * (heat_rate_ccgt / 1_000_000.0) * 1000.0)
+    else:
+        ccgt_dollars_per_mwh = gas.get("$/MWh_ccgt_avg", 25)
+
     # ── Grid-only ────────────────────────────────────────────────
-    grid_ttp = dcpi.get("time_to_power_months", 36) if dcpi.get("available") else 36
-    grid_capex = kw * _CAPEX_GRID_INTERCONNECT_USD_PER_KW + _CAPEX_SUBSTATION_BUILD_USD
+    # v2.1 item 3 — prefer live queue depth over DCPI's TTP if available
+    grid_ttp = (overrides.get("live_queue_ttp_months")
+                or (dcpi.get("time_to_power_months", 36)
+                    if dcpi.get("available") else 36))
+    grid_capex = kw * _CAPEX_GRID_INTERCONNECT_USD_PER_KW + sub_capex
     grid_opex_yr = annual_mwh * _GRID_AVG_LMP_USD_PER_MWH
     grid_npv = -(grid_capex + _npv([grid_opex_yr] * _NPV_HORIZON_YEARS))
     grid_levelized = abs(grid_npv) / (annual_mwh * _NPV_HORIZON_YEARS)
@@ -406,7 +612,7 @@ def _compute_scenarios(target_mw: int, dcpi: dict, gas: dict) -> dict:
     # ── Gas BTM (CCGT) ───────────────────────────────────────────
     btm_ttp = 14  # typical CCGT build + tap, faster than ISO queue
     btm_capex = kw * _CAPEX_GAS_CCGT_USD_PER_KW + _CAPEX_GAS_PIPELINE_TAP_USD
-    btm_opex_yr = annual_mwh * gas.get("$/MWh_ccgt_avg", 25)
+    btm_opex_yr = annual_mwh * ccgt_dollars_per_mwh
     btm_npv = -(btm_capex + _npv([btm_opex_yr] * _NPV_HORIZON_YEARS))
     btm_levelized = abs(btm_npv) / (annual_mwh * _NPV_HORIZON_YEARS)
 
@@ -415,9 +621,9 @@ def _compute_scenarios(target_mw: int, dcpi: dict, gas: dict) -> dict:
     hybrid_capex = (kw * _CAPEX_GAS_CCGT_USD_PER_KW * 0.7
                     + kw * _CAPEX_GRID_INTERCONNECT_USD_PER_KW * 0.5
                     + _CAPEX_GAS_PIPELINE_TAP_USD
-                    + _CAPEX_SUBSTATION_BUILD_USD * 0.5)
+                    + sub_capex * 0.5)
     # 70% gas-fueled, 30% sold-to-grid as ancillary
-    hybrid_opex_yr = annual_mwh * gas.get("$/MWh_ccgt_avg", 25) * 0.7 \
+    hybrid_opex_yr = annual_mwh * ccgt_dollars_per_mwh * 0.7 \
                       - annual_mwh * _GRID_AVG_LMP_USD_PER_MWH * 0.10  # grid sell credit
     hybrid_npv = -(hybrid_capex + _npv([hybrid_opex_yr] * _NPV_HORIZON_YEARS))
     hybrid_levelized = abs(hybrid_npv) / (annual_mwh * _NPV_HORIZON_YEARS)
@@ -488,7 +694,8 @@ def _pick_best_fit(scenarios: dict, dcpi: dict, deadline_months: int) -> dict:
 
 def _compute_valuation(target_mw: int, acres: float, dcpi: dict,
                         best_fit: dict, scenarios: dict,
-                        readiness: dict = None) -> dict:
+                        readiness: dict = None,
+                        market_baseline: dict = None) -> dict:
     """Compute $-range valuation. v2.0 (2026-06-04) recalibrated to the
     user-supplied $150K-$800K/MW industry range. Uses:
       - $475K/MW baseline (midpoint of industry range)
@@ -530,7 +737,18 @@ def _compute_valuation(target_mw: int, acres: float, dcpi: dict,
             readiness_applied[flag] = premium
     readiness_mult = round(readiness_mult, 3)
 
-    per_mw_mid = _VALUE_PER_MW_USD_BASE * verdict_mult * bestfit_mult * readiness_mult
+    # v2.1 item 2 — regression-fit per-MW baseline if we have ≥8 sized
+    # comps in this market. Falls back to the $475K global baseline.
+    market_baseline = market_baseline or {}
+    if market_baseline.get("available"):
+        base_per_mw = float(market_baseline["median_per_mw"])
+        baseline_source = (f"market_regression (n={market_baseline['n_comps']} "
+                              f"comps, table={market_baseline.get('table')})")
+    else:
+        base_per_mw = _VALUE_PER_MW_USD_BASE
+        baseline_source = "global_baseline_v2.0"
+
+    per_mw_mid = base_per_mw * verdict_mult * bestfit_mult * readiness_mult
     per_acre_mid = _VALUE_PER_ACRE_USD_BASE * verdict_mult * readiness_mult
 
     site_value_mid = per_mw_mid * target_mw + per_acre_mid * acres
@@ -551,6 +769,8 @@ def _compute_valuation(target_mw: int, acres: float, dcpi: dict,
             "bestfit_mult":    bestfit_mult,
             "readiness_mult":  readiness_mult,
             "readiness_applied": readiness_applied,
+            "baseline_per_mw_usd": round(base_per_mw, 0),
+            "baseline_source":  baseline_source,
         },
         "_methodology":        ("v2.0: $475K/MW × verdict × best-fit × "
                                   "site-readiness stack + $15K/acre × verdict × "
@@ -597,24 +817,50 @@ def site_value():
         val = readiness_raw.get(flag, payload.get(flag, False))
         readiness[flag] = bool(val)
 
+    # v2.1 — optional user overrides (graceful fallback to defaults).
+    user_heat_rate_ccgt = payload.get("heat_rate_ccgt")    # Btu/kWh
+    user_gas_mmbtu      = payload.get("utility_gas_usd_mmbtu")  # tariff override
+
     # Gather data
     slug, state, dist = _nearest_market(lat, lon)
     dcpi = _fetch_dcpi(slug)
     gas = _fetch_gas_economics(slug, state)
-    scenarios = _compute_scenarios(target_mw, dcpi, gas)
+
+    # v2.1 Phase 3 overrides — each falls back to v2.0 behavior silently
+    sub_proximity = _fetch_nearest_substation(lat, lon)       # item 4
+    market_baseline = _fetch_market_comp_baseline(slug, state) # item 2
+    live_queue = _fetch_live_queue_ttp(dcpi.get("iso", ""), slug)  # item 3
+
+    overrides = {
+        "substation_capex_usd":  sub_proximity.get("capex_usd"),
+        "live_queue_ttp_months": (live_queue.get("months_to_power")
+                                    if live_queue.get("available") else None),
+        "heat_rate_ccgt":        user_heat_rate_ccgt,  # item 5
+        "gas_usd_mmbtu_override": user_gas_mmbtu,      # item 1
+    }
+
+    scenarios = _compute_scenarios(target_mw, dcpi, gas, overrides=overrides)
     best_fit = _pick_best_fit(scenarios, dcpi, deadline_months)
     valuation = _compute_valuation(target_mw, acres, dcpi, best_fit,
-                                     scenarios, readiness=readiness)
+                                     scenarios, readiness=readiness,
+                                     market_baseline=market_baseline)
     comps = _fetch_comparable_sales(slug, state)
 
     base = {
         "ok":            True,
-        "engine_version": "v2.0",
+        "engine_version": "v2.1",
         "as_of":         _dt.datetime.utcnow().isoformat() + "Z",
         "input":         {"lat": lat, "lon": lon, "acres": acres,
                           "target_mw": target_mw,
                           "deadline_months": deadline_months,
-                          "readiness": readiness},
+                          "readiness": readiness,
+                          "heat_rate_ccgt": user_heat_rate_ccgt,
+                          "utility_gas_usd_mmbtu": user_gas_mmbtu},
+        "phase_3_inputs": {
+            "substation_proximity": sub_proximity,
+            "market_baseline":      market_baseline,
+            "live_queue_ttp":       live_queue,
+        },
         "market_context": {
             "nearest_market_slug":  slug,
             "nearest_market_state": state,
@@ -683,14 +929,26 @@ def site_value():
 def site_value_methodology():
     return jsonify({
         "ok":           True,
-        "version":      "v2.0 (2026-06-04)",
+        "version":      "v2.1 (2026-06-04)",
         "summary":      ("Three-scenario NPV comparison for a (lat, lon, "
-                          "acres, target_mw, readiness flags) tuple: Grid-only, "
-                          "Gas BTM (CCGT), Gas-to-Grid Hybrid. Inputs sourced "
-                          "from DCPI verdict, live gas hub pricing, and 234+ "
-                          "market DCPI scores. Valuation envelope is industry-"
-                          "multiple baseline ($475K/MW) × verdict mult × best-"
-                          "fit mult × site-readiness premium stack, ±50% range."),
+                          "acres, target_mw, readiness flags + optional "
+                          "heat-rate + utility-gas-tariff) tuple. v2.1 adds "
+                          "5 Phase-3 live-data overrides with graceful "
+                          "fallback to v2.0 constants when upstream is missing."),
+        "v2_1_changelog": [
+            "Phase 3 #1 — Optional utility_gas_usd_mmbtu input replaces state-avg "
+              "gas pricing; flows through CCGT $/MWh via heat rate.",
+            "Phase 3 #2 — Market-specific per-MW baseline from regression on "
+              "comparable_sales (deals table) when >=8 sized comps exist; "
+              "falls back to global $475K/MW baseline otherwise.",
+            "Phase 3 #3 — Live ISO queue depth → time-to-power override "
+              "(queue_mw / annual_velocity_mw × 12) replaces DCPI's slower "
+              "time_to_power_months when /interconnection-queue/snapshot has data.",
+            "Phase 3 #4 — Substation capex from HIFLD haversine proximity "
+              "(<5mi=$1M, 5-25mi=$4M, >25mi=$8M) replaces fixed $8M assumption.",
+            "Phase 3 #5 — Optional heat_rate_ccgt input replaces fixed 6800 "
+              "Btu/kWh; flows through to BTM + Hybrid scenarios.",
+        ],
         "v2_changelog": [
             "Recalibrated baseline from $2M/MW → $475K/MW (midpoint of $150K-$800K industry range)",
             "Widened verdict spread from 0.75-1.20 → 0.40-1.65 (full industry envelope)",
@@ -698,6 +956,12 @@ def site_value_methodology():
             "Widened envelope from ±30% → ±50% (real-world illiquidity spread)",
             "Per-acre baseline $75K → $15K (industrial-zoned land comp)",
         ],
+        "substation_proximity_tiers": [
+            {"max_miles": t[0] if t[0] != float("inf") else "inf",
+             "capex_usd": t[1], "tier": t[2]}
+            for t in _SUBSTATION_PROXIMITY_TIERS
+        ],
+        "regression_min_comps": _MIN_COMPS_FOR_REGRESSION,
         "constants":   {
             "capex_grid_interconnect_usd_per_kw":  _CAPEX_GRID_INTERCONNECT_USD_PER_KW,
             "capex_gas_ccgt_usd_per_kw":            _CAPEX_GAS_CCGT_USD_PER_KW,
@@ -737,13 +1001,12 @@ def site_value_methodology():
                            "it represents the total cost of power delivery, "
                            "not net cashflow. Compare scenarios by levelized "
                            "$/MWh + time-to-power, not by NPV magnitude alone."),
-        "phase_3_roadmap": [
-            "Per-utility delivered gas tariff (not state-avg)",
-            "Regression-fit valuation envelope from comparable_sales",
-            "Live ISO queue depth per scenario time-to-power",
-            "Real substation proximity (HIFLD) replacing capex assumption",
-            "Custom heat-rate input (currently fixed at 6800 Btu/kWh CCGT)",
+        "phase_4_roadmap": [
             "Revenue-side NPV (project earnings) so net-NPV is meaningful",
+            "Per-utility tariff AUTO-lookup from utility-territory mapping (currently user-supplied)",
+            "Regression with verdict + MW interaction terms (currently flat median)",
+            "Direct HIFLD voltage-kV check (currently any sub counts)",
+            "Live LMP per scenario (currently US-blended $45/MWh)",
         ],
     }), 200
 
@@ -827,6 +1090,8 @@ th { color: var(--muted); font-size: 11px; text-transform: uppercase; letter-spa
     <label>Acres &nbsp;<span style="color:var(--accent2);font-size:11px">> 0</span><br><input id="acres" type="number" step="0.1" min="0.1" value="50" required></label>
     <label>Target MW &nbsp;<span style="color:var(--accent2);font-size:11px">> 0</span><br><input id="target_mw" type="number" step="1" min="1" value="100" required></label>
     <label>Deadline (months)<br><input id="deadline_months" type="number" step="1" min="1" max="120" value="24"></label>
+    <label>CCGT heat rate (Btu/kWh) &nbsp;<span style="color:var(--accent2);font-size:11px">optional · default 6800</span><br><input id="heat_rate_ccgt" type="number" step="50" min="5500" max="12000" placeholder="6800"></label>
+    <label>Utility gas tariff ($/MMBtu) &nbsp;<span style="color:var(--accent2);font-size:11px">optional · default = state avg</span><br><input id="utility_gas_usd_mmbtu" type="number" step="0.05" min="0" max="40" placeholder="3.50"></label>
     <label>API Key (PRO unlock)<br><input id="api_key" type="password" placeholder="dchub_..." autocomplete="off"></label>
   </form>
 
@@ -980,11 +1245,17 @@ document.getElementById('valForm').addEventListener('submit', async (e) => {
     permits_in_hand:         document.getElementById('r_permits').checked,
   };
 
+  // v2.1 — optional overrides (only sent if non-empty)
+  const hr  = parseFloat(document.getElementById('heat_rate_ccgt').value);
+  const tar = parseFloat(document.getElementById('utility_gas_usd_mmbtu').value);
+
   const body = {
     lat, lon, acres, target_mw,
     deadline_months: parseInt(document.getElementById('deadline_months').value || 24),
     readiness: readiness,
   };
+  if (Number.isFinite(hr) && hr > 0)  body.heat_rate_ccgt        = hr;
+  if (Number.isFinite(tar) && tar > 0) body.utility_gas_usd_mmbtu = tar;
   const apiKey = document.getElementById('api_key').value.trim();
   const headers = { 'Content-Type': 'application/json' };
   if (apiKey) headers['X-API-Key'] = apiKey;
