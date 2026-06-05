@@ -809,7 +809,7 @@ def _persist_linkedin_urn(cur, post_id, urn, content_text, slug=None):
         cur.execute(
             """INSERT INTO linkedin_posts (post_urn, content, post_type, status,
                                             posted_at)
-               VALUES (%s, %s, %s, %s, NOW())""",
+               VALUES (%s, %s, %s, %s, NOW() ON CONFLICT DO NOTHING)""",
             (urn, (content_text or '')[:500], 'auto_press', 'success'),
         )
     except Exception as e:
@@ -1743,7 +1743,7 @@ def enqueue_custom():
     try:
         cur.execute("""
             INSERT INTO social_media_posts (content, platform, status, created_at)
-            VALUES (%s, %s, 'approved', NOW())
+            VALUES (%s, %s, 'approved', NOW() ON CONFLICT DO NOTHING)
             RETURNING id
         """, (content, platform))
         row = cur.fetchone()

@@ -263,7 +263,7 @@ def fix_reset_for_email():
                 (email,)
             )
             cur.execute(
-                "INSERT INTO password_reset_tokens (user_email, token, expires_at) VALUES (%s, %s, %s)",
+                "INSERT INTO password_reset_tokens (user_email, token, expires_at) VALUES (%s, %s, %s) ON CONFLICT DO NOTHING",
                 (email, token, expires_at)
             )
             conn.commit()
