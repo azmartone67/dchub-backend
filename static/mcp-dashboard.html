@@ -22,7 +22,7 @@
 <div class="grid" id="kpis"></div>
 <div class="card">
   <h3 style="margin-top:0">Top tools triggering upgrade signals (last 30d)</h3>
-  <div class="sub" style="margin:-4px 0 8px">Ranked by <b>distinct sessions</b>, not raw signal volume — a few looping anonymous-proxy callers inflate raw counts. "Distinct callers (IP)" is near-zero for LLM-proxy traffic (no client IP); read it as attributable demand.</div>
+  <div class="sub" style="margin:-4px 0 8px">⚠️ Raw signal <b>volume</b>, not distinct demand. The top rows are anonymous/automated traffic looping a few tools — note ~1 session per signal and <b>0 distinct callers (IP)</b>: these are <b>not</b> distinct prospects. For real addressable demand, read the next table ↓ (distinct IPs on actually-paywalled tools).</div>
   <table id="signals"><thead><tr><th>Tool</th><th>Distinct sessions</th><th>Distinct callers (IP)</th><th>Raw signals</th></tr></thead><tbody></tbody></table>
 </div>
 <div class="card" style="margin-top:14px">
