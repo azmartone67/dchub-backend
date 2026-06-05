@@ -356,23 +356,48 @@ def _build_gemini_functions() -> list:
     return [{"functionDeclarations": declarations}]
 
 
-@vertex_integration_bp.route("/.well-known/gemini-functions.json",
-                              methods=["GET"])
-def gemini_functions_json():
-    """Function declarations array for direct Gemini SDK consumption.
-
-    Usage pattern (Python):
-        import requests
-        tools = requests.get(
-            'https://dchub.cloud/.well-known/gemini-functions.json'
-        ).json()
-        model.generate_content(prompt, tools=tools)
-    """
+def _gemini_functions_response():
+    """Shared response builder for the two URL aliases below."""
     return Response(json.dumps(_build_gemini_functions(), indent=2),
                     mimetype="application/json",
                     headers={"Cache-Control": "public, max-age=600",
                              "X-DC-Hub-Surface": "gemini-functions",
                              "Access-Control-Allow-Origin": "*"})
+
+
+@vertex_integration_bp.route("/.well-known/gemini-functions.json",
+                              methods=["GET"])
+def gemini_functions_well_known():
+    """Function declarations at the conventional .well-known path.
+
+    NOTE: dchub.cloud serves /.well-known/* through a zone-level
+    Workers Route (the MCP landing worker) that intercepts these
+    paths before the Pages worker. Behind the zone shadow we 200
+    correctly, but external scrapers hitting dchub.cloud may see
+    403. Use /api/v1/gemini-functions.json as the always-routable
+    sibling.
+
+    Usage pattern (Python):
+        import requests
+        tools = requests.get(
+            'https://dchub.cloud/api/v1/gemini-functions.json'
+        ).json()
+        model.generate_content(prompt, tools=tools)
+    """
+    return _gemini_functions_response()
+
+
+@vertex_integration_bp.route("/api/v1/gemini-functions.json",
+                              methods=["GET"])
+def gemini_functions_api_v1():
+    """Sibling alias that bypasses the .well-known zone-worker shadow.
+
+    Same response, always-routable via dchub.cloud (the /api/* prefix
+    is forwarded to Railway by the Pages worker without zone
+    interception). Reference THIS URL from external docs / OpenAPI /
+    landing pages.
+    """
+    return _gemini_functions_response()
 
 
 # ── 3. /vertex partner landing page ─────────────────────────────
@@ -429,7 +454,7 @@ th { color: var(--muted); font-size: 11px; text-transform: uppercase; letter-spa
     <div class="card">
       <h3>2. Direct Gemini Function Calling</h3>
       <p style="margin:0 0 10px;font-size:14px">For agents using the Gemini SDK directly. Fetch the function declarations array + pass into <code>generateContent</code>.</p>
-      <div class="url"><a href="/.well-known/gemini-functions.json">https://dchub.cloud/.well-known/gemini-functions.json</a></div>
+      <div class="url"><a href="/.well-known/gemini-functions.json">https://dchub.cloud/api/v1/gemini-functions.json</a></div>
       <p class="muted" style="font-size:12px;margin:0">Plug-and-play with Vertex SDK + AI Studio.</p>
     </div>
   </div>
@@ -453,7 +478,7 @@ from vertexai.generative_models import GenerativeModel, Tool
 
 # Pull DC Hub's tool catalog
 tools_json = requests.get(
-    "https://dchub.cloud/.well-known/gemini-functions.json"
+    "https://dchub.cloud/api/v1/gemini-functions.json"
 ).json()
 tools = [Tool.from_dict(t) for t in tools_json]
 
@@ -516,7 +541,8 @@ def vertex_health():
         "tools_count":    len(_VERTEX_TOOLS),
         "tool_names":     tool_names,
         "spec_url":       "https://dchub.cloud/openapi-vertex.yaml",
-        "functions_url":  "https://dchub.cloud/.well-known/gemini-functions.json",
+        "functions_url":  "https://dchub.cloud/api/v1/gemini-functions.json",
+        "functions_well_known_alias": "https://dchub.cloud/.well-known/gemini-functions.json",
         "landing_url":    "https://dchub.cloud/vertex",
         "tool_set_hash":  h,
         "citation_policy": "required-for-free-tier",
