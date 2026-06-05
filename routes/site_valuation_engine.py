@@ -1055,8 +1055,13 @@ def site_value():
     base.update({
         "best_fit":          {"scenario": best_fit["scenario"]},
         "valuation_teaser":  {
-            "site_value_usd_mid": valuation["site_value_usd_mid"],
-            "$/mw_mid":           valuation["$/mw_mid"],
+            "site_value_usd_mid":     valuation["site_value_usd_mid"],
+            "$/mw_mid":               valuation["$/mw_mid"],
+            # v2.2 — the "site trades by MW" depiction is a methodology
+            # fact, not a paywalled insight. Surface it on the teaser so
+            # even free visitors see the breakdown + sufficiency.
+            "site_value_breakdown":   valuation.get("site_value_breakdown"),
+            "site_sufficiency":       valuation.get("site_sufficiency"),
         },
         "scenarios_teaser":  {
             "grid_only":          {"time_to_power_months": scenarios["grid_only"]["time_to_power_months"]},
