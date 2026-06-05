@@ -7929,7 +7929,10 @@ try:
     # restart-burst pattern. Currently no X-quad equivalent so this disables
     # X posting entirely until DCHUB_AUTOPUB_LEGACY=1 — acceptable since
     # X engagement was negligible.
-    _legacy_autopub_x = os.environ.get("DCHUB_AUTOPUB_LEGACY", "").strip() in ("1", "true", "yes")
+    # r73 (2026-06-05): case-insensitive — common typos "TRUE" / "True" / "Yes"
+    # used to silently fail the gate, even though TWITTER_PUBLISHER_ENABLED's
+    # check below already normalizes via .lower(). Now both gates are case-tolerant.
+    _legacy_autopub_x = os.environ.get("DCHUB_AUTOPUB_LEGACY", "").strip().lower() in ("1", "true", "yes", "on", "enabled")
     if not IS_FAILOVER and _legacy_autopub_x and IS_LEADER:
         start_twitter_publisher()
         logger.info("✅ Twitter/X legacy auto-publisher launched")
