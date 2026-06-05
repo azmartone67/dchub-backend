@@ -79,11 +79,12 @@ _REGISTRIES = [
     {
         "id":           "smithery_server",
         "name":         "smithery.ai server page",
-        # 2026-06-05: Smithery's search API endpoint moved (now 404). The
-        # /server/<slug> path 308-redirects to the actual server detail
-        # if listed, or returns 404/empty if not. Use that as the
-        # presence check.
-        "url":          "https://smithery.ai/server/dchub",
+        # 2026-06-05: Smithery's slug is namespaced by GitHub owner —
+        # the actual canonical path is /servers/<gh-user>/<repo>, not
+        # /server/<name>. DC Hub is live at /servers/azmartone67/dchub
+        # (verified via Chrome inspection: 95/100 score, 99.6% uptime,
+        # 162ms p50 latency, 979 lifetime tool calls).
+        "url":          "https://smithery.ai/servers/azmartone67/dchub",
         "submission_url": "https://smithery.ai/new",
     },
     {
