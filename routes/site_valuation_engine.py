@@ -167,6 +167,29 @@ _SUBSTATION_PROXIMITY_TIERS = [
 # (regression-fit) instead of the global $475K baseline.
 _MIN_COMPS_FOR_REGRESSION = 8
 
+# v2.2 — Site sufficiency: data-center parcels TRADE BY THE MW. The land
+# is implicit in the $/MW comp (every comp transaction includes the
+# acres it sits on at no separate line-item). Summing $/acre × acres on
+# TOP of $/MW × MW double-counts the land. The headline valuation is
+# now $/MW × MW only; acres are reported as a sufficiency check (does
+# the parcel fit the build envelope?), not as additive value.
+#
+# Industry rule of thumb for hyperscale DC siting (rack-density-agnostic):
+#   < 1.0 ac/MW   → undersized; buyer struggles to fit campus + buffer
+#   1.0–1.5 ac/MW → tight (single-story Tier III, no expansion room)
+#   1.5–2.5 ac/MW → typical hyperscale campus
+#   > 2.5 ac/MW   → comfortable / room for solar + substation + expansion
+_ACRES_PER_MW_UNDERSIZED  = 1.0   # below this: red flag
+_ACRES_PER_MW_TYPICAL_MIN = 1.5
+_ACRES_PER_MW_TYPICAL_MAX = 2.5
+
+# Surplus-acreage residual land value: if the parcel has acres above
+# ~3× the typical max, those extra acres have separate industrial-land
+# value (split-and-resell). Conservative residual until we wire up real
+# zoned-industrial comps per market.
+_RESIDUAL_LAND_USD_PER_ACRE = 8_000   # $8K/acre baseline for surplus
+_SURPLUS_THRESHOLD_ACRES_PER_MW = 3.0  # only acres above 3× MW count as surplus
+
 
 # ── Nearest DCPI market lookup ────────────────────────────────────
 
@@ -736,6 +759,49 @@ def _pick_best_fit(scenarios: dict, dcpi: dict, deadline_months: int) -> dict:
     }
 
 
+def _site_sufficiency(target_mw: int, acres: float) -> dict:
+    """v2.2 — Acres-per-MW sufficiency check + surplus calculation.
+    Surfaces 'is this parcel right-sized for the build?' as a separate
+    signal from the headline $/MW valuation."""
+    if target_mw <= 0:
+        return {"category": "invalid", "acres_per_mw": None}
+    actual_ratio = acres / target_mw
+    if actual_ratio < _ACRES_PER_MW_UNDERSIZED:
+        category = "undersized"
+        note = (f"Only {actual_ratio:.2f} ac/MW — below the 1.0 ac/MW "
+                  f"minimum needed to fit the campus + transformer + "
+                  f"buffer. Buyer may not be able to build full {target_mw} MW.")
+    elif actual_ratio < _ACRES_PER_MW_TYPICAL_MIN:
+        category = "tight"
+        note = (f"{actual_ratio:.2f} ac/MW — workable for single-story "
+                  f"Tier III, no room for solar/expansion.")
+    elif actual_ratio <= _ACRES_PER_MW_TYPICAL_MAX:
+        category = "typical"
+        note = (f"{actual_ratio:.2f} ac/MW — typical hyperscale campus "
+                  f"sizing with normal support footprint.")
+    elif actual_ratio <= _SURPLUS_THRESHOLD_ACRES_PER_MW:
+        category = "comfortable"
+        note = (f"{actual_ratio:.2f} ac/MW — comfortable; room for "
+                  f"solar, substation, and modest expansion.")
+    else:
+        category = "surplus"
+        note = (f"{actual_ratio:.2f} ac/MW — surplus land. Acres above "
+                  f"{_SURPLUS_THRESHOLD_ACRES_PER_MW:.1f} ac/MW have "
+                  f"separate residual industrial-land value.")
+    surplus_acres = max(0.0, acres - target_mw * _SURPLUS_THRESHOLD_ACRES_PER_MW)
+    return {
+        "acres":                 acres,
+        "target_mw":             target_mw,
+        "acres_per_mw":          round(actual_ratio, 2),
+        "typical_band":          [_ACRES_PER_MW_TYPICAL_MIN,
+                                     _ACRES_PER_MW_TYPICAL_MAX],
+        "category":              category,
+        "note":                  note,
+        "surplus_acres":         round(surplus_acres, 1),
+        "residual_land_value":   round(surplus_acres * _RESIDUAL_LAND_USD_PER_ACRE, 0),
+    }
+
+
 def _compute_valuation(target_mw: int, acres: float, dcpi: dict,
                         best_fit: dict, scenarios: dict,
                         readiness: dict = None,
@@ -806,12 +872,19 @@ def _compute_valuation(target_mw: int, acres: float, dcpi: dict,
         band_status = "floor_saturated"
     else:
         band_status = "in_band"
-    # Per-acre uses the same scaling ratio so the two figures stay coherent
-    # (otherwise per-acre would dominate site_value_mid when per-MW caps).
+    # Per-acre figure kept informational (shown in response) but NOT
+    # summed into site_value_mid — see v2.2 rationale above.
     scale_factor = per_mw_mid / per_mw_uncapped if per_mw_uncapped > 0 else 1.0
     per_acre_mid = per_acre_uncapped * scale_factor
 
-    site_value_mid = per_mw_mid * target_mw + per_acre_mid * acres
+    # v2.2 — Data-center sites trade by the MW. Land cost is implicit in
+    # every $/MW comp. Headline valuation = $/MW × MW (no acres summed in).
+    # Surplus land (acres beyond ~3× target_mw) is added as a small
+    # residual via the site_sufficiency block — those acres ARE separately
+    # marketable as industrial land.
+    suff = _site_sufficiency(int(target_mw), float(acres))
+    surplus_residual = float(suff.get("residual_land_value") or 0)
+    site_value_mid = per_mw_mid * target_mw + surplus_residual
 
     spread = _VALUE_RANGE_SPREAD
     return {
@@ -822,12 +895,24 @@ def _compute_valuation(target_mw: int, acres: float, dcpi: dict,
         "$/mw_band_floor":     _VALUE_PER_MW_FLOOR_USD,
         "$/mw_band_ceiling":   _VALUE_PER_MW_CEIL_USD,
         "$/mw_band_status":    band_status,
-        "$/acre_low":          round(per_acre_mid * (1 - spread), 0),
-        "$/acre_mid":          round(per_acre_mid, 0),
-        "$/acre_high":         round(per_acre_mid * (1 + spread), 0),
+        # v2.2 — $/acre is INFORMATIONAL only (not summed into site_value_mid).
+        # Data-center comps trade by the MW; land is implicit in $/MW.
+        # Kept for context — these are the residual land values per acre,
+        # what surplus acres above ~3× target_mw would fetch separately.
+        "$/acre_residual_mid": _RESIDUAL_LAND_USD_PER_ACRE,
+        "$/acre_legacy_mid":   round(per_acre_mid, 0),  # pre-v2.2 figure
         "site_value_usd_low":  round(site_value_mid * (1 - spread), 0),
         "site_value_usd_mid":  round(site_value_mid, 0),
         "site_value_usd_high": round(site_value_mid * (1 + spread), 0),
+        "site_value_breakdown": {
+            "mw_contribution_usd":      round(per_mw_mid * target_mw, 0),
+            "surplus_land_residual_usd": round(surplus_residual, 0),
+            "depiction":                ("Site trades by MW. Land cost is "
+                                            "implicit in the $/MW comp. Surplus "
+                                            "acres above 3× MW have separate "
+                                            "industrial-land residual."),
+        },
+        "site_sufficiency": suff,
         "multipliers": {
             "verdict_mult":    verdict_mult,
             "bestfit_mult":    bestfit_mult,
@@ -837,13 +922,15 @@ def _compute_valuation(target_mw: int, acres: float, dcpi: dict,
             "baseline_source":  baseline_source,
             "band_clamp":      band_status,
         },
-        "_methodology":        ("v2.0: $475K/MW × verdict × best-fit × "
-                                  "site-readiness stack + $15K/acre × verdict × "
-                                  "readiness, ±50% envelope. Verdict spans "
-                                  "AVOID(0.40)-BUILD(1.65). Readiness stack: "
-                                  "grid_interconnect(+30%) × substation(+25%) × "
-                                  "water(+10%) × fiber(+20%) × zoning(+30%) × "
-                                  "permits(+20%), all multiplicative."),
+        "_methodology":        ("v2.2: $/MW × MW only (sites trade by the MW; "
+                                  "land cost is implicit in every $/MW comp). "
+                                  "Surplus acres above 3× target_mw add small "
+                                  "residual land value at $8K/acre. Verdict "
+                                  "spans AVOID(0.40)-BUILD(1.65); 6 readiness "
+                                  "premiums (grid/sub/water/fiber/zoning/permits) "
+                                  "stack multiplicatively to ~3.35× for "
+                                  "shovel-ready. Per-MW clamped to industry "
+                                  "$150K-$800K band. ±50% envelope."),
     }
 
 
@@ -919,7 +1006,7 @@ def site_value():
 
     base = {
         "ok":            True,
-        "engine_version": "v2.1",
+        "engine_version": "v2.2",
         "as_of":         _dt.datetime.utcnow().isoformat() + "Z",
         "input":         {"lat": lat, "lon": lon, "acres": acres,
                           "target_mw": target_mw,
@@ -1000,12 +1087,23 @@ def site_value():
 def site_value_methodology():
     return jsonify({
         "ok":           True,
-        "version":      "v2.1 (2026-06-04)",
+        "version":      "v2.2 (2026-06-04)",
         "summary":      ("Three-scenario NPV comparison for a (lat, lon, "
                           "acres, target_mw, readiness flags + optional "
                           "heat-rate + utility-gas-tariff) tuple. v2.1 adds "
                           "5 Phase-3 live-data overrides with graceful "
                           "fallback to v2.0 constants when upstream is missing."),
+        "v2_2_changelog": [
+            "MW-only depiction — site_value_usd_mid = $/MW × MW. The "
+              "$/acre line was being SUMMED on top, double-counting land "
+              "that's already implicit in every $/MW comp. Now informational only.",
+            "Site sufficiency block — acres/MW ratio categorized as "
+              "undersized/tight/typical/comfortable/surplus with industry "
+              "thresholds (typical band 1.5-2.5 ac/MW for hyperscale).",
+            "Surplus residual — acres above 3× target_mw add $8K/acre as "
+              "separately-marketable industrial land. Conservative pending "
+              "per-market zoned-industrial comps.",
+        ],
         "v2_1_changelog": [
             "Phase 3 #1 — Optional utility_gas_usd_mmbtu input replaces state-avg "
               "gas pricing; flows through CCGT $/MWh via heat rate.",
@@ -1436,17 +1534,43 @@ function renderResults(d) {
         In-band: per-MW ${fmt$(d.valuation['$/mw_mid'])} sits between industry floor ${fmt$(floor)} and ceiling ${fmt$(ceil)}.
       </div>`;
     }
+    // v2.2 — site sufficiency block + MW-only breakdown
+    const bd = d.valuation.site_value_breakdown || {};
+    const suff = d.valuation.site_sufficiency || {};
+    const suffColor = {
+      undersized: '#dc2626', tight: '#f59e0b', typical: '#10b981',
+      comfortable: '#10b981', surplus: '#0ea5e9',
+    }[suff.category] || '#9ca3af';
     html += `
       <div class="card">
-        <h3>Valuation envelope</h3>
+        <h3>Site value — by the MW</h3>
         <div class="stat">${fmtM$(d.valuation.site_value_usd_mid)}</div>
         <div class="stat-label">midpoint · ${fmtM$(d.valuation.site_value_usd_low)} – ${fmtM$(d.valuation.site_value_usd_high)}  <span style="opacity:0.6">(±50% envelope)</span></div>
-        <div style="margin-top:12px;font-size:14px;color:var(--fg)">
+        <div style="margin-top:14px;font-size:14px;color:var(--fg)">
           <b style="font-size:18px;color:var(--accent2)">${fmt$(d.valuation['$/mw_mid'])}</b> <span style="color:var(--muted);font-size:12px">per MW</span>
-          &nbsp;·&nbsp;
-          <b>${fmt$(d.valuation['$/acre_mid'])}</b> <span style="color:var(--muted);font-size:12px">per acre</span>
+          &nbsp;×&nbsp;
+          <b>${d.input.target_mw} MW</b>
+          &nbsp;=&nbsp;
+          <b>${fmtM$(bd.mw_contribution_usd || 0)}</b>
         </div>
+        ${bd.surplus_land_residual_usd > 0 ? `
+        <div style="margin-top:6px;font-size:12.5px;color:var(--muted)">
+          + surplus land residual: <b style="color:var(--fg)">${fmtM$(bd.surplus_land_residual_usd)}</b>
+          <span style="opacity:0.7"> · ${suff.surplus_acres} acres × $${(8000).toLocaleString()}/ac</span>
+        </div>` : ''}
         ${bandNote}
+        ${suff.category && suff.category !== 'invalid' ? `
+        <div style="margin-top:14px;background:var(--panel2);border:1px solid var(--border);border-left:3px solid ${suffColor};padding:10px 12px;border-radius:4px;font-size:12.5px">
+          <div style="display:flex;align-items:center;gap:10px;flex-wrap:wrap">
+            <span style="background:${suffColor};color:#fff;font-weight:700;padding:2px 8px;border-radius:3px;text-transform:uppercase;font-size:10.5px;letter-spacing:0.06em">${suff.category}</span>
+            <span style="color:var(--fg);font-weight:700">${suff.acres_per_mw} ac/MW</span>
+            <span style="color:var(--muted);font-size:11px">typical band: ${suff.typical_band ? suff.typical_band[0] + '–' + suff.typical_band[1] : '?'} ac/MW</span>
+          </div>
+          <div style="margin-top:6px;color:var(--muted);font-size:11.5px;line-height:1.45">${suff.note || ''}</div>
+        </div>` : ''}
+        <div style="margin-top:12px;font-size:11.5px;color:var(--muted);border-top:1px solid var(--border);padding-top:10px;line-height:1.5">
+          <b>How sites trade:</b> data-center parcels are priced by the MW. Land cost is implicit in every $/MW comp — that's why we don't add $/acre × acres on top (would double-count). Acres are reported above as a build-sufficiency check.
+        </div>
         <div style="margin-top:10px;font-size:12px;color:var(--muted);border-top:1px solid var(--border);padding-top:10px">
           Stack: verdict <b style="color:var(--fg)">${(m.verdict_mult||1).toFixed(2)}×</b>
           · best-fit <b style="color:var(--fg)">${(m.bestfit_mult||1).toFixed(2)}×</b>
