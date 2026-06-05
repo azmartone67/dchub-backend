@@ -3208,8 +3208,40 @@ def _issue_session_cookie(response):
         # path varies by API key (anon cap vs full set), so it must stay
         # uncacheable — leaving the cookie on it keeps CF correctly DYNAMIC.
         _cpath = request.path
-        if (_cpath == "/markets" or _cpath.startswith("/markets/")
-                or _cpath == "/operators" or _cpath.startswith("/operators/")):
+        # 2026-06-05 (Phase HJ — cache-hit recovery from 23.95%).
+        # The Set-Cookie pollution problem applies to EVERY HTML page,
+        # but the previous fix only bypassed /markets + /operators.
+        # CF dashboard showed dchub.cloud at 23.95% cache-hit (target
+        # 60%+) — most catalog pages were DYNAMIC because they all get
+        # the session cookie. These paths serve NO gated data, just
+        # public catalog/landing content; the cookie adds nothing here
+        # and costs us the CF edge cache.
+        _COOKIE_BYPASS_EXACT = {
+            "/markets", "/operators",
+            "/dcpi", "/grid", "/dcgi",
+            "/partners", "/vertex",
+            "/freshness", "/enterprise",
+            "/coverage", "/transparency",
+            "/grid-intelligence", "/grid-transition",
+            "/site-selection", "/deal-autopsy",
+            "/state-of-power", "/pipeline-report",
+            "/hyperscaler-deals", "/ai-capacity-index",
+        }
+        _COOKIE_BYPASS_PREFIXES = (
+            "/markets/", "/operators/",
+            "/dcpi/",
+            "/partners/", "/vertex/",
+            "/facility/", "/facilities/",
+            "/reports/",
+            "/sites/",
+            "/listings/",
+            "/iso/",
+            "/grid/",
+            "/dcgi/",
+            "/state-of-power/",
+        )
+        if (_cpath in _COOKIE_BYPASS_EXACT
+                or _cpath.startswith(_COOKIE_BYPASS_PREFIXES)):
             return response
         from routes.session_cookie import validate_cookie, set_cookie_on_response
         if validate_cookie():
@@ -26726,6 +26758,20 @@ try:
     print("[main] vertex_integration_bp registered: /openapi-vertex.{yaml,json} + /vertex + /.well-known/gemini-functions.json", flush=True)
 except Exception as _vx_e:
     print(f"[main] vertex_integration_bp register failed: {_vx_e}", flush=True)
+
+# 2026-06-05 (Phase HJ) — daily-commit throttle for the autopilot.
+# Today's traffic incident: 75 autopilot commits in 24h pushed
+# cache-hit ratio from 39% → 23.95%, caused multiple Railway 503
+# windows, and shipped 7 SEO landings that 403'd at the CF edge for
+# hours. Default cap 12 commits/day per repo; settable via
+# DCHUB_AUTOPILOT_DAILY_COMMIT_CAP env; hard-kill via
+# DCHUB_AUTOPILOT_DISABLED. Exposes GET /api/v1/brain/commit-throttle.
+try:
+    from routes.brain_commit_throttle import brain_commit_throttle_bp
+    app.register_blueprint(brain_commit_throttle_bp)
+    print("[main] brain_commit_throttle_bp registered: GET /api/v1/brain/commit-throttle", flush=True)
+except Exception as _ct_e:
+    print(f"[main] brain_commit_throttle_bp register failed: {_ct_e}", flush=True)
 
 # r79 (2026-06-03) — Redirect blueprint for known-dead URLs. Each entry
 # in routes/redirects_404_killer.py is a URL we caught 404ing in production

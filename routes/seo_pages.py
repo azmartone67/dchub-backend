@@ -44,6 +44,87 @@ seo_pages_bp = Blueprint("seo_pages", __name__)
 
 
 # ─────────────────────────────────────────────────────────────────────
+# CF-routable prefix guard (Phase HJ, 2026-06-05)
+# ─────────────────────────────────────────────────────────────────────
+#
+# The CF zone-level Workers Route uses an ALLOWLIST: paths under
+# certain prefixes 403 with "DNS points to prohibited IP" (Error 1000)
+# at the edge regardless of what Render origin serves. Verified
+# 2026-06-05 via live curl:
+#
+#   ALLOWED (return 200): /markets/* /facility/* /facilities/*
+#                         /partners/* /sites/* /reports/* /grid/*
+#                         /dcpi/* /operators/* /listings/* /iso/*
+#                         /state-of-power/* /ai-capacity-index
+#                         /hyperscaler-deals /freshness /enterprise
+#                         /vertex (added today)
+#
+#   BLOCKED (403 Err 1000): /aws/* /docs/* /research/* /address/*
+#                           /interxion-* /moltbook-* /api-* etc.
+#
+# Every new SEO landing MUST register under an allowed prefix or it
+# will silently 403 on the edge for hours/days before being caught.
+# Autopilot bit this bug today — created 7 landings under /aws/*,
+# /address/*, /interxion-*, /moltbook-* — they all 403'd before SEO
+# noticed.
+#
+# Use _assert_cf_routable_path() inside any new SEO landing route to
+# fail fast at startup. Returns False (and logs a warning) for paths
+# outside the allowlist; the autopilot's pre-commit fence reads the
+# warning log and refuses to ship.
+
+_CF_ALLOWED_PREFIXES = (
+    "/markets/", "/operators/",
+    "/facility/", "/facilities/",
+    "/partners/",
+    "/sites/", "/listings/",
+    "/reports/",
+    "/grid/", "/iso/",
+    "/dcpi/",
+    "/state-of-power/",
+)
+_CF_ALLOWED_EXACT = {
+    "/markets", "/operators", "/partners", "/sites", "/listings",
+    "/reports", "/grid", "/iso", "/dcpi",
+    "/state-of-power", "/ai-capacity-index", "/hyperscaler-deals",
+    "/freshness", "/enterprise", "/coverage", "/transparency",
+    "/grid-intelligence", "/grid-transition",
+    "/site-selection", "/deal-autopsy",
+    "/pipeline-report", "/dcgi",
+    "/vertex",
+}
+
+
+def _assert_cf_routable_path(path: str, source: str = "seo_pages") -> bool:
+    """Return True iff `path` is under a CF-routable prefix.
+
+    Logs an explicit error when the path would 403 at the CF edge.
+    Used by SEO landing creators + brain autopilot to refuse to
+    register a new public URL that's behind the zone-worker shadow.
+    """
+    if not path or not path.startswith("/"):
+        return False
+    if path in _CF_ALLOWED_EXACT:
+        return True
+    for pfx in _CF_ALLOWED_PREFIXES:
+        if path.startswith(pfx):
+            return True
+    try:
+        print(
+            f"[seo_pages][CF-ROUTABLE-GUARD] REFUSING path={path!r} from "
+            f"{source}: not under CF-allowed prefixes "
+            f"({sorted(_CF_ALLOWED_EXACT)[:6]}... + "
+            f"{list(_CF_ALLOWED_PREFIXES)}). This would 403 at the edge "
+            f"with CF Error 1000. Re-route under /facility/* or /markets/* "
+            f"or /partners/* instead.",
+            flush=True,
+        )
+    except Exception:
+        pass
+    return False
+
+
+# ─────────────────────────────────────────────────────────────────────
 # DB helper (re-uses DATABASE_URL like the rest of the app)
 # ─────────────────────────────────────────────────────────────────────
 def _conn():
