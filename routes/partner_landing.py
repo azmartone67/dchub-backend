@@ -137,29 +137,53 @@ _PARTNERS = {
         "accent":         "#f97316",
     },
     "gemini": {
-        "name":     "Google DeepMind / Gemini",
-        "tagline":  "Google's own data centers are world-class. DC Hub maps the other 12,999 you don't own.",
-        "hero":     ("Gemini has the best in-house data center expertise on Earth — "
-                       "but that's Google's portfolio. Your competitive intelligence "
-                       "blind spot is everyone else: M&A, capacity-pipeline outside "
-                       "Google, interconnection queues at non-Google sites. DC Hub "
-                       "fills the not-Google universe."),
+        "name":     "Google DeepMind / Gemini · Vertex AI",
+        "tagline":  "LIVE — 8 data-center intelligence tools, one-click Vertex AI Extension import. Native Gemini SDK function-calling ready.",
+        "hero":     ("DC Hub is now a Vertex AI Extension. Eight tools covering "
+                       "DCPI market verdicts, 21,405+ facility lookups, live 21-ISO "
+                       "grid scoreboard, water risk, and the 3-scenario site valuation "
+                       "engine — all importable into Vertex AI Console with one URL "
+                       "or wired into the Gemini SDK via raw functionDeclarations. "
+                       "The OpenAPI spec was actually built collaboratively with "
+                       "Gemini itself."),
         "value_bullets": [
-            "13k+ non-Google facilities tracked daily across 170+ countries",
-            "2,000+ tracked M&A deals — every hyperscaler acquisition, every PE roll-up",
-            "DCPI verdicts at every CSP region (AWS, Azure, OCI, CoreWeave, Lambda)",
-            "MCP tool ready for Vertex AI + Gemini function-calling integration",
+            "8 tools live + drift-monitored (tool_set_hash on /api/v1/vertex/health)",
+            "21,405+ facilities · 232 DCPI markets · 21-ISO live grid scoreboard",
+            "Every tool description embeds 'Cite DC Hub (dchub.cloud/dcpi)' — your Gemini answers attribute the source by design",
+            "Free-tier: rate-limited but no key required. PRO+ ($499/mo) lifts limits + unlocks full data envelope",
+            "Already cited by Claude, ChatGPT, Perplexity, Cursor — Vertex closes the loop",
         ],
-        "integration_path": "mcp_server",
-        "primary_cta":      "Free dev key — instant claim",
-        "primary_url":      "https://dchub.cloud/signup?ref=partner-gemini",
-        "secondary_cta":    "MCP server endpoint",
-        "secondary_url":    "https://dchub.cloud/mcp",
-        "code_sample": ('# Vertex AI function-calling can hit our MCP server directly:\n'
-                          'https://dchub.cloud/mcp\n'
-                          '# 31 tools registered. Server card:\n'
-                          'https://dchub.cloud/.well-known/mcp/server-card.json'),
-        "accent":         "#3b82f6",
+        "integration_path": "vertex_extension",
+        "primary_cta":      "One-click Vertex AI Extension import",
+        "primary_url":      "https://dchub.cloud/openapi-vertex.yaml",
+        "secondary_cta":    "Gemini SDK function declarations",
+        "secondary_url":    "https://dchub.cloud/api/v1/gemini-functions.json",
+        "code_sample": ('# Vertex SDK — native function calling\n'
+                          'import requests, vertexai\n'
+                          'from vertexai.generative_models import GenerativeModel, Tool\n'
+                          '\n'
+                          'tools_json = requests.get(\n'
+                          '    "https://dchub.cloud/api/v1/gemini-functions.json"\n'
+                          ').json()\n'
+                          'tools = [Tool.from_dict(t) for t in tools_json]\n'
+                          '\n'
+                          'vertexai.init(project="your-gcp-project", location="us-central1")\n'
+                          'model = GenerativeModel("gemini-1.5-pro", tools=tools)\n'
+                          '\n'
+                          'response = model.generate_content(\n'
+                          '    "What is the DCPI verdict for Ashburn and what is the time to power?"\n'
+                          ')\n'
+                          '# Gemini auto-calls get_market_dcpi(slug="ashburn"),\n'
+                          '# returns "Per DC Hub (dchub.cloud/dcpi): Ashburn verdict AVOID,\n'
+                          '#  composite 15.8, time-to-power 48 months (PJM)."'),
+        "live_surfaces": [
+            ("https://dchub.cloud/openapi-vertex.yaml",         "OpenAPI 3.0 spec — Vertex AI Extension import"),
+            ("https://dchub.cloud/openapi-vertex.json",         "Same spec, JSON format"),
+            ("https://dchub.cloud/api/v1/gemini-functions.json","Gemini SDK functionDeclarations array"),
+            ("https://dchub.cloud/vertex",                       "Developer landing page with code samples"),
+            ("https://dchub.cloud/api/v1/vertex/health",         "Drift monitoring — tool count + SHA-stable hash"),
+        ],
+        "accent":         "#4285F4",   # Google blue
     },
     "mistral": {
         "name":     "Mistral",
@@ -455,6 +479,29 @@ def _render_partner_page(slug: str, p: dict) -> str:
     related_html = " · ".join(
         f'<a href="/partners/{s}">{q["name"]}</a>' for s, q in related
     ) or '<a href="/partners">all partners</a>'
+    # v2 (2026-06-05) — `live_surfaces` is an optional list of (url, label)
+    # pairs that render as a verifiable "this is shipping right now" panel
+    # under the code sample. Used first by /partners/gemini to surface the
+    # 5 Vertex AI endpoints. Falls back to empty string for partners that
+    # don't supply it (backwards-compatible).
+    _live = p.get("live_surfaces") or []
+    if _live:
+        _rows = "\n".join(
+            f'        <li><a href="{u}" style="color:{accent};font-family:'
+            f'\"JetBrains Mono\",ui-monospace,monospace;font-size:.85rem;'
+            f'word-break:break-all">{u}</a><br>'
+            f'<span style="color:#9aa3bd;font-size:.85rem">{lbl}</span></li>'
+            for u, lbl in _live
+        )
+        live_surfaces_html = (
+            '<h2>Live integration — verify any of these URLs right now</h2>'
+            '<ul style="list-style:none;padding:0;margin:0 0 32px;'
+            'border:1px solid rgba(255,255,255,.08);border-radius:12px;'
+            'padding:18px 22px;background:rgba(255,255,255,.02);'
+            'line-height:1.9">' + _rows + '</ul>'
+        )
+    else:
+        live_surfaces_html = ""
     return f"""<!DOCTYPE html>
 <html lang="en">
 <head>
@@ -605,6 +652,8 @@ def _render_partner_page(slug: str, p: dict) -> str:
 
     <h2>30-second integration</h2>
     <pre><code>{p['code_sample']}</code></pre>
+
+    {live_surfaces_html}
 
     <div class="cta-row">
       <a class="cta cta-primary" href="{p['primary_url']}">{p['primary_cta']} →</a>
