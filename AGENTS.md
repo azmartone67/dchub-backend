@@ -1,7 +1,7 @@
 # DC Hub — Data Center Intelligence Platform
 
 ## Overview
-DC Hub (dchub.cloud) is a comprehensive data center intelligence API tracking 50,000+ facilities across 140+ countries with 3,800+ providers. Free API access with real-time grid data, M&A tracking, site analysis, and market intelligence.
+DC Hub (dchub.cloud) is a comprehensive data center intelligence API tracking 21,000+ facilities across 170+ countries with 3,800+ providers. Free API access with real-time grid data, M&A tracking, site analysis, and market intelligence.
 
 ## MCP Server (Model Context Protocol) — Connect Your AI Agent
 
@@ -19,7 +19,7 @@ Config: https://dchub.cloud/.well-known/mcp.json
 - `search_facilities` - Search 20,000+ data center facilities
 - `get_market_stats` - Global market statistics
 - `get_news` - Real-time industry news from 40+ sources
-- `get_deals` - 700+ M&A transactions ($51B+)
+- `get_deals` - 700+ M&A transactions (2,000+ deals)
 - `get_capacity_pipeline` - 21+ GW capacity under construction
 - `compare_markets` - Side-by-side market comparison
 - `score_site` - Location suitability scoring (0-100)
@@ -66,7 +66,7 @@ Server Card: https://dchub.cloud/.well-known/mcp/server-card.json
 | Tool | Description |
 |------|-------------|
 | `search_facilities` | Query 20,000+ data centers by location, provider, capacity |
-| `get_deals` | Access 700+ M&A transactions worth $51B+ |
+| `get_deals` | Access 700+ M&A transactions worth 2,000+ deals |
 | `get_capacity_pipeline` | Track 21+ GW of capacity under construction |
 | `score_site` | Get location suitability scores (0-100) |
 | `get_grid_fuel_mix` | Real-time power grid generation data |

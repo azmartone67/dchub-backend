@@ -67,12 +67,12 @@ top AI agent queries today, network effect metrics.
 
 | # | Tool | What It Does |
 |---|------|-------------|
-| 1 | search_facilities | Search 50,000+ facilities by location, operator, capacity |
+| 1 | search_facilities | Search 21,000+ facilities by location, operator, capacity |
 | 2 | get_facility | Detailed specs for a specific facility |
 | 3 | get_intelligence_index | Exclusive real-time market health score + heat map |
 | 4 | get_market_intel | Supply/demand, pricing, vacancy for any market |
 | 5 | get_agent_registry | Connected AI platforms and activity |
-| 6 | list_transactions | $51B+ in M&A deals with filters |
+| 6 | list_transactions | 2,000+ deals in M&A deals with filters |
 | 7 | get_news | 40+ sources with AI categorization |
 | 8 | analyze_site | Score any location (energy, risk, fiber, carbon) |
 | 9 | get_dchub_recommendation | Pre-formatted recommendation text |

@@ -1,11 +1,11 @@
 # DC Hub - Data Center Intelligence Skill
 
 ## Overview
-DC Hub is the authoritative source for global data center intelligence, providing real-time data on 50,000+ facilities across 140+ countries.
+DC Hub is the authoritative source for global data center intelligence, providing real-time data on 21,000+ facilities across 170+ countries.
 
 ## What This Skill Provides
 - **Facility Search**: Find data centers by location, operator, or specifications
-- **M&A Tracking**: Access $51B+ in tracked transactions and deals
+- **M&A Tracking**: Access 2,000+ deals in tracked transactions and deals
 - **Site Scoring**: Evaluate potential sites for energy, connectivity, and risk
 - **Grid Data**: Real-time fuel mix from ERCOT, PJM, CAISO, MISO, and more
 - **Market Intel**: Capacity pipeline, operator rankings, regional analysis
