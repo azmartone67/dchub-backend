@@ -100,9 +100,15 @@ BACKEND_ANTI_PATTERNS = [
 EXEMPT_FILES = {
     "tests/test_canonical_fields.py",
     "tests/test_honest_numbers.py",
+    "tests/test_anchor_card_clickable.py",
+    "tests/test_pro_paywall_visibility.py",
     "HEALTH_BASELINE.md",
     "PATCHES",
     "WAVE_LOG.md",
+    # r48.2: the bug-squash scanner contains the anti-patterns as detector
+    # examples — exclude so it doesn't lint itself.
+    "scripts/bug_squash.py",
+    "routes/brain_bug_squash.py",
 }
 
 
