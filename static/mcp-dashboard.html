@@ -22,7 +22,8 @@
 <div class="grid" id="kpis"></div>
 <div class="card">
   <h3 style="margin-top:0">Top tools triggering upgrade signals (last 30d)</h3>
-  <table id="signals"><thead><tr><th>Tool</th><th>Signals</th></tr></thead><tbody></tbody></table>
+  <div class="sub" style="margin:-4px 0 8px">Ranked by <b>distinct sessions</b>, not raw signal volume — a few looping anonymous-proxy callers inflate raw counts. "Distinct callers (IP)" is near-zero for LLM-proxy traffic (no client IP); read it as attributable demand.</div>
+  <table id="signals"><thead><tr><th>Tool</th><th>Distinct sessions</th><th>Distinct callers (IP)</th><th>Raw signals</th></tr></thead><tbody></tbody></table>
 </div>
 <div class="card" style="margin-top:14px">
   <h3 style="margin-top:0">Paid-tool demand from free users (last 30d) — your addressable upgrade pool</h3>
@@ -43,7 +44,7 @@ async function load() {
         <div class="sub-value">free ${kt.free||0} · paid ${kt.paid||0} · ent ${kt.enterprise||0}</div></div>
     `;
     document.querySelector('#signals tbody').innerHTML = (d.top_signal_tools_30d || [])
-      .map(r => `<tr><td>${r.tool || '—'}</td><td>${r.n}</td></tr>`).join('') || '<tr><td colspan=2 style="color:#666">No signals yet — Python MCP is offline or no free users have hit a paid tool.</td></tr>';
+      .map(r => `<tr><td>${r.tool || '—'}</td><td>${r.sessions ?? '—'}</td><td>${r.callers ?? '—'}</td><td style="color:#999">${r.n}</td></tr>`).join('') || '<tr><td colspan=4 style="color:#666">No signals yet — Python MCP is offline or no free users have hit a paid tool.</td></tr>';
     document.querySelector('#paid tbody').innerHTML = (d.paid_tool_demand_30d || [])
       .map(r => `<tr><td>${r.tool}</td><td>${r.calls}</td><td>${r.users}</td></tr>`).join('');
   } catch(e) {

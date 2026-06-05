@@ -1131,14 +1131,26 @@ def mcp_funnel():
             # so the top-tool ranking excludes synthetic/probe traffic
             # (was previously polluted by dchub-selfheal hammering
             # get_grid_intelligence).
+            # Item r-funnel-distinct (2026-06-05): rank by DISTINCT sessions/callers,
+            # NOT raw COUNT(*). The generic 'mcp' client bucket (anonymous LLM-proxy,
+            # NULL ip) fires thousands of signals from a handful of sessions, so raw
+            # count over-stated a few power tools (market_intel/grid_data/water_risk
+            # ~3-4k each) while masking real distinct demand. Mirrors the
+            # paid_tool_demand_30d treatment (COUNT(DISTINCT ip_address)). `n` is
+            # retained as de-emphasized context for any existing consumer.
             cur.execute(
-                """SELECT tool_requested, COUNT(*) AS n
+                """SELECT tool_requested,
+                          COUNT(*)                    AS n,
+                          COUNT(DISTINCT session_id)  AS sessions,
+                          COUNT(DISTINCT ip_address)  AS callers
                    FROM mcp_funnel_real
                    WHERE created_at >= NOW() - INTERVAL '30 days'
-                   GROUP BY tool_requested ORDER BY n DESC LIMIT 10"""
+                   GROUP BY tool_requested
+                   ORDER BY sessions DESC, n DESC LIMIT 10"""
             )
             out["top_signal_tools_30d"] = [
-                {"tool": r[0], "n": r[1]} for r in cur.fetchall()
+                {"tool": r[0], "n": r[1], "sessions": r[2], "callers": r[3]}
+                for r in cur.fetchall()
             ]
 
             cur.execute(
