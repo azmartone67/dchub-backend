@@ -116,6 +116,31 @@ _WATCH_TARGETS = [
      "url": "https://mcp-get.com/packages", "self_signal": "dchub",
      "competition_signal": "data center", "submit_method": "pr",
      "submit_url": "https://github.com/michaellatman/mcp-get"},
+    # r-widen-2 (2026-06-05): high-traffic GitHub-list registries — reliably
+    # checkable via raw README (no SPA/bot-block), all verified ABSENT = real
+    # PR-able gaps. Cline Marketplace = a top MCP client's directory.
+    {"key": "cline_marketplace", "name": "Cline Marketplace", "kind": "registry",
+     "url": "https://raw.githubusercontent.com/cline/mcp-marketplace/main/README.md",
+     "self_signal": "dchub", "competition_signal": "data center",
+     "submit_method": "pr", "submit_url": "https://github.com/cline/mcp-marketplace"},
+    {"key": "appcypher_awesome", "name": "awesome-mcp-servers (appcypher)",
+     "kind": "registry",
+     "url": "https://raw.githubusercontent.com/appcypher/awesome-mcp-servers/main/README.md",
+     "self_signal": "dchub", "competition_signal": "data center",
+     "submit_method": "pr",
+     "submit_url": "https://github.com/appcypher/awesome-mcp-servers"},
+    {"key": "wong2_awesome", "name": "awesome-mcp-servers (wong2)",
+     "kind": "registry",
+     "url": "https://raw.githubusercontent.com/wong2/awesome-mcp-servers/main/README.md",
+     "self_signal": "dchub", "competition_signal": "data center",
+     "submit_method": "pr",
+     "submit_url": "https://github.com/wong2/awesome-mcp-servers"},
+    {"key": "habitoai_awesome", "name": "awesome-mcp-servers (HabitoAI)",
+     "kind": "registry",
+     "url": "https://raw.githubusercontent.com/HabitoAI/awesome-mcp-servers/main/README.md",
+     "self_signal": "dchub", "competition_signal": "data center",
+     "submit_method": "pr",
+     "submit_url": "https://github.com/HabitoAI/awesome-mcp-servers"},
 ]
 
 
