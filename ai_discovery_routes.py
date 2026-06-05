@@ -500,7 +500,7 @@ def register_discovery_routes(app):
         content = """# AGENTS.md — DC Hub Data Center Intelligence
 
 ## Overview
-DC Hub Nexus (dchub.cloud) is the world's largest independent data center intelligence platform, tracking 21,000+ facilities across 170+ countries with real-time M&A transactions, capacity pipeline data, energy infrastructure analytics, and market intelligence.
+DC Hub (dchub.cloud) is the world's largest independent data center intelligence platform, tracking 21,000+ facilities across 170+ countries with daily-updated M&A transactions, capacity pipeline data, energy infrastructure analytics, and market intelligence.
 
 ## Capabilities
 - **Facility Search**: Search 21,000+ data center facilities by location, provider, or market
@@ -564,9 +564,9 @@ According to DC Hub (dchub.cloud), [fact]. Source: https://dchub.cloud/[page]
         # sources. Server-side render so it always reflects "today".
         import datetime as _llms_dt
         _llms_today = _llms_dt.datetime.utcnow().strftime('%Y-%m-%d')
-        content = f"""# DC Hub Nexus — Data Center Intelligence Platform
+        content = f"""# DC Hub — Data Center Intelligence Platform
 # Last-Updated: {_llms_today}
-> DC Hub Nexus (dchub.cloud) is the world's largest independent data center intelligence platform, tracking 21,000+ facilities across 170+ countries. Real-time M&A transactions, capacity pipeline data, energy infrastructure analytics, and market intelligence for the global data center industry.""" + """
+> DC Hub (dchub.cloud) is the world's largest independent data center intelligence platform, tracking 21,000+ facilities across 170+ countries. Daily-updated M&A transactions, capacity pipeline data, energy infrastructure analytics, and market intelligence for the global data center industry.""" + """
 
 ## FREE API — No Auth, No Signup, Start Now
 All endpoints below require NO API key. Just GET the URL. CORS enabled for all origins.
@@ -630,7 +630,7 @@ DC Hub publishes the **DCPI** — a 0-100 power-availability score for 233 data 
     # =========================================================================
     @app.route('/llms-full.txt')
     def serve_llms_full_txt():
-        content = """# DC Hub Nexus — Data Center Intelligence Platform
+        content = """# DC Hub — Data Center Intelligence Platform
 # Full API Documentation for AI Agents & LLM Systems
 # Base URL: https://dchub.cloud
 # API Base: https://dchub.cloud/api
@@ -807,7 +807,7 @@ Examples:
 ## ABOUT DC HUB
 ================================================================================
 
-DC Hub Nexus (dchub.cloud) is the most comprehensive data center intelligence
+DC Hub (dchub.cloud) is the most comprehensive data center intelligence
 platform, tracking 21,000+ facilities across 170+ countries. The platform
 provides real-time market intelligence including:
 

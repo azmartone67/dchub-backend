@@ -386,12 +386,21 @@ def brain_pulse():
     # synthesis than the rule-based mapping. Falls back to the original
     # pattern-mapped voice when no brief is available or summary is empty.
     brief = out.get("inspector_brief") or {}
-    if brief.get("summary"):
-        out["voice_line"] = brief["summary"]
+    safe = _public_safe(brief.get("summary"))
+    if safe:
+        out["voice_line"] = safe
         out["voice_source"] = "inspector"
     else:
         out["voice_line"] = _voice(out)
         out["voice_source"] = "rules"
+    # PUBLIC endpoint: never expose the raw internal Inspector narrative
+    # (ops metrics, customer emails, escalation language, possibly-stale
+    # counts like the legacy 12,907). Keep only safe display fields.
+    if out.get("inspector_brief"):
+        out["inspector_brief"] = {
+            "age_human":    out["inspector_brief"].get("age_human"),
+            "generated_at": out["inspector_brief"].get("generated_at"),
+        }
 
     resp = jsonify(out)
     resp.headers["Cache-Control"] = "public, max-age=60"
@@ -423,6 +432,32 @@ def _verdict(actions_24h: int, press_today: int) -> str:
     if press_today > 0 and actions_24h == 0:
         return f"Quiet on fixes. {press_today} press pieces published today."
     return f"{actions_24h} autonomous fixes · {press_today} press pieces today."
+
+
+_PUBLIC_BANNED = (
+    "@", "escalation", "starving", "autopilot", "pipeline is", "conversion",
+    "detector", "consistency", "country tag", "no country", "founding",
+    "customer", "paid_", "facilities_added", "facilities tracked",
+    "unknown entit", "_7d", "_24h", "_30d", "per ", "quarter of", "degrad",
+    "stuck", "churn", "leak", "email", "escalat",
+)
+
+
+def _public_safe(text):
+    """Return the Inspector line ONLY if safe for the PUBLIC homepage —
+    no internal metrics, customer identities, escalation language, or raw
+    (possibly-stale) counts. Otherwise None, so the caller falls back to the
+    safe rule-based _voice(). This is what keeps internal ops off the public
+    surface — added after the stale-count + "elevated escalations" homepage leak (2026-06-04)."""
+    if not text or not isinstance(text, str):
+        return None
+    low = text.lower()
+    if any(tok in low for tok in _PUBLIC_BANNED):
+        return None
+    import re as _re
+    if _re.search(r"\d{3,}", text):   # reject raw integer counts in the public voice
+        return None
+    return text.strip()
 
 
 def _voice(state: dict) -> str:

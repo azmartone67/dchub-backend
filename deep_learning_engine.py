@@ -1,5 +1,5 @@
 """
-DC Hub Nexus - Deep Learning Self-Aware Engine
+DC Hub - Deep Learning Self-Aware Engine
 ===============================================
 Unified AI-powered system that learns, adapts, and grows automatically across:
 - Facilities: Discovers new data centers from multiple sources

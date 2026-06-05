@@ -17,10 +17,10 @@ name: Testimonials seed (daily — bridge ai_citations → scoreboard)
 # re-flatlining the scoreboard.
 
 on:
-  schedule:
+  # schedule: DISABLED 2026-06-04 (accuracy) — synthesized quote text from metadata, not verbatim. Real recorded citations only. Manual dispatch retained.
     # 11:41 UTC — 30 min after the 11:11 UTC ai-citation probe, so the
     # day's fresh citations are already in ai_citations to bridge.
-    - cron: '41 11 * * *'
+  #   - cron: '41 11 * * *'
   workflow_dispatch:
     inputs:
       dry_run:

@@ -747,7 +747,7 @@ def require_plan(min_plan='pro'):
                     'X-RateLimit-Limit': str(plan_limit),
                     'X-RateLimit-Tier': user_plan,
                     'X-Auth-Method': auth_method,
-                    'X-Powered-By': 'DC Hub Nexus',
+                    'X-Powered-By': 'DC Hub',
                 }
 
                 return f(*args, **kwargs)

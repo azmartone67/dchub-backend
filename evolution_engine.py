@@ -1,5 +1,5 @@
 """
-DC Hub Nexus - Autonomous Evolution Engine v1.0
+DC Hub - Autonomous Evolution Engine v1.0
 ================================================
 """
 
@@ -910,7 +910,7 @@ def teach_topic(topic: str) -> Dict:
 
 
 if __name__ == '__main__':
-    print("🧠 DC Hub Nexus - Evolution Engine")
+    print("🧠 DC Hub - Evolution Engine")
     print("=" * 50)
     engine = EvolutionEngine()
     print("\n📊 Current Status:")

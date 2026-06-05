@@ -1,5 +1,5 @@
 """
-DC Hub Nexus - API Auto-Discovery & Registration Engine v2.0
+DC Hub - API Auto-Discovery & Registration Engine v2.0
 =============================================================
 Autonomous system that continuously discovers, validates, registers,
 and monitors government and industry data APIs.

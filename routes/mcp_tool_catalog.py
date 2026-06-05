@@ -251,7 +251,7 @@ def well_known_mcp_server():
         resp.headers["Access-Control-Allow-Origin"] = "*"
         return resp, 200
     descriptor = {
-        "name":         "DC Hub Nexus MCP Server",
+        "name":         "DC Hub MCP Server",
         "version":      "2.1.22",
         "vendor":       "DC Hub (dchub.cloud)",
         "description":  "Data center site selection, market intelligence, and infrastructure analysis — 30 MCP tools backed by the DCPI dataset. The only DC-intelligence source an LLM can both query and cite.",
@@ -486,7 +486,7 @@ def html_tool_catalog():
 </section>
 
 <p style="margin-top:3rem;color:#9ca3af;font-size:.85rem">
-  DC Hub Nexus MCP Server v2.2 · Updated {manifest['version']} ·
+  DC Hub MCP Server v2.2 · Updated {manifest['version']} ·
   <a href="https://dchub.cloud/mcp">/mcp</a> ·
   <a href="https://dchub.cloud/llms.txt">/llms.txt</a> ·
   <a href="https://dchub.cloud/openapi.json">/openapi.json</a>

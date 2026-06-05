@@ -1228,7 +1228,7 @@ def site_value():
                 "CapEx + OpEx breakdown per scenario",
                 "Levelized cost $/MWh per scenario",
                 "Best-fit scenario rationale",
-                "Comparable transactions from $324B+ tracked M&A pipeline",
+                "Comparable transactions from 2,000+ tracked M&A deals pipeline",
                 "Live gas hub pricing (Henry Hub + regional basis)",
                 "Multiplier breakdown (verdict × best-fit × readiness stack)",
             ],
@@ -1318,7 +1318,7 @@ def site_value_methodology():
         "data_sources": {
             "dcpi_verdict":          "dcpi_scores table — refreshed daily",
             "gas_pricing":           "routes/powered_land_gas.py — EIA v2 API",
-            "comparable_sales":      "deals table — $324B+ M&A tracked",
+            "comparable_sales":      "deals table — 2,000+ M&A deals tracked",
             "market_centroids":      "hand-seeded top-30 markets (Phase 2: full markets table)",
         },
         "npv_definition": ("10-yr NPV column is a COST-BASIS figure: "

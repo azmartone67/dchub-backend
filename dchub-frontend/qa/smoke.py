@@ -169,7 +169,7 @@ def s3_ai_integrations_not_redirected(base: str) -> Result:
         # Integrations page has a clearly distinct fingerprint
         marker_found = any(m in body for m in (
             "AI Platform Integrations",
-            "DC Hub Nexus MCP Server",
+            "DC Hub MCP Server",
             "Connected Platforms",
         ))
         if not marker_found:

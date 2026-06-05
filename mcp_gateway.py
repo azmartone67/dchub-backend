@@ -1560,7 +1560,7 @@ class MCPGateway:
             ),
             "description": (
                 "Comprehensive data center intelligence platform — "
-                "21,000+ facilities, 170+ countries, real-time M&A, "
+                "21,000+ facilities, 170+ countries, daily-updated M&A, "
                 "capacity pipeline, energy infrastructure."
             ),
             "homepage": self.base_url,

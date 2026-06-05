@@ -1,6 +1,6 @@
 #!/usr/bin/env python3
 """
-DC HUB NEXUS - DISCOVERY ENGINE v3.0
+DC HUB - DISCOVERY ENGINE v3.0
 ====================================
 Multi-Source Data Center Discovery System
 Target: 30,000+ unique facilities

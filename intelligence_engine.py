@@ -1,7 +1,7 @@
 """
 DC Hub Intelligence Engine - Daily Email, LinkedIn, Deal Alerts
 ================================================================
-Automated intelligence system for DC Hub Nexus.
+Automated intelligence system for DC Hub.
 
 Features:
 - Daily Intelligence Email summaries
@@ -274,7 +274,7 @@ def generate_daily_email_content() -> Tuple[str, str, str]:
         {"<div class='section'><h2>Today's Capacity Projects</h2>" + ''.join([f'<div class="list-item"><strong>{p.get("company", "Unknown")}</strong>: {p.get("capacity_mw", 0):.0f} MW in {p.get("location", "Unknown")}</div>' for p in stats['capacity_projects'][:5]]) + "</div>" if stats['capacity_projects'] else ""}
         
         <div class="footer">
-            <p>Powered by DC Hub Nexus | <a href="https://dchub.cloud">dchub.cloud</a></p>
+            <p>Powered by DC Hub | <a href="https://dchub.cloud">dchub.cloud</a></p>
             <p>Data Center Intelligence Platform</p>
         </div>
     </div>
@@ -299,7 +299,7 @@ TOP OPERATORS
 {chr(10).join([f"- {o['operator']}: {o['count']} sites" for o in stats['top_operators'][:5]])}
 
 ---
-Powered by DC Hub Nexus | dchub.cloud
+Powered by DC Hub | dchub.cloud
 """
     
     return subject, html_content, text_content
@@ -502,7 +502,7 @@ def send_deal_alerts(alerts: List[Dict]) -> Dict:
                 payload = {
                     'timestamp': datetime.now().isoformat(),
                     'alerts': alerts,
-                    'source': 'DC Hub Nexus'
+                    'source': 'DC Hub'
                 }
 
                 response = requests.post(

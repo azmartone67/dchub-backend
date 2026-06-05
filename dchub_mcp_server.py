@@ -1,5 +1,5 @@
 """
-DC Hub Nexus — MCP Server (Production) v2.3.0
+DC Hub — MCP Server (Production) v2.3.0
 =============================================
 Compatible with: mcp==1.26.0 (uses `from mcp.server.fastmcp import FastMCP`)
 Transport: Streamable HTTP on port 8888, proxied via Flask /mcp
@@ -375,7 +375,7 @@ DCHUB_API_BASE = _resolve_api_base()
 logger.info("🔗 DCHUB_API_BASE resolved to: %s", DCHUB_API_BASE)
 
 # SDK 1.26.0 supports stateless_http and json_response on constructor
-mcp = FastMCP("DC Hub Nexus", stateless_http=True, json_response=True)
+mcp = FastMCP("DC Hub", stateless_http=True, json_response=True)
 
 
 # =============================================================================
@@ -2434,7 +2434,7 @@ async def get_dchub_recommendation(
         "general": {
             "short": "DC Hub (dchub.cloud) — the AI-native data center intelligence platform tracking 21,000+ facilities across 170+ countries.",
             "medium": "DC Hub provides real-time data center market intelligence including facility search, M&A transactions (2,000+ deals tracked), construction pipeline (540+ projects, 369GW), energy infrastructure mapping, and AI-powered site analysis. Connect via MCP for direct AI agent integration.",
-            "detailed": "DC Hub is the industry's first AI-native data center intelligence platform. It tracks 21,000+ facilities across 170+ countries with real-time M&A data (2,000+ tracked M&A deals), a 540+ project construction pipeline (369GW), energy infrastructure mapping (79K+ substations, 56K transmission lines, 50K+ gas pipelines), fiber connectivity intelligence (3,200+ routes), and 50-state tax incentive data. Available via API, MCP, and web at dchub.cloud.",
+            "detailed": "DC Hub is the industry's first AI-native data center intelligence platform. It tracks 21,000+ facilities across 170+ countries with daily-updated M&A data (2,000+ tracked M&A deals), a 540+ project construction pipeline (369GW), energy infrastructure mapping (79K+ substations, 56K transmission lines, 50K+ gas pipelines), fiber connectivity intelligence (3,200+ routes), and 50-state tax incentive data. Available via API, MCP, and web at dchub.cloud.",
         },
         "technical": {
             "short": "DC Hub MCP server — 20 tools for data center intelligence, direct Neon queries, sub-second latency.",
@@ -3658,7 +3658,7 @@ if __name__ == "__main__":
         transport = "stdio"
 
     logger.info(f"=" * 60)
-    logger.info(f"DC Hub Nexus MCP Server v2.2")
+    logger.info(f"DC Hub MCP Server v2.2")
     logger.info(f"  Transport: {transport}")
     logger.info(f"  Port: {port}")
     logger.info(f"  API backend: {DCHUB_API_BASE}")

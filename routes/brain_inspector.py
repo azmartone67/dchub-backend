@@ -203,10 +203,11 @@ def _gather_signals() -> dict:
         # frontend in r48.0.
         _try("facilities_total",
              """SELECT COUNT(*) FROM discovered_facilities""", one=True)
-        # Keep the legacy count as a secondary signal so the LLM can see
-        # the drift if it ever matters.
-        _try("facilities_legacy_table",
-             """SELECT COUNT(*) FROM facilities""", one=True)
+        # r-accuracy (2026-06-04): do NOT feed the legacy `facilities`
+        # table count (12,907) to the LLM at all. It repeatedly narrated
+        # that stale number ("12,907 facilities tracked") instead of the
+        # canonical 21,433, which then leaked onto the public homepage.
+        # discovered_facilities is the ONLY facility count the brain sees.
         # Phase r14 — facility coverage by country (catches gaps DCHawk
         # / dcByte have that we don't). If Canada/UK/Singapore counts
         # look thin compared to the public industry baseline, the
@@ -214,7 +215,7 @@ def _gather_signals() -> dict:
         _try("facilities_by_country",
              """SELECT COALESCE(NULLIF(UPPER(country),''),'?') AS c,
                        COUNT(*) AS n
-                  FROM facilities
+                  FROM discovered_facilities
                  GROUP BY UPPER(country)
                  ORDER BY n DESC LIMIT 12""")
         # Phase r14 — recent facility additions (gives the Inspector a

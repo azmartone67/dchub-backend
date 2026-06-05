@@ -1434,7 +1434,7 @@ def register_outreach_routes(app):
         
         pitch = f"""DC Hub — Data Center Intelligence Platform
 
-DC Hub is the world's largest open data center intelligence platform, tracking 21,000+ facilities across 170+ countries with real-time M&A, capacity pipeline, energy pricing, and construction data.
+DC Hub is the world's largest open data center intelligence platform, tracking 21,000+ facilities across 170+ countries with daily-updated M&A, capacity pipeline, energy pricing, and construction data.
 
 KEY DATA POINTS:
 • 21,000+ data center facilities tracked globally

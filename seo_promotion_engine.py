@@ -1,5 +1,5 @@
 """
-DC Hub Nexus - SEO & Site Promotion Engine
+DC Hub - SEO & Site Promotion Engine
 ===========================================
 Automatically promotes dchub.cloud across search engines and industry platforms.
 
@@ -264,7 +264,7 @@ class SEOPromotionEngine:
         organization = {
             "@context": "https://schema.org",
             "@type": "Organization",
-            "name": "DC Hub Nexus",
+            "name": "DC Hub",
             "url": self.site_url,
             "logo": urljoin(self.site_url, "/static/logo.png"),
             "description": "Comprehensive data center intelligence platform tracking 21,000+ facilities worldwide",
@@ -282,7 +282,7 @@ class SEOPromotionEngine:
         website = {
             "@context": "https://schema.org",
             "@type": "WebSite",
-            "name": "DC Hub Nexus",
+            "name": "DC Hub",
             "url": self.site_url,
             "potentialAction": {
                 "@type": "SearchAction",
@@ -312,10 +312,10 @@ class SEOPromotionEngine:
         """Generate press release content for distribution"""
         templates = {
             'platform_update': {
-                'title': f"DC Hub Nexus Expands Global Data Center Coverage to 21,000+ Facilities",
+                'title': f"DC Hub Expands Global Data Center Coverage to 21,000+ Facilities",
                 'content': f"""FOR IMMEDIATE RELEASE
 
-DC Hub Nexus, the leading data center intelligence platform, today announced significant expansion of its global facility database, now tracking over 10,000 data centers across 170+ countries.
+DC Hub, the leading data center intelligence platform, today announced significant expansion of its global facility database, now tracking over 10,000 data centers across 170+ countries.
 
 The platform provides real-time market intelligence for hyperscale infrastructure, including:
 - Comprehensive facility data from PeeringDB, OpenStreetMap, and industry sources
@@ -340,10 +340,10 @@ press@dchub.cloud
 """
             },
             'new_feature': {
-                'title': "DC Hub Nexus Launches AI-Powered Deep Learning Engine",
+                'title': "DC Hub Launches AI-Powered Deep Learning Engine",
                 'content': f"""FOR IMMEDIATE RELEASE
 
-DC Hub Nexus introduces breakthrough AI technology for data center market intelligence.
+DC Hub introduces breakthrough AI technology for data center market intelligence.
 
 The new Deep Learning Engine automatically:
 - Detects M&A transactions from news sources
@@ -386,7 +386,7 @@ Visit {self.site_url} to explore the platform.
         
         search_queries = [
             f'site:*.com "dchub.cloud"',
-            f'"DC Hub Nexus" data center',
+            f'"DC Hub" data center',
             f'link:dchub.cloud',
         ]
         

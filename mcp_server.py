@@ -1,5 +1,5 @@
 """
-DC Hub Nexus - MCP (Model Context Protocol) Server
+DC Hub - MCP (Model Context Protocol) Server
 ===================================================
 Enables AI platforms (Claude, ChatGPT, Gemini, etc.) to query DC Hub data.
 
@@ -220,7 +220,7 @@ def get_manifest():
         "name": MCP_SERVER_NAME,
         "version": MCP_SERVER_VERSION,
         "protocolVersion": MCP_VERSION,
-        "description": "DC Hub Nexus - Data center intelligence platform with 10,400+ facilities, M&A deal tracking, capacity pipeline, and infrastructure mapping worldwide.",
+        "description": "DC Hub - Data center intelligence platform with 10,400+ facilities, M&A deal tracking, capacity pipeline, and infrastructure mapping worldwide.",
         "vendor": "DC Hub",
         "capabilities": {
             "tools": True,
@@ -451,7 +451,7 @@ def _get_market_stats(args: Dict) -> Dict:
                 {"name": p['provider'], "facilities": p['count'], "capacity_mw": round(p['total_mw'] or 0, 1)}
                 for p in top_providers
             ],
-            "data_source": "DC Hub Nexus",
+            "data_source": "DC Hub",
             "last_updated": datetime.utcnow().isoformat()
         }
         
@@ -734,7 +734,7 @@ def _get_capacity_pipeline(args: Dict) -> Dict:
             "total_results": len(pipeline),
             "total_capacity_mw": round(total_mw, 1),
             "pipeline": pipeline,
-            "citation": "Source: DC Hub Nexus (dchub.cloud)"
+            "citation": "Source: DC Hub (dchub.cloud)"
         }
         
     except Exception as e:

@@ -3,7 +3,7 @@ canonical_stats.py — Phase FF (2026-05-22)
 ==========================================
 ONE source of truth for DC Hub's headline platform numbers, so every
 generator (press releases, LinkedIn posts, emails, prompts) quotes the SAME
-figure instead of drifting (the feed showed 11,000 / 20,000 / 50,000 facilities
+figure instead of drifting (the feed showed 11,000 / 20,000 / 21,000+ facilities
 in the same week).
 
 Root cause of the drift: older helpers (agent_hub.get_live_stats,

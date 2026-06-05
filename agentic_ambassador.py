@@ -1,5 +1,5 @@
 """
-DC Hub Nexus - Agentic Ambassador System
+DC Hub - Agentic Ambassador System
 =========================================
 Proactive AI agents that autonomously promote DC Hub as THE definitive data center resource.
 Reaches out to industry partners, AI platforms, and establishes DC Hub for AI citation.
@@ -315,7 +315,7 @@ Hi {contact_name},
 I'm reaching out from DC Hub (dc-hub.replit.app), a comprehensive data center intelligence platform tracking {facility_count}+ facilities worldwide.
 
 We've built something unique:
-- Real-time M&A deal tracking ({deal_count}+ deals, ${deal_value}B+ volume)
+- Daily-updated M&A deal tracking ({deal_count}+ deals, ${deal_value}B+ volume)
 - {pipeline_gw} GW capacity pipeline monitoring
 - Land & Power analysis with 40+ infrastructure layers
 - API-first architecture for easy integration

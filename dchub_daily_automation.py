@@ -622,7 +622,7 @@ def generate_daily_linkedin_post():
 {'📍 ' + market if market else ''}
 {capacity_str}
 
-DC Hub tracks {facility_count}+ facilities across 170+ countries with real-time M&A intelligence.
+DC Hub tracks {facility_count}+ facilities across 170+ countries with daily-updated M&A intelligence.
 
 📊 Full M&A tracker: dchub.cloud/transactions
 🔍 Explore: dchub.cloud
@@ -650,7 +650,7 @@ DC Hub tracks {facility_count}+ data center facilities across 170+ countries. Ge
 Tracking {facility_count}+ data center facilities across 170+ countries.
 
 What we monitor:
-→ Real-time M&A transactions
+→ Daily-updated M&A transactions
 → Construction pipeline & capacity
 → Power infrastructure & grid data
 → News from 40+ industry sources

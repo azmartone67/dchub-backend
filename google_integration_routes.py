@@ -73,7 +73,7 @@ def setup_google_routes(app):
                     "@type": "Organization",
                     "@id": f"{FRONTEND_URL}/#organization",
                     "name": "DC Hub",
-                    "alternateName": "DC Hub Nexus",
+                    "alternateName": "DC Hub",
                     "url": FRONTEND_URL,
                     "description": "Real-time data center intelligence platform tracking 21,000+ facilities across 170+ countries.",
                     "foundingDate": "2024",
@@ -182,7 +182,7 @@ def setup_google_routes(app):
     def google_discovery():
         """Google-specific discovery manifest for Vertex AI / Gemini."""
         return jsonify({
-            "platform": "DC Hub Nexus",
+            "platform": "DC Hub",
             "version": API_VERSION,
             "target": "Google Vertex AI / Gemini",
             "openapi_spec": f"{BASE_URL}/openapi.json",
@@ -237,7 +237,7 @@ def setup_google_routes(app):
     def discovery_all():
         """Unified discovery index for all AI platforms."""
         return jsonify({
-            "platform": "DC Hub Nexus",
+            "platform": "DC Hub",
             "description": "Data Center Intelligence Platform — 21,000+ facilities, 170+ countries",
             "version": API_VERSION,
             "generated_at": datetime.now(timezone.utc).isoformat(),

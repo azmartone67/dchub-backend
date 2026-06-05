@@ -1,6 +1,6 @@
 """
 from nav_config import register_nav_config_route
-DC HUB NEXUS - ENHANCED API SERVER v80
+DC HUB - ENHANCED API SERVER v80
 ======================================
 Features Added (v80):
   - Email Welcome Series (5-email drip campaign)
@@ -1993,7 +1993,7 @@ def sales_chat():
 @app.route('/', methods=['GET'])
 def index():
     return jsonify({
-        'name': 'DC Hub Nexus API',
+        'name': 'DC Hub API',
         'version': '75.0.0',
         'status': 'healthy',
         'features': ['leads', 'auth', 'markets', 'reports', 'agents', 'discovery']

@@ -1140,7 +1140,7 @@ def _short_recommendation(dim: str, result: dict) -> str:
 
 # ── Opus proposal generator (the proactive "expand capabilities" loop) ──
 
-_LIFECYCLE_PROMPT = """You are the lifecycle curator for DC Hub Nexus — the
+_LIFECYCLE_PROMPT = """You are the lifecycle curator for DC Hub — the
 de-facto MCP server for data center market intelligence. Your job is to
 PROPOSE ONE specific new capability that would deepen the moat.
 
@@ -1354,7 +1354,7 @@ def _call_opus_for_proposal(audit_summary: str) -> tuple[dict | None, str | None
 # the human approve. The brain gets smarter by having two voices.
 
 _CHALLENGER_PROMPT = """You are the SKEPTIC reviewing a moat-deepening
-capability proposal for DC Hub Nexus, the leading data-center
+capability proposal for DC Hub, the leading data-center
 intelligence MCP server.
 
 PROPOSAL UNDER REVIEW (from Opus 4.7):

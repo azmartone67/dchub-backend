@@ -809,7 +809,7 @@ def set_provider(facilities, provider):
 
 def run_all():
     print("=" * 60)
-    print("DC Hub Nexus - Provider Directory Scraper v2.0")
+    print("DC Hub - Provider Directory Scraper v2.0")
     print(f"Started at: {datetime.now().isoformat()}")
     print("=" * 60)
 

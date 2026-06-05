@@ -1,5 +1,5 @@
 """
-Enhanced Promotion Engine for DC Hub Nexus
+Enhanced Promotion Engine for DC Hub
 Automated multi-channel promotion to boost search visibility and traffic
 
 Features:
@@ -28,7 +28,7 @@ class EnhancedPromotionEngine:
     def __init__(self, db_path: str = 'dc_nexus.db'):
         self.db_path = db_path
         self.site_url = 'https://dchub.cloud'
-        self.site_name = 'DC Hub Nexus'
+        self.site_name = 'DC Hub'
         self.site_description = 'Real-time data center intelligence platform tracking 21,000+ facilities worldwide with fiber routes, power infrastructure, and market analytics.'
         
         # Directory submission targets
@@ -355,7 +355,7 @@ class EnhancedPromotionEngine:
         
         # Create MCP manifest for AI platforms
         mcp_manifest = {
-            "name": "DC Hub Nexus",
+            "name": "DC Hub",
             "description": self.site_description,
             "url": self.site_url,
             "api_endpoint": f"{self.site_url}/api/v1",
@@ -493,7 +493,7 @@ class EnhancedPromotionEngine:
         recent_news = cursor.fetchone()[0]
         
         if not news_hook:
-            news_hook = f"DC Hub Nexus Now Tracks {facility_count:,}+ Data Center Facilities Worldwide"
+            news_hook = f"DC Hub Now Tracks {facility_count:,}+ Data Center Facilities Worldwide"
         
         press_release = {
             'title': news_hook,
@@ -503,7 +503,7 @@ FOR IMMEDIATE RELEASE
 
 {news_hook}
 
-{datetime.now().strftime('%B %d, %Y')} - DC Hub Nexus, a comprehensive data center intelligence platform, 
+{datetime.now().strftime('%B %d, %Y')} - DC Hub, a comprehensive data center intelligence platform, 
 announces expanded coverage of global data center infrastructure.
 
 KEY HIGHLIGHTS:
@@ -512,7 +512,7 @@ KEY HIGHLIGHTS:
 • Real-time market intelligence with {recent_news} news items this week
 • AI-powered analytics for site selection and capacity planning
 
-"DC Hub Nexus provides the most comprehensive view of global data center infrastructure," 
+"DC Hub provides the most comprehensive view of global data center infrastructure," 
 said the development team. "Our platform helps enterprises, investors, and operators make 
 data-driven decisions about their digital infrastructure needs."
 
@@ -524,8 +524,8 @@ The platform features:
 - M&A deal tracking and market intelligence
 - API access for enterprise integration
 
-ABOUT DC HUB NEXUS:
-DC Hub Nexus is a data center intelligence platform providing real-time tracking of 
+ABOUT DC HUB:
+DC Hub is a data center intelligence platform providing real-time tracking of 
 global data center infrastructure, market trends, and capacity analytics.
 
 CONTACT:
@@ -534,7 +534,7 @@ API Documentation: {self.site_url}/api/v1
 
 ###
 """,
-            'boilerplate': f"DC Hub Nexus ({self.site_url}) is a data center intelligence platform.",
+            'boilerplate': f"DC Hub ({self.site_url}) is a data center intelligence platform.",
             'contact': 'info@dchub.cloud'
         }
         

@@ -3,7 +3,7 @@
 DC HUB DATA NEXUS - ULTIMATE DISCOVERY ENGINE v4.0
 ===================================================
 Enhanced with fixed data sources and 12+ RSS feeds
-Target: 50,000+ facilities from 15+ sources
+Target: 21,000+ facilities from 15+ sources
 
 Sources:
   FREE APIs (Tier 1 - Run Daily):
@@ -1581,7 +1581,7 @@ class NexusEngine:
     def run_quick(self) -> Dict:
         """Quick discovery - PeeringDB only"""
         logger.info("=" * 60)
-        logger.info("DC HUB NEXUS - QUICK DISCOVERY")
+        logger.info("DC HUB - QUICK DISCOVERY")
         logger.info("=" * 60)
         
         start = time.time()
@@ -1609,7 +1609,7 @@ class NexusEngine:
     def run_full(self) -> Dict:
         """Full discovery - All sources"""
         logger.info("=" * 60)
-        logger.info("DC HUB NEXUS - FULL DISCOVERY v4.0")
+        logger.info("DC HUB - FULL DISCOVERY v4.0")
         logger.info("=" * 60)
         
         start = time.time()
@@ -1722,7 +1722,7 @@ class NexusEngine:
 if __name__ == "__main__":
     import argparse
     
-    parser = argparse.ArgumentParser(description="DC Hub Nexus - Data Center Discovery Engine v4.0")
+    parser = argparse.ArgumentParser(description="DC Hub - Data Center Discovery Engine v4.0")
     parser.add_argument('--quick', action='store_true', help='Quick discovery (PeeringDB only)')
     parser.add_argument('--full', action='store_true', help='Full discovery (all sources)')
     parser.add_argument('--news', action='store_true', help='News/announcements only')

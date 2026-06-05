@@ -1,5 +1,5 @@
 """
-DC Hub Nexus - Self-Learning Discovery System
+DC Hub - Self-Learning Discovery System
 ==============================================
 Automatically discovers new data center sources beyond manually configured ones.
 Learns from existing data to find related sites, APIs, and directories.

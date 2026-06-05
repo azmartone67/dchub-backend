@@ -1230,7 +1230,7 @@ def agent_facilities():
             "success": True,
             "count": len(facilities),
             "facilities": facilities,
-            "source": "DC Hub Nexus (dchub.cloud)"
+            "source": "DC Hub (dchub.cloud)"
         }
         
         if agent:
@@ -1271,7 +1271,7 @@ def agent_stats():
                 "data_sources": 15,
                 "news_feeds": 60
             },
-            "source": "DC Hub Nexus (dchub.cloud)",
+            "source": "DC Hub (dchub.cloud)",
             "auth_instructions": "https://moltbook.com/auth.md?app=DCHub&endpoint=https://dchub.cloud/api/agent"
         })
         
@@ -1362,7 +1362,7 @@ def agent_capabilities():
     return jsonify({
         "agent": {
             "name": "DCHubBot",
-            "platform": "DC Hub Nexus",
+            "platform": "DC Hub",
             "version": "2.1",
             "agent_id": "b3a94f93-48a6-454b-807c-9d16f5cc99d1",
             "moltbook_handle": "aqua-43Q7",

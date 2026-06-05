@@ -1,5 +1,5 @@
 """
-DC Hub Nexus - Automatic KMZ/KML Infrastructure Discovery v3.0
+DC Hub - Automatic KMZ/KML Infrastructure Discovery v3.0
 ================================================================
 Autonomous system that discovers, downloads, and parses KMZ/KML
 infrastructure files from public government and industry sources.

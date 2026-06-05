@@ -1,5 +1,5 @@
 """
-DC Hub Nexus - AI Orchestrator v1.0
+DC Hub - AI Orchestrator v1.0
 ====================================
 The "Master Brain" that coordinates all AI agents and enables proactive behaviors.
 

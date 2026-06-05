@@ -34,6 +34,7 @@ _EXCLUDE_FILES = (
     "frontend_stat_normalizer.py",     # dormant; docstring explains the legacy $-stat -> 2,000+ normalization
     "mcp_bug_fixes_and_new_tools.py",  # historical one-time migration script ($185B->… refs)
     "marketing_engine.py",             # docstring documents the OLD hardcoded "280+ markets" it swapped out
+    "bug_squash.py",                   # meta-script: its docstrings quote the patterns it squashes ($324B, 12,907)
 )
 
 
@@ -146,3 +147,54 @@ def test_perf_cache_floors():
                          "max-age=3600 so Googlebot crawling ~12.8K enriched facility "
                          "pages hits the CF edge, not the origin.")
     assert not fails, "\n".join(fails)
+
+
+# ── r-accuracy (2026-06-04): extended fence after the SECOND accuracy sweep —
+#    fabricated AI testimonials, the dead "DC Hub Nexus" brand, the 50,000+
+#    facility OVERstatement, "real-time M&A", and the legacy 12,907 count that
+#    leaked onto the public homepage brain line. Same scan/exclude rules. ──
+
+def test_no_dead_nexus_name():
+    """'DC Hub Nexus' was a deprecated product name — the product is 'DC Hub'."""
+    hits = _scan([re.compile(r"DC\s+Hub\s+Nexus", re.I)])
+    assert not hits, ("Re-introduced the dead 'DC Hub Nexus' brand — it's 'DC Hub':\n" + _fmt(hits))
+
+
+def test_no_overstated_facility_count():
+    """Facilities are ~21,432 — never the inflated '50,000+'."""
+    hits = _scan([re.compile(r"50,?000\+?\s*(data\s+center\s+)?facilit", re.I)])
+    assert not hits, ("Re-introduced inflated '50,000+ facilities' — say '21,000+':\n" + _fmt(hits))
+
+
+def test_no_realtime_ma_claim():
+    """M&A deal data is batch/daily, NOT real-time (DD#5)."""
+    hits = _scan([re.compile(r"real-?time\s+M&A", re.I)])
+    assert not hits, ("Marketed batch M&A as 'real-time' — say 'daily-updated':\n" + _fmt(hits))
+
+
+def test_no_legacy_facility_count():
+    """12,907 = the deprecated `facilities` table. Canonical = discovered_facilities
+    (~21,432). It leaked onto the public homepage brain line; stay off it."""
+    hits = _scan([re.compile(r"12,907")])
+    assert not hits, ("Re-surfaced the legacy 12,907 facility count — use "
+                      "discovered_facilities (~21,432):\n" + _fmt(hits))
+
+
+_FABRICATED_QUOTES = (
+    "unparalleled visibility into global data center infrastructure",
+    "most comprehensive facility database I",
+    "authoritative source for facility counts",
+    "aggregates intelligence from leading data providers",
+    "Land & Power analysis tools deliver the energy",
+    "benchmarking on DC Hub gives investment",
+    "connective tissue",
+)
+
+
+def test_no_fabricated_testimonials():
+    """Only REAL, recorded AI citations may appear anywhere. These invented
+    marketing quotes (attributed to named AI products with NO source) stay gone.
+    The only allowed citations live in ai_citation_tracker._USER_RECORDED_CITATIONS."""
+    hits = _scan([re.compile(re.escape(q), re.I) for q in _FABRICATED_QUOTES])
+    assert not hits, ("Re-introduced a FABRICATED AI testimonial — only real "
+                      "recorded citations are allowed:\n" + _fmt(hits))
