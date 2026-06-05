@@ -19628,8 +19628,8 @@ def get_testimonials():  # v2 neon-backed
             "  AND COALESCE(source, '') NOT ILIKE '%%synth%%' "
             "  AND COALESCE(source, '') NOT ILIKE '%%solicit%%' "
             "  AND quote NOT ILIKE '%%280+%%' AND quote NOT ILIKE '%%285 market%%' "
-            "  AND quote NOT ILIKE '%%286 market%%' AND quote NOT ILIKE '%%$324B%%' "
-            "  AND quote NOT ILIKE '%%50,000%%' "
+            "  AND quote NOT ILIKE '%%286 market%%' AND quote NOT ILIKE '%%324B%%' "
+            "  AND quote NOT ILIKE '%%50,000 facil%%' "
         )
         params = []
 

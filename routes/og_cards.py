@@ -712,36 +712,48 @@ def _draw_ai_hero(pr):
         img = bg
         d = ImageDraw.Draw(img)
 
-        # Bottom gradient overlay for text legibility (60% opacity black
-        # gradient covering bottom half)
+        # Strong bottom gradient — protects ALL text below the midline.
+        # v2 (2026-06-05): alpha bumped 180→220 and gradient starts
+        # higher (40% vs 50%) so headline+pill+CTA all sit on safe contrast.
         overlay = Image.new('RGBA', (W, H), (0, 0, 0, 0))
         odraw = ImageDraw.Draw(overlay)
-        for i in range(H // 2, H):
-            alpha = int(180 * ((i - H // 2) / (H // 2)))
+        start_y = int(H * 0.40)
+        for i in range(start_y, H):
+            alpha = int(220 * ((i - start_y) / (H - start_y)))
             odraw.line([(0, i), (W, i)], fill=(0, 0, 0, alpha))
         img = Image.alpha_composite(img.convert('RGBA'), overlay).convert('RGB')
         d = ImageDraw.Draw(img)
 
-        # Brand chip (top-left)
-        d.rectangle([(64, 60), (320, 112)], fill=BG)
-        d.text((80, 72), 'DC HUB MEDIA · DAILY', font=_mono(24), fill=ACCENT)
+        # Brand accent strip (purple) — same anchor as all other styles
+        _draw_brand_strip(d)
 
-        # Headline at the bottom (3 lines max, with shadow)
+        # Brand chip + DC HUB MEDIA label (top-left, like every other style)
+        _brand_chip(d, 60, 56, size=52)
+        d.text((130, 56),  'DC HUB MEDIA', font=_font(20), fill=PURPLE_LT)
+        d.text((130, 84),  _safe_date_str(pr.get('date'), '%b %d, %Y').upper(),
+               font=_mono(16), fill=CYAN)
+
+        # Verdict pill — top-right if applicable
+        signals = pr.get('signals', {}) if isinstance(pr.get('signals', {}), dict) else {}
+        if signals.get('top_build_markets'):
+            verdict = _verdict_for(signals)
+            _verdict_pill(d, x=W - 280, y=44, verdict=verdict,
+                          font_size=36, pad_x=32, pad_y=14)
+
+        # Headline at the bottom — no double-shadow hack, just clean
+        # white on the gradient-darkened SDXL backdrop.
         title = pr.get('title', '')[:120]
         lines = _wrap(title, 22)[:3]
         line_height = 76
         total_height = line_height * len(lines)
-        y_start = H - total_height - 130
+        y_start = H - total_height - 100
         for line in lines:
-            d.text((84, y_start + 4), line, font=_font(60), fill=(0, 0, 0))
-            d.text((80, y_start), line, font=_font(60), fill=TEXT)
+            d.text((60, y_start), line, font=_font(60), fill=WHITE)
             y_start += line_height
 
-        d.text((84, H - 76), '→ dchub.cloud/news', font=_font(36), fill=(0, 0, 0))
-        d.text((80, H - 80), '→ dchub.cloud/news', font=_font(36), fill=TEXT)
-        d.text((80, H - 36),
-               f'DC Hub Media  ·  {_safe_date_str(pr.get("date"), "%B %d, %Y")}',
-               font=_font(20), fill=TEXT)
+        # Footer
+        _draw_brand_footer(d, y=H - 64, mark='dchub.cloud/news',
+                           kicker='DC HUB MEDIA  ·  AUTONOMOUS PRESS')
 
         return img
 
@@ -912,17 +924,33 @@ def smart_style():
 def _draw_fallback(slug):
     """Last-resort card if DB unavailable or generator throws. Never 404 —
     LinkedIn / Twitter aggressively drop link-card previews if og:image
-    returns 4xx, and we want SOME card no matter what."""
+    returns 4xx, and we want SOME card no matter what.
+
+    v2 (2026-06-05): rebuilt to match the v2 brand language (deep navy,
+    brand chip, cyan kicker) so the fallback no longer looks like an
+    error page. It IS the worst-case render, so it has to still look
+    intentional and premium."""
     from PIL import Image, ImageDraw
     img = Image.new('RGB', (W, H), BG)
+    _subtle_gradient(img, BG, BG_DEEP, falloff=1.0)
     d = ImageDraw.Draw(img)
-    d.rectangle([(0, 0), (W, 80)], fill=ACCENT)
-    d.text((60, 26), 'DC HUB', font=_font(32), fill=BG)
-    d.text((60, 200), 'Data Center Intelligence',
-           font=_font(52), fill=TEXT)
-    d.text((60, 270), 'Power · Pipeline · Pricing · ISO Grid',
-           font=_font(32), fill=MUTED)
-    d.text((60, H - 50), 'dchub.cloud', font=_mono(22), fill=ACCENT)
+
+    _draw_brand_strip(d)
+
+    # Hero brand mark centered-left
+    _brand_chip(d, 60, 140, size=200)
+    d.text((300, 168), 'DC HUB', font=_font(78), fill=WHITE)
+    d.text((300, 256), 'DATA CENTER INTELLIGENCE', font=_mono(22), fill=CYAN)
+
+    # Pillars
+    d.text((60, 400), 'POWER  ·  PIPELINE  ·  PRICING  ·  ISO GRID',
+           font=_mono(22), fill=MUTED)
+    d.text((60, 442), 'Live since 2024  ·  21,400 facilities  ·  170+ countries',
+           font=_font(22), fill=TEXT)
+
+    _draw_brand_footer(d, y=H - 64, mark='dchub.cloud',
+                       kicker='DC HUB  ·  CITED BY CLAUDE, CHATGPT, PERPLEXITY')
+
     return img
 
 
