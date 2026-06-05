@@ -424,54 +424,72 @@ def ecosystem_coverage():
             try: c.close()
             except Exception: pass
 
+    # Official-registry presence drives auto-index inference: mcp.so / Glama /
+    # PulseMCP crawl the official registry, so being live there ⇒ covered there
+    # even when their JS/paginated index pages defeat a direct slug probe (a
+    # bare probe shows them 'missing' = a FALSE negative). Don't call covered
+    # surfaces gaps.
+    official_live = bool(latest.get("official_registry", {}).get("we_present"))
+
     targets = []
     for t in _WATCH_TARGETS:
         lat = latest.get(t["key"], {})
         present = lat.get("we_present")
-        status = ("live" if present else
-                  ("unknown" if present is None else "missing"))
+        method = t.get("submit_method", "")
+        detail = lat.get("detail")
+        if present:
+            status = "live"                       # verified present
+        elif method == "auto-index" and official_live:
+            status = "auto-indexed"               # covered by design, probe can't confirm
+            detail = "auto-indexed from official registry (direct probe inconclusive)"
+        elif present is None:
+            status = "unknown"                    # probe blocked (403/404/redirect)
+        else:
+            status = "gap"                        # verified-absent / manual submit pending
         targets.append({
             "key": t["key"], "name": t["name"], "kind": t.get("kind", "registry"),
             "we_present": present, "status": status,
-            "submit_method": t.get("submit_method", ""),
-            "submit_url": t.get("submit_url", ""),
+            "submit_method": method, "submit_url": t.get("submit_url", ""),
             "http_status": lat.get("http_status"),
-            "detail": lat.get("detail"),
-            "last_checked": lat.get("at"),
+            "detail": detail, "last_checked": lat.get("at"),
         })
 
     live = [t for t in targets if t["status"] == "live"]
-    missing = [t for t in targets if t["status"] == "missing"]
+    auto = [t for t in targets if t["status"] == "auto-indexed"]
+    gaps = [t for t in targets if t["status"] == "gap"]
     unknown = [t for t in targets if t["status"] == "unknown"]
-    # gaps that need a human/PR action to close (missing + manual submit path)
+    covered = len(live) + len(auto)
+    denom = covered + len(gaps)  # exclude 'unknown' (probe-blocked) from the %
+    # actionable: a verified gap on a surface with a manual submit path
     owner_actions = [
         {"name": t["name"], "submit_method": t["submit_method"],
          "submit_url": t["submit_url"], "detail": t["detail"]}
-        for t in missing
+        for t in gaps
         if t["submit_method"] in ("form", "pr", "owner", "claim")
     ]
-    checked = len(live) + len(missing)  # exclude never-checked from the %
     resp = jsonify({
         "ok": True,
         "scorecard": {
             "total_targets": len(targets),
-            "live": len(live),
-            "missing": len(missing),
+            "verified_live": len(live),
+            "auto_indexed": len(auto),
+            "covered": covered,
+            "gaps": len(gaps),
             "unknown": len(unknown),
-            "coverage_pct": (round(100.0 * len(live) / checked, 1)
-                             if checked else None),
+            "coverage_pct": round(100.0 * covered / denom, 1) if denom else None,
         },
         "by_kind": {
-            k: {"live": sum(1 for t in targets
-                            if t["kind"] == k and t["status"] == "live"),
+            k: {"covered": sum(1 for t in targets if t["kind"] == k
+                               and t["status"] in ("live", "auto-indexed")),
                 "total": sum(1 for t in targets if t["kind"] == k)}
             for k in ("official", "registry", "self")
         },
         "owner_actions": owner_actions,
         "targets": targets,
-        "note": ("3rd-party registries are best-effort (many 403/redirect bare "
-                 "probes); 'official' + 'self' targets are deterministic. Treat "
-                 "'unknown' as 'probe blocked', not 'absent'."),
+        "note": ("3rd-party registries are best-effort (403/redirect/JS defeat a "
+                 "bare probe); 'official' + 'self' are deterministic. "
+                 "'auto-indexed' = covered via the official-registry crawl. "
+                 "'unknown' = probe blocked, not absent."),
         "generated_at": datetime.datetime.utcnow().isoformat() + "Z",
     })
     resp.headers["Cache-Control"] = "public, max-age=300"
