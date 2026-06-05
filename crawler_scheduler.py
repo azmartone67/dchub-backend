@@ -83,6 +83,16 @@ SCHEDULE = [
     # infra-sync and 3/15 kmz-discovery) and gives any nightly upstream
     # refresh time to land. Same-hour-same-day cap → one run/day.
     ( 2,  2, "tool_calibration",   "_run_tool_calibration_check"),
+    # Daily R2 refresh — POST /refresh on the heroic-reprieve daily
+    # FastAPI so today's PNGs land in R2 (2026-06-05). R2 has been
+    # empty for 7+ days because extractor_cron.py's daily_refresh_if_needed()
+    # silently skipped when DAILY_SVC_URL/REFRESH_SECRET weren't set on
+    # that worker. This is a SECOND, redundant trigger from the main
+    # backend so a single missing env var on one worker doesn't break
+    # /daily. Slot 1 UTC: empty hour, fires BEFORE LinkedIn/X post slots,
+    # gives R2 cache + global CF edge time to warm before first morning
+    # social scrape. Same-hour-same-day cap → one run/day.
+    ( 1,  1, "daily_r2_refresh",   "_run_daily_r2_refresh"),
 ]
 
 # ---------------------------------------------------------------------------
@@ -945,6 +955,68 @@ def _run_auto_interconnect():
                        d.get("email_sent"))
     except Exception as e:
         logger.error("🔌 auto_interconnect: error — %s", e)
+
+
+def _run_daily_r2_refresh():
+    """POST /refresh on the heroic-reprieve daily FastAPI so today's PNGs
+    (9 variants × 3 themes × 3 sizes) get rendered + uploaded to R2.
+
+    Background (2026-06-05): R2 was empty for all dates from 2026-05-29
+    onward. The intended trigger was extractor_cron.py's
+    daily_refresh_if_needed() which runs on the separate extractor
+    Railway worker (railway-extractor.toml). That cron silently skips
+    when DAILY_SVC_URL or REFRESH_SECRET env vars aren't set on the
+    extractor service — and one of them wasn't. This is a SECOND
+    trigger from the main backend so a single missing env var doesn't
+    leave /daily serving the Railway live-render path forever (slower
+    + redundant compute).
+
+    Env vars (read from MAIN backend, not extractor):
+      DAILY_SVC_URL    e.g. https://dchub-backend-production-f7dd.up.railway.app
+                       (falls back to that exact URL if unset)
+      REFRESH_SECRET   shared secret with the daily service
+                       (skip with a HIGH-VISIBILITY warning if unset)
+
+    Resilient: never raises — logs failure and exits so the next slot
+    can still run.
+    """
+    import requests as _rq
+    base = (os.environ.get("DAILY_SVC_URL", "").strip()
+            or "https://dchub-backend-production-f7dd.up.railway.app").rstrip("/")
+    secret = (os.environ.get("REFRESH_SECRET") or
+              os.environ.get("DAILY_REFRESH_SECRET") or "").strip()
+    if not secret:
+        logger.warning(
+            "🖼️  daily_r2_refresh: REFRESH_SECRET not set on main backend — "
+            "skipping. R2 will continue serving stale dates. Set "
+            "REFRESH_SECRET in Railway resourceful-essence to match the "
+            "value on heroic-reprieve (daily FastAPI service)."
+        )
+        return
+    try:
+        r = _rq.post(
+            f"{base}/refresh",
+            headers={
+                "X-Refresh-Secret": secret,
+                "User-Agent": "dchub-cron-r2refresh/1.0",
+            },
+            timeout=30,
+        )
+        # The /refresh endpoint returns {"queued": true} immediately and
+        # the actual render runs as a FastAPI BackgroundTask — so the
+        # 200 OK just means the job got queued, not that R2 was written.
+        if r.status_code == 200:
+            logger.info("🖼️  daily_r2_refresh: queued OK on %s (200)", base)
+        elif r.status_code == 401:
+            logger.error(
+                "🖼️  daily_r2_refresh: 401 bad secret on %s — REFRESH_SECRET "
+                "on main backend does NOT match the value on heroic-reprieve. "
+                "Rotate to the same value in both Railway services.", base)
+        else:
+            logger.error("🖼️  daily_r2_refresh: HTTP %d on %s — %s",
+                         r.status_code, base, r.text[:200])
+    except Exception as e:
+        logger.error("🖼️  daily_r2_refresh: POST failed to %s — %s", base, e)
 
 
 def _run_gas_pricing_refresh():
