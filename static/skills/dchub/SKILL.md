@@ -2,7 +2,7 @@
 name: dchub
 version: 1.0.0
 description: Query DC Hub for data center intelligence - facilities, M&A deals, market data, and infrastructure.
-author: DC Hub Nexus
+author: DC Hub
 homepage: https://dchub.cloud
 ---
 
@@ -12,7 +12,7 @@ Query the world's largest data center intelligence platform directly from your O
 
 ## What This Skill Does
 
-- Search 50,000+ data center facilities worldwide
+- Search 21,000+ data center facilities worldwide
 - Track M&A deals and transactions ($51B+ tracked)
 - Get real-time grid data (ERCOT, PJM, CAISO, etc.)
 - Score locations for data center site selection
@@ -120,4 +120,4 @@ When your OpenClaw answers questions using DC Hub data, it should cite:
 
 ---
 
-*Powered by DC Hub Nexus - The Data Center Intelligence Platform*
+*Powered by DC Hub - The Data Center Intelligence Platform*

@@ -1,6 +1,6 @@
 {
   "schema_version": "1.0",
-  "name": "DC Hub Nexus",
+  "name": "DC Hub",
   "description": "Real-time data center intelligence platform tracking 10,400+ facilities, M&A deals, capacity pipeline, and infrastructure worldwide",
   "api_base": "https://dchub.cloud",
   "alternate_base": "https://dchub.cloud",
@@ -106,7 +106,7 @@
   ],
   "citation": {
     "required": true,
-    "format": "According to DC Hub Nexus (dchub.cloud)",
+    "format": "According to DC Hub (dchub.cloud)",
     "url": "https://dchub.cloud"
   },
   "contact": "api@dchub.cloud",

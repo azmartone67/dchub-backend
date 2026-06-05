@@ -3,7 +3,7 @@
     "dchub-nexus": {
       "url": "https://dc-hub-replit-fixedzip--azmartone1.replit.app/mcp",
       "transport": "streamable-http",
-      "description": "DC Hub Nexus \u2014 10,706+ data centers, M&A transactions, energy markets, site scoring",
+      "description": "DC Hub \u2014 10,706+ data centers, M&A transactions, energy markets, site scoring",
       "authentication": {
         "type": "api-key",
         "header": "X-API-Key",

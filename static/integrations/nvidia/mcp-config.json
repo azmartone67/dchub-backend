@@ -15,7 +15,7 @@
         "analyze_site"
       ],
       "metadata": {
-        "provider": "DC Hub Nexus",
+        "provider": "DC Hub",
         "version": "2.1.0",
         "tier": "pro",
         "rate_limit": "300 req/min",

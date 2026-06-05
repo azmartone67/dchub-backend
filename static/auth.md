@@ -110,7 +110,7 @@ curl "https://dchub.cloud/api/agent/facilities?q=Dallas" \
 
 | Capability | Description |
 |------------|-------------|
-| `facility_search` | 20,534+ data centers in 140+ countries |
+| `facility_search` | 20,534+ data centers in 170+ countries |
 | `market_intelligence` | Real-time capacity tracking |
 | `transaction_tracking` | $51B+ in M&A deals |
 | `infrastructure_mapping` | Fiber, power, permits |
@@ -151,4 +151,4 @@ These files help AI platforms and agents find DC Hub:
 - **Docs:** https://dchub.cloud/api-docs
 - **Moltbook:** @aqua-43Q7
 
-*DC Hub Nexus - Data Center Intelligence for AI Agents*
+*DC Hub - Data Center Intelligence for AI Agents*

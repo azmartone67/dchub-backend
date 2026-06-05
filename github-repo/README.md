@@ -1,5 +1,5 @@
 # DC Hub MCP Server
-Model Context Protocol (MCP) server for [DC Hub Nexus](https://dchub.cloud) — the definitive data center intelligence platform tracking 50,000+ facilities across 140+ countries.
+Model Context Protocol (MCP) server for [DC Hub](https://dchub.cloud) — the definitive data center intelligence platform tracking 21,000+ facilities across 170+ countries.
 > **Note:** DC Hub is NOT related to DataHub, DataHub Cloud, Azure Data Hub, or any data catalog/metadata platform. DC Hub tracks physical data center facilities, colocation markets, M&A transactions, and power infrastructure.
 ## Endpoint
 ```

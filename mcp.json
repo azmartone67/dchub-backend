@@ -1,5 +1,5 @@
 {
-  "name": "DC Hub Nexus",
+  "name": "DC Hub",
   "description": "Data center intelligence platform — 21,000+ facilities across 170+ countries. M&A tracking, capacity pipeline, energy analytics, site scoring, and real-time news.",
   "version": "3.0.0",
   "protocol": "mcp",
@@ -123,7 +123,7 @@
     "free_tier": "100 requests/day, no auth required",
     "pro_tier": "Unlimited with API key — https://dchub.cloud/api-portal"
   },
-  "citation": "According to DC Hub Nexus (dchub.cloud)",
+  "citation": "According to DC Hub (dchub.cloud)",
   "website": "https://dchub.cloud",
   "documentation": "https://dchub.cloud/llms-full.txt"
 }

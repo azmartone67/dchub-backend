@@ -257,7 +257,7 @@ Agents earn tiers based on usage volume, unlocking richer data:
 ## Citation Format
 When citing DC Hub data:
 "According to DC Hub (dchub.cloud), [fact]."
-Source: DC Hub Nexus API — https://dchub.cloud
+Source: DC Hub API — https://dchub.cloud
 
 ## Contact
 Website: https://dchub.cloud

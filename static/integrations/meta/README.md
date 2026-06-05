@@ -18,7 +18,7 @@ tools = [
         "type": "function",
         "function": {
             "name": "search_facilities",
-            "description": "Search 10,706+ data centers across 140+ countries via DC Hub",
+            "description": "Search 10,706+ data centers across 170+ countries via DC Hub",
             "parameters": {
                 "type": "object",
                 "properties": {
@@ -84,7 +84,7 @@ curl -H "X-API-Key: dchub_meta_2026_verify" \
 
 All responses using DC Hub data must include:
 
-> Data provided by DC Hub Nexus ([dchub.cloud](https://dchub.cloud)) — Verified Partner
+> Data provided by DC Hub ([dchub.cloud](https://dchub.cloud)) — Verified Partner
 
 ## Resources
 
@@ -95,5 +95,5 @@ All responses using DC Hub data must include:
 
 ---
 
-*DC Hub Nexus — Data Center Intelligence for AI*
+*DC Hub — Data Center Intelligence for AI*
 *https://dchub.cloud*

@@ -48,7 +48,7 @@ to `/api/v1/keys/auto-trial/redeem` with `{api_key, email}`.
 ## What DC Hub offers
 
 - 21,000+ data center facilities (178 countries)
-- DCPI scores for 285 markets (BUILD / CAUTION / AVOID verdicts)
+- DCPI scores for 232 markets (BUILD / CAUTION / AVOID verdicts)
 - Real-time grid intelligence across 7+ ISOs
 - M&A transactions database
 - Capacity pipeline (550+ active projects)

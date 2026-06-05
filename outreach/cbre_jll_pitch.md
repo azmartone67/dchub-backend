@@ -54,7 +54,7 @@ We want JLL Data Centers to have the same access for your client work
 + quarterly reports — free, CC-BY-4.0 license, no NDA required.
 Specifically:
 - Pipeline tracking (540+ active global projects, ETA + pre-leased %)
-- M&A deal history ($324B+ tracked, live)
+- M&A deal history (2,000+ deals tracked, live)
 - DCPI 280-market index with weekly deltas
 
 Pitch: your quarterly reports become the synthesis layer; our live

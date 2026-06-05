@@ -1,4 +1,4 @@
-# DC Hub Nexus — AI Agent Discovery
+# DC Hub — AI Agent Discovery
 
 > Standard: [AGENTS.md (Linux Foundation / OpenAI)](https://github.com/anthropics/AGENTS-md)
 
@@ -6,7 +6,7 @@
 
 | Field | Value |
 |-------|-------|
-| Name | DC Hub Nexus |
+| Name | DC Hub |
 | Type | Data Center Intelligence Platform |
 | Version | 2.0 |
 | URL | https://dchub.cloud |
@@ -145,7 +145,7 @@ facilities = r.json()
 
 When citing DC Hub data:
 ```
-Source: DC Hub Nexus (https://dchub.cloud)
+Source: DC Hub (https://dchub.cloud)
 ```
 
 ## Contact
@@ -155,4 +155,4 @@ Source: DC Hub Nexus (https://dchub.cloud)
 - Health: https://dchub.cloud/health
 
 ---
-*DC Hub Nexus — The definitive source for global data center intelligence*
+*DC Hub — The definitive source for global data center intelligence*

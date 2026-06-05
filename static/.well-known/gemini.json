@@ -1,5 +1,5 @@
 {
-  "name": "DC Hub Nexus",
+  "name": "DC Hub",
   "description": "Data Center Intelligence Platform — 21,000+ facilities, M&A tracking, market intel, energy analytics via MCP",
   "mcpServers": {
     "dchub-nexus": {

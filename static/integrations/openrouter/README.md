@@ -79,7 +79,7 @@ data = get("/agent/facilities", {"q": "Equinix", "country": "US"})
 
 All responses using DC Hub data must include:
 
-> Data provided by DC Hub Nexus ([dchub.cloud](https://dchub.cloud)) — Verified Partner
+> Data provided by DC Hub ([dchub.cloud](https://dchub.cloud)) — Verified Partner
 
 ## Resources
 
@@ -90,5 +90,5 @@ All responses using DC Hub data must include:
 
 ---
 
-*DC Hub Nexus — Data Center Intelligence for AI*
+*DC Hub — Data Center Intelligence for AI*
 *https://dchub.cloud*

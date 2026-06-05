@@ -1,8 +1,8 @@
-# DC Hub Nexus - MCP Server Submission
+# DC Hub - MCP Server Submission
 
 ## Server Information
 
-**Name:** DC Hub Nexus  
+**Name:** DC Hub  
 **Version:** 2.0.0  
 **Category:** Data & Research  
 **Website:** https://dchub.cloud  
@@ -10,7 +10,7 @@
 
 ## Description
 
-DC Hub Nexus is the definitive data center intelligence platform, providing comprehensive access to:
+DC Hub is the definitive data center intelligence platform, providing comprehensive access to:
 - **10,000+ data center facilities** worldwide with location, specifications, and operator details
 - **700+ M&A transactions** with deal values, buyers, sellers, and dates
 - **250+ GW capacity pipeline** tracking new developments and expansions

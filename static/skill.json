@@ -1,11 +1,11 @@
 {
   "schema_version": "1.0",
   "name": "dchub",
-  "display_name": "DC Hub Nexus",
+  "display_name": "DC Hub",
   "version": "2.0.0",
   "description": "Global data center intelligence platform — real-time tracking of 21,000+ facilities across 169 countries, M&A deals, capacity pipelines, site risk assessment, and energy infrastructure.",
   "homepage": "https://dchub.cloud",
-  "author": "DC Hub Nexus",
+  "author": "DC Hub",
   "contact_email": "api@dchub.cloud",
   "logo_url": "https://dchub.cloud/static/dchub-logo.png",
   "categories": ["data", "infrastructure", "real-estate", "energy", "market-intelligence"],

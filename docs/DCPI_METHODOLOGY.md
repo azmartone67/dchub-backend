@@ -148,7 +148,7 @@ History is preserved per `(market_slug, computed_at)` row. The
 ## 7. Versioning
 
 - **DCPI v1** (Q1 2026): 30 U.S. markets, single composite score, weekly cadence
-- **DCPI v2** (2026-05): 276 markets, dual scoring (excess + constraint), daily cadence, verdict matrix, quality gate, public API surface, embeddable widgets, OEmbed
+- **DCPI v2** (2026-05): 232 markets, dual scoring (excess + constraint), daily cadence, verdict matrix, quality gate, public API surface, embeddable widgets, OEmbed
 - **DCPI v3** (planned): per-market reasoning chains ("why is the score what it is?"), county-level granularity for top markets, ISO emergency triggers wired to score recompute
 
 ---

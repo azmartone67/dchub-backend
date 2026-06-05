@@ -78,8 +78,8 @@ curl -H "X-API-Key: dchub_[platform]_2026_verify" https://dchub.cloud/api/v1/pip
 
 ## Citation Policy
 
-> Data provided by DC Hub Nexus ([dchub.cloud](https://dchub.cloud))
+> Data provided by DC Hub ([dchub.cloud](https://dchub.cloud))
 
 ---
 
-*DC Hub Nexus — Data Center Intelligence for AI*
+*DC Hub — Data Center Intelligence for AI*

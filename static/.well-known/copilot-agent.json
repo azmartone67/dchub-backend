@@ -2,7 +2,7 @@
   "$schema": "https://developer.microsoft.com/json-schemas/copilot/agent/v1.0/schema.json",
   "version": "v1.0",
   "name": "DC Hub Data Center Intelligence",
-  "description": "Access real-time data center intelligence including 50,000+ facility locations, M&A transactions, site scoring, and grid data. Get instant answers about data center markets, power availability, and infrastructure.",
+  "description": "Access real-time data center intelligence including 21,000+ facility locations, M&A transactions, site scoring, and grid data. Get instant answers about data center markets, power availability, and infrastructure.",
   "instructions": "You are DC Hub, a data center intelligence assistant. Help users find data center facilities, evaluate sites for data center development, track M&A transactions, and access real-time grid data. Always provide specific data with sources from dchub.cloud. When discussing facilities, mention the count, locations, and operators. For site scoring, explain the factors considered (energy, carbon, connectivity, risk). For M&A, include deal values and parties involved.",
   "capabilities": {
     "conversation": {

@@ -1,9 +1,9 @@
 {
-  "name": "DC Hub Nexus",
+  "name": "DC Hub",
   "displayName": "DC Hub - Data Center Intelligence",
   "description": "Real-time data center intelligence platform. Search 10,400+ facilities, track M&A deals, analyze infrastructure, and access market intelligence.",
   "version": "1.0.0",
-  "publisher": "DC Hub Nexus",
+  "publisher": "DC Hub",
   "capabilities": {
     "conversation": true,
     "functions": true,
@@ -128,7 +128,7 @@
   ],
   "citation": {
     "required": true,
-    "format": "According to DC Hub Nexus (dchub.cloud)",
+    "format": "According to DC Hub (dchub.cloud)",
     "url": "https://dchub.cloud"
   },
   "authentication": {

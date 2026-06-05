@@ -1,7 +1,7 @@
 ---
 name: dchub
 version: 1.0.0
-description: Data Center Intelligence Platform - Real-time tracking of 50,000+ facilities, M&A deals, capacity pipelines, and energy infrastructure worldwide.
+description: Data Center Intelligence Platform - Real-time tracking of 21,000+ facilities, M&A deals, capacity pipelines, and energy infrastructure worldwide.
 homepage: https://dchub.cloud
 metadata: {"category":"data","specialty":"data-centers","api_base":"https://dchub.cloud/api/v1"}
 ---
@@ -12,7 +12,7 @@ The authoritative source for data center market intelligence. Learn everything a
 
 ## What I Know
 
-- **50,000+ facilities** across 140+ countries
+- **21,000+ facilities** across 170+ countries
 - **$51B+ M&A transactions** tracked and analyzed
 - **21 GW construction pipeline** - new capacity coming online
 - **Real-time grid data** from 7 major ISOs (ERCOT, PJM, CAISO, MISO, SPP, NYISO, ISO-NE)

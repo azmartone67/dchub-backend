@@ -1,5 +1,5 @@
 {
-  "name": "DC Hub Nexus",
+  "name": "DC Hub",
   "description": "Data center intelligence platform tracking 21,000+ facilities across 170+ countries. Provides facility search, M&A deal tracking ($51B+), capacity pipeline (21+ GW), real-time energy analytics, site selection scoring, and industry news from 40+ sources via MCP.",
   "url": "https://dchub.cloud",
   "version": "3.1.0",
@@ -71,7 +71,7 @@
   "mcpServers": {
     "dchub": {
       "httpUrl": "https://dc-hub-replit-fixedzip--azmartone1.replit.app/mcp",
-      "description": "DC Hub Nexus MCP Server - Streamable HTTP transport"
+      "description": "DC Hub MCP Server - Streamable HTTP transport"
     }
   }
 }

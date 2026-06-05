@@ -2,7 +2,7 @@
   "openapi": "3.0.0",
   "info": {
     "title": "DC Hub API",
-    "description": "Data Center Intelligence Platform - Access 50,000+ facilities, M&A transactions, site scoring, and real-time grid data.",
+    "description": "Data Center Intelligence Platform - Access 21,000+ facilities, M&A transactions, site scoring, and real-time grid data.",
     "version": "2.0.0",
     "contact": {
       "name": "DC Hub API Support",
@@ -161,7 +161,7 @@
       "get": {
         "operationId": "searchFacilities",
         "summary": "Search data center facilities",
-        "description": "Search 50,000+ data center facilities by location, provider, capacity, or other criteria.",
+        "description": "Search 21,000+ data center facilities by location, provider, capacity, or other criteria.",
         "parameters": [
           {"name": "q", "in": "query", "schema": {"type": "string"}, "description": "Search query"},
           {"name": "market", "in": "query", "schema": {"type": "string"}, "description": "Market name"},
