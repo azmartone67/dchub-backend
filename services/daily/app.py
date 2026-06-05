@@ -39,7 +39,11 @@ def _lazy_mcp():
 log = logging.getLogger("uvicorn.error")
 app = FastAPI(title="DC Hub Daily")
 
-THEMES = ["a", "b", "c"]
+THEMES = ["a", "b", "c", "d"]   # r70 (2026-06-05): theme 'd' (Arctic canonical) was missing — it's the
+                                # default the frontend serves on /daily (option `value="d" selected`),
+                                # so without it the R2 cache served only the 3 non-default themes and
+                                # the default kept falling back to Railway /generate. Adding it means
+                                # all four themes warm to R2 nightly.
 SIZES = ["portrait", "square", "story"]
 REFRESH_SECRET = os.environ.get("REFRESH_SECRET", "")
 
