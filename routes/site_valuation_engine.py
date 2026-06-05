@@ -727,14 +727,19 @@ def _pick_best_fit(scenarios: dict, dcpi: dict, deadline_months: int) -> dict:
       3. If grid TTP > deadline → exclude grid_only
       4. If DCPI verdict is AVOID → prefer BTM (don't trust grid)
     """
+    # v2.1b shipped a `_assumptions` metadata key inside scenarios dict.
+    # Filter out anything starting with `_` so we only iterate real
+    # scenarios — otherwise we KeyError on s["time_to_power_months"]
+    # when the iterator hits the metadata entry.
+    real_scenarios = {k: v for k, v in scenarios.items() if not k.startswith("_")}
     candidates = []
-    for name, s in scenarios.items():
+    for name, s in real_scenarios.items():
         if s["time_to_power_months"] > deadline_months:
             continue
         candidates.append((name, s))
     if not candidates:
         # No scenario meets deadline → pick fastest
-        candidates = [(name, s) for name, s in scenarios.items()]
+        candidates = [(name, s) for name, s in real_scenarios.items()]
         candidates.sort(key=lambda x: x[1]["time_to_power_months"])
         best_name, best_s = candidates[0]
         return {
