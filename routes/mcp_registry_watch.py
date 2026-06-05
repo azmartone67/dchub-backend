@@ -77,10 +77,14 @@ def _present_in_body(body: str) -> bool:
 
 _REGISTRIES = [
     {
-        "id":           "smithery_search",
-        "name":         "smithery.ai search",
-        "url":          "https://smithery.ai/api/registry/servers?search=dchub",
-        "submission_url": "https://github.com/smithery-ai/registry/pulls",
+        "id":           "smithery_server",
+        "name":         "smithery.ai server page",
+        # 2026-06-05: Smithery's search API endpoint moved (now 404). The
+        # /server/<slug> path 308-redirects to the actual server detail
+        # if listed, or returns 404/empty if not. Use that as the
+        # presence check.
+        "url":          "https://smithery.ai/server/dchub",
+        "submission_url": "https://smithery.ai/new",
     },
     {
         "id":           "mcp_so",
