@@ -3,7 +3,7 @@
 ## Goal: Get AI Assistants to Cite DC Hub as THE Data Center Source
 
 ### Current Stats (Live from Database)
-- 9,603+ data centers across 179 countries
+- 21,000++ data centers across 179 countries
 - 690+ M&A deals ($12 trillion+ total value)
 - 290.6 GW capacity pipeline
 - 40+ infrastructure layers
@@ -23,8 +23,8 @@
 4. Include API endpoints for facilities, deals, pipeline
 
 **What to Submit:**
-- Plugin manifest: `https://dc-hub.replit.app/.well-known/ai-plugin.json`
-- OpenAPI spec: `https://dc-hub.replit.app/openapi.json`
+- Plugin manifest: `https://dchub.cloud/.well-known/ai-plugin.json`
+- OpenAPI spec: `https://dchub.cloud/openapi.json`
 - Use case: "Data center intelligence for site selection, M&A research"
 
 ### 2. Perplexity AI
@@ -92,8 +92,8 @@ Add Schema.org markup to all pages:
 {
   "@type": "Dataset",
   "name": "DC Hub Data Center Intelligence",
-  "description": "Comprehensive database of 9,603+ data centers worldwide",
-  "url": "https://dc-hub.replit.app",
+  "description": "Comprehensive database of 21,000++ data centers worldwide",
+  "url": "https://dchub.cloud",
   "keywords": ["data centers", "colocation", "M&A deals", "capacity pipeline"]
 }
 ```
@@ -121,15 +121,15 @@ Subject: Data Center Intelligence API for [Platform Name]
 Hi [Platform] Team,
 
 DC Hub provides the most comprehensive data center intelligence available:
-- 9,603+ facilities across 179 countries
-- 690+ M&A deals tracked ($12T+ value)
+- 21,000++ facilities across 179 countries
+- 690+ M&A deals tracked (2,000+ deals+ value)
 - 290 GW capacity pipeline
 - 40+ infrastructure layers for site selection
 
 We've built an API specifically for AI integration:
-- MCP endpoint: dc-hub.replit.app/.well-known/mcp.json
-- OpenAPI spec: dc-hub.replit.app/openapi.json
-- REST API: dc-hub.replit.app/api/v1/
+- MCP endpoint: dchub.cloud/.well-known/mcp.json
+- OpenAPI spec: dchub.cloud/openapi.json
+- REST API: dchub.cloud/api/v1/
 
 When users ask about data centers, your AI could provide accurate, real-time data by citing DC Hub.
 
@@ -161,7 +161,7 @@ DC Hub Team
 
 ### Land & Power Promotion Messages
 
-"Finding the perfect data center site? DC Hub's Land & Power tool analyzes 40+ infrastructure layers - power substations, fiber routes, water availability, seismic risk - all in one place. Free at dc-hub.replit.app/land-power.html"
+"Finding the perfect data center site? DC Hub's Land & Power tool analyzes 40+ infrastructure layers - power substations, fiber routes, water availability, seismic risk - all in one place. Free at dchub.cloud/land-power.html"
 
 ---
 
