@@ -22,7 +22,7 @@ site scoring, and capacity pipeline tracking.
 
 **Why this is useful for the community list:**
 - Hosted (no install / npm step) — agents can connect immediately
-- Real-world data set (20,000+ facilities, 975+ deals, 7 US ISOs)
+- Real-world data set (21,000+ facilities, 2,000+ deals, 7 US ISOs)
 - Tested with Claude Desktop, Claude Code, Cursor, ChatGPT, Continue
 - Open API + manifest discovery — fits the MCP discovery convention
 - Free tier exists; paid tier ($12/mo) for deeper queries
@@ -30,7 +30,7 @@ site scoring, and capacity pipeline tracking.
 **Suggested README entry:**
 
 `- **[DC Hub Intelligence](https://dchub.cloud/mcp)** — Data center
-intelligence: 20K+ facilities, M&A tracking, grid analytics, site
+intelligence: 21,000+ facilities, M&A tracking, grid analytics, site
 scoring. (Hosted, Streamable HTTP)`
 
 Happy to submit a PR with the README edit if preferred — open this

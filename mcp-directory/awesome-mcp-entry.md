@@ -8,7 +8,7 @@ or **🌐 Data & Search**. Paste the entry alphabetically by server name.
 ## Entry (markdown, paste verbatim into the README)
 
 ```markdown
-- [DC Hub Intelligence](https://dchub.cloud/mcp) - Real-time data center intelligence platform. 20,000+ facilities, 50+ tools covering M&A transactions, capacity pipeline, energy/grid analytics, site scoring across 232 markets and 7 ISOs.  🌐 ☁️
+- [DC Hub Intelligence](https://dchub.cloud/mcp) - Real-time data center intelligence platform. 21,000+ facilities, 33 tools covering M&A transactions, capacity pipeline, energy/grid analytics, site scoring across 232 markets and 7 ISOs.  🌐 ☁️
 ```
 
 ## PR description boilerplate
@@ -18,7 +18,7 @@ Title: feat: add DC Hub Intelligence MCP server
 
 Body:
 DC Hub is a hosted Streamable-HTTP MCP server giving AI agents live
-data-center intelligence: 20,000+ facilities, 975+ M&A transactions,
+data-center intelligence: 21,000+ facilities, 2,000+ M&A transactions,
 real-time ISO/RTO grid data, and site-suitability scoring for any US
 lat/long.
 

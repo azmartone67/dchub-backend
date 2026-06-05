@@ -28,13 +28,26 @@ ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 # Excluded from the scan: vcs/build, stale worktrees + version archives, the test
 # suite itself, and the few files that legitimately MENTION an old value in an
 # explanatory (historical) comment/docstring.
+# r-accuracy-md-json (2026-06-05): the fence now ALSO scans .md + .json (agent
+# configs, skill manifests, docs) — not just .py — after inflated served files
+# (static/.well-known, integrations/, skill.json) slipped past the .py-only scan.
+# The stale ~/dchub-backend/dchub-frontend/ MIRROR is excluded (the LIVE frontend
+# is a separate repo with its own accuracy_fence.py), as are internal drafts /
+# baselines / guard-docs that quote old values in an explanatory way.
 _EXCLUDE_DIRS = ("/.git/", "/.claude/", "/node_modules/", "/dchub-mcp-v2.1/",
-                 "/PATCHES/", "/tests/", "/__pycache__/", "/.venv/")
+                 "/dchub-frontend/", "/PATCHES/", "/tests/", "/__pycache__/", "/.venv/",
+    "/data/")   # runtime STATE dumps (ambassador_state, etc.) — machine-generated, regenerated from already-fixed .py sources
 _EXCLUDE_FILES = (
     "frontend_stat_normalizer.py",     # dormant; docstring explains the legacy $-stat -> 2,000+ normalization
     "mcp_bug_fixes_and_new_tools.py",  # historical one-time migration script ($185B->… refs)
     "marketing_engine.py",             # docstring documents the OLD hardcoded "280+ markets" it swapped out
     "bug_squash.py",                   # meta-script: its docstrings quote the patterns it squashes ($324B, 12,907)
+    # internal drafts / baselines / guard-docs that intentionally quote old values:
+    "HEALTH_BASELINE.md", "DEPLOYMENT_LOCK.md", "SHOW_HN_DRAFT.md", "DAVID_EMAIL_DRAFT.md",
+    "REGISTRY_SUBMISSIONS.md", "CBRE_x_DCHub_Partnership_Deck.md", "replit.md",
+    "mcp_registry_submissions.md", "pr_queue.json",
+    "gauntlet_round1.json",            # eval RESULTS — summaries critique AI inflation ("actual ~20,534"), not a live claim
+    "PHASE_FF_DESIGN.md",              # design doc quoting the historical "I see 12,553" question that triggered the fix
 )
 
 
@@ -43,7 +56,7 @@ def _live_py_files():
         if any(x in (dp + "/") for x in _EXCLUDE_DIRS):
             continue
         for f in fn:
-            if f.endswith(".py") and f not in _EXCLUDE_FILES:
+            if f.endswith((".py", ".md", ".json")) and f not in _EXCLUDE_FILES:
                 yield os.path.join(dp, f)
 
 

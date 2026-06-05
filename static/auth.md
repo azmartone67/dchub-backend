@@ -110,7 +110,7 @@ curl "https://dchub.cloud/api/agent/facilities?q=Dallas" \
 
 | Capability | Description |
 |------------|-------------|
-| `facility_search` | 20,534+ data centers in 170+ countries |
+| `facility_search` | 21,000+ data centers in 170+ countries |
 | `market_intelligence` | Real-time capacity tracking |
 | `transaction_tracking` | $51B+ in M&A deals |
 | `infrastructure_mapping` | Fiber, power, permits |

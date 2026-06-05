@@ -5,7 +5,7 @@ date: 2026-04-28
 status: ready_to_publish
 ---
 
-SAN FRANCISCO, April 28, 2026 — DC Hub, the data center intelligence platform tracking 20,000+ facilities across 170+ countries, today launched semantic search powered by Cloudflare Vectorize. For the first time, operators, developers, and investors can query the platform in natural language and filter results by ISO/grid territory (PJM, ERCOT, CAISO, MISO, SPP, NYISO, ISO-NE, NWPP), capacity range, status, and provider — all returning in under 200 milliseconds at the edge.
+SAN FRANCISCO, April 28, 2026 — DC Hub, the data center intelligence platform tracking 21,000+ facilities across 170+ countries, today launched semantic search powered by Cloudflare Vectorize. For the first time, operators, developers, and investors can query the platform in natural language and filter results by ISO/grid territory (PJM, ERCOT, CAISO, MISO, SPP, NYISO, ISO-NE, NWPP), capacity range, status, and provider — all returning in under 200 milliseconds at the edge.
 
 The release includes a free public explorer at **dchub.cloud/api/v1/explorer** and a native MCP integration that surfaces 25+ DC Hub tools to Claude Desktop, ChatGPT Connector, and Cursor users. Developers can hit the API directly at **dchub.cloud/api/v1/search/semantic** or use natural language through any MCP-compatible client.
 

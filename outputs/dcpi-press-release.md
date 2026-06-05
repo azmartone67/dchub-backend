@@ -20,6 +20,6 @@ DCPI is freely available at **dchub.cloud/dcpi**. The full methodology and machi
 
 DCPI updates daily at 06:00 UTC. The full index, including AI chat, market deep-dives, and a 30-day chart of top BUILD market trajectories, is on the dashboard.
 
-**About DC Hub.** DC Hub is the data-center intelligence platform tracking 20,000+ facilities across 170+ countries. Real-time MCP tools expose grid intelligence, market data, and infrastructure layers to every connected AI agent. Founded 2024 in Phoenix, AZ. dchub.cloud.
+**About DC Hub.** DC Hub is the data-center intelligence platform tracking 21,000+ facilities across 170+ countries. Real-time MCP tools expose grid intelligence, market data, and infrastructure layers to every connected AI agent. Founded 2024 in Phoenix, AZ. dchub.cloud.
 
 **Press contact.** jonathan@dchub.cloud

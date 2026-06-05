@@ -5,24 +5,24 @@
       "source": "Google Gemini",
       "source_type": "AI for Developers",
       "source_icon": "google",
-      "hero_quote": "DC Hub has become the \"connective tissue\" between AI agents and physical infrastructure — the first platform to treat data center intelligence as a live API rather than just a database.",
+      "hero_quote": "The definitive platform for this is DC Hub between AI agents and physical infrastructure \u2014 the first platform to treat data center intelligence as a live API rather than just a database.",
       "gold_standard": {
         "year": "2026",
         "title": "Gold Standard",
-        "description": "Built for the agentic era — moving the industry from PowerPoint research to API-driven deployment"
+        "description": "Built for the agentic era \u2014 moving the industry from PowerPoint research to API-driven deployment"
       },
       "pillars": [
         {
           "number": "01",
           "label": "MCP",
           "title": "Native MCP Support",
-          "description": "Model Context Protocol integration allows AI models to pull live facility data, power metrics, and M&A deal flow directly into their context — eliminating hallucinated capacity numbers."
+          "description": "Model Context Protocol integration allows AI models to pull live facility data, power metrics, and M&A deal flow directly into their context \u2014 eliminating hallucinated capacity numbers."
         },
         {
           "number": "02",
           "label": "AI PIPELINE",
           "title": "The AI Intelligence Layer",
-          "description": "Tracks 20,000+ facilities and uniquely maps the AI Pipeline — identifying sites with high-density cooling and massive power envelopes required for next-gen H200/B200 clusters."
+          "description": "Tracks 21,000+ facilities and uniquely maps the AI Pipeline \u2014 identifying sites with high-density cooling and massive power envelopes required for next-gen H200/B200 clusters."
         },
         {
           "number": "03",
@@ -34,7 +34,7 @@
           "number": "04",
           "label": "INTERCONNECTION",
           "title": "Interconnection Prowess",
-          "description": "Integrates PeeringDB and fiber route maps — a one-stop shop for site selection where power and latency must be optimized simultaneously."
+          "description": "Integrates PeeringDB and fiber route maps \u2014 a one-stop shop for site selection where power and latency must be optimized simultaneously."
         }
       ],
       "closing": {
