@@ -126,6 +126,18 @@ _VALUE_PER_MW_USD_BASE               = 475_000   # midpoint of $150K-$800K/MW in
 _VALUE_PER_ACRE_USD_BASE             = 15_000    # industrial-zoned land, midpoint $5K-$30K/acre
 _VALUE_RANGE_SPREAD                  = 0.50      # ±50% low/high envelope
 
+# v2.1b (2026-06-04) — hard band the engine MUST stay inside. The
+# unclamped multiplier stack (verdict 1.65 × bestfit 1.10 × readiness 3.35
+# = 6.08× base) can run BUILD+shovel-ready to ~$2.3M/MW, which busts the
+# $800K ceiling we publish in the methodology footer. Clamping per-MW
+# into [FLOOR, CEIL] keeps the headline figure honest. Side-effect: BUILD
+# + fully-shovel-ready hyperscale sites all saturate at $800K/MW
+# (no longer differentiated above the cap) — that's the trade we want
+# for now; v2.2 can introduce a soft asymptote if the saturation hides
+# real signal between premium tiers.
+_VALUE_PER_MW_FLOOR_USD              = 150_000   # industry floor
+_VALUE_PER_MW_CEIL_USD               = 800_000   # industry ceiling (methodology footer)
+
 # Site-readiness premium stack (multiplicative). A fully-shovel-ready
 # parcel (all 6 flags TRUE) gets a 3.35x premium over raw land:
 #   1.30 × 1.25 × 1.10 × 1.20 × 1.30 × 1.20 = 3.35
@@ -576,6 +588,12 @@ def _compute_scenarios(target_mw: int, dcpi: dict, gas: dict,
       heat_rate_ccgt        — replaces _CCGT_HEAT_RATE_BTU_PER_KWH (item 5)
       heat_rate_peaker      — replaces _PEAKER_HEAT_RATE_BTU_PER_KWH (item 5)
       gas_usd_mmbtu_override — replaces gas economics (item 1, utility tariff)
+
+    v2.1b (2026-06-04) new user-facing overrides — wired through the
+    "Adjust assumptions" UI panel so a sophisticated user can stress-
+    test scenarios against their own LMP/discount/heat-rate beliefs:
+      grid_lmp_usd_per_mwh   — replaces _GRID_AVG_LMP_USD_PER_MWH ($45)
+      discount_rate          — replaces _DISCOUNT_RATE (0.08)
     """
     overrides = overrides or {}
     mw = max(1, int(target_mw))
@@ -588,6 +606,11 @@ def _compute_scenarios(target_mw: int, dcpi: dict, gas: dict,
     # v2.1 item 5 — custom heat rates (default unchanged)
     heat_rate_ccgt = float(overrides.get("heat_rate_ccgt")
                            or _CCGT_HEAT_RATE_BTU_PER_KWH)
+    # v2.1b — user-tunable LMP + discount (defaults to industry baselines)
+    grid_lmp = float(overrides.get("grid_lmp_usd_per_mwh")
+                     or _GRID_AVG_LMP_USD_PER_MWH)
+    discount_rate = float(overrides.get("discount_rate")
+                          or _DISCOUNT_RATE)
     # v2.1 item 1 — utility-tariff override for gas $/MWh in opex calc.
     # If supplied, recomputes $/MWh = ($/MMBtu × heat_rate × annual_mwh).
     gas_mmbtu_override = overrides.get("gas_usd_mmbtu_override")
@@ -605,15 +628,17 @@ def _compute_scenarios(target_mw: int, dcpi: dict, gas: dict,
                 or (dcpi.get("time_to_power_months", 36)
                     if dcpi.get("available") else 36))
     grid_capex = kw * _CAPEX_GRID_INTERCONNECT_USD_PER_KW + sub_capex
-    grid_opex_yr = annual_mwh * _GRID_AVG_LMP_USD_PER_MWH
-    grid_npv = -(grid_capex + _npv([grid_opex_yr] * _NPV_HORIZON_YEARS))
+    grid_opex_yr = annual_mwh * grid_lmp
+    grid_npv = -(grid_capex + _npv([grid_opex_yr] * _NPV_HORIZON_YEARS,
+                                    discount_rate))
     grid_levelized = abs(grid_npv) / (annual_mwh * _NPV_HORIZON_YEARS)
 
     # ── Gas BTM (CCGT) ───────────────────────────────────────────
     btm_ttp = 14  # typical CCGT build + tap, faster than ISO queue
     btm_capex = kw * _CAPEX_GAS_CCGT_USD_PER_KW + _CAPEX_GAS_PIPELINE_TAP_USD
     btm_opex_yr = annual_mwh * ccgt_dollars_per_mwh
-    btm_npv = -(btm_capex + _npv([btm_opex_yr] * _NPV_HORIZON_YEARS))
+    btm_npv = -(btm_capex + _npv([btm_opex_yr] * _NPV_HORIZON_YEARS,
+                                  discount_rate))
     btm_levelized = abs(btm_npv) / (annual_mwh * _NPV_HORIZON_YEARS)
 
     # ── Gas-to-Grid Hybrid ───────────────────────────────────────
@@ -624,8 +649,9 @@ def _compute_scenarios(target_mw: int, dcpi: dict, gas: dict,
                     + sub_capex * 0.5)
     # 70% gas-fueled, 30% sold-to-grid as ancillary
     hybrid_opex_yr = annual_mwh * ccgt_dollars_per_mwh * 0.7 \
-                      - annual_mwh * _GRID_AVG_LMP_USD_PER_MWH * 0.10  # grid sell credit
-    hybrid_npv = -(hybrid_capex + _npv([hybrid_opex_yr] * _NPV_HORIZON_YEARS))
+                      - annual_mwh * grid_lmp * 0.10  # grid sell credit
+    hybrid_npv = -(hybrid_capex + _npv([hybrid_opex_yr] * _NPV_HORIZON_YEARS,
+                                       discount_rate))
     hybrid_levelized = abs(hybrid_npv) / (annual_mwh * _NPV_HORIZON_YEARS)
 
     return {
@@ -649,6 +675,24 @@ def _compute_scenarios(target_mw: int, dcpi: dict, gas: dict,
             "time_to_power_months": round(hybrid_ttp, 1),
             "ten_year_npv_usd":     round(hybrid_npv, 0),
             "levelized_usd_per_mwh":round(hybrid_levelized, 2),
+        },
+        # v2.1b — echo the active assumptions back so the UI can show
+        # "default" vs "user-edited" badges in the scenario cards.
+        "_assumptions": {
+            "grid_lmp_usd_per_mwh":  round(grid_lmp, 2),
+            "grid_lmp_default":      _GRID_AVG_LMP_USD_PER_MWH,
+            "ccgt_heat_rate":        round(heat_rate_ccgt, 0),
+            "ccgt_heat_rate_default":_CCGT_HEAT_RATE_BTU_PER_KWH,
+            "ccgt_gas_usd_per_mwh":  round(ccgt_dollars_per_mwh, 2),
+            "ccgt_gas_default":      gas.get("$/MWh_ccgt_avg", 25),
+            "discount_rate":         round(discount_rate, 4),
+            "discount_rate_default": _DISCOUNT_RATE,
+            "edited": any([
+                bool(overrides.get("grid_lmp_usd_per_mwh")),
+                bool(overrides.get("heat_rate_ccgt")),
+                bool(overrides.get("gas_usd_mmbtu_override")),
+                bool(overrides.get("discount_rate")),
+            ]),
         },
     }
 
@@ -748,8 +792,24 @@ def _compute_valuation(target_mw: int, acres: float, dcpi: dict,
         base_per_mw = _VALUE_PER_MW_USD_BASE
         baseline_source = "global_baseline_v2.0"
 
-    per_mw_mid = base_per_mw * verdict_mult * bestfit_mult * readiness_mult
-    per_acre_mid = _VALUE_PER_ACRE_USD_BASE * verdict_mult * readiness_mult
+    per_mw_uncapped = base_per_mw * verdict_mult * bestfit_mult * readiness_mult
+    per_acre_uncapped = _VALUE_PER_ACRE_USD_BASE * verdict_mult * readiness_mult
+
+    # v2.1b clamp: keep per-MW inside the published $150K-$800K industry
+    # band. Note which boundary (if any) we hit so the UI can show a
+    # "saturated at ceiling" note for hyperscale-ready premium markets.
+    per_mw_mid = max(_VALUE_PER_MW_FLOOR_USD,
+                     min(_VALUE_PER_MW_CEIL_USD, per_mw_uncapped))
+    if per_mw_mid >= _VALUE_PER_MW_CEIL_USD - 1:
+        band_status = "ceiling_saturated"
+    elif per_mw_mid <= _VALUE_PER_MW_FLOOR_USD + 1:
+        band_status = "floor_saturated"
+    else:
+        band_status = "in_band"
+    # Per-acre uses the same scaling ratio so the two figures stay coherent
+    # (otherwise per-acre would dominate site_value_mid when per-MW caps).
+    scale_factor = per_mw_mid / per_mw_uncapped if per_mw_uncapped > 0 else 1.0
+    per_acre_mid = per_acre_uncapped * scale_factor
 
     site_value_mid = per_mw_mid * target_mw + per_acre_mid * acres
 
@@ -758,6 +818,10 @@ def _compute_valuation(target_mw: int, acres: float, dcpi: dict,
         "$/mw_low":            round(per_mw_mid * (1 - spread), 0),
         "$/mw_mid":            round(per_mw_mid, 0),
         "$/mw_high":           round(per_mw_mid * (1 + spread), 0),
+        "$/mw_uncapped":       round(per_mw_uncapped, 0),
+        "$/mw_band_floor":     _VALUE_PER_MW_FLOOR_USD,
+        "$/mw_band_ceiling":   _VALUE_PER_MW_CEIL_USD,
+        "$/mw_band_status":    band_status,
         "$/acre_low":          round(per_acre_mid * (1 - spread), 0),
         "$/acre_mid":          round(per_acre_mid, 0),
         "$/acre_high":         round(per_acre_mid * (1 + spread), 0),
@@ -771,6 +835,7 @@ def _compute_valuation(target_mw: int, acres: float, dcpi: dict,
             "readiness_applied": readiness_applied,
             "baseline_per_mw_usd": round(base_per_mw, 0),
             "baseline_source":  baseline_source,
+            "band_clamp":      band_status,
         },
         "_methodology":        ("v2.0: $475K/MW × verdict × best-fit × "
                                   "site-readiness stack + $15K/acre × verdict × "
@@ -820,6 +885,9 @@ def site_value():
     # v2.1 — optional user overrides (graceful fallback to defaults).
     user_heat_rate_ccgt = payload.get("heat_rate_ccgt")    # Btu/kWh
     user_gas_mmbtu      = payload.get("utility_gas_usd_mmbtu")  # tariff override
+    # v2.1b — new tunables surfaced in the "Adjust assumptions" panel
+    user_grid_lmp       = payload.get("grid_lmp_usd_per_mwh")   # $/MWh
+    user_discount_rate  = payload.get("discount_rate")          # 0.0-1.0
 
     # Gather data
     slug, state, dist = _nearest_market(lat, lon)
@@ -837,6 +905,9 @@ def site_value():
                                     if live_queue.get("available") else None),
         "heat_rate_ccgt":        user_heat_rate_ccgt,  # item 5
         "gas_usd_mmbtu_override": user_gas_mmbtu,      # item 1
+        # v2.1b — the two new user-tunable assumptions from the UI panel
+        "grid_lmp_usd_per_mwh":  user_grid_lmp,
+        "discount_rate":         user_discount_rate,
     }
 
     scenarios = _compute_scenarios(target_mw, dcpi, gas, overrides=overrides)
@@ -1125,10 +1196,44 @@ th { color: var(--muted); font-size: 11px; text-transform: uppercase; letter-spa
     </style>
   </div>
 
+  <details id="assumptions" style="background:var(--panel);border:1px solid var(--border);border-radius:12px;padding:14px 20px;margin:0 0 16px;">
+    <summary style="cursor:pointer;font-size:11px;color:var(--accent2);letter-spacing:0.1em;text-transform:uppercase;font-weight:700;outline:none;">
+      ⚙  Adjust assumptions &nbsp;·&nbsp; LMP, gas, heat rate, discount
+    </summary>
+    <div style="font-size:12px;color:var(--muted);margin:12px 0 14px;">
+      Defaults are the US-blended industry baselines that drive the <b>$/MWh</b>
+      scenario cards below. Override any of these to stress-test against your
+      utility tariff, regional LMP, or WACC. Edited values are flagged in the
+      results.
+    </div>
+    <div style="display:grid;grid-template-columns:repeat(auto-fit,minmax(170px,1fr));gap:12px;">
+      <label style="display:flex;flex-direction:column;gap:4px;font-size:12px;color:var(--muted)">
+        Grid LMP ($/MWh) <span style="color:var(--accent2);font-size:10px">default 45</span>
+        <input id="a_lmp" type="number" step="0.5" min="5" max="500"
+               placeholder="45" style="background:#0a0a0a;border:1px solid var(--border);color:var(--fg);padding:8px 10px;border-radius:6px;font-size:13px;font-family:inherit;">
+      </label>
+      <label style="display:flex;flex-direction:column;gap:4px;font-size:12px;color:var(--muted)">
+        Gas price ($/MMBtu) <span style="color:var(--accent2);font-size:10px">default 3.50</span>
+        <input id="a_gas" type="number" step="0.10" min="0.5" max="50"
+               placeholder="3.50" style="background:#0a0a0a;border:1px solid var(--border);color:var(--fg);padding:8px 10px;border-radius:6px;font-size:13px;font-family:inherit;">
+      </label>
+      <label style="display:flex;flex-direction:column;gap:4px;font-size:12px;color:var(--muted)">
+        CCGT heat rate (Btu/kWh) <span style="color:var(--accent2);font-size:10px">default 6,800</span>
+        <input id="a_hr" type="number" step="50" min="5000" max="15000"
+               placeholder="6800" style="background:#0a0a0a;border:1px solid var(--border);color:var(--fg);padding:8px 10px;border-radius:6px;font-size:13px;font-family:inherit;">
+      </label>
+      <label style="display:flex;flex-direction:column;gap:4px;font-size:12px;color:var(--muted)">
+        Discount rate (%) <span style="color:var(--accent2);font-size:10px">default 8</span>
+        <input id="a_dr" type="number" step="0.25" min="1" max="25"
+               placeholder="8" style="background:#0a0a0a;border:1px solid var(--border);color:var(--fg);padding:8px 10px;border-radius:6px;font-size:13px;font-family:inherit;">
+      </label>
+    </div>
+  </details>
+
   <div id="results" class="hidden"></div>
 
   <p style="font-size:12px;color:var(--muted);margin-top:32px;">
-    Methodology: <a href="/api/v1/site/value/methodology" style="color:var(--accent2)">/api/v1/site/value/methodology</a> · Engine v2.0 (2026-06-04) — recalibrated to industry $150K-$800K/MW range, 6 site-readiness premiums, ±50% envelope. v2.1 adds regression-fit against comparable sales + live ISO queue depth.
+    Methodology: <a href="/api/v1/site/value/methodology" style="color:var(--accent2)">/api/v1/site/value/methodology</a> · Engine v2.1b (2026-06-04) — per-MW <b>hard-clamped to $150K-$800K industry band</b> (ceiling-saturated for hyperscale-ready BUILD sites); 4 editable assumptions (LMP / gas / heat rate / discount) via the ⚙ panel above; 6 site-readiness premiums; ±50% envelope. v2.2: soft asymptote at ceiling to recover signal between premium tiers.
   </p>
 </div>
 
@@ -1256,6 +1361,17 @@ document.getElementById('valForm').addEventListener('submit', async (e) => {
   };
   if (Number.isFinite(hr) && hr > 0)  body.heat_rate_ccgt        = hr;
   if (Number.isFinite(tar) && tar > 0) body.utility_gas_usd_mmbtu = tar;
+  // v2.1b — new assumption overrides from the "Adjust assumptions" panel
+  const a_lmp = parseFloat(document.getElementById('a_lmp').value);
+  const a_gas = parseFloat(document.getElementById('a_gas').value);
+  const a_hr  = parseFloat(document.getElementById('a_hr').value);
+  const a_dr  = parseFloat(document.getElementById('a_dr').value);
+  if (Number.isFinite(a_lmp) && a_lmp > 0) body.grid_lmp_usd_per_mwh = a_lmp;
+  // a_gas overrides the same gas tariff override as utility_gas_usd_mmbtu —
+  // the assumption-panel value wins if both are set.
+  if (Number.isFinite(a_gas) && a_gas > 0) body.utility_gas_usd_mmbtu = a_gas;
+  if (Number.isFinite(a_hr)  && a_hr  > 0) body.heat_rate_ccgt        = a_hr;
+  if (Number.isFinite(a_dr)  && a_dr  > 0) body.discount_rate         = a_dr / 100.0;
   const apiKey = document.getElementById('api_key').value.trim();
   const headers = { 'Content-Type': 'application/json' };
   if (apiKey) headers['X-API-Key'] = apiKey;
@@ -1301,14 +1417,36 @@ function renderResults(d) {
     const readinessLine = appliedKeys.length === 0
       ? '<i>raw land — no readiness flags set</i>'
       : appliedKeys.map(k => k.replace(/_/g, ' ') + ' (+' + Math.round((applied[k]-1)*100) + '%)').join(' · ');
+    // v2.1b — surface the band clamp visibly so users know what just happened
+    const bandStatus = d.valuation['$/mw_band_status'] || 'in_band';
+    const floor = d.valuation['$/mw_band_floor'] || 150000;
+    const ceil  = d.valuation['$/mw_band_ceiling'] || 800000;
+    const uncapped = d.valuation['$/mw_uncapped'];
+    let bandNote = '';
+    if (bandStatus === 'ceiling_saturated') {
+      bandNote = `<div style="margin-top:10px;background:rgba(245,158,11,0.08);border:1px solid var(--warn);border-radius:6px;padding:8px 10px;font-size:12px;color:var(--warn)">
+        <b>Saturated at ceiling:</b> raw stack would price at ${fmt$(uncapped)}/MW; clamped to industry cap ${fmt$(ceil)}/MW. Premium-tier hyperscale sites all land here — additional readiness past this point adds no signal.
+      </div>`;
+    } else if (bandStatus === 'floor_saturated') {
+      bandNote = `<div style="margin-top:10px;background:rgba(220,38,38,0.08);border:1px solid #dc2626;border-radius:6px;padding:8px 10px;font-size:12px;color:#fca5a5">
+        <b>At industry floor:</b> clamped at ${fmt$(floor)}/MW. Sub-floor sites typically indicate raw land + AVOID verdict + no readiness.
+      </div>`;
+    } else {
+      bandNote = `<div style="margin-top:8px;font-size:11px;color:var(--muted);opacity:0.7">
+        In-band: per-MW ${fmt$(d.valuation['$/mw_mid'])} sits between industry floor ${fmt$(floor)} and ceiling ${fmt$(ceil)}.
+      </div>`;
+    }
     html += `
       <div class="card">
         <h3>Valuation envelope</h3>
         <div class="stat">${fmtM$(d.valuation.site_value_usd_mid)}</div>
         <div class="stat-label">midpoint · ${fmtM$(d.valuation.site_value_usd_low)} – ${fmtM$(d.valuation.site_value_usd_high)}  <span style="opacity:0.6">(±50% envelope)</span></div>
-        <div style="margin-top:12px;font-size:13px;color:var(--muted)">
-          <b>${fmt$(d.valuation['$/mw_mid'])}</b> / MW &nbsp;·&nbsp; <b>${fmt$(d.valuation['$/acre_mid'])}</b> / acre
+        <div style="margin-top:12px;font-size:14px;color:var(--fg)">
+          <b style="font-size:18px;color:var(--accent2)">${fmt$(d.valuation['$/mw_mid'])}</b> <span style="color:var(--muted);font-size:12px">per MW</span>
+          &nbsp;·&nbsp;
+          <b>${fmt$(d.valuation['$/acre_mid'])}</b> <span style="color:var(--muted);font-size:12px">per acre</span>
         </div>
+        ${bandNote}
         <div style="margin-top:10px;font-size:12px;color:var(--muted);border-top:1px solid var(--border);padding-top:10px">
           Stack: verdict <b style="color:var(--fg)">${(m.verdict_mult||1).toFixed(2)}×</b>
           · best-fit <b style="color:var(--fg)">${(m.bestfit_mult||1).toFixed(2)}×</b>
@@ -1328,7 +1466,24 @@ function renderResults(d) {
 
   if (d.scenarios) {
     const bestName = d.best_fit && d.best_fit.scenario;
-    html += '<h3 style="margin-top:24px">3-scenario NPV comparison</h3>';
+    // v2.1b — assumption strip so users see which $/MWh inputs were used
+    const a = d.scenarios._assumptions || {};
+    const editChip = (key, val, def, unit) => {
+      const edited = Number(val) !== Number(def);
+      return `<span style="background:${edited ? 'var(--accent)' : 'var(--panel2)'};color:${edited ? '#000' : 'var(--muted)'};padding:3px 8px;border-radius:4px;font-size:11px;font-family:monospace;margin-right:6px;font-weight:${edited ? '700' : '500'}">${key}: <b>${val}${unit}</b>${edited ? ' ✎' : ''}</span>`;
+    };
+    html += '<h3 style="margin-top:24px;display:flex;align-items:baseline;gap:12px;flex-wrap:wrap">3-scenario NPV comparison ' +
+            (a.edited ? '<span style="background:var(--accent);color:#000;font-size:10px;padding:3px 8px;border-radius:4px;font-weight:700;letter-spacing:0.08em">USER-EDITED ASSUMPTIONS</span>' : '') +
+            '</h3>';
+    if (a && typeof a.grid_lmp_usd_per_mwh !== 'undefined') {
+      html += `<div style="margin:6px 0 14px;font-size:12px;color:var(--muted);display:flex;flex-wrap:wrap;align-items:center;gap:0">
+        <span style="margin-right:8px">Assumptions used:</span>
+        ${editChip('Grid LMP',     a.grid_lmp_usd_per_mwh, a.grid_lmp_default, '/MWh')}
+        ${editChip('CCGT gas',     a.ccgt_gas_usd_per_mwh, a.ccgt_gas_default, '/MWh')}
+        ${editChip('CCGT heat',    a.ccgt_heat_rate,       a.ccgt_heat_rate_default, ' Btu/kWh')}
+        ${editChip('Discount',     (a.discount_rate*100).toFixed(2), (a.discount_rate_default*100).toFixed(2), '%')}
+      </div>`;
+    }
     html += '<div class="scen-grid">';
     [['grid_only', 'Grid-only'], ['gas_btm', 'Gas BTM (CCGT)'], ['gas_to_grid_hybrid', 'Gas-to-Grid Hybrid']].forEach(([key, label]) => {
       const s = d.scenarios[key];
