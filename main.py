@@ -3909,6 +3909,16 @@ def handle_well_known():
                     "standard": "https://dchub.cloud/llms.txt",
                     "full": "https://dchub.cloud/llms-full.txt",
                 },
+                # 2026-06-04 — Vertex AI / Gemini integration. Native
+                # Google Cloud Extension Hub + Gemini SDK ingest paths.
+                "vertex_ai": {
+                    "landing":           "https://dchub.cloud/vertex",
+                    "openapi_extension": "https://dchub.cloud/openapi-vertex.yaml",
+                    "openapi_json":      "https://dchub.cloud/openapi-vertex.json",
+                    "gemini_functions":  "https://dchub.cloud/.well-known/gemini-functions.json",
+                    "health":            "https://dchub.cloud/api/v1/vertex/health",
+                    "import_hint":       "Vertex AI Console → Extensions → Create → Import from URL → paste the openapi_extension URL.",
+                },
             },
 
             # Backwards-compat alias — older agents read `interfaces`.
@@ -26699,6 +26709,22 @@ try:
     print("[main] site_valuation_engine_bp registered: POST /api/v1/site/value + GET /sites/value + methodology", flush=True)
 except Exception as _sve_e:
     print(f"[main] site_valuation_engine_bp register failed: {_sve_e}", flush=True)
+
+# 2026-06-04 — Vertex AI / Gemini integration surface. Exposes the
+# 8-tool core as both Vertex AI Extension OpenAPI 3.0 + Gemini SDK
+# functionDeclarations. Strategy: become discoverable in Google's
+# enterprise AI tooling, drive citation-loop via embedded directive.
+# Endpoints:
+#   /openapi-vertex.yaml + /openapi-vertex.json   — Vertex AI Extension import
+#   /.well-known/gemini-functions.json            — Gemini SDK function calling
+#   /vertex                                       — partner landing page
+#   /api/v1/vertex/health                         — liveness + tool hash
+try:
+    from routes.vertex_integration import vertex_integration_bp
+    app.register_blueprint(vertex_integration_bp)
+    print("[main] vertex_integration_bp registered: /openapi-vertex.{yaml,json} + /vertex + /.well-known/gemini-functions.json", flush=True)
+except Exception as _vx_e:
+    print(f"[main] vertex_integration_bp register failed: {_vx_e}", flush=True)
 
 # r79 (2026-06-03) — Redirect blueprint for known-dead URLs. Each entry
 # in routes/redirects_404_killer.py is a URL we caught 404ing in production
