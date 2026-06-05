@@ -322,6 +322,16 @@ def _render_b(data: RenderData, size: Size, pal_key: str = "b") -> Image.Image:
 
 
 def _header_b(ax, data: RenderData, big: int, kicker_size: int, pal: dict):
+    """Header band for theme B/D — kicker + title + subtitle.
+
+    r70 (2026-06-05): added a prominent LIVE pill in the top-right corner.
+    The day-over-day data delta on this image is visually subtle (Virginia
+    moves from 842 → 844, etc.), so users perceived the page as "stale"
+    even though it was rendering today's live counts. The pill makes the
+    freshness unmistakable at thumbnail scale on LinkedIn / Twitter.
+    Visual: bright green rounded pill, white text, leading white dot to
+    suggest a live recording indicator. Pairs with the verdict pill
+    language we use in the og_cards rotation."""
     ax.set_xlim(0, 1); ax.set_ylim(0, 1)
     ax.text(0, 0.80, "D A I L Y   D A T A   C E N T E R   B R I E F",
             color=pal["accent"], fontsize=kicker_size, weight="bold", family="sans-serif")
@@ -329,6 +339,33 @@ def _header_b(ax, data: RenderData, big: int, kicker_size: int, pal: dict):
             color=pal["ink"], fontsize=big, weight="bold", family="sans-serif")
     ax.text(0, 0.10, f"{data.generated} · by status · {len(data.states)} states + DC",
             color=pal["dim"], fontsize=12, family="sans-serif")
+
+    # ── LIVE pill (top-right) ──
+    # Fixed pill width — sized for "● LIVE · YYYY-MM-DD" at kicker_size+1 font.
+    # Empirically tuned against the 1080px-wide header axis. Matplotlib in
+    # axis coords doesn't expose pre-render text width and plt.Circle
+    # gets distorted by the thin-strip aspect ratio of the header axis,
+    # so we render the recording dot as a unicode bullet inside the text
+    # instead of a separate patch — keeps it round + perfectly aligned.
+    pill_label = f"●  LIVE  ·  {data.generated}"
+    pill_w = 0.26
+    pill_h = 0.40
+    pill_x = 1.0 - pill_w
+    pill_y = 0.62
+    ax.add_patch(FancyBboxPatch(
+        (pill_x, pill_y), pill_w, pill_h,
+        boxstyle="round,pad=0.0,rounding_size=0.19",
+        linewidth=0, facecolor="#10B981"           # brand BUILD green
+    ))
+    ax.text(
+        pill_x + pill_w / 2, pill_y + pill_h / 2 - 0.02,
+        pill_label,
+        color="white",
+        fontsize=kicker_size + 1,
+        weight="bold",
+        family="sans-serif",
+        ha="center", va="center",
+    )
 
 
 def _kpi_row_b(fig, rect: list[float], total_op: int, total_uc: int, total_ann: int, pal: dict):
