@@ -122,6 +122,7 @@ def findings_db_status():
     2026-06-06 persistence fix — if total_rows climbs and detectors
     appear, the canonical writer is landing rows."""
     out = {"ok": True}
+    selftest = request.args.get("selftest") == "1"
     try:
         import psycopg2
         _du = (os.environ.get("NEON_DATABASE_URL")
@@ -130,6 +131,52 @@ def findings_db_status():
             return jsonify({"ok": False, "error": "no_database_url"}), 500
         with psycopg2.connect(_du, connect_timeout=8) as conn:
             with conn.cursor() as cur:
+                if selftest:
+                    # Drive the canonical writer end-to-end: introspect →
+                    # idempotent ALTER (restores seen_count) → constraint-
+                    # agnostic upsert → read back. All three rewired writers
+                    # (consistency_radar, mcp_presence_crawler,
+                    # brain_bug_squash) delegate to this exact function, so a
+                    # green self-test proves the persistence fix. Idempotent:
+                    # re-running just bumps the probe row's count/seen_count.
+                    st = {}
+                    try:
+                        from routes.brain_findings_writer import (
+                            upsert_brain_finding, live_columns)
+                        res = upsert_brain_finding(
+                            cur,
+                            issue="selftest:writer-probe",
+                            url="https://dchub.cloud/api/v1/brain/findings/db-status",
+                            count=1,
+                            detail="canonical-writer self-test (idempotent; safe to re-run)",
+                            detector="findings_writer_selftest",
+                            status="open")
+                        conn.commit()
+                        st["upsert_result"] = res  # inserted|updated|skipped
+                        st["writer_live_columns"] = live_columns()
+                        # Re-introspect: did the writer's ALTER add seen_count?
+                        cur.execute(
+                            "SELECT column_name FROM information_schema.columns "
+                            "WHERE table_name='brain_findings'")
+                        cols_now = {r[0] for r in cur.fetchall()}
+                        st["seen_count_added_by_writer"] = "seen_count" in cols_now
+                        sc = "seen_count" if "seen_count" in cols_now else "NULL"
+                        cur.execute(
+                            f"SELECT issue, count, status, {sc} FROM brain_findings "
+                            "WHERE issue='selftest:writer-probe' LIMIT 1")
+                        row = cur.fetchone()
+                        st["readback"] = (
+                            {"issue": row[0], "count": row[1], "status": row[2],
+                             "seen_count": row[3]} if row else None)
+                        st["passed"] = bool(row) and res in ("inserted", "updated")
+                    except Exception as e:
+                        try:
+                            conn.rollback()
+                        except Exception:
+                            pass
+                        st["passed"] = False
+                        st["error"] = str(e)[:200]
+                    out["selftest"] = st
                 cur.execute("SELECT column_name FROM information_schema.columns "
                             "WHERE table_name='brain_findings'")
                 out["live_columns"] = sorted(r[0] for r in cur.fetchall())
