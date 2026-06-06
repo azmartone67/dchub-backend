@@ -111,9 +111,30 @@ def _resolve_caller_tier() -> tuple[str, dict]:
         except Exception as e:
             debug["api_key_resolve_err"] = str(e)[:80]
 
-    # 2. dchub_token cookie path — look up user plan in DB
+    # 2. dchub_token cookie path — JWT first, then DB lookup.
     token = request.cookies.get("dchub_token") or request.headers.get("Authorization", "").replace("Bearer ", "")
     if token:
+        # 2a. JWT path (FIX 2026-06-06): the frontend login stores a signed
+        # HS256 JWT as dchub_token whose payload carries the `plan` claim
+        # (main.py jwt.encode {..., 'plan': plan, 'exp': ...}). tier_gate
+        # previously only matched RAW tokens against api_keys / users
+        # .session_token, so a JWT matched nothing and EVERY JWT-logged-in
+        # PRO user fell through to FREE → upgrade gate on every page that
+        # uses _resolve_caller_tier ("gated even though I'm pro"). Decode +
+        # VERIFY signature + exp with JWT_SECRET and trust the signed plan
+        # claim — the same contract dchub_me.py and paywall_middleware use.
+        # Expired / forged / unsigned tokens raise and fall through to FREE.
+        if token.count(".") == 2:
+            try:
+                import os as _os, jwt as _pyjwt
+                _secret = _os.environ.get("JWT_SECRET")
+                if _secret:
+                    _p = _pyjwt.decode(token, _secret, algorithms=["HS256"])
+                    _plan = (_p.get("plan") or _p.get("tier") or "").strip()
+                    if _plan:
+                        return _plan.upper(), {"source": "cookie:jwt"}
+            except Exception as e:
+                debug["jwt_decode_err"] = str(e)[:80]
         try:
             import os, psycopg2
             db = os.environ.get("DATABASE_URL")
