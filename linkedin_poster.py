@@ -249,6 +249,21 @@ def post_to_linkedin(text, link_url=None, link_title=None, link_desc=None, image
     if os.environ.get("LINKEDIN_SKIP_IMAGE_UPLOAD", "0") == "1":
         image_bytes = None  # Force text-only path
 
+    # ── Media-quality gate (2026-06-06) ──────────────────────────────
+    # The "bush league" blank cards that shipped were the stale static
+    # landing-*.png files (~14KB). A real 1200x630 DC Hub card rendered by
+    # /api/v1/og/dynamic.png is 30-55KB. If an image this thin reaches the
+    # poster, LOUDLY flag it — this is the durable signal so a blank can
+    # never ship SILENTLY again. We don't hard-block (callers own the
+    # hold/fallback decision), but the warning is queryable in logs +
+    # surfaces to the brain's log scan / media audit.
+    if image_bytes is not None and len(image_bytes) < 18000:
+        logger.warning(
+            "[media-quality] ⚠️ THIN IMAGE %dB (<18KB) — likely a blank/low-quality card. "
+            "Rich DC Hub cards are 30-55KB; source should use /api/v1/og/dynamic.png. "
+            "Flagging so a 'bush league' blank does not ship silently.",
+            len(image_bytes))
+
     _image_urn = None
     if image_bytes is not None:
         try:
