@@ -40,7 +40,9 @@ and find the byline.
 Once you have 5+ emails, replace the placeholders and run:
 
 ```bash
-KEY="83a984cb494aa8ebb4b4032239f8bae5a3c1d91873df09d67b40bedbfa427093"
+# Never hardcode the admin key. Export it in your shell first:
+#   export DCHUB_ADMIN_KEY=...   (copy the current value from Railway env)
+KEY="$DCHUB_ADMIN_KEY"
 
 curl -s -X POST -H "X-Admin-Key: $KEY" \
   -H "Content-Type: application/json" \
