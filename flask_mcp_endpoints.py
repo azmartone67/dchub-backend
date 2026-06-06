@@ -772,6 +772,84 @@ def track_tool_call():
     return jsonify({"ok": True}), 200
 
 
+# ── POST /api/v1/mcp/signal-paywall — record a paywall/preview signal ────
+#
+# 2026-06-06 (MCP-C): restore tool_requested write from the MCP server's
+# trial_preview + blocked_paid_only branches. Prior to this fix, only
+# Python paths (mcp_upgrade_gate.gate_tool_call + pair_code redeem) wrote
+# mcp_upgrade_signals.tool_requested — the Node MCP server (server.mjs)
+# in dchub-mcp-server fired NO signal at all when it returned a
+# trial_preview or blocked_paid_only response. Result: the funnel
+# reported 0 upgrade signals tagged with tool_requested for the busiest
+# paid tool (get_grid_intelligence: 4,540 paywall hits, 0 tagged
+# signals). Per-tool funnel optimization was structurally blind.
+#
+# This endpoint is the fire-and-forget telemetry hook the MCP server
+# calls inside its paywall branch. It delegates to fire_upgrade_signal
+# from mcp_upgrade_gate.py, which already handles synthetic-traffic
+# exclusion, api_key → user_email resolution, and the canonical
+# mcp_upgrade_signals INSERT (tool_requested column populated).
+@mcp_bp.post("/api/v1/mcp/signal-paywall")
+@_require_internal
+def mcp_signal_paywall():
+    body = request.get_json(silent=True) or {}
+    tool = (body.get('tool') or body.get('tool_name') or '').strip()
+    if not tool:
+        return jsonify({"ok": False, "error": "missing tool"}), 200
+
+    signal_type = (body.get('signal_type') or 'trial_preview').strip()
+    # Valid signal_type values used elsewhere in the codebase:
+    #   trial_preview, paid_tool_blocked, daily_limit_hit, redeem_url_viewed
+    # Accept any so the MCP server can label new branches without a
+    # Flask redeploy, but fall back to trial_preview if the caller
+    # passes something obviously wrong.
+    if signal_type not in (
+        'trial_preview', 'paid_tool_blocked', 'daily_limit_hit',
+        'redeem_url_viewed', 'anon_preview', 'blocked_paid_only',
+    ):
+        signal_type = 'trial_preview'
+
+    # r44 (2026-05-25): prefer the modern Mcp-Session-Id HTTP header
+    # over the body field for the same reasons as /api/v1/mcp/track.
+    session_id = (
+        request.headers.get("Mcp-Session-Id")
+        or request.headers.get("mcp-session-id")
+        or request.headers.get("X-Mcp-Session-Id")
+        or body.get("session_id")
+    )
+
+    # mcp_client (platform) for synthetic-traffic exclusion. fire_upgrade_signal
+    # short-circuits when mcp_client matches _SYNTHETIC_CLIENT_PREFIXES so
+    # our own probes don't pollute the funnel.
+    mcp_client = (body.get('mcp_client') or body.get('platform') or 'mcp').strip()
+    user_agent = body.get('user_agent') or request.headers.get('User-Agent')
+    api_key    = body.get('api_key')  # optional — lifted from headers if missing
+    user_email = body.get('user_email')
+    message_shown = (body.get('message_shown') or '')[:2000] or None
+    tier_current = body.get('tier_current') or 'free'
+    tier_required = body.get('tier_required') or 'paid'
+
+    try:
+        from mcp_upgrade_gate import fire_upgrade_signal
+        fire_upgrade_signal(
+            signal_type=signal_type,
+            tool_requested=tool,
+            tier_current=tier_current,
+            tier_required=tier_required,
+            message_shown=message_shown,
+            mcp_client=mcp_client,
+            user_agent=user_agent,
+            session_id=session_id,
+            user_email=user_email,
+            api_key=api_key,
+        )
+    except Exception as e:
+        # Telemetry is fire-and-forget — never 500 the MCP request path.
+        return jsonify({"ok": False, "error": str(e)}), 200
+
+    return jsonify({"ok": True}), 200
+
+
 # ── GET /api/v1/mcp/stats — for our own admin dashboard ───────────────────
 
 @mcp_bp.get("/api/v1/mcp/stats")
