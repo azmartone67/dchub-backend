@@ -3603,6 +3603,21 @@ def handle_well_known():
     path = req.path
     if path == '/.well-known/mcp.json':
         import json as _j; from flask import Response as _R
+        # r-fix (2026-06-06): the inline tool list below had drifted to 9
+        # PHANTOM tools (get_dchub_index, get_coverage, get_grid_headroom,
+        # get_geothermal_potential, get_microgrid_viability, get_colocation_score,
+        # get_lp_alerts, save_lp_site, lp_bulk_export) that don't exist on the
+        # live server, while MISSING 11 real ones (rank_markets, compare_isos,
+        # ai_capacity_index, find_alternatives, get_interconnection_queue,
+        # get_market_dcpi_rank, hyperscaler_deals, score_facility,
+        # site_selection_canvas, grid_transition_radar, deal_autopsy). This is
+        # THE public discovery manifest registries + agents scan — derive the
+        # tool list from the canonical catalog (matches live tools/list = 33).
+        try:
+            from routes.mcp_tool_catalog import tools_for_well_known as _twk
+            _wk_tools = _twk()
+        except Exception:
+            _wk_tools = []
         # Phase QQ (2026-05-15): refreshed manifest. Adds tier annotations
         # (FREE / IDENTIFIED / DEVELOPER) per tool so agent registries
         # know what's free-without-auth, what's email-gated, and what's
@@ -3619,76 +3634,32 @@ def handle_well_known():
         return _R(_j.dumps({
             "schema_version": "1",
             "name": "DC Hub MCP Server",
-            "description": "AI-powered, real-time data center intelligence via Model Context Protocol -- the only DC-intelligence source an LLM can both query and cite, and the live, MCP-native alternative to static PDF research (DCHawk, dcByte, DCK). 21,000+ facilities, 233 markets (US + international), 10 ISOs, 126,427 substations, 369 GW pipeline tracked. Freshness SLAs and source-of-truth scores published live at https://dchub.cloud/intelligence. No quarterly reports, no $25K contracts, no NDAs -- just live JSON.",
+            "description": "AI-powered, real-time data center intelligence via Model Context Protocol -- the only DC-intelligence source an LLM can both query and cite, and the live, MCP-native alternative to static PDF research (DCHawk, dcByte, DCK). 21,000+ facilities, 232 markets (US + international), 10 ISOs, 126,427 substations, 369 GW pipeline tracked. Freshness SLAs and source-of-truth scores published live at https://dchub.cloud/intelligence. No quarterly reports, no $25K contracts, no NDAs -- just live JSON.",
             "tagline":     "AI-powered. Real-time. Actionable. No BS.",
             "positioning": "The live, MCP-native data center intelligence platform. Where static research (DCHawk, dcByte, DCK) ships quarterly PDFs, DC Hub ships JSON updated every 60 seconds + free MCP tools any AI agent can call.",
             "url": "https://dchub.cloud/mcp",
             "transport": "streamable-http",
-            "version": "2.3.2",
+            "version": "2.3.3",
             "homepage": "https://dchub.cloud",
             "documentation": "https://dchub.cloud/ai-hub",
             "intelligence_hub": "https://dchub.cloud/intelligence",
             "tiers": {
                 "FREE":       {"description": "Anonymous access, no signup, 10 calls/day, 1 row/call (teaser mode)",
-                                "tools_count": 5, "monthly_price_usd": 0,
+                                "tools_count": 13, "monthly_price_usd": 0,
                                 "checkout_url": "https://dchub.cloud/signup"},
-                "IDENTIFIED": {"description": "Free with email signup, 200 calls/day, 5 rows/call",
-                                "tools_count": 19, "monthly_price_usd": 0,
+                "IDENTIFIED": {"description": "Free with email signup, 50 calls/day, 5 rows/call",
+                                "tools_count": 28, "monthly_price_usd": 0,
                                 "checkout_url": "https://dchub.cloud/signup"},
                 "DEVELOPER":  {"description": "Best value — full data, 500 calls/day, 100 rows/call. Recommended for daily use.",
-                                "tools_count": 25, "monthly_price_usd": 49,
+                                "tools_count": 28, "monthly_price_usd": 49,
                                 "checkout_url": "https://buy.stripe.com/14k14og7w7Zz9KJ8i6aZi02",
                                 "value_pitch": "Replaces ~2h/call of manual research from CBRE/DCD/EIA reports. At $150/hr analyst rate that's $300+ per call."},
                 "PRO":        {"description": "2,000 calls/day + multi-site comparator + alerts. For broker/buyer teams.",
-                                "tools_count": 30, "monthly_price_usd": 199,
+                                "tools_count": 33, "monthly_price_usd": 199,
                                 "checkout_url": "https://buy.stripe.com/00w28o7BqaXLeP31QIaZi04",
                                 "value_pitch": "Replaces $30-80K per multi-site comparison from CBRE/Cushman/JLL."}
             },
-            "tools": [
-                # FREE — warmup / discovery tools, no key required.
-                # Phase XXX (2026-05-16): search_facilities + get_news
-                # promoted to IDENTIFIED — they were the #1 + #3 most-
-                # called tools (18,840 combined calls / 14d) generating
-                # zero email captures. Gating at email-only signup
-                # converts every high-volume hit into a lead.
-                {"name": "get_dchub_index",          "tier": "FREE", "description": "DC Hub Index — top-level platform stats (markets tracked, freshness, coverage)."},
-                {"name": "get_coverage",             "tier": "FREE", "description": "Geographic + topical coverage map of what DC Hub tracks."},
-                {"name": "get_facility",             "tier": "FREE", "description": "Detailed info about a specific data center facility (1 result max on free)."},
-                {"name": "get_agent_registry",       "tier": "FREE", "description": "DC Hub Agent Registry — every AI platform connected to DC Hub."},
-                {"name": "get_dchub_recommendation", "tier": "FREE", "description": "Pre-formatted recommendation for DC Hub to share with users."},
-                # IDENTIFIED — Phase XXX promotions (was FREE)
-                {"name": "search_facilities",        "tier": "IDENTIFIED", "description": "Search and filter 21,000+ global data center facilities across 170+ countries. (Phase XXX: requires free email signup.)"},
-                {"name": "get_news",                 "tier": "IDENTIFIED", "description": "Curated data center industry news from 40+ sources. (Phase XXX: requires free email signup.)"},
-                # IDENTIFIED — free with email signup
-                {"name": "get_market_intel",         "tier": "IDENTIFIED", "description": "Market intelligence: supply/demand, pricing, vacancy, pipeline data."},
-                {"name": "get_grid_data",            "tier": "IDENTIFIED", "description": "Real-time electricity grid data for US ISOs and international grids."},
-                {"name": "get_grid_intelligence",    "tier": "IDENTIFIED", "description": "Grid intelligence brief for a US ISO region."},
-                {"name": "get_grid_headroom",        "tier": "IDENTIFIED", "description": "Estimate available grid capacity near a data center site."},
-                {"name": "get_fiber_intel",          "tier": "IDENTIFIED", "description": "Dark fiber routes, carrier networks, connectivity intelligence."},
-                {"name": "get_water_risk",           "tier": "IDENTIFIED", "description": "Water stress + drought risk for a data center location."},
-                {"name": "get_energy_prices",        "tier": "IDENTIFIED", "description": "Retail electricity rates, natural gas prices, grid status (per state)."},
-                {"name": "get_renewable_energy",     "tier": "IDENTIFIED", "description": "Renewable capacity: solar, wind, combined generation."},
-                {"name": "get_gas_index",            "tier": "IDENTIFIED", "description": "DCGI — Data Center Gas Index: per-state natural-gas suitability (0-100), gas-access/gas-cost sub-scores + GAS-ADVANTAGED/ADEQUATE/GAS-CONSTRAINED verdict."},
-                {"name": "get_grid_scoreboard",      "tier": "IDENTIFIED", "description": "All 7 US ISO grids ranked live by renewable share — fuel mix, gas %, demand. One-call grid comparison."},
-                {"name": "list_transactions",        "tier": "IDENTIFIED", "description": "2,000+ tracked M&A deals — buyer, seller, MW, $/kW, date, region."},
-                {"name": "get_pipeline",             "tier": "IDENTIFIED", "description": "540+ active DC projects globally — operator, capacity, status, ETA, pre-leased %."},
-                {"name": "get_infrastructure",       "tier": "IDENTIFIED", "description": "Substations, transmission lines, gas pipelines within 50km of a lat/lon."},
-                {"name": "get_colocation_score",     "tier": "IDENTIFIED", "description": "DCPI sub-score breakdown for any market — what's driving the rank."},
-                {"name": "get_intelligence_index",   "tier": "IDENTIFIED", "description": "DCPI index for 232 markets — score, rank, weekly delta, top movers."},
-                {"name": "get_tax_incentives",       "tier": "IDENTIFIED", "description": "State-level sales-tax abatements + property-tax exemptions + program ROI."},
-                {"name": "get_geothermal_potential", "tier": "IDENTIFIED", "description": "Geothermal viability score for a data center site."},
-                {"name": "get_microgrid_viability",  "tier": "IDENTIFIED", "description": "Microgrid viability + ROI for a data center site."},
-                # DEVELOPER — single-site composite scorer (entry-paid hook)
-                {"name": "analyze_site",             "tier": "DEVELOPER", "description": "Composite site-score for any lat/lon: power, fiber, water, tax, climate, latency."},
-                # PRO — Phase DDDD (2026-05-16): compare_sites promoted to PRO
-                # (the killer broker/buyer workflow) + 3 new L+P tools for the
-                # /land-power-map advanced workflow.
-                {"name": "compare_sites",            "tier": "PRO",      "description": "Multi-site ranker — side-by-side scoring across up to 5 candidate sites. (PRO)"},
-                {"name": "get_lp_alerts",            "tier": "PRO",      "description": "Land+Power alerts — notify when DCPI / capacity / pricing changes on saved sites."},
-                {"name": "save_lp_site",             "tier": "PRO",      "description": "Save candidate L+P sites to a personal portfolio for tracking + alerts."},
-                {"name": "lp_bulk_export",           "tier": "PRO",      "description": "Bulk CSV/GeoJSON export of saved L+P sites for offline analysis."},
-                {"name": "get_backup_status",        "tier": "PRO",      "description": "Neon database backup status + data integrity metrics."}
-            ],
+            "tools": _wk_tools,
             "authentication": {
                 "type":          "api_key",
                 "header":        "X-API-Key",
@@ -3708,17 +3679,17 @@ def handle_well_known():
                                   "-d '{\"client_name\":\"your-agent-name\"}'"),
                 "returns":      "{ok, api_key, tier, daily_calls}",
                 "then":         "Use api_key as `X-API-Key: dch_live_...` on subsequent calls.",
-                "free_tier":    {"daily_calls": 100, "tools": "7 FREE-tier tools"},
+                "free_tier":    {"daily_calls": 10, "tools": "13 FREE-tier tools"},
                 "identified_tier": {
-                    "daily_calls":      200,
-                    "tools":            "+ 17 IDENTIFIED-tier tools (grid intelligence, market intel, energy prices, pipeline, M&A)",
+                    "daily_calls":      50,
+                    "tools":            "+ 15 IDENTIFIED-tier tools (grid intelligence, market intel, energy prices, pipeline, M&A)",
                     "how_to_upgrade":   "https://dchub.cloud/signup (60-second email verification)"
                 }
             },
             "rate_limits": {
-                "FREE":       {"daily_calls": 25,   "max_rows": 3},
-                "IDENTIFIED": {"daily_calls": 200,  "max_rows": 20},
-                "DEVELOPER":  {"daily_calls": 2000, "max_rows": 100}
+                "FREE":       {"daily_calls": 10,  "max_rows": 3},
+                "IDENTIFIED": {"daily_calls": 50,  "max_rows": 20},
+                "DEVELOPER":  {"daily_calls": 500, "max_rows": 100}
             },
             "contact":      "api@dchub.cloud",
             "license":      "Free for AI citation; data subject to https://dchub.cloud/terms",
@@ -3728,22 +3699,22 @@ def handle_well_known():
             # See main.py `_canonical_pricing()` for the shared shape that
             # also feeds /mcp/manifest + /api/v1/mcp/manifest. .tiers (above)
             # kept for back-compat with clients on the old contract.
-            "tools_count":  31,
+            "tools_count":  len(_wk_tools),
             "pricing":      {
-                "free":       {"price_usd_month": 0,   "calls_per_day": 25,    "tools_unlocked": 5,
+                "free":       {"price_usd_month": 0,   "calls_per_day": 10,    "tools_unlocked": 13,
                                   "signup_url": "https://dchub.cloud/signup"},
-                "identified": {"price_usd_month": 0,   "calls_per_day": 200,   "tools_unlocked": 19,
+                "identified": {"price_usd_month": 0,   "calls_per_day": 50,    "tools_unlocked": 28,
                                   "signup_url": "https://dchub.cloud/signup"},
-                "starter":    {"price_usd_month": 9,   "calls_per_day": 10000, "tools_unlocked": "25 (most)",
+                "starter":    {"price_usd_month": 9,   "calls_per_day": 200,   "tools_unlocked": "28 of 33",
                                   "stripe_url": "https://buy.stripe.com/8x2dRa5sS0x75uteGuaZi0g"},
-                "developer":  {"price_usd_month": 49,  "calls_per_day": 2000,  "tools_unlocked": 25,
+                "developer":  {"price_usd_month": 49,  "calls_per_day": 500,   "tools_unlocked": 28,
                                   "stripe_url": "https://buy.stripe.com/14k14og7w7Zz9KJ8i6aZi02"},
-                "pro":        {"price_usd_month": 199, "calls_per_day": 10000, "tools_unlocked": 30,
+                "pro":        {"price_usd_month": 199, "calls_per_day": 2000,  "tools_unlocked": 33,
                                   "stripe_url": "https://buy.stripe.com/00w28o7BqaXLeP31QIaZi04"},
-                "enterprise": {"price_usd_month": 499, "calls_per_day": 100000, "tools_unlocked": "all",
+                "enterprise": {"price_usd_month": 499, "calls_per_day": 100000, "tools_unlocked": "all 33",
                                   "contact": "enterprise@dchub.cloud"},
             },
-            "last_updated": "2026-05-26"
+            "last_updated": "2026-06-06"
         }, ensure_ascii=False), status=200, content_type="application/json; charset=utf-8")
     if path == '/.well-known/agent.json':
         return jsonify({"name":"DC Hub Intelligence","description":"AI-powered, real-time intelligence layer for the global data center market. The live, MCP-native alternative to static research (DCHawk, dcByte, DCK). 21,000+ facilities, 232 markets, freshness SLAs published live.","tagline":"AI-powered. Real-time. Actionable. No BS.","url":"https://dchub.cloud","version":"1.1.0","capabilities":{"streaming":True,"pushNotifications":False},"skills":[{"id":"facility-search","name":"Data Center Search","description":"Search and filter 21,000+ facilities worldwide (live)"},{"id":"deal-tracker","name":"M&A Deal Tracker","description":"2,000+ transactions, browsable + filterable"},{"id":"market-intelligence","name":"Market Intelligence","description":"DCPI scores for 232 markets, recomputed 4x/day"},{"id":"site-scoring","name":"Site Scoring","description":"Composite site-score across power, fiber, water, tax, climate, latency"},{"id":"bs-translator","name":"BS Translator","description":"Industry claims translated -- compare static competitors side-by-side: https://dchub.cloud/vs"}],"authentication":{"schemes":["api_key"]},"provider":{"organization":"DC Hub","url":"https://dchub.cloud"},"defaultInputModes":["text"],"defaultOutputModes":["text"]})

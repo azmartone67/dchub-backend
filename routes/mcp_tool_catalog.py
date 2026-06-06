@@ -206,8 +206,32 @@ def flat_tools_for_card() -> list[dict]:
     return [{"name": name, "description": summary} for name, _cat, _tier, summary, _ex in TOOLS]
 
 
+_WELL_KNOWN_TIER = {"free": "FREE", "identified": "IDENTIFIED", "pro": "PRO"}
+
+
+def tools_for_well_known() -> list[dict]:
+    """Tier-annotated tool list for the /.well-known/mcp.json manifest
+    (handle_well_known in main.py). Same 33-tool catalog mapped to the
+    manifest's UPPER-case tier labels, so the public discovery manifest
+    derives from the one catalog and can't re-advertise phantom tools.
+    (The served manifest had drifted to 9 phantoms + 11 missing — r-fix.)"""
+    return [
+        {"name": name,
+         "tier": _WELL_KNOWN_TIER.get(tier, "IDENTIFIED"),
+         "description": summary}
+        for name, _cat, tier, summary, _ex in TOOLS
+    ]
+
+
 # Count constant other modules can import for assertions / display.
 LIVE_MCP_TOOL_COUNT = len(TOOLS)
+# Authoritative PRO-only tool set (mirrors server.mjs PRO_ONLY_TOOLS) — the
+# 5 highest-value premium tools. Other surfaces should derive "gated_tools"
+# from this rather than hand-listing (the CF worker had a stale 4-tool set).
+PRO_ONLY_TOOLS = [
+    "analyze_site", "compare_sites", "get_grid_intelligence",
+    "get_fiber_intel", "get_dchub_recommendation",
+]
 
 
 # r43-K (2026-05-30): also serve at /api/v1/mcp/tools (no `.json`) — many
