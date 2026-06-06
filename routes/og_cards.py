@@ -49,30 +49,47 @@ ACCENT  = PURPLE
 ACCENT2 = PURPLE_LT
 
 
+# Fonts are BUNDLED in the repo (routes/fonts/) and loaded first. This is the
+# durable fix for the 2026-06-06 "empty cards" bug: Railway's Nixpacks image
+# has no system DejaVu/Helvetica at the hardcoded paths, so _font() fell
+# through to ImageFont.load_default() — a ~10px bitmap font that IGNORES the
+# requested size. Every headline/number rendered tiny and the cards looked
+# ~80% empty. It rendered fine in dev (macOS has Helvetica.ttc) so it was
+# invisible locally. Bundling the TTFs removes the host-font dependency
+# entirely — the cards now render identically on Railway, Render and local.
+_FONT_DIR = os.path.join(os.path.dirname(os.path.abspath(__file__)), 'fonts')
+_FONT_FELL_BACK = False   # flips True (and logs once) if we ever hit load_default
+
+
 def _font(size, bold=True):
-    """Find a system font. Linux servers have DejaVu; macOS dev has Helvetica."""
+    """Bundled DejaVu (repo) first, then system fonts, then a LOUD default."""
     from PIL import ImageFont
+    global _FONT_FELL_BACK
     candidates = [
+        os.path.join(_FONT_DIR, 'DejaVuSans-Bold.ttf' if bold else 'DejaVuSans.ttf'),
         '/usr/share/fonts/truetype/dejavu/DejaVuSans-Bold.ttf' if bold
             else '/usr/share/fonts/truetype/dejavu/DejaVuSans.ttf',
         '/System/Library/Fonts/Helvetica.ttc',
-        '/Library/Fonts/Arial Bold.ttf',
         '/usr/share/fonts/truetype/liberation/LiberationSans-Bold.ttf' if bold
             else '/usr/share/fonts/truetype/liberation/LiberationSans-Regular.ttf',
     ]
     for path in candidates:
         try: return ImageFont.truetype(path, size)
         except Exception: continue
+    if not _FONT_FELL_BACK:
+        _FONT_FELL_BACK = True
+        print(f"[og_cards] FONT FALLBACK to load_default() — bundled font missing "
+              f"at {_FONT_DIR}; cards will render tiny. CHECK THE DEPLOY.")
     return ImageFont.load_default()
 
 
 def _mono(size):
-    """Monospace font for terminal/data-brutalist style."""
+    """Monospace font for terminal/data-brutalist style (bundled first)."""
     from PIL import ImageFont
     for path in [
+        os.path.join(_FONT_DIR, 'DejaVuSansMono-Bold.ttf'),
         '/usr/share/fonts/truetype/dejavu/DejaVuSansMono-Bold.ttf',
         '/System/Library/Fonts/Menlo.ttc',
-        '/Library/Fonts/Courier New Bold.ttf',
     ]:
         try: return ImageFont.truetype(path, size)
         except Exception: continue
@@ -164,7 +181,9 @@ def _market_score_of(m: dict) -> float:
 
 
 def _wrap(text, max_chars):
-    """Greedy word wrap. Returns list of lines."""
+    """Greedy word wrap by CHARACTER count. Returns list of lines.
+    Fragile for headlines (char width != pixel width) — prefer _wrap_px
+    for anything that must fit a known pixel box."""
     words = (text or '').split()
     lines, cur = [], ''
     for w in words:
@@ -175,6 +194,40 @@ def _wrap(text, max_chars):
             cur = w
     if cur: lines.append(cur)
     return lines
+
+
+def _wrap_px(text, font, max_w, max_lines=3):
+    """Pixel-accurate greedy word wrap — measures each candidate line with
+    the ACTUAL font so a headline never overflows the canvas. (The
+    char-count _wrap silently overflowed once the bundled fonts started
+    rendering at true size — the ai_hero headline ran off the right edge.)
+    Truncates to max_lines with an ellipsis."""
+    def _w(s):
+        try:
+            bb = font.getbbox(s)
+            return bb[2] - bb[0]
+        except Exception:
+            try: return font.getsize(s)[0]
+            except Exception: return len(s) * 10
+    words = (text or '').split()
+    lines, cur = [], ''
+    for i, w in enumerate(words):
+        trial = (cur + ' ' + w).strip()
+        if _w(trial) <= max_w or not cur:
+            cur = trial
+        else:
+            lines.append(cur)
+            cur = w
+            if len(lines) >= max_lines:
+                # Out of room — ellipsize the final line and stop.
+                last = lines[-1]
+                while last and _w(last + '…') > max_w:
+                    last = last.rsplit(' ', 1)[0] if ' ' in last else last[:-1]
+                lines[-1] = (last + '…') if last else '…'
+                return lines[:max_lines]
+    if cur and len(lines) < max_lines:
+        lines.append(cur)
+    return lines[:max_lines]
 
 
 def _verdict_for(signals: dict, fallback='BUILD'):
@@ -752,12 +805,13 @@ def _draw_ai_hero(pr):
         # Headline at the bottom — no double-shadow hack, just clean
         # white on the gradient-darkened SDXL backdrop.
         title = pr.get('title', '')[:120]
-        lines = _wrap(title, 22)[:3]
+        hf = _font(60)
+        lines = _wrap_px(title, hf, max_w=W - 120, max_lines=3)
         line_height = 76
         total_height = line_height * len(lines)
         y_start = H - total_height - 100
         for line in lines:
-            d.text((60, y_start), line, font=_font(60), fill=WHITE)
+            d.text((60, y_start), line, font=hf, fill=WHITE)
             y_start += line_height
 
         # Footer
@@ -789,13 +843,16 @@ def _draw_ai_hero(pr):
         verdict = _verdict_for(signals)
         _verdict_pill(d, x=W - 280, y=44, verdict=verdict, font_size=36, pad_x=32, pad_y=14)
 
-    # Headline — sits BELOW the brand block, no overlap, no shadows needed
+    # Headline — sits BELOW the brand block, no overlap, no shadows needed.
+    # Pixel-wrapped (not char-count) so the long deal-headline titles wrap
+    # cleanly instead of running off the right edge.
     title = pr.get('title', '')[:140]
-    lines = _wrap(title, 56)[:2]
-    y = 410
+    hf = _font(44)
+    lines = _wrap_px(title, hf, max_w=W - 120, max_lines=3)
+    y = 408
     for line in lines:
-        d.text((60, y), line, font=_font(38), fill=TEXT)
-        y += 50
+        d.text((60, y), line, font=hf, fill=TEXT)
+        y += 58
 
     # Footer
     _draw_brand_footer(d, y=H - 64, mark='dchub.cloud/news',
