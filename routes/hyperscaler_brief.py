@@ -1106,30 +1106,37 @@ def _render_html(brief: dict) -> str:
 <meta property="og:image" content="https://dchub.cloud/static/og/hyperscaler-{_esc(slug)}.png">
 <link rel="canonical" href="https://dchub.cloud/hyperscalers/{_esc(slug)}/brief">
 <link rel="stylesheet" href="/static/dchub-brand.css">
+<link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=Instrument+Sans:wght@400;500;600;700;800&family=JetBrains+Mono:wght@400;500&display=swap">
 <style>
- body{{max-width:1200px;margin:0 auto;padding:32px 24px;font-family:-apple-system,BlinkMacSystemFont,system-ui,sans-serif;line-height:1.5;color:#0f172a}}
- h1{{font-size:2.4rem;margin:.2em 0 .1em;letter-spacing:-.02em;color:{color}}}
- h2{{font-size:1.4rem;margin:1.6em 0 .6em;border-bottom:2px solid #e2e8f0;padding-bottom:6px}}
- .tagline{{color:#475569;font-size:1.05rem;margin:0 0 24px}}
- .grid3{{display:grid;grid-template-columns:repeat(3,1fr);gap:16px;margin:20px 0}}
- .grid4{{display:grid;grid-template-columns:repeat(4,1fr);gap:16px;margin:20px 0}}
- .kpi{{background:#f8fafc;border:1px solid #e2e8f0;padding:18px 20px;border-radius:10px}}
- .kpi-v{{font-size:1.8rem;font-weight:700;font-family:ui-monospace,monospace;color:{color};line-height:1.1}}
- .kpi-v small{{font-size:1.1rem;color:#64748b;font-weight:500}}
- .kpi-l{{font-size:.82rem;color:#64748b;margin-top:4px;text-transform:uppercase;letter-spacing:.04em}}
+ :root{{--bg:#0a0a0f;--surf:#131319;--surf2:#1a1a22;--b:rgba(255,255,255,.09);--tx:#fafafa;--mut:#a1a1aa;--dim:#71717a;--ind:#818cf8;--vio:#a855f7;--cy:#22d3ee}}
+ *{{box-sizing:border-box}}
+ body{{max-width:1100px;margin:0 auto;padding:2.5rem 1.5rem 4rem;font-family:'Instrument Sans',-apple-system,BlinkMacSystemFont,system-ui,sans-serif;line-height:1.55;color:#d4d4d8;background:var(--bg)}}
+ h1{{font-size:2.4rem;margin:.15em 0 .1em;letter-spacing:-.02em;color:#fff;font-weight:800}}
+ h2{{font-size:1.3rem;margin:1.8em 0 .6em;border-bottom:1px solid var(--b);padding-bottom:8px;color:#fff;font-weight:700}}
+ .tagline{{color:var(--mut);font-size:1.05rem;margin:0 0 24px}}
+ .grid3{{display:grid;grid-template-columns:repeat(3,1fr);gap:14px;margin:20px 0}}
+ .grid4{{display:grid;grid-template-columns:repeat(4,1fr);gap:14px;margin:20px 0}}
+ .kpi{{background:var(--surf);border:1px solid var(--b);padding:18px 20px;border-radius:12px}}
+ .kpi-v{{font-size:1.8rem;font-weight:700;font-family:'JetBrains Mono',ui-monospace,monospace;color:{color};line-height:1.1}}
+ .kpi-v small{{font-size:1.1rem;color:var(--mut);font-weight:500}}
+ .kpi-l{{font-size:.74rem;color:var(--dim);margin-top:6px;text-transform:uppercase;letter-spacing:.08em;font-family:'JetBrains Mono',monospace}}
  table.t{{width:100%;border-collapse:collapse;margin:12px 0}}
- table.t th{{text-align:left;padding:8px 10px;background:#f1f5f9;font-size:.82rem;color:#475569;border-bottom:1px solid #cbd5e1}}
- table.t td{{padding:8px 10px;border-bottom:1px solid #e2e8f0;font-size:.92rem}}
- .muted{{color:#94a3b8;font-style:italic}}
- .note{{color:#64748b;font-size:.85rem}}
+ table.t th{{text-align:left;padding:9px 11px;background:var(--surf2);font-size:.72rem;color:var(--mut);border-bottom:1px solid var(--b);text-transform:uppercase;letter-spacing:.05em;font-family:'JetBrains Mono',monospace}}
+ table.t td{{padding:9px 11px;border-bottom:1px solid var(--b);font-size:.92rem;color:#d4d4d8}}
+ .muted{{color:var(--dim);font-style:italic}}
+ .note{{color:var(--dim);font-size:.85rem}}
  .news{{list-style:none;padding:0;margin:8px 0}}
- .news li{{padding:8px 0;border-bottom:1px solid #f1f5f9}}
- .news .meta{{color:#64748b;font-size:.82rem}}
- .paywall{{background:linear-gradient(180deg,#fff 0%,#f1f5f9 100%);border:2px solid {color};border-radius:14px;padding:32px;text-align:center;margin:32px 0}}
- .btn{{display:inline-block;background:{color};color:#fff;padding:12px 24px;border-radius:8px;text-decoration:none;font-weight:600;margin:12px 0}}
- .live{{display:inline-block;padding:3px 10px;border-radius:999px;background:#dcfce7;color:#166534;font-size:.78rem;font-weight:600;margin-left:8px}}
- .pill{{display:inline-block;padding:2px 10px;border-radius:999px;background:{color};color:#fff;font-size:.75rem;font-weight:600;letter-spacing:.04em;text-transform:uppercase;margin-right:6px}}
- footer{{color:#64748b;font-size:.85rem;margin-top:32px;padding-top:16px;border-top:1px solid #e2e8f0}}
+ .news li{{padding:9px 0;border-bottom:1px solid var(--b)}}
+ .news .meta{{color:var(--dim);font-size:.82rem}}
+ .news a{{color:#e4e4e7;text-decoration:none}}
+ .news a:hover{{color:#fff;text-decoration:underline}}
+ .paywall{{background:linear-gradient(160deg,var(--surf) 0%,var(--surf2) 100%);border:1px solid var(--b);border-radius:16px;padding:36px 32px;text-align:center;margin:32px 0}}
+ .paywall h2,.paywall h3{{color:#fff;border:0}}
+ .btn{{display:inline-block;background:linear-gradient(135deg,var(--ind),var(--vio));color:#fff;padding:13px 26px;border-radius:9px;text-decoration:none;font-weight:600;margin:12px 0}}
+ .live{{display:inline-block;padding:3px 10px;border-radius:999px;background:rgba(52,211,153,.12);color:#34d399;font-size:.74rem;font-weight:600;margin-left:8px;font-family:'JetBrains Mono',monospace}}
+ .pill{{display:inline-block;padding:3px 11px;border-radius:999px;background:{color};color:#fff;font-size:.72rem;font-weight:700;letter-spacing:.05em;text-transform:uppercase;margin-right:6px;font-family:'JetBrains Mono',monospace}}
+ a{{color:var(--ind)}}
+ footer{{color:var(--dim);font-size:.82rem;margin-top:36px;padding-top:18px;border-top:1px solid var(--b);font-family:'JetBrains Mono',monospace}}
 </style></head><body>
 <header>
   <span class="pill">{_esc(short)}</span>
@@ -1224,8 +1231,11 @@ def api_hyperscaler_brief(slug):
     if not brief.get("ok") and brief.get("error") == "hyperscaler_not_found":
         status = 404
     resp = jsonify(brief)
-    # 6h edge cache per spec.
-    resp.headers["Cache-Control"] = "public, max-age=21600, s-maxage=21600"
+    # 2026-06-06: per-tier payload — must NOT sit in a shared edge cache
+    # (was public s-maxage=21600 → anon copy served to PRO callers). no-store.
+    resp.headers["Cache-Control"] = "private, no-store, no-cache, must-revalidate"
+    resp.headers["CDN-Cache-Control"] = "no-store"
+    resp.headers["Vary"] = "Cookie, X-API-Key"
     resp.headers["Access-Control-Allow-Origin"] = "*"
     return resp, status
 
@@ -1260,7 +1270,14 @@ def html_hyperscaler_brief(slug):
     html = _render_html(brief)
     return Response(html, mimetype="text/html",
                     headers={
-                        "Cache-Control": "public, max-age=21600, s-maxage=21600",
+                        # 2026-06-06 FIX: per-tier gated page — was served on a
+                        # 6h SHARED edge cache (s-maxage) keyed only on URL, so a
+                        # cached anon/FREE render was served to PRO users too
+                        # ("gated even though I'm pro"). private+no-store; the CF
+                        # worker's _originSaysNoStore honor-path enforces it edge-side.
+                        "Cache-Control": "private, no-store, no-cache, must-revalidate",
+                        "CDN-Cache-Control": "no-store",
+                        "Vary": "Cookie",
                         "X-Hyperscaler-Brief-Tier": tier,
                     })
 

@@ -2304,8 +2304,19 @@ def html_market_brief(slug):
     html = _render_html(brief)
     return Response(html, mimetype="text/html",
                     headers={
-                        # 6h edge cache — see spec section 6
-                        "Cache-Control": "public, max-age=21600, s-maxage=21600",
+                        # 2026-06-06 FIX: this page is PER-TIER gated (PRO sees
+                        # 9 sections, anon sees the teaser + paywall). It was
+                        # served `public, s-maxage=21600` — a 6h SHARED edge
+                        # cache keyed only on URL — so whichever tier filled the
+                        # cache (usually anon) was served to EVERYONE, incl PRO
+                        # users → "gated even though I'm pro". Per-user pages must
+                        # never sit in a shared cache. private+no-store; the CF
+                        # worker's _originSaysNoStore honor-path makes it stick
+                        # edge-side. (The cookieless catalog page /markets/<slug>
+                        # stays cacheable; only the gated /brief goes dynamic.)
+                        "Cache-Control": "private, no-store, no-cache, must-revalidate",
+                        "CDN-Cache-Control": "no-store",
+                        "Vary": "Cookie",
                         "X-Market-Brief-Tier": tier,
                     })
 
