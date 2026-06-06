@@ -27938,6 +27938,23 @@ try:
 except Exception as _e:
     print(f"[main] lp_sites register failed: {_e}", file=sys.stderr)
 
+# 2026-06-06: Saved Searches (advertised on /pricing as a PRO feature) was
+# ONLY registered inside the dead `if __name__ == '__main__':` block, which
+# gunicorn (main:app) never executes — so the whole /api/saved-searches API
+# 404'd in production while pricing.html sold it. Wire it at MODULE level so
+# it goes live, idempotently, and ensure its tables exist.
+try:
+    if 'saved_searches' not in app.blueprints:
+        from saved_searches import register_saved_searches, init_saved_searches_db
+        try:
+            init_saved_searches_db()
+        except Exception as _e:
+            print(f"[main] saved_searches table init: {_e}", file=sys.stderr)
+        register_saved_searches(app)
+        print("💾 Saved Searches: ✅ registered at module level (was dead in __main__)")
+except Exception as _e:
+    print(f"[main] saved_searches register failed: {_e}", file=sys.stderr)
+
 # Phase HHHH (2026-05-16): facility-count delta tracker + brain
 # stagnation detector. Catches silent discovery-pipeline failures.
 try:

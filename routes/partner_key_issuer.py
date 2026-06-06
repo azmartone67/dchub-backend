@@ -645,16 +645,22 @@ def me_usage():
         your usage stats (the tracker excludes admin/usage paths).
 
     Example:
-        curl -H "X-API-Key: dchub_developer_..." \\
+        curl -H "X-API-Key: dch_live_..." \\
           "https://dchub.cloud/api/v1/me/usage?days=14"
     """
     api_key = (request.headers.get("X-API-Key") or "").strip()
-    if not api_key or not api_key.startswith("dchub_") or len(api_key) < 24:
+    # FIX (2026-06-06): accept ALL DC Hub key shapes. The old guard only
+    # allowed the legacy `dchub_` prefix, but every issued key today is
+    # `dch_live_…` (paid), `dch_trial_…` (trial) or `dchub_…` (legacy) —
+    # so paying Developer/Pro customers got a 401 on their OWN usage
+    # endpoint. Any `dch`-prefixed key of plausible length is valid here;
+    # the existence/active check below is the real gate.
+    if not api_key or not api_key.startswith("dch") or len(api_key) < 16:
         return jsonify({
             "ok": False,
             "error": "valid_dchub_api_key_required",
-            "hint":  "Pass your key via the X-API-Key header. Issue or "
-                     "rotate at partnerships@dchub.cloud."
+            "hint":  "Pass your key via the X-API-Key header (dch_live_… / "
+                     "dch_trial_…). Manage keys in your dashboard."
         }), 401
 
     prefix = api_key[:24]  # match what the tracker stores
