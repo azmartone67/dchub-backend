@@ -28284,6 +28284,18 @@ except Exception as _e:
     print(f"[main] campaign_halfprice_annual register failed: {_e}",
           file=sys.stderr)
 
+# Campaign outcome poller (2026-06-06): daily summary email of the 6
+# halfprice-annual recipients' conversion status (sent/opened/converted)
+# delivered to operator. Auto-stops after all-converted OR 14d elapsed.
+try:
+    from routes.campaign_outcome_poller import campaign_outcomes_bp
+    app.register_blueprint(campaign_outcomes_bp)
+    print("[main] campaign_outcomes_bp registered: "
+          "/api/v1/admin/campaign/halfprice-annual/outcomes{,/send}",
+          flush=True)
+except Exception as _e:
+    print(f"[main] campaign_outcomes register failed: {_e}", file=sys.stderr)
+
 # Phase XXXX (2026-05-16): competitor intel watcher — daily snapshot
 # of competitor sites, brain finding on significant drift.
 try:

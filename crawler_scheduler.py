@@ -259,6 +259,14 @@ SCHEDULE = [
     # handle_subscription_deleted on Stripe's webhook, not here. Kill
     # switch: DCHUB_DEMOTE_DRY_RUN=1 forces dry-run on every caller.
     ( 3,  3, "expired_onetime_demote", "_run_expired_onetime_demote"),
+    # Half-price annual campaign outcome poller (2026-06-06): daily summary
+    # email to operator (azmartone@gmail.com) at 19:00 UTC = ~24h after the
+    # campaign fired at 18:42 UTC on 2026-06-06. Joins campaign_log →
+    # users.source_plan → Stripe checkout sessions; renders an HTML
+    # status table per recipient. Auto-stops after either (a) all 6
+    # convert or (b) 14 days elapse from fire date. Same-hour pair → one
+    # run/UTC day. Kill switch: CAMPAIGN_OUTCOME_POLLER_DISABLE=1.
+    (19, 19, "campaign_outcome_poll", "_run_campaign_outcome_poll"),
 ]
 
 # ---------------------------------------------------------------------------
@@ -1705,6 +1713,36 @@ def _run_feedback_triage():
         logger.error("📬 feedback_triage error: %s", e, exc_info=True)
 
 
+def _run_campaign_outcome_poll():
+    """Fire /api/v1/admin/campaign/halfprice-annual/outcomes?send=1 (loopback).
+    Renders an HTML summary of the 6 customers emailed in the halfprice
+    campaign + their current conversion status + Stripe activity, then
+    emails Jonathan via Resend. Auto-stops after either (a) all 6 convert
+    or (b) 14 days elapse. Kill switch: CAMPAIGN_OUTCOME_POLLER_DISABLE=1.
+    """
+    import requests as _rq
+    key = (os.environ.get("DCHUB_ADMIN_KEY")
+           or os.environ.get("DCHUB_INTERNAL_KEY") or "")
+    if not key:
+        logger.warning("📊 campaign_outcome_poll: skipped — DCHUB_ADMIN_KEY not set")
+        return
+    base = os.environ.get("DCHUB_INTERNAL_API", "http://127.0.0.1:8080")
+    try:
+        r = _rq.get(
+            f"{base}/api/v1/admin/campaign/halfprice-annual/outcomes?send=1",
+            headers={"X-Admin-Key": key, "User-Agent": "dchub-cron-campaign-poll/1.0"},
+            timeout=60,
+        )
+        d = (r.json() if r.headers.get("content-type", "").startswith("application/json") else {}) or {}
+        logger.info("📊 campaign_outcome_poll: converted=%s pending=%s sent=%s stop=%s",
+                    d.get("converted_count"),
+                    d.get("pending_count"),
+                    d.get("summary_sent"),
+                    d.get("stop_condition_met"))
+    except Exception as e:
+        logger.error("📊 campaign_outcome_poll: error — %s", e)
+
+
 def _run_renewal_nudge_onetime():
     """Fire /api/v1/admin/renewal-nudge/send (loopback). Finds one-time
     Pro Annual buyers (source_plan='pro_annual_onetime') whose
@@ -1775,6 +1813,7 @@ _RUNNERS = {
     "watchlist_weekly_digest":  _run_watchlist_weekly_digest,
     "hyperscaler_brief_warm":   _run_hyperscaler_brief_warm,
     "renewal_nudge_onetime":    _run_renewal_nudge_onetime,
+    "campaign_outcome_poll":    _run_campaign_outcome_poll,
 }
 
 
