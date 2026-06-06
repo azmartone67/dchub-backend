@@ -125,10 +125,14 @@ def _grade_self_assessment(brain_status: dict) -> dict:
         "honest_score":      honest,
         "total_penalty":     round(total_penalty, 2),
         "penalties":         penalties,
+        # 2026-06-06 fix: label was inverted. When honest < claimed,
+        # Brain v2 CLAIMED MORE THAN IT EARNED → it OVERSTATED.
+        # When honest > claimed (rare; happens if our penalties go
+        # negative which they don't currently), it UNDERSTATED.
         "verdict": ("honest_match" if abs(honest - claimed) < 0.1
-                    else ("understated_by_" + str(round(claimed - honest, 1))
+                    else ("overstated_by_" + str(round(claimed - honest, 1))
                           if honest < claimed
-                          else "overstated_by_" + str(round(honest - claimed, 1)))),
+                          else "understated_by_" + str(round(honest - claimed, 1)))),
     }
 
 
