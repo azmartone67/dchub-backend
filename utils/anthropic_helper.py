@@ -113,6 +113,21 @@ def get_anthropic_client(api_key: str | None = None, **overrides):
     return anthropic.Anthropic(**kwargs)
 
 
+def get_status() -> dict:
+    """Queryable AI-Gateway status — for an admin endpoint, the brain's
+    self-model, or a quick health check. Never raises."""
+    bu = get_anthropic_base_url()
+    return {
+        "active": gateway_active(),
+        "base_url_host": (bu.split("/")[2] if bu and "//" in bu else None),
+        "raw_calls_routed": True,   # all raw sites use anthropic_messages_url()
+        "sdk_calls_routed": bool(bu),
+        "attribution": "cf-aig-metadata per component (brain-reasoning tagged)",
+        "how_to_enable": ("set ANTHROPIC_BASE_URL on Railway to "
+                          "https://gateway.ai.cloudflare.com/v1/<account>/<gateway>/anthropic"),
+    }
+
+
 # ── Module-load diagnostic ──────────────────────────────────────────
 def _smoke():
     bu = get_anthropic_base_url()
