@@ -16,6 +16,7 @@ import csv
 import io
 import json
 import logging
+import os
 import time
 import urllib.request
 
@@ -166,9 +167,13 @@ _PDB = "https://www.peeringdb.com/api"
 
 
 def _pdb(path):
-    req = urllib.request.Request(_PDB + path,
-                                 headers={"User-Agent": "dchub-map/1.0",
-                                          "Accept": "application/json"})
+    headers = {"User-Agent": "dchub-map/1.0", "Accept": "application/json"}
+    # Anon PeeringDB rate-limits the multi-call join (HTTP 429). A free API key
+    # (set PEERINGDB_API_KEY on Railway) raises the limit so IXPs load reliably.
+    key = os.environ.get("PEERINGDB_API_KEY")
+    if key:
+        headers["Authorization"] = "Api-Key " + key
+    req = urllib.request.Request(_PDB + path, headers=headers)
     with urllib.request.urlopen(req, timeout=30) as r:
         return json.loads(r.read().decode()).get("data", [])
 
