@@ -56,8 +56,8 @@ _STRIPE_LINKS = {
         "STARTER_MONTHLY_STRIPE_LINK",
         "https://buy.stripe.com/8x2dRa5sS0x75uteGuaZi0g"),
     "developer_monthly": "https://buy.stripe.com/7sY5kE8F4fs13ml0PEaZi0c",
-    "pro_monthly":       "https://buy.stripe.com/dRm7sMbRgcfPg97buiaZi02",
-    "pro_annual":        "https://buy.stripe.com/4gM3cwcVk3JjbSR9maaZi01",
+    "pro_monthly":       "https://buy.stripe.com/eVq5kE4oOfs13mleGuaZi0h",
+    "pro_annual":        "https://buy.stripe.com/dRm7sM6wW7Zz1edgOCaZi07",  # 50%-off one-time annual
     "enterprise_monthly":"https://buy.stripe.com/fZueVe5sS6Vv7CB41QaZi0a",
 }
 

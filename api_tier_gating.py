@@ -63,8 +63,8 @@ STRIPE_PRICES_V2 = {
 
 # Stripe Payment Links — fallback if price IDs not configured
 PAYMENT_LINKS = {
-    'pro_monthly':        'https://buy.stripe.com/dRm7sMbRgcfPg97buiaZi02',
-    'pro_annual':         'https://buy.stripe.com/4gM3cwcVk3JjbSR9maaZi01',
+    'pro_monthly':        'https://buy.stripe.com/eVq5kE4oOfs13mleGuaZi0h',
+    'pro_annual':         'https://buy.stripe.com/dRm7sM6wW7Zz1edgOCaZi07',  # 50%-off one-time annual
     'enterprise_monthly': '',  # TODO: Create in Stripe Dashboard
     'enterprise_annual':  '',  # TODO: Create in Stripe Dashboard
     'research_seed_annual': 'https://buy.stripe.com/cNi3cwaNc0x75utdCqaZi0e',

@@ -954,8 +954,8 @@ def stripe_config():
         'publishableKey': STRIPE_PUBLISHABLE_KEY,
         'configured': bool(STRIPE_SECRET_KEY),
         'prices': {
-            'pro_monthly': 299,
-            'pro_annual': 1990,
+            'pro_monthly': 199,
+            'pro_annual': 1188,  # half-price one-time annual deal (50% off vs $1990 recurring)
             'founding': 99
         }
     })
@@ -975,8 +975,8 @@ def create_checkout_session():
     if not price_id or price_id.startswith('price_XXXXX'):
         # Fall back to payment links if price IDs not configured
         payment_links = {
-            'pro_monthly': 'https://buy.stripe.com/dRm7sMbRgcfPg97buiaZi02',
-            'pro_annual': 'https://buy.stripe.com/4gM3cwcVk3JjbSR9maaZi01',
+            'pro_monthly': 'https://buy.stripe.com/eVq5kE4oOfs13mleGuaZi0h',
+            'pro_annual': 'https://buy.stripe.com/dRm7sM6wW7Zz1edgOCaZi07',  # 50%-off one-time annual
             'founding': 'https://buy.stripe.com/9B6fZi1cCdjT3ml8i6aZi00'
         }
         return jsonify({
