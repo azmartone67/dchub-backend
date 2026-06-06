@@ -1,0 +1,95 @@
+name: Brain Stuck-Queue Drain
+
+# Daily 08:00 UTC drain of the brain's stuck-finding queue.
+#
+# Phase HJ-3 (2026-06-05) — companion to routes/brain_stuck_drain.py.
+# The brain observes findings at a higher rate than the autopilot's
+# proposal pipeline can process. After ~18 cron cycles a finding gets
+# stuck in the "seen many, never tried" state. This workflow forces
+# the top 5 stuck findings into the brain_proposed_code_fixes queue
+# so the next layer5 cron tick has to write a fix for them.
+#
+# Idempotent: the drain endpoint uses ON CONFLICT DO NOTHING and only
+# inserts findings that aren't already in the queue. Safe to re-run.
+# Manual trigger available via workflow_dispatch.
+
+on:
+  schedule:
+    # 08:00 UTC daily — after the 06:05 DCPI recompute window and
+    # before the 09:00 dchub-daily-status fires. Spread the autopilot
+    # load.
+    - cron: '0 8 * * *'
+  workflow_dispatch:
+    inputs:
+      dry_run:
+        description: "Preview only (skip the POST that writes to brain_proposed_code_fixes)"
+        required: false
+        default: "false"
+
+permissions:
+  contents: read
+
+concurrency:
+  group: brain-stuck-drain
+  cancel-in-progress: false
+
+jobs:
+  drain:
+    runs-on: ubuntu-latest
+    timeout-minutes: 4
+    steps:
+      - name: Preview what would be drained
+        id: preview
+        run: |
+          BODY=$(curl -sS --max-time 20 \
+            "https://dchub.cloud/api/v1/brain/stuck-drain/preview")
+          echo "$BODY" | jq -r '.would_drain[] | "  \(.seen)x  \(.kind):\(.subject)"' || true
+          STUCK=$(echo "$BODY" | jq -r '.total_stuck // 0')
+          BATCH=$(echo "$BODY" | jq -r '.batch_size // 5')
+          echo "stuck=$STUCK" >> "$GITHUB_OUTPUT"
+          echo "batch=$BATCH" >> "$GITHUB_OUTPUT"
+          {
+            echo "## Brain stuck-drain — $(date -u +%Y-%m-%d)"
+            echo ""
+            echo "**Total stuck findings:** $STUCK"
+            echo "**Will drain this run:** up to $BATCH (highest seen-count first)"
+            echo ""
+            if [ "$STUCK" -gt 0 ]; then
+              echo '```'
+              echo "$BODY" | jq -r '.would_drain[] | "\(.seen)x\t\(.kind):\(.subject)"'
+              echo '```'
+            else
+              echo "Nothing in the queue. Brain is keeping up."
+            fi
+          } >> "$GITHUB_STEP_SUMMARY"
+
+      - name: Drain (write proposals)
+        if: ${{ steps.preview.outputs.stuck != '0' && github.event.inputs.dry_run != 'true' }}
+        env:
+          ADMIN_KEY: ${{ secrets.DCHUB_ADMIN_KEY }}
+        run: |
+          if [ -z "$ADMIN_KEY" ]; then
+            echo "::warning ::DCHUB_ADMIN_KEY secret not set — skipping write step"
+            exit 0
+          fi
+          BODY=$(curl -sS --max-time 30 -X POST \
+            -H "X-Admin-Key: $ADMIN_KEY" \
+            "https://dchub.cloud/api/v1/admin/brain/stuck-drain/run")
+          INSERTED=$(echo "$BODY" | jq -r '.inserted // 0')
+          SELECTED=$(echo "$BODY" | jq -r '.selected // 0')
+          echo "  inserted=$INSERTED selected=$SELECTED"
+          echo "$BODY" | jq -r '.drained[] | "  drained:  \(.kind):\(.subject) (seen \(.seen)x)"' || true
+          {
+            echo ""
+            echo "### Result"
+            echo "- Inserted into proposal queue: **$INSERTED**"
+            echo "- Selected this batch: **$SELECTED**"
+            errors=$(echo "$BODY" | jq -r '.errors[]?' || true)
+            if [ -n "$errors" ]; then
+              echo ""
+              echo "### Errors"
+              echo '```'
+              echo "$errors"
+              echo '```'
+            fi
+          } >> "$GITHUB_STEP_SUMMARY"

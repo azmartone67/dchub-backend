@@ -3952,6 +3952,26 @@ def handle_well_known():
                     "health":            "https://dchub.cloud/api/v1/vertex/health",
                     "import_hint":       "Vertex AI Console → Extensions → Create → Import from URL → paste the openapi_extension URL.",
                 },
+                # 2026-06-05 — Agent Concierge: problem-first routing
+                # for any LLM/agent that wants to know which DC Hub
+                # tools to call for a user question. The /solve
+                # endpoint takes natural language and returns the
+                # exact tool-call recipe; cookbook surfaces all 12
+                # solved-problem patterns; upgrade-receipt builds a
+                # human-quotable conversion message when the agent
+                # hits a paywall.
+                "agent_concierge": {
+                    "landing":           "https://dchub.cloud/agent",
+                    "solve":             "https://dchub.cloud/api/v1/agent/solve",
+                    "cookbook":          "https://dchub.cloud/api/v1/agent/cookbook",
+                    "upgrade_receipt":   "https://dchub.cloud/api/v1/agent/upgrade-receipt",
+                    "usage_hint": ("POST /api/v1/agent/solve with "
+                                   "{\"problem\":\"user question\"} to get "
+                                   "the exact tool-call recipe (args + "
+                                   "citation + tier required + time-saved "
+                                   "estimate). Hot path is <1ms; no LLM "
+                                   "call required."),
+                },
             },
 
             # Backwards-compat alias — older agents read `interfaces`.
