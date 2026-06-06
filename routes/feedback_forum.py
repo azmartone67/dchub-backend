@@ -70,12 +70,15 @@ _EMAIL_RE = re.compile(r"^[A-Za-z0-9._%+-]+@[A-Za-z0-9.-]+\.[A-Za-z]{2,}$")
 
 
 def _conn():
-    """Open a psycopg2 connection — same pattern as routes/powered_land_gas.py."""
-    try:
-        from routes._iso_common import conn as _c
-        return _c()
-    except Exception:
-        pass
+    """Open a RAW psycopg2 connection. Callers use `conn.cursor()` directly
+    and `conn.close()` in finally, so _conn() must return a raw connection —
+    NOT a context manager.
+
+    r-fix (2026-06-06): the old primary path returned routes._iso_common.conn()
+    which is a @contextmanager (a _GeneratorContextManager), so every forum
+    endpoint AND init_feedback_tables 500'd with
+    "'_GeneratorContextManager' object has no attribute 'cursor'" — the whole
+    forum was dead and the table was never created. Use raw psycopg2.connect."""
     try:
         import psycopg2 as _pg
         dsn = (os.environ.get("DATABASE_URL")
