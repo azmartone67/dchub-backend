@@ -827,10 +827,18 @@ def sitemap_landings():
         urls.append(f'  <url><loc>https://dchub.cloud/facility/{slug}</loc><changefreq>monthly</changefreq><priority>0.85</priority></url>')
     urls.append('  <url><loc>https://dchub.cloud/markets/interxion-frankfurt</loc><changefreq>weekly</changefreq><priority>0.85</priority></url>')
     urls.append('  <url><loc>https://dchub.cloud/partners/moltbook-api</loc><changefreq>monthly</changefreq><priority>0.7</priority></url>')
-    # Market Brief v1 (2026-06-06): 5 seed markets get sitemapped on day 1.
-    # Beyond these the surface auto-renders for any market_power_scores
-    # row, but only the seed five are hand-QA'd + pre-warmed.
-    for _mb_slug in ('northern-virginia', 'dallas', 'phoenix', 'atlanta', 'chicago'):
+    # Market Brief v1 (2026-06-06): 15 seed markets get sitemapped on day 1
+    # (wave 1 = 5 markets + wave 2 = 10 markets added same day). Beyond
+    # these the surface auto-renders for any market_power_scores row, but
+    # only the seed fifteen are hand-QA'd + pre-warmed by the cron.
+    # Kept in lock-step with routes.market_brief.SEED_MARKETS.
+    for _mb_slug in (
+        # Wave 1
+        'northern-virginia', 'dallas', 'phoenix', 'atlanta', 'chicago',
+        # Wave 2
+        'silicon-valley', 'new-york', 'portland', 'hillsboro', 'reno',
+        'columbus', 'salt-lake-city', 'charlotte', 'denver', 'madison',
+    ):
         urls.append(f'  <url><loc>https://dchub.cloud/markets/{_mb_slug}/brief</loc><changefreq>daily</changefreq><priority>0.9</priority></url>')
     items = '\n'.join(urls)
     xml = f'<?xml version="1.0" encoding="UTF-8"?>\n<urlset xmlns="http://www.sitemaps.org/schemas/sitemap/0.9">\n{items}\n</urlset>'

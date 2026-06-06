@@ -168,6 +168,20 @@ SCHEDULE = [
     # GETs. Slot 5/17 chosen per spec. Same-hour-same-day cap → one run/slot.
     # Short, defensive runner: bounded to 5 slugs × ~250ms each = ~1.3s.
     ( 5, 17, "market_brief_warm",   "_run_market_brief_warm"),
+    # DCPI Verdict-Shift auto-press (2026-06-06): once-daily scan for
+    # markets whose DCPI verdict TODAY differs from the verdict 7 days
+    # ago. Qualifying shifts (BUILD or AVOID involved on at least one
+    # side; sub-tier CAUTION↔CAUTION is skipped) get an Anthropic-Claude-
+    # written 50-80-word LinkedIn blurb + a link to the canonical Market
+    # Brief, enqueued into social_media_posts (status='approved') for
+    # the existing LinkedIn publisher loop to ship. Cap MAX_POSTS_PER_RUN=3
+    # so a wide rescore never floods. De-dup via
+    # UNIQUE(market_slug, shift_to, DATE(posted_at)) on
+    # market_verdict_post_log; soft 48h cap per slug stacks on top.
+    # Slot 16/16 per spec — same hour as lost_conversion, but each
+    # crawler has its own per-name last_run guard so they're independent
+    # (see feedback_triage 8/20 sharing with deals for prior art).
+    (16, 16, "verdict_shift_post",  "_run_verdict_shift_post"),
 ]
 
 # ---------------------------------------------------------------------------
@@ -1220,6 +1234,54 @@ def _run_accelerator_scan():
         logger.error("📣 accelerator_scan: error — %s", e)
 
 
+def _run_verdict_shift_post():
+    """DCPI Verdict-Shift auto-press (2026-06-06): once-daily scan for
+    markets whose DCPI verdict TODAY differs from the verdict 7 days
+    ago. Qualifying shifts (BUILD or AVOID on at least one side) get
+    an Anthropic-Claude-written 50-80-word LinkedIn blurb + a link to
+    the canonical Market Brief, enqueued into social_media_posts so
+    the existing LinkedIn publisher loop ships it under its 2/day cap.
+
+    Cron call → X-Internal-Cron → the endpoint runs LIVE (the in-process
+    _is_cron_call() check inside the route flips dry_run off when the
+    cron secret is present). Caps at 3 posts/run; de-dups via
+    UNIQUE(market_slug, shift_to, DATE) on market_verdict_post_log
+    + a soft 48h cap per slug. Never raises."""
+    import requests as _rq
+    key = (os.environ.get("DCHUB_ADMIN_KEY")
+           or os.environ.get("DCHUB_INTERNAL_KEY")
+           or os.environ.get("DCHUB_ADMIN_API_KEY") or "")
+    cron_secret = os.environ.get("DCHUB_CRON_SECRET", "")
+    if not key and not cron_secret:
+        logger.warning("📣 verdict_shift_post: skipped — "
+                       "no DCHUB_ADMIN_KEY or DCHUB_CRON_SECRET set")
+        return
+    base = os.environ.get("DCHUB_INTERNAL_API", "http://127.0.0.1:8080")
+    headers = {"User-Agent": "dchub-cron-verdict-shifts/1.0"}
+    if key:
+        headers["X-Admin-Key"] = key
+    if cron_secret:
+        headers["X-Internal-Cron"] = cron_secret
+    try:
+        # Force live via query param too — belt-and-suspenders alongside
+        # the X-Internal-Cron header (the route accepts either).
+        r = _rq.post(
+            f"{base}/api/v1/admin/verdict-shifts/scan?live=1",
+            headers=headers,
+            timeout=60,
+        )
+        d = (r.json() if r.headers.get("content-type", "").startswith("application/json") else {}) or {}
+        logger.info(
+            "📣 verdict_shift_post: scanned=%s qualifying=%s posted=%s "
+            "would_post=%s errors=%s",
+            d.get("scanned"), d.get("qualifying"),
+            d.get("posted"),  d.get("would_post"),
+            len(d.get("errors", []) or []),
+        )
+    except Exception as e:
+        logger.error("📣 verdict_shift_post: error — %s", e)
+
+
 def _run_mcp_presence_crawl():
     """MCP-presence crawl (2026-06-05): for each known MCP listing site
     DC Hub appears on (Smithery, MCPHive, LobeHub, Glama, YellowMCP,
@@ -1383,6 +1445,7 @@ _RUNNERS = {
     "mcp_presence_auto_fix": _run_mcp_presence_auto_fix,
     "market_brief_warm":   _run_market_brief_warm,
     "feedback_triage":     _run_feedback_triage,
+    "verdict_shift_post":  _run_verdict_shift_post,
 }
 
 

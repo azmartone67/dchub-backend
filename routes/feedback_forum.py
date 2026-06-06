@@ -962,3 +962,535 @@ def feedback_page():
         widget = ""
     html = _FEEDBACK_PAGE.replace("__TURNSTILE_WIDGET__", widget)
     return Response(html, mimetype="text/html")
+
+
+# ── Admin triage dashboard ───────────────────────────────────────────
+# Triage queue for incoming /feedback submissions. Mirrors the public
+# feedback_page() inline-HTML style (no template file → no out-of-sync
+# deploy). Reuses the existing approve/reject endpoints in
+# routes/feedback_triage.py — the row buttons just POST there with the
+# admin key carried through.
+#
+# Auth (matches feedback_triage._admin_ok pattern):
+#   - X-Admin-Key header, OR
+#   - ?admin_key=… query param
+# Both must equal $DCHUB_ADMIN_KEY (or $ADMIN_KEY fallback).
+
+
+def _admin_ok_request(req) -> bool:
+    """Local mirror of feedback_triage._admin_ok so this page does not
+    have to import that module (avoids circular-import drama on cold
+    start). Same env-var precedence: DCHUB_ADMIN_KEY → ADMIN_KEY."""
+    sent = (req.headers.get("X-Admin-Key")
+            or req.args.get("admin_key") or "").strip()
+    if _ADMIN_KEY and sent == _ADMIN_KEY:
+        return True
+    return False
+
+
+_TRIAGE_CLASS_COLORS = {
+    # Maps brain_triage_class → (background, foreground) for the pill.
+    # Color choices mirror the public dchub-brand.css palette already
+    # in use by the public feedback page (--ok / --warn / --bad).
+    "LOW":    ("#10b981", "#062a1d"),  # green
+    "MEDIUM": ("#f59e0b", "#28190a"),  # amber
+    "HIGH":   ("#ef4444", "#280808"),  # red
+    "SPAM":   ("#71717a", "#fafafa"),  # grey
+}
+
+
+def _triage_pill(cls: Optional[str]) -> str:
+    """Render the triage-class chip. Unknown / un-triaged → neutral grey."""
+    label = (cls or "—").upper() if cls else "—"
+    bg, fg = _TRIAGE_CLASS_COLORS.get(label, ("#27272a", "#a1a1aa"))
+    return (f'<span class="pill" style="background:{bg};color:{fg};">'
+            f'{label}</span>')
+
+
+def _esc(v) -> str:
+    """Tiny HTML escaper — no f-string injection. The dashboard is
+    admin-only but we still sanitise user-submitted strings."""
+    if v is None:
+        return ""
+    try:
+        from html import escape
+        return escape(str(v), quote=True)
+    except Exception:
+        return str(v).replace("<", "&lt;").replace(">", "&gt;")
+
+
+@feedback_forum_bp.route("/admin/feedback", methods=["GET"])
+def admin_feedback_dashboard():
+    """Triage dashboard for /feedback submissions.
+
+    Renders 50 recent rows with title, type, brain_triage_class (pill),
+    confidence, recommendation, status, and inline Approve / Reject /
+    Reclassify buttons that hit the existing
+    /api/v1/admin/feedback/<id>/{approve,reject} endpoints (plus a
+    POST /api/v1/admin/feedback/<id>/reclassify that lives in this
+    module). Filter chips at the top, summary stats above the table.
+
+    Auth: X-Admin-Key header OR ?admin_key= query param. Unauthorized
+    callers get a minimal login-style page that explains the auth and
+    a 401 status — so a stale bookmark renders informatively, not as a
+    broken page.
+    """
+    if not _admin_ok_request(request):
+        # Friendly 401 — explains the auth shape rather than a JSON blob.
+        return Response(
+            "<!doctype html><html><head><meta charset=utf-8>"
+            "<title>Admin Feedback · DC Hub</title>"
+            '<link rel="stylesheet" href="/dchub-brand.css"></head>'
+            '<body style="background:#0a0e1a;color:#e6ecf5;font-family:'
+            "'Inter',system-ui,sans-serif;max-width:560px;margin:80px auto;"
+            'padding:32px;">'
+            "<h1 style=\"margin:0 0 12px;font-size:22px;\">Admin only</h1>"
+            "<p style=\"color:#94a3b8;line-height:1.6;\">"
+            "Pass <code>X-Admin-Key: …</code> as a header or "
+            "<code>?admin_key=…</code> as a query param. "
+            "The key value is the <code>DCHUB_ADMIN_KEY</code> env var "
+            "(falls back to <code>ADMIN_KEY</code>)."
+            "</p></body></html>",
+            status=401,
+            mimetype="text/html",
+        )
+
+    # Filter chip from query string (?filter=new|triaged|in_progress|…).
+    # 'all' is the default; any other value falls back to 'all' so a
+    # typo doesn't break the page.
+    flt = (request.args.get("filter") or "all").strip().lower()
+    if flt != "all" and flt not in _VALID_STATUSES:
+        flt = "all"
+
+    # ── DB fan-out ───────────────────────────────────────────────────
+    rows: list[dict] = []
+    stats = {
+        "new":          0,
+        "awaiting":     0,   # status='triaged' (queued for user approval)
+        "auto_applied": 0,   # audit_log rows actor='brain' action='applied'
+        "daily_cap":    5,   # default; overridden by env below
+        "cap_used":     0,
+    }
+    try:
+        from routes.feedback_triage import _DAILY_CAP as _TRIAGE_CAP
+        stats["daily_cap"] = int(_TRIAGE_CAP)
+    except Exception:
+        # Honour the same env var directly as a fallback.
+        try:
+            stats["daily_cap"] = int(
+                os.environ.get("FEEDBACK_AUTO_APPLY_DAILY_CAP", "5"))
+        except Exception:
+            stats["daily_cap"] = 5
+
+    conn = _conn()
+    db_error: Optional[str] = None
+    if conn is None:
+        db_error = "no_database"
+    else:
+        try:
+            with conn.cursor() as cur:
+                # Build the row query — best-effort, with WHERE only when
+                # a real status filter is set.
+                where_sql = ""
+                params: tuple = ()
+                if flt != "all":
+                    where_sql = " WHERE status = %s"
+                    params = (flt,)
+                try:
+                    cur.execute(
+                        "SELECT id, title, type, brain_triage_class, "
+                        "       brain_confidence, brain_recommendation, "
+                        "       status, created_at "
+                        "  FROM feedback_submissions"
+                        + where_sql
+                        + " ORDER BY created_at DESC LIMIT 50",
+                        params,
+                    )
+                    for r in cur.fetchall() or []:
+                        rows.append({
+                            "id":             r[0],
+                            "title":          r[1],
+                            "type":           r[2],
+                            "brain_class":    r[3],
+                            "brain_conf":     r[4],
+                            "brain_rec":      r[5],
+                            "status":         r[6],
+                            "created_at":     r[7],
+                        })
+                except Exception as e:
+                    db_error = f"row_query_failed:{type(e).__name__}"
+                    try: conn.rollback()
+                    except Exception: pass
+
+                # Summary stats — each isolated so a bad query in one
+                # never blanks the others.
+                try:
+                    cur.execute(
+                        "SELECT status, COUNT(*) FROM feedback_submissions "
+                        " WHERE status IN ('new','triaged') "
+                        " GROUP BY status"
+                    )
+                    for r in cur.fetchall() or []:
+                        if r[0] == "new":
+                            stats["new"] = int(r[1] or 0)
+                        elif r[0] == "triaged":
+                            stats["awaiting"] = int(r[1] or 0)
+                except Exception:
+                    try: conn.rollback()
+                    except Exception: pass
+
+                try:
+                    cur.execute(
+                        "SELECT COUNT(*) FROM feedback_audit_log "
+                        " WHERE action = 'applied' AND actor = 'brain' "
+                        "   AND created_at > NOW() - INTERVAL '24 hours'"
+                    )
+                    r = cur.fetchone()
+                    stats["cap_used"] = int((r[0] if r else 0) or 0)
+                    stats["auto_applied"] = stats["cap_used"]
+                except Exception:
+                    try: conn.rollback()
+                    except Exception: pass
+        finally:
+            try: conn.close()
+            except Exception: pass
+
+    # ── Render ──────────────────────────────────────────────────────
+    # Render a row from rows (already a list[dict]).
+    def _row_html(r: dict) -> str:
+        sid = int(r["id"])
+        title = _esc(r.get("title") or "—")
+        typ = _esc(r.get("type") or "other")
+        cls_pill = _triage_pill(r.get("brain_class"))
+        conf = r.get("brain_conf")
+        try:
+            conf_str = f"{float(conf):.2f}" if conf is not None else "—"
+        except Exception:
+            conf_str = "—"
+        rec = _esc((r.get("brain_rec") or "")[:200])
+        rec_full = _esc(r.get("brain_rec") or "")
+        status = _esc(r.get("status") or "—")
+        created = r.get("created_at")
+        try:
+            created_str = created.strftime("%Y-%m-%d %H:%M") if created else "—"
+        except Exception:
+            created_str = str(created or "—")[:16]
+        # The buttons use the data-id attribute; the JS at the bottom of
+        # the page wires them to the admin endpoints carrying the admin
+        # key from the page URL (or window prompt fallback).
+        return (
+            f'<tr data-status="{status}">'
+            f'<td class="num">#{sid}</td>'
+            f'<td><div class="title">{title}</div>'
+            f'<div class="meta">{created_str}</div></td>'
+            f'<td>{typ}</td>'
+            f'<td>{cls_pill}<div class="meta">conf {conf_str}</div></td>'
+            f'<td><div class="rec" title="{rec_full}">{rec}</div></td>'
+            f'<td><span class="status status-{status}">{status}</span></td>'
+            f'<td class="actions">'
+            f'<button class="btn approve" data-id="{sid}" data-act="approve">Approve</button> '
+            f'<button class="btn reject"  data-id="{sid}" data-act="reject">Reject</button> '
+            f'<button class="btn reclass" data-id="{sid}" data-act="reclassify">Reclassify</button>'
+            f'</td></tr>'
+        )
+
+    if rows:
+        rows_html = "\n".join(_row_html(r) for r in rows)
+    elif db_error:
+        rows_html = (
+            f'<tr><td colspan="7" class="empty">'
+            f'No rows — DB error: {_esc(db_error)}</td></tr>'
+        )
+    else:
+        rows_html = (
+            '<tr><td colspan="7" class="empty">'
+            'No feedback submissions match this filter.</td></tr>'
+        )
+
+    # Filter chips — render with the *current* filter highlighted so the
+    # chip looks pressed.
+    chip_options = [
+        ("all",          "All"),
+        ("new",          "New"),
+        ("triaged",      "Triaged"),
+        ("in_progress",  "In progress"),
+        ("shipped",      "Shipped"),
+        ("declined",     "Declined"),
+        ("spam",         "Spam"),
+    ]
+    chip_html_parts = []
+    for val, label in chip_options:
+        cls = "chip on" if val == flt else "chip"
+        chip_html_parts.append(
+            f'<a class="{cls}" href="/admin/feedback?filter={val}'
+            f'&amp;admin_key=__ADMIN_KEY__">{label}</a>'
+        )
+    chips_html = "".join(chip_html_parts)
+
+    cap_remaining = max(0, int(stats["daily_cap"]) - int(stats["cap_used"]))
+
+    # Build the page. Brand-consistent with /feedback (same palette /
+    # spacing tokens). The admin key in the page URL is echoed back into
+    # the chip links + JS so the action buttons keep authenticating.
+    admin_key_raw = (
+        request.headers.get("X-Admin-Key")
+        or request.args.get("admin_key") or ""
+    ).strip()
+    admin_key_safe = _esc(admin_key_raw)
+
+    html = f"""<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<title>Feedback Triage — DC Hub Admin</title>
+<meta name="robots" content="noindex,nofollow">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<link rel="stylesheet" href="/dchub-brand.css">
+<style>
+  :root {{ --bg:#0a0e1a; --panel:#111726; --border:#1f2940; --ink:#e6ecf5;
+          --muted:#94a3b8; --accent:#3da9fc; --ok:#22c55e; --warn:#f59e0b;
+          --bad:#ef4444; --shipped:#10b981; }}
+  *{{box-sizing:border-box}}
+  body {{ background:var(--bg); color:var(--ink);
+         font-family:'Inter',system-ui,sans-serif; margin:0; padding:0; }}
+  .wrap {{ max-width:1400px; margin:0 auto; padding:28px 20px 80px; }}
+  h1 {{ font-size:24px; margin:0 0 4px; letter-spacing:-0.01em; }}
+  .sub {{ color:var(--muted); margin:0 0 22px; font-size:13px; }}
+  .stats {{ display:grid; grid-template-columns:repeat(auto-fit,minmax(180px,1fr));
+           gap:10px; margin:0 0 18px; }}
+  .stat {{ background:var(--panel); border:1px solid var(--border);
+          border-radius:12px; padding:14px 16px; }}
+  .stat-l {{ font-size:11px; color:var(--muted); text-transform:uppercase;
+            letter-spacing:0.06em; }}
+  .stat-v {{ font-size:22px; font-weight:600; margin-top:2px; }}
+  .chips {{ display:flex; flex-wrap:wrap; gap:6px; margin:0 0 16px; }}
+  .chip {{ display:inline-block; padding:6px 12px; border-radius:999px;
+          background:var(--panel); color:var(--muted); border:1px solid var(--border);
+          font-size:12px; text-decoration:none; }}
+  .chip.on {{ background:var(--accent); color:#fff; border-color:var(--accent); }}
+  .chip:hover {{ color:var(--ink); }}
+  table {{ width:100%; border-collapse:collapse; background:var(--panel);
+          border:1px solid var(--border); border-radius:12px; overflow:hidden;
+          font-size:13px; }}
+  th, td {{ padding:10px 12px; text-align:left; border-bottom:1px solid var(--border);
+           vertical-align:top; }}
+  th {{ background:#0d1322; font-size:11px; color:var(--muted);
+        text-transform:uppercase; letter-spacing:0.06em; font-weight:600; }}
+  tr:last-child td {{ border-bottom:none; }}
+  td.num {{ color:var(--muted); font-family:'JetBrains Mono',monospace; font-size:12px;
+           white-space:nowrap; }}
+  .title {{ font-weight:600; color:var(--ink); }}
+  .meta {{ font-size:11px; color:var(--muted); margin-top:3px;
+          font-family:'JetBrains Mono',monospace; }}
+  .pill {{ display:inline-block; padding:2px 9px; border-radius:999px;
+          font-size:11px; font-weight:600; letter-spacing:0.04em; }}
+  .rec {{ max-width:380px; color:var(--ink); line-height:1.45; }}
+  .status {{ font-size:11px; padding:2px 8px; border-radius:6px;
+            background:#27272a; color:#a1a1aa; text-transform:uppercase;
+            letter-spacing:0.06em; }}
+  .status-new {{ background:#1e3a8a; color:#dbeafe; }}
+  .status-triaged {{ background:#92400e; color:#fef3c7; }}
+  .status-in_progress {{ background:#3730a3; color:#e0e7ff; }}
+  .status-shipped {{ background:#065f46; color:#d1fae5; }}
+  .status-declined {{ background:#7f1d1d; color:#fee2e2; }}
+  .actions {{ white-space:nowrap; }}
+  .btn {{ display:inline-block; border:none; cursor:pointer; padding:5px 11px;
+         border-radius:6px; font-size:11px; font-weight:600;
+         font-family:inherit; }}
+  .btn.approve {{ background:var(--ok); color:#fff; }}
+  .btn.reject {{ background:var(--bad); color:#fff; }}
+  .btn.reclass {{ background:#475569; color:#fff; }}
+  .btn:hover {{ opacity:0.85; }}
+  .btn:disabled {{ opacity:0.4; cursor:not-allowed; }}
+  .empty {{ text-align:center; color:var(--muted); padding:32px 0; }}
+  .toast {{ position:fixed; bottom:20px; right:20px; background:var(--panel);
+           border:1px solid var(--border); border-radius:10px; padding:12px 16px;
+           color:var(--ink); font-size:13px; box-shadow:0 6px 24px rgba(0,0,0,0.4);
+           opacity:0; transition:opacity 0.2s; pointer-events:none; }}
+  .toast.show {{ opacity:1; }}
+</style>
+</head>
+<body>
+<div class="wrap">
+  <h1>Feedback Triage</h1>
+  <p class="sub">Recent 50 submissions · brain-triaged + one-click moderation. Filter chips below the stats.</p>
+
+  <div class="stats">
+    <div class="stat"><div class="stat-l">New</div><div class="stat-v">{stats['new']}</div></div>
+    <div class="stat"><div class="stat-l">Awaiting approval</div><div class="stat-v">{stats['awaiting']}</div></div>
+    <div class="stat"><div class="stat-l">Auto-applied (24h)</div><div class="stat-v">{stats['auto_applied']}</div></div>
+    <div class="stat"><div class="stat-l">Daily cap remaining</div><div class="stat-v">{cap_remaining} / {stats['daily_cap']}</div></div>
+  </div>
+
+  <div class="chips">{chips_html}</div>
+
+  <table>
+    <thead>
+      <tr>
+        <th>ID</th>
+        <th>Title</th>
+        <th>Type</th>
+        <th>Triage</th>
+        <th>Recommendation</th>
+        <th>Status</th>
+        <th>Actions</th>
+      </tr>
+    </thead>
+    <tbody>
+{rows_html}
+    </tbody>
+  </table>
+</div>
+
+<div id="toast" class="toast"></div>
+
+<script>
+(function(){{
+  // Pull the admin key from the page URL so action buttons keep
+  // authenticating against the existing /api/v1/admin/feedback/<id>/…
+  // endpoints. Fall back to prompt() if absent.
+  var params = new URLSearchParams(window.location.search);
+  var ADMIN_KEY = params.get("admin_key") || "{admin_key_safe}" || "";
+
+  // Rewrite the chip links so each one carries the *current* admin_key
+  // (the template literal placeholder above is the raw token).
+  document.querySelectorAll(".chip").forEach(function(a){{
+    a.href = a.href.replace("__ADMIN_KEY__", encodeURIComponent(ADMIN_KEY));
+  }});
+
+  function toast(msg, ok){{
+    var t = document.getElementById("toast");
+    t.textContent = msg;
+    t.style.borderColor = ok ? "#22c55e" : "#ef4444";
+    t.classList.add("show");
+    setTimeout(function(){{ t.classList.remove("show"); }}, 2500);
+  }}
+
+  async function callAdmin(act, sid, rationale){{
+    if (!ADMIN_KEY) {{
+      ADMIN_KEY = prompt("Admin key:");
+      if (!ADMIN_KEY) return null;
+    }}
+    var url = "/api/v1/admin/feedback/" + sid + "/" + act;
+    var headers = {{ "X-Admin-Key": ADMIN_KEY, "Content-Type": "application/json" }};
+    var body = rationale ? JSON.stringify({{rationale: rationale}}) : null;
+    try {{
+      var resp = await fetch(url, {{ method: "POST", headers: headers, body: body }});
+      var j = await resp.json().catch(function(){{ return {{}}; }});
+      if (!resp.ok) {{
+        toast("Error: " + (j.error || resp.status), false);
+        return null;
+      }}
+      return j;
+    }} catch (e) {{
+      toast("Network error: " + e.message, false);
+      return null;
+    }}
+  }}
+
+  document.querySelectorAll(".btn").forEach(function(b){{
+    b.addEventListener("click", async function(){{
+      var act = b.dataset.act;
+      var sid = b.dataset.id;
+      if (act === "reject") {{
+        var why = prompt("Reject reason (visible in audit log):", "Not actionable");
+        if (why === null) return;
+        b.disabled = true;
+        var r = await callAdmin("reject", sid, why);
+        if (r && r.ok) {{
+          toast("Rejected #" + sid, true);
+          var row = b.closest("tr"); if (row) row.style.opacity = "0.45";
+        }} else {{ b.disabled = false; }}
+      }} else if (act === "approve") {{
+        b.disabled = true;
+        var r = await callAdmin("approve", sid, null);
+        if (r && r.ok) {{
+          toast("Approved #" + sid, true);
+          var row = b.closest("tr"); if (row) row.style.opacity = "0.6";
+        }} else {{ b.disabled = false; }}
+      }} else if (act === "reclassify") {{
+        var cls = prompt("New triage class (LOW / MEDIUM / HIGH / SPAM):", "MEDIUM");
+        if (!cls) return;
+        cls = cls.trim().toUpperCase();
+        if (["LOW","MEDIUM","HIGH","SPAM"].indexOf(cls) < 0) {{
+          toast("Invalid class", false); return;
+        }}
+        b.disabled = true;
+        var r = await callAdmin("reclassify", sid, cls);
+        if (r && r.ok) {{
+          toast("Reclassified #" + sid + " → " + cls, true);
+          // Soft refresh so the new pill colour shows.
+          setTimeout(function(){{ window.location.reload(); }}, 600);
+        }} else {{ b.disabled = false; }}
+      }}
+    }});
+  }});
+}})();
+</script>
+</body>
+</html>"""
+    return Response(html, mimetype="text/html")
+
+
+@feedback_forum_bp.route("/api/v1/admin/feedback/<int:sid>/reclassify",
+                          methods=["POST"])
+def admin_feedback_reclassify(sid: int):
+    """Override the brain's triage_class on a submission. Body or query
+    string param `rationale` is read as the new class (LOW/MEDIUM/HIGH/
+    SPAM). Audit row written via feedback_triage._audit if importable;
+    otherwise falls back to a direct INSERT into feedback_audit_log.
+
+    Auth: same X-Admin-Key / ?admin_key= pattern as feedback_triage."""
+    if not _admin_ok_request(request):
+        return jsonify(error="unauthorized"), 401
+    body = request.get_json(silent=True) or {}
+    raw = (body.get("rationale") or body.get("class")
+           or request.args.get("class") or "").strip().upper()
+    if raw not in ("LOW", "MEDIUM", "HIGH", "SPAM"):
+        return jsonify(error="invalid_class",
+                       allowed=["LOW", "MEDIUM", "HIGH", "SPAM"]), 400
+    conn = _conn()
+    if conn is None:
+        return jsonify(error="db_unavailable"), 503
+    try:
+        with conn.cursor() as cur:
+            # Stamp the override + bump triage_runs so the next cron pass
+            # sees that a human touched this row.
+            cur.execute(
+                "UPDATE feedback_submissions "
+                "   SET brain_triage_class = %s, "
+                "       brain_last_triage_at = NOW(), "
+                "       status_updated_at = NOW() "
+                " WHERE id = %s RETURNING id",
+                (raw, sid),
+            )
+            row = cur.fetchone()
+            if not row:
+                return jsonify(error="not_found"), 404
+            conn.commit()
+        # Audit — prefer feedback_triage._audit for symmetry with the
+        # approve/reject endpoints; fall back to a direct insert.
+        try:
+            from routes.feedback_triage import _audit as fa
+            fa(sid, "reclassified", "admin", f"new_class={raw}")
+        except Exception:
+            try:
+                with conn.cursor() as cur:
+                    cur.execute(
+                        "INSERT INTO feedback_audit_log "
+                        "  (submission_id, action, actor, notes) "
+                        "VALUES (%s, 'reclassified', 'admin', %s)",
+                        (sid, f"new_class={raw}"),
+                    )
+                conn.commit()
+            except Exception:
+                try: conn.rollback()
+                except Exception: pass
+        return jsonify(ok=True, id=sid, brain_triage_class=raw), 200
+    except Exception as e:
+        try: conn.rollback()
+        except Exception: pass
+        return jsonify(error="db_update_failed", hint=str(e)[:200]), 500
+    finally:
+        try: conn.close()
+        except Exception: pass

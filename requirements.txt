@@ -35,3 +35,9 @@ matplotlib>=3.7
 # r47.3 (2026-05-25): ISO queue parsers — ERCOT PDFs (pypdf), PJM XLSX (openpyxl)
 pypdf>=4.0
 openpyxl>=3.1
+
+# Market Brief PDF export (Phase 2) — HTML→PDF via weasyprint. Linux Docker
+# already has pango/cairo via apt; Railway image needs libpango1.0-0 +
+# libcairo2 + libpangoft2-1.0-0 + shared-mime-info installed in the
+# Dockerfile (or buildpacks) for weasyprint to dlopen at runtime.
+weasyprint>=60.0

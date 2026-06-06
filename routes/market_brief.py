@@ -40,22 +40,50 @@ market_brief_bp = Blueprint("market_brief", __name__)
 # Constants
 # ─────────────────────────────────────────────────────────────────────
 
-# 5 seed markets — first launch wave. Beyond these the surface still
-# auto-renders for any market with a market_power_scores row, but only
-# the seed five are hand-QA'd and pre-warmed by the cron.
+# 15 seed markets — top US data-center markets by operational MW +
+# transaction volume. Wave 1 (5) shipped 2026-06-06; wave 2 (10) added
+# same day. Beyond these the surface still auto-renders for any market
+# with a market_power_scores row, but only the seed fifteen are
+# hand-QA'd and pre-warmed by the cron.
+#
+# Per-market verification (2026-06-06 vs live /api/v1/dcpi/scores/<slug>):
+#   silicon-valley       → DCPI canonical = santa-clara (CA)
+#   new-york             → market_slug=new-york (NY)
+#   portland             → market_slug=portland (state=ME on DCPI — sole
+#                          row; no portland-or in market_power_scores yet)
+#   hillsboro            → market_slug=hillsboro (OR)
+#   reno                 → market_slug=reno (NV)
+#   columbus             → market_slug=columbus (OH)
+#   salt-lake-city       → market_slug=salt-lake-city (UT)
+#   charlotte            → market_slug=charlotte (NC)
+#   denver               → market_slug=denver (CO)
+#   madison              → market_slug=madison (WI)
 SEED_MARKETS = (
+    # Wave 1 (2026-06-06)
     "northern-virginia",
     "dallas",
     "phoenix",
     "atlanta",
     "chicago",
+    # Wave 2 (2026-06-06) — top US markets by ops MW + transaction volume
+    "silicon-valley",
+    "new-york",
+    "portland",
+    "hillsboro",
+    "reno",
+    "columbus",
+    "salt-lake-city",
+    "charlotte",
+    "denver",
+    "madison",
 )
 
 # Alias map: alternate slug → canonical slug. Mirrors the spec's "canonicalize
 # to city slug" rule (and prevents the 6.6k/day 404 incident from
 # /markets vs /dcpi slug drift — per the market-slugs memory). The canonical
 # form for the Market Brief is the metro slug used by /markets/<slug>, so
-# `ashburn` resolves to `northern-virginia`.
+# `ashburn` resolves to `northern-virginia`, and `san-jose`/`santa-clara`
+# resolve to `silicon-valley`.
 _CANONICAL_SLUG: dict[str, str] = {
     "ashburn": "northern-virginia",
     "nova": "northern-virginia",
@@ -64,6 +92,19 @@ _CANONICAL_SLUG: dict[str, str] = {
     "phx": "phoenix",
     "atl": "atlanta",
     "chi": "chicago",
+    # Wave 2 aliases — metro form is the canonical Market Brief URL,
+    # DCPI city slug routes via MARKET_ALIAS below.
+    "san-jose": "silicon-valley",
+    "santa-clara": "silicon-valley",
+    "sv": "silicon-valley",
+    "nyc": "new-york",
+    "new-york-city": "new-york",
+    "ny": "new-york",
+    "pdx": "portland",
+    "slc": "salt-lake-city",
+    "clt": "charlotte",
+    "den": "denver",
+    "msn": "madison",
 }
 
 # Reverse map: canonical METRO slug → CITY slug used by market_power_scores
@@ -72,7 +113,13 @@ _CANONICAL_SLUG: dict[str, str] = {
 # even when the URL uses the metro form.
 MARKET_ALIAS: dict[str, str] = {
     "northern-virginia": "ashburn",
-    # dallas, phoenix, atlanta, chicago: DCPI uses the same slug as the URL
+    # silicon-valley → DCPI stores as `santa-clara` (verified live
+    # 2026-06-06: GET /api/v1/dcpi/scores/silicon-valley returns
+    # _canonical_slug=santa-clara, market_slug=santa-clara).
+    "silicon-valley": "santa-clara",
+    # dallas, phoenix, atlanta, chicago, new-york, portland, hillsboro,
+    # reno, columbus, salt-lake-city, charlotte, denver, madison:
+    # DCPI uses the same slug as the URL.
 }
 
 
@@ -894,11 +941,23 @@ def _render_html(brief: dict) -> str:
 
     # ── Share URLs ────────────────────────────────────────────────────
     page_url = f"https://dchub.cloud/markets/{slug}/brief"
+    pdf_url  = f"https://dchub.cloud/markets/{slug}/brief.pdf"
     share_x = (f"https://twitter.com/intent/tweet?text="
                f"{name.replace(' ', '+')}+data+center+market+brief+%E2%80%94+DCPI+"
                f"{score_str.replace('/', '%2F')}+verdict+{verdict}"
                f"&url={page_url}")
     share_li = f"https://www.linkedin.com/sharing/share-offsite/?url={page_url}"
+
+    # PRO+ users see a real Download PDF button; anon/free see an upgrade CTA.
+    # Both render the same `.pdf-btn` slot in the share strip below.
+    if is_pro:
+        pdf_btn_html = (f'<a href="{pdf_url}" class="pdf-btn pro" '
+                        f'download="dchub-market-brief-{slug}.pdf">'
+                        f'Download PDF</a>')
+    else:
+        pdf_btn_html = ('<a href="/pricing?utm_source=market_brief_pdf" '
+                        'class="pdf-btn upgrade">'
+                        'Upgrade to download PDF</a>')
 
     # ── Citation block ────────────────────────────────────────────────
     citation_url = page_url
@@ -953,6 +1012,8 @@ tbody tr:last-child td{{border-bottom:none}}
 .share{{display:flex;gap:.5rem;flex-wrap:wrap;margin:2rem 0}}
 .share a{{background:var(--surf);border:1px solid var(--b);border-radius:8px;padding:.5rem 1rem;color:var(--ind);text-decoration:none;font-size:.85rem;font-family:'JetBrains Mono',monospace}}
 .share a:hover{{border-color:var(--ind)}}
+.pdf-btn.pro{{background:var(--grad)!important;color:#fff!important;font-weight:600;border:none!important}}
+.pdf-btn.upgrade{{background:rgba(99,102,241,.12)!important;color:#a5b4fc!important;border:1px dashed #6366f1!important}}
 .copy-btn{{cursor:pointer;background:none;border:none;font-family:inherit;font-size:inherit;padding:0;color:inherit}}
 .blur-card{{position:relative;background:var(--surf);border:1px solid var(--b);border-radius:14px;padding:2rem;margin:.5rem 0 1.5rem;overflow:hidden;min-height:180px}}
 .blur-overlay{{position:absolute;inset:0;background:linear-gradient(180deg,rgba(10,10,15,.4) 0%,rgba(10,10,15,.92) 100%);display:flex;flex-direction:column;align-items:center;justify-content:center;text-align:center;padding:1.5rem;z-index:2;backdrop-filter:blur(6px)}}
@@ -1016,7 +1077,7 @@ tbody tr:last-child td{{border-bottom:none}}
   <a href="{share_x}" target="_blank" rel="noopener">Share on X</a>
   <a href="{share_li}" target="_blank" rel="noopener">Share on LinkedIn</a>
   <a href="#" class="copy-btn" onclick="navigator.clipboard.writeText('{page_url}');this.textContent='Copied!';return false;">Copy URL</a>
-  <a href="javascript:window.print()">Print / PDF</a>
+  {pdf_btn_html}
 </div>
 
 <div class="citation">{citation}</div>
@@ -1029,15 +1090,387 @@ tbody tr:last-child td{{border-bottom:none}}
 
 
 # ─────────────────────────────────────────────────────────────────────
+# PDF export — Phase 2 (2026-06-06)
+#
+# Brokers want to drop the brief into PowerPoint decks. We render the
+# SAME 9-section data through a print-tuned HTML shell + weasyprint,
+# adding a cover page, page numbers, and a footer watermark. PRO+ gated
+# (anon → 402); 1h edge cache because a fresh render is expensive.
+#
+# Linux Docker runtime needs the native libs (libpango1.0-0 + libcairo2
+# + libpangoft2-1.0-0). Local arm64 macOS dev needs them via Homebrew —
+# CI tests against the Linux image. On import failure we raise 503
+# from the route (NOT silently render a TODO stub).
+# ─────────────────────────────────────────────────────────────────────
+
+# Slimmer print-mode HTML: drops nav/share/blur/script, swaps the dark
+# theme for paper, sized for letter, leaves room for @page header/footer.
+# Footer watermark is fully baked into the @page rule via a Python f-string
+# at render time (the watermark and date are fixed for a given render).
+_PDF_BASE_CSS_TMPL = """
+@page {
+  size: Letter;
+  margin: 0.75in 0.6in 0.95in 0.6in;
+  @bottom-left {
+    content: "DC Hub · WATERMARK_TOKEN · Generated DATE_TOKEN";
+    font: 8pt 'Helvetica', sans-serif;
+    color: #71717a;
+    padding-top: 6pt;
+  }
+  @bottom-right {
+    content: "Page " counter(page) " of " counter(pages);
+    font: 8pt 'Helvetica', sans-serif;
+    color: #71717a;
+    padding-top: 6pt;
+  }
+}
+@page :first {
+  margin: 0;
+  @bottom-left { content: none; }
+  @bottom-right { content: none; }
+}
+body { font-family: 'Helvetica', 'Arial', sans-serif; color: #0a0a0f; font-size: 10pt; line-height: 1.55; margin: 0; }
+
+/* ── COVER PAGE ── */
+.cover { page: cover; height: 100vh; padding: 0; margin: 0; page-break-after: always; position: relative;
+         background: linear-gradient(160deg, #0a0a0f 0%, #131319 60%, #1a1a26 100%); color: #fafafa; }
+.cover-inner { padding: 1.4in 0.9in 1in 0.9in; height: 100%; display: flex; flex-direction: column; }
+.cover-logo { font-size: 11pt; letter-spacing: .08em; text-transform: uppercase; color: #a1a1aa; font-weight: 600; }
+.cover-title { font-size: 38pt; font-weight: 700; letter-spacing: -0.02em; margin: 0.55in 0 0.15in 0; line-height: 1.05; }
+.cover-sub { font-size: 13pt; color: #a1a1aa; margin: 0 0 0.5in 0; }
+.cover-verdict-pill { display: inline-block; font-weight: 700; font-size: 11pt; padding: 0.10in 0.30in;
+                      border-radius: 6pt; letter-spacing: .04em; text-transform: uppercase; }
+.cover-meta { margin-top: auto; font-size: 10pt; color: #a1a1aa; border-top: 1px solid rgba(255,255,255,0.12);
+              padding-top: 0.25in; line-height: 1.7; }
+.cover-meta b { color: #fafafa; font-weight: 600; display: inline-block; min-width: 1.4in; }
+.cover-prepared { margin-top: 0.4in; font-size: 11pt; color: #fafafa; }
+.cover-prepared .line { display: inline-block; border-bottom: 1pt solid #6366f1; min-width: 3.2in; margin-left: 0.15in; padding-bottom: 1pt; }
+
+/* ── BODY PAGES ── */
+h1 { font-size: 18pt; font-weight: 700; margin: 0 0 6pt 0; color: #0a0a0f; letter-spacing: -.01em; }
+h2 { font-size: 12pt; font-weight: 700; margin: 18pt 0 6pt 0; color: #131319; border-bottom: 1pt solid #d4d4d8; padding-bottom: 3pt; }
+.lead { color: #52525b; font-size: 10pt; margin: 0 0 12pt 0; }
+.verdict-pill { display: inline-block; font-weight: 700; font-size: 9pt; padding: 2pt 8pt; border-radius: 4pt; letter-spacing: .04em; text-transform: uppercase; vertical-align: middle; }
+.score { font-family: 'JetBrains Mono','Courier New', monospace; color: #131319; font-weight: 600; margin-left: 6pt; }
+.kpis { display: grid; grid-template-columns: repeat(4, 1fr); gap: 6pt; margin: 4pt 0 14pt 0; }
+.kpi { border: 1px solid #d4d4d8; border-radius: 4pt; padding: 6pt 8pt; }
+.kpi-l { font-size: 7pt; color: #71717a; text-transform: uppercase; letter-spacing: .05em; font-weight: 500; }
+.kpi-v { font-size: 11pt; color: #0a0a0f; font-weight: 600; margin-top: 2pt; }
+table { width: 100%; border-collapse: collapse; margin: 4pt 0 12pt 0; font-size: 9pt; }
+th, td { padding: 4pt 6pt; text-align: left; border-bottom: 1px solid #e4e4e7; }
+th { background: #f4f4f5; font-size: 7pt; text-transform: uppercase; letter-spacing: .05em; color: #52525b; font-weight: 600; }
+td { color: #18181b; vertical-align: top; }
+.grid3 { display: grid; grid-template-columns: 1fr 1fr 1fr; gap: 5pt; margin: 4pt 0 12pt 0; }
+.cell { border: 1px solid #d4d4d8; border-radius: 4pt; padding: 5pt 7pt; font-size: 9pt; }
+.cell b { color: #71717a; font-size: 7pt; text-transform: uppercase; letter-spacing: .04em; font-weight: 500; display: block; margin-bottom: 2pt; }
+.cell span { color: #0a0a0f; font-weight: 600; }
+.risk-list { padding-left: 0; list-style: none; margin: 4pt 0 12pt 0; }
+.risk-list li { border: 1px solid #d4d4d8; border-radius: 4pt; padding: 5pt 8pt; margin-bottom: 3pt; font-size: 9pt; }
+.risk-list b { color: #52525b; font-weight: 600; margin-right: 4pt; }
+.outlook p { font-size: 10pt; margin: 6pt 0; color: #18181b; }
+.citation { border: 1px solid #d4d4d8; border-radius: 4pt; padding: 6pt 8pt; font-size: 8pt;
+            color: #52525b; margin: 16pt 0 6pt 0; font-family: 'JetBrains Mono','Courier New',monospace; }
+.section { page-break-inside: avoid; }
+"""
+
+
+def _render_pdf_html(brief: dict) -> str:
+    """Build a print-tuned HTML for weasyprint — cover page first, then
+    the same data the live brief renders but stripped of nav/blur/share/
+    print-fragile CSS. PRO-only path (called only by the PDF route after
+    `_is_pro()` gate)."""
+    slug = brief.get("slug") or ""
+    hero = brief.get("hero") or {}
+    live = brief.get("live_as_of") or {}
+    kpis = brief.get("kpis") or {}
+    outlook = brief.get("outlook") or {}
+    pg = brief.get("power_grid") or {}
+    pipe = brief.get("pipeline") or []
+    ops = brief.get("operators") or []
+    ma = brief.get("ma") or []
+    comps = brief.get("comps") or {}
+    risk = brief.get("risk") or {}
+
+    name = hero.get("name") or slug.replace("-", " ").title()
+    verdict = hero.get("verdict") or "—"
+    score = hero.get("composite_score")
+    score_str = f"{score}/100" if score is not None else "—"
+    colors = _verdict_colors(verdict)
+
+    live_iso = live.get("iso") or hero.get("computed_at") or ""
+    citation_iso = (live_iso or "")[:19].replace("T", " ")
+    today_iso = datetime.date.today().isoformat()
+    page_url = f"dchub.cloud/markets/{slug}/brief"
+
+    def _fmt_mw(v):
+        if v is None:
+            return "—"
+        try:
+            return f"{float(v):,.0f} MW"
+        except (TypeError, ValueError):
+            return "—"
+
+    def _fmt_int(v):
+        if v is None:
+            return "—"
+        try:
+            return f"{int(v):,}"
+        except (TypeError, ValueError):
+            return "—"
+
+    def _fmt_months(v):
+        if v is None:
+            return "—"
+        try:
+            return f"{float(v):.1f} mo"
+        except (TypeError, ValueError):
+            return "—"
+
+    def _fmt_pct(v):
+        if v is None:
+            return "—"
+        try:
+            return f"{float(v):.1f}%"
+        except (TypeError, ValueError):
+            return "—"
+
+    def _money(v):
+        if v is None:
+            return "—"
+        try:
+            return f"${float(v):,.0f}"
+        except (TypeError, ValueError):
+            return "—"
+
+    def _row(cells):
+        return "<tr>" + "".join(f"<td>{c}</td>" for c in cells) + "</tr>"
+
+    # ── KPI tiles (limit to top 4 so the at-a-glance fits a single row) ──
+    kpi_pairs = [
+        ("Operational", _fmt_mw(kpis.get("operational_mw"))),
+        ("Pipeline",    _fmt_mw(kpis.get("pipeline_mw"))),
+        ("Facilities",  _fmt_int(kpis.get("facility_count"))),
+        ("Queue Wait",  _fmt_months(kpis.get("queue_months"))),
+    ]
+    kpi_html = "".join(
+        f'<div class="kpi"><div class="kpi-l">{lab}</div>'
+        f'<div class="kpi-v">{val}</div></div>'
+        for lab, val in kpi_pairs)
+
+    # ── Power & Grid grid ──
+    pg_html = (
+        '<div class="grid3">'
+        f'<div class="cell"><b>ISO</b><span>{pg.get("iso") or "—"}</span></div>'
+        f'<div class="cell"><b>Queue Capacity</b><span>{_fmt_mw(pg.get("queue_capacity_mw"))}</span></div>'
+        f'<div class="cell"><b>Queue Wait</b><span>{_fmt_months(pg.get("queue_wait_months"))}</span></div>'
+        f'<div class="cell"><b>Reserve Margin</b><span>{_fmt_pct(pg.get("reserve_margin_pct"))}</span></div>'
+        f'<div class="cell"><b>Gen Additions 12mo</b><span>{_fmt_mw(pg.get("gen_additions_mw"))}</span></div>'
+        f'<div class="cell"><b>Interconnect Pending</b><span>{_fmt_mw(pg.get("interconnection_pending_mw"))}</span></div>'
+        '</div>'
+    )
+
+    # ── Pipeline (top 8 — trim for print) ──
+    pipe_top = pipe[:8]
+    pipe_rows = "\n".join(
+        _row([p.get("operator") or "—",
+              (p.get("facility") or "—")[:60],
+              _fmt_mw(p.get("power_mw")),
+              (p.get("status") or "—")[:20],
+              p.get("eta") or "—"])
+        for p in pipe_top) or _row(["—", "No pipeline tracked", "—", "—", "—"])
+    pipe_html = (
+        '<table><thead><tr><th>Operator</th><th>Facility</th>'
+        '<th>Power</th><th>Status</th><th>ETA</th></tr></thead>'
+        f'<tbody>{pipe_rows}</tbody></table>')
+
+    # ── Operators (top 5) ──
+    ops_rows = "\n".join(
+        _row([o.get("operator") or "—",
+              _fmt_int(o.get("facility_count")),
+              _fmt_mw(o.get("total_mw"))])
+        for o in ops[:5]) or _row(["No operator data yet", "—", "—"])
+    ops_html = (
+        '<table><thead><tr><th>Operator</th>'
+        '<th>Facilities</th><th>Total MW</th></tr></thead>'
+        f'<tbody>{ops_rows}</tbody></table>')
+
+    # ── M&A (top 8) ──
+    ma_rows = "\n".join(
+        _row([m.get("date") or "—",
+              (m.get("buyer") or "—")[:30],
+              (m.get("seller") or "—")[:30],
+              _money(m.get("value")),
+              _fmt_mw(m.get("mw"))])
+        for m in ma[:8]) or _row(["—", "No M&A in last 24mo", "—", "—", "—"])
+    ma_html = (
+        '<table><thead><tr><th>Date</th><th>Buyer</th>'
+        '<th>Seller</th><th>Value</th><th>MW</th></tr></thead>'
+        f'<tbody>{ma_rows}</tbody></table>')
+
+    # ── Comps (compressed: 4 powered-shell + 4 land) ──
+    comps_ps = (comps.get("powered_shell") or [])[:4]
+    comps_ld = (comps.get("land") or [])[:4]
+    def _comp_rows(items, label):
+        return "\n".join(
+            _row([c.get("date") or "—",
+                  (c.get("asset") or c.get("buyer") or "—")[:40],
+                  _money(c.get("value")), _fmt_mw(c.get("mw"))])
+            for c in items) or _row(["—", f"No {label} comps", "—", "—"])
+    comps_html = (
+        '<table><thead><tr><th colspan="4" style="background:#fff;color:#71717a;'
+        'font-weight:600;letter-spacing:.04em">Powered Shell</th></tr>'
+        '<tr><th>Date</th><th>Asset</th><th>Value</th><th>MW</th></tr></thead>'
+        f'<tbody>{_comp_rows(comps_ps, "powered-shell")}</tbody></table>'
+        '<table><thead><tr><th colspan="4" style="background:#fff;color:#71717a;'
+        'font-weight:600;letter-spacing:.04em">Land</th></tr>'
+        '<tr><th>Date</th><th>Asset</th><th>Value</th><th>MW</th></tr></thead>'
+        f'<tbody>{_comp_rows(comps_ld, "land")}</tbody></table>')
+
+    # ── Risk ──
+    risk_items = []
+    if risk.get("water_stress") is not None:
+        risk_items.append(("Water Stress", f"{risk['water_stress']:.2f}"))
+    if risk.get("drought_months_d2_plus") is not None:
+        risk_items.append(("Drought (D2+)", f"{risk['drought_months_d2_plus']} mo"))
+    if risk.get("wildfire_seismic_note"):
+        risk_items.append(("Wildfire / Seismic", risk["wildfire_seismic_note"]))
+    if not risk_items:
+        risk_items.append(("Risk", "Data thin — fewer than 3 risk signals available"))
+    risk_html = "<ul class='risk-list'>" + "".join(
+        f"<li><b>{lab}:</b> {val}</li>" for lab, val in risk_items) + "</ul>"
+
+    # ── Outlook (full narrative — PRO+ gate already enforced upstream) ──
+    narrative = outlook.get("narrative_md") or ""
+    out_paragraphs = "".join(
+        f"<p>{p.strip()}</p>" for p in narrative.split("\n\n") if p.strip()
+    ) or "<p>Outlook narrative will be generated on the next cron pass.</p>"
+
+    citation = f"DC Hub · https://{page_url} · Live as of {citation_iso} UTC"
+
+    # Cover-page verdict pill background uses the same palette as the web pill
+    cover_pill_style = (f"background:{colors['pill_bg']};"
+                        f"color:{colors['pill_fg']};")
+    # Body verdict pill (small) — same colors but on white background
+    body_pill_style = (f"background:{colors['pill_bg']};"
+                       f"color:{colors['pill_fg']};")
+
+    # Watermark + date are baked into the @page rule via the CSS template
+    # (string-set + attr() didn't survive weasyprint's @page footer slot
+    # cleanly, so we substitute at Python render time).
+    css = (_PDF_BASE_CSS_TMPL
+           .replace("WATERMARK_TOKEN", f"dchub.cloud/markets/{slug}/brief")
+           .replace("DATE_TOKEN", today_iso))
+    return f"""<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<title>{name} Market Brief · DC Hub</title>
+<style>{css}</style>
+</head>
+<body>
+
+<!-- ── COVER PAGE ── -->
+<section class="cover">
+  <div class="cover-inner">
+    <div class="cover-logo">DC Hub · Source-of-Truth Data Center Market Intelligence</div>
+    <div class="cover-title">{name}<br/>Market Brief</div>
+    <div class="cover-sub">DCPI {score_str} · Live as of {citation_iso} UTC</div>
+    <div><span class="cover-verdict-pill" style="{cover_pill_style}">{verdict}</span></div>
+    <div class="cover-prepared">Prepared for:<span class="line">&nbsp;</span></div>
+    <div class="cover-meta">
+      <div><b>Market</b> {name}</div>
+      <div><b>Verdict</b> {verdict} ({score_str})</div>
+      <div><b>Generated</b> {today_iso}</div>
+      <div><b>Source URL</b> https://{page_url}</div>
+    </div>
+  </div>
+</section>
+
+<!-- ── HEADER ── -->
+<h1>{name}</h1>
+<p class="lead">Market Brief · <span class="verdict-pill" style="{body_pill_style}">{verdict}</span><span class="score">DCPI {score_str}</span> · Live as of {citation_iso} UTC</p>
+
+<div class="section">
+  <h2>At a Glance</h2>
+  <div class="kpis">{kpi_html}</div>
+</div>
+
+<div class="section">
+  <h2>Power &amp; Grid</h2>
+  {pg_html}
+</div>
+
+<div class="section">
+  <h2>Pipeline (top 8)</h2>
+  {pipe_html}
+</div>
+
+<div class="section">
+  <h2>Operator Footprint (top 5)</h2>
+  {ops_html}
+</div>
+
+<div class="section">
+  <h2>M&amp;A Activity (24mo)</h2>
+  {ma_html}
+</div>
+
+<div class="section">
+  <h2>Comps</h2>
+  {comps_html}
+</div>
+
+<div class="section">
+  <h2>Risk Factors</h2>
+  {risk_html}
+</div>
+
+<div class="section">
+  <h2>12-Month Outlook</h2>
+  <div class="outlook">{out_paragraphs}</div>
+</div>
+
+<div class="citation">{citation}</div>
+
+</body>
+</html>"""
+
+
+def _render_pdf_for_slug(slug: str, tier: str = "PRO") -> bytes:
+    """End-to-end: build the brief data → render print HTML → weasyprint PDF.
+    Raises ImportError if weasyprint native libs aren't loadable; raises
+    ValueError if the market isn't covered. Callers (the route) translate
+    those into HTTP status codes. Used directly by the requested smoke test:
+
+        python3 -c "from routes.market_brief import _render_pdf_for_slug; \\
+                    _render_pdf_for_slug('dallas')"
+    """
+    # Force a PRO render so the deep sections populate even when called
+    # outside an HTTP context (smoke tests + the future prewarm cron).
+    brief = _build_brief(slug, tier=tier)
+    if not brief.get("ok"):
+        raise ValueError(f"brief_unavailable:{brief.get('error') or 'unknown'}")
+    html = _render_pdf_html(brief)
+    # Lazy import — keeps the module importable even when weasyprint's
+    # native deps aren't installed (the JSON + HTML routes still serve).
+    from weasyprint import HTML  # noqa: WPS433  (deferred import is deliberate)
+    return HTML(string=html, base_url="https://dchub.cloud/").write_pdf()
+
+
+# ─────────────────────────────────────────────────────────────────────
 # Pre-warm helper (called by crawler_scheduler._run_market_brief_warm)
 # ─────────────────────────────────────────────────────────────────────
 
 def prewarm_seed_markets() -> dict:
     """Pre-build the brief for each seed slug so the first visitor doesn't
-    pay the cold fan-out cost. Best-effort — never raises. Returns a
-    short status dict for logging."""
+    pay the cold fan-out cost. Best-effort — never raises. Sleeps 1s
+    between markets so a 15-market warm doesn't hammer the 1-replica
+    backend's connection pool (per the dchub-backend-flapping memory).
+    Returns a short status dict for logging."""
+    import time as _time
     out: dict = {"warmed": 0, "errors": 0, "slugs": []}
-    for slug in SEED_MARKETS:
+    n = len(SEED_MARKETS)
+    for i, slug in enumerate(SEED_MARKETS):
         try:
             brief = _build_brief(slug, tier="ADMIN")
             ok = bool(brief.get("ok"))
@@ -1051,6 +1484,13 @@ def prewarm_seed_markets() -> dict:
             out["errors"] += 1
             out["slugs"].append({"slug": slug, "ok": False,
                                  "error": f"{type(e).__name__}:{str(e)[:80]}"})
+        # 1s between markets to avoid DB connection-pool exhaustion;
+        # skip the final sleep so the cron isn't idle for nothing.
+        if i < n - 1:
+            try:
+                _time.sleep(1.0)
+            except Exception:
+                pass
     return out
 
 
@@ -1069,6 +1509,102 @@ def api_market_brief(slug):
     resp.headers["Cache-Control"] = "public, max-age=21600, s-maxage=21600"
     resp.headers["Access-Control-Allow-Origin"] = "*"
     return resp, status
+
+
+def _admin_authorized() -> bool:
+    """Gate /api/v1/admin/* endpoints on the canonical X-Admin-Key header.
+    Same convention as routes/api_usage_tracker.py — DCHUB_ADMIN_KEY env
+    var is the shared secret. Returns False if either side is missing."""
+    import hmac as _hmac
+    ac = (request.headers.get("X-Admin-Key", "") or "").split()
+    ac = ac[0] if ac else ""
+    ae = (os.environ.get("DCHUB_ADMIN_KEY") or os.environ.get("ADMIN_API_KEY") or "").split()
+    ae = ae[0] if ae else ""
+    return bool(ac and ae and _hmac.compare_digest(ac, ae))
+
+
+@market_brief_bp.route("/api/v1/admin/market-brief/discover-eligible-markets",
+                       methods=["GET"])
+def admin_discover_eligible_markets():
+    """List every market in `market_power_scores` that is currently
+    eligible to be added to SEED_MARKETS — i.e. has a published row
+    computed within the last 7 days. Operators can spot-check the list
+    and add slugs to SEED_MARKETS without code changes elsewhere.
+
+    Gated on X-Admin-Key (DCHUB_ADMIN_KEY env var). Response shape:
+      {
+        "ok": true,
+        "count": <int>,
+        "already_seeded": [<slug>, ...],
+        "candidates": [
+          {"slug": ..., "name": ..., "state": ..., "iso": ...,
+           "verdict": ..., "computed_at": ..., "is_seeded": bool}
+        ]
+      }
+    """
+    if not _admin_authorized():
+        return jsonify({"ok": False, "error": "admin_key_required"}), 401
+    c = _conn()
+    if c is None:
+        return jsonify({"ok": False, "error": "no_database"}), 500
+    rows: list[dict] = []
+    try:
+        with c.cursor() as cur:
+            # Try the published-flag form first; some deployments don't
+            # have the column yet, so fall back to a plain freshness gate.
+            try:
+                cur.execute("""
+                    SELECT market_slug, market_name, state, iso, verdict, computed_at
+                      FROM market_power_scores
+                     WHERE published = TRUE
+                       AND computed_at > NOW() - INTERVAL '7 days'
+                     ORDER BY market_slug
+                """)
+            except Exception:
+                # `published` column absent — fall back to freshness only.
+                c.rollback()
+                cur.execute("""
+                    SELECT market_slug, market_name, state, iso, verdict, computed_at
+                      FROM market_power_scores
+                     WHERE computed_at > NOW() - INTERVAL '7 days'
+                     ORDER BY market_slug
+                """)
+            # Build the set of canonical seeded slugs (via _CANONICAL_SLUG
+            # for aliases) AND the DCPI city-slug form (via MARKET_ALIAS),
+            # so e.g. `santa-clara` lights up as seeded by `silicon-valley`.
+            seeded = set(SEED_MARKETS)
+            for canonical in SEED_MARKETS:
+                city = MARKET_ALIAS.get(canonical)
+                if city:
+                    seeded.add(city)
+            for r in cur.fetchall():
+                slug = r[0]
+                rows.append({
+                    "slug":        slug,
+                    "name":        r[1],
+                    "state":       r[2],
+                    "iso":         r[3],
+                    "verdict":     r[4],
+                    "computed_at": r[5].isoformat() if r[5] else None,
+                    "is_seeded":   slug in seeded,
+                })
+    except Exception as e:
+        try:
+            c.close()
+        except Exception:
+            pass
+        return jsonify({"ok": False, "error": f"db_error:{type(e).__name__}"}), 500
+    finally:
+        try:
+            c.close()
+        except Exception:
+            pass
+    return jsonify({
+        "ok":             True,
+        "count":          len(rows),
+        "already_seeded": sorted(SEED_MARKETS),
+        "candidates":     rows,
+    }), 200
 
 
 @market_brief_bp.route("/markets/<slug>/brief", methods=["GET"])
@@ -1104,3 +1640,71 @@ def html_market_brief(slug):
                         "Cache-Control": "public, max-age=21600, s-maxage=21600",
                         "X-Market-Brief-Tier": tier,
                     })
+
+
+@market_brief_bp.route("/markets/<slug>/brief.pdf", methods=["GET"])
+def pdf_market_brief(slug):
+    """PDF export — PRO+ only.
+
+    Phase 2 of the Market Brief spec. Same 9-section data, print-tuned
+    HTML, weasyprint → PDF, cover page + page numbers + footer watermark.
+    1h edge cache; filename headers so the broker's Downloads folder
+    ends up with `dchub-market-brief-<slug>-YYYY-MM-DD.pdf`.
+
+    Auth contract:
+      - Anon/FREE  → 402 Payment Required + upgrade JSON
+      - PRO+       → 200 application/pdf
+      - missing slug → 404 (consistent with the JSON endpoint)
+      - weasyprint native libs missing → 503 (Docker image regression)
+    """
+    tier = _caller_tier()
+    if not _is_pro(tier):
+        # Spec says: anon gets a clean 402 JSON, not a paywall HTML page,
+        # so MCP / curl callers can react programmatically.
+        return jsonify({
+            "error":       "pdf_requires_pro",
+            "upgrade_url": "/pricing",
+            "message":     ("PDF export is a PRO feature ($499/mo). "
+                            "Visit dchub.cloud/pricing to unlock."),
+        }), 402
+    canonical = _canonical(slug)
+    if canonical != _norm_slug(slug):
+        # 301 alias — preserves link equity AND the broker-shared filename
+        # still says `northern-virginia` even if they typed `nova`.
+        from flask import redirect
+        return redirect(f"/markets/{canonical}/brief.pdf", code=301)
+    try:
+        pdf_bytes = _render_pdf_for_slug(canonical, tier=tier)
+    except ImportError as e:
+        # weasyprint native libs not loadable — surface clearly so the
+        # ops team fixes the Docker image rather than the page silently
+        # falling back to HTML.
+        return jsonify({
+            "error":   "pdf_engine_unavailable",
+            "detail":  f"{type(e).__name__}: {str(e)[:200]}",
+            "hint":    ("weasyprint native libs (libpango1.0-0, libcairo2, "
+                        "libpangoft2-1.0-0) missing from the runtime image."),
+        }), 503
+    except ValueError as e:
+        msg = str(e)
+        if msg.startswith("brief_unavailable:market_not_found"):
+            return jsonify({"error": "market_not_found", "slug": slug}), 404
+        return jsonify({"error": "brief_unavailable", "detail": msg}), 502
+    except Exception as e:
+        return jsonify({
+            "error":  "pdf_render_failed",
+            "detail": f"{type(e).__name__}: {str(e)[:200]}",
+        }), 500
+
+    today_iso = datetime.date.today().isoformat()
+    filename = f"dchub-market-brief-{canonical}-{today_iso}.pdf"
+    return Response(
+        pdf_bytes,
+        mimetype="application/pdf",
+        headers={
+            # 1h edge cache — PDF render is expensive (~1-3s for weasyprint).
+            "Cache-Control":       "public, max-age=3600, s-maxage=3600",
+            "Content-Disposition": f'attachment; filename="{filename}"',
+            "X-Market-Brief-Tier": tier,
+            "X-Content-Type-Options": "nosniff",
+        })

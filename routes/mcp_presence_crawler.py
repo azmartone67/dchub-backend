@@ -87,9 +87,15 @@ SEED_REGISTRIES: list[dict] = [
         "submit_url":    "https://smithery.ai/new",
     },
     {
+        # 2026-06-06: MCPHive submission backend POST
+        # /scripts/save_submission.php returns 404 — site appears
+        # abandoned for new listings; we fall back to crawling the
+        # directory home and flag with notes.submission_backend_404
+        # so the auto-submitter skips it.
         "registry_name": "mcphive",
-        "listing_url":   "https://mcphive.com/servers/dchub",
-        "submit_url":    "https://mcphive.com/submit",
+        "listing_url":   "https://mcphive.com/",
+        "submit_url":    None,
+        "notes":         {"submission_backend_404": True},
     },
     {
         "registry_name": "lobehub",
@@ -102,14 +108,20 @@ SEED_REGISTRIES: list[dict] = [
         "submit_url":    "https://glama.ai/mcp/servers/new",
     },
     {
+        # 2026-06-06: yellowmcp.com 404s on /servers/<slug>; the live
+        # listing pattern is /mcp/<slug> (verified via site search).
         "registry_name": "yellowmcp",
-        "listing_url":   "https://yellowmcp.com/servers/dchub",
-        "submit_url":    "https://yellowmcp.com/submit",
+        "listing_url":   "https://yellowmcp.com/mcp/dchub",
+        "submit_url":    "https://yellowmcp.com/submit-mcp",
     },
     {
+        # 2026-06-06: registry.modelcontextprotocol.io 404'd on
+        # /servers/<slug>; the canonical (Anthropic-maintained) registry
+        # is mcp.so (registry.mcp.so is the API; humans browse mcp.so).
+        # Submit flow = GitHub PR to modelcontextprotocol/registry.
         "registry_name": "mcp_official_registry",
-        "listing_url":   "https://registry.modelcontextprotocol.io/servers/dchub",
-        "submit_url":    "https://registry.modelcontextprotocol.io/submit",
+        "listing_url":   "https://registry.mcp.so/server/dchub-mcp-server",
+        "submit_url":    "https://github.com/modelcontextprotocol/registry",
     },
     {
         "registry_name": "cline",
@@ -229,18 +241,25 @@ def _ensure_schema(cur) -> None:
 
 
 def _seed_registries(cur) -> int:
-    """Idempotent seed of SEED_REGISTRIES. Returns rows touched."""
+    """Idempotent seed of SEED_REGISTRIES. Returns rows touched.
+
+    Now also threads the per-seed `notes` blob (e.g. the
+    `submission_backend_404` flag for MCPHive) on first insert.
+    Existing rows are left alone — use the reseed-broken endpoint to
+    force-update a row's URLs/notes."""
     inserted = 0
     for r in SEED_REGISTRIES:
         try:
+            notes_blob = json.dumps(r.get("notes") or {})
             cur.execute(
                 """
                 INSERT INTO mcp_presence_listings
-                    (registry_name, listing_url, submit_url, discovered)
-                VALUES (%s, %s, %s, FALSE)
+                    (registry_name, listing_url, submit_url, discovered, notes)
+                VALUES (%s, %s, %s, FALSE, %s::jsonb)
                 ON CONFLICT (registry_name) DO NOTHING
                 """,
-                (r["registry_name"], r["listing_url"], r.get("submit_url")),
+                (r["registry_name"], r["listing_url"],
+                 r.get("submit_url"), notes_blob),
             )
             if cur.rowcount and cur.rowcount > 0:
                 inserted += 1
@@ -253,13 +272,32 @@ def _seed_registries(cur) -> int:
 # ── HTTP fetch (rate-limited) ─────────────────────────────────────────
 _last_request_ts = 0.0
 
+# Hosts known to rate-limit aggressively — sleep extra before the
+# initial GET. Smithery returned 429 on the live crawl; pre-emptive
+# delay keeps us under their threshold without needing a token bucket.
+_AGGRESSIVE_HOSTS = {"smithery.ai"}
+_PREFETCH_BACKOFF_S = 5.0
+# Cap how long we'll wait on a Retry-After before giving up (some
+# providers send unreasonable values like 3600).
+_MAX_RETRY_AFTER_S = 15.0
+
 
 def _polite_get(url: str) -> tuple[str | None, int | None]:
-    """Rate-limited GET. Returns (html_text or None, status_code or None)."""
+    """Rate-limited GET. Returns (html_text or None, status_code or None).
+
+    Adds pre-emptive backoff for known-aggressive hosts (smithery.ai)
+    and honors HTTP 429 Retry-After with one bounded retry."""
     global _last_request_ts
     elapsed = time.time() - _last_request_ts
     if elapsed < RATE_LIMIT_SLEEP_S:
         time.sleep(RATE_LIMIT_SLEEP_S - elapsed)
+    # Aggressive-host pre-emptive delay (covers smithery.ai 429s)
+    try:
+        host = (urlparse(url).hostname or "").lower().lstrip("www.")
+        if host in _AGGRESSIVE_HOSTS:
+            time.sleep(_PREFETCH_BACKOFF_S)
+    except Exception:
+        pass
     _last_request_ts = time.time()
     try:
         r = requests.get(
@@ -268,6 +306,31 @@ def _polite_get(url: str) -> tuple[str | None, int | None]:
             timeout=REQUEST_TIMEOUT_S,
             allow_redirects=True,
         )
+        # 429 backoff + single retry
+        if r.status_code == 429:
+            retry_after = 0.0
+            try:
+                retry_after = float(r.headers.get("Retry-After", "0") or "0")
+            except Exception:
+                retry_after = 0.0
+            wait = min(max(retry_after, _PREFETCH_BACKOFF_S),
+                       _MAX_RETRY_AFTER_S)
+            logger.info("mcp_presence: 429 on %s, sleeping %.1fs",
+                        url, wait)
+            time.sleep(wait)
+            _last_request_ts = time.time()
+            try:
+                r = requests.get(
+                    url,
+                    headers={"User-Agent": USER_AGENT,
+                             "Accept": "text/html,*/*"},
+                    timeout=REQUEST_TIMEOUT_S,
+                    allow_redirects=True,
+                )
+            except Exception as e:
+                logger.info("mcp_presence: retry GET failed %s: %s",
+                            url, e)
+                return None, 429
         return (r.text if r.status_code == 200 else None), r.status_code
     except Exception as e:
         logger.info("mcp_presence: GET failed %s: %s", url, e)
@@ -406,6 +469,226 @@ def _extractor_generic(html: str) -> dict | None:
         return None
 
 
+# ── SPA-aware extractors (2026-06-06) ─────────────────────────────────
+# LobeHub / Glama / Smithery all return an empty <div id="root"> to a
+# plain requests.get because they're React-rendered. Three strategies:
+#   1) public REST API (Glama + Smithery expose JSON endpoints) — used
+#      where available because it's cheapest and most reliable
+#   2) __NEXT_DATA__ JSON blob embedded in the HTML — used for LobeHub
+#      and MCPHive (both Next.js)
+#   3) Playwright headless — deliberately NOT shipped; too heavy a dep
+#      for what we get (extractors must stay self-contained + cheap)
+# Each function returns the canonical extractor dict shape
+# (tools/uptime/last_updated/status) or None on failure. NEVER raises.
+_DCHUB_SMITHERY_SLUG = "@dchub/dchub-mcp-server"
+_DCHUB_GLAMA_SLUG    = "dchub"
+_DCHUB_LOBEHUB_SLUG  = "dchub-mcp-server"
+_DCHUB_MCPHIVE_SLUG  = "dchub"
+
+
+def _api_get_json(url: str, timeout: int | None = None) -> Any:
+    """Polite GET that decodes JSON. Returns the parsed body or None.
+    Re-uses the rate-limit ledger so this counts against MAX_REQUESTS_
+    PER_RUN just like _polite_get."""
+    global _last_request_ts
+    elapsed = time.time() - _last_request_ts
+    if elapsed < RATE_LIMIT_SLEEP_S:
+        time.sleep(RATE_LIMIT_SLEEP_S - elapsed)
+    try:
+        host = (urlparse(url).hostname or "").lower().lstrip("www.")
+        if host in _AGGRESSIVE_HOSTS:
+            time.sleep(_PREFETCH_BACKOFF_S)
+    except Exception:
+        pass
+    _last_request_ts = time.time()
+    try:
+        r = requests.get(
+            url,
+            headers={"User-Agent": USER_AGENT,
+                     "Accept": "application/json"},
+            timeout=timeout or REQUEST_TIMEOUT_S,
+            allow_redirects=True,
+        )
+        if r.status_code == 429:
+            try:
+                wait = float(r.headers.get("Retry-After", "0") or "0")
+            except Exception:
+                wait = 0.0
+            wait = min(max(wait, _PREFETCH_BACKOFF_S), _MAX_RETRY_AFTER_S)
+            time.sleep(wait)
+            _last_request_ts = time.time()
+            r = requests.get(
+                url,
+                headers={"User-Agent": USER_AGENT,
+                         "Accept": "application/json"},
+                timeout=timeout or REQUEST_TIMEOUT_S,
+                allow_redirects=True,
+            )
+        if r.status_code != 200:
+            return None
+        return r.json()
+    except Exception as e:
+        logger.info("mcp_presence: API GET failed %s: %s", url, e)
+        return None
+
+
+def _extractor_smithery_api(slug: str = _DCHUB_SMITHERY_SLUG) -> dict | None:
+    """Hit Smithery's public REST API directly. The /api/v1/servers/<slug>
+    response carries a tool list + qualifiedName + updatedAt. Cheaper
+    than rendering the SPA. Returns None if the API doesn't 200."""
+    try:
+        # Smithery URL-encodes the leading '@' but the server canonicalizes
+        url = (f"https://smithery.ai/api/v1/servers/"
+               f"{requests.utils.quote(slug, safe='@/')}")
+        data = _api_get_json(url)
+        if not isinstance(data, dict):
+            return None
+        tools = None
+        # The API has shipped a couple of shapes — try the common ones
+        for key in ("tools", "toolList", "capabilities"):
+            v = data.get(key)
+            if isinstance(v, list):
+                tools = len(v)
+                break
+        if tools is None and isinstance(data.get("toolCount"), int):
+            tools = int(data["toolCount"])
+        uptime = None
+        for key in ("uptime", "uptimePct", "availability"):
+            v = data.get(key)
+            if isinstance(v, (int, float)):
+                uptime = float(v)
+                break
+        last_updated = (data.get("updatedAt")
+                        or data.get("lastUpdated")
+                        or data.get("lastSeenAt"))
+        return {"tools": tools, "uptime": uptime,
+                "last_updated": last_updated, "status": "smithery_api"}
+    except Exception:
+        return None
+
+
+def _extractor_glama_api(slug: str = _DCHUB_GLAMA_SLUG) -> dict | None:
+    """Hit Glama's public REST API at https://glama.ai/api/mcp/v1/servers/
+    <slug>. Returns the canonical extractor dict or None."""
+    try:
+        url = f"https://glama.ai/api/mcp/v1/servers/{slug}"
+        data = _api_get_json(url)
+        if not isinstance(data, dict):
+            return None
+        tools = None
+        for key in ("tools", "capabilities", "toolList"):
+            v = data.get(key)
+            if isinstance(v, list):
+                tools = len(v)
+                break
+        if tools is None and isinstance(data.get("toolCount"), int):
+            tools = int(data["toolCount"])
+        uptime = None
+        # Glama exposes a quality score 0..100 — record under uptime for
+        # uniformity; the brain can decide how to triage it.
+        qs = data.get("qualityScore") or data.get("quality_score")
+        if isinstance(qs, (int, float)):
+            uptime = float(qs)
+        last_updated = (data.get("lastIndexedAt")
+                        or data.get("lastIndexed")
+                        or data.get("updatedAt"))
+        return {"tools": tools, "uptime": uptime,
+                "last_updated": last_updated, "status": "glama_api"}
+    except Exception:
+        return None
+
+
+def _parse_next_data(html: str) -> Any:
+    """Extract + parse the __NEXT_DATA__ JSON blob embedded in Next.js
+    pages. Returns the decoded object or None. Never raises."""
+    try:
+        m = re.search(
+            r'<script[^>]+id=["\']__NEXT_DATA__["\'][^>]*>(.*?)</script>',
+            html, re.S,
+        )
+        if not m:
+            return None
+        return json.loads(m.group(1))
+    except Exception:
+        return None
+
+
+def _walk_for_keys(obj: Any, keys: tuple[str, ...]) -> Any:
+    """Walk a nested dict/list looking for the first key in `keys` that
+    has a non-None value. Bounded depth/breadth to keep cheap."""
+    try:
+        stack: list[Any] = [obj]
+        seen_steps = 0
+        while stack and seen_steps < 2000:
+            seen_steps += 1
+            node = stack.pop()
+            if isinstance(node, dict):
+                for k, v in node.items():
+                    if k in keys and v is not None:
+                        return v
+                    if isinstance(v, (dict, list)):
+                        stack.append(v)
+            elif isinstance(node, list):
+                for v in node:
+                    if isinstance(v, (dict, list)):
+                        stack.append(v)
+    except Exception:
+        return None
+    return None
+
+
+def _extractor_lobehub_next_data(html: str) -> dict | None:
+    """LobeHub embeds the SSR'd page state in __NEXT_DATA__. We walk
+    the JSON looking for the tools/capabilities list rather than
+    chasing a brittle regex. Returns the canonical dict or None."""
+    try:
+        data = _parse_next_data(html)
+        if data is None:
+            return None
+        tool_list = _walk_for_keys(data, ("tools", "capabilities",
+                                          "toolList"))
+        tools = None
+        if isinstance(tool_list, list):
+            tools = len(tool_list)
+        elif isinstance(tool_list, int):
+            tools = tool_list
+        if tools is None:
+            tc = _walk_for_keys(data, ("toolCount", "tools_count"))
+            if isinstance(tc, int):
+                tools = tc
+        last_updated = _walk_for_keys(
+            data, ("updatedAt", "lastUpdated", "lastIndexedAt"))
+        if not isinstance(last_updated, str):
+            last_updated = None
+        return {"tools": tools, "uptime": None,
+                "last_updated": last_updated, "status": "lobehub_next_data"}
+    except Exception:
+        return None
+
+
+def _extractor_mcphive_next_data(html: str) -> dict | None:
+    """MCPHive is Next.js too. Same __NEXT_DATA__ walk."""
+    try:
+        data = _parse_next_data(html)
+        if data is None:
+            return None
+        tool_list = _walk_for_keys(data, ("tools", "capabilities",
+                                          "toolList"))
+        tools = None
+        if isinstance(tool_list, list):
+            tools = len(tool_list)
+        elif isinstance(tool_list, int):
+            tools = tool_list
+        last_updated = _walk_for_keys(
+            data, ("updatedAt", "lastUpdated", "lastSeenAt"))
+        if not isinstance(last_updated, str):
+            last_updated = None
+        return {"tools": tools, "uptime": None,
+                "last_updated": last_updated, "status": "mcphive_next_data"}
+    except Exception:
+        return None
+
+
 _EXTRACTORS = {
     "smithery":  _extractor_smithery,
     "mcphive":   _extractor_mcphive,
@@ -415,12 +698,44 @@ _EXTRACTORS = {
 }
 
 
+# Registries whose canonical extraction path is a public API hit, not
+# an HTML scrape. The crawler short-circuits the HTML fetch for these
+# and goes straight to the API.
+_API_EXTRACTORS = {
+    "smithery": lambda: _extractor_smithery_api(_DCHUB_SMITHERY_SLUG),
+    "glama":    lambda: _extractor_glama_api(_DCHUB_GLAMA_SLUG),
+}
+
+
+# Fall-back chain for SPA-rendered registries: when the primary
+# extractor returns no tool count, try the __NEXT_DATA__ parser before
+# giving up. (LobeHub + MCPHive both ship Next.js.)
+_SPA_FALLBACKS = {
+    "lobehub": _extractor_lobehub_next_data,
+    "mcphive": _extractor_mcphive_next_data,
+}
+
+
 def _extract_for(registry_name: str, html: str) -> dict:
     """Look up the registry-specific extractor; fall through to the
     generic. Always returns a dict (never None) so callers don't have
-    to special-case."""
+    to special-case.
+
+    For SPA-rendered registries we layer:
+      1. registry-specific regex extractor (legacy)
+      2. __NEXT_DATA__ JSON walk (new, more robust)
+    and prefer whichever first returns a non-None tool count."""
     fn = _EXTRACTORS.get(registry_name, _extractor_generic)
     out = fn(html) or {}
+    if out.get("tools") is None:
+        fb = _SPA_FALLBACKS.get(registry_name)
+        if fb is not None:
+            try:
+                fb_out = fb(html) or {}
+                if fb_out.get("tools") is not None:
+                    out = fb_out
+            except Exception:
+                pass
     return {
         "tools":        out.get("tools"),
         "uptime":       out.get("uptime"),
@@ -527,30 +842,53 @@ def crawl_mcp_presence() -> dict:
             for row in rows:
                 row_id, registry_name, listing_url = row[0], row[1], row[2]
                 try:
-                    html, status_code = _polite_get(listing_url)
-                    if not html:
-                        summary["errors"] += 1
-                        summary["registries"].append({
-                            "registry": registry_name,
-                            "status":   "fetch_failed",
-                            "http":     status_code,
-                        })
-                        # Still bump last_crawled_at so we don't hammer
-                        # a permanently-404 URL on every run.
+                    extracted: dict | None = None
+                    status_code: int | None = None
+                    # API-first short-circuit (Smithery + Glama).
+                    # SPA pages return empty <div id="root"> to a plain
+                    # GET, but both registries expose a public JSON API.
+                    api_fn = _API_EXTRACTORS.get(registry_name)
+                    if api_fn is not None:
                         try:
-                            cur.execute(
-                                "UPDATE mcp_presence_listings "
-                                "   SET last_crawled_at = NOW(), "
-                                "       notes = jsonb_set(COALESCE(notes,'{}'::jsonb), "
-                                "                         '{last_http}', to_jsonb(%s::int)) "
-                                " WHERE id = %s",
-                                (int(status_code or 0), row_id),
-                            )
+                            api_out = api_fn()
                         except Exception:
-                            pass
-                        continue
+                            api_out = None
+                        if api_out and api_out.get("tools") is not None:
+                            extracted = {
+                                "tools":        api_out.get("tools"),
+                                "uptime":       api_out.get("uptime"),
+                                "last_updated": api_out.get("last_updated"),
+                                "status":       api_out.get("status") or "ok",
+                            }
+                            status_code = 200  # API said ok
 
-                    extracted = _extract_for(registry_name, html)
+                    html: str | None = None
+                    if extracted is None:
+                        html, status_code = _polite_get(listing_url)
+                        if not html:
+                            summary["errors"] += 1
+                            summary["registries"].append({
+                                "registry": registry_name,
+                                "status":   "fetch_failed",
+                                "http":     status_code,
+                            })
+                            # Still bump last_crawled_at so we don't hammer
+                            # a permanently-404 URL on every run.
+                            try:
+                                cur.execute(
+                                    "UPDATE mcp_presence_listings "
+                                    "   SET last_crawled_at = NOW(), "
+                                    "       notes = jsonb_set(COALESCE(notes,'{}'::jsonb), "
+                                    "                         '{last_http}', to_jsonb(%s::int)) "
+                                    " WHERE id = %s",
+                                    (int(status_code or 0), row_id),
+                                )
+                            except Exception:
+                                pass
+                            continue
+
+                    if extracted is None:
+                        extracted = _extract_for(registry_name, html or "")
                     listing_tools  = extracted.get("tools")
                     listing_uptime = extracted.get("uptime")
                     listing_last   = extracted.get("last_updated")
@@ -1018,6 +1356,134 @@ def discover_endpoint():
     return jsonify({"ok": True, **result}), 200
 
 
+# ── Force-reseed the 4 broken-URL rows (2026-06-06) ──────────────────
+# The first live crawl found mcphive / yellowmcp / mcp_official_registry
+# all returning 404 because the seed URLs were wrong, and Smithery
+# returning 429 because we hammered it. The standard _seed_registries
+# call is INSERT … ON CONFLICT DO NOTHING (won't update existing rows),
+# so we expose this idempotent UPDATE-only fixup so the brain can call
+# it once after deploy and not need a row delete first.
+RESEED_BROKEN_REGISTRIES: list[dict] = [
+    {
+        "registry_name": "mcphive",
+        "listing_url":   "https://mcphive.com/",
+        "submit_url":    None,
+        "notes_patch":   {"submission_backend_404": True,
+                          "reseed_reason": "POST /scripts/save_submission.php "
+                                            "returns 404 — site abandoned for "
+                                            "new listings"},
+    },
+    {
+        "registry_name": "yellowmcp",
+        "listing_url":   "https://yellowmcp.com/mcp/dchub",
+        "submit_url":    "https://yellowmcp.com/submit-mcp",
+        "notes_patch":   {"reseed_reason": "old /servers/<slug> path 404'd; "
+                                            "live pattern is /mcp/<slug>"},
+    },
+    {
+        "registry_name": "mcp_official_registry",
+        "listing_url":   "https://registry.mcp.so/server/dchub-mcp-server",
+        "submit_url":    "https://github.com/modelcontextprotocol/registry",
+        "notes_patch":   {"reseed_reason": "registry.modelcontextprotocol.io "
+                                            "404'd; canonical registry humans "
+                                            "browse is mcp.so (PR-based submit)"},
+    },
+    {
+        "registry_name": "smithery",
+        "listing_url":   "https://smithery.ai/server/@dchub/dchub-mcp-server",
+        "submit_url":    "https://smithery.ai/new",
+        "notes_patch":   {"reseed_reason": "added pre-emptive 5s backoff + "
+                                            "429 Retry-After handling in "
+                                            "_polite_get"},
+    },
+]
+
+
+def _reseed_broken(cur) -> list[dict]:
+    """Idempotent UPDATE for the 4 broken-URL rows. Returns per-row
+    status. Defensive — never raises."""
+    out: list[dict] = []
+    for r in RESEED_BROKEN_REGISTRIES:
+        try:
+            cur.execute(
+                """
+                UPDATE mcp_presence_listings
+                   SET listing_url = %s,
+                       submit_url  = %s,
+                       notes       = COALESCE(notes, '{}'::jsonb) || %s::jsonb,
+                       last_crawled_at = NULL
+                 WHERE registry_name = %s
+                """,
+                (r["listing_url"], r.get("submit_url"),
+                 json.dumps(r.get("notes_patch") or {}),
+                 r["registry_name"]),
+            )
+            out.append({
+                "registry": r["registry_name"],
+                "updated_rows": cur.rowcount or 0,
+                "listing_url": r["listing_url"],
+                "submit_url":  r.get("submit_url"),
+            })
+        except Exception as e:
+            out.append({
+                "registry": r["registry_name"],
+                "error":    str(e)[:200],
+            })
+    return out
+
+
+@mcp_presence_crawler_bp.route(
+    "/api/v1/admin/mcp-presence/reseed-broken", methods=["POST"])
+def reseed_broken_endpoint():
+    """Idempotent: UPDATE the 4 broken-URL rows
+    (mcphive/yellowmcp/mcp_official_registry/smithery) with corrected
+    URLs + notes. Also files the canonical
+    mcp_registry_unreachable:mcphive brain_findings row so the brain
+    knows MCPHive's submission backend is dead."""
+    if not _admin_or_cron_authorized():
+        return jsonify({"ok": False, "error": "admin_key_required"}), 401
+    conn = _db_conn()
+    if not conn:
+        return jsonify({"ok": False, "error": "db_unavailable"}), 503
+    try:
+        with conn.cursor() as cur:
+            _ensure_schema(cur)
+            results = _reseed_broken(cur)
+            # File the canonical MCPHive unreachable finding so the
+            # brain stops queueing retries.
+            try:
+                _write_brain_finding(
+                    cur,
+                    issue="mcp_registry_unreachable:mcphive",
+                    url="https://mcphive.com/submit",
+                    detail=(
+                        "MCPHive submission endpoint POST "
+                        "/scripts/save_submission.php returns 404 — "
+                        "site abandoned for new listings. DC Hub "
+                        "absent from servers + clients lists. No "
+                        "retry path; auto-submitter will skip via "
+                        "notes.submission_backend_404=true."
+                    ),
+                    count=1,
+                )
+            except Exception as e:
+                logger.warning("mcp_presence: brain_finding write for "
+                               "mcphive unreachable failed: %s", e)
+            conn.commit()
+        return jsonify({
+            "ok":      True,
+            "results": results,
+            "count":   len(results),
+        }), 200
+    except Exception as e:
+        return jsonify({"ok": False, "error": str(e)[:200]}), 500
+    finally:
+        try:
+            conn.close()
+        except Exception:
+            pass
+
+
 @mcp_presence_crawler_bp.route(
     "/api/v1/mcp-presence/status", methods=["GET"])
 def status_endpoint():
@@ -1405,23 +1871,33 @@ def auto_resubmit_listing(registry_name: str, dry_run: bool = True) -> dict:
         )
         return result
 
-    # Look up the submit_url so the result row carries it (useful for
-    # the human-loop path even when we don't POST). Best-effort — the
-    # submitter dispatch doesn't actually need it because each
-    # submitter knows its own endpoint.
+    # Look up the submit_url + notes so the result row carries them
+    # (useful for the human-loop path even when we don't POST). Best-
+    # effort — the submitter dispatch doesn't actually need submit_url
+    # because each submitter knows its own endpoint, but notes carries
+    # the submission_backend_404 / dead-endpoint flag (MCPHive).
     submit_url = None
+    listing_notes: dict = {}
     conn = _db_conn()
     if conn:
         try:
             with conn.cursor() as cur:
                 cur.execute(
-                    "SELECT submit_url FROM mcp_presence_listings "
+                    "SELECT submit_url, COALESCE(notes,'{}'::jsonb) "
+                    "  FROM mcp_presence_listings "
                     " WHERE registry_name = %s",
                     (registry_name,),
                 )
                 row = cur.fetchone()
                 if row:
                     submit_url = row[0]
+                    if isinstance(row[1], dict):
+                        listing_notes = row[1]
+                    elif isinstance(row[1], str):
+                        try:
+                            listing_notes = json.loads(row[1])
+                        except Exception:
+                            listing_notes = {}
         except Exception:
             pass
         finally:
@@ -1430,6 +1906,25 @@ def auto_resubmit_listing(registry_name: str, dry_run: bool = True) -> dict:
             except Exception:
                 pass
     result["submit_url_from_db"] = submit_url
+
+    # Short-circuit: if the registry is marked as having a dead
+    # submission backend (e.g. MCPHive 404s on POST), skip the
+    # submitter entirely and return a structured "skipped" result.
+    # The brain reads this and stops queueing retries.
+    if listing_notes.get("submission_backend_404") is True:
+        result["ok"] = True
+        result["submitter"] = f"{registry_name}_skipped_backend_404"
+        result["skipped"] = True
+        result["skip_reason"] = "submission_backend_404"
+        result["next_action"] = (
+            f"{registry_name} submission backend is 404 — "
+            "no retry path. See mcp_registry_unreachable finding."
+        )
+        try:
+            _persist_auto_fix_outcome(registry_name, result)
+        except Exception:
+            pass
+        return result
 
     # Dispatch
     fn = SUBMITTERS.get(registry_name)
@@ -1702,6 +2197,6 @@ def register_mcp_presence_crawler(app) -> None:
     app.register_blueprint(mcp_presence_crawler_bp)
     logger.info(
         "MCP Presence Crawler registered: POST /api/v1/admin/mcp-presence/"
-        "{crawl,seed,discover,auto-fix/<registry>,auto-fix-all}, "
-        "GET /api/v1/mcp-presence/status"
+        "{crawl,seed,discover,reseed-broken,auto-fix/<registry>,"
+        "auto-fix-all}, GET /api/v1/mcp-presence/status"
     )
