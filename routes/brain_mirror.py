@@ -140,9 +140,25 @@ def _detect_finding_clusters(findings: list) -> dict:
     Example: if 7 of 12 shadowed_route findings all point at
     routes/dcpi.py, that file probably has a structural duplication
     issue worth a single batched fix rather than 7 individual fixes.
+
+    Defensive: brain_findings endpoints across the codebase return
+    different shapes — some are lists of dicts, some are lists of
+    strings, some are lists of compact tuples. Drop anything that
+    isn't dict-shaped so we don't 500 on shape drift.
     """
     if not findings:
         return {"clusters": [], "note": "no findings to cluster"}
+
+    # Coerce: only keep dict-shaped findings. The brain v1 healer
+    # /api/v1/heal/findings sometimes returns plain strings ("ago
+    # 5min: stale data 'placeholder' on /pockets") — those have no
+    # structured kind/url so we can't cluster them.
+    findings = [f for f in findings if isinstance(f, dict)]
+    if not findings:
+        return {"clusters": [], "note": "findings present but none are "
+                                          "dict-shaped (likely from a "
+                                          "string-returning healer "
+                                          "endpoint — clusterer skipped)"}
 
     by_kind = Counter(f.get("kind") or f.get("finding_kind") or "unknown"
                        for f in findings)
@@ -404,13 +420,37 @@ def _fetch_findings() -> list:
 
 
 def _run_cycle() -> dict:
-    """Run one full Mirror cycle. Returns the full report dict."""
+    """Run one full Mirror cycle. Returns the full report dict.
+
+    Each sub-function is wrapped in defensive try/except so a single
+    broken brain endpoint doesn't take down the whole Mirror response.
+    Mirror's job is to grade the OTHER layers — it has to keep
+    working even when one of them is misbehaving (that's exactly
+    what we want to surface).
+    """
     status = _fetch_brain_status()
+    if not isinstance(status, dict):
+        status = {}
     findings = _fetch_findings()
-    grade = _grade_self_assessment(status)
-    clusters = _detect_finding_clusters(findings)
-    outcomes = _attribute_outcomes()
-    hypotheses = _propose_hypotheses(status, clusters, outcomes)
+    if not isinstance(findings, list):
+        findings = []
+    try:
+        grade = _grade_self_assessment(status)
+    except Exception as e:
+        grade = {"error": str(e)[:200], "honest_score": None,
+                  "claimed_score": None}
+    try:
+        clusters = _detect_finding_clusters(findings)
+    except Exception as e:
+        clusters = {"error": str(e)[:200], "clusters": []}
+    try:
+        outcomes = _attribute_outcomes()
+    except Exception as e:
+        outcomes = {"available": False, "reason": str(e)[:200]}
+    try:
+        hypotheses = _propose_hypotheses(status, clusters, outcomes)
+    except Exception as e:
+        hypotheses = {"error": str(e)[:200], "count": 0, "hypotheses": []}
     return {
         "ok":         True,
         "layer":      25,
