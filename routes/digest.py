@@ -177,11 +177,11 @@ def _market_row(rank, name, slug, right_html, accent):
     return (
         '<tr><td style="padding:0 0 8px 0">'
         '<table role="presentation" width="100%" cellpadding="0" cellspacing="0" border="0" '
-        f'style="background:#ffffff;border:1px solid #eceef4;border-left:4px solid {accent};'
+        f'style="background:#1a1a22;border:1px solid #26262f;border-left:4px solid {accent};'
         'border-radius:8px"><tr>'
-        '<td style="padding:11px 14px;font:600 15px/1.3 -apple-system,BlinkMacSystemFont,Segoe UI,Roboto,Helvetica,Arial,sans-serif;color:#0f172a">'
-        f'<span style="color:#94a3b8;font-weight:700">{rank}.</span>&nbsp;'
-        f'<a href="{SITE}/dcpi/{_esc(slug)}" style="color:#0f172a;text-decoration:none">{_esc(name)}</a>'
+        '<td style="padding:11px 14px;font:600 15px/1.3 -apple-system,BlinkMacSystemFont,Segoe UI,Roboto,Helvetica,Arial,sans-serif;color:#fafafa">'
+        f'<span style="color:#71717a;font-weight:700">{rank}.</span>&nbsp;'
+        f'<a href="{SITE}/dcpi/{_esc(slug)}" style="color:#fafafa;text-decoration:none">{_esc(name)}</a>'
         '</td>'
         f'<td align="right" style="padding:11px 14px;white-space:nowrap;font:600 14px -apple-system,Segoe UI,Roboto,Arial,sans-serif">{right_html}</td>'
         '</tr></table></td></tr>'
@@ -193,7 +193,7 @@ def _section(title, rows_html):
         return ""
     return (
         f'<tr><td style="padding:18px 0 8px 0;font:700 12px/1 -apple-system,Segoe UI,Roboto,Arial,sans-serif;'
-        f'letter-spacing:.09em;text-transform:uppercase;color:#64748b">{title}</td></tr>'
+        f'letter-spacing:.09em;text-transform:uppercase;color:#a1a1aa">{title}</td></tr>'
         '<tr><td><table role="presentation" width="100%" cellpadding="0" cellspacing="0" border="0">'
         f'{rows_html}</table></td></tr>'
     )
@@ -213,10 +213,10 @@ def _render_digest_email_html(d, unsub_url=None):
     tile_cells = "".join(
         '<td width="25%" align="center" valign="top" style="padding:6px">'
         '<table role="presentation" width="100%" cellpadding="0" cellspacing="0" border="0" '
-        'style="background:#ffffff;border:1px solid #eceef4;border-radius:10px"><tr>'
+        'style="background:#1a1a22;border:1px solid #26262f;border-radius:10px"><tr>'
         '<td align="center" style="padding:14px 6px">'
-        f'<div style="font:800 24px/1 -apple-system,Segoe UI,Roboto,Arial,sans-serif;color:#4f46e5">{_esc(n)}</div>'
-        f'<div style="font:600 10px/1.3 -apple-system,Segoe UI,Roboto,Arial,sans-serif;letter-spacing:.05em;text-transform:uppercase;color:#94a3b8;padding-top:5px">{_esc(l)}</div>'
+        f'<div style="font:800 24px/1 -apple-system,Segoe UI,Roboto,Arial,sans-serif;color:#818cf8">{_esc(n)}</div>'
+        f'<div style="font:600 10px/1.3 -apple-system,Segoe UI,Roboto,Arial,sans-serif;letter-spacing:.05em;text-transform:uppercase;color:#71717a;padding-top:5px">{_esc(l)}</div>'
         '</td></tr></table></td>'
         for n, l in tiles
     )
@@ -225,9 +225,9 @@ def _render_digest_email_html(d, unsub_url=None):
     build_rows = "".join(
         _market_row(
             i + 1, r["market"], r["slug"],
-            f'<span style="color:#059669">Excess {_num(r.get("excess"))}</span>'
+            f'<span style="color:#34d399">Excess {_num(r.get("excess"))}</span>'
             + (f'&nbsp;<span style="display:inline-block;padding:2px 8px;border-radius:999px;'
-               f'background:#ecfdf5;color:#059669;font:700 10px -apple-system,Arial,sans-serif;'
+               f'background:#13312a;color:#34d399;font:700 10px -apple-system,Arial,sans-serif;'
                f'letter-spacing:.04em;text-transform:uppercase">{_esc(r.get("verdict"))}</span>'
                if r.get("verdict") else ""),
             "#10b981")
@@ -237,8 +237,8 @@ def _render_digest_email_html(d, unsub_url=None):
     avoid_rows = "".join(
         _market_row(
             i + 1, r["market"], r["slug"],
-            f'<span style="color:#dc2626">Constraint {_num(r.get("constraint"))}</span>'
-            + (f'&nbsp;<span style="color:#94a3b8;font-weight:500">~{int(round(r.get("ttp_months") or 0))}mo</span>'
+            f'<span style="color:#f87171">Constraint {_num(r.get("constraint"))}</span>'
+            + (f'&nbsp;<span style="color:#71717a;font-weight:500">~{int(round(r.get("ttp_months") or 0))}mo</span>'
                if r.get("ttp_months") else ""),
             "#ef4444")
         for i, r in enumerate(d.get("top_avoid", []))
@@ -249,10 +249,10 @@ def _render_digest_email_html(d, unsub_url=None):
         mover_rows = "".join(
             _market_row(
                 i + 1, r["market"], r["slug"],
-                (f'<span style="color:#059669">&#9650; +{_num(r.get("delta"))}</span>'
+                (f'<span style="color:#34d399">&#9650; +{_num(r.get("delta"))}</span>'
                  if (r.get("delta") or 0) > 0 else
-                 f'<span style="color:#dc2626">&#9660; {_num(r.get("delta"))}</span>')
-                + f'&nbsp;<span style="color:#94a3b8;font-weight:500">now {_num(r.get("now"))}</span>',
+                 f'<span style="color:#f87171">&#9660; {_num(r.get("delta"))}</span>')
+                + f'&nbsp;<span style="color:#71717a;font-weight:500">now {_num(r.get("now"))}</span>',
                 "#6366f1")
             for i, r in enumerate(movers)
         )
@@ -261,12 +261,12 @@ def _render_digest_email_html(d, unsub_url=None):
         # Honest empty state — no fabricated zeros.
         movers_section = (
             '<tr><td style="padding:18px 0 8px 0;font:700 12px/1 -apple-system,Segoe UI,Roboto,Arial,sans-serif;'
-            'letter-spacing:.09em;text-transform:uppercase;color:#64748b">📈 Biggest 7-day movers</td></tr>'
-            '<tr><td style="padding:4px 2px;font:400 14px/1.5 -apple-system,Segoe UI,Roboto,Arial,sans-serif;color:#94a3b8">'
+            'letter-spacing:.09em;text-transform:uppercase;color:#a1a1aa">📈 Biggest 7-day movers</td></tr>'
+            '<tr><td style="padding:4px 2px;font:400 14px/1.5 -apple-system,Segoe UI,Roboto,Arial,sans-serif;color:#71717a">'
             'Markets held steady — no market shifted by 1+ excess-power point over the last 7 days.</td></tr>'
         )
 
-    footer_unsub = (f'<a href="{_esc(unsub_url)}" style="color:#94a3b8;text-decoration:underline">Unsubscribe</a> · '
+    footer_unsub = (f'<a href="{_esc(unsub_url)}" style="color:#71717a;text-decoration:underline">Unsubscribe</a> · '
                     if unsub_url else "")
 
     lede = _esc(d.get("dcpi_summary") or "Today's U.S. + global data-center market brief.")
@@ -275,36 +275,36 @@ def _render_digest_email_html(d, unsub_url=None):
     if d.get("news_count_24h"): extras.append(f"{d['news_count_24h']} news items (24h)")
     if d.get("deals_count_7d"): extras.append(f"{d['deals_count_7d']} M&A deals (7d)")
     if extras:
-        secondary = ('<tr><td style="padding:8px 0 0 0;font:400 13px/1.5 -apple-system,Segoe UI,Roboto,Arial,sans-serif;color:#64748b">'
+        secondary = ('<tr><td style="padding:8px 0 0 0;font:400 13px/1.5 -apple-system,Segoe UI,Roboto,Arial,sans-serif;color:#71717a">'
                      f'Also tracked: {_esc(" · ".join(extras))}.</td></tr>')
 
     return f"""<!doctype html>
-<html lang="en"><head><meta charset="utf-8">
+<html lang="en" style="background:#0a0a0f"><head><meta charset="utf-8">
 <meta name="viewport" content="width=device-width,initial-scale=1">
-<meta name="color-scheme" content="light"><meta name="supported-color-schemes" content="light">
+<meta name="color-scheme" content="dark"><meta name="supported-color-schemes" content="dark light">
 <title>{_esc(d['title'])}</title></head>
-<body style="margin:0;padding:0;background:#eef0f5;-webkit-text-size-adjust:100%">
+<body style="margin:0;padding:0;background:#0a0a0f;-webkit-text-size-adjust:100%">
 <div style="display:none;max-height:0;overflow:hidden;opacity:0">{lede}</div>
-<table role="presentation" width="100%" cellpadding="0" cellspacing="0" border="0" bgcolor="#eef0f5"><tr>
+<table role="presentation" width="100%" cellpadding="0" cellspacing="0" border="0" bgcolor="#0a0a0f"><tr>
 <td align="center" style="padding:24px 12px">
   <table role="presentation" width="600" cellpadding="0" cellspacing="0" border="0" style="width:600px;max-width:600px">
     <!-- header -->
-    <tr><td bgcolor="#0f1117" style="background:#0f1117;border-radius:14px 14px 0 0;padding:26px 0 18px;text-align:center">
-      <img src="{BRAND_LOGO}" width="120" height="120" alt="DC Hub — Data Center Intelligence"
-           style="display:inline-block;border:0;width:120px;height:120px">
+    <tr><td bgcolor="#0f1117" style="background:#0f1117;border-radius:14px 14px 0 0;padding:24px 0 16px;text-align:center">
+      <img src="{BRAND_LOGO}" width="116" height="116" alt="DC Hub — Data Center Intelligence"
+           style="display:inline-block;border:0;width:116px;height:116px">
     </td></tr>
     <tr><td height="4" style="height:4px;line-height:4px;font-size:0;background:{grad}" bgcolor="#7c3aed">&nbsp;</td></tr>
     <!-- body -->
-    <tr><td bgcolor="#ffffff" style="background:#ffffff;border-radius:0 0 14px 14px;padding:26px 26px 30px">
+    <tr><td bgcolor="#131319" style="background:#131319;border-radius:0 0 14px 14px;padding:26px 26px 30px">
       <table role="presentation" width="100%" cellpadding="0" cellspacing="0" border="0">
-        <tr><td style="font:700 11px/1 -apple-system,Segoe UI,Roboto,Arial,sans-serif;letter-spacing:.14em;text-transform:uppercase;color:#7c3aed">
+        <tr><td style="font:700 11px/1 ui-monospace,Menlo,Consolas,monospace;letter-spacing:.16em;text-transform:uppercase;color:#22d3ee">
           Daily Market Brief · {_esc(d['date'])}</td></tr>
-        <tr><td style="padding:6px 0 0 0;font:800 26px/1.2 -apple-system,BlinkMacSystemFont,Segoe UI,Roboto,Helvetica,Arial,sans-serif;color:#0f172a">
+        <tr><td style="padding:8px 0 0 0;font:800 26px/1.2 'Instrument Sans',-apple-system,BlinkMacSystemFont,Segoe UI,Roboto,Helvetica,Arial,sans-serif;color:#fafafa">
           {_esc(d['title'])}</td></tr>
         <!-- lede card -->
         <tr><td style="padding:16px 0 4px 0">
-          <table role="presentation" width="100%" cellpadding="0" cellspacing="0" border="0" style="background:#f6f5ff;border:1px solid #e6e3ff;border-radius:10px"><tr>
-          <td style="padding:14px 16px;font:500 15px/1.55 -apple-system,Segoe UI,Roboto,Arial,sans-serif;color:#312e81">{lede}</td>
+          <table role="presentation" width="100%" cellpadding="0" cellspacing="0" border="0" style="background:#17161f;border:1px solid #2b2740;border-left:3px solid #818cf8;border-radius:10px"><tr>
+          <td style="padding:14px 16px;font:500 15px/1.55 -apple-system,Segoe UI,Roboto,Arial,sans-serif;color:#e4e4e7">{lede}</td>
           </tr></table>
         </td></tr>
         {secondary}
@@ -321,14 +321,14 @@ def _render_digest_email_html(d, unsub_url=None):
             <a href="{SITE}/dcpi" style="display:inline-block;padding:13px 30px;font:700 15px -apple-system,Segoe UI,Roboto,Arial,sans-serif;color:#ffffff;text-decoration:none">Open the live index →</a>
           </td></tr></table>
         </td></tr>
-        <tr><td align="center" style="padding:4px 0 0 0;font:400 13px -apple-system,Segoe UI,Roboto,Arial,sans-serif;color:#94a3b8">
-          Or connect any AI agent: <span style="font-family:Menlo,Consolas,monospace;color:#475569">dchub.cloud/mcp</span></td></tr>
+        <tr><td align="center" style="padding:4px 0 0 0;font:400 13px -apple-system,Segoe UI,Roboto,Arial,sans-serif;color:#71717a">
+          Or connect any AI agent: <span style="font-family:ui-monospace,Menlo,Consolas,monospace;color:#22d3ee">dchub.cloud/mcp</span></td></tr>
         <!-- footer -->
         <tr><td style="padding:22px 0 0 0"><table role="presentation" width="100%" cellpadding="0" cellspacing="0" border="0"><tr>
-          <td style="border-top:1px solid #eceef4;padding:16px 0 0 0;font:400 12px/1.6 -apple-system,Segoe UI,Roboto,Arial,sans-serif;color:#94a3b8;text-align:center">
+          <td style="border-top:1px solid #26262f;padding:16px 0 0 0;font:400 12px/1.6 -apple-system,Segoe UI,Roboto,Arial,sans-serif;color:#71717a;text-align:center">
             DC Hub · agent-native data-center &amp; power intelligence · free for citation (CC BY 4.0)<br>
-            {footer_unsub}<a href="{SITE}/dcpi" style="color:#94a3b8;text-decoration:underline">Open DCPI</a> ·
-            <a href="{SITE}/digest/today" style="color:#94a3b8;text-decoration:underline">View in browser</a>
+            {footer_unsub}<a href="{SITE}/dcpi" style="color:#71717a;text-decoration:underline">Open DCPI</a> ·
+            <a href="{SITE}/digest/today" style="color:#71717a;text-decoration:underline">View in browser</a>
           </td>
         </tr></table></td></tr>
       </table>
