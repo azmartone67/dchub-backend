@@ -40,6 +40,7 @@ up with one env-var change.
 """
 import os
 import logging
+from utils.anthropic_helper import anthropic_messages_url
 
 logger = logging.getLogger(__name__)
 
@@ -244,7 +245,7 @@ def probe_model_reachability(api_key: str,
             "messages": [{"role": "user", "content": "hi"}],
         }).encode("utf-8")
         req = urllib.request.Request(
-            "https://api.anthropic.com/v1/messages",
+            anthropic_messages_url(),
             data=body,
             headers={
                 "Content-Type": "application/json",

@@ -45,6 +45,7 @@ import sys
 from datetime import datetime, timezone, timedelta, date
 from functools import wraps
 from flask import Blueprint, jsonify, request
+from utils.anthropic_helper import anthropic_messages_url
 
 marketing_bp = Blueprint("marketing_engine", __name__)
 
@@ -1238,7 +1239,7 @@ def _call_claude_marketing(prompt: str) -> tuple[dict | None, str | None]:
         "system": _inject_engagement_signal(_inject_editorial_lessons(_inject_live_stats(_MARKETING_SYSTEM))),
         "messages": [{"role": "user", "content": prompt}],
     }).encode("utf-8")
-    req = Request("https://api.anthropic.com/v1/messages", data=body, headers={
+    req = Request(anthropic_messages_url(), data=body, headers={
         "Content-Type": "application/json",
         "X-API-Key": ANTHROPIC_API_KEY,
         "Anthropic-Version": "2023-06-01",
@@ -1587,7 +1588,7 @@ def _claude_rewrite_for_linkedin(rel: dict, style: str | None = None) -> str | N
     try:
         import requests as _rq
         resp = _rq.post(
-            "https://api.anthropic.com/v1/messages",
+            anthropic_messages_url(),
             json={
                 "model": MARKETING_MODEL,
                 "max_tokens": 1200,

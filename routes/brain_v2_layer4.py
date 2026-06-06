@@ -66,6 +66,7 @@ import time
 from datetime import datetime, timezone
 from functools import wraps
 from flask import Blueprint, jsonify, request
+from utils.anthropic_helper import anthropic_messages_url
 
 brain_v2_bp = Blueprint("brain_v2", __name__)
 
@@ -359,8 +360,14 @@ def _call_claude(prompt: str, system: str) -> tuple[str | None, str | None]:
                 _headers["Anthropic-Beta"] = one_m_beta_header()
         except Exception:
             pass
+        # AI Gateway per-component cost attribution (no-op unless gateway active).
+        try:
+            from utils.anthropic_helper import aig_metadata_headers
+            _headers.update(aig_metadata_headers("brain-reasoning"))
+        except Exception:
+            pass
         req = urllib.request.Request(
-            "https://api.anthropic.com/v1/messages",
+            anthropic_messages_url(),
             data=body,
             headers=_headers,
         )

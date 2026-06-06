@@ -26,6 +26,7 @@ import os
 import re
 import datetime
 from flask import Blueprint, Response, jsonify, request, abort, redirect
+from utils.anthropic_helper import anthropic_messages_url
 
 
 market_deep_dive_bp = Blueprint("market_deep_dive", __name__)
@@ -170,7 +171,7 @@ def _ask_claude_to_write(facts: dict) -> tuple[str | None, str | None]:
     try:
         import requests
         r = requests.post(
-            "https://api.anthropic.com/v1/messages",
+            anthropic_messages_url(),
             headers={"x-api-key": _ANTHROPIC_KEY,
                      "anthropic-version": "2023-06-01",
                      "content-type": "application/json"},

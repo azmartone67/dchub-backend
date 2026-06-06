@@ -8,6 +8,7 @@ import os, json, re
 from flask import Blueprint, request, jsonify
 import psycopg2, psycopg2.extras
 import requests
+from utils.anthropic_helper import anthropic_messages_url
 
 dcpi_ask_bp = Blueprint("dcpi_ask", __name__)
 
@@ -65,7 +66,7 @@ def _call_anthropic(question: str, context: str) -> tuple[str, list]:
         return "I'm not able to answer right now — Anthropic API key not configured.", []
     try:
         r = requests.post(
-            "https://api.anthropic.com/v1/messages",
+            anthropic_messages_url(),
             headers={
                 "x-api-key": api_key,
                 "anthropic-version": "2023-06-01",

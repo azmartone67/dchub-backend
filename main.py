@@ -41,6 +41,7 @@ from routes.outreach import outreach_bp
 from dotenv import load_dotenv
 from internal_auth import is_valid_internal_key, get_internal_key_for_client
 from csp_report import csp_report_bp
+from utils.anthropic_helper import anthropic_messages_url
 
 
 def _phase22_audit_check():
@@ -13261,7 +13262,7 @@ def _ai_demo_ask():
     import requests
     try:
         r = requests.post(
-            'https://api.anthropic.com/v1/messages',
+            anthropic_messages_url(),
             json={
                 'model': 'claude-sonnet-4-20250514',
                 'max_tokens': 600,

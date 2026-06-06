@@ -55,6 +55,43 @@ def gateway_active() -> bool:
     return "gateway.ai.cloudflare.com" in url
 
 
+def anthropic_messages_url() -> str:
+    """The /v1/messages endpoint for RAW HTTP callers (requests/urllib/httpx).
+
+    The 20+ raw call sites across the brain layers + press + market-brief
+    hardcoded "https://api.anthropic.com/v1/messages", which BYPASSES the
+    AI Gateway even when ANTHROPIC_BASE_URL is set (only the SDK reads that
+    env var). Route them through this helper so a single env-var flip sends
+    ALL of DC Hub's Claude traffic — SDK and raw — through the gateway.
+
+    Returns the gateway messages URL when configured, else Anthropic direct.
+    No behavior change until ANTHROPIC_BASE_URL / DCHUB_AI_GATEWAY_URL is set."""
+    base = (get_anthropic_base_url() or "https://api.anthropic.com").rstrip("/")
+    return base + "/v1/messages"
+
+
+def aig_metadata_headers(component: str, *, cache_ttl: int | None = None) -> dict:
+    """Cloudflare AI Gateway request headers for cost attribution + caching.
+
+    - cf-aig-metadata: JSON tagging the request with a component (e.g.
+      "brain-reasoning", "press", "market-brief") so the AI Gateway dashboard
+      and spend limits can attribute cost per workload.
+    - cf-aig-cache-ttl: when cache_ttl is given, lets the gateway serve
+      identical prompts from cache (the brain hits the same radar/critique
+      prompts repeatedly → cache hits are free).
+
+    No-ops (returns {}) when the gateway isn't active, so adding these to
+    every call site is safe whether or not the gateway is configured."""
+    if not gateway_active():
+        return {}
+    import json as _json
+    headers = {"cf-aig-metadata": _json.dumps(
+        {"component": component, "app": "dchub"}, separators=(",", ":"))}
+    if cache_ttl and cache_ttl > 0:
+        headers["cf-aig-cache-ttl"] = str(int(cache_ttl))
+    return headers
+
+
 def get_anthropic_client(api_key: str | None = None, **overrides):
     """Return an anthropic.Anthropic client wired to AI Gateway if configured.
 

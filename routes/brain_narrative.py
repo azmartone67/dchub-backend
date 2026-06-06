@@ -20,6 +20,7 @@ import time
 import logging
 import datetime as _dt
 from flask import Blueprint, request, jsonify
+from utils.anthropic_helper import anthropic_messages_url
 
 logger = logging.getLogger(__name__)
 brain_narrative_bp = Blueprint("brain_narrative", __name__)
@@ -107,7 +108,7 @@ def _call_claude(prompt: str) -> str | None:
     try:
         import requests
         r = requests.post(
-            "https://api.anthropic.com/v1/messages",
+            anthropic_messages_url(),
             headers={
                 "x-api-key": _ANTHROPIC_KEY,
                 "anthropic-version": "2023-06-01",

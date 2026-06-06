@@ -31,6 +31,7 @@ import datetime
 from flask import Blueprint, request, jsonify
 import psycopg2
 import psycopg2.extras
+from utils.anthropic_helper import anthropic_messages_url
 
 
 ai_citation_tracker_bp = Blueprint("ai_citation_tracker", __name__)
@@ -767,7 +768,7 @@ def _ask_claude(prompt_text: str) -> tuple[str, str | None]:
         return "", "no_key"
     try:
         r = _req.post(
-            "https://api.anthropic.com/v1/messages",
+            anthropic_messages_url(),
             headers={
                 "x-api-key":         api_key,
                 "anthropic-version": "2023-06-01",

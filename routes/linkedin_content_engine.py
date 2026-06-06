@@ -37,6 +37,7 @@ import random
 import urllib.request
 import urllib.error
 from contextlib import contextmanager
+from utils.anthropic_helper import anthropic_messages_url
 
 try:
     import psycopg2 as _pg
@@ -376,7 +377,7 @@ def _compose_with_claude(story_type: str, data: dict, landing: str) -> str | Non
         "messages": [{"role": "user", "content": user_prompt}],
     }).encode("utf-8")
     req = urllib.request.Request(
-        "https://api.anthropic.com/v1/messages",
+        anthropic_messages_url(),
         data=body,
         headers={
             "Content-Type": "application/json",

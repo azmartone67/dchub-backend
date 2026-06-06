@@ -49,6 +49,7 @@ from datetime import datetime, timedelta, timezone
 from typing import Optional
 
 from flask import Blueprint, jsonify, request
+from utils.anthropic_helper import anthropic_messages_url
 
 logger = logging.getLogger(__name__)
 
@@ -203,7 +204,7 @@ def _call_claude(prompt: str) -> tuple[Optional[str], Optional[str]]:
             "messages": [{"role": "user", "content": prompt}],
         }).encode("utf-8")
         req = urllib.request.Request(
-            "https://api.anthropic.com/v1/messages",
+            anthropic_messages_url(),
             data=body,
             headers={
                 "Content-Type": "application/json",

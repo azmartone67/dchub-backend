@@ -32,6 +32,7 @@ import re
 from datetime import datetime, timezone, timedelta
 
 from flask import Blueprint, jsonify, request
+from utils.anthropic_helper import anthropic_messages_url
 
 demo_bp = Blueprint("demo", __name__)
 
@@ -283,7 +284,7 @@ def _call_claude_with_tools(question):
     for turn in range(MAX_TOOL_TURNS + 1):  # +1 for final answer
         try:
             r = requests.post(
-                "https://api.anthropic.com/v1/messages",
+                anthropic_messages_url(),
                 json={
                     "model": DEMO_MODEL,
                     "max_tokens": MAX_OUTPUT_TOKENS,

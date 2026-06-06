@@ -32,6 +32,7 @@ import json
 import logging
 import datetime as _dt
 from flask import Blueprint, jsonify, request
+from utils.anthropic_helper import anthropic_messages_url
 
 logger = logging.getLogger(__name__)
 brain_layer9_bp = Blueprint("brain_layer9", __name__)
@@ -160,7 +161,7 @@ the founder."""
     try:
         import requests
         r = requests.post(
-            "https://api.anthropic.com/v1/messages",
+            anthropic_messages_url(),
             headers={"x-api-key": _ANTHROPIC_KEY,
                      "anthropic-version": "2023-06-01",
                      "content-type": "application/json"},

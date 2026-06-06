@@ -53,6 +53,7 @@ import logging
 import datetime
 import hashlib
 from flask import Blueprint, jsonify, request
+from utils.anthropic_helper import anthropic_messages_url
 
 logger = logging.getLogger(__name__)
 news_ner_bp = Blueprint("news_ner", __name__)
@@ -269,7 +270,7 @@ def _extract_names_llm(headline: str, body: str) -> list[str]:
         "messages": [{"role": "user", "content": sample}],
     }).encode()
     req = urllib.request.Request(
-        "https://api.anthropic.com/v1/messages",
+        anthropic_messages_url(),
         data=payload, method="POST",
         headers={
             "x-api-key": key,

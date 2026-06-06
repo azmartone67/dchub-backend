@@ -53,6 +53,7 @@ import json
 import logging
 import datetime
 from flask import Blueprint, jsonify, request, Response
+from utils.anthropic_helper import anthropic_messages_url
 
 logger = logging.getLogger(__name__)
 brain_inspector_bp = Blueprint("brain_inspector", __name__)
@@ -609,7 +610,7 @@ def _call_opus(system: str, user: str, model: str,
         "messages": [{"role": "user", "content": user}],
     }).encode()
     req = urllib.request.Request(
-        "https://api.anthropic.com/v1/messages",
+        anthropic_messages_url(),
         data=payload, method="POST",
         headers={
             "x-api-key": key,

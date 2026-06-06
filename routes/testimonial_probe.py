@@ -32,6 +32,7 @@ from datetime import datetime, timezone
 
 import psycopg2
 from flask import Blueprint, jsonify, request
+from utils.anthropic_helper import anthropic_messages_url
 
 testimonial_probe_bp = Blueprint("testimonial_probe", __name__)
 
@@ -191,7 +192,7 @@ def _probe_claude() -> dict:
         # first run returned http_404. claude-haiku-4-5-20251001 is the
         # cheapest current model — perfect for a 2-3 sentence probe.
         req = urllib.request.Request(
-            "https://api.anthropic.com/v1/messages",
+            anthropic_messages_url(),
             data=json.dumps({
                 "model": "claude-haiku-4-5-20251001",
                 "max_tokens": 300,

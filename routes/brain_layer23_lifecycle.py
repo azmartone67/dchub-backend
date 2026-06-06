@@ -52,6 +52,7 @@ import urllib.error
 from typing import Any
 
 from flask import Blueprint, jsonify, request, current_app
+from utils.anthropic_helper import anthropic_messages_url
 
 
 brain_lifecycle_bp = Blueprint("brain_lifecycle", __name__)
@@ -1314,7 +1315,7 @@ def _call_opus_for_proposal(audit_summary: str) -> tuple[dict | None, str | None
         "messages": [{"role": "user", "content": prompt}],
     }).encode("utf-8")
     req = urllib.request.Request(
-        "https://api.anthropic.com/v1/messages",
+        anthropic_messages_url(),
         data=body,
         headers={
             "Content-Type": "application/json",
@@ -1408,7 +1409,7 @@ def _challenge_proposal(proposal: dict, audit_summary: str) -> dict:
         "messages": [{"role": "user", "content": prompt}],
     }).encode("utf-8")
     req = urllib.request.Request(
-        "https://api.anthropic.com/v1/messages",
+        anthropic_messages_url(),
         data=body,
         headers={
             "Content-Type": "application/json",
