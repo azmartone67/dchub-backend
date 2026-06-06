@@ -66,7 +66,8 @@ def _cached(key: str, builder):
 
 def _f(v):
     try:
-        return float(v)
+        x = float(v)
+        return None if x != x else x  # reject NaN (x != x is True only for NaN)
     except (TypeError, ValueError):
         return None
 
@@ -209,6 +210,13 @@ def _build_ixps():
 @global_infra_bp.route("/api/v1/infrastructure/global-ixps", methods=["GET"])
 def global_ixps():
     return _cached("ixps", _build_ixps)
+
+
+# ── GDACS multi-hazard proxy (browser can't fetch gdacs.org directly) ──
+@global_infra_bp.route("/api/v1/infrastructure/global-hazards", methods=["GET"])
+def global_hazards():
+    return _cached("gdacs", lambda: _fetch_text(
+        "https://www.gdacs.org/gdacsapi/api/events/geteventlist/MAP"))
 
 
 def register_global_infra(app):
