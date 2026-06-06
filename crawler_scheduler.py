@@ -228,6 +228,37 @@ SCHEDULE = [
     # triage 8/20 sharing with deals). Bounded: 10 slugs × ~250ms each +
     # 9 × 1s sleep = ~12s per slot.
     ( 8, 20, "hyperscaler_brief_warm", "_run_hyperscaler_brief_warm"),
+    # r65-renewal-nudge (2026-06-06): day-330 renewal nudge for one-time
+    # Pro Annual buyers ($1,188 link, mode='payment' — no Stripe-side
+    # auto-renew). Companion to 594756e8 which stamps users.tier_expires_at
+    # = NOW() + 365 days and users.source_plan = 'pro_annual_onetime'.
+    # Without this nudge, those buyers silently churn at day 365.
+    # Slot 14/14 UTC = mid-morning Eastern, evening Europe (good open-rate
+    # window for B2B). Same-hour pair → one run/UTC day. The hour is
+    # shared with knowledge_sync (14/2) and watchlist_weekly_digest
+    # (14/14, Mondays-only) but each has its own per-name last_run guard
+    # (prior art: feedback_triage 8/20 sharing with deals). Internal
+    # 50/run safety cap + 7-day per-user cooldown via renewal_nudge_log.
+    # Kill switch: DCHUB_RENEWAL_NUDGE_DISABLE=1. Dry-run knob:
+    # DCHUB_RENEWAL_NUDGE_DRY_RUN=1.
+    (14, 14, "renewal_nudge_onetime", "_run_renewal_nudge_onetime"),
+    # Expired one-time tier demote (2026-06-06): nightly enforcement leg
+    # of commit 594756e8. That commit stamped users.tier_expires_at = NOW()
+    # + 365 days + users.source_plan = '<plan>_onetime' on the new mode=
+    # 'payment' Pro Annual checkout ($1,188) so the expiry was TRACKED;
+    # this cron ENFORCES it. SELECT users WHERE tier_expires_at < NOW() AND
+    # source_plan ILIKE '%_onetime' AND plan != 'free', then UPDATE plan/
+    # role='free' + subscription_status='expired' + demoted_at/_reason.
+    # api_keys.rate_limit_tier also drops to 'free' (mirrors
+    # handle_subscription_deleted's downgrade path so a now-expired key
+    # can't keep hitting paid endpoints). 03:00 UTC slot chosen because
+    # it's empty: between 02:00 tool_calibration and 04:00 gas_pricing_
+    # refresh — no overlap with any existing crawler. Same-hour same-day
+    # cap → one run/UTC day. Subscription-mode buyers leave tier_expires_at
+    # NULL so the SELECT can never match them — they're handled by
+    # handle_subscription_deleted on Stripe's webhook, not here. Kill
+    # switch: DCHUB_DEMOTE_DRY_RUN=1 forces dry-run on every caller.
+    ( 3,  3, "expired_onetime_demote", "_run_expired_onetime_demote"),
 ]
 
 # ---------------------------------------------------------------------------
@@ -1618,6 +1649,35 @@ def _run_mcp_presence_auto_fix():
         logger.error("📡 mcp_presence_auto_fix error: %s", e, exc_info=True)
 
 
+def _run_expired_onetime_demote():
+    """Nightly demote of expired one-time tier buyers (2026-06-06):
+    enforcement leg of commit 594756e8. Calls
+    routes.expired_demote.run_expired_demote(dry_run=False) which scans
+    `users WHERE tier_expires_at < NOW() AND source_plan ILIKE '%_onetime'
+    AND plan != 'free'`, then UPDATEs plan/role to 'free' +
+    subscription_status='expired' + demoted_at=NOW() +
+    demoted_reason='tier_expired_onetime', plus drops api_keys.rate_limit_
+    tier to 'free' for each affected user. Audit row goes into
+    brain_findings (detector='expired_demote_cron') so the demote count is
+    visible on the brain dashboard. Defensive everywhere — module-level
+    try/except so this can never crash the scheduler thread. Subscription-
+    mode buyers leave tier_expires_at NULL → the SELECT can never match
+    them. Kill switch: DCHUB_DEMOTE_DRY_RUN=1 forces dry-run. Slot 03/03
+    UTC, same-hour same-day cap → one run/UTC day."""
+    try:
+        from routes.expired_demote import run_expired_demote
+        result = run_expired_demote(dry_run=False, limit=500) or {}
+        logger.info(
+            "💀 expired_onetime_demote: dry_run=%s checked=%s demoted=%s errors=%s",
+            result.get("dry_run"),
+            result.get("checked"),
+            result.get("demoted"),
+            len(result.get("errors", []) or []),
+        )
+    except Exception as e:
+        logger.error("💀 expired_onetime_demote error: %s", e, exc_info=True)
+
+
 def _run_feedback_triage():
     """Customer Feedback Forum triage (2026-06-06): pull status='new'
     + 'triaged' rows from feedback_submissions, classify via Claude,
@@ -1645,6 +1705,45 @@ def _run_feedback_triage():
         logger.error("📬 feedback_triage error: %s", e, exc_info=True)
 
 
+def _run_renewal_nudge_onetime():
+    """Fire /api/v1/admin/renewal-nudge/send (loopback). Finds one-time
+    Pro Annual buyers (source_plan='pro_annual_onetime') whose
+    tier_expires_at is 20-35 days out and who haven't been nudged in 7d,
+    sends a friendly renew-or-switch-to-monthly email via Resend, logs
+    to renewal_nudge_log. Cap is 50/run inside the route. No-ops cleanly
+    if DCHUB_RESEND_API_KEY or DCHUB_ADMIN_KEY missing.
+
+    Set DCHUB_RENEWAL_NUDGE_DRY_RUN=1 to skip the actual Resend POST but
+    still log "WOULD HAVE SENT" to stdout — handy for the first deploy
+    before any candidates exist. Kill switch:
+    DCHUB_RENEWAL_NUDGE_DISABLE=1.
+    """
+    import requests as _rq
+    key = (os.environ.get("DCHUB_ADMIN_KEY")
+           or os.environ.get("DCHUB_INTERNAL_KEY")
+           or os.environ.get("DCHUB_ADMIN_API_KEY") or "")
+    if not key:
+        logger.warning("📅 renewal_nudge_onetime: skipped — DCHUB_ADMIN_KEY not set")
+        return
+    base = os.environ.get("DCHUB_INTERNAL_API", "http://127.0.0.1:8080")
+    try:
+        r = _rq.post(
+            f"{base}/api/v1/admin/renewal-nudge/send",
+            headers={"X-Admin-Key": key, "X-Internal-Key": key,
+                     "User-Agent": "dchub-cron-renewal-nudge/1.0"},
+            timeout=120,
+        )
+        d = (r.json() if r.headers.get("content-type", "").startswith("application/json") else {}) or {}
+        logger.info("📅 renewal_nudge_onetime: eligible=%s sent=%s skipped=%s errors=%s dry_run=%s",
+                    d.get("eligible_count"),
+                    len(d.get("sent", []) or []),
+                    len(d.get("skipped", []) or []),
+                    len(d.get("errors", []) or []),
+                    d.get("dry_run"))
+    except Exception as e:
+        logger.error("📅 renewal_nudge_onetime: error — %s", e)
+
+
 _RUNNERS = {
     "market_refresh":      _run_market_refresh,
     "news":                _run_news_crawler,
@@ -1670,10 +1769,12 @@ _RUNNERS = {
     "state_brief_warm":    _run_state_brief_warm,
     "operator_brief_warm": _run_operator_brief_warm,
     "feedback_triage":     _run_feedback_triage,
+    "expired_onetime_demote": _run_expired_onetime_demote,
     "verdict_shift_post":  _run_verdict_shift_post,
     "watchlist_realtime":       _run_watchlist_realtime,
     "watchlist_weekly_digest":  _run_watchlist_weekly_digest,
     "hyperscaler_brief_warm":   _run_hyperscaler_brief_warm,
+    "renewal_nudge_onetime":    _run_renewal_nudge_onetime,
 }
 
 

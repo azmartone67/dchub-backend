@@ -154,6 +154,27 @@ SCHEMA_STATEMENTS = [
         "ALTER TABLE users ADD COLUMN IF NOT EXISTS source_plan TEXT",
         "CREATE INDEX IF NOT EXISTS ix_users_tier_expires_at ON users(tier_expires_at) WHERE tier_expires_at IS NOT NULL",
     ]),
+    ("renewal_nudge_log table", [
+        # r65-renewal-nudge (2026-06-06): per-send log for the day-330
+        # renewal nudge cron (routes/renewal_nudge.py). Powers the 7-day
+        # cooldown ("NOT EXISTS in last 7 days") AND a public history
+        # endpoint. user_id is TEXT to match the existing users.id
+        # convention (Stripe-prefixed strings, not BIGSERIAL).
+        # routes/renewal_nudge._ensure_schema also runs this at request
+        # time as a belt-and-suspenders for cold deploys.
+        """CREATE TABLE IF NOT EXISTS renewal_nudge_log (
+            id                       BIGSERIAL PRIMARY KEY,
+            user_id                  TEXT NOT NULL,
+            email                    TEXT NOT NULL,
+            sent_at                  TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+            days_remaining_at_send   INT,
+            resend_message_id        TEXT,
+            status                   TEXT NOT NULL DEFAULT 'sent',
+            delivery_info            TEXT
+        )""",
+        "CREATE INDEX IF NOT EXISTS ix_renewal_nudge_log_user_sent ON renewal_nudge_log(user_id, sent_at DESC)",
+        "CREATE INDEX IF NOT EXISTS ix_renewal_nudge_log_email_sent ON renewal_nudge_log(email, sent_at DESC)",
+    ]),
     ("press_releases.published_at column", [
         # If the column doesn't exist, ALTER TABLE ADD COLUMN IF NOT
         # EXISTS is idempotent. Some deploys may have it as

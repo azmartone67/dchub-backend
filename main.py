@@ -27108,6 +27108,21 @@ try:
 except Exception as _wlb_e:
     print(f"[main] watchlist_bp register failed: {_wlb_e}", flush=True)
 
+# Nightly demote cron for expired one-time tier buyers (2026-06-06).
+# Companion to commit 594756e8 which stamped tier_expires_at=NOW()+365d +
+# source_plan='pro_annual_onetime' on the new $1,188 one-time Pro Annual
+# checkout. That fix TRACKED the expiry; this blueprint ENFORCES it. Cron
+# fires at slot (3,3,"expired_onetime_demote") in crawler_scheduler.py.
+# Endpoints: GET /api/v1/admin/lifecycle/demote-preview (dry-run SELECT)
+# and POST /api/v1/admin/lifecycle/demote-expired (live UPDATE). Kill
+# switch: DCHUB_DEMOTE_DRY_RUN=1 forces dry-run on every caller.
+try:
+    from routes.expired_demote import expired_demote_bp
+    app.register_blueprint(expired_demote_bp)
+    print("[main] expired_demote_bp registered: /api/v1/admin/lifecycle/{demote-preview,demote-expired}", flush=True)
+except Exception as _exd_e:
+    print(f"[main] expired_demote_bp register failed: {_exd_e}", flush=True)
+
 # PRO Pricing A/B experiment (2026-06-06): test $499/mo vs $99/mo on
 # new visitors. Deterministic 50/50 cohort split via session-hash;
 # sticky cookie carries arm across visits. Existing PRO subscribers
@@ -28063,6 +28078,15 @@ try:
     app.register_blueprint(upgrade_nudger_bp)
 except Exception as _e:
     print(f"[main] upgrade_nudger register failed: {_e}", file=sys.stderr)
+
+# r65-renewal-nudge (2026-06-06): day-330 renewal nudge for one-time
+# Pro Annual buyers. Companion to 594756e8 (tier_expires_at stamping).
+# Without this, $1,188 one-time buyers silently churn at day 365.
+try:
+    from routes.renewal_nudge import renewal_nudge_bp
+    app.register_blueprint(renewal_nudge_bp)
+except Exception as _e:
+    print(f"[main] renewal_nudge register failed: {_e}", file=sys.stderr)
 
 # Phase XXXX (2026-05-16): competitor intel watcher — daily snapshot
 # of competitor sites, brain finding on significant drift.
