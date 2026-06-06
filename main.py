@@ -22136,6 +22136,47 @@ def api_claude_gateway_probe():
 def api_v1_me():
     api_key = request.headers.get('X-API-Key', '') or request.args.get('api_key', '')
     if not api_key:
+        # 2026-06-06: this endpoint was X-API-Key-only, so a logged-in
+        # BROWSER (which carries the signed JWT in the dchub_token cookie,
+        # not an X-API-Key header) always got 401 'no_api_key'. Accept the
+        # login JWT (dchub_token cookie OR Authorization: Bearer <jwt>),
+        # verify it (canonical JWT_SECRET / HS256), and return the same
+        # {success, user} shape looked up by the JWT's user_id.
+        _auth = request.headers.get('Authorization', '')
+        _tok = None
+        if _auth.startswith('Bearer ') and not _auth[7:].strip().startswith('dchub_'):
+            _tok = _auth[7:].strip()
+        if not _tok:
+            _tok = (request.cookies.get('dchub_token')
+                    or request.cookies.get('auth_token')
+                    or request.cookies.get('token'))
+        if _tok:
+            _c = None
+            try:
+                import jwt as _jwt
+                _p = _jwt.decode(_tok, JWT_SECRET, algorithms=['HS256'])
+                _uid = _p.get('user_id')
+                _c = get_read_db()
+                _cur = _c.cursor(cursor_factory=psycopg2.extras.RealDictCursor)
+                _cur.execute("""
+                    SELECT id, email, COALESCE(plan,'free') AS plan,
+                           created_at AS user_created_at
+                      FROM users WHERE id::text = %s LIMIT 1
+                """, (str(_uid),))
+                _row = _cur.fetchone()
+                if _row:
+                    return jsonify({'success': True, 'user': dict(_row),
+                                    'auth_source': 'jwt'})
+                # Signed JWT but no matching user row — return the claims.
+                return jsonify({'success': True, 'auth_source': 'jwt',
+                                'user': {'id': _uid, 'email': _p.get('email'),
+                                         'plan': _p.get('plan', 'free')}})
+            except Exception:
+                pass  # invalid/expired JWT → fall through to no_api_key
+            finally:
+                if _c:
+                    try: _c.close()
+                    except Exception: pass
         return jsonify({'success': False, 'error': 'no_api_key'}), 401
     import hashlib as _hl
     key_hash = _hl.sha256(api_key.encode()).hexdigest()
