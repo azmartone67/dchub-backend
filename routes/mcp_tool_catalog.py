@@ -162,6 +162,23 @@ TOOLS = [
     ("deal_autopsy",          "intelligence",   "free",
      "Tracked data-center M&A / capex deal flow with the DCPI grid-reality verdict overlaid on each deal market — 'what is the real play?'. Returns recent deals (buyer, seller, value, market) + each market DCPI verdict and time-to-power; paid key adds the per-deal autopsy narrative.",
      'deal_autopsy(limit=15)'),
+    # ── Agent MOAT — persistence + monitoring + incremental sync (2026-06-06).
+    # Live in server.mjs; turns DC Hub from a stateless lookup into agent state.
+    ("get_changes",           "intelligence",   "free",
+     "Incremental sync — what changed in DC Hub since a timestamp (DCPI 7-day movers, newly discovered facilities, new M&A deals, news) so an agent pulls only the delta instead of re-fetching everything. Pass since=<ISO> or '24h'/'7d'.",
+     'get_changes(since="7d")'),
+    ("save_site",             "portfolio",      "pro",
+     "Save a candidate site (lat/lon + optional name/state/market/target_mw/notes) to your DC Hub account so an agent can track + revisit it across sessions. Returns the saved site id.",
+     'save_site(lat=39.04, lon=-77.48, name="Ashburn parcel", target_mw=100)'),
+    ("list_saved_sites",      "portfolio",      "pro",
+     "List the sites saved to your account — the persistent shortlist from save_site, each with its saved DCPI score, target MW, market, and notes.",
+     'list_saved_sites()'),
+    ("set_market_alert",      "portfolio",      "pro",
+     "Subscribe to movement alerts for a DCPI market (email or webhook) — get notified when its Excess-Power / Constraint score moves. Lets an agent MONITOR markets, not just query them.",
+     'set_market_alert(market="northern-virginia", channel="webhook", destination="https://hooks.example.com/dc")'),
+    ("export_dataset",        "portfolio",      "pro",
+     "Bulk export your saved sites as CSV or GeoJSON for offline analysis / ingestion.",
+     'export_dataset(format="csv")'),
 ]
 
 
@@ -226,11 +243,14 @@ def tools_for_well_known() -> list[dict]:
 # Count constant other modules can import for assertions / display.
 LIVE_MCP_TOOL_COUNT = len(TOOLS)
 # Authoritative PRO-only tool set (mirrors server.mjs PRO_ONLY_TOOLS) — the
-# 5 highest-value premium tools. Other surfaces should derive "gated_tools"
+# highest-value premium tools. Other surfaces should derive "gated_tools"
 # from this rather than hand-listing (the CF worker had a stale 4-tool set).
 PRO_ONLY_TOOLS = [
     "analyze_site", "compare_sites", "get_grid_intelligence",
     "get_fiber_intel", "get_dchub_recommendation",
+    # Agent MOAT (2026-06-06): persistence + monitoring + export are PRO.
+    # get_changes (incremental sync) stays free — it drives agent retention.
+    "save_site", "list_saved_sites", "set_market_alert", "export_dataset",
 ]
 
 
