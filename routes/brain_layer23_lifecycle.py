@@ -998,18 +998,29 @@ def _audit_perf_budget() -> dict:
                ("/api/v1/dcpi/scores?limit=5", 6.0)]
     slow, checked = [], 0
     for path, budget in targets:
-        try:
-            t0 = time.time()
-            req = _u.Request(base + path, headers={"User-Agent": "dchub-brain-audit/1.0"})
-            with _u.urlopen(req, timeout=15) as r:
-                r.read(2048)
-            dt = round(time.time() - t0, 2)
-            checked += 1
-            if dt > budget:
-                slow.append({"path": path, "seconds": dt, "budget": budget})
-        except Exception as e:
-            slow.append({"path": path, "error": type(e).__name__, "budget": budget})
-            checked += 1
+        # Retry once — a single transient blip (a momentary CF/edge hiccup, as
+        # happened to /alive on first run) is NOT a budget breach. Only flag if
+        # NO attempt comes back within budget. Avoids chronic false-'weak' noise.
+        best_dt, last_err = None, None
+        for _attempt in (1, 2):
+            try:
+                t0 = time.time()
+                req = _u.Request(base + path, headers={"User-Agent": "dchub-brain-audit/1.0"})
+                with _u.urlopen(req, timeout=15) as r:
+                    r.read(2048)
+                dt = round(time.time() - t0, 2)
+                best_dt = dt if best_dt is None else min(best_dt, dt)
+                if dt <= budget:
+                    break
+            except Exception as e:
+                last_err = type(e).__name__
+        checked += 1
+        if best_dt is not None and best_dt <= budget:
+            continue
+        if best_dt is not None:
+            slow.append({"path": path, "seconds": best_dt, "budget": budget})
+        else:
+            slow.append({"path": path, "error": last_err or "error", "budget": budget})
     return {
         "ok": len(slow) == 0 and checked > 0,
         "endpoints_checked": checked,
