@@ -1,0 +1,30 @@
+# Railway Nixpacks build config for DC Hub backend.
+#
+# Why this file exists:
+#   The Market Brief PDF export uses WeasyPrint (2026-06-06 ship), which
+#   needs native C libraries (Pango/Cairo) at runtime. Nixpacks doesn't
+#   auto-detect these from requirements.txt alone — we have to declare them
+#   explicitly via aptPkgs. Without this, /markets/<slug>/brief.pdf returns
+#   500 with "cannot import 'gi' / 'cairo' / 'pango'".
+#
+# Affected endpoint:
+#   GET /markets/<slug>/brief.pdf  (PRO+ gated)
+
+[phases.setup]
+aptPkgs = [
+  # WeasyPrint runtime deps (PDF rendering of Market Brief).
+  # libpango1.0-0       — Pango text layout (the slow one to install)
+  # libcairo2           — Cairo 2D graphics
+  # libpangoft2-1.0-0   — Pango FreeType bridge (for system fonts)
+  # libgdk-pixbuf-2.0-0 — image rendering (cover-page logo, charts)
+  # shared-mime-info    — MIME detection (used by WeasyPrint for embeds)
+  # fonts-liberation    — DejaVu/Liberation fallback fonts so PDFs aren't
+  #                       boxes when the system lacks the Inter/JetBrains
+  #                       fonts the brand uses.
+  "libpango1.0-0",
+  "libcairo2",
+  "libpangoft2-1.0-0",
+  "libgdk-pixbuf-2.0-0",
+  "shared-mime-info",
+  "fonts-liberation",
+]
