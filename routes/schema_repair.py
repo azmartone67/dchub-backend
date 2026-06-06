@@ -488,6 +488,31 @@ SCHEMA_STATEMENTS = [
         "CREATE INDEX IF NOT EXISTS ix_connect_lv_viewed ON connect_landing_views(viewed_at DESC)",
         "CREATE INDEX IF NOT EXISTS ix_connect_lv_keyfor ON connect_landing_views(key_minted_for) WHERE key_minted_for IS NOT NULL",
     ]),
+    ("r68-funnel-stamping columns", [
+        # r68-funnel-stamping (2026-06-06): close the two measurement leaks
+        # the /admin/funnel-health dashboard surfaced — 18 codes minted but
+        # 0 redeem-page views and 11 conversions but 0 stripe-click stamps.
+        # The redeem_viewed_at stamp was already fired by pair_code.redeem
+        # _landing but no per-view counter existed. The stripe_clicked_at
+        # stamp died at sendBeacon races (browser navigation to Stripe ran
+        # in the same tick and dropped the beacon). Both fixes need new
+        # columns:
+        #   • mcp_pair_codes.redeem_view_count  — counter for repeat views
+        #     (the canonical landing keeps was_first_view semantics; this
+        #     adds a "this human looked at it N times" signal for the
+        #     conversion-funnel dashboard).
+        #   • mcp_pair_codes.stripe_click_count — same idea for the new
+        #     server-side click proxy (/api/v1/redeem/<code>/click).
+        #   • connect_landing_views.stripe_clicked_at + stripe_clicked_plan
+        #     — added by the /api/v1/connect/click proxy that stamps
+        #     before 302ing to Stripe.
+        # All ADD COLUMN IF NOT EXISTS so re-runs are idempotent.
+        "ALTER TABLE mcp_pair_codes ADD COLUMN IF NOT EXISTS redeem_view_count INTEGER DEFAULT 0",
+        "ALTER TABLE mcp_pair_codes ADD COLUMN IF NOT EXISTS stripe_click_count INTEGER DEFAULT 0",
+        "ALTER TABLE connect_landing_views ADD COLUMN IF NOT EXISTS stripe_clicked_at TIMESTAMPTZ",
+        "ALTER TABLE connect_landing_views ADD COLUMN IF NOT EXISTS stripe_clicked_plan TEXT",
+        "CREATE INDEX IF NOT EXISTS ix_connect_lv_clicked ON connect_landing_views(stripe_clicked_at) WHERE stripe_clicked_at IS NOT NULL",
+    ]),
 ]
 
 

@@ -725,6 +725,58 @@ def phase63_redeem(session_id):
             mimetype='text/html'
         )
 
+    # r68-funnel-stamping (2026-06-06): stamp redeem_viewed_at on any
+    # mcp_pair_codes row keyed on this session_id BEFORE rendering the
+    # form.  Path-4 above mints a pair code keyed `sess:<id>` (api_key_hash
+    # = sha256("sess:<id>")[:32]) and 302s to /redeem/<code>; the canonical
+    # pair_code.redeem_landing stamps the view there. But the UUID-shape
+    # path falls through here directly to render the email form — without
+    # this stamp, those views are invisible to the funnel dashboard.
+    # We probe for a previously-minted code on this session and stamp
+    # both `redeem_viewed_at` and `redeem_view_count` on it. Best-effort:
+    # a missing code or table issue is silently ignored — the form must
+    # render regardless of telemetry state.
+    try:
+        import hashlib as _hashlib
+        _api_key_hash = _hashlib.sha256(f"sess:{session_id}".encode()).hexdigest()[:32]
+        _stamp_conn, _ = _connect()
+        if _stamp_conn:
+            try:
+                with _stamp_conn.cursor() as _scur:
+                    # Try the new counter column first; fall back if absent.
+                    try:
+                        _scur.execute(
+                            "UPDATE mcp_pair_codes "
+                            "SET redeem_viewed_at = COALESCE(redeem_viewed_at, NOW()), "
+                            "    redeem_view_count = COALESCE(redeem_view_count, 0) + 1 "
+                            "WHERE api_key_hash = %s",
+                            (_api_key_hash,)
+                        )
+                    except Exception:
+                        _stamp_conn.rollback()
+                        _scur.execute(
+                            "UPDATE mcp_pair_codes "
+                            "SET redeem_viewed_at = COALESCE(redeem_viewed_at, NOW()) "
+                            "WHERE api_key_hash = %s",
+                            (_api_key_hash,)
+                        )
+                _stamp_conn.commit()
+            except Exception as _stamp_e:
+                try: _stamp_conn.rollback()
+                except Exception: pass
+                _p99_logger.warning(
+                    f"r68-funnel-stamping pair_code stamp failed "
+                    f"session={session_id[:40]}: {type(_stamp_e).__name__}: {_stamp_e}"
+                )
+            finally:
+                try: _stamp_conn.close()
+                except Exception: pass
+    except Exception as _outer_e:
+        _p99_logger.warning(
+            f"r68-funnel-stamping outer wrapper failed "
+            f"session={session_id[:40]}: {type(_outer_e).__name__}: {_outer_e}"
+        )
+
     # GET: serve form — tool-aware. Query which tools this session
     # has hit + render personalized headline.
     short = session_id[:8]

@@ -52,6 +52,7 @@ main.py) calls `redeem_pair_code()` to flip the api_key's tier.
 from __future__ import annotations
 import os
 import sys
+import json
 import secrets as _secrets
 import string
 from datetime import datetime, timezone, timedelta
@@ -446,25 +447,49 @@ def redeem_landing(code):
                 f"Code <strong>{_h(code)}</strong> expired. "
                 "Ask your AI agent to generate a new one — they're "
                 "valid for 30 minutes."), mimetype="text/html"), 410
-        # Record the view
+        # Record the view.  r68-funnel-stamping (2026-06-06): also increment
+        # redeem_view_count so the funnel dashboard can distinguish "1 view
+        # then closed" from "10 views, never clicked" — repeat views are a
+        # strong signal the human is wavering on a buying decision.  The
+        # boolean-flip `was_first_view` still gates the mcp_upgrade_signals
+        # write below so we don't amplify every page refresh into a signal.
         was_first_view = False
         try:
             with c.cursor() as cur:
                 cur.execute("""
                     UPDATE mcp_pair_codes
                     SET redeem_viewed_at = COALESCE(redeem_viewed_at, NOW()),
+                        redeem_view_count = COALESCE(redeem_view_count, 0) + 1,
                         user_agent_at_view = COALESCE(user_agent_at_view, %s)
                     WHERE code = %s
-                    RETURNING (redeem_viewed_at::date = CURRENT_DATE
-                                AND user_agent_at_view = %s)
-                """, ((request.headers.get("User-Agent") or "")[:300], code,
-                       (request.headers.get("User-Agent") or "")[:300]))
+                    RETURNING (redeem_view_count = 1)
+                """, ((request.headers.get("User-Agent") or "")[:300], code))
                 r = cur.fetchone()
                 was_first_view = bool(r and r[0])
             c.commit()
         except Exception:
+            # Pre-schema-repair DBs lack redeem_view_count → retry without it
+            # so we still stamp redeem_viewed_at on the legacy path.  Don't
+            # let a missing column block the conversion-funnel stamp.
             try: c.rollback()
             except Exception: pass
+            try:
+                with c.cursor() as cur:
+                    cur.execute("""
+                        UPDATE mcp_pair_codes
+                        SET redeem_viewed_at = COALESCE(redeem_viewed_at, NOW()),
+                            user_agent_at_view = COALESCE(user_agent_at_view, %s)
+                        WHERE code = %s
+                        RETURNING (redeem_viewed_at::date = CURRENT_DATE
+                                    AND user_agent_at_view = %s)
+                    """, ((request.headers.get("User-Agent") or "")[:300], code,
+                           (request.headers.get("User-Agent") or "")[:300]))
+                    r = cur.fetchone()
+                    was_first_view = bool(r and r[0])
+                c.commit()
+            except Exception:
+                try: c.rollback()
+                except Exception: pass
 
         # Phase QQ (2026-05-15): also record this as an "upgrade_click"
         # signal in mcp_upgrade_signals so the conversion-funnel
@@ -726,6 +751,104 @@ def pair_code_clicked(code):
 
 
 # ---------------------------------------------------------------------------
+# r68-funnel-stamping (2026-06-06) — server-side stripe_clicked_at stamp.
+#
+# The redeem page was sending a navigator.sendBeacon(.../clicked) on the
+# Stripe button. Beacons lose ~50% reliability when the browser navigates
+# away to buy.stripe.com in the same tick — Chrome/Safari prioritise the
+# navigation and silently drop the in-flight beacon. Result: 11 conversions
+# in 30d → 0 stripe_clicked_at stamps in mcp_pair_codes.
+#
+# This proxy endpoint converts the unreliable beacon into a reliable
+# server-side stamp: the human's browser GETs this URL, we UPDATE the row
+# THEN 302 to Stripe in the response. The redirect can't race the DB write
+# because the redirect IS the response. 100% stamp reliability.
+# ---------------------------------------------------------------------------
+
+# Canonical Stripe Payment Links per tier. Mirrors routes/_stripe_links.py.
+# pro_monthly + pro_annual added for the connect-landing-page proxy + so
+# the redeem page can offer both upgrade options. starter/developer kept
+# for legacy redeem-page paths that may still link there.
+_STRIPE_TIER_LINKS = {
+    "starter":      "https://buy.stripe.com/8x2dRa5sS6V79KJ3aMaZi0a",  # $9/mo
+    "developer":    STRIPE_DEVELOPER_LINK,                              # $49/mo
+    "pro_monthly":  "https://buy.stripe.com/eVq5kE4oOfs13mleGuaZi0h",  # $199/mo
+    "pro_annual":   "https://buy.stripe.com/dRm7sM6wW7Zz1edgOCaZi07",  # $1,188/yr
+}
+
+
+@pair_code_bp.get("/api/v1/redeem/<code>/click")
+def redeem_click_proxy(code):
+    """GET-only click proxy: stamps stripe_clicked_at FIRST then 302s to
+    buy.stripe.com. Uses Flask `redirect()` so the response code is in
+    the browser before navigation begins.  Replaces the sendBeacon path,
+    which silently dropped ~half its calls when the browser jumped to
+    Stripe in the same tick.
+
+    Query params:
+      plan  — one of: starter | developer | pro_monthly | pro_annual
+              (defaults to developer for backward compatibility with the
+              existing /redeem/<code> CTA which hard-codes $49/mo).
+
+    The 302 target carries `?client_reference_id=<code>` so the Stripe
+    webhook can attribute the conversion back to this exact pair code.
+    """
+    from flask import redirect, current_app
+    code = (code or "").upper().strip()
+    plan = (request.args.get("plan") or "developer").strip().lower()
+    # Pick Stripe link; fallback to developer if plan is unknown so a typo
+    # in the redeem-page <a href> never breaks the click flow.
+    stripe_base = _STRIPE_TIER_LINKS.get(plan) or _STRIPE_TIER_LINKS["developer"]
+
+    # Stamp first. Telemetry write must NOT block the redirect — wrap
+    # tight, swallow on failure, log loud, then redirect regardless.
+    c = _conn()
+    if c is not None:
+        try:
+            with c.cursor() as cur:
+                cur.execute("""
+                    UPDATE mcp_pair_codes
+                    SET stripe_clicked_at = COALESCE(stripe_clicked_at, NOW()),
+                        stripe_click_count = COALESCE(stripe_click_count, 0) + 1
+                    WHERE code = %s
+                """, (code,))
+            c.commit()
+        except Exception as e:
+            try: c.rollback()
+            except Exception: pass
+            # Pre-schema-repair DBs may lack stripe_click_count → retry
+            # without it so the canonical `stripe_clicked_at` stamp still
+            # fires on the legacy column set.
+            try:
+                with c.cursor() as cur:
+                    cur.execute("""
+                        UPDATE mcp_pair_codes
+                        SET stripe_clicked_at = COALESCE(stripe_clicked_at, NOW())
+                        WHERE code = %s
+                    """, (code,))
+                c.commit()
+            except Exception as e2:
+                try: c.rollback()
+                except Exception: pass
+                try:
+                    current_app.logger.warning(
+                        f"redeem_click_proxy stamp failed code={code}: "
+                        f"{type(e2).__name__}: {e2}"
+                    )
+                except Exception:
+                    pass
+        finally:
+            try: c.close()
+            except Exception: pass
+
+    # Append client_reference_id so the Stripe webhook can link the
+    # conversion back to this pair code (Fix-E pattern).
+    sep = "&" if "?" in stripe_base else "?"
+    redirect_url = f"{stripe_base}{sep}client_reference_id={code}"
+    return redirect(redirect_url, code=302)
+
+
+# ---------------------------------------------------------------------------
 # Funnel diagnostics — the OTHER thing the user asked for
 # ---------------------------------------------------------------------------
 
@@ -815,9 +938,15 @@ def _redeem_page(code, tool_name, market, target_tier, referring_agent=None):
     """
     pretty_tool = (tool_name or "").replace("get_", "").replace("_", " ").title() or "DC Hub paid feature"
     market_line = f"<div class='ctx-row'><span>Market:</span><b>{_h(market)}</b></div>" if market else ""
-    stripe_url = (f"{STRIPE_DEVELOPER_LINK}"
-                  f"{'&' if '?' in STRIPE_DEVELOPER_LINK else '?'}"
-                  f"client_reference_id={_h(code)}")
+    # r68-funnel-stamping (2026-06-06): point the Stripe button at the
+    # server-side click proxy `/api/v1/redeem/<code>/click` instead of
+    # buy.stripe.com directly.  The proxy stamps `stripe_clicked_at` in
+    # mcp_pair_codes (the column the funnel-health dashboard reads),
+    # then 302s to Stripe with client_reference_id wired.  Before this,
+    # the page used navigator.sendBeacon which the browser dropped when
+    # the same-tick navigation to Stripe happened first → 11 conversions
+    # in 30d but 0 stripe_clicked_at stamps.
+    stripe_url = f"/api/v1/redeem/{_h(code)}/click?plan=developer"
     # Play 6 — pretty-format the referring agent name
     agent_pretty_map = {
         "claude":     "Claude Desktop",
@@ -896,8 +1025,10 @@ h1{{font-size:1.6rem;margin:0 0 8px;letter-spacing:-0.02em;font-weight:800}}
     <div class="ctx-row"><span>Plan:</span><b>Developer · $49/mo</b></div>
   </div>
 
-  <a href="{stripe_url}" class="cta" id="cta"
-     onclick="navigator.sendBeacon('/api/v1/mcp/pair-code/{_h(code)}/clicked')">
+  <!-- The /api/v1/redeem/<code>/click proxy stamps stripe_clicked_at
+       server-side then 302s to Stripe. No beacon needed — the redirect
+       IS the response, so the DB stamp can't race the navigation. -->
+  <a href="{stripe_url}" class="cta" id="cta">
     Unlock for $49/mo →
   </a>
   <div class="cta-sub">Secure checkout via Stripe · 7-day money-back</div>

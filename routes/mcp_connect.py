@@ -34,7 +34,7 @@ from __future__ import annotations
 import os
 import json
 import logging
-from flask import Blueprint, request, jsonify, make_response
+from flask import Blueprint, request, jsonify, make_response, redirect
 
 logger = logging.getLogger(__name__)
 
@@ -341,12 +341,17 @@ _PAGE_TEMPLATE = """<!DOCTYPE html>
     and removes the free-tier truncation on grid + fiber intel.
   </p>
   <div class="upgrade-grid">
-    <a id="upg-monthly" class="upgrade-tile" href="{STRIPE_MONTHLY}">
+    <!-- r68-funnel-stamping (2026-06-06): both hrefs now point at the
+         /api/v1/connect/click proxy which stamps connect_landing_views
+         .stripe_clicked_at before bouncing to Stripe.  The href is
+         re-set by mintKey() once a trial key exists so we can carry
+         it through as client_reference_id. -->
+    <a id="upg-monthly" class="upgrade-tile" href="/api/v1/connect/click?platform={KEY}&plan=pro_monthly&view_id={VIEW_ID}">
       <h3>Pro Monthly</h3>
       <div class="price">$199<span style="font-size:.7em;color:var(--muted)">/mo</span></div>
       <div class="desc">Cancel anytime. Same unlimited access, monthly billing.</div>
     </a>
-    <a id="upg-annual" class="upgrade-tile" href="{STRIPE_ANNUAL}">
+    <a id="upg-annual" class="upgrade-tile" href="/api/v1/connect/click?platform={KEY}&plan=pro_annual&view_id={VIEW_ID}">
       <h3>Pro Annual <span class="save">50% off</span></h3>
       <div class="price">$1,188<span style="font-size:.7em;color:var(--muted)">/yr</span></div>
       <div class="desc">One-time payment, 365 days of Pro. Best value.</div>
@@ -403,9 +408,19 @@ async function mintKey(again) {{
       const body = document.getElementById("snippet-body");
       body.innerText = RAW_SNIPPET.replaceAll("{{TRIAL_KEY}}", mintedKey);
 
-      // Bind Stripe links to the trial key (Fix-E client_reference_id)
-      document.getElementById("upg-monthly").href = STRIPE_M + "?client_reference_id=" + encodeURIComponent(mintedKey);
-      document.getElementById("upg-annual").href  = STRIPE_A + "?client_reference_id=" + encodeURIComponent(mintedKey);
+      // Bind Stripe links via the /api/v1/connect/click proxy: it stamps
+      // connect_landing_views.stripe_clicked_at BEFORE 302ing to Stripe so
+      // the conversion-funnel dashboard can read viewed→clicked drop-off.
+      // Carry the minted key as `key` query param → proxy threads it into
+      // Stripe as client_reference_id (Fix-E attribution chain preserved).
+      const viewQS = VIEW_ID ? ("&view_id=" + encodeURIComponent(VIEW_ID)) : "";
+      const keyQS = "&key=" + encodeURIComponent(mintedKey);
+      document.getElementById("upg-monthly").href =
+        "/api/v1/connect/click?platform=" + encodeURIComponent(CLIENT_KEY) +
+        "&plan=pro_monthly" + viewQS + keyQS;
+      document.getElementById("upg-annual").href =
+        "/api/v1/connect/click?platform=" + encodeURIComponent(CLIENT_KEY) +
+        "&plan=pro_annual" + viewQS + keyQS;
       document.getElementById("ref-note").style.display = "block";
 
       btn.innerText = again ? "Mint another" : "Key minted -- paste in step 2 ↑";
@@ -492,6 +507,7 @@ def _render_page(client_key: str, view_id: int | None) -> str:
         DEEP_LINK_HTML=deep_link_html,
         STRIPE_MONTHLY=_STRIPE_MONTHLY,
         STRIPE_ANNUAL=_STRIPE_ANNUAL,
+        VIEW_ID=(str(view_id) if view_id else ""),
         CLIENT_KEY_JSON=json.dumps(client_key),
         VIEW_ID_JSON=json.dumps(view_id),
         SNIPPET_JSON=json.dumps(c["snippet"]),
@@ -567,6 +583,88 @@ def mint_update():
     finally:
         try: db.close()
         except Exception: pass
+
+
+# ── r68-funnel-stamping (2026-06-06): stripe-click proxy ────────────────
+# The Connect landing pages had direct buy.stripe.com links. Result: 0
+# stripe_clicked_at stamps in connect_landing_views even though some
+# operators DID click through. Same root cause as the redeem-page leak:
+# in-page JS beacons race the cross-origin navigation and lose.
+#
+# This proxy stamps the per-view row first, THEN 302s to Stripe with
+# client_reference_id wired. View_id comes from a query param so the
+# stamp lands on the row that minted the trial key (= the row the
+# funnel-attribution joins on).
+@mcp_connect_bp.route("/api/v1/connect/click", methods=["GET"])
+def connect_click_proxy():
+    """Stamp connect_landing_views.stripe_clicked_at then 302 to Stripe.
+
+    Query params:
+      platform — cursor|cline|continue|claude-desktop (audit only)
+      plan     — pro_monthly | pro_annual  (which Stripe link to bounce to)
+      view_id  — connect_landing_views.id (set by the page after _record_view)
+      key      — minted trial key, used as client_reference_id for Stripe
+                 attribution (Fix-E pattern, mirrors redeem-page click).
+    """
+    platform = (request.args.get("platform") or "").strip().lower()
+    plan = (request.args.get("plan") or "pro_monthly").strip().lower()
+    view_id = (request.args.get("view_id") or "").strip()
+    key = (request.args.get("key") or "").strip()
+
+    stripe_base = _STRIPE_ANNUAL if plan == "pro_annual" else _STRIPE_MONTHLY
+
+    # Stamp first.  Best-effort: a failure here must NEVER block the
+    # redirect (the user is mid-click on the Upgrade button — making them
+    # see an error page for a telemetry blip would be a bigger leak than
+    # the missing stamp). Wrap tight, log, redirect.
+    if view_id:
+        db = _get_db()
+        if db is not None:
+            try:
+                with db.cursor() as cur:
+                    cur.execute(
+                        """UPDATE connect_landing_views
+                               SET stripe_clicked_at = COALESCE(stripe_clicked_at, NOW()),
+                                   stripe_clicked_plan = COALESCE(stripe_clicked_plan, %s)
+                             WHERE id = %s""",
+                        (plan[:32], int(view_id)) if view_id.isdigit() else (plan[:32], -1),
+                    )
+                db.commit()
+            except Exception as e:
+                try: db.rollback()
+                except Exception: pass
+                # Pre-schema-repair DBs lack stripe_clicked_at/_plan →
+                # retry just stamping the timestamp column (added second
+                # below).  If both fail, log + redirect anyway.
+                try:
+                    with db.cursor() as cur:
+                        cur.execute(
+                            """UPDATE connect_landing_views
+                                   SET stripe_clicked_at = COALESCE(stripe_clicked_at, NOW())
+                                 WHERE id = %s""",
+                            (int(view_id),) if view_id.isdigit() else (-1,),
+                        )
+                    db.commit()
+                except Exception as e2:
+                    try: db.rollback()
+                    except Exception: pass
+                    logger.warning(
+                        "connect_click_proxy stamp failed platform=%s view_id=%s: %s",
+                        platform, view_id, e2,
+                    )
+            finally:
+                try: db.close()
+                except Exception: pass
+
+    # Carry the minted trial key forward to Stripe so the webhook can
+    # attribute the conversion back to this page via the existing
+    # users.api_key match path.
+    sep = "&" if "?" in stripe_base else "?"
+    if key:
+        redirect_url = f"{stripe_base}{sep}client_reference_id={key}"
+    else:
+        redirect_url = stripe_base
+    return redirect(redirect_url, code=302)
 
 
 # Public admin/stats endpoint for the funnel dashboard.
