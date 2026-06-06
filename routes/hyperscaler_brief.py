@@ -1277,27 +1277,34 @@ def html_hyperscaler_index():
             f'<p>{meta["tagline"]}</p></a>'
         )
     return Response(
-        f"""<!doctype html><html><head><meta charset=utf-8>
+        f"""<!doctype html><html lang=en><head><meta charset=utf-8>
+<meta name=viewport content="width=device-width,initial-scale=1">
 <title>Hyperscaler Briefs · DC Hub</title>
 <link rel="stylesheet" href="/static/dchub-brand.css">
+<link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=Instrument+Sans:wght@400;500;600;700;800&family=JetBrains+Mono:wght@400;500&display=swap">
+<script src="/js/dchub-nav.js" defer></script>
 <style>
- body{{max-width:1100px;margin:0 auto;padding:32px;font-family:system-ui;color:#0f172a}}
- h1{{font-size:2.2rem;margin:.2em 0}}
- .lead{{color:#475569;max-width:760px}}
+ :root{{--bg:#0a0a0f;--surf:#131319;--b:rgba(255,255,255,.09);--tx:#fafafa;--mut:#a1a1aa;--dim:#71717a;--ind:#818cf8;--cy:#22d3ee}}
+ *{{box-sizing:border-box}}
+ body{{max-width:1080px;margin:0 auto;padding:2.5rem 1.25rem 4rem;font-family:'Instrument Sans',-apple-system,BlinkMacSystemFont,system-ui,sans-serif;background:var(--bg);color:#d4d4d8;line-height:1.55}}
+ .kick{{font-family:'JetBrains Mono',monospace;font-size:.72rem;letter-spacing:.16em;text-transform:uppercase;color:var(--cy);margin:0 0 .4rem}}
+ h1{{font-size:2.2rem;margin:.1em 0 .3em;color:#fff;font-weight:800;letter-spacing:-.02em}}
+ .lead{{color:var(--mut);max-width:760px}}
  .grid{{display:grid;grid-template-columns:repeat(auto-fill,minmax(260px,1fr));gap:16px;margin:24px 0}}
- .card{{display:block;background:#fff;border:1px solid #e2e8f0;padding:18px;border-radius:10px;text-decoration:none;color:inherit;transition:transform .15s}}
- .card:hover{{transform:translateY(-2px);box-shadow:0 4px 12px rgba(0,0,0,.06)}}
- .card h3{{margin:0 0 6px;font-size:1.05rem}}
- .card p{{margin:0;color:#64748b;font-size:.88rem}}
+ .card{{display:block;background:var(--surf);border:1px solid var(--b);padding:18px;border-radius:11px;text-decoration:none;color:inherit;transition:transform .12s,border-color .12s}}
+ .card:hover{{transform:translateY(-2px);border-color:var(--ind)}}
+ .card h3{{margin:0 0 6px;font-size:1.05rem;color:#fff}}
+ .card p{{margin:0;color:var(--mut);font-size:.88rem}}
 </style></head><body>
+<p class=kick>DC Hub · Premium</p>
 <h1>Hyperscaler Briefs</h1>
 <p class="lead">Full-pipeline coverage on the 10 hyperscalers DC Hub tracks.
 M&amp;A bankers, PE deal teams, and hedge funds use these briefs to size
 $/MW velocity, ISO concentration risk, and PPA flow. 6h edge cache.</p>
 <div class="grid">{''.join(cards)}</div>
-<p style="color:#64748b;font-size:.85rem;margin-top:32px">
-<a href="/hyperscaler-deals">→ Live hyperscaler deal ticker</a> ·
-<a href="/pricing">Pricing</a></p>
+<p style="color:#71717a;font-size:.85rem;margin-top:2rem;border-top:1px solid rgba(255,255,255,.09);padding-top:1.25rem;font-family:'JetBrains Mono',monospace">
+<a href="/hyperscaler-deals" style="color:#818cf8;text-decoration:none">→ Live hyperscaler deal ticker</a> ·
+<a href="/pricing" style="color:#818cf8;text-decoration:none">Pricing</a></p>
 </body></html>""",
         mimetype="text/html",
         headers={"Cache-Control": "public, max-age=21600, s-maxage=21600"})

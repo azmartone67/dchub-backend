@@ -198,27 +198,35 @@ _LANDING_HD = """<!DOCTYPE html>
 <meta property="og:image" content="https://api.dchub.cloud/static/og/landing-hyperscaler-deals.png">
 <link rel="canonical" href="https://dchub.cloud/hyperscaler-deals">
 <link rel="stylesheet" href="https://dchub.cloud/static/dchub-brand.css">
+<link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=Instrument+Sans:wght@400;500;600;700;800&family=JetBrains+Mono:wght@400;500&display=swap">
+<script src="/js/dchub-nav.js" defer></script>
 <style>
- body{max-width:1100px;margin:0 auto;padding:32px 24px;font-family:-apple-system,BlinkMacSystemFont,system-ui,sans-serif;line-height:1.5}
- h1{font-size:2.2rem;margin:.4em 0;letter-spacing:-.02em}
- .lead{color:#475569;font-size:1.05rem;max-width:760px}
- .deal{background:#fff;border:1px solid #e2e8f0;border-radius:10px;padding:16px 20px;margin:12px 0;display:flex;justify-content:space-between;gap:20px;flex-wrap:wrap;box-shadow:0 1px 2px rgba(0,0,0,.04)}
+ :root{--bg:#0a0a0f;--surf:#131319;--b:rgba(255,255,255,.09);--tx:#fafafa;--mut:#a1a1aa;--dim:#71717a;--ind:#818cf8;--cy:#22d3ee;--grn:#34d399}
+ *{box-sizing:border-box}
+ body{max-width:1080px;margin:0 auto;padding:2.5rem 1.25rem 4rem;font-family:'Instrument Sans',-apple-system,BlinkMacSystemFont,system-ui,sans-serif;line-height:1.55;background:var(--bg);color:#d4d4d8}
+ .kick{font-family:'JetBrains Mono',monospace;font-size:.72rem;letter-spacing:.16em;text-transform:uppercase;color:var(--cy);margin:0 0 .4rem}
+ h1{font-size:2.2rem;margin:.1em 0 .3em;letter-spacing:-.02em;color:#fff;font-weight:800}
+ .lead{color:var(--mut);font-size:1.05rem;max-width:760px}
+ .deal{background:var(--surf);border:1px solid var(--b);border-radius:11px;padding:16px 20px;margin:12px 0;display:flex;justify-content:space-between;gap:20px;flex-wrap:wrap;transition:border-color .12s}
+ .deal:hover{border-color:var(--ind)}
  .deal-main{flex:1;min-width:300px}
- .deal h3{margin:0 0 6px;font-size:1.05rem;color:#0f172a}
+ .deal h3{margin:0 0 6px;font-size:1.05rem;color:#fafafa;font-weight:700}
  .deal h3 a{color:inherit;text-decoration:none}
- .deal h3 a:hover{color:#6366f1}
- .meta{font-size:.82rem;color:#64748b;margin-bottom:6px}
+ .deal h3 a:hover{color:var(--ind)}
+ .meta{font-size:.82rem;color:var(--dim);margin-bottom:6px;font-family:'JetBrains Mono',monospace}
  .actors{display:inline-flex;gap:6px;flex-wrap:wrap}
- .actor{background:#e0e7ff;color:#3730a3;padding:2px 8px;border-radius:4px;font-size:.75rem;font-weight:600}
- .summary{color:#475569;font-size:.9rem;margin-top:8px}
+ .actor{background:rgba(129,140,248,.16);color:#c7d2fe;padding:2px 8px;border-radius:5px;font-size:.72rem;font-weight:700;font-family:'JetBrains Mono',monospace}
+ .summary{color:var(--mut);font-size:.9rem;margin-top:8px}
  .deal-figures{min-width:140px;text-align:right}
- .dollar{font-size:1.6rem;font-weight:700;color:#15803d;font-family:ui-monospace,monospace;line-height:1}
- .mw{font-size:1.1rem;font-weight:600;color:#6366f1;font-family:ui-monospace,monospace;margin-top:4px}
- .pane{background:#f8fafc;border:1px solid #e2e8f0;padding:18px 22px;border-radius:10px;margin:20px 0}
- .pane h2{margin-top:0;font-size:1.1rem}
- #status{color:#64748b;font-size:.85rem;margin:8px 0}
- .api{font-family:ui-monospace,monospace;background:#e0e7ff;color:#3730a3;padding:1px 6px;border-radius:3px;font-size:.85em}
+ .dollar{font-size:1.6rem;font-weight:800;color:var(--grn);font-family:'JetBrains Mono',monospace;line-height:1}
+ .mw{font-size:1.1rem;font-weight:700;color:var(--ind);font-family:'JetBrains Mono',monospace;margin-top:4px}
+ .pane{background:var(--surf);border:1px solid var(--b);padding:18px 22px;border-radius:11px;margin:20px 0}
+ .pane h2{margin-top:0;font-size:1.1rem;color:#fff}
+ .pane a{color:var(--ind);text-decoration:none}
+ #status{color:var(--dim);font-size:.85rem;margin:8px 0;font-family:'JetBrains Mono',monospace}
+ .api{font-family:'JetBrains Mono',monospace;background:#1a1a22;color:var(--cy);padding:1px 6px;border-radius:4px;font-size:.85em;border:1px solid var(--b)}
 </style></head><body>
+<p class="kick">DC Hub · Live Ticker</p>
 <h1>Hyperscaler AI Deal Tracker</h1>
 <p class="lead">Live ticker of AI capex deals: Stargate, Oracle, CoreWeave, AMD, NVIDIA, sovereign AI, hyperscale GPU clusters.
 $-figures and MW extracted automatically. Refreshed every 10 minutes.</p>
@@ -233,7 +241,7 @@ $-figures and MW extracted automatically. Refreshed every 10 minutes.</p>
   Actor detection by name match; $/MW extracted via regex from title + summary.</p>
 </div>
 
-<p style="color:#64748b;font-size:.85rem;margin-top:24px"><a href="/">DC Hub</a> · <a href="/ai-capacity-index">AI Capacity Index</a> · <a href="/news">All news</a></p>
+<p style="color:#71717a;font-size:.85rem;margin-top:2rem;border-top:1px solid rgba(255,255,255,.09);padding-top:1.25rem;font-family:'JetBrains Mono',monospace"><a href="/" style="color:#818cf8;text-decoration:none">DC Hub</a> · <a href="/ai-capacity-index" style="color:#818cf8;text-decoration:none">AI Capacity Index</a> · <a href="/news" style="color:#818cf8;text-decoration:none">All news</a></p>
 
 <script>
 fetch('/api/v1/hyperscaler-deals?limit=25').then(r=>r.json()).then(d=>{
