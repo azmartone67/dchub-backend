@@ -1175,7 +1175,7 @@ def _render_html(brief: dict) -> str:
     citation = (f"DC Hub · <a href=\"{citation_url}\">{citation_url}</a> · "
                 f"Live as of {citation_iso} UTC")
 
-    return f"""<!doctype html>
+    _html = f"""<!doctype html>
 <html lang="en">
 <head>
 <meta charset="utf-8">
@@ -1190,30 +1190,37 @@ def _render_html(brief: dict) -> str:
 <meta property="og:type" content="article">
 <link rel="stylesheet" href="/static/dchub-brand.css">
 <style>
-:root{{--bg:#0a0a0f;--surf:#131319;--b:rgba(255,255,255,0.08);--tx:#fafafa;--mut:#a1a1aa;--dim:#71717a;--ind:#818cf8;--grad:linear-gradient(135deg,#6366f1,#a855f7)}}
+:root{{--bg:#0a0a0f;--surf:#15151c;--surf2:#1b1b24;--b:rgba(255,255,255,0.08);--b2:rgba(255,255,255,0.14);--tx:#fafafa;--mut:#a1a1aa;--dim:#71717a;--ind:#818cf8;--vio:#a855f7;--cy:#22d3ee;--acc:{colors['pill_bg']};--grad:linear-gradient(135deg,#6366f1,#a855f7)}}
 *{{box-sizing:border-box}}
-body{{font-family:'Instrument Sans',-apple-system,BlinkMacSystemFont,sans-serif;max-width:900px;margin:0 auto;padding:2.5rem 1.25rem;background:var(--bg);color:#d4d4d8;line-height:1.65;-webkit-font-smoothing:antialiased}}
-h1{{font-weight:700;letter-spacing:-.02em;margin:0 0 .25rem;font-size:2.4rem;color:var(--tx)}}
-h2{{font-size:1.25rem;font-weight:600;color:var(--tx);margin:2.25rem 0 .75rem;letter-spacing:-.01em}}
-h3.sub{{font-size:1rem;font-weight:600;color:var(--mut);margin:1.5rem 0 .5rem;letter-spacing:.02em;text-transform:uppercase}}
-.live-pill{{display:inline-flex;align-items:center;gap:.4rem;background:var(--surf);border:1px solid var(--b);border-radius:999px;padding:.35rem .8rem;font-size:.72rem;color:var(--mut);font-family:'JetBrains Mono',monospace;margin-left:.5rem}}
-.live-dot{{width:.5rem;height:.5rem;background:#10b981;border-radius:50%;animation:pulse 2.5s ease-in-out infinite}}
+body{{font-family:'Instrument Sans',-apple-system,BlinkMacSystemFont,sans-serif;max-width:920px;margin:0 auto;padding:2.75rem 1.25rem 4rem;background:var(--bg);color:#d4d4d8;line-height:1.65;-webkit-font-smoothing:antialiased;position:relative}}
+body::before{{content:"";position:fixed;inset:0 0 auto 0;height:440px;background:radial-gradient(115% 380px at 16% -45%,color-mix(in srgb,var(--acc) 20%,transparent),transparent 72%);pointer-events:none;z-index:-1}}
+h1{{font-weight:800;letter-spacing:-.025em;margin:0 0 .35rem;font-size:2.6rem;line-height:1.04;color:var(--tx)}}
+h2{{font-size:1.18rem;font-weight:700;color:var(--tx);margin:2.5rem 0 .9rem;letter-spacing:-.01em;display:flex;align-items:center;gap:.6rem}}
+h2::before{{content:"";width:.5rem;height:1.05rem;border-radius:3px;background:var(--acc);opacity:.92}}
+h3.sub{{font-size:.95rem;font-weight:600;color:var(--mut);margin:1.5rem 0 .5rem;letter-spacing:.02em;text-transform:uppercase}}
+.live-pill{{display:inline-flex;align-items:center;gap:.4rem;background:var(--surf);border:1px solid var(--b);border-radius:999px;padding:.32rem .78rem;font-size:.7rem;color:var(--mut);font-family:'JetBrains Mono',monospace;margin-left:.6rem;vertical-align:middle}}
+.live-dot{{width:.5rem;height:.5rem;background:#10b981;border-radius:50%;animation:pulse 2.5s ease-in-out infinite;box-shadow:0 0 0 3px rgba(16,185,129,.14)}}
 @keyframes pulse{{0%,100%{{opacity:1}}50%{{opacity:.35}}}}
-.verdict-pill{{display:inline-block;background:{colors['pill_bg']};color:{colors['pill_fg']};font-weight:700;font-size:.85rem;padding:.45rem 1rem;border-radius:8px;letter-spacing:.04em;text-transform:uppercase}}
-.score{{font-family:'JetBrains Mono',monospace;color:var(--tx);font-weight:600;font-size:1rem;margin-left:.75rem}}
-.sub{{color:var(--dim);font-size:.85rem;margin:0 0 1.5rem;font-family:'JetBrains Mono',monospace}}
-.kpis{{display:grid;grid-template-columns:repeat(auto-fit,minmax(170px,1fr));gap:.75rem;margin:1rem 0 2rem}}
-.kpi{{background:var(--surf);border:1px solid var(--b);border-radius:12px;padding:.95rem 1.1rem;display:flex;flex-direction:column;gap:.35rem}}
-.kpi-l{{font-size:.68rem;color:var(--dim);text-transform:uppercase;letter-spacing:.06em;font-family:'JetBrains Mono',monospace}}
-.kpi-v{{font-size:1.35rem;color:var(--tx);font-weight:600;letter-spacing:-.01em}}
-.grid3{{display:grid;grid-template-columns:repeat(auto-fit,minmax(220px,1fr));gap:.6rem;margin:.5rem 0 1.5rem}}
-.cell{{background:var(--surf);border:1px solid var(--b);border-radius:10px;padding:.75rem .95rem;display:flex;justify-content:space-between;align-items:center;font-size:.88rem}}
-.cell b{{color:var(--dim);font-size:.7rem;text-transform:uppercase;letter-spacing:.05em;font-weight:500;font-family:'JetBrains Mono',monospace}}
-.cell span{{color:var(--tx);font-weight:600;font-family:'JetBrains Mono',monospace}}
-table{{width:100%;border-collapse:collapse;margin:.5rem 0 1.5rem;font-size:.88rem;background:var(--surf);border:1px solid var(--b);border-radius:10px;overflow:hidden}}
-th,td{{padding:.55rem .85rem;text-align:left;border-bottom:1px solid var(--b)}}
-th{{background:rgba(255,255,255,0.025);font-size:.7rem;text-transform:uppercase;letter-spacing:.05em;color:var(--dim);font-family:'JetBrains Mono',monospace;font-weight:500}}
+.verdict-pill{{display:inline-block;background:{colors['pill_bg']};color:{colors['pill_fg']};font-weight:700;font-size:.8rem;padding:.42rem .95rem;border-radius:8px;letter-spacing:.05em;text-transform:uppercase;box-shadow:0 2px 18px -5px color-mix(in srgb,var(--acc) 65%,transparent)}}
+.score{{font-family:'JetBrains Mono',monospace;color:var(--tx);font-weight:600;font-size:.95rem;margin-left:.6rem}}
+.sub{{color:var(--dim);font-size:.82rem;margin:0 0 1.75rem;font-family:'JetBrains Mono',monospace}}
+.kpis{{display:grid;grid-template-columns:repeat(auto-fit,minmax(165px,1fr));gap:.75rem;margin:1rem 0 2rem}}
+.kpi{{background:linear-gradient(160deg,var(--surf) 0%,var(--surf2) 100%);border:1px solid var(--b);border-left:3px solid var(--acc);border-radius:12px;padding:1rem 1.15rem;display:flex;flex-direction:column;gap:.4rem;transition:transform .14s ease,border-color .14s ease}}
+.kpi:hover{{transform:translateY(-2px);border-color:var(--b2)}}
+.kpi-l{{font-size:.66rem;color:var(--dim);text-transform:uppercase;letter-spacing:.08em;font-family:'JetBrains Mono',monospace}}
+.kpi-v{{font-size:1.45rem;color:var(--tx);font-weight:700;letter-spacing:-.01em}}
+.grid3{{display:grid;grid-template-columns:repeat(auto-fit,minmax(215px,1fr));gap:.6rem;margin:.5rem 0 1.5rem}}
+.cell{{background:var(--surf);border:1px solid var(--b);border-radius:11px;padding:.8rem 1rem;display:flex;justify-content:space-between;align-items:center;gap:.75rem;font-size:.88rem;transition:border-color .14s ease}}
+.cell:hover{{border-color:var(--b2)}}
+.cell b{{color:var(--dim);font-size:.66rem;text-transform:uppercase;letter-spacing:.06em;font-weight:500;font-family:'JetBrains Mono',monospace}}
+.cell span{{color:var(--tx);font-weight:600;font-family:'JetBrains Mono',monospace;text-align:right}}
+.na{{color:var(--dim)!important;opacity:.45;font-weight:400!important}}
+table{{width:100%;border-collapse:collapse;margin:.5rem 0 1.5rem;font-size:.88rem;background:var(--surf);border:1px solid var(--b);border-radius:12px;overflow:hidden}}
+th,td{{padding:.6rem .9rem;text-align:left;border-bottom:1px solid var(--b)}}
+th{{background:rgba(255,255,255,0.03);font-size:.68rem;text-transform:uppercase;letter-spacing:.06em;color:var(--dim);font-family:'JetBrains Mono',monospace;font-weight:500}}
 td{{color:var(--tx);font-family:'JetBrains Mono',monospace}}
+tbody tr{{transition:background .14s ease}}
+tbody tr:hover{{background:rgba(255,255,255,0.018)}}
 tbody tr:last-child td{{border-bottom:none}}
 .risk-list{{padding-left:0;list-style:none;margin:.5rem 0 1.5rem}}
 .risk-list li{{background:var(--surf);border:1px solid var(--b);border-radius:10px;padding:.7rem .95rem;margin-bottom:.5rem;font-size:.88rem}}
@@ -1298,6 +1305,16 @@ tbody tr:last-child td{{border-bottom:none}}
 <script src="/js/dchub-nav.js" defer></script>
 </body>
 </html>"""
+    # Elegance (2026-06-06): dim "not available" values so a thin-data market
+    # (e.g. Cheyenne) reads as intentional, not broken — instead of a wall of
+    # stark em-dashes. Safe no-op when a market has full data.
+    for _pat, _rep in (
+        ('<span class="kpi-v">—</span>', '<span class="kpi-v na">—</span>'),
+        ('<span>—</span>',               '<span class="na">—</span>'),
+        ('<td>—</td>',                   '<td class="na">—</td>'),
+    ):
+        _html = _html.replace(_pat, _rep)
+    return _html
 
 
 # ─────────────────────────────────────────────────────────────────────
