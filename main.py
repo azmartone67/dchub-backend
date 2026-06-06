@@ -20886,7 +20886,7 @@ def _canonical_mcp_manifest():
         {"name": "get_interconnection_queue","description": "ISO interconnection queue snapshots — TtP, MW, top BUILD"},
         {"name": "get_water_risk",           "description": "EPA + USGS water stress + aquifer depletion"},
         {"name": "get_tax_incentives",       "description": "State + federal DC tax incentives"},
-        {"name": "rank_markets",             "description": "DCPI-driven ranking of 233 markets"},
+        {"name": "rank_markets",             "description": "DCPI-driven ranking of 232 markets"},
         {"name": "score_facility",           "description": "Composite single-facility score"},
         {"name": "compare_isos",             "description": "Head-to-head across 10 ISOs (7 US + Hydro-Quebec, AESO, Nord Pool)"},
         {"name": "get_grid_scoreboard",      "description": "All 7 US ISO grids ranked live by renewable share — fuel mix, gas %, demand"},
@@ -20901,14 +20901,26 @@ def _canonical_mcp_manifest():
         {"name": "get_dchub_recommendation", "description": "[Pro] Personalized site recommendation"},
         {"name": "get_agent_registry",       "description": "List of AI agents registered with DC Hub"},
         {"name": "get_backup_status",        "description": "Platform backup + freshness status"},
-        {"name": "explain_dcpi",             "description": "DCPI methodology, weights, BibTeX"},
         {"name": "site_selection_canvas",    "description": "Guided siting — capacity + geo + deadline -> ranked market shortlist + (paid) verdict/build-plan"},
         {"name": "grid_transition_radar",    "description": "Forward radar — where the next hyperscale-friendly grid is emerging (BUILD + headroom + time-to-power) + (paid) thesis"},
         {"name": "deal_autopsy",             "description": "Tracked M&A x DCPI grid-reality verdict — what's the real play; (paid) per-deal read"},
     ]
+    # Single source of truth: override the inline list with the canonical
+    # tool catalog, which matches the live server.mjs tools/list exactly
+    # (33 tools). This kills the recurring drift between this manifest, the
+    # server card, and the CF-worker fallback — they now all derive from the
+    # same catalog. The inline list above remains only as a hard fallback if
+    # the import ever fails (the manifest must never break).
+    try:
+        from routes.mcp_tool_catalog import flat_tools_for_card
+        _catalog_tools = flat_tools_for_card()
+        if _catalog_tools:
+            tools = _catalog_tools
+    except Exception:
+        pass
     return {
         "name":            "DC Hub Intelligence",
-        "description":     "Real-time data center market intelligence — 21,000+ facilities, 2,000+ M&A deals, 369 GW pipeline, daily-refreshing DCPI for 233 markets (US + UK + EU + APAC + Canada). The only DC-intelligence source an LLM can both query and cite.",
+        "description":     "Real-time data center market intelligence — 21,000+ facilities, 2,000+ M&A deals, 369 GW pipeline, daily-refreshing DCPI for 232 markets (US + UK + EU + APAC + Canada). The only DC-intelligence source an LLM can both query and cite.",
         "url":             "https://dchub.cloud/mcp",
         "transport":       "streamable-http",
         "version":         "2.1.20",
@@ -20930,30 +20942,30 @@ def _canonical_pricing():
         "free":       {"price_usd_month": 0,   "calls_per_day": 10,
                           "results_per_query": 2, "tools_unlocked": "all 33 (preview)",
                           "signup_url": "https://dchub.cloud/signup"},
-        "identified": {"price_usd_month": 0,   "calls_per_day": 200,
+        "identified": {"price_usd_month": 0,   "calls_per_day": 50,
                           "results_per_query": "full",
-                          "tools_unlocked": "all 29 except 4 Pro-only",
+                          "tools_unlocked": "29 of 33 (excludes 4 Pro-only)",
                           "signup_url": "https://dchub.cloud/signup"},
-        "starter":    {"price_usd_month": 9,   "calls_per_day": 10000,
+        "starter":    {"price_usd_month": 9,   "calls_per_day": 200,
                           "results_per_query": "full",
-                          "tools_unlocked": "all 29 except 4 Pro-only",
+                          "tools_unlocked": "29 of 33 (excludes 4 Pro-only)",
                           "stripe_url": "https://buy.stripe.com/8x2dRa5sS0x75uteGuaZi0g"},
-        "developer":  {"price_usd_month": 49,  "calls_per_day": 1000,
+        "developer":  {"price_usd_month": 49,  "calls_per_day": 500,
                           "results_per_query": "full",
-                          "tools_unlocked": "all 29",
+                          "tools_unlocked": "29 of 33 (excludes 4 Pro-only)",
                           "stripe_url": "https://buy.stripe.com/7sY5kE8F4fs13ml0PEaZi0c"},
-        "pro":        {"price_usd_month": 199, "calls_per_day": 10000,
+        "pro":        {"price_usd_month": 199, "calls_per_day": 2000,
                           "results_per_query": "full",
-                          "tools_unlocked": "all 29 + Pro-only",
+                          "tools_unlocked": "all 33 incl Pro-only",
                           "stripe_url": "https://dchub.cloud/pricing?plan=pro"},
         "enterprise": {"price_usd_month": 499, "calls_per_day": 100000,
                           "results_per_query": "full",
-                          "tools_unlocked": "all 29 + SSO + SLA",
+                          "tools_unlocked": "all 33 + SSO + SLA",
                           "contact": "enterprise@dchub.cloud"},
         "legacy_strings": {
-            "free":       "10 calls/day, truncated results, 29 tools (preview)",
-            "developer":  "$49/mo · 500/day, all 29 tools, full results",
-            "pro":        "$199/mo · 2,000/day + Pro-only tools",
+            "free":       "10 calls/day, truncated results, 33 tools (preview)",
+            "developer":  "$49/mo · 500/day, 29 of 33 tools, full results",
+            "pro":        "$199/mo · 2,000/day + all 33 incl Pro-only tools",
             "enterprise": "$499/mo · 100,000/day + SSO + SLA",
         },
     }
