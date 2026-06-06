@@ -1917,6 +1917,66 @@ def trial_check():
                 # trial-check on a session-upgrade lookup error.
                 pass
 
+            # Fix E (2026-06-06): mcp_session_upgrades closure ──────────
+            # The Stripe checkout.session.completed webhook
+            # (handle_checkout_completed in main.py) writes a row keyed by
+            # mcp_session_id whenever the human pays via a paywall link
+            # whose client_reference_id matched this MCP session. Look
+            # for a row touched in the last 1h that hasn't been "consumed"
+            # by an earlier trial-check call yet. When found, return
+            # tier_upgrade=<plan> so server.mjs flips this session's tier
+            # in-place on the very next paid-tool call — no key swap, no
+            # reconnect. Only overrides the api_keys lookup above when it
+            # found nothing, so existing redeem-key flows are preserved.
+            try:
+                cur.execute(
+                    """SELECT plan FROM mcp_session_upgrades
+                       WHERE mcp_session_id = %s
+                         AND upgraded_at > NOW() - INTERVAL '1 hour'
+                       LIMIT 1""",
+                    (session_id,),
+                )
+                _u_row = cur.fetchone()
+                if _u_row and _u_row[0]:
+                    _u_plan = str(_u_row[0]).lower()
+                    # Map plan_name → tier (server.mjs accepts developer/pro/enterprise/founding)
+                    _plan_to_tier = {
+                        'starter':    'developer',  # $9 Starter unlocks paid tools = developer-equivalent
+                        'developer':  'developer',
+                        'pro':        'pro',
+                        'pro_monthly':  'pro',
+                        'pro_annual':   'pro',
+                        'enterprise': 'enterprise',
+                        'enterprise_monthly': 'enterprise',
+                        'enterprise_annual':  'enterprise',
+                        'founding':   'pro',
+                    }
+                    _u_tier = _plan_to_tier.get(_u_plan, _u_plan)
+                    if _u_tier in ('developer', 'pro', 'enterprise', 'founding'):
+                        # Don't downgrade if api_keys lookup already
+                        # produced a stronger tier (rare race, but possible).
+                        _existing = out.get('tier_upgrade', '')
+                        _rank = {'developer': 1, 'founding': 2, 'pro': 2, 'enterprise': 3}
+                        if _rank.get(_u_tier, 0) >= _rank.get(_existing, 0):
+                            out["tier_upgrade"] = _u_tier
+                            out["fix_e_session_bound"] = True
+                            # mark consumed so we don't re-flip on every call
+                            try:
+                                cur.execute(
+                                    """UPDATE mcp_session_upgrades
+                                       SET consumed_at = COALESCE(consumed_at, NOW())
+                                       WHERE mcp_session_id = %s""",
+                                    (session_id,),
+                                )
+                                conn.commit()
+                            except Exception:
+                                try: conn.rollback()
+                                except Exception: pass
+            except Exception:
+                # Table may not exist yet (pre-schema-repair) — soft-fail.
+                try: conn.rollback()
+                except Exception: pass
+
         return jsonify(out), 200
     except Exception as e:
         return jsonify({"trial_used": True, "prior_calls": 0,

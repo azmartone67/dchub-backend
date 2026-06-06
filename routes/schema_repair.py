@@ -384,6 +384,35 @@ SCHEMA_STATEMENTS = [
         "CREATE INDEX IF NOT EXISTS ix_mgp_usdmwh_cc_avg ON market_gas_pricing(usd_per_mwh_cc_avg)",
         "CREATE INDEX IF NOT EXISTS ix_mgp_fetched ON market_gas_pricing(fetched_at DESC)",
     ]),
+    ("mcp_session_upgrades (Fix E — Stripe client_reference_id → MCP session_id binding)", [
+        # Fix E (2026-06-06): close the conversion loop end-to-end inside the
+        # caller's in-flight MCP session. The MCP server now appends
+        # ?client_reference_id=<Mcp-Session-Id> to every Stripe Checkout URL it
+        # emits in a paywall response (server.mjs/_stripeWithSession). When the
+        # human completes Stripe Checkout, the checkout.session.completed
+        # webhook (handle_checkout_completed in main.py) writes a row here.
+        # The /api/v1/mcp/trial-check route (flask_mcp_endpoints.py) then
+        # returns tier_upgrade=<plan> on the very next tool call from the same
+        # Mcp-Session-Id — server.mjs flips the in-memory tier in-place,
+        # re-runs the gate, and serves full data immediately. No key swap,
+        # no reconnect, no waiting for the api_key table to propagate.
+        # consumed_at is stamped on the first successful read so we don't
+        # re-flip tier_upgrade on every subsequent call in the same session.
+        """CREATE TABLE IF NOT EXISTS mcp_session_upgrades (
+            mcp_session_id     TEXT PRIMARY KEY,
+            user_id            TEXT,
+            user_email         TEXT,
+            plan               TEXT,
+            stripe_session_id  TEXT,
+            stripe_customer_id TEXT,
+            amount_cents       INTEGER,
+            upgraded_at        TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+            consumed_at        TIMESTAMPTZ
+        )""",
+        "CREATE INDEX IF NOT EXISTS ix_mcp_session_upgrades_upgraded ON mcp_session_upgrades(upgraded_at DESC)",
+        "CREATE INDEX IF NOT EXISTS ix_mcp_session_upgrades_email ON mcp_session_upgrades(user_email)",
+        "CREATE INDEX IF NOT EXISTS ix_mcp_session_upgrades_stripe ON mcp_session_upgrades(stripe_session_id)",
+    ]),
     ("auto_interconnect_findings (3-stage pipeline notification queue)", [
         # Auto-interconnect (2026-06-04): novel-UA + pending-bucket findings
         # surfaced for admin approval. Single-use approve_token; TTL purge

@@ -12029,6 +12029,104 @@ def handle_checkout_completed(session):
     except Exception as _p17_e:
         try: logger.warning(f'phase17 mcp_conversions logging failed: {_p17_e}')
         except Exception: pass
+
+    # Fix E (2026-06-06): mcp_session_upgrades — bind checkout to MCP session_id.
+    # ─────────────────────────────────────────────────────────────────────────
+    # The MCP server (server.mjs) now appends ?client_reference_id=<mcp_session_id>
+    # to every Stripe Checkout URL emitted by a paywall response. When the human
+    # completes Stripe Checkout, Stripe passes that value back to us as
+    # session.client_reference_id on the checkout.session.completed event.
+    # We persist (mcp_session_id, user_id?, plan, stripe_session_id) so the
+    # NEXT tool call from the SAME Mcp-Session-Id can detect the conversion
+    # and serve full data instantly — no key swap, no reconnect, no waiting
+    # for the api_key table to propagate. Closes the conversion loop end-to-end
+    # for Claude.ai web (which can't even hold an X-API-Key), ChatGPT, Cursor,
+    # Cline, and every other MCP client where the human pays in-browser while
+    # the agent's session keeps going.
+    #
+    # ONLY fires when client_reference_id is a plain MCP session id, NOT one of
+    # the existing reserved prefixes (DCM- pair codes, tu- top-up tokens, or the
+    # phase17 ref_*__tool_* attribution shape) — those already have dedicated
+    # handlers above. Idempotent: ON CONFLICT (mcp_session_id) DO UPDATE so a
+    # Stripe webhook retry simply refreshes the row. Fail-soft: never raises.
+    try:
+        _fixe_data = data if isinstance(data, dict) else {}
+        _fixe_cref = (_fixe_data.get('client_reference_id') or '').strip()
+        if _fixe_cref:
+            _fixe_upper = _fixe_cref.upper()
+            _fixe_lower = _fixe_cref.lower()
+            _is_reserved = (
+                _fixe_upper.startswith('DCM-')
+                or _fixe_lower.startswith('tu-')
+                or _fixe_cref.startswith('ref_')
+            )
+            if not _is_reserved:
+                _fixe_session_id = _fixe_data.get('id') or ''
+                _fixe_email = (
+                    _fixe_data.get('customer_email')
+                    or (_fixe_data.get('customer_details') or {}).get('email')
+                    or ''
+                ).lower().strip()
+                _fixe_plan = (_fixe_data.get('metadata') or {}).get('plan', '') or ''
+                _fixe_amount = int(_fixe_data.get('amount_total') or 0)
+                if not _fixe_plan and _fixe_amount:
+                    _ah_dollars = _fixe_amount // 100
+                    if _ah_dollars >= 600: _fixe_plan = 'enterprise'
+                    elif _ah_dollars >= 195: _fixe_plan = 'pro'
+                    elif _ah_dollars >= 40: _fixe_plan = 'developer'
+                    elif _ah_dollars >= 5: _fixe_plan = 'starter'
+                _fixe_user_id = None
+                try:
+                    if _fixe_email:
+                        _, _u_rows = _pg_execute(
+                            "SELECT id FROM users WHERE email = %s LIMIT 1",
+                            (_fixe_email,), fetch=True)
+                        if _u_rows: _fixe_user_id = _u_rows[0][0]
+                except Exception: pass
+                try:
+                    _pg_execute(
+                        """CREATE TABLE IF NOT EXISTS mcp_session_upgrades (
+                            mcp_session_id     TEXT PRIMARY KEY,
+                            user_id            TEXT,
+                            user_email         TEXT,
+                            plan               TEXT,
+                            stripe_session_id  TEXT,
+                            stripe_customer_id TEXT,
+                            amount_cents       INTEGER,
+                            upgraded_at        TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+                            consumed_at        TIMESTAMPTZ
+                        )"""
+                    )
+                except Exception: pass
+                try:
+                    _pg_execute(
+                        """INSERT INTO mcp_session_upgrades
+                            (mcp_session_id, user_id, user_email, plan,
+                             stripe_session_id, stripe_customer_id, amount_cents)
+                           VALUES (%s, %s, %s, %s, %s, %s, %s)
+                           ON CONFLICT (mcp_session_id) DO UPDATE SET
+                             user_id            = COALESCE(EXCLUDED.user_id, mcp_session_upgrades.user_id),
+                             user_email         = COALESCE(EXCLUDED.user_email, mcp_session_upgrades.user_email),
+                             plan               = EXCLUDED.plan,
+                             stripe_session_id  = EXCLUDED.stripe_session_id,
+                             stripe_customer_id = COALESCE(EXCLUDED.stripe_customer_id, mcp_session_upgrades.stripe_customer_id),
+                             amount_cents       = EXCLUDED.amount_cents,
+                             upgraded_at        = NOW(),
+                             consumed_at        = NULL""",
+                        (_fixe_cref[:200], _fixe_user_id, _fixe_email or None,
+                         _fixe_plan or 'unknown', _fixe_session_id,
+                         _fixe_data.get('customer') or None, _fixe_amount))
+                    try:
+                        print(f"FixE: mcp_session_upgrades bound sid={_fixe_cref[:12]}... plan={_fixe_plan} email={_fixe_email or '(none)'}")
+                    except Exception: pass
+                except Exception as _fixe_ins_err:
+                    try: logger.warning(f'FixE mcp_session_upgrades insert failed: {_fixe_ins_err}')
+                    except Exception: pass
+    except Exception as _fixe_e:
+        try: logger.warning(f'FixE mcp_session_upgrades top-level failed: {_fixe_e}')
+        except Exception: pass
+
+
 def handle_subscription_created(subscription):
     """Handle new subscription - writes to PostgreSQL first"""
     customer_id = subscription.get('customer', '')
