@@ -2271,7 +2271,11 @@ def start_auto_publisher():
                 # governs the rate; otherwise stay at 1/fire for clean cadence.
                 # Same backlog-drain shape the Bluesky loop already uses.
                 _remaining_today = max(DAILY_CAP - published_today, 0)
-                _drain_budget = _remaining_today if _queued > 10 else 1
+                # r91 (2026-06-06): small-queue drain 1->2/fire so a healthy
+                # queue actually reaches DAILY_CAP (1/fire * 4 fires = 4 < cap 6
+                # left good content stuck). Still bounded by DAILY_CAP, 8s
+                # spacing, and per-content-class 1/day dedup — so no spam burst.
+                _drain_budget = _remaining_today if _queued > 10 else min(2, _remaining_today)
                 _attempts = 0
                 # Track which "content_class" patterns we've published TODAY
                 # so we can avoid double-firing the same post type. Pattern
