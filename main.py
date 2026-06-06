@@ -3503,7 +3503,13 @@ def get_facilities():
               AND latitude != 0 AND longitude != 0""")
         total = cur.fetchone()[0]
         cur.close(); conn.close()
-        return jsonify({"count": total, "data": data})
+        resp = jsonify({"count": total, "data": data})
+        # The full facility set is large (~4MB / ~19K rows). Let the browser
+        # cache it briefly so map re-loads / re-visits within the window skip
+        # the redundant fetch (eases the boot burst on the 1-replica backend).
+        # private = per-user (set can vary by tier); counts move slowly.
+        resp.headers['Cache-Control'] = 'private, max-age=120'
+        return resp
     except Exception as e:
         print(f"[/api/facilities] error: {e}")
         return jsonify({"count": 0, "data": [], "error": str(e)}), 500
@@ -26953,6 +26959,18 @@ try:
     print("[main] market_brief_bp registered: /markets/<slug>/brief + /api/v1/market-brief/<slug>", flush=True)
 except Exception as _mb_e:
     print(f"[main] market_brief_bp register failed: {_mb_e}", flush=True)
+
+# DCPI Verdict-Shift auto-press (2026-06-06): autonomous detector that
+# enqueues a LinkedIn post when a market's DCPI verdict SHIFTS — e.g.
+# Phoenix CAUTION → AVOID. Every shift = inbound traffic to the new
+# Market Brief feature. Default DRY-RUN; live only via cron (slot 16/16)
+# or explicit ?live=1. Caps at 3 posts/run + 48h soft cap per slug.
+try:
+    from routes.market_verdict_shifts import market_verdict_shifts_bp
+    app.register_blueprint(market_verdict_shifts_bp)
+    print("[main] market_verdict_shifts_bp registered: /api/v1/admin/verdict-shifts/scan + /api/v1/verdict-shifts/recent", flush=True)
+except Exception as _mvs_e:
+    print(f"[main] market_verdict_shifts_bp register failed: {_mvs_e}", flush=True)
 
 # Autonomous MCP-presence management (2026-06-05): twice-daily crawl of
 # the ~15 MCP listing sites DC Hub appears on (Smithery, MCPHive,

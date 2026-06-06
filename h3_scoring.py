@@ -132,11 +132,11 @@ def score_hex_cell(hex_id, conn=None):
             try: conn.rollback()
             except: pass
         
-        # Gas score: pipelines within radius
+        # Gas score: pipelines within radius.
         try:
             c.execute("""
                 SELECT COUNT(*), COALESCE(MAX(diameter_inches), 0)
-                FROM gas_pipelines 
+                FROM gas_pipelines
                 WHERE lat BETWEEN %s AND %s AND lng BETWEEN %s AND %s
             """, (lat - radius, lat + radius, lng - radius, lng + radius))
             row = c.fetchone()
@@ -145,6 +145,23 @@ def score_hex_cell(hex_id, conn=None):
             scores['gas'] = min(10, gas_count * 2)
             if max_diameter >= 30:
                 scores['gas'] = min(15, scores['gas'] + 5)
+            # gas_pipelines is sparse (~918 rows), so gas-rich metros (e.g.
+            # Ashburn/NoVA) scored gas=0 despite real supply. Credit nearby
+            # natural-gas-fired generation as a proxy for gas availability.
+            if scores['gas'] < 10:
+                try:
+                    c.execute("""
+                        SELECT COUNT(*) FROM power_plants_eia
+                        WHERE lat BETWEEN %s AND %s AND lng BETWEEN %s AND %s
+                          AND primary_fuel ILIKE '%%gas%%'
+                    """, (lat - radius, lat + radius, lng - radius, lng + radius))
+                    gp = c.fetchone()
+                    gas_plants = gp[0] if gp else 0
+                    if gas_plants:
+                        scores['gas'] = max(scores['gas'], min(10, gas_plants * 4))
+                except Exception:
+                    try: conn.rollback()
+                    except: pass
         except Exception as e:
             logger.debug(f"Gas scoring error: {e}")
             try: conn.rollback()
