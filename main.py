@@ -27078,6 +27078,21 @@ try:
 except Exception as _bsd_e:
     print(f"[main] brain_stuck_drain_bp register failed: {_bsd_e}", flush=True)
 
+# 2026-06-06 (Phase HJ-4) — Brain Mirror, Layer 25.
+# Reflection layer: grades Brain v2's self-assessment honestly
+# (catches the 4.00/4 perfect-score gaming when 20 findings are stuck),
+# clusters findings to find structural hypotheses, attributes
+# outcomes to outputs, and surfaces 3 net-new hypotheses about what
+# the brain ISN'T looking at. Daily 09:00 UTC cron via
+# .github/workflows/brain-mirror.yml opens a GitHub issue if the
+# honest score drops below 3.0.
+try:
+    from routes.brain_mirror import brain_mirror_bp
+    app.register_blueprint(brain_mirror_bp)
+    print("[main] brain_mirror_bp registered: GET /api/v1/brain/mirror/report + POST /api/v1/admin/brain/mirror/run", flush=True)
+except Exception as _bm_e:
+    print(f"[main] brain_mirror_bp register failed: {_bm_e}", flush=True)
+
 # r79 (2026-06-03) — Redirect blueprint for known-dead URLs. Each entry
 # in routes/redirects_404_killer.py is a URL we caught 404ing in production
 # (some during live demos). The link-check CI workflow now catches new

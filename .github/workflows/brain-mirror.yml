@@ -1,0 +1,103 @@
+name: Brain Mirror (Reflection Layer)
+
+# Daily 09:00 UTC reflection cycle. Brain Mirror grades Brain v2's
+# self-assessment honestly, detects cross-finding clusters, attributes
+# outcomes, and surfaces 3 net-new hypotheses.
+#
+# Phase HJ-4 (2026-06-06) — Layer 25 of the brain stack. Read-only
+# from the brain's own data; writes to brain_mirror_reports for
+# trending. Doesn't propose code fixes itself (that's Layer 5's job).
+
+on:
+  schedule:
+    # 09:00 UTC daily — after 06:05 DCPI recompute + 08:00 brain
+    # stuck-drain. Mirror grades the morning's already-run cycles.
+    - cron: '0 9 * * *'
+  workflow_dispatch:
+
+permissions:
+  contents: read
+  issues: write   # so we can open an issue when honest_score < 3.0
+
+concurrency:
+  group: brain-mirror
+  cancel-in-progress: false
+
+jobs:
+  reflect:
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    steps:
+      - name: Trigger reflection cycle
+        id: mirror
+        env:
+          ADMIN_KEY: ${{ secrets.DCHUB_ADMIN_KEY }}
+        run: |
+          if [ -z "$ADMIN_KEY" ]; then
+            echo "::notice ::DCHUB_ADMIN_KEY secret not set — using public read endpoint"
+            BODY=$(curl -sS --max-time 30 \
+              "https://dchub.cloud/api/v1/brain/mirror/report")
+          else
+            BODY=$(curl -sS --max-time 30 -X POST \
+              -H "X-Admin-Key: $ADMIN_KEY" \
+              "https://dchub.cloud/api/v1/admin/brain/mirror/run")
+          fi
+          HONEST=$(echo "$BODY" | jq -r '.honest_grade.honest_score // 0')
+          CLAIMED=$(echo "$BODY" | jq -r '.honest_grade.claimed_score // 0')
+          VERDICT=$(echo "$BODY" | jq -r '.honest_grade.verdict // "?"')
+          BACKLOG=$(echo "$BODY" | jq -r '._brain_status_snapshot.actionable_findings_count // 0')
+          CLUSTERS=$(echo "$BODY" | jq -r '.clusters.clusters | length')
+          HYPS=$(echo "$BODY" | jq -r '.hypotheses.count // 0')
+
+          echo "honest=$HONEST" >> "$GITHUB_OUTPUT"
+          echo "claimed=$CLAIMED" >> "$GITHUB_OUTPUT"
+          echo "verdict=$VERDICT" >> "$GITHUB_OUTPUT"
+          echo "backlog=$BACKLOG" >> "$GITHUB_OUTPUT"
+
+          {
+            echo "## Brain Mirror — $(date -u +%Y-%m-%d)"
+            echo ""
+            echo "**Honest score:** $HONEST / 4.0"
+            echo "**Claimed score:** $CLAIMED / 4.0"
+            echo "**Verdict:** $VERDICT"
+            echo "**Backlog:** $BACKLOG actionable findings"
+            echo "**Cross-finding clusters:** $CLUSTERS"
+            echo "**Hypotheses surfaced:** $HYPS"
+            echo ""
+            if [ "$CLUSTERS" -gt 0 ]; then
+              echo "### Clusters"
+              echo "$BODY" | jq -r '.clusters.clusters[] | "- **\(.kind)**: \(.hypothesis)"'
+              echo ""
+            fi
+            if [ "$HYPS" -gt 0 ]; then
+              echo "### Hypotheses"
+              echo "$BODY" | jq -r '.hypotheses.hypotheses[] | "- **\(.id)**: \(.question)\n    Next: \(.next_step)"'
+            fi
+          } >> "$GITHUB_STEP_SUMMARY"
+
+      - name: Open issue if honest_score < 3.0
+        if: steps.mirror.outputs.honest != '' && fromJSON(steps.mirror.outputs.honest) < 3.0
+        uses: actions/github-script@v7
+        with:
+          github-token: ${{ secrets.GITHUB_TOKEN }}
+          script: |
+            const honest = '${{ steps.mirror.outputs.honest }}';
+            const claimed = '${{ steps.mirror.outputs.claimed }}';
+            const verdict = '${{ steps.mirror.outputs.verdict }}';
+            const backlog = '${{ steps.mirror.outputs.backlog }}';
+            const title = `Brain Mirror — honest_score ${honest}/4 (claimed ${claimed})`;
+            // De-dup against any open mirror issue
+            const existing = await github.rest.issues.listForRepo({
+              owner: context.repo.owner, repo: context.repo.repo,
+              state: 'open', labels: ['brain-mirror'],
+            });
+            if (existing.data.some(i => i.title === title)) {
+              console.log('Open issue already exists — skip');
+              return;
+            }
+            await github.rest.issues.create({
+              owner: context.repo.owner, repo: context.repo.repo,
+              title,
+              labels: ['brain-mirror', 'auto'],
+              body: `Mirror's honest grading is ${honest}/4 (Brain v2 claims ${claimed}). Verdict: **${verdict}**. Actionable findings: ${backlog}.\n\nSee https://dchub.cloud/api/v1/brain/mirror/report for the full payload + hypotheses.\n\nAuto-filed by .github/workflows/brain-mirror.yml.`,
+            });
