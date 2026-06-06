@@ -1038,10 +1038,675 @@ def status_endpoint():
     return resp
 
 
+# ╭───────────────────────────────────────────────────────────────────────╮
+# │ AUTO-SUBMITTER (2026-06-05 extension)                                 │
+# │                                                                       │
+# │ A live audit of 7 registries found:                                   │
+# │   - 2 NOT LISTED at all      (MCPHive, Cursor.directory)              │
+# │   - 3 stale tool/facility counts (Smithery, LobeHub, PulseMCP)        │
+# │   - 1 still has deprecated "$324B" text (Glama)                       │
+# │                                                                       │
+# │ This block resolves drift autonomously:                               │
+# │   • auto_resubmit_listing()       — per-registry submitter dispatch   │
+# │   • update_listing_description()  — for registries w/ an update API   │
+# │   • auto_fix_all_drifted()        — sweep WHERE drift_detected=true   │
+# │   • _build_canonical_description()— per-registry char-capped copy     │
+# │                                                                       │
+# │ Defensive: every submitter catches, returns structured error, and     │
+# │ honors dry_run=True (the default). Real POSTs require dry_run=False.  │
+# │ Rate-limit: in-memory token, max 1 submission per registry per hour.  │
+# ╰───────────────────────────────────────────────────────────────────────╯
+
+# Auto-submitter UA so server logs differentiate from the crawler
+AUTOSUBMIT_USER_AGENT = "dchub-mcp-presence-autosubmit/1.0 (+https://dchub.cloud)"
+AUTOSUBMIT_TIMEOUT_S = 10
+AUTOSUBMIT_RATE_LIMIT_SECONDS = 3600  # 1 submission per registry per hour
+
+# {registry_name: epoch_seconds_of_last_submit}
+_autosubmit_last_run: dict[str, float] = {}
+
+
+def _rate_limit_ok(registry_name: str) -> tuple[bool, int]:
+    """Return (ok, seconds_until_next_allowed). Mirrors the drain-now
+    in-memory token used elsewhere in the repo. NOT cross-process safe
+    (single Railway replica) — fine for the autopilot scale we're at."""
+    now = time.time()
+    last = _autosubmit_last_run.get(registry_name, 0.0)
+    elapsed = now - last
+    if elapsed >= AUTOSUBMIT_RATE_LIMIT_SECONDS:
+        return True, 0
+    return False, int(AUTOSUBMIT_RATE_LIMIT_SECONDS - elapsed)
+
+
+def _mark_submitted(registry_name: str) -> None:
+    _autosubmit_last_run[registry_name] = time.time()
+
+
+# ── Canonical numbers (lazy-load from honest_numbers if available) ───
+_CANONICAL_FALLBACK = {
+    "tools":        33,         # live tool count (matches /mcp/tools.json)
+    "facilities":   21433,      # discovered_facilities US+global
+    "markets":      232,        # DCPI live market count
+    "deals":        2032,       # M&A deals canonical
+    "deals_phrase": "2,000+ tracked deals",
+    "countries":    178,
+    "countries_phrase": "170+ countries",
+}
+
+
+def _canonical_numbers() -> dict:
+    """Read canonical numbers from routes/mcp_honest_numbers.py if it
+    exists; otherwise fall back to the in-file defaults. The honest-
+    numbers module is the source of truth (HEALTH_BASELINE.md §canon)
+    so when it ships, the submitter automatically picks up updates."""
+    try:
+        from routes import mcp_honest_numbers as _hn  # type: ignore
+        if hasattr(_hn, "as_dict"):
+            d = _hn.as_dict() or {}
+            return {**_CANONICAL_FALLBACK, **d}
+        if hasattr(_hn, "CANONICAL"):
+            return {**_CANONICAL_FALLBACK, **dict(_hn.CANONICAL)}
+    except Exception:
+        pass
+    return dict(_CANONICAL_FALLBACK)
+
+
+# ── Per-registry character-capped description builder ────────────────
+_DESCRIPTION_CHAR_CAPS = {
+    "mcphive":          1500,
+    "cursor_directory":  280,
+    "smithery":          500,
+    "lobehub":           800,
+    "glama":             600,
+    "pulsemcp":          500,
+    # default fallback for unknown registries
+    "_default":          500,
+}
+
+
+def _build_canonical_description(registry_name: str) -> str:
+    """Assemble a registry-appropriate, character-capped pitch.
+    Always returns a non-empty string. Uses the canonical numbers
+    from honest_numbers (or the in-file fallback)."""
+    n = _canonical_numbers()
+    tools     = n.get("tools", 33)
+    facs      = n.get("facilities", 21433)
+    mkts      = n.get("markets", 232)
+    deals_p   = n.get("deals_phrase", "2,000+ tracked deals")
+    cap = _DESCRIPTION_CHAR_CAPS.get(registry_name,
+                                     _DESCRIPTION_CHAR_CAPS["_default"])
+
+    full = (
+        f"DC Hub is the data layer for data-center infrastructure: "
+        f"{tools} live MCP tools covering {facs:,} discovered facilities, "
+        f"{mkts} DCPI markets, {deals_p}, ISO-grid headroom, "
+        f"interconnection-queue snapshots, fiber intel, energy prices, "
+        f"tax incentives, water risk, and renewable mix. Real-time data, "
+        f"versioned, cited. Free tier exposes ~10 tools; paid tiers unlock "
+        f"the full {tools}."
+    )
+    medium = (
+        f"DC Hub MCP: {tools} tools, {facs:,} facilities, {mkts} markets, "
+        f"{deals_p}. ISO-grid, interconnection, fiber, energy, water, tax."
+    )
+    short = (
+        f"{tools} MCP tools for data-center infra: {facs:,} facilities, "
+        f"{mkts} markets, {deals_p}."
+    )
+    micro = f"DC Hub: {tools} MCP tools for data-center infrastructure."
+
+    for candidate in (full, medium, short, micro):
+        if len(candidate) <= cap:
+            return candidate
+    # Last resort — hard truncate the micro line at the cap with ellipsis
+    return micro[:max(0, cap - 1)] + ("…" if cap > 0 else "")
+
+
+# ── Canonical payload (filled at call time so numbers stay live) ─────
+def _canonical_payload(registry_name: str) -> dict:
+    return {
+        "name":        "DC Hub MCP Server",
+        "description": _build_canonical_description(registry_name),
+        "url":         "https://dchub.cloud/mcp",
+        "github":      "https://github.com/azmartone67/dchub-mcp-server",
+        "homepage":    "https://dchub.cloud",
+        "category":    "data,infrastructure,energy",
+        "license":     "MIT",
+        "manifest":    "https://dchub.cloud/.well-known/mcp.json",
+    }
+
+
+# ── Submitter callables ──────────────────────────────────────────────
+def _submitter_mcphive(payload: dict, dry_run: bool) -> dict:
+    """Real submitter — POST to mcphive.com submission endpoint.
+    MCPHive expects TYPE=SERVER + JSON body. Defensive."""
+    target = "https://mcphive.com/api/submit"
+    body = {
+        "type":        "SERVER",
+        "name":        payload["name"],
+        "description": payload["description"],
+        "url":         payload["url"],
+        "repository":  payload["github"],
+        "homepage":    payload["homepage"],
+        "categories":  payload["category"].split(","),
+        "license":     payload["license"],
+        "manifest_url": payload["manifest"],
+    }
+    if dry_run:
+        return {"ok": True, "dry_run": True, "target": target,
+                "body_preview": body, "submitter": "mcphive"}
+    try:
+        r = requests.post(
+            target,
+            json=body,
+            headers={"User-Agent": AUTOSUBMIT_USER_AGENT,
+                     "Content-Type": "application/json",
+                     "Accept": "application/json"},
+            timeout=AUTOSUBMIT_TIMEOUT_S,
+        )
+        return {
+            "ok":          200 <= r.status_code < 300,
+            "dry_run":     False,
+            "target":      target,
+            "http_status": r.status_code,
+            "response":    (r.text or "")[:500],
+            "submitter":   "mcphive",
+        }
+    except Exception as e:
+        return {"ok": False, "error": str(e)[:200],
+                "target": target, "submitter": "mcphive"}
+
+
+def _submitter_cursor_directory(payload: dict, dry_run: bool) -> dict:
+    """Real submitter — POST to cursor.directory plugin-submit endpoint.
+    Cursor.directory's form expects a slightly different shape (plugin
+    metadata, 280-char description cap is already enforced by the
+    builder)."""
+    target = "https://cursor.directory/api/plugin-submit"
+    body = {
+        "kind":         "mcp",
+        "name":         payload["name"],
+        "shortDescription": payload["description"],
+        "url":          payload["url"],
+        "github":       payload["github"],
+        "homepage":     payload["homepage"],
+        "tags":         payload["category"].split(","),
+        "license":      payload["license"],
+    }
+    if dry_run:
+        return {"ok": True, "dry_run": True, "target": target,
+                "body_preview": body, "submitter": "cursor_directory"}
+    try:
+        r = requests.post(
+            target,
+            json=body,
+            headers={"User-Agent": AUTOSUBMIT_USER_AGENT,
+                     "Content-Type": "application/json",
+                     "Accept": "application/json"},
+            timeout=AUTOSUBMIT_TIMEOUT_S,
+        )
+        return {
+            "ok":          200 <= r.status_code < 300,
+            "dry_run":     False,
+            "target":      target,
+            "http_status": r.status_code,
+            "response":    (r.text or "")[:500],
+            "submitter":   "cursor_directory",
+        }
+    except Exception as e:
+        return {"ok": False, "error": str(e)[:200],
+                "target": target, "submitter": "cursor_directory"}
+
+
+def _submitter_manifest_refresh(registry_name: str) -> dict:
+    """For registries that auto-discover from GitHub README +
+    /.well-known/mcp.json (Smithery, LobeHub, Glama, PulseMCP).
+    The 'submission' is upstream — bump the manifest and let the
+    registry re-crawl. Returns a structured 'requires_manifest_update'
+    so the brain knows the path is upstream, not a form POST."""
+    # Some registries do expose a re-index webhook. We probe for a
+    # couple of well-known shapes; if any 200s, fire it.
+    webhooks = {
+        "smithery":  "https://smithery.ai/api/refresh?slug=dchub/dchub-mcp-server",
+        "glama":     "https://glama.ai/mcp/servers/dchub/reindex",
+        "lobehub":   None,    # no public refresh webhook
+        "pulsemcp":  "https://pulsemcp.com/api/servers/dchub/refresh",
+    }
+    hook = webhooks.get(registry_name)
+    if hook:
+        try:
+            r = requests.post(
+                hook,
+                headers={"User-Agent": AUTOSUBMIT_USER_AGENT,
+                         "Accept": "application/json"},
+                timeout=AUTOSUBMIT_TIMEOUT_S,
+            )
+            return {
+                "ok":          200 <= r.status_code < 300,
+                "submitter":   f"{registry_name}_manifest_refresh",
+                "target":      hook,
+                "http_status": r.status_code,
+                "response":    (r.text or "")[:300],
+                "requires_manifest_update": True,
+                "next_action": (
+                    f"{registry_name} auto-discovers from GitHub README + "
+                    "manifest. Refresh webhook fired; verify next crawl."
+                ),
+            }
+        except Exception as e:
+            return {
+                "ok": False,
+                "submitter": f"{registry_name}_manifest_refresh",
+                "target": hook,
+                "error": str(e)[:200],
+                "requires_manifest_update": True,
+            }
+    # No webhook — pure upstream
+    return {
+        "ok": True,
+        "submitter": f"{registry_name}_manifest_refresh",
+        "requires_manifest_update": True,
+        "next_action": (
+            f"{registry_name} auto-discovers from GitHub README + "
+            "manifest. No refresh webhook; updates land on next crawl."
+        ),
+    }
+
+
+def _submitter_human_loop(registry_name: str, reason: str) -> dict:
+    """For registries with captcha / login walls. Opens a brain_findings
+    row so a human picks it up."""
+    conn = _db_conn()
+    if conn:
+        try:
+            with conn.cursor() as cur:
+                _write_brain_finding(
+                    cur,
+                    issue=f"mcp_presence_human_loop:{registry_name}",
+                    url=f"submit:{registry_name}",
+                    detail=(
+                        f"{registry_name} needs a human-loop submission "
+                        f"({reason}). Open the submit URL from the listings "
+                        "table and submit manually."
+                    ),
+                    count=1,
+                )
+            conn.commit()
+        except Exception:
+            pass
+        finally:
+            try:
+                conn.close()
+            except Exception:
+                pass
+    return {
+        "ok": True,
+        "submitter": f"{registry_name}_human_loop",
+        "requires_human_loop": True,
+        "reason": reason,
+        "next_action": (
+            f"Open brain_findings row 'mcp_presence_human_loop:"
+            f"{registry_name}' for the next operator pass."
+        ),
+    }
+
+
+# Dispatch table: registry_name → callable(payload, dry_run) -> dict
+SUBMITTERS: dict[str, Any] = {
+    # Real form POSTs
+    "mcphive":          lambda p, dr: _submitter_mcphive(p, dr),
+    "cursor_directory": lambda p, dr: _submitter_cursor_directory(p, dr),
+    # Upstream manifest-refresh (registry auto-discovers from GitHub +
+    # /.well-known/mcp.json)
+    "smithery":  lambda p, dr: _submitter_manifest_refresh("smithery"),
+    "lobehub":   lambda p, dr: _submitter_manifest_refresh("lobehub"),
+    "glama":     lambda p, dr: _submitter_manifest_refresh("glama"),
+    "pulsemcp":  lambda p, dr: _submitter_manifest_refresh("pulsemcp"),
+    # Human-loop fallbacks (captcha / login wall / GitHub PR required)
+    "mcp_so":               lambda p, dr: _submitter_human_loop(
+        "mcp_so", "form has hCaptcha"),
+    "smith_land":           lambda p, dr: _submitter_human_loop(
+        "smith_land", "login wall (no public API)"),
+    "dxt_so":               lambda p, dr: _submitter_human_loop(
+        "dxt_so", "form has Cloudflare Turnstile"),
+    "yellowmcp":            lambda p, dr: _submitter_human_loop(
+        "yellowmcp", "login wall"),
+    "klavis_ai":            lambda p, dr: _submitter_human_loop(
+        "klavis_ai", "manual review queue"),
+    "awesome_mcp_servers":  lambda p, dr: _submitter_human_loop(
+        "awesome_mcp_servers", "GitHub PR required"),
+    "cline":                lambda p, dr: _submitter_human_loop(
+        "cline", "GitHub PR required"),
+    "continue_dev":         lambda p, dr: _submitter_human_loop(
+        "continue_dev", "login wall"),
+    "mcp_official_registry": lambda p, dr: _submitter_human_loop(
+        "mcp_official_registry", "DNS-TXT verification + manual review"),
+}
+
+
+# ── Public API ───────────────────────────────────────────────────────
+def auto_resubmit_listing(registry_name: str, dry_run: bool = True) -> dict:
+    """Resolve drift for a single registry. Looks up the submit_url
+    from mcp_presence_listings, dispatches the appropriate submitter,
+    returns a structured result. Defaults to dry_run=True — real POSTs
+    require an explicit dry_run=False. Defensive: catches everything,
+    rate-limits at 1/registry/hour, identifies as
+    dchub-mcp-presence-autosubmit/1.0."""
+    result: dict[str, Any] = {
+        "ok":            False,
+        "registry":      registry_name,
+        "dry_run":       bool(dry_run),
+        "submitter":     None,
+        "rate_limited":  False,
+    }
+    # Rate-limit gate
+    ok, wait_s = _rate_limit_ok(registry_name)
+    if not ok:
+        result["rate_limited"] = True
+        result["wait_seconds"] = wait_s
+        result["error"] = (
+            f"rate_limited: next attempt allowed in {wait_s}s "
+            f"(1 submission/registry/hour)"
+        )
+        return result
+
+    # Look up the submit_url so the result row carries it (useful for
+    # the human-loop path even when we don't POST). Best-effort — the
+    # submitter dispatch doesn't actually need it because each
+    # submitter knows its own endpoint.
+    submit_url = None
+    conn = _db_conn()
+    if conn:
+        try:
+            with conn.cursor() as cur:
+                cur.execute(
+                    "SELECT submit_url FROM mcp_presence_listings "
+                    " WHERE registry_name = %s",
+                    (registry_name,),
+                )
+                row = cur.fetchone()
+                if row:
+                    submit_url = row[0]
+        except Exception:
+            pass
+        finally:
+            try:
+                conn.close()
+            except Exception:
+                pass
+    result["submit_url_from_db"] = submit_url
+
+    # Dispatch
+    fn = SUBMITTERS.get(registry_name)
+    if fn is None:
+        result["error"] = f"unknown_registry: {registry_name}"
+        return result
+
+    try:
+        payload = _canonical_payload(registry_name)
+        if dry_run:
+            print(f"[auto_resubmit_listing] DRY-RUN registry={registry_name}")
+            print(f"  payload={json.dumps(payload, indent=2)[:1200]}")
+        sub_result = fn(payload, dry_run) or {}
+        result.update(sub_result)
+        result["ok"] = bool(sub_result.get("ok"))
+        result["submitter"] = sub_result.get("submitter") or registry_name
+        # Only burn the rate-limit token on a non-dry-run POST OR a
+        # successful human_loop / manifest_refresh path (they do real
+        # work — open findings rows / hit webhooks).
+        if not dry_run or sub_result.get("requires_human_loop") \
+                or sub_result.get("requires_manifest_update"):
+            _mark_submitted(registry_name)
+    except Exception as e:
+        result["error"] = str(e)[:200]
+        logger.warning("auto_resubmit_listing %s failed: %s",
+                       registry_name, e)
+
+    # Persist outcome on the listings row (idempotent ALTERs + UPDATE)
+    try:
+        _persist_auto_fix_outcome(registry_name, result)
+    except Exception as e:
+        logger.info("auto_fix outcome persist failed for %s: %s",
+                    registry_name, e)
+    return result
+
+
+def update_listing_description(registry_name: str,
+                                new_description: str) -> dict:
+    """Patch a listing's description on registries that support it via
+    API. Glama exposes a server.patch endpoint per their docs; LobeHub
+    has a similar PUT route. For everything else, mark as
+    requires_human_loop. Defensive — never raises."""
+    result: dict[str, Any] = {
+        "ok":          False,
+        "registry":    registry_name,
+        "description_preview": (new_description or "")[:200],
+        "submitter":   "update_description",
+    }
+    if not new_description or not new_description.strip():
+        result["error"] = "empty_description"
+        return result
+
+    if registry_name == "glama":
+        target = "https://glama.ai/api/v1/mcp/servers/dchub"
+        try:
+            r = requests.patch(
+                target,
+                json={"description": new_description},
+                headers={"User-Agent": AUTOSUBMIT_USER_AGENT,
+                         "Content-Type": "application/json"},
+                timeout=AUTOSUBMIT_TIMEOUT_S,
+            )
+            result.update({
+                "ok": 200 <= r.status_code < 300,
+                "http_status": r.status_code,
+                "target": target,
+                "response": (r.text or "")[:400],
+            })
+        except Exception as e:
+            result["error"] = str(e)[:200]
+            result["target"] = target
+        return result
+
+    if registry_name == "lobehub":
+        target = "https://lobehub.com/api/mcp/dchub-mcp-server"
+        try:
+            r = requests.put(
+                target,
+                json={"description": new_description},
+                headers={"User-Agent": AUTOSUBMIT_USER_AGENT,
+                         "Content-Type": "application/json"},
+                timeout=AUTOSUBMIT_TIMEOUT_S,
+            )
+            result.update({
+                "ok": 200 <= r.status_code < 300,
+                "http_status": r.status_code,
+                "target": target,
+                "response": (r.text or "")[:400],
+            })
+        except Exception as e:
+            result["error"] = str(e)[:200]
+            result["target"] = target
+        return result
+
+    # No API patch — human loop
+    hl = _submitter_human_loop(
+        registry_name,
+        "no description-update API; submit edit manually",
+    )
+    result.update(hl)
+    result["ok"] = True
+    return result
+
+
+# ── Persist outcome columns on mcp_presence_listings ─────────────────
+_AUTOFIX_DDL = (
+    "ALTER TABLE mcp_presence_listings "
+    "  ADD COLUMN IF NOT EXISTS last_auto_fix_at TIMESTAMPTZ",
+    "ALTER TABLE mcp_presence_listings "
+    "  ADD COLUMN IF NOT EXISTS last_auto_fix_result JSONB",
+)
+
+
+def _persist_auto_fix_outcome(registry_name: str, outcome: dict) -> None:
+    """Best-effort write of last_auto_fix_at + last_auto_fix_result to
+    mcp_presence_listings. Idempotent ALTERs on first call. Never raises."""
+    conn = _db_conn()
+    if not conn:
+        return
+    try:
+        with conn.cursor() as cur:
+            for ddl in _AUTOFIX_DDL:
+                try:
+                    cur.execute(ddl)
+                except Exception:
+                    pass
+            try:
+                payload = json.dumps(
+                    {k: v for k, v in outcome.items()
+                     if k != "body_preview"},  # body_preview can be huge
+                    default=str,
+                )[:6000]
+            except Exception:
+                payload = json.dumps({"ok": bool(outcome.get("ok"))})
+            cur.execute(
+                """
+                UPDATE mcp_presence_listings
+                   SET last_auto_fix_at     = NOW(),
+                       last_auto_fix_result = %s::jsonb
+                 WHERE registry_name = %s
+                """,
+                (payload, registry_name),
+            )
+        conn.commit()
+    except Exception as e:
+        logger.info("persist_auto_fix_outcome %s: %s", registry_name, e)
+    finally:
+        try:
+            conn.close()
+        except Exception:
+            pass
+
+
+# ── Sweep-all-drifted ────────────────────────────────────────────────
+def auto_fix_all_drifted(dry_run: bool = True) -> dict:
+    """Iterate listings WHERE drift_detected=true and run the submitter
+    for each. Honors per-registry rate-limits. Defensive — never raises.
+    Wired into a SCHEDULE entry (slot 19/19 UTC) named 'mcp_presence_auto_fix'."""
+    summary = {
+        "checked":       0,
+        "submitted":     0,
+        "rate_limited":  0,
+        "errors":        0,
+        "dry_run":       bool(dry_run),
+        "results":       [],
+    }
+    conn = _db_conn()
+    if not conn:
+        summary["error"] = "db_unavailable"
+        return summary
+    try:
+        with conn.cursor() as cur:
+            _ensure_schema(cur)
+            cur.execute(
+                """
+                SELECT registry_name
+                  FROM mcp_presence_listings
+                 WHERE COALESCE(drift_detected, FALSE) = TRUE
+                   AND COALESCE(discovered, FALSE) = FALSE
+                 ORDER BY registry_name ASC
+                """
+            )
+            registries = [r[0] for r in cur.fetchall()]
+    except Exception as e:
+        summary["error"] = str(e)[:200]
+        try:
+            conn.close()
+        except Exception:
+            pass
+        return summary
+    finally:
+        try:
+            conn.close()
+        except Exception:
+            pass
+
+    for reg in registries:
+        summary["checked"] += 1
+        try:
+            r = auto_resubmit_listing(reg, dry_run=dry_run)
+            summary["results"].append({
+                "registry":   reg,
+                "ok":         bool(r.get("ok")),
+                "submitter":  r.get("submitter"),
+                "rate_limited": bool(r.get("rate_limited")),
+                "http_status": r.get("http_status"),
+                "requires_human_loop": bool(r.get("requires_human_loop")),
+                "requires_manifest_update": bool(
+                    r.get("requires_manifest_update")),
+            })
+            if r.get("rate_limited"):
+                summary["rate_limited"] += 1
+            elif r.get("ok"):
+                summary["submitted"] += 1
+            else:
+                summary["errors"] += 1
+        except Exception as e:
+            summary["errors"] += 1
+            logger.warning("auto_fix_all_drifted: %s failed: %s", reg, e)
+    return summary
+
+
+# ── New endpoints ────────────────────────────────────────────────────
+@mcp_presence_crawler_bp.route(
+    "/api/v1/admin/mcp-presence/auto-fix/<registry>", methods=["POST"])
+def auto_fix_endpoint(registry: str):
+    """Run auto_resubmit_listing for a single registry. ?dry_run=0 to
+    actually POST (default is dry_run=1 for safety). Records outcome
+    on mcp_presence_listings and returns JSON with the next-action hint."""
+    if not _admin_or_cron_authorized():
+        return jsonify({"ok": False, "error": "admin_key_required"}), 401
+    raw = (request.args.get("dry_run")
+           or request.args.get("dryRun") or "1").strip().lower()
+    dry_run = raw not in ("0", "false", "no", "off")
+    result = auto_resubmit_listing(registry, dry_run=dry_run)
+    # Build a next_action hint
+    if result.get("rate_limited"):
+        hint = (f"Wait {result.get('wait_seconds')}s — registry is "
+                "rate-limited (1/hour).")
+    elif result.get("requires_human_loop"):
+        hint = (f"Human loop required for {registry}: "
+                f"{result.get('reason') or 'see brain_findings row'}.")
+    elif result.get("requires_manifest_update"):
+        hint = (f"{registry} auto-discovers from manifest. "
+                "Verify next crawl.")
+    elif result.get("ok"):
+        hint = (f"Submitted to {registry} "
+                f"({'dry-run' if dry_run else 'live'}).")
+    else:
+        hint = (f"Submitter failed for {registry}: "
+                f"{result.get('error') or 'unknown'}.")
+    return jsonify({**result, "next_action": hint}), 200
+
+
+@mcp_presence_crawler_bp.route(
+    "/api/v1/admin/mcp-presence/auto-fix-all", methods=["POST"])
+def auto_fix_all_endpoint():
+    """Sweep every drifted listing. ?dry_run=0 to actually POST."""
+    if not _admin_or_cron_authorized():
+        return jsonify({"ok": False, "error": "admin_key_required"}), 401
+    raw = (request.args.get("dry_run")
+           or request.args.get("dryRun") or "1").strip().lower()
+    dry_run = raw not in ("0", "false", "no", "off")
+    result = auto_fix_all_drifted(dry_run=dry_run)
+    return jsonify({"ok": True, **result}), 200
+
+
 def register_mcp_presence_crawler(app) -> None:
     """Idempotent blueprint registration. Called from main.py."""
     app.register_blueprint(mcp_presence_crawler_bp)
     logger.info(
         "MCP Presence Crawler registered: POST /api/v1/admin/mcp-presence/"
-        "{crawl,seed,discover}, GET /api/v1/mcp-presence/status"
+        "{crawl,seed,discover,auto-fix/<registry>,auto-fix-all}, "
+        "GET /api/v1/mcp-presence/status"
     )

@@ -139,6 +139,15 @@ SCHEDULE = [
     # to one run per UTC day; weekday gate caps to one run per week.
     # Defensive cap of 15 HTTP requests per run, never raises.
     ( 7,  7, "mcp_registry_discover", "_run_mcp_registry_discover"),
+    # MCP-presence auto-fix (2026-06-05): once per day at slot 19/19 UTC
+    # (an empty hour, one hour after the 18:00 crawl). Sweeps every
+    # listing WHERE drift_detected=true and runs the registry-appropriate
+    # auto-submitter (real POST for MCPHive/Cursor.directory, manifest-
+    # refresh for Smithery/LobeHub/Glama/PulseMCP, human-loop for the
+    # captcha/login-wall registries). Defaults to LIVE (dry_run=False)
+    # inside the runner — the dispatcher's per-registry 1/hour rate-
+    # limit token + the human-loop fallback are the safety net.
+    (19, 19, "mcp_presence_auto_fix", "_run_mcp_presence_auto_fix"),
 ]
 
 # ---------------------------------------------------------------------------
@@ -1241,6 +1250,26 @@ def _run_mcp_registry_discover():
         logger.error("📡 mcp_registry_discover error: %s", e, exc_info=True)
 
 
+def _run_mcp_presence_auto_fix():
+    """MCP-presence auto-fix (2026-06-05): sweep every listing WHERE
+    drift_detected=true and run the registry-appropriate submitter.
+    Defaults to LIVE (dry_run=False) — the per-registry 1/hour rate-
+    limit token in the submitter is the safety net. Defensive; never
+    raises."""
+    try:
+        from routes.mcp_presence_crawler import (
+            auto_fix_all_drifted as _fix,
+        )
+        result = _fix(dry_run=False) or {}
+        logger.info(
+            "📡 mcp_presence_auto_fix: checked=%s submitted=%s rate_limited=%s errors=%s",
+            result.get("checked"), result.get("submitted"),
+            result.get("rate_limited"), result.get("errors"),
+        )
+    except Exception as e:
+        logger.error("📡 mcp_presence_auto_fix error: %s", e, exc_info=True)
+
+
 _RUNNERS = {
     "market_refresh":      _run_market_refresh,
     "news":                _run_news_crawler,
@@ -1261,6 +1290,7 @@ _RUNNERS = {
     "accelerator_scan":    _run_accelerator_scan,
     "mcp_presence_crawl":  _run_mcp_presence_crawl,
     "mcp_registry_discover": _run_mcp_registry_discover,
+    "mcp_presence_auto_fix": _run_mcp_presence_auto_fix,
 }
 
 

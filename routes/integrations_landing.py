@@ -17,9 +17,9 @@ MCP_LANDING_HTML = """<!DOCTYPE html>
 <html lang="en"><head>
 <meta charset="utf-8"><meta name="viewport" content="width=device-width, initial-scale=1">
 <title>Connect DC Hub MCP · Claude, Cursor, Cline, Continue</title>
-<meta name="description" content="DC Hub MCP server — 24 tools covering 21,000+ data center facilities, M&A, grid intelligence, fiber, water risk, tax incentives. Free tier: 10 calls/day, no signup.">
+<meta name="description" content="DC Hub MCP server — 33 tools covering 21,000+ data center facilities, 2,000+ tracked M&A deals, grid intelligence, fiber, water risk, tax incentives. Free tier: 10 calls/day, no signup.">
 <meta property="og:title" content="DC Hub MCP — connect to any AI agent in 30 seconds">
-<meta property="og:description" content="24 tools · 21,000+ facilities · streamable-http · free tier no signup">
+<meta property="og:description" content="33 tools · 21,000+ facilities · 232 markets · streamable-http · free tier no signup">
 <meta property="og:image" content="https://api.dchub.cloud/static/og/landing-integrations-mcp.png">
 <meta property="og:url" content="https://dchub.cloud/integrations/mcp">
 <meta name="twitter:card" content="summary_large_image">
@@ -52,7 +52,7 @@ MCP_LANDING_HTML = """<!DOCTYPE html>
 <header>
   <div class="eyebrow">Model Context Protocol</div>
   <h1>Connect DC Hub to your AI in 30 seconds.</h1>
-  <p class="lead">Native MCP server. <b>24 tools</b> covering <b>21,000+ facilities</b>, M&amp;A deals,
+  <p class="lead">Native MCP server. <b>33 tools</b> covering <b>21,000+ facilities</b>, <b>2,000+ tracked M&amp;A deals</b>,
   grid intelligence (US ISOs + Hydro-Québec + AESO + Nord Pool), fiber routes, water risk, tax incentives.
   Free tier: <b>10 calls/day, no signup</b>.</p>
 </header>
@@ -84,7 +84,7 @@ MCP_LANDING_HTML = """<!DOCTYPE html>
 </div>
 
 <div class="pane">
-  <h2>The 24 tools</h2>
+  <h2>The 33 tools</h2>
   <div class="tools">
     <div class="tool"><b>search_facilities</b>21k facilities, by city/MW/operator</div>
     <div class="tool"><b>get_facility</b>Full profile by ID</div>

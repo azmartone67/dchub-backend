@@ -7109,7 +7109,7 @@ _MCP_LANDING_HTML = """<!DOCTYPE html>
 <html lang="en"><head>
 <meta charset="utf-8"><meta name="viewport" content="width=device-width, initial-scale=1">
 <title>DC Hub MCP Server · Connect to Claude, Cursor, Cline, Windsurf</title>
-<meta name="description" content="Add DC Hub's Model Context Protocol server to any AI agent runtime. 40 tools. Auto-trial keys mean you start in 60 seconds.">
+<meta name="description" content="Add DC Hub's Model Context Protocol server to any AI agent runtime. 33 tools. Auto-trial keys mean you start in 60 seconds.">
 <link rel="canonical" href="https://dchub.cloud/mcp">
 <meta property="og:title" content="DC Hub MCP Server">
 <link rel="preconnect" href="https://fonts.googleapis.com">
@@ -7157,10 +7157,10 @@ _MCP_LANDING_HTML = """<!DOCTYPE html>
 <header>
   <div class="eyebrow">Model Context Protocol · MCP Server</div>
   <h1>Drop DC Hub into any AI agent.</h1>
-  <p>Native MCP server. 40 tools covering 21,000+ facilities, M&amp;A transactions, grid intelligence, fiber routes, water risk, tax incentives. Auto-trial keys mean your agent starts working in 60 seconds &mdash; no signup flow, no manual auth.</p>
+  <p>Native MCP server. 33 tools covering 21,000+ facilities, 2,000+ tracked M&amp;A deals, grid intelligence, fiber routes, water risk, tax incentives. Auto-trial keys mean your agent starts working in 60 seconds &mdash; no signup flow, no manual auth.</p>
   <div class="badges">
     <span class="badge">Streamable HTTP</span>
-    <span class="badge">40 tools</span>
+    <span class="badge">33 tools</span>
     <span class="badge">Free tier 1k calls/day</span>
     <span class="badge">Cited by 15+ AI platforms</span>
   </div>
@@ -7286,7 +7286,7 @@ X-API-Key: your-key
 
 <section>
   <h2>What you can ask</h2>
-  <p class="lead">All 40 tools land directly in your AI's tool menu. Example asks:</p>
+  <p class="lead">All 33 tools land directly in your AI's tool menu. Example asks:</p>
   <div class="tool-grid">
     <div class="tool"><div class="tname">search_facilities</div><div class="tdesc">"Find data centers in Ashburn over 50 MW"</div></div>
     <div class="tool"><div class="tname">analyze_site</div><div class="tdesc">"Score lat 39.0, lon -77.4 for hyperscaler suitability"</div></div>

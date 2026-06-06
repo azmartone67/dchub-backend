@@ -80,8 +80,8 @@ GDCI_METHODOLOGY = {
         "The GDCI is a proprietary composite benchmark measuring the health and trajectory "
         "of the global data center market. It synthesizes supply-side capacity metrics, "
         "demand signals, capital flows, energy infrastructure readiness, and market liquidity "
-        "into a single 0-100 score. Updated hourly from DC Hub's 20,000+ facility database "
-        "across 140+ countries."
+        "into a single 0-100 score. Updated hourly from DC Hub's 21,000+ facility database "
+        "across 170+ countries."
     ),
     "scale": {
         "range": "0-100",
@@ -146,8 +146,8 @@ GDCI_METHODOLOGY = {
     },
     "update_frequency": "Hourly (API), Daily (published)",
     "data_sources": [
-        "DC Hub facility database (20,000+ facilities, 140+ countries)",
-        "DC Hub M&A tracker ($324B+ tracked)",
+        "DC Hub facility database (21,000+ facilities, 170+ countries)",
+        "DC Hub M&A tracker (2,000+ tracked deals)",
         "DC Hub capacity pipeline analytics",
         "CBRE, JLL, Cushman & Wakefield market reports",
         "EIA, ENTSO-E, AEMO grid data",
@@ -898,9 +898,9 @@ def gdci_index():
                     "detail": "Under construction + announced through 2028"
                 },
                 {
-                    "signal": "M&A Volume (TTM)",
-                    "value": "$324B+",
-                    "detail": "Trailing 12-month tracked transaction value"
+                    "signal": "M&A Deals Tracked",
+                    "value": "2,000+",
+                    "detail": "Tracked DC M&A and capital transactions (2019-present)"
                 },
                 {
                     "signal": "Average Vacancy (Top 10)",
