@@ -279,16 +279,18 @@ _ELIGIBILITY_SQL = """
             OR u.source_plan IS DISTINCT FROM 'pro_annual_onetime')
        AND u.email IS NOT NULL
        AND u.email <> ''
-       -- Exclude founder's self-test accounts (one-shot campaign safety)
+       -- Exclude founder's self-test accounts (one-shot campaign safety).
+       -- Explicit list only — LIKE patterns caused 0-eligible in the last deploy.
        AND LOWER(u.email) NOT IN (
            'azmartone@gmail.com',
            'azmartone@icloud.com',
+           'azmartone+stripe1@gmail.com',
+           'azmartone+stripe2@gmail.com',
+           'azmartone+stripe3@gmail.com',
            'jonathan@dchub.cloud',
+           'jonathan@dchub.io',
            'jonathan.martone@arcadianinfra.com'
        )
-       -- Catch every gmail+alias variant used for Stripe testing
-       AND LOWER(u.email) NOT LIKE 'azmartone+%@gmail.com'
-       AND LOWER(u.email) NOT LIKE 'jonathan%@dchub.%'
        AND NOT EXISTS (
            SELECT 1 FROM campaign_log c
             WHERE c.campaign_name = %s
