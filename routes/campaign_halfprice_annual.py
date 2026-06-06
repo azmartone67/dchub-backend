@@ -279,6 +279,12 @@ _ELIGIBILITY_SQL = """
             OR u.source_plan IS DISTINCT FROM 'pro_annual_onetime')
        AND u.email IS NOT NULL
        AND u.email <> ''
+       -- Exclude founder's self-test accounts (one-shot campaign safety)
+       AND LOWER(u.email) NOT IN (
+           'azmartone@gmail.com',
+           'azmartone@icloud.com',
+           'jonathan@dchub.cloud'
+       )
        AND NOT EXISTS (
            SELECT 1 FROM campaign_log c
             WHERE c.campaign_name = %s
