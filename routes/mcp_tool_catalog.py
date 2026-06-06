@@ -38,9 +38,10 @@ _CATEGORIES = [
 # tier values: "free" (anonymous), "identified" (email-verified key), "pro"
 #
 # r59 (2026-05-29): rewritten to mirror the LIVE MCP server EXACTLY — the
-# tools registered in dchub-mcp-server/server.mjs via trackedTool() (30 as of
-# r62: added get_gas_index + get_grid_scoreboard). The
-# previous list had drifted into ~10 aspirational/REST-only entries
+# tools registered in dchub-mcp-server/server.mjs via trackedTool() (33 as of
+# 2026-06-03: get_gas_index + get_grid_scoreboard from r62, plus 3 decision-
+# layer products added 2026-06-03 — site_selection_canvas, grid_transition_radar,
+# deal_autopsy). The previous list had drifted into ~10 aspirational/REST-only entries
 # (recommend_market, simulate_buildout, get_geothermal_potential,
 # get_microgrid_viability, get_colocation_score, get_air_permitting,
 # get_grid_headroom, search_facilities_semantic, explain_market_move,
@@ -148,6 +149,19 @@ TOOLS = [
     ("get_backup_status",     "portfolio",      "free",
      "DC Hub platform health: database backup status, data freshness across 49 sources (green/yellow/red), agentic heartbeat score (0-100), MCP call volume, and DCPI recompute cadence — trust/uptime signals.",
      'get_backup_status()'),
+    # ── DC Hub DECISION-LAYER PRODUCTS (2026-06-03) ─────────────────────────
+    # Shipped in dchub-mcp-server/server.mjs the same day; SYNTHESIS layer is
+    # gated server-side by tier_gate (paid keys see verdict/thesis/autopsy
+    # narrative; free/anon agents see the ranked shortlist hook + citations).
+    ("site_selection_canvas", "decision",       "free",
+     "Guided end-to-end data-center site selection. Give a capacity target + geography + deadline and get a ranked shortlist of US markets (DCPI verdict, excess-power headroom, time-to-power, ISO) — and, with a paid key, the synthesis decision layer: the #1 pick, the why, a build sequence, and risk flags.",
+     'site_selection_canvas(capacity_mw=100, region="TX", max_months=24)'),
+    ("grid_transition_radar", "decision",       "free",
+     "Forward-looking 'where is the next hyperscale-friendly grid emerging' radar. Returns the US markets + ISOs with the strongest near-term emergence signal (BUILD verdict + excess-power headroom + short time-to-power), an ISO rollup, and a grid-headroom leaderboard. Paid key adds the transition thesis.",
+     'grid_transition_radar(max_months=24)'),
+    ("deal_autopsy",          "intelligence",   "free",
+     "Tracked data-center M&A / capex deal flow with the DCPI grid-reality verdict overlaid on each deal market — 'what is the real play?'. Returns recent deals (buyer, seller, value, market) + each market DCPI verdict and time-to-power; paid key adds the per-deal autopsy narrative.",
+     'deal_autopsy(limit=15)'),
 ]
 
 
@@ -182,7 +196,7 @@ def _build_manifest() -> dict:
 
 
 def flat_tools_for_card() -> list[dict]:
-    """Flat [{name, description}] list of the 28 live MCP tools.
+    """Flat [{name, description}] list of the live MCP tools (count = len(TOOLS)).
 
     Single source of truth for any other surface that needs to embed the
     tool inventory (e.g. the MCP server-card in ai_discovery_routes.py).
@@ -312,7 +326,7 @@ def well_known_ai_agents():
                 "discovery":    "https://dchub.cloud/.well-known/mcp-server.json",
                 "tools":        "https://dchub.cloud/.well-known/mcp-tools.json",
                 "html_catalog": "https://dchub.cloud/mcp/tools",
-                "tool_count":   28,
+                "tool_count":   len(TOOLS),
             },
             "rest": {
                 "openapi":  "https://dchub.cloud/openapi.json",
