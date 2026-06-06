@@ -4069,6 +4069,42 @@ def handle_well_known():
                     "intelligence": "/intelligence",
                     "transparency": "/transparency",
                 },
+                # 2026-06-05 (Phase HJ-3) — Agent Concierge surfaces.
+                # POST /api/v1/agent/solve with {"problem":"..."} to
+                # get the exact DC Hub tool-call recipe for any user
+                # question. Hot path is keyword-match against a
+                # 12-recipe cookbook; no LLM call required; <1ms.
+                # The /upgrade-receipt builds a structured paywall
+                # response with a magic-link the agent quotes verbatim
+                # to its human user — the conversion isn't agent →
+                # paid (no wallet); it's agent → human → paid with
+                # the agent as the sales channel.
+                "agent_concierge": {
+                    "landing":         "/agent",
+                    "solve":           "POST /api/v1/agent/solve",
+                    "cookbook":        "/api/v1/agent/cookbook",
+                    "recipe_lookup":   "/api/v1/agent/recipe/<id>",
+                    "upgrade_receipt": "POST /api/v1/agent/upgrade-receipt",
+                    "usage_hint": ("POST /api/v1/agent/solve with "
+                                   "{\"problem\":\"user question\"} to "
+                                   "get the exact tool-call recipe. "
+                                   "Hot path is <1ms; no LLM call."),
+                },
+                # 2026-06-05 (Phase HI) — Vertex AI / Gemini SDK
+                # surfaces. Distinct from agent_concierge: vertex_ai
+                # is the one-click extension import path for Google
+                # Cloud customers. agent_concierge is the universal-
+                # agent problem-first router.
+                "vertex_ai": {
+                    "landing":           "/vertex",
+                    "openapi_extension": "/openapi-vertex.yaml",
+                    "openapi_json":      "/openapi-vertex.json",
+                    "gemini_functions":  "/api/v1/gemini-functions.json",
+                    "health":            "/api/v1/vertex/health",
+                    "import_hint": ("Vertex AI Console → Extensions → "
+                                    "Create → Import from URL → paste "
+                                    "the openapi_extension URL."),
+                },
                 # r56 (2026-05-25): canonical recovery path for any
                 # AI agent that hits a 401/403/429. Every Flask 4xx
                 # response from /api/* also embeds _upgrade_hint
