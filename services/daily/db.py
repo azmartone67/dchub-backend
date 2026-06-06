@@ -56,9 +56,30 @@ def get_snapshot(date: datetime.date | None = None) -> dict | None:
         return row["payload"] if row else None
 
 
+_renders_theme_check_relaxed = False
+
+
+def _relax_renders_theme_check(c) -> None:
+    """Self-heal (2026-06-06): the original CHECK (theme IN ('a','b','c'))
+    predates theme 'd' (Arctic) and the 'gdci'/'grid' daily briefs, so every
+    render upload was failing renders_theme_check (~18/run). Theme is a
+    free-form, expanding label — drop the constraint rather than chase it.
+    Runs once per process; idempotent (IF EXISTS)."""
+    global _renders_theme_check_relaxed
+    if _renders_theme_check_relaxed:
+        return
+    try:
+        c.execute("ALTER TABLE daily.renders "
+                  "DROP CONSTRAINT IF EXISTS renders_theme_check")
+    except Exception:
+        pass
+    _renders_theme_check_relaxed = True
+
+
 def upsert_render(date: datetime.date, theme: str, size: str,
                   r2_key: str, nbytes: int) -> None:
     with conn() as c:
+        _relax_renders_theme_check(c)
         c.execute(
             """INSERT INTO daily.renders(date, theme, size, r2_key, bytes, generated_at)
                VALUES (%s, %s, %s, %s, %s, now())

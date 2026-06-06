@@ -16,7 +16,7 @@ CREATE INDEX IF NOT EXISTS snapshots_generated_idx
 
 CREATE TABLE IF NOT EXISTS daily.renders (
     date          DATE NOT NULL,
-    theme         TEXT NOT NULL CHECK (theme IN ('a', 'b', 'c')),
+    theme         TEXT NOT NULL,   -- free-form/expanding label (a,b,c,d,gdci,grid,…); no CHECK
     size          TEXT NOT NULL CHECK (size  IN ('portrait', 'square', 'story')),
     r2_key        TEXT NOT NULL,
     bytes         INTEGER NOT NULL,
