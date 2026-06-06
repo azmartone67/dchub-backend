@@ -126,7 +126,27 @@ def _fetch_mirror_hypotheses() -> list:
         return []
 
 
-def _enact_hypothesis(cur, h: dict) -> dict:
+def _live_findings_columns(cur) -> set:
+    """Query the ACTUAL columns on the live brain_findings table.
+
+    Stop guessing — the in-repo DDL (brain_consistency_radar._DDL) does
+    NOT match the live table (the live one predates it; CREATE TABLE IF
+    NOT EXISTS never altered it). First enact attempt died on
+    finding_kind; second on seen_count. Introspect once, build the
+    INSERT from the intersection of {what we want} ∩ {what exists}.
+    """
+    try:
+        cur.execute("""
+            SELECT column_name
+              FROM information_schema.columns
+             WHERE table_name = 'brain_findings'
+        """)
+        return {r[0] for r in cur.fetchall()}
+    except Exception:
+        return set()
+
+
+def _enact_hypothesis(cur, h: dict, live_cols: set = None) -> dict:
     """Convert one Mirror hypothesis into a concrete autopilot action.
 
     Returns {action, detail} describing what was done.
@@ -150,33 +170,48 @@ def _enact_hypothesis(cur, h: dict) -> dict:
     severity = "high" if hid in ("structural-cluster",
                                   "backlog-vs-proposals-gap") else "medium"
 
-    # 2026-06-06 fix: brain_findings schema is (issue, url, count, detail,
-    # first_seen, last_seen, seen_count) with UNIQUE(issue, url) — NOT the
-    # finding_kind/subject/evidence/severity/source columns I assumed
-    # (mcp_registry_watch.py has the same wrong-column bug, silently
-    # swallowed). Use the canonical upsert from
-    # brain_consistency_radar._persist_findings_to_db so re-enacting the
-    # same hypothesis bumps seen_count instead of erroring.
+    # 2026-06-06: ADAPTIVE insert. The live brain_findings schema is
+    # whatever it is (drifted from the repo DDL). Build the column list
+    # from what actually exists. Candidate values, applied only if the
+    # column is present:
     issue = f"mirror_enacted:{hid}"
     url = f"dchub://brain/mirror/{hid}"
     detail = (f"[{severity}] Mirror hypothesis enacted. "
               f"Q: {question} | Next: {next_step}")
+    candidates = {
+        "issue":      issue,
+        "url":        url,
+        "count":      1,
+        "detail":     detail,
+        # extra column names other writers/DDLs have used, in case the
+        # live table has them instead of the canonical set:
+        "finding":    issue,
+        "description": detail,
+        "kind":       f"mirror_enacted:{hid}",
+        "severity":   severity,
+        "source":     "brain_v3_enact",
+    }
+    if live_cols is None:
+        live_cols = _live_findings_columns(cur)
+    use = {c: v for c, v in candidates.items() if c in live_cols}
+    if "issue" not in use and "finding" not in use:
+        return {"hypothesis": hid, "action": "failed",
+                "error": f"no writable text column in {sorted(live_cols)}"}
+    cols = list(use.keys())
+    placeholders = ", ".join(["%s"] * len(cols))
+    collist = ", ".join(cols)
+    # Plain INSERT (no ON CONFLICT — we don't know which unique
+    # constraint exists on the live table; a duplicate just errors
+    # into the savepoint rollback, which is harmless).
+    sql = f"INSERT INTO brain_findings ({collist}) VALUES ({placeholders})"
     try:
-        cur.execute("""
-            INSERT INTO brain_findings
-                (issue, url, count, detail, first_seen, last_seen, seen_count)
-            VALUES (%s, %s, %s, %s, NOW(), NOW(), 1)
-            ON CONFLICT (issue, url) DO UPDATE
-               SET count      = EXCLUDED.count,
-                   detail     = EXCLUDED.detail,
-                   last_seen  = NOW(),
-                   seen_count = brain_findings.seen_count + 1
-        """, (issue, url, 1, detail))
+        cur.execute(sql, [use[c] for c in cols])
         return {"hypothesis": hid, "action": "filed_finding",
-                "severity": severity, "issue": issue}
+                "severity": severity, "issue": issue,
+                "columns_used": cols}
     except Exception as e:
         return {"hypothesis": hid, "action": "failed",
-                "error": str(e)[:120]}
+                "error": str(e)[:140]}
 
 
 @brain_v3_bp.route("/api/v1/admin/brain/v3/enact", methods=["POST"])
@@ -206,6 +241,7 @@ def v3_enact():
         })
 
     actions = []
+    live_cols_seen = []
     try:
         import psycopg2
         _du = (os.environ.get("NEON_DATABASE_URL")
@@ -229,12 +265,15 @@ def v3_enact():
                     )
                 """)
                 conn.commit()
+                # Introspect the LIVE schema ONCE (stop guessing).
+                live_cols = _live_findings_columns(cur)
+                live_cols_seen = sorted(live_cols)
                 # Savepoint per finding so one bad row can't abort the
                 # rest of the batch (the transaction-abort cascade that
                 # bit the first enact attempt).
                 for h in hypotheses:
                     cur.execute("SAVEPOINT enact_sp")
-                    a = _enact_hypothesis(cur, h)
+                    a = _enact_hypothesis(cur, h, live_cols=live_cols)
                     if a.get("action") == "failed":
                         cur.execute("ROLLBACK TO SAVEPOINT enact_sp")
                     else:
@@ -251,7 +290,8 @@ def v3_enact():
         "hypotheses_in": len(hypotheses),
         "enacted":       filed,
         "actions":       actions,
-        "note": ("Mirror hypotheses are now brain_findings rows. The next "
-                 "autopilot + layer5 cron cycle will pick them up. "
-                 "Re-run after the cycle to see if the backlog drops."),
+        "live_brain_findings_columns": live_cols_seen,
+        "note": ("Mirror hypotheses are now brain_findings rows (written "
+                 "to the columns that actually exist on the live table). "
+                 "The next autopilot + layer5 cron cycle will pick them up."),
     })
