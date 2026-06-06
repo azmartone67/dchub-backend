@@ -154,6 +154,76 @@ def openapi_live():
                 "responses": {"200": {"description": "OK"}}}},
             "/mcp": {"post": {"summary": "MCP streamable-http endpoint (24 tools)",
                 "responses": {"200": {"description": "OK"}}}},
+            "/api/v1/market-brief/{slug}": {"get": {
+                "summary": "Single Market Brief — full 9-section JSON",
+                "description": ("Live Market Brief for one slug "
+                                "(northern-virginia, dallas, phoenix, …). "
+                                "Anon/free get hero + KPIs + outlook teaser; "
+                                "PRO+ unlocks Power & Grid, Pipeline, Operators, "
+                                "M&A, Comps, Risk."),
+                "parameters": [
+                    {"name": "slug", "in": "path", "required": True,
+                     "schema": {"type": "string"},
+                     "example": "northern-virginia"},
+                ],
+                "responses": {"200": {"description": "Brief JSON"},
+                              "404": {"description": "market_not_found"}}}},
+            "/api/v1/market-brief/all": {"get": {
+                "summary": "Bulk Market Briefs — every brief in one call (BI integration)",
+                "description": ("Returns all briefs the caller's tier is "
+                                "entitled to (anon/free=5 markets, PRO+=15, "
+                                "ENTERPRISE=all ~232). Streamed when >50 briefs. "
+                                "Paginated via ?limit & ?offset (default 50, "
+                                "max 500 PRO+). 6h edge cache. Designed for "
+                                "Tableau, Power BI, Hex, Snowflake."),
+                "parameters": [
+                    {"name": "limit", "in": "query",
+                     "schema": {"type": "integer", "default": 50, "maximum": 500},
+                     "description": "Page size. Default 50."},
+                    {"name": "offset", "in": "query",
+                     "schema": {"type": "integer", "default": 0},
+                     "description": "Page offset."},
+                ],
+                "responses": {
+                    "200": {"description": "Bulk JSON of briefs"},
+                    "429": {"description": "Daily cap exceeded (anon=10/d, free=50/d)"},
+                }}},
+            "/api/v1/market-brief/diff": {"get": {
+                "summary": "Incremental Market Briefs — only briefs changed since `since`",
+                "description": ("Returns only briefs whose computed_at is "
+                                "after the supplied timestamp. Use case: BI "
+                                "tools that refresh every 6h and want to "
+                                "skip unchanged briefs."),
+                "parameters": [
+                    {"name": "since", "in": "query", "required": False,
+                     "schema": {"type": "string", "format": "date-time"},
+                     "example": "2026-06-06T00:00:00Z",
+                     "description": ("ISO 8601 timestamp. If missing/invalid, "
+                                     "returns everything (same as /all).")},
+                    {"name": "limit", "in": "query",
+                     "schema": {"type": "integer", "default": 50, "maximum": 500}},
+                    {"name": "offset", "in": "query",
+                     "schema": {"type": "integer", "default": 0}},
+                ],
+                "responses": {"200": {"description": "Bulk JSON of changed briefs"},
+                              "429": {"description": "Daily cap exceeded"}}}},
+            "/api/v1/market-brief/all.csv": {"get": {
+                "summary": "Bulk Market Briefs as CSV — Excel/Tableau download",
+                "description": ("Same data + tier gating as /all but emitted "
+                                "as CSV with a canonical column order "
+                                "(market_slug, market_name, verdict, "
+                                "composite_score, excess_power, …). "
+                                "Streamed when >50 markets. "
+                                "Content-Disposition: attachment."),
+                "parameters": [
+                    {"name": "limit", "in": "query",
+                     "schema": {"type": "integer", "default": 50, "maximum": 500}},
+                    {"name": "offset", "in": "query",
+                     "schema": {"type": "integer", "default": 0}},
+                ],
+                "responses": {"200": {"description": "text/csv",
+                                       "content": {"text/csv": {}}},
+                              "429": {"description": "Daily cap exceeded"}}}},
         }
     }
     return jsonify(spec), 200, {"Cache-Control": "public, max-age=300, s-maxage=600"}

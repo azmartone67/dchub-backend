@@ -353,6 +353,7 @@ def _call_claude(prompt: str, system: str) -> tuple[str | None, str | None]:
         _headers = {
             "Content-Type": "application/json",
             "X-API-Key": ANTHROPIC_API_KEY,
+            "User-Agent": "dchub-brain/1.0",
             "Anthropic-Version": "2023-06-01",
         }
         try:

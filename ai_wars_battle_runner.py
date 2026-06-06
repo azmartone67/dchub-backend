@@ -105,7 +105,8 @@ def call_platform_api(platform_key, prompt, timeout=45):
         return {"response_text": "", "had_real_response": False, "api_calls": 1, "used_mcp": False, "elapsed_seconds": time.time() - start, "error": str(e)}
 
 def _call_anthropic(config, api_key, prompt, timeout):
-    r = requests.post(config["url"], json={"model": config["model"], "max_tokens": 2000, "messages": [{"role": "user", "content": prompt}]}, headers={"x-api-key": api_key, "anthropic-version": "2023-06-01", "Content-Type": "application/json"}, timeout=timeout)
+    r = requests.post(config["url"], json={"model": config["model"], "max_tokens": 2000, "messages": [{"role": "user", "content": prompt}]}, headers={"x-api-key": api_key, "User-Agent": "dchub-brain/1.0",
+ "anthropic-version": "2023-06-01", "Content-Type": "application/json"}, timeout=timeout)
     r.raise_for_status()
     data = r.json()
     return " ".join(b.get("text", "") for b in data.get("content", []) if b.get("type") == "text").strip()

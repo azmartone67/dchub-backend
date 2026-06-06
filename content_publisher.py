@@ -144,6 +144,25 @@ def init_content_tables():
     except Exception as _vse:
         logger.warning("market_verdict_shifts table init skipped: %s", _vse)
 
+    # widget_embeds table — embeddable Market Brief widget (2026-06-06).
+    # Defensive ALTER pattern; idempotent CREATE + ADD COLUMN IF NOT EXISTS.
+    try:
+        from routes.market_brief import init_widget_embed_tables as _iwet
+        _iwet()
+    except Exception as _wee:
+        logger.warning("widget_embeds table init skipped: %s", _wee)
+
+    # Watchlist tables (user_watchlists + watchlist_alerts_sent +
+    # browser_push_subscriptions) — same boot-init pattern. 2026-06-06:
+    # Real-time Watchlist + Verdict-Shift Alerts. Without this hook the
+    # first /api/v1/watchlist/add call would have to lazily create the
+    # tables on the request path; this is the clean path.
+    try:
+        from routes.watchlist import init_watchlist_tables as _iwlt
+        _iwlt()
+    except Exception as _wle:
+        logger.warning("watchlist table init skipped: %s", _wle)
+
 def _media_block_category(reason: str) -> str:
     r = (reason or "").lower()
     if "disclaimer" in r:                       return "ai_disclaimer_as_validation"

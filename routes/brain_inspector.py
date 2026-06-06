@@ -614,6 +614,7 @@ def _call_opus(system: str, user: str, model: str,
         data=payload, method="POST",
         headers={
             "x-api-key": key,
+            "User-Agent": "dchub-brain/1.0",
             "anthropic-version": "2023-06-01",
             "content-type": "application/json",
         },

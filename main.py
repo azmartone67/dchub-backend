@@ -26961,6 +26961,47 @@ try:
 except Exception as _mb_e:
     print(f"[main] market_brief_bp register failed: {_mb_e}", flush=True)
 
+# Hyperscaler Brief (2026-06-06): per-hyperscaler full-pipeline view at
+# /hyperscalers/<slug>/brief — built for M&A bankers, PE deal teams, and
+# hedge funds tracking AWS / Azure / Google / Meta / Apple / Oracle /
+# ByteDance / Tencent / Alibaba / SoftBank. 9 sections, FREE teaser
+# (Hero + Pipeline + Outlook teaser) + PRO unlock for PPAs / M&A /
+# Water / ISO / Time-to-Power / Capital Velocity. Wells Fargo charges
+# $100K+/yr for similar coverage; DC Hub PRO is $499/mo.
+try:
+    from routes.hyperscaler_brief import hyperscaler_brief_bp
+    app.register_blueprint(hyperscaler_brief_bp)
+    print("[main] hyperscaler_brief_bp registered: /hyperscalers/<slug>/brief + /api/v1/hyperscaler-brief/<slug>", flush=True)
+except Exception as _hb_e:
+    print(f"[main] hyperscaler_brief_bp register failed: {_hb_e}", flush=True)
+
+# Per-state Market Brief (2026-06-06): aggregate every DCPI market in a
+# state into ONE shareable brief. Captures broad-intent SEO queries like
+# "texas data center market" — state-level aggregation nobody else
+# publishes. 8 seed states (TX, CA, VA, GA, OH, OR, IL, AZ) hand-QA'd
+# and pre-warmed by state_brief_warm cron (slot 6/18).
+try:
+    from routes.state_brief import state_brief_bp
+    app.register_blueprint(state_brief_bp)
+    print("[main] state_brief_bp registered: /states/<state>/brief + /api/v1/state-brief/<state>", flush=True)
+except Exception as _sb_e:
+    print(f"[main] state_brief_bp register failed: {_sb_e}", flush=True)
+
+# Operator Brief v1 (2026-06-06): mirror of Market Brief but for OPERATORS.
+# Aligned, QTS, Digital Realty, Vantage, AirTrunk — investors + brokers
+# comparing operators want a single shareable URL. 9 sections, FREE teaser
+# (Hero + Footprint + Outlook teaser) + PRO unlock for Market Concentration,
+# Pipeline, Lease Velocity, Capital, M&A, Competitive. Routes:
+# /operators/<slug>/brief + /api/v1/operator-brief/<slug>. Pre-warmed by
+# operator_brief_warm cron (slot 7/19). /operators/* is already in
+# dchub-frontend/_routes.json include (used by the seo operator pages).
+try:
+    from routes.operator_brief import operator_brief_bp
+    app.register_blueprint(operator_brief_bp)
+    print("[main] operator_brief_bp registered: /operators/<slug>/brief + /api/v1/operator-brief/<slug>", flush=True)
+except Exception as _ob_e:
+    print(f"[main] operator_brief_bp register failed: {_ob_e}", flush=True)
+
 # DCPI Verdict-Shift auto-press (2026-06-06): autonomous detector that
 # enqueues a LinkedIn post when a market's DCPI verdict SHIFTS — e.g.
 # Phoenix CAUTION → AVOID. Every shift = inbound traffic to the new
@@ -26972,6 +27013,40 @@ try:
     print("[main] market_verdict_shifts_bp registered: /api/v1/admin/verdict-shifts/scan + /api/v1/verdict-shifts/recent", flush=True)
 except Exception as _mvs_e:
     print(f"[main] market_verdict_shifts_bp register failed: {_mvs_e}", flush=True)
+
+# Real-time Watchlist + Verdict-Shift Alerts (2026-06-06): users pick
+# DCPI markets to watch. When the DCPI verdict SHIFTS on a watched
+# market, we alert via email (Resend) + optional browser push (VAPID/
+# pywebpush). FREE = weekly digest (Monday 14:00 UTC); PRO+ = realtime
+# (twice-daily cron @ 10/22 UTC). Email-shape validated + 10/IP/24h
+# rate-limited. Browser push degrades to no-op if VAPID env vars are
+# missing — the subscribe endpoint cleanly 503s so the UI can hide
+# the button.
+try:
+    from routes.watchlist import watchlist_bp
+    app.register_blueprint(watchlist_bp)
+    print("[main] watchlist_bp registered: /api/v1/watchlist/{add,remove,list,push/subscribe} + /watchlist", flush=True)
+except Exception as _wlb_e:
+    print(f"[main] watchlist_bp register failed: {_wlb_e}", flush=True)
+
+# PRO Pricing A/B experiment (2026-06-06): test $499/mo vs $99/mo on
+# new visitors. Deterministic 50/50 cohort split via session-hash;
+# sticky cookie carries arm across visits. Existing PRO subscribers
+# are grandfathered to Arm A (never see the $99 anchor). Fail-safes:
+# (1) STRIPE_PRICE_PRO_B unset → A/B inactive; (2) PRICING_AB_DISABLE=1
+# kill switch → everyone gets Arm A. Endpoints: /api/v1/pricing/ab-cohort
+# (public), /api/v1/pricing/ab-event (public event logger),
+# /api/v1/admin/pricing/ab-stats (admin conv + MRR per arm).
+try:
+    from routes.pricing_ab import pricing_ab_bp, init_pricing_ab_tables
+    app.register_blueprint(pricing_ab_bp)
+    try:
+        init_pricing_ab_tables()
+    except Exception as _pab_init_e:
+        print(f"[main] pricing_ab table init skipped: {_pab_init_e}", flush=True)
+    print("[main] pricing_ab_bp registered: /api/v1/pricing/ab-cohort + /api/v1/pricing/ab-event + /api/v1/admin/pricing/ab-stats", flush=True)
+except Exception as _pab_e:
+    print(f"[main] pricing_ab_bp register failed: {_pab_e}", flush=True)
 
 # Autonomous MCP-presence management (2026-06-05): twice-daily crawl of
 # the ~15 MCP listing sites DC Hub appears on (Smithery, MCPHive,

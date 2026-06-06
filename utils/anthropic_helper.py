@@ -85,8 +85,17 @@ def aig_metadata_headers(component: str, *, cache_ttl: int | None = None) -> dic
     if not gateway_active():
         return {}
     import json as _json
-    headers = {"cf-aig-metadata": _json.dumps(
-        {"component": component, "app": "dchub"}, separators=(",", ":"))}
+    # IMPORTANT: Cloudflare bot-management on gateway.ai.cloudflare.com returns
+    # HTTP 403 error-code 1010 for requests whose User-Agent is the Python
+    # stdlib default ("Python-urllib/3.x"). urllib-based raw callers MUST send a
+    # custom UA or every gateway call fails. (requests' default "python-requests/x"
+    # passes, so requests.post callers are unaffected.) Set one here so any call
+    # site merging these headers is gateway-safe.
+    headers = {
+        "User-Agent": "dchub-brain/1.0",
+        "cf-aig-metadata": _json.dumps(
+            {"component": component, "app": "dchub"}, separators=(",", ":")),
+    }
     if cache_ttl and cache_ttl > 0:
         headers["cf-aig-cache-ttl"] = str(int(cache_ttl))
     return headers

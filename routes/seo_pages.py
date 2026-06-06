@@ -840,6 +840,39 @@ def sitemap_landings():
         'columbus', 'salt-lake-city', 'charlotte', 'denver', 'madison',
     ):
         urls.append(f'  <url><loc>https://dchub.cloud/markets/{_mb_slug}/brief</loc><changefreq>daily</changefreq><priority>0.9</priority></url>')
+    # State Brief v1 (2026-06-06): 8 seed states (state-level roll-ups
+    # capture broad-intent "texas data center market" SEO queries that
+    # no single market_brief URL captures). Kept in lock-step with
+    # routes.state_brief.SEED_STATES.
+    for _sb_slug in (
+        'texas', 'california', 'virginia', 'georgia',
+        'ohio', 'oregon', 'illinois', 'arizona',
+    ):
+        urls.append(f'  <url><loc>https://dchub.cloud/states/{_sb_slug}/brief</loc><changefreq>daily</changefreq><priority>0.9</priority></url>')
+    # Operator Brief v1 (2026-06-06): 10 seed operators. Captures
+    # investor/broker-intent SEO ("Aligned vs QTS data center MW",
+    # "AirTrunk pipeline", etc.). Beyond these the surface auto-renders
+    # for any tracked operator, but only the seed ten are hand-QA'd +
+    # pre-warmed. Kept in lock-step with routes.operator_brief.SEED_OPERATORS.
+    for _ob_slug in (
+        'aligned', 'qts', 'digital-realty', 'equinix', 'vantage',
+        'cyrusone', 'cologix', 'core-scientific', 'airtrunk',
+        'iron-mountain',
+    ):
+        urls.append(f'  <url><loc>https://dchub.cloud/operators/{_ob_slug}/brief</loc><changefreq>daily</changefreq><priority>0.9</priority></url>')
+    # Hyperscaler Brief v1 (2026-06-06): 10 seed hyperscalers (AWS, Azure,
+    # Google, Meta, Apple, Oracle, ByteDance, Tencent, Alibaba, SoftBank).
+    # Per-hyperscaler full-pipeline view: MW, capex, M&A, PPAs, ISO
+    # concentration, water, capital velocity — built for M&A bankers, PE
+    # deal teams, and hedge funds. Beyond these the surface auto-renders
+    # for any slug in HYPERSCALER_ALIASES, but only the seed ten are
+    # hand-QA'd + pre-warmed. Kept in lock-step with
+    # routes.hyperscaler_brief.SEED_HYPERSCALERS.
+    for _hs_slug in (
+        'aws', 'azure', 'google-cloud', 'meta', 'apple',
+        'oracle', 'tiktok-bytedance', 'tencent', 'alibaba', 'softbank',
+    ):
+        urls.append(f'  <url><loc>https://dchub.cloud/hyperscalers/{_hs_slug}/brief</loc><changefreq>daily</changefreq><priority>0.9</priority></url>')
     items = '\n'.join(urls)
     xml = f'<?xml version="1.0" encoding="UTF-8"?>\n<urlset xmlns="http://www.sitemaps.org/schemas/sitemap/0.9">\n{items}\n</urlset>'
     return Response(xml, mimetype='application/xml',

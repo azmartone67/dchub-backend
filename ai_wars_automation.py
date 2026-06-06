@@ -547,6 +547,7 @@ def _call_anthropic(prompt, max_tokens=1000):
     r = requests.post('https://gateway.ai.cloudflare.com/v1/4bb33ec40ef02f9f4b41dc97668d5a52/dchub/anthropic/v1/messages',
         headers={
             'x-api-key': key,
+            "User-Agent": "dchub-brain/1.0",
             'anthropic-version': '2023-06-01',
             'Content-Type': 'application/json',
         },
@@ -775,6 +776,7 @@ def _call_mcp_native(platform_key, prompt, max_tokens=1000):
     r = requests.post('https://gateway.ai.cloudflare.com/v1/4bb33ec40ef02f9f4b41dc97668d5a52/dchub/anthropic/v1/messages',
         headers={
             'x-api-key': key,
+            "User-Agent": "dchub-brain/1.0",
             'anthropic-version': '2023-06-01',
             'Content-Type': 'application/json',
         },

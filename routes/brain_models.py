@@ -257,6 +257,7 @@ def probe_model_reachability(api_key: str,
             headers={
                 "Content-Type": "application/json",
                 "X-API-Key": api_key,
+                "User-Agent": "dchub-brain/1.0",
                 "Anthropic-Version": "2023-06-01",
             },
         )

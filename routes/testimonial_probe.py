@@ -201,6 +201,7 @@ def _probe_claude() -> dict:
             headers={
                 "Content-Type": "application/json",
                 "x-api-key": key,
+                "User-Agent": "dchub-brain/1.0",
                 "anthropic-version": "2023-06-01",
             }, method="POST")
         with urllib.request.urlopen(req, timeout=30) as resp:

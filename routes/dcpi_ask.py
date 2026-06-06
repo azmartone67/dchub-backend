@@ -69,6 +69,7 @@ def _call_anthropic(question: str, context: str) -> tuple[str, list]:
             anthropic_messages_url(),
             headers={
                 "x-api-key": api_key,
+                "User-Agent": "dchub-brain/1.0",
                 "anthropic-version": "2023-06-01",
                 "Content-Type": "application/json",
             },

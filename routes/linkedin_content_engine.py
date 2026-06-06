@@ -382,6 +382,7 @@ def _compose_with_claude(story_type: str, data: dict, landing: str) -> str | Non
         headers={
             "Content-Type": "application/json",
             "X-API-Key": ANTHROPIC_API_KEY,
+            "User-Agent": "dchub-brain/1.0",
             "Anthropic-Version": "2023-06-01",
         },
     )

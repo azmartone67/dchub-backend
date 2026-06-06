@@ -294,6 +294,7 @@ def _call_claude_with_tools(question):
                 },
                 headers={
                     "x-api-key": ANTHROPIC_API_KEY,
+                    "User-Agent": "dchub-brain/1.0",
                     "anthropic-version": "2023-06-01",
                     "content-type": "application/json",
                 },

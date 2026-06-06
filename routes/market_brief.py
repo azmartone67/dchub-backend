@@ -26,12 +26,21 @@ market_power_scores row.
 
 from __future__ import annotations
 
+import csv
 import datetime
+import hashlib
+import hmac
+import io
 import json
+import logging
 import os
 import re
+import time
+from urllib.parse import urlparse
 from flask import (Blueprint, Response, jsonify, render_template, request,
-                   url_for)
+                   stream_with_context, url_for)
+
+logger = logging.getLogger(__name__)
 
 market_brief_bp = Blueprint("market_brief", __name__)
 
@@ -124,6 +133,207 @@ MARKET_ALIAS: dict[str, str] = {
 
 
 _PRO_RANK = 4  # tier_registry rank for pro/founding
+
+
+# ─────────────────────────────────────────────────────────────────────
+# Embeddable Market Brief Widget (2026-06-06)
+# -----------------------------------------------------------------
+# Brokers / REITs embed the Market Brief on their own marketing sites
+# via <iframe src="https://dchub.cloud/markets/<slug>/brief?embed=1">.
+#
+# Three surfaces:
+#   1. GET /markets/<slug>/brief?embed=1  — the iframe payload
+#      (strips nav/footer/share/upgrade strip; adds a non-removable
+#      "Powered by DC Hub" attribution bar at the bottom for free
+#      tier; X-Frame-Options ALLOWALL + CSP frame-ancestors *).
+#   2. GET /markets/<slug>/brief/embed     — the embed-code generator
+#      page (iframe code + copy button + live preview + PRO+ toggle).
+#   3. GET /api/v1/admin/widget-embeds/stats?days=30 — admin diagnostic
+#      and GET /api/v1/widget-embeds/recent — public press-release feed.
+#
+# Watermark removal for PRO+ uses an HMAC-signed pro_token:
+#   pro_token = HMAC-SHA256(DCHUB_SESSION_SECRET, "embed|<slug>|<ts>")
+# truncated to 24 hex chars (96 bits). Valid for 365 days from the ts.
+# A small "DC Hub" corner attribution remains for legal/SEO even when
+# the bar is stripped.
+#
+# Attribution is logged to widget_embeds via the upsert below on every
+# embed render. Best-effort (one bad write never breaks an iframe).
+# ─────────────────────────────────────────────────────────────────────
+
+# Same secret-resolution chain as routes/session_cookie.py so a single
+# DCHUB_SESSION_SECRET env var rotates everything.
+_WIDGET_SIGN_SECRET = (
+    os.environ.get("DCHUB_SESSION_SECRET")
+    or os.environ.get("DCHUB_ADMIN_KEY")
+    or "dchub-default-rotate-via-DCHUB_SESSION_SECRET-env"
+).encode()
+
+# Pro tokens valid for 1 year (brokers shouldn't have to refresh embed
+# codes mid-campaign). Verification still re-checks the caller's tier
+# at render time, so a token issued at PRO+ silently downgrades back
+# to watermark if the underlying account churns.
+_PRO_TOKEN_MAX_AGE_S = 365 * 24 * 3600
+
+
+def _sign_pro_token(slug: str, issued_ts: int | None = None) -> str:
+    """Return a `<ts>.<sig>` pro_token bound to `slug`. `ts` is the issue
+    epoch (defaults to now); `sig` is HMAC-SHA256(secret, "embed|<slug>|<ts>")
+    truncated to 24 hex chars."""
+    ts = int(issued_ts if issued_ts is not None else time.time())
+    payload = f"embed|{slug}|{ts}".encode()
+    sig = hmac.new(_WIDGET_SIGN_SECRET, payload, hashlib.sha256).hexdigest()[:24]
+    return f"{ts}.{sig}"
+
+
+def _verify_pro_token(token: str | None, slug: str) -> bool:
+    """True iff the pro_token is well-formed, within MAX_AGE, and the
+    HMAC matches the (slug, ts) pair. NOTE: tier check is the CALLER's
+    responsibility — this only validates the token itself."""
+    if not token or "." not in token:
+        return False
+    try:
+        ts_str, sig = token.split(".", 1)
+        issued = int(ts_str)
+    except (ValueError, AttributeError):
+        return False
+    if time.time() - issued > _PRO_TOKEN_MAX_AGE_S or issued < 0:
+        return False
+    payload = f"embed|{slug}|{issued}".encode()
+    expected = hmac.new(_WIDGET_SIGN_SECRET, payload, hashlib.sha256).hexdigest()[:24]
+    return hmac.compare_digest(sig, expected)
+
+
+def _embed_host_from_referer(referer: str | None) -> tuple[str, str]:
+    """Return (host, full_url) parsed from the Referer header. Empty
+    strings if the header is missing/malformed. Strips port + lowercases
+    host."""
+    if not referer:
+        return ("", "")
+    try:
+        p = urlparse(referer)
+        host = (p.hostname or "").lower()
+        # Drop default ports; keep odd ports as part of host for diagnostics.
+        full = referer[:512]  # cap for the DB column
+        return (host, full)
+    except Exception:
+        return ("", "")
+
+
+def init_widget_embed_tables():
+    """Defensive ALTER pattern (mirrors init_content_tables + feedback_forum
+    + market_verdict_shifts). Creates widget_embeds and idempotently adds
+    any missing columns. Safe on both fresh-boot and existing prod tables.
+
+    Schema (UNIQUE on (market_slug, embed_host) — one row per market×host
+    pair, view_count++ on each render):
+
+      id              SERIAL PRIMARY KEY
+      market_slug     TEXT NOT NULL
+      embed_host      TEXT NOT NULL  -- parsed from Referer; '' if unknown
+      embed_url       TEXT           -- full Referer URL, capped 512 chars
+      embed_tier      TEXT           -- FREE / PRO+ / ANON
+      first_seen_at   TIMESTAMPTZ NOT NULL DEFAULT NOW()
+      last_seen_at    TIMESTAMPTZ NOT NULL DEFAULT NOW()
+      view_count      INTEGER NOT NULL DEFAULT 0
+    """
+    conn = _conn()
+    if conn is None:
+        logger.warning("init_widget_embed_tables skipped: no DATABASE_URL")
+        return
+    try:
+        with conn.cursor() as cur:
+            try:
+                cur.execute("""
+                    CREATE TABLE IF NOT EXISTS widget_embeds (
+                        id              SERIAL PRIMARY KEY,
+                        market_slug     TEXT NOT NULL,
+                        embed_host      TEXT NOT NULL DEFAULT '',
+                        embed_url       TEXT,
+                        embed_tier      TEXT,
+                        first_seen_at   TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+                        last_seen_at    TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+                        view_count      INTEGER NOT NULL DEFAULT 0
+                    )
+                """)
+                conn.commit()
+            except Exception as e:
+                try: conn.rollback()
+                except Exception: pass
+                logger.warning("widget_embeds CREATE skipped: %s", e)
+            for col_def in [
+                "embed_host TEXT NOT NULL DEFAULT ''",
+                "embed_url TEXT",
+                "embed_tier TEXT",
+                "first_seen_at TIMESTAMPTZ NOT NULL DEFAULT NOW()",
+                "last_seen_at TIMESTAMPTZ NOT NULL DEFAULT NOW()",
+                "view_count INTEGER NOT NULL DEFAULT 0",
+            ]:
+                col = col_def.split()[0]
+                try:
+                    cur.execute(
+                        f"ALTER TABLE widget_embeds ADD COLUMN IF NOT EXISTS {col_def}")
+                    conn.commit()
+                except Exception:
+                    try: conn.rollback()
+                    except Exception: pass
+            # UNIQUE index on (market_slug, embed_host) so the upsert below
+            # uses ON CONFLICT (not partial — no WHERE — to avoid the PG
+            # partial-index ON CONFLICT trap memorized in the codebase).
+            try:
+                cur.execute("""
+                    CREATE UNIQUE INDEX IF NOT EXISTS widget_embeds_uq
+                       ON widget_embeds (market_slug, embed_host)
+                """)
+                conn.commit()
+            except Exception:
+                try: conn.rollback()
+                except Exception: pass
+            # Sortable index for the public + admin stats endpoints.
+            try:
+                cur.execute("""
+                    CREATE INDEX IF NOT EXISTS widget_embeds_last_seen_idx
+                       ON widget_embeds (last_seen_at DESC)
+                """)
+                conn.commit()
+            except Exception:
+                try: conn.rollback()
+                except Exception: pass
+    finally:
+        try: conn.close()
+        except Exception: pass
+
+
+def _log_widget_embed(slug: str, host: str, url: str, tier: str) -> None:
+    """Upsert one row into widget_embeds. Best-effort — failures are
+    swallowed so a missing column never breaks an iframe render."""
+    if not slug:
+        return
+    conn = _conn()
+    if conn is None:
+        return
+    try:
+        with conn.cursor() as cur:
+            try:
+                cur.execute("""
+                    INSERT INTO widget_embeds
+                        (market_slug, embed_host, embed_url, embed_tier, view_count)
+                    VALUES (%s, %s, %s, %s, 1)
+                    ON CONFLICT (market_slug, embed_host) DO UPDATE
+                        SET last_seen_at = NOW(),
+                            view_count   = widget_embeds.view_count + 1,
+                            embed_url    = COALESCE(EXCLUDED.embed_url, widget_embeds.embed_url),
+                            embed_tier   = COALESCE(EXCLUDED.embed_tier, widget_embeds.embed_tier)
+                """, (slug, host or "", url or None, tier or None))
+                conn.commit()
+            except Exception:
+                try: conn.rollback()
+                except Exception: pass
+    except Exception:
+        pass
+    finally:
+        try: conn.close()
+        except Exception: pass
 
 
 # ─────────────────────────────────────────────────────────────────────
@@ -1077,6 +1287,7 @@ tbody tr:last-child td{{border-bottom:none}}
   <a href="{share_x}" target="_blank" rel="noopener">Share on X</a>
   <a href="{share_li}" target="_blank" rel="noopener">Share on LinkedIn</a>
   <a href="#" class="copy-btn" onclick="navigator.clipboard.writeText('{page_url}');this.textContent='Copied!';return false;">Copy URL</a>
+  <a href="/markets/{slug}/brief/embed" rel="nofollow">Embed this brief</a>
   {pdf_btn_html}
 </div>
 
@@ -1085,6 +1296,317 @@ tbody tr:last-child td{{border-bottom:none}}
 <p class="footer">Powered by <a href="https://dchub.cloud">DC Hub</a> · Source-of-truth data center market intelligence · 2,000+ tracked deals · 21,433 facilities · 232 markets · JSON: <a href="/api/v1/market-brief/{slug}">/api/v1/market-brief/{slug}</a></p>
 
 <script src="/js/dchub-nav.js" defer></script>
+</body>
+</html>"""
+
+
+# ─────────────────────────────────────────────────────────────────────
+# Embed render — slim iframe payload (no nav, no footer, no upgrade
+# upsell, no share strip). Watermark bar at the bottom is non-removable
+# for FREE/ANON; PRO+ with a valid pro_token gets a small corner mark
+# instead. Same 9-section data the live brief uses.
+# ─────────────────────────────────────────────────────────────────────
+
+
+def _render_embed_html(brief: dict, *, watermark_off: bool) -> str:
+    """Slim iframe-friendly HTML. Drops nav/footer/share/upgrade. Always
+    shows a "Powered by DC Hub" attribution: as a full-width bar for
+    FREE / unverified callers (`watermark_off=False`), or as a small
+    bottom-right corner link for PRO+ callers with a valid pro_token
+    (`watermark_off=True`). Caller is responsible for sending the
+    iframe-friendly response headers."""
+    slug = brief.get("slug") or ""
+    hero = brief.get("hero") or {}
+    live = brief.get("live_as_of") or {}
+    kpis = brief.get("kpis") or {}
+    outlook = brief.get("outlook") or {}
+    is_pro = bool(brief.get("is_pro"))
+
+    name = hero.get("name") or slug.replace("-", " ").title()
+    verdict = hero.get("verdict") or "—"
+    score = hero.get("composite_score")
+    score_str = f"{score}/100" if score is not None else "—"
+    colors = _verdict_colors(verdict)
+
+    live_iso = live.get("iso") or hero.get("computed_at") or ""
+    live_age = live.get("age_hours")
+    live_age_str = f"{live_age:.1f}h" if isinstance(live_age, (int, float)) else "—"
+    citation_iso = (live_iso or "")[:19].replace("T", " ")
+
+    def _fmt_mw(v):
+        if v is None:
+            return "—"
+        try: return f"{float(v):,.0f} MW"
+        except (TypeError, ValueError): return "—"
+
+    def _fmt_int(v):
+        if v is None:
+            return "—"
+        try: return f"{int(v):,}"
+        except (TypeError, ValueError): return "—"
+
+    def _fmt_months(v):
+        if v is None:
+            return "—"
+        try: return f"{float(v):.1f} mo"
+        except (TypeError, ValueError): return "—"
+
+    # KPI tiles — same as the full brief but capped at 4 for the iframe
+    # width budget (most embedders use ~640-960px wide).
+    kpi_pairs = [
+        ("Operational", _fmt_mw(kpis.get("operational_mw"))),
+        ("Pipeline",    _fmt_mw(kpis.get("pipeline_mw"))),
+        ("Facilities",  _fmt_int(kpis.get("facility_count"))),
+        ("Queue Wait",  _fmt_months(kpis.get("queue_months"))),
+    ]
+    kpi_html = "\n".join(
+        f'<div class="kpi"><span class="kpi-l">{lab}</span>'
+        f'<span class="kpi-v">{val}</span></div>'
+        for lab, val in kpi_pairs)
+
+    # Teaser narrative — first 50 words (more aggressive than the full
+    # brief's 80, because iframes are usually shorter).
+    narrative = outlook.get("narrative_md") or ""
+    words = narrative.split()
+    teaser = " ".join(words[:50])
+    if len(words) > 50:
+        teaser += "…"
+
+    canonical_url = f"https://dchub.cloud/markets/{slug}/brief"
+    powered_by_url = (
+        f"https://dchub.cloud/markets/{slug}/brief?utm_source=embed"
+        f"&utm_medium=widget&utm_campaign=powered_by")
+
+    # Attribution: full bar when watermark is ON, small corner link when OFF.
+    if watermark_off:
+        attribution_html = (
+            f'<a class="dc-corner" href="{powered_by_url}" '
+            f'target="_blank" rel="noopener">DC Hub</a>'
+        )
+        body_extra_pad = ""
+    else:
+        attribution_html = (
+            '<div class="dc-bar">'
+            f'<span>Powered by <a href="{powered_by_url}" target="_blank" '
+            f'rel="noopener">DC Hub</a> · '
+            f'<a href="{powered_by_url}" target="_blank" rel="noopener">'
+            f'Source-of-truth data center market intelligence</a></span>'
+            '<a class="dc-bar-cta" href="https://dchub.cloud/pricing'
+            '?utm_source=embed&utm_medium=widget" target="_blank" '
+            'rel="noopener">Remove watermark</a>'
+            '</div>'
+        )
+        body_extra_pad = "padding-bottom:3.5rem;"
+
+    return f"""<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1">
+<title>{name} Market Brief · DC Hub</title>
+<meta name="robots" content="noindex,nofollow">
+<link rel="canonical" href="{canonical_url}">
+<style>
+:root{{--bg:#0a0a0f;--surf:#131319;--b:rgba(255,255,255,0.08);--tx:#fafafa;--mut:#a1a1aa;--dim:#71717a;--ind:#818cf8}}
+*{{box-sizing:border-box}}
+html,body{{margin:0;padding:0}}
+body{{font-family:'Instrument Sans',-apple-system,BlinkMacSystemFont,sans-serif;background:var(--bg);color:#d4d4d8;line-height:1.55;-webkit-font-smoothing:antialiased;padding:1.25rem 1.25rem 1rem;{body_extra_pad}}}
+h1{{font-weight:700;letter-spacing:-.02em;margin:0 0 .25rem;font-size:1.5rem;color:var(--tx)}}
+h2{{font-size:.95rem;font-weight:600;color:var(--tx);margin:1rem 0 .5rem;letter-spacing:-.01em;text-transform:uppercase}}
+.live-pill{{display:inline-flex;align-items:center;gap:.3rem;background:var(--surf);border:1px solid var(--b);border-radius:999px;padding:.2rem .55rem;font-size:.65rem;color:var(--mut);font-family:'JetBrains Mono',monospace;margin-left:.4rem;vertical-align:middle}}
+.live-dot{{width:.4rem;height:.4rem;background:#10b981;border-radius:50%}}
+.verdict-pill{{display:inline-block;background:{colors['pill_bg']};color:{colors['pill_fg']};font-weight:700;font-size:.7rem;padding:.3rem .7rem;border-radius:6px;letter-spacing:.04em;text-transform:uppercase}}
+.score{{font-family:'JetBrains Mono',monospace;color:var(--tx);font-weight:600;font-size:.8rem;margin-left:.5rem}}
+.sub{{color:var(--dim);font-size:.72rem;margin:.25rem 0 1rem;font-family:'JetBrains Mono',monospace}}
+.kpis{{display:grid;grid-template-columns:repeat(auto-fit,minmax(130px,1fr));gap:.5rem;margin:.5rem 0 1rem}}
+.kpi{{background:var(--surf);border:1px solid var(--b);border-radius:8px;padding:.55rem .7rem;display:flex;flex-direction:column;gap:.2rem}}
+.kpi-l{{font-size:.6rem;color:var(--dim);text-transform:uppercase;letter-spacing:.05em;font-family:'JetBrains Mono',monospace}}
+.kpi-v{{font-size:1rem;color:var(--tx);font-weight:600}}
+.outlook{{font-size:.85rem;color:#d4d4d8;background:var(--surf);border:1px solid var(--b);border-radius:8px;padding:.7rem .85rem;margin:.5rem 0 1rem}}
+.outlook a{{color:var(--ind);text-decoration:none}}
+.deep-cta{{display:block;text-align:center;background:rgba(99,102,241,.12);border:1px dashed #6366f1;border-radius:8px;padding:.55rem .85rem;color:#a5b4fc;text-decoration:none;font-size:.78rem;font-family:'JetBrains Mono',monospace;margin:.5rem 0 1rem}}
+.deep-cta:hover{{background:rgba(99,102,241,.2)}}
+.dc-bar{{position:fixed;left:0;right:0;bottom:0;background:linear-gradient(90deg,#0a0a0f 0%,#131319 100%);border-top:1px solid var(--b);padding:.55rem 1rem;display:flex;align-items:center;justify-content:space-between;gap:.75rem;font-size:.7rem;color:var(--mut);font-family:'JetBrains Mono',monospace;z-index:100}}
+.dc-bar a{{color:var(--ind);text-decoration:none}}
+.dc-bar-cta{{background:rgba(99,102,241,.16);border:1px solid rgba(129,140,248,.45);border-radius:6px;padding:.25rem .65rem;color:#c7d2fe!important;font-weight:600;white-space:nowrap}}
+.dc-corner{{position:fixed;right:.6rem;bottom:.5rem;font-size:.6rem;color:var(--dim);font-family:'JetBrains Mono',monospace;text-decoration:none;opacity:.55;letter-spacing:.04em;z-index:100}}
+.dc-corner:hover{{opacity:1;color:var(--ind)}}
+</style>
+</head>
+<body>
+
+<h1>{name}<span class="live-pill"><span class="live-dot"></span>Live · {live_age_str}</span></h1>
+<p class="sub"><span class="verdict-pill">{verdict}</span><span class="score">DCPI {score_str}</span> · Live as of {citation_iso} UTC</p>
+
+<h2>At a Glance</h2>
+<div class="kpis">
+{kpi_html}
+</div>
+
+<h2>12-Month Outlook</h2>
+<div class="outlook">{teaser or 'Outlook narrative will render on the next cron pass.'}</div>
+
+<a class="deep-cta" href="{canonical_url}" target="_blank" rel="noopener">
+Open the full brief on dchub.cloud → Power &amp; Grid · Pipeline · Operators · M&amp;A · Comps · Risk
+</a>
+
+{attribution_html}
+
+</body>
+</html>"""
+
+
+# ─────────────────────────────────────────────────────────────────────
+# Embed-code generator page — public, shows the iframe code with a
+# copy button + a live preview iframe + (for PRO+) a "remove watermark"
+# toggle wired to a freshly minted signed pro_token. Anon sees the
+# free iframe + "Sign up to remove watermark" upsell.
+# ─────────────────────────────────────────────────────────────────────
+
+
+def _render_embed_codegen_html(slug: str, name: str, verdict: str,
+                                score_str: str, tier: str,
+                                is_pro: bool) -> str:
+    """Embed-code generator (public). PRO+ callers get a watermark-off
+    toggle wired to a fresh signed token. Anon/FREE callers see the
+    free embed + an upgrade CTA — the toggle is still visible but
+    disabled, so the value prop is legible."""
+    pro_token = _sign_pro_token(slug) if is_pro else ""
+    free_iframe_src = f"https://dchub.cloud/markets/{slug}/brief?embed=1"
+    pro_iframe_src = (f"https://dchub.cloud/markets/{slug}/brief?embed=1"
+                       f"&pro_token={pro_token}") if pro_token else ""
+    # Embed code shown in the <textarea>: defaults to the free iframe;
+    # the toggle JS swaps in the pro-token version when checked.
+    free_code = (
+        f'<iframe src="{free_iframe_src}" '
+        f'width="100%" height="540" frameborder="0" '
+        f'style="border:1px solid #1f2937;border-radius:10px;'
+        f'max-width:720px" loading="lazy" '
+        f'title="{name} Market Brief — DC Hub"></iframe>')
+    pro_code = (
+        f'<iframe src="{pro_iframe_src}" '
+        f'width="100%" height="540" frameborder="0" '
+        f'style="border:1px solid #1f2937;border-radius:10px;'
+        f'max-width:720px" loading="lazy" '
+        f'title="{name} Market Brief — DC Hub"></iframe>') if pro_token else ""
+    # HTML escape the code-block contents (it's literal HTML the user
+    # will copy — we want to display the <iframe> source, not render it).
+    from html import escape as _esc
+    free_code_disp = _esc(free_code)
+    pro_code_disp = _esc(pro_code) if pro_code else ""
+
+    if is_pro:
+        toggle_html = f"""
+<label class="toggle">
+  <input type="checkbox" id="watermark-toggle" checked>
+  <span>Show "Powered by DC Hub" bar (uncheck for PRO+ watermark-off)</span>
+</label>
+<p class="hint">Your PRO+ token is good for 1 year. Re-load this page to mint a fresh one.</p>"""
+    else:
+        toggle_html = """
+<label class="toggle disabled">
+  <input type="checkbox" id="watermark-toggle" checked disabled>
+  <span>Show "Powered by DC Hub" bar — watermark-off requires PRO+</span>
+</label>
+<p class="hint"><a href="/pricing?utm_source=embed_codegen">Upgrade to PRO ($499/mo)</a> to remove the watermark.</p>"""
+
+    title_safe = _esc(name)
+    return f"""<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1">
+<title>Embed the {title_safe} Market Brief · DC Hub</title>
+<meta name="description" content="Embed the live DC Hub Market Brief for {title_safe} on your own site — verdict {verdict} ({score_str}), refreshed every 6 hours. Free with a 'Powered by DC Hub' bar; PRO+ removes the watermark.">
+<link rel="canonical" href="https://dchub.cloud/markets/{slug}/brief/embed">
+<link rel="stylesheet" href="/static/dchub-brand.css">
+<style>
+:root{{--bg:#0a0a0f;--surf:#131319;--b:rgba(255,255,255,0.08);--tx:#fafafa;--mut:#a1a1aa;--dim:#71717a;--ind:#818cf8;--grad:linear-gradient(135deg,#6366f1,#a855f7)}}
+*{{box-sizing:border-box}}
+body{{font-family:'Instrument Sans',-apple-system,BlinkMacSystemFont,sans-serif;max-width:960px;margin:0 auto;padding:2rem 1.25rem 3rem;background:var(--bg);color:#d4d4d8;line-height:1.6}}
+h1{{font-weight:700;letter-spacing:-.02em;margin:0 0 .25rem;font-size:2rem;color:var(--tx)}}
+h2{{font-size:1.1rem;font-weight:600;color:var(--tx);margin:1.75rem 0 .5rem}}
+.sub{{color:var(--dim);font-size:.85rem;margin:.25rem 0 1.5rem;font-family:'JetBrains Mono',monospace}}
+textarea{{width:100%;min-height:140px;background:var(--surf);border:1px solid var(--b);border-radius:10px;padding:.85rem 1rem;color:#e4e4e7;font-family:'JetBrains Mono','SF Mono',monospace;font-size:.78rem;line-height:1.5;resize:vertical}}
+.copy-row{{display:flex;gap:.5rem;margin-top:.5rem}}
+.btn{{background:var(--grad);color:#fff;border:none;border-radius:8px;padding:.55rem 1.1rem;font-weight:600;font-size:.85rem;cursor:pointer;font-family:inherit}}
+.btn.sec{{background:transparent;color:var(--ind);border:1px solid var(--b)}}
+.toggle{{display:flex;align-items:center;gap:.55rem;background:var(--surf);border:1px solid var(--b);border-radius:8px;padding:.6rem .85rem;margin:.75rem 0 .25rem;font-size:.85rem;color:var(--tx)}}
+.toggle.disabled{{opacity:.6}}
+.toggle input{{width:1rem;height:1rem;accent-color:#818cf8}}
+.hint{{font-size:.78rem;color:var(--mut);margin:.25rem 0 1rem;font-family:'JetBrains Mono',monospace}}
+.hint a{{color:var(--ind);text-decoration:none}}
+.preview{{margin:1rem 0 2rem;background:var(--surf);border:1px solid var(--b);border-radius:12px;padding:1rem;overflow:hidden}}
+.preview iframe{{display:block;border:1px solid var(--b);border-radius:8px;width:100%;height:540px}}
+.code-note{{background:rgba(99,102,241,.08);border:1px solid rgba(129,140,248,.25);border-radius:8px;padding:.7rem .9rem;font-size:.8rem;color:#c7d2fe;margin:1.5rem 0;font-family:'JetBrains Mono',monospace}}
+.code-note a{{color:#a5b4fc;text-decoration:none}}
+.footer{{color:var(--dim);font-size:.78rem;margin-top:2.5rem;padding-top:1rem;border-top:1px solid var(--b);font-family:'JetBrains Mono',monospace}}
+.footer a{{color:var(--ind);text-decoration:none}}
+</style>
+</head>
+<body>
+
+<h1>Embed the {title_safe} Market Brief</h1>
+<p class="sub">A turnkey, live-updating market intelligence widget for your broker / REIT / fund site. Refreshed every 6 hours. Verdict {verdict} ({score_str}).</p>
+
+<h2>1. Copy the embed code</h2>
+<textarea id="embed-code" readonly>{free_code_disp}</textarea>
+<div class="copy-row">
+  <button class="btn" onclick="copyEmbed()">Copy embed code</button>
+  <a class="btn sec" href="/markets/{slug}/brief?embed=1" target="_blank" rel="noopener">Open standalone</a>
+</div>
+
+<h2>2. Watermark</h2>
+{toggle_html}
+
+<h2>3. Live preview</h2>
+<div class="preview">
+  <iframe id="preview-frame" src="{free_iframe_src}" loading="lazy"
+          title="{title_safe} Market Brief preview"></iframe>
+</div>
+
+<div class="code-note">
+The widget is responsive — width:100% adapts to your container. Default height is 540px;
+adjust as needed. The brief data is fetched server-side and rendered with a 6h edge
+cache. <a href="/widget-example.html">See a full example</a> · <a href="/api/v1/widget-embeds/recent">Who else embeds DC Hub?</a>
+</div>
+
+<p class="footer">Powered by <a href="https://dchub.cloud">DC Hub</a> · <a href="/markets/{slug}/brief">Open the brief on dchub.cloud</a> · <a href="/premium">Browse all PRO tools</a></p>
+
+<script>
+const FREE_CODE = {json.dumps(free_code)};
+const PRO_CODE  = {json.dumps(pro_code)};
+const FREE_SRC  = {json.dumps(free_iframe_src)};
+const PRO_SRC   = {json.dumps(pro_iframe_src)};
+const IS_PRO    = {('true' if is_pro else 'false')};
+
+function copyEmbed() {{
+  const ta = document.getElementById('embed-code');
+  ta.select();
+  document.execCommand('copy');
+  const btn = document.querySelector('.btn');
+  const t = btn.textContent;
+  btn.textContent = 'Copied!';
+  setTimeout(() => {{ btn.textContent = t; }}, 1500);
+}}
+
+const toggle = document.getElementById('watermark-toggle');
+if (toggle && IS_PRO) {{
+  toggle.addEventListener('change', () => {{
+    const watermarkOn = toggle.checked;
+    const ta = document.getElementById('embed-code');
+    const frame = document.getElementById('preview-frame');
+    if (watermarkOn) {{
+      ta.value = FREE_CODE;
+      frame.src = FREE_SRC;
+    }} else {{
+      ta.value = PRO_CODE;
+      frame.src = PRO_SRC;
+    }}
+  }});
+}}
+</script>
+
 </body>
 </html>"""
 
@@ -1609,8 +2131,16 @@ def admin_discover_eligible_markets():
 
 @market_brief_bp.route("/markets/<slug>/brief", methods=["GET"])
 def html_market_brief(slug):
-    """HTML render — 9 sections, paywalled by tier."""
+    """HTML render — 9 sections, paywalled by tier.
+
+    Supports `?embed=1` for iframe embedding (slim payload, no nav/footer/
+    share/upgrade, X-Frame-Options ALLOWALL, CSP frame-ancestors *,
+    Referer logged to widget_embeds). PRO+ embedders pass a signed
+    `pro_token=<ts>.<sig>` to strip the watermark bar — verified via
+    HMAC against DCHUB_SESSION_SECRET, gated on the caller's tier.
+    """
     tier = _caller_tier()
+    is_embed = request.args.get("embed", "").lower() in ("1", "true", "yes")
     brief = _build_brief(slug, tier)
     if not brief.get("ok") and brief.get("error") == "market_not_found":
         # Don't 404 — the spec says URLs are always 200 so emailed links
@@ -1632,7 +2162,44 @@ def html_market_brief(slug):
         # 301 alias to canonical slug — preserves link equity, prevents
         # duplicate-content. (Per spec section 7 + market-slugs memory.)
         from flask import redirect
-        return redirect(f"/markets/{brief['redirect_to']}/brief", code=301)
+        suffix = "?embed=1" if is_embed else ""
+        return redirect(f"/markets/{brief['redirect_to']}/brief{suffix}", code=301)
+
+    # ── EMBED MODE ─────────────────────────────────────────────────
+    if is_embed:
+        canonical_slug = brief.get("slug") or _canonical(slug)
+        # Watermark removal requires BOTH a valid signed token AND
+        # an underlying PRO+ tier. Token alone is not enough — a churned
+        # PRO subscriber loses watermark-off automatically.
+        pro_token = request.args.get("pro_token", "").strip()
+        watermark_off = (
+            bool(pro_token)
+            and _verify_pro_token(pro_token, canonical_slug)
+            and _is_pro(tier)
+        )
+        # Attribution logging — best-effort, never blocks render.
+        try:
+            referer = request.headers.get("Referer") or request.headers.get("Referrer")
+            host, full_url = _embed_host_from_referer(referer)
+            tier_label = "PRO+" if watermark_off else ("FREE" if _is_pro(tier) else "ANON")
+            _log_widget_embed(canonical_slug, host, full_url, tier_label)
+        except Exception:
+            pass
+        html = _render_embed_html(brief, watermark_off=watermark_off)
+        resp = Response(html, mimetype="text/html")
+        resp.headers["Cache-Control"] = "public, max-age=21600, s-maxage=21600"
+        resp.headers["X-Market-Brief-Tier"] = tier
+        resp.headers["X-Market-Brief-Embed"] = "1"
+        # Iframe-friendly: ALLOWALL + frame-ancestors *. The brief is
+        # public data and the whole point of the embed is third-party
+        # framing, so we explicitly opt-OUT of the default DENY/SAMEORIGIN.
+        resp.headers["X-Frame-Options"] = "ALLOWALL"
+        resp.headers["Content-Security-Policy"] = "frame-ancestors *"
+        # CORS pre-flight friendliness for the live preview iframe.
+        resp.headers["Access-Control-Allow-Origin"] = "*"
+        return resp
+
+    # ── REGULAR HTML ───────────────────────────────────────────────
     html = _render_html(brief)
     return Response(html, mimetype="text/html",
                     headers={
@@ -1640,6 +2207,191 @@ def html_market_brief(slug):
                         "Cache-Control": "public, max-age=21600, s-maxage=21600",
                         "X-Market-Brief-Tier": tier,
                     })
+
+
+@market_brief_bp.route("/markets/<slug>/brief/embed", methods=["GET"])
+def html_market_brief_embed_codegen(slug):
+    """Embed-code generator page — public. Shows the iframe code with
+    a copy button, a live preview iframe, and (for PRO+) a watermark-
+    removal toggle wired to a freshly minted signed pro_token. Anon/FREE
+    callers see the toggle disabled with an upgrade CTA."""
+    tier = _caller_tier()
+    canonical = _canonical(slug)
+    if canonical != _norm_slug(slug):
+        from flask import redirect
+        return redirect(f"/markets/{canonical}/brief/embed", code=301)
+
+    # We need the market name + verdict to render a useful codegen page;
+    # cheapest path is the same _build_brief fan-out. PRO render so the
+    # hero / verdict populate even for anon visitors (the codegen page
+    # is read-only metadata, not paywalled data).
+    brief = _build_brief(canonical, tier="ADMIN")
+    if not brief.get("ok") and brief.get("error") == "market_not_found":
+        # Same 200-with-shell pattern as the main brief route.
+        sample = brief.get("sample_markets") or []
+        sample_html = ", ".join(
+            f'<a href="/markets/{s}/brief/embed">{s}</a>' for s in sample[:8])
+        body = (
+            f'<h1>Embed code — {slug}</h1>'
+            f'<p>This market is not yet in our DCPI coverage. Try: {sample_html}</p>'
+        )
+        return Response(
+            f"<!doctype html><html><head><meta charset=utf-8><title>Embed code · DC Hub</title>"
+            f'<link rel="stylesheet" href="/static/dchub-brand.css"></head><body>{body}</body></html>',
+            mimetype="text/html",
+            headers={"Cache-Control": "public, max-age=300"})
+
+    hero = brief.get("hero") or {}
+    name = hero.get("name") or canonical.replace("-", " ").title()
+    verdict = hero.get("verdict") or "—"
+    score = hero.get("composite_score")
+    score_str = f"{score}/100" if score is not None else "—"
+    is_pro = _is_pro(tier)
+    html = _render_embed_codegen_html(
+        slug=canonical, name=name, verdict=verdict, score_str=score_str,
+        tier=tier, is_pro=is_pro)
+    # No edge cache: the page contains a freshly minted pro_token for
+    # PRO+ callers. Aggressive caching would leak one user's token to
+    # the next. 5 minutes is enough for "click copy, paste in CMS."
+    return Response(html, mimetype="text/html", headers={
+        "Cache-Control": "private, max-age=300",
+        "X-Market-Brief-Tier": tier,
+    })
+
+
+@market_brief_bp.route("/api/v1/widget-embeds/recent", methods=["GET"])
+def widget_embeds_recent():
+    """PUBLIC — recent embed-host activity. Great for press-release
+    bullets ("DC Hub is embedded by N broker / REIT sites"). We expose
+    the host + market_slug + last_seen, never the full Referer URL
+    (which could leak internal CMS preview paths)."""
+    limit = max(1, min(50, int(request.args.get("limit", 20))))
+    c = _conn()
+    out = {"ok": True, "rows": [], "total_hosts": 0,
+            "since": None, "until": datetime.datetime.utcnow().isoformat()}
+    if c is None:
+        out["ok"] = False
+        out["error"] = "no_database"
+        return jsonify(out), 200
+    try:
+        with c.cursor() as cur:
+            try:
+                cur.execute("""
+                    SELECT embed_host,
+                           market_slug,
+                           SUM(view_count)        AS views,
+                           MIN(first_seen_at)     AS first_seen,
+                           MAX(last_seen_at)      AS last_seen
+                      FROM widget_embeds
+                     WHERE embed_host <> ''
+                       AND embed_host NOT IN ('dchub.cloud', 'localhost')
+                       AND embed_host NOT LIKE '%%.dchub.cloud'
+                     GROUP BY embed_host, market_slug
+                     ORDER BY last_seen DESC
+                     LIMIT %s
+                """, (limit,))
+                for r in cur.fetchall():
+                    out["rows"].append({
+                        "embed_host":  r[0],
+                        "market_slug": r[1],
+                        "view_count":  int(r[2] or 0),
+                        "first_seen":  r[3].isoformat() if r[3] else None,
+                        "last_seen":   r[4].isoformat() if r[4] else None,
+                    })
+                # Distinct host count for the headline number.
+                cur.execute("""
+                    SELECT COUNT(DISTINCT embed_host)
+                      FROM widget_embeds
+                     WHERE embed_host <> ''
+                       AND embed_host NOT IN ('dchub.cloud', 'localhost')
+                       AND embed_host NOT LIKE '%%.dchub.cloud'
+                """)
+                r = cur.fetchone()
+                out["total_hosts"] = int((r and r[0]) or 0)
+                cur.execute("SELECT MIN(first_seen_at) FROM widget_embeds")
+                r = cur.fetchone()
+                if r and r[0]:
+                    out["since"] = r[0].isoformat()
+            except Exception as e:
+                out["ok"] = False
+                out["error"] = f"db_error:{type(e).__name__}"
+    finally:
+        try: c.close()
+        except Exception: pass
+    resp = jsonify(out)
+    resp.headers["Cache-Control"] = "public, max-age=300"
+    resp.headers["Access-Control-Allow-Origin"] = "*"
+    return resp, 200
+
+
+@market_brief_bp.route("/api/v1/admin/widget-embeds/stats", methods=["GET"])
+def admin_widget_embeds_stats():
+    """Admin diagnostic — top embedding domains in the last `days` window
+    (default 30). Returns per-host roll-ups + per-market roll-ups + a
+    full event count. Gated on X-Admin-Key (DCHUB_ADMIN_KEY)."""
+    if not _admin_authorized():
+        return jsonify({"ok": False, "error": "admin_key_required"}), 401
+    days = max(1, min(365, int(request.args.get("days", 30))))
+    c = _conn()
+    if c is None:
+        return jsonify({"ok": False, "error": "no_database"}), 500
+    out = {"ok": True, "window_days": days, "top_hosts": [],
+           "top_markets": [], "total_views": 0, "distinct_hosts": 0,
+           "rows_in_window": 0}
+    interval = f"{days} days"
+    try:
+        with c.cursor() as cur:
+            cur.execute("""
+                SELECT embed_host, SUM(view_count), MAX(last_seen_at)
+                  FROM widget_embeds
+                 WHERE last_seen_at > NOW() - INTERVAL %s
+                   AND embed_host <> ''
+                 GROUP BY embed_host
+                 ORDER BY SUM(view_count) DESC
+                 LIMIT 25
+            """, (interval,))
+            for r in cur.fetchall():
+                out["top_hosts"].append({
+                    "host":       r[0],
+                    "views":      int(r[1] or 0),
+                    "last_seen":  r[2].isoformat() if r[2] else None,
+                })
+            cur.execute("""
+                SELECT market_slug,
+                       SUM(view_count),
+                       COUNT(DISTINCT embed_host)
+                  FROM widget_embeds
+                 WHERE last_seen_at > NOW() - INTERVAL %s
+                 GROUP BY market_slug
+                 ORDER BY SUM(view_count) DESC
+                 LIMIT 25
+            """, (interval,))
+            for r in cur.fetchall():
+                out["top_markets"].append({
+                    "market_slug":     r[0],
+                    "views":           int(r[1] or 0),
+                    "distinct_hosts":  int(r[2] or 0),
+                })
+            cur.execute("""
+                SELECT COALESCE(SUM(view_count), 0),
+                       COUNT(DISTINCT embed_host),
+                       COUNT(*)
+                  FROM widget_embeds
+                 WHERE last_seen_at > NOW() - INTERVAL %s
+            """, (interval,))
+            r = cur.fetchone()
+            if r:
+                out["total_views"]    = int(r[0] or 0)
+                out["distinct_hosts"] = int(r[1] or 0)
+                out["rows_in_window"] = int(r[2] or 0)
+    except Exception as e:
+        out["ok"] = False
+        out["error"] = f"db_error:{type(e).__name__}: {str(e)[:200]}"
+        return jsonify(out), 500
+    finally:
+        try: c.close()
+        except Exception: pass
+    return jsonify(out), 200
 
 
 @market_brief_bp.route("/markets/<slug>/brief.pdf", methods=["GET"])
@@ -1708,3 +2460,595 @@ def pdf_market_brief(slug):
             "X-Market-Brief-Tier": tier,
             "X-Content-Type-Options": "nosniff",
         })
+
+
+# ─────────────────────────────────────────────────────────────────────
+# Bulk Market Brief API (2026-06-06) — Phase ZZZZZ-bulk
+# -------------------------------------------------------------------
+# BI/fintech integration surface. Tableau, Power BI, Hex, Snowflake all
+# want ONE endpoint that returns every brief in a single round-trip
+# (vs. N+1 polling of /api/v1/market-brief/<slug>). Three new endpoints:
+#
+#   GET /api/v1/market-brief/all           — all briefs (tier-scoped),
+#                                            streamed if >50 markets
+#   GET /api/v1/market-brief/diff?since=…  — only briefs computed after
+#                                            the given iso8601 timestamp
+#   GET /api/v1/market-brief/all.csv       — same data as /all, but CSV
+#                                            (Excel-friendly download)
+#
+# Pagination: ?limit=50&offset=0 on /all (default 50, max 500 PRO+, max
+# 50 free/anon — page through ENTERPRISE's 232 markets in 5 calls).
+#
+# Tier slicing (paywall on PER-MARKET sections still applies inside each
+# brief — anon gets teaser sections; what changes here is the COUNT of
+# markets returned):
+#   ANON / FREE        → 5 markets   (SEED_MARKETS[:5] — wave 1)
+#   IDENTIFIED         → 5 markets   (same — gated content unlocks at PRO)
+#   DEVELOPER          → 5 markets
+#   PRO / FOUNDING+    → 15 markets  (all SEED_MARKETS — wave 1 + 2)
+#   ENTERPRISE         → ALL markets in market_power_scores (~232)
+#
+# Daily-cap rate limiting via mcp_call_log row-count over 24h window:
+#   ANON               → 10 calls/day on /all
+#   FREE (identified)  → 50 calls/day
+#   PRO+               → unlimited
+#
+# Telemetry: every /all and /diff call writes one row to mcp_call_log
+# (tool='market_brief_all' or 'market_brief_diff'), so the BI surface
+# shows up in /by-the-numbers + the conversion-funnel reports.
+# ─────────────────────────────────────────────────────────────────────
+
+# Pagination defaults / caps (per spec — default 50 markets per page).
+_BULK_DEFAULT_LIMIT = 50
+_BULK_FREE_MAX_LIMIT = 50    # anon/free can't override beyond default
+_BULK_PRO_MAX_LIMIT = 500    # PRO+ can pull 500 in one shot
+_BULK_STREAM_THRESHOLD = 50  # spec: stream when >50 markets
+
+# Daily-cap thresholds. None = unlimited.
+_BULK_DAILY_CAPS: dict[str, int | None] = {
+    "FREE":         10,    # anon / no key
+    "IDENTIFIED":   50,    # identified key but no paid plan
+    "DEVELOPER":    50,
+    "PRO":          None,
+    "FOUNDING":     None,
+    "RESEARCH_SEED": None,
+    "ENTERPRISE":   None,
+    "ADMIN":        None,
+}
+
+# Canonical CSV column order (per spec item #4). Stable across releases
+# so BI imports don't break when we add new internal sections.
+_BULK_CSV_COLUMNS = (
+    "market_slug", "market_name", "verdict", "composite_score",
+    "excess_power", "constraint_score", "queue_wait_months", "iso",
+    "state", "operational_mw", "pipeline_mw", "facility_count",
+    "vacancy_pct", "lease_rate", "top_operator",
+    "outlook_word_count", "live_as_of", "computed_at",
+)
+
+
+def _bulk_caller_id() -> str:
+    """Stable per-caller key for mcp_call_log telemetry + daily-cap counts.
+    Prefers api_key; falls back to CF-Connecting-IP, then remote_addr."""
+    return (
+        (request.headers.get("X-API-Key") or "").strip()
+        or (request.cookies.get("dchub_token") or "").strip()
+        or request.headers.get("CF-Connecting-IP", "")
+        or request.remote_addr
+        or "anon"
+    )[:128]
+
+
+def _bulk_log_call(tool: str, tier: str, status: str = "ok",
+                   extra: str | None = None) -> None:
+    """Insert one telemetry row into mcp_call_log. Best-effort — if the
+    insert fails (column drift, DB down) we swallow it; an unobservable
+    call is better than a 500 on the bulk endpoint."""
+    caller = _bulk_caller_id()
+    conn = _conn()
+    if conn is None:
+        return
+    try:
+        with conn.cursor() as cur:
+            try:
+                cur.execute(
+                    "INSERT INTO mcp_call_log "
+                    "  (api_key, tool, status, event_type, referrer, user_agent, timestamp) "
+                    "VALUES (%s, %s, %s, %s, %s, %s, NOW())",
+                    (
+                        caller, tool, status, f"bulk:{tier}",
+                        (request.headers.get("Referer") or extra or "")[:512],
+                        (request.headers.get("User-Agent", "") or "")[:500],
+                    ),
+                )
+                conn.commit()
+            except Exception:
+                try: conn.rollback()
+                except Exception: pass
+    except Exception:
+        pass
+    finally:
+        try: conn.close()
+        except Exception: pass
+
+
+def _bulk_daily_count(tool: str, caller: str) -> int:
+    """Return the count of mcp_call_log rows for this (tool, api_key) in
+    the last 24h. Best-effort — returns 0 on any DB error so we never
+    falsely cap a paying caller because the counter is unreachable."""
+    conn = _conn()
+    if conn is None:
+        return 0
+    try:
+        with conn.cursor() as cur:
+            try:
+                cur.execute(
+                    "SELECT COUNT(*) FROM mcp_call_log "
+                    " WHERE tool = %s AND api_key = %s "
+                    "   AND timestamp >= NOW() - INTERVAL '24 hours'",
+                    (tool, caller),
+                )
+                r = cur.fetchone()
+                return int(r[0] or 0) if r else 0
+            except Exception:
+                return 0
+    finally:
+        try: conn.close()
+        except Exception: pass
+
+
+def _bulk_check_daily_cap(tier: str, tool: str) -> tuple[bool, int | None, int]:
+    """Returns (allowed, cap, current_count). cap=None means unlimited."""
+    cap = _BULK_DAILY_CAPS.get((tier or "FREE").upper(), 10)
+    if cap is None:
+        return True, None, 0
+    caller = _bulk_caller_id()
+    count = _bulk_daily_count(tool, caller)
+    return count < cap, cap, count
+
+
+def _bulk_slugs_for_tier(tier: str) -> list[str]:
+    """Return the list of market slugs the caller is entitled to in a
+    bulk pull. ANON/FREE → 5 seed markets; PRO+ → 15 seed markets;
+    ENTERPRISE → all market_power_scores rows in canonical slug form.
+
+    Falls back to SEED_MARKETS on any DB error (so ENTERPRISE never
+    silently downgrades to PRO if the lookup fails — they still get the
+    15 hand-QA'd markets at minimum)."""
+    t = (tier or "FREE").upper()
+    if t in ("ENTERPRISE", "ADMIN", "RESEARCH_SEED"):
+        # Pull every market in market_power_scores, canonicalize to the
+        # /markets/<slug> form so the returned briefs use the same slug
+        # as the /<slug> endpoint.
+        conn = _conn()
+        if conn is None:
+            return list(SEED_MARKETS)
+        try:
+            with conn.cursor() as cur:
+                try:
+                    cur.execute(
+                        "SELECT DISTINCT market_slug FROM market_power_scores "
+                        " WHERE market_slug IS NOT NULL "
+                        " ORDER BY market_slug")
+                    rows = [r[0] for r in cur.fetchall() if r[0]]
+                except Exception:
+                    rows = []
+            # Reverse-map DCPI city slugs back to canonical metro slugs
+            # where we have a Market Brief alias (so silicon-valley shows
+            # up as silicon-valley, not santa-clara).
+            city_to_metro = {v: k for k, v in MARKET_ALIAS.items()}
+            canonical: list[str] = []
+            seen: set[str] = set()
+            for s in rows:
+                slug = city_to_metro.get(s, _canonical(s))
+                if slug not in seen:
+                    seen.add(slug)
+                    canonical.append(slug)
+            # Make sure every SEED is included even if not yet in the
+            # power-scores table (defensive, eager seeding).
+            for s in SEED_MARKETS:
+                if s not in seen:
+                    seen.add(s)
+                    canonical.append(s)
+            return canonical
+        finally:
+            try: conn.close()
+            except Exception: pass
+    elif _is_pro(t):
+        return list(SEED_MARKETS)  # all 15 wave-1+wave-2 seed markets
+    else:
+        # Anon / FREE / IDENTIFIED / DEVELOPER → first 5 seed markets
+        # (wave 1 — northern-virginia, dallas, phoenix, atlanta, chicago)
+        return list(SEED_MARKETS[:5])
+
+
+def _bulk_parse_pagination(tier: str) -> tuple[int, int]:
+    """Parse ?limit & ?offset query params with tier-aware caps."""
+    try:
+        raw_limit = int(request.args.get("limit", _BULK_DEFAULT_LIMIT))
+    except (TypeError, ValueError):
+        raw_limit = _BULK_DEFAULT_LIMIT
+    try:
+        offset = max(0, int(request.args.get("offset", 0)))
+    except (TypeError, ValueError):
+        offset = 0
+    max_limit = _BULK_PRO_MAX_LIMIT if _is_pro(tier) else _BULK_FREE_MAX_LIMIT
+    limit = max(1, min(raw_limit, max_limit))
+    return limit, offset
+
+
+def _bulk_build_briefs(slugs: list[str], tier: str) -> list[dict]:
+    """Build briefs for every slug in the batched (non-streaming) path.
+
+    Each brief still uses the existing best-effort per-section fan-out
+    via _build_brief(); one brief failing never sinks the whole batch.
+    """
+    out: list[dict] = []
+    for slug in slugs:
+        try:
+            brief = _build_brief(slug, tier)
+            if brief.get("ok") or brief.get("error"):
+                out.append(brief)
+        except Exception as e:
+            out.append({
+                "ok":    False,
+                "slug":  slug,
+                "error": f"build_failed:{type(e).__name__}:{str(e)[:80]}",
+            })
+    return out
+
+
+def _bulk_filter_changed(slugs: list[str], since: datetime.datetime) -> list[str]:
+    """Return only the slugs whose market_power_scores.computed_at is
+    after `since`. Used by the /diff endpoint for incremental refresh
+    (Tableau-style poll every 6h, get only what shifted).
+
+    One DB round-trip — IN-list query against the full slug set."""
+    if not slugs:
+        return []
+    conn = _conn()
+    if conn is None:
+        return list(slugs)  # fail-open: better to over-return than skip shifts
+    changed: list[str] = []
+    try:
+        with conn.cursor() as cur:
+            try:
+                # Canonical metro and DCPI city forms both possible — match either.
+                city_forms = [MARKET_ALIAS.get(s, s) for s in slugs]
+                lookup = list({*slugs, *city_forms})
+                cur.execute(
+                    "SELECT DISTINCT market_slug FROM market_power_scores "
+                    " WHERE market_slug = ANY(%s) "
+                    "   AND computed_at > %s",
+                    (lookup, since),
+                )
+                hit = {r[0] for r in cur.fetchall() if r[0]}
+                city_to_metro = {v: k for k, v in MARKET_ALIAS.items()}
+                for s in slugs:
+                    if s in hit or MARKET_ALIAS.get(s) in hit:
+                        changed.append(s)
+                    elif city_to_metro.get(s) in hit:
+                        changed.append(s)
+            except Exception:
+                # Fail-open: if the diff query fails, return everything.
+                return list(slugs)
+    finally:
+        try: conn.close()
+        except Exception: pass
+    return changed
+
+
+def _bulk_csv_row_for_brief(brief: dict) -> list:
+    """Project one brief into the canonical CSV column order. Missing
+    fields are emitted as empty cells (Excel/Tableau handle that natively)."""
+    hero = brief.get("hero") or {}
+    kpis = brief.get("kpis") or {}
+    outlook = brief.get("outlook") or {}
+    live = brief.get("live_as_of") or {}
+    return [
+        hero.get("slug") or brief.get("slug") or "",
+        hero.get("name") or "",
+        hero.get("verdict") or "",
+        hero.get("composite_score") if hero.get("composite_score") is not None else "",
+        hero.get("excess_power") if hero.get("excess_power") is not None else "",
+        hero.get("constraint_score") if hero.get("constraint_score") is not None else "",
+        hero.get("queue_wait_months") if hero.get("queue_wait_months") is not None else "",
+        hero.get("iso") or "",
+        hero.get("state") or "",
+        kpis.get("operational_mw") if kpis.get("operational_mw") is not None else "",
+        kpis.get("pipeline_mw") if kpis.get("pipeline_mw") is not None else "",
+        kpis.get("facility_count") if kpis.get("facility_count") is not None else "",
+        kpis.get("vacancy_pct") if kpis.get("vacancy_pct") is not None else "",
+        kpis.get("lease_rate") if kpis.get("lease_rate") is not None else "",
+        kpis.get("top_operator") or "",
+        outlook.get("word_count") if outlook.get("word_count") is not None else 0,
+        live.get("iso") or "",
+        hero.get("computed_at") or "",
+    ]
+
+
+def _bulk_429_response(tier: str, cap: int, count: int, tool: str):
+    """Standard 429 payload when the per-tier daily cap is exhausted."""
+    payload = {
+        "error":         "daily_cap_exceeded",
+        "tool":          tool,
+        "tier":          tier,
+        "limit":         f"{cap}/day",
+        "current_count": count,
+        "upgrade_url":   "/pricing?utm_source=market_brief_bulk",
+        "message":       (f"Daily limit of {cap} calls reached for tier {tier}. "
+                          "Upgrade to PRO ($499/mo) for unlimited bulk pulls."),
+    }
+    resp = jsonify(payload)
+    resp.headers["Retry-After"] = "3600"
+    resp.headers["X-RateLimit-Limit"] = str(cap)
+    resp.headers["X-RateLimit-Remaining"] = "0"
+    return resp, 429
+
+
+@market_brief_bp.route("/api/v1/market-brief/all", methods=["GET"])
+def api_market_brief_bulk():
+    """Bulk endpoint — return every brief the caller's tier is entitled to.
+
+    Tier scoping (count of markets returned):
+      ANON/FREE   → 5 seed markets
+      PRO+        → 15 seed markets
+      ENTERPRISE  → all market_power_scores markets (~232)
+
+    Section paywalls inside each brief are unchanged: anon/free still
+    see Hero + KPIs + Outlook teaser; PRO+ sections (Power & Grid,
+    Pipeline, Operators, M&A, Comps, Risk) remain locked at the per-brief
+    level even within /all.
+
+    Query params:
+      ?limit=N    1..50 (FREE) or 1..500 (PRO+).  Default 50.
+      ?offset=N   page offset.                    Default 0.
+
+    Streams (Transfer-Encoding: chunked) when the response would include
+    >50 briefs; otherwise returns a single JSON object.
+
+    Rate-limit (daily, per api_key, via mcp_call_log):
+      anon  →  10/day      free key → 50/day      PRO+ → unlimited
+    """
+    tier = _caller_tier()
+    tool = "market_brief_all"
+
+    # 1. Daily-cap gate (spec item #7).
+    allowed, cap, count = _bulk_check_daily_cap(tier, tool)
+    if not allowed:
+        _bulk_log_call(tool, tier, status="rate_limited")
+        return _bulk_429_response(tier, cap or 0, count, tool)
+
+    # 2. Tier-scoped slug list + pagination.
+    all_slugs = _bulk_slugs_for_tier(tier)
+    total_available = len(all_slugs)
+    limit, offset = _bulk_parse_pagination(tier)
+    page_slugs = all_slugs[offset:offset + limit]
+    page_count = len(page_slugs)
+    as_of = datetime.datetime.utcnow().isoformat() + "Z"
+
+    # 3. Telemetry (spec item #8).
+    _bulk_log_call(tool, tier, status="ok",
+                   extra=f"n={page_count}/{total_available};off={offset}")
+
+    # 4. Streaming path — only when the actual response is large
+    #    (>_BULK_STREAM_THRESHOLD briefs) so small ANON pulls stay
+    #    single-shot JSON (Tableau dislikes chunked when it can avoid it).
+    if page_count > _BULK_STREAM_THRESHOLD:
+        def _stream():
+            head = (
+                '{"as_of":' + json.dumps(as_of) +
+                ',"tier":' + json.dumps(tier) +
+                ',"count":' + str(page_count) +
+                ',"total_available":' + str(total_available) +
+                ',"limit":' + str(limit) +
+                ',"offset":' + str(offset) +
+                ',"streamed":true' +
+                ',"briefs":['
+            )
+            yield head
+            first = True
+            for slug in page_slugs:
+                try:
+                    brief = _build_brief(slug, tier)
+                except Exception as e:
+                    brief = {"ok": False, "slug": slug,
+                             "error": f"build_failed:{type(e).__name__}"}
+                if not first:
+                    yield ","
+                yield json.dumps(brief, default=str)
+                first = False
+            yield "]}"
+
+        resp = Response(stream_with_context(_stream()), mimetype="application/json")
+        resp.headers["Cache-Control"]      = "public, max-age=21600, s-maxage=21600"
+        resp.headers["Access-Control-Allow-Origin"] = "*"
+        resp.headers["X-Market-Brief-Tier"] = tier
+        resp.headers["X-Market-Brief-Mode"] = "stream"
+        resp.headers["X-Total-Available"]   = str(total_available)
+        return resp
+
+    # 5. Batched (single-payload) path.
+    briefs = _bulk_build_briefs(page_slugs, tier)
+    payload = {
+        "as_of":           as_of,
+        "tier":            tier,
+        "count":           len(briefs),
+        "total_available": total_available,
+        "limit":           limit,
+        "offset":          offset,
+        "streamed":        False,
+        "briefs":          briefs,
+    }
+    resp = jsonify(payload)
+    resp.headers["Cache-Control"]      = "public, max-age=21600, s-maxage=21600"
+    resp.headers["Access-Control-Allow-Origin"] = "*"
+    resp.headers["X-Market-Brief-Tier"] = tier
+    resp.headers["X-Market-Brief-Mode"] = "batch"
+    resp.headers["X-Total-Available"]   = str(total_available)
+    return resp
+
+
+@market_brief_bp.route("/api/v1/market-brief/diff", methods=["GET"])
+def api_market_brief_diff():
+    """Incremental-refresh endpoint — return only the briefs whose
+    `market_power_scores.computed_at` is later than `?since=<iso8601>`.
+
+    Use case: a BI tool that wants to do a 6-hourly refresh without
+    re-downloading every brief — call /diff with the timestamp of the
+    last successful pull and only get markets that have shifted.
+
+    Same response shape + tier scoping as /all. If `?since` is missing
+    or malformed, returns everything (equivalent to /all).
+    """
+    tier = _caller_tier()
+    tool = "market_brief_diff"
+
+    allowed, cap, count = _bulk_check_daily_cap(tier, tool)
+    if not allowed:
+        _bulk_log_call(tool, tier, status="rate_limited")
+        return _bulk_429_response(tier, cap or 0, count, tool)
+
+    # Parse `since`. Accept iso8601 with/without trailing Z + plain dates.
+    since_raw = (request.args.get("since") or "").strip()
+    since_dt: datetime.datetime | None = None
+    if since_raw:
+        try:
+            normalized = since_raw[:-1] if since_raw.endswith("Z") else since_raw
+            since_dt = datetime.datetime.fromisoformat(normalized)
+            if since_dt.tzinfo is not None:
+                since_dt = since_dt.replace(tzinfo=None)
+        except (ValueError, AttributeError):
+            since_dt = None
+
+    all_slugs = _bulk_slugs_for_tier(tier)
+    total_available = len(all_slugs)
+    if since_dt is None:
+        changed_slugs = all_slugs  # missing/invalid since → return all
+        since_iso = None
+    else:
+        changed_slugs = _bulk_filter_changed(all_slugs, since_dt)
+        since_iso = since_dt.isoformat() + "Z"
+
+    limit, offset = _bulk_parse_pagination(tier)
+    page_slugs = changed_slugs[offset:offset + limit]
+    page_count = len(page_slugs)
+    as_of = datetime.datetime.utcnow().isoformat() + "Z"
+
+    _bulk_log_call(tool, tier, status="ok",
+                   extra=f"since={since_iso};n={page_count}")
+
+    if page_count > _BULK_STREAM_THRESHOLD:
+        def _stream():
+            head = (
+                '{"as_of":' + json.dumps(as_of) +
+                ',"since":' + json.dumps(since_iso) +
+                ',"tier":' + json.dumps(tier) +
+                ',"count":' + str(page_count) +
+                ',"total_available":' + str(total_available) +
+                ',"changed_total":' + str(len(changed_slugs)) +
+                ',"limit":' + str(limit) +
+                ',"offset":' + str(offset) +
+                ',"streamed":true' +
+                ',"briefs":['
+            )
+            yield head
+            first = True
+            for slug in page_slugs:
+                try:
+                    brief = _build_brief(slug, tier)
+                except Exception as e:
+                    brief = {"ok": False, "slug": slug,
+                             "error": f"build_failed:{type(e).__name__}"}
+                if not first:
+                    yield ","
+                yield json.dumps(brief, default=str)
+                first = False
+            yield "]}"
+
+        resp = Response(stream_with_context(_stream()), mimetype="application/json")
+        resp.headers["Cache-Control"]      = "public, max-age=21600, s-maxage=21600"
+        resp.headers["Access-Control-Allow-Origin"] = "*"
+        resp.headers["X-Market-Brief-Tier"] = tier
+        resp.headers["X-Market-Brief-Mode"] = "stream-diff"
+        return resp
+
+    briefs = _bulk_build_briefs(page_slugs, tier)
+    payload = {
+        "as_of":           as_of,
+        "since":           since_iso,
+        "tier":            tier,
+        "count":           len(briefs),
+        "total_available": total_available,
+        "changed_total":   len(changed_slugs),
+        "limit":           limit,
+        "offset":          offset,
+        "streamed":        False,
+        "briefs":          briefs,
+    }
+    resp = jsonify(payload)
+    resp.headers["Cache-Control"]      = "public, max-age=21600, s-maxage=21600"
+    resp.headers["Access-Control-Allow-Origin"] = "*"
+    resp.headers["X-Market-Brief-Tier"] = tier
+    resp.headers["X-Market-Brief-Mode"] = "batch-diff"
+    return resp
+
+
+@market_brief_bp.route("/api/v1/market-brief/all.csv", methods=["GET"])
+def api_market_brief_bulk_csv():
+    """CSV mirror of /all — tier-gated identically, canonical column
+    order in `_BULK_CSV_COLUMNS`. Streamed when >50 markets.
+
+    Sets Content-Disposition so the browser/curl save it as
+    `dchub-market-briefs-YYYY-MM-DD.csv`."""
+    tier = _caller_tier()
+    tool = "market_brief_all_csv"
+
+    allowed, cap, count = _bulk_check_daily_cap(tier, tool)
+    if not allowed:
+        _bulk_log_call(tool, tier, status="rate_limited")
+        return _bulk_429_response(tier, cap or 0, count, tool)
+
+    all_slugs = _bulk_slugs_for_tier(tier)
+    limit, offset = _bulk_parse_pagination(tier)
+    page_slugs = all_slugs[offset:offset + limit]
+    page_count = len(page_slugs)
+
+    _bulk_log_call(tool, tier, status="ok",
+                   extra=f"csv;n={page_count}/{len(all_slugs)}")
+
+    today_iso = datetime.date.today().isoformat()
+    filename = f"dchub-market-briefs-{today_iso}.csv"
+
+    def _row_to_csv(row: list) -> str:
+        """Render one CSV row using the stdlib csv module so quoting +
+        escaping match Excel/RFC 4180."""
+        sio = io.StringIO()
+        csv.writer(sio).writerow(row)
+        return sio.getvalue()
+
+    if page_count > _BULK_STREAM_THRESHOLD:
+        def _stream():
+            yield _row_to_csv(list(_BULK_CSV_COLUMNS))
+            for slug in page_slugs:
+                try:
+                    brief = _build_brief(slug, tier)
+                    yield _row_to_csv(_bulk_csv_row_for_brief(brief))
+                except Exception as e:
+                    yield _row_to_csv([slug] + [""] * (len(_BULK_CSV_COLUMNS) - 2) +
+                                       [f"build_failed:{type(e).__name__}"])
+
+        resp = Response(stream_with_context(_stream()), mimetype="text/csv")
+    else:
+        sio = io.StringIO()
+        w = csv.writer(sio)
+        w.writerow(list(_BULK_CSV_COLUMNS))
+        for brief in _bulk_build_briefs(page_slugs, tier):
+            w.writerow(_bulk_csv_row_for_brief(brief))
+        resp = Response(sio.getvalue(), mimetype="text/csv")
+
+    resp.headers["Cache-Control"]      = "public, max-age=21600, s-maxage=21600"
+    resp.headers["Access-Control-Allow-Origin"] = "*"
+    resp.headers["Content-Disposition"] = f'attachment; filename="{filename}"'
+    resp.headers["X-Market-Brief-Tier"] = tier
+    return resp

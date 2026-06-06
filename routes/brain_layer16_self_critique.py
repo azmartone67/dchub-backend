@@ -229,6 +229,7 @@ prediction. Reply with ONLY the JSON."""
         r = requests.post(
             anthropic_messages_url(),
             headers={"x-api-key": _ANTHROPIC_KEY,
+                     "User-Agent": "dchub-brain/1.0",
                      "anthropic-version": "2023-06-01",
                      "content-type": "application/json"},
             json={"model": "claude-sonnet-4-5",

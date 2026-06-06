@@ -1320,6 +1320,7 @@ def _call_opus_for_proposal(audit_summary: str) -> tuple[dict | None, str | None
         headers={
             "Content-Type": "application/json",
             "X-API-Key": ANTHROPIC_API_KEY,
+            "User-Agent": "dchub-brain/1.0",
             "Anthropic-Version": "2023-06-01",
         },
     )
@@ -1414,6 +1415,7 @@ def _challenge_proposal(proposal: dict, audit_summary: str) -> dict:
         headers={
             "Content-Type": "application/json",
             "X-API-Key": ANTHROPIC_API_KEY,
+            "User-Agent": "dchub-brain/1.0",
             "Anthropic-Version": "2023-06-01",
         },
     )

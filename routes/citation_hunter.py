@@ -133,6 +133,7 @@ def _ask_claude(query: str) -> tuple[str | None, str | None]:
             anthropic_messages_url(),
             headers={
                 "x-api-key":          _ANTHROPIC_KEY,
+                "User-Agent": "dchub-brain/1.0",
                 "anthropic-version":  "2023-06-01",
                 "content-type":       "application/json",
             },

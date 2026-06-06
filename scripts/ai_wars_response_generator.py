@@ -57,7 +57,8 @@ def generate_all_responses(question, context_data=None, timeout=90):
         start = time.time()
         r = requests.post("https://gateway.ai.cloudflare.com/v1/4bb33ec40ef02f9f4b41dc97668d5a52/dchub/anthropic/v1/messages",
             json={"model": "claude-sonnet-4-20250514", "max_tokens": 8000, "messages": [{"role": "user", "content": prompt}]},
-            headers={"x-api-key": api_key, "anthropic-version": "2023-06-01", "Content-Type": "application/json"},
+            headers={"x-api-key": api_key, "User-Agent": "dchub-brain/1.0",
+ "anthropic-version": "2023-06-01", "Content-Type": "application/json"},
             timeout=timeout)
         elapsed = time.time() - start
         r.raise_for_status()

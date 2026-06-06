@@ -1242,6 +1242,7 @@ def _call_claude_marketing(prompt: str) -> tuple[dict | None, str | None]:
     req = Request(anthropic_messages_url(), data=body, headers={
         "Content-Type": "application/json",
         "X-API-Key": ANTHROPIC_API_KEY,
+        "User-Agent": "dchub-brain/1.0",
         "Anthropic-Version": "2023-06-01",
     })
     try:
@@ -1596,6 +1597,7 @@ def _claude_rewrite_for_linkedin(rel: dict, style: str | None = None) -> str | N
             },
             headers={
                 "x-api-key": ANTHROPIC_API_KEY,
+                "User-Agent": "dchub-brain/1.0",
                 "anthropic-version": "2023-06-01",
                 "Content-Type": "application/json",
             },

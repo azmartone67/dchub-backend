@@ -168,6 +168,21 @@ SCHEDULE = [
     # GETs. Slot 5/17 chosen per spec. Same-hour-same-day cap → one run/slot.
     # Short, defensive runner: bounded to 5 slugs × ~250ms each = ~1.3s.
     ( 5, 17, "market_brief_warm",   "_run_market_brief_warm"),
+    # Per-State Brief pre-warm (2026-06-06): build the per-state roll-up for
+    # each of the 8 seed states (texas, california, virginia, georgia, ohio,
+    # oregon, illinois, arizona). 1s sleep between states. Slot 6/18 chosen
+    # to stagger from market_brief_warm (5/17) so the DB pool doesn't see
+    # both warms hit at once.
+    ( 6, 18, "state_brief_warm",    "_run_state_brief_warm"),
+    # Operator Brief pre-warm (2026-06-06): build the 9-section operator
+    # brief for each of the 10 seed operators (aligned, qts, digital-realty,
+    # equinix, vantage, cyrusone, cologix, core-scientific, airtrunk,
+    # iron-mountain) so the first investor/broker visitor doesn't pay
+    # the cold per-section DB cost. 6h edge cache (CF s-maxage=21600)
+    # primed via loopback GETs. Slot 7/19 chosen to stagger from
+    # market_brief_warm (5/17) and state_brief_warm (6/18) — DB pool
+    # doesn't see three warms back-to-back. ~10 operators × 1s sleep = ~10s.
+    ( 7, 19, "operator_brief_warm", "_run_operator_brief_warm"),
     # DCPI Verdict-Shift auto-press (2026-06-06): once-daily scan for
     # markets whose DCPI verdict TODAY differs from the verdict 7 days
     # ago. Qualifying shifts (BUILD or AVOID involved on at least one
@@ -182,6 +197,37 @@ SCHEDULE = [
     # crawler has its own per-name last_run guard so they're independent
     # (see feedback_triage 8/20 sharing with deals for prior art).
     (16, 16, "verdict_shift_post",  "_run_verdict_shift_post"),
+    # Real-time Watchlist + Verdict-Shift Alerts (2026-06-06): twice-
+    # daily realtime sweep so PRO+ watchers see verdict shifts within
+    # ~12h. Slot 10/22 UTC chosen because it brackets the daily DCPI
+    # snapshot writer (~04:00 UTC) — by 10:00 today's shifts are
+    # detectable. The dispatcher pulls shifts from
+    # market_verdict_shifts._detect_shifts (one source of truth) and
+    # fans out via email (Resend) + optional browser push (pywebpush+
+    # VAPID, no-op if env vars missing). FREE watchers are QUEUED
+    # (status='pending') for the Monday digest, not emailed in realtime.
+    # Same-hour same-day cap via the per-name last_run guard. Both
+    # slots are already shared with energy_discovery; per-name locks
+    # keep them independent (prior art: verdict_shift_post 16/16 sharing
+    # with lost_conversion).
+    (10, 22, "watchlist_realtime",      "_run_watchlist_realtime"),
+    # Weekly digest for FREE watchers (2026-06-06). Slot 14/14 UTC.
+    # Self-gates to Mondays inside the runner because the SCHEDULE
+    # harness is hour-based, not weekly — same pattern as
+    # mcp_registry_discover (Mondays only). Bundles every PENDING alert
+    # per watcher into one digest email and marks status='sent'.
+    (14, 14, "watchlist_weekly_digest", "_run_watchlist_weekly_digest"),
+    # Hyperscaler Brief pre-warm (2026-06-06): pre-build the 9-section
+    # hyperscaler_brief fan-out for each of the 10 seed hyperscalers
+    # (aws/azure/google-cloud/meta/apple/oracle/tiktok-bytedance/tencent/
+    # alibaba/softbank) so the first visitor doesn't pay the cold per-
+    # section DB cost. The HTML endpoint has a 6h edge cache
+    # (CF s-maxage=21600); the warm runs PRIME the CF cache via loopback
+    # GETs. Slot 8/20 per spec — shares hour with deals + feedback_triage
+    # but each has its own per-name last_run guard (prior art: feedback_
+    # triage 8/20 sharing with deals). Bounded: 10 slugs × ~250ms each +
+    # 9 × 1s sleep = ~12s per slot.
+    ( 8, 20, "hyperscaler_brief_warm", "_run_hyperscaler_brief_warm"),
 ]
 
 # ---------------------------------------------------------------------------
@@ -1282,6 +1328,63 @@ def _run_verdict_shift_post():
         logger.error("📣 verdict_shift_post: error — %s", e)
 
 
+def _run_watchlist_realtime():
+    """Real-time Watchlist + Verdict-Shift Alerts (2026-06-06): twice-
+    daily fan-out for PRO+ watchers. Pulls today's verdict shifts from
+    market_verdict_shifts._detect_shifts (one source of truth) and
+    emails / browser-pushes every PRO+ watcher on a shifted market.
+    FREE watchers are QUEUED (status='pending') for the Monday digest.
+
+    Calls the dispatcher MODULE directly (no HTTP loopback) — fan-out
+    is short (bounded by MAX_REALTIME_ALERTS_PER_RUN=500). The dispatcher
+    is defensive everywhere (per-watcher try/except, missing Resend/
+    VAPID degrades silently, malformed rows are skipped) so this runner
+    can never crash the scheduler thread."""
+    try:
+        from routes.watchlist_dispatcher import dispatch_watchlist_alerts as _disp
+        result = _disp(mode="realtime") or {}
+        logger.info(
+            "🔔 watchlist_realtime: shifts=%s watchers=%s sent=%s queued=%s "
+            "skipped=%s push_sent=%s push_failed=%s errors=%s",
+            result.get("shifts_seen"), result.get("watchers_total"),
+            result.get("alerts_sent"), result.get("alerts_queued"),
+            result.get("alerts_skipped"), result.get("push_sent"),
+            result.get("push_failed"),
+            len(result.get("errors", []) or []),
+        )
+    except Exception as e:
+        logger.error("🔔 watchlist_realtime error: %s", e, exc_info=True)
+
+
+def _run_watchlist_weekly_digest():
+    """Weekly digest for FREE watchers (2026-06-06). Self-gates to
+    Mondays (weekday()==0) — the SCHEDULE harness is hour-based, not
+    weekly, so we cap here. Bundles every PENDING alert per watcher
+    into one digest email and marks status='sent'. Defensive — never
+    raises (mirror of mcp_registry_discover's weekday gate pattern)."""
+    try:
+        now = datetime.now(timezone.utc)
+        if now.weekday() != 0:  # 0 == Monday
+            logger.info(
+                "🔔 watchlist_weekly_digest: skipped — weekly gate "
+                "(today=%s, runs Mondays only)",
+                now.strftime("%A"),
+            )
+            return
+        from routes.watchlist_dispatcher import dispatch_watchlist_alerts as _disp
+        result = _disp(mode="digest") or {}
+        logger.info(
+            "🔔 watchlist_weekly_digest: shifts=%s watchers=%s sent=%s "
+            "queued=%s skipped=%s errors=%s",
+            result.get("shifts_seen"), result.get("watchers_total"),
+            result.get("alerts_sent"), result.get("alerts_queued"),
+            result.get("alerts_skipped"),
+            len(result.get("errors", []) or []),
+        )
+    except Exception as e:
+        logger.error("🔔 watchlist_weekly_digest error: %s", e, exc_info=True)
+
+
 def _run_mcp_presence_crawl():
     """MCP-presence crawl (2026-06-05): for each known MCP listing site
     DC Hub appears on (Smithery, MCPHive, LobeHub, Glama, YellowMCP,
@@ -1375,6 +1478,126 @@ def _run_market_brief_warm():
         logger.error("🧾 market_brief_warm CF prime error: %s", e)
 
 
+def _run_state_brief_warm():
+    """State Brief pre-warm (2026-06-06): build the per-state aggregate
+    brief for each of the 8 seed states (texas, california, virginia,
+    georgia, ohio, oregon, illinois, arizona) so the first real visitor
+    doesn't pay the cold fan-out cost. Also issues a loopback GET to
+    prime the CF edge cache. Defensive — never raises. Bounded
+    (8 states × ~600ms each + 1s sleeps = ~13s)."""
+    try:
+        from routes.state_brief import prewarm_seed_states, SEED_STATES
+        result = prewarm_seed_states() or {}
+        logger.info(
+            "🗺️ state_brief_warm: warmed=%s errors=%s",
+            result.get("warmed"), result.get("errors"),
+        )
+    except Exception as e:
+        logger.error("🗺️ state_brief_warm prewarm error: %s", e)
+        SEED_STATES = ("texas", "california", "virginia", "georgia",
+                       "ohio", "oregon", "illinois", "arizona")
+    # CF edge-cache prime (best-effort).
+    try:
+        import requests as _rq
+        base = os.environ.get("DCHUB_PUBLIC_BASE", "https://dchub.cloud")
+        primed = 0
+        for slug in SEED_STATES:
+            try:
+                r = _rq.get(f"{base}/states/{slug}/brief",
+                            headers={"User-Agent": "dchub-cron-state-brief-warm/1.0"},
+                            timeout=12)
+                if r.status_code == 200:
+                    primed += 1
+            except Exception:
+                pass
+        logger.info("🗺️ state_brief_warm: cf_primed=%s/%s",
+                    primed, len(SEED_STATES))
+    except Exception as e:
+        logger.error("🗺️ state_brief_warm CF prime error: %s", e)
+
+
+def _run_operator_brief_warm():
+    """Operator Brief pre-warm (2026-06-06): build the 9-section operator
+    brief for each of the 10 seed operators (aligned, qts, digital-realty,
+    equinix, vantage, cyrusone, cologix, core-scientific, airtrunk,
+    iron-mountain) so the first investor/broker visitor doesn't pay the
+    cold per-section DB cost. Issues loopback GETs to prime the CF edge
+    cache. Defensive — never raises. Bounded (10 ops × ~700ms + 1s
+    sleeps = ~17s wall time)."""
+    try:
+        from routes.operator_brief import (prewarm_seed_operators,
+                                            SEED_OPERATORS)
+        result = prewarm_seed_operators() or {}
+        logger.info(
+            "🏢 operator_brief_warm: warmed=%s errors=%s",
+            result.get("warmed"), result.get("errors"),
+        )
+    except Exception as e:
+        logger.error("🏢 operator_brief_warm prewarm error: %s", e)
+        SEED_OPERATORS = ("aligned", "qts", "digital-realty", "equinix",
+                          "vantage", "cyrusone", "cologix",
+                          "core-scientific", "airtrunk", "iron-mountain")
+    # CF edge-cache prime (best-effort).
+    try:
+        import requests as _rq
+        base = os.environ.get("DCHUB_PUBLIC_BASE", "https://dchub.cloud")
+        primed = 0
+        for slug in SEED_OPERATORS:
+            try:
+                r = _rq.get(f"{base}/operators/{slug}/brief",
+                            headers={"User-Agent": "dchub-cron-operator-brief-warm/1.0"},
+                            timeout=12)
+                if r.status_code == 200:
+                    primed += 1
+            except Exception:
+                pass
+        logger.info("🏢 operator_brief_warm: cf_primed=%s/%s",
+                    primed, len(SEED_OPERATORS))
+    except Exception as e:
+        logger.error("🏢 operator_brief_warm CF prime error: %s", e)
+
+
+def _run_hyperscaler_brief_warm():
+    """Hyperscaler Brief pre-warm (2026-06-06): build the 9-section
+    hyperscaler brief for each of the 10 seed hyperscalers (aws, azure,
+    google-cloud, meta, apple, oracle, tiktok-bytedance, tencent,
+    alibaba, softbank) so the first M&A-banker visitor doesn't pay the
+    cold per-section DB cost. Issues loopback GETs to prime the CF edge
+    cache. Defensive — never raises. Bounded (10 hs × ~250ms + 9 × 1s
+    sleeps = ~12s wall time)."""
+    try:
+        from routes.hyperscaler_brief import (prewarm_seed_hyperscalers,
+                                               SEED_HYPERSCALERS)
+        result = prewarm_seed_hyperscalers() or {}
+        logger.info(
+            "🛰️ hyperscaler_brief_warm: warmed=%s errors=%s",
+            result.get("warmed"), result.get("errors"),
+        )
+    except Exception as e:
+        logger.error("🛰️ hyperscaler_brief_warm prewarm error: %s", e)
+        SEED_HYPERSCALERS = ("aws", "azure", "google-cloud", "meta",
+                             "apple", "oracle", "tiktok-bytedance",
+                             "tencent", "alibaba", "softbank")
+    # CF edge-cache prime (best-effort).
+    try:
+        import requests as _rq
+        base = os.environ.get("DCHUB_PUBLIC_BASE", "https://dchub.cloud")
+        primed = 0
+        for slug in SEED_HYPERSCALERS:
+            try:
+                r = _rq.get(f"{base}/hyperscalers/{slug}/brief",
+                            headers={"User-Agent": "dchub-cron-hyperscaler-brief-warm/1.0"},
+                            timeout=12)
+                if r.status_code == 200:
+                    primed += 1
+            except Exception:
+                pass
+        logger.info("🛰️ hyperscaler_brief_warm: cf_primed=%s/%s",
+                    primed, len(SEED_HYPERSCALERS))
+    except Exception as e:
+        logger.error("🛰️ hyperscaler_brief_warm CF prime error: %s", e)
+
+
 def _run_mcp_presence_auto_fix():
     """MCP-presence auto-fix (2026-06-05): sweep every listing WHERE
     drift_detected=true and run the registry-appropriate submitter.
@@ -1444,8 +1667,13 @@ _RUNNERS = {
     "mcp_registry_discover": _run_mcp_registry_discover,
     "mcp_presence_auto_fix": _run_mcp_presence_auto_fix,
     "market_brief_warm":   _run_market_brief_warm,
+    "state_brief_warm":    _run_state_brief_warm,
+    "operator_brief_warm": _run_operator_brief_warm,
     "feedback_triage":     _run_feedback_triage,
     "verdict_shift_post":  _run_verdict_shift_post,
+    "watchlist_realtime":       _run_watchlist_realtime,
+    "watchlist_weekly_digest":  _run_watchlist_weekly_digest,
+    "hyperscaler_brief_warm":   _run_hyperscaler_brief_warm,
 }
 
 
