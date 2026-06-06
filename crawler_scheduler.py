@@ -148,6 +148,26 @@ SCHEDULE = [
     # inside the runner — the dispatcher's per-registry 1/hour rate-
     # limit token + the human-loop fallback are the safety net.
     (19, 19, "mcp_presence_auto_fix", "_run_mcp_presence_auto_fix"),
+    # Customer Feedback Forum triage (2026-06-06): twice-daily brain
+    # triage of new /feedback submissions. Classifies LOW/MEDIUM/HIGH/
+    # SPAM, writes brain_recommendation back, and (LOW-class only +
+    # 2-cycle diff-hash gate + 5/day cap + kill switch
+    # FEEDBACK_AUTO_APPLY_DISABLE) marks rows in_progress so the
+    # brain_pr_opener cron can ship them. HIGH-class rows email the
+    # user via Resend with signed-token approve/reject buttons. Slot
+    # 8/20 UTC shares the hour with deals (8/20) but those callers run
+    # via separate per-name locks; collision is acceptable because
+    # triage is bounded (<=20 rows, ~25s/call worst case, ~8 min total
+    # ceiling). Slot chosen because the spec asks for 08:00 / 20:00 UTC.
+    ( 8, 20, "feedback_triage",     "_run_feedback_triage"),
+    # Market Brief pre-warm (2026-06-06): build the 9-section market_brief
+    # fan-out for each of the 5 seed markets (northern-virginia, dallas,
+    # phoenix, atlanta, chicago) so the first visitor doesn't pay the
+    # cold per-section DB cost. The HTML endpoint has a 6h edge cache
+    # (CF s-maxage=21600); the warm runs PRIME the CF cache via loopback
+    # GETs. Slot 5/17 chosen per spec. Same-hour-same-day cap → one run/slot.
+    # Short, defensive runner: bounded to 5 slugs × ~250ms each = ~1.3s.
+    ( 5, 17, "market_brief_warm",   "_run_market_brief_warm"),
 ]
 
 # ---------------------------------------------------------------------------
@@ -1250,6 +1270,49 @@ def _run_mcp_registry_discover():
         logger.error("📡 mcp_registry_discover error: %s", e, exc_info=True)
 
 
+def _run_market_brief_warm():
+    """Market Brief pre-warm (2026-06-06): pre-build the 9-section brief
+    for each of the 5 seed markets so the first real visitor doesn't pay
+    the cold fan-out cost. Also issues a loopback GET against the public
+    HTML endpoint so the CF edge cache populates.
+
+    Defensive — never raises. Bounded (5 slugs × short queries). Two
+    layers:
+      1) prewarm_seed_markets() builds the in-process brief (covers any
+         backend that doesn't sit behind CF — direct hits to Railway).
+      2) loopback GET to /markets/<slug>/brief so the CF s-maxage=21600
+         cache populates ahead of organic traffic.
+    """
+    try:
+        from routes.market_brief import prewarm_seed_markets, SEED_MARKETS
+        result = prewarm_seed_markets() or {}
+        logger.info(
+            "🧾 market_brief_warm: warmed=%s errors=%s",
+            result.get("warmed"), result.get("errors"),
+        )
+    except Exception as e:
+        logger.error("🧾 market_brief_warm prewarm error: %s", e)
+        SEED_MARKETS = ("northern-virginia", "dallas", "phoenix",
+                        "atlanta", "chicago")
+    # CF edge-cache prime (best-effort).
+    try:
+        import requests as _rq
+        base = os.environ.get("DCHUB_PUBLIC_BASE", "https://dchub.cloud")
+        primed = 0
+        for slug in SEED_MARKETS:
+            try:
+                r = _rq.get(f"{base}/markets/{slug}/brief",
+                            headers={"User-Agent": "dchub-cron-market-brief-warm/1.0"},
+                            timeout=12)
+                if r.status_code == 200:
+                    primed += 1
+            except Exception:
+                pass
+        logger.info("🧾 market_brief_warm: cf_primed=%s/%s", primed, len(SEED_MARKETS))
+    except Exception as e:
+        logger.error("🧾 market_brief_warm CF prime error: %s", e)
+
+
 def _run_mcp_presence_auto_fix():
     """MCP-presence auto-fix (2026-06-05): sweep every listing WHERE
     drift_detected=true and run the registry-appropriate submitter.
@@ -1268,6 +1331,33 @@ def _run_mcp_presence_auto_fix():
         )
     except Exception as e:
         logger.error("📡 mcp_presence_auto_fix error: %s", e, exc_info=True)
+
+
+def _run_feedback_triage():
+    """Customer Feedback Forum triage (2026-06-06): pull status='new'
+    + 'triaged' rows from feedback_submissions, classify via Claude,
+    write brain_recommendation back, and (LOW class only + 2-cycle
+    diff-hash gate + 5/day cap + kill switch
+    FEEDBACK_AUTO_APPLY_DISABLE) mark eligible rows in_progress so
+    the brain_pr_opener cron ships them. HIGH-class rows email the
+    user via Resend with signed-token approve/reject buttons.
+    Defensive; never raises. Slot 8/20 UTC."""
+    try:
+        from routes.feedback_triage import triage_pending_submissions
+        result = triage_pending_submissions(limit=20) or {}
+        cls = result.get("classified", {}) or {}
+        logger.info(
+            "📬 feedback_triage: checked=%s LOW=%s MED=%s HIGH=%s SPAM=%s "
+            "applied=%s kill=%s errors=%s",
+            result.get("checked"),
+            cls.get("LOW", 0), cls.get("MEDIUM", 0),
+            cls.get("HIGH", 0), cls.get("SPAM", 0),
+            result.get("auto_applied", 0),
+            result.get("kill_switch"),
+            len(result.get("errors", []) or []),
+        )
+    except Exception as e:
+        logger.error("📬 feedback_triage error: %s", e, exc_info=True)
 
 
 _RUNNERS = {
@@ -1291,6 +1381,8 @@ _RUNNERS = {
     "mcp_presence_crawl":  _run_mcp_presence_crawl,
     "mcp_registry_discover": _run_mcp_registry_discover,
     "mcp_presence_auto_fix": _run_mcp_presence_auto_fix,
+    "market_brief_warm":   _run_market_brief_warm,
+    "feedback_triage":     _run_feedback_triage,
 }
 
 

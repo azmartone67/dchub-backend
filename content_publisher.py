@@ -126,6 +126,15 @@ def init_content_tables():
     finally:
         try: conn.close()
         except Exception: pass
+    # 2026-06-06: piggy-back the Feedback Forum schema bootstrap onto
+    # init_content_tables so it runs on the same boot path (already wired
+    # in main.py). Defensive — if feedback_forum import or table init
+    # fails, we log and continue so content_publisher stays up.
+    try:
+        from routes.feedback_forum import init_feedback_tables as _ift
+        _ift()
+    except Exception as _fbe:
+        logger.warning("feedback_forum table init skipped: %s", _fbe)
 
 def _media_block_category(reason: str) -> str:
     r = (reason or "").lower()

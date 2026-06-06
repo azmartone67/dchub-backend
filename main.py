@@ -1487,6 +1487,25 @@ try:
     except Exception as _plge:
         import logging
         logging.getLogger(__name__).warning('powered_land_gas wiring failed: %s', _plge)
+    # Customer Feedback Forum v1 (2026-06-06): /feedback page + DB
+    # schema bootstrap (piggy-backs onto content_publisher.init_content_tables)
+    # + brain triage + auto-apply for LOW-risk submissions. User
+    # explicitly enabled auto-apply by default; kill switch is
+    # FEEDBACK_AUTO_APPLY_DISABLE. Triage cron is in
+    # crawler_scheduler.py SCHEDULE entry 'feedback_triage' at slot
+    # 8/20 UTC.
+    try:
+        from routes.feedback_forum import feedback_forum_bp
+        app.register_blueprint(feedback_forum_bp)
+    except Exception as _ffe:
+        import logging
+        logging.getLogger(__name__).warning('feedback_forum wiring failed: %s', _ffe)
+    try:
+        from routes.feedback_triage import feedback_triage_bp
+        app.register_blueprint(feedback_triage_bp)
+    except Exception as _fte:
+        import logging
+        logging.getLogger(__name__).warning('feedback_triage wiring failed: %s', _fte)
     # Phase ZZZZ-brain-L123 (2026-05-18): brain layers 1-3 — PR opener,
     # LLM narrative, finding-outcome memory. Closes the "brain detects
     # but never fixes / never learns" gap the user called out.
@@ -26913,6 +26932,18 @@ try:
     print("[main] dchub_media_accelerator_bp registered: /api/v1/admin/media/accelerator/{scan,recent}", flush=True)
 except Exception as _dma_e:
     print(f"[main] dchub_media_accelerator_bp register failed: {_dma_e}", flush=True)
+
+# Market Brief v1 (2026-06-06): shareable per-market briefs that replace
+# the dcHawk PDF in a broker/REIT/fund deck. 9 sections, FREE teaser
+# (Hero + At-a-Glance + Outlook teaser) + PRO unlock for Power/Pipeline/
+# Operators/M&A/Comps/Risk. URL is always public, always 200 — emailed
+# links never 404. Per feature_specs/MARKET_BRIEF_v1.md.
+try:
+    from routes.market_brief import market_brief_bp
+    app.register_blueprint(market_brief_bp)
+    print("[main] market_brief_bp registered: /markets/<slug>/brief + /api/v1/market-brief/<slug>", flush=True)
+except Exception as _mb_e:
+    print(f"[main] market_brief_bp register failed: {_mb_e}", flush=True)
 
 # Autonomous MCP-presence management (2026-06-05): twice-daily crawl of
 # the ~15 MCP listing sites DC Hub appears on (Smithery, MCPHive,

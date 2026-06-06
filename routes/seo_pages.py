@@ -827,6 +827,11 @@ def sitemap_landings():
         urls.append(f'  <url><loc>https://dchub.cloud/facility/{slug}</loc><changefreq>monthly</changefreq><priority>0.85</priority></url>')
     urls.append('  <url><loc>https://dchub.cloud/markets/interxion-frankfurt</loc><changefreq>weekly</changefreq><priority>0.85</priority></url>')
     urls.append('  <url><loc>https://dchub.cloud/partners/moltbook-api</loc><changefreq>monthly</changefreq><priority>0.7</priority></url>')
+    # Market Brief v1 (2026-06-06): 5 seed markets get sitemapped on day 1.
+    # Beyond these the surface auto-renders for any market_power_scores
+    # row, but only the seed five are hand-QA'd + pre-warmed.
+    for _mb_slug in ('northern-virginia', 'dallas', 'phoenix', 'atlanta', 'chicago'):
+        urls.append(f'  <url><loc>https://dchub.cloud/markets/{_mb_slug}/brief</loc><changefreq>daily</changefreq><priority>0.9</priority></url>')
     items = '\n'.join(urls)
     xml = f'<?xml version="1.0" encoding="UTF-8"?>\n<urlset xmlns="http://www.sitemaps.org/schemas/sitemap/0.9">\n{items}\n</urlset>'
     return Response(xml, mimetype='application/xml',

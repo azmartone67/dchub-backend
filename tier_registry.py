@@ -82,6 +82,53 @@ TIER_PRICE_USD_MONTH = {
 }
 
 
+# ─────────────────────────────────────────────────────────────────────
+# Per-tier surface unlocks (r-market-brief, 2026-06-06).
+# Source of truth for which subscription unlocks which premium surface.
+# Consumers read this to drive paywall copy + the "Includes…" pricing copy.
+# ─────────────────────────────────────────────────────────────────────
+TIER_FEATURES = {
+    'anonymous':  {'market_brief': 'teaser'},
+    'anon':       {'market_brief': 'teaser'},
+    'free':       {'market_brief': 'teaser'},
+    'identified': {'market_brief': 'teaser'},
+    'starter':    {'market_brief': 'teaser'},
+    'developer':  {'market_brief': 'teaser'},
+    # PRO + above unlock the full 9-section brief for ALL markets.
+    'pro':        {'market_brief': 'full'},
+    'founding':   {'market_brief': 'full'},   # == pro
+    'enterprise': {'market_brief': 'full+white_label'},
+    'research_seed': {'market_brief': 'full+white_label'},
+    'admin':      {'market_brief': 'full+white_label'},
+}
+
+# Public-facing pricing copy bullets. The pricing page reads this to render
+# the "Includes…" list under each plan card; keeping the copy here keeps
+# tier benefits + price + marketing copy in ONE source of truth.
+TIER_PRICING_COPY = {
+    'starter':    ['10× the free quota', 'API access', 'Email support'],
+    'developer':  ['500 MCP calls/day', 'All public datasets',
+                   'Developer Slack channel'],
+    'pro':        ['2,000 MCP calls/day', 'Market Brief for all markets',
+                   'Live deal flow + operator footprint',
+                   'Priority email support'],
+    'founding':   ['2,000 MCP calls/day', 'Market Brief for all markets',
+                   'Founding-member badge', 'Direct line to the team'],
+    'enterprise': ['Unlimited MCP', 'White-labeled Market Brief',
+                   'Dedicated account manager', 'Custom SLA'],
+}
+
+
+def features(tier):
+    """Per-tier feature unlock map (e.g. market_brief = teaser|full|full+white_label)."""
+    return TIER_FEATURES.get(_norm(tier), TIER_FEATURES['free'])
+
+
+def pricing_copy(tier):
+    """Bulleted 'Includes…' list shown on the pricing card for `tier`."""
+    return TIER_PRICING_COPY.get(_norm(tier), [])
+
+
 def _norm(name):
     return (name or 'free').strip().lower()
 
@@ -151,10 +198,13 @@ def as_public_dict():
                       'api_tier': t['api_tier'],
                       'price_usd_month': TIER_PRICE_USD_MONTH.get(n),
                       'calls_per_day': TIER_LIMITS.get(n, {}).get('mcp_daily'),
-                      'stripe_link': _stripe_link(n)}
+                      'stripe_link': _stripe_link(n),
+                      'features': TIER_FEATURES.get(n, {}),
+                      'includes': TIER_PRICING_COPY.get(n, [])}
                   for n, t in TIERS.items()},
         'limits': TIER_LIMITS,
         'pricing': {n: TIER_PRICE_USD_MONTH.get(n) for n in TIERS},
+        'features': TIER_FEATURES,
         'rule': 'founding == pro for access and benefits',
         'price_note': 'price_usd_month: starter 9 · developer 49 · pro 199 · enterprise custom. calls_per_day = mcp_daily.',
     }
