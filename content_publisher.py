@@ -12,6 +12,7 @@ import requests
 import threading
 from datetime import datetime, timedelta
 from flask import Blueprint, request, jsonify
+from utils.anthropic_helper import anthropic_messages_url
 
 # phase57_landing — daily landing URL helper for LinkedIn rich-card preview
 def _phase30c_landing_url(d=None):
@@ -135,6 +136,13 @@ def init_content_tables():
         _ift()
     except Exception as _fbe:
         logger.warning("feedback_forum table init skipped: %s", _fbe)
+
+    # market_verdict_post_log table — same boot-init pattern.
+    try:
+        from routes.market_verdict_shifts import init_verdict_shift_tables as _ivst
+        _ivst()
+    except Exception as _vse:
+        logger.warning("market_verdict_shifts table init skipped: %s", _vse)
 
 def _media_block_category(reason: str) -> str:
     r = (reason or "").lower()
@@ -1555,7 +1563,7 @@ def _editor_review(content_text: str):
         import requests as _rq
         import json as _json
         r = _rq.post(
-            "https://api.anthropic.com/v1/messages",
+            anthropic_messages_url(),
             headers={"x-api-key": key, "anthropic-version": "2023-06-01",
                      "content-type": "application/json"},
             json={"model": _EDITOR_MODEL, "max_tokens": 120,

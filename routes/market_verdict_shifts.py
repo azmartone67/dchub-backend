@@ -132,6 +132,25 @@ def _log(msg: str) -> None:
 _TABLES_READY = False
 
 
+def init_verdict_shift_tables() -> None:
+    """Public boot-init hook. Called from content_publisher.init_content_tables()
+    at boot so the log table exists before the FIRST query (the read endpoint
+    `/api/v1/verdict-shifts/recent` was 500'ing with "relation does not exist"
+    because the lazy `_ensure_log_table` only ran on the WRITE path)."""
+    conn = _db_conn()
+    if conn is None:
+        return
+    try:
+        with conn:
+            with conn.cursor() as cur:
+                _ensure_log_table(cur)
+    except Exception:
+        pass
+    finally:
+        try: conn.close()
+        except Exception: pass
+
+
 def _ensure_log_table(cur) -> None:
     """Create market_verdict_post_log if missing. Idempotent.
 

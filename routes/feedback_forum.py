@@ -1019,6 +1019,7 @@ def _esc(v) -> str:
         return str(v).replace("<", "&lt;").replace(">", "&gt;")
 
 
+@feedback_forum_bp.route("/api/v1/admin/feedback", methods=["GET"])
 @feedback_forum_bp.route("/admin/feedback", methods=["GET"])
 def admin_feedback_dashboard():
     """Triage dashboard for /feedback submissions.
