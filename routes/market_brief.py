@@ -163,19 +163,21 @@ def _section_hero(cur, slug: str) -> dict | None:
     # 100% broken). Now we SELECT only the columns market_deep_dive (the proven
     # sibling) uses; the optional fields default to None and downstream
     # sections (power/queue) fill what they can, best-effort.
-    # r-fix-2 (2026-06-06): the SELECT was asking for `verdict` and `score`
-    # which don't exist on the live market_power_scores table. The columns
-    # are `composite_score` (not score) and there's NO verdict column —
-    # verdict is DERIVED from (constraint_score, excess_power_score) per
-    # scripts/bulk_dcpi_score.py:compute_verdict. The bare except swallowed
-    # the "column does not exist" error → returned None → "not in coverage"
-    # rendered for every market. Now: query the real columns, derive verdict.
-    #
-    # Also widened the slug match to handle the metro↔city alias trap (e.g.
-    # /markets/northern-virginia/brief should resolve to ashburn in DCPI).
+    # r-fix-3 (2026-06-06) — AUTHORITATIVE per the two live writers
+    # (routes/dcpi.py:1473 + main.py:28548) and the CREATE TABLE
+    # (routes/dcpi.py:153). The REAL columns are: market_slug, market_name,
+    # state, iso, constraint_score, excess_power_score, time_to_power_months,
+    # queue_wait_months, verdict, computed_at, ... — `verdict` DOES exist;
+    # NEITHER `score` NOR `composite_score` exists (the DCPI composite is
+    # computed on the fly in index_api, never stored). Earlier attempts kept
+    # `score` (r-fix) then swapped to `composite_score` (r-fix-2) — BOTH
+    # non-existent, so the query kept throwing into the bare except → None →
+    # "not in coverage" for every market. Use only writer-guaranteed columns;
+    # composite_score stays None (hero shows verdict + excess + constraint).
+    # MARKET_ALIAS handles the metro↔city slug trap (northern-virginia↔ashburn).
     try:
         cur.execute("""
-            SELECT market_slug, market_name, composite_score,
+            SELECT market_slug, market_name, verdict,
                    excess_power_score, constraint_score, computed_at, iso
               FROM market_power_scores
              WHERE LOWER(market_slug) = LOWER(%s)
@@ -209,8 +211,8 @@ def _section_hero(cur, slug: str) -> dict | None:
         "name":              r[1],
         "state":             None,
         "iso":               r[6],
-        "verdict":           verdict,
-        "composite_score":   _as_int(r[2]),
+        "verdict":           (r[2] or verdict),
+        "composite_score":   None,
         "excess_power":      _as_float(r[3]),
         "constraint_score":  _as_float(r[4]),
         "queue_wait_months": None,
