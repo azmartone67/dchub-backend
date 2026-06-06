@@ -681,7 +681,7 @@ def _card_url_for(story_type: str, data: dict, text: str) -> str | None:
             tool = d.get("tool") or {}
             ask = _clean(tool.get("ask"), 110) or "rank every US market by excess power for AI"
             title = f"Ask any AI to {ask}"
-            sub = f"Live via DC Hub MCP · {tool.get('tool', '')} · 24 free agent-native tools"
+            sub = f"Live via DC Hub MCP · {tool.get('tool', '')} · 33 agent-native tools"
             style = "editorial"
 
         elif story_type == "shipped_this_week":
@@ -708,6 +708,15 @@ def _card_url_for(story_type: str, data: dict, text: str) -> str | None:
             return None
         if not sub:
             sub = "Live, agent-native data-center intelligence · dchub.cloud"
+
+        # Opt-in AI imagery (2026-06-06): when DCHUB_MEDIA_AI_IMAGES is on AND CF
+        # Workers AI creds are set on the backend, visually-rich stories get an
+        # SDXL hero photo (atmospheric data-center / grid imagery) instead of a
+        # typographic card. Default OFF → behavior unchanged; ai_hero also falls
+        # back to the polished gradient card if SDXL is unconfigured, so it's safe.
+        if os.environ.get("DCHUB_MEDIA_AI_IMAGES", "").lower() in ("1", "true", "yes") \
+                and story_type in ("energy_narrative", "hyperscaler_drama", "capability_spotlight"):
+            style = "ai_hero"
 
         params = {"style": style, "title": title, "subheadline": sub}
         if market:

@@ -672,10 +672,15 @@ def _generate_workers_ai_image(prompt: str, slug: str):
     if cache_key in _AI_IMAGE_CACHE:
         return _AI_IMAGE_CACHE[cache_key]
 
-    account_id = os.environ.get('CF_ACCOUNT_ID', '')
-    api_token  = os.environ.get('CF_API_TOKEN', '')
+    # Accept either the dedicated CF_* vars or the broader CLOUDFLARE_* vars
+    # (the account often already has CLOUDFLARE_API_TOKEN/ACCOUNT_ID set for
+    # Pages/Wrangler). The token must have the "Workers AI" permission.
+    account_id = (os.environ.get('CF_ACCOUNT_ID')
+                  or os.environ.get('CLOUDFLARE_ACCOUNT_ID') or '')
+    api_token  = (os.environ.get('CF_API_TOKEN')
+                  or os.environ.get('CLOUDFLARE_API_TOKEN') or '')
     if not (account_id and api_token):
-        return None  # Not configured — caller falls back to gradient
+        return None  # Not configured — caller falls back to the gradient card
 
     try:
         import requests as _rq
@@ -1238,12 +1243,19 @@ def og_card_dynamic():
             'verdict': verdict or 'BUILD',
         }]}
 
+    _title = (args.get('title') or 'DC Hub Media').strip()[:200]
+    # Per-content slug so the ai_hero SDXL cache (keyed by slug+day) produces a
+    # DISTINCT image per headline — otherwise every dynamic AI card would share
+    # one image for the whole day.
+    import hashlib as _hl
+    _slug = 'dyn-' + _hl.sha1((_title + '|' + (args.get('market') or '')).encode()).hexdigest()[:12]
     pr = {
-        'title':       (args.get('title') or 'DC Hub Media').strip()[:200],
+        'title':       _title,
         'subheadline': (args.get('subheadline') or '').strip()[:300],
         'date':        date_val,
         'signals':     signals,
-        'slug':        'dynamic',
+        'slug':        _slug,
+        'topic':       (args.get('topic') or '').strip()[:80],
     }
 
     try:
