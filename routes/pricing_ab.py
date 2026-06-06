@@ -508,7 +508,7 @@ def record_ab_event():
                     INSERT INTO pricing_ab_events
                         (session_hash, cohort, event_type,
                          source_path, utm_source, value_usd)
-                    VALUES (%s, %s, %s, %s, %s, %s)
+                    VALUES (%s, %s, %s, %s, %s, %s) ON CONFLICT DO NOTHING
                     """,
                     (sess_hash, cohort, event_type,
                      source_path, utm_source, value_usd),

@@ -99,7 +99,7 @@ def record_signal(*, signal_type, tool_requested=None, tier_current='free',
                             (session_id, user_email, ip_address, signal_type, tool_requested,
                              tier_current, tier_required, daily_usage, daily_limit,
                              message_shown, mcp_client, user_agent, caller_id, created_at)
-                          VALUES (%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,NOW())
+                          VALUES (%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,NOW() ON CONFLICT DO NOTHING)
                           RETURNING id""",
                         (session_id, user_email, ip_address, signal_type, tool_requested,
                          tier_current, tier_required, daily_usage, daily_limit,

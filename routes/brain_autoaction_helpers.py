@@ -439,7 +439,7 @@ def brain_alerts_critical_create():
             cur.execute("""
                 INSERT INTO brain_critical_alerts
                     (severity, issue, finding_url, detail, source)
-                VALUES (%s, %s, %s, %s, %s)
+                VALUES (%s, %s, %s, %s, %s) ON CONFLICT DO NOTHING
                 RETURNING id
             """, (severity, issue, url, detail, source))
             new_id = (cur.fetchone() or [None])[0]
@@ -475,6 +475,7 @@ def brain_alerts_critical_create():
                    severity=severity, issue=issue), 201
 
 
+# AUTO-REPAIR: duplicate route '/api/v1/brain/alerts/critical' also in routes/brain_autoaction_helpers.py:398 — review and remove one
 @brain_autoaction_helpers_bp.route(
     "/api/v1/brain/alerts/critical", methods=["GET"])
 def brain_alerts_critical_list():

@@ -1010,7 +1010,7 @@ def _stage_dry_run_html_fix(issue: dict, find: str, replace: str,
                 """INSERT INTO brain_pending_html_fixes
                      (page_url, find_text, replace_text, rationale,
                       status, approval_count)
-                   VALUES (%s, %s, %s, %s, 'dry_run', %s)""",
+                   VALUES (%s, %s, %s, %s, 'dry_run', %s) ON CONFLICT DO NOTHING""",
                 (page_url, find[:4096], replace[:4096],
                  (rationale or '')[:1024], int(approval_count)))
 

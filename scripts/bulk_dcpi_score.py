@@ -147,7 +147,7 @@ def main():
                      constraint_score, excess_power_score,
                      verdict, tier_required, computed_at,
                      iso, state)
-                    VALUES (%s, %s, NULL, NULL, %s, %s, %s, 'lite-pro', NOW(), %s, %s)
+                    VALUES (%s, %s, NULL, NULL, %s, %s, %s, 'lite-pro', NOW() ON CONFLICT DO NOTHING, %s, %s)
                     ON CONFLICT (market_slug) DO UPDATE SET
                         market_name = EXCLUDED.market_name,
                         constraint_score = EXCLUDED.constraint_score,

@@ -220,6 +220,7 @@ def send_admin_alert_email(subject, body_text):
 # AUTH ROUTES (7 routes)
 # =============================================================================
 
+# AUTO-REPAIR: duplicate route '/api/auth/register' also in api_server.py:609 — review and remove one
 @auth_bp.route('/api/auth/register', methods=['POST'])
 def register_user():
     """Register new user account"""
@@ -250,7 +251,7 @@ def register_user():
 
             pg_cur.execute("""
                 INSERT INTO users (id, email, password_hash, name, company, plan, role, created_at)
-                VALUES (%s, %s, %s, %s, %s, 'free', 'user', %s)
+                VALUES (%s, %s, %s, %s, %s, 'free', 'user', %s) ON CONFLICT DO NOTHING
             """, (user_id, email, password_hash, name, company, datetime.utcnow().isoformat()))
             pg_conn.commit()
             # Send free welcome email
@@ -291,6 +292,7 @@ def register_user():
         logger.error(f"Registration error: {e}")
         return jsonify({'error': 'Registration failed'}), 500
 
+# AUTO-REPAIR: duplicate route '/api/auth/login' also in api_server.py:696 — review and remove one
 
 @auth_bp.route('/api/auth/login', methods=['POST'])
 def login_user():
@@ -461,7 +463,7 @@ def google_auth_callback():
                 user_role = 'user'
                 pg_cur.execute("""
                     INSERT INTO users (id, email, name, plan, role, google_id, created_at, last_login)
-                    VALUES (%s, %s, %s, 'free', 'user', %s, %s, %s)
+                    VALUES (%s, %s, %s, 'free', 'user', %s, %s, %s) ON CONFLICT DO NOTHING
                 """, (user_id, email, name, google_id,
                       datetime.utcnow().isoformat(), datetime.utcnow().isoformat()))
 
@@ -495,6 +497,7 @@ def google_auth_callback():
         logger.error(f"Google callback error: {e}")
         error_msg = str(e).replace("'", "\\'")
         return f"""<script>if(window.opener){{window.opener.postMessage({{type:'google-auth-error',error:'{error_msg}'}},'*');window.close();}}else{{window.location.href='/login.html?error='+encodeURIComponent('{error_msg}');}}</script>"""
+# AUTO-REPAIR: duplicate route '/api/auth/google' also in api_server.py:740 — review and remove one
 
 
 @auth_bp.route('/api/auth/google', methods=['POST'])
@@ -577,7 +580,7 @@ def google_auth():
                 user_company = ''
                 pg_cur.execute("""
                     INSERT INTO users (id, email, name, plan, role, google_id, created_at, last_login)
-                    VALUES (%s, %s, %s, 'free', 'user', %s, %s, %s)
+                    VALUES (%s, %s, %s, 'free', 'user', %s, %s, %s) ON CONFLICT DO NOTHING
                 """, (user_id, email, name, google_id,
                       datetime.utcnow().isoformat(), datetime.utcnow().isoformat()))
 
@@ -610,6 +613,7 @@ def google_auth():
     except Exception as e:
         logger.error(f"Google auth error: {e}")
         import traceback; traceback.print_exc()
+# AUTO-REPAIR: duplicate route '/api/auth/me' also in api_server.py:868 — review and remove one
         return jsonify({'error': 'Google authentication failed'}), 500
 
 
@@ -644,6 +648,7 @@ def get_current_user():
                 }
             })
     except Exception as e:
+# AUTO-REPAIR: duplicate route '/api/auth/update' also in api_server.py:902 — review and remove one
         logger.error(f"Get user error: {e}")
         return jsonify({'error': 'Failed to retrieve user'}), 500
 
@@ -728,6 +733,7 @@ def get_user_dashboard():
         'alerts': alerts,
         'watchlist': [],
         'stats': {
+# AUTO-REPAIR: duplicate route '/api/user/dashboard' also in routes/auth_routes.py:693 — review and remove one
             'searches': 0,
             'alerts': len(alerts)
         }
@@ -817,7 +823,7 @@ def forgot_password():
 
                 pg_cur.execute("UPDATE password_reset_tokens SET used = TRUE WHERE user_email = %s AND used = FALSE", (email,))
                 pg_cur.execute(
-                    "INSERT INTO password_reset_tokens (user_email, token, expires_at) VALUES (%s, %s, %s)",
+                    "INSERT INTO password_reset_tokens (user_email, token, expires_at) VALUES (%s, %s, %s) ON CONFLICT DO NOTHING",
                     (email, token, expires_at)
                 )
                 pg_conn.commit()
