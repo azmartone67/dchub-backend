@@ -89,12 +89,16 @@ _DEFAULT_CHALLENGER = "claude-sonnet-4-5"
 # degrades to the next-cheapest confirmed-or-likely-valid model.
 # _safe_resolve() and call sites walk this on a 404/400 so a model
 # the key can't reach never zeros out the brain.
+# r-fix (2026-06-06): route AROUND the known-404 models so a fallback walk
+# doesn't burn requests (+ AI Gateway error rate) hitting dead endpoints.
+# claude-opus-4-7 returns 404 (see note above); claude-haiku-3-5 is RETIRED.
+# On any opus failure go straight to the confirmed-valid sonnet-4-5; haiku-4-5
+# is the cheapest VALID model = terminal (no fallback to retired haiku-3-5).
 _FALLBACK_CHAIN = {
-    "claude-opus-4-8":     "claude-opus-4-7",
-    "claude-opus-4-7":     "claude-opus-4-5",
+    "claude-opus-4-8":     "claude-sonnet-4-5",
+    "claude-opus-4-7":     "claude-sonnet-4-5",
     "claude-opus-4-5":     "claude-sonnet-4-5",
     "claude-sonnet-4-5":   "claude-haiku-4-5",
-    "claude-haiku-4-5":    "claude-haiku-3-5",
 }
 
 # Brain v3: which models support the 1M-context beta. When the
@@ -232,9 +236,12 @@ def probe_model_reachability(api_key: str,
                 "hint": "ANTHROPIC_API_KEY not set on the service"}
 
     # Probe order: best → worst. First reachable = best usable.
+    # r-fix (2026-06-06): dropped claude-haiku-3-5 (RETIRED → always 404, just
+    # pollutes the AI Gateway error rate). claude-opus-4-7 kept (probing it is
+    # how we confirm it's still 404), but it's no longer in the fallback path.
     if models is None:
         models = ["claude-opus-4-8", "claude-opus-4-7", "claude-opus-4-5",
-                  "claude-sonnet-4-5", "claude-haiku-4-5", "claude-haiku-3-5"]
+                  "claude-sonnet-4-5", "claude-haiku-4-5"]
 
     results = {}
     best_reachable = None

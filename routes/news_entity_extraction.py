@@ -252,7 +252,9 @@ def _extract_names_llm(headline: str, body: str) -> list[str]:
         from routes.brain_models import brain_model_for
         model = LLM_MODEL or brain_model_for("voice")
     except Exception:
-        model = LLM_MODEL or "claude-haiku-3-5"
+        # r-fix (2026-06-06): claude-haiku-3-5 is RETIRED → 404 on every call
+        # (broke entity extraction + ~contributed to the AI Gateway error rate).
+        model = LLM_MODEL or "claude-haiku-4-5"
     sample = (headline + "\n\n" + (body or ""))[:1200]
     system = (
         "Extract proper-noun NAMES of data center facilities or "
