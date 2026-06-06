@@ -26982,6 +26982,46 @@ try:
 except Exception as _mrw_e:
     print(f"[main] mcp_registry_watch_bp register failed: {_mrw_e}", flush=True)
 
+# 2026-06-05 (Phase HJ-3 Agent Concierge) — Novel agent acquisition +
+# conversion system. The thesis: AI agents are the new search engine,
+# and the conversion funnel is agent → human → paid (agents don't have
+# wallets). Three surfaces designed to compound:
+#   GET  /agent                          public landing page (renders
+#                                        for both agents AND humans
+#                                        building agents)
+#   POST /api/v1/agent/solve             NL problem → tool-call recipe.
+#                                        The meta-tool. Keyword-matches
+#                                        against a curated 12-recipe
+#                                        cookbook; falls back to a
+#                                        generic 3-tool starter if no
+#                                        match. <1ms hot path.
+#   GET  /api/v1/agent/cookbook          full recipe library, browsable
+#                                        by agents at planning time
+#   GET  /api/v1/agent/recipe/<id>       single-recipe lookup
+#   POST /api/v1/agent/upgrade-receipt   smart paywall: returns partial
+#                                        preview + agent-quotable
+#                                        rationale + magic-link upgrade
+#                                        URL that preserves agent
+#                                        context across the conversion
+try:
+    from routes.agent_concierge import agent_concierge_bp
+    app.register_blueprint(agent_concierge_bp)
+    print("[main] agent_concierge_bp registered: /agent + /api/v1/agent/{solve,cookbook,recipe/<id>,upgrade-receipt}", flush=True)
+except Exception as _ac_e:
+    print(f"[main] agent_concierge_bp register failed: {_ac_e}", flush=True)
+
+# 2026-06-05 (Phase HJ-3) — Brain stuck-queue drainer. Forces autopilot
+# proposals on findings the brain has noticed 18-37 times but never
+# tried to propose a fix for. The brain is great at observing; the
+# autopilot pipeline wasn't catching up to observation rate. This
+# short-circuits that.
+try:
+    from routes.brain_stuck_drain import brain_stuck_drain_bp
+    app.register_blueprint(brain_stuck_drain_bp)
+    print("[main] brain_stuck_drain_bp registered: GET /api/v1/brain/stuck-drain/preview + POST /api/v1/admin/brain/stuck-drain/run", flush=True)
+except Exception as _bsd_e:
+    print(f"[main] brain_stuck_drain_bp register failed: {_bsd_e}", flush=True)
+
 # r79 (2026-06-03) — Redirect blueprint for known-dead URLs. Each entry
 # in routes/redirects_404_killer.py is a URL we caught 404ing in production
 # (some during live demos). The link-check CI workflow now catches new
