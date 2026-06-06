@@ -300,11 +300,19 @@ def _find_eligible(cur) -> list[dict]:
         return out
     for r in rows:
         uid, email, plan, created_at, src_plan = r
+        # created_at may come back as datetime OR ISO string depending on
+        # driver / column type — handle both defensively.
+        joined_at: str | None = None
+        if created_at is not None:
+            try:
+                joined_at = created_at.isoformat()
+            except AttributeError:
+                joined_at = str(created_at)
         out.append({
             "user_id":    str(uid) if uid is not None else None,
             "email":      (email or "").strip().lower(),
             "plan":       plan,
-            "joined_at":  created_at.isoformat() if created_at else None,
+            "joined_at":  joined_at,
             "source_plan": src_plan,
         })
     return out
