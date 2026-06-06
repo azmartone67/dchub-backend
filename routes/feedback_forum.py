@@ -916,7 +916,15 @@ loadShipped();
 
 
 @feedback_forum_bp.route("/feedback", methods=["GET"])
+@feedback_forum_bp.route("/partners/feedback", methods=["GET"])
 def feedback_page():
+    # r74 (2026-06-06): dual-route alias. The single-segment /feedback path
+    # hits the CF zone-worker allowlist trap (same Error 1000 pattern as
+    # /aws/*, /research/*, /docs/* per session memory). /partners/* IS in
+    # the CF zone allowlist, so /partners/feedback reaches CF Pages → the
+    # backend cleanly. We keep BOTH alive so once the user fixes the CF
+    # dashboard rule, the canonical /feedback URL works too without a
+    # second deploy.
     """HTML page with form + public list. Renders inline (no template
     file) so a deploy can't get out of sync with a missing template."""
     if _TURNSTILE_SITEKEY:
