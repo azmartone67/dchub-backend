@@ -340,35 +340,40 @@ def media_aggregate():
                 ]
             except Exception: c.rollback()
 
-        # ── Rail: biggest movers (>3pt excess shift in 7d) ──────────
+        # ── Rail: biggest movers (real >=1pt excess shift over ~7d) ──
+        # r-fix (2026-06-06): source from dcpi_daily_snapshots (history-
+        # preserving) instead of market_power_scores, which re-stamps
+        # computed_at on every recompute so there was never a 7-day-ago row
+        # → this rail was permanently empty. Now diffs latest snapshot vs the
+        # most recent snapshot on/before 7 days ago. Honest-empty until the
+        # table has >=7 days of daily history, then real movers populate.
         with c.cursor() as cur:
             try:
                 cur.execute("""
                     WITH latest AS (
                       SELECT DISTINCT ON (market_slug) market_slug, market_name,
-                             iso, excess_power_score AS now_e
-                      FROM market_power_scores WHERE published = true
-                      ORDER BY market_slug, computed_at DESC
+                             excess_power_score AS now_e
+                      FROM dcpi_daily_snapshots
+                      ORDER BY market_slug, snapshot_date DESC
                     ),
                     week_ago AS (
                       SELECT DISTINCT ON (market_slug) market_slug,
                              excess_power_score AS prev_e
-                      FROM market_power_scores
-                      WHERE published = true
-                        AND computed_at < NOW() - INTERVAL '7 days'
-                      ORDER BY market_slug, computed_at DESC
+                      FROM dcpi_daily_snapshots
+                      WHERE snapshot_date <= CURRENT_DATE - 7
+                      ORDER BY market_slug, snapshot_date DESC
                     )
-                    SELECT l.market_slug, l.market_name, l.iso,
+                    SELECT l.market_slug, l.market_name,
                            l.now_e, (l.now_e - w.prev_e) AS delta
                     FROM latest l JOIN week_ago w ON l.market_slug = w.market_slug
-                    WHERE ABS(l.now_e - w.prev_e) > 3
+                    WHERE ABS(l.now_e - w.prev_e) >= 1
                     ORDER BY ABS(l.now_e - w.prev_e) DESC LIMIT 8
                 """)
                 for r in cur.fetchall():
                     out["rails"]["biggest_movers"].append({
-                        "slug": r[0], "market": r[1], "iso": r[2],
-                        "now": round(r[3] or 0, 1),
-                        "delta": round(r[4] or 0, 1),
+                        "slug": r[0], "market": r[1],
+                        "now": round(r[2] or 0, 1),
+                        "delta": round(r[3] or 0, 1),
                         "url": f"https://dchub.cloud/dcpi/{r[0]}",
                     })
             except Exception: c.rollback()

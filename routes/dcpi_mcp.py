@@ -66,29 +66,42 @@ def compare_dcpi():
 
 @dcpi_mcp_bp.route("/api/v1/mcp/dcpi/movers", methods=["GET"])
 def dcpi_movers():
-    """MCP tool: getDCPIMovers — biggest 7-day score movers."""
+    """MCP tool: getDCPIMovers — biggest 7-day score movers.
+
+    r-fix (2026-06-06): sourced from dcpi_daily_snapshots (the history-
+    preserving table), NOT market_power_scores. The old query self-joined
+    market_power_scores on `computed_at < NOW()-7d`, but that table re-stamps
+    computed_at on every recompute, so there was never a 7-day-ago row — every
+    "mover" came back with prev=NULL and delta=0 (10 fabricated non-movers).
+    Now we diff the latest snapshot against the most recent snapshot on/before
+    7 days ago and return ONLY real movers (|delta| >= 0.5). Empty until the
+    table has >=7 days of daily history (honest), then real deltas appear."""
     with _conn() as c, c.cursor(cursor_factory=psycopg2.extras.RealDictCursor) as cur:
         cur.execute("""
             WITH latest AS (
                 SELECT DISTINCT ON (market_slug)
                     market_slug, market_name, excess_power_score AS now_e,
-                    constraint_score AS now_c, computed_at
-                FROM market_power_scores
-                ORDER BY market_slug, computed_at DESC
+                    constraint_score AS now_c, snapshot_date
+                FROM dcpi_daily_snapshots
+                ORDER BY market_slug, snapshot_date DESC
             ),
             week_ago AS (
                 SELECT DISTINCT ON (market_slug)
-                    market_slug, excess_power_score AS prev_e
-                FROM market_power_scores
-                WHERE computed_at < NOW() - INTERVAL '7 days'
-                ORDER BY market_slug, computed_at DESC
+                    market_slug, excess_power_score AS prev_e, snapshot_date AS prev_date
+                FROM dcpi_daily_snapshots
+                WHERE snapshot_date <= CURRENT_DATE - 7
+                ORDER BY market_slug, snapshot_date DESC
             )
             SELECT l.market_slug, l.market_name, l.now_e, w.prev_e,
-                   COALESCE(l.now_e - w.prev_e, 0) AS delta
-            FROM latest l LEFT JOIN week_ago w ON l.market_slug=w.market_slug
-            ORDER BY ABS(COALESCE(l.now_e - w.prev_e, 0)) DESC
+                   ROUND((l.now_e - w.prev_e)::numeric, 1) AS delta,
+                   (CURRENT_DATE - w.prev_date) AS window_days
+            FROM latest l JOIN week_ago w ON l.market_slug = w.market_slug
+            WHERE ABS(l.now_e - w.prev_e) >= 0.5
+            ORDER BY ABS(l.now_e - w.prev_e) DESC
             LIMIT 10
         """)
         rows = cur.fetchall()
     return jsonify({"tool": "getDCPIMovers", "movers": rows,
+                    "window": "~7d (from dcpi_daily_snapshots)",
+                    "note": "empty until >=7 days of daily snapshot history exists",
                     "source": "https://dchub.cloud/dcpi"}), 200
