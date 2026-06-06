@@ -392,7 +392,11 @@ def _fetch_image_bytes(og_image_url: str) -> bytes | None:
             og_image_url,
             headers={"User-Agent": "DCHub-LinkedInQuad/1.1"},
         )
-        with urllib.request.urlopen(req, timeout=15) as resp:
+        # 45s (was 15s): ai_hero cards generate an SDXL image on first fetch
+        # (~15-30s) before the card is composited+cached. 15s timed out → the
+        # post fell back to text-only. Posts are 4/day so a longer wait is fine;
+        # subsequent fetches of the same slug+day hit the cache and return fast.
+        with urllib.request.urlopen(req, timeout=45) as resp:
             if resp.status == 200:
                 data = resp.read()
                 # LinkedIn caps image uploads at ~5MB; OG images are
