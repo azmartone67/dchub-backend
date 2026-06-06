@@ -10,7 +10,7 @@ Routes:
 import os
 import re
 import datetime
-from flask import Blueprint, request, Response
+from flask import Blueprint, request, Response, redirect
 
 
 # === phase 99h: dev-key creation + email send ============================
@@ -247,6 +247,18 @@ redeem_bp = Blueprint('redeem', __name__)
 
 EMAIL_RE = re.compile(r'^[A-Za-z0-9._%+-]+@[A-Za-z0-9.-]+\.[A-Za-z]{2,}$')
 UUID_RE = re.compile(r'^[0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{12}$')
+# r68-redeem-leak (2026-06-06): the BIGGEST funnel leak. AI agents were
+# being handed /api/v1/redeem/<X> URLs where <X> could be a UUID, a
+# DCM-XXXX pair code, a "sess:abc" string, or any opaque session id —
+# but this handler had a hard UUID_RE.match() gate and returned 400
+# "Invalid session ID" for everything else. r67-conv comment confirmed
+# the 16 minted codes → 0 redeem-page views funnel cliff. Fix:
+#   - DCM-XXXX (pair code) → delegate to pair_code.redeem_landing
+#     (same code path as /redeem/<code>, writes redeem_viewed_at).
+#   - non-UUID, non-DCM → mint a pair code for this session and 302
+#     to /redeem/<code>. If mint fails, fall through to the email
+#     form (graceful — never 400 the user out of the funnel).
+DCM_RE = re.compile(r'^DCM-[A-Z2-9]{4}$', re.IGNORECASE)
 
 FORM_HTML = """<!DOCTYPE html>
 <html lang="en">
@@ -498,13 +510,68 @@ def phase63_redeem(session_id):
     mcp_upgrade_signals rows for this session_id."""
     session_id = (session_id or '').strip()
 
-    # Validate session_id format (must be UUID-shaped)
-    if not UUID_RE.match(session_id):
-        return Response(
-            ERROR_HTML.replace('__TITLE__', 'Invalid session ID')
-                      .replace('__MESSAGE__', 'That session ID does not look right. Use the link from your AI assistant exactly.'),
-            mimetype='text/html', status=400
-        )
+    # r68-redeem-leak (2026-06-06): pre-fix this returned 400 "Invalid
+    # session ID" for anything not UUID-shaped, which 404'd every AI
+    # agent that handed a human a /api/v1/redeem/<DCM-XXXX> or
+    # /api/v1/redeem/<sess:...> URL. 16 codes/30d → 0 page views.
+    # New routing:
+    #   1. Empty/garbage → render the generic form (no crash).
+    #   2. DCM-XXXX → delegate to pair_code's redeem_landing (the
+    #      canonical pair-code surface; writes redeem_viewed_at,
+    #      shows tool/market context, has the Stripe CTA).
+    #   3. Non-UUID opaque id (sess:xxx, mcp-xxx, etc) on POST →
+    #      treat as a session identifier and continue (no UUID gate;
+    #      mcp_upgrade_signals.session_id is TEXT, not UUID).
+    #   4. Non-UUID opaque id on GET → mint a pair code keyed on this
+    #      session and 302 to /redeem/<DCM-code> so the human lands on
+    #      the canonical funnel-tracked page. Falls through to the
+    #      generic form if the mint fails (database briefly down).
+    if not session_id:
+        # Defensive: empty path means routing fell through; render form
+        # without session lookup rather than a hard 400.
+        session_id = 'unknown'
+
+    # Path 2: pair-code shape → delegate to the canonical pair-code handler.
+    # This is the route that writes mcp_pair_codes.redeem_viewed_at, which
+    # is what the conversion funnel counts.
+    if DCM_RE.match(session_id):
+        try:
+            from routes.pair_code import redeem_landing as _pc_redeem
+            return _pc_redeem(session_id.upper())
+        except Exception as _e:
+            _p99_logger.warning(
+                f"r68-redeem-leak: pair_code delegation failed for "
+                f"{session_id}: {type(_e).__name__}: {_e}"
+            )
+            # Fall through to safe 302 to /redeem/<code> on pair_code_bp.
+            return redirect(f'/redeem/{session_id.upper()}', code=302)
+
+    # Path 4: GET with non-UUID, non-DCM id → mint a pair code and
+    # redirect to the canonical page. Only on GET (POST is the form
+    # submission and the user has already landed; preserve that flow).
+    if request.method == 'GET' and not UUID_RE.match(session_id):
+        try:
+            from routes.pair_code import get_or_create_code as _mint
+            # Key on `sess:<id>` so a re-hit from the same session reuses
+            # the same pair code (idempotent within the 30-min window).
+            _mint_result = _mint(f"sess:{session_id}",
+                                  tool_name=request.args.get('tool'),
+                                  market=request.args.get('market'))
+            if _mint_result and _mint_result.get('code'):
+                _code = _mint_result['code']
+                _p99_logger.info(
+                    f"r68-redeem-leak: minted {_code} for "
+                    f"non-UUID session_id={session_id[:40]}"
+                )
+                return redirect(f'/redeem/{_code}', code=302)
+        except Exception as _e:
+            _p99_logger.warning(
+                f"r68-redeem-leak: inline mint failed for "
+                f"session={session_id[:40]}: {type(_e).__name__}: {_e}"
+            )
+        # Mint failed — fall through to render the email form with this
+        # session_id. Form still works; the lookup will just return no
+        # tools_tried context. Better than a 400.
 
     if request.method == 'POST':
         email = (request.form.get('email') or '').strip().lower()
