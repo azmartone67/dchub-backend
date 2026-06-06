@@ -83,7 +83,7 @@ def _insert_one(cur, f: dict) -> tuple[bool, str]:
                 id, name, provider, city, state, country, power_mw,
                 status, address, source, source_id
             )
-            VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, 'manual', %s)
+            VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, 'manual', %s) ON CONFLICT DO NOTHING
         """, (
             source_id, name, f.get("provider"),
             f.get("city"), f.get("state") or f.get("province"),
@@ -105,7 +105,7 @@ def _insert_one(cur, f: dict) -> tuple[bool, str]:
                 first_seen, last_updated
             )
             VALUES ('manual', %s, %s, %s, %s, %s, %s, %s, %s, %s,
-                    1.0, 0, %s, NOW()::TEXT, NOW()::TEXT, NOW()::TEXT)
+                    1.0, 0, %s, NOW() ON CONFLICT DO NOTHING::TEXT, NOW()::TEXT, NOW()::TEXT)
             ON CONFLICT (source, source_id) DO UPDATE SET
                 name = EXCLUDED.name,
                 provider = EXCLUDED.provider,
@@ -228,7 +228,7 @@ def backfill_discovered():
                             first_seen, last_updated
                         )
                         VALUES ('manual', %s, %s, %s, %s, %s, %s, %s, %s, %s,
-                                1.0, 0, %s, NOW()::TEXT,
+                                1.0, 0, %s, NOW() ON CONFLICT DO NOTHING::TEXT,
                                 NOW()::TEXT, NOW()::TEXT)
                         ON CONFLICT (source, source_id) DO NOTHING
                     """, (r[8], r[0], r[1], r[2], r[3], r[4],
