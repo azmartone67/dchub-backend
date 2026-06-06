@@ -416,13 +416,27 @@ def run_fire(fire_key: str) -> dict:
     env_dry = os.environ.get("DCHUB_HALFPRICE_DRY_RUN", ""
                              ).lower() in ("1", "true", "yes")
 
-    # Fire-key gate.
-    if not _valid_fire_key(fire_key):
+    # Fire-key gate. Multi-replica fallback: if the in-memory dict doesn't
+    # have the key (the preview hit a different replica), accept a special
+    # bypass fire_key = "ADMIN_OVERRIDE_<sha256(ADMIN_KEY)[:16]>" so an
+    # operator with the admin key can fire even when preview/fire land on
+    # different workers. Belt-and-suspenders: the admin-key check at the
+    # blueprint level already gates this endpoint.
+    import hashlib
+    admin_key = os.environ.get("DCHUB_ADMIN_KEY", "")
+    expected_override = "ADMIN_OVERRIDE_" + hashlib.sha256(
+        admin_key.encode()).hexdigest()[:16] if admin_key else ""
+    is_override = expected_override and fire_key == expected_override
+
+    if not is_override and not _valid_fire_key(fire_key):
         out["errors"].append("invalid_or_expired_fire_key")
         return out
 
-    # Single-use: pop the key so it can't be reused.
-    _FIRE_KEYS.pop(fire_key, None)
+    # Single-use: pop the key so it can't be reused (unless override).
+    if not is_override:
+        _FIRE_KEYS.pop(fire_key, None)
+    else:
+        _log(f"FIRE: using ADMIN_OVERRIDE bypass (multi-replica fallback)")
 
     c = _db_conn()
     if c is None:
