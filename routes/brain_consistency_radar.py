@@ -8520,6 +8520,16 @@ def _persist_findings_to_db(findings: list[dict]) -> int:
                 # First grab the current scan's unique keys, then
                 # delete brain_findings rows whose last_seen is older
                 # than 10 min AND not in this scan's keys.
+                # 2026-06-06: the inline INSERT used seen_count + ON
+                # CONFLICT (issue, url) — neither exists on the LIVE
+                # table, so this "canonical" persister failed silently
+                # for weeks (DELETE-sweep below still ran, so the table
+                # stayed empty/stale). Delegate to the canonical writer
+                # which introspects the live schema, restores seen_count,
+                # and upserts constraint-agnostically. THIS is why the
+                # brain learning log went silent: findings computed but
+                # never durably stored.
+                from routes.brain_findings_writer import upsert_brain_finding
                 current_keys = set()
                 for f in findings:
                     if not isinstance(f, dict): continue
@@ -8527,19 +8537,13 @@ def _persist_findings_to_db(findings: list[dict]) -> int:
                     url   = (f.get("url") or "")[:500]
                     if not issue: continue
                     current_keys.add((issue, url))
-                    cur.execute("""
-                        INSERT INTO brain_findings
-                            (issue, url, count, detail,
-                             first_seen, last_seen, seen_count)
-                        VALUES (%s, %s, %s, %s, NOW(), NOW(), 1)
-                        ON CONFLICT (issue, url) DO UPDATE
-                           SET count       = EXCLUDED.count,
-                               detail      = EXCLUDED.detail,
-                               last_seen   = NOW(),
-                               seen_count  = brain_findings.seen_count + 1
-                    """, (issue, url, f.get("count"),
-                          (f.get("detail") or "")[:2000]))
-                    rows += 1
+                    res = upsert_brain_finding(
+                        cur, issue=issue, url=url,
+                        count=f.get("count") or 1,
+                        detail=(f.get("detail") or "")[:2000],
+                        detector="consistency_radar")
+                    if res in ("inserted", "updated"):
+                        rows += 1
                 # Sweep stale findings (haven't reappeared in 10 min)
                 cur.execute("""
                     DELETE FROM brain_findings

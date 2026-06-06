@@ -468,22 +468,17 @@ def _our_actual_tool_count() -> int | None:
 # ── brain_findings writer ─────────────────────────────────────────────
 def _write_brain_finding(cur, issue: str, url: str, detail: str,
                          count: int = 1) -> None:
-    """Upsert into brain_findings — never raises. Mirrors the
-    bug-squash pattern: (issue, url) is the UNIQUE key."""
+    """Upsert into brain_findings via the canonical writer.
+
+    2026-06-06: the old inline INSERT used seen_count + ON CONFLICT
+    (issue, url) — neither exists on the LIVE table, so it failed
+    silently inside this except for weeks. Now delegates to
+    routes/brain_findings_writer which introspects the live schema,
+    restores seen_count, and upserts constraint-agnostically."""
     try:
-        cur.execute(
-            """
-            INSERT INTO brain_findings
-                (issue, url, count, detail, first_seen, last_seen, seen_count)
-            VALUES (%s, %s, %s, %s, NOW(), NOW(), 1)
-            ON CONFLICT (issue, url) DO UPDATE
-                SET count      = EXCLUDED.count,
-                    detail     = EXCLUDED.detail,
-                    last_seen  = NOW(),
-                    seen_count = brain_findings.seen_count + 1
-            """,
-            (issue[:200], (url or "")[:500], count, (detail or "")[:2000]),
-        )
+        from routes.brain_findings_writer import upsert_brain_finding
+        upsert_brain_finding(cur, issue=issue, url=url, count=count,
+                             detail=detail, detector="mcp_presence_crawler")
     except Exception as e:
         logger.warning("mcp_presence: brain_findings write failed: %s", e)
 

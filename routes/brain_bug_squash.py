@@ -75,30 +75,26 @@ def _persist_findings(findings: list[dict]) -> dict:
     try:
         with psycopg2.connect(dsn, sslmode="require", connect_timeout=6) as c:
             with c.cursor() as cur:
+                # 2026-06-06: the ON CONFLICT DO UPDATE referenced
+                # seen_count (phantom column on the live table) + needs
+                # a UNIQUE(issue,url) constraint that may not exist, so
+                # every conflicting write failed silently. Delegate to
+                # the canonical brain_findings_writer (introspects schema,
+                # restores seen_count, constraint-agnostic upsert).
+                from routes.brain_findings_writer import upsert_brain_finding
                 for f in findings:
                     try:
-                        cur.execute(
-                            """
-                            INSERT INTO brain_findings
-                                (issue, url, count, detail, detector, status)
-                            VALUES (%s, %s, 1, %s, %s, 'open')
-                            ON CONFLICT (issue, url) DO UPDATE
-                                SET last_seen = NOW(),
-                                    seen_count = brain_findings.seen_count + 1,
-                                    detail = EXCLUDED.detail
-                            RETURNING (xmax = 0) AS is_insert
-                            """,
-                            (
-                                f.get("issue", "bug_squash:unknown"),
-                                f.get("url", ""),
-                                f.get("detail", ""),
-                                f.get("detector", "brain_bug_squash"),
-                            ),
-                        )
-                        row = cur.fetchone()
-                        if row and row[0]:
+                        res = upsert_brain_finding(
+                            cur,
+                            issue=f.get("issue", "bug_squash:unknown"),
+                            url=f.get("url", ""),
+                            count=1,
+                            detail=f.get("detail", ""),
+                            detector=f.get("detector", "brain_bug_squash"),
+                            status="open")
+                        if res == "inserted":
                             inserted += 1
-                        else:
+                        elif res == "updated":
                             updated += 1
                     except Exception as e:
                         log.warning("bug_squash insert failed for %s: %s",
