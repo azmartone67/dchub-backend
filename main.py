@@ -10399,8 +10399,8 @@ def stripe_config():
         'publishableKey': STRIPE_PUBLISHABLE_KEY,
         'configured': bool(STRIPE_SECRET_KEY),
         'prices': {
-            'pro_monthly': 299,
-            'pro_annual': 1990,
+            'pro_monthly': 199,
+            'pro_annual': 1188,  # half-price one-time annual deal (50% off vs $1990 recurring)
             'founding': 99
         }
     })
@@ -10420,8 +10420,8 @@ def create_checkout_session():
     if not price_id or price_id.startswith('price_XXXXX'):
         # Fall back to payment links if price IDs not configured
         payment_links = {
-            'pro_monthly': 'https://buy.stripe.com/dRm7sMbRgcfPg97buiaZi02',
-            'pro_annual': 'https://buy.stripe.com/4gM3cwcVk3JjbSR9maaZi01',
+            'pro_monthly': 'https://buy.stripe.com/eVq5kE4oOfs13mleGuaZi0h',
+            'pro_annual': 'https://buy.stripe.com/dRm7sM6wW7Zz1edgOCaZi07',  # 50%-off one-time annual
             'founding': 'https://buy.stripe.com/9B6fZi1cCdjT3ml8i6aZi00',
             'enterprise_monthly': 'https://buy.stripe.com/fZueVe5sS6Vv7CB41QaZi0a',
             'enterprise_annual': 'https://buy.stripe.com/dRmdRa4oO1Bb9KJ2XMaZi0b',
@@ -24698,6 +24698,12 @@ try:
         print("🌿 EPA Facilities shim: ✅ Registered (/api/epa/facilities)")
     except Exception as _epa_e:
         print(f"🌿 EPA Facilities shim: ⚠️ {_epa_e}")
+    try:
+        from routes.gas_pipeline_ingest import gas_ingest_bp
+        app.register_blueprint(gas_ingest_bp)
+        print("🔥 Gas Pipeline Ingest: ✅ Registered (/api/v1/admin/ingest/gas-pipelines)")
+    except Exception as _gpi_e:
+        print(f"🔥 Gas Pipeline Ingest: ⚠️ {_gpi_e}")
 except Exception as e:
     print(f"❌ Energy Discovery blueprint failed: {e}")
 

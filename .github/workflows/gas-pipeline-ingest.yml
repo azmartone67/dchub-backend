@@ -1,0 +1,33 @@
+name: Gas Pipeline Ingest (EIA → gas_pipelines)
+
+# Enriches the sparse gas_pipelines table from the EIA Natural Gas Pipelines
+# feature service. Idempotent (tags source='eia_geodot_lines', clears its own
+# prior rows). Runs weekly; also dispatchable on demand.
+
+on:
+  schedule:
+    - cron: '30 7 * * 1'   # Mondays 07:30 UTC
+  workflow_dispatch:
+    inputs:
+      cap:
+        description: 'Max features to ingest'
+        required: false
+        default: '12000'
+
+jobs:
+  ingest:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Trigger gas-pipeline ingest
+        env:
+          ADMIN_KEY: ${{ secrets.DCHUB_ADMIN_KEY }}
+          CAP: ${{ github.event.inputs.cap || '12000' }}
+        run: |
+          if [ -z "$ADMIN_KEY" ]; then
+            echo "::warning::DCHUB_ADMIN_KEY not set — skipping"; exit 0
+          fi
+          code=$(curl -sS -m 180 -o /tmp/gas.json -w "%{http_code}" -X POST \
+            -H "X-Admin-Key: $ADMIN_KEY" \
+            "https://dchub-backend-production.up.railway.app/api/v1/admin/ingest/gas-pipelines?cap=${CAP}")
+          echo "HTTP $code"; cat /tmp/gas.json || true
+          [ "$code" = "200" ] || { echo "::error::gas ingest failed ($code)"; exit 1; }

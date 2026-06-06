@@ -271,11 +271,26 @@ def energy_discovery_transmission_lines():
 
 @energy_discovery_bp.route('/api/energy-discovery/wind-projects', methods=['GET'])
 def energy_discovery_wind_projects():
-    """Return wind project data for Energy Discovery panel"""
+    """Wind projects for the Energy Discovery panel. The dedicated wind_projects
+    table is empty, so serve real wind generation from power_plants_eia
+    (primary_fuel='wind', ~hundreds of sites); curated seed fallback on error."""
     try:
         market = request.args.get('market', '')
         limit = min(int(request.args.get('limit', 2000)), 5000)
-        projects = _filter_market(_WIND_PROJECTS, market)[:limit]
+        projects = _rows_from_db(
+            "SELECT name, lat, lng, nameplate_capacity_mw, utility_name, state, county "
+            "FROM power_plants_eia "
+            "WHERE lat IS NOT NULL AND lng IS NOT NULL AND primary_fuel ILIKE '%%wind%%' "
+            "ORDER BY nameplate_capacity_mw DESC NULLS LAST LIMIT %s",
+            [limit],
+            lambda r: {'project_name': r[0] or 'Wind Project',
+                       'lat': float(r[1]), 'lng': float(r[2]),
+                       'project_capacity_mw': float(r[3]) if r[3] is not None else 0,
+                       'turbine_capacity_kw': 0, 'manufacturer': '', 'model': '',
+                       'operator': r[4] or '', 'state': r[5] or '',
+                       'county': r[6] or '', 'market': ''})
+        if not projects:
+            projects = _filter_market(_WIND_PROJECTS, market)[:limit]
         return jsonify({'success': True, 'data': projects, 'count': len(projects)})
     except Exception as e:
         logger.error(f"Energy discovery wind-projects error: {e}")
@@ -390,6 +405,18 @@ def energy_discovery_status():
                 cur.execute("SELECT COALESCE(SUM(nameplate_capacity_mw),0) FROM power_plants_eia")
                 cap_row = cur.fetchone() or (0,)
                 out['data']['total_capacity_mw'] = int(cap_row[0] or 0)
+            except Exception:
+                try: conn.rollback()
+                except Exception: pass
+
+            # Wind: the dedicated wind_projects table is empty, so the loop above
+            # reports 0. Count wind generation from power_plants_eia instead so
+            # the badge reflects reality.
+            try:
+                cur.execute("SELECT COUNT(*) FROM power_plants_eia WHERE primary_fuel ILIKE '%%wind%%'")
+                _wr = cur.fetchone()
+                if _wr and _wr[0]:
+                    out['data']['total_wind_projects'] = int(_wr[0])
             except Exception:
                 try: conn.rollback()
                 except Exception: pass
