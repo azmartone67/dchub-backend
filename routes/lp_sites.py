@@ -601,7 +601,7 @@ h1{font-size:2rem;font-weight:800;letter-spacing:-.02em;color:#fff;margin:0 0 .4
 </style></head><body><div class=wrap>
 <p class=kick>Premium · Your Portfolio</p>
 <h1>Alerts &amp; Saved Sites</h1>
-<p class=lead>Everything DC Hub is holding for you — candidate Land+Power sites, the alerts watching them, and bulk export. The same portfolio your agents read and write through the MCP tools <code>save_site</code> and <code>set_market_alert</code>.</p>
+<p class=lead>Your DC Hub portfolio — candidate Land+Power sites, the alerts watching them, and one-click CSV / GeoJSON export, all in one place. Agents get the same persistence through the <code>save_site</code> and <code>set_market_alert</code> MCP tools.</p>
 <p class=status id=status>Loading your portfolio…</p>
 <div id=gate></div>
 <div id=sites class=sec style=display:none></div>
