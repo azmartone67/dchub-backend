@@ -112,6 +112,51 @@ def v3_status():
         return jsonify({"ok": False, "error": str(e)}), 500
 
 
+# ── brain_findings DB diagnostic (verify persistence works) ──────
+
+@brain_v3_bp.route("/api/v1/brain/findings/db-status", methods=["GET"])
+def findings_db_status():
+    """Public read-only: is the brain_findings table actually being
+    written? Returns live columns + total row count + count-by-detector
+    + 5 most-recent rows. No secrets. The verification surface for the
+    2026-06-06 persistence fix — if total_rows climbs and detectors
+    appear, the canonical writer is landing rows."""
+    out = {"ok": True}
+    try:
+        import psycopg2
+        _du = (os.environ.get("NEON_DATABASE_URL")
+               or os.environ.get("DATABASE_URL", "")).strip()
+        if not _du:
+            return jsonify({"ok": False, "error": "no_database_url"}), 500
+        with psycopg2.connect(_du, connect_timeout=8) as conn:
+            with conn.cursor() as cur:
+                cur.execute("SELECT column_name FROM information_schema.columns "
+                            "WHERE table_name='brain_findings'")
+                out["live_columns"] = sorted(r[0] for r in cur.fetchall())
+                cur.execute("SELECT COUNT(*) FROM brain_findings")
+                out["total_rows"] = cur.fetchone()[0]
+                has_detector = "detector" in out["live_columns"]
+                if has_detector:
+                    cur.execute("SELECT COALESCE(detector,'(null)'), COUNT(*) "
+                                "FROM brain_findings GROUP BY 1 "
+                                "ORDER BY 2 DESC LIMIT 10")
+                    out["by_detector"] = {r[0]: r[1] for r in cur.fetchall()}
+                has_sc = "seen_count" in out["live_columns"]
+                out["seen_count_column_present"] = has_sc
+                order_col = ("last_seen" if "last_seen" in out["live_columns"]
+                             else "id")
+                sc_sel = ", COALESCE(seen_count,1)" if has_sc else ", 1"
+                cur.execute(
+                    f"SELECT issue, count, LEFT(COALESCE(detail,''),60){sc_sel} "
+                    f"FROM brain_findings ORDER BY {order_col} DESC LIMIT 5")
+                out["recent"] = [
+                    {"issue": r[0], "count": r[1], "detail": r[2],
+                     "seen_count": r[3]} for r in cur.fetchall()]
+    except Exception as e:
+        return jsonify({"ok": False, "error": str(e)[:200]}), 500
+    return jsonify(out), 200, {"Cache-Control": "no-store, max-age=0"}
+
+
 # ── Mirror hypothesis → action enactment ─────────────────────────
 
 def _fetch_mirror_hypotheses() -> list:
