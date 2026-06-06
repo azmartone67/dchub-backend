@@ -66,6 +66,15 @@ _CANONICAL_SLUG: dict[str, str] = {
     "chi": "chicago",
 }
 
+# Reverse map: canonical METRO slug → CITY slug used by market_power_scores
+# (DCPI uses city slugs, /markets uses metro slugs per market-slugs memory).
+# Used by _section_hero's third match clause so the DB lookup resolves
+# even when the URL uses the metro form.
+MARKET_ALIAS: dict[str, str] = {
+    "northern-virginia": "ashburn",
+    # dallas, phoenix, atlanta, chicago: DCPI uses the same slug as the URL
+}
+
 
 _PRO_RANK = 4  # tier_registry rank for pro/founding
 
@@ -154,33 +163,60 @@ def _section_hero(cur, slug: str) -> dict | None:
     # 100% broken). Now we SELECT only the columns market_deep_dive (the proven
     # sibling) uses; the optional fields default to None and downstream
     # sections (power/queue) fill what they can, best-effort.
+    # r-fix-2 (2026-06-06): the SELECT was asking for `verdict` and `score`
+    # which don't exist on the live market_power_scores table. The columns
+    # are `composite_score` (not score) and there's NO verdict column —
+    # verdict is DERIVED from (constraint_score, excess_power_score) per
+    # scripts/bulk_dcpi_score.py:compute_verdict. The bare except swallowed
+    # the "column does not exist" error → returned None → "not in coverage"
+    # rendered for every market. Now: query the real columns, derive verdict.
+    #
+    # Also widened the slug match to handle the metro↔city alias trap (e.g.
+    # /markets/northern-virginia/brief should resolve to ashburn in DCPI).
     try:
         cur.execute("""
-            SELECT market_slug, market_name, verdict, score,
-                   excess_power_score, constraint_score, computed_at
+            SELECT market_slug, market_name, composite_score,
+                   excess_power_score, constraint_score, computed_at, iso
               FROM market_power_scores
              WHERE LOWER(market_slug) = LOWER(%s)
                 OR LOWER(REPLACE(market_name, ' ', '-')) = LOWER(%s)
+                OR LOWER(market_slug) = LOWER(%s)
              ORDER BY computed_at DESC LIMIT 1
-        """, (slug, slug))
+        """, (slug, slug, MARKET_ALIAS.get(slug, slug)))
         r = cur.fetchone()
     except Exception:
         return None
     if not r:
         return None
+    # Derive verdict from (constraint, excess) per Phase 229 matrix in
+    # scripts/bulk_dcpi_score.py:37. Same thresholds the canonical scorer uses.
+    constraint = float(r[4] or 0)
+    excess     = float(r[3] or 0)
+    if constraint == 0 and excess == 0:
+        verdict = "NODATA"
+    elif excess >= 60 and constraint <= 40:
+        verdict = "BUILD"
+    elif excess >= 50 and constraint <= 50:
+        verdict = "BUILD"
+    elif constraint >= 70 and excess <= 40:
+        verdict = "AVOID"
+    elif constraint >= 60 and excess <= 30:
+        verdict = "AVOID"
+    else:
+        verdict = "CAUTION"
     return {
         "slug":              r[0],
         "name":              r[1],
         "state":             None,
-        "iso":               None,
-        "verdict":           r[2],
-        "composite_score":   _as_int(r[3]),
-        "excess_power":      _as_float(r[4]),
-        "constraint_score":  _as_float(r[5]),
+        "iso":               r[6],
+        "verdict":           verdict,
+        "composite_score":   _as_int(r[2]),
+        "excess_power":      _as_float(r[3]),
+        "constraint_score":  _as_float(r[4]),
         "queue_wait_months": None,
         "time_to_power_mo":  None,
-        "computed_at":       r[6].isoformat() if r[6] else None,
-        "_computed_at_dt":   r[6],  # internal — used to compute live-as-of
+        "computed_at":       r[5].isoformat() if r[5] else None,
+        "_computed_at_dt":   r[5],  # internal — used to compute live-as-of
     }
 
 
