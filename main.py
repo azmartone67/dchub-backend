@@ -11732,6 +11732,14 @@ def handle_checkout_completed(session):
                 plan_name, api_tier = 'pro', 'pro'
             elif amount_dollars == 299 or (295 <= amount_dollars <= 305):
                 plan_name, api_tier = 'pro', 'pro'
+            elif amount_dollars == 1188 or (1180 <= amount_dollars <= 1196):
+                # r65-annual-onetime (2026-06-06): NEW $1,188 50%-off
+                # one-time Pro Annual (price_1TecqhJ9ey2ATcQl4Hmp99OU,
+                # prod_UdugEgQ3DMEDWC). The payment_link map should hit
+                # first; this fallback exists so a future plink swap
+                # (or a checkout via the price-id-direct URL) still
+                # routes correctly. Tier-expiry handling lives below.
+                plan_name, api_tier = 'pro', 'pro'
             elif amount_dollars == 1590 or (1585 <= amount_dollars <= 1595):
                 plan_name, api_tier = 'pro', 'pro'
             elif amount_dollars == 2990 or (2985 <= amount_dollars <= 2995):
@@ -11766,16 +11774,55 @@ def handle_checkout_completed(session):
 
         stripe_cust = session.get('customer', '')
 
+        # r65-annual-onetime (2026-06-06): one-time Pro Annual link
+        # (price_1TecqhJ9ey2ATcQl4Hmp99OU, $1,188 50% off) fires
+        # checkout.session.completed with mode='payment' — NO follow-up
+        # customer.subscription.* events, NO Stripe-side renewal, no
+        # current_period_end. Without an EXPLICIT stored expiry, the
+        # buyer would keep tier='pro' FOREVER (a refund/abuse crisis).
+        #
+        # Stamp tier_expires_at = NOW() + 365d for ANY one-time payment
+        # whose resolved plan is 'pro' (or 'founding', which maps to
+        # pro tier). subscription-mode buyers leave tier_expires_at
+        # NULL (their expiry follows subscription_status / Stripe's
+        # auto-renew). source_plan = 'pro_annual_onetime' lets a
+        # ~day-330 renewal nudge cron target ONLY one-time buyers
+        # without nagging recurring subscribers.
+        #
+        # Idempotent: a Stripe retry of the same session re-writes the
+        # same expiry (still ~NOW()+365d, off by seconds — harmless).
+        session_mode = (session.get('mode') or '').lower()
+        is_onetime_payment = (session_mode == 'payment')
+        set_tier_expiry = is_onetime_payment and plan_name in ('pro', 'founding', 'enterprise')
+        source_plan_label = None
+        if set_tier_expiry:
+            if amount_dollars >= 500:
+                source_plan_label = f"{plan_name}_annual_onetime"
+            else:
+                source_plan_label = f"{plan_name}_onetime"
+            print(f"📅 One-time payment ({session_mode}, ${amount_dollars}): "
+                  f"stamping tier_expires_at=NOW()+365d, source_plan={source_plan_label}")
+
         rows_updated = 0
         if user_id:
-            rc, _ = _pg_execute(
-                "UPDATE users SET plan = %s, role = %s, subscription_status = 'active', stripe_customer_id = %s, plan_updated_at = NOW() WHERE id = %s",
-                (plan_name, api_tier, stripe_cust, user_id))
+            if set_tier_expiry:
+                rc, _ = _pg_execute(
+                    "UPDATE users SET plan = %s, role = %s, subscription_status = 'active', stripe_customer_id = %s, plan_updated_at = NOW(), tier_expires_at = NOW() + INTERVAL '365 days', source_plan = %s WHERE id = %s",
+                    (plan_name, api_tier, stripe_cust, source_plan_label, user_id))
+            else:
+                rc, _ = _pg_execute(
+                    "UPDATE users SET plan = %s, role = %s, subscription_status = 'active', stripe_customer_id = %s, plan_updated_at = NOW() WHERE id = %s",
+                    (plan_name, api_tier, stripe_cust, user_id))
             rows_updated = rc
         elif customer_email:
-            rc, _ = _pg_execute(
-                "UPDATE users SET plan = %s, role = %s, subscription_status = 'active', stripe_customer_id = %s, plan_updated_at = NOW() WHERE email = %s",
-                (plan_name, api_tier, stripe_cust, customer_email))
+            if set_tier_expiry:
+                rc, _ = _pg_execute(
+                    "UPDATE users SET plan = %s, role = %s, subscription_status = 'active', stripe_customer_id = %s, plan_updated_at = NOW(), tier_expires_at = NOW() + INTERVAL '365 days', source_plan = %s WHERE email = %s",
+                    (plan_name, api_tier, stripe_cust, source_plan_label, customer_email))
+            else:
+                rc, _ = _pg_execute(
+                    "UPDATE users SET plan = %s, role = %s, subscription_status = 'active', stripe_customer_id = %s, plan_updated_at = NOW() WHERE email = %s",
+                    (plan_name, api_tier, stripe_cust, customer_email))
             rows_updated = rc
 
         # Legacy SQLite get_db() removed — _pg_execute above handles Neon
@@ -11795,6 +11842,20 @@ def handle_checkout_completed(session):
                 ("INSERT INTO users (id, email, password_hash, name, plan, role, api_calls_today, api_calls_total, created_at, stripe_customer_id, subscription_status) VALUES (%s, %s, %s, %s, %s, %s, 0, 0, %s, %s, 'active') ON CONFLICT (id) DO UPDATE SET email = EXCLUDED.email, password_hash = EXCLUDED.password_hash, name = EXCLUDED.name, plan = EXCLUDED.plan, role = EXCLUDED.role, api_calls_today = EXCLUDED.api_calls_today, api_calls_total = EXCLUDED.api_calls_total, created_at = EXCLUDED.created_at, stripe_customer_id = EXCLUDED.stripe_customer_id, subscription_status = EXCLUDED.subscription_status",
                  (new_user_id, customer_email, hashed_pw, display_name, plan_name, api_tier, now, stripe_cust)),
             ])
+
+            # r65-annual-onetime (2026-06-06): stamp the 365-day expiry +
+            # source_plan on the fresh row. Separate UPDATE (not a wider
+            # INSERT column list) so a deploy without the migration applied
+            # still creates the user (column will just be missing) and the
+            # UPDATE soft-fails. schema_repair runs the ADD COLUMN.
+            if set_tier_expiry:
+                try:
+                    _pg_execute(
+                        "UPDATE users SET tier_expires_at = NOW() + INTERVAL '365 days', source_plan = %s WHERE id = %s",
+                        (source_plan_label, new_user_id))
+                    print(f"📅 New user {customer_email}: tier_expires_at=NOW()+365d, source_plan={source_plan_label}")
+                except Exception as _exp_err:
+                    print(f"⚠️ tier_expires_at stamp failed (non-fatal — schema migration may be pending): {_exp_err}")
 
             print(f"🔐 Account created for {customer_email}")
 

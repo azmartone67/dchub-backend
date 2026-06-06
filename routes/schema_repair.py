@@ -139,6 +139,21 @@ SCHEMA_STATEMENTS = [
         "ALTER TABLE users ADD COLUMN IF NOT EXISTS demoted_at TIMESTAMPTZ",
         "ALTER TABLE users ADD COLUMN IF NOT EXISTS demoted_reason TEXT",
     ]),
+    ("users.tier_expiry + source_plan columns", [
+        # r65-annual-onetime (2026-06-06): one-time Pro Annual link
+        # (price_1TecqhJ9ey2ATcQl4Hmp99OU, $1,188) fires
+        # checkout.session.completed with mode='payment' — there is NO
+        # follow-up customer.subscription.* event with current_period_end,
+        # so without a stored expiry the user would keep tier='pro'
+        # FOREVER. tier_expires_at gets stamped to NOW()+365d on the
+        # one-time path; subscription-mode buyers leave it NULL (their
+        # expiry is implicit in subscription_status / Stripe's renewal).
+        # source_plan lets renewal-nudge crons target one-time annual
+        # buyers ~330 days in without hitting recurring subscribers.
+        "ALTER TABLE users ADD COLUMN IF NOT EXISTS tier_expires_at TIMESTAMPTZ",
+        "ALTER TABLE users ADD COLUMN IF NOT EXISTS source_plan TEXT",
+        "CREATE INDEX IF NOT EXISTS ix_users_tier_expires_at ON users(tier_expires_at) WHERE tier_expires_at IS NOT NULL",
+    ]),
     ("press_releases.published_at column", [
         # If the column doesn't exist, ALTER TABLE ADD COLUMN IF NOT
         # EXISTS is idempotent. Some deploys may have it as
