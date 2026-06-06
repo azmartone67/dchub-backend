@@ -159,16 +159,75 @@ def _filter_market(data, market_key):
 
 
 # ============================================================================
+# LIVE-TABLE READ HELPERS (2026-06-06)
+# The four data endpoints below used to return tiny hardcoded seed arrays
+# (32 plants / 13 lines / 14 pipelines) — users correctly flagged the map as
+# "light". They now query the populated EIA/HIFLD tables and FALL BACK to the
+# curated seed on ANY error or empty result, so the endpoint can never return
+# *fewer* items than before.
+# ============================================================================
+
+def _rows_from_db(sql, params, mapper):
+    """Run a read-only query and map each row. Returns [] on any failure so
+    the caller can fall back to seed data (never regress, never 500)."""
+    conn = None
+    try:
+        from db_utils import try_get_db
+        conn = try_get_db()
+        if not conn:
+            return []
+        cur = conn.cursor()
+        cur.execute(sql, params)
+        return [mapper(r) for r in cur.fetchall()]
+    except Exception as e:
+        logger.warning(f"energy-discovery live query failed, using seed: {e}")
+        return []
+    finally:
+        if conn:
+            try:
+                conn.close()
+            except Exception:
+                pass
+
+
+def _volt_class(kv):
+    try:
+        kv = float(kv or 0)
+    except (TypeError, ValueError):
+        return 'HV'
+    if kv >= 765:
+        return 'UHV'
+    if kv >= 345:
+        return 'EHV'
+    if kv >= 100:
+        return 'HV'
+    return 'MV'
+
+
+# ============================================================================
 # ROUTES — /api/energy-discovery/*
 # ============================================================================
 
 @energy_discovery_bp.route('/api/energy-discovery/power-plants', methods=['GET'])
 def energy_discovery_power_plants():
-    """Return power plant data for Energy Discovery panel"""
+    """Power plants for the Energy Discovery panel — live from power_plants_eia
+    (~13K rows); curated seed fallback on any error/empty."""
     try:
         market = request.args.get('market', '')
         limit = min(int(request.args.get('limit', 2000)), 5000)
-        plants = _filter_market(_POWER_PLANTS, market)[:limit]
+        plants = _rows_from_db(
+            "SELECT name, lat, lng, nameplate_capacity_mw, primary_fuel, "
+            "utility_name, state FROM power_plants_eia "
+            "WHERE lat IS NOT NULL AND lng IS NOT NULL "
+            "ORDER BY nameplate_capacity_mw DESC NULLS LAST LIMIT %s",
+            [limit],
+            lambda r: {'name': r[0] or 'Power Plant',
+                       'lat': float(r[1]), 'lng': float(r[2]),
+                       'capacity_mw': float(r[3]) if r[3] is not None else 0,
+                       'fuel_type': r[4] or 'Unknown', 'operator': r[5] or '',
+                       'state': r[6] or '', 'source': 'EIA-860', 'market': ''})
+        if not plants:
+            plants = _filter_market(_POWER_PLANTS, market)[:limit]
         return jsonify({'success': True, 'data': plants, 'count': len(plants)})
     except Exception as e:
         logger.error(f"Energy discovery power-plants error: {e}")
@@ -177,11 +236,25 @@ def energy_discovery_power_plants():
 
 @energy_discovery_bp.route('/api/energy-discovery/transmission-lines', methods=['GET'])
 def energy_discovery_transmission_lines():
-    """Return transmission line data for Energy Discovery panel"""
+    """Transmission lines for the Energy Discovery panel — live from
+    transmission_lines_eia (~56K rows); curated seed fallback on error/empty."""
     try:
         market = request.args.get('market', '')
         limit = min(int(request.args.get('limit', 2000)), 5000)
-        lines = _filter_market(_TRANSMISSION_LINES, market)[:limit]
+        lines = _rows_from_db(
+            "SELECT owner, voltage_kv, sub_1, sub_2, lat, lng, state "
+            "FROM transmission_lines_eia "
+            "WHERE lat IS NOT NULL AND lng IS NOT NULL "
+            "ORDER BY voltage_kv DESC NULLS LAST LIMIT %s",
+            [limit],
+            lambda r: {'owner': r[0] or '',
+                       'voltage_kv': float(r[1]) if r[1] is not None else 0,
+                       'volt_class': _volt_class(r[1]),
+                       'sub_1': r[2] or '', 'sub_2': r[3] or '',
+                       'lat': float(r[4]), 'lng': float(r[5]),
+                       'state': r[6] or '', 'market': ''})
+        if not lines:
+            lines = _filter_market(_TRANSMISSION_LINES, market)[:limit]
         return jsonify({'success': True, 'data': lines, 'count': len(lines)})
     except Exception as e:
         logger.error(f"Energy discovery transmission-lines error: {e}")
@@ -203,11 +276,23 @@ def energy_discovery_wind_projects():
 
 @energy_discovery_bp.route('/api/energy-discovery/pipelines', methods=['GET'])
 def energy_discovery_pipelines():
-    """Return pipeline data for Energy Discovery panel"""
+    """Gas pipelines for the Energy Discovery panel — live from gas_pipelines
+    (918 geocoded segments); curated seed fallback on error/empty."""
     try:
         market = request.args.get('market', '')
         limit = min(int(request.args.get('limit', 500)), 1000)
-        pipes = _filter_market(_PIPELINES, market)[:limit]
+        pipes = _rows_from_db(
+            "SELECT operator, lat, lng, pipeline_type FROM gas_pipelines "
+            "WHERE lat IS NOT NULL AND lng IS NOT NULL LIMIT %s",
+            [limit],
+            lambda r: {'name': (r[0] or 'Gas Pipeline'),
+                       'operator': r[0] or '',
+                       'lat': float(r[1]), 'lng': float(r[2]),
+                       'commodity': 'Natural Gas',
+                       'pipeline_type': r[3] or '',
+                       'state': '', 'market': ''})
+        if not pipes:
+            pipes = _filter_market(_PIPELINES, market)[:limit]
         return jsonify({'success': True, 'data': pipes, 'count': len(pipes)})
     except Exception as e:
         logger.error(f"Energy discovery pipelines error: {e}")
@@ -267,7 +352,7 @@ def energy_discovery_status():
             for label, table, ts in [
                 ('total_substations',      'substations',        'updated_at'),
                 ('total_pipelines',        'gas_pipelines',      'updated_at'),
-                ('total_power_plants',     'power_plants',       'created_at'),
+                ('total_power_plants',     'power_plants_eia',   'created_at'),
                 ('total_transmissions',    'transmission_lines', 'created_at'),
                 ('total_wind_projects',    'wind_projects',      'updated_at'),
                 ('total_gas_compressors',  'gas_compressors',    'updated_at'),
@@ -290,7 +375,7 @@ def energy_discovery_status():
 
             # total capacity (substations carry voltage_kv, sum power plant capacity)
             try:
-                cur.execute("SELECT COALESCE(SUM(capacity_mw),0) FROM power_plants")
+                cur.execute("SELECT COALESCE(SUM(nameplate_capacity_mw),0) FROM power_plants_eia")
                 cap_row = cur.fetchone() or (0,)
                 out['data']['total_capacity_mw'] = int(cap_row[0] or 0)
             except Exception:

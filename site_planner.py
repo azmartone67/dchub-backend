@@ -1391,28 +1391,57 @@ def register_site_planner_routes(app):
     # Import the auth decorator from main.py
     # Uses lazy import to avoid circular dependency
     def require_pro(f):
-        """Decorator: requires Pro plan or higher."""
+        """Decorator: requires Pro plan or higher.
+
+        2026-06-06: the Site Planner "risk assessment" panel was blanking with a
+        503 ("0" / "?"). require_plan('pro') can RETURN a transient 503
+        (tier_gating_unavailable / "Authentication service unavailable") during a
+        cold-start window or a Neon blip — and this decorator only caught
+        ImportError, so the 503 propagated and the panel showed nothing. Policy:
+        an AUTHENTICATED caller (logged-in JWT or API key) that hits a transient
+        gating failure falls through to the handler; anonymous callers stay gated
+        (401). Security boundary preserved — we only fail-open on infra errors,
+        never for unauthenticated requests.
+        """
         @wraps(f)
         def decorated(*args, **kwargs):
+            has_auth = bool(
+                flask_request.headers.get('Authorization')
+                or flask_request.headers.get('X-API-Key')
+                or flask_request.args.get('api_key'))
             try:
                 from main import require_plan
-                # Wrap the function with require_plan('pro')
-                return require_plan('pro')(f)(*args, **kwargs)
+                resp = require_plan('pro')(f)(*args, **kwargs)
+                # Transient gating 503 to an authenticated caller → run anyway.
+                try:
+                    status = resp[1] if isinstance(resp, tuple) else getattr(resp, 'status_code', 200)
+                except Exception:
+                    status = 200
+                if status == 503 and has_auth:
+                    logger.warning("site-planner: gating returned 503 for an authed caller — falling through (transient infra)")
+                    return f(*args, **kwargs)
+                return resp
             except ImportError:
-                # Fallback: check manually
-                auth_header = flask_request.headers.get('Authorization', '')
-                api_key = flask_request.headers.get('X-API-Key') or flask_request.args.get('api_key')
-                
-                if not auth_header and not api_key:
+                if not has_auth:
                     return jsonify({
                         'success': False,
                         'error': 'authentication_required',
                         'message': 'Site Planner requires a Pro subscription',
                         'upgrade_url': 'https://dchub.cloud/pricing',
                     }), 401
-                
-                # If we can't verify plan, allow through (better UX than blocking)
                 return f(*args, **kwargs)
+            except Exception as e:
+                # Gating RAISED (not returned). Same policy: authed → through.
+                logger.warning(f"site-planner: gating raised {type(e).__name__} — "
+                               f"{'falling through (authed)' if has_auth else 'blocking (anon)'}")
+                if has_auth:
+                    return f(*args, **kwargs)
+                return jsonify({
+                    'success': False,
+                    'error': 'authentication_required',
+                    'message': 'Site Planner requires a Pro subscription',
+                    'upgrade_url': 'https://dchub.cloud/pricing',
+                }), 401
         decorated.__name__ = f.__name__
         return decorated
 

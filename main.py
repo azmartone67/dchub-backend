@@ -3469,7 +3469,10 @@ def get_facilities():
         _full = False  # fail closed to the teaser if the resolver is unavailable
     _FREE_FACILITIES_CAP = 100
     try:
-        limit = min(int(request.args.get('limit', 2000)), 5000 if _full else _FREE_FACILITIES_CAP)
+        # Privileged (Dev/Pro+) callers can pull the full geocoded set so the
+        # land-power map plots ALL data centers (markers are clustered). Was
+        # 5000 — users reported "we don't have all of them loaded".
+        limit = min(int(request.args.get('limit', 2000)), 25000 if _full else _FREE_FACILITIES_CAP)
     except (TypeError, ValueError):
         limit = _FREE_FACILITIES_CAP
     try:
@@ -24682,6 +24685,12 @@ try:
     from routes.energy_discovery_routes import energy_discovery_bp
     app.register_blueprint(energy_discovery_bp)
     print("⚡ Energy Discovery Blueprint: ✅ Registered (6 routes)")
+    try:
+        from routes.epa_facilities import epa_facilities_bp
+        app.register_blueprint(epa_facilities_bp)
+        print("🌿 EPA Facilities shim: ✅ Registered (/api/epa/facilities)")
+    except Exception as _epa_e:
+        print(f"🌿 EPA Facilities shim: ⚠️ {_epa_e}")
 except Exception as e:
     print(f"❌ Energy Discovery blueprint failed: {e}")
 
