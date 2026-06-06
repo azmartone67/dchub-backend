@@ -24771,6 +24771,12 @@ try:
         print("🌊 Submarine Cables proxy: ✅ Registered (/api/v1/infrastructure/submarine-cables)")
     except Exception as _sub_e:
         print(f"🌊 Submarine Cables proxy: ⚠️ {_sub_e}")
+    try:
+        from routes.global_infra import global_infra_bp
+        app.register_blueprint(global_infra_bp)
+        print("🌍 Global Infra proxies: ✅ Registered (global-power-plants, global-gas)")
+    except Exception as _gi_e:
+        print(f"🌍 Global Infra proxies: ⚠️ {_gi_e}")
 except Exception as e:
     print(f"❌ Energy Discovery blueprint failed: {e}")
 
