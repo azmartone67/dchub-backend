@@ -468,6 +468,26 @@ SCHEMA_STATEMENTS = [
         "CREATE INDEX IF NOT EXISTS ix_aif_created ON auto_interconnect_findings(created_at DESC)",
         "CREATE INDEX IF NOT EXISTS ix_aif_ttl ON auto_interconnect_findings(ttl_at) WHERE status='pending'",
     ]),
+    ("connect_landing_views table", [
+        # Phase r80-mcp-connect (2026-06-06): per-MCP-client landing-page
+        # telemetry — routes/mcp_connect.py serves /connect/<cursor|cline|
+        # continue|claude-desktop>. One row per page view. The minted trial
+        # key is patched in via POST /api/v1/connect/mint-update so we can
+        # attribute "this conversion came from /connect/cursor's mint".
+        """CREATE TABLE IF NOT EXISTS connect_landing_views (
+            id              BIGSERIAL PRIMARY KEY,
+            client          TEXT NOT NULL,
+            viewed_at       TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+            user_agent      TEXT,
+            referer         TEXT,
+            ip              TEXT,
+            key_minted_for  TEXT,
+            key_minted_at   TIMESTAMPTZ
+        )""",
+        "CREATE INDEX IF NOT EXISTS ix_connect_lv_client ON connect_landing_views(client)",
+        "CREATE INDEX IF NOT EXISTS ix_connect_lv_viewed ON connect_landing_views(viewed_at DESC)",
+        "CREATE INDEX IF NOT EXISTS ix_connect_lv_keyfor ON connect_landing_views(key_minted_for) WHERE key_minted_for IS NOT NULL",
+    ]),
 ]
 
 

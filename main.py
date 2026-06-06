@@ -1501,6 +1501,18 @@ try:
     except Exception as _ffe:
         import logging
         logging.getLogger(__name__).warning('feedback_forum wiring failed: %s', _ffe)
+    # 2026-06-06: single-pane /admin/funnel-health dashboard surfacing every
+    # new conversion-telemetry table (mcp_session_upgrades, renewal_nudge_log,
+    # pricing_ab_events, source_plan='pro_annual_onetime' cohort, per-AI-
+    # platform breakdown). Dual-route /admin/funnel-health + /api/v1/admin/
+    # funnel-health for CF zone-worker bypass, 60s in-memory cache,
+    # X-Admin-Key gated. See routes/funnel_health.py header for details.
+    try:
+        from routes.funnel_health import funnel_health_bp
+        app.register_blueprint(funnel_health_bp)
+    except Exception as _fhe:
+        import logging
+        logging.getLogger(__name__).warning('funnel_health wiring failed: %s', _fhe)
     try:
         from routes.feedback_triage import feedback_triage_bp
         app.register_blueprint(feedback_triage_bp)
@@ -28313,6 +28325,17 @@ try:
     app.register_blueprint(auto_trial_bp)
 except Exception as _e:
     print(f"[main] auto_trial register failed: {_e}", file=sys.stderr)
+
+# Phase r80-mcp-connect (2026-06-06): per-MCP-client landing pages.
+# /connect/cursor, /connect/cline, /connect/continue, /connect/claude-desktop
+# — the keyed-bearing MCP clients that hold an X-API-Key persistently and
+# actually convert. One-page funnel: mint trial key, paste install snippet,
+# try prompts, upgrade. Per-page telemetry in connect_landing_views.
+try:
+    from routes.mcp_connect import mcp_connect_bp
+    app.register_blueprint(mcp_connect_bp)
+except Exception as _e:
+    print(f"[main] mcp_connect register failed: {_e}", file=sys.stderr)
 
 # Phase EEEEE (2026-05-16): VOLUME RECOVERY — anon grace mode lets
 # the first 5 calls/24h per (ip+ua) bypass the IDENTIFIED gate,
