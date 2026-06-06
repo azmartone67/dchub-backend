@@ -59,21 +59,28 @@ def _first_point(geom: dict):
 
 
 def _fetch(cap: int):
-    """Paginate the feature service; return [(lat, lng, operator, type), ...]."""
+    """Paginate the feature service; return [(lat, lng, operator, type), ...].
+
+    We only need the first vertex of each line, so request heavily-simplified
+    geometry (maxAllowableOffset) + small pages — a full-geometry 1000-feature
+    page timed out from the 1-replica backend (the browser tolerates it; a
+    synchronous server pull does not)."""
     rows = []
     offset = 0
-    page = 1000
+    page = 500
     while len(rows) < cap:
         params = urllib.parse.urlencode({
             "where": "1=1",
             "outFields": "operator,typepipe,status",
             "returnGeometry": "true",
             "outSR": "4326",
+            "maxAllowableOffset": "0.05",   # simplify: ~5km, we only keep 1 vertex
+            "geometryPrecision": "4",
             "resultOffset": offset,
             "resultRecordCount": page,
             "f": "json",
         })
-        with urllib.request.urlopen(_SVC + "?" + params, timeout=30) as r:
+        with urllib.request.urlopen(_SVC + "?" + params, timeout=55) as r:
             data = json.loads(r.read().decode())
         feats = data.get("features") or []
         if not feats:
@@ -101,9 +108,11 @@ def ingest_gas_pipelines():
 
     dry = request.args.get("dry_run", "0") == "1"
     try:
-        cap = min(int(request.args.get("cap", 12000)), 33000)
+        # Default 2000 (8 pages) — reliably completes inside Railway's request
+        # window. Raise via ?cap= for a fuller load if the host can handle it.
+        cap = min(int(request.args.get("cap", 2000)), 8000)
     except (TypeError, ValueError):
-        cap = 12000
+        cap = 2000
 
     try:
         rows = _fetch(cap)

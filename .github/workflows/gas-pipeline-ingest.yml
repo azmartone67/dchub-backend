@@ -12,7 +12,7 @@ on:
       cap:
         description: 'Max features to ingest'
         required: false
-        default: '12000'
+        default: '2000'
 
 jobs:
   ingest:
@@ -21,7 +21,7 @@ jobs:
       - name: Trigger gas-pipeline ingest
         env:
           ADMIN_KEY: ${{ secrets.DCHUB_ADMIN_KEY }}
-          CAP: ${{ github.event.inputs.cap || '12000' }}
+          CAP: ${{ github.event.inputs.cap || '2000' }}
         run: |
           if [ -z "$ADMIN_KEY" ]; then
             echo "::warning::DCHUB_ADMIN_KEY not set — skipping"; exit 0
