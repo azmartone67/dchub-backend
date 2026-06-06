@@ -160,6 +160,57 @@ def global_gas():
     return _cached("gem", _build_gem)
 
 
+# ── PeeringDB Global IXPs → GeoJSON points (geocoded via ix→ixfac→fac) ──
+_PDB = "https://www.peeringdb.com/api"
+
+
+def _pdb(path):
+    req = urllib.request.Request(_PDB + path,
+                                 headers={"User-Agent": "dchub-map/1.0",
+                                          "Accept": "application/json"})
+    with urllib.request.urlopen(req, timeout=30) as r:
+        return json.loads(r.read().decode()).get("data", [])
+
+
+def _build_ixps():
+    # /api/ix has city/country but NO lat/lng — geocode each IXP via the
+    # facility it's hosted in (ixfac → fac). Slim field-sets keep the anon
+    # rate-limit happy; cached 24h so this 3-call join runs once a day.
+    facs = {f["id"]: f for f in _pdb("/fac?fields=id,latitude,longitude")}
+    time.sleep(0.6)
+    ix_to_fac = {}
+    for xf in _pdb("/ixfac?fields=ix_id,fac_id"):
+        ix_to_fac.setdefault(xf.get("ix_id"), xf.get("fac_id"))
+    time.sleep(0.6)
+    feats = []
+    for x in _pdb("/ix?fields=id,name,city,country,net_count"):
+        f = facs.get(ix_to_fac.get(x.get("id")))
+        if not f:
+            continue
+        lat, lng = _f(f.get("latitude")), _f(f.get("longitude"))
+        if lat is None or lng is None or (lat == 0 and lng == 0):
+            continue
+        feats.append({
+            "type": "Feature",
+            "geometry": {"type": "Point", "coordinates": [lng, lat]},
+            "properties": {
+                "name": x.get("name") or "",
+                "city": x.get("city") or "",
+                "country": x.get("country") or "",
+                "networks": x.get("net_count") or 0,
+            },
+        })
+    return json.dumps({
+        "type": "FeatureCollection", "features": feats, "count": len(feats),
+        "source": "PeeringDB",
+    })
+
+
+@global_infra_bp.route("/api/v1/infrastructure/global-ixps", methods=["GET"])
+def global_ixps():
+    return _cached("ixps", _build_ixps)
+
+
 def register_global_infra(app):
     try:
         app.register_blueprint(global_infra_bp)
