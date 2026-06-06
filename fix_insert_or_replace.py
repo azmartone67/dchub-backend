@@ -121,7 +121,7 @@ def parse_insert_statement(sql_text):
     Parse an INSERT INTO statement to extract table, columns, and values.
     Returns (table, columns, values_placeholders) or None if can't parse.
     """
-    # Match: INSERT INTO table_name (col1, col2, ...) VALUES (...)
+    # Match: INSERT INTO table_name (col1, col2, ...) VALUES (...) ON CONFLICT DO NOTHING
     # Handle multiline by joining
     pattern = r'INSERT\s+INTO\s+(\w+)\s*\(([^)]+)\)\s*VALUES\s*\(([^)]+)\)'
     m = re.search(pattern, sql_text, re.IGNORECASE | re.DOTALL)
