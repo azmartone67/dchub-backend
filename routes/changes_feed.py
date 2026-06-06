@@ -146,28 +146,43 @@ def changes_since():
             except Exception:
                 diff["news_new"] = []
 
-            # DCPI: re-scored markets (flip detection — verdict changed)
+            # DCPI: markets that MOVED 1+ excess-power pt over the last 7 days.
+            # 2026-06-06 fix: was diffing market_power_scores.computed_at, but
+            # that table is RE-STAMPED on every recompute so the diff was always
+            # empty (total_changes stuck at 0). Read real deltas from the
+            # history-preserving dcpi_daily_snapshots instead — same verified
+            # query the digest/brief movers use. No `since` param → no tz risk.
             try:
                 rows = _safe(cur, """
-                    SELECT market_slug, verdict, excess_power_score,
-                           constraint_score, time_to_power_months, computed_at
-                      FROM market_power_scores
-                     WHERE computed_at IS NOT NULL AND computed_at > %s
-                     ORDER BY computed_at DESC LIMIT %s""", (since, limit))
+                    WITH latest AS (
+                      SELECT DISTINCT ON (market_slug) market_slug, market_name,
+                             excess_power_score AS now_e
+                      FROM dcpi_daily_snapshots
+                      ORDER BY market_slug, snapshot_date DESC
+                    ), prev AS (
+                      SELECT DISTINCT ON (market_slug) market_slug,
+                             excess_power_score AS prev_e
+                      FROM dcpi_daily_snapshots
+                      WHERE snapshot_date <= CURRENT_DATE - 7
+                      ORDER BY market_slug, snapshot_date DESC
+                    )
+                    SELECT l.market_slug, l.market_name, l.now_e,
+                           (l.now_e - p.prev_e) AS delta
+                    FROM latest l JOIN prev p ON l.market_slug = p.market_slug
+                    WHERE ABS(l.now_e - p.prev_e) >= 1
+                    ORDER BY ABS(l.now_e - p.prev_e) DESC LIMIT %s""", (limit,))
                 dcpi_changes = [{
-                    "market_slug": r[0], "verdict": r[1],
-                    "excess_power_score": float(r[2]) if r[2] is not None else None,
-                    "constraint_score": float(r[3]) if r[3] is not None else None,
-                    "time_to_power_months": float(r[4]) if r[4] is not None else None,
-                    "computed_at": r[5].isoformat() if r[5] else None,
+                    "market_slug": r[0], "market": r[1],
+                    "excess_power_score": round(float(r[2]), 1) if r[2] is not None else None,
+                    "delta_7d": round(float(r[3]), 1) if r[3] is not None else None,
                 } for r in rows]
-                diff["dcpi_rescores"] = dcpi_changes
-                counts["dcpi_rescores"] = len(dcpi_changes)
+                diff["dcpi_movers"] = dcpi_changes
+                counts["dcpi_movers"] = len(dcpi_changes)
                 if dcpi_changes:
-                    sources.append(src(f"{len(dcpi_changes)} DCPI re-scores",
-                                       "market_power_scores", dcpi_changes[0]["computed_at"]))
+                    sources.append(src(f"{len(dcpi_changes)} DCPI markets moved 1+pt (7d)",
+                                       "dcpi_daily_snapshots", now_iso()))
             except Exception:
-                diff["dcpi_rescores"] = []
+                diff["dcpi_movers"] = []
 
             # Transactions: new deals
             try:
@@ -215,24 +230,25 @@ def changes_since():
             except Exception:
                 diff["pocket_listings_new"] = []
 
-            # Facilities: newly discovered
+            # Facilities: newly discovered. 2026-06-06 fix: canonical table is
+            # discovered_facilities (21k+ rows, created_at) — NOT the small
+            # curated `facilities` table the old query used (few/no recent rows).
             try:
                 rows = _safe(cur, """
-                    SELECT id, name, provider, city, state, power_mw, first_seen
-                      FROM facilities
-                     WHERE first_seen IS NOT NULL AND first_seen > %s
-                     ORDER BY first_seen DESC LIMIT %s""", (since, limit))
+                    SELECT id, name, state, capacity_mw, created_at
+                      FROM discovered_facilities
+                     WHERE created_at IS NOT NULL AND created_at > %s
+                     ORDER BY created_at DESC LIMIT %s""", (since, limit))
                 fac_new = [{
-                    "id": r[0], "name": r[1], "provider": r[2],
-                    "city": r[3], "state": r[4],
-                    "power_mw": float(r[5]) if r[5] is not None else None,
-                    "first_seen": r[6].isoformat() if r[6] else None,
+                    "id": r[0], "name": r[1], "state": r[2],
+                    "capacity_mw": float(r[3]) if r[3] is not None else None,
+                    "discovered_at": r[4].isoformat() if r[4] and hasattr(r[4], 'isoformat') else r[4],
                 } for r in rows]
                 diff["facilities_new"] = fac_new
                 counts["facilities_new"] = len(fac_new)
                 if fac_new:
                     sources.append(src(f"{len(fac_new)} newly discovered facilities",
-                                       "facilities", fac_new[0]["first_seen"]))
+                                       "discovered_facilities", fac_new[0]["discovered_at"]))
             except Exception:
                 diff["facilities_new"] = []
     except Exception as e:
