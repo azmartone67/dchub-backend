@@ -56,11 +56,13 @@ jobs:
       - name: Compute our README entry
         id: entry
         run: |
-          # The exact line format the README expects: a Markdown bullet
-          # under the relevant category. punkpeye/awesome-mcp-servers
-          # uses simple `- [name](url) - description` entries.
+          # The exact line format the README expects. punkpeye/awesome-mcp-servers
+          # REQUIRES a github.com repo link (NOT a hosted URL like dchub.cloud/mcp —
+          # the maintainer bot auto-rejects non-GitHub links) plus a Glama score badge
+          # after the link. Format mirrors neighboring entries:
+          #   - [name](github-url) [![name MCP server](glama badge)](glama link) 📇 ☁️ - desc
           cat > /tmp/entry.md <<'EOF'
-          - [DC Hub](https://dchub.cloud/mcp) - Data-center, power & gas intelligence MCP server. 33 tools covering 21,000+ data-center facilities (170+ countries), 232 US power markets scored by the DC Hub Power Index (DCPI), 2,000+ tracked M&A deals, ISO grid telemetry (PJM, ERCOT, CAISO, MISO, SPP, NYISO), fiber routes, and energy pricing. Free to cite (CC-BY-4.0).
+          - [DC Hub](https://github.com/azmartone67/dchub-mcp-server) [![DC Hub MCP server](https://glama.ai/mcp/servers/azmartone67/dchub-mcp-server/badges/score.svg)](https://glama.ai/mcp/servers/azmartone67/dchub-mcp-server) 📇 ☁️ - Data-center, power & gas intelligence MCP server. 33 tools covering 21,000+ data-center facilities (170+ countries), 232 US power markets scored by the DC Hub Power Index (DCPI), 2,000+ tracked M&A deals, ISO grid telemetry (PJM, ERCOT, CAISO, MISO, SPP, NYISO), fiber routes, and energy pricing. Free to cite (CC-BY-4.0).
           EOF
           echo "::notice::Entry drafted:"
           cat /tmp/entry.md
