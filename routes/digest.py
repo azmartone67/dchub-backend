@@ -76,11 +76,24 @@ def _movers_from_snapshots(cur):
             FROM latest l JOIN week_ago w ON l.market_slug = w.market_slug
             WHERE ABS(l.now_e - w.prev_e) >= 1
             ORDER BY ABS(l.now_e - w.prev_e) DESC
-            LIMIT 5
+            LIMIT 40
         """)
-        return [{"market": r["market_name"], "slug": r["market_slug"],
-                 "now": round(r["now_e"] or 0, 1), "delta": round(r["delta"] or 0, 1)}
-                for r in cur.fetchall()]
+        # DCPI excess scores are ISO-level cloned, so every market in an ISO
+        # that moved shows the IDENTICAL delta (e.g. all NYISO markets at
+        # -9.2). Collapse to one representative per distinct delta so the
+        # list surfaces 5 DIFFERENT regional moves instead of 4 near-dupes —
+        # still 100% real data, just de-duplicated for readability.
+        out, seen = [], set()
+        for r in cur.fetchall():
+            dkey = round(r["delta"] or 0, 1)
+            if dkey in seen:
+                continue
+            seen.add(dkey)
+            out.append({"market": r["market_name"], "slug": r["market_slug"],
+                        "now": round(r["now_e"] or 0, 1), "delta": dkey})
+            if len(out) >= 5:
+                break
+        return out
     except Exception:
         try: cur.connection.rollback()
         except Exception: pass
