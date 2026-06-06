@@ -219,20 +219,37 @@ def mcp_registries_scan():
         if _du and findings:
             with psycopg2.connect(_du, connect_timeout=8) as conn:
                 with conn.cursor() as cur:
+                    # 2026-06-06 fix: brain_findings schema is
+                    # (issue, url, count, detail, first_seen, last_seen,
+                    # seen_count) UNIQUE(issue, url) — NOT the
+                    # finding_kind/subject/evidence/severity/source
+                    # columns this used to target. The old INSERT 404'd
+                    # on every row (swallowed by the bare except) AND
+                    # filed++ ran anyway, so findings_filed lied. Now
+                    # uses the canonical upsert + only counts real
+                    # inserts. Savepoint per row so one failure doesn't
+                    # poison the batch.
                     for f in findings:
+                        issue = f"{f['kind']}:{f['subject']}"
+                        url = f.get("url") or f"dchub://mcp-registry/{f['subject']}"
+                        detail = f"[{f.get('severity','medium')}] {f.get('evidence','')}"
+                        cur.execute("SAVEPOINT mrw_sp")
                         try:
                             cur.execute("""
                                 INSERT INTO brain_findings
-                                  (finding_kind, subject, url, evidence,
-                                   severity, source, created_at)
-                                VALUES (%s, %s, %s, %s, %s, %s, NOW())
-                                ON CONFLICT DO NOTHING
-                            """, (f["kind"], f["subject"], f["url"],
-                                  f["evidence"], f["severity"],
-                                  "mcp_registry_watch"))
+                                  (issue, url, count, detail,
+                                   first_seen, last_seen, seen_count)
+                                VALUES (%s, %s, %s, %s, NOW(), NOW(), 1)
+                                ON CONFLICT (issue, url) DO UPDATE
+                                   SET count      = EXCLUDED.count,
+                                       detail     = EXCLUDED.detail,
+                                       last_seen  = NOW(),
+                                       seen_count = brain_findings.seen_count + 1
+                            """, (issue, url, 1, detail))
+                            cur.execute("RELEASE SAVEPOINT mrw_sp")
                             filed += 1
                         except Exception:
-                            pass
+                            cur.execute("ROLLBACK TO SAVEPOINT mrw_sp")
                 conn.commit()
     except Exception as _e:
         pass
