@@ -120,6 +120,25 @@ SCHEDULE = [
     # one run per slot per day. Both slots are empty hours (no overlap
     # with 14/2 knowledge-sync, 18/19 news/facilities, 20/21 deals/market).
     (15, 23, "accelerator_scan",   "_run_accelerator_scan"),
+    # MCP-presence crawl (2026-06-05): twice-daily sweep of the ~15 MCP
+    # listing sites DC Hub appears on (Smithery, MCPHive, LobeHub, Glama,
+    # YellowMCP, mcp.so, PulseMCP, etc.). For each, fetch the listing
+    # page, scrape published tool count + uptime, compare to our live
+    # /api/v1/mcp/tools.json count, write a brain_findings row when drift
+    # is detected. Rate-limited at 1s/request × max 15 requests, so a run
+    # finishes in well under 60s — small enough to share an hour with
+    # the news crawler (which holds the lock first; the presence crawler
+    # picks up on the next-minute tick after news finishes, or on the
+    # next-day re-fire if news overruns). Slot 6/18 mirrors the user's
+    # spec; if collision proves chronic, move to an empty hour later.
+    ( 6, 18, "mcp_presence_crawl",   "_run_mcp_presence_crawl"),
+    # MCP-registry discoverer (2026-06-05): weekly Google-SERP scan for
+    # NEW MCP listing sites DC Hub isn't on yet. Self-gates to Mondays
+    # inside the runner so this only fires once per week (the SCHEDULE
+    # harness is hour-based, not weekly). Slot 7/7 same-hour pair caps
+    # to one run per UTC day; weekday gate caps to one run per week.
+    # Defensive cap of 15 HTTP requests per run, never raises.
+    ( 7,  7, "mcp_registry_discover", "_run_mcp_registry_discover"),
 ]
 
 # ---------------------------------------------------------------------------
@@ -1172,6 +1191,56 @@ def _run_accelerator_scan():
         logger.error("📣 accelerator_scan: error — %s", e)
 
 
+def _run_mcp_presence_crawl():
+    """MCP-presence crawl (2026-06-05): for each known MCP listing site
+    DC Hub appears on (Smithery, MCPHive, LobeHub, Glama, YellowMCP,
+    mcp.so, PulseMCP, etc.), fetch the listing page, scrape published
+    tool count + uptime, compare to our live tool count, write drift
+    findings to brain_findings. Defensive — never raises. Calls the
+    module directly (no HTTP loopback) because the crawler is short
+    enough to fit inside the scheduler's run-guard window."""
+    try:
+        from routes.mcp_presence_crawler import crawl_mcp_presence as _crawl
+        result = _crawl() or {}
+        logger.info(
+            "📡 mcp_presence_crawl: checked=%s drift=%s stale=%s errors=%s actual_tools=%s",
+            result.get("checked"), result.get("drift_found"),
+            result.get("stale_found"), result.get("errors"),
+            result.get("our_actual_tool_count"),
+        )
+    except Exception as e:
+        logger.error("📡 mcp_presence_crawl error: %s", e, exc_info=True)
+
+
+def _run_mcp_registry_discover():
+    """MCP-registry discoverer (2026-06-05): weekly Google-SERP scan for
+    NEW MCP listing sites DC Hub isn't on yet. WEEKDAY GATE: only fires
+    on Mondays (weekday()==0) — the SCHEDULE harness is hour-based, not
+    weekly, so we self-cap here. Files brain_findings rows of type
+    'mcp_registry_discovered' for the brain to triage. Defensive —
+    never raises."""
+    try:
+        now = datetime.now(timezone.utc)
+        if now.weekday() != 0:  # 0 = Monday
+            logger.info(
+                "📡 mcp_registry_discover: skipped — weekly gate (today=%s, runs Mondays only)",
+                now.strftime("%A"),
+            )
+            return
+        from routes.mcp_presence_crawler import (
+            discover_new_mcp_registries as _disc,
+        )
+        result = _disc() or {}
+        logger.info(
+            "📡 mcp_registry_discover: queries=%s candidates=%s new=%s submit_pages=%s errors=%s",
+            result.get("queries_run"), result.get("candidates_seen"),
+            result.get("new_domains"), result.get("submit_pages"),
+            result.get("errors"),
+        )
+    except Exception as e:
+        logger.error("📡 mcp_registry_discover error: %s", e, exc_info=True)
+
+
 _RUNNERS = {
     "market_refresh":      _run_market_refresh,
     "news":                _run_news_crawler,
@@ -1190,6 +1259,8 @@ _RUNNERS = {
     "tool_calibration":    _run_tool_calibration_check,
     "linkedin_engagement_sync": _run_linkedin_engagement_sync,
     "accelerator_scan":    _run_accelerator_scan,
+    "mcp_presence_crawl":  _run_mcp_presence_crawl,
+    "mcp_registry_discover": _run_mcp_registry_discover,
 }
 
 

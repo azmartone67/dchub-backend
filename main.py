@@ -26875,6 +26875,20 @@ try:
 except Exception as _dma_e:
     print(f"[main] dchub_media_accelerator_bp register failed: {_dma_e}", flush=True)
 
+# Autonomous MCP-presence management (2026-06-05): twice-daily crawl of
+# the ~15 MCP listing sites DC Hub appears on (Smithery, MCPHive,
+# LobeHub, Glama, YellowMCP, mcp.so, PulseMCP, etc.) + weekly Google-
+# SERP discovery of NEW MCP registries. Drift/stale/new-registry findings
+# are written to brain_findings so the brain hub triages them. The
+# crawler is rate-limited (1s × max 15 reqs) and identifies itself as
+# `dchub-mcp-presence-crawler/1.0 (+https://dchub.cloud)`.
+try:
+    from routes.mcp_presence_crawler import register_mcp_presence_crawler
+    register_mcp_presence_crawler(app)
+    print("[main] mcp_presence_crawler registered: /api/v1/admin/mcp-presence/{crawl,seed,discover}, /api/v1/mcp-presence/status", flush=True)
+except Exception as _mpc_e:
+    print(f"[main] mcp_presence_crawler register failed: {_mpc_e}", flush=True)
+
 try:
     from routes.ai_citation_scraper import ai_citation_scraper_bp
     app.register_blueprint(ai_citation_scraper_bp)
