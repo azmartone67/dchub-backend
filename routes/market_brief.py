@@ -2129,6 +2129,107 @@ def admin_discover_eligible_markets():
     }), 200
 
 
+@market_brief_bp.route("/brief", methods=["GET"])
+@market_brief_bp.route("/briefs", methods=["GET"])
+def html_market_brief_index():
+    """Brief INDEX / picker — choose any covered market, go to its full brief.
+    Replaces the hard-coded single-market deep link the nav used to carry.
+    Dark site brand + global nav so it reads as part of the main site."""
+    import html as _h
+    rows = []
+    try:
+        with _conn() as c, c.cursor() as cur:
+            cur.execute("""SELECT DISTINCT ON (market_slug)
+                   market_slug, market_name, state, iso, verdict,
+                   excess_power_score, constraint_score
+                 FROM market_power_scores
+                 ORDER BY market_slug, computed_at DESC""")
+            for r in cur.fetchall():
+                rows.append({"slug": r[0], "name": r[1] or r[0], "state": r[2] or "",
+                             "iso": r[3] or "", "verdict": (r[4] or "WATCH"),
+                             "excess": r[5], "constraint": r[6]})
+    except Exception:
+        rows = []
+
+    def _rank(m):
+        v = (m["verdict"] or "").upper()
+        # BUILD first (best excess), then WATCH, then AVOID (worst constraint)
+        if "BUILD" in v:  return (0, -(m["excess"] or 0))
+        if "AVOID" in v:  return (2, -(m["constraint"] or 0))
+        return (1, -(m["excess"] or 0))
+    rows.sort(key=_rank)
+
+    cards = []
+    for m in rows:
+        v = (m["verdict"] or "WATCH").upper()
+        col = "#34d399" if "BUILD" in v else ("#f87171" if "AVOID" in v else "#fbbf24")
+        if m["excess"] is not None and "AVOID" not in v:
+            metric = f"Excess {float(m['excess']):.0f}"
+        elif m["constraint"] is not None:
+            metric = f"Constraint {float(m['constraint']):.0f}"
+        else:
+            metric = ""
+        nm = _h.escape(m["name"]); st = _h.escape(m["state"]); iso = _h.escape(m["iso"])
+        search = _h.escape(f"{m['name']} {m['state']} {m['iso']} {v}".lower())
+        sub = " · ".join(x for x in [st, iso] if x)
+        cards.append(
+            f'<a class="mc" href="/markets/{_h.escape(m["slug"])}/brief" data-s="{search}">'
+            f'<div class="mc-top"><span class="mc-name">{nm}</span>'
+            f'<span class="mc-v" style="color:{col};border-color:{col}">{_h.escape(v)}</span></div>'
+            f'<div class="mc-sub">{sub}</div>'
+            f'<div class="mc-metric">{metric}</div></a>'
+        )
+    cards_html = "".join(cards) or '<p class="empty">Market scores are refreshing — check back shortly.</p>'
+    count = len(rows)
+
+    CSS = """
+:root{--bg:#0a0a0f;--surf:#131319;--surf2:#1a1a22;--b:rgba(255,255,255,.09);--tx:#fafafa;--mut:#a1a1aa;--dim:#71717a;--ind:#818cf8;--vio:#a855f7;--cy:#22d3ee}
+*{box-sizing:border-box}body{margin:0;background:var(--bg);color:#d4d4d8;font-family:'Instrument Sans',-apple-system,BlinkMacSystemFont,system-ui,sans-serif;line-height:1.55}
+.wrap{max-width:1100px;margin:0 auto;padding:2.5rem 1.25rem 4rem}
+.kick{font-family:'JetBrains Mono',monospace;font-size:.72rem;letter-spacing:.16em;text-transform:uppercase;color:var(--cy);margin:0 0 .5rem}
+h1{font-size:2rem;font-weight:800;letter-spacing:-.02em;color:#fff;margin:0 0 .4rem}
+.lead{color:var(--mut);max-width:640px;margin:0 0 1.5rem}
+.search{width:100%;max-width:440px;background:var(--surf);border:1px solid var(--b);border-radius:10px;padding:.7rem .9rem;color:var(--tx);font-size:.95rem;margin:0 0 1.5rem}
+.search::placeholder{color:var(--dim)}
+.grid{display:grid;grid-template-columns:repeat(auto-fill,minmax(230px,1fr));gap:.85rem}
+.mc{display:block;background:var(--surf);border:1px solid var(--b);border-radius:11px;padding:.95rem 1.05rem;text-decoration:none;color:inherit;transition:transform .12s,border-color .12s}
+.mc:hover{transform:translateY(-2px);border-color:var(--ind)}
+.mc-top{display:flex;justify-content:space-between;align-items:center;gap:.5rem}
+.mc-name{font-weight:700;color:#fff;font-size:1.02rem}
+.mc-v{font-family:'JetBrains Mono',monospace;font-size:.6rem;font-weight:700;letter-spacing:.05em;border:1px solid;border-radius:999px;padding:.12rem .5rem}
+.mc-sub{color:var(--dim);font-size:.74rem;font-family:'JetBrains Mono',monospace;margin:.3rem 0 .15rem}
+.mc-metric{color:var(--mut);font-size:.82rem;font-weight:600}
+.empty{color:var(--dim)}
+.foot{margin-top:2.5rem;padding-top:1.25rem;border-top:1px solid var(--b);color:var(--dim);font-size:.8rem;font-family:'JetBrains Mono',monospace}
+.foot a{color:var(--ind);text-decoration:none}
+"""
+    HTML = (
+        "<!doctype html><html lang=en><head><meta charset=utf-8>"
+        "<meta name=viewport content='width=device-width,initial-scale=1'>"
+        "<meta name=theme-color content='#0a0a0f'>"
+        f"<title>Market Briefs · {count} markets · DC Hub</title>"
+        "<meta name='description' content='Live per-market data-center intelligence briefs — power, grid, pipeline, operators, M&A, comps, risk. Pick any market.'>"
+        "<link rel=stylesheet href='https://fonts.googleapis.com/css2?family=Instrument+Sans:wght@400;500;600;700;800&family=JetBrains+Mono:wght@400;500&display=swap'>"
+        "<link rel=stylesheet href='/static/dchub-brand.css'>"
+        "<script src='/js/dchub-nav.js' defer></script>"
+        f"<style>{CSS}</style></head><body><div class=wrap>"
+        "<p class=kick>Premium · Market Brief</p>"
+        "<h1>Market Briefs</h1>"
+        f"<p class=lead>Live per-market intelligence — power &amp; grid, construction pipeline, operators, M&amp;A, lease comps, and risk. Pick any of the {count} scored markets for its full brief.</p>"
+        "<input class=search id=q placeholder='Search market, state, ISO, or verdict…' autocomplete=off>"
+        f"<div class=grid id=grid>{cards_html}</div>"
+        "<div class=foot>DC Hub · agent-native data-center &amp; power intelligence · "
+        "<a href='/dcpi'>Open DCPI</a> · <a href='/pricing'>Pricing</a></div>"
+        "</div>"
+        "<script>(function(){var q=document.getElementById('q'),g=document.getElementById('grid');"
+        "if(!q)return;q.addEventListener('input',function(){var t=q.value.trim().toLowerCase();"
+        "g.querySelectorAll('.mc').forEach(function(c){c.style.display=(!t||(c.getAttribute('data-s')||'').indexOf(t)>-1)?'':'none';});});})();</script>"
+        "</body></html>"
+    )
+    return Response(HTML, mimetype="text/html",
+                    headers={"Cache-Control": "public, max-age=600"})
+
+
 @market_brief_bp.route("/markets/<slug>/brief", methods=["GET"])
 def html_market_brief(slug):
     """HTML render — 9 sections, paywalled by tier.
