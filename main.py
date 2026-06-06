@@ -24765,6 +24765,12 @@ try:
         print("🔥 Gas Pipeline Ingest: ✅ Registered (/api/v1/admin/ingest/gas-pipelines)")
     except Exception as _gpi_e:
         print(f"🔥 Gas Pipeline Ingest: ⚠️ {_gpi_e}")
+    try:
+        from routes.submarine_cables import subsea_bp
+        app.register_blueprint(subsea_bp)
+        print("🌊 Submarine Cables proxy: ✅ Registered (/api/v1/infrastructure/submarine-cables)")
+    except Exception as _sub_e:
+        print(f"🌊 Submarine Cables proxy: ⚠️ {_sub_e}")
 except Exception as e:
     print(f"❌ Energy Discovery blueprint failed: {e}")
 
