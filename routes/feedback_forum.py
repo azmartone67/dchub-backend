@@ -941,6 +941,7 @@ loadShipped();
 
 @feedback_forum_bp.route("/feedback", methods=["GET"])
 @feedback_forum_bp.route("/partners/feedback", methods=["GET"])
+@feedback_forum_bp.route("/community", methods=["GET"])
 def feedback_page():
     # r74 (2026-06-06): dual-route alias. The single-segment /feedback path
     # hits the CF zone-worker allowlist trap (same Error 1000 pattern as

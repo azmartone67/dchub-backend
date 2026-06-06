@@ -89,6 +89,46 @@ def _count_autopilot_commits_today() -> int:
     return sum(1 for b in blocks if _AUTOPILOT_MARKER in b)
 
 
+_DEFAULT_MIN_INTERVAL_MIN = 12
+
+
+def _min_interval_min() -> int:
+    try:
+        return max(0, int(os.environ.get(
+            "DCHUB_AUTOPILOT_MIN_COMMIT_INTERVAL_MIN", _DEFAULT_MIN_INTERVAL_MIN)))
+    except Exception:
+        return _DEFAULT_MIN_INTERVAL_MIN
+
+
+def _minutes_since_last_autopilot_commit():
+    """Minutes since the most recent autopilot-marked commit, or None.
+
+    A min-interval complements the daily cap: the cap bounds total/day but
+    lets the autopilot ship in tight bursts, which keeps Railway rebuilding
+    (each push = a deploy) and delays every ship. Spacing commits out smooths
+    the deploy pipeline. Graceful: returns None on any git error."""
+    try:
+        out = subprocess.check_output(
+            ["git", "log", "-40", "--pretty=%cI%x09%B%n---END---"],
+            timeout=10, stderr=subprocess.DEVNULL,
+        ).decode("utf-8", errors="ignore")
+    except Exception:
+        return None
+    for block in out.split("---END---"):
+        block = block.strip()
+        if not block:
+            continue
+        if _AUTOPILOT_MARKER in block:
+            iso = block.split("\t", 1)[0].split("\n", 1)[0].strip()
+            try:
+                ts = _dt.datetime.fromisoformat(iso)
+                now = _dt.datetime.now(ts.tzinfo)
+                return max(0.0, (now - ts).total_seconds() / 60.0)
+            except Exception:
+                return None
+    return None
+
+
 # ── Public API ──────────────────────────────────────────────────
 
 def check_daily_commit_budget(source: str = "autopilot") -> tuple[bool, str]:
@@ -108,7 +148,17 @@ def check_daily_commit_budget(source: str = "autopilot") -> tuple[bool, str]:
             f"shipped today (UTC). Reset at 00:00 UTC. Source attempting: "
             f"{source}. To raise the cap, set DCHUB_AUTOPILOT_DAILY_COMMIT_CAP."
         )
-    return True, f"budget ok: {n}/{cap} used today (from {source})"
+    gap = _min_interval_min()
+    if gap > 0:
+        mins = _minutes_since_last_autopilot_commit()
+        if mins is not None and mins < gap:
+            return False, (
+                f"min-interval throttle: last autopilot commit {mins:.0f} min "
+                f"ago (< {gap} min). Batch the change and retry shortly so the "
+                f"deploy pipeline doesn't churn. Tune via "
+                f"DCHUB_AUTOPILOT_MIN_COMMIT_INTERVAL_MIN (0 disables). Source: {source}."
+            )
+    return True, f"budget ok: {n}/{cap} used today, last >{_min_interval_min()}min ago (from {source})"
 
 
 def get_budget_status() -> dict:
