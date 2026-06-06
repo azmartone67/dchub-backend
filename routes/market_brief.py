@@ -146,11 +146,18 @@ def _section_hero(cur, slug: str) -> dict | None:
     # excess_power_score, constraint_score, computed_at, queue_wait_months.
     # Try the full SELECT; if `score` is the canonical column (per
     # market_deep_dive._gather_market_facts) use it.
+    # r-fix (2026-06-06): the previous SELECT also asked for state, iso,
+    # queue_wait_months, time_to_power_months — columns that DON'T exist on
+    # the live market_power_scores table. The query threw, the bare `except`
+    # below swallowed it, and `_section_hero` returned None → the gating check
+    # rendered "not yet in our DCPI coverage" for EVERY market (the brief was
+    # 100% broken). Now we SELECT only the columns market_deep_dive (the proven
+    # sibling) uses; the optional fields default to None and downstream
+    # sections (power/queue) fill what they can, best-effort.
     try:
         cur.execute("""
-            SELECT market_slug, market_name, state, iso, verdict,
-                   score, excess_power_score, constraint_score,
-                   queue_wait_months, time_to_power_months, computed_at
+            SELECT market_slug, market_name, verdict, score,
+                   excess_power_score, constraint_score, computed_at
               FROM market_power_scores
              WHERE LOWER(market_slug) = LOWER(%s)
                 OR LOWER(REPLACE(market_name, ' ', '-')) = LOWER(%s)
@@ -164,16 +171,16 @@ def _section_hero(cur, slug: str) -> dict | None:
     return {
         "slug":              r[0],
         "name":              r[1],
-        "state":             r[2],
-        "iso":               r[3],
-        "verdict":           r[4],
-        "composite_score":   _as_int(r[5]),
-        "excess_power":      _as_float(r[6]),
-        "constraint_score":  _as_float(r[7]),
-        "queue_wait_months": _as_float(r[8]),
-        "time_to_power_mo":  _as_float(r[9]),
-        "computed_at":       r[10].isoformat() if r[10] else None,
-        "_computed_at_dt":   r[10],  # internal — used to compute live-as-of
+        "state":             None,
+        "iso":               None,
+        "verdict":           r[2],
+        "composite_score":   _as_int(r[3]),
+        "excess_power":      _as_float(r[4]),
+        "constraint_score":  _as_float(r[5]),
+        "queue_wait_months": None,
+        "time_to_power_mo":  None,
+        "computed_at":       r[6].isoformat() if r[6] else None,
+        "_computed_at_dt":   r[6],  # internal — used to compute live-as-of
     }
 
 

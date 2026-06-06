@@ -440,6 +440,7 @@ def submit_feedback():
 
     Returns {id, status} on success, or {error, hint} on rejection.
     Always 200 for spam quarantine (we don't tell bots they were flagged)."""
+    _ensure_ff_schema()
     data = request.get_json(silent=True) or request.form.to_dict() or {}
 
     title = (data.get("title") or "").strip()
@@ -531,10 +532,30 @@ def submit_feedback():
         except Exception: pass
 
 
+_FF_SCHEMA_READY = False
+
+
+def _ensure_ff_schema():
+    """r-fix (2026-06-06): /api/v1/feedback/list 500'd because the SELECT hit
+    feedback_submissions before content_publisher.init_content_tables() had
+    guaranteed the table + all columns existed (boot-order / schema-drift).
+    init_feedback_tables() is idempotent (CREATE + ALTER IF NOT EXISTS), so
+    run it once per process at the read/write entrypoints to self-heal."""
+    global _FF_SCHEMA_READY
+    if _FF_SCHEMA_READY:
+        return
+    try:
+        init_feedback_tables()
+    except Exception:
+        pass
+    _FF_SCHEMA_READY = True
+
+
 @feedback_forum_bp.route("/api/v1/feedback/list", methods=["GET"])
 def list_feedback():
     """Public anonymized list. Query params: status, type, limit (≤50),
     offset, sort (recent|votes|shipped)."""
+    _ensure_ff_schema()
     status = (request.args.get("status") or "").strip().lower()
     type_ = (request.args.get("type") or "").strip().lower()
     sort = (request.args.get("sort") or "recent").strip().lower()
