@@ -17312,8 +17312,19 @@ def daily_cron():
                         logger.warning(f"[daily_cron] OG image fetch failed ({_og_url}): {_img_e2}")
                 return None
 
-            token = get_valid_token()
-            if not token:
+            # Same-day idempotency (2026-06-06): the digest appeared TWICE on the
+            # feed (two near-simultaneous cron triggers). Skip if a digest already
+            # posted TODAY in this process. Fail-open: the marker is set only AFTER
+            # a confirmed success and resets on restart, so a failed attempt still
+            # retries and the digest can never be permanently suppressed.
+            _today_key = _dt.utcnow().strftime('%Y-%m-%d')
+            _digest_done_today = getattr(daily_cron, '_last_digest_date', None) == _today_key
+            token = None if _digest_done_today else get_valid_token()
+            if _digest_done_today:
+                results['linkedin'] = {'success': True, 'skipped': True,
+                                       'reason': 'digest_already_posted_today'}
+                logger.info("[daily_cron] digest already posted today — skipping duplicate")
+            elif not token:
                 results['linkedin'] = {'success': False, 'error': 'No valid LinkedIn token'}
             else:
                 image_bytes = _daily_digest_image_bytes()
@@ -17342,6 +17353,7 @@ def daily_cron():
                     _meta = _meta or {}
                     _img_attached = bool(_meta.get("image_attached"))
                     if _ok and _img_attached:
+                        daily_cron._last_digest_date = _today_key  # mark success → block same-day dup
                         results['linkedin'] = {
                             'success': True,
                             'post_id': str(_meta.get('post_urn') or _meta.get('urn') or '')[:100],
