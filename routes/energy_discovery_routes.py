@@ -14,10 +14,18 @@ Add to main.py:
 from flask import Blueprint, jsonify, request
 import logging
 import json
+import time
 
 logger = logging.getLogger(__name__)
 
 energy_discovery_bp = Blueprint('energy_discovery', __name__)
+
+# /status runs ~8 COUNT(*) on large tables (substations 126K, transmission 52K,
+# power_plants_eia 13K) — ~1.7s/call. On the 1-replica backend the land-power
+# map's boot burst made that a flapping trigger (transient 503s observed in a
+# 2026-06-06 Chrome QA sweep). The counts change slowly, so cache the payload.
+_STATUS_CACHE = {'data': None, 'ts': 0.0}
+_STATUS_TTL_S = 120
 
 # ============================================================================
 # MARKET DEFINITIONS (matches frontend MARKETS object)
@@ -305,8 +313,12 @@ def energy_discovery_status():
 
     Replaces the in-memory state with live row counts + last-updated
     timestamps. Used by the dashboard, watchdog, and Land-Power map UI
-    as the freshness/health signal.
+    as the freshness/health signal. Cached _STATUS_TTL_S seconds — the COUNT(*)
+    sweep is slow and the boot burst otherwise flaps the 1-replica backend.
     """
+    _now = time.time()
+    if _STATUS_CACHE['data'] is not None and (_now - _STATUS_CACHE['ts']) < _STATUS_TTL_S:
+        return jsonify({**_STATUS_CACHE['data'], '_cache': 'hit'})
     out = {
         'success': True,
         'data': {
@@ -408,7 +420,11 @@ def energy_discovery_status():
     except Exception as _e:
         out['data']['_error'] = type(_e).__name__ + ': ' + str(_e)[:200]
 
-    return jsonify(out)
+    # Cache only a clean result — never pin a transient DB error for 2 min.
+    if not out.get('data', {}).get('_error'):
+        _STATUS_CACHE['data'] = out
+        _STATUS_CACHE['ts'] = _now
+    return jsonify({**out, '_cache': 'miss'})
 
 @energy_discovery_bp.route('/api/v1/capacity/heatmap', methods=['GET'])
 def capacity_heatmap():
