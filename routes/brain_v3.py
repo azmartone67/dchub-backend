@@ -150,23 +150,30 @@ def _enact_hypothesis(cur, h: dict) -> dict:
     severity = "high" if hid in ("structural-cluster",
                                   "backlog-vs-proposals-gap") else "medium"
 
+    # 2026-06-06 fix: brain_findings schema is (issue, url, count, detail,
+    # first_seen, last_seen, seen_count) with UNIQUE(issue, url) — NOT the
+    # finding_kind/subject/evidence/severity/source columns I assumed
+    # (mcp_registry_watch.py has the same wrong-column bug, silently
+    # swallowed). Use the canonical upsert from
+    # brain_consistency_radar._persist_findings_to_db so re-enacting the
+    # same hypothesis bumps seen_count instead of erroring.
+    issue = f"mirror_enacted:{hid}"
+    url = f"dchub://brain/mirror/{hid}"
+    detail = (f"[{severity}] Mirror hypothesis enacted. "
+              f"Q: {question} | Next: {next_step}")
     try:
         cur.execute("""
             INSERT INTO brain_findings
-              (finding_kind, subject, url, evidence, severity, source,
-               created_at)
-            VALUES (%s, %s, %s, %s, %s, %s, NOW())
-            ON CONFLICT DO NOTHING
-        """, (
-            f"mirror_enacted:{hid}",
-            hid,
-            None,
-            f"Mirror hypothesis enacted. Q: {question} | Next: {next_step}",
-            severity,
-            "brain_v3_enact",
-        ))
+                (issue, url, count, detail, first_seen, last_seen, seen_count)
+            VALUES (%s, %s, %s, %s, NOW(), NOW(), 1)
+            ON CONFLICT (issue, url) DO UPDATE
+               SET count      = EXCLUDED.count,
+                   detail     = EXCLUDED.detail,
+                   last_seen  = NOW(),
+                   seen_count = brain_findings.seen_count + 1
+        """, (issue, url, 1, detail))
         return {"hypothesis": hid, "action": "filed_finding",
-                "severity": severity}
+                "severity": severity, "issue": issue}
     except Exception as e:
         return {"hypothesis": hid, "action": "failed",
                 "error": str(e)[:120]}
@@ -207,8 +214,32 @@ def v3_enact():
             return jsonify({"ok": False, "error": "no_database_url"}), 500
         with psycopg2.connect(_du, connect_timeout=8) as conn:
             with conn.cursor() as cur:
+                # Ensure the table exists (idempotent) before inserting.
+                cur.execute("""
+                    CREATE TABLE IF NOT EXISTS brain_findings (
+                        id SERIAL PRIMARY KEY,
+                        issue TEXT NOT NULL,
+                        url TEXT NOT NULL DEFAULT '',
+                        count INTEGER,
+                        detail TEXT,
+                        first_seen TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+                        last_seen TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+                        seen_count INTEGER NOT NULL DEFAULT 1,
+                        UNIQUE (issue, url)
+                    )
+                """)
+                conn.commit()
+                # Savepoint per finding so one bad row can't abort the
+                # rest of the batch (the transaction-abort cascade that
+                # bit the first enact attempt).
                 for h in hypotheses:
-                    actions.append(_enact_hypothesis(cur, h))
+                    cur.execute("SAVEPOINT enact_sp")
+                    a = _enact_hypothesis(cur, h)
+                    if a.get("action") == "failed":
+                        cur.execute("ROLLBACK TO SAVEPOINT enact_sp")
+                    else:
+                        cur.execute("RELEASE SAVEPOINT enact_sp")
+                    actions.append(a)
             conn.commit()
     except Exception as e:
         return jsonify({"ok": False, "error": str(e)[:200],
