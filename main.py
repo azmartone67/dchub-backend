@@ -27970,6 +27970,35 @@ try:
 except Exception as _e:
     print(f"[main] saved_searches register failed: {_e}", file=sys.stderr)
 
+# 2026-06-06: Capacity Headroom API was ALSO stranded in the dead `__main__`
+# block (gunicorn never runs it), so /api/v1/capacity/{headroom,trends,compare,
+# status} 404'd in prod. It is @require_plan('pro') gated + computes from real
+# EIA/FERC sources, so wire it at module level. The scheduler stays gated on
+# ENABLE_BACKGROUND_SCHEDULERS (default off) -> the cache populates lazily on
+# first request, so there is no import-time load on every gunicorn worker.
+#
+# NOTE: data_layers_api was also stranded in that block but is DELIBERATELY left
+# dead: its /api/v1/facilities/all is an UNGATED bulk dump (bypasses the tier
+# row-count gating) and /api/v1/solar/farms + /wind/farms return HARDCODED
+# placeholder data. It must be gated + wired to real data before going live.
+try:
+    if 'capacity_headroom' not in app.blueprints:
+        from capacity_headroom_api import (create_headroom_blueprint,
+                                            init_headroom_db, start_headroom_scheduler)
+        try:
+            init_headroom_db()
+        except Exception as _e:
+            print(f"[main] capacity_headroom init_db: {_e}", file=sys.stderr)
+        app.register_blueprint(create_headroom_blueprint())
+        if ENABLE_BACKGROUND_SCHEDULERS:
+            try:
+                start_headroom_scheduler(delay_seconds=90)
+            except Exception as _e:
+                print(f"[main] capacity_headroom scheduler: {_e}", file=sys.stderr)
+        print("[main] Capacity Headroom API: registered at module level (was dead in __main__)")
+except Exception as _e:
+    print(f"[main] capacity_headroom register failed: {_e}", file=sys.stderr)
+
 # Phase HHHH (2026-05-16): facility-count delta tracker + brain
 # stagnation detector. Catches silent discovery-pipeline failures.
 try:
