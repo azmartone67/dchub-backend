@@ -283,8 +283,12 @@ _ELIGIBILITY_SQL = """
        AND LOWER(u.email) NOT IN (
            'azmartone@gmail.com',
            'azmartone@icloud.com',
-           'jonathan@dchub.cloud'
+           'jonathan@dchub.cloud',
+           'jonathan.martone@arcadianinfra.com'
        )
+       -- Catch every gmail+alias variant used for Stripe testing
+       AND LOWER(u.email) NOT LIKE 'azmartone+%@gmail.com'
+       AND LOWER(u.email) NOT LIKE 'jonathan%@dchub.%'
        AND NOT EXISTS (
            SELECT 1 FROM campaign_log c
             WHERE c.campaign_name = %s
