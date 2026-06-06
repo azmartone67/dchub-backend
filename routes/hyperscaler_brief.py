@@ -171,7 +171,15 @@ def _conn():
     if not db:
         return None
     try:
-        return psycopg2.connect(db, sslmode="require", connect_timeout=5)
+        c = psycopg2.connect(db, sslmode="require", connect_timeout=5)
+        # 2026-06-06: autocommit so each section query is independent. Without
+        # it, the FIRST query that errors (e.g. a column that doesn't exist)
+        # aborts the shared transaction and every subsequent section fails with
+        # "current transaction is aborted" → most of the brief rendered empty
+        # even though the data exists. Makes the docstring's "degrade one tile,
+        # not the page" actually true. (Same fix as changes_feed.py.)
+        c.autocommit = True
+        return c
     except Exception:
         return None
 
@@ -509,10 +517,14 @@ def _section_ma(cur, meta: dict) -> list[dict]:
     try:
         buyer_where, buyer_params = _ilike_clauses("buyer", aliases)
         seller_where, seller_params = _ilike_clauses("seller", aliases)
+        # deals schema (canonical writer admin_ai_deals.py): id, date, year,
+        # buyer, seller, value, type, market, notes, verified, source_url,
+        # created_at. 2026-06-06 FIX: the prior SELECT referenced mw / region /
+        # asset_name — NONE of which exist — so this query threw on every call
+        # and (pre-autocommit) poisoned the rest of the brief. Use real columns.
         cur.execute(
             f"""
-            SELECT date, buyer, seller, value, mw, type,
-                   COALESCE(market, region) AS location, asset_name
+            SELECT date, buyer, seller, value, type, market, notes
               FROM deals
              WHERE ({buyer_where} OR {seller_where})
                AND (date IS NULL OR date >= CURRENT_DATE - INTERVAL '24 months')
@@ -527,10 +539,10 @@ def _section_ma(cur, meta: dict) -> list[dict]:
                 "buyer":  r[1], "seller": r[2],
                 "value":  v,
                 "value_display": _fmt_money(v) if v is not None else "amount undisclosed",
-                "mw":     _as_float(r[4]),
-                "type":   r[5],
-                "location": r[6],
-                "asset":  r[7],
+                "mw":     None,
+                "type":   r[4],
+                "location": r[5],
+                "asset":  r[6],
             })
     except Exception:
         pass
