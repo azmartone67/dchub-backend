@@ -175,6 +175,27 @@ SCHEMA_STATEMENTS = [
         "CREATE INDEX IF NOT EXISTS ix_renewal_nudge_log_user_sent ON renewal_nudge_log(user_id, sent_at DESC)",
         "CREATE INDEX IF NOT EXISTS ix_renewal_nudge_log_email_sent ON renewal_nudge_log(email, sent_at DESC)",
     ]),
+    ("campaign_log table", [
+        # r66-halfprice-annual (2026-06-06): per-campaign send log for
+        # the half-price annual upgrade outreach (routes/campaign_halfprice_annual.py).
+        # UNIQUE(campaign_name, email) makes re-firing the same campaign
+        # a no-op for already-sent rows — idempotent by construction.
+        # Used by ANY future campaign endpoint that needs "never email the
+        # same person twice for the same blast" semantics, not just the
+        # halfprice_annual_2026_06 campaign.
+        """CREATE TABLE IF NOT EXISTS campaign_log (
+            id              SERIAL PRIMARY KEY,
+            campaign_name   TEXT NOT NULL,
+            user_id         TEXT,
+            email           TEXT NOT NULL,
+            sent_at         TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+            resend_message_id TEXT,
+            payload         JSONB,
+            UNIQUE(campaign_name, email)
+        )""",
+        "CREATE INDEX IF NOT EXISTS ix_campaign_log_campaign ON campaign_log(campaign_name)",
+        "CREATE INDEX IF NOT EXISTS ix_campaign_log_sent_at ON campaign_log(sent_at DESC)",
+    ]),
     ("press_releases.published_at column", [
         # If the column doesn't exist, ALTER TABLE ADD COLUMN IF NOT
         # EXISTS is idempotent. Some deploys may have it as

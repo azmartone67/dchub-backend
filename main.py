@@ -28258,6 +28258,20 @@ try:
 except Exception as _e:
     print(f"[main] renewal_nudge register failed: {_e}", file=sys.stderr)
 
+# r66-halfprice-annual (2026-06-06): half-price Pro Annual outreach to
+# active monthly Pro subs ($199 → effectively $99/mo via $1,188 one-time).
+# DRY-RUN gated: /preview returns fire_key, /fire?fire_key=X actually sends.
+# 50-email cap, UNIQUE(campaign_name, email) idempotency.
+try:
+    from routes.campaign_halfprice_annual import campaign_halfprice_annual_bp
+    app.register_blueprint(campaign_halfprice_annual_bp)
+    print("[main] campaign_halfprice_annual_bp registered: "
+          "/api/v1/admin/campaign/halfprice-annual/{preview,fire,log}",
+          flush=True)
+except Exception as _e:
+    print(f"[main] campaign_halfprice_annual register failed: {_e}",
+          file=sys.stderr)
+
 # Phase XXXX (2026-05-16): competitor intel watcher — daily snapshot
 # of competitor sites, brain finding on significant drift.
 try:
