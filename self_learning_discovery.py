@@ -258,7 +258,7 @@ class SelfLearningDiscovery:
                 
                 cursor.execute('''
                     INSERT INTO discovered_sources (domain, url, discovery_method, created_at)
-                    VALUES (%s, %s, %s, %s)
+                    VALUES (%s, %s, %s, %s) ON CONFLICT DO NOTHING
                 ''', (domain, url, method, datetime.now().isoformat()))
                 
                 if cursor.rowcount > 0:
@@ -470,7 +470,7 @@ class SelfLearningDiscovery:
             for keyword, freq in sorted(patterns.items(), key=lambda x: -x[1])[:50]:
                 cursor.execute('''
                     INSERT INTO learned_keywords  (keyword, frequency, relevance_score)
-                    VALUES (%s, %s, %s)
+                    VALUES (%s, %s, %s) ON CONFLICT DO NOTHING
                 ''', (keyword, freq, min(1.0, freq / 100)))
             
             conn.commit()
@@ -669,7 +669,7 @@ class SelfLearningDiscovery:
             cursor.execute('''
                 INSERT INTO discovered_sources 
                 (domain, url, source_type, discovery_method, created_at)
-                VALUES (%s, %s, 'permit', 'permit_monitor', CURRENT_TIMESTAMP)
+                VALUES (%s, %s, 'permit', 'permit_monitor', CURRENT_TIMESTAMP) ON CONFLICT DO NOTHING
             ''', (f"permit:{region}", url))
             
             conn.commit()
