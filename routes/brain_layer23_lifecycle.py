@@ -922,6 +922,14 @@ def _audit_tool_conversion_health() -> dict:
     }
 
 
+# Dynamic-card fix (commit 32402961) deployed 2026-06-06 17:47 UTC — before it,
+# posts legitimately used the static landing-*.png. Only judge posts from this
+# cutoff onward so the dim isn't 'weak' on grandfathered history. Self-expiring:
+# the SQL takes the LATER of (cutoff, 14d-ago), so once 14d pass the cutoff the
+# normal rolling window takes over and this constant becomes a no-op.
+_MEDIA_DYNAMIC_FIX_AT = "2026-06-06 18:00:00+00"
+
+
 def _audit_media_image_quality() -> dict:
     """2026-06-06: the defect class that needed a HUMAN this week — a LinkedIn
     or daily-digest post shipping a BLANK/stale image while the brain looped
@@ -938,8 +946,9 @@ def _audit_media_image_quality() -> dict:
         with _conn() as c, c.cursor() as cur:
             cur.execute(
                 "SELECT og_image_url FROM linkedin_quad_posts "
-                "WHERE posted_at > NOW() - INTERVAL '14 days' AND og_image_url IS NOT NULL "
-                "ORDER BY posted_at DESC LIMIT 8")
+                "WHERE posted_at >= GREATEST(%s::timestamptz, NOW() - INTERVAL '14 days') "
+                "AND og_image_url IS NOT NULL "
+                "ORDER BY posted_at DESC LIMIT 8", (_MEDIA_DYNAMIC_FIX_AT,))
             urls = [r[0] for r in cur.fetchall() if r[0]]
     except Exception:
         pass  # DB optional — the live-engine probe below still runs
