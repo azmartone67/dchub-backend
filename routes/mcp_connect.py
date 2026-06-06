@@ -170,10 +170,17 @@ def _get_db():
 
 
 def _record_view(client_key: str) -> int | None:
-    """Insert a row in connect_landing_views, return its id (best-effort)."""
+    """Insert a row in connect_landing_views, return its id (best-effort).
+
+    main.get_db() hands out a pooled psycopg2 connection that is NOT
+    autocommit — we must commit() before close() or the row is rolled
+    back on connection return. We close the connection ourselves at the
+    end so it returns to the pool cleanly.
+    """
     db = _get_db()
     if db is None:
         return None
+    new_id = None
     try:
         ua = (request.headers.get("User-Agent") or "")[:300]
         ref = (request.headers.get("Referer") or "")[:500]
@@ -189,12 +196,16 @@ def _record_view(client_key: str) -> int | None:
                 (client_key, ua, ref, ip),
             )
             row = cur.fetchone()
-            return int(row[0]) if row else None
+            new_id = int(row[0]) if row else None
+        db.commit()
     except Exception as e:
         logger.warning("connect_landing_views insert failed: %s", e)
         try: db.rollback()
         except Exception: pass
-        return None
+    finally:
+        try: db.close()
+        except Exception: pass
+    return new_id
 
 
 # ── Page render ─────────────────────────────────────────────────────────
@@ -546,12 +557,16 @@ def mint_update():
                      WHERE id = %s""",
                 (api_key[:120], int(view_id)),
             )
+        db.commit()
         return jsonify(ok=True), 200
     except Exception as e:
         try: db.rollback()
         except Exception: pass
         return jsonify(ok=False, error="update_failed",
                        detail=str(e)[:160]), 200
+    finally:
+        try: db.close()
+        except Exception: pass
 
 
 # Public admin/stats endpoint for the funnel dashboard.
@@ -590,3 +605,6 @@ def connect_stats():
     except Exception as e:
         return jsonify(ok=False, error="query_failed",
                        detail=str(e)[:200]), 500
+    finally:
+        try: db.close()
+        except Exception: pass
