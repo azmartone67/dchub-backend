@@ -158,7 +158,15 @@ def resolve_auth() -> dict:
         if auth_header.startswith("Bearer ") and not auth_header[7:].strip().startswith("dchub_"):
             token = auth_header[7:].strip()
         if not token:
-            token = request.cookies.get("auth_token") or request.cookies.get("token")
+            # 2026-06-06 FIX: the frontend login + nav bridge store the signed
+            # JWT as the `dchub_token` cookie (NOT auth_token/token), so this
+            # handler 401'd for every logged-in browser user. Accept dchub_token
+            # too — same canonical JWT_SECRET/HS256 decode below, same as
+            # main.py + tier_gate.py. (A `dchub_` API key value here is not a
+            # JWT and will just fail decode → anonymous fallback, so harmless.)
+            token = (request.cookies.get("auth_token")
+                     or request.cookies.get("token")
+                     or request.cookies.get("dchub_token"))
         if token:
             import jwt
             from main import JWT_SECRET  # type: ignore

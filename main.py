@@ -8258,7 +8258,12 @@ def _get_request_tier():
         if auth_header.startswith('Bearer ') and not auth_header[7:].strip().startswith('dchub_'):
             token = auth_header[7:].strip()
         if not token:
-            token = request.cookies.get('auth_token') or request.cookies.get('token')
+            # 2026-06-06: include dchub_token — the login cookie name the
+            # frontend actually sets (was auth_token/token only → logged-in
+            # users resolved as anon/free here).
+            token = (request.cookies.get('auth_token')
+                     or request.cookies.get('token')
+                     or request.cookies.get('dchub_token'))
         if token:
             import jwt
             payload = jwt.decode(token, JWT_SECRET, algorithms=['HS256'])

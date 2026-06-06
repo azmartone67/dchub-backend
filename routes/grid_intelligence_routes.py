@@ -287,7 +287,10 @@ def _determine_tier(api_key):
         if auth_header.startswith('Bearer ') and not auth_header[7:].strip().startswith('dchub_'):
             token = auth_header[7:].strip()
         if not token:
-            token = _req.cookies.get('auth_token') or _req.cookies.get('token')
+            # 2026-06-06: include dchub_token (the actual login cookie name —
+            # was auth_token/token only, so logged-in users resolved to free).
+            token = (_req.cookies.get('auth_token') or _req.cookies.get('token')
+                     or _req.cookies.get('dchub_token'))
         if token:
             payload = jwt.decode(token, JWT_SECRET, algorithms=['HS256'])
             return _map_plan(payload.get('plan'))
