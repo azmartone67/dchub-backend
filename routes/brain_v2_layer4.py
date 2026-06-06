@@ -325,13 +325,22 @@ def _call_claude(prompt: str, system: str) -> tuple[str | None, str | None]:
         import urllib.error
     except Exception as e:
         return None, f"stdlib_import_fail: {e}"
-    # 2026-05-31 MODEL SELF-HEAL: try BRAIN_MODEL, but on a 404/400 (model not
-    # found/invalid — e.g. a bad DCHUB_BRAIN_MODEL env like an unreleased
-    # claude-opus-4-8-* date, which 404'd every Layer-5 call → 0 proposals for
-    # 30d) retry ONCE with a confirmed-valid model so a misconfigured model
-    # can't zero out the whole brain. Other codes (401/429/5xx) don't retry.
-    _FALLBACK_MODEL = "claude-sonnet-4-20250514"
-    _models = [BRAIN_MODEL] + ([_FALLBACK_MODEL] if BRAIN_MODEL != _FALLBACK_MODEL else [])
+    # Brain v3 (2026-06-06) MODEL SELF-HEAL: walk the FULL fallback
+    # chain (opus-4-8 → opus-4-7 → opus-4-5 → sonnet → haiku) instead
+    # of the old 2-deep retry. On a 404/400 (model not accessible to
+    # this key — the prior opus-4-7 attempt 404'd) we degrade one rung
+    # and retry, so a high default never zeros out the brain. Other
+    # codes (401/429/5xx) don't retry. Also opt-in 1M context: when the
+    # resolved model supports it + DCHUB_BRAIN_1M_CONTEXT is on, add the
+    # beta header so the inspector tier can hold far more findings.
+    try:
+        from routes.brain_models import (resolve_chain, supports_1m_context,
+                                         one_m_beta_header)
+        _models = resolve_chain(BRAIN_MODEL)
+    except Exception:
+        _models = [BRAIN_MODEL, "claude-sonnet-4-20250514"]
+        supports_1m_context = lambda m: False  # noqa: E731
+        one_m_beta_header = lambda: ""          # noqa: E731
     last_err = None
     for _i, _model in enumerate(_models):
         body = json.dumps({
@@ -340,14 +349,20 @@ def _call_claude(prompt: str, system: str) -> tuple[str | None, str | None]:
             "system": system,
             "messages": [{"role": "user", "content": prompt}],
         }).encode("utf-8")
+        _headers = {
+            "Content-Type": "application/json",
+            "X-API-Key": ANTHROPIC_API_KEY,
+            "Anthropic-Version": "2023-06-01",
+        }
+        try:
+            if supports_1m_context(_model):
+                _headers["Anthropic-Beta"] = one_m_beta_header()
+        except Exception:
+            pass
         req = urllib.request.Request(
             "https://api.anthropic.com/v1/messages",
             data=body,
-            headers={
-                "Content-Type": "application/json",
-                "X-API-Key": ANTHROPIC_API_KEY,
-                "Anthropic-Version": "2023-06-01",
-            },
+            headers=_headers,
         )
         try:
             with urllib.request.urlopen(req, timeout=20) as r:

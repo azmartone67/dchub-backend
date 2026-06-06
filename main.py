@@ -27093,6 +27093,18 @@ try:
 except Exception as _bm_e:
     print(f"[main] brain_mirror_bp register failed: {_bm_e}", flush=True)
 
+# 2026-06-06 (Brain v3) — agentic Opus 4.8 1M-context upgrade control
+# surface. Model-reachability probe (verify the key can reach opus-4-8
+# before trusting the new default), v3 status, and the Mirror
+# hypothesis→action enactment bridge (turns reflection into real
+# autopilot findings — the "enacting change" piece).
+try:
+    from routes.brain_v3 import brain_v3_bp
+    app.register_blueprint(brain_v3_bp)
+    print("[main] brain_v3_bp registered: GET /api/v1/brain/model-probe + /api/v1/brain/v3/status + POST /api/v1/admin/brain/v3/enact", flush=True)
+except Exception as _bv3_e:
+    print(f"[main] brain_v3_bp register failed: {_bv3_e}", flush=True)
+
 # r79 (2026-06-03) — Redirect blueprint for known-dead URLs. Each entry
 # in routes/redirects_404_killer.py is a URL we caught 404ing in production
 # (some during live demos). The link-check CI workflow now catches new
