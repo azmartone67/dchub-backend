@@ -8,6 +8,7 @@ All SQLite references removed.
 import feedparser
 import requests
 import hashlib
+import html as _html
 import re
 import json
 import os
@@ -286,6 +287,7 @@ def fetch_single_feed(feed_info, db_path=NEWS_DB_PATH):
 
                 summary = entry.get('summary', entry.get('description', '')).strip()
                 summary = re.sub(r'<[^>]+>', '', summary)
+                summary = _html.unescape(summary)  # decode &nbsp; &amp; &#39; etc.
                 summary = re.sub(r'\s+', ' ', summary).strip()[:500]
 
                 # STRICT FILTERING
@@ -415,7 +417,9 @@ def fetch_google_news(query, max_results=20):
                 if len(parts)==2 and len(parts[1])<50:
                     title, source = parts[0], parts[1]
             summary = re.sub(r'<[^>]+>','', entry.get('summary','').strip())
+            summary = _html.unescape(summary)  # decode &nbsp; &amp; &#39; etc.
             summary = re.sub(r'\s+',' ', summary).strip()[:500]
+            title = _html.unescape(title)
             if not is_relevant_article(title, summary): continue
             pub_date = None
             if hasattr(entry,'published_parsed') and entry.published_parsed:

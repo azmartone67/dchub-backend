@@ -1180,7 +1180,98 @@ def og_card(style, slug):
     )
 
 
+@og_cards_bp.route('/api/v1/og/dynamic.png', methods=['GET'])
+def og_card_dynamic():
+    """Render a PREMIUM card from query params — no stored press release needed.
+
+    2026-06-06: every DC Hub Media LinkedIn post should ship the same rich,
+    headline-driven card as auto-press. Before this, the quad-daily and daily
+    digest publishers pointed at STATIC `landing-*.png` files that were frozen
+    blank during the 2026-06-06 font-fallback bug — so 4 of 5 posts looked
+    empty ("bush league"). This route lets ANY publisher build a live card
+    from the post's actual headline + stat, rendered by the same (now
+    font-fixed) draw functions that produce the editorial cards.
+
+    Query params:
+      style        editorial | data_brutal | infographic | today | smart
+                   (default editorial — always populated, never blank)
+      title        the headline (drives the card; required for a good card)
+      subheadline  supporting line under the headline / cyan rule
+      market       optional market name → data_brutal big-number + verdict pill
+      score        optional float → the giant hero number (data_brutal)
+      verdict      BUILD | CAUTION | AVOID → pill + color
+      date         optional ISO date (defaults to today)
+    """
+    from flask import request as _req
+    args = _req.args
+
+    style = (args.get('style') or 'editorial').strip().lower()
+    if style in ('today', 'smart'):
+        style = smart_style()
+    elif style == 'rotation':
+        style = todays_style()
+
+    # Date (date object so _safe_date_str's strftime path works)
+    date_val = None
+    ds = (args.get('date') or '').strip()
+    if ds:
+        try:
+            date_val = datetime.date.fromisoformat(ds[:10])
+        except Exception:
+            date_val = None
+    if date_val is None:
+        date_val = datetime.datetime.utcnow().date()
+
+    # Synthetic signals so the data_brutal hero number + verdict pill light up
+    market = (args.get('market') or '').strip()
+    score_raw = args.get('score')
+    verdict = (args.get('verdict') or '').strip().upper()
+    signals = {}
+    if market or (score_raw not in (None, '')):
+        try:
+            sc = float(score_raw) if score_raw not in (None, '') else 0.0
+        except Exception:
+            sc = 0.0
+        signals = {'top_build_markets': [{
+            'market': market or (args.get('title') or '')[:30],
+            'excess': sc,
+            'verdict': verdict or 'BUILD',
+        }]}
+
+    pr = {
+        'title':       (args.get('title') or 'DC Hub Media').strip()[:200],
+        'subheadline': (args.get('subheadline') or '').strip()[:300],
+        'date':        date_val,
+        'signals':     signals,
+        'slug':        'dynamic',
+    }
+
+    try:
+        fn = STYLE_MAP.get(style, _draw_editorial)
+        img = fn(pr)
+    except Exception as e:
+        import traceback as _tb
+        print(f"[og_cards] dynamic render error ({style}): {e}\n{_tb.format_exc()}")
+        img = _draw_fallback('dynamic')
+
+    buf = io.BytesIO()
+    img.save(buf, format='PNG', optimize=True)
+    buf.seek(0)
+    return Response(
+        buf.read(),
+        mimetype='image/png',
+        headers={
+            # Unique param-sets → unique cards; cache a day at the edge so
+            # LinkedIn's scraper gets a stable image per post.
+            'Cache-Control': 'public, max-age=86400, s-maxage=86400',
+            'X-DC-Card-Style': style,
+            'X-DC-Card-Dynamic': '1',
+        },
+    )
+
+
 def register_og_cards(app):
     app.register_blueprint(og_cards_bp)
     app.logger.info("✓ OG cards registered: GET /api/v1/og/<style>/<slug>.png")
+    app.logger.info("✓ OG dynamic card: GET /api/v1/og/dynamic.png?title=…&style=…")
     app.logger.info(f"  Today's rotation style: {todays_style()}")

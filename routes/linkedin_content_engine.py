@@ -31,11 +31,13 @@ API is unavailable, so the slot never goes silent.
 from __future__ import annotations
 
 import datetime
+import html as _html
 import json
 import os
 import random
 import urllib.request
 import urllib.error
+import urllib.parse
 from contextlib import contextmanager
 from utils.anthropic_helper import anthropic_messages_url
 
@@ -592,6 +594,133 @@ def _static_fallback(story_type: str, data: dict, landing: str) -> str:
 
 # ── Public API ────────────────────────────────────────────────────
 
+# ── Premium dynamic card builder ──────────────────────────────────
+# 2026-06-06: every post gets a RICH headline card (same engine as auto-press)
+# instead of the frozen-blank static landing-*.png files. Builds a
+# /api/v1/og/dynamic.png URL from the story's real headline + key stat.
+_OG_DYNAMIC_BASE = (os.environ.get("DCHUB_OG_BASE", "https://api.dchub.cloud").rstrip("/")
+                    + "/api/v1/og/dynamic.png")
+
+
+def _clean(s, n: int) -> str:
+    if not s:
+        return ""
+    try:
+        s = _html.unescape(str(s))
+    except Exception:
+        s = str(s)
+    return " ".join(s.split())[:n]
+
+
+def _f1(v) -> str:
+    try:
+        return f"{float(v):.1f}"
+    except Exception:
+        return ""
+
+
+def _card_url_for(story_type: str, data: dict, text: str) -> str | None:
+    """Build a premium dynamic-card URL from the story's real headline + stat.
+    Returns None on any problem so the caller keeps the static fallback."""
+    try:
+        d = data or {}
+        title = sub = market = score = verdict = ""
+        style = "editorial"
+
+        if story_type == "dcpi_scoop":
+            s = d.get("scoop") or {}
+            market = _clean(s.get("market_name"), 40)
+            score = _f1(s.get("excess_power_score"))
+            verdict = (s.get("verdict") or "BUILD")
+            title = market
+            ttp = s.get("time_to_power_months")
+            if score:
+                sub = f"Excess power {score} · {verdict}" + (f" · power in {int(ttp)} mo" if ttp else "")
+            style = "data_brutal" if score else "editorial"
+
+        elif story_type == "market_anomaly":
+            a = d.get("anomaly") or {}
+            market = _clean(a.get("market_name"), 40)
+            score = _f1(a.get("now_e"))
+            verdict = (a.get("now_v") or "BUILD")
+            title = market
+            dl = a.get("delta")
+            if dl is not None and score:
+                sub = f"{'+' if float(dl) >= 0 else ''}{_f1(dl)} pt WoW DCPI shift · now {score} · {verdict}"
+            elif score:
+                sub = f"DCPI {score} · {verdict}"
+            style = "data_brutal" if score else "editorial"
+
+        elif story_type == "energy_narrative":
+            s = d.get("story_data") or {}
+            market = _clean(s.get("market_name"), 40)
+            score = _f1(s.get("excess_power_score") or s.get("constraint_score"))
+            title = market or "The grid story behind the build-out"
+            if s.get("curtailment_pct"):
+                sub = f"{_f1(s['curtailment_pct'])}% curtailment — power the grid can't place"
+            elif s.get("gen_additions_12mo_mw"):
+                sub = f"{int(s['gen_additions_12mo_mw']):,} MW added in 12 months"
+            elif s.get("queue_wait_months"):
+                sub = f"{int(s['queue_wait_months'])}-month interconnection queue"
+            else:
+                sub = "Live ISO grid intelligence on DC Hub"
+            style = "data_brutal" if (market and score) else "editorial"
+
+        elif story_type == "hyperscaler_drama":
+            news = d.get("news") or {}
+            mkt = d.get("market") or {}
+            title = _clean(news.get("title"), 120) or "The hyperscale build-out, decoded"
+            if mkt:
+                sub = (f"DCPI's take: {_clean(mkt.get('market_name'), 30)} is "
+                       f"{mkt.get('verdict', 'BUILD')} at {_f1(mkt.get('excess_power_score'))}")
+            else:
+                sub = "Live, agent-native data-center intelligence"
+            style = "editorial"
+
+        elif story_type == "capability_spotlight":
+            tool = d.get("tool") or {}
+            ask = _clean(tool.get("ask"), 110) or "rank every US market by excess power for AI"
+            title = f"Ask any AI to {ask}"
+            sub = f"Live via DC Hub MCP · {tool.get('tool', '')} · 24 free agent-native tools"
+            style = "editorial"
+
+        elif story_type == "shipped_this_week":
+            st = d.get("stats") or {}
+            title = "What DC Hub shipped this week"
+            parts = []
+            if st.get("press_releases"):
+                parts.append(f"{st['press_releases']} press releases")
+            if st.get("mcp_tool_calls"):
+                parts.append(f"{int(st['mcp_tool_calls']):,} MCP calls")
+            if st.get("facilities_discovered"):
+                parts.append(f"{st['facilities_discovered']} new facilities")
+            sub = " · ".join(parts) or "Compounding live intelligence, every day"
+            style = "editorial"
+
+        # Generic fallback — pull the strongest line from the composed text
+        if not title:
+            for ln in (text or "").splitlines():
+                ln = ln.strip().lstrip("📊📰🔌🌊⚡🟢🟣✅•- ").strip()
+                if len(ln) > 14:
+                    title = ln[:120]
+                    break
+        if not title:
+            return None
+        if not sub:
+            sub = "Live, agent-native data-center intelligence · dchub.cloud"
+
+        params = {"style": style, "title": title, "subheadline": sub}
+        if market:
+            params["market"] = market
+        if score:
+            params["score"] = score
+        if verdict:
+            params["verdict"] = verdict
+        return _OG_DYNAMIC_BASE + "?" + urllib.parse.urlencode(params)
+    except Exception:
+        return None
+
+
 def compose_story_post(slot_topic: str | None = None) -> dict:
     """Compose a story-driven LinkedIn post.
 
@@ -609,6 +738,13 @@ def compose_story_post(slot_topic: str | None = None) -> dict:
     if not text or len(text) < 200:
         text = _static_fallback(story_type, data, landing)
         source = "fallback"
+
+    # Premium dynamic card from the story's real headline + stat (replaces the
+    # frozen-blank static landing PNG). Falls back to the static map if the
+    # builder returns nothing.
+    _dyn = _card_url_for(story_type, data, text)
+    if _dyn:
+        og_url = _dyn
 
     return {
         "story_type":   story_type,

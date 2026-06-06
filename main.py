@@ -17236,10 +17236,16 @@ def daily_cron():
             digest_date = datetime.now().strftime('%Y-%m-%d')
             digest_url = 'https://dchub.cloud/news/digest-' + digest_date
             post_lines = [f'📊 DC Hub Daily Intelligence — {today_str}\n']
+            import html as _h_digest  # decode &nbsp; &amp; &#39; etc. leaking from RSS summaries
+            def _clean_entity(_s):
+                try:
+                    return ' '.join(_h_digest.unescape(str(_s or '')).split())
+                except Exception:
+                    return str(_s or '')
             for i, a in enumerate(articles[:5], 1):
-                post_lines.append(f"{i}. {a['title']}")
+                post_lines.append(f"{i}. {_clean_entity(a['title'])}")
                 if a.get('summary'):
-                    post_lines.append(f"   {a['summary'][:120]}...")
+                    post_lines.append(f"   {_clean_entity(a['summary'])[:120]}...")
             post_lines.append(f'\n🔗 Full digest: {digest_url}')
             post_lines.append('\n#DataCenter #Infrastructure #CloudComputing #AI #DigitalInfrastructure')
             post_text = '\n'.join(post_lines)
@@ -17255,6 +17261,31 @@ def daily_cron():
             # text-only post. Holding is safe: the cron re-fires daily and the
             # quad publisher still covers the feed in the meantime.
             def _daily_digest_image_bytes():
+                # Tier 0 (2026-06-06): PREMIUM dynamic editorial card — same
+                # font-fixed engine as auto-press editorial cards. Replaces the
+                # frozen-blank static landing PNGs (and the chart generator's
+                # tiny-font output) that made the digest look "bush league".
+                try:
+                    import urllib.request as _u0, urllib.parse as _up0, html as _h0
+                    _top = (articles[0] if articles else {}) or {}
+                    _sub = _h0.unescape(_top.get('title') or
+                                        'Live data-center power, land, gas & fiber intelligence').strip()
+                    _sub = ' '.join(_sub.split())[:150]
+                    _q0 = _up0.urlencode({
+                        'style': 'editorial',
+                        'title': 'DC Hub Daily Intelligence',
+                        'subheadline': _sub,
+                        'date': digest_date,
+                    })
+                    _url0 = 'https://api.dchub.cloud/api/v1/og/dynamic.png?' + _q0
+                    _rq0 = _u0.Request(_url0, headers={'User-Agent': 'DCHub-DailyDigest/1.0'})
+                    with _u0.urlopen(_rq0, timeout=20) as _rs0:
+                        if getattr(_rs0, 'status', 200) == 200:
+                            _b0 = _rs0.read()
+                            if _b0 and 5000 < len(_b0) < 5_000_000:
+                                return _b0
+                except Exception as _img_e0:
+                    logger.warning(f"[daily_cron] dynamic OG card failed: {_img_e0}")
                 # Tier 1: freshly rendered daily chart
                 try:
                     from dchub_media import Aggregator, Generator
