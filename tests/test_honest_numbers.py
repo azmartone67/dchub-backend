@@ -179,6 +179,18 @@ def test_no_overstated_facility_count():
     assert not hits, ("Re-introduced inflated '50,000+ facilities' — say '21,000+':\n" + _fmt(hits))
 
 
+def test_no_stale_tool_count():
+    """MCP tool count = 33 (server.mjs registers 33 trackedTool; live connector
+    exposes all 33). 2026-06-06: the repo desc said '19 tools' and a card said
+    '24 free tools' — both stale/divergent. Ban the understatements so a single
+    honest number stays consistent across surfaces."""
+    pats = [re.compile(r"\b19\s+tools\b", re.I),
+            re.compile(r"\b24\s+free\b[^.\n]{0,24}tools", re.I)]
+    hits = _scan(pats)
+    assert not hits, ("Re-introduced a stale MCP tool count — the verified count is 33 "
+                      "(server.mjs trackedTool registrations):\n" + _fmt(hits))
+
+
 def test_no_realtime_ma_claim():
     """M&A deal data is batch/daily, NOT real-time (DD#5)."""
     hits = _scan([re.compile(r"real-?time\s+M&A", re.I)])

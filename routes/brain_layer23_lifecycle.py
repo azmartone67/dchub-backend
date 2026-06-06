@@ -922,6 +922,104 @@ def _audit_tool_conversion_health() -> dict:
     }
 
 
+def _audit_media_image_quality() -> dict:
+    """2026-06-06: the defect class that needed a HUMAN this week — a LinkedIn
+    or daily-digest post shipping a BLANK/stale image while the brain looped
+    right past it. This dim closes that loop. It samples recent post image URLs
+    + probes the live card engine and flags:
+      (a) any URL still wired to the frozen static landing-*.png (blank-prone),
+      (b) any image that fetches < 18KB (blank/thin — rich cards are 30-55KB).
+    'weak' when any blank/stale image is in the sample → the brain files a
+    finding and (via L22 'stale_media_image' recipe) can repoint the publisher
+    at /api/v1/og/dynamic.png. Verifiable: a deliberately-thin URL trips it."""
+    import urllib.request as _u
+    urls = []
+    try:
+        with _conn() as c, c.cursor() as cur:
+            cur.execute(
+                "SELECT og_image_url FROM linkedin_quad_posts "
+                "WHERE posted_at > NOW() - INTERVAL '14 days' AND og_image_url IS NOT NULL "
+                "ORDER BY posted_at DESC LIMIT 8")
+            urls = [r[0] for r in cur.fetchall() if r[0]]
+    except Exception:
+        pass  # DB optional — the live-engine probe below still runs
+
+    # Any publisher still pointing at the frozen static landing PNGs?
+    stale_static = [u for u in urls if "/static/og/landing-" in u]
+
+    # Fetch-size check. Always probe the live dynamic engine (editorial = fast
+    # PIL, no SDXL) so the dim works even with zero recent posts. Skip recent
+    # ai_hero URLs — a cache miss there is a 15-30s SDXL gen and must not block
+    # the audit; their blank-fallback is already size-gated at post time.
+    probe = ("https://api.dchub.cloud/api/v1/og/dynamic.png?style=editorial"
+             "&title=Brain+media+quality+probe&subheadline=autonomous+self-check")
+    to_check = [probe] + [u for u in urls
+                          if "ai_hero" not in u and "/static/og/landing-" not in u][:4]
+    thin, checked = [], 0
+    for u in to_check:
+        try:
+            req = _u.Request(u, headers={"User-Agent": "dchub-brain-audit/1.0"})
+            with _u.urlopen(req, timeout=12) as r:
+                b = r.read()
+                checked += 1
+                if len(b) < 18000:
+                    thin.append({"url": u[:90], "bytes": len(b)})
+        except Exception:
+            pass
+
+    bad = len(stale_static) + len(thin)
+    return {
+        "ok": (bad == 0 and checked > 0),
+        "posts_sampled": len(urls),
+        "images_checked": checked,
+        "stale_static_count": len(stale_static),
+        "stale_static_samples": stale_static[:3],
+        "thin_image_count": len(thin),
+        "thin_samples": thin[:3],
+        "verdict": ("blank-or-stale-images" if bad else
+                    ("healthy" if checked else "unknown")),
+        # If we couldn't check anything (engine unreachable), surface 'unknown'
+        # rather than a false 'weak'.
+        "_source_result": (None if checked > 0
+                           else _AuditUnavailable("media_image_quality")),
+    }
+
+
+def _audit_perf_budget() -> dict:
+    """2026-06-06: perf-budget watchdog. The single-replica backend periodically
+    flaps (slow/503) when a heavy synchronous endpoint exhausts the worker pool —
+    the class behind the 2026-06-06 cron-heartbeat 503. Times a few key public
+    endpoints and flags 'weak' if any exceeds its budget, so the brain SEES the
+    slowness as it builds instead of only as Cloudflare 5xx after the fact."""
+    import urllib.request as _u
+    base = "https://api.dchub.cloud"
+    targets = [("/alive", 2.5),
+               ("/api/v1/media/aggregate", 5.0),
+               ("/api/v1/dcpi/scores?limit=5", 6.0)]
+    slow, checked = [], 0
+    for path, budget in targets:
+        try:
+            t0 = time.time()
+            req = _u.Request(base + path, headers={"User-Agent": "dchub-brain-audit/1.0"})
+            with _u.urlopen(req, timeout=15) as r:
+                r.read(2048)
+            dt = round(time.time() - t0, 2)
+            checked += 1
+            if dt > budget:
+                slow.append({"path": path, "seconds": dt, "budget": budget})
+        except Exception as e:
+            slow.append({"path": path, "error": type(e).__name__, "budget": budget})
+            checked += 1
+    return {
+        "ok": len(slow) == 0 and checked > 0,
+        "endpoints_checked": checked,
+        "slow_count": len(slow),
+        "slow": slow[:5],
+        "verdict": ("slow-or-erroring" if slow else ("healthy" if checked else "unknown")),
+        "_source_result": (None if checked > 0 else _AuditUnavailable("perf_budget")),
+    }
+
+
 # r38 (2026-05-25): module-level cache so repeated /findings hits
 # within 5min reuse the audit result. _run_full_audit takes ~17s
 # (10 sequential test_client calls); without this cache, the
@@ -981,6 +1079,11 @@ def _run_full_audit(force: bool = False) -> dict:
         "internal_bot_storm":     _audit_internal_bot_storm,
         # r54 (2026-05-25): per-market DCPI staleness detection
         "dcpi_freshness":         _audit_dcpi_freshness,
+        # 2026-06-06: catch blank/stale POST IMAGES (the defect that needed a
+        # human this week — brain now self-detects it).
+        "media_image_quality":    _audit_media_image_quality,
+        # 2026-06-06: perf-budget watchdog — slow endpoints before they flap.
+        "perf_budget":            _audit_perf_budget,
     }
     audits: dict = {}
     try:
@@ -1102,6 +1205,19 @@ def _short_recommendation(dim: str, result: dict) -> str:
         return f"page integrity {result.get('site_score')}/100, breakdown={result.get('breakdown')}"
     if dim == "value_shipped":
         return f"brain shipped only {result.get('total_7d')}/7d — investigate why cycle slowed"
+    if dim == "perf_budget":
+        slow = result.get("slow") or []
+        names = [s.get("path") for s in slow]
+        return (f"{result.get('slow_count')} endpoint(s) over perf budget: {names} — "
+                f"cache/time-cap the slow path before it flaps the 1-replica worker pool.")
+    if dim == "media_image_quality":
+        bits = []
+        if result.get("stale_static_count"):
+            bits.append(f"{result['stale_static_count']} post(s) still wired to frozen static landing-*.png")
+        if result.get("thin_image_count"):
+            bits.append(f"{result['thin_image_count']} blank/thin image(s) <18KB")
+        return ("post images degraded: " + ("; ".join(bits) or "engine produced a thin card") +
+                " — repoint publishers at /api/v1/og/dynamic.png (rich cards are 30-55KB).")
     if dim == "tool_conversion_health":
         trapped = result.get("trapped_tools") or []
         names = [(t.get("tool") if isinstance(t, dict) else str(t)) for t in trapped[:5]]

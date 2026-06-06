@@ -665,10 +665,11 @@ def _draw_infographic(pr):
 _AI_IMAGE_CACHE = {}             # (slug, yyyymmdd) → png bytes
 _AI_IMAGE_CACHE_MAX = 50
 
-def _generate_workers_ai_image(prompt: str, slug: str):
+def _generate_workers_ai_image(prompt: str, slug: str, variant: int = 0):
     """Hit Cloudflare Workers AI SDXL endpoint. Returns PNG bytes or None
-    if creds missing / API errored. Result cached per-day."""
-    cache_key = (slug, datetime.datetime.utcnow().strftime('%Y%m%d'))
+    if creds missing / API errored. Cached per (slug, day, variant) so the
+    review-retry loop can request a genuinely different image for variant>0."""
+    cache_key = (slug, datetime.datetime.utcnow().strftime('%Y%m%d'), variant)
     if cache_key in _AI_IMAGE_CACHE:
         return _AI_IMAGE_CACHE[cache_key]
 
@@ -687,10 +688,20 @@ def _generate_workers_ai_image(prompt: str, slug: str):
         # SDXL on Workers AI returns binary PNG when format is set right.
         url = (f"https://api.cloudflare.com/client/v4/accounts/{account_id}"
                f"/ai/run/@cf/stabilityai/stable-diffusion-xl-base-1.0")
+        # variant>0 nudges the composition so a review-retry yields a genuinely
+        # different image, not the same dud regenerated.
+        _nudge = ["", ", dramatic wide-angle composition, volumetric golden light",
+                  ", elevated aerial perspective, moody overcast sky"][variant % 3]
         resp = _rq.post(
             url,
             json={
-                "prompt": prompt[:1500],
+                "prompt": (prompt[:1400] + _nudge)[:1500],
+                # Negative prompt (2026-06-06) kills the common SDXL duds that
+                # made some heroes look off: garbled text, watermarks/logos,
+                # blur, deformed structures, cartoonish/oversaturated output.
+                "negative_prompt": ("text, words, letters, watermark, logo, signature, "
+                                    "blurry, low quality, jpeg artifacts, distorted, deformed, "
+                                    "ugly, oversaturated, cartoon, illustration, frame, border, people, faces"),
                 # Wider aspect to better match our 1200x630 final canvas
                 "width": 1024, "height": 576,
                 "num_steps": 20,           # 20 is the sweet spot for SDXL
@@ -747,6 +758,50 @@ def _build_sdxl_prompt(pr: dict) -> str:
     )
 
 
+def _ai_review_ok(png_bytes: bytes) -> bool:
+    """Opt-in (DCHUB_MEDIA_AI_REVIEW=1) vision check: ask a cheap Claude model
+    whether the generated image is a clean, photographic, on-brand
+    infrastructure/landscape image — NOT a garbled SDXL dud. Fail-OPEN (returns
+    True) when review is off, no API key, or any error, so it never blocks a post."""
+    if os.environ.get("DCHUB_MEDIA_AI_REVIEW", "").lower() not in ("1", "true", "yes"):
+        return True
+    api_key = (os.environ.get("ANTHROPIC_API_KEY")
+               or os.environ.get("DCHUB_ANTHROPIC_API_KEY") or "")
+    if not api_key or not png_bytes:
+        return True
+    try:
+        import base64
+        import urllib.request as _u
+        from utils.anthropic_helper import anthropic_messages_url
+        b64 = base64.b64encode(png_bytes).decode()
+        body = json.dumps({
+            "model": "claude-haiku-4-5",   # cheap + fast vision judge
+            "max_tokens": 8,
+            "messages": [{"role": "user", "content": [
+                {"type": "image", "source": {"type": "base64",
+                 "media_type": "image/png", "data": b64}},
+                {"type": "text", "text":
+                 "This is an auto-generated background photo for a data-center "
+                 "intelligence brand. Is it a clean, photographic, on-brand "
+                 "infrastructure or landscape image with NO garbled text and no "
+                 "obvious AI artifacts? Answer only GOOD or BAD."},
+            ]}],
+        }).encode()
+        req = _u.Request(anthropic_messages_url(), data=body, headers={
+            "Content-Type": "application/json", "X-API-Key": api_key,
+            "anthropic-version": "2023-06-01"})
+        with _u.urlopen(req, timeout=20) as r:
+            d = json.loads(r.read().decode())
+        txt = "".join(p.get("text", "") for p in d.get("content", [])).strip().upper()
+        ok = "BAD" not in txt
+        if not ok:
+            print("[ai_hero] vision review flagged image BAD → retrying a variant")
+        return ok
+    except Exception as e:
+        print(f"[ai_hero] review skipped ({e}) — fail-open GOOD")
+        return True
+
+
 def _draw_ai_hero(pr):
     """Phase JJ (2026-05-14): real AI-generated hero via CF Workers AI
     SDXL when CF_ACCOUNT_ID + CF_API_TOKEN are set. Falls back to the
@@ -759,7 +814,12 @@ def _draw_ai_hero(pr):
         # Try to derive a slug from the title for cache keying
         slug = (pr.get('title') or 'unknown').lower().replace(' ', '-')[:60]
 
-    ai_png = _generate_workers_ai_image(_build_sdxl_prompt(pr), slug)
+    _prompt = _build_sdxl_prompt(pr)
+    ai_png = _generate_workers_ai_image(_prompt, slug, 0)
+    # Review-retry (opt-in via DCHUB_MEDIA_AI_REVIEW): if the first image fails
+    # the vision check, take ONE fresh variant. Bounded → at most 2 gens.
+    if ai_png and not _ai_review_ok(ai_png):
+        ai_png = _generate_workers_ai_image(_prompt, slug, 1) or ai_png
     if ai_png:
         # Real AI image — composite headline overlay
         from io import BytesIO

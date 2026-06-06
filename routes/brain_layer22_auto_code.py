@@ -231,6 +231,48 @@ def _try_recipe_route_alias(finding: dict) -> dict | None:
     }
 
 
+# ── Recipe: stale_media_image (2026-06-06) ──────────────────────────
+
+def _try_recipe_stale_media_image(finding: dict) -> dict | None:
+    """For an L23 'media_image_quality' weak finding (blank/stale post image),
+    draft a fix: repoint the publisher off the frozen static landing-*.png onto
+    the live /api/v1/og/dynamic.png card engine. DRAFT-ONLY (opens an issue with
+    the proposed change) — media code paths are NOT in the real-PR whitelist, so
+    a human reviews + merges. This is the exact class that shipped 4 blank
+    LinkedIn posts on 2026-06-06 while the brain looped past it."""
+    if finding.get("dim") != "media_image_quality":
+        return None
+    if _already_drafted("stale_media_image", "media-image"):
+        return None
+    diff_summary = (
+        "Replace any remaining `/static/og/landing-*.png` reference in the "
+        "publishers with a /api/v1/og/dynamic.png card URL built from the post's "
+        "headline (pattern: linkedin_content_engine._card_url_for). Confirm the "
+        "daily-digest Tier-0 dynamic card + the quad OG map both point at the "
+        "dynamic engine, not a frozen static PNG.")
+    return {
+        "recipe": "stale_media_image",
+        "target_path": "routes/linkedin_content_engine.py",
+        "title": "[brain-l22] Repoint a blank/stale post image onto the live card engine",
+        "body": _build_pr_body(
+            recipe="stale_media_image",
+            trigger=finding,
+            target="routes/linkedin_content_engine.py + routes/linkedin_quad_daily.py + main.py(daily_cron)",
+            diff_summary=diff_summary,
+            rationale=(
+                "L23 media_image_quality flagged a blank/thin (<18KB) or static "
+                "landing-*.png image being posted. Rich cards are 30-55KB; the "
+                "dynamic engine renders editorial / data_brutal / ai_hero from the "
+                "post's own data. Same fix shipped manually on 2026-06-06."),
+            verification=(
+                "curl the publisher's og_image_url — expect a >=30KB PNG. Re-run "
+                "the L23 audit; media_image_quality should return healthy."),
+        ),
+        "labels": ["brain-l22-auto-code", "recipe-stale-media-image",
+                   "needs-human-merge"],
+    }
+
+
 # ── PR body builder ─────────────────────────────────────────────────
 
 def _build_pr_body(recipe, trigger, target, diff_summary, rationale,
@@ -621,6 +663,21 @@ def _scan_and_draft(dry_run: bool) -> dict:
                 })
     except Exception: pass
 
+    # 3. r-media (2026-06-06): scan L23 lifecycle findings for the media-image
+    # defect class (the one that needed a human this week). Draft-only — opens an
+    # issue with the proposed repoint; a human merges (media paths aren't in the
+    # real-PR whitelist).
+    try:
+        audit = _internal("/api/v1/brain/lifecycle/audit")
+        for f in (audit.get("findings") or []):
+            if f.get("dim") == "media_image_quality" and f.get("status") == "weak":
+                draft = _try_recipe_stale_media_image(f)
+                if draft:
+                    res = _draft_pr(draft, dry_run=dry_run)
+                    (drafted if res.get("ok") else skipped).append({
+                        "recipe": draft["recipe"], "title": draft["title"], "result": res})
+    except Exception: pass
+
     return {
         "ok": True,
         "ran_at": _dt.datetime.utcnow().isoformat() + "Z",
@@ -678,13 +735,17 @@ def auto_code_list():
         ok=True,
         dry_run_default=_DRY_RUN,
         max_diff_lines=_MAX_DIFF_LINES,
-        recipes=["route_alias_404"],  # MVP: just this one
+        recipes=["route_alias_404", "missing_route", "high_5xx", "gone_410_alias",
+                 "stale_media_image"],
+        real_pr_whitelist=["route_alias_404"],  # only this one writes a branch+PR
+        draft_only=["missing_route", "high_5xx", "gone_410_alias", "stale_media_image"],
         recent_actions=actions,
-        note=("L22 MVP: route_alias_404 recipe is the only whitelisted "
-              "auto-fix. DRY_RUN=true by default — flip to false via "
-              "AUTO_CODE_DRY_RUN=0 env var to enable live issue creation. "
-              "Real PR-write (with file change on a branch) is the next "
-              "iteration; this MVP opens an issue with the proposed diff."),
+        note=("L22 recipe library (2026-06-06): route_alias_404 is the only recipe "
+              "whitelisted for a REAL PR (branch + file change); the rest — incl. the "
+              "new stale_media_image recipe that catches blank/stale post images — are "
+              "DRAFT-ONLY (open an issue with the proposed fix for a human to merge). "
+              "DRY_RUN=true by default; AUTO_CODE_DRY_RUN=0 enables live issue creation. "
+              "Draft-only on novel/risky classes is the intentional safety boundary."),
     )
 
 
