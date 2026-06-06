@@ -352,6 +352,34 @@ def _validate_and_store_proposal(source_name: str, prop: dict) -> dict:
                     "file_count": len(changes),
                     "rationale": rationale[:200]}
 
+    # r-no-hallucinated-syntax (2026-06-06): the dominant Layer-5 noise was
+    # proposing "incomplete function / syntax error / NameError" fixes for files
+    # that ALREADY COMPILE CLEAN (Claude inventing bugs from a truncated excerpt
+    # — verified: report_narrative/email_service/ai_interconnection/main.py all
+    # compile fine yet had 0.95-confidence "syntax error" proposals). If the
+    # target .py compiles and the rationale claims a compile-class bug, the bug
+    # is hallucinated — reject before it reaches the queue / draft-PR opener.
+    _rl = rationale.lower()
+    if any(t in _rl for t in ("syntax error", "incomplete", "nameerror",
+                              "name error", "fails to import", "unclosed",
+                              "missing paren", "would cause", "causes a syntax",
+                              "indentation error")):
+        for ch in changes:
+            if not str(ch.get("file", "")).endswith(".py"):
+                continue
+            try:
+                compile(_read_window(ch["file"], max_chars=400000),
+                        ch["file"], "exec")
+            except SyntaxError:
+                continue   # genuinely broken (or truncated read) -> allow the fix
+            except Exception:
+                continue
+            return {"outcome": "rejected_false_syntax_claim",
+                    "file": ch["file"],
+                    "rationale": ("File compiles clean; the claimed syntax/"
+                                  "incomplete-function bug is hallucinated. "
+                                  "Auto-rejected by the compile guard.")[:200]}
+
     primary = changes[0]
     # Item G (2026-06-02): compute recipe_key for fuzzy cross-cycle
     # dedupe. The (loop_name, file_path, search_text) UNIQUE constraint
