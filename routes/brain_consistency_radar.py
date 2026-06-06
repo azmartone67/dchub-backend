@@ -4763,6 +4763,15 @@ def check_page_brand_drift() -> list[dict]:
     return findings
 
 
+_BRAND_UNIFORMITY_CACHE = {"ts": 0.0, "findings": None}
+# r-fix (2026-06-06): brand uniformity only changes when the FRONTEND
+# redeploys (rare), yet this detector re-fetched every top public page on
+# every radar scan — DCHub-BrainUniformity was ~9.7k req/day on the CF
+# dashboard. Cache the whole sweep for 6h (matches the deadlink-probe + self-
+# heal cadence) so we keep detection without DOSing the single Railway replica.
+_BRAND_UNIFORMITY_TTL_S = 21600
+
+
 def check_page_brand_uniformity() -> list[dict]:
     """Phase r33-K (2026-05-21). After r33-I's manual sweep unified every
     public page to the canonical brand (Instrument Sans + indigo→violet
@@ -4795,6 +4804,14 @@ def check_page_brand_uniformity() -> list[dict]:
     import urllib.error as _rerr
     import concurrent.futures as _cf
     import re as _re
+    import time as _t
+
+    # Serve the cached sweep if still fresh — dedups the all-pages probe across
+    # every brain workflow that hits the radar inside the 6h window (0 probes).
+    _now = _t.time()
+    if (_BRAND_UNIFORMITY_CACHE["findings"] is not None
+            and (_now - _BRAND_UNIFORMITY_CACHE["ts"]) < _BRAND_UNIFORMITY_TTL_S):
+        return list(_BRAND_UNIFORMITY_CACHE["findings"])
 
     PAGES = [
         '/', '/pricing', '/api-docs', '/developers', '/architecture',
@@ -4951,6 +4968,8 @@ def check_page_brand_uniformity() -> list[dict]:
             if len(findings) >= 20:
                 break
 
+    _BRAND_UNIFORMITY_CACHE["ts"] = _now
+    _BRAND_UNIFORMITY_CACHE["findings"] = list(findings)
     return findings
 
 
