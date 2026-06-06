@@ -51,6 +51,13 @@ def _safe(cur, sql, params=()):
         cur.execute(sql, params)
         return cur.fetchall()
     except Exception:
+        # 2026-06-06: roll back after a failed query. Without this, the FIRST
+        # domain that hits a missing table/column aborts the transaction and
+        # EVERY subsequent domain query fails with "transaction is aborted" ->
+        # all domains return [] and total_changes is stuck at 0 even though the
+        # valid queries (dcpi_movers, facilities) would return real rows.
+        try: cur.connection.rollback()
+        except Exception: pass
         return []
 
 
