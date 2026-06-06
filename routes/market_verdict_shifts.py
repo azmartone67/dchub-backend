@@ -444,7 +444,7 @@ def _enqueue_linkedin_post(cur, blurb: str) -> int | None:
         cur.execute("""
             INSERT INTO social_media_posts
                    (content, platform, status, created_at, approved_at)
-            VALUES (%s, 'linkedin', 'approved', NOW(), NOW()::text)
+            VALUES (%s, 'linkedin', 'approved', NOW() ON CONFLICT DO NOTHING, NOW()::text)
             RETURNING id
         """, (blurb,))
         row = cur.fetchone()
@@ -482,7 +482,7 @@ def _record_post(cur, shift: dict, blurb: str, smp_id: int | None) -> bool:
                        (market_slug, shift_from, shift_to,
                         composite, excess_score, constraint_sc,
                         blurb, smp_id)
-                VALUES (%s, %s, %s, %s, %s, %s, %s, %s)
+                VALUES (%s, %s, %s, %s, %s, %s, %s, %s) ON CONFLICT DO NOTHING
             """, (
                 shift["market_slug"], shift["shift_from"], shift["shift_to"],
                 _composite_score(shift.get("constraint_score"),

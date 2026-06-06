@@ -683,7 +683,7 @@ def _upsert_market(payload: dict) -> bool:
                     hh_source, basis_source, delivered_source,
                     data_basis, fetched_at, period
                 ) VALUES (
-                    %(market_slug)s, %(market_name)s, %(state)s,
+                    %(market_slug) ON CONFLICT DO NOTHINGs, %(market_name)s, %(state)s,
                     %(pricing_hub_key)s, %(pricing_hub_name)s,
                     %(henry_hub_spot_usd_mmbtu)s, %(basis_diff_usd_mmbtu)s,
                     %(hub_spot_usd_mmbtu)s,

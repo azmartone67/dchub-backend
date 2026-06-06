@@ -590,12 +590,12 @@ def _learn_from_cycle(cycle_result: dict):
             else:
                 cursor.execute('''
                     INSERT INTO outreach_learning_memory (channel, lesson_type, lesson, confidence)
-                    VALUES (%s, %s, %s, %s)
+                    VALUES (%s, %s, %s, %s) ON CONFLICT DO NOTHING
                 ''', (channel, lesson_type, lesson, confidence))
         
         cursor.execute('''
             INSERT INTO outreach_learning_log (cycle_number, action_taken, reason, outcome)
-            VALUES (%s, %s, %s, %s)
+            VALUES (%s, %s, %s, %s) ON CONFLICT DO NOTHING
         ''', (cycle_num, 'learn_from_cycle', 
               f'Analyzed cycle results: dirs={summary.get("directories")}, broadcasts={summary.get("ai_broadcasts")}',
               f'{len(lessons)} lessons extracted, organic={len(organic)}'))
@@ -648,7 +648,7 @@ def _get_adaptive_pitch(platform_id: str) -> str:
             enhanced = f"{base_pitch} [Learned: {'; '.join(lessons[:2])}]"
             cursor.execute('''
                 INSERT INTO outreach_pitch_variants (platform, pitch_text)
-                VALUES (%s, %s)
+                VALUES (%s, %s) ON CONFLICT DO NOTHING
             ''', (platform_id, enhanced))
             conn.commit()
         
@@ -1047,7 +1047,7 @@ def check_for_organic_traffic():
                 
                 cursor.execute('''
                     INSERT INTO organic_traffic_alerts (platform, user_agent, endpoint, is_organic, detected_at)
-                    VALUES (%s, %s, %s, 1, %s)
+                    VALUES (%s, %s, %s, 1, %s) ON CONFLICT DO NOTHING
                 ''', (platform, user_agent, endpoint, created_at))
         
         conn.commit()
@@ -1573,11 +1573,11 @@ Website: https://dchub.cloud
             cursor = conn.cursor()
             cursor.execute('''
                 INSERT INTO outreach_learning_memory (channel, lesson_type, lesson, confidence)
-                VALUES (%s, %s, %s, 0.9)
+                VALUES (%s, %s, %s, 0.9) ON CONFLICT DO NOTHING
             ''', (channel, lesson_type, lesson))
             cursor.execute('''
                 INSERT INTO outreach_learning_log (cycle_number, action_taken, reason, outcome)
-                VALUES (%s, 'manual_teach', %s, 'Lesson stored with 0.9 confidence')
+                VALUES (%s, 'manual_teach', %s, 'Lesson stored with 0.9 confidence') ON CONFLICT DO NOTHING
             ''', (_learning_cycle_count['count'], f'Manual lesson: {lesson[:100]}'))
             conn.commit()
             return jsonify({'status': 'learned', 'channel': channel, 'lesson': lesson})
