@@ -69,15 +69,20 @@ def _ensure_tables(cur):
         )""")
 
 
-def _self_get(path: str, timeout: float = 8.0):
-    """Fetch one of our own public endpoints (best-effort; returns {} on error)."""
-    try:
-        req = urllib.request.Request(_API + path,
-                                     headers={"User-Agent": "dchub-site-automation/1.0"})
-        with urllib.request.urlopen(req, timeout=timeout) as r:
-            return json.loads(r.read().decode())
-    except Exception:
-        return {}
+def _self_get(path: str, timeout: float = 8.0, retries: int = 1):
+    """Fetch one of our own public endpoints. Retries once (the 1-replica
+    backend can momentarily refuse a self-call). Returns {} only after all
+    attempts fail — callers must distinguish {} (unavailable) from a real
+    empty result, NOT silently treat a failed fetch as 'all good'."""
+    for _ in range(retries + 1):
+        try:
+            req = urllib.request.Request(_API + path,
+                                         headers={"User-Agent": "dchub-site-automation/1.0"})
+            with urllib.request.urlopen(req, timeout=timeout) as r:
+                return json.loads(r.read().decode())
+        except Exception:
+            continue
+    return {}
 
 
 # ════════════════════════════════════════════════════════════════════
@@ -136,12 +141,15 @@ def visual_sentinel():
 # ════════════════════════════════════════════════════════════════════
 def _build_briefing() -> dict:
     """Aggregate 'shipped / flagged / needs-your-call' from live signals."""
-    media = _self_get("/api/v1/media/aggregate")
+    media = _self_get("/api/v1/media/aggregate", timeout=12)
     spine = (media.get("live_spine") or {}) if isinstance(media, dict) else {}
-    audit = _self_get("/api/v1/brain/lifecycle/audit")
-    findings = (audit.get("findings") or []) if isinstance(audit, dict) else []
-    sentinel = _self_get("/api/v1/admin/visual-sentinel")
-    autocode = _self_get("/api/v1/brain/auto-code")
+    # The audit is the heavy one (runs/aggregates many dims) — give it room + a
+    # retry. CRITICAL: if it doesn't load, we must NOT imply "all green".
+    audit = _self_get("/api/v1/brain/lifecycle/audit", timeout=22)
+    audit_ok = isinstance(audit, dict) and ("findings" in audit or "audits" in audit)
+    findings = (audit.get("findings") or []) if audit_ok else []
+    sentinel = _self_get("/api/v1/admin/visual-sentinel", timeout=10)
+    autocode = _self_get("/api/v1/brain/auto-code", timeout=10)
 
     shipped = {
         "auto_press_7d": spine.get("auto_press_7d"),
@@ -155,18 +163,25 @@ def _build_briefing() -> dict:
         flagged.append({"dim": "visual_sentinel",
                         "summary": f"{sentinel.get('issues_count')} page(s) look broken/blank — "
                                    + ", ".join(i.get("page", "?") for i in (sentinel.get("issues") or [])[:4])})
+    if not audit_ok:
+        # Honest: a failed audit fetch is NOT "all green" — say so loudly.
+        flagged.append({"dim": "audit_unavailable",
+                        "summary": "brain audit didn't load this run — flags UNKNOWN (not necessarily green). "
+                                   "Transient self-call miss; reload to refresh."})
     needs_you = []
     recent_actions = autocode.get("recent_actions") or []
     drafts = [a for a in recent_actions if a.get("pr_url") or a.get("recipe")]
     if drafts:
-        needs_you.append({"what": "review L22 auto-drafted fixes",
-                          "count": len(drafts), "newest": drafts[0].get("title") or drafts[0].get("recipe")})
+        needs_you.append({"what": f"review {len(drafts)} L22 auto-drafted fixes "
+                                  f"(newest: {drafts[0].get('title') or drafts[0].get('recipe')})",
+                          "count": len(drafts)})
+    health = "unknown" if not audit_ok else ("attention" if (flagged or needs_you) else "all-green")
     return {
-        "as_of": (audit.get("audits", {}).get("_meta") if isinstance(audit, dict) else None) or None,
+        "audit_loaded": audit_ok,
         "shipped_7d": shipped,
         "flagged": flagged,
         "needs_your_call": needs_you,
-        "health": "attention" if (flagged or needs_you) else "all-green",
+        "health": health,
     }
 
 
