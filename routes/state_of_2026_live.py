@@ -610,17 +610,38 @@ def _render_state_page(hero: dict) -> str:
 </div>
 
 <div class="cta">
-  <h2>Subscribe to the State of 2026 weekly digest</h2>
-  <p>Every Monday: which markets shifted verdict, what moved on the
-  leaderboard, and the deal that nobody is talking about. Free. No card.</p>
-  <form class="subscribe" onsubmit="return subscribe(event)">
+  <h2>Get the DC Hub Weekly newsletter</h2>
+  <p>Every Friday: top LinkedIn posts, top AI-agent MCP queries, top
+  DCPI verdict shifts, one strategic note from the brain. Free. No card.
+  Unsubscribe in one click.</p>
+  <form class="subscribe" onsubmit="return subscribeNewsletter(event)">
     <input type="email" name="email" placeholder="you@firm.com" required>
     <button type="submit">Subscribe</button>
   </form>
   <div id="subscribe-msg" class="subscribe-msg"></div>
-  <p style="margin-top:20px"><a href="/r/signup">Or claim a free dev key
-    (10 API calls/day, no card) →</a></p>
+  <p style="margin-top:20px"><a href="/newsletter">View past issues →</a>
+    &nbsp;·&nbsp;
+    <a href="/r/signup">Claim a free dev key (10 API calls/day, no card) →</a></p>
 </div>
+<script>
+function subscribeNewsletter(e) {{
+  e.preventDefault();
+  var form = e.target;
+  var email = form.email.value.trim();
+  var msg = document.getElementById('subscribe-msg');
+  msg.textContent = 'Subscribing...';
+  fetch('/api/v1/newsletter/subscribe', {{
+    method:'POST',
+    headers:{{'Content-Type':'application/json'}},
+    body: JSON.stringify({{email: email, source: 'state-of-2026'}})
+  }}).then(r=>r.json()).then(d=>{{
+    msg.textContent = d.ok
+      ? "You're in. Welcome email landing now."
+      : ("Could not subscribe: " + (d.error || 'unknown'));
+  }}).catch(function(){{ msg.textContent='Network error — try again.'; }});
+  return false;
+}}
+</script>
 
 <div class="cta">
   <h2>Verify any number on this page</h2>

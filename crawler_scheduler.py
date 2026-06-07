@@ -222,6 +222,23 @@ SCHEDULE = [
     # crawler has its own per-name last_run guard so they're independent
     # (see feedback_triage 8/20 sharing with deals for prior art).
     (16, 16, "verdict_shift_post",  "_run_verdict_shift_post"),
+    # DC Hub Weekly newsletter (2026-06-07, Phase RR-newsletter): Friday
+    # 16:00 UTC ONLY (the runner gates internally to weekday==4 / Friday).
+    # Sends one HTML email per Friday to:
+    #   - newsletter_subscribers.unsubscribed_at IS NULL (public form)
+    #   - mcp_dev_keys.status='active' (dev-key holders, opt-out via unsub)
+    # Composes from: linkedin_posts (top 3 by engagement, 7d), mcp_upgrade_
+    # signals (top 3 tool_requested), market_verdict_post_log (top 3 shifts),
+    # brain_findings (1 strategic note), discovered_facilities (operator
+    # count). All sections fail-soft → empty data renders as honest "no
+    # movement this week" cards (not fabricated). Throttled via newsletter_
+    # sends UNIQUE(issue_id,email) + a 5-day per-email guard, so the
+    # SCHEDULE's same-hour pairing CANNOT double-send within a week (issue_id
+    # is week-pinned: 'issue-YYYY-w<isoweek>'). Slot 16/16 chosen because it
+    # already houses lost_conversion + verdict_shift_post (the per-name
+    # last_run guard keeps them independent). NEWSLETTER_DISABLE=1 kill
+    # switch + NEWSLETTER_DRY_RUN=1 render-only mode + 500 recipient cap.
+    (16, 16, "weekly_newsletter",   "_run_weekly_newsletter"),
     # Real-time Watchlist + Verdict-Shift Alerts (2026-06-06): twice-
     # daily realtime sweep so PRO+ watchers see verdict shifts within
     # ~12h. Slot 10/22 UTC chosen because it brackets the daily DCPI
@@ -437,6 +454,40 @@ SCHEDULE = [
     # hour-same-day cap → one flush per UTC half-day.
     (13,  1, "media_comment_engagement_flush",
               "_run_media_comment_engagement_flush"),
+    # Commenter DM follow-up loop (2026-06-07). COMPOUNDS the comment
+    # engagement loop above — when someone leaves a substantive comment
+    # on a DC Hub post AND meets quality bar (500+ followers OR named
+    # org / qualified title like CFO/Director/VP/Founder), Claude drafts
+    # a personalized DM with a specific data brief link relevant to their
+    # company/title (PE→state-of-power, RE→market brief, operator→
+    # operator brief, general→state-of-2026). 5 DMs/day hard cap (very
+    # safe: LinkedIn allows ~100/wk for org pages; 5/day = 35/wk). 24h
+    # cooldown per recipient. DRY-RUN ON by default — operator reviews
+    # on /admin/media-mix → "DM Follow-up", flips MEDIA_DM_DRY_RUN=0 to
+    # go live (or uses the per-row 1-click "approve & send" admin button).
+    # Twice daily 11/23 UTC (offset from comment-engagement 9/21 so the
+    # DM lags the comment reply by ~2h — natural cadence). Daily cap:
+    # MEDIA_DM_DAILY_CAP=5. Min followers: MEDIA_DM_MIN_FOLLOWERS=500.
+    # Kill switch: MEDIA_DM_DISABLE=1.
+    (11, 23, "media_dm_follow_up", "_run_media_dm_follow_up"),
+    # Multi-platform amplifier (2026-06-07). Cross-post NEW LinkedIn
+    # posts published in the last 60 minutes to Bluesky + Twitter/X +
+    # Mastodon + Hacker News (semi-auto via 1-click submitlink URL).
+    # User spec says "every 30 min" → "every hour" — collapsed to two
+    # slots/day (15/3 UTC) within the harness's hour-based two-slot
+    # cap. Detection window is 60 min so a noon LinkedIn post is picked
+    # up by the 15 UTC slot, a midnight LinkedIn post by the 3 UTC
+    # slot. Daily cap is enforced INSIDE amplify_to_all() (5/day default
+    # via MULTIPLATFORM_AMPLIFIER_DAILY_CAP), so even if both slots fire
+    # the user-visible cadence stays sane. Idempotent via UNIQUE(
+    # source_post_id, target_platform) on multiplatform_amplifier_log
+    # — a second sweep over the same source row no-ops cleanly. 15 UTC
+    # chosen because it's already shared with accelerator_scan (per-name
+    # last_run guards keep both independent); 3 UTC is empty. Kill
+    # switch: MULTIPLATFORM_AMPLIFIER_DISABLE=1. Dry-run preview:
+    # MULTIPLATFORM_AMPLIFIER_DRY_RUN=1.
+    (15,  3, "multiplatform_amplifier",
+              "_run_multiplatform_amplifier"),
 ]
 
 # ---------------------------------------------------------------------------
@@ -1716,6 +1767,114 @@ def _run_media_comment_engagement_flush():
         logger.error("💬 media_comment_engagement_flush: error — %s", e)
 
 
+def _run_media_dm_follow_up():
+    """Commenter DM follow-up loop (2026-06-07). COMPOUNDS the comment
+    engagement loop — twice daily 11/23 UTC the cron walks the last 7d
+    of REPLIED comments in media_comment_engagement_log, enriches each
+    commenter via LinkedIn profile API (name/headline/company/follower
+    count), qualifies on 500+ followers OR title contains a qualified
+    keyword (CFO/Director/VP/Founder/PE/Real Estate/Energy/...), picks
+    the most relevant DC Hub asset per commenter (PE→state-of-power,
+    RE→/markets/<their-city>/brief, operator→/operators/<co>/brief,
+    general→/state-of-2026), and has Claude draft a 3-sentence DM:
+      S1 — references their public comment specifically.
+      S2 — adds ONE specific DC Hub number.
+      S3 — soft ask ('happy to chat — just reply').
+    Tone-rejects on circle back / synergy / leverage / best of breed /
+    value-add etc., regenerates once.
+
+    DRY-RUN ON by default — drafts to media_dm_log, operator reviews
+    on /admin/media-mix → 'DM Follow-up' and either flips
+    MEDIA_DM_DRY_RUN=0 OR uses the per-row 1-click 'approve & send'
+    admin button. 5/day hard cap (LinkedIn allows ~100/wk for org
+    pages; 5/day = 35/wk, very safe). 24h cooldown per recipient.
+
+    CRITICAL for Monday's State of 2026 launch — dozens of qualified
+    commenters expected. Never raises. Kill switch: MEDIA_DM_DISABLE=1."""
+    import requests as _rq
+    key = (os.environ.get("DCHUB_ADMIN_KEY")
+           or os.environ.get("DCHUB_INTERNAL_KEY")
+           or os.environ.get("DCHUB_ADMIN_API_KEY") or "")
+    if not key:
+        logger.warning(
+            "📩 media_dm_follow_up: skipped — DCHUB_ADMIN_KEY not set")
+        return
+    base = os.environ.get("DCHUB_INTERNAL_API", "http://127.0.0.1:8080")
+    try:
+        r = _rq.post(
+            f"{base}/api/v1/admin/media/dm-followup/send",
+            headers={"X-Admin-Key": key,
+                     "User-Agent": "dchub-cron-dm-followup/1.0"},
+            timeout=90,
+        )
+        d = (r.json() if r.headers.get("content-type", "").startswith(
+            "application/json") else {}) or {}
+        logger.info(
+            "📩 media_dm_follow_up: detected=%s qualified=%s fired=%s "
+            "dry_run=%s daily=%s/%s min_followers=%s skipped=%s "
+            "kill=%s errors=%s",
+            d.get("detected"), d.get("qualified"), d.get("fired"),
+            d.get("dry_run"), d.get("dms_today"), d.get("daily_cap"),
+            d.get("min_followers"), len((d.get("skipped") or {})),
+            d.get("kill_switched"), len(d.get("errors") or []),
+        )
+    except Exception as e:
+        logger.error("📩 media_dm_follow_up: error — %s", e)
+
+
+def _run_multiplatform_amplifier():
+    """Multi-platform amplifier (2026-06-07). Twice daily 15/3 UTC the
+    cron walks linkedin_posts.posted_at in the last 60 minutes, looks
+    for rows that haven't yet been amplified to Bluesky / Twitter /
+    Mastodon / Hacker News (via UNIQUE(source_post_id, target_platform)
+    on multiplatform_amplifier_log), and fans them out in parallel via
+    threadpool.
+
+    Per-platform framing is tuned at module level:
+      • Bluesky 300-char native voice + #datacenters #infrastructure
+      • Twitter/X 280-char with link
+      • Mastodon 500-char (paragraph + hashtags)
+      • HN 80-char Show HN title + 1-click submitlink URL (HN's ToS
+        blocks bot submissions — we generate the URL and surface it on
+        /admin/multiplatform-amplifier; operator clicks Submit in their
+        logged-in browser)
+
+    Built for Monday's State of 2026 launch — single LinkedIn seed
+    (10K-follower org page) becomes 4 additional surface impressions.
+
+    Safety: kill switch MULTIPLATFORM_AMPLIFIER_DISABLE=1, dry-run
+    MULTIPLATFORM_AMPLIFIER_DRY_RUN=1, 5/day cap
+    MULTIPLATFORM_AMPLIFIER_DAILY_CAP. Daily cap enforced inside
+    amplify_to_all() — even if both slots fire the user-visible cadence
+    stays sane. Loopback admin endpoint so cron + manual triggers share
+    the same auth gate. Never raises."""
+    import requests as _rq
+    key = (os.environ.get("DCHUB_ADMIN_KEY")
+           or os.environ.get("DCHUB_INTERNAL_KEY")
+           or os.environ.get("DCHUB_ADMIN_API_KEY") or "")
+    if not key:
+        logger.warning(
+            "📡 multiplatform_amplifier: skipped — DCHUB_ADMIN_KEY not set")
+        return
+    base = os.environ.get("DCHUB_INTERNAL_API", "http://127.0.0.1:8080")
+    try:
+        r = _rq.post(
+            f"{base}/api/v1/admin/multiplatform/auto-sweep",
+            headers={"X-Admin-Key": key,
+                     "User-Agent": "dchub-cron-multiplatform-amplifier/1.0"},
+            timeout=120,
+        )
+        d = (r.json() if r.headers.get("content-type", "").startswith(
+            "application/json") else {}) or {}
+        logger.info(
+            "📡 multiplatform_amplifier: swept=%s amplified=%s errors=%s",
+            d.get("swept"), d.get("amplified"),
+            len(d.get("errors", []) or []),
+        )
+    except Exception as e:
+        logger.error("📡 multiplatform_amplifier: error — %s", e)
+
+
 def _run_verdict_shift_post():
     """DCPI Verdict-Shift auto-press (2026-06-06): once-daily scan for
     markets whose DCPI verdict TODAY differs from the verdict 7 days
@@ -1762,6 +1921,34 @@ def _run_verdict_shift_post():
         )
     except Exception as e:
         logger.error("📣 verdict_shift_post: error — %s", e)
+
+
+def _run_weekly_newsletter():
+    """DC Hub Weekly newsletter (2026-06-07, Phase RR-newsletter).
+    Slot 16/16 — but gates internally to weekday==4 (Friday) so it fires
+    exactly once per week even though SCHEDULE is hour-based with two
+    slots/day. Sends one editorial HTML email to active newsletter_
+    subscribers + active mcp_dev_keys holders (excluding unsubscribed +
+    last-sent within 5 days). Throttled via newsletter_sends UNIQUE on
+    (issue_id, email) so re-fires inside the same week are silent no-ops.
+
+    Calls routes/weekly_newsletter._run_weekly_newsletter() directly
+    (no loopback HTTP) — the runner is fully self-contained: pulls data,
+    renders HTML, sends via Resend, persists to newsletter_issues +
+    newsletter_sends, and respects NEWSLETTER_DISABLE / NEWSLETTER_DRY_RUN
+    env flags. Never raises (per-recipient try/except inside)."""
+    try:
+        from routes.weekly_newsletter import _run_weekly_newsletter as _wn
+        result = _wn() or {}
+        if result:
+            logger.info(
+                "📬 weekly_newsletter %s: attempted=%s sent=%s failed=%s dry_run=%s",
+                result.get("issue_id"), result.get("attempted"),
+                result.get("sent"), result.get("failed"),
+                result.get("dry_run"),
+            )
+    except Exception as e:
+        logger.error("📬 weekly_newsletter: error — %s", e)
 
 
 def _run_watchlist_realtime():
@@ -2450,6 +2637,8 @@ _RUNNERS = {
     "media_spike_responder": _run_media_spike_responder,
     "media_comment_engagement":       _run_media_comment_engagement,
     "media_comment_engagement_flush": _run_media_comment_engagement_flush,
+    "media_dm_follow_up":             _run_media_dm_follow_up,
+    "multiplatform_amplifier":        _run_multiplatform_amplifier,
     "mcp_presence_crawl":  _run_mcp_presence_crawl,
     "mcp_registry_discover": _run_mcp_registry_discover,
     "mcp_presence_auto_fix": _run_mcp_presence_auto_fix,
@@ -2459,6 +2648,7 @@ _RUNNERS = {
     "feedback_triage":     _run_feedback_triage,
     "expired_onetime_demote": _run_expired_onetime_demote,
     "verdict_shift_post":  _run_verdict_shift_post,
+    "weekly_newsletter":   _run_weekly_newsletter,
     "watchlist_realtime":       _run_watchlist_realtime,
     "watchlist_weekly_digest":  _run_watchlist_weekly_digest,
     "hyperscaler_brief_warm":   _run_hyperscaler_brief_warm,

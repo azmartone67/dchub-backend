@@ -27474,6 +27474,23 @@ try:
 except Exception as _dma_e:
     print(f"[main] dchub_media_accelerator_bp register failed: {_dma_e}", flush=True)
 
+# Multi-platform amplifier (2026-06-07): fan-out one LinkedIn post to
+# Bluesky + Twitter/X + Mastodon + Hacker News (semi-auto) in parallel
+# with platform-tuned framing. Built for Monday's State of 2026 launch
+# — single LinkedIn seed becomes 5 surface impressions. Endpoints:
+#   POST /api/v1/admin/multiplatform/amplify              fire one
+#   POST /api/v1/admin/multiplatform/auto-sweep           cron sweep
+#   GET  /api/v1/admin/multiplatform/preview-state-of-2026
+#   GET  /api/v1/admin/multiplatform/log
+#   GET  /admin/multiplatform-amplifier                   HTML dashboard
+#   GET  /r/hn-submit/<short>                             HN click tracker
+try:
+    from routes.multiplatform_amplifier import multiplatform_amplifier_bp
+    app.register_blueprint(multiplatform_amplifier_bp)
+    print("[main] multiplatform_amplifier_bp registered: /api/v1/admin/multiplatform/* + /admin/multiplatform-amplifier", flush=True)
+except Exception as _mpa_e:
+    print(f"[main] multiplatform_amplifier_bp register failed: {_mpa_e}", flush=True)
+
 # DC Hub Media topic tuner (2026-06-07): evolves the per-post accelerator
 # into a TOPIC-LEVEL engagement learner. Classifies posts into 14 topics
 # (DCPI / hyperscaler / grid / M&A / fiber / facility / market / verdict
@@ -27552,6 +27569,27 @@ try:
           "regenerate/<id>,flush-due}", flush=True)
 except Exception as _mce_e:
     print(f"[main] media_comment_engagement_bp register failed: {_mce_e}",
+          flush=True)
+
+# Commenter DM follow-up loop (2026-06-07): compounds the comment-engagement
+# loop above. When someone leaves a substantive comment on a DC Hub post AND
+# meets the quality bar (500+ followers OR named org / qualified title),
+# Claude drafts a personalized DM with a specific data brief link relevant
+# to their company/title (PE→state-of-power, RE→market brief, operator→
+# operator brief, general→state-of-2026). 5 DMs/day hard cap (LinkedIn safe:
+# 35/wk vs ~100/wk org limit). DRY-RUN ON by default — operator reviews on
+# /admin/media-mix → "DM Follow-up", flips MEDIA_DM_DRY_RUN=0 to go live.
+# Daily cap: MEDIA_DM_DAILY_CAP=5. Quality floor: MEDIA_DM_MIN_FOLLOWERS=500.
+# Kill switch: MEDIA_DM_DISABLE=1. Cron 11/23 UTC. CRITICAL for Monday's
+# State of 2026 launch — dozens of qualified commenters expected.
+try:
+    from routes.media_dm_follow_up import media_dm_follow_up_bp
+    app.register_blueprint(media_dm_follow_up_bp)
+    print("[main] media_dm_follow_up_bp registered: "
+          "/api/v1/admin/media/dm-followup/{preview,send,log,"
+          "approve/<id>,regenerate/<id>}", flush=True)
+except Exception as _mdf_e:
+    print(f"[main] media_dm_follow_up_bp register failed: {_mdf_e}",
           flush=True)
 
 # Market Brief v1 (2026-06-06): shareable per-market briefs that replace
@@ -28808,6 +28846,24 @@ try:
     print("[main] weekly_movement_digest_bp registered", flush=True)
 except Exception as _e:
     print(f"[main] weekly_movement_digest register failed: {_e}", file=sys.stderr)
+
+# Phase RR-newsletter (2026-06-07): public weekly newsletter — Friday 16:00 UTC.
+#   /newsletter                          — public signup form
+#   /api/v1/newsletter/subscribe         — POST {email, source?}
+#   /newsletter/unsubscribe/<token>      — 1-click HMAC unsubscribe
+#   /newsletter/archive                  — past issues list
+#   /newsletter/issue/<issue_id>         — single issue archive
+#   /api/v1/admin/newsletter/preview     — render next Friday's HTML now
+#   /api/v1/admin/newsletter/send-test   — send to azmartone@gmail.com
+#   /api/v1/admin/newsletter/send        — admin send to full list (?confirm=true)
+#   /api/v1/admin/newsletter/stats       — subscriber + issue counts
+#   /admin/newsletter                    — admin dashboard
+try:
+    from routes.weekly_newsletter import weekly_newsletter_bp
+    app.register_blueprint(weekly_newsletter_bp)
+    print("[main] weekly_newsletter_bp registered: /newsletter + /api/v1/newsletter/* + /admin/newsletter", flush=True)
+except Exception as _e:
+    print(f"[main] weekly_newsletter register failed: {_e}", file=sys.stderr)
 
 # Phase GGGGG (2026-05-16): schema.org saturation audit + reusable
 # JSON-LD helper for new pages. Drives SOT score.

@@ -1251,6 +1251,8 @@ The tuner runs daily at 13:30 UTC after LinkedIn engagement sync.</p>
 
 {_render_comment_engagement_section()}
 
+{_render_dm_follow_up_section()}
+
 {_render_style_ab_section()}
 
 <h2 class="muted" style="margin-top:32px;font-size:14px;">Tuner actions</h2>
@@ -1469,6 +1471,170 @@ def _render_comment_engagement_section() -> str:
   Blocklist: <code>MEDIA_COMMENT_REPLY_BLOCKLIST=urn1,name2,...</code>.
   Endpoints: <code>GET /api/v1/admin/media/comment-engagement/poll-now</code> (dry-run preview),
   <code>POST .../run</code> (full cycle), <code>POST .../flush-due</code> (post queued).
+</p>"""
+
+
+def _render_dm_follow_up_section() -> str:
+    """2026-06-07: surface the DM Follow-up card on /admin/media-mix.
+
+    Compounds the Comment Engagement tile above — shows pending dry-run
+    DM drafts, sent DMs, attribution KPIs (response rate, attributed
+    visits, signups), plus a per-row 1-click 'approve & send' admin
+    button (DRY-RUN drafts only; killswitch + already-sent prevent it
+    from doing anything dangerous).
+
+    CRITICAL for Monday's State of 2026 launch — operator reviews the
+    first wave of DM drafts here BEFORE flipping MEDIA_DM_DRY_RUN=0 to
+    go fully autonomous. Fail-soft: empty string on partial deploy."""
+    try:
+        from routes.media_dm_follow_up import (
+            recent_log_rows as _dm_recent,
+            recent_counters as _dm_counters,
+            _dry_run as _dm_dry,
+            _kill_switched as _dm_kill,
+            _env_int as _dm_env,
+            DAILY_CAP_DEFAULT as _dm_cap_default,
+            MIN_FOLLOWERS_DEFAULT as _dm_floor_default,
+        )
+        rows = _dm_recent(days=30, limit=50) or []
+        counters = _dm_counters(days=30) or {}
+        dry_on = bool(_dm_dry())
+        kill_on = bool(_dm_kill())
+        daily_cap = int(_dm_env("MEDIA_DM_DAILY_CAP", _dm_cap_default))
+        min_follow = int(_dm_env("MEDIA_DM_MIN_FOLLOWERS", _dm_floor_default))
+    except Exception as e:
+        _log(f"render_dm_follow_up_section skipped: {e}")
+        return ""
+
+    dry_pill   = "DRY-RUN" if dry_on else "LIVE"
+    kill_pill  = "KILL ON" if kill_on else "kill off"
+    badge_dry  = ("background:#3b2e0a;color:#ffd166" if dry_on
+                  else "background:#0e2a1c;color:#7cf3a0")
+    badge_kill = ("background:#3a0e0e;color:#ff8a8a" if kill_on
+                  else "background:#1d2630;color:#9ec5fe")
+    sent       = int(counters.get("sent", 0))
+    dry_rows   = int(counters.get("dry_run", 0))
+    failed     = int(counters.get("post_failed", 0))
+    skipped_total = sum(
+        v for k, v in counters.items()
+        if isinstance(v, int) and k.startswith("skipped_"))
+    responses  = int(counters.get("responses", 0))
+    attrib_v   = int(counters.get("attributed_visits", 0))
+    attrib_s   = int(counters.get("attributed_signups", 0))
+
+    table_rows: list[str] = []
+    for r in rows[:40]:
+        detected = (r.get("detected_at") or "")[:16].replace("T", " ")
+        recip = (r.get("recipient_name")
+                 or r.get("recipient_urn") or "")[:32]
+        title = (r.get("recipient_title") or "")[:48]
+        company = (r.get("recipient_company") or "")[:32]
+        followers = int(r.get("recipient_follower_count") or 0)
+        qual = (r.get("qualified_by") or "")[:24]
+        subject = (r.get("dm_subject") or "")[:80]
+        body = (r.get("dm_body") or "")[:480]
+        link = (r.get("dm_link") or "")[:80]
+        decision = str(r.get("decision") or "")
+        reason = str(r.get("decision_reason") or "")[:60]
+        sent_at = (r.get("dm_sent_at") or "")[:16].replace("T", " ")
+        resp_at = (r.get("response_received_at") or "")
+        log_id = int(r.get("id") or 0)
+        decision_color = {
+            "sent":         "#7cf3a0",
+            "dry_run":      "#ffd166",
+            "post_failed":  "#ff8a8a",
+            "skipped_tone": "#c79bff",
+        }.get(decision, "#97a3b6")
+
+        # Action buttons — only on dry_run rows that are still actionable
+        buttons = ""
+        if decision == "dry_run" and log_id:
+            buttons = (
+                f"<a href='/api/v1/admin/media/dm-followup/approve/{log_id}'"
+                " style='font-size:11px;color:#7cf3a0;margin-left:8px' "
+                "onclick=\"event.preventDefault();"
+                "if(!confirm('Send this DM live?'))return;"
+                "fetch(this.href,{method:'POST',"
+                "headers:{'X-Admin-Key':prompt('admin key')}})"
+                ".then(r=>r.json()).then(d=>alert(JSON.stringify(d,null,2)))\""
+                ">approve&amp;send</a>"
+                f"<a href='/api/v1/admin/media/dm-followup/regenerate/{log_id}'"
+                " style='font-size:11px;color:#9ec5fe;margin-left:8px' "
+                "onclick=\"event.preventDefault();fetch(this.href,{method:'POST',"
+                "headers:{'X-Admin-Key':prompt('admin key')}}).then(r=>r.json())"
+                ".then(d=>alert(JSON.stringify(d,null,2)))\""
+                ">regenerate</a>"
+            )
+
+        recip_line = f"<b>{recip}</b>"
+        if title and company:
+            recip_line += (f"<br><span class='muted' style='font-size:11px'>"
+                           f"{title} · {company}</span>")
+        elif title:
+            recip_line += (f"<br><span class='muted' style='font-size:11px'>"
+                           f"{title}</span>")
+        recip_line += (f"<br><span class='muted' style='font-size:10px'>"
+                       f"{followers:,} followers · {qual}</span>")
+
+        timing = sent_at or detected
+        if resp_at:
+            timing += (f"<br><span style='color:#7cf3a0;font-size:10px'>"
+                       f"replied</span>")
+
+        table_rows.append(
+            f"<tr><td>{recip_line}</td>"
+            f"<td><b>{subject}</b><br>"
+            f"<span style='font-size:12px'>{body}</span><br>"
+            f"<span class='muted' style='font-size:10px'>→ {link}</span></td>"
+            f"<td><span style='color:{decision_color}'>{decision}</span>"
+            f" <span class='muted' style='font-size:10px'>{reason}</span>"
+            f"{buttons}</td>"
+            f"<td class='muted' style='font-size:11px'>{timing}</td></tr>"
+        )
+
+    body_html = "".join(table_rows) or (
+        "<tr><td colspan=4 class='muted'>No DM follow-ups yet. "
+        "The cron runs twice daily at 11/21 UTC; manually probe with "
+        "<code>GET /api/v1/admin/media/dm-followup/preview</code>.</td></tr>"
+    )
+    return f"""
+<h2>DM Follow-up (1:1 LinkedIn DMs to qualified commenters)</h2>
+<div class="kpi-row">
+  <div class="kpi" style="{badge_dry};padding:6px 12px"><span>Mode</span><b>{dry_pill}</b></div>
+  <div class="kpi" style="{badge_kill};padding:6px 12px"><span>Switch</span><b>{kill_pill}</b></div>
+  <div class="kpi"><span>Daily cap</span><b>{daily_cap}/day</b></div>
+  <div class="kpi"><span>Follower floor</span><b>{min_follow:,}+</b></div>
+  <div class="kpi"><span>30d sent</span><b>{sent}</b></div>
+  <div class="kpi"><span>30d drafts</span><b>{dry_rows}</b></div>
+  <div class="kpi"><span>30d responses</span><b>{responses}</b></div>
+  <div class="kpi"><span>30d visits attributed</span><b>{attrib_v}</b></div>
+  <div class="kpi"><span>30d signups attributed</span><b>{attrib_s}</b></div>
+  <div class="kpi"><span>30d failed/skipped</span><b>{failed + skipped_total}</b></div>
+</div>
+<table><thead><tr>
+  <th style="width:200px">Recipient</th>
+  <th>Draft DM</th>
+  <th style="width:160px">Decision</th>
+  <th style="width:120px">Timing</th>
+</tr></thead>
+<tbody>{body_html}</tbody></table>
+<p class="muted" style="font-size:12px;margin-top:4px">
+  Compounds the Comment Engagement tile above. When a qualified commenter
+  (500+ followers OR title contains CFO / Director / VP / Founder / PE /
+  Real Estate / Energy / etc.) replies to a DC Hub post, Claude drafts a
+  3-sentence DM (references their comment + 1 specific DC Hub number +
+  soft ask) with a personalized brief link (PE→state-of-power,
+  RE→/markets/&lt;city&gt;/brief, operator→/operators/&lt;co&gt;/brief,
+  general→/state-of-2026). 24h cooldown per recipient. 5/day hard cap
+  = 35/wk (LinkedIn allows ~100/wk for org pages).
+  Ships DRY-RUN by default — review ~5 drafts, then either flip
+  <code>MEDIA_DM_DRY_RUN=0</code> to go autonomous OR use the per-row
+  "approve&amp;send" button (admin key required). Kill switch:
+  <code>MEDIA_DM_DISABLE=1</code>. Blocklist:
+  <code>MEDIA_DM_BLOCKLIST=urn1,name2,...</code>. Endpoints:
+  <code>GET /api/v1/admin/media/dm-followup/preview</code>,
+  <code>POST .../send</code>,
+  <code>POST .../approve/&lt;id&gt;</code>.
 </p>"""
 
 
