@@ -163,6 +163,28 @@ def init_content_tables():
     except Exception as _wle:
         logger.warning("watchlist table init skipped: %s", _wle)
 
+    # Media topic tuner tables (2026-06-07): media_topic_mix + media_link_clicks
+    # + media_link_shortcodes + media_themed_series, plus the
+    # media_topic_tags JSONB column added to social_media_posts +
+    # linkedin_posts. Same boot-init pattern. Required for the daily
+    # 14:00 UTC tuner cron + the /li/<short> click attribution proxy.
+    try:
+        from routes.media_topic_tuner import init_topic_tuner_tables as _itt
+        _itt()
+    except Exception as _tte:
+        logger.warning("media topic tuner table init skipped: %s", _tte)
+
+    # State of 2026 LIVING document tables (state_of_2026_pageviews,
+    # state_of_2026_clicks, state_of_2026_claim_proposals). 2026-06-07:
+    # boot-init so the /state-of-2026 landing + /r/<token> attribution
+    # proxy + daily claims evolver cron can write without lazy creation
+    # on the hot path.
+    try:
+        from routes.state_of_2026_live import init_state_of_2026_tables as _is26t
+        _is26t()
+    except Exception as _s26te:
+        logger.warning("state_of_2026 table init skipped: %s", _s26te)
+
 def _media_block_category(reason: str) -> str:
     r = (reason or "").lower()
     if "disclaimer" in r:                       return "ai_disclaimer_as_validation"

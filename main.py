@@ -1527,6 +1527,19 @@ try:
         import logging
         logging.getLogger(__name__).warning(
             'state_of_2026_precheck wiring failed: %s', _s26e)
+    # 2026-06-07: State of 2026 LIVING document — server-rendered
+    # /state-of-2026 landing with live hero numbers from API, click
+    # attribution via /r/<token> proxy, /admin/state-of-2026-pulse
+    # engagement dashboard, claims auto-evolver (cron writes proposals
+    # to a table; operator approves via UI; never auto-pushes git).
+    # See routes/state_of_2026_live.py header.
+    try:
+        from routes.state_of_2026_live import state_of_2026_live_bp
+        app.register_blueprint(state_of_2026_live_bp)
+    except Exception as _s26le:
+        import logging
+        logging.getLogger(__name__).warning(
+            'state_of_2026_live wiring failed: %s', _s26le)
     try:
         from routes.feedback_triage import feedback_triage_bp
         app.register_blueprint(feedback_triage_bp)

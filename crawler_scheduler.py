@@ -120,6 +120,17 @@ SCHEDULE = [
     # one run per slot per day. Both slots are empty hours (no overlap
     # with 14/2 knowledge-sync, 18/19 news/facilities, 20/21 deals/market).
     (15, 23, "accelerator_scan",   "_run_accelerator_scan"),
+    # DC Hub Media topic tuner (2026-06-07): TOPIC-LEVEL engagement learner.
+    # Daily at 14 UTC (one hour after linkedin_engagement_sync 13:00 so
+    # today's impressions/clicks are fresh) and 2 UTC (overnight refresh
+    # before the 08 UTC LinkedIn slot fires). Classifies recent posts into
+    # 14 topics, computes 7d engagement score per topic, writes the
+    # weighted topic_mix into media_topic_mix (overwrites today's row
+    # idempotently), and generators on the next cron call pick from the
+    # new mix. ~3s/run. Same-hour-same-day cap → one per slot. Caps any
+    # single topic at 35% so a breakout topic can't pin us to clickbait.
+    # Shares 14/2 with knowledge_sync; each has its own per-name guard.
+    (14,  2, "media_topic_tune",    "_run_media_topic_tune"),
     # MCP-presence crawl (2026-06-05): twice-daily sweep of the ~15 MCP
     # listing sites DC Hub appears on (Smithery, MCPHive, LobeHub, Glama,
     # YellowMCP, mcp.so, PulseMCP, etc.). For each, fetch the listing
@@ -310,6 +321,17 @@ SCHEDULE = [
     # switch: DCHUB_BRAIN_DIGEST_DISABLE=1. Dry-run: DCHUB_BRAIN_DIGEST
     # _DRY_RUN=1 (renders to log table, no Resend call).
     ( 8,  8, "brain_strategic_digest",    "_run_brain_strategic_digest"),
+    # State of 2026 LIVING claims evolver (2026-06-07): walk every claim
+    # in docs/state-of-2026-claims.txt; if the live value is OUTSIDE the
+    # expected [min,max] band (especially HIGHER — growth!), write a
+    # proposal row to state_of_2026_claim_proposals (status='pending')
+    # so the operator can approve via /admin/state-of-2026-pulse one-click.
+    # NEVER auto-pushes git. Slot 6/6 UTC chosen because it's after the
+    # 04:00 UTC DCPI snapshot writer + 06:00 UTC news crawler (per-name
+    # last_run guard keeps them independent). Idempotent: same lineno
+    # with status='pending' skips silently. Same-hour same-day cap → one
+    # run per UTC day. Kill switch: DCHUB_STATE_2026_EVOLVER_DISABLE=1.
+    ( 6,  6, "state_of_2026_claim_evolve", "_run_state_of_2026_claim_evolve"),
 ]
 
 # ---------------------------------------------------------------------------
@@ -1325,6 +1347,44 @@ def _run_linkedin_engagement_sync():
         )
     except Exception as e:
         logger.error("📈 LinkedIn engagement sync error: %s", e, exc_info=True)
+
+
+def _run_state_of_2026_claim_evolve():
+    """State of 2026 LIVING claims evolver (2026-06-07): hits the
+    admin-keyed loopback endpoint that walks every claim in docs/state-of
+    -2026-claims.txt, pulls the live value, and if drifted past the
+    expected band writes a proposal to state_of_2026_claim_proposals
+    (status='pending') for the operator to approve.
+
+    NEVER auto-pushes git from this cron. Strict observer.
+    Kill switch: DCHUB_STATE_2026_EVOLVER_DISABLE=1."""
+    if os.environ.get("DCHUB_STATE_2026_EVOLVER_DISABLE", "").lower() in (
+            "1", "true", "yes"):
+        logger.info("📣 state_of_2026_claim_evolve: skipped — kill switch on")
+        return
+    import requests as _rq
+    key = (os.environ.get("DCHUB_ADMIN_KEY")
+           or os.environ.get("DCHUB_INTERNAL_KEY")
+           or os.environ.get("DCHUB_ADMIN_API_KEY") or "")
+    if not key:
+        logger.warning(
+            "📣 state_of_2026_claim_evolve: skipped — DCHUB_ADMIN_KEY not set")
+        return
+    base = os.environ.get("DCHUB_INTERNAL_API", "http://127.0.0.1:8080")
+    try:
+        r = _rq.post(
+            f"{base}/api/v1/admin/state-of-2026/claims/propose",
+            headers={"X-Admin-Key": key,
+                     "User-Agent": "dchub-cron-state2026-evolve/1.0"},
+            timeout=60,
+        )
+        d = (r.json() if r.headers.get("content-type", "").startswith(
+            "application/json") else {}) or {}
+        logger.info(
+            "📣 state_of_2026_claim_evolve: proposed=%s skipped=%s",
+            d.get("proposed_n"), d.get("skipped_n"))
+    except Exception as e:
+        logger.error("📣 state_of_2026_claim_evolve: error — %s", e)
 
 
 def _run_accelerator_scan():
