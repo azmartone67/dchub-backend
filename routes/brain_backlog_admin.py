@@ -45,7 +45,18 @@ PR with broken code. Mitigations:
 Companion env vars:
   BRAIN_AUTOPILOT_DRAFT_PR_DISABLE=1   kill switch (default off)
   BRAIN_DRAFT_PR_DAILY_CAP=5           daily cap (default 5)
-  BRAIN_DRAFT_PR_MIN_CONF=0.90         min confidence (default 0.90)
+  DCHUB_BRAIN_L5_CONF_MIN=0.75         min confidence (default 0.75)
+                                       (canonical name; legacy alias
+                                       BRAIN_DRAFT_PR_MIN_CONF still
+                                       honored for backwards-compat)
+
+2026-06-07 (Task #148): lowered the draft-PR confidence floor 0.90 → 0.75
+so the brain opens 3-5× more DRAFT PRs and we accumulate faster
+learning data. DRAFT mode is preserved + the ast.parse syntax gate
+still rejects broken patches + the 5/day cap still throttles noise.
+Sentinel auto-merge floor (SENTINEL_AUTO_MERGE_REQUIRE_CONF=0.95)
+is UNCHANGED — auto-merge stays conservative; only the human-review
+draft pool widens.
 """
 from __future__ import annotations
 
@@ -86,11 +97,27 @@ def _daily_cap() -> int:
 
 
 def _min_conf() -> float:
+    """Confidence floor below which a Layer-5 proposal will NOT be
+    promoted to a DRAFT PR. Env-driven so we can tune the bar without
+    a redeploy.
+
+    Canonical env var: DCHUB_BRAIN_L5_CONF_MIN (default 0.75 as of
+    2026-06-07 task #148 — lowered from 0.90 so the brain opens 3-5×
+    more draft PRs + accumulates faster learning data; safety is
+    preserved by DRAFT mode + ast.parse syntax gate + 5/day cap).
+
+    Legacy alias BRAIN_DRAFT_PR_MIN_CONF is still honored if set so a
+    rollback can re-pin the old 0.90 without code changes. Sentinel
+    auto-merge uses a SEPARATE knob (SENTINEL_AUTO_MERGE_REQUIRE_CONF,
+    default 0.95) and is unaffected by this floor.
+    """
+    raw = (os.environ.get("DCHUB_BRAIN_L5_CONF_MIN")
+           or os.environ.get("BRAIN_DRAFT_PR_MIN_CONF")
+           or "0.75")
     try:
-        return max(0.0, min(1.0, float(
-            os.environ.get("BRAIN_DRAFT_PR_MIN_CONF", "0.90"))))
+        return max(0.0, min(1.0, float(raw)))
     except Exception:
-        return 0.90
+        return 0.75
 
 
 def _stuck_auto_action_off() -> bool:
@@ -561,7 +588,13 @@ pre{background:#0a0a14;border:1px solid var(--bord);border-radius:6px;
 </head><body>
 <h1>Brain Backlog · Drive Change</h1>
 <div class="sub">stuck-issue queue · L5 proposed code fixes ·
-   one-click draft PRs · admin-gated · loaded <span id="ts"></span></div>
+   one-click draft PRs · admin-gated · loaded <span id="ts"></span>
+   · <span id="floor-pill" class="pill ok"
+          title="Confidence floor below which a Layer-5 proposal will
+                 NOT be promoted to a DRAFT PR. Lower = more learning
+                 data; sentinel auto-merge floor is separate (0.95).">
+       L5 floor: ?
+     </span></div>
 
 <div class="grid" id="kpis"></div>
 
@@ -720,6 +753,21 @@ function render(d){
   const stk = cfg.stuck_auto_action_kill_switch ?
     '<span class="pill kill">stuck kill ON</span>' :
     '<span class="pill ok">stuck live</span>';
+  // Floor pill (top sub-line): pure indicator of the active L5 PR
+  // confidence floor. Color-codes the throttle: <0.80 = wide (warn,
+  // more PRs), >=0.90 = strict (ok, fewer PRs).
+  const fp = $('floor-pill');
+  if(fp){
+    const floor = (cfg.draft_pr_min_conf!=null)
+      ? Number(cfg.draft_pr_min_conf).toFixed(2) : '?';
+    fp.textContent = `L5 floor: ≥${floor}`;
+    fp.className = 'pill ' + (Number(floor) < 0.80 ? 'warn' :
+                              Number(floor) >= 0.90 ? 'ok' : 'ok');
+    fp.title = `Layer-5 draft-PR confidence floor (env ` +
+      `DCHUB_BRAIN_L5_CONF_MIN). Proposals below ${floor} are NOT ` +
+      `promoted to a draft PR. Sentinel auto-merge uses a separate ` +
+      `floor (0.95) and is unaffected.`;
+  }
   $('kpis').innerHTML = `
     <div class="card"><div class="v">${d.stuck_total||0}</div>
       <div class="l">Stuck findings</div></div>
