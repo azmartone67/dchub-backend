@@ -7067,50 +7067,80 @@ def check_shadowed_routes() -> list[dict]:
     except Exception:
         return findings
 
+    # Verify-before-filing (2026-06-07): the raw route-audit lists EVERY path with
+    # >1 handler, but two cases are pure noise that clog the "stuck/untried" worklist
+    # forever (the brain can't safely delete a decorator, so they never resolve):
+    #   1. Intentional 404-killer / fallback handlers — registered precisely to LOSE
+    #      to the real route (working as designed, not a bug).
+    #   2. Duplicate handlers whose path still serves users a healthy response —
+    #      Flask just picks the first; nothing is broken.
+    # So we now PROBE the live edge and only file a finding when the route is actually
+    # broken for users (404/5xx, or 403 = CF Error-1000 routing like the
+    # /state-of-the-data-center + /research cases). This stops the brain crying wolf.
+    _FALLBACK = ("redirects_404_killer", "redir_", "_fallback", "_404", "killer")
+    _EDGE = "https://dchub.cloud"
+    _seen: set = set()
     for entry in (data.get("shadowed_routes") or []):
         path = entry.get("path", "?")
+        if path in _seen:          # route-audit can list the same path twice
+            continue
+        _seen.add(path)
         methods = entry.get("methods", [])
         endpoints = entry.get("endpoints", [])
-        same_endpoint = (len(set(endpoints)) == 1)
 
-        # Phase ZZZZ-T4 (2026-05-18): pick the loser per heuristics.
-        # _override, _legacy, _v1, _old, phaseNNN_ prefixed handlers
-        # are almost always the one to remove (we keep the cleanly-named
-        # canonical handler).
-        loser = None
-        keeper = None
-        for ep in endpoints:
-            ep_low = ep.lower()
-            if any(s in ep_low for s in ("_override", "_legacy", "_v1", "_old",
-                                          "phase9", "phase8", "phase7")):
+        # Never probe mutating paths (recompute/delete/etc.); skip them entirely.
+        if any(w in path.lower()
+               for w in ("recompute", "delete", "send", "reset", "purge", "wipe")):
+            continue
+
+        # PROBE FIRST, then decide (order matters — a route can have a "fine"-looking
+        # handler list yet still be 403/404 for real users, e.g. /research). Probe the
+        # live EDGE: 405 = HEAD not allowed (route exists) → confirm with a 1-byte GET.
+        live = None
+        try:
+            hr = _req.head(_EDGE + path, timeout=3, allow_redirects=False,
+                           headers={"User-Agent": "dchub-brain-route-audit/1.0"})
+            live = hr.status_code
+            if live == 405:
+                live = _req.get(_EDGE + path, timeout=3, allow_redirects=False,
+                                headers={"User-Agent": "dchub-brain-route-audit/1.0",
+                                         "Range": "bytes=0-0"}).status_code
+        except Exception:
+            live = None
+        broken = (live in (403, 404)) or (live is not None and live >= 500)
+        if not broken:
+            # Route serves users fine — whether it's a working duplicate or a
+            # canonical route + 404-killer safety net, it's not a wolf. Don't file.
+            continue
+
+        # Broken for real users → surface it. Strip fallback handlers for the
+        # recommendation (the canonical handler is the keeper).
+        real_eps = [ep for ep in endpoints
+                    if not any(m in ep.lower() for m in _FALLBACK)] or endpoints
+        loser = keeper = None
+        for ep in real_eps:
+            if any(s in ep.lower() for s in ("_override", "_legacy", "_v1", "_old",
+                                              "phase9", "phase8", "phase7")):
                 loser = ep
             else:
                 keeper = ep
         if loser and keeper and loser != keeper:
             recommendation = (
-                f"REMOVE the `{loser}` handler (older/legacy pattern). "
-                f"KEEP `{keeper}`. Grep the codebase for `def {loser.split('.')[-1]}` "
-                f"and comment out or delete its @route decorator."
-            )
+                f"REMOVE the `{loser}` handler (older/legacy pattern); KEEP `{keeper}`.")
         else:
             recommendation = (
-                "grep the codebase for the path and pick one canonical "
-                "handler (look for _override/_legacy suffixes — those are "
-                "usually the ones to remove)."
-            )
+                "Two real implementations compete for this path AND the live edge is "
+                "broken — most likely CF routing, NOT a Python dup: check the "
+                "_routes.json include wildcard + the zone-worker allowlist (same class "
+                "as the /state-of-the-data-center fix).")
 
         findings.append({
             "issue":  "shadowed_route",
             "url":    path,
-            "count":  len(endpoints),
+            "count":  len(real_eps),
             "detail": (
-                f"Path `{path}` ({','.join(methods)}) has "
-                f"{len(endpoints)} registered handlers: "
-                f"{', '.join(endpoints)}. "
-                + ("Same function name — likely a duplicate decorator on the "
-                   "same function. " if same_endpoint else
-                   "Different functions — two implementations competing for "
-                   "the same URL; Flask silently picks the first registered. ")
+                f"Path `{path}` ({','.join(methods)}) has {len(real_eps)} real handlers "
+                f"({', '.join(real_eps)}) AND returns live edge status {live} (BROKEN). "
                 + recommendation
             ),
         })
