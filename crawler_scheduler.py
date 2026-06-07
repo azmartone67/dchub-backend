@@ -267,6 +267,13 @@ SCHEDULE = [
     # Kill switch: DCHUB_RENEWAL_NUDGE_DISABLE=1. Dry-run knob:
     # DCHUB_RENEWAL_NUDGE_DRY_RUN=1.
     (14, 14, "renewal_nudge_onetime", "_run_renewal_nudge_onetime"),
+
+    # Morning briefing (2026-06-07): operator's personal CEO daily report.
+    # Twice-daily slot but the runner UNIQUE(DATE(sent_at), recipient) gate
+    # on morning_briefing_log skips silently if already sent today —
+    # 18:00 is purely failsafe in case Railway slept through 06:00. Kill
+    # switch: MORNING_BRIEFING_DISABLE=1. Dry-run: MORNING_BRIEFING_DRY_RUN=1.
+    ( 6, 18, "morning_briefing",     "_run_morning_briefing"),
     # Expired one-time tier demote (2026-06-06): nightly enforcement leg
     # of commit 594756e8. That commit stamped users.tier_expires_at = NOW()
     # + 365 days + users.source_plan = '<plan>_onetime' on the new mode=
@@ -2041,6 +2048,39 @@ def _run_renewal_nudge_onetime():
         logger.error("📅 renewal_nudge_onetime: error — %s", e)
 
 
+def _run_morning_briefing():
+    """Fire /api/v1/admin/morning-briefing/send (loopback). Operator's
+    personal CEO daily report — fans out to 6 admin dashboards and ships
+    a single 1-page HTML email to azmartone@gmail.com at 06:00 UTC.
+
+    Idempotent: morning_briefing_log UNIQUE(DATE(sent_at), recipient_email)
+    means a redundant 18:00 firing skips silently. No-ops if
+    MORNING_BRIEFING_DISABLE=1. Dry-run knob: MORNING_BRIEFING_DRY_RUN=1.
+    """
+    import requests as _rq
+    key = (os.environ.get("DCHUB_ADMIN_KEY")
+           or os.environ.get("DCHUB_INTERNAL_KEY")
+           or os.environ.get("DCHUB_ADMIN_API_KEY") or "")
+    if not key:
+        logger.warning("📅 morning_briefing: skipped — DCHUB_ADMIN_KEY not set")
+        return
+    base = os.environ.get("DCHUB_INTERNAL_API", "http://127.0.0.1:8080")
+    try:
+        r = _rq.post(
+            f"{base}/api/v1/admin/morning-briefing/send",
+            headers={"X-Admin-Key": key, "X-Internal-Key": key,
+                     "User-Agent": "dchub-cron-morning-briefing/1.0"},
+            timeout=120,
+        )
+        d = (r.json() if r.headers.get("content-type", "").startswith("application/json") else {}) or {}
+        logger.info("📅 morning_briefing: ok=%s skipped=%s message_id=%s "
+                    "dry_run=%s status=%s",
+                    d.get("ok"), d.get("skipped"),
+                    d.get("message_id"), d.get("dry_run"), r.status_code)
+    except Exception as e:
+        logger.error("📅 morning_briefing: error — %s", e)
+
+
 def _run_brain_strategic_synthesis():
     """Brain L6 Strategic Synthesis (2026-06-06). Once per WEEK (Mondays
     only) — self-gates here because the SCHEDULE harness is hour-based.
@@ -2290,6 +2330,7 @@ _RUNNERS = {
     "watchlist_weekly_digest":  _run_watchlist_weekly_digest,
     "hyperscaler_brief_warm":   _run_hyperscaler_brief_warm,
     "renewal_nudge_onetime":    _run_renewal_nudge_onetime,
+    "morning_briefing":         _run_morning_briefing,
     "campaign_outcome_poll":    _run_campaign_outcome_poll,
     "brain_strategic_synthesis": _run_brain_strategic_synthesis,
     "brain_strategic_synthesis_thu": _run_brain_strategic_synthesis_thu,

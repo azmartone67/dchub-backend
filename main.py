@@ -28630,6 +28630,20 @@ try:
 except Exception as _e:
     print(f"[main] renewal_nudge register failed: {_e}", file=sys.stderr)
 
+# r67-morning-briefing (2026-06-07): operator's personal CEO daily report.
+# Single 1-page HTML email at 06:00 UTC fanning out to 6 admin dashboards
+# (funnel-health, brain-backlog, sentinel-inbox, media-pulse, qa/state-2026,
+# strategic-recs). UNIQUE(DATE(sent_at), recipient_email) on
+# morning_briefing_log enforces same-day idempotency.
+try:
+    from routes.morning_briefing import morning_briefing_bp
+    app.register_blueprint(morning_briefing_bp)
+    print("[main] morning_briefing_bp registered: "
+          "/api/v1/admin/morning-briefing/{preview,send,history}",
+          flush=True)
+except Exception as _e:
+    print(f"[main] morning_briefing register failed: {_e}", file=sys.stderr)
+
 # r66-halfprice-annual (2026-06-06): half-price Pro Annual outreach to
 # active monthly Pro subs ($199 → effectively $99/mo via $1,188 one-time).
 # DRY-RUN gated: /preview returns fire_key, /fire?fire_key=X actually sends.
