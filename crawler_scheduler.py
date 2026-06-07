@@ -369,6 +369,17 @@ SCHEDULE = [
     # last_run guard keeps them independent). Idempotent: same lineno
     # with status='pending' skips silently. Same-hour same-day cap → one
     # run per UTC day. Kill switch: DCHUB_STATE_2026_EVOLVER_DISABLE=1.
+    # State of 2026 LIVING DOC daily refresh (2026-06-07 Round 3): re-probes
+    # every claim, UPSERTs into state_of_2026_live_numbers (PK=claim_lineno),
+    # busts the page's in-memory 5min cache + the CF edge cache on the
+    # /api/v1/og/editorial/state-of-2026.png OG card. The /state-of-2026
+    # page then reads from the persisted row (sub-ms response) instead of
+    # fanning out 8 internal probes on every cold-cache hit. Slot 05/05
+    # UTC chosen so the row is fresh before the 06:00 UTC claim evolver
+    # runs (the evolver compares live vs expected_max; using same-cycle
+    # data avoids a race). Same-hour-same-day cap → one run/day. Kill
+    # switch: STATE_2026_REFRESH_DISABLE=1.
+    ( 5,  5, "state_of_2026_refresh",      "_run_state_of_2026_refresh"),
     ( 6,  6, "state_of_2026_claim_evolve", "_run_state_of_2026_claim_evolve"),
     # Brain ROUND 2 (2026-06-07): PR outcome monitor. Twice-daily poll
     # against GitHub for merged PRs from azmartone67/dchub-backend in
@@ -488,6 +499,23 @@ SCHEDULE = [
     # MULTIPLATFORM_AMPLIFIER_DRY_RUN=1.
     (15,  3, "multiplatform_amplifier",
               "_run_multiplatform_amplifier"),
+    # Brain Feature Proposer (2026-06-07, task #157): twice-daily clustering
+    # of last-30d /feedback rows (MEDIUM/HIGH class, no prior proposal PR)
+    # by shared keyword tokens. Each 3+ user cluster → Claude writes a
+    # 200-word feature spec → DRAFT PR opens with routes/_proposed_<slug>.py
+    # stub. Slot 15/3 UTC mirrors multiplatform_amplifier — both slots are
+    # already in the schedule with per-name guards, so collisions stay
+    # independent. Bounded: <=2 Claude calls per run (weekly hard cap of 2
+    # is the budget gate). Worst-case is 2 calls × ~40s + 2 GitHub PR opens
+    # × ~3s ≈ 90s before the next slot. Kill switch:
+    # BRAIN_FEATURE_PROPOSER_DISABLE=1. Dry-run preview (no PR opened):
+    # BRAIN_FEATURE_PROPOSER_DRY_RUN=1. Cluster size floor:
+    # BRAIN_FEATURE_PROPOSER_MIN_CLUSTER (default 3). Spam filter is a
+    # SQL gate (rows classified SPAM are 'declined', not MEDIUM/HIGH) +
+    # a per-row heuristic (< 40 chars or no proper-noun tokens) that
+    # rejects low-signal misclassifications.
+    (15,  3, "brain_feature_proposer",
+              "_run_brain_feature_proposer"),
 ]
 
 # ---------------------------------------------------------------------------
@@ -1521,6 +1549,49 @@ def _run_linkedin_engagement_sync():
         logger.warning("🎨 Style A/B backfill skipped: %s", e)
 
 
+def _run_state_of_2026_refresh():
+    """State of 2026 LIVING DOC daily refresh (2026-06-07 Round 3): hits
+    the admin-keyed loopback endpoint that walks every claim, probes its
+    live value, UPSERTs state_of_2026_live_numbers (PK=claim_lineno), and
+    busts the page's in-memory cache + the CF edge cache on the OG card.
+
+    Fires at 05:00 UTC daily so the persisted row is fresh BEFORE the
+    06:00 UTC claim_evolve runs (the evolver compares live vs expected
+    range — using same-cycle data avoids a race where the evolver flags
+    drift the operator can't reproduce on the page).
+
+    Kill switch: STATE_2026_REFRESH_DISABLE=1."""
+    if os.environ.get("STATE_2026_REFRESH_DISABLE", "").lower() in (
+            "1", "true", "yes"):
+        logger.info("🔄 state_of_2026_refresh: skipped — kill switch on")
+        return
+    import requests as _rq
+    key = (os.environ.get("DCHUB_ADMIN_KEY")
+           or os.environ.get("DCHUB_INTERNAL_KEY")
+           or os.environ.get("DCHUB_ADMIN_API_KEY") or "")
+    if not key:
+        logger.warning(
+            "🔄 state_of_2026_refresh: skipped — DCHUB_ADMIN_KEY not set")
+        return
+    base = os.environ.get("DCHUB_INTERNAL_API", "http://127.0.0.1:8080")
+    try:
+        r = _rq.post(
+            f"{base}/api/v1/admin/state-of-2026/refresh-now?source=cron",
+            headers={"X-Admin-Key": key,
+                     "User-Agent": "dchub-cron-state2026-refresh/1.0"},
+            timeout=120,
+        )
+        d = (r.json() if r.headers.get("content-type", "").startswith(
+            "application/json") else {}) or {}
+        og = d.get("og_card_regen") or {}
+        logger.info(
+            "🔄 state_of_2026_refresh: refreshed=%s errors=%s "
+            "og_card_status=%s",
+            d.get("n_refreshed"), d.get("n_errors"), og.get("status"))
+    except Exception as e:
+        logger.error("🔄 state_of_2026_refresh: error — %s", e)
+
+
 def _run_state_of_2026_claim_evolve():
     """State of 2026 LIVING claims evolver (2026-06-07): hits the
     admin-keyed loopback endpoint that walks every claim in docs/state-of
@@ -2270,6 +2341,45 @@ def _run_expired_onetime_demote():
         logger.error("💀 expired_onetime_demote error: %s", e, exc_info=True)
 
 
+def _run_brain_feature_proposer():
+    """Brain Feature Proposer (2026-06-07, task #157): twice-daily cluster
+    of 30d /feedback rows (MEDIUM/HIGH class, no prior proposal PR) by
+    shared keyword tokens. Each 3+ user cluster → Claude writes a 200-word
+    feature spec → DRAFT PR opens with a routes/_proposed_<slug>.py stub
+    that a human fleshes out. Hard cap 2 proposals per rolling 7d. Kill
+    switch: BRAIN_FEATURE_PROPOSER_DISABLE=1. Dry-run preview (no PR
+    opened): BRAIN_FEATURE_PROPOSER_DRY_RUN=1. Defensive; never raises.
+    Slot 15/3 UTC (shares hour with multiplatform_amplifier — per-name
+    last_run guard keeps them independent)."""
+    try:
+        from routes.brain_feature_proposer import run_feature_proposer
+        result = run_feature_proposer(force=False) or {}
+        proposals = result.get("proposals") or []
+        logger.info(
+            "💡 brain_feature_proposer: rows=%s clusters=%s proposed=%s "
+            "skipped=%s kill=%s dry_run=%s weekly=%s/%s",
+            result.get("rows_scanned"),
+            result.get("clusters_found"),
+            len(proposals),
+            len(result.get("skipped", []) or []),
+            result.get("kill_switch"),
+            result.get("dry_run"),
+            result.get("weekly_used"),
+            result.get("weekly_cap"),
+        )
+        for p in proposals[:3]:
+            logger.info(
+                "💡 brain_feature_proposer proposal: theme=%s count=%s "
+                "name=%s pr=%s",
+                p.get("theme"),
+                p.get("count"),
+                p.get("spec_name") or (p.get("spec") or {}).get("feature_name"),
+                p.get("pr_url"),
+            )
+    except Exception as e:
+        logger.error("💡 brain_feature_proposer error: %s", e, exc_info=True)
+
+
 def _run_feedback_triage():
     """Customer Feedback Forum triage (2026-06-06): pull status='new'
     + 'triaged' rows from feedback_submissions, classify via Claude,
@@ -2646,6 +2756,7 @@ _RUNNERS = {
     "state_brief_warm":    _run_state_brief_warm,
     "operator_brief_warm": _run_operator_brief_warm,
     "feedback_triage":     _run_feedback_triage,
+    "brain_feature_proposer": _run_brain_feature_proposer,
     "expired_onetime_demote": _run_expired_onetime_demote,
     "verdict_shift_post":  _run_verdict_shift_post,
     "weekly_newsletter":   _run_weekly_newsletter,
@@ -2662,6 +2773,13 @@ _RUNNERS = {
     "brain_cross_session_scan":  _run_brain_cross_session_scan,
     "sentinel_auto_merge_sweep":    _run_sentinel_auto_merge_sweep,
     "sentinel_auto_merge_followup": _run_sentinel_auto_merge_followup,
+    # State of 2026 LIVING DOC (2026-06-07 Round 3): the SCHEDULE entries
+    # reference these by name and they were missing from _RUNNERS — the
+    # cron rows existed but the dispatcher never matched the name → silent
+    # no-op. Wiring them here unblocks the daily 05:00 UTC refresh + the
+    # 06:00 UTC claim evolver.
+    "state_of_2026_refresh":         _run_state_of_2026_refresh,
+    "state_of_2026_claim_evolve":    _run_state_of_2026_claim_evolve,
 }
 
 

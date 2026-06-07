@@ -27,6 +27,15 @@ DB tables (idempotent CREATE IF NOT EXISTS in init_state_of_2026_tables):
                                    proposed_text, current_min, current_max,
                                    proposed_min, proposed_max, live_value,
                                    reason, status, ts, applied_ts)
+  - state_of_2026_live_numbers   (2026-06-07 Round 3: daily-refresh cache so
+                                   the page reads sub-ms from this table
+                                   instead of fanning out 8 internal probes
+                                   on every cold-cache hit. Daily 05:00 UTC
+                                   cron refreshes; page falls back to live
+                                   probes if the row is missing/stale.)
+                                   (claim_lineno PK, claim_text, endpoint,
+                                    json_path, live_value, expected_min,
+                                    expected_max, measured_at, source)
 
 Rate-limiting / live-API safety:
   - /state-of-2026 page query results are CACHED for 300s in-memory. A
@@ -189,6 +198,31 @@ def init_state_of_2026_tables() -> None:
                 """,
                 "CREATE INDEX IF NOT EXISTS state_of_2026_claim_props_status_idx "
                 "ON state_of_2026_claim_proposals(status, ts)",
+                # Round 3 (2026-06-07): persisted live-numbers cache. Keyed
+                # by claim_lineno so re-runs UPSERT cleanly. The page reads
+                # this table for sub-ms response (vs 8 internal probes at
+                # ~6s p95 on cold cache). measured_at is the freshness
+                # source for the "Updated YYYY-MM-DD UTC" badge on every
+                # hero card. The previous_value column lets the dashboard
+                # show a delta (and lets the drift detector flag DOWN
+                # crashes, not just upward growth).
+                """
+                CREATE TABLE IF NOT EXISTS state_of_2026_live_numbers (
+                    claim_lineno    INTEGER PRIMARY KEY,
+                    claim_text      TEXT,
+                    endpoint        TEXT,
+                    json_path       TEXT,
+                    live_value      DOUBLE PRECISION,
+                    previous_value  DOUBLE PRECISION,
+                    expected_min    DOUBLE PRECISION,
+                    expected_max    DOUBLE PRECISION,
+                    in_range        BOOLEAN,
+                    measured_at     TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+                    source          TEXT NOT NULL DEFAULT 'cron'
+                )
+                """,
+                "CREATE INDEX IF NOT EXISTS state_of_2026_live_numbers_ts_idx "
+                "ON state_of_2026_live_numbers(measured_at)",
             ):
                 try:
                     cur.execute(stmt)
@@ -350,6 +384,245 @@ def _fetch_hero_numbers() -> dict:
     return data
 
 
+# ── Round 3 (2026-06-07): persisted-cache live numbers ───────────────
+# The page now prefers the daily-refreshed row in state_of_2026_live_numbers
+# over fanning out 8 internal probes. _fetch_hero_numbers_persisted() reads
+# the table; if the table is empty / stale / partial, it falls back to the
+# in-memory cache + live probe chain so the page never breaks on a cold boot.
+
+_PERSISTED_MAX_AGE_S = 36 * 60 * 60  # 36h grace period (cron is daily 05:00 UTC)
+
+
+def _fetch_hero_numbers_persisted() -> dict:
+    """Prefer the persisted daily-refresh row. Falls back to the in-memory
+    cache + live-probe chain on partial/missing/stale data. Each number
+    carries its own measured_at so the page can render a per-card 'Updated'
+    badge even if some rows are fresher than others."""
+    claims = _parse_claims()
+    if not claims:
+        return _fetch_hero_numbers()
+
+    c = _conn()
+    if c is None:
+        return _fetch_hero_numbers()
+
+    rows_by_lineno: dict[int, dict] = {}
+    try:
+        with c.cursor() as cur:
+            try:
+                cur.execute(
+                    "SELECT claim_lineno, claim_text, endpoint, json_path, "
+                    "       live_value, previous_value, expected_min, "
+                    "       expected_max, in_range, measured_at, source "
+                    "FROM state_of_2026_live_numbers")
+                for r in (cur.fetchall() or []):
+                    rows_by_lineno[int(r[0] or 0)] = {
+                        "claim":          r[1],
+                        "endpoint":       r[2],
+                        "json_path":      r[3],
+                        "live_value":     (float(r[4]) if r[4] is not None else None),
+                        "previous_value": (float(r[5]) if r[5] is not None else None),
+                        "expected_min":   (float(r[6]) if r[6] is not None else None),
+                        "expected_max":   (float(r[7]) if r[7] is not None else None),
+                        "in_range":       bool(r[8]) if r[8] is not None else False,
+                        "measured_at":    str(r[9]),
+                        "source":         r[10] or "cron",
+                    }
+            except Exception as e:
+                logger.debug("persisted numbers read failed: %s", e)
+    finally:
+        try: c.close()
+        except Exception: pass
+
+    # If the cache table is empty OR every row is older than the grace
+    # window, fall back to the live-probe path.
+    if not rows_by_lineno:
+        return _fetch_hero_numbers()
+
+    now_utc = datetime.now(timezone.utc)
+    numbers: list[dict] = []
+    any_stale = False
+    for cl in claims:
+        ln = cl["_lineno"]
+        row = rows_by_lineno.get(ln)
+        if row is None or row.get("live_value") is None:
+            any_stale = True
+        # Compute age from measured_at if present.
+        age_s: Optional[int] = None
+        if row and row.get("measured_at"):
+            try:
+                m_at = datetime.fromisoformat(
+                    row["measured_at"].replace(" ", "T").replace("+00", "+00:00"))
+                age_s = int((now_utc - m_at).total_seconds())
+            except Exception:
+                age_s = None
+        numbers.append({
+            "claim":         (row or {}).get("claim") or cl["claim"],
+            "endpoint":      cl["endpoint"],
+            "json_path":     cl["json_path"],
+            "expected_min":  cl["expected_min"],
+            "expected_max":  cl["expected_max"],
+            "live_value":    (row or {}).get("live_value"),
+            "previous_value": (row or {}).get("previous_value"),
+            "in_range":      bool((row or {}).get("in_range", False)),
+            "lineno":        ln,
+            "measured_at":   (row or {}).get("measured_at"),
+            "age_seconds":   age_s,
+            "source":        (row or {}).get("source", "cron"),
+        })
+
+    # If the persisted view is missing >half the claims, prefer the live
+    # path so the page never shows a sparse hero grid.
+    persisted_count = sum(1 for n in numbers if n.get("live_value") is not None)
+    if persisted_count < max(1, len(numbers) // 2):
+        return _fetch_hero_numbers()
+
+    return {
+        "claim_count": len(numbers),
+        "numbers":     numbers,
+        "as_of":       now_utc.isoformat(),
+        "cache_age_s": min(
+            (n.get("age_seconds") or 0) for n in numbers
+            if n.get("age_seconds") is not None) if numbers else 0,
+        "source":      ("persisted-partial" if any_stale else "persisted"),
+    }
+
+
+def _persist_live_numbers(source: str = "cron") -> dict:
+    """Probe every claim, UPSERT a row in state_of_2026_live_numbers per
+    claim_lineno (PK), and return a summary. Updates previous_value to the
+    OLD live_value (so the dashboard can render deltas / DOWN warnings).
+    Also clears the in-memory 5min cache so the page picks the row up
+    immediately on the next request."""
+    claims = _parse_claims()
+    if not claims:
+        return {"ok": False, "error": "no claims to refresh", "n": 0}
+
+    refreshed: list[dict] = []
+    errors: list[dict] = []
+
+    c = _conn()
+    if c is None:
+        return {"ok": False, "error": "db unavailable", "n": 0}
+
+    try:
+        for cl in claims:
+            try:
+                r = _probe_internal(cl["endpoint"], expect_json=True, timeout=8.0)
+                live_val = _extract(r.get("json"), cl["json_path"]) if r.get("ok") else None
+                in_range = bool(live_val is not None
+                                and cl["expected_min"] <= live_val <= cl["expected_max"])
+                # Read prior value so we can store it as previous_value.
+                prev_val: Optional[float] = None
+                try:
+                    with c.cursor() as cur:
+                        cur.execute(
+                            "SELECT live_value FROM state_of_2026_live_numbers "
+                            "WHERE claim_lineno = %s", (cl["_lineno"],))
+                        prv = cur.fetchone()
+                        if prv and prv[0] is not None:
+                            prev_val = float(prv[0])
+                except Exception:
+                    pass
+
+                # UPSERT — on conflict the PK matches.
+                try:
+                    with c.cursor() as cur:
+                        cur.execute(
+                            "INSERT INTO state_of_2026_live_numbers "
+                            "(claim_lineno, claim_text, endpoint, json_path, "
+                            " live_value, previous_value, expected_min, "
+                            " expected_max, in_range, measured_at, source) "
+                            "VALUES (%s,%s,%s,%s,%s,%s,%s,%s,%s,NOW(),%s) "
+                            "ON CONFLICT (claim_lineno) DO UPDATE SET "
+                            " claim_text = EXCLUDED.claim_text, "
+                            " endpoint = EXCLUDED.endpoint, "
+                            " json_path = EXCLUDED.json_path, "
+                            " live_value = EXCLUDED.live_value, "
+                            " previous_value = EXCLUDED.previous_value, "
+                            " expected_min = EXCLUDED.expected_min, "
+                            " expected_max = EXCLUDED.expected_max, "
+                            " in_range = EXCLUDED.in_range, "
+                            " measured_at = NOW(), "
+                            " source = EXCLUDED.source",
+                            (cl["_lineno"], cl["claim"], cl["endpoint"],
+                             cl["json_path"], live_val, prev_val,
+                             cl["expected_min"], cl["expected_max"],
+                             in_range, source))
+                except Exception as e:
+                    errors.append({"lineno": cl["_lineno"], "error": str(e)[:120]})
+                    continue
+
+                refreshed.append({
+                    "lineno":         cl["_lineno"],
+                    "claim":          cl["claim"][:80],
+                    "live_value":     live_val,
+                    "previous_value": prev_val,
+                    "in_range":       in_range,
+                })
+            except Exception as e:
+                errors.append({"lineno": cl["_lineno"],
+                               "error": f"{type(e).__name__}: {e}"[:120]})
+    finally:
+        try: c.close()
+        except Exception: pass
+
+    # Bust the in-memory hero cache so the page picks up the new persisted
+    # row immediately (vs waiting up to 5min for the old TTL to expire).
+    _HERO_CACHE["data"] = None
+    _HERO_CACHE["ts"] = 0.0
+
+    # Bust the OG-card CF edge cache by hitting the URL with a cache-bust
+    # query param. The CF Pages worker honors no-cache on cb=NNN hits; the
+    # next anon hit re-renders from the live press_release row.
+    og_bust = {"ok": False, "status": 0}
+    try:
+        if _rq is not None:
+            cb = int(time.time())
+            r = _rq.get(
+                f"{_PROBE_BASE_URL}/api/v1/og/editorial/state-of-2026.png?cb={cb}",
+                headers={"User-Agent": "dchub-state2026-og-bust/1.0",
+                         "Cache-Control": "no-cache",
+                         "X-Admin-Key": _ADMIN_KEY},
+                timeout=10)
+            og_bust = {"ok": (200 <= r.status_code < 400),
+                       "status": r.status_code,
+                       "bytes": int(r.headers.get("Content-Length", 0) or 0)}
+    except Exception as e:
+        og_bust = {"ok": False, "error": f"{type(e).__name__}: {e}"[:120]}
+
+    return {
+        "ok":          len(refreshed) > 0,
+        "n_refreshed": len(refreshed),
+        "n_errors":    len(errors),
+        "refreshed":   refreshed,
+        "errors":      errors[:10],
+        "og_card_regen": og_bust,
+        "source":      source,
+        "ts":          datetime.now(timezone.utc).isoformat(),
+    }
+
+
+@state_of_2026_live_bp.route("/api/v1/admin/state-of-2026/refresh-now",
+                              methods=["POST", "GET"])
+def state_of_2026_refresh_now():
+    """Manual + cron entry point. Re-probes every claim, UPSERTs into
+    state_of_2026_live_numbers, busts the in-memory + CF OG cache. Idempotent.
+
+    Kill switch: STATE_2026_REFRESH_DISABLE=1 returns {ok:false,disabled:true}
+    without touching the DB."""
+    if not _admin_ok(request):
+        return jsonify({"ok": False, "error": "admin_key required"}), 401
+    if os.environ.get("STATE_2026_REFRESH_DISABLE", "").lower() in (
+            "1", "true", "yes"):
+        return jsonify({"ok": False, "disabled": True,
+                        "reason": "STATE_2026_REFRESH_DISABLE=1"}), 200
+
+    source = (request.args.get("source") or "manual").strip()[:32]
+    result = _persist_live_numbers(source=source)
+    return jsonify(result)
+
+
 # ── click attribution ────────────────────────────────────────────────
 
 @state_of_2026_live_bp.route("/r/<token>", methods=["GET"])
@@ -474,6 +747,7 @@ def _render_state_page(hero: dict) -> str:
     hero_cards: list[str] = []
     for i, n in enumerate(nums):
         live = n.get("live_value")
+        prev = n.get("previous_value")
         display = (f"{int(live):,}" if (live is not None and live >= 100)
                    else (f"{live:.1f}" if live is not None else "—"))
         # Shorten the claim text to its key noun phrase.
@@ -484,15 +758,49 @@ def _render_state_page(hero: dict) -> str:
         badge_color = "#10b981" if in_range else "#f59e0b"
         badge_text = "LIVE" if in_range else "DRIFT"
         ep = n.get("endpoint", "")
+        # Round 3 (2026-06-07): per-card "Updated YYYY-MM-DD HH:MM UTC" badge.
+        # measured_at is set by the daily 05:00 UTC refresh cron. If the row
+        # is older than 36h, color the badge amber to flag stale data.
+        m_at_raw = n.get("measured_at")
+        updated_chip = ""
+        if m_at_raw:
+            try:
+                m_at = datetime.fromisoformat(
+                    str(m_at_raw).replace(" ", "T").replace("+00", "+00:00"))
+                age_s = (datetime.now(timezone.utc) - m_at).total_seconds()
+                stale = age_s > 36 * 3600
+                clr = "#9ca3af" if not stale else "#f59e0b"
+                disp = m_at.strftime("%Y-%m-%d %H:%M UTC")
+                updated_chip = (f'<div class="updated-chip" '
+                                f'style="color:{clr}" '
+                                f'title="Numbers refresh daily at 05:00 UTC. '
+                                f'This row was measured at {disp}.">'
+                                f'Updated {disp}</div>')
+            except Exception:
+                pass
+        # Delta chip — shows direction since prior refresh.
+        delta_chip = ""
+        if prev is not None and live is not None:
+            d = live - prev
+            if abs(d) > 0.001:
+                arrow = "↑" if d > 0 else "↓"
+                delta_disp = (f"{abs(int(d)):,}" if abs(d) >= 100
+                              else f"{abs(d):.1f}")
+                d_color = "#34d399" if d > 0 else "#fbbf24"
+                delta_chip = (f' <span class="delta-chip" '
+                              f'style="color:{d_color}" '
+                              f'title="Change since prior daily refresh">'
+                              f'{arrow}{delta_disp}</span>')
         hero_cards.append(f'''
         <div class="stat">
-          <div class="stat-num">{_esc(display)}</div>
+          <div class="stat-num">{_esc(display)}{delta_chip}</div>
           <div class="stat-claim">{_esc(text)}</div>
           <div class="stat-meta">
             <span class="live-badge" style="background:{badge_color}">{badge_text}</span>
             <a class="stat-src" href="{_PUBLIC_BASE_URL}{_esc(ep)}"
                target="_blank" rel="noopener nofollow">source</a>
           </div>
+          {updated_chip}
         </div>''')
 
     cache_chip = ""
@@ -565,6 +873,8 @@ def _render_state_page(hero: dict) -> str:
   .stat-claim{{margin-top:10px;color:#d4d4d8;font-size:14px;line-height:1.4}}
   .stat-meta{{margin-top:14px;display:flex;justify-content:space-between;align-items:center}}
   .live-badge{{display:inline-block;padding:2px 8px;border-radius:4px;color:#fff;font-size:10px;font-weight:700;letter-spacing:0.5px}}
+  .updated-chip{{margin-top:10px;font-size:10px;color:#9ca3af;font-family:JetBrains Mono,ui-monospace,SFMono-Regular,Menlo,monospace;letter-spacing:0.3px;border-top:1px dashed #262626;padding-top:8px}}
+  .delta-chip{{font-size:14px;font-weight:600;margin-left:8px;vertical-align:middle;letter-spacing:0}}
   .stat-src{{font-size:11px;color:#71717a;text-decoration:none}}
   .stat-src:hover{{color:#7dd3fc;text-decoration:underline}}
   .cta{{background:#171717;border:1px solid #262626;border-radius:12px;padding:32px;margin-bottom:32px}}
@@ -914,13 +1224,18 @@ def state_of_2026_page():
     except Exception:
         pass
 
-    hero = _fetch_hero_numbers()
+    # Round 3 (2026-06-07): prefer the persisted-cache row over a live
+    # probe-fanout. Page response is now sub-ms when the daily 05:00 UTC
+    # cron has refreshed the table. Fallback chain handles cold-boot +
+    # partial-cache cases (see _fetch_hero_numbers_persisted).
+    hero = _fetch_hero_numbers_persisted()
     return Response(
         _render_state_page(hero),
         mimetype="text/html; charset=utf-8",
         headers={
             "Cache-Control": "public, max-age=120",  # CF edge for 2min
             "X-Robots-Tag": "index, follow",
+            "X-DC-State-Source": str(hero.get("source", "live")),
         })
 
 
@@ -1074,27 +1389,50 @@ def claims_propose():
                 continue  # in band, nothing to do
 
             # Out of band. Decide direction + propose new range.
+            # Round 3 (2026-06-07): DOWN crashes are propagated with the
+            # same surface as UP growth — both write a pending proposal
+            # with the same status, but the reason text leads with
+            # GROWTH/DECLINE so the operator can triage at a glance.
             reason = ""
+            severity = "GROWTH"  # GROWTH | DECLINE | CRASH
             if live > emax:
                 # Growth — bump both ends up. New max = live * 1.1
                 # (10% headroom); new min = current max (lock in floor).
                 new_min = emax
                 new_max = round(live * 1.1, 1)
-                reason = (f"GROWTH: live {live} > current max {emax}. "
-                          f"Bumping range to [{new_min}, {new_max}].")
+                pct_over = ((live - emax) / emax * 100.0) if emax else 0
+                reason = (f"GROWTH: live {live} > current max {emax} "
+                          f"(+{pct_over:.1f}%). Bumping range to "
+                          f"[{new_min}, {new_max}].")
             elif live < emin:
                 # Shrink — could be a real drop (we'd want to know) or a
-                # transient flap. Don't auto-shrink; just flag.
+                # transient flap. Don't auto-shrink; instead propose a new
+                # floor at live * 0.9 and call out the severity. > 25%
+                # below min = CRASH (e.g. dev keys 55 → 10), < 25% = DECLINE.
+                pct_under = ((emin - live) / emin * 100.0) if emin else 0
+                if pct_under >= 25.0:
+                    severity = "CRASH"
+                else:
+                    severity = "DECLINE"
                 new_min = round(live * 0.9, 1)
                 new_max = emax
-                reason = (f"DECLINE: live {live} < current min {emin}. "
-                          f"Flagging for review (not auto-shrinking).")
+                reason = (f"{severity}: live {live} < current min {emin} "
+                          f"(-{pct_under:.1f}%). Proposing floor at "
+                          f"{new_min} but operator should investigate "
+                          f"BEFORE applying — a crash usually means a "
+                          f"data source broke, not that the claim should "
+                          f"be lowered.")
             else:
                 continue
 
             # Rewrite the visible claim text — e.g. "300+ markets" → "320+ markets".
             old_text = cl["claim"]
             new_text = _rewrite_claim_text(old_text, live, emax, new_max)
+            # For DOWN drift, DON'T rewrite the visible claim text — the
+            # operator might decide to fix the data source rather than
+            # lower the published number. Leave it as a flag.
+            if severity in ("DECLINE", "CRASH"):
+                new_text = old_text  # operator inspects before any rewrite
 
             row = {
                 "lineno":        cl["_lineno"],
@@ -1484,10 +1822,24 @@ def state_of_2026_pulse():
 </div>
 
 <div class=panel>
+  <h2>Live numbers cache (refreshes daily 05:00 UTC)</h2>
+  <p class=muted>The /state-of-2026 page reads from <code>state_of_2026_live_numbers</code>;
+  cron <code>state_of_2026_refresh</code> @ 05:00 UTC refreshes the cache from
+  every claim's live endpoint and busts the OG card edge cache.
+  <button onclick="refreshNow()" style="margin-left:8px">Refresh now</button>
+  · Kill switch: <code>STATE_2026_REFRESH_DISABLE=1</code></p>
+  <div id="refresh-status" class=muted style="margin-top:8px"></div>
+</div>
+
+<div class=panel>
   <h2>Auto-claim-update proposals (pending review)</h2>
   <p class=muted>Daily 06:00 UTC cron writes proposals here when a live
-  number drifts past the [min, max] expected band. Apply rewrites
-  docs/state-of-2026-claims.txt in-place; commit/push is a separate manual step.</p>
+  number drifts past the [min, max] expected band. <b style="color:#34d399">GROWTH</b>
+  proposals bump the published number up; <b style="color:#fbbf24">DECLINE</b> and
+  <b style="color:#f87171">CRASH</b> proposals flag a data-source regression for
+  triage (the page leaves the claim text untouched until you investigate).
+  Apply rewrites docs/state-of-2026-claims.txt in-place; commit/push is a
+  separate manual step.</p>
   <table>
     <thead><tr><th>Line</th><th>Diff</th><th>Live</th><th>Range</th><th>Reason</th><th>Action</th></tr></thead>
     <tbody>{prop_rows}</tbody>
@@ -1496,6 +1848,29 @@ def state_of_2026_pulse():
 
 <script>
 var KEY = "{admin_q}";
+function refreshNow() {{
+  var s = document.getElementById('refresh-status');
+  s.textContent = 'Refreshing… (this re-probes all 8 endpoints + busts the OG cache)';
+  s.style.color = '#a3a3a3';
+  fetch('/api/v1/admin/state-of-2026/refresh-now?admin_key=' + KEY + '&source=manual', {{
+    method: 'POST', headers: {{ 'X-Admin-Key': KEY }}
+  }}).then(r => r.json()).then(d => {{
+    if (d.ok) {{
+      s.style.color = '#34d399';
+      var og = d.og_card_regen || {{}};
+      s.textContent = 'OK — refreshed ' + d.n_refreshed +
+        ' rows, ' + d.n_errors + ' errors. OG card HTTP ' +
+        (og.status || '—') + '.';
+      setTimeout(function() {{ window.location.reload(); }}, 2500);
+    }} else {{
+      s.style.color = '#f59e0b';
+      s.textContent = 'Failed: ' + (d.error || d.reason || 'unknown');
+    }}
+  }}).catch(e => {{
+    s.style.color = '#f59e0b';
+    s.textContent = 'Network error: ' + e;
+  }});
+}}
 function applyProp(pid) {{
   if (!confirm('Apply proposal #' + pid + '? This rewrites claims.txt on disk.')) return;
   fetch('/api/v1/admin/state-of-2026/claims/apply/' + pid + '?admin_key=' + KEY, {{
