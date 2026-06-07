@@ -1,97 +1,100 @@
-# dchub Platform — Index + Reserve
+# DC Hub Backend
 
-Two new sub-products for **dchub.cloud**, designed in the strategy brief that ships alongside this scaffold:
+**Flask backend powering [dchub.cloud](https://dchub.cloud) — real-time data center, power, and gas intelligence for AI agents and humans.**
 
-- **dchub Index** — a certified lease & purchase comp database, head-to-head against Hawk Swap.
-- **dchub Reserve** — a gated, off-market marketplace for excess capacity. Pocket listings to a vetted buyer pool.
+> 🔍 **Looking for the MCP server?** This repo is the Flask backend. The standalone MCP server is at [azmartone67/dchub-mcp-server](https://github.com/azmartone67/dchub-mcp-server) (live at `https://dchub.cloud/mcp`).
 
-Both share a single facility graph, a single identity layer, and a cross-product flywheel: closing a Reserve listing automatically generates a Tier-2 verified Comp in Index.
+[![Tools](https://img.shields.io/badge/MCP%20tools-33-blue)](https://dchub.cloud/.well-known/mcp.json) [![Markets](https://img.shields.io/badge/DCPI%20markets-232-purple)](https://dchub.cloud/dcpi) [![Facilities](https://img.shields.io/badge/facilities-21%2C000%2B-green)](https://dchub.cloud) [![Countries](https://img.shields.io/badge/countries-170%2B-orange)](https://dchub.cloud) [![License](https://img.shields.io/badge/data-CC--BY--4.0-lightgrey)](https://dchub.cloud/cited-by)
 
-## Run on Replit
+---
 
-1. Import this repo into a new Python Replit.
-2. The `.replit` file already wires the Run button to `uvicorn`.
-3. Hit **Run**. The app will:
-   - create a SQLite database at `/tmp/dchub.db`
-   - seed 5 facilities, 6 comps across all four verification tiers, and 4 listings across all four discretion modes
-   - serve the home page, Index UI, Reserve UI, and `/docs` (Swagger).
+## What this powers
 
-## Run locally
+DC Hub is the live data layer for data-center infrastructure — every API, MCP tool call, market brief, and AI integration on `dchub.cloud` runs through this Flask backend.
 
-```bash
-python -m venv .venv && source .venv/bin/activate
-pip install -r requirements.txt
-python -m uvicorn main:app --reload --port 8080
-open http://localhost:8080
+- **21,000+ data center facilities** across 170+ countries (search, profile, score, alternatives)
+- **232 markets** scored daily by the DC Hub Power Index (DCPI — BUILD / CAUTION / AVOID)
+- **DC Hub Gas Index (DCGI)** — per-state natural-gas suitability for siting
+- **Live ISO grid telemetry** — PJM, ERCOT, CAISO, MISO, SPP, NYISO, ISO-NE (fuel mix, carbon intensity, demand, prices, queue depth)
+- **2,000+ tracked M&A transactions** + hyperscaler capex tracker
+- **Site factors** — fiber routes, water-stress, tax incentives, transmission & substations
+- **126,427 substations** with voltage class + capacity estimates
+- **NEPA filings** for upcoming federal energy + data center projects
+
+## Architecture
+
+```
+                    ┌──────────────────────────────────────┐
+                    │   Cloudflare Pages (dchub-frontend)  │
+                    │   Static HTML + worker for routing   │
+                    └────────────┬─────────────────────────┘
+                                 │ proxies /api/*, /mcp, /admin/*
+                                 ▼
+   ┌─────────────────────────────────────────────────────────────┐
+   │   THIS REPO — Flask backend on Railway (2 replicas)         │
+   │   + Render failover at dchub-backend-render.onrender.com    │
+   │                                                              │
+   │   • 350+ blueprints, 58 surface registrations on boot       │
+   │   • Neon Postgres (primary) + Redis cache                    │
+   │   • Brain v2 layers (Layer 4 HTML fixes, Layer 5 PR writer) │
+   │   • 30+ scheduled crons (data ingest, demote, nudge, etc.)  │
+   └─────────────────────────────────────────────────────────────┘
+                                 │
+                                 ├──> Neon Postgres (primary DB)
+                                 ├──> Cloudflare R2 (asset storage)
+                                 ├──> Resend (transactional email)
+                                 ├──> Stripe (billing, webhooks)
+                                 ├──> Anthropic Claude API (brain reasoning)
+                                 └──> dchub-mcp-server (Streamable HTTP MCP)
 ```
 
-## Run the smoke tests
+## MCP integration
 
-```bash
-pip install -r requirements.txt
-pytest -q
+The MCP server at `https://dchub.cloud/mcp` exposes **33 tools** for AI agents. See the standalone repo: [azmartone67/dchub-mcp-server](https://github.com/azmartone67/dchub-mcp-server).
+
+**MCP catalog listings:**
+- [Glama](https://glama.ai/mcp/connectors/cloud.dchub/dc-hub-data-center-intelligence-mcp-server) — ownership verified
+- [Smithery](https://smithery.ai/servers/azmartone67/dchub)
+- [Cursor Directory](https://cursor.directory/plugins/mcp-dchub)
+- [Official MCP Registry](https://registry.modelcontextprotocol.io/servers/cloud.dchub/mcp-server)
+
+**Example MCP queries an AI agent can run:**
+
+```
+"What's the current grid headroom in PJM?"
+"Show me AWS data center construction pipeline in Ohio"
+"Compare ERCOT vs PJM capacity prices over the last 30 days"
+"Find data centers within 50km of Northern Virginia substations >230kV"
+"Get the DC Hub Power Index verdict for Ashburn vs. Phoenix"
+"Get fiber routes between Ashburn and Atlanta"
 ```
 
-The smoke tests validate the most important guarantees:
+## API access
 
-- Anonymous viewers see only Public listings, with operator contact info redacted.
-- Buyer tier gates are enforced (a Silver buyer cannot see Pocket; a Channel buyer cannot see Gated).
-- Pocket listings are visible only to manually-invited buyers.
-- Whisper listings never appear in any browse response — they're matched out-of-band.
-- Operator comp submissions create REPORTED comps by default and escalate to VERIFIED when a document hash is supplied.
+- **Public API**: <https://dchub.cloud/api/v1/> — free tier with no signup
+- **Free dev key**: <https://dchub.cloud/signup> for higher rate limits
+- **Paid tiers**: <https://dchub.cloud/pricing> ($9 Starter, $49 Developer, $199 Pro, Enterprise)
+- **OpenAPI spec**: <https://dchub.cloud/openapi.json>
 
-## Endpoints
+## Used by
 
-| Path | Purpose |
-|---|---|
-| `/` | Landing page |
-| `/index` | Index UI — comp filters + KPIs |
-| `/reserve` | Reserve UI — discretion-aware listings, demo identity switcher |
-| `/docs` | OpenAPI / Swagger |
-| `GET /api/index/comps` | Filterable comp list (market, operator, tier, etc.) |
-| `GET /api/index/stats` | Aggregate KPIs |
-| `GET /api/index/comps/{id}` | Single comp |
-| `GET /api/reserve/listings` | Browse listings — visibility depends on `X-DCHUB-Buyer-Key` header |
-| `GET /api/reserve/listings/{id}` | Single listing |
-| `POST /api/reserve/listings` | Operator creates a listing (DRAFT) |
-| `POST /api/reserve/listings/{id}/activate` | Operator publishes |
-| `POST /api/reserve/listings/{id}/interest` | Buyer expresses interest (NDA gate enforced for Gated) |
-| `POST /api/reserve/listings/{id}/close` | Operator closes — auto-generates Tier-2 Comp |
-| `POST /api/operators/comps` | Operator submits a Comp to Index |
-| `GET /api/operators/me` | Operator profile + Q-credit count |
-| `GET /api/_demo/keys` | **Demo only.** Returns seeded API keys for the UI identity switcher. |
+Claude, ChatGPT, Cursor, Cline, Perplexity, Gemini, Copilot, DeepSeek, Mistral — see [/cited-by](https://dchub.cloud/cited-by) for live AI-citation tracking.
 
-## Data model (highlights)
+## Local development
 
-- `Facility` — physical site, joinable to dchub.cloud's existing facility graph by `external_id`.
-- `Comp` — one transaction record. Carries `verification_tier` (1=Certified … 4=Inferred), `source_kind`, `confirmations`, optional `document_hash`.
-- `Listing` — one off-market offer. Carries `discretion` (public/gated/pocket/whisper), `min_buyer_tier`, optional `invited_buyer_ids`.
-- `Buyer`, `Operator` — separate identity tables, each with an `api_key`. Buyer tier (`platinum`/`gold`/`silver`/`channel`) drives Reserve visibility.
+This is a private operational repo — not designed for external contribution. If you're looking to integrate DC Hub data into your AI app:
 
-## Critical visibility rules (enforced in `app/auth.py`)
+1. **Via MCP**: configure your client with `https://dchub.cloud/mcp` (Streamable HTTP transport)
+2. **Via REST**: see <https://dchub.cloud/openapi.json>
+3. **Via embed**: see <https://dchub.cloud/widget-example.html>
 
-| Discretion | Anonymous | Silver | Gold | Platinum |
-|---|---|---|---|---|
-| Public  | ✓ (redacted) | ✓ | ✓ | ✓ |
-| Gated   | ✗ | ✓ (NDA on click) | ✓ | ✓ |
-| Pocket  | ✗ | ✗ | invited only | invited only |
-| Whisper | ✗ | ✗ | ✗ | match-only |
+For partnership / data licensing / press, contact: jonathan@dchub.cloud
 
-The Channel (broker) tier sits below Silver and only sees Public; brokers participate by introducing their own clients into the buyer pool.
+## License
 
-## What's NOT in this scaffold (intentionally)
+- **Code**: proprietary (operational backend)
+- **Data**: CC-BY-4.0 (cite "DC Hub, dchub.cloud" in any derivative)
 
-- Real auth (use Auth0 / WorkOS / Clerk in production)
-- Email + deal threading (use Postmark / Resend + a deals table with messages)
-- Document hash + redacted-PDF storage (S3 + KMS, not in scope here)
-- Ingestion pipelines for filings/news/permits (these are scheduled jobs that should call dchub's existing endpoints)
-- Payment & escrow for success fees (Stripe Connect)
-- Production database — SQLite is fine for Replit demo; swap to Postgres or NeonDB before launch
+---
 
-## Where this connects to existing dchub.cloud
-
-`Facility.external_id` is the join key. Once Index runs in production, `app/seed.py` should be replaced by an ingestion job that calls `mcp__dchub__search_facilities` to pull the existing facility graph and `mcp__dchub__get_pipeline` for forward-looking supply context. Listings on Reserve should reference an existing Facility row by its `external_id`.
-
-## Naming
-
-The scaffold uses `Index` and `Reserve` as proposed in the strategy doc (§3.1, §3.2). Easy to rebrand — the name only appears in `static/*.html`, `main.py` titles, and the README.
+*Backend for the [DC Hub](https://dchub.cloud) data intelligence platform · Built by [@azmartone67](https://github.com/azmartone67) · Live since 2025*
