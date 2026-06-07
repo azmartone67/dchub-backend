@@ -174,18 +174,29 @@ def _run_id_for(week_of: _dt.date) -> str:
 # ─── Context gatherers ──────────────────────────────────────────────
 
 def _http_get_json(path: str, timeout: int = 8) -> dict:
+    """Fetch JSON from a backend route. Prefers the EXTERNAL Railway base
+    over loopback because the synthesis runs inside a request thread —
+    a loopback GET against the same gunicorn worker would deadlock /
+    serialize. The external Railway base goes through CF + Railway edge
+    so it's served by a sibling worker (or this one's idle slot)."""
     import urllib.request
     headers = {"X-Internal-Probe": "1",
                "User-Agent": "dchub-brain-strategic/1.0"}
     ak = _admin_key()
     if ak:
         headers["X-Admin-Key"] = ak
-    for base in (_INTERNAL_BASE, _RAILWAY_BASE):
+    # External first — see docstring. Falls back to loopback only if
+    # external probes fail (e.g. local pytest without internet).
+    for base in (_RAILWAY_BASE, _INTERNAL_BASE):
         try:
             req = urllib.request.Request(f"{base}{path}", headers=headers)
             with urllib.request.urlopen(req, timeout=timeout) as r:
                 raw = r.read().decode("utf-8", errors="ignore")
-                return json.loads(raw)
+                parsed = json.loads(raw)
+                # An endpoint legitimately returning an empty body still
+                # counts as a successful probe — don't fall through to
+                # loopback (would just deadlock).
+                return parsed if isinstance(parsed, (dict, list)) else {}
         except Exception:
             continue
     return {}
