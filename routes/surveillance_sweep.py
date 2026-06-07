@@ -550,8 +550,7 @@ _DEALS_CANONICAL_FLOOR = 2000  # public "2,000+" — never rebaseline below this
 def _internal_ok():
     key = request.headers.get("X-Internal-Key", "")
     allowed = {os.environ.get("DCHUB_INTERNAL_KEY", ""),
-               os.environ.get("DCHUB_ADMIN_KEY", ""),
-               "dchub-internal-sync-2026"}  # in-code fallback
+               os.environ.get("DCHUB_ADMIN_KEY", "")}  # env-only (r-sec)
     allowed.discard("")
     return key in allowed
 

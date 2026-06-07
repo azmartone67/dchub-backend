@@ -60,7 +60,7 @@ _PARTNERS = {
                        "your RAG document pipeline in minutes."),
         "value_bullets": [
             "21,000+ facilities, 170+ countries — daily-refreshed, every record carries a citation URL for grounded generation",
-            "Two paths: MCP server (dchub.cloud/mcp, 33 tools) for command-a tool-use, or REST for classic RAG documents",
+            "Two paths: MCP server (dchub.cloud/mcp, 38 tools) for command-a tool-use, or REST for classic RAG documents",
             "Live DCPI market verdicts (BUILD/CAUTION/AVOID), grid headroom, fiber routes, 650+ GW pipeline",
             "Free dev key in one API call (no email); Enterprise partner key available for evaluation",
         ],

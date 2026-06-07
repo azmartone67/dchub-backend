@@ -22,7 +22,7 @@ logger = logging.getLogger("mcp_outreach_bridge")
 
 NEON_URL     = os.environ.get("NEON_DATABASE_URL") or os.environ.get("DATABASE_URL")
 ADMIN_EMAIL  = os.environ.get("DCHUB_ADMIN_EMAIL", "azmartone@gmail.com")
-ADMIN_KEY    = os.environ.get("DAILY_ADMIN_KEY") or os.environ.get("DCHUB_INTERNAL_KEY", "dchub-internal-sync-2026")
+ADMIN_KEY    = os.environ.get("DAILY_ADMIN_KEY") or os.environ.get("DCHUB_INTERNAL_KEY", "")
 
 mcp_outreach_bp = Blueprint("mcp_outreach_bp", __name__)
 

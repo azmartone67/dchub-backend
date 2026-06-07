@@ -46,6 +46,7 @@ ENDPOINTS
   GET  /api/v1/admin/news-ner/status        last-run summary
 """
 import os
+from internal_auth import accepted_internal_keys
 import re
 import time
 import json
@@ -59,7 +60,7 @@ logger = logging.getLogger(__name__)
 news_ner_bp = Blueprint("news_ner", __name__)
 
 
-_INTERNAL_KEYS = {"dchub-internal-sync-2026"}
+_INTERNAL_KEYS = accepted_internal_keys()
 for _n in ("DCHUB_INTERNAL_KEY", "INTERNAL_KEY", "DCHUB_ADMIN_KEY"):
     _v = os.environ.get(_n)
     if _v:

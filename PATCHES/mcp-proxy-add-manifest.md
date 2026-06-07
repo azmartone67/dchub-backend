@@ -46,7 +46,7 @@ if (url.pathname === '/mcp/manifest' || url.pathname === '/mcp/manifest.json') {
     tools_endpoint: 'POST /mcp with {"jsonrpc":"2.0","id":1,"method":"tools/list"}',
     pricing: {
       free:       '5 calls/day,    truncated results, 20 tools',
-      developer:  '$49/mo  1,000/day, all 40 tools',
+      developer:  '$49/mo  1,000/day, all 38 tools',
       pro:        '$199/mo 10,000/day',
       enterprise: '$499/mo 100,000/day',
     },

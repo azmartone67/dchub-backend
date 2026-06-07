@@ -49,6 +49,7 @@ ENDPOINTS:
   GET  /api/v1/brain/models                 which model each tier uses
 """
 import os
+from internal_auth import accepted_internal_keys
 import json
 import logging
 import datetime
@@ -60,7 +61,7 @@ brain_inspector_bp = Blueprint("brain_inspector", __name__)
 
 
 # ── Auth ─────────────────────────────────────────────────────────────
-_INTERNAL_KEYS = {"dchub-internal-sync-2026"}
+_INTERNAL_KEYS = accepted_internal_keys()
 for _n in ("DCHUB_INTERNAL_KEY", "INTERNAL_KEY", "DCHUB_ADMIN_KEY"):
     _v = os.environ.get(_n)
     if _v:
@@ -565,7 +566,7 @@ def brief_draft_prs(bid: int):
     try:
         import urllib.request, json as _json
         admin_key = (os.environ.get("DCHUB_ADMIN_KEY")
-                      or "dchub-internal-sync-2026")
+                      or "")
         req = urllib.request.Request(
             "http://localhost:8080/api/v1/brain/auto-code/run",
             data=_json.dumps({"trigger": "inspector",
@@ -813,7 +814,7 @@ def _generate_brief() -> dict:
                 try:
                     import urllib.request, json as _json
                     admin_key = (os.environ.get("DCHUB_ADMIN_KEY")
-                                  or "dchub-internal-sync-2026")
+                                  or "")
                     req = urllib.request.Request(
                         "http://localhost:8080/api/v1/brain/auto-code/run",
                         data=_json.dumps({"trigger": "inspector_auto",

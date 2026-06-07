@@ -19,7 +19,7 @@
  *          agents discovering via these manifests can paste a Stripe
  *          link inline. Pairs with the c334511 isError=true patch +
  *          the tool-aware redeem landing (20cc228b).
- *   - FIX: MCP_LANDING_HTML_V1 description "40 tools" → "29 tools"
+ *   - FIX: MCP_LANDING_HTML_V1 description "38 tools" → "29 tools"
  *          (matches every other surface).
  *
  * v4.9.14 CHANGES (May 26 2026) — Phase r49.8:
@@ -199,7 +199,7 @@
  *
  * v4.9.1 CHANGES (May 23 2026) — Phase ZZZZZ-round29:
  *   - FIX: Discovery surfaces were inconsistent — /mcp/manifest claimed
- *          40 tools, /.well-known/mcp.json claimed 25, /.well-known/agent.json
+ *          38 tools, /.well-known/mcp.json claimed 25, /.well-known/agent.json
  *          had a different name ("DC Hub Intelligence Agent" v2.0.0), and
  *          versions were a mix of semver (2.1.2, 2.0.0) and worker build
  *          strings (4.9.0-oauth-resource-metadata). Real MCP server serves

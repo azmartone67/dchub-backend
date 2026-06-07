@@ -41,6 +41,7 @@ This is the core MTTR-5 loop.
 """
 
 import os
+from internal_auth import accepted_internal_keys
 import time
 import threading
 import logging
@@ -433,7 +434,7 @@ def repair_l21_schema():
     # Admin gate
     sent = (request.headers.get("X-Internal-Key")
             or request.args.get("admin_key") or "").strip()
-    allowed = {"dchub-internal-sync-2026"}
+    allowed = accepted_internal_keys()
     for _n in ("DCHUB_INTERNAL_KEY", "INTERNAL_KEY",
                 "MCP_INTERNAL_KEY", "DCHUB_ADMIN_KEY"):
         _v = os.environ.get(_n)

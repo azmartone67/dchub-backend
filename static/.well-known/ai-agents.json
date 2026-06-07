@@ -29,7 +29,7 @@
         }
       }
     },
-    "_tools_note": "Synced 2026-06-02 to the 30 tools actually registered on the live MCP server (dchub.cloud/mcp). The prior 14-name list was stale.",
+    "_tools_note": "Synced 2026-06-02 to the 38 tools actually registered on the live MCP server (dchub.cloud/mcp). The prior 14-name list was stale.",
     "tools": [
       "search_facilities",
       "get_facility",

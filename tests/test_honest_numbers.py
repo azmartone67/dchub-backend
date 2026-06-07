@@ -16,7 +16,8 @@ VERIFIED CANONICAL NUMBERS (checked at the Railway origin, 2026-06-03):
                                            the one live-computing route falls back to $85B)
   countries    = 178    -> say "170+"
   DCPI markets = 233    -> say "232"       (NEVER 280+/285/286/289: SPP-clone inflation, deduped in fix #43)
-  MCP tools    = 31     (manifest incl. the Worker-only semantic_search)
+  MCP tools    = 38     (AUTHORITATIVE: live tools/list on dchub.cloud/mcp, 2026-06-07.
+                         NEVER 11/19/20/24/30/31/33/40 as the TOTAL — those are stale/subset)
   active MCP clients = Claude + Cursor     (NEVER "96+ AI platforms" / long "cited by ChatGPT,
                                            Claude, Gemini, Perplexity, Groq" lists)
 """
@@ -180,15 +181,20 @@ def test_no_overstated_facility_count():
 
 
 def test_no_stale_tool_count():
-    """MCP tool count = 33 (server.mjs registers 33 trackedTool; live connector
-    exposes all 33). 2026-06-06: the repo desc said '19 tools' and a card said
-    '24 free tools' — both stale/divergent. Ban the understatements so a single
-    honest number stays consistent across surfaces."""
+    """MCP tool count = 38 (AUTHORITATIVE: live tools/list on https://dchub.cloud/mcp,
+    verified 2026-06-07; server.mjs registers ~39 trackedTool, one not exposed).
+    History: surfaces drifted across 11/19/20/24/30/31/33/40 — Devin's QA flagged the
+    inconsistency as a credibility problem. 2026-06-07 swept 33/31/30/40 'tools' → 38
+    across backend+frontend (132 replacements). Ban every stale TOTAL so a single honest
+    number stays consistent. NOTE: subset counts ('11 free tools', 'X/24 tools' internal
+    splits) are legitimate and intentionally NOT banned — only the bare total claims."""
     pats = [re.compile(r"\b19\s+tools\b", re.I),
-            re.compile(r"\b24\s+free\b[^.\n]{0,24}tools", re.I)]
+            re.compile(r"\b24\s+free\b[^.\n]{0,24}tools", re.I),
+            re.compile(r"\b(30|31|33|40)\s+(MCP\s+)?tools\b", re.I)]
     hits = _scan(pats)
-    assert not hits, ("Re-introduced a stale MCP tool count — the verified count is 33 "
-                      "(server.mjs trackedTool registrations):\n" + _fmt(hits))
+    assert not hits, ("Re-introduced a stale MCP tool count — the verified count is 38 "
+                      "(live tools/list on dchub.cloud/mcp). Use 38 for the TOTAL; keep "
+                      "subset counts (e.g. '11 free tools') as-is:\n" + _fmt(hits))
 
 
 def test_no_realtime_ma_claim():

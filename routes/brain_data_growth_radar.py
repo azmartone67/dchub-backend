@@ -23,6 +23,7 @@ How it works:
     a jump that already happened (the values were real prior values).
 """
 import os
+from internal_auth import accepted_internal_keys
 import json
 import time
 import datetime
@@ -256,7 +257,7 @@ def _authorized():
             or request.headers.get("X-Internal-Key")
             or request.headers.get("X-Internal-Cron")
             or request.args.get("admin_key") or "").strip()
-    allowed = {"dchub-internal-sync-2026"}
+    allowed = accepted_internal_keys()
     for n in ("DCHUB_ADMIN_KEY", "DCHUB_INTERNAL_KEY", "INTERNAL_KEY", "MCP_INTERNAL_KEY"):
         v = os.environ.get(n)
         if v:

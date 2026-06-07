@@ -24,8 +24,10 @@ log = logging.getLogger(__name__)
 # LEGACY_OK=False to invalidate.
 _LEGACY_KEYS = frozenset(("dchub-internal-2024", "dchub-internal-sync-2026"))
 
-# Flip to "0" in env (or change default here) once all callers send env-sourced values.
-LEGACY_OK = os.environ.get("INTERNAL_AUTH_LEGACY_OK", "1") == "1"
+# r-sec (2026-06-07): default flipped to OFF. The legacy hardcoded strings
+# below are now REJECTED unless INTERNAL_AUTH_LEGACY_OK=1 is explicitly set in
+# env (emergency re-enable only, during a migration window).
+LEGACY_OK = os.environ.get("INTERNAL_AUTH_LEGACY_OK", "0") == "1"
 
 
 def _clean_key(v):
@@ -132,5 +134,20 @@ def get_internal_key_for_client():
             "Set DCHUB_INTERNAL_KEY on this host to close the migration."
         )
         _LEGACY_FALLBACK_WARNED = True
-    # Last-resort legacy (remove after all clients migrated)
-    return "dchub-internal-sync-2026"
+    # Last-resort: no env key configured. Fail CLOSED (return empty) rather
+    # than leak a public hardcoded credential. r-sec (2026-06-07).
+    return ""
+
+
+def accepted_internal_keys() -> set:
+    """Env-sourced set of valid internal keys — NO hardcoded literals.
+
+    Drop-in replacement for the old inline ``{"dchub-internal-sync-2026"}``
+    seed sets scattered across route modules. Empty values are filtered so a
+    missing env var fails CLOSED (never accepts a blank/empty header)."""
+    keys = set()
+    for env_var in ("DCHUB_INTERNAL_KEY", "DCHUB_SYNC_KEY", "INTERNAL_WORKER_SECRET"):
+        v = _clean_key(os.environ.get(env_var, ""))
+        if v:
+            keys.add(v)
+    return keys

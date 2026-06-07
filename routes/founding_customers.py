@@ -30,6 +30,7 @@ Used by:
     name them as a positive Healthy item
 """
 import os
+from internal_auth import accepted_internal_keys
 import json
 import logging
 import datetime
@@ -39,7 +40,7 @@ logger = logging.getLogger(__name__)
 founding_customers_bp = Blueprint("founding_customers", __name__)
 
 
-_INTERNAL_KEYS = {"dchub-internal-sync-2026"}
+_INTERNAL_KEYS = accepted_internal_keys()
 for _n in ("DCHUB_INTERNAL_KEY", "INTERNAL_KEY", "DCHUB_ADMIN_KEY"):
     _v = os.environ.get(_n)
     if _v:

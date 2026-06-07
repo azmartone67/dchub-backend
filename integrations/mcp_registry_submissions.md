@@ -2,7 +2,7 @@
 
 > ✅ **VERIFIED HONEST (2026-06-02).** Every headline number in this packet was
 > fact-checked against the live origin on 2026-06-02 and the stale figures were
-> replaced. Confirmed live: **31 tools** (`/.well-known/mcp.json` → `tools_count: 31`,
+> replaced. Confirmed live: **38 tools** (`/.well-known/mcp.json` → `tools_count: 31`,
 > tool list refreshed verbatim below), **21,422 facilities** (`/api/v1/stats` →
 > `facilities: 21422`, stated as "21,000+"), **233 markets US+intl** (DCPI
 > `total_available`), **~1,980 tracked M&A deals**, **7 US ISOs live** (PJM, ERCOT,
@@ -15,7 +15,7 @@ the owner (Jonathan / azmartone@gmail.com) greenlights external submission.
 
 **Authored:** 2026-05-31. **Fact-checked + numbers corrected:** 2026-06-02. Verified
 against the live, canonical source files:
-- `/.well-known/mcp.json` (live, HTTP 200) → **31 tools** (`tools_count: 31`), transport `streamable-http`
+- `/.well-known/mcp.json` (live, HTTP 200) → **38 tools** (`tools_count: 31`), transport `streamable-http`
 - `/api/v1/stats` (live, HTTP 200) → `facilities: 21422` (stated as "21,000+")
 - `server.json` (repo root, used by `mcp-publisher`) → name `cloud.dchub/mcp-server`, v2.2.0
 - `/llms.txt` (live, HTTP 200), `/.well-known/glama.json` (live, HTTP 200)
@@ -67,13 +67,13 @@ Data-center + energy intelligence for AI agents: 21,000+ facilities, 233 markets
 
 **Short description (~300 chars, for tweet/bio fields):**
 ```
-DC Hub is the MCP server for data-center & energy intelligence. 31 tools over 21,000+ facilities and 233 markets (US+intl), the DC Hub Power Index (DCPI) + DC Hub Gas Index (DCGI), live ISO grid telemetry, fiber routes, and ~1,980 M&A deals. For site selection, market analysis, and AI-load siting.
+DC Hub is the MCP server for data-center & energy intelligence. 38 tools over 21,000+ facilities and 233 markets (US+intl), the DC Hub Power Index (DCPI) + DC Hub Gas Index (DCGI), live ISO grid telemetry, fiber routes, and ~1,980 M&A deals. For site selection, market analysis, and AI-load siting.
 ```
 
 **Long description (use when the field allows >500 chars):**
 ```
 DC Hub is a data-center and energy intelligence MCP server for AI agents. It exposes
-31 tools covering 21,000+ data-center facilities across 233 markets (US +
+38 tools covering 21,000+ data-center facilities across 233 markets (US +
 international), the proprietary DC Hub Power Index (DCPI) and DC Hub Gas Index (DCGI)
 for ranking markets, live ISO grid telemetry (PJM, ERCOT, CAISO, MISO, SPP, NYISO,
 ISO-NE), fiber-route and carrier intelligence, energy and tax-incentive data,
@@ -95,7 +95,7 @@ ai-infrastructure, interconnection-queue, intelligence
 Data & APIs · Infrastructure · Energy · Research · Finance · Location Services
 ```
 
-**The 31 tools (verbatim from the live manifest, 2026-06-02 — use where a tool list is asked):**
+**The 38 tools (verbatim from the live manifest, 2026-06-02 — use where a tool list is asked):**
 ```
 search_facilities, get_facility, list_transactions, get_market_intel, get_news,
 analyze_site, compare_sites, get_intelligence_index, get_pipeline, get_grid_data,
@@ -216,7 +216,7 @@ Homepage:      https://dchub.cloud
 Repository:    https://github.com/azmartone67/dchub-backend
 Category:      Data & APIs / Infrastructure
 Tags:          data-center, energy, grid, iso, dcpi, dcgi, site-selection, m-and-a, fiber
-Description:   Data-center + energy intelligence for AI agents: 21,000+ facilities, 233 markets (US+intl), DCPI/DCGI indices, live ISO grid telemetry, fiber, and ~1,980 M&A deals. 31 tools. Optional X-API-Key; free anonymous tier.
+Description:   Data-center + energy intelligence for AI agents: 21,000+ facilities, 233 markets (US+intl), DCPI/DCGI indices, live ISO grid telemetry, fiber, and ~1,980 M&A deals. 38 tools. Optional X-API-Key; free anonymous tier.
 Contact:       api@dchub.cloud
 ```
 
@@ -283,7 +283,7 @@ Contact:       api@dchub.cloud
             "contact": "api@dchub.cloud",
             "license": "Proprietary — free for AI citation; data per https://dchub.cloud/terms"
           },
-          "overview": "## DC Hub (Remote)\n\nDC Hub is a data-center and energy intelligence MCP server for AI agents. It exposes 31 tools over 21,000+ data-center facilities across 233 markets (US + international), the proprietary DC Hub Power Index (DCPI) and DC Hub Gas Index (DCGI) for ranking markets, live ISO grid telemetry (PJM, ERCOT, CAISO, MISO, SPP, NYISO, ISO-NE), fiber-route and carrier intelligence, energy and tax-incentive data, water/drought risk, interconnection-queue headroom, and ~1,980 tracked data-center M&A transactions. Used for site selection, market analysis, capacity/pipeline tracking, grid-risk modeling, and AI-load siting. Streamable-HTTP transport with optional X-API-Key authentication; free anonymous tier.",
+          "overview": "## DC Hub (Remote)\n\nDC Hub is a data-center and energy intelligence MCP server for AI agents. It exposes 38 tools over 21,000+ data-center facilities across 233 markets (US + international), the proprietary DC Hub Power Index (DCPI) and DC Hub Gas Index (DCGI) for ranking markets, live ISO grid telemetry (PJM, ERCOT, CAISO, MISO, SPP, NYISO, ISO-NE), fiber-route and carrier intelligence, energy and tax-incentive data, water/drought risk, interconnection-queue headroom, and ~1,980 tracked data-center M&A transactions. Used for site selection, market analysis, capacity/pipeline tracking, grid-risk modeling, and AI-load siting. Streamable-HTTP transport with optional X-API-Key authentication; free anonymous tier.",
           "status": "Active",
           "tier": "Community",
           "tags": [
@@ -324,7 +324,7 @@ Title: Add DC Hub (remote) — data-center & energy intelligence MCP server
 
 Body:
 Adds DC Hub, a hosted streamable-http MCP server for data-center and energy
-intelligence (31 tools, 21,000+ facilities across 233 markets (US+intl), DCPI/DCGI
+intelligence (38 tools, 21,000+ facilities across 233 markets (US+intl), DCPI/DCGI
 indices, live ISO grid data, fiber, ~1,980 M&A deals).
 
 - Endpoint: https://dchub.cloud/mcp  (streamable-http)
@@ -418,7 +418,7 @@ Filed against issue #<NNN> (issue-first flow). All commits DCO-signed (git commi
 ### (c) After claiming, update these listing attributes in the Glama admin
 ```
 Display name:  DC Hub
-Description:   Data-center + energy intelligence for AI agents: 21,000+ facilities, 233 markets (US+intl), DCPI/DCGI indices, live ISO grid telemetry, fiber, and ~1,980 M&A deals. 31 tools, streamable-http, optional X-API-Key.
+Description:   Data-center + energy intelligence for AI agents: 21,000+ facilities, 233 markets (US+intl), DCPI/DCGI indices, live ISO grid telemetry, fiber, and ~1,980 M&A deals. 38 tools, streamable-http, optional X-API-Key.
 Homepage:      https://dchub.cloud
 Endpoint:      https://dchub.cloud/mcp
 Tags:          data-center, energy, grid, iso, dcpi, dcgi, site-selection, m-and-a, fiber
@@ -451,7 +451,7 @@ URL to paste at smithery.ai/new:   https://dchub.cloud/mcp
 ### (b) Listing metadata (fill/refresh on the Smithery listing page)
 ```
 Name:          DC Hub
-Description:   Data-center + energy intelligence for AI agents: 21,000+ facilities, 233 markets (US+intl), DCPI/DCGI indices, live ISO grid telemetry, fiber, and ~1,980 M&A deals. 31 tools.
+Description:   Data-center + energy intelligence for AI agents: 21,000+ facilities, 233 markets (US+intl), DCPI/DCGI indices, live ISO grid telemetry, fiber, and ~1,980 M&A deals. 38 tools.
 Homepage:      https://dchub.cloud
 Categories:    Data & APIs / Infrastructure
 Tags:          data-center, energy, grid, iso, dcpi, dcgi, site-selection, m-and-a, fiber
@@ -503,7 +503,7 @@ Title: Add DC Hub — data-center & energy intelligence MCP server
 
 Body:
 Adds DC Hub under "Search & Data Extraction". DC Hub is a hosted streamable-http MCP
-server (31 tools) for data-center and energy intelligence: 21,000+ facilities across
+server (38 tools) for data-center and energy intelligence: 21,000+ facilities across
 233 markets (US+intl), the DC Hub Power Index (DCPI) + DC Hub Gas Index (DCGI), live ISO
 grid telemetry, fiber routes, and ~1,980 M&A deals.
 

@@ -24,6 +24,7 @@ No payment processing here — invoicing happens out-of-band for the
 friends-and-family launch. Stripe wiring is the next layer.
 """
 import os
+from internal_auth import accepted_internal_keys
 import json
 import logging
 import datetime
@@ -34,7 +35,7 @@ sponsorships_bp = Blueprint("sponsorships", __name__)
 
 
 # ── Auth ─────────────────────────────────────────────────────────────
-_INTERNAL_KEYS = {"dchub-internal-sync-2026"}
+_INTERNAL_KEYS = accepted_internal_keys()
 for _n in ("DCHUB_INTERNAL_KEY", "INTERNAL_KEY", "DCHUB_ADMIN_KEY"):
     _v = os.environ.get(_n)
     if _v:

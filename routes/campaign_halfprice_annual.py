@@ -200,7 +200,7 @@ That's effectively <strong>$99/mo</strong>, 50% off your current $199
 monthly rate.</p>
 
 <p>We did this for two reasons: (1) the platform's a lot more useful
-than it was 6 months ago &mdash; 33 MCP tools, 232 markets in the DCPI,
+than it was 6 months ago &mdash; 38 MCP tools, 232 markets in the DCPI,
 15 live Market Briefs, the new Map Brief PDF export &mdash; and (2) a few
 of you have asked about an annual option specifically.</p>
 

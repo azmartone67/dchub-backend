@@ -648,7 +648,7 @@ if __name__ == '__main__':
         print("✅ All patches applied and syntax-verified!")
         print("\nNext steps:")
         print("  git add dchub_mcp_server.py main.py")
-        print("  git commit -m 'MCP: 4 new tools + region fix (19 tools total)'")
+        print("  git commit -m 'MCP: 4 new tools + region fix (38 tools total)'")
         print("  git push")
     else:
         print("❌ Syntax errors detected — DO NOT PUSH until fixed!")

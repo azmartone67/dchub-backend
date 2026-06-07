@@ -57,7 +57,7 @@ integrate via MCP (Model Context Protocol) or direct REST.
 
 - Endpoint: `https://dchub.cloud/mcp` (streamable-http)
 - Manifest: `https://dchub.cloud/.well-known/mcp.json`
-- 40 tools across 4 tiers (FREE / IDENTIFIED / DEVELOPER / PRO)
+- 38 tools across 4 tiers (FREE / IDENTIFIED / DEVELOPER / PRO)
 - Pricing: free tier (1 row teaser), $9/mo (500 calls/day, full data),
   $199/mo (10k calls/day + multi-site comparator)
 

@@ -10,6 +10,7 @@ Phase ZZZZZ-round36 (2026-05-24). The brain consistency radar flagged:
 This endpoint surfaces the funnel state so we can SEE where the leak
 is happening (instead of just knowing it exists). Read-only — pulls
 from mcp_upgrade_signals + mcp_conversions tables.
+from internal_auth import accepted_internal_keys
 """
 import os
 import datetime
@@ -279,7 +280,7 @@ def backfill_empty_city():
     from flask import request as _req
     import os as _os
     _sent = _req.headers.get("X-Internal-Key", "") or ""
-    _allowed = {"dchub-internal-sync-2026"}
+    _allowed = accepted_internal_keys()
     for _name in ("DCHUB_INTERNAL_KEY", "INTERNAL_KEY", "MCP_INTERNAL_KEY"):
         _v = _os.environ.get(_name)
         if _v:
@@ -407,7 +408,7 @@ def backfill_market_by_bbox():
     from flask import request as _req
     import os as _os
     _sent = _req.headers.get("X-Internal-Key", "") or ""
-    _allowed = {"dchub-internal-sync-2026"}
+    _allowed = accepted_internal_keys()
     for _name in ("DCHUB_INTERNAL_KEY", "INTERNAL_KEY", "MCP_INTERNAL_KEY"):
         _v = _os.environ.get(_name)
         if _v:
@@ -479,7 +480,7 @@ def backfill_market_from_city():
     from flask import request as _req
     import os as _os
     _sent = _req.headers.get("X-Internal-Key", "") or ""
-    _allowed = {"dchub-internal-sync-2026"}
+    _allowed = accepted_internal_keys()
     for _name in ("DCHUB_INTERNAL_KEY", "INTERNAL_KEY", "MCP_INTERNAL_KEY"):
         _v = _os.environ.get(_name)
         if _v:
@@ -530,7 +531,7 @@ def users_inspect():
     from flask import request as _req
     import os as _os
     _sent = _req.headers.get("X-Internal-Key", "") or ""
-    _allowed = {"dchub-internal-sync-2026"}
+    _allowed = accepted_internal_keys()
     for _name in ("DCHUB_INTERNAL_KEY", "INTERNAL_KEY", "MCP_INTERNAL_KEY"):
         _v = _os.environ.get(_name)
         if _v:

@@ -184,7 +184,7 @@ We're listed on 4/7 MCP directories. The remaining 3 need manual action.
 4. Commit message: `Add DC Hub MCP server`.
 5. Open PR with description:
    > Adds DC Hub — a public Model Context Protocol server providing
-   > real-time data center market intelligence. 40 tools covering grid
+   > real-time data center market intelligence. 38 tools covering grid
    > capacity, fiber routes, facility search, M&A deal tracking. Free
    > tier 10 calls/day, $49/mo developer tier. MCP server at
    > https://dchub.cloud/mcp, manifest at https://dchub.cloud/mcp/manifest.
@@ -222,7 +222,7 @@ We're listed on 4/7 MCP directories. The remaining 3 need manual action.
    > - Manifest: https://dchub.cloud/mcp/manifest
    > - Transport: Streamable HTTP
    > - Category: Data / Industry Intelligence
-   > - 40 tools, real-time data center market data, used in production
+   > - 38 tools, real-time data center market data, used in production
    >   by Claude users today.
    >
    > Happy to provide additional info or screenshots.

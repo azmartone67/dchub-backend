@@ -34,6 +34,7 @@ Conversion math (industry benchmark):
     = $200-250 MRR from one outreach batch.
 """
 import os
+from internal_auth import accepted_internal_keys
 import logging
 from datetime import datetime
 from flask import Blueprint, jsonify, request
@@ -48,7 +49,7 @@ upgrade_pool_outreach_bp = Blueprint("upgrade_pool_outreach", __name__)
 # worked for schema/repair. Root cause: my earlier check looked at
 # DCHUB_ADMIN_KEY only, but Railway has DCHUB_INTERNAL_KEY set (which
 # schema/repair also accepts). Now both modules accept the same key.
-_INTERNAL_KEYS: set = {"dchub-internal-sync-2026"}
+_INTERNAL_KEYS: set = accepted_internal_keys()
 for _n in ("DCHUB_INTERNAL_KEY", "INTERNAL_KEY", "DCHUB_ADMIN_KEY",
            "ADMIN_API_KEY", "ADMIN_SECRET"):
     _v = os.environ.get(_n)

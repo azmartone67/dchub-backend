@@ -159,7 +159,7 @@
  *
  * v4.9.1 CHANGES (May 23 2026) — Phase ZZZZZ-round29:
  *   - FIX: Discovery surfaces were inconsistent — /mcp/manifest claimed
- *          40 tools, /.well-known/mcp.json claimed 25, /.well-known/agent.json
+ *          38 tools, /.well-known/mcp.json claimed 25, /.well-known/agent.json
  *          had a different name ("DC Hub Intelligence Agent" v2.0.0), and
  *          versions were a mix of semver (2.1.2, 2.0.0) and worker build
  *          strings (4.9.0-oauth-resource-metadata). Real MCP server serves
@@ -491,7 +491,7 @@ const MCP_LANDING_HTML_V1 = `<!DOCTYPE html>
 <html lang="en"><head>
 <meta charset="utf-8"><meta name="viewport" content="width=device-width, initial-scale=1">
 <title>Connect DC Hub MCP · Claude, Cursor, Cline</title>
-<meta name="description" content="Add DC Hub's MCP server to any AI agent runtime. 40 tools, 21,000+ facilities, no signup for free tier.">
+<meta name="description" content="Add DC Hub's MCP server to any AI agent runtime. 38 tools, 21,000+ facilities, no signup for free tier.">
 <link rel="preconnect" href="https://fonts.googleapis.com">
 <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
 <link href="https://fonts.googleapis.com/css2?family=Instrument+Sans:wght@400;500;600;700;800&family=JetBrains+Mono:wght@500;600;700&display=swap" rel="stylesheet">
@@ -525,7 +525,7 @@ const MCP_LANDING_HTML_V1 = `<!DOCTYPE html>
 <header>
   <div class="eyebrow">Model Context Protocol · MCP Server</div>
   <h1>Connect DC Hub to your AI in 30 seconds.</h1>
-  <p class="lead">Native MCP server. 40 tools covering 21,000+ facilities, M&amp;A, grid intelligence, fiber, water risk, tax incentives. No signup needed for the free tier.</p>
+  <p class="lead">Native MCP server. 38 tools covering 21,000+ facilities, M&amp;A, grid intelligence, fiber, water risk, tax incentives. No signup needed for the free tier.</p>
 </header>
 
 <div class="urlbox">

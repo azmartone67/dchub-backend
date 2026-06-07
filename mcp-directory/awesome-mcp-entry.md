@@ -8,7 +8,7 @@ or **🌐 Data & Search**. Paste the entry alphabetically by server name.
 ## Entry (markdown, paste verbatim into the README)
 
 ```markdown
-- [DC Hub Intelligence](https://dchub.cloud/mcp) - Real-time data center intelligence platform. 21,000+ facilities, 33 tools covering M&A transactions, capacity pipeline, energy/grid analytics, site scoring across 232 markets and 7 ISOs.  🌐 ☁️
+- [DC Hub Intelligence](https://dchub.cloud/mcp) - Real-time data center intelligence platform. 21,000+ facilities, 38 tools covering M&A transactions, capacity pipeline, energy/grid analytics, site scoring across 232 markets and 7 ISOs.  🌐 ☁️
 ```
 
 ## PR description boilerplate

@@ -117,7 +117,7 @@ def _internal_ok(req) -> bool:
         return False
     expected_admin = (os.environ.get("DCHUB_ADMIN_KEY") or "").strip()
     expected_internal = (os.environ.get("DCHUB_INTERNAL_KEY")
-                         or "dchub-internal-sync-2026").strip()
+                         or "").strip()
     return sent in (expected_admin, expected_internal) and bool(sent)
 
 

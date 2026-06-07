@@ -104,7 +104,7 @@ Brokers, analysts, research vendors, trade press, and AI platforms — all run o
 <div class="partner">
 <h3>AI Platforms</h3>
 <div class="who">ChatGPT · Claude · Perplexity · Gemini · Groq · Cursor · Windsurf</div>
-<div class="we">Native <b>MCP server</b> at /mcp — your agents auto-discover our 40 tools without manual integration. Already 100+ teams using DC Hub via MCP. Live citation telemetry: <a href="/cited-by" style="color:var(--blue)">/cited-by</a>.</div>
+<div class="we">Native <b>MCP server</b> at /mcp — your agents auto-discover our 38 tools without manual integration. Already 100+ teams using DC Hub via MCP. Live citation telemetry: <a href="/cited-by" style="color:var(--blue)">/cited-by</a>.</div>
 </div>
 
 <div class="partner">

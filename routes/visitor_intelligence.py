@@ -31,6 +31,7 @@ Honest scope:
 Anything below the "we cannot" line is roadmap, not delivery.
 """
 import os
+from internal_auth import accepted_internal_keys
 import logging
 from datetime import datetime
 from flask import Blueprint, jsonify, request, Response, render_template_string
@@ -39,7 +40,7 @@ logger = logging.getLogger(__name__)
 visitor_intelligence_bp = Blueprint("visitor_intelligence", __name__)
 
 
-_INTERNAL_KEYS: set = {"dchub-internal-sync-2026"}
+_INTERNAL_KEYS: set = accepted_internal_keys()
 for _n in ("DCHUB_INTERNAL_KEY", "INTERNAL_KEY", "DCHUB_ADMIN_KEY",
            "ADMIN_API_KEY", "ADMIN_SECRET"):
     _v = os.environ.get(_n)

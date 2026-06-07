@@ -64,7 +64,6 @@ def _admin_authorized() -> bool:
     valid = {
         _clean(os.environ.get("DCHUB_ADMIN_KEY")),
         _clean(os.environ.get("DCHUB_INTERNAL_KEY")),
-        "dchub-internal-sync-2026",  # hardcoded brain sync key
     }
     valid.discard("")
     if not valid:

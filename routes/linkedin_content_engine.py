@@ -697,7 +697,7 @@ def _card_url_for(story_type: str, data: dict, text: str) -> str | None:
             tool = d.get("tool") or {}
             ask = _clean(tool.get("ask"), 110) or "rank every US market by excess power for AI"
             title = f"Ask any AI to {ask}"
-            sub = f"Live via DC Hub MCP · {tool.get('tool', '')} · 33 agent-native tools"
+            sub = f"Live via DC Hub MCP · {tool.get('tool', '')} · 38 agent-native tools"
             style = "editorial"
 
         elif story_type == "shipped_this_week":

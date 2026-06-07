@@ -46,6 +46,7 @@ dry_run=1 skips writes + email entirely.
 from __future__ import annotations
 
 import os
+from internal_auth import accepted_internal_keys
 import re
 import uuid
 import logging
@@ -58,7 +59,7 @@ auto_interconnect_bp = Blueprint("auto_interconnect", __name__)
 
 
 # ── Admin gate ──────────────────────────────────────────────────────
-_INTERNAL_KEYS = {"dchub-internal-sync-2026"}
+_INTERNAL_KEYS = accepted_internal_keys()
 for _n in ("DCHUB_INTERNAL_KEY", "INTERNAL_KEY", "DCHUB_ADMIN_KEY",
            "DCHUB_ADMIN_API_KEY"):
     _v = os.environ.get(_n)

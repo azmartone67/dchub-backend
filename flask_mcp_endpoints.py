@@ -3,6 +3,7 @@ DC Hub — Flask MCP key validation + telemetry + dev-signup + dashboard endpoin
 ─────────────────────────────────────────────────────────────────────────────
 Drop into the Railway Flask backend. In main.py:
     from flask_mcp_endpoints import mcp_bp
+from internal_auth import accepted_internal_keys
     app.register_blueprint(mcp_bp)
 
 Endpoints (all under mcp_bp):
@@ -48,7 +49,7 @@ _UUID_RE_MOD = _re_mod.compile(
 )
 
 NEON_URL     = os.environ.get("NEON_DATABASE_URL") or os.environ.get("DATABASE_URL")
-INTERNAL_KEY = os.environ.get("DCHUB_INTERNAL_KEY", "dchub-internal-sync-2026")
+INTERNAL_KEY = os.environ.get("DCHUB_INTERNAL_KEY", "")
 
 if not NEON_URL:
     raise RuntimeError("NEON_DATABASE_URL (or DATABASE_URL) must be set for flask_mcp_endpoints")
@@ -93,7 +94,7 @@ def _require_internal(fn):
         #   1) any value the operator considers internal (env vars + literal default)
         #   2) shape-aware bypass for the telemetry-only /track route
         _sent = request.headers.get('X-Internal-Key', '') or ''
-        _allowed = {INTERNAL_KEY, 'dchub-internal-sync-2026'}
+        _allowed = accepted_internal_keys()
         for _name in ('DCHUB_INTERNAL_KEY', 'INTERNAL_KEY', 'MCP_INTERNAL_KEY'):
             _v = os.environ.get(_name)
             if _v: _allowed.add(_v)

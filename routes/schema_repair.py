@@ -18,6 +18,7 @@ This module ships three endpoints to address each:
   GET  /api/v1/admin/funnel/leakage        per-stage drop-off detail
 """
 import os
+from internal_auth import accepted_internal_keys
 import logging
 import datetime
 from flask import Blueprint, jsonify, request
@@ -26,7 +27,7 @@ logger = logging.getLogger(__name__)
 schema_repair_bp = Blueprint("schema_repair", __name__)
 
 
-_INTERNAL_KEYS = {"dchub-internal-sync-2026"}
+_INTERNAL_KEYS = accepted_internal_keys()
 for _n in ("DCHUB_INTERNAL_KEY", "INTERNAL_KEY", "DCHUB_ADMIN_KEY"):
     _v = os.environ.get(_n)
     if _v:

@@ -442,7 +442,7 @@ a{{color:var(--blue)}}
 
 <h2>🤖 AI agent adoption</h2>
 <div class="section">
-  <p>DC Hub is the only DC intelligence platform with a native <strong>MCP server</strong> — ChatGPT, Claude, Cursor, Windsurf, Perplexity, Groq, and Gemini auto-discover our 40 tools without manual integration.</p>
+  <p>DC Hub is the only DC intelligence platform with a native <strong>MCP server</strong> — ChatGPT, Claude, Cursor, Windsurf, Perplexity, Groq, and Gemini auto-discover our 38 tools without manual integration.</p>
   <p style="margin-top:14px"><strong>{ai_platforms}+ AI platforms</strong> currently integrated · <strong>{mcp_calls or '500+'}</strong> MCP tool calls in the last 7 days.</p>
   <p style="margin-top:14px"><a href="/ai">→ Full integrations list</a> · <a href="/cited-by">→ AI citations live tracker</a></p>
 </div>

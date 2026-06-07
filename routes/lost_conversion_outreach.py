@@ -35,6 +35,7 @@ The send endpoint:
     been emailed before, and obviously-invalid email patterns.
 """
 import os
+from internal_auth import accepted_internal_keys
 import re
 from datetime import datetime, timezone
 from flask import Blueprint, jsonify, request
@@ -42,7 +43,7 @@ from flask import Blueprint, jsonify, request
 lost_conversion_outreach_bp = Blueprint("lost_conversion_outreach", __name__)
 
 
-_INTERNAL_KEYS = {"dchub-internal-sync-2026"}
+_INTERNAL_KEYS = accepted_internal_keys()
 for _n in ("DCHUB_INTERNAL_KEY", "INTERNAL_KEY", "MCP_INTERNAL_KEY", "DCHUB_ADMIN_KEY"):
     _v = os.environ.get(_n)
     if _v:

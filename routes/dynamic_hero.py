@@ -74,7 +74,7 @@ _SEED_MESSAGES = [
     ),
     (
         "Built for AI agents.<br>[GRAD]Loved by humans.[/GRAD]",
-        "MCP-native from day one. 40 tools. Sub-300ms median latency. Cited by 15+ AI platforms. Designed so your agent can answer 'where should I build' in one call.",
+        "MCP-native from day one. 38 tools. Sub-300ms median latency. Cited by 15+ AI platforms. Designed so your agent can answer 'where should I build' in one call.",
         "agent-first",
     ),
 ]

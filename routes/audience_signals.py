@@ -21,6 +21,7 @@ Clearbit, etc.) is optional. Missing keys → that section returns null,
 endpoint still 200s with what we DO know.
 """
 import os
+from internal_auth import accepted_internal_keys
 import logging
 from datetime import datetime, timezone, timedelta
 from flask import Blueprint, jsonify, request
@@ -30,7 +31,7 @@ audience_signals_bp = Blueprint("audience_signals", __name__)
 
 
 # ── Auth helpers ────────────────────────────────────────────────────
-_INTERNAL_KEYS = {"dchub-internal-sync-2026"}
+_INTERNAL_KEYS = accepted_internal_keys()
 for _n in ("DCHUB_INTERNAL_KEY", "INTERNAL_KEY", "MCP_INTERNAL_KEY", "DCHUB_ADMIN_KEY"):
     _v = os.environ.get(_n)
     if _v:

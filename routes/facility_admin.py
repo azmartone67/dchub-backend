@@ -12,6 +12,7 @@ brain catches these autonomously going forward.
   GET  /api/v1/admin/facilities/recent  list recently-added manual facilities
 """
 import os
+from internal_auth import accepted_internal_keys
 import json
 import hashlib
 import logging
@@ -22,7 +23,7 @@ logger = logging.getLogger(__name__)
 facility_admin_bp = Blueprint("facility_admin", __name__)
 
 
-_INTERNAL_KEYS = {"dchub-internal-sync-2026"}
+_INTERNAL_KEYS = accepted_internal_keys()
 for _n in ("DCHUB_INTERNAL_KEY", "INTERNAL_KEY", "DCHUB_ADMIN_KEY"):
     _v = os.environ.get(_n)
     if _v:

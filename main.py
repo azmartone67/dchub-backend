@@ -1592,7 +1592,7 @@ try:
     # 2026-05-31: /vs is now served by the FACTUAL competitive_seo module
     # (observed-and-dated competitor facts only, from the moat radar). The
     # old competitive_vs.py carried UNVERIFIED pricing claims ($25K seat,
-    # $9/mo, "40 tools/96 platforms") — RETIRED here (not registered), so
+    # $9/mo, "38 tools/96 platforms") — RETIRED here (not registered), so
     # those routes no longer serve. competitive_seo registers first so it
     # owns /vs + /vs/<slug> (and beats the quick_redirects /vs 301 below).
     try:
@@ -3796,7 +3796,7 @@ def handle_well_known():
             "contact":      "api@dchub.cloud",
             "license":      "Free for AI citation; data subject to https://dchub.cloud/terms",
             # r68.1 (2026-05-26): add fields AI agents quote from `jq`:
-            # - tools_count: numeric for "DC Hub exposes 31 MCP tools"
+            # - tools_count: numeric for "DC Hub exposes 38 MCP tools"
             # - pricing.<tier>.price_usd_month: numeric for ROI math
             # See main.py `_canonical_pricing()` for the shared shape that
             # also feeds /mcp/manifest + /api/v1/mcp/manifest. .tiers (above)
@@ -3985,7 +3985,7 @@ def handle_well_known():
                     # r37b (2026-06-02): advertise the actual tool surface so an
                     # agent reading this manifest (the path llms.txt points at)
                     # sees what it can call without a round-trip to tools/list.
-                    # Synced to the 30 tools registered on the live MCP server
+                    # Synced to the 38 tools registered on the live MCP server
                     # (dchub-mcp-server/server.mjs) + the static
                     # /.well-known/ai-agents.json — keep all three in sync.
                     "tools_count": 30,
@@ -5615,7 +5615,7 @@ try:
         def _w(*args, **kwargs):
             sent = (request.headers.get("X-Internal-Key")
                     or request.args.get("admin_key") or "").strip()
-            allowed = {"dchub-internal-sync-2026"}
+            allowed = set()
             for _n in ("DCHUB_INTERNAL_KEY", "INTERNAL_KEY",
                        "MCP_INTERNAL_KEY", "DCHUB_ADMIN_KEY"):
                 _v = os.environ.get(_n)
@@ -7218,7 +7218,7 @@ _MCP_LANDING_HTML = """<!DOCTYPE html>
 <html lang="en"><head>
 <meta charset="utf-8"><meta name="viewport" content="width=device-width, initial-scale=1">
 <title>DC Hub MCP Server · Connect to Claude, Cursor, Cline, Windsurf</title>
-<meta name="description" content="Add DC Hub's Model Context Protocol server to any AI agent runtime. 33 tools. Auto-trial keys mean you start in 60 seconds.">
+<meta name="description" content="Add DC Hub's Model Context Protocol server to any AI agent runtime. 38 tools. Auto-trial keys mean you start in 60 seconds.">
 <link rel="canonical" href="https://dchub.cloud/mcp">
 <meta property="og:title" content="DC Hub MCP Server">
 <link rel="preconnect" href="https://fonts.googleapis.com">
@@ -7266,10 +7266,10 @@ _MCP_LANDING_HTML = """<!DOCTYPE html>
 <header>
   <div class="eyebrow">Model Context Protocol · MCP Server</div>
   <h1>Drop DC Hub into any AI agent.</h1>
-  <p>Native MCP server. 33 tools covering 21,000+ facilities, 2,000+ tracked M&amp;A deals, grid intelligence, fiber routes, water risk, tax incentives. Auto-trial keys mean your agent starts working in 60 seconds &mdash; no signup flow, no manual auth.</p>
+  <p>Native MCP server. 38 tools covering 21,000+ facilities, 2,000+ tracked M&amp;A deals, grid intelligence, fiber routes, water risk, tax incentives. Auto-trial keys mean your agent starts working in 60 seconds &mdash; no signup flow, no manual auth.</p>
   <div class="badges">
     <span class="badge">Streamable HTTP</span>
-    <span class="badge">33 tools</span>
+    <span class="badge">38 tools</span>
     <span class="badge">Free tier 1k calls/day</span>
     <span class="badge">Cited by 15+ AI platforms</span>
   </div>
@@ -7395,7 +7395,7 @@ X-API-Key: your-key
 
 <section>
   <h2>What you can ask</h2>
-  <p class="lead">All 33 tools land directly in your AI's tool menu. Example asks:</p>
+  <p class="lead">All 38 tools land directly in your AI's tool menu. Example asks:</p>
   <div class="tool-grid">
     <div class="tool"><div class="tname">search_facilities</div><div class="tdesc">"Find data centers in Ashburn over 50 MW"</div></div>
     <div class="tool"><div class="tname">analyze_site</div><div class="tdesc">"Score lat 39.0, lon -77.4 for hyperscaler suitability"</div></div>
@@ -21348,7 +21348,7 @@ def _canonical_mcp_manifest():
     ]
     # Single source of truth: override the inline list with the canonical
     # tool catalog, which matches the live server.mjs tools/list exactly
-    # (33 tools). This kills the recurring drift between this manifest, the
+    # (38 tools). This kills the recurring drift between this manifest, the
     # server card, and the CF-worker fallback — they now all derive from the
     # same catalog. The inline list above remains only as a hard fallback if
     # the import ever fails (the manifest must never break).
@@ -21404,8 +21404,8 @@ def _canonical_pricing():
                           "tools_unlocked": "all 33 + SSO + SLA",
                           "contact": "enterprise@dchub.cloud"},
         "legacy_strings": {
-            "free":       "10 calls/day, truncated results, 33 tools (preview)",
-            "developer":  "$49/mo · 500/day, 29 of 33 tools, full results",
+            "free":       "10 calls/day, truncated results, 38 tools (preview)",
+            "developer":  "$49/mo · 500/day, 29 of 38 tools, full results",
             "pro":        "$199/mo · 2,000/day + all 33 incl Pro-only tools",
             "enterprise": "$499/mo · 100,000/day + SSO + SLA",
         },
@@ -22682,8 +22682,7 @@ def phase12c_admin_load_all():
     legacy 'dchub-internal-sync-2026' default we relaxed in Phase 9h).
     """
     sent = (request.headers.get('X-Internal-Key') or '').strip()
-    allowed = {os.environ.get('DCHUB_INTERNAL_KEY','dchub-internal-sync-2026'),
-               'dchub-internal-sync-2026',
+    allowed = {os.environ.get('DCHUB_INTERNAL_KEY',''),
                os.environ.get('INTERNAL_KEY',''),
                os.environ.get('MCP_INTERNAL_KEY','')}
     if not (sent and sent in {a for a in allowed if a}):
@@ -22738,7 +22737,7 @@ def phase12f_run_all_loaders():
     relaxed (env vars + 'dchub-internal-sync-2026' default).
     """
     sent = (request.headers.get('X-Internal-Key') or '').strip()
-    allowed = {'dchub-internal-sync-2026'}
+    allowed = set()
     for n in ('DCHUB_INTERNAL_KEY','INTERNAL_KEY','MCP_INTERNAL_KEY','DCHUB_ADMIN_KEY'):
         v = os.environ.get(n)
         if v: allowed.add(v)
@@ -22839,7 +22838,7 @@ phase12g_loader_state = {}
 
 def _phase12g_check_auth():
     sent = (request.headers.get('X-Internal-Key') or '').strip()
-    allowed = {'dchub-internal-sync-2026'}
+    allowed = set()
     for n in ('DCHUB_INTERNAL_KEY','INTERNAL_KEY','MCP_INTERNAL_KEY','DCHUB_ADMIN_KEY'):
         v = os.environ.get(n)
         if v: allowed.add(v)
@@ -22941,7 +22940,7 @@ def phase12j_load_energy_discovery_live():
     for each — all from HIFLD ArcGIS (no EIA dependency).
     """
     sent = (request.headers.get('X-Internal-Key') or '').strip()
-    allowed = {'dchub-internal-sync-2026'}
+    allowed = set()
     for n in ('DCHUB_INTERNAL_KEY','INTERNAL_KEY','MCP_INTERNAL_KEY','DCHUB_ADMIN_KEY'):
         v = os.environ.get(n)
         if v: allowed.add(v)
@@ -23106,7 +23105,7 @@ def _phase13_osm_async(loader_name, status_key):
 
 def _phase13_check_auth():
     sent = (request.headers.get('X-Internal-Key') or '').strip()
-    allowed = {'dchub-internal-sync-2026'}
+    allowed = set()
     for n in ('DCHUB_INTERNAL_KEY','INTERNAL_KEY','MCP_INTERNAL_KEY','DCHUB_ADMIN_KEY'):
         v = os.environ.get(n)
         if v: allowed.add(v)

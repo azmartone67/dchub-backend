@@ -23,6 +23,7 @@ Endpoint:
 Triggered daily at 06:00 UTC by dchub-scheduler.py.
 """
 import os
+from internal_auth import accepted_internal_keys
 import time
 import logging
 from datetime import datetime, timezone
@@ -33,7 +34,7 @@ daily_render_fanout_bp = Blueprint("daily_render_fanout", __name__)
 
 
 # ── Auth ────────────────────────────────────────────────────────────
-_INTERNAL_KEYS = {"dchub-internal-sync-2026"}
+_INTERNAL_KEYS = accepted_internal_keys()
 for _n in ("DCHUB_INTERNAL_KEY", "INTERNAL_KEY", "MCP_INTERNAL_KEY", "DCHUB_ADMIN_KEY"):
     _v = os.environ.get(_n)
     if _v:
@@ -50,7 +51,7 @@ def _admin_ok():
 # Hit the prod Pages worker. (Local dev sets DCHUB_FRONTEND_URL.)
 FRONTEND_URL = os.environ.get("DCHUB_FRONTEND_URL", "https://dchub.cloud")
 RENDER_PATH = "/api/admin/render-daily"
-INTERNAL_KEY = "dchub-internal-sync-2026"
+INTERNAL_KEY = os.environ.get("DCHUB_INTERNAL_KEY", "")
 PER_CALL_TIMEOUT = 60          # Browser Rendering screenshots ~5-15s typically
 INTER_CALL_DELAY = 0.5         # mild pacing so we don't burst the worker
 THEMES = ['d', 'e', 'f', 'g', 'h', 'i', 'j', 'k', 'l']

@@ -37,6 +37,7 @@ through /checkout/start so EVERY paywalled user gets the email
 prompt — anonymous and api-keyed alike.
 """
 import os
+from internal_auth import accepted_internal_keys
 import re
 import secrets
 from datetime import datetime, timezone
@@ -581,7 +582,7 @@ def backfill_signals():
     that came in anonymous but whose user later left an email at the
     /notify or /checkout/start pages."""
     sent = (request.headers.get("X-Internal-Key") or "").strip()
-    allowed = {"dchub-internal-sync-2026"}
+    allowed = accepted_internal_keys()
     for n in ("DCHUB_INTERNAL_KEY", "INTERNAL_KEY", "DCHUB_ADMIN_KEY"):
         v = os.environ.get(n)
         if v: allowed.add(v)
@@ -632,7 +633,7 @@ def test_send():
     """Diagnose email delivery. ?to=you@example.com (defaults to admin)."""
     sent = (request.headers.get("X-Internal-Key") or
             request.args.get("admin_key") or "").strip()
-    allowed = {"dchub-internal-sync-2026"}
+    allowed = accepted_internal_keys()
     for n in ("DCHUB_INTERNAL_KEY", "INTERNAL_KEY", "DCHUB_ADMIN_KEY"):
         v = os.environ.get(n)
         if v: allowed.add(v)

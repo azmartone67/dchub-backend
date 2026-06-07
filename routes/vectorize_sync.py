@@ -43,6 +43,7 @@ Endpoints:
   GET  /api/v1/admin/vectorize-sync/status  Latest run stats + index size
 """
 import os
+from internal_auth import accepted_internal_keys
 import json
 import time
 import hashlib
@@ -55,7 +56,7 @@ vectorize_sync_bp = Blueprint("vectorize_sync", __name__)
 
 
 # ── Auth (same pattern as d1_sync) ─────────────────────────────────
-_INTERNAL_KEYS = {"dchub-internal-sync-2026"}
+_INTERNAL_KEYS = accepted_internal_keys()
 for _n in ("DCHUB_INTERNAL_KEY", "INTERNAL_KEY", "MCP_INTERNAL_KEY", "DCHUB_ADMIN_KEY"):
     _v = os.environ.get(_n)
     if _v:

@@ -469,7 +469,7 @@ _CAMPAIGN_POSTS = [
 
 So when an AI agent is asked "where can I build 200 MW with available power and low water risk?" — the entire industry is invisible to it.
 
-DC Hub isn't. MCP-native, 30 tools, 21,000+ facilities, 7 live grid operators, fiber + substations + gas pipelines + water risk — one machine-readable, citable query.
+DC Hub isn't. MCP-native, 38 tools, 21,000+ facilities, 7 live grid operators, fiber + substations + gas pipelines + water risk — one machine-readable, citable query.
 
 They built for humans reading PDFs. We built for the agents your team already uses.
 

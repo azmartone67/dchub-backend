@@ -50,7 +50,7 @@ DC Hub is the live data layer for data-center infrastructure — every API, MCP 
 
 ## MCP integration
 
-The MCP server at `https://dchub.cloud/mcp` exposes **33 tools** for AI agents. See the standalone repo: [azmartone67/dchub-mcp-server](https://github.com/azmartone67/dchub-mcp-server).
+The MCP server at `https://dchub.cloud/mcp` exposes **38 tools** for AI agents. See the standalone repo: [azmartone67/dchub-mcp-server](https://github.com/azmartone67/dchub-mcp-server).
 
 **MCP catalog listings:**
 - [Glama](https://glama.ai/mcp/connectors/cloud.dchub/dc-hub-data-center-intelligence-mcp-server) — ownership verified
