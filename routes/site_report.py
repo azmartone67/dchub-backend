@@ -193,6 +193,37 @@ def _call_with_timeout(fn, timeout, *args, **kwargs):
         return None
 
 
+def _pdf_diag():
+    """Best-effort diagnostics for why weasyprint can't load its native libs.
+    Only invoked on the PDF failure path; never raises. Tells us the runtime
+    LD_LIBRARY_PATH and where (if anywhere) libgobject actually lives, so the
+    fix is precise instead of guessed."""
+    import os as _os, glob as _glob
+    d = {}
+    try:
+        d["LD_LIBRARY_PATH"] = (_os.environ.get("LD_LIBRARY_PATH") or "")[:500]
+    except Exception:
+        pass
+    try:
+        import ctypes.util as _cu
+        d["find_gobject"] = _cu.find_library("gobject-2.0")
+        d["find_pango"] = _cu.find_library("pango-1.0")
+    except Exception as _e:
+        d["find_err"] = str(_e)[:100]
+    found = []
+    for pat in ("/usr/lib/x86_64-linux-gnu/libgobject-2.0.so*",
+                "/nix/store/*-glib-*/lib/libgobject-2.0.so*",
+                "/nix/store/*/lib/libgobject-2.0.so*"):
+        try:
+            found += _glob.glob(pat)[:3]
+            if found:
+                break
+        except Exception:
+            pass
+    d["libgobject_paths"] = found[:6]
+    return d
+
+
 # ════════════════════════════════════════════════════════════════════════════
 #  Section data gatherers — each isolated; a failure renders "—", never a 500
 # ════════════════════════════════════════════════════════════════════════════
@@ -1156,6 +1187,7 @@ def site_report():
                             "is available now and is print-to-PDF ready (Cmd/Ctrl-P → Save as PDF)."),
                 "html_url": f"/api/v1/site-report?lat={lat}&lon={lon}",
                 "detail": f"{type(e).__name__}: {str(e)[:160]}",
+                "_diag": _pdf_diag(),
             }), 503
         except Exception as e:
             return jsonify({"error": "pdf_render_failed",

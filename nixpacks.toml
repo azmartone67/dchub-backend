@@ -11,20 +11,23 @@
 #   GET /markets/<slug>/brief.pdf  (PRO+ gated)
 
 [phases.setup]
+# WeasyPrint's native stack must come from NIX packages, not apt. Nixpacks
+# builds on a Nix base whose dynamic loader searches the Nix store — it does
+# NOT search /usr/lib/x86_64-linux-gnu where apt installs, so apt-provided
+# libpango/cairo/glib are present-but-unloadable (ctypes:
+# "cannot load library 'libgobject-2.0-0'"). nixPkgs land in /nix/store and
+# nixpacks wires their lib dirs into the runtime env, so the loader finds them.
+nixPkgs = [
+  "glib",        # libgobject-2.0 / libglib-2.0 / libgio-2.0  (the missing one)
+  "pango",       # libpango-1.0 / libpangocairo-1.0 / libpangoft2-1.0
+  "cairo",       # libcairo
+  "harfbuzz",    # libharfbuzz (text shaping)
+  "fontconfig",  # libfontconfig (font discovery)
+  "libffi",      # libffi (cffi/ctypes bridge weasyprint uses)
+]
 aptPkgs = [
-  # WeasyPrint runtime deps (PDF rendering of Market Brief).
-  # libpango1.0-0       — Pango text layout (the slow one to install)
-  # libcairo2           — Cairo 2D graphics
-  # libpangoft2-1.0-0   — Pango FreeType bridge (for system fonts)
-  # libgdk-pixbuf-2.0-0 — image rendering (cover-page logo, charts)
-  # shared-mime-info    — MIME detection (used by WeasyPrint for embeds)
-  # fonts-liberation    — DejaVu/Liberation fallback fonts so PDFs aren't
-  #                       boxes when the system lacks the Inter/JetBrains
-  #                       fonts the brand uses.
-  "libpango1.0-0",
-  "libcairo2",
-  "libpangoft2-1.0-0",
-  "libgdk-pixbuf-2.0-0",
+  # Fonts + MIME data only (no native .so that would ABI-clash with the Nix
+  # libs above). fonts-liberation gives a sane serif/sans fallback in the PDF.
   "shared-mime-info",
   "fonts-liberation",
 ]
