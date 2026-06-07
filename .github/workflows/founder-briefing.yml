@@ -1,0 +1,29 @@
+name: Founder Briefing
+
+# 2026-06-06: pushes the founder one daily digest (shipped / flagged / needs-
+# your-call) so the "you go looking" loop goes away. The send only happens when
+# DCHUB_BRIEFING_EMAIL is set on the backend (opt-in, to your own inbox); the
+# /briefing page is always available regardless.
+
+on:
+  schedule:
+    - cron: '0 13 * * *'   # daily 13:00 UTC
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  send:
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    steps:
+      - name: Trigger founder briefing send
+        run: |
+          code=$(curl -sS -m 30 -X POST \
+            -H "X-Admin-Key: ${{ secrets.DCHUB_ADMIN_KEY }}" \
+            -o body.json -w "%{http_code}" \
+            https://api.dchub.cloud/api/v1/admin/briefing/send || echo 000)
+          echo "HTTP $code"; cat body.json || true
+          # Don't fail the job on a no-op (e.g., email not configured) — only on 5xx.
+          [ "$code" -ge 500 ] 2>/dev/null && exit 1 || exit 0

@@ -1,0 +1,35 @@
+name: Visual Sentinel
+
+# 2026-06-06: the automation that lets the system SEE the rendered site (the gap
+# API audits can't cover). Loads key pages in headless Chromium, flags blank/
+# broken/empty pages + broken images, reports to /api/v1/admin/visual-sentinel,
+# and goes red if anything looks broken. Add DCHUB_ADMIN_KEY as a repo secret to
+# enable the report POST (the red job signals either way).
+
+on:
+  schedule:
+    - cron: '17 */6 * * *'   # every 6 hours
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  sentinel:
+    runs-on: ubuntu-latest
+    timeout-minutes: 12
+    steps:
+      - uses: actions/checkout@v5
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '20'
+      - name: Install Playwright + Chromium
+        run: |
+          npm install playwright@^1.44
+          npx playwright install --with-deps chromium
+      - name: Run visual sentinel
+        env:
+          DCHUB_ADMIN_KEY: ${{ secrets.DCHUB_ADMIN_KEY }}
+          SENTINEL_BASE: https://dchub.cloud
+          DCHUB_API_BASE: https://api.dchub.cloud
+        run: node scripts/visual_sentinel.mjs

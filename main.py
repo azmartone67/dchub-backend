@@ -24976,6 +24976,12 @@ try:
         print("🌍 Global Infra proxies: ✅ Registered (global-power-plants, global-gas)")
     except Exception as _gi_e:
         print(f"🌍 Global Infra proxies: ⚠️ {_gi_e}")
+    try:
+        from routes.site_automation import register_site_automation
+        register_site_automation(app)
+        print("🤖 Site automation: ✅ visual-sentinel + briefing + deploy-integrity + ci-triage")
+    except Exception as _sa_e:
+        print(f"🤖 Site automation: ⚠️ {_sa_e}")
 except Exception as e:
     print(f"❌ Energy Discovery blueprint failed: {e}")
 

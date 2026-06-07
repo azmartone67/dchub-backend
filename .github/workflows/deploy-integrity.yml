@@ -1,0 +1,68 @@
+name: Deploy Integrity
+
+# 2026-06-06: catches the recurring "why isn't my change live" toil —
+#   (a) dual-repo divergence: the standalone ~/dchub-frontend (wins the CF Pages
+#       race) vs the backend's mirror subdir drifting apart (the dc-hub-media
+#       stale-copy class), and
+#   (b) live route breakage: a key page serving non-200 or a near-blank body
+#       (the dc-hub-media 0-byte class) via /api/v1/admin/deploy-integrity.
+
+on:
+  schedule:
+    - cron: '37 */4 * * *'   # every 4 hours
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  integrity:
+    runs-on: ubuntu-latest
+    timeout-minutes: 8
+    steps:
+      - name: Check out backend (this repo)
+        uses: actions/checkout@v5
+        with:
+          path: dchub-backend
+      - name: Check out frontend (sibling, private)
+        continue-on-error: true
+        uses: actions/checkout@v5
+        with:
+          repository: azmartone67/dchub-frontend
+          path: dchub-frontend
+          token: ${{ secrets.DCHUB_FRONTEND_RO_TOKEN || github.token }}
+
+      - name: Dual-repo divergence on shared frontend files
+        run: |
+          FILES="land-power-map.html dc-hub-media/index.html"
+          DIVERGED=0
+          for f in $FILES; do
+            A="dchub-frontend/$f"; B="dchub-backend/dchub-frontend/$f"
+            if [ -f "$A" ] && [ -f "$B" ]; then
+              if ! diff -q "$A" "$B" >/dev/null 2>&1; then
+                echo "::warning title=Dual-repo divergence::$f differs between standalone frontend and backend mirror — the CF Pages race can serve the stale copy. Re-sync."
+                DIVERGED=1
+              fi
+            elif [ -f "$A" ] && [ ! -f "$B" ]; then
+              echo "::warning::$f exists only in standalone frontend (backend mirror missing)"
+            fi
+          done
+          [ "$DIVERGED" = "0" ] && echo "✅ shared frontend files in sync" || echo "⚠️ divergence found (warnings above)"
+
+      - name: Live route smoke (200 + non-blank)
+        run: |
+          code=$(curl -sS -m 30 -o integrity.json -w "%{http_code}" \
+            https://api.dchub.cloud/api/v1/admin/deploy-integrity || echo 000)
+          echo "endpoint HTTP $code"; cat integrity.json || true
+          python3 - <<'PY'
+          import json, sys
+          try:
+              d = json.load(open("integrity.json"))
+          except Exception as e:
+              print("::warning::could not read integrity result:", e); sys.exit(0)
+          broken = d.get("broken_count", 0)
+          for b in (d.get("broken") or []):
+              print(f"::error title=Route broken::{b.get('path')} → {b.get('status') or b.get('error')} ({b.get('bytes')} bytes)")
+          print(f"broken routes: {broken}/{d.get('checked')}")
+          sys.exit(1 if broken else 0)
+          PY

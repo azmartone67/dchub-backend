@@ -1,0 +1,48 @@
+name: CI Auto-Triage
+
+# 2026-06-06: when another workflow fails, classify it and POST the verdict to
+# /api/v1/admin/ci-triage so failures arrive PRE-DIAGNOSED (private-repo
+# checkout 404 / transient 5xx / dependency failure / unrecognized) instead of
+# the founder finding a red run cold. Known classes carry a suggested fix; the
+# brain + founder briefing read /api/v1/admin/ci-triage (GET).
+
+on:
+  workflow_run:
+    workflows:
+      - regression-lint
+      - "Cron Heartbeat (5-min)"
+      - "Visual Sentinel"
+      - "Deploy Integrity"
+      - "Founder Briefing"
+    types: [completed]
+
+permissions:
+  actions: read
+  contents: read
+
+jobs:
+  triage:
+    if: ${{ github.event.workflow_run.conclusion == 'failure' }}
+    runs-on: ubuntu-latest
+    timeout-minutes: 6
+    steps:
+      - name: Classify + report the failed run
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          RUN_ID="${{ github.event.workflow_run.id }}"
+          WF="${{ github.event.workflow_run.name }}"
+          URL="${{ github.event.workflow_run.html_url }}"
+          echo "Triaging failed run: $WF ($URL)"
+          LOG=$(gh run view "$RUN_ID" --log-failed 2>/dev/null | tail -c 2500 | tr '\n\r"' '   ' || echo "")
+          python3 - "$WF" "$URL" "$LOG" <<'PY' > payload.json
+          import json, sys
+          wf, url, log = sys.argv[1], sys.argv[2], sys.argv[3]
+          print(json.dumps({"workflow": wf, "run_url": url,
+                            "conclusion": "failure", "log_excerpt": log[:2400]}))
+          PY
+          code=$(curl -sS -m 30 -X POST "https://api.dchub.cloud/api/v1/admin/ci-triage" \
+            -H "Content-Type: application/json" \
+            -H "X-Admin-Key: ${{ secrets.DCHUB_ADMIN_KEY }}" \
+            --data @payload.json -o triage.json -w "%{http_code}" || echo 000)
+          echo "triage HTTP $code"; cat triage.json || true
