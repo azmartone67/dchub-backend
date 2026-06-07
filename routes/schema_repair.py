@@ -826,6 +826,94 @@ SCHEMA_STATEMENTS = [
         "CREATE INDEX IF NOT EXISTS ix_mcel_pending ON media_comment_engagement_log(scheduled_for) WHERE decision = 'queued' AND reply_posted_at IS NULL",
         "CREATE INDEX IF NOT EXISTS ix_mcel_decision ON media_comment_engagement_log(decision)",
     ]),
+    ("media_trending_topics table (R3)", [
+        # 2026-06-07 — Media Round 3 trending detector
+        # (routes/media_trending_detector.py). Stores per-source + merged
+        # rows once per UTC day (UNIQUE (topic, source, detected_at::date)
+        # via a partial index). The detector fires twice daily at 06:00 +
+        # 18:00 UTC and writes top-5 merged rows + every per-source row;
+        # re-runs same day idempotently UPSERT the existing row. Read by
+        # /admin/media-trending dashboard, the /admin/media-mix "Trending
+        # Now" card, and the public /api/v1/media/trending/top tile.
+        """CREATE TABLE IF NOT EXISTS media_trending_topics (
+            id              BIGSERIAL PRIMARY KEY,
+            topic           TEXT NOT NULL,
+            name            TEXT,
+            source          TEXT NOT NULL,
+            score           NUMERIC NOT NULL DEFAULT 0,
+            count_24h       INTEGER NOT NULL DEFAULT 0,
+            baseline_7d_avg NUMERIC NOT NULL DEFAULT 0,
+            sample_titles   JSONB DEFAULT '[]'::jsonb,
+            detected_at     TIMESTAMPTZ NOT NULL DEFAULT NOW()
+        )""",
+        "CREATE UNIQUE INDEX IF NOT EXISTS media_trending_topics_uq "
+        "ON media_trending_topics(topic, source, (detected_at::date))",
+        "CREATE INDEX IF NOT EXISTS media_trending_topics_score_idx "
+        "ON media_trending_topics(detected_at DESC, score DESC)",
+    ]),
+    ("newsletter_subject_ab + newsletter_open_events tables (R3)", [
+        # 2026-06-07 — Media Round 3 newsletter A/B
+        # (routes/weekly_newsletter.py). One row per issue_id stores both
+        # subject lines + pattern slugs + per-cohort recipient counts. The
+        # pixel route (/api/v1/newsletter/pixel/<token>) verifies an HMAC
+        # token before counting an open, then increments opens_a/opens_b
+        # and inserts a UNIQUE row into newsletter_open_events so an
+        # individual recipient opening 10x still counts once.
+        """CREATE TABLE IF NOT EXISTS newsletter_subject_ab (
+            id              SERIAL PRIMARY KEY,
+            issue_id        TEXT NOT NULL,
+            subject_a       TEXT NOT NULL,
+            subject_b       TEXT NOT NULL,
+            pattern_a       TEXT NOT NULL,
+            pattern_b       TEXT NOT NULL,
+            recipients_a    INT NOT NULL DEFAULT 0,
+            recipients_b    INT NOT NULL DEFAULT 0,
+            opens_a         INT NOT NULL DEFAULT 0,
+            opens_b         INT NOT NULL DEFAULT 0,
+            winner          TEXT,
+            decided_at      TIMESTAMPTZ,
+            created_at      TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+            UNIQUE (issue_id)
+        )""",
+        """CREATE TABLE IF NOT EXISTS newsletter_open_events (
+            id          BIGSERIAL PRIMARY KEY,
+            issue_id    TEXT NOT NULL,
+            email       TEXT NOT NULL,
+            cohort      TEXT,
+            opened_at   TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+            ip_hash     TEXT,
+            user_agent  TEXT
+        )""",
+        "CREATE UNIQUE INDEX IF NOT EXISTS newsletter_open_events_unique_per_issue "
+        "ON newsletter_open_events (issue_id, LOWER(email))",
+    ]),
+    ("media_thread_log table (R3)", [
+        # 2026-06-07 — Media Round 3 thread generator
+        # (routes/media_thread_generator.py). Admin-triggered 5-post
+        # LinkedIn thread series for big launches. DRY-RUN by default;
+        # operator flips dry_run=0 to ship. The flush cron walks queued
+        # rows, posts the next due slot (root first, then replies as a
+        # comment chain) with 4-7min stagger, then marks the row
+        # 'completed' when all 5 slots have posted_urn. Hard cap of 1
+        # thread per UTC day across the whole table (algo-protective).
+        """CREATE TABLE IF NOT EXISTS media_thread_log (
+            id              BIGSERIAL PRIMARY KEY,
+            seed_post_id    BIGINT,
+            root_post_urn   TEXT,
+            title           TEXT,
+            posts           JSONB NOT NULL DEFAULT '[]'::jsonb,
+            status          TEXT NOT NULL DEFAULT 'dry_run',
+            destination_url TEXT,
+            headline_num    TEXT,
+            started_at      TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+            completed_at    TIMESTAMPTZ,
+            error           TEXT
+        )""",
+        "CREATE INDEX IF NOT EXISTS media_thread_log_status_idx "
+        "ON media_thread_log(status, started_at DESC)",
+        "CREATE INDEX IF NOT EXISTS media_thread_log_started_idx "
+        "ON media_thread_log(started_at DESC)",
+    ]),
     ("media_style_outcomes table", [
         # 2026-06-07: DC Hub Media style A/B learner
         # (routes/media_style_ab.py). One row per LinkedIn post's
@@ -926,6 +1014,42 @@ SCHEMA_STATEMENTS = [
         )""",
         "CREATE INDEX IF NOT EXISTS ix_cap_status ON connected_ai_platforms(status)",
         "CREATE INDEX IF NOT EXISTS ix_cap_fit ON connected_ai_platforms(fit_score DESC NULLS LAST)",
+    ]),
+    # MCP Funnel Round 3 Unlock 3 (2026-06-07): team accounts ($499/mo, 5
+    # seats). The owner gets a shared API key + can invite up to 5 members;
+    # per-seat usage attribution via mcp_call_log.session_id =
+    # hash(member_email). See routes/team_accounts.py.
+    ("team_accounts table (R3 Unlock 3)", [
+        """CREATE TABLE IF NOT EXISTS team_accounts (
+            id                       BIGSERIAL PRIMARY KEY,
+            owner_email              TEXT NOT NULL,
+            plan                     TEXT NOT NULL DEFAULT 'team',
+            seats                    INTEGER NOT NULL DEFAULT 5,
+            shared_api_key           TEXT UNIQUE,
+            stripe_subscription_id   TEXT,
+            stripe_customer_id       TEXT,
+            status                   TEXT NOT NULL DEFAULT 'active',
+            created_at               TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+            updated_at               TIMESTAMPTZ NOT NULL DEFAULT NOW()
+        )""",
+        "CREATE INDEX IF NOT EXISTS ix_team_accounts_owner ON team_accounts(LOWER(owner_email))",
+        "CREATE INDEX IF NOT EXISTS ix_team_accounts_status ON team_accounts(status)",
+        "CREATE INDEX IF NOT EXISTS ix_team_accounts_stripe_sub ON team_accounts(stripe_subscription_id) WHERE stripe_subscription_id IS NOT NULL",
+    ]),
+    ("team_seats table (R3 Unlock 3)", [
+        """CREATE TABLE IF NOT EXISTS team_seats (
+            id            BIGSERIAL PRIMARY KEY,
+            team_id       BIGINT NOT NULL,
+            member_email  TEXT NOT NULL,
+            role          TEXT NOT NULL DEFAULT 'member',
+            status        TEXT NOT NULL DEFAULT 'active',
+            added_at      TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+            removed_at    TIMESTAMPTZ,
+            UNIQUE (team_id, member_email)
+        )""",
+        "CREATE INDEX IF NOT EXISTS ix_team_seats_team ON team_seats(team_id)",
+        "CREATE INDEX IF NOT EXISTS ix_team_seats_email ON team_seats(LOWER(member_email))",
+        "CREATE INDEX IF NOT EXISTS ix_team_seats_status ON team_seats(status)",
     ]),
 ]
 
