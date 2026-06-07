@@ -27259,6 +27259,17 @@ try:
 except Exception as _mb_e:
     print(f"[main] market_brief_bp register failed: {_mb_e}", flush=True)
 
+# Site Intelligence Report (2026-06-06): auto-generated branded report from a
+# lat/lon — GET /api/v1/site-report?lat=&lon=. The automated version of the
+# Martone Advisors manual survey template; PRO-gated; HTML now, &format=pdf via
+# weasyprint. Pulls power/gas/water/air/fiber/latency from DC Hub's own layers.
+try:
+    from routes.site_report import site_report_bp
+    app.register_blueprint(site_report_bp)
+    print("[main] site_report_bp registered: /api/v1/site-report", flush=True)
+except Exception as _sr_e:
+    print(f"[main] site_report_bp register failed: {_sr_e}", flush=True)
+
 # Hyperscaler Brief (2026-06-06): per-hyperscaler full-pipeline view at
 # /hyperscalers/<slug>/brief — built for M&A bankers, PE deal teams, and
 # hedge funds tracking AWS / Azure / Google / Meta / Apple / Oracle /
