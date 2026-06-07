@@ -1189,6 +1189,40 @@ def _img_data_uri(file_storage):
         return None
 
 
+def _render_unlock_page():
+    """Tiny client-side bounce: read the dchub_token JWT from localStorage (set
+    by the logged-in app on dchub.cloud, same origin) and re-fetch the report
+    with an Authorization: Bearer header — which the gate accepts even when the
+    CF proxy didn't forward the cookie to /api/*. If not logged in, prompt login."""
+    return """<!doctype html><html lang="en"><head><meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1">
+<title>DC Hub · Site Intelligence Report</title>
+<link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=Instrument+Sans:wght@400;600;700&display=swap">
+<style>
+ html,body{margin:0;height:100%;background:#0a0a0f;color:#a1a1aa;font-family:'Instrument Sans',system-ui,sans-serif}
+ .wrap{height:100%;display:flex;align-items:center;justify-content:center;text-align:center;padding:24px}
+ .wm{font-weight:800;font-size:20px;color:#fff;margin-bottom:18px}.wm span{color:#818cf8}
+ .sp{width:30px;height:30px;border:3px solid #1b1b24;border-top-color:#818cf8;border-radius:50%;animation:sp 1s linear infinite;margin:0 auto 16px}
+ @keyframes sp{to{transform:rotate(360deg)}} a{color:#22d3ee;font-weight:600}
+</style></head>
+<body><div class="wrap"><div><div class="wm">DC<span>·</span>Hub</div>
+<div class="sp" id="sp"></div><div id="m">Loading your Site Intelligence Report…</div></div></div>
+<script>
+(function(){
+  var t=null; try{t=localStorage.getItem('dchub_token');}catch(e){}
+  var m=document.getElementById('m'), sp=document.getElementById('sp');
+  function fail(h){ if(sp) sp.style.display='none'; m.innerHTML=h; }
+  if(!t){ fail('Please <a href="/login?next='+encodeURIComponent(location.pathname+location.search)+'">log in</a> to view this PRO report.'); return; }
+  fetch(location.pathname+location.search,{headers:{'Authorization':'Bearer '+t},credentials:'include'})
+   .then(function(r){ if(r.ok) return r.text(); throw r.status; })
+   .then(function(html){ document.open(); document.write(html); document.close(); })
+   .catch(function(code){ fail(code===402
+      ? 'This report needs a PRO plan. <a href="/pricing">Upgrade \\u2192</a>'
+      : 'Could not load (error '+code+'). <a href="/pricing">See plans</a> or re-log in.'); });
+})();
+</script></body></html>"""
+
+
 def _render_portal(prefill):
     """Branded submission portal — paste coords, DC Hub auto-fills the report,
     optionally attach the (manual) fiber-locator maps, one click → report."""
@@ -1286,7 +1320,9 @@ def _render_portal(prefill):
     if(!isFinite(lat)||!isFinite(lon)){{ msg.style.color='#f87171'; msg.textContent='Enter valid coordinates.'; return; }}
     go.disabled=true; msg.style.color='#a1a1aa'; msg.textContent='Generating report from DC Hub data…';
     var fd=new FormData(f);
-    fetch('/api/v1/site-report', {{ method:'POST', body:fd, credentials:'include' }})
+    var _t=null; try{{_t=localStorage.getItem('dchub_token');}}catch(e){{}}
+    var _hdrs={{}}; if(_t) _hdrs['Authorization']='Bearer '+_t;
+    fetch('/api/v1/site-report', {{ method:'POST', body:fd, credentials:'include', headers:_hdrs }})
       .then(function(r){{
         if(r.status===402){{ msg.innerHTML='<span style="color:#fbbf24">This is a PRO feature. <a href="/pricing">Upgrade to generate →</a></span>'; go.disabled=false; return null; }}
         if(!r.ok){{ return r.text().then(function(t){{ throw new Error('HTTP '+r.status+' '+t.slice(0,160)); }}); }}
@@ -1326,7 +1362,22 @@ def site_report():
     try:
         from routes.tier_gate import _resolve_caller_tier, _gate_response
         tier, _ = _resolve_caller_tier()
-        if (tier or "FREE").upper() not in ("PRO", "ENTERPRISE", "FOUNDING", "RESEARCH_SEED"):
+        if (tier or "FREE").upper() not in ("PRO", "ENTERPRISE", "FOUNDING", "RESEARCH_SEED", "ADMIN"):
+            # A logged-in user's dchub_token JWT lives in localStorage, but a
+            # top-level browser navigation to /api/* only sends it as a COOKIE,
+            # which the CF proxy may not forward → the gate sees FREE. For an
+            # unauthenticated *browser* GET, serve a tiny client-side "unlock"
+            # page that re-fetches with Authorization: Bearer <localStorage
+            # .dchub_token> (the gate accepts Bearer). Loop-safe: only when no
+            # Authorization / api_key was supplied (the re-fetch carries one).
+            _has_auth = bool(request.headers.get("Authorization")
+                             or request.headers.get("X-API-Key")
+                             or request.args.get("api_key"))
+            _wants_html = "text/html" in (request.headers.get("Accept") or "")
+            if request.method == "GET" and _wants_html and not _has_auth:
+                return Response(_render_unlock_page(), mimetype="text/html; charset=utf-8",
+                                headers={"Cache-Control": "private, no-store",
+                                         "X-Content-Type-Options": "nosniff"})
             return _gate_response(tier, "PRO", "site_report", {
                 "what": "Auto-generated, branded Site Intelligence Report from a lat/lon",
                 "sections": ["Power/Transmission", "Gas", "Water & Drought",
