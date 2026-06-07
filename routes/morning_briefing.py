@@ -109,12 +109,23 @@ CREATE INDEX IF NOT EXISTS ix_morning_briefing_sent_at
 
 
 def _ensure_schema(c) -> None:
+    """Create the morning_briefing_log table + indexes if absent.
+
+    Logs failures (the old try/except: pass silently swallowed init
+    errors, which surfaced later as 500s on /history when the SELECT
+    hit a non-existent table). With logging we can grep Railway logs
+    on next 500 and see the actual psycopg2 error.
+    """
     try:
         with c.cursor() as cur:
             cur.execute(_SCHEMA)
-    except Exception:
+    except Exception as e:
         try: c.rollback()
         except Exception: pass
+        try:
+            logger.warning("morning_briefing _ensure_schema failed: %s", e)
+        except Exception:
+            pass
 
 
 # ── HTTP helpers ──────────────────────────────────────────────────────
@@ -804,17 +815,35 @@ def morning_briefing_history():
     c = _conn()
     if c is None:
         return jsonify(error="no_database"), 503
+    rows = []
+    schema_error = None
     try:
         _ensure_schema(c)
+        import psycopg2
         import psycopg2.extras
-        with c.cursor(cursor_factory=psycopg2.extras.RealDictCursor) as cur:
-            cur.execute("""
-                SELECT id, sent_at, recipient_email, resend_message_id,
-                       summary_json, status
-                  FROM morning_briefing_log
-                 ORDER BY sent_at DESC LIMIT 30
-            """)
-            rows = cur.fetchall()
+        try:
+            with c.cursor(cursor_factory=psycopg2.extras.RealDictCursor) as cur:
+                cur.execute("""
+                    SELECT id, sent_at, recipient_email, resend_message_id,
+                           summary_json, status
+                      FROM morning_briefing_log
+                     ORDER BY sent_at DESC LIMIT 30
+                """)
+                rows = cur.fetchall()
+        except psycopg2.errors.UndefinedTable as e:
+            # Schema init failed silently AND the SELECT hit a missing
+            # table — return empty log gracefully instead of 500ing.
+            # The next briefing send (which uses a fresh connection +
+            # INSERT) will surface a real error if the DB role can't
+            # actually create the table.
+            schema_error = "table_not_initialized"
+            try: c.rollback()
+            except Exception: pass
+            try:
+                logger.warning(
+                    "morning_briefing_history: table missing — %s", e)
+            except Exception:
+                pass
     finally:
         try: c.close()
         except Exception: pass
@@ -826,4 +855,10 @@ def morning_briefing_history():
         "summary":            r["summary_json"],
         "status":             r["status"],
     } for r in rows]
-    return jsonify(log=out, count=len(out)), 200
+    resp = {"log": out, "count": len(out)}
+    if schema_error:
+        # Honest signal to the dashboard: empty because no log yet.
+        resp["note"] = (
+            "Briefing log table not yet created — first successful "
+            "send will initialize it.")
+    return jsonify(resp), 200

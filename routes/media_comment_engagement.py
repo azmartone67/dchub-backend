@@ -1063,13 +1063,18 @@ def recent_counters(days: int = 7) -> dict:
 
 # ── HTTP endpoints ───────────────────────────────────────────────────────
 @media_comment_engagement_bp.route(
-    "/api/v1/admin/media/comment-engagement/poll-now", methods=["GET"])
+    "/api/v1/admin/media/comment-engagement/poll-now",
+    methods=["GET", "POST"])
 def http_poll_now():
     """Read-only-ish: what comments would we reply to right now?
     Always returns the drafts. NEVER posts. Safe to spam.
 
     This is the verify-mode endpoint per the task spec: "Test with the
     poll endpoint: returns what WOULD be replied without actually posting".
+
+    Accepts BOTH GET (curl/operator verify) AND POST (dashboard "Poll
+    now" button). The previous GET-only registration caused 405s when
+    the dashboard sent the standard fetch(..., {method:'POST'}).
 
     Internally calls run_comment_engagement_scan() but forces DRY_RUN=True
     by setting the env var for the duration of the call. We use a context
