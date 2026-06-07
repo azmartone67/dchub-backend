@@ -344,6 +344,39 @@ def _audit_server_card_drift() -> dict:
     }
 
 
+def _audit_billing_tier_drift() -> dict:
+    """r77 (2026-06-07): paying customers (users.plan paid + active sub) whose MCP
+    dev key (mcp_dev_keys.tier) is still free — they pay but the MCP gate gives them
+    free tier. This is the bug that silently stuck 14 Pro customers on free. Should
+    stay 0 now that the Stripe webhook upgrades/demotes mcp_dev_keys (main.py) and the
+    identify flow inherits tier. Fail-soft: a DB blip reports ok (don't false-alarm)."""
+    try:
+        c = _conn()
+        if c is None:
+            return {"ok": True, "note": "db_unavailable"}
+        with c, c.cursor() as cur:
+            cur.execute("""
+                SELECT u.plan, COUNT(*)::int
+                  FROM mcp_dev_keys k
+                  JOIN users u ON LOWER(k.email) = LOWER(u.email)
+                 WHERE k.status = 'active'
+                   AND u.plan IN ('pro','founding','enterprise')
+                   AND COALESCE(u.subscription_status,'') = 'active'
+                   AND COALESCE(k.tier,'free') NOT IN ('paid','enterprise')
+                 GROUP BY u.plan
+            """)
+            by_plan = {r[0]: int(r[1]) for r in (cur.fetchall() or [])}
+        total = sum(by_plan.values())
+        return {
+            "ok": total == 0,
+            "stuck_paying_customers": total,
+            "by_plan": by_plan,
+            "detail": "paying customers whose MCP key tier is still free (pay->free leak)",
+        }
+    except Exception as e:
+        return {"ok": True, "note": f"query_failed: {str(e)[:80]}"}
+
+
 def _audit_ai_citations_trend() -> dict:
     """ai_citations_7d week-over-week — is the citation moat growing?"""
     sot = _call_internal("/api/v1/media/source-of-truth")
@@ -1081,6 +1114,8 @@ def _run_full_audit(force: bool = False) -> dict:
 
     _audit_fns = {
         "server_card_drift":      _audit_server_card_drift,
+        # r77 (2026-06-07): paying customers stuck on free MCP tier (pay→free leak)
+        "billing_tier_drift":     _audit_billing_tier_drift,
         "ai_citations_trend":     _audit_ai_citations_trend,
         "press_cadence":          _audit_press_cadence,
         "topic_pulse":            _audit_topic_pulse_health,

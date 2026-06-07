@@ -12331,6 +12331,20 @@ def handle_subscription_deleted(subscription):
         for row in pg_rows:
             _pg_execute("UPDATE api_keys SET rate_limit_tier = 'free', last_used_at = %s WHERE user_id = %s", (now, row[0]))
 
+    # r77 (2026-06-07): demote the MCP dev key(s) too — symmetric to the payment
+    # upgrade. The MCP gate reads mcp_dev_keys.tier (keyed on email), so without
+    # this a churned customer keeps paid MCP tools forever (free-riding). Best-effort.
+    try:
+        _mc, _ = _pg_execute(
+            "UPDATE mcp_dev_keys SET tier = 'free' "
+            "WHERE LOWER(email) IN (SELECT LOWER(email) FROM users WHERE stripe_customer_id = %s) "
+            "AND tier IN ('paid','enterprise')",
+            (customer_id,))
+        if _mc:
+            print(f"🔑 Demoted {_mc} MCP dev key(s) → free for canceled customer {customer_id}")
+    except Exception as _mcp_err:
+        print(f"⚠️ mcp_dev_keys demote failed (non-fatal): {str(_mcp_err)[:120]}")
+
     conn = get_db()
     try:
         c = conn.cursor()

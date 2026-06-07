@@ -506,6 +506,22 @@ def identify_key():
                      WHERE api_key = %s""",
                 (email, datetime.now(timezone.utc).isoformat(), api_key),
             )
+
+            # r77 (2026-06-07): inherit paid tier if this email already belongs to
+            # a paying customer (covers the pay-first-then-connect-MCP order). The
+            # MCP gate reads mcp_dev_keys.tier, so without this a paid user who
+            # identifies their key later would stay free. Only upgrades a stuck key.
+            cur.execute(
+                """UPDATE mcp_dev_keys AS k
+                       SET tier = CASE WHEN u.plan = 'enterprise' THEN 'enterprise' ELSE 'paid' END
+                      FROM users u
+                     WHERE k.api_key = %s
+                       AND LOWER(u.email) = LOWER(%s)
+                       AND u.plan IN ('pro','founding','enterprise')
+                       AND COALESCE(u.subscription_status,'') = 'active'
+                       AND COALESCE(k.tier,'free') NOT IN ('paid','enterprise')""",
+                (api_key, email),
+            )
     except Exception as e:
         # Never hard-fail the agent — it can keep using the key.
         return jsonify(ok=False, error="storage_failed",
