@@ -263,7 +263,7 @@ def upsert_brain_finding(cur, issue: str, url: str = "", count: int = 1,
         ph = ", ".join(["%s"] * len(icols) + ["NOW()"] * len(now_cols))
         try:
             cur.execute(
-                f"INSERT INTO brain_findings ({collist}) VALUES ({ph})",
+                f"INSERT INTO brain_findings ({collist}) VALUES ({ph}) ON CONFLICT DO NOTHING",
                 [use[c] for c in icols])
             _release_sp(cur, "bfw_ins")
             return "inserted"

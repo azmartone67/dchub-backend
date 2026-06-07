@@ -1001,7 +1001,7 @@ def _write_log_row(candidate: dict, contact: dict, enrichment: dict,
                         %s, %s, %s,
                         %s, %s, %s, %s, %s,
                         %s, %s, %s,
-                        %s, %s)
+                        %s, %s) ON CONFLICT DO NOTHING
                 RETURNING id
             """, (
                 candidate.get("domain"),
