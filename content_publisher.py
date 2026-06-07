@@ -205,6 +205,18 @@ def init_content_tables():
     except Exception as _icee:
         logger.warning("media comment engagement table init skipped: %s", _icee)
 
+    # Multi-platform amplifier (2026-06-07): multiplatform_amplifier_log table.
+    # Required by the master fan-out dispatcher (LinkedIn → Bluesky + Twitter
+    # + Mastodon + HN semi-auto) for the State of 2026 launch and any future
+    # cross-posts. Same defensive boot-init pattern as the other media-loop
+    # modules — fail-soft so a missing brand-new table never blanks
+    # content_publisher.
+    try:
+        from routes.multiplatform_amplifier import init_amplifier_tables as _ima
+        _ima()
+    except Exception as _imae:
+        logger.warning("multiplatform amplifier table init skipped: %s", _imae)
+
 def _media_block_category(reason: str) -> str:
     r = (reason or "").lower()
     if "disclaimer" in r:                       return "ai_disclaimer_as_validation"
