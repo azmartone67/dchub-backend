@@ -389,6 +389,10 @@ Real thanks for the bet.
             headers={
                 "Authorization": f"Bearer {resend_key}",
                 "Content-Type": "application/json",
+                # Cloudflare fronts api.resend.com and 403s urllib's DEFAULT
+                # User-Agent (error 1010). A normal UA is REQUIRED or every
+                # welcome silently fails. r-sec 2026-06-07.
+                "User-Agent": "DCHub-Mailer/1.0 (+https://dchub.cloud)",
             },
         )
         with urllib.request.urlopen(req, timeout=15) as resp:
