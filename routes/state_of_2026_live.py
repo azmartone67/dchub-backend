@@ -603,6 +603,37 @@ def _persist_live_numbers(source: str = "cron") -> dict:
     }
 
 
+# ──────────────────────────────────────────────────────────────────
+# Legacy-URL aliases — brain_consistency_radar + surface_registrations
+# both reference /state-of-the-data-center as the canonical URL but
+# nothing ever built it. We canonicalize to /state-of-2026 (the actual
+# living-doc surface) and 301-redirect every common legacy spelling.
+#
+# Cloudflare Error 1000 NOTE: the dchub.cloud zone-worker has an
+# out-of-repo rule that 403s /state-of-the-data-center BEFORE the
+# Pages worker runs (same trap pattern as /research/* per memory).
+# This redirect handler executes if/when CF stops blocking — and is
+# useful for direct-to-origin calls (Railway URL, Render failover).
+# Long-term fix is removing the CF zone-worker rule (CF dashboard).
+# ──────────────────────────────────────────────────────────────────
+
+@state_of_2026_live_bp.route("/state-of-the-data-center", methods=["GET"])
+@state_of_2026_live_bp.route("/state-of-the-data-center/", methods=["GET"])
+@state_of_2026_live_bp.route("/state-of-the-data-center-2026", methods=["GET"])
+@state_of_2026_live_bp.route("/state-of-data-centers-2026", methods=["GET"])
+@state_of_2026_live_bp.route("/state-of-data-center", methods=["GET"])
+@state_of_2026_live_bp.route("/state-of-the-datacenter", methods=["GET"])
+def state_of_data_center_legacy_alias():
+    """301 → /state-of-2026 (the canonical living-doc URL).
+
+    Preserves query string for attribution (e.g., utm_*, ref tokens).
+    """
+    from flask import redirect as _redirect
+    qs = request.query_string.decode("utf-8") if request.query_string else ""
+    target = "/state-of-2026" + (f"?{qs}" if qs else "")
+    return _redirect(target, code=301)
+
+
 @state_of_2026_live_bp.route("/api/v1/admin/state-of-2026/refresh-now",
                               methods=["POST", "GET"])
 def state_of_2026_refresh_now():
