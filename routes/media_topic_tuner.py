@@ -356,17 +356,20 @@ def backfill_recent_tags(limit: int = 500) -> dict[str, Any]:
             except Exception as e:
                 out["errors"].append(f"smp_backfill: {e}")
             try:
-                # linkedin_posts uses either `content` or 'post_text';
-                # pick whichever exists.
-                col = "content"
+                # linkedin_posts uses either `content_text`, `content`, or
+                # `post_text`; pick whichever exists in the live schema.
+                col = "content_text"
                 try:
-                    cur.execute("""SELECT 1 FROM information_schema.columns
+                    cur.execute("""SELECT column_name FROM information_schema.columns
                                    WHERE table_name='linkedin_posts'
-                                     AND column_name='content'""")
-                    if not cur.fetchone():
-                        col = "post_text"
+                                     AND column_name IN ('content_text','content','post_text')""")
+                    cols = {r[0] if not hasattr(r, 'get') else r.get('column_name')
+                            for r in (cur.fetchall() or [])}
+                    if "content_text" in cols: col = "content_text"
+                    elif "content" in cols:    col = "content"
+                    elif "post_text" in cols:  col = "post_text"
                 except Exception:
-                    col = "content"
+                    col = "content_text"
                 out["linkedin_posts_tagged"] = _backfill_table(
                     cur, "linkedin_posts", col, "id", limit)
             except Exception as e:
@@ -407,9 +410,12 @@ def topic_performance(days: int = 30) -> list[dict]:
             # client-side (classifier is cheap) so we can score
             # un-backfilled rows too.
             try:
+                # linkedin_posts uses `published_at` in the canonical schema
+                # (see linkedin_autopost.py CREATE TABLE) and `posted_at` in
+                # other replicas. COALESCE both so we don't miss either.
                 cur.execute(f"""
                     SELECT id,
-                           COALESCE(content, post_text, '') AS body,
+                           COALESCE(content_text, content, post_text, '') AS body,
                            COALESCE(impressions, 0)         AS impressions,
                            COALESCE(clicks, 0)              AS clicks,
                            COALESCE(likes, 0)               AS likes,
@@ -417,8 +423,9 @@ def topic_performance(days: int = 30) -> list[dict]:
                            COALESCE(shares, 0)              AS shares,
                            media_topic_tags                 AS tags
                       FROM linkedin_posts
-                     WHERE posted_at > NOW() - INTERVAL '{int(days)} days'
-                       AND COALESCE(content, post_text, '') <> ''
+                     WHERE COALESCE(published_at, posted_at, created_at, NOW())
+                           > NOW() - INTERVAL '{int(days)} days'
+                       AND COALESCE(content_text, content, post_text, '') <> ''
                 """)
                 rows = cur.fetchall() or []
             except Exception as e:
