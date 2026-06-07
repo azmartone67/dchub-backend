@@ -95,7 +95,7 @@ _SEED = [
         "canonical_name":     "digital-realty",
         "display_name":       "Digital Realty",
         "operator_type":      "reit",
-        "website":            "https://www.digitalrealty.com/about-us/global-data-centers",
+        "website":            "https://www.digitalrealty.com/data-centers",
         "hq_country":         "US",
         "hq_city":            "Austin",
         "headline":           "Largest publicly traded DC REIT by footprint — 311 data centers in 50+ metros across 25 countries.",

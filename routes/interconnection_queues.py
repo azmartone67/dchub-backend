@@ -243,11 +243,11 @@ tr:last-child td{{border-bottom:0}}
 <strong>Sources</strong> (each ISO snapshot links its primary source):
 <a href="https://www.ercot.com/gridinfo/resource">ERCOT MIS</a> &middot;
 <a href="https://www.pjm.com/planning/services-requests/interconnection-queues">PJM Queue Tracker</a> &middot;
-<a href="https://www.misoenergy.org/planning/resource-utilization/generator-interconnection-queue/">MISO GIQ</a> &middot;
-<a href="https://www.spp.org/engineering/transmission-planning/generator-interconnection/">SPP DISIS</a> &middot;
-<a href="https://www.caiso.com/planning/generator-interconnection-process">CAISO</a> &middot;
+<a href="https://www.misoenergy.org/">MISO GIQ</a> &middot;
+<a href="https://spp.org/engineering/generator-interconnection/">SPP DISIS</a> &middot;
+<a href="https://www.caiso.com/generation-transmission/generation/generator-interconnection">CAISO</a> &middot;
 <a href="https://www.nyiso.com/connecting-to-the-grid">NYISO</a> &middot;
-<a href="https://www.iso-ne.com/system-planning/interconnection-process">ISO-NE</a> &middot;
+<a href="https://www.iso-ne.com/system-planning/interconnection-service">ISO-NE</a> &middot;
 LBNL <a href="https://emp.lbl.gov/queues">Queued Up</a>
 </p>
 </body></html>"""

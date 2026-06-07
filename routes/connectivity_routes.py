@@ -333,7 +333,7 @@ SEED_PROVIDERS = [
         'display_name': 'Crown Castle Fiber',
         'provider_type': 'fiber_carrier',
         'headquarters': 'Houston, TX',
-        'website': 'https://crowncastle.com/fiber',
+        'website': 'https://www.crowncastle.com/',
         'route_miles': 85000,
         'dark_fiber': True, 'lit_services': True, 'wavelength': True, 'ethernet': True,
         'description': 'Metro and enterprise fiber with 85,000+ route miles across top US markets. Small cell and edge connectivity.',
