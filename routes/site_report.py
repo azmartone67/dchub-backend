@@ -711,6 +711,13 @@ def _build_survey_data(lat, lon, latency_target, capacity_mw):
         fiber = _grab("fiber")
         latency = _grab("latency")
 
+    # Auto satellite site map for the Power page — every report gets a visual of
+    # the parcel (a POST upload from the submission portal overrides this).
+    power["site_map"] = _static_site_map(lat, lon)
+    power["site_map_caption"] = ("DC Hub satellite view · " + _coords_str(lat, lon)
+                                 + " — pin marks the candidate site (imagery: Esri).")
+    power["_site_map_pin"] = True
+
     iso = power.get("iso", "—")
     loc_bits = [b for b in [_STATE_NAME.get(state, state), (iso if iso and iso != "—" else None)] if b]
     location = " · ".join(loc_bits) if loc_bits else "United States"
@@ -876,13 +883,29 @@ def _kv(k, v_html):
             f'<span class="vv">{v_html}</span></div>')
 
 
-def _mapfig(src, cap, h="3.4in"):
-    """Render an uploaded map figure (data: URI or path). Empty src → ''."""
+def _mapfig(src, cap, h="3.4in", pin=False):
+    """Render a map figure (data: URI or URL). Empty src → ''. When pin=True,
+    overlays a centered marker (used for the auto satellite site map, which is
+    centered on the coordinates)."""
     if not src:
         return ""
-    return (f'<div class="mapfig"><img src="{_esc(src)}" style="height:{h}"/>'
+    pin_html = ('<div style="position:absolute;top:50%;left:50%;'
+                'transform:translate(-50%,-100%);font-size:30px;line-height:1;'
+                'pointer-events:none;filter:drop-shadow(0 2px 3px rgba(0,0,0,.55))">📍</div>'
+                if pin else "")
+    return (f'<div class="mapfig" style="position:relative"><img src="{_esc(src)}" style="height:{h}"/>'
+            + pin_html
             + (f'<div class="mapcap">{_esc(cap)}</div>' if cap else "")
             + "</div>")
+
+
+def _static_site_map(lat, lon, dlat=0.0065, dlon=0.0095):
+    """Free ArcGIS World Imagery static export centered on the site (no API key,
+    CORS-ok). ~1.5 km across — shows the parcel + immediate surroundings."""
+    return ("https://services.arcgisonline.com/arcgis/rest/services/World_Imagery/"
+            "MapServer/export?bbox="
+            f"{lon - dlon:.5f},{lat - dlat:.5f},{lon + dlon:.5f},{lat + dlat:.5f}"
+            "&bboxSR=4326&imageSR=4326&size=920,560&format=png&f=image")
 
 
 _CSS = """
@@ -991,7 +1014,7 @@ def _render_html(S):
     H.append(
         '<section class="page"><p class="kick"><span class="secnum">01</span> &nbsp;Power &amp; Grid</p>'
         '<h2>⚡ Transmission &amp; Substation</h2><div class="sec-rule"></div>'
-        + _mapfig(p.get("site_map"), p.get("site_map_caption"), "3.0in")
+        + _mapfig(p.get("site_map"), p.get("site_map_caption"), "3.0in", pin=p.get("_site_map_pin"))
         + '<div class="grid2">'
         '<div class="card ind"><p class="lab">Nearest Substation</p>'
         f'<div class="big">{_esc(p.get("substation","—"))}</div>'
@@ -1431,6 +1454,7 @@ def site_report():
         _latency = _img_data_uri(request.files.get("latency_map"))
         if _site:
             survey.setdefault("power", {})["site_map"] = _site
+            survey["power"]["_site_map_pin"] = False  # user's own map — no center pin
             survey["power"]["site_map_caption"] = (
                 vals.get("site_map_caption") or "DC Hub land + power view — uploaded site map.")
         if _fiber:

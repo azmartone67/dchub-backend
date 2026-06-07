@@ -3521,6 +3521,27 @@ def get_facilities():
         page = 1
     page = max(1, page)
     offset = (page - 1) * limit
+
+    # Optional viewport filter: bbox=minLon,minLat,maxLon,maxLat (WGS84) lets the
+    # map fetch only what's on screen as you pan/zoom. min_mw filters by capacity.
+    # Both are additive + backward-compatible (absent → previous behaviour).
+    _filt_sql, _filt_params = "", []
+    _bbox = request.args.get('bbox')
+    if _bbox:
+        try:
+            mnLon, mnLat, mxLon, mxLat = [float(x) for x in _bbox.split(',')][:4]
+            _filt_sql += " AND longitude BETWEEN %s AND %s AND latitude BETWEEN %s AND %s"
+            _filt_params += [mnLon, mxLon, mnLat, mxLat]
+        except (TypeError, ValueError):
+            pass
+    try:
+        _minmw = request.args.get('min_mw')
+        if _minmw:
+            _filt_sql += " AND power_mw >= %s"
+            _filt_params.append(float(_minmw))
+    except (TypeError, ValueError):
+        pass
+
     try:
         conn = get_db_connection()
         cur  = conn.cursor()
@@ -3531,16 +3552,16 @@ def get_facilities():
                    facility_type, status
             FROM discovered_facilities
             WHERE latitude IS NOT NULL AND longitude IS NOT NULL
-              AND latitude != 0 AND longitude != 0
+              AND latitude != 0 AND longitude != 0''' + _filt_sql + '''
             ORDER BY power_mw DESC NULLS LAST
             LIMIT %s OFFSET %s
-        ''', (limit, offset))
+        ''', tuple(_filt_params + [limit, offset]))
         rows = cur.fetchall()
         cols = [d[0] for d in cur.description]
         data = [dict(zip(cols, row)) for row in rows]
         cur.execute("""SELECT COUNT(*) FROM discovered_facilities
             WHERE latitude IS NOT NULL AND longitude IS NOT NULL
-              AND latitude != 0 AND longitude != 0""")
+              AND latitude != 0 AND longitude != 0""" + _filt_sql, tuple(_filt_params))
         total = cur.fetchone()[0]
         cur.close(); conn.close()
         resp = jsonify({"count": total, "data": data})
