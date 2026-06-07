@@ -174,6 +174,16 @@ def init_content_tables():
     except Exception as _tte:
         logger.warning("media topic tuner table init skipped: %s", _tte)
 
+    # Media ROUND 2 — spike responder (2026-06-07): media_autoresponse_log
+    # table + linkedin_posts.autoresponse_triggered_at column. Required
+    # for the twice-daily spike detector cron at 10/22 UTC and the
+    # /api/v1/admin/media/spikes/* endpoints.
+    try:
+        from routes.media_spike_responder import init_spike_responder_tables as _isr
+        _isr()
+    except Exception as _isre:
+        logger.warning("media spike responder table init skipped: %s", _isre)
+
     # State of 2026 LIVING document tables (state_of_2026_pageviews,
     # state_of_2026_clicks, state_of_2026_claim_proposals). 2026-06-07:
     # boot-init so the /state-of-2026 landing + /r/<token> attribution

@@ -1540,6 +1540,19 @@ try:
         import logging
         logging.getLogger(__name__).warning(
             'state_of_2026_live wiring failed: %s', _s26le)
+    # 2026-06-07 Round 2: state-of-2026 visitor → MCP trial conversion.
+    # Page-side JS tracks time-on-page + outbound brief clicks; threshold
+    # (2 clicks OR 60s) opens a modal; modal POST mints a trial key +
+    # emails it via Resend. See routes/state_visitor_claim.py header.
+    try:
+        from routes.state_visitor_claim import state_visitor_claim_bp
+        app.register_blueprint(state_visitor_claim_bp)
+        print("🎯 [state_visitor_claim] ready · POST /api/v1/state-of-2026/track-event · "
+              "POST /api/v1/state-of-2026/claim-email · GET /api/v1/state-of-2026/funnel")
+    except Exception as _svce:
+        import logging
+        logging.getLogger(__name__).warning(
+            'state_visitor_claim wiring failed: %s', _svce)
     try:
         from routes.feedback_triage import feedback_triage_bp
         app.register_blueprint(feedback_triage_bp)

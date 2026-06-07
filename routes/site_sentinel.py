@@ -1520,6 +1520,12 @@ findings opened here on its next learn pass and proposes draft PRs.</p>
   <span style="color:var(--mute);font-size:.8rem;margin-left:.5rem" id="ts"></span>
 </div>
 
+<div class="toolbar" id="tabs">
+  <button class="btn alt tab-btn active" data-tab="manifest" style="background:rgba(99,102,241,.3)">Manifest probes</button>
+  <button class="btn alt tab-btn" data-tab="automerge">Auto-merge Activity</button>
+</div>
+
+<div id="tab-manifest">
 <table>
   <thead>
     <tr>
@@ -1531,6 +1537,40 @@ findings opened here on its next learn pass and proposes draft PRs.</p>
     <tr><td colspan="9" style="text-align:center;padding:2rem;color:var(--mute)">Loading...</td></tr>
   </tbody>
 </table>
+</div>
+
+<div id="tab-automerge" style="display:none">
+  <div class="summary">
+    <div class="kpi"><div class="l">Kill Switch</div><div class="v" id="am-kill" style="font-size:1rem">--</div></div>
+    <div class="kpi"><div class="l">Dry Run</div><div class="v" id="am-dry" style="font-size:1rem">--</div></div>
+    <div class="kpi"><div class="l">Weekly Cap</div><div class="v" id="am-cap" style="font-size:1.1rem">--</div></div>
+    <div class="kpi"><div class="l">Min Confidence</div><div class="v" id="am-conf" style="font-size:1.1rem">--</div></div>
+    <div class="kpi"><div class="l">Outcomes (merged rows)</div><div class="v" id="am-outcomes" style="font-size:.85rem">--</div></div>
+  </div>
+  <div class="toolbar">
+    <button class="btn" id="am-run">Run auto-merge sweep now</button>
+    <button class="btn alt" id="am-followup">Run follow-up probes</button>
+    <button class="btn alt" id="am-block-24h" style="background:rgba(239,68,68,.2);color:#fca5a5">Block auto-merge 24h</button>
+    <button class="btn alt" id="am-reload">Reload decisions</button>
+  </div>
+  <table>
+    <thead>
+      <tr>
+        <th>When</th><th>PR</th><th>Decision</th><th>Reason</th>
+        <th>Sentinel Path</th><th>Conf</th><th>Files</th><th>Follow-up</th>
+      </tr>
+    </thead>
+    <tbody id="am-tbody">
+      <tr><td colspan="8" style="text-align:center;padding:2rem;color:var(--mute)">Click "Reload decisions" to load.</td></tr>
+    </tbody>
+  </table>
+  <p class="footer" style="margin-top:1rem">
+    Decisions: <a href="/api/v1/admin/sentinel/auto-merge-log" style="color:#a5b4fc">/api/v1/admin/sentinel/auto-merge-log</a> ·
+    Sweep: <a href="/api/v1/admin/sentinel/auto-merge-eligible" style="color:#a5b4fc">/api/v1/admin/sentinel/auto-merge-eligible</a> ·
+    Status: <a href="/api/v1/admin/sentinel/auto-merge-status" style="color:#a5b4fc">/api/v1/admin/sentinel/auto-merge-status</a> ·
+    Source: routes/sentinel_auto_merge.py
+  </p>
+</div>
 
 <p class="footer">
   JSON: <a href="/api/v1/admin/sentinel-inbox" style="color:#a5b4fc">/api/v1/admin/sentinel-inbox</a> ·
@@ -1644,6 +1684,132 @@ findings opened here on its next learn pass and proposes draft PRs.</p>
   });
   document.getElementById('reload').addEventListener('click', load);
   load();
+
+  // ── Auto-merge tab (Round 2) ──────────────────────────────────────
+  function amFmtTime(s){
+    if (!s) return '--';
+    try { return String(s).replace('T',' ').slice(0,19) + 'Z'; }
+    catch(e){ return String(s); }
+  }
+  function amFmtFiles(arr){
+    if (!arr || !arr.length) return '--';
+    var s = arr.slice(0,2).map(function(p){ return '<code style="font-size:.7rem">'+esc(p)+'</code>'; }).join('<br>');
+    if (arr.length > 2) s += '<br><span style="color:var(--mute)">+' + (arr.length-2) + ' more</span>';
+    return s;
+  }
+  function amFmtDecision(row){
+    var d = row.decision || '';
+    var color = d === 'allow' ? '#10b981' : (d === 'reject' ? '#fca5a5' : '#fbbf24');
+    var label = d.toUpperCase();
+    if (d === 'allow' && row.dry_run) label = 'DRY-RUN ALLOW';
+    if (d === 'allow' && row.merged_at && !row.dry_run) label = 'MERGED';
+    return '<span style="color:'+color+';font-weight:600;font-size:.78rem">'+esc(label)+'</span>';
+  }
+  function amFmtFollowup(row){
+    if (!row.merge_sha || row.dry_run) return '--';
+    var o = row.follow_up_outcome;
+    if (!o) return '<span class="pill" style="background:rgba(245,158,11,.2);color:#fbbf24">pending</span>';
+    if (o === 'success') return '<span class="pill" style="background:rgba(16,185,129,.2);color:#10b981">healed</span>';
+    if (o === 'regression') return '<span class="pill" style="background:rgba(239,68,68,.3);color:white">regressed</span>';
+    return '<span class="pill" style="background:rgba(148,163,184,.2);color:var(--mute)">'+esc(o)+'</span>';
+  }
+  function loadAutoMergeLog(){
+    fetch('/api/v1/admin/sentinel/auto-merge-log?admin_key='+encodeURIComponent(ADMIN_KEY),
+          { headers: { 'X-Admin-Key': ADMIN_KEY }})
+      .then(function(r){ return r.json(); })
+      .then(function(j){
+        if (j.error){ toast('Auto-merge log: ' + j.error); return; }
+        document.getElementById('am-kill').textContent = j.kill_switch ? 'ON (DISABLED)' : 'off';
+        document.getElementById('am-kill').style.color = j.kill_switch ? '#fca5a5' : '#10b981';
+        document.getElementById('am-dry').textContent = j.dry_run ? 'YES (no merges)' : 'no (live)';
+        document.getElementById('am-dry').style.color = j.dry_run ? '#fbbf24' : '#10b981';
+        document.getElementById('am-cap').textContent = (j.used_this_week||0) + ' / ' + (j.weekly_cap||10);
+        document.getElementById('am-conf').textContent = '≥ ' + (j.min_confidence||0.95);
+        var oc = j.outcomes || {};
+        document.getElementById('am-outcomes').innerHTML =
+          '<span style="color:#10b981">' + (oc.success||0) + ' ok</span> · ' +
+          '<span style="color:#fca5a5">' + (oc.regression||0) + ' regress</span> · ' +
+          '<span style="color:#fbbf24">' + (oc.pending||0) + ' pend</span> · ' +
+          '<span style="color:var(--mute)">' + (oc.inconclusive||0) + ' ?</span>';
+        var tb = document.getElementById('am-tbody');
+        tb.innerHTML = '';
+        var rows = j.rows || [];
+        if (!rows.length){
+          tb.innerHTML = '<tr><td colspan="8" style="text-align:center;padding:2rem;color:var(--mute)">No decisions logged yet. Run sweep to populate.</td></tr>';
+          return;
+        }
+        rows.forEach(function(r){
+          var tr = document.createElement('tr');
+          tr.innerHTML =
+            '<td style="font-size:.72rem;color:var(--mute)">' + esc(amFmtTime(r.decided_at)) + '</td>' +
+            '<td><a href="https://github.com/azmartone67/dchub-backend/pull/' + (r.pr_number||0) + '" target="_blank" rel="noopener" style="color:#a5b4fc">#' + esc(r.pr_number||'?') + '</a></td>' +
+            '<td>' + amFmtDecision(r) + '</td>' +
+            '<td><span class="reason" title="' + esc(r.reason||'') + '">' + esc((r.reason||'').slice(0,90)) + '</span></td>' +
+            '<td><code style="font-size:.72rem">' + esc(r.sentinel_path||'--') + '</code></td>' +
+            '<td>' + (r.confidence != null ? (Number(r.confidence).toFixed(2)) : '--') + '</td>' +
+            '<td>' + amFmtFiles(r.files_changed) + '</td>' +
+            '<td>' + amFmtFollowup(r) + '</td>';
+          tb.appendChild(tr);
+        });
+      })
+      .catch(function(e){ toast('Auto-merge log load failed: ' + e); });
+  }
+  document.querySelectorAll('.tab-btn').forEach(function(btn){
+    btn.addEventListener('click', function(){
+      document.querySelectorAll('.tab-btn').forEach(function(b){
+        b.style.background = 'rgba(255,255,255,.08)';
+        b.classList.remove('active');
+      });
+      this.style.background = 'rgba(99,102,241,.3)';
+      this.classList.add('active');
+      var t = this.getAttribute('data-tab');
+      document.getElementById('tab-manifest').style.display = (t==='manifest') ? '' : 'none';
+      document.getElementById('tab-automerge').style.display = (t==='automerge') ? '' : 'none';
+      if (t === 'automerge') loadAutoMergeLog();
+    });
+  });
+  document.getElementById('am-reload').addEventListener('click', loadAutoMergeLog);
+  document.getElementById('am-run').addEventListener('click', function(){
+    this.disabled = true; toast('Running auto-merge sweep...');
+    fetch('/api/v1/admin/sentinel/auto-merge-eligible?admin_key=' + encodeURIComponent(ADMIN_KEY),
+          { method: 'POST', headers: { 'X-Admin-Key': ADMIN_KEY }})
+      .then(function(r){ return r.json(); })
+      .then(function(j){
+        toast('Sweep: scanned=' + (j.scanned||0) + ' allowed=' + (j.allowed||0) +
+              ' rejected=' + (j.rejected||0) + ' merged=' + (j.merged||0) +
+              (j.dry_run ? ' (DRY-RUN)' : ''));
+        setTimeout(loadAutoMergeLog, 400);
+      })
+      .catch(function(e){ toast('Sweep failed: ' + e); })
+      .finally((function(b){ return function(){ b.disabled = false; }; })(this));
+  });
+  document.getElementById('am-followup').addEventListener('click', function(){
+    this.disabled = true; toast('Running follow-up probes...');
+    fetch('/api/v1/admin/sentinel/auto-merge-followup?admin_key=' + encodeURIComponent(ADMIN_KEY),
+          { method: 'POST', headers: { 'X-Admin-Key': ADMIN_KEY }})
+      .then(function(r){ return r.json(); })
+      .then(function(j){
+        toast('Follow-up: checked=' + (j.checked||0) +
+              ' success=' + (j.success||0) +
+              ' regression=' + (j.regression||0));
+        setTimeout(loadAutoMergeLog, 400);
+      })
+      .catch(function(e){ toast('Follow-up failed: ' + e); })
+      .finally((function(b){ return function(){ b.disabled = false; }; })(this));
+  });
+  document.getElementById('am-block-24h').addEventListener('click', function(){
+    if (!confirm('Block auto-merge for 24 hours? (writes a row to sentinel_auto_merge_block; all sweeps will reject during the window)')) return;
+    this.disabled = true; toast('Setting 24h block...');
+    fetch('/api/v1/admin/sentinel/auto-merge-block-24h?admin_key=' + encodeURIComponent(ADMIN_KEY),
+          { method: 'POST', headers: { 'X-Admin-Key': ADMIN_KEY }})
+      .then(function(r){ return r.json(); })
+      .then(function(j){
+        toast(j.ok ? ('Blocked until ' + (j.blocked_until||'(24h)')) : ('Block failed: ' + (j.error||'?')));
+        setTimeout(loadAutoMergeLog, 400);
+      })
+      .catch(function(e){ toast('Block failed: ' + e); })
+      .finally((function(b){ return function(){ b.disabled = false; }; })(this));
+  });
 })();
 </script>
 </body></html>"""

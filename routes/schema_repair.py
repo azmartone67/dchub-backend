@@ -513,6 +513,36 @@ SCHEMA_STATEMENTS = [
         "ALTER TABLE connect_landing_views ADD COLUMN IF NOT EXISTS stripe_clicked_plan TEXT",
         "CREATE INDEX IF NOT EXISTS ix_connect_lv_clicked ON connect_landing_views(stripe_clicked_at) WHERE stripe_clicked_at IS NOT NULL",
     ]),
+    ("state_visitor_intent table (2026-06-07 R2 — state-of-2026 web-visitor claim)", [
+        # 2026-06-07 Round 2: state-of-2026 web visitors. Page-side JS bumps
+        # brief_clicks / time_on_page_seconds via /api/v1/state-of-2026/track-event;
+        # when EITHER crosses threshold (2 clicks OR 60s), the modal fires
+        # /api/v1/state-of-2026/claim-email which mints a trial key + emails
+        # it. visitor_session_id UNIQUE so retries can't double-mint.
+        # Mirrors _SCHEMA_SQL in routes/state_visitor_claim.py so a fresh
+        # deploy that hasn't called the endpoint yet still has the table.
+        """CREATE TABLE IF NOT EXISTS state_visitor_intent (
+            id                       BIGSERIAL PRIMARY KEY,
+            visitor_session_id       TEXT NOT NULL UNIQUE,
+            brief_clicks             INTEGER NOT NULL DEFAULT 0,
+            time_on_page_seconds     INTEGER NOT NULL DEFAULT 0,
+            brief_slugs              TEXT,
+            hi_threshold_hit_at      TIMESTAMPTZ,
+            claim_token              TEXT,
+            claim_minted_at          TIMESTAMPTZ,
+            claim_used_at            TIMESTAMPTZ,
+            email                    TEXT,
+            minted_api_key           TEXT,
+            ua                       TEXT,
+            referer                  TEXT,
+            ip_hash                  TEXT,
+            first_seen_at            TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+            last_event_at            TIMESTAMPTZ NOT NULL DEFAULT NOW()
+        )""",
+        "CREATE INDEX IF NOT EXISTS ix_svi_hi_hit ON state_visitor_intent(hi_threshold_hit_at DESC) WHERE hi_threshold_hit_at IS NOT NULL",
+        "CREATE INDEX IF NOT EXISTS ix_svi_used ON state_visitor_intent(claim_used_at DESC) WHERE claim_used_at IS NOT NULL",
+        "CREATE INDEX IF NOT EXISTS ix_svi_email ON state_visitor_intent(LOWER(email)) WHERE email IS NOT NULL",
+    ]),
     ("mcp_high_intent_sessions table (2026-06-07 session-bound 3-strike claim)", [
         # 2026-06-07: session-bound HIGH-INTENT capture. When an MCP session
         # hits the SAME paid tool 3+ times in 24h, the mcp-server fires a

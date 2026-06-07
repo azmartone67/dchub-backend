@@ -1536,6 +1536,48 @@ def _run_media_topic_tune():
     )
 
 
+def _run_media_spike_responder():
+    """DC Hub Media ROUND 2 — engagement-spike auto-responder (2026-06-07).
+
+    Twice daily 10/22 UTC. Calls the loopback admin endpoint so the same
+    auth gate fires for cron + manual triggers. Endpoint internally:
+      - detects LinkedIn posts crossing 2x baseline impressions in <6h
+      - generates 3 follow-up comments via Claude (staggered 30/90/180m)
+      - logs to media_autoresponse_log
+      - honors MEDIA_AUTORESPONSE_DISABLE / DRY_RUN / WEEKLY_CAP envs
+      - per-post once-only via linkedin_posts.autoresponse_triggered_at
+
+    Defaults to DRY-RUN — writes drafts without posting; operator flips
+    the flag after reviewing on /admin/media-mix. Never raises."""
+    import requests as _rq
+    key = (os.environ.get("DCHUB_ADMIN_KEY")
+           or os.environ.get("DCHUB_INTERNAL_KEY")
+           or os.environ.get("DCHUB_ADMIN_API_KEY") or "")
+    if not key:
+        logger.warning(
+            "📣 media_spike_responder: skipped — DCHUB_ADMIN_KEY not set")
+        return
+    base = os.environ.get("DCHUB_INTERNAL_API", "http://127.0.0.1:8080")
+    try:
+        r = _rq.post(
+            f"{base}/api/v1/admin/media/spikes/detect",
+            headers={"X-Admin-Key": key,
+                     "User-Agent": "dchub-cron-spike-responder/1.0"},
+            timeout=90,
+        )
+        d = (r.json() if r.headers.get("content-type", "").startswith(
+            "application/json") else {}) or {}
+        logger.info(
+            "📣 media_spike_responder: detected=%s fired=%s dry_run=%s "
+            "weekly=%s/%s kill=%s errors=%s",
+            d.get("detected"), d.get("fired"), d.get("dry_run"),
+            d.get("weekly_used"), d.get("weekly_cap"),
+            d.get("kill_switched"), len(d.get("errors") or []),
+        )
+    except Exception as e:
+        logger.error("📣 media_spike_responder: error — %s", e)
+
+
 def _run_verdict_shift_post():
     """DCPI Verdict-Shift auto-press (2026-06-06): once-daily scan for
     markets whose DCPI verdict TODAY differs from the verdict 7 days
@@ -2234,6 +2276,7 @@ _RUNNERS = {
     "linkedin_engagement_sync": _run_linkedin_engagement_sync,
     "accelerator_scan":    _run_accelerator_scan,
     "media_topic_tune":    _run_media_topic_tune,
+    "media_spike_responder": _run_media_spike_responder,
     "mcp_presence_crawl":  _run_mcp_presence_crawl,
     "mcp_registry_discover": _run_mcp_registry_discover,
     "mcp_presence_auto_fix": _run_mcp_presence_auto_fix,

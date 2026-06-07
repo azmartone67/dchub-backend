@@ -1160,9 +1160,12 @@ def http_li_click(short):
 # ── Admin HTML dashboard ────────────────────────────────────────────────
 def _render_media_mix_html(mix: list[dict], perf: list[dict],
                           series: list[dict],
-                          assisted: dict[str, Any]) -> str:
+                          assisted: dict[str, Any],
+                          autoresp: list[dict] | None = None,
+                          autoresp_flags: dict[str, Any] | None = None) -> str:
     """Single-page HTML — top 5 topics, current mix bars, series schedule,
-    click-attribution KPIs. No frameworks; mobile-friendly."""
+    click-attribution KPIs + ROUND-2 auto-response activity table.
+    No frameworks; mobile-friendly."""
     def _fmt_pct(x: float) -> str:
         return f"{x * 100:.1f}%"
     eff = mix[0]["effective_for"] if mix else "(none yet)"
@@ -1244,14 +1247,101 @@ The tuner runs daily at 13:30 UTC after LinkedIn engagement sync.</p>
 </tr></thead>
 <tbody>{series_html}</tbody></table>
 
+{_render_autoresponse_section(autoresp or [], autoresp_flags or {})}
+
 <h2 class="muted" style="margin-top:32px;font-size:14px;">Tuner actions</h2>
 <p class="muted">
   <code>POST /api/v1/admin/media/tune-now</code> — recompute today's mix<br>
   <code>POST /api/v1/admin/media/backfill-tags?limit=500</code> — tag historic posts<br>
   <code>POST /api/v1/admin/media/series/create?kind=build-top10</code> — create 5-part series<br>
-  <code>GET  /api/v1/admin/media/topic-performance?days=30</code> — raw engagement
+  <code>GET  /api/v1/admin/media/topic-performance?days=30</code> — raw engagement<br>
+  <code>GET  /api/v1/admin/media/spikes/preview</code> — round-2 spike preview<br>
+  <code>POST /api/v1/admin/media/spikes/detect</code> — round-2 detect+gen run<br>
+  <code>POST /api/v1/admin/media/autoresponse/publish/&lt;log_id&gt;</code> — flush a dry-run draft live
 </p>
 </body></html>"""
+
+
+def _render_autoresponse_section(rows: list[dict], flags: dict[str, Any]) -> str:
+    """ROUND-2 dashboard tile: Auto-Response Activity. Shows last 30d
+    spikes + decisions (responded/skipped/rejected/dry_run), the
+    generated comments + their performance after publish, and the
+    kill-switch / dry-run flags currently in effect."""
+    dry_pill   = ("DRY-RUN" if flags.get("dry_run") else "LIVE")
+    kill_pill  = ("KILL ON" if flags.get("kill_switched") else "kill off")
+    weekly     = f"{flags.get('weekly_used', 0)}/{flags.get('weekly_cap', 3)} this 7d"
+    badge_dry  = "background:#3b2e0a;color:#ffd166" if flags.get("dry_run") else "background:#0e2a1c;color:#7cf3a0"
+    badge_kill = "background:#3a0e0e;color:#ff8a8a" if flags.get("kill_switched") else "background:#1d2630;color:#9ec5fe"
+    table_rows: list[str] = []
+    for r in rows[:30]:
+        spike = (r.get("spike_detected_at") or "")[:16].replace("T", " ")
+        urn   = (r.get("source_post_urn") or "")[:34]
+        impr  = int(r.get("impressions_before") or 0)
+        ratio = float(r.get("viral_ratio") or 0)
+        status= str(r.get("status") or "")
+        comms = r.get("comments") or []
+        if isinstance(comms, str):
+            try:
+                comms = json.loads(comms)
+            except Exception:
+                comms = []
+        comms_html = "".join(
+            f"<div style='padding:6px 0;border-top:1px solid #1d2530'>"
+            f"<span class='muted' style='font-size:11px'>+{(c.get('offset_min') or 0)}m</span> "
+            f"&nbsp;{(c.get('comment') or '')[:240]}</div>"
+            for c in (comms or []) if isinstance(c, dict)
+        )
+        if not comms_html:
+            comms_html = "<span class='muted'>(no comments generated)</span>"
+        status_color = {
+            "dry_run":   "#ffd166",
+            "queued":    "#9ec5fe",
+            "published": "#7cf3a0",
+            "rejected":  "#ff8a8a",
+            "publish_failed": "#ff8a8a",
+        }.get(status, "#97a3b6")
+        publish_btn = ""
+        if status in ("dry_run", "queued"):
+            publish_btn = (
+                f"<a href='/api/v1/admin/media/autoresponse/publish/{r.get('id')}'"
+                " style='font-size:11px;color:#9ec5fe' "
+                "onclick=\"event.preventDefault();fetch(this.href,{method:'POST',"
+                "headers:{'X-Admin-Key':prompt('admin key')}}).then(r=>r.json())"
+                ".then(d=>alert(JSON.stringify(d,null,2)))\">"
+                "publish live</a>"
+            )
+        table_rows.append(
+            f"<tr><td>{spike}</td>"
+            f"<td class='muted' style='font-size:11px'>{urn}</td>"
+            f"<td class='num'>{impr:,}</td>"
+            f"<td class='num'>{ratio:.2f}x</td>"
+            f"<td><span style='color:{status_color}'>{status}</span> {publish_btn}</td></tr>"
+            f"<tr><td colspan=5 style='padding:4px 8px 12px 8px;background:#0e1320'>{comms_html}</td></tr>"
+        )
+    body = "".join(table_rows) or (
+        "<tr><td colspan=5 class='muted'>No spike auto-responses yet. "
+        "The cron runs 10/22 UTC; manually probe with "
+        "<code>GET /api/v1/admin/media/spikes/preview</code>.</td></tr>"
+    )
+    return f"""
+<h2>Auto-Response Activity (ROUND 2)</h2>
+<div class="kpi-row">
+  <div class="kpi" style="{badge_dry};padding:6px 12px"><span>Mode</span><b>{dry_pill}</b></div>
+  <div class="kpi" style="{badge_kill};padding:6px 12px"><span>Switch</span><b>{kill_pill}</b></div>
+  <div class="kpi"><span>Weekly cap</span><b>{weekly}</b></div>
+  <div class="kpi"><span>30d spikes logged</span><b>{len(rows)}</b></div>
+</div>
+<table><thead><tr>
+  <th>Detected</th><th>Source post URN</th><th>Impressions</th>
+  <th>Ratio</th><th>Status</th>
+</tr></thead>
+<tbody>{body}</tbody></table>
+<p class="muted" style="font-size:12px;margin-top:4px">
+  Defaults: detect at 2x baseline impressions in &lt;6h, generate 3 comments via Claude (staggered 30/90/180min),
+  ship in DRY-RUN. Set <code>MEDIA_AUTORESPONSE_DRY_RUN=0</code> to go live.
+  Kill switch: <code>MEDIA_AUTORESPONSE_DISABLE=1</code>.
+  Weekly cap: <code>MEDIA_AUTORESPONSE_WEEKLY_CAP=3</code>.
+</p>"""
 
 
 @media_topic_tuner_bp.route("/admin/media-mix", methods=["GET"])
@@ -1264,6 +1354,40 @@ def http_media_mix_dashboard():
     perf     = topic_performance(days=30)
     series   = list_themed_series()
     assisted = linkedin_assisted_conversions(days=30)
-    html = _render_media_mix_html(mix, perf, series, assisted)
+    # ROUND 2 (2026-06-07): pull auto-response activity for the same
+    # dashboard. Fail-soft if the module isn't on the path (partial deploy).
+    autoresp: list[dict] = []
+    autoresp_flags = {"dry_run": True, "kill_switched": False,
+                      "weekly_cap": 3, "weekly_used": 0}
+    try:
+        from routes.media_spike_responder import (
+            recent_log_rows as _autoresp_recent,
+            _dry_run as _arr_dry,
+            _kill_switched as _arr_kill,
+            _env_int as _arr_env,
+            _db_conn as _arr_db,
+            _weekly_used as _arr_used,
+            WEEKLY_CAP_DEFAULT as _arr_cap_default,
+        )
+        autoresp = _autoresp_recent(days=30, limit=30) or []
+        autoresp_flags["dry_run"] = bool(_arr_dry())
+        autoresp_flags["kill_switched"] = bool(_arr_kill())
+        autoresp_flags["weekly_cap"] = int(
+            _arr_env("MEDIA_AUTORESPONSE_WEEKLY_CAP", _arr_cap_default))
+        _c = _arr_db()
+        if _c is not None:
+            try:
+                with _c, _c.cursor() as _cur:
+                    autoresp_flags["weekly_used"] = int(_arr_used(_cur))
+            except Exception:
+                pass
+            finally:
+                try: _c.close()
+                except Exception: pass
+    except Exception:
+        pass
+    html = _render_media_mix_html(mix, perf, series, assisted,
+                                  autoresp=autoresp,
+                                  autoresp_flags=autoresp_flags)
     return html, 200, {"Content-Type": "text/html; charset=utf-8",
                        "Cache-Control": "no-store"}
