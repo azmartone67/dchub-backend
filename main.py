@@ -1,3 +1,8 @@
+# Global UA shim: forces a real User-Agent on ALL urllib/requests calls so
+# Cloudflare (fronting api.resend.com etc.) won't 403 the default UA with
+# "error 1010" — which silently broke all transactional email. MUST load
+# before any HTTP-using module. r-sec 2026-06-07.
+import http_ua_default  # noqa: F401,E402
 from routes.press_queue import press_queue_bp
 from routes.digest import digest_bp
 # Phase GG (2026-05-14): per-site capacity, ISO snapshot, pocket listings
