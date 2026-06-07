@@ -1211,7 +1211,7 @@ function subscribe(e) {{
           'Your trial key (also emailed to ' + email + '):</div>' +
           '<div class="ok-msg">' + d.api_key + '</div>' +
           '<div class="legal" style="margin-top:10px">Add this to your MCP client and reconnect. ' +
-          '<a href="/mcp-connect" target="_blank" rel="noopener" style="color:#7dd3fc">Setup guide →</a></div>';
+          '<a href="/integrations/mcp" target="_blank" rel="noopener" style="color:#7dd3fc">Setup guide →</a></div>';
       }} else {{
         btn.disabled = false;
         btn.textContent = 'Get my key →';
