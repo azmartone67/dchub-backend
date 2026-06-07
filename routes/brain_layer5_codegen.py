@@ -127,6 +127,19 @@ Constraints:
 - If the right fix is "needs human investigation, no autonomous patch
   is safe," say so explicitly under "## Diagnosis" and leave "## Proposed fix" with the human-action recommendation.
 
+PRE-FLIGHT DIAGNOSIS VERIFICATION — do these BEFORE proposing. (2026-06-07: a batch
+of conf-0.90 proposals was 80% wrong because the diagnosis skipped these. Read the
+file context, don't just pattern-match the detail.)
+  1. ADDING AN IMPORT? First confirm it is NOT already imported — scan the file
+     context for `^(from|import).*\\b<name>\\b`. If present, there is NO bug; say so.
+  2. ADDING A commit()/rollback()? Read the CALLEE first — if the wrapped function
+     already commits/rolls back, an outer one is a no-op. Don't propose it.
+  3. REMOVING code? Check the surrounding lines/comments for EMERGENCY / CRITICAL /
+     belt-and-suspenders / "do not remove" markers — if present, it's intentional. Skip.
+  4. CLAIMING A SYMBOL IS UNDEFINED? First grep the file for `def <name>` /
+     `<name> =` / a `@contextmanager` or decorator defining it. If defined, NO bug.
+If your diagnosis fails any check, output "needs human investigation" under ## Diagnosis.
+
 Write the proposal only. No preamble, no sign-off.
 """
 
@@ -160,6 +173,51 @@ def _call_claude(prompt: str) -> str | None:
     except Exception as e:
         logger.warning(f"layer5 codegen call failed: {e}")
         return None
+
+
+def _preflight_diagnosis_check(proposal_md: str, file_context: str | None) -> list:
+    """Deterministic verification of an LLM proposal against the REAL file — the
+    'pre-flight diagnosis verification' that was missing when 80% of conf-0.90
+    proposals shipped wrong (2026-06-07: dup imports, no-op commits, EMERGENCY
+    removals, symbols claimed undefined that were defined). Returns warnings;
+    non-empty → status downgraded to 'needs_review' (over-flag is safe — it just
+    routes to human review, the correct default for an 80%-wrong batch)."""
+    import re
+    warnings = []
+    if not proposal_md:
+        return warnings
+    fc = file_context or ""
+    pm = proposal_md
+    low = pm.lower()
+    added = [l[1:].strip() for l in pm.splitlines() if l.startswith('+') and not l.startswith('+++')]
+    removed = [l[1:].strip() for l in pm.splitlines() if l.startswith('-') and not l.startswith('---')]
+
+    # 1. Already-imported guard (killed PR #1032 class)
+    for l in added:
+        m = re.match(r'^(?:from\s+\S+\s+import\s+(\w+)|import\s+(\w+))', l)
+        if m and fc:
+            name = m.group(1) or m.group(2)
+            if name and re.search(rf'^(?:from|import)\s+.*\b{re.escape(name)}\b', fc, re.M):
+                warnings.append(f"already-imported: '{name}' looks already imported — adding it is a no-op")
+
+    # 2. Callee/commit guard (killed PR #1031 class) — can't fully resolve statically; flag
+    if any(re.search(r'\.(commit|rollback)\s*\(', l) for l in added):
+        warnings.append("commit/rollback added: confirm the wrapped callee doesn't already commit (outer one may be a no-op)")
+
+    # 3. EMERGENCY-removal guard (killed PR #1033 class)
+    if removed and any(r for r in removed if r):
+        for kw in ('EMERGENCY', 'CRITICAL', 'belt-and-suspenders', 'do not remove'):
+            if kw.lower() in fc.lower():
+                warnings.append(f"emergency-removal: file context contains '{kw}' — a removal may delete an intentional safeguard")
+                break
+
+    # 4. Symbol-resolution guard (killed PR #1035 class)
+    sm = re.search(r"['\"`]?(\w+)['\"`]?\s+is\s+(?:not\s+defined|undefined)|undefined\s+(?:symbol|name|variable)\s+['\"`]?(\w+)", low)
+    if sm and fc:
+        name = sm.group(1) or sm.group(2)
+        if name and re.search(rf'(?:def\s+{re.escape(name)}\b|^\s*{re.escape(name)}\s*=|@contextmanager)', fc, re.M):
+            warnings.append(f"symbol-resolution: '{name}' claimed undefined but appears defined in the file")
+    return warnings
 
 
 @brain_layer5_bp.route("/api/v1/brain/layer5/propose", methods=["POST"])
@@ -206,6 +264,17 @@ def propose():
         return jsonify(ok=False, error="codegen_failed",
                        hint="Claude API call returned empty"), 503
 
+    # r77 (2026-06-07): deterministic pre-flight diagnosis check against the real
+    # file. Catches the 4 misdiagnosis classes that made 80% of conf-0.90 proposals
+    # wrong. Non-empty → downgrade status to 'needs_review' + surface inline.
+    preflight_warnings = _preflight_diagnosis_check(proposal, file_context)
+    proposal_status = "needs_review" if preflight_warnings else "proposed"
+    if preflight_warnings:
+        proposal = (proposal + "\n\n## ⚠️ Pre-flight diagnosis warnings (auto-check)\n"
+                    "Deterministic checks flagged this as a possible misdiagnosis "
+                    "(the class that made 80% of conf-0.90 PRs wrong) — REVIEW before merge:\n"
+                    + "\n".join(f"- {w}" for w in preflight_warnings))
+
     # Persist the proposal
     proposal_id = None
     try:
@@ -215,11 +284,11 @@ def propose():
                 INSERT INTO brain_layer5_proposals
                     (error_class, finding_url, finding_detail, file_context,
                      proposal_md, model, status)
-                VALUES (%s, %s, %s, %s, %s, %s, 'proposed')
+                VALUES (%s, %s, %s, %s, %s, %s, %s)
                 RETURNING id
             """, (error_class, finding_url, finding_detail,
                   (file_context[:6000] if file_context else None),
-                  proposal, _MODEL))
+                  proposal, _MODEL, proposal_status))
             proposal_id = cur.fetchone()[0]
             c.commit()
         c.close()
@@ -233,6 +302,8 @@ def propose():
         finding_url=finding_url,
         model=_MODEL,
         elapsed_seconds=elapsed,
+        status=proposal_status,
+        preflight_warnings=preflight_warnings,
         proposal_markdown=proposal,
         review_url=(f"https://dchub.cloud/api/v1/brain/layer5/proposals/{proposal_id}"
                     if proposal_id else None),
