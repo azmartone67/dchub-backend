@@ -387,7 +387,7 @@ def _ip_rate_limit_ok(ip_hash: str) -> bool:
             if n >= _RATE_LIMIT_PER_DAY:
                 return False
             cur.execute(
-                "INSERT INTO watchlist_ratelimit (ip_hash) VALUES (%s)",
+                "INSERT INTO watchlist_ratelimit (ip_hash) VALUES (%s) ON CONFLICT DO NOTHING",
                 (ip_hash,)
             )
             conn.commit()
@@ -492,7 +492,7 @@ def add_watchlist_entry():
                 INSERT INTO user_watchlists
                        (owner_email_hash, owner_email_masked, market_slug,
                         channel, tier_at_signup)
-                VALUES (%s, %s, %s, %s, %s)
+                VALUES (%s, %s, %s, %s, %s) ON CONFLICT DO NOTHING
                 RETURNING id
             """, (email_hash, masked, slug, channel, tier))
             new_id = cur.fetchone()[0]
@@ -672,7 +672,7 @@ def push_subscribe():
                 INSERT INTO browser_push_subscriptions
                        (subscriber_email_hash, endpoint, p256dh, auth,
                         user_agent, last_used_at)
-                VALUES (%s, %s, %s, %s, %s, NOW())
+                VALUES (%s, %s, %s, %s, %s, NOW() ON CONFLICT DO NOTHING)
                 RETURNING id
             """, (email_hash, endpoint, p256dh, auth, ua))
             new_id = cur.fetchone()[0]

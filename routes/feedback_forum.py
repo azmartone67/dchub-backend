@@ -422,7 +422,7 @@ def _quarantine(payload: dict, reason: str) -> None:
             with conn.cursor() as cur:
                 cur.execute(
                     "INSERT INTO feedback_spam_quarantine "
-                    "(raw_payload, classifier_reason) VALUES (%s, %s)",
+                    "(raw_payload, classifier_reason) VALUES (%s, %s) ON CONFLICT DO NOTHING",
                     (json.dumps(payload)[:8000], reason[:200])
                 )
                 conn.commit()
@@ -514,7 +514,7 @@ def submit_feedback():
                 (title, description, type, url_referenced,
                  submitter_email_masked, submitter_email_hash,
                  submitter_ip_hash, submitter_state, status)
-                VALUES (%s, %s, %s, %s, %s, %s, %s, %s, 'new')
+                VALUES (%s, %s, %s, %s, %s, %s, %s, %s, 'new') ON CONFLICT DO NOTHING
                 RETURNING id
             """, (title[:120], description[:2000], type_, url_ref[:500],
                   email_masked[:120], email_hash, ip_hash, state))

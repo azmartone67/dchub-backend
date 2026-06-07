@@ -222,7 +222,7 @@ def _enqueue_cross_post(cur, platform: str, content_text: str) -> bool:
     try:
         cur.execute("""
             INSERT INTO social_media_posts (content, platform, status, created_at, approved_at)
-            VALUES (%s, %s, 'approved', NOW(), NOW()::text)
+            VALUES (%s, %s, 'approved', NOW() ON CONFLICT DO NOTHING, NOW()::text)
         """, (content_text, platform))
         return True
     except Exception as e:

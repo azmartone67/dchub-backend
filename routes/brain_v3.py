@@ -295,7 +295,7 @@ def _enact_hypothesis(cur, h: dict, live_cols: set = None) -> dict:
     # Plain INSERT (no ON CONFLICT — we don't know which unique
     # constraint exists on the live table; a duplicate just errors
     # into the savepoint rollback, which is harmless).
-    sql = f"INSERT INTO brain_findings ({collist}) VALUES ({placeholders})"
+    sql = f"INSERT INTO brain_findings ({collist}) VALUES ({placeholders}) ON CONFLICT DO NOTHING"
     try:
         cur.execute(sql, [use[c] for c in cols])
         return {"hypothesis": hid, "action": "filed_finding",

@@ -737,7 +737,7 @@ def process_all_alerts(frequency_filter=None, dry_run=False):
                 c = db.cursor()
                 c.execute('''
                     INSERT INTO alert_notifications (alert_id, email, matches_json, status)
-                    VALUES (%s, %s, %s, %s)
+                    VALUES (%s, %s, %s, %s) ON CONFLICT DO NOTHING
                 ''', (alert_id, email, json.dumps(matches[:10]), 'sent'))
                 
             else:
