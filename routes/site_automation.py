@@ -244,33 +244,37 @@ def briefing_send():
     mail sender; no-ops safely otherwise. Called by briefing.yml cron."""
     if not _admin_ok():
         return jsonify({"ok": False, "error": "admin key required"}), 401
-    to = os.environ.get("DCHUB_BRIEFING_EMAIL", "").strip()
-    if not to:
+    # Comma-separated → supports a branded inbox (jonathan@dchub.cloud) PLUS a
+    # fallback (personal Gmail) so a Proofpoint quarantine of the dchub.cloud one
+    # never means you miss the briefing. e.g. "jonathan@dchub.cloud,azmartone@gmail.com".
+    raw = os.environ.get("DCHUB_BRIEFING_EMAIL", "").strip()
+    recipients = [r.strip() for r in raw.split(",") if r.strip()]
+    if not recipients:
         return jsonify({"ok": True, "sent": False, "reason": "DCHUB_BRIEFING_EMAIL not set"})
     b = _build_briefing()
     subject = f"DC Hub briefing — {b.get('health')} — {datetime.datetime.utcnow():%b %d}"
     lines = [f"Health: {b.get('health')}", "", "FLAGGED:"]
     lines += [f"  • {f.get('summary')}" for f in (b.get("flagged") or [])] or ["  (none)"]
     lines += ["", "NEEDS YOUR CALL:"]
-    lines += [f"  • {n.get('what')} ({n.get('count')})" for n in (b.get("needs_your_call") or [])] or ["  (none)"]
-    lines += ["", "Full view: https://dchub.cloud/briefing"]
+    lines += [f"  • {n.get('what')}" for n in (b.get("needs_your_call") or [])] or ["  (none)"]
+    lines += ["", "Full view: https://dchub-backend-production.up.railway.app/briefing"]
     text = "\n".join(lines)
-    try:
-        # Reuse whatever mail sender the app already exposes; fail soft.
-        sent = False
+
+    def _send_one(addr):
         try:
-            from routes.cross_post_email import send_plain_email  # type: ignore
-            sent = bool(send_plain_email(to, subject, text))
-        except Exception:
             try:
-                from main import send_email  # type: ignore
-                sent = bool(send_email(to, subject, text))
+                from routes.cross_post_email import send_plain_email  # type: ignore
+                return bool(send_plain_email(addr, subject, text))
             except Exception:
-                sent = False
-        return jsonify({"ok": True, "sent": sent, "to": to,
-                        "reason": None if sent else "no mail sender available"})
-    except Exception as e:
-        return jsonify({"ok": True, "sent": False, "error": str(e)[:160]})
+                from main import send_email  # type: ignore
+                return bool(send_email(addr, subject, text))
+        except Exception:
+            return False
+
+    results = {addr: _send_one(addr) for addr in recipients}
+    any_sent = any(results.values())
+    return jsonify({"ok": True, "sent": any_sent, "recipients": results,
+                    "reason": None if any_sent else "no mail sender available / all sends failed"})
 
 
 # ════════════════════════════════════════════════════════════════════
