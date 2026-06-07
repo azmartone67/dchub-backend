@@ -232,6 +232,22 @@ def _pdf_diag():
             d["nix_store"] = "absent"
     except Exception as _e:
         d["nix_glib_err"] = str(_e)[:80]
+    # Definitive: do the apt libs reach the RUNTIME Debian multiarch dir, and is
+    # libgobject in the ldconfig cache? Answers "do nixpacks aptPkgs persist to
+    # runtime?" without another guess.
+    try:
+        import os as _os3, subprocess as _sp
+        _d2 = "/usr/lib/x86_64-linux-gnu"
+        d["usrlib_libs"] = ([x for x in _os3.listdir(_d2)
+                             if ("pango" in x or "gobject" in x or "cairo" in x)][:8]
+                            if _os3.path.isdir(_d2) else "dir-absent")
+        try:
+            _out = _sp.run(["ldconfig", "-p"], capture_output=True, text=True, timeout=4).stdout
+            d["ldconfig_gobject"] = [l.strip() for l in _out.splitlines() if "gobject" in l][:2]
+        except Exception:
+            d["ldconfig"] = "n/a"
+    except Exception as _e:
+        d["usrlib_err"] = str(_e)[:80]
     return d
 
 

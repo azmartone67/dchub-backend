@@ -11,23 +11,24 @@
 #   GET /markets/<slug>/brief.pdf  (PRO+ gated)
 
 [phases.setup]
-# WeasyPrint's native stack must come from NIX packages, not apt. Nixpacks
-# builds on a Nix base whose dynamic loader searches the Nix store — it does
-# NOT search /usr/lib/x86_64-linux-gnu where apt installs, so apt-provided
-# libpango/cairo/glib are present-but-unloadable (ctypes:
-# "cannot load library 'libgobject-2.0-0'"). nixPkgs land in /nix/store and
-# nixpacks wires their lib dirs into the runtime env, so the loader finds them.
+# WeasyPrint native stack (Pango/Cairo/GLib) for the PDF exports
+# (/markets/<slug>/brief.pdf and /api/v1/site-report?...&format=pdf).
+#
+# FINDING (2026-06-07): the runtime container exposes NEITHER /nix/store NOR
+# these libs under /usr/lib/x86_64-linux-gnu (confirmed by the site-report PDF
+# 503 _diag: nix_store=absent, libgobject_paths=[]). i.e. nixpacks is not
+# carrying the native libs into the slim runtime image. start_web.sh prepends
+# every /nix/store lib dir AND /usr/lib/x86_64-linux-gnu to LD_LIBRARY_PATH, so
+# the moment the libs DO land in the image (next clean rebuild, or a Dockerfile
+# builder) PDF starts working with no further code change. We declare them both
+# ways below so whichever runtime nixpacks produces has the libs available.
+# If PDF must work reliably, the durable fix is a Dockerfile builder (full
+# control of the runtime image) — tracked as a follow-up.
 nixPkgs = [
-  "glib",        # libgobject-2.0 / libglib-2.0 / libgio-2.0  (the missing one)
-  "pango",       # libpango-1.0 / libpangocairo-1.0 / libpangoft2-1.0
-  "cairo",       # libcairo
-  "harfbuzz",    # libharfbuzz (text shaping)
-  "fontconfig",  # libfontconfig (font discovery)
-  "libffi",      # libffi (cffi/ctypes bridge weasyprint uses)
+  "glib", "pango", "cairo", "harfbuzz", "fontconfig", "libffi",
 ]
 aptPkgs = [
-  # Fonts + MIME data only (no native .so that would ABI-clash with the Nix
-  # libs above). fonts-liberation gives a sane serif/sans fallback in the PDF.
-  "shared-mime-info",
-  "fonts-liberation",
+  "libpango-1.0-0", "libpangocairo-1.0-0", "libpangoft2-1.0-0",
+  "libcairo2", "libgdk-pixbuf-2.0-0", "libglib2.0-0", "libffi8",
+  "shared-mime-info", "fonts-liberation",
 ]
