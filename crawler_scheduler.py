@@ -1833,6 +1833,9 @@ def _run_brain_strategic_synthesis():
         from routes.brain_strategic_planner import (
             run_strategic_synthesis as _run,
         )
+        # In-process call — no HTTP gateway, no 40s ceiling. The Claude
+        # call can take 60-120s for Opus; we're inside the scheduler
+        # thread so we just block.
         result = _run(force=False) or {}
         logger.info(
             "🧠 brain_strategic_synthesis: rec_count=%s prs_opened=%s "

@@ -957,16 +957,43 @@ def _estimate_cost(in_tok: int, out_tok: int, model: str) -> float:
 
 # ─── HTTP routes ────────────────────────────────────────────────────
 
+_BG_STATE = {"last_started": None, "last_finished": None,
+             "last_result": None, "running": False}
+
+
+def _bg_run(force: bool, open_prs: Optional[bool]) -> None:
+    _BG_STATE["running"] = True
+    _BG_STATE["last_started"] = _dt.datetime.now(
+        _dt.timezone.utc).isoformat()
+    try:
+        result = run_strategic_synthesis(force=force, open_prs=open_prs)
+        _BG_STATE["last_result"] = result
+    except Exception as e:
+        logger.error("L6 strategic background run failed: %s", e,
+                      exc_info=True)
+        _BG_STATE["last_result"] = {"ok": False, "error": str(e)[:200]}
+    finally:
+        _BG_STATE["running"] = False
+        _BG_STATE["last_finished"] = _dt.datetime.now(
+            _dt.timezone.utc).isoformat()
+
+
 @brain_strategic_bp.route(
     "/api/v1/admin/brain/strategic-synthesis/run", methods=["POST", "GET"])
 def strategic_run():
-    """Trigger the weekly synthesis. Admin-gated.
+    """Trigger the weekly synthesis. Admin-gated. Fire-and-forget pattern
+    (L14 vintage) — returns 202 immediately while the Claude call runs
+    in a background thread. Reason: Railway's HTTP gateway hard-caps
+    requests at ~40s; an Opus 4.8 reasoning call routinely runs 60-120s.
+    Poll GET /api/v1/brain/strategic-synthesis/latest to see the result.
+
+    Synchronous mode available via sync=1 (only useful from a cron that
+    already has a long timeout; web clients should never use this).
 
     Query/body params:
       force=1            recompute even if this week already exists
       open_prs=1|0       override the DCHUB_BRAIN_STRATEGIC_DRAFT_PR env
-
-    Returns the full summary dict (recommendations + PR results)."""
+      sync=1             block until done (for cron use only)"""
     if not _admin_ok():
         return jsonify(ok=False, error="unauthorized"), 401
 
@@ -974,9 +1001,56 @@ def strategic_run():
     force = _truthy(request.args.get("force")) or _truthy(body.get("force"))
     op = request.args.get("open_prs") or body.get("open_prs")
     open_prs = None if op is None else _truthy(op)
+    sync = _truthy(request.args.get("sync")) or _truthy(body.get("sync"))
 
-    result = run_strategic_synthesis(force=force, open_prs=open_prs)
-    return jsonify(result), (200 if result.get("ok") else 200)
+    if sync:
+        result = run_strategic_synthesis(force=force, open_prs=open_prs)
+        return jsonify(result), 200
+
+    if _BG_STATE.get("running"):
+        return jsonify(
+            ok=True, accepted=False,
+            reason="background_run_already_in_flight",
+            last_started=_BG_STATE.get("last_started"),
+            hint=("Poll /api/v1/brain/strategic-synthesis/latest for "
+                  "results."),
+        ), 202
+
+    import threading as _th
+    _th.Thread(
+        target=_bg_run, args=(force, open_prs),
+        daemon=True, name="brain-l6-strategic",
+    ).start()
+
+    return jsonify(
+        ok=True, accepted=True,
+        started_at=_dt.datetime.now(_dt.timezone.utc).isoformat(),
+        week_of=str(_week_of_iso()),
+        note=("Synthesis started in background. Poll "
+              "GET /api/v1/brain/strategic-synthesis/latest in ~30-90s. "
+              "Cost ~$0.50-$1 depending on which model fires."),
+    ), 202
+
+
+@brain_strategic_bp.route(
+    "/api/v1/admin/brain/strategic-synthesis/bg-state", methods=["GET"])
+def strategic_bg_state():
+    """Read-only view of the background runner's last attempt."""
+    if not _admin_ok():
+        return jsonify(ok=False, error="unauthorized"), 401
+    last = _BG_STATE.get("last_result") or {}
+    # Strip the heavy recommendations list — caller can hit /latest for it
+    light = {k: v for k, v in last.items()
+              if k not in ("recommendations", "pr_results")}
+    light["_rec_count_in_last_result"] = len(
+        last.get("recommendations") or [])
+    return jsonify(
+        ok=True,
+        running=bool(_BG_STATE.get("running")),
+        last_started=_BG_STATE.get("last_started"),
+        last_finished=_BG_STATE.get("last_finished"),
+        last_result_summary=light,
+    ), 200
 
 
 @brain_strategic_bp.route(
