@@ -106,7 +106,11 @@ _CTX_BUDGET = {
     "page_health":  4000,
     "feedback":     4000,
     "backlog":      3500,
-    "competitors":  3000,
+    # 2026-06-07: bumped 3000→5000 to accommodate the new 3-layer
+    # competitor envelope (presence + universe + signal). The L6
+    # self-critique flagged the old 3000-byte budget as part of why
+    # competitor_lacks were getting interpolated from tool names.
+    "competitors":  5000,
     "self_model":   2500,
     "recent_recs":  1500,
 }
@@ -231,13 +235,8 @@ def _gather_strategic_context() -> dict:
     # Stuck-issue queue — 67 stuck × 23 cycles untried per brain_backlog
     backlog = _http_get_json("/api/v1/admin/brain/backlog")
 
-    # Competitor signal — MCP presence drift + new-registry discovery
-    competitors = _http_get_json("/api/v1/mcp/presence/recent")
-    # Best-effort. mcp_presence_crawler may not expose a public endpoint;
-    # we read brain_findings filtered to mcp_presence as a fallback.
-    if not competitors:
-        competitors = _http_get_json(
-            "/api/v1/brain/findings?issue_like=mcp_presence&limit=20")
+    # Competitor signal — MCP presence + registry intel + public manifests
+    competitors = _gather_competitor_context()
 
     # Self-model — what the brain believes about itself
     self_model = _http_get_json("/api/v1/brain/self-model")
@@ -254,6 +253,117 @@ def _gather_strategic_context() -> dict:
         "self_model":  self_model,
         "recent_recs": recent_recs,
     }
+
+
+# ─── Competitor context (2026-06-07) ───────────────────────────────
+# The L6 self-critique on its 2026-06-01 live run flagged: "Competitor
+# signal context is empty, so all competitor_lacks entries are
+# interpolated from tool names rather than cited evidence." Fix:
+# wire the planner to the live /mcp/presence/recent endpoint
+# (mcp_presence_crawler) + a small curated set of competitor categories
+# (other MCP servers + DC/energy/grid registries) so the prompt now has
+# something concrete to ground its "DC Hub lacks X" reasoning on.
+
+# Curated competitor universe (NOT scraped — static catalog of the
+# real competitive landscape so the prompt can cite specific names).
+# Update sparingly; this is the "what the brain knows about its
+# market" baseline.
+_COMPETITOR_UNIVERSE = {
+    "data_center_registries": [
+        {"name": "Baxtel", "url": "https://baxtel.com",
+         "focus": "global data-center directory, audited specs"},
+        {"name": "DCByte", "url": "https://dcbyte.com",
+         "focus": "paid market-research subscription (~$30K/yr)"},
+        {"name": "DataCenters.com", "url": "https://datacenters.com",
+         "focus": "free directory, broker-funded"},
+        {"name": "Data Center Map",
+         "url": "https://www.datacentermap.com",
+         "focus": "free global map, basic facts only"},
+        {"name": "Data Center Catalog",
+         "url": "https://datacentercatalog.com",
+         "focus": "free directory, limited intel"},
+    ],
+    "energy_grid_data": [
+        {"name": "Wood Mackenzie",
+         "url": "https://www.woodmac.com",
+         "focus": "enterprise energy intel ($$$)"},
+        {"name": "ERCOT public API",
+         "url": "https://www.ercot.com/mp/data-products",
+         "focus": "Texas grid data — free but rate-limited"},
+        {"name": "PJM Data Miner 2",
+         "url": "https://dataminer2.pjm.com",
+         "focus": "PJM ISO data — free, API"},
+        {"name": "EIA OpenData",
+         "url": "https://www.eia.gov/opendata/",
+         "focus": "US energy data — free reference"},
+    ],
+    "mcp_directories": [
+        {"name": "Smithery",   "url": "https://smithery.ai"},
+        {"name": "Glama",      "url": "https://glama.ai/mcp"},
+        {"name": "LobeHub",    "url": "https://lobehub.com/mcp"},
+        {"name": "PulseMCP",   "url": "https://pulsemcp.com"},
+        {"name": "mcp.so",     "url": "https://mcp.so"},
+    ],
+    "what_dc_hub_uniquely_offers": [
+        "Real-time ISO grid headroom for 21 grids (none of the above expose this for agents)",
+        "Interconnection-queue snapshot (live FERC/ISO data)",
+        "Per-rack water/power deal autopsies (Nautilus/MMR/Switch)",
+        "33+ MCP tools cited by agent platforms (Groq, Perplexity, etc.)",
+        "DCPI composite score for 232 markets (rebuilt weekly)",
+        "Versioned + cited data (vs PDF reports from incumbents)",
+    ],
+}
+
+
+def _gather_competitor_context() -> dict:
+    """Assemble the competitor-intel envelope the L6 prompt feeds on.
+
+    Three layers (each layer is fail-soft → empty dict on miss):
+      1. `presence` — live MCP-presence crawler snapshot
+         (/api/v1/mcp/presence/recent) — what other MCP directories
+         say about DC Hub, drift, recently-discovered registries
+      2. `universe` — curated static catalog of the real competitive
+         landscape (DC registries, energy data providers, MCP dirs)
+      3. `signal` — recent mcp_presence_* findings from brain_findings
+         (fallback path; keeps the legacy data flowing)
+
+    Why static + live: the live crawler covers MCP directories well
+    but doesn't track Baxtel/DCByte/etc. (they're not MCP servers).
+    The static universe gives the prompt a CITED competitor list so
+    competitor_lacks entries can reference real names + URLs."""
+
+    # Layer 1: live MCP presence (now backed by the new /recent endpoint)
+    presence = _http_get_json("/api/v1/mcp/presence/recent?days=30")
+    # Backwards-compat alias (server registered both paths)
+    if not presence:
+        presence = _http_get_json("/api/v1/mcp-presence/recent?days=30")
+    # Last-ditch fallback: the /status endpoint always works
+    if not presence:
+        presence = _http_get_json("/api/v1/mcp-presence/status")
+
+    # Layer 3: brain_findings already-filed competitor signals
+    findings = _http_get_json(
+        "/api/v1/brain/findings?issue_like=mcp_presence&limit=20")
+
+    envelope = {
+        "presence": presence or {"_note": "presence_endpoint_unreachable"},
+        "universe": _COMPETITOR_UNIVERSE,
+        "signal":   findings or {"_note": "no_competitor_findings_yet"},
+        "_layers":  ["presence", "universe", "signal"],
+        "_pulled_at": _dt.datetime.now(_dt.timezone.utc).isoformat(),
+    }
+
+    # Defensive completeness flag — the prompt builder uses this to
+    # decide whether competitor_lacks should be marked low-confidence.
+    has_real_data = bool(
+        (presence and isinstance(presence, dict)
+         and (presence.get("active_registries")
+              or presence.get("recently_discovered")))
+        or (findings and isinstance(findings, (list, dict))
+            and findings)
+    )
+    envelope["_has_real_data"] = has_real_data
+    return envelope
 
 
 def _read_recent_recs(weeks_back: int = 4) -> list:

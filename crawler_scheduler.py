@@ -285,6 +285,20 @@ SCHEDULE = [
     # DCHUB_BRAIN_STRATEGIC_DISABLE=1. Opt-in scaffold-PR opener:
     # DCHUB_BRAIN_STRATEGIC_DRAFT_PR=1 (caps at 5 draft PRs/week).
     ( 8,  8, "brain_strategic_synthesis", "_run_brain_strategic_synthesis"),
+    # Brain L6 Strategic Synthesis — THURSDAY mid-week run (2026-06-07).
+    # The Monday run gives a kickoff strategic landscape; the Thursday
+    # run lets the brain react to mid-week funnel + customer-feedback
+    # signal before the weekend. Same runner, same idempotency
+    # (week_of_iso anchored to Monday so Thursday re-uses the same week
+    # row unless force=1 is passed). The Thursday wrapper self-gates to
+    # weekday()==3 so a normal Thursday slot fires once; idempotency
+    # means Thursday WILL recompute (force=True) so we get a second
+    # snapshot per week rather than re-reading Monday's cache. Same
+    # ~$1/run cost (Opus 4.8 reasoning tier) → ~$10/year for biweekly
+    # vs ~$5/year weekly. Kill switch: DCHUB_BRAIN_STRATEGIC_DISABLE=1
+    # disables both runs.
+    ( 8,  8, "brain_strategic_synthesis_thu",
+              "_run_brain_strategic_synthesis_thu"),
     # Brain L6 Strategic Digest (2026-06-06): fires 30 min after the
     # synthesis at 08:30 UTC Mondays. Renders this week's recommendations
     # into a 1-page HTML email and ships via Resend (DCHUB_RESEND_API_KEY).
@@ -1851,6 +1865,45 @@ def _run_brain_strategic_synthesis():
             "🧠 brain_strategic_synthesis error: %s", e, exc_info=True)
 
 
+def _run_brain_strategic_synthesis_thu():
+    """Brain L6 Strategic Synthesis — THURSDAY mid-week run (2026-06-07).
+    Doubles the brain's strategic cadence from weekly → twice-weekly for
+    ~$10/year total at Opus 4.8 reasoning rates. Self-gates to weekday==3
+    (Thursday) and calls run_strategic_synthesis(force=True) so we get a
+    fresh snapshot rather than re-reading Monday's cache row. The same
+    week_of_iso anchor means the rec rows still land under one ISO-week
+    bucket; force=True just refreshes that bucket with mid-week signal.
+    Kill switch shared with the Monday run (DCHUB_BRAIN_STRATEGIC_DISABLE=1).
+    Defensive — never raises."""
+    try:
+        now = datetime.now(timezone.utc)
+        if now.weekday() != 3:  # 3 == Thursday
+            logger.info(
+                "🧠 brain_strategic_synthesis_thu: skipped — weekly gate "
+                "(today=%s, runs Thursdays only)",
+                now.strftime("%A"))
+            return
+        from routes.brain_strategic_planner import (
+            run_strategic_synthesis as _run,
+        )
+        # force=True so we recompute the same week_of_iso bucket with
+        # mid-week funnel + feedback signal. Without force the planner
+        # short-circuits on the existing Monday row.
+        result = _run(force=True) or {}
+        logger.info(
+            "🧠 brain_strategic_synthesis_thu: rec_count=%s prs_opened=%s "
+            "model=%s cost_usd=%s from_cache=%s",
+            result.get("rec_count"),
+            result.get("prs_opened"),
+            result.get("model_used"),
+            result.get("estimated_cost_usd"),
+            result.get("from_cache"),
+        )
+    except Exception as e:
+        logger.error(
+            "🧠 brain_strategic_synthesis_thu error: %s", e, exc_info=True)
+
+
 def _run_brain_strategic_digest():
     """Brain L6 Strategic Digest email (2026-06-06). Once per WEEK
     (Mondays only) — fires 30 min after the synthesis. Renders this
@@ -1917,6 +1970,7 @@ _RUNNERS = {
     "renewal_nudge_onetime":    _run_renewal_nudge_onetime,
     "campaign_outcome_poll":    _run_campaign_outcome_poll,
     "brain_strategic_synthesis": _run_brain_strategic_synthesis,
+    "brain_strategic_synthesis_thu": _run_brain_strategic_synthesis_thu,
     "brain_strategic_digest":    _run_brain_strategic_digest,
 }
 

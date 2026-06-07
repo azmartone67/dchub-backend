@@ -1499,6 +1499,225 @@ def status_endpoint():
     return resp
 
 
+# ── /recent — competitor signal channel for Brain L6 (2026-06-07) ────
+# Brain L6 Strategic Synthesis self-critique on its first live run flagged
+# "Competitor signal context is empty, so all competitor_lacks entries are
+# interpolated from tool names rather than cited evidence." This endpoint
+# closes that loop. Aliased at both:
+#     /api/v1/mcp-presence/recent  (matches the existing /status path style)
+#     /api/v1/mcp/presence/recent  (path the Brain L6 planner already calls)
+# Returns the last N days of crawl results + recently-discovered registries
+# + the canonical drift/stale/healthy histogram in a single JSON envelope
+# the planner can drop straight into its prompt.
+_RECENT_DEFAULT_DAYS = 30
+_RECENT_MAX_DAYS = 180
+
+
+def _recent_snapshot(days: int) -> dict:
+    """Build the competitor-intel envelope the Brain L6 planner consumes.
+
+    Shape (kept stable so the planner's evidence_keys stay portable):
+        {
+          "as_of":           ISO-8601 UTC,
+          "window_days":     <int>,
+          "total_listings":  <int>,
+          "drifted":         <int>,
+          "stale":           <int>,
+          "healthy":         <int>,
+          "discovered_pending": <int>,
+          "active_registries":      [ {registry, listing_url, ...}, ... ],
+          "recently_discovered":    [ {registry, listing_url, discovered}, ... ],
+          "competitor_features":    [ {registry, features:[...]}, ... ],
+          "submission_blockers":    [ {registry, blocker, next_action} ],
+          "scrape_window_count":    <int>,  # rows last_crawled_at within N days
+        }
+
+    Defensive — never raises. Returns the partial snapshot on DB error so
+    the planner can still cite *something* (an explicit `error` key)."""
+    days = max(1, min(int(days or _RECENT_DEFAULT_DAYS), _RECENT_MAX_DAYS))
+    now = _dt.datetime.now(_dt.timezone.utc)
+    cutoff = now - _dt.timedelta(days=days)
+    out = {
+        "as_of":               now.strftime("%Y-%m-%dT%H:%M:%SZ"),
+        "window_days":         days,
+        "total_listings":      0,
+        "drifted":             0,
+        "stale":               0,
+        "healthy":             0,
+        "discovered_pending":  0,
+        "scrape_window_count": 0,
+        "active_registries":   [],
+        "recently_discovered": [],
+        "competitor_features": [],
+        "submission_blockers": [],
+    }
+    conn = _db_conn()
+    if not conn:
+        out["error"] = "db_unavailable"
+        return out
+    try:
+        with conn.cursor() as cur:
+            _ensure_schema(cur)
+            # Headline histogram across ALL listings (mirrors /status)
+            cur.execute(
+                """
+                SELECT
+                  COUNT(*),
+                  COUNT(*) FILTER (WHERE COALESCE(drift_detected, FALSE)),
+                  COUNT(*) FILTER (WHERE COALESCE(dchub_metric_stale_days, 0)
+                                        >= %s),
+                  COUNT(*) FILTER (WHERE COALESCE(discovered, FALSE)),
+                  COUNT(*) FILTER (WHERE last_crawled_at >= %s)
+                  FROM mcp_presence_listings
+                """,
+                (STALE_DAYS_THRESHOLD, cutoff),
+            )
+            row = cur.fetchone() or (0, 0, 0, 0, 0)
+            out["total_listings"]      = int(row[0] or 0)
+            out["drifted"]             = int(row[1] or 0)
+            out["stale"]               = int(row[2] or 0)
+            out["discovered_pending"]  = int(row[3] or 0)
+            out["scrape_window_count"] = int(row[4] or 0)
+
+            # Active known registries (the canonical seed list — the
+            # competitor universe the brain compares us against).
+            cur.execute(
+                """
+                SELECT registry_name, listing_url, submit_url,
+                       dchub_metric_published_tools, our_actual_tool_count,
+                       dchub_metric_stale_days, drift_detected,
+                       last_crawled_at, COALESCE(notes, '{}'::jsonb)
+                  FROM mcp_presence_listings
+                 WHERE COALESCE(discovered, FALSE) = FALSE
+                 ORDER BY drift_detected DESC NULLS LAST,
+                          dchub_metric_stale_days DESC NULLS LAST,
+                          registry_name ASC
+                 LIMIT 30
+                """
+            )
+            for r in cur.fetchall() or []:
+                (registry_name, listing_url, submit_url,
+                 published, actual, stale_days, drift,
+                 last_crawled, notes) = r
+                # Mirror /status' healthy bucketing
+                is_healthy = (
+                    not drift
+                    and (stale_days or 0) < STALE_DAYS_THRESHOLD
+                    and last_crawled is not None
+                )
+                if is_healthy:
+                    out["healthy"] += 1
+                notes_dict = (notes if isinstance(notes, dict)
+                              else (json.loads(notes) if notes else {}))
+                out["active_registries"].append({
+                    "registry":         registry_name,
+                    "listing_url":      listing_url,
+                    "submit_url":       submit_url,
+                    "published_tools":  published,
+                    "actual_tools":     actual,
+                    "stale_days":       stale_days,
+                    "drift_detected":   bool(drift),
+                    "last_crawled_at":  (last_crawled.strftime(
+                                            "%Y-%m-%dT%H:%M:%SZ")
+                                         if last_crawled else None),
+                })
+                # Submission blockers — for the planner's "DC Hub lacks Z"
+                # framing. Surfaces the canonical reasons each registry
+                # is dead/blocked so the brain can cite them.
+                if notes_dict.get("submission_backend_404"):
+                    out["submission_blockers"].append({
+                        "registry":    registry_name,
+                        "blocker":     "submission_backend_404",
+                        "next_action": ("MCPHive-style abandoned backend "
+                                        "— no retry path"),
+                    })
+
+            # Recently-discovered candidates (the brain treats these as
+            # "competitor registries DC Hub is NOT listed on yet")
+            cur.execute(
+                """
+                SELECT registry_name, listing_url, submit_url,
+                       last_crawled_at, COALESCE(notes, '{}'::jsonb)
+                  FROM mcp_presence_listings
+                 WHERE COALESCE(discovered, FALSE) = TRUE
+                   AND created_at >= %s
+                 ORDER BY created_at DESC
+                 LIMIT 25
+                """,
+                (cutoff,),
+            )
+            for r in cur.fetchall() or []:
+                (registry_name, listing_url, submit_url,
+                 last_crawled, notes) = r
+                notes_dict = (notes if isinstance(notes, dict)
+                              else (json.loads(notes) if notes else {}))
+                out["recently_discovered"].append({
+                    "registry":         registry_name,
+                    "listing_url":      listing_url,
+                    "submit_url":       submit_url,
+                    "discovered_via":   notes_dict.get(
+                                            "discovered_via_query"),
+                    "last_crawled_at":  (last_crawled.strftime(
+                                            "%Y-%m-%dT%H:%M:%SZ")
+                                         if last_crawled else None),
+                })
+
+            # Competitor features hint — pulled from notes blobs that
+            # carry sniffed-feature tags. Best-effort. Returns an empty
+            # list on first run (until the discoverer fills the notes
+            # JSON), which is fine — the planner already handles []
+            # gracefully.
+            cur.execute(
+                """
+                SELECT registry_name, COALESCE(notes->'features',
+                                                '[]'::jsonb)
+                  FROM mcp_presence_listings
+                 WHERE notes ? 'features'
+                 LIMIT 15
+                """
+            )
+            for r in cur.fetchall() or []:
+                feats = r[1] if isinstance(r[1], list) else []
+                if feats:
+                    out["competitor_features"].append({
+                        "registry": r[0],
+                        "features": feats[:10],
+                    })
+    except Exception as e:
+        out["error"] = str(e)[:200]
+        logger.info("mcp_presence /recent snapshot error: %s", e)
+    finally:
+        try:
+            conn.close()
+        except Exception:
+            pass
+    return out
+
+
+@mcp_presence_crawler_bp.route(
+    "/api/v1/mcp-presence/recent", methods=["GET"])
+@mcp_presence_crawler_bp.route(
+    "/api/v1/mcp/presence/recent", methods=["GET"])
+def recent_endpoint():
+    """PUBLIC — competitor signal channel for Brain L6 Strategic Synthesis.
+
+    Returns the last N days of crawl results so the brain's strategic
+    planner has CITED competitor evidence (not interpolated tool names).
+    Two aliases keep both old (/mcp-presence/...) and new (/mcp/presence/...)
+    callers happy. ?days=N (1..180, default 30)."""
+    from flask import make_response
+    try:
+        days = int(request.args.get("days") or _RECENT_DEFAULT_DAYS)
+    except Exception:
+        days = _RECENT_DEFAULT_DAYS
+    payload = _recent_snapshot(days)
+    resp = make_response(jsonify(payload), 200)
+    # 5-min edge cache — the underlying snapshot only changes when the
+    # crawler fires (twice/day), so a short cache is safe and saves DB.
+    resp.headers["Cache-Control"] = "public, max-age=300"
+    return resp
+
+
 # ╭───────────────────────────────────────────────────────────────────────╮
 # │ AUTO-SUBMITTER (2026-06-05 extension)                                 │
 # │                                                                       │
@@ -2198,5 +2417,6 @@ def register_mcp_presence_crawler(app) -> None:
     logger.info(
         "MCP Presence Crawler registered: POST /api/v1/admin/mcp-presence/"
         "{crawl,seed,discover,reseed-broken,auto-fix/<registry>,"
-        "auto-fix-all}, GET /api/v1/mcp-presence/status"
+        "auto-fix-all}, GET /api/v1/mcp-presence/{status,recent}, "
+        "GET /api/v1/mcp/presence/recent (Brain L6 alias)"
     )
