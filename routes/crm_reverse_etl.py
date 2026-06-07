@@ -743,6 +743,8 @@ def backfill_last_n_days(days: int = 7) -> dict:
         "newsletter_signup": 0, "trial_key_activated": 0,
         "paid_conversion": 0,
     }
+    inserted = {k: 0 for k in counts}
+    errors = []
     try:
         _ensure_schema(c)
         cutoff = datetime.datetime.now(datetime.timezone.utc) - datetime.timedelta(days=days)
@@ -754,10 +756,14 @@ def backfill_last_n_days(days: int = 7) -> dict:
                          FROM mcp_high_intent_sessions
                         WHERE claim_used_at >= %s""", (cutoff,))
                 for em, sid, ts in cur.fetchall():
-                    capture_event("mcp_high_intent",
-                                  {"email": em, "session_id": sid,
-                                   "captured_at_hist": _iso(ts)})
+                    r = capture_event("mcp_high_intent",
+                                      {"email": em, "session_id": sid,
+                                       "captured_at_hist": _iso(ts)})
                     counts["mcp_high_intent"] += 1
+                    if r and r.get("queue_id"):
+                        inserted["mcp_high_intent"] += 1
+                    elif r and r.get("error"):
+                        errors.append(("mcp_high_intent", r.get("error")))
         except Exception as e:
             logger.warning("[crm_etl backfill] mcp HI failed: %s", e)
 
@@ -769,10 +775,14 @@ def backfill_last_n_days(days: int = 7) -> dict:
                          FROM state_visitor_intent
                         WHERE claim_used_at >= %s""", (cutoff,))
                 for em, sid, ts in cur.fetchall():
-                    capture_event("state_visitor_high_intent",
-                                  {"email": em, "session_id": sid,
-                                   "captured_at_hist": _iso(ts)})
+                    r = capture_event("state_visitor_high_intent",
+                                      {"email": em, "session_id": sid,
+                                       "captured_at_hist": _iso(ts)})
                     counts["state_visitor_high_intent"] += 1
+                    if r and r.get("queue_id"):
+                        inserted["state_visitor_high_intent"] += 1
+                    elif r and r.get("error"):
+                        errors.append(("state_visitor_high_intent", r.get("error")))
         except Exception as e:
             logger.warning("[crm_etl backfill] state HI failed: %s", e)
 
@@ -784,10 +794,14 @@ def backfill_last_n_days(days: int = 7) -> dict:
                         WHERE subscribed_at >= %s
                           AND unsubscribed_at IS NULL""", (cutoff,))
                 for em, ts in cur.fetchall():
-                    capture_event("newsletter_signup",
-                                  {"email": em,
-                                   "captured_at_hist": _iso(ts)})
+                    r = capture_event("newsletter_signup",
+                                      {"email": em,
+                                       "captured_at_hist": _iso(ts)})
                     counts["newsletter_signup"] += 1
+                    if r and r.get("queue_id"):
+                        inserted["newsletter_signup"] += 1
+                    elif r and r.get("error"):
+                        errors.append(("newsletter_signup", r.get("error")))
         except Exception as e:
             logger.warning("[crm_etl backfill] newsletter failed: %s", e)
 
@@ -799,10 +813,14 @@ def backfill_last_n_days(days: int = 7) -> dict:
                         WHERE minted_at >= %s
                           AND operator_email IS NOT NULL""", (cutoff,))
                 for em, ts in cur.fetchall():
-                    capture_event("trial_key_activated",
-                                  {"email": em,
-                                   "captured_at_hist": _iso(ts)})
+                    r = capture_event("trial_key_activated",
+                                      {"email": em,
+                                       "captured_at_hist": _iso(ts)})
                     counts["trial_key_activated"] += 1
+                    if r and r.get("queue_id"):
+                        inserted["trial_key_activated"] += 1
+                    elif r and r.get("error"):
+                        errors.append(("trial_key_activated", r.get("error")))
         except Exception as e:
             logger.warning("[crm_etl backfill] trial keys failed: %s", e)
 
@@ -815,13 +833,19 @@ def backfill_last_n_days(days: int = 7) -> dict:
                           AND subscription_status = 'active'
                           AND email IS NOT NULL""", (cutoff,))
                 for em, ts, plan in cur.fetchall():
-                    capture_event("paid_conversion",
-                                  {"email": em, "plan": plan,
-                                   "captured_at_hist": _iso(ts)})
+                    r = capture_event("paid_conversion",
+                                      {"email": em, "plan": plan,
+                                       "captured_at_hist": _iso(ts)})
                     counts["paid_conversion"] += 1
+                    if r and r.get("queue_id"):
+                        inserted["paid_conversion"] += 1
+                    elif r and r.get("error"):
+                        errors.append(("paid_conversion", r.get("error")))
         except Exception as e:
             logger.warning("[crm_etl backfill] users failed: %s", e)
-        return {"ok": True, "counts": counts, "days": days}
+        return {"ok": True, "counts": counts,
+                "inserted": inserted,
+                "errors": errors[:10], "days": days}
     finally:
         _return(c)
 
