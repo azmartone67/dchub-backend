@@ -221,6 +221,17 @@ def _pdf_diag():
         except Exception:
             pass
     d["libgobject_paths"] = found[:6]
+    # Definitive: is the glib nix package even installed? Lists /nix/store dirs
+    # whose name contains 'glib' (the package providing libgobject-2.0).
+    try:
+        import os as _os2
+        if _os2.path.isdir("/nix/store"):
+            d["nix_glib_dirs"] = [x for x in _os2.listdir("/nix/store")
+                                  if "glib" in x.lower() and "-" in x][:6]
+        else:
+            d["nix_store"] = "absent"
+    except Exception as _e:
+        d["nix_glib_err"] = str(_e)[:80]
     return d
 
 
@@ -849,6 +860,15 @@ def _kv(k, v_html):
             f'<span class="vv">{v_html}</span></div>')
 
 
+def _mapfig(src, cap, h="3.4in"):
+    """Render an uploaded map figure (data: URI or path). Empty src → ''."""
+    if not src:
+        return ""
+    return (f'<div class="mapfig"><img src="{_esc(src)}" style="height:{h}"/>'
+            + (f'<div class="mapcap">{_esc(cap)}</div>' if cap else "")
+            + "</div>")
+
+
 _CSS = """
   :root{--bg:#0a0a0f;--surf:#14141b;--surf2:#1b1b24;--b:rgba(255,255,255,.10);--b2:rgba(255,255,255,.16);
     --tx:#fafafa;--mut:#a1a1aa;--dim:#71717a;--ind:#818cf8;--vio:#a855f7;--cy:#22d3ee;--grn:#34d399;--amb:#fbbf24;--red:#f87171;}
@@ -897,6 +917,9 @@ _CSS = """
   .tags{display:flex;flex-wrap:wrap;gap:6px;margin-top:8px;}
   .tag{font-family:'JetBrains Mono',monospace;font-size:10px;color:#cbd5e1;background:var(--surf2);border:1px solid var(--b);border-radius:6px;padding:3px 8px;}
   .foot{position:absolute;bottom:.45in;left:.75in;right:.75in;display:flex;justify-content:space-between;font-family:'JetBrains Mono',monospace;font-size:9px;color:var(--dim);border-top:1px solid var(--b);padding-top:8px;}
+  .mapfig{margin:14px 0 6px;border:1px solid var(--b);border-radius:12px;overflow:hidden;background:#0a0a0f;}
+  .mapfig img{width:100%;display:block;object-fit:contain;background:#0a0a0f;}
+  .mapcap{font-family:'JetBrains Mono',monospace;font-size:9.5px;color:var(--mut);padding:8px 12px;border-top:1px solid var(--b);background:var(--surf);}
   .statstrip{display:grid;grid-template-columns:repeat(4,1fr);gap:12px;margin:22px 0;}
   .stat{background:linear-gradient(160deg,var(--surf),var(--surf2));border:1px solid var(--b);border-radius:12px;padding:14px 16px;text-align:center;}
   .stat .sv{font-size:23px;font-weight:800;color:#fff;letter-spacing:-.02em;line-height:1;}
@@ -951,7 +974,9 @@ def _render_html(S):
                      if p.get("headroom") else "")
     H.append(
         '<section class="page"><p class="kick"><span class="secnum">01</span> &nbsp;Power &amp; Grid</p>'
-        '<h2>⚡ Transmission &amp; Substation</h2><div class="sec-rule"></div><div class="grid2">'
+        '<h2>⚡ Transmission &amp; Substation</h2><div class="sec-rule"></div>'
+        + _mapfig(p.get("site_map"), p.get("site_map_caption"), "3.0in")
+        + '<div class="grid2">'
         '<div class="card ind"><p class="lab">Nearest Substation</p>'
         f'<div class="big">{_esc(p.get("substation","—"))}</div>'
         + (f'<p class="note">{_esc(p.get("substation_note"))}</p>' if p.get("substation_note") else "")
@@ -1058,6 +1083,16 @@ def _render_html(S):
         + foot() + '</section>'
     )
 
+    # ── CONNECTIVITY MAPS (uploaded fiber-locator exports — submission portal) ──
+    if f.get("fiber_map") or f.get("latency_map"):
+        H.append(
+            '<section class="page"><p class="kick"><span class="secnum">05</span> &nbsp;Connectivity · Maps</p>'
+            '<h2>🗺️ Fiber &amp; Latency Maps</h2><div class="sec-rule"></div>'
+            + _mapfig(f.get("fiber_map"), f.get("fiber_map_caption"), "3.55in")
+            + _mapfig(f.get("latency_map"), f.get("latency_map_caption"), "3.55in")
+            + foot() + '</section>'
+        )
+
     # ── SUMMARY ──
     sm = S.get("summary") or {}
     grid = "".join(
@@ -1113,9 +1148,163 @@ def _render_html(S):
 
 
 # ════════════════════════════════════════════════════════════════════════════
+#  Submission portal — upload the manual fiber-locator maps + generate
+# ════════════════════════════════════════════════════════════════════════════
+_IMG_MAGIC = {b"\x89PNG\r\n\x1a\n": "image/png", b"\xff\xd8\xff": "image/jpeg",
+              b"GIF87a": "image/gif", b"GIF89a": "image/gif"}
+_MAX_IMG = 8 * 1024 * 1024  # 8 MB per map
+
+
+def _img_data_uri(file_storage):
+    """Validate an uploaded image (PNG/JPEG/GIF, <=8 MB by magic bytes) and
+    return a data: URI for inline embedding, else None. Never raises."""
+    if not file_storage or not getattr(file_storage, "filename", ""):
+        return None
+    try:
+        blob = file_storage.read(_MAX_IMG + 1)
+        if not blob or len(blob) > _MAX_IMG:
+            return None
+        mime = next((m for magic, m in _IMG_MAGIC.items() if blob.startswith(magic)), None)
+        if not mime:
+            return None
+        import base64
+        return f"data:{mime};base64," + base64.b64encode(blob).decode("ascii")
+    except Exception:
+        return None
+
+
+def _render_portal(prefill):
+    """Branded submission portal — paste coords, DC Hub auto-fills the report,
+    optionally attach the (manual) fiber-locator maps, one click → report."""
+    pf = prefill or {}
+    lat = _esc(pf.get("lat", ""))
+    lon = _esc(pf.get("lon", ""))
+    return f"""<!doctype html><html lang="en"><head><meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1">
+<title>DC Hub · Site Intelligence Report — Generate</title>
+<link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=Instrument+Sans:wght@400;500;600;700;800&family=JetBrains+Mono:wght@400;500;600&display=swap">
+<style>
+ :root{{--bg:#0a0a0f;--surf:#14141b;--surf2:#1b1b24;--b:rgba(255,255,255,.12);--tx:#fafafa;--mut:#a1a1aa;--dim:#71717a;--ind:#818cf8;--vio:#a855f7;--cy:#22d3ee;--grn:#34d399;}}
+ *{{box-sizing:border-box}}body{{margin:0;background:var(--bg);color:#e4e4e7;font-family:'Instrument Sans',system-ui,sans-serif;line-height:1.55}}
+ .wrap{{max-width:680px;margin:0 auto;padding:40px 22px 80px}}
+ .brand{{font-weight:800;font-size:22px;color:#fff;letter-spacing:-.02em}}.brand span{{color:var(--ind)}}
+ .kick{{font-family:'JetBrains Mono',monospace;font-size:10px;letter-spacing:.2em;text-transform:uppercase;color:var(--cy);margin:18px 0 6px}}
+ h1{{font-size:30px;font-weight:800;color:#fff;letter-spacing:-.02em;margin:0 0 8px;line-height:1.1}}
+ .lead{{color:var(--mut);font-size:14.5px;max-width:34em;margin:0 0 22px}}
+ .card{{background:var(--surf);border:1px solid var(--b);border-radius:14px;padding:20px 22px;margin-bottom:16px}}
+ label{{display:block;font-family:'JetBrains Mono',monospace;font-size:10px;letter-spacing:.08em;text-transform:uppercase;color:var(--dim);margin:0 0 6px}}
+ .row{{display:grid;grid-template-columns:1fr 1fr;gap:14px}}
+ input,select,textarea{{width:100%;padding:10px 12px;background:var(--bg);border:1px solid var(--b);border-radius:8px;color:#fff;font:inherit;font-size:14px;margin-bottom:14px}}
+ input:focus,select:focus,textarea:focus{{outline:none;border-color:var(--ind);box-shadow:0 0 0 3px rgba(129,140,248,.18)}}
+ input[type=file]{{padding:8px;font-size:12px;color:var(--mut)}}
+ .hint{{font-size:11.5px;color:var(--dim);margin:-8px 0 14px}}
+ .sec{{font-weight:700;color:#fff;font-size:14px;margin:6px 0 12px;display:flex;align-items:center;gap:8px}}
+ .badge{{font-family:'JetBrains Mono',monospace;font-size:9px;color:var(--grn);border:1px solid var(--grn);border-radius:999px;padding:2px 8px;background:rgba(52,211,153,.08)}}
+ button{{width:100%;padding:14px;background:linear-gradient(135deg,var(--ind),var(--vio));border:none;border-radius:10px;color:#fff;font-weight:700;font-size:15px;cursor:pointer;font-family:inherit}}
+ button:disabled{{opacity:.6;cursor:wait}}
+ #msg{{margin-top:14px;font-size:13px;min-height:20px}}
+ a{{color:var(--cy)}}
+ .auto{{font-size:12px;color:var(--mut);background:var(--surf2);border:1px solid var(--b);border-radius:10px;padding:12px 14px;margin-bottom:18px}}
+ .auto b{{color:#fff}}
+</style></head>
+<body><div class="wrap">
+ <div class="brand">DC<span>·</span>Hub</div>
+ <p class="kick">Site Intelligence Report</p>
+ <h1>Generate a branded site report</h1>
+ <p class="lead">Paste coordinates and DC&nbsp;Hub auto-fills power, gas, water, air, fiber &amp; latency
+   from its own live data. The only manual step is your fiber-locator map exports — attach them below
+   (optional) and they're embedded into the report. <b>PRO feature.</b></p>
+
+ <div class="auto">⚙️ <b>Auto-filled from DC Hub:</b> nearest substation &amp; transmission (HIFLD), gas
+   pipeline, USDM water/drought, EPA air-permitting, fiber routes, and great-circle latency. You only
+   provide the coordinates (and optionally the two fiber-locator maps).</div>
+
+ <form id="f">
+   <div class="card">
+     <div class="sec">📍 Location <span class="badge">required</span></div>
+     <div class="row">
+       <div><label>Latitude</label><input name="lat" id="lat" value="{lat}" placeholder="26.4767" required></div>
+       <div><label>Longitude</label><input name="lon" id="lon" value="{lon}" placeholder="-97.7535" required></div>
+     </div>
+     <label>Intended use case</label>
+     <input name="use_case" placeholder="AI training campus — dedicated dark-fiber / OWS">
+     <div class="row">
+       <div><label>Latency target</label>
+         <select name="latency_target">
+           <option value="dallas">Dallas (Infomart)</option>
+           <option value="ashburn">Ashburn, VA</option>
+           <option value="chicago">Chicago (350 E Cermak)</option>
+           <option value="silicon valley">Silicon Valley</option>
+           <option value="phoenix">Phoenix</option>
+           <option value="atlanta">Atlanta</option>
+           <option value="new york">New York (60 Hudson)</option>
+         </select></div>
+       <div><label>Prepared for (client)</label><input name="prepared_for" placeholder="Acme Capital"></div>
+     </div>
+     <label>Assumed IT load (MW) — drives air-permitting</label>
+     <input name="capacity_mw" value="100" inputmode="decimal">
+   </div>
+
+   <div class="card">
+     <div class="sec">🗺️ Fiber-locator maps <span class="badge" style="color:var(--vio);border-color:var(--vio);background:rgba(168,85,247,.08)">optional</span></div>
+     <p class="hint">Manual exports from your fiber-locator tool. PNG/JPG, ≤8&nbsp;MB each. Embedded on the
+       report's Connectivity Maps page; the site map appears on the Power page.</p>
+     <label>Site map (your DC Hub map screenshot)</label>
+     <input type="file" name="site_map" accept="image/*">
+     <label>Fiber carriers map</label>
+     <input type="file" name="fiber_map" accept="image/*">
+     <label>Latency / route map</label>
+     <input type="file" name="latency_map" accept="image/*">
+   </div>
+
+   <button type="submit" id="go">Generate Site Report →</button>
+   <div id="msg"></div>
+ </form>
+
+<script>
+(function(){{
+  var f=document.getElementById('f'), go=document.getElementById('go'), msg=document.getElementById('msg');
+  f.addEventListener('submit', function(e){{
+    e.preventDefault();
+    var lat=parseFloat(document.getElementById('lat').value), lon=parseFloat(document.getElementById('lon').value);
+    if(!isFinite(lat)||!isFinite(lon)){{ msg.style.color='#f87171'; msg.textContent='Enter valid coordinates.'; return; }}
+    go.disabled=true; msg.style.color='#a1a1aa'; msg.textContent='Generating report from DC Hub data…';
+    var fd=new FormData(f);
+    fetch('/api/v1/site-report', {{ method:'POST', body:fd, credentials:'include' }})
+      .then(function(r){{
+        if(r.status===402){{ msg.innerHTML='<span style="color:#fbbf24">This is a PRO feature. <a href="/pricing">Upgrade to generate →</a></span>'; go.disabled=false; return null; }}
+        if(!r.ok){{ return r.text().then(function(t){{ throw new Error('HTTP '+r.status+' '+t.slice(0,160)); }}); }}
+        return r.text();
+      }})
+      .then(function(html){{
+        if(html===null) return;
+        var w=window.open('','_blank');
+        if(w){{ w.document.open(); w.document.write(html); w.document.close(); msg.style.color='#34d399'; msg.textContent='✅ Report opened in a new tab.'; }}
+        else {{ msg.style.color='#fbbf24'; msg.textContent='Pop-up blocked — allow pop-ups and retry.'; }}
+        go.disabled=false;
+      }})
+      .catch(function(err){{ msg.style.color='#f87171'; msg.textContent='Error: '+err.message; go.disabled=false; }});
+  }});
+}})();
+</script>
+</div></body></html>"""
+
+
+# ════════════════════════════════════════════════════════════════════════════
 #  Route
 # ════════════════════════════════════════════════════════════════════════════
-@site_report_bp.route("/api/v1/site-report", methods=["GET"])
+@site_report_bp.route("/api/v1/site-report/portal", methods=["GET"])
+def site_report_portal():
+    """Human-facing submission portal (public form; generation is PRO-gated by
+    the POST below). Pre-fills lat/lon from the query so the map's
+    'Generate Report' button lands here ready to go."""
+    prefill = {"lat": (request.args.get("lat") or "").strip(),
+               "lon": (request.args.get("lon") or "").strip()}
+    return Response(_render_portal(prefill), mimetype="text/html; charset=utf-8",
+                    headers={"Cache-Control": "public, max-age=300"})
+
+
+@site_report_bp.route("/api/v1/site-report", methods=["GET", "POST"])
 def site_report():
     # PRO gate (premium deliverable). Anon/FREE → 402 + upgrade JSON.
     try:
@@ -1132,28 +1321,30 @@ def site_report():
         # If the gate itself errors, fail safe to PRO-denied rather than leaking.
         return jsonify({"error": "tier_check_failed", "upgrade_url": "/pricing"}), 402
 
+    vals = request.values  # merges query args (GET) + form fields (POST multipart)
     try:
-        lat = float(request.args.get("lat"))
-        lon = float(request.args.get("lon"))
+        lat = float(vals.get("lat"))
+        lon = float(vals.get("lon"))
     except (TypeError, ValueError):
         return jsonify({
             "error": "lat and lon are required floats",
             "example": "/api/v1/site-report?lat=26.4767&lon=-97.7535&latency_target=dallas",
+            "portal": "/api/v1/site-report/portal",
         }), 400
     if not (-90 <= lat <= 90 and -180 <= lon <= 180):
         return jsonify({"error": "lat/lon out of range"}), 400
 
-    use_case = (request.args.get("use_case") or "").strip()
-    latency_target = (request.args.get("latency_target") or "").strip()
-    prepared_for = (request.args.get("prepared_for") or "").strip()
-    prepared_by = (request.args.get("prepared_by") or "").strip() or "DC Hub"
+    use_case = (vals.get("use_case") or "").strip()
+    latency_target = (vals.get("latency_target") or "").strip()
+    prepared_for = (vals.get("prepared_for") or "").strip()
+    prepared_by = (vals.get("prepared_by") or "").strip() or "DC Hub"
     try:
-        capacity_mw = float(request.args.get("capacity_mw", 100))
+        capacity_mw = float(vals.get("capacity_mw") or 100)
         if capacity_mw <= 0 or capacity_mw > 10000:
             capacity_mw = 100.0
     except (TypeError, ValueError):
         capacity_mw = 100.0
-    fmt = (request.args.get("format") or "html").lower()
+    fmt = (vals.get("format") or "html").lower()
 
     try:
         survey = _get_or_build_survey(lat, lon, use_case, latency_target,
@@ -1161,6 +1352,28 @@ def site_report():
     except Exception as e:
         return jsonify({"error": "report_build_failed",
                         "detail": f"{type(e).__name__}: {str(e)[:200]}"}), 500
+
+    # POST (submission portal): embed uploaded fiber-locator maps. Deep-copy so
+    # we never mutate the shared CACHED survey (that would leak one caller's
+    # uploaded maps into another caller's cached report).
+    if request.method == "POST" and request.files:
+        import copy as _copy
+        survey = _copy.deepcopy(survey)
+        _site = _img_data_uri(request.files.get("site_map"))
+        _fiber = _img_data_uri(request.files.get("fiber_map"))
+        _latency = _img_data_uri(request.files.get("latency_map"))
+        if _site:
+            survey.setdefault("power", {})["site_map"] = _site
+            survey["power"]["site_map_caption"] = (
+                vals.get("site_map_caption") or "DC Hub land + power view — uploaded site map.")
+        if _fiber:
+            survey.setdefault("fiber", {})["fiber_map"] = _fiber
+            survey["fiber"]["fiber_map_caption"] = (
+                vals.get("fiber_map_caption") or "Fiber-locator export — carrier routes near the site.")
+        if _latency:
+            survey.setdefault("fiber", {})["latency_map"] = _latency
+            survey["fiber"]["latency_map_caption"] = (
+                vals.get("latency_map_caption") or "Fiber-locator route — measured latency path.")
 
     if fmt == "json":
         # Strip private "_*" helper keys for a clean machine-readable payload.
