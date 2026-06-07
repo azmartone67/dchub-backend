@@ -1002,19 +1002,24 @@ def _audit_perf_budget() -> dict:
     slowness as it builds instead of only as Cloudflare 5xx after the fact."""
     import urllib.request as _u
     base = "https://api.dchub.cloud"
-    targets = [("/alive", 2.5),
-               ("/api/v1/media/aggregate", 5.0),
-               ("/api/v1/dcpi/scores?limit=5", 6.0)]
+    # /alive is probed at the ORIGIN, not the edge: api.dchub.cloud only proxies
+    # /api/* paths, so a bare /alive 522s at CF — a ROUTING quirk, not a health
+    # issue (verified 2026-06-06: origin /alive held 100% over 30s sustained load).
+    # Probing it via the edge produced a chronic FALSE perf_budget flag. The /api/*
+    # targets correctly go through CF (that's the path real callers use).
+    targets = [("https://dchub-backend-production.up.railway.app/alive", 2.5),
+               (base + "/api/v1/media/aggregate", 5.0),
+               (base + "/api/v1/dcpi/scores?limit=5", 6.0)]
     slow, checked = [], 0
-    for path, budget in targets:
-        # Retry once — a single transient blip (a momentary CF/edge hiccup, as
-        # happened to /alive on first run) is NOT a budget breach. Only flag if
+    for url, budget in targets:
+        path = url.replace("https://dchub-backend-production.up.railway.app", "").replace(base, "")
+        # Retry once — a single transient blip is NOT a budget breach. Only flag if
         # NO attempt comes back within budget. Avoids chronic false-'weak' noise.
         best_dt, last_err = None, None
         for _attempt in (1, 2):
             try:
                 t0 = time.time()
-                req = _u.Request(base + path, headers={"User-Agent": "dchub-brain-audit/1.0"})
+                req = _u.Request(url, headers={"User-Agent": "dchub-brain-audit/1.0"})
                 with _u.urlopen(req, timeout=15) as r:
                     r.read(2048)
                 dt = round(time.time() - t0, 2)
