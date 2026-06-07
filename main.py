@@ -15319,12 +15319,17 @@ def _list_facilities_full():
     limit = min(limit, 100)
     offset = (page - 1) * limit
 
-    q = request.args.get('q', '').strip()
+    # Accept the MCP search_facilities tool's advertised param aliases
+    # (operator=→provider, market=→q, min_mw=→min_power) so keyed agents'
+    # filters actually apply — see _list_facilities_free (Devin QA 2026-06-07).
+    q = request.args.get('q', '').strip() or (request.args.get('market', '') or '').strip()
     country = request.args.get('country')
-    provider = request.args.get('provider')
+    provider = request.args.get('provider') or request.args.get('operator')
     status = request.args.get('status')
     region = request.args.get('region')
     min_power = request.args.get('min_power', type=float)
+    if min_power is None:
+        min_power = request.args.get('min_mw', type=float)
     source = request.args.get('source')
 
     sql = "SELECT * FROM facilities WHERE 1=1"
