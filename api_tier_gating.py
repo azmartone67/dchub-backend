@@ -397,13 +397,36 @@ def generate_api_key(user_id, email=None, plan='free', name='Default'):
 
 def validate_api_key(api_key):
     """Validate API key and return user info. BUG-005 FIX: Direct psycopg2 connection.
-    
+
     UPDATED: Added NEON_DATABASE_URL as primary fallback — Railway DATABASE_URL
     sometimes points to wrong Neon DB (helium vs ep-old-waterfall).
+
+    Phase BC-CRITICAL (2026-06-07): added dch_trial_* branch up-front. Without
+    this, auto-minted trial keys (from mcp_high_intent_claim, state_visitor_claim,
+    /api/v1/keys/auto-trial) 401'd on every @require_plan endpoint that imports
+    this module — killing the entire post-mint UX described in the trial-key
+    welcome message.
     """
     if not api_key:
         return None
-    
+
+    # Trial key branch — auto_trial_keys table, not api_keys.
+    if api_key.startswith('dch_trial_'):
+        try:
+            from routes.auto_trial import validate_trial_key
+            valid, _reason = validate_trial_key(api_key)
+            if not valid:
+                return None
+            return {
+                'user_id': api_key,
+                'email': None,
+                'plan': 'identified',
+                'role': 'trial',
+                'rate_limit_tier': 'identified',
+            }
+        except Exception:
+            return None
+
     import psycopg2
     conn = None
     try:

@@ -59,6 +59,18 @@ RATE_LIMITS = {
         'name': 'Free',
         'price': 0
     },
+    # Phase BC-CRITICAL (2026-06-07): trial keys (dch_trial_*) come in as
+    # plan="identified" via validate_api_key. Without this tier here, the
+    # rate limiter (line 348) fell back to 'free' (100/day) — silently
+    # cutting trial keys to half their promised quota.
+    'identified': {
+        'requests_per_day': 200,
+        'requests_per_minute': 30,
+        'max_keys': 1,
+        'features': ['basic_search', 'facility_list', 'news', 'market_data', 'energy_data'],
+        'name': 'Identified',
+        'price': 0
+    },
     'pro': {
         'requests_per_day': 10000,
         'requests_per_minute': 100,
@@ -243,33 +255,68 @@ def get_key_prefix(key):
     return key[:16] if len(key) > 16 else key
 
 def validate_api_key(key):
-    """Validate API key and return key info"""
-    if not key or not key.startswith('dchub_'):
+    """Validate API key and return key info.
+
+    Recognized key shapes:
+      - dchub_*       → user-minted via /api/v2/keys → api_keys table
+      - dch_trial_*   → auto-minted trial keys (mcp_high_intent_claim,
+                        state_visitor_claim, /api/v1/keys/auto-trial) →
+                        auto_trial_keys table. Phase BC-CRITICAL (2026-06-07):
+                        without this branch, every trial key returns 401
+                        on REST endpoints — kills MCP + State conversion.
+    """
+    if not key:
         return None
-    
+
+    # Trial key branch — auto-minted dch_trial_* keys live in auto_trial_keys
+    # (a separate table from api_keys). They're IDENTIFIED tier with 200/day.
+    if key.startswith('dch_trial_'):
+        try:
+            from routes.auto_trial import validate_trial_key
+            valid, _reason = validate_trial_key(key)
+            if not valid:
+                return None
+            # Shape-match the api_keys row that downstream code expects.
+            # user_id is the key itself (no users-row for trial keys); plan
+            # is "identified" so RATE_LIMITS lookup works.
+            return {
+                'id':            key,
+                'user_id':       key,
+                'key_hash':      hash_api_key(key),
+                'plan':          'identified',
+                'is_active':     1,
+                'expires_at':    None,
+                'trial':         True,
+            }
+        except Exception:
+            return None
+
+    if not key.startswith('dchub_'):
+        return None
+
     key_hash = hash_api_key(key)
-    
+
     conn = get_db()
     c = conn.cursor()
-    
+
     c.execute("""
         SELECT ak.*, up.plan
         FROM api_keys ak
         LEFT JOIN user_plans up ON ak.user_id = up.user_id
         WHERE ak.key_hash = %s AND ak.is_active = 1
     """, (key_hash,))
-    
+
     row = c.fetchone()
     conn.close()
-    
+
     if not row:
         return None
-    
+
     # Check expiration
     if row['expires_at']:
         if datetime.fromisoformat(row['expires_at']) < datetime.utcnow():
             return None
-    
+
     return dict(row)
 
 def update_key_usage(key_id):
