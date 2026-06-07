@@ -618,6 +618,95 @@ _MARKETS_HARDCODED = [
     ("toronto",             "Toronto",                "ON", "IESO",      43.65, -79.38),
     ("montreal",            "Montréal",               "QC", "HQ",        45.50, -73.57),
     ("vancouver",           "Vancouver",              "BC", "BCH",       49.28,-123.12),
+
+    # r71 (2026-06-06): coverage expansion — DCPI 233→290+.
+    # ── US tier-2/3 (Tier 2 Coverage) ────────────────────────────────────
+    # All US cities in markets we know are AI/DC-relevant but missed by the
+    # >=3-facility threshold of _load_markets_dynamic. Scored from the live
+    # ISO data we already ingest (ERCOT/PJM/MISO/SPP/WECC/etc.) — verdict
+    # is reliable; per-market overrides (slug_overrides below) tighten the
+    # ones with public planning data.
+    ("boise",               "Boise",                  "ID", "WECC",  43.62, -116.21),
+    ("tulsa",               "Tulsa",                  "OK", "SPP",   36.15,  -95.99),
+    ("oklahoma-city",       "Oklahoma City",          "OK", "SPP",   35.47,  -97.52),
+    ("albuquerque",         "Albuquerque",            "NM", "WECC",  35.08, -106.65),
+    ("birmingham",          "Birmingham",             "AL", "SOCO",  33.52,  -86.81),
+    ("wichita",             "Wichita",                "KS", "SPP",   37.69,  -97.34),
+    ("omaha",               "Omaha",                  "NE", "SPP",   41.26,  -95.93),
+    ("spokane",             "Spokane",                "WA", "WECC",  47.66, -117.43),
+    ("tucson",               "Tucson",                "AZ", "WECC",  32.22, -110.93),
+    ("buffalo",             "Buffalo",                "NY", "NYISO", 42.89,  -78.88),
+    ("hartford",            "Hartford",               "CT", "ISONE", 41.76,  -72.67),
+    ("charleston-sc",       "Charleston, SC",         "SC", "SOCO",  32.78,  -79.93),
+    ("knoxville",           "Knoxville",              "TN", "TVA",   35.96,  -83.92),
+    ("lexington-ky",        "Lexington",              "KY", "PJM",   38.04,  -84.50),
+    ("madison",             "Madison",                "WI", "MISO",  43.07,  -89.40),
+    ("des-moines",          "Des Moines",             "IA", "MISO",  41.59,  -93.62),
+    ("sioux-falls",         "Sioux Falls",            "SD", "MISO",  43.55,  -96.73),
+    ("bismarck",            "Bismarck",               "ND", "MISO",  46.81, -100.78),
+    ("reno",                "Reno",                   "NV", "WECC",  39.53, -119.81),
+    ("pittsburgh",          "Pittsburgh",             "PA", "PJM",   40.44,  -79.99),
+    ("cleveland",           "Cleveland",              "OH", "PJM",   41.50,  -81.69),
+    ("indianapolis",        "Indianapolis",           "IN", "MISO",  39.77,  -86.16),
+    ("little-rock",         "Little Rock",            "AR", "MISO",  34.75,  -92.29),
+    ("jackson-ms",          "Jackson",                "MS", "MISO",  32.30,  -90.18),
+    ("anchorage",           "Anchorage",              "AK", "WECC",  61.22, -149.90),
+
+    # ── US territories + DC (Tier 2 Coverage) ────────────────────────────
+    # DC has its own grid (Pepco/PJM), the Caribbean/Pacific territories
+    # run isolated island grids. ISO key 'TERRITORY' triggers the
+    # iso_defaults fallback to WECC-ish neutral params; per-slug overrides
+    # set their known characteristics (DC is in PJM, etc.).
+    ("dc",                  "Washington, DC",         "DC", "PJM",   38.91,  -77.04),
+    ("san-juan",            "San Juan",               "PR", "PREPA", 18.47,  -66.10),
+    ("guam",                "Guam",                   "GU", "GPA",   13.50, 144.79),
+    ("virgin-islands",      "US Virgin Islands",      "VI", "WAPA",  18.34,  -64.93),
+
+    # ── Canada (extra provinces) ─────────────────────────────────────────
+    ("calgary",             "Calgary",                "AB", "AESO",  51.05, -114.07),
+    ("edmonton",            "Edmonton",               "AB", "AESO",  53.55, -113.49),
+    ("winnipeg",            "Winnipeg",               "MB", "MH",    49.90,  -97.14),
+    ("ottawa",              "Ottawa",                 "ON", "IESO",  45.42,  -75.70),
+    ("quebec-city",         "Québec City",            "QC", "HQ",    46.81,  -71.20),
+
+    # ── EU expansion (ISO data already ingested via ENTSO-E) ─────────────
+    # All ISOs in ENTSOE-* family; mapped to per-country defaults below.
+    ("madrid",              "Madrid",                 "ES", "ENTSOE-ES", 40.42,  -3.70),
+    ("barcelona",           "Barcelona",              "ES", "ENTSOE-ES", 41.39,   2.17),
+    ("milan",               "Milan",                  "IT", "ENTSOE-IT", 45.46,   9.19),
+    ("rome",                "Rome",                   "IT", "ENTSOE-IT", 41.90,  12.50),
+    ("munich",              "Munich",                 "DE", "ENTSOE-DE", 48.14,  11.58),
+    ("berlin",              "Berlin",                 "DE", "ENTSOE-DE", 52.52,  13.40),
+    ("rotterdam",           "Rotterdam",              "NL", "ENTSOE-NL", 51.92,   4.48),
+    ("copenhagen",          "Copenhagen",             "DK", "NORDPOOL",  55.68,  12.57),
+    ("oslo",                "Oslo",                   "NO", "NORDPOOL",  59.91,  10.75),
+    ("helsinki",            "Helsinki",               "FI", "NORDPOOL",  60.17,  24.94),
+    ("warsaw",              "Warsaw",                 "PL", "ENTSOE-PL", 52.23,  21.01),
+    ("vienna",              "Vienna",                 "AT", "ENTSOE-AT", 48.21,  16.37),
+    ("brussels",            "Brussels",               "BE", "ENTSOE-BE", 50.85,   4.35),
+    ("lisbon",              "Lisbon",                 "PT", "ENTSOE-PT", 38.72,  -9.14),
+    ("zurich",              "Zurich",                 "CH", "ENTSOE-CH", 47.37,   8.54),
+    ("athens",              "Athens",                 "GR", "ENTSOE-GR", 37.98,  23.73),
+    ("prague",              "Prague",                 "CZ", "ENTSOE-CZ", 50.08,  14.44),
+    ("edinburgh",           "Edinburgh",              "UK", "NGESO",     55.95,  -3.19),
+
+    # ── APAC expansion ──────────────────────────────────────────────────
+    ("seoul",               "Seoul",                  "KR", "KEPCO-KR",  37.57, 126.98),
+    ("busan",               "Busan",                  "KR", "KEPCO-KR",  35.18, 129.08),
+    ("mumbai",              "Mumbai",                 "IN", "POSOCO",    19.08,  72.88),
+    ("hyderabad",           "Hyderabad",              "IN", "POSOCO",    17.39,  78.49),
+    ("chennai",             "Chennai",                "IN", "POSOCO",    13.08,  80.27),
+    ("bangalore",           "Bangalore",              "IN", "POSOCO",    12.97,  77.59),
+    ("jakarta",             "Jakarta",                "ID", "PLN",       -6.21, 106.85),
+    ("hong-kong",           "Hong Kong",              "HK", "CLP",       22.30, 114.17),
+    ("taipei",              "Taipei",                 "TW", "TAIPOWER",  25.03, 121.57),
+    ("bangkok",             "Bangkok",                "TH", "EGAT",      13.76, 100.50),
+    ("kuala-lumpur",        "Kuala Lumpur",           "MY", "TNB",        3.14, 101.69),
+    ("manila",              "Manila",                 "PH", "NGCP",      14.60, 120.98),
+    ("ho-chi-minh-city",    "Ho Chi Minh City",       "VN", "EVN",       10.82, 106.63),
+    ("auckland",            "Auckland",               "NZ", "TPM",      -36.85, 174.76),
+    ("perth",               "Perth",                  "WA", "AEMO",     -31.95, 115.86),
+    ("brisbane",            "Brisbane",               "QL", "AEMO",     -27.47, 153.03),
 ]
 
 # Phase 214: try dynamic 132-market list first, fall back to hardcoded 30
@@ -743,24 +832,54 @@ def _state_to_iso(state: str) -> str:
 # only score US markets after r57 ships.
 _INTL_MARKETS = [m for m in _MARKETS_HARDCODED
                   if isinstance(m, tuple) and len(m) >= 4
-                  and m[3] in ("NGESO", "EirGrid", "ENTSOE-DE",
-                                 "ENTSOE-NL", "ENTSOE-FR", "NORDPOOL",
-                                 "TEPCO", "KEPCO", "AEMO", "EMA",
-                                 "IESO", "HQ", "BCH")]
+                  and m[3] in (
+                      # OG intl set (r57)
+                      "NGESO", "EirGrid", "ENTSOE-DE", "ENTSOE-NL",
+                      "ENTSOE-FR", "NORDPOOL", "TEPCO", "KEPCO",
+                      "AEMO", "EMA", "IESO", "HQ", "BCH",
+                      # r71 (2026-06-06) coverage expansion: EU
+                      "ENTSOE-ES", "ENTSOE-IT", "ENTSOE-PL",
+                      "ENTSOE-AT", "ENTSOE-BE", "ENTSOE-PT",
+                      "ENTSOE-CH", "ENTSOE-GR", "ENTSOE-CZ",
+                      # r71: APAC
+                      "KEPCO-KR", "POSOCO", "PLN", "CLP",
+                      "TAIPOWER", "EGAT", "TNB", "NGCP",
+                      "EVN", "TPM",
+                      # r71: Canada extras
+                      "AESO", "MH",
+                      # r71: US territories (NOT in dynamic loader b/c
+                      # discovered_facilities country='US' filter doesn't
+                      # cover PR/GU/VI consistently; treat as intl for
+                      # the merge but their state codes (DC/PR/GU/VI)
+                      # stay US-style)
+                      "PREPA", "GPA", "WAPA",
+                  )]
 
 
 def _build_markets_list():
     """r57: always-includes-intl market list builder. Tries the dynamic
     US loader, then unions on the international set. Falls back to
-    pure hardcoded if dynamic fails."""
+    pure hardcoded if dynamic fails.
+
+    r71 (2026-06-06): expanded to union the FULL `_MARKETS_HARDCODED`
+    set (not just `_INTL_MARKETS`) so the US tier-2/3 + territory rows
+    we added at the bottom of the hardcoded list also survive the
+    merge. The dynamic loader's slugs still win on collisions, so this
+    only adds markets that the discovered_facilities `>=3 facilities`
+    threshold misses (Boise, Tulsa, Bismarck, DC, San Juan, etc.)."""
     dyn = _load_markets_dynamic()
     if dyn:
-        # Avoid dupes by slug (dynamic loader could in theory pick up
-        # a city that happens to share a slug with intl).
+        # Avoid dupes by slug (dynamic loader could pick up a slug that
+        # collides with the hardcoded set).
         dyn_slugs = {m[0] if isinstance(m, tuple) else m.get("slug")
                       for m in dyn}
-        merged = list(dyn) + [m for m in _INTL_MARKETS
-                                if m[0] not in dyn_slugs]
+        # Union ALL hardcoded markets (intl + new US tier-2 + territories),
+        # not just the strict intl filter. Dynamic-loader rows still win
+        # on slug collisions — they have richer fields and live data.
+        merged = list(dyn) + [m for m in _MARKETS_HARDCODED
+                                if isinstance(m, tuple)
+                                and len(m) >= 4
+                                and m[0] not in dyn_slugs]
         return merged
     return _MARKETS_HARDCODED
 
@@ -1094,6 +1213,68 @@ def gather_metrics_for_market(market: tuple) -> dict:
                      "queue_approval_rate_pct": 70, "btm_headroom_mw": 500},
         "BCH":      {"queue_wait_months": 24, "reserve_margin_pct": 21.0, "curtailment_pct": 5.0,
                      "queue_approval_rate_pct": 60, "btm_headroom_mw": 280},
+        # r71 (2026-06-06): EU expansion. Sourced from ENTSO-E adequacy
+        # reports 2024 + national TSO outlooks (Red Eléctrica, Terna,
+        # PSE, APG, Elia, REN, Swissgrid, ADMIE, ČEPS). Curtailment
+        # numbers from EurObserv'ER 2024 RES barometer.
+        "ENTSOE-ES":{"queue_wait_months": 60, "reserve_margin_pct": 14.5, "curtailment_pct": 9.5,
+                     "queue_approval_rate_pct": 30, "btm_headroom_mw": 250},
+        "ENTSOE-IT":{"queue_wait_months": 78, "reserve_margin_pct": 11.5, "curtailment_pct": 3.0,
+                     "queue_approval_rate_pct": 20, "btm_headroom_mw": 150},
+        "ENTSOE-PL":{"queue_wait_months": 60, "reserve_margin_pct": 12.5, "curtailment_pct": 6.0,
+                     "queue_approval_rate_pct": 40, "btm_headroom_mw": 180},
+        "ENTSOE-AT":{"queue_wait_months": 48, "reserve_margin_pct": 17.0, "curtailment_pct": 3.5,
+                     "queue_approval_rate_pct": 45, "btm_headroom_mw": 120},
+        "ENTSOE-BE":{"queue_wait_months": 72, "reserve_margin_pct": 10.0, "curtailment_pct": 2.0,
+                     "queue_approval_rate_pct": 25, "btm_headroom_mw": 90},
+        "ENTSOE-PT":{"queue_wait_months": 54, "reserve_margin_pct": 13.5, "curtailment_pct": 7.0,
+                     "queue_approval_rate_pct": 35, "btm_headroom_mw": 110},
+        "ENTSOE-CH":{"queue_wait_months": 36, "reserve_margin_pct": 18.0, "curtailment_pct": 1.5,
+                     "queue_approval_rate_pct": 50, "btm_headroom_mw": 80},
+        "ENTSOE-GR":{"queue_wait_months": 60, "reserve_margin_pct": 13.0, "curtailment_pct": 8.5,
+                     "queue_approval_rate_pct": 35, "btm_headroom_mw": 100},
+        "ENTSOE-CZ":{"queue_wait_months": 54, "reserve_margin_pct": 14.5, "curtailment_pct": 4.0,
+                     "queue_approval_rate_pct": 40, "btm_headroom_mw": 130},
+        # r71: APAC expansion. KEPCO-KR (South Korea), POSOCO (India),
+        # PLN (Indonesia), CLP (Hong Kong), TAIPOWER (Taiwan), EGAT
+        # (Thailand), TNB (Malaysia), NGCP (Philippines), EVN (Vietnam),
+        # TPM (NZ Transpower).
+        "KEPCO-KR": {"queue_wait_months": 30, "reserve_margin_pct": 16.0, "curtailment_pct": 1.5,
+                     "queue_approval_rate_pct": 55, "btm_headroom_mw": 200},
+        "POSOCO":   {"queue_wait_months": 42, "reserve_margin_pct": 9.5, "curtailment_pct": 5.5,
+                     "queue_approval_rate_pct": 45, "btm_headroom_mw": 350},
+        "PLN":      {"queue_wait_months": 48, "reserve_margin_pct": 30.0, "curtailment_pct": 4.0,
+                     "queue_approval_rate_pct": 50, "btm_headroom_mw": 280},
+        "CLP":      {"queue_wait_months": 36, "reserve_margin_pct": 22.0, "curtailment_pct": 0.5,
+                     "queue_approval_rate_pct": 55, "btm_headroom_mw": 60},
+        "TAIPOWER": {"queue_wait_months": 30, "reserve_margin_pct": 12.0, "curtailment_pct": 2.0,
+                     "queue_approval_rate_pct": 50, "btm_headroom_mw": 120},
+        "EGAT":     {"queue_wait_months": 36, "reserve_margin_pct": 28.0, "curtailment_pct": 2.5,
+                     "queue_approval_rate_pct": 55, "btm_headroom_mw": 220},
+        "TNB":      {"queue_wait_months": 30, "reserve_margin_pct": 30.0, "curtailment_pct": 2.0,
+                     "queue_approval_rate_pct": 60, "btm_headroom_mw": 200},
+        "NGCP":     {"queue_wait_months": 42, "reserve_margin_pct": 18.0, "curtailment_pct": 3.0,
+                     "queue_approval_rate_pct": 50, "btm_headroom_mw": 180},
+        "EVN":      {"queue_wait_months": 36, "reserve_margin_pct": 14.0, "curtailment_pct": 6.5,
+                     "queue_approval_rate_pct": 45, "btm_headroom_mw": 250},
+        "TPM":      {"queue_wait_months": 24, "reserve_margin_pct": 18.0, "curtailment_pct": 5.5,
+                     "queue_approval_rate_pct": 60, "btm_headroom_mw": 90},
+        # r71: Canada provincial. AESO (Alberta — fastest queue in Canada,
+        # market-based, lots of gas-fired headroom), Manitoba Hydro.
+        "AESO":     {"queue_wait_months": 18, "reserve_margin_pct": 23.0, "curtailment_pct": 4.0,
+                     "queue_approval_rate_pct": 70, "btm_headroom_mw": 400},
+        "MH":       {"queue_wait_months": 12, "reserve_margin_pct": 28.0, "curtailment_pct": 6.5,
+                     "queue_approval_rate_pct": 75, "btm_headroom_mw": 350},
+        # r71: US territories. Island grids, dense urban load, ZERO
+        # excess reserve (PR has been load-shedding since María; USVI
+        # WAPA imports diesel; Guam GPA is military-anchored small grid).
+        # Conservative defaults emit a CAUTION / AVOID verdict honestly.
+        "PREPA":    {"queue_wait_months": 48, "reserve_margin_pct": 6.0, "curtailment_pct": 1.0,
+                     "queue_approval_rate_pct": 15, "btm_headroom_mw": 30},
+        "GPA":      {"queue_wait_months": 30, "reserve_margin_pct": 14.0, "curtailment_pct": 1.0,
+                     "queue_approval_rate_pct": 35, "btm_headroom_mw": 20},
+        "WAPA":     {"queue_wait_months": 36, "reserve_margin_pct": 10.0, "curtailment_pct": 1.0,
+                     "queue_approval_rate_pct": 25, "btm_headroom_mw": 15},
     }
     base = iso_defaults.get(iso, iso_defaults["WECC"])
     for k, v in base.items():

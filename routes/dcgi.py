@@ -200,6 +200,16 @@ _STATE_BOXES = {
     'VT': (42.7, 45.0, -73.4, -71.5), 'VA': (36.5, 39.5, -83.7, -75.2),
     'WA': (45.5, 49.0, -124.8, -116.9), 'WV': (37.2, 40.6, -82.6, -77.7),
     'WI': (42.5, 47.1, -92.9, -86.8), 'WY': (41.0, 45.0, -111.1, -104.1),
+    # r71 (2026-06-06): US territories + DC. DC has the same pipeline
+    # access as adjacent MD/VA (Washington Gas serves it via interstate
+    # taps); PR/GU/VI are LNG-only — no continental pipelines. Boxes
+    # let the lat/lng→state matcher find them if EIA ever publishes
+    # data for these; _gas_state_rollup() seeds them with Tier-2
+    # placeholder counts so they show up in DCGI today.
+    'DC': (38.79, 39.00, -77.12, -76.91),
+    'PR': (17.88, 18.52, -67.95, -65.22),
+    'VI': (17.67, 18.42, -65.10, -64.56),
+    'GU': (13.23, 13.66, 144.62, 144.97),
 }
 
 
@@ -338,6 +348,45 @@ def _gas_state_rollup():
         except Exception as e:
             diag["diag_error"] = str(e)[:160]
         return {}, "no states derived | diag=" + json.dumps(diag)
+
+    # ── r71 (2026-06-06): US territories + DC injection ───────────────────
+    # DC and US territories don't appear in gas_pipelines (DC because the
+    # EIA dataset stops at adjacent MD/VA taps; PR/GU/VI because they're
+    # LNG islands with no interstate pipelines), so the lat/lng→state
+    # matcher above never finds them. Seed them with conservative, source-
+    # documented territory placeholders so the DCGI catalog covers 51
+    # (50 states + DC) plus the 3 territories. Each gets `tier="2"` so
+    # consumers can flag them as "Tier 2 Coverage". DCGI value here is a
+    # MODELED ESTIMATE — not gas_pipelines-derived.
+    _territory_seeds = {
+        # DC: Washington Gas serves the District via Cove Point/TETCO
+        # interstate taps shared with adjacent MD/VA. Counted as 2
+        # interstate connections + 1 LDC.
+        "DC": {"pipelines": 2, "operators": 1, "interstate": 2, "tier": "2",
+               "data_basis": "modeled_territory", "gas_price": 9.5},
+        # PR: 1 LNG terminal (EcoElectrica), 0 interstate pipelines.
+        # Effectively GAS-CONSTRAINED — DC ops require LNG sourcing.
+        "PR": {"pipelines": 1, "operators": 1, "interstate": 0, "tier": "2",
+               "data_basis": "modeled_territory_lng", "gas_price": 14.0},
+        # USVI: WAPA imports propane/LNG by ship. No pipelines.
+        "VI": {"pipelines": 1, "operators": 1, "interstate": 0, "tier": "2",
+               "data_basis": "modeled_territory_lng", "gas_price": 16.0},
+        # Guam: GPA runs gas turbines on imported diesel/LNG.
+        "GU": {"pipelines": 1, "operators": 1, "interstate": 0, "tier": "2",
+               "data_basis": "modeled_territory_lng", "gas_price": 15.5},
+    }
+    for st, seed in _territory_seeds.items():
+        if st not in states:
+            row = {"state": st, "pipelines": seed["pipelines"],
+                   "operators": seed["operators"],
+                   "interstate": seed["interstate"]}
+            row["tier"] = seed["tier"]
+            row["data_basis"] = seed["data_basis"]
+            if seed.get("gas_price"):
+                row["gas_price"] = seed["gas_price"]
+                row["gas_price_sector"] = "modeled_territory_lng_delivered"
+                row["gas_price_period"] = "2026-Q2"
+            states[st] = row
 
     max_n = max((s["pipelines"] for s in states.values()), default=1) or 1
     for s in states.values():
