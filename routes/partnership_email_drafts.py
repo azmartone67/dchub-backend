@@ -259,7 +259,10 @@ def _send_resend(to_email, subject, html, text):
 
 def _record_send(slug, to_email, subject, personal_note, status, detail):
     try:
-        with _conn() as c, c.cursor() as cur:
+        dsn = os.environ.get("DATABASE_URL") or os.environ.get("NEON_DATABASE_URL") or ""
+        if not dsn:
+            return
+        with psycopg2.connect(dsn) as c, c.cursor() as cur:
             cur.execute("""
                 INSERT INTO partnership_emails_sent
                   (track_slug, to_email, subject, personal_note, smtp_status, smtp_detail)
