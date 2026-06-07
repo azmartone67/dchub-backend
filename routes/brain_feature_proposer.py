@@ -117,19 +117,18 @@ def _min_cluster() -> int:
 
 
 def _conn():
-    try:
-        from routes._iso_common import conn as _c
-        return _c()
-    except Exception:
-        pass
+    """Return a raw psycopg2 connection (NOT the _iso_common
+    contextmanager — its `conn()` is `@contextmanager`, so `_c().cursor()`
+    crashes with `'_GeneratorContextManager' has no attribute 'cursor'`).
+    Mirrors the pattern that already works in routes/brain_bug_squash.py."""
     try:
         import psycopg2 as _pg
         dsn = (os.environ.get("DATABASE_URL")
                or os.environ.get("NEON_DATABASE_URL") or "")
         if dsn:
-            return _pg.connect(dsn)
-    except Exception:
-        pass
+            return _pg.connect(dsn, sslmode="require", connect_timeout=6)
+    except Exception as e:
+        logger.warning("brain_feature_proposer: _conn failed: %s", e)
     return None
 
 

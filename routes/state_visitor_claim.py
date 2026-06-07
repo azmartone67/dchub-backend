@@ -540,6 +540,17 @@ def claim_email():
 
         public_base = (os.environ.get("DCHUB_PUBLIC_BASE_URL")
                        or "https://dchub.cloud").rstrip("/")
+
+        # r74 (2026-06-07): emit CRM reverse-ETL capture event. Fail-soft.
+        try:
+            from routes.crm_reverse_etl import capture_event as _crm_capture
+            _crm_capture("state_visitor_high_intent", {
+                "email": email, "session_id": vsid,
+                "brief_clicks": brief_clicks, "time_on_page_s": time_s,
+            })
+        except Exception as _e_crm:
+            logger.debug("[claim_email] crm capture skipped: %s", _e_crm)
+
         logger.info("[state_visitor_claim] minted vsid=%s email=%s key=%s "
                     "email_status=%s clicks=%s time_s=%s",
                     vsid[:12], email, (api_key or "")[:20] + "...",

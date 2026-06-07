@@ -872,6 +872,17 @@ def claim_submit(token: str):
         except Exception as e:
             logger.warning("[claim_submit] mark-used failed: %s", e)
 
+        # r74 (2026-06-07): emit CRM reverse-ETL capture event.
+        # Fail-soft — a CRM hiccup cannot break the conversion flow.
+        try:
+            from routes.crm_reverse_etl import capture_event as _crm_capture
+            _crm_capture("mcp_high_intent", {
+                "email": email, "session_id": sid,
+                "tool": tool, "claim_token": token[:16],
+            })
+        except Exception as _e_crm:
+            logger.debug("[claim_submit] crm capture skipped: %s", _e_crm)
+
         logger.info("[claim_submit] minted token=%s tool=%s email=%s key=%s email_status=%s mint_error=%s",
                     token[:16], tool, email, api_key[:20] + "..." if api_key else None,
                     email_status, mint_error)

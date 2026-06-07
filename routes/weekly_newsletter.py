@@ -862,6 +862,13 @@ def api_subscribe():
     except Exception as e:
         logger.debug("welcome email skipped: %s", e)
 
+    # r74 (2026-06-07): emit CRM reverse-ETL capture. Fail-soft.
+    try:
+        from routes.crm_reverse_etl import capture_event as _crm_capture
+        _crm_capture("newsletter_signup", {"email": email, "source": source})
+    except Exception as _e_crm:
+        logger.debug("[newsletter] crm capture skipped: %s", _e_crm)
+
     resp = jsonify(ok=True, email=email, next_send="Friday 16:00 UTC")
     resp.headers["Access-Control-Allow-Origin"] = "*"
     return resp, 200

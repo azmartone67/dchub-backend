@@ -2698,6 +2698,44 @@ def _run_brain_pr_outcome_monitor():
             "🧠 brain_pr_outcome_monitor error: %s", e, exc_info=True)
 
 
+def _run_brain_self_perception():
+    """Task #161 (2026-06-07). Daily 04:00 UTC — brain reads its OWN
+    dashboards (funnel-health, brain-backlog, sentinel-inbox, media,
+    state-of-2026, brain_pr_outcomes, brain_strategic_recommendations)
+    and asks Claude (Opus 4.8 reasoning tier) for a wins / losses /
+    adjustments self-assessment. Persists to brain_self_perception
+    (one row per UTC date — UNIQUE(ran_on)). Strategic synthesis L6
+    consumes this via gather_self_perception_context() so the next
+    weekly synthesis sees how the brain self-assessed yesterday.
+    Morning briefing at 06:00 reads the same-day row's one-liner.
+
+    Self-gates on activity: <2 brain-authored PRs + strategic recs in
+    the last 7d writes a 'low_activity' sentinel row (no Claude call).
+    Cost ~$0.17/run at Opus 4.8 reasoning rates. Defensive — never
+    raises. Kill: BRAIN_SELF_PERCEPTION_DISABLE=1."""
+    try:
+        from routes.brain_self_perception import (
+            run_self_perception as _run,
+        )
+        result = _run(force=False) or {}
+        logger.info(
+            "🧠 brain_self_perception: ok=%s from_cache=%s "
+            "skipped=%s wins=%s losses=%s adj=%s model=%s "
+            "cost_cents=%s row_id=%s",
+            result.get("ok"),
+            result.get("from_cache"),
+            result.get("skipped"),
+            result.get("wins_count"),
+            result.get("losses_count"),
+            result.get("adjustments_count"),
+            result.get("model_used"),
+            result.get("cost_cents"),
+            result.get("row_id"))
+    except Exception as e:
+        logger.error(
+            "🧠 brain_self_perception error: %s", e, exc_info=True)
+
+
 def _run_brain_cross_session_scan():
     """Brain ROUND 2 (2026-06-07). Twice-daily — scans brain_findings
     for (detector, issue) pairs appearing in N+ distinct sessions in

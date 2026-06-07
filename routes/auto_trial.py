@@ -211,6 +211,18 @@ def mint_trial_for_request(req=None, tool_name: str = "", client_name: str = "",
         try: c.close()
         except Exception: pass
 
+    # r74 (2026-06-07): emit CRM reverse-ETL capture on first mint (not reuse).
+    # Only fires when an operator email is bound at mint time. Fail-soft.
+    try:
+        if operator_email:
+            from routes.crm_reverse_etl import capture_event as _crm_capture
+            _crm_capture("trial_key_activated", {
+                "email": operator_email,
+                "tool": tool_name, "mcp_client": client_name,
+            })
+    except Exception:
+        pass
+
     return {
         "ok":          True,
         "api_key":     api_key,
