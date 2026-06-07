@@ -1,0 +1,30 @@
+# State of Data Centers 2026 — Pre-Publish Claim Sheet
+#
+# Used by GET /api/v1/admin/qa/state-of-2026-precheck (routes/state_of_2026_precheck.py)
+# to fact-check the LinkedIn-bound narrative against live DC Hub data.
+#
+# Format (ONE claim per line, all fields required, '#' = comment):
+#
+#   claim: <verbatim narrative text> | endpoint: /api/v1/X | json_path: a.b.c | expected_min: Y | expected_max: Z
+#
+#   - claim        verbatim text the user is about to post (used for the GO/NO-GO worst-case display)
+#   - endpoint     a backend URL (relative — base is implied prod) the harness hits with X-Admin-Key
+#   - json_path    dotted path into the JSON response. `_total_available` or `count` or `scores.0.composite_score` etc.
+#                  use `len:scores` to count an array; `sum:items.mw` to sum a numeric field across an array
+#   - expected_min int/float minimum the live number must be (inclusive)
+#   - expected_max int/float maximum the live number must be (inclusive)
+#
+# Drift > 5% from the claim or out-of-range = NO_GO fail.
+#
+# Seed claims below are PLACEHOLDERS — edit them with the exact phrasing you'll use in the LinkedIn post.
+# Lines starting with '#' or blank lines are ignored.
+
+claim: 233 markets tracked across DCPI v2.1 | endpoint: /api/v1/dcpi/scores | json_path: _total_available | expected_min: 225 | expected_max: 245
+claim: top-10 DCPI sample size | endpoint: /api/v1/dcpi/scores | json_path: count | expected_min: 8 | expected_max: 12
+claim: DCGI operator coverage spans 10+ operators | endpoint: /api/v1/dcgi/operators | json_path: len:operators | expected_min: 10 | expected_max: 500
+claim: 25 markets featured on the DCPI leaderboard | endpoint: /api/v1/dcpi/leaderboard | json_path: count | expected_min: 20 | expected_max: 30
+
+# Add your own claims, e.g.:
+# claim: ERCOT queue 410 GW pending | endpoint: /api/v1/grid/status?iso=ercot | json_path: queue_pending_gw | expected_min: 390 | expected_max: 430
+# claim: PJM headroom 30 GW | endpoint: /api/v1/grid/status?iso=pjm | json_path: headroom_gw | expected_min: 28 | expected_max: 32
+# claim: $324B in tracked M&A | endpoint: /api/v1/transactions/total-value | json_path: total_usd_b | expected_min: 300 | expected_max: 350

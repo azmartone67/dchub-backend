@@ -1513,6 +1513,20 @@ try:
     except Exception as _fhe:
         import logging
         logging.getLogger(__name__).warning('funnel_health wiring failed: %s', _fhe)
+    # 2026-06-06: State of 2026 pre-publish QA harness — ONE button the founder
+    # clicks before the LinkedIn launch to score every brief / hyperscaler /
+    # claim / OG card / link and return GO / CAUTION / NO_GO. Catches the
+    # embarrassing data (em-dashes, AWS $328M/MW math, wrong-attribution news)
+    # BEFORE the post goes out to 10K followers. See
+    # routes/state_of_2026_precheck.py for the audit rules + docs/state-of-
+    # 2026-claims.txt for the user-editable claim sheet.
+    try:
+        from routes.state_of_2026_precheck import state_of_2026_precheck_bp
+        app.register_blueprint(state_of_2026_precheck_bp)
+    except Exception as _s26e:
+        import logging
+        logging.getLogger(__name__).warning(
+            'state_of_2026_precheck wiring failed: %s', _s26e)
     try:
         from routes.feedback_triage import feedback_triage_bp
         app.register_blueprint(feedback_triage_bp)

@@ -934,6 +934,8 @@ def _render_html(data: dict, admin_key: str) -> str:
 <body>
 <div class="wrap">
   <a class="refresh" href="?admin_key={admin_key_safe}">↻ Refresh (60s TTL)</a>
+  <a class="refresh" style="right:170px;background:#fbbf24;color:#000"
+     href="/admin/qa/state-of-2026?admin_key={admin_key_safe}">▶ State of 2026 QA</a>
   <h1>Funnel Health <span class="pulse">LIVE</span></h1>
   <p class="sub">Single-pane view of every conversion signal — MCP funnel,
      Stripe MRR, new lifecycle events, per-platform breakdown.
