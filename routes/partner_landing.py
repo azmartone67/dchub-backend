@@ -45,6 +45,40 @@ partner_landing_bp = Blueprint("partner_landing", __name__)
 # routes/ai_lab_outreach.py — when r63's outreach module needs a
 # slug, it MUST match a slug here so the email link resolves.
 _PARTNERS = {
+    "cohere": {
+        # 2026-06-07: added after Cohere's command-a-plus validated the pitch in the
+        # playground (asked for integration points / docs / timeline / showcase).
+        # Endpoints verified live: /api/v1/markets/<slug>=200, /api/v1/keys/claim POST
+        # returns a key, /mcp live. (NOT /api/v1/market-intel — that 404s.)
+        "name":     "Cohere",
+        "tagline":  "Ground-truth data-center intelligence for Cohere's enterprise RAG.",
+        "hero":     ("Cohere's enterprise RAG customers in infrastructure, energy, and "
+                       "real estate need ground truth on data-center capacity — not "
+                       "hallucinated numbers. DC Hub is the live tool: 21,000+ facilities "
+                       "across 170+ countries, live grid / fiber / water / market data, "
+                       "every record citation-ready. Wire it into command-a tool-use or "
+                       "your RAG document pipeline in minutes."),
+        "value_bullets": [
+            "21,000+ facilities, 170+ countries — daily-refreshed, every record carries a citation URL for grounded generation",
+            "Two paths: MCP server (dchub.cloud/mcp, 33 tools) for command-a tool-use, or REST for classic RAG documents",
+            "Live DCPI market verdicts (BUILD/CAUTION/AVOID), grid headroom, fiber routes, 650+ GW pipeline",
+            "Free dev key in one API call (no email); Enterprise partner key available for evaluation",
+        ],
+        "integration_path": "rest_api",
+        "primary_cta":      "Free dev key — one call, no email",
+        "primary_url":      "https://dchub.cloud/signup?ref=partner-cohere",
+        "secondary_cta":    "OpenAPI spec",
+        "secondary_url":    "https://dchub.cloud/openapi.json",
+        "code_sample": ('# Cohere command-a tool-use -> live DC Hub market intel (cited):\n'
+                          'import cohere, requests\n'
+                          'co = cohere.ClientV2("<COHERE_KEY>")\n'
+                          'def dchub_market(slug):\n'
+                          '    return requests.get(f"https://api.dchub.cloud/api/v1/markets/{slug}", timeout=20).json()\n'
+                          '# register dchub_market as a tool; command-a calls it + cites dchub.cloud\n\n'
+                          '# Grab a free key first (no email):\n'
+                          'curl -X POST https://dchub.cloud/api/v1/keys/claim -d \'{"client_name":"cohere"}\''),
+        "accent":         "#ff7759",   # Cohere coral
+    },
     "nlr": {
         # r77.6 (2026-05-26) — partnership is pre-execution. NDA + MOU + License
         # are all still in draft/redline. MOU Article VII (when executed) restricts
