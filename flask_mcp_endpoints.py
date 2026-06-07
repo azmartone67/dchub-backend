@@ -166,11 +166,80 @@ def validate_key():
     except Exception:
         pass
 
+    # ── 2026-06-07: tier-table-gap cross-check (SITE_QA.md bug #2) ──
+    # mcp_dev_keys.tier can drift below users.plan / api_keys.rate_limit_tier
+    # when Stripe webhook upgrades the user but the mcp_dev_keys backfill
+    # didn't run (the r77 backfill healed 14 customers, but new churn keeps
+    # producing drift). Take the HIGHEST tier across all 3 tables so a paying
+    # customer never sees current_tier='free' just because mcp_dev_keys lags.
+    mcp_tier = (row[2] or "free").lower()
+    user_email = row[1]
+    plan_tier = None
+    api_key_tier = None
+    try:
+        with _pool.connection() as conn, conn.cursor() as cur:
+            # Check users.plan via email join (most paying customers)
+            if user_email:
+                cur.execute(
+                    "SELECT plan FROM users WHERE LOWER(email) = LOWER(%s) "
+                    "AND subscription_status IN ('active','trialing') LIMIT 1",
+                    (user_email,),
+                )
+                ur = cur.fetchone()
+                if ur and ur[0]:
+                    plan_tier = ur[0].lower()
+            # Check api_keys.rate_limit_tier via api_key value (covers
+            # enterprise/research_seed keys minted outside Stripe flow)
+            cur.execute(
+                "SELECT rate_limit_tier FROM api_keys WHERE key_value = %s "
+                "AND (revoked_at IS NULL OR revoked_at > NOW()) LIMIT 1",
+                (api_key,),
+            )
+            ar = cur.fetchone()
+            if ar and ar[0]:
+                api_key_tier = ar[0].lower()
+    except Exception:
+        # fail-soft: stick with mcp_dev_keys.tier if cross-check fails
+        pass
+
+    # Tier ranking — pick the highest across all sources.
+    _RANK = {
+        "anonymous": -1, "anon": -1, "free": 0, "identified": 1,
+        "starter": 2, "developer": 3, "founding": 4, "pro": 4,
+        "team": 5, "metered": 5, "enterprise": 6, "research_seed": 6,
+        "admin": 99,
+    }
+    candidates = [mcp_tier]
+    if plan_tier:
+        candidates.append(plan_tier)
+    if api_key_tier:
+        candidates.append(api_key_tier)
+    effective_tier = max(candidates, key=lambda t: _RANK.get(t, 0))
+
+    # If we promoted, log it (helps the L23 billing-drift detector spot
+    # keys that need an mcp_dev_keys.tier backfill).
+    if effective_tier != mcp_tier:
+        try:
+            import logging
+            logging.getLogger(__name__).warning(
+                "[keys.validate] tier promoted: api_key=%s mcp_dev_keys=%s plan=%s api_key_tier=%s → %s",
+                api_key[:20] + "...", mcp_tier, plan_tier, api_key_tier, effective_tier,
+            )
+        except Exception:
+            pass
+
     return jsonify({
         "valid":        True,
-        "tier":         row[2] or "free",
+        "tier":         effective_tier,
         "developer_id": row[0],
         "email":        row[1],
+        "tier_source":  "highest_of_3" if effective_tier != mcp_tier else "mcp_dev_keys",
+        "tier_detail":  {
+            "mcp_dev_keys": mcp_tier,
+            "users_plan":   plan_tier,
+            "api_key_tier": api_key_tier,
+            "effective":    effective_tier,
+        },
     }), 200
 
 
