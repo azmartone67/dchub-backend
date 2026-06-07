@@ -992,14 +992,14 @@ def _render_html(brief: dict) -> str:
     is_pro = bool(brief.get("is_pro"))
 
     name = hero.get("name") or slug.replace("-", " ").title()
-    verdict = hero.get("verdict") or "—"
+    verdict = hero.get("verdict") or "PENDING"
     score = hero.get("composite_score")
-    score_str = f"{score}/100" if score is not None else "—"
+    score_str = f"{score}/100" if score is not None else "score pending"
     colors = _verdict_colors(verdict)
 
     live_iso = live.get("iso") or hero.get("computed_at") or ""
     live_age = live.get("age_hours")
-    live_age_str = f"{live_age:.1f}h" if isinstance(live_age, (int, float)) else "—"
+    live_age_str = f"{live_age:.1f}h" if isinstance(live_age, (int, float)) else "freshly seeded"
 
     # ── Thin-coverage formatters (2026-06-06 — replaces stark em-dashes).
     # The rule: NULL from the DB means "no data source yet" → render as a
@@ -1537,14 +1537,14 @@ def _render_embed_html(brief: dict, *, watermark_off: bool) -> str:
     is_pro = bool(brief.get("is_pro"))
 
     name = hero.get("name") or slug.replace("-", " ").title()
-    verdict = hero.get("verdict") or "—"
+    verdict = hero.get("verdict") or "PENDING"
     score = hero.get("composite_score")
-    score_str = f"{score}/100" if score is not None else "—"
+    score_str = f"{score}/100" if score is not None else "score pending"
     colors = _verdict_colors(verdict)
 
     live_iso = live.get("iso") or hero.get("computed_at") or ""
     live_age = live.get("age_hours")
-    live_age_str = f"{live_age:.1f}h" if isinstance(live_age, (int, float)) else "—"
+    live_age_str = f"{live_age:.1f}h" if isinstance(live_age, (int, float)) else "freshly seeded"
     citation_iso = (live_iso or "")[:19].replace("T", " ")
 
     def _fmt_mw(v):
