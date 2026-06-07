@@ -64,7 +64,13 @@ _FROM_NAME  = os.environ.get("DCHUB_FROM_NAME",  "DC Hub")
 _FROM_EMAIL = os.environ.get("DCHUB_FROM_EMAIL", "alerts@dchub.cloud")
 _OPERATOR   = os.environ.get("DCHUB_OPERATOR_EMAIL",
                               "azmartone@gmail.com").strip().lower()
-_INTERNAL_BASE = os.environ.get("DCHUB_INTERNAL_API", "http://127.0.0.1:8080")
+# Loopback to our own Flask process. Railway assigns a $PORT at boot —
+# the 8080 fallback only matters in local dev. DCHUB_INTERNAL_API can
+# override (e.g. for cross-container or when probing the public URL).
+_INTERNAL_BASE = os.environ.get(
+    "DCHUB_INTERNAL_API",
+    f"http://127.0.0.1:{os.environ.get('PORT', '8080')}",
+)
 
 # Per-endpoint fetch timeout. Kept low — if a source endpoint hangs,
 # we render the section as "—" rather than holding up the whole email.
@@ -114,7 +120,19 @@ def _ensure_schema(c) -> None:
 # ── HTTP helpers ──────────────────────────────────────────────────────
 
 def _get_json(path: str) -> dict | None:
-    """Loopback GET → JSON. Returns None on any error (caller renders '—')."""
+    """Loopback GET → JSON. Returns None on any error (caller renders '—').
+
+    IMPORTANT: do NOT call our own Flask routes via requests.get on
+    127.0.0.1 — Railway runs one worker, so a self-request deadlocks
+    the worker pool (see ref_dchub_backend_flapping memory). The current
+    request handler holds the only worker, then we try to make a second
+    request, and the loopback hangs until timeout.
+
+    Workaround: call the underlying functions directly via in-process
+    Python imports for the endpoints that aren't trivial to inline. The
+    funnel-health and sentinel-inbox modules expose helpers we can use
+    without going through HTTP.
+    """
     try:
         import requests
         headers = {
@@ -135,11 +153,86 @@ def _get_json(path: str) -> dict | None:
         return None
 
 
+def _call_in_process(getter_path: str) -> dict | None:
+    """Bypass HTTP and call the route's data builder directly. Avoids
+    the 1-worker deadlock. Returns None on any error."""
+    try:
+        if getter_path == "funnel-health":
+            from routes.funnel_health import _data_cached
+            return _data_cached() or {}
+        if getter_path == "brain-backlog":
+            from routes.brain_backlog_admin import _backlog_snapshot
+            return _backlog_snapshot() or {}
+        if getter_path == "sentinel-inbox":
+            from routes.site_sentinel import (
+                latest_results, consec_failure_state, _grade,
+            )
+            try:
+                rows = latest_results() or []
+            except Exception:
+                rows = []
+            try:
+                consec = {x["path"]: x for x in (consec_failure_state() or [])}
+            except Exception:
+                consec = {}
+            items = []
+            for r in rows:
+                p  = r.get("path") or ""
+                cs = consec.get(p, {})
+                items.append({
+                    "path": p,
+                    "label": r.get("label") or p,
+                    "category": r.get("category"),
+                    "healthy": bool(r.get("healthy")),
+                    "grade": _grade(r, cs),
+                    "consecutive_5xx": int(cs.get("consecutive_5xx", 0) or 0),
+                })
+            healthy = sum(1 for i in items if i["healthy"])
+            grades = {"A":0,"B":0,"C":0,"D":0,"F":0}
+            for i in items:
+                grades[i.get("grade", "C")] = grades.get(i.get("grade", "C"), 0) + 1
+            return {
+                "total": len(items),
+                "healthy": healthy,
+                "unhealthy": len(items) - healthy,
+                "grades": grades,
+                "items": items,
+            }
+        if getter_path == "media-pulse":
+            # Call the actual function (it's small) — but it uses Flask's
+            # request context only inside the route wrapper, not the helper.
+            from routes.dchub_media_revival import media_pulse as mp_fn
+            from flask import current_app
+            try:
+                with current_app.test_request_context("/api/v1/media/pulse"):
+                    r = mp_fn()
+                # r is a Flask Response or tuple; extract JSON.
+                if isinstance(r, tuple):
+                    resp = r[0]
+                else:
+                    resp = r
+                try:
+                    return resp.get_json()
+                except Exception:
+                    import json as _j
+                    return _j.loads(resp.get_data(as_text=True))
+            except Exception:
+                return None
+    except Exception:
+        return None
+    return None
+
+
 # ── Source gatherers ──────────────────────────────────────────────────
 
 def _gather_funnel() -> dict:
-    """Last-24h funnel + verdict from /admin/funnel-health?format=json."""
-    d = _get_json("/api/v1/admin/funnel-health?format=json") or {}
+    """Last-24h funnel + verdict from /admin/funnel-health?format=json.
+
+    Calls the route's _data_cached() directly to dodge the 1-worker
+    self-request deadlock. Falls back to HTTP if the import fails."""
+    d = (_call_in_process("funnel-health")
+         or _get_json("/api/v1/admin/funnel-health?format=json")
+         or {})
     k = d.get("kpis", {}) or {}
     f = d.get("funnel", {}) or {}
     ab = (d.get("pricing_ab") or {}) if isinstance(d, dict) else {}
@@ -178,7 +271,9 @@ def _gather_funnel() -> dict:
 
 
 def _gather_brain_backlog() -> dict:
-    d = _get_json("/api/v1/admin/brain/backlog") or {}
+    d = (_call_in_process("brain-backlog")
+         or _get_json("/api/v1/admin/brain/backlog")
+         or {})
     pc = d.get("proposed_code", {}) or {}
     return {
         "stuck_total":         int(d.get("stuck_total") or 0),
@@ -222,7 +317,9 @@ def _gather_strategic_recs() -> dict:
 
 
 def _gather_sentinel() -> dict:
-    d = _get_json("/api/v1/admin/sentinel-inbox") or {}
+    d = (_call_in_process("sentinel-inbox")
+         or _get_json("/api/v1/admin/sentinel-inbox")
+         or {})
     grades = d.get("grades", {}) or {}
     items = d.get("items") or []
     # Flag the 1-3 worst pages (grade D/F + healthy=false) for the
@@ -249,7 +346,9 @@ def _gather_sentinel() -> dict:
 
 def _gather_media() -> dict:
     """Press cadence + LinkedIn velocity + spike count last 24h."""
-    d = _get_json("/api/v1/media/pulse") or {}
+    d = (_call_in_process("media-pulse")
+         or _get_json("/api/v1/media/pulse")
+         or {})
     comp = (d.get("components") or {}) if isinstance(d, dict) else {}
     press = (comp.get("press") or {}) if isinstance(comp, dict) else {}
     linkedin = (comp.get("linkedin") or {}) if isinstance(comp, dict) else {}
