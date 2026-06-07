@@ -282,7 +282,8 @@ STATE_OF_2026_MASTODON = (
 
 
 def frame_bluesky(source_text: str, source_link: str) -> str:
-    """Bluesky 300-char post. Keeps the LinkedIn voice; clamps to 300."""
+    """Bluesky 300-char post. Keeps the LinkedIn voice; clamps to 300
+    even if the source already has the link inline."""
     if _is_state_of_2026(source_text, source_link):
         return STATE_OF_2026_BLUESKY
     text = (source_text or "").strip()
@@ -293,11 +294,16 @@ def frame_bluesky(source_text: str, source_link: str) -> str:
         if len(text) > room:
             text = text[:max(0, room - 1)].rstrip() + "…"
         return (text + "\n" + link).strip()[:300]
+    if len(text) > 300:
+        text = text[:299].rstrip() + "…"
     return text[:300]
 
 
 def frame_twitter(source_text: str, source_link: str) -> str:
-    """Twitter/X 280-char status."""
+    """Twitter/X 280-char status. Clamps the whole result to 280 chars
+    even when the source already contains the link (LinkedIn posts
+    often inline the link in the body, so we'd otherwise return a 287-
+    char string the Tweet API rejects)."""
     if _is_state_of_2026(source_text, source_link):
         return STATE_OF_2026_TWITTER
     text = (source_text or "").strip()
@@ -307,11 +313,15 @@ def frame_twitter(source_text: str, source_link: str) -> str:
         if len(text) > room:
             text = text[:max(0, room - 1)].rstrip() + "…"
         return (text + " " + link).strip()[:280]
+    # Link already inline (or no link) — still must clamp to 280.
+    if len(text) > 280:
+        text = text[:279].rstrip() + "…"
     return text[:280]
 
 
 def frame_mastodon(source_text: str, source_link: str) -> str:
-    """Mastodon 500-char status (their default; instances vary)."""
+    """Mastodon 500-char status (their default; instances vary).
+    Clamps even when link is inline."""
     if _is_state_of_2026(source_text, source_link):
         return STATE_OF_2026_MASTODON
     text = (source_text or "").strip()
@@ -321,6 +331,8 @@ def frame_mastodon(source_text: str, source_link: str) -> str:
         if len(text) > room:
             text = text[:max(0, room - 1)].rstrip() + "…"
         return (text + "\n\n" + link).strip()[:500]
+    if len(text) > 500:
+        text = text[:499].rstrip() + "…"
     return text[:500]
 
 
