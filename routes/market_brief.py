@@ -799,7 +799,7 @@ def _section_outlook(slug: str, hero: dict) -> dict:
         score = hero.get("composite_score")
         score_str = f"{score}/100" if score is not None else "(score pending)"
         excess = hero.get("excess_power")
-        excess_str = f"{excess:.1f}" if isinstance(excess, (int, float)) else "—"
+        excess_str = f"{excess:.1f}" if isinstance(excess, (int, float)) else "n/a"
         out["narrative_md"] = (
             f"**12-month outlook: {verdict}** (DCPI {score_str}). "
             f"{hero.get('name','This market')} carries an excess-power "
@@ -941,7 +941,7 @@ def _build_brief(slug: str, tier: str) -> dict:
                     "checkout_url":  "/pricing?utm_source=market_brief",
                     "blurb":         ("Power & Grid, Pipeline, Operator footprint, "
                                       "M&A, Comps, and Risk are unlocked for PRO "
-                                      "subscribers — $499/mo, all markets."),
+                                      "subscribers at $499/mo, all markets."),
                 }
         out["ok"] = True
     finally:
@@ -1007,7 +1007,7 @@ def _render_html(brief: dict) -> str:
     # (e.g. 0 MW pipeline) renders as "0" — zero is information. The HTML
     # gets the .nt (not-tracked) class so it visually de-emphasizes
     # without disappearing.
-    NT_PILL = '<span class="nt" title="Coverage building — data source typically lands ~6mo after a market enters the DCPI">Not tracked</span>'
+    NT_PILL = '<span class="nt" title="Coverage building: data source typically lands ~6mo after a market enters the DCPI">Not tracked</span>'
 
     def _fmt_mw(v):
         if v is None:
@@ -1049,7 +1049,7 @@ def _render_html(brief: dict) -> str:
     kpi_tiles.append(("Facilities",  _fmt_int(kpis.get("facility_count"))))
     kpi_tiles.append(("Queue Wait",  _fmt_months(kpis.get("queue_months"))))
     if kpis.get("top_operator"):
-        kpi_tiles.append(("Top Operator", kpis["top_operator"].get("name") or "—"))
+        kpi_tiles.append(("Top Operator", kpis["top_operator"].get("name") or NT_PILL))
     if kpis.get("lease_rate") is not None:
         kpi_tiles.append(("Lease Rate", f"${kpis['lease_rate']:.2f}/kW-mo"))
     if kpis.get("vacancy_pct") is not None:
@@ -1075,10 +1075,10 @@ def _render_html(brief: dict) -> str:
                    label_plural: str | None = None) -> str:
         """Inline pill next to the section h2. n is the populated row count."""
         if n and n > 0:
-            return (f'<span class="cov ok" title="Live data — {n} '
+            return (f'<span class="cov ok" title="Live data: {n} '
                     f'{label_plural or label_singular}">'
                     f'{n:,} {label_plural or label_singular}</span>')
-        return ('<span class="cov thin" title="Coverage building — '
+        return ('<span class="cov thin" title="Coverage building: '
                 'data source typically lands ~6mo after a market enters '
                 'the DCPI">Coverage building</span>')
 
@@ -1246,8 +1246,8 @@ def _render_html(brief: dict) -> str:
             '<div class="blur-overlay">'
             '<div class="blur-title">PRO unlocks all sections</div>'
             '<div class="blur-body">Power &amp; Grid · Pipeline · Operator Footprint '
-            '· M&amp;A · Comps · Risk — all markets, live updates, share-ready.</div>'
-            '<a class="cta" href="/pricing?utm_source=market_brief">Unlock with PRO — $499/mo</a>'
+            '· M&amp;A · Comps · Risk. All markets, live updates, share-ready.</div>'
+            '<a class="cta" href="/pricing?utm_source=market_brief">Unlock with PRO · $499/mo</a>'
             '</div>'
             '<div class="blur-fake">'
             '<div class="fake-row"></div><div class="fake-row"></div>'
@@ -1352,7 +1352,7 @@ def _render_html(brief: dict) -> str:
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width,initial-scale=1">
 <title>{name} Market Brief · DC Hub</title>
-<meta name="description" content="{name} data center market brief — DCPI verdict {verdict} ({score_str}). Operational + pipeline MW, queue wait, operator footprint, M&amp;A, comps, risk, 12-month outlook.">
+<meta name="description" content="{name} data center market brief. DCPI verdict {verdict} ({score_str}). Operational + pipeline MW, queue wait, operator footprint, M&amp;A, comps, risk, 12-month outlook.">
 <meta name="robots" content="index,follow">
 <link rel="canonical" href="{page_url}">
 <meta property="og:title" content="{name} Market Brief · DC Hub">
@@ -1414,7 +1414,7 @@ tbody tr:last-child td{{border-bottom:none}}
 .citation a{{color:var(--ind);text-decoration:none}}
 .footer{{color:var(--dim);font-size:.78rem;margin-top:1.5rem;padding-top:1.25rem;border-top:1px solid var(--b);font-family:'JetBrains Mono',monospace}}
 .footer a{{color:var(--ind);text-decoration:none}}
-/* Thin-coverage UX (2026-06-06) — replaces stark em-dashes */
+/* Thin-coverage UX (2026-06-06) replaces stark em-dashes */
 .nt{{display:inline-block;background:rgba(99,102,241,.10);color:#a5b4fc;border:1px dashed rgba(99,102,241,.35);border-radius:6px;padding:.08rem .5rem;font-size:.74rem;font-family:'JetBrains Mono',monospace;font-weight:500;letter-spacing:.01em;line-height:1.3;vertical-align:middle;cursor:help}}
 .cov{{display:inline-flex;align-items:center;background:var(--surf);border:1px solid var(--b);border-radius:999px;padding:.18rem .6rem;font-size:.66rem;font-family:'JetBrains Mono',monospace;font-weight:500;letter-spacing:.02em;text-transform:none;cursor:help;margin-left:.55rem;vertical-align:middle}}
 .cov.ok{{color:#34d399;border-color:rgba(52,211,153,.30);background:rgba(16,185,129,.08)}}
@@ -1547,25 +1547,32 @@ def _render_embed_html(brief: dict, *, watermark_off: bool) -> str:
     live_age_str = f"{live_age:.1f}h" if isinstance(live_age, (int, float)) else "freshly seeded"
     citation_iso = (live_iso or "")[:19].replace("T", " ")
 
+    # Embed render uses the same "Not tracked" pill philosophy as the
+    # full brief (no stark em-dashes ever emitted to the iframe payload).
+    _EMBED_NT = ('<span style="display:inline-block;background:rgba(99,102,241,.10);'
+                 'color:#a5b4fc;border:1px dashed rgba(99,102,241,.35);'
+                 'border-radius:5px;padding:0 .35rem;font-size:.72rem;'
+                 'font-family:\'JetBrains Mono\',monospace;">Not tracked</span>')
+
     def _fmt_mw(v):
         if v is None:
-            return "—"
+            return _EMBED_NT
         try: return f"{float(v):,.0f} MW"
-        except (TypeError, ValueError): return "—"
+        except (TypeError, ValueError): return _EMBED_NT
 
     def _fmt_int(v):
         if v is None:
-            return "—"
+            return _EMBED_NT
         try: return f"{int(v):,}"
-        except (TypeError, ValueError): return "—"
+        except (TypeError, ValueError): return _EMBED_NT
 
     def _fmt_months(v):
         if v is None:
-            return "—"
+            return _EMBED_NT
         try: return f"{float(v):.1f} mo"
-        except (TypeError, ValueError): return "—"
+        except (TypeError, ValueError): return _EMBED_NT
 
-    # KPI tiles — same as the full brief but capped at 4 for the iframe
+    # KPI tiles - same as the full brief but capped at 4 for the iframe
     # width budget (most embedders use ~640-960px wide).
     kpi_pairs = [
         ("Operational", _fmt_mw(kpis.get("operational_mw"))),
@@ -1928,9 +1935,9 @@ def _render_pdf_html(brief: dict) -> str:
     risk = brief.get("risk") or {}
 
     name = hero.get("name") or slug.replace("-", " ").title()
-    verdict = hero.get("verdict") or "—"
+    verdict = hero.get("verdict") or "PENDING"
     score = hero.get("composite_score")
-    score_str = f"{score}/100" if score is not None else "—"
+    score_str = f"{score}/100" if score is not None else "score pending"
     colors = _verdict_colors(verdict)
 
     live_iso = live.get("iso") or hero.get("computed_at") or ""
@@ -2689,7 +2696,7 @@ def html_market_brief(slug):
         sample_html = ", ".join(
             f'<a href="/markets/{s}/brief">{s}</a>' for s in sample[:8])
         body = (
-            f'<h1>Market Brief — {slug}</h1>'
+            f'<h1>Market Brief: {slug}</h1>'
             f'<p class="sub">This market is not yet in our DCPI coverage. Try one of: {sample_html}</p>'
             f'<p class="footer">Powered by <a href="https://dchub.cloud">DC Hub</a></p>'
         )
@@ -2783,7 +2790,7 @@ def html_market_brief_embed_codegen(slug):
         sample_html = ", ".join(
             f'<a href="/markets/{s}/brief/embed">{s}</a>' for s in sample[:8])
         body = (
-            f'<h1>Embed code — {slug}</h1>'
+            f'<h1>Embed code: {slug}</h1>'
             f'<p>This market is not yet in our DCPI coverage. Try: {sample_html}</p>'
         )
         return Response(
@@ -2794,9 +2801,9 @@ def html_market_brief_embed_codegen(slug):
 
     hero = brief.get("hero") or {}
     name = hero.get("name") or canonical.replace("-", " ").title()
-    verdict = hero.get("verdict") or "—"
+    verdict = hero.get("verdict") or "PENDING"
     score = hero.get("composite_score")
-    score_str = f"{score}/100" if score is not None else "—"
+    score_str = f"{score}/100" if score is not None else "score pending"
     is_pro = _is_pro(tier)
     html = _render_embed_codegen_html(
         slug=canonical, name=name, verdict=verdict, score_str=score_str,
