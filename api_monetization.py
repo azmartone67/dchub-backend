@@ -469,7 +469,7 @@ def track_api_usage(user_id, api_key_id, endpoint, method, status_code, response
             c.execute("""
                 INSERT INTO api_usage (user_id, api_key_id, endpoint, method, status_code,
                                        response_time_ms, ip_address, user_agent, timestamp, date)
-                VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s)
+                VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s) ON CONFLICT DO NOTHING
             """, (user_id, api_key_id, endpoint, method, status_code,
                   response_time_ms, ip_address, user_agent, now.isoformat(), date))
 
@@ -829,7 +829,7 @@ def get_current_plan():
         # Create user_plans entry
         c.execute("""
             INSERT INTO user_plans (user_id, plan, updated_at)
-            VALUES (%s, %s, %s)
+            VALUES (%s, %s, %s) ON CONFLICT DO NOTHING
         """, (user_id, plan, datetime.utcnow().isoformat()))
         conn.commit()
         
@@ -913,6 +913,7 @@ def list_api_keys():
         'count': len(keys)
     })
 
+# AUTO-REPAIR: duplicate route '/api/v2/keys' also in api_monetization.py:869 — review and remove one
 @monetization_bp.route('/api/v2/keys', methods=['POST'])
 def create_api_key():
     """Generate a new API key"""
@@ -971,7 +972,7 @@ def create_api_key():
     
     c.execute("""
         INSERT INTO api_keys (user_id, key_hash, key_prefix, name, rate_limit_tier, plan, is_active, created_at)
-        VALUES (%s, %s, %s, %s, %s, %s, 1, %s) RETURNING id
+        VALUES (%s, %s, %s, %s, %s, %s, 1, %s) ON CONFLICT DO NOTHING RETURNING id
     """, (user_id, key_hash, key_prefix, name, plan, plan, now))
     
     row = c.fetchone()

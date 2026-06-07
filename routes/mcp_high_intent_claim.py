@@ -307,7 +307,7 @@ def track_paid_hit():
                     (mcp_session_id, tool_name, paid_call_count_24h,
                      first_hit_at, last_hit_at, user_agent, mcp_client,
                      claim_variant)
-                VALUES (%s, %s, 1, NOW(), NOW(), %s, %s, %s)
+                VALUES (%s, %s, 1, NOW() ON CONFLICT DO NOTHING, NOW(), %s, %s, %s)
                 ON CONFLICT (mcp_session_id, tool_name)
                 DO UPDATE SET
                     paid_call_count_24h = CASE
@@ -692,6 +692,7 @@ def claim_form(token: str):
         except Exception: pass
 
 
+# AUTO-REPAIR: duplicate route '/claim/<token>' also in routes/mcp_high_intent_claim.py:635 — review and remove one
 @mcp_high_intent_claim_bp.route("/claim/<token>", methods=["POST"])
 def claim_submit(token: str):
     """Validates email + token, mints a dch_trial_ key via auto_trial.mint_trial_for_request,
@@ -838,7 +839,7 @@ def claim_submit(token: str):
                         """INSERT INTO auto_trial_keys
                              (api_key, minted_for_tool, request_ip_hash, request_ua,
                               expires_at, operator_email, client_name)
-                           VALUES (%s, %s, %s, %s, NOW() + INTERVAL '7 days', %s, %s)
+                           VALUES (%s, %s, %s, %s, NOW() ON CONFLICT DO NOTHING + INTERVAL '7 days', %s, %s)
                            ON CONFLICT (api_key) DO NOTHING""",
                         (api_key, tool,
                          hashlib.sha256(ip.encode()).hexdigest()[:16],
