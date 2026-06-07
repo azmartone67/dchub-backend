@@ -532,6 +532,24 @@ def _render_state_page(hero: dict) -> str:
 <style>
   *{{box-sizing:border-box}}
   body{{background:#0a0a0a;color:#e5e5e5;font:16px/1.55 -apple-system,BlinkMacSystemFont,"Segoe UI",system-ui,sans-serif;margin:0;padding:0}}
+  /* Round 2 (2026-06-07): high-intent capture modal. Slides up from
+     bottom-right when reader hits the threshold (2 brief clicks OR 60s
+     on page). Closes with X; 30d cookie prevents re-show on dismiss. */
+  #s26-modal{{position:fixed;right:24px;bottom:24px;width:380px;max-width:calc(100vw - 32px);background:#171717;border:1px solid #404040;border-radius:14px;padding:24px;box-shadow:0 16px 48px rgba(0,0,0,0.6);transform:translateY(120%);transition:transform .35s cubic-bezier(.4,0,.2,1);z-index:9999;font-family:inherit}}
+  #s26-modal.open{{transform:translateY(0)}}
+  #s26-modal .close-btn{{position:absolute;top:12px;right:12px;background:none;border:0;color:#71717a;font-size:18px;cursor:pointer;padding:4px 8px;line-height:1}}
+  #s26-modal .close-btn:hover{{color:#e5e5e5}}
+  #s26-modal h3{{margin:0 0 8px;font-size:17px;color:#fff;font-weight:700;line-height:1.3}}
+  #s26-modal p{{margin:0 0 16px;color:#a3a3a3;font-size:13px;line-height:1.5}}
+  #s26-modal input[type=email]{{width:100%;padding:11px 14px;background:#0a0a0a;color:#e5e5e5;border:1px solid #404040;border-radius:8px;font-size:14px;margin-bottom:10px;font-family:inherit}}
+  #s26-modal input[type=email]:focus{{outline:0;border-color:#10b981}}
+  #s26-modal button.go{{width:100%;padding:11px;background:#10b981;color:#0a0a0a;border:0;border-radius:8px;font-weight:700;cursor:pointer;font-size:14px;transition:background .15s}}
+  #s26-modal button.go:hover{{background:#34d399}}
+  #s26-modal .legal{{margin-top:12px;font-size:11px;color:#71717a;line-height:1.4}}
+  #s26-modal .legal a{{color:#71717a;text-decoration:underline}}
+  #s26-modal .ok-msg{{background:rgba(16,185,129,.08);border:1px solid rgba(16,185,129,.3);border-radius:8px;padding:12px;font-size:13px;color:#34d399;margin-top:10px;font-family:JetBrains Mono,monospace;word-break:break-all}}
+  #s26-modal .err-msg{{background:rgba(245,158,11,.08);border:1px solid rgba(245,158,11,.3);border-radius:8px;padding:10px;font-size:12px;color:#fbbf24;margin-top:10px}}
+  @media (max-width:640px){{ #s26-modal{{right:12px;left:12px;bottom:12px;width:auto}} }}
   a{{color:#7dd3fc}}
   .wrap{{max-width:980px;margin:0 auto;padding:48px 24px 96px}}
   header{{margin-bottom:48px}}
@@ -654,6 +672,23 @@ def _render_state_page(hero: dict) -> str:
 </div>
 </div>
 
+<!-- Round 2 (2026-06-07): high-intent capture modal. Hidden until JS opens it
+     after the visitor hits the threshold (2 brief clicks OR 60s on page). -->
+<div id="s26-modal" role="dialog" aria-label="Get your DC Hub trial key" aria-hidden="true">
+  <button class="close-btn" aria-label="Close" onclick="s26Dismiss()">×</button>
+  <h3>You're reading the State of 2026. Get the live data.</h3>
+  <p>Free trial key — works in Claude, Cursor, Cline, ChatGPT, any MCP client.
+     50 calls/day for 7 days. No card.</p>
+  <form id="s26-form" onsubmit="return s26Submit(event)">
+    <input type="email" name="email" placeholder="you@firm.com" required autocomplete="email">
+    <button type="submit" class="go">Get my key →</button>
+    <div class="legal">By submitting, you'll receive a single welcome email
+      with your trial key. <a href="/privacy" target="_blank" rel="noopener">Privacy</a> ·
+      <a href="/terms" target="_blank" rel="noopener">Terms</a>.</div>
+  </form>
+  <div id="s26-result" style="display:none"></div>
+</div>
+
 <script>
 function subscribe(e) {{
   e.preventDefault();
@@ -682,6 +717,153 @@ function subscribe(e) {{
   }});
   return false;
 }}
+</script>
+
+<script>
+/* ── Round 2 (2026-06-07): high-intent visitor capture ──
+   Tracks time-on-page + outbound brief clicks. When threshold hits
+   (2+ brief clicks OR 60s on page), the modal opens. Posts to
+   /api/v1/state-of-2026/track-event and /claim-email. Dismiss sets a
+   30d cookie. GDPR: stored fields = client-generated UUID + UA + Referer
+   + hashed IP. Email only on explicit submission. */
+(function() {{
+  function readCookie(name) {{
+    var m = document.cookie.match(new RegExp('(?:^|; )' + name + '=([^;]*)'));
+    return m ? decodeURIComponent(m[1]) : null;
+  }}
+  function writeCookie(name, val, days) {{
+    var d = new Date();
+    d.setTime(d.getTime() + days*86400*1000);
+    document.cookie = name + '=' + encodeURIComponent(val) +
+      '; expires=' + d.toUTCString() + '; path=/; SameSite=Lax';
+  }}
+  function getOrMakeVsid() {{
+    var v = sessionStorage.getItem('dch_vsid');
+    if (v) return v;
+    var rnd;
+    if (window.crypto && crypto.getRandomValues) {{
+      rnd = crypto.getRandomValues(new Uint8Array(16));
+    }} else {{
+      rnd = new Array(16);
+      for (var i=0;i<16;i++) rnd[i] = Math.floor(Math.random()*256);
+    }}
+    rnd[6] = (rnd[6] & 0x0f) | 0x40;
+    rnd[8] = (rnd[8] & 0x3f) | 0x80;
+    var hex = '';
+    for (var j=0;j<16;j++) hex += (rnd[j]<16?'0':'') + rnd[j].toString(16);
+    sessionStorage.setItem('dch_vsid', hex);
+    return hex;
+  }}
+  var VSID = getOrMakeVsid();
+  var TICK_S = 30;
+  var startMs = Date.now();
+  var lastSentS = 0;
+  var modalShown = false;
+  var dismissed = readCookie('dch_s26_dismissed') === '1';
+  var alreadyClaimed = readCookie('dch_s26_claimed') === '1';
+
+  function showModal() {{
+    if (modalShown || dismissed || alreadyClaimed) return;
+    modalShown = true;
+    var m = document.getElementById('s26-modal');
+    if (m) {{ m.classList.add('open'); m.setAttribute('aria-hidden','false'); }}
+  }}
+
+  function postTrack(payload) {{
+    payload.visitor_session_id = VSID;
+    return fetch('/api/v1/state-of-2026/track-event', {{
+      method: 'POST',
+      headers: {{ 'Content-Type': 'application/json' }},
+      body: JSON.stringify(payload),
+      keepalive: true
+    }}).then(function(r){{ return r.json(); }})
+      .then(function(d){{
+        if (d && d.is_high_intent) showModal();
+        return d;
+      }}).catch(function(){{ /* network errors are silent */ }});
+  }}
+
+  /* Brief-click instrumentation: every link whose href is /r/<token>
+     for a high-value brief token counts. */
+  var BRIEF_TOKENS = {{
+    dcpi:1, dcgi:1, queues:1, mcp:1, hyper:1, report:1,
+    markets:1, cheyenne:1
+  }};
+  document.addEventListener('click', function(ev) {{
+    var t = ev.target;
+    while (t && t !== document.body) {{
+      if (t.tagName === 'A' && t.getAttribute && t.getAttribute('href')) {{
+        var href = t.getAttribute('href');
+        var m = href.match(/^\\/r\\/([a-z_]+)/);
+        if (m && BRIEF_TOKENS[m[1]]) {{
+          postTrack({{ event_type: 'brief_click', brief_slug: m[1] }});
+        }}
+        break;
+      }}
+      t = t.parentNode;
+    }}
+  }}, true);
+
+  /* Time-tick: every 30s while page is visible, send the delta. */
+  function tick() {{
+    if (document.hidden) return;
+    var nowS = Math.floor((Date.now() - startMs) / 1000);
+    var delta = nowS - lastSentS;
+    if (delta < 1) return;
+    lastSentS = nowS;
+    postTrack({{ event_type: 'time_tick', seconds_on_page: delta }});
+  }}
+  setInterval(tick, TICK_S * 1000);
+  /* Kick at 62s so the 60s threshold trips reliably even on slow connects. */
+  setTimeout(tick, 62 * 1000);
+  window.addEventListener('beforeunload', tick);
+
+  /* Form submission inside modal. */
+  window.s26Submit = function(e) {{
+    e.preventDefault();
+    var f = e.target;
+    var email = f.email.value.trim();
+    var btn = f.querySelector('button.go');
+    var resultDiv = document.getElementById('s26-result');
+    btn.disabled = true;
+    btn.textContent = 'Minting...';
+    fetch('/api/v1/state-of-2026/claim-email', {{
+      method: 'POST',
+      headers: {{ 'Content-Type': 'application/json' }},
+      body: JSON.stringify({{ visitor_session_id: VSID, email: email }})
+    }}).then(function(r){{ return r.json(); }}).then(function(d){{
+      if (d && d.ok && d.api_key) {{
+        writeCookie('dch_s26_claimed', '1', 365);
+        f.style.display = 'none';
+        resultDiv.style.display = 'block';
+        resultDiv.innerHTML =
+          '<div style="color:#34d399;font-size:14px;font-weight:600;margin-bottom:8px">' +
+          'Your trial key (also emailed to ' + email + '):</div>' +
+          '<div class="ok-msg">' + d.api_key + '</div>' +
+          '<div class="legal" style="margin-top:10px">Add this to your MCP client and reconnect. ' +
+          '<a href="/mcp-connect" target="_blank" rel="noopener" style="color:#7dd3fc">Setup guide →</a></div>';
+      }} else {{
+        btn.disabled = false;
+        btn.textContent = 'Get my key →';
+        resultDiv.style.display = 'block';
+        resultDiv.innerHTML = '<div class="err-msg">' +
+          ((d && d.error) || 'Something went wrong — try again in a moment.') + '</div>';
+      }}
+    }}).catch(function(){{
+      btn.disabled = false;
+      btn.textContent = 'Get my key →';
+      resultDiv.style.display = 'block';
+      resultDiv.innerHTML = '<div class="err-msg">Network error — try again.</div>';
+    }});
+    return false;
+  }};
+
+  window.s26Dismiss = function() {{
+    writeCookie('dch_s26_dismissed', '1', 30);
+    var m = document.getElementById('s26-modal');
+    if (m) {{ m.classList.remove('open'); m.setAttribute('aria-hidden','true'); }}
+  }};
+}})();
 </script>
 </body></html>"""
 
@@ -1076,13 +1258,20 @@ def state_of_2026_pulse():
     admin_q = _esc(admin_key, quote=True)
 
     # Inline the attribution call so we don't 401-loop on the proxy.
-    with state_of_2026_live_bp.test_request_context(
-        f"/api/v1/admin/state-of-2026/attribution?days={days}",
-        headers={"X-Admin-Key": _ADMIN_KEY}):
-        att_resp = attribution_json()
+    # 2026-06-07 Round-1 cleanup: Blueprint has NO test_request_context
+    # method (that's a Flask app method). Was 500'ing every pulse hit
+    # with AttributeError. Use current_app to get the live Flask app
+    # and push the request context with the admin key injected so the
+    # inline attribution_json() call passes the _admin_ok gate.
+    from flask import current_app
     try:
+        with current_app.test_request_context(
+            f"/api/v1/admin/state-of-2026/attribution?days={days}",
+            headers={"X-Admin-Key": _ADMIN_KEY}):
+            att_resp = attribution_json()
         att = json.loads(att_resp.get_data(as_text=True))
-    except Exception:
+    except Exception as e:
+        logger.debug("pulse attribution sub-call failed: %s", e)
         att = {}
 
     # Pending proposals
