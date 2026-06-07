@@ -234,6 +234,8 @@ def _build_attribution(c, event_type: str, payload: dict) -> dict:
                     }
         except Exception as e:
             logger.debug("[crm_etl] mcp_high_intent lookup failed: %s", e)
+            try: c.rollback()
+            except Exception: pass
 
     # 2. State-of-2026 visitor intent
     if email or sid:
@@ -267,6 +269,8 @@ def _build_attribution(c, event_type: str, payload: dict) -> dict:
                         chain.setdefault("original_referer", r[5])
         except Exception as e:
             logger.debug("[crm_etl] state_visitor lookup failed: %s", e)
+            try: c.rollback()
+            except Exception: pass
 
     # 3. Newsletter signup
     if email:
@@ -286,6 +290,8 @@ def _build_attribution(c, event_type: str, payload: dict) -> dict:
                     }
         except Exception as e:
             logger.debug("[crm_etl] newsletter lookup failed: %s", e)
+            try: c.rollback()
+            except Exception: pass
 
     # 4. Trial key (auto_trial_keys)
     if email:
@@ -330,7 +336,8 @@ def _build_attribution(c, event_type: str, payload: dict) -> dict:
                         for rr in rows
                     ]
         except Exception:
-            pass
+            try: c.rollback()
+            except Exception: pass
 
     # 6. LinkedIn / media link clicks (last 5)
     if email or sid:
@@ -350,7 +357,8 @@ def _build_attribution(c, event_type: str, payload: dict) -> dict:
                         for rr in rows
                     ]
         except Exception:
-            pass
+            try: c.rollback()
+            except Exception: pass
 
     # 7. Paid conversion (users table)
     if email:
@@ -369,7 +377,8 @@ def _build_attribution(c, event_type: str, payload: dict) -> dict:
                         "stripe_customer":   r[3],
                     }
         except Exception:
-            pass
+            try: c.rollback()
+            except Exception: pass
 
     return chain
 
@@ -483,13 +492,18 @@ def capture_event(event_type: str, payload: dict) -> dict:
         return {"ok": False, "error": "no_db"}
     try:
         _ensure_schema(c)
-        # Build the attribution chain
+        # Build the attribution chain. Each sub-query inside is wrapped in
+        # a savepoint so a missing/changed source table can't poison the
+        # outer transaction and block the INSERT downstream.
         try:
             chain = _build_attribution(c, event_type, payload)
         except Exception as e:
             logger.warning("[crm_etl] attribution build failed: %s", e)
             chain = {"event_type": event_type,
                      "trigger_event": {"type": event_type, "ts": _now_iso()}}
+        # Clear any aborted txn state from attribution queries before INSERT.
+        try: c.rollback()
+        except Exception: pass
 
         # Enrich company (best-effort)
         enrich = _enrich_company(email) if email else {}
