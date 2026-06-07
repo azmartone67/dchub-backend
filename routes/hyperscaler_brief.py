@@ -5,7 +5,9 @@ M&A bankers + PE deal teams + hedge funds tracking hyperscalers pay
 $100K+/yr for similar coverage from Wells Fargo. DC Hub charges $499/mo.
 
 For each hyperscaler (AWS, Azure, Google, Meta, Apple, Oracle, ByteDance,
-Tencent, Alibaba, SoftBank), the brief gives a full pipeline view:
+Tencent, Alibaba), the brief gives a full pipeline view. SoftBank is
+intentionally excluded — they're an investor in hyperscalers (Vision
+Fund, OpenAI Stargate equity), not an operator.
 
   1. Hero — total announced MW + capital + "Live as of"
   2. Announced Pipeline — last 12mo of announced builds (location, MW, ETA)
@@ -56,9 +58,12 @@ hyperscaler_brief_bp = Blueprint("hyperscaler_brief", __name__)
 # Constants — 10 seed hyperscalers + alias map
 # ─────────────────────────────────────────────────────────────────────
 
-# 10 seed hyperscalers (sitemapped on day 1 + pre-warmed by the cron).
+# 9 seed hyperscalers (sitemapped + pre-warmed by the cron).
+# 2026-06-06: SoftBank REMOVED — they're an INVESTOR in hyperscalers (Vision
+# Fund, OpenAI Stargate equity) not an operator. Counting SoftBank as a
+# hyperscaler inflated the comparison table with $1T+ of unrelated VC capital.
 # Beyond these the surface still auto-renders for ANY slug in
-# HYPERSCALER_ALIASES, but only the seed ten are hand-QA'd.
+# HYPERSCALER_ALIASES, but only the seed nine are hand-QA'd.
 SEED_HYPERSCALERS = (
     "aws",
     "azure",
@@ -69,7 +74,6 @@ SEED_HYPERSCALERS = (
     "tiktok-bytedance",
     "tencent",
     "alibaba",
-    "softbank",
 )
 
 # Slug → (display_name, [ILIKE_aliases]). Aliases are matched
@@ -77,11 +81,18 @@ SEED_HYPERSCALERS = (
 # `summary` (LIKE '%<alias>%'). Order matters: the most specific alias
 # should appear first so a partial match still tags the right hyperscaler.
 HYPERSCALER_ALIASES: dict[str, dict] = {
+    # NOTE: alias lists are intentionally broadened (2026-06-06) — the
+    # data-writer (project_seeder.py, data_grabber.py, kmz loaders) writes
+    # `provider` as `Microsoft`, `Google`, `Meta`, `Amazon Web Services`,
+    # NOT `Microsoft Azure` / `Google Cloud`. The original tight aliases
+    # JOINed to ZERO rows for everyone except AWS, producing the 0-MW
+    # column for the entire peer table. The aliases now include the bare
+    # parent-company name + each cloud brand.
     "aws": {
         "display": "Amazon Web Services",
         "short":   "AWS",
-        "aliases": ["aws", "amazon web services", "amazon data center",
-                    "amazon.com"],
+        "aliases": ["aws", "amazon web services", "amazon/aws", "amazon",
+                    "amazon data center", "amazon.com"],
         "color":   "#ff9900",
         "tagline": "Largest hyperscaler by MW · 27+ regions",
     },
@@ -89,7 +100,7 @@ HYPERSCALER_ALIASES: dict[str, dict] = {
         "display": "Microsoft Azure",
         "short":   "Azure",
         "aliases": ["azure", "microsoft azure", "microsoft data center",
-                    "microsoft corp"],
+                    "microsoft corp", "microsoft"],
         "color":   "#0078d4",
         "tagline": "OpenAI compute backbone · 60+ regions",
     },
@@ -97,7 +108,7 @@ HYPERSCALER_ALIASES: dict[str, dict] = {
         "display": "Google Cloud",
         "short":   "Google",
         "aliases": ["google cloud", "google data center", "alphabet inc",
-                    "google llc"],
+                    "google llc", "google"],
         "color":   "#4285f4",
         "tagline": "TPU-led AI capacity · 35+ regions",
     },
@@ -105,7 +116,7 @@ HYPERSCALER_ALIASES: dict[str, dict] = {
         "display": "Meta (Facebook)",
         "short":   "Meta",
         "aliases": ["meta platforms", "meta data center", "facebook data center",
-                    "meta inc", "facebook inc"],
+                    "meta inc", "facebook inc", "meta", "facebook"],
         "color":   "#0866ff",
         "tagline": "Llama training scale · self-built campuses",
     },
@@ -113,14 +124,15 @@ HYPERSCALER_ALIASES: dict[str, dict] = {
         "display": "Apple",
         "short":   "Apple",
         "aliases": ["apple inc", "apple data center", "apple intelligence",
-                    "apple silicon"],
+                    "apple silicon", "apple"],
         "color":   "#000000",
         "tagline": "Private AI compute · iCloud regions",
     },
     "oracle": {
         "display": "Oracle Cloud",
         "short":   "Oracle",
-        "aliases": ["oracle cloud", "oracle corp", "oci ", "oracle data center"],
+        "aliases": ["oracle cloud", "oracle corp", "oci ", "oracle data center",
+                    "oracle"],
         "color":   "#c74634",
         "tagline": "OpenAI Stargate partner · Texas + UAE",
     },
@@ -145,14 +157,131 @@ HYPERSCALER_ALIASES: dict[str, dict] = {
         "color":   "#ff6a00",
         "tagline": "APAC hyperscaler · Tongyi Qianwen",
     },
-    "softbank": {
-        "display": "SoftBank",
-        "short":   "SoftBank",
-        "aliases": ["softbank", "softbank group", "softbank corp"],
-        "color":   "#85d10c",
-        "tagline": "OpenAI Stargate lead investor · AI infra",
-    },
 }
+
+
+# ─────────────────────────────────────────────────────────────────────
+# Coverage floors + bad-attribution patterns (2026-06-06)
+# ─────────────────────────────────────────────────────────────────────
+#
+# Coverage floors — below these thresholds we DON'T compute $/MW (it's a
+# coverage-depth artifact, not a real metric). Hyperscalers below BOTH
+# floors are hidden under "Coverage expanding" in the peer table.
+#
+# Numbers anchored to public industry estimates so a sane single-region
+# build still clears the floor: 1,000 MW ≈ a single hyperscaler region;
+# $100M ≈ one priced M&A or major land deal.
+HYPERSCALER_COVERAGE_FLOORS = {
+    "min_mw_for_per_mw":      100.0,       # don't compute $/MW under this
+    "min_capex_for_per_mw":   100_000_000, # don't compute $/MW under this
+    "min_mw_for_show":        100.0,       # hide row entirely below this
+    "min_capex_for_show":     100_000_000, # AND below this
+}
+
+# Industry-cited published MW baselines (operational + announced) — used
+# ONLY as a sanity-check upper bound for the comparison table tooltip.
+# DO NOT use to FAKE the MW (we report what `discovered_facilities` has).
+PUBLIC_MW_REFERENCE = {
+    "aws":               20000,  # ~20 GW
+    "azure":             20000,  # ~20 GW, OpenAI compute backbone
+    "google-cloud":      10000,
+    "meta":               7000,
+    "apple":              1000,
+    "oracle":             3000,  # incl Stargate share
+    "tiktok-bytedance":   3000,
+    "tencent":            5000,
+    "alibaba":            6000,
+}
+
+# Bad-attribution patterns — news headlines that contain a hyperscaler
+# name but DO NOT represent hyperscaler capex/build/M&A activity.
+#
+# Class 1 — cloud purchase (customer BUYING from the hyperscaler):
+#   "Pinterest signs $4B AWS cloud deal" — Pinterest is the buyer
+#   "Snowflake's $6B AWS bet"            — Snowflake is the buyer
+# Class 2 — telecom/spectrum auctions (FCC AWS-3 is spectrum, not capex):
+#   "AWS-3 auction" / "AWS-3 spectrum"
+# Class 3 — security/breach/outage/exec drama:
+#   "23andMe DNA breach" / "AWS outage" / "AWS exec leaves"
+# Class 4 — product/feature/research stories (no capex):
+#   "AWS Bedrock now supports …" / "AWS Randomized Graph Networks"
+# Class 5 — IPO/earnings (financial event, not data-center capex)
+_BAD_ATTRIBUTION_RE = re.compile(
+    r"("
+    # Cloud purchase / contract — hyperscaler is the SELLER not the buyer
+    r"signs\s+(?:a\s+)?(?:us)?\$?[\d.,]*\s*(?:b|m)?\s*(?:n|illion)?\s*"
+    r"(?:aws|azure|google|gcp|microsoft|oracle|alibaba)\s+(?:cloud|deal)"
+    r"|\b(?:bets?\s+on|bet\s+with|bet\s+to|opts?\s+for|"
+    r"picks?|chooses?|migrates?\s+to|moves?\s+to|adopts?|"
+    r"signs?\s+(?:on\s+)?with|signs?\s+deal\s+with|"
+    r"signs?\s+cloud\s+deal\s+with)\s+"
+    r"(?:aws|azure|google\s+cloud|gcp|microsoft\s+azure|oracle\s+cloud|"
+    r"alibaba\s+cloud|aliyun)"
+    # Class 2 — spectrum auctions (AWS-3 is FCC spectrum, NOT Amazon Web Services)
+    r"|\baws-3\b|aws\s*3\s+(?:auction|spectrum|band)"
+    # Class 3 — security/breach/outage
+    r"|\b(?:data\s+breach|breach|hack|hacked|leak|leaked|"
+    r"vulnerability|cve|exploit|ransom|outage|down|crash|crashed|"
+    r"investigation|lawsuit|fine|fined|antitrust|probe|settle|settled|"
+    r"layoff|laid\s+off|fired|fires|resign|resigns?|quits?|"
+    r"exec\s+(?:leaves|left|departs|departed|joins|to\s+(?:join|leave)))"
+    # Class 4 — opinion / product / research / interview noise
+    r"|\b(?:exec(?:utive)?\s+:?\s*|cto\s*:?\s*|ceo\s*:?\s*|"
+    r"interview|opinion|analysis|commentary|"
+    r"randomized|architecture|networks?\s+are\s+ready|"
+    r"bedrock\s+(?:now|adds|supports)|grok\s+into|"
+    r"need\s+to\s+think|telco|telcos)"
+    # Class 5 — IPO / earnings / stock
+    r"|\b(?:ipo|earnings|stock|share\s+price|market\s+cap|"
+    r"q[1-4]\s+(?:results|earnings)|files\s+for\s+ipo)"
+    r")",
+    re.IGNORECASE,
+)
+
+# Capex/build/M&A POSITIVE patterns — headlines that DO indicate
+# hyperscaler-as-buyer-of-real-estate-or-power. We require at least one
+# match to keep a row in the pipeline news fallback.
+_GOOD_CAPEX_RE = re.compile(
+    r"\b(?:announces?|building|builds?|opens?|launches?|expand(?:s|ing)?|"
+    r"breaks?\s+ground|invests?\s+(?:in\s+)?[\$\d]|to\s+invest|"
+    r"plans?\s+(?:to\s+)?(?:build|spend|invest)|"
+    r"acquires?|acquisition\s+of|to\s+acquire|buys?\s+\d+|"
+    r"signs?\s+ppa|power\s+purchase|nuclear|smr|solar\s+farm|wind\s+farm|"
+    r"data\s+center|datacenter|hyperscale|campus|"
+    r"new\s+region|new\s+facility|new\s+site|"
+    r"\d+\s*-?\s*(?:mw|gw)\b|\d+\s*megawatt|\d+\s*gigawatt|"
+    r"land\s+(?:deal|acquisition|buy)|leases?\s+\d+|"
+    r"\$\d+(?:\.\d+)?\s*(?:b|bn|m|mn|billion|million)\s+(?:data\s+center|capex|investment))",
+    re.IGNORECASE,
+)
+
+# Deal-type whitelist for the "invested capital" aggregate. Cloud
+# contracts ("AI-contract") are revenue FOR the hyperscaler, not capex BY
+# the hyperscaler — exclude them from the buyer-side sum.
+# (Per admin_ai_deals.VALID_TYPES + _normalize_type.)
+_CAPEX_DEAL_TYPES = (
+    "M&A", "capex", "AI-infra", "land", "power-agreement", "JV",
+    "transaction", "acquisition",
+)
+_NON_CAPEX_DEAL_TYPES = (
+    # Customer contracts — hyperscaler is the seller of compute, NOT the
+    # buyer of infrastructure. Counted as the hyperscaler's revenue, not capex.
+    "AI-contract", "ai-contract", "ai_contract",
+    "equity", "debt",  # financing rounds — not data-center capex
+)
+
+
+def _is_capex_news(title: str, summary: str | None = None) -> bool:
+    """Return True iff a news headline (+summary) looks like real
+    hyperscaler capex (build / M&A / PPA / land), False if it's a cloud
+    purchase / spectrum / outage / opinion / IPO. Conservative: a row
+    needs to NOT match the bad pattern AND match the good pattern."""
+    blob = f"{title or ''} {summary or ''}"
+    if not blob.strip():
+        return False
+    if _BAD_ATTRIBUTION_RE.search(blob):
+        return False
+    return bool(_GOOD_CAPEX_RE.search(blob))
 
 
 # tier_registry rank for pro/founding
@@ -343,12 +472,25 @@ def _section_hero(cur, slug: str, meta: dict) -> dict:
             out["total_announced_mw"] = _as_float(r[4])
     except Exception:
         pass
-    # Invested capital — sum of value_usd on deals where this hyperscaler
-    # is the buyer. NULL value_usd rows are excluded from the sum but
-    # included in the count so we can render "(N deals, amount undisclosed)"
-    # for cases where rows exist but $-amounts are sparse.
+    # Invested capital — sum of value on deals where this hyperscaler is
+    # the BUYER AND the deal type is in the capex whitelist.
+    #
+    # 2026-06-06 ATTRIBUTION FIX: previously this summed ALL value WHERE
+    # buyer ILIKE %aws% — but rows where AWS is the seller (cloud contracts:
+    # "Pinterest BUYS $4B of AWS cloud") get pushed up to $630B AWS capex.
+    # Two filters:
+    #   (1) Type must be a capex-like type (capex/M&A/land/PPA/JV/transaction
+    #       /acquisition), NOT a cloud contract ("AI-contract"), equity round,
+    #       or debt financing.
+    #   (2) The hyperscaler must NOT also be in the seller column for the
+    #       same row — that's a cloud-contract pattern.
+    # Result: $/MW math is now anchored to real-estate/power capex, not
+    # cloud revenue. Real-world hyperscaler $/MW = $20-40M, not $328M.
     try:
         buyer_where, buyer_params = _ilike_clauses("buyer", aliases)
+        seller_where, seller_params = _ilike_clauses("seller", aliases)
+        # Capex types — use placeholders so type values are escaped.
+        type_placeholders = ",".join(["%s"] * len(_CAPEX_DEAL_TYPES))
         cur.execute(
             f"""
             SELECT COUNT(*) AS deal_count,
@@ -356,8 +498,10 @@ def _section_hero(cur, slug: str, meta: dict) -> dict:
                    COALESCE(SUM(value), 0) AS total_value
               FROM deals
              WHERE {buyer_where}
+               AND NOT ({seller_where})
+               AND (type IS NULL OR type IN ({type_placeholders}))
             """,
-            buyer_params,
+            buyer_params + seller_params + list(_CAPEX_DEAL_TYPES),
         )
         r = cur.fetchone()
         if r:
@@ -366,7 +510,29 @@ def _section_hero(cur, slug: str, meta: dict) -> dict:
             out["invested_capital"]    = _as_float(r[2]) if (r[1] or 0) > 0 else None
             out["invested_capital_display"] = _fmt_money(out["invested_capital"])
     except Exception:
-        pass
+        # Fallback (type column may not exist): just exclude self-seller rows.
+        try:
+            buyer_where, buyer_params = _ilike_clauses("buyer", aliases)
+            seller_where, seller_params = _ilike_clauses("seller", aliases)
+            cur.execute(
+                f"""
+                SELECT COUNT(*) AS deal_count,
+                       COUNT(value) FILTER (WHERE value IS NOT NULL) AS valued_count,
+                       COALESCE(SUM(value), 0) AS total_value
+                  FROM deals
+                 WHERE {buyer_where}
+                   AND NOT ({seller_where})
+                """,
+                buyer_params + seller_params,
+            )
+            r = cur.fetchone()
+            if r:
+                out["deal_count"]          = _as_int(r[0])
+                out["valued_deal_count"]   = _as_int(r[1])
+                out["invested_capital"]    = _as_float(r[2]) if (r[1] or 0) > 0 else None
+                out["invested_capital_display"] = _fmt_money(out["invested_capital"])
+        except Exception:
+            pass
     return out
 
 
@@ -439,35 +605,71 @@ def _section_pipeline(cur, meta: dict) -> list[dict]:
             pass
     # Pass 2 (back-fill to 12 entries): news headlines mentioning the
     # hyperscaler in the last 12 months.
+    #
+    # 2026-06-06 ATTRIBUTION FIX: filter out the noise — cloud-purchase
+    # ("Pinterest signs $4B AWS cloud deal"), spectrum auctions ("AWS-3
+    # auction"), security/breach/outage ("23andMe DNA breach"), and
+    # opinion/product/IPO chatter. Require BOTH:
+    #   (a) NOT _BAD_ATTRIBUTION_RE (cloud-purchase / spectrum / breach / etc.)
+    #   (b)     _GOOD_CAPEX_RE      (build / acquire / MW / PPA / etc.)
+    # Result: the pipeline tab shows real hyperscaler capex, not the
+    # firehose of every news headline that names them.
     if len(out) < 12:
         try:
             news_where, news_params = _ilike_clauses("title", aliases)
+            # Pull a wider net (60 rows) so we have enough survivors
+            # after filtering down to capex-relevant ones.
             cur.execute(
                 f"""
-                SELECT title, source, url, published_date
+                SELECT title, source, url, published_date,
+                       COALESCE(summary, description, '') AS summary
                   FROM news
                  WHERE {news_where}
                    AND published_date > CURRENT_DATE - INTERVAL '12 months'
                  ORDER BY published_date DESC LIMIT %s
                 """,
-                news_params + [12 - len(out)],
+                news_params + [60],
             )
-            for r in cur.fetchall():
-                out.append({
-                    "operator": meta["short"],
-                    "facility": r[0],
-                    "power_mw": None,
-                    "status":   "announced",
-                    "eta":      None,
-                    "location": None,
-                    "market":   None,
-                    "url":      r[2],
-                    "published": r[3].isoformat() if r[3] else None,
-                    "news_source": r[1],
-                    "source":   "news",
-                })
+            news_rows = cur.fetchall()
         except Exception:
-            pass
+            # Some envs the `summary`/`description` columns may not exist —
+            # retry without them.
+            try:
+                news_where, news_params = _ilike_clauses("title", aliases)
+                cur.execute(
+                    f"""
+                    SELECT title, source, url, published_date, '' AS summary
+                      FROM news
+                     WHERE {news_where}
+                       AND published_date > CURRENT_DATE - INTERVAL '12 months'
+                     ORDER BY published_date DESC LIMIT %s
+                    """,
+                    news_params + [60],
+                )
+                news_rows = cur.fetchall()
+            except Exception:
+                news_rows = []
+        for r in news_rows:
+            if len(out) >= 12:
+                break
+            title = r[0]
+            summary = r[4] if len(r) > 4 else ""
+            # Skip cloud-purchase / spectrum / breach / opinion / IPO noise.
+            if not _is_capex_news(title, summary):
+                continue
+            out.append({
+                "operator": meta["short"],
+                "facility": title,
+                "power_mw": None,
+                "status":   "announced",
+                "eta":      None,
+                "location": None,
+                "market":   None,
+                "url":      r[2],
+                "published": r[3].isoformat() if r[3] else None,
+                "news_source": r[1],
+                "source":   "news",
+            })
     return out[:12]
 
 
@@ -749,25 +951,75 @@ def _section_time_to_power(cur, meta: dict) -> dict:
     return out
 
 
+def _coverage_quality(spend: float | None, mw: float | None) -> str:
+    """Quality badge for a peer row.
+       'verified'        — both signals above their floors
+       'thin_capex'      — MW above floor but capex below
+       'thin_mw'         — capex above floor but MW below
+       'expanding'       — both below — row is hidden / 'Coverage expanding'
+    """
+    f = HYPERSCALER_COVERAGE_FLOORS
+    has_mw   = bool(mw and mw    >= f["min_mw_for_show"])
+    has_cap  = bool(spend and spend >= f["min_capex_for_show"])
+    if has_mw and has_cap:
+        return "verified"
+    if has_mw and not has_cap:
+        return "thin_capex"
+    if has_cap and not has_mw:
+        return "thin_mw"
+    return "expanding"
+
+
+def _per_mw_or_none(spend: float | None, mw: float | None) -> float | None:
+    """Compute $/MW ONLY when both signals clear the per-MW math floor.
+    Returns None otherwise — the caller renders 'Coverage expanding'
+    instead of an absurd number ($328M/MW from a 1,920MW Berwick build +
+    $630B of cloud-contract revenue we mis-attributed)."""
+    f = HYPERSCALER_COVERAGE_FLOORS
+    if not (spend and mw):
+        return None
+    if mw    < f["min_mw_for_per_mw"]:
+        return None
+    if spend < f["min_capex_for_per_mw"]:
+        return None
+    return spend / mw
+
+
 def _section_capital_velocity(cur, meta: dict, hero: dict) -> dict:
     """Section 8: Capital Velocity (PRO+). $/MW spend rate vs peers.
 
     Uses the hero's `invested_capital` + `total_announced_mw` to compute
-    $/MW. Compares to the cross-hyperscaler average over the same window."""
+    $/MW. Compares to the cross-hyperscaler average over the same window.
+
+    2026-06-06 MATH GUARDS:
+      • $/MW is NEVER computed when MW < 100 OR capex < $100M — that's a
+        coverage artifact, not a real metric. (Showed AWS at $328M/MW
+        before this guard — real-world is $20-40M/MW.)
+      • Capex is now whitelisted-by-type AND excludes rows where the
+        hyperscaler also appears as seller (cloud contracts).
+      • Peer rows below BOTH floors are rolled into `expanding_count`
+        instead of cluttering the table with 0 MW / —.
+      • Each peer row carries a `quality` badge so the caller can render
+        a tooltip ("verified", "thin_capex", "thin_mw").
+    """
     out = {
-        "spend_per_mw":     None,
-        "spend_per_mw_display": "n/a",
-        "peer_avg_per_mw":  None,
-        "peer_avg_display": "n/a",
-        "rank_vs_peers":    None,
-        "rank_total":       None,
-        "peer_table":       [],
-        "verdict":          None,
+        "spend_per_mw":           None,
+        "spend_per_mw_display":   "Coverage expanding",
+        "peer_avg_per_mw":        None,
+        "peer_avg_display":       "Coverage expanding",
+        "rank_vs_peers":          None,
+        "rank_total":             None,
+        "peer_table":             [],
+        "peer_expanding":         [],   # hidden — names only, for footnote
+        "expanding_count":        0,
+        "verified_count":         0,
+        "verdict":                None,
+        "coverage_floors":        HYPERSCALER_COVERAGE_FLOORS,
     }
     invested = hero.get("invested_capital")
     total_mw = hero.get("total_announced_mw")
-    if invested and total_mw and total_mw > 0:
-        per_mw = invested / total_mw
+    per_mw   = _per_mw_or_none(invested, total_mw)
+    if per_mw:
         out["spend_per_mw"]         = round(per_mw, 0)
         out["spend_per_mw_display"] = _fmt_money(per_mw) + "/MW"
     # Peer table — compute the same metric for each seed hyperscaler.
@@ -776,16 +1028,40 @@ def _section_capital_velocity(cur, meta: dict, hero: dict) -> dict:
         peer_aliases = peer_meta["aliases"]
         peer_invested = None
         peer_mw = None
+        # Capex — same whitelisted-type filter as the hero query, so the
+        # peer column matches the headline number.
         try:
             buyer_where, buyer_params = _ilike_clauses("buyer", peer_aliases)
+            seller_where, seller_params = _ilike_clauses("seller", peer_aliases)
+            type_placeholders = ",".join(["%s"] * len(_CAPEX_DEAL_TYPES))
             cur.execute(
-                f"SELECT COALESCE(SUM(value), 0) FROM deals WHERE {buyer_where}",
-                buyer_params,
+                f"""
+                SELECT COALESCE(SUM(value), 0) FROM deals
+                 WHERE {buyer_where}
+                   AND NOT ({seller_where})
+                   AND (type IS NULL OR type IN ({type_placeholders}))
+                """,
+                buyer_params + seller_params + list(_CAPEX_DEAL_TYPES),
             )
             r = cur.fetchone()
             peer_invested = _as_float(r[0]) if r and r[0] else None
         except Exception:
-            pass
+            # Fallback — no type column.
+            try:
+                buyer_where, buyer_params = _ilike_clauses("buyer", peer_aliases)
+                seller_where, seller_params = _ilike_clauses("seller", peer_aliases)
+                cur.execute(
+                    f"""
+                    SELECT COALESCE(SUM(value), 0) FROM deals
+                     WHERE {buyer_where}
+                       AND NOT ({seller_where})
+                    """,
+                    buyer_params + seller_params,
+                )
+                r = cur.fetchone()
+                peer_invested = _as_float(r[0]) if r and r[0] else None
+            except Exception:
+                pass
         try:
             prov_where, prov_params = _ilike_clauses("provider", peer_aliases)
             cur.execute(
@@ -800,23 +1076,34 @@ def _section_capital_velocity(cur, meta: dict, hero: dict) -> dict:
             peer_mw = _as_float(r[0]) if r else None
         except Exception:
             pass
-        peer_per_mw = None
-        if peer_invested and peer_mw and peer_mw > 0:
-            peer_per_mw = peer_invested / peer_mw
-        peers.append({
-            "slug":         peer_slug,
-            "name":         peer_meta["short"],
-            "spend":        peer_invested,
-            "mw":           peer_mw,
-            "per_mw":       round(peer_per_mw, 0) if peer_per_mw else None,
-            "per_mw_display": (_fmt_money(peer_per_mw) + "/MW") if peer_per_mw else "n/a",
-        })
+        per_mw_p = _per_mw_or_none(peer_invested, peer_mw)
+        quality  = _coverage_quality(peer_invested, peer_mw)
+        # Coverage-expanding rows: hide from the comparison table; they
+        # get bucketed into a footnote so we don't pretend SoftBank is
+        # also a hyperscaler at 0 MW.
+        row = {
+            "slug":           peer_slug,
+            "name":           peer_meta["short"],
+            "spend":          peer_invested,
+            "mw":             peer_mw,
+            "per_mw":         round(per_mw_p, 0) if per_mw_p else None,
+            "per_mw_display": (_fmt_money(per_mw_p) + "/MW") if per_mw_p
+                              else "Coverage expanding",
+            "public_mw_ref":  PUBLIC_MW_REFERENCE.get(peer_slug),
+            "quality":        quality,
+        }
+        if quality == "expanding":
+            out["peer_expanding"].append(row)
+        else:
+            peers.append(row)
+    out["expanding_count"] = len(out["peer_expanding"])
+    out["verified_count"]  = sum(1 for p in peers if p["quality"] == "verified")
     # Avg across peers with a real number.
     real = [p["per_mw"] for p in peers if p["per_mw"]]
     if real:
         out["peer_avg_per_mw"]  = round(sum(real) / len(real), 0)
         out["peer_avg_display"] = _fmt_money(out["peer_avg_per_mw"]) + "/MW"
-    # Rank
+    # Rank (within the verified-only peer set).
     ranked = sorted(peers, key=lambda p: (p["per_mw"] is None, -(p["per_mw"] or 0)))
     out["peer_table"] = ranked
     out["rank_total"] = len([p for p in ranked if p["per_mw"]])
@@ -831,6 +1118,10 @@ def _section_capital_velocity(cur, meta: dict, hero: dict) -> dict:
             out["verdict"] = "VALUE — disciplined $/MW vs peers."
         else:
             out["verdict"] = "INLINE — $/MW close to the peer average."
+    elif out["expanding_count"] >= 3:
+        out["verdict"] = (
+            f"Coverage expanding — {out['expanding_count']} hyperscalers "
+            "below the $/MW data-depth floor (MW + capex tracked but sparse).")
     return out
 
 
@@ -872,25 +1163,36 @@ def _section_outlook(cur, slug: str, meta: dict, hero: dict, pipeline: list[dict
             f"Active pipeline ~{int(pipeline_mw):,} MW under construction or planned.")
     if pipeline_count:
         bullets.append(f"{pipeline_count} announced builds in the last 12mo.")
-    if hero.get("invested_capital"):
+    # 2026-06-06: only mention capex when it clears the data-depth floor —
+    # otherwise we lead with a number that's a cloud-contract artifact.
+    if (hero.get("invested_capital") and
+            hero["invested_capital"] >= HYPERSCALER_COVERAGE_FLOORS["min_capex_for_show"]):
         bullets.append(
             f"Tracked capex {_fmt_money(hero['invested_capital'])} across "
-            f"{hero.get('valued_deal_count') or '—'} priced transactions.")
+            f"{hero.get('valued_deal_count') or '—'} priced capex transactions "
+            "(cloud-purchase contracts excluded).")
     else:
-        bullets.append("Most deals undisclosed-value — see M&A tab for the full list.")
+        bullets.append(
+            "Capex coverage expanding — most M&A undisclosed-value, see the "
+            "M&A tab for the full list.")
     out["bullets"] = bullets[:5]
     out["teaser"] = (
         f"Full Outlook covers {short}'s forward bets across regions, the "
         "PPA + nuclear mix, and the $/MW capital signal — PRO subscribers "
         "unlock the deep narrative.")
+    capex_verified = (hero.get("invested_capital") and
+                      hero["invested_capital"] >=
+                      HYPERSCALER_COVERAGE_FLOORS["min_capex_for_show"])
     out["summary"] = (
         f"{short} is operating a {scale} footprint of ~{int(total_mw):,} MW. "
         + (f"Pipeline of {int(pipeline_mw):,} MW is currently in flight. "
            if pipeline_mw else "")
         + ("Capex velocity tracks at " + _fmt_money(hero["invested_capital"]) + " "
-           "of priced transactions in the M&A flow."
-           if hero.get("invested_capital") else
-           "Most M&A activity is undisclosed-value — public capex signal is light.")
+           "of priced capex transactions in the M&A flow "
+           "(cloud-purchase contracts excluded)."
+           if capex_verified else
+           "Coverage expanding — most M&A activity is undisclosed-value; "
+           "the public capex signal is still building.")
     )
     return out
 
@@ -975,7 +1277,14 @@ def _render_html(brief: dict) -> str:
     op_mw    = hero.get("operational_mw") or 0
     pl_mw    = hero.get("pipeline_mw") or 0
     fc       = hero.get("facility_count") or 0
+    # 2026-06-06: surface "Coverage expanding" instead of a junk number
+    # when capex is below the coverage floor (the cloud-contract bleed
+    # got it to $630B for AWS pre-fix).
     invested_disp = hero.get("invested_capital_display") or "amount undisclosed"
+    if (hero.get("invested_capital") is None or
+        hero.get("invested_capital") <
+        HYPERSCALER_COVERAGE_FLOORS["min_capex_for_show"]):
+        invested_disp = "Coverage expanding"
 
     def _esc(s):
         if s is None:
@@ -1059,26 +1368,51 @@ def _render_html(brief: dict) -> str:
             </div>
             <p>{_esc(ttp_verdict)}</p>"""
 
-        # Capital velocity
+        # Capital velocity — render the peer table with quality badges
+        # and a "Coverage expanding" footnote for under-floor hyperscalers.
         cv = brief.get("capital_velocity") or {}
+        def _quality_badge(q):
+            badges = {
+                "verified":   '<span class="qb qb-v" title="MW + capex above coverage floor">VERIFIED</span>',
+                "thin_capex": '<span class="qb qb-t" title="MW tracked but priced-deal flow sparse">THIN CAPEX</span>',
+                "thin_mw":    '<span class="qb qb-t" title="Capex tracked but fleet MW sparse">THIN MW</span>',
+                "expanding":  '<span class="qb qb-e" title="Coverage expanding">EXPANDING</span>',
+            }
+            return badges.get(q, "")
         peer_rows = "\n".join(
-            f'<tr><td>{_esc(p["name"])}</td>'
+            f'<tr><td>{_esc(p["name"])} {_quality_badge(p.get("quality"))}</td>'
             f'<td style="text-align:right">{_esc(_fmt_money(p["spend"]) if p["spend"] else "—")}</td>'
             f'<td style="text-align:right">{(p["mw"] or 0):,.0f} MW</td>'
             f'<td style="text-align:right">{_esc(p["per_mw_display"])}</td></tr>'
             for p in (cv.get("peer_table") or [])
         )
+        if not peer_rows:
+            peer_rows = ('<tr><td colspan="4" class="muted">'
+                         'Coverage expanding — peer $/MW comparison is on hold '
+                         'until at least 3 hyperscalers clear the data-depth floor '
+                         '(1,000 MW + $100M tracked capex).</td></tr>')
+        # Footnote for coverage-expanding hyperscalers — we still name them
+        # so the reader knows what's NOT in the table.
+        expanding_names = ", ".join(_esc(p["name"]) for p in (cv.get("peer_expanding") or []))
+        expanding_footer = ""
+        if expanding_names:
+            expanding_footer = (
+                f'<p class="note">Coverage expanding ({cv.get("expanding_count") or 0}): '
+                f'{expanding_names}. Both MW and tracked capex below the data-depth '
+                'floor; row hidden until coverage clears.</p>')
         cv_html = f"""
             <div class="grid3">
-              <div class="kpi"><div class="kpi-v">{_esc(cv.get('spend_per_mw_display') or 'n/a')}</div><div class="kpi-l">{_esc(short)} $/MW</div></div>
-              <div class="kpi"><div class="kpi-v">{_esc(cv.get('peer_avg_display') or 'n/a')}</div><div class="kpi-l">Peer Avg</div></div>
+              <div class="kpi"><div class="kpi-v">{_esc(cv.get('spend_per_mw_display') or 'Coverage expanding')}</div><div class="kpi-l">{_esc(short)} $/MW</div></div>
+              <div class="kpi"><div class="kpi-v">{_esc(cv.get('peer_avg_display') or 'Coverage expanding')}</div><div class="kpi-l">Peer Avg</div></div>
               <div class="kpi"><div class="kpi-v">{cv.get('rank_vs_peers') or '—'}<small> / {cv.get('rank_total') or 0}</small></div><div class="kpi-l">Rank vs peers</div></div>
             </div>
             <p>{_esc(cv.get('verdict') or '')}</p>
             <table class="t">
-              <thead><tr><th>Hyperscaler</th><th style="text-align:right">Tracked Spend</th><th style="text-align:right">Tracked MW</th><th style="text-align:right">$/MW</th></tr></thead>
+              <thead><tr><th>Hyperscaler</th><th style="text-align:right">Tracked Capex</th><th style="text-align:right">Tracked MW</th><th style="text-align:right">$/MW</th></tr></thead>
               <tbody>{peer_rows}</tbody>
-            </table>"""
+            </table>
+            {expanding_footer}
+            <p class="note">$/MW computed only when MW ≥ {int(HYPERSCALER_COVERAGE_FLOORS['min_mw_for_per_mw'])} AND tracked capex ≥ ${int(HYPERSCALER_COVERAGE_FLOORS['min_capex_for_per_mw']/1e6)}M. Cloud-purchase deals (e.g. Pinterest buying AWS cloud) excluded from capex.</p>"""
 
         pro_sections_html = f"""
         <section><h2>3 · Signed PPAs</h2><ul class="news">{ppa_rows}</ul></section>
@@ -1149,6 +1483,10 @@ def _render_html(brief: dict) -> str:
  .pill{{display:inline-block;padding:3px 11px;border-radius:999px;background:{color};color:#fff;font-size:.72rem;font-weight:700;letter-spacing:.05em;text-transform:uppercase;margin-right:6px;font-family:'JetBrains Mono',monospace}}
  a{{color:var(--ind)}}
  footer{{color:var(--dim);font-size:.82rem;margin-top:36px;padding-top:18px;border-top:1px solid var(--b);font-family:'JetBrains Mono',monospace}}
+ .qb{{display:inline-block;padding:1px 6px;margin-left:6px;border-radius:4px;font-size:.62rem;font-weight:700;letter-spacing:.06em;font-family:'JetBrains Mono',monospace;vertical-align:middle}}
+ .qb-v{{background:rgba(52,211,153,.16);color:#34d399}}
+ .qb-t{{background:rgba(251,191,36,.14);color:#fbbf24}}
+ .qb-e{{background:rgba(148,163,184,.16);color:#94a3b8}}
 </style></head><body>
 <header>
   <span class="pill">{_esc(short)}</span>
