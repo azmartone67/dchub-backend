@@ -366,16 +366,24 @@ def _as_int(v):
         return None
 
 
-def _ilike_clauses(column: str, aliases: list[str]) -> tuple[str, list[str]]:
+def _ilike_clauses(column: str, aliases: list[str], null_safe: bool = False) -> tuple[str, list[str]]:
     """Build a parameterized OR-chain of `column ILIKE %s` clauses for each
     alias. Returns (sql_fragment, params_list).
 
     The aliases are wrapped with %...% so any substring match counts.
-    Empty aliases are filtered out defensively."""
+    Empty aliases are filtered out defensively.
+
+    `null_safe=True` wraps the column in COALESCE(..., '') so the clause
+    can be safely used inside a NOT (...) negation — without it,
+    `NOT (NULL ILIKE x)` evaluates to NULL, which WHERE treats as FALSE
+    and silently drops rows whose column IS NULL. (Bit us 2026-06-06:
+    every M&A deal with NULL seller was being excluded from the AWS
+    capex sum.)"""
     clean = [a.strip() for a in aliases if a and a.strip()]
     if not clean:
         return "FALSE", []
-    parts = [f"{column} ILIKE %s" for _ in clean]
+    col_expr = f"COALESCE({column}, '')" if null_safe else column
+    parts = [f"{col_expr} ILIKE %s" for _ in clean]
     params = [f"%{a}%" for a in clean]
     return "(" + " OR ".join(parts) + ")", params
 
@@ -488,7 +496,7 @@ def _section_hero(cur, slug: str, meta: dict) -> dict:
     # cloud revenue. Real-world hyperscaler $/MW = $20-40M, not $328M.
     try:
         buyer_where, buyer_params = _ilike_clauses("buyer", aliases)
-        seller_where, seller_params = _ilike_clauses("seller", aliases)
+        seller_where, seller_params = _ilike_clauses("seller", aliases, null_safe=True)
         # Capex types — use placeholders so type values are escaped.
         type_placeholders = ",".join(["%s"] * len(_CAPEX_DEAL_TYPES))
         cur.execute(
@@ -513,7 +521,7 @@ def _section_hero(cur, slug: str, meta: dict) -> dict:
         # Fallback (type column may not exist): just exclude self-seller rows.
         try:
             buyer_where, buyer_params = _ilike_clauses("buyer", aliases)
-            seller_where, seller_params = _ilike_clauses("seller", aliases)
+            seller_where, seller_params = _ilike_clauses("seller", aliases, null_safe=True)
             cur.execute(
                 f"""
                 SELECT COUNT(*) AS deal_count,
@@ -1032,7 +1040,7 @@ def _section_capital_velocity(cur, meta: dict, hero: dict) -> dict:
         # peer column matches the headline number.
         try:
             buyer_where, buyer_params = _ilike_clauses("buyer", peer_aliases)
-            seller_where, seller_params = _ilike_clauses("seller", peer_aliases)
+            seller_where, seller_params = _ilike_clauses("seller", peer_aliases, null_safe=True)
             type_placeholders = ",".join(["%s"] * len(_CAPEX_DEAL_TYPES))
             cur.execute(
                 f"""
@@ -1049,7 +1057,7 @@ def _section_capital_velocity(cur, meta: dict, hero: dict) -> dict:
             # Fallback — no type column.
             try:
                 buyer_where, buyer_params = _ilike_clauses("buyer", peer_aliases)
-                seller_where, seller_params = _ilike_clauses("seller", peer_aliases)
+                seller_where, seller_params = _ilike_clauses("seller", peer_aliases, null_safe=True)
                 cur.execute(
                     f"""
                     SELECT COALESCE(SUM(value), 0) FROM deals
