@@ -120,12 +120,27 @@ _CANONICAL_SLUG: dict[str, str] = {
 # (DCPI uses city slugs, /markets uses metro slugs per market-slugs memory).
 # Used by _section_hero's third match clause so the DB lookup resolves
 # even when the URL uses the metro form.
+#
+# Also used to repair punctuation-mangling: _norm_slug() strips apostrophes
+# and periods to dashes, but DCPI's ingestion preserves them in the DB slug
+# (e.g. "Coeur d'Alene" → market_slug=`coeur-d'alene`, "St. Louis" →
+# market_slug=`st.-louis`). The normalized URL form (`coeur-d-alene`,
+# `st-louis`) doesn't match the DB row, so we explicitly alias the
+# punctuation-stripped form back to the real DB slug here. Audited
+# 2026-06-06 against the live leaderboard's 190 published markets —
+# these were the only 2 broken by _norm_slug (the rest had no
+# non-alphanumeric punctuation in their DB slug).
 MARKET_ALIAS: dict[str, str] = {
     "northern-virginia": "ashburn",
     # silicon-valley → DCPI stores as `santa-clara` (verified live
     # 2026-06-06: GET /api/v1/dcpi/scores/silicon-valley returns
     # _canonical_slug=santa-clara, market_slug=santa-clara).
     "silicon-valley": "santa-clara",
+    # Punctuation-mangling repairs (2026-06-06 dormant-market audit):
+    # both URLs work via the punctuation-stripped form, the alias steers
+    # the DB lookup at the real (punctuation-bearing) DCPI slug.
+    "coeur-d-alene": "coeur-d'alene",   # Coeur d'Alene, ID  (CAUTION)
+    "st-louis":      "st.-louis",       # St. Louis, MO     (CAUTION)
     # dallas, phoenix, atlanta, chicago, new-york, portland, hillsboro,
     # reno, columbus, salt-lake-city, charlotte, denver, madison:
     # DCPI uses the same slug as the URL.
@@ -432,16 +447,27 @@ def _section_hero(cur, slug: str) -> dict | None:
     # "not in coverage" for every market. Use only writer-guaranteed columns;
     # composite_score stays None (hero shows verdict + excess + constraint).
     # MARKET_ALIAS handles the metro↔city slug trap (northern-virginia↔ashburn).
+    # r-fix-4 (2026-06-06) — fourth match clause: punctuation-stripped
+    # slug equality. _norm_slug() strips apostrophes/periods/etc. to dashes
+    # before this point, but the DB slug preserves them (e.g. DCPI stores
+    # `coeur-d'alene` and `st.-louis`). REGEXP_REPLACE collapses every
+    # non-alphanumeric run to a single dash on BOTH sides so the
+    # punctuation-stripped URL slug matches the punctuation-bearing DB
+    # slug without needing a per-market alias entry. Resolved 2 dormant
+    # markets (coeur-d'alene, st.-louis) and future-proofs any new
+    # special-char DCPI markets.
     try:
-        cur.execute("""
+        cur.execute(r"""
             SELECT market_slug, market_name, verdict,
                    excess_power_score, constraint_score, computed_at, iso
               FROM market_power_scores
              WHERE LOWER(market_slug) = LOWER(%s)
                 OR LOWER(REPLACE(market_name, ' ', '-')) = LOWER(%s)
                 OR LOWER(market_slug) = LOWER(%s)
+                OR LOWER(REGEXP_REPLACE(market_slug, '[^a-z0-9]+', '-', 'gi')) =
+                   LOWER(REGEXP_REPLACE(%s,          '[^a-z0-9]+', '-', 'gi'))
              ORDER BY computed_at DESC LIMIT 1
-        """, (slug, slug, MARKET_ALIAS.get(slug, slug)))
+        """, (slug, slug, MARKET_ALIAS.get(slug, slug), slug))
         r = cur.fetchone()
     except Exception:
         return None
