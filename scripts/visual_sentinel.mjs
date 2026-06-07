@@ -31,10 +31,12 @@ async function checkPage(browser, spec) {
   pg.on('pageerror', e => pageErrors.push(String(e).slice(0, 160)));
   const out = { page: spec.page, path: spec.path, ok: false };
   try {
-    const resp = await pg.goto(BASE + spec.path, { waitUntil: 'networkidle', timeout: 45000 });
+    // NOT 'networkidle' — live pages (the map, the media feed) poll continuously
+    // and never go idle, which false-times-out every page. domcontentloaded +
+    // a fixed settle is the reliable strategy for sites with background polling.
+    const resp = await pg.goto(BASE + spec.path, { waitUntil: 'domcontentloaded', timeout: 60000 });
     out.status = resp ? resp.status() : 0;
-    // give lazy images / async renders a moment
-    await pg.waitForTimeout(3500);
+    await pg.waitForTimeout(6000);  // let async render + lazy images attempt to load
     const textLen = (await pg.evaluate(() => document.body ? document.body.innerText.trim().length : 0));
     const brokenImgs = await pg.evaluate(() =>
       Array.from(document.images)
