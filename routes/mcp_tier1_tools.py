@@ -256,9 +256,14 @@ def find_alternatives():
                 # tier column doesn't exist in discovered_facilities — default to 0
                 target.setdefault('tier', 0)
 
-                # Find candidates — same market first, then expand
+                # Candidates: same STATE (coarse geo filter); the radius_km distance
+                # filter below narrows to truly-nearby. Was `city = %s AND state = %s`
+                # (exact city) with a "then expand" comment but NO expansion — so a
+                # facility that's the only one in its city returned 0 alternatives
+                # (Devin QA 2026-06-07: find_alternatives resolved but empty). State +
+                # radius gives real nearby comps.
                 same_op_filter = "AND provider != %s" if exclude_operator else ""
-                params: list[Any] = [target["city"], target["state"], target["id"]]
+                params: list[Any] = [target["state"], target["id"]]
                 if exclude_operator:
                     params.append(target["provider"])
 
@@ -266,12 +271,12 @@ def find_alternatives():
                     SELECT id, name, provider, city, state, country,
                            latitude, longitude, power_mw, status
                       FROM discovered_facilities
-                     WHERE city = %s AND state = %s
+                     WHERE state = %s
                        AND id != %s
                        AND COALESCE(is_duplicate, 0) = 0
                        {same_op_filter}
                   ORDER BY power_mw DESC NULLS LAST
-                     LIMIT 50
+                     LIMIT 200
                 """, params)
                 candidates = cur.fetchall()
                 for cand in candidates:
