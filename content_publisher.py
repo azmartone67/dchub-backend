@@ -217,6 +217,35 @@ def init_content_tables():
     except Exception as _imae:
         logger.warning("multiplatform amplifier table init skipped: %s", _imae)
 
+    # Brain feature proposer (2026-06-07): adds feedback_submissions.
+    # brain_proposal_pr_url + brain_proposal_cluster_id columns +
+    # creates brain_feature_proposal_log table. Idempotent
+    # ALTER ADD COLUMN IF NOT EXISTS + CREATE TABLE IF NOT EXISTS.
+    # Required by the twice-daily proposer cron at 15/3 UTC that pulls
+    # feedback_submissions (last 30d, MEDIUM/HIGH), clusters by theme,
+    # asks Claude for a 200-word feature spec, and opens a DRAFT PR
+    # stub for each cluster of 3+ users. Same defensive boot-init
+    # pattern — feature_submissions table already created by the
+    # feedback_forum hook earlier in this function, so this hook just
+    # extends it.
+    try:
+        from routes.brain_feature_proposer import init_feature_proposer_columns as _ifpc
+        _ifpc()
+    except Exception as _ifpe:
+        logger.warning("brain feature proposer table init skipped: %s", _ifpe)
+
+    # Brain HOURLY micro-decision loop (2026-06-07): brain_micro_decisions
+    # + brain_micro_budget_state tables. Companion to the L6 weekly
+    # strategic synthesis — runs Haiku-backed 24/day inside a daemon
+    # thread spawned from main.py. Daily $5 budget cap + context-hash
+    # dedup. Same defensive boot-init pattern.
+    try:
+        from routes.brain_micro_cycle import init_micro_tables as _imct
+        _imct()
+    except Exception as _imcte:
+        logger.warning("brain micro-cycle table init skipped: %s",
+                       _imcte)
+
 def _media_block_category(reason: str) -> str:
     r = (reason or "").lower()
     if "disclaimer" in r:                       return "ai_disclaimer_as_validation"

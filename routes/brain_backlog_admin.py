@@ -618,6 +618,12 @@ pre{background:#0a0a14;border:1px solid var(--bord);border-radius:6px;
               color:var(--muted);font-weight:600">
     PR Outcomes (R2)
   </div>
+  <div class="tab" data-tab="hourly"
+       onclick="switchTab('hourly')"
+       style="padding:10px 16px;cursor:pointer;border-bottom:2px solid transparent;
+              color:var(--muted);font-weight:600">
+    Hourly Cycle
+  </div>
 </div>
 
 <div id="tab-tactical">
@@ -641,6 +647,30 @@ pre{background:#0a0a14;border:1px solid var(--bord);border-radius:6px;
   <div class="section">
     <h2>Stuck findings (persistence worklist)</h2>
     <div id="stuck"></div>
+  </div>
+
+  <div class="section">
+    <h2>Feature Proposals from Feedback</h2>
+    <div class="meta" id="feature-proposer-meta">
+      Twice-daily (15/3 UTC) — clusters last-30d <code>/feedback</code>
+      MEDIUM/HIGH submissions by shared theme, asks Claude for a 200-word
+      feature spec per cluster of 3+ users, opens a DRAFT PR with a
+      <code>routes/_proposed_&lt;slug&gt;.py</code> stub. Hard cap 2/week.
+      Kill: <code>BRAIN_FEATURE_PROPOSER_DISABLE=1</code>. Dry-run:
+      <code>BRAIN_FEATURE_PROPOSER_DRY_RUN=1</code>.
+    </div>
+    <div class="actions">
+      <button onclick="runFeatureProposer('preview', this)">
+        Preview clusters + specs
+      </button>
+      <button onclick="runFeatureProposer('run', this)" class="warn">
+        Run proposer now
+      </button>
+      <button onclick="loadFeatureProposer()">Refresh</button>
+    </div>
+    <div id="feature-proposer-clusters"></div>
+    <h3 style="margin-top:18px">Recent proposals</h3>
+    <div id="feature-proposer-log"></div>
   </div>
 </div>
 
@@ -714,6 +744,37 @@ pre{background:#0a0a14;border:1px solid var(--bord);border-radius:6px;
       </button>
     </div>
     <div id="learnings-rows"></div>
+  </div>
+</div>
+
+<div id="tab-hourly" style="display:none">
+  <div class="section">
+    <h2>Hourly micro-decision loop · Brain HOURLY</h2>
+    <div class="actions">
+      <button onclick="runHourly('run', this)" class="warn">
+        Run cycle now
+      </button>
+      <button onclick="runHourly('preview', this)">
+        Preview context
+      </button>
+      <button onclick="loadHourly()">Refresh</button>
+    </div>
+    <div class="meta" id="hourly-meta">
+      Light Haiku-backed pass every hour (~$0.003/call) that detects
+      immediate funnel/sentinel/media anomalies, picks one micro-action
+      to schedule, and names one metric to watch next hour. Daily cap
+      <code>BRAIN_MICRO_DAILY_BUDGET_USD</code> (default $5). Context-hash
+      dedup → if nothing has changed since last hour, the Claude call is
+      skipped. Anomalies severity ≥medium are written to brain_findings
+      so the L6 synthesis can consider them.
+      Kill: <code>BRAIN_MICRO_CYCLE_DISABLE=1</code>. Dry-run:
+      <code>BRAIN_MICRO_DRY_RUN=1</code>.
+    </div>
+  </div>
+  <div class="grid" id="hourly-kpis"></div>
+  <div class="section">
+    <h2>Last 24h of decisions</h2>
+    <div id="hourly-rows"></div>
   </div>
 </div>
 
@@ -1117,7 +1178,113 @@ async function openStrategicPR(recId, btn){
         'DCHUB_BRAIN_STRATEGIC_DRAFT_PR=1 in env to open all eligible scaffold PRs at once.');
 }
 
+// ── Feature Proposer panel (2026-06-07 / task #157) ─────────────────
+
+function escFP(s){
+  return String(s||'').replace(/[&<>"']/g, c => ({
+    '&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'
+  }[c]));
+}
+
+async function loadFeatureProposer(){
+  try {
+    const [c, l] = await Promise.all([
+      fetch('/api/v1/admin/brain/feature-proposer/clusters', {headers: HDR}),
+      fetch('/api/v1/admin/brain/feature-proposer/log?limit=20', {headers: HDR}),
+    ]);
+    const cd = await c.json();
+    const ld = await l.json();
+    renderFeatureProposerClusters(cd);
+    renderFeatureProposerLog(ld);
+  } catch(e){
+    const el = $('feature-proposer-clusters');
+    if(el) el.innerHTML = `<div class="meta">Load failed: ${escFP(e)}</div>`;
+  }
+}
+
+function renderFeatureProposerClusters(d){
+  const clusters = (d && d.clusters) || [];
+  const el = $('feature-proposer-clusters');
+  if(!el) return;
+  if(!clusters.length){
+    el.innerHTML = `<div class="meta">No clusters meet threshold. ` +
+      `Rows scanned: ${d.rows_scanned||0}.</div>`;
+    return;
+  }
+  el.innerHTML = clusters.slice(0, 10).map(c => `
+    <div class="row">
+      <div class="name">${escFP(c.theme||'?')}
+        <span class="tag">${c.count||0} users</span>
+        <div class="meta">cluster ${escFP(c.cluster_id||'?')} · ` +
+        `tokens ${escFP((c.tokens||[]).join(', '))}</div>
+      </div>
+      <div class="conf">${c.count||0}</div>
+    </div>
+  `).join('');
+}
+
+function renderFeatureProposerLog(d){
+  const props = (d && d.proposals) || [];
+  const el = $('feature-proposer-log');
+  if(!el) return;
+  if(!props.length){
+    el.innerHTML = '<div class="meta">No proposals yet.</div>';
+    return;
+  }
+  el.innerHTML = props.map(p => {
+    const dry = p.dry_run ? '<span class="tag">dry</span>' : '';
+    const pr = p.pr_url
+      ? `<a href="${escFP(p.pr_url)}" target="_blank">PR #${p.pr_number||'?'}</a>`
+      : '<span class="meta">no PR</span>';
+    const fb = Array.isArray(p.feedback_ids)
+      ? p.feedback_ids.slice(0,8).map(i=>`#${i}`).join(', ')
+      : '';
+    return `<div class="row">
+      <div class="name">${escFP(p.theme||'?')} ${dry}
+        <div class="meta">${pr} · status=${escFP(p.status||'?')} · ` +
+        `created ${escFP((p.created_at||'').slice(0,16))}</div>
+        <div class="meta url">feedback: ${escFP(fb)}</div>
+      </div>
+    </div>`;
+  }).join('');
+}
+
+async function runFeatureProposer(mode, btn){
+  if(btn) btn.classList.add('disabled');
+  let path = '';
+  let method = 'GET';
+  if(mode === 'preview'){
+    path = '/api/v1/admin/brain/feature-proposer/preview';
+  } else if(mode === 'run'){
+    path = '/api/v1/admin/brain/feature-proposer/run';
+    method = 'POST';
+  }
+  try {
+    const r = await fetch(path, {method, headers: HDR});
+    const txt = await r.text();
+    $('raw').style.display = 'block';
+    $('raw').textContent = txt;
+    let d = {};
+    try { d = JSON.parse(txt); } catch(e){}
+    if(mode === 'preview'){
+      toast(`Preview: ${d.clusters_found||0} cluster(s) found · ` +
+            `rows scanned ${d.rows_scanned||0}.`);
+    } else {
+      const props = (d.proposals||[]).length;
+      const skipped = (d.skipped||[]).length;
+      toast(`Run: ${props} proposed · ${skipped} skipped · ` +
+            `dry_run=${!!d.dry_run}.`);
+    }
+  } catch(e){
+    toast(`Feature proposer error: ${escFP(e)}`);
+  } finally {
+    if(btn) btn.classList.remove('disabled');
+    setTimeout(loadFeatureProposer, 1500);
+  }
+}
+
 refresh();
+loadFeatureProposer();
 </script>
 </body></html>"""
 

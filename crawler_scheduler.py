@@ -516,6 +516,27 @@ SCHEDULE = [
     # rejects low-signal misclassifications.
     (15,  3, "brain_feature_proposer",
               "_run_brain_feature_proposer"),
+    # Sales outreach automator (2026-06-07, task #159). Twice daily 15/3
+    # UTC the cron detects HIGH-INTENT companies from dchub.cloud
+    # (newsletter signups from corp domains + state-of-2026 visitors +
+    # MCP claims + MCP upgrade signals), enriches via Hunter.io, has
+    # Claude draft a SHORT (4-sentence) founder-voice outreach email,
+    # writes drafts to sales_outreach_log with decision='dry_run'.
+    # NEVER auto-sends: operator reviews on /admin/sales-outreach and
+    # clicks Approve to actually fire Resend. Stack of safety guards:
+    #   SALES_OUTREACH_DISABLE=1       master kill switch
+    #   SALES_OUTREACH_DRY_RUN=1       DEFAULT ON; drafts only
+    #   SALES_OUTREACH_DAILY_CAP=3     hard cap (start tiny)
+    #   30-day per-domain cooldown     enforced at detect-time
+    #   SALES_OUTREACH_BLOCKLIST=...   competitor opt-out list
+    #   Tone filter + regenerate-once  no clichés make it through
+    #   Free-mail domains skipped      gmail/yahoo etc. not "companies"
+    # Slot 15/3 shares the hour with accelerator_scan (15),
+    # multiplatform_amplifier (15/3), and brain_feature_proposer (15/3);
+    # per-name last_run guard keeps them independent (prior art:
+    # feedback_triage 8/20 sharing with deals).
+    (15,  3, "sales_outreach_detect",
+              "_run_sales_outreach_detect"),
 ]
 
 # ---------------------------------------------------------------------------

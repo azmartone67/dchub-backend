@@ -1559,6 +1559,19 @@ try:
     except Exception as _fte:
         import logging
         logging.getLogger(__name__).warning('feedback_triage wiring failed: %s', _fte)
+    # Brain Feature Proposer (2026-06-07, task #157): closes the loop
+    # from /feedback to a draft PR. Twice-daily cron clusters 30d of
+    # MEDIUM/HIGH feedback by theme; Claude writes a 200-word spec for
+    # each cluster of 3+ users; opens a DRAFT PR with a routes/_proposed_
+    # <slug>.py stub. Kill switch BRAIN_FEATURE_PROPOSER_DISABLE=1,
+    # DRY-RUN BRAIN_FEATURE_PROPOSER_DRY_RUN=1, hard cap 2/week.
+    try:
+        from routes.brain_feature_proposer import brain_feature_proposer_bp
+        app.register_blueprint(brain_feature_proposer_bp)
+    except Exception as _bfpe:
+        import logging
+        logging.getLogger(__name__).warning(
+            'brain_feature_proposer wiring failed: %s', _bfpe)
     # Phase ZZZZ-brain-L123 (2026-05-18): brain layers 1-3 — PR opener,
     # LLM narrative, finding-outcome memory. Closes the "brain detects
     # but never fixes / never learns" gap the user called out.
@@ -10753,6 +10766,19 @@ def stripe_webhook():
                             send_pro_welcome_email_sendgrid(customer_email, customer_email.split("@")[0])
                         except Exception as email_err:
                             print(f"⚠️ Pro welcome email error: {email_err}")
+                        # r74 (2026-06-07): emit CRM reverse-ETL paid_conversion capture.
+                        # Fail-soft — a CRM hiccup cannot break webhook ack.
+                        try:
+                            from routes.crm_reverse_etl import capture_event as _crm_capture
+                            _crm_capture("paid_conversion", {
+                                "email": customer_email,
+                                "session_id": str(data.get("client_reference_id") or ""),
+                                "plan":   _u.get("plan"),
+                                "stripe_session": data.get("id"),
+                                "amount_usd": (data.get("amount_total") or 0) / 100,
+                            })
+                        except Exception as _crm_e:
+                            print(f"⚠️ CRM reverse-ETL capture (non-fatal): {_crm_e}")
                         # Phase FF+25-followup-r19a (2026-05-20):
                         # Auto-tag into founding_customers cohort if we're
                         # still under FOUNDING_CUSTOMERS_CAP. The first 25
@@ -29096,6 +29122,19 @@ except Exception as _morg_e:
 from routes.admin_crm_portal import admin_crm_portal_bp  # r49: owner CRM portal /admin/crm
 app.register_blueprint(admin_crm_portal_bp)
 
+# r74 (2026-06-07): CRM Reverse ETL — high-intent capture events →
+# crm_outbound_queue → optional async push to Salesforce/HubSpot.
+# Default = STUB MODE (queue-only, CSV export). Set CRM_PROVIDER + creds
+# (SALESFORCE_INSTANCE_URL+SALESFORCE_ACCESS_TOKEN or HUBSPOT_API_KEY) to
+# go live. CRM_REVERSE_ETL_DISABLE=1 is the kill switch.
+try:
+    from routes.crm_reverse_etl import crm_reverse_etl_bp
+    app.register_blueprint(crm_reverse_etl_bp)
+    print("[main] crm_reverse_etl blueprint registered", flush=True)
+except Exception as _crm_etl_e:
+    print(f"[main] crm_reverse_etl wiring failed: {_crm_etl_e}",
+          file=sys.stderr, flush=True)
+
 # Phase r33 (2026-05-24): Page integrity report — per-URL brain
 # integration + freshness + health score. Answers "is every page on
 # the site dynamic, agentic, learning, evolving?" by walking the
@@ -29284,6 +29323,27 @@ try:
     print("[main] brain_weekly_digest_bp registered: /api/v1/admin/brain/strategic-digest/{send,preview,status} (kill: DCHUB_BRAIN_DIGEST_DISABLE)", flush=True)
 except Exception as _bwd_e:
     print(f"[main] brain_weekly_digest_bp register failed: {_bwd_e}", file=sys.stderr)
+
+# Brain HOURLY micro-decision loop (2026-06-07): companion to the L6
+# weekly strategic synthesis. Light Haiku-backed pass every hour that
+# detects immediate funnel/sentinel/media anomalies, picks one micro-
+# action, and writes to brain_micro_decisions. Daily budget cap ($5),
+# context-hash dedup so identical hours skip the Claude call entirely.
+# Schedule = background daemon thread (the SCHEDULE harness is 2-slot
+# so it can't do 24/day inside the table). Kill: BRAIN_MICRO_CYCLE_DISABLE.
+try:
+    from routes.brain_micro_cycle import (
+        brain_micro_bp, start_micro_loop as _start_micro_loop,
+    )
+    app.register_blueprint(brain_micro_bp)
+    print("[main] brain_micro_bp registered: /api/v1/admin/brain/micro-cycle/{run-now,recent,preview-context,status} (kill: BRAIN_MICRO_CYCLE_DISABLE)", flush=True)
+    # Boot the hourly loop in-process (fcntl-locked → single worker only)
+    try:
+        _start_micro_loop()
+    except Exception as _bml_e:
+        print(f"[main] brain_micro_cycle start_micro_loop failed: {_bml_e}", file=sys.stderr)
+except Exception as _bmc_e:
+    print(f"[main] brain_micro_bp register failed: {_bmc_e}", file=sys.stderr)
 
 # ROUND 2 (2026-06-07): Brain auto-execute + cross-session pollination.
 # Two new blueprints close the Round-1 gap (brain STOPS at "open draft

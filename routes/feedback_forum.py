@@ -1098,10 +1098,17 @@ def admin_feedback_dashboard():
                     where_sql = " WHERE status = %s"
                     params = (flt,)
                 try:
+                    # 2026-06-07 (task #157): also SELECT
+                    # brain_proposal_pr_url so the admin row can show a
+                    # "Brain proposed solution: PR #XYZ" link. Wrapped
+                    # in COALESCE on a defensive ALTER ADD COLUMN IF NOT
+                    # EXISTS path so this stays backward-compatible
+                    # against a pre-r157 schema.
                     cur.execute(
                         "SELECT id, title, type, brain_triage_class, "
                         "       brain_confidence, brain_recommendation, "
-                        "       status, created_at "
+                        "       status, created_at, "
+                        "       COALESCE(brain_proposal_pr_url, '') "
                         "  FROM feedback_submissions"
                         + where_sql
                         + " ORDER BY created_at DESC LIMIT 50",
@@ -1117,6 +1124,7 @@ def admin_feedback_dashboard():
                             "brain_rec":      r[5],
                             "status":         r[6],
                             "created_at":     r[7],
+                            "proposal_pr":    (r[8] or "").strip(),
                         })
                 except Exception as e:
                     db_error = f"row_query_failed:{type(e).__name__}"
@@ -1170,6 +1178,23 @@ def admin_feedback_dashboard():
             conf_str = "—"
         rec = _esc((r.get("brain_rec") or "")[:200])
         rec_full = _esc(r.get("brain_rec") or "")
+        # 2026-06-07 (task #157): show the brain's proposed-PR link
+        # inline so the operator can see at a glance which feedback rows
+        # are already covered by a draft feature PR.
+        proposal_pr = (r.get("proposal_pr") or "").strip()
+        if proposal_pr:
+            pr_num_m = re.search(r"/pull/(\d+)", proposal_pr)
+            pr_label = f"PR #{pr_num_m.group(1)}" if pr_num_m else "draft PR"
+            rec_full = (
+                f"Brain proposed solution: {pr_label}\n\n" + rec_full
+                if rec_full else
+                f"Brain proposed solution: {pr_label}")
+            rec = (
+                f'<a href="{_esc(proposal_pr)}" target="_blank" '
+                f'class="proposal-pr">[{pr_label}]</a> ' + rec
+                if rec else
+                f'<a href="{_esc(proposal_pr)}" target="_blank" '
+                f'class="proposal-pr">Brain proposed solution: {pr_label}</a>')
         status = _esc(r.get("status") or "—")
         created = r.get("created_at")
         try:
