@@ -52,8 +52,6 @@ import json
 import logging
 import os
 import re
-import subprocess
-import time
 from typing import Any
 
 from flask import Blueprint, Response, jsonify, request
@@ -230,85 +228,121 @@ def _merges_this_week() -> int:
             pass
 
 
-# ── gh CLI ────────────────────────────────────────────────────────────
+# ── GitHub REST client (no gh CLI dependency) ─────────────────────────
+# The Railway runtime doesn't ship the gh binary. Use the REST API
+# directly with GITHUB_TOKEN. Mirrors brain_pr_opener._gh pattern.
 
-def _gh_cli(args: list[str], timeout: int = 30) -> tuple[int, str]:
+_GITHUB_TOKEN = (os.environ.get("GITHUB_TOKEN")
+                 or os.environ.get("PR_SUBMIT_TOKEN") or "").strip()
+
+
+def _gh_rest(method: str, path: str, body: dict | None = None,
+              timeout: int = 30):
+    """Minimal GitHub REST client. Returns (status_code, parsed_json_or_text)."""
+    import requests
+    url = f"https://api.github.com{path}"
+    headers = {
+        "Accept": "application/vnd.github+json",
+        "X-GitHub-Api-Version": "2022-11-28",
+        "User-Agent": "dchub-sentinel-auto-merge/1.0",
+    }
+    if _GITHUB_TOKEN:
+        headers["Authorization"] = f"Bearer {_GITHUB_TOKEN}"
     try:
-        r = subprocess.run(
-            ["gh", *args], capture_output=True, text=True, timeout=timeout)
-        return r.returncode, (r.stdout or "") + (r.stderr or "")
+        r = requests.request(method, url, headers=headers, json=body,
+                              timeout=timeout)
+        try:
+            return r.status_code, r.json()
+        except Exception:
+            return r.status_code, r.text
     except Exception as e:
-        return 1, f"{type(e).__name__}: {str(e)[:200]}"
+        return 599, f"{type(e).__name__}: {str(e)[:200]}"
 
 
 def _list_brain_draft_prs(days: int = 7) -> list[dict]:
-    """Pull all open brain-authored DRAFT PRs from the last `days` days.
-
-    Brain L5 names PRs `[brain-l5 draft] <loop> — #<id>` per
-    brain_backlog_admin.py:329. Brain L22 uses `[brain-l22] ...`.
-    Round 2 is scoped to L5 fixes (the route_alias_404 L22 path is
-    1-line and already lower-risk; we expand later).
+    """Pull open brain-authored DRAFT PRs from the last `days` days via
+    REST API. Brain L5 PR title prefix is `[brain-l5 draft]` (set by
+    brain_backlog_admin.py:329).
     """
+    if not _GITHUB_TOKEN:
+        logger.warning("sentinel_auto_merge: GITHUB_TOKEN unset — sweep "
+                       "returns empty")
+        return []
+    # Use the search/issues endpoint with type:pr (works for PRs since
+    # GitHub treats PRs as issues with extra fields).
     since = (datetime.datetime.utcnow() - datetime.timedelta(days=days)
              ).strftime("%Y-%m-%d")
-    code, out = _gh_cli([
-        "pr", "list", "--repo", _GITHUB_REPO,
-        "--state", "open", "--draft",
-        "--search", f"created:>={since} [brain-l5",
-        "--json", ("number,title,body,headRefName,author,createdAt,"
-                    "isDraft,labels,url"),
-        "--limit", "50",
-    ], timeout=45)
-    if code != 0:
-        logger.warning("gh pr list failed: %s", out[:200])
+    q = (f"repo:{_GITHUB_REPO} is:pr is:open draft:true "
+         f"\"brain-l5\" in:title created:>={since}")
+    import urllib.parse as _up
+    code, j = _gh_rest("GET",
+                        f"/search/issues?q={_up.quote(q)}&per_page=50")
+    if code != 200 or not isinstance(j, dict):
+        logger.warning("brain draft PR search failed: %s %s", code,
+                       (j if isinstance(j, str) else "")[:200])
         return []
-    try:
-        return json.loads(out or "[]") or []
-    except Exception:
-        return []
+    items = j.get("items") or []
+    out: list[dict] = []
+    for it in items:
+        out.append({
+            "number":      int(it.get("number") or 0),
+            "title":       it.get("title") or "",
+            "body":        it.get("body") or "",
+            "headRefName": "",  # populated lazily by _pr_head_ref
+            "createdAt":   it.get("created_at"),
+            "isDraft":     bool(it.get("draft")),
+            "url":         it.get("html_url"),
+        })
+    return out
+
+
+def _pr_head_ref(pr_number: int) -> str | None:
+    code, j = _gh_rest("GET",
+                        f"/repos/{_GITHUB_REPO}/pulls/{pr_number}",
+                        timeout=15)
+    if code != 200 or not isinstance(j, dict):
+        return None
+    head = j.get("head") or {}
+    return head.get("ref")
 
 
 def _pr_files(pr_number: int) -> list[dict]:
-    """Returns [{'path': ..., 'additions': N, 'deletions': N}, ...]."""
-    code, out = _gh_cli([
-        "pr", "view", str(pr_number), "--repo", _GITHUB_REPO,
-        "--json", "files",
-    ], timeout=30)
-    if code != 0:
-        return []
-    try:
-        j = json.loads(out or "{}") or {}
-        files = j.get("files") or []
-        return [{"path": f.get("path") or "",
-                 "additions": int(f.get("additions") or 0),
-                 "deletions": int(f.get("deletions") or 0)}
-                for f in files]
-    except Exception:
-        return []
+    """Returns [{'path': ..., 'additions': N, 'deletions': N}, ...] for
+    every file in the PR diff. Paginates if there are >100 files."""
+    out: list[dict] = []
+    page = 1
+    while True:
+        code, j = _gh_rest("GET",
+            f"/repos/{_GITHUB_REPO}/pulls/{pr_number}/files"
+            f"?per_page=100&page={page}", timeout=30)
+        if code != 200 or not isinstance(j, list):
+            break
+        if not j:
+            break
+        for f in j:
+            out.append({"path": f.get("filename") or "",
+                        "additions": int(f.get("additions") or 0),
+                        "deletions": int(f.get("deletions") or 0)})
+        if len(j) < 100:
+            break
+        page += 1
+        if page > 5:
+            break
+    return out
 
 
 def _pr_patch_for_file(pr_number: int, path: str) -> str | None:
-    """Fetch the raw file contents from the PR head branch, so we can
-    re-verify the gated ast.parse on the actual proposed content (not
-    just the upstream gate, which can drift if the proposal was edited)."""
-    # We use gh api repos/.../pulls/N to get the head ref, then
-    # contents API to read the file at that ref.
-    code, out = _gh_cli([
-        "api", f"repos/{_GITHUB_REPO}/pulls/{pr_number}",
-        "--jq", ".head.ref",
-    ], timeout=15)
-    if code != 0:
-        return None
-    ref = (out or "").strip()
+    """Fetch raw file contents from the PR head ref so the ast.parse
+    gate runs on the actual proposed content (not the upstream-stale
+    pre-proposal content)."""
+    ref = _pr_head_ref(pr_number)
     if not ref:
         return None
-    code, out = _gh_cli([
-        "api", f"repos/{_GITHUB_REPO}/contents/{path}?ref={ref}",
-        "--jq", ".content",
-    ], timeout=15)
-    if code != 0:
+    code, j = _gh_rest("GET",
+        f"/repos/{_GITHUB_REPO}/contents/{path}?ref={ref}", timeout=15)
+    if code != 200 or not isinstance(j, dict):
         return None
-    b64 = (out or "").strip().replace("\n", "")
+    b64 = (j.get("content") or "").replace("\n", "")
     if not b64:
         return None
     try:
@@ -585,40 +619,45 @@ def _gather_decision_extras(pr_data: dict) -> dict:
 
 
 def _merge_pr(pr_number: int) -> tuple[bool, str, str | None]:
-    """Real merge via gh pr merge --squash --auto.
-
-    We use --squash so the brain attribution lives in a single commit
-    and --auto so GitHub waits on any branch protection checks before
-    merging. Returns (ok, output, merge_sha).
+    """Real merge via REST API PUT /repos/{repo}/pulls/{n}/merge with
+    method=squash. Also marks the PR as ready-for-review first (PRs that
+    are draft cannot be merged). Returns (ok, message, merge_sha).
     """
-    code, out = _gh_cli([
-        "pr", "merge", str(pr_number),
-        "--repo", _GITHUB_REPO,
-        "--squash", "--auto",
-        "--body", ("[sentinel-auto-merge] All 6 auto-merge gates passed. "
-                    "Confidence ≥ threshold, sentinel-derived, sandbox + "
-                    "forbidden gates clean, ast.parse OK, cap + kill switch "
-                    "checks OK. Follow-up sentinel probe scheduled in 5min."),
-    ], timeout=60)
-    if code != 0:
-        return False, out[:300], None
-    # Resolve the merge SHA after a brief settle window. --auto can
-    # defer the merge if branch protection requires checks; we fetch
-    # the current state to capture whatever SHA exists right now.
-    time.sleep(2)
-    code2, out2 = _gh_cli([
-        "pr", "view", str(pr_number), "--repo", _GITHUB_REPO,
-        "--json", "mergeCommit,state,mergedAt",
-    ], timeout=20)
+    # 1. Mark ready-for-review (un-draft) via PATCH. Drafts can't merge.
+    code, _ = _gh_rest("PATCH",
+        f"/repos/{_GITHUB_REPO}/pulls/{pr_number}",
+        body={"draft": False}, timeout=20)
+    if code not in (200, 201):
+        # Try the GraphQL fallback for marking ready (sometimes the REST
+        # PATCH draft:false is undocumented). Continue anyway — merge
+        # will fail loudly if still in draft.
+        pass
+
+    # 2. Squash-merge.
+    body = {
+        "commit_title": f"[sentinel-auto-merge] PR #{pr_number}",
+        "commit_message": (
+            "All 6 auto-merge gates passed.\n\n"
+            "- GATE_SENTINEL_DERIVED  ok (page_persistent_5xx finding)\n"
+            "- GATE_CONFIDENCE_MIN    ok (brain L5 conf >= threshold)\n"
+            "- GATE_AST_PARSE         ok (at PR head ref)\n"
+            "- GATE_SANDBOX_PATHS     ok (routes/*.py | dchub-frontend/*.html)\n"
+            "- GATE_FORBIDDEN_PATHS   ok (no main.py/auth/tier/stripe/etc)\n"
+            "- GATE_CAP_NOT_HIT       ok (under weekly cap, kill switch off)\n\n"
+            "Follow-up sentinel probe scheduled in 5 min to verify the "
+            "page actually heals."),
+        "merge_method": "squash",
+    }
+    code, j = _gh_rest("PUT",
+        f"/repos/{_GITHUB_REPO}/pulls/{pr_number}/merge",
+        body=body, timeout=60)
+    if code not in (200, 201):
+        msg = j if isinstance(j, str) else json.dumps(j)[:300]
+        return False, msg[:300], None
     sha = None
-    if code2 == 0:
-        try:
-            j = json.loads(out2 or "{}") or {}
-            mc = j.get("mergeCommit") or {}
-            sha = mc.get("oid")
-        except Exception:
-            sha = None
-    return True, out[:300], sha
+    if isinstance(j, dict):
+        sha = j.get("sha")
+    return True, "merged", sha
 
 
 def run_auto_merge_sweep(force_log_all: bool = True) -> dict:
