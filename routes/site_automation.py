@@ -374,7 +374,7 @@ def ci_triage():
                     _ensure_tables(cur)
                     cur.execute(
                         "INSERT INTO ci_triage_log (workflow, run_url, conclusion, "
-                        "classification, action, detail) VALUES (%s,%s,%s,%s,%s,%s)",
+                        "classification, action, detail) VALUES (%s,%s,%s,%s,%s,%s) ON CONFLICT DO NOTHING",
                         (body.get("workflow"), body.get("run_url"), body.get("conclusion"),
                          cls["classification"], action, json.dumps({**body, **cls})))
                 c.close()

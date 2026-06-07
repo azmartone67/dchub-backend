@@ -495,7 +495,7 @@ def subscribe():
     _ensure_subscribers()
     with _conn() as c, c.cursor() as cur:
         cur.execute("""INSERT INTO digest_subscribers (email, source, subscribed_at)
-            VALUES (%s, 'dcpi-form', NOW())
+            VALUES (%s, 'dcpi-form', NOW() ON CONFLICT DO NOTHING)
             ON CONFLICT (email) DO UPDATE SET subscribed_at = NOW(), unsubscribed_at = NULL
             RETURNING id""", (email,))
         sid = cur.fetchone()[0]; c.commit()
@@ -517,7 +517,7 @@ def unsubscribe():
                 # tombstone if they only existed as a dev-key holder so the
                 # send-time UNION excludes them going forward.
                 cur.execute("""INSERT INTO digest_subscribers (email, source, subscribed_at, unsubscribed_at)
-                    VALUES (%s, 'unsub', NOW(), NOW())
+                    VALUES (%s, 'unsub', NOW() ON CONFLICT DO NOTHING, NOW())
                     ON CONFLICT (email) DO UPDATE SET unsubscribed_at = NOW()""", (email,))
                 c.commit()
         except Exception:
