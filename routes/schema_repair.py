@@ -853,6 +853,80 @@ SCHEMA_STATEMENTS = [
         "CREATE INDEX IF NOT EXISTS ix_mso_published ON media_style_outcomes(published_at DESC)",
         "CREATE INDEX IF NOT EXISTS ix_mso_post_urn ON media_style_outcomes(post_urn) WHERE post_urn IS NOT NULL",
     ]),
+    # AI Agent Expansion Round 1 (2026-06-07): three tables back the
+    # auto-onboarder cron, per-platform tool-description tuner, and
+    # self-registration API. See:
+    #   routes/ai_platform_onboarder.py
+    #   routes/ai_platform_tool_tuner.py
+    #   routes/agent_self_register.py
+    ("ai_platform_submissions table", [
+        """CREATE TABLE IF NOT EXISTS ai_platform_submissions (
+            id                       SERIAL PRIMARY KEY,
+            name                     TEXT NOT NULL,
+            url                      TEXT,
+            type                     TEXT,
+            contact_email            TEXT,
+            description              TEXT,
+            agent_signature          TEXT,
+            expected_volume_per_day  INTEGER,
+            fit_score                INTEGER,
+            status                   TEXT NOT NULL DEFAULT 'pending',
+            integration_card         TEXT,
+            enrichment_meta          JSONB,
+            submitted_at             TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+            processed_at             TIMESTAMPTZ,
+            approved_at              TIMESTAMPTZ,
+            approved_by              TEXT,
+            confirmation_sent_at     TIMESTAMPTZ,
+            source                   TEXT,
+            ip_address               TEXT
+        )""",
+        "CREATE INDEX IF NOT EXISTS ix_aips_status ON ai_platform_submissions(status)",
+        "CREATE INDEX IF NOT EXISTS ix_aips_submitted ON ai_platform_submissions(submitted_at DESC)",
+        "CREATE INDEX IF NOT EXISTS ix_aips_fit ON ai_platform_submissions(fit_score DESC NULLS LAST)",
+    ]),
+    ("mcp_tool_descriptions_per_platform table", [
+        """CREATE TABLE IF NOT EXISTS mcp_tool_descriptions_per_platform (
+            id           SERIAL PRIMARY KEY,
+            platform     TEXT NOT NULL,
+            tool_name    TEXT NOT NULL,
+            description  TEXT NOT NULL,
+            version      INTEGER NOT NULL DEFAULT 1,
+            generated_by TEXT,
+            updated_at   TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+            UNIQUE(platform, tool_name)
+        )""",
+        "CREATE INDEX IF NOT EXISTS ix_mtdpp_lookup ON mcp_tool_descriptions_per_platform(platform, tool_name)",
+    ]),
+    ("ai_platform_keys table", [
+        """CREATE TABLE IF NOT EXISTS ai_platform_keys (
+            id                       SERIAL PRIMARY KEY,
+            platform_id              INTEGER,
+            api_key                  TEXT NOT NULL UNIQUE,
+            issued_at                TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+            recommended_quota_daily  INTEGER NOT NULL DEFAULT 1000,
+            used_today               INTEGER NOT NULL DEFAULT 0,
+            last_used_at             TIMESTAMPTZ,
+            revoked_at               TIMESTAMPTZ
+        )""",
+        "CREATE INDEX IF NOT EXISTS ix_apk_platform ON ai_platform_keys(platform_id)",
+        "CREATE INDEX IF NOT EXISTS ix_apk_active ON ai_platform_keys(api_key) WHERE revoked_at IS NULL",
+    ]),
+    ("connected_ai_platforms table", [
+        """CREATE TABLE IF NOT EXISTS connected_ai_platforms (
+            id               SERIAL PRIMARY KEY,
+            name             TEXT NOT NULL UNIQUE,
+            url              TEXT,
+            type             TEXT,
+            integration_card TEXT,
+            fit_score        INTEGER,
+            status           TEXT NOT NULL DEFAULT 'auto_approved',
+            source           TEXT,
+            created_at       TIMESTAMPTZ NOT NULL DEFAULT NOW()
+        )""",
+        "CREATE INDEX IF NOT EXISTS ix_cap_status ON connected_ai_platforms(status)",
+        "CREATE INDEX IF NOT EXISTS ix_cap_fit ON connected_ai_platforms(fit_score DESC NULLS LAST)",
+    ]),
 ]
 
 

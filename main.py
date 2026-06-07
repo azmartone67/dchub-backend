@@ -25108,6 +25108,34 @@ except Exception as e:
 try:
     from routes.schema_repair import schema_repair_bp
     app.register_blueprint(schema_repair_bp)
+    # AI Agent Expansion Round 1 (2026-06-07): three blueprints unblock
+    # the next 20 AI platforms onto DC Hub.
+    #   1. Auto-onboarder: brain-driven enrichment of /ai-agents queue.
+    #   2. Per-platform tool description tuner: Claude/Cursor/Cline/etc
+    #      see customized MCP tool descriptions.
+    #   3. Self-registration API: public POST issues tracking key + queues.
+    # Master kill switch: AI_AGENT_EXPANSION_DISABLE=1
+    try:
+        from routes.ai_platform_onboarder import ai_platform_onboarder_bp
+        app.register_blueprint(ai_platform_onboarder_bp)
+        print("🤖 [ai_platform_onboarder] ready · POST /api/v1/admin/platforms/process · "
+              "GET /admin/ai-platforms · GET /api/v1/platforms/connected")
+    except Exception as _e_apo:
+        print(f"⚠️ [ai_platform_onboarder] blueprint failed to register: {_e_apo}")
+    try:
+        from routes.ai_platform_tool_tuner import ai_platform_tool_tuner_bp
+        app.register_blueprint(ai_platform_tool_tuner_bp)
+        print("🤖 [ai_platform_tool_tuner] ready · GET /api/v1/mcp/tool-descriptions · "
+              "POST /api/v1/admin/mcp/tool-tuner/seed")
+    except Exception as _e_aptt:
+        print(f"⚠️ [ai_platform_tool_tuner] blueprint failed to register: {_e_aptt}")
+    try:
+        from routes.agent_self_register import agent_self_register_bp
+        app.register_blueprint(agent_self_register_bp)
+        print("🤖 [agent_self_register] ready · POST /api/v1/platforms/register · "
+              "GET /api/v1/platforms/register/docs")
+    except Exception as _e_asr:
+        print(f"⚠️ [agent_self_register] blueprint failed to register: {_e_asr}")
     # 2026-06-07 — Session-bound 3-strike one-click claim. Closes the
     # 0% MCP-conversion gap on get_grid_intelligence / get_fiber_intel
     # by minting an HMAC-signed claim_token after a session crosses 3

@@ -155,6 +155,17 @@ SCHEDULE = [
     # without re-queueing. Kill switch CRM_REVERSE_ETL_DISABLE=1.
     # Same-hour-same-day cap; bounded by limit=100/run.
     ( 7, 19, "crm_outbound_flush",   "_run_crm_outbound_flush"),
+    # AI Agent Expansion onboarder (2026-06-07): every 6h-ish cron
+    # processes the ai_platform_submissions queue — enriches each row
+    # with URL reach check + scrape + cheap fit_score + (≥70) Claude
+    # integration card + (≥85) auto_approved → connected_ai_platforms.
+    # Slots 0/6/12/18 give roughly 6h cadence (the SCHEDULE harness
+    # has 2 slots per entry, so we add TWO entries to hit all four).
+    # Per-name same-hour-same-day lock prevents double-runs. Bounded
+    # at PER_RUN_CAP (default 20) rows × ~5s/row = ~100s ceiling.
+    # Master kill switch: AI_AGENT_EXPANSION_DISABLE=1.
+    ( 0, 12, "ai_platform_onboarder",   "_run_ai_platform_onboarder"),
+    ( 6, 18, "ai_platform_onboarder_b", "_run_ai_platform_onboarder"),
     # MCP-presence crawl (2026-06-05): twice-daily sweep of the ~15 MCP
     # listing sites DC Hub appears on (Smithery, MCPHive, LobeHub, Glama,
     # YellowMCP, mcp.so, PulseMCP, etc.). For each, fetch the listing
@@ -2141,6 +2152,38 @@ def _run_watchlist_weekly_digest():
         )
     except Exception as e:
         logger.error("🔔 watchlist_weekly_digest error: %s", e, exc_info=True)
+
+
+def _run_ai_platform_onboarder():
+    """AI Agent Expansion (2026-06-07): process the platform submissions
+    queue — enrich each row with URL reachability + scrape + fit score +
+    Claude-written integration card + auto-approve (≥85) + email
+    confirmation. Loopback POST so the same admin-key gate applies to
+    cron and to manual triggers. Never raises."""
+    import requests as _rq
+    key = (os.environ.get("DCHUB_ADMIN_KEY")
+           or os.environ.get("DCHUB_INTERNAL_KEY")
+           or os.environ.get("DCHUB_ADMIN_API_KEY") or "")
+    if not key:
+        logger.warning("🤖 ai_platform_onboarder: skipped — DCHUB_ADMIN_KEY not set")
+        return
+    base = os.environ.get("DCHUB_INTERNAL_API", "http://127.0.0.1:8080")
+    try:
+        r = _rq.post(
+            f"{base}/api/v1/admin/platforms/process",
+            headers={"X-Admin-Key": key,
+                     "User-Agent": "dchub-cron-ai-onboarder/1.0"},
+            timeout=180,
+        )
+        d = (r.json() if r.headers.get("content-type", "").startswith("application/json") else {}) or {}
+        logger.info(
+            "🤖 ai_platform_onboarder: processed=%s auto_approved=%s "
+            "pending_review=%s rejected=%s elapsed=%ss",
+            d.get("processed"), d.get("auto_approved"),
+            d.get("pending_review"), d.get("rejected"), d.get("elapsed_s"),
+        )
+    except Exception as e:
+        logger.error("🤖 ai_platform_onboarder: error — %s", e)
 
 
 def _run_mcp_presence_crawl():
