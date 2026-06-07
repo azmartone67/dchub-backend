@@ -443,7 +443,7 @@ def topic_performance(days: int = 30) -> list[dict]:
             # impressions=0, but n_posts counts toward the topic weight.
             try:
                 cur.execute(f"""
-                    SELECT id, content,
+                    SELECT id, content AS body,
                            0 AS impressions, 0 AS clicks,
                            0 AS likes, 0 AS comments, 0 AS shares,
                            media_topic_tags AS tags
@@ -452,7 +452,6 @@ def topic_performance(days: int = 30) -> list[dict]:
                            > NOW() - INTERVAL '{int(days)} days'
                        AND content IS NOT NULL
                        AND content <> ''
-                       AND COALESCE(publish_platform, platform, '') IN ('linkedin','twitter','bluesky','')
                 """)
                 rows.extend(cur.fetchall() or [])
             except Exception as e:
