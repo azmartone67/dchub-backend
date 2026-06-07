@@ -218,12 +218,22 @@ def _find_social_media_post_row(cur, li_id: str, content_text: str) -> dict | No
 
 def _enqueue_cross_post(cur, platform: str, content_text: str) -> bool:
     """INSERT an approved row that the existing per-platform publisher
-    loop will pick up under its 2/day cap. Returns True on success."""
+    loop will pick up under its 2/day cap. Returns True on success.
+
+    2026-06-07: stamps media_topic_tags via the topic tuner classifier so
+    the cross-posts feed the topic engagement loop too. Tags inherit from
+    the original LinkedIn content (since we cross-post the same body)."""
     try:
+        import json as _j
+        try:
+            from routes.media_topic_tuner import tags_for_content as _t4c
+            tags = _t4c(content_text)
+        except Exception:
+            tags = []
         cur.execute("""
-            INSERT INTO social_media_posts (content, platform, status, created_at, approved_at)
-            VALUES (%s, %s, 'approved', NOW(), NOW()::text)
-        """, (content_text, platform))
+            INSERT INTO social_media_posts (content, platform, status, created_at, approved_at, media_topic_tags)
+            VALUES (%s, %s, 'approved', NOW(), NOW()::text, %s::jsonb)
+        """, (content_text, platform, _j.dumps(tags)))
         return True
     except Exception as e:
         _log(f"enqueue_{platform}_failed: {e}")

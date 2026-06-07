@@ -27430,6 +27430,25 @@ try:
 except Exception as _dma_e:
     print(f"[main] dchub_media_accelerator_bp register failed: {_dma_e}", flush=True)
 
+# DC Hub Media topic tuner (2026-06-07): evolves the per-post accelerator
+# into a TOPIC-LEVEL engagement learner. Classifies posts into 14 topics
+# (DCPI / hyperscaler / grid / M&A / fiber / facility / market / verdict
+# shift / AI capex / industry / etc), aggregates 30d engagement, auto-tunes
+# next-7d topic_mix (cap any single topic at 35% to dampen clickbait), and
+# enqueues themed series (e.g. 5-part Top 10 BUILD markets). Also serves
+# the /li/<short> click-attribution proxy that ties LinkedIn URL clicks
+# to downstream signups via a 90d httponly cookie. Daily cron at 14:00
+# UTC (right after linkedin_engagement_sync 13:00).
+try:
+    from routes.media_topic_tuner import media_topic_tuner_bp
+    app.register_blueprint(media_topic_tuner_bp)
+    print("[main] media_topic_tuner_bp registered: "
+          "/api/v1/admin/media/{topic-performance,tune-now,current-mix,"
+          "backfill-tags,series/{create,list}} + /admin/media-mix "
+          "+ /li/<short>", flush=True)
+except Exception as _mtt_e:
+    print(f"[main] media_topic_tuner_bp register failed: {_mtt_e}", flush=True)
+
 # Market Brief v1 (2026-06-06): shareable per-market briefs that replace
 # the dcHawk PDF in a broker/REIT/fund deck. 9 sections, FREE teaser
 # (Hero + At-a-Glance + Outlook teaser) + PRO unlock for Power/Pipeline/

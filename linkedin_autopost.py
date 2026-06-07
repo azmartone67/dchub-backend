@@ -331,14 +331,24 @@ def create_article_post(text, article_url, access_token=None):
 
 
 def log_post(post_type, text, article_url, result):
-    """Log a published post to PostgreSQL."""
+    """Log a published post to PostgreSQL.
+
+    2026-06-07: also stamp media_topic_tags via the topic tuner classifier
+    so the engagement aggregator can read tags directly without a backfill
+    pass. Fail-soft — if the tuner isn't importable yet, write an empty
+    array and let the daily backfill cron paint it later."""
     try:
+        try:
+            from routes.media_topic_tuner import tags_for_content as _t4c
+            tags = _t4c(text)
+        except Exception:
+            tags = []
         conn = get_pg_connection()
         cur = conn.cursor()
         status = 'published' if result.get('status_code') == 201 else 'failed'
         cur.execute('''
-            INSERT INTO linkedin_posts (post_id, post_type, content_text, article_url, status, published_at, linkedin_response)
-            VALUES (%s, %s, %s, %s, %s, %s, %s)
+            INSERT INTO linkedin_posts (post_id, post_type, content_text, article_url, status, published_at, linkedin_response, media_topic_tags)
+            VALUES (%s, %s, %s, %s, %s, %s, %s, %s::jsonb)
         ''', (
             result.get('post_id', ''),
             post_type,
@@ -346,7 +356,8 @@ def log_post(post_type, text, article_url, result):
             article_url,
             status,
             datetime.utcnow() if status == 'published' else None,
-            json.dumps(result)
+            json.dumps(result),
+            json.dumps(tags),
         ))
         conn.commit()
         cur.close()

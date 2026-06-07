@@ -1422,6 +1422,50 @@ def _run_accelerator_scan():
         logger.error("📣 accelerator_scan: error — %s", e)
 
 
+def _run_media_topic_tune():
+    """DC Hub Media topic tuner (2026-06-07): backfill missing topic tags,
+    aggregate 30d engagement, write next-7d topic_mix.
+
+    Order of operations matters: backfill FIRST so topic_performance
+    sees freshly-tagged posts in the same run; tune-now SECOND so the
+    mix reflects the freshly-tagged engagement. Both are admin-keyed
+    loopback POSTs so the same auth gate applies to cron and to manual
+    triggers. Never raises."""
+    import requests as _rq
+    key = (os.environ.get("DCHUB_ADMIN_KEY")
+           or os.environ.get("DCHUB_INTERNAL_KEY")
+           or os.environ.get("DCHUB_ADMIN_API_KEY") or "")
+    if not key:
+        logger.warning("📣 media_topic_tune: skipped — DCHUB_ADMIN_KEY not set")
+        return
+    base = os.environ.get("DCHUB_INTERNAL_API", "http://127.0.0.1:8080")
+    headers = {"X-Admin-Key": key,
+               "User-Agent": "dchub-cron-media-topic-tuner/1.0"}
+    try:
+        bf = _rq.post(f"{base}/api/v1/admin/media/backfill-tags?limit=1000",
+                      headers=headers, timeout=60)
+        bfd = bf.json() if bf.headers.get("content-type", "").startswith("application/json") else {}
+    except Exception as e:
+        bfd = {}
+        logger.warning("📣 media_topic_tune: backfill error — %s", e)
+    try:
+        tn = _rq.post(f"{base}/api/v1/admin/media/tune-now",
+                      headers=headers, timeout=60)
+        tnd = tn.json() if tn.headers.get("content-type", "").startswith("application/json") else {}
+    except Exception as e:
+        tnd = {}
+        logger.warning("📣 media_topic_tune: tune-now error — %s", e)
+    mix = tnd.get("mix", []) or []
+    top = mix[0]["topic"] if mix else "n/a"
+    logger.info(
+        "📣 media_topic_tune: backfill smp=%s li=%s · "
+        "tune wrote=%s top=%s mix=%s",
+        bfd.get("social_media_posts_tagged"),
+        bfd.get("linkedin_posts_tagged"),
+        tnd.get("wrote"), top, len(mix),
+    )
+
+
 def _run_verdict_shift_post():
     """DCPI Verdict-Shift auto-press (2026-06-06): once-daily scan for
     markets whose DCPI verdict TODAY differs from the verdict 7 days
@@ -2015,6 +2059,7 @@ _RUNNERS = {
     "tool_calibration":    _run_tool_calibration_check,
     "linkedin_engagement_sync": _run_linkedin_engagement_sync,
     "accelerator_scan":    _run_accelerator_scan,
+    "media_topic_tune":    _run_media_topic_tune,
     "mcp_presence_crawl":  _run_mcp_presence_crawl,
     "mcp_registry_discover": _run_mcp_registry_discover,
     "mcp_presence_auto_fix": _run_mcp_presence_auto_fix,
