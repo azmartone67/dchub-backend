@@ -242,9 +242,10 @@ def find_alternatives():
                            latitude, longitude, power_mw, status
                       FROM discovered_facilities
                      WHERE CAST(id AS TEXT) = %s
+                        OR LOWER(slug) = LOWER(%s)
                         OR TRIM(BOTH '-' FROM REGEXP_REPLACE(LOWER(name), '[^a-z0-9]+', '-', 'g')) = LOWER(%s)
                      LIMIT 1
-                """, (str(facility_id), str(facility_id)))
+                """, (str(facility_id), str(facility_id), str(facility_id)))
                 target = cur.fetchone()
 
                 if not target:
@@ -409,9 +410,10 @@ def score_facility():
                            source, source_url, confidence_score
                       FROM discovered_facilities
                      WHERE CAST(id AS TEXT) = %s
+                        OR LOWER(slug) = LOWER(%s)
                         OR TRIM(BOTH '-' FROM REGEXP_REPLACE(LOWER(name), '[^a-z0-9]+', '-', 'g')) = LOWER(%s)
                      LIMIT 1
-                """, (str(facility_id), str(facility_id)))
+                """, (str(facility_id), str(facility_id), str(facility_id)))
                 f = cur.fetchone()
 
                 if not f:
