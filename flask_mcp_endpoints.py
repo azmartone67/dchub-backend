@@ -3,7 +3,6 @@ DC Hub — Flask MCP key validation + telemetry + dev-signup + dashboard endpoin
 ─────────────────────────────────────────────────────────────────────────────
 Drop into the Railway Flask backend. In main.py:
     from flask_mcp_endpoints import mcp_bp
-from internal_auth import accepted_internal_keys
     app.register_blueprint(mcp_bp)
 
 Endpoints (all under mcp_bp):
@@ -28,6 +27,14 @@ import secrets
 from contextlib import contextmanager
 from datetime import datetime, timezone
 from functools import wraps
+
+# 2026-06-07 fix: this import used to live INSIDE the docstring above
+# (between two `    `-indented lines) so it was never actually executed.
+# Every call to _require_internal raised NameError → 500 with body
+# `{"error": "name 'accepted_internal_keys' is not defined"}`. That's why
+# every PAID_ONLY MCP tool call resolved current_tier="free" — server.mjs
+# called /api/v1/keys/validate, got a 500, cached the failure as "free".
+from internal_auth import accepted_internal_keys
 
 # Compat: prefer psycopg (v3), fall back to psycopg2 if Railway only has the older one
 try:
