@@ -710,12 +710,65 @@ def claim_submit(token: str):
         return Response(body, status=400, mimetype="text/html")
     sid = payload["session_id"]
     tool = payload["tool"]
+    kind = payload.get("kind") or KIND_MCP_SESSION
 
     email = (request.form.get("email") or "").strip().lower()
     if not email or not _EMAIL_RE.match(email):
-        body = _render_form(tool, 3, err="Please enter a valid email address.")
+        if kind == KIND_STATE_OF_2026_VISITOR:
+            body = _render_state_form(0, 0, err="Please enter a valid email address.")
+        else:
+            body = _render_form(tool, 3, err="Please enter a valid email address.")
         return Response(body, status=400, mimetype="text/html")
 
+    # ── kind = state_of_2026_visitor → delegate to state_visitor_claim ──
+    # We POST to /api/v1/state-of-2026/claim-email internally (sharing the
+    # mint + email path) so the form-style + JSON-style entrypoints can't
+    # drift apart. The state module already de-dupes on visitor_session_id.
+    if kind == KIND_STATE_OF_2026_VISITOR:
+        try:
+            from routes.state_visitor_claim import (
+                _mint_trial_key_for_email,
+                _send_state_of_2026_welcome_email,
+            )
+        except Exception as e:
+            logger.warning("[claim_submit] state_visitor_claim import failed: %s", e)
+            body = _render_state_form(0, 0,
+                err="Internal error — try again in a minute.")
+            return Response(body, status=500, mimetype="text/html")
+        c2 = _conn()
+        if c2 is None:
+            body = _render_state_form(0, 0,
+                err="Database temporarily unavailable. Try again in a minute.")
+            return Response(body, status=503, mimetype="text/html")
+        try:
+            api_key, mint_err = _mint_trial_key_for_email(email, c2, request)
+            ok_send, send_detail = _send_state_of_2026_welcome_email(email, api_key)
+            # Persist on state_visitor_intent.
+            try:
+                with c2.cursor() as cur:
+                    cur.execute(
+                        """UPDATE state_visitor_intent SET
+                               claim_token = COALESCE(claim_token, %s),
+                               claim_minted_at = COALESCE(claim_minted_at, NOW()),
+                               claim_used_at = NOW(),
+                               email = %s,
+                               minted_api_key = %s,
+                               hi_threshold_hit_at = COALESCE(hi_threshold_hit_at, NOW()),
+                               last_event_at = NOW()
+                             WHERE visitor_session_id = %s""",
+                        (token, email, api_key, sid),
+                    )
+            except Exception as e:
+                logger.warning("[claim_submit] state persist failed: %s", e)
+            logger.info("[claim_submit] state_of_2026 minted email=%s key=%s send=%s mint_err=%s",
+                        email, (api_key or "")[:20] + "...", ok_send, mint_err)
+            return Response(_render_state_success(email, api_key),
+                            status=200, mimetype="text/html")
+        finally:
+            try: c2.close()
+            except Exception: pass
+
+    # ── kind = mcp_session → original MCP path ──
     c = _conn()
     if c is None:
         body = _render_form(tool, 3, err="Database temporarily unavailable. Try again in a minute.")

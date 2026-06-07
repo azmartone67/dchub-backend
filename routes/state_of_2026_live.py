@@ -1307,6 +1307,27 @@ def state_of_2026_pulse():
             try: c.close()
             except Exception: pass
 
+    # Round 2 (2026-06-07): pull the visitor-funnel KPIs (high-intent →
+    # email → key → activated → paid) from routes/state_visitor_claim so
+    # the dashboard shows the conversion mechanic, not just raw clicks.
+    funnel = {}
+    try:
+        from routes.state_visitor_claim import state_visitor_claim_bp as _svc_bp  # noqa: F401
+        # Use the test_request_context so we share auth + config rather
+        # than running an HTTP loopback (which would 401 without the key).
+        with state_of_2026_live_bp.test_request_context(
+            f"/api/v1/state-of-2026/funnel?days={days}",
+            headers={"X-Admin-Key": _ADMIN_KEY}):
+            from routes.state_visitor_claim import visitor_funnel as _vf
+            f_resp = _vf()
+        try:
+            funnel = json.loads(f_resp.get_data(as_text=True))
+        except Exception:
+            funnel = {}
+    except Exception as e:
+        logger.debug("visitor funnel fetch failed: %s", e)
+        funnel = {}
+
     # Render
     pv = att.get("page_views", 0)
     uv = att.get("unique_visitors", 0)
@@ -1314,6 +1335,17 @@ def state_of_2026_pulse():
     sub = att.get("subscribes", 0)
     mcp = att.get("mcp_keys_attributed")
     mcp_disp = "n/a" if mcp is None else str(mcp)
+
+    # Visitor funnel KPIs
+    f_visitors  = int(funnel.get("visitors", 0))
+    f_li        = int(funnel.get("linkedin_attributed", 0))
+    f_hi        = int(funnel.get("high_intent_threshold_hit", 0))
+    f_emails    = int(funnel.get("emails_submitted", 0))
+    f_active    = int(funnel.get("keys_activated", 0))
+    f_paid      = int(funnel.get("paid", 0))
+    f_hi_pct    = funnel.get("high_intent_pct", 0.0)
+    f_email_pct = funnel.get("email_submit_pct", 0.0)
+    f_paid_pct  = funnel.get("paid_pct", 0.0)
 
     clicks_rows = "".join(
         f'<tr><td><code>/r/{_esc(c["token"])}</code></td>'
@@ -1376,6 +1408,42 @@ def state_of_2026_pulse():
   <div class=kpi><div class=kpi-label>LinkedIn referrals</div><div class=kpi-value>{li:,}</div></div>
   <div class=kpi><div class=kpi-label>Email subscribes</div><div class=kpi-value>{sub:,}</div></div>
   <div class=kpi><div class=kpi-label>MCP keys attributed</div><div class=kpi-value>{mcp_disp}</div></div>
+</div>
+
+<div class=panel>
+  <h2>Visitor Funnel (Round 2: page → trial key → paid)</h2>
+  <p class=muted>The conversion mechanic: page-side JS tracks time + brief
+    clicks; threshold (2 clicks OR 60s) opens the email modal; submission
+    mints a dch_trial_ key + emails it. Source:
+    <code>state_visitor_intent</code> ·
+    <a href="/api/v1/state-of-2026/funnel?days={days}&admin_key={admin_q}">JSON</a></p>
+  <div class=kpi-grid style="margin-top:12px">
+    <div class=kpi>
+      <div class=kpi-label>Visitors (tracked)</div>
+      <div class=kpi-value>{f_visitors:,}</div>
+      <div class=muted style="font-size:11px;margin-top:4px">{f_li:,} from LinkedIn</div>
+    </div>
+    <div class=kpi>
+      <div class=kpi-label>High-intent (≥2 clicks OR 60s)</div>
+      <div class=kpi-value>{f_hi:,}</div>
+      <div class=muted style="font-size:11px;margin-top:4px">{f_hi_pct}% of visitors</div>
+    </div>
+    <div class=kpi>
+      <div class=kpi-label>Emails submitted</div>
+      <div class=kpi-value>{f_emails:,}</div>
+      <div class=muted style="font-size:11px;margin-top:4px">{f_email_pct}% of visitors</div>
+    </div>
+    <div class=kpi>
+      <div class=kpi-label>Keys activated</div>
+      <div class=kpi-value>{f_active:,}</div>
+      <div class=muted style="font-size:11px;margin-top:4px">first MCP call after mint</div>
+    </div>
+    <div class=kpi>
+      <div class=kpi-label>Paid conversions</div>
+      <div class=kpi-value>{f_paid:,}</div>
+      <div class=muted style="font-size:11px;margin-top:4px">{f_paid_pct}% of emails</div>
+    </div>
+  </div>
 </div>
 
 <div class=panel>
