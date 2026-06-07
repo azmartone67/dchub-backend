@@ -318,6 +318,20 @@ SCHEDULE = [
     # handle_subscription_deleted on Stripe's webhook, not here. Kill
     # switch: DCHUB_DEMOTE_DRY_RUN=1 forces dry-run on every caller.
     ( 3,  3, "expired_onetime_demote", "_run_expired_onetime_demote"),
+    # Founding-customer welcome sweep (2026-06-07, task #165): hourly
+    # backstop for the brain autopilot's founding_customer_not_welcomed
+    # pattern. The autopilot path fires _action_founding_welcome_rescue
+    # but spent 16 days rate_limited (50 sightings, never executed) —
+    # founding customer azmartone@gmail.com (tagged 2026-06-01) was
+    # NEVER welcomed until this fix despite the endpoint + Resend both
+    # working. This cron POSTs /api/v1/admin/founding-customers/send-
+    # welcome for any founding_customers row where contact_status IN
+    # ('new','auto-tagged') AND tagged_at < NOW() - INTERVAL '1 hour'.
+    # Idempotent (the welcome path stamps contact_status='welcomed' so a
+    # re-run is a no-op). Same-hour pair → one run/UTC day from each
+    # slot; 9/9 chosen because it's empty between 08:00 and 10:00. Kill
+    # switch: DCHUB_FOUNDING_WELCOME_DISABLE=1.
+    ( 9,  9, "founding_customer_welcome", "_run_founding_customer_welcome"),
     # Half-price annual campaign outcome poller (2026-06-06): daily summary
     # email to operator (azmartone@gmail.com) at 19:00 UTC = ~24h after the
     # campaign fired at 18:42 UTC on 2026-06-06. Joins campaign_log →
@@ -2389,6 +2403,105 @@ def _run_expired_onetime_demote():
         )
     except Exception as e:
         logger.error("💀 expired_onetime_demote error: %s", e, exc_info=True)
+
+
+def _run_founding_customer_welcome():
+    """Founding-customer welcome sweep (2026-06-07, task #165): hourly
+    backstop for the brain autopilot's founding_customer_not_welcomed
+    pattern. The autopilot was rate_limited 50× across 16 days while
+    azmartone@gmail.com (founding customer #2, tagged 2026-06-01) sat
+    at contact_status='auto-tagged' the entire time.
+
+    This cron decouples the welcome path from the autopilot rate-limit
+    so the email gets sent through a deterministic non-autopilot route.
+    Scans founding_customers WHERE contact_status IN ('new','auto-tagged')
+    AND tagged_at < NOW() - INTERVAL '1 hour' and POSTs
+    /api/v1/admin/founding-customers/send-welcome for each. The welcome
+    endpoint stamps contact_status='welcomed' so a re-run is a no-op.
+
+    Kill switch: DCHUB_FOUNDING_WELCOME_DISABLE=1.
+    Dry-run: DCHUB_FOUNDING_WELCOME_DRY_RUN=1 logs intended welcomes
+    without firing. Defensive everywhere — module-level try/except so a
+    Resend hiccup never crashes the scheduler thread."""
+    import os
+    if os.environ.get("DCHUB_FOUNDING_WELCOME_DISABLE", "").strip() in ("1", "true", "yes"):
+        logger.info("📬 founding_customer_welcome: kill switch active, skipping")
+        return
+    dry = os.environ.get("DCHUB_FOUNDING_WELCOME_DRY_RUN", "").strip() in ("1", "true", "yes")
+    try:
+        from routes.founding_customers import (
+            send_founding_welcome_email, _get_db, _ensure_table,
+        )
+    except Exception as e:
+        logger.error("📬 founding_customer_welcome: import failed: %s", e)
+        return
+    pending = []
+    try:
+        _ensure_table()
+        conn = _get_db()
+        if conn is None:
+            logger.warning("📬 founding_customer_welcome: no DB")
+            return
+        try:
+            with conn.cursor() as cur:
+                cur.execute(
+                    "SELECT email, plan_at_tag, tagged_at "
+                    "  FROM founding_customers "
+                    " WHERE COALESCE(contact_status, 'new') "
+                    "       IN ('new', 'auto-tagged') "
+                    "   AND tagged_at < NOW() - INTERVAL '1 hour' "
+                    " ORDER BY tagged_at ASC LIMIT 25"
+                )
+                pending = list(cur.fetchall() or [])
+        finally:
+            try: conn.close()
+            except Exception: pass
+    except Exception as e:
+        logger.error("📬 founding_customer_welcome: SELECT failed: %s", e)
+        return
+    if not pending:
+        logger.info("📬 founding_customer_welcome: nothing pending (0 rows)")
+        return
+    sent = 0
+    failed = 0
+    for r in pending:
+        email = (r[0] or "").strip()
+        plan = r[1] or "developer"
+        if not email:
+            continue
+        if dry:
+            logger.info("📬 founding_customer_welcome[DRY]: would welcome %s", email)
+            continue
+        # Position = rank in cohort by tagged_at ASC.
+        position = 1
+        try:
+            conn = _get_db()
+            if conn is not None:
+                with conn.cursor() as cur:
+                    cur.execute(
+                        "SELECT COUNT(*) FROM founding_customers "
+                        " WHERE tagged_at <= ("
+                        "   SELECT tagged_at FROM founding_customers WHERE email = %s"
+                        " )", (email,))
+                    position = int((cur.fetchone() or [1])[0] or 1)
+                conn.close()
+        except Exception:
+            pass
+        ok = False
+        try:
+            ok = bool(send_founding_welcome_email(
+                email=email, position=position, plan=plan))
+        except Exception as e:
+            logger.error("📬 founding_customer_welcome: send failed for %s: %s",
+                         email, e)
+        if ok:
+            sent += 1
+        else:
+            failed += 1
+    logger.info(
+        "📬 founding_customer_welcome: pending=%s sent=%s failed=%s dry=%s",
+        len(pending), sent, failed, dry,
+    )
 
 
 def _run_brain_feature_proposer():

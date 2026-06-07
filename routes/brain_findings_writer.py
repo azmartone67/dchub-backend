@@ -100,6 +100,76 @@ def _ensure_schema(cur, force: bool = False) -> None:
     _schema["ensured"] = True
 
 
+# ── Runaway-finding guard (phase r70+obsolete-prune, 2026-06-07) ──────
+# Any (issue, url) tuple that crosses RUNAWAY_THRESHOLD sightings without
+# transitioning to status='resolved' or 'wont_fix' is suppressed from
+# future scans by registering it in brain_pattern_quarantine. This
+# prevents the recurring whack-a-mole where a single stuck finding
+# floods the worklist for weeks (founding_customer_not_welcomed was
+# rate-limited 50× without ever clearing; operator_directive synthesised
+# a fake 10,200 seen_count from a priority boost on an obsolete entry).
+#
+# The guard is fail-soft + audited: a savepoint wraps every probe, the
+# quarantine row carries a clear reason, and the standard 24h auto-release
+# in brain_autopilot._quarantined_patterns() still applies — so a runaway
+# pattern that becomes real again will retry on its own.
+RUNAWAY_SEEN_THRESHOLD = 200
+RUNAWAY_QUARANTINE_PREFIX = "runaway_finding:"
+
+
+def _maybe_quarantine_runaway(cur, issue: str, url: str,
+                              seen_count_after: int,
+                              status: str = "open") -> bool:
+    """If (issue,url) crossed RUNAWAY_SEEN_THRESHOLD without resolving,
+    register it in brain_pattern_quarantine so the autopilot bench list
+    suppresses it. Returns True if it ADDED a new quarantine row this
+    call. Idempotent — repeated calls are no-ops once registered.
+
+    A finding marked resolved/wont_fix is exempt — only runaway 'open'
+    findings get suppressed. The autopilot's existing 24h auto-release
+    naturally retries patterns whose root cause may have changed."""
+    if not issue or seen_count_after < RUNAWAY_SEEN_THRESHOLD:
+        return False
+    if status in ("resolved", "wont_fix", "dismissed"):
+        return False
+    pattern_name = (f"{RUNAWAY_QUARANTINE_PREFIX}{issue}"[:240]
+                    + (f"|{url[:60]}" if url else ""))[:240]
+    if not _savepoint(cur, "bfw_runaway"):
+        return False
+    try:
+        cur.execute(
+            "CREATE TABLE IF NOT EXISTS brain_pattern_quarantine ("
+            "  pattern_name TEXT PRIMARY KEY,"
+            "  fail_count INT NOT NULL DEFAULT 0,"
+            "  quarantined_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),"
+            "  released_at TIMESTAMPTZ,"
+            "  last_reason TEXT)")
+        cur.execute(
+            "INSERT INTO brain_pattern_quarantine "
+            "(pattern_name, fail_count, last_reason) "
+            "VALUES (%s, %s, %s) "
+            "ON CONFLICT (pattern_name) DO NOTHING",
+            (pattern_name, int(seen_count_after),
+             f"runaway: {seen_count_after} sightings without resolution "
+             f"(threshold={RUNAWAY_SEEN_THRESHOLD}); auto-release in 24h "
+             f"via brain_autopilot._quarantined_patterns. issue={issue} "
+             f"url={url[:120]}"),
+        )
+        added = bool(cur.rowcount)
+        _release_sp(cur, "bfw_runaway")
+        if added:
+            logger.warning(
+                "brain_findings_writer: quarantined runaway finding "
+                "issue=%s url=%s seen_count=%s",
+                issue[:80], url[:120], seen_count_after)
+        return added
+    except Exception as e:
+        _rollback_sp(cur, "bfw_runaway")
+        logger.warning("brain_findings_writer: runaway quarantine probe "
+                       "failed: %s", e)
+        return False
+
+
 def upsert_brain_finding(cur, issue: str, url: str = "", count: int = 1,
                          detail: str = "", detector: str = None,
                          status: str = "open") -> str:
@@ -109,6 +179,13 @@ def upsert_brain_finding(cur, issue: str, url: str = "", count: int = 1,
     op is savepoint-wrapped so the caller's transaction survives. Trust
     this return value (it reflects the real DB outcome), not an external
     counter.
+
+    Side effect (phase r70+obsolete-prune): when a recurrence crosses
+    RUNAWAY_SEEN_THRESHOLD without status transitioning to resolved /
+    wont_fix, the (issue,url) gets auto-registered in
+    brain_pattern_quarantine so the autopilot bench-list suppresses it
+    for the standard 24h auto-release window. Prevents the recurring
+    "finding flagged 10,200×" pathology.
 
     Usage in any writer:
         from routes.brain_findings_writer import upsert_brain_finding
@@ -142,12 +219,30 @@ def upsert_brain_finding(cur, issue: str, url: str = "", count: int = 1,
             params.append(status)
         params += [issue, url]
         try:
+            # RETURNING lets the runaway guard see the post-update
+            # seen_count + live status without a second round trip.
+            ret_cols = []
+            if has_sc:
+                ret_cols.append("seen_count")
+            if "status" in cols:
+                ret_cols.append("status")
+            ret_clause = (" RETURNING " + ", ".join(ret_cols)) if ret_cols else ""
             cur.execute(
                 f"UPDATE brain_findings SET {', '.join(set_parts)} "
-                f"WHERE issue = %s AND url = %s", params)
+                f"WHERE issue = %s AND url = %s{ret_clause}", params)
             rc = cur.rowcount
+            row = cur.fetchone() if ret_cols and rc else None
             _release_sp(cur, "bfw_upd")
             if rc and rc > 0:
+                if row and ret_cols:
+                    seen_after = int(row[0]) if has_sc else 0
+                    status_after = (row[1] if "status" in cols and len(row) > 1
+                                    else status)
+                    try:
+                        _maybe_quarantine_runaway(
+                            cur, issue, url, seen_after, status_after or status)
+                    except Exception:
+                        pass
                 return "updated"
         except Exception:
             _rollback_sp(cur, "bfw_upd")
