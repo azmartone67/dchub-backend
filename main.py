@@ -17494,6 +17494,16 @@ def daily_cron():
                     _img_attached = bool(_meta.get("image_attached"))
                     if _ok and _img_attached:
                         daily_cron._last_digest_date = _today_key  # mark success → block same-day dup
+                        # 2026-06-07: INSTANT IndexNow ping for the freshly-published
+                        # digest (Bing/Yandex index in minutes). Gated on confirmed
+                        # publish; fail-soft so it never affects the digest result.
+                        try:
+                            from routes.indexnow import submit_to_indexnow
+                            submit_to_indexnow([digest_url,
+                                                'https://dchub.cloud/news',
+                                                'https://dchub.cloud/'])
+                        except Exception as _idxn_e:
+                            logger.warning(f"[daily_cron] IndexNow ping failed: {_idxn_e}")
                         results['linkedin'] = {
                             'success': True,
                             'post_id': str(_meta.get('post_urn') or _meta.get('urn') or '')[:100],

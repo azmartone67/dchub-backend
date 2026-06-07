@@ -175,12 +175,26 @@ def _build_briefing() -> dict:
         needs_you.append({"what": f"review {len(drafts)} L22 auto-drafted fixes "
                                   f"(newest: {drafts[0].get('title') or drafts[0].get('recipe')})",
                           "count": len(drafts)})
+    # SEO indexing (IndexNow → Bing/Yandex). Read the in-process last-submit
+    # status directly so the founder can SEE pings flowing without opening Bing
+    # Webmaster Tools. No network call — _LAST is updated on every submit.
+    try:
+        from routes.indexnow import _LAST as _in_last, KEY_LOCATION as _in_loc
+        seo_indexing = {
+            "last_submit_at": _in_last.get("at"),
+            "last_submitted_count": _in_last.get("submitted"),
+            "last_status": _in_last.get("status"),
+            "key_location": _in_loc,
+        }
+    except Exception:
+        seo_indexing = {}
     health = "unknown" if not audit_ok else ("attention" if (flagged or needs_you) else "all-green")
     return {
         "audit_loaded": audit_ok,
         "shipped_7d": shipped,
         "flagged": flagged,
         "needs_your_call": needs_you,
+        "seo_indexing": seo_indexing,
         "health": health,
     }
 
@@ -202,6 +216,7 @@ def briefing_html():
         return "".join(f'<li>{(i.get("summary") or i.get("what") or i.get("dim") or "")}</li>'
                        for i in items)
     sh = b.get("shipped_7d", {})
+    si = b.get("seo_indexing", {})
     health = b.get("health")
     hcolor = "#22c55e" if health == "all-green" else "#f59e0b"
     html = f"""<!doctype html><html lang="en"><head><meta charset="utf-8">
@@ -227,6 +242,11 @@ ul{{margin:0;padding-left:18px}} li{{margin:5px 0}}
   <div><b>{sh.get('mcp_calls_24h','—')}</b><span>MCP calls/24h</span></div>
   <div><b>{sh.get('ai_agents_7d','—')}</b><span>AI agents/7d</span></div>
   <div><b>{sh.get('dcpi_markets','—')}</b><span>DCPI markets</span></div>
+</div></div>
+<div class="card"><h2>Search indexing · IndexNow → Bing/Yandex</h2><div class="stats">
+  <div><b>{si.get('last_submitted_count','—')}</b><span>URLs · last submit</span></div>
+  <div><b>{si.get('last_status','—')}</b><span>last status (202=ok)</span></div>
+  <div><b style="font-size:14px">{(si.get('last_submit_at') or '—')[:16]}</b><span>last ping (UTC)</span></div>
 </div></div>
 <div class="card"><h2>Flagged · the brain wants attention</h2>
   <ul>{_rows(b.get('flagged'), 'Nothing flagged — all audit dims green.')}</ul></div>
@@ -257,6 +277,11 @@ def briefing_send():
     lines += [f"  • {f.get('summary')}" for f in (b.get("flagged") or [])] or ["  (none)"]
     lines += ["", "NEEDS YOUR CALL:"]
     lines += [f"  • {n.get('what')}" for n in (b.get("needs_your_call") or [])] or ["  (none)"]
+    _si = b.get("seo_indexing") or {}
+    if _si.get("last_submit_at"):
+        lines += ["", "SEARCH INDEXING (IndexNow → Bing/Yandex):",
+                  f"  • last ping {(_si.get('last_submit_at') or '')[:16]} UTC · "
+                  f"{_si.get('last_submitted_count','?')} URLs · status {_si.get('last_status','?')}"]
     lines += ["", "Full view: https://dchub-backend-production.up.railway.app/briefing"]
     text = "\n".join(lines)
 

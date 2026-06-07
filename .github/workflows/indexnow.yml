@@ -18,12 +18,16 @@ jobs:
     runs-on: ubuntu-latest
     timeout-minutes: 5
     steps:
-      - name: Submit recent URLs to IndexNow
+      - name: Submit newest facilities + recent URLs to IndexNow
         run: |
-          code=$(curl -sS -m 45 -X POST \
+          # facilities=1 → newest /facilities/<slug> by id desc (the main new-content
+          # stream; sitemap lastmod is uniform so 'recent' alone can't surface them).
+          # recent=1 → recent sitemap URLs as a belt-and-suspenders net for news/press
+          # (those also get an INSTANT in-process ping at publish time).
+          code=$(curl -sS -m 60 -X POST \
             -H "X-Admin-Key: ${{ secrets.DCHUB_ADMIN_KEY }}" \
             -o body.json -w "%{http_code}" \
-            "https://api.dchub.cloud/api/v1/admin/indexnow?recent=1&n=500" || echo 000)
+            "https://api.dchub.cloud/api/v1/admin/indexnow?facilities=1&recent=1&n=2000" || echo 000)
           echo "HTTP $code"; cat body.json || true
           # Only fail on a server error; a no-op/empty is fine.
           [ "$code" -ge 500 ] 2>/dev/null && exit 1 || exit 0

@@ -1378,6 +1378,16 @@ def _write_release(rel: dict, signals: dict, topic: str) -> tuple[int | None, st
         # the transaction will roll back.
         c.commit()
 
+        # 2026-06-07: INSTANT IndexNow ping — Bing/Yandex index the new release in
+        # minutes instead of crawl-days. Failure-isolated like every distribution
+        # step below; the press release already committed above.
+        try:
+            from routes.indexnow import submit_to_indexnow
+            submit_to_indexnow([f"https://dchub.cloud/news/{rel['slug']}",
+                                "https://dchub.cloud/news"])
+        except Exception as _idxn_err:
+            print(f"[marketing_engine] IndexNow ping failed: {_idxn_err}", file=sys.stderr)
+
         # Phase FF+3 (2026-05-13): distribution layer. Each new press
         # release fans out to:
         #   1. social_media_posts (LinkedIn row, status='approved') —

@@ -15,6 +15,7 @@ submit_to_indexnow(urls) is exported for in-process hooks (e.g. ping on press
 publish). Only https://dchub.cloud/* URLs are accepted (IndexNow rejects off-host).
 """
 import datetime
+import hashlib
 import json
 import os
 import re
@@ -86,24 +87,104 @@ def _sitemap_recent(n=500):
     return [u for u, _ in pairs[:max(1, n)]]
 
 
+def _slugify(text):
+    """URL-safe slug — identical to main.py serve_sitemap_xml().slugify so the
+    facility URLs we ping MATCH the canonical /facilities/<slug> in sitemap.xml."""
+    if not text:
+        return ""
+    s = str(text).lower().strip()
+    s = re.sub(r"[^a-z0-9\s-]", "", s)
+    s = re.sub(r"[\s-]+", "-", s)
+    return s.strip("-")
+
+
+def _recent_facility_urls(n=2000):
+    """Canonical /facilities/<slug> URLs for the NEWEST facilities.
+
+    The sitemap stamps a uniform lastmod (every URL = today), so 'recent by
+    lastmod' can't surface new content. discovered_facilities.id is a serial PK,
+    so ORDER BY id DESC = most-recently-discovered. The slug is built EXACTLY like
+    main.py's sitemap (provider-slug + name-slug + md5(id)[:8]) so each URL is a
+    strict subset of the canonical sitemap. Read-only, fail-soft → []."""
+    db = (os.environ.get("DATABASE_URL")
+          or os.environ.get("NEON_DATABASE_URL") or "")
+    if not db:
+        return []
+    try:
+        import psycopg2  # lazy — avoid hard dep at import time
+        conn = psycopg2.connect(db, connect_timeout=10)
+    except Exception:
+        return []
+    urls, seen = [], set()
+    try:
+        with conn.cursor() as cur:
+            cur.execute(
+                """
+                SELECT name, provider, id FROM discovered_facilities
+                 WHERE name IS NOT NULL AND name != ''
+                 ORDER BY id DESC
+                 LIMIT %s
+                """, (max(1, min(int(n), 10000)),))
+            for name, provider, fac_id in cur.fetchall():
+                name_slug = _slugify(name)
+                if not name_slug or len(name_slug) < 3:
+                    continue
+                provider_slug = _slugify(provider)
+                hash_source = str(fac_id) if fac_id else f"{provider or ''}{name or ''}"
+                short_hash = hashlib.md5(hash_source.encode()).hexdigest()[:8]
+                full = (f"{provider_slug}-{name_slug}-{short_hash}"
+                        if provider_slug else f"{name_slug}-{short_hash}")
+                if full in seen:
+                    continue
+                seen.add(full)
+                urls.append(f"https://{HOST}/facilities/{full}")
+    except Exception:
+        urls = []
+    finally:
+        try:
+            conn.close()
+        except Exception:
+            pass
+    return urls
+
+
+def _wants(name):
+    return bool(request.args.get(name)
+                or (request.get_json(silent=True) or {}).get(name))
+
+
 @indexnow_bp.route("/api/v1/admin/indexnow", methods=["GET", "POST"])
 def indexnow_endpoint():
-    # Public read: config + last status (no submit).
-    if request.method == "GET" and not request.args.get("recent"):
+    _submit_modes = ("recent", "facilities", "new_facilities")
+    # Public read: config + last status (no submit, no mode).
+    if request.method == "GET" and not any(request.args.get(m) for m in _submit_modes):
         return jsonify(ok=True, host=HOST, key_location=KEY_LOCATION,
                        configured=bool(_ADMIN_KEY), last=_LAST)
-    # Any submit (POST, or GET/POST ?recent) is admin-gated.
-    if not _admin_ok():
+    dry = bool(_wants("dry_run"))
+    is_admin = _admin_ok()
+    # A real submit is admin-gated. A dry_run PREVIEW is public but capped — it
+    # only returns URLs that are already in the public sitemap, never pings.
+    if not is_admin and not dry:
         return jsonify(ok=False, error="admin key required"), 401
     body = request.get_json(silent=True) or {}
-    if request.args.get("recent") or body.get("recent"):
-        try:
-            n = int(request.args.get("n", body.get("n", 500)))
-        except Exception:
-            n = 500
-        urls = _sitemap_recent(n)
-    else:
-        urls = body.get("urls") or []
+    try:
+        n = int(request.args.get("n", body.get("n", 0)) or 0)
+    except Exception:
+        n = 0
+    if dry and not is_admin:
+        n = min(n or 25, 50)  # cap public preview (DB-backed) to avoid abuse
+    urls = list(body.get("urls") or [])
+    # Newest facilities (canonical /facilities/<slug>, by id desc) — the main
+    # new-content stream that has no in-process publish hook.
+    if _wants("facilities") or _wants("new_facilities"):
+        urls += _recent_facility_urls(n or 2000)
+    # Recent sitemap URLs (news/press/static) as a belt-and-suspenders net.
+    if _wants("recent"):
+        urls += _sitemap_recent(n or 500)
+    if dry:
+        seen = [u for u in dict.fromkeys(urls)
+                if isinstance(u, str) and u.startswith(f"https://{HOST}")]
+        return jsonify(ok=True, dry_run=True, count=len(seen), sample=seen[:25])
     return jsonify(submit_to_indexnow(urls))
 
 
