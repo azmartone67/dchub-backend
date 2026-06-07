@@ -513,6 +513,39 @@ SCHEMA_STATEMENTS = [
         "ALTER TABLE connect_landing_views ADD COLUMN IF NOT EXISTS stripe_clicked_plan TEXT",
         "CREATE INDEX IF NOT EXISTS ix_connect_lv_clicked ON connect_landing_views(stripe_clicked_at) WHERE stripe_clicked_at IS NOT NULL",
     ]),
+    ("brain_strategic_recommendations table", [
+        # Brain Layer-6 Strategic Synthesis (2026-06-06): weekly Claude-
+        # backed pass that reads funnel + page health + competitor signal +
+        # customer feedback + stuck-issue queue, then writes 3-7 strategic
+        # recommendations for the human to review. Each row maps 1:1 to one
+        # bullet in the Monday digest email. Status starts 'new'; flips to
+        # 'pr_drafted' when brain_strategic_planner opens the scaffold PR;
+        # 'shipped' is operator-set after merge. The strategy_payload column
+        # holds the full Claude response so we can re-render the digest
+        # without re-paying the API call.
+        """CREATE TABLE IF NOT EXISTS brain_strategic_recommendations (
+            id                BIGSERIAL PRIMARY KEY,
+            run_id            TEXT NOT NULL,
+            week_of           DATE NOT NULL,
+            kind              TEXT NOT NULL,
+            title             TEXT NOT NULL,
+            spec_md           TEXT,
+            file_scaffold     TEXT,
+            dollar_lift_est   NUMERIC,
+            confidence        NUMERIC,
+            evidence_keys     TEXT,
+            pr_url            TEXT,
+            pr_number         INTEGER,
+            status            TEXT NOT NULL DEFAULT 'new',
+            strategy_payload  JSONB,
+            created_at        TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+            updated_at        TIMESTAMPTZ NOT NULL DEFAULT NOW()
+        )""",
+        "CREATE INDEX IF NOT EXISTS ix_bsr_week_of ON brain_strategic_recommendations(week_of DESC)",
+        "CREATE INDEX IF NOT EXISTS ix_bsr_run_id ON brain_strategic_recommendations(run_id)",
+        "CREATE INDEX IF NOT EXISTS ix_bsr_kind ON brain_strategic_recommendations(kind)",
+        "CREATE INDEX IF NOT EXISTS ix_bsr_status ON brain_strategic_recommendations(status)",
+    ]),
 ]
 
 

@@ -565,26 +565,77 @@ pre{background:#0a0a14;border:1px solid var(--bord);border-radius:6px;
 
 <div class="grid" id="kpis"></div>
 
-<div class="section">
-  <h2>Actions</h2>
-  <div class="actions">
-    <button onclick="run('preview')">Preview draft PRs</button>
-    <button onclick="run('open', this)" class="warn">
-      Open up to N draft PRs now
-    </button>
-    <button onclick="refresh()">Refresh</button>
+<div class="tabs" style="display:flex;gap:4px;margin-bottom:16px;
+     border-bottom:1px solid var(--bord)">
+  <div class="tab active" data-tab="tactical"
+       onclick="switchTab('tactical')"
+       style="padding:10px 16px;cursor:pointer;border-bottom:2px solid var(--ind);
+              color:var(--fg);font-weight:600">
+    Tactical (L5 backlog)
   </div>
-  <div class="meta" id="cfg-meta"></div>
+  <div class="tab" data-tab="strategic"
+       onclick="switchTab('strategic')"
+       style="padding:10px 16px;cursor:pointer;border-bottom:2px solid transparent;
+              color:var(--muted);font-weight:600">
+    Strategic (L6 weekly)
+  </div>
 </div>
 
-<div class="section">
-  <h2>L5 proposed code fixes — high-conf, no PR yet</h2>
-  <div id="proposals"></div>
+<div id="tab-tactical">
+  <div class="section">
+    <h2>Actions</h2>
+    <div class="actions">
+      <button onclick="run('preview')">Preview draft PRs</button>
+      <button onclick="run('open', this)" class="warn">
+        Open up to N draft PRs now
+      </button>
+      <button onclick="refresh()">Refresh</button>
+    </div>
+    <div class="meta" id="cfg-meta"></div>
+  </div>
+
+  <div class="section">
+    <h2>L5 proposed code fixes — high-conf, no PR yet</h2>
+    <div id="proposals"></div>
+  </div>
+
+  <div class="section">
+    <h2>Stuck findings (persistence worklist)</h2>
+    <div id="stuck"></div>
+  </div>
 </div>
 
-<div class="section">
-  <h2>Stuck findings (persistence worklist)</h2>
-  <div id="stuck"></div>
+<div id="tab-strategic" style="display:none">
+  <div class="section">
+    <h2>Strategic synthesis · Brain Layer-6</h2>
+    <div class="actions">
+      <button onclick="runStrategic('preview', this)">Preview prompt</button>
+      <button onclick="runStrategic('synth', this)" class="warn">
+        Run synthesis now
+      </button>
+      <button onclick="runStrategic('digest', this)" class="warn">
+        Send weekly digest now
+      </button>
+      <button onclick="loadStrategic()">Refresh</button>
+    </div>
+    <div class="meta" id="strategic-meta">
+      Weekly Claude-backed pass that reads funnel + page health + customer
+      asks + brain backlog + competitor signal + self-model, then proposes
+      3 strategic gaps + 3 competitor lacks + 3 funnel optimizations + 1
+      wildcard bet. Runs Mondays 08:00 UTC; digest email at 08:30 UTC.
+      Kill: <code>DCHUB_BRAIN_STRATEGIC_DISABLE=1</code>. Scaffold PRs:
+      <code>DCHUB_BRAIN_STRATEGIC_DRAFT_PR=1</code>.
+    </div>
+  </div>
+  <div class="section">
+    <h2>This week's recommendations</h2>
+    <div id="strategic-week-meta" class="meta"></div>
+    <div id="strategic-recs"></div>
+  </div>
+  <div class="section">
+    <h2>Trend lines · funnel snapshot</h2>
+    <div id="strategic-trends"></div>
+  </div>
 </div>
 
 <pre id="raw" style="display:none"></pre>
@@ -692,6 +743,151 @@ async function run(mode, btn){
     }
   } catch(e){ toast('Response not JSON — check raw output below.'); }
   setTimeout(refresh, 1200);
+}
+
+// ── Strategic tab (Brain Layer-6) ─────────────────────────────────
+
+function switchTab(name){
+  document.querySelectorAll('.tab').forEach(t=>{
+    const active = t.dataset.tab === name;
+    t.style.borderBottomColor = active ? 'var(--ind)' : 'transparent';
+    t.style.color = active ? 'var(--fg)' : 'var(--muted)';
+  });
+  document.getElementById('tab-tactical').style.display =
+    (name==='tactical') ? '' : 'none';
+  document.getElementById('tab-strategic').style.display =
+    (name==='strategic') ? '' : 'none';
+  if(name==='strategic') loadStrategic();
+}
+
+function escapeHtml(s){
+  return String(s||'').replace(/[&<>"']/g, c=>({
+    '&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'
+  })[c]);
+}
+
+async function loadStrategic(){
+  try {
+    const r = await fetch('/api/v1/brain/strategic-synthesis/latest');
+    const d = await r.json();
+    renderStrategic(d);
+  } catch(e){
+    $('strategic-recs').innerHTML =
+      `<div class="meta">Load error: ${escapeHtml(e.message)}</div>`;
+  }
+  // Trends — load funnel snapshot
+  try {
+    const f = await fetch('/api/v1/mcp/funnel');
+    if (f.ok) {
+      const fd = await f.json();
+      const totals = fd.totals || fd.summary || {};
+      const items = Object.entries(totals).slice(0, 8)
+        .map(([k,v]) => `<div class="row">
+          <div class="name">${escapeHtml(k)}</div>
+          <div class="seen">${typeof v==='number' ?
+            v.toLocaleString() : escapeHtml(String(v))}</div>
+        </div>`).join('');
+      $('strategic-trends').innerHTML = items ||
+        '<div class="meta">No funnel totals available.</div>';
+    }
+  } catch(e){}
+}
+
+function renderStrategic(d){
+  if(!d || !d.ok){
+    $('strategic-recs').innerHTML =
+      '<div class="meta">No strategic data yet. Hit Run synthesis above.</div>';
+    return;
+  }
+  $('strategic-week-meta').innerHTML =
+    `Week of <b>${escapeHtml(d.week_of||'?')}</b> · ` +
+    `<b>${d.rec_count||0}</b> recommendation(s)`;
+  const recs = (d.recommendations || []).filter(r=>r.kind!=='synthesis_meta');
+  if(!recs.length){
+    $('strategic-recs').innerHTML = '<div class="meta">No recommendations yet.</div>';
+    return;
+  }
+  const KIND_LABEL = {
+    'strategic_gap_4w':    '🎯 Strategic gap (4w)',
+    'competitor_lack':     '⚔ Competitor lack',
+    'funnel_optimization': '📈 Funnel optimization',
+    'wildcard_bet':        '🎲 Wildcard bet',
+  };
+  $('strategic-recs').innerHTML = recs.map(r=>{
+    const dollar = (r.dollar_lift != null) ?
+      `<span class="tag" style="color:#22c55e">+$${Math.round(r.dollar_lift).toLocaleString()}/yr est.</span>` : '';
+    const conf = (r.confidence != null) ?
+      `<span class="tag">${(r.confidence*100|0)}% conf</span>` : '';
+    const pr = r.pr_url ?
+      `<div style="margin-top:6px"><a href="${escapeHtml(r.pr_url)}"
+        target="_blank" style="color:var(--ind)">→ Draft PR ready</a></div>` :
+      `<div style="margin-top:6px">
+        <button onclick="openStrategicPR(${r.id}, this)"
+          style="font-size:12px;padding:6px 10px">
+          Open draft scaffold PR</button></div>`;
+    const evid = (r.evidence_keys||[]).length ?
+      `<div class="meta" style="margin-top:6px">Evidence: ` +
+        r.evidence_keys.map(e=>`<code>${escapeHtml(e)}</code>`).join(', ') +
+        `</div>` : '';
+    return `<div class="row" style="display:block;padding:14px 12px">
+      <div style="margin-bottom:6px">
+        <span class="tag">${escapeHtml(KIND_LABEL[r.kind] || r.kind)}</span>
+        ${dollar} ${conf}
+      </div>
+      <div class="name" style="font-weight:600;font-size:14px">
+        ${escapeHtml(r.title||'?')}
+      </div>
+      <div class="meta" style="margin-top:6px;white-space:pre-wrap">
+        ${escapeHtml((r.spec_md||'').slice(0, 600))}
+      </div>
+      ${evid}
+      ${pr}
+    </div>`;
+  }).join('');
+}
+
+async function runStrategic(mode, btn){
+  if(btn) btn.classList.add('disabled');
+  let path, method;
+  if(mode==='preview'){
+    path = '/api/v1/admin/brain/strategic-synthesis/preview'; method='GET';
+  } else if(mode==='synth'){
+    path = '/api/v1/admin/brain/strategic-synthesis/run?force=1'; method='POST';
+  } else if(mode==='digest'){
+    path = '/api/v1/admin/brain/strategic-digest/send?force=1'; method='POST';
+  }
+  try {
+    const r = await fetch(path, {method, headers: HDR});
+    const txt = await r.text();
+    $('raw').style.display = 'block';
+    $('raw').textContent = txt;
+    try {
+      const d = JSON.parse(txt);
+      if(mode==='preview'){
+        toast(`Prompt ready: ${d.prompt_chars||0} chars (~${d.prompt_tokens_est||0} tokens).`);
+      } else if(mode==='synth'){
+        toast(`Synthesis: ${d.rec_count||0} recs, ${d.prs_opened||0} PRs, ` +
+              `model=${d.model_used||'?'}, cost~$${d.estimated_cost_usd||0}.`);
+      } else {
+        if(d.skipped){
+          toast(`Digest: ${d.skipped}.`);
+        } else {
+          toast(`Digest: sent=${(d.sent||[]).length}, failed=${(d.failed||[]).length}, ` +
+                `dry_run=${d.dry_run||false}.`);
+        }
+      }
+    } catch(e){ toast('Response not JSON — check raw output below.'); }
+  } finally {
+    if(btn) btn.classList.remove('disabled');
+    setTimeout(loadStrategic, 1500);
+  }
+}
+
+async function openStrategicPR(recId, btn){
+  // For now, the operator route is "re-run synthesis with PRs on"; per-rec
+  // PR opener requires a finer-grained endpoint we have not exposed yet.
+  toast('Per-rec PR opener: TODO. Use Run synthesis with ' +
+        'DCHUB_BRAIN_STRATEGIC_DRAFT_PR=1 in env to open all eligible scaffold PRs at once.');
 }
 
 refresh();

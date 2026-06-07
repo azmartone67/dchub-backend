@@ -267,6 +267,35 @@ SCHEDULE = [
     # convert or (b) 14 days elapse from fire date. Same-hour pair → one
     # run/UTC day. Kill switch: CAMPAIGN_OUTCOME_POLLER_DISABLE=1.
     (19, 19, "campaign_outcome_poll", "_run_campaign_outcome_poll"),
+    # Brain L6 Strategic Synthesis (2026-06-06): once-weekly Claude-backed
+    # synthesis of funnel + page-health + customer asks + brain backlog +
+    # competitor signal + self-model into 3 strategic gaps, 3 competitor
+    # lacks, 3 funnel optimizations, and 1 wildcard bet. Self-gates to
+    # Mondays inside the runner (the SCHEDULE harness is hour-based, not
+    # weekly — same pattern as watchlist_weekly_digest and
+    # mcp_registry_discover). Idempotent per ISO week (re-renders from
+    # cached rows if same week_of_iso re-fires). Slot 8/8 UTC chosen for:
+    # (a) it's an empty hour (only feedback_triage 8/20 + hyperscaler_
+    # brief_warm 8/20 share the hour, both have per-name last_run guards,
+    # so they don't collide), (b) gives the morning operator a fresh
+    # strategic digest in their 9 AM Eastern inbox. Same-hour-same-day
+    # cap → one run per UTC day; weekday gate → one run per week. Cost
+    # ~$1/run (Opus 4.8 reasoning tier with sonnet fallback), see the
+    # _estimate_cost helper in brain_strategic_planner. Kill switch:
+    # DCHUB_BRAIN_STRATEGIC_DISABLE=1. Opt-in scaffold-PR opener:
+    # DCHUB_BRAIN_STRATEGIC_DRAFT_PR=1 (caps at 5 draft PRs/week).
+    ( 8,  8, "brain_strategic_synthesis", "_run_brain_strategic_synthesis"),
+    # Brain L6 Strategic Digest (2026-06-06): fires 30 min after the
+    # synthesis at 08:30 UTC Mondays. Renders this week's recommendations
+    # into a 1-page HTML email and ships via Resend (DCHUB_RESEND_API_KEY).
+    # Default recipient = azmartone@gmail.com (override via
+    # DCHUB_BRAIN_DIGEST_TO). Self-gates to Mondays. Idempotent: same
+    # week_of_iso skips silently (UNIQUE index on brain_digest_log).
+    # Slot 8/8 UTC same-hour pair → one run per UTC day; the synthesis
+    # at 08:00 lands first, the digest at 08:30 reads the rows. Kill
+    # switch: DCHUB_BRAIN_DIGEST_DISABLE=1. Dry-run: DCHUB_BRAIN_DIGEST
+    # _DRY_RUN=1 (renders to log table, no Resend call).
+    ( 8,  8, "brain_strategic_digest",    "_run_brain_strategic_digest"),
 ]
 
 # ---------------------------------------------------------------------------
@@ -1782,6 +1811,76 @@ def _run_renewal_nudge_onetime():
         logger.error("📅 renewal_nudge_onetime: error — %s", e)
 
 
+def _run_brain_strategic_synthesis():
+    """Brain L6 Strategic Synthesis (2026-06-06). Once per WEEK (Mondays
+    only) — self-gates here because the SCHEDULE harness is hour-based.
+    Pulls funnel + page-health + customer feedback + brain backlog +
+    competitor signal + self-model; calls Claude (Opus 4.8 reasoning
+    tier with sonnet fallback); writes recommendations to
+    brain_strategic_recommendations; optionally opens scaffold draft PRs
+    when DCHUB_BRAIN_STRATEGIC_DRAFT_PR=1. Defensive — never raises.
+    Kill switch: DCHUB_BRAIN_STRATEGIC_DISABLE=1. Cost ~$1/run. Mirrors
+    the weekly-gate pattern used by mcp_registry_discover +
+    watchlist_weekly_digest."""
+    try:
+        now = datetime.now(timezone.utc)
+        if now.weekday() != 0:  # 0 == Monday
+            logger.info(
+                "🧠 brain_strategic_synthesis: skipped — weekly gate "
+                "(today=%s, runs Mondays only)",
+                now.strftime("%A"))
+            return
+        from routes.brain_strategic_planner import (
+            run_strategic_synthesis as _run,
+        )
+        result = _run(force=False) or {}
+        logger.info(
+            "🧠 brain_strategic_synthesis: rec_count=%s prs_opened=%s "
+            "model=%s cost_usd=%s from_cache=%s",
+            result.get("rec_count"),
+            result.get("prs_opened"),
+            result.get("model_used"),
+            result.get("estimated_cost_usd"),
+            result.get("from_cache"),
+        )
+    except Exception as e:
+        logger.error(
+            "🧠 brain_strategic_synthesis error: %s", e, exc_info=True)
+
+
+def _run_brain_strategic_digest():
+    """Brain L6 Strategic Digest email (2026-06-06). Once per WEEK
+    (Mondays only) — fires 30 min after the synthesis. Renders this
+    week's recommendations into HTML + plaintext and ships via Resend.
+    Idempotent per week_of (UNIQUE index on brain_digest_log). Kill
+    switch: DCHUB_BRAIN_DIGEST_DISABLE=1. Dry-run: DCHUB_BRAIN_DIGEST_
+    DRY_RUN=1. Defensive — never raises."""
+    try:
+        now = datetime.now(timezone.utc)
+        if now.weekday() != 0:
+            logger.info(
+                "📨 brain_strategic_digest: skipped — weekly gate "
+                "(today=%s, runs Mondays only)",
+                now.strftime("%A"))
+            return
+        from routes.brain_weekly_digest import (
+            send_weekly_digest as _send,
+        )
+        result = _send(force=False) or {}
+        logger.info(
+            "📨 brain_strategic_digest: ok=%s subject=%s sent=%s "
+            "failed=%s dry_run=%s",
+            result.get("ok"),
+            (result.get("subject") or "?")[:80],
+            len(result.get("sent", []) or []),
+            len(result.get("failed", []) or []),
+            result.get("dry_run"),
+        )
+    except Exception as e:
+        logger.error(
+            "📨 brain_strategic_digest error: %s", e, exc_info=True)
+
+
 _RUNNERS = {
     "market_refresh":      _run_market_refresh,
     "news":                _run_news_crawler,
@@ -1814,6 +1913,8 @@ _RUNNERS = {
     "hyperscaler_brief_warm":   _run_hyperscaler_brief_warm,
     "renewal_nudge_onetime":    _run_renewal_nudge_onetime,
     "campaign_outcome_poll":    _run_campaign_outcome_poll,
+    "brain_strategic_synthesis": _run_brain_strategic_synthesis,
+    "brain_strategic_digest":    _run_brain_strategic_digest,
 }
 
 

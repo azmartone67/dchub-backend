@@ -28858,6 +28858,28 @@ try:
 except Exception as _e:
     print(f"[main] iso_queue_ingest_bp register failed: {_e}", file=sys.stderr)
 
+# r-strategic (2026-06-06): Brain Layer-6 Strategic Synthesis. Weekly
+# Claude-backed pass that reads funnel + page-health + customer asks +
+# brain backlog + competitor signal + self-model, then writes 3 strategic
+# gaps + 3 competitor lacks + 3 funnel optimizations + 1 wildcard bet to
+# brain_strategic_recommendations and (when DCHUB_BRAIN_STRATEGIC_DRAFT_PR
+# =1) opens up to 5 scaffold draft PRs/week. Companion brain_weekly_digest
+# ships the Monday HTML email. Both blueprints fail-safe (kill switches:
+# DCHUB_BRAIN_STRATEGIC_DISABLE / DCHUB_BRAIN_DIGEST_DISABLE). See the
+# module docstrings for cost (~$1/run) + safety contract.
+try:
+    from routes.brain_strategic_planner import brain_strategic_bp
+    app.register_blueprint(brain_strategic_bp)
+    print("[main] brain_strategic_bp registered: /api/v1/brain/strategic-synthesis/* + admin /run /preview /status (kill: DCHUB_BRAIN_STRATEGIC_DISABLE)", flush=True)
+except Exception as _bs_e:
+    print(f"[main] brain_strategic_bp register failed: {_bs_e}", file=sys.stderr)
+try:
+    from routes.brain_weekly_digest import brain_weekly_digest_bp
+    app.register_blueprint(brain_weekly_digest_bp)
+    print("[main] brain_weekly_digest_bp registered: /api/v1/admin/brain/strategic-digest/{send,preview,status} (kill: DCHUB_BRAIN_DIGEST_DISABLE)", flush=True)
+except Exception as _bwd_e:
+    print(f"[main] brain_weekly_digest_bp register failed: {_bwd_e}", file=sys.stderr)
+
 # === Brain v2 · Layer 3 freshness fields ===
 try:
     from flask import jsonify as _bv2_jsonify

@@ -176,6 +176,12 @@ HYPERSCALER_COVERAGE_FLOORS = {
     "min_capex_for_per_mw":   100_000_000, # don't compute $/MW under this
     "min_mw_for_show":        100.0,       # hide row entirely below this
     "min_capex_for_show":     100_000_000, # AND below this
+    # SANITY CEILING — anything above this is almost certainly a deal
+    # mis-tag (largest real hyperscaler annual capex is ~$80B/yr). Above
+    # the ceiling the brief shows "Coverage expanding" so we never publish
+    # a fake $1.5T number. Aggressive — refine when the deals.type column
+    # is clean enough to drop the gate.
+    "max_capex_sanity":       500_000_000_000,  # $500B
 }
 
 # Industry-cited published MW baselines (operational + announced) — used
@@ -515,7 +521,9 @@ def _section_hero(cur, slug: str, meta: dict) -> dict:
         if r:
             out["deal_count"]          = _as_int(r[0])
             out["valued_deal_count"]   = _as_int(r[1])
-            out["invested_capital"]    = _as_float(r[2]) if (r[1] or 0) > 0 else None
+            # Sanity-clamp: > $500B for a single hyperscaler is mis-tag.
+            raw_capex = _as_float(r[2]) if (r[1] or 0) > 0 else None
+            out["invested_capital"]    = _sanity_clamp_capex(raw_capex)
             out["invested_capital_display"] = _fmt_money(out["invested_capital"])
     except Exception:
         # Fallback (type column may not exist): just exclude self-seller rows.
@@ -537,7 +545,8 @@ def _section_hero(cur, slug: str, meta: dict) -> dict:
             if r:
                 out["deal_count"]          = _as_int(r[0])
                 out["valued_deal_count"]   = _as_int(r[1])
-                out["invested_capital"]    = _as_float(r[2]) if (r[1] or 0) > 0 else None
+                raw_capex = _as_float(r[2]) if (r[1] or 0) > 0 else None
+                out["invested_capital"]    = _sanity_clamp_capex(raw_capex)
                 out["invested_capital_display"] = _fmt_money(out["invested_capital"])
         except Exception:
             pass
@@ -990,7 +999,23 @@ def _per_mw_or_none(spend: float | None, mw: float | None) -> float | None:
         return None
     if spend < f["min_capex_for_per_mw"]:
         return None
+    # Sanity ceiling — see HYPERSCALER_COVERAGE_FLOORS comment.
+    if spend > f["max_capex_sanity"]:
+        return None
     return spend / mw
+
+
+def _sanity_clamp_capex(spend: float | None) -> float | None:
+    """Clamp a capex value to None if it exceeds the sanity ceiling.
+    Anything > $500B for a single hyperscaler is almost certainly a
+    type-mis-tagged equity round or cloud contract that slipped through
+    the WHERE filter — we show 'Coverage expanding' rather than publish
+    a $1.5T number that would embarrass the brand."""
+    if spend is None:
+        return None
+    if spend > HYPERSCALER_COVERAGE_FLOORS["max_capex_sanity"]:
+        return None
+    return spend
 
 
 def _section_capital_velocity(cur, meta: dict, hero: dict) -> dict:
@@ -1084,6 +1109,8 @@ def _section_capital_velocity(cur, meta: dict, hero: dict) -> dict:
             peer_mw = _as_float(r[0]) if r else None
         except Exception:
             pass
+        # Sanity-clamp the peer capex — > $500B is type-mis-tagged noise.
+        peer_invested = _sanity_clamp_capex(peer_invested)
         per_mw_p = _per_mw_or_none(peer_invested, peer_mw)
         quality  = _coverage_quality(peer_invested, peer_mw)
         # Coverage-expanding rows: hide from the comparison table; they
