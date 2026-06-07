@@ -1083,12 +1083,198 @@ def claim_variant_conversion():
         except Exception: pass
 
 
+# ── GET /api/v1/admin/mcp/high-intent/step-drop ───────────────────────
+# 2026-06-07: step-by-step drop-off monitor so the brain can scream the
+# instant the claim funnel breaks again. Reports a 7-step waterfall:
+#
+#   1. claims_minted   — claim URLs sent (token generated, X-DC-Claim-URL
+#                        emitted to the AI agent in the paywall response)
+#   2. page_viewed     — human actually opened /claim/<token>
+#                        (proxy: claim_used_at IS NOT NULL, OR a tracked
+#                        page_view event on this row — we use the former
+#                        as a strict superset; a click without submit isn't
+#                        currently tracked but the gap matters most when
+#                        the page itself is broken which IS visible from
+#                        the should_mint_rate / used delta)
+#   3. email_submitted — POST /claim/<token> with a valid email
+#                        (proxy: claim_email IS NOT NULL on this row)
+#   4. key_issued      — auto_trial.mint_trial_for_request returned a key
+#                        (proxy: minted_api_key IS NOT NULL on this row)
+#   5. first_api_call  — that key actually made an API call after issuance
+#                        (joined to mcp_call_log.api_key or auto_trial_keys.last_used_at)
+#   6. upgrade_click   — the human hit a Stripe checkout link from a
+#                        paywall surfaced AFTER the trial issuance
+#                        (proxy: mcp_upgrade_signals.stripe_clicked_at
+#                        for the same email within 14 days)
+#   7. paid            — joined to users.plan != 'free' (same email window)
+#
+# The drop_pct field on each row tells the brain WHERE the funnel is
+# bleeding. If step 1→2 is the killer (the 19/0/0 we just fixed) this
+# would have been a 100% drop alarm on the very first day.
+#
+# All windows: ?days=N (default 30, max 365). Admin-keyed.
+
+@mcp_high_intent_claim_bp.route(
+    "/api/v1/admin/mcp/high-intent/step-drop", methods=["GET"])
+def high_intent_step_drop():
+    """Step-by-step drop-off monitor. The single page the brain checks
+    every 15 min to scream the instant the claim funnel breaks.
+
+    Returns:
+      {ok, window_days, steps: [{step, label, count, drop_pct, drop_from_prev},
+                                ...],
+       overall_conversion_pct,
+       killer_step: <name of the step with the biggest drop_from_prev>,
+       alarm: bool}
+    """
+    if not _internal_ok(request):
+        return jsonify(ok=False, error="forbidden"), 403
+    try:
+        days = max(1, min(365, int(request.args.get("days") or "30")))
+    except Exception:
+        days = 30
+
+    c = _conn()
+    if c is None:
+        return jsonify(ok=False, error="no_db"), 503
+
+    steps_out = []
+    try:
+        _ensure_schema(c)
+        # Pull the 7 counts from a single CTE-style probe per step so a
+        # missing column on a brand-new schema can't blank the whole page.
+        # Each scalar is wrapped in its own try/except.
+        def _scalar(sql: str, args: tuple = ()) -> int:
+            try:
+                with c.cursor() as cur:
+                    cur.execute(sql, args)
+                    row = cur.fetchone()
+                return int((row or [0])[0] or 0)
+            except Exception as e:
+                logger.debug("[step_drop] probe failed: %s -- %s", sql[:60], e)
+                try: c.rollback()
+                except Exception: pass
+                return 0
+
+        n_minted = _scalar(
+            """SELECT COUNT(*) FROM mcp_high_intent_sessions
+                WHERE claim_minted_at IS NOT NULL
+                  AND claim_minted_at >= NOW() - INTERVAL '%s days'""" % days)
+
+        # Step 2: we don't yet track raw page-views separately from POSTs.
+        # As a conservative proxy: claim_used_at IS NOT NULL (form-submit).
+        # The brain can compare n_used vs n_minted directly — that's the
+        # 19/0/0 alarm we just lived through.
+        n_used = _scalar(
+            """SELECT COUNT(*) FROM mcp_high_intent_sessions
+                WHERE claim_used_at IS NOT NULL
+                  AND claim_used_at >= NOW() - INTERVAL '%s days'""" % days)
+        n_page_viewed = n_used  # conservative under-count; see note above.
+
+        n_email = _scalar(
+            """SELECT COUNT(*) FROM mcp_high_intent_sessions
+                WHERE claim_email IS NOT NULL
+                  AND claim_used_at IS NOT NULL
+                  AND claim_used_at >= NOW() - INTERVAL '%s days'""" % days)
+
+        n_key = _scalar(
+            """SELECT COUNT(*) FROM mcp_high_intent_sessions
+                WHERE minted_api_key IS NOT NULL
+                  AND claim_used_at IS NOT NULL
+                  AND claim_used_at >= NOW() - INTERVAL '%s days'""" % days)
+
+        # Step 5: trial key actually made an API call. Join to auto_trial_keys
+        # (where the trial keys live with a last_used_at column).
+        n_first_call = _scalar(
+            """SELECT COUNT(DISTINCT h.minted_api_key)
+                 FROM mcp_high_intent_sessions h
+                 JOIN auto_trial_keys a ON a.api_key = h.minted_api_key
+                WHERE h.minted_api_key IS NOT NULL
+                  AND h.claim_used_at >= NOW() - INTERVAL '%s days'
+                  AND a.last_used_at IS NOT NULL""" % days)
+
+        # Step 6: same email later hit Stripe checkout.
+        n_upgrade_click = _scalar(
+            """SELECT COUNT(DISTINCT LOWER(h.claim_email))
+                 FROM mcp_high_intent_sessions h
+                 JOIN mcp_upgrade_signals u
+                   ON LOWER(u.operator_email) = LOWER(h.claim_email)
+                WHERE h.claim_email IS NOT NULL
+                  AND h.claim_used_at >= NOW() - INTERVAL '%s days'
+                  AND u.stripe_clicked_at IS NOT NULL
+                  AND u.stripe_clicked_at >= h.claim_used_at - INTERVAL '1 day'
+                  AND u.stripe_clicked_at <= h.claim_used_at + INTERVAL '14 days'""" % days)
+
+        # Step 7: same email is paying.
+        n_paid = _scalar(
+            """SELECT COUNT(DISTINCT LOWER(h.claim_email))
+                 FROM mcp_high_intent_sessions h
+                 JOIN users u ON LOWER(u.email) = LOWER(h.claim_email)
+                WHERE h.claim_email IS NOT NULL
+                  AND h.claim_used_at >= NOW() - INTERVAL '%s days'
+                  AND COALESCE(u.plan, 'free') NOT IN ('free','')""" % days)
+
+        raw_steps = [
+            ("claims_minted",   "Claim URL minted + sent to agent",   n_minted),
+            ("page_viewed",     "Human opened the claim page",        n_page_viewed),
+            ("email_submitted", "Human submitted email",              n_email),
+            ("key_issued",      "Trial key issued",                   n_key),
+            ("first_api_call",  "Trial key made first API call",      n_first_call),
+            ("upgrade_click",   "Human clicked Stripe checkout",      n_upgrade_click),
+            ("paid",            "Conversion: plan != 'free'",          n_paid),
+        ]
+
+        prev = None
+        killer_drop = -1.0
+        killer = None
+        for (name, label, count) in raw_steps:
+            if prev is None or prev == 0:
+                drop_from_prev = 0.0
+            else:
+                drop_from_prev = round(100.0 * (prev - count) / prev, 2)
+            drop_pct = (round(100.0 * (n_minted - count) / n_minted, 2)
+                        if n_minted else 0.0)
+            steps_out.append({
+                "step":            name,
+                "label":           label,
+                "count":           count,
+                "drop_pct":        drop_pct,
+                "drop_from_prev":  drop_from_prev,
+            })
+            if drop_from_prev > killer_drop and name != "claims_minted":
+                killer_drop = drop_from_prev
+                killer = name
+            prev = count
+
+        overall_conv = (round(100.0 * n_paid / n_minted, 2)
+                        if n_minted else 0.0)
+        # Alarm: minted > 5 AND used == 0 (the 19/0/0 alarm), OR any
+        # single step drops >95% off the prior step.
+        alarm = (n_minted > 5 and n_used == 0) or killer_drop > 95.0
+
+        return jsonify(
+            ok=True,
+            window_days=days,
+            steps=steps_out,
+            overall_conversion_pct=overall_conv,
+            killer_step=killer,
+            killer_drop_pct=round(killer_drop, 2) if killer else 0.0,
+            alarm=alarm,
+            threshold=HIGH_INTENT_THRESHOLD,
+            generated_at=datetime.now(timezone.utc).isoformat(),
+        )
+    finally:
+        try: c.close()
+        except Exception: pass
+
+
 def _smoke():
     logger.info("[high_intent_claim] ready · threshold=%s · variants=%s · "
                 "POST /api/v1/mcp/track-paid-hit · "
                 "GET /api/v1/mcp/should-mint-claim · GET/POST /claim/<token> · "
                 "GET /api/v1/mcp/high-intent/stats · "
-                "GET /api/v1/admin/mcp/claim-variant-conversion",
+                "GET /api/v1/admin/mcp/claim-variant-conversion · "
+                "GET /api/v1/admin/mcp/high-intent/step-drop",
                 HIGH_INTENT_THRESHOLD, sorted(VALID_VARIANTS))
 
 
