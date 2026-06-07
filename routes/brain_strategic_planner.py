@@ -113,6 +113,11 @@ _CTX_BUDGET = {
     "competitors":  5000,
     "self_model":   2500,
     "recent_recs":  1500,
+    # 2026-06-07 ROUND 2: pr_outcomes feeds the brain's own track
+    # record into the synthesis so it learns from past attempts.
+    # ~2 KB holds the last 30d of merged brain-authored PRs +
+    # before/after sentinel grades.
+    "pr_outcomes":  2000,
 }
 
 
@@ -244,6 +249,14 @@ def _gather_strategic_context() -> dict:
     # Recent strategic recs (so we don't repeat ourselves week-to-week)
     recent_recs = _read_recent_recs(weeks_back=4)
 
+    # ROUND 2 (2026-06-07): the brain's own track record. Reads the
+    # brain_pr_outcomes table directly (filled by brain_pr_outcome_
+    # monitor twice daily). The synthesis prompt now sees what the
+    # brain proposed in past weeks AND whether sentinel approved or
+    # regressed after merge → "last time I patched X for finding Y,
+    # sentinel regressed → try Z this round".
+    pr_outcomes = _gather_outcomes_context(window_days=30)
+
     return {
         "funnel":      {"now": funnel_now, "d30": funnel_30d},
         "page_health": page_health,
@@ -252,7 +265,73 @@ def _gather_strategic_context() -> dict:
         "competitors": competitors,
         "self_model":  self_model,
         "recent_recs": recent_recs,
+        "pr_outcomes": pr_outcomes,
     }
+
+
+def _gather_outcomes_context(window_days: int = 30) -> dict:
+    """Pull brain_pr_outcomes for the synthesis context.
+
+    Returns {summary: {success_rate, regression_count, by_outcome},
+             recent: [{pr, files, outcome, before, after, ...}, ...]}.
+
+    Fail-soft → empty envelope on miss (table may not exist yet on
+    first deploy)."""
+    c = _get_db()
+    if c is None:
+        return {"_note": "no_db"}
+    try:
+        with c.cursor() as cur:
+            cur.execute(
+                """SELECT outcome, COUNT(*) FROM brain_pr_outcomes
+                    WHERE brain_authored = TRUE
+                      AND created_at > NOW() - INTERVAL '%s days'
+                    GROUP BY outcome""", (window_days,))
+            by_outcome = {r[0]: int(r[1]) for r in cur.fetchall() or []}
+            cur.execute(
+                """SELECT pr_number, pr_url, pr_title, sentinel_endpoint,
+                          sentinel_before_grade, sentinel_after_grade,
+                          outcome, regression_details, files_changed,
+                          merged_at
+                     FROM brain_pr_outcomes
+                    WHERE brain_authored = TRUE
+                      AND created_at > NOW() - INTERVAL '%s days'
+                    ORDER BY COALESCE(merged_at, created_at) DESC
+                    LIMIT 25""", (window_days,))
+            recent = []
+            for r in cur.fetchall() or []:
+                recent.append({
+                    "pr_number":  r[0],
+                    "pr_url":     r[1],
+                    "title":      (r[2] or "")[:120],
+                    "endpoint":   r[3],
+                    "before":     (float(r[4]) if r[4] is not None else None),
+                    "after":      (float(r[5]) if r[5] is not None else None),
+                    "outcome":    r[6],
+                    "regression": (r[7] or "")[:200],
+                    "files":      (r[8] or "")[:300],
+                    "merged_at":  str(r[9]) if r[9] else None,
+                })
+        merged_n = sum(by_outcome.get(k, 0) for k in
+                       ("success", "regression", "unknown", "deploy_fail"))
+        success = by_outcome.get("success", 0)
+        return {
+            "window_days":      window_days,
+            "by_outcome":       by_outcome,
+            "merged_total":     merged_n,
+            "success_rate":     (round(success / merged_n, 3)
+                                  if merged_n else None),
+            "regression_rate":  (round(by_outcome.get("regression", 0)
+                                        / merged_n, 3)
+                                  if merged_n else None),
+            "recent":           recent,
+        }
+    except Exception as e:
+        logger.warning("L6 strategic: pr_outcomes read failed: %s", e)
+        return {"_note": "read_failed", "error": str(e)[:160]}
+    finally:
+        try: c.close()
+        except Exception: pass
 
 
 # ─── Competitor context (2026-06-07) ───────────────────────────────
@@ -493,6 +572,13 @@ def _build_prompt(ctx: dict) -> str:
     sections.append("RECENT RECS (past 4 weeks — do not repeat):\n" +
                     _truncate(ctx.get("recent_recs"),
                               _CTX_BUDGET["recent_recs"]))
+    # ROUND 2 (2026-06-07): own track record. The prompt should explicitly
+    # weigh past patches that REGRESSED sentinel as a signal NOT to
+    # propose similar patterns. See _gather_outcomes_context.
+    sections.append("PR OUTCOMES (past 30d — brain's own track record; "
+                    "learn from regressions):\n" +
+                    _truncate(ctx.get("pr_outcomes"),
+                              _CTX_BUDGET["pr_outcomes"]))
 
     return ("\n\n".join(sections) +
             "\n\n──── End context. Reply with the JSON object ONLY. ────")

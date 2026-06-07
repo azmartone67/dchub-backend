@@ -15446,9 +15446,15 @@ def _list_facilities_free():
     FREE_LIMIT = 5
     # Freemium facility listing -- max 5 results, IDs + basic fields (full data paywalled).
     BASIC_FIELDS = ('id', 'name', 'city', 'state', 'country', 'provider', 'slug')
-    q = request.args.get('q', '').strip()
+    # Accept the MCP search_facilities tool's ADVERTISED param names as aliases.
+    # The tool tells agents to use operator=/market=, but this endpoint only read
+    # provider=/q= — so those filters were silently IGNORED and agents got the
+    # unfiltered default set (Devin QA 2026-06-07: "market=ashburn / operator=AWS
+    # ignored → same 4 facilities; Ashburn returns non-Ashburn"). Map them so the
+    # filters actually bite. market= flows through q's MARKET_ALIASES city-expansion.
+    q = request.args.get('q', '').strip() or (request.args.get('market', '') or '').strip()
     country = request.args.get('country')
-    provider = request.args.get('provider')
+    provider = request.args.get('provider') or request.args.get('operator')
 
     sql = "SELECT * FROM discovered_facilities WHERE 1=1"
     count_sql = "SELECT COUNT(*) FROM discovered_facilities WHERE 1=1"
@@ -27470,6 +27476,29 @@ try:
 except Exception as _mtt_e:
     print(f"[main] media_topic_tuner_bp register failed: {_mtt_e}", flush=True)
 
+# DC Hub Media ROUND 2 (2026-06-07): engagement-spike auto-responder.
+# When a LinkedIn post (last 24h) crosses 2x the 30d baseline impressions
+# in under 6 hours of publish, generates a 3-comment follow-up thread via
+# Claude (staggered 30/90/180min) to extend the conversation and ride the
+# engagement wave. Ships DRY-RUN by default (MEDIA_AUTORESPONSE_DRY_RUN=1)
+# — the very first deploy observes spikes and writes drafts to
+# media_autoresponse_log WITHOUT posting; operator flips the flag after
+# reviewing on /admin/media-mix. Per-post once-only via
+# linkedin_posts.autoresponse_triggered_at; rolling 7d cap=3 via
+# MEDIA_AUTORESPONSE_WEEKLY_CAP; lazy-LLM-speak tone reject list
+# auto-regenerates. Master kill switch MEDIA_AUTORESPONSE_DISABLE=1.
+# Cron at 10/22 UTC via crawler_scheduler.
+try:
+    from routes.media_spike_responder import media_spike_responder_bp
+    app.register_blueprint(media_spike_responder_bp)
+    print("[main] media_spike_responder_bp registered: "
+          "/api/v1/admin/media/spikes/{preview,detect} + "
+          "/api/v1/admin/media/autoresponse/{recent,publish/<id>}",
+          flush=True)
+except Exception as _msr_e:
+    print(f"[main] media_spike_responder_bp register failed: {_msr_e}",
+          flush=True)
+
 # Market Brief v1 (2026-06-06): shareable per-market briefs that replace
 # the dcHawk PDF in a broker/REIT/fund deck. 9 sections, FREE teaser
 # (Hero + At-a-Glance + Outlook teaser) + PRO unlock for Power/Pipeline/
@@ -29010,6 +29039,20 @@ try:
 except Exception as _e:
     print(f"[main] site_sentinel register failed: {_e}", file=sys.stderr)
 
+# 2026-06-07 (Sentinel Round 2) — Auto-merge brain Layer-5 fixes that
+# came from a sentinel-derived finding AND pass all 6 safety gates.
+# DRY-RUN by default (SENTINEL_AUTO_MERGE_DRY_RUN=1 in Railway on first
+# deploy). Kill switch SENTINEL_AUTO_MERGE_DISABLE=1; weekly cap 10
+# (SENTINEL_AUTO_MERGE_WEEKLY_CAP); min conf 0.95
+# (SENTINEL_AUTO_MERGE_REQUIRE_CONF). Routes: POST /api/v1/admin/
+# sentinel/auto-merge-eligible + GET /api/v1/admin/sentinel/auto-merge-log.
+try:
+    from routes.sentinel_auto_merge import sentinel_auto_merge_bp
+    app.register_blueprint(sentinel_auto_merge_bp)
+    print("[main] sentinel_auto_merge_bp registered: POST /api/v1/admin/sentinel/auto-merge-eligible + GET /api/v1/admin/sentinel/auto-merge-log (kill: SENTINEL_AUTO_MERGE_DISABLE, dry: SENTINEL_AUTO_MERGE_DRY_RUN)", flush=True)
+except Exception as _sam_e:
+    print(f"[main] sentinel_auto_merge_bp register failed: {_sam_e}", file=sys.stderr)
+
 # Phase OOO (2026-05-16): BS Translator / "vs static competitors" page.
 # The brand-positioning surface — translates competitor claims into
 # what DC Hub actually offers (live, free, MCP-native, no BS).
@@ -29116,6 +29159,38 @@ try:
     print("[main] brain_weekly_digest_bp registered: /api/v1/admin/brain/strategic-digest/{send,preview,status} (kill: DCHUB_BRAIN_DIGEST_DISABLE)", flush=True)
 except Exception as _bwd_e:
     print(f"[main] brain_weekly_digest_bp register failed: {_bwd_e}", file=sys.stderr)
+
+# ROUND 2 (2026-06-07): Brain auto-execute + cross-session pollination.
+# Two new blueprints close the Round-1 gap (brain STOPS at "open draft
+# PR" — never finds out if patch worked):
+#   - brain_pr_outcome_monitor_bp: twice-daily GitHub poll for merged
+#     PRs from brain-authored branches; re-probes sentinel grade
+#     before/after merge; logs outcome=success|regression|deploy_fail|
+#     unknown to brain_pr_outcomes; on regression opens a follow-up
+#     finding so synthesis learns the patch was bad.
+#   - brain_cross_session_pollinator_bp: detects (detector, issue)
+#     patterns crossing N+ distinct sessions in 7d; escalates +
+#     surfaces "cross-session learnings" card.
+# The strategic planner now consumes brain_pr_outcomes via
+# _gather_outcomes_context so the synthesis prompt sees its own
+# track record. Kill: BRAIN_PR_OUTCOME_MONITOR_DISABLE /
+# BRAIN_CROSS_SESSION_ESCALATE_DISABLE.
+try:
+    from routes.brain_pr_outcome_monitor import (
+        brain_pr_outcome_monitor_bp,
+    )
+    app.register_blueprint(brain_pr_outcome_monitor_bp)
+    print("[main] brain_pr_outcome_monitor_bp registered: /api/v1/admin/brain/pr-outcomes{/monitor-now,/summary,/health} (kill: BRAIN_PR_OUTCOME_MONITOR_DISABLE)", flush=True)
+except Exception as _bpo_e:
+    print(f"[main] brain_pr_outcome_monitor_bp register failed: {_bpo_e}", file=sys.stderr)
+try:
+    from routes.brain_cross_session_pollinator import (
+        brain_cross_session_bp,
+    )
+    app.register_blueprint(brain_cross_session_bp)
+    print("[main] brain_cross_session_bp registered: /api/v1/admin/brain/cross-session/{scan,health} + /cross-session-learnings (kill: BRAIN_CROSS_SESSION_ESCALATE_DISABLE)", flush=True)
+except Exception as _bcs_e:
+    print(f"[main] brain_cross_session_bp register failed: {_bcs_e}", file=sys.stderr)
 
 # === Brain v2 · Layer 3 freshness fields ===
 try:

@@ -579,6 +579,12 @@ pre{background:#0a0a14;border:1px solid var(--bord);border-radius:6px;
               color:var(--muted);font-weight:600">
     Strategic (L6 weekly)
   </div>
+  <div class="tab" data-tab="outcomes"
+       onclick="switchTab('outcomes')"
+       style="padding:10px 16px;cursor:pointer;border-bottom:2px solid transparent;
+              color:var(--muted);font-weight:600">
+    PR Outcomes (R2)
+  </div>
 </div>
 
 <div id="tab-tactical">
@@ -635,6 +641,46 @@ pre{background:#0a0a14;border:1px solid var(--bord);border-radius:6px;
   <div class="section">
     <h2>Trend lines · funnel snapshot</h2>
     <div id="strategic-trends"></div>
+  </div>
+</div>
+
+<div id="tab-outcomes" style="display:none">
+  <div class="section">
+    <h2>PR Outcomes · Brain ROUND 2 (auto-execute monitor)</h2>
+    <div class="actions">
+      <button onclick="runOutcomes('monitor', this)" class="warn">
+        Run monitor now (24h window)
+      </button>
+      <button onclick="loadOutcomes()">Refresh</button>
+    </div>
+    <div class="meta" id="outcomes-meta">
+      Twice-daily (10/22 UTC) — polls GitHub for merged brain-authored
+      PRs in the last 24h, re-probes sentinel grade before/after, writes
+      success/regression rows so the strategic synthesis learns from
+      its own track record. Detects brain authorship by PR title
+      markers (<code>[brain-l5</code>), branch prefix
+      (<code>brain-v2/</code>), or body markers. On regression files a
+      follow-up <code>brain_pr_regression</code> finding.
+      Kill: <code>BRAIN_PR_OUTCOME_MONITOR_DISABLE=1</code>.
+    </div>
+  </div>
+  <div class="grid" id="outcomes-kpis"></div>
+  <div class="section">
+    <h2>Recent PR outcomes (last 30d)</h2>
+    <div id="outcomes-rows"></div>
+  </div>
+  <div class="section">
+    <h2>Cross-session learnings · pattern pollination</h2>
+    <div class="meta" id="learnings-meta">
+      Patterns surfaced in 3+ distinct brain sessions over the last 7d
+      (escalated to higher severity so the synthesis weighs them).
+      Kill: <code>BRAIN_CROSS_SESSION_ESCALATE_DISABLE=1</code>.
+      <button onclick="scanCrossSession(this)" class="warn"
+              style="font-size:12px;padding:6px 10px;margin-left:8px">
+        Scan now
+      </button>
+    </div>
+    <div id="learnings-rows"></div>
   </div>
 </div>
 
@@ -757,7 +803,140 @@ function switchTab(name){
     (name==='tactical') ? '' : 'none';
   document.getElementById('tab-strategic').style.display =
     (name==='strategic') ? '' : 'none';
+  document.getElementById('tab-outcomes').style.display =
+    (name==='outcomes') ? '' : 'none';
   if(name==='strategic') loadStrategic();
+  if(name==='outcomes')  loadOutcomes();
+}
+
+// ── PR Outcomes tab (ROUND 2) ──────────────────────────────────────
+
+const OUTCOME_BADGE = {
+  'success':     '<span class="pill ok">success</span>',
+  'regression':  '<span class="pill kill">REGRESSION</span>',
+  'draft':       '<span class="pill">draft</span>',
+  'open':        '<span class="pill">open</span>',
+  'unknown':     '<span class="pill">unknown</span>',
+  'deploy_fail': '<span class="pill kill">deploy_fail</span>',
+};
+
+async function loadOutcomes(){
+  try {
+    const [s, l, cs] = await Promise.all([
+      fetch('/api/v1/admin/brain/pr-outcomes/summary', {headers: HDR}),
+      fetch('/api/v1/admin/brain/pr-outcomes', {headers: HDR}),
+      fetch('/api/v1/admin/brain/cross-session-learnings', {headers: HDR}),
+    ]);
+    const summary = await s.json();
+    const listing = await l.json();
+    const learnings = await cs.json();
+    renderOutcomes(summary, listing, learnings);
+  } catch(e){
+    $('outcomes-rows').innerHTML =
+      `<div class="meta">Load error: ${escapeHtml(e.message)}</div>`;
+  }
+}
+
+function renderOutcomes(summary, listing, learnings){
+  // KPIs
+  const succ = summary.success_rate;
+  const regr = summary.regression_rate;
+  const by   = summary.by_outcome || {};
+  $('outcomes-kpis').innerHTML = `
+    <div class="card"><div class="v">${summary.merged || 0}</div>
+      <div class="l">Merged (30d)</div></div>
+    <div class="card"><div class="v">${(by.success||0)}</div>
+      <div class="l">Success
+        ${succ != null ? `<span class="tag">${(succ*100|0)}%</span>` : ''}
+      </div></div>
+    <div class="card"><div class="v">${(by.regression||0)}</div>
+      <div class="l">Regression
+        ${regr != null ? `<span class="tag">${(regr*100|0)}%</span>` : ''}
+      </div></div>
+    <div class="card"><div class="v">${(by.draft||0)+(by.open||0)}</div>
+      <div class="l">In-flight (draft+open)</div></div>
+  `;
+  // Rows
+  const rows = (listing.outcomes || []).slice(0, 50);
+  $('outcomes-rows').innerHTML = rows.length ? rows.map(r => {
+    const grade = (r.sentinel_before_grade != null &&
+                   r.sentinel_after_grade != null)
+      ? `<span class="tag">${r.sentinel_before_grade.toFixed(1)} → ${r.sentinel_after_grade.toFixed(1)}</span>`
+      : '';
+    const reg = r.regression_details ?
+      `<div class="meta" style="color:#ef4444">${escapeHtml(r.regression_details)}</div>` : '';
+    const url = r.pr_url ?
+      `<a href="${escapeHtml(r.pr_url)}" target="_blank" style="color:var(--ind)">#${r.pr_number}</a>` :
+      `#${r.pr_number}`;
+    return `<div class="row" style="display:block;padding:10px 12px">
+      <div style="display:flex;justify-content:space-between;align-items:center">
+        <div>
+          ${OUTCOME_BADGE[r.outcome] || OUTCOME_BADGE.unknown}
+          ${url}
+          <span class="tag">${escapeHtml(r.sentinel_endpoint || 'no-endpoint')}</span>
+          ${grade}
+        </div>
+        <div class="meta" style="font-size:11px">${escapeHtml((r.merged_at || r.created_at || '').slice(0,16))}</div>
+      </div>
+      <div class="name" style="font-size:13px;margin-top:4px">
+        ${escapeHtml((r.pr_title || '').slice(0, 140))}
+      </div>
+      ${reg}
+    </div>`;
+  }).join('') : '<div class="meta">No PR outcomes recorded yet. Click "Run monitor now" above to backfill.</div>';
+
+  // Cross-session learnings
+  const ls = (learnings.learnings || []).slice(0, 20);
+  $('learnings-rows').innerHTML = ls.length ? ls.map(l => `
+    <div class="row" style="display:block;padding:10px 12px">
+      <div>
+        <span class="pill kill">×${l.distinct_sessions} sessions</span>
+        <code>${escapeHtml(l.detector || '?')}</code>
+        <span class="tag">${escapeHtml(l.issue || '?')}</span>
+        <span class="tag">${l.row_count} rows</span>
+      </div>
+      <div class="meta" style="margin-top:4px;font-size:11px">
+        escalated ${escapeHtml((l.escalated_at || '').slice(0, 16))}
+        · last seen ${escapeHtml((l.last_seen || '').slice(0, 16))}
+      </div>
+      ${l.sample_urls ? `<div class="meta url" style="margin-top:4px">${escapeHtml(l.sample_urls.slice(0, 200))}</div>` : ''}
+    </div>
+  `).join('') : '<div class="meta">No cross-session patterns detected yet (threshold: 3+ sessions in 7d).</div>';
+}
+
+async function runOutcomes(mode, btn){
+  if(btn) btn.classList.add('disabled');
+  try {
+    const r = await fetch('/api/v1/admin/brain/pr-outcomes/monitor-now',
+      {method:'POST', headers: HDR});
+    const d = await r.json();
+    $('raw').style.display = 'block';
+    $('raw').textContent = JSON.stringify(d, null, 2);
+    const res = d.results || {};
+    toast(`Monitor: scanned=${d.scanned||0} success=${res.success||0} ` +
+          `regression=${res.regression||0} draft=${res.draft||0}.`);
+  } catch(e){ toast('Run failed: ' + e.message); }
+  finally {
+    if(btn) btn.classList.remove('disabled');
+    setTimeout(loadOutcomes, 800);
+  }
+}
+
+async function scanCrossSession(btn){
+  if(btn) btn.classList.add('disabled');
+  try {
+    const r = await fetch('/api/v1/admin/brain/cross-session/scan',
+      {method:'POST', headers: HDR});
+    const d = await r.json();
+    $('raw').style.display = 'block';
+    $('raw').textContent = JSON.stringify(d, null, 2);
+    toast(`Cross-session scan: ${(d.escalated_clusters||[]).length} ` +
+          `clusters, ${d.escalated_rows||0} rows escalated.`);
+  } catch(e){ toast('Scan failed: ' + e.message); }
+  finally {
+    if(btn) btn.classList.remove('disabled');
+    setTimeout(loadOutcomes, 800);
+  }
 }
 
 function escapeHtml(s){

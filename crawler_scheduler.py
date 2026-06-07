@@ -131,6 +131,20 @@ SCHEDULE = [
     # single topic at 35% so a breakout topic can't pin us to clickbait.
     # Shares 14/2 with knowledge_sync; each has its own per-name guard.
     (14,  2, "media_topic_tune",    "_run_media_topic_tune"),
+    # DC Hub Media ROUND 2 — engagement-spike auto-responder (2026-06-07):
+    # twice daily 10/22 UTC. Detects LinkedIn posts that crossed 2x the
+    # 30d baseline impressions in <6h, generates 3-comment follow-up
+    # threads via Claude (staggered 30/90/180min), logs them. Ships
+    # DRY-RUN by default (MEDIA_AUTORESPONSE_DRY_RUN=1) — writes drafts
+    # to media_autoresponse_log without actually posting; operator flips
+    # the flag after reviewing on /admin/media-mix. Per-post once-only
+    # via linkedin_posts.autoresponse_triggered_at; rolling 7-day cap
+    # (MEDIA_AUTORESPONSE_WEEKLY_CAP, default 3); kill switch
+    # MEDIA_AUTORESPONSE_DISABLE=1. 10 UTC chosen 1h after the 9
+    # market_refresh and after the 8 deals slot; 22 UTC follows 21
+    # market. Same-hour-same-day cap → one per slot. Bounded: <=5
+    # spikes × ~3s Claude call = ~15s worst case. Runner never raises.
+    (10, 22, "media_spike_responder", "_run_media_spike_responder"),
     # MCP-presence crawl (2026-06-05): twice-daily sweep of the ~15 MCP
     # listing sites DC Hub appears on (Smithery, MCPHive, LobeHub, Glama,
     # YellowMCP, mcp.so, PulseMCP, etc.). For each, fetch the listing
@@ -332,6 +346,62 @@ SCHEDULE = [
     # with status='pending' skips silently. Same-hour same-day cap → one
     # run per UTC day. Kill switch: DCHUB_STATE_2026_EVOLVER_DISABLE=1.
     ( 6,  6, "state_of_2026_claim_evolve", "_run_state_of_2026_claim_evolve"),
+    # Brain ROUND 2 (2026-06-07): PR outcome monitor. Twice-daily poll
+    # against GitHub for merged PRs from azmartone67/dchub-backend in
+    # the last 24h. For each brain-authored merged PR (detected by
+    # "[brain-" title / "brain-v2/" branch / "Auto-proposed by Brain"
+    # body markers), records sentinel grade before/after to
+    # brain_pr_outcomes. Closes the loop on Layer-5 draft PRs: the
+    # strategic synthesis then reads the last 30d of outcomes via
+    # _gather_outcomes_context so the brain learns from its own track
+    # record. Slot 10/22 UTC chosen to give Railway deploy time after
+    # any merges that landed in the morning (10:00 UTC = 6am ET work
+    # window) and at end of day (22:00 UTC = 6pm ET). Same-hour-same-
+    # day cap → one run per UTC half-day. No Claude calls (pure
+    # GitHub REST + sentinel re-probe) so cost is zero. Kill switch:
+    # BRAIN_PR_OUTCOME_MONITOR_DISABLE=1.
+    (10, 22, "brain_pr_outcome_monitor",
+              "_run_brain_pr_outcome_monitor"),
+    # Brain ROUND 2 (2026-06-07): cross-session finding pollination.
+    # After every brain_findings INSERT a (detector, issue) pair gets
+    # checked against the last 7d of brain_findings — if it surfaced
+    # in N+ distinct session_id values (default N=3) we mark every
+    # matching row cross_session_escalated_at + write a META finding
+    # for the strategic synthesis. The scheduled cron run is the
+    # safety net for sessions that bypass the inline hook (autopilot
+    # writers, batched detectors). Slot 11/23 UTC = 1h after the PR
+    # outcome monitor so the two ROUND 2 detectors don't collide on
+    # the same gunicorn worker pool. Defensive — never raises. Kill
+    # switch: BRAIN_CROSS_SESSION_ESCALATE_DISABLE=1.
+    (11, 23, "brain_cross_session_scan",
+              "_run_brain_cross_session_scan"),
+    # Sentinel Round 2 auto-merge sweep (2026-06-07): twice-daily walk of
+    # brain-authored DRAFT PRs from the last 7 days. Auto-merges only those
+    # that pass ALL 6 gates: sentinel-derived (page_persistent_5xx:<path>),
+    # confidence ≥ SENTINEL_AUTO_MERGE_REQUIRE_CONF (default 0.95), ast.parse
+    # at PR head, sandbox paths (routes/*.py | dchub-frontend/*.html),
+    # NO forbidden surfaces (main.py, auth*, tier_*, stripe*, schema_repair,
+    # _routes.json, _worker.js), weekly cap not hit (default 10/wk via
+    # SENTINEL_AUTO_MERGE_WEEKLY_CAP), kill switch off
+    # (SENTINEL_AUTO_MERGE_DISABLE != 1). DRY-RUN by default on first
+    # deploy (SENTINEL_AUTO_MERGE_DRY_RUN=1 Railway env var) — logs
+    # decisions only, no real gh pr merge. After a real merge, schedules
+    # a 5-min follow-up sentinel probe (cron slot below) to verify the
+    # page heals. EVERY decision (allow/reject) is logged regardless of
+    # whether the merge fires so the operator sees rejection reasons in
+    # /admin/sentinel-inbox (Auto-merge Activity tab). Slot 5/17 per spec.
+    # Shares the hour with market_brief_warm (5/17); per-name last_run
+    # guards keep them independent. Roll-back: SENTINEL_AUTO_MERGE_DISABLE=1
+    # + manual revert PR. Source: routes/sentinel_auto_merge.py.
+    ( 5, 17, "sentinel_auto_merge_sweep",
+              "_run_sentinel_auto_merge_sweep"),
+    # Sentinel auto-merge FOLLOW-UP probe (2026-06-07): runs ~1h past the
+    # sweep to catch the 5-min-post-merge sentinel re-probe. Walks rows
+    # where follow_up_at <= NOW() and follow_up_outcome IS NULL, fetches
+    # the sentinel path, classifies success/regression/inconclusive.
+    # ~50 row cap per run. Slot 6/18 = 1h past sweep slot 5/17.
+    ( 6, 18, "sentinel_auto_merge_followup",
+              "_run_sentinel_auto_merge_followup"),
 ]
 
 # ---------------------------------------------------------------------------
@@ -2041,6 +2111,110 @@ def _run_brain_strategic_digest():
             "📨 brain_strategic_digest error: %s", e, exc_info=True)
 
 
+def _run_brain_pr_outcome_monitor():
+    """Brain ROUND 2 (2026-06-07). Twice-daily — polls GitHub for PRs
+    merged in the last 24h, filters to brain-authored ones (by title /
+    branch / body markers), records sentinel grade before/after to
+    brain_pr_outcomes. Closes the Layer-5 loop so the strategic
+    synthesis learns from past attempts. wait_for_deploy=False keeps
+    the scheduler thread free — we'll catch deploy completion on the
+    next run. Kill switch: BRAIN_PR_OUTCOME_MONITOR_DISABLE=1.
+    Defensive — never raises."""
+    try:
+        from routes.brain_pr_outcome_monitor import (
+            monitor_recent_prs as _run,
+        )
+        result = _run(days=1, wait_for_deploy=False) or {}
+        results = result.get("results") or {}
+        logger.info(
+            "🧠 brain_pr_outcome_monitor: scanned=%s success=%s "
+            "regression=%s draft=%s unknown=%s non_brain=%s",
+            result.get("scanned"),
+            results.get("success"), results.get("regression"),
+            results.get("draft"), results.get("unknown"),
+            results.get("non_brain"))
+    except Exception as e:
+        logger.error(
+            "🧠 brain_pr_outcome_monitor error: %s", e, exc_info=True)
+
+
+def _run_brain_cross_session_scan():
+    """Brain ROUND 2 (2026-06-07). Twice-daily — scans brain_findings
+    for (detector, issue) pairs appearing in N+ distinct sessions in
+    the last 7d. Escalates each matching cluster (stamps
+    cross_session_escalated_at + writes a meta finding). Defensive —
+    never raises. Kill: BRAIN_CROSS_SESSION_ESCALATE_DISABLE=1."""
+    try:
+        from routes.brain_cross_session_pollinator import (
+            detect_cross_session_patterns as _run,
+        )
+        result = _run(window_days=7) or {}
+        logger.info(
+            "🧠 brain_cross_session_scan: "
+            "escalated_clusters=%s escalated_rows=%s ok=%s",
+            len(result.get("escalated_clusters") or []),
+            result.get("escalated_rows"),
+            result.get("ok"))
+    except Exception as e:
+        logger.error(
+            "🧠 brain_cross_session_scan error: %s", e, exc_info=True)
+
+
+def _run_sentinel_auto_merge_sweep():
+    """Sentinel Round 2 (2026-06-07). Twice-daily walk of brain-authored
+    DRAFT PRs in the last 7d. Auto-merges only those passing ALL 6
+    gates (sentinel-derived, conf ≥ 0.95, ast.parse, sandbox paths,
+    no forbidden surfaces, weekly cap not hit + kill switch off). EVERY
+    decision logged regardless of merge so /admin/sentinel-inbox shows
+    rejection reasons. DRY-RUN by default on first deploy.
+
+    Defensive — never raises. Kill: SENTINEL_AUTO_MERGE_DISABLE=1.
+    Dry-run: SENTINEL_AUTO_MERGE_DRY_RUN=1.
+    """
+    try:
+        from routes.sentinel_auto_merge import run_auto_merge_sweep as _run
+        result = _run(force_log_all=True) or {}
+        logger.info(
+            "🛡️  sentinel_auto_merge_sweep: scanned=%s allowed=%s "
+            "rejected=%s merged=%s dry_run=%s used=%s/%s",
+            result.get("scanned"),
+            result.get("allowed"),
+            result.get("rejected"),
+            result.get("merged"),
+            result.get("dry_run"),
+            result.get("used_this_week"),
+            result.get("weekly_cap"),
+        )
+    except Exception as e:
+        logger.error(
+            "🛡️  sentinel_auto_merge_sweep error: %s", e, exc_info=True)
+
+
+def _run_sentinel_auto_merge_followup():
+    """Sentinel Round 2 follow-up (2026-06-07). Probes every merged-row
+    in sentinel_auto_merge_log whose follow_up_at has elapsed and no
+    outcome recorded yet. Classifies success / regression / inconclusive
+    based on the live sentinel page status. ~50 row cap per run.
+
+    Defensive — never raises.
+    """
+    try:
+        from routes.sentinel_auto_merge import run_follow_up_probes as _run
+        result = _run(max_age_min=60) or {}
+        logger.info(
+            "🛡️  sentinel_auto_merge_followup: checked=%s success=%s "
+            "regression=%s inconclusive=%s errors=%s",
+            result.get("checked"),
+            result.get("success"),
+            result.get("regression"),
+            result.get("inconclusive"),
+            len(result.get("errors") or []),
+        )
+    except Exception as e:
+        logger.error(
+            "🛡️  sentinel_auto_merge_followup error: %s", e, exc_info=True)
+
+
 _RUNNERS = {
     "market_refresh":      _run_market_refresh,
     "news":                _run_news_crawler,
@@ -2077,6 +2251,10 @@ _RUNNERS = {
     "brain_strategic_synthesis": _run_brain_strategic_synthesis,
     "brain_strategic_synthesis_thu": _run_brain_strategic_synthesis_thu,
     "brain_strategic_digest":    _run_brain_strategic_digest,
+    "brain_pr_outcome_monitor":  _run_brain_pr_outcome_monitor,
+    "brain_cross_session_scan":  _run_brain_cross_session_scan,
+    "sentinel_auto_merge_sweep":    _run_sentinel_auto_merge_sweep,
+    "sentinel_auto_merge_followup": _run_sentinel_auto_merge_followup,
 }
 
 
