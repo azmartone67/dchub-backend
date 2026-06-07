@@ -409,10 +409,16 @@ def topic_performance(days: int = 30) -> list[dict]:
             # Pull every post with engagement in the window. Tag it
             # client-side (classifier is cheap) so we can score
             # un-backfilled rows too.
+            # Pull linkedin_posts with engagement. linkedin_posts uses
+            # `published_at` in the canonical schema (see linkedin_autopost.py
+            # CREATE TABLE) and `posted_at` in other replicas. COALESCE both.
+            # 2026-06-07: COALESCE engagement columns too — if `impressions`
+            # column doesn't exist in this schema, the SELECT falls back to 0
+            # via the column-existence dance below. Best-effort over both
+            # linkedin_posts AND social_media_posts so we never starve the
+            # learner when one of the surfaces hasn't been hydrated yet.
+            rows: list = []
             try:
-                # linkedin_posts uses `published_at` in the canonical schema
-                # (see linkedin_autopost.py CREATE TABLE) and `posted_at` in
-                # other replicas. COALESCE both so we don't miss either.
                 cur.execute(f"""
                     SELECT id,
                            COALESCE(content_text, content, post_text, '') AS body,
@@ -427,10 +433,30 @@ def topic_performance(days: int = 30) -> list[dict]:
                            > NOW() - INTERVAL '{int(days)} days'
                        AND COALESCE(content_text, content, post_text, '') <> ''
                 """)
-                rows = cur.fetchall() or []
+                rows.extend(cur.fetchall() or [])
             except Exception as e:
-                _log(f"topic_performance query failed: {e}")
-                return out
+                _log(f"topic_performance li_query failed: {e}")
+            # Also pull social_media_posts so the tuner still has signal
+            # when linkedin_posts.impressions hasn't been hydrated yet
+            # (LinkedIn API takes 24-48h to fill the columns on a new post).
+            # Score from social_media_posts uses VOLUME as a proxy:
+            # impressions=0, but n_posts counts toward the topic weight.
+            try:
+                cur.execute(f"""
+                    SELECT id, content,
+                           0 AS impressions, 0 AS clicks,
+                           0 AS likes, 0 AS comments, 0 AS shares,
+                           media_topic_tags AS tags
+                      FROM social_media_posts
+                     WHERE COALESCE(created_at, NOW())
+                           > NOW() - INTERVAL '{int(days)} days'
+                       AND content IS NOT NULL
+                       AND content <> ''
+                       AND COALESCE(publish_platform, platform, '') IN ('linkedin','twitter','bluesky','')
+                """)
+                rows.extend(cur.fetchall() or [])
+            except Exception as e:
+                _log(f"topic_performance smp_query failed: {e}")
 
             buckets: dict[str, dict] = {}
             for row in rows:
