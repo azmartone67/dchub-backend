@@ -36,12 +36,28 @@ async function checkPage(browser, spec) {
     // a fixed settle is the reliable strategy for sites with background polling.
     const resp = await pg.goto(BASE + spec.path, { waitUntil: 'domcontentloaded', timeout: 60000 });
     out.status = resp ? resp.status() : 0;
-    await pg.waitForTimeout(6000);  // let async render + lazy images attempt to load
+    await pg.waitForTimeout(5000);
+    // Scroll to trigger lazy-loads + give cross-origin assets time, then reset.
+    await pg.evaluate(() => window.scrollTo(0, document.body.scrollHeight)).catch(() => {});
+    await pg.waitForTimeout(2500);
+    await pg.evaluate(() => window.scrollTo(0, 0)).catch(() => {});
     const textLen = (await pg.evaluate(() => document.body ? document.body.innerText.trim().length : 0));
-    const brokenImgs = await pg.evaluate(() =>
-      Array.from(document.images)
-        .filter(i => i.complete && i.naturalWidth === 0)
-        .map(i => (i.currentSrc || i.src || '').slice(0, 90)).slice(0, 8));
+    // Split broken images by origin: a broken FIRST-PARTY image (our og cards,
+    // hero, gallery — the blank-card class) is a hard fail; a broken THIRD-PARTY
+    // CDN icon (e.g. simpleicons) is a soft warning, not a red alarm.
+    const imgInfo = await pg.evaluate(() => {
+      const origin = location.origin;
+      return Array.from(document.images)
+        .filter(i => i.complete && i.naturalWidth === 0 && i.clientHeight > 2)
+        .map(i => {
+          const s = i.currentSrc || i.getAttribute('src') || '';
+          let abs = s;
+          try { abs = s.startsWith('http') ? s : new URL(s, location.href).href; } catch (e) {}
+          return { src: abs.slice(0, 90), same: abs.startsWith(origin) };
+        }).slice(0, 16);
+    });
+    const sameBroken = imgInfo.filter(i => i.same).map(i => i.src);
+    const crossBroken = imgInfo.filter(i => !i.same).map(i => i.src);
     let missing = [];
     if (spec.mustInclude) {
       const html = (await pg.content());
@@ -49,18 +65,20 @@ async function checkPage(browser, spec) {
     }
     out.http_status = out.status;
     out.text_len = textLen;
-    out.broken_images = brokenImgs;
+    out.broken_images = sameBroken;                  // hard-fail set (our assets)
+    out.broken_images_thirdparty = crossBroken;      // warn set (external CDNs)
     out.console_errors = consoleErrors.length;
     out.page_errors = pageErrors.slice(0, 3);
     out.missing_markers = missing;
-    // verdict
+    // verdict — fail only on things WE own/control
     const reasons = [];
     if (out.status !== 200) reasons.push(`http ${out.status}`);
     if (textLen < 200) reasons.push(`near-empty body (${textLen} chars)`);
-    if (brokenImgs.length) reasons.push(`${brokenImgs.length} broken/blank image(s)`);
+    if (sameBroken.length) reasons.push(`${sameBroken.length} broken first-party image(s)`);
     if (pageErrors.length) reasons.push(`${pageErrors.length} uncaught page error(s)`);
     if (missing.length) reasons.push(`missing: ${missing.join(', ')}`);
     out.ok = reasons.length === 0;
+    if (crossBroken.length) out.warning = `${crossBroken.length} third-party image(s) not loading: ${crossBroken.slice(0, 3).join(', ')}`;
     if (!out.ok) out.issue = reasons.join('; ');
   } catch (e) {
     out.ok = false; out.issue = `load failed: ${String(e).slice(0, 140)}`;
@@ -76,7 +94,7 @@ async function checkPage(browser, spec) {
   for (const spec of PAGES) {
     const r = await checkPage(browser, spec);
     pages.push(r);
-    console.log(`${r.ok ? '✅' : '❌'} ${r.page} (${r.path}) ${r.ok ? '' : '— ' + r.issue}`);
+    console.log(`${r.ok ? '✅' : '❌'} ${r.page} (${r.path})${r.ok ? '' : ' — ' + r.issue}${r.warning ? '  ⚠ ' + r.warning : ''}`);
   }
   await browser.close();
 
