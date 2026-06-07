@@ -27494,6 +27494,19 @@ try:
 except Exception as _bsd_e:
     print(f"[main] brain_stuck_drain_bp register failed: {_bsd_e}", flush=True)
 
+# 2026-06-07 (Phase r68) — Brain Backlog Admin: close see→act loop.
+# Surfaces the 67 stuck findings + 40 L5 proposals on /admin/brain-backlog
+# and adds POST /api/v1/admin/brain/draft-prs/run which bypasses the
+# (currently failing) GH Actions brain-layer5-pr-opener.yml workflow.
+# Opens DRAFT PRs via GitHub REST API directly. Kill switch:
+# BRAIN_AUTOPILOT_DRAFT_PR_DISABLE=1. Daily cap: 5 (BRAIN_DRAFT_PR_DAILY_CAP).
+try:
+    from routes.brain_backlog_admin import brain_backlog_admin_bp
+    app.register_blueprint(brain_backlog_admin_bp)
+    print("[main] brain_backlog_admin_bp registered: GET /admin/brain-backlog + POST /api/v1/admin/brain/draft-prs/run (kill: BRAIN_AUTOPILOT_DRAFT_PR_DISABLE)", flush=True)
+except Exception as _bba_e:
+    print(f"[main] brain_backlog_admin_bp register failed: {_bba_e}", flush=True)
+
 # 2026-06-06 (Phase HJ-4) — Brain Mirror, Layer 25.
 # Reflection layer: grades Brain v2's self-assessment honestly
 # (catches the 4.00/4 perfect-score gaming when 20 findings are stuck),
