@@ -15,7 +15,7 @@
 
 claim: 300+ markets tracked across DCPI v2.1 | endpoint: /api/v1/dcpi/scores | json_path: _total_available | expected_min: 290 | expected_max: 320
 claim: 25 markets surfaced on the DCPI top-tier leaderboard | endpoint: /api/v1/dcpi/leaderboard | json_path: count | expected_min: 22 | expected_max: 28
-claim: 12+ verified DCGI operators across the natural-gas index | endpoint: /api/v1/dcgi/operators | json_path: total_distinct_operators_tracked | expected_min: 10 | expected_max: 50
+claim: 350+ verified DCGI operators across the natural-gas index | endpoint: /api/v1/dcgi/operators | json_path: total_distinct_operators_tracked | expected_min: 300 | expected_max: 500
 
 # ──────────────────────────────────────────────────────────────────────
 # DCPI TOP-BUILD MARKET (Cheyenne, WY — composite 73.1, verdict BUILD)
