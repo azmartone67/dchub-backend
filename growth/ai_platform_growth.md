@@ -55,9 +55,11 @@ LlamaIndex ecosystems get DC Hub out of the box. Publish to langchain-community
 import requests
 from langchain.tools import Tool
 
-def dchub_market_intel(market: str) -> str:
-    r = requests.get("https://api.dchub.cloud/api/v1/market-intel",
-                     params={"market": market}, timeout=20)
+def dchub_market_intel(market_slug: str) -> str:
+    # VERIFIED 2026-06-07: /api/v1/markets/<slug> (e.g. "northern-virginia") = 200.
+    # (NOT /api/v1/market-intel — that 404s.) Other live paths: /api/v1/facilities,
+    # /api/v1/markets/compare, /api/v1/facilities/detail/{id}, /api/grid/fuel-mix.
+    r = requests.get(f"https://api.dchub.cloud/api/v1/markets/{market_slug}", timeout=20)
     return r.text  # JSON: capacity price, vacancy, DCPI verdict, citation URL
 
 dchub_tool = Tool(
