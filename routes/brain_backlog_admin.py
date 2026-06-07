@@ -705,6 +705,38 @@ pre{background:#0a0a14;border:1px solid var(--bord);border-radius:6px;
     <h2>Trend lines · funnel snapshot</h2>
     <div id="strategic-trends"></div>
   </div>
+  <!-- Task #161 (2026-06-07): brain reads its own dashboards. -->
+  <div class="section">
+    <h2>Brain's Self-Assessment
+      <span class="pill" title="Daily Claude-backed pass that reads every admin dashboard the brain owns + brain_pr_outcomes + brain_strategic_recommendations and writes an HONEST wins/losses/adjustments grade of the brain's own recent output. Closes the verification loop: today the brain only WRITES (proposes fixes, opens PRs). With self-perception it READS BACK the dashboards to verify what actually worked. Runs 04:00 UTC daily, feeds INTO the weekly strategic synthesis + 06:00 morning briefing. Kill: BRAIN_SELF_PERCEPTION_DISABLE=1.">i</span>
+    </h2>
+    <div class="actions">
+      <button onclick="runSelfPerception('preview', this)">Preview prompt</button>
+      <button onclick="runSelfPerception('run', this)" class="warn">
+        Run now (force, bypass same-day cap)
+      </button>
+      <button onclick="loadSelfPerception()">Refresh</button>
+    </div>
+    <div class="meta" id="self-perception-meta">
+      The brain READS its own dashboards (funnel-health, brain-backlog,
+      sentinel-inbox, media-mix, state-of-2026, brain_pr_outcomes,
+      brain_strategic_recommendations) and writes an honest grade:
+      wins / losses / adjustments. Feeds back INTO the L6 strategic
+      synthesis so the brain learns from its own track record.
+      Cost ~$0.17/run (~$62/year) at Opus 4.8 reasoning rates. One
+      row per UTC date (UNIQUE(ran_on)). Activity gate skips Claude
+      when ≤2 brain-authored items in the last 7d (writes a
+      'low_activity' sentinel row instead).
+    </div>
+  </div>
+  <div class="section">
+    <h3 style="margin-top:0">Latest assessment</h3>
+    <div id="self-perception-latest"></div>
+  </div>
+  <div class="section">
+    <h3 style="margin-top:0">Recent assessments (last 30d)</h3>
+    <div id="self-perception-history"></div>
+  </div>
 </div>
 
 <div id="tab-outcomes" style="display:none">
@@ -914,8 +946,125 @@ function switchTab(name){
     (name==='strategic') ? '' : 'none';
   document.getElementById('tab-outcomes').style.display =
     (name==='outcomes') ? '' : 'none';
-  if(name==='strategic') loadStrategic();
+  const th = document.getElementById('tab-hourly');
+  if(th) th.style.display = (name==='hourly') ? '' : 'none';
+  if(name==='strategic'){
+    loadStrategic();
+    // Task #161 (2026-06-07): Brain's Self-Assessment panel shares
+    // the Strategic tab — load both when the operator opens it.
+    if(typeof loadSelfPerception === 'function') loadSelfPerception();
+  }
   if(name==='outcomes')  loadOutcomes();
+  if(name==='hourly')    loadHourly();
+}
+
+// ── Hourly micro-decision tab (Brain HOURLY) ──────────────────────
+
+const HOURLY_SEV_BADGE = {
+  'critical': '<span class="pill kill">CRITICAL</span>',
+  'high':     '<span class="pill kill">high</span>',
+  'medium':   '<span class="pill warn">medium</span>',
+  'low':      '<span class="pill">low</span>',
+  'none':     '<span class="pill ok">quiet</span>',
+};
+
+async function loadHourly(){
+  try {
+    const r = await fetch(
+      '/api/v1/admin/brain/micro-cycle/recent', {headers: HDR});
+    if(!r.ok){
+      $('hourly-rows').innerHTML =
+        `<div class="meta" style="color:#ef4444">${r.status} — admin_key required.</div>`;
+      return;
+    }
+    const d = await r.json();
+    renderHourly(d);
+  } catch(e){
+    $('hourly-rows').innerHTML =
+      `<div class="meta">Load error: ${escapeHtml(e.message)}</div>`;
+  }
+}
+
+function renderHourly(d){
+  const bs = d.budget_state || {};
+  const cap_usd = d.budget_cap_usd || 5;
+  const spent = (bs.spent_cents || 0) / 100;
+  const pct = Math.min(100, Math.round(spent / cap_usd * 100));
+  const kill = d.kill_switch ?
+    '<span class="pill kill">KILL ON</span>' :
+    '<span class="pill ok">live</span>';
+  const dryrun = d.dry_run ?
+    '<span class="pill warn">dry-run</span>' : '';
+  const decisions = d.decisions || [];
+  const non_skipped = decisions.filter(x => !x.skipped_reason);
+  const anomalies = non_skipped.filter(
+    x => ['medium','high','critical'].includes(
+      (x.anomaly_severity || '').toLowerCase()));
+  $('hourly-kpis').innerHTML = `
+    <div class="card"><div class="v">${non_skipped.length}</div>
+      <div class="l">Cycles ran (24h)</div></div>
+    <div class="card"><div class="v">${anomalies.length}</div>
+      <div class="l">Anomalies caught</div></div>
+    <div class="card"><div class="v">$${spent.toFixed(3)}</div>
+      <div class="l">Spent today (${pct}% of $${cap_usd}) ${kill} ${dryrun}</div></div>
+    <div class="card"><div class="v">${bs.skipped_count || 0}</div>
+      <div class="l">Skipped (dedup/cap)</div></div>
+  `;
+  $('hourly-rows').innerHTML = decisions.length ? decisions.map(it => {
+    const sev = (it.anomaly_severity || 'none').toLowerCase();
+    const badge = HOURLY_SEV_BADGE[sev] || HOURLY_SEV_BADGE.none;
+    const skip = it.skipped_reason ?
+      `<span class="tag">skipped: ${escapeHtml(it.skipped_reason)}</span>` : '';
+    const conf = it.confidence != null ?
+      `<span class="tag">conf ${Number(it.confidence).toFixed(2)}</span>` : '';
+    const cost = it.cost_cents ?
+      `<span class="tag">${(it.cost_cents/100).toFixed(3)}¢</span>` : '';
+    return `<div class="row" style="display:block;padding:10px 12px">
+      <div style="display:flex;justify-content:space-between;align-items:center">
+        <div>${badge} ${skip}
+          <span class="tag">${escapeHtml(it.model || '?')}</span>
+          ${conf} ${cost}
+        </div>
+        <div class="meta" style="font-size:11px">
+          ${escapeHtml((it.ran_at || '').slice(0,16))} UTC · h${it.hour_utc}
+        </div>
+      </div>
+      ${it.anomaly ?
+        `<div class="name" style="margin-top:4px">${escapeHtml(it.anomaly)}</div>` : ''}
+      ${it.micro_action ?
+        `<div class="meta" style="margin-top:2px">→ ${escapeHtml(it.micro_action)}</div>` : ''}
+      ${it.watch_metric ?
+        `<div class="meta" style="margin-top:2px">watch: ${escapeHtml(it.watch_metric)}</div>` : ''}
+    </div>`;
+  }).join('') : '<div class="meta">No cycles run yet — click "Run cycle now".</div>';
+}
+
+async function runHourly(mode, btn){
+  if(btn) btn.classList.add('disabled');
+  const path = (mode === 'preview') ?
+    '/api/v1/admin/brain/micro-cycle/preview-context' :
+    '/api/v1/admin/brain/micro-cycle/run-now?force=1';
+  const r = await fetch(path, {
+    method: (mode === 'preview') ? 'GET' : 'POST',
+    headers: HDR,
+  });
+  const txt = await r.text();
+  $('raw').style.display = 'block';
+  $('raw').textContent = txt;
+  if(btn) btn.classList.remove('disabled');
+  try {
+    const d = JSON.parse(txt);
+    if(mode === 'preview'){
+      toast(`Context ${d.context_chars} chars · hash ${d.context_hash} ` +
+            `(prev ${d.last_context_hash || 'none'})`);
+    } else if(d.skipped){
+      toast(`Skipped: ${d.skipped}`);
+    } else {
+      toast(`Anomaly: ${(d.anomaly || 'none').slice(0,80)} ` +
+            `· severity=${d.anomaly_severity} · ${d.cost_cents}¢`);
+    }
+  } catch(e){ toast('Response not JSON — check raw output below.'); }
+  setTimeout(loadHourly, 1200);
 }
 
 // ── PR Outcomes tab (ROUND 2) ──────────────────────────────────────
@@ -1176,6 +1325,163 @@ async function openStrategicPR(recId, btn){
   // PR opener requires a finer-grained endpoint we have not exposed yet.
   toast('Per-rec PR opener: TODO. Use Run synthesis with ' +
         'DCHUB_BRAIN_STRATEGIC_DRAFT_PR=1 in env to open all eligible scaffold PRs at once.');
+}
+
+// ── Brain's Self-Assessment panel (Task #161 — 2026-06-07) ──────────
+// The brain reads its OWN dashboards once a day and writes wins /
+// losses / adjustments to brain_self_perception. This panel surfaces
+// the latest row + history. PUBLIC read endpoints — no admin key
+// needed for the GETs (operator can refresh without re-typing key).
+
+async function loadSelfPerception(){
+  try {
+    const [latestR, historyR] = await Promise.all([
+      fetch('/api/v1/brain/self-perception/latest'),
+      fetch('/api/v1/brain/self-perception/history?days=30'),
+    ]);
+    const latest = await latestR.json();
+    const history = await historyR.json();
+    renderSelfPerceptionLatest(latest);
+    renderSelfPerceptionHistory(history);
+  } catch(e){
+    $('self-perception-latest').innerHTML =
+      `<div class="meta">Load error: ${escapeHtml(e.message)}</div>`;
+  }
+}
+
+function renderSelfPerceptionLatest(d){
+  const latest = (d || {}).latest;
+  if(!latest){
+    $('self-perception-latest').innerHTML =
+      '<div class="meta">No self-assessment yet. ' +
+      'Daily run fires at 04:00 UTC; hit Run now to seed.</div>';
+    return;
+  }
+  const wins = latest.wins || [];
+  const losses = latest.losses || [];
+  const adj = latest.adjustments || [];
+  // Compute win/loss ratio for the operator's glance
+  const ratio = wins.length && losses.length
+    ? `${wins.length}:${losses.length}` :
+      (wins.length ? `${wins.length}W` :
+       losses.length ? `${losses.length}L` : '0:0');
+  const ratioPill = wins.length > losses.length ?
+    `<span class="pill ok">${ratio} ratio</span>` :
+    losses.length > wins.length ?
+    `<span class="pill warn">${ratio} ratio</span>` :
+    `<span class="pill">${ratio} ratio</span>`;
+  const winRows = wins.map(w => `
+    <div class="row" style="display:block;border-left:3px solid #22c55e;padding:10px 12px;margin-bottom:6px">
+      <div style="font-weight:600;font-size:13px;color:#15803d">
+        ✓ ${escapeHtml(w.title||'?')}
+        <span class="tag">${escapeHtml(w.confidence||'?')}</span>
+      </div>
+      <div class="meta" style="margin-top:4px">${escapeHtml(w.evidence||'')}</div>
+    </div>`).join('') || '<div class="meta">No wins this run.</div>';
+  const lossRows = losses.map(l => `
+    <div class="row" style="display:block;border-left:3px solid #ef4444;padding:10px 12px;margin-bottom:6px">
+      <div style="font-weight:600;font-size:13px;color:#991b1b">
+        ✗ ${escapeHtml(l.title||'?')}
+        <span class="tag">${escapeHtml(l.confidence||'?')}</span>
+      </div>
+      <div class="meta" style="margin-top:4px">${escapeHtml(l.evidence||'')}</div>
+      ${l.root_cause ?
+        `<div class="meta" style="margin-top:2px;color:#7c2d12">
+          Root cause: ${escapeHtml(l.root_cause)}</div>` : ''}
+    </div>`).join('') || '<div class="meta">No losses this run.</div>';
+  const adjRows = adj.map(a => `
+    <div class="row" style="display:block;border-left:3px solid #f59e0b;padding:10px 12px;margin-bottom:6px">
+      <div style="font-weight:600;font-size:13px;color:#92400e">
+        → ${escapeHtml(a.title||'?')}
+      </div>
+      <div class="meta" style="margin-top:4px">
+        <b>Change:</b> ${escapeHtml(a.change||'')}
+      </div>
+      <div class="meta" style="margin-top:2px">
+        <b>Why:</b> ${escapeHtml(a.rationale||'')}
+      </div>
+    </div>`).join('') || '<div class="meta">No adjustments proposed.</div>';
+  const cost = latest.cost_cents != null
+    ? `${latest.cost_cents.toFixed(1)}¢` : '?';
+  $('self-perception-latest').innerHTML = `
+    <div style="background:#f8fafc;border-radius:8px;padding:14px 16px;margin-bottom:12px">
+      <div style="font-size:13px;color:#475569;margin-bottom:8px">
+        Ran on <b>${escapeHtml(latest.ran_on||'?')}</b> ·
+        ${ratioPill} ·
+        model=<code>${escapeHtml(latest.model_used||'?')}</code> ·
+        cost=${cost} ·
+        ${latest.pr_count_in_window||0} brain PRs in window
+      </div>
+      <div style="font-size:14px;color:#1e293b;line-height:1.5">
+        <em>"${escapeHtml(latest.summary||'(no summary)')}"</em>
+      </div>
+    </div>
+    <h4 style="margin:14px 0 6px 0;color:#15803d">Wins (${wins.length})</h4>
+    ${winRows}
+    <h4 style="margin:14px 0 6px 0;color:#991b1b">Losses (${losses.length})</h4>
+    ${lossRows}
+    <h4 style="margin:14px 0 6px 0;color:#92400e">Adjustments (${adj.length})</h4>
+    ${adjRows}`;
+}
+
+function renderSelfPerceptionHistory(d){
+  const hist = (d || {}).history || [];
+  if(!hist.length){
+    $('self-perception-history').innerHTML =
+      '<div class="meta">No history yet.</div>';
+    return;
+  }
+  $('self-perception-history').innerHTML = hist.map(h => {
+    const skip = h.skipped_reason
+      ? `<span class="pill warn">${escapeHtml(h.skipped_reason)}</span>`
+      : '';
+    return `<div class="row">
+      <div class="name">
+        <b>${escapeHtml(h.ran_on)}</b> ${skip}
+        <div class="meta">${escapeHtml((h.summary||'(no summary)').slice(0,180))}</div>
+      </div>
+      <div class="seen">
+        <span style="color:#22c55e">${h.wins||0}W</span> /
+        <span style="color:#ef4444">${h.losses||0}L</span> /
+        <span style="color:#f59e0b">${h.adjustments||0}A</span>
+      </div>
+    </div>`;
+  }).join('');
+}
+
+async function runSelfPerception(mode, btn){
+  if(btn) btn.classList.add('disabled');
+  const path = (mode === 'preview')
+    ? '/api/v1/admin/brain/self-perception/preview'
+    : '/api/v1/admin/brain/self-perception/run?force=1';
+  const method = (mode === 'preview') ? 'GET' : 'POST';
+  try {
+    const r = await fetch(path, {method, headers: HDR});
+    const txt = await r.text();
+    $('raw').style.display = 'block';
+    $('raw').textContent = txt;
+    try {
+      const d = JSON.parse(txt);
+      if(mode === 'preview'){
+        toast(`Prompt ready: ${d.prompt_chars||0} chars ` +
+              `(~${d.prompt_tokens_est||0} tokens). ` +
+              `Would skip? ${d.activity && d.activity.would_skip_low_activity}`);
+      } else {
+        if(d.skipped){
+          toast(`Self-perception skipped: ${d.skipped}.`);
+        } else if(d.from_cache){
+          toast(`Already ran today; showing cached row.`);
+        } else {
+          toast(`Self-perception: ${d.wins_count||0} wins, ` +
+                `${d.losses_count||0} losses, ${d.adjustments_count||0} adj, ` +
+                `model=${d.model_used||'?'}, cost~${d.cost_cents||0}¢.`);
+        }
+      }
+    } catch(e){ toast('Response not JSON — check raw output.'); }
+  } finally {
+    if(btn) btn.classList.remove('disabled');
+    setTimeout(loadSelfPerception, 1500);
+  }
 }
 
 // ── Feature Proposer panel (2026-06-07 / task #157) ─────────────────
