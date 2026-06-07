@@ -107,7 +107,7 @@ CREATE TABLE IF NOT EXISTS crm_outbound_queue (
     id                  BIGSERIAL PRIMARY KEY,
     event_type          TEXT NOT NULL,
     captured_at         TIMESTAMPTZ NOT NULL DEFAULT NOW(),
-    captured_date       DATE GENERATED ALWAYS AS ((captured_at AT TIME ZONE 'UTC')::date) STORED,
+    captured_date       DATE NOT NULL DEFAULT (NOW() AT TIME ZONE 'UTC')::date,
     lead_email          TEXT,
     lead_session_id     TEXT,
     lead_company        TEXT,
@@ -132,6 +132,26 @@ CREATE INDEX IF NOT EXISTS ix_crm_q_status
 CREATE INDEX IF NOT EXISTS ix_crm_q_email
     ON crm_outbound_queue (LOWER(lead_email))
     WHERE lead_email IS NOT NULL;
+-- r74.1 (2026-06-07): if a previous deploy created the table with a
+-- generated `captured_date` STORED column (which requires IMMUTABLE
+-- expressions Postgres won't allow with AT TIME ZONE), the INSERT
+-- silently fails. Drop+recreate column as a regular date with a DEFAULT
+-- so re-deploys upgrade in place.
+DO $$
+BEGIN
+    IF EXISTS (
+        SELECT 1 FROM information_schema.columns
+         WHERE table_name = 'crm_outbound_queue'
+           AND column_name = 'captured_date'
+           AND is_generated = 'ALWAYS'
+    ) THEN
+        ALTER TABLE crm_outbound_queue
+            DROP COLUMN captured_date;
+        ALTER TABLE crm_outbound_queue
+            ADD COLUMN captured_date DATE NOT NULL
+                DEFAULT (NOW() AT TIME ZONE 'UTC')::date;
+    END IF;
+END$$;
 """
 
 
@@ -487,8 +507,9 @@ def capture_event(event_type: str, payload: dict) -> dict:
                           (event_type, lead_email, lead_session_id,
                            lead_company, lead_title, lead_first_name,
                            lead_last_name, attribution_chain, intent_score,
-                           status)
-                        VALUES (%s, %s, %s, %s, %s, %s, %s, %s::jsonb, %s, 'queued')
+                           status, captured_date)
+                        VALUES (%s, %s, %s, %s, %s, %s, %s, %s::jsonb, %s,
+                                'queued', (NOW() AT TIME ZONE 'UTC')::date)
                         ON CONFLICT (event_type, COALESCE(LOWER(lead_email),''),
                                      COALESCE(lead_session_id,''), captured_date)
                         DO NOTHING

@@ -705,6 +705,40 @@ SCHEMA_STATEMENTS = [
         "CREATE INDEX IF NOT EXISTS ix_bpo_merged_at ON brain_pr_outcomes(merged_at DESC) WHERE merged_at IS NOT NULL",
         "CREATE INDEX IF NOT EXISTS ix_bpo_brain_authored ON brain_pr_outcomes(brain_authored) WHERE brain_authored = TRUE",
     ]),
+    ("brain_self_perception table", [
+        # Task #161 (2026-06-07): brain reads its own dashboards.
+        # Closes the verification loop. Once a day at 04:00 UTC the brain
+        # fans out to every admin dashboard, asks Claude for an honest
+        # wins/losses/adjustments self-assessment. Persists ONE row per
+        # UTC date (UNIQUE on ran_on) so the daily cap is enforced at the
+        # DB layer. Strategic synthesis L6 reads back via
+        # gather_self_perception_context() so the next weekly prompt
+        # sees "here's how you self-assessed last week".
+        #
+        # skipped_reason values:
+        #   - NULL        → ran successfully + Claude responded
+        #   - low_activity → <2 brain-authored PRs+recs in last 7d; no
+        #                    Claude call, sentinel row only
+        #   - (others can be added later — kept TEXT for flexibility)
+        """CREATE TABLE IF NOT EXISTS brain_self_perception (
+            id                    BIGSERIAL PRIMARY KEY,
+            ran_at                TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+            ran_on                DATE NOT NULL DEFAULT CURRENT_DATE,
+            summary               TEXT,
+            wins                  JSONB NOT NULL DEFAULT '[]'::jsonb,
+            losses                JSONB NOT NULL DEFAULT '[]'::jsonb,
+            adjustments           JSONB NOT NULL DEFAULT '[]'::jsonb,
+            raw_context_size_kb   NUMERIC,
+            claude_cost_cents     NUMERIC,
+            model_used            TEXT,
+            activity_window_days  INTEGER DEFAULT 7,
+            pr_count_in_window    INTEGER DEFAULT 0,
+            skipped_reason        TEXT,
+            raw_payload           JSONB
+        )""",
+        "CREATE UNIQUE INDEX IF NOT EXISTS ux_brain_self_perception_day ON brain_self_perception(ran_on)",
+        "CREATE INDEX IF NOT EXISTS ix_brain_self_perception_ran_at ON brain_self_perception(ran_at DESC)",
+    ]),
     ("brain_findings cross_session columns", [
         # Brain ROUND 2 (2026-06-07): cross-session finding pollination.
         # Today the brain processes findings PER session (loop_run), so the

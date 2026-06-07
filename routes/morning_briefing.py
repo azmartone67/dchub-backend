@@ -405,6 +405,21 @@ def _gather_state_2026() -> dict:
 
 # ── Public synthesis ──────────────────────────────────────────────────
 
+def _gather_self_perception() -> dict:
+    """Task #161 (2026-06-07): one-liner from the brain's own daily
+    self-assessment. The 04:00 UTC self-perception runner writes a row
+    to brain_self_perception; the 06:00 morning briefing reads it here.
+    Fail-soft → empty envelope if the module isn't deployed yet."""
+    try:
+        from routes.brain_self_perception import (
+            latest_self_perception_one_liner,
+        )
+        return latest_self_perception_one_liner() or {}
+    except Exception:
+        return {"summary": None, "wins_count": 0, "losses_count": 0,
+                "ran_on": None}
+
+
 def gather_briefing_context() -> dict:
     """Fan out to all source endpoints. Each returns a defensive dict."""
     started = datetime.datetime.now(datetime.timezone.utc)
@@ -414,6 +429,10 @@ def gather_briefing_context() -> dict:
     sent   = _gather_sentinel()
     media  = _gather_media()
     state  = _gather_state_2026()
+    # Task #161: brain's self-assessment one-liner (writes at 04:00 UTC,
+    # we render at 06:00 UTC). The 2h gap ensures the same-day row is
+    # already persisted when the briefing fires.
+    self_perception = _gather_self_perception()
     return {
         "generated_at":     started.isoformat(),
         "date_pretty":      started.strftime("%A, %B %d, %Y"),
@@ -423,6 +442,7 @@ def gather_briefing_context() -> dict:
         "sentinel":         sent,
         "media":            media,
         "state_of_2026":    state,
+        "self_perception":  self_perception,
     }
 
 
@@ -451,9 +471,33 @@ def render_briefing_html(ctx: dict) -> str:
     m  = ctx["media"]
     st = ctx["state_of_2026"]
     sr = ctx["strategic"]
+    sp = ctx.get("self_perception") or {}
 
     grades = s.get("grades") or {}
     sentinel_score = f"{s.get('healthy', 0)}/{s.get('total', 0)} healthy"
+
+    # Task #161 (2026-06-07): brain's own self-assessment one-liner.
+    # Empty quote falls back gracefully when self_perception hasn't run
+    # yet or skipped on low_activity.
+    if sp.get("summary"):
+        sp_line = (
+            f'<div style="margin-top:.4rem;padding:.5rem .75rem;'
+            f'background:#fef3c7;border-left:3px solid #f59e0b;'
+            f'border-radius:4px;font-size:.9rem;color:#78350f">'
+            f'<strong>Brain\'s self-assessment ({sp.get("ran_on","")}):</strong>'
+            f' {sp["summary"][:260]} '
+            f'<span style="color:#92400e;font-size:.85rem">'
+            f'· {sp.get("wins_count", 0)} wins · '
+            f'{sp.get("losses_count", 0)} losses</span>'
+            f"</div>"
+        )
+    else:
+        sp_line = (
+            '<div style="margin-top:.4rem;color:#94a3b8;font-size:.85rem">'
+            "Brain self-assessment: no run yet today "
+            "(04:00 UTC; appears here at 06:00)."
+            "</div>"
+        )
 
     # "Today's schedule" — hard-coded from crawler_scheduler.SCHEDULE
     # because we don't want to import that giant module just for this.
@@ -577,6 +621,7 @@ margin:0 auto;padding:1.25rem;color:#1f2937;line-height:1.5;background:#ffffff">
   <div>Stuck issues (untried 23+ cycles): <strong>{b['stuck_total']}</strong></div>
   <div>Strategic recommendations stored (last 4 wks): <strong>{sr['count_4w']}</strong></div>
   <div style="margin-top:.4rem;color:#334155">Latest: {strat_quote}</div>
+  {sp_line}
  </div>
 </div>
 

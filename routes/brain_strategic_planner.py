@@ -118,6 +118,13 @@ _CTX_BUDGET = {
     # ~2 KB holds the last 30d of merged brain-authored PRs +
     # before/after sentinel grades.
     "pr_outcomes":  2000,
+    # Task #161 (2026-06-07): brain reads its own dashboards.
+    # The daily self-perception module writes wins/losses/adjustments
+    # to brain_self_perception. The weekly L6 prompt now sees the
+    # last 14d of those self-assessments so the brain factors its
+    # own judgment into the next strategic plan. Recursive self-
+    # improvement loop closes. ~2 KB holds the last 14d.
+    "self_perception": 2000,
 }
 
 
@@ -257,15 +264,32 @@ def _gather_strategic_context() -> dict:
     # sentinel regressed → try Z this round".
     pr_outcomes = _gather_outcomes_context(window_days=30)
 
+    # Task #161 (2026-06-07): brain reads its own dashboards. The daily
+    # self-perception module writes wins/losses/adjustments to
+    # brain_self_perception. Pulling the last 14d here closes the
+    # recursive self-improvement loop: the L6 synthesis now sees how
+    # the brain self-assessed yesterday + the past two weeks. Fail-soft
+    # if the new module / table isn't deployed yet — empty envelope.
+    try:
+        from routes.brain_self_perception import (
+            gather_self_perception_context as _gsp,
+        )
+        self_perception = _gsp(window_days=14)
+    except Exception as _gsp_e:
+        logger.debug(
+            "L6 strategic: self_perception import skipped: %s", _gsp_e)
+        self_perception = {"_note": "module_not_loaded"}
+
     return {
-        "funnel":      {"now": funnel_now, "d30": funnel_30d},
-        "page_health": page_health,
-        "feedback":    feedback,
-        "backlog":     backlog,
-        "competitors": competitors,
-        "self_model":  self_model,
-        "recent_recs": recent_recs,
-        "pr_outcomes": pr_outcomes,
+        "funnel":          {"now": funnel_now, "d30": funnel_30d},
+        "page_health":     page_health,
+        "feedback":        feedback,
+        "backlog":         backlog,
+        "competitors":     competitors,
+        "self_model":      self_model,
+        "recent_recs":     recent_recs,
+        "pr_outcomes":     pr_outcomes,
+        "self_perception": self_perception,
     }
 
 
@@ -579,6 +603,17 @@ def _build_prompt(ctx: dict) -> str:
                     "learn from regressions):\n" +
                     _truncate(ctx.get("pr_outcomes"),
                               _CTX_BUDGET["pr_outcomes"]))
+    # Task #161 (2026-06-07): brain's own daily self-assessments. The
+    # prompt now sees "here's how you self-assessed yesterday + the
+    # past 2 weeks". Wins / losses / adjustments are honest grades the
+    # brain wrote about its own output. Use them to AVOID repeating
+    # the same losses next week — and to ESCALATE adjustments the
+    # operator hasn't acted on.
+    sections.append("SELF-PERCEPTION (past 14d daily self-assessments — "
+                    "your own wins/losses/adjustments; if a loss repeats "
+                    "across days the operator hasn't acted → escalate):\n"
+                    + _truncate(ctx.get("self_perception"),
+                                _CTX_BUDGET["self_perception"]))
 
     return ("\n\n".join(sections) +
             "\n\n──── End context. Reply with the JSON object ONLY. ────")

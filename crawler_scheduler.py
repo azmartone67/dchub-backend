@@ -2920,6 +2920,7 @@ _RUNNERS = {
     "brain_strategic_synthesis_thu": _run_brain_strategic_synthesis_thu,
     "brain_strategic_digest":    _run_brain_strategic_digest,
     "brain_pr_outcome_monitor":  _run_brain_pr_outcome_monitor,
+    "brain_self_perception":     _run_brain_self_perception,
     "brain_cross_session_scan":  _run_brain_cross_session_scan,
     "sentinel_auto_merge_sweep":    _run_sentinel_auto_merge_sweep,
     "sentinel_auto_merge_followup": _run_sentinel_auto_merge_followup,
