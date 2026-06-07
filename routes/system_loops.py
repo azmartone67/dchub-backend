@@ -187,18 +187,37 @@ def _probe_brain_learn(cur) -> dict:
     note_extra = ""
     status = _classify(age, 1.0)
     if status != "alive" and (age is None or age > 1.0):
-        # When log is quiet, classify as 'idle' rather than 'dead' if
-        # the endpoint exists and recent runs have any record of
-        # being called — best proxy here is mcp_tool_calls writes
-        # within last hour (which proves the backend is alive and
-        # serving traffic, so the brain cron's curl would have
-        # reached it). This is a heuristic, not a hard guarantee.
-        proxy_row = _safe_query(cur,
-            "SELECT COUNT(*) FROM mcp_tool_calls WHERE created_at > NOW() - INTERVAL '1 hour'")
-        backend_alive = proxy_row and (proxy_row[0] or 0) > 0
-        if backend_alive:
+        # r66-qa (2026-06-07): PRIMARY liveness = the heartbeat the learn
+        # handler stamps on EVERY invocation (brain_v2_store meta 'last_run_at',
+        # brain_v2_layer4.py:488) — including no-op passes with no novel
+        # findings. brain_learning_log only gets rows when something is actually
+        # proposed, so MAX(t) chronically under-reports a healthy-but-quiet
+        # brain as 'dead' (it read May-29 here while the cron fired hourly).
+        # If last_run_at is fresh, the cron IS firing → IDLE, not DEAD.
+        run_age = None
+        try:
+            from routes import brain_v2_store as _bstore
+            from datetime import datetime as _dtm, timezone as _tz
+            _lr = _bstore.get_meta("last_run_at")
+            if _lr:
+                _d = _dtm.fromisoformat(str(_lr).replace("Z", "+00:00"))
+                if _d.tzinfo is None:
+                    _d = _d.replace(tzinfo=_tz.utc)
+                run_age = (_dtm.now(_tz.utc) - _d).total_seconds() / 3600.0
+        except Exception:
+            run_age = None
+        if run_age is not None and run_age <= 2.0:
             status = "idle"
-            note_extra = " · backend alive, brain endpoint likely ran with no novel findings (every healer issue already in FIX_MAP)"
+            note_extra = f" · last_run_at {round(run_age, 2)}h ago — cron firing, no novel findings (healthy-quiet)"
+        else:
+            # Fallback proxy: backend serving MCP traffic ⇒ the cron's curl
+            # would have reached it. Heuristic, not a hard guarantee.
+            proxy_row = _safe_query(cur,
+                "SELECT COUNT(*) FROM mcp_tool_calls WHERE created_at > NOW() - INTERVAL '1 hour'")
+            backend_alive = proxy_row and (proxy_row[0] or 0) > 0
+            if backend_alive:
+                status = "idle"
+                note_extra = " · backend alive, brain endpoint likely ran with no novel findings"
 
     return {
         "name": "brain_learn",
