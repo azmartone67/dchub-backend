@@ -14,10 +14,10 @@ jobs:
       RAILWAY: https://dchub-backend-production.up.railway.app
       INTERNAL_KEY: ${{ secrets.DCHUB_INTERNAL_KEY }}
     steps:
-      - name: Default INTERNAL_KEY if secret missing
+      - name: Require INTERNAL_KEY secret
         run: |
           if [ -z "$INTERNAL_KEY" ]; then
-            echo "INTERNAL_KEY=dchub-internal-sync-2026" >> $GITHUB_ENV
+            echo "::error::DCHUB_INTERNAL_KEY secret not set — refusing public fallback"; exit 1
           fi
 
       - name: Snapshot baseline

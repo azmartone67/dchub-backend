@@ -39,7 +39,7 @@ jobs:
           RAILWAY="https://dchub-backend-production.up.railway.app"
           INTERNAL_KEY="${{ secrets.DCHUB_INTERNAL_KEY }}"
           if [ -z "$INTERNAL_KEY" ]; then
-            INTERNAL_KEY="dchub-internal-sync-2026"
+            echo "::error::DCHUB_INTERNAL_KEY secret not set — refusing public fallback"; exit 1
           fi
           echo "Step 0/4: Firing async loaders..."
           for endpoint in load-substations-live load-power-plants-live load-pipelines-live load-facilities-live load-energy-discovery-live; do
