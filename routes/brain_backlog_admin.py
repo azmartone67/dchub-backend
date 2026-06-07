@@ -449,10 +449,15 @@ def draft_prs_run():
             cap=cap, used_today=used,
         ), 200
 
-    # Pull the same high-conf queue
+    # Pull the same high-conf queue. Over-fetch by 8x because the L5
+    # codegen has historically generated patches that fail the syntax
+    # gate (the GH Actions workflow has been failing on this for weeks);
+    # we need a wide pool to find any that actually patch cleanly.
+    fetch_limit = int(request.args.get("fetch_limit")
+                      or max(remaining * 8, 16))
     pending = _http_get_json(
         f"/api/v1/brain/proposed-code/pending-pr?"
-        f"limit={remaining * 2}&"  # over-fetch a bit; some will skip
+        f"limit={fetch_limit}&"
         f"min_confidence={_min_conf()}") or {}
     items = pending.get("items") or []
     if not items:
