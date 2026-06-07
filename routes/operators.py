@@ -313,6 +313,7 @@ def api_operator_detail(slug):
 
 # ── HTML pages ──────────────────────────────────────────────────
 
+# AUTO-REPAIR: duplicate route '/operators' also in routes/eu_gas_entsog.py:193 — review and remove one
 @operators_bp.route("/operators", methods=["GET"], strict_slashes=False)
 def operators_index():
     """Public index page — top 50 operators by facility count."""

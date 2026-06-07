@@ -521,7 +521,7 @@ def _record_spend(cents: float, skipped: bool) -> None:
             cur.execute("""
                 INSERT INTO brain_micro_budget_state
                   (day, spent_cents, runs_count, skipped_count, updated_at)
-                VALUES (CURRENT_DATE, %s, %s, %s, NOW())
+                VALUES (CURRENT_DATE, %s, %s, %s, NOW() ON CONFLICT DO NOTHING)
                 ON CONFLICT (day) DO UPDATE SET
                   spent_cents  = brain_micro_budget_state.spent_cents  + EXCLUDED.spent_cents,
                   runs_count   = brain_micro_budget_state.runs_count   + EXCLUDED.runs_count,
@@ -714,7 +714,7 @@ def _persist_decision(ctx: dict, payload: Optional[dict],
                    anomaly_severity, micro_action, watch_metric,
                    confidence, context_summary, context_hash,
                    claude_cost_cents, skipped_reason, raw_payload)
-                VALUES (NOW(), %s, %s, %s, %s, %s, %s, %s, %s, %s, %s,
+                VALUES (NOW() ON CONFLICT DO NOTHING, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s,
                         %s, %s, %s::jsonb)
                 ON CONFLICT (date_utc, hour_utc) DO UPDATE SET
                   anomaly = EXCLUDED.anomaly,

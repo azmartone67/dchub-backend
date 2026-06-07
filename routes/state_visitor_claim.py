@@ -237,7 +237,7 @@ def track_event():
                         (visitor_session_id, brief_clicks, brief_slugs,
                          time_on_page_seconds, ua, referer, ip_hash,
                          first_seen_at, last_event_at)
-                    VALUES (%s, 1, %s, 0, %s, %s, %s, NOW(), NOW())
+                    VALUES (%s, 1, %s, 0, %s, %s, %s, NOW() ON CONFLICT DO NOTHING, NOW())
                     ON CONFLICT (visitor_session_id) DO UPDATE SET
                         brief_clicks = state_visitor_intent.brief_clicks + 1,
                         brief_slugs = CASE
@@ -260,7 +260,7 @@ def track_event():
                     INSERT INTO state_visitor_intent
                         (visitor_session_id, brief_clicks, time_on_page_seconds,
                          ua, referer, ip_hash, first_seen_at, last_event_at)
-                    VALUES (%s, 0, %s, %s, %s, %s, NOW(), NOW())
+                    VALUES (%s, 0, %s, %s, %s, %s, NOW() ON CONFLICT DO NOTHING, NOW())
                     ON CONFLICT (visitor_session_id) DO UPDATE SET
                         time_on_page_seconds =
                             state_visitor_intent.time_on_page_seconds + EXCLUDED.time_on_page_seconds,
@@ -344,7 +344,7 @@ def _mint_trial_key_for_email(email: str, c, request_obj) -> tuple[str, str]:
                     """INSERT INTO auto_trial_keys
                          (api_key, minted_for_tool, request_ip_hash, request_ua,
                           expires_at, operator_email, client_name)
-                       VALUES (%s, %s, %s, %s, NOW() + INTERVAL '7 days', %s, %s)
+                       VALUES (%s, %s, %s, %s, NOW() ON CONFLICT DO NOTHING + INTERVAL '7 days', %s, %s)
                        ON CONFLICT (api_key) DO NOTHING""",
                     (api_key, "state-of-2026",
                      hashlib.sha256(ip.encode()).hexdigest()[:16],
@@ -481,7 +481,7 @@ def claim_email():
                     """INSERT INTO state_visitor_intent
                          (visitor_session_id, brief_clicks, time_on_page_seconds,
                           ua, referer, ip_hash, first_seen_at, last_event_at)
-                       VALUES (%s, 0, 0, %s, %s, %s, NOW(), NOW())
+                       VALUES (%s, 0, 0, %s, %s, %s, NOW() ON CONFLICT DO NOTHING, NOW())
                        ON CONFLICT (visitor_session_id) DO NOTHING""",
                     (vsid,
                      (request.headers.get("User-Agent") or "")[:200],
