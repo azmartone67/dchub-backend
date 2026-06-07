@@ -1,6 +1,7 @@
 # State of Data Centers 2026 — Pre-Publish Claim Sheet
 #
-# Used by GET /api/v1/admin/qa/state-of-2026-precheck.
+# Used by GET /api/v1/admin/qa/state-of-2026-precheck
+# (routes/state_of_2026_precheck.py)
 #
 # Format (ONE claim per line, ALL fields required, '#' = comment):
 #   claim: <verbatim narrative text> | endpoint: /api/v1/X | json_path: a.b.c | expected_min: Y | expected_max: Z
@@ -9,38 +10,66 @@
 # Lines starting with '#' or blank are ignored.
 
 # ──────────────────────────────────────────────────────────────────────
-# VERIFIED CLAIMS — endpoints proven live + json_path proven correct
+# COVERAGE HEADLINES — what DC Hub indexes (post-2026-06-06 expansion)
 # ──────────────────────────────────────────────────────────────────────
 
 claim: 300+ markets tracked across DCPI v2.1 | endpoint: /api/v1/dcpi/scores | json_path: _total_available | expected_min: 290 | expected_max: 320
+claim: 25 markets surfaced on the DCPI top-tier leaderboard | endpoint: /api/v1/dcpi/leaderboard | json_path: count | expected_min: 22 | expected_max: 28
+claim: 12+ verified DCGI operators across the natural-gas index | endpoint: /api/v1/dcgi/operators | json_path: total_distinct_operators_tracked | expected_min: 10 | expected_max: 50
 
 # ──────────────────────────────────────────────────────────────────────
-# ADD YOUR OWN CLAIMS BELOW (replace examples with your real post wording)
+# DCPI TOP-BUILD MARKET (Cheyenne, WY — composite 73.1, verdict BUILD)
+# ──────────────────────────────────────────────────────────────────────
+
+claim: Top DCPI BUILD market scores composite 73 | endpoint: /api/v1/dcpi/leaderboard | json_path: leaderboard.0.composite_score | expected_min: 65 | expected_max: 85
+claim: Top BUILD market shows 70 excess power score | endpoint: /api/v1/market-brief/cheyenne | json_path: hero.excess_power | expected_min: 60 | expected_max: 80
+
+# ──────────────────────────────────────────────────────────────────────
+# AI / MCP TRACTION (your real growth story)
+# ──────────────────────────────────────────────────────────────────────
+
+claim: 50+ active dev keys across MCP integrations | endpoint: /admin/funnel-health?format=json | json_path: kpis.active_dev_keys | expected_min: 45 | expected_max: 200
+claim: 35,000+ tool calls per week on the live MCP server | endpoint: /admin/funnel-health?format=json | json_path: kpis.tool_calls_7d | expected_min: 25000 | expected_max: 80000
+claim: 10+ paid conversions since launch (30d window) | endpoint: /admin/funnel-health?format=json | json_path: kpis.conversions_30d | expected_min: 8 | expected_max: 100
+
+# ──────────────────────────────────────────────────────────────────────
+# ADD YOUR OWN CLAIMS BELOW
 # ──────────────────────────────────────────────────────────────────────
 #
-# How to add a claim:
-#  1. Decide what number you'll cite in the post ("we serve 21,000 facilities")
-#  2. Find an admin API endpoint that returns that number
-#  3. Trace the JSON path to it (admin/funnel-health surfaces many of these)
-#  4. Add 5% buffer to expected_min/_max so the harness allows fresh-data drift
+# Recipe for each claim you'll cite in the LinkedIn post:
+#  1. Decide your exact wording → put in `claim:`
+#  2. Find the live endpoint that proves it (see cheat sheet below)
+#  3. Trace json_path with `curl -H "X-Admin-Key: $KEY" <url> | python3 -m json.tool`
+#  4. Set expected_min/_max with ±5–15% buffer for fresh-data drift
 #
-# Example shapes (uncomment + edit before publishing):
+# CHEAT SHEET — endpoints proven live + their useful json_paths:
 #
-# claim: ERCOT queue 410 GW pending | endpoint: /api/v1/grid/status?iso=ercot | json_path: queue_pending_gw | expected_min: 390 | expected_max: 430
-# claim: PJM headroom 30 GW | endpoint: /api/v1/grid/status?iso=pjm | json_path: headroom_gw | expected_min: 28 | expected_max: 32
-# claim: Top BUILD market is Tulsa | endpoint: /api/v1/dcpi/leaderboard | json_path: top_build.0.market_slug | expected_min: 0 | expected_max: 0
-# claim: 6 customer conversions | endpoint: /api/v1/admin/funnel-health?format=json | json_path: conversions_30d | expected_min: 11 | expected_max: 50
+#   /admin/funnel-health?format=json   (admin-gated)
+#       kpis.tool_calls_7d        — weekly MCP tool calls
+#       kpis.conversions_30d      — paid conversions in last 30d
+#       kpis.active_dev_keys      — total dev keys
+#       kpis.mrr_usd              — current MRR in dollars
+#       funnel.distinct_paid_users_30d  — addressable demand pool
+#       signals_with_tool_tagged.pct_tagged_30d  — Fix C measurement
+#       platforms[]               — array of AI platform stats
 #
-# ──────────────────────────────────────────────────────────────────────
-# REMOVED CLAIMS (endpoints don't exist — add real ones above)
-# ──────────────────────────────────────────────────────────────────────
-# Endpoints I'd recommended that turned out to not exist or return wrong shape:
-#  - /api/v1/site/stats           (no facilities_total field — try /api/v1/admin/funnel-health)
-#  - /api/v1/dcgi/states          (returns 404 — try /api/v1/dcgi/operators which works)
-#  - /api/v1/mcp/tools-count      (returns 404 — try /.well-known/mcp.json or hardcode 33)
-#  - /api/v1/ai-platforms/stats   (returns 404 — try /admin/funnel-health for ai_platforms)
-#  - /api/v1/grid/iso-list        (returns 200 but no 'count' field — try /api/v1/grid/operators)
-#  - /api/v1/grid/operators       (returns 200 but no 'count' field — needs json_path tracing)
+#   /api/v1/dcpi/scores
+#       _total_available  — total DCPI market count (306)
+#       count             — markets returned in page (anon-gated to 10)
 #
-# Run `curl -H "X-Admin-Key: $ADMIN_KEY" <endpoint> | python3 -m json.tool | head`
-# on any endpoint you want to claim against to figure out the right json_path.
+#   /api/v1/dcpi/leaderboard
+#       count             — top markets shown (25)
+#       leaderboard.0.market_name  — top BUILD market name (Cheyenne)
+#       leaderboard.0.composite_score  — top BUILD composite
+#       leaderboard.0.verdict  — "BUILD" / "CAUTION" / "AVOID"
+#
+#   /api/v1/market-brief/<slug>
+#       hero.excess_power     — excess power score
+#       hero.constraint_score — constraint score
+#       hero.iso              — ISO operator
+#
+#   /api/v1/dcgi/operators
+#       total_distinct_operators_tracked  — 12
+#
+# Re-run QA after editing:
+#   curl "https://dchub-backend-production.up.railway.app/api/v1/admin/qa/state-of-2026-precheck?admin_key=$KEY"
