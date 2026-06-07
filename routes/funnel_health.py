@@ -215,7 +215,16 @@ def _build_data() -> dict:
                         # per claim_variant ('claude', 'cursor', 'cline',
                         # 'chatgpt', 'generic'). Populated by the dedicated
                         # query block below.
-                        "variant_breakdown": []},
+                        "variant_breakdown": [],
+                        # 2026-06-07: step-by-step drop monitor —
+                        # claims_minted → page_viewed → email_submitted
+                        # → key_issued → first_api_call → upgrade_click → paid.
+                        # killer_step + alarm flag scream the instant any
+                        # step drops >95% (the 19/0/0 stall pattern).
+                        "step_drop": []},
+        "step_drop_alarm": False,
+        "step_drop_killer": "",
+        "step_drop_killer_pct": 0.0,
         "platforms": [],
         "ab_status": {"ab_active": False, "kill_switch": False,
                       "cohorts": {"A": {}, "B": {}}, "z": 0.0, "sig_pct": 0.0,
@@ -595,6 +604,76 @@ def _build_data() -> dict:
                         "use_rate_pct": 0.0, "paid_rate_pct": 0.0})
             out["high_intent"]["variant_breakdown"] = variant_breakdown
         except Exception:
+            try: conn.rollback()
+            except Exception: pass
+
+        # ── 2026-06-07: step-by-step drop monitor ─────────────────────
+        # Same 7-step waterfall as /api/v1/admin/mcp/high-intent/step-drop
+        # — surfaces inline on /admin/funnel-health so the operator sees
+        # the killer step without having to hit a separate endpoint.
+        # Fail-soft: a bad query CANNOT blank the rest of the dashboard.
+        try:
+            with conn.cursor() as cur:
+                def _ds(sql):
+                    try:
+                        cur.execute(sql)
+                        return int((cur.fetchone() or [0])[0] or 0)
+                    except Exception:
+                        try: conn.rollback()
+                        except Exception: pass
+                        return 0
+                _m = _ds("SELECT COUNT(*) FROM mcp_high_intent_sessions WHERE claim_minted_at IS NOT NULL AND claim_minted_at >= NOW() - INTERVAL '30 days'")
+                _u = _ds("SELECT COUNT(*) FROM mcp_high_intent_sessions WHERE claim_used_at   IS NOT NULL AND claim_used_at   >= NOW() - INTERVAL '30 days'")
+                _e = _ds("SELECT COUNT(*) FROM mcp_high_intent_sessions WHERE claim_email     IS NOT NULL AND claim_used_at   >= NOW() - INTERVAL '30 days'")
+                _k = _ds("SELECT COUNT(*) FROM mcp_high_intent_sessions WHERE minted_api_key  IS NOT NULL AND claim_used_at   >= NOW() - INTERVAL '30 days'")
+                _f = _ds("""SELECT COUNT(DISTINCT h.minted_api_key)
+                              FROM mcp_high_intent_sessions h
+                              JOIN auto_trial_keys a ON a.api_key = h.minted_api_key
+                             WHERE h.minted_api_key IS NOT NULL
+                               AND h.claim_used_at >= NOW() - INTERVAL '30 days'
+                               AND a.last_used_at IS NOT NULL""")
+                _c = _ds("""SELECT COUNT(DISTINCT LOWER(h.claim_email))
+                              FROM mcp_high_intent_sessions h
+                              JOIN mcp_upgrade_signals u
+                                ON LOWER(u.operator_email) = LOWER(h.claim_email)
+                             WHERE h.claim_email IS NOT NULL
+                               AND h.claim_used_at >= NOW() - INTERVAL '30 days'
+                               AND u.stripe_clicked_at IS NOT NULL""")
+                _p = _ds("""SELECT COUNT(DISTINCT LOWER(h.claim_email))
+                              FROM mcp_high_intent_sessions h
+                              JOIN users u ON LOWER(u.email) = LOWER(h.claim_email)
+                             WHERE h.claim_email IS NOT NULL
+                               AND h.claim_used_at >= NOW() - INTERVAL '30 days'
+                               AND COALESCE(u.plan, 'free') NOT IN ('free','')""")
+            raw = [("claims_minted", "Claim URL minted", _m),
+                   ("page_viewed",   "Page opened",      _u),
+                   ("email_submitted","Email submitted", _e),
+                   ("key_issued",    "Trial key issued", _k),
+                   ("first_api_call","Key made API call",_f),
+                   ("upgrade_click", "Stripe click",     _c),
+                   ("paid",          "Conversion",       _p)]
+            prev = None
+            killer_drop = -1.0
+            killer = ""
+            steps = []
+            for name, label, count in raw:
+                if prev is None or prev == 0:
+                    dfp = 0.0
+                else:
+                    dfp = round(100.0 * (prev - count) / prev, 2)
+                steps.append({"step": name, "label": label, "count": count,
+                              "drop_from_prev": dfp,
+                              "drop_pct": round(100.0 * (_m - count) / _m, 2) if _m else 0.0})
+                if dfp > killer_drop and name != "claims_minted":
+                    killer_drop = dfp
+                    killer = name
+                prev = count
+            out["high_intent"]["step_drop"] = steps
+            out["step_drop_alarm"] = (_m > 5 and _u == 0) or killer_drop > 95.0
+            out["step_drop_killer"] = killer
+            out["step_drop_killer_pct"] = round(killer_drop, 2) if killer else 0.0
+        except Exception as e:
+            logger.debug("[funnel_health] step_drop probe failed: %s", e)
             try: conn.rollback()
             except Exception: pass
 
@@ -1268,6 +1347,46 @@ def _render_html(data: dict, admin_key: str) -> str:
       trial key emailed via Resend. Threshold env-driven via
       <code>DCHUB_HIGH_INTENT_THRESHOLD</code> (2026-06-07: lowered 3 → 2 after
       empirical drop-off analysis).
+    </div>
+  </div>
+
+  <!-- 2026-06-07: step-by-step drop monitor (funnel_health_high_intent_step_drop)
+       7-stage waterfall: claims_minted → page_viewed → email_submitted →
+       key_issued → first_api_call → upgrade_click → paid. The killer_step
+       banner screams the instant any step drops >95% from prior — would
+       have caught the 19/0/0 stall on day 1. Endpoint:
+       GET /api/v1/admin/mcp/high-intent/step-drop -->
+  <div class="card" style="margin-bottom:18px;border:{(
+      '2px solid #ef4444' if data.get('step_drop_alarm') else
+      '1px solid var(--border)')};">
+    <h2>High-intent funnel · step-by-step drop
+      <span style="font-size:10px;color:{('#ef4444' if data.get('step_drop_alarm') else 'var(--accent)')};">
+        {('ALARM · killer=' + str(data.get('step_drop_killer',''))) if data.get('step_drop_alarm') else 'monitoring'}
+      </span>
+    </h2>
+    <table>
+      <thead><tr>
+        <th>Step</th>
+        <th style="text-align:right">Count (30d)</th>
+        <th style="text-align:right">Drop from prev</th>
+        <th style="text-align:right">Cumulative drop vs minted</th>
+      </tr></thead>
+      <tbody>
+      {''.join(
+        f'<tr><td>{_esc(s.get("label","?"))}</td>'
+        f'<td style="text-align:right">{_fmt_n(s.get("count",0))}</td>'
+        f'<td style="text-align:right;color:{("#ef4444" if s.get("drop_from_prev",0)>95 else "#f59e0b" if s.get("drop_from_prev",0)>50 else "var(--muted)")}">{s.get("drop_from_prev",0):.1f}%</td>'
+        f'<td style="text-align:right;color:{("#ef4444" if s.get("drop_pct",0)>95 else "#f59e0b" if s.get("drop_pct",0)>50 else "var(--muted)")}">{s.get("drop_pct",0):.1f}%</td>'
+        f'</tr>'
+        for s in hi.get('step_drop', []) or []
+      ) or '<tr><td colspan="4" style="color:var(--muted);text-align:center;padding:18px">No data yet</td></tr>'}
+      </tbody>
+    </table>
+    <div style="font-size:11px;color:var(--muted);margin-top:10px;">
+      Killer step = the single biggest drop_from_prev. If the funnel breaks at
+      any point (CF Pages 404, broken page, email send fail, broken Stripe link),
+      this card screams within 60s (cache TTL) instead of 30 days.
+      Endpoint: <code>/api/v1/admin/mcp/high-intent/step-drop</code>.
     </div>
   </div>
 
