@@ -359,7 +359,10 @@ def _audit_market_brief_one(slug: str) -> dict:
     out["sections_total"] = len(section_markers)
     out["sections"] = section_status
 
-    # Score:
+    # Score by sections, then DEMOTE if em-dashes blow past 5 (the brief
+    # template ships them as "field not yet populated" placeholders, so 29
+    # of them on a page means the Thin Coverage UX isn't rendering and the
+    # founder is about to share a page full of dashes).
     #  A = 4/4
     #  B = 3/4
     #  C = 2/4
@@ -370,6 +373,12 @@ def _audit_market_brief_one(slug: str) -> dict:
     elif populated == 2: out["score"] = "C"
     elif populated == 1: out["score"] = "D"
     else:                out["score"] = "F"
+    # Em-dash demotion. > 5 → step down two letter grades; > 20 → straight F.
+    if em_n > 20:
+        out["score"] = "F"
+    elif em_n > 5:
+        step_down = {"A": "C", "B": "D", "C": "F", "D": "F", "F": "F"}
+        out["score"] = step_down.get(out["score"], "F")
 
     return out
 
@@ -453,10 +462,19 @@ def _audit_hyperscaler_brief_one(slug: str) -> dict:
         out["fail_reasons"].append(
             f"${max_seen:,}/MW > ${MAX_USD_PER_MW:,} ceiling (math broken)")
 
-    # Tracked facility count — look for "X facilities tracked" or count rows.
-    # Be lenient: any of a few markers counts as "has at least one".
-    fac_markers = (r"facilities tracked", r"facility-card", r"data-facility=",
-                   r"<tr[^>]*data-mw")
+    # Tracked facility count — look for any of the canonical facility markers
+    # the hyperscaler-brief template renders. The live template emits
+    # "tracked across" + "facilities" (separated), so match either phrasing.
+    fac_markers = (
+        r"facilities tracked",
+        r"tracked across",
+        r"facility-card",
+        r"data-facility=",
+        r"<tr[^>]*data-mw",
+        # The Capital Velocity section emits "$/MW" KPIs on a real-data brief;
+        # presence is a robust proxy for "this brief has data".
+        r"\$/MW",
+    )
     has_fac = any(re.search(p, body, re.I) for p in fac_markers)
     out["tracked_facilities"] = 1 if has_fac else 0
     if not has_fac:
@@ -521,12 +539,23 @@ def _audit_dcpi_dcgi_summary() -> dict:
         "overall_score": "F",
         "critical_fails": 0,
     }
-    # 1. DCPI total markets (the 233 number)
-    r = _probe("/api/v1/dcpi/scores?limit=1", expect_json=True)
+    # 1. DCPI total markets (the 233 number).
+    # `_total_available` is populated regardless of `limit`, but be explicit:
+    # query with a generous limit so j.get("count") is also meaningful as a
+    # secondary signal if the _total_available field ever disappears.
+    r = _probe("/api/v1/dcpi/scores?limit=10", expect_json=True)
     total = None
     if r.get("ok") and isinstance(r.get("json"), dict):
         j = r["json"]
-        total = j.get("_total_available") or j.get("count") or len(j.get("scores") or [])
+        # PREFER _total_available — it reflects the full universe even when
+        # the page is gated to 10. Fall back to count/scores.length.
+        total = (j.get("_total_available")
+                 or j.get("total_markets")
+                 or len(j.get("scores") or []))
+        # 'count' is the page count (gated to 10), not the universe — use it
+        # ONLY when nothing else is present.
+        if not total:
+            total = j.get("count")
     chk = {"check": "DCPI total markets", "value": total,
            "expected": "~233 (±10)", "passed": False, "note": ""}
     if isinstance(total, (int, float)) and 220 <= total <= 250:
