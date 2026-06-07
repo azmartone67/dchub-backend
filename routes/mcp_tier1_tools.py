@@ -232,13 +232,19 @@ def find_alternatives():
         try:
             with c.cursor(cursor_factory=psycopg2.extras.RealDictCursor) as cur:
                 # Get the target facility (cast id since discovered_facilities.id is SERIAL int)
+                # Resolve by integer id OR by the name-slug that search_facilities
+                # returns (e.g. 'stack-stafford-technology-campus'). Before this,
+                # only CAST(id AS TEXT) matched, so an agent that searched → got a
+                # slug → called find_alternatives got a 404 (Devin QA 2026-06-07).
+                # name-slug match needs no stored slug column → schema-safe.
                 cur.execute("""
                     SELECT id, name, provider, city, state, country,
                            latitude, longitude, power_mw, status
                       FROM discovered_facilities
                      WHERE CAST(id AS TEXT) = %s
+                        OR TRIM(BOTH '-' FROM REGEXP_REPLACE(LOWER(name), '[^a-z0-9]+', '-', 'g')) = LOWER(%s)
                      LIMIT 1
-                """, (str(facility_id),))
+                """, (str(facility_id), str(facility_id)))
                 target = cur.fetchone()
 
                 if not target:
@@ -389,13 +395,18 @@ def score_facility():
             with c.cursor(cursor_factory=psycopg2.extras.RealDictCursor) as cur:
                 # discovered_facilities lacks tier/sqft/certifications/connectivity
                 # — graceful absence (defaults to 0/None)
+                # Resolve by integer id OR the name-slug search_facilities returns
+                # (e.g. 'stack-stafford-technology-campus') — see find_alternatives
+                # above. Fixes the search→score 404 (Devin QA 2026-06-07). Schema-safe.
                 cur.execute("""
                     SELECT id, name, provider, city, state, country,
                            latitude, longitude, power_mw, status,
                            source, source_url, confidence_score
                       FROM discovered_facilities
-                     WHERE CAST(id AS TEXT) = %s LIMIT 1
-                """, (str(facility_id),))
+                     WHERE CAST(id AS TEXT) = %s
+                        OR TRIM(BOTH '-' FROM REGEXP_REPLACE(LOWER(name), '[^a-z0-9]+', '-', 'g')) = LOWER(%s)
+                     LIMIT 1
+                """, (str(facility_id), str(facility_id)))
                 f = cur.fetchone()
 
                 if not f:
