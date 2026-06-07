@@ -62,7 +62,7 @@ jobs:
           # after the link. Format mirrors neighboring entries:
           #   - [name](github-url) [![name MCP server](glama badge)](glama link) 📇 ☁️ - desc
           cat > /tmp/entry.md <<'EOF'
-          - [DC Hub](https://github.com/azmartone67/dchub-mcp-server) [![DC Hub MCP server](https://glama.ai/mcp/servers/azmartone67/dchub-mcp-server/badges/score.svg)](https://glama.ai/mcp/servers/azmartone67/dchub-mcp-server) 📇 ☁️ - Data-center, power & gas intelligence MCP server. 38 tools covering 21,000+ data-center facilities (170+ countries), 232 US power markets scored by the DC Hub Power Index (DCPI), 2,000+ tracked M&A deals, ISO grid telemetry (PJM, ERCOT, CAISO, MISO, SPP, NYISO), fiber routes, and energy pricing. Free to cite (CC-BY-4.0).
+          - [azmartone67/dchub-mcp-server](https://github.com/azmartone67/dchub-mcp-server) [![DC Hub MCP server](https://glama.ai/mcp/servers/azmartone67/dchub-mcp-server/badges/score.svg)](https://glama.ai/mcp/servers/azmartone67/dchub-mcp-server) 📇 ☁️ - Data-center, power & gas intelligence MCP server. 38 tools covering 21,000+ data-center facilities (170+ countries), 232 US power markets scored by the DC Hub Power Index (DCPI), 2,000+ tracked M&A deals, ISO grid telemetry (PJM, ERCOT, CAISO, MISO, SPP, NYISO), fiber routes, and energy pricing. Free to cite (CC-BY-4.0).
           EOF
           echo "::notice::Entry drafted:"
           cat /tmp/entry.md
@@ -86,8 +86,8 @@ jobs:
           cd /tmp/amcp
 
           # Step 2: skip if our entry is already there.
-          if grep -q "dchub.cloud" README.md; then
-            echo "::notice::dchub.cloud already present in README.md — no PR needed."
+          if grep -q "azmartone67/dchub-mcp-server" README.md; then
+            echo "::notice::dchub-mcp-server already present in README.md — no PR needed."
             echo "ALREADY_PRESENT=1" >> "$GITHUB_ENV"
             exit 0
           fi
