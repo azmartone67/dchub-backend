@@ -195,6 +195,16 @@ def init_content_tables():
     except Exception as _s26te:
         logger.warning("state_of_2026 table init skipped: %s", _s26te)
 
+    # Media comment engagement loop (2026-06-07): media_comment_engagement_log
+    # table. Required for the LinkedIn comment poll cron at 9/21 UTC + flush
+    # at 13/1 UTC + the /api/v1/admin/media/comment-engagement/* endpoints.
+    # CRITICAL for Monday's State of 2026 launch comment storm.
+    try:
+        from routes.media_comment_engagement import init_comment_engagement_tables as _ice
+        _ice()
+    except Exception as _icee:
+        logger.warning("media comment engagement table init skipped: %s", _icee)
+
 def _media_block_category(reason: str) -> str:
     r = (reason or "").lower()
     if "disclaimer" in r:                       return "ai_disclaimer_as_validation"

@@ -1249,6 +1249,8 @@ The tuner runs daily at 13:30 UTC after LinkedIn engagement sync.</p>
 
 {_render_autoresponse_section(autoresp or [], autoresp_flags or {})}
 
+{_render_comment_engagement_section()}
+
 {_render_style_ab_section()}
 
 <h2 class="muted" style="margin-top:32px;font-size:14px;">Tuner actions</h2>
@@ -1343,6 +1345,130 @@ def _render_autoresponse_section(rows: list[dict], flags: dict[str, Any]) -> str
   ship in DRY-RUN. Set <code>MEDIA_AUTORESPONSE_DRY_RUN=0</code> to go live.
   Kill switch: <code>MEDIA_AUTORESPONSE_DISABLE=1</code>.
   Weekly cap: <code>MEDIA_AUTORESPONSE_WEEKLY_CAP=3</code>.
+</p>"""
+
+
+def _render_comment_engagement_section() -> str:
+    """2026-06-07: surface the LinkedIn Comment Engagement loop card on
+    /admin/media-mix. Shows last 7d of detected comments, the generated
+    replies, decision badges (replied / dry_run / queued / skipped_*),
+    and the kill-switch + dry-run flags. Includes a one-click
+    "regenerate" admin button per row.
+
+    CRITICAL for Monday's State of 2026 launch — this is where Jonathan
+    will be reviewing the first wave of drafts before flipping
+    MEDIA_COMMENT_REPLY_DRY_RUN=0 to go live. Fail-soft: empty string
+    on partial deploy."""
+    try:
+        from routes.media_comment_engagement import (
+            recent_log_rows as _ce_recent,
+            recent_counters as _ce_counters,
+            _dry_run as _ce_dry,
+            _kill_switched as _ce_kill,
+            _env_int as _ce_env,
+            DAILY_CAP_DEFAULT as _ce_cap_default,
+        )
+        rows = _ce_recent(days=7, limit=50) or []
+        counters = _ce_counters(days=7) or {}
+        dry_on = bool(_ce_dry())
+        kill_on = bool(_ce_kill())
+        daily_cap = int(_ce_env("MEDIA_COMMENT_REPLY_DAILY_CAP", _ce_cap_default))
+    except Exception as e:
+        _log(f"render_comment_engagement_section skipped: {e}")
+        return ""
+
+    dry_pill   = "DRY-RUN" if dry_on else "LIVE"
+    kill_pill  = "KILL ON" if kill_on else "kill off"
+    badge_dry  = ("background:#3b2e0a;color:#ffd166" if dry_on
+                  else "background:#0e2a1c;color:#7cf3a0")
+    badge_kill = ("background:#3a0e0e;color:#ff8a8a" if kill_on
+                  else "background:#1d2630;color:#9ec5fe")
+    replied   = int(counters.get("replied", 0))
+    queued    = int(counters.get("queued", 0))
+    dry_rows  = int(counters.get("dry_run", 0))
+    skipped_total = sum(
+        v for k, v in counters.items()
+        if isinstance(v, int) and k.startswith("skipped_"))
+
+    table_rows: list[str] = []
+    for r in rows[:40]:
+        detected = (r.get("comment_detected_at") or "")[:16].replace("T", " ")
+        author = (r.get("comment_author_name") or r.get("comment_author_urn") or "")[:32]
+        text = (r.get("comment_text") or "")[:240]
+        reply = (r.get("reply_generated") or "")[:300]
+        decision = str(r.get("decision") or "")
+        reason = str(r.get("decision_reason") or "")[:80]
+        scheduled = (r.get("scheduled_for") or "")[:16].replace("T", " ")
+        posted = (r.get("reply_posted_at") or "")[:16].replace("T", " ")
+        urn = (r.get("source_post_urn") or "")[:34]
+        log_id = int(r.get("id") or 0)
+        decision_color = {
+            "replied":          "#7cf3a0",
+            "queued":           "#9ec5fe",
+            "dry_run":          "#ffd166",
+            "post_failed":      "#ff8a8a",
+            "skipped_tone":     "#c79bff",
+            "skipped_spam":     "#ff8a8a",
+            "skipped_self":     "#97a3b6",
+            "skipped_too_short":"#97a3b6",
+            "skipped_bare_emoji":"#97a3b6",
+            "skipped_blocklist_urn":"#97a3b6",
+            "skipped_capped":   "#ffb37c",
+        }.get(decision, "#97a3b6")
+        regen_btn = ""
+        if decision in ("dry_run", "queued", "skipped_tone", "post_failed") and log_id:
+            regen_btn = (
+                f"<a href='/api/v1/admin/media/comment-engagement/regenerate/{log_id}'"
+                " style='font-size:11px;color:#9ec5fe;margin-left:8px' "
+                "onclick=\"event.preventDefault();fetch(this.href,{method:'POST',"
+                "headers:{'X-Admin-Key':prompt('admin key')}}).then(r=>r.json())"
+                ".then(d=>alert(JSON.stringify(d,null,2)))\">regenerate</a>"
+            )
+        sched_or_posted = posted or scheduled or "—"
+        table_rows.append(
+            f"<tr><td>{detected}</td>"
+            f"<td class='muted' style='font-size:11px'>{author}</td>"
+            f"<td>{text}</td>"
+            f"<td><span style='color:{decision_color}'>{decision}</span>"
+            f" <span class='muted' style='font-size:11px'>{reason}</span>{regen_btn}</td>"
+            f"<td class='muted' style='font-size:11px'>{sched_or_posted}<br>{urn}</td></tr>"
+        )
+        if reply:
+            table_rows.append(
+                f"<tr><td colspan=5 style='padding:4px 8px 12px 8px;background:#0e1320'>"
+                f"<span class='muted' style='font-size:11px'>reply:</span> {reply}"
+                f"</td></tr>"
+            )
+    body = "".join(table_rows) or (
+        "<tr><td colspan=5 class='muted'>No comments processed yet. "
+        "The cron runs 9/21 UTC; manually probe with "
+        "<code>GET /api/v1/admin/media/comment-engagement/poll-now</code>.</td></tr>"
+    )
+    return f"""
+<h2>Comment Engagement (LinkedIn auto-reply loop)</h2>
+<div class="kpi-row">
+  <div class="kpi" style="{badge_dry};padding:6px 12px"><span>Mode</span><b>{dry_pill}</b></div>
+  <div class="kpi" style="{badge_kill};padding:6px 12px"><span>Switch</span><b>{kill_pill}</b></div>
+  <div class="kpi"><span>Daily cap</span><b>{daily_cap}</b></div>
+  <div class="kpi"><span>7d replied</span><b>{replied}</b></div>
+  <div class="kpi"><span>7d queued</span><b>{queued}</b></div>
+  <div class="kpi"><span>7d dry-run</span><b>{dry_rows}</b></div>
+  <div class="kpi"><span>7d skipped</span><b>{skipped_total}</b></div>
+</div>
+<table><thead><tr>
+  <th>Detected</th><th>Author</th><th>Comment</th>
+  <th>Decision</th><th>Scheduled / Post URN</th>
+</tr></thead>
+<tbody>{body}</tbody></table>
+<p class="muted" style="font-size:12px;margin-top:4px">
+  Detects comments on the last 7d of DC Hub LinkedIn posts (every 4h), drafts a 280-char reply via Claude
+  (1 specific DC Hub number + 1 brief link), tone-filters, waits a random 4-7min for human cadence, posts as the
+  org URN. Ships DRY-RUN by default — set <code>MEDIA_COMMENT_REPLY_DRY_RUN=0</code> to flip live after
+  reviewing ~10 drafts. Daily cap: <code>MEDIA_COMMENT_REPLY_DAILY_CAP={daily_cap}</code>.
+  Kill switch: <code>MEDIA_COMMENT_REPLY_DISABLE=1</code>.
+  Blocklist: <code>MEDIA_COMMENT_REPLY_BLOCKLIST=urn1,name2,...</code>.
+  Endpoints: <code>GET /api/v1/admin/media/comment-engagement/poll-now</code> (dry-run preview),
+  <code>POST .../run</code> (full cycle), <code>POST .../flush-due</code> (post queued).
 </p>"""
 
 
