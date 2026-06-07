@@ -193,6 +193,60 @@ _MANIFEST: list[dict] = [
     # backend, 150 is a more realistic floor.
     {"path": "/.well-known/agent.json",  "category": "normal", "min_bytes":  150, "label": "Agent Card"},
     {"path": "/llms.txt",                "category": "normal", "min_bytes":  500, "label": "llms.txt"},
+
+    # ── Phase HEAL-AND-SHIP (2026-06-07) — sentinel evolves into autonomous
+    # heal-and-ship loop. Tracks ALL surfaces shipped in the last week so the
+    # brain SEES every new endpoint the moment it regresses.
+    #
+    # Admin-gated routes are flagged `needs_admin: True` — the probe attaches
+    # X-Admin-Key (DCHUB_ADMIN_KEY env) so a 401/403 doesn't get logged as a
+    # false outage. Without that flag, every admin dashboard would scream
+    # 401 once per scan.
+
+    # Admin dashboards (single-pane operator telemetry surfaces)
+    {"path": "/admin/funnel-health",                "category": "high",   "min_bytes": 2000, "label": "Admin Funnel Health",       "needs_admin": True},
+    {"path": "/admin/brain-backlog",                "category": "high",   "min_bytes": 2000, "label": "Admin Brain Backlog",       "needs_admin": True},
+    {"path": "/admin/qa/state-of-2026",             "category": "high",   "min_bytes": 2000, "label": "Admin QA State-of-2026",    "needs_admin": True},
+    {"path": "/api/v1/admin/qa/state-of-2026-precheck", "category": "high","min_bytes": 200, "label": "QA Precheck API",           "needs_admin": True, "expected_status": [200, 202]},
+
+    # MCP Connect landings (the one-click connector hand-off pages)
+    {"path": "/connect/cursor",                     "category": "high",   "min_bytes": 1500, "label": "Connect → Cursor",          "wants_nav": True},
+    {"path": "/connect/cline",                      "category": "high",   "min_bytes": 1500, "label": "Connect → Cline",           "wants_nav": True},
+    {"path": "/connect/continue",                   "category": "high",   "min_bytes": 1500, "label": "Connect → Continue",        "wants_nav": True},
+    {"path": "/connect/claude-desktop",             "category": "high",   "min_bytes": 1500, "label": "Connect → Claude Desktop",  "wants_nav": True},
+
+    # Per-market brief canaries (top 5 by ops MW)
+    {"path": "/markets/northern-virginia/brief",    "category": "high",   "min_bytes": 2000, "label": "Market Brief: Northern Virginia"},
+    {"path": "/markets/dallas/brief",               "category": "high",   "min_bytes": 2000, "label": "Market Brief: Dallas"},
+    {"path": "/markets/phoenix/brief",              "category": "high",   "min_bytes": 2000, "label": "Market Brief: Phoenix"},
+    {"path": "/markets/atlanta/brief",              "category": "high",   "min_bytes": 2000, "label": "Market Brief: Atlanta"},
+    {"path": "/markets/chicago/brief",              "category": "high",   "min_bytes": 2000, "label": "Market Brief: Chicago"},
+
+    # Per-hyperscaler brief canaries (top 5 by capex)
+    {"path": "/hyperscalers/aws/brief",             "category": "high",   "min_bytes": 2000, "label": "Hyperscaler Brief: AWS"},
+    {"path": "/hyperscalers/azure/brief",           "category": "high",   "min_bytes": 2000, "label": "Hyperscaler Brief: Azure"},
+    {"path": "/hyperscalers/google-cloud/brief",    "category": "high",   "min_bytes": 2000, "label": "Hyperscaler Brief: Google Cloud"},
+    {"path": "/hyperscalers/meta/brief",            "category": "high",   "min_bytes": 2000, "label": "Hyperscaler Brief: Meta"},
+    {"path": "/hyperscalers/oracle/brief",          "category": "high",   "min_bytes": 2000, "label": "Hyperscaler Brief: Oracle"},
+
+    # Per-state brief canaries (top 5 by published-market count)
+    {"path": "/states/texas/brief",                 "category": "high",   "min_bytes": 2000, "label": "State Brief: Texas"},
+    {"path": "/states/california/brief",            "category": "high",   "min_bytes": 2000, "label": "State Brief: California"},
+    {"path": "/states/virginia/brief",              "category": "high",   "min_bytes": 2000, "label": "State Brief: Virginia"},
+    {"path": "/states/georgia/brief",               "category": "high",   "min_bytes": 2000, "label": "State Brief: Georgia"},
+    {"path": "/states/ohio/brief",                  "category": "high",   "min_bytes": 2000, "label": "State Brief: Ohio"},
+
+    # Per-operator brief canaries (top 5 by ops MW)
+    {"path": "/operators/aligned/brief",            "category": "high",   "min_bytes": 2000, "label": "Operator Brief: Aligned"},
+    {"path": "/operators/qts/brief",                "category": "high",   "min_bytes": 2000, "label": "Operator Brief: QTS"},
+    {"path": "/operators/digital-realty/brief",     "category": "high",   "min_bytes": 2000, "label": "Operator Brief: Digital Realty"},
+    {"path": "/operators/equinix/brief",            "category": "high",   "min_bytes": 2000, "label": "Operator Brief: Equinix"},
+    {"path": "/operators/vantage/brief",            "category": "high",   "min_bytes": 2000, "label": "Operator Brief: Vantage"},
+
+    # DCPI + MCP funnel API canaries (the JSON the brain learns from)
+    {"path": "/api/v1/dcpi/scores",                 "category": "high",   "min_bytes":  500, "label": "DCPI Scores API (full)"},
+    {"path": "/api/v1/dcpi/leaderboard",            "category": "high",   "min_bytes":  500, "label": "DCPI Leaderboard API"},
+    {"path": "/api/v1/mcp/funnel",                  "category": "high",   "min_bytes":  300, "label": "MCP Funnel API"},
 ]
 
 
@@ -373,6 +427,13 @@ def _scan_one(entry: dict) -> dict:
         }
         if _ik:
             _hdrs["X-Internal-Key"] = _ik
+        # Phase HEAL-AND-SHIP (2026-06-07): admin-gated pages need the
+        # X-Admin-Key header or they 401/403 + the sentinel logs a false
+        # "page down" finding. The brain then spins on a phantom outage
+        # because nothing is actually broken — it's just gated. Attach
+        # the admin key when the manifest entry sets `needs_admin: True`.
+        if entry.get("needs_admin") and _ADMIN_KEY:
+            _hdrs["X-Admin-Key"] = _ADMIN_KEY
         # r-sentinel-retry (2026-05-31): the slowest-render pages
         # (/dcpi/<slug>, /markets/<slug>, /operators, /grid/<iso>) were
         # red-flagged on a SINGLE transient self-call timeout even though
@@ -563,6 +624,17 @@ def scan_all() -> list[dict]:
         if c is not None:
             try: c.close()
             except Exception: pass
+
+    # Phase HEAL-AND-SHIP (2026-06-07): auto-run the consecutive-failure
+    # tracker after every full sweep so the brain backlog and the operator
+    # email path are wired without needing a separate cron. The tracker has
+    # its own rate-limit guard (_TRACKER_MIN_INTERVAL_S) so it cannot fire
+    # more often than once per 30s even if scan_all is called repeatedly.
+    try:
+        track_consecutive_failures(results)
+    except Exception:
+        pass
+
     return results
 
 
@@ -840,6 +912,737 @@ def sentinel_resolutions():
     return resp, 200
 
 
+# ── Phase HEAL-AND-SHIP (2026-06-07) — autonomous heal-and-ship loop ───
+# Closes the gap the user named: "probe sweep runs but nothing acts on
+# failures." Now consecutive 5xx hits cross a threshold → the sentinel
+# opens a brain Layer-5 fix proposal automatically via brain_findings.
+# At threshold 5 a follow-up email goes to Jonathan so a chronic outage
+# never just stews in the dashboard.
+#
+# The counters survive across probes via site_sentinel_consec_failures
+# (per-path counter + last_failure_at + last_brain_finding_at). A 2xx
+# response resets the counter and (optionally) logs a recovery hook.
+
+_CONSEC_SCHEMA = """
+CREATE TABLE IF NOT EXISTS site_sentinel_consec_failures (
+    path                   TEXT PRIMARY KEY,
+    consecutive_5xx_count  INT NOT NULL DEFAULT 0,
+    consecutive_fail_count INT NOT NULL DEFAULT 0,
+    last_status_code       INT,
+    last_reason            TEXT,
+    last_failure_at        TIMESTAMPTZ,
+    last_brain_finding_at  TIMESTAMPTZ,
+    last_escalation_at     TIMESTAMPTZ,
+    last_success_at        TIMESTAMPTZ
+);
+CREATE INDEX IF NOT EXISTS ix_ssc_failure_at ON site_sentinel_consec_failures(last_failure_at DESC);
+"""
+
+# Threshold tuning. Three strikes = brain finding (Layer-5 reads on next
+# learn pass); five strikes = also email the operator.
+_BRAIN_FINDING_THRESHOLD = 3
+_EMAIL_THRESHOLD         = 5
+
+# Idempotency guard: don't re-fire the brain finding more than once per
+# this many hours per path (otherwise every 5-min scan keeps re-upserting
+# the same finding, drowning brain_findings).
+_BRAIN_FINDING_REFIRE_HOURS = 6
+_EMAIL_REFIRE_HOURS         = 24
+
+# Probe-storm guard. The 162.220.232.99 1.5M-blocked-request incident
+# (per memory) was the sentinel hammering its own surfaces. We never want
+# the heal-and-ship loop to *trigger more probes* — it only reads the
+# already-persisted scan_all() results. Belt-and-suspenders: track when
+# we last ran the failure-tracker so even if it's wired into two cron
+# slots it can't run more than once per 30s.
+_TRACKER_GUARD = {"last_run_ts": 0.0}
+_TRACKER_MIN_INTERVAL_S = 30.0
+
+
+def _is_5xx(status_code: int | None) -> bool:
+    try:
+        return 500 <= int(status_code or 0) <= 599
+    except Exception:
+        return False
+
+
+def track_consecutive_failures(results: list[dict] | None = None) -> dict:
+    """Walk the latest scan results. For each path:
+      • 5xx        → increment consecutive_5xx_count + consecutive_fail_count
+      • non-5xx 4xx/timeout/etc → increment consecutive_fail_count only
+        (keeps the broader fail trail honest without auto-opening a brain
+        finding for a 401/timeout — those are usually config/transient).
+      • 2xx healthy → reset BOTH counters + last_success_at = NOW().
+    Threshold hits open/refresh brain findings + (at 5) email the operator.
+
+    No HTTP probes. Pure DB walk over latest_results() / persisted scan
+    rows so this can never DDoS our own site.
+    """
+    import time as _time
+    out: dict = {"checked": 0, "opened": [], "escalated": [], "reset": [],
+                 "skipped_reason": None,
+                 "ran_at": datetime.datetime.utcnow().isoformat() + "Z"}
+
+    # Probe-storm guard (paranoid; not strictly needed since we don't probe).
+    now_ts = _time.time()
+    if now_ts - _TRACKER_GUARD["last_run_ts"] < _TRACKER_MIN_INTERVAL_S:
+        out["skipped_reason"] = "rate_limited_30s"
+        return out
+    _TRACKER_GUARD["last_run_ts"] = now_ts
+
+    if results is None:
+        results = latest_results()
+    if not results:
+        out["skipped_reason"] = "no_results"
+        return out
+
+    c = _conn()
+    if c is None:
+        out["skipped_reason"] = "no_database"
+        return out
+    try:
+        with c.cursor() as cur:
+            cur.execute(_CONSEC_SCHEMA)
+            for r in results:
+                path = r.get("path")
+                if not path:
+                    continue
+                out["checked"] += 1
+                status_code = r.get("status_code") or 0
+                reason      = r.get("reason") or ""
+                healthy     = bool(r.get("healthy"))
+                label       = r.get("label") or path
+                category    = r.get("category") or "normal"
+
+                if healthy:
+                    # Reset both counters.
+                    cur.execute("""
+                        INSERT INTO site_sentinel_consec_failures
+                          (path, consecutive_5xx_count, consecutive_fail_count,
+                           last_status_code, last_reason, last_success_at)
+                        VALUES (%s, 0, 0, %s, %s, NOW())
+                        ON CONFLICT (path) DO UPDATE SET
+                          consecutive_5xx_count  = 0,
+                          consecutive_fail_count = 0,
+                          last_status_code       = EXCLUDED.last_status_code,
+                          last_reason            = 'ok',
+                          last_success_at        = NOW()
+                    """, (path, status_code, reason or "ok"))
+                    out["reset"].append(path)
+                    continue
+
+                # Unhealthy: bump fail counter; bump 5xx counter only when
+                # the status is in the 500s. Other failure modes
+                # (timeout / connect_failed / 4xx / body_too_small /
+                # nav_missing / stale) still raise consecutive_fail_count
+                # but don't directly fire the auto-Layer-5 path — those
+                # are caught by the existing detector + heal loop.
+                fivexx_step = 1 if _is_5xx(status_code) else 0
+                cur.execute("""
+                    INSERT INTO site_sentinel_consec_failures
+                      (path, consecutive_5xx_count, consecutive_fail_count,
+                       last_status_code, last_reason, last_failure_at)
+                    VALUES (%s, %s, 1, %s, %s, NOW())
+                    ON CONFLICT (path) DO UPDATE SET
+                      consecutive_5xx_count  = site_sentinel_consec_failures.consecutive_5xx_count + %s,
+                      consecutive_fail_count = site_sentinel_consec_failures.consecutive_fail_count + 1,
+                      last_status_code       = EXCLUDED.last_status_code,
+                      last_reason            = EXCLUDED.last_reason,
+                      last_failure_at        = NOW()
+                    RETURNING consecutive_5xx_count, consecutive_fail_count,
+                              last_brain_finding_at, last_escalation_at
+                """, (path, fivexx_step, status_code, reason, fivexx_step))
+                row = cur.fetchone()
+                if not row:
+                    continue
+                consec_5xx, consec_fail, last_bf_at, last_esc_at = row
+
+                # ── threshold 3: open brain Layer-5 fix proposal ──
+                if consec_5xx >= _BRAIN_FINDING_THRESHOLD:
+                    cooldown_hit = False
+                    if last_bf_at is not None:
+                        try:
+                            hours_since = (datetime.datetime.now(datetime.timezone.utc)
+                                           - last_bf_at).total_seconds() / 3600.0
+                            cooldown_hit = hours_since < _BRAIN_FINDING_REFIRE_HOURS
+                        except Exception:
+                            cooldown_hit = False
+                    if not cooldown_hit:
+                        try:
+                            from routes.brain_findings_writer import upsert_brain_finding
+                            issue = f"page_persistent_5xx:{path}"
+                            url   = f"{_SITE_BASE}{path}"
+                            detail = (
+                                f"Sentinel: '{label}' returned 5xx {consec_5xx} consecutive scans "
+                                f"(last status {status_code}, reason: {reason}). "
+                                f"Category: {category}. Auto-opened by site_sentinel for "
+                                f"brain Layer-5 fix proposal. Fix path: inspect the route "
+                                f"+ open a draft PR. Source: routes/site_sentinel.py "
+                                f":track_consecutive_failures."
+                            )
+                            res = upsert_brain_finding(
+                                cur, issue=issue, url=url,
+                                count=int(consec_5xx),
+                                detail=detail,
+                                detector="site_sentinel.heal_and_ship")
+                            cur.execute("""
+                                UPDATE site_sentinel_consec_failures
+                                   SET last_brain_finding_at = NOW()
+                                 WHERE path = %s
+                            """, (path,))
+                            out["opened"].append({
+                                "path": path, "label": label,
+                                "consecutive_5xx": int(consec_5xx),
+                                "consecutive_fail": int(consec_fail),
+                                "brain_writer_result": res,
+                                "status_code": int(status_code),
+                            })
+                        except Exception as e:
+                            out.setdefault("errors", []).append(
+                                f"open_finding:{path}:{type(e).__name__}:{str(e)[:80]}")
+
+                # ── threshold 5: email Jonathan (Resend) ──
+                if consec_5xx >= _EMAIL_THRESHOLD:
+                    esc_cooldown = False
+                    if last_esc_at is not None:
+                        try:
+                            hours_since = (datetime.datetime.now(datetime.timezone.utc)
+                                           - last_esc_at).total_seconds() / 3600.0
+                            esc_cooldown = hours_since < _EMAIL_REFIRE_HOURS
+                        except Exception:
+                            esc_cooldown = False
+                    if not esc_cooldown:
+                        sent = _send_escalation_email(path, label, category,
+                                                      consec_5xx, status_code,
+                                                      reason)
+                        if sent:
+                            cur.execute("""
+                                UPDATE site_sentinel_consec_failures
+                                   SET last_escalation_at = NOW()
+                                 WHERE path = %s
+                            """, (path,))
+                            out["escalated"].append({
+                                "path": path, "label": label,
+                                "consecutive_5xx": int(consec_5xx),
+                                "email_sent": True,
+                            })
+    except Exception as e:
+        out["error"] = f"{type(e).__name__}:{str(e)[:120]}"
+    finally:
+        try: c.close()
+        except Exception: pass
+    out["opened_count"]     = len(out["opened"])
+    out["escalated_count"]  = len(out["escalated"])
+    out["reset_count"]      = len(out["reset"])
+    return out
+
+
+def _send_escalation_email(path: str, label: str, category: str,
+                            consec_5xx: int, status_code: int,
+                            reason: str) -> bool:
+    """Best-effort Resend email. Fails silently — escalation is informative
+    only, not a guard. Tries the canonical helper, falls back to the legacy
+    alias, then to a direct Resend API call if RESEND_API_KEY is set."""
+    to = (os.environ.get("DCHUB_OPERATOR_EMAIL")
+          or os.environ.get("OPERATOR_EMAIL")
+          or "azmartone@gmail.com").strip()
+    subject = f"[Sentinel] Persistent 5xx on {label} ({consec_5xx} consecutive)"
+    body = (
+        f"The Site Sentinel has detected {consec_5xx} consecutive 5xx responses on:\n\n"
+        f"  Page:     {label}\n"
+        f"  Path:     {path}\n"
+        f"  URL:      {_SITE_BASE}{path}\n"
+        f"  Category: {category}\n"
+        f"  Last:     HTTP {status_code} — {reason}\n\n"
+        f"A brain Layer-5 finding has been open since strike 3. Layer-5 will "
+        f"propose a fix on its next learn pass. If a draft PR appears in the "
+        f"backlog, review + merge.\n\n"
+        f"Inbox: https://dchub.cloud/admin/sentinel-inbox\n"
+        f"Source: routes/site_sentinel.py:track_consecutive_failures\n"
+    )
+    # 1) Canonical helper
+    try:
+        from routes.email_resend import send_email  # type: ignore
+        send_email(to=to, subject=subject, body=body)
+        return True
+    except Exception:
+        pass
+    # 2) Direct Resend API
+    try:
+        import requests as _rq
+        key = os.environ.get("RESEND_API_KEY") or ""
+        if not key:
+            return False
+        _rq.post("https://api.resend.com/emails",
+                 headers={"Authorization": f"Bearer {key}",
+                          "Content-Type": "application/json"},
+                 json={"from": os.environ.get("RESEND_FROM_EMAIL", "alerts@dchub.cloud"),
+                       "to": [to], "subject": subject, "text": body},
+                 timeout=8)
+        return True
+    except Exception:
+        return False
+
+
+def consec_failure_state() -> list[dict]:
+    """Read-only counter snapshot. Used by the inbox dashboard JSON."""
+    c = _conn()
+    if c is None:
+        return []
+    out: list[dict] = []
+    try:
+        import psycopg2.extras
+        with c.cursor(cursor_factory=psycopg2.extras.RealDictCursor) as cur:
+            cur.execute(_CONSEC_SCHEMA)
+            cur.execute("""
+                SELECT path, consecutive_5xx_count, consecutive_fail_count,
+                       last_status_code, last_reason, last_failure_at,
+                       last_brain_finding_at, last_escalation_at,
+                       last_success_at
+                  FROM site_sentinel_consec_failures
+            """)
+            for r in cur.fetchall():
+                out.append({
+                    "path": r["path"],
+                    "consecutive_5xx":  int(r["consecutive_5xx_count"] or 0),
+                    "consecutive_fail": int(r["consecutive_fail_count"] or 0),
+                    "last_status_code": r["last_status_code"],
+                    "last_reason":      r["last_reason"],
+                    "last_failure_at":  r["last_failure_at"].isoformat() if r["last_failure_at"] else None,
+                    "last_brain_finding_at": r["last_brain_finding_at"].isoformat() if r["last_brain_finding_at"] else None,
+                    "last_escalation_at":    r["last_escalation_at"].isoformat() if r["last_escalation_at"] else None,
+                    "last_success_at":  r["last_success_at"].isoformat() if r["last_success_at"] else None,
+                })
+    except Exception:
+        return out
+    finally:
+        try: c.close()
+        except Exception: pass
+    return out
+
+
+def _grade(r: dict, consec: dict | None) -> str:
+    """One-letter grade for the inbox row.
+      A = healthy + fast        B = healthy but slow (>3s)
+      C = unhealthy 1 strike    D = unhealthy 2 strikes / 3+ fail
+      F = unhealthy >=3 strikes (brain finding open or escalated)
+    """
+    c5 = (consec or {}).get("consecutive_5xx", 0) or 0
+    cf = (consec or {}).get("consecutive_fail", 0) or 0
+    if not r.get("healthy"):
+        if c5 >= _BRAIN_FINDING_THRESHOLD:
+            return "F"
+        if c5 >= 2 or cf >= 3:
+            return "D"
+        return "C"
+    elapsed = r.get("elapsed_ms") or 0
+    if elapsed > 3000:
+        return "B"
+    return "A"
+
+
+@site_sentinel_bp.route("/api/v1/sentinel/track-failures", methods=["POST"])
+def sentinel_track_failures():
+    """Admin-only: walk the latest scan + update consecutive-failure
+    counters + open brain findings at threshold 3 + escalate at 5.
+
+    This is the single closing-the-loop call. Wire it after every probe
+    sweep. No HTTP probes performed (read-only on persisted scan rows)
+    so it can't trigger a probe storm."""
+    provided = (request.headers.get("X-Admin-Key")
+                or request.args.get("admin_key") or "").strip()
+    if _ADMIN_KEY and provided != _ADMIN_KEY:
+        return jsonify(error="unauthorized", hint="X-Admin-Key required"), 401
+    return jsonify(track_consecutive_failures()), 200
+
+
+@site_sentinel_bp.route("/api/v1/admin/sentinel-inbox", methods=["GET"])
+def sentinel_inbox_json():
+    """JSON feed for the Sentinel Inbox dashboard. Admin-gated. Read-only.
+    Joins persisted scan rows + consecutive-failure counters so the
+    operator and the brain see the same per-page status."""
+    provided = (request.headers.get("X-Admin-Key")
+                or request.args.get("admin_key") or "").strip()
+    if _ADMIN_KEY and provided != _ADMIN_KEY:
+        return jsonify(error="unauthorized", hint="X-Admin-Key required"), 401
+    rows = latest_results()
+    consec_by_path = {x["path"]: x for x in consec_failure_state()}
+    items = []
+    for r in rows:
+        p  = r.get("path") or ""
+        cs = consec_by_path.get(p, {})
+        items.append({
+            "path":              p,
+            "label":             r.get("label") or p,
+            "category":          r.get("category"),
+            "status_code":       r.get("status_code"),
+            "bytes":             r.get("bytes"),
+            "elapsed_ms":        r.get("elapsed_ms"),
+            "healthy":           bool(r.get("healthy")),
+            "reason":            r.get("reason"),
+            "grade":             _grade(r, cs),
+            "consecutive_5xx":   cs.get("consecutive_5xx", 0),
+            "consecutive_fail":  cs.get("consecutive_fail", 0),
+            "last_failure_at":   cs.get("last_failure_at"),
+            "last_brain_finding_at": cs.get("last_brain_finding_at"),
+            "last_escalation_at":    cs.get("last_escalation_at"),
+            "last_success_at":   cs.get("last_success_at"),
+            "checked_at":        r.get("checked_at"),
+        })
+    items.sort(key=lambda x: (x["healthy"],
+                              0 if x["grade"] == "F" else (1 if x["grade"] == "D" else 2),
+                              x["category"], x["path"]))
+    healthy = sum(1 for i in items if i["healthy"])
+    grades  = {"A": 0, "B": 0, "C": 0, "D": 0, "F": 0}
+    for i in items:
+        grades[i.get("grade", "C")] = grades.get(i.get("grade", "C"), 0) + 1
+    return jsonify(
+        total=len(items),
+        healthy=healthy,
+        unhealthy=len(items) - healthy,
+        manifest_size=len(_MANIFEST),
+        grades=grades,
+        items=items,
+        generated_at=datetime.datetime.utcnow().isoformat() + "Z",
+    ), 200
+
+
+@site_sentinel_bp.route("/api/v1/admin/sentinel-inbox/probe", methods=["POST"])
+def sentinel_inbox_probe_one():
+    """Admin: re-probe a single page on demand (the inbox row-level
+    'trigger probe now' button). Bounded to paths in the current manifest
+    so it can't be used to probe arbitrary URLs."""
+    provided = (request.headers.get("X-Admin-Key")
+                or request.args.get("admin_key") or "").strip()
+    if _ADMIN_KEY and provided != _ADMIN_KEY:
+        return jsonify(error="unauthorized", hint="X-Admin-Key required"), 401
+    target = (request.args.get("path")
+              or (request.get_json(silent=True) or {}).get("path") or "").strip()
+    if not target:
+        return jsonify(error="missing_path"), 400
+    entry = next((e for e in _MANIFEST if e["path"] == target), None)
+    if entry is None:
+        return jsonify(error="not_in_manifest", path=target), 404
+    scan = _scan_one(entry)
+    # Persist this single result (mirrors the multi-scan upsert above).
+    c = _conn()
+    if c is not None:
+        try:
+            with c.cursor() as cur:
+                _ensure_schema(cur)
+                cur.execute("""
+                    INSERT INTO site_sentinel_results
+                      (path, category, label, status_code, bytes, elapsed_ms,
+                       healthy, reason, checked_at, last_healthy_at,
+                       has_nav, stale_days, data_age_src, content_hash)
+                    VALUES (%s,%s,%s,%s,%s,%s,%s,%s, NOW(),
+                            CASE WHEN %s THEN NOW() ELSE NULL END,
+                            %s, %s, %s, %s)
+                    ON CONFLICT (path) DO UPDATE SET
+                      status_code = EXCLUDED.status_code,
+                      bytes       = EXCLUDED.bytes,
+                      elapsed_ms  = EXCLUDED.elapsed_ms,
+                      healthy     = EXCLUDED.healthy,
+                      reason      = EXCLUDED.reason,
+                      checked_at  = NOW(),
+                      has_nav     = EXCLUDED.has_nav,
+                      stale_days  = EXCLUDED.stale_days,
+                      data_age_src= EXCLUDED.data_age_src,
+                      content_hash= EXCLUDED.content_hash,
+                      last_healthy_at = CASE
+                        WHEN EXCLUDED.healthy THEN NOW()
+                        ELSE site_sentinel_results.last_healthy_at
+                      END
+                """, (entry["path"], entry["category"],
+                      entry.get("label", ""),
+                      scan["status_code"], scan["bytes"], scan["elapsed_ms"],
+                      scan["healthy"], scan["reason"],
+                      scan["healthy"],
+                      scan.get("has_nav"), scan.get("stale_days"),
+                      scan.get("data_age_src"), scan.get("content_hash")))
+        except Exception:
+            pass
+        finally:
+            try: c.close()
+            except Exception: pass
+    # Update the consecutive counter for this single path so the inbox
+    # immediately reflects the new state. Reuses the same logic.
+    track_consecutive_failures([{
+        "path":        entry["path"],
+        "label":       entry.get("label", ""),
+        "category":    entry["category"],
+        "status_code": scan["status_code"],
+        "reason":      scan["reason"],
+        "healthy":     scan["healthy"],
+    }])
+    return jsonify(ok=True, path=target, scan=scan), 200
+
+
+@site_sentinel_bp.route("/api/v1/admin/sentinel-inbox/open-finding",
+                         methods=["POST"])
+def sentinel_inbox_open_finding():
+    """Admin: force-open a brain finding for a specific page without
+    waiting for the 3-strike threshold."""
+    provided = (request.headers.get("X-Admin-Key")
+                or request.args.get("admin_key") or "").strip()
+    if _ADMIN_KEY and provided != _ADMIN_KEY:
+        return jsonify(error="unauthorized", hint="X-Admin-Key required"), 401
+    target = (request.args.get("path")
+              or (request.get_json(silent=True) or {}).get("path") or "").strip()
+    if not target:
+        return jsonify(error="missing_path"), 400
+    entry = next((e for e in _MANIFEST if e["path"] == target), None)
+    if entry is None:
+        return jsonify(error="not_in_manifest", path=target), 404
+    c = _conn()
+    if c is None:
+        return jsonify(error="no_database"), 500
+    try:
+        with c.cursor() as cur:
+            from routes.brain_findings_writer import upsert_brain_finding
+            issue = f"page_persistent_5xx:{target}"
+            url   = f"{_SITE_BASE}{target}"
+            detail = (
+                f"Operator-escalated from /admin/sentinel-inbox. "
+                f"Page '{entry.get('label', target)}' flagged for manual "
+                f"Layer-5 fix proposal. Source: routes/site_sentinel.py "
+                f":sentinel_inbox_open_finding."
+            )
+            res = upsert_brain_finding(cur, issue=issue, url=url,
+                                       count=1, detail=detail,
+                                       detector="site_sentinel.inbox_manual")
+            cur.execute(_CONSEC_SCHEMA)
+            cur.execute("""
+                INSERT INTO site_sentinel_consec_failures (path, last_brain_finding_at)
+                VALUES (%s, NOW())
+                ON CONFLICT (path) DO UPDATE SET last_brain_finding_at = NOW()
+            """, (target,))
+        return jsonify(ok=True, path=target, brain_writer_result=res), 200
+    except Exception as e:
+        return jsonify(error=f"{type(e).__name__}:{str(e)[:120]}"), 500
+    finally:
+        try: c.close()
+        except Exception: pass
+
+
+@site_sentinel_bp.route("/admin/sentinel-inbox", methods=["GET"],
+                         strict_slashes=False)
+def sentinel_inbox_dashboard():
+    """The Sentinel Inbox — every probe result + grade + one-click actions.
+    Mirrors the /admin/brain-backlog UX (the page itself renders publicly;
+    the JS fetches with X-Admin-Key from the URL query string)."""
+    return Response(_INBOX_HTML, mimetype="text/html")
+
+
+# Inbox HTML — standalone so it renders even if other brand surfaces break.
+_INBOX_HTML = r"""<!doctype html>
+<html><head><meta charset="utf-8">
+<title>Sentinel Inbox — DC Hub</title>
+<meta name="robots" content="noindex,nofollow">
+<link rel="stylesheet" href="/static/dchub-brand.css">
+<style>
+ :root{--ok:#10b981;--bad:#ef4444;--warn:#f59e0b;--mute:#94a3b8}
+ body{font-family:'Inter',-apple-system,sans-serif;background:#0a0e1a;color:#e6ecf5;
+   max-width:1400px;margin:0 auto;padding:1.5rem 1rem;line-height:1.45}
+ h1{font-size:1.6rem;margin:.2rem 0}
+ .sub{color:var(--mute);font-size:.9rem;margin-bottom:1rem}
+ .toolbar{display:flex;gap:.5rem;flex-wrap:wrap;margin:1rem 0;align-items:center}
+ .btn{background:linear-gradient(135deg,#6366f1,#a855f7);color:white;border:0;
+   padding:.55rem 1rem;border-radius:6px;font-weight:600;cursor:pointer;font-size:.85rem}
+ .btn.alt{background:rgba(255,255,255,.08);color:#cbd5e1}
+ .btn:disabled{opacity:.5;cursor:not-allowed}
+ .grade{padding:.3rem .65rem;border-radius:99px;font-size:.78rem;font-weight:700;
+   border:1px solid rgba(255,255,255,.1)}
+ .grade.A{background:rgba(16,185,129,.15);color:#10b981}
+ .grade.B{background:rgba(59,130,246,.15);color:#60a5fa}
+ .grade.C{background:rgba(245,158,11,.15);color:#fbbf24}
+ .grade.D{background:rgba(239,68,68,.15);color:#fca5a5}
+ .grade.F{background:rgba(239,68,68,.3);color:white}
+ table{width:100%;border-collapse:collapse;font-size:.84rem;
+   background:rgba(255,255,255,.02);border-radius:8px;overflow:hidden;
+   border:1px solid rgba(255,255,255,.06)}
+ th{text-align:left;padding:.55rem .6rem;background:rgba(255,255,255,.04);
+   text-transform:uppercase;font-size:.72rem;color:var(--mute);font-weight:600}
+ td{padding:.5rem .6rem;border-top:1px solid rgba(255,255,255,.05);vertical-align:middle}
+ tr:hover td{background:rgba(255,255,255,.03)}
+ td.path a{color:#a5b4fc;text-decoration:none;font-family:JetBrains Mono,monospace;font-size:.8rem}
+ td.path a:hover{text-decoration:underline}
+ .status.ok{color:#10b981;font-weight:600}
+ .status.bad{color:#fca5a5;font-weight:600}
+ .pill{display:inline-block;padding:.15rem .45rem;border-radius:4px;font-size:.7rem;
+   font-weight:600;font-family:JetBrains Mono,monospace}
+ .pill.crit{background:rgba(239,68,68,.2);color:#fca5a5}
+ .pill.high{background:rgba(245,158,11,.2);color:#fbbf24}
+ .pill.norm{background:rgba(148,163,184,.2);color:var(--mute)}
+ .pill.fail{background:rgba(239,68,68,.3);color:white}
+ .pill.bf{background:rgba(99,102,241,.3);color:#c4b5fd}
+ .rowbtn{padding:.3rem .55rem;border-radius:4px;background:rgba(255,255,255,.06);
+   border:1px solid rgba(255,255,255,.1);color:#e6ecf5;cursor:pointer;font-size:.72rem;
+   margin-right:.25rem}
+ .rowbtn:hover{background:rgba(99,102,241,.2)}
+ .summary{display:grid;grid-template-columns:repeat(auto-fit,minmax(140px,1fr));
+   gap:.6rem;margin:1rem 0}
+ .kpi{background:rgba(255,255,255,.04);padding:.7rem .9rem;border-radius:8px;
+   border:1px solid rgba(255,255,255,.06)}
+ .kpi .v{font-size:1.5rem;font-weight:700;font-family:JetBrains Mono,monospace}
+ .kpi .l{font-size:.7rem;color:var(--mute);text-transform:uppercase;letter-spacing:.05em}
+ .toast{position:fixed;bottom:1rem;right:1rem;background:#1f2937;padding:.6rem 1rem;
+   border-radius:6px;border:1px solid rgba(255,255,255,.1);font-size:.85rem;
+   max-width:380px;opacity:0;transition:opacity .25s;pointer-events:none}
+ .toast.show{opacity:1}
+ .footer{color:var(--mute);font-size:.8rem;margin-top:2rem;line-height:1.5}
+ .reason{font-family:JetBrains Mono,monospace;font-size:.72rem;color:#fca5a5;
+   max-width:280px;overflow:hidden;text-overflow:ellipsis;display:block;white-space:nowrap}
+</style></head>
+<body>
+<h1>Sentinel Inbox</h1>
+<p class="sub">Every probe result + grade + one-click actions. Brain Layer-5 reads
+findings opened here on its next learn pass and proposes draft PRs.</p>
+
+<div class="summary" id="kpis">
+  <div class="kpi"><div class="l">Total Tracked</div><div class="v" id="kpi-total">--</div></div>
+  <div class="kpi"><div class="l">Healthy</div><div class="v" id="kpi-healthy" style="color:#10b981">--</div></div>
+  <div class="kpi"><div class="l">Unhealthy</div><div class="v" id="kpi-unhealthy" style="color:#fca5a5">--</div></div>
+  <div class="kpi"><div class="l">Manifest Size</div><div class="v" id="kpi-manifest">--</div></div>
+  <div class="kpi"><div class="l">Grades</div><div class="v" id="kpi-grades" style="font-size:.9rem">--</div></div>
+</div>
+
+<div class="toolbar">
+  <button class="btn" id="sweep">Run sweep now</button>
+  <button class="btn alt" id="track">Run heal-and-ship tracker</button>
+  <button class="btn alt" id="reload">Reload</button>
+  <span style="color:var(--mute);font-size:.8rem;margin-left:.5rem" id="ts"></span>
+</div>
+
+<table>
+  <thead>
+    <tr>
+      <th>Grade</th><th>Cat</th><th>Page</th><th>Status</th><th>Bytes</th>
+      <th>Streak</th><th>Reason</th><th>Brain</th><th>Actions</th>
+    </tr>
+  </thead>
+  <tbody id="tbody">
+    <tr><td colspan="9" style="text-align:center;padding:2rem;color:var(--mute)">Loading...</td></tr>
+  </tbody>
+</table>
+
+<p class="footer">
+  JSON: <a href="/api/v1/admin/sentinel-inbox" style="color:#a5b4fc">/api/v1/admin/sentinel-inbox</a> ·
+  /api/v1/sentinel/track-failures (auto-runs after every probe sweep) ·
+  Brain backlog: <a href="/admin/brain-backlog" style="color:#a5b4fc">/admin/brain-backlog</a> ·
+  Source: routes/site_sentinel.py
+</p>
+
+<div id="toast" class="toast"></div>
+
+<script>
+(function(){
+  var ADMIN_KEY = new URLSearchParams(window.location.search).get('admin_key') || '';
+  function toast(msg){
+    var t = document.getElementById('toast');
+    t.textContent = msg; t.classList.add('show');
+    setTimeout(function(){ t.classList.remove('show'); }, 3500);
+  }
+  function esc(s){ return String(s||'').replace(/[&<>"]/g, function(m){
+    return ({"&":"&amp;","<":"&lt;",">":"&gt;",'"':"&quot;"}[m]); }); }
+  function catPill(c){ var k=(c||'normal')==='critical'?'crit':(c==='high'?'high':'norm');
+    return '<span class="pill '+k+'">'+esc(c||'normal')+'</span>'; }
+  function load(){
+    fetch('/api/v1/admin/sentinel-inbox?admin_key=' + encodeURIComponent(ADMIN_KEY),
+          { headers: { 'X-Admin-Key': ADMIN_KEY } })
+      .then(function(r){ return r.json(); })
+      .then(function(j){
+        if (j.error){ toast('Unauthorized: append ?admin_key=... to URL'); return; }
+        document.getElementById('kpi-total').textContent = j.total;
+        document.getElementById('kpi-healthy').textContent = j.healthy;
+        document.getElementById('kpi-unhealthy').textContent = j.unhealthy;
+        document.getElementById('kpi-manifest').textContent = j.manifest_size;
+        var g = j.grades || {};
+        document.getElementById('kpi-grades').textContent =
+          'A:' + (g.A||0) + ' B:' + (g.B||0) + ' C:' + (g.C||0) + ' D:' + (g.D||0) + ' F:' + (g.F||0);
+        document.getElementById('ts').textContent = 'generated_at ' + j.generated_at;
+        var tb = document.getElementById('tbody'); tb.innerHTML = '';
+        (j.items || []).forEach(function(it){
+          var tr = document.createElement('tr');
+          var brainPill = it.last_brain_finding_at
+            ? '<span class="pill bf" title="brain finding open since ' + esc(it.last_brain_finding_at) + '">L5 OPEN</span>'
+            : '--';
+          var streak = (it.consecutive_5xx > 0)
+            ? '<span class="pill fail">' + it.consecutive_5xx + 'x 5xx</span>'
+            : ((it.consecutive_fail > 0) ? (it.consecutive_fail + 'x fail') : '--');
+          tr.innerHTML =
+            '<td><span class="grade ' + esc(it.grade) + '">' + esc(it.grade) + '</span></td>' +
+            '<td>' + catPill(it.category) + '</td>' +
+            '<td class="path"><a href="' + esc(it.path) + '" target="_blank" rel="noopener">' + esc(it.label) + '</a>' +
+              '<br><span style="color:var(--mute);font-family:JetBrains Mono,monospace;font-size:.7rem">' + esc(it.path) + '</span></td>' +
+            '<td><span class="status ' + (it.healthy ? 'ok' : 'bad') + '">' + esc(it.status_code || '--') + '</span></td>' +
+            '<td>' + esc(it.bytes || 0) + '</td>' +
+            '<td>' + streak + '</td>' +
+            '<td><span class="reason" title="' + esc(it.reason || '') + '">' + esc(it.reason || '--') + '</span></td>' +
+            '<td>' + brainPill + '</td>' +
+            '<td>' +
+              '<button class="rowbtn" data-act="probe" data-path="' + esc(it.path) + '">Probe</button>' +
+              '<button class="rowbtn" data-act="open"  data-path="' + esc(it.path) + '">Open finding</button>' +
+            '</td>';
+          tb.appendChild(tr);
+        });
+      })
+      .catch(function(e){ toast('Load failed: ' + e); });
+  }
+  document.addEventListener('click', function(ev){
+    var b = ev.target.closest('button.rowbtn');
+    if (!b) return;
+    var act = b.getAttribute('data-act'), path = b.getAttribute('data-path');
+    var url = act === 'probe' ? '/api/v1/admin/sentinel-inbox/probe'
+                              : '/api/v1/admin/sentinel-inbox/open-finding';
+    b.disabled = true;
+    fetch(url + '?admin_key=' + encodeURIComponent(ADMIN_KEY),
+          { method: 'POST',
+            headers: { 'Content-Type': 'application/json', 'X-Admin-Key': ADMIN_KEY },
+            body: JSON.stringify({ path: path }) })
+      .then(function(r){ return r.json(); })
+      .then(function(j){
+        toast(act === 'probe' ? ('Probed ' + path + ' -> ' + (j.scan ? j.scan.status_code : 'err'))
+                              : ('Brain finding ' + (j.brain_writer_result || 'opened') + ' for ' + path));
+        setTimeout(load, 400);
+      })
+      .catch(function(e){ toast('Failed: ' + e); })
+      .finally(function(){ b.disabled = false; });
+  });
+  document.getElementById('sweep').addEventListener('click', function(){
+    this.disabled = true; toast('Running full sweep...');
+    fetch('/api/v1/sentinel/scan-now?admin_key=' + encodeURIComponent(ADMIN_KEY),
+          { method: 'POST', headers: { 'X-Admin-Key': ADMIN_KEY } })
+      .then(function(r){ return r.json(); })
+      .then(function(j){
+        toast('Sweep complete: ' + j.healthy + '/' + j.scanned + ' healthy');
+        return fetch('/api/v1/sentinel/track-failures?admin_key=' + encodeURIComponent(ADMIN_KEY),
+                     { method: 'POST', headers: { 'X-Admin-Key': ADMIN_KEY } });
+      })
+      .then(function(r){ return r ? r.json() : {}; })
+      .then(function(j){ setTimeout(load, 400); })
+      .catch(function(e){ toast('Sweep failed: ' + e); })
+      .finally(function(){ document.getElementById('sweep').disabled = false; });
+  });
+  document.getElementById('track').addEventListener('click', function(){
+    this.disabled = true; toast('Running heal-and-ship tracker...');
+    fetch('/api/v1/sentinel/track-failures?admin_key=' + encodeURIComponent(ADMIN_KEY),
+          { method: 'POST', headers: { 'X-Admin-Key': ADMIN_KEY } })
+      .then(function(r){ return r.json(); })
+      .then(function(j){
+        toast('Tracker: opened=' + (j.opened_count||0) + ' escalated=' + (j.escalated_count||0));
+        setTimeout(load, 400);
+      })
+      .catch(function(e){ toast('Tracker failed: ' + e); })
+      .finally(function(){ document.getElementById('track').disabled = false; });
+  });
+  document.getElementById('reload').addEventListener('click', load);
+  load();
+})();
+</script>
+</body></html>"""
+
+
 @site_sentinel_bp.route("/api/v1/sentinel/scan", methods=["GET"])
 def sentinel_scan():
     """Return the last persisted scan. Public, cached 5min."""
@@ -1081,6 +1884,7 @@ def sentinel_dashboard():
 </table>
 <p class="footer">JSON: <a href="/api/v1/sentinel/scan">/api/v1/sentinel/scan</a> ·
 Findings only: <a href="/api/v1/sentinel/findings">/api/v1/sentinel/findings</a> ·
+Heal-and-ship inbox: <a href="/admin/sentinel-inbox">/admin/sentinel-inbox</a> ·
 Manifest size: {len(_MANIFEST)} URLs · Add new URLs in routes/site_sentinel.py:_MANIFEST</p>
 </body></html>"""
     return Response(html, mimetype="text/html",
