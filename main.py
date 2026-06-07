@@ -28931,8 +28931,11 @@ try:
         register_surface(Surface(
             surface_id="site_sentinel",
             name="Site Sentinel",
-            description="The /sentinel dashboard — page-health for every URL on the manifest",
-            routes=["/sentinel", "/api/v1/sentinel/scan", "/api/v1/sentinel/findings"],
+            description="The /sentinel dashboard — page-health for every URL on the manifest. /admin/sentinel-inbox is the heal-and-ship console — every probe result + 1-click trigger probe / open brain finding buttons.",
+            routes=["/sentinel", "/admin/sentinel-inbox",
+                    "/api/v1/sentinel/scan", "/api/v1/sentinel/findings",
+                    "/api/v1/admin/sentinel-inbox",
+                    "/api/v1/sentinel/track-failures"],
             paid_tools=[],
             expected_event_types=["view"],
         ))

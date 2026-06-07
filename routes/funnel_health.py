@@ -196,6 +196,16 @@ def _build_data() -> dict:
                                      "pct_tagged_30d": 0.0},
         "source_plan_cohort": {"total": 0, "expiring_next_60d": 0,
                                "expired_not_demoted": 0},
+        # 2026-06-07: session-bound 3-strike high-intent claim KPIs.
+        # high_intent_sessions_30d = rows that crossed the 3-paid-hits
+        # threshold in the last 30d. claims_minted = how many of those got
+        # a signed URL emitted into the paywall response. claims_used =
+        # how many humans clicked the URL + entered an email. claim_to_paid
+        # = how many of THOSE eventually paid (joined to users.email).
+        "high_intent": {"sessions_30d": 0, "claims_minted_30d": 0,
+                        "claims_used_30d": 0, "claim_to_paid_30d": 0,
+                        "minted_rate_pct": 0.0, "claim_to_paid_rate_pct": 0.0,
+                        "threshold": 3},
         "platforms": [],
         "ab_status": {"ab_active": False, "kill_switch": False,
                       "cohorts": {"A": {}, "B": {}}, "z": 0.0, "sig_pct": 0.0,
@@ -454,6 +464,56 @@ def _build_data() -> dict:
         except Exception:
             pass
 
+        # ── 2026-06-07: High-intent 3-strike claim KPIs ───────────────
+        # The new conversion-funnel surface — see
+        # routes/mcp_high_intent_claim.py. We probe directly here (not via
+        # the public stats endpoint) so the dashboard works during the
+        # rollout window before the endpoint is necessarily deployed.
+        try:
+            v = _scalar(cur,
+                "SELECT COUNT(*) FROM mcp_high_intent_sessions "
+                " WHERE last_hit_at >= NOW() - INTERVAL '30 days' "
+                "   AND paid_call_count_24h >= 3")
+            if v is None:
+                out["missing_tables"].append("mcp_high_intent_sessions")
+            else:
+                out["high_intent"]["sessions_30d"] = int(v or 0)
+                out["high_intent"]["claims_minted_30d"] = int(_scalar(cur,
+                    "SELECT COUNT(*) FROM mcp_high_intent_sessions "
+                    " WHERE claim_minted_at IS NOT NULL "
+                    "   AND claim_minted_at >= NOW() - INTERVAL '30 days'") or 0)
+                out["high_intent"]["claims_used_30d"] = int(_scalar(cur,
+                    "SELECT COUNT(*) FROM mcp_high_intent_sessions "
+                    " WHERE claim_used_at IS NOT NULL "
+                    "   AND claim_used_at >= NOW() - INTERVAL '30 days'") or 0)
+                # claim_to_paid: joined to users.email. Skips silently if
+                # users.email column missing (rollout-time defensiveness).
+                try:
+                    cur.execute(
+                        "SELECT COUNT(DISTINCT h.claim_email) "
+                        "  FROM mcp_high_intent_sessions h "
+                        "  JOIN users u "
+                        "    ON LOWER(u.email) = LOWER(h.claim_email) "
+                        " WHERE h.claim_used_at IS NOT NULL "
+                        "   AND h.claim_used_at >= NOW() - INTERVAL '30 days' "
+                        "   AND COALESCE(u.plan, 'free') NOT IN ('free','')")
+                    out["high_intent"]["claim_to_paid_30d"] = int(
+                        (cur.fetchone() or (0,))[0] or 0)
+                except Exception:
+                    try: conn.rollback()
+                    except Exception: pass
+                if out["high_intent"]["sessions_30d"] > 0:
+                    out["high_intent"]["minted_rate_pct"] = round(
+                        100.0 * out["high_intent"]["claims_minted_30d"]
+                        / out["high_intent"]["sessions_30d"], 1)
+                if out["high_intent"]["claims_used_30d"] > 0:
+                    out["high_intent"]["claim_to_paid_rate_pct"] = round(
+                        100.0 * out["high_intent"]["claim_to_paid_30d"]
+                        / out["high_intent"]["claims_used_30d"], 1)
+        except Exception:
+            try: conn.rollback()
+            except Exception: pass
+
         # ── Per-AI-platform breakdown ─────────────────────────────────
         # Match on mcp_call_log.platform (LIKE) + mcp_upgrade_signals.mcp_client.
         # Conversions = pair_codes redeemed where user_agent_at_view matches.
@@ -711,6 +771,11 @@ def _render_html(data: dict, admin_key: str) -> str:
     sess = data["session_upgrades"]
     rn = data["renewal_nudge"]
     coh = data["source_plan_cohort"]
+    hi = data.get("high_intent", {"sessions_30d": 0, "claims_minted_30d": 0,
+                                   "claims_used_30d": 0, "claim_to_paid_30d": 0,
+                                   "minted_rate_pct": 0.0,
+                                   "claim_to_paid_rate_pct": 0.0,
+                                   "threshold": 3})
     ab = data["ab_status"]
     plats = data["platforms"]
     evs = data["events"]
@@ -1079,6 +1144,43 @@ def _render_html(data: dict, admin_key: str) -> str:
           <div class="ss-v" style="color:{'#ef4444' if coh['expired_not_demoted']>0 else 'var(--ink)'}">{_fmt_n(coh['expired_not_demoted'])}</div>
         </div>
       </div>
+    </div>
+  </div>
+
+  <!-- 2026-06-07: 3-STRIKE HIGH-INTENT CLAIM (closes 0% MCP-conversion gap) -->
+  <div class="card" style="margin-bottom:18px;">
+    <h2>3-strike high-intent claim <span style="font-size:10px;color:var(--accent);">NEW · session-bound · threshold={hi.get('threshold',3)}</span></h2>
+    <div class="card-row">
+      <div class="sub-stat">
+        <div class="ss-l">High-intent sessions 30d</div>
+        <div class="ss-v">{_fmt_n(hi.get('sessions_30d',0))}</div>
+      </div>
+      <div class="sub-stat">
+        <div class="ss-l">Claims minted 30d</div>
+        <div class="ss-v">{_fmt_n(hi.get('claims_minted_30d',0))}</div>
+      </div>
+      <div class="sub-stat">
+        <div class="ss-l">Mint rate</div>
+        <div class="ss-v" style="color:{('#22c55e' if hi.get('minted_rate_pct',0)>=80 else '#f59e0b' if hi.get('minted_rate_pct',0)>=40 else '#94a3b8')}">{hi.get('minted_rate_pct',0):.1f}%</div>
+      </div>
+      <div class="sub-stat">
+        <div class="ss-l">Claims used 30d</div>
+        <div class="ss-v">{_fmt_n(hi.get('claims_used_30d',0))}</div>
+      </div>
+      <div class="sub-stat">
+        <div class="ss-l">Claim → paid 30d</div>
+        <div class="ss-v" style="color:{('#22c55e' if hi.get('claim_to_paid_30d',0)>0 else 'var(--muted)')}">{_fmt_n(hi.get('claim_to_paid_30d',0))}</div>
+      </div>
+      <div class="sub-stat">
+        <div class="ss-l">Claim-to-paid rate</div>
+        <div class="ss-v" style="color:{('#22c55e' if hi.get('claim_to_paid_rate_pct',0)>=10 else '#f59e0b' if hi.get('claim_to_paid_rate_pct',0)>0 else 'var(--muted)')}">{hi.get('claim_to_paid_rate_pct',0):.1f}%</div>
+      </div>
+    </div>
+    <div style="font-size:11px;color:var(--muted);margin-top:10px;">
+      mcp-server tracks every paid-tool hit per (session_id, tool); on the 3rd hit in 24h
+      the paywall response embeds a signed
+      <code>https://dchub.cloud/claim/&lt;token&gt;</code> URL. Human enters email →
+      trial key emailed via Resend. First conversion target: within 7 days of ship.
     </div>
   </div>
 

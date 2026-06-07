@@ -513,6 +513,37 @@ SCHEMA_STATEMENTS = [
         "ALTER TABLE connect_landing_views ADD COLUMN IF NOT EXISTS stripe_clicked_plan TEXT",
         "CREATE INDEX IF NOT EXISTS ix_connect_lv_clicked ON connect_landing_views(stripe_clicked_at) WHERE stripe_clicked_at IS NOT NULL",
     ]),
+    ("mcp_high_intent_sessions table (2026-06-07 session-bound 3-strike claim)", [
+        # 2026-06-07: session-bound HIGH-INTENT capture. When an MCP session
+        # hits the SAME paid tool 3+ times in 24h, the mcp-server fires a
+        # claim_token via /api/v1/mcp/should-mint-claim. The token is HMAC-
+        # signed (DCHUB_HMAC_SECRET) — DB row exists for idempotency
+        # (claim_minted_at, claim_used_at) + funnel attribution, not for
+        # token validity. UNIQUE(mcp_session_id, tool_name) guarantees a
+        # retrying agent gets the SAME token (not N different links).
+        # Mirrors the _SCHEMA_SQL block in routes/mcp_high_intent_claim.py
+        # so a fresh deploy that hasn't called the endpoint yet still has
+        # the table (the public stats route doesn't trigger _ensure_schema).
+        """CREATE TABLE IF NOT EXISTS mcp_high_intent_sessions (
+            id                   BIGSERIAL PRIMARY KEY,
+            mcp_session_id       TEXT NOT NULL,
+            tool_name            TEXT NOT NULL,
+            paid_call_count_24h  INTEGER NOT NULL DEFAULT 0,
+            first_hit_at         TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+            last_hit_at          TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+            claim_token          TEXT,
+            claim_minted_at      TIMESTAMPTZ,
+            claim_used_at        TIMESTAMPTZ,
+            claim_email          TEXT,
+            minted_api_key       TEXT,
+            user_agent           TEXT,
+            mcp_client           TEXT
+        )""",
+        "CREATE UNIQUE INDEX IF NOT EXISTS ix_mhis_sid_tool ON mcp_high_intent_sessions(mcp_session_id, tool_name)",
+        "CREATE INDEX IF NOT EXISTS ix_mhis_minted_at ON mcp_high_intent_sessions(claim_minted_at DESC) WHERE claim_minted_at IS NOT NULL",
+        "CREATE INDEX IF NOT EXISTS ix_mhis_used_at ON mcp_high_intent_sessions(claim_used_at DESC) WHERE claim_used_at IS NOT NULL",
+        "CREATE INDEX IF NOT EXISTS ix_mhis_token ON mcp_high_intent_sessions(claim_token) WHERE claim_token IS NOT NULL",
+    ]),
     ("brain_strategic_recommendations table", [
         # Brain Layer-6 Strategic Synthesis (2026-06-06): weekly Claude-
         # backed pass that reads funnel + page health + competitor signal +
