@@ -36,7 +36,7 @@ import logging
 import os
 import re
 import time
-from urllib.parse import urlparse
+from urllib.parse import urlparse, quote_plus
 from flask import (Blueprint, Response, jsonify, render_template, request,
                    stream_with_context, url_for)
 
@@ -1323,10 +1323,14 @@ def _render_html(brief: dict) -> str:
     # ── Share URLs ────────────────────────────────────────────────────
     page_url = f"https://dchub.cloud/markets/{slug}/brief"
     pdf_url  = f"https://dchub.cloud/markets/{slug}/brief.pdf"
-    share_x = (f"https://twitter.com/intent/tweet?text="
-               f"{name.replace(' ', '+')}+data+center+market+brief+%E2%80%94+DCPI+"
-               f"{score_str.replace('/', '%2F')}+verdict+{verdict}"
-               f"&url={page_url}")
+    # 2026-06-07 page-audit: was concatenating .replace(' ', '+') on multi-word
+    # strings (e.g. score_str="score pending") → resulting URL contained literal
+    # ASCII space → curl/some browsers 000'd. urllib.parse.quote_plus handles ALL
+    # special chars + spaces properly.
+    _share_text = (f"{name} data center market brief — DCPI {score_str} "
+                   f"verdict {verdict}")
+    share_x = (f"https://twitter.com/intent/tweet?text={quote_plus(_share_text)}"
+               f"&url={quote_plus(page_url)}")
     share_li = f"https://www.linkedin.com/sharing/share-offsite/?url={page_url}"
 
     # PRO+ users see a real Download PDF button; anon/free see an upgrade CTA.

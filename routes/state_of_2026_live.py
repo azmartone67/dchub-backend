@@ -112,7 +112,7 @@ ATTRIBUTION_TOKENS: dict[str, str] = {
     "dcpi":       f"{_PUBLIC_BASE_URL}/dcpi",
     "dcgi":       f"{_PUBLIC_BASE_URL}/dcgi",
     "queues":     f"{_PUBLIC_BASE_URL}/interconnection-queues",
-    "mcp":        f"{_PUBLIC_BASE_URL}/mcp-connect",
+    "mcp":        f"{_PUBLIC_BASE_URL}/integrations/mcp",  # 2026-06-07 page-audit: was /mcp-connect (404 — never existed); canonical landing is /integrations/mcp (200)
     "hyper":      f"{_PUBLIC_BASE_URL}/hyperscalers",
     "qa":         f"{_PUBLIC_BASE_URL}/admin/qa/state-of-2026",
     "report":     f"{_PUBLIC_BASE_URL}/reports/state-of-power",
@@ -822,14 +822,22 @@ def _render_state_page(hero: dict) -> str:
                               f'style="color:{d_color}" '
                               f'title="Change since prior daily refresh">'
                               f'{arrow}{delta_disp}</span>')
+        # 2026-06-07 page-audit: suppress "source" link when the endpoint is
+        # admin-gated (e.g. /admin/funnel-health). The public visitor hitting
+        # this on the launch surface saw 403 instead of a real source. For
+        # admin endpoints, render the LIVE badge but no clickable link.
+        if ep.startswith("/admin/"):
+            _src_link = '<span class="stat-src" style="cursor:default" title="Source data is admin-gated; aggregate is public">internal source</span>'
+        else:
+            _src_link = (f'<a class="stat-src" href="{_PUBLIC_BASE_URL}{_esc(ep)}" '
+                         f'target="_blank" rel="noopener nofollow">source</a>')
         hero_cards.append(f'''
         <div class="stat">
           <div class="stat-num">{_esc(display)}{delta_chip}</div>
           <div class="stat-claim">{_esc(text)}</div>
           <div class="stat-meta">
             <span class="live-badge" style="background:{badge_color}">{badge_text}</span>
-            <a class="stat-src" href="{_PUBLIC_BASE_URL}{_esc(ep)}"
-               target="_blank" rel="noopener nofollow">source</a>
+            {_src_link}
           </div>
           {updated_chip}
         </div>''')

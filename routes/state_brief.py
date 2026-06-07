@@ -37,6 +37,7 @@ from __future__ import annotations
 import datetime
 import os
 import re
+from urllib.parse import quote_plus
 
 from flask import Blueprint, Response, jsonify, request
 
@@ -1022,9 +1023,11 @@ def _render_html(brief: dict) -> str:
 
     # ── Share + citation ──────────────────────────────────────────────
     page_url = f"https://dchub.cloud/states/{state}/brief"
-    share_x = (f"https://twitter.com/intent/tweet?text="
-               f"{full_name.replace(' ', '+')}+data+center+market+brief+"
-               f"%E2%80%94+verdict+{verdict}&url={page_url}")
+    # 2026-06-07 page-audit: safer encoding (handles multi-word state names
+    # like "New Mexico" + special chars in verdict). Same fix as market_brief.py.
+    _share_text = f"{full_name} data center market brief — verdict {verdict}"
+    share_x = (f"https://twitter.com/intent/tweet?text={quote_plus(_share_text)}"
+               f"&url={quote_plus(page_url)}")
     share_li = f"https://www.linkedin.com/sharing/share-offsite/?url={page_url}"
     citation = (f'DC Hub · <a href="{page_url}">{page_url}</a> · '
                 f"Live as of {citation_iso} UTC")
