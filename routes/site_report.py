@@ -27,9 +27,11 @@ Data sources (imported directly — NO synchronous self-HTTP calls):
 Gated PRO (premium deliverable) via routes.tier_gate.require_tier.
 """
 
+import re
 import math
 import time
 import datetime
+import concurrent.futures as _cf
 
 from flask import Blueprint, request, Response, jsonify
 
@@ -168,6 +170,29 @@ def _dist_color(mi, near=3, mid=15):
     return "grn" if mi < near else ("amb" if mi < mid else "red")
 
 
+_JUNK_NAME = re.compile(r"^(unknown|unnamed|null|none|n/?a|substation|pipeline)[\W_]*\d*$", re.I)
+
+
+def _clean_name(name, fallback):
+    """Replace junk import placeholders (UNKNOWN306108, NULL, '') with a clean
+    fallback so customer-facing reports never show database scaffolding."""
+    n = (str(name).strip() if name is not None else "")
+    if not n or _JUNK_NAME.match(n):
+        return fallback, False
+    return n, True
+
+
+def _call_with_timeout(fn, timeout, *args, **kwargs):
+    """Run fn with a hard wall-clock cap. Returns None on timeout/error — keeps
+    a flaky external fallback (e.g. the 15s HIFLD transmission probe) from
+    blowing the whole report's latency budget / holding a worker too long."""
+    try:
+        with _cf.ThreadPoolExecutor(max_workers=1) as ex:
+            return ex.submit(fn, *args, **kwargs).result(timeout=timeout)
+    except Exception:
+        return None
+
+
 # ════════════════════════════════════════════════════════════════════════════
 #  Section data gatherers — each isolated; a failure renders "—", never a 500
 # ════════════════════════════════════════════════════════════════════════════
@@ -193,12 +218,7 @@ def _gather_power(lat, lon, state):
     except Exception:
         subs = []
     sub = subs[0] if subs else None
-
-    tx = None
-    try:
-        tx = find_nearest_transmission(lat, lon, max_distance_miles=25)
-    except Exception:
-        tx = None
+    real_name = False
 
     if sub:
         dist = sub.get("distance_miles")
@@ -207,11 +227,14 @@ def _gather_power(lat, lon, state):
         except (TypeError, ValueError):
             dist = None
         on_parcel = dist is not None and dist < 0.5
-        out["substation"] = sub.get("name") or "Unnamed substation"
+        volt_label = _fmt_kv(sub.get("voltage_kv"))
+        name, real_name = _clean_name(sub.get("name"),
+                                      f"{volt_label} substation" if volt_label else "Unnamed substation")
+        out["substation"] = name
         out["substation_note"] = ("On or directly adjacent to the candidate parcel."
                                    if on_parcel else
                                    f"Nearest mapped substation — {_fmt_mi(dist) or '—'} from the site.")
-        out["voltage"] = _fmt_kv(sub.get("voltage_kv")) or "—"
+        out["voltage"] = volt_label or "—"
         out["operator"] = sub.get("operator") or "—"
         out["substation_source"] = ("OpenStreetMap (live)" if sub.get("source") == "OpenStreetMap"
                                      else "DC Hub grid layer · HIFLD/Neon")
@@ -226,10 +249,21 @@ def _gather_power(lat, lon, state):
         out["_dist"] = None
         out["_volt"] = 0
 
+    # Transmission line — only probe when we have a REAL substation name. A junk
+    # placeholder name guarantees find_nearest_transmission's internal fuzzy
+    # match misses and falls back to a ~15s HIFLD live call. Hard-cap at 6s too.
+    tx = None
+    if sub and real_name:
+        tx = _call_with_timeout(find_nearest_transmission, 6, lat, lon, max_distance_miles=25)
+
     if tx:
         out["line_voltage"] = _fmt_kv(tx.get("voltage_kv")) or out.get("voltage", "—")
         out["line_owner"] = tx.get("owner") or out.get("operator", "—")
         out["line_source"] = "HIFLD electric grid (live)" if tx.get("distance_miles") == "N/A (live query)" else "HIFLD electric grid"
+        # Backfill the substation operator from the line owner when the
+        # substation record lacks one (common in HIFLD).
+        if out.get("operator") in (None, "—") and tx.get("owner"):
+            out["operator"] = tx.get("owner")
     else:
         out["line_voltage"] = out.get("voltage", "—")
         out["line_owner"] = out.get("operator", "—")
@@ -275,7 +309,7 @@ def _gather_gas(lat, lon, state):
         return out
     g = {}
     try:
-        g = find_nearby_gas_pipelines(lat, lon, radius_miles=25, limit=5) or {}
+        g = find_nearby_gas_pipelines(lat, lon, radius_miles=50, limit=5) or {}
     except Exception:
         g = {}
     np_ = g.get("nearest_pipeline") if g else None
@@ -315,7 +349,7 @@ def _gather_gas(lat, lon, state):
         out["source"] = "DC Hub gas layer · HIFLD/Neon"
         out["_dist"] = None
         out["_score"] = None
-        out["assessment"] = ("No natural-gas pipeline detected within 25 mi in DC Hub's pipeline layer. "
+        out["assessment"] = ("No natural-gas pipeline detected within 50 mi in DC Hub's pipeline layer. "
                              "If on-site generation is required, confirm midstream access directly with operators.")
     return out
 
@@ -332,7 +366,7 @@ def _usdm_point_level(lat, lon):
             "inSR": "4326", "spatialRel": "esriSpatialRelIntersects",
             "outFields": "DM", "returnGeometry": "false", "f": "json",
         }
-        r = requests.get(url, params=params, timeout=6)
+        r = requests.get(url, params=params, timeout=5)
         d = r.json()
         feats = d.get("features") or []
         if not feats:
@@ -367,7 +401,7 @@ def _usdm_state_stats(state):
             "enddate": f"{today.month}/{today.day}/{today.year}",
             "statisticsType": 2,
         }
-        r = requests.get(url, params=params, timeout=8, headers={"Accept": "application/json"})
+        r = requests.get(url, params=params, timeout=7, headers={"Accept": "application/json"})
         rows = r.json()
         if not isinstance(rows, list) or not rows:
             return None
@@ -518,7 +552,7 @@ def _fiber_nearby_providers(lat, lon, radius_miles=25, limit=8):
 
 def _gather_fiber(lat, lon):
     out = {"_score": None}
-    rows = _fiber_nearby_providers(lat, lon, radius_miles=25, limit=8)
+    rows = _fiber_nearby_providers(lat, lon, radius_miles=50, limit=8)
     adj, near = [], []
     for r in rows:
         try:
@@ -528,21 +562,21 @@ def _gather_fiber(lat, lon):
         (adj if d < 5 else near).append(r.get("provider"))
     out["adjacent"] = " · ".join(adj[:4]) if adj else "—"
     out["nearby"] = " · ".join(near[:4]) if near else "—"
-    out["nearby_dist"] = "Within ~25 mi"
+    out["nearby_dist"] = "Within ~50 mi"
     out["source"] = "DC Hub fiber routes · carrier maps"
     n = len(rows)
     out["_count"] = n
     out["_score"] = (90 if n >= 4 else 72 if n >= 2 else 45 if n >= 1 else 20)
     if n:
         out["assessment"] = (
-            f"DC Hub maps {n} carrier route{'s' if n != 1 else ''} within ~25 mi of the site"
+            f"DC Hub maps {n} carrier route{'s' if n != 1 else ''} within ~50 mi of the site"
             + (f" — including {adj[0]} adjacent" if adj else "")
             + ". For exact entrance-facility distances and dark-fiber / wave availability, pair this "
             "with a fiber-locator route export (attachable to this report)."
         )
     else:
         out["assessment"] = (
-            "No carrier routes are mapped within ~25 mi in DC Hub's fiber layer for this point. "
+            "No carrier routes are mapped within ~50 mi in DC Hub's fiber layer for this point. "
             "Carrier presence may still exist — confirm with a fiber-locator export, which can be "
             "appended to this report."
         )
@@ -593,12 +627,31 @@ def _gather_latency(lat, lon, target_arg):
 # ════════════════════════════════════════════════════════════════════════════
 def _build_survey_data(lat, lon, latency_target, capacity_mw):
     state = _state_for(lat, lon)
-    power = _gather_power(lat, lon, state)
-    gas = _gather_gas(lat, lon, state)
-    water = _gather_water(lat, lon, state)
-    air = _gather_air(lat, lon, capacity_mw)
-    fiber = _gather_fiber(lat, lon)
-    latency = _gather_latency(lat, lon, latency_target)
+    # Run the section gatherers concurrently — water (USDM) and power (HIFLD
+    # fallback) are the long poles; overlapping them keeps the uncached build to
+    # roughly the single slowest section instead of their sum. Each gatherer is
+    # already failure-isolated; a future timeout just yields an empty section.
+    with _cf.ThreadPoolExecutor(max_workers=6) as ex:
+        _f = {
+            "power": ex.submit(_gather_power, lat, lon, state),
+            "gas": ex.submit(_gather_gas, lat, lon, state),
+            "water": ex.submit(_gather_water, lat, lon, state),
+            "air": ex.submit(_gather_air, lat, lon, capacity_mw),
+            "fiber": ex.submit(_gather_fiber, lat, lon),
+            "latency": ex.submit(_gather_latency, lat, lon, latency_target),
+        }
+
+        def _grab(k):
+            try:
+                return _f[k].result(timeout=18) or {}
+            except Exception:
+                return {}
+        power = _grab("power")
+        gas = _grab("gas")
+        water = _grab("water")
+        air = _grab("air")
+        fiber = _grab("fiber")
+        latency = _grab("latency")
 
     iso = power.get("iso", "—")
     loc_bits = [b for b in [_STATE_NAME.get(state, state), (iso if iso and iso != "—" else None)] if b]
@@ -638,8 +691,9 @@ def _build_survey_data(lat, lon, latency_target, capacity_mw):
                    (fiber.get("adjacent") if fiber.get("adjacent", "—") != "—" else "see fiber-locator"),
                    _score_color(fiber.get("_score"))))
     # Latency
-    lat_color = "grn" if latency["_ms"] < 20 else "amb" if latency["_ms"] < 50 else "red"
-    short_target = latency["latency_target"].split(" (")[0].split(",")[0]
+    _lms = latency.get("_ms")
+    lat_color = ("grn" if _lms < 20 else "amb" if _lms < 50 else "red") if _lms is not None else "amb"
+    short_target = (latency.get("latency_target") or "core").split(" (")[0].split(",")[0]
     sc.append(card(f"Latency → {short_target}", latency.get("latency_ms", "—"), " ms",
                    "fiber (est.)", lat_color))
 
