@@ -303,7 +303,7 @@ def main():
                 energy_incentive, data_center_specific, incentive_details,
                 qualifying_investment, qualifying_jobs, duration_years,
                 max_benefit, notes, last_updated
-            ) VALUES (%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s, NOW())
+            ) VALUES (%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s, NOW() ON CONFLICT DO NOTHING)
         """, (
             s["state_abbr"], s["state_name"], s["sales_tax_exempt"],
             s["property_tax_abatement"], s["enterprise_zone"],
