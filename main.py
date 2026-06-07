@@ -11939,6 +11939,29 @@ def handle_checkout_completed(session):
 
         print(f"💳 Webhook UPDATE: email='{customer_email}', user_id='{user_id}', pg_rows={rows_updated}, sqlite_rows={sqlite_rows}")
 
+        # ── r77 (2026-06-07, founder + Devin QA): upgrade the customer's MCP DEV KEY too ──
+        # REVENUE-CRITICAL. The MCP gate validates against mcp_dev_keys.tier (flask_mcp_
+        # endpoints.validate_key) and server.mjs:925 unlocks ONLY tier IN ('paid','enterprise').
+        # This webhook upgraded users.plan + api_keys (the WEB/REST surface) but NEVER touched
+        # mcp_dev_keys — so a paying customer's MCP tools stayed FREE. They paid and the
+        # agent-facing product (the whole MCP value prop) gave them nothing → a major reason
+        # MCP upgrades didn't stick. Match the key(s) they identified with their billing email
+        # (r62c identity capture sets mcp_dev_keys.email). Best-effort — must NEVER break the
+        # webhook (a thrown error here would block the users/api_keys upgrade above).
+        try:
+            _paid_mcp_tier = ('enterprise' if plan_name == 'enterprise'
+                              else 'paid' if plan_name in ('pro', 'founding') else None)
+            if _paid_mcp_tier and customer_email:
+                _mc, _ = _pg_execute(
+                    "UPDATE mcp_dev_keys SET tier = %s WHERE LOWER(email) = LOWER(%s) AND status = 'active'",
+                    (_paid_mcp_tier, customer_email))
+                print(f"🔑 MCP dev key(s) → tier '{_paid_mcp_tier}' for {customer_email} (rows={_mc})")
+                if not _mc:
+                    print(f"ℹ️ No active mcp_dev_keys row for {customer_email} yet — "
+                          f"will apply when they claim/identify an MCP key with this email.")
+        except Exception as _mcp_err:
+            print(f"⚠️ mcp_dev_keys tier upgrade failed (non-fatal): {str(_mcp_err)[:120]}")
+
         if rows_updated == 0 and sqlite_rows == 0 and customer_email:
             import secrets as sec
             new_user_id = f"stripe_{sec.token_hex(8)}"
