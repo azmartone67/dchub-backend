@@ -3,28 +3,37 @@
 # Used by GET /api/v1/admin/qa/state-of-2026-precheck (routes/state_of_2026_precheck.py)
 # to fact-check the LinkedIn-bound narrative against live DC Hub data.
 #
-# Format (ONE claim per line, all fields required, '#' = comment):
-#
+# Format (ONE claim per line):
 #   claim: <verbatim narrative text> | endpoint: /api/v1/X | json_path: a.b.c | expected_min: Y | expected_max: Z
 #
-#   - claim        verbatim text the user is about to post (used for the GO/NO-GO worst-case display)
-#   - endpoint     a backend URL (relative — base is implied prod) the harness hits with X-Admin-Key
-#   - json_path    dotted path into the JSON response. `_total_available` or `count` or `scores.0.composite_score` etc.
-#                  use `len:scores` to count an array; `sum:items.mw` to sum a numeric field across an array
-#   - expected_min int/float minimum the live number must be (inclusive)
-#   - expected_max int/float maximum the live number must be (inclusive)
-#
-# Drift > 5% from the claim or out-of-range = NO_GO fail.
-#
-# Seed claims below are PLACEHOLDERS — edit them with the exact phrasing you'll use in the LinkedIn post.
-# Lines starting with '#' or blank lines are ignored.
+# Drift > 5% from claim or out-of-range = NO_GO fail.
+# Lines starting with '#' or blank are ignored.
 
-claim: 233 markets tracked across DCPI v2.1 | endpoint: /api/v1/dcpi/scores | json_path: _total_available | expected_min: 225 | expected_max: 245
-claim: top-10 DCPI sample size | endpoint: /api/v1/dcpi/scores | json_path: count | expected_min: 8 | expected_max: 12
-claim: DCGI operator coverage spans 10+ operators | endpoint: /api/v1/dcgi/operators | json_path: len:operators | expected_min: 10 | expected_max: 500
-claim: 25 markets featured on the DCPI leaderboard | endpoint: /api/v1/dcpi/leaderboard | json_path: count | expected_min: 20 | expected_max: 30
+# ── Coverage headlines (post-2026-06-06 expansion) ──────────────────────
+claim: 300+ markets tracked across DCPI v2.1 | endpoint: /api/v1/dcpi/scores | json_path: _total_available | expected_min: 290 | expected_max: 320
+claim: 21,000+ data center facilities across 170+ countries | endpoint: /api/v1/site/stats | json_path: facilities_total | expected_min: 20000 | expected_max: 25000
+claim: 51 US states covered by DCGI | endpoint: /api/v1/dcgi/states | json_path: _total_states | expected_min: 50 | expected_max: 55
+claim: 2,000+ tracked M&A deals | endpoint: /api/v1/site/stats | json_path: deals_total | expected_min: 1900 | expected_max: 2500
+claim: 33 MCP tools live for AI agents | endpoint: /api/v1/mcp/tools-count | json_path: count | expected_min: 31 | expected_max: 35
 
-# Add your own claims, e.g.:
+# ── DCPI verdict mix (the headline distribution) ────────────────────────
+claim: BUILD markets count | endpoint: /api/v1/dcpi/leaderboard | json_path: verdict_counts.BUILD | expected_min: 40 | expected_max: 150
+claim: CAUTION markets count | endpoint: /api/v1/dcpi/leaderboard | json_path: verdict_counts.CAUTION | expected_min: 40 | expected_max: 150
+claim: AVOID markets count | endpoint: /api/v1/dcpi/leaderboard | json_path: verdict_counts.AVOID | expected_min: 20 | expected_max: 100
+
+# ── AI/MCP traction (your real growth story) ────────────────────────────
+claim: 630,000+ cumulative AI agent requests served | endpoint: /api/v1/ai-platforms/stats | json_path: total_requests | expected_min: 600000 | expected_max: 800000
+claim: 14 active AI platforms integrated | endpoint: /api/v1/ai-platforms/stats | json_path: active_platforms | expected_min: 12 | expected_max: 20
+claim: 95K+ Claude integration requests | endpoint: /api/v1/ai-platforms/stats | json_path: by_platform.claude | expected_min: 90000 | expected_max: 120000
+
+# ── Grid coverage ───────────────────────────────────────────────────────
+claim: 7 US ISOs with live telemetry | endpoint: /api/v1/grid/iso-list | json_path: count | expected_min: 7 | expected_max: 9
+claim: 69 grid operators covered globally | endpoint: /api/v1/grid/operators | json_path: count | expected_min: 60 | expected_max: 80
+
+# ── Add your own claims below ───────────────────────────────────────────
+# ⚠️  EDIT THESE TO MATCH YOUR EXACT POST WORDING ⚠️
+#
+# Example shapes (uncomment + edit before publishing):
 # claim: ERCOT queue 410 GW pending | endpoint: /api/v1/grid/status?iso=ercot | json_path: queue_pending_gw | expected_min: 390 | expected_max: 430
 # claim: PJM headroom 30 GW | endpoint: /api/v1/grid/status?iso=pjm | json_path: headroom_gw | expected_min: 28 | expected_max: 32
-# claim: $324B in tracked M&A | endpoint: /api/v1/transactions/total-value | json_path: total_usd_b | expected_min: 300 | expected_max: 350
+# claim: Top BUILD market is Tulsa | endpoint: /api/v1/dcpi/leaderboard | json_path: top_build.0.market_slug | expected_min: 0 | expected_max: 0
