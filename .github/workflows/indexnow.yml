@@ -1,0 +1,29 @@
+name: IndexNow Submit
+
+# 2026-06-07: instant search indexing for Bing/Yandex/Seznam. Pings IndexNow with
+# the most-recent sitemap URLs every 6h so fresh /facilities/* and /news/* pages
+# get indexed in minutes instead of waiting for a crawl. Needs DCHUB_ADMIN_KEY
+# (repo secret) — the submit endpoint is admin-gated.
+
+on:
+  schedule:
+    - cron: '23 */6 * * *'   # every 6 hours
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  ping:
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    steps:
+      - name: Submit recent URLs to IndexNow
+        run: |
+          code=$(curl -sS -m 45 -X POST \
+            -H "X-Admin-Key: ${{ secrets.DCHUB_ADMIN_KEY }}" \
+            -o body.json -w "%{http_code}" \
+            "https://api.dchub.cloud/api/v1/admin/indexnow?recent=1&n=500" || echo 000)
+          echo "HTTP $code"; cat body.json || true
+          # Only fail on a server error; a no-op/empty is fine.
+          [ "$code" -ge 500 ] 2>/dev/null && exit 1 || exit 0

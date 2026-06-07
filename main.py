@@ -24996,6 +24996,12 @@ try:
         print("🤖 Site automation: ✅ visual-sentinel + briefing + deploy-integrity + ci-triage")
     except Exception as _sa_e:
         print(f"🤖 Site automation: ⚠️ {_sa_e}")
+    try:
+        from routes.indexnow import register_indexnow
+        register_indexnow(app)
+        print("⚡ IndexNow: ✅ instant Bing/Yandex indexing wired")
+    except Exception as _in_e:
+        print(f"⚡ IndexNow: ⚠️ {_in_e}")
 except Exception as e:
     print(f"❌ Energy Discovery blueprint failed: {e}")
 
