@@ -52,9 +52,7 @@ Abuse model:
 """
 from __future__ import annotations
 
-import base64
 import hashlib
-import hmac
 import logging
 import os
 import re
@@ -72,9 +70,27 @@ mcp_high_intent_claim_bp = Blueprint("mcp_high_intent_claim", __name__)
 
 # ── Config ────────────────────────────────────────────────────────────
 
-HIGH_INTENT_THRESHOLD = 3            # paid-hits in 24h before claim is minted
+# Round 2 (2026-06-07): threshold env-driven so we can A/B without redeploys.
+# Default dropped 3→2 because the funnel data showed enormous drop-off after
+# the FIRST paid-tool hit on every UA (get_grid_intelligence: 4 distinct
+# callers, all with count=1; compare_sites: 22 distinct callers, all 1-2).
+# The "3 strikes" gate was discarding 95%+ of would-be high-intent sessions.
+# Operator can pin back to 3 (conservative) via DCHUB_HIGH_INTENT_THRESHOLD=3.
+HIGH_INTENT_THRESHOLD = int(os.environ.get("DCHUB_HIGH_INTENT_THRESHOLD", "2"))
 CLAIM_TOKEN_TTL_S     = 24 * 3600    # 24h
 CLAIM_RL_PER_IP_HOUR  = 10           # POST /claim rate-limit
+
+# Round 2: per-platform claim copy A/B. The mcp-server sends ?variant=X
+# alongside the track-paid-hit / should-mint-claim calls. We store the
+# variant on the row so the variant-conversion endpoint can compute
+# per-variant minted/used/paid rates.
+VALID_VARIANTS = {"claude", "cursor", "cline", "chatgpt", "generic"}
+
+
+def _norm_variant(v: str | None) -> str:
+    """Normalize variant string to one of VALID_VARIANTS, else 'generic'."""
+    s = (v or "").strip().lower()
+    return s if s in VALID_VARIANTS else "generic"
 
 
 def _hmac_secret() -> bytes:
@@ -121,51 +137,47 @@ def _conn():
 
 
 # ── Token sign / verify ──────────────────────────────────────────────
+# Round 2 (2026-06-07): delegate to utils.claim_token so state_visitor_claim
+# uses the SAME secret + payload format. Legacy 3-field MCP tokens (kind
+# implicit = mcp_session) still verify bit-for-bit. Module-level imports
+# are at the top of the file.
+from utils.claim_token import (
+    KIND_MCP_SESSION,
+    KIND_STATE_OF_2026_VISITOR,
+    sign_claim_token as _shared_sign,
+    verify_claim_token as _shared_verify,
+)
 
-def _b64u(b: bytes) -> str:
-    return base64.urlsafe_b64encode(b).rstrip(b"=").decode("ascii")
 
-
-def _b64u_decode(s: str) -> bytes:
-    pad = b"=" * ((4 - len(s) % 4) % 4)
-    return base64.urlsafe_b64decode(s.encode("ascii") + pad)
-
-
-def sign_claim_token(mcp_session_id: str, tool_name: str, ts: int | None = None) -> str:
-    """Returns a URL-safe token of shape <payload_b64>.<sig_hex>."""
-    if ts is None:
-        ts = int(time.time())
-    # Trim session_id to avoid runaway URLs from broken clients (mcp_session_id
-    # is canonically a uuid-ish string ~36 chars; cap at 100).
-    sid = (mcp_session_id or "")[:100]
-    tool = (tool_name or "")[:64]
-    payload_raw = f"{sid}|{tool}|{ts}".encode("utf-8")
-    sig = hmac.new(_hmac_secret(), payload_raw, hashlib.sha256).hexdigest()[:32]
-    return f"{_b64u(payload_raw)}.{sig}"
+def sign_claim_token(mcp_session_id: str, tool_name: str,
+                     ts: int | None = None) -> str:
+    """Sign an MCP-session claim token. Legacy 3-field payload — preserved
+    for backward-compat. New kinds should use utils.claim_token directly."""
+    return _shared_sign(
+        kind=KIND_MCP_SESSION,
+        session_id=mcp_session_id,
+        extra=tool_name,
+        ts=ts,
+    )
 
 
 def verify_claim_token(token: str) -> dict | None:
     """Returns {session_id, tool, ts} on success, None on any failure.
-    Also rejects tokens older than CLAIM_TOKEN_TTL_S."""
-    if not token or "." not in token:
+
+    Round 2 compatibility: works for BOTH legacy 3-field MCP tokens AND
+    the new state-of-2026 visitor tokens. The caller can inspect `.kind`
+    to branch; existing callers that only look at `session_id` + `tool`
+    keep working unchanged because we map `extra` → `tool` here.
+    """
+    payload = _shared_verify(token)
+    if not payload:
         return None
-    try:
-        payload_b64, sig_hex = token.rsplit(".", 1)
-        payload_raw = _b64u_decode(payload_b64)
-        expected = hmac.new(_hmac_secret(), payload_raw,
-                            hashlib.sha256).hexdigest()[:32]
-        if not hmac.compare_digest(sig_hex, expected):
-            return None
-        parts = payload_raw.decode("utf-8").split("|")
-        if len(parts) != 3:
-            return None
-        sid, tool, ts_s = parts
-        ts = int(ts_s)
-        if (int(time.time()) - ts) > CLAIM_TOKEN_TTL_S:
-            return None
-        return {"session_id": sid, "tool": tool, "ts": ts}
-    except Exception:
-        return None
+    return {
+        "session_id": payload["session_id"],
+        "tool":       payload["extra"],   # legacy field name
+        "ts":         payload["ts"],
+        "kind":       payload["kind"],    # new field; legacy callers ignore
+    }
 
 
 # ── Rate-limit (in-memory) for POST /claim ────────────────────────────
@@ -207,7 +219,8 @@ CREATE TABLE IF NOT EXISTS mcp_high_intent_sessions (
     claim_email          TEXT,
     minted_api_key       TEXT,
     user_agent           TEXT,
-    mcp_client           TEXT
+    mcp_client           TEXT,
+    claim_variant        TEXT
 );
 CREATE UNIQUE INDEX IF NOT EXISTS ix_mhis_sid_tool
     ON mcp_high_intent_sessions(mcp_session_id, tool_name);
@@ -220,6 +233,17 @@ CREATE INDEX IF NOT EXISTS ix_mhis_used_at
 CREATE INDEX IF NOT EXISTS ix_mhis_token
     ON mcp_high_intent_sessions(claim_token)
     WHERE claim_token IS NOT NULL;
+CREATE INDEX IF NOT EXISTS ix_mhis_variant
+    ON mcp_high_intent_sessions(claim_variant)
+    WHERE claim_variant IS NOT NULL;
+-- Round 2 (2026-06-07): idempotent ALTER for rows that pre-date variant tracking.
+-- ADD COLUMN IF NOT EXISTS is PG9.6+. Existing rows backfill to 'generic' so the
+-- per-variant breakdown isn't NULL-poisoned.
+ALTER TABLE mcp_high_intent_sessions
+    ADD COLUMN IF NOT EXISTS claim_variant TEXT;
+UPDATE mcp_high_intent_sessions
+    SET claim_variant = 'generic'
+    WHERE claim_variant IS NULL;
 """
 
 
@@ -258,6 +282,13 @@ def track_paid_hit():
         return jsonify(ok=False, error="missing_session_or_tool"), 400
     ua = str(body.get("user_agent") or "")[:300] or None
     mcp_client = str(body.get("mcp_client") or "")[:80] or None
+    # Round 2 (2026-06-07): platform-derived variant for the A/B test. The
+    # mcp-server sends this on every call so we can store it the FIRST time
+    # we see the (sid, tool) pair (per-row stickiness — a user's first
+    # platform wins the variant attribution).
+    variant_in = (body.get("variant")
+                  or request.args.get("variant") or "")
+    variant = _norm_variant(variant_in) if variant_in else None
 
     c = _conn()
     if c is None:
@@ -267,12 +298,16 @@ def track_paid_hit():
         with c.cursor() as cur:
             # Upsert: if the row exists AND last_hit_at within 24h, increment.
             # If older than 24h, RESET counter to 1 (sliding 24h window).
+            # variant is COALESCEd so the very FIRST observation of a session
+            # locks the attribution; later same-session calls don't overwrite
+            # (a user can't migrate from cursor to claude mid-session anyway).
             cur.execute(
                 """
                 INSERT INTO mcp_high_intent_sessions
                     (mcp_session_id, tool_name, paid_call_count_24h,
-                     first_hit_at, last_hit_at, user_agent, mcp_client)
-                VALUES (%s, %s, 1, NOW(), NOW(), %s, %s)
+                     first_hit_at, last_hit_at, user_agent, mcp_client,
+                     claim_variant)
+                VALUES (%s, %s, 1, NOW(), NOW(), %s, %s, %s)
                 ON CONFLICT (mcp_session_id, tool_name)
                 DO UPDATE SET
                     paid_call_count_24h = CASE
@@ -284,10 +319,12 @@ def track_paid_hit():
                     user_agent = COALESCE(EXCLUDED.user_agent,
                                           mcp_high_intent_sessions.user_agent),
                     mcp_client = COALESCE(EXCLUDED.mcp_client,
-                                          mcp_high_intent_sessions.mcp_client)
+                                          mcp_high_intent_sessions.mcp_client),
+                    claim_variant = COALESCE(mcp_high_intent_sessions.claim_variant,
+                                             EXCLUDED.claim_variant)
                 RETURNING paid_call_count_24h, claim_minted_at, claim_used_at
                 """,
-                (sid, tool, ua, mcp_client),
+                (sid, tool, ua, mcp_client, variant),
             )
             r = cur.fetchone() or (0, None, None)
             count = int(r[0] or 0)
@@ -327,6 +364,12 @@ def should_mint_claim():
         return jsonify(ok=False, error="forbidden"), 403
     sid = str(request.args.get("session_id") or "").strip()[:100]
     tool = str(request.args.get("tool") or "").strip()[:64]
+    # Round 2: variant comes from the mcp-server (platform detection happens
+    # there). If the row already has a variant, we keep it (sticky). If not,
+    # we lock it on mint so per-variant attribution reflects the platform
+    # active when the claim URL was issued.
+    variant_in = (request.args.get("variant") or "").strip().lower()
+    variant = _norm_variant(variant_in) if variant_in else None
     if not sid or not tool:
         return jsonify(ok=False, error="missing_session_or_tool"), 400
 
@@ -338,7 +381,7 @@ def should_mint_claim():
         with c.cursor() as cur:
             cur.execute(
                 """SELECT paid_call_count_24h, claim_token, claim_minted_at,
-                          claim_used_at, last_hit_at
+                          claim_used_at, last_hit_at, claim_variant
                      FROM mcp_high_intent_sessions
                     WHERE mcp_session_id = %s AND tool_name = %s""",
                 (sid, tool),
@@ -350,6 +393,7 @@ def should_mint_claim():
             existing_token = row[1]
             minted_at = row[2]
             used_at = row[3]
+            existing_variant = row[5] if len(row) > 5 else None
             # Already used? Don't reissue.
             if used_at is not None:
                 return jsonify(
@@ -367,6 +411,7 @@ def should_mint_claim():
                         claim_token=existing_token,
                         claim_url=f"https://dchub.cloud/claim/{existing_token}",
                         reused=True,
+                        variant=existing_variant or "generic",
                         threshold=HIGH_INTENT_THRESHOLD,
                     )
             # Below threshold? Don't mint.
@@ -375,13 +420,18 @@ def should_mint_claim():
                     should_mint=False, count=count,
                     threshold=HIGH_INTENT_THRESHOLD,
                 )
-            # Mint a fresh token + persist.
+            # Mint a fresh token + persist. Lock the variant on mint if it
+            # wasn't already set (fallback: 'generic'). Existing variant
+            # wins — first observation is the stickiest signal.
             token = sign_claim_token(sid, tool)
+            locked_variant = existing_variant or variant or "generic"
             cur.execute(
                 """UPDATE mcp_high_intent_sessions
-                      SET claim_token = %s, claim_minted_at = NOW()
+                      SET claim_token = %s,
+                          claim_minted_at = NOW(),
+                          claim_variant = COALESCE(claim_variant, %s)
                     WHERE mcp_session_id = %s AND tool_name = %s""",
-                (token, sid, tool),
+                (token, locked_variant, sid, tool),
             )
             return jsonify(
                 should_mint=True,
@@ -389,6 +439,7 @@ def should_mint_claim():
                 claim_token=token,
                 claim_url=f"https://dchub.cloud/claim/{token}",
                 reused=False,
+                variant=locked_variant,
                 threshold=HIGH_INTENT_THRESHOLD,
             )
     except Exception as e:
@@ -550,6 +601,37 @@ def _lookup_claim_row(c, sid: str, tool: str):
         return cur.fetchone()
 
 
+# ── /claim/<token> kind dispatch — state-of-2026 visitor renderers ──
+# Round 2 (2026-06-07): the same /claim/<token> URL now handles MCP session
+# tokens AND state-of-2026 web visitor tokens. The shared HMAC verify returns
+# `kind`; we render different copy + email body for each. State visitor mint
+# delegates to routes.state_visitor_claim (its _mint helper + email body).
+
+def _render_state_form(brief_clicks: int, time_s: int, err: str = "") -> str:
+    """State-of-2026 visitor variant of the claim form. Copy references the
+    REPORT they were reading (not an MCP tool they were calling)."""
+    err_html = (f'<div class="err">{_esc(err)}</div>') if err else ""
+    sub = (f"You spent {time_s}+ seconds with the State of 2026 report "
+           f"and clicked into {brief_clicks} brief{'s' if brief_clicks != 1 else ''} — "
+           "we figure you want the data your way. One email and your trial "
+           "key is in your inbox in ~60 seconds.")
+    if not brief_clicks and not time_s:
+        sub = ("You came in via a one-click claim link from the State of 2026 "
+               "report. One email and your trial key is in your inbox.")
+    return (_CLAIM_FORM_HTML
+            .replace("__TOOL__", "the State of 2026 report")
+            .replace("__COUNT__", "")
+            .replace("__ERR__", err_html)
+            .replace("Your agent hit this tool  times in the last 24h — clearly the data is useful.\n  One email and your trial key is in your inbox in ~60 seconds.", sub))
+
+
+def _render_state_success(email: str, key: str) -> str:
+    return (_CLAIM_SUCCESS_HTML
+            .replace("__EMAIL__", _esc(email))
+            .replace("__KEY__", _esc(key))
+            .replace("__TOOL__", "the State of 2026 data"))
+
+
 @mcp_high_intent_claim_bp.route("/claim/<token>", methods=["GET"])
 def claim_form(token: str):
     """Renders a clean 1-field email form. Validates HMAC + freshness +
@@ -565,6 +647,27 @@ def claim_form(token: str):
         return Response(body, status=400, mimetype="text/html")
     sid = payload["session_id"]
     tool = payload["tool"]
+    kind = payload.get("kind") or KIND_MCP_SESSION
+
+    # ── kind = state_of_2026_visitor → state-flavored form ──
+    if kind == KIND_STATE_OF_2026_VISITOR:
+        try:
+            from routes.state_visitor_claim import fetch_visitor_row
+            row = fetch_visitor_row(sid)
+        except Exception as e:
+            logger.warning("[claim_form] state visitor lookup failed: %s", e)
+            row = None
+        if row and row.get("claim_used_at") is not None:
+            body = _render_state_form(
+                row.get("brief_clicks", 0), row.get("time_on_page_seconds", 0),
+                err="This claim was already used. Get another key at dchub.cloud/signup.")
+            return Response(body, status=410, mimetype="text/html")
+        body = _render_state_form(
+            (row or {}).get("brief_clicks", 0),
+            (row or {}).get("time_on_page_seconds", 0))
+        return Response(body, status=200, mimetype="text/html")
+
+    # ── kind = mcp_session → original MCP form ──
     c = _conn()
     if c is None:
         body = _render_form(tool, 3, err="Database temporarily unavailable. Try again in a minute.")
@@ -810,10 +913,119 @@ def high_intent_stats():
         except Exception: pass
 
 
+# ── GET /api/v1/admin/mcp/claim-variant-conversion ────────────────────
+# Round 2 (2026-06-07): per-platform A/B reporting. Surfaces:
+#   minted (claim URLs sent) → used (human entered email + key minted)
+#                            → paid (joined to users.email + plan != free)
+# Window: ?days=N (default 30, max 365). Admin-keyed.
+
+@mcp_high_intent_claim_bp.route(
+    "/api/v1/admin/mcp/claim-variant-conversion", methods=["GET"])
+def claim_variant_conversion():
+    if not _internal_ok(request):
+        return jsonify(ok=False, error="forbidden"), 403
+    try:
+        days = max(1, min(365, int(request.args.get("days") or "30")))
+    except Exception:
+        days = 30
+
+    c = _conn()
+    if c is None:
+        return jsonify(ok=False, error="no_db"), 503
+    try:
+        _ensure_schema(c)
+        # Build one row per variant. We left-join to users.email to attribute
+        # paid conversions back to the variant the human first saw. The COALESCE
+        # on claim_variant ('generic' default) covers any backfill gaps.
+        rows = []
+        with c.cursor() as cur:
+            try:
+                cur.execute(
+                    """
+                    SELECT
+                        COALESCE(NULLIF(h.claim_variant,''), 'generic') AS variant,
+                        COUNT(*) FILTER (WHERE h.claim_minted_at IS NOT NULL
+                                         AND h.claim_minted_at >= NOW() - INTERVAL '%s days') AS minted,
+                        COUNT(*) FILTER (WHERE h.claim_used_at IS NOT NULL
+                                         AND h.claim_used_at   >= NOW() - INTERVAL '%s days') AS used,
+                        COUNT(DISTINCT CASE
+                            WHEN h.claim_used_at IS NOT NULL
+                                 AND h.claim_used_at >= NOW() - INTERVAL '%s days'
+                                 AND u.email IS NOT NULL
+                                 AND COALESCE(u.plan,'free') NOT IN ('free','')
+                            THEN LOWER(h.claim_email)
+                        END) AS paid
+                    FROM mcp_high_intent_sessions h
+                    LEFT JOIN users u ON LOWER(u.email) = LOWER(h.claim_email)
+                    GROUP BY 1
+                    ORDER BY minted DESC, used DESC, paid DESC
+                    """ % (days, days, days)
+                )
+                for r in cur.fetchall():
+                    variant, minted, used, paid = (r[0] or "generic",
+                                                   int(r[1] or 0),
+                                                   int(r[2] or 0),
+                                                   int(r[3] or 0))
+                    use_rate = round(100.0 * used / minted, 2) if minted else 0.0
+                    paid_rate = round(100.0 * paid / minted, 2) if minted else 0.0
+                    # Only include variants that have actually been minted —
+                    # an empty 'generic' row from pre-Round-2 data is fine,
+                    # but variants that have NEVER fired are skipped to keep
+                    # the dashboard signal-to-noise high.
+                    if minted == 0 and used == 0 and paid == 0:
+                        continue
+                    rows.append({
+                        "variant": variant,
+                        "minted": minted,
+                        "used": used,
+                        "paid": paid,
+                        "use_rate_pct": use_rate,
+                        "paid_rate_pct": paid_rate,
+                    })
+            except Exception as e:
+                logger.warning("[claim_variant_conversion] query failed: %s", e)
+                try: c.rollback()
+                except Exception: pass
+
+        # Ensure every known variant appears (zero-rows) so the dashboard can
+        # show "no data yet" for variants that haven't fired — easier to
+        # diagnose UA-detection gaps.
+        seen = {r["variant"] for r in rows}
+        for v in sorted(VALID_VARIANTS):
+            if v not in seen:
+                rows.append({"variant": v, "minted": 0, "used": 0, "paid": 0,
+                             "use_rate_pct": 0.0, "paid_rate_pct": 0.0})
+
+        # Totals across all variants (handy for the dashboard header).
+        total_minted = sum(r["minted"] for r in rows)
+        total_used   = sum(r["used"]   for r in rows)
+        total_paid   = sum(r["paid"]   for r in rows)
+        return jsonify(
+            ok=True,
+            window_days=days,
+            variants=rows,
+            totals={
+                "minted": total_minted,
+                "used": total_used,
+                "paid": total_paid,
+                "use_rate_pct": round(100.0 * total_used / total_minted, 2) if total_minted else 0.0,
+                "paid_rate_pct": round(100.0 * total_paid / total_minted, 2) if total_minted else 0.0,
+            },
+            threshold=HIGH_INTENT_THRESHOLD,
+            generated_at=datetime.now(timezone.utc).isoformat(),
+        )
+    finally:
+        try: c.close()
+        except Exception: pass
+
+
 def _smoke():
-    logger.info("[high_intent_claim] ready · POST /api/v1/mcp/track-paid-hit · "
+    logger.info("[high_intent_claim] ready · threshold=%s · variants=%s · "
+                "POST /api/v1/mcp/track-paid-hit · "
                 "GET /api/v1/mcp/should-mint-claim · GET/POST /claim/<token> · "
-                "GET /api/v1/mcp/high-intent/stats")
+                "GET /api/v1/mcp/high-intent/stats · "
+                "GET /api/v1/admin/mcp/claim-variant-conversion",
+                HIGH_INTENT_THRESHOLD, sorted(VALID_VARIANTS))
 
 
 _smoke()

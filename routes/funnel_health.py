@@ -205,7 +205,17 @@ def _build_data() -> dict:
         "high_intent": {"sessions_30d": 0, "claims_minted_30d": 0,
                         "claims_used_30d": 0, "claim_to_paid_30d": 0,
                         "minted_rate_pct": 0.0, "claim_to_paid_rate_pct": 0.0,
-                        "threshold": 3},
+                        # Round 2 (2026-06-07): threshold is env-driven via
+                        # DCHUB_HIGH_INTENT_THRESHOLD (default 2 since 3→2 drop).
+                        # We pull the LIVE value from the module so the
+                        # dashboard reflects what the endpoint is actually
+                        # using (not a hardcoded duplicate).
+                        "threshold": 2,
+                        # Round 2: per-variant A/B breakdown — minted/used/paid
+                        # per claim_variant ('claude', 'cursor', 'cline',
+                        # 'chatgpt', 'generic'). Populated by the dedicated
+                        # query block below.
+                        "variant_breakdown": []},
         "platforms": [],
         "ab_status": {"ab_active": False, "kill_switch": False,
                       "cohorts": {"A": {}, "B": {}}, "z": 0.0, "sig_pct": 0.0,
@@ -510,6 +520,80 @@ def _build_data() -> dict:
                     out["high_intent"]["claim_to_paid_rate_pct"] = round(
                         100.0 * out["high_intent"]["claim_to_paid_30d"]
                         / out["high_intent"]["claims_used_30d"], 1)
+                # Round 2: pull the LIVE threshold so the dashboard reflects
+                # what the endpoint is using (env-driven via
+                # DCHUB_HIGH_INTENT_THRESHOLD).
+                try:
+                    from routes.mcp_high_intent_claim import HIGH_INTENT_THRESHOLD as _T
+                    out["high_intent"]["threshold"] = int(_T)
+                except Exception:
+                    pass
+        except Exception:
+            try: conn.rollback()
+            except Exception: pass
+
+        # ── Round 2 (2026-06-07): per-variant claim breakdown ─────────
+        # claim_variant tells us which platform-specific copy the human saw.
+        # We compute minted/used/paid per variant + per-variant use_rate and
+        # paid_rate so the dashboard surfaces the A/B winner directly.
+        # Defensive: claim_variant might be absent on a still-deploying box;
+        # the try/except + per-row column-present check keeps the page green.
+        try:
+            cur.execute(
+                """SELECT
+                       COALESCE(NULLIF(claim_variant,''), 'generic') AS variant,
+                       COUNT(*) FILTER (WHERE claim_minted_at IS NOT NULL
+                                        AND claim_minted_at >= NOW() - INTERVAL '30 days') AS minted,
+                       COUNT(*) FILTER (WHERE claim_used_at IS NOT NULL
+                                        AND claim_used_at   >= NOW() - INTERVAL '30 days') AS used
+                     FROM mcp_high_intent_sessions
+                    GROUP BY 1
+                    ORDER BY minted DESC, used DESC""")
+            v_rows = cur.fetchall() or []
+            # Paid join is a SEPARATE query so a missing 'users' table or
+            # email-column mismatch doesn't blow away the minted/used numbers.
+            paid_by_variant = {}
+            try:
+                cur.execute(
+                    """SELECT COALESCE(NULLIF(h.claim_variant,''), 'generic'),
+                              COUNT(DISTINCT LOWER(h.claim_email))
+                         FROM mcp_high_intent_sessions h
+                         JOIN users u
+                           ON LOWER(u.email) = LOWER(h.claim_email)
+                        WHERE h.claim_used_at IS NOT NULL
+                          AND h.claim_used_at >= NOW() - INTERVAL '30 days'
+                          AND COALESCE(u.plan, 'free') NOT IN ('free','')
+                        GROUP BY 1""")
+                for v_name, paid_n in (cur.fetchall() or []):
+                    paid_by_variant[v_name or "generic"] = int(paid_n or 0)
+            except Exception:
+                try: conn.rollback()
+                except Exception: pass
+
+            variant_breakdown = []
+            for v_name, minted, used in v_rows:
+                minted = int(minted or 0)
+                used   = int(used or 0)
+                paid   = int(paid_by_variant.get(v_name or "generic", 0))
+                use_rate  = round(100.0 * used / minted, 1) if minted else 0.0
+                paid_rate = round(100.0 * paid / minted, 1) if minted else 0.0
+                variant_breakdown.append({
+                    "variant": v_name or "generic",
+                    "minted": minted,
+                    "used": used,
+                    "paid": paid,
+                    "use_rate_pct": use_rate,
+                    "paid_rate_pct": paid_rate,
+                })
+            # Add zero-rows for variants that haven't fired yet (signal-to-
+            # noise: easier to spot UA-detection gaps).
+            seen = {r["variant"] for r in variant_breakdown}
+            for v in ("claude", "cursor", "cline", "chatgpt", "generic"):
+                if v not in seen:
+                    variant_breakdown.append({
+                        "variant": v, "minted": 0, "used": 0, "paid": 0,
+                        "use_rate_pct": 0.0, "paid_rate_pct": 0.0})
+            out["high_intent"]["variant_breakdown"] = variant_breakdown
         except Exception:
             try: conn.rollback()
             except Exception: pass
@@ -1177,10 +1261,50 @@ def _render_html(data: dict, admin_key: str) -> str:
       </div>
     </div>
     <div style="font-size:11px;color:var(--muted);margin-top:10px;">
-      mcp-server tracks every paid-tool hit per (session_id, tool); on the 3rd hit in 24h
+      mcp-server tracks every paid-tool hit per (session_id, tool); on the
+      <b>{hi.get('threshold',2)}{'nd' if int(hi.get('threshold',2))==2 else 'rd'}</b> hit in 24h
       the paywall response embeds a signed
       <code>https://dchub.cloud/claim/&lt;token&gt;</code> URL. Human enters email →
-      trial key emailed via Resend. First conversion target: within 7 days of ship.
+      trial key emailed via Resend. Threshold env-driven via
+      <code>DCHUB_HIGH_INTENT_THRESHOLD</code> (2026-06-07: lowered 3 → 2 after
+      empirical drop-off analysis).
+    </div>
+  </div>
+
+  <!-- Round 2 (2026-06-07): per-variant A/B breakdown
+       The claim copy is platform-specific (claude/cursor/cline/chatgpt/generic).
+       This card surfaces minted → used → paid per variant so we can pick a
+       winner. Endpoint: GET /api/v1/admin/mcp/claim-variant-conversion -->
+  <div class="card" style="margin-bottom:18px;">
+    <h2>Claim copy A/B by platform <span style="font-size:10px;color:var(--accent);">NEW · 5 variants · {len(hi.get('variant_breakdown', []) or [])} rows</span></h2>
+    <table>
+      <thead><tr>
+        <th>Variant</th>
+        <th style="text-align:right">Minted</th>
+        <th style="text-align:right">Used</th>
+        <th style="text-align:right">Paid</th>
+        <th style="text-align:right">Use rate</th>
+        <th style="text-align:right">Paid rate</th>
+      </tr></thead>
+      <tbody>
+      {''.join(
+        f'<tr><td>{_esc(vb.get("variant","generic"))}</td>'
+        f'<td style="text-align:right">{_fmt_n(vb.get("minted",0))}</td>'
+        f'<td style="text-align:right">{_fmt_n(vb.get("used",0))}</td>'
+        f'<td style="text-align:right;color:{("#22c55e" if vb.get("paid",0)>0 else "var(--muted)")}">{_fmt_n(vb.get("paid",0))}</td>'
+        f'<td style="text-align:right">{vb.get("use_rate_pct",0):.1f}%</td>'
+        f'<td style="text-align:right;color:{("#22c55e" if vb.get("paid_rate_pct",0)>=10 else "#f59e0b" if vb.get("paid_rate_pct",0)>0 else "var(--muted)")}">{vb.get("paid_rate_pct",0):.1f}%</td>'
+        f'</tr>'
+        for vb in (hi.get('variant_breakdown', []) or []))}
+      </tbody>
+    </table>
+    <div style="font-size:11px;color:var(--muted);margin-top:10px;">
+      Each minted claim records the variant the human saw (locked on first observation).
+      The mcp-server picks the variant from the inbound MCP <code>clientInfo.name</code>
+      (Claude.ai / Cursor / Cline / ChatGPT) and falls back to UA matching. The variant
+      controls the AGENT-facing relay copy — the URL is the same across all variants.
+      JSON: <a href="/api/v1/admin/mcp/claim-variant-conversion?admin_key={admin_key_safe}&amp;days=30"
+            style="color:var(--accent)">/api/v1/admin/mcp/claim-variant-conversion</a>
     </div>
   </div>
 
