@@ -24993,6 +24993,20 @@ except Exception as e:
 try:
     from routes.schema_repair import schema_repair_bp
     app.register_blueprint(schema_repair_bp)
+    # 2026-06-07 — Session-bound 3-strike one-click claim. Closes the
+    # 0% MCP-conversion gap on get_grid_intelligence / get_fiber_intel
+    # by minting an HMAC-signed claim_token after a session crosses 3
+    # paid-tool hits in 24h. The mcp-server embeds the resulting
+    # https://dchub.cloud/claim/<token> URL in the paywall response;
+    # the agent relays the short link to the human; one email click
+    # mints a trial key + emails it. routes/mcp_high_intent_claim.py.
+    try:
+        from routes.mcp_high_intent_claim import mcp_high_intent_claim_bp
+        app.register_blueprint(mcp_high_intent_claim_bp)
+        print("🎯 [mcp_high_intent_claim] ready · POST /api/v1/mcp/track-paid-hit · "
+              "GET /should-mint-claim · GET/POST /claim/<token> · /api/v1/mcp/high-intent/stats")
+    except Exception as _e_hic:
+        print(f"⚠️ [mcp_high_intent_claim] blueprint failed to register: {_e_hic}")
     # Phase media_no_404 (2026-06-02): single URL-emission chokepoint
     # so every public dchub.cloud URL posted by social/press/email/RSS
     # goes through one HEAD-checked code path. Auto-revokes LinkedIn
