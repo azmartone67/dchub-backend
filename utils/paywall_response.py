@@ -156,6 +156,36 @@ def get_user_call_count(user_id, tool_name, days=7):
         return 0
 
 
+def _caller_call_count(caller_id, tool_name, days=7):
+    """Anonymous-aware call count: count prior upgrade signals for this caller_id
+    (the email/session/anon-fingerprint identity from mcp_signal_canonical) + tool.
+    Lets KEYLESS repeat-callers escalate through the discount/email-capture tiers —
+    previously only api-keyed users (user_id) escalated, so the anonymous majority
+    (most grid/fiber paywall volume) sat on the soft Tier-1 preview forever and
+    never saw a discount or email-capture CTA. Falls back to 0 on any error."""
+    if not caller_id or not tool_name:
+        return 0
+    try:
+        from db_utils import try_get_db
+        conn = try_get_db()
+        if not conn:
+            return 0
+        cur = conn.cursor()
+        try:
+            cur.execute(
+                "SELECT COUNT(*) FROM mcp_upgrade_signals "
+                "WHERE caller_id = %s AND tool_requested = %s "
+                f"AND created_at > NOW() - INTERVAL '{int(days)} days'",
+                (caller_id, tool_name))
+            r = cur.fetchone() or (0,)
+            return int(r[0] or 0)
+        finally:
+            try: conn.close()
+            except Exception: pass
+    except Exception:
+        return 0
+
+
 def _attribution_url(base, tool_name, call_count, current_tier='free', extra_params=None):
     """Append attribution query params to the upgrade URL.
 
@@ -252,6 +282,24 @@ def build_paywall_response(
     validator accepts both shapes since v1.3.13.
     """
     call_count = get_user_call_count(user_id, tool_name) if user_id else 0
+    # Anon-escalation (2026-06-07): keyless callers have user_id=None → would always
+    # sit on the Tier-1 soft preview. Resolve their caller_id from the request
+    # fingerprint (session / MCP-client / IP — the SAME identity mcp_signal_canonical
+    # records on every signal) so the discount + email-capture tiers ALSO fire for
+    # the anonymous majority, which is most of the grid/fiber paywall volume.
+    if not call_count:
+        try:
+            from flask import request as _rq
+            from mcp_signal_canonical import _compute_caller_id
+            _cid = _compute_caller_id(
+                session_id=_rq.headers.get('Mcp-Session-Id'),
+                mcp_client=(_rq.headers.get('X-MCP-Client')
+                            or _rq.headers.get('User-Agent', ''))[:60],
+                user_agent=_rq.headers.get('User-Agent'),
+                ip_address=(_rq.headers.get('CF-Connecting-IP') or _rq.remote_addr))
+            call_count = _caller_call_count(_cid, tool_name)
+        except Exception:
+            pass
     human_message = _build_human_message(
         tool_name, call_count, current_tier,
         partial_data_summary=trial_preview_data,
