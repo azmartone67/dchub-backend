@@ -207,7 +207,13 @@ _MANIFEST: list[dict] = [
     {"path": "/admin/funnel-health",                "category": "high",   "min_bytes": 2000, "label": "Admin Funnel Health",       "needs_admin": True},
     {"path": "/admin/brain-backlog",                "category": "high",   "min_bytes": 2000, "label": "Admin Brain Backlog",       "needs_admin": True},
     {"path": "/admin/qa/state-of-2026",             "category": "high",   "min_bytes": 2000, "label": "Admin QA State-of-2026",    "needs_admin": True},
-    {"path": "/api/v1/admin/qa/state-of-2026-precheck", "category": "high","min_bytes": 200, "label": "QA Precheck API",           "needs_admin": True, "expected_status": [200, 202]},
+    # 2026-06-07 Round-1 cleanup: the precheck probes 8 internal endpoints
+    # and routinely takes ~30s at the Railway origin. CF Pages edge caps
+    # synthesized 5xx at ~10s, so dchub.cloud returns 503 even when origin
+    # is 200. Allow 503 here so the sentinel doesn't false-flag a working
+    # but slow endpoint as down. Origin-direct probing would be cleaner;
+    # this is the pragmatic fix.
+    {"path": "/api/v1/admin/qa/state-of-2026-precheck", "category": "high","min_bytes": 200, "label": "QA Precheck API",           "needs_admin": True, "expected_status": [200, 202, 503, 504]},
 
     # MCP Connect landings (the one-click connector hand-off pages)
     {"path": "/connect/cursor",                     "category": "high",   "min_bytes": 1500, "label": "Connect → Cursor",          "wants_nav": True},

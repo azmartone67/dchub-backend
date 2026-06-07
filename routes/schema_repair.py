@@ -537,12 +537,65 @@ SCHEMA_STATEMENTS = [
             claim_email          TEXT,
             minted_api_key       TEXT,
             user_agent           TEXT,
-            mcp_client           TEXT
+            mcp_client           TEXT,
+            claim_variant        TEXT
         )""",
+        # Round 2 (2026-06-07): idempotent ALTER for rows that pre-date variant
+        # tracking. Existing rows backfill to 'generic' so the per-variant
+        # breakdown isn't NULL-poisoned.
+        "ALTER TABLE mcp_high_intent_sessions ADD COLUMN IF NOT EXISTS claim_variant TEXT",
+        "UPDATE mcp_high_intent_sessions SET claim_variant = 'generic' WHERE claim_variant IS NULL",
         "CREATE UNIQUE INDEX IF NOT EXISTS ix_mhis_sid_tool ON mcp_high_intent_sessions(mcp_session_id, tool_name)",
         "CREATE INDEX IF NOT EXISTS ix_mhis_minted_at ON mcp_high_intent_sessions(claim_minted_at DESC) WHERE claim_minted_at IS NOT NULL",
         "CREATE INDEX IF NOT EXISTS ix_mhis_used_at ON mcp_high_intent_sessions(claim_used_at DESC) WHERE claim_used_at IS NOT NULL",
         "CREATE INDEX IF NOT EXISTS ix_mhis_token ON mcp_high_intent_sessions(claim_token) WHERE claim_token IS NOT NULL",
+        "CREATE INDEX IF NOT EXISTS ix_mhis_variant ON mcp_high_intent_sessions(claim_variant) WHERE claim_variant IS NOT NULL",
+    ]),
+    ("state_of_2026 living-doc tables (clicks/pageviews/claim_proposals)", [
+        # 2026-06-07 Round-1 cleanup: the boot-init hook
+        # state_of_2026_live.init_state_of_2026_tables() creates these on
+        # first boot, but /admin/state-of-2026-pulse 500s on any deploy
+        # that booted before the routes/state_of_2026_live.py module
+        # landed (the table CREATE only runs through the live module's
+        # init hook). Mirroring the DDL here so POST /schema/repair is
+        # the single recovery lever for cold-deploy schema gaps.
+        # Idempotent CREATE TABLE IF NOT EXISTS.
+        """CREATE TABLE IF NOT EXISTS state_of_2026_pageviews (
+            id            BIGSERIAL PRIMARY KEY,
+            ip_hash       TEXT,
+            referer       TEXT,
+            ua            TEXT,
+            session_id    TEXT,
+            ts            TIMESTAMPTZ NOT NULL DEFAULT NOW()
+        )""",
+        "CREATE INDEX IF NOT EXISTS state_of_2026_pageviews_ts_idx ON state_of_2026_pageviews(ts)",
+        """CREATE TABLE IF NOT EXISTS state_of_2026_clicks (
+            id            BIGSERIAL PRIMARY KEY,
+            token         TEXT NOT NULL,
+            destination   TEXT NOT NULL,
+            referer       TEXT,
+            ip_hash       TEXT,
+            ua            TEXT,
+            session_id    TEXT,
+            ts            TIMESTAMPTZ NOT NULL DEFAULT NOW()
+        )""",
+        "CREATE INDEX IF NOT EXISTS state_of_2026_clicks_token_ts_idx ON state_of_2026_clicks(token, ts)",
+        """CREATE TABLE IF NOT EXISTS state_of_2026_claim_proposals (
+            id              BIGSERIAL PRIMARY KEY,
+            claim_lineno    INTEGER,
+            current_text    TEXT,
+            proposed_text   TEXT,
+            current_min     DOUBLE PRECISION,
+            current_max     DOUBLE PRECISION,
+            proposed_min    DOUBLE PRECISION,
+            proposed_max    DOUBLE PRECISION,
+            live_value      DOUBLE PRECISION,
+            reason          TEXT,
+            status          TEXT NOT NULL DEFAULT 'pending',
+            ts              TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+            applied_ts      TIMESTAMPTZ
+        )""",
+        "CREATE INDEX IF NOT EXISTS state_of_2026_claim_props_status_idx ON state_of_2026_claim_proposals(status, ts)",
     ]),
     ("brain_strategic_recommendations table", [
         # Brain Layer-6 Strategic Synthesis (2026-06-06): weekly Claude-
@@ -576,6 +629,107 @@ SCHEMA_STATEMENTS = [
         "CREATE INDEX IF NOT EXISTS ix_bsr_run_id ON brain_strategic_recommendations(run_id)",
         "CREATE INDEX IF NOT EXISTS ix_bsr_kind ON brain_strategic_recommendations(kind)",
         "CREATE INDEX IF NOT EXISTS ix_bsr_status ON brain_strategic_recommendations(status)",
+    ]),
+    ("brain_pr_outcomes table", [
+        # Brain ROUND 2 (2026-06-07): closes the loop on Layer-5 draft PRs.
+        # When the brain opens a draft PR it currently STOPS there — the
+        # operator clicks Merge, but the brain never finds out whether the
+        # patch actually fixed anything or regressed sentinel. This table
+        # records the outcome: on every brain-authored merged PR we wait
+        # for Railway deploy, re-probe the touched endpoint via sentinel,
+        # and write a success/regression row. The strategic synthesis then
+        # reads the last 30d of outcomes so the brain LEARNS from its own
+        # track record ("last time I proposed X for finding Y, sentinel
+        # regressed B → A — try Z this time").
+        #
+        # outcome values:
+        #   - 'draft'      → PR opened, never merged (still in flight)
+        #   - 'success'    → merged + deploy ok + sentinel grade equal/better
+        #   - 'regression' → merged + sentinel grade worse OR endpoint 5xx
+        #   - 'deploy_fail'→ merge ok but Railway deploy failed/timed out
+        #   - 'unknown'    → merged but sentinel had no baseline / couldn't probe
+        """CREATE TABLE IF NOT EXISTS brain_pr_outcomes (
+            id                       BIGSERIAL PRIMARY KEY,
+            pr_number                INTEGER NOT NULL,
+            pr_url                   TEXT,
+            pr_title                 TEXT,
+            branch                   TEXT,
+            merged_at                TIMESTAMPTZ,
+            commit_sha               TEXT,
+            deploy_at                TIMESTAMPTZ,
+            deploy_status            TEXT,
+            sentinel_endpoint        TEXT,
+            sentinel_before_grade    NUMERIC,
+            sentinel_after_grade     NUMERIC,
+            outcome                  TEXT NOT NULL DEFAULT 'draft',
+            regression_details       TEXT,
+            files_changed            TEXT,
+            brain_authored           BOOLEAN NOT NULL DEFAULT FALSE,
+            learned_at               TIMESTAMPTZ,
+            created_at               TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+            updated_at               TIMESTAMPTZ NOT NULL DEFAULT NOW()
+        )""",
+        "CREATE UNIQUE INDEX IF NOT EXISTS ix_bpo_pr_number ON brain_pr_outcomes(pr_number)",
+        "CREATE INDEX IF NOT EXISTS ix_bpo_outcome ON brain_pr_outcomes(outcome)",
+        "CREATE INDEX IF NOT EXISTS ix_bpo_merged_at ON brain_pr_outcomes(merged_at DESC) WHERE merged_at IS NOT NULL",
+        "CREATE INDEX IF NOT EXISTS ix_bpo_brain_authored ON brain_pr_outcomes(brain_authored) WHERE brain_authored = TRUE",
+    ]),
+    ("brain_findings cross_session columns", [
+        # Brain ROUND 2 (2026-06-07): cross-session finding pollination.
+        # Today the brain processes findings PER session (loop_run), so the
+        # same shadowed_route or stale_cron pattern might surface 3 weeks
+        # in a row across 3 different brain sessions but never escalate.
+        # After every brain_findings INSERT we check if (detector,issue_kind)
+        # has appeared in N+ DISTINCT brain sessions in the last 7d. If yes,
+        # we set cross_session_escalated_at + bump status='escalated'. The
+        # backlog dashboard surfaces these as a separate "Cross-session
+        # learnings" card so the operator sees recurring patterns the brain
+        # has independently rediscovered.
+        "ALTER TABLE brain_findings ADD COLUMN IF NOT EXISTS session_id TEXT",
+        "ALTER TABLE brain_findings ADD COLUMN IF NOT EXISTS cross_session_escalated_at TIMESTAMPTZ",
+        "ALTER TABLE brain_findings ADD COLUMN IF NOT EXISTS cross_session_count INTEGER NOT NULL DEFAULT 0",
+        "CREATE INDEX IF NOT EXISTS ix_brain_findings_session_id ON brain_findings(session_id) WHERE session_id IS NOT NULL",
+        "CREATE INDEX IF NOT EXISTS ix_brain_findings_cross_escalated ON brain_findings(cross_session_escalated_at DESC) WHERE cross_session_escalated_at IS NOT NULL",
+    ]),
+    ("sentinel_auto_merge_log + block tables (Round 2)", [
+        # Sentinel Round 2 (2026-06-07): per-decision log for the brain-L5
+        # auto-merge runner. EVERY decision (allow/reject + dry-run) lands
+        # here so the operator can audit the gate that fired. The block
+        # table powers the dashboard's one-click 24h kill.
+        # Source of truth lives in routes/sentinel_auto_merge.py:_LOG_SCHEMA;
+        # this entry is for the schema-repair sweep so a cold deploy has
+        # the tables on first cron run, not first request.
+        """CREATE TABLE IF NOT EXISTS sentinel_auto_merge_log (
+            id                          BIGSERIAL PRIMARY KEY,
+            pr_number                   INT NOT NULL,
+            decision                    TEXT NOT NULL,
+            reason                      TEXT,
+            issue                       TEXT,
+            sentinel_path               TEXT,
+            confidence                  REAL,
+            files_changed               JSONB,
+            merged_at                   TIMESTAMPTZ,
+            merge_sha                   TEXT,
+            dry_run                     BOOLEAN NOT NULL DEFAULT FALSE,
+            follow_up_at                TIMESTAMPTZ,
+            follow_up_sentinel_grade    TEXT,
+            follow_up_status_code       INT,
+            follow_up_outcome           TEXT,
+            decided_at                  TIMESTAMPTZ NOT NULL DEFAULT NOW()
+        )""",
+        "CREATE INDEX IF NOT EXISTS ix_sam_pr           ON sentinel_auto_merge_log(pr_number)",
+        "CREATE INDEX IF NOT EXISTS ix_sam_decided      ON sentinel_auto_merge_log(decided_at DESC)",
+        "CREATE INDEX IF NOT EXISTS ix_sam_decision     ON sentinel_auto_merge_log(decision)",
+        "CREATE INDEX IF NOT EXISTS ix_sam_merged       ON sentinel_auto_merge_log(merged_at DESC)",
+        "CREATE INDEX IF NOT EXISTS ix_sam_followup_due ON sentinel_auto_merge_log(follow_up_at) WHERE follow_up_at IS NOT NULL AND follow_up_outcome IS NULL",
+        """CREATE TABLE IF NOT EXISTS sentinel_auto_merge_block (
+            id              SERIAL PRIMARY KEY,
+            blocked_until   TIMESTAMPTZ NOT NULL,
+            blocked_by      TEXT,
+            note            TEXT,
+            created_at      TIMESTAMPTZ NOT NULL DEFAULT NOW()
+        )""",
+        "CREATE INDEX IF NOT EXISTS ix_sam_block_until ON sentinel_auto_merge_block(blocked_until DESC)",
     ]),
 ]
 

@@ -418,6 +418,16 @@ def topic_performance(days: int = 30) -> list[dict]:
             # linkedin_posts AND social_media_posts so we never starve the
             # learner when one of the surfaces hasn't been hydrated yet.
             rows: list = []
+            # 2026-06-07 Round-1 cleanup: BOTH queries below must run even
+            # if the linkedin_posts COALESCE references a missing column
+            # (e.g. `impressions` doesn't exist on every deploy). Plain
+            # psycopg2 leaves the connection in `aborted_transaction` state
+            # after a single failure → every subsequent execute() silently
+            # fails until ROLLBACK. Rolling back between probes + scoping
+            # each into its own cursor restores per-table independence so
+            # social_media_posts still flows when linkedin_posts is missing
+            # a column. This was the actual cause of n_topics=0 despite
+            # backfill_recent_tags reporting 6 social_media_posts tagged.
             try:
                 cur.execute(f"""
                     SELECT id,
@@ -436,6 +446,10 @@ def topic_performance(days: int = 30) -> list[dict]:
                 rows.extend(cur.fetchall() or [])
             except Exception as e:
                 _log(f"topic_performance li_query failed: {e}")
+                # Critical: roll back the aborted transaction so the
+                # social_media_posts query below isn't a silent no-op.
+                try: conn.rollback()
+                except Exception: pass
             # Also pull social_media_posts so the tuner still has signal
             # when linkedin_posts.impressions hasn't been hydrated yet
             # (LinkedIn API takes 24-48h to fill the columns on a new post).
@@ -456,6 +470,8 @@ def topic_performance(days: int = 30) -> list[dict]:
                 rows.extend(cur.fetchall() or [])
             except Exception as e:
                 _log(f"topic_performance smp_query failed: {e}")
+                try: conn.rollback()
+                except Exception: pass
 
             buckets: dict[str, dict] = {}
             for row in rows:

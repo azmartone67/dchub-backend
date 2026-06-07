@@ -1663,10 +1663,10 @@ def _recent_snapshot(days: int) -> dict:
                 })
 
             # Competitor features hint — pulled from notes blobs that
-            # carry sniffed-feature tags. Best-effort. Returns an empty
-            # list on first run (until the discoverer fills the notes
-            # JSON), which is fine — the planner already handles []
-            # gracefully.
+            # carry sniffed-feature tags. Best-effort. If notes lacks
+            # `features` (the discoverer hasn't filled it yet), fall
+            # back to a curated baseline so the brain L6 planner has
+            # CITED competitor evidence to draw on instead of [].
             cur.execute(
                 """
                 SELECT registry_name, COALESCE(notes->'features',
@@ -1683,6 +1683,98 @@ def _recent_snapshot(days: int) -> dict:
                         "registry": r[0],
                         "features": feats[:10],
                     })
+
+            # 2026-06-07 Round-1 cleanup: when the discoverer hasn't
+            # populated notes.features yet (first runs), surface a curated
+            # baseline for each ACTIVE registry the brain can compare
+            # DC Hub against. Each list is the registry's own observed
+            # differentiators (gathered from their landing pages during
+            # the 2026-06-05 audit). Brain L6 self-critique explicitly
+            # asked for "competitor signal context"; an empty array
+            # silently degrades the planner to interpolating from tool
+            # names. Curated baseline > empty array.
+            if not out["competitor_features"]:
+                _CURATED_FEATURES = {
+                    "smithery": [
+                        "quality_score badge", "auto-discovered tool list",
+                        "uptime tracking", "OAuth flow tester",
+                        "MCP Inspector UI", "one-click install in Claude Desktop",
+                    ],
+                    "glama": [
+                        "auto-discovered capabilities", "quality_score 0-100",
+                        "tool_count badge", "Dockerfile build status",
+                        "security audit grade", "GitHub-linked deploys",
+                    ],
+                    "lobehub": [
+                        "Chinese-language interface", "one-click install",
+                        "screenshot gallery", "category taxonomy",
+                        "user reviews + stars", "auto-translate descriptions",
+                    ],
+                    "cline": [
+                        "marketplace inside VS Code", "auto-install on click",
+                        "JSON manifest schema", "GitHub PR submission",
+                        "developer-first surface", "free + paid tool tags",
+                    ],
+                    "continue_dev": [
+                        "IDE hub integration", "tool sharing across teams",
+                        "MCP + plugin unified directory",
+                        "team workspace permissions",
+                    ],
+                    "cursor_directory": [
+                        "Cursor IDE installer link", "rule + MCP combined surface",
+                        "fast-search of 1000+ MCPs", "curated 'Best of' lists",
+                    ],
+                    "mcp_so": [
+                        "PR-based submission (low friction)",
+                        "category + tag taxonomy", "homepage carousel",
+                        "GitHub stars displayed", "weekly trending list",
+                    ],
+                    "pulsemcp": [
+                        "RSS feed of new MCPs", "uptime + latency probes",
+                        "free tier filter", "discord-friendly cards",
+                    ],
+                    "awesome_mcp_servers": [
+                        "GitHub-stars-as-signal", "curated by community",
+                        "single README file", "PR-reviewed quality bar",
+                    ],
+                    "mcphive": [
+                        "stats grid (tools/users/uptime)",
+                        "submission backend dead (auto-discovered only)",
+                    ],
+                    "yellowmcp": [
+                        "Chinese-MCP surface", "WeChat share buttons",
+                        "tool_count badge", "submission form (low traffic)",
+                    ],
+                    "klavis_ai": [
+                        "enterprise MCP hosting", "managed-runtime tier",
+                        "OAuth-out-of-box", "paid tier directory",
+                    ],
+                    "mcp_official_registry": [
+                        "Anthropic-aligned canonical registry",
+                        "PR-based submission to modelcontextprotocol/registry",
+                        "DNS TXT verification of ownership",
+                    ],
+                    "smith_land": [
+                        "simple submit form", "category filter",
+                    ],
+                    "dxt_so": [
+                        "Anthropic Desktop Extension format support",
+                        "one-click .dxt installer",
+                    ],
+                }
+                # Emit features only for ACTIVE registries we surfaced — the
+                # planner cites these alongside the registry rows above.
+                active_names = {a.get("registry") for a in out["active_registries"]}
+                for reg_name, feats in _CURATED_FEATURES.items():
+                    if reg_name in active_names and feats:
+                        out["competitor_features"].append({
+                            "registry": reg_name,
+                            "features": feats[:10],
+                            "source":   "curated_baseline_2026_06_07",
+                        })
+                # Bound to top 15 to mirror the SELECT cap and keep the
+                # planner's prompt budget predictable.
+                out["competitor_features"] = out["competitor_features"][:15]
     except Exception as e:
         out["error"] = str(e)[:200]
         logger.info("mcp_presence /recent snapshot error: %s", e)
