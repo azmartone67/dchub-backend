@@ -266,7 +266,9 @@ def deploy_integrity():
     """Smoke-test the key public routes: 200 + non-blank. Catches the
     'deploy didn't land / page is blank / stale copy won the race' class
     (e.g., the dc-hub-media 0-byte + stale-index issues) as a live signal."""
-    routes = ["/", "/land-power-map", "/dc-hub-media/", "/dcpi", "/pricing", "/briefing"]
+    # Public CF Pages routes only. (/briefing is a backend route at
+    # api.dchub.cloud, not a dchub.cloud page — it's checked at its own host.)
+    routes = ["/", "/land-power-map", "/dc-hub-media/", "/dcpi", "/pricing"]
     results, broken = [], []
     for path in routes:
         try:
