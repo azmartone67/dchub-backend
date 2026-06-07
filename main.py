@@ -1518,6 +1518,33 @@ try:
     except Exception as _fhe:
         import logging
         logging.getLogger(__name__).warning('funnel_health wiring failed: %s', _fhe)
+    # MCP Funnel Round 3 (2026-06-07): three Unlocks landing together —
+    #   1) per-tool conversion analyzer (read-only brain detector, daily 02 UTC)
+    #   2) /dashboard/usage customer self-serve usage page (key-gated, 10 req/min)
+    #   3) team accounts ($499/mo / 5 seats; new tier; STRIPE_PRICE_TEAM_MONTHLY
+    #      env var must be set before /api/v1/team/create works)
+    # All three respect MCP_FUNNEL_R3_DISABLE=1 as a global kill switch.
+    try:
+        from routes.mcp_per_tool_conversion import mcp_per_tool_conversion_bp
+        app.register_blueprint(mcp_per_tool_conversion_bp)
+    except Exception as _ptc_e:
+        import logging
+        logging.getLogger(__name__).warning(
+            'mcp_per_tool_conversion wiring failed: %s', _ptc_e)
+    try:
+        from routes.customer_usage_dashboard import customer_usage_dashboard_bp
+        app.register_blueprint(customer_usage_dashboard_bp)
+    except Exception as _cud_e:
+        import logging
+        logging.getLogger(__name__).warning(
+            'customer_usage_dashboard wiring failed: %s', _cud_e)
+    try:
+        from routes.team_accounts import team_accounts_bp
+        app.register_blueprint(team_accounts_bp)
+    except Exception as _team_e:
+        import logging
+        logging.getLogger(__name__).warning(
+            'team_accounts wiring failed: %s', _team_e)
     # 2026-06-06: State of 2026 pre-publish QA harness — ONE button the founder
     # clicks before the LinkedIn launch to score every brief / hyperscaler /
     # claim / OG card / link and return GO / CAUTION / NO_GO. Catches the
@@ -28982,6 +29009,44 @@ try:
 except Exception as _e:
     print(f"[main] weekly_newsletter register failed: {_e}", file=sys.stderr)
 
+# DC Hub Media ROUND 3 (2026-06-07): trending topic detector. Twice-daily
+# scan of RSS (via the existing news table) + Reddit anon JSON + LinkedIn
+# trending (when LINKEDIN_TRENDING_TOKEN present). Top-5 trending topics
+# bias the next 24h of topic_mix when score >= 2.0x baseline.
+# - GET  /api/v1/admin/media/trending           — top-5 JSON
+# - POST /api/v1/admin/media/trending/run-now   — manual trigger
+# - GET  /api/v1/media/trending/top             — public-safe top 3
+# - GET  /admin/media-trending                  — HTML dashboard
+# Kill switches: MEDIA_R3_DISABLE=1 (all R3) or TRENDING_DETECTOR_DISABLE=1.
+try:
+    from routes.media_trending_detector import media_trending_detector_bp
+    app.register_blueprint(media_trending_detector_bp)
+    print("[main] media_trending_detector_bp registered: "
+          "/api/v1/admin/media/trending + /api/v1/media/trending/top + "
+          "/admin/media-trending", flush=True)
+except Exception as _e:
+    print(f"[main] media_trending_detector register failed: {_e}",
+          file=sys.stderr)
+
+# DC Hub Media ROUND 3 (2026-06-07): LinkedIn thread generator. Admin-
+# triggered 5-post thread series for big launches (e.g. State of 2026).
+# Each post REPLIES to the previous one (LI comment chain), 4-7min stagger.
+# DRY-RUN default; ?dry_run=0 ships live. Hard cap 1 thread/UTC day.
+# - POST /api/v1/admin/media/thread/generate         — generate + persist
+# - GET  /api/v1/admin/media/thread/<id>             — read back one
+# - GET  /api/v1/admin/media/thread/list             — recent threads
+# - POST /api/v1/admin/media/thread/<id>/publish     — flip dry_run -> queued
+# Kill switches: MEDIA_R3_DISABLE=1 or THREAD_GENERATOR_DISABLE=1.
+try:
+    from routes.media_thread_generator import media_thread_generator_bp
+    app.register_blueprint(media_thread_generator_bp)
+    print("[main] media_thread_generator_bp registered: "
+          "/api/v1/admin/media/thread/{generate,<id>,list,publish}",
+          flush=True)
+except Exception as _e:
+    print(f"[main] media_thread_generator register failed: {_e}",
+          file=sys.stderr)
+
 # Phase GGGGG (2026-05-16): schema.org saturation audit + reusable
 # JSON-LD helper for new pages. Drives SOT score.
 try:
@@ -29485,6 +29550,46 @@ try:
     print("[main] brain_self_perception_bp registered: /api/v1/admin/brain/self-perception/{run,preview,status} + /api/v1/brain/self-perception/{latest,history} (kill: BRAIN_SELF_PERCEPTION_DISABLE)", flush=True)
 except Exception as _bsp_e:
     print(f"[main] brain_self_perception_bp register failed: {_bsp_e}", file=sys.stderr)
+
+# Task #170 (2026-06-07): Brain Round 3 — brain reads its own CODE +
+# proposes architecture refactors + answers ops Q&A. Three unlocks:
+#   1. brain_code_scanner — daily 03:30 UTC walks routes/*.py (~430
+#      files), AST-based line/func/nesting metrics, called_from grep
+#      across the whole repo, has_tests proxy, commits_7d. Surfaces
+#      hotspots (highest-complexity / untested-large / churn / dead).
+#      Persists to brain_code_inventory; L6 reads via
+#      gather_code_inventory_context().
+#   2. brain_architecture_proposer — Claude (Sonnet) writes a 200-word
+#      refactor SPEC (not a patch) on top-ranked pattern. ≥0.85 conf
+#      opens a draft GitHub Issue labeled brain-l7-architecture +
+#      proposal. Conservative cap: 1/week. DRY-RUN by default
+#      (BRAIN_R3_ARCHITECTURE_DRY_RUN=1 default ON).
+#   3. brain_qa — POST /api/v1/brain/ask answers ops questions; keyword
+#      router picks context (MRR/funnel, brain backlog, media, sentinel,
+#      claims, state-of-2026, code hotspots). Admin-key gated; 50 Q/day
+#      per key; logged to brain_qa_log. Chat UI at /admin/ask-brain.
+# Master kill: BRAIN_R3_DISABLE=1. Daily budget across all 3:
+# BRAIN_R3_DAILY_BUDGET_USD ($3 default).
+try:
+    from routes.brain_code_scanner import brain_code_scanner_bp
+    app.register_blueprint(brain_code_scanner_bp)
+    print("[main] brain_code_scanner_bp registered: /api/v1/admin/brain/code-scanner/{run,preview,status} + /api/v1/brain/code-inventory/{hotspots,file} + /admin/brain-code-inventory (kill: BRAIN_R3_DISABLE or BRAIN_CODE_SCANNER_DISABLE)", flush=True)
+except Exception as _bcs2_e:
+    print(f"[main] brain_code_scanner_bp register failed: {_bcs2_e}", file=sys.stderr)
+
+try:
+    from routes.brain_architecture_proposer import brain_architecture_bp
+    app.register_blueprint(brain_architecture_bp)
+    print("[main] brain_architecture_bp registered: /api/v1/admin/brain/architecture/{run,preview,status} + /api/v1/brain/architecture/proposals (DRY-RUN default, 1/wk cap; kill: BRAIN_R3_DISABLE or BRAIN_ARCH_PROPOSER_DISABLE)", flush=True)
+except Exception as _bap_e:
+    print(f"[main] brain_architecture_bp register failed: {_bap_e}", file=sys.stderr)
+
+try:
+    from routes.brain_qa import brain_qa_bp
+    app.register_blueprint(brain_qa_bp)
+    print("[main] brain_qa_bp registered: POST /api/v1/brain/ask + /api/v1/brain/ask/{status,log} + /admin/ask-brain (admin-gated; 50/day cap; budget BRAIN_R3_DAILY_BUDGET_USD; kill: BRAIN_R3_DISABLE or BRAIN_QA_DISABLE)", flush=True)
+except Exception as _bqa_e:
+    print(f"[main] brain_qa_bp register failed: {_bqa_e}", file=sys.stderr)
 
 # === Brain v2 · Layer 3 freshness fields ===
 try:

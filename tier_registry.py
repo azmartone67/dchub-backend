@@ -31,6 +31,12 @@ TIERS = {
     'developer':  {'rank': 3,  'label': 'Developer',  'paid': True,  'api_tier': 'developer'},
     'pro':        {'rank': 4,  'label': 'Pro',        'paid': True,  'api_tier': 'pro'},
     'founding':   {'rank': 4,  'label': 'Founding',   'paid': True,  'api_tier': 'pro'},   # == pro
+    # MCP Funnel Round 3 Unlock 3 (2026-06-07): team accounts. Sits
+    # between Pro (rank 4) and Enterprise (rank 5); api_tier='pro' so
+    # team members get Pro-equivalent gates. The multi-seat economics
+    # live in routes/team_accounts.py — this entry is only for tier
+    # rank/label propagation.
+    'team':       {'rank': 4,  'label': 'Team',       'paid': True,  'api_tier': 'pro'},
     'enterprise': {'rank': 5,  'label': 'Enterprise', 'paid': True,  'api_tier': 'enterprise'},
     'research_seed': {'rank': 5, 'label': 'Research', 'paid': True,  'api_tier': 'enterprise'},
     'admin':      {'rank': 99, 'label': 'Admin',      'paid': True,  'api_tier': 'admin'},
@@ -47,6 +53,7 @@ TIER_LIMITS = {
     'starter':    dict(rate_limit=500,   record_cap=500,   page_cap=10, mcp_daily=200,   mcp_results=50),
     'developer':  dict(rate_limit=1000,  record_cap=500,   page_cap=10, mcp_daily=500,  mcp_results=100),
     'pro':        dict(**_PRO),
+    'team':       dict(**_PRO),  # team members get Pro-equivalent daily caps
     'founding':   dict(**_PRO),  # founding == pro benefits
     'enterprise': dict(rate_limit=100000, record_cap=999999, page_cap=999, mcp_daily=100000, mcp_results=10000),
     'research_seed': dict(rate_limit=100000, record_cap=999999, page_cap=999, mcp_daily=100000, mcp_results=10000),  # NLR == enterprise
@@ -75,6 +82,7 @@ TIER_PRICE_USD_MONTH = {
     'starter':    9,
     'developer':  49,
     'pro':        199,
+    'team':       499,    # $499/mo for 5 seats = $99.80/seat (R3 Unlock 3)
     'founding':   199,    # == pro
     'enterprise': None,   # custom / contact sales
     'research_seed': None,
@@ -96,6 +104,7 @@ TIER_FEATURES = {
     'developer':  {'market_brief': 'teaser'},
     # PRO + above unlock the full 9-section brief for ALL markets.
     'pro':        {'market_brief': 'full'},
+    'team':       {'market_brief': 'full'},   # team members get Pro features
     'founding':   {'market_brief': 'full'},   # == pro
     'enterprise': {'market_brief': 'full+white_label'},
     'research_seed': {'market_brief': 'full+white_label'},
@@ -112,6 +121,10 @@ TIER_PRICING_COPY = {
     'pro':        ['2,000 MCP calls/day', 'Market Brief for all markets',
                    'Live deal flow + operator footprint',
                    'Priority email support'],
+    'team':       ['5 seats included', '2,000 MCP calls/day shared',
+                   'Per-seat usage attribution',
+                   'Owner-controlled invite + remove',
+                   'Everything in Pro'],
     'founding':   ['2,000 MCP calls/day', 'Market Brief for all markets',
                    'Founding-member badge', 'Direct line to the team'],
     'enterprise': ['Unlimited MCP', 'White-labeled Market Brief',

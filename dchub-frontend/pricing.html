@@ -430,6 +430,57 @@ a:hover { color: #22d3ee; }
     </div>
 </section>
 
+<!-- ═══════════════ TEAM TIER (R3 Unlock 3, 2026-06-07) ═══════════════
+     Sits between Pro ($199) and Enterprise ($699). Buyability is gated
+     on STRIPE_PRICE_TEAM_MONTHLY env var — when not set, the card shows
+     a "Coming soon" CTA and links to /api/v1/team/config diagnostics. -->
+<section class="pricing-section" style="padding-top:0;">
+    <div style="text-align:center;margin-bottom:2rem;">
+        <div style="font-family:var(--font-mono);font-size:0.7rem;color:var(--green);text-transform:uppercase;letter-spacing:0.1em;margin-bottom:0.5rem;">MULTI-SEAT TIER</div>
+        <h2 style="font-size:1.5rem;font-weight:700;">Team</h2>
+        <p style="font-size:0.9rem;color:var(--text-secondary);max-width:540px;margin:0.5rem auto 0;">Up to 5 seats on a shared key with per-seat usage attribution. Cheaper than 5× Pro, lighter than Enterprise.</p>
+    </div>
+    <div style="display:grid;grid-template-columns:1fr;gap:1rem;max-width:500px;margin:0 auto;">
+        <div class="plan-card" style="border-color:var(--green);background:linear-gradient(180deg,rgba(16,185,129,0.06) 0%,var(--bg-card) 40%);">
+            <div class="plan-ribbon" style="background:rgba(16,185,129,0.15);color:var(--green);">👥 TEAM · 5 SEATS</div>
+            <div class="plan-name">Team Monthly</div>
+            <div class="plan-desc">For consulting teams + internal squads</div>
+            <div class="plan-price">
+                <span class="price-amount">$499</span><span class="price-period">/month</span>
+            </div>
+            <div class="price-note"><span class="highlight">$99.80/seat — save $496/mo vs 5× Pro</span></div>
+            <ul class="plan-features">
+                <li><span class="icon yes">✓</span> 5 seats included (shared API key)</li>
+                <li><span class="icon yes">✓</span> Per-seat usage attribution</li>
+                <li><span class="icon yes">✓</span> Owner-controlled invite + remove</li>
+                <li><span class="icon yes">✓</span> 2,000 MCP calls/day shared</li>
+                <li><span class="icon yes">✓</span> Everything in Pro</li>
+                <li><span class="icon yes">✓</span> Cancel anytime</li>
+            </ul>
+            <a href="#" id="team-cta" class="plan-cta" style="background:linear-gradient(135deg,var(--green),#16a34a);color:#fff;">Start Team — $499/mo →</a>
+            <div id="team-coming-soon" style="display:none;margin-top:0.6rem;font-size:0.75rem;color:var(--text-secondary);text-align:center;">
+                Stripe product launching — <a href="mailto:hello@dchub.cloud?subject=Team%20tier%20interest" style="color:var(--green);">email to be notified</a>
+            </div>
+        </div>
+    </div>
+    <script>
+    // R3 Unlock 3 (2026-06-07): hide the CTA until STRIPE_PRICE_TEAM_MONTHLY
+    // is set in Railway env vars (the team_accounts route exposes that
+    // status via /api/v1/team/config).
+    fetch('/api/v1/team/config').then(function(r){return r.json();}).then(function(j){
+      if (j && j.enabled && j.stripe_link) {
+        document.getElementById('team-cta').setAttribute('href', j.stripe_link);
+      } else {
+        document.getElementById('team-cta').style.display = 'none';
+        document.getElementById('team-coming-soon').style.display = 'block';
+      }
+    }).catch(function(){
+      document.getElementById('team-cta').style.display = 'none';
+      document.getElementById('team-coming-soon').style.display = 'block';
+    });
+    </script>
+</section>
+
 <!-- ═══════════════ ENTERPRISE SECTION ═══════════════════ -->
 <section class="pricing-section" style="padding-top:0;">
     <div style="text-align:center;margin-bottom:2rem;">

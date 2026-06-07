@@ -83,6 +83,14 @@ SCHEDULE = [
     # infra-sync and 3/15 kmz-discovery) and gives any nightly upstream
     # refresh time to land. Same-hour-same-day cap → one run/day.
     ( 2,  2, "tool_calibration",   "_run_tool_calibration_check"),
+    # MCP Funnel Round 3 Unlock 1 (2026-06-07): per-tool conversion
+    # analyzer. Read-only — computes 30d conv rate for each of the 38
+    # MCP tools and writes LOW (>=100 callers + 0 paid) + HIGH (top 3
+    # by rate) brain findings. Daily 02:00 UTC. Same-hour-same-day cap
+    # via the SCHEDULE harness; idempotent thanks to
+    # brain_findings_writer.upsert_brain_finding so re-runs are safe.
+    # Kill switch: MCP_FUNNEL_R3_DISABLE=1.
+    ( 2,  2, "per_tool_conversion", "_run_per_tool_conversion"),
     # Daily R2 refresh — POST /refresh on the heroic-reprieve daily
     # FastAPI so today's PNGs land in R2 (2026-06-05). R2 has been
     # empty for 7+ days because extractor_cron.py's daily_refresh_if_needed()
@@ -214,6 +222,26 @@ SCHEDULE = [
     # GETs. Slot 5/17 chosen per spec. Same-hour-same-day cap → one run/slot.
     # Short, defensive runner: bounded to 5 slugs × ~250ms each = ~1.3s.
     ( 5, 17, "market_brief_warm",   "_run_market_brief_warm"),
+    # DC Hub Media ROUND 3 (2026-06-07): trending topic detector. Fires
+    # twice daily at 06:00 + 18:00 UTC, one minute after the news crawler
+    # rows land in the `news` table. Scores topics by (24h_count /
+    # 7d_baseline) × engagement_signal. Top-5 bias the next topic_mix
+    # run. Bounded: ~2s RSS query, ~5s Reddit fetch w/ 0.5s/sub sleep,
+    # ~3s LinkedIn attempt (only if token present). Same-hour-same-day
+    # cap → one run/slot. Kill: MEDIA_R3_DISABLE=1 or
+    # TRENDING_DETECTOR_DISABLE=1. Shares 6/18 with state_brief_warm +
+    # mcp_presence_crawl; each runner has its own per-name lock.
+    ( 6, 18, "media_trending_detect", "_run_media_trending_detect"),
+    # DC Hub Media ROUND 3 (2026-06-07): thread flush cron for the
+    # LinkedIn thread generator. Slot 15/15 UTC — once per UTC day (the
+    # same-hour-pair == one slot per day pattern). Walks media_thread_log
+    # rows in 'queued'/'partial' status, posts AT MOST ONE due post per
+    # call. The 4-7min stagger is encoded in scheduled_for stamps; one
+    # post/flush + the hourly cadence means a typical 5-post thread
+    # ships across ~25-35min of clock time (still humanlike for a launch
+    # day). Idempotent: posted_at set => row skipped on re-run.
+    # Kill: MEDIA_R3_DISABLE=1 or THREAD_GENERATOR_DISABLE=1.
+    (15, 15, "media_thread_flush",   "_run_media_thread_flush"),
     # Per-State Brief pre-warm (2026-06-06): build the per-state roll-up for
     # each of the 8 seed states (texas, california, virginia, georgia, ohio,
     # oregon, illinois, arizona). 1s sleep between states. Slot 6/18 chosen
@@ -451,6 +479,39 @@ SCHEDULE = [
     # BRAIN_SELF_PERCEPTION_DRY_RUN=1 (renders prompt, skips Claude).
     ( 4,  4, "brain_self_perception",
               "_run_brain_self_perception"),
+    # Task #170 (2026-06-07): Brain ROUND 3 — code scanner.
+    # Daily ~03:30 UTC (slot 3,3 → fires at hour=3) the brain walks
+    # routes/*.py (~430 files), AST-parses each for line/func/class
+    # counts + max-nesting complexity proxy, builds a cross-file ref
+    # index to count called_from for the public functions in each
+    # file, runs a tests/ name-match probe for has_tests, and (where
+    # git available) counts commits_7d via `git log --since=7.days`.
+    # Persists one row per file to brain_code_inventory (UPSERT,
+    # prev_line_count + prev_function_count tracked so the operator
+    # can see growth). Hotspots feed L6 strategic synthesis via
+    # gather_code_inventory_context(). Pure file IO + grep + ast.parse
+    # — ZERO Claude tokens. Same-day idempotency in
+    # brain_code_inventory_runs. Kill switch: BRAIN_R3_DISABLE=1
+    # (master) or BRAIN_CODE_SCANNER_DISABLE=1 (per-unlock).
+    ( 3,  3, "brain_code_scanner",
+              "_run_brain_code_scanner"),
+    # Task #170 (2026-06-07): Brain ROUND 3 — architecture proposer.
+    # Daily slot 5,5 (1h after the scanner so the inventory is fresh)
+    # the brain reads the code-inventory hotspots, ranks candidate
+    # refactor patterns (CLUSTER_SIMILAR_ROUTES, UNTESTED_CRITICAL_PATH,
+    # LIKELY_DEAD_LARGE, COMPLEXITY_HOTSPOT), picks the top one, and
+    # Claude (Sonnet) writes a 200-word REFACTOR SPEC (not a patch).
+    # Confidence ≥ 0.85 + DRY_RUN OFF + GITHUB_TOKEN set opens a
+    # draft GitHub Issue labeled brain-l7-architecture + proposal.
+    # Conservative weekly cap (BRAIN_R3_ARCH_WEEKLY_CAP, default 1)
+    # via iso_week field gates the runner. Persists to
+    # brain_architecture_proposals (UNIQUE dedupe_key 30d).
+    # DRY-RUN by default (BRAIN_R3_ARCHITECTURE_DRY_RUN=1 default ON).
+    # Cost ~$0.02-0.05/run (Sonnet) — capped by the shared
+    # BRAIN_R3_DAILY_BUDGET_USD ($3 default). Kill switches:
+    # BRAIN_R3_DISABLE=1 or BRAIN_ARCH_PROPOSER_DISABLE=1.
+    ( 5,  5, "brain_architecture_propose",
+              "_run_brain_architecture_propose"),
     # Brain ROUND 2 (2026-06-07): cross-session finding pollination.
     # After every brain_findings INSERT a (detector, issue) pair gets
     # checked against the last 7d of brain_findings — if it surfaced
@@ -1581,6 +1642,46 @@ def _run_tool_calibration_check():
         logger.error("🎯 Tool calibration check error: %s", e, exc_info=True)
 
 
+def _run_per_tool_conversion():
+    """MCP Funnel Round 3 Unlock 1 (2026-06-07): per-tool conversion
+    analyzer. Computes 30d conv rate for each of the 38 MCP tools and
+    writes LOW/HIGH brain findings via the canonical upsert. Idempotent
+    + read-only against tool tables. Kill switch:
+    MCP_FUNNEL_R3_DISABLE=1.
+    """
+    import os
+    if os.environ.get("MCP_FUNNEL_R3_DISABLE", "").strip() in ("1", "true", "yes"):
+        logger.info("[per_tool_conversion] disabled via MCP_FUNNEL_R3_DISABLE")
+        return
+    try:
+        # Lazy import — the route file owns the compute + brain emit
+        # logic so the cron remains a thin wrapper.
+        from routes.mcp_per_tool_conversion import (
+            _compute as _ptc_compute,
+            _emit_brain_findings as _ptc_emit,
+            _CACHE as _ptc_cache,
+        )
+        # Bust the dashboard cache so the computed numbers are fresh.
+        _ptc_cache["data"] = None
+        _ptc_cache["ts"] = 0.0
+        data = _ptc_compute()
+        brain = _ptc_emit(data)
+        logger.info(
+            "📊 per_tool_conversion: %d tools probed · %d low / %d high "
+            "performers · brain_findings written: low=%d high=%d",
+            data.get("total_tools", 0),
+            len(data.get("low_performers") or []),
+            len(data.get("high_performers") or []),
+            brain.get("low_written", 0), brain.get("high_written", 0),
+        )
+        if data.get("missing_tables"):
+            logger.warning(
+                "📊 per_tool_conversion: missing tables — %s",
+                ", ".join(data.get("missing_tables", [])))
+    except Exception as e:
+        logger.error("📊 per_tool_conversion error: %s", e, exc_info=True)
+
+
 def _run_linkedin_engagement_sync():
     """r72 (2026-06-05): pull native LinkedIn engagement + impressions onto
     recent posts so the media measure→learn loop sees BOTH halves of the
@@ -2067,6 +2168,39 @@ def _run_verdict_shift_post():
         )
     except Exception as e:
         logger.error("📣 verdict_shift_post: error — %s", e)
+
+
+def _run_media_trending_detect():
+    """DC Hub Media ROUND 3 (2026-06-07): trending topic detector. Twice
+    daily at 06:00 + 18:00 UTC. Scores topics from RSS (`news` table) +
+    Reddit anon JSON + LinkedIn (when token present), writes the top-5
+    merged rows + every per-source row to media_trending_topics. The next
+    /admin/media-mix dashboard view + the next topic_tuner run read these
+    rows. Calls the module's runner directly (no loopback HTTP). Never
+    raises (the inner runner swallows). Kill: MEDIA_R3_DISABLE=1 or
+    TRENDING_DETECTOR_DISABLE=1."""
+    try:
+        from routes.media_trending_detector import (
+            _run_media_trending_detect as _td)
+        _td()
+    except Exception as e:
+        logger.error("📣 media_trending_detect: error — %s", e)
+
+
+def _run_media_thread_flush():
+    """DC Hub Media ROUND 3 (2026-06-07): LinkedIn thread flush cron. Once
+    per UTC day at 15:00 (same-hour pair). Walks media_thread_log rows in
+    status='queued'/'partial' and posts AT MOST ONE due slot per call.
+    The 4-7min stagger encoded in scheduled_for stamps + the 1-post-per-
+    flush cadence keep launch-day pace humanlike. Idempotent per post
+    (posted_at set => row skipped on re-run). Never raises. Kill:
+    MEDIA_R3_DISABLE=1 or THREAD_GENERATOR_DISABLE=1."""
+    try:
+        from routes.media_thread_generator import (
+            _run_media_thread_flush as _tf)
+        _tf()
+    except Exception as e:
+        logger.error("📣 media_thread_flush: error — %s", e)
 
 
 def _run_weekly_newsletter():
@@ -2892,6 +3026,69 @@ def _run_brain_self_perception():
             "🧠 brain_self_perception error: %s", e, exc_info=True)
 
 
+def _run_brain_code_scanner():
+    """Task #170 (2026-06-07). Brain ROUND 3 — code scanner.
+    Daily slot 3,3 (~03:30 UTC fires at hour=3). Walks routes/*.py
+    AST-parses each for line/func/class counts + max-nesting, runs a
+    cross-file grep to count called_from for public functions, probes
+    tests/ for name-match has_tests, and counts commits_7d via git log.
+    Persists one row per file to brain_code_inventory (UPSERT, prev_*
+    fields tracked). Hotspots feed L6 strategic synthesis via
+    gather_code_inventory_context(). Pure file IO + grep + ast.parse —
+    ZERO Claude tokens. Defensive — never raises. Kill switch:
+    BRAIN_R3_DISABLE=1 (master) or BRAIN_CODE_SCANNER_DISABLE=1."""
+    try:
+        from routes.brain_code_scanner import run_code_scan as _run
+        result = _run(force=False) or {}
+        logger.info(
+            "🧠 brain_code_scanner: ok=%s from_cache=%s "
+            "files_scanned=%s files_changed=%s findings=%s "
+            "duration_ms=%s",
+            result.get("ok"),
+            result.get("from_cache"),
+            result.get("files_scanned"),
+            result.get("files_changed"),
+            result.get("findings_count"),
+            result.get("duration_ms"))
+    except Exception as e:
+        logger.error(
+            "🧠 brain_code_scanner error: %s", e, exc_info=True)
+
+
+def _run_brain_architecture_propose():
+    """Task #170 (2026-06-07). Brain ROUND 3 — architecture proposer.
+    Daily slot 5,5. Reads code-inventory hotspots, ranks candidate
+    refactor patterns (CLUSTER_SIMILAR_ROUTES / UNTESTED_CRITICAL_PATH
+    / LIKELY_DEAD_LARGE / COMPLEXITY_HOTSPOT), picks top-1, Claude
+    (Sonnet) writes a 200-word REFACTOR SPEC. ≥0.85 confidence + DRY_RUN
+    OFF + GITHUB_TOKEN set opens a draft GitHub Issue labeled
+    brain-l7-architecture + proposal. Conservative weekly cap (default
+    1/wk). Persists to brain_architecture_proposals. DRY-RUN by default
+    (BRAIN_R3_ARCHITECTURE_DRY_RUN=1 default ON). Cost ~$0.02-0.05/run.
+    Defensive — never raises. Kill: BRAIN_R3_DISABLE=1 or
+    BRAIN_ARCH_PROPOSER_DISABLE=1."""
+    try:
+        from routes.brain_architecture_proposer import (
+            run_architecture_proposer as _run,
+        )
+        result = _run(force=False) or {}
+        logger.info(
+            "🧠 brain_architecture_propose: ok=%s skipped=%s "
+            "pattern=%s confidence=%s status=%s row_id=%s "
+            "github=%s cost_cents=%s",
+            result.get("ok"),
+            result.get("skipped"),
+            result.get("pattern"),
+            result.get("confidence"),
+            result.get("status"),
+            result.get("row_id"),
+            result.get("github_issue_number"),
+            result.get("cost_cents"))
+    except Exception as e:
+        logger.error(
+            "🧠 brain_architecture_propose error: %s", e, exc_info=True)
+
+
 def _run_brain_cross_session_scan():
     """Brain ROUND 2 (2026-06-07). Twice-daily — scans brain_findings
     for (detector, issue) pairs appearing in N+ distinct sessions in
@@ -3046,6 +3243,7 @@ _RUNNERS = {
     "auto_interconnect":   _run_auto_interconnect,
     "gas_pricing_refresh": _run_gas_pricing_refresh,
     "tool_calibration":    _run_tool_calibration_check,
+    "per_tool_conversion": _run_per_tool_conversion,
     "linkedin_engagement_sync": _run_linkedin_engagement_sync,
     "accelerator_scan":    _run_accelerator_scan,
     "media_topic_tune":    _run_media_topic_tune,
@@ -3066,6 +3264,9 @@ _RUNNERS = {
     "expired_onetime_demote": _run_expired_onetime_demote,
     "verdict_shift_post":  _run_verdict_shift_post,
     "weekly_newsletter":   _run_weekly_newsletter,
+    # DC Hub Media ROUND 3 (2026-06-07)
+    "media_trending_detect":  _run_media_trending_detect,
+    "media_thread_flush":     _run_media_thread_flush,
     "watchlist_realtime":       _run_watchlist_realtime,
     "watchlist_weekly_digest":  _run_watchlist_weekly_digest,
     "hyperscaler_brief_warm":   _run_hyperscaler_brief_warm,
@@ -3077,6 +3278,9 @@ _RUNNERS = {
     "brain_strategic_digest":    _run_brain_strategic_digest,
     "brain_pr_outcome_monitor":  _run_brain_pr_outcome_monitor,
     "brain_self_perception":     _run_brain_self_perception,
+    # Brain ROUND 3 (Task #170, 2026-06-07): code scanner + arch proposer.
+    "brain_code_scanner":          _run_brain_code_scanner,
+    "brain_architecture_propose":  _run_brain_architecture_propose,
     "brain_cross_session_scan":  _run_brain_cross_session_scan,
     "sentinel_auto_merge_sweep":    _run_sentinel_auto_merge_sweep,
     "sentinel_auto_merge_followup": _run_sentinel_auto_merge_followup,

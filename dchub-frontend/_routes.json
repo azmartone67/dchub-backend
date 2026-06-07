@@ -79,7 +79,9 @@
     "/hyperscaler-deals.rss",
     "/hyperscaler-deals.xml",
     "/rss/*",
-    "/interconnection-queues"
+    "/interconnection-queues",
+    "/dashboard/usage",
+    "/dashboard/usage/*"
   ],
   "exclude": []
 }

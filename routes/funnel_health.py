@@ -1458,6 +1458,36 @@ def _render_html(data: dict, admin_key: str) -> str:
     </div>
   </div>
 
+  <!-- R3 Unlock 1 (2026-06-07): per-tool conversion ranking — top 3 + bottom 3.
+       Compact inline view; full 38-tool table at /admin/per-tool-conversion.
+       Cron at 02:00 UTC writes LOW (≥100 callers + 0 paid) and HIGH (top 3
+       by rate) findings to brain_findings. Card content is hydrated by JS
+       from /api/v1/admin/per-tool-conversion/top so this dashboard doesn't
+       have to re-probe 38 tools on every refresh. -->
+  <div class="card" style="margin-bottom:18px;">
+    <h2>Per-tool conversion ranking
+      <span style="font-size:10px;color:var(--accent);">R3 NEW · 38 tools · daily</span>
+    </h2>
+    <div id="ptc-inline" style="display:grid;grid-template-columns:1fr 1fr;gap:16px;font-size:12px;">
+      <div>
+        <div style="font-size:10px;color:#22c55e;text-transform:uppercase;letter-spacing:0.05em;margin-bottom:8px;">Top 3 by conv rate</div>
+        <ul id="ptc-top" style="margin:0;padding-left:18px;line-height:1.7;color:var(--fg);">
+          <li style="color:var(--muted);list-style:none;margin-left:-18px;">Loading…</li>
+        </ul>
+      </div>
+      <div>
+        <div style="font-size:10px;color:#ef4444;text-transform:uppercase;letter-spacing:0.05em;margin-bottom:8px;">Bottom 3 (≥1 caller)</div>
+        <ul id="ptc-bot" style="margin:0;padding-left:18px;line-height:1.7;color:var(--fg);">
+          <li style="color:var(--muted);list-style:none;margin-left:-18px;">Loading…</li>
+        </ul>
+      </div>
+    </div>
+    <div style="font-size:11px;color:var(--muted);margin-top:12px;">
+      Full table: <a href="/admin/per-tool-conversion?admin_key={admin_key_safe}" style="color:var(--accent);">/admin/per-tool-conversion</a>
+      · JSON: <a href="/api/v1/admin/per-tool-conversion?admin_key={admin_key_safe}&amp;format=json" style="color:var(--accent);">/api/v1/admin/per-tool-conversion?format=json</a>
+    </div>
+  </div>
+
   <div class="footer">
     cache_ttl={_CACHE_TTL_S}s ·
     routes/funnel_health.py ·
@@ -1495,6 +1525,48 @@ def _render_html(data: dict, admin_key: str) -> str:
       this.disabled = false;
     }}
   }});
+
+  // R3 Unlock 1 (2026-06-07): hydrate the per-tool conversion card from
+  // /api/v1/admin/per-tool-conversion/top. The endpoint reuses its own
+  // 10-min cache so the fan-out from funnel-health to ptc never spikes
+  // the DB.
+  function esc(s){{ var d=document.createElement('div'); d.textContent = s||''; return d.innerHTML; }}
+  function fmtRate(r){{ return (r>=0.01 ? r.toFixed(2) : '0.00') + '%'; }}
+  function ptcRow(r){{
+    var color = r.conv_rate_pct >= 1.0 ? '#22c55e'
+              : r.conv_rate_pct > 0 ? '#f59e0b'
+              : (r.distinct_callers_30d >= 100 ? '#ef4444' : '#94a3b8');
+    return '<li><strong>' + esc(r.tool) + '</strong> · ' +
+           '<span style="color:' + color + ';">' + fmtRate(r.conv_rate_pct) + '</span> · ' +
+           (r.distinct_callers_30d||0).toLocaleString() + ' callers · ' +
+           (r.paid_conversions_30d||0) + ' paid</li>';
+  }}
+  (async function(){{
+    try {{
+      var r = await fetch('/api/v1/admin/per-tool-conversion/top', {{
+        headers: {{ 'X-Admin-Key': ADMIN_KEY }}
+      }});
+      if (!r.ok) throw new Error(r.status);
+      var j = await r.json();
+      var topEl = document.getElementById('ptc-top');
+      var botEl = document.getElementById('ptc-bot');
+      if ((j.top_3||[]).length) {{
+        topEl.innerHTML = j.top_3.map(ptcRow).join('');
+      }} else {{
+        topEl.innerHTML = '<li style="color:var(--muted);list-style:none;margin-left:-18px;">No data yet</li>';
+      }}
+      if ((j.bottom_3||[]).length) {{
+        botEl.innerHTML = j.bottom_3.map(ptcRow).join('');
+      }} else {{
+        botEl.innerHTML = '<li style="color:var(--muted);list-style:none;margin-left:-18px;">No data yet</li>';
+      }}
+    }} catch (e) {{
+      var topEl = document.getElementById('ptc-top');
+      var botEl = document.getElementById('ptc-bot');
+      if (topEl) topEl.innerHTML = '<li style="color:#ef4444;list-style:none;margin-left:-18px;">Load failed: ' + esc(String(e)) + '</li>';
+      if (botEl) botEl.innerHTML = '';
+    }}
+  }})();
 }})();
 </script>
 </body>
