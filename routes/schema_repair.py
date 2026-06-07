@@ -761,6 +761,63 @@ SCHEMA_STATEMENTS = [
         )""",
         "CREATE INDEX IF NOT EXISTS ix_sam_block_until ON sentinel_auto_merge_block(blocked_until DESC)",
     ]),
+    ("media_comment_engagement_log table", [
+        # 2026-06-07 — LinkedIn comment engagement loop (routes/
+        # media_comment_engagement.py). Detects new comments on DC Hub
+        # org posts, drafts replies via Claude, posts as the org URN.
+        # Ships DRY-RUN by default; daily cap=10; 4-7min human cadence
+        # delay; per-comment-urn unique so the same comment can never
+        # be re-evaluated. Critical for the State of 2026 Monday
+        # launch comment storm.
+        """CREATE TABLE IF NOT EXISTS media_comment_engagement_log (
+            id                       BIGSERIAL PRIMARY KEY,
+            source_post_urn          TEXT NOT NULL,
+            source_post_id           TEXT,
+            comment_urn              TEXT UNIQUE NOT NULL,
+            comment_author_urn       TEXT,
+            comment_author_name      TEXT,
+            comment_text             TEXT,
+            comment_detected_at      TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+            reply_generated          TEXT,
+            reply_posted_at          TIMESTAMPTZ,
+            reply_urn                TEXT,
+            scheduled_for            TIMESTAMPTZ,
+            decision                 TEXT,
+            decision_reason          TEXT,
+            attributed_visit         BOOLEAN,
+            attributed_signup        BOOLEAN
+        )""",
+        "CREATE INDEX IF NOT EXISTS ix_mcel_decided ON media_comment_engagement_log(comment_detected_at DESC)",
+        "CREATE INDEX IF NOT EXISTS ix_mcel_pending ON media_comment_engagement_log(scheduled_for) WHERE decision = 'queued' AND reply_posted_at IS NULL",
+        "CREATE INDEX IF NOT EXISTS ix_mcel_decision ON media_comment_engagement_log(decision)",
+    ]),
+    ("media_style_outcomes table", [
+        # 2026-06-07: DC Hub Media style A/B learner
+        # (routes/media_style_ab.py). One row per LinkedIn post's
+        # (topic, style) decision + later-filled engagement metrics.
+        # The picker reads this to compute epsilon-greedy choices per
+        # topic; the linkedin_engagement_sync cron backfills the
+        # metrics 24h after publish.
+        """CREATE TABLE IF NOT EXISTS media_style_outcomes (
+            id              BIGSERIAL PRIMARY KEY,
+            post_id         BIGINT,
+            post_urn        TEXT,
+            topic           TEXT NOT NULL,
+            style           TEXT NOT NULL,
+            published_at    TIMESTAMPTZ NOT NULL,
+            impressions     INTEGER,
+            reactions       INTEGER,
+            comments        INTEGER,
+            clicks          INTEGER,
+            score           REAL,
+            measured_at     TIMESTAMPTZ,
+            decision_phase  TEXT,
+            created_at      TIMESTAMPTZ NOT NULL DEFAULT NOW()
+        )""",
+        "CREATE INDEX IF NOT EXISTS ix_mso_topic_style ON media_style_outcomes(topic, style)",
+        "CREATE INDEX IF NOT EXISTS ix_mso_published ON media_style_outcomes(published_at DESC)",
+        "CREATE INDEX IF NOT EXISTS ix_mso_post_urn ON media_style_outcomes(post_urn) WHERE post_urn IS NOT NULL",
+    ]),
 ]
 
 

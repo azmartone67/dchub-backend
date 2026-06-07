@@ -1249,6 +1249,8 @@ The tuner runs daily at 13:30 UTC after LinkedIn engagement sync.</p>
 
 {_render_autoresponse_section(autoresp or [], autoresp_flags or {})}
 
+{_render_style_ab_section()}
+
 <h2 class="muted" style="margin-top:32px;font-size:14px;">Tuner actions</h2>
 <p class="muted">
   <code>POST /api/v1/admin/media/tune-now</code> — recompute today's mix<br>
@@ -1342,6 +1344,19 @@ def _render_autoresponse_section(rows: list[dict], flags: dict[str, Any]) -> str
   Kill switch: <code>MEDIA_AUTORESPONSE_DISABLE=1</code>.
   Weekly cap: <code>MEDIA_AUTORESPONSE_WEEKLY_CAP=3</code>.
 </p>"""
+
+
+def _render_style_ab_section() -> str:
+    """2026-06-07: surface the Style A/B Learner card on /admin/media-mix.
+    Delegates to routes.media_style_ab.render_style_ab_card() so the
+    learner module owns its own template. Fail-soft: empty string if
+    the module isn't importable (partial deploy)."""
+    try:
+        from routes.media_style_ab import render_style_ab_card
+        return render_style_ab_card(days=30) or ""
+    except Exception as e:
+        _log(f"render_style_ab_card skipped: {e}")
+        return ""
 
 
 @media_topic_tuner_bp.route("/admin/media-mix", methods=["GET"])

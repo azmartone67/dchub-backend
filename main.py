@@ -27494,6 +27494,24 @@ try:
 except Exception as _mtt_e:
     print(f"[main] media_topic_tuner_bp register failed: {_mtt_e}", flush=True)
 
+# DC Hub Media STYLE A/B LEARNER (2026-06-07): per-topic epsilon-greedy
+# image-style picker. Today every story_type → one hardcoded style; this
+# learner randomly explores the 4 pickable styles per topic until it has
+# ≥3 measured posts per (topic, style), then exploits the winner 80% of
+# the time. Records every decision to media_style_outcomes; the
+# linkedin_engagement_sync cron back-fills impressions/reactions/comments/
+# clicks 24h after publish. DEFAULT OFF on first deploy — operator flips
+# DCHUB_STYLE_AB_LEARNER_ENABLED=1 once they've eyeballed the dashboard.
+try:
+    from routes.media_style_ab import media_style_ab_bp
+    app.register_blueprint(media_style_ab_bp)
+    print("[main] media_style_ab_bp registered: "
+          "/api/v1/admin/media/style-ab{,/pick,/backfill,/sync}",
+          flush=True)
+except Exception as _msab_e:
+    print(f"[main] media_style_ab_bp register failed: {_msab_e}",
+          flush=True)
+
 # DC Hub Media ROUND 2 (2026-06-07): engagement-spike auto-responder.
 # When a LinkedIn post (last 24h) crosses 2x the 30d baseline impressions
 # in under 6 hours of publish, generates a 3-comment follow-up thread via
@@ -27515,6 +27533,26 @@ try:
           flush=True)
 except Exception as _msr_e:
     print(f"[main] media_spike_responder_bp register failed: {_msr_e}",
+          flush=True)
+
+# LinkedIn comment engagement loop (2026-06-07): when someone comments on a
+# DC Hub LinkedIn post, Claude drafts a substantive reply (referencing live
+# DC Hub data), waits 4-7 min for human cadence, posts as the ORG URN.
+# CRITICAL for Monday's State of 2026 launch comment storm. Ships DRY-RUN by
+# default (MEDIA_COMMENT_REPLY_DRY_RUN=1) — the first deploy generates drafts
+# without posting; operator reviews ~10 on /admin/media-mix → "Comment
+# Engagement", flips MEDIA_COMMENT_REPLY_DRY_RUN=0 to go live. Daily cap=10
+# via MEDIA_COMMENT_REPLY_DAILY_CAP; blocklist via MEDIA_COMMENT_REPLY_BLOCKLIST
+# (comma-separated URNs/names). Master kill switch MEDIA_COMMENT_REPLY_DISABLE=1.
+# Cron at 9/21 UTC (poll+queue) + 13/1 UTC (flush due) via crawler_scheduler.
+try:
+    from routes.media_comment_engagement import media_comment_engagement_bp
+    app.register_blueprint(media_comment_engagement_bp)
+    print("[main] media_comment_engagement_bp registered: "
+          "/api/v1/admin/media/comment-engagement/{poll-now,run,recent,"
+          "regenerate/<id>,flush-due}", flush=True)
+except Exception as _mce_e:
+    print(f"[main] media_comment_engagement_bp register failed: {_mce_e}",
           flush=True)
 
 # Market Brief v1 (2026-06-06): shareable per-market briefs that replace

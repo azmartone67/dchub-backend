@@ -87,6 +87,22 @@ OG_IMAGE_BY_TYPE = {
     "market_anomaly":        "https://api.dchub.cloud/static/og/landing-ai-capacity.png",
 }
 
+# 2026-06-07: bridge from the content-engine's `story_type` (6 values, used
+# inside this file) to the topic_tuner's 14-topic library (the unit the A/B
+# learner aggregates against). One topic per story_type — we keep it 1:1
+# instead of trying to match TOPIC_LIBRARY regexes here, because that map
+# already classifies real posts; THIS map just gives the freshly-composed
+# post a sensible topic key before the regex sees it. routes/media_style_ab.py
+# consumes this via the wired pick_style_if_enabled().
+_STORY_TYPE_TO_TOPIC = {
+    "dcpi_scoop":           "dcpi_verdict",
+    "market_anomaly":       "verdict_shift",
+    "energy_narrative":     "energy_pricing",
+    "hyperscaler_drama":    "hyperscaler_deal",
+    "capability_spotlight": "ai_citation",
+    "shipped_this_week":    "industry_pulse",
+}
+
 # Known MCP tool catalog — used by capability_spotlight to pick a
 # tool + describe an example call. Hand-curated from server-card.
 _MCP_TOOL_HOOKS = [
@@ -717,6 +733,18 @@ def _card_url_for(story_type: str, data: dict, text: str) -> str | None:
         if os.environ.get("DCHUB_MEDIA_AI_IMAGES", "").lower() in ("1", "true", "yes") \
                 and story_type in ("energy_narrative", "hyperscaler_drama", "capability_spotlight"):
             style = "ai_hero"
+
+        # 2026-06-07: A/B style learner. Default OFF (observe first). When
+        # DCHUB_STYLE_AB_LEARNER_ENABLED=1 the learner picks a style per
+        # topic via epsilon-greedy and records the decision; otherwise the
+        # hardcoded `style` above wins. Mapped from story_type → topic
+        # because the topic_tuner library is the unit we learn on.
+        try:
+            from routes.media_style_ab import pick_style_if_enabled
+            _topic = _STORY_TYPE_TO_TOPIC.get(story_type, "other")
+            style = pick_style_if_enabled(_topic, fallback=style)
+        except Exception:
+            pass
 
         params = {"style": style, "title": title, "subheadline": sub}
         if market:

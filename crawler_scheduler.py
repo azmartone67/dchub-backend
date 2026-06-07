@@ -409,6 +409,34 @@ SCHEDULE = [
     # ~50 row cap per run. Slot 6/18 = 1h past sweep slot 5/17.
     ( 6, 18, "sentinel_auto_merge_followup",
               "_run_sentinel_auto_merge_followup"),
+    # LinkedIn comment engagement loop (2026-06-07). CRITICAL for Monday's
+    # State of 2026 launch — when 10K followers comment on the post, this
+    # cron polls /rest/socialActions/<post_urn>/comments for the last 7d of
+    # org posts, has Claude draft a substantive reply (1 specific DC Hub
+    # number + 1 link to a brief), and either queues it for human-cadence
+    # (4-7 min) flush or — in DRY-RUN (default) — writes a draft to
+    # media_comment_engagement_log for the operator to review on
+    # /admin/media-mix. Slot 9/21 UTC per spec ("approx 4h apart during
+    # business hours" — collapsed to two slots since the harness is hour-
+    # based two-slot, and the daily cap (MEDIA_COMMENT_REPLY_DAILY_CAP,
+    # default 10) prevents looking automated even under a comment storm).
+    # Per-comment-URN UNIQUE in media_comment_engagement_log means a
+    # comment can never be re-evaluated. Master kill switch
+    # MEDIA_COMMENT_REPLY_DISABLE=1. Defaults to DRY-RUN — operator flips
+    # MEDIA_COMMENT_REPLY_DRY_RUN=0 after reviewing ~10 drafts.
+    ( 9, 21, "media_comment_engagement",
+              "_run_media_comment_engagement"),
+    # LinkedIn comment engagement FLUSH-DUE (2026-06-07). Sister cron of
+    # the detect slot above. Pulls media_comment_engagement_log rows
+    # where decision='queued' AND scheduled_for <= NOW() AND
+    # reply_posted_at IS NULL and actually POSTs them via the LinkedIn
+    # API. In DRY-RUN mode this is a no-op (queued draft is the final
+    # state). Slot 13/1 UTC = the "between" slots of the detect cron
+    # (9/21) so a queued reply with 4-7min stagger is flushed at most
+    # 4h after detection — well within human comment cadence. Same-
+    # hour-same-day cap → one flush per UTC half-day.
+    (13,  1, "media_comment_engagement_flush",
+              "_run_media_comment_engagement_flush"),
 ]
 
 # ---------------------------------------------------------------------------
@@ -1405,6 +1433,11 @@ def _run_linkedin_engagement_sync():
     signal (likes/comments via socialActions AND impressions/clicks/shares
     via organizationalEntityShareStatistics).
 
+    2026-06-07: after both feeds land, fan out to the Style A/B learner's
+    backfill_engagement(): every media_style_outcomes row whose post is
+    ≥24h old gets its score computed from the freshly-synced engagement.
+    Fail-soft so the learner half can't block the sync half.
+
     FAIL-SOFT: if the token lacks r_organization_social, fetch_* returns
     `reason: scope_or_auth_403` and we just log + continue — no exception
     propagates. Same-day cap is provided by SCHEDULE's same-hour pair
@@ -1424,6 +1457,17 @@ def _run_linkedin_engagement_sync():
         )
     except Exception as e:
         logger.error("📈 LinkedIn engagement sync error: %s", e, exc_info=True)
+    # Style A/B backfill — must run AFTER the LinkedIn syncs above.
+    try:
+        from routes.media_style_ab import backfill_engagement as _styleab_bf
+        ab = _styleab_bf(min_age_hours=24) or {}
+        logger.info(
+            "🎨 Style A/B backfill: checked=%d updated=%d errors=%d",
+            ab.get("checked", 0), ab.get("updated", 0),
+            ab.get("errors", 0),
+        )
+    except Exception as e:
+        logger.warning("🎨 Style A/B backfill skipped: %s", e)
 
 
 def _run_state_of_2026_claim_evolve():
@@ -1583,6 +1627,93 @@ def _run_media_spike_responder():
         )
     except Exception as e:
         logger.error("📣 media_spike_responder: error — %s", e)
+
+
+def _run_media_comment_engagement():
+    """LinkedIn comment engagement loop (2026-06-07).
+
+    Twice daily 9/21 UTC. Calls the loopback admin endpoint so the same
+    auth gate fires for cron + manual triggers. Endpoint internally:
+      - polls /rest/socialActions/<post_urn>/comments for the last 7d of
+        DC Hub org posts (max 25 posts × 50 comments per page),
+      - filters: skip self, skip blocklist, skip <10 chars, skip spam,
+        skip already-handled (UNIQUE on comment_urn),
+      - generates a reply via Claude (1 specific DC Hub number + 1 link
+        to a brief, <=280 chars, casual founder voice),
+      - tone-checks; rejects + regenerates ONCE on lazy LLM-speak hit,
+      - in DRY-RUN (default) writes a draft to media_comment_engagement_log
+        with decision='dry_run' + scheduled_for stamp,
+      - in LIVE mode writes decision='queued' + scheduled_for = NOW()
+        + random(4-7 min) so the FLUSH cron actually posts it.
+
+    Daily cap (MEDIA_COMMENT_REPLY_DAILY_CAP, default 10) prevents
+    looking automated even under a comment storm.
+
+    CRITICAL for Monday's State of 2026 launch comment storm. Never
+    raises. Kill switch: MEDIA_COMMENT_REPLY_DISABLE=1."""
+    import requests as _rq
+    key = (os.environ.get("DCHUB_ADMIN_KEY")
+           or os.environ.get("DCHUB_INTERNAL_KEY")
+           or os.environ.get("DCHUB_ADMIN_API_KEY") or "")
+    if not key:
+        logger.warning(
+            "💬 media_comment_engagement: skipped — DCHUB_ADMIN_KEY not set")
+        return
+    base = os.environ.get("DCHUB_INTERNAL_API", "http://127.0.0.1:8080")
+    try:
+        r = _rq.post(
+            f"{base}/api/v1/admin/media/comment-engagement/run",
+            headers={"X-Admin-Key": key,
+                     "User-Agent": "dchub-cron-comment-engagement/1.0"},
+            timeout=90,
+        )
+        d = (r.json() if r.headers.get("content-type", "").startswith(
+            "application/json") else {}) or {}
+        logger.info(
+            "💬 media_comment_engagement: detected=%s eligible=%s fired=%s "
+            "dry_run=%s daily=%s/%s skipped=%s kill=%s errors=%s",
+            d.get("detected"), d.get("eligible"), d.get("fired"),
+            d.get("dry_run"), d.get("replies_today"), d.get("daily_cap"),
+            len((d.get("skipped") or {})), d.get("kill_switched"),
+            len(d.get("errors") or []),
+        )
+    except Exception as e:
+        logger.error("💬 media_comment_engagement: error — %s", e)
+
+
+def _run_media_comment_engagement_flush():
+    """LinkedIn comment engagement FLUSH-DUE (2026-06-07).
+
+    Sister cron of media_comment_engagement above. Slot 13/1 UTC = the
+    "between" hours of the detect cron (9/21), so queued replies whose
+    4-7min scheduled_for has elapsed get posted within 4h of detection.
+
+    In DRY-RUN mode (default first deploy) this is a NO-OP — the queued
+    draft IS the final state until the operator flips
+    MEDIA_COMMENT_REPLY_DRY_RUN=0. Never raises."""
+    import requests as _rq
+    key = (os.environ.get("DCHUB_ADMIN_KEY")
+           or os.environ.get("DCHUB_INTERNAL_KEY")
+           or os.environ.get("DCHUB_ADMIN_API_KEY") or "")
+    if not key:
+        logger.warning(
+            "💬 media_comment_engagement_flush: skipped — DCHUB_ADMIN_KEY not set")
+        return
+    base = os.environ.get("DCHUB_INTERNAL_API", "http://127.0.0.1:8080")
+    try:
+        r = _rq.post(
+            f"{base}/api/v1/admin/media/comment-engagement/flush-due",
+            headers={"X-Admin-Key": key,
+                     "User-Agent": "dchub-cron-comment-engagement-flush/1.0"},
+            timeout=60,
+        )
+        d = (r.json() if r.headers.get("content-type", "").startswith(
+            "application/json") else {}) or {}
+        logger.info(
+            "💬 media_comment_engagement_flush: posted=%s errors=%s",
+            d.get("posted"), d.get("errors"))
+    except Exception as e:
+        logger.error("💬 media_comment_engagement_flush: error — %s", e)
 
 
 def _run_verdict_shift_post():
@@ -2317,6 +2448,8 @@ _RUNNERS = {
     "accelerator_scan":    _run_accelerator_scan,
     "media_topic_tune":    _run_media_topic_tune,
     "media_spike_responder": _run_media_spike_responder,
+    "media_comment_engagement":       _run_media_comment_engagement,
+    "media_comment_engagement_flush": _run_media_comment_engagement_flush,
     "mcp_presence_crawl":  _run_mcp_presence_crawl,
     "mcp_registry_discover": _run_mcp_registry_discover,
     "mcp_presence_auto_fix": _run_mcp_presence_auto_fix,
