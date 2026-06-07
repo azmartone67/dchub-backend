@@ -27618,6 +27618,24 @@ except Exception as _mdf_e:
     print(f"[main] media_dm_follow_up_bp register failed: {_mdf_e}",
           flush=True)
 
+# Sales outreach automator (2026-06-07, task #159): conservative founder-led
+# sales outreach to HIGH-INTENT companies detected from dchub.cloud traffic
+# (newsletter signups + state-of-2026 visitors + MCP claims + MCP upgrade
+# signals). Twice-daily cron drafts SHORT 4-sentence founder-voice emails
+# via Claude; DRY-RUN ON by default; operator approves EVERY send via
+# /admin/sales-outreach. Stack: 3/day hard cap, 30d per-domain cooldown,
+# tone filter, free-mail skip, blocklist env var. Multiple kill switches.
+try:
+    from routes.sales_outreach_automator import sales_outreach_automator_bp
+    app.register_blueprint(sales_outreach_automator_bp)
+    print("[main] sales_outreach_automator_bp registered: "
+          "/admin/sales-outreach + /api/v1/admin/sales-outreach/"
+          "{detect,log,approve/<id>,decline/<id>,regenerate/<id>}",
+          flush=True)
+except Exception as _sou_e:
+    print(f"[main] sales_outreach_automator_bp register failed: {_sou_e}",
+          flush=True)
+
 # Market Brief v1 (2026-06-06): shareable per-market briefs that replace
 # the dcHawk PDF in a broker/REIT/fund deck. 9 sections, FREE teaser
 # (Hero + At-a-Glance + Outlook teaser) + PRO unlock for Power/Pipeline/
@@ -29376,6 +29394,24 @@ try:
     print("[main] brain_cross_session_bp registered: /api/v1/admin/brain/cross-session/{scan,health} + /cross-session-learnings (kill: BRAIN_CROSS_SESSION_ESCALATE_DISABLE)", flush=True)
 except Exception as _bcs_e:
     print(f"[main] brain_cross_session_bp register failed: {_bcs_e}", file=sys.stderr)
+
+# Task #161 (2026-06-07): brain reads its own dashboards.
+# Closes the verification loop — daily 04:00 UTC the brain fans out to
+# /admin/funnel-health, /admin/brain-backlog, /admin/sentinel-inbox,
+# /api/v1/media/pulse, /admin/state-of-2026-pulse + brain_pr_outcomes,
+# asks Claude for a wins/losses/adjustments self-assessment, persists
+# to brain_self_perception (one row/UTC date). Strategic synthesis
+# (L6) reads back via gather_self_perception_context() so the brain
+# learns from its own track record; morning briefing reads the
+# one-liner. Kill: BRAIN_SELF_PERCEPTION_DISABLE=1.
+try:
+    from routes.brain_self_perception import (
+        brain_self_perception_bp,
+    )
+    app.register_blueprint(brain_self_perception_bp)
+    print("[main] brain_self_perception_bp registered: /api/v1/admin/brain/self-perception/{run,preview,status} + /api/v1/brain/self-perception/{latest,history} (kill: BRAIN_SELF_PERCEPTION_DISABLE)", flush=True)
+except Exception as _bsp_e:
+    print(f"[main] brain_self_perception_bp register failed: {_bsp_e}", file=sys.stderr)
 
 # === Brain v2 · Layer 3 freshness fields ===
 try:

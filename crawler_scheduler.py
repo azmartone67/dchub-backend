@@ -145,6 +145,16 @@ SCHEDULE = [
     # market. Same-hour-same-day cap → one per slot. Bounded: <=5
     # spikes × ~3s Claude call = ~15s worst case. Runner never raises.
     (10, 22, "media_spike_responder", "_run_media_spike_responder"),
+    # CRM Reverse-ETL flush (r74, 2026-06-07): twice daily 7/19 UTC, push
+    # status='queued' rows from crm_outbound_queue to the configured CRM
+    # (Salesforce / HubSpot / stub). Each capture_event() hook (MCP HI,
+    # State visitor, newsletter signup, trial mint, paid conversion)
+    # writes a row inline; this cron does the async outbound delivery.
+    # In STUB mode (no CRM creds) the flush flips status='queued' →
+    # 'queued_export' so the CSV export endpoint can vacuum them later
+    # without re-queueing. Kill switch CRM_REVERSE_ETL_DISABLE=1.
+    # Same-hour-same-day cap; bounded by limit=100/run.
+    ( 7, 19, "crm_outbound_flush",   "_run_crm_outbound_flush"),
     # MCP-presence crawl (2026-06-05): twice-daily sweep of the ~15 MCP
     # listing sites DC Hub appears on (Smithery, MCPHive, LobeHub, Glama,
     # YellowMCP, mcp.so, PulseMCP, etc.). For each, fetch the listing
@@ -397,6 +407,25 @@ SCHEDULE = [
     # BRAIN_PR_OUTCOME_MONITOR_DISABLE=1.
     (10, 22, "brain_pr_outcome_monitor",
               "_run_brain_pr_outcome_monitor"),
+    # Task #161 (2026-06-07): brain reads its OWN dashboards.
+    # Daily 04:00 UTC the brain fans out to /admin/funnel-health,
+    # /admin/brain-backlog, /admin/sentinel-inbox, /api/v1/media/pulse,
+    # /admin/state-of-2026-pulse + brain_pr_outcomes + brain_strategic_
+    # recommendations, then asks Claude (Opus 4.8 reasoning tier) for an
+    # honest wins/losses/adjustments self-assessment. Persists to
+    # brain_self_perception (one row/UTC date — UNIQUE(ran_on)).
+    # Strategic synthesis L6 reads back via
+    # gather_self_perception_context() so the brain's next strategic
+    # prompt sees "here's how you self-assessed yesterday". Morning
+    # briefing at 06:00 reads the same-day row's one-liner. Self-gates
+    # on activity: <2 brain-authored PRs+recs in the last 7d writes a
+    # 'low_activity' sentinel row + no Claude call. Same-hour same-day
+    # cap → one run per UTC day. Cost ~$0.17/run (~$62/year) at Opus
+    # 4.8 reasoning rates, $0.025 fallback to Sonnet-4.5.
+    # Kill switch: BRAIN_SELF_PERCEPTION_DISABLE=1. Dry-run knob:
+    # BRAIN_SELF_PERCEPTION_DRY_RUN=1 (renders prompt, skips Claude).
+    ( 4,  4, "brain_self_perception",
+              "_run_brain_self_perception"),
     # Brain ROUND 2 (2026-06-07): cross-session finding pollination.
     # After every brain_findings INSERT a (detector, issue) pair gets
     # checked against the last 7d of brain_findings — if it surfaced
@@ -2746,6 +2775,67 @@ def _run_sentinel_auto_merge_followup():
             "🛡️  sentinel_auto_merge_followup error: %s", e, exc_info=True)
 
 
+def _run_sales_outreach_detect():
+    """Sales outreach automator (2026-06-07, task #159). Twice daily 15/3
+    UTC the cron detects HIGH-INTENT companies (newsletter signups from
+    corp domains + state-of-2026 visitors + MCP claims + MCP upgrade
+    signals over the last 14d), enriches via Hunter.io, has Claude draft
+    a SHORT (4-sentence) founder-voice outreach email, writes drafts
+    to sales_outreach_log with decision='dry_run'. NEVER auto-sends:
+    operator reviews on /admin/sales-outreach and clicks Approve to
+    actually fire Resend. Multiple safety guards: SALES_OUTREACH_DISABLE
+    (kill), SALES_OUTREACH_DRY_RUN (DEFAULT ON), SALES_OUTREACH_DAILY_CAP=3
+    (hard cap, very small to start), 30-day per-domain cooldown,
+    SALES_OUTREACH_BLOCKLIST, tone-filter w/ regenerate-once, free-mail
+    domains skipped. Never raises."""
+    import requests as _rq
+    key = (os.environ.get("DCHUB_ADMIN_KEY")
+           or os.environ.get("DCHUB_INTERNAL_KEY")
+           or os.environ.get("DCHUB_ADMIN_API_KEY") or "")
+    if not key:
+        logger.warning(
+            "📬 sales_outreach_detect: skipped — DCHUB_ADMIN_KEY not set")
+        return
+    base = os.environ.get("DCHUB_INTERNAL_API", "http://127.0.0.1:8080")
+    try:
+        r = _rq.post(
+            f"{base}/api/v1/admin/sales-outreach/detect",
+            headers={"X-Admin-Key": key,
+                     "User-Agent": "dchub-cron-sales-outreach/1.0"},
+            timeout=90,
+        )
+        d = (r.json() if r.headers.get("content-type", "").startswith(
+            "application/json") else {}) or {}
+        logger.info(
+            "📬 sales_outreach_detect: detected=%s drafted=%s "
+            "skipped=%s cap_remaining=%s dry_run=%s",
+            d.get("detected"), d.get("drafted"),
+            len(d.get("skipped") or []),
+            d.get("cap_remaining"), d.get("env_dry_run"),
+        )
+    except Exception as e:
+        logger.error("📬 sales_outreach_detect: error — %s", e)
+
+
+def _run_crm_outbound_flush():
+    """CRM Reverse-ETL flush (r74, 2026-06-07). Push status='queued' rows
+    from crm_outbound_queue to the configured CRM (Salesforce / HubSpot /
+    stub). Defaults to STUB mode (no creds → CSV-export queue). Each
+    capture_event() hook elsewhere in the codebase already writes rows
+    inline; this cron is just the async outbound delivery loop.
+    Never raises. Kill switch CRM_REVERSE_ETL_DISABLE=1."""
+    try:
+        from routes.crm_reverse_etl import flush_outbound_queue as _flush
+        d = _flush(limit=100) or {}
+        logger.info(
+            "📇 crm_outbound_flush: pushed=%s failed=%s provider=%s dry_run=%s",
+            d.get("pushed"), d.get("failed"),
+            d.get("provider"), d.get("dry_run"),
+        )
+    except Exception as e:
+        logger.error("📇 crm_outbound_flush: error — %s", e)
+
+
 _RUNNERS = {
     "market_refresh":      _run_market_refresh,
     "news":                _run_news_crawler,
@@ -2778,6 +2868,7 @@ _RUNNERS = {
     "operator_brief_warm": _run_operator_brief_warm,
     "feedback_triage":     _run_feedback_triage,
     "brain_feature_proposer": _run_brain_feature_proposer,
+    "sales_outreach_detect":  _run_sales_outreach_detect,
     "expired_onetime_demote": _run_expired_onetime_demote,
     "verdict_shift_post":  _run_verdict_shift_post,
     "weekly_newsletter":   _run_weekly_newsletter,
@@ -2801,6 +2892,8 @@ _RUNNERS = {
     # 06:00 UTC claim evolver.
     "state_of_2026_refresh":         _run_state_of_2026_refresh,
     "state_of_2026_claim_evolve":    _run_state_of_2026_claim_evolve,
+    # r74 (2026-06-07): CRM Reverse-ETL flush — twice-daily push queue → CRM
+    "crm_outbound_flush":            _run_crm_outbound_flush,
 }
 
 
