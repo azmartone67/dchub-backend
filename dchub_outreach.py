@@ -398,19 +398,9 @@ def build_queue(max_total=50):
     ]
     deduped = filtered_internal
 
-    # Filter out anyone already emailed in last 14 days
+        # Filter out anyone already emailed in last 14 days
     ensure_outreach_log_table()
     filtered = [q for q in deduped if not already_outreached_recently(q["email"], 14)]
-    # P268_BUILD_QUEUE_FILTER — strip internal/test/db-excluded emails before returning
-    try:
-        _db_excl = get_db_excludes()
-    except Exception:
-        _db_excl = set()
-    filtered = [
-        _q for _q in filtered
-        if not is_internal_email(_q.get("email", ""))
-        and (_q.get("email", "").lower() not in _db_excl)
-    ]
 
     return filtered[:max_total], None
 
