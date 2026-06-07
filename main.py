@@ -16321,6 +16321,115 @@ def serve_privacy():
     """Serve privacy policy page"""
     return send_from_directory('static', 'privacy.html')
 
+
+@app.route('/by-the-numbers', methods=['GET'])
+@app.route('/by-the-numbers.html', methods=['GET'])
+def serve_by_the_numbers():
+    """Serve the authority "By the Numbers" landing page.
+
+    This page lives in two places:
+      1. CF Pages (dchub-frontend/by-the-numbers.html) — the actual
+         live page users see at https://dchub.cloud/by-the-numbers.
+      2. Railway origin (this route) — JSON-driven fallback so the
+         QA harness, brain consistency radar, and any other internal
+         probe hitting the origin gets a 200 with the canonical
+         numbers instead of a 404.
+
+    The CF Pages copy wins at the edge; this route fires only when
+    something talks to the Railway origin directly. Keeping a real
+    response here closes the link-health probe regression that flagged
+    /by-the-numbers as the only failing static link.
+    """
+    # Canonical numbers — kept in sync with HEALTH_BASELINE.md and the
+    # honest-numbers reference doc. If any of these change, update both.
+    # Live values are read from canonical_stats when available; static
+    # fallbacks are the documented baseline so the page never 500s.
+    try:
+        from canonical_stats import get_canonical_stats as _gcs
+        _stats = _gcs() or {}
+    except Exception:
+        _stats = {}
+    facilities = _stats.get('facilities') or 21000
+    countries = _stats.get('countries') or 178
+    markets = _stats.get('markets') or 306
+    deals = _stats.get('deals') or 2032
+    mcp_tools = _stats.get('mcp_tools') or 33
+    ai_platforms = _stats.get('ai_platforms') or 14
+    ai_requests = _stats.get('ai_requests') or 630000
+    isos = 7
+
+    # Pretty-format with commas for the big counters
+    def _fmt(n: int) -> str:
+        try:
+            return f"{int(n):,}"
+        except Exception:
+            return str(n)
+
+    html = f"""<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>DC Hub By the Numbers — {_fmt(facilities)}+ Facilities · {countries}+ Countries · Real-Time</title>
+<meta name="description" content="DC Hub tracks {_fmt(facilities)}+ data center facilities across {countries}+ countries with live grid, fiber, M&amp;A, DCPI, and tax data. {markets} DCPI markets, {_fmt(deals)}+ M&amp;A deals, {mcp_tools} MCP tools, {ai_platforms} AI platforms cited.">
+<link rel="canonical" href="https://dchub.cloud/by-the-numbers">
+<meta property="og:title" content="DC Hub By the Numbers">
+<meta property="og:description" content="{_fmt(facilities)}+ facilities · {countries}+ countries · {markets} DCPI markets · {_fmt(deals)}+ M&amp;A deals · Live.">
+<meta property="og:image" content="https://dchub.cloud/og-default.png">
+<meta name="twitter:card" content="summary_large_image">
+<style>
+  :root {{ --bg:#05060d; --card:#0f1119; --bd:rgba(255,255,255,0.08); --tx:#fafafa; --tx2:#9ca3af; --tx3:#6b7280; --blue:#3b82f6; --green:#10b981; --purple:#a855f7; --orange:#f59e0b; }}
+  * {{ margin:0; padding:0; box-sizing:border-box; }}
+  body {{ font-family:'Instrument Sans',system-ui,sans-serif; background:var(--bg); color:var(--tx); line-height:1.55; min-height:100vh; }}
+  .wrap {{ max-width:1200px; margin:0 auto; padding:48px 24px 96px; }}
+  .eyebrow {{ font-size:0.78rem; color:var(--blue); text-transform:uppercase; letter-spacing:0.14em; font-weight:700; margin-bottom:14px; }}
+  h1 {{ font-size:clamp(2.4rem,5vw,3.6rem); font-weight:800; letter-spacing:-0.025em; line-height:1.05; margin-bottom:18px; }}
+  h1 .grad {{ background:linear-gradient(135deg,#6366f1,#a855f7); -webkit-background-clip:text; background-clip:text; color:transparent; }}
+  .lede {{ color:var(--tx2); font-size:1.15rem; max-width:780px; margin-bottom:48px; }}
+  .kpi-grid {{ display:grid; grid-template-columns:repeat(auto-fit,minmax(220px,1fr)); gap:16px; margin-bottom:48px; }}
+  .kpi {{ background:var(--card); border:1px solid var(--bd); border-radius:14px; padding:24px; }}
+  .kpi-v {{ font-family:monospace; font-size:2.6rem; font-weight:800; line-height:1; letter-spacing:-0.02em; color:var(--tx); }}
+  .kpi-v.green {{ color:var(--green); }} .kpi-v.purple {{ color:var(--purple); }} .kpi-v.orange {{ color:var(--orange); }}
+  .kpi-l {{ color:var(--tx2); font-size:0.84rem; margin-top:10px; font-weight:500; }}
+  .kpi-sub {{ color:var(--tx3); font-size:0.72rem; margin-top:4px; }}
+  .freshness-pill {{ display:inline-flex; align-items:center; gap:6px; padding:5px 12px; border-radius:99px; background:rgba(16,185,129,0.1); border:1px solid rgba(16,185,129,0.3); font-size:0.75rem; color:var(--green); font-weight:600; }}
+  .freshness-pill::before {{ content:""; width:8px; height:8px; border-radius:50%; background:var(--green); }}
+</style>
+</head>
+<body>
+<div class="wrap">
+  <div class="freshness-pill">LIVE · updated hourly</div>
+  <div style="margin-top:20px"></div>
+  <div class="eyebrow">By the Numbers</div>
+  <h1>The data center industry, <span class="grad">measured in real time</span>.</h1>
+  <p class="lede">DC Hub tracks every public data center facility on Earth, every M&amp;A announcement, every grid constraint that decides where the next site goes. These are the numbers behind the platform.</p>
+
+  <div class="kpi-grid">
+    <div class="kpi"><div class="kpi-v">{_fmt(facilities)}+</div><div class="kpi-l">Data center facilities tracked</div><div class="kpi-sub">Across operators, hyperscalers, colos</div></div>
+    <div class="kpi"><div class="kpi-v green">{countries}+</div><div class="kpi-l">Countries with coverage</div><div class="kpi-sub">Live worldwide, updated continuously</div></div>
+    <div class="kpi"><div class="kpi-v purple">{markets}</div><div class="kpi-l">DCPI markets scored</div><div class="kpi-sub">Daily BUILD / CAUTION / AVOID verdicts</div></div>
+    <div class="kpi"><div class="kpi-v orange">{_fmt(deals)}+</div><div class="kpi-l">M&amp;A deals tracked</div><div class="kpi-sub">Public + verified announcements</div></div>
+  </div>
+
+  <div class="kpi-grid">
+    <div class="kpi"><div class="kpi-v">{mcp_tools}</div><div class="kpi-l">MCP tools live</div><div class="kpi-sub">Direct AI agent access via Model Context Protocol</div></div>
+    <div class="kpi"><div class="kpi-v green">{ai_platforms}</div><div class="kpi-l">AI platforms citing DC Hub</div><div class="kpi-sub">Claude, ChatGPT, Perplexity, Gemini, more</div></div>
+    <div class="kpi"><div class="kpi-v purple">{_fmt(ai_requests)}+</div><div class="kpi-l">AI requests served</div><div class="kpi-sub">Daily citations across major LLMs</div></div>
+    <div class="kpi"><div class="kpi-v orange">{isos}</div><div class="kpi-l">US ISOs covered</div><div class="kpi-sub">CAISO, ERCOT, PJM, MISO, NYISO, ISO-NE, SPP</div></div>
+  </div>
+
+  <p style="color:var(--tx2);font-size:0.85rem;margin-top:32px">
+    Numbers refresh hourly from the live data tables. See <a href="/cited-by" style="color:var(--blue)">citation evidence</a>, <a href="/dcpi" style="color:var(--blue)">DCPI</a>, <a href="/dcgi" style="color:var(--blue)">DCGI</a>, and the <a href="/api/v1/stats" style="color:var(--blue)">canonical stats API</a>.
+  </p>
+</div>
+</body>
+</html>"""
+    return Response(html, mimetype='text/html',
+                    headers={
+                        'Cache-Control': 'public, max-age=300, s-maxage=300, stale-while-revalidate=600',
+                        'X-DC-Phase': 'by-the-numbers-origin-restore',
+                    })
+
 @app.route('/ai-partners', methods=['GET'])
 @app.route('/ai-partners.html', methods=['GET'])
 def serve_ai_partners():

@@ -1845,6 +1845,29 @@ def api_scores():
     except Exception:
         pass
     _paid = _plan in _PAID_PLANS
+
+    # Admin-key bypass (2026-06-07): the State-of-2026 QA harness and other
+    # internal probes (brain consistency radar, freshness watchdog) need the
+    # REAL row total to fact-check the "300+ markets" claim. X-Admin-Key
+    # matching DCHUB_ADMIN_KEY is the same gate as funnel_health.admin_*
+    # and state_of_2026_precheck — and the keys never leak to anonymous
+    # callers (only the harness has them). Treats admin as full-tier:
+    # NO row cap, NO masking, AND surfaces _total_available unconditionally
+    # so the harness has a single field to read regardless of plan.
+    _admin_bypass = False
+    try:
+        _admin_key_env = (os.environ.get("DCHUB_ADMIN_KEY")
+                          or os.environ.get("DCHUB_INTERNAL_KEY") or "").strip()
+        if _admin_key_env:
+            _sent = (request.headers.get("X-Admin-Key")
+                     or request.args.get("admin_key") or "").strip()
+            if _sent and _sent == _admin_key_env:
+                _admin_bypass = True
+                _paid = True
+                _plan = "admin"
+    except Exception:
+        pass
+
     if not _paid:
         # Truly-anonymous is also row-capped to the preview size; identified
         # keeps the full catalog (names + verdicts) with the numbers masked.
@@ -1864,6 +1887,14 @@ def api_scores():
     payload = {"scores": rows, "count": len(rows), "sort": sort_by,
                "filters": {"verdict": verdict_filter, "iso": iso_filter,
                            "state": state_filter}}
+    # ALWAYS surface _total_available for paid/admin callers so the QA
+    # harness's narrative-claim verifier doesn't have to fall back to
+    # len(scores) (which equals the page limit, not the universe). For
+    # gated callers the field is set in the _gated branch below.
+    if _paid:
+        payload["_total_available"] = _total_rows
+    if _admin_bypass:
+        payload["_admin_bypass"] = True
     if _gated:
         payload["_gated"] = True
         payload["_preview_only"] = True
@@ -1882,6 +1913,51 @@ def api_scores():
     resp.headers["ETag"] = etag
     resp.headers["Cache-Control"] = "public, max-age=120, stale-while-revalidate=300"
     return resp, 200
+
+
+@dcpi_bp.route("/api/v1/dcpi/total", methods=["GET"])
+def api_dcpi_total():
+    """Admin-gated DCPI total market count.
+
+    Returns the REAL row count from market_power_scores (no preview cap,
+    no masking, no payload). Designed for the State-of-2026 QA harness's
+    narrative-claim verifier and any other internal probe that just needs
+    the "how many markets are scored?" number to fact-check public claims
+    like "300+ DCPI markets".
+
+    Auth: X-Admin-Key header OR ?admin_key= matching DCHUB_ADMIN_KEY
+    (falls back to DCHUB_INTERNAL_KEY). Same gate as funnel_health and
+    state_of_2026_precheck.
+
+    Returns {ok, total, generated_at} on success, 401 otherwise.
+    """
+    _admin_key_env = (os.environ.get("DCHUB_ADMIN_KEY")
+                      or os.environ.get("DCHUB_INTERNAL_KEY") or "").strip()
+    _sent = (request.headers.get("X-Admin-Key")
+             or request.args.get("admin_key") or "").strip()
+    if not _admin_key_env or _sent != _admin_key_env:
+        return jsonify({"ok": False, "error": "admin_key required"}), 401
+
+    _ensure_tables()
+    try:
+        with _conn() as c, c.cursor() as cur:
+            cur.execute("""
+                SELECT COUNT(DISTINCT market_slug)
+                  FROM market_power_scores
+                 WHERE published = true
+            """)
+            row = cur.fetchone()
+            total = int(row[0]) if row and row[0] is not None else 0
+    except Exception as e:
+        return jsonify({"ok": False, "error": f"{type(e).__name__}: {e}"}), 500
+
+    from datetime import datetime as _dt, timezone as _tz
+    return jsonify({
+        "ok":           True,
+        "total":        total,
+        "source":       "market_power_scores (published=true, DISTINCT market_slug)",
+        "generated_at": _dt.now(_tz.utc).isoformat(),
+    }), 200
 
 
 @dcpi_bp.route("/api/v1/dcpi/scores/<slug>", methods=["GET"])

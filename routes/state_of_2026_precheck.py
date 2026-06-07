@@ -128,12 +128,34 @@ MAX_USD_PER_MW = 100_000_000
 # Drift threshold for narrative claim verification — > 5% = NO_GO.
 CLAIM_DRIFT_PCT = 0.05
 
-# Probe HTTP timeout (per request). 6s upstream cap — the brief route can
-# take 2-3s under load on the single Railway replica + edge cache; anything
-# tighter and we get false-negative HTTP-0s. Originally 4s; raised after the
-# 2026-06-06 dry-run logged HTTP-0 on every market because the cold-cache
-# brief render legitimately took 4.1-4.4s.
-PROBE_TIMEOUT_S = 6.0
+# Probe HTTP timeout (per request). 6s was the legacy default — too tight
+# for cold-cache hyperscaler briefs (PIL/cairo + aggregation across facilities
+# + deals + news) and OG card generation, which routinely flagged HTTP 0
+# false-positives in the 2026-06-06 dry-run despite live curls returning 200.
+#
+# Per-surface raises (kept under the 90s wall clock — see comment below):
+#   - default        :  8s   (was 6s)
+#   - market briefs  : 10s
+#   - hyperscaler    : 15s   (heaviest aggregation surface)
+#   - og cards       : 12s   (PIL/cairo cold-cache)
+#   - dcpi/dcgi      :  8s
+#   - claims (json)  :  8s
+#   - link health    :  8s   (HEAD-style, but still a real GET)
+#
+# Wall-clock guard: each surface fans out across WORKER_COUNT=8 threads,
+# so the per-surface walltime is approximately
+#   ceil(items / WORKER_COUNT) * per-probe-timeout.
+# Worst-case is market briefs at 30 items / 8 workers * 10s ≈ 38s for that
+# surface alone — but the harness runs surfaces SEQUENTIALLY at the top
+# level (see _run_full_audit), so total ≤ sum of surface walltimes.
+# Empirically the brain has logged 19-22s end-to-end, the bumps put the
+# cold-cache worst-case at 60-70s — well under 90s, with budget to spare.
+PROBE_TIMEOUT_S = 8.0
+PROBE_TIMEOUT_MARKET_BRIEF_S = 10.0
+PROBE_TIMEOUT_HYPERSCALER_BRIEF_S = 15.0
+PROBE_TIMEOUT_OG_CARD_S = 12.0
+PROBE_TIMEOUT_DCPI_S = 8.0
+PROBE_TIMEOUT_LINK_HEALTH_S = 8.0
 
 # Worker fan-out cap. Set high enough to finish in < 30s, low enough to
 # not flood the single Railway replica.
@@ -160,47 +182,81 @@ def _admin_ok(req) -> bool:
 # ── HTTP probe helpers ────────────────────────────────────────────────
 
 def _probe(path: str, method: str = "GET", expect_json: bool = False,
-           timeout: float = PROBE_TIMEOUT_S) -> dict:
+           timeout: float = PROBE_TIMEOUT_S, retry_on_http0: bool = True) -> dict:
     """Hit a backend path. Returns {ok, status, body, json, dur_ms, error}.
 
     Sends X-Admin-Key + an internal UA so the probe bypasses
     tier-gating and CF anti-bot. Best-effort — any exception is caught
     and surfaced in the `error` field; the harness keeps running.
+
+    retry_on_http0: if True (default), retry ONCE with a 1.5x timeout
+    on connection/timeout exceptions. Most HTTP-0 reports in the 2026-06-06
+    dry-run were transient (single Railway replica recovering from a brain-
+    sweep burst); a single retry kills the false-positive without doubling
+    the wall clock for genuinely-down probes.
     """
     out: dict[str, Any] = {
         "path": path, "ok": False, "status": 0, "dur_ms": 0,
         "body_len": 0, "body_sample": "", "json": None, "error": None,
+        "attempts": 0,
     }
     if _rq is None:
         out["error"] = "requests library unavailable"
         return out
     url = path if path.startswith("http") else f"{_PROBE_BASE_URL}{path}"
+    headers = {
+        "User-Agent": "dchub-state-of-2026-precheck/1.0",
+        "X-Admin-Key": _ADMIN_KEY,
+        "X-API-Key":   _ADMIN_KEY,  # some endpoints check the other header
+        "Accept":      "application/json, text/html",
+    }
+
+    def _attempt(attempt_timeout: float) -> tuple[bool, Any]:
+        """Returns (transient_error, exception_or_response)."""
+        try:
+            r = _rq.request(method, url, headers=headers,
+                            timeout=attempt_timeout, allow_redirects=True)
+            return False, r
+        except Exception as e:
+            # ConnectTimeout / ReadTimeout / ConnectionError are transient;
+            # everything else is also surfaced but we only retry on these.
+            err_name = type(e).__name__
+            transient = err_name in (
+                "ConnectTimeout", "ReadTimeout", "Timeout",
+                "ConnectionError", "ChunkedEncodingError",
+            )
+            return transient, e
+
     t0 = time.time()
-    try:
-        headers = {
-            "User-Agent": "dchub-state-of-2026-precheck/1.0",
-            "X-Admin-Key": _ADMIN_KEY,
-            "X-API-Key":   _ADMIN_KEY,  # some endpoints check the other header
-            "Accept":      "application/json, text/html",
-        }
-        r = _rq.request(method, url, headers=headers, timeout=timeout,
-                        allow_redirects=True)
-        out["status"] = r.status_code
-        out["dur_ms"] = int((time.time() - t0) * 1000)
-        body = r.text or ""
-        out["body_len"] = len(body)
-        out["body_sample"] = body[:400]
-        if expect_json:
-            try:
-                out["json"] = r.json()
-            except Exception:
-                out["json"] = None
-        else:
-            out["body"] = body
-        out["ok"] = (200 <= r.status_code < 400)
-    except Exception as e:
-        out["dur_ms"] = int((time.time() - t0) * 1000)
-        out["error"] = f"{type(e).__name__}: {e}"
+    out["attempts"] = 1
+    transient, result = _attempt(timeout)
+    # Retry once on a transient error if enabled.
+    if transient and retry_on_http0:
+        out["attempts"] = 2
+        # Brief cooldown so we don't immediately hit the same hot replica.
+        time.sleep(0.25)
+        transient, result = _attempt(min(timeout * 1.5, 25.0))
+
+    out["dur_ms"] = int((time.time() - t0) * 1000)
+
+    # Result is either an Exception or a requests.Response
+    if isinstance(result, Exception):
+        out["error"] = f"{type(result).__name__}: {result}"
+        return out
+
+    r = result
+    out["status"] = r.status_code
+    body = r.text or ""
+    out["body_len"] = len(body)
+    out["body_sample"] = body[:400]
+    if expect_json:
+        try:
+            out["json"] = r.json()
+        except Exception:
+            out["json"] = None
+    else:
+        out["body"] = body
+    out["ok"] = (200 <= r.status_code < 400)
     return out
 
 
@@ -321,7 +377,8 @@ def _score_letter(passed: int, total: int) -> str:
 
 def _audit_market_brief_one(slug: str) -> dict:
     """Probe one /markets/<slug>/brief. Score it A/B/C/D + flag em-dashes."""
-    res = _probe(f"/markets/{slug}/brief", expect_json=False)
+    res = _probe(f"/markets/{slug}/brief", expect_json=False,
+                 timeout=PROBE_TIMEOUT_MARKET_BRIEF_S)
     out: dict[str, Any] = {
         "slug": slug, "url": f"/markets/{slug}/brief",
         "status": res["status"], "dur_ms": res["dur_ms"],
@@ -388,7 +445,14 @@ def _audit_market_briefs(slugs: tuple[str, ...]) -> dict:
     rows: list[dict] = []
     with ThreadPoolExecutor(max_workers=WORKER_COUNT) as ex:
         futs = {ex.submit(_audit_market_brief_one, s): s for s in slugs}
-        for fut in as_completed(futs, timeout=PROBE_TIMEOUT_S * len(slugs) + 5):
+        # Wall-clock budget: per-probe walltime * batches + slack.
+        # Each market brief probe is now timeout=10s with 1 retry @ 15s,
+        # so worst-case per item is ~25s. With WORKER_COUNT=8 parallel,
+        # 30 markets fan out across ceil(30/8)=4 batches → ~100s worst-case.
+        # In practice the brief route is warm-cached and finishes in 1-3s.
+        _wall = max(PROBE_TIMEOUT_MARKET_BRIEF_S * 3,
+                    PROBE_TIMEOUT_MARKET_BRIEF_S * len(slugs) / WORKER_COUNT + 10)
+        for fut in as_completed(futs, timeout=_wall):
             try:
                 rows.append(fut.result())
             except Exception as e:
@@ -426,7 +490,8 @@ def _audit_market_briefs(slugs: tuple[str, ...]) -> dict:
 
 def _audit_hyperscaler_brief_one(slug: str) -> dict:
     """Probe one /hyperscalers/<slug>/brief. Flag $/MW math, wrong attribution."""
-    res = _probe(f"/hyperscalers/{slug}/brief", expect_json=False)
+    res = _probe(f"/hyperscalers/{slug}/brief", expect_json=False,
+                 timeout=PROBE_TIMEOUT_HYPERSCALER_BRIEF_S)
     out: dict[str, Any] = {
         "slug": slug, "url": f"/hyperscalers/{slug}/brief",
         "status": res["status"], "dur_ms": res["dur_ms"],
@@ -504,7 +569,9 @@ def _audit_hyperscaler_briefs(slugs: tuple[str, ...]) -> dict:
     rows: list[dict] = []
     with ThreadPoolExecutor(max_workers=WORKER_COUNT) as ex:
         futs = {ex.submit(_audit_hyperscaler_brief_one, s): s for s in slugs}
-        for fut in as_completed(futs, timeout=PROBE_TIMEOUT_S * len(slugs) + 5):
+        _wall = max(PROBE_TIMEOUT_HYPERSCALER_BRIEF_S * 3,
+                    PROBE_TIMEOUT_HYPERSCALER_BRIEF_S * len(slugs) / WORKER_COUNT + 10)
+        for fut in as_completed(futs, timeout=_wall):
             try:
                 rows.append(fut.result())
             except Exception as e:
@@ -539,35 +606,49 @@ def _audit_dcpi_dcgi_summary() -> dict:
         "overall_score": "F",
         "critical_fails": 0,
     }
-    # 1. DCPI total markets (the 233 number).
-    # `_total_available` is populated regardless of `limit`, but be explicit:
-    # query with a generous limit so j.get("count") is also meaningful as a
-    # secondary signal if the _total_available field ever disappears.
-    r = _probe("/api/v1/dcpi/scores?limit=10", expect_json=True)
+    # 1. DCPI total markets (the 306 number post-r71 expansion).
+    # PRIMARY: the new admin-only /api/v1/dcpi/total returns the real row count
+    # without going through preview gating. FALLBACK: /api/v1/dcpi/scores
+    # with the admin-bypass branch (also added 2026-06-07) returns
+    # _total_available unconditionally for admin callers; the legacy gated
+    # _total_available read still works on older deploys.
     total = None
+    r = _probe("/api/v1/dcpi/total", expect_json=True,
+               timeout=PROBE_TIMEOUT_DCPI_S)
     if r.get("ok") and isinstance(r.get("json"), dict):
-        j = r["json"]
-        # PREFER _total_available — it reflects the full universe even when
-        # the page is gated to 10. Fall back to count/scores.length.
-        total = (j.get("_total_available")
-                 or j.get("total_markets")
-                 or len(j.get("scores") or []))
-        # 'count' is the page count (gated to 10), not the universe — use it
-        # ONLY when nothing else is present.
-        if not total:
-            total = j.get("count")
+        t = r["json"].get("total")
+        if isinstance(t, (int, float)):
+            total = int(t)
+    if total is None:
+        r = _probe("/api/v1/dcpi/scores?limit=10", expect_json=True,
+                   timeout=PROBE_TIMEOUT_DCPI_S)
+        if r.get("ok") and isinstance(r.get("json"), dict):
+            j = r["json"]
+            # PREFER _total_available — it reflects the full universe even when
+            # the page is gated to 10. Fall back to count/scores.length.
+            total = (j.get("_total_available")
+                     or j.get("total_markets")
+                     or len(j.get("scores") or []))
+            # 'count' is the page count (gated to 10), not the universe — use it
+            # ONLY when nothing else is present.
+            if not total:
+                total = j.get("count")
     chk = {"check": "DCPI total markets", "value": total,
-           "expected": "~233 (±10)", "passed": False, "note": ""}
-    if isinstance(total, (int, float)) and 220 <= total <= 250:
+           "expected": "~306 (range 280-330)", "passed": False, "note": ""}
+    # Range broadened post-r71 (2026-06-06) DCPI expansion which lifted
+    # the coverage universe from 233 → 290+ → 306. Accept anything from
+    # 280 (slight drift down) up to 330 (room for international adds).
+    if isinstance(total, (int, float)) and 280 <= total <= 330:
         chk["passed"] = True
     elif total is None:
-        chk["note"] = "could not fetch /api/v1/dcpi/scores"
+        chk["note"] = "could not fetch /api/v1/dcpi/total or /scores"
     else:
-        chk["note"] = f"out of range — got {total}, expected 220-250"
+        chk["note"] = f"out of range — got {total}, expected 280-330"
     out["checks"].append(chk)
 
     # 2. DCPI verdict distribution (BUILD / CAUTION / AVOID counts)
-    r = _probe("/api/v1/dcpi/leaderboard", expect_json=True)
+    r = _probe("/api/v1/dcpi/leaderboard", expect_json=True,
+               timeout=PROBE_TIMEOUT_DCPI_S)
     verdict_counts = {"BUILD": 0, "CAUTION": 0, "AVOID": 0}
     leaderboard_len = 0
     if r.get("ok") and isinstance(r.get("json"), dict):
@@ -591,7 +672,8 @@ def _audit_dcpi_dcgi_summary() -> dict:
     out["checks"].append(chk)
 
     # 3. DCGI operators count
-    r = _probe("/api/v1/dcgi/operators", expect_json=True)
+    r = _probe("/api/v1/dcgi/operators", expect_json=True,
+               timeout=PROBE_TIMEOUT_DCPI_S)
     op_count = 0
     if r.get("ok") and isinstance(r.get("json"), dict):
         j = r["json"]
@@ -606,7 +688,8 @@ def _audit_dcpi_dcgi_summary() -> dict:
 
     # 4. DCPI movers — must populate, otherwise the narrative claim about
     # "top-mover markets" will sit blank.
-    r = _probe("/api/v1/dcpi/movers", expect_json=True)
+    r = _probe("/api/v1/dcpi/movers", expect_json=True,
+               timeout=PROBE_TIMEOUT_DCPI_S)
     movers_n = 0
     if r.get("ok") and isinstance(r.get("json"), dict):
         j = r["json"]
@@ -685,7 +768,7 @@ def _audit_og_card_one(style: str) -> dict:
     # falls back to a default when the slug is missing.
     test_slug = "state-of-2026"
     url = f"/api/v1/og/{style}/{test_slug}.png"
-    res = _probe(url, expect_json=False)
+    res = _probe(url, expect_json=False, timeout=PROBE_TIMEOUT_OG_CARD_S)
     out: dict[str, Any] = {
         "style": style, "url": url, "status": res["status"],
         "dur_ms": res["dur_ms"], "size_bytes": res["body_len"],
@@ -709,7 +792,9 @@ def _audit_og_cards(styles: tuple[str, ...]) -> dict:
     rows: list[dict] = []
     with ThreadPoolExecutor(max_workers=WORKER_COUNT) as ex:
         futs = {ex.submit(_audit_og_card_one, s): s for s in styles}
-        for fut in as_completed(futs, timeout=PROBE_TIMEOUT_S * len(styles) + 5):
+        _wall = max(PROBE_TIMEOUT_OG_CARD_S * 3,
+                    PROBE_TIMEOUT_OG_CARD_S * len(styles) / WORKER_COUNT + 10)
+        for fut in as_completed(futs, timeout=_wall):
             try:
                 rows.append(fut.result())
             except Exception as e:
@@ -739,8 +824,13 @@ def _audit_link_health(highlighted_markets: tuple[str, ...],
 
     rows: list[dict] = []
     with ThreadPoolExecutor(max_workers=WORKER_COUNT) as ex:
-        futs = {ex.submit(_probe, p): p for p in paths}
-        for fut in as_completed(futs, timeout=PROBE_TIMEOUT_S * len(paths) + 5):
+        # link health is just an existence check — use the link-health timeout
+        # so a slow brief doesn't blow the budget when included here.
+        futs = {ex.submit(_probe, p, "GET", False,
+                          PROBE_TIMEOUT_LINK_HEALTH_S): p for p in paths}
+        _wall = max(PROBE_TIMEOUT_LINK_HEALTH_S * 3,
+                    PROBE_TIMEOUT_LINK_HEALTH_S * len(paths) / WORKER_COUNT + 10)
+        for fut in as_completed(futs, timeout=_wall):
             p = futs[fut]
             try:
                 r = fut.result()
