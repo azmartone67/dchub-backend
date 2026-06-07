@@ -20830,18 +20830,41 @@ def serve_sitemap_xml():
     conn = None
     fac_rows = []
     loc_rows = []
+    fac_has_date = False
     try:
         conn = get_read_db()
         c = conn.cursor()
 
-        # Get facility data for individual pages (include provider + id for slug generation)
-        c.execute("""
-            SELECT name, provider, city, state, country, id
-            FROM discovered_facilities 
-            WHERE name IS NOT NULL AND name != ''
-            LIMIT 15000
-        """)
-        fac_rows = c.fetchall()
+        # Get facility data for individual pages (include provider + id for slug generation).
+        # SEO (2026-06-07): two fixes for GOOGLE discovery —
+        #   1. LIMIT 15000 → 50000: the old cap silently dropped ~6k of ~21k
+        #      facilities from the sitemap, so Google could not discover them at all.
+        #   2. first_seen as a TRUSTWORTHY per-row <lastmod>: every URL previously
+        #      got a uniform 'today', which Google distrusts and ignores. first_seen
+        #      is insertion-time (NOT the daily-mass-touched last_updated), so new
+        #      facilities sort fresh. Guarded with a fallback so a schema mismatch
+        #      can never break the sitemap.
+        try:
+            c.execute("""
+                SELECT name, provider, city, state, country, id, first_seen
+                FROM discovered_facilities
+                WHERE name IS NOT NULL AND name != ''
+                LIMIT 50000
+            """)
+            fac_rows = c.fetchall()
+            fac_has_date = True
+        except Exception:
+            try:
+                conn.rollback()
+            except Exception:
+                pass
+            c.execute("""
+                SELECT name, provider, city, state, country, id
+                FROM discovered_facilities
+                WHERE name IS NOT NULL AND name != ''
+                LIMIT 50000
+            """)
+            fac_rows = c.fetchall()
 
         # Get unique country/state combos for location pages
         c.execute("""
@@ -21087,9 +21110,17 @@ def serve_sitemap_xml():
         else:
             full_slug = f"{name_slug}-{short_hash}"
 
+        # per-facility lastmod from first_seen (trustworthy) — fall back to today
+        _lm = today
+        if fac_has_date and len(row) > 6 and row[6]:
+            try:
+                _lm = str(row[6])[:10]
+            except Exception:
+                _lm = today
+
         if full_slug not in seen_slugs:
             seen_slugs.add(full_slug)
-            urls.append(f'  <url><loc>https://dchub.cloud/facilities/{full_slug}</loc><lastmod>{today}</lastmod><changefreq>monthly</changefreq><priority>0.5</priority></url>')
+            urls.append(f'  <url><loc>https://dchub.cloud/facilities/{full_slug}</loc><lastmod>{_lm}</lastmod><changefreq>monthly</changefreq><priority>0.5</priority></url>')
 
     # NOTE: do NOT use an f-string here — '<?xml ... ?>' contains '?', and a prior
     # regression replaced '?' with '%s' (the same bug class fixed in task #4).
