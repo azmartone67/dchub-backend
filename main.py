@@ -23962,7 +23962,10 @@ def _prewarm_caches():
     logger.info("🔥 Cache pre-warm: %d/%d hot routes warmed (serial, +%ds)",
                 warmed, len(paths), _PREWARM_DELAY_S)
 
-if IS_RAILWAY:
+# r-perf 2026-06-07: default OFF. The serial self-request pre-warm logged
+# 0/16 warmed (the /dcpi /brain self-hits time out under 1-worker cold-boot
+# load) — pure boot load for zero benefit. Re-enable with PREWARM_ENABLE=1.
+if IS_RAILWAY and os.environ.get("PREWARM_ENABLE", "0") == "1":
     threading.Timer(_PREWARM_DELAY_S, _prewarm_caches).start()
     logger.info("🔥 Cache pre-warm scheduled (+%ds after boot, serial %.0fs stagger)",
                 _PREWARM_DELAY_S, _PREWARM_STAGGER_S)
