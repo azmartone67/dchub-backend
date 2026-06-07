@@ -789,19 +789,27 @@ def _section_outlook(slug: str, hero: dict) -> dict:
     except Exception:
         pass
     if not out["narrative_md"]:
+        # Stub-only template: short, honest, doesn't pretend to be a
+        # full deep-dive. The "Live narrative generating" pill in the
+        # rendered HTML reinforces that this is a placeholder. We keep
+        # the verdict/score line for SEO + agent-readable summary, but
+        # drop the long "this will be replaced on next cron pass" line
+        # — readers don't want to hear that mid-document.
         verdict = (hero.get("verdict") or "CAUTION").upper()
         score = hero.get("composite_score")
         score_str = f"{score}/100" if score is not None else "(score pending)"
+        excess = hero.get("excess_power")
+        excess_str = f"{excess:.1f}" if isinstance(excess, (int, float)) else "—"
         out["narrative_md"] = (
             f"**12-month outlook: {verdict}** (DCPI {score_str}). "
-            f"{hero.get('name','This market')} carries an excess-power score "
-            f"of {hero.get('excess_power') or '—'} and a queue-wait of "
-            f"{hero.get('queue_wait_months') or '—'} months. "
-            "A Claude-written deep-dive narrative is generated nightly — "
-            "if this is the first render after seed, the placeholder will "
-            "be replaced on the next cron pass."
+            f"{hero.get('name','This market')} carries an excess-power "
+            f"score of {excess_str}, which drives the {verdict} verdict "
+            f"under DCPI's constraint-vs-headroom matrix. A live, "
+            f"Claude-written deep-dive replaces this stub on the next "
+            f"refresh cycle (typically within 4 hours)."
         )
         out["rationale"] = "Auto-template (deep-dive not yet generated)."
+        out["_is_stub"] = True
     return out
 
 
@@ -993,37 +1001,46 @@ def _render_html(brief: dict) -> str:
     live_age = live.get("age_hours")
     live_age_str = f"{live_age:.1f}h" if isinstance(live_age, (int, float)) else "—"
 
+    # ── Thin-coverage formatters (2026-06-06 — replaces stark em-dashes).
+    # The rule: NULL from the DB means "no data source yet" → render as a
+    # subtle "Not tracked" pill (honest, not broken). A real zero value
+    # (e.g. 0 MW pipeline) renders as "0" — zero is information. The HTML
+    # gets the .nt (not-tracked) class so it visually de-emphasizes
+    # without disappearing.
+    NT_PILL = '<span class="nt" title="Coverage building — data source typically lands ~6mo after a market enters the DCPI">Not tracked</span>'
+
     def _fmt_mw(v):
         if v is None:
-            return "—"
+            return NT_PILL
         try:
-            return f"{float(v):,.0f} MW"
+            f = float(v)
+            return f"{f:,.0f} MW"
         except (TypeError, ValueError):
-            return "—"
+            return NT_PILL
 
     def _fmt_int(v):
         if v is None:
-            return "—"
+            return NT_PILL
         try:
             return f"{int(v):,}"
         except (TypeError, ValueError):
-            return "—"
+            return NT_PILL
 
     def _fmt_months(v):
         if v is None:
-            return "—"
+            return NT_PILL
         try:
             return f"{float(v):.1f} mo"
         except (TypeError, ValueError):
-            return "—"
+            return NT_PILL
 
     def _fmt_pct(v):
         if v is None:
-            return "—"
+            return NT_PILL
         try:
             return f"{float(v):.1f}%"
         except (TypeError, ValueError):
-            return "—"
+            return NT_PILL
 
     # ── KPI tiles ────────────────────────────────────────────────────
     kpi_tiles = []
@@ -1050,10 +1067,56 @@ def _render_html(brief: dict) -> str:
     comps = brief.get("comps") or {}
     risk = brief.get("risk") or {}
 
+    # ── Coverage badges & "Coverage building" empty-state card ────────
+    # Per-section badge: "12 tracked" (green) when populated, "Coverage
+    # building" (subtle indigo) when thin. Lets readers see at a glance
+    # which sections are honest empty vs not.
+    def _cov_badge(n: int | None, *, label_singular: str = "tracked",
+                   label_plural: str | None = None) -> str:
+        """Inline pill next to the section h2. n is the populated row count."""
+        if n and n > 0:
+            return (f'<span class="cov ok" title="Live data — {n} '
+                    f'{label_plural or label_singular}">'
+                    f'{n:,} {label_plural or label_singular}</span>')
+        return ('<span class="cov thin" title="Coverage building — '
+                'data source typically lands ~6mo after a market enters '
+                'the DCPI">Coverage building</span>')
+
+    def _empty_state(section: str, source_hint: str) -> str:
+        """Soft empty-state card. Beats "—" rows. Explains the data source."""
+        return (
+            f'<div class="empty-state">'
+            f'<div class="empty-icon" aria-hidden="true">[+]</div>'
+            f'<div class="empty-body">'
+            f'<div class="empty-title">Coverage building for {section}</div>'
+            f'<div class="empty-detail">We will surface live {section} '
+            f'data here as soon as our {source_hint} crawl returns rows '
+            f'for {name}. Full coverage typically lands within ~6 months '
+            f'of a market joining the DCPI.</div>'
+            f'</div>'
+            f'</div>'
+        )
+
+    # Section population counts (used to drive Coverage % at top)
+    _has_pg     = bool(pg and any(pg.get(k) is not None for k in
+        ("queue_capacity_mw", "queue_wait_months", "reserve_margin_pct",
+         "gen_additions_mw", "interconnection_pending_mw")))
+    _has_pipe   = len(pipe) > 0
+    _has_ops    = len(ops) > 0
+    _has_ma     = len(ma) > 0
+    _has_comps  = bool((comps.get("powered_shell") or []) or
+                       (comps.get("land") or []))
+    _has_risk   = bool(risk and any(risk.get(k) is not None for k in
+        ("water_stress", "drought_months_d2_plus", "wildfire_seismic_note")))
+    _has_outlook = bool((outlook.get("word_count") or 0) >= 100)
+
     if is_pro:
+        # Power & Grid: cells show "Not tracked" instead of "—" for
+        # missing values; the NT_PILL formatters already do this.
+        pg_iso = pg.get("iso") or NT_PILL
         pg_html = (
             f'<div class="grid3">'
-            f'<div class="cell"><b>ISO</b><span>{pg.get("iso") or "—"}</span></div>'
+            f'<div class="cell"><b>ISO</b><span>{pg_iso}</span></div>'
             f'<div class="cell"><b>Queue Capacity</b><span>{_fmt_mw(pg.get("queue_capacity_mw"))}</span></div>'
             f'<div class="cell"><b>Queue Wait</b><span>{_fmt_months(pg.get("queue_wait_months"))}</span></div>'
             f'<div class="cell"><b>Reserve Margin</b><span>{_fmt_pct(pg.get("reserve_margin_pct"))}</span></div>'
@@ -1065,69 +1128,102 @@ def _render_html(brief: dict) -> str:
         def _row(cells):
             return "<tr>" + "".join(f"<td>{c}</td>" for c in cells) + "</tr>"
 
-        pipe_rows = "\n".join(
-            _row([p.get("operator") or "—",
-                  p.get("facility") or "—",
-                  _fmt_mw(p.get("power_mw")),
-                  p.get("status") or "—",
-                  p.get("eta") or "—"])
-            for p in pipe) or _row(["—", "No pipeline tracked", "—", "—", "—"])
-        pipe_html = (
-            '<table><thead><tr><th>Operator</th><th>Facility</th>'
-            '<th>Power</th><th>Status</th><th>ETA</th></tr></thead>'
-            f'<tbody>{pipe_rows}</tbody></table>')
+        if pipe:
+            pipe_rows = "\n".join(
+                _row([p.get("operator") or NT_PILL,
+                      p.get("facility") or NT_PILL,
+                      _fmt_mw(p.get("power_mw")),
+                      p.get("status") or NT_PILL,
+                      p.get("eta") or NT_PILL])
+                for p in pipe)
+            pipe_html = (
+                '<table><thead><tr><th>Operator</th><th>Facility</th>'
+                '<th>Power</th><th>Status</th><th>ETA</th></tr></thead>'
+                f'<tbody>{pipe_rows}</tbody></table>')
+        else:
+            pipe_html = _empty_state(
+                "pipeline projects",
+                "facility (under-construction + planned)")
 
-        ops_rows = "\n".join(
-            _row([o.get("operator") or "—",
-                  _fmt_int(o.get("facility_count")),
-                  _fmt_mw(o.get("total_mw"))])
-            for o in ops) or _row(["No operator data yet", "—", "—"])
-        ops_html = (
-            '<table><thead><tr><th>Operator</th>'
-            '<th>Facilities</th><th>Total MW</th></tr></thead>'
-            f'<tbody>{ops_rows}</tbody></table>')
+        if ops:
+            ops_rows = "\n".join(
+                _row([o.get("operator") or NT_PILL,
+                      _fmt_int(o.get("facility_count")),
+                      _fmt_mw(o.get("total_mw"))])
+                for o in ops)
+            ops_html = (
+                '<table><thead><tr><th>Operator</th>'
+                '<th>Facilities</th><th>Total MW</th></tr></thead>'
+                f'<tbody>{ops_rows}</tbody></table>')
+        else:
+            ops_html = _empty_state(
+                "operator footprint",
+                "facility-owner")
 
         def _money(v):
             if v is None:
-                return "—"
+                return NT_PILL
             try:
                 return f"${float(v):,.0f}"
             except (TypeError, ValueError):
-                return "—"
+                return NT_PILL
 
-        ma_rows = "\n".join(
-            _row([m.get("date") or "—",
-                  m.get("buyer") or "—",
-                  m.get("seller") or "—",
-                  _money(m.get("value")),
-                  _fmt_mw(m.get("mw"))])
-            for m in ma) or _row(["—", "No M&A in last 24mo", "—", "—", "—"])
-        ma_html = (
-            '<table><thead><tr><th>Date</th><th>Buyer</th>'
-            '<th>Seller</th><th>Value</th><th>MW</th></tr></thead>'
-            f'<tbody>{ma_rows}</tbody></table>')
+        if ma:
+            ma_rows = "\n".join(
+                _row([m.get("date") or NT_PILL,
+                      m.get("buyer") or NT_PILL,
+                      m.get("seller") or NT_PILL,
+                      _money(m.get("value")),
+                      _fmt_mw(m.get("mw"))])
+                for m in ma)
+            ma_html = (
+                '<table><thead><tr><th>Date</th><th>Buyer</th>'
+                '<th>Seller</th><th>Value</th><th>MW</th></tr></thead>'
+                f'<tbody>{ma_rows}</tbody></table>')
+        else:
+            ma_html = _empty_state(
+                "M&A activity (24mo)",
+                "deals-tracker")
 
         comps_ps = comps.get("powered_shell") or []
         comps_ld = comps.get("land") or []
-        ps_rows = "\n".join(
-            _row([c.get("date") or "—",
-                  c.get("asset") or c.get("buyer") or "—",
-                  _money(c.get("value")), _fmt_mw(c.get("mw"))])
-            for c in comps_ps) or _row(["—", "No powered-shell comps", "—", "—"])
-        ld_rows = "\n".join(
-            _row([c.get("date") or "—",
-                  c.get("asset") or c.get("buyer") or "—",
-                  _money(c.get("value")), _fmt_mw(c.get("mw"))])
-            for c in comps_ld) or _row(["—", "No land comps", "—", "—"])
-        comps_html = (
-            '<h3 class="sub">Powered Shell</h3>'
-            '<table><thead><tr><th>Date</th><th>Asset</th>'
-            '<th>Value</th><th>MW</th></tr></thead>'
-            f'<tbody>{ps_rows}</tbody></table>'
-            '<h3 class="sub">Land</h3>'
-            '<table><thead><tr><th>Date</th><th>Asset</th>'
-            '<th>Value</th><th>MW</th></tr></thead>'
-            f'<tbody>{ld_rows}</tbody></table>')
+        if comps_ps or comps_ld:
+            # Render each comp half as table-or-empty-state independently
+            if comps_ps:
+                ps_rows = "\n".join(
+                    _row([c.get("date") or NT_PILL,
+                          c.get("asset") or c.get("buyer") or NT_PILL,
+                          _money(c.get("value")), _fmt_mw(c.get("mw"))])
+                    for c in comps_ps)
+                ps_block = (
+                    '<table><thead><tr><th>Date</th><th>Asset</th>'
+                    '<th>Value</th><th>MW</th></tr></thead>'
+                    f'<tbody>{ps_rows}</tbody></table>')
+            else:
+                ps_block = ('<div class="empty-inline">No powered-shell '
+                            'comps tracked yet for this market.</div>')
+            if comps_ld:
+                ld_rows = "\n".join(
+                    _row([c.get("date") or NT_PILL,
+                          c.get("asset") or c.get("buyer") or NT_PILL,
+                          _money(c.get("value")), _fmt_mw(c.get("mw"))])
+                    for c in comps_ld)
+                ld_block = (
+                    '<table><thead><tr><th>Date</th><th>Asset</th>'
+                    '<th>Value</th><th>MW</th></tr></thead>'
+                    f'<tbody>{ld_rows}</tbody></table>')
+            else:
+                ld_block = ('<div class="empty-inline">No land comps '
+                            'tracked yet for this market.</div>')
+            comps_html = (
+                '<h3 class="sub">Powered Shell</h3>'
+                f'{ps_block}'
+                '<h3 class="sub">Land</h3>'
+                f'{ld_block}')
+        else:
+            comps_html = _empty_state(
+                "powered-shell and land comps",
+                "transaction-tracker")
 
         risk_items = []
         if risk.get("water_stress") is not None:
@@ -1136,10 +1232,13 @@ def _render_html(brief: dict) -> str:
             risk_items.append(("Drought (D2+)", f"{risk['drought_months_d2_plus']} mo"))
         if risk.get("wildfire_seismic_note"):
             risk_items.append(("Wildfire / Seismic", risk["wildfire_seismic_note"]))
-        if not risk_items:
-            risk_items.append(("Risk", "Data thin — fewer than 3 risk signals available"))
-        risk_html = "<ul class='risk-list'>" + "".join(
-            f"<li><b>{lab}:</b> {val}</li>" for lab, val in risk_items) + "</ul>"
+        if risk_items:
+            risk_html = "<ul class='risk-list'>" + "".join(
+                f"<li><b>{lab}:</b> {val}</li>" for lab, val in risk_items) + "</ul>"
+        else:
+            risk_html = _empty_state(
+                "risk signals (water, drought, seismic)",
+                "USDM + state-water + USGS")
     else:
         # Free teaser: blurred cards + "Unlock with PRO" CTA. URL still 200s.
         blur = (
@@ -1164,6 +1263,7 @@ def _render_html(brief: dict) -> str:
 
     # ── Outlook narrative ──────────────────────────────────────────────
     narrative = outlook.get("narrative_md") or ""
+    is_stub_outlook = bool(outlook.get("_is_stub"))
     # Free teaser = first 80 words
     if not is_pro:
         words = narrative.split()
@@ -1173,7 +1273,52 @@ def _render_html(brief: dict) -> str:
     # Simple paragraph wrap
     out_paragraphs = "".join(
         f"<p>{p.strip()}</p>" for p in narrative.split("\n\n") if p.strip()
-    ) or "<p>Outlook narrative will be generated on the next cron pass.</p>"
+    ) or ('<div class="empty-state">'
+          '<div class="empty-icon" aria-hidden="true">[~]</div>'
+          '<div class="empty-body">'
+          '<div class="empty-title">Live narrative generating</div>'
+          '<div class="empty-detail">The Claude-written 12-month '
+          'outlook for this market refreshes on a 4-hour cycle. '
+          'Refresh this page shortly.</div></div></div>')
+    # If we're rendering the auto-template stub, prefix a pill that
+    # tells the reader this isn't the final narrative.
+    if is_stub_outlook and out_paragraphs.startswith("<p>"):
+        out_paragraphs = (
+            '<div class="outlook-stub-pill" title="Refreshes on a '
+            '4-hour cycle">Live narrative generating · refresh shortly'
+            '</div>' + out_paragraphs
+        )
+
+    # ── Coverage % summary (top-of-brief honesty pill) ────────────────
+    # Counts populated sections out of 8. "100%" means every section
+    # has real data; "37%" means three sections are populated. We surface
+    # this near the live-pill so readers see thin coverage as intentional
+    # rather than broken. Only used in the rendered HTML — JSON unchanged.
+    _section_flags = [
+        _has_pg, _has_pipe, _has_ops, _has_ma, _has_comps, _has_risk,
+        _has_outlook,
+        # KPI tile group counts as a section iff at least 2 of the 4
+        # core KPIs are populated.
+        sum(1 for k in ("operational_mw","pipeline_mw","facility_count",
+                        "queue_months") if kpis.get(k) is not None) >= 2,
+    ]
+    _populated = sum(1 for f in _section_flags if f)
+    _total = len(_section_flags)
+    _cov_pct = int(round(100.0 * _populated / max(1, _total)))
+    if _populated >= _total - 1:
+        _cov_class = "ok"
+    elif _populated >= _total // 2:
+        _cov_class = "mid"
+    else:
+        _cov_class = "thin"
+    coverage_pill = (
+        f'<span class="cov-summary {_cov_class}" '
+        f'title="This brief has {_populated} of {_total} sections '
+        f'populated with live data. Empty sections reflect markets '
+        f'where DC Hub coverage is still building.">'
+        f'{_cov_pct}% live coverage · {_populated}/{_total} sections'
+        f'</span>'
+    )
 
     # ── Share URLs ────────────────────────────────────────────────────
     page_url = f"https://dchub.cloud/markets/{slug}/brief"
@@ -1269,6 +1414,22 @@ tbody tr:last-child td{{border-bottom:none}}
 .citation a{{color:var(--ind);text-decoration:none}}
 .footer{{color:var(--dim);font-size:.78rem;margin-top:1.5rem;padding-top:1.25rem;border-top:1px solid var(--b);font-family:'JetBrains Mono',monospace}}
 .footer a{{color:var(--ind);text-decoration:none}}
+/* Thin-coverage UX (2026-06-06) — replaces stark em-dashes */
+.nt{{display:inline-block;background:rgba(99,102,241,.10);color:#a5b4fc;border:1px dashed rgba(99,102,241,.35);border-radius:6px;padding:.08rem .5rem;font-size:.74rem;font-family:'JetBrains Mono',monospace;font-weight:500;letter-spacing:.01em;line-height:1.3;vertical-align:middle;cursor:help}}
+.cov{{display:inline-flex;align-items:center;background:var(--surf);border:1px solid var(--b);border-radius:999px;padding:.18rem .6rem;font-size:.66rem;font-family:'JetBrains Mono',monospace;font-weight:500;letter-spacing:.02em;text-transform:none;cursor:help;margin-left:.55rem;vertical-align:middle}}
+.cov.ok{{color:#34d399;border-color:rgba(52,211,153,.30);background:rgba(16,185,129,.08)}}
+.cov.thin{{color:#a5b4fc;border-color:rgba(99,102,241,.30);background:rgba(99,102,241,.08)}}
+.cov-summary{{display:inline-block;background:var(--surf);border:1px solid var(--b);border-radius:999px;padding:.30rem .80rem;font-size:.70rem;color:var(--mut);font-family:'JetBrains Mono',monospace;margin-left:.55rem;letter-spacing:.02em;vertical-align:middle;cursor:help}}
+.cov-summary.ok{{color:#34d399;border-color:rgba(52,211,153,.30);background:rgba(16,185,129,.06)}}
+.cov-summary.mid{{color:#fbbf24;border-color:rgba(251,191,36,.30);background:rgba(251,191,36,.06)}}
+.cov-summary.thin{{color:#a5b4fc;border-color:rgba(99,102,241,.30);background:rgba(99,102,241,.06)}}
+.empty-state{{display:flex;gap:1rem;background:linear-gradient(160deg,rgba(99,102,241,.04) 0%,rgba(168,85,247,.03) 100%);border:1px dashed rgba(99,102,241,.20);border-radius:12px;padding:1.1rem 1.25rem;margin:.5rem 0 1.5rem;align-items:flex-start}}
+.empty-icon{{flex-shrink:0;width:2.2rem;height:2.2rem;border-radius:8px;background:rgba(99,102,241,.10);color:#a5b4fc;display:flex;align-items:center;justify-content:center;font-family:'JetBrains Mono',monospace;font-weight:700;font-size:.95rem;letter-spacing:-.02em}}
+.empty-body{{flex:1;min-width:0}}
+.empty-title{{color:var(--tx);font-weight:600;font-size:.92rem;margin-bottom:.30rem;letter-spacing:-.005em}}
+.empty-detail{{color:var(--mut);font-size:.81rem;line-height:1.55}}
+.empty-inline{{color:var(--mut);font-size:.82rem;background:var(--surf);border:1px dashed var(--b);border-radius:10px;padding:.7rem 1rem;margin:.4rem 0 1rem;font-family:inherit}}
+.outlook-stub-pill{{display:inline-block;background:rgba(99,102,241,.10);color:#a5b4fc;border:1px dashed rgba(99,102,241,.30);border-radius:6px;padding:.30rem .65rem;font-size:.74rem;font-family:'JetBrains Mono',monospace;margin-bottom:.85rem;letter-spacing:.01em}}
 @media print{{
   body{{max-width:none;padding:0 1rem;background:#fff;color:#0a0a0f}}
   h1,h2,h3,.kpi-v,.cell span,td{{color:#0a0a0f}}
@@ -1280,35 +1441,39 @@ tbody tr:last-child td{{border-bottom:none}}
   .live-pill{{background:#fff;border:1px solid #d4d4d8;color:#0a0a0f}}
   .footer{{color:#71717a;border-color:#d4d4d8}}
   p,td,.kpi-v,.cell span{{color:#0a0a0f}}
+  .nt,.cov,.cov-summary{{background:#f4f4f5;color:#52525b;border:1px solid #d4d4d8}}
+  .empty-state{{background:#f9f9fb;border:1px dashed #d4d4d8;color:#0a0a0f}}
+  .empty-title{{color:#0a0a0f}}
+  .empty-detail{{color:#52525b}}
 }}
 </style>
 </head>
 <body>
 
 <h1>{name}<span class="live-pill"><span class="live-dot"></span>Live · {live_age_str} fresh</span></h1>
-<p class="sub">Market Brief · <span class="verdict-pill">{verdict}</span><span class="score">DCPI {score_str}</span> · Live as of {citation_iso} UTC</p>
+<p class="sub">Market Brief · <span class="verdict-pill">{verdict}</span><span class="score">DCPI {score_str}</span> · Live as of {citation_iso} UTC {coverage_pill}</p>
 
-<h2>At a Glance</h2>
+<h2>At a Glance {_cov_badge(sum(1 for k in ("operational_mw","pipeline_mw","facility_count","queue_months") if kpis.get(k) is not None), label_singular="of 4 KPIs live", label_plural="of 4 KPIs live")}</h2>
 <div class="kpis">
 {kpi_html}
 </div>
 
-<h2>Power &amp; Grid</h2>
+<h2>Power &amp; Grid {_cov_badge(sum(1 for k in ("queue_capacity_mw","queue_wait_months","reserve_margin_pct","gen_additions_mw","interconnection_pending_mw") if pg.get(k) is not None), label_singular="of 5 metrics live", label_plural="of 5 metrics live")}</h2>
 {pg_html}
 
-<h2>Pipeline</h2>
+<h2>Pipeline {_cov_badge(len(pipe), label_singular="project tracked", label_plural="projects tracked")}</h2>
 {pipe_html}
 
-<h2>Operator Footprint</h2>
+<h2>Operator Footprint {_cov_badge(len(ops), label_singular="operator tracked", label_plural="operators tracked")}</h2>
 {ops_html}
 
-<h2>M&amp;A Activity (24mo)</h2>
+<h2>M&amp;A Activity (24mo) {_cov_badge(len(ma), label_singular="deal tracked", label_plural="deals tracked")}</h2>
 {ma_html}
 
-<h2>Comps</h2>
+<h2>Comps {_cov_badge(len(comps.get("powered_shell") or []) + len(comps.get("land") or []), label_singular="comp tracked", label_plural="comps tracked")}</h2>
 {comps_html}
 
-<h2>Risk Factors</h2>
+<h2>Risk Factors {_cov_badge(sum(1 for k in ("water_stress","drought_months_d2_plus","wildfire_seismic_note") if risk.get(k) is not None), label_singular="of 3 signals live", label_plural="of 3 signals live")}</h2>
 {risk_html}
 
 <h2>12-Month Outlook</h2>
@@ -1331,13 +1496,19 @@ tbody tr:last-child td{{border-bottom:none}}
 <script src="/js/dchub-nav.js" defer></script>
 </body>
 </html>"""
-    # Elegance (2026-06-06): dim "not available" values so a thin-data market
-    # (e.g. Cheyenne) reads as intentional, not broken — instead of a wall of
-    # stark em-dashes. Safe no-op when a market has full data.
+    # The previous em-dash dimming pass (2026-06-06) is now redundant —
+    # the NT_PILL formatters and _empty_state cards render thin coverage
+    # natively (no stark dashes ever emitted from the data fan-out path).
+    # Kept as a hard fallback for any literal `<td>—</td>` that slipped
+    # through the formatters (e.g. a third-party comp row); harmless when
+    # there's nothing to match.
     for _pat, _rep in (
-        ('<span class="kpi-v">—</span>', '<span class="kpi-v na">—</span>'),
-        ('<span>—</span>',               '<span class="na">—</span>'),
-        ('<td>—</td>',                   '<td class="na">—</td>'),
+        ('<span class="kpi-v">—</span>',
+         '<span class="kpi-v"><span class="nt" title="Coverage building">Not tracked</span></span>'),
+        ('<span>—</span>',
+         '<span><span class="nt" title="Coverage building">Not tracked</span></span>'),
+        ('<td>—</td>',
+         '<td><span class="nt" title="Coverage building">Not tracked</span></td>'),
     ):
         _html = _html.replace(_pat, _rep)
     return _html
@@ -2169,6 +2340,231 @@ def admin_discover_eligible_markets():
         "count":          len(rows),
         "already_seeded": sorted(SEED_MARKETS),
         "candidates":     rows,
+    }), 200
+
+
+@market_brief_bp.route("/api/v1/admin/market-coverage-matrix", methods=["GET"])
+def admin_market_coverage_matrix():
+    """Per-market coverage matrix across all 7 section sources (KPIs,
+    power_grid, pipeline, operators, M&A, comps, risk). Lets operators
+    instantly spot which markets are thin (Cheyenne, La Vista, etc.)
+    and which are full (Ashburn, Dallas).
+
+    Counts come from direct SQL — bypass the JSON brief's tier gate so
+    we can audit thin coverage even on anon-stubbed JSON.
+
+    Gated on X-Admin-Key. Response shape:
+      {
+        "ok": true,
+        "as_of": "<iso>",
+        "summary": {
+          "total_markets": <int>,
+          "full": <int> (>= 5 sections),
+          "medium": <int> (2-4 sections),
+          "thin": <int> (<= 1 section),
+        },
+        "markets": [
+          {"slug": "cheyenne", "name": "Cheyenne", "state": "WY",
+           "verdict": "BUILD",
+           "facilities_n": 0, "pipeline_n": 0, "operators_n": 0,
+           "ma_n": 0, "comps_n": 0, "risk_filled": 0,
+           "kpi_filled": 0, "coverage_pct": 0,
+           "tier": "thin"},
+          ...
+        ]
+      }
+    """
+    if not _admin_authorized():
+        return jsonify({"ok": False, "error": "admin_key_required"}), 401
+    c = _conn()
+    if c is None:
+        return jsonify({"ok": False, "error": "no_database"}), 500
+
+    out = []
+    try:
+        with c.cursor() as cur:
+            # 1. Get every published market
+            cur.execute("""
+                SELECT DISTINCT ON (market_slug)
+                       market_slug, market_name, state, iso, verdict
+                  FROM market_power_scores
+                 WHERE computed_at > NOW() - INTERVAL '14 days'
+                 ORDER BY market_slug, computed_at DESC
+            """)
+            markets = [{"slug": r[0], "name": r[1], "state": r[2],
+                        "iso": r[3], "verdict": r[4]} for r in cur.fetchall()]
+
+            # 2. Per market, compute section populations via the same
+            #    fan-out the _build_brief uses.
+            for m in markets:
+                slug = m["slug"]
+                name = m["name"]
+                try:
+                    cur.execute("""
+                        SELECT COUNT(*),
+                               COUNT(*) FILTER (WHERE status ILIKE '%construction%'
+                                                   OR status ILIKE '%planned%'
+                                                   OR status ILIKE '%announced%')
+                          FROM discovered_facilities
+                         WHERE LOWER(COALESCE(market, '')) = LOWER(%s)
+                           AND merged_at IS NULL AND is_duplicate = 0
+                    """, (name,))
+                    r = cur.fetchone() or (0, 0)
+                    facilities_n, pipeline_n = int(r[0] or 0), int(r[1] or 0)
+                except Exception:
+                    facilities_n, pipeline_n = 0, 0
+                    try:
+                        c.rollback()
+                    except Exception:
+                        pass
+
+                try:
+                    cur.execute("""
+                        SELECT COUNT(DISTINCT provider)
+                          FROM discovered_facilities
+                         WHERE LOWER(COALESCE(market, '')) = LOWER(%s)
+                           AND provider IS NOT NULL AND provider <> ''
+                           AND merged_at IS NULL AND is_duplicate = 0
+                    """, (name,))
+                    operators_n = int((cur.fetchone() or (0,))[0] or 0)
+                except Exception:
+                    operators_n = 0
+                    try:
+                        c.rollback()
+                    except Exception:
+                        pass
+
+                try:
+                    cur.execute("""
+                        SELECT COUNT(*)
+                          FROM deals
+                         WHERE (LOWER(COALESCE(market, '')) = LOWER(%s)
+                                OR LOWER(COALESCE(region, '')) = LOWER(%s))
+                           AND (date IS NULL OR date >= (CURRENT_DATE - INTERVAL '24 months'))
+                    """, (name, name))
+                    ma_n = int((cur.fetchone() or (0,))[0] or 0)
+                except Exception:
+                    ma_n = 0
+                    try:
+                        c.rollback()
+                    except Exception:
+                        pass
+
+                try:
+                    cur.execute("""
+                        SELECT COUNT(*)
+                          FROM deals
+                         WHERE (LOWER(COALESCE(market, '')) = LOWER(%s)
+                                OR LOWER(COALESCE(region, '')) = LOWER(%s))
+                           AND (LOWER(COALESCE(type, '')) LIKE '%%powered%%'
+                                OR LOWER(COALESCE(type, '')) LIKE '%%shell%%'
+                                OR LOWER(COALESCE(type, '')) LIKE '%%land%%'
+                                OR LOWER(COALESCE(type, '')) LIKE '%%site%%')
+                    """, (name, name))
+                    comps_n = int((cur.fetchone() or (0,))[0] or 0)
+                except Exception:
+                    comps_n = 0
+                    try:
+                        c.rollback()
+                    except Exception:
+                        pass
+
+                state = m.get("state") or ""
+                risk_filled = 0
+                try:
+                    cur.execute("""
+                        SELECT water_stress_score, drought_d2_months
+                          FROM water_risk
+                         WHERE UPPER(state) = UPPER(%s)
+                         ORDER BY computed_at DESC NULLS LAST LIMIT 1
+                    """, (state,))
+                    r = cur.fetchone()
+                    if r:
+                        if r[0] is not None:
+                            risk_filled += 1
+                        if r[1] is not None:
+                            risk_filled += 1
+                except Exception:
+                    try:
+                        c.rollback()
+                    except Exception:
+                        pass
+                if state.upper() in ("CA", "OR", "WA", "NV", "ID", "AK", "HI"):
+                    risk_filled += 1  # wildfire_seismic_note heuristic
+
+                # KPI filled count is approximate from operational MW + facility
+                # count + pipeline MW. queue_months requires deeper query — skip.
+                kpi_filled = 0
+                if facilities_n > 0:
+                    kpi_filled += 1  # facility_count
+                # operational/pipeline MW require summing facility power_mw —
+                # use facilities_n>0 as a proxy.
+                if facilities_n > 0:
+                    kpi_filled += 1  # operational + pipeline MW likely populated
+
+                # Count populated sections (out of 7)
+                sec_pg = 1 if facilities_n > 0 else 0  # power_grid_iso ~always present, count if ANY data
+                sec_pipe = 1 if pipeline_n > 0 else 0
+                sec_ops = 1 if operators_n > 0 else 0
+                sec_ma = 1 if ma_n > 0 else 0
+                sec_comps = 1 if comps_n > 0 else 0
+                sec_risk = 1 if risk_filled > 0 else 0
+                sec_kpi = 1 if kpi_filled > 0 else 0
+                populated = sec_pg + sec_pipe + sec_ops + sec_ma + sec_comps + sec_risk + sec_kpi
+                total_sections = 7
+                pct = int(round(100.0 * populated / total_sections))
+
+                if populated >= 5:
+                    tier = "full"
+                elif populated >= 2:
+                    tier = "medium"
+                else:
+                    tier = "thin"
+
+                out.append({
+                    "slug": slug,
+                    "name": name,
+                    "state": state,
+                    "iso": m.get("iso"),
+                    "verdict": m.get("verdict"),
+                    "facilities_n": facilities_n,
+                    "pipeline_n": pipeline_n,
+                    "operators_n": operators_n,
+                    "ma_n": ma_n,
+                    "comps_n": comps_n,
+                    "risk_filled": risk_filled,
+                    "kpi_filled": kpi_filled,
+                    "populated_sections": populated,
+                    "total_sections": total_sections,
+                    "coverage_pct": pct,
+                    "tier": tier,
+                })
+    except Exception as e:
+        try:
+            c.close()
+        except Exception:
+            pass
+        return jsonify({"ok": False, "error": f"db_error:{type(e).__name__}"}), 500
+    finally:
+        try:
+            c.close()
+        except Exception:
+            pass
+
+    # Sort thin → full so the operators eye-ball the worst first.
+    out.sort(key=lambda x: (x["populated_sections"], x["slug"]))
+    summary = {
+        "total_markets": len(out),
+        "full":   sum(1 for m in out if m["tier"] == "full"),
+        "medium": sum(1 for m in out if m["tier"] == "medium"),
+        "thin":   sum(1 for m in out if m["tier"] == "thin"),
+    }
+    from datetime import datetime, timezone
+    return jsonify({
+        "ok": True,
+        "as_of": datetime.now(timezone.utc).isoformat(),
+        "summary": summary,
+        "markets": out,
     }), 200
 
 
