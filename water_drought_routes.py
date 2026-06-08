@@ -454,6 +454,19 @@ def register_water_routes(app):
         _set_cached(cache_key, result)
         return jsonify(result)
 
+    # Path-param alias for the documented /api/water/drought/state/{state} shape
+    # (Devin QA: documented-but-404 — it was never routed). Reuses drought_monitor's
+    # live USDM logic via an in-process re-dispatch (same pattern as morning_briefing).
+    # Both the bare /api/water/... and the /api/v1/water/... forms resolve.
+    @app.route('/api/water/drought/state/<state>', methods=['GET'])
+    @app.route('/api/v1/water/drought/state/<state>', methods=['GET'])
+    def drought_state_path(state):
+        from flask import current_app
+        with current_app.test_request_context(
+                '/api/v1/water/drought',
+                query_string={'state': (state or '').upper()}):
+            return drought_monitor()
+
     # -----------------------------------------------------------------
     # 4. NOAA Flood Risk — Stream Gauges & Forecasts
     # -----------------------------------------------------------------
