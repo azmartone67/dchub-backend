@@ -29,7 +29,7 @@ fence in §5 fails the build if a forbidden one returns.
 |---|---|---|---|
 | M&A deals | `COUNT(*)`=**2,032** | "2,000+ tracked deals" | **"$324B"** (uncomputable; `value_usd` sparse; live route falls back to $85B) |
 | Countries | **178** | "170+" | "140+" |
-| DCPI markets | **233** (`/api/v1/dcpi/scores`) | "232" | **280+/285/286/289/276** (SPP-clone inflation, deduped in fix #43) |
+| DCPI markets | **300** (Neon dedup 2026-06-08: COUNT(DISTINCT market_name)−3 aggregates; raw 306) | "300" / "300+" | **340+** (gross over-claim; ~300 is real, grew from 232 via intl) |
 | MCP tools | **31** (manifest incl. Worker-only `semantic_search`) | "31" | (server.mjs `tools/list` = 30; both defensible) |
 | Active MCP clients | **Claude + Cursor** | "used by Claude and Cursor" | "96+/90+ AI platforms"; long "cited by ChatGPT, Gemini, Perplexity, Groq" lists |
 
