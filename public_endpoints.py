@@ -102,9 +102,9 @@ def get_version():
         'version': APP_VERSION,
         'build': APP_BUILD,
         'release_notes': RELEASE_NOTES,
-        'facilities': 20000,
-        'markets': 35,
-        'deals': 673,
+        'facilities': 21432,
+        'markets': 232,
+        'deals': 2000,
         'updated_at': datetime.utcnow().isoformat()
     }
     conn = None
@@ -114,22 +114,22 @@ def get_version():
         # facilities count via planner statistic (instant)
         try:
             cursor.execute(
-                "SELECT reltuples::bigint FROM pg_class WHERE relname = 'facilities'")
+                "SELECT reltuples::bigint FROM pg_class WHERE relname = 'discovered_facilities'")
             row = cursor.fetchone()
             if row and row[0]:
                 result['facilities'] = int(row[0])
         except Exception:
             pass
-        # markets — DISTINCT can't use reltuples; keep COUNT but with
-        # 60s in-process cache so it only runs once per minute.
+        # markets — r73: this used COUNT(DISTINCT country) FROM facilities, which
+        # is a COUNTRY count (~179) mislabeled as "markets", AND read the legacy
+        # facilities table. Use the canonical DCPI market count (232) instead.
         try:
-            cursor.execute(
-                "SELECT COUNT(DISTINCT country) FROM facilities WHERE country IS NOT NULL")
-            row = cursor.fetchone()
-            if row and row[0]:
-                result['markets'] = row[0]
+            from canonical_stats import get_canonical_stats as _gcs
+            _m = int((_gcs() or {}).get('markets', 232) or 232)
+            if _m:
+                result['markets'] = _m
         except Exception:
-            pass
+            result['markets'] = 232
         # deals count via planner statistic
         try:
             cursor.execute(
