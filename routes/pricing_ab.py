@@ -64,7 +64,11 @@ pricing_ab_bp = Blueprint("pricing_ab", __name__)
 
 # Two arms — Arm A is ALWAYS the control / fail-safe. Arm B only ships
 # when STRIPE_PRICE_PRO_B is configured.
-_ARM_A_PRICE_USD = 499
+# r73: Arm A must be the CANONICAL Pro price ($199 — matches the static
+# /pricing page, schema.org Product offer, and STRIPE_PRICE_PRO_A). It was
+# 499, which made the live A/B "$499 vs $99" and showed ~half of visitors a
+# 2.5x price. The intended experiment is $199 (control) vs $99 (test).
+_ARM_A_PRICE_USD = 199
 _ARM_B_PRICE_USD = 99
 
 # Cookie name shared with pricing.html JS hook.
