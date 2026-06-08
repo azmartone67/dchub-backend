@@ -27365,6 +27365,17 @@ try:
 except Exception as _ch_e:
     print(f"[main] cron_heartbeat_bp register failed: {_ch_e}", flush=True)
 
+# 2026-06-08: proactive Railway-failover cache warmer. Re-fetches the must-survive
+# endpoints through the CF edge worker every ~20 min so DCHUB_CACHE always holds
+# fresh last-known-good copies for the read-failover (vs only what organic traffic
+# happened to cache). /api/v1/admin/failover/warm + /coverage.
+try:
+    from routes.failover_warm import failover_warm_bp
+    app.register_blueprint(failover_warm_bp)
+    print("[main] failover_warm_bp registered: /api/v1/admin/failover/warm", flush=True)
+except Exception as _fw_e:
+    print(f"[main] failover_warm_bp register failed: {_fw_e}", flush=True)
+
 # r47.33 (2026-05-26): infra_data_bp registration — SQL aligned with live
 # Neon schema (submarine_cables uses `cable_name`/`rfs_year`, not `name`/`rfs`)
 # and missing /api/v1/cable-landing-points endpoint added. All 4 routes also

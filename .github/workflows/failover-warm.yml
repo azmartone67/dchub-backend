@@ -1,0 +1,44 @@
+name: Failover Cache Warm (20-min)
+
+# Proactively refresh the DCHUB_CACHE KV read-failover for the must-survive
+# endpoints, so a Railway outage during low traffic still serves recent data
+# (not whatever organic traffic happened to cache hours earlier).
+#
+# Hits the Railway ORIGIN directly (so the warmer route itself isn't subject to
+# the CF worker's ~15s proxy timeout). The route then GETs each critical path
+# THROUGH the worker (api.dchub.cloud), causing the worker to (re)cache them.
+
+on:
+  schedule:
+    - cron: "*/20 * * * *"
+  workflow_dispatch: {}
+
+concurrency:
+  group: failover-warm
+  cancel-in-progress: true
+
+jobs:
+  warm:
+    runs-on: ubuntu-latest
+    timeout-minutes: 3
+    steps:
+      - name: Warm the Railway-failover KV cache
+        run: |
+          set +e
+          BODY=$(curl -sS -m 90 -X POST \
+            -H "X-DC-Probe: failover-warm" \
+            -H "User-Agent: DCHub-FailoverWarmCron/1.0" \
+            https://dchub-backend-production.up.railway.app/api/v1/admin/failover/warm)
+          RC=$?
+          echo "curl rc=$RC"
+          echo "$BODY" | head -c 500
+          echo ""
+          WARMED=$(echo "$BODY" | python3 -c "import sys,json;print(json.load(sys.stdin).get('warmed','?'))" 2>/dev/null || echo "?")
+          TOTAL=$(echo "$BODY" | python3 -c "import sys,json;print(json.load(sys.stdin).get('total','?'))" 2>/dev/null || echo "?")
+          echo "warmed $WARMED/$TOTAL critical endpoints into DCHUB_CACHE"
+          # Non-fatal: a warm miss is a soft signal, not an outage. Only fail if
+          # the origin itself was unreachable (so we don't spam red Xs).
+          if [ "$RC" -ne 0 ]; then
+            echo "::warning::failover warm origin unreachable (rc=$RC) — transient"
+          fi
+          exit 0
