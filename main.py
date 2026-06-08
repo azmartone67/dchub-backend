@@ -29507,6 +29507,13 @@ try:
 except Exception as _bs_e:
     print(f"[main] brain_strategic_bp register failed: {_bs_e}", file=sys.stderr)
 try:
+    # r78 (2026-06-07): competitor-gap -> product bridge + unsealed-funnel tracker
+    from routes.brain_strategic_gaps import brain_strategic_gaps_bp
+    app.register_blueprint(brain_strategic_gaps_bp)
+    print("[main] brain_strategic_gaps_bp registered: /api/v1/brain/strategic-gaps + /conversions-since-fix", flush=True)
+except Exception as _bsg_e:
+    print(f"[main] brain_strategic_gaps_bp register failed: {_bsg_e}", file=sys.stderr)
+try:
     from routes.brain_weekly_digest import brain_weekly_digest_bp
     app.register_blueprint(brain_weekly_digest_bp)
     print("[main] brain_weekly_digest_bp registered: /api/v1/admin/brain/strategic-digest/{send,preview,status} (kill: DCHUB_BRAIN_DIGEST_DISABLE)", flush=True)
