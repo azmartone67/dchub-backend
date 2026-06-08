@@ -16274,6 +16274,16 @@ def ai_tracking_full():
 
         for r in rows:
             key = (r[0] or '').lower()
+            # r72: exclude our own internal/probe/scanner/test buckets from the
+            # public "Requests by Platform" chart + totals. This is the endpoint
+            # that fed the chart "Internal 212k / Mcp 103k" as the top two bars
+            # plus ~80 probe/test rows (agent-seo, curl-test, *-probe, ...).
+            # active_count already used _is_real_ai_platform; this aligns the
+            # bars + all_time/7d totals with it so the chart shows real external
+            # AI platforms only. (cumulative + /api/v1/ai-tracking/stats already
+            # filtered; this was the straggler.)
+            if _is_junk_platform(key):
+                continue
             req_total = int(r[3] or 0)
             req_7d = int(r[4] or 0)
             platforms[key] = {
