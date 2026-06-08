@@ -15644,18 +15644,11 @@ def _list_facilities_free():
     for row in rows:
         full = dict_from_row(row)
         fac = {k: full.get(k) for k in BASIC_FIELDS}
-        # r-slug (2026-06-08, Devin QA #28): the stored `slug` column is a
-        # city-state form (e.g. "stack-stafford-va") that get_facility_by_slug
-        # and the live /facilities/<slug> page CANNOT resolve — both key on the
-        # canonical provider-name-LEFT(MD5(id),8) form. Emit the canonical slug
-        # so the search_facilities -> get_facility / page round-trip works.
-        try:
-            from routes.d1_sync import _build_facility_slug as _canon_slug
-            _cs = _canon_slug(full)
-            if _cs:
-                fac['slug'] = _cs
-        except Exception:
-            pass
+        # NOTE (2026-06-08): emit the stored `slug` column as-is — get_facility_by_id
+        # resolves by df.slug, so search->get_facility round-trips for any facility
+        # that has a stored slug. (An earlier attempt to force the hash form here
+        # REGRESSED facilities whose stored slug already resolved; the durable fix is
+        # to make the RESOLVER also accept the hash form — see get_facility_by_id.)
         # Add resolved names even in free tier (for SEO rendering)
         if resolve_location_name:
             fac['state_name'] = get_state_name(fac.get('state', ''), fac.get('country', 'US'))
@@ -24138,7 +24131,15 @@ def get_facility_by_id(facility_id):
             """, (int_id,))
 
         except ValueError:
-            # hex string / slug fallback (slug first — most common from search results)
+            # hex string / slug fallback (slug first — most common from search results).
+            # r-slug (2026-06-08, Devin QA #28): ALSO resolve the canonical
+            # provider-name-LEFT(MD5(id),8) form (what /api/v1/search + the live
+            # /facilities/<slug> page emit) — extract the trailing 8-hex hash8 and
+            # match LEFT(MD5(id),8). Additive: df.slug / merged / source still resolve.
+            _h8 = ""
+            _hp = str(facility_id).rsplit('-', 1)
+            if len(_hp) == 2 and len(_hp[1]) == 8 and all(ch in '0123456789abcdef' for ch in _hp[1].lower()):
+                _h8 = _hp[1].lower()
             cur.execute("""
                 SELECT df.id, df.name, df.provider, df.city, df.state, df.country, df.market AS region,
                        df.latitude, df.longitude, df.power_mw, df.status, df.address, df.source,
@@ -24149,8 +24150,9 @@ def get_facility_by_id(facility_id):
                 WHERE df.slug = %s
                    OR df.merged_facility_id = %s
                    OR df.source_id = %s
+                   OR (%s <> '' AND LEFT(MD5(df.id::text), 8) = %s)
                 LIMIT 1
-            """, (facility_id, facility_id, facility_id))
+            """, (facility_id, facility_id, facility_id, _h8, _h8))
         row = cur.fetchone()
         if not row:
             # Fallback: composite paid-tier IDs come from the `facilities` table directly
