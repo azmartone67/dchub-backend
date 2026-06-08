@@ -404,6 +404,15 @@ def score_facility():
                 # Resolve by integer id OR the name-slug search_facilities returns
                 # (e.g. 'stack-stafford-technology-campus') — see find_alternatives
                 # above. Fixes the search→score 404 (Devin QA 2026-06-07). Schema-safe.
+                # r-slug (2026-06-08, Devin QA #28): also resolve the CANONICAL
+                # slug form that search_facilities/get_facility/the live page use —
+                # provider-name-LEFT(MD5(id),8). Extract the trailing 8-hex hash8
+                # (same logic as get_facility_by_slug) so the search→score
+                # round-trip resolves instead of 404ing.
+                _h8 = ""
+                _hp = str(facility_id).rsplit('-', 1)
+                if len(_hp) == 2 and len(_hp[1]) == 8 and all(ch in '0123456789abcdef' for ch in _hp[1].lower()):
+                    _h8 = _hp[1].lower()
                 cur.execute("""
                     SELECT id, name, provider, city, state, country,
                            latitude, longitude, power_mw, status,
@@ -412,8 +421,9 @@ def score_facility():
                      WHERE CAST(id AS TEXT) = %s
                         OR LOWER(slug) = LOWER(%s)
                         OR TRIM(BOTH '-' FROM REGEXP_REPLACE(LOWER(name), '[^a-z0-9]+', '-', 'g')) = LOWER(%s)
+                        OR (%s <> '' AND LEFT(MD5(CAST(id AS TEXT)), 8) = %s)
                      LIMIT 1
-                """, (str(facility_id), str(facility_id), str(facility_id)))
+                """, (str(facility_id), str(facility_id), str(facility_id), _h8, _h8))
                 f = cur.fetchone()
 
                 if not f:

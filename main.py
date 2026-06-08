@@ -15644,6 +15644,18 @@ def _list_facilities_free():
     for row in rows:
         full = dict_from_row(row)
         fac = {k: full.get(k) for k in BASIC_FIELDS}
+        # r-slug (2026-06-08, Devin QA #28): the stored `slug` column is a
+        # city-state form (e.g. "stack-stafford-va") that get_facility_by_slug
+        # and the live /facilities/<slug> page CANNOT resolve — both key on the
+        # canonical provider-name-LEFT(MD5(id),8) form. Emit the canonical slug
+        # so the search_facilities -> get_facility / page round-trip works.
+        try:
+            from routes.d1_sync import _build_facility_slug as _canon_slug
+            _cs = _canon_slug(full)
+            if _cs:
+                fac['slug'] = _cs
+        except Exception:
+            pass
         # Add resolved names even in free tier (for SEO rendering)
         if resolve_location_name:
             fac['state_name'] = get_state_name(fac.get('state', ''), fac.get('country', 'US'))
