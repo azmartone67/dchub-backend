@@ -337,7 +337,7 @@ def _get_related_queries(endpoint: str) -> list[dict]:
             {"endpoint": "/api/grid/fuel-mix", "description": "Energy generation breakdown", "example": "GET /api/grid/fuel-mix?iso=ERCOT"},
             {"endpoint": "/api/carbon/intensity", "description": "Carbon footprint of the grid", "example": "GET /api/carbon/intensity?state=TX"},
             {"endpoint": "/api/renewable/combined", "description": "Solar and wind potential", "example": "GET /api/renewable/combined?lat=33.45&lon=-112.07"},
-            {"endpoint": "/api/water/drought/state/AZ", "description": "Water risk assessment"},
+            {"endpoint": "/api/v1/water/drought?state=AZ", "description": "Water risk assessment", "example": "GET /api/v1/water/drought?state=AZ"},
         ],
         "grid_fuel_mix": [
             {"endpoint": "/api/carbon/intensity", "description": "Carbon intensity for this grid", "example": "GET /api/carbon/intensity?state=TX"},

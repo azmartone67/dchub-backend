@@ -423,7 +423,7 @@
         }
       }
     },
-    "/api/water/drought/state/{state}": {
+    "/api/v1/water/drought": {
       "get": {
         "operationId": "getWaterStress",
         "summary": "Get water stress and drought index for a state",
@@ -431,7 +431,7 @@
         "parameters": [
           {
             "name": "state",
-            "in": "path",
+            "in": "query",
             "required": true,
             "description": "US state abbreviation (e.g., AZ, TX, CA, VA)",
             "schema": { "type": "string" }
