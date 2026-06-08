@@ -158,7 +158,7 @@ def _build_spec(app) -> dict:
                 "PDFs and $25K contracts, DC Hub ships live JSON, free MCP "
                 "tools, and freshness SLAs published every 60 seconds.\n\n"
                 "21,000+ facilities in 170+ countries, 369 GW pipeline, "
-                "daily-refreshed DCPI scores for 290+ markets, MCP server "
+                "daily-refreshed DCPI scores for 232 markets, MCP server "
                 "with 28+ tools. Designed for AI agent consumption — claim "
                 "a free dev key at POST /api/v1/keys/claim.\n\n"
                 "Side-by-side comparison with static competitors: "

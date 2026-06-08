@@ -6,7 +6,7 @@ a SERVER-RENDERED landing page that:
 
   1. Pulls all 8 verified claim values LIVE from the same endpoints the QA
      harness validates against — so the page never lies to a LinkedIn
-     visitor (no hardcoded "300+ markets" while DB shows 306).
+     visitor (pull canonical market count; never hardcode an inflated value).
   2. Records click-attribution via /r/<token> 302 proxy. token → destination
      map is hardcoded (small set, no DB write on the hot path); each click
      writes a row to `state_of_2026_clicks` with referer + ip_hash + ua + ts.

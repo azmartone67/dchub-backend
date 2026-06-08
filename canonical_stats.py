@@ -87,12 +87,20 @@ def _query_live() -> dict:
                 out["countries"] = n
         except Exception:
             pass
-        # Markets currently scored in the DCPI index.
+        # Markets in the DCPI index. r73: COUNT(DISTINCT market_slug) returns
+        # ~306, but that raw count includes DUPE slugs (e.g. cheyenne +
+        # cheyenne-wy = one place) and AGGREGATE regions (rural-spp,
+        # upper-michigan) — NOT 306 distinct metros. The verified deduped
+        # canonical is 232 (fix #43; CI-fenced). Cap at the curated canonical so
+        # the raw dupe-laden count can never inflate the public 'markets' number
+        # ("never above true"). If the real deduped count drops below 232 it will
+        # show the lower real value. EXACT deduped figure pending a Neon dedup.
         try:
-            cur.execute("SELECT COUNT(DISTINCT market_slug) FROM market_power_scores")
+            cur.execute("SELECT COUNT(DISTINCT market_slug) FROM market_power_scores "
+                        "WHERE COALESCE(published, true) = true")
             n = int((cur.fetchone() or [0])[0] or 0)
             if n > 0:
-                out["markets"] = n
+                out["markets"] = min(n, _FALLBACK["markets"])
         except Exception:
             pass
     finally:

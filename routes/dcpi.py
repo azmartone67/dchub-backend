@@ -1923,7 +1923,7 @@ def api_dcpi_total():
     no masking, no payload). Designed for the State-of-2026 QA harness's
     narrative-claim verifier and any other internal probe that just needs
     the "how many markets are scored?" number to fact-check public claims
-    like "300+ DCPI markets".
+    like "232 DCPI markets".
 
     Auth: X-Admin-Key header OR ?admin_key= matching DCHUB_ADMIN_KEY
     (falls back to DCHUB_INTERNAL_KEY). Same gate as funnel_health and
