@@ -432,7 +432,7 @@ table{border-collapse:collapse}td,th{padding:5px 9px;border-bottom:1px solid #ee
 </style></head><body>
 <h1>DC Hub · platform self-registration</h1>
 <p>Public, rate-limited POST. Use this to register an AI platform that wants
-to query DC Hub's data layer (50k+ facilities, 230+ markets, 31 MCP tools).</p>
+to query DC Hub's data layer (21,000+ facilities, 232 markets, 38 MCP tools).</p>
 <h2>POST <code>/api/v1/platforms/register</code></h2>
 <table><tr><th>field</th><th>type</th><th>required</th><th>notes</th></tr>
 <tr><td>name</td><td>string</td><td>yes</td><td>2-80 chars</td></tr>
