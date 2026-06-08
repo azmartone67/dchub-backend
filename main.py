@@ -28095,10 +28095,22 @@ try:
         """Fire prefix-based redirects (/research/*) BEFORE the route
         matcher returns a 404. Skip the known-working route prefixes
         so we don't intercept legitimate traffic."""
-        from flask import request
+        from flask import request, redirect
         if request.method != "GET":
             return None
         path = request.path or ""
+        # r72: legacy *.html URLs — old static facility/location/dcpi pages that
+        # Google still has indexed are ~690 of the 1,000 GSC "Redirect error"
+        # URLs (e.g. /facilities/<slug>.html). 301 them to the clean canonical
+        # URL: recovers the live pages, cleanly drops dead slugs (301->404, which
+        # Google de-indexes), and clears the redirect-error class. Runs BEFORE the
+        # skip list so /dcpi/*.html and /markets/*.html are covered too. Frontend
+        # static .html (served by CF Pages) never reach the backend, so untouched.
+        if len(path) > 6 and not path.startswith(("/api/", "/static/")):
+            if path.endswith(".html"):
+                return redirect(path[:-5], code=301)
+            if path.endswith(".html/"):
+                return redirect(path[:-6], code=301)
         # Skip the route prefixes that we know have valid handlers.
         # Anything else flows through to maybe_prefix_redirect for a
         # possible redirect, then falls through to Flask's 404.
