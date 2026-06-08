@@ -70,13 +70,13 @@ CRITICAL_PATHS = [
     "/api/v1/facilities?q=ashburn",
     "/api/v1/facilities?q=dallas",
     "/api/v1/facilities?q=aws",
-    # ── DCPI ──
-    "/api/v1/dcpi/markets",
-    # ── Public site critical pages ──
+    # ── Public site critical pages ── (DCPI is covered by the /dcpi page below;
+    # the /api/v1/dcpi/* endpoints 404 — data is served elsewhere)
     "/",
     "/markets",
     "/dcpi",
-    "/agents",
+    "/agent",
+    "/ai",
     "/pricing",
     "/land-power-map",
 ]
