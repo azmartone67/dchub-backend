@@ -624,7 +624,7 @@ def generate_drafts():
                         INSERT INTO press_pitch_drafts
                             (contact_id, angle_key, angle_data, subject, body,
                              score, status)
-                        VALUES (%s, %s, %s::jsonb, %s, %s, %s, 'pending')
+                        VALUES (%s, %s, %s::jsonb, %s, %s, %s, 'pending') ON CONFLICT DO NOTHING
                         RETURNING id
                     """, (contact["id"], angle.get("key"),
                            json.dumps(angle.get("data") or {}),
