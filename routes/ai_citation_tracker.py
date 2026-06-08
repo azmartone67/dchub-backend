@@ -876,6 +876,95 @@ def _run_claude_citation_pass() -> dict:
     return out
 
 
+# r78 (2026-06-08): Perplexity is an ANSWER engine — it returns the source URLs
+# it actually cited, which we fold into the text so a dchub.cloud source counts
+# even if the prose doesn't name us. It's the single most relevant engine for
+# citation tracking and was already keyed but stubbed. This lights it up.
+def _ask_perplexity(prompt_text: str):
+    try:
+        import requests as _req
+    except Exception:
+        return "", "requests_not_available"
+    api_key = os.environ.get("PERPLEXITY_API_KEY", "").strip()
+    if not api_key:
+        return "", "no_key"
+    try:
+        r = _req.post(
+            "https://api.perplexity.ai/chat/completions",
+            headers={"Authorization": f"Bearer {api_key}",
+                     "User-Agent": "dchub-brain/1.0",
+                     "content-type": "application/json"},
+            json={"model": "sonar", "max_tokens": 800,
+                  "messages": [{"role": "user", "content": prompt_text}]},
+            timeout=30,
+        )
+        if r.status_code != 200:
+            return "", f"http_{r.status_code}"
+        data = r.json()
+        choices = data.get("choices") or []
+        text = " ".join((ch.get("message") or {}).get("content", "") for ch in choices)
+        # fold the cited source URLs into the text so _parse_citations sees them
+        for u in (data.get("citations") or []):
+            text += " " + str(u)
+        return text, None
+    except Exception as e:
+        return "", f"exc:{str(e)[:60]}"
+
+
+def _run_perplexity_citation_pass():
+    """Same shape as the Claude pass, engine='perplexity'. Idempotent per
+    (engine, prompt_id) via the most-recent-auto-cron-row refresh — no
+    re-stamp drift, no accumulation."""
+    out = {"executed": 0, "recorded": 0, "errors": []}
+    if not os.environ.get("PERPLEXITY_API_KEY", "").strip():
+        out["errors"].append("PERPLEXITY_API_KEY not set"); return out
+    c = _conn()
+    if c is None:
+        out["errors"].append("no_database"); return out
+    try:
+        with c, c.cursor() as cur:
+            for prompt_id, prompt_text in _CANONICAL_PROMPTS:
+                out["executed"] += 1
+                text, err = _ask_perplexity(prompt_text)
+                if err:
+                    out["errors"].append({"prompt": prompt_id, "err": err})
+                    continue
+                p = _parse_citations(text)
+                try:
+                    cur.execute("""
+                        UPDATE ai_citations
+                           SET response_text = %s, dchub_cited = %s,
+                               dchawk_cited = %s, dcbyte_cited = %s,
+                               other_sources = %s::jsonb, observed_at = NOW()
+                         WHERE id = (
+                             SELECT id FROM ai_citations
+                              WHERE engine = 'perplexity' AND prompt_id = %s
+                                AND source = 'auto_cron_perplexity'
+                              ORDER BY observed_at DESC LIMIT 1
+                         )
+                    """, (text[:2000], p["dchub_cited"], p["dchawk_cited"],
+                          p["dcbyte_cited"], _json.dumps(p["other_sources"]),
+                          prompt_id))
+                    if cur.rowcount == 0:
+                        cur.execute("""
+                            INSERT INTO ai_citations
+                                (engine, platform, prompt_id, prompt_text,
+                                 dchub_cited, dchub_position, dchawk_cited,
+                                 dcbyte_cited, other_sources, response_text, source)
+                            VALUES (%s, %s, %s, %s, %s, NULL, %s, %s, %s::jsonb, %s, %s)
+                        """, ('perplexity', 'perplexity', prompt_id, prompt_text,
+                              p["dchub_cited"], p["dchawk_cited"], p["dcbyte_cited"],
+                              _json.dumps(p["other_sources"]), text[:2000],
+                              'auto_cron_perplexity'))
+                    out["recorded"] += 1
+                except Exception as e:
+                    out["errors"].append({"prompt": prompt_id, "err": f"db:{str(e)[:60]}"})
+    finally:
+        try: c.close()
+        except Exception: pass
+    return out
+
+
 @ai_citation_tracker_bp.route("/api/v1/ai-citations/run-cron", methods=["POST"])
 def run_cron():
     """Cron entry point — queries every (engine × prompt) that has
@@ -913,13 +1002,22 @@ def run_cron():
         except Exception as e:
             claude_result = {"executed": 0, "recorded": 0, "errors": [f"pass_exc:{str(e)[:80]}"]}
 
+    # r78: Perplexity pass — the answer engine that cites its sources
+    perplexity_result = {"executed": 0, "recorded": 0, "errors": ["skipped: no key"]}
+    if engines.get("perplexity"):
+        try:
+            perplexity_result = _run_perplexity_citation_pass()
+        except Exception as e:
+            perplexity_result = {"executed": 0, "recorded": 0, "errors": [f"pass_exc:{str(e)[:80]}"]}
+
     return jsonify(
         ok=True,
         engines_with_keys=engines,
         matrix=matrix,
-        executed=claude_result.get("executed", 0),
-        recorded=claude_result.get("recorded", 0),
-        errors=claude_result.get("errors", []),
+        executed=claude_result.get("executed", 0) + perplexity_result.get("executed", 0),
+        recorded=claude_result.get("recorded", 0) + perplexity_result.get("recorded", 0),
+        by_engine={"claude": claude_result, "perplexity": perplexity_result},
+        errors={"claude": claude_result.get("errors", []), "perplexity": perplexity_result.get("errors", [])},
         next_steps=(
             "Add GEMINI_API_KEY / PERPLEXITY_API_KEY / XAI_API_KEY to "
             "Railway env to light up additional engines. Schedule this "
