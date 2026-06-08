@@ -426,6 +426,12 @@ def _render_page(title, subheadline, body, category, date_human, slug, meta,
     auto_badge = ('<span class="dot"></span>Autonomous brief'
                   if is_auto else
                   'Press release · DC Hub')
+    # r-card (2026-06-08): press releases use the clean, headline-driven
+    # EDITORIAL card. The "today" rotation can render a data_brutal verdict
+    # card (BUILD/CAUTION pill) that overlaps + truncates a non-market headline
+    # — which mangled the Smithery #1 press release card. Auto briefs (which
+    # carry real market/verdict data) keep the "today" rotation.
+    og_style = "today" if is_auto else "editorial"
 
     return f"""<!doctype html>
 <html lang="en"><head>
@@ -440,7 +446,7 @@ def _render_page(title, subheadline, body, category, date_human, slug, meta,
 <meta property="og:url" content="{canonical}">
 <meta property="og:type" content="article">
 <meta property="og:site_name" content="DC Hub">
-<meta property="og:image" content="https://dchub.cloud/api/v1/og/today/{slug}.png">
+<meta property="og:image" content="https://dchub.cloud/api/v1/og/{og_style}/{slug}.png">
 <meta property="og:image:width" content="1200">
 <meta property="og:image:height" content="630">
 <meta property="og:image:type" content="image/png">
@@ -451,7 +457,7 @@ def _render_page(title, subheadline, body, category, date_human, slug, meta,
 <meta name="twitter:site" content="@dchubcloud">
 <meta name="twitter:title" content="{title_esc}">
 <meta name="twitter:description" content="{desc_esc}">
-<meta name="twitter:image" content="https://dchub.cloud/api/v1/og/today/{slug}.png">
+<meta name="twitter:image" content="https://dchub.cloud/api/v1/og/{og_style}/{slug}.png">
 {jsonld}
 {_STYLES}
 </head><body><div class="wrap">
