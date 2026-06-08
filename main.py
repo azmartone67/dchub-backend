@@ -25314,6 +25314,13 @@ try:
         print("🧠 [brain-innovation] ready · /brain/innovation · /api/v1/brain/innovation")
     except Exception as _e_bi:
         print(f"⚠️ [brain-innovation] blueprint failed to register: {_e_bi}")
+    # r73: Innovation Hub — unified brain+media+product "what's next" surface.
+    try:
+        from routes.innovation_hub import innovation_hub_bp
+        app.register_blueprint(innovation_hub_bp)
+        print("🧭 [innovation-hub] ready · /brain/roadmap · /innovation · /api/v1/brain/roadmap")
+    except Exception as _e_ih:
+        print(f"⚠️ [innovation-hub] blueprint failed to register: {_e_ih}")
     print("🔧 Schema Repair: ✅ Registered "
           "(POST /api/v1/admin/schema/repair · /geocoding/backfill · "
           "GET /funnel/leakage)")
