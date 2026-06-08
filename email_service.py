@@ -728,22 +728,24 @@ def start_welcome_series(user_id: str, email: str, name: str = "there"):
 def stop_welcome_series(email: str):
     """Stop welcome series for a user (e.g., on unsubscribe or upgrade)"""
     conn = get_db()
-    c = conn.cursor()
-    
-    # Mark series as completed/stopped
-    c.execute("""
-        UPDATE welcome_series SET status = 'stopped', completed_at = %s
-        WHERE email = %s AND status = 'active'
-    """, (datetime.utcnow().isoformat(), email))
-    
-    # Cancel pending emails
-    c.execute("""
-        UPDATE email_queue SET status = 'cancelled'
-        WHERE email = %s AND status = 'scheduled' AND sequence_id IS NOT NULL
-    """, (email,))
-    
-    conn.commit()
-    conn.close()
+    try:
+        c = conn.cursor()
+        # Mark series as completed/stopped
+        c.execute("""
+            UPDATE welcome_series SET status = 'stopped', completed_at = %s
+            WHERE email = %s AND status = 'active'
+        """, (datetime.utcnow().isoformat(), email))
+        # Cancel pending emails
+        c.execute("""
+            UPDATE email_queue SET status = 'cancelled'
+            WHERE email = %s AND status = 'scheduled' AND sequence_id IS NOT NULL
+        """, (email,))
+        conn.commit()
+    finally:  # r72: never leak the conn on a DB error
+        try:
+            conn.close()
+        except Exception:
+            pass
     
     return {'success': True}
 

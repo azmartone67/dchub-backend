@@ -21130,13 +21130,10 @@ def serve_sitemap_xml():
         # Priority 0.9 — these are core differentiated surfaces.
         ('/grid-intelligence', '0.9', 'daily'),
         ('/iso',           '0.9', 'daily'),
-        ('/iso/pjm',       '0.8', 'daily'),
-        ('/iso/ercot',     '0.8', 'daily'),
-        ('/iso/caiso',     '0.8', 'daily'),
-        ('/iso/miso',      '0.8', 'daily'),
-        ('/iso/nyiso',     '0.8', 'daily'),
-        ('/iso/isone',     '0.8', 'daily'),
-        ('/iso/spp',       '0.8', 'daily'),
+        # r72: removed /iso/<code> sitemap entries — each 301-redirects to
+        # /grid/<CODE>, so listing them produced Google "Page with redirect".
+        # The /grid/<code> equivalents below are 200 and cover the same ISO
+        # surfaces, so nothing is lost from the index.
         ('/grid',          '0.9', 'daily'),
         ('/grid/pjm',      '0.8', 'daily'),
         ('/grid/ercot',    '0.8', 'daily'),

@@ -445,7 +445,7 @@ def _render_facility(f: dict, nearby: list) -> str:
 # ═════════════════════════════════════════════════════════════════════
 # MARKET PAGE — /markets/<slug>
 # ═════════════════════════════════════════════════════════════════════
-@seo_pages_bp.get("/markets/<slug>")
+@seo_pages_bp.get("/markets/<slug>", strict_slashes=False)
 def market_page(slug: str):
     slug = slug.strip().lower()
     if not slug or len(slug) > 100:

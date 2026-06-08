@@ -297,17 +297,20 @@ def validate_api_key(key):
     key_hash = hash_api_key(key)
 
     conn = get_db()
-    c = conn.cursor()
-
-    c.execute("""
-        SELECT ak.*, up.plan
-        FROM api_keys ak
-        LEFT JOIN user_plans up ON ak.user_id = up.user_id
-        WHERE ak.key_hash = %s AND ak.is_active = 1
-    """, (key_hash,))
-
-    row = c.fetchone()
-    conn.close()
+    try:
+        c = conn.cursor()
+        c.execute("""
+            SELECT ak.*, up.plan
+            FROM api_keys ak
+            LEFT JOIN user_plans up ON ak.user_id = up.user_id
+            WHERE ak.key_hash = %s AND ak.is_active = 1
+        """, (key_hash,))
+        row = c.fetchone()
+    finally:  # r72: never leak the conn on a DB error (hot auth path)
+        try:
+            conn.close()
+        except Exception:
+            pass
 
     if not row:
         return None
@@ -322,16 +325,19 @@ def validate_api_key(key):
 def update_key_usage(key_id):
     """Update last used timestamp and usage count"""
     conn = get_db()
-    c = conn.cursor()
-    
-    c.execute("""
-        UPDATE api_keys 
-        SET last_used_at = %s, usage_count = usage_count + 1
-        WHERE id = %s
-    """, (datetime.utcnow().isoformat(), key_id))
-    
-    conn.commit()
-    conn.close()
+    try:
+        c = conn.cursor()
+        c.execute("""
+            UPDATE api_keys
+            SET last_used_at = %s, usage_count = usage_count + 1
+            WHERE id = %s
+        """, (datetime.utcnow().isoformat(), key_id))
+        conn.commit()
+    finally:  # r72: never leak the conn on a DB error
+        try:
+            conn.close()
+        except Exception:
+            pass
 
 # =============================================================================
 # RATE LIMITING
