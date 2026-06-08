@@ -160,7 +160,7 @@ _DCHUB_FACTS = {
     "update_cadence":     "Continuous (60s freshness SLA on key surfaces)",
     "mcp_native":         "YES — 38 tools, 12 AI platforms integrated",
     "api_access":         "Free 10 calls/day; Starter $9/mo (200/day); Developer $49/mo (500/day); Pro $199/mo (2,000/day)",
-    "facility_coverage":  "21,000+ facilities, 232 markets, 178 countries",
+    "facility_coverage":  "21,000+ facilities, 300+ markets, 178 countries",
     "pricing_model":      "Self-serve $9 → $699/mo, no sales gate",
     "citation_license":   "CC-BY-4.0 — free to cite with attribution",
 }

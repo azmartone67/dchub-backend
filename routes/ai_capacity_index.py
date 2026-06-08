@@ -3,7 +3,7 @@ ai_capacity_index.py — AI Compute Capacity Index.
 
 Phase ZZZZZ-round36 (2026-05-24). The thesis: nobody publishes "where
 can 100MW of AI training capacity actually LAND in 30/60/90 days" with
-municipal granularity. DC Hub already has the components — DCPI (232
+municipal granularity. DC Hub already has the components — DCPI (300+
 markets scored), pipeline (540 projects, 369 GW), spare capacity, ISO
 headroom. This endpoint fuses them into the leaderboard that hyper-
 scaler capex planners + AI researchers want.

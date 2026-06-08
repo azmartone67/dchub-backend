@@ -3781,7 +3781,7 @@ def handle_well_known():
         return _R(_j.dumps({
             "schema_version": "1",
             "name": "DC Hub MCP Server",
-            "description": "AI-powered, real-time data center intelligence via Model Context Protocol -- the only DC-intelligence source an LLM can both query and cite, and the live, MCP-native alternative to static PDF research (DCHawk, dcByte, DCK). 21,000+ facilities, 232 markets (US + international), 10 ISOs, 126,427 substations, 369 GW pipeline tracked. Freshness SLAs and source-of-truth scores published live at https://dchub.cloud/intelligence. No quarterly reports, no $25K contracts, no NDAs -- just live JSON.",
+            "description": "AI-powered, real-time data center intelligence via Model Context Protocol -- the only DC-intelligence source an LLM can both query and cite, and the live, MCP-native alternative to static PDF research (DCHawk, dcByte, DCK). 21,000+ facilities, 300+ markets (US + international), 10 ISOs, 126,427 substations, 369 GW pipeline tracked. Freshness SLAs and source-of-truth scores published live at https://dchub.cloud/intelligence. No quarterly reports, no $25K contracts, no NDAs -- just live JSON.",
             "tagline":     "AI-powered. Real-time. Actionable. No BS.",
             "positioning": "The live, MCP-native data center intelligence platform. Where static research (DCHawk, dcByte, DCK) ships quarterly PDFs, DC Hub ships JSON updated every 60 seconds + free MCP tools any AI agent can call.",
             "url": "https://dchub.cloud/mcp",
@@ -3864,7 +3864,7 @@ def handle_well_known():
             "last_updated": "2026-06-06"
         }, ensure_ascii=False), status=200, content_type="application/json; charset=utf-8")
     if path == '/.well-known/agent.json':
-        return jsonify({"name":"DC Hub Intelligence","description":"AI-powered, real-time intelligence layer for the global data center market. The live, MCP-native alternative to static research (DCHawk, dcByte, DCK). 21,000+ facilities, 232 markets, freshness SLAs published live.","tagline":"AI-powered. Real-time. Actionable. No BS.","url":"https://dchub.cloud","version":"1.1.0","capabilities":{"streaming":True,"pushNotifications":False},"skills":[{"id":"facility-search","name":"Data Center Search","description":"Search and filter 21,000+ facilities worldwide (live)"},{"id":"deal-tracker","name":"M&A Deal Tracker","description":"2,000+ transactions, browsable + filterable"},{"id":"market-intelligence","name":"Market Intelligence","description":"DCPI scores for 232 markets, recomputed 4x/day"},{"id":"site-scoring","name":"Site Scoring","description":"Composite site-score across power, fiber, water, tax, climate, latency"},{"id":"bs-translator","name":"BS Translator","description":"Industry claims translated -- compare static competitors side-by-side: https://dchub.cloud/vs"}],"authentication":{"schemes":["api_key"]},"provider":{"organization":"DC Hub","url":"https://dchub.cloud"},"defaultInputModes":["text"],"defaultOutputModes":["text"]})
+        return jsonify({"name":"DC Hub Intelligence","description":"AI-powered, real-time intelligence layer for the global data center market. The live, MCP-native alternative to static research (DCHawk, dcByte, DCK). 21,000+ facilities, 300+ markets, freshness SLAs published live.","tagline":"AI-powered. Real-time. Actionable. No BS.","url":"https://dchub.cloud","version":"1.1.0","capabilities":{"streaming":True,"pushNotifications":False},"skills":[{"id":"facility-search","name":"Data Center Search","description":"Search and filter 21,000+ facilities worldwide (live)"},{"id":"deal-tracker","name":"M&A Deal Tracker","description":"2,000+ transactions, browsable + filterable"},{"id":"market-intelligence","name":"Market Intelligence","description":"DCPI scores for 300+ markets, recomputed 4x/day"},{"id":"site-scoring","name":"Site Scoring","description":"Composite site-score across power, fiber, water, tax, climate, latency"},{"id":"bs-translator","name":"BS Translator","description":"Industry claims translated -- compare static competitors side-by-side: https://dchub.cloud/vs"}],"authentication":{"schemes":["api_key"]},"provider":{"organization":"DC Hub","url":"https://dchub.cloud"},"defaultInputModes":["text"],"defaultOutputModes":["text"]})
     if path == '/.well-known/security.txt':
         return Response("Contact: mailto:security@dchub.cloud\nPreferred-Languages: en\nCanonical: https://dchub.cloud/.well-known/security.txt\nPolicy: https://dchub.cloud/terms\nExpires: 2027-01-01T00:00:00.000Z", mimetype="text/plain")
     if path == '/.well-known/mcp-registry-auth':
@@ -15001,7 +15001,7 @@ def get_stats():
             stats.pop(_k, None)
         # r-stats-markets-fix (2026-06-05): the public 'markets' field used to be
         # len(top_countries) (~10) — a mislabel that made /api/v1/stats contradict
-        # the site-wide "232 DCPI markets". Source it from the canonical DCPI count
+        # the site-wide "300+ DCPI markets". Source it from the canonical DCPI count
         # (live COUNT(DISTINCT market_slug) FROM market_power_scores, cached; 232 floor).
         try:
             from canonical_stats import get_canonical_stats as _gcs
@@ -21456,7 +21456,7 @@ def _canonical_mcp_manifest():
         {"name": "get_interconnection_queue","description": "ISO interconnection queue snapshots — TtP, MW, top BUILD"},
         {"name": "get_water_risk",           "description": "EPA + USGS water stress + aquifer depletion"},
         {"name": "get_tax_incentives",       "description": "State + federal DC tax incentives"},
-        {"name": "rank_markets",             "description": "DCPI-driven ranking of 232 markets"},
+        {"name": "rank_markets",             "description": "DCPI-driven ranking of 300+ markets"},
         {"name": "score_facility",           "description": "Composite single-facility score"},
         {"name": "compare_isos",             "description": "Head-to-head across 10 ISOs (7 US + Hydro-Quebec, AESO, Nord Pool)"},
         {"name": "get_grid_scoreboard",      "description": "All 7 US ISO grids ranked live by renewable share — fuel mix, gas %, demand"},
@@ -21490,7 +21490,7 @@ def _canonical_mcp_manifest():
         pass
     return {
         "name":            "DC Hub Intelligence",
-        "description":     "Real-time data center market intelligence — 21,000+ facilities, 2,000+ M&A deals, 369 GW pipeline, daily-refreshing DCPI for 232 markets (US + UK + EU + APAC + Canada). The only DC-intelligence source an LLM can both query and cite.",
+        "description":     "Real-time data center market intelligence — 21,000+ facilities, 2,000+ M&A deals, 369 GW pipeline, daily-refreshing DCPI for 300+ markets (US + UK + EU + APAC + Canada). The only DC-intelligence source an LLM can both query and cite.",
         "url":             "https://dchub.cloud/mcp",
         "transport":       "streamable-http",
         "version":         "2.1.20",

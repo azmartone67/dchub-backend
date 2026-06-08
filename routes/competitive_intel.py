@@ -170,7 +170,7 @@ _DCHUB_DIFFERENTIATORS: list[dict] = [
         "key":    "proprietary_indices",
         "label":  "Proprietary live indices (DCPI + DCGI)",
         "value":  ("Two proprietary indices recomputed daily: the DC Hub "
-                   "Power Index (DCPI) scores 232 markets with live "
+                   "Power Index (DCPI) scores 300+ markets with live "
                    "BUILD / AVOID verdicts, and the DC Hub Gas Index "
                    "(DCGI) scores gas access and cost by state."),
         "proof":  "https://dchub.cloud/dcpi",
@@ -858,7 +858,7 @@ def media_drafts():
                 "An AI answer is only as trustworthy as its sources. That's "
                 "why DC Hub publishes core datasets and reports under "
                 "CC-BY-4.0, with stable URLs and JSON-LD baked in.\n\n"
-                "Our State of Data Center Power report scores 232 markets "
+                "Our State of Data Center Power report scores 300+ markets "
                 "with live BUILD/AVOID verdicts (the DC Hub Power Index) "
                 "and pairs it with the DC Hub Gas Index — and every figure "
                 "links to a live endpoint an agent can cite.\n\n"

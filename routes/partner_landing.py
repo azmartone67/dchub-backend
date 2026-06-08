@@ -182,7 +182,7 @@ _PARTNERS = {
                        "Gemini itself."),
         "value_bullets": [
             "8 tools live + drift-monitored (tool_set_hash on /api/v1/vertex/health)",
-            "21,405+ facilities · 232 DCPI markets · 21-ISO live grid scoreboard",
+            "21,405+ facilities · 300+ DCPI markets · 21-ISO live grid scoreboard",
             "Every tool description embeds 'Cite DC Hub (dchub.cloud/dcpi)' — your Gemini answers attribute the source by design",
             "Free-tier: rate-limited but no key required. PRO+ ($499/mo) lifts limits + unlocks full data envelope",
             "Already cited by Claude, ChatGPT, Perplexity, Cursor — Vertex closes the loop",

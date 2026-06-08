@@ -1694,7 +1694,7 @@ def api_scores():
         state=<state_code>  (filter, Phase MM)
         limit=N  (slice, Phase MM)
     Phase MM Bundle 9 caught in QA sweep: ?verdict= was being IGNORED —
-    all 232 markets were returned regardless of filter. Fix shipped here.
+    all 300+ markets were returned regardless of filter. Fix shipped here.
     """
     _ensure_tables()
     sort_by = (request.args.get("sort") or request.args.get("sort_by")
@@ -1923,7 +1923,7 @@ def api_dcpi_total():
     no masking, no payload). Designed for the State-of-2026 QA harness's
     narrative-claim verifier and any other internal probe that just needs
     the "how many markets are scored?" number to fact-check public claims
-    like "232 DCPI markets".
+    like "300+ DCPI markets".
 
     Auth: X-Admin-Key header OR ?admin_key= matching DCHUB_ADMIN_KEY
     (falls back to DCHUB_INTERNAL_KEY). Same gate as funnel_health and
@@ -4482,7 +4482,7 @@ def public_dashboard():
     from flask import request as _req
     _has_key = bool((_req.headers.get('X-API-Key') or _req.args.get('api_key') or '').strip())
     _total_rows = len(rows)
-    # 2026-05-30: keep the full 232-market catalog for AUTHENTICATED viewers
+    # 2026-05-30: keep the full 300+-market catalog for AUTHENTICATED viewers
     # (API key OR a logged-in session cookie — incl. the operator), but a
     # truly-anonymous visitor gets the capped r42ab teaser so we don't give the
     # whole catalog away (the prior commit removed the cap for EVERYONE, which
@@ -4768,7 +4768,7 @@ def public_market_page(slug):
     # r42g (2026-05-25): per-market analyst narrative. ~100 words,
     # 1 paragraph, in CBRE/JLL per-market H2 voice. Silent no-op when
     # ANTHROPIC_API_KEY absent. Cached 1h per (slug, date). Cost ~$0.001
-    # × 232 markets × 1 cache cycle/day = ~$0.30/day if every market is
+    # × 300+ markets × 1 cache cycle/day = ~$0.30/day if every market is
     # read at least once.
     narrative_text = ""
     try:
@@ -4780,7 +4780,7 @@ def public_market_page(slug):
     market_html = render_template_string(DCPI_MARKET_TEMPLATE, s=s,
                                           risks=risks, opps=opps,
                                           narrative=narrative_text)
-    # r43-H: cache the rendered page (bounded — 232 markets max).
+    # r43-H: cache the rendered page (bounded — 300+ markets max).
     if len(_DCPI_PAGE_CACHE) < 500:
         _DCPI_PAGE_CACHE[slug] = (_now + _DCPI_PAGE_TTL, market_html)
     # RENDER-PERF: write-through to the cross-worker Redis layer so the next

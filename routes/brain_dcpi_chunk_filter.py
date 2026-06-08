@@ -3,7 +3,7 @@ brain_dcpi_chunk_filter.py — corrects DCPI false positives.
 
 Phase ZZZZZ-round44 (2026-05-25). Brain counts dcpi_runs with
 markets_scored=0 as failures, but DCPI processes in chunks of 100
-and the universe is 232 markets. Tail chunks (200:300, 300:400)
+and the universe is 300+ markets. Tail chunks (200:300, 300:400)
 correctly return 0. This module classifies expected vs true failures.
 """
 import os, datetime, re

@@ -591,7 +591,7 @@ def generate_reply(comment: dict, post_context: dict,
                          ", ".join(f"{a['iso']} {a['count']}"
                                    for a in ctx["iso_queue"]))
     ctx_lines.append("Static numbers ALWAYS available: 2,000+ tracked deals; "
-                     "232 DCPI markets; 5,700+ discovered facilities.")
+                     "300+ DCPI markets; 5,700+ discovered facilities.")
     brief_link = _pick_brief_link(ctx)
     ctx_lines.append(f"Recommended brief link: {brief_link}")
 

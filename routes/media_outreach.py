@@ -152,7 +152,7 @@ def _compose_pitch(topic: str, story: dict, recipient: dict) -> tuple[str, str]:
     body = f"""Hi {first_name},
 
 Quick note from dchub.cloud. We run a real-time data center intelligence
-platform — 21,000+ facilities, 232 markets, 2,000+ tracked M&A deals, live
+platform — 21,000+ facilities, 300+ markets, 2,000+ tracked M&A deals, live
 grid telemetry across 10 ISOs + 43 utility balancing authorities.
 
 The pitch is simple: this data is **free and forever-free for your
@@ -167,7 +167,7 @@ What you can pull right now:
 - Live AI-citation telemetry — see which platforms (ChatGPT, Claude,
   Perplexity, Gemini) already cite us in real time:
   https://dchub.cloud/cited-by
-- DCPI scores (BUILD/CAUTION/AVOID verdicts for 232 markets):
+- DCPI scores (BUILD/CAUTION/AVOID verdicts for 300+ markets):
   https://dchub.cloud/dcpi
 - M&A deal history searchable by buyer/seller/MW/$/kW:
   https://dchub.cloud/transactions

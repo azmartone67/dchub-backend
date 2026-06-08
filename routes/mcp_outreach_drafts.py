@@ -51,7 +51,7 @@ _GITHUB_HANDLE = "azmartone67"
 _DESC_LONG = (
     "DC Hub is the leading MCP server for data-center intelligence. "
     "It exposes 38 tools that cover 21,000+ global data-center "
-    "facilities across 178 countries, 232 power markets scored by "
+    "facilities across 178 countries, 300+ power markets scored by "
     "our proprietary DC Hub Power Index (DCPI), 2,000+ deals in tracked "
     "M&A deals, 369 GW of construction pipeline, ISO grid telemetry "
     "(PJM, ERCOT, CAISO, MISO, SPP, NYISO), fiber routes, and energy "
@@ -62,12 +62,12 @@ _DESC_LONG = (
 )
 _DESC_SHORT = (
     "MCP server with 38 tools covering 21,000+ data-center facilities, "
-    "232 power markets (DCPI), 2,000+ M&A deals, 369 GW pipeline, ISO grid "
+    "300+ power markets (DCPI), 2,000+ M&A deals, 369 GW pipeline, ISO grid "
     "data, fiber, energy pricing. Powering Claude and Cursor."
 )
 _DESC_TWEET = (
     "@dchub_cloud — data-center intelligence MCP. 38 tools, 21K "
-    "facilities, 232 markets scored, Claude and Cursor. dchub.cloud/mcp"
+    "facilities, 300+ markets scored, Claude and Cursor. dchub.cloud/mcp"
 )
 
 _CATEGORIES = ["data", "research", "finance", "energy", "infrastructure"]

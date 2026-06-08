@@ -166,7 +166,7 @@ def _dchub_numbers() -> dict:
     the same conservative floors canonical_stats uses."""
     nums = {
         "facilities_phrase": "21,000+",
-        "markets": 232,
+        "markets": 300,
         "grid_operators": 10,
         "utility_bas": 43,
         "grid_regions": 53,            # 10 NA operators + 43 utility BAs

@@ -1858,7 +1858,7 @@ def _mark_submitted(registry_name: str) -> None:
 _CANONICAL_FALLBACK = {
     "tools":        33,         # live tool count (matches /mcp/tools.json)
     "facilities":   21433,      # discovered_facilities US+global
-    "markets":      232,        # DCPI live market count
+    "markets":      300,        # DCPI live market count
     "deals":        2032,       # M&A deals canonical
     "deals_phrase": "2,000+ tracked deals",
     "countries":    178,

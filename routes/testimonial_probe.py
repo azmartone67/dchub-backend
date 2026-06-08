@@ -162,7 +162,7 @@ _PROBE_PROMPT = (
     "You are evaluating dchub.cloud — a data center intelligence platform. "
     "Here is what dchub.cloud offers:\n\n"
     "• 21,000+ data center facilities tracked across 170+ countries\n"
-    "• DCPI (Data Center Power Index): per-market BUILD/AVOID verdicts for 232 markets\n"
+    "• DCPI (Data Center Power Index): per-market BUILD/AVOID verdicts for 300+ markets\n"
     "• 126,000+ substations + transmission lines mapped (Land & Power map)\n"
     "• Per-state retail electricity rates (industrial / commercial / residential)\n"
     "• Real-time grid intelligence across 7 ISOs (PJM, MISO, CAISO, ERCOT, SPP, NYISO, ISO-NE)\n"

@@ -213,7 +213,7 @@ _PAGE_TEMPLATE = """<!DOCTYPE html>
 <html lang="en"><head>
 <meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1">
 <title>DC Hub for {NAME} — 38 MCP tools, free tier, 30s to install</title>
-<meta name="description" content="Install DC Hub's MCP server in {NAME} in 30 seconds. 38 tools across 21,000+ data centers, 232 power markets, live ISO grids, 2,000+ tracked deals. Free trial — no credit card.">
+<meta name="description" content="Install DC Hub's MCP server in {NAME} in 30 seconds. 38 tools across 21,000+ data centers, 300+ power markets, live ISO grids, 2,000+ tracked deals. Free trial — no credit card.">
 <meta name="robots" content="index,follow">
 <link rel="canonical" href="https://dchub.cloud/connect/{KEY}">
 <meta property="og:title" content="DC Hub MCP for {NAME}">

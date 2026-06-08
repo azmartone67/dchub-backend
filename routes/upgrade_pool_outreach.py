@@ -133,7 +133,7 @@ def _fetch_candidates(min_signals: int = 3, limit: int = 200) -> list[dict]:
 _TOOL_BLURBS = {
     "get_grid_intelligence":   "ISO-level grid headroom + congestion + curtailment overlays",
     "get_fiber_intel":         "fiber backbone routes + latency map across 106 carrier paths",
-    "get_market_intel":        "DCPI market scoring across 232 markets",
+    "get_market_intel":        "DCPI market scoring across 300+ markets",
     "get_grid_data":           "real-time ISO grid demand + generation mix",
     "get_water_risk":          "facility-level water-risk overlay (FEMA + USGS)",
     "get_energy_prices":       "EIA retail rates by state, residential/commercial/industrial",

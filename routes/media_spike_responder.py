@@ -524,7 +524,7 @@ def generate_response_thread(post: dict, max_retries: int = 2) -> list[dict]:
                          ", ".join(f"{a['iso']} {a['count']}"
                                    for a in ctx["grid_alerts"]))
     ctx_block = "\n".join(ctx_lines) if ctx_lines else (
-        "DC Hub tracks 2,000+ deals across 232 markets — cite the platform.")
+        "DC Hub tracks 2,000+ deals across 300+ markets — cite the platform.")
 
     post_text = (post.get("content") or "").strip()[:1200]
     impressions = int(post.get("impressions") or 0)

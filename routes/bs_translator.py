@@ -112,7 +112,7 @@ CLAIMS = [
         "category": "Markets / DCPI",
         "claim":         "\"Top markets ranked\"",
         "translation":   "Top 5 cities listed in a PDF, ranking method opaque",
-        "dchub":         "232 markets scored with the DC Hub Power Index (DCPI) — methodology public, scores recomputed daily, every market drillable to its inputs.",
+        "dchub":         "300+ markets scored with the DC Hub Power Index (DCPI) — methodology public, scores recomputed daily, every market drillable to its inputs.",
         "proof_url":     "/api/v1/dcpi/scores",
         "proof_label":   "All 276 market scores",
     },

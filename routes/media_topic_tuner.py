@@ -1247,6 +1247,8 @@ The tuner runs daily at 13:30 UTC after LinkedIn engagement sync.</p>
 </tr></thead>
 <tbody>{series_html}</tbody></table>
 
+{_render_trending_section()}
+
 {_render_autoresponse_section(autoresp or [], autoresp_flags or {})}
 
 {_render_comment_engagement_section()}
@@ -1266,6 +1268,21 @@ The tuner runs daily at 13:30 UTC after LinkedIn engagement sync.</p>
   <code>POST /api/v1/admin/media/autoresponse/publish/&lt;log_id&gt;</code> — flush a dry-run draft live
 </p>
 </body></html>"""
+
+
+def _render_trending_section() -> str:
+    """ROUND 3 (2026-06-07): render the Trending Now card. Imports lazily
+    so a partial deploy without media_trending_detector doesn't blow up
+    the entire /admin/media-mix surface."""
+    try:
+        from routes.media_trending_detector import render_trending_card_html
+        return render_trending_card_html()
+    except Exception:
+        return ("<h2>Trending Now (Round 3)</h2>"
+                "<p class='muted'>media_trending_detector not loaded "
+                "(partial deploy or kill switch). See "
+                "<code>/admin/media-trending</code> for the standalone "
+                "view.</p>")
 
 
 def _render_autoresponse_section(rows: list[dict], flags: dict[str, Any]) -> str:

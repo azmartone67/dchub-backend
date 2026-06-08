@@ -59,7 +59,7 @@ _LICENSE_URL = "https://creativecommons.org/licenses/by/4.0/"
 # numbers the homepage brags about. ───────────────────────────────────
 _CANON = {
     "facilities":   21418,   # discovered_facilities raw count (get_stats)
-    "markets":      232,     # DCPI market universe
+    "markets":      300,     # DCPI market universe
     "isos":         53,      # 53 US grid regions = 10 ISOs + 43 utility BAs
                              # (NOT "51" — that was an arithmetic error). The
                              # 10 = 7 live US ISOs + TVA + BPA + IESO; the 43

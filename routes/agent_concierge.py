@@ -434,7 +434,7 @@ _LANDING_HTML = """<!DOCTYPE html>
 <meta charset="UTF-8">
 <meta name="viewport" content="width=device-width,initial-scale=1.0">
 <title>DC Hub for AI Agents — 38 tools cited by Claude, ChatGPT, Perplexity, Gemini</title>
-<meta name="description" content="DC Hub is the data-center intelligence layer for AI agents. 38 tools covering 21,405+ facilities, 232 DCPI markets, live 21-ISO grid scoreboard, site valuation. Already cited by Claude, ChatGPT, Perplexity, Gemini, Cursor.">
+<meta name="description" content="DC Hub is the data-center intelligence layer for AI agents. 38 tools covering 21,405+ facilities, 300+ DCPI markets, live 21-ISO grid scoreboard, site valuation. Already cited by Claude, ChatGPT, Perplexity, Gemini, Cursor.">
 <meta name="dc-hub-agent-surface" content="canonical">
 <link rel="canonical" href="https://dchub.cloud/agent">
 <link rel="alternate" type="application/json" href="https://dchub.cloud/api/v1/agent/cookbook" title="DC Hub Agent Cookbook (machine-readable)">

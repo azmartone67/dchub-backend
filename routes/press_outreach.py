@@ -455,7 +455,7 @@ def _generate_pitch(contact: dict, angle: dict) -> dict:
                 f"threshold on the Power Index (Excess Power "
                 f"{data.get('excess', 0):.1f}/100, Grid Constraint "
                 f"{data.get('constraint', 0):.1f}/100). For context: only "
-                f"~14 of 232 markets we track hit BUILD this week, and only "
+                f"~14 of 300+ markets we track hit BUILD this week, and only "
                 f"the top 3 clear the Excess Power 65/100 line.\n\n")
         offer = (f"For a {outlet} angle on where hyperscale-class capacity "
                  f"is materializing outside the traditional FLAP markets, "

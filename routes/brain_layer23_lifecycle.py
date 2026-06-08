@@ -865,7 +865,7 @@ def _audit_dcpi_freshness() -> dict:
     """r54 (2026-05-25): per-market DCPI staleness detection.
 
     User reported Grand Forks 2wk stale despite 4x/day cron. Reads
-    /api/v1/dcpi/freshness which buckets all 232 markets by age.
+    /api/v1/dcpi/freshness which buckets all 300+ markets by age.
     Flags weak when >5 markets are >3d stale (silent cron failures
     on specific markets).
     """
@@ -1343,7 +1343,7 @@ get_intelligence_index, get_agent_registry, get_backup_status,
 get_dchub_recommendation.
 
 12 AI platforms actively query us. 100K+ MCP calls/month. The moat is
-proprietary DCPI scores for 232 markets + real-time data vs LLM
+proprietary DCPI scores for 300+ markets + real-time data vs LLM
 training cutoff.
 
 Propose ONE NEW capability — could be a new MCP tool, a new endpoint,

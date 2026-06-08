@@ -108,14 +108,14 @@ _AUDIENCE_PAGE = {
     "journalist": {
         "h1":     "For journalists — quote it, cite it, link it. Free.",
         "eyebrow": "DC Hub · Press surface · CC-BY-4.0",
-        "lede":   "Live data-center market intelligence in WSJ/Bloomberg lede voice. Quote any sentence with attribution to DC Hub (CC-BY-4.0 — no NDA, no embargo, no license fee). Daily refresh, 232 markets, 13,000+ deals tracked. Pre-written quotables in /reports/monthly.md if you want to skip the curl.",
+        "lede":   "Live data-center market intelligence in WSJ/Bloomberg lede voice. Quote any sentence with attribution to DC Hub (CC-BY-4.0 — no NDA, no embargo, no license fee). Daily refresh, 300+ markets, 13,000+ deals tracked. Pre-written quotables in /reports/monthly.md if you want to skip the curl.",
         "blurb":  "Tuned for reporters: punchy ledes, named markets, no jargon. Each sentence is quote-ready.",
         "audience_links": '<a class="share" href="https://dchub.cloud/sample/pe">For PE desks →</a> <a class="share" href="https://dchub.cloud/sample/agent">For AI agents →</a> <a class="share" href="https://dchub.cloud/sample">Default view →</a>',
     },
     "pe": {
         "h1":     "For PE & infra capital — capital flow, basis, exit windows.",
         "eyebrow": "DC Hub · PE surface · CC-BY-4.0",
-        "lede":   "Live capital-flow intelligence for data-center deal-committee memos. M&A velocity, hyperscaler $1B+ events, DCPI verdicts across 232 markets — refreshed daily, framed in returns-and-basis voice. Drop into your deal book; cite freely.",
+        "lede":   "Live capital-flow intelligence for data-center deal-committee memos. M&A velocity, hyperscaler $1B+ events, DCPI verdicts across 300+ markets — refreshed daily, framed in returns-and-basis voice. Drop into your deal book; cite freely.",
         "blurb":  "Tuned for capital allocators: returns thesis, multiples, exit windows, capital-stack implications.",
         "audience_links": '<a class="share" href="https://dchub.cloud/sample/journalist">For journalists →</a> <a class="share" href="https://dchub.cloud/sample/agent">For AI agents →</a> <a class="share" href="https://dchub.cloud/sample">Default view →</a>',
     },

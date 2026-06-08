@@ -108,14 +108,18 @@ def test_no_inflated_platform_counts():
 
 
 def test_no_inflated_market_counts():
-    """DCPI universe is 232/233 — not 276/280+/285/286/289 (SPP-clone inflation)."""
-    # r73: widened 28[0-9] -> also 29x and 3xx — the live raw count hit 306
-    # (dupe/aggregate slugs in market_power_scores) and slipped the old 276-289
-    # window. Anything 276-399 "markets" is inflation vs the 232 canonical.
-    pats = [re.compile(r"\b(27[6-9]|28[0-9]|29[0-9]|3[0-9]{2})\+?\s+(power\s+|US\s+power\s+|DCPI\s+)?markets", re.I),
-            # dict-literal form `"markets": 232` — number AFTER the word, so the
-            # phrase pattern above misses it. This is what bit canonical_stats._FALLBACK.
-            re.compile(r'["\']markets["\']\s*:\s*(27[6-9]|28[0-9]|29[0-9]|3[0-9]{2})\b')]
+    """DCPI universe is ~300 (Neon-verified 2026-06-08: COUNT(DISTINCT market_name)
+    minus 3 aggregates = 300; grew from 232 via international expansion). Catch
+    GROSS over-claims (340+) — the real ~300 (+ a growth buffer to 339) is fine."""
+    # r73 (2026-06-08): retuned. The window was 276-399 back when 232 was the
+    # believed canonical; the Neon dedup proved the real count is 300, so
+    # 276-339 is now LEGITIMATE. Catch 340+ as inflation.
+    # NOTE: dict-literal pattern is DOUBLE-quote only ("markets": N) — DC Hub's own
+    # stats/config use JSON-style double quotes; single-quoted Python data records
+    # ('markets': 400) are third-party provider attributes (e.g. Zayo's coverage),
+    # NOT DC Hub's DCPI count, so they're legitimately exempt.
+    pats = [re.compile(r"\b(3[4-9][0-9]|[4-9][0-9]{2})\+?\s+(power\s+|US\s+power\s+|DCPI\s+)?markets", re.I),
+            re.compile(r'"markets"\s*:\s*(3[4-9][0-9]|[4-9][0-9]{2})\b')]
     hits = _scan(pats)
     assert not hits, ("Re-introduced an inflated DCPI market count — the verified universe "
                       "is 232 (live /api/v1/dcpi/scores=233):\n" + _fmt(hits))

@@ -59,7 +59,7 @@ _TEMPLATE = """<!DOCTYPE html>
 <div class="eyebrow">DC Hub · Platform Architecture</div>
 <h1>How DC Hub Works</h1>
 <p class="lead">DC Hub is a real-time intelligence platform for data center infrastructure: 21,000+ facilities,
-170+ countries, 232 power markets scored daily, 2,000+ M&amp;A deals tracked, and an MCP server that lets
+170+ countries, 300+ power markets scored daily, 2,000+ M&amp;A deals tracked, and an MCP server that lets
 AI agents query all of it directly. Here's how it fits together.</p>
 
 <div class="stat-grid" id="live-stats">
@@ -91,7 +91,7 @@ state KMZ sources are thin.</p>
 </table>
 
 <h2>2. The DCPI scoring engine</h2>
-<p>The <a href="/dcpi"><b>DC Hub Power Index</b></a> ranks 232 US + international markets on a 0–100 composite:
+<p>The <a href="/dcpi"><b>DC Hub Power Index</b></a> ranks 300+ US + international markets on a 0–100 composite:
 spare power capacity, ISO interconnect time-to-power, grid constraint, operator depth, fiber depth, and
 demand pressure. Markets get one of four verdicts: <code>BUILD</code> (14 today), <code>CAUTION</code> (141),
 <code>AVOID</code> (63), or <code>LOW_SIGNAL</code> (67). Today's top BUILD: Cheyenne, WY. Today's top AVOID:

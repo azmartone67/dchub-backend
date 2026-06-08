@@ -111,7 +111,7 @@ def _tool_to_pitch(tool: str) -> str:
         'get_fiber_intel':        "carrier-network fiber routes + dark/lit segments",
         'analyze_site':           "12-factor site scoring with raw analyst exports",
         'compare_sites':          "side-by-side 5-site comparison + ranking explainer",
-        'get_market_intel':       "232-market DCPI with daily delta + Excess/Constraint scores",
+        'get_market_intel':       "300+-market DCPI with daily delta + Excess/Constraint scores",
         'get_pipeline':           "369 GW construction pipeline w/ operator + capacity",
         'get_infrastructure':     "substations / transmission lines / gas pipelines layered geo",
         'get_facility':           "21K+ facility specs w/ PUE, fiber, power, M&A history",

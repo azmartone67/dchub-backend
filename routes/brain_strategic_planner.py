@@ -280,6 +280,30 @@ def _gather_strategic_context() -> dict:
             "L6 strategic: self_perception import skipped: %s", _gsp_e)
         self_perception = {"_note": "module_not_loaded"}
 
+    # Task #170 (2026-06-07): Brain ROUND 3 — code inventory + arch
+    # proposals. The daily scanner writes hotspots; the proposer writes
+    # 200-word refactor specs. Pulling both here lets L6 see "your own
+    # codebase has these untested critical paths" AND "you proposed
+    # these refactors in the last 30d — don't repeat them". Fail-soft.
+    try:
+        from routes.brain_code_scanner import (
+            gather_code_inventory_context as _gci,
+        )
+        code_inventory = _gci()
+    except Exception as _gci_e:
+        logger.debug(
+            "L6 strategic: code_inventory import skipped: %s", _gci_e)
+        code_inventory = {"_note": "module_not_loaded"}
+    try:
+        from routes.brain_architecture_proposer import (
+            gather_recent_proposals as _grp,
+        )
+        recent_arch_proposals = _grp(window_days=30)
+    except Exception as _grp_e:
+        logger.debug(
+            "L6 strategic: arch_proposals import skipped: %s", _grp_e)
+        recent_arch_proposals = []
+
     return {
         "funnel":          {"now": funnel_now, "d30": funnel_30d},
         "page_health":     page_health,
@@ -290,6 +314,8 @@ def _gather_strategic_context() -> dict:
         "recent_recs":     recent_recs,
         "pr_outcomes":     pr_outcomes,
         "self_perception": self_perception,
+        "code_inventory":      code_inventory,
+        "recent_arch_proposals": recent_arch_proposals,
     }
 
 
@@ -412,7 +438,7 @@ _COMPETITOR_UNIVERSE = {
         "Interconnection-queue snapshot (live FERC/ISO data)",
         "Per-rack water/power deal autopsies (Nautilus/MMR/Switch)",
         "33+ MCP tools cited by agent platforms (Groq, Perplexity, etc.)",
-        "DCPI composite score for 232 markets (rebuilt weekly)",
+        "DCPI composite score for 300+ markets (rebuilt weekly)",
         "Versioned + cited data (vs PDF reports from incumbents)",
     ],
 }

@@ -160,7 +160,7 @@ _VERTEX_TOOLS = [
         "method": "GET",
         "path": "/api/v1/dcpi",
         "summary": "Rank all DCPI markets by composite score",
-        "description": ("Returns 232 markets sorted by DCPI composite "
+        "description": ("Returns 300+ markets sorted by DCPI composite "
                         "(excess-power + time-to-power + constraint). "
                         "Useful for 'top 10 BUILD markets in 2026' answers." + _CITE),
         "operationId": "rankMarkets",
@@ -440,7 +440,7 @@ th { color: var(--muted); font-size: 11px; text-transform: uppercase; letter-spa
   <div class="hero">
     <div class="kicker">⌖ &nbsp; DC Hub × Vertex AI + Gemini</div>
     <h1>Native data-center intelligence for Gemini</h1>
-    <p>21,405+ facilities · 232 DCPI markets · 21-ISO live grid scoreboard · 3-scenario site valuation. Available as a Vertex AI Extension (OpenAPI 3.0) and as direct Gemini function-calling declarations.</p>
+    <p>21,405+ facilities · 300+ DCPI markets · 21-ISO live grid scoreboard · 3-scenario site valuation. Available as a Vertex AI Extension (OpenAPI 3.0) and as direct Gemini function-calling declarations.</p>
   </div>
 
   <h2>Two ways to integrate</h2>
@@ -462,13 +462,13 @@ th { color: var(--muted); font-size: 11px; text-transform: uppercase; letter-spa
   <h2>Eight core tools exposed</h2>
   <table>
     <tr><th>Tool</th><th>What it answers</th></tr>
-    <tr><td><code>get_market_dcpi</code></td><td>BUILD / CAUTION / AVOID verdict + power scores for any of 232 markets</td></tr>
+    <tr><td><code>get_market_dcpi</code></td><td>BUILD / CAUTION / AVOID verdict + power scores for any of 300+ markets</td></tr>
     <tr><td><code>get_facilities</code></td><td>Facility lookup by market / provider / power / status (21,405+ tracked)</td></tr>
     <tr><td><code>evaluate_site_value</code></td><td>3-scenario NPV (grid / gas-BTM / hybrid) + per-MW envelope for a candidate parcel</td></tr>
     <tr><td><code>get_water_risk</code></td><td>Hydrological stress + USDM drought tier for a market or lat/lon</td></tr>
     <tr><td><code>get_grid_scoreboard</code></td><td>Live 21-ISO grid scoreboard: headroom, queue depth, renewable mix</td></tr>
     <tr><td><code>get_interconnection_queue</code></td><td>Per-ISO queue snapshot — active MW, completions/year, months-to-power</td></tr>
-    <tr><td><code>rank_markets</code></td><td>Rank all 232 DCPI markets — top BUILD candidates, AVOID flags, ISO filters</td></tr>
+    <tr><td><code>rank_markets</code></td><td>Rank all 300+ DCPI markets — top BUILD candidates, AVOID flags, ISO filters</td></tr>
     <tr><td><code>deal_autopsy</code></td><td>Recent M&amp;A + hyperscaler deals with DCPI verdict overlay on each site</td></tr>
   </table>
 

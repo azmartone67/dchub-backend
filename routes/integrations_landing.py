@@ -19,7 +19,7 @@ MCP_LANDING_HTML = """<!DOCTYPE html>
 <title>Connect DC Hub MCP · Claude, Cursor, Cline, Continue</title>
 <meta name="description" content="DC Hub MCP server — 38 tools covering 21,000+ data center facilities, 2,000+ tracked M&A deals, grid intelligence, fiber, water risk, tax incentives. Free tier: 10 calls/day, no signup.">
 <meta property="og:title" content="DC Hub MCP — connect to any AI agent in 30 seconds">
-<meta property="og:description" content="38 tools · 21,000+ facilities · 232 markets · streamable-http · free tier no signup">
+<meta property="og:description" content="38 tools · 21,000+ facilities · 300+ markets · streamable-http · free tier no signup">
 <meta property="og:image" content="https://api.dchub.cloud/static/og/landing-integrations-mcp.png">
 <meta property="og:url" content="https://dchub.cloud/integrations/mcp">
 <meta name="twitter:card" content="summary_large_image">

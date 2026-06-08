@@ -152,7 +152,7 @@ def _gather():
         {"name": "get_tax_incentives",      "what":  "Federal + state DC tax incentives, 50 states"},
         {"name": "get_water_risk",          "what":  "Water stress + cooling viability"},
         {"name": "compare_sites",           "what":  "Side-by-side comparison of up to 5 locations"},
-        {"name": "rank_markets",            "what":  "Rank 232 markets by any dimension"},
+        {"name": "rank_markets",            "what":  "Rank 300+ markets by any dimension"},
         {"name": "find_alternatives",       "what":  "Find substitute markets when target is constrained"},
         {"name": "score_facility",          "what":  "Score one facility on 12 dimensions"},
         {"name": "hyperscaler_deals",       "what":  "Live $1B+ deal tracker"},

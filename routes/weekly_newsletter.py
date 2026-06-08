@@ -76,6 +76,31 @@ _DRY_RUN = (os.environ.get("NEWSLETTER_DRY_RUN") or "").strip() in ("1", "true",
 _RECIPIENT_CAP = int(os.environ.get("NEWSLETTER_RECIPIENT_CAP") or "500")
 _RESEND_DAYS = int(os.environ.get("NEWSLETTER_THROTTLE_DAYS") or "5")
 
+# Round 3 (2026-06-07): subject-line A/B. Off by default — flipping
+# NEWSLETTER_AB_ENABLED=1 turns on Claude-generated subject pair, 50/50
+# cohort split, pixel-based open tracking, and pattern-weighted picking
+# for issues 4+ (the first 3 are pure A/B explore).
+_NEWSLETTER_AB_ENABLED = (
+    os.environ.get("NEWSLETTER_AB_ENABLED") or "").strip().lower() in (
+    "1", "true", "yes", "on")
+# Stop the A/B harness entirely with the same R3 global kill switch.
+if (os.environ.get("MEDIA_R3_DISABLE") or "").strip().lower() in (
+        "1", "true", "yes", "on"):
+    _NEWSLETTER_AB_ENABLED = False
+_AB_MIN_ISSUES_FOR_PATTERN_WEIGHT = 3
+_AB_CLAUDE_MODEL = (os.environ.get("NEWSLETTER_AB_MODEL")
+                    or "claude-sonnet-4-5-20251022")
+# All 6 patterns the prompt rotates through; pattern winner over the last
+# N issues weights the next prompt toward the better-performing bucket.
+_AB_PATTERNS = [
+    ("question_form",    "phrased as a direct question (ends with '?')"),
+    ("headline_stat",    "leads with a hard number ('2.4 GW. One quarter.')"),
+    ("verdict_shift",    "names a market with a verdict change ('Atlanta flipped to BUILD')"),
+    ("contrarian_take",  "states an unexpected position ('Why we're wrong about Reno')"),
+    ("you_focused",      "addresses the reader directly with 'you/your'"),
+    ("name_drop",        "names a hyperscaler or known operator"),
+]
+
 
 # ── DB ────────────────────────────────────────────────────────────────────
 def _conn():
@@ -336,6 +361,93 @@ def _h(s) -> str:
     """HTML-escape; preserve None as empty string."""
     import html
     return html.escape(str(s or ""))
+
+
+def _render_ab_section_html() -> str:
+    """Round 3 (2026-06-07): A/B subject-line card for /admin/newsletter.
+    Reads the last 6 issues + the computed winning pattern. Fail-soft so
+    a partial deploy w/o the A/B tables doesn't 500 the dashboard."""
+    if not _NEWSLETTER_AB_ENABLED:
+        return ("<h2>Subject-line A/B (Round 3)</h2>"
+                "<div class='box'><p style='font-size:13px;color:#a3a3a3'>"
+                "<b>Disabled.</b> Set <code>NEWSLETTER_AB_ENABLED=1</code> "
+                "in Railway env to turn on Claude-generated subject pair, "
+                "50/50 cohort split, and tracking-pixel open measurement. "
+                "Schema is already provisioned via schema_repair.py.</p></div>")
+    rows: list[dict] = []
+    winning = None
+    info = None
+    try:
+        winning, info = _winning_pattern()
+        c = _conn()
+        if c:
+            with c.cursor() as cur:
+                cur.execute("SELECT to_regclass('public.newsletter_subject_ab')")
+                r = cur.fetchone()
+                if r and r[0]:
+                    cur.execute("""
+                        SELECT issue_id, subject_a, subject_b, pattern_a, pattern_b,
+                               recipients_a, recipients_b, opens_a, opens_b
+                          FROM newsletter_subject_ab
+                         ORDER BY created_at DESC
+                         LIMIT 6
+                    """)
+                    for r in cur.fetchall() or []:
+                        ra = int(r[5] or 0); rb = int(r[6] or 0)
+                        oa = int(r[7] or 0); ob = int(r[8] or 0)
+                        rows.append({
+                            "issue_id": r[0],
+                            "subject_a": r[1], "subject_b": r[2],
+                            "pattern_a": r[3], "pattern_b": r[4],
+                            "rate_a": (oa / ra) if ra else 0.0,
+                            "rate_b": (ob / rb) if rb else 0.0,
+                            "ra": ra, "rb": rb, "oa": oa, "ob": ob,
+                        })
+            c.close()
+    except Exception:
+        pass
+    rows_html = "".join(
+        f"<tr><td>{_h(r['issue_id'])}</td>"
+        f"<td><b>A:</b> {_h(r['subject_a'])}<br>"
+        f"<span style='color:#737373;font-size:11px'>"
+        f"{_h(r['pattern_a'])} · {r['oa']}/{r['ra']} "
+        f"({r['rate_a']*100:.1f}%)</span></td>"
+        f"<td><b>B:</b> {_h(r['subject_b'])}<br>"
+        f"<span style='color:#737373;font-size:11px'>"
+        f"{_h(r['pattern_b'])} · {r['ob']}/{r['rb']} "
+        f"({r['rate_b']*100:.1f}%)</span></td>"
+        f"<td style='text-align:center;font-weight:700;"
+        f"color:{'#10b981' if r['rate_a'] > r['rate_b'] else '#fbbf24' if r['rate_b'] > r['rate_a'] else '#737373'}'>"
+        f"{'A' if r['rate_a'] > r['rate_b'] else 'B' if r['rate_b'] > r['rate_a'] else '—'}</td></tr>"
+        for r in rows
+    ) or "<tr><td colspan=4 style='text-align:center;color:#737373'>No A/B issues sent yet — fire the next Friday newsletter.</td></tr>"
+    win_pill = (f"<span style='background:#052e16;color:#86efac;"
+                f"padding:4px 10px;border-radius:14px;font-size:11px;"
+                f"font-weight:700'>WINNER: {_h(winning)}</span>"
+                if winning else
+                f"<span style='background:#1f2937;color:#9ca3af;"
+                f"padding:4px 10px;border-radius:14px;font-size:11px'>"
+                f"Exploring — {_h((info or {}).get('reason') or 'no winner yet')}</span>")
+    return f"""
+<h2>Subject-line A/B (Round 3)</h2>
+<div class='box'>
+<p style='font-size:13px;color:#a3a3a3;margin-bottom:12px'>
+Two subjects, 50/50 split, opens tracked via 1×1 pixel + HMAC signed URL.
+After 3 issues with measured opens, the winning PATTERN biases the next prompt.
+{win_pill}</p>
+<table>
+<thead><tr>
+<th>Issue</th>
+<th style='width:42%'>Subject A · pattern · opens</th>
+<th style='width:42%'>Subject B · pattern · opens</th>
+<th style='text-align:center'>Winner</th>
+</tr></thead>
+<tbody>{rows_html}</tbody>
+</table>
+<p style='font-size:11px;color:#737373;margin-top:8px'>
+JSON view: <code>/api/v1/admin/newsletter/ab?key=KEY</code>
+</p>
+</div>"""
 
 
 def render_newsletter_html(ctx: dict, recipient_email: str = "") -> str:
@@ -648,17 +760,50 @@ def _resend_send(to_email: str, subject: str, html_body: str) -> dict:
 
 
 def send_newsletter(ctx: dict, recipients: list[str], issue_id: str,
-                     persist_issue: bool = True) -> dict:
-    """Send the newsletter to each recipient. Idempotent per (issue_id, email)."""
+                     persist_issue: bool = True,
+                     ab_enabled: bool | None = None) -> dict:
+    """Send the newsletter to each recipient. Idempotent per (issue_id, email).
+
+    Round 3 (2026-06-07): when `ab_enabled` (or env NEWSLETTER_AB_ENABLED=1)
+    is set, generate TWO subject lines via Claude (one per pattern bucket)
+    and split the recipient list 50/50 — each cohort gets a different
+    subject. Open rates land via the tracking pixel route below
+    (/api/v1/newsletter/pixel/<token>) AND via Resend webhook delivery
+    events; the winning PATTERN is then weighted for the NEXT issue.
+    Pattern weighting requires ≥3 prior issues with measured opens before
+    it does anything (cold-start safety).
+    """
     sent, failed = [], []
     c = _conn()
     if not c:
         return {"ok": False, "error": "no_database", "sent": 0, "failed": 0}
-    subject = f"DC Hub Weekly — {ctx.get('week_label')}"
+    base_subject = f"DC Hub Weekly — {ctx.get('week_label')}"
+    # ── Round 3: A/B subject lines ────────────────────────────────────
+    ab_on = (ab_enabled if ab_enabled is not None else _NEWSLETTER_AB_ENABLED)
+    ab_pair = None
+    if ab_on:
+        try:
+            ab_pair = _generate_subject_ab_pair(ctx)
+        except Exception as _ab_e:
+            logger.warning("subject A/B gen failed, falling back: %s", _ab_e)
+            ab_pair = None
+    cohort_a: set[str] = set()
+    cohort_b: set[str] = set()
+    if ab_pair:
+        # Stable 50/50 split per recipient — sha1(email||issue_id) % 2
+        for email in recipients:
+            seed = hashlib.sha1(
+                (issue_id + "|" + (email or "").lower()).encode()).hexdigest()
+            if int(seed, 16) % 2 == 0:
+                cohort_a.add(email)
+            else:
+                cohort_b.add(email)
+    subject = base_subject  # default if A/B disabled
     try:
         with c.cursor() as cur:
             _ensure_tables(cur)
             c.commit()
+            sent_a = sent_b = 0
             for email in recipients:
                 # Check if already sent this issue (extra safety)
                 cur.execute(
@@ -667,10 +812,24 @@ def send_newsletter(ctx: dict, recipients: list[str], issue_id: str,
                     (issue_id, email))
                 if cur.fetchone():
                     continue  # idempotent skip
+                # Round 3: cohort + per-email pixel + cohort-specific subject
+                cohort = ""
+                this_subject = subject
+                if ab_pair:
+                    if email in cohort_a:
+                        cohort = "A"; this_subject = ab_pair["a"]["subject"]
+                    elif email in cohort_b:
+                        cohort = "B"; this_subject = ab_pair["b"]["subject"]
                 html_body = render_newsletter_html(ctx, recipient_email=email)
-                res = _resend_send(email, subject, html_body)
+                if ab_pair:
+                    html_body = _inject_open_pixel(
+                        html_body, issue_id, email, cohort)
+                res = _resend_send(email, this_subject, html_body)
                 if res.get("ok"):
-                    sent.append({"email": email, "resend_id": res.get("id")})
+                    sent.append({"email": email, "resend_id": res.get("id"),
+                                 "cohort": cohort or None})
+                    if cohort == "A": sent_a += 1
+                    elif cohort == "B": sent_b += 1
                     try:
                         cur.execute("""
                             INSERT INTO newsletter_sends
@@ -690,7 +849,17 @@ def send_newsletter(ctx: dict, recipients: list[str], issue_id: str,
                                        email, e)
                 else:
                     failed.append({"email": email,
-                                   "reason": res.get("error") or "unknown"})
+                                   "reason": res.get("error") or "unknown",
+                                   "cohort": cohort or None})
+            # Round 3: persist the A/B row for this issue (one per issue_id)
+            if ab_pair:
+                try:
+                    _persist_subject_ab_row(cur, issue_id, ab_pair,
+                                            sent_a, sent_b)
+                    c.commit()
+                except Exception as e:
+                    c.rollback()
+                    logger.warning("subject_ab persist failed: %s", e)
             # Persist issue row (idempotent)
             if persist_issue and (sent or failed):
                 try:
@@ -1234,6 +1403,8 @@ iframe{{width:100%;height:800px;border:1px solid #1f1f1f;border-radius:10px;back
 </table>
 </div>
 
+{_render_ab_section_html()}
+
 <h2>Send now</h2>
 <div class="box">
 <p style="font-size:13px;color:#a3a3a3;margin-bottom:14px">Skip the Friday gate. Throttling + idempotency still apply.</p>
@@ -1303,6 +1474,392 @@ def _run_weekly_newsletter():
                 issue_id, result.get("attempted"), result.get("sent"),
                 result.get("failed"), result.get("dry_run"))
     return result
+
+
+# ────────────────────────────────────────────────────────────────────────
+# Round 3 (2026-06-07): subject-line A/B
+# ────────────────────────────────────────────────────────────────────────
+# Why
+# ---
+# Open rate is the only newsletter metric that moves before the click. A
+# subject line that wins +3pp open rate over the alternative is the single
+# highest-leverage edit in the entire pipeline. We:
+#   1. Generate TWO subjects per issue (Claude, prompted to use distinct
+#      patterns from _AB_PATTERNS)
+#   2. Split recipients 50/50 (stable sha1(email||issue_id) % 2)
+#   3. Track opens via tracking pixel + Resend webhook (whichever lands first)
+#   4. After 3 issues with measured opens, the winning PATTERN bucket gets
+#      weighted higher in the prompt for the NEXT issue's subject pair
+#
+# Cold start: issues 1-3 are pure A/B explore (no pattern bias). Issue 4+
+# uses the winning pattern as one of the two slots; the other slot stays
+# random for ongoing exploration.
+
+def _ensure_subject_ab_table(cur) -> None:
+    """Idempotent. Called inside send_newsletter under an already-open
+    transaction."""
+    cur.execute("""
+        CREATE TABLE IF NOT EXISTS newsletter_subject_ab (
+            id              SERIAL PRIMARY KEY,
+            issue_id        TEXT NOT NULL,
+            subject_a       TEXT NOT NULL,
+            subject_b       TEXT NOT NULL,
+            pattern_a       TEXT NOT NULL,
+            pattern_b       TEXT NOT NULL,
+            recipients_a    INT NOT NULL DEFAULT 0,
+            recipients_b    INT NOT NULL DEFAULT 0,
+            opens_a         INT NOT NULL DEFAULT 0,
+            opens_b         INT NOT NULL DEFAULT 0,
+            winner          TEXT,
+            decided_at      TIMESTAMPTZ,
+            created_at      TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+            UNIQUE (issue_id)
+        )
+    """)
+    cur.execute("""
+        CREATE TABLE IF NOT EXISTS newsletter_open_events (
+            id          BIGSERIAL PRIMARY KEY,
+            issue_id    TEXT NOT NULL,
+            email       TEXT NOT NULL,
+            cohort      TEXT,
+            opened_at   TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+            ip_hash     TEXT,
+            user_agent  TEXT
+        )
+    """)
+    cur.execute("""
+        CREATE UNIQUE INDEX IF NOT EXISTS newsletter_open_events_unique_per_issue
+            ON newsletter_open_events (issue_id, LOWER(email))
+    """)
+
+
+def _winning_pattern() -> tuple[str | None, dict | None]:
+    """Read the last N issues with measured opens and return the pattern
+    with the highest open rate (only if at least _AB_MIN_ISSUES_FOR_PATTERN_WEIGHT
+    issues have ≥1 open on EACH side, AND the winner is statistically
+    interesting (>=2pp gap)). Otherwise None."""
+    c = _conn()
+    if not c:
+        return None, None
+    try:
+        with c.cursor() as cur:
+            cur.execute("SELECT to_regclass('public.newsletter_subject_ab')")
+            r = cur.fetchone()
+            if not (r and r[0]):
+                return None, None
+            cur.execute("""
+                SELECT pattern_a, pattern_b, recipients_a, recipients_b,
+                       opens_a, opens_b
+                  FROM newsletter_subject_ab
+                 WHERE winner IS NOT NULL
+                    OR (recipients_a > 0 AND recipients_b > 0
+                        AND created_at >= NOW() - INTERVAL '120 days')
+                 ORDER BY created_at DESC
+                 LIMIT 12
+            """)
+            rows = cur.fetchall() or []
+        if len(rows) < _AB_MIN_ISSUES_FOR_PATTERN_WEIGHT:
+            return None, {"reason": "not_enough_data", "n": len(rows)}
+        # Per-pattern totals: opens / recipients ratio
+        totals: dict[str, dict] = {}
+        for pa, pb, ra, rb, oa, ob in rows:
+            for pat, recs, opens in ((pa, ra, oa), (pb, rb, ob)):
+                if not pat: continue
+                t = totals.setdefault(pat, {"r": 0, "o": 0, "n": 0})
+                t["r"] += int(recs or 0); t["o"] += int(opens or 0)
+                t["n"] += 1
+        ranked = sorted(
+            ((pat, t["o"] / max(1, t["r"])) for pat, t in totals.items()
+             if t["r"] >= 20),
+            key=lambda x: -x[1])
+        if not ranked:
+            return None, {"reason": "no_pattern_with_min_recipients"}
+        winner_pat = ranked[0][0]
+        winner_rate = ranked[0][1]
+        runner_rate = ranked[1][1] if len(ranked) > 1 else 0.0
+        if (winner_rate - runner_rate) < 0.02:
+            return None, {"reason": "gap_too_small",
+                           "winner_rate": round(winner_rate, 3),
+                           "runner_rate": round(runner_rate, 3)}
+        return winner_pat, {"reason": "winner_picked", "pattern": winner_pat,
+                             "open_rate": round(winner_rate, 3)}
+    except Exception as e:
+        logger.warning("_winning_pattern failed: %s", e)
+        return None, None
+    finally:
+        try: c.close()
+        except Exception: pass
+
+
+def _call_claude_for_subjects(ctx: dict, pattern_a: str, pattern_b: str) -> tuple[str, str] | None:
+    """Return (subject_a, subject_b) or None on any failure."""
+    key = (os.environ.get("ANTHROPIC_API_KEY") or "").strip()
+    if not key:
+        return None
+    desc_a = next((d for slug, d in _AB_PATTERNS if slug == pattern_a),
+                   "leads with a strong hook")
+    desc_b = next((d for slug, d in _AB_PATTERNS if slug == pattern_b),
+                   "leads with a strong hook")
+    week = ctx.get("week_label") or "this week"
+    top_post = (ctx.get("top_posts") or [{}])[0]
+    top_query = (ctx.get("top_queries") or [{}])[0]
+    top_shift = (ctx.get("top_shifts") or [{}])[0]
+    user_payload = (
+        f"Newsletter issue: DC Hub Weekly, {week}\n"
+        f"Top LinkedIn snippet: {(top_post.get('snippet') or '')[:200]}\n"
+        f"Most-asked MCP tool: {top_query.get('tool') or '(none)'}"
+        f" ({top_query.get('volume') or 0} calls)\n"
+        f"Biggest DCPI shift: {top_shift.get('market_slug') or '(none)'}"
+        f" — {top_shift.get('shift_from') or ''} -> "
+        f"{top_shift.get('shift_to') or ''}\n\n"
+        f"Generate TWO subject lines (one per pattern). HARD CONSTRAINTS:\n"
+        f"- Each <= 60 chars (Gmail truncates after 60-ish on mobile)\n"
+        f"- No emoji, no clickbait, no all-caps in more than ONE word per line\n"
+        f"- Concrete and specific — name a number or a market when you can\n"
+        f"- Pattern A: {desc_a}\n"
+        f"- Pattern B: {desc_b}\n\n"
+        f"Output ONLY valid JSON: {{\"a\":\"...\", \"b\":\"...\"}}"
+    )
+    try:
+        import urllib.request
+        req = urllib.request.Request(
+            "https://api.anthropic.com/v1/messages",
+            data=json.dumps({
+                "model": _AB_CLAUDE_MODEL,
+                "max_tokens": 300,
+                "system": ("You write data-center industry newsletter subject "
+                            "lines that move open rate. Direct, specific, "
+                            "no clickbait."),
+                "messages": [{"role": "user", "content": user_payload}],
+            }).encode("utf-8"),
+            headers={
+                "Content-Type": "application/json",
+                "x-api-key": key,
+                "anthropic-version": "2023-06-01",
+                "User-Agent": "dchub-newsletter-ab/1.0",
+            }, method="POST")
+        with urllib.request.urlopen(req, timeout=20) as resp:
+            data = json.loads(resp.read().decode("utf-8"))
+        blocks = data.get("content") or []
+        text = "".join(b.get("text", "")
+                        for b in blocks if b.get("type") == "text").strip()
+        if text.startswith("```"):
+            text = re.sub(r"^```(?:json)?\s*", "", text)
+            text = re.sub(r"\s*```$", "", text)
+        try:
+            obj = json.loads(text)
+        except Exception:
+            m = re.search(r"\{.*\}", text, re.DOTALL)
+            if not m: return None
+            obj = json.loads(m.group(0))
+        a = str(obj.get("a") or "").strip()
+        b = str(obj.get("b") or "").strip()
+        if not a or not b or a == b:
+            return None
+        return a[:120], b[:120]
+    except Exception as e:
+        logger.warning("subject_ab claude failed: %s", e)
+        return None
+
+
+def _fallback_subject_pair(ctx: dict, pattern_a: str, pattern_b: str) -> tuple[str, str]:
+    """Deterministic fallback when Claude unavailable."""
+    week = (ctx.get("week_label") or "").replace("Week of ", "")
+    top_shift = (ctx.get("top_shifts") or [{}])[0]
+    market = (top_shift.get("market_slug") or "").replace("-", " ").title()
+    shift_to = (top_shift.get("shift_to") or "").upper()
+    a = (f"Which market flipped to {shift_to}? — DC Hub Weekly"
+         if pattern_a == "question_form"
+         else f"DC Hub Weekly — {week}")[:60]
+    b = (f"{market}: {shift_to}. {week}".strip(" .—")
+         if pattern_b == "verdict_shift" and market
+         else f"This week in data centers — {week}")[:60]
+    if a == b:
+        b = b + " ·"
+    return a, b
+
+
+def _generate_subject_ab_pair(ctx: dict) -> dict | None:
+    """Pick the two patterns, generate subjects, return
+    {"a":{"subject","pattern"}, "b":{"subject","pattern"}}.
+    Issue 4+ biases pattern_a to the historical winner."""
+    winner, info = _winning_pattern()
+    rng = _secrets.SystemRandom()
+    if winner:
+        pat_a = winner
+        # pat_b is the highest-scoring OTHER pattern; if no signal, random
+        others = [slug for slug, _ in _AB_PATTERNS if slug != winner]
+        pat_b = rng.choice(others)
+    else:
+        chosen = rng.sample(_AB_PATTERNS, 2)
+        pat_a = chosen[0][0]; pat_b = chosen[1][0]
+    pair = _call_claude_for_subjects(ctx, pat_a, pat_b)
+    if not pair:
+        pair = _fallback_subject_pair(ctx, pat_a, pat_b)
+    return {
+        "a": {"subject": pair[0], "pattern": pat_a},
+        "b": {"subject": pair[1], "pattern": pat_b},
+        "winner_hint": info or {},
+    }
+
+
+def _ab_pixel_token(issue_id: str, email: str, cohort: str) -> str:
+    """HMAC token used by the open-tracking pixel route. Cohort baked in
+    so the same email opening from a different cohort split (rare, but
+    e.g. on a re-send) doesn't false-attribute. 16 hex chars."""
+    payload = f"{issue_id}|{(email or '').lower()}|{cohort or ''}"
+    return hmac.new(_secret(), payload.encode(),
+                     hashlib.sha256).hexdigest()[:16]
+
+
+def _inject_open_pixel(html_body: str, issue_id: str, email: str,
+                        cohort: str) -> str:
+    """Append a 1x1 tracking pixel before </body>. The URL is signed so a
+    spoofed call from a random IP can't inflate one cohort's opens."""
+    token = _ab_pixel_token(issue_id, email, cohort)
+    safe_issue = quote(issue_id)
+    safe_email = quote((email or "").lower())
+    safe_cohort = quote(cohort or "")
+    pixel_url = (f"{SITE}/api/v1/newsletter/pixel/{token}"
+                  f"?i={safe_issue}&e={safe_email}&c={safe_cohort}")
+    pixel = (f'<img src="{pixel_url}" width="1" height="1" '
+             f'style="display:block;border:0;width:1px;height:1px" alt="">')
+    if "</body>" in html_body:
+        return html_body.replace("</body>", pixel + "</body>", 1)
+    return html_body + pixel
+
+
+def _persist_subject_ab_row(cur, issue_id: str, ab_pair: dict,
+                              recipients_a: int, recipients_b: int) -> None:
+    _ensure_subject_ab_table(cur)
+    cur.execute("""
+        INSERT INTO newsletter_subject_ab
+            (issue_id, subject_a, subject_b, pattern_a, pattern_b,
+             recipients_a, recipients_b)
+        VALUES (%s, %s, %s, %s, %s, %s, %s)
+        ON CONFLICT (issue_id) DO UPDATE
+          SET recipients_a = newsletter_subject_ab.recipients_a + EXCLUDED.recipients_a,
+              recipients_b = newsletter_subject_ab.recipients_b + EXCLUDED.recipients_b,
+              subject_a    = EXCLUDED.subject_a,
+              subject_b    = EXCLUDED.subject_b,
+              pattern_a    = EXCLUDED.pattern_a,
+              pattern_b    = EXCLUDED.pattern_b
+    """, (issue_id,
+          ab_pair["a"]["subject"], ab_pair["b"]["subject"],
+          ab_pair["a"]["pattern"], ab_pair["b"]["pattern"],
+          recipients_a, recipients_b))
+
+
+# ── Pixel route + admin A/B stats endpoint ─────────────────────────────
+_TRANSPARENT_GIF_BYTES = bytes.fromhex(
+    "47494638396101000100800000ffffff00000021f90401000000002c0000000001"
+    "000100000202044401003b")
+
+
+@weekly_newsletter_bp.route(
+    "/api/v1/newsletter/pixel/<token>", methods=["GET"])
+def newsletter_open_pixel(token):
+    """Tracking pixel. Verifies HMAC token before counting the open.
+    Always returns the 1x1 gif (we never leak token validity in the
+    response — only in the DB-side count). Tolerates any client error."""
+    issue_id = (request.args.get("i") or "").strip()[:80]
+    email = (request.args.get("e") or "").strip().lower()[:200]
+    cohort = (request.args.get("c") or "").strip()[:4]
+    try:
+        if issue_id and email and cohort in ("A", "B", ""):
+            expected = _ab_pixel_token(issue_id, email, cohort)
+            if hmac.compare_digest(expected, token):
+                c = _conn()
+                if c:
+                    try:
+                        with c.cursor() as cur:
+                            _ensure_subject_ab_table(cur)
+                            # Log the raw event — UNIQUE per (issue_id, email)
+                            # means a recipient opening 10 times counts once.
+                            cur.execute("""
+                                INSERT INTO newsletter_open_events
+                                    (issue_id, email, cohort, ip_hash, user_agent)
+                                VALUES (%s, %s, %s, %s, %s)
+                                ON CONFLICT DO NOTHING
+                            """, (issue_id, email, cohort,
+                                  hashlib.sha256(
+                                      (request.remote_addr or "").encode()
+                                      ).hexdigest()[:24],
+                                  (request.headers.get("User-Agent")
+                                    or "")[:240]))
+                            if cur.rowcount > 0:
+                                col = ("opens_a" if cohort == "A"
+                                       else "opens_b" if cohort == "B"
+                                       else None)
+                                if col:
+                                    cur.execute(f"""
+                                        UPDATE newsletter_subject_ab
+                                           SET {col} = {col} + 1
+                                         WHERE issue_id = %s
+                                    """, (issue_id,))
+                                c.commit()
+                    finally:
+                        try: c.close()
+                        except Exception: pass
+    except Exception:
+        pass
+    return Response(_TRANSPARENT_GIF_BYTES, mimetype="image/gif",
+                     headers={"Cache-Control":
+                               "no-store, no-cache, must-revalidate"})
+
+
+@weekly_newsletter_bp.route(
+    "/api/v1/admin/newsletter/ab", methods=["GET"])
+def admin_ab_stats():
+    """Return last 12 issues' A/B records with computed open rates +
+    current pattern-weight signal."""
+    if not _admin_authed():
+        return jsonify(error="unauthorized"), 401
+    out = {"enabled": _NEWSLETTER_AB_ENABLED, "issues": [],
+           "winning_pattern": None, "pattern_info": None}
+    winner, info = _winning_pattern()
+    out["winning_pattern"] = winner
+    out["pattern_info"] = info
+    c = _conn()
+    if not c:
+        return jsonify(out)
+    try:
+        with c.cursor() as cur:
+            cur.execute("SELECT to_regclass('public.newsletter_subject_ab')")
+            r = cur.fetchone()
+            if not (r and r[0]):
+                return jsonify(out)
+            cur.execute("""
+                SELECT issue_id, subject_a, subject_b, pattern_a, pattern_b,
+                       recipients_a, recipients_b, opens_a, opens_b,
+                       winner, decided_at, created_at
+                  FROM newsletter_subject_ab
+                 ORDER BY created_at DESC
+                 LIMIT 12
+            """)
+            for r in cur.fetchall() or []:
+                ra = int(r[5] or 0); rb = int(r[6] or 0)
+                oa = int(r[7] or 0); ob = int(r[8] or 0)
+                out["issues"].append({
+                    "issue_id":    r[0],
+                    "subject_a":   r[1],
+                    "subject_b":   r[2],
+                    "pattern_a":   r[3],
+                    "pattern_b":   r[4],
+                    "recipients_a": ra,
+                    "recipients_b": rb,
+                    "opens_a":     oa,
+                    "opens_b":     ob,
+                    "open_rate_a": round(oa / ra, 4) if ra else None,
+                    "open_rate_b": round(ob / rb, 4) if rb else None,
+                    "winner":      r[9],
+                    "decided_at":  r[10].isoformat() if r[10] else None,
+                    "created_at":  r[11].isoformat() if r[11] else None,
+                })
+    finally:
+        try: c.close()
+        except Exception: pass
+    return jsonify(out)
 
 
 __all__ = [

@@ -17,7 +17,7 @@ Four coverage dimensions, all computed from REAL live data (never hardcoded
           50-US-state target minus those = gaps. A state with zero pipeline
           rows can't be scored, so it surfaces as a high-priority gap.
   dcpi  — market power index. covered = DISTINCT market_slug rows in
-          market_power_scores; total = the canonical 232 markets
+          market_power_scores; total = the canonical 300+ markets
           (canonical_stats). The shortfall is the gap (reported as a count,
           not a list — we don't have a canonical 286-name registry here, so
           enumerating the *missing* market names is out of scope for v1).
@@ -162,7 +162,7 @@ def _gas_pipeline_coverage(scored_map):
 
 def _dcpi_coverage():
     """DCPI market scoring coverage. covered = DISTINCT market_slug rows in
-    market_power_scores; total = canonical 232 markets. Returns
+    market_power_scores; total = canonical 300+ markets. Returns
     (covered:int, total:int, err:str|None). Never raises."""
     total = 286
     try:

@@ -132,7 +132,7 @@ def _build_release(track):
         f"- {track['url']} — this invitation's full text\n"
         f"- https://dchub.cloud/reports/monthly — live monthly report\n"
         f"- https://dchub.cloud/reports/quarterly-deep — quarterly equivalent\n"
-        f"- https://dchub.cloud/dcpi — 232 markets with daily verdicts\n"
+        f"- https://dchub.cloud/dcpi — 300+ markets with daily verdicts\n"
         f"- https://dchub.cloud/.well-known/mcp.json — full MCP manifest\n\n"
         f"### Contact\n\n"
         f"For partnership inquiries: partnerships@dchub.cloud. For editorial use of "

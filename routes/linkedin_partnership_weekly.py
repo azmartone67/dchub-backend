@@ -59,7 +59,7 @@ _TRACKS = [
 
 Our model is simple: Switzerland — neutral, CC-BY-4.0, no channel conflict. We don't broker; we don't replace anyone's offering. We're the live data layer underneath whatever you're already building.
 
-What we bring: 21,405 tracked facilities globally, 232 markets scored daily by DCPI, 2,000+ tracked M&A deals, real-time grid intelligence across 10 ISOs. Actively used by Claude and Cursor via MCP, with a growing roster of AI agents connecting.
+What we bring: 21,405 tracked facilities globally, 300+ markets scored daily by DCPI, 2,000+ tracked M&A deals, real-time grid intelligence across 10 ISOs. Actively used by Claude and Cursor via MCP, with a growing roster of AI agents connecting.
 
 What we'd love in return: cross-licensing, editorial collaboration, co-branded research drops, or a paid MCP feed your team can query. The specific shape is up to you.
 
@@ -76,7 +76,7 @@ DCHawk's depth on North-American sub-markets is sharp. DC Hub's depth on LATAM +
 
 Our specific opening offer: a 30-day data-exchange pilot. We'd expose 500 of our highest-confidence non-FLAP facilities via DCHawk's API; we'd ask DCHawk to expose 500 of their highest-confidence FLAP records via ours. Both sides report join-rate + value lifted. No money changes hands during the pilot. A written commercial framework only triggers if both sides see >15% incremental coverage.
 
-We have 21,405 tracked facilities globally. 232 markets scored daily by DCPI. 2,000+ M&A deals tracked. We're cited by Claude and Cursor.
+We have 21,405 tracked facilities globally. 300+ markets scored daily by DCPI. 2,000+ M&A deals tracked. We're cited by Claude and Cursor.
 
 Try our data right now — no signup, CC-BY-4.0:
 → /api/v1/facilities?country=GB&limit=10
@@ -92,7 +92,7 @@ To anyone at DCHawk reading this — partnerships@dchub.cloud. The full open inv
         "url": "https://dchub.cloud/partners#cbre",
         "body": """We don't have a partnership with CBRE. We're publishing an open invitation for one — under our Switzerland model. No channel conflict; we're not in brokerage and never will be.
 
-CBRE's semi-annual Data Center Trends report is the most-cited piece in the industry. We admire it — and we think we can complement it. Our DCPI generates a similar dataset live, daily, CC-BY-4.0, AI-agent native. 232 markets vs the tier-1 focus of broker reports. International coverage (AESO, Hydro-Québec, Nord Pool) that's not in the broker decks.
+CBRE's semi-annual Data Center Trends report is the most-cited piece in the industry. We admire it — and we think we can complement it. Our DCPI generates a similar dataset live, daily, CC-BY-4.0, AI-agent native. 300+ markets vs the tier-1 focus of broker reports. International coverage (AESO, Hydro-Québec, Nord Pool) that's not in the broker decks.
 
 Our specific opening offer: a 90-day MCP-server pilot for one CBRE Data Center Solutions team. We'd set up Slack or Microsoft Copilot integration in 48 hours so CBRE brokers can query the data inside their existing workflow. Free during the pilot; standard CBRE+ feed pricing after.
 
@@ -136,7 +136,7 @@ What we'd love to offer JLL: a JLL-branded portal into DC Hub's live intelligenc
 Our specific opening offer: a 90-day MCP pilot for one JLL Data Centers regional team (we'd suggest Americas given our coverage density). Same shape as the CBRE invitation — runs in parallel, isolated data planes, no leak across.
 
 For any JLL broker reading this — try the data right now, no login:
-→ /dcpi (232 markets, daily verdicts)
+→ /dcpi (300+ markets, daily verdicts)
 → /transactions (2,000+ deals)
 → /reports/quarterly-deep (live H2-equivalent)
 

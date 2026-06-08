@@ -427,7 +427,7 @@ def api_topic_pulse():
         # r34g+3 (2026-05-24): inline the exact connection pattern from
         # dcpi.py:_conn() — read DATABASE_URL OR NEON_DATABASE_URL fallback,
         # then run the same SELECT DISTINCT ON query that
-        # /api/v1/dcpi/scores uses (returns 232 markets). The previous
+        # /api/v1/dcpi/scores uses (returns 300+ markets). The previous
         # import-of-dcpi approach was failing silently for unknown reason;
         # inlining the connection guarantees we hit the right DB.
         # Tracks debug counts in the response so future "why 0?" debugging

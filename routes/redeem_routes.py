@@ -83,7 +83,7 @@ def _p99_send_email(email, api_key, tools_tried):
             "next_step": "Try ashburn, dallas, phoenix, silicon-valley, atlanta.",
         },
         "get_market_intel": {
-            "tagline": "DCPI scores for 232 markets",
+            "tagline": "DCPI scores for 300+ markets",
             "curl_example": (
                 f"curl -H 'Authorization: Bearer {api_key}' "
                 "https://dchub.cloud/api/v1/markets/northern-virginia"

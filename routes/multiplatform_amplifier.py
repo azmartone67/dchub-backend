@@ -257,13 +257,13 @@ def _is_state_of_2026(source_text: str, source_link: str) -> bool:
 
 # Hard-coded marquee framings for the State of 2026 launch.
 STATE_OF_2026_BLUESKY = (
-    "DC Hub's State of 2026 just dropped — 232 markets in DCPI, "
+    "DC Hub's State of 2026 just dropped — 300+ markets in DCPI, "
     "38 MCP tools, 14 AI platforms connected. Live data from our "
     "actual production: " + STATE_OF_2026_URL +
     " #datacenters #infrastructure"
 )
 STATE_OF_2026_TWITTER = (
-    "State of Data Centers 2026 from DC Hub: 232 markets scored, "
+    "State of Data Centers 2026 from DC Hub: 300+ markets scored, "
     "38 MCP tools live for AI agents, real-time grid telemetry across "
     "7 US ISOs. Live: " + STATE_OF_2026_URL
 )
@@ -272,7 +272,7 @@ STATE_OF_2026_HN_TITLE = (
 )
 STATE_OF_2026_MASTODON = (
     "DC Hub's State of Data Centers 2026 just shipped.\n\n"
-    "232 markets scored in our DCPI (DC Power Index), 38 MCP tools live "
+    "300+ markets scored in our DCPI (DC Power Index), 38 MCP tools live "
     "for AI agents to query in real time, grid telemetry across 7 US ISOs, "
     "and live data on every hyperscaler deal in our pipeline.\n\n"
     "Everything queryable from Claude, ChatGPT, Cursor, etc.\n\n"

@@ -31,7 +31,7 @@ import threading
 _FALLBACK = {
     "facilities": 21000,
     "countries": 170,
-    "markets": 232,          # 2026-06-03: was 286 (SPP-clone inflation, >true live 232-234 — violated "never above true"); fence missed it (format is "markets": N, not "N markets")
+    "markets": 300,          # 2026-06-08: Neon-verified COUNT(DISTINCT market_name) minus 3 aggregates = 300 (grew from 232 via intl expansion). Live query below; this is the fallback.
     "isos": 7,               # 7 live US ISOs (ERCOT, CAISO, NYISO, MISO, PJM, SPP, ISO-NE)
     "grid_operators": 10,    # 10 North-American grid operators w/ live data (7 US ISOs + TVA + BPA + IESO)
     "utility_bas": 43,       # 43 US utility balancing authorities (live EIA-930)
@@ -87,20 +87,20 @@ def _query_live() -> dict:
                 out["countries"] = n
         except Exception:
             pass
-        # Markets in the DCPI index. r73: COUNT(DISTINCT market_slug) returns
-        # ~306, but that raw count includes DUPE slugs (e.g. cheyenne +
-        # cheyenne-wy = one place) and AGGREGATE regions (rural-spp,
-        # upper-michigan) — NOT 306 distinct metros. The verified deduped
-        # canonical is 232 (fix #43; CI-fenced). Cap at the curated canonical so
-        # the raw dupe-laden count can never inflate the public 'markets' number
-        # ("never above true"). If the real deduped count drops below 232 it will
-        # show the lower real value. EXACT deduped figure pending a Neon dedup.
+        # Markets in the DCPI index. r73 (2026-06-08): TRUE count is
+        # COUNT(DISTINCT market_name) minus the 3 aggregate regions
+        # (pacific-nw-rural, rural-spp, upper-michigan) = 300 (Neon-verified).
+        # DISTINCT market_name (not slug) collapses the dupe variants
+        # (cheyenne+cheyenne-wy, portland+portland-or, st-louis+st.-louis).
+        # Markets genuinely grew 232->300 via international expansion — no cap,
+        # this is the real live count.
         try:
-            cur.execute("SELECT COUNT(DISTINCT market_slug) FROM market_power_scores "
-                        "WHERE COALESCE(published, true) = true")
+            cur.execute("SELECT COUNT(DISTINCT market_name) FROM market_power_scores "
+                        "WHERE COALESCE(published, true) = true "
+                        "AND market_slug NOT IN ('pacific-nw-rural','rural-spp','upper-michigan')")
             n = int((cur.fetchone() or [0])[0] or 0)
             if n > 0:
-                out["markets"] = min(n, _FALLBACK["markets"])
+                out["markets"] = n
         except Exception:
             pass
     finally:

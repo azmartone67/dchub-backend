@@ -1495,7 +1495,7 @@ tbody tr:last-child td{{border-bottom:none}}
 
 <div class="citation">{citation}</div>
 
-<p class="footer">Powered by <a href="https://dchub.cloud">DC Hub</a> · Source-of-truth data center market intelligence · 2,000+ tracked deals · 21,433 facilities · 232 markets · JSON: <a href="/api/v1/market-brief/{slug}">/api/v1/market-brief/{slug}</a></p>
+<p class="footer">Powered by <a href="https://dchub.cloud">DC Hub</a> · Source-of-truth data center market intelligence · 2,000+ tracked deals · 21,433 facilities · 300+ markets · JSON: <a href="/api/v1/market-brief/{slug}">/api/v1/market-brief/{slug}</a></p>
 
 <script src="/js/dchub-nav.js" defer></script>
 </body>
@@ -3039,7 +3039,7 @@ def pdf_market_brief(slug):
 #                                            (Excel-friendly download)
 #
 # Pagination: ?limit=50&offset=0 on /all (default 50, max 500 PRO+, max
-# 50 free/anon — page through ENTERPRISE's 232 markets in 5 calls).
+# 50 free/anon — page through ENTERPRISE's 300+ markets in 5 calls).
 #
 # Tier slicing (paywall on PER-MARKET sections still applies inside each
 # brief — anon gets teaser sections; what changes here is the COUNT of
