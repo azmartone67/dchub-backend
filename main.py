@@ -16160,7 +16160,8 @@ _JUNK_PLATFORM_NAMES = {
 _JUNK_PLATFORM_RE = re.compile(
     r'(^qa|^curl|^smoke|^test|^probe|-probe$|prober|-scanner$|scanner|'
     r'-checker$|-health$|-test$|noauth|no-auth|sandbox|health-check|'
-    r'-validator$|-crawler$|-inspector$|-monitor$|smithery-probe|tester)',
+    r'-validator$|-crawler$|-inspector$|-monitor$|smithery-probe|tester|'
+    r'-seo$|^seo-|seobot|agent-seo|agent-search)',  # r73: catch SEO bots (agent-seo)
     re.I,
 )
 def _is_junk_platform(key: str) -> bool:
@@ -28111,6 +28112,12 @@ try:
                 return redirect(path[:-5], code=301)
             if path.endswith(".html/"):
                 return redirect(path[:-6], code=301)
+        # r73: /markets/<slug>/ and /facilities/<slug>/ canonicalize WITHOUT a
+        # trailing slash; 301 the trailing-slash variant to the canonical (the
+        # blueprint strict_slashes tweak didn't cover it). Scoped to these two
+        # sections so /dcpi/<x>/ (canonical WITH the slash) is untouched.
+        if path.endswith("/") and re.match(r"^/(markets|facilities)/[^/]+/$", path):
+            return redirect(path.rstrip("/"), code=301)
         # Skip the route prefixes that we know have valid handlers.
         # Anything else flows through to maybe_prefix_redirect for a
         # possible redirect, then falls through to Flask's 404.
