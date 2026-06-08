@@ -15761,6 +15761,32 @@ def search_facilities():
 
         facilities = [dict_from_row(row) for row in c.fetchall()]
 
+        # r-qa 2026-06-07 (Devin diligence #1): emit the CANONICAL profile slug
+        # `{provider}-{name}-{hash8}` that /facilities/<slug> + by-slug resolve
+        # (hash8 = md5(id)[:8], matches the sitemap gen ~main.py:21243). The stored
+        # df.slug is name-only (no hash8), so a search→profile round-trip 404'd.
+        try:
+            import hashlib as _hl, re as _re2
+            def _fac_slug(text):
+                if not text:
+                    return ''
+                s = str(text).lower().strip()
+                s = _re2.sub(r'[^a-z0-9\s-]', '', s)
+                s = _re2.sub(r'[\s-]+', '-', s)
+                return s.strip('-')
+            for f in facilities:
+                _fid = f.get('id')
+                if _fid is None:
+                    continue
+                _h = _hl.md5(str(_fid).encode()).hexdigest()[:8]
+                _ps, _ns = _fac_slug(f.get('provider')), _fac_slug(f.get('name'))
+                _slug = f"{_ps}-{_ns}-{_h}" if (_ps and _ns) else (f"{_ns}-{_h}" if _ns else None)
+                if _slug:
+                    f['slug'] = _slug
+                    f['profile_url'] = f"https://dchub.cloud/facilities/{_slug}"
+        except Exception:
+            pass  # never let slug enrichment break search
+
         # Enrich with confidence badge
         try:
             for f in facilities:
