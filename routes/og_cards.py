@@ -1030,28 +1030,37 @@ def _style_performance():
             # capture), skip the LinkedIn factor entirely. Same for missing
             # impressions/shares columns.
             try:
-                cur.execute("""
-                    SELECT a.slug, a.generated_at,
-                           COALESCE(p.impressions, 0),
-                           COALESCE(p.likes, 0),
-                           COALESCE(p.comments, 0),
-                           COALESCE(p.shares, 0)
-                      FROM auto_press_releases a
-                      LEFT JOIN linkedin_posts p ON p.slug = a.slug
-                     WHERE a.generated_at > NOW() - INTERVAL '60 days'
-                       AND p.impressions IS NOT NULL
-                """)
-                for slug, gen_at, imps, likes, comments, shares in cur.fetchall():
-                    if not gen_at:
-                        continue
-                    style = DAILY_STYLES.get(gen_at.weekday(), 'data_brutal')
-                    b = agg.setdefault(style, {
-                        'views': 0, 'clicks': 0, 'posts': set(),
-                        'li_impressions': 0, 'li_engagements': 0, 'li_posts': 0,
-                    })
-                    b['li_impressions'] += int(imps or 0)
-                    b['li_engagements'] += int((likes or 0) + (comments or 0) + (shares or 0))
-                    b['li_posts'] += 1
+                # Pre-flight (2026-06-08): linkedin_posts.slug may not exist yet
+                # (pre URN-capture). Check the column FIRST so the JOIN below does
+                # not throw UndefinedColumn on every run — that was spamming the
+                # live logs: "[smart-style] LinkedIn factor skipped: UndefinedColumn
+                # column p.slug does not exist". When absent, skip cleanly.
+                cur.execute("""SELECT 1 FROM information_schema.columns
+                                WHERE table_name='linkedin_posts'
+                                  AND column_name='slug' LIMIT 1""")
+                if cur.fetchone():
+                    cur.execute("""
+                        SELECT a.slug, a.generated_at,
+                               COALESCE(p.impressions, 0),
+                               COALESCE(p.likes, 0),
+                               COALESCE(p.comments, 0),
+                               COALESCE(p.shares, 0)
+                          FROM auto_press_releases a
+                          LEFT JOIN linkedin_posts p ON p.slug = a.slug
+                         WHERE a.generated_at > NOW() - INTERVAL '60 days'
+                           AND p.impressions IS NOT NULL
+                    """)
+                    for slug, gen_at, imps, likes, comments, shares in cur.fetchall():
+                        if not gen_at:
+                            continue
+                        style = DAILY_STYLES.get(gen_at.weekday(), 'data_brutal')
+                        b = agg.setdefault(style, {
+                            'views': 0, 'clicks': 0, 'posts': set(),
+                            'li_impressions': 0, 'li_engagements': 0, 'li_posts': 0,
+                        })
+                        b['li_impressions'] += int(imps or 0)
+                        b['li_engagements'] += int((likes or 0) + (comments or 0) + (shares or 0))
+                        b['li_posts'] += 1
             except Exception as li_err:
                 # linkedin_posts.slug / impressions / shares column missing,
                 # or table doesn't exist — degrade gracefully. Operators see

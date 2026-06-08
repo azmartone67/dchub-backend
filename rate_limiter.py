@@ -252,6 +252,26 @@ def rate_limit_before():
                           'dc-healer', 'autopilot'):
         return None
 
+    # 2026-06-08: UA-based bypass for the platform's OWN read-only probes.
+    # The header bypasses above only fire if the probe sets X-DC-Probe/
+    # X-Internal-Key — but many don't, so under 2 Railway replicas (non-loopback
+    # self-call remote_addr) they 429. CF logs showed these UAs are ~40% of all
+    # traffic (DCHubHealer 57k, deadlink-probe 34k, route-audit, frontend-health,
+    # uniformity, redir/schema-audit, failover/render/self-heal probes) and the
+    # 429s make the brain rate-limit ITSELF (then retry → more load). These are
+    # internal health/audit crawlers hitting READ endpoints; the tier/paywall
+    # gates still apply (this only lifts the req/min cap, not auth). Matched on
+    # probe-specific UA substrings so the public 'dchub' SDK is NOT exempted.
+    _ua = (request.headers.get('User-Agent') or '').lower()
+    _INTERNAL_PROBE_UA = (
+        'dchubhealer', 'dchub-brain', 'dchub-frontend-health', 'dchub-redircheck',
+        'dchub-schema-audit', 'dchub-selfheal', 'dchub-failoverprobe',
+        'dchub-renderflapcheck', 'brain-radar', 'brainuniformity',
+        'dc-security-audit', 'deadlink', 'route-audit',
+    )
+    if _ua and any(m in _ua for m in _INTERNAL_PROBE_UA):
+        return None
+
     # r42t (2026-05-26): bypass on X-Admin-Key match. The brain
     # autopilot's _execute_action sends X-Admin-Key but no X-DC-Probe;
     # was getting throttled, leading to 1,869 actions/24h ALL failing
