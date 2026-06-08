@@ -1199,7 +1199,11 @@ class KMZAutoDiscovery:
             cur.execute('''
                 SELECT id, name, url, provider FROM kmz_discovered_sources
                 WHERE source_type IN ('arcgis', 'state_gis')
-                AND (last_checked IS NULL OR last_checked < NOW() - INTERVAL '3 days')
+                AND (
+                    last_checked IS NULL
+                    OR NULLIF(last_checked::text, '') IS NULL
+                    OR NULLIF(last_checked::text, '')::timestamptz < NOW() - INTERVAL '3 days'
+                )
                 AND status != 'failed'
                 LIMIT 30
             ''')
