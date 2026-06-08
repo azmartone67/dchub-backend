@@ -26,8 +26,17 @@ from flask import Blueprint, jsonify, request
 
 failover_warm_bp = Blueprint("failover_warm", __name__, url_prefix="/api/v1/admin/failover")
 
-# Always go THROUGH the edge worker so it (re)caches into DCHUB_CACHE.
-EDGE = "https://api.dchub.cloud"
+# Go THROUGH the edge so the worker (re)caches into DCHUB_CACHE. Path type
+# picks the host: /api/* is served + cached by the API worker (api.dchub.cloud
+# → kv:/api/... keys); HTML pages / llms.txt / .well-known are served by the
+# site worker (dchub.cloud → html:/... keys). Using the wrong host 404s and
+# never refreshes that key — which is why the page warms failed on the first run.
+API_EDGE = "https://api.dchub.cloud"
+SITE_EDGE = "https://dchub.cloud"
+
+
+def _base_for(path):
+    return API_EDGE if path.startswith("/api/") else SITE_EDGE
 
 # The must-survive set. Canonical paths only (NO cache-busters) so the worker
 # caches the canonical key the failover actually serves. Grouped for the report.
@@ -74,7 +83,7 @@ CRITICAL_PATHS = [
 
 
 def _warm(path):
-    url = EDGE + path
+    url = _base_for(path) + path
     started = datetime.datetime.utcnow()
     try:
         req = urllib.request.Request(
@@ -137,7 +146,8 @@ def coverage():
     return jsonify({
         "critical_paths": len(CRITICAL_PATHS),
         "paths": CRITICAL_PATHS,
-        "edge": EDGE,
+        "api_edge": API_EDGE,
+        "site_edge": SITE_EDGE,
         "kv_namespace": "DCHUB_CACHE",
         "note": "These are pre-warmed every ~20 min so the KV failover serves recent data.",
     }), 200
