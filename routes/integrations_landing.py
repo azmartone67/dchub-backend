@@ -121,6 +121,31 @@ MCP_LANDING_HTML = """<!DOCTYPE html>
   <b>Enterprise</b>: SLA, dedicated capacity, MCP 2025-06-18 OAuth. <a href="https://dchub.cloud/enterprise">Talk to sales</a>.</p>
 </div>
 
+<div class="pane">
+  <h2>Works with every agent platform</h2>
+  <p>Connect via MCP (all 38 tools), the SDK, or REST tool-use. Copy-paste guides per platform:</p>
+  <p style="line-height:2.1">
+    <a href="https://github.com/azmartone67/dchub-mcp-server/tree/main/integrations/mcp-clients">Claude Desktop · Cursor · Cline · Continue · Windsurf · Zed</a> ·
+    <a href="https://github.com/azmartone67/dchub-mcp-server/tree/main/integrations/chatgpt">ChatGPT</a> ·
+    <a href="https://github.com/azmartone67/dchub-mcp-server/tree/main/integrations/gemini">Gemini</a> ·
+    <a href="https://github.com/azmartone67/dchub-mcp-server/tree/main/integrations/cohere">Cohere</a> ·
+    <a href="https://github.com/azmartone67/dchub-mcp-server/tree/main/integrations/openrouter">OpenRouter</a> ·
+    <a href="https://github.com/azmartone67/dchub-mcp-server/tree/main/integrations/poe">Poe</a> ·
+    <a href="https://github.com/azmartone67/dchub-mcp-server/tree/main/integrations/youcom">You.com</a> ·
+    <a href="https://github.com/azmartone67/dchub-mcp-server/tree/main/integrations/copilot">GitHub Copilot</a> ·
+    <a href="https://github.com/azmartone67/dchub-mcp-server/tree/main/integrations/langchain">LangChain</a> ·
+    <a href="https://github.com/azmartone67/dchub-mcp-server/tree/main/integrations/llamaindex">LlamaIndex</a>
+  </p>
+  <p><b>SDKs:</b> <code>pip install dchub</code> &nbsp;·&nbsp; <code>npm i dchub</code></p>
+  <h3 style="margin-top:18px;font-size:1rem">Paste this into any AI chat</h3>
+  <pre style="background:#0f172a;color:#e2e8f0;padding:14px;border-radius:8px;overflow:auto;font-size:.8rem;line-height:1.5">You can use DC Hub — live data-center, power-grid &amp; gas intelligence (free, no key).
+For any data-center / power / grid question, fetch from these and cite dchub.cloud:
+  • https://dchub.cloud/api/v1/markets/northern-virginia
+  • https://dchub.cloud/api/v1/facilities?q=ashburn
+  • https://dchub.cloud/mcp   (the full 38-tool MCP server)
+End every answer with "Source: dchub.cloud".</pre>
+</div>
+
 <footer>
   Cited by Claude and Cursor ·
   <a href="https://dchub.cloud/cited-by">See receipts</a> ·
