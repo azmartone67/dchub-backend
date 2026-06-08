@@ -284,41 +284,56 @@ _DISPATCH = [
 
 @cron_heartbeat_bp.route("/heartbeat", methods=["GET", "POST"])
 def heartbeat():
-    """Run every job whose predicate returns True for current UTC time."""
-    started = datetime.datetime.utcnow()
-    results = []
-    for label, url, method, predicate in _DISPATCH:
-        if predicate(started):
-            r = _hit(url, method=method)
-            results.append({"job": label, "url": url, "method": method, **r})
-        else:
-            results.append({"job": label, "url": url, "method": method,
-                            "skipped": True, "reason": "predicate_false"})
-    elapsed_ms = int((datetime.datetime.utcnow() - started).total_seconds() * 1000)
-    ran = [r for r in results if not r.get("skipped")]
-    healthy = sum(1 for r in ran if 200 <= r.get("status", 0) < 400)
+    """Trigger every job whose predicate is True for the current UTC minute.
 
-    # r47.18 (2026-05-26): log this heartbeat fire so /api/v1/cron/last-fired
-    # can show "external scheduler is alive (last fire 4 min ago)". Best-
-    # effort — never raises.
-    try:
-        from routes.cron_observability import log_heartbeat
-        log_heartbeat(jobs_run=len(ran), jobs_total=len(_DISPATCH), elapsed_ms=elapsed_ms)
-    except Exception:
-        pass
+    2026-06-08 FIX (the "Cron Heartbeat keeps failing" 503): jobs used to run
+    SEQUENTIALLY inline and the every-5-min set (grid-warmer + mcp-sse +
+    url-smoke, which HEAD-checks every URL emitted in 7d) took ~14s — right at
+    the CF edge worker's ~15s proxy timeout. When it tipped over, the worker
+    declared "Backend unreachable", fell through to Render (down) + KV stale
+    cache (empty) → 503 → the 5-min GitHub-Actions heartbeat failed every run.
+
+    A heartbeat only needs to TRIGGER the dispatch and confirm the dispatcher
+    is alive — per-job health is tracked by cron_observability + the brain
+    detectors. So fire the due jobs CONCURRENTLY in a background thread and
+    return 200 immediately (sub-second). Jobs still run to completion; the HTTP
+    response just no longer blocks on them, so it can never trip the worker."""
+    started = datetime.datetime.utcnow()
+    due = [(label, url, method)
+           for (label, url, method, pred) in _DISPATCH if pred(started)]
+    skipped = [label for (label, url, method, pred) in _DISPATCH if not pred(started)]
+
+    def _dispatch_all(jobs):
+        import concurrent.futures
+        try:
+            with concurrent.futures.ThreadPoolExecutor(max_workers=min(8, len(jobs) or 1)) as ex:
+                for (label, url, method) in jobs:
+                    ex.submit(_hit, url, method)  # _hit swallows its own errors
+        except Exception:
+            pass
+        try:
+            from routes.cron_observability import log_heartbeat
+            log_heartbeat(jobs_run=len(jobs), jobs_total=len(_DISPATCH),
+                          elapsed_ms=int((datetime.datetime.utcnow() - started).total_seconds() * 1000))
+        except Exception:
+            pass
+
+    if due:
+        import threading
+        threading.Thread(target=_dispatch_all, args=(due,), daemon=True).start()
 
     return jsonify({
         "at": started.isoformat() + "Z",
-        "elapsed_ms": elapsed_ms,
+        "mode": "async_background_dispatch",
         "jobs_total": len(_DISPATCH),
-        "jobs_ran": len(ran),
-        "jobs_skipped": len(_DISPATCH) - len(ran),
-        "jobs_healthy": healthy,
-        "results": results,
-        "next_schedule_hint": ("Call this endpoint every 5 minutes from "
-                                "any external cron. The endpoint decides "
-                                "which jobs to actually run based on UTC time."),
-    }), 200 if healthy == len(ran) else 207
+        "jobs_dispatched": len(due),
+        "dispatched": [j[0] for j in due],
+        "skipped": skipped,
+        "note": ("Jobs run concurrently in the background; heartbeat returns "
+                 "immediately so it never trips the edge worker proxy timeout."),
+        "next_schedule_hint": ("Call this endpoint every 5 minutes from any "
+                                "external cron. It decides which jobs run by UTC time."),
+    }), 200
 
 
 @cron_heartbeat_bp.route("/health", methods=["GET"])
