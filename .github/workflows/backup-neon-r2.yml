@@ -1,0 +1,51 @@
+name: Neon → R2 nightly backup
+
+# #4 (2026-06-08): the disaster-recovery tier. backup_neon_to_r2.py already
+# existed (pg_dump → gzip → R2 dchub-backups + 30d retention) but NOTHING ran it.
+# This wires it to a nightly cron. Covers the one gap the Railway/Render/KV
+# failover doesn't: "Neon itself has a bad day" — a point-in-time SQL snapshot
+# in R2 (zero egress) you can restore from.
+#
+# REQUIRES these GitHub repo secrets (Settings → Secrets and variables → Actions):
+#   DATABASE_URL, R2_ACCESS_KEY_ID, R2_SECRET_ACCESS_KEY, R2_ENDPOINT_URL
+# (you already have these values on Railway — copy them in.)
+
+on:
+  schedule:
+    - cron: "0 8 * * *"        # 08:00 UTC daily
+  workflow_dispatch: {}         # manual run button
+
+concurrency:
+  group: neon-r2-backup
+  cancel-in-progress: false
+
+jobs:
+  backup:
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install pg_dump (match Neon's major version) + boto3
+        run: |
+          sudo sh -c 'echo "deb https://apt.postgresql.org/pub/repos/apt $(lsb_release -cs)-pgdg main" > /etc/apt/sources.list.d/pgdg.list'
+          curl -fsSL https://www.postgresql.org/media/keys/ACCC4CF8.asc | sudo gpg --dearmor -o /etc/apt/trusted.gpg.d/pgdg.gpg
+          sudo apt-get update
+          sudo apt-get install -y postgresql-client-16 || sudo apt-get install -y postgresql-client
+          python -m pip install --quiet boto3
+
+      - name: Run Neon → R2 backup
+        env:
+          DATABASE_URL: ${{ secrets.DATABASE_URL }}
+          R2_ACCESS_KEY_ID: ${{ secrets.R2_ACCESS_KEY_ID }}
+          R2_SECRET_ACCESS_KEY: ${{ secrets.R2_SECRET_ACCESS_KEY }}
+          R2_ENDPOINT_URL: ${{ secrets.R2_ENDPOINT_URL }}
+          R2_BUCKET_NAME: dchub-backups
+          BACKUP_RETENTION_DAYS: "30"
+        run: |
+          # prefer the version-matched client if installed
+          if [ -x /usr/lib/postgresql/16/bin/pg_dump ]; then
+            export PATH="/usr/lib/postgresql/16/bin:$PATH"
+          fi
+          pg_dump --version
+          python backup_neon_to_r2.py

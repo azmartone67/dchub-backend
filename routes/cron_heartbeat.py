@@ -279,6 +279,13 @@ _DISPATCH = [
      f"{BASE}/api/v1/brain/weekly-movement-digest/run?send=true",
      "POST",
      lambda now: now.hour == 13 and now.minute < 5),
+
+    # 2026-06-08 (#2): rebuild the R2 dataset exports daily at 09:00 UTC so the
+    # bulk-download set + the large-dataset failover stay fresh.
+    ("r2_exports_build_daily",
+     f"{BASE}/api/v1/admin/exports/build",
+     "POST",
+     lambda now: now.hour == 9 and now.minute < 5),
 ]
 
 

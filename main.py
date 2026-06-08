@@ -27376,6 +27376,16 @@ try:
 except Exception as _fw_e:
     print(f"[main] failover_warm_bp register failed: {_fw_e}", flush=True)
 
+# 2026-06-08: R2 dataset exporter (#2) — publishes key datasets to R2 for bulk
+# download (zero-egress) + large-dataset failover. /api/v1/admin/exports/build,
+# /api/v1/exports (manifest), /api/v1/exports/<name> (presigned download).
+try:
+    from routes.r2_exports import r2_exports_bp
+    app.register_blueprint(r2_exports_bp)
+    print("[main] r2_exports_bp registered: /api/v1/exports + /admin/exports/build", flush=True)
+except Exception as _r2e_e:
+    print(f"[main] r2_exports_bp register failed: {_r2e_e}", flush=True)
+
 # r47.33 (2026-05-26): infra_data_bp registration — SQL aligned with live
 # Neon schema (submarine_cables uses `cable_name`/`rfs_year`, not `name`/`rfs`)
 # and missing /api/v1/cable-landing-points endpoint added. All 4 routes also
