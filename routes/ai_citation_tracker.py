@@ -400,6 +400,7 @@ except Exception:
 # Engine endpoints — real adapters will be wired when keys are added.
 def _engine_env_present() -> dict[str, bool]:
     return {
+        "chatgpt":    bool(os.environ.get("OPENAI_API_KEY")),
         "gemini":     bool(os.environ.get("GEMINI_API_KEY")),
         "perplexity": bool(os.environ.get("PERPLEXITY_API_KEY")),
         "claude":     bool(os.environ.get("ANTHROPIC_API_KEY")),
@@ -965,6 +966,128 @@ def _run_perplexity_citation_pass():
     return out
 
 
+# r78b (2026-06-08): ChatGPT / Gemini / Grok probes (keys now in Railway). Same
+# (response_text, error) contract as Claude/Perplexity; all fail-soft.
+def _ask_openai(prompt_text: str):
+    try:
+        import requests as _req
+    except Exception:
+        return "", "requests_not_available"
+    api_key = os.environ.get("OPENAI_API_KEY", "").strip()
+    if not api_key:
+        return "", "no_key"
+    try:
+        r = _req.post(
+            "https://api.openai.com/v1/chat/completions",
+            headers={"Authorization": f"Bearer {api_key}", "content-type": "application/json",
+                     "User-Agent": "dchub-brain/1.0"},
+            json={"model": "gpt-4o-mini", "max_tokens": 800,
+                  "messages": [{"role": "user", "content": prompt_text}]},
+            timeout=30)
+        if r.status_code != 200:
+            return "", f"http_{r.status_code}"
+        ch = (r.json().get("choices") or [])
+        return " ".join((c.get("message") or {}).get("content", "") for c in ch), None
+    except Exception as e:
+        return "", f"exc:{str(e)[:60]}"
+
+
+def _ask_grok(prompt_text: str):
+    # xAI is OpenAI-compatible
+    try:
+        import requests as _req
+    except Exception:
+        return "", "requests_not_available"
+    api_key = os.environ.get("XAI_API_KEY", "").strip()
+    if not api_key:
+        return "", "no_key"
+    try:
+        r = _req.post(
+            "https://api.x.ai/v1/chat/completions",
+            headers={"Authorization": f"Bearer {api_key}", "content-type": "application/json",
+                     "User-Agent": "dchub-brain/1.0"},
+            json={"model": "grok-2-latest", "max_tokens": 800,
+                  "messages": [{"role": "user", "content": prompt_text}]},
+            timeout=30)
+        if r.status_code != 200:
+            return "", f"http_{r.status_code}"
+        ch = (r.json().get("choices") or [])
+        return " ".join((c.get("message") or {}).get("content", "") for c in ch), None
+    except Exception as e:
+        return "", f"exc:{str(e)[:60]}"
+
+
+def _ask_gemini(prompt_text: str):
+    try:
+        import requests as _req
+    except Exception:
+        return "", "requests_not_available"
+    api_key = os.environ.get("GEMINI_API_KEY", "").strip()
+    if not api_key:
+        return "", "no_key"
+    try:
+        r = _req.post(
+            f"https://generativelanguage.googleapis.com/v1beta/models/gemini-2.0-flash:generateContent?key={api_key}",
+            headers={"content-type": "application/json", "User-Agent": "dchub-brain/1.0"},
+            json={"contents": [{"parts": [{"text": prompt_text}]}]},
+            timeout=30)
+        if r.status_code != 200:
+            return "", f"http_{r.status_code}"
+        text = ""
+        for cand in (r.json().get("candidates") or []):
+            for part in ((cand.get("content") or {}).get("parts") or []):
+                text += " " + part.get("text", "")
+        return text, None
+    except Exception as e:
+        return "", f"exc:{str(e)[:60]}"
+
+
+def _run_engine_citation_pass(engine: str, ask_fn, source: str, key_env: str):
+    """Generalized pass for any engine — same idempotent (engine, prompt_id)
+    upsert as the Claude/Perplexity passes."""
+    out = {"executed": 0, "recorded": 0, "errors": []}
+    if not os.environ.get(key_env, "").strip():
+        out["errors"].append(f"{key_env} not set"); return out
+    c = _conn()
+    if c is None:
+        out["errors"].append("no_database"); return out
+    try:
+        with c, c.cursor() as cur:
+            for prompt_id, prompt_text in _CANONICAL_PROMPTS:
+                out["executed"] += 1
+                text, err = ask_fn(prompt_text)
+                if err:
+                    out["errors"].append({"prompt": prompt_id, "err": err}); continue
+                p = _parse_citations(text)
+                try:
+                    cur.execute("""
+                        UPDATE ai_citations
+                           SET response_text=%s, dchub_cited=%s, dchawk_cited=%s,
+                               dcbyte_cited=%s, other_sources=%s::jsonb, observed_at=NOW()
+                         WHERE id=(SELECT id FROM ai_citations
+                                    WHERE engine=%s AND prompt_id=%s AND source=%s
+                                    ORDER BY observed_at DESC LIMIT 1)
+                    """, (text[:2000], p["dchub_cited"], p["dchawk_cited"], p["dcbyte_cited"],
+                          _json.dumps(p["other_sources"]), engine, prompt_id, source))
+                    if cur.rowcount == 0:
+                        cur.execute("""
+                            INSERT INTO ai_citations
+                                (engine, platform, prompt_id, prompt_text, dchub_cited,
+                                 dchub_position, dchawk_cited, dcbyte_cited, other_sources,
+                                 response_text, source)
+                            VALUES (%s,%s,%s,%s,%s,NULL,%s,%s,%s::jsonb,%s,%s)
+                        """, (engine, engine, prompt_id, prompt_text, p["dchub_cited"],
+                              p["dchawk_cited"], p["dcbyte_cited"],
+                              _json.dumps(p["other_sources"]), text[:2000], source))
+                    out["recorded"] += 1
+                except Exception as e:
+                    out["errors"].append({"prompt": prompt_id, "err": f"db:{str(e)[:60]}"})
+    finally:
+        try: c.close()
+        except Exception: pass
+    return out
+
+
 @ai_citation_tracker_bp.route("/api/v1/ai-citations/run-cron", methods=["POST"])
 def run_cron():
     """Cron entry point — queries every (engine × prompt) that has
@@ -1010,17 +1133,28 @@ def run_cron():
         except Exception as e:
             perplexity_result = {"executed": 0, "recorded": 0, "errors": [f"pass_exc:{str(e)[:80]}"]}
 
+    # r78b: ChatGPT / Gemini / Grok via the generalized pass (keys now in Railway)
+    results = {"claude": claude_result, "perplexity": perplexity_result}
+    for eng, ask_fn, source, key_env in [
+        ("chatgpt", _ask_openai, "auto_cron_chatgpt", "OPENAI_API_KEY"),
+        ("gemini",  _ask_gemini, "auto_cron_gemini",  "GEMINI_API_KEY"),
+        ("grok",    _ask_grok,   "auto_cron_grok",    "XAI_API_KEY"),
+    ]:
+        if engines.get(eng):
+            try:
+                results[eng] = _run_engine_citation_pass(eng, ask_fn, source, key_env)
+            except Exception as e:
+                results[eng] = {"executed": 0, "recorded": 0, "errors": [f"pass_exc:{str(e)[:80]}"]}
+        else:
+            results[eng] = {"executed": 0, "recorded": 0, "errors": ["skipped: no key"]}
+
     return jsonify(
         ok=True,
         engines_with_keys=engines,
         matrix=matrix,
-        executed=claude_result.get("executed", 0) + perplexity_result.get("executed", 0),
-        recorded=claude_result.get("recorded", 0) + perplexity_result.get("recorded", 0),
-        by_engine={"claude": claude_result, "perplexity": perplexity_result},
-        errors={"claude": claude_result.get("errors", []), "perplexity": perplexity_result.get("errors", [])},
-        next_steps=(
-            "Add GEMINI_API_KEY / PERPLEXITY_API_KEY / XAI_API_KEY to "
-            "Railway env to light up additional engines. Schedule this "
-            "endpoint weekly via cron for a time series."
-        ),
+        executed=sum(r.get("executed", 0) for r in results.values()),
+        recorded=sum(r.get("recorded", 0) for r in results.values()),
+        by_engine={k: {"executed": v.get("executed", 0), "recorded": v.get("recorded", 0),
+                       "errors": (v.get("errors") or [])[:5]} for k, v in results.items()},
+        next_steps="All 5 engines wired (chatgpt/gemini/perplexity/claude/grok). evolve-cron records a per-(engine,prompt) citation time-series.",
     ), 200
