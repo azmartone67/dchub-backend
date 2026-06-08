@@ -5465,11 +5465,20 @@ def check_conversion_rate_floor() -> list[dict]:
                 # what is really a handful of callers — the same artifact r35 + C1
                 # removed from the other funnel detectors. Gate + rate on distinct
                 # callers so the floor reflects real demand.
+                # r72: dropped the NULLIF(tool_requested,'') fallback from the
+                # COALESCE. With it, an anonymous bot looping all ~38 tools counted
+                # as 38 distinct "callers" (tool-name diversity, not caller
+                # diversity) — inflating the denominator and DEFLATING the
+                # conversion rate, which kept this escalation firing ~x27 on a
+                # handful of bots. Count only IDENTIFIABLE callers (email or MCP
+                # client); anonymous rows (both NULL) are skipped by COUNT(DISTINCT),
+                # so the rate now reflects conversion among callers we can actually
+                # convert. Still gated at >=25 below, so it stays silent until
+                # there's genuinely broad identified demand.
                 cur.execute("""
                     SELECT COUNT(DISTINCT COALESCE(
                                NULLIF(user_email,''),
-                               NULLIF(mcp_client,''),
-                               NULLIF(tool_requested,'')))
+                               NULLIF(mcp_client,'')))
                       FROM mcp_upgrade_signals
                      WHERE created_at >= NOW() - INTERVAL '30 days'
                 """)

@@ -3,7 +3,7 @@ ai_capacity_index.py — AI Compute Capacity Index.
 
 Phase ZZZZZ-round36 (2026-05-24). The thesis: nobody publishes "where
 can 100MW of AI training capacity actually LAND in 30/60/90 days" with
-municipal granularity. DC Hub already has the components — DCPI (286
+municipal granularity. DC Hub already has the components — DCPI (232
 markets scored), pipeline (540 projects, 369 GW), spare capacity, ISO
 headroom. This endpoint fuses them into the leaderboard that hyper-
 scaler capex planners + AI researchers want.
@@ -152,7 +152,7 @@ _LANDING = """<!DOCTYPE html>
 <html lang="en"><head>
 <meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1">
 <title>AI Compute Capacity Index — DC Hub</title>
-<meta name="description" content="Where 100MW of AI training capacity can actually land in 30/60/90 days. Ranked weekly across 286 data center markets.">
+<meta name="description" content="Where 100MW of AI training capacity can actually land in 30/60/90 days. Ranked weekly across 232 data center markets.">
 <meta property="og:title" content="AI Compute Capacity Index">
 <meta property="og:description" content="Weekly leaderboard: where can hyperscale AI workloads land in the next 30/60/90 days?">
 <meta property="og:image" content="https://api.dchub.cloud/static/og/landing-ai-capacity.png">
@@ -176,7 +176,7 @@ _LANDING = """<!DOCTYPE html>
 </style></head><body>
 <h1>AI Compute Capacity Index</h1>
 <p class="lead">Where can 100MW of AI training capacity actually land in the next 30, 60, or 90 days?
-Ranked across 286 data center markets, refreshed every Friday.</p>
+Ranked across 232 data center markets, refreshed every Friday.</p>
 
 <div id="status">loading...</div>
 <table id="leaderboard"><thead><tr>

@@ -100,7 +100,7 @@ def _gather():
     #     baseline, NOT live telemetry (Hydro-Québec, AESO, Nord Pool).
     counts = {
         "facilities":       21000,
-        "markets_scored":   286,
+        "markets_scored":   232,
         "deals_tracked":    1972,
         "countries":        170,
         "us_isos":          ["PJM","CAISO","ERCOT","MISO","SPP","NYISO","ISO-NE"],

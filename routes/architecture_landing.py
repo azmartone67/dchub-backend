@@ -65,7 +65,7 @@ AI agents query all of it directly. Here's how it fits together.</p>
 <div class="stat-grid" id="live-stats">
   <div class="stat"><div class="stat-num" id="s-facilities">21,000+</div><div class="stat-label">Facilities</div></div>
   <div class="stat"><div class="stat-num" id="s-countries">170+</div><div class="stat-label">Countries</div></div>
-  <div class="stat"><div class="stat-num" id="s-markets">286</div><div class="stat-label">DCPI markets</div></div>
+  <div class="stat"><div class="stat-num" id="s-markets">232</div><div class="stat-label">DCPI markets</div></div>
   <div class="stat"><div class="stat-num" id="s-tools">23+</div><div class="stat-label">MCP tools</div></div>
   <div class="stat"><div class="stat-num" id="s-gw">369 GW</div><div class="stat-label">Pipeline tracked</div></div>
 </div>
@@ -91,7 +91,7 @@ state KMZ sources are thin.</p>
 </table>
 
 <h2>2. The DCPI scoring engine</h2>
-<p>The <a href="/dcpi"><b>DC Hub Power Index</b></a> ranks 286 US + international markets on a 0–100 composite:
+<p>The <a href="/dcpi"><b>DC Hub Power Index</b></a> ranks 232 US + international markets on a 0–100 composite:
 spare power capacity, ISO interconnect time-to-power, grid constraint, operator depth, fiber depth, and
 demand pressure. Markets get one of four verdicts: <code>BUILD</code> (14 today), <code>CAUTION</code> (141),
 <code>AVOID</code> (63), or <code>LOW_SIGNAL</code> (67). Today's top BUILD: Cheyenne, WY. Today's top AVOID:

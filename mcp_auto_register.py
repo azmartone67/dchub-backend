@@ -268,10 +268,33 @@ def get_discovered_platforms_as_cards():
         conn = get_db()
         cursor = conn.cursor()
         try:
+            # r72: READ-TIME junk filter. The write-time SKIP_USER_AGENTS guard
+            # was added later, so pre-existing test/automation rows (Test-Client,
+            # No-Auth-Test, Postmanclient-*, Researchclient, Mistralai-Python,
+            # Agentdiscoveryindex, curl/probes/scanners) still surfaced on the
+            # PUBLIC "Connected AI Platforms" roster. Filter them out here so the
+            # roster shows only real, NAMED external AI platforms — independent of
+            # any backfill. Legit registries/clients (Glama, Poe, Cursor,
+            # Smithery) are intentionally NOT excluded.
             cursor.execute('''
                 SELECT id, user_agent, first_seen, last_seen, request_count, identified_as
                 FROM discovered_platforms
                 WHERE auto_configured = 0
+                  AND identified_as IS NOT NULL
+                  AND btrim(identified_as) <> ''
+                  AND lower(identified_as) NOT IN
+                      ('unknown','unknown platform','test','no-auth-test')
+                  AND lower(COALESCE(identified_as,'') || ' ' || COALESCE(user_agent,''))
+                      NOT LIKE ALL (ARRAY[
+                        '%test-client%','%test_client%','%no-auth%','%noauth%','%postman%',
+                        '%researchclient%','%agentdiscoveryindex%','%mistralai-python%',
+                        '%fastmcpclient%','%qa-test%','%smoke%','%canary%','%-probe%','%probe %',
+                        '%scanner%','%scraper%','%validator%','%inspector%','%mcpscoringengine%',
+                        '%python-requests%','%go-http-client%','%curl/%','%wget%','%httpie%',
+                        '%uptimerobot%','%statuscake%','%pingdom%','%health-check%','%heartbeat%',
+                        '%deadlink%','%self-heal%','%selfheal%','%brainradar%','%redircheck%',
+                        '%schema-audit%','%dchub%','%sandbox%'
+                      ])
                 ORDER BY last_seen DESC
                 LIMIT 50
             ''')

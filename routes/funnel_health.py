@@ -1016,10 +1016,21 @@ def _render_html(data: dict, admin_key: str) -> str:
     winner = ab.get("winner") or "no_data"
     ab_active = ab.get("ab_active")
     ab_kill = ab.get("kill_switch")
+    # r72: a configured-but-empty A/B was rendering a green "ACTIVE" with
+    # winner:no_data — misleading. If it's active yet recording zero
+    # impressions (frontend not posting, or pricing_ab_events table
+    # missing/mismatched — see missing_tables), say so in amber so the
+    # operator knows to check, instead of implying a running experiment.
+    _abc = ab.get("cohorts") or {}
+    ab_total_imp = int((_abc.get("A") or {}).get("impressions", 0) or 0) + \
+                   int((_abc.get("B") or {}).get("impressions", 0) or 0)
+    ab_no_data = bool(ab_active) and ab_total_imp == 0
     ab_state = ("KILL SWITCH ON" if ab_kill
+                else "ACTIVE · NO DATA (events not recording)" if ab_no_data
                 else "ACTIVE" if ab_active
                 else "OFF (arm A only)")
     ab_state_color = ("#ef4444" if ab_kill
+                      else "#f59e0b" if ab_no_data
                       else "#22c55e" if ab_active
                       else "#94a3b8")
     sig_color = ("#22c55e" if sig_pct >= 95

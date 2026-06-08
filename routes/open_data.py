@@ -91,22 +91,14 @@ def manifest():
     ], generated_at=datetime.datetime.utcnow().isoformat()+"Z"), 200
 
 
-@open_data_bp.route("/research", methods=["GET"])
-def research_landing():
-    try:
-        with _conn() as c, c.cursor() as cur:
-            cur.execute("""SELECT DISTINCT market_slug, market_name FROM market_power_scores
-                           ORDER BY market_name""")
-            markets = cur.fetchall()
-    except Exception:
-        markets = []
-    items = "".join([f'<li><a href="/research/{m[0]}">{m[1]} — Market Report</a></li>' for m in markets])
-    return Response(f"""<!DOCTYPE html><html><head><meta charset="utf-8"><title>DC Hub · Research</title>
-<style>body{{font-family:-apple-system,system-ui;background:#0a0a12;color:#fff;max-width:780px;margin:2rem auto;padding:2rem}}
-a{{color:#818cf8}}h1{{font-size:1.8rem;margin:0 0 0.3rem}}h2{{margin-top:1.5rem;color:#9ca3af;font-size:0.85rem;text-transform:uppercase}}
-ul{{padding-left:1.2rem}}li{{margin:0.3rem 0}}</style></head><body>
-<h1>DC Hub · Research</h1><p style="color:#9ca3af">Auto-generated. Updated daily. Free to cite.</p>
-<h2>Market Reports</h2><ul>{items}</ul></body></html>""", mimetype="text/html")
+# r72: removed the duplicate bare "/research" index here — it shadowed
+# main.py's curated research.html (research_page), which the brain flagged as
+# shadowed_route /research (seen x37, untried). The curated static page now
+# owns /research; the dynamic per-market detail pages below (/research/<slug>)
+# are unchanged. NOTE: /research is still edge-redirected to /grid-intelligence
+# by redirects_404_killer until the out-of-repo CF Pages config for /research/*
+# is fixed in the CF dashboard (owner action), so this de-dup is cosmetic-only
+# at the edge for now — but it clears the brain finding and the Flask shadow.
 
 
 @open_data_bp.route("/research/<slug>", methods=["GET"])

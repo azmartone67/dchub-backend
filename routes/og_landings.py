@@ -119,7 +119,7 @@ def og_ai_capacity():
         kicker="AI COMPUTE CAPACITY INDEX",
         title="Where 100MW can land in 90 days.",
         subtitle="Weekly leaderboard · 232 markets · fused with DCPI + interconnect queue",
-        stat_a=("286", "MARKETS RANKED"),
+        stat_a=("232", "MARKETS RANKED"),
         stat_b=("90d", "PLANNING HORIZON"),
         badge="LIVE",
     ))

@@ -67,7 +67,7 @@ def _build_release(track):
     iso_year, iso_week = _current_iso_week()
 
     # Pull a couple of live stats so the press release has fresh numbers
-    facilities = 21405; markets = 286; deals = 1972
+    facilities = 21405; markets = 232; deals = 1972
     try:
         with _conn() as c, c.cursor() as cur:
             cur.execute("SELECT COUNT(*) FROM discovered_facilities")

@@ -167,7 +167,7 @@ def _dcpi_coverage():
     total = 286
     try:
         from canonical_stats import get_canonical_stats
-        total = int(get_canonical_stats().get("markets", 286) or 286)
+        total = int(get_canonical_stats().get("markets", 233) or 233)
     except Exception:
         total = 286
     covered = 0

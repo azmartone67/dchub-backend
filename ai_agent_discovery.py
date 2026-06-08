@@ -524,11 +524,23 @@ def ai_tracking_stats():
             c.execute("SELECT COUNT(*) FROM ai_access_log")
             total = c.fetchone()[0]
 
-            # By platform
-            c.execute("""SELECT platform, COUNT(*) as cnt
-                        FROM ai_access_log
-                        GROUP BY platform
-                        ORDER BY cnt DESC""")
+            # By platform — r72: exclude our own internal/probe/test buckets so
+            # the public "Requests by Platform" chart leads with real external AI
+            # platforms (was showing "Internal" + "mcp" as the top two bars).
+            # Mirrors main._is_junk_platform; inlined as SQL to avoid a circular
+            # import (main imports this module).
+            _PF_JUNK = (
+                "lower(coalesce(platform,'')) NOT IN ("
+                "'internal','mcp','mcp_generic','direct','unknown','unknown_ai',"
+                "'seo_bot','media_crawler','test','no-auth-test','mcp-sandbox',"
+                "'test-client','canary','curl','qa','probe','smoke',"
+                "'mcp-remote-fallback-test') "
+                "AND coalesce(btrim(platform),'') <> '' "
+                "AND lower(coalesce(platform,'')) !~ "
+                "'(^qa|^curl|^smoke|^test|^probe|probe|scanner|noauth|no-auth|sandbox|health|-validator|-crawler|-inspector|-monitor|tester|checker)'"
+            )
+            c.execute("SELECT platform, COUNT(*) as cnt FROM ai_access_log WHERE "
+                      + _PF_JUNK + " GROUP BY platform ORDER BY cnt DESC")
             by_platform = [{"platform": row[0], "count": row[1]} for row in c.fetchall()]
 
             # By file
@@ -547,12 +559,10 @@ def ai_tracking_stats():
                         ORDER BY day""", (week_ago,))
             daily_trend = [{"date": row[0], "count": row[1]} for row in c.fetchall()]
 
-            # Last 7 days by platform
-            c.execute("""SELECT platform, COUNT(*) as cnt
-                        FROM ai_access_log
-                        WHERE timestamp > %s
-                        GROUP BY platform
-                        ORDER BY cnt DESC""", (week_ago,))
+            # Last 7 days by platform (same junk/internal exclusion as above)
+            c.execute("SELECT platform, COUNT(*) as cnt FROM ai_access_log "
+                      "WHERE timestamp > %s AND " + _PF_JUNK +
+                      " GROUP BY platform ORDER BY cnt DESC", (week_ago,))
             weekly_by_platform = [{"platform": row[0], "count": row[1]} for row in c.fetchall()]
 
             # Today's count
