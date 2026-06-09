@@ -1,0 +1,46 @@
+name: Strategic Briefing (weekly)
+
+# Delivers the weekly product-intelligence briefing RELIABLY, bypassing the cron-
+# heartbeat dispatcher (whose X-Internal-Key didn't match the admin routes'
+# DCHUB_ADMIN_KEY check, so synthesis + digest silently 403'd). This authenticates
+# directly with the DCHUB_ADMIN_KEY GitHub secret:
+#   1. run the strategic SYNTHESIS (Opus generates this week's ~20 recommendations
+#      from competitor-crawler gaps + agent demand + paywall pressure)
+#   2. send the DIGEST email (the briefing) to the operator
+# Requires GitHub secret: DCHUB_ADMIN_KEY (same value as Railway's).
+
+on:
+  schedule:
+    - cron: "0 14 * * 1"     # Monday 14:00 UTC (10 AM ET)
+  workflow_dispatch: {}        # manual "Run workflow" button
+
+concurrency:
+  group: strategic-briefing
+  cancel-in-progress: false
+
+jobs:
+  brief:
+    runs-on: ubuntu-latest
+    timeout-minutes: 8
+    steps:
+      - name: 1) Run the strategic synthesis (generate this week's recs)
+        run: |
+          echo "Running synthesis..."
+          curl -sS -m 120 -X POST \
+            -H "X-Admin-Key: ${{ secrets.DCHUB_ADMIN_KEY }}" \
+            "https://dchub.cloud/api/v1/admin/brain/strategic-synthesis/run?force=1" | head -c 500
+          echo ""
+
+      - name: 2) Wait for the Opus pass to persist recs
+        run: sleep 30
+
+      - name: 3) Send the briefing email
+        run: |
+          echo "Sending digest..."
+          BODY=$(curl -sS -m 60 -X POST \
+            -H "X-Admin-Key: ${{ secrets.DCHUB_ADMIN_KEY }}" \
+            "https://dchub.cloud/api/v1/admin/brain/strategic-digest/send")
+          echo "$BODY" | head -c 600
+          echo ""
+          # surface the outcome
+          echo "$BODY" | grep -qiE '"dry_run": *false|"sent"|"ok": *true' && echo "✅ briefing sent" || echo "::warning::digest returned non-sent (check recs / auth)"
