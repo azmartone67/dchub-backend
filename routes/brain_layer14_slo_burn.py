@@ -88,6 +88,11 @@ def _scan_once():
 
 
 def _loop():
+    # Warm-up: at boot gunicorn isn't listening on localhost:$PORT yet, so an
+    # immediate self-probe times out (read timeout=4) and logs a false
+    # "slo-burn scan probe failed" warning on every deploy. Sleep one interval
+    # first so the first probe lands after the server is actually serving.
+    time.sleep(_INTERVAL_S)
     while True:
         try:
             _scan_once()

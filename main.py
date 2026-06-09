@@ -29302,15 +29302,16 @@ except Exception as _tse:
 # block re-asserts the wiring next to the other register_blueprint calls and
 # is idempotent — a duplicate registration (ValueError: "already registered")
 # is benign because the routes are already live from the earlier block.
-try:
-    from routes.quarterly_report import quarterly_report_bp
-    app.register_blueprint(quarterly_report_bp)
-    print("[main] quarterly_report_bp registered: /state-of-power/<quarter> + /state-of-power/quarterly + /api/v1/reports/quarterly/<quarter>.{json,csv}", flush=True)
-except ValueError as _qre:
-    # Already registered earlier in this file — routes are live; not an error.
-    print(f"[main] quarterly_report_bp already registered ({_qre}); routes live", flush=True)
-except Exception as _qre2:
-    print(f"[main] quarterly_report wiring failed: {_qre2}", file=sys.stderr, flush=True)
+# Only (re)register if the earlier block above failed to wire it — this keeps
+# the defensive re-assert without emitting the noisy benign "already registered"
+# ValueError line on every boot (the normal path, where it's already live).
+if "quarterly_report" not in app.blueprints:
+    try:
+        from routes.quarterly_report import quarterly_report_bp
+        app.register_blueprint(quarterly_report_bp)
+        print("[main] quarterly_report_bp registered (re-assert): /state-of-power/<quarter> + JSON/CSV", flush=True)
+    except Exception as _qre2:
+        print(f"[main] quarterly_report wiring failed: {_qre2}", file=sys.stderr, flush=True)
 
 # r55 (2026-05-25): MCP funnel upgrade UX — preview + upgrade-hint
 try:
