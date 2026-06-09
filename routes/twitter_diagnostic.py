@@ -62,7 +62,8 @@ def _env_state() -> dict:
 def _interpret_x_error(status: int, body_text: str) -> dict:
     """Map X API error text to actionable diagnosis."""
     body = (body_text or "").lower()
-    if "must be attached to a project" in body or "must be associated" in body:
+    if ("client-not-enrolled" in body or "attached to a project" in body
+            or "must be attached to a project" in body or "must be associated" in body):
         return {
             "diagnosis":     "app_not_in_project",
             "fix":           ("Your X dev-portal App is a legacy standalone. "
