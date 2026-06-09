@@ -295,11 +295,22 @@ _DISPATCH = [
     # send. The endpoint is IDEMPOTENT per (week_of, dry_run), so checking hourly
     # (top of each hour) safely sends exactly ONCE per week AND catches up within
     # the hour if a week's slot was missed — the rest are cheap no-op dedupe hits.
-    # Fire on EVERY heartbeat: GitHub-cron latency makes a narrow minute-window
-    # unreliable (the :00 run often lands at :07 and misses it). send_weekly_digest
-    # dedupes per (week_of, dry_run) BEFORE rendering (cheap ~1 DB query), so this
-    # safely sends exactly ONCE per week and delivers on the very next tick — the
-    # other ~287 daily calls are no-op dedupe returns.
+    # UPSTREAM of the digest: run the weekly strategic SYNTHESIS (the Opus pass
+    # that generates the recommendations the digest emails). It was never cron'd
+    # — ran once 6-07, then recs went stale, so the digest rendered empty for new
+    # weeks. run_strategic_synthesis is IDEMPOTENT per ISO week (force=False →
+    # from_cache), so firing every heartbeat does the Opus work ONCE per week and
+    # the rest are cheap cache reads. Populates this week's recs → the digest below
+    # then has content to send.
+    ("strategic_synthesis_weekly",
+     f"{BASE}/api/v1/admin/brain/strategic-synthesis/run",
+     "POST",
+     lambda now: True),
+
+    # Then DELIVER the briefing. send_weekly_digest dedupes per (week_of, dry_run)
+    # BEFORE rendering (cheap), so firing every heartbeat sends exactly ONCE per
+    # week and delivers on the next tick after the synthesis populates recs.
+    # (Narrow minute-windows were unreliable under GitHub-cron latency.)
     ("strategic_digest_weekly",
      f"{BASE}/api/v1/admin/brain/strategic-digest/send",
      "POST",
