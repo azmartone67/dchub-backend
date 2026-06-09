@@ -23,23 +23,26 @@ jobs:
     runs-on: ubuntu-latest
     timeout-minutes: 8
     steps:
+      # Hit the Railway ORIGIN directly — the synthesis is a slow Opus call that
+      # exceeds the CF worker's ~15s proxy timeout (→ 503 "backend unreachable").
+      # The origin has no such timeout, so the Opus pass completes + recs persist.
       - name: 1) Run the strategic synthesis (generate this week's recs)
         run: |
-          echo "Running synthesis..."
-          curl -sS -m 120 -X POST \
+          echo "Running synthesis (origin direct)..."
+          curl -sS -m 150 -X POST \
             -H "X-Admin-Key: ${{ secrets.DCHUB_ADMIN_KEY }}" \
-            "https://dchub.cloud/api/v1/admin/brain/strategic-synthesis/run?force=1" | head -c 500
+            "https://dchub-backend-production.up.railway.app/api/v1/admin/brain/strategic-synthesis/run?force=1" | head -c 500
           echo ""
 
-      - name: 2) Wait for the Opus pass to persist recs
-        run: sleep 30
+      - name: 2) Wait for recs to persist
+        run: sleep 15
 
       - name: 3) Send the briefing email
         run: |
-          echo "Sending digest..."
+          echo "Sending digest (origin direct)..."
           BODY=$(curl -sS -m 60 -X POST \
             -H "X-Admin-Key: ${{ secrets.DCHUB_ADMIN_KEY }}" \
-            "https://dchub.cloud/api/v1/admin/brain/strategic-digest/send")
+            "https://dchub-backend-production.up.railway.app/api/v1/admin/brain/strategic-digest/send")
           echo "$BODY" | head -c 600
           echo ""
           # surface the outcome
