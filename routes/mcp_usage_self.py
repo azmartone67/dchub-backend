@@ -9,9 +9,9 @@ The MCP funnel showed:
   - 115 distinct callers hit get_fiber_intel (paid) 4,946 times
 
 That's the addressable conversion pool: ~115 active near-converters.
-The current upgrade hint is generic ("$199/mo Pro"); it doesn't tell
+The current upgrade hint is generic ("$49/mo Developer"); it doesn't tell
 the caller "you've called get_grid_intelligence 47 times this month —
-$199 unblocks all 47." This module surfaces that data.
+$49 unblocks all 47." This module surfaces that data.
 
 Endpoints:
 
@@ -368,19 +368,17 @@ I noticed {client} (via {platform}) called DC Hub's `{top_tool}` tool
 every one. You're clearly using DC Hub for real work — and the 403s
 mean every call is a wasted round-trip for your agent.
 
-A Pro tier ($199/mo) unblocks `{top_tool}` plus the other 3 Pro-only
-tools (`get_fiber_intel`, `analyze_site`, `compare_sites`). At your
-current cadence ({p403} blocked calls in {days_active} days) that's
-$<$4/blocked-call already — and the friction stops the moment you
-swap your X-API-Key header.
+A paid plan unblocks `{top_tool}` and every other gated tool. The
+$49/mo Developer plan gives you 500 calls/day — at your cadence
+({p403} blocked calls in {days_active} days) the 403s stop the moment
+you swap in your X-API-Key header.
 
-If $199 is heavier than you need, the $9/mo Starter unlocks all OTHER
-tools (10,000 calls/day) and you can dip into Pro just for the four
-gated ones — total still under $50/mo for most use cases.
+If that's more than you need, the $9/mo Starter covers 200 calls/day —
+plenty for most agents.
 
 Two paths:
   1. Upgrade in 30 sec: https://dchub.cloud/pricing
-  2. Free 30-min Pro trial — reply to this and I'll comp you one.
+  2. Free 30-min trial — reply to this and I'll comp you one.
 
 What's blocking the upgrade?
 
