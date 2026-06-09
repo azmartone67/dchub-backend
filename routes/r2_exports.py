@@ -24,21 +24,25 @@ from flask import Blueprint, jsonify, request, redirect
 
 r2_exports_bp = Blueprint("r2_exports", __name__)
 
-R2_BUCKET = (os.environ.get("R2_EXPORTS_BUCKET")
-             or os.environ.get("R2_BUCKET_NAME") or "dchub-daily")
+# NOTE: default to dchub-daily (writable, actively used) — NOT R2_BUCKET_NAME,
+# which on Railway is dchub-backups (the locked-down DB-backup bucket → writes
+# 401 Unauthorized). Override with R2_EXPORTS_BUCKET if you want a dedicated one.
+R2_BUCKET = os.environ.get("R2_EXPORTS_BUCKET") or "dchub-daily"
 R2_PREFIX = "exports/"
 _PORT = os.environ.get("PORT", "8080")
 _BASE = "http://127.0.0.1:" + str(_PORT)
 
-# (name, internal_path, description). Fetched via localhost so existing
-# serialization + gating apply; per-dataset failures are skipped + reported,
-# so a bad path never breaks the whole build. Extend freely.
+# (name, internal_path, description). FREE/PUBLIC datasets ONLY — these become
+# public presigned downloads, so paid endpoints (grid intelligence, pipeline,
+# fiber, analyze_site) are deliberately excluded; exporting them would give away
+# paid data. Fetched via localhost so existing serialization applies; per-dataset
+# failures skip + report, so a bad path never breaks the build. Extend freely.
 DATASETS = [
     ("agent-registry", "/api/agents/registry", "Connected AI platforms + activity"),
     ("markets", "/api/v1/markets", "All tracked data-center markets"),
-    ("facilities", "/api/v1/facilities?limit=50000", "Data-center facilities (full set)"),
-    ("grid-ercot", "/api/v1/grid/status?iso=ERCOT", "ERCOT grid snapshot"),
-    ("pipeline", "/api/v1/pipeline", "Capacity pipeline / projects"),
+    ("facilities", "/api/v1/facilities?limit=50000", "Data-center facilities (public set)"),
+    ("news", "/api/v1/news", "Curated industry news feed"),
+    ("ai-capacity", "/ai-capacity-index/today.json", "AI capacity index (daily)"),
 ]
 _NAMES = {d[0] for d in DATASETS}
 
