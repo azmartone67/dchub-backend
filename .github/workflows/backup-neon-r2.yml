@@ -31,7 +31,9 @@ jobs:
           sudo sh -c 'echo "deb https://apt.postgresql.org/pub/repos/apt $(lsb_release -cs)-pgdg main" > /etc/apt/sources.list.d/pgdg.list'
           curl -fsSL https://www.postgresql.org/media/keys/ACCC4CF8.asc | sudo gpg --dearmor -o /etc/apt/trusted.gpg.d/pgdg.gpg
           sudo apt-get update
-          sudo apt-get install -y postgresql-client-16 || sudo apt-get install -y postgresql-client
+          # Neon runs Postgres 18 — pg_dump refuses to dump a newer server with
+          # an older client, so install the v18 client (fallback: PGDG meta = latest).
+          sudo apt-get install -y postgresql-client-18 || sudo apt-get install -y postgresql-client
           python -m pip install --quiet boto3
 
       - name: Run Neon → R2 backup
@@ -43,9 +45,9 @@ jobs:
           R2_BUCKET_NAME: dchub-backups
           BACKUP_RETENTION_DAYS: "30"
         run: |
-          # prefer the version-matched client if installed
-          if [ -x /usr/lib/postgresql/16/bin/pg_dump ]; then
-            export PATH="/usr/lib/postgresql/16/bin:$PATH"
+          # prefer the version-matched (v18) client if installed
+          if [ -x /usr/lib/postgresql/18/bin/pg_dump ]; then
+            export PATH="/usr/lib/postgresql/18/bin:$PATH"
           fi
           pg_dump --version
           python backup_neon_to_r2.py
