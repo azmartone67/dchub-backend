@@ -326,11 +326,22 @@ def resolve_tier(api_key: Optional[str]) -> Tier:
     # Check in-memory store first
     if api_key in _key_store:
         return _key_store[api_key]
-    # Prefix-based resolution (fast path for new-style keys)
-    if api_key.startswith("dchub_ent_"): return Tier.ENTERPRISE
-    if api_key.startswith("dchub_pro_"): return Tier.PRO
-    if api_key.startswith("dchub_dev_"): return Tier.DEVELOPER
-    if api_key.startswith("dchub_sta_"): return Tier.STARTER
+    # Prefix-based resolution (fast path for new-style keys).
+    # r78-b (2026-06-09): partner_key_issuer mints keys with LONG-FORM plan
+    # names — dchub_developer_*, dchub_enterprise_* — but this resolver
+    # only knew the short forms. Long-form fell through to the DB hash
+    # lookup, which doesn't match partner keys (stored raw, not hashed),
+    # so tier resolved to FREE → site_risk_water gate fired 402 on NLR
+    # partner keys. Accept BOTH forms. Long-form match check goes first
+    # because "dchub_enterprise_" startswith "dchub_ent" — short check
+    # would consume the long-form key incorrectly.
+    if api_key.startswith("dchub_enterprise_"): return Tier.ENTERPRISE
+    if api_key.startswith("dchub_developer_"):  return Tier.DEVELOPER
+    if api_key.startswith("dchub_starter_"):    return Tier.STARTER
+    if api_key.startswith("dchub_ent_"):        return Tier.ENTERPRISE
+    if api_key.startswith("dchub_pro_"):        return Tier.PRO
+    if api_key.startswith("dchub_dev_"):        return Tier.DEVELOPER
+    if api_key.startswith("dchub_sta_"):        return Tier.STARTER
     # Phase DDDDD (2026-05-16): auto-mint trial keys (`dch_trial_`)
     # resolve as IDENTIFIED tier. Validation against DB happens lazily
     # on first call; the prefix check here keeps the hot path fast.

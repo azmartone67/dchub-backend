@@ -24687,11 +24687,17 @@ def api_site_forecast():
         try:
             with pg_connection() as _kconn:
                 _kc = _kconn.cursor()
+                # r78-b (2026-06-09): switched from users.plan (via JOIN) to
+                # api_keys.plan (direct). Partner keys minted by
+                # partner_key_issuer.py set api_keys.plan='developer' correctly
+                # but the users.plan may not always be updated in sync (depends
+                # on the user-creation/update branch hit during issuance).
+                # api_keys is the canonical source for per-key tier.
                 _kc.execute(
-                    "SELECT u.plan FROM api_keys ak JOIN users u ON ak.user_id = u.id "
-                    "WHERE ak.key_hash = %s AND ak.is_active = 1 LIMIT 1", (api_key,))
+                    "SELECT plan FROM api_keys WHERE key_hash = %s "
+                    "AND is_active = 1 LIMIT 1", (api_key,))
                 _krow = _kc.fetchone()
-                if _krow:
+                if _krow and _krow[0]:
                     plan = _krow[0]
         except Exception:
             pass
