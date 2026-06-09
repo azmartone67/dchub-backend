@@ -420,6 +420,34 @@ def should_mint_claim():
                     should_mint=False, count=count,
                     threshold=HIGH_INTENT_THRESHOLD,
                 )
+            # Session-level dedup (2026-06-09): a human needs ONE claim link
+            # per SESSION, not one per tool. If this session already minted a
+            # fresh, unredeemed claim on ANY tool, reuse it instead of signing
+            # a new token. Without this, a session that crosses threshold on N
+            # tools mints N claims — the inflated mint-rate (e.g. 1700%) symptom.
+            cur.execute(
+                """SELECT claim_token, claim_minted_at, claim_variant
+                     FROM mcp_high_intent_sessions
+                    WHERE mcp_session_id = %s
+                      AND claim_token IS NOT NULL
+                      AND claim_used_at IS NULL
+                      AND claim_minted_at IS NOT NULL
+                    ORDER BY claim_minted_at DESC
+                    LIMIT 1""",
+                (sid,),
+            )
+            sess = cur.fetchone()
+            if sess and sess[0] and sess[1] is not None:
+                if (datetime.now(timezone.utc) - sess[1]).total_seconds() < CLAIM_TOKEN_TTL_S:
+                    return jsonify(
+                        should_mint=True,
+                        count=count,
+                        claim_token=sess[0],
+                        claim_url=f"https://dchub.cloud/claim/{sess[0]}",
+                        reused=True,
+                        variant=(sess[2] if (len(sess) > 2 and sess[2]) else (existing_variant or "generic")),
+                        threshold=HIGH_INTENT_THRESHOLD,
+                    )
             # Mint a fresh token + persist. Lock the variant on mint if it
             # wasn't already set (fallback: 'generic'). Existing variant
             # wins — first observation is the stickiest signal.
