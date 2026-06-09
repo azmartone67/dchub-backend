@@ -24,10 +24,28 @@ jobs:
           # stream; sitemap lastmod is uniform so 'recent' alone can't surface them).
           # recent=1 → recent sitemap URLs as a belt-and-suspenders net for news/press
           # (those also get an INSTANT in-process ping at publish time).
-          code=$(curl -sS -m 60 -X POST \
-            -H "X-Admin-Key: ${{ secrets.DCHUB_ADMIN_KEY }}" \
-            -o body.json -w "%{http_code}" \
-            "https://api.dchub.cloud/api/v1/admin/indexnow?facilities=1&recent=1&n=2000" || echo 000)
-          echo "HTTP $code"; cat body.json || true
-          # Only fail on a server error; a no-op/empty is fine.
-          [ "$code" -ge 500 ] 2>/dev/null && exit 1 || exit 0
+          # 2026-06-08: hit the Railway ORIGIN directly. Submitting 2000 URLs is slow
+          # and exceeded the api.dchub.cloud zone-worker proxy timeout → 503 "backend
+          # unreachable" (worker_version 4.9.17) even while the backend was healthy.
+          # The origin has no proxy cap (curl -m 90 covers it). Retry 3x for transient
+          # deploy windows.
+          ORIGIN="https://dchub-backend-production.up.railway.app"
+          code=000
+          for attempt in 1 2 3; do
+            code=$(curl -sS -m 90 -X POST \
+              -H "X-Admin-Key: ${{ secrets.DCHUB_ADMIN_KEY }}" \
+              -o body.json -w "%{http_code}" \
+              "$ORIGIN/api/v1/admin/indexnow?facilities=1&recent=1&n=2000" || echo 000)
+            echo "attempt $attempt → HTTP $code"; head -c 300 body.json 2>/dev/null; echo ""
+            [ "$code" = "200" ] && break
+            [ "$attempt" -lt 3 ] && sleep 10
+          done
+          # IndexNow is best-effort (news/press also ping in-process at publish time),
+          # so a persistent non-200 is a WARNING, not a hard CI failure — it just retries
+          # next schedule. The real page/backend guards are route-smoke + surveillance.
+          if [ "$code" = "200" ]; then
+            echo "✅ submitted"
+          else
+            echo "::warning::IndexNow non-200 ($code) after 3 tries — best-effort, retries next run"
+          fi
+          exit 0
