@@ -160,6 +160,23 @@ def validate_key():
                     "email":        None,
                     "source":       "auto_trial",
                 }), 200
+            # 2026-06-08 conversion lever: distinguish the unbound daily-cap hit
+            # (15/day) so the agent gets the specific "bind email to unlock 50/day"
+            # nudge at the exact moment of friction — not a bare invalid. Still
+            # valid:False (Node falls back to the free-tier paywall hint), but
+            # carries the bind CTA for clients that surface structured hints.
+            if _reason in ("daily_cap_unbound", "daily_cap"):
+                return jsonify({
+                    "valid":  False,
+                    "tier":   "free",
+                    "reason": _reason,
+                    "upgrade_hint": (
+                        "DC Hub trial daily cap reached. Bind your operator's "
+                        "email to unlock 50 calls/day: POST "
+                        "/api/v1/keys/auto-trial/bind {api_key, email}. "
+                        "(Agents can't pay — the email is how the upgrade reaches "
+                        "your human.)"),
+                }), 200
         except Exception:
             pass
         return jsonify({"valid": False, "tier": "free"}), 200
