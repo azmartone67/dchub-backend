@@ -437,3 +437,19 @@ def quick_score():
         "interactive_map_url": out.get("interactive_map_url"),
         "narrative":         out.get("narrative"),
     }), 200
+
+
+@land_power_mcp_bp.route("/api/v1/land-power/track", methods=["POST", "OPTIONS"])
+def land_power_track():
+    """Fire-and-forget analytics ping from the Land & Power map's site evaluations.
+    Public + intentionally lightweight: accept the body and return 204. No auth, so
+    the map's non-blocking telemetry can never 401 the browser console
+    (the endpoint simply didn't exist before — Devin/owner QA 2026-06-08)."""
+    hdrs = {"Access-Control-Allow-Origin": "*"}
+    if request.method == "OPTIONS":
+        return ("", 204, hdrs)
+    try:
+        request.get_json(silent=True)  # accept + discard; analytics payload is {filters:[]}
+    except Exception:
+        pass
+    return ("", 204, hdrs)
