@@ -1,0 +1,92 @@
+name: Funnel auto-tune (trial unbound cap)
+
+# Self-tuning conversion gate. The tiered trial (2026-06-09) caps unbound trials at
+# TRIAL_DAILY_CALLS_UNBOUND (15) and unlocks 50/day on email-bind — the lever that turns
+# anonymous agent-use into IDENTIFIED leads. But most agents call ~1.5×/day, so 15 may be
+# too loose to bite. This watches the IDENTIFIED count daily and, past a 48h grace window,
+# steps the cap down (15→10→8→6, floor 6) until email capture starts moving — then holds.
+#
+# Auto-apply needs the RAILWAY_TOKEN secret (project-scoped). Without it, the run still
+# reports the exact recommendation so you can set TRIAL_DAILY_CALLS_UNBOUND by hand.
+# Requires secret: DCHUB_ADMIN_KEY. Optional: RAILWAY_TOKEN (enables the auto part).
+
+on:
+  schedule:
+    - cron: "0 16 * * *"      # daily 16:00 UTC
+  workflow_dispatch: {}
+
+concurrency:
+  group: funnel-autotune
+  cancel-in-progress: false
+
+jobs:
+  autotune:
+    runs-on: ubuntu-latest
+    timeout-minutes: 6
+    env:
+      ORIGIN: https://dchub-backend-production.up.railway.app
+      GRACE_UNTIL: "2026-06-11"     # 48h after the 6-09 tiered-trial deploy
+      IDENTIFIED_TARGET: "5"        # "moving" = at least this many identified
+      FLOOR: "6"
+    steps:
+      - name: Watch identified + auto-tune the cap
+        run: |
+          set -uo pipefail
+          # ── read the current funnel state ──
+          STATS=$(curl -sS -m 30 "$ORIGIN/api/v1/keys/auto-trial/stats" || echo '{}')
+          IDENT=$(echo "$STATS" | python3 -c "import sys,json;print(int((json.load(sys.stdin).get('funnel') or {}).get('3_identified') or 0))" 2>/dev/null || echo 0)
+          MINTED=$(echo "$STATS" | python3 -c "import sys,json;print(int((json.load(sys.stdin).get('funnel') or {}).get('1_minted') or 0))" 2>/dev/null || echo 0)
+          # current effective cap = what a fresh unbound mint reports
+          MINT=$(curl -sS -m 20 -X POST "$ORIGIN/api/v1/keys/auto-mint?tool=autotune-probe" || echo '{}')
+          CAP=$(echo "$MINT" | python3 -c "import sys,json;print(int(json.load(sys.stdin).get('daily_calls') or 15))" 2>/dev/null || echo 15)
+          TODAY=$(date -u +%Y-%m-%d)
+
+          {
+            echo "## Funnel auto-tune — $TODAY"
+            echo "- identified (leads captured): **$IDENT**  ·  trials minted: $MINTED"
+            echo "- current unbound cap: **$CAP/day**"
+          } >> "$GITHUB_STEP_SUMMARY"
+
+          # ── 48h grace: observe only ──
+          if [[ "$TODAY" < "$GRACE_UNTIL" ]]; then
+            echo "::notice::Still in 48h grace (until $GRACE_UNTIL) — observing only. identified=$IDENT cap=$CAP"
+            echo "- decision: **observe** (in grace window)" >> "$GITHUB_STEP_SUMMARY"
+            exit 0
+          fi
+
+          # ── lead capture is working → hold ──
+          if [ "$IDENT" -ge "$IDENTIFIED_TARGET" ]; then
+            echo "::notice::identified=$IDENT ≥ $IDENTIFIED_TARGET — cap $CAP is working. Hold."
+            echo "- decision: **hold** — capture is moving (identified=$IDENT)" >> "$GITHUB_STEP_SUMMARY"
+            exit 0
+          fi
+
+          # ── stuck near zero → step the cap down ──
+          if [ "$CAP" -le "$FLOOR" ]; then
+            echo "::warning::Cap already at floor $FLOOR and identified still $IDENT — a lower cap isn't the answer. Needs human review (different lever: in-response email-capture, or messaging)."
+            echo "- decision: **escalate** — at floor $FLOOR, still stuck. Needs a different lever." >> "$GITHUB_STEP_SUMMARY"
+            exit 0
+          fi
+          if   [ "$CAP" -gt 10 ]; then NEW=10
+          elif [ "$CAP" -gt 8  ]; then NEW=8
+          else NEW="$FLOOR"; fi
+
+          echo "::warning::identified stuck at $IDENT past grace → stepping cap $CAP → $NEW"
+          echo "- decision: **step down** $CAP → **$NEW** (identified still $IDENT)" >> "$GITHUB_STEP_SUMMARY"
+
+          # ── apply via Railway if token present; else report the manual command ──
+          if [ -n "${RAILWAY_TOKEN:-}" ]; then
+            npm i -g @railway/cli >/dev/null 2>&1 || true
+            if railway variables --set "TRIAL_DAILY_CALLS_UNBOUND=$NEW" --service dchub-backend >/tmp/rw 2>&1; then
+              echo "::notice::auto-tuned TRIAL_DAILY_CALLS_UNBOUND → $NEW (Railway redeploys to apply)"
+              echo "- applied: ✅ Railway env set to $NEW (auto-redeploy)" >> "$GITHUB_STEP_SUMMARY"
+            else
+              echo "::warning::railway set failed: $(tail -1 /tmp/rw). Set TRIAL_DAILY_CALLS_UNBOUND=$NEW manually."
+              echo "- applied: ⚠️ Railway set failed — set TRIAL_DAILY_CALLS_UNBOUND=$NEW by hand" >> "$GITHUB_STEP_SUMMARY"
+            fi
+          else
+            echo "::warning::RAILWAY_TOKEN not set — add it (project-scoped) to enable auto-apply. For now set TRIAL_DAILY_CALLS_UNBOUND=$NEW on Railway manually."
+            echo "- applied: ⚠️ no RAILWAY_TOKEN — set \`TRIAL_DAILY_CALLS_UNBOUND=$NEW\` on Railway manually" >> "$GITHUB_STEP_SUMMARY"
+          fi
+        env:
+          RAILWAY_TOKEN: ${{ secrets.RAILWAY_TOKEN }}
