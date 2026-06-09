@@ -130,10 +130,14 @@ _DISPATCH = [
     # so calling at :00/:05 of slot hours is safe even if both fire.
     # Without this entry, the quad only ran via manual force triggers and
     # all 4 slots fired in one 4-minute burst (LinkedIn spam-throttled).
+    # 2026-06-08 QUALITY OVER QUANTITY: cut LinkedIn 4x/day -> 2x/day. The 08:00
+    # (3-4 AM ET) and 20:00 (3-4 PM ET) slots are disabled; keep the two peak-
+    # engagement slots 12:00 (7-8 AM ET) + 16:00 (11 AM-noon ET). Fewer, sharper
+    # posts. (Combined with CONTENT_QUALITY_MIN 0.5 -> 0.72.)
     ("linkedin_quad_slot_08",
      f"{BASE}/api/v1/linkedin-quad/run",
      "POST",
-     lambda now: now.hour == 8 and now.minute < 10),
+     lambda now: False),  # disabled — 4->2/day quality cut
     ("linkedin_quad_slot_12",
      f"{BASE}/api/v1/linkedin-quad/run",
      "POST",
@@ -145,7 +149,7 @@ _DISPATCH = [
     ("linkedin_quad_slot_20",
      f"{BASE}/api/v1/linkedin-quad/run",
      "POST",
-     lambda now: now.hour == 20 and now.minute < 10),
+     lambda now: False),  # disabled — 4->2/day quality cut
 
     # r47.11 (2026-05-25): daily cross-post email — fires after slot_20
     # so the email body contains the freshest post for the day's

@@ -1485,7 +1485,11 @@ def _post_headline_signature(text: str) -> dict:
 # itself throws we log and allow — distribution must never dark-hold on a
 # bug), but fail-CLOSED for a confidently-computed low score.
 # ---------------------------------------------------------------------------
-QUALITY_MIN = float(os.environ.get('CONTENT_QUALITY_MIN', '0.5'))
+# 2026-06-08: raised 0.5 -> 0.72 (quality over quantity). At 0.5 roughly half of
+# generated posts shipped; the operator wants fewer, sharper posts. 0.72 means a
+# post must clear a clearly-above-average bar (data specificity + freshness +
+# hook) to publish. Override with CONTENT_QUALITY_MIN env if you want to retune.
+QUALITY_MIN = float(os.environ.get('CONTENT_QUALITY_MIN', '0.72'))
 
 # Phrases that signal the post references something recent (freshness). Kept
 # in sync with the cadence language marketing_engine leads with ("in the last
