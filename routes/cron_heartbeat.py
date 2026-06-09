@@ -295,10 +295,15 @@ _DISPATCH = [
     # send. The endpoint is IDEMPOTENT per (week_of, dry_run), so checking hourly
     # (top of each hour) safely sends exactly ONCE per week AND catches up within
     # the hour if a week's slot was missed — the rest are cheap no-op dedupe hits.
+    # Fire on EVERY heartbeat: GitHub-cron latency makes a narrow minute-window
+    # unreliable (the :00 run often lands at :07 and misses it). send_weekly_digest
+    # dedupes per (week_of, dry_run) BEFORE rendering (cheap ~1 DB query), so this
+    # safely sends exactly ONCE per week and delivers on the very next tick — the
+    # other ~287 daily calls are no-op dedupe returns.
     ("strategic_digest_weekly",
      f"{BASE}/api/v1/admin/brain/strategic-digest/send",
      "POST",
-     lambda now: now.minute < 5),
+     lambda now: True),
 ]
 
 
