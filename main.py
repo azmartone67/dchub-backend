@@ -24683,25 +24683,35 @@ def api_site_forecast():
         (request.headers.get('Authorization', '')[7:].strip()
          if request.headers.get('Authorization', '').startswith('Bearer ') else '')
     )
+    is_partner = False
     if api_key and api_key.startswith('dchub_'):
         try:
             with pg_connection() as _kconn:
                 _kc = _kconn.cursor()
-                # r78-b (2026-06-09): switched from users.plan (via JOIN) to
-                # api_keys.plan (direct). Partner keys minted by
-                # partner_key_issuer.py set api_keys.plan='developer' correctly
-                # but the users.plan may not always be updated in sync (depends
-                # on the user-creation/update branch hit during issuance).
-                # api_keys is the canonical source for per-key tier.
+                # r78-b: api_keys.plan is canonical for tier.
                 _kc.execute(
                     "SELECT plan FROM api_keys WHERE key_hash = %s "
                     "AND is_active = 1 LIMIT 1", (api_key,))
                 _krow = _kc.fetchone()
                 if _krow and _krow[0]:
                     plan = _krow[0]
+                # r78-c (2026-06-09): probe partner_keys_issued by key_prefix
+                # as well. Partner-tier plans use custom labels
+                # ('research_seed', etc.) that don't fit the standard hierarchy
+                # — any active partner key gets Pro treatment regardless of
+                # how the plan column is labeled. Mirrors the
+                # partner-key bypass in api_tier_gating.validate_api_key
+                # added in r73-b.
+                _key_prefix = api_key[:28]
+                _kc.execute(
+                    "SELECT 1 FROM partner_keys_issued "
+                    "WHERE key_prefix = %s AND revoked_at IS NULL LIMIT 1",
+                    (_key_prefix,))
+                if _kc.fetchone():
+                    is_partner = True
         except Exception:
             pass
-    is_pro = plan in ('pro', 'enterprise', 'developer')
+    is_pro = is_partner or plan in ('pro', 'enterprise', 'developer')
 
     scores = {}
     details = {}
