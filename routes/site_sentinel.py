@@ -496,16 +496,41 @@ def _scan_one(entry: dict) -> dict:
             # visitors load the page fine. This produced a false "Pricing down"
             # critical finding. Treat a CF-challenge 403 as a soft skip, not a
             # broken page.
-            if out["status_code"] in (403, 503):
+            _csnip = ""
+            try:
+                _csnip = (body.decode("utf-8", "ignore") if isinstance(body, bytes)
+                          else (body or ""))[:4000].lower()
+            except Exception:
                 _csnip = ""
-                try:
-                    _csnip = (body.decode("utf-8", "ignore") if isinstance(body, bytes)
-                              else (body or ""))[:2000].lower()
-                except Exception:
-                    _csnip = ""
+            # r63-qa: Cloudflare HARD errors (origin/DNS misconfig) are served as
+            # 403/5xx whose error page ALSO contains "cloudflare"/"ray id" — so the
+            # challenge-skip below was masking real outages as healthy. The live
+            # example: /connect/* → Error 1000 "DNS points to prohibited IP" was
+            # logged "waf_challenge_skipped" (green) while dead for every visitor.
+            # Detect CF hard errors FIRST and fail them as genuine outages.
+            _cf_hard = {
+                "1000": ("error 1000", "dns points to prohibited ip"),
+                "1001": ("error 1001", "dns resolution error"),
+                "1014": ("error 1014",),
+                "1016": ("error 1016", "origin dns error"),
+                "521":  ("error 521", "web server is down"),
+                "522":  ("error 522", "connection timed out"),
+                "523":  ("error 523", "origin is unreachable"),
+                "525":  ("error 525", "ssl handshake failed"),
+            }
+            for _code, _markers in _cf_hard.items():
+                if any(m in _csnip for m in _markers):
+                    out["reason"] = f"cf_error_{_code}"
+                    return out  # healthy stays False — real outage, not a skip
+            # A genuine Cloudflare anti-bot CHALLENGE served to OUR OWN self-probe
+            # (not a real visitor) is not a page outage. Match only true
+            # challenge/block markers — NOT bare "cloudflare"/"ray id", which
+            # appear on every CF error page including the hard errors above.
+            if out["status_code"] in (403, 503):
                 if any(m in _csnip for m in (
                         "just a moment", "cf-challenge", "/cdn-cgi/challenge",
-                        "attention required", "cloudflare", "ray id")):
+                        "challenge-platform", "attention required",
+                        "enable javascript and cookies")):
                     out["healthy"] = True
                     out["reason"] = "waf_challenge_skipped"
                     return out
