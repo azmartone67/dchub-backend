@@ -286,6 +286,17 @@ _DISPATCH = [
      f"{BASE}/api/v1/admin/exports/build",
      "POST",
      lambda now: now.hour == 9 and now.minute < 5),
+
+    # 2026-06-08: DELIVER the weekly strategic intelligence briefing (Mon 15:00
+    # UTC). The brain generates ~20 product-enhancement recommendations from
+    # competitor gaps + agent demand + paywall pressure — but it had NO cron and
+    # only ever sent a dry-run, so the operator never received it. send_weekly_
+    # digest()'s _admin_ok accepts X-Internal-Key (which _hit sends) and dry_run
+    # defaults to the env (false) → real send. Idempotent per (week_of, dry_run).
+    ("strategic_digest_weekly",
+     f"{BASE}/api/v1/admin/brain/strategic-digest/send",
+     "POST",
+     lambda now: now.weekday() == 0 and now.hour == 15 and now.minute < 5),
 ]
 
 
