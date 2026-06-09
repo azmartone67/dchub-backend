@@ -24695,18 +24695,21 @@ def api_site_forecast():
                 _krow = _kc.fetchone()
                 if _krow and _krow[0]:
                     plan = _krow[0]
-                # r78-c (2026-06-09): probe partner_keys_issued by key_prefix
-                # as well. Partner-tier plans use custom labels
-                # ('research_seed', etc.) that don't fit the standard hierarchy
-                # — any active partner key gets Pro treatment regardless of
-                # how the plan column is labeled. Mirrors the
-                # partner-key bypass in api_tier_gating.validate_api_key
-                # added in r73-b.
-                _key_prefix = api_key[:28]
+                # r78-c (2026-06-09): probe partner_keys_issued by LIKE-prefix.
+                # Partner-tier plans use custom labels ('research_seed', etc.)
+                # that don't fit the standard hierarchy — any active partner
+                # key gets Pro treatment regardless of how the plan column is
+                # labeled. partner_keys_issued.key_prefix is 24 chars
+                # (dchub_<plan>_<first-8-of-body>) per partner_key_issuer.py
+                # line 167; the issued raw key is ~48 chars total. LIKE-prefix
+                # match works regardless of either length changing in future.
+                # Mirrors the partner-key bypass added in r73-b to
+                # api_tier_gating.validate_api_key.
                 _kc.execute(
                     "SELECT 1 FROM partner_keys_issued "
-                    "WHERE key_prefix = %s AND revoked_at IS NULL LIMIT 1",
-                    (_key_prefix,))
+                    "WHERE %s LIKE key_prefix || '%%' "
+                    "  AND revoked_at IS NULL LIMIT 1",
+                    (api_key,))
                 if _kc.fetchone():
                     is_partner = True
         except Exception:
