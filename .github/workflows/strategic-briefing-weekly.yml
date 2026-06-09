@@ -34,8 +34,11 @@ jobs:
             "https://dchub-backend-production.up.railway.app/api/v1/admin/brain/strategic-synthesis/run?force=1" | head -c 500
           echo ""
 
-      - name: 2) Wait for recs to persist
-        run: sleep 15
+      # The synthesis run is ASYNC — it returns {"accepted":true,"started in
+      # background"} immediately and the Opus pass + DB persist take 30-90s.
+      # Wait long enough that the recs exist before the digest renders.
+      - name: 2) Wait for the background Opus pass to persist recs (30-90s)
+        run: sleep 110
 
       - name: 3) Send the briefing email
         run: |
