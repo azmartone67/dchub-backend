@@ -379,7 +379,7 @@ def energy_discovery_status():
             for label, table, ts in [
                 ('total_substations',      'substations',        'updated_at'),
                 ('total_pipelines',        'gas_pipelines',      'updated_at'),
-                ('total_power_plants',     'power_plants_eia',   'created_at'),
+                ('total_power_plants',     'power_plants_eia',   None),  # no ts column on this table -> plain COUNT (silences created_at/inserted_at log spam)
                 ('total_transmissions',    'transmission_lines', 'created_at'),
                 ('total_wind_projects',    'wind_projects',      'updated_at'),
                 ('total_gas_compressors',  'gas_compressors',    'updated_at'),

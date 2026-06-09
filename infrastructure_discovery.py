@@ -1027,7 +1027,7 @@ class SubstationDiscovery:
                 INSERT INTO substations
                 (name, operator, voltage_kv, capacity_mva, city, state, lat, lng, source, source_id)
                 VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s)
-                ON CONFLICT(source_id) DO NOTHING
+                ON CONFLICT DO NOTHING
             ''', (
                 sub['name'][:200],
                 sub.get('operator', '')[:100],
