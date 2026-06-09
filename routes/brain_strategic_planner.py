@@ -676,7 +676,13 @@ def _call_claude(prompt: str) -> Optional[dict]:
                 },
                 json={
                     "model":      model,
-                    "max_tokens": 3200,
+                    # 2026-06-08 FIX: was 3200 — too small for the ~20-rec JSON
+                    # once the prompt was enriched (r63 history+rejection memory).
+                    # The response truncated mid-string (~char 8-10k) → "Unterminated
+                    # string" JSON parse failure → all models failed → no recs persisted
+                    # → the weekly briefing silently never delivered. 16000 fits the
+                    # full synthesis with headroom (safe for opus-4-8/sonnet-4-5/haiku-4-5).
+                    "max_tokens": 16000,
                     "system":     _SYSTEM_PROMPT,
                     "messages":   [{"role": "user", "content": prompt}],
                 },
