@@ -44,6 +44,15 @@ def _hit(url, method="POST", timeout=30):
         _ik = os.environ.get("DCHUB_INTERNAL_KEY") or os.environ.get("DCHUB_SYNC_KEY")
         if _ik:
             _headers["X-Internal-Key"] = _ik
+        # 2026-06-08 FIX: the admin routes' _admin_ok() compares the provided
+        # header against DCHUB_ADMIN_KEY (not the internal key), so X-Internal-Key
+        # (=DCHUB_INTERNAL_KEY, a DIFFERENT value) failed hmac.compare_digest and
+        # silently 403'd EVERY admin-gated dispatch job (strategic synthesis +
+        # digest never ran/sent). Also send X-Admin-Key=DCHUB_ADMIN_KEY so those
+        # routes authorize cron-originated calls correctly.
+        _ak = os.environ.get("DCHUB_ADMIN_KEY")
+        if _ak:
+            _headers["X-Admin-Key"] = _ak
         req = urllib.request.Request(
             url, data=data, method=method,
             headers=_headers,
