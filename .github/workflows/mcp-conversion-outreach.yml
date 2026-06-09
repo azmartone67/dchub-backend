@@ -1,0 +1,38 @@
+name: MCP Conversion Outreach (weekly)
+
+# Pulls the addressable upgrade pool — free users repeatedly hitting PAID tools
+# (get_grid_intelligence: 160 distinct users, get_fiber_intel: 157) — and the
+# pre-drafted outreach for them, so the operator can convert the funnel instead
+# of letting 300+ near-converters sit. Authenticates with DCHUB_ADMIN_KEY.
+#
+# /api/v1/admin/funnel/near-converters already ranks the pool + drafts the emails
+# (r67-c/r70-a). This surfaces them on a schedule into the Actions log (and is the
+# hook point to auto-email them later once you approve the copy).
+
+on:
+  schedule:
+    - cron: "0 15 * * 1"     # Monday 15:00 UTC (after the strategic briefing)
+  workflow_dispatch: {}
+
+concurrency:
+  group: mcp-conversion-outreach
+  cancel-in-progress: false
+
+jobs:
+  outreach:
+    runs-on: ubuntu-latest
+    timeout-minutes: 6
+    steps:
+      - name: Pull the near-converter pool + drafts (origin direct)
+        run: |
+          echo "=== Addressable upgrade pool (free users on paid tools) ==="
+          curl -sS -m 60 \
+            -H "X-Admin-Key: ${{ secrets.DCHUB_ADMIN_KEY }}" \
+            "https://dchub-backend-production.up.railway.app/api/v1/admin/funnel/near-converters?limit=40&drafts=1" \
+            | python3 -m json.tool 2>/dev/null | head -200
+          echo ""
+          echo "=== Bots filtered out (sanity — don't outreach these) ==="
+          curl -sS -m 30 \
+            -H "X-Admin-Key: ${{ secrets.DCHUB_ADMIN_KEY }}" \
+            "https://dchub-backend-production.up.railway.app/api/v1/admin/funnel/bots-detected?limit=10" \
+            | python3 -c "import sys,json;d=json.load(sys.stdin);print('bots:',len(d.get('bots') or d.get('rows') or []))" 2>/dev/null || true
