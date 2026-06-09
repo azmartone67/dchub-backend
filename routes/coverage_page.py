@@ -102,6 +102,7 @@ def coverage_json():
     return resp
 
 
+# AUTO-REPAIR: duplicate route '/coverage' also in routes/failover_warm.py:143 — review and remove one
 @coverage_page_bp.route("/coverage", methods=["GET"])
 def coverage_html():
     d = _compute_coverage()

@@ -867,7 +867,7 @@ def send_newsletter(ctx: dict, recipients: list[str], issue_id: str,
                         INSERT INTO newsletter_issues
                             (issue_id, sent_at, recipient_count,
                              content_html, content_json)
-                        VALUES (%s, NOW(), %s, %s, %s)
+                        VALUES (%s, NOW() ON CONFLICT DO NOTHING, %s, %s, %s)
                         ON CONFLICT (issue_id) DO UPDATE
                             SET recipient_count = newsletter_issues.recipient_count
                                                   + EXCLUDED.recipient_count
@@ -1095,7 +1095,7 @@ def unsubscribe(token):
                     cur.execute("""
                         INSERT INTO newsletter_subscribers
                             (email, source, subscribed_at, unsubscribed_at)
-                        VALUES (%s, 'unsub', NOW(), NOW())
+                        VALUES (%s, 'unsub', NOW() ON CONFLICT DO NOTHING, NOW())
                         ON CONFLICT (email) DO UPDATE
                             SET unsubscribed_at = NOW()
                     """, (email,))

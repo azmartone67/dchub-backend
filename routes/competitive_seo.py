@@ -610,6 +610,7 @@ def _html_headers() -> dict:
     return {"Cache-Control": "public, max-age=900, s-maxage=3600"}
 
 
+# AUTO-REPAIR: duplicate route '/vs/<slug>' also in routes/competitive_vs.py:213 — review and remove one
 @competitive_seo_bp.route("/vs/<slug>", methods=["GET"], strict_slashes=False)
 def vs_page(slug):
     """Factual 'DC Hub vs <Competitor>' comparison landing page. NEVER 500s:

@@ -879,7 +879,7 @@ def create_build_top10_series(start_date: datetime.date | None = None) -> dict[s
                             (content, platform, publish_platform, status,
                              created_at, media_topic_tags)
                         VALUES (%s, 'linkedin', 'linkedin', 'approved',
-                                NOW(), %s::jsonb)
+                                NOW() ON CONFLICT DO NOTHING, %s::jsonb)
                         RETURNING id
                     """, (body, json.dumps(["market_brief", "dcpi_verdict"])))
                     smp_id = cur.fetchone()[0]
@@ -979,7 +979,7 @@ def record_li_click(short_code: str, destination: str,
                 INSERT INTO media_link_clicks
                     (short_code, destination, session_id, referer, user_agent,
                      ip_hash, topic, smp_id)
-                VALUES (%s, %s, %s, %s, %s, %s, %s, %s)
+                VALUES (%s, %s, %s, %s, %s, %s, %s, %s) ON CONFLICT DO NOTHING
             """, (short_code, destination, session_id, referer, ua,
                   _hash_ip(ip), topic, smp_id))
     except Exception as e:
