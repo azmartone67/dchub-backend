@@ -40,6 +40,18 @@ jobs:
       - name: 2) Wait for the background Opus pass to persist recs (30-90s)
         run: sleep 110
 
+      - name: 2b) DIAGNOSTIC — what did the background run actually do?
+        run: |
+          echo "--- bg-state (background runner's last result/error) ---"
+          curl -sS -m 30 \
+            -H "X-Admin-Key: ${{ secrets.DCHUB_ADMIN_KEY }}" \
+            "https://dchub-backend-production.up.railway.app/api/v1/admin/brain/strategic-synthesis/bg-state"
+          echo ""
+          echo "--- latest (did recs persist for this week?) ---"
+          curl -sS -m 30 \
+            "https://dchub-backend-production.up.railway.app/api/v1/brain/strategic-synthesis/latest" | head -c 300
+          echo ""
+
       - name: 3) Send the briefing email
         run: |
           echo "Sending digest (origin direct)..."
