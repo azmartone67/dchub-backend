@@ -65,6 +65,14 @@ def _conn():
 # v2: 7-day expiry + 50 calls/day. Forces renewal/upgrade decision quicker.
 TRIAL_DAYS         = 7
 TRIAL_DAILY_CALLS  = 50
+# 2026-06-08 conversion lever (founder-set: Conservative). Unbound trials (no
+# operator/signed-up email) get a small daily taste; binding the operator's email
+# unlocks the full TRIAL_DAILY_CALLS. Diagnosis: 894 trials minted → 143 activated
+# → 0 IDENTIFIED, because a full week of 50/day with no email meant agents never
+# had to involve their human (= no lead = nothing to convert). 15/day is generous
+# enough to protect the "agents reach for DC Hub" moat while making heavy
+# power-users (the real leads) bind. Tune via env without a deploy.
+TRIAL_DAILY_UNBOUND = int(os.environ.get("TRIAL_DAILY_CALLS_UNBOUND", "15"))
 
 _SCHEMA = """
 CREATE TABLE IF NOT EXISTS auto_trial_keys (
@@ -76,6 +84,8 @@ CREATE TABLE IF NOT EXISTS auto_trial_keys (
     request_ua       TEXT,
     last_used_at     TIMESTAMPTZ,
     call_count       INT NOT NULL DEFAULT 0,
+    daily_count      INT NOT NULL DEFAULT 0,
+    daily_date       DATE,
     signed_up_email  TEXT,
     operator_email   TEXT,
     operator_name    TEXT,
@@ -100,6 +110,11 @@ def _ensure_schema(c):
             cur.execute("ALTER TABLE auto_trial_keys ADD COLUMN IF NOT EXISTS operator_email TEXT")
             cur.execute("ALTER TABLE auto_trial_keys ADD COLUMN IF NOT EXISTS operator_name TEXT")
             cur.execute("ALTER TABLE auto_trial_keys ADD COLUMN IF NOT EXISTS client_name TEXT")
+            # 2026-06-08 conversion lever: per-day counter for the tiered cap
+            # (unbound trials get a small taste; binding the operator email unlocks
+            # the full daily allowance — the bridge that makes agents capture a lead).
+            cur.execute("ALTER TABLE auto_trial_keys ADD COLUMN IF NOT EXISTS daily_count INT NOT NULL DEFAULT 0")
+            cur.execute("ALTER TABLE auto_trial_keys ADD COLUMN IF NOT EXISTS daily_date DATE")
     except Exception:
         try: c.rollback()
         except Exception: pass
@@ -168,24 +183,28 @@ def mint_trial_for_request(req=None, tool_name: str = "", client_name: str = "",
                         "api_key":     r[0],
                         "expires_at":  r[1].isoformat() if r[1] else None,
                         "tier":        "IDENTIFIED",
-                        "daily_calls": TRIAL_DAILY_CALLS,
+                        "daily_calls": (TRIAL_DAILY_CALLS if operator_email
+                                        else TRIAL_DAILY_UNBOUND),
+                        "daily_calls_when_email_bound": TRIAL_DAILY_CALLS,
                         "trial_days":  TRIAL_DAYS,
                         "days_remaining": days_left,
                         "reused":      True,
                         "upgrade_cta": (
-                            f"Trial expires in {days_left} day(s). To keep this key "
-                            f"working AND email your operator a 1-click upgrade link, "
-                            f"bind their email: POST /api/v1/keys/auto-trial/bind "
+                            f"You're on {TRIAL_DAILY_UNBOUND} calls/day. Bind your "
+                            f"operator's email to unlock {TRIAL_DAILY_CALLS}/day + a "
+                            f"1-click upgrade link: POST /api/v1/keys/auto-trial/bind "
                             f"{{api_key, email}}."
                         ),
                         "operator_action": (
-                            "ACTION FOR YOUR HUMAN OPERATOR: reply with your work "
-                            "email to keep this data flowing — your agent can bind "
-                            "it via POST /api/v1/keys/auto-trial/bind {api_key, email}."
+                            f"ACTION FOR YOUR HUMAN OPERATOR: this key is capped at "
+                            f"{TRIAL_DAILY_UNBOUND}/day until you add your work email "
+                            f"— reply with it to unlock {TRIAL_DAILY_CALLS}/day "
+                            f"(agent binds via POST /api/v1/keys/auto-trial/bind "
+                            f"{{api_key, email}})."
                         ),
                         "instructions":(f"Use api_key in X-API-Key header. "
-                                         f"FREE for {days_left} more day(s) at "
-                                         f"{TRIAL_DAILY_CALLS}/day."),
+                                         f"{TRIAL_DAILY_UNBOUND} calls/day; bind your "
+                                         f"operator email to unlock {TRIAL_DAILY_CALLS}/day."),
                     }
             except Exception: pass
 
@@ -228,25 +247,27 @@ def mint_trial_for_request(req=None, tool_name: str = "", client_name: str = "",
         "api_key":     api_key,
         "expires_at":  expires,
         "tier":        "IDENTIFIED",
-        "daily_calls": TRIAL_DAILY_CALLS,
+        "daily_calls": TRIAL_DAILY_UNBOUND,
+        "daily_calls_when_email_bound": TRIAL_DAILY_CALLS,
         "trial_days":  TRIAL_DAYS,
         "days_remaining": TRIAL_DAYS,
         "reused":      False,
         "upgrade_cta": (
-            f"This trial gives {TRIAL_DAILY_CALLS} calls/day for {TRIAL_DAYS} days. "
-            f"To keep it working past the trial AND get your operator a 1-click "
-            f"upgrade link, bind their email: POST /api/v1/keys/auto-trial/bind "
-            f"{{api_key, email}}. (Binding emails the human the upgrade path — "
-            f"agents can't pay, humans do.)"
+            f"You have {TRIAL_DAILY_UNBOUND} free calls/day right now. Bind your "
+            f"operator's email to UNLOCK {TRIAL_DAILY_CALLS}/day for {TRIAL_DAYS} "
+            f"days + a 1-click upgrade link: POST /api/v1/keys/auto-trial/bind "
+            f"{{api_key, email}}. (Agents can't pay — humans do; the email is how "
+            f"the upgrade reaches yours.)"
         ),
         "operator_action": (
-            "ACTION FOR YOUR HUMAN OPERATOR: reply with your work email so this "
-            "key keeps working and you get the 1-click upgrade link. Your agent "
-            "can bind it via POST /api/v1/keys/auto-trial/bind {api_key, email}."
+            f"ACTION FOR YOUR HUMAN OPERATOR: this key is capped at "
+            f"{TRIAL_DAILY_UNBOUND} calls/day until you add your work email. Reply "
+            f"with it and your agent unlocks {TRIAL_DAILY_CALLS}/day via POST "
+            f"/api/v1/keys/auto-trial/bind {{api_key, email}}."
         ),
-        "instructions":(f"Use api_key in X-API-Key header. FREE for "
-                         f"{TRIAL_DAYS} days at {TRIAL_DAILY_CALLS}/day. "
-                         f"Bind your operator email to persist + upgrade: POST "
+        "instructions":(f"Use api_key in X-API-Key header. {TRIAL_DAILY_UNBOUND} "
+                         f"calls/day free; bind your operator's email to unlock "
+                         f"{TRIAL_DAILY_CALLS}/day for {TRIAL_DAYS} days: POST "
                          f"/api/v1/keys/auto-trial/bind {{api_key, email}} (or "
                          f"/redeem to convert to a 365-day IDENTIFIED key)."),
     }
@@ -266,27 +287,54 @@ def validate_trial_key(api_key: str) -> tuple[bool, str]:
     try:
         with c.cursor() as cur:
             try:
+                # Tiered daily cap: unbound trials get TRIAL_DAILY_UNBOUND/day;
+                # binding the operator (or signed-up) email unlocks the full
+                # TRIAL_DAILY_CALLS. This is the conversion lever — hitting the
+                # unbound cap is the moment the agent asks its human for an email.
                 cur.execute("""
-                    SELECT expires_at, signed_up_email FROM auto_trial_keys
-                     WHERE api_key = %s
+                    SELECT expires_at, signed_up_email, operator_email,
+                           COALESCE(daily_count, 0), daily_date
+                      FROM auto_trial_keys WHERE api_key = %s
                 """, (api_key,))
                 r = cur.fetchone()
                 if not r: return False, "unknown_trial_key"
-                expires = r[0]
-                if expires and expires < datetime.datetime.now(datetime.timezone.utc):
+                now = datetime.datetime.now(datetime.timezone.utc)
+                if r[0] and r[0] < now:
                     return False, "expired"
-                # Touch last_used_at + call_count
+                bound = bool(r[1]) or bool(r[2])
+                cap   = TRIAL_DAILY_CALLS if bound else TRIAL_DAILY_UNBOUND
+                today = now.date()
+                used_today = r[3] if r[4] == today else 0
+                if used_today >= cap:
+                    return False, ("daily_cap_unbound" if not bound else "daily_cap")
                 try:
                     cur.execute("""
                         UPDATE auto_trial_keys
                            SET last_used_at = NOW(),
-                               call_count = call_count + 1
+                               call_count   = call_count + 1,
+                               daily_count  = CASE WHEN daily_date = %s
+                                                   THEN daily_count + 1 ELSE 1 END,
+                               daily_date   = %s
                          WHERE api_key = %s
-                    """, (api_key,))
+                    """, (today, today, api_key))
                 except Exception: pass
                 return True, "ok"
             except Exception:
-                return False, "validation_failed"
+                # FAIL-OPEN: daily_* not migrated yet OR a transient error → fall
+                # back to the legacy expiry-only path so a caller is never wrongly
+                # blocked. (mint/redeem run _ensure_schema constantly, so the
+                # columns exist within seconds of deploy; this covers the gap.)
+                try:
+                    cur.execute("SELECT expires_at FROM auto_trial_keys WHERE api_key = %s", (api_key,))
+                    r = cur.fetchone()
+                    if not r: return False, "unknown_trial_key"
+                    if r[0] and r[0] < datetime.datetime.now(datetime.timezone.utc):
+                        return False, "expired"
+                    cur.execute("UPDATE auto_trial_keys SET last_used_at = NOW(), "
+                                "call_count = call_count + 1 WHERE api_key = %s", (api_key,))
+                    return True, "ok"
+                except Exception:
+                    return False, "validation_failed"
     finally:
         try: c.close()
         except Exception: pass
