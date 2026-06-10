@@ -29,41 +29,38 @@ _RANK_HIGHLIGHTS = [
 ]
 
 
+# The registries DC Hub is CONFIRMED listed on (homepage-verified). Curated + stable
+# so the shareable page never shows aspirational/abandoned crawler seeds as "listed".
+CONFIRMED_REGISTRIES = [
+    {"registry": "Smithery",              "url": "https://smithery.ai/server/@dchub/dchub-mcp-server"},
+    {"registry": "Glama",                 "url": "https://glama.ai/mcp/servers/azmartone67/dchub-mcp-server"},
+    {"registry": "mcp.so",                "url": "https://mcp.so/server/dchub-mcp-server"},
+    {"registry": "PulseMCP",              "url": "https://www.pulsemcp.com/servers/dchub"},
+    {"registry": "LobeHub",               "url": "https://lobehub.com/mcp/dchub-mcp-server"},
+    {"registry": "Official MCP Registry", "url": "https://github.com/modelcontextprotocol/registry"},
+]
+
+# Only recognizable AI platforms count as "connected" on the shareable page — internal
+# probes / health-checks / unknown SDKs ('deploy-probe', 'yellowmcp-health', 'unknown')
+# must never appear as social proof. Substring allowlist of real platforms.
+_PLATFORM_ALLOW = (
+    "claude", "anthropic", "chatgpt", "openai", "gpt", "gemini", "google", "bard",
+    "perplexity", "grok", "xai", "copilot", "microsoft", "meta", "llama", "deepseek",
+    "mistral", "cohere", "you.com", "youchat", "poe", "quora", "huggingface", "groq",
+    "cursor", "cline", "windsurf", "continue", "openrouter",
+)
+TOOLS_COUNT = 31
+
+
 def _registries_live():
-    """Registries DC Hub is listed on, from the live presence crawler table."""
-    try:
-        from main import get_db
-        import psycopg2.extras
-        c = get_db()
-        if c is None:
-            return []
-        with c.cursor(cursor_factory=psycopg2.extras.RealDictCursor) as cur:
-            cur.execute("""
-                SELECT registry_name, listing_url,
-                       dchub_metric_published_tools AS tools,
-                       dchub_metric_last_seen AS last_seen
-                  FROM mcp_presence_listings
-                 WHERE listing_url IS NOT NULL
-                   AND COALESCE(discovered, false) = false
-                 ORDER BY (dchub_metric_last_seen IS NOT NULL) DESC, registry_name
-                 LIMIT 30
-            """)
-            out = []
-            for r in cur.fetchall():
-                out.append({
-                    "registry": (r["registry_name"] or "").replace("-", " ").title(),
-                    "url": r["listing_url"],
-                    "tools": r.get("tools"),
-                    "listed": True,
-                    "last_seen": r["last_seen"].isoformat() if r.get("last_seen") else None,
-                })
-            return out
-    except Exception:
-        return []
+    """Confirmed registry listings (curated, homepage-verified)."""
+    return [{**r, "listed": True, "tools": None, "last_seen": None}
+            for r in CONFIRMED_REGISTRIES]
 
 
 def _platforms_live():
-    """Connected AI platforms from the live MCP activity endpoint (localhost)."""
+    """Connected AI platforms from live MCP activity — filtered to recognizable
+    brands so internal probes/health-checks never show as social proof."""
     try:
         req = urllib.request.Request(
             "http://127.0.0.1:8080/api/v1/mcp/platforms",
@@ -71,15 +68,18 @@ def _platforms_live():
         with urllib.request.urlopen(req, timeout=4) as resp:
             d = json.loads(resp.read(200000))
         rows = d.get("platforms") or []
-        active = [r for r in rows if (r.get("total_connections") or 0) > 0]
-        active.sort(key=lambda r: -(r.get("total_connections") or 0))
+        def _real(name):
+            n = (name or "").lower()
+            return any(a in n for a in _PLATFORM_ALLOW)
+        real = [r for r in rows if _real(r.get("platform")) and (r.get("total_connections") or 0) > 0]
+        real.sort(key=lambda r: -(r.get("total_connections") or 0))
         top = [{"platform": (r.get("platform") or "").replace("-", " ").title(),
                 "connections": r.get("total_connections"),
-                "status": r.get("status")} for r in active[:12]]
-        return {"active_count": len(active), "tracked_count": len(rows),
-                "tools_count": d.get("tools_count"), "top": top}
+                "status": r.get("status")} for r in real[:14]]
+        return {"active_count": len(real), "tracked_count": len(rows),
+                "tools_count": TOOLS_COUNT, "top": top}
     except Exception:
-        return {"active_count": None, "tracked_count": None, "tools_count": None, "top": []}
+        return {"active_count": None, "tracked_count": None, "tools_count": TOOLS_COUNT, "top": []}
 
 
 def _standing():
