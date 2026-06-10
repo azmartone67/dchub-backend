@@ -24,7 +24,7 @@ BASE = "https://dchub.cloud"
 # queries that define this category; Glama profile-completeness score.
 _RANK_HIGHLIGHTS = [
     {"registry": "Smithery", "claim": "#1 server for “data centers”, “energy”, “grid”, “power”, “fiber”, “hyperscale”, “interconnection”",
-     "source": "https://smithery.ai/server/@dchub/dchub-mcp-server"},
+     "source": "https://smithery.ai/servers/azmartone67/dchub"},
     {"registry": "Glama", "claim": "Quality score 83% (Server Coherence A · Tool Definition A)",
      "source": "https://glama.ai/mcp/servers/azmartone67/dchub-mcp-server"},
 ]
@@ -33,7 +33,7 @@ _RANK_HIGHLIGHTS = [
 # The registries DC Hub is CONFIRMED listed on (homepage-verified). Curated + stable
 # so the shareable page never shows aspirational/abandoned crawler seeds as "listed".
 CONFIRMED_REGISTRIES = [
-    {"registry": "Smithery",              "url": "https://smithery.ai/server/@dchub/dchub-mcp-server"},
+    {"registry": "Smithery",              "url": "https://smithery.ai/servers/azmartone67/dchub"},
     {"registry": "Glama",                 "url": "https://glama.ai/mcp/servers/azmartone67/dchub-mcp-server"},
     {"registry": "mcp.so",                "url": "https://mcp.so/server/dchub-mcp-server"},
     {"registry": "PulseMCP",              "url": "https://www.pulsemcp.com/servers/dchub"},
