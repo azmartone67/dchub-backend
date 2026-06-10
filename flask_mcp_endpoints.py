@@ -125,6 +125,35 @@ def _require_internal(fn):
 
 # ── POST /api/v1/keys/validate ─────────────────────────────────────────────
 
+# The Node gate (server.mjs applyTierGate) unlocks paid tools ONLY for
+# tier in ('paid','enterprise'). So validate MUST normalize granular plan
+# names (founding/pro/team/metered/…) to that vocabulary, or a paying
+# customer is gated. Mirrors the Stripe webhook's _paid_mcp_tier mapping.
+_ENT_PLANS  = {"enterprise", "research_seed", "admin"}
+_PAID_PLANS = {"paid", "pro", "founding", "team", "metered"}
+
+def _node_tier_max(plans):
+    """Highest Node-vocab tier across a list of plan strings.
+    enterprise > paid > (identified/starter/developer) > free."""
+    norm = set()
+    for p in plans:
+        p = (p or "").strip().lower()
+        if p in _ENT_PLANS:
+            norm.add("enterprise")
+        elif p in _PAID_PLANS:
+            norm.add("paid")
+        elif p:
+            norm.add(p)
+    if "enterprise" in norm:
+        return "enterprise"
+    if "paid" in norm:
+        return "paid"
+    for t in ("identified", "starter", "developer"):
+        if t in norm:
+            return t
+    return "free"
+
+
 @mcp_bp.post("/api/v1/keys/validate")
 @_require_internal
 def validate_key():
@@ -177,6 +206,43 @@ def validate_key():
                         "(Agents can't pay — the email is how the upgrade reaches "
                         "your human.)"),
                 }), 200
+        except Exception:
+            pass
+        # ── 2026-06-10: paid REST/dashboard key used directly at the MCP ──
+        # A web-signup founding/pro/enterprise customer points an agent at the
+        # MCP using their dashboard api_keys key (dchub_…). That key has NO
+        # mcp_dev_keys row, so the lookup above missed it and we were about to
+        # return 'free' — the SAME pay→free leak r77 fixed for keys that
+        # ALREADY had an mcp_dev_keys row, but never for a brand-new web signup.
+        # Resolve the key against api_keys (by key_hash, like mcp_gatekeeper) +
+        # users.plan and grant the real tier. Fail-soft → original free return.
+        try:
+            import hashlib as _hl
+            _kh = _hl.sha256(api_key.encode()).hexdigest()
+            with _pool.connection() as conn, conn.cursor() as cur:
+                cur.execute(
+                    "SELECT ak.rate_limit_tier, ak.plan, u.plan, u.email "
+                    "FROM api_keys ak LEFT JOIN users u ON u.id = ak.user_id "
+                    "WHERE ak.key_hash = %s "
+                    "AND (ak.is_active IS NULL OR ak.is_active IN (1, TRUE)) "
+                    "LIMIT 1",
+                    (_kh,),
+                )
+                _akr = cur.fetchone()
+            if _akr:
+                _nt = _node_tier_max([_akr[0], _akr[1], _akr[2]])
+                if _nt in ("paid", "enterprise"):
+                    return jsonify({
+                        "valid":        True,
+                        "tier":         _nt,
+                        "developer_id": None,
+                        "email":        _akr[3],
+                        "tier_source":  "api_keys_no_mcp_row",
+                        "tier_detail":  {"api_key_tier": _akr[0],
+                                         "api_key_plan": _akr[1],
+                                         "users_plan":   _akr[2],
+                                         "effective":    _nt},
+                    }), 200
         except Exception:
             pass
         return jsonify({"valid": False, "tier": "free"}), 200
@@ -238,7 +304,12 @@ def validate_key():
         candidates.append(plan_tier)
     if api_key_tier:
         candidates.append(api_key_tier)
-    effective_tier = max(candidates, key=lambda t: _RANK.get(t, 0))
+    # Normalize to the Node gate's vocabulary (server.mjs unlocks only
+    # 'paid'/'enterprise'); founding/pro/team/metered all map to 'paid'.
+    # Previously this returned the raw plan name (e.g. 'founding'), which the
+    # Node gate did not recognize → a founding/pro customer with an
+    # mcp_dev_keys row was silently gated to the paywall.
+    effective_tier = _node_tier_max(candidates)
 
     # If we promoted, log it (helps the L23 billing-drift detector spot
     # keys that need an mcp_dev_keys.tier backfill).
