@@ -832,3 +832,22 @@ def phase63_redeem(session_id):
         mimetype='text/html; charset=utf-8',
         headers={'Cache-Control': 'no-store, must-revalidate'},
     )
+
+
+@redeem_bp.route('/redeem', methods=['GET', 'POST'])
+@redeem_bp.route('/api/v1/redeem', methods=['GET', 'POST'])
+def phase63_redeem_bare():
+    """r79 (2026-06-10): bare /redeem — THE auto-trial conversion fix.
+
+    The auto_trial mint CTA hands every agent 'https://dchub.cloud/redeem to
+    convert to a 365-day IDENTIFIED key', but bare /redeem had no route
+    (404 at origin) and wasn't in the worker forward-list (403 at edge). So
+    100% of trial-key email-bind attempts hit a dead page — the funnel's
+    2_activated->3_identified step was a literal 100% drop (145 activated -> 0
+    identified -> 0 paid). This route makes the URL the CTA already uses
+    actually render the email-capture form. A fresh UUID session id means the
+    existing handler skips the pair-code redirect and renders the form inline
+    (each visitor isolated, no shared-code conflation); POST captures the
+    email + mints a key exactly like the session variant."""
+    import uuid as _uuid
+    return phase63_redeem(str(_uuid.uuid4()))

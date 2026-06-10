@@ -268,8 +268,9 @@ def mint_trial_for_request(req=None, tool_name: str = "", client_name: str = "",
         "instructions":(f"Use api_key in X-API-Key header. {TRIAL_DAILY_UNBOUND} "
                          f"calls/day free; bind your operator's email to unlock "
                          f"{TRIAL_DAILY_CALLS}/day for {TRIAL_DAYS} days: POST "
-                         f"/api/v1/keys/auto-trial/bind {{api_key, email}} (or "
-                         f"/redeem to convert to a 365-day IDENTIFIED key)."),
+                         f"/api/v1/keys/auto-trial/bind {{api_key, email}} (or send "
+                         f"your human to https://dchub.cloud/redeem to convert to a "
+                         f"365-day IDENTIFIED key)."),
     }
 
 
