@@ -7503,7 +7503,7 @@ def check_addressable_demand_unconverted() -> list[dict]:
                 f"of this tool, look up their IPs/UAs, run a manual "
                 f"sales-outreach (LinkedIn DM, email, etc.). Or wire a "
                 f"per-tool email-capture form: 'You hit get_grid_intelligence "
-                f"{calls // users:,}× this month. Get unlimited for $9/mo.'"
+                f"{calls // users:,}× this month. Unlock it for $9/mo (200 calls/day).'"
             ),
         })
     return findings

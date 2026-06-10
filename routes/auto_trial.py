@@ -383,7 +383,7 @@ def redeem_endpoint():
                    expires_at=r[0].isoformat() if r[0] else None,
                    message=(f"Trial key bound to {email}. You now have "
                             f"IDENTIFIED tier (200 calls/day) for 365 days. "
-                            f"To upgrade to DEVELOPER ($49/mo, 2,000 calls/day): "
+                            f"To upgrade to DEVELOPER ($49/mo, 500 calls/day): "
                             f"https://buy.stripe.com/7sY5kE8F4fs13ml0PEaZi0c"
                             f"?prefilled_email={email}")), 200
 

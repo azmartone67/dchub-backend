@@ -66,7 +66,9 @@ spec with live counts at https://api.dchub.cloud/openapi-live.json.
 ## Authentication
 
 - **Free tier**: 10 calls/day, no signup, no auth header
-- **Developer ($49/mo)**: 1000 calls/day, X-API-Key header — signup at https://dchub.cloud/signup
+- **Starter ($9/mo)**: 200 calls/day — unlocks all 30 tools + full grid, fiber & market data
+- **Developer ($49/mo)**: 500 calls/day, X-API-Key header — signup at https://dchub.cloud/signup
+- **Pro ($199/mo)**: 2,000 calls/day + analyze_site, compare_sites, PDF reports & CSV export
 - **Enterprise**: SLA + MCP 2025-06-18 OAuth — contact api@dchub.cloud
 
 ## Rate limits

@@ -361,6 +361,25 @@ def _draft_near_converter_pitch(nc: dict) -> str:
     except Exception:
         days_active = "30"
 
+    # Tier-aware pricing (canonical map 2026-06-09): which plan actually unlocks
+    # `top_tool`? Pro-only ($199/mo): analyze_site, compare_sites — the only tools
+    # above Starter. Everything else (grid/fiber/market/dcpi/tax/gas) unlocks at
+    # $9/mo Starter. Quoting $49 for a grid user oversells; quoting $49 for an
+    # analyze_site user UNDERSELLS (it won't unlock) — both kill the conversion.
+    _PRO_ONLY = {"analyze_site", "compare_sites"}
+    if top_tool in _PRO_ONLY:
+        price_block = (
+            f"`{top_tool}` is a Pro-tier tool. The $199/mo Pro plan unlocks it (plus\n"
+            f"compare_sites, PDF reports, CSV export, and Slack alerts) at 2,000\n"
+            f"calls/day — the 403s stop the moment you swap in your X-API-Key header.")
+    else:
+        price_block = (
+            f"Good news — `{top_tool}` unlocks on the $9/mo Starter plan (200 calls/day,\n"
+            f"all 30 tools, full grid + fiber + market data). At your cadence ({p403}\n"
+            f"blocked calls in {days_active} days) that's plenty, and the 403s stop the\n"
+            f"moment you swap in your X-API-Key header. Running heavier? $49/mo Developer\n"
+            f"is 500 calls/day.")
+
     return f"""Hi —
 
 I noticed {client} (via {platform}) called DC Hub's `{top_tool}` tool
@@ -368,13 +387,7 @@ I noticed {client} (via {platform}) called DC Hub's `{top_tool}` tool
 every one. You're clearly using DC Hub for real work — and the 403s
 mean every call is a wasted round-trip for your agent.
 
-A paid plan unblocks `{top_tool}` and every other gated tool. The
-$49/mo Developer plan gives you 500 calls/day — at your cadence
-({p403} blocked calls in {days_active} days) the 403s stop the moment
-you swap in your X-API-Key header.
-
-If that's more than you need, the $9/mo Starter covers 200 calls/day —
-plenty for most agents.
+{price_block}
 
 Two paths:
   1. Upgrade in 30 sec: https://dchub.cloud/pricing
