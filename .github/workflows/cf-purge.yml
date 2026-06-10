@@ -1,0 +1,44 @@
+name: Cloudflare cache purge
+
+# Purge specific URLs from Cloudflare's edge cache. Built because a stale 404 got
+# cached for /dcpi/leaderboard before the route existed (origin 200, edge 404), and
+# there was no token in the dev environment to purge it. Reusable for any future
+# "the edge is serving a stale page" situation.
+#
+# Requires GitHub secret: CLOUDFLARE_API_TOKEN (zone Cache Purge permission).
+# Optional secret: CLOUDFLARE_ZONE_ID (falls back to the dchub.cloud zone).
+
+on:
+  workflow_dispatch:
+    inputs:
+      urls:
+        description: "Space-separated absolute URLs to purge"
+        required: true
+        default: "https://dchub.cloud/dcpi/leaderboard https://dchub.cloud/mcp-standing"
+
+jobs:
+  purge:
+    runs-on: ubuntu-latest
+    timeout-minutes: 4
+    steps:
+      - name: Purge URLs from Cloudflare edge
+        env:
+          TOKEN: ${{ secrets.CLOUDFLARE_API_TOKEN }}
+          ZONE_SECRET: ${{ secrets.CLOUDFLARE_ZONE_ID }}
+          URLS: ${{ github.event.inputs.urls }}
+        run: |
+          if [ -z "$TOKEN" ]; then
+            echo "::error::CLOUDFLARE_API_TOKEN secret is not set. Add it (zone Cache Purge perm) and re-run, or purge in the CF dashboard."
+            exit 1
+          fi
+          ZONE="${ZONE_SECRET:-1cb22dda8d50546d6edf0c09a8be5128}"
+          BODY=$(python3 -c "import os,json;print(json.dumps({'files':os.environ['URLS'].split()}))")
+          echo "Purging: $URLS"
+          RESP=$(curl -sS -m 30 -X POST \
+            "https://api.cloudflare.com/client/v4/zones/$ZONE/purge_cache" \
+            -H "Authorization: Bearer $TOKEN" -H "Content-Type: application/json" \
+            --data "$BODY")
+          echo "$RESP" | python3 -m json.tool || echo "$RESP"
+          echo "$RESP" | python3 -c "import sys,json;d=json.load(sys.stdin);sys.exit(0 if d.get('success') else 1)" \
+            && echo "✅ purge succeeded" \
+            || { echo "::error::CF purge failed — check token permission / zone id"; exit 1; }
