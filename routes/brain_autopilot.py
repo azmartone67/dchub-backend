@@ -251,6 +251,25 @@ def _action_cron_schedule_collision(finding: dict) -> tuple[str | None, dict | N
     return "/api/v1/brain/cron-collision/propose", body
 
 
+def _action_outbound_distribution(finding: dict) -> tuple[str | None, dict | None]:
+    """r79 (2026-06-10) — promote outbound-distribution from escalation-only to
+    AUTONOMOUS audit/submit. The 'brain needs to do more' ask: ~6 MCP-registry
+    targets (lobehub, mcp_hive, toolhive, yellowmcp, mcphub, awesome_mcp) sat
+    'never audited / untried' for 37 radar cycles because the pattern's action
+    was hardcoded (None, None). check_outbound_distribution_health stamps the
+    finding url as `target:<key>`; this extracts the key and POSTs it to the
+    registry submit endpoint, which runs _submit_target + _audit_target. Effect:
+    the brain self-heals the distribution channel — 'never audited' clears and
+    the listing status refreshes on its own. Manual-submit-only registries
+    record a queued no-op (the endpoint handles that); the AUDIT always runs.
+    Same promotion pattern as Phase EEE data_freshness + Phase III cron."""
+    url = (finding.get("url") or "")
+    key = url.split("target:")[-1].strip() if "target:" in url else ""
+    if not key:
+        return None, None
+    return "/api/v1/admin/outreach/mcp-registry/submit", {"target": key}
+
+
 def _action_worker_source_unreachable(finding: dict) -> tuple[str | None, dict | None]:
     """raw.githubusercontent.com fetch failed (private repo, no token).
     Needs GITHUB_TOKEN env var. Escalate."""
@@ -814,10 +833,10 @@ _PATTERN_LIBRARY: dict[str, dict[str, Any]] = {
     # Anthropic). Fires if any registry is stale, "not_listed", or
     # has never been audited.
     "outbound_distribution_health": {
-        "action":      lambda f: (None, None),
-        "method":      None,
-        "use_admin":   False,
-        "description": "Escalation-only: an MCP-registry listing is missing OR the daily outreach cron hasn't run in 48h. See /api/v1/admin/outreach/mcp-registry/status. Fix: open the PR/form at the registry's manual_url, OR check GH Actions for the mcp-outreach.yml workflow status.",
+        "action":      _action_outbound_distribution,
+        "method":      "POST",   # r79 (2026-06-10): promoted escalation → autonomous
+        "use_admin":   True,     # mcp-registry/submit is admin-gated
+        "description": "Autonomous (r79): extracts target:<key> from the finding and POSTs to /api/v1/admin/outreach/mcp-registry/submit → runs submit + audit, clearing 'never audited' and refreshing listing status. The brain self-heals the distribution channel instead of escalating. Manual-only registries record a queued no-op; the audit always runs. Status: /api/v1/admin/outreach/mcp-registry/status.",
     },
     # Phase FF+25-followup-r14 (2026-05-20): coverage gap escalation.
     # User reported DCHawk has Calgary-metro facilities we don't. Fix
