@@ -44,6 +44,8 @@ _STATIC_PAGES = [
     ("/transactions", 0.8, "daily"),
     ("/capacity-pipeline", 0.8, "daily"),
     ("/rankings", 0.8, "weekly"),
+    ("/dcpi/leaderboard", 0.9, "daily"),    # 2026-06-08: canonical ranked-market leaderboard (structured-data page)
+    ("/mcp-standing", 0.8, "weekly"),       # MCP adoption / registry-standing page
     ("/brain", 0.6, "daily"),
     ("/gdci", 0.7, "weekly"),
     ("/about", 0.6, "monthly"),

@@ -49,3 +49,16 @@ jobs:
             echo "::warning::IndexNow non-200 ($code) after 3 tries — best-effort, retries next run"
           fi
           exit 0
+
+      - name: Submit key SEO pages explicitly (leaderboard, MCP standing, DCPI)
+        run: |
+          # 2026-06-08: explicitly re-ping the high-value structured pages every run so
+          # Perplexity/Google/Bing cite the LIVE leaderboard instead of stale LinkedIn posts.
+          ORIGIN="https://dchub-backend-production.up.railway.app"
+          curl -sS -m 60 -X POST \
+            -H "X-Admin-Key: ${{ secrets.DCHUB_ADMIN_KEY }}" \
+            -H "Content-Type: application/json" \
+            --data '{"urls":["https://dchub.cloud/dcpi/leaderboard","https://dchub.cloud/mcp-standing","https://dchub.cloud/dcpi"]}' \
+            "$ORIGIN/api/v1/admin/indexnow" | head -c 400
+          echo ""
+          exit 0
