@@ -1,0 +1,84 @@
+name: Restore test — verify Neon→R2 backup is restorable
+
+# Hardening tier (2026-06-10): backup-neon-r2.yml proves we CAN make a dump.
+# This proves the dump can be RESTORED: download the latest R2 backup, restore
+# it into a throwaway Postgres 18 service container, and verify table count +
+# row counts (restore_verify.py). An untested backup is not a backup.
+# Never mutates prod — the only prod touch is a read-only table-presence compare.
+#
+# Reuses the same repo secrets as the backup job: DATABASE_URL, R2_ACCESS_KEY_ID,
+# R2_SECRET_ACCESS_KEY, R2_ENDPOINT_URL.
+
+on:
+  schedule:
+    - cron: "0 11 * * 1"        # Mondays 11:00 UTC (after the daily 08:00 dumps land)
+  workflow_dispatch: {}          # manual run button
+
+concurrency:
+  group: restore-test
+  cancel-in-progress: false
+
+jobs:
+  restore-test:
+    runs-on: ubuntu-latest
+    timeout-minutes: 25
+    services:
+      pg:
+        image: postgres:18
+        env:
+          POSTGRES_PASSWORD: postgres
+          POSTGRES_DB: restore_test
+        ports:
+          - 5432:5432
+        options: >-
+          --health-cmd "pg_isready -U postgres"
+          --health-interval 5s --health-timeout 5s --health-retries 20
+    env:
+      RESTORE_TARGET_URL: postgres://postgres:postgres@localhost:5432/restore_test
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install pg client 18 + python deps
+        run: |
+          sudo sh -c 'echo "deb https://apt.postgresql.org/pub/repos/apt $(lsb_release -cs)-pgdg main" > /etc/apt/sources.list.d/pgdg.list'
+          curl -fsSL https://www.postgresql.org/media/keys/ACCC4CF8.asc | sudo gpg --dearmor -o /etc/apt/trusted.gpg.d/pgdg.gpg
+          sudo apt-get update
+          sudo apt-get install -y postgresql-client-18 || sudo apt-get install -y postgresql-client
+          python -m pip install --quiet boto3 psycopg2-binary
+
+      - name: Download latest backup from R2
+        env:
+          R2_ACCESS_KEY_ID: ${{ secrets.R2_ACCESS_KEY_ID }}
+          R2_SECRET_ACCESS_KEY: ${{ secrets.R2_SECRET_ACCESS_KEY }}
+          R2_ENDPOINT_URL: ${{ secrets.R2_ENDPOINT_URL }}
+          R2_BUCKET_NAME: dchub-backups
+        run: |
+          python - <<'PY'
+          import os, boto3
+          s3 = boto3.client("s3", endpoint_url=os.environ["R2_ENDPOINT_URL"],
+                            aws_access_key_id=os.environ["R2_ACCESS_KEY_ID"],
+                            aws_secret_access_key=os.environ["R2_SECRET_ACCESS_KEY"],
+                            region_name="auto")
+          objs = s3.list_objects_v2(Bucket=os.environ["R2_BUCKET_NAME"],
+                                    Prefix="neon_backup_").get("Contents", [])
+          if not objs:
+              raise SystemExit("no neon_backup_* objects in R2 — nothing to restore")
+          latest = max(objs, key=lambda o: o["LastModified"])
+          print(f"latest backup: {latest['Key']}  {latest['Size']/1048576:.1f} MB  {latest['LastModified']}")
+          s3.download_file(os.environ["R2_BUCKET_NAME"], latest["Key"], "backup.sql.gz")
+          open("BACKUP_KEY.txt", "w").write(latest["Key"])
+          PY
+
+      - name: Restore into throwaway Postgres
+        run: |
+          echo "Restoring $(cat BACKUP_KEY.txt) ..."
+          # ON_ERROR_STOP=0: continue past benign noise (missing extensions/roles);
+          # the real pass/fail gate is restore_verify.py, not psql's exit code.
+          gunzip -c backup.sql.gz | psql "$RESTORE_TARGET_URL" -v ON_ERROR_STOP=0 > restore.out 2> restore.err || true
+          echo "--- restore ERROR/FATAL lines (deduped) ---"
+          grep -iE "^psql:|ERROR|FATAL" restore.err | sed -E 's/[0-9]+/N/g' | sort | uniq -c | sort -rn | head -40 || echo "(none)"
+
+      - name: Verify restore
+        env:
+          SOURCE_DATABASE_URL: ${{ secrets.DATABASE_URL }}
+        run: python restore_verify.py
