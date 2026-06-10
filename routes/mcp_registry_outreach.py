@@ -160,49 +160,60 @@ DISCOVERY_TARGETS = [
         "key":         "lobehub",
         "name":        "Lobehub",
         "homepage":    "https://lobehub.com/mcp",
-        "submit_url":  "https://lobehub.com/mcp/submit",
-        "submit_method":"manual",
-        "manual_url":  "https://lobehub.com/mcp/submit",
+        # r-fix 2026-06-10: lobehub.com/mcp/submit 404s. Real path is a
+        # GitHub issue on lobehub/lobehub. Filed issue #15667.
+        "submit_url":  "https://github.com/lobehub/lobehub/issues",
+        "submit_method":"github_issue",
+        "manual_url":  "https://github.com/lobehub/lobehub/issues/15667",
         "audit_url":   "https://lobehub.com/mcp/dchub",
         "audit_signal":"DC Hub",
         "audit_browser_ua": True,
-        "description": "Lobehub MCP directory. Pending submission.",
+        "description": "Lobehub MCP directory. Submitted via GitHub issue lobehub/lobehub#15667 (2026-06-10).",
     },
     {
         "key":         "mcp_hive",
         "name":        "MCP Hive",
         "homepage":    "https://mcphive.com",
-        "submit_url":  "https://mcphive.com/submit",
+        # r-fix 2026-06-10: real form is /submit.html (not /submit, which 404s).
+        "submit_url":  "https://mcphive.com/submit.html",
         "submit_method":"manual",
-        "manual_url":  "https://mcphive.com/submit",
+        "manual_url":  "https://mcphive.com/submit.html",
         "audit_url":   "https://mcphive.com/servers/dchub",
         "audit_signal":"DC Hub",
         "audit_browser_ua": True,
-        "description": "MCP Hive aggregator. Pending submission.",
+        "description": "MCP Hive directory. Manual form at /submit.html (pending paste).",
     },
     {
         "key":         "toolhive",
         "name":        "ToolHive",
-        "homepage":    "https://toolhive.io",
-        "submit_url":  "https://toolhive.io/submit",
-        "submit_method":"manual",
-        "manual_url":  "https://toolhive.io/submit",
-        "audit_url":   "https://toolhive.io/tools/dchub",
-        "audit_signal":"DC Hub",
+        # r-fix 2026-06-10: toolhive.io is DEAD (301 -> compliancehive.eu).
+        # The real ToolHive is Stacklok's GitHub registry (repo renamed
+        # toolhive-registry -> toolhive-catalog). PR #1252 filed.
+        "homepage":    "https://github.com/stacklok/toolhive-catalog",
+        "submit_url":  "https://github.com/stacklok/toolhive-catalog/pulls",
+        "submit_method":"github_pr",
+        "manual_url":  "https://github.com/stacklok/toolhive-catalog/pull/1252",
+        "audit_url":   "https://raw.githubusercontent.com/stacklok/toolhive-catalog/main/registries/toolhive/servers/dchub/server.json",
+        "audit_signal":"dchub",
         "audit_browser_ua": True,
-        "description": "ToolHive directory. Pending submission.",
+        "description": "Stacklok ToolHive registry (GitHub PR). PR stacklok/toolhive-catalog#1252 filed 2026-06-10.",
     },
     {
         "key":         "yellowmcp",
         "name":        "Yellowmcp",
+        # r-fix 2026-06-10: AUTO-DISCOVERS remote servers — DC Hub is
+        # ALREADY listed (not a submission gap). BUT flagged -100%
+        # "Declining Reliability" because their uptime probe does
+        # GET /mcp -> 405 (the MCP POST initialize handshake returns 200).
+        # Action: claim the listing + make GET /mcp return 200.
         "homepage":    "https://yellowmcp.com",
-        "submit_url":  "https://yellowmcp.com/submit",
-        "submit_method":"manual",
-        "manual_url":  "https://yellowmcp.com/submit",
+        "submit_url":  "https://yellowmcp.com/claim",
+        "submit_method":"claim",
+        "manual_url":  "https://yellowmcp.com/claim",
         "audit_url":   "https://yellowmcp.com/servers/dchub",
         "audit_signal":"DC Hub",
         "audit_browser_ua": True,
-        "description": "Yellowmcp catalog. Pending submission.",
+        "description": "Yellowmcp reliability directory. LISTED (auto-discovered) but -100% reliability: GET /mcp returns 405 to their probe. Claim + fix GET handler.",
     },
 ]
 
@@ -216,11 +227,14 @@ DISCOVERY_TARGETS = [
 # read so the brain dashboard doesn't keep flagging us as "missing
 # from five 404 pages."
 _DEAD_REGISTRY_KEYS = {
-    "mcphub",     # mcphub.io/submit → 404 verified 2026-05-25
-    "lobehub",    # lobehub.com/mcp/submit → 404
-    "mcp_hive",   # mcphive.com/submit → 404
-    "toolhive",   # toolhive.io/submit → not reachable
-    "yellowmcp",  # yellowmcp.com/submit → 404
+    # r-fix 2026-06-10: re-verified all five. Only mcphub.io still has no
+    # working manual path (JS-only SPA; /submit 404s; no GitHub repo).
+    # The others had their REAL paths found and are now live/actioned:
+    #   lobehub   -> GitHub issue lobehub/lobehub#15667
+    #   mcp_hive  -> form at mcphive.com/submit.html
+    #   toolhive  -> Stacklok GitHub PR stacklok/toolhive-catalog#1252
+    #   yellowmcp -> already listed (auto-discovered); claim + GET-405 fix
+    "mcphub",     # mcphub.io JS SPA; /submit 404; no verifiable submit path
 }
 
 
