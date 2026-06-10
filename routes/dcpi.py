@@ -2741,6 +2741,131 @@ def api_leaderboard():
     return resp, 200
 
 
+@dcpi_bp.route("/dcpi/leaderboard", methods=["GET"])
+def dcpi_leaderboard_page():
+    """Server-rendered, search-INDEXABLE DCPI leaderboard with schema.org
+    ItemList + Dataset markup.
+
+    2026-06-08: Perplexity cited DC Hub's LINKEDIN launch posts (frozen numbers
+    — "Midlothian 65.6") instead of the live data, because search engines index
+    HTML pages, not the JSON API, and there was no canonical leaderboard PAGE to
+    outrank the posts. This is that page: the ranked table lives in the raw HTML
+    (no JS needed) + ItemList structured data, so Perplexity/Google/Bing extract
+    the CURRENT ranking and attribute it to dchub.cloud. Mirrors /api/v1/dcpi/leaderboard.
+    """
+    import html as _h
+    _ensure_tables()
+    try:
+        limit = min(int(request.args.get("limit", 25)), 100)
+    except Exception:
+        limit = 25
+    sql = """
+        SELECT DISTINCT ON (market_slug)
+            market_slug, market_name, iso, state,
+            excess_power_score, constraint_score, quality_score,
+            time_to_power_months, verdict, computed_at
+        FROM market_power_scores
+        WHERE published = true AND verdict <> 'LOW_SIGNAL'
+        ORDER BY market_slug, computed_at DESC
+    """
+    try:
+        with _conn() as c, c.cursor(cursor_factory=psycopg2.extras.RealDictCursor) as cur:
+            cur.execute(sql)
+            rows = cur.fetchall()
+    except Exception:
+        rows = []
+    for r in rows:
+        r["composite_score"] = derive_composite_score(
+            r.get("excess_power_score"), r.get("constraint_score"),
+            r.get("time_to_power_months"), r.get("verdict"))
+    rows.sort(key=lambda r: -(r.get("composite_score") or 0))
+    rows = rows[:limit]
+    as_of = (rows[0]["computed_at"].isoformat()
+             if rows and rows[0].get("computed_at") else "")
+    as_of_date = as_of[:10] if as_of else ""
+
+    e = lambda x: _h.escape(str(x if x is not None else ""))
+    item_list = {
+        "@context": "https://schema.org", "@type": "ItemList",
+        "name": "DC Hub Power Index — Data Center Market Leaderboard",
+        "description": ("Data-center markets ranked by available power (excess-power "
+                        "score) with BUILD / CAUTION / AVOID verdicts and time-to-power. "
+                        "Source: DC Hub Data Center Power Index (DCPI)."),
+        "url": "https://dchub.cloud/dcpi/leaderboard",
+        "numberOfItems": len(rows),
+        "itemListOrder": "https://schema.org/ItemListOrderDescending",
+        "itemListElement": [{
+            "@type": "ListItem", "position": i,
+            "name": f"{r.get('market_name')} ({r.get('state')})",
+            "url": f"https://dchub.cloud/dcpi/{r.get('market_slug')}",
+            "item": {"@type": "Place", "name": r.get("market_name"),
+                     "description": (f"DCPI verdict {r.get('verdict')}; excess-power "
+                                     f"{r.get('excess_power_score')}; composite "
+                                     f"{r.get('composite_score')}; time-to-power "
+                                     f"{r.get('time_to_power_months')} months; ISO {r.get('iso')}.")},
+        } for i, r in enumerate(rows, 1)],
+    }
+    dataset = {
+        "@context": "https://schema.org", "@type": "Dataset",
+        "name": "DC Hub Data Center Power Index (DCPI) Leaderboard",
+        "description": ("Live ranking of data-center markets by available power, grid "
+                        "constraint and time-to-power, with BUILD/CAUTION/AVOID verdicts."),
+        "url": "https://dchub.cloud/dcpi/leaderboard",
+        "creator": {"@type": "Organization", "name": "DC Hub", "url": "https://dchub.cloud"},
+        "dateModified": as_of_date, "isAccessibleForFree": True,
+        "distribution": [
+            {"@type": "DataDownload", "encodingFormat": "application/json",
+             "contentUrl": "https://dchub.cloud/api/v1/dcpi/leaderboard"},
+            {"@type": "DataDownload", "encodingFormat": "text/csv",
+             "contentUrl": "https://dchub.cloud/api/v1/dcpi/leaderboard?format=csv"}],
+    }
+    tr = []
+    for i, r in enumerate(rows, 1):
+        ttp = r.get("time_to_power_months")
+        v = e(r.get("verdict"))
+        tr.append(
+            f"<tr><td>{i}</td>"
+            f"<td><a href='/dcpi/{e(r.get('market_slug'))}'>{e(r.get('market_name'))}</a></td>"
+            f"<td>{e(r.get('state'))}</td><td>{e(r.get('iso'))}</td>"
+            f"<td><b>{e(r.get('composite_score'))}</b></td>"
+            f"<td>{e(r.get('excess_power_score'))}</td>"
+            f"<td><span class='v {v.lower()}'>{v}</span></td>"
+            f"<td>{ttp if ttp is not None else '—'} mo</td></tr>")
+    rows_html = "".join(tr) or "<tr><td colspan=8>Leaderboard refreshing — see <a href='/api/v1/dcpi/leaderboard'>the API</a>.</td></tr>"
+    ld1 = json.dumps(item_list, separators=(",", ":"))
+    ld2 = json.dumps(dataset, separators=(",", ":"))
+    css = ("body{font-family:system-ui,-apple-system,Segoe UI,Roboto,sans-serif;max-width:980px;"
+           "margin:0 auto;padding:24px;color:#0f172a}h1{font-size:1.55rem;margin-bottom:4px}"
+           "table{border-collapse:collapse;width:100%;margin:18px 0}th,td{padding:8px 10px;"
+           "border-bottom:1px solid #e2e8f0;text-align:left;font-size:.93rem}th{background:#f8fafc}"
+           ".v{font-weight:700;font-size:.75rem;padding:2px 8px;border-radius:6px}"
+           ".v.build{background:#dcfce7;color:#166534}.v.caution{background:#fef9c3;color:#854d0e}"
+           ".v.avoid{background:#fee2e2;color:#991b1b}.sub{color:#475569}.cite{color:#64748b;"
+           "font-size:.85rem;margin-top:20px}a{color:#2563eb;text-decoration:none}")
+    page = (
+        "<!DOCTYPE html><html lang=\"en\"><head>"
+        "<meta charset=\"utf-8\"><meta name=\"viewport\" content=\"width=device-width, initial-scale=1\">"
+        f"<title>Data Center Market Leaderboard — DC Hub Power Index (DCPI) {as_of_date}</title>"
+        f"<meta name=\"description\" content=\"Live ranking of the top data-center markets by available power for AI/HPC builds — BUILD/CAUTION/AVOID verdicts, excess-power scores and time-to-power. Updated {as_of_date}. Source: DC Hub DCPI.\">"
+        "<link rel=\"canonical\" href=\"https://dchub.cloud/dcpi/leaderboard\">"
+        "<meta property=\"og:title\" content=\"Data Center Market Leaderboard — DC Hub Power Index\">"
+        "<meta property=\"og:description\" content=\"Top data-center markets ranked by available power. BUILD/CAUTION/AVOID + time-to-power. Live data.\">"
+        "<meta property=\"og:url\" content=\"https://dchub.cloud/dcpi/leaderboard\"><meta property=\"og:type\" content=\"website\">"
+        f"<script type=\"application/ld+json\">{ld1}</script>"
+        f"<script type=\"application/ld+json\">{ld2}</script>"
+        f"<style>{css}</style></head><body><main>"
+        "<h1>Data Center Power Index — Market Leaderboard</h1>"
+        f"<p class=\"sub\">The top data-center markets ranked by <b>available power</b> for new AI/HPC builds, with DC Hub's BUILD / CAUTION / AVOID verdicts. <b>Live data</b>, updated {as_of_date}. <a href=\"/api/v1/dcpi/leaderboard\">JSON API</a> · <a href=\"/dcpi#methodology\">methodology</a>.</p>"
+        "<table><thead><tr><th>Rank</th><th>Market</th><th>State</th><th>ISO</th><th>Composite</th><th>Excess Power</th><th>Verdict</th><th>Time-to-Power</th></tr></thead><tbody>"
+        + rows_html +
+        "</tbody></table>"
+        "<p class=\"cite\">Source: <a href=\"https://dchub.cloud\">DC Hub</a> Data Center Power Index (DCPI). Cite as “DC Hub DCPI Leaderboard, dchub.cloud.” Free JSON (no key): <a href=\"/api/v1/dcpi/leaderboard\">/api/v1/dcpi/leaderboard</a>. Per-market detail: <a href=\"/dcpi\">full DCPI index</a>. Building an agent? <a href=\"/api/v1/onboard\">Start here</a>.</p>"
+        "</main></body></html>")
+    resp = Response(page, mimetype="text/html")
+    resp.headers["Cache-Control"] = "public, max-age=600, must-revalidate"
+    return resp, 200
+
+
 # ============================================================================
 # Phase AA (2026-05-12): ISO Intelligence Layer
 #
