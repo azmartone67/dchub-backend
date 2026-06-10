@@ -2773,6 +2773,7 @@ def dcpi_leaderboard_page():
     the CURRENT ranking and attribute it to dchub.cloud. Mirrors /api/v1/dcpi/leaderboard.
     """
     import html as _h
+    from routes._brand_shell import brand_page
     _ensure_tables()
     try:
         limit = min(int(request.args.get("limit", 25)), 100)
@@ -2853,33 +2854,22 @@ def dcpi_leaderboard_page():
     rows_html = "".join(tr) or "<tr><td colspan=8>Leaderboard refreshing — see <a href='/api/v1/dcpi/leaderboard'>the API</a>.</td></tr>"
     ld1 = json.dumps(item_list, separators=(",", ":"))
     ld2 = json.dumps(dataset, separators=(",", ":"))
-    css = ("body{font-family:system-ui,-apple-system,Segoe UI,Roboto,sans-serif;max-width:980px;"
-           "margin:0 auto;padding:24px;color:#0f172a}h1{font-size:1.55rem;margin-bottom:4px}"
-           "table{border-collapse:collapse;width:100%;margin:18px 0}th,td{padding:8px 10px;"
-           "border-bottom:1px solid #e2e8f0;text-align:left;font-size:.93rem}th{background:#f8fafc}"
-           ".v{font-weight:700;font-size:.75rem;padding:2px 8px;border-radius:6px}"
-           ".v.build{background:#dcfce7;color:#166534}.v.caution{background:#fef9c3;color:#854d0e}"
-           ".v.avoid{background:#fee2e2;color:#991b1b}.sub{color:#475569}.cite{color:#64748b;"
-           "font-size:.85rem;margin-top:20px}a{color:#2563eb;text-decoration:none}")
-    page = (
-        "<!DOCTYPE html><html lang=\"en\"><head>"
-        "<meta charset=\"utf-8\"><meta name=\"viewport\" content=\"width=device-width, initial-scale=1\">"
-        f"<title>Data Center Market Leaderboard — DC Hub Power Index (DCPI) {as_of_date}</title>"
-        f"<meta name=\"description\" content=\"Live ranking of the top data-center markets by available power for AI/HPC builds — BUILD/CAUTION/AVOID verdicts, excess-power scores and time-to-power. Updated {as_of_date}. Source: DC Hub DCPI.\">"
-        "<link rel=\"canonical\" href=\"https://dchub.cloud/dcpi/leaderboard\">"
-        "<meta property=\"og:title\" content=\"Data Center Market Leaderboard — DC Hub Power Index\">"
-        "<meta property=\"og:description\" content=\"Top data-center markets ranked by available power. BUILD/CAUTION/AVOID + time-to-power. Live data.\">"
-        "<meta property=\"og:url\" content=\"https://dchub.cloud/dcpi/leaderboard\"><meta property=\"og:type\" content=\"website\">"
-        f"<script type=\"application/ld+json\">{ld1}</script>"
-        f"<script type=\"application/ld+json\">{ld2}</script>"
-        f"<style>{css}</style></head><body><main>"
+    body = (
         "<h1>Data Center Power Index — Market Leaderboard</h1>"
-        f"<p class=\"sub\">The top data-center markets ranked by <b>available power</b> for new AI/HPC builds, with DC Hub's BUILD / CAUTION / AVOID verdicts. <b>Live data</b>, updated {as_of_date}. <a href=\"/api/v1/dcpi/leaderboard\">JSON API</a> · <a href=\"/dcpi#methodology\">methodology</a>.</p>"
+        f"<p class=\"lede\">The top data-center markets ranked by <b>available power</b> for new AI/HPC builds, with DC Hub's BUILD / CAUTION / AVOID verdicts. <b>Live data</b>, updated {as_of_date}. <a href=\"/api/v1/dcpi/leaderboard\">JSON API</a> · <a href=\"/dcpi#methodology\">methodology</a>.</p>"
         "<table><thead><tr><th>Rank</th><th>Market</th><th>State</th><th>ISO</th><th>Composite</th><th>Excess Power</th><th>Verdict</th><th>Time-to-Power</th></tr></thead><tbody>"
         + rows_html +
         "</tbody></table>"
-        "<p class=\"cite\">Source: <a href=\"https://dchub.cloud\">DC Hub</a> Data Center Power Index (DCPI). Cite as “DC Hub DCPI Leaderboard, dchub.cloud.” Free JSON (no key): <a href=\"/api/v1/dcpi/leaderboard\">/api/v1/dcpi/leaderboard</a>. Per-market detail: <a href=\"/dcpi\">full DCPI index</a>. Building an agent? <a href=\"/api/v1/onboard\">Start here</a>.</p>"
-        "</main></body></html>")
+        "<p class=\"cite\">Source: <a href=\"https://dchub.cloud\">DC Hub</a> Data Center Power Index (DCPI). Cite as “DC Hub DCPI Leaderboard, dchub.cloud.” Free JSON (no key): <a href=\"/api/v1/dcpi/leaderboard\">/api/v1/dcpi/leaderboard</a>. Per-market detail: <a href=\"/dcpi\">full DCPI index</a>. Building an agent? <a href=\"/api/v1/onboard\">Start here</a>.</p>")
+    page = brand_page(
+        title=f"Data Center Market Leaderboard — DC Hub Power Index (DCPI) {as_of_date}",
+        description=(f"Live ranking of the top data-center markets by available power for AI/HPC "
+                     f"builds — BUILD/CAUTION/AVOID verdicts, excess-power scores and time-to-power. "
+                     f"Updated {as_of_date}. Source: DC Hub DCPI."),
+        canonical="https://dchub.cloud/dcpi/leaderboard",
+        body_html=body,
+        ld_jsons=[ld1, ld2],
+        og_desc="Top data-center markets ranked by available power. BUILD/CAUTION/AVOID + time-to-power. Live data.")
     resp = Response(page, mimetype="text/html")
     resp.headers["Cache-Control"] = "public, max-age=600, must-revalidate"
     return resp, 200

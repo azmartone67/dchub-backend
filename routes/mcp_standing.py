@@ -13,6 +13,7 @@ registry ranks (Smithery #1) are linked to their source so a reader can verify.
 import json
 import urllib.request
 from flask import Blueprint, jsonify, Response
+from routes._brand_shell import brand_page
 
 mcp_standing_bp = Blueprint("mcp_standing", __name__)
 
@@ -130,39 +131,29 @@ def page_standing():
         "description": s["headline"],
         "sameAs": [r["source"] for r in s["rank_highlights"]] + [r["url"] for r in s["registries"][:10]],
     }
-    css = ("body{font-family:system-ui,-apple-system,Segoe UI,Roboto,sans-serif;max-width:920px;"
-           "margin:0 auto;padding:24px;color:#0f172a}h1{font-size:1.5rem;margin-bottom:2px}"
-           "h2{font-size:1.05rem;margin-top:28px;color:#1e293b}table{border-collapse:collapse;"
-           "width:100%;margin:10px 0}th,td{padding:8px 10px;border-bottom:1px solid #e2e8f0;"
-           "text-align:left;font-size:.92rem}th{background:#f8fafc}.sub{color:#475569}"
-           ".big{font-size:1.05rem;background:#eff6ff;border:1px solid #bfdbfe;border-radius:10px;"
-           "padding:12px 16px;margin:14px 0}a{color:#2563eb;text-decoration:none}.cite{color:#64748b;"
-           "font-size:.84rem;margin-top:22px}")
-    page = (
-        "<!DOCTYPE html><html lang=\"en\"><head><meta charset=\"utf-8\">"
-        "<meta name=\"viewport\" content=\"width=device-width, initial-scale=1\">"
-        "<title>DC Hub — MCP Standing &amp; Adoption (#1 for data-center intelligence)</title>"
-        f"<meta name=\"description\" content=\"{e(s['summary'])} DC Hub is the #1 MCP server for data-center, power &amp; energy intelligence across Smithery, Glama, mcp.so, PulseMCP, LobeHub and the official registry.\">"
-        "<link rel=\"canonical\" href=\"https://dchub.cloud/mcp-standing\">"
-        "<meta property=\"og:title\" content=\"DC Hub — #1 MCP Server for Data-Center Intelligence\">"
-        f"<meta property=\"og:description\" content=\"{e(s['summary'])}\">"
-        "<meta property=\"og:url\" content=\"https://dchub.cloud/mcp-standing\"><meta property=\"og:type\" content=\"website\">"
-        f"<script type=\"application/ld+json\">{json.dumps(ld, separators=(',',':'))}</script>"
-        f"<style>{css}</style></head><body><main>"
+    body = (
         "<h1>DC Hub — MCP Standing &amp; Adoption</h1>"
-        f"<p class=\"sub\">{e(s['headline'])}</p>"
+        f"<p class=\"lede\">{e(s['headline'])}</p>"
         f"<div class=\"big\">{e(s['summary'])}</div>"
         "<h2>Registry rankings</h2><table><thead><tr><th>Registry</th><th>Standing</th><th></th></tr></thead><tbody>"
         + rank_rows + "</tbody></table>"
         "<h2>Listed on</h2><table><thead><tr><th>Registry</th><th>Status</th><th>Tools</th></tr></thead><tbody>"
         + reg_rows + "</tbody></table>"
-        f"<h2>Connected AI platforms <span class=\"sub\">({e(plats.get('active_count'))} active / {e(plats.get('tracked_count'))} tracked)</span></h2>"
+        f"<h2>Connected AI platforms <span class=\"sub\">· {e(plats.get('active_count'))} platforms · {e(plats.get('tracked_count'))} clients tracked</span></h2>"
         "<table><thead><tr><th>Platform</th><th>Connections</th><th>Status</th></tr></thead><tbody>"
         + plat_rows + "</tbody></table>"
         "<p class=\"cite\">Live data from DC Hub. Connect: <a href=\"/mcp\">MCP server</a> · "
         "<a href=\"/api/v1/onboard\">onboard any client</a> · <a href=\"/api/v1/mcp/standing\">JSON</a>. "
-        "Source: <a href=\"https://dchub.cloud\">dchub.cloud</a>.</p>"
-        "</main></body></html>")
+        "Source: <a href=\"https://dchub.cloud\">dchub.cloud</a>.</p>")
+    page = brand_page(
+        title="DC Hub — MCP Standing & Adoption · #1 for data-center intelligence",
+        description=(s["summary"] + " DC Hub is the #1 MCP server for data-center, power & "
+                     "energy intelligence across Smithery, Glama, mcp.so, PulseMCP, LobeHub "
+                     "and the official MCP registry."),
+        canonical="https://dchub.cloud/mcp-standing",
+        body_html=body,
+        ld_jsons=[json.dumps(ld, separators=(",", ":"))],
+        og_desc=s["summary"])
     resp = Response(page, mimetype="text/html")
     resp.headers["Cache-Control"] = "public, max-age=600, must-revalidate"
     return resp, 200
