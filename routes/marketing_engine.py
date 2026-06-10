@@ -401,6 +401,7 @@ def _collect_signals() -> dict:
         # crossed a round number (1k, 10k, 100k, 1M).
         try:
             COVERAGE_TABLES = [
+                ("AI requests served",  "ai_requests",         "created_at"),
                 ("facilities",          "facilities",          "discovered_at"),
                 ("markets_tracked",     "market_power_scores", "computed_at"),
                 ("mcp_developers",      "mcp_dev_keys",        "created_at"),
