@@ -216,10 +216,14 @@ _MANIFEST: list[dict] = [
     {"path": "/api/v1/admin/qa/state-of-2026-precheck", "category": "high","min_bytes": 200, "label": "QA Precheck API",           "needs_admin": True, "expected_status": [200, 202, 503, 504]},
 
     # MCP Connect landings (the one-click connector hand-off pages)
-    {"path": "/connect/cursor",                     "category": "high",   "min_bytes": 1500, "label": "Connect → Cursor",          "wants_nav": True},
-    {"path": "/connect/cline",                      "category": "high",   "min_bytes": 1500, "label": "Connect → Cline",           "wants_nav": True},
-    {"path": "/connect/continue",                   "category": "high",   "min_bytes": 1500, "label": "Connect → Continue",        "wants_nav": True},
-    {"path": "/connect/claude-desktop",             "category": "high",   "min_bytes": 1500, "label": "Connect → Claude Desktop",  "wants_nav": True},
+    # 2026-06-08: nav-exempt. The /connect/<tool> pages are intentional dark-themed
+    # conversion landing pages (own topbar, #0a0a0f) — the standard light site-nav
+    # would clash. They're focused install pages, not standard content pages, so the
+    # 'nav_missing' finding was a false positive. min_bytes still guards real breakage.
+    {"path": "/connect/cursor",                     "category": "high",   "min_bytes": 1500, "label": "Connect → Cursor",          "wants_nav": False},
+    {"path": "/connect/cline",                      "category": "high",   "min_bytes": 1500, "label": "Connect → Cline",           "wants_nav": False},
+    {"path": "/connect/continue",                   "category": "high",   "min_bytes": 1500, "label": "Connect → Continue",        "wants_nav": False},
+    {"path": "/connect/claude-desktop",             "category": "high",   "min_bytes": 1500, "label": "Connect → Claude Desktop",  "wants_nav": False},
 
     # Per-market brief canaries (top 5 by ops MW)
     {"path": "/markets/northern-virginia/brief",    "category": "high",   "min_bytes": 2000, "label": "Market Brief: Northern Virginia"},
