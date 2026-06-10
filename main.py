@@ -29052,6 +29052,14 @@ try:
 except Exception as _e:
     print(f"[main] onboard_universal register failed: {_e}", file=sys.stderr)
 
+try:
+    from routes.mcp_standing import mcp_standing_bp
+    app.register_blueprint(mcp_standing_bp)
+    print("[main] mcp_standing_bp registered: GET /api/v1/mcp/standing + /mcp-standing "
+          "(shareable MCP adoption page — registries, rankings, connected platforms)")
+except Exception as _e:
+    print(f"[main] mcp_standing register failed: {_e}", file=sys.stderr)
+
 # Phase r80-mcp-connect (2026-06-06): per-MCP-client landing pages.
 # /connect/cursor, /connect/cline, /connect/continue, /connect/claude-desktop
 # — the keyed-bearing MCP clients that hold an X-API-Key persistently and
