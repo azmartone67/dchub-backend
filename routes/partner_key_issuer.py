@@ -187,9 +187,25 @@ def _issue_internal(
                 """, (plan, plan, name, company, user_id))
             else:
                 user_id = secrets.token_hex(16)
-                placeholder_pw = hashlib.sha256(
-                    secrets.token_urlsafe(32).encode()
-                ).hexdigest()
+                # r79.5 (2026-06-09): generate a PROPER PBKDF2-format placeholder
+                # password hash (salt:hash with colon separator). The login
+                # endpoint at routes/auth_routes.py:326 rejects any pw_hash
+                # without a ':' as 'HASH_FORMAT_MISMATCH' before even trying to
+                # verify. Old SHA256-hex placeholder caused partner contacts
+                # to get cryptic 401 with 'Please reset your password' when
+                # they tried logging in, before they could understand they
+                # needed forgot-password flow. The new PBKDF2 placeholder uses
+                # an unguessable random salt + hash of an unguessable random
+                # password — same security posture, but the format is correct
+                # so verify_password() exits cleanly with 'Invalid credentials'
+                # (the standard message) and triggers the standard
+                # forgot-password recovery UX.
+                _salt = secrets.token_hex(16)
+                _unknown_pw = secrets.token_urlsafe(32)
+                _hash = hashlib.pbkdf2_hmac(
+                    "sha256", _unknown_pw.encode(), _salt.encode(), 10000
+                ).hex()
+                placeholder_pw = f"{_salt}:{_hash}"
                 cur.execute("""
                     INSERT INTO users (id, email, password_hash, name, company,
                                           role, plan, api_calls_today, api_calls_total)
