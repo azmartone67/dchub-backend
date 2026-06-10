@@ -439,6 +439,7 @@ def quick_score():
     }), 200
 
 
+# AUTO-REPAIR: duplicate route '/api/v1/land-power/track' also in land_power_usage_limiter.py:490 — review and remove one
 @land_power_mcp_bp.route("/api/v1/land-power/track", methods=["POST", "OPTIONS"])
 def land_power_track():
     """Fire-and-forget analytics ping from the Land & Power map's site evaluations.

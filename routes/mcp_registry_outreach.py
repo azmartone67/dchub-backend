@@ -356,7 +356,7 @@ def _record(target_key: str, target_name: str, action: str,
                 INSERT INTO outreach_submissions
                     (target_key, target_name, action, outcome, http_code,
                      detail, payload_sha)
-                VALUES (%s, %s, %s, %s, %s, %s, %s)
+                VALUES (%s, %s, %s, %s, %s, %s, %s) ON CONFLICT DO NOTHING
             """, (target_key, target_name, action, outcome, http_code,
                   (detail or "")[:2000], payload_sha))
         conn.commit()

@@ -538,7 +538,7 @@ def _log_qa(question: str, answer: Optional[dict],
                        asker_admin_key_hash, latency_ms, error,
                        confidence)
                    VALUES (%s, %s, %s::jsonb, %s::jsonb, %s::jsonb,
-                           %s, %s, %s, %s, %s, %s)
+                           %s, %s, %s, %s, %s, %s) ON CONFLICT DO NOTHING
                    RETURNING id""",
                 (question[:2000],
                  ((answer or {}).get("answer") or "")[:4000],
@@ -641,6 +641,7 @@ def ask_brain(question: str, provided_key_hash: str) -> dict:
 
 # ─── HTTP routes ─────────────────────────────────────────────────
 
+# AUTO-REPAIR: duplicate route '/api/v1/brain/ask' also in routes/brain_layer9_conversational.py:111 — review and remove one
 @brain_qa_bp.route("/api/v1/brain/ask", methods=["POST", "GET"])
 def brain_ask():
     if not _admin_ok():

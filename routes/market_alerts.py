@@ -342,7 +342,7 @@ def _snapshot_and_diff(cur, sig):
             """INSERT INTO market_movement_snapshots
                    (market_slug, verdict, constraint_score,
                     excess_power_score, time_to_power_months)
-               VALUES (%s, %s, %s, %s, %s)""",
+               VALUES (%s, %s, %s, %s, %s) ON CONFLICT DO NOTHING""",
             (slug, sig["verdict"], sig["constraint_score"],
              sig["excess_power_score"], sig["time_to_power_months"]))
 
@@ -497,7 +497,7 @@ def run_alerts():
                 cur.execute(
                     """INSERT INTO market_movement_events
                            (market_slug, kind, summary, detail)
-                       VALUES (%s, %s, %s, %s::jsonb)
+                       VALUES (%s, %s, %s, %s::jsonb) ON CONFLICT DO NOTHING
                        RETURNING id""",
                     (ev["market_slug"], ev["kind"], ev["summary"],
                      json.dumps(ev["detail"])))
