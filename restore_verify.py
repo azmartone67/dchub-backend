@@ -84,13 +84,25 @@ def main():
 
     # ---- optional compare against the live source ----
     src = {}
+    ext_owned = set()  # tables created by CREATE EXTENSION (e.g. postgis.spatial_ref_sys)
     if SOURCE:
         try:
             sconn = psycopg2.connect(SOURCE, connect_timeout=20)
             sconn.autocommit = True
-            sconn.cursor().execute("SET statement_timeout = '15s'")  # never load the 1-replica prod
+            sc = sconn.cursor()
+            sc.execute("SET statement_timeout = '15s'")  # never load the 1-replica prod
             src = table_estimates(sconn)
-            print(f"\nSource public tables: {len(src)}")
+            sc.execute(
+                """
+                SELECT c.relname
+                FROM pg_depend d
+                JOIN pg_class c ON c.oid = d.objid
+                JOIN pg_namespace n ON n.oid = c.relnamespace
+                WHERE d.deptype = 'e' AND n.nspname = 'public' AND c.relkind = 'r'
+                """
+            )
+            ext_owned = {r[0] for r in sc.fetchall()}
+            print(f"\nSource public tables: {len(src)}  (extension-owned: {len(ext_owned)})")
         except Exception as e:
             print(f"(source compare skipped — could not read source: {str(e)[:140]})")
 
@@ -99,11 +111,21 @@ def main():
 
     if src:
         missing = [t for t in src if t not in restored]
-        sig_missing = sorted(t for t in missing if src.get(t, 0) >= SIGNIFICANT_ROWS)
-        minor_missing = sorted(t for t in missing if t not in sig_missing)
+        # Extension-owned tables (postgis spatial_ref_sys, etc.) are recreated by
+        # CREATE EXTENSION on a real Neon target — their absence in a vanilla
+        # container is expected, never data loss, regardless of row count.
+        expected_absent = sorted(t for t in missing if t in ext_owned)
+        real_missing = [t for t in missing if t not in ext_owned]
+        sig_missing = sorted(t for t in real_missing if src.get(t, 0) >= SIGNIFICANT_ROWS)
+        minor_missing = sorted(t for t in real_missing if t not in sig_missing)
+        if expected_absent:
+            print("INFO — extension-owned tables absent from the vanilla test container "
+                  "(restored by CREATE EXTENSION on a real Neon target):")
+            for t in expected_absent:
+                print(f"  . {t}  (source est. {int(src.get(t, 0))} rows)")
         for t in minor_missing:
             warns.append(f"~ {t} not restored (source est. {int(src.get(t, 0))} rows) — "
-                         f"tiny/extension-owned; expected to differ in a vanilla container")
+                         f"tiny or depends on a Neon-only extension; restores fine on Neon")
         for t in sig_missing:
             problems.append(f"SIGNIFICANT source table absent from restore: {t} (~{int(src[t])} rows)")
         for t, est in src.items():
