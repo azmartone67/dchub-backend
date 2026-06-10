@@ -2627,6 +2627,25 @@ def api_movers():
     return jsonify(movers=rows), 200
 
 
+def _dedup_leaderboard(rows):
+    """2026-06-08: collapse duplicate market rows (e.g. 'Cheyenne' + 'Cheyenne, WY'
+    are the same place with separate slugs) so the leaderboard never shows the same
+    market twice — a credibility tell now that search engines index it. Conservative:
+    keys on (normalized city name, state), so genuinely-distinct same-name markets in
+    different states (Springfield IL vs MO) are kept. Rows arrive pre-sorted by
+    composite desc, so the first (best) instance wins."""
+    seen, out = set(), []
+    for r in rows:
+        city = (r.get("market_name") or "").split(",")[0].strip().lower()
+        city = "".join(ch for ch in city if ch.isalnum())
+        key = (city, (r.get("state") or "").strip().upper())
+        if not city or key in seen:
+            continue
+        seen.add(key)
+        out.append(r)
+    return out
+
+
 # phase 267: public, machine-readable leaderboard so the DCPI is citable
 #            without scraping the HTML page.
 @dcpi_bp.route("/api/v1/dcpi/leaderboard", methods=["GET"])
@@ -2691,7 +2710,7 @@ def api_leaderboard():
             r.get("verdict"),
         )
     rows.sort(key=lambda r: -(r.get("composite_score") or 0))
-    rows = rows[:limit]
+    rows = _dedup_leaderboard(rows)[:limit]
     for r in rows:
         if r.get("computed_at"):
             r["computed_at"] = r["computed_at"].isoformat()
@@ -2779,7 +2798,7 @@ def dcpi_leaderboard_page():
             r.get("excess_power_score"), r.get("constraint_score"),
             r.get("time_to_power_months"), r.get("verdict"))
     rows.sort(key=lambda r: -(r.get("composite_score") or 0))
-    rows = rows[:limit]
+    rows = _dedup_leaderboard(rows)[:limit]
     as_of = (rows[0]["computed_at"].isoformat()
              if rows and rows[0].get("computed_at") else "")
     as_of_date = as_of[:10] if as_of else ""
