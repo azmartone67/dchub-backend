@@ -75,8 +75,13 @@ jobs:
           # ON_ERROR_STOP=0: continue past benign noise (missing extensions/roles);
           # the real pass/fail gate is restore_verify.py, not psql's exit code.
           gunzip -c backup.sql.gz | psql "$RESTORE_TARGET_URL" -v ON_ERROR_STOP=0 > restore.out 2> restore.err || true
-          echo "--- restore ERROR/FATAL lines (deduped) ---"
-          grep -iE "^psql:|ERROR|FATAL" restore.err | sed -E 's/[0-9]+/N/g' | sort | uniq -c | sort -rn | head -40 || echo "(none)"
+          echo "--- restore ERROR/FATAL lines (deduped, top 40) ---"
+          grep -aiE "^psql:|ERROR|FATAL" restore.err | sed -E 's/[0-9]+/N/g' | sort | uniq -c | sort -rn | head -40 || echo "(none)"
+          echo "--- non-data CREATE/dependency failures (diagnose missing app tables) ---"
+          # 'syntax error at or near' lines are COPY data mis-parsed after an earlier
+          # failure — drop them; the real cause is the missing type/extension/relation.
+          grep -aiE "does not exist|is not available|cannot|violates|invalid input|no such" restore.err \
+            | grep -aviE "syntax error at or near" | sort -u | head -30 || echo "(none)"
 
       - name: Verify restore
         env:
