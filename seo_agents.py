@@ -305,6 +305,7 @@ _post_counter = 0
 def setup_seo_routes(app):
     """Register all SEO agent routes with the Flask app."""
     
+# AUTO-REPAIR: duplicate route '/api/seo/status' also in seo_agent.py:292 — review and remove one
     @app.route('/api/seo/status')
     def seo_status():
         """Overall SEO agent system status."""

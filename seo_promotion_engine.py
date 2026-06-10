@@ -365,7 +365,7 @@ Visit {self.site_url} to explore the platform.
             cursor = conn.cursor()
             cursor.execute('''
                 INSERT INTO press_releases (title, content, status)
-                VALUES (%s, %s, 'draft')
+                VALUES (%s, %s, 'draft') ON CONFLICT DO NOTHING
             ''', (template['title'], template['content']))
             pr_id = cursor.lastrowid
             conn.commit()
@@ -399,7 +399,7 @@ Visit {self.site_url} to explore the platform.
             cursor = conn.cursor()
             cursor.execute('''
                 INSERT INTO seo_submissions (engine, url_submitted, submission_type, response_code, status)
-                VALUES (%s, %s, %s, %s, %s)
+                VALUES (%s, %s, %s, %s, %s) ON CONFLICT DO NOTHING
             ''', (engine, url, sub_type, status_code, 'success' if status_code in [200, 202] else 'failed'))
             conn.commit()
             conn.close()

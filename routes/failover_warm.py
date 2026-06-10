@@ -115,6 +115,7 @@ def _authorized():
     return False
 
 
+# AUTO-REPAIR: duplicate route '/warm' also in routes/grid_cache_warmer.py:59 — review and remove one
 @failover_warm_bp.route("/warm", methods=["GET", "POST"])
 def warm():
     if not _authorized():

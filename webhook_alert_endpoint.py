@@ -125,7 +125,7 @@ def stripe_webhook_alert():
             """)
             c.execute("""
                 INSERT INTO webhook_alerts (email, expected_plan, session_id, customer_id, error, created_at)
-                VALUES (%s, %s, %s, %s, %s, %s)
+                VALUES (%s, %s, %s, %s, %s, %s) ON CONFLICT DO NOTHING
             """, (email, expected_plan, session_id, customer_id, client_error, now))
             conn.commit()
             alert_logged = True

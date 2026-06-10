@@ -171,6 +171,7 @@ def audit_json():
 # the apex but Railway-direct serves it).
 @site_audit_bp.route("/ops/dashboard", methods=["GET"], strict_slashes=False)
 @site_audit_bp.route("/admin/status", methods=["GET"], strict_slashes=False)
+# AUTO-REPAIR: duplicate route '/status' also in enhanced_promotion.py:839 — review and remove one
 @site_audit_bp.route("/status", methods=["GET"])
 def status_html():
     d = _gather_audit()

@@ -112,7 +112,7 @@ def _upsert_digest(payload: DigestPayload, publish_railway: bool,
       story_count, categories, sources, run_source, get_news_ok,
       publish_railway, publish_linkedin, linkedin_post_id, error_notes
     ) VALUES (
-      %(slug)s, %(digest_date)s, %(title)s, %(html)s, %(markdown)s, %(linkedin_text)s,
+      %(slug) ON CONFLICT DO NOTHINGs, %(digest_date)s, %(title)s, %(html)s, %(markdown)s, %(linkedin_text)s,
       %(story_count)s, %(categories)s, %(sources)s, %(run_source)s, %(get_news_ok)s,
       %(publish_railway)s, %(publish_linkedin)s, %(linkedin_post_id)s, %(error_notes)s
     )
