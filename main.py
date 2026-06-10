@@ -22540,6 +22540,7 @@ def api_v1_me():
     try:
         conn = get_read_db()
         cur = conn.cursor(cursor_factory=psycopg2.extras.RealDictCursor)
+        # Standard customer keys: key_hash is SHA256 of api_key
         cur.execute("""
             SELECT u.id, u.email, COALESCE(u.plan,'free') AS plan,
                    u.created_at AS user_created_at,
@@ -22551,6 +22552,27 @@ def api_v1_me():
             LIMIT 1
         """, (key_hash,))
         row = cur.fetchone()
+        if not row:
+            # r79.1 (2026-06-09): partner keys (NLR, future research
+            # partners) store key_hash = the raw api_key string, not its
+            # SHA256 hash, because partner_key_issuer.py mints them
+            # pre-revealed (the partner needs the raw string to call us).
+            # Same raw-key fallback pattern as api_tier_gating.validate_api_key
+            # added in r73-b, and the site-forecast inline check fixed in
+            # r78-b. Without this fallback, /api/v1/me returned
+            # "invalid_or_revoked_key" to NLR Developer keys, breaking the
+            # dashboard's tier-detection on the customer's first /me call.
+            cur.execute("""
+                SELECT u.id, u.email, COALESCE(u.plan,'free') AS plan,
+                       u.created_at AS user_created_at,
+                       ak.created_at AS key_issued_at,
+                       ak.is_active
+                FROM api_keys ak
+                JOIN users u ON ak.user_id = u.id
+                WHERE ak.key_hash = %s AND ak.is_active = 1
+                LIMIT 1
+            """, (api_key,))
+            row = cur.fetchone()
         if not row:
             return jsonify({'success': False, 'error': 'invalid_or_revoked_key'}), 401
         return jsonify({'success': True, 'user': dict(row)})
