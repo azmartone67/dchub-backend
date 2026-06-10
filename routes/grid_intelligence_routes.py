@@ -266,6 +266,18 @@ def _determine_tier(api_key):
                 WHERE ak.key_hash = %s AND ak.is_active = 1
             """, (key_hash,))
             row = cur.fetchone()
+            # r79.2 (2026-06-09): partner-key raw-key fallback. Partner
+            # keys (NLR, future research partners) store key_hash = raw
+            # api_key string (partner_key_issuer.py line 168), not the
+            # SHA256 hash. Same pattern as r79.1 (/api/v1/me), r78-c
+            # (site-forecast), r73-b (api_tier_gating).
+            if not row:
+                cur.execute("""
+                    SELECT u.plan FROM api_keys ak
+                    JOIN users u ON ak.user_id = u.id
+                    WHERE ak.key_hash = %s AND ak.is_active = 1
+                """, (api_key,))
+                row = cur.fetchone()
             if row:
                 return _map_plan(row[0])
         except Exception as e:

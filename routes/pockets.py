@@ -705,6 +705,13 @@ def _auth_user_id():
                 cur.execute("SELECT user_id FROM api_keys "
                             "WHERE key_hash=%s AND is_active=1 LIMIT 1", (kh,))
                 r = cur.fetchone()
+                # r79.2 (2026-06-09): partner-key raw-key fallback.
+                # Same pattern as r79.1 (/api/v1/me).
+                if not r:
+                    cur.execute("SELECT user_id FROM api_keys "
+                                "WHERE key_hash=%s AND is_active=1 LIMIT 1",
+                                (api_key,))
+                    r = cur.fetchone()
                 return r[0] if r else None
             finally:
                 return_pg_connection(c)

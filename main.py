@@ -8347,9 +8347,21 @@ def _get_request_tier():
     if api_key and api_key.startswith('dchub_'):
         key_hash = hashlib.sha256(api_key.encode()).hexdigest()
         try:
+            # SHA256 lookup — standard customer keys
             _, rows = _pg_execute(
                 "SELECT u.plan, u.id FROM api_keys ak JOIN users u ON ak.user_id = u.id WHERE ak.key_hash = %s AND ak.is_active = 1",
                 (key_hash,), fetch=True)
+            # r79.2 (2026-06-09): partner-key raw-key fallback. Same pattern
+            # as r79.1 (/api/v1/me), r78-c (site-forecast), r73-b
+            # (api_tier_gating.validate_api_key). Partner keys store
+            # key_hash = the raw api_key string (see
+            # partner_key_issuer.py line 168), so SHA256 lookup misses
+            # them. Without this fallback, MCP manifest + any other
+            # endpoint that calls this helper resolved NLR keys as anon.
+            if not rows:
+                _, rows = _pg_execute(
+                    "SELECT u.plan, u.id FROM api_keys ak JOIN users u ON ak.user_id = u.id WHERE ak.key_hash = %s AND ak.is_active = 1",
+                    (api_key,), fetch=True)
             if rows:
                 plan = rows[0][0] or 'free'
                 user_id = rows[0][1]
@@ -22615,6 +22627,19 @@ def api_v1_usage():
             WHERE ak.key_hash = %s AND ak.is_active = 1 LIMIT 1
         """, (key_hash,))
         u = cur.fetchone()
+        if not u:
+            # r79.2 (2026-06-09): partner-key raw-key fallback — same
+            # pattern as /api/v1/me fix in r79.1. Partner keys store
+            # key_hash = the raw api_key string, not its SHA256 hash.
+            cur.execute("""
+                SELECT u.id,
+                       COALESCE(u.plan,'free') AS plan,
+                       COALESCE(u.api_calls_today, 0) AS api_calls_today,
+                       COALESCE(u.api_calls_total, 0) AS api_calls_total
+                FROM api_keys ak JOIN users u ON ak.user_id = u.id
+                WHERE ak.key_hash = %s AND ak.is_active = 1 LIMIT 1
+            """, (api_key,))
+            u = cur.fetchone()
         if not u:
             return jsonify({'success': False, 'error': 'invalid_key'}), 401
         plan = (u.get('plan') or 'free').lower()
