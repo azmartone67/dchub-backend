@@ -371,7 +371,7 @@ def _force_seed_user_citations():
                         (engine, platform, prompt_id, prompt_text, dchub_cited,
                          dchub_position, dchawk_cited, dcbyte_cited, other_sources,
                          response_text, notes, source)
-                    VALUES (%s,%s,%s,%s,true,%s,false,false,%s::jsonb,%s,%s,%s)
+                    VALUES (%s,%s,%s,%s,true,%s,false,false,%s::jsonb,%s,%s,%s) ON CONFLICT DO NOTHING
                 """, (cit["engine"], cit["engine"], cit["prompt_id"],
                       cit["prompt_text"], cit["dchub_position"],
                       _json.dumps(cit["other_sources"]), cit["response_text"],
@@ -525,7 +525,7 @@ def record_observation():
                     (engine, prompt_id, prompt_text, dchub_cited,
                      dchub_position, dchawk_cited, dcbyte_cited,
                      other_sources, response_text, response_url, notes, source)
-                VALUES (%s,%s,%s,%s,%s,%s,%s,%s::jsonb,%s,%s,%s,%s)
+                VALUES (%s,%s,%s,%s,%s,%s,%s,%s::jsonb,%s,%s,%s,%s) ON CONFLICT DO NOTHING
                 RETURNING id, observed_at
             """, (
                 engine,
@@ -862,7 +862,7 @@ def _run_claude_citation_pass() -> dict:
                                  dcbyte_cited, other_sources, response_text,
                                  source)
                             VALUES (%s, %s, %s, %s, %s, NULL, %s, %s,
-                                    %s::jsonb, %s, %s)
+                                    %s::jsonb, %s, %s) ON CONFLICT DO NOTHING
                         """, ('claude', 'claude', prompt_id, prompt_text,
                               p["dchub_cited"], p["dchawk_cited"],
                               p["dcbyte_cited"],
@@ -952,7 +952,7 @@ def _run_perplexity_citation_pass():
                                 (engine, platform, prompt_id, prompt_text,
                                  dchub_cited, dchub_position, dchawk_cited,
                                  dcbyte_cited, other_sources, response_text, source)
-                            VALUES (%s, %s, %s, %s, %s, NULL, %s, %s, %s::jsonb, %s, %s)
+                            VALUES (%s, %s, %s, %s, %s, NULL, %s, %s, %s::jsonb, %s, %s) ON CONFLICT DO NOTHING
                         """, ('perplexity', 'perplexity', prompt_id, prompt_text,
                               p["dchub_cited"], p["dchawk_cited"], p["dcbyte_cited"],
                               _json.dumps(p["other_sources"]), text[:2000],
@@ -1075,7 +1075,7 @@ def _run_engine_citation_pass(engine: str, ask_fn, source: str, key_env: str):
                                 (engine, platform, prompt_id, prompt_text, dchub_cited,
                                  dchub_position, dchawk_cited, dcbyte_cited, other_sources,
                                  response_text, source)
-                            VALUES (%s,%s,%s,%s,%s,NULL,%s,%s,%s::jsonb,%s,%s)
+                            VALUES (%s,%s,%s,%s,%s,NULL,%s,%s,%s::jsonb,%s,%s) ON CONFLICT DO NOTHING
                         """, (engine, engine, prompt_id, prompt_text, p["dchub_cited"],
                               p["dchawk_cited"], p["dcbyte_cited"],
                               _json.dumps(p["other_sources"]), text[:2000], source))

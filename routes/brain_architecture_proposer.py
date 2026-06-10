@@ -609,7 +609,7 @@ def _persist_proposal(proposal: dict, dedupe_key: str,
                        claude_cost_cents, dedupe_key, raw_payload)
                    VALUES (%s, %s, %s, %s, %s, %s, %s::jsonb,
                            %s::jsonb, %s::jsonb, %s, %s, %s, %s, %s, %s,
-                           %s, %s::jsonb)
+                           %s, %s::jsonb) ON CONFLICT DO NOTHING
                    RETURNING id""",
                 (_iso_week(),
                  proposal.get("pattern") or "UNKNOWN",

@@ -352,6 +352,7 @@ def compute_dcpi_score():
 
 
 # ── HTTP endpoints ──────────────────────────────────────────────────────────
+# AUTO-REPAIR: duplicate route '/run' also in enhanced_promotion.py:844 — review and remove one
 @iso_eu_entsoe_bp.route("/run", methods=["POST", "GET"])
 def http_run():
     return jsonify(run_extraction()), 200
@@ -382,6 +383,7 @@ def http_zones():
 def http_dcpi_score():
     return jsonify(compute_dcpi_score()), 200
 
+# AUTO-REPAIR: duplicate route '/health' also in index_api.py:617 — review and remove one
 
 @iso_eu_entsoe_bp.route("/health", methods=["GET"])
 def http_health():

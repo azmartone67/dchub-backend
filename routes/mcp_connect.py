@@ -191,7 +191,7 @@ def _record_view(client_key: str) -> int | None:
             cur.execute(
                 """INSERT INTO connect_landing_views
                      (client, viewed_at, user_agent, referer, ip)
-                   VALUES (%s, NOW(), %s, %s, %s)
+                   VALUES (%s, NOW() ON CONFLICT DO NOTHING, %s, %s, %s)
                    RETURNING id""",
                 (client_key, ua, ref, ip),
             )

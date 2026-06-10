@@ -353,7 +353,7 @@ def admin_broadcast():
                            (subject, subject_hash, target_tiers, body_html,
                             cta_link, triggered_by, eligible_count,
                             sent_count, failed_count, mode, finished_at)
-                       VALUES (%s, %s, %s, %s, %s, %s, %s, 0, 0, %s, NOW())
+                       VALUES (%s, %s, %s, %s, %s, %s, %s, 0, 0, %s, NOW() ON CONFLICT DO NOTHING)
                        ON CONFLICT DO NOTHING
                        RETURNING id""",
                     (subject, subject_hash, ','.join(target_tiers),
