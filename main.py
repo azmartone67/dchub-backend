@@ -29044,6 +29044,14 @@ try:
 except Exception as _e:
     print(f"[main] auto_trial register failed: {_e}", file=sys.stderr)
 
+try:
+    from routes.onboard_universal import onboard_universal_bp
+    app.register_blueprint(onboard_universal_bp)
+    print("[main] onboard_universal_bp registered: GET /api/v1/onboard "
+          "(auto-detects browse|mcp|connector|rest — one endpoint onboards any client)")
+except Exception as _e:
+    print(f"[main] onboard_universal register failed: {_e}", file=sys.stderr)
+
 # Phase r80-mcp-connect (2026-06-06): per-MCP-client landing pages.
 # /connect/cursor, /connect/cline, /connect/continue, /connect/claude-desktop
 # — the keyed-bearing MCP clients that hold an X-API-Key persistently and
