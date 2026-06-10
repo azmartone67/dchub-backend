@@ -395,7 +395,7 @@ def _resolve_from_db_hash(api_key: str) -> Optional[Tier]:
                 SELECT ak.rate_limit_tier, ak.plan, COALESCE(u.plan, 'free') as user_plan
                 FROM api_keys ak
                 LEFT JOIN users u ON ak.user_id = u.id
-                WHERE ak.key_hash = %s AND ak.is_active = 1
+                WHERE ak.key_hash = %s AND (ak.is_active = 1 OR ak.is_active IS NULL)
                 LIMIT 1
             """, (key_hash,))
             row = cur.fetchone()
