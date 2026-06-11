@@ -428,6 +428,7 @@ def api_force_refresh():
     return jsonify(refreshed=out), 200
 
 
+# AUTO-REPAIR: duplicate route '/heartbeat' also in routes/cron_heartbeat.py:334 — review and remove one
 @heartbeat_bp.route("/heartbeat", methods=["GET"])
 def heartbeat_page():
     s = _status()

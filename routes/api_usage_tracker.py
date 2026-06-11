@@ -228,7 +228,7 @@ def _flush() -> dict:
                     """
                     INSERT INTO api_usage_meter
                           (api_key, tier, usage_date, calls_count, last_call_at, updated_at)
-                    VALUES (%s, 'developer', %s, %s, NOW(), NOW())
+                    VALUES (%s, 'developer', %s, %s, NOW() ON CONFLICT DO NOTHING, NOW())
                     ON CONFLICT (api_key, usage_date) DO UPDATE
                        SET calls_count  = api_usage_meter.calls_count + EXCLUDED.calls_count,
                            last_call_at = NOW(),

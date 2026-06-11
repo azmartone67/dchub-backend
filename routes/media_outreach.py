@@ -308,7 +308,7 @@ def stage_weekly():
             subject, txt = _compose_pitch("industry_pulse", story, j)
             try:
                 cur.execute("""INSERT INTO media_pitch_drafts (recipient_email, recipient_name, publication, subject, body, topic)
-                               VALUES (%s,%s,%s,%s,%s,%s) RETURNING id""",
+                               VALUES (%s,%s,%s,%s,%s,%s) ON CONFLICT DO NOTHING RETURNING id""",
                             (email, j.get("name"), j.get("publication"), subject, txt, "industry_pulse"))
                 staged.append({"id": cur.fetchone()[0], "email": email, "name": j.get("name"),
                                "publication": j.get("publication"), "subject": subject})
@@ -523,7 +523,7 @@ def pitch_send():
                 INSERT INTO media_outreach_log
                   (recipient_email, recipient_name, publication, subject,
                    body, pitch_topic, resend_id)
-                VALUES (%s, %s, %s, %s, %s, %s, %s)
+                VALUES (%s, %s, %s, %s, %s, %s, %s) ON CONFLICT DO NOTHING
                 RETURNING id, sent_at
             """, (email, (recipient or {}).get("name"),
                   (recipient or {}).get("publication"),

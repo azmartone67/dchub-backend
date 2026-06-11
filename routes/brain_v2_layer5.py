@@ -425,7 +425,7 @@ def _validate_and_store_proposal(source_name: str, prop: dict) -> dict:
                      recipe_key, finding_class, approval_count,
                      cycles_seen, last_seen_at)
                 VALUES (%s, %s, %s, %s, %s, %s, %s, %s,
-                        %s, %s, %s, %s, NOW())
+                        %s, %s, %s, %s, NOW() ON CONFLICT DO NOTHING)
                 ON CONFLICT (loop_name, file_path, search_text) DO UPDATE
                   SET approval_count = brain_proposed_code_fixes.approval_count + 1,
                       cycles_seen    = brain_proposed_code_fixes.cycles_seen + 1,

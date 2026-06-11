@@ -508,7 +508,7 @@ class GatewayDB:
                         c = conn.cursor()
                         c.execute("""
                             INSERT INTO platform_connections (platform_id, platform_name, protocol, status, total_requests, total_errors, avg_latency_ms)
-                            VALUES (%s, %s, 'auto', 'active', 0, 0, 0)
+                            VALUES (%s, %s, 'auto', 'active', 0, 0, 0) ON CONFLICT DO NOTHING
                         """, (valid_pid, valid_pid))
                         conn.commit()
                 except Exception:
@@ -523,7 +523,7 @@ class GatewayDB:
                 (platform_id, user_agent, ip_address, method, path,
                  query_params, request_body, response_code, response_time_ms,
                  tools_invoked, session_id)
-                VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s)
+                VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s) ON CONFLICT DO NOTHING
             """, (valid_pid, user_agent, ip, method, path, query,
                   body[:2000] if body else "", response_code, response_time,
                   tools, session_id))
@@ -565,7 +565,7 @@ class GatewayDB:
             c.execute("""
                 INSERT INTO discovery_hits
                 (file_path, platform_id, user_agent, ip_address, response_code)
-                VALUES (%s, %s, %s, %s, %s)
+                VALUES (%s, %s, %s, %s, %s) ON CONFLICT DO NOTHING
             """, (file_path, platform_id, user_agent, ip, code))
             conn.commit()
         except Exception as e:
@@ -622,7 +622,7 @@ class GatewayDB:
             c = conn.cursor()
             c.execute("""
                 INSERT INTO discovered_platforms (user_agent, protocol_guess, request_count, first_seen, last_seen)
-                VALUES (%s, %s, 1, NOW(), NOW())
+                VALUES (%s, %s, 1, NOW() ON CONFLICT DO NOTHING, NOW())
                 ON CONFLICT (user_agent) DO UPDATE SET
                     request_count = discovered_platforms.request_count + 1,
                     last_seen = NOW()

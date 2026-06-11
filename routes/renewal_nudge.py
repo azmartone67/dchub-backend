@@ -290,7 +290,7 @@ def run_renewal_nudge(dry_run: bool = False) -> dict:
                         INSERT INTO renewal_nudge_log
                           (user_id, email, days_remaining_at_send,
                            resend_message_id, status, delivery_info)
-                        VALUES (%s, %s, %s, %s, %s, %s)
+                        VALUES (%s, %s, %s, %s, %s, %s) ON CONFLICT DO NOTHING
                     """, (u["user_id"], u["email"], u["days_remaining"],
                           msg_id, "sent" if ok else "send_failed", info))
                 except Exception:

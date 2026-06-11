@@ -186,7 +186,7 @@ def _record_alert(cur, watchlist_id: int, shift: dict, channel: str,
             INSERT INTO watchlist_alerts_sent
                    (watchlist_id, market_slug, shift_from, shift_to,
                     channel, status, sent_at)
-            VALUES (%s, %s, %s, %s, %s, %s, NOW())
+            VALUES (%s, %s, %s, %s, %s, %s, NOW() ON CONFLICT DO NOTHING)
         """, (
             watchlist_id, shift.get("market_slug"),
             (shift.get("shift_from") or "").upper(),
