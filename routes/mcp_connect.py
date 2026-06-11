@@ -150,6 +150,46 @@ _CLIENTS = {
             "Rank the top 10 international markets by DCPI for Q4 build decisions.",
         ],
     },
+    # 2026-06-11: ChatGPT now supports custom MCP connectors (Developer Mode /
+    # Pro·Business·Enterprise). /connect/chatgpt used to 404 — ChatGPT is the #2
+    # AI reader of DC Hub (28K), so this is the most direct "get others to
+    # tool-call" surface.
+    "chatgpt": {
+        "name":           "ChatGPT",
+        "tagline":        "Add DC Hub as a custom MCP connector",
+        "install_path":   "ChatGPT → Settings → Connectors → Add custom connector",
+        "install_path_win": "ChatGPT → Settings → Connectors → Add custom connector",
+        "snippet_lang":   "text",
+        "snippet":        """Connector URL:  https://dchub.cloud/mcp
+Header (optional, unlocks 50/day):  X-API-Key: {{TRIAL_KEY}}
+
+In ChatGPT: Settings -> Connectors -> Add custom connector -> paste the URL.""",
+        "deep_link":      "",
+        "deep_link_label": "",
+        "examples": [
+            "Rank the top 10 US power markets by DCPI for 2026 build readiness.",
+            "What's the interconnection-queue depth in PJM vs ERCOT right now?",
+            "Show me the latest hyperscaler data-center M&A deals this quarter.",
+        ],
+    },
+    "gemini": {
+        "name":           "Gemini",
+        "tagline":        "Call DC Hub from Gemini via MCP / function calling",
+        "install_path":   "Vertex AI / Gemini — point tool-use at the MCP endpoint",
+        "install_path_win": "Vertex AI / Gemini — point tool-use at the MCP endpoint",
+        "snippet_lang":   "text",
+        "snippet":        """MCP endpoint:  https://dchub.cloud/mcp
+Gemini function declarations:  https://dchub.cloud/api/v1/gemini-functions.json
+OpenAPI (Vertex):  https://dchub.cloud/openapi-vertex.yaml
+Header (optional, unlocks 50/day):  X-API-Key: {{TRIAL_KEY}}""",
+        "deep_link":      "",
+        "deep_link_label": "",
+        "examples": [
+            "Summarize live grid headroom across the top 5 AI data-center markets.",
+            "Which US markets have the most available powered-shell capacity?",
+            "Compare DCPI build-readiness for Northern Virginia vs Columbus.",
+        ],
+    },
 }
 
 
@@ -549,6 +589,16 @@ def connect_continue():
 @mcp_connect_bp.route("/connect/claude-desktop", methods=["GET"])
 def connect_claude_desktop():
     return _serve("claude-desktop")
+
+
+@mcp_connect_bp.route("/connect/chatgpt", methods=["GET"])
+def connect_chatgpt():
+    return _serve("chatgpt")
+
+
+@mcp_connect_bp.route("/connect/gemini", methods=["GET"])
+def connect_gemini():
+    return _serve("gemini")
 
 
 # Best-effort "this view's key" hook the JS calls after a successful mint.
