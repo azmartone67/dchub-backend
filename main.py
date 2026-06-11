@@ -3814,12 +3814,20 @@ def api_v1_map():
         if not _map_full:
             payload['_gated'] = True
             payload['_upgrade_cta'] = (
-                f"Showing {len(facilities)} of {total} facilities with basic "
-                f"fields and approximate locations. Upgrade for exact "
-                f"coordinates, power, and full specs — dchub.cloud/pricing")
+                f"Showing all {total} facilities with name + location. Upgrade "
+                f"for power capacity, operator, fiber, and full facility "
+                f"specs — dchub.cloud/pricing")
             payload['_pricing_url'] = "https://dchub.cloud/pricing"
             payload['_signup_url'] = "https://dchub.cloud/signup"
-        return jsonify(payload)
+        resp = jsonify(payload)
+        # r-tune 2026-06-11: this is a tier-VARYING response — it MUST NOT be
+        # shared/edge-cached. A cached anon copy was being served for ~1h
+        # (cf-cache-status HIT), masking every deploy AND risking a paid user
+        # getting the masked body. add_security_headers respects an explicit
+        # no-store (see its ~line 9494), so this is the authoritative directive.
+        resp.headers['Cache-Control'] = 'no-store, no-cache, must-revalidate, max-age=0'
+        resp.headers['CDN-Cache-Control'] = 'no-store'
+        return resp
     except Exception as e:
         return jsonify({'success': False, 'error': str(e)}), 500
     finally:
