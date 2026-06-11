@@ -95,6 +95,11 @@ _DEFAULT_CHALLENGER = "claude-sonnet-4-5"
 # On any opus failure go straight to the confirmed-valid sonnet-4-5; haiku-4-5
 # is the cheapest VALID model = terminal (no fallback to retired haiku-3-5).
 _FALLBACK_CHAIN = {
+    # 2026-06-10: Fable 5 pinned on inspector/reasoning/challenger via env. It
+    # MUST have a fallback rung or the raw call sites (e.g. layer4._call_claude,
+    # which uses the model RAW) zero out the brain on any future fable-5 404.
+    # Degrades fable-5 → opus-4-8 → sonnet-4-5 → haiku-4-5.
+    "claude-fable-5":      "claude-opus-4-8",
     "claude-opus-4-8":     "claude-sonnet-4-5",
     "claude-opus-4-7":     "claude-sonnet-4-5",
     "claude-opus-4-5":     "claude-sonnet-4-5",
@@ -107,6 +112,8 @@ _FALLBACK_CHAIN = {
 # inspector tier hold the whole site's findings + history in one
 # prompt instead of truncating to a 1.5KB snippet.
 _ONE_M_CONTEXT_MODELS = {
+    # 2026-06-10: verified fable-5 accepts the context-1m beta header (probe → 200).
+    "claude-fable-5",
     "claude-opus-4-8",
     "claude-opus-4-7",
     "claude-sonnet-4-5",
@@ -240,7 +247,7 @@ def probe_model_reachability(api_key: str,
     # pollutes the AI Gateway error rate). claude-opus-4-7 kept (probing it is
     # how we confirm it's still 404), but it's no longer in the fallback path.
     if models is None:
-        models = ["claude-opus-4-8", "claude-opus-4-7", "claude-opus-4-5",
+        models = ["claude-fable-5", "claude-opus-4-8", "claude-opus-4-7", "claude-opus-4-5",
                   "claude-sonnet-4-5", "claude-haiku-4-5"]
 
     results = {}
