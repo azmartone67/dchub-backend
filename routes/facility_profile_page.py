@@ -171,13 +171,18 @@ def _resolve_legacy_slug(slug: str):
             cands = c.fetchall()
             if not cands:
                 return None
-            # Tier 0: exact canonical name-part match. Pure hash-churn AND
-            # duplicates (identical name-part == same real facility) — already
-            # ordered best-first, so return the first exact match.
-            for rid, rprov, rname in cands:
-                cand_slug = _fac_slug(rid, rprov, rname)
-                if cand_slug.rsplit("-", 1)[0] == name_part:
-                    return cand_slug
+            # Tier 0: exact canonical name-part match — pure hash-churn + real
+            # duplicates. GUARD: generic names (provider repeated as name, e.g.
+            # "amazon-web-services-amazon-web-services") map to dozens of DISTINCT
+            # facilities sharing one name-part; redirecting those would point the
+            # old URL at the WRONG facility, so only resolve a SMALL match set.
+            exact = [(rid, rprov, rname) for (rid, rprov, rname) in cands
+                     if _fac_slug(rid, rprov, rname).rsplit("-", 1)[0] == name_part]
+            if 1 <= len(exact) <= 3:
+                rid, rprov, rname = exact[0]    # cands ordered best (power) first
+                return _fac_slug(rid, rprov, rname)
+            if len(exact) > 3:
+                return None                     # generic name → not safely resolvable
             # Tier 1: exactly one candidate carries every distinctive token
             # (covers cleaned company prefixes where the name-part changed).
             if len(cands) == 1:
