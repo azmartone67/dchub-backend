@@ -3345,7 +3345,7 @@ def _issue_session_cookie(response):
             "/hyperscaler-deals", "/ai-capacity-index",
         }
         _COOKIE_BYPASS_PREFIXES = (
-            "/markets/", "/operators/",
+            "/markets/", "/operators/", "/states/", "/hyperscalers/",
             "/dcpi/",
             "/partners/", "/vertex/",
             "/facility/", "/facilities/",
