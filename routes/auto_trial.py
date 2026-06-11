@@ -344,9 +344,22 @@ def validate_trial_key(api_key: str) -> tuple[bool, str]:
 @auto_trial_bp.route("/api/v1/keys/auto-mint", methods=["POST"])
 def auto_mint_endpoint():
     """Direct callable for testing or alt clients. Same as the
-    inline mint in mcp_gatekeeper."""
-    tool = (request.args.get("tool") or "").strip()
-    return jsonify(mint_trial_for_request(request, tool)), 200
+    inline mint in mcp_gatekeeper.
+
+    2026-06-10 (conversion): also read an optional email/name from the JSON
+    body and forward it. mint_trial_for_request already honors operator_email
+    (→ auto_trial_keys.operator_email, the 15→50/day cap bump, and CRM
+    trial_key_activated capture) — the endpoint just wasn't forwarding it, so
+    every /auto-mint key was anonymous and un-nurturable (the dead free→paid
+    funnel). No email in the body → unchanged anonymous mint."""
+    d = request.get_json(silent=True) or {}
+    tool = (request.args.get("tool") or d.get("tool") or "").strip()
+    return jsonify(mint_trial_for_request(
+        request, tool,
+        client_name=(d.get("client_name") or "").strip(),
+        operator_email=(d.get("operator_email") or d.get("email") or "").strip(),
+        operator_name=(d.get("operator_name") or "").strip(),
+    )), 200
 
 
 @auto_trial_bp.route("/api/v1/keys/auto-trial/redeem", methods=["POST"])
