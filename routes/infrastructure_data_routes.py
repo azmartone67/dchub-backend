@@ -43,6 +43,35 @@ def _safe_float(val):
         return None
 
 
+# 2026-05-28 — tier gating for the map layer endpoints. power_plants_eia and
+# transmission_lines_eia are public EIA/HIFLD datasets, so the gate is lighter
+# than the proprietary facility map: free/anon get a capped preview with
+# city-level coords; paid tiers get full rows + exact coords. Cookie/key-aware
+# detection mirrors the energy paywall; fails closed to anonymous.
+_LAYER_PAID = {'pro', 'enterprise', 'founding', 'internal', 'admin'}
+_LAYER_CAP = {'anonymous': 50, 'free': 50, 'identified': 100, 'developer': 500}
+
+
+def _layer_tier():
+    def _dec(_t):
+        try:
+            import jwt as _j, os as _o
+            secret = _o.environ.get('JWT_SECRET') or _o.environ.get('SECRET_KEY', '')
+            return _j.decode(_t, secret, algorithms=['HS256'])
+        except Exception:
+            return None
+    try:
+        from map_tier_gating import _detect_caller_tier
+        t, _ = _detect_caller_tier(decode_jwt_func=_dec)
+        return (t or 'anonymous').lower()
+    except Exception:
+        return 'anonymous'
+
+
+def _layer_cap(tier):
+    return 500 if tier in _LAYER_PAID else _LAYER_CAP.get(tier, 50)
+
+
 # r47.33 (2026-05-26): process-local memo for the heavy land-power-map
 # endpoints. Geographic data is the same for any caller hitting the same
 # query-param set — power_plants_eia has 13K rows, transmission_lines_eia
@@ -117,9 +146,14 @@ def get_power_plants():
     except:
         min_mw = None
 
+    _tier = _layer_tier()
+    _full = _tier in _LAYER_PAID
+    limit = min(limit, _layer_cap(_tier))
+
     # r47.33: memo by normalized params. Lat/lng quantized to 0.25° so
-    # nearby map pans hit the same cache slot.
-    cache_key = ('power-plants',
+    # nearby map pans hit the same cache slot. Tier is part of the key so a
+    # paid caller's full result is never served to a free/anon caller.
+    cache_key = ('power-plants', _tier,
                  round(lat, 2) if lat is not None else None,
                  round(lng, 2) if lng is not None else None,
                  radius, state_filter, fuel_filter, min_mw,
@@ -164,6 +198,10 @@ def get_power_plants():
 
         plants = []
         for r in rows:
+            _lat, _lng = float(r[16]), float(r[17])
+            if not _full:
+                # city-level (~11km) coords; exact siting stays paywalled
+                _lat, _lng = round(_lat, 1), round(_lng, 1)
             plants.append({
                 'id': r[0], 'plant_id': r[1], 'name': r[2],
                 'utility': r[3], 'state': r[4], 'city': r[5], 'county': r[6],
@@ -172,13 +210,14 @@ def get_power_plants():
                 'natural_gas_mw': _safe_float(r[11]), 'solar_mw': _safe_float(r[12]),
                 'wind_mw': _safe_float(r[13]), 'nuclear_mw': _safe_float(r[14]),
                 'coal_mw': _safe_float(r[15]),
-                'lat': float(r[16]), 'lng': float(r[17])
+                'lat': _lat, 'lng': _lng
             })
 
         payload = {
             'success': True,
             'plants': plants,
             'count': len(plants),
+            'tier': _tier,
             'filters': {
                 'state': state_filter or 'all',
                 'fuel': fuel_filter or 'all',
@@ -187,6 +226,12 @@ def get_power_plants():
             },
             '_cache': 'miss',
         }
+        if not _full:
+            payload['_gated'] = True
+            payload['_upgrade_cta'] = (
+                "Free preview: capped results with approximate locations. "
+                "Upgrade for full coverage + exact coordinates — dchub.cloud/pricing")
+            payload['_pricing_url'] = "https://dchub.cloud/pricing"
         _memo_set(cache_key, {**payload, '_cache': 'hit'})
         return jsonify(payload)
     except Exception as e:
@@ -241,9 +286,14 @@ def get_transmission_lines():
     except:
         min_voltage = None
 
+    _tier = _layer_tier()
+    _full = _tier in _LAYER_PAID
+    limit = min(limit, _layer_cap(_tier))
+
     # r47.33: memo by normalized params — 94K-row table makes this the
-    # single most expensive map endpoint.
-    cache_key = ('transmission-lines',
+    # single most expensive map endpoint. Tier in the key so a paid caller's
+    # full result is never served to a free/anon caller.
+    cache_key = ('transmission-lines', _tier,
                  round(lat, 2) if lat is not None else None,
                  round(lng, 2) if lng is not None else None,
                  radius, state_filter, min_voltage, owner_filter,
@@ -286,11 +336,14 @@ def get_transmission_lines():
 
         lines = []
         for r in rows:
+            _lat, _lng = float(r[5]), float(r[6])
+            if not _full:
+                _lat, _lng = round(_lat, 1), round(_lng, 1)
             lines.append({
                 'id': r[0], 'owner': r[1],
                 'voltage_kv': _safe_float(r[2]),
                 'substation_1': r[3], 'substation_2': r[4],
-                'lat': float(r[5]), 'lng': float(r[6]),
+                'lat': _lat, 'lng': _lng,
                 'state': r[7]
             })
 
@@ -298,6 +351,7 @@ def get_transmission_lines():
             'success': True,
             'lines': lines,
             'count': len(lines),
+            'tier': _tier,
             'filters': {
                 'state': state_filter or 'all',
                 'min_voltage': min_voltage,
@@ -306,6 +360,12 @@ def get_transmission_lines():
             },
             '_cache': 'miss',
         }
+        if not _full:
+            payload['_gated'] = True
+            payload['_upgrade_cta'] = (
+                "Free preview: capped results with approximate locations. "
+                "Upgrade for full coverage + exact coordinates — dchub.cloud/pricing")
+            payload['_pricing_url'] = "https://dchub.cloud/pricing"
         _memo_set(cache_key, {**payload, '_cache': 'hit'})
         return jsonify(payload)
     except Exception as e:
