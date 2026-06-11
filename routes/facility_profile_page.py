@@ -166,10 +166,17 @@ def _resolve_legacy_slug(slug: str):
             c.execute(
                 "SELECT id, provider, name FROM discovered_facilities "
                 "WHERE name IS NOT NULL AND name <> '' AND " + conds + " "
-                "ORDER BY COALESCE(power_mw,0) DESC, id ASC LIMIT 200",
+                "ORDER BY COALESCE(power_mw,0) DESC, id ASC LIMIT 25",
                 [f"%{t}%" for t in toks])
             cands = c.fetchall()
             if not cands:
+                return None
+            # GUARD: if the distinctive tokens match many facilities, this is a
+            # GENERIC name (provider repeated as the name, e.g. "amazon-web-
+            # services-amazon-web-services" → 166 distinct sites). Not safely
+            # resolvable to one facility — bail rather than redirect to the wrong
+            # one. Specific names match only the facility + its few duplicates.
+            if len(cands) >= 25:
                 return None
             # Tier 0: exact canonical name-part match — pure hash-churn + real
             # duplicates. GUARD: generic names (provider repeated as name, e.g.
