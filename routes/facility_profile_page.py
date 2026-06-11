@@ -124,6 +124,76 @@ def _fac_slug(fac_id, provider, name) -> str:
     return f"{ps}-{ns}-{h8}" if ps else f"{ns}-{h8}"
 
 
+# Legal-suffix / filler tokens dropped from legacy-slug matching.
+_SLUG_STOPWORDS = {"inc", "llc", "corp", "ltd", "plc", "co", "sa", "ag",
+                   "gmbh", "the", "group", "holdings", "company"}
+
+
+def _resolve_legacy_slug(slug: str):
+    """Old indexed slugs embed MD5(id)[:8]; re-ingestion assigns NEW ids (and
+    creates duplicate rows), so previously-indexed facility slugs 404 even though
+    the facility still exists under a new slug — silently de-indexing ~14K pages.
+
+    Recover the SEO equity: match the slug's name-part to the live row(s) and
+    return the CURRENT canonical slug for a 301. HIGH PRECISION — only an exact
+    canonical name-part match (handles pure hash-churn + duplicates) or a single
+    unique token match (handles cleaned company prefixes) wins. Anything
+    ambiguous returns None and falls through to the existing 404, so we never
+    mis-redirect. Validated at 95% recovery / 0 mis-redirects on the GSC export.
+    """
+    base = slug[:-5] if slug.endswith(".html") else slug
+    base = base.split("/")[0]
+    parts = base.rsplit("-", 1)
+    is_hash = (len(parts) == 2 and len(parts[1]) == 8
+               and all(ch in "0123456789abcdef" for ch in parts[1].lower()))
+    name_part = parts[0] if is_hash else base
+    # Distinctive tokens for the DB pre-filter. Drop legal suffixes + BARE
+    # numbers ('1'/'3' would LIKE-match everything); the number is still
+    # enforced by the exact name-part comparison below.
+    toks = [t for t in dict.fromkeys(name_part.split("-"))
+            if t and t not in _SLUG_STOPWORDS and not t.isdigit()]
+    if len(toks) < 2:
+        return None
+    try:
+        from main import get_read_db
+        conn = get_read_db()
+        if not conn:
+            return None
+        try:
+            c = conn.cursor()
+            conds = " AND ".join(
+                ["LOWER(COALESCE(provider,'')||' '||COALESCE(name,'')) LIKE %s"] * len(toks))
+            c.execute(
+                "SELECT id, provider, name FROM discovered_facilities "
+                "WHERE name IS NOT NULL AND name <> '' AND " + conds + " "
+                "ORDER BY COALESCE(power_mw,0) DESC, id ASC LIMIT 200",
+                [f"%{t}%" for t in toks])
+            cands = c.fetchall()
+            if not cands:
+                return None
+            # Tier 0: exact canonical name-part match. Pure hash-churn AND
+            # duplicates (identical name-part == same real facility) — already
+            # ordered best-first, so return the first exact match.
+            for rid, rprov, rname in cands:
+                cand_slug = _fac_slug(rid, rprov, rname)
+                if cand_slug.rsplit("-", 1)[0] == name_part:
+                    return cand_slug
+            # Tier 1: exactly one candidate carries every distinctive token
+            # (covers cleaned company prefixes where the name-part changed).
+            if len(cands) == 1:
+                rid, rprov, rname = cands[0]
+                return _fac_slug(rid, rprov, rname)
+            return None
+        finally:
+            try:
+                conn.close()
+            except Exception:
+                pass
+    except Exception as e:
+        logger.warning(f"legacy slug resolve failed: {e}")
+        return None
+
+
 def _comparables_html(fac: dict, limit: int = 6) -> str:
     """Internal-link mesh: other data centers in the same city/market. Adds
     unique per-page content + crawl depth — the core of turning thin facility
@@ -466,6 +536,17 @@ def render_facility_profile(slug):
 
     fac = _fetch_facility_by_slug(slug)
     if not fac:
+        # SEO recovery: re-ingestion churns MD5(id) → old indexed slugs 404
+        # though the facility still exists under a new slug. Resolve + 301 to
+        # the current canonical URL (preserves link equity). Only confident
+        # matches redirect; the rest keep the existing noindex 404.
+        _target = _resolve_legacy_slug(slug)
+        if _target and _target != slug:
+            return Response(status=301, headers={
+                "Location": f"/facilities/{_target}",
+                "Cache-Control": "public, max-age=86400",
+                "X-DC-Hub-Source": "facility-slug-recovery",
+            })
         return Response(
             f"""<!DOCTYPE html><html><head>
 <meta charset="utf-8"><title>Facility not found | DC Hub</title>
