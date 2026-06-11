@@ -347,24 +347,23 @@ def _format_post_base(slot, payload):
                 f"Source: {news.get('url', landing)}\n\n"
                 f"#DCHubMedia #DataCenter #DCPI #AIInfrastructure"
             )
-        # Fallback when no fresh news — vary by hour-of-day so it isn't identical
-        import datetime as _dt
-        rotation_seed = _dt.datetime.utcnow().day  # 1-31
-        contrarians = [
-            ("Northern Virginia",   14.5, "60-month queue"),
-            ("Silicon Valley",      18.2, "47-month queue"),
-            ("Loudoun County",      11.8, "63-month queue"),
-            ("Santa Clara",         16.9, "52-month queue"),
-            ("Reston",              13.1, "58-month queue"),
-        ]
-        legacy, score, wait = contrarians[rotation_seed % len(contrarians)]
+        # Fallback when no fresh news. 2026-06-11: REMOVED the hardcoded/fabricated
+        # DCPI scores (NoVa 14.5, "Cheyenne 69.5, Council Bluffs 68.1, Midlothian
+        # 65.6") — they were stale, unverifiable, and repeated daily, which is
+        # exactly why the editor-in-chief rejected these as "unverifiable DCPI
+        # scores" and the feed read repetitive (the "Cheyenne over and over" the
+        # operator flagged). Ship an honest, score-free directional post that
+        # points at the LIVE DCPI ranking + open methodology instead of inventing
+        # numbers. (Path A / marketing_engine carries the real per-market DCPI
+        # posts now that the quality scorer recognizes DCPI scores — r80.2.)
         return (
-            f"⚡ Everyone says {legacy} is THE data-center market.\n\n"
-            f"DCPI shows: {legacy} Excess Power score = {score} (bottom decile of 285 "
-            f"markets). {wait}. Capex is quietly moving to Cheyenne (69.5), "
-            f"Council Bluffs (68.1), Midlothian TX (65.6).\n\n"
-            f"The narrative lags the build by 18-24 months.\n\n"
-            f"Where AI infra is actually landing: {landing}\n\n"
+            f"⚡ The data-center map shifts faster than the headlines.\n\n"
+            f"Primary metros like Northern Virginia and Silicon Valley sit behind "
+            f"multi-year interconnection queues while capex rotates toward emerging, "
+            f"power-rich markets. DC Hub's DCPI ranks all 285 markets on live grid "
+            f"headroom — see who's actually moving, methodology open:\n\n"
+            f"Live ranking: {landing}\n"
+            f"Methodology: https://dchub.cloud/dcpi#methodology\n\n"
             f"#DCHubMedia #DataCenter #DCPI"
         )
     # Fallback: generic

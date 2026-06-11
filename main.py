@@ -3247,6 +3247,29 @@ def _start_request_timer():
     request._start_time = time.time()
 
 @app.after_request
+def _add_mcp_discovery_headers(response):
+    """2026-06-11: advertise the live MCP server on EVERY response so the AI
+    crawlers already READING DC Hub (Claude/ChatGPT/Gemini/Perplexity/… — 769K
+    reads) discover they can TOOL-CALL it, not just cite it. The header set
+    already existed in api_response_enrichment.get_enrichment_headers() but was
+    never wired into any after_request (dead code). Adds X-MCP-Endpoint (the
+    emerging convention) + a Link rel=mcp-manifest to the canonical 38-tool
+    .well-known/mcp.json. setdefault so it never clobbers an existing header;
+    fail-open — can never break a response."""
+    try:
+        from api_response_enrichment import get_enrichment_headers
+        for _k, _v in get_enrichment_headers().items():
+            response.headers.setdefault(_k, _v)
+        response.headers.setdefault("X-MCP-Endpoint", "https://dchub.cloud/mcp")
+        _mcp_link = '<https://dchub.cloud/.well-known/mcp.json>; rel="mcp-manifest"'
+        _existing = response.headers.get("Link")
+        response.headers["Link"] = f"{_existing}, {_mcp_link}" if _existing else _mcp_link
+    except Exception:
+        pass
+    return response
+
+
+@app.after_request
 def _check_request_timeout(response):
     start = getattr(request, '_start_time', None)
     if start:
