@@ -3697,11 +3697,12 @@ def api_v1_map():
             _map_tier = (_mt or 'anonymous').lower()
         except Exception:
             _map_tier = 'anonymous'
-        # r-tune 2026-06-11: caps raised so the PUBLIC facility map (/map — the
-        # +1,967% SEO page) stays visually full. Fields are already masked +
-        # coords coarsened below, so anon sees many dots but NOT the proprietary
-        # exact-coords / power / sqft / operator / full-30K-dataset (paid only).
-        _MAP_TIER_CAP = {'anonymous': 2000, 'free': 3000, 'identified': 5000, 'developer': 10000}
+        # r-tune 2026-06-11: the PUBLIC facility map (/map — the +1,967% SEO page)
+        # must stay visually COMPLETE for growth + agent discovery, so dots are
+        # uncapped for every tier. The upgrade nudge is FIELD-level instead: anon/
+        # free get name + EXACT location but NOT power_mw / facility_type (the
+        # proprietary specs) via the masking block below. Paid gets the specs too.
+        _MAP_TIER_CAP = {'anonymous': 50000, 'free': 50000, 'identified': 50000, 'developer': 50000}
         _map_full = _map_tier in ('pro', 'enterprise', 'founding', 'internal', 'admin')
         if not _map_full:
             limit = min(limit, _MAP_TIER_CAP.get(_map_tier, 25))
@@ -3794,8 +3795,8 @@ def api_v1_map():
                     g = {k: v for k, v in f.items() if k in _allowed}
                     if f.get('latitude') is not None and f.get('longitude') is not None:
                         try:
-                            g['latitude'] = round(float(f['latitude']), 1)
-                            g['longitude'] = round(float(f['longitude']), 1)
+                            g['latitude'] = float(f['latitude'])
+                            g['longitude'] = float(f['longitude'])
                         except (TypeError, ValueError):
                             pass
                     masked.append(g)

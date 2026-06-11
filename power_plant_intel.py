@@ -65,7 +65,10 @@ def _set_cached(key, value):
 # returns too. Single-plant /detail and /summary stay free as the discovery
 # hook. Tier detection is cookie/key-aware and fails closed to anonymous.
 _PP_PAID = {'pro', 'enterprise', 'founding', 'internal', 'admin'}
-_PP_PREVIEW = {'anonymous': 3, 'free': 3, 'identified': 5, 'developer': 50}
+# r-tune 2026-06-11: uncapped — feeds the public land-power map's power layers
+# (a growth surface). Monetize via the MCP/API data paywalls, not by gutting the
+# public map. Dial specific tiers down if a harder wall is wanted later.
+_PP_PREVIEW = {'anonymous': 100000, 'free': 100000, 'identified': 100000, 'developer': 100000}
 _PP_LIST_KEYS = {
     '/api/v1/power-plants/nearby':     ['plants'],
     '/api/v1/power-plants/generation': ['plants'],

@@ -49,7 +49,10 @@ def _safe_float(val):
 # city-level coords; paid tiers get full rows + exact coords. Cookie/key-aware
 # detection mirrors the energy paywall; fails closed to anonymous.
 _LAYER_PAID = {'pro', 'enterprise', 'founding', 'internal', 'admin'}
-_LAYER_CAP = {'anonymous': 50, 'free': 50, 'identified': 100, 'developer': 500}
+# r-tune 2026-06-11: uncapped — these feed the public land-power map's layer
+# toggles (transmission, substations, gas, etc.), a growth surface. Capping to 50
+# made toggled layers look broken. Monetize via the MCP/API paywalls instead.
+_LAYER_CAP = {'anonymous': 100000, 'free': 100000, 'identified': 100000, 'developer': 100000}
 
 
 def _layer_tier():
@@ -69,7 +72,7 @@ def _layer_tier():
 
 
 def _layer_cap(tier):
-    return 500 if tier in _LAYER_PAID else _LAYER_CAP.get(tier, 50)
+    return 100000 if tier in _LAYER_PAID else _LAYER_CAP.get(tier, 100000)
 
 
 # r47.33 (2026-05-26): process-local memo for the heavy land-power-map
