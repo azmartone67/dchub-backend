@@ -12144,7 +12144,7 @@ def handle_checkout_completed(session):
 
     # phase17_mcp_conversion: write the conversion to mcp_conversions table
     try:
-        _p17_data = data if isinstance(data, dict) else {}
+        _p17_data = session if isinstance(session, dict) else {}
         _p17_session_id = _p17_data.get('id')
         _p17_email = (_p17_data.get('customer_email')
                       or (_p17_data.get('customer_details') or {}).get('email') or '')
@@ -12221,7 +12221,7 @@ def handle_checkout_completed(session):
     # handlers above. Idempotent: ON CONFLICT (mcp_session_id) DO UPDATE so a
     # Stripe webhook retry simply refreshes the row. Fail-soft: never raises.
     try:
-        _fixe_data = data if isinstance(data, dict) else {}
+        _fixe_data = session if isinstance(session, dict) else {}
         _fixe_cref = (_fixe_data.get('client_reference_id') or '').strip()
         if _fixe_cref:
             _fixe_upper = _fixe_cref.upper()
