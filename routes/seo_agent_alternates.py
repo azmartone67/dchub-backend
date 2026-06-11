@@ -21,12 +21,42 @@ _SEO_PATTERNS = [
 ]
 
 
+_BREADCRUMB_SECTION = {
+    "facility": ("Facilities", "/sites"),
+    "market":   ("Markets", "/markets"),
+    "grid":     ("Grid Intelligence", "/grid-intel"),
+    "deals":    ("Hyperscaler Deals", "/hyperscaler-deals"),
+    "capacity": ("AI Capacity Index", "/ai-capacity-index"),
+}
+
+
 def _alternate_link_for(path):
     for pat, kind, tmpl in _SEO_PATTERNS:
         m = pat.match(path)
         if m:
-            return tmpl.format(*m.groups()), kind
-    return None, None
+            slug = (m.groups()[0] if m.groups() else "") or ""
+            return tmpl.format(*m.groups()), kind, slug
+    return None, None, None
+
+
+def _breadcrumb_jsonld(path, kind, slug):
+    """2026-06-11: BreadcrumbList JSON-LD for SEO pages — GSC showed
+    Breadcrumbs 0/0. Adds SERP breadcrumb display across the market /
+    facility / grid trees. Built from the matched path; never raises."""
+    import json as _json
+    base = "https://dchub.cloud"
+    items = [{"@type": "ListItem", "position": 1, "name": "DC Hub", "item": base + "/"}]
+    pos = 2
+    sec = _BREADCRUMB_SECTION.get(kind)
+    if sec:
+        items.append({"@type": "ListItem", "position": pos, "name": sec[0], "item": base + sec[1]})
+        pos += 1
+    if slug:
+        name = (slug.replace("-", " ").replace("_", " ").strip()[:80].title()) or kind.title()
+        items.append({"@type": "ListItem", "position": pos, "name": name, "item": base + path})
+    payload = {"@context": "https://schema.org", "@type": "BreadcrumbList", "itemListElement": items}
+    return ('<script type="application/ld+json">'
+            + _json.dumps(payload, separators=(",", ":")) + "</script>")
 
 
 def register_alternate_hook(app):
@@ -36,7 +66,7 @@ def register_alternate_hook(app):
             ct = (resp.headers.get("Content-Type") or "").lower()
             if "text/html" not in ct:
                 return resp
-            alt_url, kind = _alternate_link_for(request.path)
+            alt_url, kind, slug = _alternate_link_for(request.path)
             if not alt_url:
                 return resp
             body = resp.get_data(as_text=True)
@@ -47,6 +77,7 @@ def register_alternate_hook(app):
                 f'''<link rel="alternate" type="application/mcp+json" href="https://dchub.cloud/mcp" title="DC Hub MCP">'''
                 f'''<meta name="dchub:resource-type" content="{kind}">'''
                 f'''<meta name="dchub:mcp-tools" content="search_facilities,get_facility,analyze_site,compare_sites,get_market_intel">'''
+                + _breadcrumb_jsonld(request.path, kind, slug)
             )
             body = body.replace("<head>", "<head>" + link_tags, 1)
             resp.set_data(body)
