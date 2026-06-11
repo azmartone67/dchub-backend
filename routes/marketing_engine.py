@@ -1464,6 +1464,13 @@ def _format_linkedin_post(rel: dict) -> str:
     parts = [title]
     if sub: parts.append(sub)
     parts.append(f"Full release → {url}")
+    # 2026-06-10: DCPI-led posts were rejected by the editor-in-chief
+    # ("unverifiable DCPI scores; methodology link untraceable; lacks credibility
+    # markers"). Cite the public methodology page on DCPI-topic posts so the score
+    # is verifiable — directly answers that rejection criterion. /dcpi is 200
+    # (/dcpi/methodology 308-redirects), #methodology anchors the section.
+    if 'dcpi' in (title + ' ' + sub).lower() or 'excess power' in (title + ' ' + sub).lower():
+        parts.append("DCPI methodology → https://dchub.cloud/dcpi#methodology")
     # Phase HH+1: DC Hub Media branding — newsroom byline + tag.
     parts.append("Published by DC Hub Media — dchub.cloud/dc-hub-media")
     parts.append("#DCHub #DCHubMedia #datacenter #infrastructure")

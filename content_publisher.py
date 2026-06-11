@@ -1386,6 +1386,16 @@ _METRIC_PATTERNS = [
     # "<N> unique (AI )callers/agents"
     ("unique_callers",
      _re_legacy.compile(r'([\d,]+)\s+unique\s+(?:AI\s+)?(?:callers|agents)', _re_legacy.I)),
+    # 2026-06-10: DCPI score — DC Hub's #1 content type was INVISIBLE to the
+    # quality scorer (no pattern), so DCPI-led posts ("Cheyenne hit DCPI score
+    # 69.5 (BUILD)") scored ~0.55 and were auto-rejected below CONTENT_QUALITY_MIN
+    # — the root cause of near-zero social posting. Matches "DCPI 69.5", "DCPI
+    # score 69.5", "DCPI score of 69.5", "Excess Power 69.5"; value bounded 0-999
+    # so it can't grab an unrelated big number. NOTE: dcpi_score is PER-MARKET
+    # (value differs per market) so it is EXCLUDED from the metric_label dedup
+    # below — DCPI posts dedup on market_verdict, not the shared label.
+    ("dcpi_score",
+     _re_legacy.compile(r'(?:DCPI|Excess[\s\-]?Power)(?:\s+score)?(?:\s+of)?\s+([\d]{1,3}(?:\.\d{1,2})?)\b', _re_legacy.I)),
 ]
 
 
@@ -1822,6 +1832,10 @@ def _should_skip_publish(cur, content_text: str, platform: str):
                               f"already posted to {platform} within "
                               f"{_DEDUP_LOOKBACK_DAYS}d")
             if (sig.get("metric_label")
+                    # 2026-06-10: dcpi_score is per-market (value varies by
+                    # market) — dedup it via market_verdict above, NOT the shared
+                    # label, else every DCPI post after the first over-collapses.
+                    and sig.get("metric_label") != "dcpi_score"
                     and psig.get("metric_label") == sig.get("metric_label")):
                 return True, (f"duplicate headline metric '{sig['metric_label']}' "
                               f"already posted to {platform} within "
