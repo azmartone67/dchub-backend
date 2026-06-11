@@ -743,9 +743,13 @@ def learn_backend_issues():
         # / 1-of-4 while the real 84-deep backlog flows through HERE untracked.
         # Wrapped so a telemetry hiccup never breaks the learn loop.
         try:
-            from routes.brain_v2_store import bump_persistence as _bp, MAX_ISSUE_LABEL_LEN
+            # 2026-06-10: persistence bump MOVED below the loop so it records the
+            # finding's REAL outcome (proposed / config_not_code / no_source_map /
+            # deferred_rate_cap) in ONE call. The bare bump here only ever wrote a
+            # NULL last_outcome, so ~21 findings showed a permanent false "untried"
+            # and re-surfaced every cycle, inflating seen_count. Temporal memory
+            # still bumps here (it has no outcome dimension).
             from routes.brain_learning import bump_temporal as _bt
-            _bp(issue_label=(issue.get("issue") or "")[:MAX_ISSUE_LABEL_LEN], url=issue.get("url") or "")
             _bt(issue.get("issue") or "", issue.get("url") or "")
         except Exception:
             pass
@@ -884,6 +888,24 @@ def learn_backend_issues():
         res = _validate_and_store_proposal(loop_state["name"], prop)
         res["url"] = url
         results.append(res)
+
+    # 2026-06-10: persist each finding's REAL outcome to brain_issue_persistence.
+    # `results` is 1:1 and index-aligned with `backend_issues` (every issue path
+    # appends exactly once), so zip pairs each finding with its outcome. Writing
+    # the true outcome lets most_persistent_unfixed() DROP findings that were
+    # actually 'proposed' and show the rest by their real reason — instead of the
+    # permanent false "untried" the bare top-of-loop bump produced. ONE bump per
+    # finding per cycle (no double-increment). Never breaks the learn response.
+    try:
+        from routes.brain_v2_store import (bump_persistence as _bp_oc,
+                                           MAX_ISSUE_LABEL_LEN as _MIL_oc)
+        for _iss, _res in zip(backend_issues, results):
+            _oc = (_res.get("outcome") or _res.get("status") or "").strip()
+            _bp_oc(issue_label=(_iss.get("issue") or "")[:_MIL_oc],
+                   url=_iss.get("url") or "",
+                   last_outcome=(_oc or None))
+    except Exception:
+        pass
 
     return jsonify(
         ok=True,
