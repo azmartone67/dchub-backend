@@ -3697,7 +3697,11 @@ def api_v1_map():
             _map_tier = (_mt or 'anonymous').lower()
         except Exception:
             _map_tier = 'anonymous'
-        _MAP_TIER_CAP = {'anonymous': 25, 'free': 35, 'identified': 50, 'developer': 1000}
+        # r-tune 2026-06-11: caps raised so the PUBLIC facility map (/map — the
+        # +1,967% SEO page) stays visually full. Fields are already masked +
+        # coords coarsened below, so anon sees many dots but NOT the proprietary
+        # exact-coords / power / sqft / operator / full-30K-dataset (paid only).
+        _MAP_TIER_CAP = {'anonymous': 2000, 'free': 3000, 'identified': 5000, 'developer': 10000}
         _map_full = _map_tier in ('pro', 'enterprise', 'founding', 'internal', 'admin')
         if not _map_full:
             limit = min(limit, _MAP_TIER_CAP.get(_map_tier, 25))
