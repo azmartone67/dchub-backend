@@ -2440,7 +2440,11 @@ def _run_state_brief_warm():
             try:
                 r = _rq.get(f"{base}/states/{slug}/brief",
                             headers={"User-Agent": "dchub-cron-state-brief-warm/1.0"},
-                            timeout=12)
+                            # 2026-06-10: 12s was < the cold render (7-10s, spikes
+                            # past 12s) so the prime timed out before CF could cache
+                            # → every real visitor paid the cold cost. 35s lets the
+                            # prime complete so the s-maxage=21600 edge cache fills.
+                            timeout=35)
                 if r.status_code == 200:
                     primed += 1
             except Exception:
@@ -2481,7 +2485,10 @@ def _run_operator_brief_warm():
             try:
                 r = _rq.get(f"{base}/operators/{slug}/brief",
                             headers={"User-Agent": "dchub-cron-operator-brief-warm/1.0"},
-                            timeout=12)
+                            # 2026-06-10: operator briefs render ~14.5s cold, so the
+                            # 12s prime ALWAYS timed out → CF never cached → every
+                            # visitor paid 14.5s. 35s lets the prime complete.
+                            timeout=35)
                 if r.status_code == 200:
                     primed += 1
             except Exception:
@@ -2522,7 +2529,10 @@ def _run_hyperscaler_brief_warm():
             try:
                 r = _rq.get(f"{base}/hyperscalers/{slug}/brief",
                             headers={"User-Agent": "dchub-cron-hyperscaler-brief-warm/1.0"},
-                            timeout=12)
+                            # 2026-06-10: match state/operator — cold renders can
+                            # exceed the old 12s prime timeout (Google Cloud ~7.9s
+                            # and spikes), starving the CF edge cache.
+                            timeout=35)
                 if r.status_code == 200:
                     primed += 1
             except Exception:
