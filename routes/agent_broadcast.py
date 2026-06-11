@@ -429,10 +429,25 @@ def _fetch_ai_citations(days: int) -> list[dict]:
                 who_expr = "'AI agent'"
             url_expr = "url" if "url" in cols else "''"
             ts_col = _first_col(cols, "approved_at", "created_at")
-            ts_expr = ts_col if ts_col else "NULL::timestamp"
-            order_expr = (f"{ts_col} DESC NULLS LAST" if ts_col else "1")
-            where_expr = ("WHERE COALESCE(approved, true) = true"
-                          if "approved" in cols else "")
+            # 2026-06-11 FIX: fresh testimonials arrive approved_at=NULL +
+            # approved=false (auto-captured daily, pending manual curation). The
+            # old "approved_at DESC NULLS LAST" + "approved=true" combo buried all
+            # 355 fresh rows behind the LIMIT/WHERE, so the page showed only the
+            # 17 hand-approved marquee quotes whose newest approved_at is 96d
+            # stale (2026-03-06). Rank by EFFECTIVE recency and surface recent
+            # genuine captures (the probe already verified each DC Hub citation)
+            # so the testimonial feed stays fresh without a human in the loop.
+            _has_both = ("approved_at" in cols and "created_at" in cols)
+            rank_expr = "COALESCE(approved_at, created_at)" if _has_both else (ts_col or "NULL::timestamp")
+            ts_expr = rank_expr
+            order_expr = f"{rank_expr} DESC NULLS LAST"
+            if "approved" in cols and "created_at" in cols:
+                where_expr = ("WHERE (COALESCE(approved, true) = true "
+                              "OR created_at > NOW() - INTERVAL '21 days')")
+            elif "approved" in cols:
+                where_expr = "WHERE COALESCE(approved, true) = true"
+            else:
+                where_expr = ""
             cur.execute(f"""
                 SELECT {who_expr}  AS who,
                        {url_expr}  AS url,
