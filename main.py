@@ -29638,6 +29638,17 @@ try:
 except Exception as _e:
     print(f"[main] seo_agent_alternates register failed: {_e}", file=sys.stderr)
 
+# 2026-06-11 (#5): Render BUILD-status monitor. The brain watches the LIVE
+# site (Railway); a Render *build* failure (failover host) went silent with
+# no alert. This polls the Render deploy API + emails on a failed build,
+# deduped per deploy_id. Admin-gated; cron-callable from GH Actions.
+try:
+    from routes.render_build_monitor import render_build_monitor_bp
+    app.register_blueprint(render_build_monitor_bp)
+    print("[main] render_build_monitor_bp registered: /api/v1/admin/render/build-check")
+except Exception as _e:
+    print(f"[main] render_build_monitor_bp register failed: {_e}", file=sys.stderr)
+
 # r47 (2026-05-25): ISO interconnection queue tracker — moat surface
 # that pulls the cited numbers (410 GW total, 87% DC share) into DCPI's
 # domain so AI synthesis attributes them to dchub.cloud, not ercot.com.

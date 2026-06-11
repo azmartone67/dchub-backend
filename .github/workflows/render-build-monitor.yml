@@ -1,0 +1,48 @@
+name: Render Build Monitor (15-min)
+
+# 2026-06-11 (#5): The brain watches the LIVE site (Railway). A Render *build*
+# failure (Render is the failover host) went silent — nothing went down, so no
+# alert fired. This polls the Render deploy API via our admin endpoint, which
+# emails the operator (Resend) on a failed build, deduped per deploy_id.
+#
+# Hits the Railway ORIGIN directly so the check isn't subject to the CF worker
+# proxy timeout / edge caching of the admin response. The endpoint is a no-op
+# (returns ok=false:no_render_api_key) unless RENDER_API_KEY is set on Railway.
+
+on:
+  schedule:
+    - cron: "*/15 * * * *"
+  workflow_dispatch: {}
+
+concurrency:
+  group: render-build-monitor
+  cancel-in-progress: true
+
+jobs:
+  check:
+    runs-on: ubuntu-latest
+    timeout-minutes: 3
+    steps:
+      - name: Poll Render build status (alert on failure)
+        env:
+          ADMIN_KEY: ${{ secrets.DCHUB_ADMIN_KEY }}
+        run: |
+          set +e
+          BODY=$(curl -sS -m 60 -X POST \
+            -H "X-Admin-Key: $ADMIN_KEY" \
+            -H "User-Agent: DCHub-RenderBuildMonitor/1.0" \
+            https://dchub-backend-production.up.railway.app/api/v1/admin/render/build-check)
+          RC=$?
+          echo "curl rc=$RC"
+          echo "$BODY" | head -c 800
+          echo ""
+          STATUS=$(echo "$BODY" | python3 -c "import sys,json;print(json.load(sys.stdin).get('status','?'))" 2>/dev/null || echo "?")
+          ALERTED=$(echo "$BODY" | python3 -c "import sys,json;print(json.load(sys.stdin).get('alerted','?'))" 2>/dev/null || echo "?")
+          echo "render deploy status=$STATUS alerted=$ALERTED"
+          # Non-fatal: a transient Render API / origin hiccup is a soft signal,
+          # not an outage. Only warn if the origin itself was unreachable so we
+          # don't spam red Xs on the Actions calendar.
+          if [ "$RC" -ne 0 ]; then
+            echo "::warning::render-build-monitor origin unreachable (rc=$RC) — transient"
+          fi
+          exit 0
