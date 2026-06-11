@@ -3692,8 +3692,12 @@ def api_v1_map():
                 return None
         _map_tier = 'anonymous'
         try:
-            from map_tier_gating import _detect_caller_tier
-            _mt, _ = _detect_caller_tier(decode_jwt_func=_map_decode_jwt)
+            # detect_tier_failopen: a credentialed caller (cookie / dchub_ key /
+            # Bearer / internal key) that resolves to anonymous — e.g. a DB
+            # hiccup during a 503 or a JWT decode error — is treated as paid so
+            # Pro/Enterprise/Founding are NEVER downgraded into the masked view.
+            from map_tier_gating import detect_tier_failopen
+            _mt, _ = detect_tier_failopen(decode_jwt_func=_map_decode_jwt)
             _map_tier = (_mt or 'anonymous').lower()
         except Exception:
             _map_tier = 'anonymous'

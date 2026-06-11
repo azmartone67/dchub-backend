@@ -123,6 +123,50 @@ def _detect_caller_tier(decode_jwt_func=None):
     return 'anonymous', None
 
 
+def has_auth_credential(req=None):
+    """True if the request carries ANY auth credential — internal key,
+    dchub_ API key, Bearer token, or a login cookie. Used to tell a real
+    (logged-in / keyed) caller whose tier lookup transiently failed apart
+    from a genuinely anonymous one."""
+    from flask import request as _r
+    r = req or _r
+    try:
+        if (r.headers.get('X-Internal-Key') or '').strip():
+            return True
+        if (r.headers.get('X-API-Key') or r.args.get('api_key') or '').strip():
+            return True
+        if r.headers.get('Authorization', '').startswith('Bearer '):
+            return True
+        if (r.cookies.get('auth_token') or r.cookies.get('token')
+                or r.cookies.get('dchub_token')):
+            return True
+    except Exception:
+        pass
+    return False
+
+
+def detect_tier_failopen(decode_jwt_func=None, req=None):
+    """Like _detect_caller_tier, but fails OPEN for credentialed callers.
+
+    If tier resolves to 'anonymous' yet the request carries an auth
+    credential (cookie / dchub_ key / Bearer / internal key), return 'pro'
+    so a paid user is NEVER downgraded by a transient DB hiccup, JWT decode
+    failure, or any other resolution error. Genuinely anonymous callers
+    (no credential) stay 'anonymous' and keep the free experience.
+
+    Correctly-resolved tiers (free / identified / developer / paid) pass
+    through unchanged — free is still free.
+    """
+    try:
+        tier, info = _detect_caller_tier(decode_jwt_func)
+    except Exception:
+        tier, info = 'anonymous', None
+    tier = (tier or 'anonymous').lower()
+    if tier == 'anonymous' and has_auth_credential(req):
+        return 'pro', {'source': 'credentialed_failopen'}
+    return tier, info
+
+
 def _normalize_tier(plan):
     """Normalize plan name to tier level."""
     plan = (plan or 'anonymous').lower().strip()
