@@ -80,11 +80,12 @@ def _payload(cat: str) -> dict:
     if cat == "mcp":
         d.update({
             "category": "mcp",
-            "what": "MCP client (Claude Desktop, Cursor, Cline, Continue, Windsurf)",
-            "method": "Add the DC Hub MCP server to your client config — 31 tools become callable.",
+            "what": "MCP client (Claude Desktop, Cursor, Cline, Continue, ChatGPT, Gemini, Windsurf)",
+            "method": "Add the DC Hub MCP server to your client config — 38 tools become callable.",
             "mcp_config": {"mcpServers": {"dchub": {"url": f"{BASE}/mcp"}}},
             "one_click_setup": {t: f"{BASE}/connect/{t}" for t in
-                                ("claude-desktop", "cursor", "cline", "continue")},
+                                ("claude-desktop", "cursor", "cline", "continue",
+                                 "chatgpt", "gemini")},
             "example_tools": ["get_grid_intelligence", "search_facilities", "rank_markets",
                               "get_pipeline", "get_fiber_intel", "get_market_intel"],
         })
