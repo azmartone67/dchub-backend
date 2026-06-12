@@ -86,8 +86,9 @@ def _pp_tier():
         except Exception:
             return None
     try:
-        from map_tier_gating import _detect_caller_tier
-        t, _ = _detect_caller_tier(decode_jwt_func=_dec)
+        # fail open for credentialed callers so a paid user is never teased.
+        from map_tier_gating import detect_tier_failopen
+        t, _ = detect_tier_failopen(decode_jwt_func=_dec)
         return (t or 'anonymous').lower()
     except Exception:
         return 'anonymous'
