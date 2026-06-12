@@ -30972,6 +30972,17 @@ def _admin_dedup_facilities_soft():
     COMPLETE = ("((power_mw IS NOT NULL)::int + (address IS NOT NULL AND address<>'')::int "
                 "+ (status IS NOT NULL AND status NOT IN ('','Unknown','unknown'))::int "
                 "+ (sqft IS NOT NULL)::int + (facility_type IS NOT NULL)::int)")
+    # ?key=city : provider+name+city, EXCLUDING generic rows (provider's alnum ==
+    # name's alnum, e.g. 'Amazon Web Services'/'Amazon Web Services') so distinct
+    # hyperscaler sites are never collapsed. Catches real dupes whose coords drift
+    # or are null (e.g. 'Google Cloud us-central1 Iowa'/Council Bluffs x2). Still a
+    # reversible SOFT mark. Default ?key=coords4dp (exact-coords, safest but tiny).
+    _NONGENERIC = ("regexp_replace(lower(coalesce(provider,'')),'[^a-z0-9]+','','g') <> "
+                   "regexp_replace(lower(name),'[^a-z0-9]+','','g')")
+    if request.args.get("key") == "city":
+        KEXPR = "lower(trim(coalesce(provider,''))), lower(trim(name)), lower(trim(city))"
+        KWHERE = ("name IS NOT NULL AND name<>'' AND city IS NOT NULL AND city<>'' "
+                  "AND is_duplicate = 0 AND merged_at IS NULL AND " + _NONGENERIC)
     conn = None
     try:
         conn = psycopg2.connect(DATABASE_URL, connect_timeout=12)
