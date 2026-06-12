@@ -198,7 +198,12 @@ def _probe_brain_learn(cur) -> dict:
         try:
             from routes import brain_v2_store as _bstore
             from datetime import datetime as _dtm, timezone as _tz
-            _lr = _bstore.get_meta("last_run_at")
+            _lrm = _bstore.get_meta("last_run_at")
+            # get_meta returns {"value": "<iso>"} (see brain_v2_layer4.py:1555) —
+            # unwrap it. The prior code passed the whole dict to fromisoformat,
+            # which ALWAYS raised → the heartbeat was silently ignored → a
+            # healthy hourly-firing brain was mis-reported as "idle 328h dead".
+            _lr = (_lrm.get("value") if isinstance(_lrm, dict) else _lrm)
             if _lr:
                 _d = _dtm.fromisoformat(str(_lr).replace("Z", "+00:00"))
                 if _d.tzinfo is None:
@@ -208,6 +213,7 @@ def _probe_brain_learn(cur) -> dict:
             run_age = None
         if run_age is not None and run_age <= 2.0:
             status = "idle"
+            age = run_age  # report the LIVE heartbeat age, not the stale proposal-log age (328h)
             note_extra = f" · last_run_at {round(run_age, 2)}h ago — cron firing, no novel findings (healthy-quiet)"
         else:
             # Fallback proxy: backend serving MCP traffic ⇒ the cron's curl
