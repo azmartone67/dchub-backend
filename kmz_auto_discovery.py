@@ -1549,6 +1549,28 @@ def register_kmz_discovery_routes(app, get_pg_fn, return_pg_fn, start_scheduler=
         finally:
             _release(conn)
 
+    @kmz_bp.route('/api/kmz-discovery/prune', methods=['POST'])
+    def prune_kmz_sources():
+        # One-shot cleanup: the scheduler is shelved (#4) and these 'discovered' sources
+        # never ingested (dead/random ArcGIS). Confirm-gated; low-risk even if triggered.
+        if flask_request.args.get('confirm') != 'prune-stale-2026':
+            return jsonify({'success': False, 'error': 'pass ?confirm=prune-stale-2026'}), 400
+        conn = None
+        try:
+            conn = _conn()
+            cur = conn.cursor()
+            cur.execute("DELETE FROM kmz_discovered_sources WHERE status = 'discovered' AND last_checked IS NULL")
+            deleted = cur.rowcount
+            conn.commit()
+            cur.close()
+            return jsonify({'success': True, 'deleted': deleted})
+        except Exception as e:
+            try: conn.rollback()
+            except Exception: pass
+            return jsonify({'success': False, 'error': str(e)}), 500
+        finally:
+            _release(conn)
+
     app.register_blueprint(kmz_bp)
 
     os.makedirs(KMZ_DOWNLOAD_DIR, exist_ok=True)
