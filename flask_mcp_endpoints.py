@@ -1942,6 +1942,14 @@ def stripe_webhook_mcp():
     except Exception:
         pass
 
+    # r-attr 2026-06-12: honest channel label instead of the constant
+    # "stripe_webhook_mcp". attribution_id is set only when a prior signal
+    # matched this buyer's email — an MCP/agent-funnel touch. No match = the
+    # buyer arrived organically (site/pricing) with no prior agent signal. The
+    # email join is lossy (~99% of signals have NULL email), so 'organic' means
+    # "no MCP touch found", not a hard claim. Proper pair-code attribution via
+    # checkout.session.completed.client_reference_id is the deliberate next step.
+    _source = "mcp_signal_attributed" if attribution_id else "organic_no_mcp_touch"
     # Insert (idempotent on stripe_subscription_id thanks to the UNIQUE constraint)
     try:
         with _pool.connection() as conn, conn.cursor() as cur:
@@ -1955,7 +1963,7 @@ def stripe_webhook_mcp():
                          mrr_cents = EXCLUDED.mrr_cents
                    RETURNING id""",
                 (email, customer_id, sub_id, plan_to, mrr_cents,
-                 "stripe_webhook_mcp", attribution_id),
+                 _source, attribution_id),
             )
             conv_id = cur.fetchone()[0]
     except Exception as e:

@@ -518,9 +518,10 @@ def _render_profile(fac: dict, slug: str) -> str:
     {comps_html}
 
     <div class="cta">
-      <a class="primary" href="/sites/{_esc(slug)}">View full capacity report &rarr;</a>
-      <a href="/ai">Get a free MCP key</a>
-      <a href="/cited-by">Used by Claude and Cursor</a>
+      <a class="primary" href="/pricing">Get all 19,000+ facilities + power scores &amp; site-selection tools &mdash; DC Hub from $49/mo &rarr;</a>
+      <a href="/sites/{_esc(slug)}">Full capacity report</a>
+      <a href="/ai">Free MCP key (AI agents)</a>
+      <a href="/cited-by">Used by Claude &amp; Cursor</a>
     </div>
 
     <div class="foot">
