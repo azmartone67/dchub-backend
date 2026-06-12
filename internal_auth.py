@@ -66,8 +66,17 @@ def is_valid_internal_key(header_value):
     if not cleaned:
         return False
 
-    # Env-backed secrets (the correct path). Check all three known env vars.
-    for env_var in ("DCHUB_INTERNAL_KEY", "DCHUB_SYNC_KEY", "INTERNAL_WORKER_SECRET"):
+    # Env-backed secrets (the correct path). Check all known env vars.
+    # 2026-06-12: accept DCHUB_ADMIN_KEY too. Internal server probes (the
+    # brain radar, sentinel, self-heal) fall back to sending DCHUB_ADMIN_KEY
+    # as X-Internal-Key when DCHUB_INTERNAL_KEY isn't set in their runtime
+    # (see routes/brain_consistency_radar.py r34). Without this, those probes
+    # got a hard 403 on @require_plan('pro') endpoints like /api/v1/pipeline,
+    # polluting the brain findings with self-inflicted paywall hits. The admin
+    # key already grants admin-tier bypass on every gated endpoint, so honoring
+    # it here as an internal credential is consistent (admin >= internal).
+    for env_var in ("DCHUB_INTERNAL_KEY", "DCHUB_SYNC_KEY",
+                    "INTERNAL_WORKER_SECRET", "DCHUB_ADMIN_KEY"):
         expected = _clean_key(os.environ.get(env_var, ""))
         if expected and hmac.compare_digest(cleaned, expected):
             return True
