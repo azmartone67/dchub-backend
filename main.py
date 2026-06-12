@@ -22001,11 +22001,48 @@ def interconnect_queue():
 
 @app.route('/api/v1/gas-processing-plants', methods=['GET', 'OPTIONS'])
 def gas_processing_plants():
-    return jsonify({"features": [], "total": 0, "source": "stub"})
+    # 2026-06-12: was a stub. Now serves the gas_processing_plants Neon table
+    # (478 real plants ingested from HIFLD/EIA via gas_loader). Small set -> return all.
+    if request.method == 'OPTIONS':
+        return ('', 204)
+    conn = None
+    try:
+        conn = get_pg_connection()
+        cur = conn.cursor()
+        cur.execute("""SELECT plant_name, operator, state, county, capacity_mmcfd, status, lat, lng
+                       FROM gas_processing_plants WHERE lat IS NOT NULL AND lng IS NOT NULL""")
+        feats = [{'name': r[0], 'operator': r[1], 'state': r[2], 'county': r[3],
+                  'capacity_mmcfd': float(r[4]) if r[4] is not None else None,
+                  'status': r[5], 'lat': float(r[6]), 'lng': float(r[7])} for r in cur.fetchall()]
+        return jsonify({"success": True, "count": len(feats), "features": feats, "source": "HIFLD/EIA (Neon)"})
+    except Exception as e:
+        return jsonify({"success": False, "features": [], "total": 0, "error": str(e)}), 200
+    finally:
+        if conn is not None:
+            try: return_pg_connection(conn)
+            except Exception: pass
 
 @app.route('/api/v1/gas-compressor-stations', methods=['GET', 'OPTIONS'])
 def gas_compressor_stations():
-    return jsonify({"features": [], "total": 0, "source": "stub"})
+    # 2026-06-12: was a stub. Now serves the gas_compressor_stations Neon table
+    # (1,768 real stations ingested from HIFLD via gas_loader). Small set -> return all.
+    if request.method == 'OPTIONS':
+        return ('', 204)
+    conn = None
+    try:
+        conn = get_pg_connection()
+        cur = conn.cursor()
+        cur.execute("""SELECT station_name, operator, county, state, lat, lng
+                       FROM gas_compressor_stations WHERE lat IS NOT NULL AND lng IS NOT NULL""")
+        feats = [{'name': r[0], 'operator': r[1], 'county': r[2], 'state': r[3],
+                  'lat': float(r[4]), 'lng': float(r[5])} for r in cur.fetchall()]
+        return jsonify({"success": True, "count": len(feats), "features": feats, "source": "HIFLD (Neon)"})
+    except Exception as e:
+        return jsonify({"success": False, "features": [], "total": 0, "error": str(e)}), 200
+    finally:
+        if conn is not None:
+            try: return_pg_connection(conn)
+            except Exception: pass
 
 # Phase RRR-shadow-cleanup (2026-05-18): removed `active_fires` stub
 # at this line. It returned `{"fires": [], ...}` empty stub while
