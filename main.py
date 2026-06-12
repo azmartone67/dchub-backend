@@ -30946,6 +30946,79 @@ def _admin_dedup_facilities_dryrun():
     return jsonify(out)
 
 
+@app.route("/api/v1/admin/dedup-facilities-soft", methods=["GET", "POST"])
+def _admin_dedup_facilities_soft():
+    """SOFT facility dedup keyed on provider+name+EXACT coords (4dp ~11m) — the
+    only safe key. (The existing name+country pipeline collapses generic names
+    like 'Amazon Web Services'/US into one row = data loss; source_id doesn't
+    group the dupes.) Re-ingestion dupes share exact coords; distinct facilities
+    never do. Marks the extra rows in each cluster is_duplicate=1 — reads already
+    filter `is_duplicate=0 AND merged_at IS NULL`, so this removes them from
+    map/count/sitemap REVERSIBLY (no DELETE, no FK repoint). Keeps the most-
+    complete row. GET=dry-run, POST ?confirm=DEDUP=execute. Neon PITR backstop."""
+    import os, psycopg2
+    from flask import jsonify, request
+    expected = os.environ.get("DCHUB_ADMIN_KEY") or os.environ.get("DCHUB_INTERNAL_KEY")
+    provided = (request.headers.get("X-Admin-Key") or request.args.get("admin_key"))
+    if expected and provided != expected:
+        return jsonify(error="unauthorized", hint="X-Admin-Key required"), 401
+    DATABASE_URL = os.environ.get("DATABASE_URL")
+    if not DATABASE_URL:
+        return jsonify(error="no_database"), 503
+    KEXPR = ("lower(trim(coalesce(provider,''))), lower(trim(name)), "
+             "round(latitude::numeric,4), round(longitude::numeric,4)")
+    KWHERE = ("name IS NOT NULL AND name<>'' AND latitude IS NOT NULL "
+              "AND longitude IS NOT NULL AND is_duplicate = 0 AND merged_at IS NULL")
+    COMPLETE = ("((power_mw IS NOT NULL)::int + (address IS NOT NULL AND address<>'')::int "
+                "+ (status IS NOT NULL AND status NOT IN ('','Unknown','unknown'))::int "
+                "+ (sqft IS NOT NULL)::int + (facility_type IS NOT NULL)::int)")
+    conn = None
+    try:
+        conn = psycopg2.connect(DATABASE_URL, connect_timeout=12)
+        conn.autocommit = False
+        cur = conn.cursor()
+        if request.method == "GET":
+            cur.execute(f"SELECT COALESCE(SUM(cnt-1),0), COUNT(*) FROM "
+                        f"(SELECT COUNT(*) cnt FROM discovered_facilities WHERE {KWHERE} "
+                        f"GROUP BY {KEXPR} HAVING COUNT(*)>1) t")
+            removable, clusters = cur.fetchone()
+            cur.execute(f"SELECT trim(name), trim(coalesce(provider,'')), COUNT(*) c "
+                        f"FROM discovered_facilities WHERE {KWHERE} GROUP BY {KEXPR}, "
+                        f"trim(name), trim(coalesce(provider,'')) HAVING COUNT(*)>1 "
+                        f"ORDER BY c DESC LIMIT 6")
+            samples = [{"name": r[0], "provider": r[1], "rows": r[2]} for r in cur.fetchall()]
+            conn.rollback(); conn.close()
+            return jsonify(method="dry-run", key="provider+name+coords4dp",
+                           removable=int(removable), clusters=int(clusters), samples=samples)
+        if request.args.get("confirm") != "DEDUP":
+            conn.close()
+            return jsonify(error="confirmation required", hint="POST ?confirm=DEDUP"), 400
+        cur.execute(f"""
+            WITH ranked AS (
+              SELECT id, ROW_NUMBER() OVER (PARTITION BY {KEXPR}
+                ORDER BY {COMPLETE} DESC, id ASC) AS rn
+              FROM discovered_facilities WHERE {KWHERE})
+            UPDATE discovered_facilities d
+               SET is_duplicate = 1,
+                   notes = COALESCE(d.notes,'') || ' [dedup-coords4dp 2026-06-11]'
+              FROM ranked r WHERE d.id = r.id AND r.rn > 1""")
+        marked = cur.rowcount
+        cur.execute("SELECT COUNT(*) FROM discovered_facilities "
+                    "WHERE is_duplicate = 0 AND merged_at IS NULL")
+        remaining = cur.fetchone()[0]
+        conn.commit(); conn.close()
+        return jsonify(ok=True, marked_duplicate=marked, remaining_active=remaining,
+                       reversible="UPDATE discovered_facilities SET is_duplicate=0 "
+                                  "WHERE notes LIKE '%dedup-coords4dp 2026-06-11%'")
+    except Exception as e:
+        try:
+            if conn:
+                conn.rollback(); conn.close()
+        except Exception:
+            pass
+        return jsonify(error=str(e)[:300]), 500
+
+
 @app.route("/api/v1/_phase", methods=["GET"])
 def _phase239_marker():
     from flask import jsonify
