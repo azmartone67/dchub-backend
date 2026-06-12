@@ -702,21 +702,11 @@ class AutonomousBrain:
                             # source_url → the same article dedups across runs.
                             name = (article['title'] or '').strip()[:200]
                             if name:
-                                source_id = f"news_fiber_{int(hashlib.sha1(str(article['source_url'] or name).encode()).hexdigest()[:12], 16)}"
-                                try:
-                                    wcur.execute("""
-                                        INSERT INTO fiber_routes
-                                        (name, provider, route_type, status, source, source_id)
-                                        VALUES (%s, %s, %s, %s, %s, %s)
-                                        ON CONFLICT (source_id) DO NOTHING
-                                    """, (name, provider[:100], route_type, 'active',
-                                          'news_extraction', source_id[:100]))
-                                    if wcur.rowcount and wcur.rowcount > 0:
-                                        results['added'] += 1
-                                    conn.commit()
-                                except Exception as ins_err:
-                                    conn.rollback()
-                                    logger.debug(f"Fiber route insert skipped: {ins_err}")
+                                # GUARD (#2, 2026-06-11): a news article is NOT a fiber route and
+                                # carries NO geometry. Writing it to fiber_routes polluted the table
+                                # (and any map/API reading it) with geometry-less rows. Skip — fiber
+                                # news doesn't belong in the routes table. Track it as a mention only.
+                                results['news_mentions'] = results.get('news_mentions', 0) + 1
                             break
 
                 wcur.close()

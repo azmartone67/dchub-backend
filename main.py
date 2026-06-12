@@ -5906,8 +5906,12 @@ except Exception as e:
 
 try:
     from kmz_auto_discovery import register_kmz_discovery_routes
-    register_kmz_discovery_routes(app, get_pg_connection, return_pg_connection, start_scheduler=ENABLE_DISCOVERY_SCHEDULERS)
-    logger.info("✅ KMZ Auto-Discovery v4.0 registered (Neon)" + (" (scheduler active)" if ENABLE_DISCOVERY_SCHEDULERS else " (manual POST only)"))
+    # #4 (2026-06-11): scheduler SHELVED. The crawler's named-carrier sources (Zayo/Lumen/
+    # Crown Castle/Windstream ArcGIS) are DEAD URLs, and its discovered ArcGIS sources never
+    # ingested (0/100 — _export_arcgis_as_kml never reached). Routes stay registered for
+    # manual POST, but the auto-scheduler no longer burns cycles on dead sources.
+    register_kmz_discovery_routes(app, get_pg_connection, return_pg_connection, start_scheduler=False)
+    logger.info("✅ KMZ Auto-Discovery v4.0 registered (Neon) (scheduler SHELVED — manual POST only)")
     logger.info("   GET  /api/kmz/health            — v4.0 source registry + live status")
     logger.info("   GET  /api/kmz-discovery/status  — engine status")
     logger.info("   POST /api/kmz-discovery/run     — trigger manual cycle")

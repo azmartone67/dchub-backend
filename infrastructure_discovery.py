@@ -1571,7 +1571,9 @@ def register_infrastructure_routes(app, start_scheduler=True):
         conn = get_db()
         try:
             cursor = conn.cursor()
-            cursor.execute("SELECT * FROM fiber_routes ORDER BY created_at DESC LIMIT 100")
+            # #2 (2026-06-11): exclude geometry-less news rows the brain previously mis-filed
+            # into fiber_routes (source='news_extraction') so they never reach any consumer.
+            cursor.execute("SELECT * FROM fiber_routes WHERE source IS DISTINCT FROM 'news_extraction' ORDER BY created_at DESC LIMIT 100")
             routes = [dict(row) for row in cursor.fetchall()]
         finally:
             try: conn.close()
