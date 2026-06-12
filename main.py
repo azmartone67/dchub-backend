@@ -30893,6 +30893,55 @@ def _admin_schema_introspect():
         return jsonify({"error": str(e)[:200]}), 500
 
 
+@app.route("/api/v1/admin/dedup-facilities-dryrun", methods=["GET"])
+def _admin_dedup_facilities_dryrun():
+    """READ-ONLY dry-run for the facility de-duplication migration. Reports
+    whether the duplicate rows actually share source_id (so a source_id-keyed
+    dedup is safe) and what FK references point at discovered_facilities.id
+    (so a DELETE wouldn't orphan rows). No writes."""
+    import os, psycopg2
+    from flask import jsonify, request
+    expected = os.environ.get("DCHUB_ADMIN_KEY") or os.environ.get("DCHUB_INTERNAL_KEY")
+    provided = (request.headers.get("X-Admin-Key") or request.args.get("admin_key"))
+    if expected and provided != expected:
+        return jsonify(error="unauthorized", hint="X-Admin-Key required"), 401
+    DATABASE_URL = os.environ.get("DATABASE_URL")
+    if not DATABASE_URL:
+        return jsonify(error="no_database"), 503
+    out = {}
+    try:
+        with psycopg2.connect(DATABASE_URL, connect_timeout=8) as conn, conn.cursor() as cur:
+            cur.execute("SELECT COUNT(*), COUNT(DISTINCT source_id), "
+                        "COUNT(*) FILTER (WHERE source_id IS NULL OR source_id='') "
+                        "FROM discovered_facilities")
+            total, distinct_sid, null_sid = cur.fetchone()
+            out['total_rows'] = total
+            out['distinct_source_id'] = distinct_sid
+            out['null_source_id'] = null_sid
+            cur.execute("SELECT COALESCE(SUM(cnt-1),0) FROM (SELECT source_id, "
+                        "COUNT(*) cnt FROM discovered_facilities WHERE source_id "
+                        "IS NOT NULL AND source_id<>'' GROUP BY source_id "
+                        "HAVING COUNT(*)>1) t")
+            out['removable_by_source_id_dedup'] = int(cur.fetchone()[0])
+            cur.execute("SELECT source_id, COUNT(*) c FROM discovered_facilities "
+                        "WHERE source_id IS NOT NULL AND source_id<>'' GROUP BY "
+                        "source_id HAVING COUNT(*)>1 ORDER BY c DESC LIMIT 6")
+            out['top_dup_source_ids'] = [{"source_id": r[0], "count": r[1]} for r in cur.fetchall()]
+            # name-part dupes that DON'T share source_id (the harder case)
+            cur.execute("SELECT COALESCE(SUM(cnt-1),0) FROM (SELECT lower(provider||'|'||name) k, "
+                        "COUNT(DISTINCT COALESCE(source_id,id::text)) cnt FROM discovered_facilities "
+                        "WHERE name IS NOT NULL GROUP BY 1 HAVING COUNT(*)>1) t")
+            out['dupes_NOT_sharing_source_id'] = int(cur.fetchone()[0])
+            cur.execute("SELECT tc.table_name, kcu.column_name FROM information_schema.table_constraints tc "
+                        "JOIN information_schema.key_column_usage kcu ON tc.constraint_name=kcu.constraint_name "
+                        "JOIN information_schema.constraint_column_usage ccu ON tc.constraint_name=ccu.constraint_name "
+                        "WHERE tc.constraint_type='FOREIGN KEY' AND ccu.table_name='discovered_facilities'")
+            out['fk_references_to_discovered_facilities'] = [{"table": r[0], "column": r[1]} for r in cur.fetchall()]
+    except Exception as e:
+        return jsonify(error=str(e)[:300]), 500
+    return jsonify(out)
+
+
 @app.route("/api/v1/_phase", methods=["GET"])
 def _phase239_marker():
     from flask import jsonify
