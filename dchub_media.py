@@ -751,6 +751,34 @@ def aggregate_announcements_v3(limit_per_source=20):
 
         queries.append(("testimonial", orig_sql, (limit_per_source,)))
 
+        # 2026-06-12: fresh-probe arm. The nightly testimonial probes
+        # (routes/testimonial_probe.py — Claude/Perplexity/Gemini) write
+        # rows with approved=FALSE pending human review, AND the original
+        # arm above excludes agent_name='Claude'. Net effect: the only
+        # source producing fresh rows (the Claude probe) was double-hidden,
+        # so the wall went stale even though probes ran daily. This SEPARATE
+        # arm surfaces recent probe_% rows regardless of approval and
+        # includes Claude — but DISTINCT ON (agent, quote-prefix) collapses
+        # the near-duplicate quotes that were the reason auto-approval was
+        # turned off, so the wall stays fresh without re-inflating. Fails
+        # alone (separate query) like the auto arm; consumer de-dupes.
+        probe_sql = """SELECT title, url, summary, source, ts FROM (
+            SELECT DISTINCT ON (agent_name, LEFT(quote, 80))
+                   COALESCE(NULLIF(agent_name,''), NULLIF(platform,''), 'AI Testimonial') AS title,
+                   COALESCE(url, '') AS url,
+                   quote AS summary,
+                   COALESCE(NULLIF(source,''), platform, agent_name, 'AI Industry') AS source,
+                   COALESCE(approved_at, created_at) AS ts,
+                   created_at
+            FROM ai_testimonials
+            WHERE source LIKE 'probe_%%'
+              AND created_at > NOW() - INTERVAL '45 days'
+              AND quote IS NOT NULL AND length(quote) > 40
+              AND agent_name IS NOT NULL AND agent_name <> 'unknown'
+            ORDER BY agent_name, LEFT(quote, 80), created_at DESC
+        ) p ORDER BY created_at DESC LIMIT %s"""
+        queries.append(("testimonial", probe_sql, (limit_per_source,)))
+
         # Phase MM (2026-05-13, post-hotfix): emit the auto-ingested arm
         # as a SEPARATE query (not a UNION). Keeps the original working
         # query untouched — if the auto query has any schema mismatch
