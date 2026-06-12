@@ -35,6 +35,63 @@ _ADMIN_KEY = (os.environ.get("DCHUB_ADMIN_KEY")
 _LAST = {"at": None, "submitted": 0, "status": None}
 
 
+def _db_conn():
+    db = (os.environ.get("DATABASE_URL") or os.environ.get("NEON_DATABASE_URL") or "")
+    if not db:
+        return None
+    try:
+        import psycopg2  # lazy
+        return psycopg2.connect(db, connect_timeout=8)
+    except Exception:
+        return None
+
+
+def _save_last(d):
+    """Persist last-submit status. The in-memory _LAST resets on every redeploy, and
+    this backend redeploys constantly — so a HEALTHY IndexNow always read last:null on
+    the dashboard, which looked permanently broken. Persisting makes the status honest.
+    Fail-soft: any DB issue just leaves the in-memory value."""
+    conn = _db_conn()
+    if not conn:
+        return
+    try:
+        with conn, conn.cursor() as cur:
+            cur.execute("CREATE TABLE IF NOT EXISTS indexnow_last "
+                        "(id INT PRIMARY KEY, at TEXT, submitted INT, status INT)")
+            cur.execute("INSERT INTO indexnow_last (id, at, submitted, status) "
+                        "VALUES (1, %s, %s, %s) ON CONFLICT (id) DO UPDATE SET "
+                        "at = EXCLUDED.at, submitted = EXCLUDED.submitted, status = EXCLUDED.status",
+                        (d.get("at"), int(d.get("submitted") or 0), d.get("status")))
+    except Exception:
+        pass
+    finally:
+        try:
+            conn.close()
+        except Exception:
+            pass
+
+
+def _load_last():
+    """Read persisted last-submit status; fall back to in-memory on any issue."""
+    conn = _db_conn()
+    if not conn:
+        return dict(_LAST)
+    try:
+        with conn.cursor() as cur:
+            cur.execute("SELECT at, submitted, status FROM indexnow_last WHERE id = 1")
+            row = cur.fetchone()
+        if row:
+            return {"at": row[0], "submitted": row[1], "status": row[2]}
+    except Exception:
+        pass
+    finally:
+        try:
+            conn.close()
+        except Exception:
+            pass
+    return dict(_LAST)
+
+
 def _admin_ok() -> bool:
     return bool(_ADMIN_KEY) and request.headers.get("X-Admin-Key", "") == _ADMIN_KEY
 
@@ -68,6 +125,7 @@ def submit_to_indexnow(urls):
         out = {"ok": False, "error": str(e)[:160], "submitted": 0}
     _LAST.update(at=datetime.datetime.utcnow().isoformat() + "Z",
                  submitted=out.get("submitted", 0), status=out.get("status"))
+    _save_last(_LAST)
     return out
 
 
@@ -159,7 +217,7 @@ def indexnow_endpoint():
     # Public read: config + last status (no submit, no mode).
     if request.method == "GET" and not any(request.args.get(m) for m in _submit_modes):
         return jsonify(ok=True, host=HOST, key_location=KEY_LOCATION,
-                       configured=bool(_ADMIN_KEY), last=_LAST)
+                       configured=bool(_ADMIN_KEY), last=_load_last())
     dry = bool(_wants("dry_run"))
     is_admin = _admin_ok()
     # A real submit is admin-gated. A dry_run PREVIEW is public but capped — it

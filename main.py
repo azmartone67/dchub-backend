@@ -9064,7 +9064,8 @@ def crawler_stats():
         cursor.execute('SELECT crawler_name, COUNT(*) as visits FROM crawler_visits GROUP BY crawler_name ORDER BY visits DESC')
         by_crawler = [dict(row) for row in cursor.fetchall()]
 
-        cursor.execute('SELECT crawler_family, COUNT(*) as visits FROM crawler_visits GROUP BY crawler_family ORDER BY visits DESC')
+        # crawler_visits has `platform`, not `crawler_family` (repo DDL drift). Alias keeps downstream key.
+        cursor.execute('SELECT platform AS crawler_family, COUNT(*) as visits FROM crawler_visits GROUP BY platform ORDER BY visits DESC')
         by_family = {row['crawler_family']: row['visits'] for row in cursor.fetchall()}
 
         since_24h = (datetime.now(timezone.utc) - timedelta(hours=24)).isoformat()
@@ -24762,7 +24763,8 @@ def api_site_score():
         try:
             c.execute("""
                 SELECT COUNT(DISTINCT provider) FROM fiber_routes
-                WHERE UPPER(states_served) ILIKE %s OR UPPER(states_served) ILIKE %s
+                WHERE UPPER(start_location || ' ' || end_location) ILIKE %s
+                   OR UPPER(start_location || ' ' || end_location) ILIKE %s
             """, (f'%{state}%', f'%, {state}%'))
             fiber_carriers = c.fetchone()[0] or 0
             if fiber_carriers >= 5:

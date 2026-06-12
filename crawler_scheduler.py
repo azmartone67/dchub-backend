@@ -1437,7 +1437,7 @@ def _run_ai_lab_auto_outreach():
     if not key:
         logger.warning("📧 ai_lab_outreach autopilot: skipped — DCHUB_ADMIN_KEY not set")
         return
-    base = os.environ.get("DCHUB_INTERNAL_API", "http://127.0.0.1:8080")
+    base = (os.environ.get("DCHUB_INTERNAL_API", "http://127.0.0.1:8080") or "").strip()  # strip(): a trailing \n in the env value became %0a in the URL -> NameResolutionError
     try:
         r = _rq.post(
             f"{base}/api/v1/admin/ai-lab-outreach/auto-send?limit=3",
@@ -1462,7 +1462,7 @@ def _run_lost_conversion_outreach():
     if not key:
         logger.warning("📧 lost_conversion autopilot: skipped — DCHUB_ADMIN_KEY not set")
         return
-    base = os.environ.get("DCHUB_INTERNAL_API", "http://127.0.0.1:8080")
+    base = (os.environ.get("DCHUB_INTERNAL_API", "http://127.0.0.1:8080") or "").strip()  # strip(): a trailing \n in the env value became %0a in the URL -> NameResolutionError
     try:
         r = _rq.post(
             f"{base}/api/v1/admin/lost-conversion/send"
@@ -1499,7 +1499,7 @@ def _run_auto_interconnect():
     if not key:
         logger.warning("🔌 auto_interconnect: skipped — DCHUB_ADMIN_KEY not set")
         return
-    base = os.environ.get("DCHUB_INTERNAL_API", "http://127.0.0.1:8080")
+    base = (os.environ.get("DCHUB_INTERNAL_API", "http://127.0.0.1:8080") or "").strip()  # strip(): a trailing \n in the env value became %0a in the URL -> NameResolutionError
     try:
         r = _rq.post(
             f"{base}/api/v1/admin/auto-interconnect/run",
@@ -1602,7 +1602,7 @@ def _run_gas_pricing_refresh():
         except Exception as e:
             logger.error("⛽ gas_pricing_refresh: in-proc fallback error — %s", e)
         return
-    base = os.environ.get("DCHUB_INTERNAL_API", "http://127.0.0.1:8080")
+    base = (os.environ.get("DCHUB_INTERNAL_API", "http://127.0.0.1:8080") or "").strip()  # strip(): a trailing \n in the env value became %0a in the URL -> NameResolutionError
     try:
         r = _rq.post(
             f"{base}/api/v1/markets/gas-pricing/cron",
@@ -1749,7 +1749,7 @@ def _run_state_of_2026_refresh():
         logger.warning(
             "🔄 state_of_2026_refresh: skipped — DCHUB_ADMIN_KEY not set")
         return
-    base = os.environ.get("DCHUB_INTERNAL_API", "http://127.0.0.1:8080")
+    base = (os.environ.get("DCHUB_INTERNAL_API", "http://127.0.0.1:8080") or "").strip()  # strip(): a trailing \n in the env value became %0a in the URL -> NameResolutionError
     try:
         r = _rq.post(
             f"{base}/api/v1/admin/state-of-2026/refresh-now?source=cron",
@@ -1789,7 +1789,7 @@ def _run_state_of_2026_claim_evolve():
         logger.warning(
             "📣 state_of_2026_claim_evolve: skipped — DCHUB_ADMIN_KEY not set")
         return
-    base = os.environ.get("DCHUB_INTERNAL_API", "http://127.0.0.1:8080")
+    base = (os.environ.get("DCHUB_INTERNAL_API", "http://127.0.0.1:8080") or "").strip()  # strip(): a trailing \n in the env value became %0a in the URL -> NameResolutionError
     try:
         r = _rq.post(
             f"{base}/api/v1/admin/state-of-2026/claims/propose",
@@ -1823,7 +1823,7 @@ def _run_accelerator_scan():
     if not key:
         logger.warning("📣 accelerator_scan: skipped — DCHUB_ADMIN_KEY not set")
         return
-    base = os.environ.get("DCHUB_INTERNAL_API", "http://127.0.0.1:8080")
+    base = (os.environ.get("DCHUB_INTERNAL_API", "http://127.0.0.1:8080") or "").strip()  # strip(): a trailing \n in the env value became %0a in the URL -> NameResolutionError
     try:
         r = _rq.post(
             f"{base}/api/v1/admin/media/accelerator/scan",
@@ -1906,7 +1906,7 @@ def _run_media_spike_responder():
         logger.warning(
             "📣 media_spike_responder: skipped — DCHUB_ADMIN_KEY not set")
         return
-    base = os.environ.get("DCHUB_INTERNAL_API", "http://127.0.0.1:8080")
+    base = (os.environ.get("DCHUB_INTERNAL_API", "http://127.0.0.1:8080") or "").strip()  # strip(): a trailing \n in the env value became %0a in the URL -> NameResolutionError
     try:
         r = _rq.post(
             f"{base}/api/v1/admin/media/spikes/detect",
@@ -1957,7 +1957,7 @@ def _run_media_comment_engagement():
         logger.warning(
             "💬 media_comment_engagement: skipped — DCHUB_ADMIN_KEY not set")
         return
-    base = os.environ.get("DCHUB_INTERNAL_API", "http://127.0.0.1:8080")
+    base = (os.environ.get("DCHUB_INTERNAL_API", "http://127.0.0.1:8080") or "").strip()  # strip(): a trailing \n in the env value became %0a in the URL -> NameResolutionError
     try:
         r = _rq.post(
             f"{base}/api/v1/admin/media/comment-engagement/run",
@@ -1997,7 +1997,7 @@ def _run_media_comment_engagement_flush():
         logger.warning(
             "💬 media_comment_engagement_flush: skipped — DCHUB_ADMIN_KEY not set")
         return
-    base = os.environ.get("DCHUB_INTERNAL_API", "http://127.0.0.1:8080")
+    base = (os.environ.get("DCHUB_INTERNAL_API", "http://127.0.0.1:8080") or "").strip()  # strip(): a trailing \n in the env value became %0a in the URL -> NameResolutionError
     try:
         r = _rq.post(
             f"{base}/api/v1/admin/media/comment-engagement/flush-due",
@@ -2046,7 +2046,7 @@ def _run_media_dm_follow_up():
         logger.warning(
             "📩 media_dm_follow_up: skipped — DCHUB_ADMIN_KEY not set")
         return
-    base = os.environ.get("DCHUB_INTERNAL_API", "http://127.0.0.1:8080")
+    base = (os.environ.get("DCHUB_INTERNAL_API", "http://127.0.0.1:8080") or "").strip()  # strip(): a trailing \n in the env value became %0a in the URL -> NameResolutionError
     try:
         r = _rq.post(
             f"{base}/api/v1/admin/media/dm-followup/send",
@@ -2103,7 +2103,7 @@ def _run_multiplatform_amplifier():
         logger.warning(
             "📡 multiplatform_amplifier: skipped — DCHUB_ADMIN_KEY not set")
         return
-    base = os.environ.get("DCHUB_INTERNAL_API", "http://127.0.0.1:8080")
+    base = (os.environ.get("DCHUB_INTERNAL_API", "http://127.0.0.1:8080") or "").strip()  # strip(): a trailing \n in the env value became %0a in the URL -> NameResolutionError
     try:
         r = _rq.post(
             f"{base}/api/v1/admin/multiplatform/auto-sweep",
@@ -2301,7 +2301,7 @@ def _run_ai_platform_onboarder():
     if not key:
         logger.warning("🤖 ai_platform_onboarder: skipped — DCHUB_ADMIN_KEY not set")
         return
-    base = os.environ.get("DCHUB_INTERNAL_API", "http://127.0.0.1:8080")
+    base = (os.environ.get("DCHUB_INTERNAL_API", "http://127.0.0.1:8080") or "").strip()  # strip(): a trailing \n in the env value became %0a in the URL -> NameResolutionError
     try:
         r = _rq.post(
             f"{base}/api/v1/admin/platforms/process",
@@ -2770,7 +2770,7 @@ def _run_campaign_outcome_poll():
     if not key:
         logger.warning("📊 campaign_outcome_poll: skipped — DCHUB_ADMIN_KEY not set")
         return
-    base = os.environ.get("DCHUB_INTERNAL_API", "http://127.0.0.1:8080")
+    base = (os.environ.get("DCHUB_INTERNAL_API", "http://127.0.0.1:8080") or "").strip()  # strip(): a trailing \n in the env value became %0a in the URL -> NameResolutionError
     try:
         r = _rq.get(
             f"{base}/api/v1/admin/campaign/halfprice-annual/outcomes?send=1",
@@ -2807,7 +2807,7 @@ def _run_renewal_nudge_onetime():
     if not key:
         logger.warning("📅 renewal_nudge_onetime: skipped — DCHUB_ADMIN_KEY not set")
         return
-    base = os.environ.get("DCHUB_INTERNAL_API", "http://127.0.0.1:8080")
+    base = (os.environ.get("DCHUB_INTERNAL_API", "http://127.0.0.1:8080") or "").strip()  # strip(): a trailing \n in the env value became %0a in the URL -> NameResolutionError
     try:
         r = _rq.post(
             f"{base}/api/v1/admin/renewal-nudge/send",
@@ -2842,7 +2842,7 @@ def _run_morning_briefing():
     if not key:
         logger.warning("📅 morning_briefing: skipped — DCHUB_ADMIN_KEY not set")
         return
-    base = os.environ.get("DCHUB_INTERNAL_API", "http://127.0.0.1:8080")
+    base = (os.environ.get("DCHUB_INTERNAL_API", "http://127.0.0.1:8080") or "").strip()  # strip(): a trailing \n in the env value became %0a in the URL -> NameResolutionError
     try:
         r = _rq.post(
             f"{base}/api/v1/admin/morning-briefing/send",
@@ -3197,7 +3197,7 @@ def _run_sales_outreach_detect():
         logger.warning(
             "📬 sales_outreach_detect: skipped — DCHUB_ADMIN_KEY not set")
         return
-    base = os.environ.get("DCHUB_INTERNAL_API", "http://127.0.0.1:8080")
+    base = (os.environ.get("DCHUB_INTERNAL_API", "http://127.0.0.1:8080") or "").strip()  # strip(): a trailing \n in the env value became %0a in the URL -> NameResolutionError
     try:
         r = _rq.post(
             f"{base}/api/v1/admin/sales-outreach/detect",
