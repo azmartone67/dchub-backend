@@ -1,0 +1,41 @@
+# Weekly free-tier upgrade nudge (owner-approved copy, 2026-06-12).
+# Fires the admin endpoint that emails ACTIVE free-key users a key-bound
+# one-click Developer checkout + the usage-based option.
+#
+# Safety properties (enforced server-side in routes/free_upgrade_nudge.py):
+#   - external addresses only (internal/QA inboxes excluded by default)
+#   - 45-day per-recipient cooldown, 25-recipient cap per run
+#   - only free-tier keys WITH an email and >=5 calls in 30d qualify
+# With today's zero external emailable keys this sends nothing — it starts
+# working automatically as /keys/claim + /keys/identify capture emails.
+name: upgrade-nudge-weekly
+
+on:
+  schedule:
+    - cron: '7 15 * * 2'   # Tuesdays 15:07 UTC (~US morning)
+  workflow_dispatch: {}
+
+jobs:
+  fire:
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    steps:
+      - name: Fire upgrade nudges (external recipients only)
+        env:
+          ADMIN_KEY: ${{ secrets.DCHUB_ADMIN_KEY }}
+        run: |
+          set -euo pipefail
+          if [ -z "${ADMIN_KEY:-}" ]; then
+            echo "::warning::DCHUB_ADMIN_KEY not set — skipping"
+            exit 0
+          fi
+          http=$(curl -sS --max-time 120 -X POST \
+            "https://dchub-backend-production.up.railway.app/api/v1/admin/upgrade-nudge/fire?confirm=SEND&min_calls=5&days=30&cap=25" \
+            -H "X-Admin-Key: ${ADMIN_KEY}" \
+            -o /tmp/nudge.json -w '%{http_code}')
+          echo "HTTP ${http}"
+          cat /tmp/nudge.json
+          if [ "${http}" != "200" ]; then
+            echo "::error::upgrade-nudge fire returned ${http}"
+            exit 1
+          fi
