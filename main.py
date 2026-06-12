@@ -29366,6 +29366,18 @@ except Exception as _e:
     print(f"[main] campaign_halfprice_annual register failed: {_e}",
           file=sys.stderr)
 
+# Free-tier upgrade nudge (2026-06-12, owner request): automated outreach to
+# ACTIVE free-key users with key-bound one-click Stripe checkout (their pair
+# code rides client_reference_id, so payment auto-upgrades THEIR key). Same
+# preview/fire/log discipline — no cron until the owner approves the copy.
+try:
+    from routes.free_upgrade_nudge import free_upgrade_nudge_bp
+    app.register_blueprint(free_upgrade_nudge_bp)
+    print("[main] free_upgrade_nudge_bp registered: "
+          "/api/v1/admin/upgrade-nudge/{preview,fire,log}", flush=True)
+except Exception as _e:
+    print(f"[main] free_upgrade_nudge register failed: {_e}", file=sys.stderr)
+
 # Campaign outcome poller (2026-06-06): daily summary email of the 6
 # halfprice-annual recipients' conversion status (sent/opened/converted)
 # delivered to operator. Auto-stops after all-converted OR 14d elapsed.

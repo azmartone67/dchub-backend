@@ -620,6 +620,36 @@ def upgrade_redirect():
     # Fast path: cached code OR mint completes in <500ms.
     result = _fast_get_code(api_key, tool, market, agent, deadline_ms=500)
     if result and result.get("code"):
+        # 2026-06-12 (owner decision): skip the /redeem interstitial. Lifetime
+        # funnel: 22 codes minted → 3 interstitial views → 0 completed
+        # checkouts — the extra hop killed everyone. Send the human STRAIGHT
+        # to Stripe checkout with the pair-code as client_reference_id; the
+        # webhook's existing DCM- branch flips THIS SAME api_key on payment,
+        # so key-binding survives with one hop fewer. /redeem/<code> stays
+        # alive for legacy links already in the wild.
+        code = result["code"]
+        base = None
+        try:
+            from routes._stripe_links import STRIPE_LINKS, resolve_tier
+            _tier = resolve_tier(tool, (request.args.get("tier") or "").strip())
+            base = STRIPE_LINKS.get(_tier) or STRIPE_LINKS.get("developer")
+        except Exception:
+            base = None
+        if base:
+            sep = "&" if "?" in base else "?"
+            dest = f"{base}{sep}client_reference_id={code}"
+            try:
+                # funnel stamp: this 302 IS the stripe-click now
+                with _conn() as c, c.cursor() as cur:
+                    cur.execute(
+                        "UPDATE mcp_pair_codes SET stripe_clicked_at = NOW(), "
+                        "stripe_click_count = COALESCE(stripe_click_count,0)+1 "
+                        "WHERE code = %s", (code,))
+                    c.commit()
+            except Exception:
+                pass
+            return redirect(dest, code=302)
+        # _stripe_links unavailable — legacy interstitial as a safe fallback
         return redirect(f"https://dchub.cloud/redeem/{result['code']}", code=302)
 
     # Slow path: mint didn't finish in time. Send the user to /pricing
