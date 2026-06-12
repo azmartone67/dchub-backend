@@ -31019,6 +31019,13 @@ def _admin_dedup_facilities_soft():
             conn.rollback(); conn.close()
             return jsonify(method="dry-run", key="provider+name+coords4dp",
                            removable=int(removable), clusters=int(clusters), samples=samples)
+        if request.args.get("revert") == "1":
+            cur.execute("UPDATE discovered_facilities SET is_duplicate = 0, "
+                        "notes = REPLACE(COALESCE(notes,''),' [dedup-coords4dp 2026-06-11]','') "
+                        "WHERE notes LIKE '%dedup-coords4dp 2026-06-11%'")
+            reverted = cur.rowcount
+            conn.commit(); conn.close()
+            return jsonify(ok=True, reverted=reverted)
         if request.args.get("confirm") != "DEDUP":
             conn.close()
             return jsonify(error="confirmation required", hint="POST ?confirm=DEDUP"), 400
