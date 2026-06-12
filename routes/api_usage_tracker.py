@@ -217,24 +217,60 @@ def _flush() -> dict:
             # 2. Per-day rollup into existing api_usage_meter
             # Group by (key, date) and bulk-upsert. We use the prefix as
             # the api_key field (api_usage_meter.api_key was TEXT; prefix
-            # is also TEXT). Tier defaults to 'developer' for partner keys.
+            # is also TEXT).
+            #
+            # r79 (2026-06-13): tier is RESOLVED from the key registries, not
+            # hardcoded 'developer'. The hardcode labeled the owner's
+            # enterprise key, partner keys AND unregistered internal/test keys
+            # as paying developer traffic — which polluted the 2026-06-12
+            # revenue audit (an internal-looking 49k-call month masqueraded as
+            # ~$580 customer overage; it was the owner's own key). Prefix-match
+            # against mcp_dev_keys / api_keys (the meter stores 24-char
+            # prefixes by design; LIKE needs the underscores escaped);
+            # anything in NEITHER registry is ours → tier='internal'.
             from collections import defaultdict
+
+            def _tier_for_prefix(kp: str) -> str:
+                esc = kp.replace("\\", "\\\\").replace("_", "\\_").replace("%", "\\%")
+                try:
+                    cur.execute(
+                        "SELECT tier FROM mcp_dev_keys "
+                        " WHERE api_key LIKE %s ESCAPE '\\' LIMIT 1", (esc + "%",))
+                    row = cur.fetchone()
+                    if row and row[0]:
+                        return str(row[0])
+                    cur.execute(
+                        "SELECT COALESCE(NULLIF(rate_limit_tier,''),'developer') "
+                        "  FROM api_keys "
+                        " WHERE key_hash LIKE %s ESCAPE '\\' "
+                        "   AND COALESCE(is_active, 1) <> 0 LIMIT 1", (esc + "%",))
+                    row = cur.fetchone()
+                    if row and row[0]:
+                        return str(row[0])
+                except Exception:
+                    pass
+                return "internal"
+
+            _tier_cache: dict = {}
             by_key_day = defaultdict(int)
             for e in entries:
                 day = e["ts"].date()
                 by_key_day[(e["key_prefix"], day)] += 1
             for (kp, day), cnt in by_key_day.items():
+                if kp not in _tier_cache:
+                    _tier_cache[kp] = _tier_for_prefix(kp)
                 cur.execute(
                     """
                     INSERT INTO api_usage_meter
                           (api_key, tier, usage_date, calls_count, last_call_at, updated_at)
-                    VALUES (%s, 'developer', %s, %s, NOW(), NOW())
+                    VALUES (%s, %s, %s, %s, NOW(), NOW())
                     ON CONFLICT (api_key, usage_date) DO UPDATE
                        SET calls_count  = api_usage_meter.calls_count + EXCLUDED.calls_count,
+                           tier         = EXCLUDED.tier,
                            last_call_at = NOW(),
                            updated_at   = NOW()
                     """,
-                    (kp, day, cnt),
+                    (kp, _tier_cache[kp], day, cnt),
                 )
 
             # 3. Bump api_keys counters (calls_total, calls_today, usage_count,

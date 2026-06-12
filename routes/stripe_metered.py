@@ -44,6 +44,10 @@ TIER_LIMITS = {
     "developer":  {"included": 30_000,  "overage_per_call": 0.005, "hard_cap": False},
     "pro":        {"included": 300_000, "overage_per_call": 0.002, "hard_cap": False},
     "enterprise": {"included": 3_000_000,"overage_per_call": 0.001,"hard_cap": False},
+    # r79 (2026-06-13): our own service keys (resolved by the usage tracker
+    # when a key matches NO registry). Never billable, never capped — exists
+    # so internal rows stop masquerading as 'developer' revenue.
+    "internal":   {"included": 10**9,   "overage_per_call": None,  "hard_cap": False},
 }
 
 
