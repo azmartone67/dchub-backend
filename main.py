@@ -14005,6 +14005,39 @@ def _classify_mcp_platform(name):
     return 'other'
 
 
+# 2026-06-12 — server-provided platform logos. The integrations page rendered
+# letter avatars / broken hashed asset 404s for most platforms. Serving a
+# stable logo_url per platform from the API makes the logo independent of the
+# frontend build (CSP img-src already allows https:). Map name → brand domain;
+# Google's favicon service returns each platform's icon at any size with no key.
+_PLATFORM_LOGO_DOMAINS = {
+    'claude': 'claude.ai', 'anthropic': 'anthropic.com',
+    'chatgpt': 'openai.com', 'gpt': 'openai.com', 'openai': 'openai.com',
+    'grok': 'x.ai', 'xai': 'x.ai',
+    'gemini': 'gemini.google.com', 'google': 'google.com',
+    'perplexity': 'perplexity.ai', 'cursor': 'cursor.com',
+    'copilot': 'github.com', 'windsurf': 'codeium.com', 'codeium': 'codeium.com',
+    'groq': 'groq.com', 'deepseek': 'deepseek.com', 'poe': 'poe.com',
+    'you.com': 'you.com', 'mistral': 'mistral.ai', 'cohere': 'cohere.com',
+    'huggingface': 'huggingface.co', 'meta ai': 'meta.ai', 'meta': 'meta.ai',
+    'continue': 'continue.dev', 'cline': 'cline.bot', 'zed': 'zed.dev',
+    'dialtoneapp': 'dialtone.app',
+}
+
+
+def _platform_logo_url(name):
+    """Stable logo URL for a platform, or None. Matches on a brand-domain map
+    first (longest key wins), then falls back to the lowercased token as a
+    domain guess for unrecognized-but-named clients."""
+    n = (name or '').strip().lower()
+    if not n:
+        return None
+    for key in sorted(_PLATFORM_LOGO_DOMAINS, key=len, reverse=True):
+        if key in n:
+            return f"https://www.google.com/s2/favicons?domain={_PLATFORM_LOGO_DOMAINS[key]}&sz=64"
+    return None
+
+
 @app.route('/api/v1/mcp/platforms', methods=['GET'])
 def mcp_platforms_status():
     try:
@@ -14072,6 +14105,7 @@ def mcp_platforms_status():
             platform_list.append({
                 "platform": p[0],
                 "category": category,
+                "logo_url": _platform_logo_url(p[0]),
                 "total_connections": p[1],
                 # ISO-format the timestamps so the frontend stops rendering
                 # "NaNd ago" / "Invalid Date" off a raw psycopg2 datetime.
@@ -14086,7 +14120,8 @@ def mcp_platforms_status():
         for k in known:
             if k not in seen:
                 platform_list.append({
-                    "platform": k, "category": "platform", "total_connections": 0,
+                    "platform": k, "category": "platform",
+                    "logo_url": _platform_logo_url(k), "total_connections": 0,
                     "last_seen": None, "first_seen": None, "status": "pending"
                 })
 
