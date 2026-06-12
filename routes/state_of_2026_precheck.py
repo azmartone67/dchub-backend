@@ -161,9 +161,16 @@ PROBE_TIMEOUT_LINK_HEALTH_S = 8.0
 # not flood the single Railway replica.
 WORKER_COUNT = 8
 
-# In-memory result cache — 60s keyed on the request signature.
+# In-memory result cache keyed on the request signature.
+# 2026-06-12: was 60s with an INLINE rebuild — the sentinel probes every few
+# minutes, so nearly every probe missed the cache, ran the full 20-70s audit
+# inline, and 502'd at the ~10s edge synthesis cap (the one red page of 99).
+# Now: 15min fresh window + serve-stale-while-revalidate (background thread),
+# so no request ever runs the audit inline.
 _CACHE: dict[str, Any] = {}
-_CACHE_TTL_S = 60
+_CACHE_TTL_S = 900
+_CACHE_STALE_MAX_S = 86400   # serve a stale copy (while refreshing) up to a day
+_REFRESHING: set = set()     # single-flight guard for background refreshes
 
 # Path to the user-editable narrative claim sheet.
 _REPO_ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
@@ -1003,8 +1010,35 @@ def _run_full_audit(markets: tuple[str, ...], markets_limit: int = 30) -> dict:
     }
 
 
+def _refresh_audit_async(key: str, markets_limit: int) -> None:
+    """Kick exactly one background rebuild for this cache key."""
+    import threading
+    if key in _REFRESHING:
+        return
+    _REFRESHING.add(key)
+
+    def _job():
+        try:
+            data = _run_full_audit(TOP_MARKETS_TO_PROBE, markets_limit=markets_limit)
+            _CACHE[key] = {"ts": time.time(), "data": data}
+        except Exception:
+            pass  # next request retries; never crash the worker over a refresh
+        finally:
+            _REFRESHING.discard(key)
+
+    threading.Thread(target=_job, name=f"sot2026-refresh-{markets_limit}",
+                     daemon=True).start()
+
+
 def _cached_audit(markets_limit: int) -> dict:
-    """60s cache key on the markets_limit signature."""
+    """Serve-fresh / serve-stale-while-revalidate / warm-up.
+
+    The full audit takes 20-70s and the edge caps origin synthesis ~10s, so
+    it must NEVER run inline on a request thread. Fresh (<15min): cached
+    copy. Stale: cached copy immediately + one background refresh. Cold
+    (first hit after a restart): a 'warming' stub immediately + background
+    run — the next probe gets real data.
+    """
     key = f"audit:{markets_limit}"
     now = time.time()
     ent = _CACHE.get(key)
@@ -1012,9 +1046,24 @@ def _cached_audit(markets_limit: int) -> dict:
         out = dict(ent["data"])
         out["cache_age_s"] = int(now - ent["ts"])
         return out
-    data = _run_full_audit(TOP_MARKETS_TO_PROBE, markets_limit=markets_limit)
-    _CACHE[key] = {"ts": now, "data": data}
-    return data
+    _refresh_audit_async(key, markets_limit)
+    if ent and (now - ent["ts"]) < _CACHE_STALE_MAX_S:
+        out = dict(ent["data"])
+        out["cache_age_s"] = int(now - ent["ts"])
+        out["stale_refreshing"] = True
+        return out
+    return {
+        "warming": True,
+        "verdict": "WARMING", "color": "#6366f1",
+        "message": ("First audit since restart is running in the background — "
+                    "refresh this page in ~60s for the full report."),
+        "grade_counts": {}, "total_critical": 0,
+        "audits": [], "fix_list": [], "runtime_ms": 0, "surface_runtimes": {},
+        "generated_at": datetime.now(timezone.utc).isoformat(),
+        "probe_base": _PROBE_BASE_URL,
+        "markets_probed": [], "hyperscalers_probed": [],
+        "cache_age_s": -1,
+    }
 
 
 # ── HTML rendering ────────────────────────────────────────────────────
@@ -1241,7 +1290,9 @@ def state_of_2026_precheck_json():
         limit = 30
     limit = max(5, min(100, limit))
     data = _cached_audit(limit)
+    # 202 while the first post-restart audit builds (sentinel accepts 202)
     return Response(json.dumps(data, default=str, indent=2),
+                    status=202 if data.get("warming") else 200,
                     mimetype="application/json",
                     headers={"Cache-Control": "private, no-store"})
 

@@ -448,6 +448,39 @@ def observe():
 
 
 # ---------------------------------------------------------------------------
+# record_extraction — in-process ledger write for ingestion jobs
+# ---------------------------------------------------------------------------
+
+def record_extraction(source_id: str, outcome: str = "success",
+                      rows_inserted=None, duration_ms=None,
+                      error=None, observations=None) -> None:
+    """Same row POST /observe records, minus the HTTP hop.
+
+    For in-process jobs (deal ingestion, gas refresh, ISO pulls): calling the
+    worker's own HTTP API from inside the process is the synchronous-self-call
+    pattern that exhausts the small replica pool — write the ledger row
+    directly instead. Never raises: telemetry must not break an ingestion job.
+    """
+    try:
+        if outcome not in ("success", "failure", "partial", "anomaly"):
+            outcome = "partial"
+        _ensure_tables()
+        with _conn() as c, c.cursor() as cur:
+            cur.execute(
+                """INSERT INTO extraction_intelligence
+                      (source_id, outcome, rows_inserted, duration_ms, error,
+                       anomaly_score, observations, proposed_fix)
+                   VALUES (%s, %s, %s, %s, %s, 0, %s, NULL)""",
+                (source_id, outcome, rows_inserted, duration_ms,
+                 (str(error)[:500] if error else None),
+                 json.dumps(observations or {})),
+            )
+            c.commit()
+    except Exception:
+        pass
+
+
+# ---------------------------------------------------------------------------
 # GET /insights — daily-rolled summary
 # ---------------------------------------------------------------------------
 

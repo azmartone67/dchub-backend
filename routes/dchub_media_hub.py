@@ -296,6 +296,39 @@ def media_aggregate():
                         "posted_at": r[5].isoformat() if r[5] else None,
                     })
             except Exception: c.rollback()
+            # 2026-06-12: fresh-probe arm (port of the feed-v3 #1106 fix to THIS
+            # endpoint — the one that renders the visible "Recent AI citations"
+            # rail). The nightly testimonial probes write approved=FALSE rows and
+            # the canonical arm above excludes agent_name='Claude', so the rail
+            # stayed pinned to the 4 oldest canonical quotes (~98d, Meta/Grok)
+            # while fresh probe rows landed daily (verified: 29 probe rows, newest
+            # 2026-06-12 05:07). Surface recent probe_% rows incl. Claude;
+            # DISTINCT ON (agent, quote-prefix) collapses near-duplicate runs.
+            # The merge-sort below puts the freshest first.
+            try:
+                cur.execute("""
+                    SELECT src, agent_name, platform, quote, url, ts FROM (
+                        SELECT DISTINCT ON (agent_name, LEFT(quote, 80))
+                               COALESCE(NULLIF(source,''), 'probe') AS src,
+                               agent_name, platform, quote, url,
+                               COALESCE(approved_at, created_at) AS ts,
+                               created_at
+                        FROM ai_testimonials
+                        WHERE source LIKE 'probe_%'
+                          AND created_at > NOW() - INTERVAL '45 days'
+                          AND quote IS NOT NULL AND length(quote) > 40
+                          AND agent_name IS NOT NULL AND agent_name <> 'unknown'
+                        ORDER BY agent_name, LEFT(quote, 80), created_at DESC
+                    ) p ORDER BY created_at DESC LIMIT 6
+                """)
+                for r in cur.fetchall():
+                    out["rails"]["testimonials"].append({
+                        "source": r[0], "agent": r[1], "platform": r[2],
+                        "quote": (r[3] or "")[:500],
+                        "url": r[4],
+                        "posted_at": r[5].isoformat() if r[5] else None,
+                    })
+            except Exception: c.rollback()
 
         # 2026-05-29: the canonical + auto arms each sort internally,
         # but the merged list was returned in arm-order. The page does

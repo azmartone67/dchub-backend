@@ -293,6 +293,18 @@ def run_ingestion(get_db):
             except Exception: pass
 
     logger.info(f"  ✅ Ingestion complete: {inserted} inserted/updated, {errors} errors")
+    # 2026-06-12: report to the autonomous-intelligence extraction ledger.
+    # This job ran for months without the observatory ever seeing it — the
+    # dashboard showed "1 sources" because only the data-pulse workflow wrote
+    # to extraction_intelligence. Direct in-process write (no HTTP self-call).
+    try:
+        from routes.extractor_brain import record_extraction
+        record_extraction("deal-ingestion",
+                          "success" if not errors else "partial",
+                          rows_inserted=inserted,
+                          observations={"errors": errors})
+    except Exception:
+        pass  # ledger telemetry must never break ingestion
 
 
 # ── Scheduler thread ──────────────────────────────────────────────────

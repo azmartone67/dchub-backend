@@ -5475,19 +5475,43 @@ def check_conversion_rate_floor() -> list[dict]:
                 # so the rate now reflects conversion among callers we can actually
                 # convert. Still gated at >=25 below, so it stays silent until
                 # there's genuinely broad identified demand.
+                # r78: exclude internal/self clients from the caller pool. The
+                # live 30d window counted dchub-selfheal, mcp-probe,
+                # dchub-mcp-test and pipeline_mcp as "callers" — our own probes
+                # are not prospects, and they deflate the conversion rate.
                 cur.execute("""
                     SELECT COUNT(DISTINCT COALESCE(
                                NULLIF(user_email,''),
                                NULLIF(mcp_client,'')))
                       FROM mcp_upgrade_signals
                      WHERE created_at >= NOW() - INTERVAL '30 days'
+                       AND COALESCE(mcp_client,'') NOT LIKE 'dchub%'
+                       AND COALESCE(mcp_client,'') NOT LIKE 'loop%'
+                       AND COALESCE(mcp_client,'') NOT LIKE '%probe%'
+                       AND COALESCE(mcp_client,'') NOT LIKE '%-test'
+                       AND COALESCE(mcp_client,'') NOT LIKE '%scanner%'
+                       AND COALESCE(mcp_client,'') <> 'pipeline_mcp'
                 """)
                 distinct_callers = int((cur.fetchone() or [0])[0] or 0)
-                cur.execute("""
-                    SELECT COUNT(*) FROM mcp_pair_codes
-                     WHERE redeemed_at IS NOT NULL
-                       AND redeemed_at >= NOW() - INTERVAL '30 days'
-                """)
+                # r78: pair-code redemptions are ONE conversion mechanism and
+                # have been 0/30d (verified live) while the canonical funnel
+                # (funnel_health KPI-2) counts conversions from the Stripe-
+                # webhook mcp_conversions table — 8 in the same window.
+                # Dividing real demand by a dead mechanism pinned this metric
+                # at 0% forever (the ×47 stuck finding). Prefer mcp_conversions,
+                # fall back to pair codes — the same preference funnel_health uses.
+                cur.execute("SELECT to_regclass('public.mcp_conversions') IS NOT NULL")
+                if bool((cur.fetchone() or [False])[0]):
+                    cur.execute("""
+                        SELECT COUNT(*) FROM mcp_conversions
+                         WHERE created_at >= NOW() - INTERVAL '30 days'
+                    """)
+                else:
+                    cur.execute("""
+                        SELECT COUNT(*) FROM mcp_pair_codes
+                         WHERE redeemed_at IS NOT NULL
+                           AND redeemed_at >= NOW() - INTERVAL '30 days'
+                    """)
                 conversions = int((cur.fetchone() or [0])[0] or 0)
             except Exception:
                 return findings

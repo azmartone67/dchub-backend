@@ -149,7 +149,17 @@ def load_gas_compressors():
 
 
 def refresh_all():
-    return {'processing': load_gas_processings(), 'compressors': load_gas_compressors()}
+    out = {'processing': load_gas_processings(), 'compressors': load_gas_compressors()}
+    # 2026-06-12: report to the autonomous-intelligence extraction ledger
+    # (observatory showed "1 sources" because loaders never wrote to it).
+    try:
+        from routes.extractor_brain import record_extraction
+        record_extraction("gas-infra-loader", "success",
+                          rows_inserted=int(out.get('processing') or 0) + int(out.get('compressors') or 0),
+                          observations=out)
+    except Exception:
+        pass
+    return out
 
 
 if __name__ == '__main__':

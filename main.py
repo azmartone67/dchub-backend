@@ -28418,7 +28418,11 @@ except Exception as _ct_e:
 # Routes: GET /{KEY}.txt (self-verify) + POST /api/v1/admin/indexnow/submit.
 try:
     from routes.indexnow_route import indexnow_bp
-    app.register_blueprint(indexnow_bp)
+    # name= override: routes/indexnow.py already registered a blueprint named
+    # "indexnow" earlier in boot, so this registration failed on every deploy
+    # ("name 'indexnow' is already registered") — leaving /{KEY}.txt dead and
+    # IndexNow key self-verification broken. Distinct registration name fixes it.
+    app.register_blueprint(indexnow_bp, name="indexnow_route")
     print("[main] indexnow_bp registered: /{KEY}.txt + POST /api/v1/admin/indexnow/submit", flush=True)
 except Exception as _in_e:
     print(f"[main] indexnow_bp register failed: {_in_e}", flush=True)

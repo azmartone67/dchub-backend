@@ -758,7 +758,12 @@ def brain_page():
     # Render log
     if log:
         log_rows = []
-        for entry in reversed(log):
+        # 2026-06-12: the store returns newest-first (ORDER BY t DESC) and the
+        # old reversed() here flipped it back — the page rendered the OLDEST
+        # rows (perpetual 2026-05-26 placeholders) as the "learning log".
+        # Sort explicitly newest-first so either source (store rows with 't',
+        # legacy in-memory entries with 'ts') displays correctly.
+        for entry in sorted(log, key=lambda e: str(e.get("t") or e.get("ts") or ""), reverse=True):
             outcome = (entry.get("outcome") or "")[:60]
             cls = ("ok" if outcome.startswith("proposed") or outcome == "approval_count_incremented"
                    else "err" if "fail" in outcome or "error" in outcome or "refused" in outcome
