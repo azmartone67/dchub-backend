@@ -37,7 +37,7 @@ def _db_conn():
     thread that called get_db() per cycle and only closed on the success path,
     so any send_email/DB exception leaked a connection forever → eventual Neon
     pool exhaustion (the 1-replica flapping failure mode). Every raw
-    `conn = get_db()` site is converted to `with _db_conn() as conn:`."""
+    get_db() assignment site is converted to `with _db_conn() as conn:`."""
     conn = None
     try:
         conn = get_db()
@@ -662,62 +662,61 @@ def render_email_template(template_content: str, variables: dict) -> str:
 
 def start_welcome_series(user_id: str, email: str, name: str = "there"):
     """Start the welcome series for a new user"""
-    conn = get_db()
-    c = conn.cursor()
-    
-    # Check if already in welcome series
-    c.execute("SELECT id FROM welcome_series WHERE email = %s", (email,))
-    if c.fetchone():
-        conn.close()
-        return {'success': False, 'error': 'Already in welcome series'}
-    
-    # Create welcome series record
-    series_id = secrets.token_hex(8)
-    unsubscribe_token = secrets.token_urlsafe(32)
-    
-    c.execute("""
-        INSERT INTO welcome_series (id, user_id, email, current_step, started_at, status)
-        VALUES (%s, %s, %s, 0, %s, 'active')
-    """, (series_id, user_id, email, datetime.utcnow().isoformat()))
-    
-    # Schedule all emails in the series
-    now = datetime.utcnow()
-    
-    for step, template in WELCOME_SERIES_TEMPLATES.items():
-        email_id = secrets.token_hex(8)
-        scheduled_at = now + timedelta(hours=template['delay_hours'])
-        
-        # Render the email content
-        variables = {
-            'name': name.split()[0] if name else 'there',  # First name only
-            'email': email,
-            'app_url': APP_URL,
-            'email_id': email_id,
-            'unsubscribe_token': unsubscribe_token,
-            'subject': template['subject']
-        }
-        
-        html_content = render_email_template(template['content'], variables)
-        
+    with _db_conn() as conn:
+        c = conn.cursor()
+
+        # Check if already in welcome series
+        c.execute("SELECT id FROM welcome_series WHERE email = %s", (email,))
+        if c.fetchone():
+            conn.close()
+            return {'success': False, 'error': 'Already in welcome series'}
+
+        # Create welcome series record
+        series_id = secrets.token_hex(8)
+        unsubscribe_token = secrets.token_urlsafe(32)
+
         c.execute("""
-            INSERT INTO email_queue 
-            (id, user_id, email, template_name, subject, body_html, scheduled_at, status, sequence_id, sequence_step, created_at)
-            VALUES (%s, %s, %s, %s, %s, %s, %s, 'scheduled', %s, %s, %s)
-        """, (
-            email_id,
-            user_id,
-            email,
-            template['name'],
-            template['subject'],
-            html_content,
-            scheduled_at.isoformat(),
-            series_id,
-            step,
-            datetime.utcnow().isoformat()
-        ))
-    
-    conn.commit()
-    conn.close()
+            INSERT INTO welcome_series (id, user_id, email, current_step, started_at, status)
+            VALUES (%s, %s, %s, 0, %s, 'active')
+        """, (series_id, user_id, email, datetime.utcnow().isoformat()))
+
+        # Schedule all emails in the series
+        now = datetime.utcnow()
+
+        for step, template in WELCOME_SERIES_TEMPLATES.items():
+            email_id = secrets.token_hex(8)
+            scheduled_at = now + timedelta(hours=template['delay_hours'])
+
+            # Render the email content
+            variables = {
+                'name': name.split()[0] if name else 'there',  # First name only
+                'email': email,
+                'app_url': APP_URL,
+                'email_id': email_id,
+                'unsubscribe_token': unsubscribe_token,
+                'subject': template['subject']
+            }
+
+            html_content = render_email_template(template['content'], variables)
+
+            c.execute("""
+                INSERT INTO email_queue
+                (id, user_id, email, template_name, subject, body_html, scheduled_at, status, sequence_id, sequence_step, created_at)
+                VALUES (%s, %s, %s, %s, %s, %s, %s, 'scheduled', %s, %s, %s)
+            """, (
+                email_id,
+                user_id,
+                email,
+                template['name'],
+                template['subject'],
+                html_content,
+                scheduled_at.isoformat(),
+                series_id,
+                step,
+                datetime.utcnow().isoformat()
+            ))
+
+        conn.commit()
     
     # Immediately send the first email
     process_email_queue()
@@ -727,25 +726,25 @@ def start_welcome_series(user_id: str, email: str, name: str = "there"):
 
 def stop_welcome_series(email: str):
     """Stop welcome series for a user (e.g., on unsubscribe or upgrade)"""
-    conn = get_db()
-    try:
-        c = conn.cursor()
-        # Mark series as completed/stopped
-        c.execute("""
-            UPDATE welcome_series SET status = 'stopped', completed_at = %s
-            WHERE email = %s AND status = 'active'
-        """, (datetime.utcnow().isoformat(), email))
-        # Cancel pending emails
-        c.execute("""
-            UPDATE email_queue SET status = 'cancelled'
-            WHERE email = %s AND status = 'scheduled' AND sequence_id IS NOT NULL
-        """, (email,))
-        conn.commit()
-    finally:  # r72: never leak the conn on a DB error
+    with _db_conn() as conn:
         try:
-            conn.close()
-        except Exception:
-            pass
+            c = conn.cursor()
+            # Mark series as completed/stopped
+            c.execute("""
+                UPDATE welcome_series SET status = 'stopped', completed_at = %s
+                WHERE email = %s AND status = 'active'
+            """, (datetime.utcnow().isoformat(), email))
+            # Cancel pending emails
+            c.execute("""
+                UPDATE email_queue SET status = 'cancelled'
+                WHERE email = %s AND status = 'scheduled' AND sequence_id IS NOT NULL
+            """, (email,))
+            conn.commit()
+        finally:  # r72: never leak the conn on a DB error
+            try:
+                conn.close()
+            except Exception:
+                pass
     
     return {'success': True}
 
@@ -833,38 +832,37 @@ def _process_email_queue(conn):
 
 def get_email_stats():
     """Get email sending statistics"""
-    conn = get_db()
-    c = conn.cursor()
-    
-    stats = {}
-    
-    # Queue status counts
-    c.execute("""
-        SELECT status, COUNT(*) FROM email_queue GROUP BY status
-    """)
-    stats['queue'] = {row[0]: row[1] for row in c.fetchall()}
-    
-    # Welcome series stats
-    c.execute("""
-        SELECT status, COUNT(*) FROM welcome_series GROUP BY status
-    """)
-    stats['welcome_series'] = {row[0]: row[1] for row in c.fetchall()}
-    
-    # Recent sends (last 24h)
-    yesterday = (datetime.utcnow() - timedelta(hours=24)).isoformat()
-    c.execute("""
-        SELECT COUNT(*) FROM email_queue WHERE sent_at >= %s
-    """, (yesterday,))
-    stats['sent_24h'] = c.fetchone()[0]
-    
-    # Open tracking (if implemented)
-    c.execute("""
-        SELECT event_type, COUNT(*) FROM email_tracking 
-        WHERE created_at >= %s GROUP BY event_type
-    """, (yesterday,))
-    stats['tracking_24h'] = {row[0]: row[1] for row in c.fetchall()}
-    
-    conn.close()
+    with _db_conn() as conn:
+        c = conn.cursor()
+
+        stats = {}
+
+        # Queue status counts
+        c.execute("""
+            SELECT status, COUNT(*) FROM email_queue GROUP BY status
+        """)
+        stats['queue'] = {row[0]: row[1] for row in c.fetchall()}
+
+        # Welcome series stats
+        c.execute("""
+            SELECT status, COUNT(*) FROM welcome_series GROUP BY status
+        """)
+        stats['welcome_series'] = {row[0]: row[1] for row in c.fetchall()}
+
+        # Recent sends (last 24h)
+        yesterday = (datetime.utcnow() - timedelta(hours=24)).isoformat()
+        c.execute("""
+            SELECT COUNT(*) FROM email_queue WHERE sent_at >= %s
+        """, (yesterday,))
+        stats['sent_24h'] = c.fetchone()[0]
+
+        # Open tracking (if implemented)
+        c.execute("""
+            SELECT event_type, COUNT(*) FROM email_tracking
+            WHERE created_at >= %s GROUP BY event_type
+        """, (yesterday,))
+        stats['tracking_24h'] = {row[0]: row[1] for row in c.fetchall()}
+
     return stats
 
 
@@ -934,57 +932,55 @@ def handle_new_signup(user_id: str, email: str, name: str, source: str = 'regist
 
 def handle_unsubscribe(token: str) -> dict:
     """Handle email unsubscribe"""
-    conn = get_db()
-    c = conn.cursor()
-    
-    # Find user by unsubscribe token in email queue
-    # In production, you'd want a separate unsubscribe_tokens table
-    c.execute("""
-        UPDATE leads SET subscribed = 0 WHERE email IN (
+    with _db_conn() as conn:
+        c = conn.cursor()
+
+        # Find user by unsubscribe token in email queue
+        # In production, you'd want a separate unsubscribe_tokens table
+        c.execute("""
+            UPDATE leads SET subscribed = 0 WHERE email IN (
+                SELECT DISTINCT email FROM email_queue WHERE body_html LIKE %s
+            )
+        """, (f'%{token}%',))
+
+        # Stop welcome series
+        c.execute("""
             SELECT DISTINCT email FROM email_queue WHERE body_html LIKE %s
-        )
-    """, (f'%{token}%',))
-    
-    # Stop welcome series
-    c.execute("""
-        SELECT DISTINCT email FROM email_queue WHERE body_html LIKE %s
-    """, (f'%{token}%',))
-    
-    result = c.fetchone()
-    if result:
-        stop_welcome_series(result[0])
-    
-    conn.commit()
-    conn.close()
+        """, (f'%{token}%',))
+
+        result = c.fetchone()
+        if result:
+            stop_welcome_series(result[0])
+
+        conn.commit()
     
     return {'success': True}
 
 
 def record_email_event(email_id: str, event_type: str, ip: str = None, user_agent: str = None):
     """Record email tracking event (open, click, etc.)"""
-    conn = get_db()
-    c = conn.cursor()
-    
-    # Get email info
-    c.execute("SELECT email FROM email_queue WHERE id = %s", (email_id,))
-    row = c.fetchone()
-    email = row[0] if row else None
-    
-    c.execute("""
-        INSERT INTO email_tracking (id, email_id, email, event_type, ip_address, user_agent, created_at)
-        VALUES (%s, %s, %s, %s, %s, %s, %s)
-    """, (
-        secrets.token_hex(8),
-        email_id,
-        email,
-        event_type,
-        ip,
-        user_agent,
-        datetime.utcnow().isoformat()
-    ))
-    
-    conn.commit()
-    conn.close()
+    with _db_conn() as conn:
+        c = conn.cursor()
+
+        # Get email info
+        c.execute("SELECT email FROM email_queue WHERE id = %s", (email_id,))
+        row = c.fetchone()
+        email = row[0] if row else None
+
+        c.execute("""
+            INSERT INTO email_tracking (id, email_id, email, event_type, ip_address, user_agent, created_at)
+            VALUES (%s, %s, %s, %s, %s, %s, %s)
+        """, (
+            secrets.token_hex(8),
+            email_id,
+            email,
+            event_type,
+            ip,
+            user_agent,
+            datetime.utcnow().isoformat()
+        ))
+
+        conn.commit()
 
 
 # Initialize tables when module loads

@@ -10,6 +10,7 @@ import logging
 import time
 import requests
 import threading
+from contextlib import contextmanager, ExitStack
 from datetime import datetime, timedelta
 from flask import Blueprint, request, jsonify
 from utils.anthropic_helper import anthropic_messages_url
@@ -66,6 +67,17 @@ def _get_db(retries=3):
                 logger.error(f"SQLite connect failed after {retries} attempts: {e}")
     raise last_error
 
+@contextmanager
+def _db_conn():
+    """Yields a _get_db() connection; guarantees close on every exit path
+    (the conn-leak class behind the 2026-05-19 Neon-pool outage)."""
+    conn = _get_db()
+    try:
+        yield conn
+    finally:
+        try: conn.close()
+        except Exception: pass
+
 def _check_admin(req):
     admin_key = req.headers.get('X-Admin-Key') or req.args.get('admin_key') or req.args.get('key')
     valid_keys = [k for k in [os.environ.get('DCHUB_ADMIN_KEY', '')] if k]
@@ -76,57 +88,57 @@ def init_content_tables():
     table bootstrap. Creates social_media_posts if missing, then adds
     any missing columns. press_releases is already managed elsewhere
     (routes/press_queue.py etc.) so we leave it alone."""
-    conn = _get_db()
-    cur = conn.cursor()
-    try:
-        # social_media_posts — needed by auto-publish loops
+    with _db_conn() as conn:
+        cur = conn.cursor()
         try:
-            cur.execute("""
-                CREATE TABLE IF NOT EXISTS social_media_posts (
-                    id              SERIAL PRIMARY KEY,
-                    content         TEXT NOT NULL,
-                    platform        TEXT,
-                    status          TEXT NOT NULL DEFAULT 'draft',
-                    created_at      TIMESTAMPTZ NOT NULL DEFAULT NOW(),
-                    approved_at     TEXT,
-                    posted_at       TEXT,
-                    published_at    TEXT,
-                    publish_platform TEXT,
-                    bluesky_uri     TEXT,
-                    twitter_id      TEXT,
-                    linkedin_urn    TEXT
-                )
-            """)
-            try: conn.commit()
-            except Exception: pass
-        except Exception as e:
-            logger.warning(f"social_media_posts CREATE skipped: {e}")
-        # Add missing columns idempotently (cheap on PG with IF NOT EXISTS).
-        # accelerate + viral_score added 2026-06-05 for the DC Hub Media
-        # accelerator (routes/dchub_media_accelerator.py): when a LinkedIn
-        # post outperforms the 30d baseline by 2x+ within 6h of publish we
-        # auto-enqueue Twitter + Bluesky cross-posts and flag the row.
-        for col_def in [
-            "approved_at TEXT",
-            "publish_platform TEXT",
-            "published_at TEXT",
-            "bluesky_uri TEXT",
-            "twitter_id TEXT",
-            "linkedin_urn TEXT",
-            "accelerate BOOLEAN DEFAULT FALSE",
-            "viral_score NUMERIC DEFAULT NULL",
-        ]:
-            col = col_def.split()[0]
+            # social_media_posts — needed by auto-publish loops
             try:
-                cur.execute(f"ALTER TABLE social_media_posts ADD COLUMN IF NOT EXISTS {col_def}")
+                cur.execute("""
+                    CREATE TABLE IF NOT EXISTS social_media_posts (
+                        id              SERIAL PRIMARY KEY,
+                        content         TEXT NOT NULL,
+                        platform        TEXT,
+                        status          TEXT NOT NULL DEFAULT 'draft',
+                        created_at      TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+                        approved_at     TEXT,
+                        posted_at       TEXT,
+                        published_at    TEXT,
+                        publish_platform TEXT,
+                        bluesky_uri     TEXT,
+                        twitter_id      TEXT,
+                        linkedin_urn    TEXT
+                    )
+                """)
                 try: conn.commit()
                 except Exception: pass
-            except Exception:
-                pass
-        logger.info("Content publishing tables initialized (Neon)")
-    finally:
-        try: conn.close()
-        except Exception: pass
+            except Exception as e:
+                logger.warning(f"social_media_posts CREATE skipped: {e}")
+            # Add missing columns idempotently (cheap on PG with IF NOT EXISTS).
+            # accelerate + viral_score added 2026-06-05 for the DC Hub Media
+            # accelerator (routes/dchub_media_accelerator.py): when a LinkedIn
+            # post outperforms the 30d baseline by 2x+ within 6h of publish we
+            # auto-enqueue Twitter + Bluesky cross-posts and flag the row.
+            for col_def in [
+                "approved_at TEXT",
+                "publish_platform TEXT",
+                "published_at TEXT",
+                "bluesky_uri TEXT",
+                "twitter_id TEXT",
+                "linkedin_urn TEXT",
+                "accelerate BOOLEAN DEFAULT FALSE",
+                "viral_score NUMERIC DEFAULT NULL",
+            ]:
+                col = col_def.split()[0]
+                try:
+                    cur.execute(f"ALTER TABLE social_media_posts ADD COLUMN IF NOT EXISTS {col_def}")
+                    try: conn.commit()
+                    except Exception: pass
+                except Exception:
+                    pass
+            logger.info("Content publishing tables initialized (Neon)")
+        finally:
+            try: conn.close()
+            except Exception: pass
     # 2026-06-06: piggy-back the Feedback Forum schema bootstrap onto
     # init_content_tables so it runs on the same boot path (already wired
     # in main.py). Defensive — if feedback_forum import or table init
@@ -274,42 +286,42 @@ def media_self_critique():
     out = {"window_days": 7, "blocked_total": 0, "blocked_by_category": {},
            "published_7d": 0, "reject_rate": None, "recent_blocks": [],
            "lessons_fed_to_generator": []}
-    conn = _get_db()
-    if conn is None:
-        out["error"] = "no_db"
-        return jsonify(out), 200
-    try:
-        with conn.cursor() as cur:
-            rows = []
-            try:
-                cur.execute("""SELECT reason, created_at FROM media_review_log
-                    WHERE decision = 'blocked'
-                      AND created_at > NOW() - INTERVAL '7 days'
-                    ORDER BY created_at DESC LIMIT 500""")
-                rows = cur.fetchall() or []
-            except Exception:
-                rows = []  # table may not exist until the first block
-            cats = {}
-            for row in rows:
-                reason = row.get('reason') if hasattr(row, 'get') else row[0]
-                cats[_media_block_category(reason)] = cats.get(_media_block_category(reason), 0) + 1
-            out["blocked_total"] = len(rows)
-            out["blocked_by_category"] = dict(sorted(cats.items(), key=lambda x: -x[1]))
-            out["recent_blocks"] = [
-                {"category": _media_block_category(r.get('reason') if hasattr(r, 'get') else r[0]),
-                 "reason": ((r.get('reason') if hasattr(r, 'get') else r[0]) or "")[:140]}
-                for r in rows[:8]]
-            try:
-                cur.execute("""SELECT COUNT(*) FROM social_media_posts
-                    WHERE status='published' AND publish_platform='linkedin'
-                      AND published_at >= (NOW() - INTERVAL '7 days')""")
-                pr = cur.fetchone()
-                out["published_7d"] = int((pr.get('count') if hasattr(pr, 'get') else pr[0]) or 0)
-            except Exception:
-                pass
-    finally:
-        try: conn.close()
-        except Exception: pass
+    with _db_conn() as conn:
+        if conn is None:
+            out["error"] = "no_db"
+            return jsonify(out), 200
+        try:
+            with conn.cursor() as cur:
+                rows = []
+                try:
+                    cur.execute("""SELECT reason, created_at FROM media_review_log
+                        WHERE decision = 'blocked'
+                          AND created_at > NOW() - INTERVAL '7 days'
+                        ORDER BY created_at DESC LIMIT 500""")
+                    rows = cur.fetchall() or []
+                except Exception:
+                    rows = []  # table may not exist until the first block
+                cats = {}
+                for row in rows:
+                    reason = row.get('reason') if hasattr(row, 'get') else row[0]
+                    cats[_media_block_category(reason)] = cats.get(_media_block_category(reason), 0) + 1
+                out["blocked_total"] = len(rows)
+                out["blocked_by_category"] = dict(sorted(cats.items(), key=lambda x: -x[1]))
+                out["recent_blocks"] = [
+                    {"category": _media_block_category(r.get('reason') if hasattr(r, 'get') else r[0]),
+                     "reason": ((r.get('reason') if hasattr(r, 'get') else r[0]) or "")[:140]}
+                    for r in rows[:8]]
+                try:
+                    cur.execute("""SELECT COUNT(*) FROM social_media_posts
+                        WHERE status='published' AND publish_platform='linkedin'
+                          AND published_at >= (NOW() - INTERVAL '7 days')""")
+                    pr = cur.fetchone()
+                    out["published_7d"] = int((pr.get('count') if hasattr(pr, 'get') else pr[0]) or 0)
+                except Exception:
+                    pass
+        finally:
+            try: conn.close()
+            except Exception: pass
     _tot = out["blocked_total"] + out["published_7d"]
     out["reject_rate"] = round(out["blocked_total"] / _tot, 3) if _tot else None
     out["lessons_fed_to_generator"] = [
@@ -321,18 +333,17 @@ def media_self_critique():
 def content_stats():
     if not _check_admin(request):
         return jsonify({'error': 'Unauthorized'}), 401
-    conn = _get_db()
-    cur = conn.cursor()
-    stats = {'draft': 0, 'approved': 0, 'published': 0, 'rejected': 0, 'published_today': 0}
-    today = datetime.utcnow().strftime('%Y-%m-%d')
-    for table in ['social_media_posts', 'press_releases']:
-        for status_val in ['draft', 'approved', 'published', 'rejected']:
-            cur.execute(f"SELECT COUNT(*) FROM {table} WHERE status = %s", (status_val,))
-            stats[status_val] += cur.fetchone()[0]
-        cur.execute(f"SELECT COUNT(*) FROM {table} WHERE status = 'published' AND published_at LIKE %s", (today + '%',))
-        stats['published_today'] += cur.fetchone()[0]
-    linkedin_connected = bool(os.environ.get('LINKEDIN_ACCESS_TOKEN', '').strip())
-    conn.close()
+    with _db_conn() as conn:
+        cur = conn.cursor()
+        stats = {'draft': 0, 'approved': 0, 'published': 0, 'rejected': 0, 'published_today': 0}
+        today = datetime.utcnow().strftime('%Y-%m-%d')
+        for table in ['social_media_posts', 'press_releases']:
+            for status_val in ['draft', 'approved', 'published', 'rejected']:
+                cur.execute(f"SELECT COUNT(*) FROM {table} WHERE status = %s", (status_val,))
+                stats[status_val] += cur.fetchone()[0]
+            cur.execute(f"SELECT COUNT(*) FROM {table} WHERE status = 'published' AND published_at LIKE %s", (today + '%',))
+            stats['published_today'] += cur.fetchone()[0]
+        linkedin_connected = bool(os.environ.get('LINKEDIN_ACCESS_TOKEN', '').strip())
     return jsonify({'stats': stats, 'linkedin_connected': linkedin_connected})
 
 @content_bp.route('/api/admin/content-queue', methods=['GET'])
@@ -345,40 +356,39 @@ def content_queue():
     page = max(1, int(request.args.get('page', 1)))
     limit = min(50, max(1, int(request.args.get('limit', 10))))
     offset = (page - 1) * limit
-    conn = _get_db()
-    cur = conn.cursor()
-    if content_type == 'press':
-        base_query = "FROM press_releases WHERE status = %s"
-        params = [status_filter]
-        if platform_filter:
-            base_query += " AND COALESCE(publish_platform, '') = %s"
-            params.append(platform_filter)
-        cur.execute(f"SELECT COUNT(*) {base_query}", params)
-        total = cur.fetchone()[0]
-        cur.execute(f"SELECT id, 'press' as type, title || '\\n\\n' || content as content, status, COALESCE(publish_platform, '') as publish_platform, created_at, published_at, approved_at {base_query} ORDER BY created_at DESC LIMIT %s OFFSET %s", params + [limit, offset])
-    else:
-        base_query = "FROM social_media_posts WHERE status = %s"
-        params = [status_filter]
-        if platform_filter:
-            base_query += " AND platform = %s"
-            params.append(platform_filter)
-        cur.execute(f"SELECT COUNT(*) {base_query}", params)
-        total = cur.fetchone()[0]
-        cur.execute(f"SELECT id, 'social' as type, content, status, platform as publish_platform, created_at, COALESCE(posted_at, published_at) as published_at, approved_at {base_query} ORDER BY created_at DESC LIMIT %s OFFSET %s", params + [limit, offset])
-    rows = cur.fetchall()
-    items = []
-    for r in rows:
-        items.append({
-            'id': r['id'],
-            'type': r['type'],
-            'content': r['content'],
-            'status': r['status'],
-            'publish_platform': r['publish_platform'],
-            'created_at': r['created_at'],
-            'published_at': r['published_at'],
-            'approved_at': r['approved_at'] if 'approved_at' in r.keys() else None,
-        })
-    conn.close()
+    with _db_conn() as conn:
+        cur = conn.cursor()
+        if content_type == 'press':
+            base_query = "FROM press_releases WHERE status = %s"
+            params = [status_filter]
+            if platform_filter:
+                base_query += " AND COALESCE(publish_platform, '') = %s"
+                params.append(platform_filter)
+            cur.execute(f"SELECT COUNT(*) {base_query}", params)
+            total = cur.fetchone()[0]
+            cur.execute(f"SELECT id, 'press' as type, title || '\\n\\n' || content as content, status, COALESCE(publish_platform, '') as publish_platform, created_at, published_at, approved_at {base_query} ORDER BY created_at DESC LIMIT %s OFFSET %s", params + [limit, offset])
+        else:
+            base_query = "FROM social_media_posts WHERE status = %s"
+            params = [status_filter]
+            if platform_filter:
+                base_query += " AND platform = %s"
+                params.append(platform_filter)
+            cur.execute(f"SELECT COUNT(*) {base_query}", params)
+            total = cur.fetchone()[0]
+            cur.execute(f"SELECT id, 'social' as type, content, status, platform as publish_platform, created_at, COALESCE(posted_at, published_at) as published_at, approved_at {base_query} ORDER BY created_at DESC LIMIT %s OFFSET %s", params + [limit, offset])
+        rows = cur.fetchall()
+        items = []
+        for r in rows:
+            items.append({
+                'id': r['id'],
+                'type': r['type'],
+                'content': r['content'],
+                'status': r['status'],
+                'publish_platform': r['publish_platform'],
+                'created_at': r['created_at'],
+                'published_at': r['published_at'],
+                'approved_at': r['approved_at'] if 'approved_at' in r.keys() else None,
+            })
     return jsonify({'items': items, 'total': total})
 
 @content_bp.route('/api/admin/content/<int:item_id>/approve', methods=['POST'])
@@ -388,14 +398,13 @@ def content_approve(item_id):
     content_type = request.args.get('type', 'social')
     table = 'press_releases' if content_type == 'press' else 'social_media_posts'
     now = datetime.utcnow().isoformat() + 'Z'
-    conn = _get_db()
-    cur = conn.cursor()
-    cur.execute(f"UPDATE {table} SET status = 'approved', approved_at = %s WHERE id = %s", (now, item_id))
-    if cur.rowcount == 0:
-        conn.close()
-        return jsonify({'success': False, 'error': 'Not found'}), 404
-    conn.commit()
-    conn.close()
+    with _db_conn() as conn:
+        cur = conn.cursor()
+        cur.execute(f"UPDATE {table} SET status = 'approved', approved_at = %s WHERE id = %s", (now, item_id))
+        if cur.rowcount == 0:
+            conn.close()
+            return jsonify({'success': False, 'error': 'Not found'}), 404
+        conn.commit()
     return jsonify({'success': True})
 
 @content_bp.route('/api/admin/content/<int:item_id>/reject', methods=['POST'])
@@ -404,14 +413,13 @@ def content_reject(item_id):
         return jsonify({'error': 'Unauthorized'}), 401
     content_type = request.args.get('type', 'social')
     table = 'press_releases' if content_type == 'press' else 'social_media_posts'
-    conn = _get_db()
-    cur = conn.cursor()
-    cur.execute(f"UPDATE {table} SET status = 'rejected' WHERE id = %s", (item_id,))
-    if cur.rowcount == 0:
-        conn.close()
-        return jsonify({'success': False, 'error': 'Not found'}), 404
-    conn.commit()
-    conn.close()
+    with _db_conn() as conn:
+        cur = conn.cursor()
+        cur.execute(f"UPDATE {table} SET status = 'rejected' WHERE id = %s", (item_id,))
+        if cur.rowcount == 0:
+            conn.close()
+            return jsonify({'success': False, 'error': 'Not found'}), 404
+        conn.commit()
     return jsonify({'success': True})
 
 @content_bp.route('/api/admin/content/<int:item_id>/edit', methods=['POST'])
@@ -424,17 +432,16 @@ def content_edit(item_id):
     content_type = request.args.get('type', 'social')
     table = 'press_releases' if content_type == 'press' else 'social_media_posts'
     now = datetime.utcnow().isoformat() + 'Z'
-    conn = _get_db()
-    cur = conn.cursor()
-    if auto_approve:
-        cur.execute(f"UPDATE {table} SET content = %s, status = 'approved', approved_at = %s WHERE id = %s", (new_content, now, item_id))
-    else:
-        cur.execute(f"UPDATE {table} SET content = %s WHERE id = %s", (new_content, item_id))
-    if cur.rowcount == 0:
-        conn.close()
-        return jsonify({'success': False, 'error': 'Not found'}), 404
-    conn.commit()
-    conn.close()
+    with _db_conn() as conn:
+        cur = conn.cursor()
+        if auto_approve:
+            cur.execute(f"UPDATE {table} SET content = %s, status = 'approved', approved_at = %s WHERE id = %s", (new_content, now, item_id))
+        else:
+            cur.execute(f"UPDATE {table} SET content = %s WHERE id = %s", (new_content, item_id))
+        if cur.rowcount == 0:
+            conn.close()
+            return jsonify({'success': False, 'error': 'Not found'}), 404
+        conn.commit()
     return jsonify({'success': True})
 
 def _extract_og_image_url(page_url):
@@ -1083,46 +1090,47 @@ def publish_bluesky():
     # Allow either {post_id} (lookup row) OR {text} (one-shot post)
     content_text = raw_text
     conn = None
-    if post_id and not raw_text:
-        try:
-            conn = _get_db()
-            cur = conn.cursor()
-            cur.execute("SELECT content FROM social_media_posts WHERE id = %s",
-                        (post_id,))
-            row = cur.fetchone()
-            if not row:
-                return jsonify({'success': False, 'error': 'post_not_found'}), 404
-            content_text = row[0] or ""
-        except Exception as e:
-            return jsonify({'success': False, 'error': f'db:{str(e)[:120]}'}), 500
-    if not content_text:
-        return jsonify({'success': False, 'error': 'post_id_or_text_required'}), 400
+    with ExitStack() as _conn_stack:
+        if post_id and not raw_text:
+            try:
+                conn = _conn_stack.enter_context(_db_conn())
+                cur = conn.cursor()
+                cur.execute("SELECT content FROM social_media_posts WHERE id = %s",
+                            (post_id,))
+                row = cur.fetchone()
+                if not row:
+                    return jsonify({'success': False, 'error': 'post_not_found'}), 404
+                content_text = row[0] or ""
+            except Exception as e:
+                return jsonify({'success': False, 'error': f'db:{str(e)[:120]}'}), 500
+        if not content_text:
+            return jsonify({'success': False, 'error': 'post_id_or_text_required'}), 400
 
-    ok, result = _post_to_bluesky(content_text)
-    if ok and post_id and conn is not None:
-        try:
-            cur = conn.cursor()
-            from datetime import datetime as _dt2
-            now = _dt2.utcnow()
-            cur.execute("""UPDATE social_media_posts
-                              SET status = %s,
-                                  posted_at = %s, published_at = %s,
-                                  publish_platform = %s
-                            WHERE id = %s""",
-                        ('published', now, now, 'bluesky', post_id))
-            conn.commit()
-        except Exception:
-            pass
-    if conn is not None:
-        try: conn.close()
-        except Exception: pass
-    return jsonify({
-        'success':  ok,
-        'platform': 'bluesky',
-        'post_id':  post_id,
-        'uri':      result if ok else None,
-        'error':    None if ok else result,
-    }), (200 if ok else 502)
+        ok, result = _post_to_bluesky(content_text)
+        if ok and post_id and conn is not None:
+            try:
+                cur = conn.cursor()
+                from datetime import datetime as _dt2
+                now = _dt2.utcnow()
+                cur.execute("""UPDATE social_media_posts
+                                  SET status = %s,
+                                      posted_at = %s, published_at = %s,
+                                      publish_platform = %s
+                                WHERE id = %s""",
+                            ('published', now, now, 'bluesky', post_id))
+                conn.commit()
+            except Exception:
+                pass
+        if conn is not None:
+            try: conn.close()
+            except Exception: pass
+        return jsonify({
+            'success':  ok,
+            'platform': 'bluesky',
+            'post_id':  post_id,
+            'uri':      result if ok else None,
+            'error':    None if ok else result,
+        }), (200 if ok else 502)
 
 
 @content_bp.route('/api/admin/publish/linkedin', methods=['POST'])
@@ -1136,49 +1144,49 @@ def publish_linkedin():
     access_token = os.environ.get('LINKEDIN_ACCESS_TOKEN', '').strip()
     if not access_token:
         return jsonify({'success': False, 'error': 'LINKEDIN_ACCESS_TOKEN not configured'}), 500
-    conn = _get_db()
-    cur = conn.cursor()
-    cur.execute("SELECT id, content, status, platform FROM social_media_posts WHERE id = %s", (post_id,))
-    row = cur.fetchone()
-    if not row:
-        conn.close()
-        return jsonify({'success': False, 'error': 'Post not found'}), 404
-    if row['status'] not in ('approved', 'draft'):
-        conn.close()
-        return jsonify({'success': False, 'error': f"Post status is '{row['status']}', must be approved or draft"}), 400
-    content_text = row['content']
-    # r51 (2026-05-29): extract URL from body so manual publishes also get
-    # the IMAGE-attach path (otherwise this endpoint sent imageless text-only
-    # posts even after the auto-publisher started attaching images).
-    _art_url = None
-    _art_title = None
-    try:
-        import re as _re_url
-        _m = _re_url.search(r'https?://[^\s)>\]]+', content_text or '')
-        if _m:
-            _art_url = _m.group(0).rstrip('.,')
-            _first_line = (content_text or '').strip().split('\n', 1)[0].strip()
-            _art_title = _first_line[:180] or None
-    except Exception:
+    with _db_conn() as conn:
+        cur = conn.cursor()
+        cur.execute("SELECT id, content, status, platform FROM social_media_posts WHERE id = %s", (post_id,))
+        row = cur.fetchone()
+        if not row:
+            conn.close()
+            return jsonify({'success': False, 'error': 'Post not found'}), 404
+        if row['status'] not in ('approved', 'draft'):
+            conn.close()
+            return jsonify({'success': False, 'error': f"Post status is '{row['status']}', must be approved or draft"}), 400
+        content_text = row['content']
+        # r51 (2026-05-29): extract URL from body so manual publishes also get
+        # the IMAGE-attach path (otherwise this endpoint sent imageless text-only
+        # posts even after the auto-publisher started attaching images).
         _art_url = None
         _art_title = None
-    success, result = _post_to_linkedin(content_text, access_token,
-                                          article_url=_art_url,
-                                          article_title=_art_title)
-    now = datetime.utcnow().isoformat() + 'Z'
-    if success:
-        cur.execute("UPDATE social_media_posts SET status = 'published', posted_at = %s, published_at = %s, publish_platform = 'linkedin' WHERE id = %s", (now, now, post_id))
-        # r72: capture the URN so we can later fetch engagement
-        # (likes/comments/impressions) for this post.
-        _persist_linkedin_urn(cur, post_id, result, content_text)
-        conn.commit()
-        conn.close()
-        logger.info(f"Published post {post_id} to LinkedIn: {result}")
-        return jsonify({'success': True, 'linkedin_post_id': result})
-    else:
-        conn.close()
-        logger.warning(f"LinkedIn publish failed for post {post_id}: {result}")
-        return jsonify({'success': False, 'error': result})
+        try:
+            import re as _re_url
+            _m = _re_url.search(r'https?://[^\s)>\]]+', content_text or '')
+            if _m:
+                _art_url = _m.group(0).rstrip('.,')
+                _first_line = (content_text or '').strip().split('\n', 1)[0].strip()
+                _art_title = _first_line[:180] or None
+        except Exception:
+            _art_url = None
+            _art_title = None
+        success, result = _post_to_linkedin(content_text, access_token,
+                                              article_url=_art_url,
+                                              article_title=_art_title)
+        now = datetime.utcnow().isoformat() + 'Z'
+        if success:
+            cur.execute("UPDATE social_media_posts SET status = 'published', posted_at = %s, published_at = %s, publish_platform = 'linkedin' WHERE id = %s", (now, now, post_id))
+            # r72: capture the URN so we can later fetch engagement
+            # (likes/comments/impressions) for this post.
+            _persist_linkedin_urn(cur, post_id, result, content_text)
+            conn.commit()
+            conn.close()
+            logger.info(f"Published post {post_id} to LinkedIn: {result}")
+            return jsonify({'success': True, 'linkedin_post_id': result})
+        else:
+            conn.close()
+            logger.warning(f"LinkedIn publish failed for post {post_id}: {result}")
+            return jsonify({'success': False, 'error': result})
 
 # r62 (2026-05-29): legacy short-DCPI-post detector + auto-rewriter.
 # Even after r47.38 fixed the generator, the queue still contains rows
@@ -1715,29 +1723,29 @@ def _record_media_block(platform: str, reason: str, content: str = ""):
     break or block publishing."""
     global _media_review_ready
     try:
-        conn = _get_db()
-        if conn is None:
-            return
-        try:
-            with conn.cursor() as cur:
-                if not _media_review_ready:
-                    cur.execute("""CREATE TABLE IF NOT EXISTS media_review_log (
-                        id BIGSERIAL PRIMARY KEY, platform TEXT,
-                        decision TEXT DEFAULT 'blocked', reason TEXT,
-                        content_excerpt TEXT,
-                        created_at TIMESTAMPTZ DEFAULT NOW())""")
-                    cur.execute("CREATE INDEX IF NOT EXISTS media_review_log_ts "
-                                "ON media_review_log(created_at DESC)")
+        with _db_conn() as conn:
+            if conn is None:
+                return
+            try:
+                with conn.cursor() as cur:
+                    if not _media_review_ready:
+                        cur.execute("""CREATE TABLE IF NOT EXISTS media_review_log (
+                            id BIGSERIAL PRIMARY KEY, platform TEXT,
+                            decision TEXT DEFAULT 'blocked', reason TEXT,
+                            content_excerpt TEXT,
+                            created_at TIMESTAMPTZ DEFAULT NOW())""")
+                        cur.execute("CREATE INDEX IF NOT EXISTS media_review_log_ts "
+                                    "ON media_review_log(created_at DESC)")
+                        conn.commit()
+                        _media_review_ready = True
+                    cur.execute(
+                        "INSERT INTO media_review_log (platform, decision, reason, content_excerpt) "
+                        "VALUES (%s,'blocked',%s,%s)",
+                        (platform, (reason or "")[:300], (content or "")[:280]))
                     conn.commit()
-                    _media_review_ready = True
-                cur.execute(
-                    "INSERT INTO media_review_log (platform, decision, reason, content_excerpt) "
-                    "VALUES (%s,'blocked',%s,%s)",
-                    (platform, (reason or "")[:300], (content or "")[:280]))
-                conn.commit()
-        finally:
-            try: conn.close()
-            except Exception: pass
+            finally:
+                try: conn.close()
+                except Exception: pass
     except Exception:
         pass
 
@@ -1875,65 +1883,65 @@ def enqueue_custom():
         return jsonify({'success': False,
                         'error': "platform must be linkedin|twitter|bluesky"}), 400
 
-    conn = _get_db()
-    cur = conn.cursor()
-    try:
-        cur.execute("""
-            INSERT INTO social_media_posts (content, platform, status, created_at)
-            VALUES (%s, %s, 'approved', NOW())
-            RETURNING id
-        """, (content, platform))
-        row = cur.fetchone()
-        new_id = row['id'] if hasattr(row, 'get') else (row[0] if row else None)
-        conn.commit()
-    except Exception as e:
-        try: conn.rollback()
-        except Exception: pass
-        try: conn.close()
-        except Exception: pass
-        return jsonify({'success': False, 'error': str(e)[:200]}), 500
-
-    out = {'success': True, 'post_id': new_id, 'platform': platform,
-           'status': 'approved'}
-
-    if publish_now and platform == 'linkedin':
-        access_token = os.environ.get('LINKEDIN_ACCESS_TOKEN', '').strip()
-        if not access_token:
-            out['published'] = False
-            out['publish_error'] = 'LINKEDIN_ACCESS_TOKEN not configured'
+    with _db_conn() as conn:
+        cur = conn.cursor()
+        try:
+            cur.execute("""
+                INSERT INTO social_media_posts (content, platform, status, created_at)
+                VALUES (%s, %s, 'approved', NOW())
+                RETURNING id
+            """, (content, platform))
+            row = cur.fetchone()
+            new_id = row['id'] if hasattr(row, 'get') else (row[0] if row else None)
+            conn.commit()
+        except Exception as e:
+            try: conn.rollback()
+            except Exception: pass
             try: conn.close()
             except Exception: pass
-            return jsonify(out), 200
-        # Pull URL hint for rich link-card share (LinkedIn scrapes og:image)
-        try:
-            import re as _re_url
-            _m = _re_url.search(r'https?://[^\s)>\]]+', content)
-            _art_url = _m.group(0).rstrip('.,') if _m else None
-            _art_title = (content.strip().split('\n', 1)[0].strip())[:180] or None
-        except Exception:
-            _art_url = None
-            _art_title = None
-        ok, result = _post_to_linkedin(content, access_token,
-                                         article_url=_art_url,
-                                         article_title=_art_title)
-        now = datetime.utcnow().isoformat() + 'Z'
-        if ok:
-            cur.execute("""UPDATE social_media_posts
-                              SET status = 'published',
-                                  posted_at = %s, published_at = %s,
-                                  publish_platform = 'linkedin'
-                            WHERE id = %s""", (now, now, new_id))
-            # r72: persist URN for engagement loop.
-            _persist_linkedin_urn(cur, new_id, result, content)
-            conn.commit()
-            out['published'] = True
-            out['linkedin_post_id'] = result
-        else:
-            out['published'] = False
-            out['publish_error'] = result
-    try: conn.close()
-    except Exception: pass
-    return jsonify(out), 200
+            return jsonify({'success': False, 'error': str(e)[:200]}), 500
+
+        out = {'success': True, 'post_id': new_id, 'platform': platform,
+               'status': 'approved'}
+
+        if publish_now and platform == 'linkedin':
+            access_token = os.environ.get('LINKEDIN_ACCESS_TOKEN', '').strip()
+            if not access_token:
+                out['published'] = False
+                out['publish_error'] = 'LINKEDIN_ACCESS_TOKEN not configured'
+                try: conn.close()
+                except Exception: pass
+                return jsonify(out), 200
+            # Pull URL hint for rich link-card share (LinkedIn scrapes og:image)
+            try:
+                import re as _re_url
+                _m = _re_url.search(r'https?://[^\s)>\]]+', content)
+                _art_url = _m.group(0).rstrip('.,') if _m else None
+                _art_title = (content.strip().split('\n', 1)[0].strip())[:180] or None
+            except Exception:
+                _art_url = None
+                _art_title = None
+            ok, result = _post_to_linkedin(content, access_token,
+                                             article_url=_art_url,
+                                             article_title=_art_title)
+            now = datetime.utcnow().isoformat() + 'Z'
+            if ok:
+                cur.execute("""UPDATE social_media_posts
+                                  SET status = 'published',
+                                      posted_at = %s, published_at = %s,
+                                      publish_platform = 'linkedin'
+                                WHERE id = %s""", (now, now, new_id))
+                # r72: persist URN for engagement loop.
+                _persist_linkedin_urn(cur, new_id, result, content)
+                conn.commit()
+                out['published'] = True
+                out['linkedin_post_id'] = result
+            else:
+                out['published'] = False
+                out['publish_error'] = result
+        try: conn.close()
+        except Exception: pass
+        return jsonify(out), 200
 
 
 # r42v admin: bulk-reject queued posts matching a content pattern.
@@ -1952,40 +1960,40 @@ def purge_queue():
     if len(pattern) < 3:
         return jsonify({'success': False,
                         'error': 'pattern too short (min 3 chars)'}), 400
-    conn = _get_db()
-    cur = conn.cursor()
-    try:
-        if platform:
-            cur.execute("""UPDATE social_media_posts
-                              SET status = 'rejected'
-                            WHERE status IN ('approved', 'draft')
-                              AND platform = %s
-                              AND content ILIKE %s
-                            RETURNING id""",
-                        (platform, f'%{pattern}%'))
-        else:
-            cur.execute("""UPDATE social_media_posts
-                              SET status = 'rejected'
-                            WHERE status IN ('approved', 'draft')
-                              AND content ILIKE %s
-                            RETURNING id""",
-                        (f'%{pattern}%',))
-        rejected_ids = [r['id'] if hasattr(r, 'get') else r[0] for r in (cur.fetchall() or [])]
-        conn.commit()
-        return jsonify({
-            'success': True,
-            'pattern': pattern,
-            'platform': platform or 'all',
-            'rejected_count': len(rejected_ids),
-            'rejected_ids': rejected_ids[:50],  # cap for response size
-        }), 200
-    except Exception as e:
-        try: conn.rollback()
-        except Exception: pass
-        return jsonify({'success': False, 'error': str(e)[:200]}), 500
-    finally:
-        try: conn.close()
-        except Exception: pass
+    with _db_conn() as conn:
+        cur = conn.cursor()
+        try:
+            if platform:
+                cur.execute("""UPDATE social_media_posts
+                                  SET status = 'rejected'
+                                WHERE status IN ('approved', 'draft')
+                                  AND platform = %s
+                                  AND content ILIKE %s
+                                RETURNING id""",
+                            (platform, f'%{pattern}%'))
+            else:
+                cur.execute("""UPDATE social_media_posts
+                                  SET status = 'rejected'
+                                WHERE status IN ('approved', 'draft')
+                                  AND content ILIKE %s
+                                RETURNING id""",
+                            (f'%{pattern}%',))
+            rejected_ids = [r['id'] if hasattr(r, 'get') else r[0] for r in (cur.fetchall() or [])]
+            conn.commit()
+            return jsonify({
+                'success': True,
+                'pattern': pattern,
+                'platform': platform or 'all',
+                'rejected_count': len(rejected_ids),
+                'rejected_ids': rejected_ids[:50],  # cap for response size
+            }), 200
+        except Exception as e:
+            try: conn.rollback()
+            except Exception: pass
+            return jsonify({'success': False, 'error': str(e)[:200]}), 500
+        finally:
+            try: conn.close()
+            except Exception: pass
 
 
 # r62 (2026-05-29): admin tools for the legacy short-DCPI cleanup.
@@ -2006,64 +2014,64 @@ def sanitize_queue():
     if not _check_admin(request):
         return jsonify({'error': 'Unauthorized'}), 401
     dry_run = (request.args.get('dry_run', '0') or '0').strip().lower() in ('1', 'true', 'yes')
-    conn = _get_db()
-    cur = conn.cursor()
-    try:
-        cur.execute("""
-            SELECT id, content FROM social_media_posts
-             WHERE status IN ('approved', 'draft')
-               AND (platform = 'linkedin' OR platform IS NULL)
-             ORDER BY created_at ASC
-             LIMIT 500
-        """)
-        rows = cur.fetchall() or []
-        samples = []
-        rewritten_count = 0
-        skipped_count = 0
-        for r in rows:
-            rid = r['id'] if hasattr(r, 'get') else r[0]
-            text = r['content'] if hasattr(r, 'get') else r[1]
-            if not _is_legacy_short_dcpi_shape(text or ''):
-                continue
-            new_text = _rewrite_legacy_to_rich(text or '')
-            if not new_text or len(new_text) <= len(text or ''):
-                skipped_count += 1
-                continue
-            if len(samples) < 5:
-                samples.append({
-                    'id': rid,
-                    'before_chars': len(text or ''),
-                    'after_chars': len(new_text),
-                    'before_preview': (text or '')[:160],
-                    'after_preview': new_text[:240],
-                })
-            if not dry_run:
-                try:
-                    cur.execute(
-                        "UPDATE social_media_posts SET content = %s WHERE id = %s",
-                        (new_text, rid),
-                    )
-                except Exception:
+    with _db_conn() as conn:
+        cur = conn.cursor()
+        try:
+            cur.execute("""
+                SELECT id, content FROM social_media_posts
+                 WHERE status IN ('approved', 'draft')
+                   AND (platform = 'linkedin' OR platform IS NULL)
+                 ORDER BY created_at ASC
+                 LIMIT 500
+            """)
+            rows = cur.fetchall() or []
+            samples = []
+            rewritten_count = 0
+            skipped_count = 0
+            for r in rows:
+                rid = r['id'] if hasattr(r, 'get') else r[0]
+                text = r['content'] if hasattr(r, 'get') else r[1]
+                if not _is_legacy_short_dcpi_shape(text or ''):
+                    continue
+                new_text = _rewrite_legacy_to_rich(text or '')
+                if not new_text or len(new_text) <= len(text or ''):
                     skipped_count += 1
                     continue
-            rewritten_count += 1
-        if not dry_run:
-            conn.commit()
-        return jsonify({
-            'success':         True,
-            'dry_run':         dry_run,
-            'scanned':         len(rows),
-            'rewritten_count': rewritten_count,
-            'skipped_count':   skipped_count,
-            'samples':         samples,
-        }), 200
-    except Exception as e:
-        try: conn.rollback()
-        except Exception: pass
-        return jsonify({'success': False, 'error': str(e)[:200]}), 500
-    finally:
-        try: conn.close()
-        except Exception: pass
+                if len(samples) < 5:
+                    samples.append({
+                        'id': rid,
+                        'before_chars': len(text or ''),
+                        'after_chars': len(new_text),
+                        'before_preview': (text or '')[:160],
+                        'after_preview': new_text[:240],
+                    })
+                if not dry_run:
+                    try:
+                        cur.execute(
+                            "UPDATE social_media_posts SET content = %s WHERE id = %s",
+                            (new_text, rid),
+                        )
+                    except Exception:
+                        skipped_count += 1
+                        continue
+                rewritten_count += 1
+            if not dry_run:
+                conn.commit()
+            return jsonify({
+                'success':         True,
+                'dry_run':         dry_run,
+                'scanned':         len(rows),
+                'rewritten_count': rewritten_count,
+                'skipped_count':   skipped_count,
+                'samples':         samples,
+            }), 200
+        except Exception as e:
+            try: conn.rollback()
+            except Exception: pass
+            return jsonify({'success': False, 'error': str(e)[:200]}), 500
+        finally:
+            try: conn.close()
+            except Exception: pass
 
 
 @content_bp.route('/api/admin/publish/preview-rewrite', methods=['GET', 'POST'])
@@ -2085,17 +2093,17 @@ def preview_rewrite():
             rid_int = int(rid)
         except (TypeError, ValueError):
             return jsonify({'success': False, 'error': 'id must be integer'}), 400
-        conn = _get_db()
-        try:
-            cur = conn.cursor()
-            cur.execute("SELECT content FROM social_media_posts WHERE id = %s", (rid_int,))
-            r = cur.fetchone()
-            if not r:
-                return jsonify({'success': False, 'error': 'not_found'}), 404
-            raw = r['content'] if hasattr(r, 'get') else r[0]
-        finally:
-            try: conn.close()
-            except Exception: pass
+        with _db_conn() as conn:
+            try:
+                cur = conn.cursor()
+                cur.execute("SELECT content FROM social_media_posts WHERE id = %s", (rid_int,))
+                r = cur.fetchone()
+                if not r:
+                    return jsonify({'success': False, 'error': 'not_found'}), 404
+                raw = r['content'] if hasattr(r, 'get') else r[0]
+            finally:
+                try: conn.close()
+                except Exception: pass
     else:
         body = request.get_json(silent=True) or {}
         raw = body.get('content') or ''
@@ -2313,7 +2321,7 @@ def start_auto_publisher():
                 continue
             # Phase FF+7-fix4 (2026-05-19): hard guarantee that every
             # iteration closes its DB connection, even when sub-operations
-            # raise. The earlier loop had `conn = _get_db()` then ~50 lines
+            # raise. The earlier loop had a raw _get_db() assignment then ~50 lines
             # of work and `conn.close()` only in some branches. When an
             # exception fired mid-way (e.g. RealDictCursor KeyError, network
             # blip), the connection leaked. Across 3 publishers × N
@@ -2330,198 +2338,198 @@ def start_auto_publisher():
                     # Loud-when-queued, quiet-when-empty surface
                     _queued = 0
                     try:
-                        conn = _get_db()
-                        _qcur = conn.cursor()
-                        _qcur.execute("SELECT COUNT(*) AS n FROM social_media_posts WHERE status = 'approved'")
-                        _r = _qcur.fetchone() or {}
-                        _queued = _r.get('n', 0) if hasattr(_r, 'get') else (_r[0] if _r else 0)
+                        with _db_conn() as conn:
+                            _qcur = conn.cursor()
+                            _qcur.execute("SELECT COUNT(*) AS n FROM social_media_posts WHERE status = 'approved'")
+                            _r = _qcur.fetchone() or {}
+                            _queued = _r.get('n', 0) if hasattr(_r, 'get') else (_r[0] if _r else 0)
                     except Exception: pass
                     if _queued:
                         logger.warning("Auto-publisher: %s approved post(s) queued but LINKEDIN_ACCESS_TOKEN not set — LinkedIn distribution is DARK", _queued)
                     else:
                         logger.debug("Auto-publisher: No LINKEDIN_ACCESS_TOKEN, skipping")
                     continue
-                conn = _get_db()
-                cur = conn.cursor()
-                today = datetime.utcnow().strftime('%Y-%m-%d')
-                cur.execute("SELECT COUNT(*) AS n FROM social_media_posts WHERE status = 'published' AND publish_platform = 'linkedin' AND published_at LIKE %s", (today + '%',))
-                _row = cur.fetchone() or {}
-                published_today = _row.get('n', 0) if hasattr(_row, 'get') else (_row[0] if _row else 0)
-                # r88 (2026-05-31): raise the daily cap MODESTLY + make it
-                # env-overridable to clear the ~189-approved backlog without
-                # spamming LinkedIn. Default 6/day drains ~189 over ~5 weeks.
-                # DO NOT uncap — dumping the whole backlog in a day reads as
-                # a spam bot and risks LinkedIn throttling/ban. Set
-                # LINKEDIN_DAILY_CAP=N in Railway to tune (e.g. 4 to slow,
-                # 8 to clear faster); keep it well under ~10/day.
-                DAILY_CAP = int(os.environ.get('LINKEDIN_DAILY_CAP', '6'))
-                if published_today >= DAILY_CAP:
-                    logger.info(f"Auto-publisher: Already published {published_today} today (cap {DAILY_CAP}), skipping")
-                    _record_attempt("linkedin", "skipped_cap")
-                    continue  # finally will close conn
-                cur.execute("SELECT COUNT(*) AS n FROM social_media_posts WHERE status = 'approved'")
-                _row = cur.fetchone() or {}
-                _queued = _row.get('n', 0) if hasattr(_row, 'get') else (_row[0] if _row else 0)
-                # r42v (2026-05-26): cap drain at 1 per loop iteration to avoid
-                # three back-to-back AVOID posts (Chantilly/Edison/Buffalo) at
-                # 3m/4m timestamps that looked like a spam bot.
-                # r88 (2026-05-31): with a ~189-post backlog, 1/fire * 4 fires
-                # never reaches the raised cap. When the queue is large, fill
-                # the remaining daily budget THIS fire (each post still spaced
-                # ~8s apart, content-class deduped) so DAILY_CAP actually
-                # governs the rate; otherwise stay at 1/fire for clean cadence.
-                # Same backlog-drain shape the Bluesky loop already uses.
-                _remaining_today = max(DAILY_CAP - published_today, 0)
-                # r91 (2026-06-06): small-queue drain 1->2/fire so a healthy
-                # queue actually reaches DAILY_CAP (1/fire * 4 fires = 4 < cap 6
-                # left good content stuck). Still bounded by DAILY_CAP, 8s
-                # spacing, and per-content-class 1/day dedup — so no spam burst.
-                _drain_budget = _remaining_today if _queued > 10 else min(2, _remaining_today)
-                _attempts = 0
-                # Track which "content_class" patterns we've published TODAY
-                # so we can avoid double-firing the same post type. Pattern
-                # detection is lightweight: look at the first line of the
-                # body. Each pattern can publish at most 1/24h.
-                _seen_classes_today = set()
-                _seen_hooks_run = set()   # r65-qa: in-run opening-hook dedup (same-fire variants)
-                try:
-                    cur.execute("""SELECT content FROM social_media_posts
-                                    WHERE status = 'published'
-                                      AND publish_platform = 'linkedin'
-                                      AND published_at LIKE %s""", (today + '%',))
-                    for (_pub_text,) in cur.fetchall() if False else []:
-                        pass
-                    # cur.fetchall() returns RealDictRow rows; reread properly
-                    cur.execute("""SELECT content FROM social_media_posts
-                                    WHERE status = 'published'
-                                      AND publish_platform = 'linkedin'
-                                      AND published_at LIKE %s""", (today + '%',))
-                    for _row in cur.fetchall() or []:
-                        _txt = _row.get('content') if hasattr(_row, 'get') else (_row[0] if _row else '')
-                        _seen_classes_today.add(_classify_post_for_dedup(_txt or ''))
-                        _seen_hooks_run.add(_opening_hook(_txt or ''))
-                except Exception:
-                    pass
-                while _attempts < _drain_budget:
-                    # Find next approved post that's not a duplicate class
-                    cur.execute("SELECT id, content FROM social_media_posts WHERE status = 'approved' AND platform = 'linkedin' ORDER BY created_at ASC LIMIT 20")
-                    candidates = cur.fetchall() or []
-                    if not candidates:
-                        cur.execute("SELECT id, content FROM social_media_posts WHERE status = 'approved' ORDER BY created_at ASC LIMIT 20")
-                        candidates = cur.fetchall() or []
-
-                    row = None
-                    for _cand in candidates:
-                        _ctext = _cand.get('content') if hasattr(_cand, 'get') else (_cand[1] if _cand else '')
-                        _cls = _classify_post_for_dedup(_ctext or '')
-                        if _cls in _seen_classes_today:
-                            continue
-                        # r65-qa: same-fire opening-hook guard — blocks a 2nd
-                        # variant sharing the same hook within ONE drain, before
-                        # the prior publish commits (the citation-dup case).
-                        _chook = _opening_hook(_ctext or '')
-                        if _chook and _chook in _seen_hooks_run:
-                            logger.warning("Auto-publisher: SKIPPED LinkedIn candidate (same-fire duplicate hook '%s')", _chook[:48])
-                            _record_media_block('linkedin', 'same-fire duplicate hook', _ctext)   # r66
-                            continue
-                        # r63 (2026-05-29): entity-level + zero-stat judgment.
-                        # Catches near-dupes the coarse class tag misses (two
-                        # "Montréal BUILD" or "MCP tool-call surge" posts both
-                        # land in class "other"), AND blocks "0 tool calls"
-                        # zero-stat posts. Skipping a candidate here naturally
-                        # rotates to a DIFFERENT topic in the same drain.
-                        _skip, _why = _should_skip_publish(cur, _ctext or '', 'linkedin')
-                        if _skip:
-                            logger.warning(
-                                "Auto-publisher: SKIPPED LinkedIn candidate %s for dedup/judgment — %s",
-                                (_cand.get('id') if hasattr(_cand, 'get') else (_cand[0] if _cand else '?')),
-                                _why)
-                            _record_media_block('linkedin', _why, _ctext)   # r66 evolving loop
-                            continue
-                        row = _cand
-                        _seen_classes_today.add(_cls)
-                        if _chook:
-                            _seen_hooks_run.add(_chook)
-                        break
-                    if not row:
-                        logger.debug("Auto-publisher: No approved posts to publish (or all classes/entities already fired)")
-                        if _attempts == 0:
-                            _record_attempt("linkedin", "no_queued")
-                        break
-                    post_id = row['id']
-                    content_text = row['content']
-                    # r62 (2026-05-29): legacy-shape quality gate. If this row
-                    # is a pre-r47.38 short DCPI post (📍 X · ISO · DCPI
-                    # verdict: VVV / Excess Power: ... / Live page: ...),
-                    # rewrite it to the rich narrative shape BEFORE publish.
-                    # Without this, queue rows enqueued days ago keep landing
-                    # on LinkedIn as "ugly short" posts despite the generator
-                    # being fixed. We also persist the rewrite back to the
-                    # row so the audit log shows what actually went out.
-                    if _is_legacy_short_dcpi_shape(content_text or ''):
-                        rewritten = _rewrite_legacy_to_rich(content_text or '')
-                        if rewritten and len(rewritten) > len(content_text or ''):
-                            try:
-                                cur.execute(
-                                    "UPDATE social_media_posts SET content = %s WHERE id = %s",
-                                    (rewritten, post_id),
-                                )
-                                conn.commit()
-                            except Exception as _e_rw:
-                                logger.warning(
-                                    "Legacy-rewrite persist failed for post %s: %s",
-                                    post_id, _e_rw,
-                                )
-                            content_text = rewritten
-                            logger.info(
-                                "Rewrote legacy short-DCPI post %s to rich shape (was %d chars, now %d)",
-                                post_id,
-                                len(row.get('content') or '') if hasattr(row, 'get') else len(row[1] or ''),
-                                len(rewritten),
-                            )
-                    # Phase FF (#1): promote text-only posts to rich ARTICLE
-                    # shares so LinkedIn renders the rotating og:today card (the
-                    # "4 designs"). Extract the first URL + a title from the body;
-                    # _post_to_linkedin builds an ARTICLE share whose card image
-                    # LinkedIn scrapes from that URL's og:image — press-release
-                    # pages point og:image at /api/v1/og/today/<slug>.png. This
-                    # is the reason posts were weak text-only: line passed no
-                    # article_url. FAIL-SAFE: any error / no URL → text-only
-                    # (prior behaviour), so it can never make a post worse.
-                    _art_url = None
-                    _art_title = None
+                with _db_conn() as conn:
+                    cur = conn.cursor()
+                    today = datetime.utcnow().strftime('%Y-%m-%d')
+                    cur.execute("SELECT COUNT(*) AS n FROM social_media_posts WHERE status = 'published' AND publish_platform = 'linkedin' AND published_at LIKE %s", (today + '%',))
+                    _row = cur.fetchone() or {}
+                    published_today = _row.get('n', 0) if hasattr(_row, 'get') else (_row[0] if _row else 0)
+                    # r88 (2026-05-31): raise the daily cap MODESTLY + make it
+                    # env-overridable to clear the ~189-approved backlog without
+                    # spamming LinkedIn. Default 6/day drains ~189 over ~5 weeks.
+                    # DO NOT uncap — dumping the whole backlog in a day reads as
+                    # a spam bot and risks LinkedIn throttling/ban. Set
+                    # LINKEDIN_DAILY_CAP=N in Railway to tune (e.g. 4 to slow,
+                    # 8 to clear faster); keep it well under ~10/day.
+                    DAILY_CAP = int(os.environ.get('LINKEDIN_DAILY_CAP', '6'))
+                    if published_today >= DAILY_CAP:
+                        logger.info(f"Auto-publisher: Already published {published_today} today (cap {DAILY_CAP}), skipping")
+                        _record_attempt("linkedin", "skipped_cap")
+                        continue  # finally will close conn
+                    cur.execute("SELECT COUNT(*) AS n FROM social_media_posts WHERE status = 'approved'")
+                    _row = cur.fetchone() or {}
+                    _queued = _row.get('n', 0) if hasattr(_row, 'get') else (_row[0] if _row else 0)
+                    # r42v (2026-05-26): cap drain at 1 per loop iteration to avoid
+                    # three back-to-back AVOID posts (Chantilly/Edison/Buffalo) at
+                    # 3m/4m timestamps that looked like a spam bot.
+                    # r88 (2026-05-31): with a ~189-post backlog, 1/fire * 4 fires
+                    # never reaches the raised cap. When the queue is large, fill
+                    # the remaining daily budget THIS fire (each post still spaced
+                    # ~8s apart, content-class deduped) so DAILY_CAP actually
+                    # governs the rate; otherwise stay at 1/fire for clean cadence.
+                    # Same backlog-drain shape the Bluesky loop already uses.
+                    _remaining_today = max(DAILY_CAP - published_today, 0)
+                    # r91 (2026-06-06): small-queue drain 1->2/fire so a healthy
+                    # queue actually reaches DAILY_CAP (1/fire * 4 fires = 4 < cap 6
+                    # left good content stuck). Still bounded by DAILY_CAP, 8s
+                    # spacing, and per-content-class 1/day dedup — so no spam burst.
+                    _drain_budget = _remaining_today if _queued > 10 else min(2, _remaining_today)
+                    _attempts = 0
+                    # Track which "content_class" patterns we've published TODAY
+                    # so we can avoid double-firing the same post type. Pattern
+                    # detection is lightweight: look at the first line of the
+                    # body. Each pattern can publish at most 1/24h.
+                    _seen_classes_today = set()
+                    _seen_hooks_run = set()   # r65-qa: in-run opening-hook dedup (same-fire variants)
                     try:
-                        import re as _re_url
-                        _m = _re_url.search(r'https?://[^\s)>\]]+', content_text or '')
-                        if _m:
-                            _art_url = _m.group(0).rstrip('.,')
-                            _first_line = (content_text or '').strip().split('\n', 1)[0].strip()
-                            _art_title = _first_line[:180] or None
+                        cur.execute("""SELECT content FROM social_media_posts
+                                        WHERE status = 'published'
+                                          AND publish_platform = 'linkedin'
+                                          AND published_at LIKE %s""", (today + '%',))
+                        for (_pub_text,) in cur.fetchall() if False else []:
+                            pass
+                        # cur.fetchall() returns RealDictRow rows; reread properly
+                        cur.execute("""SELECT content FROM social_media_posts
+                                        WHERE status = 'published'
+                                          AND publish_platform = 'linkedin'
+                                          AND published_at LIKE %s""", (today + '%',))
+                        for _row in cur.fetchall() or []:
+                            _txt = _row.get('content') if hasattr(_row, 'get') else (_row[0] if _row else '')
+                            _seen_classes_today.add(_classify_post_for_dedup(_txt or ''))
+                            _seen_hooks_run.add(_opening_hook(_txt or ''))
                     except Exception:
+                        pass
+                    while _attempts < _drain_budget:
+                        # Find next approved post that's not a duplicate class
+                        cur.execute("SELECT id, content FROM social_media_posts WHERE status = 'approved' AND platform = 'linkedin' ORDER BY created_at ASC LIMIT 20")
+                        candidates = cur.fetchall() or []
+                        if not candidates:
+                            cur.execute("SELECT id, content FROM social_media_posts WHERE status = 'approved' ORDER BY created_at ASC LIMIT 20")
+                            candidates = cur.fetchall() or []
+
+                        row = None
+                        for _cand in candidates:
+                            _ctext = _cand.get('content') if hasattr(_cand, 'get') else (_cand[1] if _cand else '')
+                            _cls = _classify_post_for_dedup(_ctext or '')
+                            if _cls in _seen_classes_today:
+                                continue
+                            # r65-qa: same-fire opening-hook guard — blocks a 2nd
+                            # variant sharing the same hook within ONE drain, before
+                            # the prior publish commits (the citation-dup case).
+                            _chook = _opening_hook(_ctext or '')
+                            if _chook and _chook in _seen_hooks_run:
+                                logger.warning("Auto-publisher: SKIPPED LinkedIn candidate (same-fire duplicate hook '%s')", _chook[:48])
+                                _record_media_block('linkedin', 'same-fire duplicate hook', _ctext)   # r66
+                                continue
+                            # r63 (2026-05-29): entity-level + zero-stat judgment.
+                            # Catches near-dupes the coarse class tag misses (two
+                            # "Montréal BUILD" or "MCP tool-call surge" posts both
+                            # land in class "other"), AND blocks "0 tool calls"
+                            # zero-stat posts. Skipping a candidate here naturally
+                            # rotates to a DIFFERENT topic in the same drain.
+                            _skip, _why = _should_skip_publish(cur, _ctext or '', 'linkedin')
+                            if _skip:
+                                logger.warning(
+                                    "Auto-publisher: SKIPPED LinkedIn candidate %s for dedup/judgment — %s",
+                                    (_cand.get('id') if hasattr(_cand, 'get') else (_cand[0] if _cand else '?')),
+                                    _why)
+                                _record_media_block('linkedin', _why, _ctext)   # r66 evolving loop
+                                continue
+                            row = _cand
+                            _seen_classes_today.add(_cls)
+                            if _chook:
+                                _seen_hooks_run.add(_chook)
+                            break
+                        if not row:
+                            logger.debug("Auto-publisher: No approved posts to publish (or all classes/entities already fired)")
+                            if _attempts == 0:
+                                _record_attempt("linkedin", "no_queued")
+                            break
+                        post_id = row['id']
+                        content_text = row['content']
+                        # r62 (2026-05-29): legacy-shape quality gate. If this row
+                        # is a pre-r47.38 short DCPI post (📍 X · ISO · DCPI
+                        # verdict: VVV / Excess Power: ... / Live page: ...),
+                        # rewrite it to the rich narrative shape BEFORE publish.
+                        # Without this, queue rows enqueued days ago keep landing
+                        # on LinkedIn as "ugly short" posts despite the generator
+                        # being fixed. We also persist the rewrite back to the
+                        # row so the audit log shows what actually went out.
+                        if _is_legacy_short_dcpi_shape(content_text or ''):
+                            rewritten = _rewrite_legacy_to_rich(content_text or '')
+                            if rewritten and len(rewritten) > len(content_text or ''):
+                                try:
+                                    cur.execute(
+                                        "UPDATE social_media_posts SET content = %s WHERE id = %s",
+                                        (rewritten, post_id),
+                                    )
+                                    conn.commit()
+                                except Exception as _e_rw:
+                                    logger.warning(
+                                        "Legacy-rewrite persist failed for post %s: %s",
+                                        post_id, _e_rw,
+                                    )
+                                content_text = rewritten
+                                logger.info(
+                                    "Rewrote legacy short-DCPI post %s to rich shape (was %d chars, now %d)",
+                                    post_id,
+                                    len(row.get('content') or '') if hasattr(row, 'get') else len(row[1] or ''),
+                                    len(rewritten),
+                                )
+                        # Phase FF (#1): promote text-only posts to rich ARTICLE
+                        # shares so LinkedIn renders the rotating og:today card (the
+                        # "4 designs"). Extract the first URL + a title from the body;
+                        # _post_to_linkedin builds an ARTICLE share whose card image
+                        # LinkedIn scrapes from that URL's og:image — press-release
+                        # pages point og:image at /api/v1/og/today/<slug>.png. This
+                        # is the reason posts were weak text-only: line passed no
+                        # article_url. FAIL-SAFE: any error / no URL → text-only
+                        # (prior behaviour), so it can never make a post worse.
                         _art_url = None
                         _art_title = None
-                    success, result = _post_to_linkedin(
-                        content_text, access_token,
-                        article_url=_art_url, article_title=_art_title)
-                    now = datetime.utcnow().isoformat() + 'Z'
-                    if success:
-                        cur.execute("UPDATE social_media_posts SET status = 'published', posted_at = %s, published_at = %s, publish_platform = 'linkedin' WHERE id = %s", (now, now, post_id))
-                        # r72: capture URN → engagement loop can find this post.
-                        _persist_linkedin_urn(cur, post_id, result, content_text)
-                        conn.commit()
-                        logger.info(f"Auto-published post {post_id} to LinkedIn (drain {_attempts+1}/{_drain_budget}, queued={_queued}, urn={result})")
-                        _record_attempt("linkedin", "ok")
-                    else:
-                        logger.warning(f"Auto-publish failed for post {post_id}: {result}")
-                        _record_attempt("linkedin", "error",
-                                         error_class=_classify_publish_error(result))
                         try:
-                            cur.execute("UPDATE social_media_posts SET status = 'failed' WHERE id = %s", (post_id,))
+                            import re as _re_url
+                            _m = _re_url.search(r'https?://[^\s)>\]]+', content_text or '')
+                            if _m:
+                                _art_url = _m.group(0).rstrip('.,')
+                                _first_line = (content_text or '').strip().split('\n', 1)[0].strip()
+                                _art_title = _first_line[:180] or None
+                        except Exception:
+                            _art_url = None
+                            _art_title = None
+                        success, result = _post_to_linkedin(
+                            content_text, access_token,
+                            article_url=_art_url, article_title=_art_title)
+                        now = datetime.utcnow().isoformat() + 'Z'
+                        if success:
+                            cur.execute("UPDATE social_media_posts SET status = 'published', posted_at = %s, published_at = %s, publish_platform = 'linkedin' WHERE id = %s", (now, now, post_id))
+                            # r72: capture URN → engagement loop can find this post.
+                            _persist_linkedin_urn(cur, post_id, result, content_text)
                             conn.commit()
-                        except Exception: pass
-                    _attempts += 1
-                    if _attempts < _drain_budget:
-                        time.sleep(8)
+                            logger.info(f"Auto-published post {post_id} to LinkedIn (drain {_attempts+1}/{_drain_budget}, queued={_queued}, urn={result})")
+                            _record_attempt("linkedin", "ok")
+                        else:
+                            logger.warning(f"Auto-publish failed for post {post_id}: {result}")
+                            _record_attempt("linkedin", "error",
+                                             error_class=_classify_publish_error(result))
+                            try:
+                                cur.execute("UPDATE social_media_posts SET status = 'failed' WHERE id = %s", (post_id,))
+                                conn.commit()
+                            except Exception: pass
+                        _attempts += 1
+                        if _attempts < _drain_budget:
+                            time.sleep(8)
             except Exception as e:
                 # Log FULL traceback so we can diagnose, not just str(e)
                 logger.error(f"Auto-publisher error: {type(e).__name__}: {e}")
@@ -2584,53 +2592,53 @@ def start_twitter_publisher():
                 if not (bearer or oauth1):
                     _queued = 0
                     try:
-                        conn = _get_db()
-                        _qcur = conn.cursor()
-                        _qcur.execute("SELECT COUNT(*) AS n FROM social_media_posts WHERE status = 'approved' AND platform = 'twitter'")
-                        _r = _qcur.fetchone() or {}
-                        _queued = _r.get('n', 0) if hasattr(_r, 'get') else (_r[0] if _r else 0)
+                        with _db_conn() as conn:
+                            _qcur = conn.cursor()
+                            _qcur.execute("SELECT COUNT(*) AS n FROM social_media_posts WHERE status = 'approved' AND platform = 'twitter'")
+                            _r = _qcur.fetchone() or {}
+                            _queued = _r.get('n', 0) if hasattr(_r, 'get') else (_r[0] if _r else 0)
                     except Exception: pass
                     if _queued:
                         logger.warning("Twitter auto-publisher: %s approved X post(s) queued but no credentials set — X distribution is DARK", _queued)
                     else:
                         logger.debug("Twitter auto-publisher: no credentials, skipping")
                     continue
-                conn = _get_db()
-                cur = conn.cursor()
-                today = datetime.utcnow().strftime('%Y-%m-%d')
-                cur.execute("SELECT COUNT(*) AS n FROM social_media_posts WHERE status = 'published' AND publish_platform = 'twitter' AND published_at LIKE %s", (today + '%',))
-                _row = cur.fetchone() or {}
-                pub_today = _row.get('n', 0) if hasattr(_row, 'get') else (_row[0] if _row else 0)
-                if pub_today >= 2:
-                    logger.info(f"Twitter auto-publisher: already {pub_today} today, skipping")
-                    _record_attempt("twitter", "skipped_cap")
-                    continue
-                cur.execute("SELECT id, content FROM social_media_posts WHERE status = 'approved' AND platform = 'twitter' ORDER BY created_at ASC LIMIT 1")
-                row = cur.fetchone()
-                if not row:
-                    logger.debug("Twitter auto-publisher: no approved Twitter posts")
-                    _record_attempt("twitter", "no_queued")
-                    continue
-                post_id = row['id']
-                content_text = row['content']
-                # r63 (2026-05-29): same entity-level + zero-stat judgment as
-                # the LinkedIn loop. Twitter picks a single oldest row, so a
-                # skip just defers to the next cycle (no rotation here).
-                _skip, _why = _should_skip_publish(cur, content_text or '', 'twitter')
-                if _skip:
-                    logger.warning("Twitter auto-publisher: SKIPPED post %s for dedup/judgment — %s", post_id, _why)
-                    continue
-                success, result = _post_to_twitter(content_text)
-                now = datetime.utcnow().isoformat() + 'Z'
-                if success:
-                    cur.execute("UPDATE social_media_posts SET status = 'published', posted_at = %s, published_at = %s, publish_platform = 'twitter' WHERE id = %s", (now, now, post_id))
-                    conn.commit()
-                    logger.info(f"Auto-published post {post_id} to X")
-                    _record_attempt("twitter", "ok")
-                else:
-                    logger.warning(f"Twitter auto-publish failed for {post_id}: {result}")
-                    _record_attempt("twitter", "error",
-                                     error_class=_classify_publish_error(result))
+                with _db_conn() as conn:
+                    cur = conn.cursor()
+                    today = datetime.utcnow().strftime('%Y-%m-%d')
+                    cur.execute("SELECT COUNT(*) AS n FROM social_media_posts WHERE status = 'published' AND publish_platform = 'twitter' AND published_at LIKE %s", (today + '%',))
+                    _row = cur.fetchone() or {}
+                    pub_today = _row.get('n', 0) if hasattr(_row, 'get') else (_row[0] if _row else 0)
+                    if pub_today >= 2:
+                        logger.info(f"Twitter auto-publisher: already {pub_today} today, skipping")
+                        _record_attempt("twitter", "skipped_cap")
+                        continue
+                    cur.execute("SELECT id, content FROM social_media_posts WHERE status = 'approved' AND platform = 'twitter' ORDER BY created_at ASC LIMIT 1")
+                    row = cur.fetchone()
+                    if not row:
+                        logger.debug("Twitter auto-publisher: no approved Twitter posts")
+                        _record_attempt("twitter", "no_queued")
+                        continue
+                    post_id = row['id']
+                    content_text = row['content']
+                    # r63 (2026-05-29): same entity-level + zero-stat judgment as
+                    # the LinkedIn loop. Twitter picks a single oldest row, so a
+                    # skip just defers to the next cycle (no rotation here).
+                    _skip, _why = _should_skip_publish(cur, content_text or '', 'twitter')
+                    if _skip:
+                        logger.warning("Twitter auto-publisher: SKIPPED post %s for dedup/judgment — %s", post_id, _why)
+                        continue
+                    success, result = _post_to_twitter(content_text)
+                    now = datetime.utcnow().isoformat() + 'Z'
+                    if success:
+                        cur.execute("UPDATE social_media_posts SET status = 'published', posted_at = %s, published_at = %s, publish_platform = 'twitter' WHERE id = %s", (now, now, post_id))
+                        conn.commit()
+                        logger.info(f"Auto-published post {post_id} to X")
+                        _record_attempt("twitter", "ok")
+                    else:
+                        logger.warning(f"Twitter auto-publish failed for {post_id}: {result}")
+                        _record_attempt("twitter", "error",
+                                         error_class=_classify_publish_error(result))
             except Exception as e:
                 logger.error(f"Twitter auto-publisher error: {type(e).__name__}: {e}")
                 logger.error(_tb.format_exc())
@@ -2677,13 +2685,13 @@ def start_bluesky_publisher():
                 if not handle or not app_pwd:
                     _queued = 0
                     try:
-                        conn = _get_db()
-                        _qcur = conn.cursor()
-                        _qcur.execute(
-                            "SELECT COUNT(*) AS n FROM social_media_posts "
-                            "WHERE status = 'approved' AND platform = 'bluesky'")
-                        _r = _qcur.fetchone() or {}
-                        _queued = _r.get('n', 0) if hasattr(_r, 'get') else (_r[0] if _r else 0)
+                        with _db_conn() as conn:
+                            _qcur = conn.cursor()
+                            _qcur.execute(
+                                "SELECT COUNT(*) AS n FROM social_media_posts "
+                                "WHERE status = 'approved' AND platform = 'bluesky'")
+                            _r = _qcur.fetchone() or {}
+                            _queued = _r.get('n', 0) if hasattr(_r, 'get') else (_r[0] if _r else 0)
                     except Exception: pass
                     if _queued:
                         logger.warning("Bluesky auto-publisher: %s approved post(s) queued "
@@ -2693,86 +2701,86 @@ def start_bluesky_publisher():
                         logger.debug("Bluesky auto-publisher: no credentials, skipping")
                     continue
 
-                conn = _get_db()
-                cur = conn.cursor()
-                today = datetime.utcnow().strftime('%Y-%m-%d')
-                # Phase FF+7-fix3 (2026-05-19): RealDictCursor — pull by name.
-                cur.execute(
-                    "SELECT COUNT(*) AS n FROM social_media_posts WHERE status = 'published' "
-                    "AND publish_platform = 'bluesky' AND published_at LIKE %s",
-                    (today + '%',))
-                _row = cur.fetchone() or {}
-                pub_today = _row.get('n', 0) if hasattr(_row, 'get') else (_row[0] if _row else 0)
-                DAILY_CAP = 3
-                if pub_today >= DAILY_CAP:
-                    logger.info(f"Bluesky auto-publisher: already {pub_today} today, skipping")
-                    _record_attempt("bluesky", "skipped_cap")
-                    continue  # finally will close conn
+                with _db_conn() as conn:
+                    cur = conn.cursor()
+                    today = datetime.utcnow().strftime('%Y-%m-%d')
+                    # Phase FF+7-fix3 (2026-05-19): RealDictCursor — pull by name.
+                    cur.execute(
+                        "SELECT COUNT(*) AS n FROM social_media_posts WHERE status = 'published' "
+                        "AND publish_platform = 'bluesky' AND published_at LIKE %s",
+                        (today + '%',))
+                    _row = cur.fetchone() or {}
+                    pub_today = _row.get('n', 0) if hasattr(_row, 'get') else (_row[0] if _row else 0)
+                    DAILY_CAP = 3
+                    if pub_today >= DAILY_CAP:
+                        logger.info(f"Bluesky auto-publisher: already {pub_today} today, skipping")
+                        _record_attempt("bluesky", "skipped_cap")
+                        continue  # finally will close conn
 
-                # Phase FF+7 (2026-05-18): Bluesky was filtering for
-                # platform='bluesky' rows ONLY, but auto-press enqueues with
-                # platform='linkedin' by default. Result: Bluesky publisher
-                # found 0 rows every cycle and stayed silent (0 posts in 7d
-                # despite being configured). Match LinkedIn's pattern: try
-                # platform-specific first, fall back to any approved post.
-                # Also backlog-drain like LinkedIn.
-                cur.execute("SELECT COUNT(*) AS n FROM social_media_posts WHERE status = 'approved'")
-                _row = cur.fetchone() or {}
-                _queued = _row.get('n', 0) if hasattr(_row, 'get') else (_row[0] if _row else 0)
-                _drain_budget = (DAILY_CAP - pub_today) if _queued > 10 else 1
-                _attempts = 0
-                while _attempts < _drain_budget:
-                    cur.execute("SELECT id, content FROM social_media_posts "
-                                 "WHERE status = 'approved' AND platform = 'bluesky' "
-                                 "ORDER BY created_at ASC LIMIT 1")
-                    row = cur.fetchone()
-                    if not row:
-                        # Fallback: any approved post that hasn't been
-                        # published to bluesky yet. Re-using a LinkedIn-targeted
-                        # post on Bluesky is fine — different audience, same idea.
-                        cur.execute(
-                            "SELECT id, content FROM social_media_posts "
-                            "WHERE status = 'approved' "
-                            "AND (publish_platform IS NULL OR publish_platform != 'bluesky') "
-                            "ORDER BY created_at ASC LIMIT 1")
+                    # Phase FF+7 (2026-05-18): Bluesky was filtering for
+                    # platform='bluesky' rows ONLY, but auto-press enqueues with
+                    # platform='linkedin' by default. Result: Bluesky publisher
+                    # found 0 rows every cycle and stayed silent (0 posts in 7d
+                    # despite being configured). Match LinkedIn's pattern: try
+                    # platform-specific first, fall back to any approved post.
+                    # Also backlog-drain like LinkedIn.
+                    cur.execute("SELECT COUNT(*) AS n FROM social_media_posts WHERE status = 'approved'")
+                    _row = cur.fetchone() or {}
+                    _queued = _row.get('n', 0) if hasattr(_row, 'get') else (_row[0] if _row else 0)
+                    _drain_budget = (DAILY_CAP - pub_today) if _queued > 10 else 1
+                    _attempts = 0
+                    while _attempts < _drain_budget:
+                        cur.execute("SELECT id, content FROM social_media_posts "
+                                     "WHERE status = 'approved' AND platform = 'bluesky' "
+                                     "ORDER BY created_at ASC LIMIT 1")
                         row = cur.fetchone()
-                    if not row:
-                        logger.debug("Bluesky auto-publisher: no approved posts")
-                        if _attempts == 0:
-                            _record_attempt("bluesky", "no_queued")
-                        break
-                    post_id = row['id']
-                    content_text = row['content']
-                    # r63 (2026-05-29): entity-level + zero-stat judgment.
-                    # Bluesky re-selects the same oldest row each drain
-                    # iteration (no exclusion), so on a skip we BREAK to end
-                    # this cycle's drain rather than spin on the same row.
-                    _skip, _why = _should_skip_publish(cur, content_text or '', 'bluesky')
-                    if _skip:
-                        logger.warning("Bluesky auto-publisher: SKIPPED post %s for dedup/judgment — %s", post_id, _why)
-                        break
-                    ok, result = _post_to_bluesky(content_text)
-                    now = datetime.utcnow().isoformat() + 'Z'
-                    if ok:
-                        cur.execute(
-                            "UPDATE social_media_posts SET status = %s, "
-                            "       posted_at = %s, published_at = %s, "
-                            "       publish_platform = %s WHERE id = %s",
-                            ('published', now, now, 'bluesky', post_id))
-                        conn.commit()
-                        logger.info(f"Auto-published post {post_id} to Bluesky uri={result} (drain {_attempts+1}/{_drain_budget})")
-                        _record_attempt("bluesky", "ok")
-                    else:
-                        logger.warning(f"Bluesky auto-publish failed for post {post_id}: {result}")
-                        _record_attempt("bluesky", "error",
-                                         error_class=_classify_publish_error(result))
-                        try:
-                            cur.execute("UPDATE social_media_posts SET status = 'failed' WHERE id = %s", (post_id,))
+                        if not row:
+                            # Fallback: any approved post that hasn't been
+                            # published to bluesky yet. Re-using a LinkedIn-targeted
+                            # post on Bluesky is fine — different audience, same idea.
+                            cur.execute(
+                                "SELECT id, content FROM social_media_posts "
+                                "WHERE status = 'approved' "
+                                "AND (publish_platform IS NULL OR publish_platform != 'bluesky') "
+                                "ORDER BY created_at ASC LIMIT 1")
+                            row = cur.fetchone()
+                        if not row:
+                            logger.debug("Bluesky auto-publisher: no approved posts")
+                            if _attempts == 0:
+                                _record_attempt("bluesky", "no_queued")
+                            break
+                        post_id = row['id']
+                        content_text = row['content']
+                        # r63 (2026-05-29): entity-level + zero-stat judgment.
+                        # Bluesky re-selects the same oldest row each drain
+                        # iteration (no exclusion), so on a skip we BREAK to end
+                        # this cycle's drain rather than spin on the same row.
+                        _skip, _why = _should_skip_publish(cur, content_text or '', 'bluesky')
+                        if _skip:
+                            logger.warning("Bluesky auto-publisher: SKIPPED post %s for dedup/judgment — %s", post_id, _why)
+                            break
+                        ok, result = _post_to_bluesky(content_text)
+                        now = datetime.utcnow().isoformat() + 'Z'
+                        if ok:
+                            cur.execute(
+                                "UPDATE social_media_posts SET status = %s, "
+                                "       posted_at = %s, published_at = %s, "
+                                "       publish_platform = %s WHERE id = %s",
+                                ('published', now, now, 'bluesky', post_id))
                             conn.commit()
-                        except Exception: pass
-                    _attempts += 1
-                    if _attempts < _drain_budget:
-                        time.sleep(5)
+                            logger.info(f"Auto-published post {post_id} to Bluesky uri={result} (drain {_attempts+1}/{_drain_budget})")
+                            _record_attempt("bluesky", "ok")
+                        else:
+                            logger.warning(f"Bluesky auto-publish failed for post {post_id}: {result}")
+                            _record_attempt("bluesky", "error",
+                                             error_class=_classify_publish_error(result))
+                            try:
+                                cur.execute("UPDATE social_media_posts SET status = 'failed' WHERE id = %s", (post_id,))
+                                conn.commit()
+                            except Exception: pass
+                        _attempts += 1
+                        if _attempts < _drain_budget:
+                            time.sleep(5)
             except Exception as e:
                 logger.error(f"Bluesky auto-publisher error: {type(e).__name__}: {e}")
                 logger.error(_tb.format_exc())

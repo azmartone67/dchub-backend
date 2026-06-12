@@ -24,14 +24,14 @@ ai_interconnect_bp = Blueprint('ai_interconnect', __name__)
 
 
 # Phase FF+25-followup (2026-05-20): conn-leak fix.
-# Brain consistency radar flagged this file with "10 conn = get_db()
+# Brain consistency radar flagged this file with "10 raw get_db()
 # opens vs only 1 finally: blocks". The file ALSO contains a daemon
 # thread (_track_ai_usage_sync runs via threading.Thread(daemon=True)).
 # Daemon-thread conn leaks accumulate forever and eventually exhaust
 # the Neon connection pool — exactly the failure mode behind the
 # 2026-05-19 outage.
 #
-# Fix: this context manager replaces every raw `conn = get_db()` call
+# Fix: this context manager replaces every raw get_db() call
 # site. Connections close on ALL exit paths including exceptions.
 # Use as:
 #     with _db_conn() as conn:
@@ -134,41 +134,38 @@ def _track_ai_usage_sync(endpoint, query, records_returned, response_type, user_
     closes. Every AI-traffic page view fires this in a daemon thread;
     any insert failure used to leak a Neon conn slot. Combined with the
     other leak sites, this contributed to the 2026-05-19 pool exhaustion.
+    2026-06-12 — converted to the _db_conn() context manager: same
+    close-on-every-path guarantee, exactly-once close (pooled conn).
     """
-    conn = None
     try:
         platform = detect_ai_platform(user_agent, referer)
-        conn = get_db()
-        # sqlite3.Row removed - PostgreSQL uses RealDictCursor or dict(row)
-        cursor = conn.cursor()
-        cursor.execute('''
-            INSERT INTO ai_usage_tracking
-            (timestamp, platform, endpoint, query, user_agent, ip_address, records_returned, response_type, referer)
-            VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s)
-        ''', (
-            datetime.utcnow().isoformat(),
-            platform,
-            endpoint,
-            query,
-            user_agent[:500] if user_agent else None,
-            ip_address,
-            records_returned,
-            response_type,
-            referer[:500] if referer else None
-        ))
-        conn.commit()
-        if platform not in ('Unknown', 'API Client', 'direct'):
-            try:
-                from agent_hub import emit_ai_traffic_event
-                emit_ai_traffic_event(platform, endpoint, is_organic=True)
-            except Exception:
-                pass
+        with _db_conn() as conn:
+            # sqlite3.Row removed - PostgreSQL uses RealDictCursor or dict(row)
+            cursor = conn.cursor()
+            cursor.execute('''
+                INSERT INTO ai_usage_tracking
+                (timestamp, platform, endpoint, query, user_agent, ip_address, records_returned, response_type, referer)
+                VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s)
+            ''', (
+                datetime.utcnow().isoformat(),
+                platform,
+                endpoint,
+                query,
+                user_agent[:500] if user_agent else None,
+                ip_address,
+                records_returned,
+                response_type,
+                referer[:500] if referer else None
+            ))
+            conn.commit()
+            if platform not in ('Unknown', 'API Client', 'direct'):
+                try:
+                    from agent_hub import emit_ai_traffic_event
+                    emit_ai_traffic_event(platform, endpoint, is_organic=True)
+                except Exception:
+                    pass
     except Exception as e:
         print(f"AI tracking error: {type(e).__name__}: {e}")
-    finally:
-        if conn is not None:
-            try: conn.close()
-            except Exception: pass
 
 def track_ai_usage(endpoint, query=None, records_returned=0, response_type='json'):
     """Log AI platform usage to database (fire-and-forget via thread)"""
@@ -1268,55 +1265,53 @@ def handle_poe_query(data):
             return Response(generate_poe_sse(response_text), mimetype='text/event-stream')
         
         # Route query to appropriate handler
-        # Phase FF+25-followup (2026-05-20): TODO — wrap this site with
-        # try/finally too. Skipped in this PR because the if/elif/else
-        # chain below makes re-indenting risky and the outer try catches
-        # most leaks already. Lower-priority than the 6 sites converted
-        # above (this is one endpoint, not in the daemon-thread path).
+        # Phase FF+25-followup TODO resolved (2026-06-12): this last raw
+        # get_db() site now uses the _db_conn() context manager, so the
+        # connection closes on every exit path (incl. mid-query errors).
         query_lower = query.lower()
-        conn = get_db()
-        cursor = conn.cursor()
+        with _db_conn() as conn:
+            cursor = conn.cursor()
 
-        if any(word in query_lower for word in ['facility', 'facilities', 'data center', 'datacenter', 'where']):
-            # Facility search
-            search_term = query.split()[-1] if len(query.split()) > 1 else 'Virginia'
-            cursor.execute('''
-                SELECT name, city, state, country, provider 
-                FROM facilities 
-                WHERE name LIKE %s OR city LIKE %s OR state LIKE %s OR country LIKE %s
-                LIMIT 5
-            ''', (f'%{search_term}%',) * 4)
-            results = cursor.fetchall()
+            if any(word in query_lower for word in ['facility', 'facilities', 'data center', 'datacenter', 'where']):
+                # Facility search
+                search_term = query.split()[-1] if len(query.split()) > 1 else 'Virginia'
+                cursor.execute('''
+                    SELECT name, city, state, country, provider 
+                    FROM facilities 
+                    WHERE name LIKE %s OR city LIKE %s OR state LIKE %s OR country LIKE %s
+                    LIMIT 5
+                ''', (f'%{search_term}%',) * 4)
+                results = cursor.fetchall()
             
-            if results:
-                response = f"**Data Centers matching '{search_term}':**\n\n"
-                for r in results:
-                    response += f"• **{r['name']}** - {r['city']}, {r['state']}, {r['country']} ({r['provider']})\n"
-                response += f"\n*DC Hub tracks 9,600+ facilities worldwide.*"
-            else:
-                response = f"No facilities found for '{search_term}'. Try searching by city, state, or operator name."
+                if results:
+                    response = f"**Data Centers matching '{search_term}':**\n\n"
+                    for r in results:
+                        response += f"• **{r['name']}** - {r['city']}, {r['state']}, {r['country']} ({r['provider']})\n"
+                    response += f"\n*DC Hub tracks 9,600+ facilities worldwide.*"
+                else:
+                    response = f"No facilities found for '{search_term}'. Try searching by city, state, or operator name."
         
-        elif any(word in query_lower for word in ['deal', 'acquisition', 'merger', 'm&a', 'transaction']):
-            # M&A deals
-            cursor.execute('SELECT buyer, seller, value, date FROM deals ORDER BY date DESC LIMIT 5')
-            deals = cursor.fetchall()
+            elif any(word in query_lower for word in ['deal', 'acquisition', 'merger', 'm&a', 'transaction']):
+                # M&A deals
+                cursor.execute('SELECT buyer, seller, value, date FROM deals ORDER BY date DESC LIMIT 5')
+                deals = cursor.fetchall()
             
-            response = "**Recent Data Center M&A Deals:**\n\n"
-            for d in deals:
-                value_str = f"${d['value']:,.0f}M" if d['value'] else "Undisclosed"
-                response += f"• **{d['buyer']}** acquired from **{d['seller']}** - {value_str} ({d['date']})\n"
-            response += f"\n*DC Hub tracks 787 verified deals worth $10.6B+*"
+                response = "**Recent Data Center M&A Deals:**\n\n"
+                for d in deals:
+                    value_str = f"${d['value']:,.0f}M" if d['value'] else "Undisclosed"
+                    response += f"• **{d['buyer']}** acquired from **{d['seller']}** - {value_str} ({d['date']})\n"
+                response += f"\n*DC Hub tracks 787 verified deals worth $10.6B+*"
         
-        elif any(word in query_lower for word in ['stat', 'market', 'overview', 'summary']):
-            # Market stats
-            cursor.execute('SELECT COUNT(*) FROM facilities')
-            facility_count = cursor.fetchone()[0]
-            cursor.execute('SELECT COUNT(DISTINCT provider) FROM facilities')
-            provider_count = cursor.fetchone()[0]
-            cursor.execute('SELECT SUM(power_mw) FROM facilities WHERE power_mw > 0')
-            power = cursor.fetchone()[0] or 0
+            elif any(word in query_lower for word in ['stat', 'market', 'overview', 'summary']):
+                # Market stats
+                cursor.execute('SELECT COUNT(*) FROM facilities')
+                facility_count = cursor.fetchone()[0]
+                cursor.execute('SELECT COUNT(DISTINCT provider) FROM facilities')
+                provider_count = cursor.fetchone()[0]
+                cursor.execute('SELECT SUM(power_mw) FROM facilities WHERE power_mw > 0')
+                power = cursor.fetchone()[0] or 0
             
-            response = f"""**Global Data Center Market Overview:**
+                response = f"""**Global Data Center Market Overview:**
 
 • **{facility_count:,}** data center facilities tracked
 • **{provider_count:,}** unique operators/providers
@@ -1326,17 +1321,16 @@ def handle_poe_query(data):
 
 *Data aggregated from PeeringDB, OpenStreetMap, SEC EDGAR, and 60+ news sources.*"""
         
-        else:
-            response = f"""I can help you with data center intelligence! Try asking:
+            else:
+                response = f"""I can help you with data center intelligence! Try asking:
 
 • "Show data centers in Virginia"
 • "Recent M&A deals"
 • "Market overview"
-• "Who are the largest operators%s"
+• "Who are the largest operators?"
 
 *DC Hub tracks 9,600+ facilities across 178 countries.*"""
         
-        conn.close()
         
         # Add citation to response
         response += "\n\n---\n*Source: [DC Hub](https://dchub.cloud)*"

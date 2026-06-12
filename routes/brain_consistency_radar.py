@@ -142,6 +142,14 @@ def _http_get(url: str, timeout: int = 8) -> tuple[Optional[str], Optional[dict]
                                or os.environ.get("DCHUB_INTERNAL_KEY") or "")
             if admin_key:
                 headers["X-Admin-Key"] = admin_key
+            # 2026-06-12: ALSO send X-Internal-Key. Gates that honor the
+            # internal key (e.g. /api/v1/pipeline on the Render failover —
+            # verified 403 bare vs 200 with the header) check this header,
+            # not X-Admin-Key, so radar probes against Render read as anon
+            # 403s and the probe data went blind for those endpoints.
+            internal_key = _clean(os.environ.get("DCHUB_INTERNAL_KEY") or "")
+            if internal_key:
+                headers["X-Internal-Key"] = internal_key
             # Also include the brain UA so rate-limit bypass kicks in
             # (separate machinery from tier-bypass).
             headers["User-Agent"] = "DCHub-BrainRadar/1.0 (+https://dchub.cloud)"

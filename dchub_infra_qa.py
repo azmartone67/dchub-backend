@@ -158,7 +158,7 @@ def test_railway_direct_health():
     if r.status_code == 200:
         try:
             data = r.json()
-            return "pass", f"Railway healthy — facilities={data.get('facility_count', '%s')}, source={data.get('source', '%s')}"
+            return "pass", f"Railway healthy — facilities={data.get('facility_count', '?')}, source={data.get('source', '?')}"
         except:
             return "pass", f"HTTP 200 ({len(r.text)} bytes)"
     return "fail", f"HTTP {r.status_code}: {r.text[:200]}"
@@ -217,7 +217,7 @@ def test_replit_direct_health():
     if r.status_code == 200:
         try:
             data = r.json()
-            return "pass", f"Replit healthy — facilities={data.get('facility_count', '%s')}, source={data.get('source', '%s')}"
+            return "pass", f"Replit healthy — facilities={data.get('facility_count', '?')}, source={data.get('source', '?')}"
         except:
             return "pass", f"HTTP 200 ({len(r.text)} bytes)"
     elif r.status_code == 503:
@@ -398,14 +398,14 @@ def test_shared_database():
 # ============================================================
 def test_api_facility_search_via_worker():
     """Facility search works through the full Cloudflare Worker chain."""
-    r = get(f"{CLOUDFLARE_API}/v1/facilities%sq=dallas&limit=2")
+    r = get(f"{CLOUDFLARE_API}/v1/facilities?q=dallas&limit=2")
     if r.status_code == 200:
         return "pass", f"Facility search via Worker: HTTP 200 ({len(r.text)} bytes)"
     return "fail", f"HTTP {r.status_code}: {r.text[:200]}"
 
 def test_api_deals_endpoint():
     """M&A deals endpoint works."""
-    r = get(f"{CLOUDFLARE_API}/v1/deals%slimit=2")
+    r = get(f"{CLOUDFLARE_API}/v1/deals?limit=2")
     if r.status_code == 200:
         return "pass", f"Deals endpoint: HTTP 200 ({len(r.text)} bytes)"
     elif r.status_code == 401:
@@ -414,7 +414,7 @@ def test_api_deals_endpoint():
 
 def test_api_news_endpoint():
     """News endpoint works."""
-    r = get(f"{CLOUDFLARE_API}/v1/news%slimit=2")
+    r = get(f"{CLOUDFLARE_API}/v1/news?limit=2")
     if r.status_code == 200:
         return "pass", f"News endpoint: HTTP 200 ({len(r.text)} bytes)"
     return "fail", f"HTTP {r.status_code}: {r.text[:200]}"

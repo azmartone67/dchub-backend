@@ -19,7 +19,7 @@ def load():
                 raw = resp.read().decode()
             data = json.loads(raw)
             if data.get("error"):
-                errors.append(f"{state}: {data['error'].get('message','%s')}")
+                errors.append(f"{state}: {data['error'].get('message','?')}")
                 continue
             features = data.get("features", [])
             batch = 0

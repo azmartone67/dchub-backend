@@ -273,7 +273,7 @@ def test_neon_consistency():
     if RUNNING_ON_REPLIT:
         # Can't hit Replit directly, so verify via Worker
         r1, _ = timed_get(f"{RAILWAY_DIRECT}/api/v1/facilities?q=equinix&limit=1")
-        r2, _ = timed_get(f"{CLOUDFLARE_API}/v1/facilities%sq=equinix&limit=1")
+        r2, _ = timed_get(f"{CLOUDFLARE_API}/v1/facilities?q=equinix&limit=1")
         if r1.status_code == 200 and r2.status_code == 200:
             return "pass", "Railway direct + Worker proxy both return Equinix results"
         return "warn", f"Railway={r1.status_code}, Worker={r2.status_code}"
@@ -379,7 +379,7 @@ def test_no_spof():
 # LAYER 6: KEY FEATURES
 # ============================================================
 def test_facility_search_e2e():
-    r, ms = timed_get(f"{CLOUDFLARE_API}/v1/facilities%sq=dallas&limit=2")
+    r, ms = timed_get(f"{CLOUDFLARE_API}/v1/facilities?q=dallas&limit=2")
     if r.status_code == 200:
         try:
             data = r.json()

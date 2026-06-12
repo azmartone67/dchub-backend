@@ -882,7 +882,7 @@ Use this real-time data and expert knowledge to make your responses compelling a
             
             # First check if we have a direct expert answer
             if smart_answer:
-                response = f"{smart_answer}\n\nWould you like more details on this topic or a demo of our platform%s"
+                response = f"{smart_answer}\n\nWould you like more details on this topic or a demo of our platform?"
             elif any(word in message_lower for word in ['pue', 'power usage', 'efficiency']):
                 response = "PUE (Power Usage Effectiveness) is the ratio of total facility power to IT equipment power. Industry average is 1.58, while best-in-class hyperscale facilities achieve under 1.2. DC Hub tracks PUE data across markets. Want to explore efficiency trends%s"
             elif any(word in message_lower for word in ['tier', 'uptime', 'redundancy', 'n+1', '2n']):
@@ -890,7 +890,7 @@ Use this real-time data and expert knowledge to make your responses compelling a
             elif any(word in message_lower for word in ['price', 'cost', 'pricing', 'how much']):
                 response = "Wholesale colocation runs $150-250/kW/month in primary markets, up 20% YoY due to AI demand. DC Hub Pro at $199/mo gives you access to pricing data across 64+ markets. Want a demo%s"
             elif any(word in message_lower for word in ['demo', 'trial', 'test']):
-                response = f"Absolutely! We're tracking {facilities:,} facilities with {pipeline:,.0f} MW in the construction pipeline. Our Land & Power tool has 40+ government data layers for site selection. What markets are you focused on%s"
+                response = f"Absolutely! We're tracking {facilities:,} facilities with {pipeline:,.0f} MW in the construction pipeline. Our Land & Power tool has 40+ government data layers for site selection. What markets are you focused on?"
                 agent_data["stats"]["demos_booked"] += 1
             elif any(word in message_lower for word in ['ai', 'gpu', 'ml', 'machine learning']):
                 response = "AI/GPU workloads are driving unprecedented demand - 5-10x power density vs traditional compute. Markets like Phoenix and Dallas are seeing 35%+ growth. DC Hub tracks AI-ready capacity specifically. Interested in AI infrastructure data%s"
@@ -898,11 +898,11 @@ Use this real-time data and expert knowledge to make your responses compelling a
                 response = "Equinix leads in interconnection with 260+ facilities in 71 markets. Digital Realty focuses on wholesale + hyperscale with 300+ facilities. DC Hub tracks all major operators plus emerging players like Stack, Compass, and Vantage. Which operators are you researching%s"
             elif any(word in message_lower for word in ['market', 'trend', 'hot', 'growing', 'virginia', 'dallas', 'phoenix']):
                 trending = orch_context.get('trending_markets', ['Dallas', 'Phoenix', 'Northern Virginia'])[:3]
-                response = f"Hot markets right now: {', '.join(trending)}. Northern Virginia leads at 3.5 GW but faces power constraints. Phoenix and Dallas growing 22-35%. Emerging: Columbus, Nashville, Salt Lake City. What's your focus area%s"
+                response = f"Hot markets right now: {', '.join(trending)}. Northern Virginia leads at 3.5 GW but faces power constraints. Phoenix and Dallas growing 22-35%. Emerging: Columbus, Nashville, Salt Lake City. What's your focus area?"
             elif any(word in message_lower for word in ['feature', 'what can', 'capabilities', 'do you']):
-                response = f"DC Hub offers: (1) Land & Power site analysis with 40+ government data layers, (2) {facilities:,}+ facility tracking globally, (3) {pipeline/1000:.1f} GW construction pipeline, (4) M&A deal tracking (2,000+ deals), (5) Real-time infrastructure mapping. What's your use case%s"
+                response = f"DC Hub offers: (1) Land & Power site analysis with 40+ government data layers, (2) {facilities:,}+ facility tracking globally, (3) {pipeline/1000:.1f} GW construction pipeline, (4) M&A deal tracking (2,000+ deals), (5) Real-time infrastructure mapping. What's your use case?"
             else:
-                response = f"Thanks for reaching out! As a data center intelligence platform, DC Hub tracks {facilities:,}+ facilities, {pipeline/1000:.1f} GW pipeline, and provides Land & Power analysis for site selection. I can discuss markets, operators, or platform features. What interests you%s"
+                response = f"Thanks for reaching out! As a data center intelligence platform, DC Hub tracks {facilities:,}+ facilities, {pipeline/1000:.1f} GW pipeline, and provides Land & Power analysis for site selection. I can discuss markets, operators, or platform features. What interests you?"
         
         # Learn from this interaction
         learn_from_interaction("sales", message, response, success=True)

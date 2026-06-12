@@ -128,7 +128,7 @@ ALIAS_OLD = (
     "    from flask import make_response\n"
     "    # Forward directly instead of redirect (preserves X-Internal-Key header)\n"
     "    from werkzeug.test import EnvironBuilder\n"
-    "    with app.test_request_context(f'/api/grid/fuel-mix%s{request.query_string.decode()}', headers=dict(request.headers)):\n"
+    "    with app.test_request_context(f'/api/grid/fuel-mix?{request.query_string.decode()}', headers=dict(request.headers)):\n"
     "        return app.full_dispatch_request()\n"
 )
 ALIAS_NEW = (
@@ -137,7 +137,7 @@ ALIAS_NEW = (
     "    from flask import make_response\n"
     "    # Forward directly instead of redirect (preserves X-Internal-Key header)\n"
     "    from werkzeug.test import EnvironBuilder\n"
-    "    with app.test_request_context(f'/api/grid/fuel-mix%s{request.query_string.decode()}', headers=dict(request.headers)):\n"
+    "    with app.test_request_context(f'/api/grid/fuel-mix?{request.query_string.decode()}', headers=dict(request.headers)):\n"
     "        return app.full_dispatch_request()\n"
     "\n"
     "# =============================================================================\n"

@@ -1938,8 +1938,8 @@ def social_generate():
         region = data.get('region', 'global')
         
         posts = {
-            'market-trends': f"📊 Data Center Market Update | {region.title()}\n\nKey trends we're tracking:\n• AI/ML driving unprecedented demand\n• Power availability constraining growth\n• Sustainability as competitive advantage\n\nWhat trends are you seeing%s #DataCenter #Infrastructure",
-            'ai-demand': f"🤖 AI Infrastructure Demand | {region.title()}\n\nGPU clusters requiring 10-50x power density. Liquid cooling becoming standard. New markets emerging around low-cost power.\n\nHow is AI affecting your strategy%s #AI #DataCenter",
+            'market-trends': f"📊 Data Center Market Update | {region.title()}\n\nKey trends we're tracking:\n• AI/ML driving unprecedented demand\n• Power availability constraining growth\n• Sustainability as competitive advantage\n\nWhat trends are you seeing? #DataCenter #Infrastructure",
+            'ai-demand': f"🤖 AI Infrastructure Demand | {region.title()}\n\nGPU clusters requiring 10-50x power density. Liquid cooling becoming standard. New markets emerging around low-cost power.\n\nHow is AI affecting your strategy? #AI #DataCenter",
             'sustainability': f"🌱 Sustainable Data Centers | {region.title()}\n\nProgress on environmental goals:\n• PUE improvements through innovation\n• Renewable energy commitments\n• Water conservation priorities\n\n#Sustainability #GreenDataCenter"
         }
         

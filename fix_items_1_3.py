@@ -149,7 +149,7 @@ def fix_eia_gas_consumption():
         
         url = (
             f"https://api.eia.gov/v2/natural-gas/cons/sum/data/"
-            f"%sapi_key={EIA_API_KEY}"
+            f"?api_key={EIA_API_KEY}"
             f"&frequency=annual"
             f"&data[0]=value"
             f"&facets[process][]={sector_code}"

@@ -68,7 +68,7 @@ def fetch_batch(fid_start, fid_end, batch_size=1000):
     offset = 0
     while True:
         params = (
-            f"%swhere=FID>{fid_start}+AND+FID<={fid_end}"
+            f"?where=FID>{fid_start}+AND+FID<={fid_end}"
             f"&outFields=Operator,TYPEPIPE,Status,FID"
             f"&returnGeometry=true"
             f"&resultOffset={offset}"
@@ -212,7 +212,7 @@ def main():
     print(f"   After: {after}")
     print(f"\n   Top states:")
     for state, count in top_states:
-        print(f"     {state or '%s%s'}: {count}")
+        print(f"     {state or '??'}: {count}")
 
 if __name__ == '__main__':
     main()

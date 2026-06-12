@@ -5,7 +5,7 @@ fix-railway-p2.py — follow-up to fix-railway-p1.py (commit 319fc62).
 After p1 landed, 2 of the 4 v1 aliases still 404ed in production:
 
   - /api/v1/grid/fuel-mix-live  → forwards to /api/grid/fuel-mix-live
-      (line 4774 alias), which itself forwards to /api/grid/fuel-mix%s{qs}
+      (line 4774 alias), which itself forwards to /api/grid/fuel-mix?{qs}
       — the `%s` is a printf placeholder orphaned inside an f-string, a
       pre-existing typo. No real /api/grid/fuel-mix handler exists either
       (only a plan-gating manifest entry at line ~13470), so the whole
@@ -42,7 +42,7 @@ PATCH_MARKER = "# [fix-railway-p2] stub body — no real handler exists"
 
 # -----------------------------------------------------------------------------
 # Patch 2a: pre-existing grid_fuel_mix_live_alias (line ~4774) — broken since
-# day one. Its forward target /api/grid/fuel-mix%s{qs} is nonsensical.
+# day one. Its forward target /api/grid/fuel-mix?{qs} is nonsensical.
 # Replace body with a 200 JSON stub.
 # -----------------------------------------------------------------------------
 OLD_A = (
@@ -51,14 +51,14 @@ OLD_A = (
     "    from flask import make_response\n"
     "    # Forward directly instead of redirect (preserves X-Internal-Key header)\n"
     "    from werkzeug.test import EnvironBuilder\n"
-    "    with app.test_request_context(f'/api/grid/fuel-mix%s{request.query_string.decode()}', headers=dict(request.headers)):\n"
+    "    with app.test_request_context(f'/api/grid/fuel-mix?{request.query_string.decode()}', headers=dict(request.headers)):\n"
     "        return app.full_dispatch_request()\n"
 )
 NEW_A = (
     "@app.route('/api/grid/fuel-mix-live', methods=['GET'])\n"
     "def grid_fuel_mix_live_alias():\n"
     "    " + PATCH_MARKER + "\n"
-    "    # Previous body forwarded to '/api/grid/fuel-mix%s{qs}' — the `%s` was a\n"
+    "    # Previous body forwarded to '/api/grid/fuel-mix?{qs}' — the `%s` was a\n"
     "    # printf placeholder orphaned inside an f-string. The target route\n"
     "    # '/api/grid/fuel-mix' is in the plan-gating manifest but has no\n"
     "    # @app.route handler, so the forward always resolved to 404.\n"

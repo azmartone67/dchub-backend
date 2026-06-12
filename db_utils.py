@@ -279,6 +279,15 @@ class PGConnectionWrapper:
             pass
 
     def close(self):
+        # 2026-06-12: idempotent. A second close() used to rollback + putconn a
+        # connection ALREADY returned to the pool — racing whichever thread had
+        # checked it out next (silently aborting its in-flight transaction, or
+        # putconn raising and the fallback hard-closing a pooled connection).
+        # Exactly-once semantics enforced here makes `with safe_db() as conn:`
+        # blocks that also call conn.close() internally safe by construction.
+        if getattr(self, "_lp_closed", False):
+            return
+        self._lp_closed = True
         try:
             self._conn.rollback()
         except Exception:

@@ -36,6 +36,7 @@ import os
 import logging
 import threading
 import re
+from contextlib import contextmanager
 from datetime import datetime, timezone, timedelta
 
 # Try importing the battle runner helpers — graceful fallback if not available
@@ -183,6 +184,18 @@ def _get_db():
     except Exception as e:
         logger.error(f"AI Wars DB connection error: {e}")
         raise
+
+
+@contextmanager
+def _db_conn():
+    """Yields a connection from _get_db(); guarantees close on every exit
+    path (the conn-leak class behind the 2026-05-19 Neon-pool outage)."""
+    conn = _get_db()
+    try:
+        yield conn
+    finally:
+        try: conn.close()
+        except Exception: pass
 
 
 def _generate_question():
@@ -927,9 +940,9 @@ _battle_queue_lock = threading.Lock()
 def _ensure_battle_queue_table():
     """Create the wars_battle_queue table in Neon if it doesn't exist."""
     try:
-        conn = _get_db()
-        c = conn.cursor()
-        c.execute("""
+        with _db_conn() as conn:
+            c = conn.cursor()
+            c.execute("""
             CREATE TABLE IF NOT EXISTS wars_battle_queue (
                 id TEXT PRIMARY KEY,
                 question TEXT NOT NULL,
@@ -945,9 +958,9 @@ def _ensure_battle_queue_table():
                 completed_at TIMESTAMPTZ
             )
         """)
-        conn.commit()
-        conn.close()
-        logger.info("⚔️ wars_battle_queue table ensured")
+            conn.commit()
+            conn.close()
+            logger.info("⚔️ wars_battle_queue table ensured")
     except Exception as e:
         logger.warning(f"⚔️ Could not create battle queue table: {e}")
 
@@ -962,11 +975,10 @@ def _run_battle_async(queue_id, question, category):
 
         # Update DB status
         try:
-            conn = _get_db()
-            c = conn.cursor()
-            c.execute("UPDATE wars_battle_queue SET status='running', started_at=NOW() WHERE id=%s", (queue_id,))
-            conn.commit()
-            conn.close()
+            with _db_conn() as conn:
+                c = conn.cursor()
+                c.execute("UPDATE wars_battle_queue SET status='running', started_at=NOW() WHERE id=%s", (queue_id,))
+                conn.commit()
         except Exception:
             pass
 
@@ -992,14 +1004,13 @@ def _run_battle_async(queue_id, question, category):
                     _battle_queue[queue_id]['completed_at'] = datetime.now(timezone.utc).isoformat()
 
             try:
-                conn = _get_db()
-                c = conn.cursor()
-                c.execute("""UPDATE wars_battle_queue 
-                             SET status='completed', battle_id=%s, result_json=%s, completed_at=NOW() 
+                with _db_conn() as conn:
+                    c = conn.cursor()
+                    c.execute("""UPDATE wars_battle_queue
+                             SET status='completed', battle_id=%s, result_json=%s, completed_at=NOW()
                              WHERE id=%s""",
-                          (battle_id, json.dumps(result_summary), queue_id))
-                conn.commit()
-                conn.close()
+                              (battle_id, json.dumps(result_summary), queue_id))
+                    conn.commit()
             except Exception:
                 pass
         else:
@@ -1009,12 +1020,11 @@ def _run_battle_async(queue_id, question, category):
                     _battle_queue[queue_id]['status'] = 'failed'
                     _battle_queue[queue_id]['error'] = error_msg
             try:
-                conn = _get_db()
-                c = conn.cursor()
-                c.execute("UPDATE wars_battle_queue SET status='failed', error=%s, completed_at=NOW() WHERE id=%s",
-                          (error_msg, queue_id))
-                conn.commit()
-                conn.close()
+                with _db_conn() as conn:
+                    c = conn.cursor()
+                    c.execute("UPDATE wars_battle_queue SET status='failed', error=%s, completed_at=NOW() WHERE id=%s",
+                              (error_msg, queue_id))
+                    conn.commit()
             except Exception:
                 pass
 
@@ -1025,12 +1035,11 @@ def _run_battle_async(queue_id, question, category):
                 _battle_queue[queue_id]['status'] = 'failed'
                 _battle_queue[queue_id]['error'] = str(e)
         try:
-            conn = _get_db()
-            c = conn.cursor()
-            c.execute("UPDATE wars_battle_queue SET status='failed', error=%s, completed_at=NOW() WHERE id=%s",
-                      (str(e), queue_id))
-            conn.commit()
-            conn.close()
+            with _db_conn() as conn:
+                c = conn.cursor()
+                c.execute("UPDATE wars_battle_queue SET status='failed', error=%s, completed_at=NOW() WHERE id=%s",
+                          (str(e), queue_id))
+                conn.commit()
         except Exception:
             pass
 
@@ -1050,16 +1059,16 @@ def _run_battle(question, category, fighters_config=None, api_base='https://dchu
     any exception leaked a Neon pool slot. That class of leak across
     long-running threads caused the 2026-05-19 30-min outage.
     """
-    conn = _get_db()
-    try:
+    with _db_conn() as conn:
         try:
-            conn.rollback()  # Clear any stale aborted transaction
-        except Exception:
-            pass
-        return _run_battle_inner(conn, question, category, fighters_config, api_base)
-    finally:
-        try: conn.close()
-        except Exception: pass
+            try:
+                conn.rollback()  # Clear any stale aborted transaction
+            except Exception:
+                pass
+            return _run_battle_inner(conn, question, category, fighters_config, api_base)
+        finally:
+            try: conn.close()
+            except Exception: pass
 
 
 def _run_battle_inner(conn, question, category, fighters_config, api_base):
@@ -1455,9 +1464,9 @@ def register_wars_automation(app):
 
         # Store in DB
         try:
-            conn = _get_db()
-            c = conn.cursor()
-            c.execute("""
+            with _db_conn() as conn:
+                c = conn.cursor()
+                c.execute("""
                 CREATE TABLE IF NOT EXISTS wars_battle_queue (
                     id TEXT PRIMARY KEY,
                     question TEXT NOT NULL,
@@ -1473,20 +1482,19 @@ def register_wars_automation(app):
                     completed_at TIMESTAMPTZ
                 )
             """)
-            c.execute("""
+                c.execute("""
                 INSERT INTO wars_battle_queue (id, question, category, email, status, ip)
                 VALUES (%s, %s, %s, %s, 'queued', %s)
             """, (queue_id, question, category, email, ip))
-            conn.commit()
-            conn.close()
+                conn.commit()
         except Exception as e:
             logger.warning(f"Could not persist battle queue: {e}")
 
         # Also store in wars_challenges for backward compat
         try:
-            conn = _get_db()
-            c = conn.cursor()
-            c.execute("""
+            with _db_conn() as conn:
+                c = conn.cursor()
+                c.execute("""
                 CREATE TABLE IF NOT EXISTS wars_challenges (
                     id TEXT PRIMARY KEY,
                     question TEXT NOT NULL,
@@ -1498,13 +1506,12 @@ def register_wars_automation(app):
                     ip TEXT
                 )
             """)
-            challenge_id = f"challenge-{uuid.uuid4().hex[:8]}"
-            c.execute("""
+                challenge_id = f"challenge-{uuid.uuid4().hex[:8]}"
+                c.execute("""
                 INSERT INTO wars_challenges (id, question, email, category, status, ip)
                 VALUES (%s, %s, %s, %s, 'pending', %s)
             """, (challenge_id, question, email, category, ip))
-            conn.commit()
-            conn.close()
+                conn.commit()
         except Exception:
             pass
 
@@ -1573,29 +1580,29 @@ def register_wars_automation(app):
 
         # Fall back to DB (in case Railway restarted and memory was lost)
         try:
-            conn = _get_db()
-            c = conn.cursor()
-            c.execute("SELECT * FROM wars_battle_queue WHERE id = %s", (queue_id,))
-            row = c.fetchone()
-            conn.close()
+            with _db_conn() as conn:
+                c = conn.cursor()
+                c.execute("SELECT * FROM wars_battle_queue WHERE id = %s", (queue_id,))
+                row = c.fetchone()
+                conn.close()
 
-            if row:
-                response = {
-                    'success': True,
-                    'queue_id': queue_id,
-                    'status': row['status'],
-                    'created_at': str(row.get('created_at', '')),
-                    'started_at': str(row.get('started_at', '')) if row.get('started_at') else None,
-                    'completed_at': str(row.get('completed_at', '')) if row.get('completed_at') else None,
-                }
-                if row['status'] == 'completed' and row.get('result_json'):
-                    try:
-                        response['battle'] = json.loads(row['result_json'])
-                    except:
-                        response['battle'] = {'battle_id': row.get('battle_id')}
-                elif row['status'] == 'failed':
-                    response['error'] = row.get('error')
-                return jsonify(response)
+                if row:
+                    response = {
+                        'success': True,
+                        'queue_id': queue_id,
+                        'status': row['status'],
+                        'created_at': str(row.get('created_at', '')),
+                        'started_at': str(row.get('started_at', '')) if row.get('started_at') else None,
+                        'completed_at': str(row.get('completed_at', '')) if row.get('completed_at') else None,
+                    }
+                    if row['status'] == 'completed' and row.get('result_json'):
+                        try:
+                            response['battle'] = json.loads(row['result_json'])
+                        except:
+                            response['battle'] = {'battle_id': row.get('battle_id')}
+                    elif row['status'] == 'failed':
+                        response['error'] = row.get('error')
+                    return jsonify(response)
         except Exception:
             pass
 
@@ -1605,64 +1612,64 @@ def register_wars_automation(app):
     @app.route('/api/v1/ai-wars/schedule', methods=['GET'])
     def ai_wars_schedule():
         """View automation schedule and recent battle history."""
-        conn = _get_db()
-        c = conn.cursor()
+        with _db_conn() as conn:
+            c = conn.cursor()
 
-        c.execute("SELECT COUNT(*) as cnt FROM wars_battles")
-        total_battles = c.fetchone()['cnt']
+            c.execute("SELECT COUNT(*) as cnt FROM wars_battles")
+            total_battles = c.fetchone()['cnt']
 
-        c.execute("SELECT date, COUNT(*) as count FROM wars_battles GROUP BY date ORDER BY date DESC LIMIT 10")
-        recent = [dict(row) for row in c.fetchall()]
+            c.execute("SELECT date, COUNT(*) as count FROM wars_battles GROUP BY date ORDER BY date DESC LIMIT 10")
+            recent = [dict(row) for row in c.fetchall()]
 
-        # Check pending challenges
-        try:
-            c.execute("SELECT COUNT(*) as cnt FROM wars_challenges WHERE status = 'pending'")
-            pending = c.fetchone()['cnt']
-        except:
-            pending = 0
+            # Check pending challenges
+            try:
+                c.execute("SELECT COUNT(*) as cnt FROM wars_challenges WHERE status = 'pending'")
+                pending = c.fetchone()['cnt']
+            except:
+                pending = 0
 
-        # Check queued battles
-        try:
-            c.execute("SELECT COUNT(*) as cnt FROM wars_battle_queue WHERE status IN ('queued', 'running')")
-            active_queue = c.fetchone()['cnt']
-        except:
-            active_queue = 0
+            # Check queued battles
+            try:
+                c.execute("SELECT COUNT(*) as cnt FROM wars_battle_queue WHERE status IN ('queued', 'running')")
+                active_queue = c.fetchone()['cnt']
+            except:
+                active_queue = 0
 
-        # Available API keys
-        available_keys = []
-        key_map = {
-            'ANTHROPIC_API_KEY': 'Claude (+ Cursor + Windsurf)',
-            'OPENAI_API_KEY': 'ChatGPT (+ Copilot)',
-            'GOOGLE_AI_KEY': 'Gemini',
-            'XAI_API_KEY': 'Grok',
-            'DEEPSEEK_API_KEY': 'DeepSeek',
-            'MISTRAL_API_KEY': 'Mistral',
-            'COHERE_API_KEY': 'Cohere',
-            'PERPLEXITY_API_KEY': 'Perplexity',
-            'GROQ_API_KEY': 'Groq',
-            'TOGETHER_API_KEY': 'Meta AI (Llama)',
-            'YOU_API_KEY': 'You.com',
-            'AWS_ACCESS_KEY_ID': 'Amazon Q (Bedrock)',
-        }
-        for env_var, name in key_map.items():
-            if os.environ.get(env_var):
-                available_keys.append(name)
-
-        conn.close()
-
-        return jsonify({
-            'success': True,
-            'total_battles': total_battles,
-            'pending_challenges': pending,
-            'active_queue': active_queue,
-            'recent_activity': recent,
-            'api_keys_available': available_keys,
-            'platforms_with_mcp': ['cursor', 'windsurf'],
-            'schedule': {
-                'weekly_battles': 'Every Monday, 9 battles (one per category)',
-                'challenge_processing': 'Async — returns immediately, battle runs in background',
+            # Available API keys
+            available_keys = []
+            key_map = {
+                'ANTHROPIC_API_KEY': 'Claude (+ Cursor + Windsurf)',
+                'OPENAI_API_KEY': 'ChatGPT (+ Copilot)',
+                'GOOGLE_AI_KEY': 'Gemini',
+                'XAI_API_KEY': 'Grok',
+                'DEEPSEEK_API_KEY': 'DeepSeek',
+                'MISTRAL_API_KEY': 'Mistral',
+                'COHERE_API_KEY': 'Cohere',
+                'PERPLEXITY_API_KEY': 'Perplexity',
+                'GROQ_API_KEY': 'Groq',
+                'TOGETHER_API_KEY': 'Meta AI (Llama)',
+                'YOU_API_KEY': 'You.com',
+                'AWS_ACCESS_KEY_ID': 'Amazon Q (Bedrock)',
             }
-        })
+            for env_var, name in key_map.items():
+                if os.environ.get(env_var):
+                    available_keys.append(name)
+
+            conn.close()
+
+            return jsonify({
+                'success': True,
+                'total_battles': total_battles,
+                'pending_challenges': pending,
+                'active_queue': active_queue,
+                'recent_activity': recent,
+                'api_keys_available': available_keys,
+                'platforms_with_mcp': ['cursor', 'windsurf'],
+                'schedule': {
+                    'weekly_battles': 'Every Monday, 9 battles (one per category)',
+                    'challenge_processing': 'Async — returns immediately, battle runs in background',
+                }
+            })
 
     # ─── Background scheduler ─── DISABLED: Use POST /api/jobs/ai-wars (Feb 2026)
     def _wars_scheduler_loop():
