@@ -752,13 +752,12 @@ def _build_data() -> dict:
         out["ab_status"]["kill_switch"] = kill
         out["ab_status"]["arm_b_configured"] = arm_b_ok
 
-        # 2026-06-12: clear any poisoned transaction before reading. An earlier
-        # section's failed query (no rollback in its except) aborts the shared
-        # connection's transaction, and these CORRECT queries then raise
-        # InFailedSqlTransaction — which rendered "0 impressions / missing
-        # pricing_ab_events" while the table held 93 live impressions.
+        # 2026-06-12: clear any poisoned transaction before reading (use the
+        # function's own `conn` — the first version of this guard called
+        # cur.connection, which the cursor wrapper doesn't expose, so the
+        # guard itself raised and silently fixed nothing).
         try:
-            cur.connection.rollback()
+            conn.rollback()
         except Exception:
             pass
 
@@ -788,8 +787,16 @@ def _build_data() -> dict:
                     "checkouts": checkouts,
                     "conv_rate_pct": conv,
                 }
-            except Exception:
-                out["missing_tables"].append("pricing_ab_events")
+            except Exception as _ab_e:
+                # carry the REAL exception out — this read failed for weeks as
+                # an anonymous "missing table" while the table sat there with
+                # live impressions. Name the actual error so it can't hide.
+                out["missing_tables"].append(
+                    f"pricing_ab_events ({type(_ab_e).__name__}: {str(_ab_e)[:80]})")
+                try:
+                    conn.rollback()
+                except Exception:
+                    pass
                 out["ab_status"]["cohorts"][arm] = {
                     "impressions": 0, "upgrade_clicks": 0,
                     "checkouts": 0, "conv_rate_pct": 0.0}
@@ -868,7 +875,7 @@ def _build_data() -> dict:
         # 4) Pricing A/B cohort assignments (impressions).
         try:
             try:
-                cur.connection.rollback()  # same poisoned-tx guard as the cohort reader
+                conn.rollback()  # same poisoned-tx guard as the cohort reader
             except Exception:
                 pass
             cur.execute(
