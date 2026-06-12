@@ -383,6 +383,7 @@ a{{color:#818cf8;text-decoration:none}} a:hover{{text-decoration:underline;color
  <thead><tr><th>#</th><th>Operator</th><th>Facilities</th><th>Total MW</th></tr></thead>
  <tbody>{rows or '<tr><td colspan=4 style="text-align:center;color:#9ca3af;padding:2rem">No operators tracked yet.</td></tr>'}</tbody>
 </table>
+<div style="max-width:1080px;margin:26px auto;padding:18px 22px;background:linear-gradient(135deg,rgba(99,102,241,0.14),rgba(168,85,247,0.07));border:1px solid rgba(99,102,241,0.3);border-radius:14px;text-align:center"><a href="/pricing" style="color:#a5b4fc;text-decoration:none;font-weight:600;font-size:15px">Tracking data-center operators? Get all 19,000+ facilities + power scores &amp; site-selection tools &mdash; <strong>DC Hub from $49/mo &rarr;</strong></a></div>
 <p class="foot">Live: <a href="/api/v1/operators">/api/v1/operators</a> · Brand: <a href="/vs">vs static competitors</a> · Ops: <a href="/transparency">transparency console</a></p>
 <script src="/js/dchub-nav.js" defer></script>
 </body></html>"""
@@ -507,6 +508,7 @@ a{{color:#818cf8;text-decoration:none}} a:hover{{text-decoration:underline;color
     for so in (summary.get("similar_operators") or [])[:5]
 ) or '<div class="card" style="grid-column:1/-1;text-align:center;color:#9ca3af">No comparable operators in the size band yet.</div>'}
 </div>
+<div style="max-width:1080px;margin:26px auto;padding:18px 22px;background:linear-gradient(135deg,rgba(99,102,241,0.14),rgba(168,85,247,0.07));border:1px solid rgba(99,102,241,0.3);border-radius:14px;text-align:center"><a href="/pricing" style="color:#a5b4fc;text-decoration:none;font-weight:600;font-size:15px">Tracking {summary['name']}&#39;s portfolio? Get all 19,000+ facilities + power scores &amp; site-selection tools &mdash; <strong>DC Hub from $49/mo &rarr;</strong></a></div>
 <p class="foot">Live JSON: <a href="/api/v1/operators/{slug}">/api/v1/operators/{slug}</a> · Indexed by AI agents via MCP — call <code>search_facilities(operator="{summary['name']}")</code></p>
 <script src="/js/dchub-nav.js" defer></script>
 </body></html>"""
