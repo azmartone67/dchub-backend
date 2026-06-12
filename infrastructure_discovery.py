@@ -1571,14 +1571,23 @@ def register_infrastructure_routes(app, start_scheduler=True):
         conn = get_db()
         try:
             cursor = conn.cursor()
-            # #2 (2026-06-11): exclude geometry-less news rows the brain previously mis-filed
-            # into fiber_routes (source='news_extraction') so they never reach any consumer.
-            cursor.execute("SELECT * FROM fiber_routes WHERE source IS DISTINCT FROM 'news_extraction' ORDER BY created_at DESC LIMIT 100")
+            # total real routes (exclude the brain's geometry-less news rows). RealDictCursor-
+            # safe: fetchone() may be a dict OR a tuple depending on cursor_factory.
+            total = 0
+            try:
+                cursor.execute("SELECT COUNT(*) AS total FROM fiber_routes WHERE source IS DISTINCT FROM 'news_extraction'")
+                _r = cursor.fetchone()
+                total = (_r.get('total') if hasattr(_r, 'get') else _r[0]) if _r else 0
+            except Exception:
+                total = 0
+            # #1 (2026-06-11): cap 100 -> 2000 so the Metro Links map layer shows the FULL real
+            # interconnect set, not a 100-row sample. #2: exclude news_extraction rows.
+            cursor.execute("SELECT * FROM fiber_routes WHERE source IS DISTINCT FROM 'news_extraction' ORDER BY created_at DESC LIMIT 2000")
             routes = [dict(row) for row in cursor.fetchall()]
         finally:
             try: conn.close()
             except Exception: pass
-        return jsonify({"success": True, "data": routes, "count": len(routes)})
+        return jsonify({"success": True, "data": routes, "count": len(routes), "total": total})
 
     @bp.route('/api/infrastructure/properties')
     def get_properties():
