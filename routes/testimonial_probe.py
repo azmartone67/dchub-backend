@@ -179,6 +179,14 @@ _PROBE_PROMPT = (
 )
 
 
+# Models are env-overridable so a provider deprecation is a config change,
+# not a deploy — the Claude probe already broke once on a retired model
+# (http_404). Bump DCHUB_PERPLEXITY_MODEL / DCHUB_GEMINI_MODEL on Railway
+# if a default retires; no redeploy needed.
+PERPLEXITY_MODEL = os.environ.get("DCHUB_PERPLEXITY_MODEL", "sonar")
+GEMINI_MODEL = os.environ.get("DCHUB_GEMINI_MODEL", "gemini-2.0-flash")
+
+
 def _probe_claude() -> dict:
     """Anthropic API. Uses ANTHROPIC_API_KEY which is already configured."""
     out = {"agent": "Claude", "ok": False, "error": None, "quote": None}
@@ -230,7 +238,7 @@ def _probe_perplexity() -> dict:
         req = urllib.request.Request(
             "https://api.perplexity.ai/chat/completions",
             data=json.dumps({
-                "model": "sonar",
+                "model": PERPLEXITY_MODEL,
                 "messages": [{"role": "user", "content": _PROBE_PROMPT}],
                 "max_tokens": 300,
             }).encode("utf-8"),
@@ -244,6 +252,8 @@ def _probe_perplexity() -> dict:
         out["quote"] = text.strip()
         out["ok"] = bool(text)
         return out
+    except urllib.error.HTTPError as e:
+        out["error"] = f"http_{e.code} (model={PERPLEXITY_MODEL}): {e.read().decode('utf-8','replace')[:200]}"
     except Exception as e:
         out["error"] = f"{type(e).__name__}: {str(e)[:200]}"
     return out
@@ -259,7 +269,7 @@ def _probe_gemini() -> dict:
     try:
         import urllib.request, urllib.error
         req = urllib.request.Request(
-            f"https://generativelanguage.googleapis.com/v1beta/models/gemini-1.5-flash:generateContent?key={key}",
+            f"https://generativelanguage.googleapis.com/v1beta/models/{GEMINI_MODEL}:generateContent?key={key}",
             data=json.dumps({
                 "contents": [{"parts": [{"text": _PROBE_PROMPT}]}],
                 "generationConfig": {"maxOutputTokens": 300},
@@ -272,6 +282,8 @@ def _probe_gemini() -> dict:
         out["quote"] = text.strip()
         out["ok"] = bool(text)
         return out
+    except urllib.error.HTTPError as e:
+        out["error"] = f"http_{e.code} (model={GEMINI_MODEL}): {e.read().decode('utf-8','replace')[:200]}"
     except Exception as e:
         out["error"] = f"{type(e).__name__}: {str(e)[:200]}"
     return out
