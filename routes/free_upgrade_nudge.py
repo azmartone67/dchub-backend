@@ -68,16 +68,29 @@ def _ensure_schema() -> None:
                     sent_at TIMESTAMPTZ DEFAULT NOW()
                 )""")
             c.commit()
-    except Exception:
-        pass
+    except Exception as _se:
+        # never swallow silently — the first deploy did, and the missing table
+        # 500'd the preview while this except hid the reason
+        print(f"[upgrade-nudge] schema ensure failed: {_se}", flush=True)
 
 
 def _key_hash(k: str) -> str:
     return hashlib.sha256((k or "").encode()).hexdigest()[:16]
 
 
-def _candidates(min_calls: int, days: int, cooldown_days: int) -> list[dict]:
+def _candidates(min_calls: int, days: int, cooldown_days: int,
+                include_internal: bool = False) -> list[dict]:
     out: list[dict] = []
+    # First live preview surfaced ONLY our own QA inboxes (qa-deep-scan@,
+    # final-test-*, audit-*, smoke+final@) — exclude internal/test addresses
+    # by default; ?include_internal=1 keeps them reachable for live-send tests.
+    internal_filter = "" if include_internal else """
+               AND k.email NOT ILIKE '%%@dchub.cloud'
+               AND k.email NOT ILIKE 'qa-%%'
+               AND k.email NOT ILIKE 'audit-%%'
+               AND k.email NOT ILIKE 'smoke%%'
+               AND k.email NOT ILIKE '%%test%%'
+               AND k.email NOT ILIKE '%%demo%%'"""
     from db_utils import safe_db
     with safe_db() as c:
         cur = c.cursor()
@@ -86,7 +99,7 @@ def _candidates(min_calls: int, days: int, cooldown_days: int) -> list[dict]:
               FROM mcp_dev_keys k
               JOIN mcp_call_log l ON l.api_key = k.api_key
              WHERE k.tier = 'free'
-               AND COALESCE(k.email,'') <> ''
+               AND COALESCE(k.email,'') <> ''{internal_filter}
                AND l.timestamp > NOW() - INTERVAL '{int(days)} days'
                AND NOT EXISTS (
                    SELECT 1 FROM upgrade_nudge_log n
@@ -153,13 +166,14 @@ def _render(cand: dict, links: dict) -> tuple[str, str]:
     tools_clause = (
         f" — mostly <b>{tools[0]}</b>" + (f" and <b>{tools[1]}</b>" if len(tools) > 1 else "")
         if tools else "")
-    subject = f"Your DC Hub key made {calls:,} calls this month — here's the full-data unlock"
+    _cw = f"{calls:,} call" + ("s" if calls != 1 else "")
+    subject = f"Your DC Hub key made {_cw} this month — here's the full-data unlock"
     dev_link = links.get("developer") or "https://dchub.cloud/pricing"
     met_link = links.get("metered") or "https://dchub.cloud/pricing"
     body = f"""
 <div style="font-family:-apple-system,Segoe UI,Inter,sans-serif;max-width:560px;margin:0 auto;color:#1a1a2e">
   <p>Hi,</p>
-  <p>Your DC Hub API key made <b>{calls:,} calls in the last 30 days</b>{tools_clause}.
+  <p>Your DC Hub API key made <b>{_cw} in the last 30 days</b>{tools_clause}.
      You're on the <b>free tier</b>: 10 calls/day on paid tools and preview-sized results —
      so your agent is reasoning from a fraction of the data on every gated call.</p>
   <p><b>One click unlocks your existing key</b> (no signup, no key swap — payment
@@ -206,7 +220,8 @@ def nudge_preview():
     min_calls = int(request.args.get("min_calls", "5"))
     days = int(request.args.get("days", "30"))
     cooldown = int(request.args.get("cooldown_days", "45"))
-    cands = _candidates(min_calls, days, cooldown)
+    include_internal = (request.args.get("include_internal") or "") in ("1", "true")
+    cands = _candidates(min_calls, days, cooldown, include_internal)
     sample = None
     if cands:
         links = _checkout_links(cands[0]["api_key"], cands[0]["api_key_hash"])
@@ -237,7 +252,8 @@ def nudge_fire():
     days = int(request.args.get("days", "30"))
     cooldown = int(request.args.get("cooldown_days", "45"))
     cap = int(request.args.get("cap", "25"))
-    cands = _candidates(min_calls, days, cooldown)[:cap]
+    include_internal = (request.args.get("include_internal") or "") in ("1", "true")
+    cands = _candidates(min_calls, days, cooldown, include_internal)[:cap]
     results = []
     from db_utils import safe_db
     for cand in cands:
