@@ -1580,9 +1580,9 @@ def register_infrastructure_routes(app, start_scheduler=True):
                 total = (_r.get('total') if hasattr(_r, 'get') else _r[0]) if _r else 0
             except Exception:
                 total = 0
-            # #1 (2026-06-11): cap 100 -> 2000 so the Metro Links map layer shows the FULL real
-            # interconnect set, not a 100-row sample. #2: exclude news_extraction rows.
-            cursor.execute("SELECT * FROM fiber_routes WHERE source IS DISTINCT FROM 'news_extraction' ORDER BY created_at DESC LIMIT 2000")
+            # #1 (2026-06-11): cap 100 -> 8000 so the Metro Links map layer shows the FULL real
+            # interconnect set (~6.5k), not a sample. #2: exclude news_extraction rows.
+            cursor.execute("SELECT * FROM fiber_routes WHERE source IS DISTINCT FROM 'news_extraction' ORDER BY created_at DESC LIMIT 8000")
             routes = [dict(row) for row in cursor.fetchall()]
         finally:
             try: conn.close()
