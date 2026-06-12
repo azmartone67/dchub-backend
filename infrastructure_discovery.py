@@ -1573,16 +1573,19 @@ def register_infrastructure_routes(app, start_scheduler=True):
             cursor = conn.cursor()
             # total real routes (exclude the brain's geometry-less news rows). RealDictCursor-
             # safe: fetchone() may be a dict OR a tuple depending on cursor_factory.
+            # #1: only RENDERABLE interconnects (coordinates present) — ~half the fiber_routes
+            # rows have no geometry (IX/facility entries) and just bloat the 4MB payload + a
+            # misleading n/total. Filter to geometry-present so count==total==what the map draws.
+            _where = "source IS DISTINCT FROM 'news_extraction' AND coordinates IS NOT NULL"
             total = 0
             try:
-                cursor.execute("SELECT COUNT(*) AS total FROM fiber_routes WHERE source IS DISTINCT FROM 'news_extraction'")
+                cursor.execute("SELECT COUNT(*) AS total FROM fiber_routes WHERE " + _where)
                 _r = cursor.fetchone()
                 total = (_r.get('total') if hasattr(_r, 'get') else _r[0]) if _r else 0
             except Exception:
                 total = 0
-            # #1 (2026-06-11): cap 100 -> 8000 so the Metro Links map layer shows the FULL real
-            # interconnect set (~6.5k), not a sample. #2: exclude news_extraction rows.
-            cursor.execute("SELECT * FROM fiber_routes WHERE source IS DISTINCT FROM 'news_extraction' ORDER BY created_at DESC LIMIT 8000")
+            # cap 100 -> 8000 so the Metro Links map layer shows the FULL real set, not a sample.
+            cursor.execute("SELECT * FROM fiber_routes WHERE " + _where + " ORDER BY created_at DESC LIMIT 8000")
             routes = [dict(row) for row in cursor.fetchall()]
         finally:
             try: conn.close()
