@@ -752,14 +752,19 @@ def _build_data() -> dict:
         out["ab_status"]["kill_switch"] = kill
         out["ab_status"]["arm_b_configured"] = arm_b_ok
 
-        # 2026-06-12: clear any poisoned transaction before reading (use the
-        # function's own `conn` — the first version of this guard called
-        # cur.connection, which the cursor wrapper doesn't expose, so the
-        # guard itself raised and silently fixed nothing).
+        # 2026-06-12: the REAL failure (exposed via the named-exception probe):
+        # InterfaceError: cursor already closed. This section runs after the
+        # `with conn.cursor() as cur:` block that owned `cur` has exited, so
+        # every read here died and rendered "0 impressions / missing table"
+        # while pricing_ab_events held live rows. Open a fresh cursor.
         try:
             conn.rollback()
         except Exception:
             pass
+        try:
+            cur = conn.cursor()
+        except Exception:
+            cur = None
 
         for arm in ("A", "B"):
             try:
@@ -875,9 +880,10 @@ def _build_data() -> dict:
         # 4) Pricing A/B cohort assignments (impressions).
         try:
             try:
-                conn.rollback()  # same poisoned-tx guard as the cohort reader
+                conn.rollback()  # same dead-cursor class as the cohort reader
             except Exception:
                 pass
+            cur = conn.cursor()
             cur.execute(
                 "SELECT 'ab_event', event_at, cohort, event_type "
                 "  FROM pricing_ab_events "
