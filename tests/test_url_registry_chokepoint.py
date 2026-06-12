@@ -51,6 +51,15 @@ ALLOWLIST = {
     "press_outreach.py",             # TODO: emit dcpi/* via registry
     "quarterly_report.py",           # TODO: emit dcpi/* via registry
     "seo_pages.py",                  # TODO: emit facility/* + markets/* via registry
+    # 2026-06-12 backlog -- these emit /markets/<slug>/brief sub-pages and
+    # /dcpi/<slug> links the registry doesn't model yet. TODO: add a
+    # brief/sub-path builder to url_registry, then route + remove these.
+    "market_brief.py",               # TODO: emit markets/*/brief via registry
+    "watchlist_dispatcher.py",       # TODO: emit markets/* + dcpi/* via registry
+    "market_verdict_shifts.py",      # TODO: emit markets/*/brief via registry
+    "site_selection_canvas.py",      # TODO: emit dcpi/* via registry
+    "deal_autopsy.py",               # TODO: emit dcpi/* via registry
+    "grid_transition_radar.py",      # TODO: emit dcpi/* via registry
 }
 # Detect f-string raw URL construction for the kinds we now own.
 PATTERN = re.compile(
