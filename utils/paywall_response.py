@@ -76,6 +76,34 @@ STRIPE_DEVELOPER_LINK = (
 # Back-compat alias for any external code that imported the old name
 STRIPE_PRO_LINK = STRIPE_DEVELOPER_LINK
 
+# 2026-06-12 conversion-nudge: the funnel teardown showed ~330 distinct free
+# users hammering get_grid_intelligence / get_fiber_intel, but the paywall
+# only ever pitched Developer ($49/mo). The cheapest unblock — Starter
+# ($9/mo, 200 calls/day, all 38 tools) — was never mentioned. For a free
+# user who's already called a tool many times, "$9 unlocks all of it" is a
+# far lower-friction yes than "$49/mo". Lead with Starter; keep Developer as
+# the step-up for heavy API users. Env-overridable; default is the live link.
+STRIPE_STARTER_LINK = (
+    os.environ.get('DCHUB_STRIPE_STARTER_LINK')
+    or 'https://buy.stripe.com/8x2dRa5sS0x75uteGuaZi0g'
+).strip()
+
+
+def _one_click_starter_line(tool_name=None, call_count=0):
+    """Lead CTA: the $9/mo Starter unblock, personalized with the caller's
+    own call count for THIS tool so the pitch is concrete ("you've called
+    this 47×"). Returns '' if no Starter link is configured."""
+    if not STRIPE_STARTER_LINK:
+        return ''
+    used = (f"You've called `{tool_name}` **{call_count}×** — "
+            if (tool_name and call_count and call_count > 0) else "")
+    return (
+        f"💡 **{used}$9/mo Starter unlocks all 38 tools (200 calls/day) — "
+        f"the cheapest way to unblock this:** "
+        f"[{STRIPE_STARTER_LINK}]({STRIPE_STARTER_LINK})\n\n"
+    )
+
+
 DISCOUNT_CODE_TIER2 = 'TRYDCHUB50'   # 50% off first month
 DISCOUNT_CODE_TIER3 = 'LASTCALL30'   # 30% off, urgency framing
 
@@ -215,6 +243,9 @@ def _build_human_message(tool_name, call_count, current_tier, partial_data_summa
     # Phase 276: prepend a one-click Stripe upgrade line if configured.
     # Empty string when DCHUB_STRIPE_PRO_LINK is unset — degrades cleanly.
     quick = _one_click_upgrade_line(tool_name, call_count, current_tier)
+    # 2026-06-12: lead with the $9 Starter unblock (personalized to the
+    # caller's count) — the cheapest yes for the high-frequency free users.
+    starter = _one_click_starter_line(tool_name, call_count)
 
     # Tier 3 — hard paywall with urgency (calls 6+)
     if call_count >= 6:
@@ -225,8 +256,9 @@ def _build_human_message(tool_name, call_count, current_tier, partial_data_summa
         return (
             f"🔒 **Free tier limit reached.** You've used `{tool_name}` {call_count} times "
             f"this week — your free preview is exhausted.\n\n"
+            f"{starter}"
             f"{quick}"
-            f"**[Upgrade to Developer now → {discount_url}]({discount_url})** "
+            f"**Need more than 200/day? [Upgrade to Developer → {discount_url}]({discount_url})** "
             f"Apply code `{DISCOUNT_CODE_TIER3}` for 30% off your first month.\n\n"
             f"_$49/mo unlocks {pretty_tool} + 500 calls/day, all 7 ISOs grid intel + fiber + queue analytics._"
         )
@@ -240,8 +272,9 @@ def _build_human_message(tool_name, call_count, current_tier, partial_data_summa
         email_url = _attribution_url(EMAIL_CAPTURE_URL, tool_name, call_count, current_tier)
         return (
             f"🎯 **You've hit `{tool_name}` {call_count} times — looks like you need this.**\n\n"
+            f"{starter}"
             f"{quick}"
-            f"**Get 50% off your first month** with code `{DISCOUNT_CODE_TIER2}`: "
+            f"**Or get 50% off Developer's first month** with code `{DISCOUNT_CODE_TIER2}`: "
             f"[Upgrade to Developer →]({discount_url})\n\n"
             f"Not ready? **[Get a 7-day free trial via email →]({email_url})** — "
             f"no credit card, full Developer access for a week.\n\n"
@@ -251,7 +284,8 @@ def _build_human_message(tool_name, call_count, current_tier, partial_data_summa
     # Tier 1 — standard preview (calls 1-2)
     return (
         f"🔓 **This is a SAMPLE PREVIEW — not your actual query result. The free tier shows one pre-canned record.** Get full `{tool_name}` data + 6 more ISOs grid intel "
-        f"+ fiber routes for **$49/mo**.\n\n"
+        f"+ fiber routes — **from just $9/mo (Starter, all 38 tools)**.\n\n"
+        f"{starter}"
         f"{quick}"
         f"**[Start 7-day free trial →]({pricing_url})** — no credit card required.\n\n"
         f"_Free tier shows partial data. Upgrade for live, complete results._"
@@ -361,6 +395,13 @@ def build_paywall_response(
         base['one_click_upgrade_url'] = _stripe_with_attrib(STRIPE_DEVELOPER_LINK)
         base['one_click_upgrade_tier'] = 'developer'  # phase 281
         base['one_click_upgrade_price'] = '$49/mo'    # phase 281
+    # 2026-06-12: lead structured CTA is the $9 Starter (cheapest unblock,
+    # all 38 tools). Discrete field so AI clients render it as the primary
+    # button; the markdown human_message already leads with it too.
+    if STRIPE_STARTER_LINK:
+        base['recommended_upgrade_url'] = _stripe_with_attrib(STRIPE_STARTER_LINK)
+        base['recommended_upgrade_tier'] = 'starter'
+        base['recommended_upgrade_price'] = '$9/mo'
 
     # Phase DD (2026-05-12): inject pair-code structured fields when we
     # successfully minted one above. Lets agents pass the redeem URL to
