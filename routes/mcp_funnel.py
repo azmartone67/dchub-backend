@@ -98,11 +98,15 @@ def _compute_funnel(tool_filter: str | None = None, days: int = 14) -> list[dict
                 for col in ("tool_requested", "tool", "tool_name"):
                     try:
                         cur.execute(f"""
-                            SELECT COUNT(*) FROM mcp_upgrade_signals
+                            SELECT COUNT(*) AS n FROM mcp_upgrade_signals
                              WHERE {col} = %s
                                AND created_at >= NOW() - INTERVAL '%s days'
                         """, (tool, days))
-                        n = int((cur.fetchone() or [0])[0] or 0)
+                        # RealDictCursor (line 52) returns dicts — the prior
+                        # cur.fetchone()[0] raised KeyError (swallowed by the bare
+                        # except), zeroing stage-1 for EVERY tool while signals
+                        # were written fine. Access by alias key.
+                        n = int((cur.fetchone() or {}).get("n") or 0)
                         if n > 0:
                             entry["stages"]["1_paywall_signals"] = n
                             got_signals = True
@@ -113,12 +117,12 @@ def _compute_funnel(tool_filter: str | None = None, days: int = 14) -> list[dict
                 if not got_signals:
                     try:
                         cur.execute("""
-                            SELECT COUNT(*) FROM mcp_call_log
+                            SELECT COUNT(*) AS n FROM mcp_call_log
                              WHERE tool = %s
                                AND timestamp >= NOW() - INTERVAL '%s days'
                                AND status NOT IN ('ok','success','200')
                         """, (tool, days))
-                        entry["stages"]["1_paywall_signals"] = int((cur.fetchone() or [0])[0] or 0)
+                        entry["stages"]["1_paywall_signals"] = int((cur.fetchone() or {}).get("n") or 0)
                         entry["_signals_source"] = "derived_from_non_ok_call_log"
                     except Exception:
                         pass
