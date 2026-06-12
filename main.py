@@ -19083,7 +19083,11 @@ def fiber_routes_public_api():
     payload = (_build_fiber_routes_geojson() if _fiber_full_access_ok()
                else _fiber_teaser_response())
     resp = jsonify(payload)
-    resp.headers['Cache-Control'] = 'private, no-store'
+    # canonical anti-edge-cache directive (same as the facilities endpoint's
+    # r-tune fix): the zone worker stamps plain Cache-Control with its own
+    # 3600s value, but honors the full no-store form + CDN-Cache-Control.
+    resp.headers['Cache-Control'] = 'no-store, no-cache, must-revalidate, max-age=0'
+    resp.headers['CDN-Cache-Control'] = 'no-store'
     return resp
 
 
@@ -19120,7 +19124,11 @@ def fiber_intel_api():
     payload = (_build_fiber_routes_geojson() if _fiber_full_access_ok()
                else _fiber_teaser_response())
     resp = jsonify(payload)
-    resp.headers['Cache-Control'] = 'private, no-store'
+    # canonical anti-edge-cache directive (same as the facilities endpoint's
+    # r-tune fix): the zone worker stamps plain Cache-Control with its own
+    # 3600s value, but honors the full no-store form + CDN-Cache-Control.
+    resp.headers['Cache-Control'] = 'no-store, no-cache, must-revalidate, max-age=0'
+    resp.headers['CDN-Cache-Control'] = 'no-store'
     return resp
 
 logger.info("✅ Fiber routes endpoints registered: /api/v1/fiber/sources, /api/v1/fiber/routes, /api/v1/fiber/intel")
