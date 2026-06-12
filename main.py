@@ -14017,13 +14017,25 @@ def mcp_platforms_status():
         ''')
         platforms = c.fetchall()
 
-        c.execute('''
-            SELECT platform, action, success, status_code,
-                   created_at, duration_ms
-            FROM ambassador_broadcasts
-            ORDER BY created_at DESC LIMIT 50
-        ''')
-        broadcasts = c.fetchall()
+        # 2026-06-12 (C): the ambassador broadcasts (registry re-crawl pings —
+        # Smithery/Glama/mcp.so/PulseMCP, cron at 20:00) are logged to
+        # agent_broadcast_log by routes/agent_broadcast_loop._log. The panel
+        # read `ambassador_broadcasts`, which NOTHING writes to — so it was
+        # always empty even though the broadcast cron fires daily. Read the
+        # real table; tolerate its absence.
+        broadcasts = []
+        try:
+            c.execute('''
+                SELECT target, method, status_code, elapsed_ms, fired_at
+                FROM agent_broadcast_log
+                ORDER BY fired_at DESC LIMIT 50
+            ''')
+            broadcasts = c.fetchall()
+        except Exception:
+            try:
+                db.rollback()
+            except Exception:
+                pass
 
         platform_list = []
         hidden_crawlers = 0
@@ -14082,9 +14094,11 @@ def mcp_platforms_status():
             "connected_count": active_real,
             "hidden_noise_count": hidden_noise,
             "recent_broadcasts": [
-                {"platform": b[0], "action": b[1], "success": b[2],
-                 "status_code": b[3], "time": b[4].isoformat() if hasattr(b[4], 'isoformat') else b[4],
-                 "duration_ms": b[5]}
+                {"platform": b[0], "action": b[1] or "ping",
+                 "success": 200 <= int(b[2] or 0) < 400,
+                 "status_code": b[2],
+                 "time": b[4].isoformat() if hasattr(b[4], 'isoformat') else b[4],
+                 "duration_ms": b[3]}
                 for b in broadcasts
             ],
             "mcp_endpoint": "https://dchub.cloud/mcp",
