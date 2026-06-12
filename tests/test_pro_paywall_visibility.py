@@ -38,6 +38,11 @@ ORIGIN = os.environ.get(
     "https://dchub-backend-production.up.railway.app",
 )
 TOKEN = os.environ.get("DCHUB_QA_PRO_TOKEN", "").strip()
+# Live-prod opt-in. The sunset-header check below asserts against the LIVE
+# /api/v1/stats response, so it can only pass once the header is deployed —
+# it's a post-deploy smoke check, not a pre-merge gate (pre-merge tests
+# un-deployed code). Set DCHUB_QA_LIVE=1 in a post-deploy job to run it.
+LIVE_SMOKE = os.environ.get("DCHUB_QA_LIVE", "").strip()
 
 
 def _get(path: str, *, with_token: bool = True, timeout: int = 15) -> tuple[int, dict | str]:
@@ -128,6 +133,11 @@ def test_dcgi_scores_unlock_numeric_fields_for_pro(pro_token):
 
 
 # ─── Sunset header sanity ────────────────────────────────────────────────
+@pytest.mark.skipif(
+    not LIVE_SMOKE,
+    reason="live-prod sunset-header check — runs in post-deploy smoke only "
+           "(set DCHUB_QA_LIVE=1); pre-merge tests un-deployed code.",
+)
 def test_stats_endpoint_advertises_deprecated_fields():
     """/api/v1/stats should signal which fields are deprecated so
     integrations (and tests/test_canonical_fields.py) can keep tracking.

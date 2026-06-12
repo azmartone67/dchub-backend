@@ -5720,6 +5720,24 @@ def add_cache_headers(response):
     return response
 
 
+@app.after_request
+def add_deprecated_fields_header(response):
+    """Advertise which /api/v1/stats fields are deprecated so integrations
+    have a runtime signal to migrate off them. r48.0 introduced this header;
+    it maps each legacy field to its canonical replacement. Guarded by
+    tests/test_pro_paywall_visibility.py::test_stats_endpoint_advertises_
+    deprecated_fields (a post-deploy live check)."""
+    try:
+        if request.path == '/api/v1/stats':
+            response.headers['X-Deprecated-Fields'] = (
+                'main_facilities=>total_facilities; '
+                'legacy_facilities_table=>total_facilities; '
+                'countries=>total_countries')
+    except Exception:
+        pass
+    return response
+
+
 # 2026-05-28 — the /markets pages (index + /markets/<slug>) are served
 # from Railway origin and shipped with NO Content-Security-Policy header,
 # which the CSP & Asset Watch sentinel flags as missing-csp-header. Every
