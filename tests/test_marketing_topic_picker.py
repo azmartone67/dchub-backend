@@ -10,22 +10,46 @@ These tests verify each priority level + the always-on fallback.
 """
 import os
 import re
+import ast
 
 ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 ME = os.path.join(ROOT, "routes", "marketing_engine.py")
 
 
 def _pick_daily_topic():
-    """Extract _pick_daily_topic and exec it standalone."""
+    """Load the deterministic topic cascade in isolation.
+
+    marketing_engine._pick_daily_topic() is now a thin engagement-bias
+    wrapper that delegates to _pick_daily_topic_cascade() — the Phase
+    LL/MM/NN deterministic chain these tests actually assert on. The
+    cascade calls ~10 sibling helpers, so the old "regex-extract one
+    function" trick no longer execs standalone. Importing the module
+    isn't an option either (it pulls in Flask + Anthropic + a DB).
+
+    So: AST-extract every top-level helper function (undecorated — skips
+    the @route handlers) plus every literal module constant, exec them in
+    one isolated namespace seeded with stdlib, and return the cascade.
+    """
     src = open(ME, encoding="utf-8").read()
-    m = re.search(
-        r"^def _pick_daily_topic\(.*?(?=^def |^class |\Z)",
-        src, re.DOTALL | re.MULTILINE,
-    )
-    assert m, "_pick_daily_topic not found in marketing_engine.py"
-    ns = {}
-    exec(m.group(0), ns)
-    return ns["_pick_daily_topic"]
+    tree = ast.parse(src)
+    pieces = []
+    for node in tree.body:
+        if isinstance(node, ast.FunctionDef) and not node.decorator_list:
+            pieces.append(ast.get_source_segment(src, node))
+        elif isinstance(node, ast.Assign) and isinstance(
+                node.value, (ast.Constant, ast.List, ast.Dict, ast.Set, ast.Tuple)):
+            try:
+                ast.literal_eval(node.value)
+                pieces.append(ast.get_source_segment(src, node))
+            except Exception:
+                pass
+    import sys as _sys, datetime, json, random, math, time, collections
+    ns = {"sys": _sys, "datetime": datetime, "re": re, "json": json,
+          "random": random, "math": math, "time": time, "collections": collections}
+    exec(compile("\n\n".join(p for p in pieces if p), ME, "exec"), ns)
+    fn = ns.get("_pick_daily_topic_cascade") or ns.get("_pick_daily_topic")
+    assert fn, "_pick_daily_topic_cascade not found in marketing_engine.py"
+    return fn
 
 
 def test_priority_dcpi_mover_when_big_shift():
