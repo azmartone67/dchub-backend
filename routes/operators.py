@@ -439,17 +439,25 @@ def operator_page(slug):
         for m in (summary.get("top_markets") or [])[:10]
     ) or '<span style="color:#9ca3af">No market data tracked yet.</span>'
 
+    # SEO: omit "0 MW" from the SERP description/schema when power data is sparse
+    # (colo operators like Equinix often have NULL power_mw -> SUM=0); a bare
+    # "totaling 0 MW" reads as broken in Google results.
+    _tmw = summary.get('total_mw') or 0
+    _mw_meta   = f" totaling {_tmw:,.0f} MW" if _tmw else ""
+    _mw_jsonld = f", {_tmw:,.0f} MW total" if _tmw else ""
+    _mw_card   = f"{_tmw:,.0f}" if _tmw else "&mdash;"
+
     html = f"""<!doctype html><html lang=en>
 <head><meta charset=utf-8>
 <title>{summary['name']} · Data Center Operator Profile | DC Hub</title>
-<meta name="description" content="{summary['name']} operates {summary['facility_count']} tracked data centers totaling {summary['total_mw']:,.0f} MW across {summary['countries']} countries. Live portfolio + M&A history from DC Hub.">
+<meta name="description" content="{summary['name']} operates {summary['facility_count']} tracked data centers{_mw_meta} across {summary['countries']} countries. Live portfolio + M&A history from DC Hub.">
 <meta name="robots" content="index,follow,max-snippet:-1">
 <link rel="canonical" href="https://dchub.cloud/operators/{slug}">
 <meta property="og:title" content="{summary['name']} — DC Hub operator profile">
 <script type="application/ld+json">{{
  "@context":"https://schema.org","@type":"Organization",
  "name":"{summary['name']}","url":"https://dchub.cloud/operators/{slug}",
- "description":"Data center operator tracked by DC Hub. {summary['facility_count']} facilities, {summary['total_mw']:,.0f} MW total, {summary['countries']} countries."
+ "description":"Data center operator tracked by DC Hub. {summary['facility_count']} facilities{_mw_jsonld}, {summary['countries']} countries."
 }}</script>
 <link rel="preconnect" href="https://fonts.googleapis.com">
 <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
@@ -485,7 +493,7 @@ a{{color:#818cf8;text-decoration:none}} a:hover{{text-decoration:underline;color
 <p class="sub">Live operator portfolio · tracked by DC Hub from public sources</p>
 <div class="grid">
  <div class="card"><div class="card-label">Facilities</div><div class="card-metric">{summary['facility_count']:,}</div></div>
- <div class="card"><div class="card-label">Total MW</div><div class="card-metric">{summary['total_mw']:,.0f}</div></div>
+ <div class="card"><div class="card-label">Total MW</div><div class="card-metric">{_mw_card}</div></div>
  <div class="card"><div class="card-label">Operating</div><div class="card-metric">{summary['operating_count']:,}</div></div>
  <div class="card"><div class="card-label">Pipeline</div><div class="card-metric">{summary['pipeline_count']:,}</div></div>
  <div class="card"><div class="card-label">Countries</div><div class="card-metric">{summary['countries']}</div></div>
