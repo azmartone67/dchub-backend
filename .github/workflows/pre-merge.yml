@@ -12,7 +12,7 @@ jobs:
       - uses: actions/checkout@v5
       - uses: actions/setup-python@v6
         with:
-          python-version: '3.11'
+          python-version: '3.13'
       - name: AST parse every .py
         run: |
           set -e
@@ -34,7 +34,7 @@ jobs:
           fetch-depth: 0   # need full history for merge-base
       - uses: actions/setup-python@v6
         with:
-          python-version: '3.11'
+          python-version: '3.13'
       - name: Fetch origin/main
         run: git fetch origin main
       - name: Run delta-mode regression lint
@@ -68,7 +68,7 @@ jobs:
       - uses: actions/checkout@v5
       - uses: actions/setup-python@v6
         with:
-          python-version: '3.11'
+          python-version: '3.13'
       - name: Install pytest
         run: python3 -m pip install pytest
       - name: Run pure-function tests
