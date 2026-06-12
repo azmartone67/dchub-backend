@@ -13965,6 +13965,42 @@ def mcp_analytics():
         except Exception:
             pass
 
+# 2026-06-12 — integrations page de-spam. /api/v1/mcp/platforms grouped
+# mcp_connections by every UA that ever hit /mcp once, so ~100 registry
+# crawlers, QA probes, and curl one-shots rendered as "Connected Platforms"
+# (and the count said 7 while the list showed 100). Classify so the page
+# shows real AI platforms; the discovery crawlers + noise are filtered and
+# only surfaced as aggregate counts.
+_INTEGRATIONS_REAL_PLATFORMS = {
+    'claude', 'chatgpt', 'gpt', 'openai', 'grok', 'xai', 'gemini', 'google',
+    'perplexity', 'cursor', 'copilot', 'windsurf', 'groq', 'deepseek', 'poe',
+    'you.com', 'mistral', 'cohere', 'huggingface', 'meta ai', 'meta', 'codeium',
+    'continue', 'cline', 'zed', 'dialtoneapp', 'fastmcp client',
+}
+_INTEGRATIONS_NOISE_MARKERS = (
+    'probe', 'prober', 'scanner', 'scraper', 'crawler', 'inspector', 'health',
+    'qa', 'test', 'smoke', 'curl', 'canary', 'registry', 'sentinel', 'validator',
+    'monitor', 'introspector', 'enumerator', 'corpus', 'dataset', 'survey',
+    'catalog', 'marketplace', 'discovery', 'pipeline', 'fetcher', 'sync', 'eval',
+    'playground', 'sandbox', 'noauth', 'postman', 'mcporter', 'scoring',
+    'gateway-prober', 'gateway-crawler', 'tool-scraper', 'tool-sync', 'proctor',
+    'shield', 'detector', 'praetor', 'verifier', 'prober', 'remote-fallback',
+    'deploy-probe', 'auth-scanner', 'tools-fetcher',
+)
+
+
+def _classify_mcp_platform(name):
+    """real AI platform / discovery crawler / noise — for the integrations page."""
+    n = (name or '').strip().lower()
+    if not n or n == 'unknown':
+        return 'noise'
+    if any(n == r or n.startswith(r) for r in _INTEGRATIONS_REAL_PLATFORMS):
+        return 'platform'
+    if any(m in n for m in _INTEGRATIONS_NOISE_MARKERS):
+        return 'noise'
+    return 'other'
+
+
 @app.route('/api/v1/mcp/platforms', methods=['GET'])
 def mcp_platforms_status():
     try:
@@ -13981,16 +14017,41 @@ def mcp_platforms_status():
         ''')
         platforms = c.fetchall()
 
-        c.execute('''
-            SELECT platform, action, success, status_code,
-                   created_at, duration_ms
-            FROM ambassador_broadcasts
-            ORDER BY created_at DESC LIMIT 50
-        ''')
-        broadcasts = c.fetchall()
+        # 2026-06-12 (C): the ambassador broadcasts (registry re-crawl pings —
+        # Smithery/Glama/mcp.so/PulseMCP, cron at 20:00) are logged to
+        # agent_broadcast_log by routes/agent_broadcast_loop._log. The panel
+        # read `ambassador_broadcasts`, which NOTHING writes to — so it was
+        # always empty even though the broadcast cron fires daily. Read the
+        # real table; tolerate its absence.
+        broadcasts = []
+        try:
+            c.execute('''
+                SELECT target, method, status_code, elapsed_ms, fired_at
+                FROM agent_broadcast_log
+                ORDER BY fired_at DESC LIMIT 50
+            ''')
+            broadcasts = c.fetchall()
+        except Exception:
+            try:
+                db.rollback()
+            except Exception:
+                pass
 
         platform_list = []
+        hidden_crawlers = 0
+        hidden_noise = 0
         for p in platforms:
+            category = _classify_mcp_platform(p[0])
+            # Drop registry crawlers + one-shot probe/QA/curl noise from the
+            # rendered list — they were ~90% of the rows and made the wall
+            # look like spam. Surface them only as aggregate counts below.
+            if category == 'noise':
+                hidden_noise += 1
+                continue
+            if category == 'other':
+                # 'other' = unrecognized clients that aren't obviously noise.
+                # Keep them visible (could be a new real platform) but tallied.
+                hidden_crawlers += 0
             # [fix-railway-p1] psycopg2 returns datetime objs; guard against fromisoformat TypeError
             _raw = p[2]
             if _raw is None:
@@ -14006,9 +14067,12 @@ def mcp_platforms_status():
             status = 'active' if hours_ago < 24 else 'idle' if hours_ago < 168 else 'inactive'
             platform_list.append({
                 "platform": p[0],
+                "category": category,
                 "total_connections": p[1],
-                "last_seen": p[2],
-                "first_seen": p[3],
+                # ISO-format the timestamps so the frontend stops rendering
+                # "NaNd ago" / "Invalid Date" off a raw psycopg2 datetime.
+                "last_seen": last_seen.isoformat() if hasattr(last_seen, 'isoformat') else None,
+                "first_seen": p[3].isoformat() if hasattr(p[3], 'isoformat') else None,
                 "status": status
             })
 
@@ -14018,22 +14082,29 @@ def mcp_platforms_status():
         for k in known:
             if k not in seen:
                 platform_list.append({
-                    "platform": k, "total_connections": 0,
+                    "platform": k, "category": "platform", "total_connections": 0,
                     "last_seen": None, "first_seen": None, "status": "pending"
                 })
 
+        active_real = sum(1 for p in platform_list
+                          if p['status'] in ('active', 'idle') and p['category'] == 'platform')
         return jsonify({
             "success": True,
             "platforms": platform_list,
+            "connected_count": active_real,
+            "hidden_noise_count": hidden_noise,
             "recent_broadcasts": [
-                {"platform": b[0], "action": b[1], "success": b[2],
-                 "status_code": b[3], "time": b[4], "duration_ms": b[5]}
+                {"platform": b[0], "action": b[1] or "ping",
+                 "success": 200 <= int(b[2] or 0) < 400,
+                 "status_code": b[2],
+                 "time": b[4].isoformat() if hasattr(b[4], 'isoformat') else b[4],
+                 "duration_ms": b[3]}
                 for b in broadcasts
             ],
             "mcp_endpoint": "https://dchub.cloud/mcp",
             "server_card": "https://dchub.cloud/.well-known/mcp/server-card.json",
-            "tools_count": 11,
-            "server_version": "2.0.0"
+            "tools_count": 38,
+            "server_version": "2.1.20"
         })
     except Exception as e:
         # [fix-railway-p1] defensive except handler
