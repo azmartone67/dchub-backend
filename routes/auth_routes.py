@@ -101,14 +101,35 @@ def decode_jwt(token):
     except:
         return None
 
+def _bearer_or_cookie_token():
+    """JWT from Authorization: Bearer header OR the login cookie.
+
+    2026-06-12: require_auth previously read ONLY the Bearer header, so a
+    user logged in via the `dchub_token` cookie (the access gate sets it on
+    login — see set_cookie calls below) got a 401 on /api/auth/me and every
+    other @require_auth endpoint even though the nav showed them logged in
+    (the /integrations console error). The cookie is samesite='Lax', so
+    honoring it here is CSRF-safe for state-changing requests (Lax suppresses
+    the cookie on cross-site POST/PUT). Mirrors the cookie-aware tier checks
+    used elsewhere in the backend.
+    """
+    auth_header = request.headers.get('Authorization') or ''
+    if auth_header.startswith('Bearer '):
+        tok = auth_header.split(' ', 1)[1].strip()
+        if tok:
+            return tok
+    return (request.cookies.get('dchub_token')
+            or request.cookies.get('auth_token')
+            or request.cookies.get('token') or '')
+
+
 def require_auth(f):
-    """Decorator to require JWT authentication"""
+    """Decorator to require JWT authentication (Bearer header OR login cookie)."""
     @wraps(f)
     def decorated(*args, **kwargs):
-        auth_header = request.headers.get('Authorization')
-        if not auth_header or not auth_header.startswith('Bearer '):
+        token = _bearer_or_cookie_token()
+        if not token:
             return jsonify({'error': 'Authorization required', 'code': 'AUTH_REQUIRED'}), 401
-        token = auth_header.split(' ')[1]
         payload = decode_jwt(token)
         if not payload:
             return jsonify({'error': 'Invalid or expired token', 'code': 'AUTH_INVALID'}), 401
@@ -117,13 +138,12 @@ def require_auth(f):
     return decorated
 
 def optional_auth(f):
-    """Decorator for optional JWT authentication"""
+    """Decorator for optional JWT authentication (Bearer header OR login cookie)."""
     @wraps(f)
     def decorated(*args, **kwargs):
-        auth_header = request.headers.get('Authorization')
         request.user = None
-        if auth_header and auth_header.startswith('Bearer '):
-            token = auth_header.split(' ')[1]
+        token = _bearer_or_cookie_token()
+        if token:
             payload = decode_jwt(token)
             if payload:
                 request.user = payload
