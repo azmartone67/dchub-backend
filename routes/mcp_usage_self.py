@@ -271,6 +271,17 @@ def _fetch_near_converters(min_paid_403: int = 5, limit: int = 30, days: int = 3
                      WHERE created_at > NOW() - (%s || ' days')::interval
                        AND mcp_client IS NOT NULL
                        AND mcp_client != ''
+                       -- 2026-06-12: our own probes are not prospects. The
+                       -- rate-based bot heuristic missed slow internal clients
+                       -- (pipeline_mcp surfaced as the #1 "near-converter" with
+                       -- an outreach draft addressed to ourselves). Same
+                       -- exclusion list as the radar/funnel detectors.
+                       AND mcp_client NOT ILIKE 'dchub%%'
+                       AND mcp_client NOT ILIKE 'loop%%'
+                       AND mcp_client NOT ILIKE '%%probe%%'
+                       AND mcp_client NOT ILIKE '%%scanner%%'
+                       AND mcp_client NOT ILIKE '%%-test'
+                       AND mcp_client <> 'pipeline_mcp'
                      GROUP BY mcp_client
                 )
                 SELECT *

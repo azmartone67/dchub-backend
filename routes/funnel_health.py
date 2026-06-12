@@ -752,6 +752,16 @@ def _build_data() -> dict:
         out["ab_status"]["kill_switch"] = kill
         out["ab_status"]["arm_b_configured"] = arm_b_ok
 
+        # 2026-06-12: clear any poisoned transaction before reading. An earlier
+        # section's failed query (no rollback in its except) aborts the shared
+        # connection's transaction, and these CORRECT queries then raise
+        # InFailedSqlTransaction — which rendered "0 impressions / missing
+        # pricing_ab_events" while the table held 93 live impressions.
+        try:
+            cur.connection.rollback()
+        except Exception:
+            pass
+
         for arm in ("A", "B"):
             try:
                 cur.execute(
@@ -857,6 +867,10 @@ def _build_data() -> dict:
 
         # 4) Pricing A/B cohort assignments (impressions).
         try:
+            try:
+                cur.connection.rollback()  # same poisoned-tx guard as the cohort reader
+            except Exception:
+                pass
             cur.execute(
                 "SELECT 'ab_event', event_at, cohort, event_type "
                 "  FROM pricing_ab_events "
