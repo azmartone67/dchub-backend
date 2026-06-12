@@ -212,7 +212,7 @@ def _send_resend(to_email: str, subject: str, html: str) -> tuple[bool, str]:
         return False, str(e)[:150]
 
 
-@free_upgrade_nudge_bp.route("/api/v1/admin/upgrade-nudge/preview", methods=["GET"])
+@free_upgrade_nudge_bp.route("/api/v1/admin/upgrade-nudge/preview", methods=["GET"], strict_slashes=False)
 def nudge_preview():
     if not _admin_ok():
         return jsonify({"error": "admin auth required"}), 403
@@ -242,7 +242,7 @@ def nudge_preview():
     })
 
 
-@free_upgrade_nudge_bp.route("/api/v1/admin/upgrade-nudge/fire", methods=["POST"])
+@free_upgrade_nudge_bp.route("/api/v1/admin/upgrade-nudge/fire", methods=["POST"], strict_slashes=False)
 def nudge_fire():
     if not _admin_ok():
         return jsonify({"error": "admin auth required"}), 403
@@ -285,7 +285,7 @@ def nudge_fire():
                     "results": results})
 
 
-@free_upgrade_nudge_bp.route("/api/v1/admin/upgrade-nudge/log", methods=["GET"])
+@free_upgrade_nudge_bp.route("/api/v1/admin/upgrade-nudge/log", methods=["GET"], strict_slashes=False)
 def nudge_log():
     if not _admin_ok():
         return jsonify({"error": "admin auth required"}), 403
