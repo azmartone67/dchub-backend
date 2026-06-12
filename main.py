@@ -19070,10 +19070,21 @@ def fiber_routes_api():
 def fiber_routes_public_api():
     """Land & Power map fiber overlay. Real dchub.cloud browsers (cookie or
     same-origin Referer) and paid keys get the full backbone; anonymous
-    scrapers get the 3-route teaser instead of the full paid dataset."""
-    if _fiber_full_access_ok():
-        return jsonify(_build_fiber_routes_geojson())
-    return jsonify(_fiber_teaser_response())
+    scrapers get the 3-route teaser instead of the full paid dataset.
+
+    2026-06-13: Cache-Control private,no-store on BOTH branches. This
+    response VARIES BY CALLER (teaser vs full) but had no cache headers, so
+    the CF edge cached whichever variant was fetched first under the bare
+    URL — observed live: cf-cache-status HIT age=420 serving the ANONYMOUS
+    TEASER to valid-cookie browsers and paid keys alike, re-poisoned hourly
+    by the first scraper after each TTL. That is the "customer can't see
+    the upgraded fiber" complaint. Caller-varying responses must NEVER be
+    edge-cacheable."""
+    payload = (_build_fiber_routes_geojson() if _fiber_full_access_ok()
+               else _fiber_teaser_response())
+    resp = jsonify(payload)
+    resp.headers['Cache-Control'] = 'private, no-store'
+    return resp
 
 
 # Phase ZZZZZ-round6 (2026-05-23): /api/v1/fiber/intel was referenced
@@ -19101,10 +19112,16 @@ def fiber_intel_api():
     tuple, so `.lower()` raised and the except swallowed it → EVERY
     caller (including paid) got the teaser. Now shares the fail-closed
     `_fiber_full_access_ok()` helper, so paid/internal/browser callers
-    finally get the full set here too."""
-    if _fiber_full_access_ok():
-        return jsonify(_build_fiber_routes_geojson())
-    return jsonify(_fiber_teaser_response())
+    finally get the full set here too.
+
+    2026-06-13: private,no-store — same poisoned-edge-cache class as
+    /api/v1/fiber/routes/public (a cached anonymous teaser was served to
+    PAID get_fiber_intel callers; this is the paid MCP fiber tool's API)."""
+    payload = (_build_fiber_routes_geojson() if _fiber_full_access_ok()
+               else _fiber_teaser_response())
+    resp = jsonify(payload)
+    resp.headers['Cache-Control'] = 'private, no-store'
+    return resp
 
 logger.info("✅ Fiber routes endpoints registered: /api/v1/fiber/sources, /api/v1/fiber/routes, /api/v1/fiber/intel")
 
