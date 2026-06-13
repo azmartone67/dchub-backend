@@ -410,6 +410,120 @@ def load_state():
         return jsonify({"ok": False, "error": str(e)[:300]}), 502
 
 
+def _do_ingest(state_fips, as_of, providers, hexes):
+    """Write a pre-aggregated state payload to Neon (no FCC egress).
+
+    providers = [[brand_name, provider_id], ...]
+    hexes     = [[provider_idx, h3_res8, locations, max_down], ...]
+    Same DELETE-state → chunked upsert → latlng fill as _do_load, but the
+    download+parse already happened upstream (the GitHub runner), so Railway
+    only does fast DB work. This is the path that makes TX/CA-class states
+    reliable — Railway's egress to the FCC is the part that's flaky.
+    """
+    t0 = time.time()
+    agg = {}
+    for h in hexes:
+        try:
+            pidx, h3, locs, down = h[0], h[1], h[2], h[3]
+        except Exception:
+            continue
+        if not h3:
+            continue
+        if 0 <= pidx < len(providers):
+            brand = (providers[pidx][0] or "").strip()
+            pid = (providers[pidx][1] or "")[:24] if len(providers[pidx]) > 1 else ""
+        else:
+            brand, pid = "", ""
+        if not brand:
+            continue
+        agg[(brand, h3)] = [int(locs or 0), int(down or 0), pid]
+
+    from db_utils import safe_db
+    with safe_db() as c:
+        cur = _raw(c.cursor())
+        cur.execute("SET LOCAL statement_timeout = '540s'")
+        cur.execute("DELETE FROM fcc_fiber_hex WHERE state_fips=%s", (state_fips,))
+        # _flush chunks the upsert; clear between flushes to bound memory.
+        items = list(agg.items())
+        CHUNK = 50_000
+        for i in range(0, len(items), CHUNK):
+            _flush(cur, state_fips, as_of, dict(items[i:i + CHUNK]))
+        filled = _fill_latlng(cur, state_fips)
+        cur.execute("""SELECT COUNT(*), COUNT(DISTINCT brand_name)
+                         FROM fcc_fiber_hex WHERE state_fips=%s AND as_of=%s""",
+                    (state_fips, as_of))
+        hex_total, brands = cur.fetchone()
+        c.commit()
+    try:
+        from routes.extractor_brain import record_extraction
+        record_extraction("fcc-bdc-fiber", "success", rows_inserted=int(hex_total or 0),
+                          duration_ms=int((time.time() - t0) * 1000),
+                          observations={"state": state_fips, "via": "ingest",
+                                        "brands": int(brands or 0)})
+    except Exception:
+        pass
+    return {"ok": True, "state_fips": state_fips, "as_of": as_of,
+            "hex_rows": int(hex_total or 0), "brands": int(brands or 0),
+            "latlng_filled": filled, "seconds": round(time.time() - t0, 1)}
+
+
+@fcc_bdc_fiber_bp.route("/api/v1/admin/fcc-fiber/ingest", methods=["POST"])
+def ingest_aggregate():
+    """Accept a pre-aggregated state payload (the GitHub runner did the
+    FCC download+parse) and write it to Neon.
+
+    Body: JSON (optionally gzipped — send Content-Encoding: gzip) of
+      {state_fips, as_of, providers:[[brand,provider_id]...],
+       hexes:[[provider_idx,h3_res8,locations,max_down]...]}
+    ?async=1 → 202 + background write (poll /status); required for big
+    states whose latlng UPDATE would exceed the edge timeout.
+    """
+    if not _admin_ok():
+        return jsonify({"error": "admin auth required"}), 403
+    _ensure_schema()
+    try:
+        raw = request.get_data() or b""
+        enc = (request.headers.get("Content-Encoding") or "").lower()
+        if "gzip" in enc or request.headers.get("X-Content-Gzip"):
+            import gzip
+            raw = gzip.decompress(raw)
+        payload = json.loads(raw)
+    except Exception as e:
+        return jsonify({"ok": False, "error": f"bad payload: {str(e)[:120]}"}), 400
+
+    state_fips = str(payload.get("state_fips") or "").strip()
+    as_of = str(payload.get("as_of") or _DEFAULT_AS_OF).strip()
+    providers = payload.get("providers") or []
+    hexes = payload.get("hexes") or []
+    if not state_fips or not hexes:
+        return jsonify({"ok": False, "error": "state_fips and hexes required"}), 400
+
+    is_async = (request.args.get("async") or "").strip().lower() in ("1", "true", "yes")
+    if is_async:
+        if not _LOAD_LOCK.acquire(blocking=False):
+            return jsonify({"ok": False, "busy": True, "state_fips": state_fips}), 409
+
+        def _bg():
+            try:
+                res = _do_ingest(state_fips, as_of, providers, hexes)
+                print(f"[fcc-fiber] async ingest {state_fips}@{as_of} done: {res}", flush=True)
+            except Exception as e:
+                print(f"[fcc-fiber] async ingest {state_fips}@{as_of} FAILED: {str(e)[:200]}", flush=True)
+            finally:
+                _LOAD_LOCK.release()
+
+        threading.Thread(target=_bg, name=f"fcc-ingest-{state_fips}", daemon=True).start()
+        return jsonify({"ok": True, "started": True, "async": True,
+                        "state_fips": state_fips, "as_of": as_of,
+                        "hexes_received": len(hexes),
+                        "poll": "/api/v1/admin/fcc-fiber/status"}), 202
+
+    try:
+        return jsonify(_do_ingest(state_fips, as_of, providers, hexes))
+    except Exception as e:
+        return jsonify({"ok": False, "error": str(e)[:300]}), 502
+
+
 # The 50 states + DC + PR FIPS codes the refresh cron sweeps. Territories
 # beyond PR (AS/GU/MP/VI) aren't in the FTTP availability set — omitted.
 _ALL_STATE_FIPS = [
