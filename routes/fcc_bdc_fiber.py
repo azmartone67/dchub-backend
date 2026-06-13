@@ -220,12 +220,28 @@ def load_state():
         # fill commit together (atomic re-load).
         tmp = tempfile.NamedTemporaryFile(prefix="fcc_bdc_", suffix=".zip", delete=False)
         try:
-            with _fcc_get(f"/downloads/downloadFile/availability/{file_id}", timeout=900) as r:
-                while True:
-                    piece = r.read(1 << 20)
-                    if not piece:
-                        break
-                    tmp.write(piece)
+            # FCC's CDN drops long streams sporadically ("SSL connection
+            # has been closed unexpectedly") — TX failed twice on this.
+            # Retry the whole download up to 3× on a fresh connection.
+            last_err = None
+            for attempt in range(3):
+                try:
+                    tmp.seek(0)
+                    tmp.truncate()
+                    with _fcc_get(f"/downloads/downloadFile/availability/{file_id}", timeout=900) as r:
+                        while True:
+                            piece = r.read(1 << 20)
+                            if not piece:
+                                break
+                            tmp.write(piece)
+                    last_err = None
+                    break
+                except Exception as de:
+                    last_err = de
+                    print(f"[fcc-fiber] download attempt {attempt + 1} failed: {str(de)[:120]}", flush=True)
+                    time.sleep(4 * (attempt + 1))
+            if last_err is not None:
+                raise last_err
             tmp.close()
 
             from db_utils import safe_db
