@@ -233,6 +233,190 @@ def open_route_alias_pr(src_path: str, dst_path: str,
     }
 
 
+# ── Recipe: cron_if_mismatched (r85h — WALK 2nd recipe) ─────────────
+#
+# Staggers a colliding GitHub Actions cron so 2+ workflows stop firing at
+# the same minute (thundering herd on the 2-replica backend + Neon). Mirrors
+# the route_alias writer. FENCES (never auto-touch):
+#   - evolve-cron.yml — a 19-cron mega-workflow whose jobs are gated by
+#     `if: github.event.schedule == '...'`; changing a cron string there
+#     SILENTLY DISABLES a job.
+#   - ANY workflow containing `github.event.schedule` (same trap, generalised).
+#   - DR-critical / canonical workflows stay put — we move the OTHER one.
+#   - Only plain-integer-minute crons (skip */N, ranges, lists).
+# yaml.safe_load-validates the edited file before commit. Human-merge, draft PR.
+
+_CRON_KEEP_CANONICAL = {
+    "backup-neon-r2.yml",       # nightly pg_dump -> R2 (DR-critical)
+    "iso-data-pull.yml",        # real-time grid pull
+    "dchub-daily-status.yml",   # canonical daily status
+}
+
+
+def _cron_minute_is_plain_int(expr: str) -> bool:
+    parts = expr.split()
+    return len(parts) == 5 and parts[0].isdigit() and 0 <= int(parts[0]) <= 59
+
+
+def _apply_cron_stagger_to_workflows(repo_dir: str) -> dict:
+    """Find ONE SAFE cron collision in .github/workflows and stagger the
+    non-canonical workflow's minute to a free slot. Edits exactly one file,
+    one line. Returns {ok, file, old_cron, new_cron, kept, detail} or
+    {ok:False, reason}. No-op (ok:False) when nothing is safe to fix."""
+    import glob as _glob
+    wf_dir = os.path.join(repo_dir, ".github", "workflows")
+    if not os.path.isdir(wf_dir):
+        return {"ok": False, "reason": "no .github/workflows dir"}
+    files: dict[str, str] = {}
+    for p in (_glob.glob(os.path.join(wf_dir, "*.yml"))
+              + _glob.glob(os.path.join(wf_dir, "*.yaml"))):
+        try:
+            files[os.path.basename(p)] = open(p).read()
+        except OSError:
+            continue
+    cron_pat = re.compile(r"cron:\s*['\"]([^'\"]+)['\"]")
+    expr_files: dict[str, set] = {}
+    for fn, text in files.items():
+        for m in cron_pat.finditer(text):
+            expr_files.setdefault(m.group(1).strip(), set()).add(fn)
+
+    for expr, fns in sorted(expr_files.items()):
+        if len(fns) < 2 or not _cron_minute_is_plain_int(expr):
+            continue
+        # editable = not the mega-workflow, no schedule-guard, not DR-canonical
+        editable = [fn for fn in fns
+                    if fn != "evolve-cron.yml"
+                    and "github.event.schedule" not in files[fn]
+                    and fn not in _CRON_KEEP_CANONICAL]
+        if not editable:
+            continue  # both sides canonical/guarded — leave it for a human
+        move_fn = sorted(editable)[0]
+        parts = expr.split()
+        # minutes already used at this SAME hour+dom+month+dow (avoid re-collide)
+        used = set()
+        for e in expr_files:
+            ep = e.split()
+            if len(ep) == 5 and ep[0].isdigit() and ep[1:] == parts[1:]:
+                used.add(int(ep[0]))
+        cur = int(parts[0])
+        new_min = next(((cur + d) % 60 for d in (10, 20, 40, 5, 15, 25, 35, 45, 50, 55)
+                        if ((cur + d) % 60) not in used), None)
+        if new_min is None:
+            continue
+        new_cron = " ".join([str(new_min)] + parts[1:])
+        text = files[move_fn]
+        new_text = None
+        for q in ("'", '"'):
+            tok = q + expr + q
+            if tok in text:
+                new_text = text.replace(tok, q + new_cron + q, 1)
+                break
+        if new_text is None:
+            continue
+        try:
+            import yaml
+            yaml.safe_load(new_text)
+        except Exception as ye:
+            return {"ok": False, "reason": f"yaml invalid after edit: {str(ye)[:120]}"}
+        with open(os.path.join(wf_dir, move_fn), "w") as f:
+            f.write(new_text)
+        kept = sorted(fns - {move_fn})
+        return {"ok": True, "file": move_fn, "old_cron": expr,
+                "new_cron": new_cron, "kept": kept,
+                "detail": (f"staggered {move_fn} `{expr}` -> `{new_cron}` "
+                           f"(was colliding with {', '.join(kept)})")}
+    return {"ok": False, "reason": "no safe cron collision to stagger"}
+
+
+def open_cron_stagger_pr(rationale: str = "") -> dict:
+    """Clone the fork, stagger ONE safe cron collision, commit, push, open a
+    DRAFT PR. Mirrors open_route_alias_pr. Never raises. Returns ok:False with
+    no_action=True when the live workflows have no safe collision (never opens
+    an empty PR)."""
+    if DRY_RUN:
+        return {"ok": True, "dry_run": True,
+                "would_do": "scan workflows for a safe cron collision + open a stagger PR",
+                "hint": "Set DCHUB_L22_REAL_PR=1 to enable real git ops."}
+    if not GH_TOKEN:
+        return {"ok": False, "error": "PR_SUBMIT_TOKEN / GITHUB_TOKEN unset"}
+
+    ts = datetime.datetime.utcnow()
+    work_dir = f"/tmp/l22-cron-{int(ts.timestamp())}"
+    fork_url = f"https://x-access-token:{GH_TOKEN}@github.com/{FORK_OWNER}/dchub-backend.git"
+    code, out = _safe_run(["git", "clone", "--depth", "1", "--branch",
+                            DEFAULT_BASE, fork_url, work_dir])
+    if code != 0:
+        _safe_run(["gh", "repo", "fork", UPSTREAM_REPO, "--org", FORK_OWNER,
+                   "--clone=false", "--remote=false"])
+        code, out = _safe_run(["git", "clone", "--depth", "1", "--branch",
+                                DEFAULT_BASE, fork_url, work_dir])
+        if code != 0:
+            return {"ok": False, "stage": "fork_clone", "error": out[:300]}
+
+    change = _apply_cron_stagger_to_workflows(work_dir)
+    if not change.get("ok"):
+        return {"ok": False, "stage": "detect", "no_action": True,
+                "reason": change.get("reason")}
+
+    _safe_run(["git", "config", "user.name", _BOT_AUTHOR_NAME], cwd=work_dir)
+    _safe_run(["git", "config", "user.email", _BOT_AUTHOR_EMAIL], cwd=work_dir)
+    stem = change["file"].rsplit(".", 1)[0][:32]
+    branch = f"auto-l22-cron-{stem}-{ts.strftime('%Y%m%d%H%M')}"
+    code, out = _safe_run(["git", "checkout", "-b", branch], cwd=work_dir)
+    if code != 0:
+        return {"ok": False, "stage": "branch", "error": out[:300]}
+    rel = os.path.join(".github", "workflows", change["file"])
+    code, out = _safe_run(["git", "add", rel], cwd=work_dir)
+    if code != 0:
+        return {"ok": False, "stage": "git_add", "error": out[:300]}
+    commit_msg = (
+        f"[brain-l22-auto] stagger {change['file']} cron "
+        f"{change['old_cron']} -> {change['new_cron']}\n\n"
+        f"Auto-drafted by Brain L22 (cron_if_mismatched recipe).\n"
+        f"{change['detail']}\n"
+        f"Kept the canonical job on its slot; moved the non-canonical one to a "
+        f"free minute. FENCED: never edits evolve-cron.yml or a workflow with an "
+        f"`if: github.event.schedule` guard; plain-integer-minute crons only; "
+        f"yaml-validated.\n\n{rationale}\n\n"
+        f"Co-Authored-By: Brain L22 <l22-bot@dchub.cloud>"
+    )
+    code, out = _safe_run(["git", "commit", "-m", commit_msg], cwd=work_dir)
+    if code != 0:
+        return {"ok": False, "stage": "git_commit", "error": out[:300]}
+    code, out = _safe_run(["git", "push", "-u", "origin", branch], cwd=work_dir)
+    if code != 0:
+        return {"ok": False, "stage": "git_push", "error": out[:300]}
+
+    pr_title = f"[brain-l22] Stagger {change['file']} cron collision (auto)"
+    pr_body = (
+        f"## What\n\n{change['detail']}.\n\n"
+        f"2+ workflows were firing at the exact same minute (`{change['old_cron']}`) "
+        f"— a thundering herd on the 2-replica backend + Neon. This moves the "
+        f"non-canonical job to a free minute; the canonical job is unchanged.\n\n"
+        f"## Safety\n\n"
+        f"- Edits exactly ONE workflow file, ONE cron line.\n"
+        f"- NEVER touches `evolve-cron.yml` or any workflow with an "
+        f"`if: github.event.schedule` job guard.\n"
+        f"- DR-critical workflows (e.g. backup-neon-r2) stay on their slot.\n"
+        f"- The edited file was `yaml.safe_load`-validated before commit.\n\n"
+        f"## How to revert\n\n`git revert <merge-commit>` — one-line, isolated.\n\n"
+        f"---\n_Auto-generated by Brain L22's `cron_if_mismatched` recipe "
+        f"(WALK phase, human-merge)._\n"
+    )
+    code, out = _safe_run([
+        "gh", "pr", "create", "--repo", UPSTREAM_REPO,
+        "--head", f"{FORK_OWNER}:{branch}", "--base", DEFAULT_BASE,
+        "--draft", "--title", pr_title, "--body", pr_body,
+    ], cwd=work_dir)
+    if code != 0:
+        return {"ok": False, "stage": "gh_pr_create", "error": out[:300],
+                "branch": branch}
+    pr_url = next((ln.strip() for ln in out.splitlines()
+                   if ln.strip().startswith("https://github.com/")), None)
+    return {"ok": True, "stage": "complete", "branch": branch,
+            "pr_url": pr_url, **change}
+
+
 # ── HTTP endpoints (admin observability) ───────────────────────────
 
 def _admin_authorized() -> bool:

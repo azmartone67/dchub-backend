@@ -273,6 +273,46 @@ def _try_recipe_stale_media_image(finding: dict) -> dict | None:
     }
 
 
+# ── Recipe: cron_if_mismatched (r85h — WALK 2nd real-PR recipe) ──────
+
+def _try_recipe_cron_mismatch(finding: dict) -> dict | None:
+    """For a cron_schedule_collision finding, draft a PR that staggers the
+    colliding cron. The actual file/minute is computed by the PR-writer
+    (open_cron_stagger_pr) against the LIVE repo — it picks ONE safe file and
+    NEVER touches evolve-cron.yml or any `if: github.event.schedule` guarded
+    workflow; DR-critical jobs stay put. WALK phase: real fork PR, human-merge."""
+    if finding.get("issue") != "cron_schedule_collision":
+        return None
+    expr = (finding.get("url") or "").strip() or "?"
+    if _already_drafted("cron_if_mismatched", "workflows:" + expr):
+        return None
+    return {
+        "recipe": "cron_if_mismatched",
+        "target_path": ".github/workflows/",
+        "title": f"[brain-l22] Stagger colliding cron `{expr}` in workflows",
+        "body": _build_pr_body(
+            recipe="cron_if_mismatched",
+            trigger=finding,
+            target=".github/workflows/*.yml",
+            diff_summary=(
+                f"Two+ workflows share cron `{expr}` — a thundering herd on the "
+                "2-replica backend + Neon. Stagger the non-canonical workflow's "
+                "minute to a free slot. The PR-writer picks ONE safe file and "
+                "NEVER edits evolve-cron.yml or any workflow with an "
+                "`if: github.event.schedule` job guard; DR-critical jobs stay "
+                "put; the edited file is yaml-validated."),
+            rationale=(finding.get("detail")
+                       or "Colliding crons stampede the backend + Neon at the "
+                          "same instant; staggering removes the herd."),
+            verification=("Confirm no two workflows share the new minute "
+                          "(`git grep cron: .github/workflows/`); the "
+                          "cron_schedule_collision finding clears on next scan."),
+        ),
+        "labels": ["brain-l22-auto-code", "recipe-cron-stagger",
+                   "needs-human-merge"],
+    }
+
+
 # ── PR body builder ─────────────────────────────────────────────────
 
 def _build_pr_body(recipe, trigger, target, diff_summary, rationale,
@@ -373,6 +413,34 @@ def _draft_pr(draft: dict, dry_run: bool) -> dict:
                       f"— falling back to Issue", flush=True)
         except Exception as _prw_err:
             print(f"[L22] PR-writer import/call exception: {_prw_err} "
+                  f"— falling back to Issue", flush=True)
+
+    # r85h: autonomy promotion for cron_if_mismatched (WALK 2nd recipe).
+    # Routes to open_cron_stagger_pr (fenced: never evolve-cron / schedule-
+    # guarded; DR jobs stay put; yaml-validated; DRAFT PR; human-merge). If the
+    # live repo has no SAFE collision it returns no_action — we record + stop
+    # (never open an empty Issue). Any other failure falls through to the Issue.
+    if (draft.get("recipe") == "cron_if_mismatched"
+            and os.environ.get("DCHUB_L22_REAL_PR", "0") == "1"):
+        try:
+            from routes.brain_layer22_pr_writer import open_cron_stagger_pr
+            pr_res = open_cron_stagger_pr(rationale=(draft.get("title") or "")[:200])
+            if pr_res.get("ok"):
+                _record(draft, dry_run=False, pr_url=pr_res.get("pr_url"),
+                         pr_number=None, branch=pr_res.get("branch"), error=None)
+                return {"ok": True, "pr_url": pr_res.get("pr_url"),
+                        "branch": pr_res.get("branch"),
+                        "via": "brain_layer22_pr_writer:cron", **draft}
+            if pr_res.get("no_action"):
+                _record(draft, dry_run=False, pr_url=None, pr_number=None,
+                         branch=None, error="no_action:" + str(pr_res.get("reason")))
+                return {"ok": True, "no_action": True,
+                        "reason": pr_res.get("reason"), **draft}
+            print(f"[L22] cron PR-writer failed: "
+                  f"{pr_res.get('error') or pr_res.get('stage')} "
+                  f"— falling back to Issue", flush=True)
+        except Exception as _cron_err:
+            print(f"[L22] cron PR-writer exception: {_cron_err} "
                   f"— falling back to Issue", flush=True)
 
     # MVP fallback: open an Issue (always works given GITHUB_TOKEN).
@@ -678,6 +746,24 @@ def _scan_and_draft(dry_run: bool) -> dict:
                         "recipe": draft["recipe"], "title": draft["title"], "result": res})
     except Exception: pass
 
+    # 4. r85h (WALK 2nd recipe): scan consistency-radar for cron_schedule_collision
+    # → draft a FENCED cron-stagger PR. open_cron_stagger_pr no-ops safely when the
+    # live workflows have no SAFE collision (e.g. already staggered), so this never
+    # opens an empty PR; evolve-cron.yml + schedule-guarded workflows are never
+    # touched (the writer fences them). One stagger PR per scan.
+    try:
+        radar2 = _internal("/api/v1/brain/consistency-radar")
+        for f in (radar2.get("findings") or []):
+            if f.get("issue") != "cron_schedule_collision":
+                continue
+            draft = _try_recipe_cron_mismatch(f)
+            if draft:
+                res = _draft_pr(draft, dry_run=dry_run)
+                (drafted if res.get("ok") else skipped).append({
+                    "recipe": draft["recipe"], "title": draft["title"], "result": res})
+                break
+    except Exception: pass
+
     return {
         "ok": True,
         "ran_at": _dt.datetime.utcnow().isoformat() + "Z",
@@ -735,17 +821,19 @@ def auto_code_list():
         ok=True,
         dry_run_default=_DRY_RUN,
         max_diff_lines=_MAX_DIFF_LINES,
-        recipes=["route_alias_404", "missing_route", "high_5xx", "gone_410_alias",
-                 "stale_media_image"],
-        real_pr_whitelist=["route_alias_404"],  # only this one writes a branch+PR
+        recipes=["route_alias_404", "cron_if_mismatched", "missing_route", "high_5xx",
+                 "gone_410_alias", "stale_media_image"],
+        real_pr_whitelist=["route_alias_404", "cron_if_mismatched"],  # these write a branch+PR
         draft_only=["missing_route", "high_5xx", "gone_410_alias", "stale_media_image"],
         recent_actions=actions,
-        note=("L22 recipe library (2026-06-06): route_alias_404 is the only recipe "
-              "whitelisted for a REAL PR (branch + file change); the rest — incl. the "
-              "new stale_media_image recipe that catches blank/stale post images — are "
-              "DRAFT-ONLY (open an issue with the proposed fix for a human to merge). "
-              "DRY_RUN=true by default; AUTO_CODE_DRY_RUN=0 enables live issue creation. "
-              "Draft-only on novel/risky classes is the intentional safety boundary."),
+        note=("L22 recipe library (r85h 2026-06-13): route_alias_404 + cron_if_mismatched "
+              "are whitelisted for REAL fork PRs (branch + file change, human-merge). "
+              "cron_if_mismatched staggers a colliding GitHub Actions cron, FENCED: never "
+              "edits evolve-cron.yml or any `if: github.event.schedule` guarded workflow, "
+              "DR jobs stay put, plain-int-minute crons only, yaml-validated, DRAFT PR. The "
+              "rest (incl. stale_media_image) are DRAFT-ONLY (issue for a human). "
+              "DCHUB_L22_REAL_PR=1 enables real PRs; AUTO_CODE_DRY_RUN=0 enables issues. "
+              "RUN/auto-merge stays OFF."),
     )
 
 
