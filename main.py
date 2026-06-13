@@ -4134,7 +4134,9 @@ def handle_well_known():
                     # Synced to the 38 tools registered on the live MCP server
                     # (dchub-mcp-server/server.mjs) + the static
                     # /.well-known/ai-agents.json — keep all three in sync.
-                    "tools_count": 30,
+                    # r78: was 30 — drifted 8 behind the live server
+                    # (deal_autopsy through site_selection_canvas below).
+                    "tools_count": 38,
                     "tools": [
                         "search_facilities", "get_facility", "get_market_intel",
                         "get_market_dcpi_rank", "get_gas_index", "get_grid_scoreboard",
@@ -4146,6 +4148,9 @@ def handle_well_known():
                         "get_grid_intelligence", "get_agent_registry", "get_backup_status",
                         "get_dchub_recommendation", "rank_markets", "find_alternatives",
                         "score_facility", "ai_capacity_index", "hyperscaler_deals",
+                        "deal_autopsy", "export_dataset", "get_changes",
+                        "grid_transition_radar", "list_saved_sites", "save_site",
+                        "set_market_alert", "site_selection_canvas",
                     ],
                     "tools_manifest": "https://dchub.cloud/.well-known/ai-agents.json",
                 },
@@ -4892,8 +4897,15 @@ def _leader_keepalive_loop():
                         print("🧍 [leader-election] lock held elsewhere → stepping DOWN", flush=True)
                     _LEADERSHIP['is_leader'] = False
             except Exception as _e:
-                print(f"[leader-election] re-acquire failed, failing OPEN: {_e}", flush=True)
-                _LEADERSHIP['is_leader'] = True   # DB error → assume leader (dedup backstops)
+                # r78: keep PRIOR state on a re-acquire error — promoting a
+                # FOLLOWER on a transient Neon blip created two simultaneous
+                # leaders (both replicas publishing/sending in the same
+                # minute). A standing leader keeps leading through the blip
+                # (fail-open preserved for it); a follower stays follower
+                # and retries in 30s.
+                print(f"[leader-election] re-acquire failed, keeping prior "
+                      f"state ({'leader' if _LEADERSHIP['is_leader'] else 'follower'}): {_e}",
+                      flush=True)
         except Exception as _e:
             print(f"[leader-election] keepalive loop error: {_e}", flush=True)
 
@@ -8267,9 +8279,13 @@ try:
     # at fixed UTC slots via linkedin_quad_daily.py) is the desired
     # behavior. Default OFF; set DCHUB_AUTOPUB_LEGACY=1 to re-enable.
     _legacy_autopub = os.environ.get("DCHUB_AUTOPUB_LEGACY", "").strip() in ("1", "true", "yes")
-    if not IS_FAILOVER and _legacy_autopub and IS_LEADER:
+    # r78: start on EVERY non-failover replica — the loop re-checks
+    # leadership per cycle (_is_publish_leader), so a follower's thread
+    # idles until promoted. Import-time IS_LEADER gating left a promoted
+    # follower with NO publisher thread at all (leader churn → dark).
+    if not IS_FAILOVER and _legacy_autopub:
         start_auto_publisher()
-        logger.info("✅ LinkedIn legacy auto-publisher launched (DCHUB_AUTOPUB_LEGACY=1)")
+        logger.info("✅ LinkedIn legacy auto-publisher launched (DCHUB_AUTOPUB_LEGACY=1; leader-gated per cycle)")
     elif IS_FAILOVER:
         logger.info("⏸️ LinkedIn auto-publisher PAUSED (IS_FAILOVER=true)")
         _record_pub_boot("linkedin", False, reason="IS_FAILOVER=true (read-only replica)")
@@ -8292,9 +8308,11 @@ try:
     # used to silently fail the gate, even though TWITTER_PUBLISHER_ENABLED's
     # check below already normalizes via .lower(). Now both gates are case-tolerant.
     _legacy_autopub_x = os.environ.get("DCHUB_AUTOPUB_LEGACY", "").strip().lower() in ("1", "true", "yes", "on", "enabled")
-    if not IS_FAILOVER and _legacy_autopub_x and IS_LEADER:
+    # r78: start on every non-failover replica; per-cycle leader check
+    # inside _twitter_loop owns dedup (see LinkedIn note above).
+    if not IS_FAILOVER and _legacy_autopub_x:
         start_twitter_publisher()
-        logger.info("✅ Twitter/X legacy auto-publisher launched")
+        logger.info("✅ Twitter/X legacy auto-publisher launched (leader-gated per cycle)")
     elif IS_FAILOVER:
         logger.info("⏸️ Twitter/X auto-publisher PAUSED (IS_FAILOVER=true)")
         _record_pub_boot_tw("twitter", False, reason="IS_FAILOVER=true (read-only replica)")
@@ -8308,9 +8326,11 @@ except Exception as e:
 
 try:
     from content_publisher import start_bluesky_publisher, _record_boot as _record_pub_boot_bs
-    if not IS_FAILOVER and IS_LEADER:
+    # r78: start on every non-failover replica; per-cycle leader check
+    # inside _bsky_loop owns dedup.
+    if not IS_FAILOVER:
         start_bluesky_publisher()
-        logger.info("✅ Bluesky auto-publisher launched (Neon-migrated) [leader]")
+        logger.info("✅ Bluesky auto-publisher launched (Neon-migrated; leader-gated per cycle)")
     elif IS_FAILOVER:
         logger.info("⏸️ Bluesky auto-publisher PAUSED (IS_FAILOVER=true)")
         _record_pub_boot_bs("bluesky", False, reason="IS_FAILOVER=true (read-only replica)")
@@ -8410,8 +8430,11 @@ try:
     # only; primary owns all brain work.
     if IS_FAILOVER:
         logger.info("⏸️ Autonomous Brain scheduler PAUSED (IS_FAILOVER=true — primary owns brain)")
-    elif not IS_LEADER:
-        logger.info("⏸️ Autonomous Brain scheduler PAUSED (follower replica — leader owns brain)")
+    # r78: followers now START the brain thread too — the loop's r65
+    # per-cycle is_current_leader() check keeps it idle until promoted.
+    # The old import-time gate meant leader churn (gunicorn worker
+    # recycles drop the advisory lock) could leave NO replica running
+    # the brain at all.
     elif ENABLE_BACKGROUND_SCHEDULERS or _brain_enabled:
         def _start_autonomous_brain():
             import time
@@ -13896,17 +13919,42 @@ def mcp_analytics():
         since = (datetime.utcnow() - timedelta(hours=hours)).isoformat()
 
         c = db.cursor()
+        # r78: external-vs-internal split. 93% of raw calls were our own
+        # dchub-selfheal worker + probes — the dashboard headline was
+        # reporting our own traffic as adoption. Headline numbers and the
+        # tool table are now EXTERNAL-only (same exclusion family as
+        # /api/v1/mcp/funnel); the raw total is kept alongside.
+        _ext = ("AND (platform IS NULL OR (platform NOT ILIKE 'dchub%%' "
+                "AND platform NOT ILIKE 'loop%%' "
+                "AND platform NOT ILIKE '%%probe%%' "
+                "AND platform NOT ILIKE '%%selfheal%%' "
+                "AND platform NOT ILIKE '%%sweep%%' "
+                "AND platform NOT ILIKE '%%regression-test%%'))")
         c.execute(
             'SELECT COUNT(*) FROM mcp_tool_calls WHERE created_at > %s', (since,)
         )
+        total_calls_incl_internal = c.fetchone()[0]
+        c.execute(
+            f'SELECT COUNT(*) FROM mcp_tool_calls WHERE created_at > %s {_ext}',
+            (since,)
+        )
         total_calls = c.fetchone()[0]
 
-        c.execute('''
+        c.execute(f'''
             SELECT tool_name, COUNT(*) as count, AVG(response_time_ms) as avg_ms
-            FROM mcp_tool_calls WHERE created_at > %s
+            FROM mcp_tool_calls WHERE created_at > %s {_ext}
             GROUP BY tool_name ORDER BY count DESC
         ''', (since,))
         tool_breakdown = c.fetchall()
+
+        # r78: per-CALL weighted mean. The old per-TOOL mean of means let one
+        # slow 8-call tool (get_grid_scoreboard, 45s avg) drag the headline
+        # from ~1.7s to ~3.1s.
+        c.execute(f'''
+            SELECT COALESCE(SUM(response_time_ms)::float / NULLIF(COUNT(*), 0), 0)
+            FROM mcp_tool_calls WHERE created_at > %s {_ext}
+        ''', (since,))
+        avg_ms_weighted = c.fetchone()[0] or 0
 
         c.execute('''
             SELECT platform, COUNT(*) as count
@@ -13924,36 +13972,50 @@ def mcp_analytics():
         ''', (since,))
         connections = c.fetchall()
 
-        c.execute('''
+        c.execute(f'''
             SELECT TO_CHAR(created_at, 'YYYY-MM-DD HH:00') as hour, COUNT(*) as count
-            FROM mcp_tool_calls WHERE created_at > %s
+            FROM mcp_tool_calls WHERE created_at > %s {_ext}
             GROUP BY TO_CHAR(created_at, 'YYYY-MM-DD HH:00') ORDER BY hour
         ''', (since,))
         hourly = c.fetchall()
 
-        c.execute('''
+        # r78: the live feed now honors the selected window (the old query
+        # had no WHERE at all, so the 1h/24h/7d selector was decorative)
+        # and excludes internal callers — it was 100% dchub-selfheal rows.
+        c.execute(f'''
             SELECT tool_name, platform, client_name, params,
                    response_time_ms, created_at
-            FROM mcp_tool_calls ORDER BY created_at DESC LIMIT 20
-        ''')
+            FROM mcp_tool_calls WHERE created_at > %s {_ext}
+            ORDER BY created_at DESC LIMIT 20
+        ''', (since,))
         recent = c.fetchall()
+
+        def _iso(ts):
+            # r78: jsonify renders datetimes as RFC-1123 ("Sat, 13 Jun 2026
+            # ... GMT"), which the dashboard's `new Date(s + 'Z')` parser
+            # turns into Invalid Date. Emit naive-UTC ISO strings instead
+            # (strip tzinfo too — "+00:00Z" is equally unparseable).
+            if hasattr(ts, 'astimezone') and getattr(ts, 'tzinfo', None) is not None:
+                ts = ts.astimezone(timezone.utc).replace(tzinfo=None)
+            return ts.isoformat() if hasattr(ts, 'isoformat') else ts
 
         return jsonify({
             "success": True,
             "period_hours": hours,
             "summary": {
                 "total_tool_calls": total_calls,
+                "total_calls_incl_internal": total_calls_incl_internal,
                 "unique_platforms": len(set(r[0] for r in platform_breakdown)),
                 "unique_tools_used": len(tool_breakdown),
-                "avg_response_ms": round(sum(r[2] or 0 for r in tool_breakdown) / max(len(tool_breakdown), 1))
+                "avg_response_ms": round(avg_ms_weighted)
             },
             "by_tool": [{"tool": r[0], "count": r[1], "avg_ms": round(r[2] or 0)} for r in tool_breakdown],
             "by_platform": [{"platform": r[0], "count": r[1]} for r in platform_breakdown],
             "connections": [{"platform": r[0], "client": r[1], "version": r[2],
-                           "method": r[3], "count": r[4], "last_seen": r[5]} for r in connections],
+                           "method": r[3], "count": r[4], "last_seen": _iso(r[5])} for r in connections],
             "hourly_trend": [{"hour": r[0], "count": r[1]} for r in hourly],
             "recent_calls": [{"tool": r[0], "platform": r[1], "client": r[2],
-                            "params": r[3], "response_ms": r[4], "time": r[5]} for r in recent]
+                            "params": r[3], "response_ms": r[4], "time": _iso(r[5])} for r in recent]
         })
     except Exception as e:
         # [fix-railway-p1] defensive except handler
@@ -14137,14 +14199,19 @@ def mcp_platforms_status():
                 {"platform": b[0], "action": b[1] or "ping",
                  "success": 200 <= int(b[2] or 0) < 400,
                  "status_code": b[2],
-                 "time": b[4].isoformat() if hasattr(b[4], 'isoformat') else b[4],
+                 # r78: TIMESTAMPTZ isoformat carries "+00:00", which the
+                 # dashboard's `new Date(s + 'Z')` turns into Invalid Date.
+                 # Normalize to naive-UTC ISO.
+                 "time": (b[4].astimezone(timezone.utc).replace(tzinfo=None).isoformat()
+                          if hasattr(b[4], 'astimezone') and getattr(b[4], 'tzinfo', None) is not None
+                          else (b[4].isoformat() if hasattr(b[4], 'isoformat') else b[4])),
                  "duration_ms": b[3]}
                 for b in broadcasts
             ],
             "mcp_endpoint": "https://dchub.cloud/mcp",
             "server_card": "https://dchub.cloud/.well-known/mcp/server-card.json",
             "tools_count": 38,
-            "server_version": "2.1.20"
+            "server_version": "2.2.4"
         })
     except Exception as e:
         # [fix-railway-p1] defensive except handler

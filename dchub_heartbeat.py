@@ -36,9 +36,19 @@ from contextlib import contextmanager
 from functools import wraps
 
 
+# r78: on Railway the extractors run INSIDE the backend container — POSTing
+# telemetry to themselves through the public Cloudflare edge added hundreds
+# of edge round-trips/day (and chronic 5xx rows whenever the edge hiccuped).
+# Loopback is the same handler minus the internet. Off-Railway callers (local
+# dev, any external runner) keep the public URL; env override always wins.
+_DEFAULT_HEARTBEAT_BASE = (
+    f"http://127.0.0.1:{os.environ.get('PORT', '8080')}/api/v1/sources"
+    if (os.environ.get("RAILWAY_ENVIRONMENT") or os.environ.get("RAILWAY_PROJECT_ID"))
+    else "https://dchub.cloud/api/v1/sources"
+)
 HEARTBEAT_BASE = os.environ.get(
     "DCHUB_HEARTBEAT_BASE",
-    "https://dchub.cloud/api/v1/sources",
+    _DEFAULT_HEARTBEAT_BASE,
 )
 HEARTBEAT_SECRET = os.environ.get(
     "DCHUB_ADMIN_SECRET",

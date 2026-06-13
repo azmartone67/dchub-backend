@@ -3322,17 +3322,35 @@ def _should_run_now(hour1, hour2, now_hour, now_minute, last_run_hours):
     return False, None
 
 
+def _is_scheduler_leader() -> bool:
+    """r78: per-tick leader check. Both replicas run this loop, so every
+    scheduled job — including the email/social senders — fired TWICE at the
+    same UTC slot. The fcntl lock is per-container and the in-process mutex
+    per-worker; neither spans replicas. Fail-open if leadership is
+    unknowable (worst case = prior behaviour; endpoint-side dedup backstops)."""
+    try:
+        from main import is_current_leader
+        return bool(is_current_leader())
+    except Exception:
+        return True
+
+
 def _scheduler_loop():
     """Main scheduler loop — checks every 60s if any crawler should run."""
     logger.info("📅 Crawler scheduler started")
     logger.info(f"   Schedule: {', '.join(f'{s[2]} @ {s[0]:02d}:00/{s[1]:02d}:00 UTC' for s in SCHEDULE)}")
     logger.info(f"   Manual-only: api_discovery (too heavy for scheduled runs)")
-    
+
     last_run_hours = {}
     last_reset_day = None
-    
+
     while not _stop_event.is_set():
         try:
+            # r78: leader-gate each tick. The thread keeps running on every
+            # replica so a promoted follower starts executing within 60s.
+            if not _is_scheduler_leader():
+                _stop_event.wait(60)
+                continue
             now = datetime.now(timezone.utc)
             
             if last_reset_day != now.day:

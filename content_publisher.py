@@ -2585,6 +2585,13 @@ def start_twitter_publisher():
             try:
                 time.sleep(150 if _first else 6 * 3600)
                 _first = False
+                # r78: per-cycle leader re-check (LinkedIn got this in r66;
+                # X/Bluesky only checked the import-time IS_LEADER snapshot,
+                # so a double-leader window — keepalive fail-open, gunicorn
+                # worker recycle re-election — could double-post here).
+                if not _is_publish_leader():
+                    logger.debug("Twitter auto-publisher: not leader this cycle — skipping")
+                    continue
                 bearer = os.environ.get('TWITTER_BEARER_TOKEN', '')
                 oauth1 = all([os.environ.get(k, '') for k in
                               ('TWITTER_API_KEY', 'TWITTER_API_SECRET',
@@ -2627,6 +2634,17 @@ def start_twitter_publisher():
                     _skip, _why = _should_skip_publish(cur, content_text or '', 'twitter')
                     if _skip:
                         logger.warning("Twitter auto-publisher: SKIPPED post %s for dedup/judgment — %s", post_id, _why)
+                        # r78: TERMINAL reject — a LIMIT-1 oldest-first queue
+                        # wedges forever on a rejected head row (post 750 was
+                        # re-judged every 6h for 5 days; X shipped 0 posts/7d
+                        # while 223 approved rows queued behind it). Skip
+                        # reasons are content-intrinsic (quality/dedup/editor)
+                        # and never pass on retry, so mark the row rejected to
+                        # advance the queue, and feed the lesson back to the
+                        # generator the way the LinkedIn path already does.
+                        cur.execute("UPDATE social_media_posts SET status = 'rejected' WHERE id = %s", (post_id,))
+                        conn.commit()
+                        _record_media_block('twitter', _why, content_text or '')
                         continue
                     success, result = _post_to_twitter(content_text)
                     now = datetime.utcnow().isoformat() + 'Z'
@@ -2680,6 +2698,10 @@ def start_bluesky_publisher():
             try:
                 time.sleep(180 if _first else 6 * 3600)
                 _first = False
+                # r78: per-cycle leader re-check — see Twitter loop note.
+                if not _is_publish_leader():
+                    logger.debug("Bluesky auto-publisher: not leader this cycle — skipping")
+                    continue
                 handle  = os.environ.get('BLUESKY_HANDLE', '').strip()
                 app_pwd = os.environ.get('BLUESKY_APP_PASSWORD', '').strip()
                 if not handle or not app_pwd:
@@ -2758,7 +2780,17 @@ def start_bluesky_publisher():
                         _skip, _why = _should_skip_publish(cur, content_text or '', 'bluesky')
                         if _skip:
                             logger.warning("Bluesky auto-publisher: SKIPPED post %s for dedup/judgment — %s", post_id, _why)
-                            break
+                            # r78: TERMINAL reject instead of break — breaking
+                            # on the head row wedged the whole drain on one bad
+                            # post (post 751, 5 days). Mark rejected so the
+                            # re-SELECT advances; count it against the drain
+                            # budget so a junk backlog can't burn unbounded
+                            # editor LLM calls in one cycle.
+                            cur.execute("UPDATE social_media_posts SET status = 'rejected' WHERE id = %s", (post_id,))
+                            conn.commit()
+                            _record_media_block('bluesky', _why, content_text or '')
+                            _attempts += 1
+                            continue
                         ok, result = _post_to_bluesky(content_text)
                         now = datetime.utcnow().isoformat() + 'Z'
                         if ok:

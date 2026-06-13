@@ -688,8 +688,14 @@ def market_short_html(slug):
         "description": desc,
         "url": f"https://dchub.cloud/markets/{slug_norm}",
         "additionalType": "https://schema.org/Place",
+        # r78: Google validates EVERY Dataset entity it finds — nested ones
+        # included — and requires name+description. These description-less
+        # isPartOf stubs were the GSC "16 invalid Datasets".
         "isPartOf": {"@type": "Dataset", "name": "DC Hub Data Center Market Intelligence",
-                     "url": "https://dchub.cloud/markets"},
+                     "url": "https://dchub.cloud/markets",
+                     "description": ("Live supply, vacancy, pricing, and pipeline "
+                                     "intelligence for global data center markets, "
+                                     "updated daily by DC Hub.")},
     }
     if _has(md.get('region')):
         _market_ld["containedInPlace"] = {"@type": "Place", "name": md.get('region')}

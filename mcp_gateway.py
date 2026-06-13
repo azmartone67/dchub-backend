@@ -1472,6 +1472,15 @@ class MCPGateway:
             while True:
                 try:
                     time.sleep(600)  # Every 10 minutes (reduced from 5 to ease pool pressure)
+                    # r78: leader-only — both replicas recomputed health
+                    # scores ~3s apart (the duplicate "💓 Health scores
+                    # updated" log pairs).
+                    try:
+                        from main import is_current_leader
+                        if not is_current_leader():
+                            continue
+                    except Exception:
+                        pass
                     try:
                         from main import try_get_pg_connection, return_pg_connection
                         conn = try_get_pg_connection()

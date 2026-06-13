@@ -28,7 +28,17 @@ from flask import Blueprint, jsonify, request
 cron_heartbeat_bp = Blueprint("cron_heartbeat", __name__,
                                url_prefix="/api/v1/cron")
 
-BASE = "https://api.dchub.cloud"
+# r78: the dispatcher runs INSIDE this Flask app — its job POSTs were going
+# out to api.dchub.cloud and back through Cloudflare to reach itself (and
+# api.dchub.cloud's non-/api/* routing 522s, which is what minted the
+# chronic /grid/<ISO> 5xx cluster via the grid-warmer dispatch). Loopback
+# reaches the same handlers directly. Jobs that must touch the public edge
+# (e.g. the grid warmer's own probes) set their own BASE.
+BASE = (
+    f"http://127.0.0.1:{os.environ.get('PORT', '8080')}"
+    if (os.environ.get("RAILWAY_ENVIRONMENT") or os.environ.get("RAILWAY_PROJECT_ID"))
+    else "https://api.dchub.cloud"
+)
 
 
 def _hit(url, method="POST", timeout=30):

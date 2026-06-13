@@ -472,6 +472,30 @@ def count_log() -> int:
 # Issue persistence (stuck-issue tracker — the "errors it misses" feature)
 # ---------------------------------------------------------------------------
 
+def last_outcomes_map(limit: int = 500) -> dict:
+    """{(issue_label, url): last_outcome} for the most recently seen rows.
+       Read-side companion to bump_persistence — lets the Layer-5 learn
+       loop skip deterministic-failure (permafail) issues in one query
+       instead of N+1 lookups."""
+    c = _conn()
+    if c is None:
+        return {}
+    try:
+        with c, c.cursor() as cur:
+            cur.execute(
+                """SELECT issue_label, url, last_outcome
+                     FROM brain_issue_persistence
+                    WHERE last_outcome IS NOT NULL
+                    ORDER BY last_seen_at DESC
+                    LIMIT %s;""", (limit,))
+            return {(r[0], r[1] or ""): r[2] for r in cur.fetchall()}
+    except Exception:
+        return {}
+    finally:
+        try: c.close()
+        except Exception: pass
+
+
 def bump_persistence(issue_label: str, url: str = "",
                      last_outcome: str | None = None) -> int:
     """Increment seen_count for this (issue_label, url). Returns the new

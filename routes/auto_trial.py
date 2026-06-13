@@ -486,16 +486,26 @@ def stats_endpoint():
         _ensure_schema(c)
         with c.cursor() as cur:
             try:
+                # r78: "identified" now counts EITHER email column — the
+                # operator-bind path (/auto-trial/bind, and /keys/identify
+                # fallthrough) writes operator_email, not signed_up_email,
+                # so partial wins were invisible and stage 3 read 0 even
+                # when binds happened. callers_7d now counts keys actually
+                # USED in the window — the old mint-time IP-hash count was
+                # dominated by crawler mints (meta-externalagent, Googlebot)
+                # and measured crawler IP diversity, not engaged callers.
                 cur.execute("""
                     SELECT COUNT(*) AS total,
                            COUNT(*) FILTER (WHERE minted_at >= NOW() - INTERVAL '7 days') AS minted_7d,
                            COUNT(*) FILTER (WHERE COALESCE(call_count,0) > 0
                                               OR last_used_at IS NOT NULL) AS activated,
-                           COUNT(*) FILTER (WHERE signed_up_email IS NOT NULL) AS signed_up,
-                           COUNT(DISTINCT request_ip_hash) FILTER (WHERE minted_at >= NOW() - INTERVAL '7 days') AS callers_7d
+                           COUNT(*) FILTER (WHERE signed_up_email IS NOT NULL
+                                              OR operator_email IS NOT NULL) AS signed_up,
+                           COUNT(DISTINCT request_ip_hash) FILTER (WHERE last_used_at >= NOW() - INTERVAL '7 days') AS callers_7d,
+                           COUNT(*) FILTER (WHERE operator_email IS NOT NULL) AS operator_bound
                       FROM auto_trial_keys
                 """)
-                r = cur.fetchone() or (0, 0, 0, 0, 0)
+                r = cur.fetchone() or (0, 0, 0, 0, 0, 0)
                 total, m7d, act, su, callers = (int(r[0] or 0), int(r[1] or 0),
                                                  int(r[2] or 0), int(r[3] or 0),
                                                  int(r[4] or 0))
@@ -503,6 +513,7 @@ def stats_endpoint():
                 out["trials_minted_7d"]         = m7d
                 out["trials_activated"]         = act
                 out["trials_signed_up"]         = su
+                out["trials_operator_bound"]    = int(r[5] or 0)
                 out["active_unique_callers_7d"] = callers
                 out["activated_rate_pct"] = round(100.0 * act / max(1, total), 2)
                 out["signed_up_rate_pct"] = round(100.0 * su  / max(1, total), 2)
@@ -513,12 +524,13 @@ def stats_endpoint():
             # defensively — if the table/columns differ on this deploy we
             # report 0 paid rather than 500 the whole endpoint.
             try:
+                # r78: match on either bound email (operator OR signed-up).
                 cur.execute("""
-                    SELECT COUNT(DISTINCT t.signed_up_email)
+                    SELECT COUNT(DISTINCT COALESCE(t.signed_up_email, t.operator_email))
                       FROM auto_trial_keys t
                       JOIN mcp_dev_keys k
-                        ON lower(k.email) = lower(t.signed_up_email)
-                     WHERE t.signed_up_email IS NOT NULL
+                        ON lower(k.email) = lower(COALESCE(t.signed_up_email, t.operator_email))
+                     WHERE COALESCE(t.signed_up_email, t.operator_email) IS NOT NULL
                        AND k.tier IN ('paid','enterprise')
                 """)
                 paid = int((cur.fetchone() or [0])[0] or 0)
@@ -555,7 +567,7 @@ def stats_endpoint():
     out["legend"] = {
         "1_minted":     "trial key issued inline in a paywall response",
         "2_activated":  "agent reconnected and USED the key (call_count>0) — proves inline-mint works",
-        "3_identified": "bound an email via /auto-trial/redeem",
+        "3_identified": "bound an email via /auto-trial/redeem, /auto-trial/bind, or /keys/identify (operator OR signed-up email)",
         "4_paid":       "that email later holds a real paid/enterprise key (JOIN mcp_dev_keys)",
     }
     out["generated_at"] = datetime.datetime.utcnow().isoformat() + "Z"

@@ -27,6 +27,16 @@ quick_redirects_bp = Blueprint("quick_redirects", __name__)
 #     return redirect("/vs/dchawk", code=301)
 
 
+@quick_redirects_bp.route("/agents", methods=["GET"], strict_slashes=False)
+def agents_plural_redirect():
+    """r78: /agents was the site's #1 4xx path (4.65k hits/day, 404 at edge
+    AND origin). The CF Pages worker forwards it to Flask (FLASK_HTML_PATHS
+    lists it as 'Agent registry landing') but no Flask route ever existed,
+    so every inbound agent following the /dc-hub-media link hit a 404.
+    Canonical agent landing is /agent (singular, advertised in llms.txt)."""
+    return redirect("/agent", code=301)
+
+
 @quick_redirects_bp.route("/industry", methods=["GET"], strict_slashes=False)
 def industry_index_redirect():
     return redirect("/industry/pulse", code=301)

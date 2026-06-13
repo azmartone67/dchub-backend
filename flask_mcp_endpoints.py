@@ -649,6 +649,34 @@ def identify_key():
             )
             row = cur.fetchone()
             if not row:
+                # r78: trial keys live in auto_trial_keys, NOT mcp_dev_keys —
+                # yet the MCP mint payload pointed agents at THIS endpoint, so
+                # identify failed 100% for the auto-trial cohort (0 of 214
+                # activated trial keys ever identified; the whole
+                # activated→identified funnel stage read zero by construction).
+                # Fall through with bind semantics (operator_email), which
+                # also lifts the key's daily cap 15 → 50.
+                if api_key.startswith("dch_trial_"):
+                    cur.execute(
+                        """UPDATE auto_trial_keys
+                               SET operator_email = %s
+                             WHERE api_key = %s
+                         RETURNING expires_at""",
+                        (email, api_key),
+                    )
+                    trow = cur.fetchone()
+                    if trow:
+                        return jsonify(
+                            ok=True, identified=True, key_type="trial",
+                            operator_email=email,
+                            daily_calls=50,
+                            message=("Email bound to this trial key — daily cap "
+                                     "raised 15 → 50 calls/day. Convert to a "
+                                     "365-day identified key: POST "
+                                     "/api/v1/keys/auto-trial/redeem "
+                                     "{api_key, email}. One-click upgrade: "
+                                     f"https://dchub.cloud/upgrade?key={api_key}"),
+                        ), 200
                 return jsonify(ok=False, error="unknown_api_key",
                                message="That key isn't recognized. Claim one at /api/v1/keys/claim."), 200
             existing_email, tier, status = row[0], row[1], row[2]
@@ -909,7 +937,11 @@ def track_tool_call():
                     bool((body.get('status') in (None, 'ok', 'success', 200, True)) or body.get('success', True)),
                     int((body.get('duration_ms') or body.get('response_time_ms') or 0) or 0),
                     (request.headers.get('X-Forwarded-For') or request.remote_addr or '')[:64],
-                    (request.headers.get('User-Agent') or '')[:300],
+                    # r78: prefer the CLIENT UA forwarded in the payload —
+                    # the request header here is the Node server's own
+                    # fetch UA, which is why every row since 5/18 read
+                    # user_agent='node'.
+                    ((body.get('user_agent') or request.headers.get('User-Agent') or ''))[:300],
                     (str(_r_session)[:200] if _r_session else None),
                 )
             )

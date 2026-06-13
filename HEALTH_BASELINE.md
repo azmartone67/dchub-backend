@@ -30,7 +30,7 @@ fence in §5 fails the build if a forbidden one returns.
 | M&A deals | `COUNT(*)`=**2,032** | "2,000+ tracked deals" | **"$324B"** (uncomputable; `value_usd` sparse; live route falls back to $85B) |
 | Countries | **178** | "170+" | "140+" |
 | DCPI markets | **300** (Neon dedup 2026-06-08: COUNT(DISTINCT market_name)−3 aggregates; raw 306) | "300" / "300+" | **340+** (gross over-claim; ~300 is real, grew from 232 via intl) |
-| MCP tools | **31** (manifest incl. Worker-only `semantic_search`) | "31" | (server.mjs `tools/list` = 30; both defensible) |
+| MCP tools | **38** (live `tools/list` on dchub.cloud/mcp; server.mjs registers 38 `trackedTool`. `semantic_search` no longer exists) | "38" | 11/19/20/24/30/31/33/40 (all stale drift — fenced front + back) |
 | Active MCP clients | **Claude + Cursor** | "used by Claude and Cursor" | "96+/90+ AI platforms"; long "cited by ChatGPT, Gemini, Perplexity, Groq" lists |
 
 ## 3. Config invariants (settings that MUST hold)
@@ -71,6 +71,44 @@ fence in §5 fails the build if a forbidden one returns.
 
 ## 7. Human-only follow-ups (can't be automated)
 
-1. **CF `dchubapiproxy` worker** — one `$324B` line remains in the out-of-repo `mcp.json`. CF dashboard → Workers → `dchubapiproxy` → Edit Code → replace `Tracks $324B+ in deals.` → `2,000+ tracked deals (disclosed value where public).` → Save & Deploy.
-2. **Google Search Console** — re-submit `sitemap.xml` to nudge re-crawl of the ~12.8k newly-enriched facility pages.
+1. **CF `dchubapiproxy` worker** — one `$324B` line remains in the out-of-repo `mcp.json`. CF dashboard → Workers → `dchubapiproxy` → Edit Code → replace `Tracks $324B+ in deals.` → `2,000+ tracked deals (disclosed value where public).` → Save & Deploy. **Also bump its `version` 2.1.20 → 2.2.4** while in there.
+2. **Google Search Console** — add the GSC service-account email as an owner/full user on the `sc-domain:dchub.cloud` property (`/api/gsc/status` shows `verified:false` — that's the blocker; the env var + OAuth already work), THEN re-submit `sitemap.xml` (UI or `POST /api/v1/gsc/sitemap/submit`). Do **not** wire the Indexing API for facility pages (Google restricts it to JobPosting/BroadcastEvent — policy risk).
 3. **Journalist outreach** — drafts auto-stage at `/admin/partnerships/review`; add the editor email you know + approve to send (we never guess journalist emails or auto-send).
+4. **MCP registry claims** (raise the media-organism `source_of_truth`/distribution scores): claim Glama (owner-only), fill `mcphive.com/submit.html`, nudge `stacklok/toolhive-catalog#1252` + `lobehub/lobehub#15667`, claim yellowmcp.
+5. **`api.dchub.cloud` non-`/api/*` routing** — returns 522 (dead origin) for `/grid/<ISO>` etc. CF-dashboard-managed; either fix the origin or retire the subdomain. r78 already pointed internal probes off it (warmer → `dchub.cloud`, heartbeats → loopback).
+
+## 8. r78 invariants (2026-06-12 platform-wide QA pass)
+
+The big stabilization pass. New invariants that MUST hold — diff reality against these when self-healing/funnel/traffic regress:
+
+**Brain self-heal loop (was dead 06-05 → 06-12):**
+- `routes/brain_v2_layer4.py:_call_claude` — `max_tokens=4000` (NOT 800: reasoning-tier models exhaust 800 on thinking → `no_text_block`/`parse_fail`), checks `stop_reason=='max_tokens'`, joins ALL text blocks. *Layer-5 proposals flatlined for 12 days because fable-5/opus on an 800-token budget never emitted a text block.*
+- `routes/brain_v2_layer5.py:learn_backend_issues` — permafail slow-lane (deterministic-failure outcomes retry ~weekly via crc32, not every cycle) + cycle-rotation offset + writes `brain_learning_log` (so `last_log_at` reflects real Layer-5 activity, not just the dead Layer-4 frontend path).
+- `routes/internal_bot_circuit_breaker.py` — **loopback (`127.0.0.1`/`::1`) is exempt.** This breaker (30 req/min/UA) was 429-ing the brain's OWN localhost radar/heartbeat probes (the 06-12 429 flood). `remote_addr` is the socket peer — unspoofable. Never widen to UA/Referer (CF injects a dchub.cloud Referer).
+- `routes/brain_autopilot.py:_compute_heartbeat_sync` returns a plain dict (NOT `jsonify` — it runs in a daemon thread with no app context; the old tail crashed every cold-start with "Working outside of application context").
+
+**Replica safety (2 replicas — leader-election EXISTS at `main.py:4793`, advisory lock `911714323`):**
+- Per-cycle `is_current_leader()` gate now wraps: Twitter/Bluesky publishers (`content_publisher.py`), crawler scheduler (`crawler_scheduler.py` — gates ~60 email/social jobs/day), self-heal (`dchub_self_heal.py`), deal ingester, package-stats, mcp-gateway health loop. *Before: all ran on BOTH replicas → double-posts/emails/work.*
+- Publishers + brain now START on every non-failover replica (per-cycle gate idles followers) — a promoted follower must not go dark on leader churn (gunicorn `--max-requests` recycles drop the lock).
+- Keepalive re-acquire error (`main.py:~4894`) keeps PRIOR leader state — never promotes a follower on a transient Neon blip (that made TWO leaders).
+- Editor-rejected social posts are marked `status='rejected'` (terminal) + `_record_media_block` — a LIMIT-1 oldest-first queue wedges forever on a rejected head row otherwise (X shipped 0/7d behind post 750 for 5 days).
+
+**Self-traffic diet (was ~150k self-requests/day through the public edge):**
+- `dchub_self_heal.heal_cycle` — leader-gated + **DB-backed interval gate** (`self_heal_events` `__cycle__` marker, 5.5h). The APScheduler "6h interval" was fiction: `--max-requests` recycling re-ran the 60s `heal_warmup` ~every 35 min → 71k DCHubHealer req/day.
+- `routes/brain_consistency_radar.py:check_dead_internal_links` — deadlink cache persists to `brain_meta` (survives worker recycles + spans replicas), not just in-process.
+- `grid_cache_warmer.py` — `BASE=https://dchub.cloud` (was `api.dchub.cloud` → 522s); `HOT_ISOS` = the 9 REAL `/grid/<x>` routes only (dropped TVA/SOCO/FRCC/BPA/AESO — EIA BAs with no page → chronic 5xx ×48/day).
+- `dchub_heartbeat.py` + `routes/cron_heartbeat.py` — on Railway, BASE = `127.0.0.1:$PORT` (internal telemetry to itself via loopback, not the edge).
+- `/agents` → `301 /agent` (`routes/quick_redirects.py`) — was the #1 4xx path (4.65k/day, 404 at edge+origin).
+
+**Funnel (activated→identified was 0% by construction):**
+- `flask_mcp_endpoints.py:identify_key` falls through to `auto_trial_keys` for `dch_trial_*` keys (they live there, NOT `mcp_dev_keys` — identify failed for 100% of the trial cohort). Binding raises the cap 15→50/day.
+- `routes/auto_trial.py:stats` counts EITHER `operator_email` OR `signed_up_email` as identified; `active_unique_callers_7d` counts keys USED (not mint-time IP-hash, which was crawler-dominated).
+- `server.mjs:buildAutoMintBlock` leads the email CTA with the real 15→50/day incentive (was buried "Optional").
+
+**Dashboards (truth):**
+- `/api/v1/mcp/analytics` — external-only headline (excludes dchub-selfheal/probes which were 93% of calls), weighted per-call avg (not mean-of-means), ISO timestamps (not RFC-1123 → "Invalid Date"), windowed recent_calls.
+- `ai-integrations.html` — `parseUTC()` handles all 3 backend timestamp shapes; 38-tool header; one-directional logo match (`t` no longer claims Anthropic's logo); prefers backend `logo_url`.
+
+**Fences:** frontend `scripts/accuracy_fence.py` now bans stale tool counts (`11/19/20/24/30/31/33 Tools`, `of N available`, `"tools_count": <not 38>`) — wired in `deploy-pages.yml`. Backend `tests/test_honest_numbers.py` already bans prose counts. **38 tools is canonical across both.**
+
+**MCP traffic-collapse note:** the "35.6k calls/7d" headline was ~93% internal `dchub-selfheal`. Real external MCP traffic fell 39.7k→~500 calls/wk (May→June); the May peak was ~the owner's own enterprise key (`dchub_live_08f4f…`, azmartone@gmail.com). Diagnosing the real-external collapse (candidates: scraper-block r-5/27, paywall reframe ~6/1, a Claude.ai connector change) is the top open growth question — a funnel fix can't convert traffic that's gone.

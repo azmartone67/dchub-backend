@@ -720,7 +720,10 @@ def _methodology_jsonld() -> str:
         "isAccessibleForFree": True,
         "creator": {"@type": "Organization", "name": "DC Hub", "url": "https://dchub.cloud"},
         "publisher": {"@type": "Organization", "name": "DC Hub", "url": "https://dchub.cloud"},
-        "isPartOf": {"@type": "Dataset", "name": "The State of Data Center Power", "url": STABLE_URL},
+        "isPartOf": {"@type": "Dataset", "name": "The State of Data Center Power", "url": STABLE_URL,
+                     "description": ("DC Hub's flagship live report on US data center "
+                                     "power: DCPI market verdicts, grid headroom, and "
+                                     "interconnection-queue reality, recomputed daily.")},
         "distribution": [
             {"@type": "DataDownload", "encodingFormat": "application/json",
              "contentUrl": "https://dchub.cloud/api/v1/dcpi/leaderboard"},

@@ -321,7 +321,19 @@ def _scheduler_loop(get_db):
 
     while _scheduler_running:
         try:
-            run_ingestion(get_db)
+            # r78: leader-only — both replicas ran the full RSS fetch +
+            # classify every 6h (deal_hash upserts made it safe but 2×
+            # wasteful on external fetches and Neon writes).
+            _lead = True
+            try:
+                from main import is_current_leader
+                _lead = bool(is_current_leader())
+            except Exception:
+                pass
+            if _lead:
+                run_ingestion(get_db)
+            else:
+                logger.debug("Deal ingestion: not leader — skipping cycle")
         except Exception as e:
             logger.error(f"Ingestion error (will retry next cycle): {e}")
         # Sleep in 60-second chunks so we can stop cleanly

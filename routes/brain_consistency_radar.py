@@ -5016,9 +5016,19 @@ def check_outbound_distribution_health() -> list[dict]:
 
     import datetime as _dt
     now = _dt.datetime.now(_dt.timezone.utc)
+    # r78: never flag registries already declared dead (no working submit
+    # path). mcphub sat in the stuck-issue worklist forever because this
+    # checker kept re-filing it every cycle while the outreach module had
+    # already written it off.
+    try:
+        from routes.mcp_registry_outreach import _DEAD_REGISTRY_KEYS as _DEAD_RK
+    except Exception:
+        _DEAD_RK = set()
     seen = set()
     for tk, tname, outcome, ts, detail in audits:
         seen.add(tk)
+        if tk in _DEAD_RK:
+            continue
         if ts.tzinfo is None:
             ts = ts.replace(tzinfo=_dt.timezone.utc)
         age_h = (now - ts).total_seconds() / 3600.0
@@ -5043,7 +5053,7 @@ def check_outbound_distribution_health() -> list[dict]:
     try:
         from routes.mcp_registry_outreach import DISCOVERY_TARGETS as _TARGETS
         for t in _TARGETS:
-            if t["key"] not in seen:
+            if t["key"] not in seen and t["key"] not in _DEAD_RK:
                 findings.append({
                     "issue":  "outbound_distribution_health",
                     "url":    f"target:{t['key']}",
@@ -6730,6 +6740,23 @@ def check_dead_internal_links() -> list[dict]:
         return findings
     import time as _t
     now = _t.time()
+    # r78: hydrate the in-process cache from brain_meta first. The 6h TTL
+    # was a fiction in prod — gunicorn --max-requests recycles the worker
+    # every ~35 min and wipes _DEADLINK_CACHE, so nearly every scan re-ran
+    # the full ~60-URL sweep (~47.8k deadlink-probe requests/day at CF,
+    # the single largest self-traffic source). The DB copy makes the TTL
+    # window shared across worker recycles AND both replicas.
+    if _DEADLINK_CACHE["findings"] is None:
+        try:
+            from routes.brain_v2_store import get_meta as _gm_dl
+            _row_dl = _gm_dl("deadlink_sweep_cache")
+            if _row_dl and _row_dl.get("value"):
+                import json as _json_dl
+                _payload_dl = _json_dl.loads(_row_dl["value"])
+                _DEADLINK_CACHE["ts"] = float(_payload_dl.get("ts") or 0)
+                _DEADLINK_CACHE["findings"] = _payload_dl.get("findings") or []
+        except Exception:
+            pass
     # Serve the cached sweep result if still fresh — dedups the ~60-URL probe
     # across every brain workflow that hits the radar inside the TTL window.
     if (_DEADLINK_CACHE["findings"] is not None
@@ -6831,6 +6858,15 @@ def check_dead_internal_links() -> list[dict]:
     # Cache this sweep so concurrent/subsequent radar callers reuse it.
     _DEADLINK_CACHE["ts"] = now
     _DEADLINK_CACHE["findings"] = list(findings)
+    # r78: persist to brain_meta so the TTL survives worker recycles and
+    # spans replicas (see hydrate note at the top of this function).
+    try:
+        from routes.brain_v2_store import set_meta as _sm_dl
+        import json as _json_dl2
+        _sm_dl("deadlink_sweep_cache",
+               _json_dl2.dumps({"ts": now, "findings": list(findings)}))
+    except Exception:
+        pass
     return findings
 
 

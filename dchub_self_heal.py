@@ -269,6 +269,22 @@ def release_lock(c):
         pass
 
 
+def _last_cycle_age_hours():
+    """Age of the last cycle-start marker, from Postgres — survives worker
+    recycles and is shared across replicas (the two things the in-process
+    APScheduler interval can't see)."""
+    if not DATABASE_URL:
+        return None
+    try:
+        with _conn() as c, c.cursor() as cur:
+            cur.execute("SELECT EXTRACT(EPOCH FROM (NOW() - MAX(ts)))/3600.0 "
+                        "FROM self_heal_events WHERE endpoint = '__cycle__';")
+            row = cur.fetchone()
+            return float(row[0]) if row and row[0] is not None else None
+    except Exception:
+        return None
+
+
 def heal_cycle():
     """One full cycle: probe → detect → fix → log.
 
@@ -280,6 +296,27 @@ def heal_cycle():
     indicating that ONE fixer is doing 80% of the work and the real
     drift lives at its target.
     """
+    # r78 (2026-06-12): leader gate + DB-backed interval gate. The "6h
+    # interval" set in r72 was a fiction in prod: gunicorn --max-requests
+    # recycles the worker every ~35 min, every recycle re-runs
+    # start_scheduler → the 60s `heal_warmup` one-shot → a full ~414-probe
+    # cycle through the public edge, on BOTH replicas. CF measured ~71k
+    # DCHubHealer requests/day vs the ~1.6k design. The advisory lock only
+    # prevents OVERLAP, not cadence. This gate lives in Postgres, so it
+    # holds across recycles and replicas.
+    try:
+        from main import is_current_leader
+        if not is_current_leader():
+            log.info("self_heal: not leader — skipping cycle")
+            return {"skipped": True, "reason": "not_leader"}
+    except Exception:
+        pass  # fail-open: leadership unknown → behave as before
+    _age_h = _last_cycle_age_hours()
+    if _age_h is not None and _age_h < 5.5:
+        log.info("self_heal: last cycle %.1fh ago (<5.5h) — interval gate skip",
+                 _age_h)
+        return {"skipped": True, "reason": "interval_gate",
+                "last_cycle_hours_ago": round(_age_h, 2)}
     lock = acquire_lock()
     if lock is None:
         log.info("self_heal: another worker holds lock, skipping")
@@ -290,6 +327,9 @@ def heal_cycle():
                 "by_fixer": {}, "by_pattern": {}}
     try:
         ensure_log_table()
+        # r78: cycle-start marker — the row the interval gate reads.
+        log_event(cycle_id, "__cycle__", "cycle_start", "none", True,
+                  "interval-gate marker (r78)")
         for path, kind in PROBES:
             status, body = probe(path, kind)
             summary["probes"] += 1

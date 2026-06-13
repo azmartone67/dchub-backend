@@ -743,7 +743,10 @@ def _jsonld(d: dict) -> str:
         "citation": d["citation"]["apa"],
         "creditText": d["citation"]["apa"],
         "isPartOf": {"@type": "Dataset", "name": "The State of Data Center Power",
-                     "url": "https://dchub.cloud/state-of-power"},
+                     "url": "https://dchub.cloud/state-of-power",
+                     "description": ("DC Hub's flagship live report on US data center "
+                                     "power: DCPI market verdicts, grid headroom, and "
+                                     "interconnection-queue reality, recomputed daily.")},
     }, ensure_ascii=False)
 
 

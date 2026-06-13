@@ -4182,6 +4182,9 @@ DCPI_MARKET_TEMPLATE = """<!DOCTYPE html>
 <meta charset="utf-8">
 <title>{{ s.market_name }} · DCPI {{ s.excess_power_score }} | DC Hub</title>
 <meta name="viewport" content="width=device-width, initial-scale=1">
+<!-- r78: all ~308 DCPI city pages shipped WITHOUT a meta description (GSC
+     indexability drag) — og:description existed but Google reads name=description. -->
+<meta name="description" content="{{ s.market_name }} Data Center Power Index: {{ s.verdict or 'LOW_SIGNAL' }} verdict, Excess Power {{ (s.excess_power_score or 0)|round(1) }}/100, Grid Constraint {{ (s.constraint_score or 0)|round(1) }}/100{{ (', ' ~ s.iso) if s.iso else '' }}. Power availability, time-to-power, and queue context — recomputed daily by DC Hub.">
 <meta property="og:title" content="DCPI {{ s.market_name }} · Excess {{ s.excess_power_score }} · Constraint {{ s.constraint_score }}">
 <meta property="og:description" content="{{ s.verdict }} · ~{{ (s.time_to_power_months or 0)|round(0)|int }} months to power. Updated daily.">
 <meta property="og:image" content="https://dchub.cloud/dcpi/og/{{ s.market_slug }}.png">
@@ -4207,7 +4210,7 @@ DCPI_MARKET_TEMPLATE = """<!DOCTYPE html>
   "creator": {"@type": "Organization", "name": "DC Hub", "url": "https://dchub.cloud"},
   "publisher": {"@type": "Organization", "name": "DC Hub", "url": "https://dchub.cloud"},
   "isAccessibleForFree": true,
-  "isPartOf": {"@type": "Dataset", "name": "Data Center Power Index (DCPI)", "url": "https://dchub.cloud/dcpi"},
+  "isPartOf": {"@type": "Dataset", "name": "Data Center Power Index (DCPI)", "url": "https://dchub.cloud/dcpi", "description": "Daily-recomputed power-readiness index for 300 data center markets: Excess Power score, Grid Constraint score, and a BUILD/CAUTION/AVOID verdict per market."},
   "keywords": {{ (("data center power, DCPI, " ~ s.market_name ~ ", grid constraint, excess power, " ~ (s.iso or "ISO") ~ ", site selection, " ~ (s.verdict or "LOW_SIGNAL")))|tojson }},
   "temporalCoverage": "2024-01-01/..",
   "citation": "DC Hub Data Center Power Index, dchub.cloud/dcpi",

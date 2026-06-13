@@ -2308,11 +2308,12 @@ def _compute_heartbeat_sync():
     _HEARTBEAT_CACHE["payload"] = out
     _HEARTBEAT_CACHE["ts"]      = _time.time()
 
-    from flask import jsonify as _j
-    resp = _j(out)
-    resp.headers["Cache-Control"] = "public, max-age=30"
-    resp.headers["Access-Control-Allow-Origin"] = "*"
-    return resp, 200
+    # Return the plain dict. The only caller is the daemon-thread refresh
+    # (_compute_heartbeat_async), which has no Flask app context — the old
+    # jsonify() tail crashed there on every cold-start compute ("Working
+    # outside of application context") right after the cache stash. The
+    # request path serves the cached payload via _serve_cached.
+    return out
 
 
 @brain_autopilot_bp.route("/api/v1/brain/autopilot/recent", methods=["GET"])

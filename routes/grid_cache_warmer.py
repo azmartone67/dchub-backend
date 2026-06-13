@@ -30,10 +30,16 @@ grid_warmer_bp = Blueprint("grid_warmer", __name__,
                             url_prefix="/api/v1/grid-warmer")
 
 
+# r78: match routes/grid_public_routes.ISOS exactly. TVA/SOCO/FRCC/BPA/AESO
+# are EIA balancing authorities with NO /grid/<x> page — warming them minted
+# 5 guaranteed errors per run (the chronic /grid/* 5xx ×48/day cluster in CF).
 HOT_ISOS = ["PJM", "CAISO", "ERCOT", "MISO", "NYISO", "SPP",
-             "ISONE", "TVA", "SOCO", "FRCC", "BPA", "AESO"]
+             "ISONE", "NGESO", "AEMO"]
 
-BASE = "https://api.dchub.cloud"
+# r78: warm the edge users actually hit. api.dchub.cloud's non-/api/* routing
+# points at a dead origin (522 on /grid/<ISO>) AND visitors browse
+# dchub.cloud — warming api.dchub.cloud's cache helped nobody.
+BASE = "https://dchub.cloud"
 
 # 12 ISOs × 2 URLs = 24 fetches. 24 workers means each fetch runs in
 # its own thread — total wall clock ≈ max single-fetch latency.

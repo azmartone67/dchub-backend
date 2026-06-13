@@ -83,8 +83,11 @@ _TARGETS = [
     # query traffic.
     ("registry.modelcontextprotocol.io",
      "https://registry.modelcontextprotocol.io/v0/servers?search=dchub", "GET", "registry"),
-    ("smithery.ai",
-     "https://smithery.ai/server/azmartone67/dchub", "GET", "registry"),
+    # r78: smithery DROPPED from the hourly set — their edge 429s bot UAs
+    # on the HTML page, so this probe produced a permanent FAIL row on the
+    # /dc-hub-media broadcast panel (and a daily 24-hit bot pattern against
+    # a registry we're already listed on). The mcp_registry_outreach daily
+    # audit (registry.smithery.ai API, browser-safe) owns smithery health.
     ("mcp.so",
      "https://mcp.so/server/dchub", "GET", "registry"),
     ("glama.ai",

@@ -162,9 +162,17 @@ def _refresh_loop():
     time.sleep(30)
     while True:
         try:
-            out = _refresh_all()
-            log.info("package_stats refresh: %d packages, %d errors",
-                     len(out.get("packages", [])), len(out.get("errors", [])))
+            # r78: leader-only — both replicas hit PyPI/npm every 6h.
+            _lead = True
+            try:
+                from main import is_current_leader
+                _lead = bool(is_current_leader())
+            except Exception:
+                pass
+            if _lead:
+                out = _refresh_all()
+                log.info("package_stats refresh: %d packages, %d errors",
+                         len(out.get("packages", [])), len(out.get("errors", [])))
         except Exception as e:
             log.warning("package_stats refresh failed: %s", e)
         time.sleep(6 * 3600)  # 6h cadence

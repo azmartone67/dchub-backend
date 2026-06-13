@@ -733,6 +733,31 @@ def learn_backend_issues():
     # large finding set can't burn the model budget in one cron tick, while
     # still iterating every issue so unmapped ones get a recorded outcome.
     # Proposals go to the review queue only — no auto-PR / auto-apply here.
+    #
+    # r78 (2026-06-12) STARVATION FIX: two pathologies starved the 10-call
+    # budget for 12 straight days (proposals flatlined 06-05): every cycle
+    # burned all calls on the same head-of-list issues, which then failed
+    # deterministically (model refusals / validator rejections), while 34
+    # findings sat at deferred_rate_cap forever.
+    #   1. PERMAFAIL SLOW LANE — issues whose persisted last_outcome is a
+    #      deterministic failure retry ~weekly (1 cycle in 28), not every
+    #      cycle.
+    #   2. ROTATION — start the scan at a cycle-dependent offset so tail
+    #      findings get budget even when the head is dense with fixables.
+    import time as _t
+    import zlib as _zlib
+    _cycle_no = int(_t.time() // 21600)            # one tick per 6h cron
+    _PERMAFAIL = {"refused", "rejected_false_syntax_claim",
+                  "rejected_sqlite_hallucination"}
+    try:
+        from routes.brain_v2_store import last_outcomes_map as _lom
+        _prev_outcomes = _lom()
+    except Exception:
+        _prev_outcomes = {}
+    if len(backend_issues) > 1:
+        _rot = _cycle_no % len(backend_issues)
+        backend_issues = backend_issues[_rot:] + backend_issues[:_rot]
+
     results = []
     claude_calls = 0
     for issue in backend_issues:
@@ -775,6 +800,21 @@ def learn_backend_issues():
                 or 'cron_phase_missing_schedule' in _lbl
                 or ('schedule' in _lbl and 'cron' in _lbl)):
             results.append({"url": url, "outcome": "config_not_code"})
+            continue
+
+        # Permafail slow lane (see r78 note above the loop): a finding whose
+        # last attempt ended in a deterministic failure gets retried roughly
+        # weekly — same window + same prompt will just refuse again, and the
+        # 3 unsafe_db_conn_pattern refusals alone were eating 3 of 10 calls
+        # every cycle. crc32 (not hash()) so the lane is stable across
+        # worker restarts despite PYTHONHASHSEED randomization.
+        _prev = (_prev_outcomes.get(((issue.get("issue") or "")[:200], url))
+                 or _prev_outcomes.get((issue.get("issue") or "", url)))
+        if (_prev in _PERMAFAIL
+                and (_cycle_no % 28) !=
+                    (_zlib.crc32(f"{label}|{url}".encode()) % 28)):
+            results.append({"url": url,
+                            "outcome": f"skipped_permafail:{_prev}"})
             continue
 
         # Map to source files. First try the static hand-curated map;
@@ -898,12 +938,27 @@ def learn_backend_issues():
     # finding per cycle (no double-increment). Never breaks the learn response.
     try:
         from routes.brain_v2_store import (bump_persistence as _bp_oc,
+                                           log_event as _le_oc,
                                            MAX_ISSUE_LABEL_LEN as _MIL_oc)
         for _iss, _res in zip(backend_issues, results):
             _oc = (_res.get("outcome") or _res.get("status") or "").strip()
             _bp_oc(issue_label=(_iss.get("issue") or "")[:_MIL_oc],
                    url=_iss.get("url") or "",
                    last_outcome=(_oc or None))
+            # r78: Layer-5 now writes brain_learning_log too. Before this,
+            # the backend learn path had NO log writer, so last_log_at froze
+            # (2026-05-29) while ~40 real learn calls/day ran invisibly and
+            # /brain/status kept reporting a stale log as "healthy". Skip
+            # the high-volume non-attempt outcomes so the log stays signal.
+            if _oc and _oc not in ("deferred_rate_cap", "config_not_code",
+                                   "no_source_map") \
+                   and not _oc.startswith("skipped_permafail"):
+                try:
+                    _le_oc({"issue_label": (_iss.get("issue") or "")[:_MIL_oc],
+                            "outcome": _oc[:200],
+                            "url": _iss.get("url") or ""})
+                except Exception:
+                    pass
     except Exception:
         pass
 

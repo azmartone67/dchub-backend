@@ -134,6 +134,14 @@ def register_internal_bot_circuit_breaker(app):
         path = request.path or ""
         if path in _BYPASS_PATHS:
             return None
+        # Loopback exemption: the brain's own localhost probes (radar,
+        # heartbeat refresh, layer sweeps) must never be throttled by
+        # their own app — throttling them blinds the brain (the 2026-06
+        # 429 flood). remote_addr is the socket peer address, never
+        # header-derived, so this is unspoofable from outside. Internal
+        # UAs arriving via the public edge still hit the breaker.
+        if (request.remote_addr or "") in ("127.0.0.1", "::1"):
+            return None
         ua = request.headers.get("User-Agent") or ""
         bucket = _is_internal_ua(ua)
         if not bucket:

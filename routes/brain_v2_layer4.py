@@ -344,9 +344,14 @@ def _call_claude(prompt: str, system: str) -> tuple[str | None, str | None]:
         one_m_beta_header = lambda: ""          # noqa: E731
     last_err = None
     for _i, _model in enumerate(_models):
+        # 4000, not 800: reasoning-tier models (opus-4-8 / fable-5) spend
+        # tokens on thinking blocks before the text block — an 800-token
+        # budget exhausted mid-think returns no text at all ("no_text_block")
+        # or a truncated JSON ("parse_fail: Unterminated string"), which is
+        # exactly what starved Layer-5 from 2026-06-05 onward.
         body = json.dumps({
             "model": _model,
-            "max_tokens": 800,
+            "max_tokens": 4000,
             "system": system,
             "messages": [{"role": "user", "content": prompt}],
         }).encode("utf-8")
@@ -373,11 +378,17 @@ def _call_claude(prompt: str, system: str) -> tuple[str | None, str | None]:
             headers=_headers,
         )
         try:
-            with urllib.request.urlopen(req, timeout=20) as r:
+            with urllib.request.urlopen(req, timeout=45) as r:
                 data = json.loads(r.read().decode("utf-8"))
-            for block in data.get("content", []):
-                if block.get("type") == "text":
-                    return block.get("text", ""), None
+            # A max_tokens stop means the tail of the answer is missing —
+            # any JSON in it is unparseable garbage. Fail loudly instead of
+            # letting the caller's regex grab a truncated payload.
+            if data.get("stop_reason") == "max_tokens":
+                return None, "truncated_max_tokens"
+            texts = [block.get("text", "") for block in data.get("content", [])
+                     if block.get("type") == "text"]
+            if texts:
+                return "\n".join(texts), None
             return None, "no_text_block"
         except urllib.error.HTTPError as e:
             last_err = f"http_{e.code}"

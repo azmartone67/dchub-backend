@@ -487,12 +487,20 @@ def register_usage_routes(app):
             'current_month': _current_month(),
         })
     
-    @app.route('/api/v1/land-power/track', methods=['POST'])
+    # r78: moved off /api/v1/land-power/track. That path was DOUBLE-registered
+    # — this auth-gated handler won the race over routes/land_power_mcp.py's
+    # public 204 telemetry sink (Flask keeps the first registration), so the
+    # 2026-06-08 "telemetry must never 401" fix was dead code and stale cached
+    # map JS produced ~523 401s/day. The map stopped calling this flow on
+    # 2026-06-08; parking it at -legacy keeps the plan-limit logic available
+    # without shadowing the public sink. NOTE: per-plan Land & Power search
+    # limits are currently UNENFORCED client-side (product decision pending).
+    @app.route('/api/v1/land-power/track-legacy', methods=['POST'])
     def lp_track():
         """
-        Record a Land & Power search. Frontend calls this BEFORE evaluating.
+        Record a Land & Power search. Frontend called this BEFORE evaluating.
         Returns 200 if allowed, 429 if limit reached, 401 if not authenticated.
-        
+
         Request body (optional):
           { "filters": ["substations", "nuclear", "fiber", ...] }
         """

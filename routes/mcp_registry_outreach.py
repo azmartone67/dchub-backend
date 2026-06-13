@@ -137,8 +137,12 @@ DISCOVERY_TARGETS = [
         "submit_method":"github_pr",
         "manual_url":  "https://github.com/punkpeye/awesome-mcp-servers/pulls",
         "audit_url":   "https://raw.githubusercontent.com/punkpeye/awesome-mcp-servers/main/README.md",
-        "audit_signal":"dchub.cloud",
-        "description": "Canonical curated README. NOT yet listed; PR pending.",
+        # r78: the merged listing line reads "azmartone67/dchub-mcp-server"
+        # — it does NOT contain "dchub.cloud", so the old signal was a
+        # permanent FALSE NEGATIVE (we've been listed all along while the
+        # brain filed outbound_distribution_health against this target).
+        "audit_signal":"dchub-mcp-server",
+        "description": "Canonical curated README. LISTED (azmartone67/dchub-mcp-server).",
     },
     {
         "key":         "anthropic_directory",
