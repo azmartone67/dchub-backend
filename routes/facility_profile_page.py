@@ -430,6 +430,23 @@ def _render_profile(fac: dict, slug: str) -> str:
         </div>
         """
 
+    # r83 SEO: BreadcrumbList JSON-LD (the r81 breadcrumb was visual-only).
+    # Marking it up earns a rich breadcrumb trail in Google AND Bing results
+    # and reinforces the facility↔market mesh. Home › <market hub> › <facility>.
+    _crumb_items = [{"@type": "ListItem", "position": 1, "name": "Home",
+                     "item": "https://dchub.cloud/"}]
+    _pos = 2
+    if _mkt_crumb and _mslug:
+        _crumb_items.append({"@type": "ListItem", "position": _pos,
+                             "name": _mname,
+                             "item": f"https://dchub.cloud/dcpi/{_mslug}"})
+        _pos += 1
+    _crumb_items.append({"@type": "ListItem", "position": _pos,
+                         "name": name, "item": canonical})
+    _breadcrumb_ld = _json.dumps({
+        "@context": "https://schema.org", "@type": "BreadcrumbList",
+        "itemListElement": _crumb_items}, ensure_ascii=False)
+
     return f"""<!DOCTYPE html>
 <html lang="en">
 <head>
@@ -450,6 +467,7 @@ def _render_profile(fac: dict, slug: str) -> str:
 <link rel="preconnect" href="https://fonts.googleapis.com">
 <link href="https://fonts.googleapis.com/css2?family=Instrument+Sans:wght@400;500;600;700&family=JetBrains+Mono:wght@400;500;600&display=swap" rel="stylesheet">
 <script type="application/ld+json">{_json.dumps(schema, indent=2)}</script>
+<script type="application/ld+json">{_breadcrumb_ld}</script>
 <style>
   :root{{--bg:#0a0a0f;--surf:#131319;--surf2:#1a1a22;--b:rgba(255,255,255,0.08);--tx:#fafafa;--mut:#a1a1aa;--dim:#71717a;--ind:#818cf8;--indd:#6366f1;--vio:#a855f7;--grad:linear-gradient(135deg,#6366f1,#a855f7)}}
   *{{margin:0;padding:0;box-sizing:border-box}}
