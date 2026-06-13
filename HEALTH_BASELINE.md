@@ -1,6 +1,6 @@
 # DC Hub — Health Baseline (known-good state)
 
-**As of 2026-06-03.** This file memorializes the configuration and numbers that
+**As of 2026-06-13 (r85).** This file memorializes the configuration and numbers that
 define a healthy DC Hub, and points at the automated fences that keep them from
 silently drifting. When something feels "off," diff reality against this doc.
 
@@ -30,7 +30,7 @@ fence in §5 fails the build if a forbidden one returns.
 | M&A deals | `COUNT(*)`=**2,032** | "2,000+ tracked deals" | **"$324B"** (uncomputable; `value_usd` sparse; live route falls back to $85B) |
 | Countries | **178** | "170+" | "140+" |
 | DCPI markets | **300** (Neon dedup 2026-06-08: COUNT(DISTINCT market_name)−3 aggregates; raw 306) | "300" / "300+" | **340+** (gross over-claim; ~300 is real, grew from 232 via intl) |
-| MCP tools | **38** (live `tools/list` on dchub.cloud/mcp; server.mjs registers 38 `trackedTool`. `semantic_search` no longer exists) | "38" | 11/19/20/24/30/31/33/40 (all stale drift — fenced front + back) |
+| MCP intelligence tools | **38** (marketed + fenced count). `tools/list` returns **39** incl `claim_free_key` — a r85 **utility** tool (the anon→identified conversion lever), intentionally NOT in the marketed "38 intelligence tools". `GET /mcp` status shows 39 (raw). | "38" (intelligence) | 11/19/20/24/30/31/33/40 (stale drift — fenced front + back) |
 | Active MCP clients | **Claude + Cursor** | "used by Claude and Cursor" | "96+/90+ AI platforms"; long "cited by ChatGPT, Gemini, Perplexity, Groq" lists |
 
 ## 3. Config invariants (settings that MUST hold)
@@ -44,6 +44,7 @@ fence in §5 fails the build if a forbidden one returns.
 - `routes/surface_brain.py`: `_SURFACES_TTL_S >= 300` (currently 600) — the cold recompute is ~5s; a low TTL stalls a gunicorn worker.
 - `routes/facility_profile_page.py`: facility pages keep `Cache-Control: max-age=3600` — Googlebot crawls ~12.8k enriched pages; cache them at the edge, not the origin.
 - `routes/site_qa.py`: a `code==0` failure with `response_ms >= 10000` is a HANDLER timeout, **not** DNS (the bug that hid `/pricing`).
+- **Brain model tiers** (`routes/brain_models.py`, env-driven): `DCHUB_BRAIN_MODEL_INSPECTOR` + `_REASONING` = **`claude-opus-4-8`** — **NOT `claude-fable-5`** (Fable went `http_404` on this account ~2026-06-13: *"Claude Fable 5 is not available. Please use Opus 4.8"*; `claude-haiku-3-5` also 404). Opus 4.8 is the best reachable model (more capable than Fable + 1M-context). **Verify with `GET /api/v1/brain/model-probe` (`best_reachable`) before pinning ANY tier.** Reversible when Fable returns (one env flip). The `/api/v1/brain/ask` fallback now fires on ANY model 404 (the old gate required the word "model" in the error body; Fable's said "not available" → it silently failed and the whole answer 404'd).
 
 ## 4. Architecture map (so you fix the right surface)
 
@@ -112,3 +113,13 @@ The big stabilization pass. New invariants that MUST hold — diff reality again
 **Fences:** frontend `scripts/accuracy_fence.py` now bans stale tool counts (`11/19/20/24/30/31/33 Tools`, `of N available`, `"tools_count": <not 38>`) — wired in `deploy-pages.yml`. Backend `tests/test_honest_numbers.py` already bans prose counts. **38 tools is canonical across both.**
 
 **MCP traffic-collapse note:** the "35.6k calls/7d" headline was ~93% internal `dchub-selfheal`. Real external MCP traffic fell 39.7k→~500 calls/wk (May→June); the May peak was ~the owner's own enterprise key (`dchub_live_08f4f…`, azmartone@gmail.com). Diagnosing the real-external collapse (candidates: scraper-block r-5/27, paywall reframe ~6/1, a Claude.ai connector change) is the top open growth question — a funnel fix can't convert traffic that's gone.
+
+## 9. r85 invariants (2026-06-13 — brain reasoning restored + MCP conversion truth)
+
+**★ Brain reasoning was 404ing — Fable 5 went dark.** See §3 for the pin. `DCHUB_BRAIN_MODEL_INSPECTOR` + `_REASONING` were both on the now-404 `claude-fable-5` → Inspector briefs + reasoning silently degraded for hours. Flipped to `claude-opus-4-8`. Verified: a forced `POST /api/v1/brain/brief/generate` now returns `ok:true, model:claude-opus-4-8`. When the user asks *"is brain still thinking as Fable 5?"* — the honest answer is **no, it's Opus 4.8 now (an upgrade)**, reversible when Fable access returns.
+
+**MCP "funnel leak" is a DENOMINATOR ILLUSION — the funnel is HEALTHY.** Raw `tool_calls_7d`≈36k but `distinct_callers_7d` (COUNT DISTINCT `ip_address`, 7d) ≈ **66** — the same ~66 callers loop ~540×/wk. Honest free→paid on the real base ≈ **28%** (16 paid of 57 non-ent keys); on the flagship paid tool ≈ 9% of its 173 distinct free users. That's a HEALTHY SaaS rate, NOT the 0.02% the old briefs panicked over. **NEVER divide conversions by raw `tool_calls`.** `routes/brain_inspector.py` now carries `distinct_callers_7d` in the `mcp_funnel` signal + a prompt rule so briefs stop screaming "99% leak." **Schema trap:** `mcp_tool_calls` has **no `api_key` column** (cols: `tool_name/platform/client_name/ip_address/session_id/...`) — use `ip_address`. (r85e shipped `api_key`, the new Opus brief caught it as "funnel query broken at the schema level", r85f fixed it — verify columns via `information_schema`, never assume.)
+
+**The ONE real conversion lever = anon→identified.** 99.7% of paywall hits are anonymous agents that loop + leave no identity to bill (conversions falling while upgrade-signals rise = intent leaking out with no identity attached). **`claim_free_key` MCP tool** (`server.mjs`, r85, **the 39th tool**) mints a free dev key in ONE call (no email/browser, via `/api/v1/keys/claim`) so an agent self-identifies the instant it hits a paywall. NOT in `PAID_ONLY_TOOLS` (anon-callable); `trackedTool` telemetry measures adoption; paywall responses point at it (`claim_free_key_tool` field + message line). **Proof metric to watch:** free-tier `keys_by_tier` rising in step with `upgrade_signals_7d` + `time_to_convert` compressing. Partly resolves the §8 "real-external collapse" question: the real base never went to zero (~66/wk loyal callers); the lever is converting MORE of them via identity, not chasing a phantom.
+
+**`/api/v1/brain/ask`** (L9 conversational) now reasons with the Opus reasoning tier on SEGMENTED funnel data (was hardcoded `claude-sonnet-4-5` on raw counts) — ask it conversion/strategy questions directly; it returns `model_used`. **`GET /mcp` status strings** (`server.mjs` ~L2803: `version`/`tools`) are hardcoded SEPARATELY from the `McpServer` init (~L2023) — bump BOTH on a version change or the status endpoint lies.
