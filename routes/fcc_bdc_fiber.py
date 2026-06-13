@@ -233,6 +233,10 @@ def load_state():
             rows = 0
             with safe_db() as c:
                 cur = _raw(c.cursor())
+                # Fiber-dense states (MN tripped this) push the set-based
+                # lat/lng UPDATE past the connection's statement_timeout.
+                # LOCAL = this transaction only.
+                cur.execute("SET LOCAL statement_timeout = '540s'")
                 cur.execute("DELETE FROM fcc_fiber_hex WHERE state_fips=%s AND as_of=%s",
                             (state_fips, as_of))
                 with zipfile.ZipFile(tmp.name) as z:
