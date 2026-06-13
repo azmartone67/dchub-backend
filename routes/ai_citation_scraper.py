@@ -371,19 +371,37 @@ def _record(agent: str, question: dict, response: str,
     if not c: return
     try:
         with c.cursor() as cur:
+            # r79: the old INSERT targeted agent_name/question_id/
+            # response_excerpt/citation_excerpt/is_cited — NONE of which
+            # exist on the live ai_citations table (it uses the tracker's
+            # schema: engine/platform/prompt_id/dchub_cited/...). Every
+            # probe write threw UndefinedColumn into the bare except below,
+            # so the table froze ~June 1 and the citation_score read 0
+            # forever — looking like "nobody cites us" when really the
+            # writer was broken. Mapped to the real columns; writes a
+            # checked_not_cited row too so a 0% rate is distinguishable
+            # from a dead probe.
             cur.execute("""
                 INSERT INTO ai_citations
-                    (agent_name, question_id, question, response_excerpt,
-                     cited_url, citation_excerpt, is_cited)
-                VALUES (%s, %s, %s, %s, %s, %s, %s)
+                    (engine, platform, prompt_id, query, prompt_text,
+                     response_text, cited_url, dchub_cited, citation_type, source)
+                VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s)
             """, (
-                agent, question["id"], question["q"][:500],
-                (response or "")[:600],
-                cited_url or None, excerpt or None, is_cited,
+                agent, agent, question["id"], question["q"][:500],
+                question["q"][:500], (response or "")[:600],
+                cited_url or None, is_cited,
+                ("cited" if is_cited else "checked_not_cited"), "daily_probe",
             ))
             c.commit()
-    except Exception:
-        pass
+    except Exception as e:
+        # r79: log instead of swallowing — a silent column-mismatch here
+        # cost ~2 weeks of citation telemetry. Loud failures self-heal faster.
+        try:
+            import sys as _s
+            print(f"[ai_citation_scraper] _record write failed: {e!r}",
+                  file=_s.stderr, flush=True)
+        except Exception:
+            pass
     finally:
         try: c.close()
         except Exception: pass
@@ -452,9 +470,12 @@ def recent_citations():
         return jsonify({"ok": False, "error": "db_unavailable"}), 200
     try:
         with c.cursor() as cur:
+            # r79: read the LIVE columns (engine/prompt_id/query/
+            # response_text/dchub_cited), not the phantom agent_name/
+            # question_id/citation_excerpt/is_cited the old query used.
             cur.execute("""
-                SELECT id, agent_name, question_id, question,
-                       citation_excerpt, cited_url, is_cited, observed_at
+                SELECT id, engine, prompt_id, query,
+                       response_text, cited_url, dchub_cited, observed_at
                   FROM ai_citations
                  WHERE observed_at > NOW() - INTERVAL '7 days'
                  ORDER BY observed_at DESC
