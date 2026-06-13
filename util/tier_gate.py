@@ -148,14 +148,20 @@ def resolve_tier(req=None) -> tuple[Tier, dict]:
         # fail-soft — it can only PROMOTE a genuinely-paid key, never downgrade.
         try:
             with _conn() as c, c.cursor() as cur:
+                # Match BOTH storage conventions: standard customer keys store
+                # key_hash = sha256(api_key); partner/admin keys (minted
+                # pre-revealed by partner_key_issuer) store key_hash = the RAW
+                # api_key string. /api/v1/me + api_tier_gating.validate_api_key
+                # do the same dual match (r79.1) — the owner's own enterprise
+                # key is raw-stored, so a hash-only lookup missed it entirely.
                 cur.execute(
                     """SELECT ak.rate_limit_tier, ak.plan, u.plan, u.email, ak.user_id
                          FROM api_keys ak
                          LEFT JOIN users u ON u.id = ak.user_id
-                        WHERE ak.key_hash = %s
+                        WHERE ak.key_hash IN (%s, %s)
                           AND (ak.is_active IS NULL OR ak.is_active IN (1, TRUE))
                         LIMIT 1""",
-                    (key_hash,))
+                    (key_hash, api_key))
                 arow = cur.fetchone()
             if arow:
                 best = Tier.ANONYMOUS

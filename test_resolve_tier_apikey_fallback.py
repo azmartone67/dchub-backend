@@ -84,6 +84,25 @@ def test_api_keys_fallback_takes_highest_plan():
     assert ctx["source"] == "api_keys_no_mcp_row"
 
 
+def test_api_keys_fallback_matches_raw_stored_key_hash():
+    """Partner/admin keys store key_hash = RAW api_key (not sha256). The query
+    must pass BOTH the hash and the raw key so the dual-match (key_hash IN
+    (%s,%s)) finds the owner's own enterprise key. Router returns the row ONLY
+    when the raw key is in params — proving the raw value is passed."""
+    raw = "dchub_live_08f4fb4_owner"
+    def router(sql, params):
+        if "mcp_dev_keys" in sql:
+            return None
+        if "api_keys" in sql:
+            assert raw in (params or ()), f"raw key not passed to api_keys query: {params}"
+            return ("free", None, "enterprise", "azmartone@example.com", "admin001")
+        return None
+    tier, ctx = _with_conn(router, lambda: resolve_tier(
+        FakeReq(headers={"X-API-Key": raw})))
+    assert tier == Tier.ENTERPRISE, tier
+    assert ctx["source"] == "api_keys_no_mcp_row"
+
+
 def test_mcp_dev_keys_still_wins_first():
     """An mcp_dev_keys hit returns immediately; the api_keys fallback never runs."""
     def router(sql, params):
