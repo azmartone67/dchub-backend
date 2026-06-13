@@ -22,6 +22,7 @@ import csv
 import io
 import json
 import os
+import tempfile
 import time
 import zipfile
 import urllib.request
@@ -72,6 +73,19 @@ def _raw(cur):
     return getattr(cur, "_cur", cur)
 
 
+def _try(cur, sql) -> None:
+    """Run one DDL statement; never let a failure poison the rest."""
+    try:
+        cur.execute(sql)
+        cur.connection.commit()
+    except Exception as e:
+        try:
+            cur.connection.rollback()
+        except Exception:
+            pass
+        print(f"[fcc-fiber] ddl skipped ({str(e)[:80]}): {sql[:60]}", flush=True)
+
+
 def _ensure_schema() -> None:
     global _SCHEMA_DONE
     if _SCHEMA_DONE:
@@ -80,7 +94,7 @@ def _ensure_schema() -> None:
         from db_utils import safe_db
         with safe_db() as c:
             cur = _raw(c.cursor())
-            cur.execute("""
+            _try(cur, """
                 CREATE TABLE IF NOT EXISTS fcc_fiber_hex (
                     state_fips TEXT NOT NULL,
                     as_of TEXT NOT NULL,
@@ -92,13 +106,82 @@ def _ensure_schema() -> None:
                     loaded_at TIMESTAMPTZ DEFAULT NOW(),
                     PRIMARY KEY (state_fips, as_of, brand_name, h3_res8)
                 )""")
-            cur.execute("""
+            _try(cur, """
                 CREATE INDEX IF NOT EXISTS fcc_fiber_hex_brand_idx
                     ON fcc_fiber_hex (state_fips, brand_name)""")
-            c.commit()
+            # Viewport queries: hex centers via Neon's h3 extension
+            # (verified available 2026-06-13), gist point index for
+            # bbox, pg_trgm gin for brand ILIKE at national scale.
+            _try(cur, "CREATE EXTENSION IF NOT EXISTS h3")
+            _try(cur, "CREATE EXTENSION IF NOT EXISTS pg_trgm")
+            _try(cur, "ALTER TABLE fcc_fiber_hex ADD COLUMN IF NOT EXISTS lat DOUBLE PRECISION")
+            _try(cur, "ALTER TABLE fcc_fiber_hex ADD COLUMN IF NOT EXISTS lng DOUBLE PRECISION")
+            _try(cur, """
+                CREATE INDEX IF NOT EXISTS fcc_fiber_hex_pt_gist
+                    ON fcc_fiber_hex USING gist ((point(lng, lat)))""")
+            _try(cur, """
+                CREATE INDEX IF NOT EXISTS fcc_fiber_hex_brand_trgm
+                    ON fcc_fiber_hex USING gin (brand_name gin_trgm_ops)""")
         _SCHEMA_DONE = True
     except Exception as e:
         print(f"[fcc-fiber] schema ensure failed: {e}", flush=True)
+
+
+def _fill_latlng(cur, state_fips: str) -> int:
+    """Set hex-center lat/lng on rows that lack it (pure SQL via h3 ext)."""
+    cur.execute("""
+        UPDATE fcc_fiber_hex
+           SET lat = (h3_cell_to_lat_lng(h3_res8::h3index))[1],
+               lng = (h3_cell_to_lat_lng(h3_res8::h3index))[0]
+         WHERE state_fips=%s AND lat IS NULL""", (state_fips,))
+    return cur.rowcount
+
+
+def _flush(cur, state_fips, as_of, agg) -> None:
+    """Chunked multi-row upsert of (brand, hex) aggregates.
+
+    ACCUMULATE semantics (+= / GREATEST), not overwrite: a key can span
+    flush boundaries within one load. Safe because the loader DELETEs
+    the state's rows first. db_utils executemany is a per-row loop —
+    never use it here (50k+ rows would take minutes).
+    """
+    if not agg:
+        return
+    args = []
+    for (brand, h3), (n, down, pid) in agg.items():
+        args.append((state_fips, as_of, brand[:120], pid, h3, n, down))
+    CHUNK = 1000
+    base = """
+        INSERT INTO fcc_fiber_hex
+            (state_fips, as_of, brand_name, provider_id, h3_res8, locations, max_down)
+        VALUES {}
+        ON CONFLICT (state_fips, as_of, brand_name, h3_res8) DO UPDATE
+           SET locations = fcc_fiber_hex.locations + EXCLUDED.locations,
+               max_down = GREATEST(COALESCE(fcc_fiber_hex.max_down, 0),
+                                   COALESCE(EXCLUDED.max_down, 0))"""
+    for i in range(0, len(args), CHUNK):
+        chunk = args[i:i + CHUNK]
+        ph = ",".join(["(%s,%s,%s,%s,%s,%s,%s)"] * len(chunk))
+        flat = [v for row in chunk for v in row]
+        cur.execute(base.format(ph), flat)
+
+
+def _bbox_param():
+    """Parse ?bbox=w,s,e,n → normalized float tuple, or None."""
+    raw = (request.args.get("bbox") or "").strip()
+    if not raw:
+        return None
+    try:
+        w, s, e, n = [float(x) for x in raw.split(",")[:4]]
+    except Exception:
+        return None
+    if w > e:
+        w, e = e, w
+    if s > n:
+        s, n = n, s
+    if not (-180.0 <= w <= 180.0 and -90.0 <= s <= 90.0):
+        return None
+    return (w, s, e, n)
 
 
 @fcc_bdc_fiber_bp.route("/api/v1/admin/fcc-fiber/load", methods=["POST"])
@@ -130,71 +213,78 @@ def load_state():
                 return jsonify({"error": f"no FTTP csv for state {state_fips} @ {as_of}"}), 404
             file_id = str(match[0]["file_id"])
 
-        # Download the zip fully (ND ~ tens of MB), parse the CSV inside.
-        with _fcc_get(f"/downloads/downloadFile/availability/{file_id}", timeout=600) as r:
-            blob = r.read()
-        agg = {}   # (brand, h3) -> [locations, max_down, provider_id]
-        rows = 0
-        with zipfile.ZipFile(io.BytesIO(blob)) as z:
-            name = next(n for n in z.namelist() if n.endswith(".csv"))
-            with z.open(name) as fh:
-                rdr = csv.DictReader(io.TextIOWrapper(fh, encoding="utf-8"))
-                for row in rdr:
-                    rows += 1
-                    brand = (row.get("brand_name") or row.get("provider_name") or "").strip()
-                    h3 = (row.get("h3_res8_id") or "").strip()
-                    if not brand or not h3:
-                        continue
-                    try:
-                        down = int(float(row.get("max_advertised_download_speed") or 0))
-                    except Exception:
-                        down = 0
-                    key = (brand, h3)
-                    ent = agg.get(key)
-                    if ent:
-                        ent[0] += 1
-                        if down > ent[1]:
-                            ent[1] = down
-                    else:
-                        agg[key] = [1, down, (row.get("provider_id") or "")[:24]]
+        # Stream the zip to a temp file (CA-class states are hundreds of
+        # MB — never hold the blob in RAM on the web worker), then parse,
+        # flushing aggregates to Neon every ~250k keys so the dict stays
+        # bounded. One transaction per state: DELETE + flushes + latlng
+        # fill commit together (atomic re-load).
+        tmp = tempfile.NamedTemporaryFile(prefix="fcc_bdc_", suffix=".zip", delete=False)
+        try:
+            with _fcc_get(f"/downloads/downloadFile/availability/{file_id}", timeout=900) as r:
+                while True:
+                    piece = r.read(1 << 20)
+                    if not piece:
+                        break
+                    tmp.write(piece)
+            tmp.close()
 
-        from db_utils import safe_db
-        with safe_db() as c:
-            cur = _raw(c.cursor())
-            cur.execute("DELETE FROM fcc_fiber_hex WHERE state_fips=%s AND as_of=%s",
-                        (state_fips, as_of))
-            args = []
-            for (brand, h3), (n, down, pid) in agg.items():
-                args.append((state_fips, as_of, brand[:120], pid, h3, n, down))
-            # Chunked multi-row VALUES: the db_utils executemany is a
-            # per-row loop (one Neon round-trip each) — 50k+ rows would
-            # hold a web thread for many minutes. ~1000 rows/statement
-            # keeps the whole load in seconds.
-            CHUNK = 1000
-            base = """
-                INSERT INTO fcc_fiber_hex
-                    (state_fips, as_of, brand_name, provider_id, h3_res8, locations, max_down)
-                VALUES {}
-                ON CONFLICT (state_fips, as_of, brand_name, h3_res8) DO UPDATE
-                   SET locations = EXCLUDED.locations, max_down = EXCLUDED.max_down"""
-            for i in range(0, len(args), CHUNK):
-                chunk = args[i:i + CHUNK]
-                ph = ",".join(["(%s,%s,%s,%s,%s,%s,%s)"] * len(chunk))
-                flat = [v for row in chunk for v in row]
-                cur.execute(base.format(ph), flat)
-            c.commit()
-        brands = len({b for (b, _h) in agg.keys()})
+            from db_utils import safe_db
+            agg = {}   # (brand, h3) -> [locations, max_down, provider_id]
+            rows = 0
+            with safe_db() as c:
+                cur = _raw(c.cursor())
+                cur.execute("DELETE FROM fcc_fiber_hex WHERE state_fips=%s AND as_of=%s",
+                            (state_fips, as_of))
+                with zipfile.ZipFile(tmp.name) as z:
+                    name = next(n for n in z.namelist() if n.endswith(".csv"))
+                    with z.open(name) as fh:
+                        rdr = csv.DictReader(io.TextIOWrapper(fh, encoding="utf-8"))
+                        for row in rdr:
+                            rows += 1
+                            brand = (row.get("brand_name") or row.get("provider_name") or "").strip()
+                            h3 = (row.get("h3_res8_id") or "").strip()
+                            if not brand or not h3:
+                                continue
+                            try:
+                                down = int(float(row.get("max_advertised_download_speed") or 0))
+                            except Exception:
+                                down = 0
+                            key = (brand, h3)
+                            ent = agg.get(key)
+                            if ent:
+                                ent[0] += 1
+                                if down > ent[1]:
+                                    ent[1] = down
+                            else:
+                                agg[key] = [1, down, (row.get("provider_id") or "")[:24]]
+                            if len(agg) >= 250_000:
+                                _flush(cur, state_fips, as_of, agg)
+                                agg.clear()
+                _flush(cur, state_fips, as_of, agg)
+                agg.clear()
+                filled = _fill_latlng(cur, state_fips)
+                cur.execute("""SELECT COUNT(*), COUNT(DISTINCT brand_name)
+                                 FROM fcc_fiber_hex
+                                WHERE state_fips=%s AND as_of=%s""", (state_fips, as_of))
+                hex_total, brands = cur.fetchone()
+                c.commit()
+        finally:
+            try:
+                os.unlink(tmp.name)
+            except Exception:
+                pass
         # autonomous-intelligence ledger (in-process, never raises)
         try:
             from routes.extractor_brain import record_extraction
-            record_extraction("fcc-bdc-fiber", "success", rows_inserted=len(agg),
+            record_extraction("fcc-bdc-fiber", "success", rows_inserted=int(hex_total or 0),
                               duration_ms=int((time.time() - t0) * 1000),
                               observations={"state": state_fips, "csv_rows": rows,
-                                            "brands": brands})
+                                            "brands": int(brands or 0)})
         except Exception:
             pass
         return jsonify({"ok": True, "state_fips": state_fips, "as_of": as_of,
-                        "csv_rows": rows, "hex_rows": len(agg), "brands": brands,
+                        "csv_rows": rows, "hex_rows": int(hex_total or 0),
+                        "brands": int(brands or 0), "latlng_filled": filled,
                         "seconds": round(time.time() - t0, 1)})
     except Exception as e:
         return jsonify({"ok": False, "error": str(e)[:300]}), 502
@@ -202,31 +292,45 @@ def load_state():
 
 @fcc_bdc_fiber_bp.route("/api/v1/fiber/providers", methods=["GET"])
 def list_providers():
-    """Distinct fiber brands for a state (for the map's provider picker)."""
+    """Fiber brands for a state OR a ?bbox=w,s,e,n viewport (map picker)."""
     _ensure_schema()
+    bbox = _bbox_param()
     state = (request.args.get("state") or request.args.get("state_fips") or "38").strip()
     out = []
     try:
         from db_utils import safe_db
         with safe_db() as c:
             cur = c.cursor()
-            cur.execute("""
-                SELECT brand_name, SUM(locations) AS locs, COUNT(*) AS hexes
-                  FROM fcc_fiber_hex WHERE state_fips=%s
-                 GROUP BY brand_name ORDER BY locs DESC LIMIT 100""", (state,))
+            if bbox:
+                w, s, e, n = bbox
+                cur.execute("""
+                    SELECT brand_name, SUM(locations) AS locs, COUNT(*) AS hexes
+                      FROM fcc_fiber_hex
+                     WHERE lat IS NOT NULL
+                       AND point(lng, lat) <@ box(point(%s,%s), point(%s,%s))
+                     GROUP BY brand_name ORDER BY locs DESC LIMIT 100""",
+                    (w, s, e, n))
+            else:
+                cur.execute("""
+                    SELECT brand_name, SUM(locations) AS locs, COUNT(*) AS hexes
+                      FROM fcc_fiber_hex WHERE state_fips=%s
+                     GROUP BY brand_name ORDER BY locs DESC LIMIT 100""", (state,))
             for r in cur.fetchall():
                 out.append({"brand": r[0], "locations": int(r[1] or 0), "hexes": int(r[2] or 0)})
     except Exception as e:
         return jsonify({"ok": False, "error": str(e)[:200]}), 503
-    resp = jsonify({"ok": True, "state_fips": state, "providers": out,
+    resp = jsonify({"ok": True, "providers": out,
+                    **({"bbox": list(bbox)} if bbox else {"state_fips": state}),
                     "source": "FCC Broadband Data Collection (fiber-to-the-premises filings)"})
     return resp
 
 
 @fcc_bdc_fiber_bp.route("/api/v1/fiber/footprint", methods=["GET"])
 def footprint():
-    """Hex footprint for one brand (ILIKE match). Client renders with h3-js."""
+    """Hex footprint for one brand (ILIKE), by ?bbox=w,s,e,n viewport or
+    by state (legacy default 38). Client renders with h3-js."""
     _ensure_schema()
+    bbox = _bbox_param()
     state = (request.args.get("state") or "38").strip()
     brand = (request.args.get("brand") or "").strip()
     if not brand:
@@ -237,19 +341,30 @@ def footprint():
         from db_utils import safe_db
         with safe_db() as c:
             cur = c.cursor()
-            cur.execute("""
-                SELECT h3_res8, locations, max_down, brand_name
-                  FROM fcc_fiber_hex
-                 WHERE state_fips=%s AND brand_name ILIKE %s
-                 ORDER BY locations DESC LIMIT %s""",
-                (state, "%" + brand + "%", cap))
+            if bbox:
+                w, s, e, n = bbox
+                cur.execute("""
+                    SELECT h3_res8, locations, max_down, brand_name
+                      FROM fcc_fiber_hex
+                     WHERE brand_name ILIKE %s AND lat IS NOT NULL
+                       AND point(lng, lat) <@ box(point(%s,%s), point(%s,%s))
+                     ORDER BY locations DESC LIMIT %s""",
+                    ("%" + brand + "%", w, s, e, n, cap))
+            else:
+                cur.execute("""
+                    SELECT h3_res8, locations, max_down, brand_name
+                      FROM fcc_fiber_hex
+                     WHERE state_fips=%s AND brand_name ILIKE %s
+                     ORDER BY locations DESC LIMIT %s""",
+                    (state, "%" + brand + "%", cap))
             for r in cur.fetchall():
                 hexes.append([r[0], int(r[1] or 0), int(r[2] or 0)])
                 brands.add(r[3])
     except Exception as e:
         return jsonify({"ok": False, "error": str(e)[:200]}), 503
-    return jsonify({"ok": True, "state_fips": state, "brand_query": brand,
+    return jsonify({"ok": True, "brand_query": brand,
+                    **({"bbox": list(bbox)} if bbox else {"state_fips": state}),
                     "brands_matched": sorted(brands), "count": len(hexes),
-                    "hexes": hexes,
+                    "capped": len(hexes) >= cap, "hexes": hexes,
                     "hex_format": "[h3_res8_id, locations, max_down_mbps]",
                     "source": "FCC BDC fiber-to-the-premises filings"})
