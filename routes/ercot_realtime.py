@@ -45,9 +45,14 @@ _TOKEN_TTL = 55 * 60   # refresh the ~60-min token a little early
 
 
 def _creds():
+    # r85: accept BOTH env-var name shapes. This module historically read
+    # ERCOT_API_USERNAME/ERCOT_API_PASSWORD, but the live Railway vars (and
+    # the iso_grid_adapters.py ERCOT path) use ERCOT_USERNAME/ERCOT_PASSWORD
+    # — so /api/v1/ercot/realtime reported "disabled" forever even with creds
+    # set. Read the _API_ names first (back-compat), fall back to the bare ones.
     k = os.environ.get("ERCOT_API_KEY")
-    u = os.environ.get("ERCOT_API_USERNAME")
-    p = os.environ.get("ERCOT_API_PASSWORD")
+    u = os.environ.get("ERCOT_API_USERNAME") or os.environ.get("ERCOT_USERNAME")
+    p = os.environ.get("ERCOT_API_PASSWORD") or os.environ.get("ERCOT_PASSWORD")
     return (k, u, p) if (k and u and p) else None
 
 
