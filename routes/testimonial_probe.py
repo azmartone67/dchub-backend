@@ -27,7 +27,6 @@ from __future__ import annotations
 
 import json
 import os
-import re
 import sys
 from datetime import datetime, timezone
 
@@ -129,54 +128,6 @@ def _quality_gate(text: str) -> tuple[bool, str]:
     return True, "ok"
 
 
-def _tok(s):
-    """Word-token set for cheap near-duplicate comparison."""
-    return frozenset(re.findall(r"[a-z0-9]+", (s or "").lower()))
-
-
-def _jaccard(a, b):
-    if not a or not b:
-        return 0.0
-    u = len(a | b)
-    return (len(a & b) / u) if u else 0.0
-
-
-def _should_auto_approve(cur, platform: str, quote: str) -> bool:
-    """Quality gate for auto-PUBLISHING a probe testimonial (master-shell 2026-06-12).
-
-    The probe writes genuine per-agent evaluations, but auto-approving every one
-    flooded the public wall with near-duplicate quotes (esp. Claude — the only agent
-    with a working API key right now), which is why every row was previously held for
-    manual review and the wall went ~97d stale. Instead of blanket manual review,
-    publish automatically ONLY when a row is substantive, rate-limited per platform,
-    and not a near-duplicate of a recently-approved quote. Fail-closed -> manual review.
-    Only affects FUTURE writes; the old unapproved backlog is untouched.
-    """
-    try:
-        q = (quote or "").strip()
-        if len(q) < 140:                      # substantive only (refusals are short)
-            return False
-        # Rate-limit: <= 6 auto-approved per platform per 14d (a steady trickle, never
-        # a flood) — directly caps the "near-duplicate Claude quotes" inflation.
-        cur.execute(
-            "SELECT COUNT(*) FROM ai_testimonials WHERE platform = %s AND approved = TRUE "
-            "AND created_at > NOW() - INTERVAL '14 days'", (platform,))
-        if (cur.fetchone() or [0])[0] >= 6:
-            return False
-        # Near-duplicate guard vs recently-approved quotes from the same platform.
-        cur.execute(
-            "SELECT quote FROM ai_testimonials WHERE platform = %s AND approved = TRUE "
-            "AND created_at > NOW() - INTERVAL '90 days' ORDER BY created_at DESC LIMIT 25",
-            (platform,))
-        nt = _tok(q)
-        for row in (cur.fetchall() or []):
-            if _jaccard(nt, _tok(row[0])) >= 0.6:
-                return False
-        return True
-    except Exception:
-        return False
-
-
 def _write_testimonial(cur, *, source: str, platform: str, agent_name: str,
                        quote: str, category: str = "platform",
                        featured: bool = False) -> bool:
@@ -184,10 +135,6 @@ def _write_testimonial(cur, *, source: str, platform: str, agent_name: str,
     written (False if the unique-day guard caught it)."""
     if _already_probed_today(cur, agent_name):
         return False
-    # Auto-publish quality, non-duplicate, rate-limited rows; hold the rest for manual
-    # review. The GATE (not blanket manual review) keeps the public wall fresh without
-    # the near-duplicate inflation that previously forced manual curation.
-    auto = _should_auto_approve(cur, platform, quote)
     cur.execute(
         """INSERT INTO ai_testimonials
             (platform, agent_name, quote, context, query, category,
@@ -196,7 +143,10 @@ def _write_testimonial(cur, *, source: str, platform: str, agent_name: str,
         (platform, agent_name, quote.strip(),
          f"Probed via {source} on {datetime.now(timezone.utc).date().isoformat()}",
          "What is dchub.cloud?",
-         category, featured, source, auto))
+         category, featured, source, False))  # approved=FALSE: pending human
+    # review. The media feed surfaces these via the dchub_media.py "fresh-probe
+    # arm" (shows recent probe_% rows regardless of approval, deduped) — so
+    # freshness is handled at the DISPLAY layer, not by auto-approving here.
     return True
 
 
