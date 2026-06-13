@@ -29403,6 +29403,18 @@ try:
 except Exception as _e:
     print(f"[main] free_upgrade_nudge register failed: {_e}", file=sys.stderr)
 
+# FCC BDC provider fiber footprints (2026-06-13, owner request): provider-
+# filterable fiber-to-the-premises hex footprints from public FCC filings
+# (the free-data answer to "show me Midco's fiber" — route geometry stays
+# licensed territory). Loader is admin/cron-only; read endpoints public.
+try:
+    from routes.fcc_bdc_fiber import fcc_bdc_fiber_bp
+    app.register_blueprint(fcc_bdc_fiber_bp)
+    print("[main] fcc_bdc_fiber_bp registered: /api/v1/admin/fcc-fiber/load + "
+          "/api/v1/fiber/{providers,footprint}", flush=True)
+except Exception as _e:
+    print(f"[main] fcc_bdc_fiber register failed: {_e}", file=sys.stderr)
+
 # Campaign outcome poller (2026-06-06): daily summary email of the 6
 # halfprice-annual recipients' conversion status (sent/opened/converted)
 # delivered to operator. Auto-stops after all-converted OR 14d elapsed.
