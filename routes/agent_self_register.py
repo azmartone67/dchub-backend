@@ -311,7 +311,7 @@ def register():
                      agent_signature, expected_volume_per_day,
                      fit_score, status, source, ip_address, submitted_at)
                 VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s,
-                        'self_register', %s, NOW())
+                        'self_register', %s, NOW() ON CONFLICT DO NOTHING)
                 RETURNING id
             """, (payload["name"], payload["url"], payload["type"],
                   payload["contact_email"], payload["description"],
@@ -335,7 +335,7 @@ def register():
             cur.execute("""
                 INSERT INTO ai_platform_keys
                     (platform_id, api_key, recommended_quota_daily)
-                VALUES (%s, %s, %s)
+                VALUES (%s, %s, %s) ON CONFLICT DO NOTHING
             """, (sub_id, api_key, quota))
         try: c.commit()
         except Exception: pass

@@ -261,7 +261,7 @@ def _upsert(c, platform: str, tool_name: str, description: str,
             cur.execute("""
                 INSERT INTO mcp_tool_descriptions_per_platform
                     (platform, tool_name, description, version, generated_by, updated_at)
-                VALUES (%s, %s, %s, 1, %s, NOW())
+                VALUES (%s, %s, %s, 1, %s, NOW() ON CONFLICT DO NOTHING)
                 ON CONFLICT (platform, tool_name) DO UPDATE
                    SET description = EXCLUDED.description,
                        version = mcp_tool_descriptions_per_platform.version + 1,

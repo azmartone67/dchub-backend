@@ -109,7 +109,7 @@ def record_outcome():
                 INSERT INTO brain_finding_outcomes
                   (issue_type, finding_url, finding_detail, fix_kind,
                    fix_summary, fix_pr_url, outcome, outcome_detail)
-                VALUES (%s, %s, %s, %s, %s, %s, %s, %s)
+                VALUES (%s, %s, %s, %s, %s, %s, %s, %s) ON CONFLICT DO NOTHING
                 RETURNING id
             """, (issue, body.get("finding_url"), body.get("finding_detail"),
                   fix_kind, body.get("fix_summary"), body.get("fix_pr_url"),
@@ -257,7 +257,7 @@ def backfill_from_commits():
                     INSERT INTO brain_finding_outcomes
                       (issue_type, finding_url, fix_kind, fix_summary,
                        fix_pr_url, outcome, outcome_detail)
-                    VALUES (%s, %s, %s, %s, %s, %s, %s)
+                    VALUES (%s, %s, %s, %s, %s, %s, %s) ON CONFLICT DO NOTHING
                 """, (
                     f"commit_scope:{scope}",
                     f"git:{repo}",

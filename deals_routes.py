@@ -405,6 +405,7 @@ PIPELINE_DATA = [
 DEALS_CACHE = BoundedCache(max_size=50, ttl=300)
 DEALS_CACHE_DURATION = 300  # 5 minutes cache
 
+# AUTO-REPAIR: duplicate route '/api/deals' also in transactions_news_api.py:238 — review and remove one
 @deals_bp.route('/api/deals', methods=['GET'])
 @_lazy_protect_data
 def get_deals():
@@ -883,6 +884,7 @@ SAMPLE_MARKETS = [
     {"id": 15, "name": "Dublin", "country": "IE", "region": "EMEA", "facilities": 72, "total_mw": 480, "avg_pue": 1.30, "growth": 14.2, "power_cost": 125, "fiber_providers": 18},
     {"id": 16, "name": "Paris", "country": "FR", "region": "EMEA", "facilities": 58, "total_mw": 320, "avg_pue": 1.42, "growth": 10.5, "power_cost": 155, "fiber_providers": 20},
 ]
+# AUTO-REPAIR: duplicate route '/api/dc-markets' also in transactions_news_api.py:281 — review and remove one
 
 @deals_bp.route('/api/dc-markets', methods=['GET'])
 @_lazy_require_plan('enterprise')
@@ -1243,6 +1245,7 @@ def get_agent_news():
             return jsonify({'success': False, 'error': str(pg_err), 'articles': []}), 200
     except Exception as e:
         logger.error(f"News query error: {e}")
+# AUTO-REPAIR: duplicate route '/api/news-feed' also in transactions_news_api.py:292 — review and remove one
         return jsonify({'success': False, 'error': str(e), 'articles': []}), 200
 
 @deals_bp.route('/api/news-feed', methods=['GET'])
