@@ -2256,25 +2256,32 @@ def check_mcp_funnel_leak() -> list[dict]:
         funnels = _compute_funnel(tool_filter=None, days=14)
     except Exception:
         return findings
+    # r85i: fire ONLY on the honest, actionable signal — a tool with real
+    # DISTINCT demand at the paywall but ZERO conversions. The old detector
+    # gated on raw paywall signals + a >95% stage drop, but stages 2-5 came from
+    # the separate mcp_pair_codes flow (≠ per-tool signals) so EVERY tool showed
+    # a fake ~100% leak. _compute_funnel now reports honest distinct_callers +
+    # the signal's own converted flag; per-tool conversion is genuinely 10-45%.
     for f in funnels:
-        stages = f.get("stages") or {}
-        if (stages.get("1_paywall_signals") or 0) < 50: continue
-        leak = f.get("biggest_leak") or {}
-        drop = leak.get("drop_pct")
-        stage = leak.get("stage")
-        if drop is None or drop < 95: continue
-        # 95%+ drop on a tool with >50 signals = clear funnel break
+        distinct  = f.get("distinct_callers") or 0
+        converted = (f.get("stages") or {}).get("5_converted") or 0
+        if distinct < 25:           # raw signals are loop-inflated — gate on distinct
+            continue
+        if converted > 0:           # any conversion = a normal funnel, not "broken"
+            continue
         findings.append({
             "issue":  f"mcp_funnel_leak:{f['tool']}",
-            "url":    f"mcp_funnel: tool={f['tool']}, stage={stage}",
-            "count":  int(drop),
-            "detail": (f"Tool '{f['tool']}' has a {drop}% drop at stage "
-                       f"'{stage}'. {stages.get('1_paywall_signals')} paywall "
-                       f"signals → {stages.get('5_converted',0)} conversions. "
-                       f"Inspect /api/v1/mcp/conversion-funnel/{f['tool']} for "
-                       f"the per-stage breakdown."),
+            "url":    f"mcp_funnel: tool={f['tool']}",
+            "count":  int(distinct),
+            "detail": (f"Tool '{f['tool']}' had {distinct} DISTINCT callers hit its "
+                       f"paywall in 14d but ZERO converted — real demand, no "
+                       f"monetization. Investigate the upgrade path "
+                       f"(/api/v1/mcp/conversion-funnel/{f['tool']}). Per-tool "
+                       f"conversion is now measured honestly (signal's converted "
+                       f"flag, distinct callers); most paid tools convert 10-45%."),
         })
-        if len(findings) >= 3: break  # cap — top-3 leaks is plenty
+        if len(findings) >= 3:
+            break
     return findings
 
 

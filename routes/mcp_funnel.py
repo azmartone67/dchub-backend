@@ -147,17 +147,56 @@ def _compute_funnel(tool_filter: str | None = None, days: int = 14) -> list[dict
                 except Exception:
                     pass
 
-                # Drop rates: pct of stage_N that did NOT make it to stage_N+1
+                # r85i: HONEST per-tool conversion. Stages 2-4 above come from
+                # mcp_pair_codes — a DIFFERENT, smaller flow than the per-tool
+                # paywall signals (stage 1, mcp_upgrade_signals). A paywall hit on
+                # tool X rarely produces a pair-code row with tool_name=X, so
+                # stages 2-5 read ~0 and the funnel screamed a fake "100% leak"
+                # per tool forever (the recurring mcp_funnel_leak finding). The
+                # REAL per-tool conversion is the signal's OWN `converted` flag,
+                # counted by DISTINCT caller (raw signals are loop-inflated; a
+                # converter who hit the paywall 6x must not count 6x). Override
+                # 5_converted with that + record distinct_callers; compute the
+                # leak on the honest signal->converted path, not the pair-code chain.
+                # NOTE: the `converted` flag rows carry a NULL caller_id (the flag
+                # is back-filled on a different path than the caller_id stamp), so
+                # we cannot dedupe converters by caller_id — count converted SIGNALS
+                # (non-zero, per-tool) for the conversion stage, and distinct
+                # caller_id (independently) for the demand gate.
+                distinct_callers, converted_signals = 0, 0
+                try:
+                    cur.execute("""
+                        SELECT COUNT(DISTINCT caller_id)          AS callers,
+                               COUNT(*) FILTER (WHERE converted)   AS converted
+                          FROM mcp_upgrade_signals
+                         WHERE tool_requested = %s
+                           AND created_at >= NOW() - INTERVAL '%s days'
+                    """, (tool, days))
+                    rr = cur.fetchone() or {}
+                    distinct_callers  = int(rr.get("callers") or 0)
+                    converted_signals = int(rr.get("converted") or 0)
+                except Exception:
+                    pass
+                entry["stages"]["5_converted"] = converted_signals
+                entry["distinct_callers"]      = distinct_callers
+                # pair-code stages kept as supplementary context, NOT in the leak
+                entry["pair_code_stages"] = {
+                    "minted":  entry["stages"]["2_codes_minted"],
+                    "viewed":  entry["stages"]["3_redeem_viewed"],
+                    "clicked": entry["stages"]["4_stripe_clicked"],
+                }
+
+                # Drop rates on the HONEST funnel only: total calls -> distinct
+                # paywall callers -> distinct converters. (The pair-code stages are
+                # a separate flow that doesn't align per-tool, so they're excluded
+                # from leak detection — that conflation was the false-positive.)
                 s = entry["stages"]
                 def _drop(a, b):
                     if a == 0: return None
                     return round(100.0 * (1 - (b / a)), 1)
                 entry["drop_rates"] = {
-                    "0_call_to_1_signal":          _drop(s["0_total_calls"],     s["1_paywall_signals"]),
-                    "1_signal_to_2_code":          _drop(s["1_paywall_signals"], s["2_codes_minted"]),
-                    "2_code_to_3_viewed":          _drop(s["2_codes_minted"],    s["3_redeem_viewed"]),
-                    "3_viewed_to_4_clicked":       _drop(s["3_redeem_viewed"],   s["4_stripe_clicked"]),
-                    "4_clicked_to_5_converted":    _drop(s["4_stripe_clicked"],  s["5_converted"]),
+                    "0_call_to_1_signal":      _drop(s["0_total_calls"],     s["1_paywall_signals"]),
+                    "1_signal_to_5_converted": _drop(s["1_paywall_signals"], s["5_converted"]),
                 }
 
                 # Identify the biggest leak
