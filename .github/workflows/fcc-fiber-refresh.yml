@@ -4,20 +4,18 @@
 # loaded from the FCC Broadband Data Collection. The FCC republishes the
 # availability set ~twice a year (June-30 + Dec-31 vintages, released ~5
 # months later). This job checks weekly and, when a NEW vintage appears,
-# loads every state into Neon — so the map stays current with zero manual
-# work.
+# loads every state — so the map stays current with zero manual work.
 #
-# Cheap by design: most weeks /admin/fcc-fiber/status reports
-# needs_refresh=false and the job exits in seconds. Real work (a ~35-min
-# 52-state sweep) runs only the 1-2 weeks a year FCC drops new data.
+# ★ The download + parse runs HERE on the GitHub runner, not on Railway:
+# Railway's egress to the FCC drops large downloads intermittently (TX/CA
+# fail). The runner (reliable egress) downloads each state, aggregates it,
+# and POSTs a small gzipped result to /api/v1/admin/fcc-fiber/ingest, which
+# writes it to Neon. tools/fcc_fiber_fetch.py holds the logic.
 #
-# Self-healing: each state load is idempotent (replace-state) and the job
-# only loads states still missing at the target vintage, so a partial run
-# (a flaky state) is finished by the next week's run automatically.
-#
-# Robust downloads: the loader pulls each state via HTTP Range chunks
-# (routes/fcc_bdc_fiber.py _fcc_download_to_file), which is the only path
-# that reliably fetches TX/CA-class files over Railway's egress.
+# Cheap by design: most weeks /status reports needs_refresh=false and the
+# script exits in seconds. The full ~52-state load runs only the 1-2 weeks
+# a year FCC drops new data. Self-healing: only states still missing at the
+# target vintage are loaded, so a partial run finishes next week.
 name: fcc-fiber-refresh-weekly
 
 on:
@@ -29,6 +27,10 @@ on:
         description: 'Reload ALL 52 states even if status says current'
         type: boolean
         default: false
+      states:
+        description: 'Specific state FIPS to load (space-separated, e.g. "48 06"); blank = auto'
+        type: string
+        default: ''
 
 concurrency:
   group: fcc-fiber-refresh
@@ -39,90 +41,28 @@ jobs:
     runs-on: ubuntu-latest
     timeout-minutes: 90
     env:
-      ADMIN_KEY: ${{ secrets.DCHUB_ADMIN_KEY }}
-      ORIGIN: https://dchub-backend-production.up.railway.app
-      FORCE_ALL: ${{ github.event.inputs.force_all }}
+      DCHUB_ADMIN_KEY: ${{ secrets.DCHUB_ADMIN_KEY }}
+      FCC_BDC_USERNAME: ${{ secrets.FCC_BDC_USERNAME }}
+      FCC_BDC_TOKEN: ${{ secrets.FCC_BDC_TOKEN }}
+      DCHUB_ORIGIN: https://dchub-backend-production.up.railway.app
     steps:
-      - name: Refresh FCC fiber if a new vintage is available
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+
+      - name: Refresh FCC provider fiber
         run: |
           set -uo pipefail
-          if [ -z "${ADMIN_KEY:-}" ]; then
-            echo "::warning::DCHUB_ADMIN_KEY not set — skipping"
+          if [ -z "${DCHUB_ADMIN_KEY:-}" ] || [ -z "${FCC_BDC_USERNAME:-}" ] || [ -z "${FCC_BDC_TOKEN:-}" ]; then
+            echo "::warning::missing DCHUB_ADMIN_KEY / FCC_BDC_USERNAME / FCC_BDC_TOKEN secret — skipping"
             exit 0
           fi
-
-          echo "== checking refresh status =="
-          curl -sS --max-time 90 \
-            "${ORIGIN}/api/v1/admin/fcc-fiber/status" \
-            -H "X-Admin-Key: ${ADMIN_KEY}" -o /tmp/status.json \
-            -w 'HTTP %{http_code}\n' || { echo "::error::status fetch failed"; exit 1; }
-          cat /tmp/status.json | jq . || cat /tmp/status.json
-
-          NEEDS=$(jq -r '.needs_refresh // false' /tmp/status.json)
-          TARGET=$(jq -r '.target_as_of // empty' /tmp/status.json)
-
-          if [ "${FORCE_ALL:-false}" = "true" ]; then
-            echo "force_all=true → loading all 52 states at ${TARGET}"
-            FIPS=$(jq -r '"01 02 04 05 06 08 09 10 11 12 13 15 16 17 18 19 20 21 22 23 24 25 26 27 28 29 30 31 32 33 34 35 36 37 38 39 40 41 42 44 45 46 47 48 49 50 51 53 54 55 56 72"' /tmp/status.json)
-          elif [ "${NEEDS}" != "true" ]; then
-            echo "✅ provider fiber already current (as_of=$(jq -r '.loaded.as_of' /tmp/status.json), states=$(jq -r '.loaded.states' /tmp/status.json)) — nothing to do"
-            exit 0
-          else
-            FIPS=$(jq -r '.missing_state_fips | join(" ")' /tmp/status.json)
-          fi
-
-          if [ -z "${TARGET}" ]; then echo "::error::no target vintage"; exit 1; fi
-          echo "== loading vintage ${TARGET}; states: ${FIPS} =="
-
-          # Load each state ASYNC (fire-and-forget 202) then poll /status
-          # until the state lands. A synchronous load of a giant state (TX =
-          # 10.4M rows) exceeds the Railway HTTP edge timeout and rolls back;
-          # async sidesteps it. Loads serialize server-side (one lock), so
-          # we fire one, wait for it to appear, then fire the next.
-          state_loaded() {  # $1=fips → 0 if present at TARGET vintage
-            curl -sS --max-time 60 "${ORIGIN}/api/v1/admin/fcc-fiber/status" \
-              -H "X-Admin-Key: ${ADMIN_KEY}" 2>/dev/null \
-              | jq -e --arg f "$1" '(.missing_state_fips // []) | index($f) | not' >/dev/null 2>&1
-          }
-
-          OK=0; FAIL=0; FAILED_STATES=""
-          for f in ${FIPS}; do
-            echo "--- state ${f} ---"
-            ok_state=0
-            for attempt in 1 2; do
-              http=$(curl -sS --max-time 60 -X POST \
-                "${ORIGIN}/api/v1/admin/fcc-fiber/load?state_fips=${f}&as_of=${TARGET}&async=1" \
-                -H "X-Admin-Key: ${ADMIN_KEY}" \
-                -o /tmp/load_${f}.json -w '%{http_code}' || echo "000")
-              echo "  fired async (HTTP ${http}): $(cat /tmp/load_${f}.json 2>/dev/null | head -c 160)"
-              # Poll up to ~10 min for the state to appear (TX is the slowest).
-              for _ in $(seq 1 40); do
-                sleep 15
-                if state_loaded "${f}"; then ok_state=1; break; fi
-              done
-              if [ "${ok_state}" = "1" ]; then break; fi
-              echo "  attempt ${attempt}: state ${f} did not land within timeout"
-            done
-            if [ "${ok_state}" = "1" ]; then
-              OK=$((OK+1)); echo "  ✅ ${f} loaded"
-            else
-              FAIL=$((FAIL+1)); FAILED_STATES="${FAILED_STATES} ${f}"
-            fi
-          done
-
-          echo "== summary: ${OK} loaded, ${FAIL} failed (${FAILED_STATES:-none}) =="
-          curl -sS --max-time 90 \
-            "${ORIGIN}/api/v1/admin/fcc-fiber/status" \
-            -H "X-Admin-Key: ${ADMIN_KEY}" -o /tmp/status2.json || true
-          jq -c '{loaded, latest_available, still_missing: (.missing_state_fips|length)}' /tmp/status2.json || true
-
-          # Lenient: a few flaky states get retried next week (idempotent +
-          # skip-loaded). Only hard-fail if the run loaded nothing at all
-          # despite having work to do.
-          if [ "${OK}" = "0" ] && [ "${FAIL}" != "0" ]; then
-            echo "::error::FCC refresh loaded 0 of $((OK+FAIL)) states"
-            exit 1
-          fi
-          if [ "${FAIL}" != "0" ]; then
-            echo "::warning::${FAIL} state(s) failed (${FAILED_STATES}); next weekly run will retry"
-          fi
+          ARGS=""
+          if [ "${{ github.event.inputs.force_all }}" = "true" ]; then ARGS="--force-all"; fi
+          if [ -n "${{ github.event.inputs.states }}" ]; then ARGS="${{ github.event.inputs.states }}"; fi
+          echo "running: python tools/fcc_fiber_fetch.py ${ARGS}"
+          python tools/fcc_fiber_fetch.py ${ARGS}
