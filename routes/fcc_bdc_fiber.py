@@ -56,11 +56,30 @@ def _fcc_get(path, timeout=120):
     return urllib.request.urlopen(req, timeout=timeout)
 
 
+_SCHEMA_DONE = False
+
+
+def _raw(cur):
+    """Unwrap db_utils' PGCursorWrapper.
+
+    Two wrapper behaviors break this module: execute() silently SKIPS
+    DDL when SKIP_DDL=1 (the env default — CREATE TABLE would no-op),
+    and every INSERT is followed by a SELECT lastval() probe that
+    ERRORS on tables with no serial column, aborting the transaction
+    mid-bulk-load. The raw psycopg2 cursor has neither problem and our
+    SQL is already PG-native.
+    """
+    return getattr(cur, "_cur", cur)
+
+
 def _ensure_schema() -> None:
+    global _SCHEMA_DONE
+    if _SCHEMA_DONE:
+        return
     try:
         from db_utils import safe_db
         with safe_db() as c:
-            cur = c.cursor()
+            cur = _raw(c.cursor())
             cur.execute("""
                 CREATE TABLE IF NOT EXISTS fcc_fiber_hex (
                     state_fips TEXT NOT NULL,
@@ -77,6 +96,7 @@ def _ensure_schema() -> None:
                 CREATE INDEX IF NOT EXISTS fcc_fiber_hex_brand_idx
                     ON fcc_fiber_hex (state_fips, brand_name)""")
             c.commit()
+        _SCHEMA_DONE = True
     except Exception as e:
         print(f"[fcc-fiber] schema ensure failed: {e}", flush=True)
 
@@ -140,19 +160,28 @@ def load_state():
 
         from db_utils import safe_db
         with safe_db() as c:
-            cur = c.cursor()
+            cur = _raw(c.cursor())
             cur.execute("DELETE FROM fcc_fiber_hex WHERE state_fips=%s AND as_of=%s",
                         (state_fips, as_of))
             args = []
             for (brand, h3), (n, down, pid) in agg.items():
                 args.append((state_fips, as_of, brand[:120], pid, h3, n, down))
-            cur.executemany("""
+            # Chunked multi-row VALUES: the db_utils executemany is a
+            # per-row loop (one Neon round-trip each) — 50k+ rows would
+            # hold a web thread for many minutes. ~1000 rows/statement
+            # keeps the whole load in seconds.
+            CHUNK = 1000
+            base = """
                 INSERT INTO fcc_fiber_hex
                     (state_fips, as_of, brand_name, provider_id, h3_res8, locations, max_down)
-                VALUES (%s,%s,%s,%s,%s,%s,%s)
+                VALUES {}
                 ON CONFLICT (state_fips, as_of, brand_name, h3_res8) DO UPDATE
-                   SET locations = EXCLUDED.locations, max_down = EXCLUDED.max_down""",
-                args)
+                   SET locations = EXCLUDED.locations, max_down = EXCLUDED.max_down"""
+            for i in range(0, len(args), CHUNK):
+                chunk = args[i:i + CHUNK]
+                ph = ",".join(["(%s,%s,%s,%s,%s,%s,%s)"] * len(chunk))
+                flat = [v for row in chunk for v in row]
+                cur.execute(base.format(ph), flat)
             c.commit()
         brands = len({b for (b, _h) in agg.keys()})
         # autonomous-intelligence ledger (in-process, never raises)
