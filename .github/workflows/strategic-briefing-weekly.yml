@@ -11,7 +11,7 @@ name: Strategic Briefing (weekly)
 
 on:
   schedule:
-    - cron: "0 14 * * 1"     # Monday 14:00 UTC (10 AM ET)
+    - cron: "20 14 * * 1"     # Monday 14:20 UTC
   workflow_dispatch: {}        # manual "Run workflow" button
 
 concurrency:

@@ -18,7 +18,7 @@ on:
     # 08:00 UTC daily — after the 06:05 DCPI recompute window and
     # before the 09:00 dchub-daily-status fires. Spread the autopilot
     # load.
-    - cron: '0 8 * * *'
+    - cron: '20 8 * * *'
   workflow_dispatch:
     inputs:
       dry_run:

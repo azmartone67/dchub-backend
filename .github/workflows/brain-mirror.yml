@@ -12,7 +12,7 @@ on:
   schedule:
     # 09:00 UTC daily — after 06:05 DCPI recompute + 08:00 brain
     # stuck-drain. Mirror grades the morning's already-run cycles.
-    - cron: '0 9 * * *'
+    - cron: '30 9 * * *'
   workflow_dispatch:
 
 permissions:

@@ -22,7 +22,7 @@ name: MCP Registry Weekly Sync
 
 on:
   schedule:
-    - cron: "0 14 * * 1"   # Mondays 14:00 UTC
+    - cron: "40 14 * * 1"   # Mondays 14:40 UTC
   workflow_dispatch: {}
 
 concurrency:

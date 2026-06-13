@@ -9,7 +9,7 @@ name: Brain auto-remediate + verify
 
 on:
   schedule:
-    - cron: '37 */4 * * *'   # every 4h, offset off the hour
+    - cron: '52 */4 * * *'   # every 4h, offset off the hour
   workflow_dispatch: {}
 
 permissions:
