@@ -92,9 +92,27 @@ def _gather_full_context() -> dict:
                                 "rationale": p.get("rationale"),
                                 "decision": p.get("decision")}
                                for p in (proposed.get("proposals") or [])[:3]],
+        # r85: feed the SEGMENTED funnel so the brain reasons on the real
+        # convertible base, not the automation-diluted raw 36K. Raw tool_calls
+        # are dominated by a few looping anonymous power-keys (0 distinct IPs);
+        # the REAL convertible funnel is unique_ips_7d_real (distinct callers/wk)
+        # -> keys_by_tier paid. The Inspector briefs keep panicking on "36K -> 8"
+        # because they never saw this split.
         "funnel":             {k: funnel.get(k) for k in
-                                ("tool_calls_7d", "upgrade_signals_7d",
-                                 "conversions_30d", "keys_by_tier")},
+                                ("tool_calls_7d", "tool_calls_7d_real",
+                                 "real_external_7d", "unique_ips_7d_real",
+                                 "upgrade_signals_7d", "conversions_30d",
+                                 "keys_by_tier", "time_to_convert_90d")},
+        "addressable_pool_paid_tools": (funnel.get("paid_tool_demand_30d") or [])[:6],
+        "looping_anon_signal_tools":   (funnel.get("top_signal_tools_30d") or [])[:6],
+        "funnel_field_meaning": (
+            "tool_calls_7d is RAW and automation-inflated. The CONVERTIBLE base "
+            "is unique_ips_7d_real (distinct real callers/wk) and real_external_7d "
+            "(real sessions/wk) — compute conversion rate on THAT, not raw calls. "
+            "addressable_pool_paid_tools = distinct FREE users hitting each "
+            "paywalled tool (the real upgrade pool). looping_anon_signal_tools = "
+            "a few anonymous keys looping with ~0 distinct IPs (not real demand)."
+        ),
         "publisher":          ws.get("distribution", {}),
         "outreach": {
             "total_sent":  outreach.get("total"),
@@ -158,26 +176,43 @@ Reply with plain prose (no markdown headers, no JSON). Be a coworker,
 not a report. End with one sentence on what you'd do next if you were
 the founder."""
 
+    # r85: reason with the Fable-5 reasoning tier (was hardcoded sonnet-4-5).
+    # The founder wants conversion analysis done with the brain's best
+    # reasoning model; brain_model_for('reasoning') respects
+    # DCHUB_BRAIN_MODEL_REASONING + walks the fallback chain on a 404 so a
+    # not-yet-provisioned model degrades instead of zeroing out the answer.
+    from routes.brain_models import brain_model_for, fallback_for
+    model = brain_model_for("reasoning")
+    text = ""
     try:
         import requests
-        r = requests.post(
-            anthropic_messages_url(),
-            headers={"x-api-key": _ANTHROPIC_KEY,
-                     "User-Agent": "dchub-brain/1.0",
-                     "anthropic-version": "2023-06-01",
-                     "content-type": "application/json"},
-            json={"model": "claude-sonnet-4-5",
-                  "max_tokens": 800,
-                  "messages": [{"role": "user", "content": prompt}]},
-            timeout=30,
-        )
-        if r.status_code != 200:
-            return jsonify(ok=False,
-                           error=f"Claude API {r.status_code}",
-                           detail=r.text[:200]), 503
-        body = r.json() or {}
-        text = "".join(b.get("text","") for b in (body.get("content") or [])
-                       if b.get("type") == "text").strip()
+        for _attempt in range(4):
+            r = requests.post(
+                anthropic_messages_url(),
+                headers={"x-api-key": _ANTHROPIC_KEY,
+                         "User-Agent": "dchub-brain/1.0",
+                         "anthropic-version": "2023-06-01",
+                         "content-type": "application/json"},
+                json={"model": model,
+                      "max_tokens": 1500,
+                      "messages": [{"role": "user", "content": prompt}]},
+                timeout=45,
+            )
+            if r.status_code == 404 and "model" in (r.text or "").lower():
+                nxt = fallback_for(model)
+                if not nxt:
+                    return jsonify(ok=False,
+                                   error=f"model {model} unavailable, no fallback"), 503
+                model = nxt
+                continue
+            if r.status_code != 200:
+                return jsonify(ok=False,
+                               error=f"Claude API {r.status_code}",
+                               detail=r.text[:200]), 503
+            body = r.json() or {}
+            text = "".join(b.get("text","") for b in (body.get("content") or [])
+                           if b.get("type") == "text").strip()
+            break
     except Exception as e:
         return jsonify(ok=False, error=f"{type(e).__name__}: {str(e)[:200]}"), 503
 
@@ -185,6 +220,7 @@ the founder."""
         ok=True,
         question=question,
         answer=text,
+        model_used=model,
         based_on={
             "findings_count":    ctx["findings_count"],
             "memory_records":    ctx["memory_records"],
