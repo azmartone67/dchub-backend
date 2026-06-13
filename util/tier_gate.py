@@ -56,14 +56,20 @@ TIER_NAME = {
 
 # Plan/string → Tier mapping. Identical vocabulary to mcp_gatekeeper.
 _PLAN_TO_TIER = {
-    "free":       Tier.ANONYMOUS,
-    "identified": Tier.IDENTIFIED,
-    "dev":        Tier.DEVELOPER,
-    "developer":  Tier.DEVELOPER,
-    "pro":        Tier.PRO,
-    "founding":   Tier.PRO,    # founding members get Pro
-    "enterprise": Tier.ENTERPRISE,
-    "ent":        Tier.ENTERPRISE,
+    "free":          Tier.ANONYMOUS,
+    "identified":    Tier.IDENTIFIED,
+    "starter":       Tier.IDENTIFIED,   # starter = identified-equivalent here
+    "dev":           Tier.DEVELOPER,
+    "developer":     Tier.DEVELOPER,
+    "pro":           Tier.PRO,
+    "founding":      Tier.PRO,          # founding members get Pro
+    "paid":          Tier.PRO,          # generic "paid" (Stripe) → Pro-level
+    "team":          Tier.PRO,
+    "metered":       Tier.PRO,
+    "enterprise":    Tier.ENTERPRISE,
+    "ent":           Tier.ENTERPRISE,
+    "research_seed": Tier.ENTERPRISE,   # parity with keys/validate _ENT_PLANS
+    "admin":         Tier.ENTERPRISE,
 }
 
 
@@ -109,8 +115,9 @@ def resolve_tier(req=None) -> tuple[Tier, dict]:
             except Exception:
                 pass  # fall through to mcp_dev_keys check
 
+        key_hash = hashlib.sha256(api_key.encode("utf-8")).hexdigest()
+        # 1a. mcp_dev_keys (the dev-key table) — the historical hot path.
         try:
-            key_hash = hashlib.sha256(api_key.encode("utf-8")).hexdigest()
             with _conn() as c, c.cursor() as cur:
                 cur.execute(
                     """SELECT tier, email, user_id
@@ -125,6 +132,43 @@ def resolve_tier(req=None) -> tuple[Tier, dict]:
                     ctx["user_id"] = row[2]
                     ctx["source"] = "api_key"
                     return _PLAN_TO_TIER.get(plan, Tier.IDENTIFIED), ctx
+        except Exception:
+            pass
+
+        # 1b. 2026-06-12 tier-table-gap fallback. A web-signup founding/pro/
+        # enterprise customer points an agent at a soft-gated REST route using
+        # their DASHBOARD key (dchub_…), which lives in api_keys + users.plan
+        # and has NO mcp_dev_keys row — so 1a missed and we fell straight
+        # through to ANONYMOUS, soft-gating a PAYING customer (e.g. the
+        # get_tax_incentives detail fields returned _detail_gated to an
+        # enterprise key). Mirror the SAME cross-table promotion that
+        # /api/v1/keys/validate already does (flask_mcp_endpoints.py →
+        # tier_source 'api_keys_no_mcp_row'): take the highest plan across
+        # api_keys.rate_limit_tier / api_keys.plan / users.plan. Additive &
+        # fail-soft — it can only PROMOTE a genuinely-paid key, never downgrade.
+        try:
+            with _conn() as c, c.cursor() as cur:
+                cur.execute(
+                    """SELECT ak.rate_limit_tier, ak.plan, u.plan, u.email, ak.user_id
+                         FROM api_keys ak
+                         LEFT JOIN users u ON u.id = ak.user_id
+                        WHERE ak.key_hash = %s
+                          AND (ak.is_active IS NULL OR ak.is_active IN (1, TRUE))
+                        LIMIT 1""",
+                    (key_hash,))
+                arow = cur.fetchone()
+            if arow:
+                best = Tier.ANONYMOUS
+                for _p in (arow[0], arow[1], arow[2]):
+                    _t = _PLAN_TO_TIER.get((_p or "").lower().strip())
+                    if _t is not None and _t > best:
+                        best = _t
+                if best > Tier.ANONYMOUS:
+                    ctx["plan"] = (arow[2] or arow[1] or arow[0] or "").lower().strip()
+                    ctx["email"] = arow[3]
+                    ctx["user_id"] = arow[4]
+                    ctx["source"] = "api_keys_no_mcp_row"
+                    return best, ctx
         except Exception:
             pass
 
