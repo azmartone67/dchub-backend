@@ -9,6 +9,13 @@ name: Power-plant enrichment (EIA/NASA → discovered_power_plants)
 # write is small + reversible; empty = all states.
 
 on:
+  # Weekly nationwide enrichment (2026-06-13): this job WORKS when triggered
+  # (06-04 succeeded) but had no schedule, so EIA/NASA power-plant metadata
+  # only refreshed on a manual run. The scheduled run writes nationwide
+  # (dry_run=false, all states); manual dispatch still defaults to a safe
+  # dry-run preview. Writes are source-isolated + reversible.
+  schedule:
+    - cron: '40 9 * * 2'   # Tuesdays 09:40 UTC
   workflow_dispatch:
     inputs:
       dry_run:
@@ -35,9 +42,11 @@ jobs:
       - name: Trigger + poll enrichment
         env:
           ADMIN_KEY: ${{ secrets.DCHUB_ADMIN_KEY }}
-          DRY: ${{ github.event.inputs.dry_run }}
-          STATE: ${{ github.event.inputs.state_filter }}
-          SOURCES: ${{ github.event.inputs.sources }}
+          # On schedule: force a nationwide WRITE (no inputs exist on a cron
+          # event). On manual dispatch: honor the inputs (default safe dry-run).
+          DRY: ${{ github.event_name == 'schedule' && 'false' || github.event.inputs.dry_run }}
+          STATE: ${{ github.event_name == 'schedule' && 'ALL' || github.event.inputs.state_filter }}
+          SOURCES: ${{ github.event.inputs.sources || 'nccs' }}
         run: |
           set -euo pipefail
           if [ -z "${ADMIN_KEY:-}" ]; then echo "::warning::DCHUB_ADMIN_KEY not set — skipping"; exit 0; fi
