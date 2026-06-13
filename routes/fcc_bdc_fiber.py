@@ -292,8 +292,12 @@ def load_state():
                 # lat/lng UPDATE past the connection's statement_timeout.
                 # LOCAL = this transaction only.
                 cur.execute("SET LOCAL statement_timeout = '540s'")
-                cur.execute("DELETE FROM fcc_fiber_hex WHERE state_fips=%s AND as_of=%s",
-                            (state_fips, as_of))
+                # Replace the state ENTIRELY (all vintages), not just the
+                # as_of being loaded: serving queries don't filter on as_of,
+                # so leaving an older vintage's rows behind would double-count
+                # when the refresh cron loads a new vintage. One vintage per
+                # state at all times.
+                cur.execute("DELETE FROM fcc_fiber_hex WHERE state_fips=%s", (state_fips,))
                 with zipfile.ZipFile(tmp.name) as z:
                     name = next(n for n in z.namelist() if n.endswith(".csv"))
                     with z.open(name) as fh:
