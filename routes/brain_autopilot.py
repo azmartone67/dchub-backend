@@ -1809,10 +1809,36 @@ def autopilot_run():
                 summary["rate_limited"] += 1
                 escalated = ("escalation_threshold" in reason)
                 if escalated: summary["escalated"] += 1
-                _record_action(f, issue, action_path, payload_body,
-                                dry_run=_is_dry_run(), escalated=escalated,
-                                http_code=None, body=None, error=reason,
-                                outcome="rate_limited")
+                # r84 BUDGET-BLEED FIX: when a finding has hit the escalation
+                # threshold (terminal — already flagged to a human), only RECORD
+                # the rate_limited audit row on the FIRST cycle. Pre-fix, ~6
+                # chronic findings (cron_schedule_collision ×165, outbound_
+                # distribution_health ×122) re-logged a rate_limited row every
+                # */30 cron cycle — ~90% of ALL autopilot actions were this audit
+                # spam, making the autopilot look "saturated" when it was really
+                # re-noting the same handful of unresolved issues. Same first-
+                # only guard the no-action path uses (L1796). Summary counters
+                # still increment, so observability is unchanged.
+                _skip_record = False
+                if escalated:
+                    try:
+                        with c.cursor() as _rcur:
+                            _rcur.execute("""
+                                SELECT 1 FROM brain_autopilot_actions
+                                 WHERE pattern_name = %s
+                                   AND COALESCE(finding_url,'') = %s
+                                   AND outcome = 'rate_limited'
+                                 LIMIT 1
+                            """, (issue, f.get("url") or ""))
+                            _skip_record = _rcur.fetchone() is not None
+                    except Exception:
+                        try: c.rollback()
+                        except Exception: pass
+                if not _skip_record:
+                    _record_action(f, issue, action_path, payload_body,
+                                    dry_run=_is_dry_run(), escalated=escalated,
+                                    http_code=None, body=None, error=reason,
+                                    outcome="rate_limited")
                 continue
 
             # Execute

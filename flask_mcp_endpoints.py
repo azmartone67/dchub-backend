@@ -911,6 +911,14 @@ def track_tool_call():
     # /api/v1/usage and /api/v1/data-freshness queries (which read from
     # that table) reflect activity. The 4/30 rewrite of this file moved
     # writes to mcp_call_log; this dual-write keeps both readable.
+    # r84 POOL-LEAK FIX: the close() used to live INSIDE this try, so any
+    # throw in the INSERT/commit (a transient error, a schema hiccup) skipped
+    # it and the pooled connection leaked until the 60s forced-reclaim. This
+    # fires ~5,400×/day (once per MCP tool call), so a burst of insert errors
+    # starved the pool → 30s connection-acquire waits on unrelated reads (the
+    # "facility query took 30.8s" + "forced reclaim held 75s by track_tool_call"
+    # log lines). Now the connection is ALWAYS returned in finally.
+    _db_lt = None
     try:
         from db_utils import try_get_db
         _db_lt = try_get_db()
@@ -953,11 +961,13 @@ def track_tool_call():
                 )
             )
             _db_lt.commit()
-            try: _db_lt.close()
-            except Exception: pass
     except Exception as _e_lt:
         try: import logging as _log9j; _log9j.getLogger(__name__).warning('phase9j_dual mcp_tool_calls insert: %s', _e_lt)
         except Exception: pass
+    finally:
+        if _db_lt is not None:
+            try: _db_lt.close()   # ALWAYS return the connection to the pool
+            except Exception: pass
 
 
     try:

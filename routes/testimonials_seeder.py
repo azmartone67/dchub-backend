@@ -141,18 +141,24 @@ def _pull_from_ai_citations(c) -> list[dict]:
             # question scraper) — NEVER synthesize a quote from the prompt. If a
             # row has no real excerpt actually mentioning DC Hub, we skip it.
             # Accuracy > volume: only genuine, captured citations become public.
+            # r84: read response_text, NOT citation_excerpt — the latter does
+            # not exist on the live ai_citations table (the seeder assumed a
+            # schema that never matched; every SELECT threw UndefinedColumn into
+            # the bare except below → ZERO organic testimonials ever ingested,
+            # the "newest testimonial 98 days old" finding). response_text is the
+            # real text column (the one r79b's citation-probe fix now populates).
             cur.execute("""
-                SELECT engine, citation_excerpt, observed_at, dchub_position
+                SELECT engine, response_text, observed_at, dchub_position
                   FROM ai_citations
                  WHERE dchub_cited = TRUE
                    AND observed_at > NOW() - INTERVAL '30 days'
-                   AND citation_excerpt IS NOT NULL
-                   AND LENGTH(citation_excerpt) > 40
+                   AND response_text IS NOT NULL
+                   AND LENGTH(response_text) > 40
                  ORDER BY observed_at DESC
                  LIMIT 50
             """)
             for r in cur.fetchall():
-                excerpt = (r.get("citation_excerpt") or "").strip()
+                excerpt = (r.get("response_text") or "").strip()
                 low = excerpt.lower()
                 if "dchub" not in low and "dc hub" not in low:
                     continue  # no real DC Hub mention -> not a citation, skip
@@ -234,18 +240,25 @@ def seed_testimonials():
                 continue
             try:
                 with c.cursor() as cur:
+                    # r84: write the LIVE ai_testimonials_auto columns. The old
+                    # INSERT targeted cited_at/source_url/quote_hash — none of
+                    # which exist (the table, created by dchub_media_hub.py, is
+                    # source/external_id/url/posted_at with a UNIQUE(source,
+                    # external_id) index). Every INSERT threw UndefinedColumn →
+                    # bare except → 0 rows. Mapped: quote_hash→external_id (stable
+                    # dedup key), source_url→url, cited_at→posted_at, source tag.
                     cur.execute("""
                         INSERT INTO ai_testimonials_auto
-                            (quote, platform, cited_at, source_url, quote_hash, approved)
-                        VALUES (%s, %s, %s, %s, %s, TRUE)
-                        ON CONFLICT (quote_hash) DO NOTHING
+                            (source, external_id, platform, quote, url, posted_at, approved)
+                        VALUES ('ai_citation', %s, %s, %s, %s, %s, TRUE)
+                        ON CONFLICT (source, external_id) DO NOTHING
                         RETURNING id
                     """, (
-                        quote,
-                        platform,
-                        cand.get("cited_at") or datetime.datetime.utcnow(),
-                        cand.get("source_url"),
                         qhash,
+                        platform,
+                        quote,
+                        cand.get("source_url"),
+                        cand.get("cited_at") or datetime.datetime.utcnow(),
                     ))
                     new_id = cur.fetchone()
                     if new_id:

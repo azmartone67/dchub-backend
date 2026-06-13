@@ -250,8 +250,23 @@ jobs:
                   test_status = "skipped_non_python"
 
               # 4. Create branch, commit, push — stage EVERY changed file
-              branch = f"brain-v2/auto-{loop_name}-{pid}"
-              subprocess.run(['git', 'checkout', '-b', branch], check=True)
+              # r84 CRASH FIX: loop_name is the finding's SOURCE and is often a
+              # full URL / localhost / commit link (untrusted free-form). Raw-
+              # interpolating it produced invalid git refs like
+              # "brain-v2/auto-https://github.com/.../commits/main-113" →
+              # `git checkout -b` exited 128 with check=True → the WHOLE job
+              # crashed. 8/8 scheduled runs failed for 2+ days, blocking all 25
+              # queued proposals AND starving the learning loop (no merge can
+              # happen, so calibration never gets fuel). Sanitize to a safe
+              # slug, and make a branch failure skip THIS proposal, not the batch.
+              import re as _reb
+              _safe = _reb.sub(r'[^a-z0-9]+', '-', str(loop_name).lower()).strip('-')[:40] or 'src'
+              branch = f"brain-v2/auto-{_safe}-{pid}"
+              _co = subprocess.run(['git', 'checkout', '-b', branch])
+              if _co.returncode != 0:
+                  print(f"  ⏭ skip #{pid}: could not create branch '{branch}'")
+                  subprocess.run(['git', 'checkout', '-f', 'main'])  # discard patch, reset
+                  continue
               for cf in originals:
                   subprocess.run(['git', 'add', cf], check=True)
               _files_line = ", ".join(sorted(originals.keys()))

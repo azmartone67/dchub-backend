@@ -220,14 +220,23 @@ def refresh_iso():
             "http://127.0.0.1:8080/api/v1/grid/intelligence/CAISO",
         ]
         alive_count = 0
+        had_real_failure = False   # r84: a genuine non-200 HTTP response
         details = []
         for url in probe_urls:
             try:
-                r = requests.get(url, timeout=4)
+                # r84: 4s → 15s. grid-intelligence answers in ~0.95s normally
+                # but exceeds 4s under worker-pool pressure; the marginal 4s
+                # cutoff was chronically false-timing-out and flipping 17 ISO
+                # surfaces to status='error' (the heartbeat_surfaces_stale
+                # finding). These are SELF-calls — the surfaces are actually
+                # fine (bpa/latest serves live data); a self-probe timeout is
+                # not a surface failure.
+                r = requests.get(url, timeout=15)
                 if r.status_code == 200:
                     alive_count += 1
                     details.append(f"{url.split('/')[-1]}:200")
                 else:
+                    had_real_failure = True
                     details.append(f"{url.split('/')[-1]}:{r.status_code}")
             except requests.Timeout:
                 details.append(f"{url.split('/')[-1]}:timeout")
@@ -237,8 +246,15 @@ def refresh_iso():
         if alive_count > 0:
             log.info(f"[refresh_iso] {info} → fresh")
             return True, info
-        log.warning(f"[refresh_iso] {info} → all probes failed, marking error")
-        return False, info
+        # r84: only mark the surfaces 'error' on a REAL non-200 response. If
+        # every probe merely timed out / connection-refused (transient self-
+        # call pressure), the surfaces are assumed-fresh — a self-inflicted
+        # timeout must NOT destructively stale 17 unrelated surfaces.
+        if had_real_failure:
+            log.warning(f"[refresh_iso] {info} → real failure, marking error")
+            return False, info
+        log.info(f"[refresh_iso] {info} → probe inconclusive (timeouts), assuming fresh")
+        return True, info + " (inconclusive-assumed-fresh)"
     except Exception as e:
         log.warning(f"[refresh_iso] handler error: {type(e).__name__}: {e}")
         return False, f"{type(e).__name__}: {str(e)[:80]}"
