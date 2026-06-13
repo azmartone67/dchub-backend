@@ -802,6 +802,25 @@ def learn_backend_issues():
             results.append({"url": url, "outcome": "config_not_code"})
             continue
 
+        # r78b: AVAILABILITY / METRIC findings are not source-code bugs — a
+        # page being unreachable/slow, a health probe down, or a KPI below
+        # floor cannot be fixed by editing a code window, so the model
+        # always (correctly) refuses. Feeding them to the code-fixer was
+        # burning the 10-call budget on guaranteed refusals and STARVING the
+        # genuinely code-fixable findings into deferred_rate_cap. Route them
+        # out to autopilot/operational handling instead of a Claude call.
+        # (These surface transiently after every deploy when self-probes hit
+        # the restarting backend — pages verified live-up; not real outages.)
+        _AVAIL_PREFIXES = (
+            'frontend_endpoint_unreachable', 'frontend_endpoint_slow',
+            'multi_cloud_both_down', 'native_discoverability_surface_down',
+            'endpoint_unreachable', 'endpoint_slow', 'site_url_unhealthy',
+            'page_unreachable',
+        )
+        if any(_lbl.startswith(p) for p in _AVAIL_PREFIXES):
+            results.append({"url": url, "outcome": "not_code_availability"})
+            continue
+
         # Permafail slow lane (see r78 note above the loop): a finding whose
         # last attempt ended in a deterministic failure gets retried roughly
         # weekly — same window + same prompt will just refuse again, and the
@@ -951,7 +970,7 @@ def learn_backend_issues():
             # /brain/status kept reporting a stale log as "healthy". Skip
             # the high-volume non-attempt outcomes so the log stays signal.
             if _oc and _oc not in ("deferred_rate_cap", "config_not_code",
-                                   "no_source_map") \
+                                   "no_source_map", "not_code_availability") \
                    and not _oc.startswith("skipped_permafail"):
                 try:
                     _le_oc({"issue_label": (_iss.get("issue") or "")[:_MIL_oc],
