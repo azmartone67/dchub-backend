@@ -171,10 +171,18 @@ def _gather_signals() -> dict:
                  WHERE created_at >= NOW() - INTERVAL '24 hours'
                  GROUP BY issue ORDER BY n DESC LIMIT 15""")
         # MCP funnel
+        # r85: include distinct_keyed_callers_7d so the brain reasons on the
+        # REAL convertible base, not raw calls_7d. calls_7d is dominated by a
+        # few looping anonymous power-keys (tens of distinct callers generate
+        # ~all the volume) — dividing conv by calls_7d manufactures a fake
+        # "99% leak" that every brief used to panic about.
         _try("mcp_funnel",
              """SELECT
                   (SELECT COUNT(*) FROM mcp_tool_calls
                     WHERE created_at >= NOW() - INTERVAL '7 days') AS calls_7d,
+                  (SELECT COUNT(DISTINCT api_key) FROM mcp_tool_calls
+                    WHERE created_at >= NOW() - INTERVAL '7 days'
+                      AND api_key IS NOT NULL) AS distinct_keyed_callers_7d,
                   (SELECT COUNT(*) FROM mcp_upgrade_signals
                     WHERE created_at >= NOW() - INTERVAL '7 days') AS signals_7d,
                   (SELECT COUNT(*) FROM mcp_conversions
@@ -342,6 +350,7 @@ You must:
   - If facilities_added_7d is 0, flag the discovery pipeline as Degrading — fresh additions are how we stay ahead of DCHawk + dcByte.
   - If founding_customers has any rows, NAME each customer by email (first 5) in the Healthy section with their tagged_at date. Founding customers matter disproportionately and the Inspector brief should make them visible.
   - If paid_conversions_7d has rows AND the previous brief mentioned zero conversions, flag this as a positive inflection in the One-line take.
+  - MCP FUNNEL DENOMINATOR (critical): mcp_funnel.calls_7d is RAW tool-call volume, dominated by a handful of looping anonymous agents — tens of distinct callers generate nearly all of it. NEVER compute conversion as conv_30d ÷ calls_7d; that manufactures a fake "~99% leak" and is wrong. The honest convertible base is distinct_keyed_callers_7d plus the issued-key count, and free→paid on that base is typically a healthy single-to-double-digit %. Flag the MCP funnel as Degrading ONLY if paid_conversions_7d is genuinely zero/declining or distinct-caller conversion is low — never on a raw-volume ratio. If you previously called this a severe leak, correct course.
   - If news_unknown_entities has rows, list the top 3 in the Needs-attention section by name, with mention_count + sample_headline. Recommend that the operator review them at /admin/news-ner/candidates and either seed via /api/v1/admin/facilities/bulk or reject as noise via /api/v1/admin/news-ner/reject. These are operator/facility names appearing in news that we don't track yet — high-signal discovery candidates.
   - If pocket_movers_7d has rows, mention the top 1-2 movers BY NAME in the Healthy or Degrading section depending on direction. Format: "<market> (<iso>, <state>) <±delta> on the excess-power index this week — verdict <BUILD/HOLD/AVOID>." These are the most actionable market-level shifts and represent the autonomous DCPI surface. A +15 mover should be flagged as a "BUILD candidate accelerating"; a −15 mover as "constraint emerging."
 
