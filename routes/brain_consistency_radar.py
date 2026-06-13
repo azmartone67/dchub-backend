@@ -5751,6 +5751,13 @@ def check_data_freshness_sla_breach() -> list[dict]:
         ("press_releases",         "published_at", 168,  "press releases (event-driven)"),
         ("ai_citations",           "observed_at",  168,  "AI citations (weekly)"),
         ("monthly_reports",        "created_at",   744,  "monthly trend snapshot"),
+        # r80c: proactive canary for the MCP telemetry pipeline. mcp_tool_calls
+        # gets rows continuously as long as ANY MCP traffic flows (the self-heal
+        # loop alone keeps it fresh every few min), so a 12h gap means the whole
+        # track pipeline died — exactly the silent-write class we hardened with
+        # logging in r80b, now caught proactively too. 12h is generous enough to
+        # ride out a deploy window without false-breaching.
+        ("mcp_tool_calls",         "created_at",   12,   "MCP tool-call telemetry"),
         # Phase r33-D (2026-05-21) — infrastructure layer SLAs. HIFLD
         # publishes annually, EIA quarterly; we refresh aggressively
         # so the map doesn't go stale. Each pairs with a REFRESH_MAP
