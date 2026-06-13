@@ -427,7 +427,16 @@ def safe_db_cursor():
         yield cur
         try: conn.commit()
         except Exception: pass
-    except Exception:
+    except Exception as _e:
+        # r80b: log before re-raising. Many callers wrap this in their own
+        # try/except:pass (fire-and-forget writes), which swallowed the
+        # error — exactly how the ai_citations column-mismatch hid for 2
+        # weeks. Logging HERE surfaces a dead write in the Railway logs even
+        # when the caller stays silent. Re-raise preserves caller control flow.
+        try:
+            logger.error("safe_db_cursor write failed: %r", _e)
+        except Exception:
+            pass
         try: conn.rollback()
         except Exception: pass
         raise

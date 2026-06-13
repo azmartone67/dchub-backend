@@ -6223,8 +6223,15 @@ def _persist_mcp_session(session_id, platform, client_name):
         finally:
             try: db.close()
             except Exception: pass
-    except Exception:
-        pass
+    except Exception as _e:
+        # r80b: log, don't swallow. This mcp_sessions upsert is the join
+        # source for client-name recovery in /api/v1/mcp/track — if it dies
+        # silently, every tool call attributes to client_name='unknown'
+        # (the "98.8% unattributed" symptom). A loud failure self-heals fast.
+        try:
+            logger.warning("mcp_sessions upsert failed: %r", _e)
+        except Exception:
+            pass
 
 def _log_mcp_analytics(rpc_method, rpc_params, platform, client_name, duration_ms, success=True, status_code=None):
     """

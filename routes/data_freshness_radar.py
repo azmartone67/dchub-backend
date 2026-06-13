@@ -384,8 +384,15 @@ def _scan_brain_meta(cur, now):
              upsert_row["row_count"], upsert_row["sla_hours"],
              upsert_row["age_hours"], upsert_row["status"],
              upsert_row["detail"]))
-    except Exception:
-        pass
+    except Exception as _e:
+        # r80b: log — if the freshness radar's OWN upsert dies silently, the
+        # freshness dashboard goes blind to itself (can't report it's stale).
+        try:
+            import sys as _s
+            print(f"[data_freshness_radar] data_domain_freshness upsert failed: {_e!r}",
+                  file=_s.stderr, flush=True)
+        except Exception:
+            pass
     upsert_row["last_record_at"] = (
         upsert_row["last_record_at"].isoformat()
         if upsert_row["last_record_at"] else None)

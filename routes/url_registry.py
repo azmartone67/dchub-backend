@@ -251,8 +251,16 @@ def _brain_finding(issue, url, detail):
                   (issue, url, detail, detector, count, status)
                 VALUES (%s, %s, %s, 'url_registry', 1, 'open')
             """, (issue[:120], url[:500], detail[:1000]))
-    except Exception:
-        pass
+    except Exception as _e:
+        # r80b: log — brain_findings has 8 writers / 5 column-lists; a
+        # wrong-column INSERT would silently drop findings (the exact trap
+        # the memory warns about). Surface it.
+        try:
+            import sys as _s
+            print(f"[url_registry] brain_findings write failed: {_e!r}",
+                  file=_s.stderr, flush=True)
+        except Exception:
+            pass
 
 
 # routes: smoke cron + auto-revoke + status ----------------------------
