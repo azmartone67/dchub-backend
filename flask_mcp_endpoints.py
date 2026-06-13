@@ -220,13 +220,20 @@ def validate_key():
             import hashlib as _hl
             _kh = _hl.sha256(api_key.encode()).hexdigest()
             with _pool.connection() as conn, conn.cursor() as cur:
+                # 2026-06-12: (1) match BOTH key_hash conventions — standard keys
+                # store sha256(api_key), partner/admin keys (incl. the owner's
+                # own enterprise key) store the RAW api_key string; a hash-only
+                # match missed them. (2) api_keys.is_active is an INTEGER column,
+                # so `IN (1, TRUE)` threw "operator does not exist: integer =
+                # boolean" → the whole fallback silently failed and returned
+                # free for every web-signup paid customer using a dashboard key.
                 cur.execute(
                     "SELECT ak.rate_limit_tier, ak.plan, u.plan, u.email "
                     "FROM api_keys ak LEFT JOIN users u ON u.id = ak.user_id "
-                    "WHERE ak.key_hash = %s "
-                    "AND (ak.is_active IS NULL OR ak.is_active IN (1, TRUE)) "
+                    "WHERE ak.key_hash IN (%s, %s) "
+                    "AND (ak.is_active IS NULL OR ak.is_active = 1) "
                     "LIMIT 1",
-                    (_kh,),
+                    (_kh, api_key),
                 )
                 _akr = cur.fetchone()
             if _akr:
