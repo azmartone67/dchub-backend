@@ -26,10 +26,13 @@ import urllib.request
 ORIGIN = os.environ.get("DCHUB_ORIGIN", "https://dchub-backend-production.up.railway.app").rstrip("/")
 ADMIN = "".join((os.environ.get("DCHUB_ADMIN_KEY") or "").split())
 
-# geo.dot.gov EIA Natural Gas Pipelines — the SAME source the map renders
-# client-side and the (Railway-blocked) backend ingest targets.
-GAS_SVC = ("https://geo.dot.gov/server/rest/services/Hosted/"
-           "Natural_Gas_Pipelines_US_EIA/FeatureServer/0/query")
+# EIA Natural Gas Interstate + Intrastate Pipelines (national, ~32,892
+# polylines). The old geo.dot.gov service died 2026-06 (its backend DB
+# refuses connections → 500) and the HIFLD Hp6G80Pky0om7QvQ copy was
+# deleted (400) — this FEMA-published EIA org service (FiaPA4ga0iQKduv3)
+# is the live replacement. Fields: Operator, TYPEPIPE, Status.
+GAS_SVC = ("https://services2.arcgis.com/FiaPA4ga0iQKduv3/arcgis/rest/services/"
+           "Natural_Gas_Interstate_and_Intrastate_Pipelines_1/FeatureServer/0/query")
 
 
 def _get(url, timeout=90, tries=5):
@@ -58,11 +61,11 @@ def _first_point(geom):
 
 def fetch_gas_pipelines(cap):
     """Paginate the geo.dot.gov gas-pipeline service → [[lat,lng,operator,type],...]."""
-    rows, offset, page = [], 0, 1000
+    rows, offset, page = [], 0, 2000   # service maxRecordCount = 2000
     while len(rows) < cap:
         params = urllib.parse.urlencode({
             "where": "1=1",
-            "outFields": "operator,typepipe,status",
+            "outFields": "Operator,TYPEPIPE,Status",
             "returnGeometry": "true",
             "outSR": "4326",
             "maxAllowableOffset": "0.05",   # simplify; we keep 1 vertex/line
@@ -80,7 +83,7 @@ def fetch_gas_pipelines(cap):
             if lat is None:
                 continue
             a = f.get("attributes") or {}
-            rows.append([lat, lng, (a.get("operator") or "")[:200], (a.get("typepipe") or "")[:80]])
+            rows.append([lat, lng, (a.get("Operator") or "")[:200], (a.get("TYPEPIPE") or "")[:80]])
         offset += page
         if len(feats) < page:
             break

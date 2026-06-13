@@ -1,33 +1,50 @@
 name: Gas Pipeline Ingest (EIA → gas_pipelines)
 
-# Enriches the sparse gas_pipelines table from the EIA Natural Gas Pipelines
-# feature service. Idempotent (tags source='eia_geodot_lines', clears its own
-# prior rows). Runs weekly; also dispatchable on demand.
+# Refreshes the gas_pipelines table from the EIA national Natural Gas
+# Pipelines feature service (~32,892 interstate+intrastate polylines →
+# representative points).
+#
+# ★ The fetch runs HERE on the GitHub runner, not on Railway: the old
+# geo.dot.gov source died (its backend DB refused connections → 500) and
+# Railway's egress to ArcGIS is unreliable, so every server-side cron run
+# failed. The runner (reliable egress) fetches the live EIA service and
+# POSTs the rows to the ingest endpoint, which writes to Neon. Idempotent
+# (clears its own source='eia_geodot_lines' rows each run).
+# Logic: tools/infra_fetch.py.
 
 on:
   schedule:
-    - cron: '30 7 * * 1'   # Mondays 07:30 UTC
+    - cron: '30 7 * * 1'   # Mondays 07:30 UTC (EIA pipeline data is ~quarterly)
   workflow_dispatch:
     inputs:
       cap:
         description: 'Max features to ingest'
         required: false
-        default: '2000'
+        default: '30000'
+
+concurrency:
+  group: gas-pipeline-ingest
+  cancel-in-progress: false
 
 jobs:
   ingest:
     runs-on: ubuntu-latest
+    timeout-minutes: 20
+    env:
+      DCHUB_ADMIN_KEY: ${{ secrets.DCHUB_ADMIN_KEY }}
+      DCHUB_ORIGIN: https://dchub-backend-production.up.railway.app
+      CAP: ${{ github.event.inputs.cap || '30000' }}
     steps:
-      - name: Trigger gas-pipeline ingest
-        env:
-          ADMIN_KEY: ${{ secrets.DCHUB_ADMIN_KEY }}
-          CAP: ${{ github.event.inputs.cap || '2000' }}
+      - name: Checkout
+        uses: actions/checkout@v4
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+      - name: Fetch EIA gas pipelines + ingest
         run: |
-          if [ -z "$ADMIN_KEY" ]; then
+          set -uo pipefail
+          if [ -z "${DCHUB_ADMIN_KEY:-}" ]; then
             echo "::warning::DCHUB_ADMIN_KEY not set — skipping"; exit 0
           fi
-          code=$(curl -sS -m 180 -o /tmp/gas.json -w "%{http_code}" -X POST \
-            -H "X-Admin-Key: $ADMIN_KEY" \
-            "https://dchub-backend-production.up.railway.app/api/v1/admin/ingest/gas-pipelines?cap=${CAP}")
-          echo "HTTP $code"; cat /tmp/gas.json || true
-          [ "$code" = "200" ] || { echo "::error::gas ingest failed ($code)"; exit 1; }
+          python tools/infra_fetch.py gas-pipelines "${CAP}"

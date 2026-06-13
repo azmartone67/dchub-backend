@@ -27,8 +27,12 @@ log = logging.getLogger("gas_pipeline_ingest")
 gas_ingest_bp = Blueprint("gas_pipeline_ingest", __name__)
 
 _SRC = "eia_geodot_lines"
-_SVC = ("https://geo.dot.gov/server/rest/services/Hosted/"
-        "Natural_Gas_Pipelines_US_EIA/FeatureServer/0/query")
+# geo.dot.gov died 2026-06 (backend DB refuses conns). Live replacement =
+# the EIA national interstate+intrastate service. NOTE: the daily refresh
+# now feeds rows from the GitHub runner (tools/infra_fetch.py) since Railway
+# egress to ArcGIS is unreliable; this _SVC is only the server-side fallback.
+_SVC = ("https://services2.arcgis.com/FiaPA4ga0iQKduv3/arcgis/rest/services/"
+        "Natural_Gas_Interstate_and_Intrastate_Pipelines_1/FeatureServer/0/query")
 
 
 def _dsn() -> str:
@@ -71,7 +75,7 @@ def _fetch(cap: int):
     while len(rows) < cap:
         params = urllib.parse.urlencode({
             "where": "1=1",
-            "outFields": "operator,typepipe,status",
+            "outFields": "Operator,TYPEPIPE,Status",
             "returnGeometry": "true",
             "outSR": "4326",
             "maxAllowableOffset": "0.05",   # simplify: ~5km, we only keep 1 vertex
@@ -90,8 +94,8 @@ def _fetch(cap: int):
             if lat is None:
                 continue
             a = f.get("attributes") or {}
-            rows.append((lat, lng, (a.get("operator") or "")[:200],
-                         (a.get("typepipe") or "")[:80]))
+            rows.append((lat, lng, (a.get("Operator") or "")[:200],
+                         (a.get("TYPEPIPE") or "")[:80]))
         offset += page
         if len(feats) < page:
             break
