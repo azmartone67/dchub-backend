@@ -110,14 +110,42 @@ def ingest_gas_pipelines():
     try:
         # Default 2000 (8 pages) — reliably completes inside Railway's request
         # window. Raise via ?cap= for a fuller load if the host can handle it.
-        cap = min(int(request.args.get("cap", 2000)), 8000)
+        cap = min(int(request.args.get("cap", 2000)), 60000)
     except (TypeError, ValueError):
         cap = 2000
 
-    try:
-        rows = _fetch(cap)
-    except Exception as e:
-        return jsonify(ok=False, error=f"source fetch failed: {str(e)[:160]}"), 502
+    # ★ Runner-provided rows (preferred): Railway's egress to geo.dot.gov
+    # TIMES OUT (the source-side _fetch below fails every cron run), so the
+    # GitHub Actions runner fetches geo.dot.gov and POSTs the rows here.
+    # Body: {"rows":[[lat,lng,operator,type],...]}, optionally gzipped.
+    # Falls back to the server-side _fetch when no body is sent.
+    body_rows = None
+    raw = request.get_data() or b""
+    if raw:
+        try:
+            enc = (request.headers.get("Content-Encoding") or "").lower()
+            if "gzip" in enc or request.headers.get("X-Content-Gzip"):
+                import gzip as _gz
+                raw = _gz.decompress(raw)
+            j = json.loads(raw)
+            if isinstance(j, dict) and isinstance(j.get("rows"), list):
+                body_rows = []
+                for r in j["rows"]:
+                    if isinstance(r, (list, tuple)) and len(r) >= 2:
+                        lat, lng = r[0], r[1]
+                        op = (r[2] if len(r) > 2 else "") or ""
+                        tp = (r[3] if len(r) > 3 else "") or ""
+                        body_rows.append((lat, lng, str(op)[:200], str(tp)[:80]))
+        except Exception:
+            body_rows = None
+
+    if body_rows is not None:
+        rows = body_rows[:cap] if request.args.get("cap") else body_rows
+    else:
+        try:
+            rows = _fetch(cap)
+        except Exception as e:
+            return jsonify(ok=False, error=f"source fetch failed: {str(e)[:160]}"), 502
 
     if dry:
         return jsonify(ok=True, dry_run=True, fetched=len(rows), sample=rows[:3])
