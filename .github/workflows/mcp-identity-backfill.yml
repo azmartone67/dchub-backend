@@ -17,7 +17,7 @@ name: MCP identity backfill (signals + upgrade-pool emails)
 
 'on':
   schedule:
-    - cron: '17 */6 * * *'
+    - cron: '37 */6 * * *'  # r79: staggered off visual-sentinel (was 17, collided)
   workflow_dispatch: {}
 
 permissions:

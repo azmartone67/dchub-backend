@@ -11,7 +11,7 @@ name: MCP Conversion Outreach (weekly)
 
 on:
   schedule:
-    - cron: "0 15 * * 1"     # Monday 15:00 UTC (after the strategic briefing)
+    - cron: "30 15 * * 1"  # r79: staggered off data-growth-announce (was 0, collided)     # Monday 15:00 UTC (after the strategic briefing)
   workflow_dispatch: {}
 
 concurrency:

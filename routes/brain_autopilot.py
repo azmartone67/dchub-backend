@@ -402,8 +402,36 @@ def _action_inspector_l22_handoff(finding: dict) -> tuple[str | None, dict | Non
     a RECIPE candidate in the daily brief, this autopilot picks it up
     from the detector, hands it to L22, L22 drafts a GitHub PR, human
     reviews + merges. End-to-end autonomous code change."""
+    # r79: explicit opt-in gate. This is the ONE autopilot pattern that can
+    # trigger autonomous code-fix drafting (route_alias_404 → fork-branch
+    # draft PR / GitHub Issue). The downstream rails are solid (admin-gated,
+    # fork-not-main, never-merges, real-PR OFF unless DCHUB_L22_REAL_PR=1,
+    # rate-limited, path/diff denylists) — but enabling autonomous GitHub
+    # writes is a conscious decision, so it stays OFF until BRAIN_L22_HANDOFF
+    # _ENABLE=1. Flip that one var to activate; BRAIN_AUTOPILOT_DISABLED=1
+    # still kills it (and everything) globally.
+    if (os.environ.get("BRAIN_L22_HANDOFF_ENABLE") or "").strip().lower() \
+            not in ("1", "true", "yes", "on"):
+        return (None, None)
+    # r79: re-derive brief_id from the finding URL. The detector sets
+    # finding["_brief_id"], but autopilot's primary path rebuilds findings
+    # from 4 DB columns (issue,url,count,detail) and SILENTLY DROPS _brief_id
+    # — so the handoff was a non-deterministic no-op (only fired on the rare
+    # tick when brain_findings was empty and the raw detector dict survived).
+    # The URL already encodes the id as /api/v1/brain/brief/<id>/draft-prs.
     brief_id = finding.get("_brief_id")
     if not brief_id:
+        import re as _re_bid
+        _m = _re_bid.search(r"/brief/(\d+)/draft-prs", finding.get("url") or "")
+        brief_id = _m.group(1) if _m else None
+    if not brief_id:
+        return (None, None)
+    # r79: defense-in-depth — re-assert the only IMPLEMENTED recipe at this
+    # layer (schema_drift_guard/cron_if_mismatched are docstring-only). The
+    # downstream parser + scanner already whitelist, but don't trust them
+    # blindly for an autonomous-code path.
+    _detail = (finding.get("detail") or "").lower()
+    if "recipe:" in _detail and "route_alias_404" not in _detail:
         return (None, None)
     return (
         f"/api/v1/brain/brief/{brief_id}/draft-prs",

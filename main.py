@@ -14085,6 +14085,14 @@ _PLATFORM_LOGO_DOMAINS = {
     'huggingface': 'huggingface.co', 'meta ai': 'meta.ai', 'meta': 'meta.ai',
     'continue': 'continue.dev', 'cline': 'cline.bot', 'zed': 'zed.dev',
     'dialtoneapp': 'dialtone.app',
+    # r79: MCP-ecosystem registries + clients that kept showing letter
+    # initials (the recurring "logos still missing" report). These are real
+    # platforms with real brand domains — favicon-able like the rest.
+    'glama': 'glama.ai', 'lobehub': 'lobehub.com', 'smithery': 'smithery.ai',
+    'mcp.so': 'mcp.so', 'fastmcp': 'gofastmcp.com', 'codex': 'openai.com',
+    'router': 'openrouter.ai', 'continuum': 'continue.dev',
+    'pulsemcp': 'pulsemcp.com', 'librechat': 'librechat.ai',
+    'goose': 'block.github.io', 'roo': 'roocode.com', 'kilo': 'kilocode.ai',
 }
 
 
