@@ -49,12 +49,68 @@ def _admin_ok() -> bool:
     return bool(expected) and got == expected
 
 
-def _fcc_get(path, timeout=120):
+def _fcc_get(path, timeout=120, extra_headers=None):
     u, t = _creds()
-    req = urllib.request.Request(_FCC_BASE + path,
-        headers={"username": u, "hash_value": t,
-                 "User-Agent": "dchub-bdc-fiber/1.0 (+https://dchub.cloud)"})
+    headers = {"username": u, "hash_value": t,
+               "User-Agent": "dchub-bdc-fiber/1.0 (+https://dchub.cloud)"}
+    if extra_headers:
+        headers.update(extra_headers)
+    req = urllib.request.Request(_FCC_BASE + path, headers=headers)
     return urllib.request.urlopen(req, timeout=timeout)
+
+
+def _fcc_download_to_file(path, fh, chunk_mb=16):
+    """Download an FCC file to an open file handle via HTTP Range chunks.
+
+    ★ Railway↔FCC egress kills full-stream downloads of big states (TX =
+    146 MB) ~30s in with "SSL connection has been closed unexpectedly"
+    (a per-connection duration/idle cap somewhere in the egress path).
+    The FCC CDN honors Range (verified: 206 + accept-ranges: bytes), so
+    we pull the file in ~16 MB pieces — each completes in seconds, well
+    under the cap — with per-chunk retry. Falls back to a single stream
+    if the server ignores Range (200 instead of 206).
+
+    Returns total bytes written.
+    """
+    CHUNK = chunk_mb * (1 << 20)
+    # Probe: ask for the first byte to learn the total size + range support.
+    with _fcc_get(path, timeout=60, extra_headers={"Range": "bytes=0-0"}) as r:
+        status = getattr(r, "status", r.getcode())
+        crange = r.headers.get("Content-Range") or ""
+        first = r.read()
+    if status != 206 or "/" not in crange:
+        # No range support — single stream with the caller's retry around it.
+        with _fcc_get(path, timeout=900) as r:
+            while True:
+                piece = r.read(1 << 20)
+                if not piece:
+                    break
+                fh.write(piece)
+        return fh.tell()
+
+    total = int(crange.rsplit("/", 1)[1])
+    fh.write(first)
+    start = len(first)
+    while start < total:
+        end = min(start + CHUNK, total) - 1
+        last_err = None
+        for attempt in range(4):
+            try:
+                with _fcc_get(path, timeout=180,
+                              extra_headers={"Range": f"bytes={start}-{end}"}) as r:
+                    buf = r.read()
+                fh.write(buf)
+                start += len(buf)
+                last_err = None
+                break
+            except Exception as ce:
+                last_err = ce
+                print(f"[fcc-fiber] chunk {start}-{end} attempt {attempt + 1} "
+                      f"failed: {str(ce)[:100]}", flush=True)
+                time.sleep(2 * (attempt + 1))
+        if last_err is not None:
+            raise last_err
+    return total
 
 
 _SCHEMA_DONE = False
@@ -220,28 +276,11 @@ def load_state():
         # fill commit together (atomic re-load).
         tmp = tempfile.NamedTemporaryFile(prefix="fcc_bdc_", suffix=".zip", delete=False)
         try:
-            # FCC's CDN drops long streams sporadically ("SSL connection
-            # has been closed unexpectedly") — TX failed twice on this.
-            # Retry the whole download up to 3× on a fresh connection.
-            last_err = None
-            for attempt in range(3):
-                try:
-                    tmp.seek(0)
-                    tmp.truncate()
-                    with _fcc_get(f"/downloads/downloadFile/availability/{file_id}", timeout=900) as r:
-                        while True:
-                            piece = r.read(1 << 20)
-                            if not piece:
-                                break
-                            tmp.write(piece)
-                    last_err = None
-                    break
-                except Exception as de:
-                    last_err = de
-                    print(f"[fcc-fiber] download attempt {attempt + 1} failed: {str(de)[:120]}", flush=True)
-                    time.sleep(4 * (attempt + 1))
-            if last_err is not None:
-                raise last_err
+            # Chunked HTTP-Range download (see _fcc_download_to_file): the
+            # only path that reliably pulls TX/CA-class files over Railway's
+            # egress, which kills full streams ~30s in.
+            _fcc_download_to_file(f"/downloads/downloadFile/availability/{file_id}", tmp)
+            dl_bytes = tmp.tell()
             tmp.close()
 
             from db_utils import safe_db
@@ -305,9 +344,95 @@ def load_state():
         return jsonify({"ok": True, "state_fips": state_fips, "as_of": as_of,
                         "csv_rows": rows, "hex_rows": int(hex_total or 0),
                         "brands": int(brands or 0), "latlng_filled": filled,
+                        "download_mb": round(dl_bytes / (1 << 20), 1),
                         "seconds": round(time.time() - t0, 1)})
     except Exception as e:
         return jsonify({"ok": False, "error": str(e)[:300]}), 502
+
+
+# The 50 states + DC + PR FIPS codes the refresh cron sweeps. Territories
+# beyond PR (AS/GU/MP/VI) aren't in the FTTP availability set — omitted.
+_ALL_STATE_FIPS = [
+    "01", "02", "04", "05", "06", "08", "09", "10", "11", "12", "13", "15",
+    "16", "17", "18", "19", "20", "21", "22", "23", "24", "25", "26", "27",
+    "28", "29", "30", "31", "32", "33", "34", "35", "36", "37", "38", "39",
+    "40", "41", "42", "44", "45", "46", "47", "48", "49", "50", "51", "53",
+    "54", "55", "56", "72",
+]
+
+
+def _latest_fcc_vintage():
+    """Newest as_of the FCC currently publishes FTTP availability for.
+
+    listAvailabilityData is per-vintage, so probe the recent candidates
+    (newest first) and return the first that has any state FTTP csv.
+    """
+    import datetime
+    cands = []
+    # June/December vintages, current year back two years.
+    try:
+        yr = datetime.datetime.utcnow().year
+    except Exception:
+        yr = 2026
+    for y in (yr, yr - 1, yr - 2):
+        cands.append(f"{y}-12-31")
+        cands.append(f"{y}-06-30")
+    for v in cands:
+        try:
+            with _fcc_get(f"/downloads/listAvailabilityData/{v}?category=State", timeout=60) as r:
+                data = json.loads(r.read()).get("data", [])
+            if any(str(f.get("technology_code")) == "50" and f.get("file_type") == "csv"
+                   for f in data):
+                return v
+        except Exception:
+            continue
+    return None
+
+
+@fcc_bdc_fiber_bp.route("/api/v1/admin/fcc-fiber/status", methods=["GET"])
+def refresh_status():
+    """What's loaded vs. what the FCC now publishes — drives the cron.
+
+    Returns loaded {as_of, states, hex_rows}, latest_available vintage,
+    needs_refresh, and the FIPS list still missing at that vintage so the
+    workflow can load only what's stale.
+    """
+    if not _admin_ok():
+        return jsonify({"error": "admin auth required"}), 403
+    _ensure_schema()
+    loaded_as_of, states_loaded, hex_rows, loaded_states = None, 0, 0, []
+    try:
+        from db_utils import safe_db
+        with safe_db() as c:
+            cur = c.cursor()
+            cur.execute("SELECT MAX(as_of) FROM fcc_fiber_hex")
+            loaded_as_of = (cur.fetchone() or [None])[0]
+            if loaded_as_of:
+                cur.execute("""SELECT COUNT(*), COUNT(DISTINCT state_fips)
+                                 FROM fcc_fiber_hex WHERE as_of=%s""", (loaded_as_of,))
+                hex_rows, states_loaded = cur.fetchone()
+                cur.execute("SELECT DISTINCT state_fips FROM fcc_fiber_hex WHERE as_of=%s",
+                            (loaded_as_of,))
+                loaded_states = sorted(r[0] for r in cur.fetchall())
+    except Exception as e:
+        return jsonify({"ok": False, "error": str(e)[:200]}), 503
+
+    latest = _latest_fcc_vintage()
+    if latest and latest != loaded_as_of:
+        # A whole new vintage — every state is stale.
+        missing = list(_ALL_STATE_FIPS)
+    else:
+        # Same vintage — only states we never finished.
+        missing = [f for f in _ALL_STATE_FIPS if f not in set(loaded_states)]
+    return jsonify({
+        "ok": True,
+        "loaded": {"as_of": loaded_as_of, "states": int(states_loaded or 0),
+                   "hex_rows": int(hex_rows or 0)},
+        "latest_available": latest,
+        "needs_refresh": bool(latest and (latest != loaded_as_of or missing)),
+        "target_as_of": latest or loaded_as_of,
+        "missing_state_fips": missing,
+    })
 
 
 @fcc_bdc_fiber_bp.route("/api/v1/fiber/providers", methods=["GET"])
