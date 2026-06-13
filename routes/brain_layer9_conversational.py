@@ -198,7 +198,12 @@ the founder."""
                       "messages": [{"role": "user", "content": prompt}]},
                 timeout=45,
             )
-            if r.status_code == 404 and "model" in (r.text or "").lower():
+            if r.status_code == 404:
+                # ANY 404 from the messages API is a model-availability issue.
+                # Don't gate on the word "model" in the body — the real-world
+                # error that bit us was "Claude Fable 5 is not available. Please
+                # use Opus 4.8" (no "model" token), so the gate silently failed
+                # and the whole answer 404'd instead of degrading one tier.
                 nxt = fallback_for(model)
                 if not nxt:
                     return jsonify(ok=False,
