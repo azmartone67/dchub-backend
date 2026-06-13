@@ -60,27 +60,45 @@ def _fcc_get(path, timeout=120, extra_headers=None):
     return urllib.request.urlopen(req, timeout=timeout)
 
 
+def _fcc_range_get(path, lo, hi, timeout=180, tries=6):
+    """One ranged GET (bytes=lo-hi) with retry. Returns (status, headers, body).
+
+    Railway↔FCC egress drops connections randomly (any request, any size —
+    "SSL connection has been closed unexpectedly"), so EVERY request here
+    must retry, including the tiny size-probe.
+    """
+    last_err = None
+    for attempt in range(tries):
+        try:
+            with _fcc_get(path, timeout=timeout,
+                          extra_headers={"Range": f"bytes={lo}-{hi}"}) as r:
+                return getattr(r, "status", r.getcode()), r.headers, r.read()
+        except Exception as ce:
+            last_err = ce
+            print(f"[fcc-fiber] range {lo}-{hi} attempt {attempt + 1}/{tries} "
+                  f"failed: {str(ce)[:100]}", flush=True)
+            time.sleep(min(2 * (attempt + 1), 12))
+    raise last_err
+
+
 def _fcc_download_to_file(path, fh, chunk_mb=16):
     """Download an FCC file to an open file handle via HTTP Range chunks.
 
-    ★ Railway↔FCC egress kills full-stream downloads of big states (TX =
-    146 MB) ~30s in with "SSL connection has been closed unexpectedly"
-    (a per-connection duration/idle cap somewhere in the egress path).
-    The FCC CDN honors Range (verified: 206 + accept-ranges: bytes), so
-    we pull the file in ~16 MB pieces — each completes in seconds, well
-    under the cap — with per-chunk retry. Falls back to a single stream
-    if the server ignores Range (200 instead of 206).
+    ★ Railway↔FCC egress is unreliable two ways: (1) it kills long full-
+    stream downloads ~30s in, and (2) it drops random individual
+    connections ("SSL connection has been closed unexpectedly"). So we
+    pull the file in ~16 MB ranged pieces — each completes in seconds —
+    and retry EVERY request (the FCC CDN honors Range: 206 + accept-ranges).
+    Falls back to a single stream only if the server ignores Range.
 
     Returns total bytes written.
     """
     CHUNK = chunk_mb * (1 << 20)
-    # Probe: ask for the first byte to learn the total size + range support.
-    with _fcc_get(path, timeout=60, extra_headers={"Range": "bytes=0-0"}) as r:
-        status = getattr(r, "status", r.getcode())
-        crange = r.headers.get("Content-Range") or ""
-        first = r.read()
+    # Probe (retried): first byte → total size + range support.
+    status, headers, first = _fcc_range_get(path, 0, 0, timeout=60)
+    crange = headers.get("Content-Range") or ""
     if status != 206 or "/" not in crange:
-        # No range support — single stream with the caller's retry around it.
+        # No range support — single stream (rare; small files only).
         with _fcc_get(path, timeout=900) as r:
             while True:
                 piece = r.read(1 << 20)
@@ -94,23 +112,11 @@ def _fcc_download_to_file(path, fh, chunk_mb=16):
     start = len(first)
     while start < total:
         end = min(start + CHUNK, total) - 1
-        last_err = None
-        for attempt in range(4):
-            try:
-                with _fcc_get(path, timeout=180,
-                              extra_headers={"Range": f"bytes={start}-{end}"}) as r:
-                    buf = r.read()
-                fh.write(buf)
-                start += len(buf)
-                last_err = None
-                break
-            except Exception as ce:
-                last_err = ce
-                print(f"[fcc-fiber] chunk {start}-{end} attempt {attempt + 1} "
-                      f"failed: {str(ce)[:100]}", flush=True)
-                time.sleep(2 * (attempt + 1))
-        if last_err is not None:
-            raise last_err
+        _st, _hd, buf = _fcc_range_get(path, start, end)
+        if not buf:
+            raise IOError(f"empty range {start}-{end} of {total}")
+        fh.write(buf)
+        start += len(buf)
     return total
 
 
@@ -254,8 +260,19 @@ def _do_load(state_fips, as_of, file_id):
     """
     t0 = time.time()
     if not file_id:
-        with _fcc_get(f"/downloads/listAvailabilityData/{as_of}?category=State") as r:
-            files = json.loads(r.read()).get("data", [])
+        files = []
+        _lerr = None
+        for _a in range(5):
+            try:
+                with _fcc_get(f"/downloads/listAvailabilityData/{as_of}?category=State") as r:
+                    files = json.loads(r.read()).get("data", [])
+                _lerr = None
+                break
+            except Exception as le:
+                _lerr = le
+                time.sleep(min(2 * (_a + 1), 10))
+        if _lerr is not None:
+            raise _lerr
         match = [f for f in files
                  if str(f.get("state_fips")) == state_fips
                  and str(f.get("technology_code")) == "50"
