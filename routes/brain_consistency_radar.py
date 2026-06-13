@@ -6812,7 +6812,13 @@ def check_dead_internal_links() -> list[dict]:
             # routinely 10-30s on some probes, blowing wall time from
             # the expected ~10s to the observed 77s. Worst case per
             # probe is now 8s (3s connect + 5s read).
-            r = _req.get(url, timeout=(3, 5), headers=headers, allow_redirects=True)
+            # r85: read timeout 5s -> 10s. The old 5s cap + transient backend
+            # slowness (the cron thundering-herd, fixed r85) flagged 9 LIVE
+            # pages (/pockets/*, /digest, /vs/*) as "unreachable" — every one
+            # actually returns 200 in 1-2s, they just spiked past 5s under
+            # load. 10s tolerates a load spike; the failed subset is re-probed
+            # once below, so nothing is flagged on a single slow response.
+            r = _req.get(url, timeout=(4, 10), headers=headers, allow_redirects=True)
             return (path, r.status_code, (r.text or "")[:120], None)
         except Exception as e:
             return (path, None, "", f"{type(e).__name__}: {str(e)[:120]}")
@@ -6827,6 +6833,24 @@ def check_dead_internal_links() -> list[dict]:
     with _cf.ThreadPoolExecutor(max_workers=12,
                                  thread_name_prefix="deadlink") as ex:
         results = list(ex.map(_probe_one, probes))
+
+    # r85: second-chance re-probe. Only paths that failed the first sweep
+    # (timeout/connect error, 404, or 5xx) get re-probed once — a link is
+    # flagged ONLY if it fails TWICE. This kills the transient-slowness
+    # false-positive class (mirrors the r84 heartbeat "don't destructively
+    # mark on a single transient timeout" fix). The healthy common case (no
+    # failures) skips the re-probe entirely, so wall time is unchanged.
+    def _is_suspect(res):
+        _p, _s, _b, _e = res
+        return _e is not None or _s == 404 or (_s is not None and _s >= 500)
+    _suspects = [r[0] for r in results if _is_suspect(r)]
+    if _suspects:
+        import time as _t2
+        _t2.sleep(0.3)  # brief breather so an instantaneous load spike clears
+        with _cf.ThreadPoolExecutor(max_workers=min(12, len(_suspects)),
+                                     thread_name_prefix="deadlink-retry") as ex2:
+            _retry = {r[0]: r for r in ex2.map(_probe_one, _suspects)}
+        results = [_retry.get(r[0], r) for r in results]
 
     for path, status, body_snip, err in results:
         if err is not None:
