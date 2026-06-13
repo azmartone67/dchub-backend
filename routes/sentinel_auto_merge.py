@@ -586,7 +586,7 @@ def _log_decision(pr_data: dict, decision: str, reason: str,
                   (pr_number, decision, reason, issue, sentinel_path,
                    confidence, files_changed, merge_sha, merged_at,
                    dry_run, follow_up_at)
-                VALUES (%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s)
+                VALUES (%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s) ON CONFLICT DO NOTHING
             """, (pr_number, decision, reason[:500],
                   issue, sentinel_path,
                   confidence,
@@ -980,7 +980,7 @@ def auto_merge_block_24h():
             cur.execute("""
                 INSERT INTO sentinel_auto_merge_block
                   (blocked_until, blocked_by, note)
-                VALUES (%s, %s, %s)
+                VALUES (%s, %s, %s) ON CONFLICT DO NOTHING
             """, (until, "admin_one_click",
                   "/admin/sentinel-inbox 24h block button"))
         return jsonify(ok=True,

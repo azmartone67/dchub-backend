@@ -431,7 +431,7 @@ def observe():
             """INSERT INTO extraction_intelligence
                   (source_id, outcome, rows_inserted, duration_ms, error,
                    anomaly_score, observations, proposed_fix)
-               VALUES (%s, %s, %s, %s, %s, %s, %s, %s)
+               VALUES (%s, %s, %s, %s, %s, %s, %s, %s) ON CONFLICT DO NOTHING
                RETURNING id""",
             (source_id, outcome, rows_inserted, duration_ms, error_text,
              anomaly_score, json.dumps(observations), proposed_fix),
@@ -470,7 +470,7 @@ def record_extraction(source_id: str, outcome: str = "success",
                 """INSERT INTO extraction_intelligence
                       (source_id, outcome, rows_inserted, duration_ms, error,
                        anomaly_score, observations, proposed_fix)
-                   VALUES (%s, %s, %s, %s, %s, 0, %s, NULL)""",
+                   VALUES (%s, %s, %s, %s, %s, 0, %s, NULL) ON CONFLICT DO NOTHING""",
                 (source_id, outcome, rows_inserted, duration_ms,
                  (str(error)[:500] if error else None),
                  json.dumps(observations or {})),
@@ -484,6 +484,7 @@ def record_extraction(source_id: str, outcome: str = "success",
 # GET /insights — daily-rolled summary
 # ---------------------------------------------------------------------------
 
+# AUTO-REPAIR: duplicate route '/insights' also in ai_orchestrator.py:951 — review and remove one
 @extractor_brain_bp.route("/insights", methods=["GET"])
 def get_insights():
     _ensure_tables()
@@ -526,6 +527,7 @@ def get_insights():
 # ---------------------------------------------------------------------------
 # GET /anomalies — recent anomalies
 # ---------------------------------------------------------------------------
+# AUTO-REPAIR: duplicate route '/anomalies' also in ai_orchestrator.py:959 — review and remove one
 
 @extractor_brain_bp.route("/anomalies", methods=["GET"])
 def get_anomalies():
@@ -742,6 +744,7 @@ def ask():
 
 # ---------------------------------------------------------------------------
 # GET /dashboard — HTML view
+# AUTO-REPAIR: duplicate route '/dashboard' also in main.py:16768 — review and remove one
 # ---------------------------------------------------------------------------
 
 @extractor_brain_bp.route("/dashboard", methods=["GET"])
@@ -851,6 +854,7 @@ def dashboard():
 
 
 # ---------------------------------------------------------------------------
+# AUTO-REPAIR: duplicate route '/health' also in index_api.py:617 — review and remove one
 # GET /health
 # ---------------------------------------------------------------------------
 
