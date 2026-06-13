@@ -703,6 +703,42 @@ def market_short_html(slug):
         _market_ld["additionalProperty"] = _measured
     _market_jsonld = _ldjson.dumps(_market_ld, ensure_ascii=False)
 
+    # r80 SEO INTERNAL-LINK MESH: the 21k /facilities/<slug> pages were a
+    # crawl ISLAND — every hub page that should funnel link-equity into them
+    # rendered ZERO facility links, so Google left ~21k pages unindexed.
+    # Emit the top facilities IN this market as real <a href="/facilities/…">
+    # links using the populated `market` column (96.7% of rows) + the
+    # canonical slug builder so the URLs match the sitemap exactly.
+    fac_links_html = ""
+    try:
+        from routes.facility_profile_page import _fac_slug as _fslug, _esc as _fesc
+        _c3 = _conn()
+        if _c3 is not None:
+            try:
+                with _c3.cursor() as _fcur:
+                    _fcur.execute("""
+                        SELECT id, name, provider, power_mw
+                          FROM discovered_facilities
+                         WHERE market = %s AND name IS NOT NULL AND name <> ''
+                           AND (country IN ('US','USA','United States')
+                                OR country IS NULL OR country='')
+                         ORDER BY power_mw DESC NULLS LAST
+                         LIMIT 50
+                    """, (name,))
+                    _frows = _fcur.fetchall() or []
+            finally:
+                try: _c3.close()
+                except Exception: pass
+            if _frows:
+                _items = "".join(
+                    f'<li><a href="/facilities/{_fslug(_rid, _rprov, _rname)}">{_fesc(_rname)}</a>'
+                    f'{(" &middot; " + str(round(_rpow)) + " MW") if _rpow else ""}</li>'
+                    for _rid, _rname, _rprov, _rpow in _frows)
+                fac_links_html = (f'<h2>Data centers in {name}</h2>'
+                                  f'<ul class="fac-list">{_items}</ul>')
+    except Exception:
+        pass
+
     html = f"""<!doctype html><html lang=en>
 <head><meta charset=utf-8>
 <meta name="market-slug" content="{slug_norm}">
@@ -741,6 +777,7 @@ ul{{padding-left:1.25rem}} li{{margin:.3rem 0}}
 {note_html}
 {providers_html}
 {highlights_html}
+{fac_links_html}
 <div style="max-width:1080px;margin:26px auto;padding:18px 22px;background:linear-gradient(135deg,rgba(99,102,241,0.14),rgba(168,85,247,0.07));border:1px solid rgba(99,102,241,0.3);border-radius:14px;text-align:center"><a href="/pricing" style="color:#a5b4fc;text-decoration:none;font-weight:600;font-size:15px">Researching data-center sites? Get all 19,000+ facilities + power scores &amp; site-selection tools &mdash; <strong>DC Hub from $49/mo &rarr;</strong></a></div>
 <p class="foot">Deep-dive narrative: <a href="/markets/{slug_norm}/deep-dive">/markets/{slug_norm}/deep-dive</a> ·
 JSON: <a href="/api/v1/markets/{name.replace(' ', '%20')}">/api/v1/markets/{name}</a> ·

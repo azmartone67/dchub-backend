@@ -4554,6 +4554,8 @@ h1 {
   </div>
 </div>
 
+{{ facilities_html|safe }}
+
 <div style="background:#11121a;border:1px solid #1f2030;border-radius:12px;padding:20px;margin:32px auto;max-width:760px;font-family:system-ui">
   <div style="font-size:12px;color:#9eb5d8;text-transform:uppercase;letter-spacing:.1em;margin-bottom:8px">Cite this index</div>
   <code style="display:block;background:rgba(255,255,255,.03);padding:12px;border-radius:6px;color:#e8eef8;font-size:13px;margin-bottom:8px">DC Hub. (2026). Data Center Power Index v2. https://dchub.cloud/dcpi</code>
@@ -4914,9 +4916,42 @@ def public_market_page(slug):
     except Exception:
         pass
 
+    # r80 SEO INTERNAL-LINK MESH (see market_deep_dive): emit the facilities
+    # in this DCPI market as real /facilities/<slug> links so the 21k facility
+    # pages stop being a crawl island. Built BEFORE the cache-set below so the
+    # cached copy carries the links.
+    _facilities_html = ""
+    try:
+        from routes.facility_profile_page import _fac_slug as _fslug, _esc as _fesc
+        _mkt_name = s.get("market_name") or ""
+        _mkt_state = s.get("state") or ""
+        if _mkt_name:
+            with _conn() as _fc, _fc.cursor() as _fcur:
+                _fcur.execute("""
+                    SELECT id, name, provider, power_mw
+                      FROM discovered_facilities
+                     WHERE (market = %s OR LOWER(city) = LOWER(%s))
+                       AND name IS NOT NULL AND name <> ''
+                     ORDER BY power_mw DESC NULLS LAST LIMIT 50
+                """, (_mkt_name, _mkt_name))
+                _frows = _fcur.fetchall() or []
+            if _frows:
+                _items = "".join(
+                    f'<li><a href="/facilities/{_fslug(_rid,_rprov,_rname)}" '
+                    f'style="color:#5aa3ff;text-decoration:none">{_fesc(_rname)}</a>'
+                    f'{(" &middot; " + str(round(_rpow)) + " MW") if _rpow else ""}</li>'
+                    for _rid, _rname, _rprov, _rpow in _frows)
+                _facilities_html = (
+                    '<div style="margin:32px auto;max-width:760px;font-family:system-ui">'
+                    f'<h2 style="color:#e8eef8;font-size:18px">Data centers in {_fesc(_mkt_name)}</h2>'
+                    f'<ul style="columns:2;color:#9eb5d8;font-size:14px;line-height:1.9">{_items}</ul></div>')
+    except Exception:
+        pass
+
     market_html = render_template_string(DCPI_MARKET_TEMPLATE, s=s,
                                           risks=risks, opps=opps,
-                                          narrative=narrative_text)
+                                          narrative=narrative_text,
+                                          facilities_html=_facilities_html)
     # r43-H: cache the rendered page (bounded — 300+ markets max).
     if len(_DCPI_PAGE_CACHE) < 500:
         _DCPI_PAGE_CACHE[slug] = (_now + _DCPI_PAGE_TTL, market_html)
@@ -4934,16 +4969,22 @@ def public_market_page(slug):
 def api_history():
     """Return per-day score history for top BUILD markets, last 30 days."""
     _ensure_tables()
+    # r80: read the REAL daily history table. market_power_scores is
+    # UPDATE-in-place (computed_at=NOW() per recompute), so grouping it by
+    # day collapsed every market to a single point → /history looked frozen
+    # ("heartbeat_surfaces_stale" 26h). dcpi_daily_snapshots is the genuine
+    # one-row-per-market-per-day series (306 markets/day, ~14d deep, written
+    # by the facility-snapshot-daily cron) — /trending and /movers already
+    # read it; /history was the straggler.
     with _conn() as c, c.cursor(cursor_factory=psycopg2.extras.RealDictCursor) as cur:
         cur.execute("""
             SELECT market_slug, market_name,
-                   DATE_TRUNC('day', computed_at) AS day,
-                   COALESCE(AVG(excess_power_score), 0) AS excess,
-                   COALESCE(AVG(constraint_score), 0) AS constraint
-            FROM market_power_scores
-            WHERE computed_at > NOW() - INTERVAL '30 days'
-            GROUP BY market_slug, market_name, DATE_TRUNC('day', computed_at)
-            ORDER BY market_slug, day
+                   snapshot_date AS day,
+                   COALESCE(excess_power_score, 0) AS excess,
+                   COALESCE(constraint_score, 0) AS constraint
+            FROM dcpi_daily_snapshots
+            WHERE snapshot_date > CURRENT_DATE - INTERVAL '30 days'
+            ORDER BY market_slug, snapshot_date
         """)
         rows = cur.fetchall()
     series = {}

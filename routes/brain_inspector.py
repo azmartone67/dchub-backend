@@ -214,12 +214,16 @@ def _gather_signals() -> dict:
         # / dcByte have that we don't). If Canada/UK/Singapore counts
         # look thin compared to the public industry baseline, the
         # Inspector calls it out in the brief.
+        # r80: LIMIT 12 hid mid-tier DC countries (SG=217, IE=70 both exist)
+        # below the window, so the Inspector kept hallucinating "Singapore/
+        # Ireland coverage gap". 40 surfaces every country with a real DC
+        # presence so the brief stops crying false gaps.
         _try("facilities_by_country",
              """SELECT COALESCE(NULLIF(UPPER(country),''),'?') AS c,
                        COUNT(*) AS n
                   FROM discovered_facilities
                  GROUP BY UPPER(country)
-                 ORDER BY n DESC LIMIT 12""")
+                 ORDER BY n DESC LIMIT 40""")
         # Phase r14 — recent facility additions (gives the Inspector a
         # sense of whether discovery is alive). If we haven't added
         # anything in 7d, the pipeline likely needs a kick.
