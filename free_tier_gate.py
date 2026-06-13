@@ -345,6 +345,11 @@ def init_free_tier_gate(app, get_db_conn):
                     '/api/v1/fiber/routes',
                     '/api/v1/fiber/sources',
                     '/api/v1/fiber/intel',
+                    # FCC BDC provider footprints (2026-06-13): public-domain
+                    # government data (anyone can pull it from the FCC), so the
+                    # map page may load it like substations/transmission.
+                    '/api/v1/fiber/providers',
+                    '/api/v1/fiber/footprint',
                     '/api/v1/connectivity/ixps',
                     '/api/v1/connectivity/facilities',
                     '/api/v1/connectivity/score',
