@@ -74,25 +74,40 @@ jobs:
           if [ -z "${TARGET}" ]; then echo "::error::no target vintage"; exit 1; fi
           echo "== loading vintage ${TARGET}; states: ${FIPS} =="
 
+          # Load each state ASYNC (fire-and-forget 202) then poll /status
+          # until the state lands. A synchronous load of a giant state (TX =
+          # 10.4M rows) exceeds the Railway HTTP edge timeout and rolls back;
+          # async sidesteps it. Loads serialize server-side (one lock), so
+          # we fire one, wait for it to appear, then fire the next.
+          state_loaded() {  # $1=fips → 0 if present at TARGET vintage
+            curl -sS --max-time 60 "${ORIGIN}/api/v1/admin/fcc-fiber/status" \
+              -H "X-Admin-Key: ${ADMIN_KEY}" 2>/dev/null \
+              | jq -e --arg f "$1" '(.missing_state_fips // []) | index($f) | not' >/dev/null 2>&1
+          }
+
           OK=0; FAIL=0; FAILED_STATES=""
           for f in ${FIPS}; do
             echo "--- state ${f} ---"
             ok_state=0
             for attempt in 1 2; do
-              http=$(curl -sS --max-time 900 -X POST \
-                "${ORIGIN}/api/v1/admin/fcc-fiber/load?state_fips=${f}&as_of=${TARGET}" \
+              http=$(curl -sS --max-time 60 -X POST \
+                "${ORIGIN}/api/v1/admin/fcc-fiber/load?state_fips=${f}&as_of=${TARGET}&async=1" \
                 -H "X-Admin-Key: ${ADMIN_KEY}" \
                 -o /tmp/load_${f}.json -w '%{http_code}' || echo "000")
-              body=$(cat /tmp/load_${f}.json 2>/dev/null)
-              if [ "${http}" = "200" ] && echo "${body}" | jq -e '.ok == true' >/dev/null 2>&1; then
-                echo "  ok: $(echo "${body}" | jq -c '{hex_rows, brands, download_mb, seconds}')"
-                ok_state=1; break
-              fi
-              echo "  attempt ${attempt} failed (HTTP ${http}): $(echo "${body}" | head -c 200)"
-              sleep 8
+              echo "  fired async (HTTP ${http}): $(cat /tmp/load_${f}.json 2>/dev/null | head -c 160)"
+              # Poll up to ~10 min for the state to appear (TX is the slowest).
+              for _ in $(seq 1 40); do
+                sleep 15
+                if state_loaded "${f}"; then ok_state=1; break; fi
+              done
+              if [ "${ok_state}" = "1" ]; then break; fi
+              echo "  attempt ${attempt}: state ${f} did not land within timeout"
             done
-            if [ "${ok_state}" = "1" ]; then OK=$((OK+1)); else FAIL=$((FAIL+1)); FAILED_STATES="${FAILED_STATES} ${f}"; fi
-            sleep 2
+            if [ "${ok_state}" = "1" ]; then
+              OK=$((OK+1)); echo "  ✅ ${f} loaded"
+            else
+              FAIL=$((FAIL+1)); FAILED_STATES="${FAILED_STATES} ${f}"
+            fi
           done
 
           echo "== summary: ${OK} loaded, ${FAIL} failed (${FAILED_STATES:-none}) =="

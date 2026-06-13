@@ -23,6 +23,7 @@ import io
 import json
 import os
 import tempfile
+import threading
 import time
 import zipfile
 import urllib.request
@@ -240,13 +241,120 @@ def _bbox_param():
     return (w, s, e, n)
 
 
+# Only one heavy load runs at a time (single Railway worker). The async
+# path holds this for the whole job; a second async fire returns 409 busy.
+_LOAD_LOCK = threading.Lock()
+
+
+def _do_load(state_fips, as_of, file_id):
+    """Download + aggregate one state's FTTP availability into Neon.
+
+    Returns a result dict; raises on failure. Shared by the sync and
+    async (background-thread) request paths.
+    """
+    t0 = time.time()
+    if not file_id:
+        with _fcc_get(f"/downloads/listAvailabilityData/{as_of}?category=State") as r:
+            files = json.loads(r.read()).get("data", [])
+        match = [f for f in files
+                 if str(f.get("state_fips")) == state_fips
+                 and str(f.get("technology_code")) == "50"
+                 and f.get("file_type") == "csv"]
+        if not match:
+            raise ValueError(f"no FTTP csv for state {state_fips} @ {as_of}")
+        file_id = str(match[0]["file_id"])
+
+    # Stream the zip to a temp file (CA-class states are hundreds of MB —
+    # never hold the blob in RAM on the web worker), then parse, flushing
+    # aggregates to Neon every ~250k keys so the dict stays bounded. One
+    # transaction per state: DELETE + flushes + latlng fill commit together.
+    tmp = tempfile.NamedTemporaryFile(prefix="fcc_bdc_", suffix=".zip", delete=False)
+    try:
+        # Chunked HTTP-Range download (see _fcc_download_to_file): the only
+        # path that reliably pulls TX/CA-class files over Railway's egress,
+        # which kills full streams ~30s in.
+        _fcc_download_to_file(f"/downloads/downloadFile/availability/{file_id}", tmp)
+        dl_bytes = tmp.tell()
+        tmp.close()
+
+        from db_utils import safe_db
+        agg = {}   # (brand, h3) -> [locations, max_down, provider_id]
+        rows = 0
+        with safe_db() as c:
+            cur = _raw(c.cursor())
+            # Fiber-dense states (MN tripped this) push the set-based lat/lng
+            # UPDATE past the connection's statement_timeout. LOCAL = this tx.
+            cur.execute("SET LOCAL statement_timeout = '540s'")
+            # Replace the state ENTIRELY (all vintages), not just the as_of
+            # being loaded: serving queries don't filter on as_of, so leaving
+            # an older vintage's rows behind would double-count when the
+            # refresh cron loads a new vintage. One vintage per state always.
+            cur.execute("DELETE FROM fcc_fiber_hex WHERE state_fips=%s", (state_fips,))
+            with zipfile.ZipFile(tmp.name) as z:
+                name = next(n for n in z.namelist() if n.endswith(".csv"))
+                with z.open(name) as fh:
+                    rdr = csv.DictReader(io.TextIOWrapper(fh, encoding="utf-8"))
+                    for row in rdr:
+                        rows += 1
+                        brand = (row.get("brand_name") or row.get("provider_name") or "").strip()
+                        h3 = (row.get("h3_res8_id") or "").strip()
+                        if not brand or not h3:
+                            continue
+                        try:
+                            down = int(float(row.get("max_advertised_download_speed") or 0))
+                        except Exception:
+                            down = 0
+                        key = (brand, h3)
+                        ent = agg.get(key)
+                        if ent:
+                            ent[0] += 1
+                            if down > ent[1]:
+                                ent[1] = down
+                        else:
+                            agg[key] = [1, down, (row.get("provider_id") or "")[:24]]
+                        if len(agg) >= 250_000:
+                            _flush(cur, state_fips, as_of, agg)
+                            agg.clear()
+            _flush(cur, state_fips, as_of, agg)
+            agg.clear()
+            filled = _fill_latlng(cur, state_fips)
+            cur.execute("""SELECT COUNT(*), COUNT(DISTINCT brand_name)
+                             FROM fcc_fiber_hex
+                            WHERE state_fips=%s AND as_of=%s""", (state_fips, as_of))
+            hex_total, brands = cur.fetchone()
+            c.commit()
+    finally:
+        try:
+            os.unlink(tmp.name)
+        except Exception:
+            pass
+    # autonomous-intelligence ledger (in-process, never raises)
+    try:
+        from routes.extractor_brain import record_extraction
+        record_extraction("fcc-bdc-fiber", "success", rows_inserted=int(hex_total or 0),
+                          duration_ms=int((time.time() - t0) * 1000),
+                          observations={"state": state_fips, "csv_rows": rows,
+                                        "brands": int(brands or 0)})
+    except Exception:
+        pass
+    return {"ok": True, "state_fips": state_fips, "as_of": as_of,
+            "csv_rows": rows, "hex_rows": int(hex_total or 0),
+            "brands": int(brands or 0), "latlng_filled": filled,
+            "download_mb": round(dl_bytes / (1 << 20), 1),
+            "seconds": round(time.time() - t0, 1)}
+
+
 @fcc_bdc_fiber_bp.route("/api/v1/admin/fcc-fiber/load", methods=["POST"])
 def load_state():
     """Download + aggregate one state's FTTP availability into Neon.
 
     Params: state_fips (e.g. 38), as_of (default 2025-12-31),
-            file_id (optional — skip the listing lookup).
-    Synchronous and heavy (ND ≈ a few hundred k rows) — admin/cron only.
+            file_id (optional — skip the listing lookup),
+            async=1 (fire-and-forget — returns 202 immediately, loads in a
+                     background thread; required for TX/CA-class states whose
+                     full request would exceed the Railway HTTP edge timeout
+                     and roll back. The cron polls /status for completion).
+    Admin/cron only.
     """
     if not _admin_ok():
         return jsonify({"error": "admin auth required"}), 403
@@ -254,102 +362,33 @@ def load_state():
     state_fips = (request.args.get("state_fips") or "").strip()
     as_of = (request.args.get("as_of") or _DEFAULT_AS_OF).strip()
     file_id = (request.args.get("file_id") or "").strip()
+    is_async = (request.args.get("async") or "").strip().lower() in ("1", "true", "yes")
     if not state_fips:
         return jsonify({"error": "state_fips required"}), 400
-    t0 = time.time()
-    try:
-        if not file_id:
-            with _fcc_get(f"/downloads/listAvailabilityData/{as_of}?category=State") as r:
-                files = json.loads(r.read()).get("data", [])
-            match = [f for f in files
-                     if str(f.get("state_fips")) == state_fips
-                     and str(f.get("technology_code")) == "50"
-                     and f.get("file_type") == "csv"]
-            if not match:
-                return jsonify({"error": f"no FTTP csv for state {state_fips} @ {as_of}"}), 404
-            file_id = str(match[0]["file_id"])
 
-        # Stream the zip to a temp file (CA-class states are hundreds of
-        # MB — never hold the blob in RAM on the web worker), then parse,
-        # flushing aggregates to Neon every ~250k keys so the dict stays
-        # bounded. One transaction per state: DELETE + flushes + latlng
-        # fill commit together (atomic re-load).
-        tmp = tempfile.NamedTemporaryFile(prefix="fcc_bdc_", suffix=".zip", delete=False)
-        try:
-            # Chunked HTTP-Range download (see _fcc_download_to_file): the
-            # only path that reliably pulls TX/CA-class files over Railway's
-            # egress, which kills full streams ~30s in.
-            _fcc_download_to_file(f"/downloads/downloadFile/availability/{file_id}", tmp)
-            dl_bytes = tmp.tell()
-            tmp.close()
+    if is_async:
+        if not _LOAD_LOCK.acquire(blocking=False):
+            return jsonify({"ok": False, "busy": True, "state_fips": state_fips,
+                            "message": "another load is in progress"}), 409
 
-            from db_utils import safe_db
-            agg = {}   # (brand, h3) -> [locations, max_down, provider_id]
-            rows = 0
-            with safe_db() as c:
-                cur = _raw(c.cursor())
-                # Fiber-dense states (MN tripped this) push the set-based
-                # lat/lng UPDATE past the connection's statement_timeout.
-                # LOCAL = this transaction only.
-                cur.execute("SET LOCAL statement_timeout = '540s'")
-                # Replace the state ENTIRELY (all vintages), not just the
-                # as_of being loaded: serving queries don't filter on as_of,
-                # so leaving an older vintage's rows behind would double-count
-                # when the refresh cron loads a new vintage. One vintage per
-                # state at all times.
-                cur.execute("DELETE FROM fcc_fiber_hex WHERE state_fips=%s", (state_fips,))
-                with zipfile.ZipFile(tmp.name) as z:
-                    name = next(n for n in z.namelist() if n.endswith(".csv"))
-                    with z.open(name) as fh:
-                        rdr = csv.DictReader(io.TextIOWrapper(fh, encoding="utf-8"))
-                        for row in rdr:
-                            rows += 1
-                            brand = (row.get("brand_name") or row.get("provider_name") or "").strip()
-                            h3 = (row.get("h3_res8_id") or "").strip()
-                            if not brand or not h3:
-                                continue
-                            try:
-                                down = int(float(row.get("max_advertised_download_speed") or 0))
-                            except Exception:
-                                down = 0
-                            key = (brand, h3)
-                            ent = agg.get(key)
-                            if ent:
-                                ent[0] += 1
-                                if down > ent[1]:
-                                    ent[1] = down
-                            else:
-                                agg[key] = [1, down, (row.get("provider_id") or "")[:24]]
-                            if len(agg) >= 250_000:
-                                _flush(cur, state_fips, as_of, agg)
-                                agg.clear()
-                _flush(cur, state_fips, as_of, agg)
-                agg.clear()
-                filled = _fill_latlng(cur, state_fips)
-                cur.execute("""SELECT COUNT(*), COUNT(DISTINCT brand_name)
-                                 FROM fcc_fiber_hex
-                                WHERE state_fips=%s AND as_of=%s""", (state_fips, as_of))
-                hex_total, brands = cur.fetchone()
-                c.commit()
-        finally:
+        def _bg():
             try:
-                os.unlink(tmp.name)
-            except Exception:
-                pass
-        # autonomous-intelligence ledger (in-process, never raises)
-        try:
-            from routes.extractor_brain import record_extraction
-            record_extraction("fcc-bdc-fiber", "success", rows_inserted=int(hex_total or 0),
-                              duration_ms=int((time.time() - t0) * 1000),
-                              observations={"state": state_fips, "csv_rows": rows,
-                                            "brands": int(brands or 0)})
-        except Exception:
-            pass
-        return jsonify({"ok": True, "state_fips": state_fips, "as_of": as_of,
-                        "csv_rows": rows, "hex_rows": int(hex_total or 0),
-                        "brands": int(brands or 0), "latlng_filled": filled,
-                        "download_mb": round(dl_bytes / (1 << 20), 1),
-                        "seconds": round(time.time() - t0, 1)})
+                res = _do_load(state_fips, as_of, file_id)
+                print(f"[fcc-fiber] async load {state_fips}@{as_of} done: {res}", flush=True)
+            except Exception as e:
+                print(f"[fcc-fiber] async load {state_fips}@{as_of} FAILED: {str(e)[:200]}", flush=True)
+            finally:
+                _LOAD_LOCK.release()
+
+        threading.Thread(target=_bg, name=f"fcc-load-{state_fips}", daemon=True).start()
+        return jsonify({"ok": True, "started": True, "async": True,
+                        "state_fips": state_fips, "as_of": as_of,
+                        "poll": "/api/v1/admin/fcc-fiber/status"}), 202
+
+    try:
+        return jsonify(_do_load(state_fips, as_of, file_id))
+    except ValueError as ve:
+        return jsonify({"ok": False, "error": str(ve)}), 404
     except Exception as e:
         return jsonify({"ok": False, "error": str(e)[:300]}), 502
 
@@ -436,6 +475,7 @@ def refresh_status():
         "needs_refresh": bool(latest and (latest != loaded_as_of or missing)),
         "target_as_of": latest or loaded_as_of,
         "missing_state_fips": missing,
+        "load_in_progress": _LOAD_LOCK.locked(),
     })
 
 
