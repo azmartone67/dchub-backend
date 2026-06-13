@@ -154,12 +154,17 @@ def resolve_tier(req=None) -> tuple[Tier, dict]:
                 # api_key string. /api/v1/me + api_tier_gating.validate_api_key
                 # do the same dual match (r79.1) — the owner's own enterprise
                 # key is raw-stored, so a hash-only lookup missed it entirely.
+                # NB: api_keys.is_active is an INTEGER column — `IN (1, TRUE)`
+                # throws "operator does not exist: integer = boolean" and the
+                # except below would swallow it → silent fall-through to anon
+                # (this is exactly why the first cut still gated). Use `= 1`,
+                # matching /api/v1/me + free_tier_limiter.
                 cur.execute(
                     """SELECT ak.rate_limit_tier, ak.plan, u.plan, u.email, ak.user_id
                          FROM api_keys ak
                          LEFT JOIN users u ON u.id = ak.user_id
                         WHERE ak.key_hash IN (%s, %s)
-                          AND (ak.is_active IS NULL OR ak.is_active IN (1, TRUE))
+                          AND (ak.is_active IS NULL OR ak.is_active = 1)
                         LIMIT 1""",
                     (key_hash, api_key))
                 arow = cur.fetchone()
