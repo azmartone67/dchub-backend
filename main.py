@@ -14459,6 +14459,34 @@ def _eia_run_ingest(task_id: str):
             pass
 
 
+@app.route('/api/v1/admin/gsc/submit-sitemap', methods=['POST'])
+def admin_gsc_submit_sitemap():
+    """r81: trigger a Google Search Console sitemap (re)submission. The GSC
+    service-account JSON lives only on Railway (GitHub Actions has no such
+    secret), so a cron curls THIS endpoint and Railway does the work — same
+    pattern as backfill-facility-states. Pairs with the r80 internal-link
+    mesh: once the SA is verified on the property, this nudges Google to
+    re-crawl the (now-linked) 21k facility pages out of the unindexed pile.
+    Admin-gated. Idempotent (GSC dedupes sitemap submissions)."""
+    import os as _os_g
+    expected = _os_g.environ.get('DCHUB_ADMIN_KEY') or _os_g.environ.get('DCHUB_INTERNAL_KEY')
+    provided = (request.headers.get('X-Admin-Key') or request.args.get('admin_key'))
+    if expected and provided != expected:
+        return jsonify(ok=False, error="unauthorized", hint="X-Admin-Key header required"), 401
+    try:
+        from google_search_console import auto_submit_sitemap
+        out = auto_submit_sitemap()
+        # surface verified-state so a cron log shows WHY a submit no-ops
+        try:
+            from google_search_console import gsc_status as _gss
+            out['gsc_status'] = _gss()
+        except Exception:
+            pass
+        return jsonify(ok=bool(out.get('success')), result=out), 200
+    except Exception as e:
+        return jsonify(ok=False, error=str(e)[:200]), 200
+
+
 @app.route('/api/v1/admin/backfill-facility-states', methods=['POST'])
 def backfill_facility_states_endpoint():
     """Fill the MISSING `state` on US discovered_facilities rows from their

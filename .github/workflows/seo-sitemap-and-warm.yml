@@ -1,0 +1,52 @@
+name: SEO sitemap submit + report-narrative warm
+
+# r81: two cheap SEO/freshness keepers.
+#  1. Nudge Google to re-crawl the sitemap (the r80 internal-link mesh
+#     un-islanded the 21k facility pages — this asks Google to re-fetch).
+#     The GSC service-account JSON is Railway-only, so we POST a Railway
+#     admin endpoint (GitHub Actions has no such secret). No-ops cleanly
+#     until the SA is verified on the property (the gsc_status in the
+#     response says why) — see HEALTH_BASELINE §7.
+#  2. Warm the monthly/quarterly report narratives. report_narrative.py
+#     short-circuits to None for FOREGROUND requests (a real visitor's
+#     timeout can't finish a model call), so the analyst narrative only
+#     generates when warmed with a "prewarm" User-Agent. This cron is that
+#     warmer — the page then serves the cached narrative to real visitors.
+
+'on':
+  schedule:
+    - cron: '40 7 * * *'   # daily 07:40 UTC
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  seo-warm:
+    runs-on: ubuntu-latest
+    timeout-minutes: 6
+    env:
+      BASE: https://dchub-backend-production.up.railway.app
+      ADMIN_KEY: ${{ secrets.DCHUB_ADMIN_KEY }}
+    steps:
+      - name: Submit sitemap to Google Search Console
+        run: |
+          if [ -z "$ADMIN_KEY" ]; then
+            echo "::warning::DCHUB_ADMIN_KEY not set — skipping sitemap submit"
+          else
+            echo "::group::GSC sitemap submit"
+            curl -sS --max-time 60 -X POST -H "X-Admin-Key: $ADMIN_KEY" \
+              "$BASE/api/v1/admin/gsc/submit-sitemap" | head -c 1200 || true
+            echo; echo "::endgroup::"
+          fi
+      - name: Warm report narratives (prewarm UA flips the foreground gate)
+        run: |
+          for path in \
+            "/api/v1/reports/monthly" \
+            "/api/v1/reports/quarterly" ; do
+            echo "::group::warm $path"
+            code=$(curl -sS --max-time 40 -o /dev/null -w "%{http_code}" \
+              -H "User-Agent: DCHub-Prewarm/1.0" "$BASE$path" || echo "000")
+            echo "$path -> $code"
+            echo "::endgroup::"
+          done

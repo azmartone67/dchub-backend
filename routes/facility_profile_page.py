@@ -379,6 +379,8 @@ def _render_profile(fac: dict, slug: str) -> str:
     # platform, so a facility page should carry its market's DCPI verdict).
     _dcpi = _market_dcpi(city, state)
     dcpi_html = ""
+    _mkt_crumb = ""   # r81: facility→hub breadcrumb (completes the SEO mesh —
+                      # r80 added hub→facility links; this is the return half)
     if _dcpi:
         _verdict = (_dcpi.get("verdict") or "").upper()
         _vcolor = "#10b981" if _verdict == "BUILD" else ("#ef4444" if _verdict == "AVOID" else "#f59e0b")
@@ -393,6 +395,11 @@ def _render_profile(fac: dict, slug: str) -> str:
             f'<div class="chip"><span class="chip-l">{l}</span><span class="chip-v">{v}</span></div>'
             for l, v in _chips)
         _dlink = f'<a href="/dcpi/{_esc(_mslug)}" class="link">Full DCPI breakdown &rarr;</a>' if _mslug else ""
+        # /dcpi/<mslug> is guaranteed to resolve (same slug the DCPI page keys
+        # on) and now carries this market's facility list — safer than /markets
+        # which uses inverse metro slugs (the slug-convention trap).
+        if _mslug:
+            _mkt_crumb = f'<a href="/dcpi/{_esc(_mslug)}">{_esc(_mname)}</a> · '
         dcpi_html = (
             '<div class="section"><div class="section-head">'
             '<h2>Market intelligence</h2>'
@@ -497,7 +504,7 @@ def _render_profile(fac: dict, slug: str) -> str:
   </header>
 
   <div class="breadcrumb">
-    <a href="/">Home</a> · <a href="/land-power-map">Map</a> · {_esc(name)}
+    <a href="/">Home</a> · <a href="/land-power-map">Map</a> · {_mkt_crumb}{_esc(name)}
   </div>
 
   <div class="container">
