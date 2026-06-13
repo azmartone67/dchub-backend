@@ -145,7 +145,15 @@ class Surface:
                       COUNT(DISTINCT anon_id) FILTER (WHERE ts >= NOW() - INTERVAL '7 days' AND anon_id IS NOT NULL)   AS u7
                       FROM surface_telemetry
                      WHERE surface_id = %s
+                       AND ts >= NOW() - INTERVAL '7 days'
                 """, (self.surface_id,))
+                # r82 PERF: the AND ts>=7d floor lets Postgres use the
+                # (surface_id, ts) index instead of seq-scanning all ~2M rows
+                # for this surface + a 69MB disk sort (1.9s → ~0.5s). Every
+                # metric above is already inside a ≤7-day FILTER, so the floor
+                # changes NO result — it just stops reading rows that all the
+                # FILTERs would discard anyway. Was the worst query in the
+                # 10.9s /api/v1/surfaces cold path.
                 r = cur.fetchone() or {}
                 out["events_24h"]      = int(r.get("e24") or 0)
                 out["events_7d"]       = int(r.get("e7") or 0)
@@ -239,6 +247,7 @@ class Surface:
                       COUNT(*) FILTER (WHERE ts >= NOW() - INTERVAL '14 days' AND ts < NOW() - INTERVAL '7 days') AS prev_7d
                       FROM surface_telemetry
                      WHERE surface_id = %s
+                       AND ts >= NOW() - INTERVAL '14 days'
                 """, (self.surface_id,))
                 r = cur.fetchone()
                 now_7d = int(r[0] or 0) if r else 0

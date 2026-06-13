@@ -32,6 +32,16 @@ fi
 _THREADS=16
 if [ -n "$RENDER" ] || [ -n "$RENDER_SERVICE_ID" ]; then _THREADS=4; fi
 
+# r82 PERF: --max-requests 1000 → 20000. At current volume 1000 recycled the
+# worker every few MINUTES, which wiped every in-process cache (grid intel,
+# surface_brain, dcpi/markets memos), re-armed the 180s staggered startup +
+# 90s brain delay, and churned the leader lock — the "load-bearing" latency
+# +self-probe-storm cause. RSS is provably FLAT at ~441MB (5 samples) with a
+# 60s gc.collect+malloc_trim loop + 3-tier guard (1500/1800/2200MB) already
+# doing real leak defense, and the host has huge headroom — so 1000 was ~20×
+# over-cautious. 20000 keeps a slow safety-net recycle (every several hours)
+# without the storm. (preload + 2 workers is a separate follow-up PR — needs
+# the post-fork thread-start fix; NOT a config-only change.)
 exec gunicorn main:app --bind 0.0.0.0:"$PORT" \
   --workers 1 --threads "$_THREADS" --timeout 120 \
-  --max-requests 1000 --max-requests-jitter 50
+  --max-requests 20000 --max-requests-jitter 1000

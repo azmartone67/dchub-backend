@@ -456,10 +456,16 @@ class HealthMonitor:
                 f"{MAX_CONSECUTIVE_FAILURES}): {error_msg}"
             )
 
-            # Auto-reset pool on first failure
-            if self._consecutive_failures == 1:
+            # r82 RELIABILITY: reset the pool on the SECOND consecutive failure,
+            # not the first. A single transient Neon blip (e.g. a ~5s latency
+            # spike during an autoscale cold-start) would otherwise churn every
+            # live pooled connection cluster-wide on the first miss — a self-
+            # inflicted disruption. Two consecutive misses (≥the 120s interval
+            # apart) is a real problem worth a reset; one is noise. The 5-fail
+            # watchdog threshold is unchanged.
+            if self._consecutive_failures == 2:
                 try:
-                    logger.info("🔄 Auto-resetting connection pool...")
+                    logger.info("🔄 Auto-resetting connection pool (2 consecutive fails)...")
                     self.reset_pool()
                     self._total_resets += 1
                     logger.info("✅ Connection pool reset complete")

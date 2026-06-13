@@ -5720,13 +5720,17 @@ def add_cache_headers(response):
         if ttl is None:
             return response
         seconds = ttl[0] if isinstance(ttl, tuple) else ttl
-        # OVERRIDE — we know better than the default 60s
+        # OVERRIDE — we know better than the default 60s.
+        # r82 PERF/UPTIME: stale-while-revalidate 60 → 86400. SWR is the
+        # uptime multiplier — when the single Railway worker is slow or mid-
+        # deploy, the edge serves the last-good page INSTANTLY and refreshes
+        # in the background, instead of forwarding to a struggling origin.
         response.headers['Cache-Control'] = (
             f'public, max-age={seconds}, s-maxage={seconds}, '
-            f'stale-while-revalidate=60')
-        existing_vary = response.headers.get('Vary', '')
-        if 'Accept' not in existing_vary:
-            response.headers['Vary'] = (existing_vary + ', Accept').lstrip(', ')
+            f'stale-while-revalidate=86400')
+        # r82 PERF: do NOT add `Vary: Accept` — it fragments the edge cache
+        # into a separate entry per crawler/Accept string (tanking hit-rate).
+        # Vary: Accept-Encoding (gzip/br) is fine and is set elsewhere.
     except Exception:
         pass
     return response
@@ -9639,12 +9643,12 @@ def add_security_headers(response):
         # Railway replica. Fixes the ~39% cache-hit ratio + 12-14s repeat
         # loads. SWR lets CF serve instantly while refreshing in the bg.
         _bmax, _smax = _match_html_cache(path)
+        # r82 PERF/UPTIME: SWR 600 → 86400 (serve last-good instantly while the
+        # single worker refreshes in bg) + drop `Vary: Accept` (it fragmented
+        # the edge cache per crawler Accept-string, tanking the hit-rate).
         response.headers['Cache-Control'] = (
             f'public, max-age={_bmax}, s-maxage={_smax}, '
-            f'stale-while-revalidate=600')
-        existing_vary = response.headers.get('Vary', '')
-        if 'Accept' not in existing_vary:
-            response.headers['Vary'] = (existing_vary + ', Accept').lstrip(', ')
+            f'stale-while-revalidate=86400')
     else:
         # 2026-06-05 (Phase HJ — cache-hit recovery from 23.95%).
         # Added s-maxage=300 — without it, CF Pro edge marks the
