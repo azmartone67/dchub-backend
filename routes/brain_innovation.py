@@ -167,20 +167,31 @@ def _compute(days: int = 7) -> dict:
                 except Exception: pass
 
             # ── L22 auto-code activity ─────────────────────────────────
+            # 2026-06-14: was counting brain_l22_proposals (empty) → showed
+            # "0 PR proposals" while the loop actually ships to
+            # brain_auto_code_actions. Count the REAL shipped drafts (an
+            # opened issue/PR has pr_url set); samples show what shipped.
             try:
                 cur.execute("""
-                    SELECT recipe, target, status, created_at
-                      FROM brain_l22_proposals
-                     WHERE created_at > NOW() - INTERVAL %s
-                     ORDER BY created_at DESC
+                    SELECT recipe, target_path, pr_url, drafted_at
+                      FROM brain_auto_code_actions
+                     WHERE drafted_at > NOW() - INTERVAL %s
+                       AND pr_url IS NOT NULL AND COALESCE(dry_run, FALSE) = FALSE
+                     ORDER BY drafted_at DESC
                      LIMIT 10
                 """, (f"{days} days",))
                 rows = cur.fetchall()
+                cur.execute("""
+                    SELECT COUNT(*) FROM brain_auto_code_actions
+                     WHERE drafted_at > NOW() - INTERVAL %s
+                       AND pr_url IS NOT NULL AND COALESCE(dry_run, FALSE) = FALSE
+                """, (f"{days} days",))
+                shipped = int((cur.fetchone() or [0])[0] or 0)
                 out["l22_status"] = {
-                    "drafted_count": len(rows),
+                    "drafted_count": shipped,
                     "samples": [
-                        {"recipe": r[0], "target": r[1], "status": r[2],
-                         "at": r[3].isoformat() if r[3] else None}
+                        {"recipe": r[0], "target": r[1], "status": "shipped",
+                         "url": r[2], "at": r[3].isoformat() if r[3] else None}
                         for r in rows
                     ],
                 }
@@ -279,11 +290,13 @@ footer a{color:var(--indigo);text-decoration:none}
   <div class="stat"><div class="n">{{ d.summary.autopilot_actions }}</div><div class="l">Autopilot actions</div></div>
   <div class="stat"><div class="n">{{ d.summary.rate_limited }}</div><div class="l">Rate-limited (correctly)</div></div>
   <div class="stat"><div class="n">{{ d.summary.open_findings }}</div><div class="l">Open findings</div></div>
-  <div class="stat"><div class="n">{{ d.summary.l22_drafted }}</div><div class="l">L22 PR proposals</div></div>
+  <div class="stat"><div class="n">{{ d.summary.l22_drafted }}</div><div class="l">L22 code proposals shipped</div></div>
 </div>
 
 {% if d.summary.l22_drafted == 0 %}
-<div class="callout"><b>Honest scope:</b> Inspector identifies code-level RECIPE candidates in every brief (schema_drift_guard, cron_if_mismatched, route_alias_404). The L22 auto-code drafter is wired but no proposals have been promoted to draft-PR stage yet — the Inspector → L22 handoff pipe needs one more step. That's the next autonomy frontier.</div>
+<div class="callout"><b>Honest scope:</b> Inspector identifies code-level RECIPE candidates in every brief (schema_drift_guard, cron_if_mismatched, route_alias_404). The L22 auto-code drafter is wired and the Inspector→L22 handoff fires; no drafts in this window (recipes deduped or none surfaced).</div>
+{% else %}
+<div class="callout"><b>Honest scope:</b> The Inspector→L22 handoff is live — Inspector surfaces code-level RECIPE candidates and L22 ships them as GitHub issues/PRs ({{ d.summary.l22_drafted }} this window). route_alias + cron recipes auto-open real PRs; the rest open review-issues (code never auto-applied without a human gate, by design). The remaining work is a human/agent <em>consuming</em> the proposal backlog.</div>
 {% endif %}
 
 <h2>Recent Inspector briefs</h2>
