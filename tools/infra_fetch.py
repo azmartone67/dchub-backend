@@ -34,6 +34,21 @@ ADMIN = "".join((os.environ.get("DCHUB_ADMIN_KEY") or "").split())
 GAS_SVC = ("https://services2.arcgis.com/FiaPA4ga0iQKduv3/arcgis/rest/services/"
            "Natural_Gas_Interstate_and_Intrastate_Pipelines_1/FeatureServer/0/query")
 
+# EIA Electric Power Transmission Lines (national, ~94,619 polylines). Same
+# reliable EIA org (FiaPA4ga0iQKduv3). Attributes only — the transmission_lines
+# table stores no geometry — so returnGeometry=false (94k full geometries would
+# be huge & needless). Fields: ID, TYPE, STATUS, OWNER, VOLTAGE, SUB_1, SUB_2.
+# This 94k set supersedes the stale HIFLD 52k snapshot (clean single source).
+TRANSMISSION_SVC = ("https://services2.arcgis.com/FiaPA4ga0iQKduv3/arcgis/rest/"
+                    "services/US_Electric_Power_Transmission_Lines/FeatureServer/0/query")
+
+# EIA Power Plants in the US (national, ~13,446 points). Same EIA org. Needs
+# point geometry (returnGeometry=true, outSR=4326) for lat/lng. Fields:
+# Plant_Code, Plant_Name, Utility_Na, sector_nam, City, County, State, Zip,
+# PrimSource, Total_MW. Refreshes the same 13,446 plants (no duplication).
+POWER_PLANTS_SVC = ("https://services2.arcgis.com/FiaPA4ga0iQKduv3/arcgis/rest/"
+                    "services/Power_Plants_in_the_US/FeatureServer/0/query")
+
 
 def _get(url, timeout=90, tries=5):
     last = None
@@ -90,6 +105,131 @@ def fetch_gas_pipelines(cap):
     return rows[:cap]
 
 
+def _v_voltage(v):
+    """VOLTAGE is kV int; -999999 / negatives are 'not available' sentinels."""
+    try:
+        f = float(v)
+        return f if f > 0 else None
+    except (TypeError, ValueError):
+        return None
+
+
+def _v_clean(s, n):
+    if s is None:
+        return None
+    s = str(s).strip()
+    if not s or s.upper() in ("NOT AVAILABLE", "UNKNOWN", "NULL", "NONE"):
+        return None
+    return s[:n]
+
+
+def fetch_transmission_lines(cap):
+    """Paginate the EIA transmission service → row tuples for the ingest endpoint.
+
+    Attributes only (returnGeometry=false). Row shape (matches
+    routes/transmission_ingest._ROW_FIELDS):
+      [hifld_id, name, operator, voltage_kv, from_sub, to_sub, status, line_type]
+    """
+    rows, offset, page = [], 0, 2000   # service maxRecordCount = 2000
+    while len(rows) < cap:
+        params = urllib.parse.urlencode({
+            "where": "1=1",
+            "outFields": "ID,TYPE,STATUS,OWNER,VOLTAGE,SUB_1,SUB_2",
+            "returnGeometry": "false",
+            "resultOffset": offset,
+            "resultRecordCount": page,
+            "f": "json",
+        })
+        data = json.loads(_get(TRANSMISSION_SVC + "?" + params).decode())
+        feats = data.get("features") or []
+        if not feats:
+            break
+        for f in feats:
+            a = f.get("attributes") or {}
+            hid = _v_clean(a.get("ID"), 64)
+            owner = _v_clean(a.get("OWNER"), 200)
+            name = owner or hid
+            rows.append([
+                hid,
+                name[:200] if name else None,
+                owner,
+                _v_voltage(a.get("VOLTAGE")),
+                _v_clean(a.get("SUB_1"), 200),
+                _v_clean(a.get("SUB_2"), 200),
+                _v_clean(a.get("STATUS"), 80),
+                _v_clean(a.get("TYPE"), 80),
+            ])
+        offset += page
+        if len(feats) < page:
+            break
+    return rows[:cap]
+
+
+def fetch_power_plants(cap):
+    """Paginate the EIA power-plants service → row tuples for the ingest endpoint.
+
+    Needs point geometry (returnGeometry=true, outSR=4326). Skips non-integer
+    Plant_Code. Row shape (matches routes/power_plants_ingest._ROW_FIELDS):
+      [plant_id, name, utility_name, state, city, county, zipcode,
+       lat, lng, primary_fuel, nameplate_capacity_mw, sector]
+    """
+    def _vint(v):
+        try:
+            return int(float(v))
+        except (TypeError, ValueError):
+            return None
+
+    def _vfloat(v):
+        try:
+            return float(v)
+        except (TypeError, ValueError):
+            return None
+
+    rows, offset, page = [], 0, 2000   # service maxRecordCount = 2000
+    while len(rows) < cap:
+        params = urllib.parse.urlencode({
+            "where": "1=1",
+            "outFields": ("Plant_Code,Plant_Name,Utility_Na,sector_nam,City,"
+                          "County,State,Zip,PrimSource,Total_MW"),
+            "returnGeometry": "true",
+            "outSR": "4326",
+            "resultOffset": offset,
+            "resultRecordCount": page,
+            "f": "json",
+        })
+        data = json.loads(_get(POWER_PLANTS_SVC + "?" + params).decode())
+        feats = data.get("features") or []
+        if not feats:
+            break
+        for f in feats:
+            a = f.get("attributes") or {}
+            pid = _vint(a.get("Plant_Code"))
+            if pid is None:
+                continue
+            g = f.get("geometry") or {}
+            x, y = g.get("x"), g.get("y")
+            lat = _vfloat(y)
+            lng = _vfloat(x)
+            rows.append([
+                pid,
+                _v_clean(a.get("Plant_Name"), 200),
+                _v_clean(a.get("Utility_Na"), 200),
+                _v_clean(a.get("State"), 80),
+                _v_clean(a.get("City"), 120),
+                _v_clean(a.get("County"), 120),
+                _v_clean(a.get("Zip"), 20),
+                lat,
+                lng,
+                _v_clean(a.get("PrimSource"), 80),
+                _vfloat(a.get("Total_MW")),
+                _v_clean(a.get("sector_nam"), 120),
+            ])
+        offset += page
+        if len(feats) < page:
+            break
+    return rows[:cap]
+
+
 def post_rows(path, rows, cap):
     payload = {"rows": rows}
     body = gzip.compress(json.dumps(payload).encode("utf-8"))
@@ -106,6 +246,16 @@ LAYERS = {
         "fetch": fetch_gas_pipelines,
         "ingest": "/api/v1/admin/ingest/gas-pipelines",
         "default_cap": 30000,
+    },
+    "transmission-lines": {
+        "fetch": fetch_transmission_lines,
+        "ingest": "/api/v1/admin/ingest/transmission-lines",
+        "default_cap": 100000,   # EIA service has ~94,619 lines
+    },
+    "power-plants": {
+        "fetch": fetch_power_plants,
+        "ingest": "/api/v1/admin/ingest/power-plants",
+        "default_cap": 20000,    # EIA service has ~13,446 plants
     },
 }
 

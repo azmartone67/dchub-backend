@@ -1,0 +1,51 @@
+name: Transmission Ingest (EIA → transmission_lines)
+
+# Revives the FROZEN Land & Power "electric transmission" layer. The
+# transmission_lines table held a stale HIFLD snapshot (~52k rows) with no
+# refresh path.
+#
+# ★ The fetch runs HERE on the GitHub runner, not on Railway: Railway's egress
+# to ArcGIS is unreliable, so a server-side cron would fail. The runner
+# (reliable egress) fetches the live EIA US_Electric_Power_Transmission_Lines
+# service (~94,619 lines, FiaPA4ga0iQKduv3 org — same reliable org as the gas
+# ingest) and POSTs the rows to the ingest endpoint, which writes to Neon.
+# Idempotent full-replace inside one transaction (clears stale HIFLD + prior
+# runner rows each run → clean single-source layer).
+# Logic: tools/infra_fetch.py.
+
+on:
+  schedule:
+    - cron: '17 6 * * 1'   # Mondays 06:17 UTC (off-peak; staggered from other layers)
+  workflow_dispatch:
+    inputs:
+      cap:
+        description: 'Max features to ingest'
+        required: false
+        default: '100000'
+
+concurrency:
+  group: transmission-ingest
+  cancel-in-progress: false
+
+jobs:
+  ingest:
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    env:
+      DCHUB_ADMIN_KEY: ${{ secrets.DCHUB_ADMIN_KEY }}
+      DCHUB_ORIGIN: https://dchub-backend-production.up.railway.app
+      CAP: ${{ github.event.inputs.cap || '100000' }}
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+      - name: Fetch EIA transmission lines + ingest
+        run: |
+          set -uo pipefail
+          if [ -z "${DCHUB_ADMIN_KEY:-}" ]; then
+            echo "::warning::DCHUB_ADMIN_KEY not set — skipping"; exit 0
+          fi
+          python tools/infra_fetch.py transmission-lines "${CAP}"
