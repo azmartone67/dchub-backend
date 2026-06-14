@@ -6306,7 +6306,17 @@ def _log_mcp_analytics(rpc_method, rpc_params, platform, client_name, duration_m
     db = None
     try:
         from db_utils import try_get_db
-        db = try_get_db()
+        # Item 5 SELF-HEAL DIET (2026-06-13): skip the mcp_tool_calls write for
+        # our own self-heal / synthetic probe clients (dchub-selfheal et al. were
+        # ~93% of the table and every downstream reader already filters them out).
+        # Mirrors the guard in flask_mcp_endpoints.track_tool_call. The tool has
+        # already executed; dropping the audit row never affects the response.
+        try:
+            from flask_mcp_endpoints import _is_selfheal_synthetic as _sh_synth
+            _skip_selfheal = _sh_synth(platform, client_name)
+        except Exception:
+            _skip_selfheal = False
+        db = try_get_db() if not _skip_selfheal else None
         if db and rpc_method == 'tools/call':
             c = db.cursor()
             c.execute('''INSERT INTO mcp_tool_calls
@@ -33036,6 +33046,189 @@ def _admin_dedup_run():
         result = run_auto_approval(max_records=max_records, test_mode=test_mode)
         return jsonify(ok=True, **result)
     except Exception as e:
+        import traceback
+        return jsonify(ok=False, error=str(e)[:300],
+                       traceback=traceback.format_exc()[-500:]), 500
+
+
+@app.route("/api/v1/admin/dedup/drain", methods=["GET", "POST"])
+def _admin_dedup_drain():
+    """VERIFY -> MERGE drain for the discovered_facilities backlog (Item 5b,
+    2026-06-13).
+
+    Backlog story: discovered_facilities had ~21.5k rows, ~13.5k with
+    merged_at IS NULL. Of the *verified-clean* subset (is_duplicate=0 AND
+    merged_at IS NULL, ~3.8k) two cases exist:
+      A. NEW   — no matching row in canonical `facilities` -> INSERT a facility
+                 (slug id) and mark the discovered row merged.
+      B. EXISTS — a `facilities` row already matches by name + (city OR country)
+                 -> link merged_facility_id + stamp merged_at WITHOUT inserting
+                 (no duplicate). THIS is the bug the standalone merge_discovered_v3
+                 had: its insert-skip path never marked merged_at, so ~1.8k
+                 already-present rows sat as permanent backlog and re-surfaced
+                 every run. Draining them clears the backlog honestly.
+
+    Safety:
+      - Admin-gated (X-Admin-Key / X-Internal-Key via internal_auth).
+      - GET (or ?dryrun=1) = READ-ONLY counts, no writes.
+      - POST processes at most ?max=N rows (default 500, hard cap 2000) — never
+        a single 13.5k mass-merge. Re-runnable until backlog drains.
+      - Savepoint per row: one bad row can't abort the whole batch.
+      - Idempotent: only touches rows with merged_at IS NULL AND is_duplicate=0.
+    """
+    import os, re as _re, psycopg2
+    from flask import jsonify, request
+    provided = (request.headers.get("X-Admin-Key")
+                or request.headers.get("X-Internal-Key")
+                or request.args.get("admin_key"))
+    try:
+        from internal_auth import is_valid_internal_key
+        if not is_valid_internal_key(provided):
+            return jsonify(ok=False, error="unauthorized",
+                           hint="X-Admin-Key or X-Internal-Key header required"), 401
+    except Exception:
+        expected = os.environ.get("DCHUB_ADMIN_KEY") or os.environ.get("DCHUB_INTERNAL_KEY")
+        if expected and provided != expected:
+            return jsonify(ok=False, error="unauthorized"), 401
+
+    DATABASE_URL = os.environ.get("DATABASE_URL")
+    if not DATABASE_URL:
+        return jsonify(ok=False, error="no_database"), 503
+
+    try:
+        max_records = int(request.args.get("max", 500))
+    except (ValueError, TypeError):
+        max_records = 500
+    max_records = max(1, min(max_records, 2000))
+    dryrun = (request.method == "GET") or (request.args.get("dryrun") in ("1", "true", "yes"))
+
+    # Backlog selector: verified-clean, not yet merged, has a usable name.
+    SEL_WHERE = ("merged_at IS NULL AND is_duplicate = 0 "
+                 "AND name IS NOT NULL AND name <> ''")
+    # An existing facilities match: same name AND (same city OR same country).
+    EXISTS_SQL = ("SELECT id FROM facilities f "
+                  "WHERE LOWER(TRIM(f.name)) = LOWER(TRIM(%s)) "
+                  "AND (LOWER(TRIM(COALESCE(f.city,''))) = LOWER(TRIM(COALESCE(%s,''))) "
+                  "     OR LOWER(TRIM(COALESCE(f.country,''))) = LOWER(TRIM(COALESCE(%s,'')))) "
+                  "LIMIT 1")
+
+    def _make_slug(name, city, country):
+        parts = [name or '', city or '', country or '']
+        raw = '-'.join(p.strip() for p in parts if p.strip())
+        slug = _re.sub(r'[^a-z0-9]+', '-', raw.lower()).strip('-')
+        return slug[:100] if slug else None
+
+    def _region(country):
+        c = (country or '').upper()
+        if c in ('US', 'CA', 'MX'): return 'North America'
+        if c in ('UK', 'GB', 'DE', 'FR', 'NL', 'IE', 'SE', 'NO', 'DK', 'FI', 'CH',
+                 'AT', 'BE', 'IT', 'ES', 'PT', 'PL', 'CZ', 'RO', 'HU'): return 'Europe'
+        if c in ('SG', 'JP', 'AU', 'IN', 'HK', 'KR', 'TW', 'MY', 'ID', 'TH', 'CN',
+                 'NZ', 'PH', 'VN'): return 'Asia Pacific'
+        if c in ('BR', 'CL', 'CO', 'AR', 'PE'): return 'Latin America'
+        if c in ('AE', 'SA', 'IL', 'QA', 'BH', 'KW', 'OM'): return 'Middle East'
+        if c in ('ZA', 'NG', 'KE', 'EG', 'GH', 'MA'): return 'Africa'
+        return 'Other'
+
+    conn = None
+    try:
+        conn = psycopg2.connect(DATABASE_URL, connect_timeout=12)
+        conn.autocommit = False
+        cur = conn.cursor()
+
+        # Always report the current backlog split (read-only).
+        cur.execute(f"SELECT COUNT(*) FROM discovered_facilities WHERE {SEL_WHERE}")
+        backlog = cur.fetchone()[0]
+        cur.execute(
+            f"SELECT COUNT(*) FROM discovered_facilities df WHERE {SEL_WHERE} "
+            "AND EXISTS (SELECT 1 FROM facilities f "
+            "WHERE LOWER(TRIM(f.name)) = LOWER(TRIM(df.name)) "
+            "AND (LOWER(TRIM(COALESCE(f.city,''))) = LOWER(TRIM(COALESCE(df.city,''))) "
+            "     OR LOWER(TRIM(COALESCE(f.country,''))) = LOWER(TRIM(COALESCE(df.country,'')))))")
+        backlog_exists = cur.fetchone()[0]
+        backlog_new = backlog - backlog_exists
+
+        if dryrun:
+            conn.rollback(); conn.close()
+            return jsonify(
+                ok=True, mode="dry-run",
+                backlog_verified_unmerged=backlog,
+                would_link_existing=backlog_exists,
+                would_insert_new=backlog_new,
+                batch_cap=max_records,
+                hint="POST ?max=N to drain a batch (default 500, cap 2000). Re-run until backlog=0.",
+            )
+
+        # Pull one batch of the backlog. Stable order (id) so successive runs
+        # make forward progress.
+        cur.execute(
+            f"SELECT id, name, provider, city, state, country, latitude, longitude, "
+            f"power_mw, status, address FROM discovered_facilities "
+            f"WHERE {SEL_WHERE} ORDER BY id ASC LIMIT %s", (max_records,))
+        rows = cur.fetchall()
+
+        # Preload existing facility ids to avoid slug collisions across the batch.
+        cur.execute("SELECT id FROM facilities")
+        existing_ids = set(r[0] for r in cur.fetchall())
+
+        inserted = 0; linked = 0; skipped = 0
+        for (df_id, name, provider, city, state, country, lat, lng,
+             power, status, address) in rows:
+            cur.execute("SAVEPOINT drain_row")
+            try:
+                # Case B: already present -> link + mark merged (no insert).
+                cur.execute(EXISTS_SQL, (name, city, country))
+                hit = cur.fetchone()
+                if hit:
+                    cur.execute(
+                        "UPDATE discovered_facilities SET merged_at = NOW(), "
+                        "merged_facility_id = %s WHERE id = %s", (str(hit[0]), df_id))
+                    linked += 1
+                    cur.execute("RELEASE SAVEPOINT drain_row")
+                    continue
+
+                # Case A: new -> mint a unique slug id, insert, mark merged.
+                slug = _make_slug(name, city, country)
+                if not slug:
+                    skipped += 1
+                    cur.execute("RELEASE SAVEPOINT drain_row")
+                    continue
+                final_slug = slug; n = 2
+                while final_slug in existing_ids:
+                    final_slug = f"{slug}-{n}"; n += 1
+                cur.execute(
+                    "INSERT INTO facilities (id, name, provider, city, state, country, "
+                    "latitude, longitude, power_mw, status, address, region, source) "
+                    "VALUES (%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s)",
+                    (final_slug, name, provider, city, state, country, lat, lng,
+                     power, status or 'active', address, _region(country),
+                     'discovered_facilities_drain'))
+                existing_ids.add(final_slug)
+                cur.execute(
+                    "UPDATE discovered_facilities SET merged_at = NOW(), "
+                    "merged_facility_id = %s WHERE id = %s", (final_slug, df_id))
+                inserted += 1
+                cur.execute("RELEASE SAVEPOINT drain_row")
+            except Exception:
+                cur.execute("ROLLBACK TO SAVEPOINT drain_row")
+                cur.execute("RELEASE SAVEPOINT drain_row")
+                skipped += 1
+
+        cur.execute(f"SELECT COUNT(*) FROM discovered_facilities WHERE {SEL_WHERE}")
+        remaining = cur.fetchone()[0]
+        conn.commit(); conn.close()
+        return jsonify(
+            ok=True, mode="drain",
+            processed=len(rows), inserted_new=inserted, linked_existing=linked,
+            skipped=skipped, backlog_remaining=remaining, batch_cap=max_records,
+            hint="Re-run until backlog_remaining=0." if remaining else "Backlog drained.",
+        )
+    except Exception as e:
+        try:
+            if conn:
+                conn.rollback(); conn.close()
+        except Exception:
+            pass
         import traceback
         return jsonify(ok=False, error=str(e)[:300],
                        traceback=traceback.format_exc()[-500:]), 500
