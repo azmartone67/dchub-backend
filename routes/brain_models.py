@@ -125,27 +125,100 @@ _ONE_M_BETA_HEADER = "context-1m-2025-08-07"
 _GLOBAL_FALLBACK = (os.environ.get("DCHUB_BRAIN_MODEL") or "").strip()
 
 
-def brain_model_for(tier: str = "routine") -> str:
-    """Return the model identifier for a given tier. Env vars override
-    defaults so we can A/B test or downgrade for cost without code edits.
+# ── r85j: reachability-aware resolution + AUTO-ENABLE Fable ──────────
+# When claude-fable-5 (currently http_404 on this account) is approved again,
+# the brain auto-promotes inspector+reasoning back to it WITHOUT a manual env
+# flip — and degrades to opus the moment it 404s. Mechanism: a cached
+# reachability map (written by the /api/v1/brain/model-probe route, which a 2h
+# cron hits) tells brain_model_for what the key can actually reach. Set
+# DCHUB_BRAIN_PREFER_FABLE=1 to make fable-5 the preference for the high-reasoning
+# tiers — it activates automatically the next probe after Anthropic approves it.
+# SAFE BY CONSTRUCTION: fable-5 is used ONLY when a probe POSITIVELY confirms it
+# reachable (it's 404 by default), so "prefer fable" runs on opus until it's back.
+import time as _time
+_REACH = {"map": {}, "ts": 0.0}
+_REACH_TTL = 300  # re-hydrate the in-process copy from brain_meta every 5 min
 
-    Unknown tier → routine. Empty env var → default. Legacy
-    DCHUB_BRAIN_MODEL → used if specific tier isn't set.
+
+def store_reachability(results: dict) -> bool:
+    """Persist a {model: 'reachable'|'http_404'|...} map (from
+    probe_model_reachability) so brain_model_for can degrade off dead models +
+    auto-promote a model that comes back. Called by the model-probe route."""
+    try:
+        if not isinstance(results, dict) or not results:
+            return False
+        _REACH["map"] = dict(results)
+        _REACH["ts"] = _time.time()
+        import json as _j
+        from routes.brain_v2_store import set_meta as _sm
+        _sm("brain_model_reachability", _j.dumps({"ts": _REACH["ts"], "map": results}))
+        return True
+    except Exception:
+        return False
+
+
+def _load_reachability() -> dict:
+    """In-process reachability map, hydrated from brain_meta (shared across
+    workers + replicas) with a 5-min TTL. Empty = unknown."""
+    if _REACH["map"] and (_time.time() - _REACH["ts"]) < _REACH_TTL:
+        return _REACH["map"]
+    try:
+        import json as _j
+        from routes.brain_v2_store import get_meta as _gm
+        row = _gm("brain_model_reachability")
+        if row and row.get("value"):
+            payload = _j.loads(row["value"])
+            _REACH["map"] = payload.get("map") or {}
+            _REACH["ts"] = float(payload.get("ts") or _time.time())
+    except Exception:
+        pass
+    return _REACH["map"]
+
+
+def _prefer_fable_on() -> bool:
+    return (os.environ.get("DCHUB_BRAIN_PREFER_FABLE") or "").strip().lower() \
+        in ("1", "true", "yes", "on")
+
+
+def brain_model_for(tier: str = "routine") -> str:
+    """Return the model identifier for a given tier — reachability-aware.
+
+    Preference: DCHUB_BRAIN_PREFER_FABLE pins fable-5 on the reasoning tiers
+    (auto-enable); else env override > global fallback > tier default. The
+    chosen model is then validated against the cached probe: a model the key
+    KNOWS it can't reach degrades to the first reachable rung of its fallback
+    chain. fable-5 specifically requires POSITIVE reachability (404 by default)
+    so the preference is safe even before the first probe.
     """
     tier = (tier or "routine").lower().strip()
-    env_specific = (os.environ.get(f"DCHUB_BRAIN_MODEL_{tier.upper()}")
-                    or "").strip()
-    if env_specific:
-        return env_specific
-    if _GLOBAL_FALLBACK:
-        return _GLOBAL_FALLBACK
-    return {
-        "inspector":  _DEFAULT_INSPECTOR,
-        "reasoning":  _DEFAULT_REASONING,
-        "routine":    _DEFAULT_ROUTINE,
-        "voice":      _DEFAULT_VOICE,
-        "challenger": _DEFAULT_CHALLENGER,
-    }.get(tier, _DEFAULT_ROUTINE)
+    if _prefer_fable_on() and tier in ("inspector", "reasoning", "challenger"):
+        pref = "claude-fable-5"
+    else:
+        env_specific = (os.environ.get(f"DCHUB_BRAIN_MODEL_{tier.upper()}") or "").strip()
+        pref = env_specific or _GLOBAL_FALLBACK or {
+            "inspector":  _DEFAULT_INSPECTOR,
+            "reasoning":  _DEFAULT_REASONING,
+            "routine":    _DEFAULT_ROUTINE,
+            "voice":      _DEFAULT_VOICE,
+            "challenger": _DEFAULT_CHALLENGER,
+        }.get(tier, _DEFAULT_ROUTINE)
+
+    reach = _load_reachability() or {}
+
+    def _ok(m: str) -> bool:
+        st = reach.get(m, "")
+        if m == "claude-fable-5":
+            return st.startswith("reachable")        # require positive confirmation
+        return not (st.startswith("http_") or st.startswith("error"))
+
+    if _ok(pref):
+        return pref
+    for m in resolve_chain(pref):
+        if m != pref and _ok(m):
+            return m
+    # nothing confirmed reachable — never hand back a known-404 fable; use the
+    # safe reasoning default (opus) so raw call sites don't zero out.
+    return _DEFAULT_REASONING if pref == "claude-fable-5" else pref
 
 
 def brain_model_summary() -> dict:
@@ -157,6 +230,8 @@ def brain_model_summary() -> dict:
         "voice":     brain_model_for("voice"),
         "_global_fallback_env": _GLOBAL_FALLBACK or None,
         "_fallback_chain":      _FALLBACK_CHAIN,
+        "_prefer_fable":        _prefer_fable_on(),       # r85j auto-enable switch
+        "_reachability":        _load_reachability() or {},
     }
 
 

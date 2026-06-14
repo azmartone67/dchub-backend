@@ -67,12 +67,19 @@ def model_probe():
     recommendation. Leaks no secrets.
     """
     try:
-        from routes.brain_models import probe_model_reachability
+        from routes.brain_models import probe_model_reachability, store_reachability
     except Exception as e:
         return jsonify({"ok": False,
                         "error": f"brain_models import failed: {e}"}), 500
     key = _anthropic_key()
     result = probe_model_reachability(key)
+    # r85j: persist the reachability map so brain_model_for can degrade off dead
+    # models AND auto-promote one that comes back (e.g. fable-5 once approved).
+    if result.get("ok"):
+        try:
+            store_reachability(result.get("results", {}))
+        except Exception:
+            pass
     return jsonify(result), (200 if result.get("ok") else 500), {
         # Don't edge-cache — reachability can change as the account's
         # model access changes.
