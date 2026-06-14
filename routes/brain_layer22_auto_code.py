@@ -147,6 +147,43 @@ def _diff_within_limits(diff_text: str) -> bool:
     return (added + removed) <= _MAX_DIFF_LINES
 
 
+# Recipes that represent ONE standing concept (not per-target): the cron
+# collision + schema drift findings get drafted by multiple code paths
+# (inspector-brief, radar scan, L21) each with a DIFFERENT target_path key,
+# so per-target dedup missed them and leaked duplicate issues every cycle
+# (#1119/#1121/#1129 were all the same cron issue). These dedup by recipe
+# CLASS instead.
+_CLASS_SINGLETON_RECIPES = {
+    "cron_if_mismatched", "cron_schedule_collision", "schema_drift_guard",
+}
+
+
+def _already_drafted_class(recipe: str) -> bool:
+    """Cross-path dedup for singleton recipes — any open draft of this recipe
+    class within the window blocks a new one, regardless of target_path."""
+    if recipe not in _CLASS_SINGLETON_RECIPES:
+        return False
+    try:
+        from main import get_db
+        conn = get_db()
+        if not conn:
+            return False
+        try:
+            cur = conn.cursor()
+            cur.execute(
+                "SELECT 1 FROM brain_auto_code_actions "
+                "WHERE recipe = %s AND drafted_at > NOW() - INTERVAL %s "
+                "AND pr_url IS NOT NULL LIMIT 1",
+                (recipe, f"{_DEDUP_WINDOW_DAYS} days"),
+            )
+            return bool(cur.fetchone())
+        finally:
+            try: conn.close()
+            except Exception: pass
+    except Exception:
+        return False
+
+
 def _already_drafted(recipe: str, target: str) -> bool:
     """Idempotency: don't re-draft the same fix within 7d."""
     try:
@@ -424,6 +461,12 @@ def _draft_pr(draft: dict, dry_run: bool) -> dict:
         _record(draft, dry_run=False, pr_url=None, pr_number=None,
                  branch=None, error="GITHUB_TOKEN not set")
         return {"ok": False, "error": "GITHUB_TOKEN not set"}
+
+    # Cross-path recipe-class dedup (singleton recipes only) — stops the
+    # duplicate cron/schema-drift issues that different code paths leaked.
+    if _already_drafted_class(draft.get("recipe", "")):
+        return {"ok": False, "deduped_recipe_class": True,
+                "recipe": draft.get("recipe")}
 
     # r58 (2026-05-25): autonomy promotion for route_alias_404.
     # When the recipe is route_alias_404 AND DCHUB_L22_REAL_PR=1 in
