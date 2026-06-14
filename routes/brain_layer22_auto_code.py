@@ -769,6 +769,21 @@ def _scan_and_draft(dry_run: bool, brief_id: int | None = None) -> dict:
             candidates = _parse_code_fix_candidates(md)
             for cand in candidates:
                 recipe = (cand.get("recipe") or "").strip()
+                # r86b: dedup per RECIPE CLASS, not per target. The Inspector LLM
+                # rephrases the target each brief ("schema.org coverage detector"
+                # vs "schema_org_coverage_low handler"), so per-target dedup would
+                # let near-duplicate issues through on every 6h brief while a
+                # finding lingers in the rolling 24h window. One open draft per
+                # recipe class per dedup window is enough. We record with this
+                # stable key (set on the draft below) so future cycles dedup.
+                dedup_key = f"inspector_brief:{recipe}"
+                if recipe and _already_drafted(recipe, dedup_key):
+                    skipped.append({
+                        "recipe": recipe, "source": "inspector_brief",
+                        "brief_id": brief_id,
+                        "reason": "already_drafted_recipe_class",
+                    })
+                    continue
                 draft = None
                 if recipe == "schema_drift_guard":
                     draft = _try_recipe_schema_drift_guard(cand)
@@ -786,6 +801,9 @@ def _scan_and_draft(dry_run: bool, brief_id: int | None = None) -> dict:
                         "confidence": "medium",
                     })
                 if draft:
+                    # Stable per-recipe-class dedup key so the NEXT brief cycle's
+                    # _already_drafted(recipe, dedup_key) check above matches.
+                    draft["target_path"] = dedup_key
                     res = _draft_pr(draft, dry_run=dry_run)
                     (drafted if res.get("ok") else skipped).append({
                         "recipe": draft["recipe"], "title": draft.get("title"),

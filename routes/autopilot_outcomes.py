@@ -159,7 +159,12 @@ def verify_pending(window_minutes: int = 30, max_actions: int = 50) -> dict:
                            a.finding_issue, a.finding_url
                       FROM brain_autopilot_actions a
                      WHERE a.started_at <= NOW() - INTERVAL '%s minutes'
-                       AND a.started_at >= NOW() - INTERVAL '6 hours'
+                       -- r86b: 6h→24h to match the autopilot_action_unverified
+                       -- detector window (1h-24h). At 6h, executed_ok actions in
+                       -- the 6h-24h band were unreachable, so verifier-less
+                       -- patterns there never got a cannot_verify sentinel and
+                       -- the finding never cleared. max_actions caps the work.
+                       AND a.started_at >= NOW() - INTERVAL '24 hours'
                        AND a.outcome = 'executed_ok'
                        AND NOT EXISTS (
                          SELECT 1 FROM autopilot_outcomes o
