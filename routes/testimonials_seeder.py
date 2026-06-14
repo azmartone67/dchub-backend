@@ -299,10 +299,12 @@ def list_testimonials():
     try:
         with c, c.cursor(cursor_factory=psycopg2.extras.RealDictCursor) as cur:
             cur.execute("""
-                SELECT quote, platform, cited_at, source_url
+                SELECT quote, platform,
+                       COALESCE(posted_at, captured_at) AS cited_at,
+                       url AS source_url
                   FROM ai_testimonials_auto
                  WHERE approved = TRUE
-                 ORDER BY cited_at DESC
+                 ORDER BY COALESCE(posted_at, captured_at) DESC
                  LIMIT %s
             """, (limit,))
             rows = []

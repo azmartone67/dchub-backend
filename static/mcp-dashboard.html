@@ -29,6 +29,12 @@
   <h3 style="margin-top:0">Paid-tool demand from free users (last 30d) — your addressable upgrade pool</h3>
   <table id="paid"><thead><tr><th>Tool</th><th>Calls</th><th>Distinct users</th></tr></thead><tbody></tbody></table>
 </div>
+<div class="card" style="margin-top:14px">
+  <h3 style="margin-top:0">🔁 Retention — the real lever (new vs returning external agents)</h3>
+  <div class="sub" style="margin:-4px 0 8px">Inflow is fine; <b>retention</b> is the leak (2026-06-14 analysis): ~30-50 new external IPs arrive/wk but ~1 returns. Watch <b>returning IPs</b> + <b>key-reuse %</b> climb = the r86 first-touch fix working. Mint <i>volume</i> is scan/anon-inflated — read the <b>rate</b>, not the count. <code>/api/v1/mcp/retention</code></div>
+  <div class="grid" id="ret-kpis"></div>
+  <table id="retention"><thead><tr><th>Week</th><th>New ext IPs</th><th>Returning</th><th>Keys minted</th><th>Reused (2+)</th><th>Reuse %</th></tr></thead><tbody></tbody></table>
+</div>
 <div class="footer">DC Hub · live MCP analytics. Source: Neon → Flask blueprint → this page.</div>
 <script>
 async function load() {
@@ -47,6 +53,21 @@ async function load() {
       .map(r => `<tr><td>${r.tool || '—'}</td><td>${r.sessions ?? '—'}</td><td>${r.callers ?? '—'}</td><td style="color:#999">${r.n}</td></tr>`).join('') || '<tr><td colspan=4 style="color:#666">No signals yet — Python MCP is offline or no free users have hit a paid tool.</td></tr>';
     document.querySelector('#paid tbody').innerHTML = (d.paid_tool_demand_30d || [])
       .map(r => `<tr><td>${r.tool}</td><td>${r.calls}</td><td>${r.users}</td></tr>`).join('');
+    // r86 retention panel
+    try {
+      const rt = await (await fetch('/api/v1/mcp/retention?weeks=10')).json();
+      const s = rt.summary || {};
+      document.getElementById('ret-kpis').innerHTML = `
+        <div class="card"><div class="label">Key reuse (30d)</div><div class="value">${s.pct_reused_30d ?? '—'}%</div>
+          <div class="sub-value">avg ${s.avg_calls_per_key_30d ?? '—'} calls/key · ${s.minted_30d ?? 0} minted</div></div>
+        <div class="card"><div class="label">Returning IPs (latest wk)</div><div class="value">${s.latest_returning_ips ?? '—'}</div>
+          <div class="sub-value">vs ${s.latest_new_ips ?? '—'} new · wk ${s.latest_week ?? '—'}</div></div>`;
+      const kr = {}; (rt.key_reuse||[]).forEach(r => kr[r.week]=r);
+      document.querySelector('#retention tbody').innerHTML = (rt.ip_cohort||[]).map(r => {
+        const k = kr[r.week]||{}, pct = k.minted ? Math.round(1000*(k.reused_2plus||0)/k.minted)/10+'%' : '—';
+        return `<tr><td>${(r.week||'').slice(5,16)||r.week}</td><td>${r.new_ips}</td><td style="color:${r.returning_ips>2?'#7c7':'#c77'}">${r.returning_ips}</td><td>${k.minted ?? '—'}</td><td>${k.reused_2plus ?? '—'}</td><td>${pct}</td></tr>`;
+      }).join('') || '<tr><td colspan=6 style="color:#666">No data yet</td></tr>';
+    } catch(re) { document.querySelector('#retention tbody').innerHTML = '<tr><td colspan=6 style="color:#666">retention endpoint warming up…</td></tr>'; }
   } catch(e) {
     document.getElementById('kpis').innerHTML = `<div class="card"><div class="label">Error</div><div class="value" style="font-size:14px">${e.message}</div></div>`;
   }

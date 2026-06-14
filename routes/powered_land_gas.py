@@ -252,7 +252,13 @@ def _conn():
     """Open a psycopg2 connection. Uses the shared helper if available."""
     try:
         from routes._iso_common import conn as _c
-        return _c()
+        # _c() is a @contextmanager that YIELDS the connection — returning it
+        # directly handed callers a _GeneratorContextManager with no .cursor
+        # (the repeated "_read_cached / delivered_* err: '_GeneratorContext
+        # Manager' object has no attribute 'cursor'" log spam). Enter it to
+        # hand back the real psycopg2 connection; every caller here closes it
+        # itself in its own finally, so no leak.
+        return _c().__enter__()
     except Exception:
         pass
     # Fallback: raw connect

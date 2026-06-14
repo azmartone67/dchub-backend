@@ -1,0 +1,6 @@
+# Keep stray Node tooling out of the Railway upload so Nixpacks doesn't
+# auto-detect a Node provider and inject an npm build phase. This is a
+# Python (Flask) service started via `bash start_web.sh` (railway.json).
+package.json
+package-lock.json
+node_modules/
