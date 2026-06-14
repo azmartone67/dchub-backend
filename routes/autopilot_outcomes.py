@@ -165,8 +165,17 @@ def _verify_outbound_distribution(action, cur) -> tuple[bool, str]:
         rows = cur.fetchall()
         if not rows:
             return (False, f"no outreach_submissions row for target={key} in the 30min after action")
-        acts = sorted({(r["action"] or "") for r in rows})
-        return (True, f"{len(rows)} outreach_submissions row(s) for {key} ({', '.join(acts)})")
+        # r-incentives FIX (review): a mere ledger row is NOT a closure.
+        # action='audit' is just a re-check; 'manual_submit_queued' needs a
+        # human. Reward success ONLY when a real submission actually landed —
+        # otherwise outbound_distribution_health would score "verified" forever
+        # while the registry stays not_listed.
+        _CLOSED = {"submitted", "listed", "ok", "success", "accepted", "approved", "live"}
+        for r in rows:
+            if (r.get("action") or "").lower() == "submit" and (r.get("outcome") or "").lower() in _CLOSED:
+                return (True, f"submitted {key} (outcome={r.get('outcome')})")
+        detail = ", ".join(f"{(r.get('action') or '?')}:{(r.get('outcome') or '?')}" for r in rows)
+        return (False, f"{len(rows)} row(s) for {key} but no completed submit ({detail})")
     except Exception as e:
         return (False, f"verify_query_failed:{type(e).__name__}")
 
