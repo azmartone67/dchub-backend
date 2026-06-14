@@ -1202,18 +1202,23 @@ class AutonomousBrain:
                     # it → ALL 9 autonomous-brain feeds went silently dead since 5/31.
                     # Widen the constraint idempotently here too so this recorder is
                     # self-sufficient even if extractor_brain._ensure_tables hasn't run.
-                    cur.execute("""
-                        DO $$
-                        BEGIN
-                            ALTER TABLE extraction_intelligence
-                                DROP CONSTRAINT IF EXISTS extraction_intelligence_outcome_check;
-                            ALTER TABLE extraction_intelligence
-                                ADD CONSTRAINT extraction_intelligence_outcome_check
-                                CHECK (outcome IN ('success','failure','partial','anomaly','idle','error'));
-                        EXCEPTION WHEN others THEN NULL;
-                        END $$;
-                    """)
-                    conn.commit()  # commit DDL before per-row INSERTs
+                    # r86g: run the constraint-widen at most ONCE per process (it
+                    # takes a brief ACCESS EXCLUSIVE lock + re-validates the table;
+                    # no need to repeat it every cycle). Idempotent either way.
+                    if not getattr(type(self), '_outcome_widened', False):
+                        cur.execute("""
+                            DO $$
+                            BEGIN
+                                ALTER TABLE extraction_intelligence
+                                    DROP CONSTRAINT IF EXISTS extraction_intelligence_outcome_check;
+                                ALTER TABLE extraction_intelligence
+                                    ADD CONSTRAINT extraction_intelligence_outcome_check
+                                    CHECK (outcome IN ('success','failure','partial','anomaly','idle','error'));
+                            EXCEPTION WHEN others THEN NULL;
+                            END $$;
+                        """)
+                        conn.commit()  # commit DDL before per-row INSERTs
+                        type(self)._outcome_widened = True
                     per_domain_ms = max(int(duration * 1000 / max(len(domains), 1)), 1)
                     written = 0
                     for key, source_id, rows_key in domains:
