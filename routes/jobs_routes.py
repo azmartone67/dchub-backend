@@ -163,6 +163,12 @@ def _require_admin_key():
         return None
     provided = (
         request.headers.get('X-Admin-Key', '')
+        # r86f: ALSO read X-API-Key. dchub-jobs.yml sends the admin key in an
+        # X-API-Key header, which this reader never checked — so the scheduled
+        # /api/jobs/discovery + /api/jobs/auto-approve calls 401'd silently 4x/day
+        # and never ran. Still compared to the admin secret below, so this only
+        # accepts the admin key, not arbitrary dev keys.
+        or request.headers.get('X-API-Key', '')
         or request.headers.get('Authorization', '').replace('Bearer ', '')
         or request.args.get('admin_key', '')
         or request.args.get('key', '')

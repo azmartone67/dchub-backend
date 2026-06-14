@@ -179,13 +179,30 @@ def _gather_signals() -> dict:
         # has NO api_key column (cols: tool_name/platform/client_name/ip_address/
         # session_id/...); ip_address is the right distinct-caller proxy (== the
         # funnel's unique_ips_7d_real).
+        # r86f: distinct_callers_7d now counts EXTERNAL callers by client identity,
+        # not ip_address. ip_address is the MCP proxy's egress IP (server.mjs),
+        # so it collapsed to ~4 proxy IPs and was a useless denominator. calls_7d
+        # is also dominated by internal self-traffic (platform='dchub-selfheal'
+        # ~33k/wk), so external_calls_7d excludes internal platforms — that's the
+        # honest demand number the funnel should reason on, not the gross.
         _try("mcp_funnel",
              """SELECT
                   (SELECT COUNT(*) FROM mcp_tool_calls
                     WHERE created_at >= NOW() - INTERVAL '7 days') AS calls_7d,
-                  (SELECT COUNT(DISTINCT ip_address) FROM mcp_tool_calls
+                  (SELECT COUNT(*) FROM mcp_tool_calls
                     WHERE created_at >= NOW() - INTERVAL '7 days'
-                      AND ip_address IS NOT NULL) AS distinct_callers_7d,
+                      AND COALESCE(LOWER(platform),'') NOT LIKE 'dchub-%'
+                      AND COALESCE(LOWER(platform),'') NOT LIKE '%-probe'
+                      AND COALESCE(LOWER(platform),'') NOT LIKE '%-test'
+                      AND COALESCE(LOWER(platform),'') NOT LIKE 'sweep%'
+                      AND COALESCE(LOWER(platform),'') NOT IN ('dchub-selfheal','mcp-probe','diag','')) AS external_calls_7d,
+                  (SELECT COUNT(DISTINCT COALESCE(NULLIF(LOWER(client_name),'unknown'), platform)) FROM mcp_tool_calls
+                    WHERE created_at >= NOW() - INTERVAL '7 days'
+                      AND COALESCE(LOWER(platform),'') NOT LIKE 'dchub-%'
+                      AND COALESCE(LOWER(platform),'') NOT LIKE '%-probe'
+                      AND COALESCE(LOWER(platform),'') NOT LIKE '%-test'
+                      AND COALESCE(LOWER(platform),'') NOT LIKE 'sweep%'
+                      AND COALESCE(LOWER(platform),'') NOT IN ('dchub-selfheal','mcp-probe','diag','')) AS distinct_callers_7d,
                   (SELECT COUNT(*) FROM mcp_upgrade_signals
                     WHERE created_at >= NOW() - INTERVAL '7 days') AS signals_7d,
                   (SELECT COUNT(*) FROM mcp_conversions

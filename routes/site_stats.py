@@ -135,27 +135,38 @@ def _build_stats() -> dict:
             # so the public-facing number is robust against probe noise.
             s["mcp_calls_7d"]      = int(_scalar(cur,
                 "SELECT COUNT(*) FROM mcp_tool_calls WHERE created_at > NOW() - INTERVAL '7 days'"))
+            # r86f: HONEST external traffic. The old "exclude node/curl/python UA"
+            # denylist read 0 because the MCP proxy (server.mjs) never forwards the
+            # caller's UA — 88% of rows carry user_agent='node', so the denylist
+            # stripped ~all real traffic. And the gross count is dominated by
+            # INTERNAL self-traffic (platform='dchub-selfheal' alone ~33k/wk).
+            # Define "real external" by EXCLUDING internal PLATFORMS (selfheal /
+            # tests / probes / sweeps); this also correctly drops the ~29k
+            # 'unknown'-client rows, which are self-heal under the hood. Until
+            # server.mjs forwards the real client (then per-caller attribution
+            # works fully), this is the honest reach number.
+            _ext = (
+                " AND COALESCE(LOWER(platform),'') NOT LIKE 'dchub-%'"
+                " AND COALESCE(LOWER(platform),'') NOT LIKE '%-probe'"
+                " AND COALESCE(LOWER(platform),'') NOT LIKE '%-test'"
+                " AND COALESCE(LOWER(platform),'') NOT LIKE 'sweep%'"
+                " AND COALESCE(LOWER(platform),'') NOT LIKE 'loop%'"
+                " AND COALESCE(LOWER(platform),'') NOT IN ('dchub-selfheal','mcp-probe','diag','')"
+            )
             try:
-                s["mcp_calls_7d_real"] = int(_scalar(cur, """
-                    SELECT COUNT(*) FROM mcp_tool_calls
-                     WHERE created_at > NOW() - INTERVAL '7 days'
-                       AND COALESCE(LOWER(user_agent),'') NOT LIKE '%curl%'
-                       AND COALESCE(LOWER(user_agent),'') NOT LIKE '%python%'
-                       AND COALESCE(LOWER(user_agent),'') NOT LIKE '%requests%'
-                       AND COALESCE(LOWER(user_agent),'') NOT LIKE '%node%'
-                       AND COALESCE(LOWER(user_agent),'') NOT LIKE '%axios%'
-                       AND COALESCE(LOWER(user_agent),'') NOT LIKE '%postman%'
-                       AND COALESCE(LOWER(user_agent),'') NOT LIKE '%insomnia%'
-                       AND COALESCE(LOWER(user_agent),'') NOT LIKE 'dchub%'
-                       AND COALESCE(LOWER(user_agent),'') NOT LIKE '%dchub-%'
-                       AND user_agent IS NOT NULL
-                       AND user_agent != ''
-                """))
+                s["mcp_calls_7d_real"] = int(_scalar(cur,
+                    "SELECT COUNT(*) FROM mcp_tool_calls"
+                    " WHERE created_at > NOW() - INTERVAL '7 days'" + _ext))
             except Exception:
-                # Schema may not have user_agent yet on every deploy
                 s["mcp_calls_7d_real"] = s["mcp_calls_7d"]
-            s["mcp_unique_callers_7d"] = int(_scalar(cur,
-                "SELECT COUNT(DISTINCT ip_address) FROM mcp_tool_calls WHERE created_at > NOW() - INTERVAL '7 days'"))
+            try:
+                # distinct EXTERNAL callers by client identity (NOT ip_address —
+                # that's the proxy's egress IP, so it collapsed to ~4 proxy IPs).
+                s["mcp_unique_callers_7d"] = int(_scalar(cur,
+                    "SELECT COUNT(DISTINCT COALESCE(NULLIF(LOWER(client_name),'unknown'), platform))"
+                    " FROM mcp_tool_calls WHERE created_at > NOW() - INTERVAL '7 days'" + _ext))
+            except Exception:
+                s["mcp_unique_callers_7d"] = 0
             s["mcp_developers"]    = int(_scalar(cur,
                 "SELECT COUNT(*) FROM mcp_dev_keys"))
 
