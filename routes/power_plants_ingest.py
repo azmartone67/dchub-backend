@@ -235,9 +235,15 @@ def ingest_power_plants():
     try:
         with psycopg2.connect(dsn, sslmode="require", connect_timeout=8) as c:
             with c.cursor() as cur:
-                cur.execute("SELECT column_name FROM information_schema.columns "
+                cur.execute("SELECT column_name, character_maximum_length "
+                            "FROM information_schema.columns "
                             "WHERE table_name='power_plants_eia'")
-                cols = {r[0] for r in cur.fetchall()}
+                _colrows = cur.fetchall()
+                cols = {r[0] for r in _colrows}
+                # Per-column varchar widths — defensive truncation so a single
+                # over-long source value (e.g. EIA's full state name vs the
+                # varchar(10) state column) can never 500 the whole batch.
+                colmax = {r[0]: r[1] for r in _colrows if r[1]}
 
                 # Idempotent full-replace: clear prior EIA snapshot + runner rows.
                 if "source" in cols:
@@ -256,12 +262,18 @@ def ingest_power_plants():
                 collist = ",".join(all_cols)
                 ph = "(" + ",".join(["%s"] * len(all_cols)) + ")"
 
+                def _fit(col, v):
+                    w = colmax.get(col)
+                    if w and isinstance(v, str) and len(v) > w:
+                        return v[:w]
+                    return v
+
                 def _row_vals(t):
                     m = dict(zip(_ROW_FIELDS, t))
-                    vals = [m[col] for col in use]
-                    vals += [m[_DUP_FROM[col]] for col in dup]
+                    vals = [_fit(col, m[col]) for col in use]
+                    vals += [_fit(col, m[_DUP_FROM[col]]) for col in dup]
                     if use_tail_source:
-                        vals.append(_SRC)
+                        vals.append(_fit("source", _SRC))
                     return tuple(vals)
 
                 batch = []

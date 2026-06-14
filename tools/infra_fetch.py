@@ -123,6 +123,37 @@ def _v_clean(s, n):
     return s[:n]
 
 
+# EIA's power-plant service returns the FULL state name ("Mississippi"), but the
+# power_plants_eia.state column is varchar(10) and the rest of the schema stores
+# 2-letter USPS codes — so a full name >10 chars 500'd the whole batch insert.
+# Convert to the postal code (fall back to a 10-char truncation for anything
+# unrecognized so the insert can never overflow).
+_US_STATE2 = {
+    "alabama": "AL", "alaska": "AK", "arizona": "AZ", "arkansas": "AR",
+    "california": "CA", "colorado": "CO", "connecticut": "CT", "delaware": "DE",
+    "district of columbia": "DC", "florida": "FL", "georgia": "GA", "hawaii": "HI",
+    "idaho": "ID", "illinois": "IL", "indiana": "IN", "iowa": "IA", "kansas": "KS",
+    "kentucky": "KY", "louisiana": "LA", "maine": "ME", "maryland": "MD",
+    "massachusetts": "MA", "michigan": "MI", "minnesota": "MN", "mississippi": "MS",
+    "missouri": "MO", "montana": "MT", "nebraska": "NE", "nevada": "NV",
+    "new hampshire": "NH", "new jersey": "NJ", "new mexico": "NM", "new york": "NY",
+    "north carolina": "NC", "north dakota": "ND", "ohio": "OH", "oklahoma": "OK",
+    "oregon": "OR", "pennsylvania": "PA", "rhode island": "RI",
+    "south carolina": "SC", "south dakota": "SD", "tennessee": "TN", "texas": "TX",
+    "utah": "UT", "vermont": "VT", "virginia": "VA", "washington": "WA",
+    "west virginia": "WV", "wisconsin": "WI", "wyoming": "WY",
+    "puerto rico": "PR", "guam": "GU", "virgin islands": "VI",
+}
+
+
+def _us_state_code(v):
+    """Full state name -> 2-letter USPS code (varchar(10)-safe)."""
+    s = _v_clean(v, 80)
+    if s is None:
+        return None
+    return _US_STATE2.get(s.lower(), s[:10])
+
+
 def fetch_transmission_lines(cap):
     """Paginate the EIA transmission service → row tuples for the ingest endpoint.
 
@@ -214,9 +245,9 @@ def fetch_power_plants(cap):
                 pid,
                 _v_clean(a.get("Plant_Name"), 200),
                 _v_clean(a.get("Utility_Na"), 200),
-                _v_clean(a.get("State"), 80),
-                _v_clean(a.get("City"), 120),
-                _v_clean(a.get("County"), 120),
+                _us_state_code(a.get("State")),
+                _v_clean(a.get("City"), 100),
+                _v_clean(a.get("County"), 100),
                 _v_clean(a.get("Zip"), 20),
                 lat,
                 lng,
