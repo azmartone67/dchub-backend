@@ -41,6 +41,7 @@ Goal: every channel reinforces the same story for 5-7 days, then
 detection rolls to the next arc as new signal accumulates.
 """
 from __future__ import annotations
+from routes.url_registry import build_public_url
 
 import datetime
 import json
@@ -97,7 +98,7 @@ def _detect_dominant_arc() -> dict:
                     arc = {
                         "arc":         title[:120] if title else cat,
                         "thesis":      (meta or sub or title or "")[:400],
-                        "anchor_url":  f"https://dchub.cloud/news/{slug}",
+                        "anchor_url":  build_public_url("news", slug),
                         "tags":        _tags_from_press(title or "", cat or ""),
                         "source":      "press_release",
                         "source_date": date.isoformat() if date else None,

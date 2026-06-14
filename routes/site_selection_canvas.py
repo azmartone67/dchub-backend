@@ -26,6 +26,7 @@ Endpoints:
 """
 
 import logging
+from routes.url_registry import build_public_url
 from flask import Blueprint, jsonify, request, Response
 
 logger = logging.getLogger(__name__)
@@ -122,7 +123,7 @@ def _row_public(m):
         "time_to_power_months": m.get("time_to_power_months"),
         "composite_score": (round(m["composite_score"], 1)
                             if isinstance(m.get("composite_score"), (int, float)) else None),
-        "dcpi_url": f"https://dchub.cloud/dcpi/{m.get('market_slug')}",
+        "dcpi_url": build_public_url("dcpi", m.get('market_slug')),
     }
 
 

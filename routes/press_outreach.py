@@ -53,6 +53,7 @@ CRITICAL: NEVER auto-sends to third parties. Same draft-then-approve
 discipline as partnership_press_template + enterprise_leads_sweep.
 """
 import os
+from routes.url_registry import build_public_url
 import json
 import datetime
 import logging
@@ -303,7 +304,7 @@ def _detect_angles():
                                             "slug":   r[2],
                                             "excess": float(r[3] or 0),
                                             "constraint": float(r[4] or 0)},
-                        "url":            f"https://dchub.cloud/dcpi/{r[2]}",
+                        "url":            build_public_url("dcpi", r[2]),
                     })
             except Exception: pass
 
@@ -327,7 +328,7 @@ def _detect_angles():
                                             "slug":   r[2],
                                             "excess": float(r[3] or 0),
                                             "constraint": float(r[4] or 0)},
-                        "url":            f"https://dchub.cloud/dcpi/{r[2]}",
+                        "url":            build_public_url("dcpi", r[2]),
                     })
             except Exception: pass
 

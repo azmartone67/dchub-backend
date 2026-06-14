@@ -19,6 +19,7 @@ Endpoint:
   GET /api/v1/agents/capabilities          alias (browser-readable)
 """
 import os
+from routes.url_registry import build_public_url
 import datetime
 import json
 import threading
@@ -182,7 +183,7 @@ def _gather():
                     "slug":       r[0],
                     "title":      r[1],
                     "date":       r[2].strftime("%Y-%m-%d") if r[2] else None,
-                    "url":        f"https://dchub.cloud/press-release/{r[0]}",
+                    "url":        build_public_url("press_release", r[0]),
                 } for r in cur.fetchall()]
         except Exception:
             pass

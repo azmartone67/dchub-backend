@@ -25,6 +25,7 @@ Endpoints:
 """
 
 import re
+from routes.url_registry import build_public_url
 import logging
 from flask import Blueprint, jsonify, request, Response
 
@@ -210,7 +211,7 @@ def _deal_public(deal, mk):
             "verdict": mk.get("verdict"),
             "excess_power_score": mk.get("excess_power_score"),
             "time_to_power_months": mk.get("time_to_power_months"),
-            "dcpi_url": f"https://dchub.cloud/dcpi/{mk.get('market_slug')}",
+            "dcpi_url": build_public_url("dcpi", mk.get('market_slug')),
             # Honest about basis: a metro-direct match vs the state's representative market.
             "basis": (f"{mk.get('_state_proxy')} state proxy ({mk.get('market_name')})"
                       if mk.get("_state_proxy") else "metro match"),

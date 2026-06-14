@@ -57,6 +57,7 @@ Safety
     48h regardless of new shift direction (anti-spam belt-and-suspenders).
 """
 from __future__ import annotations
+from routes.url_registry import build_public_url
 
 import os
 import sys
@@ -400,7 +401,7 @@ def _fallback_blurb(shift: dict, narrative: str | None) -> str | None:
     parts.append("")
     parts.append(
         f"Full Market Brief: "
-        f"https://dchub.cloud/markets/{shift['market_slug']}/brief"
+        f"{build_public_url('markets', shift['market_slug'], subpath='brief')}"
     )
     parts.append("#DCPI #DataCenters")
     return " ".join(parts).strip()
@@ -720,7 +721,7 @@ def http_public_recent():
                         "constraint_score":   float(r[5]) if r[5] is not None else None,
                         "smp_id":      r[6],
                         "posted_at":   r[7].isoformat() if r[7] else None,
-                        "brief_url":   f"https://dchub.cloud/markets/{r[0]}/brief",
+                        "brief_url":   build_public_url("markets", r[0], subpath="brief"),
                     })
             except Exception as e:
                 # log table may not exist yet on this deploy

@@ -22,6 +22,7 @@ forwards to backend via PHASE_282_RAILWAY_PATHS prefix match).
 """
 
 import os
+from routes.url_registry import build_public_url
 import logging
 from flask import Blueprint, request, Response, jsonify
 import datetime as _dt
@@ -439,7 +440,7 @@ def _render_profile(fac: dict, slug: str) -> str:
     if _mkt_crumb and _mslug:
         _crumb_items.append({"@type": "ListItem", "position": _pos,
                              "name": _mname,
-                             "item": f"https://dchub.cloud/dcpi/{_mslug}"})
+                             "item": build_public_url("dcpi", _mslug)})
         _pos += 1
     _crumb_items.append({"@type": "ListItem", "position": _pos,
                          "name": name, "item": canonical})

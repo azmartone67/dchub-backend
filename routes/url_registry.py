@@ -39,15 +39,36 @@ _VALID_KINDS = {"news", "press_release", "dcpi", "partners", "reports", "markets
 
 # slug + URL builder (the ONLY one) -------------------------------------
 def slugify(s, max_len=70):
-    s = (s or "").lower()
+    # str() first: callers pass ints (facility ids), None, etc. — never crash.
+    s = str(s if s is not None else "").lower()
     s = re.sub(r"[^a-z0-9]+", "-", s).strip("-")
     return s[:max_len] or "update"
 
 
-def build_public_url(kind, slug):
+# kind -> first path segment. press_release uses the hyphenated public path.
+_KIND_PATH = {
+    "news": "news",
+    "press_release": "press-release",
+    "dcpi": "dcpi",
+    "partners": "partners",
+    "reports": "reports",
+    "markets": "markets",
+    "facility": "facility",
+}
+
+
+def build_public_url(kind, slug, subpath=None, query=None):
     """Single source of truth for every public dchub.cloud URL.
-    Strips duplicate prefixes (e.g. partnership-partnership-) and
-    rejects invalid kinds. Returns the absolute URL string."""
+
+    Strips duplicate prefixes (e.g. partnership-partnership-) and rejects
+    invalid kinds. Returns the absolute URL string.
+
+    subpath: optional fixed path appended after the slug, NOT slugified
+        (e.g. "brief", "brief.pdf", "deep-dive", "brief/embed"). Leading/
+        trailing slashes are stripped.
+    query:   optional query string. Accepts a dict ({"embed": 1}) or a raw
+        string ("embed=1" or "?embed=1"). Appended as "?...".
+    """
     if kind not in _VALID_KINDS:
         raise ValueError(f"unknown url kind: {kind}")
     slug = slugify(slug)
@@ -59,16 +80,20 @@ def build_public_url(kind, slug):
             continue
         cleaned.append(p)
     slug = "-".join(cleaned)
-    kind_path = {
-        "news": "news",
-        "press_release": "press-release",
-        "dcpi": "dcpi",
-        "partners": "partners",
-        "reports": "reports",
-        "markets": "markets",
-        "facility": "facility",
-    }[kind]
-    return f"{_BASE}/{kind_path}/{slug}"
+    url = f"{_BASE}/{_KIND_PATH[kind]}/{slug}"
+    if subpath:
+        sp = str(subpath).strip("/")
+        if sp:
+            url = f"{url}/{sp}"
+    if query:
+        if isinstance(query, dict):
+            from urllib.parse import urlencode
+            qs = urlencode(query)
+        else:
+            qs = str(query).lstrip("?")
+        if qs:
+            url = f"{url}?{qs}"
+    return url
 
 
 # DB helpers -----------------------------------------------------------
