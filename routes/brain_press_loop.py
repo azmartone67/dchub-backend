@@ -50,13 +50,50 @@ CREATE TABLE IF NOT EXISTS press_brain_outcomes (
     twitter_views   INT,
     twitter_likes   INT,
     bluesky_views   INT,
+    press_views     INT,
     click_outs      INT,
     engagement_score REAL,
+    measured_at     TIMESTAMPTZ,
     UNIQUE (commit_sha, win_keyword)
 );
 CREATE INDEX IF NOT EXISTS ix_pbo_keyword ON press_brain_outcomes(win_keyword);
 CREATE INDEX IF NOT EXISTS ix_pbo_drafted ON press_brain_outcomes(drafted_at DESC);
+-- Idempotent column adds for installs that have the table from r47.26 (before
+-- the engagement backfill landed) — press_views/measured_at didn't exist then.
+ALTER TABLE press_brain_outcomes ADD COLUMN IF NOT EXISTS press_views INT;
+ALTER TABLE press_brain_outcomes ADD COLUMN IF NOT EXISTS measured_at TIMESTAMPTZ;
 """
+
+
+# ── The learning core (pure — unit-tested via AST extraction) ────────────
+# These two functions are the math of "press engagement shifts what we draft
+# next". They take plain data (no DB/Flask) so the pytest-only CI job can
+# exercise them directly.
+
+def _engagement_score(press_views, click_outs) -> float:
+    """Reach score for one published ship-win press post from the signals we
+    can actually measure today: press-page views + click-outs (a click-out is
+    a reader leaving for the product, worth far more than a passive view).
+    LinkedIn/X/Bluesky reach folds in here later as those columns populate."""
+    v = float(press_views or 0)
+    c = float(click_outs or 0)
+    return round(v + 6.0 * c, 2)
+
+
+def _keyword_weights(scores: dict) -> dict:
+    """keyword -> multiplicative draft-priority factor from each keyword's mean
+    engagement_score. Soft-greedy with a 0.7x floor and ~1.3x ceiling — the
+    same bandit shape the media editorial desk uses (routes/media_editorial.py
+    _engagement_weights) so winners get preferred without ever crushing a
+    keyword to zero (exploration is preserved). Keywords with no measured
+    engagement are omitted → callers treat them as a neutral 1.0x and keep
+    drafting them, so a brand-new win angle is never starved."""
+    rates = [s for s in scores.values() if s is not None]
+    hi = max(rates) if rates else 0
+    if not hi or hi <= 0:
+        return {}
+    return {k: round(0.7 + 0.6 * (s / hi), 3)
+            for k, s in scores.items() if s is not None}
 
 _TABLE_INIT_DONE = False
 
@@ -85,6 +122,93 @@ def _slug_for_win(keyword: str, commit_sha: str) -> str:
     duplicate press."""
     keyword_s = keyword.lower().replace(" ", "-").replace("_", "-")
     return f"brain-win-{keyword_s}-{commit_sha[:7]}"
+
+
+def backfill_engagement() -> dict:
+    """The MEASUREMENT half of the loop (this is what was missing — the table
+    recorded draft stubs but engagement_score stayed NULL forever, so the
+    learning view always read empty).
+
+    For every outcome whose press post actually published, join press_releases
+    (published? when?) and aggregate press_engagement (views + click-outs by
+    slug), compute the reach score, and write it back. Idempotent and cheap
+    (one bounded UPDATE pass) — safe to run on every loop tick. Fully
+    defensive: never raises."""
+    _ensure_schema()
+    published, updated, errors = 0, 0, 0
+    try:
+        conn = _conn()
+        try:
+            cur = conn.cursor()
+            cur.execute("""
+                SELECT o.id, pr.published_at,
+                       COALESCE(e.views, 0), COALESCE(e.clicks, 0)
+                  FROM press_brain_outcomes o
+                  JOIN press_releases pr ON pr.slug = o.press_slug
+                  LEFT JOIN (
+                      SELECT slug,
+                             COUNT(*) FILTER (WHERE event_type = 'view') AS views,
+                             COUNT(*) FILTER (WHERE event_type IN ('click_out','stripe_click')) AS clicks
+                        FROM press_engagement GROUP BY slug
+                  ) e ON e.slug = o.press_slug
+                 WHERE pr.published = TRUE
+            """)
+            rows = cur.fetchall() or []
+            for rid, pub_at, views, clicks in rows:
+                published += 1
+                score = _engagement_score(views, clicks)
+                try:
+                    cur.execute("""
+                        UPDATE press_brain_outcomes
+                           SET published_at = COALESCE(published_at, %s),
+                               press_views = %s,
+                               click_outs = %s,
+                               engagement_score = %s,
+                               measured_at = NOW()
+                         WHERE id = %s
+                    """, (pub_at, int(views), int(clicks), score, rid))
+                    updated += 1
+                except Exception:
+                    errors += 1
+                    try: conn.rollback()
+                    except Exception: pass
+                    cur = conn.cursor()
+            try: conn.commit()
+            except Exception: pass
+        finally:
+            try: conn.close()
+            except Exception: pass
+    except Exception as e:
+        logger.warning(f"backfill_engagement failed: {e}")
+    return {"published": published, "updated": updated, "errors": errors}
+
+
+def keyword_weights() -> dict:
+    """The APPLICATION half: keyword -> draft-priority factor from measured
+    engagement. Reads the mean engagement_score per keyword and runs it through
+    the soft-greedy bandit (_keyword_weights). Empty until reach accrues (→ all
+    keywords neutral 1.0x at the call site). Defensive: {} on any error."""
+    _ensure_schema()
+    scores: dict = {}
+    try:
+        conn = _conn()
+        try:
+            cur = conn.cursor()
+            cur.execute("""
+                SELECT win_keyword, AVG(engagement_score)
+                  FROM press_brain_outcomes
+                 WHERE engagement_score IS NOT NULL
+                 GROUP BY win_keyword
+            """)
+            for kw, avg in (cur.fetchall() or []):
+                scores[kw] = float(avg) if avg is not None else None
+        finally:
+            try: conn.close()
+            except Exception: pass
+    except Exception as e:
+        logger.warning(f"keyword_weights failed: {e}")
+        return {}
+    return _keyword_weights(scores)
 
 
 @brain_press_loop_bp.route("/api/v1/brain/press-loop", methods=["POST", "GET"])
@@ -136,6 +260,27 @@ def press_loop_endpoint():
             wins=wins,
         ), 200
 
+    # 1b. LEARNING — order the wins by what actually earns reach. First refresh
+    # measured engagement (the loop's measurement half), then weight each win by
+    # its keyword's reach factor (soft-greedy, 0.7-1.3x; an untried keyword is
+    # absent → neutral 1.0x, so a brand-new angle still drafts and gets explored).
+    # When more wins arrive than the per-run cap, only the top-weighted draft —
+    # so chronic floppers get crowded out by proven winners while exploration of
+    # fresh angles is preserved. This is the "keyword scoring shifts toward
+    # winners" step the module was built for but never had.
+    backfill_engagement()
+    weights = keyword_weights()
+    for w in wins:
+        w["_reach_weight"] = weights.get(w.get("keyword"), 1.0)
+    wins.sort(key=lambda w: w.get("_reach_weight", 1.0), reverse=True)
+    try:
+        _cap = int(os.environ.get("BRAIN_PRESS_MAX_DRAFTS_PER_RUN", "6") or 6)
+    except Exception:
+        _cap = 6
+    capped_out = wins[_cap:] if (_cap > 0 and len(wins) > _cap) else []
+    if capped_out:
+        wins = wins[:_cap]
+
     # 2. Write each win as a draft press_releases row + record outcome stub
     drafted = []
     skipped_existing = 0
@@ -171,7 +316,8 @@ def press_loop_endpoint():
                     rid = cur.fetchone()
                     if rid:
                         drafted.append({"slug": slug, "id": rid[0],
-                                         "keyword": w["keyword"]})
+                                         "keyword": w["keyword"],
+                                         "reach_weight": w.get("_reach_weight", 1.0)})
                         # Record outcome stub for learning loop
                         try:
                             cur.execute("""
@@ -206,9 +352,14 @@ def press_loop_endpoint():
         skipped_existing=skipped_existing,
         errors=errors,
         drafted_slugs=[d["slug"] for d in drafted],
+        # Learning transparency: the reach factors that ordered this run and any
+        # wins the per-run cap deferred to a future tick (lowest-reach keywords).
+        reach_weights=weights,
+        deferred_by_cap=[w.get("keyword") for w in capped_out],
         note=("Drafts now live in press_releases table. They auto-fan "
               "to LinkedIn/X/Bluesky on next /api/v1/marketing/publish-now "
-              "cron fire (every 3h)."),
+              "cron fire (every 3h). Wins were ordered by measured reach per "
+              "keyword (press engagement → draft priority)."),
         generated_at=now,
     ), 200
 
@@ -223,6 +374,9 @@ def learning_endpoint():
     (LinkedIn/X webhooks → engagement_score), this view tells the brain
     which kinds of wins to draft more of."""
     _ensure_schema()
+    # Refresh measured engagement before reading, so this view reflects live
+    # reach (press views + click-outs) instead of the old all-NULL stub state.
+    backfill_engagement()
     try:
         conn = _conn()
         try:
@@ -258,9 +412,28 @@ def learning_endpoint():
     return jsonify(
         ok=True,
         keywords=out,
-        note=("Engagement scores fill in as LinkedIn/X webhooks land. "
-              "Once we have N>=10 posts per keyword, the brain will "
-              "auto-prefer the top-scoring keywords when drafting new "
-              "wins (and DEMOTE keywords that consistently flop). "
-              "This is the self-improvement loop closed."),
+        # The live draft-priority factors derived from the scores above. Empty
+        # until engagement accrues; once populated, the next press-loop run
+        # orders (and caps) wins by these — winners drafted first, floppers
+        # crowded out, untried keywords held neutral for exploration.
+        reach_weights=keyword_weights(),
+        note=("engagement_score = press_views + 6x click_outs, backfilled from "
+              "press_engagement on every read. avg_engagement per keyword drives "
+              "reach_weights (0.7-1.3x), which the press-loop applies when "
+              "ordering/capping new drafts. The measure->learn->draft loop is "
+              "now closed (LinkedIn/X reach folds in as those columns populate)."),
+    ), 200
+
+
+@brain_press_loop_bp.route("/api/v1/brain/press-loop/measure", methods=["GET", "POST"])
+def measure_endpoint():
+    """Backfill measured engagement into press_brain_outcomes and return the
+    current learned keyword weights. Wire to a periodic cron so reach data
+    flows back continuously instead of only on the next draft run."""
+    res = backfill_engagement()
+    return jsonify(
+        ok=True,
+        backfill=res,
+        reach_weights=keyword_weights(),
+        generated_at=_dt.datetime.utcnow().isoformat() + "Z",
     ), 200
