@@ -548,6 +548,7 @@ def _render_market(slug, city, state, facilities, stats) -> str:
   <nav class="breadcrumb"><a href="/">DC Hub</a> · Markets · {_h(city)}, {_h(state)}</nav>
   <h1>{_h(city)}, {_h(state)} — Data Center Market</h1>
   <p class="lede"><strong>{n_fac}</strong> facilities · <strong>{total_mw} MW</strong> total capacity · <strong>{n_op}</strong> operators</p>
+  <p class="dc-maplink" style="margin:.4rem 0 0"><a href="/map" style="color:#3b82f6;font-weight:600;text-decoration:none">📍 See {_h(city)} data centers on the live facility map →</a></p>
 </header>
 
 <section id="top-operators">

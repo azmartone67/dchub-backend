@@ -4451,6 +4451,7 @@ h1 {
   <div class="crumbs"><a href="/dcpi">DCPI</a> / <a href="/markets">Markets</a> / {{ s.market_name }}</div>
   <h1>{{ s.market_name }}</h1>
   <p class="subtitle">{{ s.iso }} · {{ s.state }} · UPDATED {{ s.computed_at[:10] }}</p>
+  <p class="dc-maplink" style="margin:.4rem 0 .2rem"><a href="/map" style="color:#3b82f6;font-weight:600;text-decoration:none">📍 See {{ s.market_name }} data centers on the live facility map →</a></p>
 
   <div class="verdict-banner {{ s.verdict }}">
     {% if s.verdict == 'BUILD' %}🟢 BUILD HERE — Excess capacity available, manageable constraints
