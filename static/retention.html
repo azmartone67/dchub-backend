@@ -1,0 +1,46 @@
+<!doctype html>
+<!-- DC Hub — standalone retention dashboard (r86-reach, 2026-06-14).
+     Drop into static/retention.html → access at /static/retention.html.
+     Standalone so the parallel session's churn of mcp-dashboard.html can't revert it.
+     Needs the /api/v1/mcp/retention endpoint (routes/mcp_retention.py) live. -->
+<html lang="en"><head>
+<meta charset="utf-8"><title>DC Hub MCP — Retention</title>
+<style>
+  body{font-family:-apple-system,BlinkMacSystemFont,sans-serif;background:#0a0a0a;color:#e6e6e6;margin:0;padding:24px}
+  h1{font-weight:300;letter-spacing:-.02em;margin:0 0 4px}
+  .sub{color:#888;font-size:13px;margin-bottom:18px}
+  .grid{display:grid;grid-template-columns:repeat(auto-fit,minmax(220px,1fr));gap:14px;margin:18px 0}
+  .card{background:#161616;border:1px solid #262626;border-radius:8px;padding:18px}
+  .label{color:#8a8a8a;font-size:11px;text-transform:uppercase;letter-spacing:.06em}
+  .value{font-size:30px;font-weight:200;margin:6px 0 0}
+  .sub-value{color:#777;font-size:12px;margin-top:2px}
+  table{width:100%;border-collapse:collapse;margin-top:8px;font-size:13px}
+  th,td{text-align:left;padding:8px 12px;border-bottom:1px solid #262626}
+  th{color:#8a8a8a;font-weight:500;text-transform:uppercase;font-size:11px;letter-spacing:.05em}
+  .reload{background:#262626;color:#e6e6e6;border:1px solid #404040;padding:6px 12px;border-radius:4px;cursor:pointer;font-size:12px;margin-left:8px}
+</style></head><body>
+<h1>🔁 DC Hub MCP — Retention <button class="reload" onclick="load()">↻ refresh</button></h1>
+<div class="sub">Inflow is fine; <b>retention</b> is the leak (2026-06-14 analysis): ~30-50 new external IPs arrive/wk but ~1 returns. Watch <b>returning IPs</b> + <b>key-reuse %</b> climb = the r86 first-touch fix working. Mint <i>volume</i> is scan/anon-inflated — read the <b>rate</b>. Source: <code>/api/v1/mcp/retention</code></div>
+<div class="grid" id="ret-kpis"></div>
+<div class="card">
+  <table id="retention"><thead><tr><th>Week</th><th>New ext IPs</th><th>Returning</th><th>Keys minted</th><th>Reused (2+)</th><th>Reuse %</th></tr></thead><tbody></tbody></table>
+</div>
+<script>
+async function load(){
+  try{
+    const rt = await (await fetch('/api/v1/mcp/retention?weeks=12')).json();
+    const s = rt.summary||{};
+    document.getElementById('ret-kpis').innerHTML = `
+      <div class="card"><div class="label">Key reuse (30d)</div><div class="value">${s.pct_reused_30d ?? '—'}%</div>
+        <div class="sub-value">avg ${s.avg_calls_per_key_30d ?? '—'} calls/key · ${s.minted_30d ?? 0} minted</div></div>
+      <div class="card"><div class="label">Returning IPs (latest wk)</div><div class="value">${s.latest_returning_ips ?? '—'}</div>
+        <div class="sub-value">vs ${s.latest_new_ips ?? '—'} new · wk ${s.latest_week ?? '—'}</div></div>`;
+    const kr={}; (rt.key_reuse||[]).forEach(r=>kr[r.week]=r);
+    document.querySelector('#retention tbody').innerHTML = (rt.ip_cohort||[]).map(r=>{
+      const k=kr[r.week]||{}, pct=k.minted?Math.round(1000*(k.reused_2plus||0)/k.minted)/10+'%':'—';
+      return `<tr><td>${(r.week||'').slice(5,16)||r.week}</td><td>${r.new_ips}</td><td style="color:${r.returning_ips>2?'#7c7':'#c77'}">${r.returning_ips}</td><td>${k.minted ?? '—'}</td><td>${k.reused_2plus ?? '—'}</td><td>${pct}</td></tr>`;
+    }).join('') || '<tr><td colspan=6 style="color:#666">No data</td></tr>';
+  }catch(e){ document.querySelector('#retention tbody').innerHTML='<tr><td colspan=6 style="color:#c77">endpoint not live — add routes/mcp_retention.py</td></tr>'; }
+}
+load();
+</script></body></html>
