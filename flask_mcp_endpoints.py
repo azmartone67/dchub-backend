@@ -55,6 +55,57 @@ _UUID_RE_MOD = _re_mod.compile(
     r"^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$"
 )
 
+# ── Self-heal / synthetic-client DIET (Item 5, 2026-06-13) ──────────────────
+# platform='dchub-selfheal' was ~33k of ~36k mcp_tool_calls/wk (~93% of the
+# table). Those are our OWN MCP self-probe loop (server.mjs forwards
+# clientInfo.name='dchub-selfheal'; UA='node'; resolved via mcp_sessions). Every
+# downstream analytics reader already EXCLUDES these names at read time (see the
+# _INTERNAL_PLATFORMS / NOT LIKE 'dchub-%%' clauses below and in
+# routes/mcp_funnel_diag.py, visitor_intelligence.py, mcp_analytics_postgres.py).
+# So the rows are pure write-amplification: they bloat the table, slow every
+# aggregate scan, and force each reader to carry the same heavy filter. Fix:
+# tag-and-exclude at WRITE time — skip the legacy mcp_tool_calls insert for these
+# synthetic clients. The tool still executes and returns normally (the health
+# check is unaffected — it never reads this analytics row); only the polluting
+# audit row is dropped. The canonical telemetry tables (mcp_call_log /
+# mcp_connections via log_mcp_connection) are untouched, so internal probe
+# health is still observable there if ever needed.
+_SELFHEAL_SYNTHETIC_NAMES = frozenset({
+    'dchub-selfheal', 'dchub-mcp-test', 'dchub-regression-test',
+    'mcp-probe', 'mcp-test', 'pipeline_mcp', 'canary',
+    'mcp-remote-fallback-test', 'registry-health-checker',
+    'mcp-shield-scanner', 'yellowmcp-health', 'glama-health',
+    'chiark-prober', 'fabrique-noauth-probe', 'agentpulse',
+    'mcpscoringengine', 'mcp-extractor',
+})
+# Prefix families mirroring the canonical read-time filter (dchub-* covers
+# selfheal/scheduler/schema-audit/failoverprobe; loop*/local-agent-mode are
+# brain loops; *-probe/-health/-scanner/-checker are registry crawlers).
+_SELFHEAL_SYNTHETIC_PREFIXES = ('dchub-', 'loop', 'local-agent-mode',
+                                'leakaudit', 'trial-leak')
+_SELFHEAL_SYNTHETIC_SUFFIXES = ('-probe', '-health', '-scanner', '-checker')
+
+
+def _is_selfheal_synthetic(*names) -> bool:
+    """True if ANY supplied identity (platform / client_name) is one of our own
+    self-heal / synthetic probe clients. Used to skip the legacy mcp_tool_calls
+    write so the analytics table reflects real external agent demand, not our
+    own monitoring loop. Mirrors the read-time exclusion list so the write-time
+    and read-time views stay consistent."""
+    for n in names:
+        if not n:
+            continue
+        v = str(n).strip().lower()
+        if not v:
+            continue
+        if v in _SELFHEAL_SYNTHETIC_NAMES:
+            return True
+        if v.startswith(_SELFHEAL_SYNTHETIC_PREFIXES):
+            return True
+        if v.endswith(_SELFHEAL_SYNTHETIC_SUFFIXES):
+            return True
+    return False
+
 NEON_URL     = os.environ.get("NEON_DATABASE_URL") or os.environ.get("DATABASE_URL")
 INTERNAL_KEY = os.environ.get("DCHUB_INTERNAL_KEY", "")
 
@@ -907,6 +958,21 @@ def track_tool_call():
     if _client_was_uuid and _looks_generic(_r_client):
         _r_client = 'unknown'
 
+    # Item 5 SELF-HEAL DIET (2026-06-13): skip the legacy mcp_tool_calls write
+    # for our own self-heal / synthetic probe clients. These were ~93% of the
+    # table (~33k/wk all tagged dchub-selfheal) and EVERY downstream reader
+    # already filters them out — so the rows were pure write-amplification.
+    # The MCP tool itself has already executed; dropping this audit row does
+    # NOT affect the response or any health check (those don't read it). The
+    # canonical mcp_call_log write below still records internal traffic, so
+    # probe health remains observable. We test BOTH the recovered identity
+    # (_r_platform/_r_client, resolved via mcp_sessions) and the raw payload
+    # fields, since the self-heal loop's clientInfo.name surfaces in both.
+    _is_synthetic_selfheal = _is_selfheal_synthetic(
+        _r_platform, _r_client,
+        body.get("platform"), body.get("client_name"), body.get("client"),
+    )
+
     # phase9j_dual: also write to legacy mcp_tool_calls so the existing
     # /api/v1/usage and /api/v1/data-freshness queries (which read from
     # that table) reflect activity. The 4/30 rewrite of this file moved
@@ -921,7 +987,9 @@ def track_tool_call():
     _db_lt = None
     try:
         from db_utils import try_get_db
-        _db_lt = try_get_db()
+        # Item 5: self-heal DIET — never open a connection / write a row for
+        # our own synthetic probe loop. This is the ~93% cut.
+        _db_lt = try_get_db() if not _is_synthetic_selfheal else None
         if _db_lt:
             _c_lt = _db_lt.cursor()
             _params_str = params if isinstance(params, str) else (json.dumps(params or {}) if params is not None else '{}')
