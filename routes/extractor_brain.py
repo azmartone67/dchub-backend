@@ -175,6 +175,36 @@ def _compute_source_quality():
                     "failing"
                 ),
             }
+        # r86f SURVIVORSHIP FIX: the 7d GROUP BY above only sees sources that
+        # emitted IN the last 7d, so a feed that STOPPED dropped out entirely and
+        # rendered as green-by-omission instead of failing. That's how 9
+        # autonomous-brain-* feeds (last seen 2026-05-31) silently vanished and a
+        # ~75% source outage read as "3 good / 0 failing". Surface any source
+        # seen in the last 30d but silent >24h as health="failing" (stale) so the
+        # dashboard + brain actually catch the outage.
+        cur.execute(
+            """SELECT source_id, MAX(observed_at) AS last_obs,
+                      EXTRACT(EPOCH FROM (NOW() - MAX(observed_at))) / 3600.0 AS stale_hours
+                 FROM extraction_intelligence
+                WHERE observed_at > NOW() - INTERVAL '30 days'
+                GROUP BY source_id
+               HAVING MAX(observed_at) < NOW() - INTERVAL '24 hours'"""
+        )
+        for src_id, last_obs, stale_hours in cur.fetchall():
+            if src_id in out:
+                continue  # had recent activity in the 7d window
+            out[src_id] = {
+                "source_id": src_id,
+                "total_runs_7d": 0,
+                "successes_7d": 0,
+                "success_rate": 0.0,
+                "total_rows_7d": 0,
+                "avg_duration_ms": 0,
+                "last_observed_at": last_obs.isoformat() if last_obs else None,
+                "stale": True,
+                "stale_hours": round(float(stale_hours or 0), 1),
+                "health": "failing",
+            }
     return out
 
 
