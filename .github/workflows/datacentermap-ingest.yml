@@ -1,0 +1,114 @@
+# Item 2a (2026-06-13, r86g) — DataCenterMap GH-runner ingest (BEST-EFFORT).
+#
+# Railway egress is 429'd by DataCenterMap's Vercel WAF, so the in-process
+# run_datacentermap_discovery() no-ops. This job fetches the DCM JSON ON the
+# GitHub runner (different egress) and POSTs to /api/admin/dcm-ingest (Neon
+# upsert, source='datacentermap', idempotent). HONEST CAVEAT: Vercel WAF
+# challenges are IP-reputation based and GH-runner ranges are commonly
+# challenged too, so the runner may ALSO get a 429/checkpoint — the job FAILS
+# SAFE (logs a warning + exits 0, never POSTs the checkpoint HTML as data).
+# It is therefore manual/workflow_dispatch ONLY (run it to test whether the
+# runner can reach DCM; promote to a schedule only once a run logs HTTP=200 +
+# a nonzero "Parsed N DCM facilities"). The guaranteed discovery growth in
+# this change comes from the CONUS OSM bboxes + news->discovery, not DCM.
+#
+# Distinct from datacentermap-crawl.yml (in-backend HTML scraper).
+
+name: DataCenterMap — runner ingest (JSON API, manual/best-effort)
+
+on:
+  workflow_dispatch:
+    inputs:
+      dry_run:
+        description: 'Dry run (normalize + roll back, no inserts)'
+        required: false
+        default: 'false'
+
+concurrency:
+  group: datacentermap-ingest
+  cancel-in-progress: false
+
+jobs:
+  ingest:
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    steps:
+      - name: Fetch DCM JSON on runner and POST to backend
+        env:
+          ADMIN_KEY: ${{ secrets.DCHUB_ADMIN_KEY }}
+          DRY: ${{ github.event.inputs.dry_run }}
+        run: |
+          set -eo pipefail
+          ORIGIN="https://dchub-backend-production.up.railway.app"
+          QS=""
+          if [ "$DRY" = "true" ]; then QS="?dry_run=1"; fi
+
+          echo "Fetching DataCenterMap JSON from the runner..."
+          # Polite UA. The runner MAY also be 429'd by DCM's Vercel WAF; if so the
+          # HTTP!=200 guard below skips this run cleanly (no bad data ingested).
+          HTTP=$(curl -sS -w '%{http_code}' -o /tmp/dcm.json \
+            -H 'User-Agent: DCHubCrawler/1.0 (+https://dchub.cloud/contact)' \
+            -H 'Accept: application/json' \
+            --max-time 120 \
+            'https://www.datacentermap.com/api/datacenters' || echo "000")
+          echo "DCM fetch HTTP=$HTTP, bytes=$(wc -c < /tmp/dcm.json 2>/dev/null || echo 0)"
+
+          if [ "$HTTP" != "200" ]; then
+            echo "::warning::DataCenterMap API returned HTTP $HTTP — skipping ingest this run."
+            head -c 400 /tmp/dcm.json || true
+            exit 0
+          fi
+
+          # Wrap a bare array into {"facilities": [...]} if needed; the
+          # endpoint accepts either, but we normalize here so the count
+          # check below is simple. Also validates the JSON parses.
+          python3 - <<'PY'
+          import json, sys
+          raw = open('/tmp/dcm.json', 'rb').read()
+          try:
+              data = json.loads(raw)
+          except Exception as e:
+              print(f"::warning::DCM JSON parse failed: {e}")
+              json.dump({"facilities": []}, open('/tmp/dcm_body.json', 'w'))
+              sys.exit(0)
+          if isinstance(data, list):
+              facs = data
+          elif isinstance(data, dict):
+              facs = data.get('facilities') or data.get('data') or data.get('datacenters') or []
+          else:
+              facs = []
+          print(f"Parsed {len(facs)} DCM facilities")
+          json.dump({"facilities": facs}, open('/tmp/dcm_body.json', 'w'))
+          PY
+
+          COUNT=$(python3 -c "import json;print(len(json.load(open('/tmp/dcm_body.json'))['facilities']))")
+          if [ "$COUNT" = "0" ]; then
+            echo "::warning::DCM returned 0 facilities — nothing to ingest."
+            exit 0
+          fi
+
+          echo "POSTing $COUNT facilities to /api/admin/dcm-ingest$QS ..."
+          RESP=$(curl -sS -X POST \
+            -H "X-Admin-Key: $ADMIN_KEY" \
+            -H "Content-Type: application/json" \
+            -H "User-Agent: DCHub-DCM-Ingest-Cron/1.0" \
+            --data-binary @/tmp/dcm_body.json \
+            --max-time 300 \
+            "$ORIGIN/api/admin/dcm-ingest$QS")
+
+          echo "$RESP" | python3 -c "
+          import sys, json
+          d = json.load(sys.stdin)
+          if not d.get('ok'):
+            print(f'::warning::dcm-ingest returned: {d.get(\"error\")}')
+            print(json.dumps(d, indent=2)[:600])
+            sys.exit(0)
+          print('### DataCenterMap runner ingest')
+          print()
+          print(f'- Received: {d.get(\"received\")}')
+          print(f'- Normalized: {d.get(\"normalized\")}')
+          print(f'- Skipped (no name): {d.get(\"skipped\")}')
+          print(f'- New: {d.get(\"added\")}')
+          print(f'- Duplicate (upsert): {d.get(\"duplicate\")}')
+          print(f'- Dry run: {d.get(\"dry_run\")}')
+          " >> "$GITHUB_STEP_SUMMARY"

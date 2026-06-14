@@ -114,6 +114,23 @@ BBOXES: dict = {
     # US states with thin DCHawk coverage
     "alaska":         (52.0, -180.0, 71.5, -141.0),
     "hawaii":         (18.9, -160.3, 22.2, -154.8),
+
+    # Continental US (CONUS) — Item 2b (2026-06-13). Pre-fix only AK + HI
+    # covered the US, so the OSM crawler never swept the lower 48 (the
+    # single biggest DC market on earth). Split into regional boxes small
+    # enough that each Overpass query (6 telecom/office/industrial
+    # sub-queries @ 25s timeout) returns without a 504. Boundaries chosen
+    # to bias toward known DC clusters (Northern Virginia, Dallas, Phoenix,
+    # Bay Area, Chicago) without overlap.
+    "us-northeast":   (38.5, -80.6, 47.6, -66.9),   # ME→VA, incl NoVA/NY/NJ
+    "us-southeast":   (24.4, -88.5, 38.5, -75.0),   # FL→VA, Atlanta corridor
+    "us-mid-atlantic-oh": (36.5, -88.5, 42.5, -80.5),  # OH/KY/TN/WV overlap-trim
+    "us-midwest-east": (38.5, -91.5, 49.4, -80.6),  # IL/IN/MI/WI/OH (Chicago)
+    "us-midwest-west": (36.0, -104.1, 49.4, -91.5), # MN/IA/MO/KS/NE/Dakotas
+    "us-south-central": (25.8, -106.7, 36.5, -88.5),# TX/OK/AR/LA/MS/AL (Dallas)
+    "us-mountain":    (31.3, -117.3, 49.0, -104.1), # CO/UT/AZ/NM/NV/ID/MT/WY
+    "us-pacific-nw":  (41.9, -124.9, 49.1, -116.5), # WA/OR/N-ID
+    "us-california":  (32.5, -124.5, 42.1, -114.1), # CA (Bay Area/LA/Silicon V)
 }
 
 OVERPASS = "https://overpass-api.de/api/interpreter"

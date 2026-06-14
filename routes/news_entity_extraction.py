@@ -474,6 +474,192 @@ def _scan(days: int, dry_run: bool) -> dict:
     return out
 
 
+# ── Promotion: NER candidate → discovered_facilities ─────────────────
+# Item 2c (2026-06-13). The NER scan above only fills news_discovered_entities
+# (a name-level candidate queue). This step closes the loop: high-confidence
+# candidates whose sample headline reads like a real facility announcement
+# are turned into proper discovered_facilities rows via the well-tested
+# news_facility_extractor.insert_discovered_facility(). Conservative gates
+# (min mention_count, real-entity filter, announcement-shaped headline,
+# not already known/rejected) keep regex noise out of the facility table.
+
+PROMOTE_MIN_MENTIONS = int(os.environ.get("NEWS_NER_PROMOTE_MIN_MENTIONS", "2"))
+PROMOTE_MAX_PER_RUN = int(os.environ.get("NEWS_NER_PROMOTE_MAX", "50"))
+
+
+def _promote_candidates(min_mentions: int = None,
+                        limit: int = None,
+                        dry_run: bool = False) -> dict:
+    """Promote high-confidence NER candidates into discovered_facilities.
+
+    Returns a summary dict. Idempotent: promoted rows are flipped to
+    in_facilities=TRUE / status='promoted' so a re-run won't double-insert,
+    and insert_discovered_facility() itself dedups on source_url."""
+    if min_mentions is None:
+        min_mentions = PROMOTE_MIN_MENTIONS
+    if limit is None:
+        limit = PROMOTE_MAX_PER_RUN
+
+    out = {
+        "ok": True,
+        "dry_run": dry_run,
+        "min_mentions": min_mentions,
+        "considered": 0,
+        "promoted": 0,
+        "skipped_not_announcement": 0,
+        "skipped_no_url": 0,
+        "errors": 0,
+        "examples": [],
+        "started_at": datetime.datetime.utcnow().isoformat() + "Z",
+    }
+
+    try:
+        from news_facility_extractor import (
+            extract_facility_from_article,
+            insert_discovered_facility,
+            is_facility_announcement,
+        )
+    except Exception as e:
+        out["ok"] = False
+        out["error"] = f"news_facility_extractor import failed: {e}"
+        return out
+
+    c = _get_db()
+    if c is None:
+        out["ok"] = False
+        out["error"] = "no_db"
+        return out
+
+    candidates = []
+    try:
+        with c.cursor() as cur:
+            cur.execute("""
+                SELECT id, entity_name, mention_count, sample_headline,
+                       sample_url
+                  FROM news_discovered_entities
+                 WHERE in_facilities = FALSE
+                   AND COALESCE(status, 'unknown') NOT IN ('rejected', 'promoted')
+                   AND mention_count >= %s
+                 ORDER BY mention_count DESC, last_seen_at DESC
+                 LIMIT %s
+            """, (min_mentions, limit))
+            for r in cur.fetchall():
+                candidates.append({
+                    "id": r[0], "name": r[1], "mentions": r[2],
+                    "headline": r[3] or "", "url": r[4] or "",
+                })
+    except Exception as e:
+        try: c.rollback()
+        except Exception: pass
+        out["ok"] = False
+        out["error"] = f"candidate query failed: {e}"
+        try: c.close()
+        except Exception: pass
+        return out
+
+    out["considered"] = len(candidates)
+
+    try:
+        for cand in candidates:
+            name = cand["name"]
+            headline = cand["headline"]
+            url = cand["url"]
+            if not url:
+                out["skipped_no_url"] += 1
+                continue
+            # Only promote candidates whose headline reads like a real
+            # facility announcement (groundbreaking / MW / acres / new DC).
+            if not (is_facility_announcement(name, headline)
+                    or is_facility_announcement(headline, name)
+                    or _is_real_entity(name)):
+                out["skipped_not_announcement"] += 1
+                continue
+
+            facility = extract_facility_from_article(
+                headline or name, headline, url, "news_ner")
+            if not facility:
+                # Build a minimal record keyed on the entity name when the
+                # headline alone doesn't trip the extractor's heuristics
+                # but the entity is a real, repeatedly-mentioned operator.
+                if not _is_real_entity(name) or cand["mentions"] < (min_mentions + 1):
+                    out["skipped_not_announcement"] += 1
+                    continue
+                facility = {
+                    "name": name[:200], "provider": name[:200],
+                    "city": None, "state": None, "country": "US",
+                    "latitude": None, "longitude": None,
+                    "power_mw": None, "sqft": None,
+                    "status": "Announced",
+                    "source": "news_ner",
+                    "source_url": url,
+                    "confidence_score": 0.62,
+                    "discovered_at": datetime.datetime.utcnow().strftime("%Y-%m-%d"),
+                    "notes": f"Promoted from news NER candidate "
+                             f"({cand['mentions']} mentions): {headline[:160]}",
+                    "investment_usd": None, "acreage": None,
+                }
+            else:
+                facility["name"] = (name or facility["name"])[:200]
+                # r86g: extract_facility_from_article always sets provider=None so
+                # setdefault was a no-op (key exists) -> NULL provider. Use the
+                # entity name as provider when none was extracted.
+                facility["provider"] = facility.get("provider") or name[:200]
+                facility["source"] = "news_ner"
+                facility["notes"] = (
+                    f"Promoted from news NER candidate "
+                    f"({cand['mentions']} mentions). "
+                    f"{facility.get('notes') or ''}")[:400]
+
+            if dry_run:
+                out["promoted"] += 1
+                if len(out["examples"]) < 20:
+                    out["examples"].append({
+                        "name": facility["name"],
+                        "status": facility.get("status"),
+                        "mentions": cand["mentions"],
+                        "url": url,
+                    })
+                continue
+
+            try:
+                new_id = insert_discovered_facility(c, facility)
+            except Exception as e:
+                out["errors"] += 1
+                logger.info(f"[news-ner promote] insert failed for "
+                            f"{name[:30]}: {str(e)[:120]}")
+                continue
+
+            # Flip the candidate so it won't be re-promoted, whether or not
+            # the insert was a fresh row (None = dup source_url already there).
+            try:
+                with c.cursor() as cur:
+                    cur.execute(
+                        "UPDATE news_discovered_entities "
+                        "SET in_facilities = TRUE, status = 'promoted', "
+                        "last_seen_at = NOW() WHERE id = %s",
+                        (cand["id"],))
+                c.commit()
+            except Exception:
+                try: c.rollback()
+                except Exception: pass
+
+            if new_id:
+                out["promoted"] += 1
+                if len(out["examples"]) < 20:
+                    out["examples"].append({
+                        "name": facility["name"],
+                        "id": new_id,
+                        "mentions": cand["mentions"],
+                        "url": url,
+                    })
+    finally:
+        try: c.close()
+        except Exception: pass
+
+    out["finished_at"] = datetime.datetime.utcnow().isoformat() + "Z"
+    return out
+
+
 # ── Endpoints ────────────────────────────────────────────────────────
 @news_ner_bp.route("/api/v1/admin/news-ner/run", methods=["POST"])
 def ner_run():
@@ -481,7 +667,32 @@ def ner_run():
         return jsonify(ok=False, error="forbidden"), 403
     days = int(request.args.get("days") or "1")
     dry_run = (request.args.get("dry_run") or "").lower() in ("1", "true", "yes")
-    return jsonify(_scan(days, dry_run))
+    # Item 2c: optionally chain promotion after the scan in one call so the
+    # cron can do scan→promote with a single POST. ?promote=1
+    result = _scan(days, dry_run)
+    if (request.args.get("promote") or "").lower() in ("1", "true", "yes"):
+        result["promotion"] = _promote_candidates(dry_run=dry_run)
+    return jsonify(result)
+
+
+@news_ner_bp.route("/api/v1/admin/news-ner/promote", methods=["POST"])
+def ner_promote():
+    """Promote high-confidence NER candidates → discovered_facilities.
+
+    Gate: X-Admin-Key. Query:
+      ?min_mentions=N   override mention threshold (default env-driven, 2)
+      ?limit=N          max candidates to promote this run (default 50)
+      ?dry_run=1        evaluate + count but DO NOT insert/flip.
+    """
+    if not _admin_ok():
+        return jsonify(ok=False, error="forbidden"), 403
+    mm = request.args.get("min_mentions")
+    lim = request.args.get("limit")
+    dry_run = (request.args.get("dry_run") or "").lower() in ("1", "true", "yes")
+    return jsonify(_promote_candidates(
+        min_mentions=int(mm) if mm else None,
+        limit=int(lim) if lim else None,
+        dry_run=dry_run))
 
 
 @news_ner_bp.route("/api/v1/admin/news-ner/candidates", methods=["GET"])

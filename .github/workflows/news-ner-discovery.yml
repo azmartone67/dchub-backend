@@ -1,0 +1,78 @@
+# Item 2c (2026-06-13) — News → Discovery cron.
+#
+# Runs the news entity-extraction (NER) scan over recent news_items, then
+# promotes high-confidence candidates into discovered_facilities via
+# news_facility_extractor.insert_discovered_facility(). Wired through the
+# backend admin endpoint so all the DB access / dedup logic stays in one
+# place (Railway has the DATABASE_URL; CI does not).
+#
+#   POST /api/v1/admin/news-ner/run?days=2&promote=1
+#     → scans last 2 days of news, fills news_discovered_entities,
+#       then chains _promote_candidates() to insert facility rows.
+
+name: News → Discovery (NER scan + promote)
+
+on:
+  schedule:
+    # 06:43 UTC daily — distinct minute, after news ingestion crons and
+    # off the 06:00/06:05/06:17/06:23 herd (no cron_schedule_collision).
+    - cron: '43 6 * * *'
+  workflow_dispatch:
+    inputs:
+      days:
+        description: 'Look-back window in days (default 2)'
+        required: false
+        default: '2'
+      dry_run:
+        description: 'Dry run (scan + evaluate, no inserts)'
+        required: false
+        default: 'false'
+
+concurrency:
+  group: news-ner-discovery
+  cancel-in-progress: false
+
+jobs:
+  scan-and-promote:
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    steps:
+      - name: Trigger NER scan + promotion
+        env:
+          ADMIN_KEY: ${{ secrets.DCHUB_ADMIN_KEY }}
+          DAYS: ${{ github.event.inputs.days }}
+          DRY: ${{ github.event.inputs.dry_run }}
+        run: |
+          set -eo pipefail
+          ORIGIN="https://dchub-backend-production.up.railway.app"
+          D="${DAYS:-2}"
+          QS="?days=$D&promote=1"
+          if [ "$DRY" = "true" ]; then QS="$QS&dry_run=1"; fi
+
+          echo "POST /api/v1/admin/news-ner/run$QS"
+          RESP=$(curl -sS -X POST \
+            -H "X-Admin-Key: $ADMIN_KEY" \
+            -H "User-Agent: DCHub-NewsNER-Cron/1.0" \
+            --max-time 600 \
+            "$ORIGIN/api/v1/admin/news-ner/run$QS")
+
+          echo "$RESP" | python3 -c "
+          import sys, json
+          d = json.load(sys.stdin)
+          print('### News → Discovery (NER)')
+          print()
+          print(f'- Articles scanned: {d.get(\"articles_scanned\")}')
+          print(f'- Candidates found: {d.get(\"candidates_found\")}')
+          print(f'- New candidates: {d.get(\"candidates_new\")}')
+          print(f'- Known candidates: {d.get(\"candidates_known\")}')
+          p = d.get('promotion') or {}
+          print()
+          print(f'**Promotion → discovered_facilities**')
+          print(f'- Considered: {p.get(\"considered\")}')
+          print(f'- Promoted: {p.get(\"promoted\")}')
+          print(f'- Skipped (not announcement): {p.get(\"skipped_not_announcement\")}')
+          print(f'- Skipped (no url): {p.get(\"skipped_no_url\")}')
+          print(f'- Errors: {p.get(\"errors\")}')
+          if not d.get('ok', True):
+            print(f'::warning::NER run error: {d.get(\"error\")}')
+          " >> "$GITHUB_STEP_SUMMARY"
