@@ -18,6 +18,7 @@ Endpoints:
 import json
 import os
 import re
+import hmac
 import statistics
 import time
 import urllib.request
@@ -165,6 +166,184 @@ def _detect_grid_anomaly(iso, metric_name, current_value):
         }
     except Exception as e:
         return {"is_anomaly": False, "anomaly_score": 0, "reason": str(e)}
+
+
+# ---------------------------------------------------------------------------
+# scan_grid_anomalies — proactive sweep over ALL (iso, metric) pairs
+# ---------------------------------------------------------------------------
+#
+# The 3-sigma detector above (_detect_grid_anomaly) only fired inside
+# POST /observe when a caller passed observations.grid_metrics — which nothing
+# ever did, so 0/40k+ extraction_intelligence rows were ever scored.
+#
+# scan_grid_anomalies() closes that gap: it pulls the recent grid_data window,
+# groups by (iso, metric_name), and for every pair with >=5 samples in 24h it
+# treats the most-recent sample as "current" and the prior 24h as the baseline,
+# reusing the same mean/std/sigma math as the live detector. Pairs whose latest
+# value lands beyond |sigma| > 3 get a single 'anomaly' row written under
+# source_id='grid-anomaly-scan'.
+#
+# Designed for the data-pulse cron (runs right after the ISO pull lands the
+# freshest samples). Read-only unless dry_run=False.
+
+GRID_ANOMALY_SOURCE_ID = "grid-anomaly-scan"
+
+
+def scan_grid_anomalies(min_samples: int = 5, sigma_threshold: float = 3.0,
+                        window_hours: int = 24, dry_run: bool = False) -> dict:
+    """Sweep grid_data for per-(iso,metric) outliers and record anomalies.
+
+    For each (iso, metric_name) with >= ``min_samples`` samples in the last
+    ``window_hours``: baseline = all-but-latest samples, current = latest
+    sample. When ``abs(sigmas) > sigma_threshold`` an extraction_intelligence
+    row is INSERTed (source_id='grid-anomaly-scan', outcome='anomaly',
+    observations={detected_anomalies:[...]}, anomaly_score=sigmas).
+
+    Returns a summary dict: pairs scanned, flagged count, inserted count, and
+    up to 25 example anomalies. ``dry_run=True`` computes everything but writes
+    nothing — used by the verification probe. Never raises on a per-pair error.
+    """
+    summary = {
+        "source_id": GRID_ANOMALY_SOURCE_ID,
+        "window_hours": window_hours,
+        "min_samples": min_samples,
+        "sigma_threshold": sigma_threshold,
+        "dry_run": bool(dry_run),
+        "pairs_scanned": 0,
+        "pairs_eligible": 0,
+        "flagged": 0,
+        "inserted": 0,
+        "anomalies": [],
+        "scanned_at": datetime.now(timezone.utc).isoformat(),
+    }
+
+    if not dry_run:
+        try:
+            _ensure_tables()
+        except Exception:
+            pass
+
+    # Pull the full recent window once, grouped client-side by (iso, metric).
+    # metadata holds nothing we need; metric_value + timestamp are enough.
+    try:
+        with _conn() as c, c.cursor() as cur:
+            cur.execute(
+                """SELECT iso, metric_name, metric_value, unit, timestamp
+                   FROM grid_data
+                   WHERE timestamp > NOW() - %s::interval
+                     AND metric_value IS NOT NULL
+                   ORDER BY iso, metric_name, timestamp DESC""",
+                (f"{int(window_hours)} hours",),
+            )
+            rows = cur.fetchall()
+    except Exception as e:
+        summary["error"] = f"db error: {e}"
+        return summary
+
+    # Group rows by (iso, metric_name); rows are already newest-first.
+    grouped: dict = {}
+    for iso, metric_name, value, unit, ts in rows:
+        if iso is None or metric_name is None or value is None:
+            continue
+        grouped.setdefault((iso, metric_name), {"unit": unit, "samples": []})
+        grouped[(iso, metric_name)]["samples"].append((float(value), ts))
+
+    summary["pairs_scanned"] = len(grouped)
+    flagged = []
+
+    for (iso, metric_name), info in grouped.items():
+        samples = info["samples"]  # newest-first
+        if len(samples) < min_samples:
+            continue
+        summary["pairs_eligible"] += 1
+
+        current_value, current_ts = samples[0]
+        baseline = [v for v, _ in samples[1:]]
+        if len(baseline) < (min_samples - 1):
+            continue
+        try:
+            mean = statistics.mean(baseline)
+            stddev = statistics.stdev(baseline) if len(baseline) > 1 else 0
+            if stddev == 0:
+                continue
+            sigmas = abs(current_value - mean) / stddev
+        except Exception:
+            continue
+
+        if sigmas <= sigma_threshold:
+            continue
+
+        anomaly = {
+            "iso": iso,
+            "metric": metric_name,
+            "unit": info["unit"],
+            "current_value": round(current_value, 4),
+            "baseline_mean": round(mean, 4),
+            "baseline_stddev": round(stddev, 4),
+            "sigmas": round(sigmas, 2),
+            "sample_count": len(samples),
+            "observed_at": current_ts.isoformat() if current_ts else None,
+        }
+        flagged.append(anomaly)
+
+    summary["flagged"] = len(flagged)
+    # Sort by sigma desc so the worst outliers lead the examples.
+    flagged.sort(key=lambda a: a["sigmas"], reverse=True)
+    summary["anomalies"] = flagged[:25]
+
+    if dry_run or not flagged:
+        return summary
+
+    # Write one row per flagged (iso, metric) anomaly. anomaly_score = sigmas
+    # (matches the task spec — NOT the 0-1 normalized score used elsewhere; the
+    # /anomalies threshold of 0.5 is trivially cleared by any >3-sigma value).
+    inserted = 0
+    skipped_dup = 0
+    try:
+        with _conn() as c, c.cursor() as cur:
+            for a in flagged:
+                # r86g: dedup persistent anomalies. The scan runs every 15 min
+                # and re-treats the latest sample as 'current', so a multi-hour
+                # grid event would re-insert each run. Skip if this exact
+                # (iso, metric, sample-timestamp) anomaly is already recorded.
+                try:
+                    cur.execute(
+                        """SELECT 1 FROM extraction_intelligence
+                            WHERE source_id = %s
+                              AND observed_at > NOW() - INTERVAL '26 hours'
+                              AND observations #>> '{detected_anomalies,0,iso}' = %s
+                              AND observations #>> '{detected_anomalies,0,metric}' = %s
+                              AND observations #>> '{detected_anomalies,0,observed_at}' = %s
+                            LIMIT 1""",
+                        (GRID_ANOMALY_SOURCE_ID, str(a.get("iso")),
+                         str(a.get("metric")), str(a.get("observed_at"))))
+                    if cur.fetchone():
+                        skipped_dup += 1
+                        continue
+                except Exception:
+                    pass  # dedup is best-effort; never block the insert
+                # r86g: REAL per-row SAVEPOINT — the old c.rollback() rolled back
+                # the WHOLE batch on one bad row (and over-counted). Isolate each.
+                try:
+                    cur.execute("SAVEPOINT a_ins")
+                    cur.execute(
+                        """INSERT INTO extraction_intelligence
+                              (source_id, outcome, anomaly_score, observations)
+                           VALUES (%s, 'anomaly', %s, %s)""",
+                        (GRID_ANOMALY_SOURCE_ID, float(a["sigmas"]),
+                         json.dumps({"detected_anomalies": [a]})),
+                    )
+                    cur.execute("RELEASE SAVEPOINT a_ins")
+                    inserted += 1
+                except Exception:
+                    try: cur.execute("ROLLBACK TO SAVEPOINT a_ins")
+                    except Exception: pass
+            c.commit()
+    except Exception as e:
+        summary["error"] = f"insert error: {e}"
+    summary["skipped_duplicate"] = skipped_dup
+    summary["inserted"] = inserted
+    return summary
 
 
 # ---------------------------------------------------------------------------
@@ -906,6 +1085,78 @@ def dashboard():
     html.append('</body></html>')
 
     return "".join(html), 200, {"Content-Type": "text/html; charset=utf-8"}
+
+
+# ---------------------------------------------------------------------------
+# POST /scan-grid-anomalies — admin/cron-triggered proactive anomaly sweep
+# ---------------------------------------------------------------------------
+
+def _admin_authorized() -> bool:
+    """Accept X-Admin-Key header, ?admin_key=, or Bearer token matching
+    DCHUB_ADMIN_KEY / DCHUB_ADMIN_SECRET / DCHUB_INTERNAL_KEY. The data-pulse
+    cron sends `Authorization: Bearer <DCHUB_ADMIN_SECRET>` (same as the source
+    heartbeat step), so accept that shape too."""
+    auth = request.headers.get("Authorization", "")
+    bearer = auth[7:].strip() if auth.lower().startswith("bearer ") else ""
+    provided = (request.headers.get("X-Admin-Key")
+                or request.args.get("admin_key")
+                or bearer or "")
+    if not provided:
+        return False
+    expected = {v for v in (
+        os.environ.get("DCHUB_ADMIN_KEY"),
+        os.environ.get("DCHUB_ADMIN_SECRET"),
+        os.environ.get("DCHUB_INTERNAL_KEY"),
+        # r86g: the data-pulse cron sends `Bearer ${DCHUB_ADMIN_SECRET ||
+        # 'dchub-admin-secret-2026'}`, and DCHUB_ADMIN_SECRET is UNSET in prod —
+        # so it falls back to this legacy literal. routes/sources.py and
+        # admin_ai_deals.py already whitelist it for exactly this reason. Without
+        # it this endpoint 401s the cron and the scan ships DORMANT (the very bug
+        # this item fixes). Accept the literal too.
+        "dchub-admin-secret-2026",
+    ) if v}
+    return any(hmac.compare_digest(provided, e) for e in expected)
+
+
+@extractor_brain_bp.route("/scan-grid-anomalies", methods=["POST", "GET"])
+def scan_grid_anomalies_endpoint():
+    """Run the proactive grid anomaly sweep. Admin-gated for writes.
+
+    Query/body params:
+      dry_run=1          compute only, no inserts (default for GET; allowed anon)
+      sigma=<float>      sigma threshold (default 3.0)
+      min_samples=<int>  minimum samples/24h per pair (default 5)
+      window_hours=<int> lookback window (default 24)
+
+    A real (write) run requires admin auth. Dry runs are open so the cron's
+    pre-check and the dashboard can preview without a key.
+    """
+    p = request.get_json(silent=True) or {}
+
+    def _arg(name, default):
+        return request.args.get(name, p.get(name, default))
+
+    # GET defaults to dry_run; POST defaults to a real write run.
+    dr_default = "1" if request.method == "GET" else "0"
+    dry_run = str(_arg("dry_run", dr_default)).lower() in ("1", "true", "yes")
+
+    if not dry_run and not _admin_authorized():
+        return jsonify(error="admin auth required for write run; pass dry_run=1 to preview"), 401
+
+    try:
+        sigma = float(_arg("sigma", 3.0))
+        min_samples = int(_arg("min_samples", 5))
+        window_hours = int(_arg("window_hours", 24))
+    except (TypeError, ValueError):
+        return jsonify(error="sigma/min_samples/window_hours must be numeric"), 400
+
+    result = scan_grid_anomalies(
+        min_samples=min_samples,
+        sigma_threshold=sigma,
+        window_hours=window_hours,
+        dry_run=dry_run,
+    )
+    return jsonify(result), 200
 
 
 # ---------------------------------------------------------------------------

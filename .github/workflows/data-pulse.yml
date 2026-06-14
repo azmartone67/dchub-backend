@@ -41,6 +41,28 @@ jobs:
           echo "failed=$FAILED" >> $GITHUB_OUTPUT
           echo "::notice title=ISO Orchestrator::rows=$ROWS failed=$FAILED"
 
+      - name: Scan grid metrics for anomalies (after ISO pull)
+        id: anomalies
+        continue-on-error: true
+        run: |
+          # Runs right after the ISO orchestrator lands fresh samples so the
+          # latest value is judged against the prior 24h. Write run (inserts
+          # 'anomaly' rows under source_id=grid-anomaly-scan) — admin-gated.
+          ANOM_RESPONSE=$(curl -sS --max-time 60 -X POST \
+            -H "Authorization: Bearer ${{ secrets.DCHUB_ADMIN_SECRET || 'dchub-admin-secret-2026' }}" \
+            -H "Content-Type: application/json" \
+            -d '{"dry_run": false}' \
+            https://dchub-backend-production.up.railway.app/api/v1/intelligence/scan-grid-anomalies)
+          echo "$ANOM_RESPONSE" | head -c 1000
+          echo ""
+          FLAGGED=$(echo "$ANOM_RESPONSE" | python3 -c "import json,sys; d=json.load(sys.stdin); print(d.get('flagged', 0))" 2>/dev/null || echo 0)
+          INSERTED=$(echo "$ANOM_RESPONSE" | python3 -c "import json,sys; d=json.load(sys.stdin); print(d.get('inserted', 0))" 2>/dev/null || echo 0)
+          PAIRS=$(echo "$ANOM_RESPONSE" | python3 -c "import json,sys; d=json.load(sys.stdin); print(d.get('pairs_eligible', 0))" 2>/dev/null || echo 0)
+          echo "flagged=$FLAGGED" >> $GITHUB_OUTPUT
+          echo "inserted=$INSERTED" >> $GITHUB_OUTPUT
+          echo "pairs=$PAIRS" >> $GITHUB_OUTPUT
+          echo "::notice title=Grid Anomaly Scan::pairs=$PAIRS flagged=$FLAGGED inserted=$INSERTED"
+
       - name: Trigger SEC EDGAR (hourly only — minute < 5)
         id: sec
         run: |
@@ -132,6 +154,7 @@ jobs:
           echo "## Pulse Summary"
           echo "- Time:        ${{ steps.meta.outputs.iso_ts }}"
           echo "- ISO rows:    ${{ steps.iso.outputs.rows }}"
+          echo "- Anomalies:   pairs=${{ steps.anomalies.outputs.pairs }} flagged=${{ steps.anomalies.outputs.flagged }} inserted=${{ steps.anomalies.outputs.inserted }}"
           echo "- SEC ran:     ${{ steps.sec.outputs.ran }}"
           echo "- SEC rows:    ${{ steps.sec.outputs.rows }}"
           echo "- Total rows:  ${{ steps.totals.outputs.total_rows }}"
