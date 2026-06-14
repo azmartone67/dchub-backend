@@ -1,18 +1,26 @@
 name: Brain Lifecycle Curator (Layer 23)
 
-# 2026-05-25 r35: proactive moat-builder. Every 2 hours, the brain
-# (Opus 4.7, reasoning tier) audits 10 lifecycle dimensions and
-# proposes ONE new capability that would deepen the moat. Proposals
-# persist in brain_lifecycle_proposals for human review.
+# 2026-05-25 r35: proactive moat-builder. The brain (Opus, reasoning
+# tier) audits the lifecycle dimensions and proposes ONE new capability
+# that would deepen the moat. Proposals persist in
+# brain_lifecycle_proposals for human review.
 #
-# Cadence: every 2 hours. Throttled enough to keep Opus spend bounded;
-# frequent enough that audit findings stay fresh and proposals stack
-# up at ~12/day max. The propose call only fires when there's at least
-# ONE weak audit dimension — clean audit = no Opus call (cost-aware).
+# 2026-06-14 de-flood: the every-2h cadence opened ~12 byte-identical
+# "[brain-l23] New capability proposal: mcp_tool" issues/day (183 open,
+# 0 of 185 ever shipped) — pure activity churn, zero closures. Two fixes:
+#   1) Cadence dropped to WEEKLY (Mon 07:37 UTC). Audit findings change
+#      slowly; weekly keeps Opus spend tiny and proposals reviewable.
+#   2) The propose endpoint now caps OPEN L23 proposal issues at ONE
+#      rolling tracker (lifecycle_propose in brain_layer23_lifecycle.py):
+#      when a brain-l23-lifecycle issue is already open, new proposals are
+#      appended as comments instead of opening identical issues. The
+#      operator closes/ships the tracker to let the next one open.
+# The propose call only fires when there's at least ONE weak audit
+# dimension — clean audit = no Opus call (cost-aware).
 
 on:
   schedule:
-    - cron: '37 */2 * * *'   # :37 past every 2h, off-cycle from other crons
+    - cron: '37 7 * * 1'   # Mon 07:37 UTC, weekly (de-flooded from every-2h)
   workflow_dispatch: {}
 
 permissions:
@@ -85,8 +93,12 @@ jobs:
           n_weak = int(a.get('findings_count') or 0)
           pid = p.get('proposal_id')
           issue = (p.get('issue_drafted') or {})
-          if issue.get('ok') and issue.get('pr_url'):
-              print(f"::notice::Opus proposal #{pid} → GH issue {issue.get('pr_url')}")
+          if issue.get('deduped_onto_open_tracker'):
+              print(f"::notice::Opus proposal #{pid} de-flooded onto open L23 tracker #{issue.get('tracker_issue')} (no new issue) {issue.get('tracker_url') or ''}")
+          elif issue.get('skipped'):
+              print(f"::notice::Opus proposal #{pid} captured; issue open skipped ({issue.get('reason')}) — proposal persisted, not lost")
+          elif issue.get('ok') and (issue.get('issue_url') or issue.get('pr_url')):
+              print(f"::notice::Opus proposal #{pid} → NEW L23 tracker issue {issue.get('issue_url') or issue.get('pr_url')}")
           elif issue.get('dry_run'):
               print(f"::notice::Opus proposal #{pid} drafted (dry-run; set _DRY_RUN=false or GITHUB_TOKEN to open issue)")
           elif issue.get('error'):
