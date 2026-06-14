@@ -82,6 +82,13 @@ def maybe_paywall(payload: dict,
     )
     payload["_signup_url"] = "https://dchub.cloud/signup"
     payload["_pricing_url"] = "https://dchub.cloud/pricing"
+    # r80 #3: give the human behind a blocked agent a low-friction way to SEE
+    # what's gated — the playground runs this same live API in-browser, no signup.
+    # Secondary to the signup/pricing CTA, not a replacement.
+    payload["_playground_url"] = "https://dchub.cloud/playground"
+    payload["_playground_hint"] = ("Your operator can explore this live (no signup) at "
+                                   "https://dchub.cloud/playground and see exactly what a "
+                                   "paid key unlocks.")
     # Update the visible count to match what's actually returned
     if "count" in payload:
         payload["count"] = preview_cap
