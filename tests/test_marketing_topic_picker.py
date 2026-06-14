@@ -129,6 +129,11 @@ def test_always_falls_back_to_a_rotation_topic():
         "iso_grid_pulse", "water_risk_brief", "fiber_capacity_map",
         "interconnection_queue", "permit_velocity", "tax_incentive_brief",
         "ma_pulse", "methodology_explainer",
+        # weekday theme rotation (marketing_engine _theme_for_weekday) is also
+        # a valid deterministic fallback — which one depends on the day the
+        # test runs, so accept the whole theme set.
+        "theme_ai_infra", "theme_deals", "theme_grid_iso",
+        "theme_markets", "theme_methodology", "theme_movers",
     }
     assert topic in rotation_topics, f"unexpected fallback topic: {topic}"
     assert reason  # non-empty
