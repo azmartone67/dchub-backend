@@ -1,0 +1,359 @@
+"""r86c (2026-06-14) — DC Hub Media EDITORIAL DESK (brain-managed, event-driven).
+
+The problem this fixes (per the media audit + user feedback): the LinkedIn engine
+read like repetitive marketing, not an intelligence analyst. Root causes were
+(1) the voice prompts were brand-evangelism, (2) self-citation was the #1 topic
+(the "ChatGPT Names DC Hub Most Purpose-Built" repetition), (3) the rich
+proprietary data (DCPI movers, deals, interconnection queue, grid headroom) was
+never used as a TREND, and (4) every engine was a fixed cron that MUST emit N
+posts/day — there was no brain step deciding "is anything worth saying today?".
+
+This module is the missing EDITOR. It:
+  - ranks today's real DATA EVENTS by newsworthiness (magnitude + novelty),
+  - returns the single best NUMBER + TREND + SO-WHAT lead, or SUPPRESS when
+    nothing clears the bar (event-driven cadence — the user's choice),
+  - exposes the shared ANALYST voice spec the generators write to,
+  - provides leads_with_number() — the hard gate that rejects any post that
+    doesn't lead with a real metric.
+
+It is READ-ONLY over data: it never publishes. The generators (linkedin_content_
+engine, marketing_engine) consult editorial_decision() for the lead + the
+post/suppress verdict; content_publisher enforces the number gate at publish.
+
+  GET /api/v1/brain/media/editorial-decision   — the ranked slate + verdict
+  GET /api/v1/brain/media/data-leads           — raw ranked candidate leads
+"""
+from __future__ import annotations
+
+import os
+import re
+import json
+import logging
+import datetime as _dt
+from flask import Blueprint, jsonify, request
+
+logger = logging.getLogger(__name__)
+media_editorial_bp = Blueprint("media_editorial", __name__)
+
+
+# ── Shared ANALYST voice ─────────────────────────────────────────────
+# The generators embed this. The contract: lead with a NUMBER + the TREND
+# (vs last week / ISO peers) + the SO-WHAT for a site-selection or capex
+# decision. Promotion is demoted to a single optional source line. This is
+# the spec that turns "DC Hub is the authority" marketing into analyst
+# intelligence the industry actually comes back to.
+ANALYST_VOICE = """You are a senior data-center infrastructure analyst writing for an audience of site-selection leads, hyperscaler capacity planners, developers, and investors. Your reputation rests on being EARLY and RIGHT with numbers, not on promotion.
+
+NON-NEGOTIABLE STRUCTURE (every post):
+1. LEAD WITH A NUMBER + THE TREND. The first sentence states a specific metric and how it moved (vs last week, vs the ISO median, vs a year ago). Example shape: "ERCOT's interconnection queue just crossed 427 GW of requested load — up from X, and Y% of all US queued capacity." No number in the first line = do not write the post.
+2. THE SO-WHAT. One or two sentences on what it means for a real decision: where to build, what to avoid, where time-to-power just got worse/better, what it implies for capex or land.
+3. THE SECOND-ORDER READ. A non-obvious implication a smart reader hadn't connected. This is what earns the follow.
+
+VOICE:
+- Dry, specific, confident. You are explaining, not selling. Take a defensible stance.
+- 700-1500 characters. 2-4 short paragraphs. No bullet-list filler.
+- Every number must come from the provided data. NEVER invent a figure, market, MW, or company.
+- Attribution is a single neutral source line at most (e.g. "Source: DC Hub DCPI, updated daily — dchub.cloud/dcpi"). It comes AFTER the insight, never before. No "we are the authority", no "the only live source", no brand-pillar speech.
+- A CTA is OPTIONAL and at most one short line; insight always precedes any link.
+- 2-3 topical hashtags max (e.g. #DataCenter #GridCapacity #DCPI). Not five.
+- Forbidden words: delve, moreover, in essence, unleash, game-changer, revolutionize, thrilled, excited. No em-dashes. At most one emoji and only if it genuinely adds.
+- Do not reuse a hook, claim, or market you have used recently. If the only thing to say is something you said this week, say nothing."""
+
+
+def _conn():
+    import psycopg2
+    db = os.environ.get("DATABASE_URL")
+    if not db:
+        return None
+    try:
+        c = psycopg2.connect(db, sslmode="require", connect_timeout=6)
+        c.autocommit = True
+        return c
+    except Exception:
+        return None
+
+
+def _internal(path: str, timeout: int = 6) -> dict:
+    """GET an internal endpoint over loopback. A dchub- UA marks the call as
+    internal so tier-gating (which is UA/loopback-aware) returns full data."""
+    try:
+        import requests
+        r = requests.get(
+            f"http://localhost:8080{path}",
+            timeout=timeout,
+            headers={"User-Agent": "dchub-internal-editorial/1.0",
+                     "X-Internal-Request": "1"},
+        )
+        if r.status_code != 200:
+            return {}
+        return r.json() or {}
+    except Exception:
+        return {}
+
+
+# ── The number gate ──────────────────────────────────────────────────
+_YEAR_ONLY = re.compile(r"^\D*(?:19|20)\d{2}\D*$")
+_HAS_METRIC = re.compile(
+    r"\d[\d,\.]*\s*(?:%|pts?|GW|MW|kW|bps|x|×|"
+    r"billion|million|B\b|M\b|markets?|facilit|deals?|MGD|gal|"
+    r"months?|weeks?|days?|points?|\$)|"
+    r"\$\s*\d|\d[\d,\.]*\s*(?:per|/)",
+    re.IGNORECASE,
+)
+
+
+def leads_with_number(text: str, head_chars: int = 220) -> bool:
+    """True if the post LEADS with a real metric (number + unit/context) in
+    its opening. The hard analyst gate: a post that opens with a brand claim
+    instead of a metric fails. A bare year ('in 2026') does not count."""
+    if not text:
+        return False
+    head = text.strip()[:head_chars]
+    first_line = head.split("\n", 1)[0]
+    probe = first_line if any(ch.isdigit() for ch in first_line) else head
+    if _YEAR_ONLY.match(probe):
+        return False
+    return bool(_HAS_METRIC.search(probe))
+
+
+# ── Candidate data-event leads ───────────────────────────────────────
+def _num(x):
+    try:
+        return float(x)
+    except Exception:
+        return None
+
+
+def rank_data_events() -> list[dict]:
+    """Gather today's real data events and rank by newsworthiness. Each lead:
+       {kind, headline_number, trend, so_what, source_url, dedup_key, score}.
+    Reuses marketing_engine._collect_signals() (DCPI movers, deals, facilities)
+    and augments with the interconnection-queue snapshot. Fully defensive —
+    any source that errors is simply skipped."""
+    leads: list[dict] = []
+
+    # Core signals (movers, deals, facilities) — reuse the tested collector.
+    sig = {}
+    try:
+        from routes.marketing_engine import _collect_signals
+        sig = _collect_signals() or {}
+    except Exception as e:
+        logger.warning("[editorial] _collect_signals failed: %s", str(e)[:160])
+
+    # 1) DCPI movers — week-over-week shift on the excess-power index.
+    for m in (sig.get("biggest_movers") or [])[:6]:
+        d = _num(m.get("delta"))
+        mk = m.get("market") or m.get("metro")
+        if d is None or not mk or abs(d) < 5:
+            continue
+        direction = "climbed" if d > 0 else "slid"
+        verdict = "a BUILD signal strengthening" if d > 0 else "a constraint emerging"
+        leads.append({
+            "kind": "dcpi_mover",
+            "headline_number": f"{mk} {direction} {abs(d):.0f} pts on the DCPI excess-power index this week",
+            "trend": f"{'+' if d>0 else ''}{d:.0f} pts WoW — the largest move in the index",
+            "so_what": f"{verdict}: re-rank {mk} in the site-selection shortlist.",
+            "source_url": "https://dchub.cloud/dcpi",
+            "dedup_key": f"dcpi_mover:{str(mk).lower()}",
+            "score": abs(d) * 1.2,
+        })
+
+    # 1b) Top DCPI build market — reliable lead even when WoW deltas are null
+    # (movers depends on computed_at history that DCPI re-stamps, so it is
+    # frequently empty). The leading excess-power score is itself a real,
+    # ownable number; the novelty filter in editorial_decision() suppresses it
+    # if that market was already featured this week (the 'Cheyenne always wins'
+    # trap the audit flagged).
+    tb = sig.get("top_build_markets") or []
+    if tb:
+        b = tb[0]
+        ex = _num(b.get("excess"))
+        mk = b.get("market") or b.get("slug")
+        if ex is not None and mk:
+            leads.append({
+                "kind": "dcpi_build",
+                "headline_number": f"{mk} leads the DCPI excess-power index at {ex:.0f}/100",
+                "trend": f"the strongest excess-power headroom of any tracked market (constraint {(_num(b.get('constraint')) or 0):.0f})",
+                "so_what": f"{mk} sits at the top of the build shortlist on available power — but verify time-to-power before committing.",
+                "source_url": f"https://dchub.cloud/dcpi/{b.get('slug','')}",
+                "dedup_key": f"build:{str(mk).split(',')[0].lower().strip()}",
+                "score": (ex or 0) * 0.45,
+            })
+
+    # 2) M&A deal of the week — largest disclosed transaction value.
+    # value is stored in $M as `value_m` (verified: KKR/Nvidia value_m=10000).
+    best_deal, best_val = None, 0.0
+    for dl in (sig.get("recent_deals") or []):
+        v = _num(dl.get("value_m") or dl.get("value") or dl.get("value_usd"))
+        if v and v > best_val:
+            best_deal, best_val = dl, v
+    if best_deal and best_val > 0:
+        # value is stored in $M in most rows; render sensibly.
+        bv = best_val
+        val_str = (f"${bv/1000:.1f}B" if bv >= 1000 else f"${bv:.0f}M")
+        buyer = best_deal.get("buyer") or best_deal.get("acquirer") or "an operator"
+        seller = best_deal.get("seller") or best_deal.get("target") or ""
+        pair = f"{buyer}/{seller}" if seller else buyer
+        leads.append({
+            "kind": "deal",
+            "headline_number": f"{val_str} data-center transaction: {pair}",
+            "trend": "the largest disclosed DC deal in the tracker this week",
+            "so_what": "capital is repricing power-rich sites — watch the comparable markets.",
+            "source_url": "https://dchub.cloud/transactions",
+            "dedup_key": f"deal:{str(buyer).lower()}:{str(seller).lower()}",
+            "score": min(60.0, 18.0 + bv / 250.0),
+        })
+
+    # 3) Interconnection queue — the clearest 'time-to-power' trend (ungated).
+    snap = _internal("/api/v1/interconnection-queue/snapshot")
+    by_iso = snap.get("by_iso") or []
+    top_iso = None
+    for row in by_iso:
+        g = _num(row.get("queued_load_total_gw"))
+        if g and (top_iso is None or g > _num(top_iso.get("queued_load_total_gw") or 0)):
+            top_iso = row
+    if top_iso:
+        g = _num(top_iso.get("queued_load_total_gw")) or 0
+        iso = top_iso.get("iso") or "an ISO"
+        tot = _num((snap.get("totals") or {}).get("queued_load_gw"))
+        share = f", {100*g/tot:.0f}% of all US queued load" if tot and tot > 0 else ""
+        leads.append({
+            "kind": "interconnection",
+            "headline_number": f"{iso}'s interconnection queue holds {g:.0f} GW of requested load{share}",
+            "trend": f"queue depth signals multi-year time-to-power in {iso}",
+            "so_what": "new large loads in this ISO face a long energization wait — price the delay into the site decision.",
+            "source_url": top_iso.get("source_url") or "https://dchub.cloud/grid-intelligence",
+            "dedup_key": f"queue:{str(iso).lower()}",
+            "score": min(50.0, g / 12.0),
+        })
+
+    # 4) Largest new facility surfaced in the last 24h.
+    nf = sig.get("new_facilities_24h") or []
+    big_fac = None
+    for f in nf:
+        mw = _num(f.get("mw") or f.get("capacity_mw") or f.get("total_mw"))
+        if mw and (big_fac is None or mw > _num(big_fac.get("_mw") or 0)):
+            f["_mw"] = mw
+            big_fac = f
+    if big_fac and _num(big_fac.get("_mw")):
+        mw = _num(big_fac["_mw"])
+        name = big_fac.get("name") or big_fac.get("operator") or "A new facility"
+        loc = big_fac.get("state") or big_fac.get("country") or ""
+        leads.append({
+            "kind": "new_facility",
+            "headline_number": f"{name}: {mw:.0f} MW {('in '+loc) if loc else ''} just entered the tracker",
+            "trend": "fresh capacity added to the live facility map in the last 24h",
+            "so_what": f"another {mw:.0f} MW of demand on {loc or 'the local grid'} — watch the headroom there.",
+            "source_url": "https://dchub.cloud/map",
+            "dedup_key": f"facility:{str(name).lower()}",
+            "score": min(35.0, 6.0 + mw / 30.0),
+        })
+
+    leads.sort(key=lambda x: x.get("score", 0), reverse=True)
+    return leads
+
+
+def _recently_posted_keys(days: int = 9) -> set:
+    """dedup_keys (normalized markets/isos/deals) that already shipped to
+    LinkedIn recently, so the editor never re-leads with the same event."""
+    keys: set = set()
+    c = _conn()
+    if c is None:
+        return keys
+    try:
+        with c.cursor() as cur:
+            cutoff = (_dt.datetime.utcnow() - _dt.timedelta(days=days)).isoformat()
+            cur.execute(
+                "SELECT LOWER(COALESCE(content,'')) FROM social_media_posts "
+                "WHERE status='published' AND publish_platform='linkedin' "
+                "AND published_at >= %s ORDER BY published_at DESC LIMIT 60",
+                (cutoff,))
+            recent = " || ".join(r[0] for r in (cur.fetchall() or []) if r and r[0])
+    except Exception:
+        recent = ""
+    finally:
+        try: c.close()
+        except Exception: pass
+    # A lead is 'already covered' if its market/iso/entity token appears in
+    # recent post text. Cheap, robust, no embedding dependency.
+    return {tok for tok in recent.split()} if recent else keys
+
+
+# Newsworthiness bar: the top lead's score must clear this or the editor
+# SUPPRESSES the slot (event-driven cadence). Tunable via env.
+_NEWSWORTHY_MIN = float(os.environ.get("MEDIA_EDITORIAL_MIN_SCORE", "8") or 8)
+
+
+def editorial_decision(slot: str | None = None) -> dict:
+    """The brain's desk-editor verdict for this slot.
+    Returns {post: bool, lead: {...}|None, reason, ranked: [...] }.
+    post=False means SUPPRESS — nothing today clears the newsworthiness bar
+    or everything newsworthy was already covered this week."""
+    ranked = rank_data_events()
+    recent_blob = _recently_posted_keys()
+
+    def _is_novel(lead):
+        # market/iso/entity from the dedup_key shouldn't already be in recent posts
+        tail = (lead.get("dedup_key") or "").split(":", 1)[-1]
+        tail = re.sub(r"[^a-z0-9]+", "", tail.lower())
+        if not tail:
+            return True
+        return not any(tail in re.sub(r"[^a-z0-9]+", "", w.lower()) for w in recent_blob)
+
+    fresh = [l for l in ranked if _is_novel(l)]
+    top = fresh[0] if fresh else None
+
+    if top and top.get("score", 0) >= _NEWSWORTHY_MIN:
+        return {
+            "post": True,
+            "slot": slot,
+            "lead": top,
+            "reason": f"{top['kind']} cleared the bar (score {top['score']:.0f} >= {_NEWSWORTHY_MIN:.0f})",
+            "ranked": ranked[:6],
+            "generated_at": _dt.datetime.utcnow().isoformat() + "Z",
+        }
+    return {
+        "post": False,
+        "slot": slot,
+        "lead": None,
+        "reason": ("no novel data event cleared the newsworthiness bar this slot "
+                   "(event-driven cadence: better silent than repetitive)"),
+        "ranked": ranked[:6],
+        "generated_at": _dt.datetime.utcnow().isoformat() + "Z",
+    }
+
+
+def lead_prompt_block(lead: dict | None) -> str:
+    """Render a lead as a prompt block the generators prepend so the post
+    LEADS with this number+trend+so-what."""
+    if not lead:
+        return ""
+    return (
+        "TODAY'S DATA LEAD (open the post with this — number first):\n"
+        f"  - Number: {lead.get('headline_number','')}\n"
+        f"  - Trend: {lead.get('trend','')}\n"
+        f"  - So-what: {lead.get('so_what','')}\n"
+        f"  - Source line (optional, after the insight): {lead.get('source_url','')}\n"
+    )
+
+
+@media_editorial_bp.route("/api/v1/brain/media/editorial-decision", methods=["GET"])
+def editorial_decision_endpoint():
+    slot = request.args.get("slot")
+    try:
+        return jsonify(editorial_decision(slot)), 200
+    except Exception as e:
+        # Fail-open to post=True so a desk bug never dark-holds the feed; the
+        # generators still apply their own dedup + the number gate.
+        return jsonify({"post": True, "lead": None,
+                        "reason": f"editorial_error_failopen:{type(e).__name__}",
+                        "ranked": []}), 200
+
+
+@media_editorial_bp.route("/api/v1/brain/media/data-leads", methods=["GET"])
+def data_leads_endpoint():
+    try:
+        return jsonify({"ok": True, "leads": rank_data_events(),
+                        "generated_at": _dt.datetime.utcnow().isoformat() + "Z"}), 200
+    except Exception as e:
+        return jsonify({"ok": False, "error": str(e)[:200]}), 200

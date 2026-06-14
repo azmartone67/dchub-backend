@@ -28078,6 +28078,15 @@ try:
 except Exception as _mns_e:
     print(f"[main] media_north_star_bp register failed: {_mns_e}", flush=True)
 
+# r86c: the brain's media EDITORIAL DESK (event-driven post/suppress + ranked
+# data leads + the analyst voice spec). Powers the analyst-grade media engine.
+try:
+    from routes.media_editorial import media_editorial_bp
+    app.register_blueprint(media_editorial_bp)
+    print("[main] media_editorial_bp registered: /api/v1/brain/media/editorial-decision", flush=True)
+except Exception as _med_e:
+    print(f"[main] media_editorial_bp register failed: {_med_e}", flush=True)
+
 # Competitive moat radar — factual, agent-first positioning. Surfaces
 # DC Hub's verifiable edges + competitors' OBSERVED agent-readiness gaps
 # (dated/sourced or 'unknown'; never pricing, never fabricated). Feeds

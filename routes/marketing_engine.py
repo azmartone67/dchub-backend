@@ -319,12 +319,20 @@ def _collect_signals() -> dict:
             print(f"[marketing_engine] ai_usage probe failed: {e}", file=sys.stderr)
 
         # New facilities discovered in last 24h
+        # r86c: discovered_facilities.discovered_at is TEXT, so the bare
+        # `discovered_at > NOW()` raised "operator does not exist: text >
+        # timestamp" — which ABORTED the shared transaction and silently
+        # poisoned every probe after it (recent_deals, industry_news,
+        # iso_today all came back empty). Cast to timestamptz with an
+        # empty/null guard (same pattern as brain_inspector.facilities_added_7d),
+        # and roll back on any error so one bad probe can't cascade.
         try:
             with c.cursor() as cur:
                 cur.execute("""
                     SELECT name, provider, city, state, country, power_mw
                     FROM discovered_facilities
-                    WHERE discovered_at > NOW() - INTERVAL '24 hours'
+                    WHERE NULLIF(discovered_at::text, '') IS NOT NULL
+                      AND discovered_at::timestamptz > NOW() - INTERVAL '24 hours'
                     ORDER BY power_mw DESC NULLS LAST
                     LIMIT 5
                 """)
@@ -334,6 +342,8 @@ def _collect_signals() -> dict:
                     for r in cur.fetchall() if r[0]]
         except Exception as e:
             print(f"[marketing_engine] facilities probe failed: {e}", file=sys.stderr)
+            try: c.rollback()
+            except Exception: pass
 
         # Phase NN (2026-05-15): industry news from the announcements feed.
         # Lets the picker run an `industry_pulse` topic — DC Hub's commentary
@@ -924,18 +934,37 @@ def _pick_daily_topic_cascade(signals: dict) -> tuple[str, str]:
                 return it
         return None
 
-    # ── 0. AI-citation showcase (HIGHEST priority) ──────────────────
-    # The format that actually drives engagement: when a major AI engine
-    # cited DC Hub in the last 14 days, lead with the quote. Gated by dedup
-    # so the same citation isn't reposted. Biases the content mix toward the
-    # third-party-validation posts that outperform bare-link releases.
+    # ── 0. DATA LEAD (r86c, HIGHEST priority) ───────────────────────
+    # The brain's editorial desk picks today's single most newsworthy DATA
+    # event (DCPI mover, top build market, M&A deal, interconnection-queue
+    # depth) as a number+trend+so-what, and only if it's NOVEL (not already
+    # posted this week). This replaces self-promotion as the #1 angle, so the
+    # post leads with intelligence instead of "an AI cited us". When nothing
+    # novel clears the bar, _lead is None and we fall through.
+    try:
+        from routes.media_editorial import editorial_decision
+        _ed = editorial_decision("marketing")
+        _lead = _ed.get("lead") if _ed.get("post") else None
+    except Exception:
+        _lead = None
+    if _lead:
+        return "data_lead", (
+            f"{_lead.get('headline_number','')}. {_lead.get('trend','')}. "
+            f"So what: {_lead.get('so_what','')} Open the post with this NUMBER; "
+            f"add one neutral source line ({_lead.get('source_url','')}) AFTER "
+            f"the insight; no brand pitch, no 'we are the authority'.")
+
+    # ── 0.5 AI-citation showcase (r86c: DEMOTED from #1, capped) ────
+    # Only when NO novel data event cleared the bar above AND a genuine citation
+    # exists. Behind the topic dedup so the same citation never reposts. Lead
+    # with the SPECIFIC data point the model cited, not "they cited us".
     cite = signals.get("recent_ai_citation")
     if cite and cite.get("quote") and not _topic_dedup("ai_citation"):
         eng = cite.get("engine") or "A leading AI assistant"
         return "ai_citation", (
             f"{eng} cited DC Hub answering '{(cite.get('prompt') or 'a data-center query')[:120]}'. "
-            f"Quote: \"{cite['quote'][:280]}\". Showcase this third-party AI validation — "
-            f"lead with the quote, attribute the engine, keep it short, link dchub.cloud.")
+            f"Quote: \"{cite['quote'][:280]}\". Lead with the SPECIFIC number/market the model "
+            f"cited (what made the answer right), not the fact that we were cited; one short source line.")
 
     # ── 1. DCPI movers (high bar: |delta| >= 5pts) ──────────────────
     movers = signals.get("biggest_movers") or []
@@ -1079,16 +1108,30 @@ _LAST_RESORT_TOPIC = (
 # 2. CLAUDE GENERATION
 # ---------------------------------------------------------------------------
 
-_MARKETING_SYSTEM = """You are the autonomous press team at DC Hub, a data-center intelligence platform tracking 280+ US/global markets, 7 ISOs, and 20,000+ facilities. You publish two coupled outputs daily, both distilling the single most newsworthy story of the last 24 hours of platform activity:
+# r86c: analyst voice (shared spec from media_editorial, inline fallback for boot
+# safety). Replaced the old "BRAND MANDATE: build DC Hub into THE authority / make
+# DC Hub the lens" framing that made every post read like marketing.
+try:
+    from routes.media_editorial import ANALYST_VOICE as _ANALYST_VOICE
+except Exception:
+    _ANALYST_VOICE = (
+        "You are a senior data-center infrastructure analyst. Lead with a specific "
+        "NUMBER + the TREND (vs last week / ISO peers) + the SO-WHAT for a "
+        "site-selection or capex decision, then a non-obvious second-order read. "
+        "Dry, specific, no promotion; never invent a figure. Attribution is one "
+        "neutral source line AFTER the insight. No brand-pillar speech.")
+
+_MARKETING_SYSTEM = _ANALYST_VOICE + """
+
+YOU ARE the autonomous analyst desk at DC Hub (live intelligence across 280+ US/global markets, 7 ISOs, 20,000+ facilities, 2,000+ M&A deals). Publish two coupled outputs, both built on the SINGLE most newsworthy DATA event of the last 24h:
 
 A) A SHORT PRESS RELEASE (long-form, web/AI-citable)
 B) A LINKEDIN POST (short-form, distribution-ready)
 
-BRAND MANDATE: your job is to build DC Hub into THE recognized authority on data-center power, land, gas and fiber intelligence. Carry ONE consistent point of view — the AI build-out is power-constrained, and DC Hub is the only LIVE, agent-native source of truth for where capacity actually is, queryable and citable by any AI agent, while competitors ship quarterly PDFs. Every release should make the reader smarter AND make DC Hub the lens they saw it through. Take a clear, defensible stance backed by the data; never read like a generic data dump.
-
 BOTH outputs MUST:
 - Be FACTUAL — only use numbers and names provided in the signal payload. Never invent specific markets, scores, MW, or company names.
-- Lead with the most concrete data point (e.g. "[Market], [STATE] climbed [N] points in the DCPI Excess Power index").
+- LEAD WITH THE NUMBER + TREND. The first sentence states the metric and how it moved (e.g. "[Market], [STATE] climbed [N] points in the DCPI excess-power index this week" or "ERCOT's interconnection queue holds [N] GW, [X]% of all US queued load"). No number in the first sentence = rewrite it. Do NOT open with a brand claim.
+- Then give the SO-WHAT for a real build/capex decision and one second-order implication.
 
 The PRESS RELEASE additionally MUST:
 - Be 200-400 words with Markdown-lite formatting: use `##` for section headings, `-` for bullets, `**bold**` for emphasis. Use 2-3 sections (e.g. "## Highlights", "## What it means", "## Methodology").
@@ -2534,7 +2577,31 @@ def publish_now():
                 out["results"]["linkedin"] = {"ok": False,
                                               "error": "LINKEDIN_ACCESS_TOKEN not set"}
             else:
+                # r86c: route publish_now through the SAME pre-publish gate as
+                # the auto-publish loop (quality + number-lead + hook/entity
+                # dedup). publish_now previously BYPASSED _should_skip_publish
+                # entirely — the exact path that let the 3 near-identical
+                # "ChatGPT Names DC Hub" citation posts ship on consecutive days.
+                # Fail-OPEN (gate error must never block a legit publish).
+                _skip, _why = False, ""
                 try:
+                    from content_publisher import _should_skip_publish
+                    _sc = _conn()
+                    if _sc is not None:
+                        try:
+                            with _sc.cursor() as _cur:
+                                _skip, _why = _should_skip_publish(
+                                    _cur, posts["linkedin"]["content"], "linkedin")
+                        finally:
+                            try: _sc.close()
+                            except Exception: pass
+                except Exception:
+                    _skip = False
+                if _skip:
+                    out["results"]["linkedin"] = {"ok": False, "skipped": True,
+                                                  "reason": _why}
+                else:
+                  try:
                     from content_publisher import _post_to_linkedin
                     article_url = f"https://dchub.cloud/news/{rel['slug']}"
                     article_thumb = (
@@ -2552,7 +2619,7 @@ def publish_now():
                     if ok:
                         _mark_published(posts["linkedin"]["post_id"], "linkedin")
                         _remember_share_urn(press_id, "linkedin", result)
-                except Exception as e:
+                  except Exception as e:
                     out["results"]["linkedin"] = {"ok": False,
                                                   "error": f"exception: {e}"}
 
