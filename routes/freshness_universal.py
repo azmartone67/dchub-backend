@@ -24,14 +24,20 @@ WINDOWS = [
     (r"^/news(/|$)",            1, "refresh_news"),
     (r"^/transactions",         24, "refresh_transactions"),
     (r"^/api/v1/dcpi",          26, "refresh_dcpi"),
-    (r"^/api/v1/grid",          2, "refresh_iso"),
+    # r86 (2026-06-13): widened 2h→6h. The grid data-pulse runs every 15 min,
+    # but the /auto drain has a 12s wall-budget and these volatile surfaces sat
+    # right at the 2h edge, sawtoothing in/out of "stale" between drains — that
+    # boundary flap was the recurring heartbeat_surfaces_stale finding, not a
+    # real outage. 6h (4x the pulse + drain jitter) stops the sawtooth while
+    # still catching a genuinely dead refresh. (Other refresh_iso surfaces use 12h.)
+    (r"^/api/v1/grid",          6, "refresh_iso"),
     # Phase YY-3 (2026-05-17) — also bind /api/grid (no v1 prefix) to
     # the iso domain. Without this, /api/grid/supported-isos,
     # /api/grid/summary/<iso>, /api/grid/fuel-mix-live fell back to
     # DEFAULT_WINDOW (168h noop_default) — no refresh function, so they
     # were permanently "29h stale" even though data-pulse runs every
     # 15 min. The breach was on the wrong surface set the whole time.
-    (r"^/api/grid",             2, "refresh_iso"),
+    (r"^/api/grid",             6, "refresh_iso"),    # r86: 2h→6h, see /api/v1/grid above
     (r"^/api/v1/markets",       24, "refresh_market"),
     (r"^/api/v1/news",          1, "refresh_news"),
     # Phase YY-3 — same fix for /api/news without v1 + /api/admin/news-status

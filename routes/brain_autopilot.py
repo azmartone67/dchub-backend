@@ -317,7 +317,9 @@ def _action_data_freshness_breach(finding: dict) -> tuple[str | None, dict | Non
         "monthly_trend":         "/api/v1/reports/monthly/archive",
         # Heal cache refresh — kicks the self_heal scheduler once
         # (idempotent in the heal_cycle implementation).
-        "heal_cache":            "/api/v1/heal/run-cycle",
+        # r86: /api/v1/heal/run-cycle was never a real route (404) — use the
+        # registered /api/v1/heal/run with the html_quality_scan action.
+        "heal_cache":            "/api/v1/heal/run?action=html_quality_scan",
         # r33-D (2026-05-21) — infrastructure layer. These tables
         # back the Land & Power map (50K+ rows each). Each endpoint
         # spawns a daemon thread that runs the HIFLD/EIA loader; the
@@ -558,7 +560,7 @@ def _find_similar_route(missing_path: str) -> tuple[str, float] | None:
         "/devrel-targets", "/visitor-intelligence", "/paywall-test",
         "/grid", "/land-power", "/reports/monthly", "/coverage",
         "/api/v1/energy/summary", "/api/v1/dcpi/recompute",
-        "/api/v1/heal/run-cycle", "/api/v1/marketing/auto-generate",
+        "/api/v1/heal/run", "/api/v1/marketing/auto-generate",
     ]
     src = (missing_path or "").rstrip("/").lower()
     if not src or src == "/":
@@ -1087,17 +1089,22 @@ _PATTERN_LIBRARY: dict[str, dict[str, Any]] = {
         "description": "Autonomous: auto-fires the outcome verifier when actions accumulate unverified. 5th autonomous pattern. Closes the brain's biggest blind spot: knowing whether autopilot ACTUALLY succeeded.",
     },
     # Phase GGGGG — schema.org coverage
-    # r42u (2026-05-26): wired to /api/v1/heal/run-cycle. The healer's
-    # generic 30-min cycle picks up missing-JSON-LD on tracked pages.
-    # Won't add JSON-LD where none exists yet (that requires per-page
-    # code), but DOES re-trigger the pages that have it but didn't
-    # render it (cache invalidation, render-error recovery). Better
-    # than the previous (None, None) which was just dead bookkeeping.
+    # r42u (2026-05-26): wired to a heal cycle so the healer re-renders
+    # tracked pages whose JSON-LD failed to render. Won't add JSON-LD
+    # where none exists yet (that requires per-page code), but DOES
+    # re-trigger the pages that have it but didn't render it (cache
+    # invalidation, render-error recovery).
+    # r86 (2026-06-13): the old target /api/v1/heal/run-cycle was NEVER a
+    # registered route — every fire 404'd and logged execution_failed
+    # (the 4-5 failed runs/24h the brain kept flagging). Repointed to the
+    # real, fast (~3s, HTTP 200) /api/v1/heal/run?action=html_quality_scan.
+    # The action= rides the query string so /heal/run's request.args parse
+    # reads it regardless of POST body.
     "schema_org_coverage_low": {
-        "action":      lambda f: ("/api/v1/heal/run-cycle", {"source": "autopilot:schema_org_low"}),
+        "action":      lambda f: ("/api/v1/heal/run?action=html_quality_scan", {"source": "autopilot:schema_org_low"}),
         "method":      "POST",
         "use_admin":   True,
-        "description": "Autonomous: kick /api/v1/heal/run-cycle to re-render pages whose JSON-LD render failed. Won't synthesize new JSON-LD (needs code), but recovers transient renders. Worklist: /api/v1/schema-org/missing.",
+        "description": "Autonomous: kick /api/v1/heal/run?action=html_quality_scan to re-probe rendered HTML/JSON-LD on key pages. Won't synthesize new JSON-LD (needs code), but recovers transient renders. Worklist: /api/v1/schema-org/missing.",
     },
     # Phase HHHHH — external mentions dropoff
     "external_mentions_dropoff": {
