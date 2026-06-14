@@ -497,6 +497,10 @@ _POCKETS_PAGE_HTML = '''<!DOCTYPE html><html lang="en"><head>
 <meta property="og:url" content="https://dchub.cloud/pockets">
 <link rel="canonical" href="https://dchub.cloud/pockets">
 <link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;600;700;800&family=JetBrains+Mono:wght@400;600&display=swap" rel="stylesheet">
+<!-- r86: shared brand CSS (loaded BEFORE the inline style so the page keeps its
+     dark theme — the inline :root/body rules below win the tie). Pairs with the
+     nav.js include before the closing body tag for the r33-I nav unification. -->
+<link rel="stylesheet" href="/static/dchub-brand.css">
 <style>
 :root{--bg:#0a0a12;--card:#11121a;--bd:#1f2030;--tx:#fff;--tx2:#9ca3af;--green:#10b981;--orange:#f59e0b;--red:#ef4444;--acc:#6366f1;--violet:#8b5cf6}
 *{box-sizing:border-box}body{font-family:'Instrument Sans',-apple-system,sans-serif;background:var(--bg);color:var(--tx);margin:0;line-height:1.6}
@@ -598,7 +602,12 @@ footer a{color:var(--acc)}
 Methodology: composite of EIA retail rates, ISO grid headroom, DCPI verdict, time-to-power.
 Data refreshed daily. <a href="/digest">Daily brief →</a> · <a href="/api/v1/pockets/top">JSON</a> · <a href="/pockets.rss">RSS</a> · <a href="/dcpi">DCPI index</a>
 </footer>
-</div></body></html>'''
+</div>
+<!-- r86: shared site nav (r33-I unification). Clears the page_brand_uniformity
+     "missing-dchub-nav-js" finding — this page was self-contained and never
+     loaded the shared nav. -->
+<script src="/js/dchub-nav.js" defer></script>
+</body></html>'''
 
 
 @pockets_bp.route("/pockets", methods=["GET"])
