@@ -50,6 +50,13 @@ _BATCH = [
     ("auto_pricing", "Pricing",
      "/pricing — public pricing + tier descriptions",
      ["/pricing"], [], ["view", "click_upgrade"]),
+    # r80 (2026-06-10): the live in-browser query console. Beacons view/query/
+    # convert/connect from playground.html so we can finally measure utilization
+    # (page views never hit the backend — static CF Pages file). Pulse:
+    # /api/v1/surface/playground/pulse.
+    ("playground", "Playground",
+     "/playground — live in-browser query console (try-before-connect)",
+     ["/playground"], [], ["view", "query", "convert", "connect"]),
     ("auto_bs_translator", "BS Translator (vs)",
      "/vs — head-to-head positioning vs competitors",
      ["/vs", "/vs/<slug>", "/bs-translator"], [], ["view"]),
