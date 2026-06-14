@@ -263,7 +263,14 @@ def _probe_perplexity() -> dict:
 def _probe_gemini() -> dict:
     """Google Gemini API. Optional — only fires if GEMINI_API_KEY is set."""
     out = {"agent": "Gemini", "ok": False, "error": None, "quote": None}
-    key = os.environ.get("GEMINI_API_KEY") or os.environ.get("GOOGLE_AI_API_KEY")
+    # GEMINI_API_KEY currently holds a non-AIza value that 401s; the valid AI
+    # Studio key (AIza…) lives in GOOGLE_AI_KEY. Prefer a correctly-formatted
+    # candidate across the known var names, falling back to first non-empty so a
+    # working setup never regresses.
+    _gk = [os.environ.get(n, "").strip() for n in
+           ("GEMINI_API_KEY", "GOOGLE_AI_API_KEY", "GOOGLE_AI_KEY", "GOOGLE_API_KEY")]
+    _gk = [c for c in _gk if c]
+    key = next((c for c in _gk if c.startswith("AIza")), _gk[0] if _gk else None)
     if not key:
         out["error"] = "no_gemini_api_key"
         return out
