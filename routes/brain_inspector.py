@@ -39,12 +39,12 @@ SAFETY:
     prompt forbids invented numbers.
   · If ANTHROPIC_API_KEY is unset, all endpoints return 503 with a
     clear next-step hint.
-  · The autonomous Inspector→L22 auto-fire (hook E) is DRY-RUN by
-    default: it records what L22 WOULD draft but opens no Issues/PRs
-    unless BRAIN_L22_AUTOPR_LIVE=1. Human-triggered admin endpoints
-    (.../brief/<id>/draft-prs, .../auto-code/run) are always live —
-    a person clicking "Draft PRs" is an explicit act. See
-    _l22_autofire_mode().
+  · The autonomous Inspector→L22 auto-fire (hook E) is LIVE by
+    default (it fills the /brain/innovation proposal stream), but has
+    a master kill-switch: set BRAIN_L22_AUTOPR_LIVE=0 to flip it to
+    dry-run (records what L22 WOULD draft, opens no Issues/PRs).
+    L22's own whitelist/diff-caps/dedup still apply; real PRs still
+    additionally need DCHUB_L22_REAL_PR=1. See _l22_autofire_mode().
 
 ENDPOINTS:
   GET  /api/v1/brain/brief/latest           public summary
@@ -84,25 +84,29 @@ def _admin_ok():
 # ── Autonomous L22 auto-fire gate ────────────────────────────────────
 # The Inspector loop hands its code-fix candidates to L22 after every
 # brief (hook E in _generate_brief). That arm is AUTONOMOUS — no human in
-# the loop — so opening Issues/PRs from it must be opt-in, not default-on.
+# the loop — but it has been PRODUCTIVE (it's what fills the
+# /brain/innovation proposal stream), so it stays LIVE by default and
+# gets a master kill-switch rather than an opt-in.
 #
-# BRAIN_L22_AUTOPR_LIVE=1   → live: hit /auto-code/run, L22 may open
-#                              Issues (and real PRs when DCHUB_L22_REAL_PR=1).
-# unset / anything else     → dry-run: hit /auto-code/dry-run, which still
-#                              parses + records every proposal to
-#                              brain_layer22_actions (state=dry_run) so the
-#                              /brain/innovation page shows what WOULD ship,
-#                              but opens nothing.
+# default / BRAIN_L22_AUTOPR_LIVE != "0"  → live: hit /auto-code/run,
+#     L22 may open review Issues (and real PRs when DCHUB_L22_REAL_PR=1).
+# BRAIN_L22_AUTOPR_LIVE=0                  → dry-run KILL-SWITCH: hit
+#     /auto-code/dry-run, which still parses + records every proposal to
+#     brain_layer22_actions (state=dry_run) so /brain/innovation shows
+#     what WOULD ship — but opens nothing.
 #
-# The human-triggered admin endpoints (brief_draft_prs, auto-code/run) are
-# unaffected — a person clicking "Draft PRs" is an explicit, intentional act.
+# Either way L22's own safety still applies (whitelist, diff caps,
+# forbidden-path list, 7d dedup; real PRs additionally need
+# DCHUB_L22_REAL_PR=1). The human-triggered admin endpoints
+# (brief_draft_prs, auto-code/run) are unaffected.
 def _l22_autofire_mode() -> tuple[str, str]:
     """Return (mode, endpoint_path) for the autonomous Inspector→L22 fire.
-    mode is "live" or "dry_run". Default is dry_run (safe)."""
-    live = os.environ.get("BRAIN_L22_AUTOPR_LIVE", "0").strip() == "1"
-    if live:
-        return ("live", "/api/v1/brain/auto-code/run")
-    return ("dry_run", "/api/v1/brain/auto-code/dry-run")
+    mode is "live" or "dry_run". Default is LIVE; BRAIN_L22_AUTOPR_LIVE=0
+    is the kill-switch that flips it to dry-run."""
+    off = os.environ.get("BRAIN_L22_AUTOPR_LIVE", "1").strip() == "0"
+    if off:
+        return ("dry_run", "/api/v1/brain/auto-code/dry-run")
+    return ("live", "/api/v1/brain/auto-code/run")
 
 
 # ── DB ───────────────────────────────────────────────────────────────
@@ -872,10 +876,11 @@ def _generate_brief() -> dict:
         # Run in a background thread so the brief endpoint returns fast.
         # L22 will take 10-30s to draft; the brief caller shouldn't wait.
         #
-        # SAFE BY DEFAULT: the autonomous arm routes to /auto-code/dry-run
-        # unless BRAIN_L22_AUTOPR_LIVE=1. Dry-run still records every
-        # proposal (so /brain/innovation shows the pipeline working) but
-        # opens no Issues or PRs. See _l22_autofire_mode().
+        # LIVE BY DEFAULT (productive), with a kill-switch: the autonomous
+        # arm routes to /auto-code/run unless BRAIN_L22_AUTOPR_LIVE=0, which
+        # flips it to /auto-code/dry-run (records every proposal so
+        # /brain/innovation still shows the pipeline, but opens nothing).
+        # See _l22_autofire_mode().
         try:
             import threading as _th
             _l22_mode, _l22_path = _l22_autofire_mode()

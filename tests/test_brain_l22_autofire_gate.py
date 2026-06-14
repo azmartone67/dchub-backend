@@ -1,8 +1,10 @@
 """Guard the autonomous Inspector→L22 auto-fire gate.
 
 The Inspector loop hands code-fix candidates to L22 after every brief (hook E
-in routes/brain_inspector._generate_brief). That arm is autonomous, so it must
-be DRY-RUN by default — opening Issues/PRs only when BRAIN_L22_AUTOPR_LIVE=1.
+in routes/brain_inspector._generate_brief). That arm is autonomous but
+productive (it fills the /brain/innovation proposal stream), so it stays LIVE
+by default with a master kill-switch: BRAIN_L22_AUTOPR_LIVE=0 flips it to
+dry-run.
 
 brain_inspector imports Flask at module load and the CI unit-tests job installs
 only pytest, so we AST-extract just _l22_autofire_mode and exec it in an
@@ -48,33 +50,35 @@ def _run(env_val):
             os.environ["BRAIN_L22_AUTOPR_LIVE"] = prev
 
 
-def test_default_is_dry_run():
+def test_default_is_live():
+    # Productive flywheel stays on unless explicitly killed.
     mode, path = _run(None)
-    assert mode == "dry_run"
-    assert path.endswith("/auto-code/dry-run")
-
-
-def test_zero_is_dry_run():
-    mode, path = _run("0")
-    assert mode == "dry_run"
-    assert path.endswith("/auto-code/dry-run")
+    assert mode == "live"
+    assert path.endswith("/auto-code/run")
+    assert not path.endswith("/dry-run")
 
 
 def test_one_is_live():
     mode, path = _run("1")
     assert mode == "live"
     assert path.endswith("/auto-code/run")
-    assert not path.endswith("/dry-run")
 
 
-def test_arbitrary_truthy_string_is_still_dry_run():
-    # Only the exact literal "1" flips to live — "true"/"yes" stay safe.
-    for val in ("true", "yes", "LIVE", "2", " 1 x"):
+def test_zero_is_the_kill_switch():
+    mode, path = _run("0")
+    assert mode == "dry_run"
+    assert path.endswith("/auto-code/dry-run")
+
+
+def test_only_exact_zero_kills_it():
+    # The kill-switch is the literal "0" only — any other value stays live,
+    # so a typo'd flag can't silently throttle the productive arm.
+    for val in ("1", "true", "yes", "LIVE", "00", "0 x", "false"):
         mode, _ = _run(val)
-        assert mode == "dry_run", f"{val!r} should stay dry_run"
+        assert mode == "live", f"{val!r} should stay live"
 
 
-def test_whitespace_padded_one_is_live():
-    # .strip() means " 1 " still means live (matches operator intent).
-    mode, _ = _run("  1  ")
-    assert mode == "live"
+def test_whitespace_padded_zero_is_kill_switch():
+    # .strip() means "  0  " still kills it (matches operator intent).
+    mode, _ = _run("  0  ")
+    assert mode == "dry_run"
