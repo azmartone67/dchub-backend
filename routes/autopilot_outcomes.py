@@ -128,6 +128,186 @@ def _verify_competitor_response(action, cur) -> tuple[bool, str]:
     return _verify_press_silent(action, cur)
 
 
+# ── 2026-06-14 (incentive re-tune ITEM 2): REAL verifiers for the five
+# patterns that actually fire daily. Before this, _VERIFIERS had four
+# entries — NONE of which matched the high-volume patterns — so every one
+# of those actions wrote a NULL/cannot_verify sentinel and 0 outcomes were
+# ever verified_resolved. These close the loop so the brain is rewarded
+# for CLOSURES (a registry actually submitted, an email actually sent, a
+# draft actually drafted) instead of raw action count.
+#
+# Every verifier is wrapped so any failure (missing table, bad column,
+# parse miss) degrades to (False, "verify_query_failed:…") — it can never
+# break the verification pass or fabricate a success. Tables/columns were
+# confirmed against prod information_schema on 2026-06-14.
+
+def _verify_outbound_distribution(action, cur) -> tuple[bool, str]:
+    """outbound_distribution_health → POST mcp-registry/submit.
+
+    The action carries finding_url='target:<key>' and POSTs the submit
+    endpoint, which (via _record) writes an outreach_submissions row with
+    action in (submit | manual_submit_queued | audit) for that target_key.
+    Success = a fresh ledger row for the target landed in the window after
+    the action fired."""
+    try:
+        url = (action.get("finding_url") or "")
+        key = url.split("target:")[-1].strip() if "target:" in url else ""
+        if not key:
+            return (False, "no_target_key_in_finding_url")
+        cur.execute("""
+            SELECT action, outcome, submitted_at
+              FROM outreach_submissions
+             WHERE target_key = %s
+               AND submitted_at >= %s - INTERVAL '2 minutes'
+               AND submitted_at <= %s + INTERVAL '30 minutes'
+             ORDER BY submitted_at DESC LIMIT 5
+        """, (key, action["started_at"], action["started_at"]))
+        rows = cur.fetchall()
+        if not rows:
+            return (False, f"no outreach_submissions row for target={key} in the 30min after action")
+        # r-incentives FIX (review): a mere ledger row is NOT a closure.
+        # action='audit' is just a re-check; 'manual_submit_queued' needs a
+        # human. Reward success ONLY when a real submission actually landed —
+        # otherwise outbound_distribution_health would score "verified" forever
+        # while the registry stays not_listed.
+        _CLOSED = {"submitted", "listed", "ok", "success", "accepted", "approved", "live"}
+        for r in rows:
+            if (r.get("action") or "").lower() == "submit" and (r.get("outcome") or "").lower() in _CLOSED:
+                return (True, f"submitted {key} (outcome={r.get('outcome')})")
+        detail = ", ".join(f"{(r.get('action') or '?')}:{(r.get('outcome') or '?')}" for r in rows)
+        return (False, f"{len(rows)} row(s) for {key} but no completed submit ({detail})")
+    except Exception as e:
+        return (False, f"verify_query_failed:{type(e).__name__}")
+
+
+def _verify_monthly_outreach_sent(action, cur) -> tuple[bool, str]:
+    """monthly_trend_unsent_3d → POST reports/monthly/send-outreach.
+
+    The send endpoint logs a monthly_outreach_log row keyed (year, month)
+    with recipients/succeeded counts. finding_url encodes the period as
+    /reports/monthly/<year>-<month>. Success = a log row exists for that
+    period with at least one recipient/success (i.e. the campaign actually
+    went out, not just the endpoint returning 200)."""
+    try:
+        import re as _re
+        url = (action.get("finding_url") or "")
+        m = _re.search(r"/(\d{4})-(\d{1,2})", url)
+        if not m:
+            return (False, f"could_not_parse_year_month:{url[:60]}")
+        yr, mo = int(m.group(1)), int(m.group(2))
+        cur.execute("""
+            SELECT recipients, succeeded, sent_at, triggered_by
+              FROM monthly_outreach_log
+             WHERE year = %s AND month = %s
+        """, (yr, mo))
+        r = cur.fetchone()
+        if not r:
+            return (False, f"no monthly_outreach_log row for {yr}-{mo:02d} — send did not land")
+        recips = int(r["recipients"] or 0)
+        succ = int(r["succeeded"] or 0)
+        sent = (succ > 0 or recips > 0)
+        return (bool(sent),
+                f"{yr}-{mo:02d} outreach log: recipients={recips} succeeded={succ} "
+                f"triggered_by={r['triggered_by']} sent_at={r['sent_at']}")
+    except Exception as e:
+        return (False, f"verify_query_failed:{type(e).__name__}")
+
+
+def _verify_schema_org_recovered(action, cur) -> tuple[bool, str]:
+    """schema_org_coverage_low → POST heal/run html_quality_scan.
+
+    The action re-probes rendered HTML/JSON-LD; run_audit() upserts the
+    fresh per-page state into schema_org_audit (has_jsonld, last_checked).
+    The finding fired because coverage < 80%. Success = the audit was
+    re-checked AFTER the action fired AND coverage has recovered to ≥80%
+    (i.e. the /schema-org/missing worklist shrank). We compute coverage
+    from the persisted table — no HTTP call inside the verifier."""
+    try:
+        cur.execute("""
+            SELECT COUNT(*) AS total,
+                   COUNT(*) FILTER (WHERE has_jsonld IS NOT TRUE) AS missing,
+                   MAX(last_checked) AS newest
+              FROM schema_org_audit
+        """)
+        r = cur.fetchone()
+        total = int(r["total"] or 0)
+        missing = int(r["missing"] or 0)
+        newest = r["newest"]
+        if total == 0:
+            return (False, "schema_org_audit empty — cannot judge coverage")
+        cov = round(100.0 * (total - missing) / total, 1)
+        # Require the scan to have re-run after the action (otherwise we'd
+        # be judging stale state). 2-min grace for clock skew.
+        import datetime as _dt
+        rechecked = bool(newest and newest >= (action["started_at"] - _dt.timedelta(minutes=2)))
+        succeeded = bool(rechecked and cov >= 80.0)
+        return (succeeded,
+                f"schema coverage now {cov}% ({missing}/{total} pages missing JSON-LD); "
+                f"rechecked_after_action={rechecked} (last_checked={newest})")
+    except Exception as e:
+        return (False, f"verify_query_failed:{type(e).__name__}")
+
+
+def _verify_l22_draft(action, cur) -> tuple[bool, str]:
+    """inspector_l22_handoff → POST brain/brief/<id>/draft-prs.
+
+    The handoff hands RECIPE candidates to Layer-22, which (when it acts)
+    writes a brain_auto_code_actions row via _record(). Success = a draft
+    landed in brain_auto_code_actions near the action time. NOTE: L22 has
+    a 3-recipe whitelist + _already_drafted() idempotency + an env gate
+    (BRAIN_L22_HANDOFF_ENABLE), so a legitimately-gated/duplicate handoff
+    produces NO new draft → that is honestly reported as not-succeeded
+    (a non-closure), which is the intent: reward only real drafts. The
+    15-min look-back captures an idempotent draft made just before this
+    tick's handoff."""
+    try:
+        cur.execute("""
+            SELECT COUNT(*) AS n, MAX(drafted_at) AS last_at
+              FROM brain_auto_code_actions
+             WHERE drafted_at >= %s - INTERVAL '15 minutes'
+               AND drafted_at <= %s + INTERVAL '30 minutes'
+        """, (action["started_at"], action["started_at"]))
+        r = cur.fetchone()
+        n = int(r["n"] or 0)
+        if n > 0:
+            return (True, f"{n} brain_auto_code_actions draft(s) near the handoff (last={r['last_at']})")
+        return (False, "no brain_auto_code_actions draft in window — L22 produced no draft "
+                       "(env-gated OFF, recipe not whitelisted, or already drafted)")
+    except Exception as e:
+        return (False, f"verify_query_failed:{type(e).__name__}")
+
+
+def _verify_founding_welcomed(action, cur) -> tuple[bool, str]:
+    """founding_customer_not_welcomed → POST founding-customers/send-welcome.
+
+    On a successful send, send_founding_welcome_email() sets the customer's
+    contact_status='welcomed' and contacted_at=NOW(). The action's payload
+    carries {'email': …}. Success = that customer is now 'welcomed'."""
+    try:
+        import re as _re
+        pay = action.get("action_payload")
+        email = ""
+        if isinstance(pay, dict):
+            email = (pay.get("email") or "").strip()
+        if not email:
+            m = _re.search(r"[\w.+-]+@[\w.-]+\.\w+", action.get("detail") or "")
+            email = m.group(0) if m else ""
+        if not email:
+            return (False, "no_email_in_payload_or_detail")
+        cur.execute("""
+            SELECT contact_status, contacted_at
+              FROM founding_customers WHERE email = %s
+        """, (email,))
+        r = cur.fetchone()
+        if not r:
+            return (False, f"{email} not found in founding_customers")
+        welcomed = ((r["contact_status"] or "").lower() == "welcomed")
+        return (bool(welcomed),
+                f"{email}: contact_status={r['contact_status']} contacted_at={r['contacted_at']}")
+    except Exception as e:
+        return (False, f"verify_query_failed:{type(e).__name__}")
+
+
 # Pattern → verifier mapping. Patterns without a verifier are skipped
 # (treated as 'cannot verify' — different from failed).
 _VERIFIERS = {
@@ -135,6 +315,12 @@ _VERIFIERS = {
     "winback_pitches_unsent":     _verify_winback_delivery,
     "market_deep_dive_stale":     _verify_market_deep_dive,
     "competitor_announcement":    _verify_competitor_response,
+    # 2026-06-14 ITEM 2 — the five high-volume patterns that fire daily.
+    "outbound_distribution_health": _verify_outbound_distribution,
+    "monthly_trend_unsent_3d":      _verify_monthly_outreach_sent,
+    "schema_org_coverage_low":      _verify_schema_org_recovered,
+    "inspector_l22_handoff":        _verify_l22_draft,
+    "founding_customer_not_welcomed": _verify_founding_welcomed,
 }
 
 
@@ -156,7 +342,12 @@ def verify_pending(window_minutes: int = 30, max_actions: int = 50) -> dict:
             try:
                 cur.execute("""
                     SELECT a.id, a.pattern_name, a.started_at, a.outcome,
-                           a.finding_issue, a.finding_url
+                           a.finding_issue, a.finding_url,
+                           -- 2026-06-14 ITEM 2: the new verifiers read the
+                           -- action payload (founding email) and detail
+                           -- (fallback email parse). Selecting them here is
+                           -- harmless for the pre-existing verifiers.
+                           a.action_payload, a.detail
                       FROM brain_autopilot_actions a
                      WHERE a.started_at <= NOW() - INTERVAL '%s minutes'
                        -- r86b: 6h→24h to match the autopilot_action_unverified
