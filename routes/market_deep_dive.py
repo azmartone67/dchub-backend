@@ -771,6 +771,7 @@ ul{{padding-left:1.25rem}} li{{margin:.3rem 0}}
 </head><body>
 <h1>{name}</h1>
 <p class="sub">Data Center Market · {md.get('region','—')}</p>
+<p class="dc-maplink" style="margin:.4rem 0 .2rem"><a href="/map" style="color:#3b82f6;font-weight:600;text-decoration:none">📍 See {name} data centers on the live facility map →</a></p>
 <div class="stats">
 {stats_html}
 </div>
