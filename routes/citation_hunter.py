@@ -139,15 +139,29 @@ def _ask_claude(query: str) -> tuple[str | None, str | None]:
             },
             json={
                 "model":      "claude-haiku-4-5-20251001",
-                "max_tokens": 600,
+                "max_tokens": 1200,
                 "messages":   [{"role": "user", "content": query}],
+                # ★ Web search ON: without it the probe only measured whether
+                # dchub.cloud is in the base model's TRAINING DATA — always ~0
+                # for a 2026 startup (the model named CBRE/JLL/DCD instead).
+                # With web search it measures REAL discoverability — does
+                # Claude, when it actually searches, surface DC Hub? That's
+                # the citation signal that should track Smithery #1 + press.
+                "tools": [{"type": "web_search_20250305",
+                           "name": "web_search", "max_uses": 4}],
             },
-            timeout=15,
+            timeout=45,
         )
         if r.status_code >= 300:
             return None, f"status_{r.status_code}_{r.text[:80]}"
         d = r.json()
-        text = (d.get("content", [{}])[0] or {}).get("text", "")
+        # With tool use the response has multiple blocks (search calls +
+        # text); concatenate every text block, not just content[0].
+        text = " ".join(
+            (b or {}).get("text", "")
+            for b in (d.get("content") or [])
+            if (b or {}).get("type") == "text"
+        )
         return text, None
     except Exception as e:
         return None, f"{type(e).__name__}:{str(e)[:60]}"
