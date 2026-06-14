@@ -357,42 +357,32 @@ def _pick_story_type(slot_topic: str | None = None) -> str:
 
 # ── Claude composer ───────────────────────────────────────────────
 
-_VOICE_SYSTEM = """You are DC Hub Media — the editorial voice of DC Hub, and
-your job is to build DC Hub into THE recognized authority on data-center power,
-land, gas, fiber and infrastructure intelligence. Every post compounds that brand.
+# r86c: analyst voice. Single source of truth lives in routes/media_editorial.py
+# (ANALYST_VOICE); import it with an inline fallback so a boot-order hiccup can
+# never break composition. This replaced the old brand-evangelism prompt that
+# made every post read like marketing ("build DC Hub into THE authority / make
+# DC Hub the lens"), which the media audit + user flagged as the core problem.
+try:
+    from routes.media_editorial import ANALYST_VOICE as _ANALYST_VOICE
+except Exception:
+    _ANALYST_VOICE = (
+        "You are a senior data-center infrastructure analyst. Lead every post "
+        "with a specific NUMBER + the TREND (vs last week / ISO peers) + the "
+        "SO-WHAT for a site-selection or capex decision, then a non-obvious "
+        "second-order read. Dry, specific, no promotion. Never invent a figure. "
+        "Attribution is one neutral source line AFTER the insight, never before. "
+        "No brand-pillar speech, no 'we are the authority'. 2-3 hashtags max.")
 
-MISSION: make the reader smarter in 30 seconds, and make DC Hub the lens they
-saw it through. You are not "posting updates" — you are establishing a point of
-view the industry comes back to.
+_VOICE_SYSTEM = _ANALYST_VOICE + """
 
-POV (carry it consistently): the AI build-out is power-constrained, and DC Hub is
-the only LIVE, agent-native source of truth for where power, land, gas and fiber
-actually are — queryable and citable by any AI agent, while everyone else ships
-quarterly PDFs.
-
-BRAND PILLARS (lead with ONE per post, rotate them): live data vs stale research ·
-agent-native (any AI can query and cite us) · breadth (21,000+ facilities, 300+
-DCPI markets, ISO grid telemetry, gas, fiber, 2,000+ M&A deals) · honest, sourced
-numbers anyone can verify.
-
-VOICE RULES:
-  - Confident, expert, story-driven. Teach something specific; cite real numbers.
-  - One opening hook that earns the scroll-stop (≤140 chars).
-  - 2-3 short paragraphs of insight, not bullet lists. Take a clear stance.
-  - One concrete CTA with the landing URL provided — invite them to verify it
-    live on DC Hub, not just "learn more."
-  - End with 3-4 hashtags (#DCHub or #DCHubMedia, #DCPI when DCPI is the proof
-    point, plus 1-2 topic tags).
-  - 800-1800 chars total (LinkedIn algorithm sweet spot).
-  - Forbidden: 'delve', 'moreover', 'in essence', 'unleash', 'game-changer',
-    'revolutionize'. No em-dashes (use ' — ' only where the typographic dash
-    improves rhythm, never as a comma substitute). Max 1 emoji, in the hook.
-    No hype you can't back with a number.
-  - Never repeat a claim from a recent post. Be specific and ownable.
-Output the POST TEXT ONLY. No preamble, no quotes."""
+OUTPUT CONTRACT (this generator): output the POST TEXT ONLY — no preamble, no
+surrounding quotes. 700-1500 characters. If a data lead is provided in the user
+message, the FIRST sentence must state its number; do not open with a brand line.
+A landing URL may be included as a single optional source line after the insight."""
 
 
-def _compose_with_claude(story_type: str, data: dict, landing: str) -> str | None:
+def _compose_with_claude(story_type: str, data: dict, landing: str,
+                          lead: dict | None = None) -> str | None:
     """Send a tailored prompt to Sonnet and return the post text.
 
     Returns None on any failure so the caller can fall back to a
@@ -405,6 +395,17 @@ def _compose_with_claude(story_type: str, data: dict, landing: str) -> str | Non
     user_prompt = _build_user_prompt(story_type, data, landing)
     if not user_prompt:
         return None
+
+    # r86c: prepend the brain editorial desk's data lead so the post OPENS with
+    # a real number+trend+so-what (and clears the number-lead publish gate).
+    if lead:
+        try:
+            from routes.media_editorial import lead_prompt_block
+            _lb = lead_prompt_block(lead)
+            if _lb:
+                user_prompt = _lb + "\n" + user_prompt
+        except Exception:
+            pass
 
     body = json.dumps({
         "model": "claude-sonnet-4-5",
@@ -758,8 +759,11 @@ def _card_url_for(story_type: str, data: dict, text: str) -> str | None:
         return None
 
 
-def compose_story_post(slot_topic: str | None = None) -> dict:
+def compose_story_post(slot_topic: str | None = None, lead: dict | None = None) -> dict:
     """Compose a story-driven LinkedIn post.
+
+    r86c: `lead` is the brain editorial desk's chosen data event
+    (number+trend+so-what); when provided, the post opens with that metric.
 
     Returns dict with:
       story_type, text, landing_url, og_image_url, source ('claude' or 'fallback')
@@ -770,7 +774,7 @@ def compose_story_post(slot_topic: str | None = None) -> dict:
     landing = LANDING_BY_TYPE[story_type]
     og_url = OG_IMAGE_BY_TYPE[story_type]
 
-    text = _compose_with_claude(story_type, data, landing)
+    text = _compose_with_claude(story_type, data, landing, lead=lead)
     source = "claude"
     if not text or len(text) < 200:
         text = _static_fallback(story_type, data, landing)

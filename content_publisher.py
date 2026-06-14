@@ -1795,6 +1795,20 @@ def _should_skip_publish(cur, content_text: str, platform: str):
         return True, (f"low quality score {_q:.3f} < {QUALITY_MIN:.3f} "
                       f"(CONTENT_QUALITY_MIN) — refusing thin/low-signal post")
 
+    # (n) r86c NUMBER-LEAD GATE (LinkedIn): an analyst post LEADS with a real
+    # metric. Reject any LinkedIn post that opens with a brand claim instead of
+    # a number+trend — this is what stops "DC Hub is the authority" marketing
+    # and the self-citation filler from publishing. Fail-OPEN if the helper is
+    # unavailable so a transient import issue never dark-holds the feed.
+    if (platform or "").lower() == "linkedin":
+        try:
+            from routes.media_editorial import leads_with_number
+            if not leads_with_number(_text):
+                return True, ("no number-lead — analyst posts must open with a "
+                              "metric+trend, not a brand claim (r86c gate)")
+        except Exception as _ng:
+            logger.warning("r86c number-gate unavailable (%s) — failing OPEN", _ng)
+
     sig = _post_headline_signature(content_text or "")
 
     # (b) zero / null headline stat — hard block, no DB needed.

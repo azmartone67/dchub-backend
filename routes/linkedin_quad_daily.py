@@ -564,6 +564,24 @@ def run():
         return jsonify({"skipped": True, "reason": "already_posted_this_slot",
                          "slot": target_slot}), 200
 
+    # r86c EVENT-DRIVEN CADENCE: ask the brain's editorial desk whether there's
+    # a genuinely novel data event worth posting this slot. If not, SUPPRESS the
+    # slot rather than spray filler — this is the core fix for the 4-posts/day
+    # repetition. `force`/ignore_slot bypasses (explicit operator override).
+    _ed_lead = None
+    if not bypass:
+        try:
+            from routes.media_editorial import editorial_decision
+            _ed = editorial_decision(target_slot.get("topic"))
+            if not _ed.get("post"):
+                return jsonify({"skipped": True,
+                                "reason": "editorial_suppress_no_novel_event",
+                                "detail": _ed.get("reason"),
+                                "slot": target_slot}), 200
+            _ed_lead = _ed.get("lead")
+        except Exception:
+            _ed_lead = None  # fail-open: editorial hiccup never blocks the slot
+
     # r49 (2026-05-25): use the new Claude-composed content engine.
     # Engine rotates through 6 story types (capability_spotlight,
     # energy_narrative, dcpi_scoop, shipped_this_week, hyperscaler_drama,
@@ -583,7 +601,7 @@ def run():
     og_url  = OG_IMAGE_MAP[target_slot["topic"]]
     try:
         from routes.linkedin_content_engine import compose_story_post
-        composed = compose_story_post(slot_topic=target_slot["topic"])
+        composed = compose_story_post(slot_topic=target_slot["topic"], lead=_ed_lead)
         text = composed.get("text")
         # Engine returns its own landing + og_image per story-type —
         # prefer those when available (more accurate match).
