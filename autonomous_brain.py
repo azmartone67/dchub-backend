@@ -1193,7 +1193,34 @@ class AutonomousBrain:
                             observed_at     TIMESTAMPTZ DEFAULT NOW()
                         )
                     """)
+                    # 2026-06-14 ROOT-CAUSE FIX: the canonical extraction_intelligence
+                    # table (routes/extractor_brain.py) carries a CHECK constraint that
+                    # only allowed ('success','failure','partial','anomaly'). When this
+                    # recorder started emitting honest 'idle'/'error' outcomes (commit
+                    # b6991791, 2026-05-31), every 0-row cycle's INSERT raised
+                    # CheckViolation, aborted the txn, and the bare except below swallowed
+                    # it → ALL 9 autonomous-brain feeds went silently dead since 5/31.
+                    # Widen the constraint idempotently here too so this recorder is
+                    # self-sufficient even if extractor_brain._ensure_tables hasn't run.
+                    # r86g: run the constraint-widen at most ONCE per process (it
+                    # takes a brief ACCESS EXCLUSIVE lock + re-validates the table;
+                    # no need to repeat it every cycle). Idempotent either way.
+                    if not getattr(type(self), '_outcome_widened', False):
+                        cur.execute("""
+                            DO $$
+                            BEGIN
+                                ALTER TABLE extraction_intelligence
+                                    DROP CONSTRAINT IF EXISTS extraction_intelligence_outcome_check;
+                                ALTER TABLE extraction_intelligence
+                                    ADD CONSTRAINT extraction_intelligence_outcome_check
+                                    CHECK (outcome IN ('success','failure','partial','anomaly','idle','error'));
+                            EXCEPTION WHEN others THEN NULL;
+                            END $$;
+                        """)
+                        conn.commit()  # commit DDL before per-row INSERTs
+                        type(self)._outcome_widened = True
                     per_domain_ms = max(int(duration * 1000 / max(len(domains), 1)), 1)
+                    written = 0
                     for key, source_id, rows_key in domains:
                         dr = results.get(key) or {}
                         rows = int(dr.get(rows_key) or 0)
@@ -1212,14 +1239,28 @@ class AutonomousBrain:
                             outcome = 'success'
                         else:
                             outcome = 'idle'
-                        cur.execute("""
-                            INSERT INTO extraction_intelligence
-                                (source_id, outcome, rows_inserted, duration_ms, error, observations)
-                            VALUES (%s, %s, %s, %s, %s, %s)
-                        """, (source_id, outcome, rows, per_domain_ms,
-                              (str(err)[:2000] if err else None),
-                              __import__('json').dumps({"cycle": results.get('cycle_id')})))
+                        # SAVEPOINT-per-row: a single bad row (e.g. a future
+                        # constraint mismatch) must NOT abort the whole batch and
+                        # silently kill every feed again — the exact failure mode
+                        # that masked this bug for two weeks.
+                        try:
+                            cur.execute("SAVEPOINT ei_row")
+                            cur.execute("""
+                                INSERT INTO extraction_intelligence
+                                    (source_id, outcome, rows_inserted, duration_ms, error, observations)
+                                VALUES (%s, %s, %s, %s, %s, %s)
+                            """, (source_id, outcome, rows, per_domain_ms,
+                                  (str(err)[:2000] if err else None),
+                                  __import__('json').dumps({"cycle": results.get('cycle_id')})))
+                            cur.execute("RELEASE SAVEPOINT ei_row")
+                            written += 1
+                        except Exception as _row_e:
+                            try: cur.execute("ROLLBACK TO SAVEPOINT ei_row")
+                            except Exception: pass
+                            logger.warning(f"   extraction_intelligence row skipped "
+                                           f"({source_id}/{outcome}): {_row_e}")
                     conn.commit()
+                    logger.info(f"   extraction_intelligence: {written}/{len(domains)} feed rows written")
             finally:
                 try: conn.close()
                 except Exception: pass

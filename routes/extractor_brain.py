@@ -57,7 +57,7 @@ CREATE TABLE IF NOT EXISTS extraction_intelligence (
     id              BIGSERIAL PRIMARY KEY,
     observed_at     TIMESTAMPTZ NOT NULL DEFAULT NOW(),
     source_id       TEXT NOT NULL,
-    outcome         TEXT NOT NULL CHECK (outcome IN ('success', 'failure', 'partial', 'anomaly')),
+    outcome         TEXT NOT NULL CHECK (outcome IN ('success', 'failure', 'partial', 'anomaly', 'idle', 'error')),
     rows_inserted   INTEGER,
     duration_ms     INTEGER,
     error           TEXT,
@@ -84,11 +84,39 @@ CREATE TABLE IF NOT EXISTS daily_insights (
 CREATE INDEX IF NOT EXISTS ix_daily_insights_date ON daily_insights (insight_date DESC);
 """
 
+# 2026-06-14: the canonical outcome CHECK above only widens NEW tables. The
+# live extraction_intelligence table was created long ago with the narrow
+# ('success','failure','partial','anomaly') constraint — so the 9
+# autonomous-brain feeds went SILENTLY DEAD on 2026-05-31 when commit b6991791
+# started emitting honest 'idle' (wrote-nothing) / 'error' outcomes: every
+# 0-row cycle's first INSERT raised CheckViolation, aborted the txn, and the
+# recorder's bare except swallowed it (logger.debug). This idempotent ALTER
+# drops the stale narrow constraint and re-adds the widened one so the existing
+# live table accepts 'idle'/'error' too. NOT VALID-free: the only pre-existing
+# rows are 'success'/'partial', both still allowed, so re-validation passes.
+_WIDEN_OUTCOME_SQL = """
+DO $$
+BEGIN
+    ALTER TABLE extraction_intelligence DROP CONSTRAINT IF EXISTS extraction_intelligence_outcome_check;
+    ALTER TABLE extraction_intelligence ADD CONSTRAINT extraction_intelligence_outcome_check
+        CHECK (outcome IN ('success', 'failure', 'partial', 'anomaly', 'idle', 'error'));
+EXCEPTION WHEN others THEN
+    -- never let a telemetry-schema migration crash startup
+    NULL;
+END $$;
+"""
+
+# Canonical set of accepted outcomes — single source of truth shared by the
+# HTTP /observe validator, the in-process record_extraction helper, and the
+# DB CHECK constraint above. Keep these three in lockstep.
+VALID_OUTCOMES = ("success", "failure", "partial", "anomaly", "idle", "error")
+
 
 def _ensure_tables():
     if getattr(_ensure_tables, "_done", False): return
     with _conn() as c, c.cursor() as cur:
         cur.execute(MIGRATION_SQL)
+        cur.execute(_WIDEN_OUTCOME_SQL)
         c.commit()
     _ensure_tables._done = True
 
@@ -423,7 +451,7 @@ def observe():
         return jsonify(error="source_id required"), 400
 
     outcome = p.get("outcome", "success")
-    if outcome not in ("success", "failure", "partial", "anomaly"):
+    if outcome not in VALID_OUTCOMES:
         return jsonify(error="invalid outcome"), 400
 
     rows_inserted = p.get("rows_inserted")
@@ -492,7 +520,7 @@ def record_extraction(source_id: str, outcome: str = "success",
     directly instead. Never raises: telemetry must not break an ingestion job.
     """
     try:
-        if outcome not in ("success", "failure", "partial", "anomaly"):
+        if outcome not in VALID_OUTCOMES:
             outcome = "partial"
         _ensure_tables()
         with _conn() as c, c.cursor() as cur:
