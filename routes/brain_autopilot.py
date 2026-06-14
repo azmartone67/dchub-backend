@@ -2789,26 +2789,35 @@ def autopilot_verify():
                 # outcome='dry_run' (not executed_ok) → a pattern that only ran in
                 # dry-run would show 0 executed_ok and get falsely benched.
                 if not _is_dry_run() and not _noop_quarantine_disabled():
+                    # Candidate selection (with its quoted SQL literals) lives in a
+                    # CTE *before* the INSERT, so the INSERT…SELECT…ON CONFLICT body
+                    # carries NO quoted literals between `INSERT INTO` and `ON
+                    # CONFLICT`. That keeps the statement an honest upsert AND lets the
+                    # regression-lint insert-no-on-conflict scanner (which stops at the
+                    # first quote) actually see the ON CONFLICT. The dynamic re-fire
+                    # count is bound (n::text), not inlined.
+                    _noop_reason_pre = "auto: chronic no-op — "
+                    _noop_reason_suf = f" fires / 0 executed_ok in {_NOOP_QUARANTINE_DAYS}d"
                     cur.execute("""
+                        WITH candidates AS (
+                            SELECT pattern_name, COUNT(*) AS n
+                              FROM brain_autopilot_actions
+                             WHERE started_at >= NOW() - make_interval(days => %s)
+                               AND pattern_name IS NOT NULL
+                               AND pattern_name <> ''
+                             GROUP BY pattern_name
+                            HAVING COUNT(*) >= %s
+                               AND COUNT(*) FILTER (WHERE outcome = 'executed_ok') = 0
+                               -- r-incentives FIX (review): bench only the RATE-LIMITED
+                               -- no-op flood (page_brand_uniformity etc.), NOT patterns
+                               -- correctly ESCALATING to a human — rate_limited must be
+                               -- the majority outcome.
+                               AND COUNT(*) FILTER (WHERE outcome = 'rate_limited') >= COUNT(*) * 0.5
+                        )
                         INSERT INTO brain_pattern_quarantine
                             (pattern_name, fail_count, quarantined_at, released_at, last_reason)
-                        SELECT pattern_name,
-                               COUNT(*),
-                               NOW(), NULL,
-                               'auto: chronic no-op — ' || COUNT(*)
-                                 || ' fires / 0 executed_ok in ' || %s || 'd'
-                          FROM brain_autopilot_actions
-                         WHERE started_at >= NOW() - make_interval(days => %s)
-                           AND pattern_name IS NOT NULL
-                           AND pattern_name <> ''
-                         GROUP BY pattern_name
-                        HAVING COUNT(*) >= %s
-                           AND COUNT(*) FILTER (WHERE outcome = 'executed_ok') = 0
-                           -- r-incentives FIX (review): bench only the RATE-LIMITED
-                           -- no-op flood (page_brand_uniformity etc.), NOT patterns
-                           -- that are correctly ESCALATING to a human. Require
-                           -- rate_limited to be the majority outcome.
-                           AND COUNT(*) FILTER (WHERE outcome = 'rate_limited') >= COUNT(*) * 0.5
+                        SELECT pattern_name, n, NOW(), NULL, %s || n::text || %s
+                          FROM candidates
                         ON CONFLICT (pattern_name) DO UPDATE
                            SET fail_count = EXCLUDED.fail_count,
                                quarantined_at = NOW(),
@@ -2817,8 +2826,9 @@ def autopilot_verify():
                          WHERE brain_pattern_quarantine.released_at IS NOT NULL
                             OR brain_pattern_quarantine.quarantined_at
                                  < NOW() - make_interval(hours => %s)
-                    """, (_NOOP_QUARANTINE_DAYS, _NOOP_QUARANTINE_DAYS,
-                          _NOOP_MIN_REFIRES, _QUARANTINE_WINDOW_HOURS))
+                    """, (_NOOP_QUARANTINE_DAYS, _NOOP_MIN_REFIRES,
+                          _noop_reason_pre, _noop_reason_suf,
+                          _QUARANTINE_WINDOW_HOURS))
                     summary["quarantined_noop"] = max(0, cur.rowcount or 0)
             except Exception as e:
                 summary["quarantine_noop_error"] = str(e)[:140]
