@@ -600,7 +600,10 @@ def _promote_candidates(min_mentions: int = None,
                 }
             else:
                 facility["name"] = (name or facility["name"])[:200]
-                facility.setdefault("provider", name[:200])
+                # r86g: extract_facility_from_article always sets provider=None so
+                # setdefault was a no-op (key exists) -> NULL provider. Use the
+                # entity name as provider when none was extracted.
+                facility["provider"] = facility.get("provider") or name[:200]
                 facility["source"] = "news_ner"
                 facility["notes"] = (
                     f"Promoted from news NER candidate "

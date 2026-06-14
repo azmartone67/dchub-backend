@@ -1,24 +1,22 @@
-# Item 2a (2026-06-13) — DataCenterMap GH-runner ingest.
+# Item 2a (2026-06-13, r86g) — DataCenterMap GH-runner ingest (BEST-EFFORT).
 #
-# Railway egress is 429-rate-limited by DataCenterMap, so the in-process
-# run_datacentermap_discovery() on the backend silently no-ops. This job
-# follows the infra_fetch.py LAYERS pattern: the GitHub runner (clean
-# egress) fetches https://www.datacentermap.com/api/datacenters, then POSTs
-# the facilities array to the backend admin endpoint /api/admin/dcm-ingest,
-# which bulk-inserts to Neon (source='datacentermap', ON CONFLICT upsert →
-# idempotent re-runs). Railway never fetches DCM.
+# Railway egress is 429'd by DataCenterMap's Vercel WAF, so the in-process
+# run_datacentermap_discovery() no-ops. This job fetches the DCM JSON ON the
+# GitHub runner (different egress) and POSTs to /api/admin/dcm-ingest (Neon
+# upsert, source='datacentermap', idempotent). HONEST CAVEAT: Vercel WAF
+# challenges are IP-reputation based and GH-runner ranges are commonly
+# challenged too, so the runner may ALSO get a 429/checkpoint — the job FAILS
+# SAFE (logs a warning + exits 0, never POSTs the checkpoint HTML as data).
+# It is therefore manual/workflow_dispatch ONLY (run it to test whether the
+# runner can reach DCM; promote to a schedule only once a run logs HTTP=200 +
+# a nonzero "Parsed N DCM facilities"). The guaranteed discovery growth in
+# this change comes from the CONUS OSM bboxes + news->discovery, not DCM.
 #
-# Distinct from datacentermap-crawl.yml: that one drives the in-backend
-# HTML scraper (/api/v1/admin/dcm-crawl/run, blocked by Vercel bot wall);
-# this one does the fetch ON the runner and ships JSON rows.
+# Distinct from datacentermap-crawl.yml (in-backend HTML scraper).
 
-name: DataCenterMap — runner ingest (JSON API)
+name: DataCenterMap — runner ingest (JSON API, manual/best-effort)
 
 on:
-  schedule:
-    # 04:33 UTC daily — distinct minute, off the 04:11 dcm-crawl and the
-    # 04:08 / 04:23 infra crons (no cron_schedule_collision).
-    - cron: '33 4 * * *'
   workflow_dispatch:
     inputs:
       dry_run:
@@ -46,7 +44,8 @@ jobs:
           if [ "$DRY" = "true" ]; then QS="?dry_run=1"; fi
 
           echo "Fetching DataCenterMap JSON from the runner..."
-          # Polite UA; the runner has clean egress (not 429'd like Railway).
+          # Polite UA. The runner MAY also be 429'd by DCM's Vercel WAF; if so the
+          # HTTP!=200 guard below skips this run cleanly (no bad data ingested).
           HTTP=$(curl -sS -w '%{http_code}' -o /tmp/dcm.json \
             -H 'User-Agent: DCHubCrawler/1.0 (+https://dchub.cloud/contact)' \
             -H 'Accept: application/json' \
