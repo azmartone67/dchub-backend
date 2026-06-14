@@ -14240,7 +14240,7 @@ def mcp_platforms_status():
             "mcp_endpoint": "https://dchub.cloud/mcp",
             "server_card": "https://dchub.cloud/.well-known/mcp/server-card.json",
             "tools_count": 38,
-            "server_version": "2.2.4"
+            "server_version": "2.2.5"
         })
     except Exception as e:
         # [fix-railway-p1] defensive except handler
