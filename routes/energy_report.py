@@ -41,7 +41,10 @@ _CC_LINK_HEADER = '<https://creativecommons.org/licenses/by/4.0/>; rel="license"
 # every API request triggered 4-6 sequential HTTP calls + a fresh
 # Claude narrative — the 21.8s p95 was killing CF worker timeouts.
 _GATHER_CACHE: dict[str, dict] = {}  # window -> {data, computed_at}
-_GATHER_TTL = 300  # 5 minutes
+_GATHER_TTL = 3600  # 1 hour (2026-06-14): was 300 — 5-min recompute of a DAILY report
+# meant the slow gather+narrative re-ran constantly, occasionally 502-ing the
+# 1-replica backend on cold misses. 1h redis TTL also survives replica restarts →
+# the cold-cache 502 (caught in the URL audit) is eliminated; report data is daily.
 
 
 def _license_block(window: str) -> dict:

@@ -21542,9 +21542,9 @@ def serve_sitemap_xml():
         ('/ai-pipeline', '0.8', 'daily'),
         ('/ai-deals', '0.8', 'daily'),
         ('/ai-agents', '0.7', 'weekly'),
-        ('/ai-inventory.html', '0.7', 'daily'),
-        ('/assets.html', '0.7', 'daily'),
-        ('/for-ai.html', '0.7', 'weekly'),
+        ('/ai-inventory', '0.7', 'daily'),
+        ('/assets', '0.7', 'daily'),
+        ('/for-ai', '0.7', 'weekly'),
         ('/connect', '0.7', 'weekly'),
         # r36 (2026-05-31): /ai/facts REMOVED from the sitemap. The page
         # exists on the backend (200, text/html "Data Center Facts") but

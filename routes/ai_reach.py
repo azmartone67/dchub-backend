@@ -42,12 +42,24 @@ def ai_reach():
     now = time.time()
     if _cache["data"] is not None and (now - _cache["ts"]) < _TTL:
         return jsonify(_cache["data"]), 200
-    c = _conn()
-    if c is None:
-        return jsonify(error="no_db"), 503
     out = {"distinct_agents_7d": 0, "distinct_platforms": 0, "per_platform": [], "requests_7d": 0,
            "window": "~recent (id-bounded ≈7d)",
            "note": "Honest reach = DISTINCT public IPs per platform (real agent sources), not cumulative request volume. The big 'requests served' counts are real traffic but loop-inflated; this is the addressable reach."}
+    # fail-soft (2026-06-14): this is a PUBLIC DISPLAY endpoint for the /ai page —
+    # it must NEVER return 5xx. A 5xx throws an F12 console error and can blank the
+    # reach lines (caught live: a cold replica whose first request hit the 9s scan
+    # timeout with an empty in-memory cache returned 500). On ANY failure: serve
+    # last-good cache, else the valid empty skeleton at 200 with degraded=true so the
+    # page renders gracefully and quietly retries on the next poll.
+    def _soft():
+        if _cache["data"] is not None:
+            stale = dict(_cache["data"]); stale["stale"] = True
+            return jsonify(stale), 200
+        out["degraded"] = True
+        return jsonify(out), 200
+    c = _conn()
+    if c is None:
+        return _soft()
     try:
         with c.cursor(cursor_factory=psycopg2.extras.RealDictCursor) as cur:
             # cap the heavy scan so a slow run fails fast → falls back to last-good cache (below)
@@ -84,12 +96,8 @@ def ai_reach():
             tot = cur.fetchone() or {}
             out["distinct_agents_7d"] = int(tot.get("agents") or 0)
             out["requests_7d"] = int(tot.get("reqs") or 0)
-    except Exception as e:
-        # never blank the /ai reach lines on a slow cold-refresh: serve last-good cache if we have it
-        if _cache["data"] is not None:
-            stale = dict(_cache["data"]); stale["stale"] = True
-            return jsonify(stale), 200
-        return jsonify(error="query_failed", detail=str(e)[:200]), 500
+    except Exception:
+        return _soft()   # fail-soft: never 5xx (last-good cache, else degraded 200)
     finally:
         try: c.close()
         except Exception: pass
