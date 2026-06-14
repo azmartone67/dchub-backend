@@ -61,6 +61,118 @@ ANTHROPIC_API_KEY = os.environ.get("ANTHROPIC_API_KEY", "")
 ADMIN_KEY = (os.environ.get("DCHUB_ADMIN_KEY")
              or os.environ.get("DCHUB_INTERNAL_KEY") or "")
 
+# ── L23 issue de-flood (2026-06-14) ───────────────────────────────────
+# The lifecycle curator was opening ~12 byte-identical
+# "[brain-l23] New capability proposal: mcp_tool" issues/day — 183 open,
+# 0 of 185 ever shipped. Reward churn, not closure. The fix below caps
+# OPEN L23 proposal issues at ONE rolling tracker: a fresh propose only
+# opens a GitHub issue when there is NO open issue carrying the
+# brain-l23-lifecycle label. When a tracker is already open, the new
+# proposal is appended as a comment on it (so context isn't lost) and
+# no second issue is created. Closing/shipping the tracker is the
+# OPERATOR's call — only then will the next propose open a new one.
+_L23_PROPOSAL_LABEL = "brain-l23-lifecycle"
+# Human-merge SLA hint surfaced on every L23 issue/comment so the operator
+# knows the expected review cadence (weekly cron → weekly review target).
+_L23_HUMAN_SLA_NOTE = (
+    "Human-merge SLA: review within 7d. While one L23 proposal issue is "
+    "open, further proposals are appended here as comments instead of "
+    "opening new issues (de-flood). Close/ship this tracker to let the "
+    "curator open the next one."
+)
+
+
+def _gh_repo() -> str:
+    return (os.environ.get("GITHUB_REPO") or "azmartone67/dchub-backend").strip()
+
+
+def _gh_token() -> str:
+    return (os.environ.get("GITHUB_TOKEN") or "").strip()
+
+
+def _find_open_l23_issue() -> dict | None:
+    """Return the most-recent OPEN brain-l23-lifecycle issue, or None.
+
+    Queries GitHub directly (source of truth — survives deploys + DB
+    blips). Returns {'number', 'html_url', 'title'} on a hit. On ANY
+    error returns the sentinel string 'unknown' so the caller can choose
+    a fail-safe behavior (skip opening, to stay on the de-flood side)
+    rather than silently flooding again.
+    """
+    tok = _gh_token()
+    if not tok:
+        return None  # no token → _draft_pr would no-op anyway; let it.
+    try:
+        import requests
+        r = requests.get(
+            f"https://api.github.com/repos/{_gh_repo()}/issues",
+            headers={
+                "Authorization": f"Bearer {tok}",
+                "Accept": "application/vnd.github+json",
+                "X-GitHub-Api-Version": "2022-11-28",
+            },
+            params={"state": "open", "labels": _L23_PROPOSAL_LABEL,
+                    "per_page": 1, "sort": "created", "direction": "desc"},
+            timeout=12,
+        )
+        if r.status_code not in (200, 201):
+            return "unknown"  # type: ignore[return-value]
+        items = r.json() or []
+        # The issues endpoint can include PRs; filter to true issues.
+        for it in items:
+            if "pull_request" in it:
+                continue
+            return {"number": it.get("number"),
+                    "html_url": it.get("html_url"),
+                    "title": it.get("title")}
+        return None
+    except Exception:
+        return "unknown"  # type: ignore[return-value]
+
+
+def _comment_on_l23_tracker(issue_number: int, proposal: dict,
+                             audit: dict, new_id) -> dict:
+    """Append a new proposal as a comment on the open L23 tracker issue.
+
+    Best-effort: returns {'ok': bool, ...}. Never raises."""
+    tok = _gh_token()
+    if not tok or not issue_number:
+        return {"ok": False, "error": "no token or issue_number"}
+    try:
+        import requests
+        kind = (proposal.get("kind") or "lifecycle_capability")
+        ttl = (proposal.get("title") or f"new {kind} proposal")
+        body = (
+            "**Brain L23 Lifecycle Curator — additional proposal "
+            "(de-flooded onto this rolling tracker)**\n\n"
+            f"> {_L23_HUMAN_SLA_NOTE}\n\n"
+            f"### {ttl[:120]}\n"
+            f"```json\n{json.dumps(proposal, indent=2)[:3000]}\n```\n\n"
+            f"composite_health={audit.get('composite_health')} | "
+            f"weak_dims={[f['dim'] for f in (audit.get('findings') or [])]}\n"
+            f"proposal_id (DB): {new_id} | "
+            f"audit_generated_at: {audit.get('generated_at')}\n"
+        )
+        r = requests.post(
+            f"https://api.github.com/repos/{_gh_repo()}"
+            f"/issues/{issue_number}/comments",
+            headers={
+                "Authorization": f"Bearer {tok}",
+                "Accept": "application/vnd.github+json",
+                "X-GitHub-Api-Version": "2022-11-28",
+            },
+            json={"body": body},
+            timeout=15,
+        )
+        if r.status_code not in (200, 201):
+            return {"ok": False,
+                    "error": f"github_{r.status_code}: {r.text[:160]}"}
+        data = r.json() or {}
+        return {"ok": True, "comment_url": data.get("html_url"),
+                "tracker_issue": issue_number}
+    except Exception as e:
+        return {"ok": False, "error": f"{type(e).__name__}: {str(e)[:160]}"}
+
 
 # ── DB connection ─────────────────────────────────────────────────
 
@@ -1762,35 +1874,67 @@ def lifecycle_propose():
             kind = (proposal.get("kind") or "lifecycle_capability")
             ttl = (proposal.get("title")
                    or f"[brain-l23] New capability proposal: {kind}")
-            body = (
-                "**Auto-drafted by Brain L23 Lifecycle Curator**\n"
-                "([routes/brain_layer23_lifecycle.py]"
-                "(https://github.com/azmartone67/dchub-backend/blob/main/routes/brain_layer23_lifecycle.py))\n\n"
-                "> [!NOTE]\n"
-                "> Opus 4.7 (reasoning tier) proposed this capability based\n"
-                "> on the moat audit below. Human review required before\n"
-                "> implementation. This is a SEED, not a PR.\n\n"
-                "## Proposal\n"
-                f"```json\n{json.dumps(proposal, indent=2)[:3500]}\n```\n\n"
-                "## Triggering audit findings\n"
-                f"composite_health={audit.get('composite_health')}\n"
-                f"weak_dims={[f['dim'] for f in (audit.get('findings') or [])]}\n"
-                f"unknown_dims={audit.get('unknown_dims')}\n\n"
-                "## Provenance\n"
-                f"proposal_id (DB): {new_id}\n"
-                f"model: claude-opus-4-7\n"
-                f"audit_generated_at: {audit.get('generated_at')}\n"
-                "\nFull audit JSON: /api/v1/brain/lifecycle/findings?force=1\n"
-                "Proposal stream: /api/v1/brain/lifecycle/proposals\n"
-            )
-            draft = {
-                "recipe": "lifecycle_capability_seed",
-                "title": ttl[:120],
-                "body": body,
-                "labels": ["brain-l23-lifecycle", "capability-proposal",
-                           f"kind-{kind[:30]}"],
-            }
-            issue_result = _draft_pr(draft, dry_run=False)
+            # ── De-flood (2026-06-14): cap OPEN L23 proposal issues at 1.
+            # If a brain-l23-lifecycle issue is already open, append this
+            # proposal as a comment on that rolling tracker instead of
+            # opening an identical new issue. Only when NO tracker is open
+            # do we open a fresh one. Fail-safe: on a GitHub lookup error
+            # ('unknown'), we STILL skip opening (stay on the de-flood
+            # side) and surface the proposal in the API response + DB —
+            # the proposal is never lost, it just doesn't spawn an issue.
+            existing = _find_open_l23_issue()
+            if existing == "unknown":
+                issue_result = {
+                    "ok": True, "skipped": True,
+                    "reason": "l23_dedup_lookup_failed_failsafe_skip",
+                    "note": ("GitHub open-issue lookup failed; skipped "
+                             "opening to avoid re-flooding. Proposal is "
+                             "persisted (see proposal_id) + in the API "
+                             "response."),
+                }
+            elif isinstance(existing, dict):
+                # A tracker is already open → de-flood onto it.
+                c_res = _comment_on_l23_tracker(
+                    existing.get("number"), proposal, audit, new_id)
+                issue_result = {
+                    "ok": bool(c_res.get("ok")),
+                    "deduped_onto_open_tracker": True,
+                    "tracker_issue": existing.get("number"),
+                    "tracker_url": existing.get("html_url"),
+                    "comment": c_res,
+                }
+            else:
+                # No open tracker → open ONE fresh rolling tracker issue.
+                body = (
+                    "**Auto-drafted by Brain L23 Lifecycle Curator**\n"
+                    "([routes/brain_layer23_lifecycle.py]"
+                    "(https://github.com/azmartone67/dchub-backend/blob/main/routes/brain_layer23_lifecycle.py))\n\n"
+                    "> [!NOTE]\n"
+                    "> Opus (reasoning tier) proposed this capability based\n"
+                    "> on the moat audit below. Human review required before\n"
+                    "> implementation. This is a SEED, not a PR.\n\n"
+                    f"> {_L23_HUMAN_SLA_NOTE}\n\n"
+                    "## Proposal\n"
+                    f"```json\n{json.dumps(proposal, indent=2)[:3500]}\n```\n\n"
+                    "## Triggering audit findings\n"
+                    f"composite_health={audit.get('composite_health')}\n"
+                    f"weak_dims={[f['dim'] for f in (audit.get('findings') or [])]}\n"
+                    f"unknown_dims={audit.get('unknown_dims')}\n\n"
+                    "## Provenance\n"
+                    f"proposal_id (DB): {new_id}\n"
+                    f"model: claude-opus-4-7\n"
+                    f"audit_generated_at: {audit.get('generated_at')}\n"
+                    "\nFull audit JSON: /api/v1/brain/lifecycle/findings?force=1\n"
+                    "Proposal stream: /api/v1/brain/lifecycle/proposals\n"
+                )
+                draft = {
+                    "recipe": "lifecycle_capability_seed",
+                    "title": ttl[:120],
+                    "body": body,
+                    "labels": [_L23_PROPOSAL_LABEL, "capability-proposal",
+                               "needs-human-merge", f"kind-{kind[:30]}"],
+                }
+                issue_result = _draft_pr(draft, dry_run=False)
         except Exception as ie:
             issue_result = {"ok": False, "error": f"{type(ie).__name__}: {str(ie)[:160]}"}
 
