@@ -1007,19 +1007,37 @@ def _gate(tool_name: str, api_key: Optional[str] = None,
         # in the same response, retries with X-API-Key header, succeeds.
         # No human signup step required.
         if auto_trial:
-            payload["auto_trial_key"] = auto_trial.get("api_key")
-            payload["auto_trial_expires_at"] = auto_trial.get("expires_at")
-            payload["auto_trial_daily_calls"] = auto_trial.get("daily_calls", 200)
-            # Override the message to LEAD with the working key
+            _tk = auto_trial.get("api_key")
+            # Use the REAL minted terms. The block used to hardcode an
+            # inflated cap/expiry, but the trial is actually
+            # TRIAL_DAILY_UNBOUND/day (15) for TRIAL_DAYS (7), 50/day once
+            # the operator email is bound. Overpromising broke trust the
+            # moment the cap/expiry bit, which is exactly the retention leak.
+            _cap = auto_trial.get("daily_calls", 15)
+            _days = auto_trial.get("days_remaining") or auto_trial.get("trial_days")
+            _exp = auto_trial.get("expires_at")
+            payload["auto_trial_key"] = _tk
+            payload["auto_trial_expires_at"] = _exp
+            payload["auto_trial_daily_calls"] = _cap
+            # Machine-readable retry instruction so programmatic agents
+            # (Cursor / Cline / Claude Code) retry WITHOUT parsing prose —
+            # the documented gap behind "key minted but never used".
+            payload["retry_with"] = {
+                "header": "X-API-Key",
+                "value":  _tk,
+                "note":   "Re-send the exact same call with this header to get real data.",
+            }
+            # Override the message to LEAD with the working key + accurate terms.
+            _exp_txt = (f", expires {str(_exp)[:10]}" if _exp
+                        else (f", {_days}-day trial" if _days else ""))
+            _bind_cta = (auto_trial.get("upgrade_cta") or "").strip()
             payload["message"] = (
-                f"✨ Auto-trial key minted for you: "
-                f"`{auto_trial.get('api_key')}` (200 calls/day, expires 30d).\n\n"
-                f"**Retry your call with the header `X-API-Key: "
-                f"{auto_trial.get('api_key')}`** — it will succeed.\n\n"
-                f"To make it permanent + tie to your email: POST "
-                f"https://dchub.cloud/api/v1/keys/auto-trial/redeem "
-                f"with body {{\"api_key\":\"{auto_trial.get('api_key')}\",\"email\":\"you@example.com\"}}.\n\n"
+                f"✨ Auto-trial key minted for you: `{_tk}` "
+                f"({_cap} calls/day{_exp_txt}).\n\n"
+                f"**Retry your call with the header `X-API-Key: {_tk}`** — "
+                f"it will succeed.\n\n"
                 f"Tool returns: {teaser or 'data'}"
+                + (f"\n\n{_bind_cta}" if _bind_cta else "")
             )
             # Suppress the now-redundant claim_endpoint to keep payload tight
             payload.pop("claim_endpoint", None)
