@@ -2157,6 +2157,7 @@ _PUBLISHER_STATE = {
         "attempts_24h":        0,
         "successes_24h":       0,
         "errors_24h":          0,
+        "consecutive_auth_failures": 0,  # ITEM 6: dead-token circuit breaker
         "_counter_day_utc":    None,  # YYYY-MM-DD; reset trigger
     },
     "twitter": {
@@ -2169,6 +2170,7 @@ _PUBLISHER_STATE = {
         "attempts_24h":        0,
         "successes_24h":       0,
         "errors_24h":          0,
+        "consecutive_auth_failures": 0,  # ITEM 6: dead-token circuit breaker
         "_counter_day_utc":    None,
     },
     "bluesky": {
@@ -2181,6 +2183,7 @@ _PUBLISHER_STATE = {
         "attempts_24h":        0,
         "successes_24h":       0,
         "errors_24h":          0,
+        "consecutive_auth_failures": 0,  # ITEM 6: dead-token circuit breaker
         "_counter_day_utc":    None,
     },
 }
@@ -2244,12 +2247,47 @@ def _record_attempt(platform: str, result: str, error_class: str = None) -> None
         if result == 'ok':
             st['successes_24h'] = st.get('successes_24h', 0) + 1
             st['last_error_class'] = None
+            # ITEM 6 (2026-06-14): any success clears the auth-failure
+            # circuit breaker (token was re-authed / transient blip ended).
+            st['consecutive_auth_failures'] = 0
         elif result == 'error':
             st['errors_24h'] = st.get('errors_24h', 0) + 1
             st['last_error_class'] = error_class or 'unknown'
-        # 'skipped_cap' + 'no_queued' do not bump success/error.
+            # ITEM 6: count consecutive auth/forbidden failures so the loop
+            # can circuit-break a dead token instead of retrying it forever
+            # (the X 132-silent-403 pattern). Only auth-class errors trip
+            # the breaker; rate-limit / network / server errors are transient
+            # and should keep retrying, so they reset the counter.
+            if (error_class or '') in ('auth_failed', 'forbidden'):
+                st['consecutive_auth_failures'] = (
+                    st.get('consecutive_auth_failures', 0) + 1)
+            else:
+                st['consecutive_auth_failures'] = 0
+        # 'skipped_cap' + 'no_queued' do not bump success/error and leave the
+        # auth-failure breaker untouched (no publish was attempted).
     except Exception:
         pass
+
+
+# ITEM 6 (2026-06-14): consecutive-auth-failure circuit breaker. After
+# this many back-to-back auth/forbidden failures we PAUSE a publisher's
+# retries (it's a dead/expired token — a human must re-auth, mirroring the
+# LinkedIn token-reset flow) and raise a clear owner re-auth action ONCE
+# rather than churning a 403 every cycle. The breaker auto-clears the
+# moment any publish succeeds (see _record_attempt 'ok' path), so a re-auth
+# self-heals with no human un-pause step.
+_AUTH_FAILURE_BREAKER_THRESHOLD = 3
+
+
+def _auth_breaker_tripped(platform: str) -> bool:
+    """True when `platform` has hit the consecutive-auth-failure threshold —
+    its token is dead and the loop should stop retrying until re-auth."""
+    try:
+        st = _PUBLISHER_STATE.get(platform) or {}
+        return int(st.get('consecutive_auth_failures', 0) or 0) >= \
+            _AUTH_FAILURE_BREAKER_THRESHOLD
+    except Exception:
+        return False
 
 
 def _classify_publish_error(exc_or_msg) -> str:
@@ -2623,6 +2661,27 @@ def start_twitter_publisher():
                         logger.warning("Twitter auto-publisher: %s approved X post(s) queued but no credentials set — X distribution is DARK", _queued)
                     else:
                         logger.debug("Twitter auto-publisher: no credentials, skipping")
+                    continue
+                # ITEM 6 (2026-06-14): dead-token circuit breaker. After N
+                # consecutive auth/forbidden failures, the X token is expired
+                # (the 132-silent-403 pattern). STOP retrying it every cycle —
+                # raise the owner re-auth action ONCE and skip the publish until
+                # a human re-auths (any success auto-clears the breaker, so the
+                # loop self-heals on re-auth with no manual un-pause). This is
+                # the engine-side complement to the social_publish_silent_failure
+                # autopilot finding: instead of 132 silent 403s, the operator
+                # gets one clear "re-auth X" action and the log goes quiet.
+                if _auth_breaker_tripped("twitter"):
+                    _fails = (_PUBLISHER_STATE.get("twitter") or {}).get(
+                        "consecutive_auth_failures", 0)
+                    logger.warning(
+                        "Twitter auto-publisher: CIRCUIT BREAKER OPEN — %s "
+                        "consecutive auth failures. X token is expired/revoked. "
+                        "OWNER ACTION: regenerate TWITTER_ACCESS_TOKEN (+secret) "
+                        "in Railway env, then POST /api/v1/marketing/publish-now"
+                        "?max=20 to drain the backlog. Retries paused until a "
+                        "publish succeeds.", _fails)
+                    _record_attempt("twitter", "skipped_cap")  # paused, not erroring
                     continue
                 with _db_conn() as conn:
                     cur = conn.cursor()
