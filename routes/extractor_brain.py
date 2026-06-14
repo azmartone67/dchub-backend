@@ -359,6 +359,8 @@ def _compute_source_quality():
             """SELECT source_id,
                       COUNT(*) AS total_runs,
                       SUM(CASE WHEN outcome = 'success' THEN 1 ELSE 0 END) AS successes,
+                      SUM(CASE WHEN outcome IN ('error','failure','execution_failed','exception')
+                               THEN 1 ELSE 0 END) AS failures,
                       SUM(rows_inserted) AS total_rows,
                       AVG(duration_ms) AS avg_duration_ms,
                       MAX(observed_at) AS last_observed
@@ -366,19 +368,33 @@ def _compute_source_quality():
                WHERE observed_at > NOW() - INTERVAL '7 days'
                GROUP BY source_id"""
         )
-        for src_id, total, successes, rows, avg_ms, last_obs in cur.fetchall():
-            success_rate = float(successes or 0) / max(int(total or 1), 1)
+        for src_id, total, successes, failures, rows, avg_ms, last_obs in cur.fetchall():
+            total_i = max(int(total or 1), 1)
+            successes_i = int(successes or 0)
+            failures_i = int(failures or 0)
+            # r86g HEALTH FIX: idle / anomaly / partial are NORMAL outcomes, not
+            # failures — a resumed feed that found 0 new rows writes 'idle', the
+            # grid anomaly scan writes 'anomaly', a short batch writes 'partial'.
+            # Scoring health off success/total alone marked ~10 perfectly healthy
+            # feeds "failing 0%" (the false alarm on the autonomous-intelligence
+            # dashboard) because they legitimately never emit a literal 'success'.
+            # Judge health by the real FAILURE rate; keep success_rate for display.
+            ok_count = int(total or 0) - failures_i
+            ok_rate = float(ok_count) / total_i
+            success_rate = float(successes_i) / total_i
             out[src_id] = {
                 "source_id": src_id,
                 "total_runs_7d": int(total or 0),
-                "successes_7d": int(successes or 0),
+                "successes_7d": successes_i,
+                "failures_7d": failures_i,
                 "success_rate": round(success_rate, 3),
+                "ok_rate": round(ok_rate, 3),
                 "total_rows_7d": int(rows or 0),
                 "avg_duration_ms": int(avg_ms or 0),
                 "last_observed_at": last_obs.isoformat() if last_obs else None,
                 "health": (
-                    "good" if success_rate >= 0.9 else
-                    "degraded" if success_rate >= 0.5 else
+                    "good" if ok_rate >= 0.9 else
+                    "degraded" if ok_rate >= 0.5 else
                     "failing"
                 ),
             }
@@ -404,7 +420,9 @@ def _compute_source_quality():
                 "source_id": src_id,
                 "total_runs_7d": 0,
                 "successes_7d": 0,
+                "failures_7d": 0,
                 "success_rate": 0.0,
+                "ok_rate": 0.0,
                 "total_rows_7d": 0,
                 "avg_duration_ms": 0,
                 "last_observed_at": last_obs.isoformat() if last_obs else None,
@@ -1071,9 +1089,10 @@ def dashboard():
     failing_list = [s for s in quality.values() if s["health"] == "failing"]
     if failing_list:
         html.append('<h2>⚠️ Sources Failing — Need Attention</h2><table>')
-        html.append('<tr><th>Source</th><th>Success Rate</th><th>Total Runs (7d)</th><th>Last Observed</th></tr>')
+        html.append('<tr><th>Source</th><th>OK Rate</th><th>Failures (7d)</th><th>Runs (7d)</th><th>Last Observed</th></tr>')
         for s in failing_list[:10]:
-            html.append(f'<tr><td><b>{s["source_id"]}</b></td><td>{s["success_rate"]*100:.0f}%</td><td>{s["total_runs_7d"]}</td><td>{s.get("last_observed_at", "?")}</td></tr>')
+            stale_tag = ' <span style="color:#f59e0b">(stale)</span>' if s.get("stale") else ''
+            html.append(f'<tr><td><b>{s["source_id"]}</b>{stale_tag}</td><td>{s.get("ok_rate", 0)*100:.0f}%</td><td>{s.get("failures_7d", 0)}</td><td>{s["total_runs_7d"]}</td><td>{s.get("last_observed_at", "?")}</td></tr>')
         html.append('</table>')
 
     html.append('<div class="muted" style="margin-top:32px">DC Hub Autonomous Intelligence · ')
