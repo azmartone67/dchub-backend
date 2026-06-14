@@ -1651,17 +1651,20 @@ _VALUE_SHIPPED_TTL = 60.0
 
 @brain_v2_bp.get("/api/v1/brain/value-shipped")
 def brain_value_shipped():
-    """What has the brain actually shipped that made the site more valuable?
+    """What VERIFIED value has the brain shipped? (r79: value, not volume.)
 
-    Counts autonomous output across the brain's value-creation surfaces:
-      - code proposals shipped (brain_proposed_fixes, status=approved+shipped)
-      - autopilot actions completed (brain_autopilot_actions)
-      - autonomous press releases written (auto_press_releases)
-      - LinkedIn posts sent (auto_press_releases.linkedin_sent_at)
+    Counts autonomous output across the brain's value-creation surfaces,
+    but the VERDICT is a weighted score that rewards verified value:
+      - conversions      (mcp_conversions)         — closed funnel, x25
+      - code_fixes       (brain_pr_outcomes)       — MERGED /pull/ PRs, x8
+      - autopilot_actions(brain_autopilot_actions) — outcome_verified, x5
+      - press_releases / linkedin_posts / outreach — cheap media, x1
+      - facilities_discovered                      — discovery, x0.2
 
-    Returns counts at 7d / 30d windows so operators can answer
-    "is the brain making us more valuable than last week?"
-    with one query instead of digging through 6 endpoints.
+    high_output is UNREACHABLE on pure media: it requires at least one
+    merged PR or verified autopilot action. Returns counts + value_score
+    at 7d / 30d so operators can answer "is the brain making us more
+    valuable than last week?" with one query.
 
     Query: ?force=1 bypasses the 60s cache.
     """
@@ -1749,23 +1752,58 @@ def brain_value_shipped():
 
     # Each query returns (c_7d, c_30d) via FILTER. INTERVAL is inlined
     # because no parameter binding is needed (constant strings).
+    #
+    # r79 (2026-06-14) REWARD VERIFIED VALUE, NOT VOLUME.
+    # ----------------------------------------------------------------
+    # The old code_fixes/autopilot queries referenced columns that do
+    # NOT exist on the live tables (brain_proposed_fixes has no
+    # applied_at/created_at/status; brain_autopilot_actions has no
+    # created_at). Both queries errored inside _dual() and silently
+    # returned (0, 0) — so "value shipped" was 100% media/discovery
+    # volume and the brain self-rated 'high_output' while shipping zero
+    # verified code/actions. We now count ONLY real, verified value:
+    #
+    #   code_fixes      = MERGED pull-request PRs (brain_pr_outcomes,
+    #                     pr_url LIKE '%/pull/%' AND merged_at NOT NULL).
+    #                     Excludes /issues/ links and unmerged drafts.
+    #   autopilot_actions = brain_autopilot_actions WHERE
+    #                     outcome_verified IS TRUE — a remediation whose
+    #                     KPI was re-checked and confirmed, NOT every
+    #                     rate_limited/escalated/dry-run attempt.
+    #
+    # Each query is wrapped by _dual() which returns (0,0) on ANY error
+    # (missing table/column), so a schema drift degrades to "no verified
+    # value" rather than crashing — fail-safe by construction.
     code_7d, code_30d = _dual(
         """SELECT
-              COUNT(*) FILTER (WHERE COALESCE(applied_at, created_at)
-                              >= NOW() - INTERVAL '7 days'
-                              AND status IN ('shipped','approved','applied','merged')),
-              COUNT(*) FILTER (WHERE COALESCE(applied_at, created_at)
-                              >= NOW() - INTERVAL '30 days'
-                              AND status IN ('shipped','approved','applied','merged'))
-           FROM brain_proposed_fixes"""
+              COUNT(*) FILTER (WHERE pr_url LIKE '%/pull/%'
+                              AND merged_at IS NOT NULL
+                              AND merged_at >= NOW() - INTERVAL '7 days'),
+              COUNT(*) FILTER (WHERE pr_url LIKE '%/pull/%'
+                              AND merged_at IS NOT NULL
+                              AND merged_at >= NOW() - INTERVAL '30 days')
+           FROM brain_pr_outcomes"""
     )
     apa_7d, apa_30d = _dual(
         """SELECT
-              COUNT(*) FILTER (WHERE COALESCE(completed_at, started_at, created_at)
+              COUNT(*) FILTER (WHERE outcome_verified IS TRUE
+                              AND COALESCE(verified_at, completed_at,
+                                           fired_at, started_at, detected_at)
                               >= NOW() - INTERVAL '7 days'),
-              COUNT(*) FILTER (WHERE COALESCE(completed_at, started_at, created_at)
+              COUNT(*) FILTER (WHERE outcome_verified IS TRUE
+                              AND COALESCE(verified_at, completed_at,
+                                           fired_at, started_at, detected_at)
                               >= NOW() - INTERVAL '30 days')
            FROM brain_autopilot_actions"""
+    )
+    # Closed funnel/conversion findings — the brain's single most valuable
+    # outcome (a free→paid upgrade). Counted separately and weighted FAR
+    # above any media post in the value score below.
+    conv_7d, conv_30d = _dual(
+        """SELECT
+              COUNT(*) FILTER (WHERE created_at >= NOW() - INTERVAL '7 days'),
+              COUNT(*) FILTER (WHERE created_at >= NOW() - INTERVAL '30 days')
+           FROM mcp_conversions"""
     )
     pr_7d, pr_30d = _dual(
         """SELECT
@@ -1805,6 +1843,7 @@ def brain_value_shipped():
     )
 
     shipped_7d = {
+        "conversions":           conv_7d,
         "code_fixes":            code_7d,
         "autopilot_actions":     apa_7d,
         "press_releases":        pr_7d,
@@ -1813,6 +1852,7 @@ def brain_value_shipped():
         "facilities_discovered": fac_7d,
     }
     shipped_30d = {
+        "conversions":           conv_30d,
         "code_fixes":            code_30d,
         "autopilot_actions":     apa_30d,
         "press_releases":        pr_30d,
@@ -1824,14 +1864,53 @@ def brain_value_shipped():
     def _sum_nonnull(d):
         return sum(v for v in d.values() if isinstance(v, int))
 
+    # Raw volume kept for backwards-compat/observability (NOT the verdict).
     total_7d = _sum_nonnull(shipped_7d)
     total_30d = _sum_nonnull(shipped_30d)
 
-    # Verdict ladder — what does this volume mean?
-    if total_7d >= 14:    verdict = "high_output"
-    elif total_7d >= 7:   verdict = "steady"
-    elif total_7d >= 1:   verdict = "slow"
-    else:                 verdict = "silent"
+    # r79: VERDICT is driven by a WEIGHTED value score, not raw volume.
+    # A closed conversion (free→paid) and a merged PR are worth far more
+    # than a media post. Media/discovery volume is real but cheap, so it
+    # is heavily discounted and can NEVER on its own reach high_output.
+    _WEIGHTS = {
+        "conversions":           25,   # closed funnel = the brain's #1 win
+        "code_fixes":            8,    # MERGED pull-request PRs only
+        "autopilot_actions":     5,    # verified remediations only
+        "press_releases":        1,    # media: cheap, easy to inflate
+        "linkedin_posts":        1,
+        "outreach_pitches":      1,
+        "facilities_discovered": 0.2,  # high-count discovery, lowest unit value
+    }
+
+    def _value_score(d):
+        return sum(_WEIGHTS.get(k, 0) * (v if isinstance(v, int) else 0)
+                   for k, v in d.items())
+
+    value_score_7d  = round(_value_score(shipped_7d), 1)
+    value_score_30d = round(_value_score(shipped_30d), 1)
+
+    # The "verified value" the gate is built on: ONLY merged PRs +
+    # verified autopilot actions + closed conversions. Pure media never
+    # contributes here.
+    verified_value_7d = code_7d + apa_7d + conv_7d
+
+    # Verdict ladder — built on the WEIGHTED score, with a HARD GATE:
+    # high_output is UNREACHABLE while code_fixes == 0 AND verified
+    # autopilot_actions == 0 (i.e. on pure media/discovery volume).
+    # 'steady' likewise requires at least one piece of verified value;
+    # otherwise media volume tops out at 'slow' regardless of how much
+    # press was emitted.
+    _has_verified_value = (code_7d > 0) or (apa_7d > 0) or (conv_7d > 0)
+    _has_code_or_action = (code_7d > 0) or (apa_7d > 0)
+
+    if value_score_7d >= 30 and _has_code_or_action:
+        verdict = "high_output"
+    elif value_score_7d >= 12 and _has_verified_value:
+        verdict = "steady"
+    elif value_score_7d >= 1:
+        verdict = "slow"
+    else:
+        verdict = "silent"
 
     try: c.close()
     except Exception: pass
@@ -1839,16 +1918,23 @@ def brain_value_shipped():
     payload = dict(
         ok=True,
         verdict=verdict,
+        value_score_7d=value_score_7d,
+        value_score_30d=value_score_30d,
+        verified_value_7d=verified_value_7d,
         total_shipped_7d=total_7d,
         total_shipped_30d=total_30d,
         shipped_7d=shipped_7d,
         shipped_30d=shipped_30d,
+        weights=_WEIGHTS,
         generated_at=_dt.datetime.utcnow().isoformat() + "Z",
         purpose=(
-            "Aggregate brain value-creation. Counts code proposals shipped, "
-            "autopilot actions, press releases written, LinkedIn posts, "
-            "and journalist pitches over 7d/30d. Single answer to 'is the "
-            "brain alive and making us more valuable this week?'"
+            "r79: rewards VERIFIED value, not volume. Verdict is a WEIGHTED "
+            "score — closed conversions (x25) and MERGED PRs (x8) and "
+            "verified autopilot actions (x5) dominate cheap media (x1). "
+            "high_output is UNREACHABLE on pure media: it requires at least "
+            "one merged PR or verified autopilot action. code_fixes counts "
+            "only merged /pull/ PRs; autopilot_actions counts only "
+            "outcome_verified rows."
         ),
     )
     # r39 cache write

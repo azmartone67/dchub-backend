@@ -1476,6 +1476,37 @@ def _record_action(finding: dict, pattern: str, action_path: str | None,
         try: c.close()
         except Exception: pass
 
+    # r79 (2026-06-14): register an outcome-bound metric target on every
+    # REAL executed autopilot action so brain_metric_targets (the
+    # outcome-reward table that has sat at 0 rows because register_target
+    # was never wired) populates with the KPI we expect this remediation
+    # to move. The outcome_verifier later re-reads the metric and writes
+    # verified_outcome — which is what brain_value_shipped now rewards.
+    #
+    # Gated hard: only non-dry-run, non-escalated, successfully-executed
+    # actions register a target. Fully fail-safe — ANY error here is
+    # swallowed so target registration can never break an autopilot run
+    # (degrades to the prior behavior of simply not registering).
+    try:
+        _is_real_exec = (
+            not dry_run
+            and not escalated
+            and isinstance(outcome, str)
+            and outcome.lower() in ("executed_ok", "ok", "success", "executed")
+        )
+        if _is_real_exec:
+            from routes.brain_metric_targets import register_target as _reg_target
+            # Map the action to a KPI proxy: the value-shipped verified
+            # count is the universal "did this real action stick?" metric.
+            _reg_target(
+                output_kind="autopilot_action",
+                output_ref=(action_path or pattern or "")[:200],
+                metric_key="brain.verified_value_7d",
+                verify_after_days=7,
+            )
+    except Exception as _rt_e:
+        print(f"[autopilot] register_target skipped (non-fatal): {_rt_e}")
+
     # Phase HHH (2026-05-16): real-time webhook escalation. When the
     # brain marks something escalated (no autonomous remediation possible,
     # needs a human), POST to BRAIN_ESCALATION_WEBHOOK_URL. Compatible
