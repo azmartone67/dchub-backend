@@ -886,6 +886,8 @@ def fetch_linkedin_impressions(days=21):
                       ADD COLUMN IF NOT EXISTS clicks BIGINT,
                       ADD COLUMN IF NOT EXISTS shares BIGINT,
                       ADD COLUMN IF NOT EXISTS unique_impressions BIGINT,
+                      ADD COLUMN IF NOT EXISTS likes BIGINT,
+                      ADD COLUMN IF NOT EXISTS comments BIGINT,
                       ADD COLUMN IF NOT EXISTS engagement_fetched_at TIMESTAMPTZ""")
     except Exception:
         pass
@@ -948,6 +950,13 @@ def fetch_linkedin_impressions(days=21):
                 clicks = _to_int(stats.get("clickCount"))
                 shares = _to_int(stats.get("shareCount"))
                 uniq = _to_int(stats.get("uniqueImpressionsCount"))
+                # r86e: totalShareStatistics ALSO carries likeCount/commentCount.
+                # Pull them HERE (this call only needs r_organization_social, which
+                # the token has) so reactions populate WITHOUT the separate
+                # socialActions feed that 403s on the missing r_organizational_
+                # social_feed scope. Reactions now feed the r86d engagement bandit.
+                likes = _to_int(stats.get("likeCount"))
+                comments = _to_int(stats.get("commentCount"))
                 if not share_urn:
                     continue
                 try:
@@ -957,9 +966,11 @@ def fetch_linkedin_impressions(days=21):
                                   clicks=%s,
                                   shares=%s,
                                   unique_impressions=%s,
+                                  likes=COALESCE(%s, likes),
+                                  comments=COALESCE(%s, comments),
                                   engagement_fetched_at=NOW()
                             WHERE post_urn=%s""",
-                        (impressions, clicks, shares, uniq, share_urn),
+                        (impressions, clicks, shares, uniq, likes, comments, share_urn),
                     )
                     out["updated"] += 1
                 except Exception as e:
