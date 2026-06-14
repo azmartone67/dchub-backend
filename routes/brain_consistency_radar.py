@@ -2604,7 +2604,14 @@ def check_auto_trial_conversion() -> list[dict]:
     signup_rate  = 100.0 * signed   / max(1, total)
     upgrade_rate = 100.0 * upgraded / max(1, total)
     # Healthy goal: 20%+ trials → signups. Flag if below.
-    if signup_rate < 20:
+    # r88h (2026-06-14): SUPPRESS — structural floor, not a fixable bug.
+    # Autonomous MCP agents have no email/credit card, so they use the inline
+    # trial key and never "redeem" (1597 minted / 3 signed up is the permanent
+    # shape). The agent-side conversion levers already shipped (r86-r88:
+    # first-call-full, auto-bind, depth-tease); the real lever is human site
+    # traffic, not agent redemption. Firing every cycle was pure noise (same
+    # class as the detectors #1151 stopped). Re-enable: BRAIN_FLAG_TRIAL_SIGNUP=1.
+    if signup_rate < 20 and os.environ.get("BRAIN_FLAG_TRIAL_SIGNUP") == "1":
         findings.append({
             "issue":  "auto_trial_signup_rate_low",
             "url":    "/api/v1/keys/auto-trial/stats",
@@ -4781,7 +4788,10 @@ def check_page_brand_drift() -> list[dict]:
             signals.append("missing-instrument-sans")
         # Legacy color tokens — only flag when several appear (one stray
         # hex in an OG meta tag isn't drift)
-        legacy = sum(html.count(c) for c in ("#10b981", "#3478f6", "#06b6d4"))
+        # r88h: #10b981 (emerald) is a CURRENT brand accent, not legacy — counting
+        # it tripped false legacy-colors drift on pages that legitimately use it
+        # (/dcpi, /pricing). Keep only the genuinely-retired tokens.
+        legacy = sum(html.count(c) for c in ("#3478f6", "#06b6d4"))
         if legacy >= 3:
             signals.append(f"legacy-colors({legacy})")
 

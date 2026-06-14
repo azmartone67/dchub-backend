@@ -2476,8 +2476,16 @@ def fix_funnel_health_scan():
         issues += 1
 
     # 2. Overall paywall -> upgrade conversion floor.
+    # r88h (2026-06-14): SUPPRESSED — same structural artifact as check #1. The
+    # numerator (upgrade) is mcp_conversions = real STRIPE PAID conversions (7),
+    # while the denominator (paywall) is raw mcp_upgrade_signals (~6000, power-
+    # agent-looped). Autonomous agents have no credit card, so paid/raw-agent-
+    # signal pins at ~0.1% forever — a permanent false alarm, not an actionable
+    # leak. Honest agent demand-vs-conversion is covered by
+    # check_mcp_conversion_stale(). Re-enable: DCHUB_FLAG_FUNNEL_CONV_FLOOR=1.
     overall = (data.get("conversion_rates") or {}).get("overall_paywall_to_upgrade")
-    if overall is not None and overall < 0.005 and paywall >= 500:
+    if (overall is not None and overall < 0.005 and paywall >= 500
+            and os.environ.get("DCHUB_FLAG_FUNNEL_CONV_FLOOR") == "1"):
         label = (f"funnel_conversion_critical: overall paywall->upgrade "
                  f"{overall * 100:.4f}% over {paywall} paywalls (target >0.5%)")
         _last_funnel_findings.setdefault("dchub://funnel/redeem", {})[label] = paywall
