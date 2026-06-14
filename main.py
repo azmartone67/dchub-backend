@@ -29224,6 +29224,14 @@ try:
 except Exception as _ret_e:
     print(f"[main] mcp_retention register failed: {_ret_e}", file=sys.stderr)
 
+# r86-reach: honest AI-platform REACH (/api/v1/ai/reach) — distinct public IPs per platform,
+# the real reach behind the loop-inflated request counts on the /ai page. Standalone file.
+try:
+    from routes.ai_reach import ai_reach_bp
+    app.register_blueprint(ai_reach_bp)
+except Exception as _air_e:
+    print(f"[main] ai_reach register failed: {_air_e}", file=sys.stderr)
+
 # Phase GGG-MMM (2026-05-16) — master shell: 6 new builds in one go.
 # Each blueprint isolated with its own try/except so any single failure
 # doesn't block app startup. See routes/*.py docstrings for per-phase rationale.
