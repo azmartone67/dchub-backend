@@ -51,7 +51,7 @@ CREATE TABLE IF NOT EXISTS autopilot_outcomes (
     pattern_name      TEXT NOT NULL,
     fired_at          TIMESTAMPTZ NOT NULL,
     verified_at       TIMESTAMPTZ NOT NULL DEFAULT NOW(),
-    succeeded         BOOLEAN NOT NULL,
+    succeeded         BOOLEAN,           -- NULL = cannot_verify (no verifier defined for this pattern)
     evidence          TEXT,              -- what we checked and found
     failure_reason    TEXT
 );
@@ -66,6 +66,11 @@ def _ensure_schema(c):
     try:
         with c.cursor() as cur:
             cur.execute(_SCHEMA)
+            # r86: the table already exists in prod with succeeded BOOLEAN NOT
+            # NULL. Relax it so cannot_verify rows (succeeded=NULL) are legal —
+            # without this, the sentinel INSERT below fails the NOT NULL and is
+            # silently swallowed by the bare except, leaving the bug in place.
+            cur.execute("ALTER TABLE autopilot_outcomes ALTER COLUMN succeeded DROP NOT NULL")
     except Exception:
         try: c.rollback()
         except Exception: pass
@@ -171,6 +176,27 @@ def verify_pending(window_minutes: int = 30, max_actions: int = 50) -> dict:
                 pattern = a["pattern_name"] or ""
                 verifier = _VERIFIERS.get(pattern)
                 if not verifier:
+                    # r86: no verifier for this pattern. Write a NEUTRAL
+                    # cannot_verify outcome (succeeded=NULL) so the NOT EXISTS
+                    # subquery above (and the autopilot_action_unverified
+                    # detector, which uses the same NOT EXISTS) stops
+                    # re-selecting this action forever. Deliberately does NOT
+                    # touch brain_issue_persistence (no mark_resolved /
+                    # mark_attempted_failed) — absence of a verifier is neither
+                    # success nor failure, and writing back either way would
+                    # corrupt the finding lifecycle.
+                    try:
+                        cur.execute("""
+                            INSERT INTO autopilot_outcomes
+                              (autopilot_action_id, pattern_name, fired_at,
+                               succeeded, evidence, failure_reason)
+                            VALUES (%s, %s, %s, NULL, %s, NULL)
+                            ON CONFLICT DO NOTHING
+                        """, (a["id"], pattern, a["started_at"],
+                              "no_verifier_defined"))
+                        out["cannot_verify"] = out.get("cannot_verify", 0) + 1
+                    except Exception:
+                        pass
                     out["skipped"] += 1
                     continue
                 succeeded, evidence = verifier(a, cur)
@@ -251,15 +277,19 @@ def outcomes_endpoint():
         _ensure_schema(c)
         import psycopg2.extras
         with c.cursor(cursor_factory=psycopg2.extras.RealDictCursor) as cur:
+            # r86: cannot_verify rows (succeeded IS NULL) are excluded from the
+            # success-rate denominator so a verifier-less pattern can't drag the
+            # rate to 0%. They're surfaced separately as cannot_verify.
             cur.execute("""
                 SELECT pattern_name,
-                       COUNT(*) AS total,
-                       COUNT(*) FILTER (WHERE succeeded) AS succeeded,
+                       COUNT(*) FILTER (WHERE succeeded IS NOT NULL) AS total,
+                       COUNT(*) FILTER (WHERE succeeded)             AS succeeded,
+                       COUNT(*) FILTER (WHERE succeeded IS NULL)     AS cannot_verify,
                        MAX(verified_at) AS last_verified
                   FROM autopilot_outcomes
                  WHERE verified_at >= NOW() - INTERVAL '30 days'
                  GROUP BY pattern_name
-                 ORDER BY total DESC
+                 ORDER BY COUNT(*) DESC
             """)
             by_pattern = cur.fetchall()
             cur.execute("""
@@ -277,6 +307,7 @@ def outcomes_endpoint():
             "pattern":          r["pattern_name"],
             "total_verified":   int(r["total"] or 0),
             "succeeded":        int(r["succeeded"] or 0),
+            "cannot_verify":    int(r["cannot_verify"] or 0),
             "success_rate_pct": round(100.0 * (r["succeeded"] or 0) / max(1, r["total"] or 1), 1),
             "last_verified":    r["last_verified"].isoformat() if r["last_verified"] else None,
         } for r in by_pattern],
@@ -284,7 +315,8 @@ def outcomes_endpoint():
             "pattern":     r["pattern_name"],
             "fired_at":    r["fired_at"].isoformat() if r["fired_at"] else None,
             "verified_at": r["verified_at"].isoformat() if r["verified_at"] else None,
-            "succeeded":   bool(r["succeeded"]),
+            # r86: tri-state — None when cannot_verify (no verifier), else bool
+            "succeeded":   (None if r["succeeded"] is None else bool(r["succeeded"])),
             "evidence":    r["evidence"],
         } for r in recent],
     }), 200

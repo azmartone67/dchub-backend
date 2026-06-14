@@ -468,7 +468,7 @@ Write only the paragraphs. No preamble, no sign-off.
 """
 
 
-def _call_claude(prompt: str) -> str | None:
+def _call_claude(prompt: str, allow_foreground: bool = False) -> str | None:
     """Single Claude call. Returns narrative text or None on failure.
     Uses haiku — cheap, fast, plenty for analyst prose.
 
@@ -503,8 +503,18 @@ def _call_claude(prompt: str) -> str | None:
     # renders instantly, and the background prewarmer/cron (which gets the
     # generous _WARM_TIMEOUT) generates + caches the narrative for the next
     # visit. No cache poisoning — the caller returns None without caching a miss.
-    if is_foreground:
+    # r86 (2026-06-13): the unconditional skip made /api/v1/reports/monthly's
+    # narrative_summary PERMANENTLY null — every JSON-report caller is in a
+    # request context and nothing warms the monthly report in the background, so
+    # the LLM call was never made (report_no_narrative finding). Callers that can
+    # afford a one-time ~6-8s generation (the JSON report endpoints, cached 1h
+    # for the next ~1000 readers) pass allow_foreground=True and run under the
+    # generous warm budget. The DCPI page render keeps allow_foreground=False so
+    # it still returns instantly and backfills via the cache.
+    if is_foreground and not allow_foreground:
         return None
+    if is_foreground and allow_foreground:
+        _to = _WARM_TIMEOUT
     try:
         import requests
         r = requests.post(
@@ -598,7 +608,10 @@ def attach_narrative(d: dict, kind: str = "monthly",
         logger.warning(f"narrative prompt build failed for {kind}/{audience}: {e}")
         return d
 
-    text = _call_claude(prompt)
+    # r86: report endpoints can afford a one-time foreground generation (result
+    # cached _CACHE_TTL); DCPI page render (attach_market_narrative) does not opt
+    # in, so it keeps rendering instantly.
+    text = _call_claude(prompt, allow_foreground=True)
     if not text:
         return d
 

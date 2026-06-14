@@ -37,6 +37,11 @@ matplotlib>=3.7
 pypdf>=4.0
 openpyxl>=3.1
 
+# r86 (2026-06-13): PyYAML so the consistency-radar cron parser uses the robust
+# yaml path instead of the regex fallback (which mis-split job blocks and
+# false-flagged hot_leads_send_top_50 as cron_phase_missing_schedule).
+PyYAML>=6.0
+
 # Market Brief PDF export (Phase 2) — HTML→PDF via weasyprint. Linux Docker
 # already has pango/cairo via apt; Railway image needs libpango1.0-0 +
 # libcairo2 + libpangoft2-1.0-0 + shared-mime-info installed in the

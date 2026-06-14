@@ -417,22 +417,19 @@ def _parse_workflow_regex(text: str) -> tuple[list[str], set[str]]:
     # condition. If the condition references `github.event.schedule`
     # along with a phase option, mark the phase as scheduled.
     scheduled: set[str] = set()
-    # Crude block split: each job starts at column 2 with a name + colon
-    job_blocks = re.split(r"\n(?=  [a-z_]+:\s*\n)", text)
-    for block in job_blocks:
-        m_name = re.match(r"\s*([a-z_]+):", block)
-        if not m_name:
-            continue
-        job_name = m_name.group(1)
-        # Only care about the `if:` line inside this block
-        if_match = re.search(r"^\s*if:\s*(.+?)(?=\n\s*runs-on|\n\s*steps:|\Z)",
-                              block, re.MULTILINE | re.DOTALL)
-        cond = if_match.group(1) if if_match else ""
-        # Phase QA-sweep-3 (2026-05-16): treat BOTH `github.event.schedule`
-        # AND `github.event_name == 'schedule'` as evidence of a scheduled
-        # trigger. brain_learn + marketing_auto_press use the latter
-        # ("fires on ANY scheduled tick") which is a legitimate pattern;
-        # the old regex only recognized the explicit-cron-string form.
+    # r86 (2026-06-13): scan EVERY `if:` expression in the whole file rather
+    # than trusting per-job block isolation. The old `re.split` anchor silently
+    # merged adjacent job blocks (e.g. when a header was followed by a comment
+    # line), absorbing hot_leads_send_top_5/top_50 into the hot_leads_preview
+    # block — so re.search only saw the FIRST `if:` (no schedule signal) and
+    # falsely reported hot_leads_send_top_50 as cron_phase_missing_schedule even
+    # though evolve-cron.yml guards it with `github.event.schedule == '7 17 * * 4'`.
+    # A whole-file scan is immune to block-split fragility.
+    # Phase QA-sweep-3 (2026-05-16): treat BOTH `github.event.schedule` AND
+    # `github.event_name == 'schedule'` as evidence of a scheduled trigger.
+    for ifm in re.finditer(r"^\s*if:\s*(.+?)(?=\n\s{0,4}[a-z_]+:|\Z)",
+                           text, re.MULTILINE | re.DOTALL):
+        cond = ifm.group(1)
         has_schedule_signal = (
             "github.event.schedule" in cond
             or "github.event_name == 'schedule'" in cond
@@ -443,8 +440,6 @@ def _parse_workflow_regex(text: str) -> tuple[list[str], set[str]]:
         for opt in phase_options:
             if f"== '{opt}'" in cond or f'== "{opt}"' in cond:
                 scheduled.add(opt)
-        if job_name in phase_options:
-            scheduled.add(job_name)
     return phase_options, scheduled
 
 
@@ -4721,10 +4716,12 @@ def check_page_brand_drift() -> list[dict]:
     # pages over a 24-hour window so we don't hit the same 5 every tick).
     import datetime as _dt
     hour_bucket = _dt.datetime.utcnow().hour
+    # r86: dropped "/status" — it 301s to status.dchub.cloud (external), so a
+    # brand scan of the redirect target always false-flagged drift.
     sample_pool = [
         "/", "/about", "/pricing", "/intelligence", "/ai-hub",
         "/dcpi", "/transactions", "/cited-by", "/reports/monthly",
-        "/daily", "/advertise", "/markets/", "/brain/brief", "/status",
+        "/daily", "/advertise", "/markets/", "/brain/brief",
     ]
     # Take 5 from the pool keyed off hour so we cycle through over time
     start = (hour_bucket * 3) % len(sample_pool)
@@ -4745,11 +4742,15 @@ def check_page_brand_drift() -> list[dict]:
             continue
 
         signals = []
-        if "data-dchub-brand" not in html:
-            signals.append("missing-brand-mark")
-        if "/js/dchub-brand.js" not in html and "dchub-brand.js" not in html:
-            signals.append("missing-brand-script")
-        if "Instrument Sans" not in html:
+        # r86: data-dchub-brand + dchub-brand.js are injected at RUNTIME by
+        # /js/dchub-nav.js (see dchub-nav.js inject()/buildNavHTML) — they are
+        # NEVER present in the served static HTML, so the old needles
+        # false-flagged drift on every modern page (the /about, /pricing
+        # missing-brand-mark/missing-brand-script findings). The real canonical-
+        # brand signal is nav.js itself being loaded.
+        if "/js/dchub-nav.js" not in html:
+            signals.append("missing-nav-js")
+        if "Instrument Sans" not in html and "/js/dchub-nav.js" not in html:
             signals.append("missing-instrument-sans")
         # Legacy color tokens — only flag when several appear (one stray
         # hex in an OG meta tag isn't drift)
@@ -4836,7 +4837,9 @@ def check_page_brand_uniformity() -> list[dict]:
         '/ai-pipeline', '/ai-integrations', '/ai-inventory',
         '/state-of-the-data-center', '/system-status', '/grid-intelligence',
         '/platform', '/sites', '/spare-capacity', '/capacity-pipeline',
-        '/mcp',
+        # r86: dropped "/mcp" — it is the MCP JSON-RPC endpoint
+        # (application/json), not an HTML page, so brand needles never matched
+        # and it false-flagged "missing dchub nav js" every pass.
     ]
 
     REQUIRED = [
@@ -4907,6 +4910,11 @@ def check_page_brand_uniformity() -> list[dict]:
         if not html or code != 200:
             # Non-200 is caught by check_frontend_critical_endpoints
             # and friends — don't double-report here.
+            continue
+        # r86: only brand-scan bodies that are actually HTML documents. A path
+        # that resolves to JSON (e.g. an API/MCP endpoint) has no brand surface,
+        # so scanning it just manufactures false "missing brand" findings.
+        if "<html" not in html[:2000].lower():
             continue
         if len(findings) >= 20:
             break
@@ -7277,7 +7285,10 @@ def check_heartbeat_surfaces_stale() -> list[dict]:
     except Exception:
         return findings
     try:
-        r = _req.get("https://dchub.cloud/api/v1/heartbeat",
+        # r86: probe the Railway ORIGIN, not dchub.cloud — the CF edge caches
+        # /api/v1/heartbeat up to 1h, so a surface the /auto drain already healed
+        # at origin still reads "stale" on the edge, manufacturing the finding.
+        r = _req.get("https://dchub-backend-production.up.railway.app/api/v1/heartbeat",
                      timeout=8,
                      headers={"User-Agent": "dchub-brain-heartbeat/1.0"})
         if r.status_code != 200:
@@ -7286,7 +7297,18 @@ def check_heartbeat_surfaces_stale() -> list[dict]:
     except Exception:
         return findings
 
-    stale = [s for s in surfs if s.get("status") == "stale"]
+    # r86: re-stamp drift parks volatile surfaces right at their window edge
+    # between /auto drains. Only treat a surface as GENUINELY stale if it is
+    # well past its window (>1.5x) — a single missed drain tick can't reach
+    # that, so this kills the boundary-sawtooth false positive while still
+    # catching a refresh function that's actually dead.
+    def _really_stale(s) -> bool:
+        if s.get("status") != "stale":
+            return False
+        age = s.get("age_hours") or 0
+        win = s.get("stale_after_hours") or 24
+        return age > win * 1.5
+    stale = [s for s in surfs if _really_stale(s)]
     if not stale:
         return findings
 

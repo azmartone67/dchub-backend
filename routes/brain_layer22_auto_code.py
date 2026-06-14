@@ -313,6 +313,66 @@ def _try_recipe_cron_mismatch(finding: dict) -> dict | None:
     }
 
 
+# ── Recipe: schema_drift_guard (r86 — Inspector-brief-only, DRAFT issue) ──
+
+# Honest/already-resolved drift the Inspector still names in stale briefs — we
+# NEVER draft a "fix" for reality (mirrors the citation skip in
+# brain_inspector._parse_code_fix_candidates). citation_score=0 is an honest
+# measurement; the mcp_funnel api_key→ip_address drift was fixed in r85f.
+_SCHEMA_DRIFT_SUPPRESS = (
+    "citation",
+    "api_key",          # mcp_funnel signal: resolved r85f (uses ip_address)
+)
+
+
+def _try_recipe_schema_drift_guard(finding: dict) -> dict | None:
+    """r86: DRAFT-only GitHub Issue for a schema/route-drift code defect the
+    Inspector surfaced (a query referencing a column/table that doesn't exist,
+    or an autopilot action targeting a dead route). This recipe NEVER edits DB
+    code or opens a real PR — _draft_pr's default path opens an Issue with the
+    precise target + a suggested guard, so a human applies the change. This is
+    the Inspector→L22 handoff for the schema_drift_guard recipe class, which
+    previously had no handler at all (so every such candidate was silently
+    dropped — the '0 L22 proposals' autonomy gap)."""
+    target = (finding.get("target") or "").strip()[:160]
+    rationale = (finding.get("rationale") or "").strip()[:300]
+    if not target:
+        return None
+    low = (target + " " + rationale).lower()
+    if any(s in low for s in _SCHEMA_DRIFT_SUPPRESS):
+        return None
+    if _already_drafted("schema_drift_guard", target):
+        return None
+    return {
+        "recipe": "schema_drift_guard",
+        "target_path": target,
+        "title": f"[brain-l22] Schema-drift guard: {target}",
+        "body": _build_pr_body(
+            recipe="schema_drift_guard",
+            trigger=finding,
+            target=target,
+            diff_summary=(
+                f"The Inspector flagged a schema/route drift in `{target}`:\n\n"
+                f"> {rationale or 'a query or action references a column/table/route that does not exist'}\n\n"
+                "Suggested guard: wrap the failing query/call in an existence "
+                "check — `information_schema.columns` for a column, a registered-"
+                "route check for an endpoint — so the signal degrades to an "
+                "honest 'not measured' instead of erroring (or repointing a dead "
+                "endpoint to a live one)."),
+            rationale=(
+                "Schema/route drift surfaces as a hard error in a brain signal "
+                "or as execution_failed in an autopilot action. A guard turns it "
+                "into honest telemetry instead of a crash, and stops the brain "
+                "re-flagging it every pass."),
+            verification=(
+                "After the guard ships, the originating finding stops erroring "
+                "on the next Inspector brief."),
+        ),
+        "labels": ["brain-l22-auto-code", "recipe-schema-drift-guard",
+                   "confidence-investigation-only"],
+    }
+
+
 # ── PR body builder ─────────────────────────────────────────────────
 
 def _build_pr_body(recipe, trigger, target, diff_summary, rationale,
@@ -665,7 +725,7 @@ def _try_recipe_gone_410_alias(pattern_key: str, count: int) -> dict | None:
     }
 
 
-def _scan_and_draft(dry_run: bool) -> dict:
+def _scan_and_draft(dry_run: bool, brief_id: int | None = None) -> dict:
     """Pull recent findings + L21 ring buffer; match against recipes; draft.
 
     Phase FF+7-meta (2026-05-19): wired DIRECTLY to L21's
@@ -673,9 +733,74 @@ def _scan_and_draft(dry_run: bool) -> dict:
     check_repeated_404_patterns detector requires 10 hits/hour which
     is too high for fresh-deploy traffic. The ring buffer threshold
     here is 2 hits/hour — lower friction, more actionable.
+
+    r86: when called with a brief_id (the Inspector→L22 auto-fire passes one),
+    FIRST consume that brief's parsed Code-fix RECIPE candidates and draft them.
+    Before r86 this function ignored brief_id entirely and only ran its own
+    independent L21/radar scan, so the Inspector's RECIPE candidates were
+    parsed, logged, and silently dropped — the literal '0 L22 PR proposals /
+    the handoff pipe needs one more step' autonomy gap on /brain/innovation.
     """
     drafted = []
     skipped = []
+
+    # 0. r86: Inspector-brief candidates (the handoff). Re-parse the brief by
+    # id, map each RECIPE candidate to its handler, and draft. Honest/already-
+    # resolved candidates are suppressed inside each recipe (e.g. citation,
+    # mcp_funnel api_key). _already_drafted dedups within 7d so a recurring
+    # candidate doesn't spam. This is the step that finally crosses the
+    # Inspector→L22 handoff frontier.
+    if brief_id:
+        try:
+            from routes.brain_inspector import _parse_code_fix_candidates, _get_db
+            md = ""
+            _c = _get_db()
+            if _c is not None:
+                try:
+                    with _c.cursor() as _cur:
+                        _cur.execute(
+                            "SELECT brief_md FROM brain_briefs WHERE id = %s",
+                            (brief_id,))
+                        _r = _cur.fetchone()
+                        md = (_r[0] if _r else "") or ""
+                finally:
+                    try: _c.close()
+                    except Exception: pass
+            candidates = _parse_code_fix_candidates(md)
+            for cand in candidates:
+                recipe = (cand.get("recipe") or "").strip()
+                draft = None
+                if recipe == "schema_drift_guard":
+                    draft = _try_recipe_schema_drift_guard(cand)
+                elif recipe == "cron_if_mismatched":
+                    draft = _try_recipe_cron_mismatch({
+                        "issue":  "cron_schedule_collision",
+                        "url":    cand.get("target") or "",
+                        "detail": cand.get("rationale") or "",
+                        "count":  1,
+                    })
+                elif recipe == "route_alias_404":
+                    draft = _try_recipe_route_alias({
+                        "url":        cand.get("target") or "",
+                        "count":      1,
+                        "confidence": "medium",
+                    })
+                if draft:
+                    res = _draft_pr(draft, dry_run=dry_run)
+                    (drafted if res.get("ok") else skipped).append({
+                        "recipe": draft["recipe"], "title": draft.get("title"),
+                        "source": "inspector_brief", "brief_id": brief_id,
+                        "result": res,
+                    })
+                else:
+                    skipped.append({
+                        "recipe": recipe, "target": cand.get("target"),
+                        "source": "inspector_brief", "brief_id": brief_id,
+                        "reason": "no_handler_or_suppressed_or_already_drafted",
+                    })
+        except Exception as e:
+            skipped.append({"source": "inspector_brief",
+                            "reason": f"brief_candidate_consume_failed: {str(e)[:160]}"})
 
     # 1. From L21 ring buffer (real-time, fresh)
     try:
@@ -837,16 +962,27 @@ def auto_code_list():
     )
 
 
+def _brief_id_from_request():
+    """r86: the Inspector→L22 auto-fire POSTs {trigger, brief_id}. Read it so
+    _scan_and_draft can consume that brief's RECIPE candidates."""
+    try:
+        body = request.get_json(silent=True) or {}
+        bid = body.get("brief_id")
+        return int(bid) if bid is not None else None
+    except Exception:
+        return None
+
+
 @brain_layer22_bp.route("/api/v1/brain/auto-code/run", methods=["POST"])
 def auto_code_run():
     if _ADMIN_KEY:
         provided = (request.headers.get("X-Admin-Key") or "").strip()
         if provided != _ADMIN_KEY:
             return jsonify(error="unauthorized"), 401
-    return jsonify(_scan_and_draft(dry_run=False))
+    return jsonify(_scan_and_draft(dry_run=False, brief_id=_brief_id_from_request()))
 
 
 @brain_layer22_bp.route("/api/v1/brain/auto-code/dry-run",
                         methods=["POST", "GET"])
 def auto_code_dry_run():
-    return jsonify(_scan_and_draft(dry_run=True))
+    return jsonify(_scan_and_draft(dry_run=True, brief_id=_brief_id_from_request()))

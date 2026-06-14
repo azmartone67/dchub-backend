@@ -864,6 +864,18 @@ All endpoints in this table are FREE and require NO authentication.
         content = """User-agent: *
 Allow: /
 
+# Crawl-budget hygiene (Bing Webmaster "limited crawl capacity" 2026-06-14):
+# every canonical page lives at a clean path (/facilities/<slug>, /markets/<slug>,
+# /grid/<iso>, /dcpi/<city>). Parameterized URLs are filters/tracking/cache-busters
+# that just spawn duplicate crawl targets, and /api/* is raw JSON, not content.
+# Steer crawlers away from both so the quota goes to real pages.
+Disallow: /*?
+Allow: /sitemap.xml
+Allow: /sitemap-index.xml
+Disallow: /api/
+Disallow: /admin/
+Disallow: /cdn-cgi/
+
 # AI Crawlers Welcome
 User-agent: GPTBot
 Allow: /
