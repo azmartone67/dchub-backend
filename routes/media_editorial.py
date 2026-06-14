@@ -116,6 +116,124 @@ def leads_with_number(text: str, head_chars: int = 220) -> bool:
     return bool(_HAS_METRIC.search(probe))
 
 
+# ── Engagement learning (r86d) — close the loop: weight angles by reach ──
+# Attribute LinkedIn impressions/clicks back to the desk's lead KINDS by
+# classifying post content, then bias rank_data_events toward angles that
+# actually earn reach. Soft-greedy with a floor (0.7x) so under-tried kinds
+# still get explored (never crushed to zero). Runs on impressions+clicks,
+# which went live once the r86c token re-auth granted r_organization_social;
+# likes/comments fold in automatically if the token later gains
+# r_organizational_social_feed (the socialActions feed scope).
+# r86d: SPECIFICITY-ORDERED (first match wins), tuned so each of the desk's own
+# lead headlines round-trips to its own kind (see tests/test_media_editorial_classify.py):
+#   deal     "$10.0B ... transaction: KKR/Nvidia"            -> $-amount cue, FIRST so a
+#                                                               stray 'GW' in the deal body
+#                                                               can't steal it for interconnection
+#   mover    "Cheyenne climbed 12 pts on the DCPI ... index"  -> delta cue, BEFORE build (the
+#                                                               mover headline also says DCPI/
+#                                                               excess-power, so build must lose)
+#   build    "Cheyenne leads the DCPI ... index at 70/100"    -> level cue
+#   queue    "ERCOT's interconnection queue holds 427 GW ..."
+#   facility "... 18 MW ... entered the tracker"
+_KIND_PATTERNS = [
+    ("deal",            re.compile(r"\$\s?\d|\bacquisition\b|acquir|\btransaction\b|\bM&A\b|\bbuyer\b|\bsold\b", re.I)),
+    ("dcpi_mover",      re.compile(r"climbed|slid|biggest mover|shifted|moved \d|\bpts?\b|\bpoints?\b", re.I)),
+    ("dcpi_build",      re.compile(r"leads the DCPI|index at|at \d+/100|build (?:signal|market)|excess.?power|\bDCPI\b", re.I)),
+    ("interconnection", re.compile(r"interconnection|\bqueue\b|\bGW\b|time.?to.?power", re.I)),
+    ("new_facility",    re.compile(r"new facility|campus|came online|entered the (?:tracker|map)|\bMW\b", re.I)),
+]
+
+
+def _classify_kind(text: str) -> str:
+    # Classify on the LEAD (first ~220 chars) — that's where the angle is set;
+    # scanning the whole body let stray tokens (a '$' or 'GW' mid-post)
+    # mis-attribute the post to the wrong kind.
+    t = (text or "")[:220]
+    for k, rx in _KIND_PATTERNS:
+        if rx.search(t):
+            return k
+    return "other"
+
+
+_ENG_CACHE: dict = {}   # days -> (epoch_ts, value)
+_ENG_TTL = 600          # 45d aggregate doesn't need per-call freshness (single-replica backend)
+
+
+def engagement_by_kind(days: int = 45) -> dict:
+    """Per-lead-kind reach performance from linkedin_posts:
+       {kind: {eng_rate=(clicks+reactions)/impr, avg_impr, posts}}.
+    Empty kinds omitted. Fully defensive (returns {} on any error).
+    r86d: process-level TTL cache so the editorial hot path (called per-slot by
+    both engines, twice per generation) doesn't re-query the 45d aggregate each
+    time — matters on the single-replica backend that flaps under sync load."""
+    import time
+    _now = time.time()
+    _hit = _ENG_CACHE.get(days)
+    if _hit and (_now - _hit[0]) < _ENG_TTL:
+        return _hit[1]
+    out: dict = {}
+    c = _conn()
+    if c is None:
+        return out
+    try:
+        import psycopg2.extras
+        with c.cursor(cursor_factory=psycopg2.extras.RealDictCursor) as cur:
+            cur.execute("""
+                SELECT COALESCE(content,'') AS content,
+                       COALESCE(impressions,0) AS impr,
+                       COALESCE(clicks,0) + COALESCE(likes,0)
+                         + COALESCE(comments,0) + COALESCE(shares,0) AS eng
+                  FROM linkedin_posts
+                 WHERE impressions IS NOT NULL AND impressions > 0
+                   AND posted_at > NOW() - make_interval(days => %s)
+            """, (int(days),))
+            agg: dict = {}
+            for r in cur.fetchall():
+                k = _classify_kind(r["content"])
+                a = agg.setdefault(k, {"impr": 0, "eng": 0, "n": 0})
+                a["impr"] += int(r["impr"] or 0)
+                a["eng"] += int(r["eng"] or 0)
+                a["n"] += 1
+            for k, a in agg.items():
+                if a["impr"] > 0:
+                    out[k] = {"eng_rate": round(a["eng"] / a["impr"], 4),
+                              "avg_impr": round(a["impr"] / max(1, a["n"]), 1),
+                              "posts": a["n"]}
+    except Exception:
+        try: c.rollback()
+        except Exception: pass
+    finally:
+        try: c.close()
+        except Exception: pass
+    _ENG_CACHE[days] = (_now, out)
+    return out
+
+
+def _engagement_weights(eng: dict) -> dict:
+    """kind -> multiplicative score factor (soft-greedy, floor 0.7x, best ~1.3x).
+    Untried kinds aren't in the map → treated as neutral 1.0x by callers, so
+    they keep getting explored."""
+    rates = [v.get("eng_rate") for v in eng.values() if v.get("eng_rate") is not None]
+    hi = max(rates) if rates else 0
+    if not hi or hi <= 0:
+        return {}
+    return {k: round(0.7 + 0.6 * (v["eng_rate"] / hi), 3)
+            for k, v in eng.items() if v.get("eng_rate") is not None}
+
+
+def engagement_signal_block() -> str:
+    """One prompt line telling the generator which angles earn the most reach,
+    so the analyst voice leans toward what lands. Empty until data accrues."""
+    eng = engagement_by_kind()
+    if not eng:
+        return ""
+    ranked = sorted(eng.items(), key=lambda kv: kv[1].get("eng_rate", 0), reverse=True)[:3]
+    parts = ", ".join(
+        f"{k} ({v['eng_rate']*100:.1f}% eng/impr, ~{v['avg_impr']:.0f} impr)"
+        for k, v in ranked)
+    return f"\nRECENT REACH (these angles earned the most reach lately — lean toward them): {parts}.\n"
+
+
 # ── Candidate data-event leads ───────────────────────────────────────
 def _num(x):
     try:
@@ -201,7 +319,9 @@ def rank_data_events() -> list[dict]:
             "so_what": "capital is repricing power-rich sites — watch the comparable markets.",
             "source_url": "https://dchub.cloud/transactions",
             "dedup_key": f"deal:{str(buyer).lower()}:{str(seller).lower()}",
-            "score": min(60.0, 18.0 + bv / 250.0),
+            # r86d: cap raised 60->120 so marquee deals keep decisive magnitude
+            # (a $50B deal must out-rank a $10B one even after the 0.7-1.3x weight).
+            "score": min(120.0, 18.0 + bv / 250.0),
         })
 
     # 3) Interconnection queue — the clearest 'time-to-power' trend (ungated).
@@ -249,6 +369,19 @@ def rank_data_events() -> list[dict]:
             "score": min(35.0, 6.0 + mw / 30.0),
         })
 
+    # r86d BANDIT: bias toward angles that actually earn reach. Each lead's
+    # newsworthiness score is multiplied by its kind's learned reach factor
+    # (soft-greedy, floor 0.7x; untried kinds stay neutral 1.0x → explored).
+    # raw_score/eng_rate/eng_weight are kept for the scoreboard + transparency.
+    eng = engagement_by_kind()
+    weights = _engagement_weights(eng)
+    for l in leads:
+        k = l.get("kind")
+        l["raw_score"] = l.get("score", 0)
+        l["eng_rate"] = (eng.get(k) or {}).get("eng_rate")
+        f = weights.get(k, 1.0)
+        l["eng_weight"] = f
+        l["score"] = round(l["raw_score"] * f, 2)
     leads.sort(key=lambda x: x.get("score", 0), reverse=True)
     return leads
 
@@ -303,7 +436,11 @@ def editorial_decision(slot: str | None = None) -> dict:
     fresh = [l for l in ranked if _is_novel(l)]
     top = fresh[0] if fresh else None
 
-    if top and top.get("score", 0) >= _NEWSWORTHY_MIN:
+    # r86d: judge the SUPPRESS bar on intrinsic newsworthiness (raw_score), so
+    # the engagement weight only re-ORDERS leads — it never floors a genuinely
+    # newsworthy lead below the bar nor promotes noise above it. (ranked is
+    # already sorted by the weighted score, so `top` is the best-by-reach lead.)
+    if top and top.get("raw_score", top.get("score", 0)) >= _NEWSWORTHY_MIN:
         return {
             "post": True,
             "slot": slot,
@@ -328,13 +465,20 @@ def lead_prompt_block(lead: dict | None) -> str:
     LEADS with this number+trend+so-what."""
     if not lead:
         return ""
-    return (
+    block = (
         "TODAY'S DATA LEAD (open the post with this — number first):\n"
         f"  - Number: {lead.get('headline_number','')}\n"
         f"  - Trend: {lead.get('trend','')}\n"
         f"  - So-what: {lead.get('so_what','')}\n"
         f"  - Source line (optional, after the insight): {lead.get('source_url','')}\n"
     )
+    # r86d: append the learned reach signal so the analyst leans toward angles
+    # that have been landing (best-effort; empty until engagement data accrues).
+    try:
+        block += engagement_signal_block()
+    except Exception:
+        pass
+    return block
 
 
 @media_editorial_bp.route("/api/v1/brain/media/editorial-decision", methods=["GET"])
@@ -355,5 +499,29 @@ def data_leads_endpoint():
     try:
         return jsonify({"ok": True, "leads": rank_data_events(),
                         "generated_at": _dt.datetime.utcnow().isoformat() + "Z"}), 200
+    except Exception as e:
+        return jsonify({"ok": False, "error": str(e)[:200]}), 200
+
+
+@media_editorial_bp.route("/api/v1/brain/media/linkedin-engagement-scoreboard", methods=["GET"])
+def engagement_scoreboard_endpoint():
+    """r86d: which angles actually earn reach. Drives the desk's bandit and is
+    the honest 'is the media engine landing?' surface (reach, not post count)."""
+    try:
+        eng = engagement_by_kind()
+        weights = _engagement_weights(eng)
+        ranked = sorted(eng.items(), key=lambda kv: kv[1].get("eng_rate", 0), reverse=True)
+        return jsonify({
+            "ok": True,
+            "by_kind": [
+                {"kind": k, **v, "score_weight": weights.get(k, 1.0)}
+                for k, v in ranked
+            ],
+            "best_angle": (ranked[0][0] if ranked else None),
+            "note": ("eng_rate = (clicks+likes+comments+shares)/impressions over 45d; "
+                     "likes/comments require the r_organizational_social_feed scope "
+                     "(impressions+clicks are live now)."),
+            "generated_at": _dt.datetime.utcnow().isoformat() + "Z",
+        }), 200
     except Exception as e:
         return jsonify({"ok": False, "error": str(e)[:200]}), 200
