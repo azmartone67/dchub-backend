@@ -25911,6 +25911,12 @@ try:
     except Exception as _gpi_e:
         print(f"🔥 Gas Pipeline Ingest: ⚠️ {_gpi_e}")
     try:
+        from routes.infra_growth import register_infra_growth
+        register_infra_growth(app)
+        print("📈 Infra Growth Tracker: ✅ Registered (/api/v1/admin/infra-growth)")
+    except Exception as _igr_e:
+        print(f"📈 Infra Growth Tracker: ⚠️ {_igr_e}")
+    try:
         from routes.submarine_cables import subsea_bp
         app.register_blueprint(subsea_bp)
         print("🌊 Submarine Cables proxy: ✅ Registered (/api/v1/infrastructure/submarine-cables)")

@@ -1,0 +1,58 @@
+# Daily infra growth tracker (owner request 2026-06-13).
+#
+# Records one count snapshot per layer per day (substations, data centers,
+# gas, fiber, power) and surfaces FLATLINE warnings — a layer that should
+# be growing but hasn't changed in N days is an early signal its source
+# quietly broke (exactly what happened to gas: frozen at 918 for weeks
+# while the cron looked green). Pure DB counts, runs on Railway; this job
+# just triggers the snapshot and echoes the trend.
+name: infra-growth-tracker
+
+on:
+  schedule:
+    - cron: '5 6 * * *'   # daily 06:05 UTC (after the 04:00 infra-sync)
+  workflow_dispatch: {}
+
+concurrency:
+  group: infra-growth-tracker
+  cancel-in-progress: false
+
+jobs:
+  snapshot:
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    env:
+      ADMIN_KEY: ${{ secrets.DCHUB_ADMIN_KEY }}
+      ORIGIN: https://dchub-backend-production.up.railway.app
+    steps:
+      - name: Snapshot + report growth
+        run: |
+          set -uo pipefail
+          if [ -z "${ADMIN_KEY:-}" ]; then
+            echo "::warning::DCHUB_ADMIN_KEY not set — skipping"; exit 0
+          fi
+          http=$(curl -sS --max-time 120 -X POST \
+            "${ORIGIN}/api/v1/admin/infra-growth/snapshot" \
+            -H "X-Admin-Key: ${ADMIN_KEY}" -o /tmp/g.json -w '%{http_code}')
+          echo "HTTP ${http}"
+          if [ "${http}" != "200" ]; then echo "::error::snapshot failed (${http})"; cat /tmp/g.json; exit 1; fi
+
+          # One readable line per layer.
+          python3 - <<'PY'
+          import json
+          d = json.load(open('/tmp/g.json'))
+          print(f"{'LAYER':<26}{'COUNT':>12}  {'+1d':>7}  {'+7d':>8}  CATEGORY")
+          for l in sorted(d.get('layers', []), key=lambda x: (x['category'], x['layer'])):
+              d1 = '' if l['delta_1d'] is None else f"+{l['delta_1d']}"
+              d7 = '' if l['delta_7d'] is None else f"+{l['delta_7d']}"
+              flag = '  ⚠️ FLATLINE' if l['flatline'] else ''
+              print(f"{l['layer']:<26}{l['count']:>12,}  {d1:>7}  {d7:>8}  {l['category']}{flag}")
+          PY
+
+          # Surface flatlines as GitHub warnings (early "source broke" alarm).
+          FLAT=$(python3 -c "import json;print('; '.join(json.load(open('/tmp/g.json')).get('flatlines',[])))")
+          if [ -n "$FLAT" ]; then
+            echo "::warning::infra layers flatlined — a source may have broken: $FLAT"
+          else
+            echo "✅ no flatlines — all layers within expected cadence"
+          fi
