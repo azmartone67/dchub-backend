@@ -1484,6 +1484,41 @@ _QUAR_CACHE = {"set": frozenset(), "ts": 0.0}
 _QUAR_TTL_S = 60.0
 
 
+# ── Loop 3b (2026-06-14): quarantine CHRONIC NO-OPS ───────────────────
+# The verify-failure quarantine above only catches patterns that actually
+# EXECUTED and then failed verification. But the dominant pathology is the
+# *no-op flood*: a pattern re-fires hundreds/thousands of times yet produces
+# ZERO executed_ok because every fire is short-circuited (rate_limited /
+# escalated / execution_failed). ~69% of all autopilot volume was these
+# bounce-loop no-ops (e.g. page_brand_uniformity 3,599 fires / 0 fix over 20d).
+# Such a pattern is demonstrably not fixing anything, so we bench it on the
+# SAME machinery (brain_pattern_quarantine + _rate_limit_check) which auto-
+# releases after _QUARANTINE_WINDOW_HOURS so the root cause can be retried.
+#
+# FAIL-SAFE invariants (any error degrades to the prior behavior — never a
+# spurious quarantine):
+#   * A pattern with ANY executed_ok inside the window is NEVER quarantined.
+#   * NULL / empty pattern_name is excluded (not a real pattern).
+#   * Requires a HIGH re-fire count (_NOOP_MIN_REFIRES) so a rarely-firing
+#     pattern with a couple of transient skips is left alone.
+#   * The whole INSERT is wrapped so a failure leaves existing rows untouched.
+# All three knobs are env-tunable.
+def _env_int(name: str, default: int) -> int:
+    try:
+        v = os.environ.get(name)
+        return int(v) if v is not None and str(v).strip() != "" else default
+    except Exception:
+        return default
+
+# 0 executed_ok over this many days => candidate (task default N=3).
+_NOOP_QUARANTINE_DAYS    = _env_int("BRAIN_NOOP_QUARANTINE_DAYS", 3)
+# ...AND at least this many total fires in the window (the "high re-fire" bar).
+_NOOP_MIN_REFIRES        = _env_int("BRAIN_NOOP_MIN_REFIRES", 20)
+# Kill switch — set to 1/true to skip chronic-no-op quarantine entirely.
+def _noop_quarantine_disabled() -> bool:
+    return str(os.environ.get("BRAIN_NOOP_QUARANTINE_DISABLED", "")).lower() in ("1", "true", "yes")
+
+
 def _ensure_quarantine_table():
     c = _conn()
     if c is None:
@@ -2156,6 +2191,12 @@ def autopilot_library():
             "cooldown_minutes":          _COOLDOWN_MIN_BETWEEN_SAME_ACTIONS,
             "escalation_threshold_24h":  _ESCALATION_THRESHOLD_24H,
         },
+        noop_quarantine={
+            "days_zero_executed_ok":     _NOOP_QUARANTINE_DAYS,   # env BRAIN_NOOP_QUARANTINE_DAYS
+            "min_refires":               _NOOP_MIN_REFIRES,       # env BRAIN_NOOP_MIN_REFIRES
+            "bench_hours_before_retry":  _QUARANTINE_WINDOW_HOURS,
+            "disabled":                  _noop_quarantine_disabled(),  # env BRAIN_NOOP_QUARANTINE_DISABLED
+        },
         kill_switch_env="BRAIN_AUTOPILOT_DISABLED",
         dry_run_env="BRAIN_AUTOPILOT_DRY_RUN",
         disabled=_is_disabled(),
@@ -2731,6 +2772,47 @@ def autopilot_verify():
                 summary["quarantined"] = max(0, cur.rowcount or 0)
             except Exception as e:
                 summary["quarantine_error"] = str(e)[:140]
+
+            # Loop 3b (2026-06-14): auto-quarantine CHRONIC NO-OPS — patterns
+            # that re-fire heavily (>= _NOOP_MIN_REFIRES total rows over
+            # _NOOP_QUARANTINE_DAYS) yet produce ZERO executed_ok in that
+            # window. These are the bounce-loop no-ops (rate_limited /
+            # escalated / execution_failed) that drive ~69% of autopilot
+            # volume without ever fixing anything. Same bench/auto-release
+            # machinery; a pattern with ANY executed_ok in the window is
+            # filtered out by the HAVING clause so a healthy pattern can
+            # NEVER be benched. NULL/empty pattern_name excluded. Fully
+            # fail-safe: any error here leaves prior quarantine state intact.
+            try:
+                if not _noop_quarantine_disabled():
+                    cur.execute("""
+                        INSERT INTO brain_pattern_quarantine
+                            (pattern_name, fail_count, quarantined_at, released_at, last_reason)
+                        SELECT pattern_name,
+                               COUNT(*),
+                               NOW(), NULL,
+                               'auto: chronic no-op — ' || COUNT(*)
+                                 || ' fires / 0 executed_ok in ' || %s || 'd'
+                          FROM brain_autopilot_actions
+                         WHERE started_at >= NOW() - make_interval(days => %s)
+                           AND pattern_name IS NOT NULL
+                           AND pattern_name <> ''
+                         GROUP BY pattern_name
+                        HAVING COUNT(*) >= %s
+                           AND COUNT(*) FILTER (WHERE outcome = 'executed_ok') = 0
+                        ON CONFLICT (pattern_name) DO UPDATE
+                           SET fail_count = EXCLUDED.fail_count,
+                               quarantined_at = NOW(),
+                               released_at = NULL,
+                               last_reason = EXCLUDED.last_reason
+                         WHERE brain_pattern_quarantine.released_at IS NOT NULL
+                            OR brain_pattern_quarantine.quarantined_at
+                                 < NOW() - make_interval(hours => %s)
+                    """, (_NOOP_QUARANTINE_DAYS, _NOOP_QUARANTINE_DAYS,
+                          _NOOP_MIN_REFIRES, _QUARANTINE_WINDOW_HOURS))
+                    summary["quarantined_noop"] = max(0, cur.rowcount or 0)
+            except Exception as e:
+                summary["quarantine_noop_error"] = str(e)[:140]
         c.commit()
     finally:
         try: c.close()
