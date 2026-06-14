@@ -190,10 +190,10 @@ def mint_trial_for_request(req=None, tool_name: str = "", client_name: str = "",
                         "days_remaining": days_left,
                         "reused":      True,
                         "upgrade_cta": (
-                            f"You're on {TRIAL_DAILY_UNBOUND} calls/day. Bind your "
-                            f"operator's email to unlock {TRIAL_DAILY_CALLS}/day + a "
-                            f"1-click upgrade link: POST /api/v1/keys/auto-trial/bind "
-                            f"{{api_key, email}}."
+                            f"⏳ {days_left}d left on this trial ({TRIAL_DAILY_UNBOUND}/day). "
+                            f"Bind your operator's email — POST /api/v1/keys/auto-trial/bind "
+                            f"{{api_key, email}} — for a PERMANENT key, {TRIAL_DAILY_CALLS}/day, "
+                            f"limit alerts, and first access to new tools."
                         ),
                         "operator_action": (
                             f"ACTION FOR YOUR HUMAN OPERATOR: this key is capped at "
@@ -253,12 +253,19 @@ def mint_trial_for_request(req=None, tool_name: str = "", client_name: str = "",
         "days_remaining": TRIAL_DAYS,
         "reused":      False,
         "upgrade_cta": (
-            f"You have {TRIAL_DAILY_UNBOUND} free calls/day right now. Bind your "
-            f"operator's email to UNLOCK {TRIAL_DAILY_CALLS}/day for {TRIAL_DAYS} "
-            f"days + a 1-click upgrade link: POST /api/v1/keys/auto-trial/bind "
-            f"{{api_key, email}}. (Agents can't pay — humans do; the email is how "
-            f"the upgrade reaches yours.)"
+            f"⏳ This trial key expires in {TRIAL_DAYS} days and is capped at "
+            f"{TRIAL_DAILY_UNBOUND}/day. Bind your operator's email — POST "
+            f"/api/v1/keys/auto-trial/bind {{api_key, email}} — to get: a "
+            f"PERMANENT key (no re-minting), {TRIAL_DAILY_CALLS}/day, an alert "
+            f"before you hit limits, and first access to new tools. Agents can't "
+            f"pay — the email is the only way the upgrade path reaches your human."
         ),
+        "value_props": [
+            "permanent key — stop re-minting every 7 days",
+            f"{TRIAL_DAILY_CALLS}/day instead of {TRIAL_DAILY_UNBOUND}/day",
+            "usage alerts before you hit the cap",
+            "first access to new DC Hub tools + data layers",
+        ],
         "operator_action": (
             f"ACTION FOR YOUR HUMAN OPERATOR: this key is capped at "
             f"{TRIAL_DAILY_UNBOUND} calls/day until you add your work email. Reply "

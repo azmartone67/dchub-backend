@@ -8704,7 +8704,7 @@ def _persist_release_sp(cur, name: str) -> None:
         pass
 
 
-def _persist_findings_to_db(findings: list[dict]) -> int:
+def _persist_findings_to_db(findings: list[dict], full_sweep: bool = False) -> int:
     """Write findings to brain_findings. UPSERT on (issue, url) so the
     same finding rolling across scans increments seen_count + bumps
     last_seen instead of duplicating. Returns rows touched.
@@ -8812,7 +8812,15 @@ def _persist_findings_to_db(findings: list[dict]) -> int:
                 # OLD code would have DELETED them, so "leave open" is the
                 # strictly safer degraded behavior.
                 resolved_now = 0
-                if _persist_savepoint(cur, "bf_resolve_absent"):
+                # r-incentives FIX: resolve-on-absence ONLY during a FULL sweep.
+                # _persist_findings_to_db has PARTIAL callers (e.g. the Inspector
+                # persisting just its degrading/attention items) — running the
+                # resolve from those would mark every finding NOT in that partial
+                # set as resolved (they're all >2min old), falsely closing the
+                # radar's open findings. Only the canonical full radar sweep
+                # passes full_sweep=True, where "open + stale last_seen" really
+                # does mean "not re-detected this sweep".
+                if full_sweep and _persist_savepoint(cur, "bf_resolve_absent"):
                     try:
                         cur.execute("""
                             UPDATE brain_findings
@@ -8915,7 +8923,9 @@ def scan_summary() -> dict:
         # across Railway workers and has caused autopilot silence
         # for hours). Defensive — never fails the scan.
         try:
-            _persist_findings_to_db(findings or [])
+            # full_sweep=True: this is the canonical scan_all() over ALL
+            # detectors, so resolve-on-absence is valid here (only place it runs).
+            _persist_findings_to_db(findings or [], full_sweep=True)
         except Exception:
             pass
         return result
