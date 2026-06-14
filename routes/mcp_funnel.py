@@ -264,3 +264,71 @@ def conversion_funnel_tool(tool):
     funnels = _compute_funnel(tool_filter=tool, days=days)
     if not funnels: return jsonify(error="no_data", tool=tool), 404
     return jsonify(funnels[0]), 200
+
+
+# ── r86-reach: RETENTION panel data ─────────────────────────────────────────
+# The reach analysis (2026-06-14) settled it: inflow is fine (~30-50 NEW external
+# IPs/wk) but ~1 returns — the leak is RETENTION, not reach. This endpoint surfaces
+# the new-vs-returning external-IP cohort + the free-key mint→reuse rate, which is
+# the success metric the r86 first-touch fix (initialize instructions + claim_free_key
+# next_tool + persist nudge) must move. Read-only. ?weeks=N (default 11, max 26).
+_RETENTION_INTERNAL = r"(loop|dchub-|selfheal|probe|health|scanner|regression|mcp-test|sweep|clawith|anthropicapi)"
+
+
+@mcp_funnel_bp.route("/api/v1/mcp/retention", methods=["GET"])
+def mcp_retention():
+    try: weeks = max(1, min(26, int(request.args.get("weeks") or 11)))
+    except ValueError: weeks = 11
+    c = _conn()
+    if c is None: return jsonify(error="no_db"), 503
+    out = {"weeks": weeks, "ip_cohort": [], "key_reuse": [], "summary": {},
+           "note": ("Retention is the lever, not reach: inflow ~30-50 new ext IPs/wk but ~1 returns. "
+                    "Watch pct_reused + returning_ips climb = the r86 first-touch fix working. "
+                    "Mint VOLUME is scan/anon-inflated — read the RATE, not the count.")}
+    try:
+        with c.cursor(cursor_factory=psycopg2.extras.RealDictCursor) as cur:
+            cur.execute("""
+                WITH ext AS (
+                  SELECT ip_address, date_trunc('week', created_at) AS wk,
+                         MIN(date_trunc('week', created_at)) OVER (PARTITION BY ip_address) AS first_wk
+                  FROM mcp_tool_calls
+                  WHERE created_at >= now() - (%s || ' weeks')::interval
+                    AND ip_address IS NOT NULL AND ip_address <> ''
+                    AND COALESCE(client_name,'') !~* %s AND COALESCE(platform,'') !~* %s )
+                SELECT wk::date AS week, COUNT(DISTINCT ip_address) AS distinct_ips,
+                       COUNT(DISTINCT ip_address) FILTER (WHERE wk = first_wk) AS new_ips,
+                       COUNT(DISTINCT ip_address) FILTER (WHERE wk > first_wk) AS returning_ips
+                FROM ext GROUP BY wk ORDER BY wk
+            """, (weeks, _RETENTION_INTERNAL, _RETENTION_INTERNAL))
+            out["ip_cohort"] = [dict(r) for r in cur.fetchall()]
+
+            cur.execute("""
+                SELECT date_trunc('week', minted_at)::date AS week, COUNT(*) AS minted,
+                       COUNT(*) FILTER (WHERE call_count > 1) AS reused_2plus,
+                       COUNT(*) FILTER (WHERE last_used_at IS NOT NULL
+                                AND last_used_at > minted_at + interval '1 hour') AS returned_later,
+                       COUNT(DISTINCT request_ip_hash) AS distinct_ips
+                FROM auto_trial_keys WHERE minted_at >= now() - (%s || ' weeks')::interval
+                GROUP BY week ORDER BY week
+            """, (weeks,))
+            out["key_reuse"] = [dict(r) for r in cur.fetchall()]
+
+            cur.execute("""
+                SELECT COUNT(*) AS minted_30d,
+                       ROUND(100.0*COUNT(*) FILTER (WHERE call_count > 1)/NULLIF(COUNT(*),0),1) AS pct_reused_30d,
+                       ROUND(AVG(call_count),2) AS avg_calls_per_key_30d
+                FROM auto_trial_keys WHERE minted_at >= now() - interval '30 days'
+            """)
+            row = cur.fetchone()
+            out["summary"] = dict(row) if row else {}
+            if out["ip_cohort"]:
+                last = out["ip_cohort"][-1]
+                out["summary"].update(latest_week=str(last["week"]),
+                                      latest_new_ips=last["new_ips"],
+                                      latest_returning_ips=last["returning_ips"])
+    except Exception as e:
+        return jsonify(error="query_failed", detail=str(e)[:200]), 500
+    finally:
+        try: c.close()
+        except Exception: pass
+    return jsonify(out), 200
