@@ -22,7 +22,7 @@ ai_reach_bp = Blueprint("ai_reach_r86", __name__)
 _PRIVATE_IP = r"^(10\.|127\.|192\.168\.|172\.(1[6-9]|2[0-9]|3[01])\.|169\.254\.|::1|fc|fd|0\.0\.0\.0|$)"
 _INTERNAL_PLAT = ('internal', 'mcp_generic', 'direct', 'unknown', 'unknown_ai', 'mcp', 'Unknown', '')
 _cache = {"ts": 0.0, "data": None}
-_TTL = 600  # 10 min — the scan is heavy
+_TTL = 1800  # 30 min — the scan is heavy; stale-on-error below covers the cold-refresh window
 
 
 def _conn():
@@ -50,6 +50,8 @@ def ai_reach():
            "note": "Honest reach = DISTINCT public IPs per platform (real agent sources), not cumulative request volume. The big 'requests served' counts are real traffic but loop-inflated; this is the addressable reach."}
     try:
         with c.cursor(cursor_factory=psycopg2.extras.RealDictCursor) as cur:
+            # cap the heavy scan so a slow run fails fast → falls back to last-good cache (below)
+            cur.execute("SET statement_timeout = '9000'")
             # id-bounded recent window (~7d of traffic) — avoids the slow TEXT-timestamp cast
             cur.execute("SELECT MAX(id) AS m FROM agent_requests")
             maxid = (cur.fetchone() or {}).get("m") or 0
@@ -83,6 +85,10 @@ def ai_reach():
             out["distinct_agents_7d"] = int(tot.get("agents") or 0)
             out["requests_7d"] = int(tot.get("reqs") or 0)
     except Exception as e:
+        # never blank the /ai reach lines on a slow cold-refresh: serve last-good cache if we have it
+        if _cache["data"] is not None:
+            stale = dict(_cache["data"]); stale["stale"] = True
+            return jsonify(stale), 200
         return jsonify(error="query_failed", detail=str(e)[:200]), 500
     finally:
         try: c.close()
