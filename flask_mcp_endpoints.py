@@ -951,7 +951,13 @@ def track_tool_call():
                     (_params_str or '{}')[:4000],
                     bool((body.get('status') in (None, 'ok', 'success', 200, True)) or body.get('success', True)),
                     int((body.get('duration_ms') or body.get('response_time_ms') or 0) or 0),
-                    (request.headers.get('X-Forwarded-For') or request.remote_addr or '')[:64],
+                    # item-3 (real caller IP): prefer the IP forwarded in the
+                    # payload — server.mjs now captures the inbound client's
+                    # X-Forwarded-For first hop and sends it as body.ip_address.
+                    # The request header / remote_addr here is the Node MCP
+                    # server's own egress IP (same reason user_agent read 'node'
+                    # for every row), so it's only a last-resort fallback.
+                    (body.get('ip_address') or request.headers.get('X-Forwarded-For') or request.remote_addr or '')[:64],
                     # r78: prefer the CLIENT UA forwarded in the payload —
                     # the request header here is the Node server's own
                     # fetch UA, which is why every row since 5/18 read
