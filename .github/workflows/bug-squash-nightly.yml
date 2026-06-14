@@ -11,7 +11,7 @@ name: bug-squash-nightly
 
 on:
   schedule:
-    - cron: '0 5 * * *'  # 05:00 UTC daily — after the dcpi-daily 06:00 recompute window
+    - cron: '13 5 * * *'  # 05:13 UTC daily (staggered off dchub-jobs 0 5)
   workflow_dispatch:
     inputs:
       pattern:

@@ -2,7 +2,7 @@ name: daily-infra-sync
 on:
   workflow_dispatch:
   schedule:
-    - cron: '0 4 * * *'   # 04:00 UTC daily
+    - cron: '8 4 * * *'   # 04:08 UTC daily (staggered off dchub-jobs 0 4 thundering herd)
 jobs:
   sync:
     runs-on: ubuntu-latest

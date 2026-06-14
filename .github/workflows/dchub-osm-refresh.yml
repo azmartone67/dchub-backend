@@ -3,7 +3,7 @@ name: DC Hub OSM Refresh
 # Overpass weekly. Sunday 02:00 UTC (Overpass least loaded).
 on:
   schedule:
-    - cron: '0 2 * * 0'
+    - cron: '14 2 * * 0'   # staggered off dchub-jobs 0 2 (Sunday herd)
   workflow_dispatch:
 
 jobs:

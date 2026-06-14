@@ -6,7 +6,7 @@ on:
     # tracked markets shifted BUILD/CAUTION/AVOID since the last check.
     # If no markets shifted, no email goes out — same-state days are
     # silent by design. Subscribe at POST /api/v1/alerts/dcpi/subscribe.
-    - cron: '0 14 * * *'
+    - cron: '9 14 * * *'   # staggered off the Monday 14:00 herd
   workflow_dispatch: {}
 jobs:
   send-alerts:

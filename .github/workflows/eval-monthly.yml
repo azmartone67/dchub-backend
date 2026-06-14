@@ -1,7 +1,7 @@
 name: Monthly MCP Tool-Description Eval
 on:
   schedule:
-    - cron: '0 13 1 * *'   # 1st of month, 13:00 UTC
+    - cron: '33 13 1 * *'   # 1st 13:33 UTC (staggered off evolve-cron 0 13)
   workflow_dispatch:
 jobs:
   eval:
