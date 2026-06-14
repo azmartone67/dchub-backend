@@ -74,6 +74,31 @@ def _db():
     return get_db()
 
 
+def _admin_ok() -> bool:
+    """Gate for admin-only discovery ingest endpoints.
+
+    Accepts X-Admin-Key / X-Internal-Key header (or ?admin_key= query)
+    matching any configured internal/admin env key. Resolved per-request
+    (not at import) so a rotated key takes effect without a restart, and
+    so the gate fails CLOSED when no key env var is set."""
+    sent = (request.headers.get("X-Admin-Key")
+            or request.headers.get("X-Internal-Key")
+            or request.args.get("admin_key") or "").strip()
+    if not sent:
+        return False
+    keys = set()
+    try:
+        from internal_auth import accepted_internal_keys
+        keys |= accepted_internal_keys()
+    except Exception:
+        pass
+    for _n in ("DCHUB_ADMIN_KEY", "DCHUB_INTERNAL_KEY", "INTERNAL_KEY"):
+        _v = (os.environ.get(_n) or "").strip()
+        if _v:
+            keys.add(_v)
+    return sent in keys
+
+
 # ─────────────────────────────────────────────────────────────
 # DISCOVERY SOURCES & CONFIGURATION
 # ─────────────────────────────────────────────────────────────
@@ -201,7 +226,7 @@ def init_discovery_tables():
 # STAGING HELPER
 # ─────────────────────────────────────────────────────────────
 
-def _stage_facilities_batch(conn, rows, batch_size=200):
+def _stage_facilities_batch(conn, rows, batch_size=200, commit=True):
     """Bulk-insert discovered facilities via psycopg2.extras.execute_values.
 
     r41-disco-batch (2026-05-25): replaces the per-row _stage_facility
@@ -212,6 +237,10 @@ def _stage_facilities_batch(conn, rows, batch_size=200):
     connection in ~2 seconds.
 
     rows: list of dicts with the same keyword args _stage_facility takes
+    commit: when False, the caller owns the transaction (used by the
+            dcm-ingest ?dry_run path so it can ROLL BACK without
+            persisting — the default commit-per-batch would otherwise
+            leave rows behind). Counts are still returned.
     Returns: (added_count, duplicate_count)
     """
     if not rows:
@@ -259,7 +288,8 @@ def _stage_facilities_batch(conn, rows, batch_size=200):
                     total_added += 1
                 else:
                     total_dup += 1
-            conn.commit()
+            if commit:
+                conn.commit()
         except Exception as e:
             try:
                 conn.rollback()
@@ -517,6 +547,162 @@ def run_datacentermap_discovery():
             except Exception:
                 pass
     return result
+
+
+# ─────────────────────────────────────────────────────────────
+# DATACENTERMAP — GH-RUNNER INGEST  (Item 2a, 2026-06-13)
+# ─────────────────────────────────────────────────────────────
+#
+# Railway egress is 429-rate-limited by DataCenterMap (the in-process
+# run_datacentermap_discovery() above silently no-ops on 403/429). The
+# infra_fetch.py LAYERS pattern fixes this: a GitHub Actions runner (clean
+# egress) fetches https://www.datacentermap.com/api/datacenters, normalizes
+# the rows, and POSTs the array to THIS endpoint with the admin key. Railway
+# never fetches DCM — it only writes the rows the runner already pulled.
+
+def _normalize_dcm_facility(fac: dict) -> dict | None:
+    """Map one DataCenterMap JSON record to a _stage_facilities_batch row.
+
+    Returns None if the record has no usable name. Mirrors the field
+    aliases already used by run_datacentermap_discovery() so the runner
+    can POST the raw API shape unchanged."""
+    if not isinstance(fac, dict):
+        return None
+    name = (fac.get('name') or fac.get('title') or '').strip()
+    if not name:
+        return None
+    raw_id = fac.get('id') or fac.get('uuid') or fac.get('slug')
+    if raw_id in (None, ''):
+        raw_id = hashlib.md5(name.encode('utf-8')).hexdigest()[:8]
+    source_id = f"dcmap_{raw_id}"
+    provider = (fac.get('company') or fac.get('operator')
+                or fac.get('provider') or '').strip() or 'Unknown'
+    country = (fac.get('country_code') or fac.get('country') or 'US')
+    country = (country[:2].upper() if country else 'US')
+
+    def _f(v):
+        try:
+            if v in (None, ''):
+                return None
+            fv = float(v)
+            return fv if fv == fv else None  # reject NaN
+        except (TypeError, ValueError):
+            return None
+
+    return {
+        'source':     'datacentermap',
+        'source_id':  source_id,
+        'name':       name[:300],
+        'provider':   provider[:200],
+        'city':       (fac.get('city') or '')[:120],
+        'state':      (fac.get('state') or fac.get('region') or '')[:120],
+        'country':    country,
+        'latitude':   _f(fac.get('latitude') or fac.get('lat')),
+        'longitude':  _f(fac.get('longitude') or fac.get('lng')
+                         or fac.get('lon')),
+        'power_mw':   _f(fac.get('power_mw') or fac.get('power')) or 0,
+        'status':     (fac.get('status') or 'active')[:60],
+        'address':    (fac.get('address') or '')[:300],
+        'source_url': (fac.get('url') or fac.get('source_url') or '')[:500],
+        'raw_data':   fac,
+        'confidence': 0.65,
+    }
+
+
+@discovery_bp.route('/api/admin/dcm-ingest', methods=['POST'])
+def dcm_ingest():
+    """Admin: bulk-ingest a DataCenterMap facilities array (GH-runner POST).
+
+    Body: {"facilities": [ {...DCM record...}, ... ]}  (a bare array is
+    also accepted). Each record is normalized to source='datacentermap'
+    and bulk-inserted via _stage_facilities_batch (ON CONFLICT upsert, so
+    re-POSTs are idempotent). Gate: X-Admin-Key header.
+
+    Query:
+      ?dry_run=1   parse + normalize but ROLL BACK (no rows written).
+    """
+    if not _admin_ok():
+        return jsonify(ok=False, error='admin_key_required'), 401
+
+    try:
+        init_discovery_tables()
+    except Exception:
+        pass
+
+    payload = request.get_json(silent=True)
+    if isinstance(payload, list):
+        facilities = payload
+    elif isinstance(payload, dict):
+        facilities = (payload.get('facilities')
+                      or payload.get('data')
+                      or payload.get('datacenters') or [])
+    else:
+        facilities = []
+    if not isinstance(facilities, list):
+        return jsonify(ok=False, error='facilities_must_be_array'), 400
+
+    dry_run = (request.args.get('dry_run') or '').lower() in ('1', 'true', 'yes')
+
+    rows = []
+    skipped = 0
+    for fac in facilities:
+        norm = _normalize_dcm_facility(fac)
+        if norm:
+            rows.append(norm)
+        else:
+            skipped += 1
+
+    result = {
+        'ok': True,
+        'source': 'datacentermap',
+        'received': len(facilities),
+        'normalized': len(rows),
+        'skipped': skipped,
+        'dry_run': dry_run,
+        'added': 0,
+        'duplicate': 0,
+        'ingested_at': datetime.utcnow().isoformat(),
+    }
+
+    if not rows:
+        return jsonify(result)
+
+    conn = None
+    try:
+        conn = _db()
+        if dry_run:
+            # Prove the write path against the live schema WITHOUT
+            # persisting: stage with commit=False, then roll back the
+            # whole batch so nothing is left behind.
+            added, dup = _stage_facilities_batch(conn, rows, commit=False)
+            try:
+                conn.rollback()
+            except Exception:
+                pass
+            result['added'] = added
+            result['duplicate'] = dup
+            result['note'] = 'dry_run — rolled back, nothing persisted'
+        else:
+            added, dup = _stage_facilities_batch(conn, rows)
+            result['added'] = added
+            result['duplicate'] = dup
+        logger.info(
+            f"[dcm-ingest] received={result['received']} "
+            f"normalized={result['normalized']} added={result['added']} "
+            f"dup={result['duplicate']} dry_run={dry_run}")
+    except Exception as e:
+        result['ok'] = False
+        result['error'] = str(e)
+        logger.error(f"[dcm-ingest] failed: {e}")
+        return jsonify(result), 500
+    finally:
+        if conn:
+            try:
+                conn.close()
+            except Exception:
+                pass
+
+    return jsonify(result)
 
 
 # ─────────────────────────────────────────────────────────────
