@@ -1908,6 +1908,7 @@ def api_scores():
             f"{_total_rows} markets with scores at https://dchub.cloud/pricing."
         )
         payload["_signup_url"] = "https://dchub.cloud/pricing"
+        payload["_playground_url"] = "https://dchub.cloud/playground"  # r80 #3: human can see what is gated, no signup
 
     resp = jsonify(**payload)
     resp.headers["ETag"] = etag

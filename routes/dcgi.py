@@ -560,6 +560,7 @@ def dcgi_scores():
             f"{_total_states} states with scores at https://dchub.cloud/pricing."
         )
         payload["_signup_url"] = "https://dchub.cloud/pricing"
+        payload["_playground_url"] = "https://dchub.cloud/playground"  # r80 #3: human can see what is gated, no signup
     resp = jsonify(payload)
     return _cache(resp), 200
 

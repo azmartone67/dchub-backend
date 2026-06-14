@@ -163,6 +163,7 @@ def _apply_gated_markers(payload: dict, gated: bool, total_available: int) -> di
         "https://dchub.cloud/pricing."
     )
     payload["_signup_url"] = "https://dchub.cloud/pricing"
+    payload["_playground_url"] = "https://dchub.cloud/playground"  # r80 #3: human can see what is gated, no signup
     return payload
 
 
