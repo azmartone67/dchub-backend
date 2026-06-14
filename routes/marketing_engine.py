@@ -51,6 +51,16 @@ marketing_bp = Blueprint("marketing_engine", __name__)
 
 ANTHROPIC_API_KEY = os.environ.get("ANTHROPIC_API_KEY", "")
 MARKETING_MODEL = os.environ.get("DCHUB_MARKETING_MODEL", "claude-sonnet-4-5")
+# Phase LL+9 (2026-06-14): a KNOWN-GOOD fallback model for the daily auto-press
+# retry loop. The "1 auto-press in 30 days" silence traced to the retry loop
+# calling Claude 3x with the SAME MARKETING_MODEL every time — so a single
+# stale/renamed primary model id (or a model the gateway no longer accepts)
+# failed all 3 attempts identically, returned 502, and persisted nothing, every
+# day. Trying a different, current model from attempt 2 means a bad primary id
+# costs one wasted call instead of the whole day's output. Haiku 4.5 is the
+# same model brain_narrative already uses successfully.
+MARKETING_MODEL_FALLBACK = os.environ.get(
+    "DCHUB_MARKETING_MODEL_FALLBACK", "claude-haiku-4-5-20251001")
 # .strip() — a trailing newline on the Railway env var (dashboards add
 # one when you paste) would make EVERY admin call 401, since the
 # comparison below is exact. Same whitespace footgun fixed for the
@@ -1104,6 +1114,26 @@ _LAST_RESORT_TOPIC = (
 )
 
 
+def _attempt_plan(topic: str, topic_reason: str) -> list[tuple]:
+    """The ordered (topic, reason, simpler_prompt, model) attempts for the daily
+    auto-press retry loop.
+
+    The fix for "1 auto-press in 30 days": the fallback model is tried from
+    attempt 2, so a stale/renamed PRIMARY model id can't fail all three
+    identical calls and zero out the day — one wasted call, then a known-good
+    model takes over on the same primary topic (still the simpler prompt). The
+    third attempt keeps the original platform_pulse last resort, also on the
+    fallback model.
+
+    Pure (returns plain tuples) so the retry strategy is unit-tested without a
+    Flask/Anthropic import."""
+    return [
+        (topic, topic_reason, False, MARKETING_MODEL),
+        (topic, topic_reason, True,  MARKETING_MODEL_FALLBACK),
+        _LAST_RESORT_TOPIC + (True, MARKETING_MODEL_FALLBACK),
+    ]
+
+
 # ---------------------------------------------------------------------------
 # 2. CLAUDE GENERATION
 # ---------------------------------------------------------------------------
@@ -1274,13 +1304,15 @@ def _inject_engagement_signal(system_prompt: str) -> str:
         return system_prompt
 
 
-def _call_claude_marketing(prompt: str) -> tuple[dict | None, str | None]:
-    """Single Anthropic call. Returns (parsed_json, error)."""
+def _call_claude_marketing(prompt: str, model: str | None = None) -> tuple[dict | None, str | None]:
+    """Single Anthropic call. Returns (parsed_json, error). `model` overrides
+    MARKETING_MODEL so the retry loop can fall back to a known-good model when
+    the primary id is stale/rejected (the cadence-killing failure mode)."""
     if not ANTHROPIC_API_KEY:
         return None, "no_api_key"
     from urllib.request import Request, urlopen
     body = json.dumps({
-        "model": MARKETING_MODEL,
+        "model": model or MARKETING_MODEL,
         "max_tokens": 1500,
         "system": _inject_engagement_signal(_inject_editorial_lessons(_inject_live_stats(_MARKETING_SYSTEM))),
         "messages": [{"role": "user", "content": prompt}],
@@ -2073,11 +2105,8 @@ def auto_generate():
     why = None
     last_attempt_err = None
 
-    for attempt_idx, (att_topic, att_reason, att_simpler) in enumerate([
-        (topic, topic_reason, False),
-        (topic, topic_reason, True),       # second pass with simpler prompt
-        _LAST_RESORT_TOPIC + (True,),      # third pass: platform_pulse, simpler
-    ]):
+    for attempt_idx, (att_topic, att_reason, att_simpler, att_model) in enumerate(
+            _attempt_plan(topic, topic_reason)):
         signals["daily_topic"] = att_topic
         signals["daily_topic_reason"] = att_reason
 
@@ -2101,9 +2130,9 @@ def auto_generate():
             prompt = (f"Daily signals (topic: {att_topic} — {att_reason}):\n"
                       "```\n" + json.dumps(signals, indent=2)[:6000] + "\n```")
 
-        rel, err = _call_claude_marketing(prompt)
+        rel, err = _call_claude_marketing(prompt, model=att_model)
         if err or not rel:
-            last_attempt_err = f"attempt_{attempt_idx+1}: claude_error={err}"
+            last_attempt_err = f"attempt_{attempt_idx+1}: claude_error={err} (model={att_model})"
             print(f"[marketing] {last_attempt_err}", file=sys.stderr)
             continue
 
