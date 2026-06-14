@@ -39,6 +39,12 @@ SAFETY:
     prompt forbids invented numbers.
   · If ANTHROPIC_API_KEY is unset, all endpoints return 503 with a
     clear next-step hint.
+  · The autonomous Inspector→L22 auto-fire (hook E) is LIVE by
+    default (it fills the /brain/innovation proposal stream), but has
+    a master kill-switch: set BRAIN_L22_AUTOPR_LIVE=0 to flip it to
+    dry-run (records what L22 WOULD draft, opens no Issues/PRs).
+    L22's own whitelist/diff-caps/dedup still apply; real PRs still
+    additionally need DCHUB_L22_REAL_PR=1. See _l22_autofire_mode().
 
 ENDPOINTS:
   GET  /api/v1/brain/brief/latest           public summary
@@ -73,6 +79,34 @@ def _admin_ok():
             or request.headers.get("X-Admin-Key")
             or request.args.get("admin_key") or "").strip()
     return sent in _INTERNAL_KEYS
+
+
+# ── Autonomous L22 auto-fire gate ────────────────────────────────────
+# The Inspector loop hands its code-fix candidates to L22 after every
+# brief (hook E in _generate_brief). That arm is AUTONOMOUS — no human in
+# the loop — but it has been PRODUCTIVE (it's what fills the
+# /brain/innovation proposal stream), so it stays LIVE by default and
+# gets a master kill-switch rather than an opt-in.
+#
+# default / BRAIN_L22_AUTOPR_LIVE != "0"  → live: hit /auto-code/run,
+#     L22 may open review Issues (and real PRs when DCHUB_L22_REAL_PR=1).
+# BRAIN_L22_AUTOPR_LIVE=0                  → dry-run KILL-SWITCH: hit
+#     /auto-code/dry-run, which still parses + records every proposal to
+#     brain_layer22_actions (state=dry_run) so /brain/innovation shows
+#     what WOULD ship — but opens nothing.
+#
+# Either way L22's own safety still applies (whitelist, diff caps,
+# forbidden-path list, 7d dedup; real PRs additionally need
+# DCHUB_L22_REAL_PR=1). The human-triggered admin endpoints
+# (brief_draft_prs, auto-code/run) are unaffected.
+def _l22_autofire_mode() -> tuple[str, str]:
+    """Return (mode, endpoint_path) for the autonomous Inspector→L22 fire.
+    mode is "live" or "dry_run". Default is LIVE; BRAIN_L22_AUTOPR_LIVE=0
+    is the kill-switch that flips it to dry-run."""
+    off = os.environ.get("BRAIN_L22_AUTOPR_LIVE", "1").strip() == "0"
+    if off:
+        return ("dry_run", "/api/v1/brain/auto-code/dry-run")
+    return ("live", "/api/v1/brain/auto-code/run")
 
 
 # ── DB ───────────────────────────────────────────────────────────────
@@ -841,15 +875,22 @@ def _generate_brief() -> dict:
         # ── E: auto-fire L22 draft-PR pipeline ────────────────────────
         # Run in a background thread so the brief endpoint returns fast.
         # L22 will take 10-30s to draft; the brief caller shouldn't wait.
+        #
+        # LIVE BY DEFAULT (productive), with a kill-switch: the autonomous
+        # arm routes to /auto-code/run unless BRAIN_L22_AUTOPR_LIVE=0, which
+        # flips it to /auto-code/dry-run (records every proposal so
+        # /brain/innovation still shows the pipeline, but opens nothing).
+        # See _l22_autofire_mode().
         try:
             import threading as _th
-            def _bg_l22():
+            _l22_mode, _l22_path = _l22_autofire_mode()
+            def _bg_l22(mode=_l22_mode, path=_l22_path):
                 try:
                     import urllib.request, json as _json
                     admin_key = (os.environ.get("DCHUB_ADMIN_KEY")
                                   or "")
                     req = urllib.request.Request(
-                        "http://localhost:8080/api/v1/brain/auto-code/run",
+                        "http://localhost:8080" + path,
                         data=_json.dumps({"trigger": "inspector_auto",
                                           "brief_id": brief_id}).encode(),
                         method="POST",
@@ -858,19 +899,20 @@ def _generate_brief() -> dict:
                     )
                     with urllib.request.urlopen(req, timeout=45) as resp:
                         logger.info(
-                            "Inspector → L22 auto-fire for brief %d: "
-                            "HTTP %s", brief_id, resp.status,
+                            "Inspector → L22 auto-fire (%s) for brief %d: "
+                            "HTTP %s", mode, brief_id, resp.status,
                         )
                 except Exception as _e:
                     logger.warning(
-                        "Inspector → L22 auto-fire failed: %s",
-                        str(_e)[:200],
+                        "Inspector → L22 auto-fire (%s) failed: %s",
+                        mode, str(_e)[:200],
                     )
             _th.Thread(
                 target=_bg_l22, daemon=True,
                 name=f"inspector-l22-brief-{brief_id}",
             ).start()
             out["l22_autofire_scheduled"] = True
+            out["l22_autofire_mode"] = _l22_mode
         except Exception as _e:
             out["l22_autofire_error"] = str(_e)[:200]
 
