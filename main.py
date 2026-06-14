@@ -33105,11 +33105,17 @@ def _admin_dedup_drain():
     # Backlog selector: verified-clean, not yet merged, has a usable name.
     SEL_WHERE = ("merged_at IS NULL AND is_duplicate = 0 "
                  "AND name IS NOT NULL AND name <> ''")
-    # An existing facilities match: same name AND (same city OR same country).
+    # An existing facilities match. r86g: the old "(city OR country)" arm
+    # collapsed to "any same-name facility anywhere" because discovered_facilities.
+    # country is uniformly 'US' even for non-US sites — producing false merges
+    # (Equinix Piscataway->Johannesburg, 5 Bouygues FR sites->one). Require a CITY
+    # match whenever BOTH cities are present; only fall back to country when one
+    # city is empty. Params: (name, city, city, country).
     EXISTS_SQL = ("SELECT id FROM facilities f "
                   "WHERE LOWER(TRIM(f.name)) = LOWER(TRIM(%s)) "
-                  "AND (LOWER(TRIM(COALESCE(f.city,''))) = LOWER(TRIM(COALESCE(%s,''))) "
-                  "     OR LOWER(TRIM(COALESCE(f.country,''))) = LOWER(TRIM(COALESCE(%s,'')))) "
+                  "AND CASE WHEN NULLIF(TRIM(%s),'') IS NOT NULL AND NULLIF(TRIM(f.city),'') IS NOT NULL "
+                  "         THEN LOWER(TRIM(f.city)) = LOWER(TRIM(%s)) "
+                  "         ELSE LOWER(TRIM(COALESCE(f.country,''))) = LOWER(TRIM(COALESCE(%s,''))) END "
                   "LIMIT 1")
 
     def _make_slug(name, city, country):
@@ -33143,8 +33149,9 @@ def _admin_dedup_drain():
             f"SELECT COUNT(*) FROM discovered_facilities df WHERE {SEL_WHERE} "
             "AND EXISTS (SELECT 1 FROM facilities f "
             "WHERE LOWER(TRIM(f.name)) = LOWER(TRIM(df.name)) "
-            "AND (LOWER(TRIM(COALESCE(f.city,''))) = LOWER(TRIM(COALESCE(df.city,''))) "
-            "     OR LOWER(TRIM(COALESCE(f.country,''))) = LOWER(TRIM(COALESCE(df.country,'')))))")
+            "AND CASE WHEN NULLIF(TRIM(df.city),'') IS NOT NULL AND NULLIF(TRIM(f.city),'') IS NOT NULL "
+            "         THEN LOWER(TRIM(f.city)) = LOWER(TRIM(df.city)) "
+            "         ELSE LOWER(TRIM(COALESCE(f.country,''))) = LOWER(TRIM(COALESCE(df.country,''))) END)")
         backlog_exists = cur.fetchone()[0]
         backlog_new = backlog - backlog_exists
 
@@ -33177,7 +33184,7 @@ def _admin_dedup_drain():
             cur.execute("SAVEPOINT drain_row")
             try:
                 # Case B: already present -> link + mark merged (no insert).
-                cur.execute(EXISTS_SQL, (name, city, country))
+                cur.execute(EXISTS_SQL, (name, city, city, country))
                 hit = cur.fetchone()
                 if hit:
                     cur.execute(
@@ -33196,18 +33203,41 @@ def _admin_dedup_drain():
                 final_slug = slug; n = 2
                 while final_slug in existing_ids:
                     final_slug = f"{slug}-{n}"; n += 1
-                cur.execute(
-                    "INSERT INTO facilities (id, name, provider, city, state, country, "
-                    "latitude, longitude, power_mw, status, address, region, source) "
-                    "VALUES (%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s)",
-                    (final_slug, name, provider, city, state, country, lat, lng,
-                     power, status or 'active', address, _region(country),
-                     'discovered_facilities_drain'))
-                existing_ids.add(final_slug)
-                cur.execute(
-                    "UPDATE discovered_facilities SET merged_at = NOW(), "
-                    "merged_facility_id = %s WHERE id = %s", (final_slug, df_id))
-                inserted += 1
+                try:
+                    cur.execute("SAVEPOINT ins_a")
+                    cur.execute(
+                        "INSERT INTO facilities (id, name, provider, city, state, country, "
+                        "latitude, longitude, power_mw, status, address, region, source) "
+                        "VALUES (%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s)",
+                        (final_slug, name, provider, city, state, country, lat, lng,
+                         power, status or 'active', address, _region(country),
+                         'discovered_facilities_drain'))
+                    cur.execute("RELEASE SAVEPOINT ins_a")
+                    existing_ids.add(final_slug)
+                    cur.execute(
+                        "UPDATE discovered_facilities SET merged_at = NOW(), "
+                        "merged_facility_id = %s WHERE id = %s", (final_slug, df_id))
+                    inserted += 1
+                except psycopg2.IntegrityError:
+                    # r86g IDEMPOTENCY: UNIQUE(name,city,country) collision (an
+                    # intra-batch dup, or an existing row the match above missed).
+                    # Link to that row + mark merged instead of skipping forever,
+                    # so re-runs actually reach backlog=0 (the row no longer
+                    # re-surfaces). SELECT sees same-txn inserts too.
+                    cur.execute("ROLLBACK TO SAVEPOINT ins_a")
+                    cur.execute(
+                        "SELECT id FROM facilities WHERE LOWER(TRIM(name))=LOWER(TRIM(%s)) "
+                        "AND LOWER(TRIM(COALESCE(city,'')))=LOWER(TRIM(COALESCE(%s,''))) "
+                        "AND LOWER(TRIM(COALESCE(country,'')))=LOWER(TRIM(COALESCE(%s,''))) LIMIT 1",
+                        (name, city, country))
+                    ex = cur.fetchone()
+                    if ex:
+                        cur.execute(
+                            "UPDATE discovered_facilities SET merged_at = NOW(), "
+                            "merged_facility_id = %s WHERE id = %s", (str(ex[0]), df_id))
+                        linked += 1
+                    else:
+                        skipped += 1
                 cur.execute("RELEASE SAVEPOINT drain_row")
             except Exception:
                 cur.execute("ROLLBACK TO SAVEPOINT drain_row")
