@@ -2019,6 +2019,56 @@ def stripe_webhook_mcp():
         return jsonify({"error": "invalid signature", "detail": str(e)}), 400
 
     event_type = event.get("type", "") if isinstance(event, dict) else getattr(event, "type", "")
+
+    # r89-conv (2026-06-14): checkout.session.completed is the ONLY Stripe event
+    # that carries client_reference_id = the MCP session_id we bind onto every
+    # Stripe URL (_stripeWithSession in the MCP server). The subscription.* events
+    # below DON'T carry it, so session-based attribution never ran → the funnel's
+    # signal→conversion link was blind for the ~99% of agent signals with NULL
+    # email. Handle it here: flip the matching signal converted=TRUE + backfill
+    # its email by session_id (mark_signals_converted Path 2) — which ALSO lets
+    # the subscription.created handler below then attribute by the now-backfilled
+    # email regardless of event order — and best-effort link an existing
+    # conversion row. Additive early-return: it does NOT insert a conversion
+    # (subscription.created does), so there is no double-count.
+    if event_type == "checkout.session.completed":
+        sess = event["data"]["object"] if isinstance(event, dict) else event.data.object
+        sess = dict(sess) if not isinstance(sess, dict) else sess
+        ref_session = sess.get("client_reference_id")
+        cust_id     = sess.get("customer")
+        cust_email  = ((sess.get("customer_details") or {}).get("email")
+                       or sess.get("customer_email") or "").lower() or None
+        attribution, linked = {}, None
+        try:
+            from mcp_signal_canonical import mark_signals_converted
+            attribution = mark_signals_converted(
+                email=cust_email, stripe_customer_id=cust_id, session_id=ref_session)
+        except Exception as _e:
+            attribution = {"error": str(_e)[:120]}
+        try:
+            if ref_session:
+                with _pool.connection() as conn, conn.cursor() as cur:
+                    cur.execute("""SELECT id FROM mcp_upgrade_signals
+                                    WHERE session_id = %s ORDER BY created_at DESC LIMIT 1""",
+                                (ref_session,))
+                    r = cur.fetchone()
+                    if r:
+                        cur.execute("""UPDATE mcp_conversions
+                                          SET attribution_signal_id = %s,
+                                              source = 'mcp_session_attributed'
+                                        WHERE attribution_signal_id IS NULL
+                                          AND (stripe_customer_id = %s
+                                               OR LOWER(user_email) = COALESCE(%s, ''))""",
+                                    (r[0], cust_id, cust_email))
+                        linked = {"signal_id": r[0], "rows": cur.rowcount}
+                        conn.commit()
+        except Exception as _e:
+            linked = {"error": str(_e)[:120]}
+        return jsonify({"ok": True, "event": event_type,
+                        "client_reference_id": ref_session,
+                        "signal_attribution": attribution,
+                        "conversion_linked": linked}), 200
+
     if event_type not in ("customer.subscription.created", "customer.subscription.updated"):
         return jsonify({"ok": True, "ignored": event_type}), 200
 

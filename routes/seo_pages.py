@@ -565,7 +565,8 @@ def _render_market(slug, city, state, facilities, stats) -> str:
 <section id="cta">
   <h2>Get the {_h(city)} market report</h2>
   <p>The full report includes lease comparables, pipeline projects, grid capacity analysis, and competitive landscape.</p>
-  <a href="/pricing?ref=market-{_esc_attr(slug)}-report" class="cta">Generate market report (PDF)</a>
+  <p>DC Hub is the live infrastructure data layer for AI agents — and for the people who build data centers: live power, grid, fiber, gas, tenants &amp; site scores on {_h(city)}, cited and machine-readable. Plans from $9/mo · full market &amp; grid intelligence from $49/mo.</p>
+  <a href="/pricing?ref=market-{_esc_attr(slug)}-report" class="cta">See plans — from $49/mo</a>
   <a href="/signup?from=market-{_esc_attr(slug)}" class="cta secondary">Or: free MCP API access</a>
 </section>"""
 
