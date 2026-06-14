@@ -228,19 +228,46 @@ def check_worker_version_drift() -> list[dict]:
                       "Either route isn't going through the worker, or the "
                       "worker isn't setting the header.",
         }]
+    # r88-honesty: directional compare. Prod (out-of-git Cloudflare deploy)
+    # routinely runs a NEWER worker than the in-repo _worker.js source, so a
+    # raw `expected != deployed` flagged a false drift every scan — and the
+    # suggested "touch _worker.js to redeploy" would DOWNGRADE prod. Only a
+    # real backslip (deployed strictly OLDER than the in-repo/expected
+    # version) is a problem worth surfacing. Compare on the numeric
+    # major.minor.patch only; ignore non-numeric suffixes like
+    # '-switzerland' / '-r80...' which Cloudflare appends per deploy.
+    def _vnum(v: str) -> tuple[int, ...]:
+        parts: list[int] = []
+        for tok in str(v).split("."):
+            num = ""
+            for ch in tok:
+                if ch.isdigit():
+                    num += ch
+                else:
+                    break  # stop at first non-numeric char (e.g. '40-switzerland')
+            if num == "":
+                break  # non-numeric component → stop building the tuple
+            parts.append(int(num))
+        return tuple(parts)
+
     if expected != deployed:
-        findings.append({
-            "issue": "worker_version_drift",
-            "url": _WORKER_PROBE_URL,
-            "count": 1,
-            "detail": (f"_worker.js source declares WORKER_VERSION="
-                       f"'{expected}' but production header reports "
-                       f"'{deployed}'. Cloudflare Pages auto-deploy may "
-                       f"have skipped this file. Touch _worker.js to "
-                       f"force a redeploy."),
-            "expected": expected,
-            "deployed": deployed,
-        })
+        exp_t, dep_t = _vnum(expected), _vnum(deployed)
+        # Flag ONLY when deployed is strictly older than expected (real
+        # backslip). If deployed >= expected (prod is newer or equal on the
+        # numeric core), it's an expected out-of-git lead — not drift.
+        if dep_t and exp_t and dep_t < exp_t:
+            findings.append({
+                "issue": "worker_version_drift",
+                "url": _WORKER_PROBE_URL,
+                "count": 1,
+                "detail": (f"_worker.js source declares WORKER_VERSION="
+                           f"'{expected}' but production header reports an "
+                           f"OLDER '{deployed}'. Cloudflare Pages auto-deploy "
+                           f"may have skipped this file. Touch _worker.js to "
+                           f"force a redeploy."),
+                "expected": expected,
+                "deployed": deployed,
+            })
     return findings
 
 
@@ -2557,7 +2584,7 @@ def check_auto_trial_conversion() -> list[dict]:
                 if not (cur.fetchone() or [None])[0]: return findings
                 cur.execute("""
                     SELECT COUNT(*),
-                           COUNT(*) FILTER (WHERE signed_up_email IS NOT NULL),
+                           COUNT(*) FILTER (WHERE COALESCE(signed_up_email, operator_email) IS NOT NULL),
                            COUNT(*) FILTER (WHERE upgraded_tier IS NOT NULL),
                            COUNT(*) FILTER (WHERE minted_at >= NOW() - INTERVAL '7 days')
                       FROM auto_trial_keys
