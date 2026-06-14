@@ -2,7 +2,7 @@ name: churn watcher (weekly at-risk customer email)
 
 on:
   schedule:
-    - cron: '0 14 * * MON'  # Mondays 14:00 UTC = 7am PT
+    - cron: '27 14 * * MON'  # Mon 14:27 UTC (staggered off the 14:00 herd)
   workflow_dispatch:
 
 jobs:

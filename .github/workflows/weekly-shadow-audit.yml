@@ -2,7 +2,7 @@ name: weekly-shadow-audit
 on:
   workflow_dispatch:
   schedule:
-    - cron: '0 12 * * 1'   # Mondays 12:00 UTC
+    - cron: '22 12 * * 1'   # Mon 12:22 UTC (staggered off dchub-qa 0 12)
 jobs:
   audit:
     runs-on: ubuntu-latest
