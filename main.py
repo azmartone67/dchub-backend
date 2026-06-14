@@ -25921,6 +25921,18 @@ try:
     except Exception as _gpi_e:
         print(f"🔥 Gas Pipeline Ingest: ⚠️ {_gpi_e}")
     try:
+        from routes.transmission_ingest import transmission_ingest_bp
+        app.register_blueprint(transmission_ingest_bp)
+        print("⚡ Transmission Ingest: ✅ Registered (/api/v1/admin/ingest/transmission-lines)")
+    except Exception as _txi_e:
+        print(f"⚡ Transmission Ingest: ⚠️ {_txi_e}")
+    try:
+        from routes.power_plants_ingest import power_plants_ingest_bp
+        app.register_blueprint(power_plants_ingest_bp)
+        print("🏭 Power Plants Ingest: ✅ Registered (/api/v1/admin/ingest/power-plants)")
+    except Exception as _ppi_e:
+        print(f"🏭 Power Plants Ingest: ⚠️ {_ppi_e}")
+    try:
         from routes.infra_growth import register_infra_growth
         register_infra_growth(app)
         print("📈 Infra Growth Tracker: ✅ Registered (/api/v1/admin/infra-growth)")
