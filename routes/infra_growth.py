@@ -108,7 +108,7 @@ def _summary(cur):
         hist = cur.fetchall()
         if not hist:
             continue
-        cur_count, cur_date = hist[0]
+        cur_date, cur_count = hist[0]   # SELECT order is (snapshot_date, count)
         d1 = d7 = None
         if today:
             import datetime
