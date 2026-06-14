@@ -141,6 +141,16 @@ def page_integrity():
         path = entry.get("path") or ""
         if not path:
             continue
+        # r88-honesty: the orphan/integrity scorer only makes sense for
+        # actual user-facing PAGES. Admin dashboards, /api/ endpoints, and
+        # the brain heartbeat are NOT surface_brain-registered by design, so
+        # scoring them as "orphans" inflated the orphan count (~18 false
+        # orphans → 38% orphan rate). Skip non-page endpoints.
+        if (entry.get("needs_admin") is True
+                or "/api/" in path
+                or "/admin/" in path
+                or path == "/api/v1/brain/heartbeat"):
+            continue
         result = results.get(path) or {}
         is_surface = path in surfaces
         has_max_age = entry.get("max_age_days") is not None
