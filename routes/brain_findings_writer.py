@@ -217,6 +217,17 @@ def upsert_brain_finding(cur, issue: str, url: str = "", count: int = 1,
         if "status" in cols:
             set_parts.append("status = %s")
             params.append(status)
+        # Reopen handling (durable-findings r-incentives): a finding that
+        # re-detects after having been auto-resolved must clear its
+        # resolved_at stamp, otherwise it reads as both open (status) and
+        # resolved (resolved_at non-NULL) → the open/resolved trajectory
+        # double-counts it. Only clear on a re-detect that is itself
+        # "open" (the normal scan path); an explicit resolve/wont_fix
+        # upsert keeps any prior resolved_at. Degrades safely if the
+        # column is absent (older schema) — the clause is just skipped.
+        if "resolved_at" in cols and status not in (
+                "resolved", "wont_fix", "dismissed"):
+            set_parts.append("resolved_at = NULL")
         params += [issue, url]
         try:
             # RETURNING lets the runaway guard see the post-update

@@ -8676,13 +8676,60 @@ CREATE INDEX IF NOT EXISTS brain_findings_issue_idx
 """
 
 
+# ── Savepoint helpers for the durable-findings persist path ──────────
+# Mirror routes.brain_findings_writer's pattern: every DB step inside
+# the persist transaction is wrapped so a single failing statement rolls
+# back ONLY itself, never aborting the whole upsert/commit. All three are
+# no-throw — they swallow errors and return a bool/None so the caller's
+# control flow degrades to the safe (leave-rows-in-place) path.
+def _persist_savepoint(cur, name: str) -> bool:
+    try:
+        cur.execute(f"SAVEPOINT {name}")
+        return True
+    except Exception:
+        return False
+
+
+def _persist_rollback_sp(cur, name: str) -> None:
+    try:
+        cur.execute(f"ROLLBACK TO SAVEPOINT {name}")
+    except Exception:
+        pass
+
+
+def _persist_release_sp(cur, name: str) -> None:
+    try:
+        cur.execute(f"RELEASE SAVEPOINT {name}")
+    except Exception:
+        pass
+
+
 def _persist_findings_to_db(findings: list[dict]) -> int:
     """Write findings to brain_findings. UPSERT on (issue, url) so the
     same finding rolling across scans increments seen_count + bumps
     last_seen instead of duplicating. Returns rows touched.
 
-    Defensive — never raises; persistence failures don't fail the
-    scan."""
+    DURABLE FINDINGS (r-incentives, 2026-06-14): this used to end with a
+    `DELETE FROM brain_findings WHERE last_seen < NOW()-INTERVAL '10 min'`
+    sweep, which WIPED every finding that dropped out of a scan. Because
+    a sweep always completes inside that 10-min window, ALL rows were
+    perpetually <1h old and resolved_count was structurally 0 — the
+    open/resolved trajectory (the signal the incentive system needs to
+    reward CLOSURES over raw activity) was unmeasurable.
+
+    Now: instead of deleting, findings ABSENT from the current sweep but
+    still marked open are RESOLVED (status='resolved', resolved_at=NOW()),
+    preserving their first_seen / seen_count history. A reappearing
+    finding is reopened by the canonical writer (clears resolved_at). The
+    two live consumers (autopilot worklist read + outcome verifier) both
+    already gate on `last_seen > NOW()-INTERVAL '10 minutes'`, so they
+    keep seeing ONLY freshly-detected findings — resolved rows accumulate
+    as history without polluting the active worklist or the verifier.
+
+    Defensive + FAIL-SAFE: every step is savepoint-wrapped and the whole
+    body is try/except. On ANY error it degrades to the safe old-ish
+    behavior (rows simply left in place — never deleted, never a crash);
+    persistence failures never fail the scan. Returns rows upserted."""
     import os as _os_p, psycopg2 as _pg_p
     # r33-Q+persist-robust (2026-05-22): fall back to NEON_DATABASE_URL
     # if DATABASE_URL isn't set (main.py normally overrides it, but a
@@ -8701,22 +8748,36 @@ def _persist_findings_to_db(findings: list[dict]) -> int:
         try:
             with conn.cursor() as cur:
                 cur.execute(_BRAIN_FINDINGS_DDL)
-                # Stale-removal: mark findings older than 2 scan cycles
-                # (10 min) as gone if they didn't reappear this run.
-                # First grab the current scan's unique keys, then
-                # delete brain_findings rows whose last_seen is older
-                # than 10 min AND not in this scan's keys.
+                # Idempotent: ensure the durability columns exist even on
+                # a table created from an older DDL (no rewrite in PG 11+).
+                # resolved_at/status are already live, but ADD IF NOT
+                # EXISTS keeps this self-healing + matches the canonical
+                # schema. Savepoint-wrapped so a failure can't poison the
+                # upsert transaction below — degrades to old behavior.
+                if _persist_savepoint(cur, "bf_alter_durable"):
+                    try:
+                        cur.execute(
+                            "ALTER TABLE brain_findings "
+                            "ADD COLUMN IF NOT EXISTS resolved_at "
+                            "TIMESTAMPTZ")
+                        cur.execute(
+                            "ALTER TABLE brain_findings "
+                            "ADD COLUMN IF NOT EXISTS status "
+                            "TEXT NOT NULL DEFAULT 'open'")
+                        _persist_release_sp(cur, "bf_alter_durable")
+                    except Exception:
+                        _persist_rollback_sp(cur, "bf_alter_durable")
                 # 2026-06-06: the inline INSERT used seen_count + ON
                 # CONFLICT (issue, url) — neither exists on the LIVE
-                # table, so this "canonical" persister failed silently
-                # for weeks (DELETE-sweep below still ran, so the table
-                # stayed empty/stale). Delegate to the canonical writer
-                # which introspects the live schema, restores seen_count,
-                # and upserts constraint-agnostically. THIS is why the
-                # brain learning log went silent: findings computed but
-                # never durably stored.
+                # table, so the old "canonical" persister failed silently
+                # for weeks. Delegate to the canonical writer which
+                # introspects the live schema, restores seen_count, and
+                # upserts constraint-agnostically (the live table has NO
+                # UNIQUE(issue,url) — verified via information_schema —
+                # so ON CONFLICT cannot be used here).
                 from routes.brain_findings_writer import upsert_brain_finding
                 current_keys = set()
+                inserted = 0
                 for f in findings:
                     if not isinstance(f, dict): continue
                     issue = (f.get("issue") or "")[:200]
@@ -8728,13 +8789,72 @@ def _persist_findings_to_db(findings: list[dict]) -> int:
                         count=f.get("count") or 1,
                         detail=(f.get("detail") or "")[:2000],
                         detector="consistency_radar")
+                    if res == "inserted":
+                        inserted += 1
                     if res in ("inserted", "updated"):
                         rows += 1
-                # Sweep stale findings (haven't reappeared in 10 min)
-                cur.execute("""
-                    DELETE FROM brain_findings
-                     WHERE last_seen < NOW() - INTERVAL '10 minutes'
-                """)
+                # DURABLE FINDINGS: RESOLVE (don't DELETE) findings that
+                # were open but are ABSENT from this sweep. This preserves
+                # first_seen/seen_count history and makes the open→resolved
+                # trajectory measurable, which the incentive system rewards.
+                #
+                # "Absent from this sweep" == an OPEN row whose last_seen
+                # was NOT just bumped by an upsert this run. The upserts
+                # above set last_seen=NOW(), so any open row with
+                # last_seen older than a small grace window (2 min — well
+                # under the scan cadence, comfortably above this run's own
+                # write latency) is one we did not re-detect. We only
+                # transition rows that are currently 'open' (idempotent;
+                # never re-stamps an already-resolved row's resolved_at).
+                #
+                # FAIL-SAFE: savepoint-wrapped. If it errors we roll back
+                # just this step and leave the rows untouched (open) — the
+                # OLD code would have DELETED them, so "leave open" is the
+                # strictly safer degraded behavior.
+                resolved_now = 0
+                if _persist_savepoint(cur, "bf_resolve_absent"):
+                    try:
+                        cur.execute("""
+                            UPDATE brain_findings
+                               SET status = 'resolved',
+                                   resolved_at = NOW()
+                             WHERE status = 'open'
+                               AND last_seen < NOW() - INTERVAL '2 minutes'
+                        """)
+                        resolved_now = cur.rowcount or 0
+                        _persist_release_sp(cur, "bf_resolve_absent")
+                    except Exception:
+                        _persist_rollback_sp(cur, "bf_resolve_absent")
+                        resolved_now = 0
+                # Open/resolved/new-rate summary (read-only, for the
+                # incentive signal + logs). Savepoint-wrapped; never fatal.
+                if _persist_savepoint(cur, "bf_summary"):
+                    try:
+                        cur.execute("""
+                            SELECT
+                              COUNT(*) FILTER (WHERE status = 'open')     AS open_now,
+                              COUNT(*) FILTER (WHERE status = 'resolved') AS resolved_total,
+                              COUNT(*) FILTER (
+                                WHERE resolved_at > NOW() - INTERVAL '24 hours'
+                              ) AS resolved_24h
+                            FROM brain_findings
+                        """)
+                        srow = cur.fetchone() or (0, 0, 0)
+                        _persist_release_sp(cur, "bf_summary")
+                        open_now, resolved_total, resolved_24h = (
+                            srow[0] or 0, srow[1] or 0, srow[2] or 0)
+                        denom = inserted + resolved_now
+                        new_rate = (round(inserted / denom, 3)
+                                    if denom else 0.0)
+                        logger.info(
+                            "brain_findings durable persist: upserted=%d "
+                            "new=%d resolved_this_run=%d | open_now=%d "
+                            "resolved_total=%d resolved_24h=%d "
+                            "new_rate=%.3f",
+                            rows, inserted, resolved_now, open_now,
+                            resolved_total, resolved_24h, new_rate)
+                    except Exception:
+                        _persist_rollback_sp(cur, "bf_summary")
             conn.commit()
         finally:
             conn.close()
