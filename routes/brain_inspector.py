@@ -143,7 +143,7 @@ def _gather_signals() -> dict:
         out["error"] = "no_database"
         return out
 
-    def _try(label: str, sql: str, params=(), one=False):
+    def _try(label: str, sql: str, params=None, one=False):
         try:
             with c.cursor() as cur:
                 cur.execute(sql, params)
