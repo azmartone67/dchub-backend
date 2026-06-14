@@ -18,6 +18,7 @@ Endpoints:
 import json
 import os
 import re
+import hmac
 import statistics
 import time
 import urllib.request
@@ -269,10 +270,34 @@ def scan_grid_anomalies(min_samples: int = 5, sigma_threshold: float = 3.0,
     # (matches the task spec — NOT the 0-1 normalized score used elsewhere; the
     # /anomalies threshold of 0.5 is trivially cleared by any >3-sigma value).
     inserted = 0
+    skipped_dup = 0
     try:
         with _conn() as c, c.cursor() as cur:
             for a in flagged:
+                # r86g: dedup persistent anomalies. The scan runs every 15 min
+                # and re-treats the latest sample as 'current', so a multi-hour
+                # grid event would re-insert each run. Skip if this exact
+                # (iso, metric, sample-timestamp) anomaly is already recorded.
                 try:
+                    cur.execute(
+                        """SELECT 1 FROM extraction_intelligence
+                            WHERE source_id = %s
+                              AND observed_at > NOW() - INTERVAL '26 hours'
+                              AND observations #>> '{detected_anomalies,0,iso}' = %s
+                              AND observations #>> '{detected_anomalies,0,metric}' = %s
+                              AND observations #>> '{detected_anomalies,0,observed_at}' = %s
+                            LIMIT 1""",
+                        (GRID_ANOMALY_SOURCE_ID, str(a.get("iso")),
+                         str(a.get("metric")), str(a.get("observed_at"))))
+                    if cur.fetchone():
+                        skipped_dup += 1
+                        continue
+                except Exception:
+                    pass  # dedup is best-effort; never block the insert
+                # r86g: REAL per-row SAVEPOINT — the old c.rollback() rolled back
+                # the WHOLE batch on one bad row (and over-counted). Isolate each.
+                try:
+                    cur.execute("SAVEPOINT a_ins")
                     cur.execute(
                         """INSERT INTO extraction_intelligence
                               (source_id, outcome, anomaly_score, observations)
@@ -280,12 +305,15 @@ def scan_grid_anomalies(min_samples: int = 5, sigma_threshold: float = 3.0,
                         (GRID_ANOMALY_SOURCE_ID, float(a["sigmas"]),
                          json.dumps({"detected_anomalies": [a]})),
                     )
+                    cur.execute("RELEASE SAVEPOINT a_ins")
                     inserted += 1
                 except Exception:
-                    c.rollback()
+                    try: cur.execute("ROLLBACK TO SAVEPOINT a_ins")
+                    except Exception: pass
             c.commit()
     except Exception as e:
         summary["error"] = f"insert error: {e}"
+    summary["skipped_duplicate"] = skipped_dup
     summary["inserted"] = inserted
     return summary
 
@@ -1021,8 +1049,15 @@ def _admin_authorized() -> bool:
         os.environ.get("DCHUB_ADMIN_KEY"),
         os.environ.get("DCHUB_ADMIN_SECRET"),
         os.environ.get("DCHUB_INTERNAL_KEY"),
+        # r86g: the data-pulse cron sends `Bearer ${DCHUB_ADMIN_SECRET ||
+        # 'dchub-admin-secret-2026'}`, and DCHUB_ADMIN_SECRET is UNSET in prod —
+        # so it falls back to this legacy literal. routes/sources.py and
+        # admin_ai_deals.py already whitelist it for exactly this reason. Without
+        # it this endpoint 401s the cron and the scan ships DORMANT (the very bug
+        # this item fixes). Accept the literal too.
+        "dchub-admin-secret-2026",
     ) if v}
-    return provided in expected
+    return any(hmac.compare_digest(provided, e) for e in expected)
 
 
 @extractor_brain_bp.route("/scan-grid-anomalies", methods=["POST", "GET"])
