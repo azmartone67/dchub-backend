@@ -599,7 +599,7 @@ footer a{color:var(--acc)}
 Methodology: composite of EIA retail rates, ISO grid headroom, DCPI verdict, time-to-power.
 Data refreshed daily. <a href="/digest">Daily brief →</a> · <a href="/api/v1/pockets/top">JSON</a> · <a href="/pockets.rss">RSS</a> · <a href="/dcpi">DCPI index</a>
 </footer>
-</div></body></html>'''
+</div><script src="/js/dchub-nav.js" defer></script></body></html>'''
 
 
 @pockets_bp.route("/pockets", methods=["GET"])

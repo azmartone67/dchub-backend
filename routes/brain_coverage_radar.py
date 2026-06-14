@@ -67,6 +67,12 @@ _US_STATES = [
     "OR", "PA", "RI", "SC", "SD", "TN", "TX", "UT", "VT", "VA", "WA", "WV",
     "WI", "WY",
 ]
+# r88h: states with NO interstate natural-gas pipeline by geography (island /
+# not pipeline-connected) — excluded from gas + DCGI coverage targets so the
+# radar stops emitting permanent unfillable "gap" findings every cycle. HI only:
+# RI IS physically crossed by the Algonquin pipeline (a real attribution gap,
+# kept flagged), so it is deliberately NOT in this set.
+_NO_GAS_PIPELINE_STATES = {"HI"}
 _US_STATE_NAMES = {
     "AL": "Alabama", "AK": "Alaska", "AZ": "Arizona", "AR": "Arkansas",
     "CA": "California", "CO": "Colorado", "CT": "Connecticut",
@@ -275,7 +281,8 @@ def compute_coverage_gaps():
     dcgi_covered, dcgi_total, scored_map, dcgi_err = _dcgi_coverage()
     if dcgi_err:
         errors["dcgi"] = dcgi_err
-    dcgi_missing = [st for st in _US_STATES if st not in dcgi_covered]
+    dcgi_missing = [st for st in _US_STATES if st not in dcgi_covered
+                    and st not in _NO_GAS_PIPELINE_STATES]
     # If the rollup failed entirely (no scored_map) we don't fabricate 50
     # gaps — that would spam the brain with a transient DB blip. Only emit
     # per-state gaps when we actually have a working rollup.
@@ -301,7 +308,8 @@ def compute_coverage_gaps():
     if gas_err and gas_err != "no_rollup":
         errors["gas"] = gas_err
     if scored_map is not None:
-        gas_missing = [st for st in _US_STATES if st not in gas_covered]
+        gas_missing = [st for st in _US_STATES if st not in gas_covered
+                       and st not in _NO_GAS_PIPELINE_STATES]
         for st in gas_missing:
             name = _US_STATE_NAMES.get(st, st)
             gaps.append({

@@ -260,8 +260,25 @@ def events_page():
             f'</div>'
         )
 
+    # r88h: schema.org Event/ItemList markup — Google rich results + lifts the
+    # schema_org coverage for /events. Built from the same rows rendered above.
+    import json as _json
+    _ld = {"@context": "https://schema.org", "@type": "ItemList",
+           "name": "Data-center industry events tracked by DC Hub",
+           "itemListElement": []}
+    for _i, _r in enumerate(rows[:50], 1):
+        _ev = {"@type": "Event", "name": (_r.get("name") or "Industry event")}
+        if _r.get("starts_on"): _ev["startDate"] = str(_r["starts_on"])
+        if _r.get("ends_on"):   _ev["endDate"]   = str(_r["ends_on"])
+        if _r.get("location"):  _ev["location"]  = {"@type": "Place", "name": _r["location"]}
+        if _r.get("organizer"): _ev["organizer"] = {"@type": "Organization", "name": _r["organizer"]}
+        if _r.get("url"):       _ev["url"]        = _r["url"]
+        _ld["itemListElement"].append({"@type": "ListItem", "position": _i, "item": _ev})
+    _events_ld_tag = '<script type="application/ld+json">' + _json.dumps(_ld) + '</script>'
+
     html = f"""<!doctype html><html lang=en>
 <head><meta charset=utf-8>
+{_events_ld_tag}
 <title>Industry Events · DC Hub</title>
 <meta name="description" content="Upcoming data-center industry events tracked by DC Hub. {len(rows)} events with submission deadlines and DC Hub participation status.">
 <link rel="canonical" href="https://dchub.cloud/events">
