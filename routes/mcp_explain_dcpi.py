@@ -26,6 +26,7 @@ GET  /api/v1/mcp/dcpi/explain/manifest
      MCP tool descriptor.
 """
 from __future__ import annotations
+from routes.url_registry import build_public_url
 
 import os
 from typing import Any
@@ -215,8 +216,8 @@ def explain_dcpi() -> Any:
         },
         "citation": (f"DC Hub Power Index (DCPI), {name}, "
                      f"{(row.get('computed_at') or '')[:10]}. "
-                     f"https://dchub.cloud/dcpi/{slug}"),
-        "source":   f"https://dchub.cloud/dcpi/{slug}",
+                     f"{build_public_url('dcpi', slug)}"),
+        "source":   f"{build_public_url('dcpi', slug)}",
     }), 200
 
 

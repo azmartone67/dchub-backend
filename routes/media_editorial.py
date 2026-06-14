@@ -24,6 +24,7 @@ post/suppress verdict; content_publisher enforces the number gate at publish.
   GET /api/v1/brain/media/data-leads           — raw ranked candidate leads
 """
 from __future__ import annotations
+from routes.url_registry import build_public_url
 
 import os
 import re
@@ -293,7 +294,7 @@ def rank_data_events() -> list[dict]:
                 "headline_number": f"{mk} leads the DCPI excess-power index at {ex:.0f}/100",
                 "trend": f"the strongest excess-power headroom of any tracked market (constraint {(_num(b.get('constraint')) or 0):.0f})",
                 "so_what": f"{mk} sits at the top of the build shortlist on available power — but verify time-to-power before committing.",
-                "source_url": f"https://dchub.cloud/dcpi/{b.get('slug','')}",
+                "source_url": build_public_url("dcpi", b.get('slug','')),
                 "dedup_key": f"build:{str(mk).split(',')[0].lower().strip()}",
                 "score": (ex or 0) * 0.45,
             })

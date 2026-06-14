@@ -30,6 +30,7 @@ Project + BLUESKY_HANDLE/BLUESKY_APP_PASSWORD env vars to unlock
 those two channels.
 """
 from __future__ import annotations
+from routes.url_registry import build_public_url
 
 import datetime
 import json
@@ -214,7 +215,7 @@ def _shape_twitter(mover: dict, arc: dict | None) -> str:
     """≤280 char X post."""
     base = (f"{mover['name']} · DCPI {mover['verdict']} · "
             f"ExcessPower {mover['excess']:.0f}/100\n\n"
-            f"https://dchub.cloud/dcpi/{mover['slug']}")
+            f"{build_public_url('dcpi', mover['slug'])}")
     if len(base) < 240:
         base += f"\n\n#datacenter #{mover['iso'].lower().replace('-','')}"
     return base[:280]

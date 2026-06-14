@@ -21,6 +21,7 @@ Endpoints:
   GET  /api/v1/partnerships/email/log               — sent history
 """
 import os
+from routes.url_registry import build_public_url
 import datetime
 import smtplib
 from contextlib import contextmanager
@@ -144,7 +145,7 @@ def _recent_partner_mention(slug):
                     "title":   r[0],
                     "slug":    r[1],
                     "rel":     rel,
-                    "url":     f"https://dchub.cloud/press-release/{r[1]}",
+                    "url":     build_public_url("press_release", r[1]),
                 }
     except Exception:
         pass

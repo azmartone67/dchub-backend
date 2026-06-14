@@ -22,6 +22,7 @@ existing reports. Same auto-narrative + brain-drift detector wiring.
 """
 
 import os
+from routes.url_registry import build_public_url
 import json
 import time
 import logging
@@ -174,7 +175,7 @@ def _gather_energy_uncached(window: str) -> dict:
         "excess_power": r.get("excess_power_score"),
         "constraint": r.get("constraint_score"),
         "ttp_months": r.get("time_to_power_months"),
-        "page": f"https://dchub.cloud/dcpi/{r.get('market_slug')}",
+        "page": build_public_url("dcpi", r.get('market_slug')),
     } for r in build_rows[:10]]
 
     avoid_rows = [r for r in leaderboard
@@ -186,7 +187,7 @@ def _gather_energy_uncached(window: str) -> dict:
         "iso":        r.get("iso"),
         "composite":  r.get("composite_score"),
         "constraint": r.get("constraint_score"),
-        "page": f"https://dchub.cloud/dcpi/{r.get('market_slug')}",
+        "page": build_public_url("dcpi", r.get('market_slug')),
     } for r in avoid_rows[:10]]
 
     # ── 2. ISO-level rollup ────────────────────────────────────────

@@ -41,6 +41,7 @@ endpoints:
   GET /api/v1/agent-broadcast/subscribers  — admin: who's polling us
 """
 from __future__ import annotations
+from routes.url_registry import build_public_url
 
 import datetime
 import json
@@ -270,7 +271,7 @@ def _fetch_press_releases(days: int) -> list[dict]:
             """)
             for r in cur.fetchall() or []:
                 title, slug, summary, category, ts = r
-                url = (f"https://dchub.cloud/news/{slug}"
+                url = (f"{build_public_url('news', slug)}"
                        if slug else "https://dchub.cloud/news")
                 out.append({
                     "kind":    "press_release",
@@ -346,8 +347,8 @@ def _fetch_dcpi_verdict_shifts(days: int) -> list[dict]:
                         "summary": (f"DCPI rescored {name} ({iso}). "
                                      f"Excess power now {ex}. Verdict was "
                                      f"{was}, now {now_}. See live: "
-                                     f"https://dchub.cloud/dcpi/{slug}"),
-                        "url":     f"https://dchub.cloud/dcpi/{slug}",
+                                     f"{build_public_url('dcpi', slug)}"),
+                        "url":     f"{build_public_url('dcpi', slug)}",
                         "weight":  (90 if (was or "") in ("BUILD", "AVOID")
                                       or (now_ or "") in ("BUILD", "AVOID")
                                     else 70),
@@ -381,8 +382,8 @@ def _fetch_dcpi_verdict_shifts(days: int) -> list[dict]:
                         "title":   f"{name} DCPI verdict: {verdict}",
                         "summary": (f"DCPI rates {name} ({iso}) {verdict}. "
                                      f"Excess power {ex}, constraint {con}. "
-                                     f"Live: https://dchub.cloud/dcpi/{slug}"),
-                        "url":     f"https://dchub.cloud/dcpi/{slug}",
+                                     f"Live: {build_public_url('dcpi', slug)}"),
+                        "url":     f"{build_public_url('dcpi', slug)}",
                         "weight":  90 if (verdict or "") in ("BUILD", "AVOID") else 70,
                         "tags":    ["dcpi", iso, verdict],
                     })

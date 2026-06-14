@@ -11,6 +11,7 @@ Endpoints:
   GET /partnerships/dashboard                 HTML view
 """
 import os
+from routes.url_registry import build_public_url
 import datetime
 from contextlib import contextmanager
 from flask import Blueprint, jsonify, Response
@@ -94,7 +95,7 @@ def _gather():
                                 "slug":       r[0],
                                 "title":      r[1],
                                 "created_at": r[2].isoformat() if r[2] else None,
-                                "url":        f"https://dchub.cloud/press-release/{r[0]}",
+                                "url":        build_public_url("press_release", r[0]),
                             }
 
             # Emails sent per track

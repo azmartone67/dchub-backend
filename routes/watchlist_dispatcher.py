@@ -29,6 +29,7 @@ dispatch_watchlist_alerts(mode='digest')   → weekly digest fan-out
 Both return a dict summary the crawler scheduler logs.
 """
 from __future__ import annotations
+from routes.url_registry import build_public_url
 
 import os
 import sys
@@ -213,8 +214,8 @@ def _watchlist_realtime_email(shift: dict) -> tuple[str, str]:
     to_v = (shift.get("shift_to") or "").upper()
     fr_v = (shift.get("shift_from") or "").upper()
     slug = shift.get("market_slug") or ""
-    brief_url = f"https://dchub.cloud/markets/{slug}/brief"
-    dcpi_url  = f"https://dchub.cloud/dcpi/{slug}"
+    brief_url = build_public_url("markets", slug, subpath="brief")
+    dcpi_url  = build_public_url("dcpi", slug)
     unsub_url = (f"https://dchub.cloud/watchlist#unsub-slug={slug}")
 
     subject = f"🚨 {name} DCPI verdict shifted to {to_v} — your watchlist alert"
@@ -289,7 +290,7 @@ def _watchlist_weekly_digest_email(shifts: list[dict]) -> tuple[str, str]:
             {_verdict_pill(s.get('shift_from'))} &nbsp;→&nbsp; {_verdict_pill(s.get('shift_to'))}
           </div>
           <div style="margin-top:10px">
-            <a href="https://dchub.cloud/markets/{slug}/brief"
+            <a href="{build_public_url('markets', slug, subpath='brief')}"
                style="color:#3da9fc;font-size:13px;text-decoration:none">
               Read Market Brief →
             </a>
@@ -492,7 +493,7 @@ def dispatch_watchlist_alerts(mode: str = "realtime") -> dict:
                                     "title": (f"{shift.get('market_name') or slug} "
                                               f"shifted to {(shift.get('shift_to') or '').upper()}"),
                                     "body": f"DCPI verdict moved. Tap for the brief.",
-                                    "url": f"https://dchub.cloud/markets/{slug}/brief",
+                                    "url": build_public_url("markets", slug, subpath="brief"),
                                 }
                                 for s in subs:
                                     if _send_push(s, payload):
