@@ -60,6 +60,8 @@ ALLOWLIST = {
     "site_selection_canvas.py",      # TODO: emit dcpi/* via registry
     "deal_autopsy.py",               # TODO: emit dcpi/* via registry
     "grid_transition_radar.py",      # TODO: emit dcpi/* via registry
+    "facility_profile_page.py",      # TODO: emit dcpi/* via registry
+    "media_editorial.py",            # TODO: emit dcpi/* via registry
 }
 # Detect f-string raw URL construction for the kinds we now own.
 PATTERN = re.compile(
