@@ -2784,7 +2784,11 @@ def autopilot_verify():
             # NEVER be benched. NULL/empty pattern_name excluded. Fully
             # fail-safe: any error here leaves prior quarantine state intact.
             try:
-                if not _noop_quarantine_disabled():
+                # r-incentives FIX (review): SKIP in dry-run. autopilot_verify has
+                # no dry-run short-circuit, and in dry-run every fire is
+                # outcome='dry_run' (not executed_ok) → a pattern that only ran in
+                # dry-run would show 0 executed_ok and get falsely benched.
+                if not _is_dry_run() and not _noop_quarantine_disabled():
                     cur.execute("""
                         INSERT INTO brain_pattern_quarantine
                             (pattern_name, fail_count, quarantined_at, released_at, last_reason)
@@ -2800,6 +2804,11 @@ def autopilot_verify():
                          GROUP BY pattern_name
                         HAVING COUNT(*) >= %s
                            AND COUNT(*) FILTER (WHERE outcome = 'executed_ok') = 0
+                           -- r-incentives FIX (review): bench only the RATE-LIMITED
+                           -- no-op flood (page_brand_uniformity etc.), NOT patterns
+                           -- that are correctly ESCALATING to a human. Require
+                           -- rate_limited to be the majority outcome.
+                           AND COUNT(*) FILTER (WHERE outcome = 'rate_limited') >= COUNT(*) * 0.5
                         ON CONFLICT (pattern_name) DO UPDATE
                            SET fail_count = EXCLUDED.fail_count,
                                quarantined_at = NOW(),
