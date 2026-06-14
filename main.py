@@ -29216,6 +29216,14 @@ try:
 except Exception as _e:
     print(f"[main] surface_brain register failed: {_e}", file=sys.stderr)
 
+# r86-reach: standalone retention endpoint (/api/v1/mcp/retention). Lives in its own
+# file (routes/mcp_retention.py) so the concurrent mcp_funnel.py refactor can't revert it.
+try:
+    from routes.mcp_retention import mcp_retention_bp
+    app.register_blueprint(mcp_retention_bp)
+except Exception as _ret_e:
+    print(f"[main] mcp_retention register failed: {_ret_e}", file=sys.stderr)
+
 # Phase GGG-MMM (2026-05-16) — master shell: 6 new builds in one go.
 # Each blueprint isolated with its own try/except so any single failure
 # doesn't block app startup. See routes/*.py docstrings for per-phase rationale.

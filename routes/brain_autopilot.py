@@ -186,6 +186,44 @@ def _action_mcp_conversion_stale(finding: dict) -> tuple[str | None, dict | None
     return None, None   # escalation-only
 
 
+# ── ITEM 6 (2026-06-14): real actions for the high-value conversion /
+# distribution findings that were previously escalation-only (or absent
+# from the library → silent no_action). Each does a SAFE, additive step
+# that moves the revenue lever, never a destructive or spammy one.
+
+def _action_conversion_build_worklist(finding: dict) -> tuple[str | None, dict | None]:
+    """High-value conversion finding (unconverted power-users / trial→paid
+    stagnation / per-tool signal-to-conversion leak). The autonomous step
+    is to MATERIALIZE the personalized upgrade-nudge worklist via the L13
+    send-batch endpoint in DRY mode — this builds the per-key pitch drafts
+    (proving the outreach pipeline + surfacing exactly who to reach) WITHOUT
+    auto-emailing anyone. The actual send stays human-gated (send-batch with
+    dry=false is a separate manual POST), so we get a real, queryable action
+    on the money finding instead of a perpetual escalation, with zero spam
+    risk. Mirrors the tier_drift / cron_collision 'record-a-worklist'
+    promotion pattern."""
+    return "/api/v1/brain/upgrade-nudge/send-batch", {
+        "dry":    True,
+        "limit":  25,
+        "source": "autopilot_conversion_worklist",
+        "trigger_issue": (finding.get("issue") or "")[:80],
+        "trigger_url":   (finding.get("url") or "")[:120],
+    }
+
+
+def _action_social_publish_token_dead(finding: dict) -> tuple[str | None, dict | None]:
+    """A social platform is configured but has published 0 posts in 7d with
+    a backlog — almost always an EXPIRED access token (the X/Twitter 132-
+    silent-failures pattern). There is no safe autonomous fix (re-auth needs
+    a human OAuth flow), so this stays an escalation — but the engine-side
+    fix (a consecutive-auth-failure circuit breaker that PAUSES retries +
+    raises a clear owner re-auth action, mirroring LinkedIn's token reset)
+    lives in content_publisher._twitter_loop. Here we escalate with the
+    owner_action embedded in the finding detail rather than letting it churn
+    silently."""
+    return None, None   # escalation-only (owner re-auth required)
+
+
 def _action_worker_version_drift(finding: dict) -> tuple[str | None, dict | None]:
     """CF Pages worker stale. Requires CF dashboard action — escalate."""
     return None, None
@@ -950,14 +988,51 @@ _PATTERN_LIBRARY: dict[str, dict[str, Any]] = {
         "use_admin":   False,
         "description": "Escalation-only: a page in the Site Sentinel manifest is unhealthy. Inspect the path in the finding — common fixes: missing route registration, CSP block, 503 from an upstream API, body smaller than the manifest's min_bytes floor. See /sentinel dashboard.",
     },
-    # Phase XXX — conversion rate below floor. Escalation-only because
-    # the fix is a strategic call: tighten more tools to IDENTIFIED+,
-    # raise FREE-tier cap pressure, or rewrite the paywall response.
+    # Phase XXX — conversion rate below floor. ITEM 6 (2026-06-14):
+    # promoted from escalation-only to AUTONOMOUS-worklist. Building the
+    # personalized nudge drafts (dry) is a real, safe step on the money
+    # finding; the strategic paywall/pricing call still belongs to a human.
     "mcp_conversion_rate_below_floor": {
-        "action":      lambda f: (None, None),
+        "action":      _action_conversion_build_worklist,
+        "method":      "POST",
+        "use_admin":   True,
+        "description": "Autonomous-worklist: materializes the L13 upgrade-nudge drafts (DRY — no auto-send) so the personalized outreach list is queryable, then escalates the strategic paywall/pricing call. Inspect /api/v1/mcp/conversion-funnel for the per-tool breakdown; the leak is usually concentrated in 1-2 tools that should be on a higher tier or have a tighter cap.",
+    },
+    # ── ITEM 6 (2026-06-14): high-value conversion / distribution patterns.
+    # These were previously ABSENT from the library (→ silent no_action) or
+    # escalation-only, so the act-loop never touched the biggest revenue
+    # levers (MCP funnel ~0.12%, 1,574 trial keys → 0 upgrades, ~189
+    # unconverted free power-users vs 16 paid keys). Now each has a REAL
+    # autonomous action: build the personalized upgrade-nudge worklist (DRY,
+    # never auto-spam). _finding_priority ranks all of these in Tier 0/1 so
+    # they act AHEAD of cron/schema/brand noise within a tick.
+    "addressable_demand_unconverted": {
+        "action":      _action_conversion_build_worklist,
+        "method":      "POST",
+        "use_admin":   True,
+        "description": "Autonomous-worklist: a paid tool has 30+ unique free users hammering it with 0 conversions — a concentrated upgrade pocket. Builds the L13 nudge drafts (DRY) so the top callers are queryable for outreach; human flips dry=false to send. See /api/v1/mcp/funnel paid_tool_demand_30d.",
+    },
+    "trial_to_paid_stagnation": {
+        "action":      _action_conversion_build_worklist,
+        "method":      "POST",
+        "use_admin":   True,
+        "description": "Autonomous-worklist: auto-trial keys are minting + getting used but 0 are converting to paid (giveaway leak). Builds the L13 nudge drafts (DRY) targeting heavy trial callers so the redemption push is queryable. Human sends. See /api/v1/mcp/funnel keys_by_tier + auto_trial_keys.",
+    },
+    "tool_signal_to_conversion_leak": {
+        "action":      _action_conversion_build_worklist,
+        "method":      "POST",
+        "use_admin":   True,
+        "description": "Autonomous-worklist: a single tool has high paywall-signal volume but near-zero gate→paid conversion. Builds the L13 nudge drafts (DRY) for that tool's heavy callers. Human reviews per-tool tier/cap + sends. See /api/v1/mcp/funnel top_tools.",
+    },
+    # Distribution outage — expired social token (the X 132-silent-failures
+    # pattern). Escalation-only (re-auth needs a human OAuth flow) but now
+    # surfaces a clear owner re-auth action AND the engine-side circuit
+    # breaker (content_publisher) stops silently retrying a dead token.
+    "social_publish_silent_failure": {
+        "action":      _action_social_publish_token_dead,
         "method":      None,
         "use_admin":   False,
-        "description": "Escalation-only: 30-day MCP conversion rate is below the configured floor. Inspect /api/v1/mcp/conversion-funnel for per-tool breakdown; the leak is usually concentrated in 1-2 tools that should be on a higher tier or have a tighter cap.",
+        "description": "Escalation-only (OWNER RE-AUTH): a social platform is configured but published 0 posts in 7d with a backlog — almost always an EXPIRED access token. Fix: regenerate <PLATFORM>_ACCESS_TOKEN in Railway env (LinkedIn: /api/v1/linkedin/token/reset-from-env), then POST /api/v1/marketing/publish-now?max=20 to drain. The publisher now circuit-breaks after consecutive auth failures so it stops generating silent 403 noise.",
     },
     # Phase YYY — page-staleness pattern. Dynamic key
     # `page_stale:<path>` resolves via prefix match. Escalation-only;
@@ -1278,6 +1353,82 @@ def _lookup_pattern(issue: str) -> dict | None:
     if base != issue:
         return _PATTERN_LIBRARY.get(base)
     return None
+
+
+# ── ITEM 6 (2026-06-14): act-loop value prioritization ────────────────
+# The act-loop chewed cron/schema/brand noise while the MONEY findings
+# (MCP funnel ~0.12%, 1,574 trial keys → 0 upgrades, ~189 unconverted
+# free power-users vs 16 paid keys, the expired-X-token distribution
+# leak) sat untouched at the back of a last_seen-DESC list. We give each
+# finding a value tier so high-revenue / distribution-outage findings
+# surface AHEAD of bookkeeping noise within a single tick. Pure ordering
+# change — it never adds or suppresses an action, only reorders the
+# existing `issues` list. FAIL-SAFE: _finding_priority is wrapped in a
+# bare-except caller that degrades to the old last_seen-DESC order on any
+# error, so a bad finding shape can never break the loop.
+#
+# Lower number = acted on FIRST.
+_PRIORITY_TIERS: dict[str, int] = {
+    # Tier 0 — direct revenue / paywall-conversion findings.
+    "addressable_demand_unconverted":       0,
+    "trial_to_paid_stagnation":             0,
+    "tool_signal_to_conversion_leak":       0,
+    "mcp_conversion_rate_below_floor":      0,
+    "mcp_conversion_stale_critical":        0,
+    "auto_trial_signup_rate_low":           0,
+    "mcp_funnel_leak":                      0,
+    "paid_customer_dormant":                0,
+    # Tier 1 — distribution / outreach outages that throttle the funnel
+    # (an expired X/LinkedIn token = the whole reach pipeline is dark).
+    "social_publish_silent_failure":        1,
+    "winback_pitches_unsent":               1,
+    "mcp_dormant_agents_present":           1,
+    "enterprise_bot_present":               1,
+    "mcp_demand_gap_unaddressed":           1,
+    # Tier 2 — growth / brand / SoT signals (matter, but not money-now).
+    "source_of_truth_declining":            2,
+    "mcp_growth_declining":                 2,
+    "mcp_volume_regression":                2,
+    "media_topic_unaddressed":              2,
+    "citation_score_dropped":               2,
+    "citation_score_below_30pct":           2,
+    # Everything else defaults to tier 5 (noise floor): cron collisions,
+    # schema drift, brand uniformity, sitemap, freshness, etc.
+}
+_PRIORITY_DEFAULT = 5
+
+
+def _finding_priority(f: dict) -> int:
+    """Value tier for a finding (lower = act first). Resolves dynamic
+    issue keys (e.g. 'mcp_funnel_leak:get_grid_intelligence') via the
+    same prefix split _lookup_pattern uses, so per-tool conversion leaks
+    inherit the tool-class priority."""
+    issue = (f.get("issue") or "") if isinstance(f, dict) else ""
+    if not issue:
+        return _PRIORITY_DEFAULT
+    t = _PRIORITY_TIERS.get(issue)
+    if t is not None:
+        return t
+    base = issue.split(":", 1)[0]
+    if base != issue:
+        t = _PRIORITY_TIERS.get(base)
+        if t is not None:
+            return t
+    return _PRIORITY_DEFAULT
+
+
+def _prioritize_issues(issues: list) -> list:
+    """Stable-sort `issues` so high-value findings act first, preserving
+    the incoming (last_seen DESC) order WITHIN each tier. Fail-safe: on
+    ANY error return the list untouched (old behaviour)."""
+    try:
+        return sorted(
+            issues,
+            key=lambda f: _finding_priority(f) if isinstance(f, dict)
+            else _PRIORITY_DEFAULT,
+        )
+    except Exception:
+        return issues
 
 
 # ── Rate limit helpers ────────────────────────────────────────────────
@@ -1664,6 +1815,10 @@ def autopilot_run():
             if key in seen: continue
             seen.add(key)
             issues.append(f)
+
+    # ITEM 6: reorder so revenue/conversion/distribution findings act
+    # ahead of cron/schema/brand noise. Stable within tier, fail-safe.
+    issues = _prioritize_issues(issues)
 
     summary = {
         "examined":           len(issues),
