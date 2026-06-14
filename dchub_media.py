@@ -758,12 +758,13 @@ def aggregate_announcements_v3(limit_per_source=20):
         # source producing fresh rows (the Claude probe) was double-hidden,
         # so the wall went stale even though probes ran daily. This SEPARATE
         # arm surfaces recent probe_% rows regardless of approval and
-        # includes Claude — but DISTINCT ON (agent, quote-prefix) collapses
-        # the near-duplicate quotes that were the reason auto-approval was
-        # turned off, so the wall stays fresh without re-inflating. Fails
-        # alone (separate query) like the auto arm; consumer de-dupes.
+        # includes Claude — DISTINCT ON (agent_name) keeps only the single
+        # freshest quote per agent, so the wall can't fill with reworded
+        # near-duplicates (LEFT(quote,80) let those through — e.g. 6 variants
+        # of the same Claude DCPI quote). Diverse once the Perplexity/Gemini
+        # probe keys are valid. Fails alone (separate query); consumer de-dupes.
         probe_sql = """SELECT title, url, summary, source, ts FROM (
-            SELECT DISTINCT ON (agent_name, LEFT(quote, 80))
+            SELECT DISTINCT ON (agent_name)
                    COALESCE(NULLIF(agent_name,''), NULLIF(platform,''), 'AI Testimonial') AS title,
                    COALESCE(url, '') AS url,
                    quote AS summary,
@@ -775,7 +776,7 @@ def aggregate_announcements_v3(limit_per_source=20):
               AND created_at > NOW() - INTERVAL '45 days'
               AND quote IS NOT NULL AND length(quote) > 40
               AND agent_name IS NOT NULL AND agent_name <> 'unknown'
-            ORDER BY agent_name, LEFT(quote, 80), created_at DESC
+            ORDER BY agent_name, created_at DESC
         ) p ORDER BY created_at DESC LIMIT %s"""
         queries.append(("testimonial", probe_sql, (limit_per_source,)))
 

@@ -278,37 +278,44 @@ p {{ font-size: 15px; color: #4a4a5a; margin-bottom: 14px; line-height: 1.6; }}
 # ═══════════════════════════════════════════════════════════════
 
 def _send_email_async(to_email, subject, html_body):
-    """Fire-and-forget SendGrid email in background thread."""
+    """Fire-and-forget email in a background thread via Resend.
+
+    The `sendgrid` package isn't installed in prod, so the old SendGrid path
+    raised ModuleNotFoundError and every usage email silently failed. Switched
+    to Resend over HTTP, matching routes/redeem_tracking.py (DCHUB_RESEND_API_KEY
+    / DCHUB_RESEND_FROM). SENDGRID_FROM_EMAIL is still honored as a from fallback.
+    """
     def _send():
         try:
-            sg_key = os.environ.get('SENDGRID_API_KEY', '')
-            if not sg_key:
-                logger.warning(f"SENDGRID_API_KEY not set — skipping email to {to_email}")
+            resend_key = os.environ.get('DCHUB_RESEND_API_KEY', '').strip()
+            if not resend_key:
+                logger.warning(f"DCHUB_RESEND_API_KEY not set — skipping email to {to_email}")
                 return
 
-            from sendgrid import SendGridAPIClient
-            from sendgrid.helpers.mail import Mail, Email, To, HtmlContent
+            sender = (os.environ.get('DCHUB_RESEND_FROM')
+                      or os.environ.get('SENDGRID_FROM_EMAIL')
+                      or 'DC Hub <noreply@dchub.cloud>')
+            if '<' not in sender:                 # bare address → add display name
+                sender = f"DC Hub <{sender}>"
+            payload = {"from": sender, "to": [to_email],
+                       "subject": subject, "html": html_body}
 
-            from_email = os.environ.get('SENDGRID_FROM_EMAIL', 'info@dchub.cloud')
-            message = Mail(
-                from_email=Email(from_email, 'DC Hub'),
-                to_emails=To(to_email),
-                subject=subject,
-                html_content=HtmlContent(html_body)
+            # BCC admin for monitoring rollout (unchanged behavior).
+            admin_email = os.environ.get('ADMIN_ALERT_EMAIL', 'jonathan@dchub.cloud')
+            if admin_email and admin_email != to_email:
+                payload["bcc"] = [admin_email]
+
+            import requests as _rq
+            resp = _rq.post(
+                "https://api.resend.com/emails",
+                headers={"Authorization": f"Bearer {resend_key}",
+                         "Content-Type": "application/json"},
+                json=payload, timeout=12,
             )
-
-            # BCC admin for monitoring initial rollout
-            try:
-                from sendgrid.helpers.mail import Bcc
-                admin_email = os.environ.get('ADMIN_ALERT_EMAIL', 'jonathan@dchub.cloud')
-                if admin_email and admin_email != to_email:
-                    message.add_bcc(Bcc(admin_email))
-            except Exception:
-                pass
-
-            sg = SendGridAPIClient(sg_key)
-            response = sg.send(message)
-            logger.info(f"📧 Usage email sent to {to_email}: {subject} (status={response.status_code})")
+            ok = resp.status_code in (200, 201)
+            (logger.info if ok else logger.error)(
+                f"📧 Usage email {'sent' if ok else 'FAILED'} to {to_email}: "
+                f"{subject} (status={resp.status_code})")
 
         except Exception as e:
             logger.error(f"📧 Usage email FAILED for {to_email}: {e}")
