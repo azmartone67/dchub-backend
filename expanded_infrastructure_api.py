@@ -407,7 +407,7 @@ def get_substations():
     state = request.args.get('state')
     min_voltage = request.args.get('min_voltage', 0, type=int)
     min_kv = request.args.get('min_kv', min_voltage, type=int)
-    limit = min(request.args.get('limit', 100, type=int), 500)
+    limit = min(request.args.get('limit', 100, type=int), 5000)  # 2026-06-15: was 500 — the map transformer/HV-substation layer was hard-capped at 500 nationwide; the substations table has ~126k rows so a viewport-bounded query should return far more. Client clusters.
 
     try:
         from db_utils import get_db
