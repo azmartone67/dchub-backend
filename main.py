@@ -15738,9 +15738,27 @@ def facility_by_slug(slug):
     try:
         conn = get_read_db()
         c = conn.cursor()
+        # On-site fiber carriers via the indexed carrier_facility_presence(dchub_facility_id)
+        # link (same source as the map popup) — fulfils get_facility's "fiber providers" promise.
         c.execute("""
             SELECT id, name, provider, city, state, country, market AS region,
-                   latitude, longitude, power_mw, status, address
+                   latitude, longitude, power_mw, status, address,
+                   (
+                     SELECT array_agg(carrier_name ORDER BY carrier_name)
+                     FROM (
+                       SELECT DISTINCT cfp.carrier_name
+                       FROM carrier_facility_presence cfp
+                       WHERE cfp.dchub_facility_id = discovered_facilities.id
+                         AND cfp.carrier_name IS NOT NULL AND cfp.carrier_name <> ''
+                       LIMIT 25
+                     ) s
+                   ) AS fiber_providers,
+                   (
+                     SELECT COUNT(DISTINCT cfp.carrier_name)
+                     FROM carrier_facility_presence cfp
+                     WHERE cfp.dchub_facility_id = discovered_facilities.id
+                       AND cfp.carrier_name IS NOT NULL AND cfp.carrier_name <> ''
+                   ) AS fiber_carrier_count
             FROM discovered_facilities
             WHERE LEFT(MD5(id::text), 8) = %s
             LIMIT 1
@@ -15749,7 +15767,14 @@ def facility_by_slug(slug):
         if not row:
             return jsonify({'success': False, 'error': 'Not found'}), 404
         cols = [desc[0] for desc in c.description]
-        return jsonify({'success': True, 'data': dict(zip(cols, row))})
+        data = dict(zip(cols, row))
+        _cc = int(data.get('fiber_carrier_count') or 0)
+        data['fiber_providers'] = data.get('fiber_providers') or []
+        data['on_net'] = _cc > 0
+        data['connectivity_note'] = (
+            f"{_cc} on-site fiber carrier(s)" if _cc
+            else "No on-site fiber carriers mapped yet (connectivity not yet linked)")
+        return jsonify({'success': True, 'data': data})
     except Exception as e:
         return jsonify({'success': False, 'error': str(e)}), 500
     finally:
