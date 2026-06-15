@@ -52,6 +52,96 @@ def _conn():
         return None
 
 
+# ── LP-SENTINEL escalation sink (2026-06-15) ────────────────────────────────
+# The in-page LP-SENTINEL (land-power-app.js) detects auto-hide regressions ("a
+# layer left the map with no user input") + stale builds, but was console+window
+# only — the alarm rang in an empty room (that's how the transformer auto-hide
+# went unnoticed). These endpoints capture what REAL users' browsers detect so a
+# silent layer regression surfaces between the daily headless QA runs.
+_SENTINEL_SCHEMA = """
+CREATE TABLE IF NOT EXISTS lp_sentinel_reports (
+    id              BIGSERIAL PRIMARY KEY,
+    reported_at     TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+    layer           TEXT,
+    kind            TEXT,
+    since_input_ms  INTEGER,
+    app_version     TEXT,
+    url             TEXT,
+    ua              TEXT
+);
+CREATE INDEX IF NOT EXISTS ix_lp_sentinel_at ON lp_sentinel_reports (reported_at DESC);
+"""
+
+
+@lp_sites_bp.route("/api/v1/lp/sentinel/report", methods=["POST"])
+def lp_sentinel_report():
+    """Fire-and-forget sink for the in-page LP-SENTINEL (sendBeacon). Records a
+    real user's auto-hide / stale-build detection. Best-effort + bounded; never
+    errors loudly (it's telemetry)."""
+    try:
+        d = request.get_json(force=True, silent=True) or {}
+    except Exception:
+        d = {}
+    layer = str(d.get("layer", ""))[:60]
+    if not layer:
+        return jsonify(ok=False, reason="no_layer"), 200
+    kind = str(d.get("kind", "auto_hide"))[:40]
+    try:
+        since = int(d.get("sinceInputMs") or 0)
+    except Exception:
+        since = 0
+    ver = str(d.get("version", ""))[:20]
+    url = str(d.get("url", ""))[:200]
+    ua = (request.headers.get("User-Agent") or "")[:200]
+    c = _conn()
+    if c is None:
+        return jsonify(ok=False, reason="no_db"), 200
+    try:
+        cur = c.cursor()
+        cur.execute(_SENTINEL_SCHEMA)
+        cur.execute(
+            "INSERT INTO lp_sentinel_reports (layer, kind, since_input_ms, app_version, url, ua) "
+            "VALUES (%s, %s, %s, %s, %s, %s)",
+            (layer, kind, since, ver, url, ua),
+        )
+    except Exception:
+        pass
+    finally:
+        try: c.close()
+        except Exception: pass
+    return jsonify(ok=True), 200
+
+
+@lp_sites_bp.route("/api/v1/lp/sentinel/reports", methods=["GET"])
+def lp_sentinel_reports():
+    """Recent real-user LP-SENTINEL reports (7d) + a per-layer 24h count — for the
+    brain/dashboard to surface silent layer regressions."""
+    c = _conn()
+    if c is None:
+        return jsonify(reports=[], count=0), 200
+    try:
+        cur = c.cursor()
+        cur.execute(_SENTINEL_SCHEMA)
+        cur.execute(
+            "SELECT reported_at, layer, kind, since_input_ms, app_version "
+            "FROM lp_sentinel_reports WHERE reported_at > NOW() - INTERVAL '7 days' "
+            "ORDER BY reported_at DESC LIMIT 200"
+        )
+        rows = [{"at": r[0].isoformat() if r[0] else None, "layer": r[1], "kind": r[2],
+                 "since_input_ms": r[3], "version": r[4]} for r in cur.fetchall()]
+        cur.execute(
+            "SELECT layer, COUNT(*) FROM lp_sentinel_reports "
+            "WHERE reported_at > NOW() - INTERVAL '24 hours' GROUP BY layer ORDER BY COUNT(*) DESC"
+        )
+        by_layer = {r[0]: int(r[1]) for r in cur.fetchall()}
+        return jsonify(reports=rows, count=len(rows), by_layer_24h=by_layer), 200
+    except Exception as e:
+        return jsonify(reports=[], error=str(e)[:160]), 200
+    finally:
+        try: c.close()
+        except Exception: pass
+
+
 _SCHEMA = """
 CREATE TABLE IF NOT EXISTS saved_lp_sites (
     id           BIGSERIAL PRIMARY KEY,
