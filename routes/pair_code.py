@@ -642,7 +642,13 @@ def upgrade_redirect():
                 # funnel stamp: this 302 IS the stripe-click now
                 with _conn() as c, c.cursor() as cur:
                     cur.execute(
+                        # r88h P2: also stamp redeem_viewed_at here. The r86
+                        # straight-to-Stripe path skipped the /redeem interstitial
+                        # (which used to stamp it), so the funnel showed
+                        # stripe_clicked > redeem_viewed and view→submit read a
+                        # false 0%. The human reaching this 302 IS the view.
                         "UPDATE mcp_pair_codes SET stripe_clicked_at = NOW(), "
+                        "redeem_viewed_at = COALESCE(redeem_viewed_at, NOW()), "
                         "stripe_click_count = COALESCE(stripe_click_count,0)+1 "
                         "WHERE code = %s", (code,))
                     c.commit()

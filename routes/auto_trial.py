@@ -139,6 +139,19 @@ def mint_trial_for_request(req=None, tool_name: str = "", client_name: str = "",
           or req.headers.get("X-Forwarded-For", "").split(",")[0].strip()
           or req.remote_addr or "?")
     ua = (req.headers.get("User-Agent") or "")[:200]
+    # r88h P2: don't mint throwaway trial keys to crawlers/bots (Googlebot,
+    # meta-externalagent, etc.) — they never reuse the key and inflated the
+    # mint→activate "drop" (see the crawler-mint note at ~line 537). Bots still
+    # get anon-grace data; they just stop padding the funnel denominator with
+    # keys no human is behind.
+    _ua_l = ua.lower()
+    if any(_b in _ua_l for _b in (
+            "googlebot", "bingbot", "meta-externalagent", "facebookexternalhit",
+            "duckduckbot", "yandexbot", "baiduspider", "ahrefsbot", "semrushbot",
+            "petalbot", "bytespider", "applebot", "amazonbot", "gptbot", "ccbot",
+            "claudebot", "google-extended", "perplexitybot", "dotbot", "mj12bot",
+            "crawler", "spider")):
+        return {"ok": False, "reason": "bot_skip", "bot": True}
     ip_hash = hashlib.sha256(ip.encode()).hexdigest()[:16]
 
     c = _conn()
