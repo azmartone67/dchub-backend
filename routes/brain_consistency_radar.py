@@ -39,12 +39,23 @@ import datetime  # r62-fix: several detectors (check_event_submission_pending,
                  # conflict with the function-local `from datetime import …`
                  # aliases (those shadow within their own scope).
 import json
+import logging
 import os
 import re
 import sys
 import urllib.request
 import urllib.error
 from typing import Optional
+
+# 2026-06-15 FREEZE FIX: this module used `logger.info(...)` in the durable-
+# persist summary block (_persist_findings_to_db) but never defined `logger`.
+# The NameError fired AFTER the bf_summary savepoint was released, so the
+# except handler did ROLLBACK TO an already-released savepoint → that aborted
+# the whole transaction → the trailing conn.commit() silently discarded every
+# upsert. Result: brain_findings froze (no last_seen bumps, no resolve-on-
+# absence) for ~22h while the scan itself kept reporting success. Defining the
+# logger removes the NameError; the release-ordering fix below is defense-in-depth.
+logger = logging.getLogger(__name__)
 
 
 # ── 1. Worker version drift ────────────────────────────────────────
@@ -8885,7 +8896,6 @@ def _persist_findings_to_db(findings: list[dict], full_sweep: bool = False) -> i
                             FROM brain_findings
                         """)
                         srow = cur.fetchone() or (0, 0, 0)
-                        _persist_release_sp(cur, "bf_summary")
                         open_now, resolved_total, resolved_24h = (
                             srow[0] or 0, srow[1] or 0, srow[2] or 0)
                         denom = inserted + resolved_now
@@ -8898,13 +8908,29 @@ def _persist_findings_to_db(findings: list[dict], full_sweep: bool = False) -> i
                             "new_rate=%.3f",
                             rows, inserted, resolved_now, open_now,
                             resolved_total, resolved_24h, new_rate)
+                        # 2026-06-15: RELEASE is now the LAST statement in the try.
+                        # Previously it ran BEFORE logger.info(); when that line
+                        # NameError'd (undefined logger), the except did ROLLBACK TO
+                        # an already-released savepoint → aborted the tx → the commit
+                        # below silently discarded every upsert (22h finding freeze).
+                        # With release last, any exception above still has a live
+                        # savepoint to roll back to, so the tx stays committable.
+                        _persist_release_sp(cur, "bf_summary")
                     except Exception:
                         _persist_rollback_sp(cur, "bf_summary")
             conn.commit()
         finally:
             conn.close()
-    except Exception:
-        pass  # Defensive — persistence never fails the scan
+    except Exception as _persist_err:
+        # Defensive — persistence never fails the scan. But LOG it: a silently
+        # swallowed exception here is exactly what hid the 22h finding-freeze
+        # (a NameError → aborted-tx → discarded commit returned rows>0 anyway).
+        try:
+            logger.warning("brain_findings persist failed (findings frozen until "
+                           "next successful sweep): %s: %s",
+                           type(_persist_err).__name__, str(_persist_err)[:200])
+        except Exception:
+            pass
     return rows
 
 
@@ -8963,8 +8989,11 @@ def scan_summary() -> dict:
             # full_sweep=True: this is the canonical scan_all() over ALL
             # detectors, so resolve-on-absence is valid here (only place it runs).
             _persist_findings_to_db(findings or [], full_sweep=True)
-        except Exception:
-            pass
+        except Exception as _e:
+            try:
+                logger.warning("scan_summary full-sweep persist failed: %s", str(_e)[:200])
+            except Exception:
+                pass
         return result
     finally:
         _release_scan_lock()
