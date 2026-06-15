@@ -163,16 +163,20 @@ def _compute_funnel(tool_filter: str | None = None, days: int = 14) -> list[dict
                 # converter who hit the paywall 6x must not count 6x). Override
                 # 5_converted with that + record distinct_callers; compute the
                 # leak on the honest signal->converted path, not the pair-code chain.
-                # NOTE: the `converted` flag rows carry a NULL caller_id (the flag
-                # is back-filled on a different path than the caller_id stamp), so
-                # we cannot dedupe converters by caller_id — count converted SIGNALS
-                # (non-zero, per-tool) for the conversion stage, and distinct
-                # caller_id (independently) for the demand gate.
+                # 2026-06-15: caller_id is now populated on every new signal (the
+                # legacy fire_upgrade_signal NULL-caller_id regression is fixed) and
+                # the historical NULL rows were backfilled, so we can finally dedupe
+                # converters by caller_id. COUNT(*) FILTER (WHERE converted) was
+                # inflating the conversion stage: mark_signals_converted() flips
+                # EVERY signal for a converting email, so one buyer who hit the
+                # paywall N times counted as N conversions (e.g. 69 "conversions"
+                # were all one operator email flipped at a single instant). Count
+                # DISTINCT converters instead.
                 distinct_callers, converted_signals = 0, 0
                 try:
                     cur.execute("""
-                        SELECT COUNT(DISTINCT caller_id)          AS callers,
-                               COUNT(*) FILTER (WHERE converted)   AS converted
+                        SELECT COUNT(DISTINCT caller_id)                          AS callers,
+                               COUNT(DISTINCT caller_id) FILTER (WHERE converted)  AS converted
                           FROM mcp_upgrade_signals
                          WHERE tool_requested = %s
                            AND created_at >= NOW() - %s * INTERVAL '1 day'
