@@ -1320,7 +1320,7 @@ def _run_facility_discovery():
             FROM discovered_facilities df
             WHERE df.status IN ('Under Construction', 'Planned', 'Announced')
               AND df.power_mw IS NOT NULL
-              AND df.discovered_at >= (NOW() - INTERVAL '7 days')::text
+              AND df.discovered_at::timestamptz >= NOW() - INTERVAL '7 days'
               AND NOT EXISTS (
                   SELECT 1 FROM capacity_pipeline cp
                   WHERE LOWER(COALESCE(cp.operator,'')) = LOWER(COALESCE(df.provider,''))
