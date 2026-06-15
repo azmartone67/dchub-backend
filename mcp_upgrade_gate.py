@@ -196,17 +196,31 @@ def fire_upgrade_signal(*, signal_type, tool_requested=None, tier_current="free"
                 user_agent = ((user_agent or '') + f' key={_key_tag}').strip()
         except Exception:
             pass
+    # 2026-06-15 REGRESSION FIX: this legacy writer omitted caller_id, so every
+    # row it wrote (and since the /api/v1/mcp/signal-paywall endpoint started
+    # routing the MCP server's high-volume paywall traffic through it ~6/6, that
+    # is ~100% of new rows) landed with caller_id = NULL — breaking every
+    # signal→conversion join and the funnel's distinct-caller metrics. Compute it
+    # with the CANONICAL helper so the value is byte-identical to
+    # mcp_signal_canonical.record_signal() and the schema_repair backfill.
+    try:
+        from mcp_signal_canonical import _compute_caller_id as _cid
+        caller_id = _cid(user_email=user_email, session_id=session_id,
+                         mcp_client=mcp_client, user_agent=user_agent,
+                         ip_address=ip_address)
+    except Exception:
+        caller_id = None
     try:
         with _cursor() as cur:
             cur.execute(
                 """INSERT INTO mcp_upgrade_signals
                      (session_id, user_email, ip_address, signal_type, tool_requested,
                       tier_current, tier_required, daily_usage, daily_limit,
-                      message_shown, mcp_client, user_agent, created_at)
-                   VALUES (%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,NOW())""",
+                      message_shown, mcp_client, user_agent, caller_id, created_at)
+                   VALUES (%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,NOW())""",
                 (session_id, user_email, ip_address, signal_type, tool_requested,
                  tier_current, tier_required, daily_usage, daily_limit,
-                 message_shown, mcp_client, user_agent),
+                 message_shown, mcp_client, user_agent, caller_id),
             )
     except Exception as e:
         print(f"[upgrade_gate] fire_signal failed: {e}")

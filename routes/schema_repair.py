@@ -272,13 +272,18 @@ SCHEMA_STATEMENTS = [
         """CREATE INDEX IF NOT EXISTS idx_mcp_signals_converted_at
             ON mcp_upgrade_signals(converted_at) WHERE converted_at IS NOT NULL""",
         # Backfill caller_id for existing rows so retroactive attribution works.
+        # 2026-06-15: the anon hash MUST be truncated to 24 hex chars to match
+        # mcp_signal_canonical._compute_caller_id ('anon:' + md5(...)[:24]) — the
+        # Python writers use [:24] while this SQL used the full 32-char md5, so an
+        # anonymous caller got two different caller_ids (24- vs 32-char) and never
+        # deduped across the writer/backfill boundary. SUBSTRING(...FOR 24) aligns them.
         """UPDATE mcp_upgrade_signals
              SET caller_id = COALESCE(
                     NULLIF(LOWER(TRIM(user_email)), ''),
                     NULLIF(session_id, ''),
-                    'anon:' || md5(COALESCE(LOWER(mcp_client),'') || '|'
+                    'anon:' || SUBSTRING(md5(COALESCE(LOWER(mcp_client),'') || '|'
                                   || SUBSTRING(COALESCE(user_agent,'') FROM 1 FOR 120) || '|'
-                                  || COALESCE(ip_address,''))
+                                  || COALESCE(ip_address,'')) FROM 1 FOR 24)
                  )
            WHERE caller_id IS NULL""",
         "ALTER TABLE mcp_conversions ADD COLUMN IF NOT EXISTS caller_id TEXT",
