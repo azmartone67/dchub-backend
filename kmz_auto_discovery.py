@@ -1014,8 +1014,13 @@ class KMZAutoDiscovery:
         conn = None
         cur = None
         try:
-            conn = _conn()
-            cur = conn.cursor()
+            # r88-pool (2026-06-15): buffer rows during the slow ArcGIS HTTP loop
+            # and write them in ONE burst after (phase 2 below). We must never hold
+            # a pooled DB connection across session.get — each is up to 45s and a
+            # source spans many batches, so the connection was held 60-89s and the
+            # 60s watchdog FORCED-RECLAIMed it every cycle (r47.36 fixed the release
+            # path but not the hold). conn is now opened only in phase 2.
+            pending = []  # list of (params_tuple, distance_km)
 
             while total_fetched < MAX_FEATURES:
                 query_url = (
@@ -1087,26 +1092,15 @@ class KMZAutoDiscovery:
                             f"{provider}_{name}_{start_point}_{end_point}".encode()
                         ).hexdigest()[:16]
 
-                        try:
-                            cur.execute('''
-                                INSERT INTO fiber_kmz_routes
-                                (name, provider, route_type, start_point, end_point,
-                                 distance_km, coordinates, kmz_file, source_url)
-                                VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s)
-                                ON CONFLICT DO NOTHING
-                            ''', (
-                                display_name, str(operator)[:100], route_type,
-                                start_point, end_point,
-                                round(distance_km, 2),
-                                json.dumps(coordinates[:MAX_COORDS]),
-                                f"arcgis_export_{url_hash}",
-                                url
-                            ))
-                            if cur.rowcount > 0:
-                                results['routes_found'] += 1
-                                results['total_km'] += distance_km
-                        except Exception as e:
-                            logger.debug(f"Route insert error: {e}")
+                        pending.append((
+                            (display_name, str(operator)[:100], route_type,
+                             start_point, end_point,
+                             round(distance_km, 2),
+                             json.dumps(coordinates[:MAX_COORDS]),
+                             f"arcgis_export_{url_hash}",
+                             url),
+                            distance_km,
+                        ))
 
                     total_fetched += len(features)
                     offset += len(features)
@@ -1122,10 +1116,29 @@ class KMZAutoDiscovery:
                     logger.debug(f"ArcGIS page fetch error at offset {offset}: {e}")
                     break
 
-            try:
-                conn.commit()
-            except Exception:
-                pass
+            # Phase 2: open the pooled connection ONLY now (HTTP is done) and write
+            # the buffered rows in one fast burst. The outer finally releases it.
+            if pending:
+                conn = _conn()
+                cur = conn.cursor()
+                for _params, _dist in pending:
+                    try:
+                        cur.execute('''
+                            INSERT INTO fiber_kmz_routes
+                            (name, provider, route_type, start_point, end_point,
+                             distance_km, coordinates, kmz_file, source_url)
+                            VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s)
+                            ON CONFLICT DO NOTHING
+                        ''', _params)
+                        if cur.rowcount > 0:
+                            results['routes_found'] += 1
+                            results['total_km'] += _dist
+                    except Exception as e:
+                        logger.debug(f"Route insert error: {e}")
+                try:
+                    conn.commit()
+                except Exception:
+                    pass
 
             if results['routes_found'] > 0:
                 logger.info(f"  {source_name}: {results['routes_found']} routes, {results['total_km']:.1f} km (fetched {total_fetched} features)")
