@@ -38,6 +38,22 @@ jobs:
             "$RAILWAY_BASE/api/v1/brain/self-critique/run" | head -c 2000 || echo '{"ok":false,"error":"curl_fail"}'
           echo
 
+      - name: L18 — memory consolidation (distill verified outcomes into lessons)
+        env:
+          ADMIN_KEY: ${{ secrets.DCHUB_ADMIN_KEY }}
+        run: |
+          set -euo pipefail
+          if [ -z "${ADMIN_KEY:-}" ]; then echo "::warning::DCHUB_ADMIN_KEY not set — skipping L18"; exit 0; fi
+          # r89f (2026-06-15): runs L18 via this admin-gated GH cron (the proven
+          # background pattern) — NOT the in-process scheduler entry
+          # brain_memory_consolidate_DISABLED, which is left off (it caused the
+          # 2026-05-19 crash-loop). Reads verified prediction outcomes + the now-
+          # unblocked brain_finding_outcomes → writes brain_consolidated_lessons.
+          curl -sS --max-time 180 -X POST -H "X-Admin-Key: $ADMIN_KEY" \
+            -H "Content-Type: application/json" -d '{}' \
+            "$RAILWAY_BASE/api/v1/brain/lessons/consolidate" | head -c 2000 || echo '{"ok":false,"error":"curl_fail"}'
+          echo
+
       - name: L14 — causal analysis
         env:
           ADMIN_KEY: ${{ secrets.DCHUB_ADMIN_KEY }}

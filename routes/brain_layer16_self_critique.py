@@ -145,6 +145,41 @@ def _capture_pending_predictions() -> int:
     return captured
 
 
+def _resolve_criterion(criterion_text: str) -> list:
+    """r89f (2026-06-15): resolve a prediction's verification_criterion to its
+    ACTUAL current value so L16 can score was_correct true/false instead of the
+    null that kept calibration permanently empty. Extract the internal GET
+    path(s) the criterion names and fetch them via the EXISTING _internal()
+    helper (GET-only, localhost:8080, own origin, 8s). Returns a compact
+    evidence list [{endpoint, status, snippet}].
+    SAFETY: read-only — never POST, never an external URL; denylist any
+    admin/keys/secret path. Capped at 2 GETs per prediction by the caller's
+    max_to_verify budget."""
+    import re as _re
+    out = []
+    try:
+        paths = _re.findall(r'(/api/v1/[\w/\-]+|/[\w/\-]{2,})', criterion_text or '')
+        seen = set()
+        for p in paths:
+            if len(out) >= 2:
+                break
+            if p in seen:
+                continue
+            seen.add(p)
+            if any(b in p.lower() for b in ('admin', 'keys', 'secret', 'internal-key', 'cron')):
+                continue
+            try:
+                resp = _internal(p, timeout=8)
+                out.append({"endpoint": p,
+                            "status": "ok" if resp else "empty",
+                            "snippet": json.dumps(resp, default=str)[:400]})
+            except Exception as _e:
+                out.append({"endpoint": p, "status": "err", "snippet": str(_e)[:120]})
+    except Exception:
+        pass
+    return out
+
+
 def _verify_pending(max_to_verify: int = 10) -> dict:
     """For each pending prediction with a verifiable criterion, ask
     Claude (if available) to compare predicted vs current state and
@@ -180,7 +215,7 @@ def _verify_pending(max_to_verify: int = 10) -> dict:
         if not pending:
             return {"verified": 0, "note": "no pending predictions ready"}
 
-        # Pull current brain state for Claude to compare against
+        # Pull current brain state for Claude to compare against (supplementary)
         ctx = {
             "freshness":  _internal("/api/v1/freshness/radar"),
             "funnel":     _internal("/api/v1/mcp/funnel"),
@@ -190,12 +225,36 @@ def _verify_pending(max_to_verify: int = 10) -> dict:
             "publisher":  _internal("/api/v1/marketing/worker-status"),
         }
 
+        # r89f (2026-06-15): when BRAIN_VERIFY_RESOLVE_ENABLE is set, resolve each
+        # prediction's verification_criterion to its LIVE value (GET-only, own
+        # origin) and hand Claude PREDICTED-vs-ACTUAL pairs — so was_correct comes
+        # back true/false instead of null (the null is what kept calibration empty,
+        # starving L14 meta-cognition / awareness / self-model). Env unset = today's
+        # exact generic-ctx path (fully reversible).
+        import os as _os16
+        _resolve_on = _os16.environ.get("BRAIN_VERIFY_RESOLVE_ENABLE", "") in ("1", "true", "True", "yes")
+        _pending_json = [{
+            "id": p["id"],
+            "title": p["chain_title"],
+            "confidence": p["confidence"],
+            "verification": p["verification_criterion"],
+            "predicted_root_cause": p["prediction"][:400],
+            "predicted_at": str(p["predicted_at"]),
+            **({"resolved_evidence": _resolve_criterion(p["verification_criterion"])}
+               if _resolve_on else {}),
+        } for p in pending]
+        _resolve_instr = ("\nEACH prediction includes resolved_evidence — the LIVE value of the "
+                          "endpoint(s) its verification criterion names. COMPARE predicted_root_cause "
+                          "against resolved_evidence and set was_correct true/false accordingly. "
+                          "Return null ONLY when resolved_evidence is genuinely inconclusive "
+                          "(empty/err on every endpoint).\n" if _resolve_on else "")
+
         prompt = f"""You are the DC Hub Brain L16 — the Self-Critique Layer.
 
 Your job: look at predictions the brain made 6+ hours ago, and check
 whether each prediction was CORRECT, WRONG, or UNCERTAIN given the
 current system state.
-
+{_resolve_instr}
 For each pending prediction, return:
   - id: the prediction id (echo it back)
   - was_correct: true | false | null  (null = can't verify yet)
@@ -209,14 +268,7 @@ WRONG = over-confident. A "low" confidence prediction that turned
 out CORRECT = under-confident. Anything else = well-calibrated.
 
 Pending predictions ({len(pending)}):
-{json.dumps([{
-    "id": p["id"],
-    "title": p["chain_title"],
-    "confidence": p["confidence"],
-    "verification": p["verification_criterion"],
-    "predicted_root_cause": p["prediction"][:400],
-    "predicted_at": str(p["predicted_at"]),
-} for p in pending], indent=2, default=str)[:6000]}
+{json.dumps(_pending_json, indent=2, default=str)[:8000]}
 
 Current system state:
 {json.dumps(ctx, indent=2, default=str)[:4000]}

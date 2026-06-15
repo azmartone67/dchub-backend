@@ -125,27 +125,32 @@ def _gather_episodes() -> dict:
                         })
             except Exception: pass
 
-            # Fix outcomes from brain memory (L3)
+            # Fix outcomes from brain memory (L3) — r89f (2026-06-15): query the
+            # REAL live columns. The old query named issue_scope/fix_applied/
+            # success/observed_at which DO NOT EXIST on brain_finding_outcomes
+            # (live cols: issue_type, fix_kind, fix_summary, outcome, attempted_at)
+            # → it hit the bare except and silently yielded [], hiding 94 verified
+            # fix outcomes from consolidation. Pure column-name correction.
             try:
                 cur.execute(
-                    "SELECT issue_scope, fix_applied, success, "
-                    "       observed_at FROM brain_finding_outcomes "
-                    "ORDER BY observed_at DESC LIMIT 30"
+                    "SELECT issue_type, fix_kind, fix_summary, outcome, "
+                    "       attempted_at FROM brain_finding_outcomes "
+                    "ORDER BY attempted_at DESC LIMIT 30"
                 )
                 for r in cur.fetchall():
                     if hasattr(r, "get"):
                         out["fix_outcomes"].append({
-                            "scope": r.get("issue_scope"),
-                            "fix": (r.get("fix_applied") or "")[:200],
-                            "success": r.get("success"),
-                            "at": str(r.get("observed_at") or "")[:19],
+                            "scope": r.get("issue_type"),
+                            "fix": ((r.get("fix_kind") or "") + ": " + (r.get("fix_summary") or ""))[:200],
+                            "success": r.get("outcome"),
+                            "at": str(r.get("attempted_at") or "")[:19],
                         })
                     else:
                         out["fix_outcomes"].append({
                             "scope": r[0],
-                            "fix": (r[1] or "")[:200],
-                            "success": r[2],
-                            "at": str(r[3])[:19],
+                            "fix": ((r[1] or "") + ": " + (r[2] or ""))[:200],
+                            "success": r[3],
+                            "at": str(r[4])[:19],
                         })
             except Exception: pass
 
