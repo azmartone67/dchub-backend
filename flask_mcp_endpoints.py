@@ -2038,6 +2038,15 @@ def stripe_webhook_mcp():
         cust_id     = sess.get("customer")
         cust_email  = ((sess.get("customer_details") or {}).get("email")
                        or sess.get("customer_email") or "").lower() or None
+        # r89c (2026-06-14): WEB-source attribution. Pricing/SEO pages set
+        # client_reference_id = ref_<source>__tool_<tool>__ts_<ts> (e.g.
+        # ref_pricing-page__tool_none__ts_1781500890) — a DIFFERENT vocabulary from
+        # an agent MCP session_id (a bare UUID). Parse which surface/tool drove the
+        # sale; agent-session refs simply don't match this pattern (web_src=None).
+        import re as _re_ref
+        _wm = _re_ref.match(r'^ref_(.+?)__tool_(.+?)(?:__ts_\d+)?$', str(ref_session or ""))
+        web_src  = _wm.group(1) if _wm else None
+        web_tool = _wm.group(2) if _wm else None
         attribution, linked = {}, None
         try:
             from mcp_signal_canonical import mark_signals_converted
@@ -2100,32 +2109,69 @@ def stripe_webhook_mcp():
                                     (ref_session,))
                         _rr = cur.fetchone()
                         attr_id = _rr[0] if _rr else None
+                    # source priority: agent signal > web ref > organic.
+                    if attr_id:
+                        _src = "mcp_session_attributed"
+                    elif web_src:
+                        _src = "web:" + web_src
+                    else:
+                        _src = "organic_no_mcp_touch"
                     # Idempotency key: the checkout session id (cs_…). Payment-mode
                     # rows have no subscription id, and stripe_subscription_id is the
                     # only UNIQUE column, so we store cs_ there to dedupe Stripe's
                     # webhook re-delivery. No reader filters on this column's shape.
                     cur.execute("""INSERT INTO mcp_conversions
                                      (user_email, stripe_customer_id, stripe_subscription_id,
-                                      plan_to, mrr_cents, source, attribution_signal_id)
-                                   VALUES (%s, %s, %s, %s, %s, %s, %s)
+                                      plan_to, mrr_cents, source, attribution_signal_id,
+                                      web_source, web_tool)
+                                   VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s)
                                    ON CONFLICT (stripe_subscription_id) DO NOTHING
                                    RETURNING id""",
                                 (cust_email, cust_id, sess.get("id"), plan_to, mrr,
-                                 ("mcp_session_attributed" if attr_id else "organic_no_mcp_touch"),
-                                 attr_id))
+                                 _src, attr_id, web_src, web_tool))
                     _row = cur.fetchone()
                     conn.commit()
                     onetime = {"conversion_id": (_row[0] if _row else None),
                                "plan_to": plan_to, "mrr_cents": mrr,
                                "attribution_signal_id": attr_id,
+                               "web_source": web_src, "web_tool": web_tool,
                                "idempotent_skip": _row is None}
         except Exception as _e:
             onetime = {"error": str(_e)[:120]}
+        # r89c: WEB-source attribution for mode=subscription (e.g. the metered link
+        # bought from the pricing page). The canonical row is owned by
+        # subscription.created (keyed on the subscription id); UPSERT on that SAME id
+        # so both event orderings converge on ONE row. subscription.created's
+        # ON CONFLICT touches only plan_to/mrr_cents, so these web fields survive; and
+        # we never relabel a row already agent-attributed (attribution_signal_id set).
+        webattr = None
+        try:
+            _sub = sess.get("subscription")
+            if web_src and sess.get("mode") == "subscription" and _sub and cust_email:
+                with _pool.connection() as conn, conn.cursor() as cur:
+                    cur.execute("""INSERT INTO mcp_conversions
+                                     (user_email, stripe_customer_id, stripe_subscription_id,
+                                      plan_to, source, web_source, web_tool)
+                                   VALUES (%s, %s, %s, 'pending', %s, %s, %s)
+                                   ON CONFLICT (stripe_subscription_id) DO UPDATE SET
+                                     web_source = EXCLUDED.web_source,
+                                     web_tool   = EXCLUDED.web_tool,
+                                     source = CASE WHEN mcp_conversions.attribution_signal_id IS NULL
+                                                   THEN EXCLUDED.source ELSE mcp_conversions.source END
+                                   RETURNING id""",
+                                (cust_email, cust_id, _sub, "web:" + web_src, web_src, web_tool))
+                    _wr = cur.fetchone()
+                    conn.commit()
+                    webattr = {"web_source": web_src, "web_tool": web_tool,
+                               "conversion_id": (_wr[0] if _wr else None)}
+        except Exception as _e:
+            webattr = {"error": str(_e)[:120]}
         return jsonify({"ok": True, "event": event_type,
                         "client_reference_id": ref_session,
                         "signal_attribution": attribution,
                         "conversion_linked": linked,
-                        "onetime_conversion": onetime}), 200
+                        "onetime_conversion": onetime,
+                        "web_attribution": webattr}), 200
 
     if event_type not in ("customer.subscription.created", "customer.subscription.updated"):
         return jsonify({"ok": True, "ignored": event_type}), 200
