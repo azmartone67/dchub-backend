@@ -281,6 +281,48 @@ def submit_sitemap(token):
     except Exception as e:
         return jsonify({'success': False, 'error': str(e)}), 500
 
+@gsc_bp.route('/api/gsc/sitemap/delete', methods=['POST', 'DELETE'])
+@require_gsc_auth
+def delete_sitemap(token):
+    """Remove a sitemap submission from Google Search Console.
+
+    Reversible (a sitemap can always be re-submitted via /api/gsc/sitemap/submit).
+    Intended for retiring redundant/legacy sitemaps (e.g. a www.* variant that just
+    301s to the apex) so crawl budget isn't spent re-reading them. Does NOT remove
+    any URLs from the index — only unsubscribes the sitemap file.
+
+    Body or query: {"sitemap_url": "https://www.dchub.cloud/sitemap.xml"} (required —
+    no default, so we never delete the canonical apex sitemap by accident).
+    """
+    data = request.get_json(silent=True) or {}
+    sitemap_url = data.get('sitemap_url') or request.args.get('sitemap_url')
+    if not sitemap_url:
+        return jsonify({'success': False, 'error': "missing 'sitemap_url'"}), 400
+
+    try:
+        site_encoded = GSC_SITE_URL.replace(':', '%3A').replace('/', '%2F')
+        sitemap_encoded = sitemap_url.replace(':', '%3A').replace('/', '%2F')
+
+        response = requests.delete(
+            f'https://www.googleapis.com/webmasters/v3/sites/{site_encoded}/sitemaps/{sitemap_encoded}',
+            headers={'Authorization': f'Bearer {token}'}
+        )
+
+        if response.status_code in [200, 204]:
+            return jsonify({
+                'success': True,
+                'message': f'Sitemap {sitemap_url} deleted',
+                'sitemap_url': sitemap_url
+            })
+        return jsonify({
+            'success': False,
+            'error': response.text,
+            'status': response.status_code
+        }), response.status_code
+
+    except Exception as e:
+        return jsonify({'success': False, 'error': str(e)}), 500
+
 @gsc_bp.route('/api/gsc/sitemap/status', methods=['GET'])
 @require_gsc_auth
 def sitemap_status(token):

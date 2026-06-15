@@ -86,20 +86,34 @@ def indexnow_submit():
         "keyLocation": f"https://{host}/{_key()}.txt",
         "urlList":  urls,
     }).encode()
-    req = urllib.request.Request(
-        "https://api.indexnow.org/IndexNow",
-        data=body,
-        headers={"Content-Type": "application/json",
-                 "User-Agent": "DCHub-IndexNow/1.0 (+https://dchub.cloud)"},
-    )
-    try:
-        with urllib.request.urlopen(req, timeout=15) as r:
-            return jsonify({
-                "ok":              200 <= r.status < 300,
-                "upstream_status": r.status,
-                "submitted_count": len(urls),
-                "host":            host,
-                "key_location":    f"https://{host}/{_key()}.txt",
-            })
-    except Exception as e:
-        return jsonify({"ok": False, "error": str(e)[:200]}), 502
+    # 2026-06-14: api.indexnow.org (shared aggregator) 403s us ("key not valid" — its
+    # validator gets challenged at our CF edge); the per-engine endpoints accept the
+    # IDENTICAL key+payload (Bing→200, Yandex→202). Submitting to one IndexNow engine
+    # shares the URLs with all participants, so try engine endpoints first, aggregator
+    # last, and return on the first 2xx.
+    endpoints = ["https://www.bing.com/indexnow",
+                 "https://yandex.com/indexnow",
+                 "https://api.indexnow.org/IndexNow"]
+    last = {"ok": False, "error": "no endpoint reached"}
+    for ep in endpoints:
+        req = urllib.request.Request(
+            ep, data=body,
+            headers={"Content-Type": "application/json",
+                     "User-Agent": "DCHub-IndexNow/1.0 (+https://dchub.cloud)"},
+        )
+        try:
+            with urllib.request.urlopen(req, timeout=15) as r:
+                ok = 200 <= r.status < 300
+                last = {
+                    "ok":              ok,
+                    "upstream_status": r.status,
+                    "submitted_count": len(urls),
+                    "host":            host,
+                    "endpoint":        ep,
+                    "key_location":    f"https://{host}/{_key()}.txt",
+                }
+                if ok:
+                    return jsonify(last)
+        except Exception as e:
+            last = {"ok": False, "error": str(e)[:200], "endpoint": ep}
+    return jsonify(last), 502
