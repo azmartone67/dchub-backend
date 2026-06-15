@@ -369,6 +369,40 @@ def auto_mint_endpoint():
     )), 200
 
 
+def _mirror_trial_to_mcp_dev_keys(api_key: str, email: str):
+    """r88h: mirror a bound trial key into mcp_dev_keys (tier='free') so a LATER
+    Stripe payment by this email flips THIS exact key's tier. The MCP gate reads
+    mcp_dev_keys.tier and validate_key (flask_mcp_endpoints.py:218) picks up the
+    row the instant the webhook lifts it to 'paid' — turning the documented
+    identified→paid 100% leak into a hands-free unlock of the agent's OWN key.
+    Own connection + fully fail-soft: must NEVER affect the bind."""
+    if not api_key or not email:
+        return
+    try:
+        c = _conn()
+        if c is None:
+            return
+        try:
+            with c.cursor() as cur:
+                cur.execute("SELECT 1 FROM mcp_dev_keys WHERE api_key = %s", (api_key,))
+                if cur.fetchone():
+                    cur.execute(
+                        "UPDATE mcp_dev_keys SET email = %s, status = 'active' "
+                        "WHERE api_key = %s AND (email IS NULL OR email = %s)",
+                        (email, api_key, email))
+                else:
+                    cur.execute(
+                        "INSERT INTO mcp_dev_keys (api_key, email, tier, status) "
+                        "VALUES (%s, %s, 'free', 'active')",
+                        (api_key, email))
+            c.commit()
+        finally:
+            try: c.close()
+            except Exception: pass
+    except Exception:
+        pass
+
+
 @auto_trial_bp.route("/api/v1/keys/auto-trial/redeem", methods=["POST"])
 def redeem_endpoint():
     """Bind a trial key to an email — converts the trial into a
@@ -399,6 +433,7 @@ def redeem_endpoint():
     finally:
         try: c.close()
         except Exception: pass
+    _mirror_trial_to_mcp_dev_keys(api_key, email)
     return jsonify(ok=True, api_key=api_key, email=email,
                    tier="IDENTIFIED", daily_calls=200,
                    expires_at=r[0].isoformat() if r[0] else None,
@@ -444,6 +479,7 @@ def bind_operator_endpoint():
     finally:
         try: c.close()
         except Exception: pass
+    _mirror_trial_to_mcp_dev_keys(api_key, email)
     return jsonify(
         ok=True, api_key=api_key, operator_email=email, bound=True,
         upgrade_url=f"https://dchub.cloud/upgrade?key={api_key}",

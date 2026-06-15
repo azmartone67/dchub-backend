@@ -12213,8 +12213,13 @@ def handle_checkout_completed(session):
         # (r62c identity capture sets mcp_dev_keys.email). Best-effort — must NEVER break the
         # webhook (a thrown error here would block the users/api_keys upgrade above).
         try:
+            # r88h: add 'developer' (the advertised $49 MCP upgrade) — it was
+            # MISSING here, so $49 Developer buyers paid but their MCP key never
+            # left 'free' (paid-but-still-free, same class as the r77 bug).
+            # 'starter' ($9) deliberately left web-only for now (revisit if the
+            # paywall sells $9 as an MCP unlock).
             _paid_mcp_tier = ('enterprise' if plan_name == 'enterprise'
-                              else 'paid' if plan_name in ('pro', 'founding') else None)
+                              else 'paid' if plan_name in ('developer', 'pro', 'founding') else None)
             if _paid_mcp_tier and customer_email:
                 _mc, _ = _pg_execute(
                     "UPDATE mcp_dev_keys SET tier = %s WHERE LOWER(email) = LOWER(%s) AND status = 'active'",
