@@ -1535,15 +1535,28 @@ def mcp_funnel():
                 for r in cur.fetchall()
             ]
 
+            # 2026-06-15: exclude OUR OWN monitoring/test traffic so the
+            # "addressable demand pool" reflects real external agents. This query
+            # reads mcp_tool_calls raw (no is_synthetic view), so dchub-selfheal +
+            # *-test/probe inflated "distinct users" (~194→175 for grid). Reuse the
+            # canonical prefix list (single source of truth) against client_name.
+            try:
+                from mcp_upgrade_gate import _SYNTHETIC_CLIENT_PREFIXES as _synp
+            except Exception:
+                _synp = ('dchub-', 'step2_', 'qa-', 'probe-', 'test-', 'monitor-',
+                         'healthcheck', 'r51-', 'r52-', 'e2e-', 'recheck')
+            _syn_clause = "".join(
+                " AND LOWER(COALESCE(client_name,'')) NOT LIKE %s" for _ in _synp)
+            _syn_params = tuple(str(p).lower() + "%" for p in _synp)
             cur.execute(
                 """SELECT tool_name, COUNT(*) AS n,
                           COUNT(DISTINCT ip_address) AS users
                    FROM mcp_tool_calls
                    WHERE tool_name = ANY(%s)
-                     AND created_at >= NOW() - INTERVAL '30 days'
+                     AND created_at >= NOW() - INTERVAL '30 days'""" + _syn_clause + """
                    GROUP BY tool_name ORDER BY n DESC""",
                 (["analyze_site", "compare_sites", "get_grid_intelligence",
-                  "get_dchub_recommendation", "get_fiber_intel"],),
+                  "get_dchub_recommendation", "get_fiber_intel"], *_syn_params),
             )
             out["paid_tool_demand_30d"] = [
                 {"tool": r[0], "calls": r[1], "users": r[2]} for r in cur.fetchall()

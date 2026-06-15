@@ -31,6 +31,25 @@ import psycopg2.extras
 
 mcp_funnel_bp = Blueprint("mcp_funnel_v2", __name__)
 
+# 2026-06-15: the stage-0 demand numbers (total_calls / unique_keys per tool)
+# read mcp_call_log, which — unlike mcp_upgrade_signals (filtered at write time
+# by _is_synthetic) — logs OUR OWN monitoring + test traffic. dchub-selfheal
+# alone is ~70% of all call volume (96,974 of 138,860 rows/30d), so "193 distinct
+# users on get_grid_intelligence" is mostly internal probes, not addressable
+# demand. Exclude synthetic clients here too, reusing the canonical prefix list
+# (single source of truth) so the demand pool reflects REAL external agents.
+try:
+    from mcp_upgrade_gate import _SYNTHETIC_CLIENT_PREFIXES as _SYNTH_PREFIXES
+except Exception:
+    _SYNTH_PREFIXES = ('dchub-', 'step2_', 'qa-', 'probe-', 'test-', 'monitor-',
+                       'healthcheck', 'r51-', 'r52-', 'e2e-', 'recheck')
+# mcp_call_log.platform carries the client label. Build a NOT-LIKE clause +
+# params from the prefix list; empty list → no-op clause.
+_SYNTH_CALL_CLAUSE = "".join(
+    " AND LOWER(COALESCE(platform,'')) NOT LIKE %s" for _ in _SYNTH_PREFIXES
+)
+_SYNTH_CALL_PARAMS = tuple(str(p).lower() + "%" for p in _SYNTH_PREFIXES)
+
 
 def _conn():
     db = os.environ.get("DATABASE_URL")
@@ -58,18 +77,20 @@ def _compute_funnel(tool_filter: str | None = None, days: int = 14) -> list[dict
                   FROM mcp_call_log
                  WHERE timestamp >= NOW() - %s * INTERVAL '1 day'
                    AND tool IS NOT NULL
-            """
+            """ + _SYNTH_CALL_CLAUSE   # exclude our own monitoring/test traffic
             # r88 (2026-06-15): days is now a BOUND psycopg2 param everywhere (the
             # `INTERVAL '%s days'` + Python `% days` mix was the recurring
             # "tuple index out of range" trap the brain kept flagging — a literal %
             # anywhere in the string would make `% days` throw, and a params/
             # placeholder misalign would crash the whole funnel signal).
+            # Param order MUST be: days (timestamp) → synthetic NOT-LIKE params →
+            # optional tool_filter, matching the clause order in the SQL.
             if tool_filter:
                 tools_query += " AND tool = %s GROUP BY tool"
-                cur.execute(tools_query, (days, tool_filter))
+                cur.execute(tools_query, (days, *_SYNTH_CALL_PARAMS, tool_filter))
             else:
                 tools_query += " GROUP BY tool HAVING COUNT(*) >= 10 ORDER BY total_calls DESC LIMIT 25"
-                cur.execute(tools_query, (days,))
+                cur.execute(tools_query, (days, *_SYNTH_CALL_PARAMS))
             tools = cur.fetchall()
 
             for t in tools:
