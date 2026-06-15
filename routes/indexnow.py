@@ -106,23 +106,39 @@ def submit_to_indexnow(urls):
     payload = json.dumps({
         "host": HOST, "key": KEY, "keyLocation": KEY_LOCATION, "urlList": urls,
     }).encode()
-    req = urllib.request.Request(
-        "https://api.indexnow.org/indexnow", data=payload,
-        headers={"Content-Type": "application/json; charset=utf-8",
-                 "User-Agent": "dchub-indexnow/1.0"})
-    try:
-        with urllib.request.urlopen(req, timeout=25) as r:
-            code = getattr(r, "status", 200)
-        out = {"ok": code in (200, 202), "status": code, "submitted": len(urls)}
-    except urllib.error.HTTPError as e:
-        body = ""
+    # 2026-06-14: the shared aggregator https://api.indexnow.org/indexnow 403s our
+    # submissions ("key not valid" — its key-file validator gets challenged at our
+    # Cloudflare edge) while the per-engine endpoints accept the IDENTICAL key +
+    # payload (Bing→200, Yandex→202). Per the IndexNow protocol, submitting to ONE
+    # participating engine shares the URLs with all others, so try the authoritative
+    # engine endpoints first and only fall back to the aggregator. Return on first 2xx.
+    endpoints = ["https://www.bing.com/indexnow",
+                 "https://yandex.com/indexnow",
+                 "https://api.indexnow.org/indexnow"]
+    out = {"ok": False, "submitted": len(urls), "error": "no endpoint reached"}
+    for ep in endpoints:
+        req = urllib.request.Request(
+            ep, data=payload,
+            headers={"Content-Type": "application/json; charset=utf-8",
+                     "User-Agent": "dchub-indexnow/1.0"})
         try:
-            body = e.read().decode()[:200]
-        except Exception:
-            pass
-        out = {"ok": False, "status": e.code, "submitted": len(urls), "error": body}
-    except Exception as e:
-        out = {"ok": False, "error": str(e)[:160], "submitted": 0}
+            with urllib.request.urlopen(req, timeout=25) as r:
+                code = getattr(r, "status", 200)
+            out = {"ok": code in (200, 202), "status": code,
+                   "submitted": len(urls), "endpoint": ep}
+            if out["ok"]:
+                break
+        except urllib.error.HTTPError as e:
+            body = ""
+            try:
+                body = e.read().decode()[:200]
+            except Exception:
+                pass
+            out = {"ok": False, "status": e.code, "submitted": len(urls),
+                   "error": body, "endpoint": ep}
+        except Exception as e:
+            out = {"ok": False, "error": str(e)[:160],
+                   "submitted": 0, "endpoint": ep}
     _LAST.update(at=datetime.datetime.utcnow().isoformat() + "Z",
                  submitted=out.get("submitted", 0), status=out.get("status"))
     _save_last(_LAST)
