@@ -189,7 +189,7 @@ def _detect_grid_anomaly(iso, metric_name, current_value):
 GRID_ANOMALY_SOURCE_ID = "grid-anomaly-scan"
 
 
-def scan_grid_anomalies(min_samples: int = 5, sigma_threshold: float = 3.0,
+def scan_grid_anomalies(min_samples: int = 5, sigma_threshold: float = 10.0,
                         window_hours: int = 24, dry_run: bool = False) -> dict:
     """Sweep grid_data for per-(iso,metric) outliers and record anomalies.
 
@@ -515,7 +515,7 @@ def _generate_daily_insight(target_date=None):
         cur.execute(
             """SELECT source_id, anomaly_score, observations, observed_at
                FROM extraction_intelligence
-               WHERE DATE(observed_at) = %s AND anomaly_score > 0.5
+               WHERE DATE(observed_at) = %s AND anomaly_score >= 10
                ORDER BY anomaly_score DESC LIMIT 10""",
             (target_date,),
         )
@@ -606,9 +606,14 @@ def _generate_daily_insight(target_date=None):
 
     summary = " ".join(parts)
 
-    # Top changes — sources with most rows ingested today
+    # Top changes — sources that actually CHANGED data today (rows > 0).
+    # 2026-06-15: exclude 0-row sources. The autonomous-brain-* article
+    # extractors run every brain cycle but legitimately ingest 0 rows most
+    # cycles (bulk infra data is sourced from HIFLD/EIA via the GH-runner, not
+    # article mentions), so including them made idle feeds masquerade as "Top
+    # Changes". A source with 0 rows ingested did not change anything.
     top_changes = sorted(
-        sources_summary.items(),
+        ((s, info) for s, info in sources_summary.items() if info["rows"] > 0),
         key=lambda kv: kv[1]["rows"],
         reverse=True,
     )[:5]
@@ -1084,11 +1089,18 @@ def dashboard():
     # Recent anomalies
     if insight['top_anomalies']:
         html.append('<h2>Recent Anomalies</h2><table>')
-        html.append('<tr><th>Source</th><th>Score</th><th>Observed</th></tr>')
+        html.append('<tr><th>Source</th><th>ISO</th><th>Metric</th><th>Score (σ)</th><th>Observed</th></tr>')
         for a in insight['top_anomalies'][:10]:
             score = a.get('anomaly_score', 0)
-            cls = 'score-high' if score > 0.8 else 'score-med' if score > 0.5 else 'score-low'
-            html.append(f'<tr><td>{a["source_id"]}</td><td class="{cls}">{score:.2f}</td><td>{a.get("observed_at", "?")}</td></tr>')
+            # grid-anomaly-scan writes anomaly_score = sigmas (NOT the 0-1 scale),
+            # so band on sigma magnitude, and surface the (iso, metric) that fired
+            # so distinct per-fuel anomalies don't render as identical rows.
+            cls = 'score-high' if score >= 20 else 'score-med' if score >= 10 else 'score-low'
+            obs = a.get('observations') or {}
+            det = (obs.get('detected_anomalies') or [{}])[0] if isinstance(obs, dict) else {}
+            iso = det.get('iso') or '—'
+            metric = det.get('metric') or '—'
+            html.append(f'<tr><td>{a["source_id"]}</td><td>{iso}</td><td>{metric}</td><td class="{cls}">{score:.2f}</td><td>{a.get("observed_at", "?")}</td></tr>')
         html.append('</table>')
 
     # Top changes
@@ -1177,7 +1189,7 @@ def scan_grid_anomalies_endpoint():
         return jsonify(error="admin auth required for write run; pass dry_run=1 to preview"), 401
 
     try:
-        sigma = float(_arg("sigma", 3.0))
+        sigma = float(_arg("sigma", 10.0))
         min_samples = int(_arg("min_samples", 5))
         window_hours = int(_arg("window_hours", 24))
     except (TypeError, ValueError):
