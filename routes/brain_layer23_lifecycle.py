@@ -130,6 +130,41 @@ def _find_open_l23_issue() -> dict | None:
         return "unknown"  # type: ignore[return-value]
 
 
+def _open_issue_with_exact_title(title: str):
+    """r89d (2026-06-15): L15-style HARD dedup-against-GitHub by EXACT title.
+
+    Mirrors routes/brain_layer15_auto_action.py:_open_issue (the fix that
+    ended L15's 600+ duplicate-issue flood). Returns a TRUTHY value (the
+    existing issue number, or a 'fail_*' sentinel string) when we must NOT
+    create — i.e. an OPEN issue with this exact title already exists, OR the
+    search failed (FAIL CLOSED: never create on uncertainty; better to drop
+    one proposal than re-flood a human's inbox). Returns None ONLY when we
+    are certain no such open issue exists. Defense-in-depth on top of the
+    label-based de-flood (_find_open_l23_issue) — if the label lookup ever
+    mis-fires, this still makes a same-title flood structurally impossible.
+    """
+    tok = _gh_token()
+    if not tok:
+        return None  # no token → _draft_pr no-ops anyway; don't block here.
+    try:
+        import requests
+        r = requests.get(
+            "https://api.github.com/search/issues",
+            headers={"Authorization": f"Bearer {tok}",
+                     "Accept": "application/vnd.github+json"},
+            params={"q": f'repo:{_gh_repo()} is:issue is:open in:title "{title}"'},
+            timeout=10,
+        )
+        if r.status_code != 200:
+            return f"fail_search_http_{r.status_code}"
+        for it in (r.json() or {}).get("items", []):
+            if (it.get("title") or "") == title:
+                return it.get("number")
+        return None
+    except Exception as e:
+        return f"fail_search_error_{type(e).__name__}"
+
+
 def _comment_on_l23_tracker(issue_number: int, proposal: dict,
                              audit: dict, new_id) -> dict:
     """Append a new proposal as a comment on the open L23 tracker issue.
@@ -1868,6 +1903,13 @@ def lifecycle_propose():
     # reviews; PR follow-through is L22's next iteration.
     issue_result = None
     auto_issue = (request.args.get("auto_issue") or "").lower() in ("1", "true", "yes")
+    # r89d (2026-06-15): BRAIN_L23_DISABLE runtime kill switch (mirrors
+    # BRAIN_L15_DISABLE) — set =1 in Railway to halt ALL L23 auto-issue
+    # creation instantly without a deploy, the way L15's flood was contained.
+    if auto_issue and os.environ.get("BRAIN_L23_DISABLE", "") in ("1", "true", "True", "yes"):
+        issue_result = {"ok": False, "skipped": True,
+                        "reason": "disabled_via_env_BRAIN_L23_DISABLE"}
+        auto_issue = False
     if auto_issue:
         try:
             from routes.brain_layer22_auto_code import _draft_pr
@@ -1934,7 +1976,19 @@ def lifecycle_propose():
                     "labels": [_L23_PROPOSAL_LABEL, "capability-proposal",
                                "needs-human-merge", f"kind-{kind[:30]}"],
                 }
-                issue_result = _draft_pr(draft, dry_run=False)
+                # r89d (2026-06-15): L15-style HARD title dedup as the final
+                # safety net before the actual create. The label-based de-flood
+                # above appends to an open tracker, but if that lookup ever
+                # mis-fires (lost label, API blip → None), never open a 2nd OPEN
+                # issue with this EXACT title. FAIL CLOSED — _open_issue_with_exact_title
+                # returns truthy on a match OR any search error, so we skip.
+                _dup = _open_issue_with_exact_title(draft["title"])
+                if _dup:
+                    issue_result = {"ok": False, "skipped": True,
+                                    "reason": f"title_dedup_skip:{_dup}",
+                                    "title": draft["title"]}
+                else:
+                    issue_result = _draft_pr(draft, dry_run=False)
         except Exception as ie:
             issue_result = {"ok": False, "error": f"{type(ie).__name__}: {str(ie)[:160]}"}
 
