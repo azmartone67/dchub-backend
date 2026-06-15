@@ -1228,7 +1228,7 @@ def find_major_pipelines(lat, lng, radius_miles=50):
             'operator': p.get('operator', 'Unknown'),
             'capacity_mdth_per_day': p.get('capacity_mdth', 0),
             'states_served': p.get('states_served', ''),
-            'distance_miles': round(p.get('distance_miles', 0, 0) or 0, 1),
+            'distance_miles': round(p.get('distance_miles', 0) or 0, 1),
         } for p in result],
         'count': len(result),
     }
