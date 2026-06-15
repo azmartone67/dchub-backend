@@ -1,0 +1,67 @@
+name: Media freshness — AI citations + testimonials (source_of_truth lever)
+
+# 2026-06-15 — wires the two freshness jobs the media-organism audit found
+# unscheduled, which left the `source_of_truth` channel scoring ~38/100 on a
+# stale hand-seed:
+#
+#   1. POST /api/v1/ai-citations/run-cron   (routes/ai_citation_tracker.py)
+#      Queries every (engine × canonical prompt) that has credentials
+#      (Claude always; ChatGPT/Gemini/Perplexity/Grok when their keys are set
+#      on Railway) and records one ai_citations observation per pair. This is
+#      what keeps ai_citations_7d / distinct-engines-cited live instead of a
+#      May baseline. Runs synchronously (LLM calls) so allow a long timeout.
+#
+#   2. POST /api/v1/admin/testimonials/seed (routes/testimonials_seeder.py)
+#      Pulls FROM the now-fresh ai_citations history (+ LinkedIn) into
+#      ai_testimonials_auto → un-sticks the 100-day-stale citations rail on
+#      /dc-hub-media. Runs AFTER step 1 so it has fresh rows to pull.
+#
+# Twice weekly (Mon + Thu) keeps the score's 7-day windows populated. Both
+# steps fail-soft: a non-200 logs a warning but never red-fails the run (the
+# citation pass still records server-side even if our curl times out).
+
+on:
+  schedule:
+    - cron: '40 11 * * 1,4'   # Mon + Thu 11:40 UTC — off-peak, distinct minute
+  workflow_dispatch: {}        # manual trigger from the Actions tab
+
+permissions:
+  contents: read
+
+env:
+  RAILWAY_BASE: https://dchub-backend-production.up.railway.app
+
+jobs:
+  freshness:
+    runs-on: ubuntu-latest
+    timeout-minutes: 12
+    steps:
+      - name: Refresh AI citations (engine x prompt matrix)
+        env:
+          ADMIN_KEY: ${{ secrets.DCHUB_ADMIN_KEY }}
+        run: |
+          set -uo pipefail
+          resp=$(curl -sS --max-time 300 -X POST \
+            -H "X-Admin-Key: ${ADMIN_KEY:-}" \
+            -H "Content-Type: application/json" \
+            "$RAILWAY_BASE/api/v1/ai-citations/run-cron" \
+            || echo '{"ok":false,"error":"curl_timeout_but_server_keeps_running"}')
+          echo "$resp" | head -c 3000; echo
+          echo "::notice::ai-citations run-cron returned $(echo "$resp" | head -c 120)"
+
+      - name: Seed testimonials from fresh citations + LinkedIn
+        env:
+          ADMIN_KEY: ${{ secrets.DCHUB_ADMIN_KEY }}
+        run: |
+          set -uo pipefail
+          if [ -z "${ADMIN_KEY:-}" ]; then
+            echo "::warning::DCHUB_ADMIN_KEY not set — testimonials seed will 401; skipping"
+            exit 0
+          fi
+          resp=$(curl -sS --max-time 120 -X POST \
+            -H "X-Admin-Key: $ADMIN_KEY" \
+            -H "Content-Type: application/json" \
+            "$RAILWAY_BASE/api/v1/admin/testimonials/seed" \
+            || echo '{"ok":false,"error":"curl_fail"}')
+          echo "$resp" | head -c 3000; echo
+          echo "::notice::testimonials seed returned $(echo "$resp" | head -c 120)"
