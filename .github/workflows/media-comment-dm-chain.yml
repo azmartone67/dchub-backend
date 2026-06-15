@@ -1,0 +1,52 @@
+name: Media comment→DM follow-up chain (dry-run safe)
+
+# 2026-06-15: the LinkedIn comment-reply loop (media_comment_engagement.py) and
+# the DM follow-up loop (media_dm_follow_up.py) were BUILT but never fired —
+# media_comment_engagement_log and media_dm_log had 0 rows ever — because
+# NOTHING scheduled their run endpoints (the (11,23,...) tuple in the source was
+# only a docstring, never wired). This cron runs the chain:
+#   1. comment-engagement/run  → poll LinkedIn comments on recent posts, draft replies
+#   2. dm-followup/send         → draft DMs to qualified engaged commenters
+#
+# SAFE: both endpoints honor their DRY_RUN env (MEDIA_COMMENT_REPLY_DRY_RUN and
+# MEDIA_DM_DRY_RUN both default to "1" = ON), so this CAPTURES comments + DRAFTS
+# replies/DMs into the logs for human review WITHOUT posting or sending anything.
+# To go live, review the drafts then set those envs to 0 in Railway. The loops
+# also enforce daily caps + 24h cooldowns + kill switches
+# (MEDIA_COMMENT_REPLY_DISABLE / MEDIA_DM_DISABLE) server-side.
+#
+# NOTE: this only produces rows when the posts actually have comments — the
+# gating input is real engagement, not this workflow.
+
+on:
+  schedule:
+    - cron: '17 11,23 * * *'   # 11:17 & 23:17 UTC, twice daily
+  workflow_dispatch: {}
+
+permissions:
+  contents: read
+
+env:
+  RAILWAY_BASE: https://dchub-backend-production.up.railway.app
+
+jobs:
+  comment-dm-chain:
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - name: Run comment-engagement + DM follow-up (dry-run unless Railway flips it)
+        env:
+          ADMIN_KEY: ${{ secrets.DCHUB_ADMIN_KEY }}
+        run: |
+          set -euo pipefail
+          if [ -z "${ADMIN_KEY:-}" ]; then
+            echo "::warning::DCHUB_ADMIN_KEY not set — skipping"; exit 0
+          fi
+          echo "== 1) comment-engagement/run (poll comments + draft replies) =="
+          curl -sS --max-time 120 -X POST -H "X-Admin-Key: $ADMIN_KEY" \
+            "$RAILWAY_BASE/api/v1/admin/media/comment-engagement/run" | head -c 1500
+          echo
+          echo "== 2) dm-followup/send (draft DMs to engaged commenters) =="
+          curl -sS --max-time 120 -X POST -H "X-Admin-Key: $ADMIN_KEY" \
+            "$RAILWAY_BASE/api/v1/admin/media/dm-followup/send" | head -c 1500
+          echo
