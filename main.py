@@ -29253,6 +29253,12 @@ try:
 except Exception as _air_e:
     print(f"[main] ai_reach register failed: {_air_e}", file=sys.stderr)
 
+try:
+    from routes.connectivity_score import connectivity_score_bp
+    app.register_blueprint(connectivity_score_bp)
+except Exception as _cs_e:
+    print(f"[main] connectivity_score register failed: {_cs_e}", file=sys.stderr)
+
 # Phase GGG-MMM (2026-05-16) — master shell: 6 new builds in one go.
 # Each blueprint isolated with its own try/except so any single failure
 # doesn't block app startup. See routes/*.py docstrings for per-phase rationale.
