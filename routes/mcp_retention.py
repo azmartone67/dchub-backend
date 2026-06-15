@@ -84,11 +84,32 @@ def mcp_retention():
             """)
             row = cur.fetchone()
             out["summary"] = dict(row) if row else {}
+            # r86b (2026-06-14): NEVER let the in-progress current week read as a
+            # "decline". date_trunc('week', now()) = Monday of the current ISO week;
+            # any cohort/reuse row with week >= that is a PARTIAL week (often just a
+            # handful of UTC-edge calls → 0 new / ~0 returning) and was making the
+            # headline KPI + the last table row look like a cliff. Split it out:
+            # the trend arrays + latest_* headline use only COMPLETE weeks; the
+            # partial week is surfaced separately under current_partial_* so nothing
+            # is hidden, just not mistaken for a finished data point.
+            cur.execute("SELECT date_trunc('week', now())::date AS cur_wk")
+            cur_wk = cur.fetchone()["cur_wk"]
+            partial_ip = [r for r in out["ip_cohort"] if r["week"] >= cur_wk]
+            out["ip_cohort"] = [r for r in out["ip_cohort"] if r["week"] < cur_wk]
+            out["key_reuse"] = [r for r in out["key_reuse"] if r["week"] < cur_wk]
             if out["ip_cohort"]:
                 last = out["ip_cohort"][-1]
                 out["summary"].update(latest_week=str(last["week"]),
                                       latest_new_ips=last["new_ips"],
-                                      latest_returning_ips=last["returning_ips"])
+                                      latest_returning_ips=last["returning_ips"],
+                                      latest_complete_week=str(last["week"]))
+            if partial_ip:
+                pw = partial_ip[-1]
+                out["summary"].update(current_partial_week=str(pw["week"]),
+                                      current_partial_new_ips=pw["new_ips"],
+                                      current_partial_returning_ips=pw["returning_ips"])
+            else:
+                out["summary"]["current_partial_week"] = str(cur_wk)
     except Exception as e:
         return jsonify(error="query_failed", detail=str(e)[:200]), 500
     finally:
