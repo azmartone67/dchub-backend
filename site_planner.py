@@ -1548,6 +1548,30 @@ def register_site_planner_routes(app):
             # Enhanced Analysis
             nearby_dcs = find_nearby_facilities(lat, lng)
             fiber = check_fiber_proximity(lat, lng)
+            # Enrich with the real parcel fiber-readiness scorer (carrier_facility_presence
+            # + FCC fiber hex). Falls back silently to the check_fiber_proximity result on
+            # any error, so existing behavior is preserved.
+            try:
+                from routes.connectivity_score import score_connectivity
+                cc = score_connectivity(lat, lng, 50)
+                if cc and not cc.get('error'):
+                    _cnt = cc.get('carrier_count', 0)
+                    _bucket = cc.get('near_net_bucket', '')
+                    _rating = ('Excellent' if _cnt >= 8 and _bucket in ('on-net', 'near-net')
+                               else 'Good' if _cnt >= 4
+                               else 'Fair' if _cnt >= 1
+                               else 'Limited')
+                    fiber['connectivity_rating'] = _rating
+                    fiber['connected_facilities_nearby'] = _cnt
+                    fiber['score'] = cc.get('score')
+                    fiber['near_net_bucket'] = _bucket
+                    fiber['nearest_carrier_km'] = cc.get('nearest_carrier_km')
+                    fiber['carrier_count'] = _cnt
+                    fiber['single_carrier_risk'] = cc.get('single_carrier_risk', False)
+                    fiber['verdict'] = cc.get('verdict_short', '')
+                    fiber['top_carriers'] = cc.get('top_carriers', [])
+            except Exception as _cc_e:
+                logger.warning(f"connectivity_score enrich failed: {_cc_e}")
             power_pricing = get_power_pricing(iso.get('name', 'SERC'))
             water = assess_water_risk(state)
             
