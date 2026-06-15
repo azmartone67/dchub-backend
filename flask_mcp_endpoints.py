@@ -2064,10 +2064,68 @@ def stripe_webhook_mcp():
                         conn.commit()
         except Exception as _e:
             linked = {"error": str(_e)[:120]}
+        # r89b (2026-06-14): mode=payment (one-time, e.g. Pro Annual $1,188) fires
+        # checkout.session.completed but NEVER customer.subscription.created, so the
+        # subscription-only INSERT (below, ~line 2128) never runs → these buyers were
+        # invisible in mcp_conversions. (The main /webhook's phase17 INSERT targets a
+        # non-existent schema and silently rolls back, so nothing covered them.)
+        # Insert here, idempotently, WITH session attribution. mode=subscription is
+        # intentionally SKIPPED — subscription.created owns that row (no double-count).
+        onetime = None
+        try:
+            if (sess.get("mode") == "payment"
+                    and (sess.get("payment_status") == "paid"
+                         or sess.get("status") == "complete")
+                    and not cust_email):
+                # mcp_conversions.user_email is NOT NULL; a paid checkout with no
+                # resolvable email is an anomaly (Stripe collects it on these links).
+                # Record the skip rather than error the handler.
+                onetime = {"skipped": "no_email"}
+            elif (sess.get("mode") == "payment"
+                    and (sess.get("payment_status") == "paid"
+                         or sess.get("status") == "complete")):
+                amount = int(sess.get("amount_total") or 0)
+                # Our only payment-mode product is the annual prepay; normalize the
+                # prepaid year to a monthly MRR so dashboards aren't inflated 12x. A
+                # smaller one-time (no recurring meaning) contributes 0 MRR.
+                if amount >= 100000:
+                    plan_to, mrr = "pro_annual", round(amount / 12)
+                else:
+                    plan_to, mrr = "one_time", 0
+                with _pool.connection() as conn, conn.cursor() as cur:
+                    attr_id = None
+                    if ref_session:
+                        cur.execute("""SELECT id FROM mcp_upgrade_signals
+                                        WHERE session_id = %s ORDER BY created_at DESC LIMIT 1""",
+                                    (ref_session,))
+                        _rr = cur.fetchone()
+                        attr_id = _rr[0] if _rr else None
+                    # Idempotency key: the checkout session id (cs_…). Payment-mode
+                    # rows have no subscription id, and stripe_subscription_id is the
+                    # only UNIQUE column, so we store cs_ there to dedupe Stripe's
+                    # webhook re-delivery. No reader filters on this column's shape.
+                    cur.execute("""INSERT INTO mcp_conversions
+                                     (user_email, stripe_customer_id, stripe_subscription_id,
+                                      plan_to, mrr_cents, source, attribution_signal_id)
+                                   VALUES (%s, %s, %s, %s, %s, %s, %s)
+                                   ON CONFLICT (stripe_subscription_id) DO NOTHING
+                                   RETURNING id""",
+                                (cust_email, cust_id, sess.get("id"), plan_to, mrr,
+                                 ("mcp_session_attributed" if attr_id else "organic_no_mcp_touch"),
+                                 attr_id))
+                    _row = cur.fetchone()
+                    conn.commit()
+                    onetime = {"conversion_id": (_row[0] if _row else None),
+                               "plan_to": plan_to, "mrr_cents": mrr,
+                               "attribution_signal_id": attr_id,
+                               "idempotent_skip": _row is None}
+        except Exception as _e:
+            onetime = {"error": str(_e)[:120]}
         return jsonify({"ok": True, "event": event_type,
                         "client_reference_id": ref_session,
                         "signal_attribution": attribution,
-                        "conversion_linked": linked}), 200
+                        "conversion_linked": linked,
+                        "onetime_conversion": onetime}), 200
 
     if event_type not in ("customer.subscription.created", "customer.subscription.updated"):
         return jsonify({"ok": True, "ignored": event_type}), 200
