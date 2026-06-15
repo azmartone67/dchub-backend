@@ -49,6 +49,72 @@ _ADMIN_KEY = (os.environ.get("DCHUB_ADMIN_KEY") or "").strip()
 
 _CACHE = {"analysis": None, "computed_at": 0.0}
 _TTL = 3600  # 1h — causal analyses are expensive, change slowly
+_DB_TTL = 86400  # 24h — DB-persisted analysis is the cross-worker source of truth
+
+
+def _db():
+    """Postgres/Neon connection or None. r89e (2026-06-15): the causal analysis
+    MUST persist to the DB, not just the per-process _CACHE. analyze() runs in a
+    daemon thread in ONE gunicorn worker while GET /causal (and L16's prediction
+    capture) hit ANOTHER worker → the in-memory cache misses cross-worker (and is
+    wiped on every restart). That is why brain_predictions_log stayed empty: L16
+    read an always-cold cache, captured 0 chains, logged 0 predictions."""
+    try:
+        import psycopg2
+        url = (os.environ.get("DATABASE_URL") or os.environ.get("NEON_DATABASE_URL"))
+        if not url:
+            return None
+        c = psycopg2.connect(url, connect_timeout=5)
+        c.autocommit = True
+        return c
+    except Exception:
+        return None
+
+
+def _persist_analysis(analysis: dict) -> None:
+    """Upsert the latest causal analysis to a single-row table so every worker
+    + L16 see it. Best-effort, never raises."""
+    import json as _json
+    if not analysis:
+        return
+    c = _db()
+    if c is None:
+        return
+    try:
+        with c.cursor() as cur:
+            cur.execute("CREATE TABLE IF NOT EXISTS brain_causal_cache ("
+                        "id INT PRIMARY KEY, analysis JSONB, "
+                        "computed_at TIMESTAMPTZ DEFAULT NOW())")
+            cur.execute("INSERT INTO brain_causal_cache (id, analysis, computed_at) "
+                        "VALUES (1, %s, NOW()) ON CONFLICT (id) DO UPDATE "
+                        "SET analysis = EXCLUDED.analysis, computed_at = NOW()",
+                        (_json.dumps(analysis),))
+    except Exception as e:
+        logger.warning(f"L14 _persist_analysis failed: {e}")
+    finally:
+        try: c.close()
+        except Exception: pass
+
+
+def _load_analysis():
+    """Load the latest DB-persisted analysis (dict) + age-seconds, or (None, None).
+    The cross-worker source of truth behind GET /causal."""
+    c = _db()
+    if c is None:
+        return None, None
+    try:
+        with c.cursor() as cur:
+            cur.execute("SELECT analysis, EXTRACT(EPOCH FROM (NOW()-computed_at))::int "
+                        "FROM brain_causal_cache WHERE id = 1")
+            row = cur.fetchone()
+            if row and row[0]:
+                return row[0], int(row[1] or 0)
+    except Exception as e:
+        logger.warning(f"L14 _load_analysis failed: {e}")
+    finally:
+        try: c.close()
+        except Exception: pass
+    return None, None
 
 
 def _internal(path: str, timeout: int = 8) -> dict:
@@ -209,6 +275,21 @@ def causal():
             cached=True,
             cache_age_seconds=int(now - _CACHE["computed_at"]),
         )
+    # r89e (2026-06-15): cross-worker / post-restart fall-through. analyze() ran
+    # in another worker's memory (or before a restart), so the in-process _CACHE
+    # is cold here. Load the DB-persisted analysis — the real source of truth that
+    # L16 reads to capture predictions.
+    db_analysis, db_age = _load_analysis()
+    if db_analysis and (db_age is None or db_age < _DB_TTL):
+        _CACHE["analysis"] = db_analysis            # warm this worker's cache
+        _CACHE["computed_at"] = now - (db_age or 0)
+        return jsonify(
+            ok=True,
+            analysis=db_analysis,
+            cached=True,
+            cache_source="db",
+            cache_age_seconds=db_age,
+        )
     return jsonify(
         ok=False,
         analysis=None,
@@ -254,6 +335,7 @@ def analyze():
             if analysis:
                 _CACHE["analysis"] = analysis
                 _CACHE["computed_at"] = time.monotonic()
+                _persist_analysis(analysis)  # r89e: survive cross-worker + restart
                 logger.info("L14 causal/analyze background call complete")
             else:
                 logger.warning("L14 causal/analyze background call: no analysis returned")
