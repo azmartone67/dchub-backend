@@ -24916,26 +24916,39 @@ def api_site_score():
             'ID': 55, 'NM': 54, 'MT': 50, 'WV': 50,
         }
         fiber_score = METRO_FIBER_SCORES.get(state, 55)
-
         fiber_carriers = 0
+        fiber_conn = None
+        # Parcel-level fiber readiness (real near-net distance + carrier depth + path diversity)
+        # from carrier_facility_presence/fcc_fiber_hex — supersedes the crude state estimate.
+        # Falls back to the state-text heuristic below on any error.
         try:
-            c.execute("""
-                SELECT COUNT(DISTINCT provider) FROM fiber_routes
-                WHERE UPPER(start_location || ' ' || end_location) ILIKE %s
-                   OR UPPER(start_location || ' ' || end_location) ILIKE %s
-            """, (f'%{state}%', f'%, {state}%'))
-            fiber_carriers = c.fetchone()[0] or 0
-            if fiber_carriers >= 5:
-                fiber_score = min(100, fiber_score + 10)
-            elif fiber_carriers >= 2:
-                fiber_score = min(100, fiber_score + 5)
+            from routes.connectivity_score import score_connectivity
+            _cc = score_connectivity(lat, lon, 50)
+            if _cc and not _cc.get('error') and _cc.get('carrier_count', 0) > 0:
+                fiber_score = _cc['score']
+                fiber_carriers = _cc['carrier_count']
+                fiber_conn = _cc
         except Exception:
-            pass
+            fiber_conn = None
 
-        if nearby_facilities >= 20:
-            fiber_score = min(100, fiber_score + 5)
-        elif nearby_facilities >= 5:
-            fiber_score = min(100, fiber_score + 3)
+        if fiber_conn is None:
+            try:
+                c.execute("""
+                    SELECT COUNT(DISTINCT provider) FROM fiber_routes
+                    WHERE UPPER(start_location || ' ' || end_location) ILIKE %s
+                       OR UPPER(start_location || ' ' || end_location) ILIKE %s
+                """, (f'%{state}%', f'%, {state}%'))
+                fiber_carriers = c.fetchone()[0] or 0
+                if fiber_carriers >= 5:
+                    fiber_score = min(100, fiber_score + 10)
+                elif fiber_carriers >= 2:
+                    fiber_score = min(100, fiber_score + 5)
+            except Exception:
+                pass
+            if nearby_facilities >= 20:
+                fiber_score = min(100, fiber_score + 5)
+            elif nearby_facilities >= 5:
+                fiber_score = min(100, fiber_score + 3)
 
         # 6. State-level risk index
         STATE_RISK = {
@@ -25003,6 +25016,19 @@ def api_site_score():
                 'generation_capacity_mw': round(nearby_generation_mw, 1),
                 'fiber_carriers_in_state': fiber_carriers,
             },
+            'fiber': ({
+                'connectivity_score': fiber_conn.get('score'),
+                'near_net_bucket': fiber_conn.get('near_net_bucket'),
+                'nearest_carrier_km': fiber_conn.get('nearest_carrier_km'),
+                'carrier_count': fiber_conn.get('carrier_count'),
+                'top_carriers': fiber_conn.get('top_carriers'),
+                'single_carrier_risk': fiber_conn.get('single_carrier_risk'),
+                'verdict': fiber_conn.get('verdict_short'),
+                'basis': 'parcel (PeeringDB carrier presence + FCC fiber coverage)',
+            } if fiber_conn else {
+                'connectivity_score': round(fiber_score, 1),
+                'basis': 'state-level estimate (parcel data unavailable)',
+            }),
             'interpretation': (
                 'Excellent site' if overall >= 80 else
                 'Good site' if overall >= 70 else
