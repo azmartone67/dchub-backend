@@ -159,6 +159,11 @@ def _resolve_criterion(criterion_text: str) -> list:
     out = []
     try:
         paths = _re.findall(r'(/api/v1/[\w/\-]+|/[\w/\-]{2,})', criterion_text or '')
+        # snake_case field names the criterion references — used to surface the
+        # SPECIFIC value Claude needs even when it sits deep in a large response
+        # (a blind prefix snippet truncates it; e.g. conversions_30d is at char
+        # 1763 of the 8KB funnel JSON). Field-aware beats bigger-snippet.
+        tokens = set(_re.findall(r'[a-z][a-z0-9_]{3,}', (criterion_text or '').lower()))
         seen = set()
         for p in paths:
             if len(out) >= 2:
@@ -170,9 +175,14 @@ def _resolve_criterion(criterion_text: str) -> list:
                 continue
             try:
                 resp = _internal(p, timeout=8)
-                out.append({"endpoint": p,
-                            "status": "ok" if resp else "empty",
-                            "snippet": json.dumps(resp, default=str)[:400]})
+                ev = {"endpoint": p, "status": "ok" if resp else "empty"}
+                if isinstance(resp, dict):
+                    hits = {k: json.dumps(resp[k], default=str)[:200]
+                            for k in resp if k.lower() in tokens}
+                    if hits:
+                        ev["named_fields"] = hits   # the exact value(s) the criterion cited
+                ev["snippet"] = json.dumps(resp, default=str)[:800]
+                out.append(ev)
             except Exception as _e:
                 out.append({"endpoint": p, "status": "err", "snippet": str(_e)[:120]})
     except Exception:
