@@ -384,17 +384,16 @@ def _mirror_trial_to_mcp_dev_keys(api_key: str, email: str):
             return
         try:
             with c.cursor() as cur:
-                cur.execute("SELECT 1 FROM mcp_dev_keys WHERE api_key = %s", (api_key,))
-                if cur.fetchone():
-                    cur.execute(
-                        "UPDATE mcp_dev_keys SET email = %s, status = 'active' "
-                        "WHERE api_key = %s AND (email IS NULL OR email = %s)",
-                        (email, api_key, email))
-                else:
-                    cur.execute(
-                        "INSERT INTO mcp_dev_keys (api_key, email, tier, status) "
-                        "VALUES (%s, %s, 'free', 'active')",
-                        (api_key, email))
+                # api_key is the PRIMARY KEY; developer_id is NOT NULL (use the key
+                # itself as a stable id). The tier CHECK only allows
+                # free/paid/enterprise, so seed 'free' and let the Stripe webhook
+                # lift it to 'paid'. Verified end-to-end before ship.
+                cur.execute(
+                    "INSERT INTO mcp_dev_keys (api_key, developer_id, email, tier, status) "
+                    "VALUES (%s, %s, %s, 'free', 'active') "
+                    "ON CONFLICT (api_key) DO UPDATE "
+                    "   SET email = EXCLUDED.email, status = 'active'",
+                    (api_key, api_key, email))
             c.commit()
         finally:
             try: c.close()
