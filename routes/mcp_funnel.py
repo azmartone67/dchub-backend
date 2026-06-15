@@ -56,15 +56,20 @@ def _compute_funnel(tool_filter: str | None = None, days: int = 14) -> list[dict
                        COUNT(DISTINCT api_key)  AS unique_keys,
                        COUNT(*) FILTER (WHERE status IN ('ok','success','200')) AS ok_calls
                   FROM mcp_call_log
-                 WHERE timestamp >= NOW() - INTERVAL '%s days'
+                 WHERE timestamp >= NOW() - %s * INTERVAL '1 day'
                    AND tool IS NOT NULL
-            """ % days
+            """
+            # r88 (2026-06-15): days is now a BOUND psycopg2 param everywhere (the
+            # `INTERVAL '%s days'` + Python `% days` mix was the recurring
+            # "tuple index out of range" trap the brain kept flagging — a literal %
+            # anywhere in the string would make `% days` throw, and a params/
+            # placeholder misalign would crash the whole funnel signal).
             if tool_filter:
                 tools_query += " AND tool = %s GROUP BY tool"
-                cur.execute(tools_query, (tool_filter,))
+                cur.execute(tools_query, (days, tool_filter))
             else:
                 tools_query += " GROUP BY tool HAVING COUNT(*) >= 10 ORDER BY total_calls DESC LIMIT 25"
-                cur.execute(tools_query)
+                cur.execute(tools_query, (days,))
             tools = cur.fetchall()
 
             for t in tools:
@@ -100,7 +105,7 @@ def _compute_funnel(tool_filter: str | None = None, days: int = 14) -> list[dict
                         cur.execute(f"""
                             SELECT COUNT(*) AS n FROM mcp_upgrade_signals
                              WHERE {col} = %s
-                               AND created_at >= NOW() - INTERVAL '%s days'
+                               AND created_at >= NOW() - %s * INTERVAL '1 day'
                         """, (tool, days))
                         # RealDictCursor (line 52) returns dicts — the prior
                         # cur.fetchone()[0] raised KeyError (swallowed by the bare
@@ -119,7 +124,7 @@ def _compute_funnel(tool_filter: str | None = None, days: int = 14) -> list[dict
                         cur.execute("""
                             SELECT COUNT(*) AS n FROM mcp_call_log
                              WHERE tool = %s
-                               AND timestamp >= NOW() - INTERVAL '%s days'
+                               AND timestamp >= NOW() - %s * INTERVAL '1 day'
                                AND status NOT IN ('ok','success','200')
                         """, (tool, days))
                         entry["stages"]["1_paywall_signals"] = int((cur.fetchone() or {}).get("n") or 0)
@@ -137,7 +142,7 @@ def _compute_funnel(tool_filter: str | None = None, days: int = 14) -> list[dict
                           COUNT(*) FILTER (WHERE redeemed_at IS NOT NULL)       AS converted
                           FROM mcp_pair_codes
                          WHERE tool_name = %s
-                           AND created_at >= NOW() - INTERVAL '%s days'
+                           AND created_at >= NOW() - %s * INTERVAL '1 day'
                     """, (tool, days))
                     r = cur.fetchone() or {}
                     entry["stages"]["2_codes_minted"]   = int(r.get("minted") or 0)
@@ -170,7 +175,7 @@ def _compute_funnel(tool_filter: str | None = None, days: int = 14) -> list[dict
                                COUNT(*) FILTER (WHERE converted)   AS converted
                           FROM mcp_upgrade_signals
                          WHERE tool_requested = %s
-                           AND created_at >= NOW() - INTERVAL '%s days'
+                           AND created_at >= NOW() - %s * INTERVAL '1 day'
                     """, (tool, days))
                     rr = cur.fetchone() or {}
                     distinct_callers  = int(rr.get("callers") or 0)

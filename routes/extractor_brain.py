@@ -413,9 +413,23 @@ def _compute_source_quality():
                 GROUP BY source_id
                HAVING MAX(observed_at) < NOW() - INTERVAL '24 hours'"""
         )
+        # r88 (2026-06-15): RETIRED legacy ledger sources — their data still flows
+        # via OTHER active loaders, so the r86f stale-surfacing above was raising a
+        # false "failing — need attention" on feeds that were intentionally removed
+        # from the active extraction list (autonomous_brain.py:1162-1168). Excluding
+        # them keeps r86f catching REAL silent outages without crying wolf on these.
+        _RETIRED_SOURCES = {
+            # power-plants: live data flows via osm_overpass_loader (power_plants table)
+            "autonomous-brain-power-plants",
+            # substations: live data flows via the active infra-sync
+            # (autonomous_brain substation_infrastructure / infra .sync())
+            "autonomous-brain-substations",
+        }
         for src_id, last_obs, stale_hours in cur.fetchall():
             if src_id in out:
                 continue  # had recent activity in the 7d window
+            if src_id in _RETIRED_SOURCES:
+                continue  # intentionally retired — data covered by other loaders
             out[src_id] = {
                 "source_id": src_id,
                 "total_runs_7d": 0,
