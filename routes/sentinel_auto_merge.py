@@ -93,6 +93,15 @@ def _min_conf() -> float:
         return 0.95
 
 
+def _l22_automerge_on() -> bool:
+    """C1 (2026-06-16): master OFF switch for extending this lane to L22
+    route_alias_404 fork-PRs. Default OFF — until L22_AUTO_MERGE_ENABLE=1 is set
+    in Railway, _list_l22_alias_prs() returns [] and NO L22 PR is ever considered,
+    so this whole capability is inert. The existing SENTINEL_AUTO_MERGE_DRY_RUN
+    still applies on top, so first activation is log-only."""
+    return _truthy(os.environ.get("L22_AUTO_MERGE_ENABLE"))
+
+
 # Sandbox: ONLY these path patterns are eligible for auto-merge.
 # Anything outside is rejected by GATE_SANDBOX_PATHS.
 _SANDBOX_PATTERNS = (
@@ -509,6 +518,144 @@ def _gate_cap_and_kill_switch() -> tuple[bool, str, dict]:
             {"used_this_week": used, "weekly_cap": cap})
 
 
+# ── C1: L22 route_alias_404 auto-merge (separate, tight gate path) ─────
+# The L5 gates above reject L22 alias PRs (not sentinel-derived; they touch
+# main.py, a forbidden surface). So route_alias_404 gets its OWN gate set,
+# reachable ONLY when L22_AUTO_MERGE_ENABLE=1. The recipe is the narrowest
+# possible: a single ADDITIVE @app.route alias line in main.py carrying the
+# deterministic `# r<NN> L22-auto-alias of <dst>` marker that
+# brain_layer22_pr_writer._apply_route_alias_to_main_py emits — nothing else
+# matches, so the main.py exception can't be widened by a malformed PR.
+
+_L22_ALIAS_LINE_RE = re.compile(
+    r"^@app\.route\((['\"])/[^'\"]+\1[^)]*\)\s+#\s*r\d+\s+L22-auto-alias of ")
+# pre-merge-gauntlet jobs that MUST be green (smoke-probe is continue-on-error
+# upstream, so it is intentionally not required).
+_REQUIRED_CHECKS = ("syntax-check", "unit-tests", "regression-lint")
+
+
+def _pr_head_sha(pr_number: int) -> str | None:
+    code, j = _gh_rest("GET", f"/repos/{_GITHUB_REPO}/pulls/{pr_number}",
+                       timeout=15)
+    if code != 200 or not isinstance(j, dict):
+        return None
+    return (j.get("head") or {}).get("sha")
+
+
+def _pr_file_patch(pr_number: int, path: str) -> str | None:
+    """The unified-diff `patch` for one file (so we can inspect the ACTUAL
+    added line, not just additions/deletions counts)."""
+    page = 1
+    while page <= 5:
+        code, j = _gh_rest("GET",
+            f"/repos/{_GITHUB_REPO}/pulls/{pr_number}/files"
+            f"?per_page=100&page={page}", timeout=30)
+        if code != 200 or not isinstance(j, list) or not j:
+            return None
+        for f in j:
+            if (f.get("filename") or "") == path:
+                return f.get("patch")
+        if len(j) < 100:
+            return None
+        page += 1
+    return None
+
+
+def _list_l22_alias_prs(days: int = 7) -> list[dict]:
+    """Open L22 route_alias_404 fork-PRs (title `[brain-l22] Add ... route alias
+    (auto)`, from brain_layer22_pr_writer.open_route_alias_pr). Returns [] unless
+    L22_AUTO_MERGE_ENABLE=1 — that flag is the master gate for this whole feature.
+    Each dict is tagged recipe='route_alias_404' so should_auto_merge dispatches
+    it to the tight L22 gate path."""
+    if not _l22_automerge_on():
+        return []
+    if not _GITHUB_TOKEN:
+        return []
+    import urllib.parse as _up
+    since = (datetime.datetime.utcnow() - datetime.timedelta(days=days)
+             ).strftime("%Y-%m-%d")
+    q = (f"repo:{_GITHUB_REPO} is:pr is:open "
+         f"\"[brain-l22] Add\" \"route alias\" in:title created:>={since}")
+    code, j = _gh_rest("GET", f"/search/issues?q={_up.quote(q)}&per_page=50")
+    if code != 200 or not isinstance(j, dict):
+        return []
+    out = []
+    for it in (j.get("items") or []):
+        out.append({
+            "number":  int(it.get("number") or 0),
+            "title":   it.get("title") or "",
+            "body":    it.get("body") or "",
+            "createdAt": it.get("created_at"),
+            "url":     it.get("html_url"),
+            "recipe":  "route_alias_404",
+        })
+    return out
+
+
+def _gate_route_alias_l22(pr_number: int, files: list[dict]) -> tuple[bool, str, dict]:
+    """Tight gate for route_alias_404: EXACTLY one file == main.py, a pure
+    single-line ADDITION (additions==1, deletions==0) whose added line is the
+    deterministic L22-auto-alias signature, and the PR body carries the verify
+    curl. ast.parse is enforced separately. This is the only condition under
+    which an automated main.py merge is permitted."""
+    if len(files) != 1:
+        return False, f"L22_ALIAS: expected exactly 1 file, got {len(files)}", {"files": [f.get('path') for f in files]}
+    f0 = files[0]
+    if (f0.get("path") or "") != "main.py":
+        return False, f"L22_ALIAS: the single file must be main.py, got {f0.get('path')}", {}
+    if int(f0.get("additions") or 0) != 1 or int(f0.get("deletions") or 0) != 0:
+        return False, (f"L22_ALIAS: must be +1/-0, got "
+                       f"+{f0.get('additions')}/-{f0.get('deletions')}"), {}
+    patch = _pr_file_patch(pr_number, "main.py")
+    if not patch:
+        return False, "L22_ALIAS: could not fetch main.py patch (fail-closed)", {}
+    added = [ln[1:].strip() for ln in patch.splitlines()
+             if ln.startswith("+") and not ln.startswith("+++")]
+    if len(added) != 1:
+        return False, f"L22_ALIAS: patch has {len(added)} added lines, expected 1", {"added": added[:3]}
+    if not _L22_ALIAS_LINE_RE.match(added[0]):
+        return False, ("L22_ALIAS: added line is not a recognized L22-auto-alias "
+                       f"@app.route signature: {added[0][:120]!r}"), {"added_line": added[0][:200]}
+    return True, "route_alias_404: single deterministic @app.route alias addition", {"added_line": added[0][:200]}
+
+
+def _gate_ci_green(pr_number: int) -> tuple[bool, str, dict]:
+    """Require the pre-merge-gauntlet required checks to be conclusion=success on
+    the PR head SHA. Fail-CLOSED on missing/pending/queued/awaiting-approval (a
+    fresh fork PR's checks may not have run yet). Also hardens the existing lane."""
+    sha = _pr_head_sha(pr_number)
+    if not sha:
+        return False, "CI_GREEN: could not resolve PR head SHA (fail-closed)", {}
+    code, j = _gh_rest("GET",
+        f"/repos/{_GITHUB_REPO}/commits/{sha}/check-runs?per_page=100",
+        timeout=20)
+    if code != 200 or not isinstance(j, dict):
+        return False, f"CI_GREEN: check-runs fetch failed ({code}) (fail-closed)", {}
+    runs = {r.get("name"): (r.get("status"), r.get("conclusion"))
+            for r in (j.get("check_runs") or [])}
+    missing, bad = [], []
+    for name in _REQUIRED_CHECKS:
+        st = runs.get(name)
+        if st is None:
+            missing.append(name)
+        elif not (st[0] == "completed" and st[1] == "success"):
+            bad.append(f"{name}={st[0]}/{st[1]}")
+    if missing or bad:
+        return False, (f"CI_GREEN: required checks not green "
+                       f"(missing={missing}, not-success={bad})"), {"runs": runs}
+    return True, f"CI green: {', '.join(_REQUIRED_CHECKS)} all success", {"sha": sha}
+
+
+def _ensure_revert_label(pr_number: int) -> None:
+    """Add the `autonomous-brain-layer5` label so brain-pr-post-merge-guard.yml
+    inherits its fast health-probe + auto-revert for this L22 merge too."""
+    try:
+        _gh_rest("POST", f"/repos/{_GITHUB_REPO}/issues/{pr_number}/labels",
+                 body={"labels": ["autonomous-brain-layer5"]}, timeout=15)
+    except Exception:
+        pass
+
+
 # ── Public API ────────────────────────────────────────────────────────
 
 def should_auto_merge(pr_data: dict) -> tuple[bool, str]:
@@ -521,6 +668,33 @@ def should_auto_merge(pr_data: dict) -> tuple[bool, str]:
     if pr_number <= 0:
         return False, "no pr number"
 
+    # C1 dispatch: L22 route_alias_404 fork-PRs run a SEPARATE tight gate path —
+    # the L5 gates would reject them (they touch main.py, a forbidden surface, and
+    # are not sentinel-derived). Reachable ONLY when L22_AUTO_MERGE_ENABLE=1.
+    if pr_data.get("recipe") == "route_alias_404":
+        if not _l22_automerge_on():
+            return False, "L22_ALIAS: L22_AUTO_MERGE_ENABLE off"
+        files = _pr_files(pr_number)
+        if not files:
+            return False, "L22_ALIAS: no files returned (fail-closed)"
+        ok, reason, _ = _gate_route_alias_l22(pr_number, files)
+        if not ok:
+            return False, reason
+        ok, reason, _ = _gate_ast_parse(pr_number, files)
+        if not ok:
+            return False, reason
+        body = pr_data.get("body") or ""
+        if "curl -i https://dchub.cloud" not in body or "expect 200" not in body:
+            return False, "L22_ALIAS: PR body missing the verify curl"
+        ok, reason, _ = _gate_ci_green(pr_number)   # required checks green (fail-closed)
+        if not ok:
+            return False, reason
+        ok, reason, _ = _gate_cap_and_kill_switch()
+        if not ok:
+            return False, reason
+        return True, "route_alias_404: all L22 gates passed (tight signature + CI green)"
+
+    # ── L5 sentinel path (existing) ──
     # Gate 1: sentinel-derived
     ok, reason, _ = _gate_sentinel_derived(pr_data)
     if not ok:
@@ -689,6 +863,7 @@ def run_auto_merge_sweep(force_log_all: bool = True) -> dict:
         return out
 
     prs = _list_brain_draft_prs(days=7)
+    prs += _list_l22_alias_prs(days=7)   # C1: returns [] unless L22_AUTO_MERGE_ENABLE=1
     out["scanned"] = len(prs)
 
     for pr in prs:
@@ -710,6 +885,8 @@ def run_auto_merge_sweep(force_log_all: bool = True) -> dict:
                        ("issue", "sentinel_path", "confidence")},
                 })
             else:
+                if pr.get("recipe") == "route_alias_404":
+                    _ensure_revert_label(pr_number)  # C1: inherit fast post-merge auto-revert
                 ok, msg, sha = _merge_pr(pr_number)
                 if ok:
                     follow_at = (datetime.datetime.utcnow()
