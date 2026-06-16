@@ -39,6 +39,17 @@ import html as _html
 
 from flask import Blueprint, Response, jsonify
 
+
+def _canon_mkts(default=300):
+    """Live DCPI market count from the SINGLE source (canonical_stats), with a
+    conservative floor fallback. Replaces the stale hardcoded 233 (live ~307) the
+    cross-surface drift detector flagged — keeps this surface from drifting again."""
+    try:
+        import canonical_stats
+        return int(canonical_stats.get_canonical_stats().get("markets", default) or default)
+    except Exception:
+        return default
+
 logger = logging.getLogger(__name__)
 state_of_power_bp = Blueprint("state_of_power", __name__)
 
@@ -222,7 +233,7 @@ def _gather():
         "refresh": "DCPI recomputed daily; this surface reflects the latest snapshot.",
         "summary": {
             "facilities": "21,000+",
-            "markets": 233,
+            "markets": _canon_mkts(),
             "substations": 126427,
             "countries": "170+",
             "live_us_isos": len(_US_ISOS),
@@ -465,7 +476,7 @@ def _jsonld(d: dict) -> str:
         "keywords": ["data center", "power availability", "DCPI", "interconnection queue",
                      "ISO grid", "BUILD verdict", "AI data center", "fuel mix",
                      "grid headroom", "site selection"],
-        "spatialCoverage": "Global · 233 markets · live grids on 4 continents (US/UK/EU/Taiwan/Australia)",
+        "spatialCoverage": f"Global · {_canon_mkts()} markets · live grids on 4 continents (US/UK/EU/Taiwan/Australia)",
         "temporalCoverage": f"Daily refresh; snapshot as of {d.get('as_of_date','')}",
         "measurementTechnique": "DCPI: Excess Power score + Constraint score → BUILD/CAUTION/AVOID verdict, recomputed daily.",
         "variableMeasured": [
