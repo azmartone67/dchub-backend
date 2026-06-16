@@ -8003,7 +8003,7 @@ def check_blueprint_registration_silent_failure() -> list[dict]:
 def check_canonical_floor_exceeds_live() -> list[dict]:
     """PRE-EMPTION (2026-06-16): flag when a canonical_stats._FALLBACK floor
     EXCEEDS the live deduped reality — the over-claim class (the marketed
-    21,000-floor vs 3,141-active, same family as the retired $324B). Floors must
+    21,000-floor vs 3,141-active, same family as the retired headline over-claims). Floors must
     round DOWN to reality, never above. Finding-only: NO autopilot action map →
     escalates to a human (per the never-auto-apply gate).
 
@@ -8040,7 +8040,7 @@ def check_canonical_floor_exceeds_live() -> list[dict]:
                     "detail": (f"canonical_stats floor `{key}`={floor} EXCEEDS the live "
                                f"value {real}. Floors must round DOWN to reality, never "
                                f"above — lower _FALLBACK['{key}'] to <= {real}. Over-claim "
-                               f"class (cf. retired $324B / 21,000-tracked-vs-3,141-verified)."),
+                               f"class (cf. the retired headline over-claims / 21,000-tracked-vs-3,141-verified)."),
                 })
         except (TypeError, ValueError):
             continue
