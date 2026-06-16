@@ -2275,6 +2275,61 @@ def stripe_webhook_mcp():
     except Exception as e:
         return jsonify({"error": "db insert failed", "detail": str(e)}), 500
 
+    # r-provision (2026-06-16): make the paywall's "we email your API key right
+    # after checkout" TRUE. The webhook recorded the conversion + bound the MCP
+    # session, but never provisioned a DURABLE key — so subscription buyers (incl
+    # the $1/100 metered plan, which IS a subscription) got only an ephemeral
+    # in-session unlock and nothing in their inbox, and were locked out again next
+    # session. Idempotently ensure a paid key for this email + email it on a fresh
+    # mint. Best-effort: a provisioning failure must NEVER fail the webhook (the
+    # conversion is already recorded above). Tier comes from Stripe's price
+    # lookup_key (plan_to); metered/unknown keys default to the generous 'developer'
+    # grant (500 calls/day) so the metered "no per-seat ceiling" pitch holds for
+    # essentially every agent (a >500/day caller can be bumped).
+    provisioned_key = None
+    try:
+        import secrets as _sec
+        # mcp_dev_keys.tier has a CHECK constraint allowing ONLY free/paid/enterprise
+        # (the gate maps the richer plan names — starter/developer/pro — onto 'paid').
+        # Any paid subscription (incl the $1/100 metered plan) → 'paid'.
+        _ptier = "enterprise" if (plan_to or "").lower() == "enterprise" else "paid"
+        with _pool.connection() as conn, conn.cursor() as cur:
+            cur.execute("SELECT api_key, tier FROM mcp_dev_keys "
+                        "WHERE LOWER(email)=%s AND status='active' "
+                        "ORDER BY created_at DESC LIMIT 1", (email,))
+            _ex = cur.fetchone()
+            _newmint = False
+            if _ex:
+                provisioned_key = _ex[0]
+                if (_ex[1] or "free").lower() in ("free", "trial", "anon", ""):
+                    cur.execute("UPDATE mcp_dev_keys SET tier=%s WHERE api_key=%s",
+                                (_ptier, provisioned_key))
+                    conn.commit()
+            else:
+                provisioned_key = "dch_live_" + _sec.token_hex(16)
+                _newmint = True
+                cur.execute("""INSERT INTO mcp_dev_keys
+                                 (api_key, developer_id, email, tier, status, metadata)
+                               VALUES (%s, %s, %s, %s, 'active', %s::jsonb)""",
+                            (provisioned_key, "dev_" + _sec.token_hex(8), email, _ptier,
+                             json.dumps({"source": "stripe_subscription",
+                                         "stripe_customer_id": customer_id,
+                                         "stripe_subscription_id": sub_id})))
+                conn.commit()
+        # Email the key only on a fresh mint (existing-key buyers already have it;
+        # this also makes Stripe webhook re-delivery a no-op email-wise). Lazy import
+        # of main (main imports us, so a top-level import would be circular).
+        if _newmint and provisioned_key:
+            try:
+                import main as _main_mod
+                _main_mod.send_welcome_email_sendgrid(email, provisioned_key, plan_name=_ptier)
+            except Exception as _ee:
+                # send_welcome_email_sendgrid already admin-alerts on SendGrid
+                # failure; swallow here so provisioning never breaks the webhook.
+                pass
+    except Exception:
+        pass
+
     # r68-canonical (2026-06-02): write-back attribution on signals.converted.
     # Previously this webhook recorded mcp_conversions but never flipped
     # signals.converted, so /api/v1/mcp/funnel kept reporting 0% on `mcp`
