@@ -3,65 +3,54 @@ from flask import Blueprint, jsonify, request
 
 stubs_v3 = Blueprint("stubs_v3", __name__)
 
+# r-poweredshell (2026-06-16): wire the /powered-shell page to REAL data.
+# Per-slug display metadata for the markets that have a powered-shell rate band
+# (_POWERED_SHELL_BANDS below). currency drives country/region so the frontend's
+# region filter + "{country} · {region}" line render correctly. Sub-market slugs
+# (ashburn, dallas, santa-clara…) are collapsed into their parent market so the
+# /markets list shows one card per market, not duplicates.
+_PS_MARKET_META = {
+    # slug:                (display_name,            country, region)
+    "northern-virginia":   ("Northern Virginia",     "US", "north_america"),
+    "dallas-fort-worth":   ("Dallas / Fort Worth",   "US", "north_america"),
+    "phoenix":             ("Phoenix",               "US", "north_america"),
+    "atlanta":             ("Atlanta",               "US", "north_america"),
+    "columbus":            ("Columbus OH",           "US", "north_america"),
+    "silicon-valley":      ("Silicon Valley",        "US", "north_america"),
+    "new-york-tristate":   ("New York Tri-State",    "US", "north_america"),
+    "chicago":             ("Chicago",               "US", "north_america"),
+    "greater-philadelphia":("Greater Philadelphia",  "US", "north_america"),
+    "eastern-pennsylvania":("Eastern Pennsylvania",  "US", "north_america"),
+    "hillsboro":           ("Hillsboro / PNW",       "US", "north_america"),
+    "reno":                ("Reno",                  "US", "north_america"),
+    "las-vegas":           ("Las Vegas",             "US", "north_america"),
+    "salt-lake-city":      ("Salt Lake City",        "US", "north_america"),
+    "los-angeles":         ("Los Angeles",           "US", "north_america"),
+    "frankfurt":           ("Frankfurt",             "DE", "europe"),
+    "london":              ("London",                "UK", "europe"),
+    "singapore":           ("Singapore",             "SG", "asia_pacific"),
+}
+# Sub-market slugs that alias to a primary market (excluded from the /markets list).
+_PS_SUBMARKET_ALIASES = {"ashburn", "dallas", "columbus-oh", "santa-clara",
+                          "new-york", "portland"}
+
+
 @stubs_v3.route("/api/v1/powered-shell/markets", methods=["GET"])
 def powered_shell_markets():
-    """Phase RRR-stubfix (2026-05-18): was returning 501 which cascaded
-    into a `frontend_endpoint_5xx` brain finding for /powered-shell.
-    Real aggregated powered-shell market data doesn't exist yet (ticket
-    #35 still open), but the frontend page needs SOMETHING to render
-    instead of looking broken. Return a 200 with curated seed data +
-    `coming_soon:true` flag so the frontend can show context cards
-    with a "live data coming soon" badge. Each row reflects what
-    dc_expert_brain.py already knows about the construction cost
-    economics ($1.5-2.5M/MW) and where the deals are happening
-    (verified via news_engine keywords + recent press)."""
-    return jsonify({
-        "coming_soon": True,
-        "ticket": "#35",
-        "note": ("Aggregated powered-shell market data is in active "
-                 "build-out. Seed rows below reflect known active markets "
-                 "from M&A and permit data; live per-market metrics land "
-                 "with the data source integration."),
-        "markets": [
-            {"market": "Northern Virginia", "active_deals": 12,
-             "estimated_mw_available": "200-400 MW",
-             "construction_cost_per_mw": "$1.8-2.5M",
-             "verdict": "AVOID — transmission queue 60+ months"},
-            {"market": "Phoenix", "active_deals": 9,
-             "estimated_mw_available": "150-300 MW",
-             "construction_cost_per_mw": "$1.5-2.2M",
-             "verdict": "CAUTION — water risk + power queue lengthening"},
-            {"market": "Dallas / Fort Worth", "active_deals": 11,
-             "estimated_mw_available": "300-500 MW",
-             "construction_cost_per_mw": "$1.4-1.8M",
-             "verdict": "BUILD — ERCOT capacity + cheaper land"},
-            {"market": "Columbus OH", "active_deals": 7,
-             "estimated_mw_available": "100-250 MW",
-             "construction_cost_per_mw": "$1.6-2.0M",
-             "verdict": "BUILD — AEP grid + hyperscaler magnet"},
-            {"market": "Atlanta", "active_deals": 6,
-             "estimated_mw_available": "80-180 MW",
-             "construction_cost_per_mw": "$1.5-1.9M",
-             "verdict": "BUILD — Southeast nuclear baseload"},
-            {"market": "Salt Lake City", "active_deals": 4,
-             "estimated_mw_available": "60-150 MW",
-             "construction_cost_per_mw": "$1.4-1.7M",
-             "verdict": "BUILD — overflow from CAISO"},
-            {"market": "Las Vegas", "active_deals": 3,
-             "estimated_mw_available": "40-120 MW",
-             "construction_cost_per_mw": "$1.6-2.1M",
-             "verdict": "CAUTION — water/heat constraints"},
-            {"market": "Cheyenne WY", "active_deals": 3,
-             "estimated_mw_available": "100-300 MW",
-             "construction_cost_per_mw": "$1.3-1.6M",
-             "verdict": "BUILD — wind + cheap land + Microsoft cluster"},
-        ],
-        "data_freshness": "seed_2026-05-18",
-        "source": ("Seed rows curated from news_engine + dc_expert_brain "
-                   "context until live aggregation lands. See "
-                   "dchub.cloud/state-of-the-data-center for the live "
-                   "DCPI BUILD/AVOID verdicts that drive these recommendations."),
-    }), 200
+    """Markets with a real powered-shell rate band. Returns a BARE ARRAY of
+    {slug, display_name, country, region} — the shape the /powered-shell page's
+    unwrap() consumes directly (an object payload would be mis-wrapped → the page
+    falls back). Drives the per-market rate-band fetches."""
+    out = []
+    for slug in _POWERED_SHELL_BANDS:
+        if slug in _PS_SUBMARKET_ALIASES:
+            continue
+        dn, country, region = _PS_MARKET_META.get(
+            slug, (slug.replace("-", " ").title(), "US", "north_america"))
+        out.append({"slug": slug, "display_name": dn,
+                    "country": country, "region": region})
+    out.sort(key=lambda m: m["display_name"])
+    return jsonify(out), 200
 
 # Phase ZZZZZ-round24 (2026-05-23): /powered-shell page was hitting
 # three endpoints we never registered — 404 for each, broke the page.
@@ -144,6 +133,16 @@ def powered_shell_rate_band(market):
         "data_class":         "powered_shell_lease",
         "status":             status,  # ok | estimated | insufficient_data
         "primary_unit":       "$/sf/year base rent (triple-net)",
+        # r-poweredshell (2026-06-16): TOP-LEVEL band fields — the /powered-shell
+        # page reads band.mid_psf_year directly (after the `band: r` frontend fix).
+        # lease_band kept nested for API back-compat.
+        "mid_psf_year":          mid_psf,
+        "low_psf_year":          lo_psf,
+        "high_psf_year":         hi_psf,
+        "currency":              currency,
+        "n_comps":               n_comps,
+        "typical_term_years":    term,
+        "typical_escalator_pct": esc,
         "lease_band": {
             "mid_psf_year":       mid_psf,
             "low_psf_year":       lo_psf,
@@ -178,33 +177,99 @@ def powered_shell_rate_band(market):
     }), 200
 
 
+# r-poweredshell (2026-06-16): REAL powered-shell lease comps — the same
+# SEC/investor-filing transactions cited in the band methodology above. These
+# are VERIFIED public filings, not fabricated. Deal-level detail is a paid
+# (Developer+) feature; free/anon callers get an empty list + the upgrade CTA.
+_PS_COMPS = [
+    {"market": "Northern Virginia", "submarket": "Manassas", "tenant": "AWS",
+     "landlord": "COPT Defense", "leased_sf": 728000, "base_rent_psf_year": 10.50,
+     "term_years": 15, "signed_date": "2022",
+     "source": "SEC filing (COPT)", "source_url": "https://www.sec.gov/cgi-bin/browse-edgar?action=getcompany&CIK=0001622194"},
+    {"market": "Northern Virginia", "submarket": "Ashburn", "tenant": "NTT",
+     "landlord": "Digital Realty", "leased_sf": 206000, "base_rent_psf_year": 18.39,
+     "term_years": 15, "signed_date": "2021",
+     "source": "DLR investor disclosure", "source_url": "https://investor.digitalrealty.com/"},
+    {"market": "New York Tri-State", "submarket": "Piscataway", "tenant": "Microsoft",
+     "landlord": "Digital Realty", "leased_sf": 220000, "base_rent_psf_year": 22.00,
+     "term_years": 15, "signed_date": "2025",
+     "source": "DLR investor disclosure", "source_url": "https://investor.digitalrealty.com/"},
+    {"market": "Phoenix", "submarket": "Mesa", "tenant": "AWS",
+     "landlord": "Vantage Data Centers", "leased_sf": 500000, "base_rent_psf_year": 13.60,
+     "term_years": 15, "signed_date": "2025",
+     "source": "Vantage announcement", "source_url": "https://vantage-dc.com/news/"},
+]
+
+
+def _ps_is_paid() -> bool:
+    """True if the caller resolves to a paid tier (deal-level comps are paid)."""
+    try:
+        from routes.tier_gate import _resolve_caller_tier
+        tier, _ = _resolve_caller_tier()
+        return (tier or "FREE").upper() in (
+            "PRO", "PAID", "DEVELOPER", "STARTER", "ENTERPRISE", "FOUNDING",
+            "RESEARCH_SEED", "ADMIN")
+    except Exception:
+        return False
+
+
 @stubs_v3.route("/api/v1/powered-shell/comps", methods=["GET"])
 def powered_shell_comps():
-    """Stub: list of comparable powered-shell deals.
-    Returns 200 with `comps: []` + coming_soon flag — frontend renders
-    'no comps yet' state instead of a 404 error."""
-    return jsonify({
-        "coming_soon": True,
-        "ticket": "#36",
-        "comps": [],
-        "note": ("Powered-shell deal comps land with the M&A deal "
-                  "tracker integration. The page renders an empty list "
-                  "until then — better than 404."),
-    }), 200
+    """Real powered-shell lease comps (SEC/investor filings). BARE ARRAY for the
+    page's unwrap(). Deal-level detail is gated to Developer+ — free/anon get an
+    empty array so the page renders its 'Upgrade to Developer' state."""
+    if not _ps_is_paid():
+        return jsonify([]), 200
+    return jsonify(_PS_COMPS), 200
 
 
 @stubs_v3.route("/api/v1/powered-shell/pipeline", methods=["GET"])
 def powered_shell_pipeline():
-    """Stub: list of powered-shell projects in the pipeline.
-    Returns 200 with `pipeline: []` + coming_soon flag — same pattern."""
-    return jsonify({
-        "coming_soon": True,
-        "ticket": "#36",
-        "pipeline": [],
-        "note": ("Powered-shell pipeline data lands with the discovery "
-                  "engine integration. Capacity-pipeline.py has the "
-                  "scaffolding; needs powered_shell category tag."),
-    }), 200
+    """Real powered-shell / new-build pipeline from the live `deals` table
+    (announced builds + developments). BARE ARRAY for unwrap(). No fabrication —
+    rows are the tracked M&A/development deals; unknown fields are null."""
+    import os
+    rows = []
+    try:
+        import psycopg2
+        dsn = os.environ.get("DATABASE_URL") or os.environ.get("NEON_DATABASE_URL")
+        if dsn:
+            conn = psycopg2.connect(dsn, connect_timeout=8)
+            try:
+                cur = conn.cursor()
+                cur.execute("""
+                    SELECT buyer, seller, value, mw, type, region, market, date
+                      FROM deals
+                     WHERE (LOWER(COALESCE(type,'')) LIKE '%%build%%'
+                            OR LOWER(COALESCE(type,'')) LIKE '%%construct%%'
+                            OR LOWER(COALESCE(type,'')) LIKE '%%develop%%'
+                            OR LOWER(COALESCE(type,'')) LIKE '%%campus%%')
+                       AND COALESCE(LOWER(TRIM(buyer)),'')  NOT IN ('tbd','unknown','n/a','')
+                     ORDER BY COALESCE(date,'1970-01-01') DESC
+                     LIMIT 100
+                """)
+                for buyer, seller, value, mw, dtype, region, market, ddate in cur.fetchall():
+                    mkt = market or region or "—"
+                    dev = seller or None
+                    tenant = buyer or None
+                    rows.append({
+                        "project_name": f"{(tenant or dev or 'Data-center')} · {mkt}",
+                        "market": mkt, "submarket": None,
+                        "stage": "announced",
+                        "announced_mw": float(mw) if mw not in (None, "") else None,
+                        "announced_sf": None,
+                        "announced_capex_usd": (float(value) * 1e6) if value not in (None, "") else None,
+                        "target_online_date": None,
+                        "developer": dev, "rumored_tenant": tenant,
+                        "signed_date": (ddate.isoformat() if hasattr(ddate, "isoformat") else (ddate or None)),
+                        "source_url": f"https://dchub.cloud/transactions",
+                    })
+            finally:
+                try: conn.close()
+                except Exception: pass
+    except Exception:
+        rows = []
+    return jsonify(rows), 200
 
 
 @stubs_v3.route("/api/v1/air-permitting", methods=["GET"])
