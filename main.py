@@ -29320,6 +29320,15 @@ try:
 except Exception as _air_e:
     print(f"[main] ai_reach register failed: {_air_e}", file=sys.stderr)
 
+# fibre route planner (/api/v1/fiber/route-plan) — diverse-route + indicative-cost
+# engine for the land+power map feature. Standalone file (conflict-proof).
+try:
+    from routes.fiber_route_plan import fiber_route_plan_bp
+    app.register_blueprint(fiber_route_plan_bp)
+    print("[main] fiber_route_plan_bp registered: /api/v1/fiber/route-plan", flush=True)
+except Exception as _frp_e:
+    print(f"[main] fiber_route_plan register failed: {_frp_e}", file=sys.stderr)
+
 try:
     from routes.connectivity_score import connectivity_score_bp
     app.register_blueprint(connectivity_score_bp)
