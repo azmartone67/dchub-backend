@@ -820,16 +820,27 @@ def _persist_recommendations(payload: dict, week_of: _dt.date,
                  json.dumps([]), None, 0.5,
                  json.dumps([]), "meta", json.dumps(meta)))
             inserted += 1
+        # 2026-06-16: a swallowed commit failure followed by `return inserted`
+        # reports fabricated persistence (same class as the radar freeze — an
+        # aborted tx makes commit() silently discard every INSERT while we return
+        # the pre-commit count). On commit failure, roll back + log + zero the
+        # count so the return reflects what actually landed.
         try:
             c.commit()
-        except Exception:
-            pass
+        except Exception as _ce:
+            try:
+                c.rollback()
+            except Exception:
+                pass
+            logger.error("L6 strategic: commit failed — 0 rows persisted: %s", _ce)
+            inserted = 0
     except Exception as e:
         try:
             c.rollback()
         except Exception:
             pass
         logger.error("L6 strategic: persist failed: %s", e)
+        inserted = 0   # rolled back → nothing persisted; don't report a fabricated count
     finally:
         try:
             c.close()

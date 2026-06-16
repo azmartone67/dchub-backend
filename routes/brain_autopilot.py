@@ -43,6 +43,13 @@ from typing import Any
 from flask import Blueprint, jsonify, request
 import psycopg2
 import psycopg2.extras
+import logging
+
+# 2026-06-16: logger was used at autopilot_verify() (logger.warning in an except
+# handler) but never defined → a NameError waiting in the verifier's error path,
+# the exact undefined-name class that froze brain_findings for 22h (PR #1175).
+# Caught repo-wide by tests/test_brain_loggers_defined.py.
+logger = logging.getLogger(__name__)
 
 
 brain_autopilot_bp = Blueprint("brain_autopilot", __name__)

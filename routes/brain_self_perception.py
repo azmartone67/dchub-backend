@@ -843,8 +843,18 @@ def persist_self_perception(payload: dict, ctx_size_kb: float,
                  activity_window_days, pr_count_in_window,
                  skipped_reason, json.dumps(raw_payload, default=str)))
             row = cur.fetchone()
-        try: c.commit()
-        except Exception: pass
+        # 2026-06-16: do NOT swallow a commit failure then return the row id —
+        # that reports fabricated persistence (the same class as the radar freeze:
+        # an aborted tx makes commit() silently discard the INSERT while we return
+        # int(row[0]) as if it landed). On commit failure, roll back, log, return 0.
+        try:
+            c.commit()
+        except Exception as _ce:
+            try: c.rollback()
+            except Exception: pass
+            try: logger.warning("self_perception: commit failed — row NOT persisted: %s", _ce)
+            except Exception: pass
+            return 0
         return int(row[0]) if row else 0
     except Exception as e:
         try: c.rollback()
