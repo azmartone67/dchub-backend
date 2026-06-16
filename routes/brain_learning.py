@@ -596,10 +596,21 @@ def probe_outcomes():
             # outcome_verified (when set by the autopilot verifier cron) is the
             # SAME present/absent check, so carry it through directly.
             try:
+                # R3b (2026-06-16): grade fix-success on the REAL effect verifier
+                # (autopilot_outcomes.succeeded — latest per action) instead of the
+                # finding-disappeared a.outcome_verified, which scored no-ops as
+                # fixed and feeds the 35%-weight learning grade. NULL succeeded
+                # (cannot_verify) falls through to the in-process brain_findings
+                # re-check below, unchanged.
                 cur.execute("""
                     SELECT a.id, a.finding_issue, a.finding_url,
-                           a.started_at, a.outcome_verified
+                           a.started_at, o.succeeded
                       FROM brain_autopilot_actions a
+                      LEFT JOIN LATERAL (
+                          SELECT succeeded FROM autopilot_outcomes ao
+                           WHERE ao.autopilot_action_id = a.id
+                           ORDER BY ao.verified_at DESC LIMIT 1
+                      ) o ON TRUE
                      WHERE a.outcome = 'executed_ok'
                        AND a.finding_issue IS NOT NULL
                        AND a.started_at <= NOW() - (%s * INTERVAL '1 hour')
@@ -621,11 +632,11 @@ def probe_outcomes():
                     # Prefer the autopilot verifier's own result (same check);
                     # else re-derive in-process from brain_findings(issue,url).
                     if verified is not None:
-                        # outcome_verified TRUE  => finding resolved (fixed)
-                        # outcome_verified FALSE => finding still present
+                        # succeeded TRUE  => verified real effect (fixed)
+                        # succeeded FALSE => no real effect (still broken)
                         still_broken = (verified is False)
-                        evidence = ("autopilot outcome_verified="
-                                    f"{bool(verified)} (verifier re-checked "
+                        evidence = ("autopilot_outcomes.succeeded="
+                                    f"{bool(verified)} (effect verifier re-checked "
                                     "brain_findings)")
                     else:
                         # Same query the autopilot verifier uses: is this exact
