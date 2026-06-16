@@ -39,6 +39,21 @@ except Exception:
 logger = logging.getLogger(__name__)
 enterprise_leads_bp = Blueprint("enterprise_leads_sweep", __name__)
 
+# 2026-06-16: the anonymous-demand sweep counted OUR OWN monitoring/test traffic
+# as "prospects" — its top platforms were dchub-mcp-test / pipeline_mcp / mcp-probe
+# / dchub-regression-test, burying the real external enterprise callers. Exclude
+# synthetic clients (same fix as the funnel de-noise), reusing the canonical
+# prefix list. m.platform is the client label; the prefixes are fixed code
+# constants (no user input) so they're safe to f-string-inject as a NOT-LIKE clause.
+try:
+    from mcp_upgrade_gate import _SYNTHETIC_CLIENT_PREFIXES as _SYNTH_PREFIXES
+except Exception:
+    _SYNTH_PREFIXES = ('dchub-', 'step2_', 'qa-', 'probe-', 'test-', 'monitor-',
+                       'healthcheck', 'r51-', 'r52-', 'e2e-', 'recheck')
+_SYNTH_NOT_LIKE = "".join(
+    " AND LOWER(COALESCE(m.platform,'')) NOT LIKE '" + str(p).lower().replace("'", "") + "%'"
+    for p in _SYNTH_PREFIXES)
+
 
 def _dsn():
     return os.environ.get("DATABASE_URL") or os.environ.get("NEON_DATABASE_URL") or ""
@@ -488,6 +503,7 @@ def anonymous_demand():
                  WHERE m.timestamp > NOW() - INTERVAL '30 days'
                    AND m.tool IN ({paid_tools_sql})
                    AND k.api_key IS NULL    -- no matching dev key = anonymous
+                   {_SYNTH_NOT_LIKE}        -- exclude our own monitoring/test traffic
                  GROUP BY m.tool
                  ORDER BY hits DESC LIMIT 12
             """)
@@ -508,6 +524,7 @@ def anonymous_demand():
                    AND m.tool IN ({paid_tools_sql})
                    AND k.api_key IS NULL
                    AND m.session_id IS NOT NULL AND m.session_id <> ''
+                   {_SYNTH_NOT_LIKE}        -- exclude our own monitoring/test traffic
                  GROUP BY LEFT(COALESCE(m.session_id, ''), 12)
                 HAVING COUNT(*) >= 5
                  ORDER BY hits DESC LIMIT 20
@@ -528,6 +545,7 @@ def anonymous_demand():
                  WHERE m.timestamp > NOW() - INTERVAL '30 days'
                    AND m.tool IN ({paid_tools_sql})
                    AND k.api_key IS NULL
+                   {_SYNTH_NOT_LIKE}        -- exclude our own monitoring/test traffic
                  GROUP BY platform
                  ORDER BY hits DESC LIMIT 10
             """)
