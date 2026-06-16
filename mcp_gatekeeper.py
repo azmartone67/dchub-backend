@@ -472,8 +472,9 @@ class _RateLimiter:
         if len(win) >= lim["minute"]:
             return (f"Rate limited: {len(win)}/{lim['minute']} calls/min. "
                     f"{'Trial' if is_trial else 'Free'} tier. "
-                    f"Upgrade → https://buy.stripe.com/14k14og7w7Zz9KJ8i6aZi02 "
-                    f"($9/mo = 200/day permanent)")
+                    f"🤖 Remove the ceiling — pay per use, $1/100 calls → "
+                    f"https://buy.stripe.com/9B69AU08y2FfbSR55UaZi0i "
+                    f"(or $9/mo=200/day → https://buy.stripe.com/14k14og7w7Zz9KJ8i6aZi02)")
 
         # Per-day
         today = self._today()
@@ -484,8 +485,9 @@ class _RateLimiter:
         if count >= lim["day"]:
             return (f"Rate limited: {count}/{lim['day']} calls today. "
                     f"{'Trial' if is_trial else 'Free'} tier. "
-                    f"Upgrade → https://buy.stripe.com/14k14og7w7Zz9KJ8i6aZi02 "
-                    f"($9/mo = 200/day, no expiry).")
+                    f"🤖 Pay per use, no daily ceiling — $1/100 calls → "
+                    f"https://buy.stripe.com/9B69AU08y2FfbSR55UaZi0i "
+                    f"(or $9/mo=200/day → https://buy.stripe.com/14k14og7w7Zz9KJ8i6aZi02).")
 
         # Record
         win.append(now)
@@ -948,6 +950,14 @@ def _gate(tool_name: str, api_key: Optional[str] = None,
             "buy_now_url": _attribute(_buy_now_url),
             "buy_now_price": price,
             "buy_now_note": "Direct Stripe checkout — no signup required",
+            # 2026-06-16 (owner): usage-based is the LEAD option for agents —
+            # monthly seats don't fit agent traffic. $1 per 100 API calls, no
+            # per-seat ceiling, scales with actual usage. Same attribution path.
+            "usage_url": _attribute("https://buy.stripe.com/9B69AU08y2FfbSR55UaZi0i"),
+            "usage_price": "$1 / 100 API calls",
+            "usage_note": ("🤖 Pay for usage, not seats — $1 per 100 calls, no subscription, "
+                           "no per-seat ceiling. Best fit for a high-volume agent; we email "
+                           "your API key right after checkout."),
             # Phase ZZ+1 (2026-05-15): structured claim-endpoint card so
             # agents that parse the response programmatically (Cursor,
             # Claude Code, Cline) can render a "claim free key" button
