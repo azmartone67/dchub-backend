@@ -1784,17 +1784,19 @@ def brain_value_shipped():
                               AND merged_at >= NOW() - INTERVAL '30 days')
            FROM brain_pr_outcomes"""
     )
+    # R3b (2026-06-16): the x5 "verified autopilot action" value-shipped gate must
+    # mean a REAL verified effect, not the finding-disappeared outcome_verified flag
+    # (which counted no-ops — e.g. monthly_trend "succeeded" 91x with 0 campaigns
+    # sent). Read the per-pattern EFFECT verifier autopilot_outcomes.succeeded IS
+    # TRUE. This correctly collapses apa to genuine closures, so high_output/steady
+    # stop being reachable on fabricated remediations.
     apa_7d, apa_30d = _dual(
         """SELECT
-              COUNT(*) FILTER (WHERE outcome_verified IS TRUE
-                              AND COALESCE(verified_at, completed_at,
-                                           fired_at, started_at, detected_at)
-                              >= NOW() - INTERVAL '7 days'),
-              COUNT(*) FILTER (WHERE outcome_verified IS TRUE
-                              AND COALESCE(verified_at, completed_at,
-                                           fired_at, started_at, detected_at)
-                              >= NOW() - INTERVAL '30 days')
-           FROM brain_autopilot_actions"""
+              COUNT(*) FILTER (WHERE succeeded IS TRUE
+                              AND verified_at >= NOW() - INTERVAL '7 days'),
+              COUNT(*) FILTER (WHERE succeeded IS TRUE
+                              AND verified_at >= NOW() - INTERVAL '30 days')
+           FROM autopilot_outcomes"""
     )
     # Closed funnel/conversion findings — the brain's single most valuable
     # outcome (a free→paid upgrade). Counted separately and weighted FAR
