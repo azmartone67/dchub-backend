@@ -7524,7 +7524,7 @@ _MCP_LANDING_HTML = """<!DOCTYPE html>
 <header>
   <div class="eyebrow">Model Context Protocol · MCP Server</div>
   <h1>Drop DC Hub into any AI agent.</h1>
-  <p>Native MCP server. 40 tools covering 21,000+ facilities, 2,000+ tracked M&amp;A deals, grid intelligence, fiber routes, water risk, tax incentives. Auto-trial keys mean your agent starts working in 60 seconds &mdash; no signup flow, no manual auth.</p>
+  <p>Native MCP server. 38 tools covering 21,000+ facilities, 2,000+ tracked M&amp;A deals, grid intelligence, fiber routes, water risk, tax incentives. Auto-trial keys mean your agent starts working in 60 seconds &mdash; no signup flow, no manual auth.</p>
   <div class="badges">
     <span class="badge">Streamable HTTP</span>
     <span class="badge">38 tools</span>
