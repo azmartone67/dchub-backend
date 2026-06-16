@@ -202,6 +202,57 @@ def history():
     return jsonify(ok=True, layer=layer or "all", days=days, rows=rows)
 
 
+_FRIENDLY = {
+    "data_centers": "Data centers", "substations": "Substations",
+    "gas_pipelines": "Gas pipelines", "metro_fiber_routes": "Fiber routes",
+    "fcc_fiber_hexes": "Broadband / middle-mile coverage", "gas_compressors": "Gas compressor stations",
+    "gas_processing": "Gas processing plants", "transmission_lines": "Transmission lines",
+    "power_plants_eia": "Power plants", "power_plants_discovered": "Discovered power plants",
+}
+
+
+@infra_growth_bp.route("/api/v1/whats-new", methods=["GET"])
+def whats_new():
+    """PUBLIC: recent additions per category (7d / 1d) for the on-site 'What's New'
+    feed. No auth — it's a freshness/marketing signal. Reuses the growth snapshots."""
+    import datetime
+    dsn = _dsn()
+    if not dsn:
+        return jsonify(ok=False, error="no DATABASE_URL"), 503
+    try:
+        with psycopg2.connect(dsn, sslmode="require", connect_timeout=8) as c:
+            with c.cursor() as cur:
+                _ensure(cur)
+                layers, _flat = _summary(cur)
+                deals_7d = deals_1d = None
+                try:
+                    cur.execute("SELECT COUNT(*) FROM deals WHERE date >= CURRENT_DATE - 7")
+                    deals_7d = int(cur.fetchone()[0])
+                    cur.execute("SELECT COUNT(*) FROM deals WHERE date >= CURRENT_DATE - 1")
+                    deals_1d = int(cur.fetchone()[0])
+                except Exception:
+                    pass
+    except Exception as e:
+        return jsonify(ok=False, error=str(e)[:200]), 500
+
+    items = []
+    if deals_7d is not None:
+        items.append({"category": "Data-center deals tracked", "total": None,
+                      "added_7d": deals_7d, "added_1d": deals_1d, "cadence": "daily", "as_of": None})
+    for l in layers:
+        items.append({"category": _FRIENDLY.get(l["layer"], l["layer"]), "total": l["count"],
+                      "added_7d": l["delta_7d"], "added_1d": l["delta_1d"],
+                      "cadence": l["category"], "as_of": l["as_of"]})
+    total_7d = sum(i["added_7d"] for i in items if isinstance(i["added_7d"], int) and i["added_7d"] > 0)
+    resp = jsonify(ok=True,
+                   generated_at=datetime.datetime.now(datetime.timezone.utc).isoformat(),
+                   total_added_7d=total_7d, items=items,
+                   note="Live additions to DC Hub across infrastructure layers (rolling 7-day).",
+                   source="DC Hub (dchub.cloud), CC-BY-4.0")
+    resp.headers["Cache-Control"] = "public, max-age=1800"
+    return resp
+
+
 def register_infra_growth(app):
     try:
         app.register_blueprint(infra_growth_bp)
