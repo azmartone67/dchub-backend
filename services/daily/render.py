@@ -267,7 +267,7 @@ def _render_a(data: RenderData, size: Size) -> Image.Image:
     ax_f.set_xlim(0, 1); ax_f.set_ylim(0, 1)
     ax_f.text(0, 0.5, f"SOURCE: {data.source} · AS OF {data.as_of}",
               color=pal["dim"], fontsize=9, family="monospace", va="center")
-    ax_f.text(1, 0.5, "DCHUB.CLOUD / DAILY", color=pal["dim"], fontsize=9,
+    ax_f.text(1, 0.5, "DC HUB MEDIA · DCHUB.CLOUD/DAILY", color=pal["dim"], fontsize=9,
               family="monospace", va="center", ha="right", weight="bold")
 
     return _figure_to_image(fig, facecolor="#0A1220")
@@ -315,7 +315,7 @@ def _render_b(data: RenderData, size: Size, pal_key: str = "b") -> Image.Image:
     ax_f.set_xlim(0, 1); ax_f.set_ylim(0, 1)
     ax_f.text(0, 0.5, f"Source: {data.source} · as of {data.as_of}",
               color=pal["dim"], fontsize=9, family="sans-serif", va="center")
-    ax_f.text(1, 0.5, "DCHUB.CLOUD / DAILY",
+    ax_f.text(1, 0.5, "DC HUB MEDIA · DCHUB.CLOUD/DAILY",
               color=pal["accent"], fontsize=9, family="sans-serif",
               va="center", ha="right", weight="bold")
     return _figure_to_image(fig, facecolor=pal["bg"])
